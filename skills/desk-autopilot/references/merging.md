@@ -42,8 +42,10 @@ accept a merge with red checks, so the rule is enforced only by you and the driv
 
 **Every merge is claimed and recorded** in the machine-wide merge log, so the merge driver and
 another session never race one PR and who merged it is on record. Before merging or arming:
-`node ~/.claude/desk/bin/merge-log.mjs claim <n> <head> --by "session <your session name>"`; when
-it refuses, naming the other merger, do not merge. After: `merge-log.mjs record <n> <head> --by
+`node ~/.claude/desk/bin/merge-log.mjs claim <n> <head> --by "session <your session name>"`. When
+it refuses (exit 11), do not merge or arm it, and report the line it printed. Where another desk
+path already merged, armed or claimed the PR, that line names who did it and at which head; any
+other refusal (a usage error, an unreadable repo) is not another merger, so do not say it is. After: `merge-log.mjs record <n> <head> --by
 "session <your session name>" --event merged` (`armed` for auto-merge, `disarmed` when you turn it off, `failed` when gh refuses).
 `merge-log.mjs show --pr <n>` says who did.
 
@@ -68,7 +70,8 @@ one exits 0 and the head has not moved. A routine that fails is recorded with th
 You never run a routine yourself: it is the driver's, outside any session's permission mode.
 
 **Known flaky checks: the one written waiver.** A PR whose only red checks are named in §4 Known
-flaky checks (`` `<check>: <glob> [<glob>…]` ``) is merged by the driver, pinned to its head, once
+flaky checks (`` `<check>: <glob> [<glob>…]` ``, or `` `<check>: <test file> > <test name>` `` for one
+test in a check that runs others) is merged by the driver, pinned to its head, once
 each of them is still red after the driver's two reruns at that head, the PR's files touch none of
 the globs the row gives for that check, and nothing else in the gate is red or pending. It logs
 `WAIVED <check>`, and once merged files a ticket naming the check, the PR, the head SHA and the
@@ -81,7 +84,14 @@ put that under `WAITING ON YOU`. It never waives:
 - a §4 Required check, whatever the row says: branch protection enforces it, and merging past it
   would be a bypass (§3 `merge-bypass` is `never`). The driver records it as `merge_blocked` and you
   report the PR;
-- a check the row does not name: it stays red.
+- a check the row does not name: it stays red;
+- a check the row names only by its tests that failed in any other: each of its failure annotations
+  (exit-code lines aside) must have a listed test's file as its path and a title that is that test's
+  name, or ends with it after ` > ` or ` › `. One with no such annotation, whose annotations could not be read, or with ten or more (as
+  many as GitHub keeps for a step, so the list may be cut short) is never waived, and the test's file counts as its path, so a PR changing it is not waived.
+
+A draft red only on checks the driver would waive gets no fix worker: it leaves draft as a green one
+does, and the driver reruns and waives them as above.
 
 A row that does not parse stops the driver at start, naming the row; fix it with `/desk-setup`.
 Unset waives nothing.
@@ -378,7 +388,10 @@ forever) and **no preview build starts without its team's preview-build lease** 
   (`undraft.mjs` `buildPark`), so this step builds it. A park that asks anything else stays a park.
   A PR out of draft gets the same build from its fix tries (`fix-tries.mjs` `fixCall`, which asks
   `undraft.mjs` `buildCall` about those checks alone), once no check a worker fixes is red or no
-  fix try is left.
+  fix try is left. A command that finds its image already there and builds nothing still exits 0, so
+  the checks are re-run all the same. Where `ci-rerun` is not `yes`, nothing is built or re-run, and a
+  draft red only on those checks goes to the person with the command, saying it was not built for
+  that reason (`undraft.mjs` `unbuiltCall`).
 - **A conflicted draft goes to a fix worker, not to `DRAFT`**, where §3 `pr-conflict-unreviewed`
   (no one but the user's handle has reviewed or commented) or `pr-conflict-reviewed` (someone has)
   is `yes`: it merges `<default>` in, reviews its new head and posts that review, within two tries of
@@ -394,18 +407,20 @@ forever) and **no preview build starts without its team's preview-build lease** 
   monorepo PR's app, docs and catalogue count once). Its size is the machine profile's
   `preview-build-slots` row (default 1), and its mode the `preview-build` entry of `lease-kinds`
   (`desk-env lease mode preview-build`): `off` takes nothing, `shadow` takes it without waiting and
-  logs a would-refuse, `on` waits. A worker or session takes it before opening its PR and before
-  every push to it (`desk-pr` §4 *Before opening the PR, and before every push to it*). The merge
+  logs a would-refuse, `on` waits. A worker or session takes it (`desk-env preview-slot`) before
+  opening its PR and before every push to it (`desk-pr` §4 *Before opening the PR, and before every
+  push to it*; a worker's `push-retry.mjs` takes it for each push). The merge
   driver takes it before rerunning a red check whose name says it is a preview (Vercel, Netlify or
   preview), and before updating a BEHIND PR's branch, labelled `<repo>#<n>`; while every unit is held
   it reruns or updates nothing and logs that the PR waits on the preview build, then tries again next
   loop. The pass does the same before each push it makes to a worker's branch, and leaves the push for
   a later pass while every unit is held. A unit has no owner: the build outlives what
   started it, so the unit lives until it is released or its 1200 seconds pass (`desk-env lease list`).
-  Where this applies, it, not review or CI, caps how fast a batch can merge, and it is what a red
-  preview-deploy check almost always means. Where config §3 `read-vercel` allows, read the build log
-  before treating it as broken code: `vercel inspect --logs <url> --scope <team slug from §4
-  Vercel>`, looking for exit 137 or "Out of Memory".
+  Serialise any retrigger you start by hand the same way. Where this applies, it, not review or CI,
+  caps how fast a batch can merge, and it is what a red preview-deploy check almost always means.
+  Where config §3 `read-vercel` allows, read the build log before treating it as broken code:
+  `vercel inspect --logs <url> --scope <team slug from §4 Vercel>`, looking for exit 137 or "Out of
+  Memory".
 
 **Act, do not watch.** The failure this stage exists to prevent is a green PR sitting unmerged while
 the orchestrator reports on it. If a PR can be merged, merge it before writing the next status

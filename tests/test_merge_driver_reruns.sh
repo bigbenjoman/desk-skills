@@ -81,6 +81,44 @@ check "AC5: the ticket is filed once per PR and head"                  '[ "$(mer
 out=$(DESK_CONFIG="$T/config-bad.md" MERGE_DRIVER_ONE_LOOP=1 bash "$B/merge-driver.sh" --tickets "T-11" 2>&1); rc=$?
 check "AC9: a row that does not parse stops the driver, naming the row" '[ $rc -eq 1 ] && echo "$out" | grep -q "FAIL: config §4 Known flaky checks does not parse: \`lint\`" && ! echo "$out" | grep -q "merge driver up"'
 
+# ---- #831: a §4 Known flaky checks item naming one test inside a check ------------------------------
+sed '/^| Known flaky checks /d' "$T/config-flaky.md" > "$T/config-test.md"
+echo '| Known flaky checks | `Integration: tests/orders.test.ts > retries a timed-out order` |' >> "$T/config-test.md"
+SHA21=b111111111111111111111111111111111111111; SHA22=b222222222222222222222222222222222222222
+SHA23=b333333333333333333333333333333333333333; SHA24=b444444444444444444444444444444444444444
+cat > "$T/prs.json" <<EOF
+{
+  "121": { "head": "fix/T-21", "base": "main", "sha": "$SHA21", "state": "open", "draft": false, "files": ["src/x.ts"],
+           "checks": [["test", "SUCCESS", 9001], ["Integration", "FAILURE", 9121]] },
+  "122": { "head": "fix/T-22", "base": "main", "sha": "$SHA22", "state": "open", "draft": false, "files": ["src/y.ts"],
+           "checks": [["test", "SUCCESS", 9002], ["Integration", "FAILURE", 9122]] },
+  "123": { "head": "fix/T-23", "base": "main", "sha": "$SHA23", "state": "open", "draft": false, "files": ["src/z.ts", "tests/orders.test.ts"],
+           "checks": [["test", "SUCCESS", 9003], ["Integration", "FAILURE", 9123]] },
+  "124": { "head": "fix/T-24", "base": "main", "sha": "$SHA24", "state": "open", "draft": false, "files": ["src/w.ts"],
+           "checks": [["test", "SUCCESS", 9004], ["Integration", "FAILURE", 9124]] }
+}
+EOF
+LISTED='{ "annotation_level": "failure", "path": "tests/orders.test.ts", "title": "tests/orders.test.ts > retries a timed-out order", "message": "AssertionError: expected 200 to be 504" }'
+EXITED='{ "annotation_level": "failure", "message": "Process completed with exit code 1." }'
+cat > "$T/annotations.json" <<EOF
+{ "9121": [$LISTED, $EXITED],
+  "9122": [$LISTED, { "annotation_level": "failure", "path": "tests/orders.test.ts", "title": "tests/orders.test.ts > totals an order", "message": "AssertionError: expected 3 to be 4" }],
+  "9123": [$LISTED],
+  "9124": [$EXITED] }
+EOF
+q init merge-flaky-test
+for k in T-21 T-22 T-23 T-24; do q add "$k" Task A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
+for p in "121:$SHA21" "122:$SHA22" "123:$SHA23" "124:$SHA24"; do for f in reruns reruns-ok; do printf 'Integration\nIntegration\n' > "$SD/$f-${p%%:*}-${p#*:}"; done; done
+: > "$T/merges.log"
+tloop(){ out=$(DESK_CONFIG="$T/config-test.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-21 T-22 T-23 T-24" 2>&1); rc=$?; }
+tloop
+check "#831: a check red only on its listed test, after two reruns, is waived" '[ $rc -eq 0 ] && echo "$out" | grep -q "#121 green but for WAIVED \"Integration\" at b11111111"'
+check "#831: a listed test beside a failure in another test of that check is not waived" 'echo "$out" | grep -qF "#122 the waiver for \"Integration\" does not apply: it failed in a test §4 Known flaky checks does not list (AssertionError: expected 3 to be 4)"'
+check "#831: a PR changing the listed test'\''s file is not waived" 'echo "$out" | grep -qF "#123 the waiver for \"Integration\" does not apply: the diff touches tests/orders.test.ts (tests/orders.test.ts, for \"Integration\")"'
+check "#831: a check whose failures name no test is never waived" 'echo "$out" | grep -qF "#124 the waiver for \"Integration\" does not apply: it failed in a test §4 Known flaky checks does not list, or its failures name no test"'
+tloop
+check "#831: the waived PR merges pinned to its head, and only it" '[ "$(merged)" = 121 ] && grep -qx "121 main $SHA21" "$T/merges.log"'
+
 # ---- DS-225 AC2: gh signed out stops the driver, saying so -------------------------------------
 : > "$FAKE_SLEEPS"; touch "$T/gh.signedout"
 loop; rm -f "$T/gh.signedout"

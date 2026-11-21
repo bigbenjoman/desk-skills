@@ -37,7 +37,7 @@ query($owner:String!, $name:String!) {
           reviewedAt:      ([$mine[] | select(.commit.oid == $pr.headRefOid) | .commit.oid] | last),
           lastReviewedAt:  ($mine | map(.submittedAt) | last),
           lastReviewedSha: ($mine | map(.commit.oid)  | last),
-          rounds:          ($mine | length),
+          rounds:          ([$mine[] | [.commit.oid, ((.body // "") | capture("round=(?<r>[0-9]+)")? | .r)]] | unique | length),
           mine:            ($pr.author.login == $me),
           filesTruncated:  $pr.files.pageInfo.hasNextPage }))       as $tagged
   | { queueTruncated: $pr_page_truncated,

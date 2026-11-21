@@ -81,7 +81,11 @@ const REWRITTEN = [
   ['#823', 'treat a peer\'s as claimed, and never kill', 1], // a peer's claimed ports are recorded for the pass
   ['#823', 'holds or anything bound.', 1],
   ['#1018', 'A start that fails parks with the CLI\'s error and is never run locally without asking.', 1], // later work on its PR is a local worker's
+  ['#755', 'Stagger PR creation and serialise every retrigger.', 1], // every push now takes the preview-build slot
+  ['#831', 'flaky checks (`` `<check>: <glob> [<glob>…]` ``) is merged by the driver', 1], // an item may name one test inside a check
   ['DS-912', 'One preview build at a time, where PRs deploy previews (§4 Vercel set).', 1], // each build takes its team's preview-build lease
+  ['DS-912', 'any retrigger you start by hand the same way. Where this applies, it, not review or CI, caps how fast a batch can', 1], // rewrapped beside the lease text
+
 ];
 checkSplit({ t, label: 'AC4', before, files, read, headings: 46, minRows: 100, rewritten: REWRITTEN });
 const deep = before.split('\n').filter((l) => /^#### /.test(l));

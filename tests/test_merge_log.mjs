@@ -122,5 +122,21 @@ t('DS-835 CLI: show --latest needs --pr', cli('show', '--latest').status, 11);
 const c5 = cli('record', '51', 'cafe123', '--by', S, '--event', 'merged', '--ticket', 'DS-2');
 t('DS-835 CLI: record --ticket writes the ticket', [c5.status, M.readLog(path).find((e) => e.pr === '51')?.ticket], [0, 'DS-2']);
 
+const A = 'session DS-1-story', B = 'session DS-2-bug';
+const armedClaim = M.claim({ repo: R, pr: 70, sha: 'abcdef1', by: A, now: NOW, path }).ok;
+M.record({ repo: R, pr: 70, sha: 'abcdef1', by: A, event: 'armed', now: NOW + 1000, path });
+t('DS-936 AC3 a session arming auto-merge claims, then records armed at its head', [armedClaim, M.readLog(path).filter((e) => e.pr === '70').map((e) => [e.event, e.sha, e.by].join(' '))], [true, [`claim abcdef1 ${A}`, `armed abcdef1 ${A}`]]);
+const b = M.claim({ repo: R, pr: 70, sha: 'abcdef1', by: B, now: NOW + 3 * M.CLAIM_MS, armedNow: () => true, path });
+t('DS-936 AC4 a second session reaching its merge step is refused, naming who armed it and at which head', [b.ok, b.why], [false, `${R}#70 is already armed by ${A} (2026-11-20T10:00:01.000Z, at abcdef1): not merging`]);
+t('DS-936 AC4 and nothing is written for the refused session', M.readLog(path).filter((e) => e.pr === '70' && e.by === B).length, 0);
+const bu = M.claim({ repo: R, pr: 70, sha: 'abcdef1', by: B, now: NOW + 3 * M.CLAIM_MS, armedNow: unread, path });
+t('DS-936 AC4 with GitHub unreadable, the refusal still names who armed it and at which head', [bu.ok, bu.why], [false, `${R}#70 has auto-merge armed by ${A} in the merge log (2026-11-20T10:00:01.000Z, at abcdef1), and GitHub could not be read to check it is still on: not merging`]);
+cli('record', '71', 'abcdef1', '--by', A, '--event', 'armed');
+writeFileSync(answer, '{"autoMergeRequest":{"enabledAt":"x"}}');
+const ca = cliGh('claim', '71', 'abcdef1', '--by', B);
+t('DS-936 AC4 CLI: a session claiming a PR another session armed exits 11, naming it and the head', [ca.status, ca.stderr.trim().startsWith(`merge-log: ${R}#71 is already armed by ${A} (`), ca.stderr.includes('at abcdef1)')], [11, true, true]);
+const cu = cli('claim', '72', 'abcdef1');
+t('DS-936 AC4 CLI: a usage refusal exits 11 and names no other merger', [cu.status, /already|armed by/.test(cu.stderr)], [11, false]);
+
 console.log(fails ? `${fails} FAILED` : 'all merge log checks passed');
 process.exit(fails ? 1 : 0);

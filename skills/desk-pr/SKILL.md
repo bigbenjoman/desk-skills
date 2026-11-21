@@ -179,34 +179,37 @@ Fill the `pre-push` slot of the §1 block from the run.
 Where PRs deploy previews, opening the PR and every push to it start a preview build, and a Vercel
 team's builds share one builder that kills builds started together (exit 137). So each of those
 steps first takes a unit of the team's preview-build lease, which every repo, batch and session on
-this computer draws on. `<team>` is the first item `desk-env list vercel` prints.
+this computer draws on. `<team>` is the first item `desk-env list vercel` prints. `<label>` is
+`<§0 GitHub repo>#<PR number>` for a push to an open PR, and `<§0 GitHub repo>@<your branch>` before
+the PR exists:
 
-- **§4 Vercel is `none` or unset**: no lease. Open and push as before.
-- Otherwise read the kind's mode once, with `desk-env lease mode preview-build`:
-  - **`off`**: no lease. Open and push as before.
-  - **`shadow` or `on`**: take the unit, then open or push. `<label>` is `<§0 GitHub repo>#<PR number>`
-    for a push to an open PR, and `<§0 GitHub repo>@<your branch>` before the PR exists:
+```bash
+desk-env preview-slot --wait 100 "<label>"
+```
 
-    ```bash
-    desk-env lease acquire preview-build <team> --ttl 1200 --no-owner --wait 100 --label "<label>"
-    ```
-
-    It prints the lease id. **`on`**: while every unit is held it waits, printing `waiting for the
-    preview-build slot for <team>` and who holds it; say you are waiting on the preview build, naming
-    them. Exit 75 means the 100 seconds ran out (inside a tool call's default timeout): run the same
-    command again, as a new command, saying you are still waiting on the preview build. Push
-    or open only once it exits 0. **`shadow`**: it never waits; where `on` would have, it says so on
-    stderr and the lease log records a would-refuse naming every holder. Open or push as before.
-  - Exit 4 (the lease store is unreadable): say so, and open or push without the lease.
+- **§4 Vercel `none` or unset** (it prints `no preview slot to take`), or the kind **`off`** (`desk-env
+  lease mode preview-build`; it says nothing was taken): no lease. Open and push as before.
+- **`on`**: it prints the lease id. While every unit is held it waits, printing `waiting for the
+  preview-build slot for <team>` and who holds it: say you are waiting on the preview build, naming
+  them. Exit 75 means the 100 seconds ran out (inside a tool call's default timeout): run the same
+  command again, as a new command, saying you are still waiting on the preview build. Push or open
+  only once it exits 0.
+- **`shadow`**: it never waits; where `on` would have, it says so on stderr and the lease log records
+  a would-refuse naming every holder. Open or push as before.
+- Exit 4 (the lease store is unreadable): say so, and open or push without the lease.
 
 The unit has no owner: the build outlives the command that started it, so the lease stays until it
-is released or its 1200 seconds pass. Never release it yourself. Taking it again with the
-same label renews that unit rather than taking a second, so all of one PR's builds hold one unit.
-Right after `gh pr create`, put the PR's number on the unit taken before it:
+is released or its 1200 seconds pass. Never release it yourself. Taking it again with the same label
+renews that unit rather than taking a second, so all of one PR's builds hold one unit. Right after
+`gh pr create`, put the PR's number on the unit taken before it:
 
 ```bash
 desk-env lease renew <lease id> preview-build <team> --ttl 1200 --no-owner --label "<§0 GitHub repo>#<PR number>"
 ```
+
+An autopilot worker's pushes go through `push-retry.mjs`, which takes the unit itself under the same
+label without waiting, and when every unit is held exits 76 naming the `desk-env preview-slot` wait
+to run first.
 
 ## 5. Stacked PRs
 

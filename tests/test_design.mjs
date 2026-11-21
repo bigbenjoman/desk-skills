@@ -787,5 +787,13 @@ else document.getElementById('storybook-root').innerHTML = '<main style="height:
   }
 }
 
+// An admit refused on a value a linked design frame shows is read by the session's design connector
+// and written into the ticket, then admitted again; only a frame no connector reads goes to the person.
+{
+  const admit = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'desk-admit', 'SKILL.md'), 'utf8');
+  const step2 = admit.slice(admit.indexOf('## 2. Refused'), admit.indexOf('| `<why>` says |'));
+  t('desk-admit §2 reads a linked design frame through the design connector before asking, and writes it into the ticket', ['get_design_context', 'the Artifact tool', "ticket's Design section", 'run step 1 again', 'only when no connector'].every((x) => step2.includes(x)), true);
+}
+
 rmSync(T, { recursive: true, force: true });
 if (fails) { console.log(`FAIL ${fails} check(s)`); process.exit(1); }

@@ -113,6 +113,7 @@ node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.str
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC2 its PR is its result, on the PR's own branch" '[ "$(field CW-1 state)" = "\"done\"" ] && [ "$(field CW-1 result.pr)" = 31 ] && [ "$(field CW-1 branch)" = "\"claude/cw-1-abc\"" ]'
 check "DS-124 AC2 the pass gives its session URL and its wall time to the PR" 'echo "$out" | grep -q "CW-1: PR #31 from cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj.from=cli&m=0 in 40m 00s"'
+check "its tracker steps are the pass's to make, and with no tracker there are none" 'echo "$out" | grep -qF "CW-1: PR #31 from cloud session" && echo "$out" | grep -qF "its tracker steps are made by the pass" && [ "$(field CW-1 tracker_steps)" = "\"none\"" ]'
 all_done; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC2 the batch report shows tokens and cost as not reported for cloud, never \$0" 'echo "$out" | grep -E "^  CW-1 " | grep -q "not reported for cloud" && ! echo "$out" | grep -E "^  CW-1 " | grep -q "\$0\.00" && echo "$out" | grep -q "cloud session: https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj"'
 cloud_ticket CW-2; : > "$T/cloud-fail"
@@ -511,6 +512,21 @@ check "one rewritten, then reset away from origin's commit, is not overwritten: 
   '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-19)" = "$W19_ORIGIN" ] && field W-19 worktree_busy.why | grep -qF "but origin/fix/W-19 has 1 commit(s) the head does not hold by their patch"'
 check "nor one whose commit someone amended on origin, author, date and subject kept: held" \
   '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-20)" = "$W20_ORIGIN" ] && field W-20 worktree_busy.why | grep -qF "but origin/fix/W-20 has 1 commit(s) the head does not hold by their patch"'
+# W-21's last worker left a commit unpushed while another push's preview build holds §4 Vercel's
+# preview-build slot: the pass leaves its push for a later pass, then pushes once the slot is free.
+wb_clone W-21; q add W-21; git -C "$T/wt/W-21" commit -q --allow-empty -m "worker's"
+q set W-21 "worker_head={\"sha\":\"$(git -C "$T/wt/W-21" rev-parse HEAD)\"}"; wb_fix W-21; W21_HEAD=$(git -C "$T/wt/W-21" rev-parse HEAD)
+sed 's/^| Ticket key pattern | `T-\[0-9\]+` |$/&\n| Vercel | `acme` `web: prj_1` |/' "$T/config-gp.md" > "$T/config-gpv.md"
+printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `preview-build=on` | test |\n' > "$T/machine-pv.md"
+pv(){ DESK_CONFIG="$T/config-gpv.md" DESK_MACHINE="$T/machine-pv.md" DESK_LEASE_DIR="$T/leases-pv" "$@"; }
+pv node "$B/desk-env.mjs" lease acquire preview-build acme --ttl 600 --no-owner --label "another PR's push" >/dev/null
+out=$(pv node "$B/pass.mjs" 2>&1)
+check "a push the preview-build slot is taken for waits for a later pass, naming it" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-21)" != "$W21_HEAD" ] && ! grep -q "^W-21 " "$T/wb-spawns" && field W-21 worktree_busy.why | grep -qF "the pass'"'"'s push of them waits on the preview build for acme: the preview-build slot for acme is held by another PR'"'"'s push"'
+rm -rf "$T/leases-pv"; out=$(pv node "$B/pass.mjs" 2>&1)
+check "once the slot is free the pass pushes, keeping the slot for that push's build under its PR's or branch's label" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-21)" = "$W21_HEAD" ] && grep -q "^W-21 " "$T/wb-spawns" && jq -e "(.leases[0].label | test(\"(@fix/W-21|#[0-9]+)\$\")) and .leases[0].ttl == 1200" "$T/leases-pv/leases.json" >/dev/null'
+q set W-21 state=done
 q set W-9 state=done; wb_fix W-10
 out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
 check "DS-606 AC2 a stale origin ref is fetched first, so a head already on origin is not held" \
@@ -940,6 +956,38 @@ rm -f "$T/state-mx/passes.jsonl"; mkdir -p "$T/state-mx/passes.jsonl"
 out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1); code=$?
 check "DS-758 AC3 a metrics file that cannot be written: the pass completes and its report says so" \
   'echo "$out" | grep -q "metrics: this pass.s metrics line was not written to $T/state-mx/passes.jsonl" && echo "$out" | grep -q "^memory: vmmem=" && [ "$code" -ne 1 ] && [ "$(jq -r .pass.at "$DESK_QUEUE")" != null ]'
+
+# ---- a cloud ticket's tracker steps: made by the pass, since the session has no tracker access ------
+# The fake desk-jira logs each call: C-1 and C-2 are In Progress with a transition to In Review, C-3 is
+# already In Review. C-2's config does not grant jira-transition.
+cat > "$T/stub/desk-jira" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/cj-calls"
+case "\$1" in
+  comments) [ -f "$T/cj-said-\$2" ] && cat "$T/cj-said-\$2"; exit 0 ;;
+  comment) echo "\$3" > "$T/cj-said-\$2" ;;
+  get) [ "\$2" = C-3 ] && s="In Review" || s="In Progress"; printf '{"key":"%s","fields":{"status":{"name":"%s"}}}\n' "\$2" "\$s" ;;
+  transitions) printf '21\tStart review\t-> In Review\n31\tClose\t-> Done\n' ;;
+  transition) echo "\$2 -> In Review" ;;
+esac
+EOF
+chmod +x "$T/stub/desk-jira"
+for v in y:yes a:ask; do sed -e "s#^\(| \`pr-images\` .*\)\$#\1\\
+| \`jira-comment\` | Comment | \`yes\` | \`yes\` |\\
+| \`jira-transition\` | Move | \`yes\` | \`${v#*:}\` |#" "$T/config.md" > "$T/config-cj${v%%:*}.md"
+  printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n| Ticket key pattern | `C-[0-9]+` |\n| Review state | `In Review` |\n| Done state | `Done` |\n' >> "$T/config-cj${v%%:*}.md"; done
+export DESK_QUEUE="$T/queue-cj.json" DESK_AUTOPILOT_STATE="$T/state-cj"; mkdir -p "$T/state-cj/logs"; q init cj
+for k in C-1 C-3; do q add "$k"; q set "$k" state=done location=cloud "result.pr=5${k#C-}" tracker_steps=due; done
+out=$(DESK_CONFIG="$T/config-cjy.md" node "$B/pass.mjs" 2>&1)
+check "a cloud ticket's PR-link comment and its move to §4 Review state are made by the pass" \
+  'grep -qx "comment C-1 PR #51, opened by a cloud session: https://github.com/acme/widgets/pull/51 (C-1/desk-autopilot cloud PR)" "$T/cj-calls" && grep -qx "transition C-1 21" "$T/cj-calls" && echo "$out" | grep -qF "C-1 cloud PR #51 → tracker: commented the link to PR #51, and moved it from In Progress to In Review" && [ "$(field C-1 tracker_steps)" != "\"due\"" ]'
+check "one already in §4 Review state is commented on, never moved" '! grep -q "^transition C-3" "$T/cj-calls" && grep -q "^comment C-3 " "$T/cj-calls"'
+: > "$T/cj-calls"; q set C-1 tracker_steps=due; out=$(DESK_CONFIG="$T/config-cjy.md" node "$B/pass.mjs" 2>&1)
+check "a comment already on the ticket is not posted again" '! grep -q "^comment C-1" "$T/cj-calls"'
+q add C-2; q set C-2 state=done location=cloud result.pr=52 tracker_steps=due
+out=$(DESK_CONFIG="$T/config-cja.md" node "$B/pass.mjs" 2>&1)
+check "a step whose §3 row is not yes is the person's, with its command" \
+  '! grep -q "^transition C-2" "$T/cj-calls" && echo "$out" | grep -qF "C-2: cloud PR #52'"'"'s tracker step is yours: config §3 jira-transition is \"ask\": move it to In Review with desk-jira transition C-2"'
 
 # ---- DS-573: a parked ticket whose own PR merged before its Jira tail was done goes back to a worker
 # for its after-merge steps only. PR 701, 703 and 704 merged, 702 is open; MT-3 is done in Jira. GitHub's
@@ -1555,19 +1603,18 @@ check "DS-798 a step a checker ran is not run again" \
   ': > "$T/follow-prompts"; DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" >/dev/null 2>&1; [ ! -s "$T/follow-prompts" ] && [ "$(field FS-2 follow_run)" = null ]'
 cp "$T/claude-before-fs" "$T/stub/claude"
 
-# ---- #771: a pass that crashes after starting a worker says which it started, in text and JSON.
-# A §4 Evidence workflow row naming `none` beside a workflow is a config error the pass reads late,
-# after its spawns.
+# ---- DS-843 AC4: a config row the pass cannot read stops it before it starts any worker.
+# A §4 Evidence workflow row naming `none` beside a workflow is a config error, and the pass uses the
+# row only after its spawns.
 export DESK_QUEUE="$T/queue-771.json" DESK_AUTOPILOT_STATE="$T/state-771"; mkdir -p "$T/state-771/logs"
 { cat "$T/config.md"; printf '\n## 4. Tracker, tools and team\n\n| Field | Value |\n|---|---|\n| Evidence workflow | `none` `x.yml` |\n'; } > "$T/config-771.md"
 q init c771; q set-batch concurrency=1
 q add C-1; q set C-1 state=triaged branch=fix/C-1
 out=$(DESK_CONFIG="$T/config-771.md" node "$B/pass.mjs" 2>&1); rc=$?
-check "#771 a crash after a spawn exits 11 and names the worker it started" \
-  '[ $rc -eq 11 ] && echo "$out" | grep -q "pass.mjs crashed: .*Evidence workflow" && echo "$out" | grep -q "^before it stopped, this pass spawned:" && echo "$out" | grep -q "^  C-1 port="'
-q set C-1 state=triaged; q set C-1 session_id=null
+check "DS-843 AC4 an unreadable Evidence workflow row stops the pass with its error before any spawn" \
+  '[ $rc -eq 11 ] && echo "$out" | grep -q "pass.mjs crashed: .*Evidence workflow" && ! echo "$out" | grep -q "spawned" && [ "$(field C-1 state)" = "\"triaged\"" ] && [ "$(field C-1 session_id)" = null ]'
 jout=$(DESK_CONFIG="$T/config-771.md" node "$B/pass.mjs" --json 2>/dev/null)
-check "#771 and the JSON carries before_crash.spawned" \
-  'echo "$jout" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const j=JSON.parse(s);process.exit(j.status===\"error\"&&/^C-1 /.test(j.before_crash?.spawned?.[0]??\"\")?0:1)})"'
+check "DS-843 AC4 and its JSON error names no spawned ticket" \
+  'echo "$jout" | jq -e ".status == \"error\" and (has(\"spawned\") | not)" >/dev/null'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

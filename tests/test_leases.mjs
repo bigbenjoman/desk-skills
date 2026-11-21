@@ -43,6 +43,29 @@ const deskEnv = (dir, args) => {
   const r = spawnSync(process.execPath, [join(root, 'desk/bin/desk-env.mjs'), 'lease', ...args], { encoding: 'utf8', cwd: S, env: env({ DESK_LEASE_DIR: dir }) });
   return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
 };
+// desk-env preview-slot: the preview-build slot for §4 Vercel's team, taken before a push.
+{
+  const conf = (vercel) => { const c = join(S, `conf-${n++}.md`); writeFileSync(c, `## 4. Tracker, tools and team\n| Field | Value |\n|---|---|\n| Vercel | ${vercel} |\n`); return c; };
+  const slot = (dir, config, args) => {
+    const r = spawnSync(process.execPath, [join(root, 'desk/bin/desk-env.mjs'), 'preview-slot', ...args], { encoding: 'utf8', cwd: S, env: env({ DESK_LEASE_DIR: dir, DESK_CONFIG: config }) });
+    return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
+  };
+  const d = fresh(); const team = conf('`acme` `web: prj_1`');
+  const first = slot(d, team, ['K-1', 'push']);
+  t('a push takes the preview slot for the §4 Vercel team, with no owner, for 1200 seconds', [first.code, JSON.parse(readFileSync(join(d, 'leases.json'), 'utf8')).leases.map((l) => [l.kind, l.key, l.owner, l.label, l.ttl])], [0, [['preview-build', 'acme', null, 'K-1 push', 1200]]]);
+  const same = slot(d, team, ['--wait', '0', 'K-1', 'push']);
+  t('DS-912: the same label again renews that unit rather than waiting', [same.code, same.out === first.out, /^renewed /.test(same.err)], [0, true, true]);
+  t('a second push while that build runs is refused when it will not wait', slot(d, team, ['--wait', '0', 'K-2']).code, 3);
+  t('with §4 Vercel none there is nothing to take', [slot(fresh(), conf('`none`'), ['K-3']).code, slot(fresh(), conf('`none`'), ['K-3']).out], [0, 'no preview slot to take: §4 Vercel names no team']);
+  t('a --wait that is not a whole number is a usage error', slot(fresh(), team, ['--wait', 'soon', 'K-4']).code, 2);
+  const r = fresh(); const id = slot(r, team, ['K-5']).out;
+  const label = () => JSON.parse(readFileSync(join(r, 'leases.json'), 'utf8')).leases[0].label;
+  deskEnv(r, ['renew', id, 'preview-build', 'acme', '--ttl', '600', '--no-owner']);
+  const kept = label();
+  deskEnv(r, ['renew', id, 'preview-build', 'acme', '--ttl', '600', '--no-owner', '--label', 'the build of K-5']);
+  t('a renew keeps its label unless it names one, which it then takes', [kept, label()], ['K-5', 'the build of K-5']);
+}
+
 const cliAsync = (dir, args) => new Promise((resolve) => {
   const c = spawn(process.execPath, [join(root, 'desk/bin/leases.mjs'), ...args], { env: env({ DESK_LEASE_DIR: dir }) });
   let out = ''; let err = '';
@@ -506,7 +529,7 @@ try {
     const d = fresh();
     const id = pb(d, 'acme', 'acme/web#41').out;
     const again = pb(d, 'acme', 'acme/web#41', ['--wait', '2']);
-    t('DS-912: the same PR again gets its own unit back at once', `${again.code} ${again.out === id} ${again.err}`, '0 true ');
+    t('DS-912: the same PR again gets its own unit back at once, saying it renewed it', `${again.code} ${again.out === id} ${again.err}`, `0 true renewed preview-build acme (lease ${id}), which the label acme/web#41 already held`);
     t('DS-912: still one unit held', json(d).length, 1);
     t('DS-912: the log records a renew, not a second grant', log(d).map((e) => e.event), ['grant', 'renew']);
   }
@@ -551,16 +574,16 @@ try {
     const sec = pr.slice(pr.indexOf('### Before opening the PR, and before every push to it'), pr.indexOf('## 5. Stacked PRs'));
     const has = (s) => sec.includes(s);
     t('DS-912: desk-pr has the lease step', sec.length > 100, true);
-    t('DS-912 AC6: no §4 Vercel takes no lease', has('**§4 Vercel is `none` or unset**: no lease. Open and push as before.'), true);
-    t('DS-912 AC7: off opens and pushes as before', has('desk-env lease mode preview-build') && has('**`off`**: no lease. Open and push as before.'), true);
-    t('DS-912 AC1 AC2: on waits, and says it waits on the preview build', has('desk-env lease acquire preview-build <team> --ttl 1200 --no-owner --wait 100 --label "<label>"') && has('say you are waiting on the preview build'), true);
+    t('DS-912 AC6 AC7: no §4 Vercel, or the kind off, takes no lease', has('**§4 Vercel `none` or unset**') && has('the kind **`off`**') && has('no lease. Open and push as before.'), true);
+    t('DS-912 AC1 AC2: on waits, and says it waits on the preview build', has('desk-env preview-slot --wait 100 "<label>"') && has('say you are waiting on the preview build'), true);
+    t('DS-912 AC2: a worker\'s push-retry takes the same unit', has('`push-retry.mjs`, which takes the unit itself under the same'), true);
     t('DS-912 AC8: shadow never waits and logs a would-refuse', has('**`shadow`**: it never waits') && has('would-refuse naming every holder'), true);
     t('DS-912 AC4: the PR number goes on the unit after opening', has('desk-env lease renew <lease id> preview-build <team> --ttl 1200 --no-owner --label "<§0 GitHub repo>#<PR number>"'), true);
     const open = readFileSync(join(root, 'skills/desk-pr/references/opening.md'), 'utf8');
     const at = open.indexOf('### Open it');
     t('DS-912 AC1: opening takes the lease before gh pr create', open.indexOf('first take the preview-build lease', at) > at && open.indexOf('first take the preview-build lease', at) < open.indexOf('gh pr create --repo', at), true);
     const s5 = readFileSync(join(root, 'skills/desk-autopilot/references/worker-contract-stage-5.md'), 'utf8');
-    t('DS-912 AC2: a worker\'s push takes the lease first', s5.includes('**A push to your open PR, and opening it, takes the preview-build lease first**'), true);
+    t('DS-912 AC1: a worker\'s PR open takes the lease first', s5.includes('**Opening your PR takes the preview-build lease first too**'), true);
     const merging = readFileSync(join(root, 'skills/desk-autopilot/references/merging.md'), 'utf8');
     t('DS-912: merging.md states the lease, not the prose cap', merging.includes('takes a unit of its Vercel team\'s preview-build lease first') && !merging.includes('One preview build at a time'), true);
   }

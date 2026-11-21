@@ -4,7 +4,7 @@ import { chmodSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseClearsWhen } from '../desk/bin/clears-when.mjs';
-import { TRANSIENT_EXIT, hookEnvFailure, parseArgs, pushWithRetry, refusalLine, transientPush, unreachedPush } from '../desk/bin/push-retry.mjs';
+import { TRANSIENT_EXIT, hookEnvFailure, parseArgs, pushWithRetry, refusalLine, slotLabel, transientPush, unreachedPush } from '../desk/bin/push-retry.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -70,6 +70,28 @@ const NFF = { status: 1, out: ' ! [rejected] b -> b (non-fast-forward)' };
 
 let r = await run(['origin', 'b'], [OK]);
 t('pushed first time: one push, no wait', [r.code, r.calls.length, r.slept], [0, 1, []]);
+
+// The preview-build slot: taken before the push without waiting; given back when the push fails, and
+// renewed for its build when it goes through.
+const slotted = async (answers, taken, args = ['origin', 'b']) => {
+  const log = []; const said = []; const calls = [];
+  const slot = { take: () => { log.push('take'); return taken; }, give: (id) => { log.push(`give ${id}`); }, keep: (id) => { log.push(`keep ${id}`); } };
+  const git = (a) => { calls.push(a.join(' ')); return answers.shift(); };
+  const code = await pushWithRetry(parseArgs(args), { git, sleep: async () => {}, now: () => 0, say: (l) => said.push(l), slot });
+  return { code, log, said, calls };
+};
+let sl = await slotted([OK], { id: 'L-1' });
+t('a push takes the preview-build slot first and, once it pushes, renews it for the build', [sl.code, sl.log], [0, ['take', 'keep L-1']]);
+sl = await slotted([NFF], { id: 'L-2' });
+t('a push git refuses gives the slot back: it started no build', [sl.code, sl.log], [1, ['take', 'give L-2']]);
+sl = await slotted([OK], { busy: 'held by #7' });
+t('a slot another build holds: exit 76, nothing pushed, naming the wait and then this same push',
+  [sl.code, sl.calls, /desk-env preview-slot --wait 540 'b'/.test(sl.said[0]) && /then run this same push again: node \S+ origin b\./.test(sl.said[0])], [76, [], true]);
+sl = await slotted([NFF], { id: 'L-3', renewed: true });
+t('DS-912 a push git refuses keeps a unit it only renewed: an earlier build of the PR may hold it', [sl.code, sl.log], [1, ['take']]);
+t('DS-912 the label names the PR once one is open, else the branch', [slotLabel('fix/A-1', 'acme/web', '41'), slotLabel('fix/A-1', 'acme/web'), slotLabel('b')], ['acme/web#41', 'acme/web@fix/A-1', 'b']);
+sl = await slotted([OK], { why: 'the preview-build slot was not taken (store unreadable)' });
+t('a slot that could not be read: the push goes ahead anyway, saying so', [sl.code, sl.said], [0, ['push-retry: the preview-build slot was not taken (store unreadable): pushing anyway']]);
 r = await run(['origin', 'b'], [E5, E5, OK]);
 t('AC1 a 5xx then a success: retried with growing waits, exit 0', [r.code, r.slept], [0, [30, 60]]);
 r = await run(['origin', 'b'], [E5]);
@@ -165,14 +187,57 @@ const dir = scratch('push-retry-');
 const log = join(dir, 'calls');
 writeFileSync(join(dir, 'git'), `#!/bin/sh\necho "$*" >> "${log}"\nprintf '%s\\n' "$STUB_OUT" >&2\nexit "$STUB_RC"\n`);
 chmodSync(join(dir, 'git'), 0o755);
+// push-retry reads the branch's open PR with gh: the stub prints $STUB_PR (none by default).
+writeFileSync(join(dir, 'gh'), '#!/bin/sh\n[ -n "$STUB_PR" ] && printf \'%s\\n\' "$STUB_PR"\nexit 0\n');
+chmodSync(join(dir, 'gh'), 0o755);
 const bin = join(dirname(fileURLToPath(import.meta.url)), '../desk/bin/push-retry.mjs');
 const cli = (args, env) => spawnSync(process.execPath, [bin, ...args], { encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, ...env } });
+// The pushes the stub ran: desk-env's own reads of the repo (for the preview slot) are not pushes.
+const pushes = () => readFileSync(log, 'utf8').trim().split('\n').filter((l) => l.startsWith('push'));
 let c = cli(['-u', 'origin', 'fix/A-1'], { STUB_OUT: 'pushed', STUB_RC: '0' });
-t('the CLI runs that push and passes on what git said', [c.status, readFileSync(log, 'utf8').trim(), c.stderr.includes('pushed')], [0, 'push -u origin fix/A-1', true]);
+t('the CLI runs that push and passes on what git said', [c.status, pushes().join('\n'), c.stderr.includes('pushed')], [0, 'push -u origin fix/A-1', true]);
 c = cli(['origin', 'fix/A-1'], { STUB_OUT: ' ! [rejected] b -> b (non-fast-forward)', STUB_RC: '1' });
-t('AC3 the CLI exits with git\'s refusal, unretried', [c.status, readFileSync(log, 'utf8').trim().split('\n').length], [1, 2]);
+t('AC3 the CLI exits with git\'s refusal, unretried', [c.status, pushes().length], [1, 2]);
 c = cli(['--force', 'origin', 'fix/A-1'], {});
-t('the CLI refuses any other push, running nothing', [c.status, readFileSync(log, 'utf8').trim().split('\n').length], [2, 2]);
+t('the CLI refuses any other push, running nothing', [c.status, pushes().length], [2, 2]);
+// The CLI against a real lease store, where §4 Vercel names a team and preview-build leases hold.
+{
+  const ld = join(dir, 'leases'); const conf = join(dir, 'conf.md'); const mach = join(dir, 'machine.md');
+  writeFileSync(conf, '## 4. Tracker, tools and team\n| Field | Value |\n|---|---|\n| Vercel | `acme` |\n');
+  writeFileSync(mach, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `preview-build=on` | test |\n');
+  const envs = { DESK_CONFIG: conf, DESK_MACHINE: mach, DESK_LEASE_DIR: ld };
+  const deskEnv = (a) => spawnSync(process.execPath, [join(dirname(bin), 'desk-env.mjs'), ...a], { encoding: 'utf8', env: { ...process.env, ...envs } });
+  const held = () => deskEnv(['lease', 'list', '--json']).stdout.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l).label);
+  deskEnv(['preview-slot', '--wait', '0', "another PR's build"]);
+  writeFileSync(log, '');
+  c = cli(['origin', 'fix/A-1'], { ...envs, STUB_OUT: 'pushed', STUB_RC: '0' });
+  t('the CLI, the slot held by another build: exit 76 and no push', [c.status, pushes().length], [76, 0]);
+  // The wait the 76 names, then the same push: the slot that wait took is the push's.
+  const wait = /desk-env preview-slot --wait 540 '([^']+)'/.exec(c.stderr)?.[1];
+  rmSync(ld, { recursive: true, force: true });
+  deskEnv(['preview-slot', '--wait', '0', wait]);
+  c = cli(['origin', 'fix/A-1'], { ...envs, STUB_OUT: 'pushed', STUB_RC: '0' });
+  t('the slot the named wait took is used, and kept under its label for the build once it pushes', [c.status, pushes().length, held()], [0, 1, [wait]]);
+  t('DS-912 with no PR open the label names the repo and branch', /@fix\/A-1$/.test(wait), true);
+  // Another team's lease, or another repo's, labelled for a branch of the same name, is not this push's.
+  rmSync(ld, { recursive: true, force: true });
+  spawnSync(process.execPath, [join(dirname(bin), 'desk-env.mjs'), 'lease', 'acquire', 'preview-build', 'other-team', '--ttl', '600', '--no-owner', '--label', wait], { encoding: 'utf8', env: { ...process.env, ...envs } });
+  deskEnv(['preview-slot', '--wait', '0', 'someone/else@fix/A-1']);
+  writeFileSync(log, '');
+  c = cli(['origin', 'fix/A-1'], { ...envs, STUB_OUT: 'pushed', STUB_RC: '0' });
+  t('a lease of that label on another team, or for another repo of the branch name, is not taken for it', [c.status, pushes().length], [76, 0]);
+  // DS-912: with the branch's PR open, the push renews the PR's unit rather than waiting behind it.
+  rmSync(ld, { recursive: true, force: true });
+  const prLabel = wait.replace(/@fix\/A-1$/, '#41');
+  deskEnv(['preview-slot', '--wait', '0', prLabel]);
+  writeFileSync(log, '');
+  c = cli(['origin', 'fix/A-1'], { ...envs, STUB_OUT: 'pushed', STUB_RC: '0', STUB_PR: '41' });
+  t('DS-912 AC2 a push to an open PR renews its own unit and pushes', [c.status, pushes().length, held()], [0, 1, [prLabel]]);
+  writeFileSync(log, '');
+  c = cli(['origin', 'fix/A-1'], { ...envs, STUB_OUT: ' ! [rejected] b -> b (non-fast-forward)', STUB_RC: '1', STUB_PR: '41' });
+  t('DS-912 and a refused push keeps that unit for the build it already covers', [c.status, held()], [1, [prLabel]]);
+}
+
 rmSync(dir, { recursive: true, force: true });
 
 console.log(`push-retry: ${fails ? `${fails} failed` : 'all passed'}`);

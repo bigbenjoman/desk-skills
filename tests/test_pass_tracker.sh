@@ -126,8 +126,8 @@ cat > "$T/stub/gh" <<EOF
 echo "\$*" >> "$T/gh-calls"
 case "\$*" in
   "pr view 310 "*) echo '{"state":"OPEN","headRefOid":"abc","reviews":[{"state":"APPROVED","author":{"login":"old"},"commit":{"oid":"zzz"}},{"state":"APPROVED","author":{"login":"mousedown"},"commit":{"oid":"abc"}},{"state":"COMMENTED","author":{"login":"me"},"commit":{"oid":"abc"}}],"statusCheckRollup":[{"__typename":"CheckRun","name":"Review gate","workflowName":"gate","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/7/job/70"},{"__typename":"CheckRun","name":"tests","workflowName":"ci","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/8/job/80"},{"__typename":"CheckRun","name":"Lint","workflowName":"ci","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/8/job/81"}]}' ;;
-  "api repos/"*"/check-runs/70/annotations") jq -c '.protected' "$FIX" ;;
-  "api repos/"*"/check-runs/81/annotations") if [ -f "$T/annotations-ok" ]; then echo '[]'; else exit 1; fi ;;
+  "api repos/"*"/check-runs/70/annotations?per_page=100") jq -c '.protected' "$FIX" ;;
+  "api repos/"*"/check-runs/81/annotations?per_page=100") if [ -f "$T/annotations-ok" ]; then echo '[]'; else exit 1; fi ;;
   "run view 8 "*"--job 81 --log-failed") printf 'Lint\tRun\t2026-10-23T10:00:00.000Z ReferenceError: React is not defined\n' ;;
   "pr list "*) echo '[]' ;;
   *) exit 1 ;;
@@ -137,6 +137,7 @@ q init ga
 q add GA-1; q set GA-1 state=done result.pr=310
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-499 AC1 a failed check keeps its gate's error line, not GitHub's exit code line" 'field GA-1 pr_status | jq -r ".checks[] | select(.name == \"Review gate\") | .error" | grep -q "^Approval required — 2 protected file(s): "'
+check "#831 the error lines keep each failure annotation's path and title beside them, exit-code lines aside" '[ "$(field GA-1 pr_status | jq -c "[.checks[] | select(.name == \"Review gate\") | .error_notes[] | [.path, .title, (.message | startswith(\"Approval required\"))]]")" = "[[\".github\",\"\",true]]" ]'
 check "DS-499 a passing check is not read, and one whose annotations could not be read keeps no error" '[ "$(field GA-1 pr_status | jq -c "[.checks[] | select(.name != \"Review gate\") | has(\"error\")]")" = "[false,false]" ] && ! grep -q "check-runs/80" "$T/gh-calls"'
 check "DS-499 AC2 who approved the head is recorded, and an approval of an older commit is not" '[ "$(field GA-1 pr_status.approvals | jq -c .)" = "[\"mousedown\"]" ]'
 touch "$T/annotations-ok"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)

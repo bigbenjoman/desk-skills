@@ -1,5 +1,5 @@
 // suite: gate (one definition of green)
-import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold, holdKind, holdNeedsPerson, agentLast, NO_REASON, UNREAD_FILES } from '../desk/bin/gate.mjs';
+import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseFlaky, flakyWaiver, failureNotes, notesIn, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold, holdKind, holdNeedsPerson, agentLast, NO_REASON, UNREAD_FILES } from '../desk/bin/gate.mjs';
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -442,5 +442,40 @@ rmSync(gtmp, { recursive: true, force: true });
     if (was === undefined) delete process.env.DESK_LEASE_DIR; else process.env.DESK_LEASE_DIR = was;
     rmSync(tmp, { recursive: true, force: true });
   }
+}
+// ---- #831: a §4 Known flaky checks item naming one test inside a check
+{
+  const row = parseFlaky(['`Integration: tests/orders.test.ts > retries a timed-out order`'.slice(1, -1), 'e2e: e2e/**', 'Unit: > no file', 'Unit: a b > two words']);
+  t('#831 the per-test form parses to its check, its file as its path and its test', JSON.stringify(row.flaky[0]), JSON.stringify({ name: 'Integration', paths: ['tests/orders.test.ts'], test: { file: 'tests/orders.test.ts', title: 'retries a timed-out order' } }));
+  t('#831 the whole-check form beside it is unchanged', JSON.stringify(row.flaky[1]), JSON.stringify({ name: 'e2e', paths: ['e2e/**'] }));
+  t('#831 a per-test item with no file, or a file with a space, is an error', row.errors.join(' '), '`Unit: > no file` `Unit: a b > two words`');
+  const checks = normaliseRollup([cr('test', 'COMPLETED', 'SUCCESS', 1), cr('Integration', 'COMPLETED', 'FAILURE', 9)]);
+  const listed = { path: 'tests/orders.test.ts', title: 'tests/orders.test.ts > retries a timed-out order', message: 'AssertionError: expected 200 to be 504' };
+  const other = { path: 'tests/orders.test.ts', title: 'tests/orders.test.ts > totals an order', message: 'AssertionError: expected 3 to be 4' };
+  const W = (notes, files = ['src/x.ts'], flaky = row.flaky.slice(0, 1)) => flakyWaiver(checks, { required: ['test'], flaky, files, notes: () => notes });
+  t('#831 only the listed test failing: waived', W([listed])?.applies, true);
+  t('#831 the test as the whole title, its file as ./path, counts too', W([{ ...listed, path: './tests/orders.test.ts', title: 'retries a timed-out order' }])?.applies, true);
+  t('#831 so does one after a describe path in another reporter\'s separator', W([{ ...listed, title: 'orders › retries a timed-out order' }])?.applies, true);
+  t('#831 a sibling test whose name starts with the listed one is not it', W([listed, { ...listed, title: 'tests/orders.test.ts > retries a timed-out order twice' }])?.reason, 'tests');
+  t('#831 nor is a test nested under it', W([{ ...listed, title: 'tests/orders.test.ts > retries a timed-out order > after a refund' }])?.reason, 'tests');
+  t('#831 a message quoting the listed name names nothing', W([{ path: 'tests/orders.test.ts', title: 'tests/orders.test.ts > totals an order', message: 'expected retries a timed-out order to be called' }])?.reason, 'tests');
+  t('#831 an annotation with no title names no test', W([{ path: 'tests/orders.test.ts', title: null, message: 'FAIL retries a timed-out order' }])?.reason, 'tests');
+  const beside = W([listed, other]);
+  t('#831 a listed test beside a failure in another test: not waived, naming it', `${beside?.applies} ${beside?.reason} ${beside?.lines}`, 'false tests AssertionError: expected 3 to be 4');
+  t('#831 a longer test name holding the listed one does not count', W([{ ...listed, title: 'tests/orders.test.ts > retries a timed-out orders' }])?.reason, 'tests');
+  t('#831 the listed title in another file does not count', W([{ ...listed, path: 'tests/carts.test.ts' }])?.reason, 'tests');
+  const touched = W([listed], ['src/x.ts', 'tests/orders.test.ts']);
+  t('#831 a PR changing the listed test\'s file: not waived', `${touched?.applies} ${touched?.reason}`, 'false paths');
+  t('#831 a check with no failure annotation is never waived', W([])?.reason, 'tests');
+  t('#831 annotations that could not be read: not waived', W(undefined)?.reason, 'annotations');
+  t('#831 as many as GitHub keeps for a step, which may have dropped another test\'s: not waived', W(Array(10).fill(listed))?.reason, 'annotations');
+  t('#831 one fewer is read as the whole list', W(Array(9).fill(listed))?.applies, true);
+  t('#831 a whole-check item for the same check waives it without its annotations', W(undefined, ['src/x.ts'], [...row.flaky.slice(0, 1), { name: 'Integration', paths: ['src/integration/**'] }])?.applies, true);
+  t('#831 failureNotes keeps path and title beside the line, exit-code lines aside', JSON.stringify(failureNotes([{ annotation_level: 'failure', path: 'a.ts', title: 'a > b', message: 'boom\nstack' }, { annotation_level: 'failure', message: 'Process completed with exit code 1.' }, { annotation_level: 'warning', message: 'w' }])),
+    JSON.stringify([{ path: 'a.ts', title: 'a > b', message: 'boom' }]));
+  const kept = checks.map((c) => (c.name === 'Integration' ? { ...c, error_notes: [listed] } : c));
+  const f = { name: 'Integration', runId: '9' };
+  t('#831 notesIn reads the error_notes the pass kept', JSON.stringify(notesIn(kept)(f)), JSON.stringify([listed]));
+  t('#831 notesIn is undefined where a run kept none', notesIn(checks)(f), undefined);
 }
 process.exit(fails ? 1 : 0);
