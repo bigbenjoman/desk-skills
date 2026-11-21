@@ -101,7 +101,7 @@ const DRAIN = ['concurrency', 'concurrency_by', 'concurrency_user'];
 const BY = 'move-batch.mjs';
 const writeQueue = (file, q, opts = {}) => writeQueueFile(file, q, { by: BY, ...opts });
 // The queue as it stands in the standing slot, which the ledger compares the moved one with.
-const before = readQueueAt(from.queue);
+const before = ledgerOn() ? readQueueAt(from.queue) : null;
 if (running.length) {
   // A worker count of 0 is a pause pass.mjs and borrowing both honour, resumes and the base fix
   // included. The count it replaces is kept, unless this batch is already draining: a count the
@@ -182,7 +182,7 @@ try {
   refuse(`could not move the batch (${e.message})${stuck.length ? `; still in ${to.state}, to move back by hand: ${stuck.join(', ')}` : ': nothing was moved'}`);
 }
 // The ledger records the move once it has happened: a moved event per ticket naming both batches.
-if (ledgerOn()) reportMissed(to.queue)(recordWrite(to.queue, before, readQueueAt(to.queue), { by: BY, from: ledgerTarget(from.queue).batch }));
+if (before) reportMissed(to.queue)(recordWrite(to.queue, before, readQueueAt(to.queue), { by: BY, from: ledgerTarget(from.queue).batch }));
 
 const tickets = Object.keys(cur.tickets ?? {}).length;
 console.log(`move-batch: moved batch ${name} (base ${cur.base}, ${tickets} ticket${tickets === 1 ? '' : 's'}, run by the supervisor) from the standing slot to batch ${epic}`);
