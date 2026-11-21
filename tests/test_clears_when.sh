@@ -596,4 +596,26 @@ check "DS-563 AC3 restated as a form: settled, waiting on it" '[ "$(cut -d"|" -f
 check "DS-563 AC3 recorded none: handed to the person" '[ "$(cut -d"|" -f10 <<< "$r")" = "only a person" ]'
 check "DS-563 AC3 restateKeys names the tickets whose line is still to restate, against the queue as it stands" '[ "$(cut -d"|" -f11,12 <<< "$r")" = "U-1,U-2|U-1" ]'
 
+# A park written `<path> exists`, with no `file`: read as the file where the path can only be one, and
+# refused otherwise, saying to write `file <path> exists`, with the forms.
+parked X-1 A "waiting on the export"
+out=$(node "$B/queue.mjs" clears-when X-1 "docs/out.json exists" 2>&1); rc=$?
+check "a park clearing on '<path> exists' is stored as that file existing" '[ $rc -eq 0 ] && [ "$(field X-1 park.clears_when)" = "{\"kind\":\"file-exists\",\"path\":\"docs/out.json\",\"root\":\"worktree\"}" ]'
+out=$(node "$B/clears-when.mjs" --check '$DESK_STATE/approvals/X-2.json exists' 2>&1); rc=$?
+check "so is a \$DESK_STATE path" '[ $rc -eq 0 ] && [ "$out" = "reads as: file \$DESK_STATE/approvals/X-2.json exists" ]'
+out=$(node "$B/clears-when.mjs" --check 'fix/X-3 exists' 2>&1); rc=$?
+check "a path that could be a branch is refused, saying to write the file form, and listing the forms" \
+  '[ $rc -eq 1 ] && grep -q "\"fix/X-3 exists\" is not a form a pass reads (for a file, write \"file fix/X-3 exists\"). The forms:" <<< "$out" && grep -qx "  file <path> exists" <<< "$out"'
+# The worker contract gives every form with a line written in it, and each such line reads as its form.
+contract="$S/../skills/desk-autopilot/references/autopilot-worker-contract.md"
+rows=$(CW="$B/clears-when.mjs" node -e '
+  import(process.env.CW).then(({ CLEARS_WHEN_EXAMPLES: ex, CLEARS_WHEN_FORM_LINES: forms, parseClearsWhen }) => {
+    const bad = ex.filter(([, e]) => !parseClearsWhen(e).ok).map(([, e]) => e);
+    const missing = forms.filter((f) => !ex.some(([g]) => g === f));
+    console.log(JSON.stringify({ bad, missing }));
+    for (const [f, e] of ex) console.log("| `" + f + "` | `" + e + "` |");
+  });')
+check "every form has an example, and each example reads" '[ "$(head -1 <<< "$rows")" = "{\"bad\":[],\"missing\":[]}" ]'
+check "the worker contract carries each form beside its example" 'while IFS= read -r row; do grep -qxF "$row" "$contract" || exit 1; done < <(tail -n +2 <<< "$rows")'
+
 echo "clears-when: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

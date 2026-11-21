@@ -95,6 +95,28 @@ log that one. Where every option breaks one, park before the PR, quoting it.
 `AUTOPILOT_PARK_INPUTS: {…}` (flat; lists ok), plus `AUTOPILOT_PARK_CLEARS_WHEN: <condition>`
 where a script can read what clears it: `desk-autopilot` *Ask or take* says how.
 
+`<condition>` is one of these forms, written as its example is, and nothing else: run
+`node ~/.claude/desk/bin/clears-when.mjs --check "<condition>"` on it before you end, and rewrite it
+if that exits 1. `<path> exists` with no `file` reads as a file only for an absolute or
+`$DESK_STATE` path, or a file name with an extension; write `file <path> exists` otherwise.
+
+| Form | Example |
+|---|---|
+| `pr <n> merged` | `pr 812 merged` |
+| `pr <n> ready` | `pr 812 ready` |
+| `ticket <KEY> done` | `ticket ABC-41 done` |
+| `variable <NAME> set` | `variable DEPLOY_TOKEN set` |
+| `run <id> completed` | `run 18842117 completed` |
+| `git push origin <branch> succeeds` | `git push origin fix/ABC-42-totals succeeds` |
+| `base contains <branch>` | `base contains main` |
+| `pr <n> reviewed by <login> at head` | `pr 812 reviewed by octocat at head` |
+| `file <path> exists` | `file $DESK_STATE/approvals/ABC-42.json exists` |
+| `ticket <KEY> in <repo> batch` | `ticket ABC-43 in acme/web batch` |
+| `check "<name>" on pr <n> passes` | `check "e2e" on pr 812 passes` |
+| `commit <sha> on <branch>` | `commit 4f2a9c1 on main` |
+| `gh pr view <n> [--repo <owner/name>] reports MERGED` | `gh pr view 812 --repo acme/web reports MERGED` |
+| `none` | `none` |
+
 When the call parks, or `desk-ticket` says stop and wait for anything else:
 
 1. **Write the park file**, `$DESK_STATE/parks/<TICKET>.json`: `{"question": "<one line>"}`, the

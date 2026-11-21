@@ -21,7 +21,9 @@
 //                          that account has a review on the commit that is the PR's head now; one
 //                          only on an older commit does not count
 //   file <path> exists     the file is there: an absolute path, one relative to the ticket's worktree,
-//                          or one under the state directory written $DESK_STATE/<path>
+//                          or one under the state directory written $DESK_STATE/<path>. `<path> exists`
+//                          with no `file` reads the same where the path cannot be anything else: an
+//                          absolute or $DESK_STATE path, or one whose last part has an extension
 //   ticket <KEY> in <repo> batch
 //                          the ticket is in the queue of a batch of that repo on this computer (its
 //                          name or owner/name), other than this one, whose orchestrator has a live beat
@@ -67,6 +69,8 @@ const FORMS = [
   [/^(?:the\s+)?(?:batch\s+)?base\s+contains\s+(?:origin\/)?([\w.-]+(?:\/[\w.-]+)*)$/i, (m) => ({ kind: 'base-contains', branch: m[1] })],
   [/^pr\s+#?(\d+)\s+reviewed\s+by\s+@?([A-Za-z0-9][\w-]*(?:\[bot\])?)\s+at\s+(?:its\s+|the\s+)?head$/i, (m) => ({ kind: 'pr-reviewed', pr: Number(m[1]), login: m[2] })],
   [/^file\s+(.+?)\s+exists$/i, (m) => fileCond(m[1])],
+  // A bare path: only one that reads as a file, so a branch or a ticket that "exists" is not taken as one.
+  [/^(\/\S+|\$(?:DESK_STATE|\{DESK_STATE\})\/\S+|\S*[^\s/]\.[A-Za-z0-9]+)\s+exists$/, (m) => fileCond(m[1])],
   [/^(?:ticket\s+)?([A-Za-z][A-Za-z0-9_]*-\d+)\s+(?:is\s+)?(?:queued\s+)?in\s+(?:an?\s+|the\s+)?([\w.-]+(?:\/[\w.-]+)?)\s+batch$/i,
     (m) => ({ kind: 'ticket-queued', ticket: m[1].toUpperCase(), repo: m[2] })],
   [new RegExp(`^checks?\\s+(${QUOTED}(?:\\s*(?:,\\s*and|,|and)\\s*${QUOTED})*)\\s+(?:on|of)\\s+pr\\s+#?(\\d+)\\s+(?:pass(?:es|ed)?|succeed(?:s|ed)?|(?:is|are)\\s+green)(?:\\s+at\\s+(?:its\\s+|the\\s+)?head)?$`, 'i'),
@@ -84,6 +88,17 @@ const FORM_LIST = ['pr <n> merged', 'pr <n> ready', 'ticket <KEY> done', 'variab
   'base contains <branch>', 'pr <n> reviewed by <login> at head', 'file <path> exists', 'ticket <KEY> in <repo> batch',
   'check "<name>" on pr <n> passes', 'commit <sha> on <branch>', 'gh pr view <n> [--repo <owner/name>] reports MERGED'];
 export const CLEARS_WHEN_FORMS = `${FORM_LIST.join(', ')}, or none`;
+// Each form beside a line written in it, as the worker contract's table gives them
+// (autopilot-worker-contract.md, which tests/test_clears_when.sh keeps in step with this list).
+export const CLEARS_WHEN_EXAMPLES = [
+  ['pr <n> merged', 'pr 812 merged'], ['pr <n> ready', 'pr 812 ready'], ['ticket <KEY> done', 'ticket ABC-41 done'],
+  ['variable <NAME> set', 'variable DEPLOY_TOKEN set'], ['run <id> completed', 'run 18842117 completed'],
+  ['git push origin <branch> succeeds', 'git push origin fix/ABC-42-totals succeeds'], ['base contains <branch>', 'base contains main'],
+  ['pr <n> reviewed by <login> at head', 'pr 812 reviewed by octocat at head'], ['file <path> exists', 'file $DESK_STATE/approvals/ABC-42.json exists'],
+  ['ticket <KEY> in <repo> batch', 'ticket ABC-43 in acme/web batch'], ['check "<name>" on pr <n> passes', 'check "e2e" on pr 812 passes'],
+  ['commit <sha> on <branch>', 'commit 4f2a9c1 on main'], ['gh pr view <n> [--repo <owner/name>] reports MERGED', 'gh pr view 812 --repo acme/web reports MERGED'],
+  ['none', 'none'],
+];
 // One form a line, for a worker checking its line before it ends (queue.mjs clears-when --check).
 export const CLEARS_WHEN_FORM_LINES = [...FORM_LIST, 'none'];
 
@@ -123,7 +138,9 @@ export function parseClearsWhen(raw, { here = null } = {}) {
     const cond = make(m, here);
     return cond.why ? { ok: false, why: cond.why } : { ok: true, cond };
   }
-  return { ok: false, why: `"${s}" is not one of: ${CLEARS_WHEN_FORMS}` };
+  const file = /^(.+?)\s+exists$/i.exec(s)?.[1];
+  const hint = file && !/^file\s/i.test(s) ? ` (for a file, write "file ${file} exists")` : '';
+  return { ok: false, why: `"${s}" is not one of: ${CLEARS_WHEN_FORMS}${hint}` };
 }
 
 // The check a worker runs on its line before it ends: {ok, text}, the text naming what it reads as, or
@@ -132,7 +149,8 @@ export function parseClearsWhen(raw, { here = null } = {}) {
 export function checkLine(raw, { here = null } = {}) {
   const p = parseClearsWhen(raw, { here });
   if (p.ok) return { ok: true, text: `reads as: ${describeCond(p.cond)}` };
-  return { ok: false, text: `${p.why.replace(/ is not one of: [\s\S]*$/, ' is not a form a pass reads')}. The forms:\n${CLEARS_WHEN_FORM_LINES.map((f) => `  ${f}`).join('\n')}` };
+  const hint = / \(for a file, write "[^"]*"\)$/.exec(p.why)?.[0] ?? '';
+  return { ok: false, text: `${p.why.replace(/ is not one of: [\s\S]*$/, ' is not a form a pass reads')}${hint}. The forms:\n${CLEARS_WHEN_FORM_LINES.map((f) => `  ${f}`).join('\n')}` };
 }
 
 // A file-exists condition's path as it is written.
