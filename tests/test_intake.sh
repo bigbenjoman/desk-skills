@@ -1433,7 +1433,7 @@ for k in PC-1 PB-1 PQ-1 PX-1; do out=$(push "$k"); eval "rc_${k//-/_}=$?"; eval 
 check "push AC3: a lane C ticket is not admitted, is handed to the digest as intake hands it, and push exits 11 with the reason" \
   '[ "$rc_PC_1" -eq 11 ] && [ "$(qget tickets.PC-1)" = undefined ] && [ "$(handed PC-1)" = "handed: lane C: needs a plan" ] && grep -q "handed PC-1 to the digest: lane C: needs a plan" <<< "$out_PC_1"'
 check "push AC3: so are a blocking lint finding, open questions and size XL" \
-  '[ "$rc_PB_1$rc_PQ_1$rc_PX_1" = 111111 ] && [ "$(handed PB-1)" ="handed: lint (blocking): no acceptance criteria" ] && [ "$(handed PQ-1)" = "handed: open question(s): which plan tier?" ] && [ "$(handed PX-1)" = "handed: size XL: it needs splitting before a worker takes it" ]'
+  '[ "$rc_PB_1$rc_PQ_1$rc_PX_1" = 111111 ] && [ "$(handed PB-1)" = "handed: lint (blocking): no acceptance criteria" ] && [ "$(handed PQ-1)" = "handed: open question(s): which plan tier?" ] && [ "$(handed PX-1)" = "handed: size XL: it needs splitting before a worker takes it" ]'
 check "push AC3: no tick is started for a ticket not admitted" '[ "$(count "$T/wake.calls")" = 0 ]'
 n=$(count "$T/triage.calls")
 out=$(push PU-1); rc=$?
