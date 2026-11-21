@@ -70,7 +70,8 @@ one exits 0 and the head has not moved. A routine that fails is recorded with th
 You never run a routine yourself: it is the driver's, outside any session's permission mode.
 
 **Known flaky checks: the one written waiver.** A PR whose only red checks are named in §4 Known
-flaky checks (`` `<check>: <glob> [<glob>…]` ``) is merged by the driver, pinned to its head, once
+flaky checks (`` `<check>: <glob> [<glob>…]` ``, or `` `<check>: <test file> > <test name>` `` for one
+test in a check that runs others) is merged by the driver, pinned to its head, once
 each of them is still red after the driver's two reruns at that head, the PR's files touch none of
 the globs the row gives for that check, and nothing else in the gate is red or pending. It logs
 `WAIVED <check>`, and once merged files a ticket naming the check, the PR, the head SHA and the
@@ -83,7 +84,14 @@ put that under `WAITING ON YOU`. It never waives:
 - a §4 Required check, whatever the row says: branch protection enforces it, and merging past it
   would be a bypass (§3 `merge-bypass` is `never`). The driver records it as `merge_blocked` and you
   report the PR;
-- a check the row does not name: it stays red.
+- a check the row does not name: it stays red;
+- a check the row names only by its tests that failed in any other: each of its failure annotations
+  (exit-code lines aside) must have a listed test's file as its path and that test's name in its
+  title or message. One with no such annotation, or whose annotations could not be read, is never
+  waived, and the test's file counts as its path, so a PR changing it is not waived.
+
+A draft red only on checks the driver would waive gets no fix worker: it leaves draft as a green one
+does, and the driver reruns and waives them as above.
 
 A row that does not parse stops the driver at start, naming the row; fix it with `/desk-setup`.
 Unset waives nothing.

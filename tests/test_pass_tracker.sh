@@ -137,6 +137,7 @@ q init ga
 q add GA-1; q set GA-1 state=done result.pr=310
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-499 AC1 a failed check keeps its gate's error line, not GitHub's exit code line" 'field GA-1 pr_status | jq -r ".checks[] | select(.name == \"Review gate\") | .error" | grep -q "^Approval required — 2 protected file(s): "'
+check "#831 the error lines keep each failure annotation's path and title beside them, exit-code lines aside" '[ "$(field GA-1 pr_status | jq -c "[.checks[] | select(.name == \"Review gate\") | .error_notes[] | [.path, .title, (.message | startswith(\"Approval required\"))]]")" = "[[\".github\",\"\",true]]" ]'
 check "DS-499 a passing check is not read, and one whose annotations could not be read keeps no error" '[ "$(field GA-1 pr_status | jq -c "[.checks[] | select(.name != \"Review gate\") | has(\"error\")]")" = "[false,false]" ] && ! grep -q "check-runs/80" "$T/gh-calls"'
 check "DS-499 AC2 who approved the head is recorded, and an approval of an older commit is not" '[ "$(field GA-1 pr_status.approvals | jq -c .)" = "[\"mousedown\"]" ]'
 touch "$T/annotations-ok"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)

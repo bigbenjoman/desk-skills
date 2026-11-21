@@ -35,8 +35,11 @@
 //   readKeyedFiles({ repo, base, head, files, holds, run }) -> contents, for the `#<key>` holds
 //   codeOwnerHolds(held, { repo, base, merger, run }) -> { held, satisfied }: a code-owner hold whose
 //     every held file the base's CODEOWNERS gives to `merger` alone is satisfied
-//   parseFlaky(items)        §4 Known flaky checks items `<check>: <glob> [<glob>…]` -> { flaky, errors }
-//   flakyWaiver(checks, { required, advisory, runs, flaky, files }) -> null | { applies, reason, checks, hits }
+//   parseFlaky(items)        §4 Known flaky checks items `<check>: <glob> [<glob>…]` or `<check>: <file> > <test>`
+//                            -> { flaky: [{ name, paths, test? }], errors }
+//   flakyWaiver(checks, { required, advisory, runs, flaky, files, notes }) -> null | { applies, reason, checks, hits }
+//   failureNotes(notes)      a job's failure annotations, exit-code lines aside -> [{ path, title, message }]
+//   notesIn(checks)          (failing check) -> the error_notes the pass kept on its runs, or undefined
 //   parseStateChecks(items)  §4 State checks items `<check>[: verdict|approval]` -> { checks: [{ name, kind }], errors }
 //   stateFailing(failing, stateChecks[, lineOf]) -> the failing checks that are state checks, each with its
 //                            kind (an approval one whose error line is staleVerdict's takes verdict)
@@ -519,12 +522,25 @@ export const promotionHolds = (tickets, since = null) => (tickets ?? [])
 
 // §4 Known flaky checks items: `<check>: <glob> [<glob>…]`, split on the last `: ` so a check name may
 // hold one. The globs are the paths whose change can make that check fail for real: a PR touching one
-// never has the check waived. An item with no check or no glob is an error, never a guess.
+// never has the check waived. `<check>: <file> > <test>` names one test in a check instead, split on
+// the first ` > `: that check is waived only when each of its failure annotations names a listed test,
+// and the test's file is its path. An item with no check, no glob, or no file or test is an error.
 export function parseFlaky(items) {
   const flaky = [];
   const errors = [];
   for (const x of items || []) {
     if (!x || /^none$/i.test(x.trim())) continue;
+    const gt = x.indexOf(' > ');
+    if (gt >= 0) {
+      const head = x.slice(0, gt);
+      const j = head.lastIndexOf(': ');
+      const name = j < 0 ? '' : head.slice(0, j).trim();
+      const file = j < 0 ? '' : head.slice(j + 2).trim();
+      const title = x.slice(gt + 3).trim();
+      if (!name || !file || /\s/.test(file) || !title) errors.push(`\`${x}\``);
+      else flaky.push({ name, paths: [file], test: { file, title } });
+      continue;
+    }
     const i = x.lastIndexOf(': ');
     const name = i < 0 ? '' : x.slice(0, i).trim();
     const paths = i < 0 ? [] : x.slice(i + 2).trim().split(/\s+/).filter(Boolean);
@@ -588,10 +604,15 @@ export const stateFailing = (failing, stateChecks, lineOf = () => null) => (fail
 // Whether a red head may merge past its failures because each is a §4 Known flaky check. null when
 // there is nothing to waive (not red, or no row). Otherwise `applies` is true only when every failing
 // check is listed, none is required (branch protection enforces those, and merging past one is a
-// bypass: §3 merge-bypass is never), the PR's files touch none of their globs, and the gate passes
-// with them set aside. `reason` says which test failed: unlisted, required, files (unreadable), paths
-// (with `hits`), or gate (something else keeps it red or pending). The driver's two reruns come first.
-export function flakyWaiver(checks, { required = [], advisory = [], runs = [], flaky = [], files = null } = {}) {
+// bypass: §3 merge-bypass is never), a check listed only by its tests failed only in those (below),
+// the PR's files touch none of their globs, and the gate passes with them set aside. `reason` says
+// which test failed: unlisted, required, annotations (unreadable), tests (with `lines`, the failures
+// no listed test names), files (unreadable), paths (with `hits`), or gate (something else keeps it red
+// or pending). The driver's two reruns come first. notes(f) is a failing check's failureNotes, or
+// undefined when they could not be read. Each failure annotation of a check listed only by its tests
+// must name one of them: its path the test's file, its title or message the test's name. A check
+// with none is never waived, since nothing says which test failed.
+export function flakyWaiver(checks, { required = [], advisory = [], runs = [], flaky = [], files = null, notes = () => undefined } = {}) {
   const gate = evaluateGate(checks, { required, advisory, runs });
   if (gate.state !== 'fail' || !gate.failing.length || !flaky.length) return null;
   const globs = new Map();
@@ -602,6 +623,14 @@ export function flakyWaiver(checks, { required = [], advisory = [], runs = [], f
   if (unlisted.length) return no('unlisted', { checks: unlisted });
   const req = names.filter((n) => required.includes(n));
   if (req.length) return no('required', { checks: req });
+  for (const n of names.filter((x) => !flaky.some((f) => f.name === x && !f.test))) {
+    const tests = flaky.filter((f) => f.name === n).map((f) => f.test);
+    const read = gate.failing.filter((f) => f.name === n).map((f) => notes(f));
+    if (read.some((x) => !Array.isArray(x))) return no('annotations', { checks: [n] });
+    const fails = read.flat();
+    const stray = fails.filter((a) => !tests.some((t) => namesTest(a, t)));
+    if (!fails.length || stray.length) return no('tests', { checks: [n], lines: stray.map((a) => a.message).slice(0, 3) });
+  }
   if (!files) return no('files');
   const hits = [];
   for (const n of names) {
@@ -616,6 +645,17 @@ export function flakyWaiver(checks, { required = [], advisory = [], runs = [], f
   if (rest.state !== 'pass') return no('gate', { reasons: rest.reasons });
   return { applies: true, reason: null, checks: names };
 }
+
+const repoPath = (p) => String(p ?? '').replace(/^(\.\/)+/, '');
+const escRe = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// The test's name as a whole: `retries a timed-out order` is not `retries a timed-out orders`.
+const namesTest = (a, t) => repoPath(a.path) === repoPath(t.file) && new RegExp(`(?<!\\w)${escRe(t.title)}(?!\\w)`).test(`${a.title ?? ''}\n${a.message ?? ''}`);
+// The error_notes the pass kept on a failing check's runs (withErrors), for flakyWaiver's notes; undefined
+// where any run of it has none, so its annotations were not read.
+export const notesIn = (checks) => (f) => {
+  const runs = latestPerCheck(checks ?? []).filter((c) => c.name === f.name && (!f.runId || String(c.runId) === String(f.runId)) && FAILED.has(lc(c.conclusion)));
+  return runs.length && runs.every((c) => Array.isArray(c.error_notes)) ? runs.flatMap((c) => c.error_notes) : undefined;
+};
 
 // The files a `#<key>` hold has to look inside, read at the PR's merge base and at its head. A file
 // absent on one side (added or deleted) reads as null; one that cannot be read is left out, so
@@ -652,7 +692,7 @@ async function loadConfigLists() {
 // §4 Known flaky checks, refused whole when any item does not parse: unset or `none` waives nothing.
 function loadFlaky(E) {
   const { flaky, errors } = parseFlaky(E.configValues('flaky-checks'));
-  if (errors.length) throw new Error(`config §4 Known flaky checks does not parse: ${errors.join(', ')} (want \`<check>: <glob> [<glob>…]\`, one span per check, or \`none\`). Run /desk-setup`);
+  if (errors.length) throw new Error(`config §4 Known flaky checks does not parse: ${errors.join(', ')} (want \`<check>: <glob> [<glob>…]\` or \`<check>: <test file> > <test name>\`, one span per item, or \`none\`). Run /desk-setup`);
   return flaky;
 }
 // §4 State checks, refused whole when any item does not parse.
@@ -665,10 +705,12 @@ function loadStateChecks(E) {
 // GitHub adds for the step's exit code says nothing of why, and can come first. Kept long: a review
 // gate's line names its files first and asks for the approval after them, and needs-you reads all of it.
 const EXIT_LINE = /^Process completed with exit code \d+\.?$/;
+const failureNotesOf = (notes) => (Array.isArray(notes) ? notes : []).filter((x) => x?.annotation_level === 'failure' && x.message && !EXIT_LINE.test(String(x.message).trim()));
 export function failureLines(notes) {
-  return (Array.isArray(notes) ? notes : []).filter((x) => x?.annotation_level === 'failure' && x.message && !EXIT_LINE.test(String(x.message).trim()))
-    .map((x) => String(x.message).split('\n')[0].trim().slice(0, 2000));
+  return failureNotesOf(notes).map((x) => String(x.message).split('\n')[0].trim().slice(0, 2000));
 }
+// The same failures with the file and title each annotation gives, for a §4 Known flaky checks test item.
+export const failureNotes = (notes) => failureNotesOf(notes).map((x) => ({ path: x.path ?? null, title: x.title ?? null, message: String(x.message).split('\n')[0].trim().slice(0, 2000) }));
 // A job's annotations as GitHub gives them, or undefined when they could not be read.
 export function jobAnnotations(repo, jobId) {
   if (!jobId) return [];
@@ -816,7 +858,8 @@ if (isMain) {
         ? await codeOwnerHolds(matchHolds(files, holds, contents), { repo, base: pr.baseRefName, merger, run: gh })
         : { held: holds.length ? [{ glob: '*', why: UNREAD_FILES, files: [] }] : [], satisfied: [] };
       const held = agentLast(owned.held);
-      const waiver = flakyWaiver(checks, { required, advisory, runs, flaky: loadFlaky(E), files: filesOk ? files : null });
+      const notes = (f) => { const a = jobAnnotations(repo, jobOf(f)); return a === undefined ? undefined : failureNotes(a); };
+      const waiver = flakyWaiver(checks, { required, advisory, runs, flaky: loadFlaky(E), files: filesOk ? files : null, notes });
       // The failing runs of the checks it would waive, for the ticket filed after the merge.
       if (waiver) waiver.runs = [...new Set(gate.failing.filter((f) => waiver.checks.includes(f.name)).map((f) => f.runId).filter(Boolean))];
       if (waiver && !waiver.runs.length) waiver.runs = [...ids];
@@ -839,7 +882,7 @@ if (isMain) {
       if (!items.length) { const v = (await import('./desk-env.mjs')).configValues('merge-holds'); items = v ?? []; }
       for (const item of items) for (const h of parseHolds([item])) console.log(`${holdKind(h)}\t${item}`);
     } else if (cmd === 'flaky') {
-      for (const f of loadFlaky(await import('./desk-env.mjs'))) console.log(`${f.name}\t${f.paths.join(' ')}`);
+      for (const f of loadFlaky(await import('./desk-env.mjs'))) console.log(`${f.name}\t${f.paths.join(' ')}${f.test ? `\t${f.test.title}` : ''}`);
     } else if (cmd === 'state') {
       for (const s of loadStateChecks(await import('./desk-env.mjs'))) console.log(`${s.name}\t${s.kind ?? ''}`);
     } else {
