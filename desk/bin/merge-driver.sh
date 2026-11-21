@@ -645,8 +645,12 @@ EOF_WAIVE
 # gets the flake fixed. Filed once per PR and head; the body stays in <state>/merge-driver for whoever
 # files it by hand.
 flaky_ticket(){
-  local body="$SD/flaky-$1-$2.md" summary="Flaky check $5 waived to merge PR #$1" out size=() sizeline=""
+  local body="$SD/flaky-$1-$2.md" summary="Flaky check $5 waived to merge PR #$1" out size=() sizeline="" by_hand
   [ -f "$SD/flaky-filed-$1-$2" ] && return 0
+  # Jira refuses a summary over 255 characters, which a long test name or several reach; the body names them all.
+  summary=$(jq -rn --arg s "$summary" '$s | if length > 255 then .[0:252] + "..." else . end')
+  # The command to file it by hand, quoted so it pastes as written: the summary holds quotes and a `>`.
+  by_hand="desk-jira create Bug $(printf '%q' "$summary") $(printf '%q' "$body")"
   # desk-jira's lint wants a size: the §4 Size field where there is one, else the body's first line.
   if [ -n "$SIZE_FIELD" ] && [ "$SIZE_FIELD" != none ]; then size=("$SIZE_FIELD=S"); else sizeline="Size: S"; fi
   printf '%s' "$3" | jq -r --arg repo "$REPO" --arg n "$1" --arg sha "$2" --arg key "$4" --arg size "$sizeline" '
@@ -676,12 +680,12 @@ flaky_ticket(){
     log "#$1 WAIVED: no tracker (§4 Tracker is ${TRACKER:-unset}), so no ticket filed — the flake's details are in $body"; touch "$SD/flaky-filed-$1-$2"; return 0
   fi
   if [ "$JIRA_CREATE_PERM" != yes ]; then
-    log "#$1 WAIVED: ticket not filed, config §3 jira-create is $JIRA_CREATE_PERM — ask, then: desk-jira create Bug \"$summary\" $body"; touch "$SD/flaky-filed-$1-$2"; return 0
+    log "#$1 WAIVED: ticket not filed, config §3 jira-create is $JIRA_CREATE_PERM — ask, then: $by_hand"; touch "$SD/flaky-filed-$1-$2"; return 0
   fi
   if out=$(desk-jira create Bug "$summary" "$body" ${size[@]+"${size[@]}"} 2>&1); then
     touch "$SD/flaky-filed-$1-$2"; log "#$1 WAIVED: filed $(printf '%s' "$out" | grep -m1 '^created' | sed 's/^created //')"
   else
-    log "#$1 WAIVED: the ticket was not filed ($(printf '%s' "$out" | tail -1)) — file it by hand: desk-jira create Bug \"$summary\" $body"
+    log "#$1 WAIVED: the ticket was not filed ($(printf '%s' "$out" | tail -1)) — file it by hand: $by_hand"
     touch "$SD/flaky-filed-$1-$2"
   fi
 }
