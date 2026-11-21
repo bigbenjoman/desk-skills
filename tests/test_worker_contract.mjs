@@ -237,6 +237,8 @@ const REWRITTEN = [
   // shortened to fit the push-nothing region in the Stage 4 file's cap; the briefing's batch notes assign the port
   ['DS-889', 'kill a server you did not start, it is likely another session\'s.', 1],
   ['DS-889', 'it posts at a head nothing has reviewed.', 1], // the verdict rule shortened; desk-review phase-7-post.md holds it whole
+  // shortened to fit the Stage 3 file's cap: a hung call now ends at its timeout, and desk-review's Phase 4 holds UNREFUTED
+  ['DS-857', 'heartbeating into your log so the orchestrator cannot see the stall', 1],
 
 ];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
