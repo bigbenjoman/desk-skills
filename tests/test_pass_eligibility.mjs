@@ -185,6 +185,10 @@ function slots(s) {
   t('memory in the hold band holds this pass', j(low(6.3)), j(['memory: 6.3G available, in the §3b hold band (4–8G) — holding spawns this pass (1 running; a worker mid-suite will drain)']));
   t('low memory is not a person stall and holds nothing itself', j(eligibility(snap(byKey(triaged('A')), { memory: { low: true, avail: 3, hold: 4, start: 8, dropTo: 1 } })).stalls), '[]');
   t('a test lock queue that could not be read is said', j(eligibility(snap({}, { lockQueue: { unread: true, line: 'test lock: queue unread' } })).lines), j(['test lock: queue unread']));
+  const harm = 'memory harm: SWAP-GROWING within the last 10m (SWAP-GROWING: swap used 4.0G, up 2.5G in 10m: hold new spawns)';
+  const held = eligibility(snap(byKey({ key: 'R', state: 'running' }, triaged('A')), { memory: { low: true, avail: 20, hold: 4, start: 8, dropTo: 1, harm } }));
+  t('a recent harm signal holds spawns with avail high, naming the signal', j(held.lines), j([`${harm} — holding spawns (1 running carry on)`]));
+  t('and it is not a person stall', j(held.stalls), '[]');
 }
 
 // ---- slots, and borrowing ----

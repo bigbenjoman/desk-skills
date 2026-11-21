@@ -1822,7 +1822,12 @@ const tierFor = (t) => {
 const GATE = E.spawnGate();
 const MIN_AVAIL_GB = GATE.start;
 const availGB = E.availableGiB();
-const lowMemory = MIN_AVAIL_GB > 0 && availGB < MIN_AVAIL_GB;
+// A harm signal `desk-env mem watch` said or still sees within its window (swap growth, an OOM kill,
+// a worker's heap OOM or exit 137, a full tmpfs, the WSL VM near its grant) holds spawns as low
+// memory does, whatever avail reads. AUTOPILOT_MIN_AVAIL_GB=0 turns this off with the rest of the gate.
+const HARM = MIN_AVAIL_GB > 0 ? E.harmHold(STATE) : [];
+const harmWhy = HARM.length ? `memory harm: ${HARM.map((h) => h.signal).join(', ')} within the last ${E.HARM_WINDOW_MS / 60000}m (${HARM[0].line})` : null;
+const lowMemory = MIN_AVAIL_GB > 0 && (availGB < MIN_AVAIL_GB || HARM.length > 0);
 // Concurrency: the queue's field (the orchestrator's per-pass ladder decision, or a count the user
 // set), never above the cap from config §3b "Autopilot worker concurrency" (`<default> / <cap>`,
 // default 2 / 3). The report says whose number it is, and whether memory lowered it.
@@ -2016,7 +2021,7 @@ runSteps({
   snapshot: () => ({
     tickets: fresh.tickets, budget: BUDGET, modelsBad, checkin: CHECKIN, health: { stalls: HEALTH.stalls, holding: HEALTH.holding },
     pace: { bad: PACE.bad, hold: PACE.hold, line: PACE.line }, paceProbe,
-    memory: { low: lowMemory, avail: availGB, hold: GATE.hold, start: GATE.start, dropTo: GATE.dropTo }, lockQueue: LOCK_QUEUE,
+    memory: { low: lowMemory, avail: availGB, hold: GATE.hold, start: GATE.start, dropTo: GATE.dropTo, harm: harmWhy }, lockQueue: LOCK_QUEUE,
     spawnGrant: { may: maySpawn, key: HEADLESS_KEY, perm: headlessPerm, queueBin: join(SHOWN_BIN, 'queue.mjs') },
     maintHold: MAINT.hold, usageHold: USAGE_HOLD, probes: [...PROBES.values()].map((p) => p.why), pacingRow: E.CONFIG_ROWS['usage-pacing'].row,
   }),
@@ -2189,7 +2194,8 @@ let gateConflict = null;
 // machine budget and the repo's shared §3b cap bind it as they bind every worker.
 const baseFixRoom = baseWorkerMay && MACHINE.room > 0 && REPO.room > 0 && !repoUnlocked;
 // Why no base worker may start this pass, the first of the holds baseFixRoom tests.
-const noBaseFixRoom = () => baseWorkerHeld ?? (lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
+const noBaseFixRoom = () => baseWorkerHeld ?? (harmWhy ? harmWhy
+  : lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
   : LOCK_QUEUE?.deep ? LOCK_QUEUE.line
   : running.length >= concurrency ? `the batch's ${running.length} running worker(s) fill its number of ${concurrency}`
   : MACHINE.room <= 0 ? MACHINE.line
@@ -5212,7 +5218,7 @@ runPhase({
   report,
 });
 const heldWhy = heldWhyOf({
-  spawned: report.spawned.length, eligible: eligible.length, held, baseHold, baseLag, lowMemory, availGB, minAvailGB: MIN_AVAIL_GB,
+  spawned: report.spawned.length, eligible: eligible.length, held, baseHold, baseLag, lowMemory, harmWhy, availGB, minAvailGB: MIN_AVAIL_GB,
   lockQueueHeldText, machine: MACHINE, repoUnlocked, repoLine, repo: REPO, concurrency,
 });
 const heldEnd = Object.values(qEnd.tickets).filter(isHeld).map((t) => t.key);
