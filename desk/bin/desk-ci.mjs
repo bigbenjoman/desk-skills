@@ -282,8 +282,8 @@ const computedInclude = (lines) => {
     }
   }
   // A YAML alias (`*name`) or merge key (`<<:`) brings in entries written elsewhere in the file, which
-  // this matrix's own text cannot show, so it is read as unreadable too.
-  if (/(^|[\s,[{:-])\*[\w-]|<<\s*:/.test(flow)) return true;
+  // this matrix's own text cannot show, so it is read as unreadable too. A `*` in a quoted string is text.
+  if (/(^|[\s,[{:-])\*[\w-]|<<\s*:/.test(flow.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''"))) return true;
   if (flow.startsWith('{')) {
     const text = `matrix: ${flow}`;
     return [...text.matchAll(/[{,]\s*["']?include["']?\s*:/g)]
