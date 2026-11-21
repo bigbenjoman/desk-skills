@@ -502,6 +502,7 @@ import { appendFileSync } from 'node:fs';
 export const intakeQuery = () => 'project = ACME';
 export const prOpen = () => true;
 export const handedByIntake = () => [];
+export const takePushed = () => [];
 if (process.argv[2] === 'run') { appendFileSync('$T/intake.calls', 'run\n'); console.log(JSON.stringify({ lines: ['intake: nothing new'] })); }
 EOF
 # gh answers each PR's state from $T/gh/<n>, OPEN where there is none.

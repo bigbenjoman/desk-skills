@@ -1391,14 +1391,15 @@ check "DS-507 AC1: the desk-admit skill starts more than 3 tickets in the backgr
   'grep -q "^\*\*With more than 3 tickets, start the call in the background\*\* (\`run_in_background\`" "$SK" && grep -q "and wait for its notification" "$SK"'
 
 # ---- push: a producer's ticket, admitted now (intake.mjs push) -----------------------------------
-# DESK_SUPERVISOR_MJS is a fake that logs each tick push starts, except where a case runs the real tick.
+# DESK_SUPERVISOR_MJS is a fake that logs each tick push starts, except where a case runs the real tick:
+# the copy in $T/bin, whose pass is the fake one (run-by.mjs is a link, so its default is the repo's own).
 # DESK_PLATFORM names no supervisor backend, so push starts the tick itself rather than through launchd.
 keyrow(){ printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Ticket key pattern | `[A-Z]+-[0-9]+` |\n' >> "$T/cfg/repos/acme__widgets/config.md"; }
 printf "import { appendFileSync } from 'node:fs';\nappendFileSync('%s/wake.calls', 'tick\\\\n');\n" "$T" > "$T/fakes/supervisor.mjs"
 push(){ (cd "$T/repo" && DESK_PLATFORM=none DESK_SUPERVISOR_MJS="${WAKE-$T/fakes/supervisor.mjs}" node "$T/bin/intake.mjs" push "$@" 2>&1); }
 config yes; keyrow; running_batch; ungate
 rec PU-1 A
-out=$(WAKE='' push PU-1); rc=$?
+out=$(WAKE="$T/bin/supervisor.mjs" push PU-1); rc=$?
 check "push AC1: a clean lane A ticket is admitted into the batch, and the output names it" '[ $rc -eq 0 ] && [ "$(qget tickets.PU-1.state)" = triaged ] && grep -q "^intake: admitted PU-1 by push into batch b1 (lane A, size S)$" <<< "$out"'
 check "push AC1: the register records it as admitted by push" '[ "$(jget "$T/state/intake.json" tickets.PU-1.outcome)" = admitted ] && [ "$(jget "$T/state/intake.json" tickets.PU-1.by)" = push ]'
 for _ in $(seq 1 120); do grep -A1 "intake: admitted PU-1 by push" "$T/state/supervisor.log" 2>/dev/null | grep -q "^no change this pass$" && break; sleep 0.5; done

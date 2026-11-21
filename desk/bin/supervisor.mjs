@@ -420,8 +420,9 @@ function interval() {
   tickStates = batches.map((b) => b.state);
   // Standing intake first, in the standing batch's environment: it may start the batch this tick passes.
   if (!named) enterBatch(null);
-  // What pushes admitted since the last tick goes in this tick's report with intake's own lines.
-  const intake = [...(named ? [] : takePushed(E.stateDir())), ...runIntake()];
+  // What pushes admitted since the last tick goes in this tick's report with intake's own lines. Push
+  // leaves them in the state folder it ran in, which a tick pinned to a batch shares with it.
+  const intake = [...takePushed(E.stateDir()), ...runIntake()];
   templateCheck(batches[0].state);
   batches.forEach((b, i) => {
     if (!named) enterBatch(b.name);

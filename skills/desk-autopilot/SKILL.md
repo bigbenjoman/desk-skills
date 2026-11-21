@@ -56,8 +56,7 @@ this table names the file that does.
 | Stage 2, for the merge order, Jira-linked holds and sizes; and whenever a pass reports `RELEASE DUE` or `STUCK` | *Order the batch by blast radius* · *Dependencies from Jira links* · *Size* | `references/order-and-holds.md` |
 | Stage 2, only for an epic, and only when `plan-batch` prints `FEATURE MODE — on` or puts `feature_plan` in `needs_person` | *Feature mode* | `references/feature-mode.md` |
 | Stage 2, before Stage 3's questions; and before any question, yours or a worker's, mid-run | *Ask or take* · *Try before asking* | `references/ask-or-take.md` |
-| Stage 4, only when `run-by.mjs stage4` says `supervisor`; and in a session opened from a supervisor's handoff | *The supervisor* · *Handing a batch to the supervisor* | `references/supervisor.md` |
-| When building anything that raises a ticket from an event and admits it | *Raising a ticket from an event: push* | `references/supervisor.md` |
+| Stage 4, only when `run-by.mjs stage4` says `supervisor`; and in a session opened from a supervisor's handoff; and when building anything that raises a ticket from an event and admits it | *The supervisor* · *Handing a batch to the supervisor* · *Raising a ticket from an event: push* | `references/supervisor.md` |
 | Stage 4 in the session, before the first pass; and whenever a pass reports a stall, a budget or model hold, or a handoff | *Stalls and spend* | `references/stalls-and-spend.md` |
 | Stage 4 in the session, before starting the merge driver; and Stage 7 | *Merge each PR the moment it goes green* · *Fix tries* | `references/merging.md` |
 | Stage 4 in the session, before the first status table; and Stage 8 | *The status table* | `references/status-table.md` |
