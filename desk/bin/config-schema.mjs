@@ -216,7 +216,9 @@ export const PERMISSION_KEYS = Object.freeze(Object.fromEntries(ROWS.filter((e) 
 export const CONFIG_ROWS = Object.freeze(Object.fromEntries(ROWS.filter((e) => e.kind !== 'perm' && !e.unread)
   .map((e) => [e.id, e.kind === 'table' ? { section: e.section, row: e.label, table: true } : { section: e.section, row: e.label }])));
 
-const norm = (s) => String(s).replace(/[*`]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+// How a label, heading or table header is compared: markdown emphasis and backticks dropped, spacing
+// collapsed, case folded. desk-env's config parser normalises with this too.
+export const norm = (s) => String(s).replace(/[*`]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
 const where = (section, label) => `${section}\t${norm(label)}`;
 
 // The template's declared rows ([{ section, label }]) and the `###` headings of its tables of the

@@ -79,6 +79,7 @@ t('tests/run.sh runs everything', scope(M('tests/run.sh')), 'full: tests/run.sh 
 t('a test helper no suite claims runs everything', scope(M('tests/helper.mjs')), 'full: no suite claims tests/helper.mjs');
 t('a fixture no suite claims runs everything', scope(M('tests/fixtures/a.md')), 'full: no suite claims tests/fixtures/a.md');
 t('desk-env.mjs runs everything', scope(M('desk/bin/desk-env.mjs')), 'full: desk/bin/desk-env.mjs is shared by every suite');
+t('config-schema.mjs, the source of desk-env.mjs\'s id tables, runs everything', scope(M('desk/bin/config-schema.mjs')), 'full: desk/bin/config-schema.mjs is shared by every suite');
 t('install.sh no suite claims runs everything', scope(M('install.sh')), 'full: no suite claims install.sh');
 t('a workflow runs everything', scope(M('.github/workflows/tests.yml')), 'full: .github/workflows/tests.yml is shared by every suite');
 t('a root file runs everything', scope(M('.gitignore')), 'full: .gitignore is a root file');

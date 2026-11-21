@@ -156,7 +156,7 @@ import net from 'node:net';
 import * as M from './machine.mjs';
 import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
-import { PERMISSION_KEYS, CONFIG_ROWS } from './config-schema.mjs';
+import { PERMISSION_KEYS, CONFIG_ROWS, norm } from './config-schema.mjs';
 
 export const HOME = process.env.HOME || homedir();
 export const expandHome = (p) => (typeof p === 'string' ? p.replace(/^~(?=\/|$)/, HOME) : p);
@@ -277,7 +277,6 @@ export class NoRepoConfigError extends DeskConfigError {}
 // the wrong one would read the suggestion as the user's answer. The row id is the "Key" column
 // where the table has one, otherwise the first column.
 let cache = null;
-const norm = (s) => s.replace(/[*`]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
 // `<section>/<heading>` of every table id, as tableLines normalises a `###` heading.
 const TABLE_IDS = new Set(Object.values(CONFIG_ROWS).filter((r) => r.table).map((r) => `${r.section}/${norm(r.row)}`));
 
@@ -318,7 +317,7 @@ export function declaredRows(text) {
   const tables = new Map(rows.filter((r) => !r.declared && r.sub).map((r) => [`${r.section}/${r.sub}`, { section: r.section, heading: r.sub }]));
   return { rows: rows.filter((r) => r.declared).map(({ section, label }) => ({ section, label })), tables: [...tables.values()] };
 }
-const settingCol = (header) =>['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? 1;
+const settingCol = (header) => ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? 1;
 
 // Any config file, not only this repo's: `ports` reads every repo's to keep dev ports apart.
 function parseConfigFile(path) {
