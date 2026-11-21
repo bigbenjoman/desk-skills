@@ -275,10 +275,11 @@ const servicePort = (s) => {
   const port = service == null ? null : PORT_TAIL.exec(s.slice(service.length));
   return port && (port[1] == null || Number(port[1]) <= 65535) ? { service, port: port[1] == null ? null : Number(port[1]) } : null;
 };
-// §3b Check-in times as the digest reads them (digest.mjs checkinTimes): every span joined, then local
-// HH:MM times split on commas or spaces. The digest falls back to its default on a bad row, so not fatal.
-const CHECKIN_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
-const checkinTimesOf = (items) => items.join(' ').split(/[\s,]+/).filter(Boolean);
+// §3b Check-in times: every span joined, then local HH:MM times split on commas or spaces. The digest
+// reads the row through these (digest.mjs checkinTimes) and falls back to its default on a bad row, so
+// the type's error is not fatal.
+export const CHECKIN_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+export const checkinTimesOf = (items) => [].concat(items).join(' ').split(/[\s,]+/).filter(Boolean);
 
 export const TYPES = Object.freeze({
   text: matching('text', () => true),
