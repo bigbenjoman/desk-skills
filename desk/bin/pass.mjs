@@ -1736,25 +1736,28 @@ if (BASE_RED) {
   const key = BASE_RED.repair_key;
   const qB = queue();
   const was = qB.tickets[key] ?? null;
-  const closed = was?.state === 'done' && !was.merged_at && prClosed(was);
+  // A PR the pass closed to reopen for its CI (reopening) is not closed for good.
+  const closed = was?.state === 'done' && !was.merged_at && !was.reopening && prClosed(was);
   const had = was && !closed ? was : null;
   if (had && !had.merged_at) baseRedRepair = { key, state: had.state };
   else if (had) baseRedRepair = { key, state: `merged at ${had.merged_at} with ${BASE_RED.branch} still red, so no second repair starts until it has gone green` };
   else if (!BASE_PUSH.ok) baseRedRepair = { off: `config §3 ${BASE_PUSH.key} is "${BASE_PUSH.perm}", so no worker is started to repair it` };
   else if (DRY) baseRedRepair = { key, state: 'to be admitted (dry run)' };
   else {
-    mkdirSync(join(STATE, 'tickets'), { recursive: true });
-    mkdirSync(join(STATE, 'triage'), { recursive: true });
-    writeFileSync(join(STATE, 'tickets', `${key}.md`), repairTicket(BASE_RED));
-    writeFileSync(join(STATE, 'triage', `${key}.json`), `${JSON.stringify(repairTriage(BASE_RED), null, 2)}\n`);
-    // A repair closed unmerged left its log under the same key, whose AUTOPILOT_DONE would keep this one
-    // from spawning: moved aside, as a requeue does.
-    E.rotateRound(key);
+    // Dropped first, so one that refuses leaves its round's files as they were.
     const dropped = closed && !isArchived(qB, key) ? qTry(['drop', key]) : { ok: true };
-    const r = dropped.ok ? qTry(['admit', key, '--by', 'base-red']) : null;
-    baseRedRepair = r?.ok ? { key, state: 'admitted to start as a slot frees' }
-      : !dropped.ok ? { key, state: `done with its PR #${was.result.pr} closed unmerged, and could not be dropped to start again (${dropped.out.split('\n').pop()}): drop or requeue it, which needs-you offers` }
-      : { off: `its repair ticket ${key} could not be admitted (${r.out.split('\n').pop()})` };
+    if (!dropped.ok) baseRedRepair = { key, state: `done with its PR #${was.result.pr} closed unmerged, and could not be dropped to start again (${dropped.out.split('\n').pop()}): drop or requeue it, which needs-you offers` };
+    else {
+      mkdirSync(join(STATE, 'tickets'), { recursive: true });
+      mkdirSync(join(STATE, 'triage'), { recursive: true });
+      writeFileSync(join(STATE, 'tickets', `${key}.md`), repairTicket(BASE_RED));
+      writeFileSync(join(STATE, 'triage', `${key}.json`), `${JSON.stringify(repairTriage(BASE_RED), null, 2)}\n`);
+      // A repair closed unmerged left its log under the same key, whose AUTOPILOT_DONE would keep this one
+      // from spawning: moved aside, as a requeue does.
+      E.rotateRound(key);
+      const r = qTry(['admit', key, '--by', 'base-red']);
+      baseRedRepair = r.ok ? { key, state: 'admitted to start as a slot frees' } : { off: `its repair ticket ${key} could not be admitted (${r.out.split('\n').pop()})` };
+    }
   }
 }
 // The PRs held on it, which its one line names in place of a BASE RED line each.
