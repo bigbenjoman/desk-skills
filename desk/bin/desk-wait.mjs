@@ -146,7 +146,8 @@ export function main(argv = process.argv.slice(2), { out = console.log, err = co
   let last = null;
   for (;;) {
     let procs;
-    try { procs = psRows('pid=,ppid=,etime=,args='); } catch (e) { err(`desk-wait: ${e.message}`); return 2; }
+    // A zombie (state Z) has exited and only waits for its parent to reap it: it is not the run.
+    try { procs = psRows('pid=,ppid=,stat=,etime=,args=').filter((p) => !/^Z/.test(p.stat)); } catch (e) { err(`desk-wait: ${e.message}`); return 2; }
     const now = Date.now();
     let roots;
     if (a.pid != null) {
