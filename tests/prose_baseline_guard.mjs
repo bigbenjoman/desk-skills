@@ -3,9 +3,8 @@
 // the file, so moving a reference into another file and its entry with it is not growth.
 //
 //   node tests/prose_baseline_guard.mjs --base <ref>        # the baseline at <ref> against the working tree's
-//   node tests/prose_baseline_guard.mjs <base.json> <head.json>
 //
-// CI runs the first form for every pull request, against its base (HEAD^1 of the merge commit). A
+// CI runs it for every pull request, against its base (HEAD^1 of the merge commit). A
 // baseline missing at the base counts as empty. Exit 1 on growth, 2 on a usage error, 0 otherwise.
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -35,16 +34,12 @@ function atRef(ref) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
-  let base, head;
-  if (args[0] === '--base' && args[1] && args.length === 2) {
-    base = parse(atRef(args[1]));
-    head = parse(existsSync(BASELINE_PATH) ? readFileSync(BASELINE_PATH, 'utf8') : '');
-  } else if (args.length === 2 && !args.some((a) => a.startsWith('--'))) {
-    [base, head] = args.map((f) => parse(readFileSync(f, 'utf8')));
-  } else {
-    console.error('usage: prose_baseline_guard.mjs --base <ref> | <base.json> <head.json>');
+  if (args[0] !== '--base' || !args[1] || args.length !== 2) {
+    console.error('usage: prose_baseline_guard.mjs --base <ref>');
     process.exit(2);
   }
+  const base = parse(atRef(args[1]));
+  const head = parse(existsSync(BASELINE_PATH) ? readFileSync(BASELINE_PATH, 'utf8') : '');
   const added = grown(base, head);
   for (const e of added) console.log(report(e));
   console.log(added.length

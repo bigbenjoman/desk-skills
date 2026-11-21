@@ -1,6 +1,7 @@
 // suite: prose check, every code reference a skill makes is one the code has, with today's drift in a baseline
 // covers: tests/prose_check.mjs tests/prose_scan.mjs tests/prose_facts.mjs desk/bin/spawn-order.mjs skills/desk-review/bin/verdict.mjs tests/command_shapes.mjs tests/fixtures/prose_baseline.json tests/fixtures/prose-code/*.md desk/bin/prose-facts.mjs desk/bin/queue-commands.mjs desk/bin/markers.mjs desk/bin/queue-writer.mjs desk/bin/batch-state.mjs desk/bin/with-lock.sh skills/**/*.md agents/*.md
 // covers: desk/bin/desk-env.mjs desk/bin/config-schema.mjs desk/bin/machine.mjs desk/bin/test-scope.mjs desk/bin/workflow-yaml.mjs desk/bin/dir-lock.mjs desk/bin/failure-class.mjs desk/bin/queue-store.mjs desk/bin/clears-when.mjs desk/bin/harvest.mjs desk/bin/spine-check.mjs desk/bin/scope-report.mjs desk/bin/baseline.mjs desk/bin/gate.mjs desk/bin/desk-ci.mjs desk/bin/decisions.mjs desk/templates/scripts/desk/review-gate.mjs
+// covers: desk/bin/costs.mjs desk/bin/desk-lines.mjs desk/bin/leases.mjs desk/bin/logins.mjs
 // The covers lines name every module the check imports, directly or through another (checked below),
 // so a change to any of them runs this suite.
 // Each fixture under tests/fixtures/prose-code/ adds one kind of drift beside a reference the code has;
@@ -20,7 +21,7 @@ const started = [];
 for (const k of SPAWNERS) childProcess[k] = (...a) => { started.push(`${k} ${a[0]}`); throw new Error(`prose check started a process: ${k}`); };
 syncBuiltinESMExports();
 const t0 = performance.now();
-const { check, gate, readBaseline, report, optOuts, OPT_OUT, facts, verdict, staleReport, baselineEntries, importClosure } = await import('./prose_check.mjs');
+const { check, gate, readBaseline, report, optOuts, OPT_OUT, facts, verdict, staleReport, baselineEntries } = await import('./prose_check.mjs');
 const { markdownFiles } = await import('./command_shapes.mjs');
 const { DEFAULT_PATHS } = await import('./prose_scan.mjs');
 const R = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -161,20 +162,23 @@ t('DS-884 AC4 the summary says to delete it', fixed.out.some((l) => /^Delete eac
 t('an entry for a file the run did not check is not stale', verdict([], held, ['skills/desk-y/SKILL.md']).code, 0);
 
 // ---- DS-884 AC6: the covers lines hold every module the check imports ------------------------------
+const { importClosure, suiteHeader } = await import('./scope_sections.mjs');
 const graph = {
   'tests/x.mjs': "import { a } from '../desk/bin/a.mjs';\nimport fs from 'node:fs';",
   'desk/bin/a.mjs': "export { b } from './b.mjs';\n// import './commented.mjs'\nconst d = await import('./dynamic.mjs');\nconst s = \"import x from './in-a-string.mjs'\";",
   'desk/bin/b.mjs': "import {\n  c,\n} from './sub/c.mjs';",
-  'desk/bin/sub/c.mjs': 'export const c = 1;',
+  'desk/bin/sub/c.mjs': "// reads skills/*/SKILL.md\nconst g = '/*';\nimport { e } from './e.mjs';\n/* a real block comment */\nimport { f } from './f.mjs';",
+  'desk/bin/dynamic.mjs': '', 'desk/bin/sub/e.mjs': '', 'desk/bin/sub/f.mjs': '',
 };
-tj('the closure follows static relative imports and re-exports, not node:, dynamic, commented or quoted ones',
-  importClosure('tests/x.mjs', (p) => graph[p]), ['desk/bin/a.mjs', 'desk/bin/b.mjs', 'desk/bin/sub/c.mjs', 'tests/x.mjs']);
+tj('the closure follows static and dynamic relative imports and re-exports, not node:, commented or quoted ones, and a /* in a line comment or a string hides none',
+  importClosure('tests/x.mjs', (p) => graph[p]),
+  ['desk/bin/a.mjs', 'desk/bin/b.mjs', 'desk/bin/dynamic.mjs', 'desk/bin/sub/c.mjs', 'desk/bin/sub/e.mjs', 'desk/bin/sub/f.mjs', 'tests/x.mjs']);
 const uncovered = (closure, covers) => closure.filter((p) => !covers.includes(p));
-tj('a module the covers lines do not list is named', uncovered(importClosure('tests/x.mjs', (p) => graph[p]), ['tests/x.mjs', 'desk/bin/a.mjs', 'desk/bin/b.mjs']), ['desk/bin/sub/c.mjs']);
-const own = readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(0, 30)
-  .filter((l) => l.startsWith('// covers: ')).flatMap((l) => l.slice('// covers: '.length).trim().split(/\s+/));
-t('the real closure reaches through desk-env.mjs', importClosure('tests/prose_check.mjs').includes('desk/bin/machine.mjs'), true);
+tj('a module the covers lines do not list is named', uncovered(importClosure('desk/bin/b.mjs', (p) => graph[p]), ['desk/bin/b.mjs', 'desk/bin/sub/c.mjs', 'desk/bin/sub/e.mjs']), ['desk/bin/sub/f.mjs']);
+const own = suiteHeader(readFileSync(fileURLToPath(import.meta.url), 'utf8')).covers;
+const closure = importClosure('tests/prose_check.mjs', (p) => readFileSync(join(R, p), 'utf8'));
+t('the real closure reaches through desk-env.mjs', closure.includes('desk/bin/machine.mjs'), true);
 tj('DS-884 AC6 every module tests/prose_check.mjs imports, directly or through another, is on a covers line',
-  uncovered(importClosure('tests/prose_check.mjs'), own), []);
+  uncovered(closure, own), []);
 
 process.exit(fails ? 1 : 0);

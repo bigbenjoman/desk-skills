@@ -17,7 +17,7 @@
 // A generated region (tests/prose_facts.mjs) that is unknown, unclosed or not what the code says is a
 // finding too, and one no opt-out or baseline holds: `node tests/prose_facts.mjs --write` fixes it.
 import { readFileSync, writeFileSync } from 'node:fs';
-import { join, dirname, relative, isAbsolute, posix } from 'node:path';
+import { join, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scan, DEFAULT_PATHS } from './prose_scan.mjs';
 import { regionProblems } from './prose_facts.mjs';
@@ -193,20 +193,6 @@ export function verdict(findings, baseline, files) {
   if (fresh.length) out.push(`Fix the reference, or keep it with "<!-- ${OPT_OUT} <reason> -->" (prose) or "# ${OPT_OUT} <reason>" (shell).`);
   if (stale.length) out.push(`Delete each entry that no longer matches from ${relative(ROOT, BASELINE)}: the baseline only shrinks.`);
   return { out, code: fresh.length || stale.length ? 1 : 0 };
-}
-
-// Every repo file `entry` loads through static relative imports, itself included, as repo paths.
-const STATIC_IMPORT = /^[^'"`\n]*\b(?:from|import)\s+(['"])(\.\.?\/[^'"]+)\1/gm;
-export function importClosure(entry, read = (p) => readFileSync(join(ROOT, p), 'utf8')) {
-  const seen = new Set(), todo = [entry];
-  while (todo.length) {
-    const p = todo.pop();
-    if (seen.has(p)) continue;
-    seen.add(p);
-    const code = read(p).replace(/\/\*[\s\S]*?\*\//g, ' ').split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
-    for (const m of code.matchAll(STATIC_IMPORT)) todo.push(posix.join(posix.dirname(p), m[2]));
-  }
-  return [...seen].sort();
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
