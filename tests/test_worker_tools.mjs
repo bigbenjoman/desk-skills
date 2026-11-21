@@ -149,8 +149,12 @@ const argv = (log, n) => {
 };
 const toolsOf = (a) => (a && a.includes('--tools') ? a[a.indexOf('--tools') + 1] : undefined);
 const LIST = WORKER_TOOLS.join(',');
-// The finder model check's call: it follows the preflight's one or two (a reply that ran no check is retried).
-const finderCall = (log) => [1, 2].map((n) => argv(log, n)).find((c) => c?.includes('Reply with exactly one word: MODEL_OK')) ?? null;
+// The finder model check's call: it follows the preflight's one or two (a reply that ran no check is
+// retried) and the model-list read, which this stub answers with no list.
+const finderCall = (log) => {
+  for (const n of [1, 2, 3]) { const c = argv(log, n); if (c?.includes('Reply with exactly one word: MODEL_OK')) return c; }
+  return null;
+};
 
 // AC1: the worker's own claude -p call, in a dry run.
 let r = spawnWorker(SID, 'run', { AUTOPILOT_DRY_RUN: '1' });
