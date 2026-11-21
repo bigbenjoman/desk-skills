@@ -5,7 +5,8 @@
 //
 //   node tests/prose_check.mjs [--write-baseline] [<file or dir> ...]   # default: skills/ and agents/
 //
-// Exit 1 on any finding the baseline does not hold, 0 otherwise. --write-baseline replaces
+// Exit 1 on any finding the baseline does not hold, or any baseline entry for a checked file that no
+// longer matches a finding (the reference was fixed: delete the entry), 0 otherwise. --write-baseline replaces
 // tests/fixtures/prose_baseline.json with every finding there is now.
 //
 // A line whose references must stay as written carries the opt-out with a reason:
@@ -16,7 +17,7 @@
 // A generated region (tests/prose_facts.mjs) that is unknown, unclosed or not what the code says is a
 // finding too, and one no opt-out or baseline holds: `node tests/prose_facts.mjs --write` fixes it.
 import { readFileSync, writeFileSync } from 'node:fs';
-import { join, dirname, relative, isAbsolute } from 'node:path';
+import { join, dirname, relative, isAbsolute, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scan, DEFAULT_PATHS } from './prose_scan.mjs';
 import { regionProblems } from './prose_facts.mjs';
@@ -169,15 +170,44 @@ export const baselineEntries = (findings) => {
   return [...seen.values()];
 };
 
-// The findings the baseline does not hold, and how many of its entries still match a finding.
-export function gate(findings, baseline) {
+// The findings the baseline does not hold, how many of its entries still match a finding, and the
+// entries that match none (`stale`): the reference was fixed, so the entry must go. Given `files` (the
+// repo paths checked), only entries for those files can be stale.
+export function gate(findings, baseline, files) {
   const held = new Set(baseline.map(keyOf));
   const fresh = findings.filter((x) => x.kind === 'region' || !held.has(keyOf(x)));
   const live = new Set(findings.map(keyOf));
-  return { fresh, remaining: baseline.filter((e) => live.has(keyOf(e))).length, stale: baseline.filter((e) => !live.has(keyOf(e))).length };
+  const checked = files && new Set(files);
+  const stale = baseline.filter((e) => !live.has(keyOf(e)) && (!checked || checked.has(e.file)));
+  return { fresh, remaining: baseline.filter((e) => live.has(keyOf(e))).length, stale };
 }
 
 export const report = (x) => `${x.file}:${x.line}: ${x.message} (${x.kind} ${x.value} in: ${x.context})`;
+export const staleReport = (e) => `${relative(ROOT, BASELINE)}: ${e.file} no longer has the ${e.kind} ${e.value} (in: ${e.context}); delete this entry`;
+
+// The check's verdict on findings against a baseline: the lines to print and the exit code.
+export function verdict(findings, baseline, files) {
+  const { fresh, remaining, stale } = gate(findings, baseline, files);
+  const out = [...fresh.map(report), ...stale.map(staleReport)];
+  out.push(`${fresh.length} finding(s) the baseline does not hold; ${remaining} baseline entries remain${stale.length ? `, ${stale.length} no longer match` : ''}`);
+  if (fresh.length) out.push(`Fix the reference, or keep it with "<!-- ${OPT_OUT} <reason> -->" (prose) or "# ${OPT_OUT} <reason>" (shell).`);
+  if (stale.length) out.push(`Delete each entry that no longer matches from ${relative(ROOT, BASELINE)}: the baseline only shrinks.`);
+  return { out, code: fresh.length || stale.length ? 1 : 0 };
+}
+
+// Every repo file `entry` loads through static relative imports, itself included, as repo paths.
+const STATIC_IMPORT = /^[^'"`\n]*\b(?:from|import)\s+(['"])(\.\.?\/[^'"]+)\1/gm;
+export function importClosure(entry, read = (p) => readFileSync(join(ROOT, p), 'utf8')) {
+  const seen = new Set(), todo = [entry];
+  while (todo.length) {
+    const p = todo.pop();
+    if (seen.has(p)) continue;
+    seen.add(p);
+    const code = read(p).replace(/\/\*[\s\S]*?\*\//g, ' ').split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+    for (const m of code.matchAll(STATIC_IMPORT)) todo.push(posix.join(posix.dirname(p), m[2]));
+  }
+  return [...seen].sort();
+}
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
@@ -191,9 +221,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.log(`wrote ${entries.length} baseline entries to ${relative(ROOT, BASELINE)}`);
     process.exit(0);
   }
-  const { fresh, remaining, stale } = gate(findings, readBaseline());
-  for (const x of fresh) console.log(report(x));
-  console.log(`${fresh.length} finding(s) the baseline does not hold; ${remaining} baseline entries remain${stale ? `, ${stale} no longer match` : ''}`);
-  if (fresh.length) console.log(`Fix the reference, or keep it with "<!-- ${OPT_OUT} <reason> -->" (prose) or "# ${OPT_OUT} <reason>" (shell).`);
-  process.exit(fresh.length ? 1 : 0);
+  const { out, code } = verdict(findings, readBaseline(), paths.length ? files.map((f) => relative(ROOT, f)) : undefined);
+  for (const l of out) console.log(l);
+  process.exit(code);
 }

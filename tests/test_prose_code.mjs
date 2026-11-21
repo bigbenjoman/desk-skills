@@ -1,10 +1,13 @@
 // suite: prose check, every code reference a skill makes is one the code has, with today's drift in a baseline
 // covers: tests/prose_check.mjs tests/prose_scan.mjs tests/prose_facts.mjs desk/bin/spawn-order.mjs skills/desk-review/bin/verdict.mjs tests/command_shapes.mjs tests/fixtures/prose_baseline.json tests/fixtures/prose-code/*.md desk/bin/prose-facts.mjs desk/bin/queue-commands.mjs desk/bin/markers.mjs desk/bin/queue-writer.mjs desk/bin/batch-state.mjs desk/bin/with-lock.sh skills/**/*.md agents/*.md
+// covers: desk/bin/desk-env.mjs desk/bin/config-schema.mjs desk/bin/machine.mjs desk/bin/test-scope.mjs desk/bin/workflow-yaml.mjs desk/bin/dir-lock.mjs desk/bin/failure-class.mjs desk/bin/queue-store.mjs desk/bin/clears-when.mjs desk/bin/harvest.mjs desk/bin/spine-check.mjs desk/bin/scope-report.mjs desk/bin/baseline.mjs desk/bin/gate.mjs desk/bin/desk-ci.mjs desk/bin/decisions.mjs desk/templates/scripts/desk/review-gate.mjs
+// The covers lines name every module the check imports, directly or through another (checked below),
+// so a change to any of them runs this suite.
 // Each fixture under tests/fixtures/prose-code/ adds one kind of drift beside a reference the code has;
 // the check must name the bad one and pass the good one. Then the real skills and agents tree, against
 // the baseline, in-process and under two seconds.
 import childProcess from 'node:child_process';
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { syncBuiltinESMExports } from 'node:module';
 import { join, dirname } from 'node:path';
@@ -17,7 +20,7 @@ const started = [];
 for (const k of SPAWNERS) childProcess[k] = (...a) => { started.push(`${k} ${a[0]}`); throw new Error(`prose check started a process: ${k}`); };
 syncBuiltinESMExports();
 const t0 = performance.now();
-const { check, gate, readBaseline, report, optOuts, OPT_OUT } = await import('./prose_check.mjs');
+const { check, gate, readBaseline, report, optOuts, OPT_OUT, facts, verdict, staleReport, baselineEntries, importClosure } = await import('./prose_check.mjs');
 const { markdownFiles } = await import('./command_shapes.mjs');
 const { DEFAULT_PATHS } = await import('./prose_scan.mjs');
 const R = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -115,13 +118,13 @@ const treeFiles = markdownFiles(DEFAULT_PATHS.map((p) => join(R, p)));
 t('DS-886 AC8 regenerating every region in the skills and agents changes no file',
   treeFiles.filter((p) => regenerate(readFileSync(p, 'utf8')).text !== readFileSync(p, 'utf8')).map((p) => p.slice(R.length + 1)).join(', '), '');
 t('DS-886 AC8 each registered region is used in the tree', Object.keys(REGIONS).filter((n) => !treeFiles.some((p) => regions(readFileSync(p, 'utf8')).found.some((r) => r.name === n))).join(', '), '');
-const facts = (...args) => childProcess.spawnSync(process.execPath, [join(R, 'tests/prose_facts.mjs'), ...args], { cwd: R, encoding: 'utf8' });
-t('DS-886 AC8 the regenerate command in check mode passes the real tree', facts().status, 0);
+const factsCli = (...args) => childProcess.spawnSync(process.execPath, [join(R, 'tests/prose_facts.mjs'), ...args], { cwd: R, encoding: 'utf8' });
+t('DS-886 AC8 the regenerate command in check mode passes the real tree', factsCli().status, 0);
 const tmp = mkdtempSync(join(tmpdir(), 'prose-facts-'));
 const edited = readFileSync(join(F, 'region-edited.md'), 'utf8');
 writeFileSync(join(tmp, 'a.md'), edited);
-const before = facts(join(tmp, 'a.md'));
-const written = facts('--write', join(tmp, 'a.md'));
+const before = factsCli(join(tmp, 'a.md'));
+const written = factsCli('--write', join(tmp, 'a.md'));
 t('DS-886 the command names the region, then --write restores it and touches nothing around it',
   [before.status, written.status, readFileSync(join(tmp, 'a.md'), 'utf8') === edited.replace('`claude`, `codex` or `gemini`', '`claude` or `codex`')].join(' '), '1 0 true');
 rmSync(tmp, { recursive: true, force: true });
@@ -136,5 +139,42 @@ const run = cli();
 t('AC9 the CLI passes and prints how many baseline entries remain',
   [run.status, new RegExp(`^0 finding\\(s\\) the baseline does not hold; ${g.remaining} baseline entries remain`, 'm').test(run.stdout)].join(' '), '0 true');
 t('a baseline entry matches its finding wherever the line moves', gate(tree.map((x) => ({ ...x, line: x.line + 7 })), baseline).fresh.length, 0);
+const tj = (name, got, want) => t(name, JSON.stringify(got), JSON.stringify(want));
+tj('DS-884 AC4 every baseline entry still matches a finding in the real tree', g.stale.map(staleReport), []);
+
+// ---- DS-884 AC3 / AC4: lines inserted above a baselined reference, and the reference fixed --------
+const { scratch } = await import('./scratch.mjs');
+const T = scratch('desk-prose-check-');
+const doc = join(T, 'skills/desk-x/SKILL.md');
+mkdirSync(dirname(doc), { recursive: true });
+const text = readFileSync(join(F, 'queue-sub.md'), 'utf8');
+const f0 = facts();
+const at = (body) => { writeFileSync(doc, body); return check([doc], { root: T, f: f0 }); };
+const held = baselineEntries(at(text));
+tj('the fixture has one baselined reference', held.map((e) => `${e.file} ${e.kind} ${e.value}`), ['skills/desk-x/SKILL.md subcommand frobnicate']);
+const moved = verdict(at(`# Inserted\n\nA paragraph above the reference.\n\n${text}`), held, ['skills/desk-x/SKILL.md']);
+tj('DS-884 AC3 lines inserted above it pass with the same baseline', [moved.code, moved.out.at(-1)], [0, '0 finding(s) the baseline does not hold; 1 baseline entries remain']);
+const fixed = verdict(at(text.replace('frobnicate', 'requeue')), held, ['skills/desk-x/SKILL.md']);
+tj('DS-884 AC4 the reference fixed with its entry left fails, telling the author to delete it', [fixed.code, fixed.out[0]],
+  [1, 'tests/fixtures/prose_baseline.json: skills/desk-x/SKILL.md no longer has the subcommand frobnicate (in: node ~/.claude/desk/bin/queue.mjs frobnicate ABC-123); delete this entry']);
+t('DS-884 AC4 the summary says to delete it', fixed.out.some((l) => /^Delete each entry that no longer matches from tests\/fixtures\/prose_baseline\.json/.test(l)), true);
+t('an entry for a file the run did not check is not stale', verdict([], held, ['skills/desk-y/SKILL.md']).code, 0);
+
+// ---- DS-884 AC6: the covers lines hold every module the check imports ------------------------------
+const graph = {
+  'tests/x.mjs': "import { a } from '../desk/bin/a.mjs';\nimport fs from 'node:fs';",
+  'desk/bin/a.mjs': "export { b } from './b.mjs';\n// import './commented.mjs'\nconst d = await import('./dynamic.mjs');\nconst s = \"import x from './in-a-string.mjs'\";",
+  'desk/bin/b.mjs': "import {\n  c,\n} from './sub/c.mjs';",
+  'desk/bin/sub/c.mjs': 'export const c = 1;',
+};
+tj('the closure follows static relative imports and re-exports, not node:, dynamic, commented or quoted ones',
+  importClosure('tests/x.mjs', (p) => graph[p]), ['desk/bin/a.mjs', 'desk/bin/b.mjs', 'desk/bin/sub/c.mjs', 'tests/x.mjs']);
+const uncovered = (closure, covers) => closure.filter((p) => !covers.includes(p));
+tj('a module the covers lines do not list is named', uncovered(importClosure('tests/x.mjs', (p) => graph[p]), ['tests/x.mjs', 'desk/bin/a.mjs', 'desk/bin/b.mjs']), ['desk/bin/sub/c.mjs']);
+const own = readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(0, 30)
+  .filter((l) => l.startsWith('// covers: ')).flatMap((l) => l.slice('// covers: '.length).trim().split(/\s+/));
+t('the real closure reaches through desk-env.mjs', importClosure('tests/prose_check.mjs').includes('desk/bin/machine.mjs'), true);
+tj('DS-884 AC6 every module tests/prose_check.mjs imports, directly or through another, is on a covers line',
+  uncovered(importClosure('tests/prose_check.mjs'), own), []);
 
 process.exit(fails ? 1 : 0);
