@@ -206,10 +206,19 @@ t('the CLI refuses any other push, running nothing', [c.status, pushes().length]
   writeFileSync(log, '');
   c = cli(['origin', 'fix/A-1'], { ...envs, STUB_OUT: 'pushed', STUB_RC: '0' });
   t('the CLI, the slot held by another build: exit 76 and no push', [c.status, pushes().length], [76, 0]);
+  // The wait the 76 names, then the same push: the slot that wait took is the push's.
+  const wait = /desk-env preview-slot --wait 540 '([^']+)'/.exec(c.stderr)?.[1];
   rmSync(ld, { recursive: true, force: true });
-  deskEnv(['preview-slot', '--wait', '0', 'a push of fix/A-1']);
+  deskEnv(['preview-slot', '--wait', '0', wait]);
   c = cli(['origin', 'fix/A-1'], { ...envs, STUB_OUT: 'pushed', STUB_RC: '0' });
-  t('the slot its own wait took is used, and renewed for the build once it pushes', [c.status, pushes().length, held()], [0, 1, ['the build of fix/A-1']]);
+  t('the slot the named wait took is used, and renewed for the build once it pushes', [c.status, pushes().length, held()], [0, 1, ['the build of fix/A-1']]);
+  // Another team's lease, or another repo's, labelled for a branch of the same name, is not this push's.
+  rmSync(ld, { recursive: true, force: true });
+  spawnSync(process.execPath, [join(dirname(bin), 'desk-env.mjs'), 'lease', 'acquire', 'preview-build', 'other-team', '--ttl', '600', '--no-owner', '--label', wait], { encoding: 'utf8', env: { ...process.env, ...envs } });
+  deskEnv(['preview-slot', '--wait', '0', 'a push of someone/else:fix/A-1']);
+  writeFileSync(log, '');
+  c = cli(['origin', 'fix/A-1'], { ...envs, STUB_OUT: 'pushed', STUB_RC: '0' });
+  t('a lease of that label on another team, or for another repo of the branch name, is not taken for it', [c.status, pushes().length], [76, 0]);
 }
 
 rmSync(dir, { recursive: true, force: true });
