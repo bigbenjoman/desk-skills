@@ -56,6 +56,8 @@ t('AC4 a command in backticks is never reworded', plainTerms('Run `git push --fo
   'Run `git push --force-with-lease=fix/DS-604-requeue-parked:abc origin fix/DS-604-requeue-parked` and `node desk/bin/spine-check.mjs`');
 t('AC4 a branch or package name outside backticks is left whole', plainTerms('Branch fix/DS-604-requeue-parked needs @acme/worker-screenshots'),
   'Branch fix/DS-604-requeue-parked needs @acme/worker-screenshots');
+t('AC4 an AC number inside a file name or path is left whole', plainTerms('Open docs/AC1.md and AC2-desktop.png, then check AC3.'),
+  "Open docs/AC1.md and AC2-desktop.png, then check one of the ticket's requirements.");
 t('AC4 a product\'s own stage and lanes keep their words', plainTerms('Should stage 2 of the billing migration change which lanes a driver sees?'),
   'Should stage 2 of the billing migration change which lanes a driver sees?');
 
@@ -65,6 +67,8 @@ t('AC3 a question that is only a not-reached list keeps an empty need', parkWord
 t('AC3 a question with none is unchanged', parkWords('Which colour should the badge be?'), 'Which colour should the badge be?');
 t('AC3 a "(not reached: …)" aside is cut, bracket and all', parkWords('Need the fee table from finance (not reached: the PR, the Jira comment).'), 'Need the fee table from finance.');
 t('AC3 a tail holding a request is kept', parkWords('Need gateway-models. Not reached: the PR, so confirm the fee.'), 'Need gateway-models. Not reached: the PR, so confirm the fee.');
+t('AC3 a tail item that asks the person, whatever word opens it, is kept', parkWords('Need the release details. Not reached: the PR, I need you to approve the Jira transition.'),
+  'Need the release details. Not reached: the PR, I need you to approve the Jira transition.');
 t('AC3 a question after the tail is kept', parkWords('Need the logo. Not reached: the PR. Which colour?'), 'Need the logo. Which colour?');
 t('AC3 a tail item that is no step is kept, whatever word opens it', parkWords('I need the gateway models. Not reached: the PR, provide the exact fee to use.'),
   'I need the gateway models. Not reached: the PR, provide the exact fee to use.');

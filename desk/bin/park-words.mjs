@@ -31,7 +31,8 @@ export function tailSteps(clause) {
 // A tail item is a step only when it names one (STEP) and opens with no request (ASK): "Not reached:
 // the PR, so confirm the fee" and "…, provide the fee to use" still ask for the fee, so they stay.
 const STEP = /\b(?:prs?|draft|reviews?|self-review|desk-review|comments?|post|jira|tracker|ticket|transitions?|state|status|done|screenshots?|images?|upload|evidence|push|commit|merge|rebase|branch|tests?|verify|verification|typecheck|lint|build|implement\w*|tools?|stages?|hygiene|cleanup|handoff|deploy\w*|preview|qa|changelog|docs?|codex|specs?)\b/i;
-const ASK = /^(?:so|but|please|confirm|choose|pick|decide|approve|answer|tell|say|send|add|set|give|provide|run|check|which|what|should|can|could|would)\b/i;
+// An item that speaks to the person ("I need you to approve the Jira transition") asks too.
+const ASK = /^(?:so|but|please|confirm|choose|pick|decide|approve|answer|tell|say|send|add|set|give|provide|run|check|which|what|should|can|could|would)\b|\byou\b/i;
 // Whether a clause is only the list of steps its worker did not reach: the marker, a colon or dash,
 // then steps, every one of them a step.
 function listTail(clause) {
@@ -135,6 +136,8 @@ export const GRANT_WORDS = {
 // ("fix/DS-604-requeue-parked", "@acme/worker-screenshots") is left alone.
 const OPEN = String.raw`(?<![\w/.@-])`;
 const CLOSE = String.raw`(?![\w/-])`;
+// CLOSE, and no file extension either ("docs/AC1.md", "AC1-desktop.png"), while a full stop ends it.
+const NAME_END = String.raw`(?![\w/-]|\.\w)`;
 // A grant id as the worker writes it: optionally "config §3", optionally in quotes.
 const grantRe = (key) => String.raw`(?:(?:the )?(?:config )?§3 )?["']?${key.replace(/[-]/g, '\\-')}["']?`;
 // "… is not granted", "… is "no"", "… is "ask"", "… is not yes", "… is off".
@@ -168,9 +171,9 @@ const TERMS = [
   [/\b4b\s+self-review\b/g, 'self-review'],
   // AC numbers: a bracketed list says nothing the person needs, so it goes; otherwise the requirement.
   [/\s*\((?:AC\s?\d+(?:\s*(?:[–—-]|to|,|and|&)\s*(?:AC\s?)?\d+)*)\)/g, ''],
-  [/\bACs?\s?\d+\s*(?:[–—-]|to)\s*(?:AC\s?)?\d+\b/g, "the ticket's requirements"],
-  [/\bAC\s?\d+(?:\s*(?:,|and|&)\s*(?:AC\s?)?\d+)+\b/g, "the ticket's requirements"],
-  [/\bAC\s?\d+\b/g, "one of the ticket's requirements"],
+  [new RegExp(String.raw`${OPEN}ACs?\s?\d+\s*(?:[–—-]|to)\s*(?:AC\s?)?\d+${NAME_END}`, 'g'), "the ticket's requirements"],
+  [new RegExp(String.raw`${OPEN}AC\s?\d+(?:\s*(?:,|and|&)\s*(?:AC\s?)?\d+)+${NAME_END}`, 'g'), "the ticket's requirements"],
+  [new RegExp(String.raw`${OPEN}AC\s?\d+${NAME_END}`, 'g'), "one of the ticket's requirements"],
   [/\b[Ll]anes?\s+(?:C\s*\/\s*D|C or D|D or C)\b/g, 'plan- or design-first work'],
   [/\b[Ll]ane\s+C\b/g, 'plan-first work'],
   [/\b[Ll]ane\s+D\b/g, 'design-first work'],
