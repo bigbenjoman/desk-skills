@@ -416,6 +416,8 @@ if (mode === 'triage') {
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-wait.mjs:*)`, `Bash(node ${b}/desk-wait.mjs:*)`]),
     // Whether its AUTOPILOT_PARK_CLEARS_WHEN line reads as a form a pass checks: reads and writes nothing.
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/clears-when.mjs --check:*)`, `Bash(node ${b}/clears-when.mjs --check:*)`]),
+    // desk-pr's closing-keyword check on a PR body file: reads it and writes nothing.
+    ...BIN_FORMS.flatMap((b) => [`Bash(${b}/closing-keywords.mjs:*)`, `Bash(node ${b}/closing-keywords.mjs:*)`]),
     // `render` and `compare` open Chromium on the saved boards (and a built Storybook), so only
     // under the browser lock.
     ...BIN_FORMS.flatMap((b) => BIN_FORMS.flatMap((d) => [' render', ' compare'].map((s) => `Bash(${b}/with-lock.sh browser node ${d}/desk-design.mjs${s}:*)`))),

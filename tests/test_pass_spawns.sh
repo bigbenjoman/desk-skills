@@ -585,6 +585,9 @@ q add P-2; q set P-2 lane=A branch=fix/P-2 "worktree=$T/wt/P-2"; q park P-2 "$PQ
 say "AUTOPILOT_PR_BODY_BEGIN:" "## Summary" "Makes p." "AUTOPILOT_PR_BODY_END:" "AUTOPILOT_PARK: $PQ" > "$T/state-rc/logs/P-2.log"
 q add P-3; q set P-3 lane=A branch=fix/P-3 "worktree=$T/wt/P-3"; q park P-3 "${PQ//P-2/P-3}"
 say "AUTOPILOT_PR_BODY_BEGIN:" "## Summary" "Makes q." "AUTOPILOT_PR_BODY_END:" "AUTOPILOT_PARK: ${PQ//P-2/P-3}" > "$T/state-rc/logs/P-3.log"
+# DS-948: P-8's body asks for an issue to be closed later with a closing keyword before it.
+mkdir -p "$T/wt-p8"; q add P-8; q set P-8 lane=A branch=fix/P-8 "worktree=$T/wt-p8"; q park P-8 "${PQ//P-2/P-8}"
+say "AUTOPILOT_PR_BODY_BEGIN:" "## Summary" "Makes r." "- [ ] Close #1090 after a week of clean main runs." "AUTOPILOT_PR_BODY_END:" "AUTOPILOT_PARK: ${PQ//P-2/P-8}" > "$T/state-rc/logs/P-8.log"
 RQ='R-1: widen this PR to cover the CSV export too (recommended), or split the export into a follow-up?'
 q add R-1; q set R-1 state=running lane=A branch=fix/R-1 session_id=gone
 say "AUTOPILOT_PARK: $RQ" 'AUTOPILOT_PARK_RECOMMENDS: {"options": ["widen this PR", "split it into a follow-up"], "chose": "widen this PR", "category": "scope"}' > "$T/state-rc/logs/R-1.log"
@@ -607,6 +610,8 @@ check "DS-397 AC5 and its draft opened from that body, with the title its worker
   'grep -qE "^pr create --repo acme/widgets --draft --base main --head fix/P-2 --title fix\(p\): P-2 make p --body-file .*/state-rc/pr-bodies/P-2.md$" "$T/rc-gh.log" && [ "$(cat "$T/state-rc/pr-bodies/P-2.md")" = "$(printf "## Summary\nMakes p.")" ]'
 check "DS-397 AC5 the ticket is recorded done on the draft, naming what its park left" \
   '[ "$(field P-2 state)" = "\"done\"" ] && [ "$(field P-2 result.pr)" = 91 ] && [ "$(field P-2 draft_pr)" = 91 ] && echo "$out" | grep -qF "P-2: PR #91 pushed and opened as a draft by the pass from its worker'"'"'s PR body; what else its park named is not done: git push origin fix/P-2 was refused"'
+check "DS-948 AC1 a body with a closing keyword mid-line is not pushed or opened, and the park says which line" \
+  '[ "$(field P-8 state)" = "\"parked\"" ] && ! grep -q "fix/P-8" "$T/rc-gh.log" && echo "$out" | grep -qF "P-8: parked on a refused push or draft PR with its PR body in the log, but its PR body has a closing keyword outside a line of its own, which GitHub would act on at merge (line 3: Close #1090): left parked"'
 check "DS-397 AC3 a take call with a recommended option is answered with it and requeued" \
   '[ "$(field R-1 state)" != "\"parked\"" ] && [ "$(field R-1 prev_park.question)" = "\"$RQ\"" ] && [ "$(field R-1 auto_answered.chose)" = "\"widen this PR\"" ] && grep -q "^widen this PR. This was the option the last worker recommended" "$T/state-rc/briefings/R-1.md" && echo "$out" | grep -qF "R-1: took the recommended option on its scope call (\"widen this PR\"), answered it and requeued; logged as a decision"'
 check "DS-397 AC3 and the decision is logged as taken by the pass" 'jq -e "select(.ticket == \"R-1\" and .chose == \"widen this PR\" and .category == \"scope\" and .source == \"pass\")" "$T/state-rc/decisions.jsonl" >/dev/null'
