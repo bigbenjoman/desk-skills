@@ -3,6 +3,7 @@
 // No config read here, so desk-env.mjs can import it without importing itself back.
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { parseOperatorChecks } from './config-schema.mjs';
 
 // ---- a line scanner for workflow YAML ---------------------------------------------------------
 // Workflows are block YAML, and every rule here needs the line it fired on, which a YAML parser
@@ -93,22 +94,8 @@ export const unquote = (s) => s.replace(/^(["'])([\s\S]*)\1$/, '$2');
 export const checkNameOf = (job) => (job.keys.name?.value ? unquote(job.keys.name.value) : job.id);
 
 // ---- §4 Pre-merge steps and the steps of a job ---------------------------------------------------
-// §4 Checks workers can't fix, Check builds and Pre-merge steps items: `<check>: <what fixes it>`,
-// split on the first `: `, so the command may hold one. An item with no check or no command is an
-// error, never a guess.
-export function parseOperatorChecks(items) {
-  const checks = [];
-  const errors = [];
-  for (const x of items || []) {
-    if (!x || /^none$/i.test(x.trim())) continue;
-    const i = x.indexOf(': ');
-    const name = i < 0 ? '' : x.slice(0, i).trim();
-    const command = i < 0 ? '' : x.slice(i + 2).trim();
-    if (!name || !command) errors.push(`\`${x}\``);
-    else checks.push({ name, command });
-  }
-  return { checks, errors };
-}
+// The §4 Checks workers can't fix, Check builds and Pre-merge steps grammar is the config schema's.
+export { parseOperatorChecks };
 
 // The words that say what a step does: four letters or more, singular, none any CI step could use.
 const STEP_STOPWORDS = new Set(['apply', 'applied', 'first', 'then', 'before', 'after', 'with', 'from', 'into', 'onto', 'this', 'that',

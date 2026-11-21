@@ -22,18 +22,10 @@ import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { repoStateOf } from './desk-env.mjs';
 import { startDetached, detachedRecord, anyRunning, hooklessGit, gitError, dirtyPaths } from './check-build.mjs';
-import { parseOperatorChecks } from './fix-tries.mjs';
 import { parkOnlyNames } from './undraft.mjs';
 
-// An entry's name is a file name too, so it holds no path.
-const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-
-// The row's items as { reads: [{ name, command }], errors: [item] }.
-export function parseLiveReads(items) {
-  const { checks, errors } = parseOperatorChecks(items);
-  const bad = checks.filter((c) => !NAME.test(c.name));
-  return { reads: checks.filter((c) => NAME.test(c.name)), errors: [...errors, ...bad.map((c) => `\`${c.name}: ${c.command}\` (a name holds only letters, digits, . _ and -)`)] };
-}
+// The row's grammar is the config schema's: the items as { reads: [{ name, command }], errors: [item] }.
+export { parseLiveReads } from './config-schema.mjs';
 
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // A name stands alone: a dot ends it only where no name character follows, so `gateway` is not named
