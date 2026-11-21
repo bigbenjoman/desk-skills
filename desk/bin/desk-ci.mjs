@@ -224,22 +224,32 @@ const yamlScalar = (s) => {
 };
 // A YAML value as a label set when written as a list, else as one string.
 const yamlValue = (s) => (/^\[[\s\S]*\]$/.test(s.trim()) ? flowItems(s).map(yamlScalar) : yamlScalar(s));
-// A key's value with a flow sequence that runs on over the lines below it read through to its end.
-// The closing bracket may sit at the key's own indent, outside its block: GitHub has parsed the file,
-// so a sequence still open after the block closes there.
-const flowValue = (value = '', block = []) => {
-  if (!/^\[/.test(value.trim()) || /\]$/.test(value.trim())) return value;
-  const joined = [value, ...block.filter((l) => !l.blank && !l.scalar).map((l) => l.text)].join(' ').trim();
-  return /\]$/.test(joined) ? joined : `${joined}]`;
+// How deep in `{` and `[` the end of a flow text sits, quoted strings skipped.
+const nesting = (s) => {
+  let braces = 0;
+  let brackets = 0;
+  let q = '';
+  for (const c of s) {
+    if (q) { if (c === q) q = ''; } else if (c === '"' || c === "'") q = c;
+    else if (c === '{') braces++; else if (c === '}') braces--; else if (c === '[') brackets++; else if (c === ']') brackets--;
+  }
+  return { braces, brackets };
+};
+// A key's value with a flow sequence that runs on over the lines after it (`following`, whatever their
+// indent) read through to its closing bracket.
+const flowValue = (value = '', following = []) => {
+  let v = value.trim();
+  if (!v.startsWith('[')) return value;
+  for (const l of following) {
+    if (nesting(v).brackets <= 0) break;
+    if (!l.blank && !l.scalar) v += ` ${l.text}`;
+  }
+  return nesting(v).brackets <= 0 ? v : `${v}]`;
 };
 // Whether a flow match at `at` in a `matrix:` line is one of the matrix's own axes: one mapping deep,
 // in no list. A key inside an include or exclude entry is one value, not an axis.
 const isFlowAxis = (text, at) => {
-  let braces = 0;
-  let brackets = 0;
-  for (const c of text.slice(text.indexOf(':') + 1, at + 1)) {
-    if (c === '{') braces++; else if (c === '}') braces--; else if (c === '[') brackets++; else if (c === ']') brackets--;
-  }
+  const { braces, brackets } = nesting(text.slice(text.indexOf(':') + 1, at + 1));
   return braces === 1 && brackets === 0;
 };
 
@@ -268,7 +278,7 @@ function matrixValues(job, key) {
     const block = blockAfter(lines, idx);
     const items = block.filter((b) => !b.blank).map((b) => b.text.replace(/^-\s*/, ''));
     if (kv.value) {
-      const value = flowValue(kv.value, block);
+      const value = flowValue(kv.value, lines.slice(idx + 1));
       const v = yamlValue(value);
       if (axis && Array.isArray(v)) vals.push(...flowItems(value).map(yamlValue)); else vals.push(v);
     } else if (axis) vals.push(...items.map(yamlValue));
@@ -398,7 +408,7 @@ function runsOnChoices(job) {
   const sub = mapping(ro.block);
   if (sub.group) return { group: true, sets: [] };
   const src = sub.labels ?? ro;
-  const value = /^[|>]/.test(src.value) ? src.block.map((l) => l.text).join(' ') : flowValue(src.value, src.block);
+  const value = /^[|>]/.test(src.value) ? src.block.map((l) => l.text).join(' ') : flowValue(src.value, job.lines.slice(job.lines.indexOf(src.line) + 1));
   const items = value ? (/^\[[\s\S]*\]$/.test(value.trim()) ? flowItems(value) : [value])
     : src.block.filter((l) => !l.blank && /^-(\s|$)/.test(l.text)).map((l) => l.text.replace(/^-\s*/, ''));
   const single = items.length === 1 && !/^\[/.test(value?.trim() ?? '');
@@ -482,7 +492,7 @@ export function parseCiConfig(text) {
     const kv = l.indent === 0 ? keyOf(l) : null;
     if (!kv || !(kv.key in out)) return;
     const items = kv.value
-      ? flowItems(flowValue(kv.value, blockAfter(lines, idx))).map((v) => ({ value: yamlScalar(v), line: l.n }))
+      ? flowItems(flowValue(kv.value, lines.slice(idx + 1))).map((v) => ({ value: yamlScalar(v), line: l.n }))
       : blockAfter(lines, idx).filter((b) => !b.blank && /^-(\s|$)/.test(b.text)).map((b) => ({ value: yamlScalar(b.text.replace(/^-\s*/, '')), line: b.n }));
     out[kv.key].push(...items.filter((x) => x.value));
   });

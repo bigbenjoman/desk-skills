@@ -300,6 +300,8 @@ const inlineMatrix = (matrix) => wf(`  m:
 `);
 t('an inline matrix axis is one leg per value, so its bare self-hosted leg is reported',
   linted(inlineMatrix('{ label: [self-hosted, voicepa-linux-arm64] }'), VPA), 'm@7 m@11');
+t('a quoted bracket in a sibling axis does not hide the runner axis',
+  linted(inlineMatrix(`{ note: ['a[b'], label: [self-hosted, voicepa-linux-arm64] }`), VPA), 'm@7 m@11');
 t('an inline include entry is one label set', linted(inlineMatrix('{ include: [{ label: [self-hosted, voicepa-linux-arm64] }] }'), VPA), '');
 
 // A flow list may run on over several lines, its closing bracket at the key's own indent.
@@ -308,6 +310,7 @@ t('a runs-on list over several lines on a hosted label lints clean', linted(mult
 t('a runs-on list over several lines on a declared label lints clean', linted(multiline(['self-hosted', 'voicepa-linux-arm64']), VPA), '');
 const multiCfg = parseCiConfig('aws-runner-labels: [\n  voicepa-linux-arm64,\n  self-hosted\n]\nhosted-workflows: [\n  release.yml\n]\n');
 t('a config list over several lines is read whole', `${multiCfg.awsLabels} ${multiCfg.hostedWorkflows} ${multiCfg.findings.length}`, 'voicepa-linux-arm64 release.yml 1');
+t('a config list continued at the key\'s own indent is read whole', parseCiConfig('hosted-workflows: [release.yml,\nnightly.yml]\n').hostedWorkflows.join(','), 'release.yml,nightly.yml');
 
 // AC9: with no AWS labels declared, an expression reads as it always has: a quoted literal counts.
 const tagged = secretJob(`\${{ startsWith(github.ref, 'refs/tags') && 'macos-latest' || 'ubuntu-latest' }}`);
