@@ -212,7 +212,8 @@ re-running a ticket from scratch.
   `pass.mjs` reads the limit from the worker's log (`usage-limit.mjs`), keeps the ticket running,
   reports `paused on the usage limit: <TICKET> on <limit> until <reset>`, and never stops it as
   wedged or marks it failed. While a limit holds, the batch holds every spawn and resume, and each
-  pass makes one probe call (`usage-probe.mjs`). Once the reset passes, or a probe succeeds (as it
+  pass makes one probe call (`usage-probe.mjs`), or, when another pass or desk-q started one on that
+  login under a minute ago, waits for that one's answer instead. Once the reset passes, or a probe succeeds (as it
   does as soon as the person switches subscription), the paused worker is resumed in its own
   session on its own model, and held tickets spawn as normal: never requeue one by hand. A worker
   whose session is still live and quiet half an hour after its reset falls back to the stall check.
