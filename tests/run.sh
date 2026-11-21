@@ -17,7 +17,21 @@
 # Each report gives the suite's user plus system CPU seconds, and a run that finishes appends one line
 # to ~/.desk-autopilot/test-runs.jsonl ($TEST_RUNS_LOG): its date, suites, job count, wall and CPU
 # seconds, and the one-minute load average at its start.
+# CI's CPU budgets: with DESK_SUITE_BUDGETS=warn, a suite whose last run took more CPU seconds than its
+# budget prints a ::warning:: naming it and the summary lists it under `over budget:`; with `enforce`
+# the same until BUDGETS_FAIL_FROM, and from that date (DESK_SUITE_BUDGETS_TODAY, YYYY-MM-DD, stands in
+# for today) it fails the run. A suite's budget is the N of a `# budget: N <ticket>` line (`//` in .mjs)
+# in its first ten lines, else 30 for a .mjs suite and 150 for any other. DESK_SUITE_DURATIONS names a
+# file the run writes { seconds, cpu } to, each keyed by suite file, for tests/plan_shards.mjs --merge.
 set -u
+BUDGETS_FAIL_FROM=2026-12-08
+budgets=${DESK_SUITE_BUDGETS:-}; today=${DESK_SUITE_BUDGETS_TODAY:-$(date -u +%Y-%m-%d)}; durations_out=${DESK_SUITE_DURATIONS:-}
+case "$budgets" in
+  '') ;;
+  warn|enforce) case "$today" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) echo "DESK_SUITE_BUDGETS_TODAY wants YYYY-MM-DD, not $today"; exit 2 ;; esac
+    [ "$budgets" = enforce ] && [ "${today//-/}" -ge "${BUDGETS_FAIL_FROM//-/}" ] && budgets=fail ;;
+  *) echo "DESK_SUITE_BUDGETS wants warn or enforce, not $budgets"; exit 2 ;;
+esac
 hook=1; jobs=; jset=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -59,13 +73,14 @@ trap stop_jobs EXIT
 trap 'exit 130' INT; trap 'exit 143' TERM
 echo "bash $BASH_VERSION ($SH); scripts with #!/usr/bin/env bash get $(command -v bash)"
 [ "$jobs" -eq 1 ] || echo "up to $jobs suites at once"
-fail=0; total=0; failed=""; flaked=""; cpu_all=0; ran=""; start=$SECONDS
+fail=0; total=0; failed=""; flaked=""; slow=""; dsec=""; dcpu=""; cpu_all=0; ran=""; start=$SECONDS
 # The one-minute load average now: Linux's /proc/loadavg, else macOS's `{ 1.23 1.45 1.67 }`.
 if [ -r /proc/loadavg ]; then read -r load _ </proc/loadavg; else load=$(sysctl -n vm.loadavg 2>/dev/null); load=${load#\{ }; load=${load%% *}; fi
 case "$load" in ''|*[!0-9.]*) load=null ;; esac
-# The run's suites, by index: label, how it runs (hook, sh or mjs), its file and the name a failure gives.
+# The run's suites, by index: label, how it runs (hook, sh or mjs), its file, the name a failure gives
+# and its CPU budget in seconds.
 n=0
-add() { lab[n]=$1; kind[n]=$2; file[n]=$3; name[n]=$4; n=$((n + 1)); }
+add() { lab[n]=$1; kind[n]=$2; file[n]=$3; name[n]=$4; bud[n]=$5; n=$((n + 1)); }
 # Milliseconds in a `times` figure such as 1m2.345s (1m2,345s where the locale's decimal point is a
 # comma), into $ms.
 to_ms() { local m=${1%%m*} w=${1#*m} f; w=${w%s}; w=${w/,/.}; f=${w#*.}; [ "$f" = "$w" ] && f=0; f="${f}000"
@@ -81,14 +96,17 @@ why_failed() { why=; checks_in "$1"
 }exit $2"
   [ "$c" -gt 0 ] || why="${why:+$why
 }no checks ran"; }
-# Runs suite $1 into its own output file, then writes "<exit> <seconds> <CPU ms> <runs> <first exit>"
-# to its done file, last, so a done file means the output is complete. A suite that fails runs once more, its first
-# output kept as $1.out1, so one flake costs a suite's time rather than a CI rerun; test_compare_pass.sh
-# never does, as it is there to find nondeterminism. The suite replaces its subshell (exec), so with -j
-# above 1 the pid this job waits on and passes a TERM to is the suite's own. The CPU is the second line
-# of `times` (the job's waited-for children, both runs), written to a file because $(times) would be a
-# new process.
-job() { s=$SECONDS; c=; runs=0; rc1=0
+# The CPU milliseconds suite $1's job has waited for so far, into $cpu: the second line of `times`,
+# written to a file because $(times) would be a new process.
+cpu_now() { times >"$OUT/$1.times"; { read -r _; read -r cu cs; } <"$OUT/$1.times"
+  to_ms "$cu"; cpu=$ms; to_ms "$cs"; cpu=$((cpu + ms)); }
+# Runs suite $1 into its own output file, then writes "<exit> <seconds> <CPU ms> <runs> <first exit>
+# <last run's CPU ms>" to its done file, last, so a done file means the output is complete. A suite that
+# fails runs once more, its first output kept as $1.out1, so one flake costs a suite's time rather than a
+# CI rerun; test_compare_pass.sh never does, as it is there to find nondeterminism. The suite replaces
+# its subshell (exec), so with -j above 1 the pid this job waits on and passes a TERM to is the suite's
+# own. The CPU is both runs'.
+job() { s=$SECONDS; c=; runs=0; rc1=0; cpu1=0
   suite() { case "${kind[$1]}" in
       hook) exec python3 "${file[$1]}" --self-test ;;
       sh) exec "$SH" "${file[$1]}" ;;
@@ -102,11 +120,10 @@ job() { s=$SECONDS; c=; runs=0; rc1=0
     fi
     [ $runs -eq 1 ] && [ "${name[$1]}" != test_compare_pass.sh ] || break
     why_failed "$OUT/$1.out" "$rc"; [ -n "$why" ] || break
-    mv "$OUT/$1.out" "$OUT/$1.out1"; rc1=$rc
+    mv "$OUT/$1.out" "$OUT/$1.out1"; rc1=$rc; cpu_now "$1"; cpu1=$cpu
   done
-  times >"$OUT/$1.times"; { read -r _; read -r cu cs; } <"$OUT/$1.times"
-  to_ms "$cu"; cpu=$ms; to_ms "$cs"; cpu=$((cpu + ms))
-  echo "$rc $((SECONDS - s)) $cpu $runs $rc1" >"$OUT/$1.tmp" && mv "$OUT/$1.tmp" "$OUT/$1.done"; }
+  cpu_now "$1"
+  echo "$rc $((SECONDS - s)) $cpu $runs $rc1 $((cpu - cpu1))" >"$OUT/$1.tmp" && mv "$OUT/$1.tmp" "$OUT/$1.done"; }
 # Whole and thousandths of a second for $1 milliseconds.
 secs() { printf '%d.%03d' $(($1 / 1000)) $(($1 % 1000)); }
 # Output $1's failure, exit $2: why, then the whole output but its ok lines, so whatever the suite said
@@ -116,22 +133,36 @@ show_failure() { why_failed "$1" "$2"; printf '%s\n' "$why" | grep -v '^failed$'
 # A failed suite fails the run. One that failed and passed on its retry is named as flaked, with its
 # first run's failure printed so it can be fixed; one that failed both runs prints both.
 # `took: <s> s` is the suite's own time, both runs when it ran twice, which tests/plan_shards.mjs
-# --record reads.
-report() { o="$OUT/$1.out"; read -r rc took cpu runs rc1 <"$OUT/$1.done"
+# --record reads. A budget is checked against the last run's CPU, so a retry does not double it.
+report() { o="$OUT/$1.out"; read -r rc took cpu runs rc1 last <"$OUT/$1.done"
   printf '\n== %s\n' "${lab[$1]}"
   grep -E "checks passed|^SKIP" "$o"; checks_in "$o"
   total=$((total + c)); echo "ok: $c"; echo "took: $took s"; echo "cpu: $(secs "$cpu") s"
   cpu_all=$((cpu_all + cpu)); ran="$ran${ran:+,}\"${name[$1]}\""
+  [ "${kind[$1]}" = hook ] || { dsec="$dsec${dsec:+,}\"${name[$1]}\":$took"; dcpu="$dcpu${dcpu:+,}\"${name[$1]}\":$(secs "$cpu")"; }
+  over=
+  if [ -n "$budgets" ] && [ "$last" -gt $((bud[$1] * 1000)) ]; then
+    over="${name[$1]} used $(secs "$last") CPU seconds, over its budget of ${bud[$1]}"
+    slow="$slow ${name[$1]}=$(secs "$last")/${bud[$1]}"
+    case "$budgets" in
+      fail) echo "::error::$over" ;;
+      enforce) echo "::warning::$over (a failure from $BUDGETS_FAIL_FROM)" ;;
+      *) echo "::warning::$over" ;;
+    esac
+  fi
   why_failed "$o" "$rc"; bad=$why
   if [ "${runs:-1}" -gt 1 ]; then
     if [ -z "$bad" ]; then echo "retried: failed its first run, passed its retry"; flaked="$flaked ${name[$1]}"; fi
     echo "-- first run"; show_failure "$o"1 "$rc1"
     [ -z "$bad" ] || echo "-- retry"
   fi
-  [ -z "$bad" ] || { show_failure "$o" "$rc"; fail=1; failed="$failed ${name[$1]}"; }; }
+  [ -z "$bad" ] || show_failure "$o" "$rc"
+  if [ -n "$bad" ] || { [ -n "$over" ] && [ "$budgets" = fail ]; }; then fail=1; failed="$failed ${name[$1]}"; fi; }
 # Every tests/test_*.sh and tests/test_*.mjs is a suite, run in name order, so adding one needs no
 # edit here. Its label is the first `# suite: <label>` (`// suite: <label>` in .mjs) line in its
-# first ten lines, or the file name without one.
+# first ten lines, or the file name without one. Its CPU budget is the N of its first `# budget: N`
+# line there, else BUDGET_MJS or BUDGET_ANY.
+BUDGET_MJS=30; BUDGET_ANY=150
 suites=$(printf '%s\n' "$T"/test_*.sh "$T"/test_*.mjs | LC_ALL=C sort)
 # A filter keeps the named suites only. A name that is no suite fails the run rather than running less.
 if [ $# -gt 0 ]; then
@@ -146,12 +177,16 @@ if [ $# -gt 0 ]; then
   suites=$(printf '%s' "$want" | LC_ALL=C sort -u)
 fi
 # Suites that are not a tests/test_* file.
-[ $hook = 0 ] || add "attribution hook self-test" hook "$T/../hooks/deny-ai-attribution.py" hooks/deny-ai-attribution.py
+[ $hook = 0 ] || add "attribution hook self-test" hook "$T/../hooks/deny-ai-attribution.py" hooks/deny-ai-attribution.py $BUDGET_ANY
 while IFS= read -r f; do
   [ -f "$f" ] || continue  # a glob that matched nothing
   label=$(head -n 10 "$f" | grep -m 1 -E '^(#|//) suite: '); label=${label#* suite: }
   [ -n "$label" ] || label=${f##*/}
-  case "$f" in *.sh) add "$label" sh "$f" "${f##*/}" ;; *) add "$label" mjs "$f" "${f##*/}" ;; esac
+  b=$(head -n 10 "$f" | grep -m 1 -oE '^(#|//) budget: [0-9]+' | grep -oE '[0-9]+$')
+  case "$f" in
+    *.sh) add "$label" sh "$f" "${f##*/}" "$((10#${b:-$BUDGET_ANY}))" ;;
+    *) add "$label" mjs "$f" "${f##*/}" "$((10#${b:-$BUDGET_MJS}))" ;;
+  esac
 done <<EOF
 $suites
 EOF
@@ -190,8 +225,11 @@ wait; pids=""
 wall=$((SECONDS - start))
 [ -z "$runs_log" ] || ( mkdir -p "$(dirname "$runs_log")" && printf '{"date":"%s","suites":[%s],"jobs":%d,"wall_s":%d,"cpu_s":%s,"load":%s}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ran" "$jobs" "$wall" "$(secs "$cpu_all")" "$load" >>"$runs_log" ) 2>/dev/null
-# The last lines name each suite that flaked (failed, then passed its retry) and each that failed, by
-# file, for the CI shard that ran them to report.
+[ -z "$durations_out" ] || printf '{"seconds":{%s},"cpu":{%s}}\n' "$dsec" "$dcpu" >"$durations_out"
+# The last lines name each suite that flaked (failed, then passed its retry), each over its CPU budget
+# (as <suite>=<CPU seconds>/<budget>) and each that failed, by file, for the CI shard that ran them to
+# report.
 [ -z "$flaked" ] || { echo; echo "flaked:$flaked"; }
+[ -z "$slow" ] || { echo; echo "over budget:$slow"; }
 [ "$fail" = 0 ] && { echo; echo "all passed: $total checks"; } || { echo; echo "FAILURES above ($total checks passed)"; echo "failed suites:$failed"; }
 exit $fail

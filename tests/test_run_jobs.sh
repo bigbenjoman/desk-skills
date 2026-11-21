@@ -36,6 +36,8 @@ printf 'echo flaky >> "$RUNS"\nif [ -e "$FLAG" ]; then echo "ok flaky"; else : >
 printf 'echo broken >> "$RUNS"\necho "ok broken half"; echo "FAIL broken run $(grep -c broken "$RUNS")"\n' > "$R/test_broken.sh"
 printf 'echo compare >> "$RUNS"\nif [ -e "$FLAG.c" ]; then echo "ok compare"; else : > "$FLAG.c"; echo "FAIL compare first run"; fi\n' > "$R/test_compare_pass.sh"
 printf 'echo pass >> "$RUNS"; echo "ok pass"\n' > "$R/test_pass.sh"
+# A suite whose budget line gives it no CPU seconds at all, so any run is over it.
+printf '# budget: 0 DS-1 a fixture\ni=0; while [ $i -lt 100000 ]; do i=$((i + 1)); done; echo "ok over"\n' > "$R/test_over.sh"
 
 # The stub desk-env prints $CAP for test-cap, and exits 3 (unset) without it.
 STUB="$T/stub"; mkdir -p "$STUB"
@@ -121,6 +123,26 @@ checks(){ B=$1; v=$("$B" -c 'echo "${BASH_VERSINFO[0]}"'); at="(bash $v)"
     check "DS-926 AC3 $at -j $j a failed test_compare_pass.sh is not retried and fails the run" \
       '[ $rc -ne 0 ] && [ "$(grep -c compare "$RUNS")" = 1 ] && printf "%s\n" "$out" | grep -qx "failed suites: test_compare_pass.sh"'
   done
+
+  # CPU budgets: test_over.sh's budget is 0, test_one.sh's the default 150.
+  over_line='::warning::test_over\.sh used [0-9]+\.[0-9]{3} CPU seconds, over its budget of 0'
+  out=$(DESK_SUITE_BUDGETS=warn "$B" "$R/run.sh" --no-hook-test -j 2 test_over.sh test_one.sh 2>&1); rc=$?
+  check "DS-927 AC5 $at warn: a suite over its budget prints a warning naming it, its CPU seconds and its budget, and the run passes" \
+    '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -qxE "$over_line" && printf "%s\n" "$out" | grep -qxE "over budget: test_over\.sh=[0-9]+\.[0-9]{3}/0" && [ "$(printf "%s\n" "$out" | grep -c "^::")" = 1 ]'
+  out=$(DESK_SUITE_BUDGETS=enforce DESK_SUITE_BUDGETS_TODAY=2026-12-07 "$B" "$R/run.sh" --no-hook-test -j 1 test_over.sh test_one.sh 2>&1); rc=$?
+  check "DS-927 AC5 $at enforce, in the first two weeks: a warning that names the date it fails from, and the run passes" \
+    '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -qxE "$over_line \(a failure from 2026-12-08\)" && printf "%s\n" "$out" | grep -qx "all passed: 2 checks"'
+  out=$(DESK_SUITE_BUDGETS=enforce DESK_SUITE_BUDGETS_TODAY=2026-12-08 "$B" "$R/run.sh" --no-hook-test -j 1 test_over.sh test_one.sh 2>&1); rc=$?
+  check "DS-927 AC6 $at enforce, from the date: the run fails naming the suite" \
+    '[ $rc -ne 0 ] && printf "%s\n" "$out" | grep -qxE "::error::test_over\.sh used [0-9]+\.[0-9]{3} CPU seconds, over its budget of 0" && printf "%s\n" "$out" | grep -qx "failed suites: test_over.sh"'
+  out=$("$B" "$R/run.sh" --no-hook-test -j 1 test_over.sh 2>&1); rc=$?
+  check "DS-927 AC5 $at without DESK_SUITE_BUDGETS (a local run) no budget is checked" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -qE "^::|over budget"'
+  out=$(DESK_SUITE_BUDGETS=fail "$B" "$R/run.sh" --no-hook-test test_one.sh 2>&1); rc=$?
+  check "DS-927 AC5 $at a budget mode that is neither warn nor enforce is refused" '[ $rc -eq 2 ]'
+  dur="$T/dur$v.json"; rm -f "$dur"
+  out=$(DESK_SUITE_DURATIONS="$dur" "$B" "$R/run.sh" --no-hook-test -j 2 test_over.sh test_one.sh 2>&1); rc=$?
+  check "DS-927 AC1 $at DESK_SUITE_DURATIONS gets each suite's seconds and CPU seconds, by file, as JSON" \
+    '[ $rc -eq 0 ] && node -e "const d = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")); const k = (o) => Object.keys(o).sort().join(); process.exit(k(d.seconds) === \"test_one.sh,test_over.sh\" && k(d.cpu) === k(d.seconds) && d.cpu[\"test_over.sh\"] > 0 ? 0 : 1)" "$dur"'
 }
 
 checks "$BASH"
@@ -139,7 +161,7 @@ shard_body=$(step_body "Run tests"); tests_body=$(step_body "Every shard passed"
 # Runs the shard step on suites $1 into $RT, then the tests job's step on its result file.
 ci_run(){ RT="$T/ci$2"; mkdir -p "$RT/job"; ln -s "$RT/result" "$RT/job/results"
   export RUNS="$T/ciruns$2" FLAG="$T/ciflag$2"; : > "$RUNS"; rm -f "$FLAG"
-  ( cd "$T/repo" && RUNNER_TEMP=$RT SHARD=1 OF=1 SUITES=$1 HOOK=false bash -e -c "$shard_body" ) >/dev/null 2>&1; src=$?
+  ( cd "$T/repo" && RUNNER_TEMP=$RT SHARD=1 OF=1 SUITES=$1 HOOK=false DESK_SUITE_BUDGETS=${3:-} bash -e -c "$shard_body" ) >/dev/null 2>&1; src=$?
   res=$(cat "$RT/result/shard-1.txt" 2>/dev/null)
   out=$(cd "$RT/job" && PLAN=success BASH32=success SHARDS=success MATRIX='{"include":[{"shard":1}]}' bash -e -c "$tests_body" 2>&1); trc=$?; }
 ci_run "test_flaky.sh test_pass.sh" 1
@@ -148,6 +170,13 @@ check "DS-926 AC4 a shard whose suite flaked writes it into its result file, and
 ci_run "test_pass.sh" 2
 check "DS-926 AC4 a shard with no flake writes an empty flaked line, and the tests job names none" \
   '[ $src -eq 0 ] && printf "%s\n" "$res" | grep -qx "flaked=" && [ $trc -eq 0 ] && printf "%s\n" "$out" | grep -qx "shard 1/1 passed" && ! printf "%s\n" "$out" | grep -q flaked'
+check "DS-927 AC1 the shard step leaves its suites' durations beside its result file" \
+  'node -e "const d = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")); process.exit(Object.keys(d.seconds).join() === \"test_pass.sh\" && \"test_pass.sh\" in d.cpu ? 0 : 1)" "$RT/result/durations-1.json"'
+ci_run "test_over.sh test_pass.sh" 3 warn
+check "DS-927 AC8 a shard on main with a suite over budget passes, writes it as slow=, and the tests job passes and names it" \
+  '[ $src -eq 0 ] && printf "%s\n" "$res" | grep -qxE "slow=test_over\.sh=[0-9]+\.[0-9]{3}/0" && [ $trc -eq 0 ] && printf "%s\n" "$out" | grep -qE "^shard 1/1 over CPU budget \(<suite>=<CPU seconds>/<budget>\): test_over\.sh="'
+check "DS-927 AC5 AC8 tests.yml enforces budgets on pull requests and only warns on a push to main" \
+  'grep -qF "DESK_SUITE_BUDGETS: \${{ github.event_name == '"'pull_request'"' && '"'enforce'"' || '"'warn'"' }}" "$W"'
 # AC7: the same under bash 3.2.
 case "$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null)" in
   3) [ "$(/bin/bash -c 'echo "$BASH_VERSION"')" = "$BASH_VERSION" ] || checks /bin/bash ;;

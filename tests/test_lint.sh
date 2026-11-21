@@ -2,7 +2,8 @@
 # suite: syntax and shellcheck (every shell script and .mjs)
 # Every tracked desk script, one file at a time: `bash -n` on each shell script (by extension or
 # shebang), `node --check` on each .mjs, and, when it is installed, `shellcheck -S warning` on each
-# shell script. DESK_REQUIRE_SHELLCHECK=1 (CI) makes a missing shellcheck a failure.
+# shell script. DESK_REQUIRE_SHELLCHECK=1 (CI) makes a missing shellcheck a failure. Every suite's CPU
+# budget line names a ticket and stays under the cap.
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"
 SH="${BASH:-bash}"
@@ -26,6 +27,32 @@ for f in "${shells[@]}"; do
 done
 for f in "${mjs[@]}"; do
   if out=$(node --check "$f" 2>&1); then ok "node --check $f"; else bad "node --check $f: ${out%%$'\n'*}"; fi
+done
+
+# A suite's `# budget: N <ticket>` line (`//` in .mjs, in its first ten lines, which run.sh reads) names
+# the ticket that answers for it and stays at or under BUDGET_CAP CPU seconds. budget_problem prints
+# what is wrong with file $1's, or nothing.
+BUDGET_CAP=600
+budget_problem(){ local l n
+  l=$(head -n 10 "$1" | grep -m 1 -E '^(#|//) budget:') || return 0
+  n=$(printf '%s\n' "$l" | grep -oE '^(#|//) budget: [0-9]+( |$)' | grep -oE '[0-9]+')
+  if [ -z "$n" ]; then echo "its budget line has no whole number of CPU seconds: $l"
+  elif ! printf '%s\n' "$l" | grep -qE '(^|[^A-Za-z0-9])[A-Z][A-Z0-9]+-[0-9]+'; then echo "its budget line names no ticket key: $l"
+  elif [ "$((10#$n))" -gt "$BUDGET_CAP" ]; then echo "its budget of $n CPU seconds is over the cap of $BUDGET_CAP"
+  fi; }
+# The check itself, on fixture suites, then on every tracked suite.
+BT="$(mktemp -d)"; trap 'rm -rf "$BT"' EXIT
+printf '#!/usr/bin/env bash\n# budget: 200\n' > "$BT/test_nokey.sh"
+printf '// suite: x\n// budget: 700 DS-1 compare_pass\n' > "$BT/test_over.mjs"
+printf '#!/usr/bin/env bash\n# budget: 400 DS-12 the stub server\n' > "$BT/test_fine.sh"
+printf '#!/usr/bin/env bash\n# budget: lots DS-12\n' > "$BT/test_nonumber.sh"
+case "$(budget_problem "$BT/test_nokey.sh")" in *"names no ticket key"*) ok "budget: a line with no ticket key is refused" ;; *) bad "budget: a line with no ticket key is not refused" ;; esac
+case "$(budget_problem "$BT/test_over.mjs")" in *"over the cap of $BUDGET_CAP"*) ok "budget: a budget over the cap is refused" ;; *) bad "budget: a budget over the cap is not refused" ;; esac
+case "$(budget_problem "$BT/test_nonumber.sh")" in *"no whole number"*) ok "budget: a line with no number is refused" ;; *) bad "budget: a line with no number is not refused" ;; esac
+[ -z "$(budget_problem "$BT/test_fine.sh")" ] && ok "budget: a keyed line under the cap passes" || bad "budget: a keyed line under the cap is refused"
+for f in tests/test_*.sh tests/test_*.mjs; do
+  [ -f "$f" ] || continue
+  p=$(budget_problem "$f"); if [ -z "$p" ]; then ok "budget $f"; else bad "budget $f: $p"; fi
 done
 
 if command -v shellcheck >/dev/null 2>&1; then

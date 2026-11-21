@@ -1,10 +1,10 @@
 // suite: CI shards (tests/plan_shards.mjs balances the suites over parallel jobs by recorded duration)
 // tests/plan_shards.mjs on fixture durations, then on this repo's suites and tests/suite_durations.json.
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { plan, matrix, describe, durationsFromLog, median, readDurations, SHARDS } from './plan_shards.mjs';
+import { plan, matrix, describe, durationsFromLog, percentile, readDurations, chooseDurations, mergeDurations, fetchDurations, SHARDS, ARTIFACT } from './plan_shards.mjs';
 import { repoMap } from './scope_sections.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
@@ -30,11 +30,22 @@ t('AC2 and the totals it was planned against', lines[0], '3 shard(s), 20.1 min i
 const skew = { 'test_big.sh': 1000, ...Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`test_s${i}.sh`, i + 1])) };
 for (const n of [2, 6, 8]) { const q = plan(Object.keys(skew), skew, n); t(`AC2 bound holds at ${n} shards on a skewed set`, slowest(q) <= bound(q), true); }
 
+// ---- DS-927 AC2: a shard that runs j suites at once is j lanes -----------------------------------
+const lanes = plan(names, secs, 2, 3);
+const longest2 = ['test_a.sh', 'test_b.sh'];
+t('DS-927 AC2 every suite is in exactly one shard of 2 x 3 lanes', [lanes.shards.length, lanes.lanes, every(lanes)], [2, 6, [...names].sort()]);
+t('DS-927 AC2 the two longest suites are in different shards', longest2.map((s) => lanes.shards.findIndex((x) => x.suites.includes(s))), [0, 1]);
+t('DS-927 AC2 a shard predicts its slowest lane, not the sum of its suites', lanes.shards.map((x) => x.seconds), [370, 310]);
+t('DS-927 AC2 the log says how many lanes', describe(lanes).split('\n')[0], '2 shard(s) of 3 lanes each, 20.1 min in all, even split 3.4 min, longest suite 6.2 min');
+for (const [n, j] of [[2, 3], [6, 3], [8, 2]]) { const q = plan(Object.keys(skew), skew, n, j); t(`DS-927 AC2 slowest shard within the even split over lanes plus the longest suite at ${n} x ${j}`, slowest(q) <= q.total / q.lanes + q.longest, true); }
+t('DS-927 AC2 one lane a shard plans as before', plan(names, secs, 3, 1).shards, p.shards);
+
 // ---- AC3: a suite with no recorded duration ------------------------------------------------------
 const q = plan([...names, 'test_new.sh'], secs, 3);
 t('AC3 a suite with no duration is still planned', every(q).includes('test_new.sh'), true);
-t('AC3 at the median recorded duration, and named', [q.guess, q.unknown], [median(Object.values(secs)), ['test_new.sh']]);
-t('AC3 the log says which suites had no duration', describe(q).split('\n').at(-1), 'no recorded duration, planned at 1.3 min each: test_new.sh');
+t('DS-927 AC4 at the 75th percentile of the recorded durations, and named', [q.guess, percentile(Object.values(secs), 0.75), q.unknown], [172.5, 172.5, ['test_new.sh']]);
+t('DS-927 AC4 the 75th percentile is of every recorded suite, not only those planned', plan(['test_j.mjs', 'test_new.sh'], secs, 2).guess, 172.5);
+t('AC3 the log says which suites had no duration', describe(q).split('\n').at(-1), 'no recorded duration, planned at 2.9 min each: test_new.sh');
 const none = plan(['test_x.sh', 'test_y.sh'], {}, 6);
 t('AC3 with no durations at all, every suite still runs', [none.shards.length, every(none)], [2, ['test_x.sh', 'test_y.sh']]);
 
@@ -88,7 +99,41 @@ try {
   const whole = JSON.parse(cli('--json').stdout);
   t('cli with no flags plans every suite into SHARDS shards', [whole.shards.length, whole.shards.flatMap((x) => x.suites).length], [SHARDS, suites.length]);
   t('cli --shards overrides the count', JSON.parse(cli('--shards', '2', '--json').stdout).shards.length, 2);
-  t('cli refuses a name that is no suite, no suites, or a bad count', [cli('--suites', 'test_nope.sh').status, cli('--suites', '').status, cli('--shards', '0', '--suites', 'test_lint.sh').status], [2, 2, 2]);
+  t('cli refuses a name that is no suite, no suites, or a bad count', [cli('--suites', 'test_nope.sh').status, cli('--suites', '').status, cli('--shards', '0', '--suites', 'test_lint.sh').status, cli('--jobs', '0', '--suites', 'test_lint.sh').status], [2, 2, 2, 2]);
+
+  // ---- DS-927 AC2, AC3: main's durations artifact, else the committed file ------------------------
+  const art = join(T, 'art.json');
+  writeFileSync(art, JSON.stringify({ seconds: { 'test_lint.sh': 5, 'test_ci.mjs': 900 }, cpu: { 'test_lint.sh': 3, 'test_ci.mjs': 2 } }));
+  const fromArt = cli('--suites', 'test_lint.sh test_ci.mjs', '--shards', '1', '--durations', art);
+  t('DS-927 AC2 a plan from main\'s artifact says so, and uses its seconds', [fromArt.status, fromArt.stdout.split('\n')[0], /^shard 1\/1: 15\.1 min predicted/m.test(fromArt.stdout)], [0, `planned from main's ${ARTIFACT} artifact (2 suites)`, true]);
+  const noArt = cli('--suites', 'test_lint.sh', '--durations', join(T, 'none.json'));
+  t('DS-927 AC3 with no artifact fetched, it plans from the committed file and says so', [noArt.status, noArt.stdout.split('\n')[0]], [0, `planned from the committed tests/suite_durations.json: no ${ARTIFACT} artifact from main could be fetched`]);
+  t('DS-927 AC3 the committed durations are the ones read then', chooseDurations(join(T, 'none.json')).seconds, rec);
+  writeFileSync(join(T, 'empty.json'), '{"seconds":{}}');
+  t('DS-927 AC3 an artifact with no suites counts as none', chooseDurations(join(T, 'empty.json')).seconds, rec);
+
+  // ---- DS-927 AC1: each shard's durations merge into the artifact --------------------------------
+  const D = join(T, 'results'); mkdirSync(D);
+  writeFileSync(join(D, 'durations-1.json'), '{"seconds":{"test_b.sh":4},"cpu":{"test_b.sh":1.5}}\n');
+  t('DS-927 AC1 a shard with no durations file records nothing', mergeDurations(D, 2), { missing: [2] });
+  writeFileSync(join(D, 'durations-2.json'), '{"seconds":{"test_a.mjs":7},"cpu":{"test_a.mjs":6.25}}\n');
+  const outFile = join(T, 'merged', 'suite_durations.json');
+  const merged = cli('--merge', D, '--of', '2', '--out', outFile);
+  t('DS-927 AC1 every shard\'s durations merge into one file of seconds and CPU seconds', [merged.status, JSON.parse(readFileSync(outFile, 'utf8'))], [0, { seconds: { 'test_a.mjs': 7, 'test_b.sh': 4 }, cpu: { 'test_a.mjs': 6.25, 'test_b.sh': 1.5 } }]);
+  t('DS-927 AC1 and a plan reads that file back', chooseDurations(outFile).seconds, { 'test_a.mjs': 7, 'test_b.sh': 4 });
+  const partial = join(T, 'partial', 'x.json');
+  t('DS-927 AC1 with a shard missing, --merge writes nothing', [cli('--merge', D, '--of', '3', '--out', partial).status, existsSync(partial)], [0, false]);
+
+  // ---- DS-927 AC2: fetching the newest artifact, through gh ---------------------------------------
+  const calls = [];
+  const fakeGh = (has) => (a) => {
+    calls.push(a.slice(0, 3).join(' '));
+    if (a[0] === 'run' && a[1] === 'list') return JSON.stringify([{ databaseId: 30 }, { databaseId: 20 }, { databaseId: 10 }]);
+    if (!has.includes(a[2])) throw new Error('no artifact');
+    return '';
+  };
+  t('DS-927 AC2 fetch takes the newest push run on main that has the artifact', [fetchDurations(T, fakeGh(['20', '10'])), calls], [20, ['run list --workflow', 'run download 30', 'run download 20']]);
+  t('DS-927 AC3 and finds none when no run has it', fetchDurations(T, fakeGh([])), null);
 
   // ---- tests/run.sh's flag for every shard but the first ------------------------------------------
   const run = spawnSync('bash', [join(R, 'tests/run.sh'), '--no-hook-test', 'test_review_verdict.mjs'], { encoding: 'utf8' });
