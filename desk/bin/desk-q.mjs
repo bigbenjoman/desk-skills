@@ -1009,10 +1009,12 @@ export function repoPlace(repos, id) {
 // ---- ship dates --------------------------------------------------------------------------------
 
 const MINUTE = 60_000;
+// The last forecast worked out for each batch and each repo's merged row, with what it was worked from.
 const forecasts = new Map();
 
-// The repo's forecast, or null with no batch. Worked out to the minute and kept, so the screen's
-// 2-second reread runs the simulation again only when the queue, the history or the minute changes.
+// The repo's forecast, or null with no batch. Worked out to the minute and kept per batch, so the
+// screen's 2-second reread runs the simulation again only when the queue, the history or the minute
+// changes, however many batches are set up.
 // A batch that is not live (liveBeat: no pass for LIVE_MS, and no next pass recorded that is still to
 // come) is `paused` while it still has a ticket autopilot could move: its dates assume passes that are
 // not happening, so they are not shown and not saved. With none left it is `idle`: nothing is late,
@@ -1033,17 +1035,19 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   // An epic with nothing left to run has shipped, so it is not run forward.
   const open = Object.fromEntries(Object.values(ep.epics).filter((e) => e.queued || e.missing > 0).map((e) => [e.key, { missing: e.missing }]));
   const id = JSON.stringify([r.id, at, checkin, r.live, r.workers, rows, open, ep.unread, history.map((l) => [l.key, l.size, l.hours])]);
-  if (!forecasts.has(id)) {
-    if (forecasts.size > 64) forecasts.clear();
+  const slot = JSON.stringify([r.id, Boolean(r.batches), checkin]);
+  const kept = forecasts.get(slot);
+  if (kept?.id !== id) {
     const sizes = Object.fromEntries(rows.map((x) => [x.key, x.size]));
     const paused = passesPaused(r);
     const F = { ...forecast({ rows, workers: r.workers, history, now: at, checkin, epics: open }), d: durations(history), sizes,
       paused, idle: !r.live && !paused, epics: ep.epics, of: ep.of, noEpic: ep.noEpic, unread: ep.unread };
     // A state directory desk-q cannot write to costs the saved estimate, never the screen.
     if (!F.none && r.live && !checkin) try { saveEstimates(r.stateDir, F.T, at); } catch { /* shown, not saved */ }
-    forecasts.set(id, F);
+    forecasts.set(slot, { id, F });
+    return F;
   }
-  return forecasts.get(id);
+  return kept.F;
 }
 
 const SOON = MINUTE;
