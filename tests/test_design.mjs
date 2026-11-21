@@ -644,9 +644,12 @@ t('AC5 check: an artifact that is neither a canvas nor a deck is advisory', `${p
 t('AC5 check: a link with no saved copy and no snapshot is of unknown kind, so blocking', checkTicket(pmIssue('h2. Design\nhttps://claude.ai/artifact/UNKNOWN1'), { root: r5, dir: DIR, state: kst }).map((f) => f.severity).join(' '), 'blocking');
 
 // ---- render in a real browser: desk's own Playwright, skipped where it is not installed ----
+// A failure instead under DESK_REQUIRE_PLAYWRIGHT=1 (CI, which installs it).
 const pw = findPlaywright();
 if (!pw.entry) {
-  console.log(`SKIP render in a browser: no desk Playwright (tried ${pw.tried.join(', ')})`);
+  const why = `no desk Playwright (tried ${pw.tried.join(', ')})`;
+  if (process.env.DESK_REQUIRE_PLAYWRIGHT === '1') t('render in a browser: DESK_REQUIRE_PLAYWRIGHT=1 needs desk Playwright', why, 'installed');
+  else console.log(`SKIP render in a browser: ${why}`);
 } else {
   const { chromium } = await importPlaywright(pw);
   // Boards that paint from a local stylesheet and font, as a saved canvas does, with no network.

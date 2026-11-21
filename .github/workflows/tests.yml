@@ -96,9 +96,11 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     # shellcheck's findings do not depend on the OS, so Linux (where it is preinstalled) requires it;
-    # test_lint.sh, in whichever shard runs it, reads this.
+    # test_lint.sh, in whichever shard runs it, reads this. Likewise test_stitch.mjs and test_design.mjs
+    # fail rather than skip their browser checks without desk's Playwright, which the shard installs.
     env:
       DESK_REQUIRE_SHELLCHECK: '1'
+      DESK_REQUIRE_PLAYWRIGHT: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -115,6 +117,14 @@ jobs:
           command -v jq >/dev/null || { sudo apt-get update && sudo apt-get install -y jq; }
           jq --version
           shellcheck --version | head -2
+      # Desk's pinned Playwright (install.sh's PLAYWRIGHT_VERSION) and its Chromium, where and as
+      # install.sh puts them, for the suites that render in a browser.
+      - name: Install desk's Playwright
+        if: contains(matrix.suites, 'test_stitch.mjs') || contains(matrix.suites, 'test_design.mjs')
+        run: |
+          v=$(sed -n 's/^PLAYWRIGHT_VERSION="\(.*\)"$/\1/p' install.sh)
+          [ -n "$v" ] || { echo "no PLAYWRIGHT_VERSION in install.sh"; exit 1; }
+          bash desk/bin/install-playwright.sh --with-deps "$HOME/.claude/desk/playwright" "$v"
       # The result file is the shard's report to the tests job: written only once run.sh has finished,
       # so a shard cancelled or timed out leaves none. run.sh writes the suites' durations beside it.
       # A suite over its CPU budget fails a pull request from the date in run.sh, and only warns on
