@@ -166,7 +166,8 @@
 import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync, statfsSync, openSync, readSync, closeSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
-import { toolResults } from './harvest.mjs';
+// Not from harvest.mjs: its CLI awaits desk-env at top level, so that import would never settle.
+import { toolResults } from './log-tool-calls.mjs';
 import { writeJsonAtomic } from './dir-lock.mjs';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';

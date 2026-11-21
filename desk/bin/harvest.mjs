@@ -6,6 +6,7 @@ import { readFileSync, realpathSync, readdirSync, mkdirSync, openSync, closeSync
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+import { toolResults } from './log-tool-calls.mjs';
 
 // A desk-review round's results file, as a worker leaves it at its worktree root (desk-review's core,
 // *The verdict*): kept past the worker's session under <state>/reviews/<KEY>/, by the pass once the
@@ -115,25 +116,6 @@ export function lastStage(logText) {
 // command_lifecycle event, say) is not a turn, so only turn events after the last result count.
 // Lines that are not JSON (stderr) are skipped.
 const TURN_EVENTS = new Set(['assistant', 'user', 'stream_event', 'system']);
-// Every tool result in a log's text, in order, as { failed, text }: `failed` is the tool's own is_error,
-// `text` its output as the tool returned it (decoded, not as the log escapes it).
-export function toolResults(logText) {
-  const results = [];
-  for (const line of String(logText ?? '').split('\n')) {
-    if (!line.includes('tool_result')) continue;
-    let e;
-    try { e = JSON.parse(line); } catch { continue; }
-    const content = e?.type === 'user' ? e.message?.content : null;
-    if (!Array.isArray(content)) continue;
-    for (const c of content) {
-      if (c?.type !== 'tool_result') continue;
-      const text = typeof c.content === 'string' ? c.content
-        : Array.isArray(c.content) ? c.content.map((x) => (typeof x?.text === 'string' ? x.text : '')).join('\n') : '';
-      results.push({ failed: !!c.is_error, text });
-    }
-  }
-  return results;
-}
 // A fault of the computer, not the ticket: a tool call that failed (is_error) on ENOSPC, no space or no
 // inodes left, among the worker's last HOST_RESULTS tool results. The text naming it, cut to 200
 // characters, or null. Only a failed call counts: a file read, a grep or a passing run that merely
