@@ -747,9 +747,9 @@ function stampOf(path, depth, out) {
   try { names = readdirSync(path).sort(); } catch { /* stamped by its own time */ }
   for (const n of names) if (!UNSTAMPED.has(n) && !n.endsWith('.log')) stampOf(join(path, n), depth - 1, out);
 }
-export function stateStamp(configRoot = deskConfigRoot()) {
+function stateStamp() {
   const out = [];
-  const repos = join(configRoot, 'repos');
+  const repos = join(deskConfigRoot(), 'repos');
   stampOf(repos, 2, out);
   let slugs = [];
   try { slugs = readdirSync(repos).sort(); } catch { /* no repo set up */ }
@@ -4105,11 +4105,13 @@ export function interactive({
     try { return loadOrRefuse(clock(), scope); } catch { scope = null; return loadOrRefuse(clock()); }
   };
   // `lastRead`: the state stamp and the time of the last reread that did not fail, null after one that
-  // did. The stamp is taken first, so a write made during the reread brings the next.
-  let lastRead = null;
+  // did. The stamp is taken first, so a write made during the reread brings the next. `avail`, Home's
+  // free memory, is sampled with each reread: on macOS a sample runs vm_stat, which an idle tick must not.
+  let lastRead = null, avail;
   const reload = (stamp = stateStamp()) => {
     lastRead = null;
     const out = load();
+    avail = availableGiB();
     lastRead = { stamp, at: clock() };
     return out;
   };
@@ -4223,7 +4225,7 @@ export function interactive({
     }
     if (view.kind === 'overview') {
       // Home's parked note goes in its notes, not on the tab line, where a 100-column terminal cuts it.
-      return { badge: '', ...overviewParts(repos, { all: view.all, now, interactive: true, checkin, width: w, badge: badge(repos), pinUsage: true }), ...claude(shownRepos(repos, view.all)),
+      return { badge: '', ...overviewParts(repos, { all: view.all, now, avail, interactive: true, checkin, width: w, badge: badge(repos), pinUsage: true }), ...claude(shownRepos(repos, view.all)),
         keys: `↑↓ select · enter open · ${VIEW_KEYS} · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · s supervisor · v levers · ${cmdKeys}` };
     }
     if (view.kind === 'repo') {

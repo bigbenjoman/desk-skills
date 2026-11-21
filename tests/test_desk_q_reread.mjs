@@ -50,6 +50,8 @@ for (const sub of ['orchestrators', 'logs']) mkdirSync(join(STATE, sub), { recur
 writeFileSync(join(STATE, 'orchestrators', 'q.json'), JSON.stringify({ queue: QUEUE, batch: SLUG, pid: 1, at: iso(NOW - 60000) }));
 const LOG = join(STATE, 'logs', 'R-1.log');
 writeFileSync(LOG, 'AUTOPILOT_STAGE: 3/9 implement\n');
+const SUPERVISOR_LOG = join(STATE, 'supervisor.log');
+writeFileSync(SUPERVISOR_LOG, 'tick\n');
 
 // Every subprocess start, and every read of the queue file, since the last reset.
 const seen = { spawns: [], reads: 0 };
@@ -89,10 +91,13 @@ t('AC1 the timer keeps redrawing', frames() - f1 >= 3, true);
 t('AC1 and rereads no queue', seen.reads, 0);
 t('AC1 and starts no process', seen.spawns.length, 0);
 
-// ---- AC4: a worker writing only to its log brings no reread
+// ---- AC4: logs bring no reread: a worker's growing, a new worker's first, and the supervisor's
+// beside the queue's state files, which only the exclusions keep out of the stamp
 reset();
-for (let i = 0; i < 5; i++) { appendFileSync(LOG, `working ${i}\n`); await sleep(40); }
-t('AC4 a growing worker log rereads no queue and starts no process', `${seen.reads} ${seen.spawns.length}`, '0 0');
+for (let i = 0; i < 5; i++) { appendFileSync(LOG, `working ${i}\n`); appendFileSync(SUPERVISOR_LOG, `tick ${i}\n`); await sleep(40); }
+writeFileSync(join(STATE, 'logs', 'R-2.log'), 'AUTOPILOT_STAGE: 1/9 triage\n');
+await sleep(80);
+t('AC4 log writes reread no queue and start no process', `${seen.reads} ${seen.spawns.length}`, '0 0');
 
 // ---- AC2: a pass writing the queue is shown by the next tick
 reset();
@@ -118,6 +123,14 @@ t('AC5 a move rereads the queues at once', rereads() >= 1 && seen.reads > 0, tru
 reset();
 await sleep(150);
 t('AC5 and the ticks after it reread nothing', rereads(), 0);
+
+// ---- AC1 on Home, whose machine line shows free memory: an idle tick starts no process there either
+input.write('\x1b');
+await sleep(600);
+reset();
+await sleep(250);
+t('AC1 Home is shown with its free memory', frame().some((l) => l.includes('GiB free')), true);
+t('AC1 and an idle Home starts no process', seen.spawns.length, 0);
 
 ui.finish(0);
 console.log(fails ? `${fails} FAILED` : 'all desk-q reread checks passed');
