@@ -295,14 +295,14 @@ export function* decideBaseSync(s) {
     } else {
       const gone = sync.reason === 'missing' || !!sync.recreate;
       yield* blocked(sync.why, gone);
-      // A refused push that holds every spawn is the person's, as one needs-you item for the batch. Its
-      // command rolls the merge back when the push is refused again, as the sync does: a merge left
-      // unpushed in the base worktree would fail every later sync as an error and clear this item. A
-      // refused recreation's command is that push alone.
-      if (sync.reason === 'push' && baseHold) {
-        stuck = { base: BASE, source: SOURCE, behind: behindBy, frozen: s.frozen ?? 0, why: sync.why, path: wt.path,
-          cmd: sync.recreate ? `git -C ${wt.path} push origin ${sync.recreate.at}:refs/heads/${BASE}`
-            : `git -C ${wt.path} fetch -q origin && git -C ${wt.path} merge --no-edit origin/${SOURCE} && git -C ${wt.path} push origin HEAD:refs/heads/${BASE} || git -C ${wt.path} reset -q --hard origin/${BASE}` };
+      // A failed sync that holds every spawn (a refused push, a base missing on origin, one that could not
+      // be fetched) is the person's, as one needs-you item for the batch. A refused push's command rolls
+      // the merge back when the push is refused again, as the sync does: a merge left unpushed in the base
+      // worktree would fail every later sync as an error. A refused recreation's command is that push alone.
+      if (baseHold) {
+        const cmd = sync.reason !== 'push' ? null : sync.recreate ? `git -C ${wt.path} push origin ${sync.recreate.at}:refs/heads/${BASE}`
+          : `git -C ${wt.path} fetch -q origin && git -C ${wt.path} merge --no-edit origin/${SOURCE} && git -C ${wt.path} push origin HEAD:refs/heads/${BASE} || git -C ${wt.path} reset -q --hard origin/${BASE}`;
+        stuck = { base: BASE, source: SOURCE, behind: behindBy, frozen: s.frozen ?? 0, why: sync.why, path: wt.path, ...(cmd ? { cmd } : {}) };
       }
     }
     // The ask is settled once the base is current, its push is granted, or the row no longer asks.
