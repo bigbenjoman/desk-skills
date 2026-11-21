@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { cellItems, configRows, declaredRows, CONFIG_ROWS, PATH_VARS, MACHINE_FALLBACK_ROWS } from '../desk/bin/desk-env.mjs';
-import { ROWS, coverage, TYPES, parseRow, norm, MACHINE_FALLBACK } from '../desk/bin/config-schema.mjs';
+import { ROWS, coverage, TYPES, parseRow, norm, MACHINE_FALLBACK, requiredFieldsIn, requiredFieldsByType } from '../desk/bin/config-schema.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -717,6 +717,12 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     t('DS-933 --where gives what where prints, beside the rows', JSON.stringify([g.code, g.json?.where, g.json?.rows?.tracker?.value]),
       JSON.stringify([0, { slug: w.SLUG, gh_repo: w.GH_REPO, config: w.CONFIG, creds: w.CREDS, exists: w.EXISTS === 'yes' }, 'jira']));
     t('DS-933 without --where there is no where', 'where' in (getJson(env, 'tracker').json ?? { where: 1 }), false);
+    const rules = ['Story, bug : customfield_1, customfield_2', 'task:customfield_3 customfield_1,customfield_3', 'Évolution: f4', 'BUG: customfield_5', 'no rule here'];
+    const by = requiredFieldsByType(rules);
+    t('DS-933 requiredFieldsByType gives one key per type case-blind, as first written', JSON.stringify(Object.keys(by.need)), '["Story","bug","task","Évolution"]');
+    t('DS-933 and each key holds what requiredFieldsIn gives that type', Object.entries(by.need).every(([ty, need]) => JSON.stringify(need) === JSON.stringify(requiredFieldsIn(rules, ty).need)) && JSON.stringify(by.need.bug), '["customfield_1","customfield_2","customfield_5"]');
+    t('DS-933 with the malformed items requiredFieldsIn names', JSON.stringify(by.malformed), JSON.stringify(requiredFieldsIn(rules, null).malformed));
+    t('DS-933 --where without jira-required-fields gives no required_fields', 'required_fields' in (getJson(env, '--where', 'tracker').json ?? { required_fields: 1 }), false);
   }
   writeFileSync(c, `${P4}| Local services | \`TODO\` |\n| Append-only paths | \`TODO\` |\n`);
   r = getJson(jenv(c), 'local-services', 'append-only-paths');

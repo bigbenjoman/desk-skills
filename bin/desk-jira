@@ -305,19 +305,15 @@ cfg_list() {
   { node "$DESK_ENV_MJS" list "$1" 2>/dev/null || true; } | jq -Rsc 'split("\n") | map(select(length > 0 and (ascii_downcase != "none")))'
 }
 
-# config §4 Required fields for an issue type, as JSON; unset is no rules. From CONFIG_JSON's items by
-# config-schema.mjs requiredFieldsIn's rules: `<Type>[, <Type>…]: <field>[, <field>…]`, a type matched
-# case-blind, each field once in first-seen order, and an item with no type or no field malformed.
+# config §4 Required fields for an issue type, as JSON (desk-env.mjs requiredFields); unset is no rules.
+# From CONFIG_JSON, desk-env's answer for every type the rules name, the type looked up case-blind.
 cfg_required() {
   local none='{"need":[],"malformed":[]}'
   [[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] || { printf '%s' "$none"; return 0; }
   if [[ -n "$CONFIG_JSON" ]]; then
-    cfg_list jira-required-fields | jq -c --arg t "$1" '($t | ascii_downcase | gsub("^\\s+|\\s+$"; "")) as $want
-      | { need: (reduce (.[] | capture("^(?<types>[^:\n]+):(?<fields>[^\n]+)$")
-                   | select(.types | split(",") | map(gsub("^\\s+|\\s+$"; "") | ascii_downcase) | index($want))
-                   | .fields | [splits("[,\\s]+")] | .[] | select(length > 0)) as $f
-                 ([]; if index([$f]) then . else . + [$f] end)),
-          malformed: map(select(test("^[^:\n]+:[^\n]*\\S") | not)) }'
+    jq -c --arg t "$1" '($t | gsub("^\\s+|\\s+$"; "") | "^\\Q" + gsub("\\\\E"; "\\E\\\\E\\Q") + "\\E$") as $want
+      | (.required_fields // {need: {}, malformed: []}) as $r
+      | {need: ([$r.need | to_entries[] | select(.key | test($want; "i")) | .value] | first // []), malformed: $r.malformed}' <<<"$CONFIG_JSON"
     return 0
   fi
   node "$DESK_ENV_MJS" required-fields "$1" 2>/dev/null || printf '%s' "$none"

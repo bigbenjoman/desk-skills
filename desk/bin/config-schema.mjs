@@ -90,10 +90,21 @@ export const permValue = (key, v) => permMatch(key, v) ?? 'no';
 export function requiredFieldsIn(rules, type) {
   const want = type == null ? null : String(type).trim().toLowerCase();
   const need = rules.flatMap((rule) => {
-    const m = /^([^:]+):(.+)$/.exec(rule);
-    return m && (want == null || m[1].split(',').some((t) => t.trim().toLowerCase() === want)) ? m[2].split(/[,\s]+/).filter(Boolean) : [];
+    const r = requiredRule(rule);
+    return r && (want == null || r.types.some((t) => t.toLowerCase() === want)) ? r.fields : [];
   });
   return { need: [...new Set(need)], malformed: rules.filter((r) => !/^[^:]+:.*\S/.test(r)) };
+}
+const requiredRule = (rule) => {
+  const m = /^([^:]+):(.+)$/.exec(rule);
+  return m && { types: m[1].split(',').map((t) => t.trim()), fields: m[2].split(/[,\s]+/).filter(Boolean) };
+};
+// requiredFieldsIn for every type the rules name, so a caller with no node can look its type up:
+// {need: {<type as first written>: [field id…]}, malformed: [item…]}, one key per type case-blind.
+export function requiredFieldsByType(rules) {
+  const types = new Map();
+  for (const t of rules.flatMap((rule) => requiredRule(rule)?.types ?? [])) if (t && !types.has(t.toLowerCase())) types.set(t.toLowerCase(), t);
+  return { need: Object.fromEntries([...types.values()].map((t) => [t, requiredFieldsIn(rules, t).need])), malformed: requiredFieldsIn(rules, null).malformed };
 }
 
 // A spend guard is a number of USD or explicitly off. Anything else ("25 USD", "0", "lots") is

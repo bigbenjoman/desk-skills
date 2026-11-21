@@ -247,7 +247,7 @@ puts() { jq -s '[.[] | select(.method == "PUT")] | length' "$LOG"; }
 comments_sent() { jq -s '[.[] | select(.method == "POST" and (.path | test("/comment$")))] | length' "$LOG"; }
 last_comment() { jq -sr '[.[] | select(.method == "POST" and (.path | test("/comment$")))] | last | .body | fromjson | .body' "$LOG"; }
 
-# DS-933: the repo and every config row come from one desk-env.mjs run. A `node` ahead on PATH logs
+# The repo and every config row come from one desk-env.mjs run. A `node` ahead on PATH logs
 # each run; a desk-env.mjs that refuses --where sends desk-jira down the separate where/get/list/perm
 # reads, so the two paths can be compared value for value.
 mkdir -p "$T/countbin" "$T/oldenv"
@@ -264,7 +264,7 @@ check "DS-933 AC1 where starts one desk-env process" '[ "$(envruns "$C" where)" 
 check "DS-933 AC1 a create its field rules refuse starts one desk-env process" '[ "$(envruns "$C" create Story s body.md --no-lint)" -eq 1 ]'
 check "DS-933 AC1 where outside any repo starts one desk-env process" '[ "$(envruns "$T/state" where)" -eq 1 ]'
 SLUG_P=$(mkrepo p "https://github.com/acme/parity" jira "http://127.0.0.1:$PORT"); P="$T/repos/p"
-printf '| Priority | `customfield_10207` |\n| Required fields | `Story, bug : customfield_1, customfield_2` `task:customfield_3 customfield_1,customfield_3` `no rule here` |\n| Size field | `customfield_10208` |\n| Priorities only you set | `P0` |\n' \
+printf '| Priority | `customfield_10207` |\n| Required fields | `Story, bug : customfield_1, customfield_2` `task:customfield_3 customfield_1,customfield_3` `Évolution: customfield_4` `no rule here` |\n| Size field | `customfield_10208` |\n| Priorities only you set | `P0` |\n' \
   >> "$DESK_CONFIG_ROOT/repos/$SLUG_P/config.md"
 printf good-token > "$DESK_CONFIG_ROOT/repos/$SLUG_P/atlassian-token"; chmod 600 "$DESK_CONFIG_ROOT/repos/$SLUG_P/atlassian-token"
 printf 'a body' > "$P/body.md"
@@ -275,7 +275,7 @@ both() { local d="$1" one two; shift
 for d in "$A" "$C" "$P" "$T/repos/n" "$T/repos/unset" "$T/state"; do
   check "DS-933 AC2 where in ${d##*/} reads as the separate reads do" 'both "$d" where && both "$d" where --dir'
 done
-for ty in Story BUG task Epic; do
+for ty in Story BUG task Epic ÉVOLUTION; do
   n0=$(creates)
   check "DS-933 AC2 create $ty in a repo of mixed rules is refused as the separate reads refuse it" 'both "$P" create "$ty" s body.md customfield_10207=P0 --no-lint && [ "$(creates)" -eq "$n0" ]'
 done
