@@ -246,6 +246,12 @@ for (const f of ['desk-config.md', 'install.sh', 'tests/compare_pass.sh', 'tests
   const d = decide(M(f), real);
   t(`DS-818 ${f} runs the suites that claim it`, [d.scope, d.suites], ['some', real.suites.map((s) => s.file).filter((s) => ALWAYS.includes(s) || real.claims.get(f)?.has(s))]);
 }
+// DS-884 AC5: a change only to a module the prose check imports, directly or through another, runs it.
+const proseCovers = real.suites.find((s) => s.file === 'test_prose_code.mjs').covers.filter((p) => /\.mjs$/.test(p) && !p.includes('*'));
+t('DS-884 AC5 each module on the prose check\'s covers lines runs the prose check',
+  proseCovers.filter((p) => !decide(M(p), real).suites.includes('test_prose_code.mjs')), []);
+t('DS-884 AC5 machine.mjs, which the prose facts registry reaches only through desk-env.mjs, runs the prose check without running everything',
+  [decide(M('desk/bin/machine.mjs'), real).scope, decide(M('desk/bin/machine.mjs'), real).suites.includes('test_prose_code.mjs')], ['some', true]);
 t('a desk-pr reference reaches the desk-pr split suite', decide(M('skills/desk-pr/references/opening.md'), real).suites.includes('test_desk_pr_split.mjs'), true);
 const cli = spawnSync(process.execPath, [join(R, 'tests/scope_sections.mjs'), '--files', 'desk/bin/merge-driver.sh', '--json'], { encoding: 'utf8' });
 const j = JSON.parse(cli.stdout || '{}');

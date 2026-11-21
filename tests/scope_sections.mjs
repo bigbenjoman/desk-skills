@@ -44,7 +44,7 @@
 //   suite claims.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, appendFileSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Script } from 'node:vm';
 
@@ -199,6 +199,17 @@ export function mentions(text) {
   return out;
 }
 
+// A suite's header, its first 30 lines: the `suite:` label ('' when none), the `covers:` globs and
+// whether it `claims: imports` only.
+export function suiteHeader(text) {
+  const head = String(text).split('\n').slice(0, 30);
+  return {
+    label: (head.slice(0, 10).find((l) => /^(#|\/\/) suite: /.test(l)) ?? '').replace(/^(#|\/\/) suite: /, ''),
+    covers: head.filter((l) => /^(#|\/\/) covers: /.test(l)).flatMap((l) => l.replace(/^(#|\/\/) covers: /, '').trim().split(/\s+/)),
+    importsOnly: head.some((l) => /^(#|\/\/) claims: imports\b/.test(l)),
+  };
+}
+
 // -> { suites: [{ file, label, covers: [glob] }], claims: Map(path -> Set(suite file)) }
 // `files` is every tracked path; `read(path)` returns its text (or '' when unreadable).
 export function buildMap(files, read) {
@@ -246,11 +257,8 @@ export function buildMap(files, read) {
   const out = [];
   for (const s of suites) {
     const t = textOf(s);
-    const head = t.split('\n').slice(0, 30);
-    const label = (head.slice(0, 10).find((l) => /^(#|\/\/) suite: /.test(l)) ?? '').replace(/^(#|\/\/) suite: /, '') || s.slice(6);
-    const covers = head.filter((l) => /^(#|\/\/) covers: /.test(l)).flatMap((l) => l.replace(/^(#|\/\/) covers: /, '').trim().split(/\s+/));
-    const importsOnly = head.some((l) => /^(#|\/\/) claims: imports\b/.test(l));
-    out.push({ file: s.slice(6), label, covers, importsOnly });
+    const { label, covers, importsOnly } = suiteHeader(t);
+    out.push({ file: s.slice(6), label: label || s.slice(6), covers, importsOnly });
     if (ALWAYS.includes(s.slice(6))) continue;
     const seen = new Set();
     const todo = importsOnly ? [...mentions(loads(s, t, { importsOnly }))].flatMap((k) => [...(names.get(k) ?? [])]) : [...namedBy(s)];
@@ -332,7 +340,9 @@ export function loads(path, text, { importsOnly = false } = {}) {
   const t = String(text);
   const out = [];
   if (/\.(mjs|cjs|js|py)$/.test(path)) {
-    const code = t.replace(/\/\*[\s\S]*?\*\//g, ' ').split('\n').filter((l) => !/^\s*(\/\/|#)/.test(l)).join('\n');
+    // Line comments go first, so a `/*` inside one opens no block; a block opens only at a line's
+    // start or after a space, `;` or `,`, so a `/*` glued to a quote, a word or `}` in a string opens none.
+    const code = t.split('\n').filter((l) => !/^\s*(\/\/|#)/.test(l)).join('\n').replace(/(^|[\s;,])\/\*[\s\S]*?\*\//gm, '$1 ');
     if (!/\.py$/.test(path)) {
       // `import x from './a.mjs'`, `} from './a.mjs'`, `import './a.mjs'`: no quote before the keyword on
       // its line, so a fixture string that holds an import is not one.
@@ -350,6 +360,19 @@ export function loads(path, text, { importsOnly = false } = {}) {
     for (const m of l.matchAll(/(?:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|\))\/([A-Za-z0-9_.@-]+(?:\/[A-Za-z0-9_.@-]+)*)/g)) out.push(m[1]);
   }
   return out.join('\n');
+}
+
+// Every repo file `entry` loads through the relative imports loads() finds (static and `import()`),
+// itself included, as sorted repo paths. `read(path)` returns a repo file's text.
+export function importClosure(entry, read) {
+  const seen = new Set(), todo = [entry];
+  while (todo.length) {
+    const p = todo.pop();
+    if (seen.has(p)) continue;
+    seen.add(p);
+    for (const spec of loads(p, read(p), { importsOnly: true }).split('\n')) if (/^\.\.?\//.test(spec)) todo.push(posix.join(posix.dirname(p), spec));
+  }
+  return [...seen].sort();
 }
 
 const git = (root, args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', maxBuffer: 64 << 20 });

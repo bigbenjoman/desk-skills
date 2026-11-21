@@ -42,6 +42,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # The prose baseline only shrinks. On every pull request, whatever suites its change reaches.
+      - name: The prose baseline does not grow
+        if: github.event_name == 'pull_request'
+        run: node tests/prose_baseline_guard.mjs --base HEAD^1
       - name: Choose the suites
         id: scope
         env:
