@@ -1759,7 +1759,7 @@ export function invalidRows(parsed) {
 }
 
 // An INVALID line: the row, then the reader's own words where they already name the row, else the item.
-const invalidLine = ({ section, label, item, error }) => {
+export const invalidLine = ({ section, label, item, error }) => {
   const own = error.replace(/^desk(-env)?: /, '');
   const head = `config §${section} "${label}" `;
   if (own.startsWith(head)) return `INVALID  §${section} ${label} ${own.slice(head.length)}`;

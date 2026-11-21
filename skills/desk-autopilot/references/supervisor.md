@@ -21,6 +21,13 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
 
 - skips while a pass holds `<state>/orchestrator.lock`, or the previous tick's pass still runs, and
   logs the skip;
+- first reads every declared config row through `desk-env get --json`. A fatal error (a value the
+  row's reader refuses today, such as `none` beside another item) runs no pass and spawns no worker
+  that tick, logs the row, and pushes one notification naming the row, the item and the form
+  expected, not repeated while the row stays as it is. An error that is not fatal never blocks
+  (`desk-env drift` reports it). `DESK_CONFIG_PREFLIGHT=off` turns the check off: in a tick's
+  environment, or set when `install` runs, which carries it into the installed agent; the log then
+  says the check is off;
 - runs `pass.mjs --json`, passing on only the approvals recorded with the batch (`approved.workers`
   as `AUTOPILOT_USER_APPROVED=1`, `approved.base_push` as `AUTOPILOT_BASE_PUSH_APPROVED=1`). It never
   grants one it was not given, so a batch whose `ask` was never answered spawns nothing and the pass

@@ -17,6 +17,10 @@
 // the log says so once per batch. For a handed-over batch, each tick:
 //   - skips, saying so in the log, while a pass holds <state>/orchestrator.lock or the previous tick's
 //     run still holds <state>/supervisor.lock;
+//   - first reads every declared config row through `desk-env get --json`: a fatal error (a value the
+//     row's reader refuses today) runs no pass that tick and pushes one item naming the row, once until
+//     the row changes. An error that is not fatal never blocks; DESK_CONFIG_PREFLIGHT=off, in the tick's
+//     environment or when `install` runs, turns the check off;
 //   - runs `pass.mjs --json` with only the Stage 3 approvals recorded with the batch: `approved.workers`
 //     becomes AUTOPILOT_USER_APPROVED=1, `approved.base_push` AUTOPILOT_BASE_PUSH_APPROVED=1, and either
 //     one inherited from the environment is dropped, so the supervisor never grants what it was not given;
@@ -75,6 +79,7 @@ import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
+import { ROWS } from './config-schema.mjs';
 import { readQueue, describeCrash, isHeld, spinePark, IDLE_RECHECK_MS, RUN_RECHECK_MS, waitingOnRun } from './batch-state.mjs';
 import { listBatches, batchPinned, alive, orchestratorHolder } from './batches.mjs';
 import { tryLockFile, unlockFile } from './dir-lock.mjs';
@@ -95,8 +100,9 @@ const DEFAULT_INTERVAL = 180;
 const MIN_INTERVAL = 60;
 // A pass takes seconds; one still going after this is hung, and launchd or systemd starts no tick while one runs.
 const PASS_TIMEOUT_MS = 10 * 60 * 1000;
-// Location roots an install passes on to the agent, so the tick reads the same config and scripts.
-const PASS_ON = ['DESK_HOME', 'DESK_CONFIG_ROOT'];
+// What an install passes on to the agent: the location roots, so the tick reads the same config and
+// scripts, and the config check's switch.
+const PASS_ON = ['DESK_HOME', 'DESK_CONFIG_ROOT', 'DESK_CONFIG_PREFLIGHT'];
 
 const die = (msg, code = 1) => { console.error(`supervisor: ${msg}`); process.exit(code); };
 const label = supervisorLabel;
@@ -402,8 +408,9 @@ const sentThisTick = new Set();
 // Whether another batch has sent `key`: the repo's own pushes reach every batch, and go out once. Any
 // key sent this tick counts. From another batch's stored list only a key that names what it is about
 // counts, since it never comes back: the check-in digest (its slot) and main's failed release (its
-// commit). An idle batch's stored keys never change, and would silence a repeat of any other.
-const ONCE_EVER = ['digest:', 'release-failed-'];
+// commit), and a refused config row (its value). An idle batch's stored keys never change, and would
+// silence a repeat of any other.
+const ONCE_EVER = ['digest:', 'release-failed-', 'config-invalid:'];
 const sentElsewhere = (state, key) => sentThisTick.has(key)
   || (ONCE_EVER.some((p) => key.startsWith(p)) && tickStates.some((d) => d !== state && readState(d).notified.includes(key)));
 
@@ -569,8 +576,50 @@ function batchInterval(intake) {
   }
   const holder = takeLock(state);
   if (holder) { log([`== ${stamp()} skipped: a pass is still running (pid ${holder})`, ...intake]); return; }
-  try { runPass(state, q, s, log, stamp, intake); }
+  try { if (!configRefused(state, s, log, intake)) runPass(state, q, s, log, stamp, intake); }
   finally { dropLock(state); }
+}
+
+// The config check before a pass: every declared row read through `desk-env get --json`. A fatal error
+// is a value the row's reader refuses today, which would stop the pass after it spawned workers, tick
+// after tick; so the tick runs no pass and pushes one item per refused row, keyed by what the row
+// holds, so a row left as it is is not pushed again. An error that is not fatal never blocks: drift
+// reports it. A check that cannot run is logged and blocks nothing. -> whether the pass is held back.
+const CONFIG_CHECK_MS = 60 * 1000;
+const CONFIG_SECTIONS = [...new Set(ROWS.map((e) => e.section))];
+function configRefused(state, s, log, intake) {
+  if (String(process.env.DESK_CONFIG_PREFLIGHT ?? '').trim().toLowerCase() === 'off') {
+    log([`== ${stamp()} config check: off (DESK_CONFIG_PREFLIGHT=off), so the pass runs whatever the config holds`]);
+    return false;
+  }
+  const r = spawnSync(process.execPath, [join(HERE, 'desk-env.mjs'), 'get', '--json', ...CONFIG_SECTIONS.flatMap((x) => ['--section', x])], {
+    cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: CONFIG_CHECK_MS, maxBuffer: 16 * 1024 * 1024,
+  });
+  // Exit 3 is no config: the pass says so itself.
+  if (r.status === 3) return false;
+  let rows;
+  try { rows = JSON.parse(String(r.stdout ?? '')).rows; } catch { /* said below */ }
+  if (!rows || ![0, 4].includes(r.status)) {
+    log([`== ${stamp()} config check: could not run, so the pass runs (${`${r.stderr ?? ''}${r.error?.message ?? ''}`.trim().split('\n')[0] || `exited ${r.status ?? r.signal}`})`]);
+    return false;
+  }
+  const refused = Object.values(rows).flatMap((row) => row.errors.filter((e) => e.fatal).map((e) => E.invalidLine({ ...row, ...e })));
+  if (!refused.length) return false;
+  const pushes = [...new Set(refused)].map((line) => ({ key: `config-invalid:${line}`, text: `config check: no pass runs until this row is fixed: ${line}` }));
+  const out = [`== ${stamp()} config check: no pass run, no worker spawned`, ...pushes.map((p) => p.text)];
+  const fresh = pushes.filter((p) => !s.notified.includes(p.key) && !sentElsewhere(state, p.key));
+  if (fresh.length) {
+    const { err, said } = notify(title(), fresh.map((p) => p.text).join(' · '));
+    if (err) out.push(`notification: failed (${err}) for the config check; the next tick tries again`);
+    else {
+      out.push(`notification: ${said} for the config check`);
+      fresh.forEach((p) => sentThisTick.add(p.key));
+      s.notified = [...new Set([...s.notified, ...fresh.map((p) => p.key)])];
+      writeState(state, s);
+    }
+  } else out.push('notification: not sent, the last one already named this row');
+  log([...out, ...intake]);
+  return true;
 }
 
 // Takes <state>/supervisor.lock for this process: -> null, or the pid of the live run that holds it

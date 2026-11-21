@@ -23,6 +23,8 @@ PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
 
 # config <autopilot-workers> <autopilot-merge> [<running on WSL?>, default no, so a WSL host reads as plain Linux]
+# $SECTION4, where set, is a §4 table's rows, written after §3.
+SECTION4=""
 config(){ mkdir -p "$T/cfg/repos/acme__widgets"; cat > "$T/cfg/repos/acme__widgets/config.md" <<EOF
 ## 0. Repo
 | Field | Value |
@@ -42,6 +44,7 @@ config(){ mkdir -p "$T/cfg/repos/acme__widgets"; cat > "$T/cfg/repos/acme__widge
 | \`autopilot-merge\` | The merge driver merges | \`ask\` | \`$2\` |
 | \`pr-merge-green\` | Merge on green | \`ask\` | \`yes\` |
 EOF
+if [ -n "$SECTION4" ]; then printf '\n## 4. Tools\n| Field | Value |\n|---|---|\n%s\n' "$SECTION4" >> "$T/cfg/repos/acme__widgets/config.md"; fi
 }
 config yes yes
 
@@ -146,6 +149,10 @@ out=$(sup install --interval 5); rc=$?
 check "an interval under a minute is refused" '[ $rc -eq 2 ]'
 out=$(sup status); rc=$?
 check "status names the agent as loaded" '[ $rc -eq 0 ] && grep -q "installed (every 300s), loaded" <<< "$out"'
+out=$(DESK_CONFIG_PREFLIGHT=off sup install --interval 300)
+check "DS-872 AC7: DESK_CONFIG_PREFLIGHT=off at install is carried into the launchd agent's environment" 'grep -A1 "<key>DESK_CONFIG_PREFLIGHT</key>" "$PL" | grep -q "<string>off</string>"'
+out=$(sup install --interval 300)
+check "DS-872: an install without it leaves it out" '! grep -q "DESK_CONFIG_PREFLIGHT" "$PL"'
 
 # ---- a batch not handed over -------------------------------------------------------------------
 queue false '{}' "$RUNNING"; verdict "$NOTHING"
@@ -272,6 +279,30 @@ queue true '{"workers":true,"base_push":true}' "$RUNNING"; : > "$T/pass.calls"
 out=$(tick)
 check "the recorded approvals are passed on" '[ "$(cat "$T/pass.calls")" = "1 1" ] && grep "approvals passed on:" "$LOG" | tail -1 | grep -q "approvals passed on: workers, base push$"'
 config yes yes; queue true '{}' "$RUNNING"
+
+# ---- DS-872: a config row today's readers refuse stops the tick before the pass ---------------------
+EVIDENCE_BAD='| Evidence workflow | `none` `pr-evidence.yml` |'
+SECTION4="$EVIDENCE_BAD"; config yes yes; verdict "$NOTHING"
+calls=$(count "$T/pass.calls"); n=$(started); notified=$(count "$T/notify.calls")
+out=$(tick); rc=$?
+check "DS-872 AC1: a refused row runs no pass and starts no driver that tick" '[ $rc -eq 0 ] && [ "$(count "$T/pass.calls")" = "$calls" ] && [ "$(started)" = "$n" ] && grep -q "config check: no pass run, no worker spawned" "$LOG"'
+check "DS-872 AC2: one push names the row, the items and the form expected" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -qF "config check: no pass runs until this row is fixed: INVALID  §4 Evidence workflow mixes \`none\` with other items (none | pr-evidence.yml)" && tail -1 "$T/notify.calls" | grep -qF "\`none\` must stand alone"'
+check "DS-872 AC2: the log records the same line" 'grep -qF "config check: no pass runs until this row is fixed: INVALID  §4 Evidence workflow mixes \`none\` with other items (none | pr-evidence.yml)" "$LOG" && grep -q "^notification: sent for the config check$" "$LOG"'
+out=$(tick)
+check "DS-872 AC3: a second tick with the row unchanged sends no second push and still runs no pass" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && [ "$(count "$T/pass.calls")" = "$calls" ] && grep -q "^notification: not sent, the last one already named this row$" "$LOG"'
+out=$(DESK_CONFIG_PREFLIGHT=off tick)
+check "DS-872 AC6: with DESK_CONFIG_PREFLIGHT=off the pass runs as today, and the log says the check is off" '[ "$(count "$T/pass.calls")" = $((calls + 1)) ] && grep -q "config check: off (DESK_CONFIG_PREFLIGHT=off)" "$LOG" && [ "$(count "$T/notify.calls")" = $((notified + 1)) ]'
+SECTION4='| Evidence workflow | `pr-evidence.yml` |'; config yes yes
+out=$(tick)
+check "DS-872 AC4: once the row is fixed the pass runs as normal" '[ "$(count "$T/pass.calls")" = $((calls + 2)) ] && [ "$(count "$T/notify.calls")" = $((notified + 1)) ]'
+SECTION4='| Local services | `Typesense on port 8108` |'; config yes yes
+out=$(tick)
+check "DS-872 AC5: a row that only warns today (Local services written in words) never blocks: the pass runs, nothing is pushed" '[ "$(count "$T/pass.calls")" = $((calls + 3)) ] && [ "$(count "$T/notify.calls")" = $((notified + 1)) ]'
+SECTION4="$EVIDENCE_BAD"; config yes yes
+out=$(tick)
+check "DS-872: the row refused again after a fix is pushed again" '[ "$(count "$T/notify.calls")" = $((notified + 2)) ] && [ "$(count "$T/pass.calls")" = $((calls + 3)) ]'
+SECTION4=""; config yes yes
+out=$(tick)
 
 # ---- AC9: an idle batch runs nothing until it changes -------------------------------------------
 DONE='{"A":{"key":"A","state":"done","result":{"pr":7}},"B":{"key":"B","state":"failed"}}'
@@ -695,6 +726,9 @@ out=$(sup install --interval 300)
 check "#735 AC1: a new interval rewrites the timer and restarts it" 'grep -qx "OnUnitActiveSec=300s" "$TM" && grep -qx -- "--user restart com.desk-skills.supervisor.acme__widgets.timer" "$T/systemctl.calls"'
 out=$(sup status); rc=$?
 check "#735 AC2: status names the timer as loaded, with its interval" '[ $rc -eq 0 ] && grep -q "installed (every 300s), loaded" <<< "$out"'
+out=$(DESK_CONFIG_PREFLIGHT=off sup install --interval 300)
+check "DS-872 AC7: DESK_CONFIG_PREFLIGHT=off at install is carried into the systemd service's environment" 'grep -qxF "Environment=\"DESK_CONFIG_PREFLIGHT=off\"" "$SV"'
+out=$(sup install --interval 300)
 agent(){ node --input-type=module -e "import { supervisorAgent } from '$T/bin/run-by.mjs'; console.log(JSON.stringify(supervisorAgent('acme__widgets')))"; }
 out=$(agent)
 check "#735 AC2: a loaded timer whose last run succeeded reports no failed exit" '[ "$out" = "{\"loaded\":true,\"exit\":null}" ]'
