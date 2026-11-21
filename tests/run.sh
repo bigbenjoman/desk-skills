@@ -21,7 +21,9 @@
 # budget prints a ::warning:: naming it and the summary lists it under `over budget:`; with `enforce`
 # the same until BUDGETS_FAIL_FROM, and from that date (DESK_SUITE_BUDGETS_TODAY, YYYY-MM-DD, stands in
 # for today) it fails the run. A suite's budget is the N of a `# budget: N <ticket>` line (`//` in .mjs)
-# in its first ten lines, else 30 for a .mjs suite and 150 for any other. DESK_SUITE_DURATIONS names a
+# in its first ten lines, else 30 for a .mjs suite and 150 for any other; a line reading
+# `# budget: N (main M) <ticket>` gives M instead unless GITHUB_EVENT_NAME is pull_request (suite_env.sh's
+# budget_of). DESK_SUITE_DURATIONS names a
 # file the run writes { seconds, cpu } to, each keyed by suite file, for tests/plan_shards.mjs --merge.
 set -u
 BUDGETS_FAIL_FROM=2026-12-08
