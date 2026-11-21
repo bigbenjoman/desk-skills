@@ -73,7 +73,8 @@ python3 $S/jira_activity.py --day $D; python3 $S/github_activity.py --day $D; py
 ```
 
 `claude_activity.py` cuts off any session at the point where it loads this skill, so the
-drafting session never reports itself.
+drafting session never reports itself, and nor does the one that drafted an earlier check-out that
+day.
 
 | Source | How | Permission (per repo) | What it's good for |
 |---|---|---|---|
@@ -185,7 +186,10 @@ Then sort:
 - Messages Claude drafted for the user to send (a Slack reply, an update to one of the §4 Slack
   channels), unless they posted it. Read the channel or thread after the draft's time to see: their
   message there settles it. Only when no read can (no Slack connector, or §3 bars that channel),
-  use the facts and put "was the <channel> update sent?" under Check before posting, saying why.
+  use the facts and put "was the <channel> update sent?" under Check before posting, saying why,
+  and name the Slack role under Missing sources with its fix. §3 bars it when the channel's row
+  (`read-slack-public`, or `read-slack-own` for a DM or private channel) is not `yes`; an `ask` row
+  bars it only once the user says no to the read (**Permissions**, step 2).
 - Claude Code housekeeping: auth errors, `/login`, model switching, context-size prompts.
 - Anything sensitive, from any source (meeting notes, DMs, private channels, transcripts): HR,
   pay, probation, investor terms, individual performance, personal matters, customer or user
@@ -201,6 +205,8 @@ layout; `references/style.md` has the conventions and a worked example for when 
 short version:
 - The header is whatever their previous check-out used; with none, `Check-out`, with the day if it
   isn't today.
+- When the window starts at a previous check-out (step 1), say so in one line under the header, e.g.
+  `Since my 12:00 check-out:`, so nobody reads the post as the whole day.
 - Lead each item with the problem in plain words, then the fix and its state.
   Use `(merged)`, `(in review)`, `(raised)`, `WIP`, `waiting on @Name`.
 - Name tickets by their key (`ABC-1891`) and PRs as `#1533`. Slack auto-links neither, so don't add
@@ -243,7 +249,9 @@ says, and give the path. Under it, briefly:
   attendance evidence (step 3), one question each: "Were you in <meeting> (<time>)? It has no
   line until you say so".
 - **Left out**: the out-of-scope or sensitive items you dropped, one line each.
-- **Missing sources**: any role with no connector or no permission, and the fix.
+- **Missing sources**: any role with no connector or no permission, and the fix: for a missing
+  connector, the one **Connectors** (step 2) gives; for a permission, the §3 row to set to `yes`
+  with `/desk-setup` ("Slack: §3 read-slack-public is no; set it to yes with /desk-setup").
 
 Then stop. The user edits and posts it. If they ask for changes, or say they were in a meeting you
 asked about (that meeting then gets its line), redraft the whole post and put it where the first

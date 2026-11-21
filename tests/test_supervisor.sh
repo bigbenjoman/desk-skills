@@ -22,7 +22,7 @@ export DESK_CONFIG_ROOT="$T/cfg" DESK_REPO_OVERRIDE=acme/widgets DESK_HOME="$T/d
 PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
 
-# config <autopilot-workers> <autopilot-merge>
+# config <autopilot-workers> <autopilot-merge> [<running on WSL?>, default no, so a WSL host reads as plain Linux]
 config(){ mkdir -p "$T/cfg/repos/acme__widgets"; cat > "$T/cfg/repos/acme__widgets/config.md" <<EOF
 ## 0. Repo
 | Field | Value |
@@ -33,6 +33,7 @@ config(){ mkdir -p "$T/cfg/repos/acme__widgets"; cat > "$T/cfg/repos/acme__widge
 | Field | Value |
 |---|---|
 | Primary repo root | \`$T/repo\` |
+| Running on WSL? | \`${3:-no}\` |
 
 ## 3. Permissions
 | Key | Capability | Recommended | Your setting |
@@ -640,6 +641,7 @@ check "#735 AC1: the service leaves the merge driver running and passes the repo
 check "#735 AC1: the timer runs it at once and every 180s by default" 'grep -qx "OnActiveSec=0" "$TM" && grep -qx "OnUnitActiveSec=180s" "$TM" && grep -qx "WantedBy=timers.target" "$TM"'
 check "#735 AC1: install reloads systemd and enables the timer now" 'grep -qx -- "--user daemon-reload" "$T/systemctl.calls" && grep -qx -- "--user enable --now com.desk-skills.supervisor.acme__widgets.timer" "$T/systemctl.calls"'
 check "#735 AC1: with lingering off, install says ticks stop at logout and how to keep them" 'grep -q "loginctl enable-linger" <<< "$out"'
+check "DS-838 AC3: on plain Linux, install says nothing about WSL" '! grep -q "WSL" <<< "$out"'
 out=$(sup install)
 check "#735 AC1: an unchanged install enables nothing again" '[ "$(grep -c " enable " "$T/systemctl.calls")" = 1 ] && grep -q "unchanged" <<< "$out"'
 out=$(sup install --interval 300)
@@ -653,6 +655,18 @@ echo exit-code > "$T/result"
 out=$(agent)
 check "#735 AC2: a failed last run is read as launchctl print is: its code and why" '[ "$out" = "{\"loaded\":true,\"exit\":{\"code\":3,\"why\":\"exit-code\"}}" ]'
 rm -f "$T/result"
+
+# ---- DS-838: on WSL, lingering does not keep the timer running --------------------------------------
+config yes yes yes
+out=$(sup install --interval 300 --reload)
+check "DS-838 AC1: on WSL with lingering off, install keeps the lingering note" 'grep -q "loginctl enable-linger" <<< "$out"'
+check "DS-838 AC1: and says ticks run only while WSL is up, naming both ways to keep it up" 'grep -q "On WSL, ticks run only while WSL is up" <<< "$out" && grep -q "Keep a terminal open" <<< "$out" && grep -qF "Windows Task Scheduler entry at logon that runs \`wsl.exe --exec sleep infinity\`" <<< "$out"'
+check "DS-838 AC1: and says how to name a non-default distro and to lift the task's 3-day limit" 'grep -qF "\`-d <distro>\` if this is not your default distro" <<< "$out" && grep -qF "\"Stop the task if it runs longer than 3 days\" turned off" <<< "$out"'
+printf '#!/bin/sh\necho Linger=yes\n' > "$T/fakes/loginctl"
+out=$(sup install --interval 300 --reload)
+check "DS-838 AC2: on WSL with lingering on, install still says ticks run only while WSL is up" '! grep -q "Lingering is off" <<< "$out" && grep -q "On WSL, ticks run only while WSL is up" <<< "$out" && grep -qF "wsl.exe --exec sleep infinity" <<< "$out"'
+printf '#!/bin/sh\necho Linger=no\n' > "$T/fakes/loginctl"
+config yes yes
 
 # ---- #735 AC3: notifications off macOS ----------------------------------------------------------
 rm -f "$T"/verdict.*.json "$T/driver.mode"

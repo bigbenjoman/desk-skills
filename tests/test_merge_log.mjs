@@ -1,13 +1,13 @@
 // suite: merge log (who merged what, at which head)
 // merge-log.mjs claim refuses a merge another merger has claimed recently, merged or armed, and lets the
 // same merger through; record and show keep and print every event; the CLI exits 11 on a refusal.
-import { mkdtempSync, readFileSync, appendFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, appendFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
-const T = mkdtempSync(join(tmpdir(), 'merge-log-'));
+const T = scratch('merge-log-');
 process.env.DESK_MERGE_LOG = join(T, 'merges.jsonl');
 const M = await import('../desk/bin/merge-log.mjs');
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'merge-log.mjs');
@@ -75,7 +75,7 @@ t('#809 two claims at once: exactly one gets the PR, every time', races.filter((
 t('#809 a bad event is refused with the usage', cli('record', '20', 'cafe123', '--by', S, '--event', 'closed').status, 11);
 t('#809 a claim with no --by is refused', cli('claim', '20', 'cafe123').status, 11);
 // The CLI reads GitHub with gh: a stub answers for PR 40, armed then not.
-const GH = mkdtempSync(join(tmpdir(), 'merge-log-gh-'));
+const GH = scratch('merge-log-gh-');
 writeFileSync(join(GH, 'gh'), '#!/bin/sh\ncat "$GH_ANSWER"\n', { mode: 0o755 });
 const answer = join(GH, 'answer.json');
 const cliGh = (...a) => spawnSync('node', [BIN, ...a, '--repo', R], { encoding: 'utf8', env: { ...process.env, PATH: `${GH}:${process.env.PATH}`, GH_ANSWER: answer } });
@@ -99,6 +99,10 @@ const ev = [
   { repo: R, pr: '62', event: 'disarmed', by: D, sha: 'c2', at: '3' },
   { repo: R, pr: '63', event: 'claim', by: D, sha: 'd1', at: '1' },
   { repo: R, pr: '63', event: 'failed', by: D, sha: 'd1', at: '2' },
+  { repo: R, pr: '65', event: 'armed', by: S, sha: 'e1', at: '1' },
+  { repo: R, pr: '65', event: 'failed', by: S, sha: 'e1', at: '2' },
+  { repo: R, pr: '66', event: 'armed', by: S, sha: 'f1', at: '1' },
+  { repo: R, pr: '66', event: 'failed', by: D, sha: 'f1', at: '2' },
 ];
 const pick = (pr, repo = R) => { const e = M.latest(ev, { repo, pr }); return e && [e.event, e.by, e.sha, e.at].join(' '); };
 t('DS-835 AC3 an armed PR reads as armed, with who, head and time', pick(60), `armed ${S} a1 2`);
@@ -107,6 +111,9 @@ t('DS-835 AC3 armed then disarmed reads as no outcome', pick(61), null);
 t('DS-835 AC3 a merge outranks a later disarm', pick(62), `merged ${D} c2 2`);
 t('DS-835 AC2 a claim then a failure is no merged entry', pick(63), null);
 t('DS-835 AC4 a PR with no lines has none', pick(64), null);
+t('DS-937 armed then a failure its armer records reads as no outcome', pick(65), null);
+t('DS-937 another merger\'s failure leaves the arm standing', pick(66), `armed ${S} f1 1`);
+t('DS-937 the repo matches whatever its case', pick(60, R.toUpperCase()), `armed ${S} a1 2`);
 const l1 = cli('show', '--pr', '50', '--latest');
 t('DS-835 AC3 CLI: show --latest prints the latest outcome as JSON', [l1.status, JSON.parse(l1.stdout).event, JSON.parse(l1.stdout).ticket], [0, 'merged', 'DS-1']);
 const empty = spawnSync('node', [BIN, 'show', '--pr', '7', '--latest', '--repo', R], { encoding: 'utf8', env: { ...process.env, DESK_MERGE_LOG: join(T, 'none', 'merges.jsonl') } });
@@ -114,6 +121,22 @@ t('DS-835 AC4 CLI: with no log yet, show --latest prints nothing and exits 0', [
 t('DS-835 CLI: show --latest needs --pr', cli('show', '--latest').status, 11);
 const c5 = cli('record', '51', 'cafe123', '--by', S, '--event', 'merged', '--ticket', 'DS-2');
 t('DS-835 CLI: record --ticket writes the ticket', [c5.status, M.readLog(path).find((e) => e.pr === '51')?.ticket], [0, 'DS-2']);
+
+const A = 'session DS-1-story', B = 'session DS-2-bug';
+const armedClaim = M.claim({ repo: R, pr: 70, sha: 'abcdef1', by: A, now: NOW, path }).ok;
+M.record({ repo: R, pr: 70, sha: 'abcdef1', by: A, event: 'armed', now: NOW + 1000, path });
+t('DS-936 AC3 a session arming auto-merge claims, then records armed at its head', [armedClaim, M.readLog(path).filter((e) => e.pr === '70').map((e) => [e.event, e.sha, e.by].join(' '))], [true, [`claim abcdef1 ${A}`, `armed abcdef1 ${A}`]]);
+const b = M.claim({ repo: R, pr: 70, sha: 'abcdef1', by: B, now: NOW + 3 * M.CLAIM_MS, armedNow: () => true, path });
+t('DS-936 AC4 a second session reaching its merge step is refused, naming who armed it and at which head', [b.ok, b.why], [false, `${R}#70 is already armed by ${A} (2026-11-20T10:00:01.000Z, at abcdef1): not merging`]);
+t('DS-936 AC4 and nothing is written for the refused session', M.readLog(path).filter((e) => e.pr === '70' && e.by === B).length, 0);
+const bu = M.claim({ repo: R, pr: 70, sha: 'abcdef1', by: B, now: NOW + 3 * M.CLAIM_MS, armedNow: unread, path });
+t('DS-936 AC4 with GitHub unreadable, the refusal still names who armed it and at which head', [bu.ok, bu.why], [false, `${R}#70 has auto-merge armed by ${A} in the merge log (2026-11-20T10:00:01.000Z, at abcdef1), and GitHub could not be read to check it is still on: not merging`]);
+cli('record', '71', 'abcdef1', '--by', A, '--event', 'armed');
+writeFileSync(answer, '{"autoMergeRequest":{"enabledAt":"x"}}');
+const ca = cliGh('claim', '71', 'abcdef1', '--by', B);
+t('DS-936 AC4 CLI: a session claiming a PR another session armed exits 11, naming it and the head', [ca.status, ca.stderr.trim().startsWith(`merge-log: ${R}#71 is already armed by ${A} (`), ca.stderr.includes('at abcdef1)')], [11, true, true]);
+const cu = cli('claim', '72', 'abcdef1');
+t('DS-936 AC4 CLI: a usage refusal exits 11 and names no other merger', [cu.status, /already|armed by/.test(cu.stderr)], [11, false]);
 
 console.log(fails ? `${fails} FAILED` : 'all merge log checks passed');
 process.exit(fails ? 1 : 0);

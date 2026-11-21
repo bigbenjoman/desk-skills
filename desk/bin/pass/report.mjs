@@ -49,6 +49,7 @@ export function decideDrift(s) {
 //   incidentalBad, appendOnlyBad, fileBudgetBad, conflictRecordBad   a row read as its default, or null
 //   conflicts              [{ file, configured, now, recent }] for each file with merge-time conflicts
 //   unreadableQueues       the other queues whose running workers' ports were not read
+//   portLeaseLines         what the port leases did this pass: unreadable, a stale holder dropped
 //   concurrency, eligible  the batch's worker count, and how many triaged tickets could spawn
 //   queueBin               queue.mjs, as the person runs it
 export function decideReportOpening(s) {
@@ -68,6 +69,7 @@ export function decideReportOpening(s) {
     if (c.now < c.configured) acts.push(out(`collisions: ${c.file} runs ${c.now} of its configured ${c.configured}, after ${c.recent} merge-time conflict(s) in the last 7 days`));
   }
   for (const why of s.unreadableQueues) acts.push(out(`ports: ${why} — its running workers' ports were not skipped`));
+  for (const l of s.portLeaseLines ?? []) acts.push(out(l));
   for (const l of s.epicLines) acts.push(out(l));
   if (r.paused.length) acts.push(out(`paused on the usage limit: ${r.paused.join(' | ')}`));
   for (const u of r.unrecognised) acts.push(out(`unrecognised usage-limit event: ${u} — not read as a pause, so the stall check applies as before`));
@@ -229,6 +231,19 @@ export function verdictOf(s) {
   const status = idle ? 'idle' : (waiting.length || parked.length) ? 'show_person' : s.spawned ? 'go_on' : 'nothing_yet';
   const needsYou = [...parked.map((p) => p.key), ...waiting.map((x) => x.split(':')[0])];
   return { waiting, parked, idle, status, needsYou };
+}
+
+// A crash's error verdict, given its message and the pass's report so far: what the pass had already
+// done (started a worker, moved, parked or failed a ticket) is listed under the message and set in the
+// JSON, so nobody reads the error as "nothing happened" and starts a ticket that already has a session.
+// Its parks go in `parked_this_pass`: the verdict's `parked` is the decider's {key, question} list.
+// -> { message, fields }: fields holds only the lists with entries, and is {} when nothing was done.
+const CRASH_FIELDS = [['spawned', 'spawned'], ['advanced', 'advanced'], ['parked', 'parked_this_pass'], ['failed', 'failed']];
+export function crashVerdict(message, report) {
+  const did = CRASH_FIELDS.map(([k, field]) => [k, field, [...(report?.[k] ?? [])]]).filter(([, , v]) => v.length);
+  if (!did.length) return { message, fields: {} };
+  const lines = did.flatMap(([k, , v]) => [`before it stopped, this pass ${k}:`, ...v.map((l) => `  ${l}`)]);
+  return { message: `${message}\n${lines.join('\n')}`, fields: Object.fromEntries(did.map(([, field, v]) => [field, v])) };
 }
 
 // The verdict's opening line, and the parks that are pushed now rather than shown in the session (a

@@ -1,8 +1,8 @@
 // suite: baseline checks (record a base's typecheck and lint errors, fail a worker only on new ones)
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { parseTsc, parseEslint, parseMypy, readRun, recordBaseline, readBaseline, compareRun, activeBaseline, summary } from '../desk/bin/baseline.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -57,7 +57,7 @@ t('mypy: the summary count', my.total, 2);
 t('mypy: success reads as none', readRun({ out: 'Success: no issues found in 4 source files', code: 0 }).problems.length, 0);
 
 // ---- record (AC1) ----
-const dir = mkdtempSync(join(tmpdir(), 'baseline-'));
+const dir = scratch('baseline-');
 const runs = { typecheck: { out: TSC, code: 2 }, lint: { out: eslint('/base'), code: 1 } };
 const b = recordBaseline({
   stateDir: dir, root: '/base', base: 'feat/x', sha: 'a'.repeat(40),

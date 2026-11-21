@@ -728,7 +728,7 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'adopt', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer', 'finish'];
+const WRITES = ['init', 'add', 'adopt', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'order', 'drop', 'merged', 'transfer', 'finish'];
 
 try {
 if (!Object.hasOwn(QUEUE_COMMANDS, cmd ?? '')) throw new Error(unknownQueueCommand(cmd));
@@ -1211,6 +1211,20 @@ switch (cmd) {
     t.updated_at = new Date().toISOString();
     save(q);
     console.log(`${key} moved to position ${n} of ${order.length} in the spawn order and marked placed: front and requeue leave it there`);
+    break;
+  }
+
+  // plan-batch's spawn order, laid over the slots these tickets already hold: an epic's children are
+  // admitted before its plan seeds them, and add leaves a queued ticket where it is. Every other
+  // ticket keeps its slot, and so does one running, finished or placed by the user (move).
+  case 'order': {
+    const free = (k) => Object.hasOwn(q.tickets, k) && !FINISHED.includes(q.tickets[k].state) && q.tickets[k].state !== 'running' && !q.tickets[k].placed;
+    const keys = [...new Set(args)].filter(free);
+    const slots = new Set(keys);
+    const next = keys[Symbol.iterator]();
+    reorder(q, unfinished(q).map((k) => (slots.has(k) ? next.next().value : k)));
+    save(q);
+    console.log(`spawn order: ${keys.join(' ') || 'nothing to reorder'}`);
     break;
   }
 

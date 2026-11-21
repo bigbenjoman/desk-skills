@@ -166,6 +166,15 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
   const rv = drive(snap([[tk(), green]]), { feedback: fb });
   const c = applied(rv)[0]?.call;
   t('a review at its head that is not clean goes to a review fix, out of draft', j([c?.call, c?.fix?.kind, c?.fix?.ready]), j(['requeue', 'review', true]));
+  // A round whose gaps only widen a broad AC an earlier try worked, past triage's files: the scope question.
+  const broad1 = 'AC2: "an avatar wherever a person shows" — src/list.tsx:4 shows a name with no avatar';
+  const wideTk = tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review', gaps: [broad1] }] });
+  const wideFb = { ...fb, review: { id: 'R2', verdict: { p0: '0', p1: '0', gaps: '1' }, body: '### Requirement gaps\n- AC2: "an avatar wherever a person shows" — src/card.tsx:9 shows a name with no avatar\n' } };
+  const wideReads = (outside) => () => reads({ reads: { outside: () => outside, title: () => 'Show the avatar on the people list' } });
+  const wide = applied(drive(snap([[wideTk, green]]), { feedback: wideFb, reads: wideReads(['src/card.tsx']) }))[0]?.call;
+  t('a ready PR\'s widening round past triage\'s files is the person\'s scope question, not a fix try', j([wide?.call, /^review gaps only you can settle: PERSON'S CALL: AC2 reads wider than the title \("Show the avatar on the people list"\)/.test(wide?.why ?? '')]), j(['stuck', true]));
+  const inside = applied(drive(snap([[wideTk, green]]), { feedback: wideFb, reads: wideReads([]) }))[0]?.call;
+  t('inside triage\'s files it is not', inside?.why?.startsWith('review gaps only you can settle'), false);
   const moved = drive(snap([[tk(), green]]), { feedback: { ...fb, head: 'd'.repeat(40) } });
   t('threads read at another head make no try', applied(moved).length, 0);
   const worked = { head: HEAD, left: [{ id: 'TH1', text: 'a thread' }], decision: null, review: null, payload: {} };

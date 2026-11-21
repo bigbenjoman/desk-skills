@@ -7,14 +7,14 @@
 // profile: it finds the composer and its file input or add-files button, and uploads nothing.
 // DESK_COMPOSER_CAPTURE=<file> with it saves that page, focused and stripped of its tokens, to build
 // a fixture from.
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findComposer, NO_COMPOSER } from '../desk/bin/pr-composer.mjs';
 import { uploadSandbox } from './upload_harness.mjs';
 import { findPlaywright, importPlaywright, loadSessionCookies } from '../desk/bin/find-playwright.mjs';
 import { browserProfile, psRows } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => {
@@ -24,7 +24,7 @@ const t = (name, got, want) => {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX = join(HERE, 'fixtures', 'github-pr');
 const fixture = (name) => join(FIX, `${name}.html`);
-const T = mkdtempSync(join(tmpdir(), 'desk-pr-composer-'));
+const T = scratch('desk-pr-composer-');
 
 // ---- upload-images.mjs on a stub gh, a scratch config and a saved login ------------------------
 const { images, fakes, upload } = uploadSandbox(T, { user: 'octocat' });

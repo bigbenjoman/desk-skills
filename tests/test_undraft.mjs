@@ -1,6 +1,5 @@
 // suite: undraft (which §4 Clean review verdict values the pass can read a review against)
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +10,7 @@ import { untriggeredChecks, runnerFault, DEFAULT_STATE_CHECKS } from '../desk/bi
 import { render } from '../skills/desk-review/bin/verdict.mjs';
 import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS, PULLBOT_APPROVAL } from './fixtures/pullbot-review.mjs';
 import { parseEvidenceRow, dispatchCall, evidenceRecord, recordDispatch, runIdFrom, DISPATCH_GRACE_MS, missingShots, dragFiles, dragCells, runFailed, firstErrorLine, failureKey, evidenceFixPlan, fixTicket, readFixes, writeFixes } from '../desk/bin/evidence.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -109,6 +109,23 @@ t('DS-323 AC3 a clean draft whose every check was skipped is the person\'s to un
 t('DS-329 AC1 a clean draft whose required check was skipped beside a passing one undrafts', withChecks(skippedTests, [review(marker(ALL_ZERO))])?.call, 'ready');
 t('DS-323 AC3 one whose review is not clean says that instead', withChecks(skippedTests.map((c) => ({ ...c, conclusion: 'skipped' })), [review(marker(ALL_ZERO.replace('gaps=0', 'gaps=2')))])?.why.includes('gaps=2'), true);
 t('DS-323 AC3 a failed check beside a skipped one is still not green', withChecks([...skippedTests, { name: 'build', status: 'completed', conclusion: 'failure' }], [review(marker(ALL_ZERO))])?.why.startsWith('its checks are not green'), true);
+
+// #831: a draft red only on checks the merge driver waives (§4 Known flaky checks) gets no fix worker: it
+// leaves draft as a green one does, and the driver reruns and waives them.
+{
+  const flakyRed = [{ name: 'tests', status: 'completed', conclusion: 'success', runId: 1 }, { name: 'Integration', status: 'completed', conclusion: 'failure', runId: 9 }];
+  const asked = [];
+  const wv = (ok) => (names) => { asked.push(names.join(',')); return ok; };
+  const draftOf = (checks, waived, perm = 'yes') => undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))], checks },
+    { perm, localReview: '/code-review', clean: 'no findings', handle: 'ben', required: ['tests'], waived });
+  t('#831 a clean draft red only on a waived check undrafts', draftOf(flakyRed, wv(true))?.call, 'ready');
+  t('#831 the waiver is asked about the red checks only', asked.join(' '), 'Integration');
+  t('#831 one the waiver does not cover goes to a fix worker, as before', draftOf(flakyRed, wv(false))?.call, 'checks');
+  t('#831 with no waiver read, as before', draftOf(flakyRed, undefined)?.call, 'checks');
+  t('#831 a required check red is never asked about', `${(asked.length = 0, draftOf([{ ...flakyRed[0], conclusion: 'failure' }, flakyRed[1]], wv(true))?.call)} ${asked.length}`, 'checks 0');
+  const held = draftOf(flakyRed, wv(true), 'no');
+  t('#831 without pr-ready, the person is told it is red only on known flaky checks', held?.why?.startsWith('it is clean, red only on §4 Known flaky checks the merge driver waives (Integration)'), true);
+}
 
 // DS-330: a draft whose red checks were all cancelled or timed out is re-run where §3 ci-rerun is yes.
 const rerunPr = (checks, more = {}) => undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))], checks: [{ name: 'types', status: 'completed', conclusion: 'success' }, ...checks] },
@@ -229,7 +246,7 @@ t('DS-416 a draft behind the default branch waits on the base sync, naming no wo
 t('DS-416 negative control: with nothing stale it goes as before', stalePr(() => ({ behind: {}, reopen: {} }))?.call, 'checks');
 
 // DS-330: the pass reruns through rerun.sh, the merge driver's own rerun, against a fake gh.
-const tmp = mkdtempSync(join(tmpdir(), 'undraft-rerun-'));
+const tmp = scratch('undraft-rerun-');
 mkdirSync(join(tmp, 'bin'));
 writeFileSync(join(tmp, 'bin', 'gh'), `#!/usr/bin/env bash\necho "$*" >> "${tmp}/gh.log"\n`, { mode: 0o755 });
 const rerunSh = (perm) => spawnSync('bash', [fileURLToPath(new URL('../desk/bin/rerun.sh', import.meta.url)), join(tmp, 'sd'), 'o/r', '701', HEAD], {
@@ -276,7 +293,7 @@ t('DS-490 with ci-rerun not yes a stuck check is the person\'s', stuckPr([ORPHAN
 t('DS-490 a queued job with no start reads its age from the run', stuckPr([{ ...ORPHAN, status: 'queued', startedAt: '0001-01-01T00:00:00Z' }], { ...live, jobs: [{ ...live.jobs[0], status: 'queued', startedAt: '0001-01-01T00:00:00Z' }] })?.call, 'cancel');
 
 // DS-490: rerun.sh re-runs the orphaned job by its id, and logs which and why.
-const tmp490 = mkdtempSync(join(tmpdir(), 'undraft-orphan-'));
+const tmp490 = scratch('undraft-orphan-');
 mkdirSync(join(tmp490, 'bin'));
 writeFileSync(join(tmp490, 'bin', 'gh'), `#!/usr/bin/env bash\necho "$*" >> "${tmp490}/gh.log"\n`, { mode: 0o755 });
 const orphanRun = spawnSync('bash', [fileURLToPath(new URL('../desk/bin/rerun.sh', import.meta.url)), join(tmp490, 'sd'), 'o/r', '701', HEAD], {
@@ -328,7 +345,19 @@ t('DS-647 built, with no run id on the failing check, every running check holds 
 t('DS-647 a failed build beside a running check waits for it, as before', buildPr([FLOWS, LINT_OTHER], { ...ok, code: 3, tail: 'x' })?.call, 'wait');
 t('DS-647 a build still running beside one waits on itself', buildPr([FLOWS, LINT_OTHER], { state: 'running', command: b0.command })?.why, `its check build \`./scripts/ensure-flows-image.sh\` is running at ${HEAD.slice(0, 9)}, then "Flows image" is re-run`);
 t('DS-647 negative control: a red check the row does not name beside a running one is not built', buildPr([FLOWS, LINT_OTHER, { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 }])?.call === 'build', false);
-for (const rerun of ['ask', 'no']) t(`DS-327 ci-rerun ${rerun}: nothing is built`, buildPr([FLOWS], null, { rerun })?.call, 'checks');
+for (const rerun of ['ask', 'no']) {
+  const u = buildPr([FLOWS], null, { rerun });
+  t(`DS-863 AC3 ci-rerun ${rerun}: nothing is built, and the person is told why, with the command`, `${u?.call} | ${u?.why} | ${u?.action}`,
+    `person | "Flows image" red at ${HEAD.slice(0, 9)} was not built, though §4 Check builds clears it: config §3 ci-rerun is "${rerun}", so the pass neither runs \`./scripts/ensure-flows-image.sh\` nor re-runs the check | run \`./scripts/ensure-flows-image.sh\` at the head of #701, then re-run "Flows image"`);
+}
+t('DS-863 AC3 negative control: ci-rerun not yes beside a red check the row does not name, a fix worker gets it as before',
+  buildPr([FLOWS, { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 }], null, { rerun: 'no' })?.call, 'checks');
+t('DS-863 AC3 negative control: ci-rerun not yes, a cancelled build check is not blamed on a missing build',
+  buildPr([{ ...FLOWS, conclusion: 'cancelled' }], null, { rerun: 'no' })?.why.includes('was not built'), false);
+t('DS-863 AC3 a required check that never reported is named beside the unbuilt one',
+  buildPr([FLOWS], null, { rerun: 'no', required: ['tests', 'deploy'] })?.why.endsWith('nor re-runs the check; its checks are not green besides: required check "deploy" has not reported'), true);
+t('DS-863 AC3 negative control: ci-rerun not yes while a check still runs, the draft waits for it first',
+  buildPr([FLOWS, { ...LINT_OTHER, runId: 31 }], null, { rerun: 'no' })?.call, 'wait');
 
 // DS-440: a check build that failed at a head behind its base goes to a worker that merges the base.
 const behindTail = { ...ok, code: 1, tail: "main's backend/ has changed since this branch was cut" };
@@ -348,7 +377,7 @@ t('DS-440 AC5 a build still failing at the head a sync try left names that try\'
 const doc = (p) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), 'utf8');
 t('DS-327 AC5 setup step 1 proposes §4 Check builds, not prose only', /\*\*Check builds\.\*\*[\s\S]*propose it for §4 Check builds[\s\S]*Never leave it as prose only/.test(doc('../skills/desk-setup/references/step-1-detect.md')), true);
 t('DS-327 AC5 the config template has the row', /^\| Check builds \| /m.test(doc('../desk-config.md')), true);
-const cbDir = mkdtempSync(join(tmpdir(), 'desk-check-builds-'));
+const cbDir = scratch('desk-check-builds-');
 writeFileSync(join(cbDir, 'config.md'), '## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Check builds | `Flows image: ./scripts/ensure-flows-image.sh` |\n');
 const cbList = spawnSync('node', [fileURLToPath(new URL('../desk/bin/desk-env.mjs', import.meta.url)), 'list', 'check-builds'],
   { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: join(cbDir, 'config.md'), DESK_MACHINE: join(cbDir, 'none.md'), HOME: cbDir } });
@@ -571,7 +600,7 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('DS-549 AC2 dispatch not yes is refused', /worker-workflow-dispatch/.test(dc(['fix/a', '935'], { allowed: false }).refused ?? ''), true);
   t('DS-549 AC3 no evidence workflow is refused', /names no usable workflow/.test(dc(['fix/a', '935'], { workflow: null }).refused ?? ''), true);
   t('EV run id from gh workflow run', runIdFrom('https://github.com/o/r/actions/runs/41191877067\n'), '41191877067');
-  const evDir = mkdtempSync(join(tmpdir(), 'desk-evidence-'));
+  const evDir = scratch('desk-evidence-');
   t('EV nothing recorded at a head reads as none', evidenceRecord(evDir, 740, HEAD, () => null), null);
   recordDispatch(evDir, 740, HEAD, { workflow: 'pr-evidence.yml', out: 'https://github.com/o/r/actions/runs/9' });
   t('EV a run not completed is running', evidenceRecord(evDir, 740, HEAD, () => ({ status: 'in_progress' }))?.state, 'running');
@@ -594,7 +623,7 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('DS-415 AC4 a run that succeeded and filled some cells is the person\'s, naming the cells left', `${ev(EVB, runDone('success', 3))?.call} ${/left 2 screenshot cell/.test(ev(EVB, runDone('success', 3))?.why)}`, 'person true');
   t('DS-415 a run with no id is the person\'s, as no log can be read', ev(EVB, { evidenceRun: () => ({ state: 'done', conclusion: 'failure', url: null, runId: null, cells: 2 }) })?.call, 'person');
   t('DS-415 the dispatch call carries the cells it was started for', ev(EVB)?.cells, 2);
-  const cellsDir = mkdtempSync(join(tmpdir(), 'desk-evidence-'));
+  const cellsDir = scratch('desk-evidence-');
   recordDispatch(cellsDir, 740, HEAD, { workflow: 'pr-evidence.yml', out: 'https://github.com/o/r/actions/runs/9', cells: 2 });
   const cellsRec = evidenceRecord(cellsDir, 740, HEAD, () => ({ status: 'completed', conclusion: 'failure' }));
   t('DS-415 the record keeps its run id and cells', `${cellsRec?.runId} ${cellsRec?.cells} ${runFailed(cellsRec, 2)}`, '9 2 true');
@@ -645,7 +674,7 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('DS-415 its body names the run and every PR waiting on it', ft.body.includes('https://github.com/o/r/actions/runs/41191877061') && ft.body.includes('#784 (VPL-640), #794 (VPL-652)'), true);
   t('DS-415 its body has every section of the Bug template', ['Problem', 'Where seen', 'Steps to reproduce', 'Diagnosis', 'Acceptance criteria', 'Verification', 'Design', 'Out of scope', 'Decisions', 'Build on'].every((h) => ft.body.includes(`\n## ${h}\n`) || ft.body.startsWith(`## ${h}\n`)), true);
   t('DS-415 AC5 its body tells the worker to park naming a setting only the person holds', /parks naming that setting and why/.test(ft.body), true);
-  const fxDir = mkdtempSync(join(tmpdir(), 'desk-evidence-'));
+  const fxDir = scratch('desk-evidence-');
   t('DS-415 no fixes recorded reads as none', JSON.stringify(readFixes(fxDir)), '{}');
   writeFixes(fxDir, fixes);
   t('DS-415 fixes round-trip', readFixes(fxDir)[KEY].fix, 'DS-900');
@@ -653,7 +682,7 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
 
   t('EV setup step 1 proposes §4 Evidence workflow', /\*\*Evidence workflow\.\*\*[\s\S]*propose it for §4 Evidence workflow/.test(doc('../skills/desk-setup/references/step-1-detect.md')), true);
   t('EV the config template has the row', /^\| Evidence workflow \| /m.test(doc('../desk-config.md')), true);
-  const evCfg = mkdtempSync(join(tmpdir(), 'desk-evidence-cfg-'));
+  const evCfg = scratch('desk-evidence-cfg-');
   writeFileSync(join(evCfg, 'config.md'), '## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Evidence workflow | `pr-evidence.yml` |\n');
   const evList = spawnSync('node', [fileURLToPath(new URL('../desk/bin/desk-env.mjs', import.meta.url)), 'list', 'evidence-workflow'],
     { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: join(evCfg, 'config.md'), DESK_MACHINE: join(evCfg, 'none.md'), HOME: evCfg } });
@@ -721,7 +750,7 @@ t('DS-316 beside a red code check, only the code check goes to the fix worker', 
 }
 
 // verdictCarries, against a real repository: the reviewed commit A, the base merged in to make B.
-const dir = mkdtempSync(join(tmpdir(), 'undraft-carry-'));
+const dir = scratch('undraft-carry-');
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
 const g = (...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const git = (args) => { try { return { ok: true, out: g(...args) }; } catch (e) { return { ok: false, out: String(e.stderr ?? '') }; } };
@@ -766,7 +795,7 @@ rmSync(dir, { recursive: true, force: true });
 // With the review-reuse lever on, a verdict carries past a rebase or any base merge only while
 // the PR's own diff is unchanged and the base moved none of the files the review rests on.
 {
-  const rd = mkdtempSync(join(tmpdir(), 'undraft-rests-'));
+  const rd = scratch('undraft-rests-');
   const rg = (...args) => execFileSync('git', ['-C', rd, ...args], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   const rgit = (args) => { try { return { ok: true, out: rg(...args) }; } catch (e) { return { ok: false, out: String(e.stderr ?? '') }; } };
   const rput = (file, text) => { mkdirSync(join(rd, file, '..'), { recursive: true }); writeFileSync(join(rd, file), text); };
@@ -852,7 +881,7 @@ rmSync(dir, { recursive: true, force: true });
 // narrows the head's review to those files and the PR's code that uses them; a lockfile or
 // configuration file the base changed needs the whole review.
 {
-  const rd = mkdtempSync(join(tmpdir(), 'undraft-targeted-'));
+  const rd = scratch('undraft-targeted-');
   const rg = (...args) => execFileSync('git', ['-C', rd, ...args], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   const rgit = (args) => { try { return { ok: true, out: rg(...args) }; } catch (e) { return { ok: false, out: String(e.stderr ?? '') }; } };
   const rput = (file, text) => { mkdirSync(join(rd, file, '..'), { recursive: true }); writeFileSync(join(rd, file), text); };
@@ -940,7 +969,7 @@ t('DS-576 AC7 nor one by a login that only contains one of them', asAccount([rev
 t('DS-576 the review account is not a person who reviewed', humanReviewed({ reviews: byAccount, comments: [] }, 'ben,agent-pullbot'), false);
 t('DS-576 and another login still is', humanReviewed({ reviews: [review('looks off', HEAD, 'mallory')], comments: [] }, 'ben,agent-pullbot'), true);
 {
-  const ra = mkdtempSync(join(tmpdir(), 'desk-review-account-'));
+  const ra = scratch('desk-review-account-');
   const logins = (row) => {
     writeFileSync(join(ra, 'config.md'), `## 4. Tracker\n\n| Field | Value |\n|---|---|\n${row ? `| Review account | ${row} |\n` : ''}`);
     const r = spawnSync('node', [fileURLToPath(new URL('../desk/bin/desk-env.mjs', import.meta.url)), 'verdict-logins'],

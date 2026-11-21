@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, outageChecks, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, outageChecks, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
@@ -298,6 +298,30 @@ const stuckBeside = gapFix(`${p1Body}\n\n### Requirement gaps\n${PERSON_GAP}`, 1
 const sentBack = personReviewFix(tk(), { pr: 702, head: HEAD, why: stuckBeside?.why });
 t('DS-513 AC3 a try the person sends for the finding is not aimed at the person\'s gap', `${stuckBeside?.why.includes(PERSON_GAP.slice(2))} ${sentBack?.findings.length} ${sentBack?.findings.some((x) => x.text.includes('PERSON'))}`, 'true 1 false');
 t('DS-513 without autopilot-judgement yes nothing changes', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: onlyPerson }), null);
+// ---- a round whose gaps only widen a broad criterion an earlier try worked, past triage's files, asks the scope
+const BROAD1 = 'AC2: "an avatar wherever a person shows" — src/list.tsx:4 shows a name with no avatar';
+const BROAD2 = '- AC2: "an avatar wherever a person shows" — src/card.tsx:9 and src/menu.tsx:3 show a name with no avatar';
+const widened = [{ try: 1, head: 'b'.repeat(40), kind: 'review', gaps: [BROAD1] }];
+const wideOpts = (o = {}) => ({ judgement: 'yes', outside: () => ['src/list.tsx', 'src/card.tsx'], title: () => 'Show the avatar on the people list', ...o });
+const wideFix = (body, done = widened, o = {}) => reviewFix(tk({ fix_tries: done }), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body }, wideOpts(o));
+const round2 = wideFix(personBody(1, BROAD2));
+t('a round-2 gap that is only new sites of an AC try 1 worked, on a change past triage\'s files, spends no try 2', round2?.call, 'stuck');
+t('it puts one scope question to the person, the title\'s scope recommended and the rest a follow-up',
+  round2?.why, `review gaps only you can settle: PERSON'S CALL: AC2 reads wider than the title ("Show the avatar on the people list"): this round's gaps are all new sites of it, after an earlier try already worked it, and the change touches 2 file(s) triage did not list (src/list.tsx, src/card.tsx). Fix only what the title names and file the rest as a follow-up? (recommended)`);
+t('the question is the person\'s gap needs-you answers through', JSON.stringify(personGapsIn(round2?.why).map((x) => x.startsWith("PERSON'S CALL: AC2 reads wider"))), '[true]');
+t('a first round on the same AC gets its try', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: personBody(1, BROAD2) }, wideOpts())?.call, 'requeue');
+t('a gap on an AC no earlier try named gets its try', wideFix(personBody(1, '- AC3: "export includes VAT" — no VAT column'))?.call, 'requeue');
+t('a round with a new AC beside the widened one gets its try', wideFix(gapBody('p0=0 p1=0 p2=0', 2, ['### Requirement gaps', BROAD2, '- AC3: "export includes VAT" — no VAT column']), widened, {})?.call, 'requeue');
+t('a change still inside triage\'s files gets its try', wideFix(personBody(1, BROAD2), widened, { outside: () => [] })?.call, 'requeue');
+t('PR files or a triage scope that could not be read leave the try', wideFix(personBody(1, BROAD2), widened, { outside: () => null })?.call, 'requeue');
+t('a pass that reads no scope leaves the try', wideFix(personBody(1, BROAD2), widened, { outside: undefined })?.call, 'requeue');
+const withPerson = reviewFix(tk({ fix_tries: widened }), { pr: 702, head: HEAD, verdict: { gaps: '2' }, body: personBody(2, BROAD2, PERSON_GAP) }, wideOpts());
+t('a person\'s gap beside the widened one goes to the person with the scope question', JSON.stringify(personGapsIn(withPerson?.why).map((x) => [x.startsWith("PERSON'S CALL: AC2 reads wider"), x.endsWith(PERSON_GAP.slice(2))])), '[[true,true]]');
+t('a P1 beside the widened gap gets its try', reviewFix(tk({ fix_tries: widened }), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1', gaps: '1' }, body: `${p1Body}\n\n### Requirement gaps\n${BROAD2}` }, wideOpts())?.call, 'requeue');
+t('the same gap still open after its try is a survivor, as before', wideFix(personBody(1, `- ${BROAD1}`))?.why.startsWith('review not clean after 1 fix try'), true);
+t('one repeating the earlier gap\'s words at a new site is a new site, not a survivor', wideFix(personBody(1, `- ${BROAD1.replace('src/list.tsx:4', 'src/card.tsx:9')}`))?.why.startsWith("review gaps only you can settle: PERSON'S CALL: AC2"), true);
+t('one naming an earlier site beside new ones is still open there, so it is not only widening', wideFix(personBody(1, `- ${BROAD1.replace('src/list.tsx:4', 'src/list.tsx:4 and src/card.tsx:9')}`))?.call, 'requeue');
+t('one naming no site is not read as new sites', wideFix(personBody(1, '- AC2: "an avatar wherever a person shows" — the settings page shows a name with none'))?.call, 'requeue');
 const gapsCall = (body, verdict, opts = { judgement: 'yes' }) => personGapsCall({ verdict, body }, opts);
 t('DS-513 a ready PR with only the person\'s gaps is stuck on them, its reason readable', JSON.stringify(personGapsIn(gapsCall(onlyPerson, { gaps: '1' })?.why)), JSON.stringify([PERSON_GAP.slice(2)]));
 t('DS-513 AC3 a review stuck reason gives up the person\'s gap it carries', JSON.stringify(personGapsIn(stuckBeside?.why)), JSON.stringify([PERSON_GAP.slice(2)]));
@@ -350,7 +374,34 @@ t('DS-585 recommendedOf keeps the option as written, dropping only emphasis arou
 t('DS-585 askCategoryIn finds each category and none in a plain engineering call', JSON.stringify(['costs £5 a month', 'GDPR', 'the prod database', 'the SMS text', 'the catalog entry', 'split it to DS-12'].map(askCategoryIn)), JSON.stringify(['money', 'legal', 'production', 'customer-copy', 'user-fact', null]));
 t('DS-585 askCategoryIn covers every example in ask-or-take.md\'s table', JSON.stringify(['approve the spend', 'a paid plan', 'anything billed', 'the Stripe webhook', 'the cookie policy copy', 'privacy', 'compliance', 'a production database', 'a secret', 'the signing key', 'a live account', 'an SMS', 'a paid placement', 'copy billed by length', 'product data', 'a design URL', 'an asset', 'the brand name', 'who owns what'].map((x) => Boolean(askCategoryIn(x)))), JSON.stringify(Array(19).fill(true)));
 const readyCall = tk({ fix: gapsFix({ pr: 702, head: HEAD, ready: true, answer: 'accept it' }) });
+const leftDirty = fixBrief(tk({ fix: { ...readyCall.fix, left_dirty: ['src/a.ts', 'src/b.ts'] } }));
+t('a try spawned over its interrupted worker\'s changes names them first, to test and commit, never discard', ['## Your interrupted worker\'s changes', '- src/a.ts', 'test it and commit it as part of this try', 'never discard or stash them'].every((x) => leftDirty.includes(x)) && leftDirty.includes('## Your call on PR #702'), true);
 t('DS-513 the person\'s call on a ready PR keeps it out of draft', `${fixBrief(readyCall).includes('open and out of draft')} ${/leave the PR out of draft/.test(fixTask(readyCall))}`, 'true true');
+t('with the repo\'s own review, a gap-answer worker re-reviews the head with it so its verdict records the accepted gap', fixBrief(readyCall, '/pullbot').includes('review the head with /pullbot and post its review on the PR as its own instructions say, so its verdict records the accepted gap'), true);
+t('DS-833 with the repo\'s own review, the gaps brief carries no desk-review accepted re-verdict', fixBrief(readyCall, '/pullbot').includes('A gap the call accepts, with no code change'), false);
+// ---- DS-833: a gap the person accepted gets that round's re-verdict at the unchanged head
+const acceptCall = tk({ fix: gapsFix({ pr: 702, head: HEAD, ready: false, answer: 'accept AC3: I checked it on staging' }) });
+const briefAc = fixBrief(acceptCall), taskAc = fixTask(acceptCall);
+t('DS-833 AC1 the gaps brief asks for the accepted re-verdict at the same head, with nothing pushed', briefAc.includes(`Push nothing for it: post that round's verdict again at the same head ${HEAD.slice(0, 12)}, with each accepted gap moved from \`gaps\` into \`accepted\``), true);
+t('DS-833 AC1 each accepted gap names who accepted it and the link, in the same round', briefAc.includes("lower its `gaps` count by one and add an `accepted` entry (`gap`, `by`, `at`, `url`): who accepted it, the date and the link to the person's comment on the PR. Keep its `round` and `since`, run desk-review's verdict.mjs on it"), true);
+t('DS-833 AC3 it reads the round\'s results file from the worktree or the ticket\'s state folder', briefAc.includes('at your worktree root, or kept under `$DESK_STATE/reviews/T-1/`'), true);
+t('DS-833 the same file kept in both places is one round, and the accepted copy never overwrites the original', briefAc.includes('A file of the same name in both places is one round.') && briefAc.includes('as `desk-review-results-<run>-accepted.json` (`<run>` its own), never over the original'), true);
+t('DS-833 AC4 the round is the one whose verdict is the newest posted at the head, even with one file', briefAc.includes('The round is the one whose verdict.mjs output is the newest verdict marker posted at the head, even where only one file has that `sha`: where none is, treat it as missing'), true);
+t('DS-833 AC1 the re-verdict is confirmed by the count rising by one, not by a single marker', briefAc.includes("confirm it landed by Phase 7's count before and after, one higher, not by finding exactly one marker"), true);
+t('DS-833 AC4 with no results file for the head it parks, naming it, and never re-counts', briefAc.includes('With no results file for that head, post nothing: park (AUTOPILOT_PARK) naming the file you looked for') && briefAc.includes('Never count a verdict by hand'), true);
+t('DS-833 AC5 a call that changes code is reviewed as a new round', briefAc.includes('Where the call changes code, push it and review the new head as a new round') && taskAc.includes('then review the new head with desk-review'), true);
+t('DS-889 AC1 a gaps call\'s task states the push-nothing rule with the accepted-gap exception, in the words desk-review\'s post phase shows', taskAc.includes(`. ${pushNothing(true)} The "A gap the call accepts" section of your briefing says how. Open no new PR`), true);
+t('DS-889 the exception is the push-nothing rule followed by desk-review\'s one exception', pushNothing(true), `${PUSH_NOTHING} ${PUSH_NOTHING_ACCEPTED}`);
+// Whether a call accepts a gap is the worker's reading of the person's words, as desk-review's is of the
+// same comment, so a call that accepts in other words, and a record queued before this text, keep both.
+const otherWords = tk({ fix: gapsFix({ pr: 702, head: HEAD, ready: false, answer: 'AC3 is fine as it is, I checked it on staging' }) });
+const oldRecord = tk({ fix: { kind: 'gaps', pr: 702, head: HEAD, ready: false, answer: 'AC3 is fine as it is' } });
+t('DS-889 AC1 a gaps call that accepts a gap without the word accept, or queued before, keeps the exception and the re-verdict section',
+  [otherWords, oldRecord].map((x) => `${fixTask(x).includes(pushNothing(true))} ${fixBrief(x).includes('A gap the call accepts, with no code change')}`).join(' '), 'true true true true');
+const reviewTaskText = fixTask(tk({ fix: { try: 1, of: 2, kind: 'review', pr: 702, head: HEAD, ready: false, findings: [{ sev: 'P1', text: 'src/a.ts:1 dup' }] } }));
+t('DS-889 AC2 a review fix states the push-nothing rule as today, without the exception', `${reviewTaskText.includes(`. ${PUSH_NOTHING} Open no new PR`)} ${reviewTaskText.includes(PUSH_NOTHING_ACCEPTED)}`, 'true false');
+const instructionTask = fixTask(tk({ fix: { kind: 'instruction', pr: 702, head: HEAD, ready: false, answer: 'accept it as it is' } }));
+t('DS-833 a person\'s instruction keeps the push-nothing line without the exception', `${instructionTask.includes(PUSH_NOTHING)} ${instructionTask.includes(PUSH_NOTHING_ACCEPTED)}`, 'true false');
 t('DS-319 the findings parser ends a P1 run at the same bold heading, and a bold finding with its file:line still counts', JSON.stringify(reviewFindings('P1 (2)\n**src/a.ts:4 — dup**\n**Requirement gaps**\n- AC1: src/b.ts:9 not done').map((x) => x.text)), JSON.stringify(['**src/a.ts:4 — dup**']));
 
 // ---- DS-316: a draft with no verdict readable at its head goes to a review worker, a red one to a fix worker

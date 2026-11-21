@@ -92,10 +92,10 @@ if (a[0] === 'pr' && a[1] === 'list') {
     statusCheckRollup: p.checks.map(([name, conclusion, run, job, startedAt]) => ({ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion, workflowName: 'ci', startedAt,
       detailsUrl: run ? 'https://github.com/acme/widgets/actions/runs/' + run + '/job/' + (job ?? run) : undefined })) });
 } else if (a[0] === 'api' && /check-runs\/\d+\/annotations/.test(a[1] ?? '')) {
-  // A job's annotations: annotations.json maps a job id to the error its run gave.
+  // A job's annotations: annotations.json maps a job id to the error its run gave, or to its annotations.
   const id = /check-runs\/(\d+)/.exec(a[1])[1];
   const m = fs.existsSync('$T/annotations.json') ? JSON.parse(fs.readFileSync('$T/annotations.json', 'utf8'))[id] : null;
-  out(m ? [{ annotation_level: 'failure', message: m }] : []);
+  out(Array.isArray(m) ? m : m ? [{ annotation_level: 'failure', message: m }] : []);
 } else if (a[0] === 'run' && a[1] === 'list') {
   out([]);
 } else if (a[0] === 'run' && a[1] === 'rerun') {
@@ -133,7 +133,7 @@ if (a[0] === 'pr' && a[1] === 'list') {
 } else if (a[0] === 'api') {
   const n = /pulls\/(\d+)\/files/.exec(a.join(' '))?.[1];
   out(((n && prs[n]?.files) || ['src/a.txt']).join('\n'));
-} else if (a[0] === 'pr' && a[1] === 'comment') {
+} else if (a[0] === 'pr' && (a[1] === 'comment' || a[1] === 'update-branch')) {
   // recorded in gh.log above
 } else if (a[0] === 'issue' && a[1] === 'view') {
   // An issue's state: issues.json maps a number to OPEN or CLOSED; any other issue is open.

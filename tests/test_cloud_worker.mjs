@@ -3,19 +3,19 @@
 // records, the start parsed from `claude --cloud`, a real start through `script` with no terminal of
 // its own (a fake claude that prints the recording, and one that refuses the way --print does), the
 // PR a session opened, and the batch report's cloud row.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from '../desk/bin/cloud-worker.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'cloud');
 const fixture = (f) => readFileSync(join(FIX, f), 'utf8');
-const S = mkdtempSync(join(tmpdir(), 'desk-cloud-'));
+const S = scratch('desk-cloud-');
 
 // ---- placement (AC3) --------------------------------------------------------
 const rec = (o) => ({ ticket: 'K-1', lane: 'A', renders: false, needs_db: false, needs_local: null, ...o });
@@ -47,6 +47,8 @@ const prompt = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', bra
 t('AC2 the prompt carries the ticket text', prompt.includes('AC1: it works'), true);
 t('AC2 and the branch to push and the PR to open', prompt.includes('branch named exactly `feat/K-1-x`, cut from `main`') && prompt.includes('with K-1 in its title'), true);
 t('AC2 and the repo\'s test command', prompt.includes('Run `bash tests/run.sh` before you push'), true);
+t('before it pushes, it reads where each server-set value its change branches on is set, and names a source it cannot read as a premise',
+  ['read where that value is set', 'every value it can set', 'as a premise'].every((x) => prompt.includes(x)) && prompt.indexOf('read where that value is set') < prompt.indexOf('and push it to origin'), true);
 
 // ---- the start (AC2, AC4) ---------------------------------------------------
 const started = parseCloudStart(fixture('created.txt'));

@@ -3,17 +3,17 @@
 // A stub claude on PATH answers the version and account reads from files, and each -p call as the
 // $T/reply file says, recording its argv. A scratch desk home links the real desk/bin beside its own
 // installed.json. Scratch HOME and repo only.
-import { readFileSync, readdirSync, writeFileSync, mkdirSync, mkdtempSync, existsSync, chmodSync, cpSync, symlinkSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync, chmodSync, cpSync, symlinkSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-const T = mkdtempSync(join(tmpdir(), 'desk-pre-'));
+const T = scratch('desk-pre-');
 for (const d of ['home', 'state', 'stub', 'repo', 'repo2', 'deskhome']) mkdirSync(join(T, d), { recursive: true });
 cpSync(join(root, 'agents'), join(T, 'home', '.claude', 'agents'), { recursive: true });
 symlinkSync(join(root, 'desk', 'bin'), join(T, 'deskhome', 'bin'));

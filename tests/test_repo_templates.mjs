@@ -4,17 +4,17 @@
 // (the newer), and a repo whose committed copies are: the hook exactly, the gate with its own edit
 // only, a pre-push.sh made from the older version with an edit of its own, and a review-gate.mjs
 // where the repo and the template changed the same line. Nothing touches your real ~/.claude.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, existsSync, chmodSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, statSync, existsSync, chmodSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = join(ROOT, 'desk', 'bin', 'repo-templates.mjs');
-const T = mkdtempSync(join(tmpdir(), 'desk-repo-templates-'));
+const T = scratch('desk-repo-templates-');
 const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('DESK_') && !k.startsWith('AUTOPILOT_'))),
   HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_SOURCE_CHECKOUT: join(T, 'src'), DESK_MACHINE: join(T, 'machine.md'),
   GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };

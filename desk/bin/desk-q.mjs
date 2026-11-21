@@ -35,11 +35,12 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels } from './desk-env.mjs';
+import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue } from './desk-env.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, unpromotedHolds, promotionWords }from './batch-state.mjs';
 import { attachArchive } from './queue-store.mjs';
 import { describeCond, restating } from './clears-when.mjs';
-import { RULES } from './machine.mjs';
+import { LEASE_KINDS, RULES } from './machine.mjs';
+import { LeaseStoreError, RESET_COMMAND, forceReleaseCommand, kindMode, overdue, peek, wouldRefuseByDay } from './leases.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
@@ -61,6 +62,7 @@ import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, pr
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 import { needsCount } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
+import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merge-log.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
 import { PAGE_RESUMES, uploadPause } from './upload-queue.mjs';
 
@@ -1005,10 +1007,10 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
 
 const SOON = MINUTE;
 // The shown states a pass can still move on: anything else waits on the user.
-const AUTOPILOT_STATES = ['running', 'ready', 'queued', 'waiting'];
+const MOVABLE_STATES = ['running', 'ready', 'queued', 'waiting'];
 // A batch whose passes stopped while it has a ticket autopilot could move: forecastOf's `paused`, and
 // needs-you's stalled item for a batch a session runs.
-export const passesPaused = (r) => !r.live && r.rows.some((x) => AUTOPILOT_STATES.includes(x.k));
+export const passesPaused = (r) => !r.live && r.rows.some((x) => MOVABLE_STATES.includes(x.k));
 const undatable = (F) => !F || F.none || F.paused || F.idle;
 const etaOf = (F, key) => (undatable(F) ? null : F.T[key]);
 // With passes stopped there are no dates, but a running worker carries on, so its row says so.
@@ -2618,7 +2620,55 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   }
   if (badge) notes.push({ tag: '  dates', sgr: GREY, text: [[badge, null]] });
   if (notes.length) foot.push('', ...noteLines(notes, w, width));
+  foot.push('', ...leaseLines({ now, width }));
   return { head, rows, foot };
+}
+
+// The Queue view's Leases section: each live lease with its holder, age and time to expiry, an overdue
+// one with the command that frees it, then each kind's shadow would-refuse counts by day. It only
+// reads: lapsing and freeing a lease stay with desk-env lease.
+const LEASE_DAYS = 7;
+function leaseLines({ now, width }) {
+  const env = { psRows, machineValue };
+  const at = { env, now: () => now };
+  // A failure stays in this section, so the rest of the Queue still draws: an unreadable store or log
+  // names itself (the store with the command that starts an empty one); anything else, such as ps
+  // failing while the owners are checked, is shown as it is.
+  const trouble = (e, reset) => (e instanceof LeaseStoreError
+    ? [...wrapped([[`▲ ${capital(e.message)}.`, WARN]], width), ...(reset ? [{ ...segLine([['    to start an empty one: ', GREY], [RESET_COMMAND, BOLD]]), whole: true }] : [])]
+    : wrapped([[`▲ The leases could not be read: ${printable(String(e?.message ?? e))}.`, WARN]], width));
+  const section = (lines, reset) => { try { return lines(); } catch (e) { return trouble(e, reset); } };
+  return [bold('Leases'), ...section(() => heldLines(peek(at), now), true), ...section(() => refusedLines(wouldRefuseByDay({ ...at, days: LEASE_DAYS }), env, width), false)];
+}
+
+// `segs` as lines indented two columns; with `width`, wrapped between words, each further line indented
+// two more.
+const wrapped = (segs, width) => (width == null ? [segs] : wrapSegs(segs, Math.max(12, width - 4)))
+  .map((s, j) => segLine([[j ? '    ' : '  ', null], ...s]));
+
+// Each held lease's row, its stored text made printable, and an overdue one's command line.
+function heldLines(held, now) {
+  if (!held.length) return ['  No leases are held.'];
+  const text = (v) => printable(String(v ?? '?'));
+  const holder = (l) => `${text(l.label)} (${l.owner ? `pid ${l.owner.pid}` : 'no owner'})`;
+  const key = (l) => `${text(l.key)}${l.units > 1 ? ` ×${l.units}` : ''}`;
+  const kw = Math.max(6, ...held.map((l) => text(l.kind).length + 2)), yw = Math.max(5, ...held.map((l) => key(l).length + 2)), hw = Math.max(8, ...held.map((l) => holder(l).length + 2));
+  const out = [segLine([[`  ${pad('KIND', kw)}${pad('KEY', yw)}${pad('HOLDER', hw)}${pad('AGE', 9)}EXPIRES`, GREY]])];
+  for (const l of held) {
+    const late = overdue(l, now), expires = Date.parse(l.expires);
+    out.push(segLine([[`  ${pad(text(l.kind), kw)}${pad(key(l), yw)}${pad(holder(l), hw)}${pad(span(now - Date.parse(l.acquired)), 9)}`, null],
+      late ? [`▲ overdue ${span(now - expires)}`, WARN] : [`in ${span(expires - now)}`, null]]));
+    if (late) out.push({ ...segLine([['    to free it: ', GREY], [forceReleaseCommand(l.id), BOLD]]), whole: true });
+  }
+  return out;
+}
+
+// Each kind's shadow would-refuse counts: the last 24 hours, then each day of the window.
+function refusedLines(refused, env, width) {
+  const kinds = LEASE_KINDS.filter((k) => refused[k]);
+  if (!kinds.length) return [segLine([[`  No shadow would-refuse in the last ${LEASE_DAYS} days.`, GREY]])];
+  return kinds.flatMap((k) => wrapped([[`${pad(k, 15)}${pad(kindMode(k, env).mode, 8)}`, null], [String(refused[k][0]), BOLD],
+    [` would-refuse in 24h · each of the last ${LEASE_DAYS} days, newest first: ${refused[k].join(' ')}`, GREY]], width));
 }
 
 export const overview = (repos, opts) => joined(overviewParts(repos, opts));
@@ -3137,6 +3187,27 @@ function timingFields(r, F, x, h, now) {
   return [['Starts', [[starts, null]]], ['Ships', [['no date', null], ...(why ? [[`  ${why}`, DIM]] : [])]]];
 }
 
+// The ticket's PR as the merge log has it: merged, or auto-merge armed, by whom at which head. A merged
+// PR the log has no entry for was merged outside desk, unless it merged before the log's first entry.
+// An open PR with no entry has nothing to say. { text, warn }, or null.
+function mergeOf(r, t, events) {
+  const pr = t.result?.pr;
+  if (pr == null) return null;
+  // The PR's own repo where its status names one (a ticket done on a PR in another repo), else this one.
+  const ps = prStatusOf(t);
+  const repo = String(ps?.url ?? '').match(/github\.com\/([^/]+\/[^/]+)\/pull\//)?.[1] ?? r.slug.replace('__', '/');
+  const e = latestMerge(events, { repo, pr });
+  if (e?.event === 'merged') return { text: `#${pr} merged by ${e.by} at ${shortSha(e)}`, warn: false };
+  if (e) return { text: `#${pr} auto-merge armed by ${e.by} at ${shortSha(e)}`, warn: false };
+  // The PR's own status decides whether it merged: merged_at stays from an earlier PR once a ticket is
+  // requeued for more work, so it is read only where no status was recorded for any PR of the ticket.
+  const mergedAt = ps ? (ps.state === 'MERGED' ? ps.merged_at ?? t.merged_at ?? '' : null) : t.pr_status == null ? t.merged_at ?? null : null;
+  if (mergedAt == null) return null;
+  const began = timeOf(events[0]?.at);
+  if (began == null || (timeOf(mergedAt) ?? Infinity) < began) return { text: `#${pr} merged before desk kept a merge log, so who merged it is not recorded`, warn: false };
+  return { text: `#${pr} merged outside desk: the merge log has no entry for it`, warn: true };
+}
+
 // `jiraUrl` adds the Jira line the interactive screen opens with o. `open` is the interactive screen's
 // set of what a, y and f unfold ('a' blockers, 'y' why lane, 'f' files); null, as in plain output,
 // shows all of it. `can` says which of them has more to show.
@@ -3237,6 +3308,12 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   const files = (tr.files_in_scope ?? []).map((f) => `  ${f}`);
   if (files.length) out.push(segLine([['Files in scope', BOLD], [` · ${files.length}`, DIM]]), ...folded('f', files, files, (n) => `${n} more`), '');
   if (t.collides_with) out.push(segLine([['Never runs with ', BOLD], [String(t.collides_with).split('|').join(', '), DIM]]));
+  if (t.result?.pr != null) {
+    // A log that cannot be read says so on this line, never takes the ticket page down with it.
+    let merge;
+    try { merge = mergeOf(r, t, readMergeLog()); } catch (e) { merge = { text: `the merge log could not be read (${e.code ?? e.message})`, warn: true }; }
+    if (merge) field('Merge', [[merge.text, merge.warn ? WARN : null]]);
+  }
   const branch = t.branch ?? tr.branch;
   if (branch) field('Branch', [[branch, DIM]], true);
   field('Open', width == null ? [['log ', null], [logPath(r, key), DIM]]

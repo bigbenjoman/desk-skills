@@ -5,18 +5,18 @@
 // Claude Design link with no saved copy. Scratch git repos only.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync, statSync, utimesSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, utimesSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { save, status, checkTicket, designFact, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose, callsHome, unbound, storyEntries, matchStories, compare, applyCrops, kindOfFiles, uploadEstimate, estimateLines } from '../desk/bin/desk-design.mjs';
 import { findPlaywright, importPlaywright } from '../desk/bin/find-playwright.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const throws = (fn) => { try { fn(); return 'no error'; } catch (e) { return `${e.code}:${e.message.split('\n')[0]}`; } };
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-design.mjs');
-const T = mkdtempSync(join(tmpdir(), 'desk-design-'));
+const T = scratch('desk-design-');
 const put = (p, s) => { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, s); };
 const read = (p) => readFileSync(p, 'utf8');
 const json = (p) => JSON.parse(read(p));
@@ -785,6 +785,14 @@ else document.getElementById('storybook-root').innerHTML = '<main style="height:
   } finally {
     await deckBrowser.close();
   }
+}
+
+// An admit refused on a value a linked design frame shows is read by the session's design connector
+// and written into the ticket, then admitted again; only a frame no connector reads goes to the person.
+{
+  const admit = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'desk-admit', 'SKILL.md'), 'utf8');
+  const step2 = admit.slice(admit.indexOf('## 2. Refused'), admit.indexOf('| `<why>` says |'));
+  t('desk-admit §2 reads a linked design frame through the design connector before asking, and writes it into the ticket', ['get_design_context', 'the Artifact tool', "ticket's Design section", 'run step 1 again', 'only when no connector'].every((x) => step2.includes(x)), true);
 }
 
 rmSync(T, { recursive: true, force: true });

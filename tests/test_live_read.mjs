@@ -1,13 +1,13 @@
 // suite: live-read (§4 Live reads: which parks the pass runs a read for, and how it records one)
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, statSync, mkdirSync, symlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, rmSync, statSync, mkdirSync, symlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseLiveReads, liveReadPark, readRecord, startRead, saveFixture, prepareCheckout, copyFixtures, WORKTREE_FIXTURES } from '../desk/bin/live-read.mjs';
 import { repoStateOf } from '../desk/bin/desk-env.mjs';
 import { waitingOnRead, batchSettled } from '../desk/bin/batch-state.mjs';
 import { shownState } from '../desk/bin/desk-q.mjs';
 import { describeCond } from '../desk/bin/clears-when.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -31,7 +31,7 @@ t('a question beside the entry is left for the person', names('Need gateway-mode
 t('a tail clause holding an ask is not the tail', names('Need gateway-models. Not reached: the PR, so confirm the fee'), null);
 t('no entries in the row asks for nothing', liveReadPark('Need gateway-models.', []), null);
 
-const dir = mkdtempSync(join(tmpdir(), 'desk-live-read-'));
+const dir = scratch('desk-live-read-');
 const head = 'c'.repeat(40);
 const wait = async (name) => { for (let i = 0; i < 100 && readRecord(dir, 'L-1', head, name)?.state !== 'done'; i++) await new Promise((r) => setTimeout(r, 50)); return readRecord(dir, 'L-1', head, name); };
 t('no read started at a head has no record', readRecord(dir, 'L-1', head, 'ok'), null);

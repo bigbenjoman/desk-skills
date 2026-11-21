@@ -583,10 +583,40 @@ export function reviewFix(t, review, opts = {}) {
   const findings = [...listed, ...inline.map(({ sev, text }) => ({ sev, text }))];
   const gaps = codeGaps ? allGaps.filter((g) => !personsCall(g)) : [];
   if (counts ? !findings.length : !gaps.length && !taken.length) return null;
+  // Before survivors: a gap repeating an earlier one's words at new sites reads to survivors as the same gap.
+  const wide = !findings.length && !taken.length ? widening(done, gaps, opts) : null;
+  if (wide) return { call: 'stuck', why: `${PERSON_GAPS}${[scopeQuestion(wide, typeof opts.title === 'function' ? opts.title() : opts.title), ...personGaps].join('; ')}` };
   const survived = survivors(done, findings, [...gaps, ...taken.map((x) => x.gap)]);
   if (survived.length) return { call: 'stuck', why: `${after} — ${SURVIVED}${[...survived, ...personGaps].join('; ')}` };
   const verdict = Object.entries(review.verdict).map(([k, x]) => `${k}=${x}`).join(' ');
   return { call: 'requeue', fix: { try: made + 1, of: made + room, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}), ...(taken.length ? { taken } : {}), ...(personGaps.length ? { person_gaps: personGaps } : {}) } };
+}
+
+// The criterion a gap names (`AC<n>`), or null, and every file:line it names.
+const gapAc = (g) => /\bAC\s?(\d+)\b/i.exec(plain(g))?.[1] ?? null;
+const sitesIn = (text) => [...String(text).matchAll(new RegExp(AT.source, 'g'))].map((m) => m[0].replace(/^\((?![^)]*\))/, ''));
+// A round whose open gaps are all new sites of criteria an earlier try's gaps already named (each gap
+// naming its criterion and file:line sites, none of them an earlier gap's), on a change that already
+// touches files triage did not list: a broad criterion ("every X") that each round widens, so another
+// try only finds the next sites. -> { acs, outside } or null. opts.outside() gives the PR's files
+// outside triage's scope as scope-report.mjs outOfScope reads it (null when either cannot be read).
+function widening(done, gaps, opts) {
+  if (!gaps.length || typeof opts.outside !== 'function') return null;
+  const earlier = (done ?? []).filter(isReviewTry).flatMap((x) => x.gaps ?? []);
+  const worked = new Set(earlier.map(gapAc).filter(Boolean));
+  const seen = new Set(earlier.flatMap(sitesIn));
+  const fresh = (g) => { const at = sitesIn(g); return at.length > 0 && at.every((x) => !seen.has(x)); };
+  if (gaps.some((g) => !worked.has(gapAc(g)) || !fresh(g))) return null;
+  const acs = [...new Set(gaps.map(gapAc))];
+  const outside = opts.outside();
+  return Array.isArray(outside) && outside.length ? { acs, outside } : null;
+}
+// The one scope question a widening round puts to the person, with the recommended default.
+function scopeQuestion({ acs, outside }, title) {
+  const named = acs.map((a) => `AC${a}`).join(' and ');
+  const it = acs.length === 1 ? 'it' : 'them';
+  const files = `${outside.slice(0, 5).join(', ')}${outside.length > 5 ? `, and ${outside.length - 5} more` : ''}`;
+  return `PERSON'S CALL: ${named} read${acs.length === 1 ? 's' : ''} wider than the title${title ? ` ("${title}")` : ''}: this round's gaps are all new sites of ${it}, after an earlier try already worked ${it}, and the change touches ${outside.length} file(s) triage did not list (${files}). Fix only what the title names and file the rest as a follow-up? (recommended)`;
 }
 
 // A ready PR's review whose only open items are gaps it tags as the person's call, as the stuck call
@@ -615,6 +645,15 @@ export function personGapsCall(review, opts = {}) {
 // FIX_TRIES_MAX tries, which are the pass's own. `ready` is a PR out of draft, which its worker leaves
 // out of draft.
 export const gapsFix = ({ pr, head, ready, answer }) => ({ kind: 'gaps', pr, head: head ?? null, ready: ready === true, what: 'review gaps: your call', answer });
+
+// The rule a reviewed fix worker's task states for a push of nothing, and its one exception, which only
+// a gaps call carries (fixTaskText). Whether the call accepts a gap is the worker's reading of the
+// person's free text, as desk-review's is of the same comment on the PR, so every gaps call carries it.
+// desk-review's post phase and the worker contract's Stage 4 show the same text, generated from these
+// (tests/prose_facts.mjs `push-nothing`).
+export const PUSH_NOTHING = 'If you pushed nothing, post no review: the head is unchanged, so a review of it would only repeat the last one.';
+export const PUSH_NOTHING_ACCEPTED = "The one exception is a gap the person accepted: post that round's verdict again at the same head, from its results file, with only the accepted gaps moved from `gaps` into `accepted`, or park naming the file where there is none.";
+export const pushNothing = (excepted) => (excepted ? `${PUSH_NOTHING} ${PUSH_NOTHING_ACCEPTED}` : PUSH_NOTHING);
 
 // The person's instruction on an open PR (desk-needs-you `resume`), as the fix it sends back: like a
 // gaps call, not one of the pass's tries; numbered as the last of the tries made, for the views that
@@ -1004,6 +1043,15 @@ const cap = (s) => s[0].toUpperCase() + s.slice(1);
 export function fixBrief(t, review = null) {
   const f = t.fix;
   if (!f || f.finished) return '';
+  // The ticket's own worker was interrupted mid-try, leaving these uncommitted (busyWorktree).
+  if (f.left_dirty?.length && !t.left_dirty_said) {
+    const rest = fixBrief({ ...t, left_dirty_said: true }, review);
+    return [`## Your interrupted worker's changes`, '',
+      'Your worktree holds uncommitted changes the worker before you left when it was interrupted:', '',
+      ...f.left_dirty.slice(0, 20).map((x) => `- ${x}`), ...(f.left_dirty.length > 20 ? [`- and ${f.left_dirty.length - 20} more (git status)`] : []), '',
+      'Read them first. Where they are this try\'s work, finish it, test it and commit it as part of this try. ' +
+      'Where they are not this ticket\'s work, change nothing and park naming the files: never discard or stash them.', '', rest].join('\n');
+  }
   if (f.kind === 'renames') {
     return [`## Migration rename try: PR #${f.pr}`, '',
       `Your PR #${f.pr} is ${f.draft ? 'a draft' : 'open and out of draft'} on this branch${f.head ? ` (head ${String(f.head).slice(0, 12)})` : ''}, and ${f.base} has renamed migrations your own files still name by the old filename, so their tests fail with ENOENT once ${f.base} is merged in:`, '',
@@ -1023,7 +1071,12 @@ export function fixBrief(t, review = null) {
   if (f.kind === 'gaps') {
     return [`## Your call on PR #${f.pr}'s review gaps`, '',
       `Your PR #${f.pr} is ${f.ready ? 'open and out of draft' : 'a draft'} on this branch, and the ${reviewName(review)} posted on its head${f.head ? ` ${String(f.head).slice(0, 12)}` : ''} left requirement gaps. The person has ruled on them (also posted on the PR):`, '',
-      ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that call on each gap, and nothing else.', ''].join('\n');
+      ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that call on each gap, and nothing else.', '',
+      // A gap accepted changes no code, so only a verdict that records it settles it: without one the
+      // verdict at the head still counts it open, and the PR goes back to the person.
+      ...(ownReview(review)
+        ? [`A gap the person accepted is settled by the review's verdict, not by code: ${reviewStep(review, 'the head')}, so its verdict records the accepted gap, even when nothing else changes.`, '']
+        : acceptedReverdict(f, t.key))].join('\n');
   }
   if (f.kind === 'instruction') {
     return [`## The person's instruction on PR #${f.pr}`, '',
@@ -1141,6 +1194,23 @@ export function fixBrief(t, review = null) {
   return lines.join('\n');
 }
 
+// A gaps call that accepts a gap and changes no code leaves the head the review read, so the one review
+// posted there is that round's verdict again with the gap moved to `accepted` (desk-review
+// phase-7-post.md, *one exception*). It is read from the round's own results file, which the pass keeps
+// under <state>/reviews/<KEY>/ once the reviewing worker exits (harvest.mjs keepReviewResults); with
+// none for the head, the worker parks rather than re-count. A call that changes code is a new round.
+function acceptedReverdict(f, key) {
+  const head = f.head ? ` ${String(f.head).slice(0, 12)}` : '';
+  return ['### A gap the call accepts, with no code change', '',
+    `Push nothing for it: post that round's verdict again at the same head${head}, with each accepted gap moved from \`gaps\` into \`accepted\` (desk-review's references/phase-7-post.md, "The one exception", and phase-5-requirements.md, "A gap the person accepted"). ` +
+      `Read the round's results file, the \`desk-review-results-<run>.json\` whose \`sha\` is that head: at your worktree root, or kept under \`$DESK_STATE/reviews/${key ?? '<TICKET>'}/\` (desk-env paths prints DESK_STATE). ` +
+      "A file of the same name in both places is one round. The round is the one whose verdict.mjs output is the newest verdict marker posted at the head, even where only one file has that `sha`: where none is, treat it as missing (below), and where more than one is, park naming them. " +
+      "Copy it to your worktree root as `desk-review-results-<run>-accepted.json` (`<run>` its own), never over the original, and in the copy, for each gap the call accepts, and only those, lower its `gaps` count by one and add an `accepted` entry (`gap`, `by`, `at`, `url`): who accepted it, the date and the link to the person's comment on the PR. Keep its `round` and `since`, run desk-review's verdict.mjs on it, and post that verdict at the same head with its `--accepted` section, as desk-review Phase 7 posts a review. " +
+      "The head then carries two verdict markers, the newer one yours: confirm it landed by Phase 7's count before and after, one higher, not by finding exactly one marker.", '',
+    "With no results file for that head, post nothing: park (AUTOPILOT_PARK) naming the file you looked for and both places you looked. Never count a verdict by hand, nor post one built from another round's results.", '',
+    'Where the call changes code, push it and review the new head as a new round, as any fix does.', ''];
+}
+
 // A review try's narrowing (reviewTry `targeted`): the files the base moved and the PR's code that uses
 // them, read as desk-review's targeted round; nothing for a whole review, which is what a review other
 // than desk-review runs, since the targeted round is desk-review's own.
@@ -1214,7 +1284,10 @@ function fixTaskText(t, review = null) {
         : 'read each failing run (gh run view <run id> --log-failed) and fix the cause, never the check';
   // A review fix is reviewed again on its new head, so the pass reads a verdict there before it undrafts.
   // A worker that pushed nothing left the head the last review read, so another review there changes nothing.
-  const after = reviewed ? `${afterReview}. If you pushed nothing, post no review: the head is unchanged, so a review of it would only repeat the last one` : '';
+  // The one exception is a gaps call that accepts a gap: its accepted re-verdict at the unchanged head,
+  // which only desk-review's verdict defines (pushNothing, in desk-review's own words).
+  const excepted = gaps && !ownReview(review);
+  const after = reviewed ? `${afterReview}. ${pushNothing(excepted)}${excepted ? ' The "A gap the call accepts" section of your briefing says how.' : ''}` : '.';
   // A conflict try's DONE line is the reason a PR stuck after its last try gives (stillInConflict).
   const said = f.kind === 'conflict' && f.check ? ' said=<one line: what you renumbered, or what still fails the check and why>'
     : f.kind === 'conflict' ? ' said=<one line: what you resolved, or what is still in conflict and why>'
@@ -1225,6 +1298,6 @@ function fixTaskText(t, review = null) {
     : `Your task is ${f.person ? 'the fix try the person sent' : f.extra ? 'the extra fix try' : `fix try ${f.try} of ${f.of}`} on PR #${f.pr}, already open on your branch: the "Fix try" section of your briefing says what is wrong. `;
   return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
     task +
-    `Fix only that: ${how}. Then verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), and push to the same branch with git push origin <your branch>${after}. ` +
+    `Fix only that: ${how}. Then verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), and push to the same branch with git push origin <your branch>${after} ` +
     `Open no new PR, leave the PR ${inDraft ? 'in' : 'out of'} draft, and leave the ticket's Jira ${f.gaps?.length || f.taken?.length ? 'status as it is, apart from the comments recording your calls' : 'as it is'}. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>${said}.`;
 }

@@ -907,12 +907,13 @@ function promotionOf(q, t) {
   return m ? { pr: m.pr, merge_commit: m.merge_commit ?? q?.promotion_commits?.[String(m.pr)] ?? null } : null;
 }
 const SHA40 = /^[0-9a-f]{40}$/;
-function gateHeld(r, t, s) {
+// `reads` is collect's (READS); its git reads the refs, READS.git where it has none.
+function gateHeld(r, t, s, reads = null) {
   const after = s.after ?? 'merge';
   if (after === 'merge') return { held: true, note: null };
   const root = gitRootOf(r);
   if (!root) return { held: true, note: 'its gate could not be checked: config §2 "Primary repo root" is unset' };
-  const git = (args) => READS.git(root, args);
+  const git = (args) => (reads?.git ?? READS.git)(root, args);
   const commit = (x) => git(['rev-parse', '--verify', '--quiet', `${x}^{commit}`]);
   const within = (a, b) => git(['merge-base', a, b]) === a;
   const pr = `PR #${t.result?.pr ?? '?'}`;
@@ -962,7 +963,7 @@ export const followGateHeld = (slug, q, t, s) => gateHeld({ slug, q }, t, s).hel
 // checker's to run, and `failed`, the checker's record, where one failed it), `waiting` not yet. A step a
 // checker passed is neither, nor is a runnable one not yet passed or failed while its checker runs (up
 // to FOLLOW_TIMEOUT_MS) or, for FOLLOW_WAIT_MS after the code went out, is still to.
-function followSplit(r, t, now = Date.now()) {
+function followSplit(r, t, now = Date.now(), reads = null) {
   const ready = [], waiting = [];
   const labels = personStepLabels(r.slug);
   const waited = now - (timeOf(outAt(r.q, t)) ?? now) >= FOLLOW_WAIT_MS;
@@ -970,7 +971,7 @@ function followSplit(r, t, now = Date.now()) {
   for (const s of t.follow_on) {
     const c = checkOf(t, s);
     if (c?.result === 'pass') continue;
-    const g = gateHeld(r, t, s);
+    const g = gateHeld(r, t, s, reads);
     if (!g.held) { waiting.push(s); continue; }
     // A step a checker ran stays its own, whatever the labels read now.
     const checked = settled(c) || followKind(s, labels) === 'runnable';
@@ -994,9 +995,9 @@ const gatedFollow = (t) => t.follow_on.some((s) => gateOf(s) !== 'merge');
 // step is an item of its own, `…:checked:<id>` (stepId), listed as soon as it failed or went unrun: its
 // result comes in on its own time, and would otherwise join an item the person was already shown.
 const stepId = (s) => createHash('sha1').update(String(s.step)).digest('hex').slice(0, 6);
-function followItems(r) {
+function followItems(r, reads = null) {
   return followsOf(r).flatMap((t) => {
-    const { ready, waiting } = followSplit(r, t);
+    const { ready, waiting } = followSplit(r, t, Date.now(), reads);
     const groups = GATES.flatMap((g) => {
       const here = ready.filter((x) => gateOf(x.s) === g);
       return [{ g, ready: here.filter((x) => !x.checked) }, ...here.filter((x) => x.checked).map((x) => ({ g, id: stepId(x.s), ready: [x] }))];
@@ -1720,7 +1721,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
       if ([...s.in].some((b) => dirs.has(resolve(b.stateDir)))) repoItem(s.r, s.t, s.item, s.item.since, s.dir, s.behind, s.said);
     }
   }
-  for (const f of inScope.flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...duplicateItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
+  for (const f of inScope.flatMap((b) => [...followItems(b, reads), ...linkItems(b), ...unpromotedItems(b), ...duplicateItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
   for (const f of inScope.flatMap(baseRedItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
   // Its need names the follow items waiting on it, so it ranks by them without saying the count.
   for (const f of inScope.flatMap(promotionItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
@@ -2217,36 +2218,49 @@ export function ask({ word, text, now = Date.now(), repos = loadRepos(now, word)
   return { ok: true, line: `${r.repo} ${ASK}${id}: ${added ? 'recorded' : 'already recorded'}; /desk-needs-you and desk-q list it until you say done.` };
 }
 
+// One run of the command line, in this process: { code, out, err }, which the entry below prints and exits
+// with. `reads` is what list's refresh and collect, and record, read through (READS where none is given).
+export function run(argv, { reads } = {}) {
+  const [cmd, ...rest] = argv;
+  const lines = [];
+  const end = (code, err = '') => ({ code, out: lines.map((l) => `${l}\n`).join(''), err });
+  const at = reads === undefined ? {} : { reads };
+  try {
+    if (cmd === 'list' && rest.length <= 1) {
+      const settled = refresh({ word: rest[0] ?? null, ...at });
+      lines.push([...settled, listText(collect({ word: rest[0] ?? null, ...at }))].join('\n'));
+    }
+    else if (cmd === 'left' && rest.length <= 1) lines.push(leftText({ word: rest[0] ?? null }));
+    else if (cmd === 'record' && rest.length >= 3) {
+      const [word, ticket, verb, ...more] = rest;
+      // An override names its decision id before the choice.
+      const [action, text] = verb === 'override' ? [`override ${more[0] ?? ''}`, more.slice(1).join(' ')] : [verb, more.join(' ')];
+      const res = record({ word, ticket, action, text, ...at });
+      lines.push(res.line);
+      if (res.message) lines.push(`MESSAGE ${res.message.to ?? '(no batch name recorded)'}: ${res.message.text}`);
+      if (!res.ok) return end(EXIT.SHOW_PERSON);
+    } else if (cmd === 'move' && rest.length === 3) {
+      const [word, ticket, to] = rest;
+      const res = record({ word, ticket, action: 'move', text: to, ...at });
+      lines.push(res.line);
+      if (!res.ok) return end(EXIT.SHOW_PERSON);
+    } else if (cmd === 'ask' && rest.length === 2) {
+      const res = ask({ word: rest[0], text: rest[1] });
+      lines.push(res.line);
+      if (!res.ok) return end(EXIT.SHOW_PERSON);
+    } else return end(EXIT.SHOW_PERSON, 'usage: needs-you.mjs list [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>"\n');
+  } catch (e) { return end(EXIT.SHOW_PERSON, `${e.message}\n`); }
+  return end(0);
+}
+
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
 })();
 if (isMain) {
-  const [cmd, ...rest] = process.argv.slice(2);
-  const refuse = (why) => { console.error(why); process.exit(EXIT.SHOW_PERSON); };
-  try {
-    if (cmd === 'list' && rest.length <= 1) {
-      const settled = refresh({ word: rest[0] ?? null });
-      console.log([...settled, listText(collect({ word: rest[0] ?? null }))].join('\n'));
-    }
-    else if (cmd === 'left' && rest.length <= 1) console.log(leftText({ word: rest[0] ?? null }));
-    else if (cmd === 'record' && rest.length >= 3) {
-      const [word, ticket, verb, ...more] = rest;
-      // An override names its decision id before the choice.
-      const [action, text] = verb === 'override' ? [`override ${more[0] ?? ''}`, more.slice(1).join(' ')] : [verb, more.join(' ')];
-      const res = record({ word, ticket, action, text });
-      console.log(res.line);
-      if (res.message) console.log(`MESSAGE ${res.message.to ?? '(no batch name recorded)'}: ${res.message.text}`);
-      if (!res.ok) process.exit(EXIT.SHOW_PERSON);
-    } else if (cmd === 'move' && rest.length === 3) {
-      const [word, ticket, to] = rest;
-      const res = record({ word, ticket, action: 'move', text: to });
-      console.log(res.line);
-      if (!res.ok) process.exit(EXIT.SHOW_PERSON);
-    } else if (cmd === 'ask' && rest.length === 2) {
-      const res = ask({ word: rest[0], text: rest[1] });
-      console.log(res.line);
-      if (!res.ok) process.exit(EXIT.SHOW_PERSON);
-    } else refuse('usage: needs-you.mjs list [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>"');
-  } catch (e) { refuse(e.message); }
+  const { code, out, err } = run(process.argv.slice(2));
+  // Through console, which drops a write to a closed pipe rather than throwing EPIPE and exiting 1.
+  if (out) console.log(out.replace(/\n$/, ''));
+  if (err) console.error(err.replace(/\n$/, ''));
+  process.exitCode = code;
 }

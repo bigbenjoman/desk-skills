@@ -6,18 +6,18 @@
 // passes the file to the preflight and the worker, and refuses a spawn when it cannot be built, is
 // proved by running it: tests/test_batch_e2e.sh.
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { REVIEW_AGENTS, buildAgents, parseAgent } from '../desk/bin/worker-agents.mjs';
+import { scratch } from './scratch.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = join(ROOT, 'desk', 'bin', 'worker-agents.mjs');
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
-const T = mkdtempSync(join(tmpdir(), 'worker-agents-'));
+const T = scratch('worker-agents-');
 const home = join(T, 'home');
 const wt = join(T, 'wt');
 const userDir = join(home, '.claude', 'agents');

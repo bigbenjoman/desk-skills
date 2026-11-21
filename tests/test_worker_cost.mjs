@@ -4,18 +4,18 @@
 // left by an earlier batch, and a ticket no worker ran; and per-stage tokens from logs with
 // stage markers, tokens before the first marker, two rounds and no usage; and preflights beside the
 // runs, with a round moved aside compressed. The idle pass that prints the table runs in the test_pass_*.sh suites.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, utimesSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { logUsage, ticketCost, batchCost, batchTickets, costTable, wallTime, preflightLine, spawnEvent, wroteSince } from '../desk/bin/worker-cost.mjs';
 import { attachArchive, archivePath, archiveDone } from '../desk/bin/queue-store.mjs';
 import { execFileSync } from 'node:child_process';
 import { parseWorkerLocation } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
-const S = mkdtempSync(join(tmpdir(), 'desk-cost-'));
+const S = scratch('desk-cost-');
 mkdirSync(join(S, 'logs'));
 const say = (text) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
 // A result event as claude -p writes it: cost and modelUsage are the session's running totals,

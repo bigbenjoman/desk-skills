@@ -343,7 +343,11 @@ exclude_from_git() { # exclude_from_git <pattern>: out of `git status` without t
   local excl
   excl="$(git -C "$WT" rev-parse --git-path info/exclude)"
   case "$excl" in /*) ;; *) excl="$WT/$excl" ;; esac
-  mkdir -p "$(dirname "$excl")"; grep -qxF "$1" "$excl" 2>/dev/null || echo "$1" >> "$excl"
+  mkdir -p "$(dirname "$excl")"
+  grep -qxF "$1" "$excl" 2>/dev/null && return 0
+  # A file whose last line has no newline would join the pattern onto that line's rule.
+  if [ -s "$excl" ] && [ -n "$(tail -c 1 "$excl")" ]; then echo >> "$excl"; fi
+  echo "$1" >> "$excl"
 }
 mask_urls() { sed -E 's#(://[^:@/[:space:]]*):[^@/[:space:]]*@#\1:***@#g'; }
 migrate_db() { # a failure is kept, printed and reported on the machine-read lines, and setup carries on
@@ -387,6 +391,10 @@ cleanup() {
 trap cleanup EXIT
 
 finish() {
+  # A desk-review round's results file stays at the worktree root for the pass to keep (harvest.mjs
+  # keepReviewResults), so it must not dirty the tree a worker proves clean before it pushes.
+  # Not worth failing setup over: a worker would then git clean it, as before.
+  exclude_from_git '/desk-review-results-*.json' || say "WARNING: could not add desk-review results files to the git exclude"
   rm -f "$MARKER"
   say "done"
   say "worktree=$WT"

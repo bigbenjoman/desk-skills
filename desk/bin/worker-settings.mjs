@@ -365,11 +365,11 @@ if (mode === 'triage') {
   const NODE_BIN = NODE_BIN_DIRS.flatMap(withPrefix);
   const NODE_BIN_TOOLS = ['prettier', 'tsx', 'prisma generate', 'prisma format', 'prisma validate'];
   // A lint tool may be type-aware, as heavy as a typecheck, so it runs only under the tsc lock (below).
-  const NODE_BIN_LINT = ['eslint', 'biome', 'oxlint', 'stylelint'];
+  const NODE_BIN_LINT = E.LINT_BINS;
 
   // ---- files ---------------------------------------------------------------------------------
-  // The worktree, and in the state dir only this ticket's park file, handoff briefing, resume file and
-  // screenshots. The resume file lives in the state dir because the harness write-protects the
+  // The worktree, and in the state dir only this ticket's park file, handoff briefing, resume file,
+  // screenshots and review results (reviews/<KEY>/, kept so a later accepted re-verdict can re-run them). The resume file lives in the state dir because the harness write-protects the
   // worktree's `.claude/`, where desk-ticket keeps it interactively. Not answers/ (a worker must not
   // answer itself), not workers/ (its own settings), not the queue or the locks.
   allow.push(
@@ -378,6 +378,7 @@ if (mode === 'triage') {
     `Edit(${abs(STATE)}/handoffs/${T}.json)`,
     `Edit(${abs(STATE)}/resume/${T}.json)`,
     `Edit(${abs(STATE)}/images/${T}/**)`, `Edit(${abs(STATE)}/images/${T}/**)`,
+    `Edit(${abs(STATE)}/reviews/${T}/**)`,
   );
   // Inside the worktree, the harness's own settings (which it may reload) and git's pointer file.
   deny.push(
@@ -475,9 +476,17 @@ if (mode === 'triage') {
   // covers, which the worker runs under the test lock like any suite line. workspace-test re-reads the
   // workspaces when it runs, so one rule covers a workspace the worker adds after spawn.
   allow.push(...lockForms('test', '.', 'desk-env workspace-test').map((c) => rule(c, '')));
-  const lintBins = NODE_BIN_DIRS.flatMap((d) => NODE_BIN_LINT.flatMap((t) => lockForms('tsc', '.', `${d}${t}`)));
+  // A lint binary runs at the root and in each directory a §4 item names, so a worker lints one file
+  // from its workspace package. A form a configured item holding `..` extends is left to that item's
+  // own rule: its `..` deny would refuse the item, and its prefix allow without the deny takes any `..`.
+  const lintDirs = [...new Set(['.', ...items.map((it) => normDir(it.dir))])];
+  const configured = items.flatMap((it) => twins(it.cmd).flatMap((cmd) => lockForms(it.lock ?? E.lockFor(it.id), it.dir, cmd)));
+  const allLint = lintDirs.flatMap((dir) => NODE_BIN_DIRS.flatMap((d) => NODE_BIN_LINT.flatMap((t) => lockForms('tsc', dir, `${d}${t}`))));
+  const extends_ = (k, c) => k.startsWith(c) && k.slice(c.length).includes('..');
+  const lintBins = allLint.filter((c) => !configured.some((k) => extends_(k, c)));
   allow.push(...lintBins.map((c) => rule(c, '')));
-  deny.push(...lintBins.map((c) => `Bash(${c}*..*)`));
+  // Such an item still takes no further `..` of the worker's.
+  deny.push(...lintBins.map((c) => `Bash(${c}*..*)`), ...configured.filter((k) => allLint.some((c) => extends_(k, c))).map((k) => `Bash(${k}*..*)`));
   if (PM && BIN_NAME.test(PM)) {
     probeBins.add(PM);
     allow.push(...withPrefix(`${PM} install`).map((c) => `Bash(${c})`)); // exactly, no arguments
@@ -704,7 +713,7 @@ if (mode === 'triage') {
   const composeFile = !stackByEnv && base ? [base, override].filter(Boolean).join(' -f ') : null;
   const services = [];
   for (const raw of cfgList('local-services')) {
-    const name = /^[a-z0-9][a-z0-9_.-]*(?=\s|$)/.exec(raw.trim())?.[0];
+    const name = E.localServiceName(raw);
     if (name) services.push(name);
     else if (E.permission('worker-local-services') === 'yes') warns.push(`§4 Local services item "${raw}" does not start with a compose service name — not allow-listed`);
   }

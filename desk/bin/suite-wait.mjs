@@ -1,11 +1,13 @@
 // What a worktree is doing with the box-wide test lock (with-lock.sh test|tsc, which suites and
 // typechecks share): running a command under it, waiting for it, or neither. Read from the process
-// table, each process's working directory, and the holder files with-lock.sh leaves in the lock dir.
+// table, each process's working directory, the slot leases with-lock.sh takes from the lease broker,
+// and the holder files it leaves in the lock dir.
 import { readFileSync, readdirSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { psRows } from './desk-env.mjs';
 import { since } from './gate.mjs';
+import { leaseDir, readStore, storeFile } from './leases.mjs';
 import { tilde } from './logins.mjs';
 
 // Every process's working directory, as [{pid, cmd, cwd}], read once: lsof, else Linux's /proc.
@@ -63,30 +65,51 @@ export function processList() {
   return PROCS;
 }
 
-// The test lock's holder files, as [{pids, at}]: each mkdir slot's `pid` (the wrapper and its command)
-// and each flock slot's `.pid` (the command with-lock.sh exec'd into), with when each was written (ms).
-// With `light`, the light lock's too (§4 Suite weight light: with-lock.sh test runs as `light`).
-function holderFiles(dir, light = false) {
+// Which locks a reader asks about (`locks`): `test`, the test lock (test and tsc, the heavy slot pool);
+// `light`, the light lock (§4 Suite weight light: with-lock.sh test runs as `light`); or `both`.
+const POOLS = { test: ['slot:heavy'], light: ['slot:light'], both: ['slot:heavy', 'slot:light'] };
+const LOCK_FILES = { test: 'desk-test', light: 'desk-light', both: '(?:desk-test|desk-light)' };
+
+// The locks' slot leases, as [{pids, at}]: each slot lease's owner (the command with-lock.sh exec'd
+// into, or ran as a child), with when it was taken (ms). Read from the store as it stands, without its
+// lock: an owner that has exited names nobody here, as a stale holder file does not. [] when the store
+// is missing or unreadable.
+function slotLeases(locks = 'test') {
+  let store;
+  try { store = readStore(storeFile(leaseDir())); } catch { return []; }
+  const pools = POOLS[locks];
+  return store.leases.filter((l) => l.kind === 'slot' && pools.includes(l.pool) && l.owner)
+    .map((l) => ({ pids: [l.owner.pid], at: Date.parse(l.acquired) }));
+}
+// The locks' holders, as [{pids, at}]: their slot leases (above), read first, then their holder files:
+// each mkdir slot's `pid` (the wrapper and its command) and each flock slot's `.pid` (the command
+// with-lock.sh exec'd into), with when each was written (ms). With the slot lease kind off, only the
+// files name anyone; in shadow both name the same run.
+function holderFiles(dir, locks = 'test') {
+  const leases = slotLeases(locks);
   let names = [];
-  try { names = readdirSync(dir); } catch { return []; }
-  const lock = light ? '(?:desk-test|desk-light)' : 'desk-test';
+  try { names = readdirSync(dir); } catch { return leases; }
+  const lock = LOCK_FILES[locks];
   const slotDir = new RegExp(`^${lock}\\.lock(\\.\\d+)?\\.d$`), slotPid = new RegExp(`^${lock}\\.lock(\\.\\d+)?\\.pid$`);
-  return names.flatMap((n) => {
+  return [...leases, ...names.flatMap((n) => {
     const file = slotDir.test(n) ? join(dir, n, 'pid') : slotPid.test(n) ? join(dir, n) : null;
     if (!file) return [];
     try {
       const pids = readFileSync(file, 'utf8').split(/\s+/).filter((p) => /^\d+$/.test(p)).map(Number);
       return [{ pids, at: statSync(file).mtimeMs }];
     } catch { return []; }
-  });
+  })];
 }
-// The pids the test lock's holder files name, and with `light` the light lock's too.
-export function lockHolders(dir, { light = false } = {}) {
-  return new Set(holderFiles(dir, light).flatMap((f) => f.pids));
+// The pids the locks' holder files and slot leases name.
+export function lockHolders(dir, { locks = 'test' } = {}) {
+  return new Set(holderFiles(dir, locks).flatMap((f) => f.pids));
 }
-// Each pid a holder file names, with when its file was written (ms).
-export function lockHolderStamps(dir) {
-  return new Map(holderFiles(dir).flatMap((f) => f.pids.map((p) => [p, f.at])));
+// Each pid a holder file or slot lease names, with when its file was written or its lease taken (ms).
+// A pid in both keeps the later time, which is when this run took the lock.
+export function lockHolderStamps(dir, { locks = 'test' } = {}) {
+  const out = new Map();
+  for (const f of holderFiles(dir, locks)) for (const p of f.pids) out.set(p, Math.max(out.get(p) ?? -Infinity, f.at));
+  return out;
 }
 
 // The process itself, by its first words: a worker's own command line quotes these commands in its
@@ -97,19 +120,44 @@ const FLOCK = /^(?:\S*\/)?flock\s+(?:-\S+\s+)*\S*desk-test\.lock(?:\.\d+)?(?:\s|
 const LIGHT_WRAPPER = /^(?:\S*\/)?(?:(?:ba|z)?sh\s+)?(?:\S*\/)?with-lock\.sh\s+light(?:\s|$)/;
 const LIGHT_FLOCK = /^(?:\S*\/)?flock\s+(?:-\S+\s+)*\S*desk-light\.lock(?:\s|$)/;
 
-// 'hold' when the process holds the test lock, 'wait' when it waits for it, else null: a pid a holder
-// file names holds; flock(1) runs its command as a child, so a single-slot flock with a child holds and
-// one with none waits; a with-lock.sh test|tsc wrapper no holder file names waits (a flock slot's
-// wrapper has exec'd into its command by the time it holds).
-// With `light`, the light lock counts too: a worker's suite on it is running or waiting all the same.
-function lockRole(p, { procs, holders, light = false }) {
+// Whether a process is a flock(1) on one of the locks (`locks`, as holderFiles takes it).
+const isFlock = (p, locks = 'both') => (locks !== 'light' && FLOCK.test(p.args)) || (locks !== 'test' && LIGHT_FLOCK.test(p.args));
+
+// 'hold' when the process holds one of the locks, 'wait' when it waits for one, else null: a pid a
+// holder file names holds; flock(1) runs its command as a child, so a single-slot flock with a child
+// holds and one with none waits; a with-lock.sh wrapper no holder file names waits (a flock slot's
+// wrapper has exec'd into its command by the time it holds). `holders` come from lockHolders with the
+// same `locks`.
+function lockRole(p, { procs, holders, locks = 'test' }) {
   if (holders.has(p.pid)) return 'hold';
-  if (FLOCK.test(p.args) || (light && LIGHT_FLOCK.test(p.args))) return procs.some((c) => c.ppid === p.pid) ? 'hold' : 'wait';
-  return WRAPPER.test(p.args) || (light && LIGHT_WRAPPER.test(p.args)) ? 'wait' : null;
+  if (isFlock(p, locks)) return procs.some((c) => c.ppid === p.pid) ? 'hold' : 'wait';
+  return (locks !== 'light' && WRAPPER.test(p.args)) || (locks !== 'test' && LIGHT_WRAPPER.test(p.args)) ? 'wait' : null;
+}
+
+// Whether a pid a holder file or slot lease names is that holder still: its process started before the
+// file was written or the lease taken (`stamps`, lockHolderStamps), so a stale file whose pid was reused
+// names nobody. A flock(1) is named by no file, and a pid with no stamp has nothing to check against.
+function currentHolder(p, { ages, stamps, now }) {
+  if (!stamps?.has(p.pid) || isFlock(p)) return true;
+  const a = ages?.get(p.pid) ?? null;
+  return a != null && now - a * 1000 <= stamps.get(p.pid) + 2000;
+}
+
+// Whether a process already runs inside a slot of the test or light lock: a holder file or slot lease
+// names it and is current (above), or its parent is a flock(1) on either lock, which runs its command as
+// a child and names it nowhere. How tests/related.sh, called through a with-lock.sh that does not
+// export DESK_LOCK_HELD, knows not to wait for a second slot behind its own. `holders` and `stamps` from
+// lockHolders and lockHolderStamps with `both`.
+export function inSlot(pid, { procs, holders, ages, stamps, now = Date.now() }) {
+  const me = procs?.find((p) => p.pid === pid);
+  if (!me) return false;
+  if (holders.has(pid) && currentHolder(me, { ages, stamps, now })) return true;
+  const parent = procs.find((p) => p.pid === me.ppid);
+  return !!parent && isFlock(parent);
 }
 
 // 'suite' when a process working in the worktree holds the test lock or the light lock (`holders` from
-// lockHolders with `light`), 'lock' when one waits for either,
+// lockHolders with `both`), 'lock' when one waits for either,
 // else null. A holder file's pid counts only for a process still working in the worktree, so a stale
 // file whose pid has been reused elsewhere names nothing here. 'unknown' when ps cannot be read: no
 // list is not an empty one, so the pass holds the worker as it would a suite, up to the same ceiling.
@@ -120,7 +168,7 @@ export function suiteWait(worktree, { procs, cwds, holders }) {
   let waiting = false;
   for (const p of procs) {
     if (!here.has(p.pid)) continue;
-    const role = lockRole(p, { procs, holders, light: true });
+    const role = lockRole(p, { procs, holders, locks: 'both' });
     if (role === 'hold') return 'suite';
     if (role === 'wait') waiting = true;
   }
@@ -145,26 +193,21 @@ export function processAges() {
   try { AGES = new Map(psRows('pid=,etime=').map((p) => [p.pid, etimeSeconds(p.etime)])); } catch { AGES = null; }
   return AGES;
 }
-// Who holds the test lock, any repo or session, as [{pid, cwd, args, seconds}]: each holding process
-// whose parent does not hold it too (a mkdir slot's file names the wrapper and its command). seconds is
-// how long it has held the lock: from its holder file, written as the lock is taken, else (a single-slot
-// flock(1), which forks its command once it holds) from that command's age; null where unknown. cwd is
-// null where it cannot be read. A pid only a holder file names
-// counts only where its process started before that file was written (`stamps`, lockHolderStamps), so a
-// stale file whose pid was reused names nobody. [] when ps cannot be read.
-export function lockHolderRuns({ procs, holders, cwds, ages, stamps, now = Date.now() }) {
+// Who holds the test lock (or with `locks`, the light lock or both), any repo or session, as
+// [{pid, cwd, args, seconds}]: each holding process whose parent does not hold it too (a mkdir slot's
+// file names the wrapper and its command). seconds is how long it has held the lock: from its holder
+// file, written as the lock is taken, else (a single-slot flock(1), which forks its command once it
+// holds) from that command's age; null where unknown. cwd is null where it cannot be read. A pid only a
+// holder file names counts only while it is that holder still (currentHolder). `holders` and `stamps`
+// from lockHolders and lockHolderStamps with the same `locks`. [] when ps cannot be read.
+export function lockHolderRuns({ procs, holders, cwds, ages, stamps, locks = 'test', now = Date.now() }) {
   if (!procs) return [];
   const age = (pid) => ages?.get(pid) ?? null;
-  const current = (p) => {
-    if (!stamps?.has(p.pid) || FLOCK.test(p.args)) return true;
-    const a = age(p.pid);
-    return a != null && now - a * 1000 <= stamps.get(p.pid) + 2000;
-  };
-  const holding = procs.filter((p) => lockRole(p, { procs, holders }) === 'hold' && current(p));
+  const holding = procs.filter((p) => lockRole(p, { procs, holders, locks }) === 'hold' && currentHolder(p, { ages, stamps, now }));
   const pids = new Set(holding.map((p) => p.pid));
   const held = (p) => {
-    if (stamps?.has(p.pid) && !FLOCK.test(p.args)) return Math.max(0, Math.floor((now - stamps.get(p.pid)) / 1000));
-    const child = FLOCK.test(p.args) ? procs.find((c) => c.ppid === p.pid) : null;
+    if (stamps?.has(p.pid) && !isFlock(p)) return Math.max(0, Math.floor((now - stamps.get(p.pid)) / 1000));
+    const child = isFlock(p) ? procs.find((c) => c.ppid === p.pid) : null;
     return age(child ? child.pid : p.pid);
   };
   return holding.filter((p) => !pids.has(p.ppid)).map((p) => ({ pid: p.pid, cwd: cwds?.find((c) => c.pid === p.pid)?.cwd ?? null, args: p.args, seconds: held(p) }));

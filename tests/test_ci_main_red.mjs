@@ -1,11 +1,11 @@
 // suite: ci main red (the red-main alarm's lane decisions and the macOS nightly gate)
 // The decisions as pure functions, then `alarm` and `nightly-due` end to end against a fake gh.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { testsLane, macosLane, withTrigger, ranSuite, decide, nightlyDue, PLAN_JOB } from './ci_main_red.mjs';
+import { testsLane, macosLane, withTrigger, ranSuite, decide, nightlyDue, PLAN_JOB, shardFindings, suiteIssue } from './ci_main_red.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -77,8 +77,18 @@ t('the last green push was 25 h ago: due', nightlyDue([run('success', 25)], NOW)
 t('a failed push run: due', nightlyDue([run('failure', 2)], NOW), true);
 t('a passed schedule run (perhaps a skip) does not count: due', nightlyDue([run('success', 2, { event: 'schedule' })], NOW), true);
 
+// The slow and flaky suites in the shard result files.
+const shards = ['rc=0\nfailed=\nflaked=test_b.sh\nslow=test_a.mjs=41.250/30\n', 'rc=0\nfailed=\nflaked=test_b.sh test_c.mjs\nslow=\n', 'rc=0\nfailed=\nflaked=\n'];
+t('DS-927 AC8 AC9 each slow and flaked suite once, across shards', JSON.stringify(shardFindings(shards)), JSON.stringify({ slow: ['test_a.mjs=41.250/30'], flaked: ['test_b.sh', 'test_c.mjs'] }));
+const runRef = { sha: 'abcdef0123', url: 'https://x/runs/9' };
+const slowIssue = suiteIssue('slow', ['test_a.mjs=41.250/30'], null, runRef);
+t('DS-927 AC8 a slow suite with no open ci-slow issue: create', slowIssue.action, 'create');
+t('DS-927 AC8 naming the suite, its CPU seconds and its budget', slowIssue.body, '**tests** on main at abcdef0: https://x/runs/9\n\nSuites over their CPU budget:\n- test_a.mjs: 41.250 CPU seconds, budget 30\n');
+t('DS-927 AC9 a flaked suite with an open ci-flaky issue: comment, naming it', [suiteIssue('flaked', ['test_b.sh'], 12, runRef).action, /\n- test_b\.sh\n$/.test(suiteIssue('flaked', ['test_b.sh'], 12, runRef).body)].join(), 'comment,true');
+t('DS-927 AC8 AC9 nothing slow or flaked: no issue', suiteIssue('slow', [], null, runRef), null);
+
 // End to end with a fake gh: `run list`/`run view`/`issue list` answer from files, everything is logged.
-const T = mkdtempSync(join(tmpdir(), 'desk-ci-red-'));
+const T = scratch('desk-ci-red-');
 try {
   const BIN = join(T, 'bin');
   mkdirSync(BIN);
@@ -91,7 +101,7 @@ case "$1 $2" in
     *) if [ -f "${T}/live-$w.json" ]; then cat "${T}/live-$w.json"; else echo '[]'; fi ;;
   esac ;;
   "run view") cat "${T}/jobs-$3.json" ;;
-  "issue list") cat "${T}/issues.json" ;;
+  "issue list") case "$*" in *ci-slow*) cat "${T}/issues-slow.json" ;; *ci-flaky*) cat "${T}/issues-flaky.json" ;; *) cat "${T}/issues.json" ;; esac ;;
   "issue create") echo "https://github.com/acme/x/issues/42" ;;
 esac
 exit 0
@@ -141,6 +151,26 @@ exit 0
   t('nightly-due: writes the output', readFileSync(join(T, 'out'), 'utf8'), 'due=false\n');
   put('runs-nightly-macos.yml.json', [{ databaseId: 3, conclusion: 'success', event: 'push', url: 'u3', headSha: 'ddddddd', createdAt: live(30) }]);
   t('nightly-due: none in 24 h runs it', cli(['nightly-due']).out.trim(), 'due=true');
+
+  // The record job's issues, from a push run's shard results: no ci-slow issue open, a ci-flaky one is.
+  const RES = join(T, 'results'); mkdirSync(RES);
+  writeFileSync(join(RES, 'shard-1.txt'), 'rc=0\nfailed=\nflaked=test_b.sh\nslow=test_a.mjs=41.250/30\n');
+  writeFileSync(join(RES, 'shard-2.txt'), 'rc=0\nfailed=\nflaked=\nslow=\n');
+  writeFileSync(join(RES, 'durations-1.json'), '{}');
+  put('issues-slow.json', []); put('issues-flaky.json', [{ number: 12 }]);
+  const s = cli(['suites', RES], { RUN_URL: 'https://x/runs/9', RUN_SHA: 'abcdef0123' });
+  const created = s.gh.filter((l) => l.startsWith('issue create'));
+  const all = s.gh.join('\n');
+  t('DS-927 AC8 a suite over budget opens one ci-slow issue, assigned to the owner', [created.length, /^issue create --label ci-slow --title slow suites: over their CPU budget on main --body [^]*?\n- test_a\.mjs: 41\.250 CPU seconds, budget 30$/m.test(all), s.gh.includes('issue edit 42 --add-assignee owner1')].join(), '1,true,true');
+  t('DS-927 AC8 and no ci-main-red issue', /ci-main-red/.test(all), false);
+  t('DS-927 AC9 a flaked suite comments on the open ci-flaky issue, naming it, assigned to the owner', [/^issue comment 12 --body [^]*?\n- test_b\.sh$/m.test(all), s.gh.includes('issue edit 12 --add-assignee owner1')].join(), 'true,true');
+  // gh's answer for the ci-slow issue cannot be read: the ci-flaky issue is still updated, and the step fails.
+  writeFileSync(join(T, 'issues-slow.json'), 'not json');
+  writeFileSync(LOG, '');
+  const broken = spawnSync(process.execPath, [SCRIPT, 'suites', RES], { encoding: 'utf8', env: { PATH: `${BIN}:${process.env.PATH}`, GH_REPO: 'acme/x', OWNER: 'owner1', RUN_URL: 'https://x/runs/9', RUN_SHA: 'abcdef0123' } });
+  t('DS-927 AC8 AC9 a ci-slow issue gh cannot update still lets the ci-flaky one be updated, and fails', [broken.status, /^ci-slow: could not open or update its issue/m.test(broken.stdout), /^issue comment 12 /m.test(readFileSync(LOG, 'utf8'))].join(), '1,true,true');
+  writeFileSync(join(RES, 'shard-1.txt'), 'rc=0\nfailed=\nflaked=\nslow=\n');
+  t('DS-927 AC8 AC9 a run with nothing slow or flaked touches no issue', cli(['suites', RES]).gh.filter((l) => /^(issue|label)/.test(l)).length, 0);
 } finally { rmSync(T, { recursive: true, force: true }); }
 
 console.log(fails ? `${fails} FAILED` : 'all ok');

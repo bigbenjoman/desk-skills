@@ -1,12 +1,12 @@
 // suite: desk-env.mjs subcommand list (its switch equals DESK_ENV_COMMANDS; usage from it)
 // covers: desk/bin/desk-env.mjs
 // Scratch directories only.
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { DESK_ENV_COMMANDS } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -31,13 +31,13 @@ function parity(text, list) {
   ];
 }
 
-t('the switch handles every listed subcommand (43)', DESK_ENV_COMMANDS.length, 43);
+t('the switch handles every listed subcommand (45)', DESK_ENV_COMMANDS.length, 45);
 t('the switch equals DESK_ENV_COMMANDS', parity(source, DESK_ENV_COMMANDS), []);
 const added = source.replace("      case 'uuid':", "      case 'frob':\n        break;\n      case 'uuid':");
 t('a subcommand the list lacks fails, named', parity(added, DESK_ENV_COMMANDS), ['desk-env.mjs handles "frob", which DESK_ENV_COMMANDS lacks']);
 
 // An unknown subcommand exits 2, its usage naming every subcommand handled.
-const S = mkdtempSync(join(tmpdir(), 'desk-env-cmds-'));
+const S = scratch('desk-env-cmds-');
 const run = (args) => spawnSync(process.execPath, [join(root, 'desk/bin/desk-env.mjs'), ...args], {
   encoding: 'utf8', cwd: S, env: { ...process.env, HOME: S, DESK_CONFIG: join(S, 'none.md') },
 });

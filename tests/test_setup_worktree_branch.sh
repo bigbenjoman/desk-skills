@@ -7,6 +7,7 @@
 # shellcheck disable=SC2034
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; B="$S/../desk/bin"; T="$(cd "$(mktemp -d)" && pwd -P)"
+trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; mkdir -p "$HOME"
 : > "$GIT_CONFIG_GLOBAL"; git config --global user.email t@example.com; git config --global user.name t
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
@@ -58,12 +59,17 @@ on_branch() { [ "$(git -C "$1" branch --show-current)" = "$2" ]; }
 
 # AC1: clean, level with origin, no process in it: detached at the same commit, the ticket's worktree made.
 held 1; H="$T/other-1"; sha=$(git -C "$H" rev-parse HEAD)
+printf '/scratch-no-newline' >> "$T/repo/.git/info/exclude" # DS-833: a last rule with no newline
 out=$(bash "$B/setup-worktree.sh" --for-worker T-1 fix/T-1 2>&1); rc=$?
 check "AC1 setup succeeds"                                      '[ $rc -eq 0 ] && [[ "$out" == *"worktree=$T/wt/T-1"* ]]'
 check "AC1 the other worktree is detached at the same commit"   '! git -C "$H" symbolic-ref -q HEAD >/dev/null && [ "$(git -C "$H" rev-parse HEAD)" = "$sha" ]'
 check "AC1 the other worktree and its files stay"               '[ -f "$H/a.txt" ] && git -C "$T/repo" worktree list | grep -qF "$H "'
 check "AC1 the ticket worktree is on the branch"                'on_branch "$T/wt/T-1" fix/T-1'
 check "AC1 the output names the folder it detached"             '[[ "$out" == *"checked out in $H"*"detached that worktree"* ]]'
+echo '{}' > "$T/wt/T-1/desk-review-results-abc1234-k3q9xz.json"
+excl="$(git -C "$T/wt/T-1" rev-parse --git-common-dir)/info/exclude"
+check "DS-833 the exclude file ends each pattern on a line of its own" '[ -z "$(tail -c 1 "$excl")" ] && grep -qxF "/desk-review-results-*.json" "$excl" && grep -qxF /scratch-no-newline "$excl"'
+check "DS-833 a desk-review results file left at the worktree root keeps git status clean" '[ -z "$(git -C "$T/wt/T-1" status --porcelain)" ]'
 
 # AC2: uncommitted changes there.
 held 2; H="$T/other-2"; printf 'two\n' > "$H/a.txt"

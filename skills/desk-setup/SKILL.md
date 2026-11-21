@@ -194,7 +194,8 @@ location: a path only, never the token.
 - **An `UNLISTED` line from `desk-env drift` is blocking.** It names a §4 command item a worker's
   allow-list cannot hold (a `$(…)`, a pipe, `&&`, an env prefix, a bare shell), so every worker is
   refused it. Propose one plain command in its place, usually the logic moved into a repo script run
-  as `bash <path>.sh`, and do not finish setup until the row has none.
+  as `bash <path>.sh`, and do not finish setup until the row has none. On §4 Local services it names
+  an item with no compose service name first: write the name first (`search :8108`), not a script.
 - Ask what they want to change instead of re-interviewing. The `MISSING` rows are asked; a
   `STALLS` or `DONTASK` line is offered as a change, never made without an answer; nothing else is
   asked unless the user names it.

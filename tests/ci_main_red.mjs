@@ -1,5 +1,6 @@
-// The red-main alarm (.github/workflows/ci-main-red.yml) and the macOS lane's nightly gate
-// (.github/workflows/nightly-macos.yml). Both read run metadata through gh, with GH_REPO set.
+// The red-main alarm (.github/workflows/ci-main-red.yml), the macOS lane's nightly gate
+// (.github/workflows/nightly-macos.yml), and the slow and flaky suite issues of tests.yml's record
+// job. All go through gh, with GH_REPO set.
 //
 // A lane is red while:
 //   tests - its latest finished push run on main failed (failure, timed_out or startup_failure); a
@@ -19,8 +20,14 @@
 //   node tests/ci_main_red.mjs nightly-due [--github-output]
 //     prints due=true unless a macOS lane run on main passed in the last DUE_MS; --github-output
 //     appends it to $GITHUB_OUTPUT.
+//   node tests/ci_main_red.mjs suites <dir>
+//     reads a tests push run's shard result files (<dir>/shard-<n>.txt) and opens or comments one
+//     issue labelled ci-slow naming each suite over its CPU budget, and one labelled ci-flaky naming
+//     each that failed then passed its retry, each assigned to OWNER as the red-main issue is. Neither
+//     turns main red, so neither is ever ci-main-red's. RUN_URL and RUN_SHA name the run.
 import { execFileSync } from 'node:child_process';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const DUE_MS = 24 * 3600e3;
@@ -87,7 +94,68 @@ export function decide({ lanes, issue, trigger }) {
 // -> due when no lane run (a push or a dispatch, which always run the suite) on main passed in DUE_MS.
 export const nightlyDue = (runs, now) => !runs.some((r) => LANE_EVENTS.has(r.event) && r.conclusion === 'success' && now - at(r) < DUE_MS);
 
+// The issue for each kind of finding a shard result file carries (its `slow=` and `flaked=` lines).
+export const SUITE_ISSUES = {
+  slow: { label: 'ci-slow', color: 'FBCA04', description: 'a suite on main is over its CPU budget', title: 'slow suites: over their CPU budget on main', what: 'over their CPU budget' },
+  flaked: { label: 'ci-flaky', color: 'D93F0B', description: 'a suite on main failed, then passed its retry', title: 'flaky suites: failed, then passed their retry on main', what: 'failed, then passed their retry' },
+};
+
+// Shard result files' text -> { slow: ['<suite>=<CPU s>/<budget>', ...], flaked: ['<suite>', ...] }, each once.
+export function shardFindings(texts) {
+  const found = { slow: new Set(), flaked: new Set() };
+  for (const text of texts) {
+    for (const line of String(text).split('\n')) {
+      const m = line.match(/^(slow|flaked)=(.*)$/);
+      if (m) for (const w of m[2].split(/\s+/).filter(Boolean)) found[m[1]].add(w);
+    }
+  }
+  return { slow: [...found.slow].sort(), flaked: [...found.flaked].sort() };
+}
+
+// What a kind's open issue (null when none) gets for the run's findings: null when there are none.
+// -> { action: 'create' | 'comment', body }
+export function suiteIssue(kind, items, issue, run) {
+  if (!items.length) return null;
+  const line = (s) => {
+    const m = kind === 'slow' && s.match(/^(.+)=([\d.]+)\/(\d+)$/);
+    return m ? `- ${m[1]}: ${m[2]} CPU seconds, budget ${m[3]}` : `- ${s}`;
+  };
+  const body = `**tests** on main at ${String(run.sha ?? '').slice(0, 7)}: ${run.url}\n\nSuites ${SUITE_ISSUES[kind].what}:\n${items.map(line).join('\n')}\n`;
+  return { action: issue == null ? 'create' : 'comment', body };
+}
+
 const gh = (args) => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
+const assignTo = (n, owner) => { try { gh(['issue', 'edit', String(n), '--add-assignee', owner]); } catch { console.log(`could not assign issue #${n} to ${owner}`); } };
+// Makes the label where it is missing. -> the number of its open issue, or null when none is open.
+const openIssue = (label, color, description) => {
+  try { gh(['label', 'create', label, '--color', color, '--description', description]); } catch { /* it exists */ }
+  return JSON.parse(gh(['issue', 'list', '--label', label, '--state', 'open', '--limit', '1', '--json', 'number']))[0]?.number ?? null;
+};
+// -> the new issue's number, read from the URL gh prints.
+const createIssue = (label, title, body) => gh(['issue', 'create', '--label', label, '--title', title, '--body', body]).trim().replace(/^.*\//, '');
+
+function suites(dir, env) {
+  const files = existsSync(dir) ? readdirSync(dir).filter((f) => /^shard-\d+\.txt$/.test(f)) : [];
+  const found = shardFindings(files.map((f) => readFileSync(join(dir, f), 'utf8')));
+  for (const kind of Object.keys(SUITE_ISSUES)) {
+    const { label, color, description, title } = SUITE_ISSUES[kind];
+    console.log(`${label}: ${found[kind].join(' ') || 'none'}`);
+    if (!found[kind].length) continue;
+    // Each kind on its own, so a gh failure on one still lets the other be reported, and fails the step.
+    try {
+      const issue = openIssue(label, color, description);
+      const d = suiteIssue(kind, found[kind], issue, { sha: env.RUN_SHA, url: env.RUN_URL });
+      let n = issue;
+      if (d.action === 'create') n = createIssue(label, title, d.body);
+      else gh(['issue', 'comment', String(issue), '--body', d.body]);
+      if (env.OWNER) assignTo(n, env.OWNER);
+      console.log(`${label}: ${d.action} #${n}`);
+    } catch (e) {
+      console.log(`${label}: could not open or update its issue: ${String(e.stderr || e.message).trim().split('\n')[0]}`);
+      process.exitCode = 1;
+    }
+  }
+}
 const runList = (wf, more = []) => JSON.parse(gh(['run', 'list', '--workflow', wf, '--branch', 'main', '--status', 'completed', ...more, '--json', FIELDS]));
 
 function triggerOf(env) {
@@ -109,13 +177,12 @@ function alarm(env, now) {
     .some((r) => IN_FLIGHT.has(r.status) && r.databaseId !== trigger?.databaseId);
   const lanes = [testsLane(tests), macosLane(macos, now, running)];
   for (const l of lanes) console.log(l.line);
-  try { gh(['label', 'create', LABEL, '--color', 'B60205', '--description', 'a CI lane on main is red, cancelled or stale']); } catch { /* it exists */ }
-  const issue = JSON.parse(gh(['issue', 'list', '--label', LABEL, '--state', 'open', '--limit', '1', '--json', 'number']))[0]?.number ?? null;
+  const issue = openIssue(LABEL, 'B60205', 'a CI lane on main is red, cancelled or stale');
   const d = decide({ lanes, issue, trigger });
-  const assign = (n) => { try { gh(['issue', 'edit', String(n), '--add-assignee', env.OWNER]); } catch { console.log(`could not assign issue #${n} to ${env.OWNER}`); } };
+  const assign = (n) => assignTo(n, env.OWNER);
   if (d.action === 'create') {
-    const url = gh(['issue', 'create', '--label', LABEL, '--title', 'main is red: a CI lane on main is failing, cancelled or stale', '--body', d.body]).trim();
-    if (env.OWNER) assign(url.replace(/^.*\//, ''));
+    const n = createIssue(LABEL, 'main is red: a CI lane on main is failing, cancelled or stale', d.body);
+    if (env.OWNER) assign(n);
   } else if (d.action === 'comment' || d.action === 'assign') {
     if (d.action === 'comment') gh(['issue', 'comment', String(issue), '--body', d.body]);
     if (env.OWNER) assign(issue);
@@ -130,9 +197,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const [cmd, ...args] = process.argv.slice(2);
   const now = Date.now();
   if (cmd === 'alarm') alarm(process.env, now);
+  else if (cmd === 'suites' && args[0]) suites(args[0], process.env);
   else if (cmd === 'nightly-due') {
     const due = nightlyDue(runList('nightly-macos.yml', ['--limit', '50']), now);
     console.log(`due=${due}`);
     if (args.includes('--github-output')) appendFileSync(process.env.GITHUB_OUTPUT, `due=${due}\n`);
-  } else { console.error('usage: ci_main_red.mjs alarm | nightly-due [--github-output]'); process.exit(2); }
+  } else { console.error('usage: ci_main_red.mjs alarm | nightly-due [--github-output] | suites <dir>'); process.exit(2); }
 }

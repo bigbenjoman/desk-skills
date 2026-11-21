@@ -149,7 +149,8 @@ export function* decideRenames(snap) {
 //                 scope, baseMerge, behind }, driver(n, head) (the merge driver's rerun record),
 //                 built(n, head), evidenceRun(n, head), missingShots(body, t) (the files body's cells
 //                 name that t's screenshot directory does not hold), shotDir(t), baseReads(head),
-//                 reviewComments(id) -> { comments } or { comments: null, error }
+//                 reviewComments(id) -> { comments } or { comments: null, error },
+//                 waived(n, head, checks, names) (the merge driver waives these red checks: pass.mjs waivedAt)
 export function* decideUndraft(snap) {
   const { cfg, reads } = snap;
   if (!snap.drafts.length) return;
@@ -167,7 +168,8 @@ export function* decideUndraft(snap) {
     // A verdict for an older head holds at this one when only clean merges of the base and empty commits came since.
     const { carry, scope, baseMerge, behind } = reads.baseMoves(t, head);
     const c = undraftCall(t, { number: n, head, base: v.baseRefName ?? null, baseHead: s.base_head ?? null, branch: v.headRefName ?? null, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry, scope },
-      { ...passCfg, passAt: snap.at, spine, ...reads.driver(n, head), built: (h) => reads.built(n, h), behind, evidenceRun: (h) => reads.evidenceRun(n, h), missingShots: (body) => reads.missingShots(body, t), shotDir: reads.shotDir(t) });
+      { ...passCfg, passAt: snap.at, spine, ...reads.driver(n, head), built: (h) => reads.built(n, h), behind, evidenceRun: (h) => reads.evidenceRun(n, h), missingShots: (body) => reads.missingShots(body, t), shotDir: reads.shotDir(t),
+        waived: (names) => s.head === head && !!reads.waived?.(n, head, s.checks, names) });
     if (!c) continue;
     // A person who put it back to draft holds it, whatever the call: no undraft, no rerun or check
     // build, and no review or fix worker. The events are read only where the record cannot settle it
@@ -205,7 +207,7 @@ export function* decideUndraft(snap) {
     let rf = null;
     if (hold || gated) rf = null;
     else if (gateFix) rf = gateFix;
-    else if (c.call === 'findings') rf = reviewFix(t, { pr: n, head, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement });
+    else if (c.call === 'findings') rf = reviewFix(t, { pr: n, head, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement, outside: () => reads.outside?.(n, head, t.key) ?? null, title: () => reads.title?.(t.key) ?? null });
     else if (c.call === 'checks' && !snap.fixRowErrors.length) {
       const ctx = { repo: snap.repo, base: snap.base, ...snap.clearsRows, stateChecks: cfg.stateChecks, builds: [], ...reads.baseReads(head) };
       const driver = reads.driver(n, head);

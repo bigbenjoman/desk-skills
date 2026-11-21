@@ -2,12 +2,12 @@
 // covers: desk/bin/desk-codex.mjs
 // A fake codex on PATH records its argv and behaves as $T/mode says: answer (progress, then a final
 // message), hang, read stdin, or fail. Scratch config and state only.
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, existsSync, chmodSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseCodexReview } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -25,7 +25,7 @@ t('an unknown role is refused', /unknown role `probe`/.test(parse('probe=a:low')
 t('a timeout that is not whole seconds is refused', /timeout `1.5`/.test(parse('timeout=1.5')), true);
 t('a role named twice is refused', /`finder` is named twice/.test(parse('finder=a:low finder=b:low')), true);
 
-const T = mkdtempSync(join(tmpdir(), 'desk-codex-'));
+const T = scratch('desk-codex-');
 for (const d of ['bin', 'state']) mkdirSync(join(T, d), { recursive: true });
 const fake = join(T, 'bin', 'codex');
 writeFileSync(fake, `#!/usr/bin/env bash

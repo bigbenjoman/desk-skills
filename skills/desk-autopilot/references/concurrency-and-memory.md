@@ -13,7 +13,7 @@ Default **2**, cap **3** (config §3b "Autopilot worker concurrency" can change 
 RAM binds before CPU, and the 5-hour and 7-day usage limits
 are account-level, shared with the user's own sessions. Worker ports start **one above** config §3b
 "Preferred dev-server port" (`AUTOPILOT_PORT_FLOOR` overrides), skipping any port another ticket
-holds, a peer session claimed (`port-claims.mjs`, from its handshake) or anything bound. Where §4 Local database is set and §3 `db-per-ticket` allows, each ticket
+holds, a peer session claimed (`port-claims.mjs`, from its handshake), with the port lease kind on another session leases (`port-lease.mjs`), or anything bound. Where §4 Local database is set and §3 `db-per-ticket` allows, each ticket
 gets its own database; otherwise every §4 Database URL variable in its worktree is blanked, and a
 ticket that needs a database parks. Shared local services (§4 Local services: a search index, a cache) cannot be
 isolated, so workers park rather than rebuild them.

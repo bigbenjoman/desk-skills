@@ -5,16 +5,16 @@
 // the check-out's session list, desk-q's probe scheduling, the pass's lift probe and each login's usage
 // reading. Nothing reads this computer's logins.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = join(ROOT, 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-claude-logins-'));
+const T = scratch('desk-claude-logins-');
 const H = join(T, 'home');
 const B = join(H, '.claude-logins', 'b');
 mkdirSync(join(H, '.claude'), { recursive: true });

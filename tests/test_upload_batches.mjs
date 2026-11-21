@@ -1,13 +1,13 @@
 // suite: upload batches (the uploader's file list, batches, tags file, resume, stall stop and sha256 reuse)
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { runUpload, tagsPath, fileSha, altOf, batchesOf, linkIn, BATCH_SIZE, EXIT_THROTTLED, EXIT_PACED, THROTTLE_MS } from '../desk/bin/upload-batches.mjs';
 import { swapCells, dragFiles } from '../desk/bin/evidence.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
-const ROOT = mkdtempSync(join(tmpdir(), 'upload-batches-'));
+const ROOT = scratch('upload-batches-');
 let n = 0;
 // A screenshot folder holding `files` (relative paths), each with its own content unless `same` says.
 function folder(files, same = {}) {

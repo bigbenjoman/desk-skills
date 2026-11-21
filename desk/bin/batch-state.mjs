@@ -33,11 +33,18 @@ export function readJsonOrRefuse(path, action) {
   try { text = readFileSync(path, 'utf8'); } catch (e) { throw new Refusal(`${path} could not be read (${e.code ?? e.message}): ${action}`); }
   try { return JSON.parse(text); } catch (e) { throw new Refusal(`${path} is not valid JSON (${e.message}): ${action}`); }
 }
+// The paths this module builds under a batch's state folder, `<KEY>` standing for the ticket. Every
+// one goes through statePath, which refuses a name not declared here.
+export const STATE_PATHS = Object.freeze({ triage: 'triage/<KEY>.json', parks: 'parks/<KEY>.json', answers: 'answers/<KEY>.txt' });
+export function statePath(stateDir, name, key) {
+  if (!Object.hasOwn(STATE_PATHS, name)) throw new Error(`not a declared state path: ${name}`);
+  return join(stateDir, STATE_PATHS[name].split('<KEY>').join(key));
+}
 // The two every script reads: the batch queue and a ticket's triage record. A queue's archived tickets
 // are found by key behind its live ones (queue-store.mjs attachArchive).
 export const readQueue = (path) => attachArchive(readJsonOrRefuse(path,
   `restore it, or re-create ${path} (queue.mjs init <batch-name>, then re-seed it with plan-batch.mjs) — refusing to read it as an empty batch`), path);
-export const readTriage = (stateDir, t) => readJsonOrRefuse(join(stateDir, 'triage', `${t}.json`), `re-run triage.sh ${t}`);
+export const readTriage = (stateDir, t) => readJsonOrRefuse(statePath(stateDir, 'triage', t), `re-run triage.sh ${t}`);
 
 // The PR state the last pass recorded for a done ticket's PR (pr_status), or null when none was read.
 // Nothing here calls GitHub.
@@ -113,13 +120,13 @@ export const moveOffer = (ts) => `move <batch> takes it out of this batch and qu
 
 // Ticket `key`'s park record, parsed, or null where it has none or it is half-written.
 function readPark(stateDir, key) {
-  try { return JSON.parse(readFileSync(join(stateDir, 'parks', `${key}.json`), 'utf8')); } catch { return null; }
+  try { return JSON.parse(readFileSync(statePath(stateDir, 'parks', key), 'utf8')); } catch { return null; }
 }
 
 // The question a worker parked on and nobody has answered yet, or null: its park file's `question`
 // while no answer file sits beside it. A half-written park file is not an error.
 export function openQuestion(stateDir, t) {
-  if (existsSync(join(stateDir, 'answers', `${t}.txt`))) return null;
+  if (existsSync(statePath(stateDir, 'answers', t))) return null;
   return readPark(stateDir, t)?.question || null;
 }
 
@@ -597,13 +604,17 @@ export const startWithout = (t, k, status, why) => ({ question: `${t} is blocked
 // A predecessor failed or parked for a reason of its own is already a question for the person, so the
 // tickets behind it wait on that answer. `prState(n)` gives a PR's state when the caller looked it up
 // ('OPEN' | 'MERGED' | 'CLOSED'); unknown counts as open.
-function holdLeadsTo(q, t, prState, seen) {
+function holdLeadsTo(q, t, prState, seen, memo = new Map()) {
   // `seen` is the current path only: a ticket on it again is a hold cycle (a hand-edited queue), which
   // can never release. Two paths meeting at one held ticket (a diamond) is normal and is followed.
   if (!holdsKept(t) || seen.has(t)) return null;
   // Held on its label, it starts on its day by itself, and a fixed label is only read by a pass, so
   // the batch is not settled while either waits.
   if (dateHeld(t)) return [];
+  // A ticket's answer is the same by whichever path the walk reaches it (one cut short by the path is
+  // on a cycle, which answers null from anywhere), so it is read once per walk: a dense held_by graph
+  // (each ticket naming every one before it) has exponentially many paths.
+  if (memo.has(t)) return memo.get(t);
   seen.add(t);
   const preds = String(t.held_by ?? '').split('|').filter(Boolean);
   const outside = String(t.held_outside ?? '').split('|');
@@ -614,11 +625,13 @@ function holdLeadsTo(q, t, prState, seen) {
     else if (['running', 'triaged'].includes(pt.state) || spinePark(pt)) continue;
     else if (pt.state === 'done') { if (pt.result?.pr == null || prState(pt.result.pr) === 'CLOSED') parks = null; }
     else if (pt.state === 'failed' || (pt.state === 'parked' && !isHeld(pt))) parks.push(p);
-    else { const up = holdLeadsTo(q, pt, prState, seen); parks = up && [...parks, ...up]; }
+    else { const up = holdLeadsTo(q, pt, prState, seen, memo); parks = up && [...parks, ...up]; }
     if (!parks) break;
   }
   seen.delete(t);
-  return parks && [...new Set(parks)];
+  const out = parks && [...new Set(parks)];
+  memo.set(t, out);
+  return out;
 }
 
 // A held ticket is still going somewhere on its own: every predecessor progressing or merged.

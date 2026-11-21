@@ -31,7 +31,18 @@ editing the result until it passes. **The one exception is a gap the person acce
 posted** (`phase-5-requirements.md`, *A gap the person accepted*): re-run verdict.mjs on that round's results with
 only the accepted gaps moved from `gaps` into `accepted`, same round and same `since`, and post it at
 the same SHA with the `--accepted` section in the body. Any other change, a finding or a gap nobody
-accepted, is a new run.
+accepted, is a new run. That round's results file is the `desk-review-results-<run>.json` whose `sha`
+is the head: in the scratchpad, at a worker's worktree root, or, once that worker has exited, kept by
+the pass under `$DESK_STATE/reviews/<TICKET>/`. So a worker leaves every results file in place, never
+`git clean`ed: the worktree's git exclude keeps it out of `git status`. A worker that finds none for the head posts nothing
+and parks naming the file: a verdict counted again without it is the re-count this rule forbids.
+
+**A fix that pushed nothing** leaves the head the last review read. A fix worker's task states the
+rule, with the exception only where it carries the person's call on the review's gaps:
+
+<!-- facts: push-nothing -->
+If you pushed nothing, post no review: the head is unchanged, so a review of it would only repeat the last one. The one exception is a gap the person accepted: post that round's verdict again at the same head, from its results file, with only the accepted gaps moved from `gaps` into `accepted`, or park naming the file where there is none.
+<!-- /facts -->
 
 **A clean run posts too**: "No P0, P1 or P2 findings at `<sha>`, N files, refuted by codex". Absence
 of a review then means *not reviewed*, unambiguously, and the next sweep's skip rule reads it.
@@ -83,7 +94,7 @@ gh pr view <n> --repo <owner>/<repo> --json reviews --jq '[.reviews[] | select(.
 
 **No increase means nothing landed**: post once more and say it took two attempts. A count that was
 already non-zero before posting means this SHA has a verdict: do not post a second one with
-different counts (above). `--paginate` is not optional (without it the newest reviews fall off and
+different counts (above), unless it is the accepted re-verdict the one exception allows. `--paginate` is not optional (without it the newest reviews fall off and
 you re-post a review that landed), and compare counts, never `.[-1]` to a string (null on an empty
 array, so the check passes quietly). On a sweep, confirm every PR in one loop before writing the
 report; a PR still at zero is named, never counted as posted.

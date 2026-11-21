@@ -3,6 +3,7 @@ import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideReopen, decideRenames, decideUndraft, decideRelease, undraftWrite } from '../desk/bin/pass/undraft.mjs';
 import { conflictFilesIn, fixTryQuote } from '../desk/bin/pass/shared.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
+import { flakyWaiver, notesIn, parseFlaky, normaliseRollup } from '../desk/bin/gate.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const j = (x) => JSON.stringify(x);
@@ -62,6 +63,44 @@ const acts = (as) => as.filter((a) => ACTS.has(a.type)).map((a) => a.type);
   const { actions } = drive(decideUndraft, undraftSnap([{ t: ticket('A'), s: status() }]), { 'pr-view': view([review(marker(ALL_ZERO))]) });
   t('a clean green draft is undrafted and commented on', j(acts(actions)), '["ready","comment"]');
   t('and its record reads ready', JSON.parse(sets(actions).find((f) => f.startsWith('undraft='))?.slice(8) ?? '{}').call, 'ready');
+}
+
+// A draft's review round whose gaps only widen a broad AC an earlier try worked, past triage's files: the
+// pass reads the PR's files and triage's scope, and puts the scope question rather than a fix try.
+{
+  const BROAD1 = 'AC2: "an avatar wherever a person shows" — src/list.tsx:4 shows a name with no avatar';
+  const gapReview = review(`${marker(ALL_ZERO.replace('gaps=0', 'gaps=1'))}\n\n### Requirement gaps\n- AC2: "an avatar wherever a person shows" — src/card.tsx:9 shows a name with no avatar\n`);
+  const tried = ticket('A', { fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review', gaps: [BROAD1] }] });
+  const asked = [];
+  const wide = (files) => undraftSnap([{ t: tried, s: status() }], {
+    cfg: { ...undraftSnap([]).cfg, judgement: 'yes' },
+    reads: { ...undraftSnap([]).reads, outside: (n, head, key) => { asked.push(`${n}@${head === HEAD}@${key}`); return files; }, title: (key) => (key === 'A' ? 'Show the avatar on the people list' : null) },
+  });
+  const run = (files) => drive(decideUndraft, wide(files), { 'pr-view': view([gapReview]) }).actions.find((a) => a.type === 'apply-fix')?.fix;
+  const past = run(['src/card.tsx']);
+  t('a widening round past triage\'s files is the person\'s scope question, not a fix try', j([past?.call, /^review gaps only you can settle: PERSON'S CALL: AC2 reads wider than the title \("Show the avatar on the people list"\)/.test(past?.why ?? '')]), j(['stuck', true]));
+  t('the out-of-scope files are read for that PR at its head and ticket', asked[0], '701@true@A');
+  t('a change inside triage\'s files is not asked the scope question', run([])?.why?.startsWith('review gaps only you can settle'), false);
+}
+
+// #831: the draft path reads §4 Known flaky checks as the merge driver does, from the error_notes the pass
+// kept on the PR's checks: red only on a listed test, the draft leaves draft; any other failure holds it.
+{
+  const flaky = parseFlaky(['Integration: tests/orders.test.ts > retries a timed-out order']).flaky;
+  const rollup = [{ name: 'tests', status: 'COMPLETED', conclusion: 'SUCCESS' },
+    { __typename: 'CheckRun', name: 'Integration', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/o/r/actions/runs/9/job/90' }];
+  const listed = { path: 'tests/orders.test.ts', title: 'tests/orders.test.ts > retries a timed-out order', message: 'AssertionError: expected 200 to be 504' };
+  const kept = (notes) => normaliseRollup(rollup).map((c) => (c.name === 'Integration' ? { ...c, error_notes: notes } : c));
+  const files = { 701: ['src/x.ts'] };
+  const waived = (n, head, checks, names) => flakyWaiver(checks, { required: ['tests'], flaky, files: files[n], notes: notesIn(checks) })?.applies === true && names.includes('Integration');
+  const run = (notes, s = {}) => drive(decideUndraft, undraftSnap([{ t: ticket('A'), s: status({ checks: kept(notes), ...s }) }], { reads: { ...undraftSnap([]).reads, waived } }),
+    { 'pr-view': view([review(marker(ALL_ZERO))], { statusCheckRollup: rollup }) }).actions;
+  t('#831 a draft red only on its listed flaky test leaves draft', acts(run([listed])).includes('ready'), true);
+  t('#831 one also red on another test in that check does not', acts(run([listed, { ...listed, title: 'tests/orders.test.ts > totals an order' }])).includes('ready'), false);
+  t('#831 nor one whose checks kept no annotations', acts(run(undefined)).includes('ready'), false);
+  t('#831 nor one read at another head', acts(run([listed], { head: 'b'.repeat(40) })).includes('ready'), false);
+  files[701] = ['tests/orders.test.ts'];
+  t('#831 nor one changing the listed test\'s file', acts(run([listed])).includes('ready'), false);
 }
 
 // AC1: a review at the head that holds a P1 is no undraft: it goes to a fix worker.

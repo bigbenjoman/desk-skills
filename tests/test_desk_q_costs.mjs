@@ -3,10 +3,10 @@
 // fixed clock and a throwaway HOME, DESK_HOME, DESK_CONFIG_ROOT and cost directory. One check or more
 // per acceptance criterion of DS-290 and of DS-291 (each row's tag and note, o to a billing page);
 // DS-290's AC4-AC7 (Costs off home) are in test_desk_q.mjs beside the other tab checks.
-import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -14,7 +14,7 @@ const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; cons
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, '..', 'desk', 'bin');
 const FIX = join(HERE, 'fixtures', 'costs-october');
-const T = mkdtempSync(join(tmpdir(), 'desk-q-costs-'));
+const T = scratch('desk-q-costs-');
 mkdirSync(join(T, 'bin'));
 writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
 const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'),
