@@ -28,12 +28,15 @@ import { readFileSync } from 'node:fs';
 import { join, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { split, shellCommands, markdownFiles, PLACEHOLDER, FENCE, closesFence } from './command_shapes.mjs';
-import { CONFIG_ROWS, CODE_SPAN_WRAPPING as SPAN } from '../desk/bin/desk-env.mjs';
+import { CONFIG_ROWS, CODE_SPAN } from '../desk/bin/desk-env.mjs';
 import { autopilotNameRe as AUTOPILOT } from '../desk/bin/prose-facts.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_PATHS = ['skills', 'agents'];
 
+// desk-env's CODE_SPAN read across a paragraph's lines, where a span may wrap onto the next one.
+const SPAN = new RegExp(CODE_SPAN.source.replace('[^\\n]', '[\\s\\S]'), 'g');
+if (SPAN.source === CODE_SPAN.source) throw new Error('prose_scan: CODE_SPAN no longer keeps a span to one line with [^\\n]; update SPAN');
 const CONTRACT = /^\s*<!--\s*contract:\s*([\w.-]+)\s*-->\s*$/;
 const FACTS_OPEN = /<!--\s*facts:\s*([\w.-]+)\s*-->/;
 const FACTS_CLOSE = /<!--\s*\/facts(?::\s*[\w.-]+)?\s*-->/;
