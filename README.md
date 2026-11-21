@@ -901,6 +901,12 @@ the same inputs skips it; delete `<state dir>/workers/<TICKET>.preflight.json` t
 A preflight session that ran no check (no reply, or no tool turn), or that read BLOCKED only on
 checks that should be OK, is run once more at default effort; a boundary failure is never retried.
 
+With the `ledger` lever on (config §3b Phase 0 levers), every queue write also appends what it
+changed to the repo's ticket ledger, `~/.claude/desk/repos/<slug>/ledger/events.jsonl`, naming its
+writer: a typed event for a ticket's change of state and a `legacy_set` for its other fields. A
+batch the ledger has not seen starts with one `seeded` event per ticket. queue.json is still written
+first and read by everything; a missed append is reported by the writer and never fails the write.
+
 The desk-skills test suite runs against throwaway homes and repos, never yours:
 
 ```bash
@@ -936,7 +942,10 @@ runs the base's `tests/test_pass*.sh` against both trees (a ref or a directory e
 output line and suite check that differs, with times, elapsed times, ids, ports and scratch paths
 left out, text the pass cut short compared up to the cut, and queue stamps (`updated_at`,
 `spawned_at`, `last_start`, `cloud.started`) compared only as set or unset. It exits 0
-when nothing differs, 1 when something does, and 2 when a run was not compared.
+when nothing differs, 1 when something does, and 2 when a run was not compared. With
+`PASS_CMP_KEEP=1` set, a run that exits 1 or 2 leaves its recordings and both trees in its scratch
+directory and prints that directory and the `compare_pass.mjs diff` command that lists them again,
+in seconds and without replaying a suite.
 
 `pass.mjs` moves into phase modules under `desk/bin/pass/`, one section at a time. A phase's decision
 is a pure function there: it takes a snapshot (the queue's tickets and whatever else it reads, the

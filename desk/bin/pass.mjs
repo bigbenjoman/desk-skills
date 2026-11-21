@@ -67,13 +67,14 @@ import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
 import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
-import { borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
+import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, prState as batchPrState } from './batches.mjs';
 import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter } from './queue-writer.mjs';
 import { runAudits, endedFromExit, auditsRunning } from './levers-audit.mjs';
+import { MISSED_PREFIX, LEDGER_BY_ENV } from './queue-ledger.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
@@ -88,6 +89,7 @@ import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOff
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
   tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
+import { decideTicketless } from './pass/ticketless-prs.mjs';
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
 import { decideFixTries, tryLabel } from './pass/fix-tries.mjs';
 import { decideReopen, decideRenames, decideUndraft, decideRelease, undraftWrite } from './pass/undraft.mjs';
@@ -277,11 +279,19 @@ function writeLines(r) {
   return [
     ...r.conflicts.map((c) => `${c.ticket ?? 'batch'}: queue write not made for ${c.field === 'order' ? 'the spawn order' : c.field === '*' ? 'the whole ticket' : c.field}: ${c.gone ? 'another writer took the ticket out of the queue' : 'another writer changed it after this pass read the queue, and its value stays'}`),
     ...(r.archiveError ? [`queue archive: done tickets were not archived this pass (${r.archiveError})`] : []),
+    ...(r.ledgerMissed ? [`${MISSED_PREFIX}, queue.json was written (${r.ledgerMissed})`] : []),
   ];
 }
 // A command queue-writer.mjs does not apply in memory runs as queue.mjs, after the changes before it
-// are written, so it reads them.
-const qRun = (args) => { flushQueue(); return shOut('node', [join(BIN, 'queue.mjs'), ...args]); };
+// are written, so it reads them. The ticket ledger names the pass as that write's writer, and a missed
+// append the command reports goes in the report, as a flush's does.
+const qRun = (args) => {
+  flushQueue();
+  const r = spawnSync('node', [join(BIN, 'queue.mjs'), ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, [LEDGER_BY_ENV]: 'pass' } });
+  if (r.status !== 0) return { ok: false, code: r.status ?? null, out: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim() || String(r.error?.message ?? 'queue.mjs did not run') };
+  report.failed.push(...String(r.stderr ?? '').split('\n').filter((l) => l.startsWith(MISSED_PREFIX)));
+  return { ok: true, out: r.stdout.trim() };
+};
 // One queue command, in the pass's write where queue-writer.mjs applies it, else as queue.mjs, without
 // reporting a refusal: -> { ok, out }, out being the refusal when not ok.
 const qTry = (args) => {
@@ -1892,14 +1902,39 @@ const runningKeys = new Set(running.map((r) => r.key));
 const FILE_BUDGET = E.fileBudget();
 const budgetAppendOnly = appendOnlyFrom(() => E.configValues('append-only-paths')).globs.map(globToRegExp);
 const budgetSerial = FILE_BUDGET.serial.map(globToRegExp);
+const scopeFiles = (rec) => {
+  const files = rec?.files_in_scope;
+  return [...new Set(Array.isArray(files) ? files.map((f) => String(f).replace(/^\.\//, '')) : [])].filter((f) => f && !budgetAppendOnly.some((re) => re.test(f)));
+};
 const scopeOf = new Map();
 const budgetFiles = (key) => {
-  if (!scopeOf.has(key)) {
-    const files = triageRec(key)?.files_in_scope;
-    scopeOf.set(key, [...new Set(Array.isArray(files) ? files.map((f) => String(f).replace(/^\.\//, '')) : [])].filter((f) => f && !budgetAppendOnly.some((re) => re.test(f))));
-  }
+  if (!scopeOf.has(key)) scopeOf.set(key, scopeFiles(triageRec(key)));
   return scopeOf.get(key);
 };
+// The tickets running in this repo's other batches fill places too, each as { key, batch, files } from
+// its batch's queue and triage record; a review try there fills none, as here. A queue that does not
+// read counts nothing, and is named in the report.
+// Read here for the ready list, and again from the queues read under the borrow lock before any spawn.
+const elsewhereRunning = [];
+const budgetUnread = [];
+let budgetSlug = null;
+try { budgetSlug = E.repoSlug(); } catch { /* outside a repo there are no other batches */ }
+const countElsewhere = (queues) => {
+  elsewhereRunning.length = 0;
+  budgetUnread.length = 0;
+  for (const o of budgetSlug == null ? [] : queues) {
+    if (o.slug !== budgetSlug) continue;
+    if (o.error) { budgetUnread.push(o.error); continue; }
+    const triageDir = join(E.batchPaths(budgetSlug, o.batch).state, 'triage');
+    for (const t of Object.values(o.q.tickets ?? {})) {
+      if (t?.state !== 'running' || !t.key || reviewOnlyTry(t)) continue;
+      let rec = null;
+      try { rec = JSON.parse(readFileSync(join(triageDir, `${t.key}.json`), 'utf8')); } catch { /* no record: names no file */ }
+      elsewhereRunning.push({ key: t.key, batch: o.batch, files: scopeFiles(rec) });
+    }
+  }
+};
+countElsewhere(otherQueues({ self: QUEUE_FILE }));
 // A file's length on the batch base, read once a pass; one the base does not have is 0 lines. Each ref's
 // tree is listed once a pass (one git call, not one per file), and each blob's length is kept across
 // passes by its id in LINE_COUNTS_FILE, so a pass reads only a blob it has not counted.
@@ -1975,15 +2010,17 @@ const placesFor = (f) => {
 };
 // A review try changes no file, so it neither waits on a file's places nor fills one.
 const reviewKeys = new Set(running.filter(reviewOnlyTry).map((r) => r.key));
-// Each file of r's at its budget: the file, its places and the running tickets that fill them.
+// Each file of r's at its budget: the file, its places, the running tickets of this batch that fill
+// them (`by`) and those of the repo's other batches (`elsewhere`, { key, batch }).
 const budgetHolds = (r) => {
   const holds = [];
   if (reviewOnlyTry(r)) return holds;
   for (const f of budgetFiles(r.key)) {
     const by = [...runningKeys].filter((k) => k !== r.key && !reviewKeys.has(k) && budgetFiles(k).includes(f));
-    if (!by.length) continue;
+    const elsewhere = elsewhereRunning.filter((o) => o.key !== r.key && !runningKeys.has(o.key) && o.files.includes(f)).map(({ key, batch }) => ({ key, batch }));
+    if (!by.length && !elsewhere.length) continue;
     const k = placesFor(f);
-    if (by.length >= k) holds.push({ file: f, k, by });
+    if (by.length + elsewhere.length >= k) holds.push({ file: f, k, by, elsewhere });
   }
   return holds;
 };
@@ -2082,6 +2119,9 @@ if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && lockWan
 }
 // Read under the lock when it was taken; without it the count may race another pass, and says so.
 const otherRepos = MACHINE_CAP != null || borrowLock || SIBLINGS ? otherQueues({ self: QUEUE_FILE }) : [];
+// The per-file budget counts the other batches' running tickets from this read too, so a ticket another
+// batch started while this pass waited for the lock holds its files here.
+if (MACHINE_CAP != null || borrowLock || SIBLINGS) countElsewhere(otherRepos);
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
 const SLOTS_SNAP = {
   borrowOn: BORROW.on, concurrency, cap: E.concurrencyLimits().cap, running: running.length, spawnable: spawnable.length,
@@ -3686,7 +3726,7 @@ runSteps({
     ...EPIC_HANDLERS,
     'epic-merged': (a, s) => epicMerged(s.q, a.key),
     'other-repo': (a) => inOtherRepo(a.key),
-    landed: (a) => landedOn(a.key, DEFAULT_BRANCH),
+    landed: (a) => landedOn(a.key, DEFAULT_BRANCH, REPO_DEFAULT),
     unpromoted: (a) => unpromotedBase(a.key, a.into),
   },
   report,
@@ -3698,7 +3738,7 @@ runSteps({
   name: 'merge holds',
   snapshot: () => holdsSnapshot(personLabels()),
   decide: decideMergeHolds,
-  handlers: { ...EPIC_HANDLERS, 'landed-here': (a) => inOtherRepo(a.key) || landedOn(a.key, DEFAULT_BRANCH) === true },
+  handlers: { ...EPIC_HANDLERS, 'landed-here': (a) => inOtherRepo(a.key) || landedOn(a.key, DEFAULT_BRANCH, REPO_DEFAULT) === true },
   report,
 });
 
@@ -3727,7 +3767,7 @@ runPhase({
   name: 'report',
   snapshot: () => ({
     ...baseSnapshot(), report, baseLines, maintLines: MAINT.lines, dateLines, linkLines, epicLines,
-    incidentalBad, appendOnlyBad, fileBudgetBad: FILE_BUDGET.bad, conflictRecordBad: conflictRecord.bad,
+    incidentalBad, appendOnlyBad, fileBudgetBad: FILE_BUDGET.bad, budgetUnread: [...budgetUnread], conflictRecordBad: conflictRecord.bad,
     conflicts: [...conflictsBy].map(([f, times]) => ({ file: f, configured: configuredPlaces(f), now: placesFor(f), recent: recentCount(times, PASS_MS) })),
     unreadableQueues: [...unreadableQueues], portLeaseLines: [...portLeaseLines], concurrency, eligible: eligible.length, queueBin: join(SHOWN_BIN, 'queue.mjs'),
   }),
@@ -5044,6 +5084,40 @@ runSteps({
   report,
 });
 
+// ---- ticketless PRs --------------------------------------------------------
+// The open PRs into the base that a desk session opened and no ticket in any of the repo's batches owns:
+// pass/ticketless-prs.mjs decideTicketless, recorded as `ticketless_prs` for needs-you.
+runPhase({
+  name: 'ticketless PRs',
+  snapshot: () => {
+    const qx = queue();
+    let handle = null;
+    try { handle = E.githubHandle() || null; } catch { /* unread: nothing is listed or dropped */ }
+    const tickets = [...Object.values(qx.tickets)];
+    const heads = qx.base ? [qx.base] : [];
+    if (REPO_SLUG != null) {
+      for (const b of listBatches(REPO_SLUG)) {
+        if (resolve(b.queue) === resolve(QUEUE_FILE) || !existsSync(b.queue)) continue;
+        try {
+          const o = readQueue(b.queue);
+          tickets.push(...Object.values(o.tickets ?? {}));
+          if (o.base) heads.push(o.base);
+        } catch { /* an unreadable batch owns nothing it can show */ }
+      }
+    }
+    let prs = null;
+    if (handle) {
+      const r = shOut('gh', ['pr', 'list', '--repo', GH_REPO, '--state', 'open', '--base', DEFAULT_BRANCH, '--author', handle, '--limit', '200',
+        '--json', 'number,title,headRefName,baseRefName,body,createdAt,author']);
+      try { prs = r.ok ? JSON.parse(r.out || '[]') : null; } catch { prs = null; }
+    }
+    return { prs, tickets, heads, base: DEFAULT_BRANCH, handle, recorded: qx.ticketless_prs ?? null, dry: DRY };
+  },
+  decide: decideTicketless,
+  handlers: { ...OUT_HANDLERS, 'set-batch': (a) => q('set-batch', ...a.fields) },
+  report,
+});
+
 // The report's lines after the ledger (pass/report.mjs decideReportLines): a §4 Merge hold on the
 // promotion, overridden calls, the review rows, WAITING ON YOU, BLOCKED ON ANSWERS, the held-back,
 // resume and reboot waits, put-off parks asked again, PARKED and the rest, and the base drift.
@@ -5090,7 +5164,9 @@ runPhase({
       base: BASE, source: SOURCE, promotion: qx.promotion,
       overrides: readDecisions(STATE).overrides, overridesSeen: seenRead('overrides-reported.json', JSON.parse, []),
       reviewClash, reviewSeen: reviewClash ? seenRead('review-rows-reported.txt', (x) => x, '') : '',
-      blocked, heldBack: heldBack.map((r) => ({ key: r.key, holds: budgetHolds(r) })),
+      blocked, heldBack: heldBack.map((r) => ({
+        key: r.key, holds: budgetHolds(r).map((h) => ({ ...h, elsewhere: h.elsewhere.map((o) => ({ key: o.key, label: batchLabel(o.batch) })) })),
+      })),
       resumeRows: Object.values(qNow.tickets).filter((r) => r.state === 'triaged').map((r) => ({
         key: r.key, resume: r.resume, resume_why: r.resume_why, toResume: toResume(r), rebootWait: r.resume === 'reboot' ? rebootReady(r).wait ?? null : null,
       })),
@@ -5198,7 +5274,7 @@ if (!DRY) {
   const holdWhy = !MAINT.hold && (held === PACE_HELD || USAGE_HOLD || usageStop) ? 'usage' : held ? null : lowMemory ? 'memory' : repoUnlocked ? 'lock' : null;
   const collisions = heldBack.map((r) => {
     const holds = budgetHolds(r);
-    return { key: r.key, with: [...new Set(holds.flatMap((h) => h.by))], files: holds.map((h) => h.file) };
+    return { key: r.key, with: [...new Set(holds.flatMap((h) => [...h.by, ...h.elsewhere.map((o) => o.key)]))], files: holds.map((h) => h.file) };
   });
   let batch = null;
   try { batch = E.batchName(); } catch { /* the standing batch */ }
