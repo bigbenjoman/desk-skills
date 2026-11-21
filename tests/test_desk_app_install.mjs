@@ -37,6 +37,7 @@ A=dist/mac-arm64/Desk.app/Contents
 mkdir -p "$A/MacOS" "$A/Resources"
 cp /usr/bin/true "$A/MacOS/Desk"
 cp main.mjs "$A/Resources/main.mjs"
+cp desk-paths.json "$A/Resources/desk-paths.json"
 cat > "$A/Info.plist" <<'EOP'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -110,6 +111,14 @@ mkdirSync(join(SRC, 'node_modules', 'x'), { recursive: true });
 writeFileSync(join(SRC, 'node_modules', 'x', 'index.js'), '');
 t('installed modules and Finder files are not source', /unchanged/.test(run(['install', '--src', SRC]).out), true);
 
+// Finder and the Dock start Desk.app without install.sh's environment, so the server's paths go into
+// the bundle, and a change to them rebuilds it.
+const baked = () => { try { return JSON.parse(readFileSync(join(APP, 'Contents', 'Resources', 'desk-paths.json'), 'utf8')); } catch { return null; } };
+t('the bundle names the config root and desk home the server was installed with', baked(), { configRoot: env.DESK_CONFIG_ROOT, deskHome: env.DESK_HOME });
+const moved = run(['install', '--src', SRC], { DESK_CONFIG_ROOT: join(home, 'elsewhere') });
+t('another config root rebuilds Desk.app with it', [moved.code, /rebuilt/.test(moved.out), baked()?.configRoot], [0, true, join(home, 'elsewhere')]);
+t('back on the first config root, it rebuilds again', [/rebuilt/.test(run(['install', '--src', SRC]).out), baked()?.configRoot], [true, env.DESK_CONFIG_ROOT]);
+
 // ---- AC8: a failed build keeps the previous Desk.app
 edit(`${original}// BREAK\n`);
 const broken = run(['install', '--src', SRC]);
@@ -123,6 +132,7 @@ t('a failed build is tried again on the next install', /failed/.test(run(['insta
 const sh = readFileSync(join(ROOT, 'install.sh'), 'utf8');
 const fn = sh.match(/^install_desk_app\(\) \{\n[\s\S]*?\n\}$/m)?.[0];
 t('install_desk_app is found in install.sh', !!fn, true);
+t('install.sh runs the step, after it installs the server', /^install_desk_ui$[\s\S]*^install_desk_app$/m.test(sh), true);
 const step = (more = {}) => spawnSync('bash', ['-c', `set -euo pipefail
 WARNINGS=0; WROTE=""
 ok(){ echo "ok $1"; }; warn(){ echo "WARN $1"; WARNINGS=$((WARNINGS+1)); }; note(){ echo "note $1"; }; wrote(){ WROTE="$WROTE$1"; }

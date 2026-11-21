@@ -1,5 +1,5 @@
 // suite: Desk.app's main process (sign-in, re-sign-in, the unreachable card, one copy only)
-// covers: desk/shell/** desk/shell/app.mjs desk/shell/main.mjs desk/shell/preload.cjs desk/shell/status.html desk/shell/status.js desk/shell/package.json
+// covers: desk/shell/** desk/shell/app.mjs desk/shell/main.mjs desk/shell/preload.cjs desk/shell/status.html desk/shell/status.js desk/shell/package.json desk/bin/desk-ui.mjs
 // desk/shell/app.mjs driven with a stubbed Electron (BrowserWindow, session, ipcMain, app) against the
 // real desk-ui server on a throwaway HOME and a test-only port. Nothing touches your real ~/.claude,
 // ~/.config/desk, state, or a server on 4823.
@@ -11,7 +11,8 @@ import { createServer } from 'node:net';
 import { runInNewContext } from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
-import { createShell, exchange, parseCookie, run, PARTITION } from '../desk/shell/app.mjs';
+import { homedir } from 'node:os';
+import { createShell, deskPaths, exchange, parseCookie, run, tokenFile, PARTITION } from '../desk/shell/app.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -53,7 +54,7 @@ process.on('exit', () => srv?.kill());
 function call(path, headers = {}) {
   return new Promise((resolve) => {
     const req = request({ host: '127.0.0.1', port: PORT, method: 'GET', path, headers: { Host: `127.0.0.1:${PORT}`, ...headers } }, (res) => {
-      let text = ''; res.on('data', (d) => { text += d; }); res.on('end', () => resolve({ status: res.statusCode, text }));
+      let text = ''; res.on('data', (d) => { text += d; }); res.on('end', () => resolve({ status: res.statusCode, text, headers: res.headers }));
     });
     req.on('error', () => resolve({ status: 0 }));
     req.end();
@@ -94,7 +95,7 @@ function fakeElectron({ lock = true } = {}) {
 async function windowLoads(f, path = '/') {
   const c = f.cookies.at(-1);
   const r = await call(path, c ? { Cookie: `${c.name}=${c.value}` } : {});
-  f.completed()?.fn({ url: `${ORIGIN}${path}`, statusCode: r.status, resourceType: 'mainFrame' });
+  f.completed()?.fn({ url: `${ORIGIN}${path}`, statusCode: r.status, resourceType: 'mainFrame', responseHeaders: { 'X-Desk-Boot': [r.headers?.['x-desk-boot']] } });
   return r;
 }
 const settle = () => sleep(150);
@@ -105,7 +106,16 @@ t('the desk-ui server starts on the test port', await startServer(), true);
 t('parseCookie reads desk_ui and its Max-Age', parseCookie('desk_ui=abc; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400'), { value: 'abc', maxAge: 86400 });
 t('parseCookie ignores another cookie', parseCookie('other=1; Path=/'), null);
 const refusedX = await exchange(ORIGIN, WRONG);
-t('exchange with the wrong token: 401, no cookie', [refusedX.status, refusedX.cookie, refusedX.loadToken], [401, null, null]);
+t('exchange with the wrong token: 401, no cookie, and the server run that refused it', [refusedX.status, refusedX.cookie, refusedX.loadToken, /^[0-9a-f]{16}$/.test(refusedX.boot)], [401, null, null, true]);
+
+// Finder and the Dock start Desk.app with none of install.sh's environment: the paths written into the
+// bundle win, with a leading ~ read as the home directory.
+const pathsFile = join(T, 'desk-paths.json');
+writeFileSync(pathsFile, JSON.stringify({ configRoot: '~/custom/desk', deskHome: join(T, 'deskhome') }));
+const baked = deskPaths(pathsFile, { DESK_CONFIG_ROOT: '/elsewhere' });
+t('the bundle\'s paths win over the environment', [baked.configRoot, baked.deskHome, tokenFile(baked)], [join(homedir(), 'custom', 'desk'), join(T, 'deskhome'), join(homedir(), 'custom', 'desk', 'ui-token')]);
+t('with none written, the environment, then the defaults', [deskPaths(join(T, 'none.json'), { DESK_CONFIG_ROOT: '/cfg' }).configRoot, deskPaths(null, {}).configRoot],
+  ['/cfg', join(homedir(), '.config', 'desk')]);
 
 // ---- AC1: the window opens on the server, signed in --------------------------------------------
 let shellToken = TOKEN;
@@ -167,9 +177,22 @@ t('a changed token file signs in again', [exchanges, win.loads.at(-1), shell.vie
 
 // A refusal straight after signing in, before anything succeeded, does not loop.
 exchanges = 0;
-f.completed().fn({ url: `${ORIGIN}/`, statusCode: 401 });
+const refusedFresh = await windowLoads(f, '/api/snapshot'); // the server refuses the new session
 await settle();
-t('a refusal straight after signing in shows the card rather than signing in again', [exchanges, shell.view], [0, 'signed-out']);
+t('a refusal straight after signing in shows the card rather than signing in again', [refusedFresh.status, exchanges, shell.view], [401, 0, 'signed-out']);
+// Unless the server restarted between the sign-in and the refusal: that is a new server, so sign in again.
+await stopServer();
+await startServer();
+await timers.at(-1).fn(); // the card sees a new run of the server: one more sign-in, which it accepts
+await settle();
+t('the card signs in to a restarted server', shell.view, 'app');
+await stopServer();
+await startServer();
+exchanges = 0;
+await windowLoads(f);
+await settle();
+t('a refusal straight after signing in, from a restarted server, signs in again with no card', [exchanges, shell.view, win.loads.at(-1)], [1, 'app', `${ORIGIN}/`]);
+exchanges = 0;
 shellToken = null;
 shell.connect();
 await settle();
@@ -209,6 +232,16 @@ exchanges = 0;
 await timers.at(-1).fn();
 await settle();
 t('after a server restart a refused token is tried once more', [exchanges, shell.view], [1, 'signed-out']);
+// A restart the card never saw down (launchctl kickstart -k is back within a second) is a new server too.
+await stopServer();
+await startServer();
+exchanges = 0;
+await timers.at(-1).fn();
+await settle();
+t('a restart between two looks is noticed, and the refused token is tried once more', [exchanges, shell.view], [1, 'signed-out']);
+await timers.at(-1).fn();
+await settle();
+t('the same server is not asked again', [exchanges, shell.view], [1, 'signed-out']);
 shellToken = TOKEN;
 
 // A window opened while the server is down shows the card straight away.
@@ -218,13 +251,41 @@ const coldShell = createShell(cold.electron, opts());
 const coldWin = coldShell.open();
 await settle();
 t('Desk.app opened on a stopped server shows the unreachable card', [coldWin.loads, coldShell.view], [['card:unreachable'], 'unreachable']);
+// With no token file either, it is still the unreachable card, and it stays on it.
+const bare = fakeElectron();
+const bareShell = createShell(bare.electron, opts({ token: () => null }));
+const bareWin = bareShell.open();
+await settle();
+await timers.at(-1).fn();
+await settle();
+t('no token and a stopped server: the unreachable card, retry after retry', [bareWin.loads, bareShell.view], [['card:unreachable', 'card:unreachable'], 'unreachable']);
 await startServer();
 
-// The cards themselves: the copy the screen spec states, and the retry button wired to the main process.
+// The cards themselves, as the window shows them: status.html with status.js run against its markup.
 const html = readFileSync(join(SHELL, 'status.html'), 'utf8');
-t('the unreachable card says what the spec says', [html.includes("Desk can't reach its local server"), html.includes('launchctl kickstart -k gui/$(id -u)/com.desk-skills.ui'),
-  html.includes("The desk-ui server on 127.0.0.1:4823 isn't answering. Your queues are safe: workers and the supervisor keep running without it.")], [true, true, true]);
-t('the not-signed-in card says what the spec says', [html.includes("This window isn't signed in to Desk"), html.includes("Re-run install.sh in Terminal. It writes Desk's sign-in again, and this window signs in by itself.")], [true, true]);
+function card(query) {
+  const els = {};
+  for (const m of html.matchAll(/<(\w+)([^>]*\bid="([^"]+)"[^>]*)>/g)) {
+    const from = m.index + m[0].length;
+    const text = html.slice(from, html.indexOf(`</${m[1]}>`, from)).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    els[m[3]] = { hidden: /\shidden\b/.test(m[2]), textContent: text, addEventListener: () => {} };
+  }
+  runInNewContext(readFileSync(join(SHELL, 'status.js'), 'utf8'), {
+    location: { search: `?${new URLSearchParams(query)}` }, URLSearchParams,
+    document: { getElementById: (id) => els[id] ?? null, querySelectorAll: () => [] },
+    setInterval: () => 0, setTimeout: () => 0, navigator: {}, window: {},
+  });
+  return Object.fromEntries(Object.entries(els).filter(([, e]) => !e.hidden).map(([id, e]) => [id, e.textContent]));
+}
+const shown = card({ state: 'unreachable', attempt: '2', retry: '5' });
+t('the unreachable card is the one shown, with the spec\'s copy and command', [shown.unreachable?.includes("Desk can't reach its local server"),
+  shown.unreachable?.includes("The desk-ui server on 127.0.0.1:4823 isn't answering. Your queues are safe: workers and the supervisor keep running without it."),
+  shown.unreachable?.includes('launchctl kickstart -k gui/$(id -u)/com.desk-skills.ui'), shown.countdown, 'signed-out' in shown],
+  [true, true, true, 'Trying again in 5 s… (attempt 2)', false]);
+const out = card({ state: 'signed-out', checkout: '~/src/desk-skills' });
+t('the not-signed-in card is the one shown, with the spec\'s copy and the checkout\'s command', [out['signed-out']?.includes("This window isn't signed in to Desk"),
+  out['signed-out']?.includes("Re-run install.sh in Terminal. It writes Desk's sign-in again, and this window signs in by itself."), out['install-cmd'], 'unreachable' in out],
+  [true, true, 'cd ~/src/desk-skills && ./install.sh', false]);
 await f.ipc['desk:retry']();
 t('Try now only acts on the unreachable card', shell.view, 'signed-out');
 

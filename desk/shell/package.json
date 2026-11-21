@@ -14,7 +14,7 @@
     "appId": "com.desk-skills.desk",
     "productName": "Desk",
     "directories": { "output": "dist" },
-    "files": ["main.mjs", "app.mjs", "preload.cjs", "status.html", "status.js"],
+    "files": ["main.mjs", "app.mjs", "preload.cjs", "status.html", "status.js", "desk-paths.json"],
     "mac": {
       "target": "dir",
       "category": "public.app-category.developer-tools",
