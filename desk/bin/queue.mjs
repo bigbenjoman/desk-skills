@@ -14,6 +14,7 @@ import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
 import { prNames } from './recoveries.mjs';
 import { spineMerger } from './spine-check.mjs';
+import { isSpineOf, ownsSpecsOf } from './pass/shared.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck, ownDraftWhy, withQuestion } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory, sizeOf } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
@@ -227,10 +228,19 @@ let finishPr = null;
 // "a single remaining step" row), so the ticket is recorded done on its PR as the pass records one whose
 // draft PR it opened: state done, the park cleared, result.pr and a summary, draft_pr while it is a draft.
 // Refused unless the ticket is parked and the PR is open or merged, from this repo, on the ticket's
-// branch, into the batch's base: the merge driver merges by that branch.
+// branch, into the batch's base: the merge driver merges by that branch. A hold, a spine or epic plan
+// park (the person's approval, never a step to finish), a park an interactive session claimed, and a
+// feature spine or a child owning criteria (whose specs the pass checks only as it records it done,
+// pass.mjs recordDone) are refused too.
 function finish(q, key, n, pr) {
   const t = ticket(q, key);
+  if (t.state === 'running') throw new Error(`${key} has a live worker (it is running), so its park is not finished yet: let it end, or stop it (queue.mjs stop ${key}): nothing recorded`);
   if (t.state !== 'parked') throw new Error(`${key} is ${t.state ?? 'in no state'}, not parked: finish records done only a parked ticket whose last step you finished`);
+  if (isHeld(t)) throw new Error(`${key} is held (${t.park?.question}), not parked on a step of its own: nothing recorded`);
+  if (spinePark(t) || planPark(t)) throw new Error(`${key} waits on the person's answer (${t.park.question}), not on a step to finish, so only that answer moves it on: nothing recorded`);
+  if (t.park?.claim?.session) throw new Error(`${key} is claimed by interactive session ${t.park.claim.session}, which is working it: leave it to that session: nothing recorded`);
+  if (isSpineOf(q, t) || ownsSpecsOf(q, t)) throw new Error(`${key} is ${isSpineOf(q, t) ? "its feature batch's spine" : 'a feature child that owns criteria'}, whose specs the pass checks when it records it done: requeue it to finish (queue.mjs requeue ${key}): nothing recorded`);
+  refuseLeft(t, key, 'recorded done');
   if (pr.error) throw new Error(`gh could not read PR #${n} on ${hereRepo() ?? 'this repo'} (${pr.error})`);
   if (pr.isCrossRepository) throw new Error(`PR #${n} is from a fork, not this repo: nothing recorded`);
   if (!['OPEN', 'MERGED'].includes(pr.state)) throw new Error(`PR #${n} is ${String(pr.state).toLowerCase()}, not open or merged: nothing recorded`);
@@ -478,6 +488,7 @@ function stepDone(q, key) {
   saveAnswer(stateDir(), key, `The person ran the step you approved and no worker can run, and it is done: ${s.step}. Do not run it again or park for it; carry on from there.`, new Date().toISOString());
   return `${key}: the approved step is recorded done (${s.step}); ${msg}`;
 }
+
 
 // What a ticket joining feature batch `q` waits for, as plan-batch holds every child it seeds: its epic
 // while that is parked on its drafted plan (epic-plan.mjs), and its spine until that is done.

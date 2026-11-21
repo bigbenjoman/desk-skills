@@ -177,7 +177,7 @@ t('AC6 off switch: the preflight passes no --tools', [!!finderCall('preoff'), to
 // briefing, compared by the system prompt and the first message each sends.
 const brief = (key) => {
   const p = join(T, 'state', `${key}.brief.md`);
-  writeFileSync(p, `Orchestrator session name: batch-x\nAnswer file to wait on: ${join(T, 'state', 'answers', `${key}.txt`)}\n\n` +
+  writeFileSync(p, `Answer file to wait on: ${join(T, 'state', 'answers', `${key}.txt`)}\n\n` +
     `## Answer from the user\n\nFor ${key}: use makeFixture from tests/helpers.\n`);
   return p;
 };
