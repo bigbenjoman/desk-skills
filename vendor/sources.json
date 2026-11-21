@@ -834,12 +834,12 @@
         "path": "skills/web-design-guidelines/"
       },
       "pin": {
-        "commit": "ba4693888",
-        "date": "2026-01-16"
+        "commit": "53b6e3ddf",
+        "date": "2026-10-29"
       },
       "license": null,
       "notes": "Installed via `npx skills` 2026-02-04. Tree == lock hash 3116f3e; unchanged at upstream HEAD. Repo has no LICENSE file (GitHub reports none). The SKILL.md fetches its guideline text from a URL at runtime, so content can change without a repo commit.",
-      "tree_sha256": "f3bc47f890f42a44db1007ab390709ec368e4b8c089baee6b0007182236ac474"
+      "tree_sha256": "fcbcb524bfd79565d5140f0e6e29d36a88359b408551f1d27240b6c9cdb5b130"
     },
     "clerk": {
       "source": {
