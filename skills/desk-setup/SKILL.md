@@ -200,7 +200,9 @@ location: a path only, never the token.
   `STALLS` or `DONTASK` line is offered as a change, never made without an answer; nothing else is
   asked unless the user names it.
 - A `NODEV` line from `desk-env drift` is offered as a §4 Dev server item for that directory, as
-  step 1's *Dev server* proposes it, whether or not the user asked to change the row.
+  step 1's *Dev server* proposes it, whether or not the user asked to change the row. Each app a
+  §4 Dev server item names with no §4 Test sign-in item (`desk-env drift --app <dir>` prints
+  `NOSIGNIN`) is asked for one, as step 1's *Test sign-in* proposes it.
 - An `INVALID` line from `desk-env drift` names a row whose value does not fit the form desk reads it
   in, with the item and the form expected. Offer a value in that form, whether or not the user asked
   to change the row.
