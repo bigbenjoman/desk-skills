@@ -1224,6 +1224,8 @@ function pushParked(t, c) {
   if (rows.length) stop(`config §3 ${rows.map((k) => `${k} is "${E.permission(k)}"`).join(' and ')}`);
   if (c.branch !== t.branch) stop(`it names ${c.branch}, and the ticket's branch is ${t.branch ?? 'not recorded'}`);
   if (!t.worktree || !existsSync(t.worktree)) stop('it has no worktree to push from');
+  const waits = previewUnit(t, c.branch);
+  if (waits) return { holds: false, note: waits };
   const push = shOut('git', ['-C', t.worktree, 'push', ...(c.lease ? [`--force-with-lease=${c.branch}:${c.lease}`] : []), 'origin', c.branch]);
   if (push.ok) return { holds: true };
   if (transientPush(push.out)) return { holds: false, note: 'GitHub still answers 5xx' };
@@ -1356,10 +1358,11 @@ function finishPush(t) {
   const open = shOut('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch, '--state', 'all', '--json', 'number', '-q', '.[0].number']);
   if (!open.ok) return false;
   if (/^\d+$/.test(open.out)) return left(`PR #${open.out} already exists from ${t.branch}`);
-  const push = shOut('git', ['-C', wt, 'push', 'origin', t.branch]);
-  if (!push.ok && (push.unreached || transientPush(push.out))) {
+  const waits = previewUnit(t, t.branch);
+  const push = waits ? null : shOut('git', ['-C', wt, 'push', 'origin', t.branch]);
+  if (waits || (!push.ok && (push.unreached || transientPush(push.out)))) {
     q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'push-ok', branch: t.branch })}`);
-    report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but ${push.unreached ? `the push got no answer (${lastLine(push.out)})` : 'GitHub still answers 5xx'}: left parked, and each pass tries the push until it can requeue it`);
+    report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but ${waits ?? (push.unreached ? `the push got no answer (${lastLine(push.out)})` : 'GitHub still answers 5xx')}: left parked, and each pass tries the push until it can requeue it`);
     return true;
   }
   if (!push.ok) return left(`git push origin ${t.branch} was refused (${lastLine(push.out)})`);
@@ -2905,6 +2908,8 @@ function busyWorktree(t, { push = false } = {}) {
   if (!why || gitHeld(why)?.wt !== null || !own) return why;
   if (E.permission('git-push') !== 'yes') return `${why}: they are its last worker's, but config §3 git-push is "${E.permission('git-push')}", so the pass does not push them`;
   if (!push || DRY) return null;
+  const waits = previewUnit(t, branch);
+  if (waits) return `${why}: they are its last worker's, but the pass's push of them ${waits}`;
   const pushed = shOut('git', ['-C', wt, 'push', 'origin', branch]);
   if (pushed.ok) {
     report.recovered.push(`${t.key}: pushed ${branch} to ${t.worker_head.sha.slice(0, 9)}, the head its last worker left, before its fix try`);
@@ -4194,13 +4199,25 @@ function rerunBuilt(t, n, head, c, rec, ready = false) {
   return { ...rec, call: 'person', why, action, lead: `its check build ran, but the re-run was refused: ${refused.join('; ')}` };
 }
 
-// A draft's cancelled or timed-out runs, re-run by the merge driver's own rerun (rerun.sh), so the
-// driver and the pass keep one record, cap and cooldown per head.
 // §4 Vercel's team, whose preview-build lease a preview check's rerun takes first; '' for none.
 function previewTeam() {
   let v; try { v = String([].concat(E.configValues('vercel') ?? [])[0] ?? '').trim(); } catch { return ''; }
   return /^(none|todo)?$/i.test(v) ? '' : v;
 }
+// A push the pass makes to ticket `t`'s branch starts a preview build too, so it first takes a unit of
+// the team's preview-build lease as desk-pr's lease step does, without waiting: labelled with the PR,
+// or the branch before one exists. -> null to push (no team, the kind off or in shadow, a unit taken,
+// or a store the broker cannot read), or why the push waits for a later pass while every unit is held.
+function previewUnit(t, branch) {
+  const team = previewTeam();
+  if (!team) return null;
+  const pr = t.result?.pr ?? t.draft_pr;
+  const label = pr != null ? `${GH_REPO}#${pr}` : `${GH_REPO}@${branch}`;
+  const r = shOut('node', [join(BIN, 'desk-env.mjs'), 'lease', 'acquire', 'preview-build', team, '--ttl', '1200', '--no-owner', '--label', label], { fresh: true });
+  return r.ok || r.code !== 3 ? null : `it waits on the preview build for ${team}: ${lastLine(r.out).replace(/^refused: /, '')}`;
+}
+// A draft's cancelled or timed-out runs, re-run by the merge driver's own rerun (rerun.sh), so the
+// driver and the pass keep one record, cap and cooldown per head.
 function rerunDraft(t, n, head, c) {
   const r = shOut('bash', [join(BIN, 'rerun.sh'), DRIVER_DIR, GH_REPO, String(n), head], { input: JSON.stringify({ gate: c.gate }), stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, RERUN_PERM: E.permission('ci-rerun'), PREVIEW_TEAM: previewTeam() } });
   const said = r.out.split('\n').filter(Boolean).join('; ');

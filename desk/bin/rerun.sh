@@ -23,14 +23,19 @@ RERUN_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # rerun goes ahead without one. -> 0 to rerun, 1 to wait.
 PREVIEW_CHECK='(^|[^[:alnum:]])(vercel|netlify|preview)([^[:alnum:]]|$)'
 preview_lease(){ # preview_lease <n> <names>
+  printf '%s\n' "$2" | grep -qiE "$PREVIEW_CHECK" || return 0
+  preview_unit "$1" "red + completed" "rerunning"
+}
+# The lease step itself, for anything the driver does to PR <n> that starts a preview build (a preview
+# check's rerun, merge-driver.sh behind's update-branch). -> 0 to go ahead, 1 to wait for a later loop.
+preview_unit(){ # preview_unit <n> <state> <what it does>
   local said rc
   [ -n "${PREVIEW_TEAM:-}" ] || return 0
-  printf '%s\n' "$2" | grep -qiE "$PREVIEW_CHECK" || return 0
   said=$(node "$RERUN_BIN/desk-env.mjs" lease acquire preview-build "$PREVIEW_TEAM" --ttl 1200 --no-owner --label "$REPO#$1" 2>&1 >/dev/null); rc=$?
   case "$rc" in
     0) case "$said" in shadow:*) log "#$1 preview build for $PREVIEW_TEAM: $said";; esac; return 0 ;;
-    3) log "#$1 red + completed, but waits on the preview build for $PREVIEW_TEAM before rerunning: ${said#refused: }"; return 1 ;;
-    *) log "#$1 could not take a preview-build lease for $PREVIEW_TEAM (exit $rc: $(printf '%s' "$said" | head -1)) — rerunning without it"; return 0 ;;
+    3) log "#$1 $2, but waits on the preview build for $PREVIEW_TEAM before $3: ${said#refused: }"; return 1 ;;
+    *) log "#$1 could not take a preview-build lease for $PREVIEW_TEAM (exit $rc: $(printf '%s' "$said" | head -1)) — $3 without it"; return 0 ;;
   esac
 }
 

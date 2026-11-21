@@ -397,8 +397,10 @@ forever) and **no preview build starts without its team's preview-build lease** 
   logs a would-refuse, `on` waits. A worker or session takes it before opening its PR and before
   every push to it (`desk-pr` §4 *Before opening the PR, and before every push to it*). The merge
   driver takes it before rerunning a red check whose name says it is a preview (Vercel, Netlify or
-  preview), labelled `<repo>#<n>`; while every unit is held it reruns nothing and logs that the PR
-  waits on the preview build, then tries again next loop. A unit has no owner: the build outlives what
+  preview), and before updating a BEHIND PR's branch, labelled `<repo>#<n>`; while every unit is held
+  it reruns or updates nothing and logs that the PR waits on the preview build, then tries again next
+  loop. The pass does the same before each push it makes to a worker's branch, and leaves the push for
+  a later pass while every unit is held. A unit has no owner: the build outlives what
   started it, so the unit lives until it is released or its 1200 seconds pass (`desk-env lease list`).
   Where this applies, it, not review or CI, caps how fast a batch can merge, and it is what a red
   preview-deploy check almost always means. Where config §3 `read-vercel` allows, read the build log

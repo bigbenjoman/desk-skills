@@ -2,8 +2,8 @@
 # suite: merge driver: red checks, reruns and waivers (offline, fake gh)
 # The real merge-driver.sh and gate.mjs, one loop at a time, set up by merge_driver_setup.sh: §4 Known
 # flaky checks waived, a signed-out gh, why a red PR is not merged, §4 State checks never rerun, an
-# approval check rerun once for an approval its run never saw, and a preview check's rerun waiting on
-# its Vercel team's preview-build lease.
+# approval check rerun once for an approval its run never saw, and a preview check's rerun and a
+# BEHIND update waiting on its Vercel team's preview-build lease.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -251,5 +251,17 @@ check "DS-912 AC5: with preview-build-slots 2 and both held, the third build wai
 rm -rf "$LD"; : > "$T/gh.log"
 pvloop "$T/machine-two.md" "T-914"
 check "DS-912 AC5: and runs once a unit is free" 'grep -q "run rerun 9914 --repo acme/widgets --failed" "$T/gh.log" && [ "$(leases)" = "acme/widgets#1914 null" ]'
+# A BEHIND PR's update-branch is a new head, so a new preview build: it takes the PR's unit first too.
+awk '{ print } /^\| `pr-ready`/ { print "| `pr-update-branch` | Update branch | `yes` | `yes` |" }' "$T/config-vercel.md" > "$T/config-vercel-up.md"
+SHA916=e916000000000000000000000000000000000000
+jq --arg s "$SHA916" '. + { "1916": { head: "fix/T-916", base: "main", sha: $s, state: "open", draft: false, mergeState: "BEHIND", checks: [["test", "SUCCESS", 9090]] } }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+q add T-916 Bug A; q set T-916 branch=fix/T-916 state=done result.pr=1916
+uploop(){ out=$(DESK_CONFIG="$T/config-vercel-up.md" DESK_MACHINE="$T/machine-one.md" DESK_LEASE_DIR="$LD" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets T-916 2>&1); rc=$?; }
+rm -rf "$LD"; hold "$T/machine-one.md" "acme/site#7"; : > "$T/gh.log"
+uploop
+check "DS-912: with the team's one unit held, a BEHIND PR is not updated, and the log says it waits on the preview build" '! grep -q "pr update-branch 1916" "$T/gh.log" && echo "$out" | grep -qF "#1916 BEHIND, but waits on the preview build for acme before updating the branch: the preview-build slot for acme is held by acme/site#7 (no owner" && [ ! -e "$SD/updated-1916-$SHA916" ]'
+rm -rf "$LD"
+uploop
+check "DS-912: once a unit is free the update takes it, labelled with the PR, and runs" 'grep -q "pr update-branch 1916 --repo acme/widgets" "$T/gh.log" && [ "$(leases)" = "acme/widgets#1916 null" ] && [ -e "$SD/updated-1916-$SHA916" ]'
 
 finish reruns

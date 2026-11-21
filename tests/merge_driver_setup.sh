@@ -133,7 +133,7 @@ if (a[0] === 'pr' && a[1] === 'list') {
 } else if (a[0] === 'api') {
   const n = /pulls\/(\d+)\/files/.exec(a.join(' '))?.[1];
   out(((n && prs[n]?.files) || ['src/a.txt']).join('\n'));
-} else if (a[0] === 'pr' && a[1] === 'comment') {
+} else if (a[0] === 'pr' && (a[1] === 'comment' || a[1] === 'update-branch')) {
   // recorded in gh.log above
 } else if (a[0] === 'issue' && a[1] === 'view') {
   // An issue's state: issues.json maps a number to OPEN or CLOSED; any other issue is open.
