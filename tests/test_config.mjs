@@ -738,8 +738,15 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   };
   const span = (v) => [].concat(v).map((x) => `\`${x}\``).join(' ');
   const valueRows = ROWS.filter((e) => CONFIG_ROWS[e.id]);
-  const configOf = (pick) => [...new Set(valueRows.map((e) => e.section))].map((s) => {
-    const es = valueRows.filter((e) => e.section === s);
+  // The rows the schema marks unread are template rows too, but plain get and list refuse them as unknown
+  // (the schema keeps them out of CONFIG_ROWS, and this ticket leaves get and list as they are), so they
+  // have no printed value to match. AC8 and AC9 cover them as that: get and list refuse each one, and
+  // get --json reads each through the same configValueFrom and configValuesIn as the rows get serves.
+  const unreadRows = ROWS.filter((e) => e.kind !== 'perm' && e.unread);
+  t('DS-870 AC8/AC9 every template row but the permissions is swept, served or unread', valueRows.length + unreadRows.length, ROWS.filter((e) => e.kind !== 'perm').length);
+  const sweptRows = [...valueRows, ...unreadRows];
+  const configOf = (pick) => [...new Set(sweptRows.map((e) => e.section))].map((s) => {
+    const es = sweptRows.filter((e) => e.section === s);
     const rows = es.filter((e) => e.kind !== 'table').map((e) => `| ${e.label} | ${span(pick(e))} |`);
     const tables = es.filter((e) => e.kind === 'table').map((e) => `\n### ${e.label}\n\n| Ask | Detail |\n|---|---|\n`
       + [].concat(pick(e)).map((x) => { const [a, ...d] = String(x).split(': '); return `| \`${a}\` | ${d.length ? `\`${d.join(': ')}\`` : ''} |`; }).join('\n'));
@@ -762,6 +769,18 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     }
     t(`DS-870 AC8 every row set to ${name} reads through get --json as through get (${valueRows.length} rows)`, getBad.join(' / '), '');
     t(`DS-870 AC9 every row set to ${name} reads through get --json as through list`, listBad.join(' / '), '');
+    // An unread row: get and list refuse it, and get --json reads the cell as a served row's would read.
+    const uj = getJson(env, ...unreadRows.map((e) => e.id)).json?.rows ?? {};
+    const unreadBad = [];
+    for (const e of unreadRows) {
+      // As get and list print a path, `~` is the sweep's HOME (T).
+      const cell = name === 'TODO' ? null : [].concat(pick(e)).map((x) => String(x).replace(/^~(?=\/|$)/, T));
+      const want = JSON.stringify([cell?.[0] ?? null, cell, cell !== null]);
+      const j = uj[e.id], got = JSON.stringify(j && [j.value, j.items, j.set]);
+      const refused = ['get', 'list'].every((cmd) => { const x = node(env, [cmd, e.id]); return x.status !== 0 && x.stdout === '' && x.stderr.includes(`unknown config id "${e.id}"`); });
+      if (got !== want || !refused) unreadBad.push(`${e.id}: json ${got}, want ${want}, get and list refuse it ${refused}`);
+    }
+    t(`DS-870 AC8/AC9 every unread row set to ${name} is refused by get and list, and read by get --json (${unreadRows.length} rows)`, unreadBad.join(' / '), '');
   }
   const permRows = ROWS.filter((e) => e.kind === 'perm');
   for (const v of ['yes', 'no', 'TODO']) {
