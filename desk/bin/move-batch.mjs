@@ -34,11 +34,12 @@ crashShowsPerson((e) => console.error(`move-batch: ${describeCrash(e)}`));
 
 // What stays with the standing slot: its named batches, the locks this move holds, the supervisor
 // agent's own log (launchd writes it for the repo), intake's register (intake admits into the slot),
-// the repo's asks (asks.mjs), and the levers' repo-level records with their locks: the lever log
-// (lever-log.mjs), the blind audits and their queue (levers-audit.mjs) and the evaluations with their
-// evidence (levers-evaluate.mjs). Each is kept once per repo, not per batch, and read from this folder.
+// the repo's asks (asks.mjs), the refused config rows already pushed (supervisor.mjs), and the levers'
+// repo-level records with their locks: the lever log (lever-log.mjs), the blind audits and their queue
+// (levers-audit.mjs) and the evaluations with their evidence (levers-evaluate.mjs). Each is kept once
+// per repo, not per batch, and read from this folder.
 // The ticket ledger is not here: it sits beside the queue under repos/<slug>, which a move leaves alone.
-const STAYS = [E.BATCHES_DIR, 'ref', 'orchestrator.lock', 'supervisor.lock', 'supervisor.agent.log', 'intake.json', 'asks.json'];
+const STAYS = [E.BATCHES_DIR, 'ref', 'orchestrator.lock', 'supervisor.lock', 'supervisor.agent.log', 'intake.json', 'asks.json', 'config-pushed.json'];
 const REPO_LEVEL = ['levers.jsonl', 'audit.jsonl', 'audit-queue.json', 'lever-evals.jsonl', 'levers-evidence'];
 const stays = (f) => STAYS.includes(f) || REPO_LEVEL.some((n) => f === n || f.startsWith(`${n}.lock`));
 // How long a stopped merge driver has to let go of its lock.

@@ -17,6 +17,10 @@
 // the log says so once per batch. For a handed-over batch, each tick:
 //   - skips, saying so in the log, while a pass holds <state>/orchestrator.lock or the previous tick's
 //     run still holds <state>/supervisor.lock;
+//   - first reads every declared config row through `desk-env get --json`: a fatal error (a value the
+//     row's reader refuses today) runs no pass that tick and pushes one item naming the row, once until
+//     the row changes. An error that is not fatal never blocks; DESK_CONFIG_PREFLIGHT=off, in the tick's
+//     environment or when `install` runs, turns the check off;
 //   - runs `pass.mjs --json` with only the Stage 3 approvals recorded with the batch: `approved.workers`
 //     becomes AUTOPILOT_USER_APPROVED=1, `approved.base_push` AUTOPILOT_BASE_PUSH_APPROVED=1, and either
 //     one inherited from the environment is dropped, so the supervisor never grants what it was not given;
@@ -95,8 +99,9 @@ const DEFAULT_INTERVAL = 180;
 const MIN_INTERVAL = 60;
 // A pass takes seconds; one still going after this is hung, and launchd or systemd starts no tick while one runs.
 const PASS_TIMEOUT_MS = 10 * 60 * 1000;
-// Location roots an install passes on to the agent, so the tick reads the same config and scripts.
-const PASS_ON = ['DESK_HOME', 'DESK_CONFIG_ROOT'];
+// What an install passes on to the agent: the location roots, so the tick reads the same config and
+// scripts, and the config check's switch.
+const PASS_ON = ['DESK_HOME', 'DESK_CONFIG_ROOT', 'DESK_CONFIG_PREFLIGHT'];
 
 const die = (msg, code = 1) => { console.error(`supervisor: ${msg}`); process.exit(code); };
 const label = supervisorLabel;
@@ -402,7 +407,8 @@ const sentThisTick = new Set();
 // Whether another batch has sent `key`: the repo's own pushes reach every batch, and go out once. Any
 // key sent this tick counts. From another batch's stored list only a key that names what it is about
 // counts, since it never comes back: the check-in digest (its slot) and main's failed release (its
-// commit). An idle batch's stored keys never change, and would silence a repeat of any other.
+// commit). An idle batch's stored keys never change, and would silence a repeat of any other. A refused
+// config row is recorded for the whole repo instead (configRefused).
 const ONCE_EVER = ['digest:', 'release-failed-'];
 const sentElsewhere = (state, key) => sentThisTick.has(key)
   || (ONCE_EVER.some((p) => key.startsWith(p)) && tickStates.some((d) => d !== state && readState(d).notified.includes(key)));
@@ -569,8 +575,77 @@ function batchInterval(intake) {
   }
   const holder = takeLock(state);
   if (holder) { log([`== ${stamp()} skipped: a pass is still running (pid ${holder})`, ...intake]); return; }
-  try { runPass(state, q, s, log, stamp, intake); }
+  try { if (!configRefused(state, s, log, intake)) runPass(state, q, s, log, stamp, intake); }
   finally { dropLock(state); }
+}
+
+// The config check before a pass: every declared row read through `desk-env get --json`. A fatal error
+// is a value the row's reader refuses today, which would stop the pass after it spawned workers, tick
+// after tick; so the tick runs no pass and pushes one item per refused row, keyed by what the row
+// holds, so a row left as it is is not pushed again. An error that is not fatal never blocks: drift
+// reports it. A check that cannot run is logged and blocks nothing. -> whether the pass is held back.
+// A tick that runs no pass still reaps an ended or overdue decider and watches the merge driver, as an
+// idle tick does. The config is the repo's, so the rows pushed are recorded once for the repo, in
+// <repo state>/config-pushed.json, not in any batch's state: a batch idle when a row was pushed finds it
+// recorded when it wakes. Every check that runs reconciles it: only the rows refused now stay
+// recorded, so a row fixed while another still blocks is pushed again if it comes back, and a clean
+// check forgets them all.
+const CONFIG_CHECK_MS = 60 * 1000;
+const CONFIG_KEY = 'config-invalid:';
+const configPushedFile = (state) => join(E.repoStateOf(state), 'config-pushed.json');
+function readConfigPushed(state) {
+  try { const k = JSON.parse(readFileSync(configPushedFile(state), 'utf8')).keys; return Array.isArray(k) ? k : []; } catch { return []; }
+}
+function writeConfigPushed(state, keys) {
+  const had = readConfigPushed(state);
+  if (had.length === keys.length && keys.every((k) => had.includes(k))) return;
+  mkdirSync(E.repoStateOf(state), { recursive: true });
+  writeFileSync(configPushedFile(state), `${JSON.stringify({ keys }, null, 2)}\n`);
+}
+// Config keys an earlier version kept in a batch's own notified list: nothing reads them now.
+const forgetRows = (s) => { s.notified = s.notified.filter((k) => !k.startsWith(CONFIG_KEY)); };
+function configRefused(state, s, log, intake) {
+  if (String(process.env.DESK_CONFIG_PREFLIGHT ?? '').trim().toLowerCase() === 'off') {
+    log([`== ${stamp()} config check: off (DESK_CONFIG_PREFLIGHT=off), so the pass runs whatever the config holds`]);
+    return false;
+  }
+  const r = spawnSync(process.execPath, [join(HERE, 'desk-env.mjs'), 'get', '--json', ...E.SECTIONS.flatMap((x) => ['--section', x])], {
+    cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: CONFIG_CHECK_MS, maxBuffer: 16 * 1024 * 1024,
+  });
+  // Exit 3 is no config: the pass says so itself.
+  if (r.status === 3) return false;
+  let rows;
+  try { rows = JSON.parse(String(r.stdout ?? '')).rows; } catch { /* said below */ }
+  if (!rows || ![0, 4].includes(r.status)) {
+    log([`== ${stamp()} config check: could not run, so the pass runs (${`${r.stderr ?? ''}${r.error?.message ?? ''}`.trim().split('\n')[0] || `exited ${r.status ?? r.signal}`})`]);
+    return false;
+  }
+  const refused = Object.values(rows).flatMap((row) => row.errors.filter((e) => e.fatal).map((e) => E.invalidLine({ ...row, ...e })));
+  forgetRows(s);
+  if (!refused.length) { writeConfigPushed(state, []); return false; }
+  const pushes = [...new Set(refused)].map((line) => ({ key: `${CONFIG_KEY}${line}`, text: `config check: no pass runs until this row is fixed: ${line}` }));
+  const keys = new Set(pushes.map((p) => p.key));
+  const recorded = readConfigPushed(state).filter((k) => keys.has(k));
+  const { sent, line } = pushFresh(state, { notified: recorded }, pushes, (ps) => (ps.length === 1 ? 'this row' : `these ${ps.length} rows`), 'tick');
+  writeConfigPushed(state, sent ? [...keys] : recorded);
+  const reaped = reapDecider(state, s);
+  const driver = watchDriver(state, s, driverHolder(state));
+  writeState(state, s);
+  log([`== ${stamp()} config check: no pass run, no worker spawned`, ...pushes.map((p) => p.text), line, ...reaped, ...driver, ...intake]);
+  return true;
+}
+
+// One notification for the pushes whose keys have not gone out, from this batch or another this tick:
+// -> { sent, line }. sent is false only when the notification failed, so the caller records nothing
+// and the next run tries again; line is what the log says, null with nothing to push. named(pushes)
+// names them in the log, and `again` is what tries again.
+function pushFresh(state, s, pushes, named, again) {
+  const fresh = pushes.filter((p) => !s.notified.includes(p.key) && !sentElsewhere(state, p.key));
+  if (!fresh.length) return { sent: true, line: pushes.length ? `notification: not sent, the last one already named ${named(pushes)}` : null };
+  const { err, said } = notify(title(), fresh.map((p) => p.text).join(' · '));
+  if (err) return { sent: false, line: `notification: failed (${err}) for ${named(fresh)}; the next ${again} tries again` };
+  fresh.forEach((p) => sentThisTick.add(p.key));
+  return { sent: true, line: `notification: ${said} for ${named(fresh)}` };
 }
 
 // Takes <state>/supervisor.lock for this process: -> null, or the pid of the live run that holds it
@@ -714,14 +789,8 @@ function runPass(state, q, s, log, stamp, intake = []) {
   // A pass that crashed or hung gave no verdict, and needs the person as much as one that said so.
   const pushes = toPush(v);
   const items = pushes.map((p) => p.key);
-  const fresh = pushes.filter((p) => !s.notified.includes(p.key) && !sentElsewhere(state, p.key));
-  let sent = true;
-  if (fresh.length) {
-    const { err, said } = notify(title(), fresh.map((p) => p.text).join(' · '));
-    sent = !err;
-    if (sent) fresh.forEach((p) => sentThisTick.add(p.key));
-    out.push(err ? `notification: failed (${err}) for ${fresh.map((p) => p.key).join(', ')}; the next pass tries again` : `notification: ${said} for ${fresh.map((p) => p.key).join(', ')}`);
-  } else if (items.length) out.push(`notification: not sent, the last one already named ${items.join(', ')}`);
+  const { sent, line } = pushFresh(state, s, pushes, (ps) => ps.map((p) => p.key).join(', '), 'pass');
+  if (line) out.push(line);
   // A failed notification records nothing new, so the next pass sends it again. A pass that refused
   // or failed checked nothing, so it keeps the keys already sent rather than dropping them.
   if (v.status === 'error') s.notified = sent ? [...new Set([...s.notified, ...items])] : s.notified;
