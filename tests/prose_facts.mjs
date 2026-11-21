@@ -19,6 +19,7 @@ import { markdownFiles, FENCE, closesFence } from './command_shapes.mjs';
 import { DEFAULT_PATHS, FACTS_OPEN, FACTS_CLOSE } from './prose_scan.mjs';
 import { VENDORS } from '../skills/desk-review/bin/verdict.mjs';
 import { SPAWN_ORDER_RULE, KEEP_ORDER_RULE } from '../desk/bin/spawn-order.mjs';
+import { pushNothing } from '../desk/bin/fix-tries.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const WRITE = 'node tests/prose_facts.mjs --write';
@@ -35,6 +36,12 @@ export const REGIONS = {
   'spawn-order': {
     from: () => ({ rule: SPAWN_ORDER_RULE, keep: KEEP_ORDER_RULE }),
     render: ({ rule, keep }) => `${rule}\n${keep}`,
+  },
+  // The push-nothing rule with its accepted-gap exception, as fix-tries renders it into the task of a
+  // fix worker whose gaps call accepts a gap.
+  'push-nothing': {
+    from: () => ({ text: pushNothing(true) }),
+    render: ({ text }) => text,
   },
 };
 
