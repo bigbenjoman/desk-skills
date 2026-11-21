@@ -30,6 +30,7 @@ checkSize({ t, root, name: 'desk-ci', core, before });
 const REWRITTEN = [
   ['DS-259', '"Can resolve" means any value other than a GitHub-hosted image label', 1], // a repo's declared AWS runner labels resolve to its own cloud runner
   ['DS-261', 'and the protection writes below, each shown first', 1], // `aws-fallback off` is a write too
+  ['DS-261', '--- name: desk-ci description: >-', 1], // the frontmatter names aws-fallback in its description and argument-hint
 ];
 checkSplit({ t, label: 'AC2', before, files, read, headings: 10, minRows: 26, rewritten: REWRITTEN });
 

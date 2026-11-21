@@ -2159,7 +2159,9 @@ if (isMain) {
     } else if (cmd === 'protection') {
       process.exit(runProtection(rest));
     } else if (cmd === 'aws-fallback' && ['off', 'status'].includes(rest[0])) {
-      process.exit((await import('./aws-fallback.mjs')).cli(rest));
+      // Not awaited: aws-fallback.mjs imports this file, and a top-level await here would leave this
+      // module evaluating while that one waits for it, so Node exits 13 with nothing run.
+      import('./aws-fallback.mjs').then((m) => process.exit(m.cli(rest))).catch((e) => { console.error(e.message); process.exit(2); });
     } else {
       throw new Error('usage: desk-ci.mjs classify|ci-lint [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] [--out <dir>] | batch-red [--prs a,b | --queue <file>] [--baseline <file>] | profile [<workflow file or directory>...] [--required <check>]... [--measure <file>] [--batch-prs <n>] [--default <branch>] | protection snapshot|restore <file>|pin|token | aws-fallback off --repo owner/name | aws-fallback status [--repo owner/name]');
     }
