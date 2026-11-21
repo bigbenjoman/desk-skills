@@ -287,7 +287,7 @@ calls=$(count "$T/pass.calls"); n=$(started); notified=$(count "$T/notify.calls"
 out=$(tick); rc=$?
 check "DS-872 AC1: a refused row runs no pass and starts no driver that tick" '[ $rc -eq 0 ] && [ "$(count "$T/pass.calls")" = "$calls" ] && [ "$(started)" = "$n" ] && grep -q "config check: no pass run, no worker spawned" "$LOG"'
 check "DS-872 AC2: one push names the row, the items and the form expected" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -qF "config check: no pass runs until this row is fixed: INVALID  §4 Evidence workflow mixes \`none\` with other items (none | pr-evidence.yml)" && tail -1 "$T/notify.calls" | grep -qF "\`none\` must stand alone"'
-check "DS-872 AC2: the log records the same line" 'grep -qF "config check: no pass runs until this row is fixed: INVALID  §4 Evidence workflow mixes \`none\` with other items (none | pr-evidence.yml)" "$LOG" && grep -q "^notification: sent for the config check$" "$LOG"'
+check "DS-872 AC2: the log records the same line" 'grep -qF "config check: no pass runs until this row is fixed: INVALID  §4 Evidence workflow mixes \`none\` with other items (none | pr-evidence.yml)" "$LOG" && grep -q "^notification: sent for this row$" "$LOG"'
 out=$(tick)
 check "DS-872 AC3: a second tick with the row unchanged sends no second push and still runs no pass" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && [ "$(count "$T/pass.calls")" = "$calls" ] && grep -q "^notification: not sent, the last one already named this row$" "$LOG"'
 out=$(DESK_CONFIG_PREFLIGHT=off tick)
@@ -301,6 +301,25 @@ check "DS-872 AC5: a row that only warns today (Local services written in words)
 SECTION4="$EVIDENCE_BAD"; config yes yes
 out=$(tick)
 check "DS-872: the row refused again after a fix is pushed again" '[ "$(count "$T/notify.calls")" = $((notified + 2)) ] && [ "$(count "$T/pass.calls")" = $((calls + 3)) ]'
+# Two rows refused: one fixed while the other still blocks, then broken again, is pushed again.
+CHECKS_BAD='| Required checks | `none` `ci` |'
+SECTION4="$EVIDENCE_BAD"$'\n'"$CHECKS_BAD"; config yes yes
+out=$(tick)
+check "DS-872: a second refused row is pushed, the first is not again" '[ "$(count "$T/notify.calls")" = $((notified + 3)) ] && tail -1 "$T/notify.calls" | grep -qF "§4 Required checks" && ! tail -1 "$T/notify.calls" | grep -qF "§4 Evidence workflow" && grep -q "^notification: sent for this row$" "$LOG"'
+SECTION4="$CHECKS_BAD"; config yes yes
+out=$(tick)
+check "DS-872: the row still refused is not pushed again while the other is fixed" '[ "$(count "$T/notify.calls")" = $((notified + 3)) ] && [ "$(count "$T/pass.calls")" = $((calls + 3)) ]'
+SECTION4="$EVIDENCE_BAD"$'\n'"$CHECKS_BAD"; config yes yes
+out=$(tick)
+check "DS-872: a row fixed while another still blocked is pushed again when it comes back" '[ "$(count "$T/notify.calls")" = $((notified + 4)) ] && tail -1 "$T/notify.calls" | grep -qF "§4 Evidence workflow" && [ "$(count "$T/pass.calls")" = $((calls + 3)) ]'
+# `none` beside a note on a value row is read as `none` today, and the collision budget's reader catches
+# the refusal and falls back: neither blocks.
+SECTION4='| In-progress state | `none` `(no tracker)` |'; config yes yes
+out=$(tick)
+check "DS-872: a value row holding \`none\` beside a note never blocks: the pass runs, nothing is pushed" '[ "$(count "$T/pass.calls")" = $((calls + 4)) ] && [ "$(count "$T/notify.calls")" = $((notified + 4)) ]'
+SECTION4=$'| Done state | `Done` |\n\n## 3b. Tuning\n| Field | Value |\n|---|---|\n| Per-file collision budget | `none` `2` |'; config yes yes
+out=$(tick)
+check "DS-872: a collision budget mixing \`none\`, which the pass reads past, never blocks" '[ "$(count "$T/pass.calls")" = $((calls + 5)) ] && [ "$(count "$T/notify.calls")" = $((notified + 4)) ]'
 SECTION4=""; config yes yes
 out=$(tick)
 

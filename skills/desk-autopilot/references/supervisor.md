@@ -24,7 +24,9 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
 - first reads every declared config row through `desk-env get --json`. A fatal error (a value the
   row's reader refuses today, such as `none` beside another item) runs no pass and spawns no worker
   that tick, logs the row, and pushes one notification naming the row, the item and the form
-  expected, not repeated while the row stays as it is. An error that is not fatal never blocks
+  expected, not repeated while the row stays as it is (a row fixed and then broken again is pushed
+  again). Such a tick still stops a decider past its time and watches the merge driver, as an idle
+  tick does. An error that is not fatal never blocks
   (`desk-env drift` reports it). `DESK_CONFIG_PREFLIGHT=off` turns the check off: in a tick's
   environment, or set when `install` runs, which carries it into the installed agent; the log then
   says the check is off;
