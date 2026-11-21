@@ -9,7 +9,8 @@
 // default branch's commit a base sync merged. The same conflict met again at the same commits on a
 // later pass is not recorded twice.
 //
-// A file with CONFLICTS_TO_LOWER conflicts within CONFLICT_WINDOW_MS runs one ticket fewer than its
+// Only ticket-PR conflicts count toward the budget: a base sync's entries are kept but lower nothing
+// (fromBaseSync). A file with CONFLICTS_TO_LOWER conflicts within CONFLICT_WINDOW_MS runs one ticket fewer than its
 // configured places (config §3b "Per-file collision budget"), and one more again after each window
 // with none, never above its configured places nor below 1.
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
@@ -79,10 +80,16 @@ export function loweredBy(times, k, now) {
   return drop;
 }
 
-// The record's conflicts by file: Map file -> [ms].
+// An entry a batch base's sync from the default branch recorded (its ticket `base-<branch>`, no PR).
+// A stale base meets the same conflict again on every default-branch commit, so these say the base
+// is out of sync, which its own report line says, and nothing about tickets colliding on the file.
+const fromBaseSync = (e) => e.pr == null && typeof e.ticket === 'string' && e.ticket.startsWith('base-');
+
+// The record's ticket-PR conflicts by file: Map file -> [ms]. Base syncs lower no file's places.
 export function conflictTimes(entries) {
   const by = new Map();
   for (const e of entries) {
+    if (fromBaseSync(e)) continue;
     if (!by.has(e.file)) by.set(e.file, []);
     by.get(e.file).push(Date.parse(e.at));
   }

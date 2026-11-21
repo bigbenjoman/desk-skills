@@ -12,7 +12,9 @@ does not hold, that is in the core or in the file the core's reference table nam
 radius first, each with its kind and why. Two tickets that share files are chained, the larger blast
 radius first (two of a kind: the smaller first, then the order named), as holds in the queue and
 entries in the `--deps` it prints, which already carries the chain; tickets that share no files are
-never chained. Jira Blocks links win over the kinds, and `CONTRADICTIONS` names each place they
+never chained. Each ticket in a chain is held behind every earlier one it shares a file with, not
+only the one just before it, so dropping or freeing that one by hand never lets it start ahead of
+the rest. Jira Blocks links win over the kinds, and `CONTRADICTIONS` names each place they
 disagree. **Say the order in the Stage 2 report** and put it in the status table's Notes; a
 contradiction is worth one line to the user, since the link may be stale.
 
@@ -21,9 +23,17 @@ append-only-paths`) covers is not counted, by `plan-batch` or by `queue.mjs admi
 each only add strings to one locale file run side by side. A row that is not a list of path globs
 reads as `none`, and the pass report names it.
 
-**The user's named order is spawn priority, not a merge chain**: `plan-batch` seeds the queue
-blockers first and otherwise in the order named, and `pass.mjs` spawns in queue order, so pass the
-tickets that gate the most others first. If the user asks for a literal chain that would idle a gate,
+**Spawn order is not a merge chain**: `plan-batch` seeds the queue in spawn order and prints it as
+SPAWN ORDER under the rule it applies:
+
+<!-- facts: spawn-order -->
+Blockers start first, then the tickets that gate the most others (directly or through any chain of holds), then, among tickets that gate none, the fewest planned files, then the order named.
+With --keep-order, tickets start in the order named, blockers still first.
+<!-- /facts -->
+
+`pass.mjs` spawns in queue order. Tickets already queued (an epic's children, admitted before its
+plan seeds them) are put in that order too (`queue.mjs order`), apart from one the user placed with
+`queue.mjs move`. If the user asks for a literal chain that would idle a gate,
 say what that costs and ask. Sharing a file never holds a ticket at admission: `queue.mjs admit`
 records `collides_with` for the plan and `desk-q` only, and the pass starts tickets that share a file
 up to that file's per-file budget (`concurrency-and-memory.md`). A ticket added mid-batch is not
@@ -57,7 +67,7 @@ A ticket parked for its lane (C, D), its size (L, XL) or its design is planned l
 blockers go in `held_by` (and `held_outside`) **beside its park**, and the plan reads `HELD (blocked
 by … , and parked: <its park>)`. The park wins and it is **never in `--deps`**, so a release can never
 send one to a headless worker; `queue.mjs hold`, `admit` and `transfer` keep that park beside the hold. `plan-batch` seeds the queue
-blockers first, and its `--deps` already carries the merge chain for tickets that share files (*Order
+in spawn order (above), and its `--deps` already carries the merge chain for tickets that share files (*Order
 the batch by blast radius*): pass it to the merge driver as it stands.
 
 **A batch planned before those parks kept their blockers** has them with `held_by` empty. `queue.mjs
@@ -86,7 +96,11 @@ with `status` `idle`: keep the loop going. Two states come to you as an exit 11,
   already that question, so what is held behind it is not STUCK (below): only a blocker that
   finished with no PR, closed its PR unmerged or is not in the batch comes to you as STUCK. A
   blocker in no batch that the ticket was admitted behind (`held_outside`) is not STUCK: the pass
-  lifts it once it is Done in Jira and its PR has merged to the batch's base. In a batch the
+  lifts it once it is Done in Jira and its PR has merged to the batch's base. One Done in Jira for a
+  day or more (its resolution date) whose PR merged into another branch no PR has promoted is raised
+  once, as a desk-needs-you `held` item naming that branch and its promotion PR's state (none,
+  draft, open or red), and desk-q shows that state in place of a date: the user promotes the branch
+  or starts the ticket without it. In a batch the
   supervisor runs, the pass also admits such a blocker into the batch (`intake.mjs admit`, `--into`
   a named batch), once per held ticket (a triage a usage limit cut off does not count, and is tried
   again once it lifts) and at most three a pass, unless it is the person's step, is outside §4 Jira

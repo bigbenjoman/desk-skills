@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readLogFile } from './harvest.mjs';
+import { seededRandom as rng } from './seeded-random.mjs';
 
 export const HISTORY_FILE = 'eta-history.jsonl';
 export const WINDOW_DAYS = 30;
@@ -76,10 +77,12 @@ export function firstSpawnFromLogs(state, key) {
 
 // The size triage recorded, or `unknown`: never guessed from anything else.
 export function sizeOf(state, key) {
-  try {
-    const s = String(JSON.parse(readFileSync(join(state, 'triage', `${key}.json`), 'utf8')).size ?? '').trim().toUpperCase();
-    return SIZES.includes(s) ? s : 'unknown';
-  } catch { return 'unknown'; }
+  try { return sizeIn(JSON.parse(readFileSync(join(state, 'triage', `${key}.json`), 'utf8'))); } catch { return 'unknown'; }
+}
+// The size triage record `rec` holds, as sizeOf reads it.
+export function sizeIn(rec) {
+  const s = String(rec?.size ?? '').trim().toUpperCase();
+  return SIZES.includes(s) ? s : 'unknown';
 }
 
 export function historyLine({ key, size, spawned_at, merged_at }) {
@@ -272,16 +275,6 @@ export function nextCheckin(t) {
     }
   }
   return null;
-}
-
-// mulberry32: a small seeded generator, so every run of the forecast draws the same numbers.
-function rng(seed) {
-  return () => {
-    seed = (seed + 0x6D2B79F5) | 0;
-    let x = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
-    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 // The share of a running ticket's work done, from its stage ("6/9", "4b/9").

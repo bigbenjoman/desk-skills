@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Levers · six weeks in</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#F9FAFB}
+a{color:#111827}a:hover{color:#374151}
+.num{font-variant-numeric:tabular-nums}
+.mono{font-family:'JetBrains Mono',ui-monospace,monospace}
+.card{background:#FFFFFF;border:1px solid #E5E7EB;border-radius:8px}
+.muted{color:#6B7280}
+.badge{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:999px;font-size:12px;font-weight:500;white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;flex:none}
+.th{font-size:12px;font-weight:500;color:#6B7280;text-align:left;padding:10px 16px;border-bottom:1px solid #E5E7EB}
+.td{padding:14px 16px;border-bottom:1px solid #F0F1F3;vertical-align:top;font-size:14px}
+</style>
+</helmet>
+<div style="font-family:Inter,system-ui,sans-serif;color:#111827;background:#F9FAFB;min-height:100%;box-sizing:border-box;padding:32px 24px 64px">
+<div style="max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:28px">
+
+<header style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:12px">
+<div style="display:flex;flex-direction:column;gap:4px">
+<h1 style="margin:0;font-size:28px;font-weight:700;letter-spacing:-.01em">Levers</h1>
+<p class="muted" style="margin:0;font-size:15px">desk tests ways to make tickets cheaper, keeps the ones that work, and turns off the rest.</p>
+</div>
+<span class="muted num" style="font-size:13px">Updated 08:07 · 1 min ago · all 4 repos reporting</span>
+</header>
+
+<section aria-label="Summary" class="card" style="padding:18px 20px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px">
+<p style="margin:0;font-size:18px;line-height:1.45;max-width:760px"><b style="font-weight:600">Working.</b> Six weeks into an 8-week trial, a ticket costs <b style="font-weight:600">4.1% less</b> than before levers, about $52 saved so far, and nothing has got worse. 3 kept, 2 still being tested, and <b style="font-weight:600;color:#B45309">1 needs your decision</b>.</p>
+<a href="#lev-h" style="display:inline-flex;align-items:center;height:40px;padding:0 16px;border-radius:6px;background:#111827;color:#F9FAFB;font-size:14px;font-weight:500;text-decoration:none">Review codex in ai-agents</a>
+</section>
+
+<section aria-label="Headline numbers" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px">
+<sc-for list="{{tiles}}" as="t" hint-placeholder-count="4">
+<article class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px;min-height:170px;box-sizing:border-box;{{t.edge}}">
+<h3 class="muted" style="margin:0;font-size:14px;font-weight:500">{{t.label}}</h3>
+<span class="num" style="font-size:34px;font-weight:600;letter-spacing:-.02em;line-height:1">{{t.value}}</span>
+<span style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500;color:{{t.ink}}"><span class="dot" style="background:{{t.dotc}}"></span>{{t.status}}</span>
+<span class="muted num" style="font-size:12px">{{t.sub}}</span>
+<svg viewBox="0 0 220 32" width="100%" height="32" aria-hidden="true" style="margin-top:auto"><line x1="0" y1="{{t.base}}" x2="220" y2="{{t.base}}" stroke="#9CA3AF" stroke-dasharray="3 3" stroke-width="1"></line><polyline points="{{t.spark}}" fill="none" stroke="#111827" stroke-width="2"></polyline></svg>
+</article>
+</sc-for>
+</section>
+
+<section aria-labelledby="tr-h" style="display:flex;flex-direction:column;gap:12px">
+<div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:12px">
+<div style="display:flex;flex-direction:column;gap:4px"><h2 id="tr-h" style="margin:0;font-size:17px;font-weight:600">Trends</h2><p class="muted" style="margin:0;font-size:13px">Black is now, grey is before levers. Left: the last 6 weeks. Right: the last 12 months.</p></div>
+<div role="group" aria-label="Chart view" style="display:inline-flex;border:1px solid #D1D5DB;border-radius:6px;overflow:hidden"><button type="button" aria-pressed="true" style="height:36px;padding:0 14px;border:0;background:#111827;color:#F9FAFB;font:500 13px Inter,system-ui,sans-serif;cursor:pointer">6 weeks &amp; 12 months</button><button type="button" aria-pressed="false" style="height:36px;padding:0 14px;border:0;border-left:1px solid #D1D5DB;background:#FFFFFF;color:#374151;font:500 13px Inter,system-ui,sans-serif;cursor:pointer">Last 30 days</button></div>
+</div>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(540px,1fr));gap:16px">
+<sc-for list="{{cards}}" as="c" hint-placeholder-count="4">
+<article class="card" style="padding:16px 16px 0;display:flex;flex-direction:column;border-radius:12px">
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:2px"><div style="flex:1"></div><h3 style="margin:0;font-size:16px;font-weight:700;text-align:center">{{c.title}}</h3><div style="flex:1;display:flex;justify-content:flex-end;align-items:center;gap:10px"><span role="img" aria-label="{{c.ragLabel}}" style="width:14px;height:14px;border-radius:50%;background:{{c.rag}}"></span><span aria-hidden="true" style="color:#6B7280;font-size:16px;letter-spacing:1px;line-height:1">···</span></div></div>
+<p class="muted" style="margin:0;font-size:12px;text-align:center">{{c.sub}}</p>
+<div style="position:relative;width:100%;aspect-ratio:700/340">
+<svg viewBox="0 0 700 340" width="100%" height="100%" role="img" aria-label="{{c.aria}}" style="display:block;position:absolute;inset:0">
+<g font-family="Inter,system-ui,sans-serif" font-size="10">
+<sc-for list="{{c.grid}}" as="t" hint-placeholder-count="10"><line x1="{{t.x0}}" y1="{{t.y}}" x2="{{t.x1}}" y2="{{t.y}}" stroke="#E0E6F1"></line></sc-for>
+<sc-for list="{{c.axes}}" as="a" hint-placeholder-count="2"><line x1="{{a.x0}}" y1="{{c.axY}}" x2="{{a.x1}}" y2="{{c.axY}}" stroke="#6E7079"></line></sc-for>
+<sc-for list="{{c.ticks}}" as="k" hint-placeholder-count="18"><line x1="{{k.x}}" y1="{{c.axY}}" x2="{{k.x}}" y2="{{c.tickY}}" stroke="#6E7079"></line></sc-for>
+<sc-for list="{{c.bases}}" as="b" hint-placeholder-count="2"><polyline points="{{b.p}}" fill="none" stroke="#9CA3AF" stroke-width="1.5"></polyline></sc-for>
+<sc-for list="{{c.bdots}}" as="d" hint-placeholder-count="18"><circle cx="{{d.x}}" cy="{{d.y}}" r="1.5" fill="#9CA3AF"></circle></sc-for>
+<sc-for list="{{c.segs}}" as="s" hint-placeholder-count="2"><polyline points="{{s.p}}" fill="none" stroke="#111827" stroke-width="2.5"></polyline></sc-for>
+<sc-for list="{{c.dots}}" as="d" hint-placeholder-count="18"><circle cx="{{d.x}}" cy="{{d.y}}" r="3" fill="#111827"></circle></sc-for>
+</g>
+</svg>
+<div aria-hidden="true" style="position:absolute;inset:0;font-size:10px;line-height:1;pointer-events:none"><sc-for list="{{c.labels}}" as="b" hint-placeholder-count="30"><span style="position:absolute;left:{{b.l}};top:{{b.t}};transform:{{b.tf}};color:{{b.c}};white-space:nowrap">{{b.s}}</span></sc-for></div>
+<div style="position:absolute;left:0;right:0;bottom:2px;display:flex;justify-content:center;gap:20px;font-size:10px;color:#6B7280"><span style="display:flex;align-items:center;gap:5px"><span style="width:20px;height:2px;background:#111827"></span>{{c.title}}</span><span style="display:flex;align-items:center;gap:5px"><span style="width:20px;height:2px;background:#9CA3AF"></span>Before levers</span></div>
+</div>
+<div style="border-top:1px solid #E5E7EB;margin:4px -16px 0">
+<div style="display:grid;grid-template-columns:repeat(9,minmax(0,1fr));font-size:12px;font-weight:500;color:#6B7280"><sc-for list="{{c.k}}" as="k" hint-placeholder-count="9"><div style="padding:6px 2px 2px;text-align:center;border-right:1px solid #E5E7EB">{{k.l}}</div></sc-for></div>
+<div style="display:grid;grid-template-columns:repeat(9,minmax(0,1fr));font-size:12px" class="mono"><sc-for list="{{c.k}}" as="k" hint-placeholder-count="9"><div style="padding:6px 2px 10px;text-align:center;border-right:1px solid #E5E7EB;color:{{k.c}}">{{k.v}}</div></sc-for></div>
+</div>
+</article>
+</sc-for>
+</div>
+</section>
+
+<section aria-labelledby="lev-h" class="card" style="overflow:hidden">
+<div style="padding:18px 16px 14px;display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:12px;border-bottom:1px solid #E5E7EB">
+<div style="display:flex;flex-direction:column;gap:4px"><h2 id="lev-h" style="margin:0;font-size:17px;font-weight:600">Is each lever working?</h2><p class="muted" style="margin:0;font-size:13px">One row per lever. Testing means it's on for half of new tickets, so desk can compare the two halves.</p></div>
+<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px" class="muted">
+<span style="display:flex;align-items:center;gap:6px"><span class="dot" style="background:#16A34A"></span>Kept</span>
+<span style="display:flex;align-items:center;gap:6px"><span class="dot" style="background:#3B82F6"></span>Testing</span>
+<span style="display:flex;align-items:center;gap:6px"><span class="dot" style="background:#D97706"></span>Needs you</span>
+<span style="display:flex;align-items:center;gap:6px"><span class="dot" style="background:#9CA3AF"></span>Off or waiting</span>
+</div>
+</div>
+<div style="overflow-x:auto">
+<table style="width:100%;min-width:900px;border-collapse:collapse">
+<thead><tr><th class="th" style="width:26%">Lever</th><th class="th" style="width:15%">Status</th><th class="th" style="width:20%">Result so far</th><th class="th" style="width:17%">Progress to a decision</th><th class="th">By repo</th></tr></thead>
+<tbody>
+<sc-for list="{{levers}}" as="l" hint-placeholder-count="7">
+<tr style="{{l.rowbg}}">
+<td class="td"><div style="display:flex;flex-direction:column;gap:3px"><span style="font-weight:600">{{l.name}}</span><span class="muted" style="font-size:13px">{{l.what}}</span><sc-if value="{{l.audited}}" hint-placeholder-val="{{false}}"><span style="font-size:12px;color:#4B5563">Each change checked by a blind review after merge</span></sc-if></div></td>
+<td class="td"><span class="badge" style="{{l.badge}}"><span class="dot" style="background:{{l.dotc}}"></span>{{l.status}}</span></td>
+<td class="td num"><div style="display:flex;flex-direction:column;gap:3px"><span style="font-weight:600;color:{{l.resInk}}">{{l.result}}</span><span class="muted" style="font-size:12px">{{l.resNote}}</span></div></td>
+<td class="td num"><div style="display:flex;flex-direction:column;gap:6px"><div style="height:6px;border-radius:3px;background:#F0F1F3" role="img" aria-label="{{l.prog}}"><div style="height:6px;border-radius:3px;background:#111827;width:{{l.pct}}"></div></div><span class="muted" style="font-size:12px">{{l.prog}}</span></div></td>
+<td class="td" style="font-size:13px"><div style="display:flex;flex-direction:column;gap:4px"><sc-for list="{{l.repos}}" as="r" hint-placeholder-count="3"><span style="display:flex;align-items:center;gap:6px"><span class="dot" style="width:6px;height:6px;background:{{r.c}}"></span><span>{{r.t}}</span></span></sc-for></div></td>
+</tr>
+</sc-for>
+</tbody>
+</table>
+</div>
+</section>
+
+<section aria-labelledby="ch-h" class="card" style="padding:18px 16px;display:flex;flex-direction:column;gap:4px">
+<h2 id="ch-h" style="margin:0;font-size:17px;font-weight:600">Every change desk made</h2>
+<p class="muted" style="margin:0 0 6px;font-size:13px">Newest first, since testing started on 17 Nov.</p>
+<sc-for list="{{changes}}" as="c" hint-placeholder-count="7">
+<div style="display:grid;grid-template-columns:110px minmax(0,1fr);gap:14px;padding:12px 0;border-top:1px solid #F0F1F3;align-items:start">
+<span class="muted num" style="font-size:13px;padding-top:2px">{{c.when}}</span>
+<div style="display:flex;flex-direction:column;gap:3px"><span style="font-size:14px;font-weight:600">{{c.what}}</span><span class="muted" style="font-size:13px">{{c.why}}</span><sc-if value="{{c.undo}}" hint-placeholder-val="{{false}}"><span style="font-size:12px;color:#4B5563">To undo: <span class="mono" style="background:#F3F4F6;padding:1px 6px;border-radius:4px">{{c.undo}}</span></span></sc-if></div>
+</div>
+</sc-for>
+</section>
+
+<section aria-labelledby="how-h" style="display:flex;flex-direction:column;gap:6px;padding:0 4px">
+<h2 id="how-h" style="margin:0;font-size:14px;font-weight:600">How desk decides</h2>
+<p class="muted" style="margin:0;font-size:13px;max-width:820px;line-height:1.55">A lever being tested is on for half of new tickets and off for the other half. Once 30 tickets on each side have finished, desk keeps the lever if those tickets cost less and nothing got worse: tickets accepted, fix tries, failed checks and reverts. Otherwise it turns the lever off. Riskier levers are tried on fewer tickets first, and each of their changes gets a blind review after merge. A lever turned off twice is paused until you decide.</p>
+</section>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":2700}}'>
+var WBR = (function () {
+var GREEN = '#16A34A', AMBER = '#D97706', INK = '#111827', MUTED = '#9CA3AF';
+var days = [], d0 = Date.UTC(2026, 10, 23), MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+for (var i = 0; i < 30; i++) { var dt = new Date(d0 + i * 864e5); days.push(dt.getUTCDate() + ' ' + MON[dt.getUTCMonth()]); }
+var LABELS = { days: days, weeks: ['WK 47','WK 48','WK 49','WK 50','WK 51','WK 52'], months: ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'] };
+var nice = function (lo, hi, minStep) {
+var span = hi - lo, raw = Math.max(span / 4, minStep || 0), mag = Math.pow(10, Math.floor(Math.log10(raw))), st = [1, 2, 2.5, 5, 10].map(function (m) { return m * mag; }).find(function (s) { return s >= raw; });
+return { lo: Math.floor(lo / st) * st, hi: Math.ceil(hi / st) * st, st: st };
+};
+// Geometry from studia-web wbr-chart.tsx buildFullOptions: width 700, height 340,
+// grid 0 left 8% right 52%, grid 1 left 54% right 4%, top 12%, bottom 16%.
+var W = 700, H = 340, T = H * 0.12, B = H * (1 - 0.16);
+function panel(out, labels, vals, base, fmt, axisFmt, x0, x1, side, every, minStep) {
+var n = labels.length, dx = (x1 - x0) / n, xAt = function (i) { return x0 + dx * (i + 0.5); };
+var got = vals.filter(function (v) { return v != null; });
+var r = nice(Math.min.apply(null, got.concat([base])) * 0.97, Math.max.apply(null, got.concat([base])) * 1.03, minStep);
+var y = function (v) { return B - (v - r.lo) / (r.hi - r.lo) * (B - T); };
+for (var v = r.lo; v <= r.hi + 1e-9; v += r.st) out.grid.push({ x0: x0, x1: x1, y: y(v), lx: side === 'left' ? x0 - 8 : x1 + 8, ty: y(v) + 3.5, a: side === 'left' ? 'end' : 'start', l: axisFmt(v) });
+out.axes.push({ x0: x0, x1: x1 });
+labels.forEach(function (l, i) { out.ticks.push({ x: xAt(i) }); if ((n - 1 - i) % every === 0) out.xs.push({ x: xAt(i), l: l }); });
+var cur = [];
+vals.forEach(function (v, i) {
+if (v == null) { if (cur.length) out.segs.push({ p: cur.join(' ') }); cur = []; return; }
+cur.push(xAt(i) + ',' + y(v));
+out.dots.push({ x: xAt(i), y: y(v), ly: y(v) - 9, v: (every === 1 || (n - 1 - i) % every === 0) ? fmt(v) : '' });
+});
+if (cur.length) out.segs.push({ p: cur.join(' ') });
+var by = y(base);
+out.bases.push({ p: labels.map(function (_, i) { return xAt(i) + ',' + by; }).join(' ') });
+labels.forEach(function (_, i) { out.bdots.push({ x: xAt(i), y: by }); });
+var firstGot = vals.findIndex(function (v) { return v != null; });
+if (firstGot > 1) out.notes.push({ x: (x0 + xAt(firstGot - 1)) / 2, y: (T + B) / 2, t: 'desk started recording on 6 Nov' });
+}
+// k: [Yesterday, DoD%, Last Wk, WoW%, MTD, MoM%, Trial to date, vs before%]; pct cells are numbers; lower is better.
+function callouts(k) {
+var H = ['Yesterday', 'DoD%', 'Last Wk', 'WoW%', 'vs before', 'MTD', 'MoM%', 'To date', 'vs before'];
+var PCT = [false, true, false, true, true, false, true, false, true];
+return H.map(function (l, i) {
+var v = k[i];
+if (!PCT[i]) return { l: l, v: v == null ? '—' : v, c: v == null ? MUTED : INK };
+if (v == null) return { l: l, v: '—', c: MUTED };
+return { l: l, v: (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(1) + '%', c: v < 0 ? GREEN : v > 0 ? AMBER : INK };
+});
+}
+var M = {
+cost: { title: 'Cost per Ticket', short: 'Cost per ticket', base: 17.52, rag: GREEN, ragLabel: 'Green: better than before levers',
+fmt: function (v) { return '$' + v.toFixed(2); }, ax: function (v) { return '$' + v.toFixed(2); },
+sub: 'API-equivalent spend per admitted ticket, all repos',
+k: ['$16.42', -1.6, '$16.80', -0.5, -4.1, '$16.86', -2.8, '$17.02', -2.9],
+days: [17.48,17.21,17.66,17.12,17.35,17.02,16.91,17.18,17.24,16.88,17.05,16.79,17.11,16.95,16.72,17.08,16.84,16.99,16.67,16.93,16.81,16.70,16.98,16.76,16.89,16.62,16.85,16.71,16.68,16.42],
+weeks: [17.60,17.31,17.05,16.95,16.88,16.80], months: [null,null,null,null,null,null,null,null,null,null,17.38,16.86] },
+tokens: { title: 'Tokens per Ticket', short: 'Tokens per ticket', base: 38.9, rag: GREEN, ragLabel: 'Green: better than before levers',
+fmt: function (v) { return v.toFixed(1) + 'M'; }, ax: function (v) { return v.toFixed(0) + 'M'; },
+sub: 'Input tokens per admitted ticket',
+k: ['33.9M', -1.2, '34.2M', -1.2, -12.1, '34.5M', -5.0, '35.9M', -7.7],
+days: [37.9,37.2,38.1,36.8,37.0,36.4,36.2,36.6,35.9,35.4,35.8,35.1,35.5,35.0,34.6,35.2,34.8,34.9,34.4,34.7,34.6,34.3,34.8,34.1,34.4,34.0,34.5,34.2,34.3,33.9],
+weeks: [39.2,37.8,36.1,35.0,34.6,34.2], months: [null,null,null,null,null,null,null,null,null,null,38.6,34.5] },
+prompts: { title: 'Permission Prompts per Start', short: 'Prompts per start', base: 15.6, rag: GREEN, ragLabel: 'Green: better than before levers',
+fmt: function (v) { return v.toFixed(1); }, ax: function (v) { return v.toFixed(0); },
+sub: 'Times a worker was blocked asking to run a command',
+k: ['5.8', -4.9, '6.1', -4.7, -60.9, '6.3', -30.0, '9.0', -42.3],
+days: [13.1,12.4,11.9,12.2,11.0,10.4,10.1,9.6,9.2,9.0,8.7,8.1,8.4,7.6,7.3,7.5,7.0,6.9,6.6,6.8,6.4,6.5,6.2,6.3,6.0,6.2,6.1,5.9,6.1,5.8],
+weeks: [15.1,11.8,8.9,6.9,6.4,6.1], months: [null,null,null,null,null,null,null,null,null,null,14.2,6.3] },
+fixes: { minStep: 0.01, title: 'Fix Tries per Ticket', short: 'Fix tries per ticket', base: 0.13, rag: GREEN, ragLabel: 'Green: under the 0.16 limit',
+fmt: function (v) { return v.toFixed(2); }, ax: function (v) { return v.toFixed(2); },
+sub: 'Must stay under 0.16 for a lever to be kept',
+k: ['0.17', 13.3, '0.14', -6.7, 7.7, '0.14', 0.0, '0.14', 7.7],
+days: [0.13,0.17,0.10,0.14,0.12,0.15,0.11,0.16,0.13,0.12,0.15,0.14,0.11,0.13,0.16,0.12,0.14,0.13,0.15,0.12,0.14,0.13,0.16,0.12,0.14,0.15,0.13,0.12,0.15,0.17],
+weeks: [0.15,0.12,0.14,0.13,0.15,0.14], months: [null,null,null,null,null,null,null,null,null,null,0.14,0.14] }
+};
+function card(key, view) {
+var m = M[key];
+var o = { grid: [], axes: [], ticks: [], xs: [], segs: [], dots: [], bases: [], bdots: [], notes: [] };
+if (view === 'days') panel(o, LABELS.days, m.days, m.base, m.fmt, m.ax, W * 0.08, W * 0.95, 'left', 5, m.minStep);
+else {
+panel(o, LABELS.weeks, m.weeks, m.base, m.fmt, m.ax, W * 0.08, W * 0.48, 'left', 1, m.minStep);
+panel(o, LABELS.months, m.months, m.base, m.fmt, m.ax, W * 0.54, W * 0.91, 'right', 2, m.minStep);
+}
+var px = function (x) { return (x / W * 100).toFixed(3) + '%'; }, py = function (y) { return (y / H * 100).toFixed(3) + '%'; };
+o.labels = [];
+o.grid.forEach(function (g) { o.labels.push({ l: px(g.lx), t: py(g.y), tf: g.a === 'end' ? 'translate(-100%,-50%)' : 'translate(0,-50%)', s: g.l, c: '#6E7079', w: 400 }); });
+o.xs.forEach(function (x) { o.labels.push({ l: px(x.x), t: py(B + 8), tf: 'translate(-50%,0)', s: x.l, c: '#6E7079', w: 400 }); });
+o.dots.forEach(function (d) { if (d.v) o.labels.push({ l: px(d.x), t: py(d.y - 6), tf: 'translate(-50%,-100%)', s: d.v, c: '#111827', w: 400 }); });
+o.notes.forEach(function (n) { o.labels.push({ l: px(n.x), t: py(n.y), tf: 'translate(-50%,-50%)', s: n.t, c: '#9CA3AF', w: 400 }); });
+o.title = m.title; o.rag = m.rag; o.ragLabel = m.ragLabel; o.sub = m.sub; o.k = callouts(m.k);
+o.legY = H - 8; var lw = 25 + m.title.length * 5.4 + 24 + 25 + 62; o.l1 = 350 - lw / 2; o.l1t = o.l1 + 25; o.l2 = o.l1 + 25 + m.title.length * 5.4 + 24; o.l2e = o.l2 + 20; o.l1e = o.l1 + 20; o.l2t = o.l2 + 25; o.axY = B; o.tickY = B + 5; o.xlY = B + 14;
+o.aria = m.title + (view === 'days' ? ': each of the last 30 days' : ': last 6 weeks on the left, last 12 months on the right') + '. Black is now, grey is before levers at ' + m.fmt(m.base) + '.';
+return o;
+}
+return { card: card };
+})();
+
+class Component extends DCLogic {
+renderVals() {
+var G = { dot: '#16A34A', ink: '#15803D', badge: 'background:#DCFCE7;color:#166534' };
+var B = { dot: '#3B82F6', ink: '#1D4ED8', badge: 'background:#DBEAFE;color:#1E40AF' };
+var A = { dot: '#D97706', ink: '#B45309', badge: 'background:#FEF3C7;color:#92400E' };
+var N = { dot: '#9CA3AF', ink: '#4B5563', badge: 'background:#F3F4F6;color:#374151' };
+var lev = function (o, s) {
+o.dotc = s.dot; o.badge = s.badge; o.resInk = o.resInk || '#111827'; o.rowbg = o.rowbg || ''; o.audited = !!o.audited;
+return o;
+};
+var R = function (t, s) { return { t: t, c: s.dot }; };
+return {
+tiles: [
+{ label: 'Cost per ticket', value: '$16.80', status: 'Better than before levers', ink: '#15803D', dotc: '#16A34A', sub: 'Was $17.52 · about $52 saved so far', spark: '0,14 37,13 73,17 110,21 147,22 183,24 220,25', base: 14, edge: '' },
+{ label: 'Tokens per ticket', value: '34.2M', status: 'Better than before levers', ink: '#15803D', dotc: '#16A34A', sub: 'Was 38.9M input tokens', spark: '0,8 37,7 73,11 110,15 147,18 183,19 220,21', base: 8, edge: '' },
+{ label: 'Fix tries per ticket', value: '0.14', status: 'Holding steady', ink: '#374151', dotc: '#9CA3AF', sub: 'Was 0.13 · limit 0.16', spark: '0,18 37,15 73,19 110,16 147,18 183,15 220,16', base: 18, edge: '' },
+{ label: 'Needs you', value: '1', status: 'codex paused in ai-agents', ink: '#B45309', dotc: '#D97706', sub: 'Open it with needs-you list ai-agents', spark: '', base: -10, edge: 'border-color:#FCD34D;background:#FFFBEB' }
+],
+cards: ['cost', 'tokens', 'prompts', 'fixes'].map(function (k) { return WBR.card(k, 'wbr'); }),
+levers: [
+lev({ name: 'wrappers', what: 'Runs often-blocked commands through approved scripts', status: 'Kept', result: '61% fewer prompts', resNote: 'Cost unchanged, nothing worse', pct: '100%', prog: 'Decided 2 Dec', repos: [R('desk-skills: kept', G), R('ai-agents: testing', B), R('studia-web: testing', B)] }, G),
+lev({ name: 'preflight', what: 'Skips the start-up check when nothing has changed', status: 'Kept', result: '42% less spent on checks', resNote: 'In desk-skills', pct: '100%', prog: 'Decided 9 Dec', repos: [R('desk-skills: kept', G), R('ai-agents: turned off', N), R('studia-web: testing', B)] }, G),
+lev({ name: 'memory', what: 'Starts workers with a short summary instead of full memory', status: 'Kept', result: '24% smaller start-up', resNote: 'In ai-agents', pct: '100%', prog: 'Decided 4 Dec', repos: [R('ai-agents: kept', G), R('desk-skills: testing', B), R('studia-web: testing', B)] }, G),
+lev({ name: 'failure-class', what: 'Reruns a ticket once when CI failed for a machine reason', status: 'Testing', result: 'No clear effect yet', resNote: 'Too few reruns to tell', resInk: '#4B5563', pct: '63%', prog: '19 of 30 tickets · about 2 weeks', repos: [R('desk-skills: testing', B), R('ai-agents: testing', B), R('studia-web: testing', B)] }, B),
+lev({ name: 'review-reuse', what: 'Keeps review notes after a rebase instead of reviewing it all again', status: 'Testing', result: 'Too early to tell', resNote: '3 of 3 blind reviews clean', resInk: '#4B5563', pct: '28%', prog: '11 of 40 tickets · on for 1 in 4', audited: true, repos: [R('desk-skills: testing', B)] }, B),
+lev({ name: 'codex', what: 'Has Codex review pull requests instead of Claude', status: 'Needs you', result: 'Turned off twice', resNote: 'Codex didn’t reply to 3 of 13 reviews', resInk: '#B45309', pct: '0%', prog: 'Paused until you decide', audited: true, rowbg: 'background:#FFFBEB', repos: [R('ai-agents: paused', A), R('desk-skills: waiting its turn', N)] }, A),
+lev({ name: 'effort', what: 'Uses less thinking on simple steps', status: 'Waiting', result: '—', resNote: 'Starts after review-reuse', resInk: '#9CA3AF', pct: '0%', prog: 'Not started', audited: true, repos: [R('desk-skills, ai-agents: queued', N), R('studia-web: not eligible (runs in the cloud)', N)] }, N)
+],
+changes: [
+{ n: 7, when: '9 Dec, 08:02', what: 'Kept preflight in desk-skills', why: 'Spend on start-up checks fell 42% across 64 tickets, with no rise in cost, fix tries or failures.', undo: 'desk-q levers undo preflight desk-skills' },
+{ n: 6, when: '4 Dec, 08:05', what: 'Kept memory in ai-agents', why: 'Workers started with 24% less to read across 60 tickets, and nothing got worse. A final check ran until 11 Dec and passed.', undo: 'desk-q levers undo memory ai-agents' },
+{ n: 5, when: '2 Dec, 08:04', what: 'Kept wrappers in desk-skills', why: 'Permission prompts fell 61% across 61 tickets, with no rise in cost, fix tries or failures.', undo: 'desk-q levers undo wrappers desk-skills' },
+{ n: 4, when: '28 Nov, 11:40', what: 'Turned off preflight in ai-agents', why: 'On AI-1841 a skipped check let a blocked command through. desk turns a lever off at once when that happens.', undo: '' },
+{ n: 3, when: '27 Nov, 09:12', what: 'Paused codex in ai-agents', why: 'It was turned off for the second time. It stays off until you decide.', undo: '' },
+{ n: 2, when: '26 Nov, 08:03', what: 'review-reuse now on for 1 in 4 desk-skills tickets', why: 'Up from 1 in 10, after 15 tickets ran with no problems.', undo: '' },
+{ n: 1, when: '17 Nov, 08:00', what: 'Testing started in desk-skills, ai-agents and studia-web', why: 'preflight, wrappers, memory and failure-class each went on for half of new tickets. studia-zendesk has too few tickets to take part.', undo: '' }
+]
+};
+}
+}
+</script>
+</body>
+</html>

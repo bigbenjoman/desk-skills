@@ -3,16 +3,16 @@
 // session logs, each repo's Subscription row and queue, on a fixed clock, under a throwaway HOME,
 // DESK_HOME, DESK_CONFIG_ROOT, DESK_LOCK_DIR and DESK_USAGE_DIR. Each line is checked in plain output,
 // and drawn at 120 columns under NO_COLOR. One check or more per acceptance criterion of DS-628.
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-q-logins-'));
+const T = scratch('desk-q-logins-');
 const H = join(T, 'home');
 mkdirSync(join(T, 'bin'));
 writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
@@ -154,6 +154,12 @@ t('AC6 the table head has RUNS ON after REPO', /^ {2}REPO +RUNS ON +LAST PASS /.
 const runsOn = (name) => h6.find((l) => l.startsWith(`  ${name} `))?.slice(2).split(/ {2,}/)[1];
 t('AC6 each repo\'s RUNS ON holds its subscription\'s email', ['solo', 'voicepa', 'studia'].map(runsOn).join(' '), 'ben.lavender@me.com ben@voicepa.ai ben@studia.io');
 t('AC6 RUNS ON lines up under its head', h6.find((l) => l.startsWith('  solo '))?.indexOf('ben.lavender@me.com'), head().indexOf('RUNS ON'));
+
+// ---- DS-533 AC23: with accounts pinned, the default is named by its pin, whatever its folder is signed in to now
+writeFileSync(env.DESK_SUBSCRIPTIONS, '| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n'
+  + '| `claude` | `work` | `~/.claude-logins/work` | `pinned@example.test` | `default` |\n| `claude` | `spare` | `~/.claude-logins/spare` | `ben@studia.io` | `unused` |\n');
+t('DS-533 AC23 the Claude line names the default by its pin', lines()[0].startsWith('Claude  pinned@example.test  '), true);
+subscriptions(CLAUDE);
 
 // ---- AC7: too narrow for every column: DONE and MERGING go before RUNS ON
 const widths = Array.from({ length: 140 }, (_, i) => 200 - i);

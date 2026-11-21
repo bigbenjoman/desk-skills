@@ -3,6 +3,8 @@
 //   node installed.mjs record <checkout> [<release dir>]   write <DESK_HOME>/installed.json: the commit
 //                                          installed from (and the release's own release.json)
 //   node installed.mjs version             print the installed commit (nothing when none is recorded)
+//   node installed.mjs running             print the commit of the release this script runs from (the
+//                                          installed one outside a release folder)
 //   node installed.mjs restart             restart each running merge driver that is between loops, and
 //                                          rewrite and reload each loaded supervisor agent; one line each
 //   node installed.mjs prune               delete all but the newest three releases, never the current one
@@ -19,17 +21,29 @@ import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { namedBatches } from './batches.mjs';
-import { supervisorLabel } from './run-by.mjs';
+import { supervisorLabel, backend, systemctl } from './run-by.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const AGENTS = join(E.HOME, 'Library', 'LaunchAgents');
 export const plistPath = (slug) => join(AGENTS, `${supervisorLabel(slug)}.plist`);
+// The systemd user units, `<label>.service` and `<label>.timer`, where systemd reads a user's own.
+export const unitDir = () => join(process.env.XDG_CONFIG_HOME || join(E.HOME, '.config'), 'systemd', 'user');
+export const unitPath = (slug, kind) => join(unitDir(), `${supervisorLabel(slug)}.${kind}`);
 const WAIT_MS = Number(process.env.DESK_RESTART_WAIT_MS) || 10_000;
 
 export const installedFile = (home = E.deskHome()) => join(home, 'installed.json');
 // {commit, dirty, at, from}, or null when no install has recorded one.
 export function readInstalled(home = E.deskHome()) {
   try { const v = JSON.parse(readFileSync(installedFile(home), 'utf8')); return v?.commit ? v : null; } catch { return null; }
+}
+// The desk version this script runs: its release folder's (releaseCommit), so one started from an older
+// release reads as old whatever is installed since. Outside a release folder, the installed commit, or null.
+export function runningVersion(home = E.deskHome()) {
+  const dir = E.releaseDirOf(HERE, home);
+  if (!dir) return readInstalled(home)?.commit ?? null;
+  let info = null;
+  try { info = JSON.parse(readFileSync(join(dir, RELEASE_FILE), 'utf8')); } catch { /* none written */ }
+  return releaseCommit(basename(dir), info);
 }
 // A process runs old code when an installed version is known and the one it started at is not it.
 export const oldCode = (version, installed = readInstalled()) => Boolean(installed?.commit) && version !== installed.commit;
@@ -60,6 +74,9 @@ function record(src, release = null) {
 // A release's order is its release.json `at` (when it last went live), else its folder's mtime.
 export const KEEP_RELEASES = 3;
 const RELEASE_FILE = 'release.json';
+// A release's version: its release.json commit, else release-<name>. Rollback records it as installed and
+// a driver started from the release records it in its lock, so the two compare equal.
+const releaseCommit = (name, info) => info?.commit || `release-${name}`;
 export const releasesDir = (home = E.deskHome()) => join(home, 'releases');
 export function currentRelease(home = E.deskHome()) {
   try { return basename(readlinkSync(join(home, 'current'))); } catch { return null; }
@@ -103,7 +120,7 @@ export function rollback(home = E.deskHome()) {
   }
   const prev = list[at - 1];
   makeCurrent(prev.name, home);
-  const v = { commit: prev.info?.commit ?? `release-${prev.name}`, dirty: prev.info?.dirty ?? null, at: new Date().toISOString(), from: prev.info?.from ?? null, release: prev.name };
+  const v = { commit: releaseCommit(prev.name, prev.info), dirty: prev.info?.dirty ?? null, at: new Date().toISOString(), from: prev.info?.from ?? null, release: prev.name };
   writeFileSync(installedFile(home), `${JSON.stringify(v, null, 2)}\n`);
   return { ok: true, line: `rolled back from release ${cur} to ${prev.name} (commit ${v.commit})` };
 }
@@ -219,21 +236,55 @@ export function readPlist(text) {
   const every = Number(/<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(text)?.[1]) || null;
   return { label: str('Label'), cwd: str('WorkingDirectory'), env, every };
 }
-// The desk version a repo's agent was loaded at, or null with none recorded. The plist is only written
-// as the agent reloads, so this is what launchd runs next, whatever a pass still going started on.
+// A supervisor's service and timer units, as supervisor.mjs writes them: { cwd, env, every }.
+const unquote = (s) => s.replace(/\\(.)/g, '$1').replace(/%%/g, '%');
+export function readUnit(service, timer = '') {
+  const cwd = /^WorkingDirectory=(.*)$/m.exec(service)?.[1];
+  const env = {};
+  for (const [, v] of service.matchAll(/^Environment="((?:[^"\\]|\\.)*)"$/gm)) {
+    const kv = unquote(v);
+    env[kv.slice(0, kv.indexOf('='))] = kv.slice(kv.indexOf('=') + 1);
+  }
+  const every = Number(/^OnUnitActiveSec=(\d+)s$/m.exec(timer)?.[1]) || null;
+  return { cwd: cwd == null ? null : unquote(cwd), env, every };
+}
+// The desk version a repo's agent was loaded at, or null with none recorded. The plist or service is
+// only written as the agent reloads, so this is what launchd or systemd runs next, whatever a pass
+// still going started on.
 export function agentVersion(slug) {
-  try { return readPlist(readFileSync(plistPath(slug), 'utf8')).env.DESK_AGENT_VERSION ?? null; } catch { return null; }
+  try {
+    if (backend() === 'systemd') return readUnit(readFileSync(unitPath(slug, 'service'), 'utf8')).env.DESK_AGENT_VERSION ?? null;
+    return readPlist(readFileSync(plistPath(slug), 'utf8')).env.DESK_AGENT_VERSION ?? null;
+  } catch { return null; }
 }
 
 // One line per loaded agent, rewritten through `supervisor.mjs install --reload` from its own working
-// directory and environment, so its plist names this node. An agent not loaded is not running.
-function reloadAgents(dir) {
-  const lines = [];
+// directory and environment, so its plist or service names this node. An agent not loaded (a timer
+// not active) is not running.
+const UNIT = /^(com\.desk-skills\.supervisor\..+)\.service$/;
+function loadedAgents(dir, units) {
+  const found = [];
+  if (backend() === 'systemd') {
+    for (const f of existsSync(units) ? readdirSync(units).sort() : []) {
+      const label = UNIT.exec(f)?.[1];
+      if (!label || systemctl('is-active', '--quiet', `${label}.timer`).status !== 0) continue;
+      const timer = join(units, `${label}.timer`);
+      found.push({ label, ...readUnit(readFileSync(join(units, f), 'utf8'), existsSync(timer) ? readFileSync(timer, 'utf8') : '') });
+    }
+    return found;
+  }
   for (const f of existsSync(dir) ? readdirSync(dir).sort() : []) {
     if (!AGENT.test(f)) continue;
     const p = readPlist(readFileSync(join(dir, f), 'utf8'));
     const label = p.label ?? f.replace(/\.plist$/, '');
     if (spawnSync('launchctl', ['print', `gui/${process.getuid()}/${label}`]).status !== 0) continue;
+    found.push({ ...p, label });
+  }
+  return found;
+}
+function reloadAgents(dir, units) {
+  const lines = [];
+  for (const { label, ...p } of loadedAgents(dir, units)) {
     if (!p.cwd || !existsSync(p.cwd)) { lines.push(`supervisor ${label}: not reloaded, its working directory ${p.cwd ?? '(none)'} is gone`); continue; }
     const env = { ...process.env, ...p.env, PATH: process.env.PATH };
     const r = spawnSync(process.execPath, [join(HERE, 'supervisor.mjs'), 'install', '--reload', ...(p.every ? ['--interval', String(p.every)] : [])], { cwd: p.cwd, env, encoding: 'utf8' });
@@ -243,9 +294,9 @@ function reloadAgents(dir) {
   return lines;
 }
 
-export function restart({ stateRoot = join(E.HOME, '.desk-autopilot'), agents = AGENTS } = {}) {
+export function restart({ stateRoot = join(E.HOME, '.desk-autopilot'), agents = AGENTS, units = unitDir() } = {}) {
   // A fresh ps for each driver: restarting the one before can take seconds, in which this one wakes.
-  const lines = [...runningDrivers(stateRoot).map((d) => restartDriver(d)), ...reloadAgents(agents)];
+  const lines = [...runningDrivers(stateRoot).map((d) => restartDriver(d)), ...reloadAgents(agents, units)];
   return lines.length ? lines : ['nothing to restart: no merge driver or supervisor agent is running'];
 }
 
@@ -257,9 +308,10 @@ if (isMain()) {
   try {
     if (cmd === 'record' && arg) { const v = record(arg, rel ?? null); console.log(`${v.commit}${v.dirty ? ' (with uncommitted changes)' : ''}${v.dirty === null ? ' (not a git checkout)' : ''}`); }
     else if (cmd === 'version') { const v = readInstalled(); if (v) console.log(v.commit); }
+    else if (cmd === 'running') { const v = runningVersion(); if (v) console.log(v); }
     else if (cmd === 'restart') for (const l of restart()) console.log(l);
     else if (cmd === 'prune') for (const l of pruneReleases()) console.log(l);
     else if (cmd === 'rollback') { const r = rollback(); console.log(r.line); if (!r.ok) process.exit(1); }
-    else { console.error('usage: installed.mjs record <checkout> [<release dir>] | version | restart | prune | rollback'); process.exit(2); }
+    else { console.error('usage: installed.mjs record <checkout> [<release dir>] | version | running | restart | prune | rollback'); process.exit(2); }
   } catch (e) { console.error(`installed: ${e.message}`); process.exit(1); }
 }

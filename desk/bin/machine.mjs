@@ -26,6 +26,7 @@ const SIZING_RULES = Object.freeze({
   'memory-ceiling-gb': { ok: wholeAtLeast(1), want: 'a whole number of GB, 1 or more' },
   'test-cap': { ok: wholeAtLeast(1), want: 'a whole number of test workers, 1 or more' },
   'test-lock-slots': { ok: wholeAtLeast(1), want: 'a whole number of slots, 1 or more' },
+  'test-lock-queue-factor': { ok: wholeAtLeast(1), want: 'a whole number, 1 or more' },
   'typecheck-lock-timeout-min': { ok: wholeAtLeast(0), want: 'a whole number of minutes' },
   'pre-push-lock-timeout-s': { ok: wholeAtLeast(0), want: 'a whole number of seconds' },
 });
@@ -40,7 +41,49 @@ const BENCH_RULES = Object.freeze({
     why: 'points of each weekly allowance the bench may spend, set in /desk-setup' },
   [BENCH_RESERVE_KEY]: { ok: (n) => n < 100, want: 'a percentage of the weekly allowance from 0 to under 100',
     why: '% of each weekly allowance the bench leaves for interactive work, set in /desk-setup' },
+  // Not the bench's, but set the same way: a Sizing row no proposal makes, which the lease broker
+  // (leases.mjs) reads, 1 when unset.
+  'preview-build-slots': { ok: (n) => Number.isInteger(n) && n >= 1, want: 'a whole number of preview builds at once per Vercel team, 1 or more',
+    why: 'preview builds one Vercel team may run at once, read by desk-env lease; set by its user' },
+  // The lease broker's per-kind lever, read as text rather than a number.
+  'lease-kinds': { text: true, problem: (v) => leaseKindsProblem(v),
+    why: 'off, shadow or on for each lease kind desk-env lease decides; a kind not named is shadow' },
 });
+
+// ---- lease kinds ------------------------------------------------------------------------------
+// The lease broker's kinds (leases.mjs takes its list from here, as this file cannot import it) and
+// the modes the lease-kinds row sets each to: off takes nothing, shadow grants and logs what it
+// would have refused, on refuses. A kind the row does not name, or names wrongly, reads as
+// DEFAULT_LEASE_MODE, so a typo never turns a kind on.
+export const LEASE_KINDS = Object.freeze(['port', 'slot', 'preview-build', 'merge', 'mem']);
+export const LEASE_MODES = Object.freeze(['off', 'shadow', 'on']);
+export const DEFAULT_LEASE_MODE = 'shadow';
+// `port=on slot=shadow` (spaces or commas between entries) -> { modes: { kind: mode }, unknown: [entry] }.
+export function parseLeaseKinds(raw) {
+  const modes = {}; const unknown = []; const garbled = new Set();
+  for (const entry of String(raw ?? '').split(/[\s,]+/).filter(Boolean)) {
+    const m = /^([\w-]+)=(.*)$/.exec(entry);
+    const kind = m?.[1].toLowerCase(); const mode = m?.[2].toLowerCase();
+    if (m && LEASE_KINDS.includes(kind) && LEASE_MODES.includes(mode)) modes[kind] = mode;
+    else { unknown.push(entry); if (LEASE_KINDS.includes(kind)) garbled.add(kind); }
+  }
+  // A kind with any entry it cannot read is the default, whatever another entry sets it to.
+  for (const k of garbled) delete modes[k];
+  return { modes, unknown };
+}
+// What is wrong with a lease-kinds value, naming each entry it does not know, or null.
+export function leaseKindsProblem(raw) {
+  const { modes, unknown } = parseLeaseKinds(raw);
+  const want = `<kind>=<mode> entries, kinds ${LEASE_KINDS.join(', ')} and modes ${LEASE_MODES.join(', ')}`;
+  if (unknown.length) return `\`lease-kinds\` names ${unknown.length === 1 ? 'an entry' : 'entries'} it does not know: ${unknown.map((e) => `"${e}"`).join(', ')}: want ${want}`;
+  return Object.keys(modes).length ? null : `\`lease-kinds\` is empty: want ${want}`;
+}
+// The checks on Sizing rows a person may have edited by hand, one line each: today lease-kinds.
+export function profileProblems(profile) {
+  const v = profile?.sizing?.['lease-kinds']?.value;
+  const bad = v == null ? null : leaseKindsProblem(v);
+  return bad ? [bad] : [];
+}
 // `bench-run-limit-<provider>`: the most runs the bench may start in a rolling week on a provider it
 // has no meter or allowance ledger for, which it otherwise refuses.
 const BENCH_RUN_LIMIT_PREFIX = 'bench-run-limit-';
@@ -55,6 +98,8 @@ export function benchSettingError(key, raw) {
   const rule = benchRule(key);
   if (!rule) return `\`${key}\` is not a bench setting: want ${Object.keys(BENCH_RULES).join(' or ')} or ${benchRunLimitKey('<provider>')}`;
   const v = String(raw ?? '').trim();
+  // A profile row is one line, so a value that breaks across lines would be read back cut short.
+  if (rule.text) return /[\r\n]/.test(v) ? `\`${key}\` holds a line break: give it on one line` : rule.problem(v);
   return /^\d+(\.\d+)?$/.test(v) && rule.ok(Number(v)) ? null : `\`${key}\` is "${raw}": want ${rule.want}`;
 }
 
@@ -62,7 +107,7 @@ export function benchSettingError(key, raw) {
 // profile already written.
 export const RULES = Object.freeze({
   osReserveGB: 8, wslCeilingGB: 16, workerHeavyGB: 3, minTestWorkers: 3, memoryPerLockSlotGB: 16,
-  efficiencyCoreWeight: 0.5, typecheckLockTimeoutMin: 20, prePushLockTimeoutS: 60,
+  efficiencyCoreWeight: 0.5, typecheckLockTimeoutMin: 20, prePushLockTimeoutS: 60, testLockQueueFactor: 2,
 });
 
 // ---- overrides -------------------------------------------------------------------------------
@@ -260,6 +305,8 @@ export function propose(hw, r = RULES) {
     `${coresWhy}${slots > 1 ? `, shared by ${slots} test lock slots` : ''}`);
   add('test-lock-slots', slots,
     `min(floor(${ceiling} GB / ${r.memoryPerLockSlotGB} GB per slot), floor(${testCores} cores / ${r.minTestWorkers} test workers at least per suite)), at least 1: suites and typechecks that hold the test lock at once`);
+  add('test-lock-queue-factor', r.testLockQueueFactor,
+    'the pass starts no worker, and resumes none into Stage 4, while test-lock-slots x this many runs wait on the test lock');
   add('typecheck-lock-timeout-min', r.typecheckLockTimeoutMin,
     `how long a typecheck waits on the lock before the wait is reported; with-lock.sh itself never times out`);
   add('pre-push-lock-timeout-s', r.prePushLockTimeoutS,

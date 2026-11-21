@@ -5,16 +5,16 @@
 // the check-out's session list, desk-q's probe scheduling, the pass's lift probe and each login's usage
 // reading. Nothing reads this computer's logins.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = join(ROOT, 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-claude-logins-'));
+const T = scratch('desk-claude-logins-');
 const H = join(T, 'home');
 const B = join(H, '.claude-logins', 'b');
 mkdirSync(join(H, '.claude'), { recursive: true });
@@ -319,6 +319,20 @@ rmSync(join(H, '.claude-logins'), { recursive: true });
 rmSync(E0.loginFile(U, 'B-1'));
 t('AC6 one login: every worker log reads as its own', lines(P.usageByLogin({ now: nowU })).length, 1);
 t('AC6 one login: the newest log wins, as it always did', Q.usageOf([], nowU).reading.seven_day.utilization, 0.4);
+
+// ---- DS-531: with accounts pinned, ~/.claude is never probed, and its workers are still read
+agents(B, [{ sessionId: 'S-B', pid: 22 }]);
+writeFileSync(process.env.DESK_SUBSCRIPTIONS, '| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n| `claude` | `b` | `~/.claude-logins/b` | `b@example.com` | `in rotation` |\n');
+resetCalls();
+const pinnedLive = L.readRegistry();
+t('DS-531 AC8 the registry still reads ~/.claude with accounts pinned', calls().includes('unset|agents'), true);
+t('DS-531 AC8 so a worker still running there is live', pinnedLive.live.map((a) => `${a.sessionId}:${a.login}`).join(), 'S-A:default,S-B:b');
+t('DS-531 AC7 probeLogins leaves out ~/.claude', L.probeLogins().map((l) => l.name).join(), 'b');
+t('DS-531 AC7 desk-q probes each account folder and never ~/.claude', Q.probesDue([], { now: nowU + 86400000 }).map((x) => x.login.name).join(), 'b');
+t('DS-531 AC7 nor with no account in use', (() => {
+  writeFileSync(process.env.DESK_SUBSCRIPTIONS, '| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n| `claude` | `b` | `~/.claude-logins/b` | `b@example.com` | `off` |\n');
+  return Q.probesDue([], { now: nowU + 86400000 }).length;
+})(), 0);
 
 rmSync(T, { recursive: true, force: true });
 console.log(fails ? `${fails} FAILED` : 'all checks passed');

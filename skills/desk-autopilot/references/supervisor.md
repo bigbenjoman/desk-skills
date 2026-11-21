@@ -7,10 +7,16 @@ hold, that is in the core or in the file the core's reference table names.
 
 ### The supervisor
 
-`supervisor.mjs` runs passes from launchd with no model in the loop, so a batch keeps moving while no
-session is open and after a reboot. `install` (run inside the repo, once per repo) writes the agent
-`com.desk-skills.supervisor.<slug>`: a tick at login and every 3 minutes (`--interval <s>` to change
-it). `uninstall` removes it, and no further passes run for that repo. `status` shows the agent, the
+`supervisor.mjs` runs passes from launchd on macOS, or a systemd user timer on Linux, with no model in
+the loop, so a batch keeps moving while no session is open and after a reboot. `install` (run inside the
+repo, once per repo) writes the agent `com.desk-skills.supervisor.<slug>` (on Linux, that name's
+`.service` and `.timer` in `~/.config/systemd/user`, enabled with `systemctl --user`): a tick at login
+and every 3 minutes (`--interval <s>` to change it). On Linux, ticks stop at logout unless lingering is
+on (`loginctl enable-linger`), and install says when it is off. On WSL, ticks run only while WSL is up,
+and lingering does not keep it up: WSL stops once every terminal closes. Keep a terminal open, or add a
+Windows Task Scheduler entry at logon that runs `wsl.exe --exec sleep infinity` (with `-d <distro>` if
+the supervisor's distro is not your default), with "Stop the task if it runs longer than 3 days" turned
+off; install says this on WSL. `uninstall` removes it, and no further passes run for that repo. `status` shows the agent, the
 batch and the log's tail. Each tick, for a batch handed over at Stage 4:
 
 - skips while a pass holds `<state>/orchestrator.lock`, or the previous tick's pass still runs, and
@@ -23,8 +29,12 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
   records `base_push_ask` on the queue rather than listing it as waiting, so no decider takes it:
   `/desk-needs-you` asks it once as the batch's `base-push` item, and its `approve` sets
   `approved.base_push`;
+- where a base sync merged but its push was refused while the base lags too far for anything to
+  spawn, the pass records `base_sync_stuck` on the queue: `/desk-needs-you` lists it first as the
+  batch's `base-sync` item, naming the frozen tickets and the command that pushes the base, and the
+  next pass that finds the base current clears it;
 - appends the report to `<state>/supervisor.log`;
-- sends one macOS notification, titled with the repo, for the pass's `push` entries the last
+- sends one desktop notification, titled with the repo, for the pass's `push` entries the last
   notification did not carry (the check-in digest, a production-broken park), or for a pass that
   refused or failed. This replaces Stage 6b while the supervisor runs;
 - starts the merge driver for the queue's tickets (it reads their holds from the queue) while tickets
@@ -42,7 +52,11 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
   minutes is stopped and its items handed on as `decider timed out`. What each session cost, settled
   and handed on goes in the next report in `<state>/supervisor.log` and in the batch notes;
 - once a pass reports the batch idle, runs nothing more for it until the queue changes (a new batch,
-  or a ticket admitted or requeued into this one).
+  or a ticket admitted or requeued into this one), a park is answered, or, with anything parked,
+  failed or held behind a blocker in no batch, `DESK_IDLE_RECHECK_MS` (30 minutes) passes, or
+  `DESK_RUN_RECHECK_MS` (2 minutes) while a park waits on an Actions run or a PR's checks. A pass asks
+  GitHub whether a held ticket's outside blockers landed at most once in that interval, busy batch or
+  idle.
 
 A batch not handed over gets no pass, so the supervisor never runs one before Stage 3 has asked; the
 log says so once per batch.
@@ -56,8 +70,9 @@ Config §3b "Batches run by" says who runs a batch once Stage 3 has asked. `run-
 it: `session` (or unset, said once as a `note`) runs the batch in this session through `/loop`,
 whether or not a supervisor is installed. `supervisor` hands the batch over, first installing the
 supervisor without asking when `supervisor.mjs status` does not exit 0; an install that fails exits
-11 and runs the batch in the session, and the report gives its `error` and `retry` command. Off
-macOS the row reads as `session`, since the supervisor needs launchd.
+11 and runs the batch in the session, and the report gives its `error` and `retry` command. On a
+computer with neither launchd nor a systemd user manager that answers (`systemctl --user`), the row
+reads as `session`.
 
 Once the batch is handed over, the session does not stay open to watch it:
 

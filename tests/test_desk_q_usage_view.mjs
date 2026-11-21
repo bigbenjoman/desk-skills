@@ -5,17 +5,17 @@
 // codex binaries the account check calls. The default, undo and remove keys run desk-env's logins
 // commands. Drawn at 104 columns under NO_COLOR. One check or more per acceptance criterion of DS-472,
 // DS-623 and DS-624, and for DS-625's drawn states.
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-q-usage-view-'));
+const T = scratch('desk-q-usage-view-');
 const H = join(T, 'home');
 mkdirSync(join(T, 'bin'));
 writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
@@ -32,12 +32,15 @@ const env = { HOME: H, DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T,
 for (const k of ['DESK_REPO_OVERRIDE', 'DESK_SLUG', 'DESK_STATE', 'DESK_REPO_DIR', 'DESK_REPO_ROOT', 'DESK_WORKTREES_DIR', 'DESK_DEFAULT_BRANCH', 'DESK_BATCH',
   'DESK_QUEUE', 'DESK_AUTOPILOT_STATE', 'DESK_CONFIG', 'DESK_SUBSCRIPTION', 'COLORFGBG', 'COLORTERM', 'NO_COLOR', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'DESK_AUTOPILOT_WORKER']) delete process.env[k];
 Object.assign(process.env, env);
-const WORK = join(H, '.claude-logins', 'work'), SPARE = join(H, '.claude-logins', 'spare'), ALT = join(H, '.codex-logins', 'alt');
-for (const d of [env.DESK_LOCK_DIR, env.DESK_USAGE_DIR, join(H, '.claude'), WORK, SPARE, join(H, '.codex'), ALT]) mkdirSync(d, { recursive: true });
+// Each Claude account has a folder of its own, pinned to it (DS-528): ~/.claude is the person's own.
+const PERSONAL = join(H, '.claude-logins', 'personal'), WORK = join(H, '.claude-logins', 'work'), SPARE = join(H, '.claude-logins', 'spare'), ALT = join(H, '.codex-logins', 'alt');
+for (const d of [env.DESK_LOCK_DIR, env.DESK_USAGE_DIR, join(H, '.claude'), PERSONAL, WORK, SPARE, join(H, '.codex'), ALT]) mkdirSync(d, { recursive: true });
+// desk-q runs on the default's folder, as the pass does: a worker or a hold that names no login is on it.
+process.env.CLAUDE_CONFIG_DIR = PERSONAL;
 writeFileSync(env.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
 // Each Claude login's account as its .claude.json records it; the default's is ~/.claude.json.
 const account = (path, email, plan) => writeFileSync(path, JSON.stringify({ oauthAccount: { emailAddress: email, planDisplayName: plan } }));
-account(join(H, '.claude.json'), 'me@example.test', 'Ultra');
+account(join(PERSONAL, '.claude.json'), 'me@example.test', 'Ultra');
 account(join(WORK, '.claude.json'), 'work@example.test', 'Max 5x');
 account(join(SPARE, '.claude.json'), 'spare@example.test', 'Pro');
 
@@ -55,19 +58,28 @@ function config(slug, sub = null) {
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`3100\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n${sub ? `| Subscription | \`default\` | \`${sub}\` |\n` : ''}`);
 }
 // The repo with a queue, solo: its Subscription row naming `sub` when given, and `running` workers on
-// the default (a worker with no login file runs on it).
+// the default (a worker with no login file runs on desk-q's own login, the default's folder).
+// A running worker's login file, naming the default's folder.
+function onDefault(slug, key) {
+  const dir = join(H, '.desk-autopilot', slug, 'workers');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${key}.login.json`), JSON.stringify({ name: 'personal', config_dir: PERSONAL }));
+}
 function repo(hold = null, sub = null, running = 0) {
   const slug = 'acme__solo';
   config(slug, sub);
   const q = join(env.DESK_HOME, 'repos', slug, 'queue.json');
   mkdirSync(dirname(q), { recursive: true });
   const tickets = { 'S-1': { key: 'S-1', state: 'triaged' } };
-  for (let i = 0; i < running; i++) tickets[`S-${i + 2}`] = { key: `S-${i + 2}`, state: 'running' };
+  for (let i = 0; i < running; i++) { tickets[`S-${i + 2}`] = { key: `S-${i + 2}`, state: 'running' }; onDefault(slug, `S-${i + 2}`); }
   writeFileSync(q, JSON.stringify({ version: 1, batch: 'solo', concurrency: 2, tickets, ...(hold ? { usage_hold: hold } : {}) }));
 }
+// Rows as [tool, name, folder, rule]: each Claude row is written pinned to the account its folder is for.
+const PINS = { personal: 'me@example.test', work: 'work@example.test', spare: 'spare@example.test' };
+const pinOf = (r) => (r[0] === 'claude' ? PINS[r[2].split('/').at(-1)] ?? '-' : '-');
 const subscriptions = (rows) => writeFileSync(env.DESK_SUBSCRIPTIONS,
-  `| Tool | Name | Folder | Rule |\n|---|---|---|---|\n${rows.map((r) => `| ${r.map((c) => `\`${c}\``).join(' | ')} |`).join('\n')}\n`);
-const ROWS = [['claude', 'personal', '~/.claude', 'default'], ['claude', 'work', '~/.claude-logins/work', 'unused'],
+  `| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n${rows.map((r) => `| ${[...r.slice(0, 3), pinOf(r), r[3]].map((c) => `\`${c}\``).join(' | ')} |`).join('\n')}\n`);
+const ROWS = [['claude', 'personal', '~/.claude-logins/personal', 'default'], ['claude', 'work', '~/.claude-logins/work', 'unused'],
   ['codex', 'codexmain', '~/.codex', 'default'], ['codex', 'alt', '~/.codex-logins/alt', 'unused']];
 
 // A Claude login's probe log holding one reading, written `ago` before FIXED.
@@ -77,7 +89,7 @@ function claudeReading(key, five, seven, ago = MIN) {
     five_hour: { utilization: five[0], resetsAt: five[1] }, seven_day: { utilization: seven[0], resetsAt: seven[1] } } } })}\n`);
   utimesSync(path, (FIXED - ago) / 1000, (FIXED - ago) / 1000);
 }
-claudeReading(null, [0.31, at(24, 14, 5)], [0.61, at(27, 6, 0)]);
+claudeReading('personal', [0.31, at(24, 14, 5)], [0.61, at(27, 6, 0)]);
 claudeReading('work', [0.58, at(24, 13, 20)], [0.72, at(26, 9, 0)]);
 claudeReading('spare', [0.0, at(24, 15, 0)], [0.18, at(29, 22, 0)], 30 * MIN);
 
@@ -129,6 +141,7 @@ async function usage(start, columns, color) {
 const rowOf = (f, name) => f.find((l) => l.slice(2).startsWith(`${name} `)) ?? null;
 // A row as the canvas lays it out: a 2-column lead, then NAME 25, PLAN 9, USE 14, 5H 21, 7D 25 and
 // WORKERS 7 on the right. `windows` given alone is one cell across 5H and 7D.
+// (A Codex PLAN comes from its auth.json id_token alone, DS-532: none here, so —.)
 const cellPad = (s, n) => s + ' '.repeat(Math.max(0, n - s.length));
 const row = (sel, name, plan, use, h5, d7, w) => `${sel ? '›' : ' '} ${cellPad(name, 25)}${cellPad(plan, 9)}${cellPad(use, 14)}${d7 == null ? cellPad(h5, 46) : cellPad(h5, 21) + cellPad(d7, 25)}${w.padStart(7)}`;
 const useOf = (f, name) => rowOf(f, name)?.slice(36, 50).trimEnd() ?? null;
@@ -136,7 +149,7 @@ const useOf = (f, name) => rowOf(f, name)?.slice(36, 50).trimEnd() ?? null;
 const footer = (f, start) => { const i = f.findIndex((l) => l.startsWith(start)); return i < 0 ? null : f[i].length >= 100 ? `${f[i]} ${f[i + 1]}` : f[i]; };
 const checked = (f) => !f.includes('Saving…');
 const subsText = () => readFileSync(env.DESK_SUBSCRIPTIONS, 'utf8');
-const ruleIn = (tool, name) => (new RegExp(`^\\| \`${tool}\` \\| \`${name}\` \\| [^|]+ \\| \`([^\`]+)\` \\|$`, 'm').exec(subsText()) ?? [])[1];
+const ruleIn = (tool, name) => (new RegExp(`^\\| \`${tool}\` \\| \`${name}\` \\| [^|]+ \\| [^|]+ \\| \`([^\`]+)\` \\|$`, 'm').exec(subsText()) ?? [])[1];
 const deskEnv = (...args) => spawnSync(process.execPath, [join(BIN, 'desk-env.mjs'), 'logins', ...args], { encoding: 'utf8', env: process.env });
 
 // solo and api follow the default, web is pinned to work; two workers run on the default.
@@ -155,7 +168,8 @@ S.done();
 
 // ---- AC1, AC3, AC8, AC12, AC14: the tables, the headline and the keys
 S = await usage();
-f = S.frame();
+// spare, found under ~/.claude-logins, is shown once desk-q has pinned it to its account (DS-533 AC19).
+f = await S.until((x) => !!rowOf(x, 'spare@example.test'));
 const HEAD = '  SUBSCRIPTION             PLAN     USE           5H                   7D                       WORKERS';
 t('AC1 the Claude table\'s columns are SUBSCRIPTION, PLAN, USE, 5H, 7D and WORKERS', f.includes(HEAD), true);
 t('AC1 the default reads ◉ default, with its plan, both windows and its 2 workers', rowOf(f, 'me@example.test'),
@@ -165,8 +179,8 @@ t('AC1 a subscription one repo is pinned to reads ● 1 repo', rowOf(f, 'work@ex
 t('AC1 a subscription no repo runs on reads ○ unused', rowOf(f, 'spare@example.test'),
   row(0, 'spare@example.test', 'Pro', '○ unused', '·········· 0% 15:00', '██········ 18% Thu 22:00', '0'));
 t('the Codex table keeps its layout, with USE in place of RULE', f.includes('  CODEX                    PLAN     USE           5H                   7D                       WORKERS'), true);
-t('AC12 the Codex default reads ◉ default', rowOf(f, 'codexmain'), row(0, 'codexmain', 'pro', '◉ default', '██········ 16% 16:40', '███······· 27% Mon 09:00', '—'));
-t('AC12 the other Codex login reads ○ unused', rowOf(f, 'alt'), row(0, 'alt', 'plus', '○ unused', '·········· 0% 12:00', '█········· 9% Fri 18:00', '—'));
+t('AC12 the Codex default reads ◉ default', rowOf(f, 'codexmain'), row(0, 'codexmain', '—', '◉ default', '██········ 16% 16:40', '███······· 27% Mon 09:00', '—'));
+t('AC12 the other Codex login reads ○ unused', rowOf(f, 'alt'), row(0, 'alt', '—', '○ unused', '·········· 0% 12:00', '█········· 9% Fri 18:00', '—'));
 t('AC3 the headline names the default and says pinned repos run elsewhere', f[3], "Workers run on me@example.test, this computer's default, unless their repo is pinned.");
 t('AC8 a subscription row selected: the keys offer d, a, x, : and q', f.at(-1), '↑↓ select · ←→ or 1–6 view · d make default · a add · x remove · : command · q quit');
 const rotation = /in rotation|standby|○ standby|◌ off|new workers start on the one with most room/;
@@ -185,7 +199,7 @@ function batch(slug, running, ready) {
   const q = join(env.DESK_HOME, 'repos', slug, 'queue.json');
   mkdirSync(dirname(q), { recursive: true });
   const tickets = {};
-  for (let i = 0; i < running; i++) tickets[`R-${i}`] = { key: `R-${i}`, state: 'running' };
+  for (let i = 0; i < running; i++) { tickets[`R-${i}`] = { key: `R-${i}`, state: 'running' }; onDefault(slug, `R-${i}`); }
   for (let i = 0; i < ready; i++) tickets[`T-${i}`] = { key: `T-${i}`, state: 'triaged' };
   writeFileSync(q, JSON.stringify({ version: 1, concurrency: 20, tickets }));
 }
@@ -323,21 +337,22 @@ t('AC13 d on codex alt makes it the Codex default, the Claude default unchanged'
 t('AC13 the message names it the Codex default', f[f.findIndex((l) => l.startsWith('✓'))], '✓ alt is now the Codex default.');
 t('AC13 and the view shows it', `${useOf(f, 'alt')} | ${useOf(f, 'codexmain')} | ${useOf(f, 'me@example.test')}`, '◉ default | ○ unused | ◉ default');
 S.done();
-subscriptions(ROWS);
+// spare pinned to its account (DS-528), as desk-q pins a found folder.
+subscriptions([...ROWS.slice(0, 2), ['claude', 'spare', '~/.claude-logins/spare', 'unused'], ...ROWS.slice(2)]);
 
 // ---- DS-472 AC10, AC11, AC15: a signed-out login says so, the headline too, and y copies its sign-in command
 writeFileSync(join(SPARE, '.signed-out'), '');
 const O = open({ kind: 'overview', all: false });
 await sleep(20);
 await O.press('6');
-f = await O.until((x) => x.some((l) => l.includes('signed out')));
-t('DS-472 AC10 a signed-out login says it is signed out and desk will not use it', rowOf(f, 'spare@example.test'),
-  row(0, 'spare@example.test', 'Pro', '○ unused', '◆ signed out: desk won\'t use it', null, '0'));
+f = await O.until((x) => x.some((l) => l.includes('not signed in')));
+// A pinned account (DS-533): not signed in, PLAN — as its folder's may be another account's.
+t('DS-472 AC10 DS-533 AC6 a signed-out account says it is not signed in and desk will not use it', rowOf(f, 'spare@example.test'),
+  row(0, 'spare@example.test', '—', '○ unused', '◆ not signed in: desk won\'t use it', null, '0'));
 t('AC15 the headline says it isn\'t signed in, naming no login workers start on', f[3], "spare@example.test isn't signed in yet, so desk can't use it.");
-t('DS-472 AC10 a note says how to sign it back in', f.find((l) => l.startsWith('note  ◆ sign in')),
-  'note  ◆ sign in      spare@example.test is signed out. Sign it back in, in another terminal:');
+t('DS-472 AC10 DS-533 AC7 a note says how to sign it in', f.join(' ').replace(/\s+/g, ' ').includes('◆ sign in spare@example.test isn\'t signed in for desk yet. In another terminal, run CLAUDE_CONFIG_DIR=~/.claude-logins/spare claude, then type /login and sign in to spare@example.test. Press y to copy the command.'), true);
 await O.pick('spare@example.test');
-t('DS-472 AC11 with it selected, the keys offer y', O.frame().at(-1).includes('y copy the sign-in command'), true);
+t('DS-472 AC11 with it selected, the keys offer y', O.frame().at(-1).includes('y copy command'), true);
 await O.press('d');
 await sleep(200);
 t('d on a signed-out login is refused, the file unchanged', `${ruleIn('claude', 'personal')} ${O.frame().includes("spare@example.test isn't signed in yet, so it can't be the default. Sign it in first.")}`, 'default true');
@@ -378,18 +393,26 @@ t('desk-env logins remove refuses the default login', deskEnv('remove', 'claude'
 subscriptions([['claude', 'spare', '~/.claude-logins/spare', 'default'], ['claude', 'office', '~/.claude-logins/work', 'unused'], ROWS[2]]);
 deskEnv('remove', 'claude', 'office');
 const back = deskEnv('set', 'claude', 'office', 'unused');
-t('u after x on a login named apart from its folder puts back that folder', `${back.status} ${/^\| `claude` \| `office` \| `~\/.claude-logins\/work` \| `unused` \|$/m.test(subsText())} ${/^## Removed/m.test(subsText())}`, '0 true false');
+t('u after x on a login named apart from its folder puts back that folder', `${back.status} ${/^\| `claude` \| `office` \| `~\/.claude-logins\/work` \| `[^`]+` \| `unused` \|$/m.test(subsText())} ${/^## Removed/m.test(subsText())}`, '0 true false');
 
 // ---- AC4: the default at its 5-hour limit still reads default, its 5H bar at 100% with the reset time
 subscriptions(ROWS);
-repo({ since: new Date(FIXED - 20 * MIN).toISOString(), type: 'five_hour', resets_at: at(24, 14, 5), preflight: 'S-1', paused: [], login_dir: null });
-claudeReading(null, [1, at(24, 14, 5)], [0.66, at(27, 6, 0)]);
+repo({ since: new Date(FIXED - 20 * MIN).toISOString(), type: 'five_hour', resets_at: at(24, 14, 5), preflight: 'S-1', paused: [], login_dir: PERSONAL });
+claudeReading('personal', [1, at(24, 14, 5)], [0.66, at(27, 6, 0)]);
 const B = await usage();
 t('AC4 the default at its limit reads ◉ default, its 5H bar at 100% with the reset', rowOf(B.frame(), 'me@example.test'),
   row(1, 'me@example.test', 'Ultra', '◉ default', '██████████ 100% 14:05', '███████··· 66% Tue 06:00', '0'));
+// DS-792: a listing scoped to another repo, which loads solo only lightly, still reads solo's hold on the default.
+config('acme__other792');
+batch('acme__other792', 0, 1);
+const limit792 = (word) => JSON.stringify(Q.usageOf(Q.loadRepos(FIXED, word), FIXED).logins?.claude?.limit ?? null);
+t('DS-792 AC2 a listing scoped to another repo reads solo\'s usage hold as the unscoped listing does',
+  `${limit792(null) !== 'null'} ${limit792('other792') === limit792(null)}`, 'true true');
+config('acme__other792', false);
+rmSync(join(env.DESK_HOME, 'repos', 'acme__other792'), { recursive: true, force: true });
 B.done();
 repo();
-claudeReading(null, [0.31, at(24, 14, 5)], [0.61, at(27, 6, 0)]);
+claudeReading('personal', [0.31, at(24, 14, 5)], [0.61, at(27, 6, 0)]);
 
 // ---- At a subscription's limit, which repos wait, how many tickets are ready and when they start
 // A login's probe log holding the rejection a real worker recorded at its limit (usage-limit-five-hour.json),
@@ -415,7 +438,7 @@ config('acme__pr-ninja');
 batch('acme__pr-ninja', 0, 8);
 config('acme__forewatt');
 batch('acme__forewatt', 0, 3);
-limitReading(null, 'five_hour', [1, at(24, 14, 5)], [0.66, at(27, 6, 0)]);
+limitReading('personal', 'five_hour', [1, at(24, 14, 5)], [0.66, at(27, 6, 0)]);
 let L = await usage();
 f = L.frame();
 t('DS-626 AC1 the default at its 5-hour limit: the headline says so and when its workers start', f[3],
@@ -439,7 +462,7 @@ t('DS-626 AC4 pr-ninja\'s and forewatt\'s RUNS ON are red, and solo\'s, api\'s a
 t('DS-626 AC4 the ■ is red', L.raw().some((x) => x.includes(`${RED}■`)), true);
 L.done();
 // AC2: at its weekly limit.
-limitReading(null, 'seven_day', [0.4, at(24, 14, 5)], [1, at(27, 6, 0)]);
+limitReading('personal', 'seven_day', [0.4, at(24, 14, 5)], [1, at(27, 6, 0)]);
 L = await usage();
 f = L.frame();
 t('DS-626 AC2 the default at its weekly limit: the headline says so', f[3],
@@ -447,7 +470,7 @@ t('DS-626 AC2 the default at its weekly limit: the headline says so', f[3],
 t('DS-626 AC2 and the ■ note starts them then', f.find((l) => l.startsWith('■ ')), '■ pr-ninja and forewatt wait for me@example.test: 11 tickets ready, starting at Tue 06:00.');
 L.done();
 // AC5: desk-skills (1 ready) pinned to work, at its 5-hour limit, while the default has room.
-claudeReading(null, [0.31, at(24, 14, 5)], [0.61, at(27, 6, 0)]);
+claudeReading('personal', [0.31, at(24, 14, 5)], [0.61, at(27, 6, 0)]);
 limitReading('work', 'five_hour', [1, at(24, 15, 40)], [0.72, at(26, 9, 0)]);
 repo();
 config('acme__api');
@@ -461,7 +484,7 @@ t('DS-626 AC5 its ■ note names the one repo and its one ticket', f.filter((l) 
 t('DS-626 AC5 and the line under it', f[f.findIndex((l) => l.startsWith('■ ')) + 1], WAIT_LAST);
 L.done();
 // AC8: the default and work both at their 5-hour limits.
-limitReading(null, 'five_hour', [1, at(24, 14, 5)], [0.66, at(27, 6, 0)]);
+limitReading('personal', 'five_hour', [1, at(24, 14, 5)], [0.66, at(27, 6, 0)]);
 L = await usage();
 f = L.frame();
 t('DS-626 AC8 two at their limits: the headline is the default\'s', f[3], 'me@example.test, the default, is at its 5-hour limit until 14:05. Its workers start again then.');
@@ -470,7 +493,7 @@ t('DS-626 AC8 a ■ note each, the default\'s first, then the one line', f.slice
   '■ desk-skills waits for work@example.test: 1 ticket ready, starting at 15:40.', WAIT_LAST].join('\n'));
 L.done();
 // AC7: no subscription at its limit.
-claudeReading(null, [0.31, at(24, 14, 5)], [0.61, at(27, 6, 0)]);
+claudeReading('personal', [0.31, at(24, 14, 5)], [0.61, at(27, 6, 0)]);
 claudeReading('work', [0.58, at(24, 13, 20)], [0.72, at(26, 9, 0)]);
 L = await usage();
 f = L.frame();
@@ -484,7 +507,7 @@ config('acme__web', 'work@example.test');
 codexReading(join(H, '.codex'), null, [27, at(26, 9, 0)], 'prolite');
 const W = await usage();
 t('DS-472 AC5 the 5H cell says the plan has no 5-hour window, never 0% or no reading yet', rowOf(W.frame(), 'codexmain'),
-  row(0, 'codexmain', 'prolite', '◉ default', 'no 5h limit', '███······· 27% Mon 09:00', '—'));
+  row(0, 'codexmain', '—', '◉ default', 'no 5h limit', '███······· 27% Mon 09:00', '—'));
 W.done();
 
 // ---- DS-472 AC12: a login with no reading yet, one the repo is pinned to
@@ -510,7 +533,7 @@ codexReading(join(H, '.codex'), [100, at(24, 16, 40)], [27, at(26, 9, 0)]);
 codexReading(ALT, [100, at(24, 12, 0)], [9, at(30, 18, 0)], 'plus');
 const X = await usage();
 f = X.frame();
-t('every Codex login at its limit: the Codex default still reads default, its bar full', rowOf(f, 'codexmain').slice(0, 71), row(0, 'codexmain', 'pro', '◉ default', '██████████ 100% 16:40', '', '').slice(0, 71));
+t('every Codex login at its limit: the Codex default still reads default, its bar full', rowOf(f, 'codexmain').slice(0, 71), row(0, 'codexmain', '—', '◉ default', '██████████ 100% 16:40', '', '').slice(0, 71));
 t('and the other reads unused', useOf(f, 'alt'), '○ unused');
 X.done();
 codexReading(join(H, '.codex'), null, [27, at(26, 9, 0)], 'prolite');
@@ -519,6 +542,9 @@ codexReading(join(H, '.codex'), null, [27, at(26, 9, 0)], 'prolite');
 rmSync(join(H, '.claude-logins'), { recursive: true, force: true });
 rmSync(join(H, '.codex-logins'), { recursive: true, force: true });
 rmSync(env.DESK_SUBSCRIPTIONS);
+// With no file, desk-q runs on ~/.claude, the one login.
+delete process.env.CLAUDE_CONFIG_DIR;
+account(join(H, '.claude.json'), 'me@example.test', 'Ultra');
 const One = await usage();
 f = One.frame();
 t('AC16 its only Claude row reads ◉ default', rowOf(f, 'me@example.test').slice(0, 50), row(1, 'me@example.test', 'Ultra', '◉ default', '', '', '').slice(0, 50));

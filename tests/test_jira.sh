@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: desk-jira against a local stub
+# budget: 215 DS-943 (about 200 desk-jira runs, each bash, node and curl against a stub server; 160-208 s on CI before DS-943's cut)
 # Tests for bin/desk-jira against a local stub. Scratch HOME only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
@@ -44,15 +45,16 @@ cat > "$T/fixture.json" <<EOF
             {"id": "customfield_10208", "name": "Size", "custom": true, "schema": {"type": "option"}}],
  "remotelinks": {"KAN-5": [{"id": 1, "relationship": "mentioned in",
    "object": {"url": "https://github.com/acme/alpha/pull/7", "title": "PR 7"}}]},
- "remotelink_fail": ["KAN-7"]}
+ "remotelink_fail": ["KAN-7"],
+ "create_drop": {"dropped": ["customfield_10207"], "dropped-labels": ["labels"]}}
 EOF
 # shellcheck source=stub_jira.sh
 . "$S/stub_jira.sh"
 PORT=$((20000 + RANDOM % 20000)); LOG="$T/requests.log"; : > "$LOG"
 stub_jira "$PORT" "$LOG" "" "$T/fixture.json"; STUB=$STUB_PID; PORT=$STUB_PORT
-trap 'kill $STUB 2>/dev/null' EXIT
+trap 'kill $STUB 2>/dev/null; rm -rf "$T"' EXIT
 stub_jira $((PORT + 1)) "$T/slow.log" 1.5; SLOW=$STUB_PID; SLOWPORT=$STUB_PORT
-trap 'kill $STUB $SLOW 2>/dev/null' EXIT
+trap 'kill $STUB $SLOW 2>/dev/null; rm -rf "$T"' EXIT
 # A site where a deleted link is still there on the read-back.
 cat > "$T/keep.json" <<'EOF'
 {"unlink_readback": "keep", "issues": {
@@ -62,7 +64,7 @@ cat > "$T/keep.json" <<'EOF'
                              "inwardIssue": {"key": "KAN-30"}}]}}}
 EOF
 stub_jira $((PORT + 2)) "$T/keep.log" "" "$T/keep.json"; KEEP=$STUB_PID; KEEPPORT=$STUB_PORT
-trap 'kill $STUB $SLOW $KEEP 2>/dev/null' EXIT
+trap 'kill $STUB $SLOW $KEEP 2>/dev/null; rm -rf "$T"' EXIT
 
 mkrepo() {  # name remote tracker site
   local d="$T/repos/$1"; git init -q "$d"; [ -n "$2" ] && git -C "$d" remote add origin "$2"
@@ -245,6 +247,42 @@ puts() { jq -s '[.[] | select(.method == "PUT")] | length' "$LOG"; }
 comments_sent() { jq -s '[.[] | select(.method == "POST" and (.path | test("/comment$")))] | length' "$LOG"; }
 last_comment() { jq -sr '[.[] | select(.method == "POST" and (.path | test("/comment$")))] | last | .body | fromjson | .body' "$LOG"; }
 
+# The repo and every config row come from one desk-env.mjs run. A `node` ahead on PATH logs
+# each run; a desk-env.mjs that refuses --where sends desk-jira down the separate where/get/list/perm
+# reads, so the two paths can be compared value for value.
+mkdir -p "$T/countbin" "$T/oldenv"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/node.calls"\nexec "%s" "$@"\n' "$T" "$(command -v node)" > "$T/countbin/node"
+chmod +x "$T/countbin/node"
+cat > "$T/oldenv/desk-env.mjs" <<EOF
+import { spawnSync } from 'node:child_process';
+const a = process.argv.slice(2);
+if (a.includes('--where')) process.exit(2);
+process.exit(spawnSync(process.execPath, ['$DESK_ENV_MJS', ...a], { stdio: 'inherit' }).status ?? 1);
+EOF
+envruns() { : > "$T/node.calls"; ( cd "$1" && shift && PATH="$T/countbin:$PATH" "$J" "$@" ) >/dev/null 2>&1; grep -c 'desk-env\.mjs' "$T/node.calls"; }
+check "DS-933 AC1 where starts one desk-env process" '[ "$(envruns "$C" where)" -eq 1 ]'
+check "DS-933 AC1 a create its field rules refuse starts one desk-env process" '[ "$(envruns "$C" create Story s body.md --no-lint)" -eq 1 ]'
+check "DS-933 AC1 where outside any repo starts one desk-env process" '[ "$(envruns "$T/state" where)" -eq 1 ]'
+SLUG_P=$(mkrepo p "https://github.com/acme/parity" jira "http://127.0.0.1:$PORT"); P="$T/repos/p"
+printf '| Priority | `customfield_10207` |\n| Required fields | `Story, bug : customfield_1, customfield_2` `task:customfield_3 customfield_1,customfield_3` `Évolution: customfield_4` `no rule here` |\n| Size field | `customfield_10208` |\n| Priorities only you set | `P0` |\n' \
+  >> "$DESK_CONFIG_ROOT/repos/$SLUG_P/config.md"
+printf good-token > "$DESK_CONFIG_ROOT/repos/$SLUG_P/atlassian-token"; chmod 600 "$DESK_CONFIG_ROOT/repos/$SLUG_P/atlassian-token"
+printf 'a body' > "$P/body.md"
+mkdir -p "$T/repos/unset"; git init -q "$T/repos/unset"; git -C "$T/repos/unset" remote add origin https://github.com/acme/unset
+both() { local d="$1" one two; shift
+  one=$(cd "$d" && "$J" "$@" 2>&1; echo "rc=$?"); two=$(cd "$d" && DESK_ENV_MJS="$T/oldenv/desk-env.mjs" "$J" "$@" 2>&1; echo "rc=$?")
+  [ "$one" = "$two" ] || { printf '  one call:\n%s\n  separate reads:\n%s\n' "$one" "$two"; return 1; }; }
+for d in "$A" "$C" "$P" "$T/repos/n" "$T/repos/unset" "$T/state"; do
+  check "DS-933 AC2 where in ${d##*/} reads as the separate reads do" 'both "$d" where && both "$d" where --dir'
+done
+for ty in Story BUG task Epic ÉVOLUTION; do
+  n0=$(creates)
+  check "DS-933 AC2 create $ty in a repo of mixed rules is refused as the separate reads refuse it" 'both "$P" create "$ty" s body.md customfield_10207=P0 --no-lint && [ "$(creates)" -eq "$n0" ]'
+done
+err=$(cd "$P" && "$J" create bug s body.md customfield_10207=P0 --no-lint 2>&1)
+check "DS-933 AC2 the one call's rules are the row's rules" 'printf "%s" "$err" | grep -q "a bug needs customfield_1 " && printf "%s" "$err" | grep -q "a bug needs customfield_2 " &&
+  ! printf "%s" "$err" | grep -q customfield_3 && printf "%s" "$err" | grep -q "item \"no rule here\" is not" && printf "%s" "$err" | grep -q P0'
+
 n0=$(creates)
 err=$(cd "$C" && "$J" create Story s body.md customfield_10207=P2 2>&1); rc=$?
 check "create without a required field is refused and names it" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "a Story needs customfield_10208 (config §4 Required fields)" && [ "$(creates)" -eq "$n0" ]'
@@ -254,6 +292,20 @@ err=$(cd "$C" && "$J" create Task s body.md customfield_10208= customfield_10207
 check "create with a required field empty is refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "needs customfield_10208" && [ "$(creates)" -eq "$n0" ]'
 out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P2 --no-lint 2>&1); rc=$?
 check "create with every required field goes, options wrapped by name" '[ $rc -eq 0 ] && [ "$(sent_fields)" = "{\"s\":{\"value\":\"M\"},\"p\":{\"value\":\"P2\"}}" ]'
+check "create reads back every field it sent" 'printf "%s" "$out" | grep -q "^  customfield_10208: M$" && printf "%s" "$out" | grep -q "^  customfield_10207: P2$"'
+out=$(cd "$C" && "$J" create Story dropped body.md customfield_10208=M customfield_10207=P2 --no-lint 2>&1); rc=$?
+check "create names a field that came back empty" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "^  customfield_10207: (empty - the write did not stick)$" && printf "%s" "$out" | grep -q "^  customfield_10208: M$"'
+out=$(cd "$C" && "$J" create Story dropped-labels body.md customfield_10208=M customfield_10207=P2 'labels=["a"]' --no-lint 2>&1); rc=$?
+check "create names a list field that came back as []" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "^  labels: (empty - the write did not stick)$"'
+sent_labels() { jq -sc '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue")] | last | .body | fromjson | .fields.labels' "$LOG"; }
+out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P2 'labels=ux, needs-copy,' --no-lint 2>&1); rc=$?
+check "create sends labels=a,b as an array, as Jira takes it" '[ $rc -eq 0 ] && [ "$(sent_labels)" = "[\"ux\",\"needs-copy\"]" ] && printf "%s" "$out" | grep -q "^  labels: "'
+out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P2 labels=solo --no-lint 2>&1); rc=$?
+check "and one label as an array of one" '[ $rc -eq 0 ] && [ "$(sent_labels)" = "[\"solo\"]" ]'
+out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P2 'labels=["j"]' --no-lint 2>&1); rc=$?
+check "a JSON array of labels passes as it is" '[ $rc -eq 0 ] && [ "$(sent_labels)" = "[\"j\"]" ]'
+out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P2 'labels= ["k"]' --no-lint 2>&1); rc=$?
+check "even with a space before it" '[ $rc -eq 0 ] && [ "$(sent_labels)" = "[\"k\"]" ]'
 out=$(cd "$C" && "$J" create Subtask s body.md --no-lint 2>&1); rc=$?
 check "a type with no rule needs no fields" '[ $rc -eq 0 ]'
 
@@ -531,6 +583,46 @@ check "lint: no design link and no No UI line is blocking" '[ $rc -eq 1 ] && pri
 clean | awk '{ if ($0 == "No UI.") print "https://www.figma.com/design/Ab/x?node-id=1-2"; else print }' > "$LD/figma.md"
 lint "$LD/figma.md" customfield_10208=M
 check "lint: a design URL in the Design section passes" '[ $rc -eq 0 ]'
+gwtblock(){ clean | awk -v o="$1" -v c="$2" -v b="$3" '/^1\. AC1/ { print o; n = split(b, l, "|"); for (i = 1; i <= n; i++) print l[i]; print c; next } { print }' > "$LD/gwt.md"; lint "$LD/gwt.md" customfield_10208=M; }
+gwtblock '```' '```' 'Given a draft|When lint runs|Then it lists each finding'
+check "DS-824 AC1 lint: Given/When/Then lines only inside a fence are criteria" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q "no acceptance criteria"'
+gwtblock '{noformat}' '{noformat}' '# AC1: Given a draft, when lint runs, then it lists each finding.'
+check "DS-824 AC1 lint: Given/When/Then lines only inside a {noformat} block are criteria" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q "no acceptance criteria"'
+gwtblock '{noformat}' '{noformat}' '1. AC1: Given a draft|When lint runs|Then it lists each finding'
+check "DS-824 AC1 lint: numbered Given/When/Then lines inside a {noformat} block are criteria" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q "no acceptance criteria"'
+gwtblock '```' '```' 'npm test|echo done'
+check "DS-824 AC3 lint: a preformatted block with no Given/When/Then line is still no acceptance criteria" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no acceptance criteria"'
+gwtblock '```' '```' 'if [ -f x ]|then|  echo ok|fi'
+check "DS-824 AC3 lint: a shell block with then on its own line is still no acceptance criteria" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no acceptance criteria"'
+gwtblock '```' '```' 'Given a draft|When lint runs|Then it shows TBD'
+check "DS-824 lint: an open decision in preformatted criteria is still blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* leaves a decision open"'
+clean | grep -v -e '^## Design' -e '^No UI' | awk '/^1\. AC1/ { print "```"; print "Given a draft"; print "Then it lists each finding"; print "```"; print "```"; print "No UI."; print "echo TODO"; print "```"; next } { print }' > "$LD/gwt2.md"
+lint "$LD/gwt2.md" customfield_10208=M
+check "DS-824 lint: another block under the criteria heading stays code" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no design link" && ! printf "%s\n" "$out" | grep -q -e "no acceptance criteria" -e "leaves a decision open"'
+gwtblock '{noformat}' '{noformat}' 'Given the job|When it runs|Then p95 in production is under 300 ms'
+check "DS-824 lint: a production run in preformatted criteria is still blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* is a criterion the worker cannot do in its branch, a live production run"'
+clean | grep -v -e '^## Design' -e '^No UI' | awk '{ print } /^\* `bin\/desk-jira`/ { print ""; print "## References"; print "* https://www.figma.com/design/Ab/x?node-id=1-2" }' > "$LD/figmaref.md"
+lint "$LD/figmaref.md" customfield_10208=M
+check "DS-824 AC2 lint: a Figma URL under a References heading is a design link" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q "no design link"'
+clean | grep -v -e '^## Design' -e '^No UI' | awk '{ print } /^\* `bin\/desk-jira`/ { print ""; print "## References"; print "* https://example.com/spec" }' > "$LD/otherref.md"
+lint "$LD/otherref.md" customfield_10208=M
+check "DS-824 AC4 lint: no design-tool URL anywhere and no No UI line is still blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no design link"'
+clean | grep -v -e '^## Design' -e '^No UI' | awk '{ print } /^\* `bin\/desk-jira`/ { print ""; print "## References"; print "* https://claude.ai/design/p/1a2b" }' > "$LD/cdref.md"
+lint "$LD/cdref.md" customfield_10208=M
+check "DS-824 lint: a Claude Design link outside the Design section is not a design link" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no design link"'
+for w in code noformat; do
+  clean | awk -v w="$w" '{ print } /^Reviewers see/ { print "The word `" w "` is text here." }' > "$LD/span.md"
+  lint "$LD/span.md" customfield_10208=M
+  check "DS-667 AC1/AC2 lint: the word $w in a code span opens no block, and every later section is read" '[ $rc -eq 0 ] && [ "$out" = "ok: no findings" ]'
+done
+clean | awk '{ print } /^Reviewers see/ { print "{code}"; print "Whether to decide the rest: TBD"; print "{code}" }' > "$LD/codeblock.md"
+lint "$LD/codeblock.md" customfield_10208=M
+check "DS-667 AC3 lint: a real {code} block stays code, and the sections after it are still read" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q -e "leaves a decision open" -e "no acceptance criteria" -e "no design link" -e "no \"Out of scope\"" -e "no \"Verification\""'
+clean | awk '{ print } /^Reviewers see/ { print "{code}}"; print "Whether to decide the rest: TBD"; print "{code}"; print "{code}"; print "x"; print "{{code}" }' > "$LD/bracecode.md"
+lint "$LD/bracecode.md" customfield_10208=M
+# A line starting {code makes desk-jira read the draft as wiki, so its ## headings draw a rendering
+# advisory: assert on what the tags hide, as AC3 does, not on an empty output.
+check "DS-667 lint: a {code} tag touching a lone brace of code still opens and closes its block" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q -e "leaves a decision open" -e "no acceptance criteria" -e "no design link" -e "no \"Out of scope\"" -e "no \"Verification\""'
 lint "$LD/clean.md"
 check "lint: Size unset is blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: Size is unset"'
 { printf 'Size: S\n\n'; clean; } > "$LD/sized.md"
@@ -576,9 +668,9 @@ jq -n '{projects: {KAN: "10101"}, issues: {
     {id: "customfield_10208", name: "Size", custom: true, schema: {type: "option"}, scope: {type: "PROJECT", project: {id: "10101"}}}]}' > "$T/scoped.json"
 jq '.fields[0] |= del(.scope)' "$T/scoped.json" > "$T/both.json"
 stub_jira $((PORT + 5)) "$T/scoped.log" "" "$T/scoped.json"; SSTUB=$STUB_PID; SPORT=$STUB_PORT
-trap 'kill $STUB $SLOW $KEEP $SSTUB 2>/dev/null' EXIT
+trap 'kill $STUB $SLOW $KEEP $SSTUB 2>/dev/null; rm -rf "$T"' EXIT
 stub_jira $((PORT + 6)) "$T/both.log" "" "$T/both.json"; BSTUB=$STUB_PID; BPORT=$STUB_PORT
-trap 'kill $STUB $SLOW $KEEP $SSTUB $BSTUB 2>/dev/null' EXIT
+trap 'kill $STUB $SLOW $KEEP $SSTUB $BSTUB 2>/dev/null; rm -rf "$T"' EXIT
 slint(){ out=$(cd "$1" && JIRA_SITE="http://127.0.0.1:$2" "$J" lint "${@:3}" 2>&1); rc=$?; }
 slint "$A" "$SPORT" "$LD/clean.md" customfield_10208=M
 check "lint: with no Size field row, Size is read from the field scoped to the project, not another's" '[ $rc -eq 0 ] && [ "$out" = "ok: no findings" ]'
@@ -625,7 +717,8 @@ h2. Out of scope
 * None.
 EOF
 printf 'h2. Acceptance criteria\n# AC1: Given a ticket, when lint runs, then it lists each finding.\nh2. Design\nhttps://claude.ai/design/p/abc123\nh2. Verification\n* none\nh2. Out of scope\n* None.\n' > "$LD/47.wiki"
-jq -n --rawfile d45 "$LD/45.wiki" --rawfile d46 "$LD/46.wiki" --rawfile d47 "$LD/47.wiki" '
+printf 'h2. Outcome\nThe word {{code}} is text here.\n{code}\nWhether to decide the rest: TBD\n{code}\nSo is {{noformat}}.\nh2. Acceptance criteria\n# AC1: Given a ticket, when lint runs, then it lists each finding.\nh2. Verification\n* Unit: tests/test\\_jira.sh.\nh2. Design\nNo UI.\nh2. Out of scope\n* None.\n' > "$LD/49.wiki"
+jq -n --rawfile d45 "$LD/45.wiki" --rawfile d46 "$LD/46.wiki" --rawfile d47 "$LD/47.wiki" --rawfile d49 "$LD/49.wiki" '
   {"issues": {
     "KAN-2": {"summary": "the epic", "issuetype": {"name": "Epic", "hierarchyLevel": 1}},
     "KAN-45": {"summary": "Lint every ticket before create", "issuetype": {"name": "Story"}, "description": $d45,
@@ -637,6 +730,8 @@ jq -n --rawfile d45 "$LD/45.wiki" --rawfile d46 "$LD/46.wiki" --rawfile d47 "$LD
       "issuelinks": [{"id": "5", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"}, "inwardIssue": {"key": "KAN-3"}}]},
     "KAN-47": {"summary": "a canvas", "issuetype": {"name": "Story"}, "description": $d47,
       "customfield_10208": {"value": "S"}, "_names": {"customfield_10208": "Size"}},
+    "KAN-49": {"summary": "code in monospace", "issuetype": {"name": "Story"}, "description": $d49,
+      "customfield_10208": {"value": "S"}, "_names": {"customfield_10208": "Size"}},
     "KAN-48": {"summary": "blocked by its own epic", "issuetype": {"name": "Story"}, "description": $d45,
       "parent": {"key": "KAN-2", "fields": {"summary": "the epic", "issuetype": {"name": "Epic", "hierarchyLevel": 1}}},
       "customfield_10208": {"value": "S"}, "_names": {"customfield_10208": "Size"},
@@ -644,7 +739,7 @@ jq -n --rawfile d45 "$LD/45.wiki" --rawfile d46 "$LD/46.wiki" --rawfile d47 "$LD
    "children": {"KAN-2": ["KAN-45", "KAN-46"]},
    "fields": [{"id": "customfield_10208", "name": "Size", "custom": true, "schema": {"type": "option"}}]}' > "$T/lint.json"
 stub_jira $((PORT + 3)) "$T/lint.log" "" "$T/lint.json"; LSTUB=$STUB_PID; LPORT=$STUB_PORT
-trap 'kill $STUB $SLOW $KEEP $LSTUB 2>/dev/null' EXIT
+trap 'kill $STUB $SLOW $KEEP $LSTUB 2>/dev/null; rm -rf "$T"' EXIT
 klint(){ out=$(cd "$A" && JIRA_SITE="http://127.0.0.1:$LPORT" "$J" lint "$@" 2>&1); rc=$?; }
 klint KAN-45
 check "lint KEY: a clean ticket (parent and sibling excluded) has no findings" '[ $rc -eq 0 ] && [ "$out" = "ok: no findings" ]'
@@ -669,6 +764,8 @@ check "lint KEY: a canvas in the working tree only, not on the base, is still bl
 git -C "$A" add docs/design && git -C "$A" -c user.name=t -c user.email=t@example.com commit -q -m canvas && git -C "$A" branch -M main
 klint KAN-47
 check "lint KEY: a saved canvas not named beside the link is desk-design's advisory" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -q "^advisory: design: .*not its saved copy docs/design/KAN-47/"'
+klint KAN-49
+check "DS-667 AC4 lint KEY: {{code}} and {{noformat}} in a stored description are text, a real {code} block stays code, and the sections after them are read" '[ $rc -eq 0 ] && [ "$out" = "ok: no findings" ]'
 klint KAN-46 Story
 check "lint KEY takes no type or fields" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q "pass no type or fields"'
 
@@ -677,7 +774,7 @@ check "lint KEY takes no type or fields" '[ $rc -ne 0 ] && printf "%s" "$out" | 
 jq -s '{issues: (map({key: .key, value: {summary: .key, issuetype: {name: .type}, description: .d,
   customfield_10208: {value: .size}, _names: {customfield_10208: "Size"}}}) | from_entries)}' "$S/lint_corpus.jsonl" > "$T/corpus.json"
 stub_jira $((PORT + 4)) "$T/corpus.log" "" "$T/corpus.json"; CSTUB=$STUB_PID; CPORT=$STUB_PORT
-trap 'kill $STUB $SLOW $KEEP $LSTUB $CSTUB 2>/dev/null' EXIT
+trap 'kill $STUB $SLOW $KEEP $LSTUB $CSTUB 2>/dev/null; rm -rf "$T"' EXIT
 SLUG_DS=$(mkrepo ds "https://github.com/acme/ds" jira "http://127.0.0.1:$CPORT")
 printf '| Ticket key pattern | `DS-[0-9]+` |\n' >> "$DESK_CONFIG_ROOT/repos/$SLUG_DS/config.md"
 printf good-token > "$DESK_CONFIG_ROOT/repos/$SLUG_DS/atlassian-token"; chmod 600 "$DESK_CONFIG_ROOT/repos/$SLUG_DS/atlassian-token"
@@ -709,7 +806,7 @@ check "create refuses parent=@<row> outside a batch check" '[ $rc -ne 0 ] && pri
 # numbers the tickets it creates (KAN-101 up) and rejects a summary of "third".
 printf '{"issues": {}, "children": {}, "create_seq": 101, "create_fail": ["third"], "fields": [{"id": "customfield_10208", "name": "Size", "custom": true, "schema": {"type": "option"}}]}\n' > "$T/batch.json"
 stub_jira $((PORT + 7)) "$T/batch.log" "" "$T/batch.json"; BTSTUB=$STUB_PID; BTPORT=$STUB_PORT
-trap 'kill $STUB $SLOW $KEEP $LSTUB $CSTUB $BTSTUB 2>/dev/null' EXIT
+trap 'kill $STUB $SLOW $KEEP $LSTUB $CSTUB $BTSTUB 2>/dev/null; rm -rf "$T"' EXIT
 BL="$T/batch.log"
 bcreates() { jq -s '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue")] | length' "$BL"; }
 bsent() { jq -sc '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue") | .body | fromjson | .fields | {summary, parent: .parent.key}]' "$BL"; }

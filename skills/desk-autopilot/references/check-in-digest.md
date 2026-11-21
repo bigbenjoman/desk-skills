@@ -39,7 +39,13 @@ login in its own folder (`desk-env logins`), get their own `claude auth status` 
 out, one is named under `STALLED` with its sign-in command and pushed as
 `health:<slug>:claude:<login>`, but it holds no spawn, and the default login's result is its own. A
 subscription this repo's work does not run on is not checked here (a repo pinned to it checks it on its
-own pass), so an unused one signed out raises nothing.
+own pass), so an unused one signed out raises nothing. Each of those logins whose sign-in passes
+also makes one real call (`usage-probe.mjs` `probeNow`), because a login the API refuses (401, 403,
+a Cloudflare page) still passes `claude auth status`. A refused call fails that login with the
+API's error, told at once: the default's holds every spawn, and the pinned login's starts no new
+worker, resume or decider on it. A passing call is not made again for 15 minutes; a usage limit or
+no answer passes without being kept. A triage run that writes no record and whose log holds a 401
+or 403 names that status, not the session limit.
 
 **The reviewer check.** Where §4 Gate reviewers (`desk-env list gate-reviewers`) names logins, each
 pass reads `gh api user` as the account desk posts verdicts from (§4 Review account's gh config
@@ -49,15 +55,27 @@ mismatch is pushed once as `health:<slug>:reviewer`, naming both logins; a sign-
 only on a §4 State check (`desk-env list state-checks`) of kind verdict, which the pass records as
 `gate_hold`, and needs-you lists it as one `reviewer` item naming those PRs.
 
+A mismatch still lets one try through: a head with no clean desk-review verdict, or a stale one, gets
+its review worker while the gate is red, since the merge driver counts desk's verdict though the gate
+does not. A sign-in it cannot read holds that review too, as its verdict could not post.
+
+The hold is for a review that is missing or stale, so it never holds findings. A desk-review at the
+head that is not clean, a §4 Gate reviewer's or else desk's own, goes to a review fix as on any PR, or
+to the person for gaps only they settle, whatever the reviewer check failed on. A PR one goes to is not
+recorded as `gate_hold`; one whose review yields neither stays held.
+
 **Weekly usage pacing.** One weekly allowance runs every repo's workers, so each pass reads the
 newest 7-day reading from the `rate_limit_event` lines in every repo's worker logs written in the
 last 6 hours (`usage-pace.mjs`). Pace is the share of the 7-day window gone since its last reset,
 read from the event's `resetsAt`. While utilisation is more than §3b "Usage pacing headroom
 (points)" (unset: 5; `off` turns it off) above pace, new spawns hold under `STALLED` and running
-workers carry on; it releases by itself as the week goes on. The report always carries one `usage:`
-line: `usage: 7-day 40%, pace 50%`, `… + 5: holding spawns`, `usage: no recent data` (no reading,
-or the newest one's window has reset), or `pacing off`. A row that reads as neither a number nor
-`off` holds every spawn, naming the row, as a malformed budget does.
+workers carry on; it releases by itself as the week goes on. It reads the login this repo's new
+workers start on. The report always carries one `usage:` line: `usage: 7-day 40%, pace 50%`,
+`… + 5: holding spawns`, `usage: no recent data for login <name>` (no reading, or the newest one's
+window has reset; with none at all the pass probes that login once, and a failed probe says why), or
+`pacing off`. After three passes in a row with no reading, a `health:` line says pacing holds nothing
+for that login. A row that reads as neither a number nor `off` holds every spawn, naming the row, as
+a malformed budget does.
 
 **The weekly maintenance window.** One per computer (`maintenance.mjs`). With §3b "Maintenance
 window" set in a repo (e.g. `Mon 06:30 UTC`, just after the weekly usage reset; unset is `none`), the
@@ -135,6 +153,21 @@ node ~/.claude/desk/bin/digest.mjs ask-again <slug> <TICKET>
   An override is recorded in that repo's decision log with who and when, and the next pass there
   lists the ticket under `WAITING ON YOU` as `decision overridden`: redo the work to the new
   choice, or put it back to the person if it cannot be.
+- **Lever changes.** Each adopt or revert the levers controller makes (the daily evaluation, or a
+  hard trip) is a call taken in category `engineering`, logged in the repo's own decision log
+  (the one `decisions.mjs` writes in its state folder), and asks nothing. The page's `Levers` section,
+  machine-wide like `Maintenance` and left out when no lever changed state since the last digest,
+  has one line per change in any repo's lever log: the lever, the repo, the mechanism metric's change
+  and the cost per ticket's with their 90% intervals, the tickets per arm and the guardrails, or for
+  a trip the trip and its ticket. Each adopt or revert is a `- [ ]` item ending on its decision id
+  and its override (`digest.mjs override <slug> <id> off` or `on`), which writes one `override`
+  event, actor `ben`, in the repo's lever log (refused while that log has an unreadable line, which
+  admission would not read past) and ticks the item: the lever then reads `overridden`, every ticket
+  admitted after it is pinned to that value, and the evaluation and the trips leave it alone. No
+  ticket waits on it, so it is not listed under `WAITING ON YOU`. An adopt or revert whose decision
+  was never written is recorded when the digest lists it, and an event that lands up to an hour after
+  the time it carries is listed by the next digest. The digest rebuilds the Levers page, and the
+  section ends on `open:` and its `file://` URL.
 - **Between check-ins** only a park whose question starts `PRODUCTION BROKEN: ` is pushed, at once
   and on its own (the worker contract says when a worker may use it).
 - **Promotion, once a day.** Going to production is asked only in the day's last slot (`promotion.mjs`).

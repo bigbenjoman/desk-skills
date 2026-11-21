@@ -2,16 +2,16 @@
 // The real pass.mjs against a fake claude whose sign-in answers
 // per config folder, a stub spawn-worker.sh that records the login each call was given, and each login's
 // reading in its own probe log. A throwaway HOME: nothing reads this computer's logins.
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-login-rotation-'));
+const T = scratch('desk-login-rotation-');
 const H = join(T, 'home');
 const dirOf = (name) => join(H, '.claude-logins', name);
 for (const k of ['CLAUDE_CONFIG_DIR', 'DESK_REPO_OVERRIDE', 'DESK_SLUG', 'DESK_STATE', 'DESK_REPO_DIR', 'DESK_REPO_ROOT', 'DESK_WORKTREES_DIR', 'DESK_DEFAULT_BRANCH', 'DESK_SUBSCRIPTION',
@@ -244,6 +244,24 @@ t('AC11 the stall names the row and the email', out.includes('this repo\'s confi
 out = pass({ ...world(THREE, fresh), DESK_SUBSCRIPTION: 'nobody@example.com' });
 t('AC11 from DESK_SUBSCRIPTION, the stall names that', out.includes('DESK_SUBSCRIPTION names nobody@example.com'), true);
 
+// A row pinned to a subscription since set off: nothing starts, and the one item asks for the pin to move.
+env = world([['login-2', 'default', 70, 70], ['login-3', 'off', 10, 10]], fresh, { sub: 'login-3@example.com' });
+out = pass(env);
+t('a pin to an off subscription starts nothing, and the ticket stays queued', `${row('Y-1').state} ${calls('Y-1').length}`, 'triaged 0');
+// The repo's slug is its git remote's, which this fixture repo has none of: desk-env names the one it reads.
+const E_SLUG = () => /^SLUG='([^']*)'/m.exec(spawnSync('node', [join(BIN, 'desk-env.mjs'), 'where'], { env, cwd: join(W, 'repo'), encoding: 'utf8' }).stdout)?.[1];
+const item = /^NOTIFY: 1 item\(s\) need you — (\S+)$/m.exec(out)?.[1] ?? null;
+t('it is one item needing you, named for the repo', item === E_SLUG(), true);
+t('its stall names the repo, the email and the command that moves it', out.includes(`${item}: this repo's config §3b "Subscription" row names login-3@example.com, which is off (claude login-3), so nothing new starts for ${item}`)
+  && out.includes(`Move ${item} to another subscription with desk-env subscription set <slug> <default|email>`), true);
+t('the batch records it for needs-you', `${batchOf().subscription_off?.email} ${batchOf().subscription_off?.login}`, 'login-3@example.com login-3');
+writeSubs([['login-2', 'default', 70, 70], ['login-3', 'unused', 10, 10]]);
+pass(env);
+t('once the subscription is unused, the record goes and the ticket starts on it', `${batchOf().subscription_off ?? null} ${row('Y-1').state} ${on('Y-1')}`, 'null running login-3');
+// DESK_SUBSCRIPTION naming an off one only stalls the run: the item would tell them to move a row that does not name it.
+out = pass({ ...world([['login-2', 'default', 70, 70], ['login-3', 'off', 10, 10]], fresh), DESK_SUBSCRIPTION: 'login-3@example.com' });
+t('from DESK_SUBSCRIPTION, nothing starts, the stall names it, and no item is recorded', `${row('Y-1').state} ${calls('Y-1').length} ${out.includes('DESK_SUBSCRIPTION names login-3@example.com, which is off (claude login-3)')} ${batchOf().subscription_off ?? null}`, 'triaged 0 true null');
+
 // AC12: the repo's subscription signed out.
 env = world([['b', 'default', 10, 10], ['c', 'unused', 90, 90]], fresh);
 signOut(dirOf('b'));
@@ -295,7 +313,8 @@ const benchRow = (name, at = RESET) => ({ login: name, config_dir: name === 'def
 const holdRow = (at = RESET, name = 'b') => ({ since: '2026-11-07T00:00:00.000Z', type: 'five_hour', resets_at: at, preflight: 'Y-1', paused: [], login_dir: dirOf(name) });
 const SEEN = join(T, 'decider-login');
 const DECIDER_CLAUDE = join(W, 'stub', 'decider-claude');
-writeFileSync(DECIDER_CLAUDE, `#!/bin/sh\nprintf '%s' "\${CLAUDE_CONFIG_DIR-unset}" > "${SEEN}"\n`, { mode: 0o755 });
+// Written aside and renamed into place, so the caller polling for the file never reads it empty.
+writeFileSync(DECIDER_CLAUDE, `#!/bin/sh\nprintf '%s' "\${CLAUDE_CONFIG_DIR-unset}" > "${SEEN}.tmp.$$" && mv "${SEEN}.tmp.$$" "${SEEN}"\n`, { mode: 0o755 });
 // In a child with the world's environment, from the repo: the decider's spawn environment (or `none`
 // when it started nothing), epic planning's headless environment, and call-login.mjs's answer for triage.
 const calling = (env) => {

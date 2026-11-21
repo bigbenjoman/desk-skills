@@ -40,8 +40,9 @@ cat > "$T/cfg/repos/acme__widgets/config.md" <<EOF
 EOF
 echo "RECOVERY RULES: a lane C or D park is never requeued" > "$T/skills/desk-autopilot/references/orchestrator-recovery.md"
 
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"
 cp "$B/supervisor.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs epic-plan.mjs closeout.mjs installed.mjs run-by.mjs usage-limit.mjs borrow.mjs dir-lock.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 cat > "$T/bin/pass.mjs" <<EOF
 import { readFileSync } from 'node:fs';
 const v = JSON.parse(readFileSync('$T/verdict.json', 'utf8'));
@@ -50,6 +51,7 @@ process.exitCode = v.code;
 EOF
 echo "console.log(JSON.stringify({ status: 'not_due', push: null }));" > "$T/bin/digest.mjs"
 echo "console.log(JSON.stringify({ hold: false, lines: [] }));" > "$T/bin/maintenance.mjs"
+link_bin "$B" "$T/bin"
 # The fake claude: its arguments one per line in claude.args.<n>, then whatever $T/claude.mode says:
 # requeue <KEY> (un-park it and say so), hand (hand every item on), hang, or none (no result line).
 cat > "$T/fakes/claude" <<EOF
@@ -83,7 +85,9 @@ esac
 EOF
 printf '#!/bin/sh\nexit 0\n' > "$T/fakes/osascript"
 printf '#!/bin/sh\necho OPEN\n' > "$T/fakes/gh"
-chmod +x "$T/fakes/claude" "$T/fakes/osascript" "$T/fakes/gh"
+# No real notifier: on Linux notify.mjs tries notify-send, then WSL's powershell.exe, and neither may reach the desktop.
+printf '#!/bin/sh\nexit 1\n' | tee "$T/fakes/notify-send" > "$T/fakes/powershell.exe"
+chmod +x "$T/fakes/claude" "$T/fakes/osascript" "$T/fakes/gh" "$T/fakes/notify-send" "$T/fakes/powershell.exe"
 export PATH="$T/fakes:$PATH"
 
 tick(){ (cd "$T/repo" && node "$T/bin/supervisor.mjs" tick --foreground 2>&1); }
@@ -465,6 +469,9 @@ check "DS-557: the digest asks a park waiting on links-made, and still not one w
 # the object literals in a check's eval.
 sorted(){ node --input-type=module -e "import { presort } from '$B/decider.mjs'; const c = (k) => JSON.stringify({ kind: k }); const r = presort([{ kind: 'parked', lane: 'A', ticket: 'L', text: 'x', clears: c('links-made') }, { kind: 'parked', lane: 'A', ticket: 'U', text: 'y', clears: c('pr-merged') }]); console.log(r.hand.map((h) => h.item.ticket).join(), r.waits.map((w) => w.ticket).join());"; }
 check "DS-557: the decider hands a links-made park on to the person rather than letting it wait" '[ "$(sorted)" = "L U" ]'
+filesort(){ node --input-type=module -e "import { presort } from '$B/decider.mjs'; const f = (person) => JSON.stringify({ kind: 'file-exists', path: 'fixtures/F/out.txt', root: 'state', ...(person ? { person } : {}) }); const r = presort([{ kind: 'parked', lane: 'A', ticket: 'F', text: 'x', clears: f(true) }, { kind: 'parked', lane: 'A', ticket: 'G', text: 'y', clears: f(false) }]); console.log(r.hand.map((h) => h.item.ticket).join(), r.waits.map((w) => w.ticket).join(), '|', r.hand[0]?.why);"; }
+check "DS-807: the decider hands a park on a file the person makes on to them, naming the file, and one a script makes waits" \
+  '[ "$(filesort)" = "F G | waits on a file only the person makes (file \$DESK_STATE/fixtures/F/out.txt exists): a pass requeues it once the file is there" ]'
 
 # ---- DS-580: a park on a step only a person or another account takes is handed on unless answered since -
 PO="There is no review from agent-pullbot at all. No worker can run it: only a person with Mac mini or org access can do this."
@@ -528,7 +535,6 @@ console.log(readFileSync('$T/cache.seen', 'utf8'), JSON.stringify(env) === befor
 check "DS-649 AC2: the decider runs with FORCE_PROMPT_CACHING_5M=1, the caller's env unchanged" '[ "$out" = "1 true" ]'
 
 # ---- DS-563 AC3: a clears-when no form read goes to the decider to restate, and to the person only as none ----
-ln -s "$B/queue.mjs" "$T/bin/queue.mjs"
 cw(){ node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]?.park?.clears_when?.kind)' "$DESK_QUEUE" "$1"; }
 unpark(){ queue "{\"$1\":{\"key\":\"$1\",\"state\":\"parked\",\"lane\":\"A\",\"park\":{\"question\":\"$2\",\"since\":\"2026-11-01T09:00:00Z\",\"clears_when\":{\"kind\":\"unreadable\",\"text\":\"KAN-1086s fix PR is merged to main\",\"why\":\"x\"}}}}"; verdict "$(parked "$1" "$2")"; }
 mark; rm -f "$T/state/handed.json"; echo "hand" > "$T/claude.mode"
@@ -554,6 +560,28 @@ out=$(tick)
 at=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets.R3.park.clears_when.at)' "$DESK_QUEUE")
 check "DS-563 AC3: on a usage hold no decider starts, and the restate's hour starts again" \
   '[ "$(calls)" = "$n" ] && [ "$(cw R3)" = unreadable ] && [ "$at" != 2026-01-01T00:00:00Z ] && node -e "process.exit(Date.now() - Date.parse(process.argv[1]) < 600000 ? 0 : 1)" "$at" && grep -q "^decider: the hour to restate an unreadable clears-when starts again once one runs: R3$" "$LOG"'
+verdict '{"status":"nothing_yet","code":10,"message":"x","waiting":[],"parked":[],"notify":false,"push":[]}'
+
+# ---- the base sync line is one item whatever its wording; a new base head is one new session --
+ids=$(node --input-type=module -e "
+import { deciderItems } from '$B/decider.mjs';
+import { createHash } from 'node:crypto';
+const id = (l, o) => deciderItems({ waiting: [l] }, {}, null, o)[0];
+const a = id('base sync: merging main into feat conflicts — feat is 21 commit(s) behind main', { baseSha: 'b1' });
+const b = id('base sync: feat is 3 commit(s) behind main and config §3 batch-base-push is \"ask\" — spawning carries on', { baseSha: 'b2' });
+const t = id('W: DRAFT — PR #9 stays draft: x');
+const today = 'wait-' + createHash('sha256').update(['W', 'DRAFT', '9'].join(String.fromCharCode(0))).digest('hex').slice(0, 12);
+console.log([a.id === b.id, a.base, b.base, t.id === today, t.base === undefined].join(' '));")
+check "DS-809 AC1/AC3: base sync lines share one id and carry the base head; a ticket line's id is as before" '[ "$ids" = "true b1 b2 true true" ]'
+mark; rm -f "$T/state/handed.json"; echo "hand" > "$T/claude.mode"
+git -C "$T/repo" init -q && git -C "$T/repo" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m one && git -C "$T/repo" update-ref refs/remotes/origin/feat HEAD
+printf '{"version":1,"batch":"b1","base":"feat","supervised":true,"approved":{},"tickets":{}}\n' > "$DESK_QUEUE"
+sync(){ verdict "$(waits "[\"base sync: merging main into feat conflicts, nothing pushed. Conflicting files: a.mjs — feat is $1 commit(s) behind main, more than the 20 it may lag and still spawn, so nothing spawns this pass\"]")"; }
+for n in 21 22 23; do sync "$n"; out=$(tick); settle; done
+check "DS-809 AC1: three passes whose base sync line differs only in its commit count start one session" '[ "$(calls)" = 1 ] && [ "$(handed | grep -c "^base sync|")" = 1 ]'
+git -C "$T/repo" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m two && git -C "$T/repo" update-ref refs/remotes/origin/feat HEAD
+for n in 24 25; do sync "$n"; out=$(tick); settle; done
+check "DS-809 AC2: handed on and unanswered, a new base head starts one new session, and later passes none" '[ "$(calls)" = 2 ] && [ "$(handed | grep -c "^base sync|")" = 1 ]'
 verdict '{"status":"nothing_yet","code":10,"message":"x","waiting":[],"parked":[],"notify":false,"push":[]}'
 
 echo "$PASS checks passed, $FAIL failed"

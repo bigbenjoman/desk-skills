@@ -15,16 +15,20 @@ import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, sizePark, labelPark, stepLabel, blockerHold, startWithout, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
-import { stateDir, runBin, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, leverOn, ghRepo,
+import { stateDir, runBin, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, levers, ghRepo,
   repoPlacement, admitInRepo, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { decisionEntry, appendDecisions } from './decisions.mjs';
-import { placement } from './cloud-worker.mjs';
+import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { SIZES, queueEpic } from './desk-q-eta.mjs';
 import { belongsElsewhere } from './batches.mjs';
 import { perTicketDb } from './health.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
+import { leverOnFor } from './lever-pin.mjs';
+import { SPAWN_ORDER_RULE, KEEP_ORDER_RULE, bySpawnOrder } from './spawn-order.mjs';
 
 const AS_JSON = process.argv.includes('--json');
+// --keep-order: spawn in the order the tickets were named (blockers still first), not by what they gate.
+const KEEP_ORDER = process.argv.includes('--keep-order');
 const plan = [];
 const say = (s) => (AS_JSON ? plan.push(s) : console.log(s));
 function verdict(status, message, needsPerson = []) {
@@ -37,8 +41,8 @@ const refuse = (message) => process.exit(verdict('error', message));
 crashShowsPerson((e) => verdict('error', describeCrash(e)));
 const STATE = stateDir();
 const QUEUE = join(runBin(), 'queue.mjs');
-const tickets = process.argv.slice(2).filter((a) => a !== '--json');
-if (!tickets.length) refuse('usage: plan-batch.mjs [--json] <TICKET> [<TICKET> ...]');
+const tickets = process.argv.slice(2).filter((a) => a !== '--json' && a !== '--keep-order');
+if (!tickets.length) refuse('usage: plan-batch.mjs [--json] [--keep-order] <TICKET> [<TICKET> ...]');
 
 const records = [];
 for (const t of tickets) {
@@ -46,7 +50,9 @@ for (const t of tickets) {
   if (!existsSync(join(STATE, 'triage', `${t}.json`))) refuse(`missing triage record for ${t} — run triage.sh ${t}`);
   records.push(readTriage(STATE, t));
   const elsewhere = belongsElsewhere(t, records.at(-1), queueFile());
-  if (elsewhere) refuse(`${elsewhere.why}: leave it out of this plan`);
+  // Queued already in the repo its Jira Repository names: handOver finds it in place there.
+  const inPlace = elsewhere?.repo && repoPlacement(records.at(-1).repository)?.ghRepo === elsewhere.repo;
+  if (elsewhere && !inPlace) refuse(`${elsewhere.why}: leave it out of this plan`);
 }
 
 // Ownership boundary, the ticket equivalent of desk-clearance's "only your own PRs".
@@ -361,8 +367,8 @@ admitted = admitted.filter((r) => !onCycle.has(r.ticket));
 // named in. Tickets that share no files are never chained, whatever their kinds. A Jira link (or the
 // feature plan) that already orders a pair wins, and the plan names where it contradicts the kinds,
 // except the spine hold, which every child has by design.
-// Holds are only added between two tickets neither of which already waits on the other, so the chain
-// cannot close a cycle.
+// A pair one of which already waits on the other is held in that order, and any other pair in the
+// order the kinds give, so the chain cannot close a cycle.
 const waitsOn = (t, p) => {
   const seen = new Set(); const stack = [t];
   while (stack.length) {
@@ -386,13 +392,21 @@ for (const r of admitted) {
   }
 }
 const liveKeys = new Set(admitted.map((r) => r.ticket));
+// Each ticket is held behind every earlier one it shares a file with, not only the one just before it,
+// even where another hold already implies the order. The holds a person changes are one ticket's own:
+// with C sharing a file with A and B and held behind B alone, dropping B (queue.mjs drop) or freeing
+// C from B (needs-you's free command) would let C start while A's PR is unmerged. The list's hold walk
+// reads each blocker once (desk-q.mjs blockerHold's memo), so a whole chain does not multiply its paths.
 for (const c of collisions) {
   if (!liveKeys.has(c.a) || !liveKeys.has(c.b)) continue;
   const [a, b] = [byKey[c.a], byKey[c.b]];
   const files = `shares ${c.shared.join(', ')}`;
   if (waitsOn(c.a, c.b) || waitsOn(c.b, c.a)) {
     const [first, then] = waitsOn(c.a, c.b) ? [b, a] : [a, b];
-    if (!preds[then.ticket]?.includes(first.ticket)) contradicts(first, then, `they share files, and its dependencies already put ${first.ticket} first, which wins`);
+    if (!preds[then.ticket]?.includes(first.ticket)) {
+      contradicts(first, then, `they share files, and its dependencies already put ${first.ticket} first, which wins`);
+      holdBehind(then.ticket, first.ticket, `${files}; its other holds already put ${first.ticket} first`);
+    }
     continue;
   }
   const [first, then] = mergesFirst(a, b) < 0 ? [a, b] : [b, a];
@@ -425,9 +439,22 @@ const topo = (list) => {
   }
   return out;
 };
-// Spawn order keeps the order the tickets were named in, so a gate the user names first starts first;
-// the merge order puts the larger blast radius first. The holds keep the two consistent where it matters.
-const order = topo(ours);
+// How many tickets in the batch each one holds, directly or through another (preds, transitively).
+const gates = (() => {
+  const succ = {};
+  for (const [t, ps] of Object.entries(preds)) for (const p of ps) (succ[p] ??= []).push(t);
+  const out = {};
+  for (const r of ours) {
+    const seen = new Set(); const stack = [...(succ[r.ticket] ?? [])];
+    while (stack.length) { const t = stack.pop(); if (seen.has(t) || t === r.ticket) continue; seen.add(t); stack.push(...(succ[t] ?? [])); }
+    out[r.ticket] = seen.size;
+  }
+  return out;
+})();
+const filesOf = (r) => (Array.isArray(r.files_in_scope) ? r.files_in_scope.length : 0);
+// Spawn order is SPAWN_ORDER_RULE (KEEP_ORDER_RULE with --keep-order); topo puts blockers first. The
+// merge order puts the larger blast radius first; the holds keep the two consistent where it matters.
+const order = topo(KEEP_ORDER ? ours : ours.slice().sort(bySpawnOrder(gates, filesOf, named)));
 const merging = topo(admitted.slice().sort((a, b) => radius(a) - radius(b) || named(a) - named(b)));
 
 // What a ticket that needs a database will actually get.
@@ -449,11 +476,14 @@ const handOver = (r) => admitInRepo(elsewhere(r), r.ticket, { by: 'plan-batch' }
 let location;
 let budget;
 try { location = workerLocation(); budget = location === 'cloud' ? workerBudget() : null; } catch (e) { refuse(e.message); }
-const featureRole = (k) => (!feature?.on ? null
-  : k === feature.spine ? 'it is the feature spine, whose specs are checked in a local worktree before it parks for approval'
-    : Object.values(feature.plan?.owners ?? {}).includes(k) ? 'it owns acceptance specs, which are checked in a local worktree when it finishes' : null);
-const effort = location === 'cloud' && leverOn('effort');
-const placed = Object.fromEntries(records.map((r) => [r.ticket, placement(r, location, { feature: featureRole(r.ticket), effort })]));
+const featureBatch = feature?.on ? { spine: feature.spine, owners: feature.plan?.owners } : null;
+// The effort lever is read per ticket: from the pin of one already in the queue (an epic's child,
+// seeded before its plan), else from the row, which `queue.mjs add` pins it with.
+let pinned = {};
+try { pinned = JSON.parse(readFileSync(queueFile(), 'utf8')).tickets ?? {}; } catch { /* no queue yet: every ticket reads the row */ }
+const rowLevers = levers();
+const effortFor = (k) => { try { return location === 'cloud' && leverOnFor('effort', pinned[k], rowLevers); } catch (e) { return refuse(e.message); } };
+const placed = Object.fromEntries(records.map((r) => [r.ticket, placement(r, location, { feature: featureRole(featureBatch, r.ticket), effort: effortFor(r.ticket) })]));
 
 say(`\nBATCH PLAN — ${records.length} ticket(s)\n${'='.repeat(60)}`);
 if (location === 'cloud') {
@@ -480,7 +510,7 @@ for (const r of order) {
   say(`  ${r.summary}`);
   say(`  branch: ${r.branch}`);
   if (elsewhere(r) && !elsewhere(r).unknown) say(`  ~ ${awayWhy(r)}: admitted there, not here, when the queue is seeded`);
-  if (location === 'cloud' && admitted.includes(r)) say(`  runs: ${placed[r.ticket].where}${placed[r.ticket].why ? ` — ${placed[r.ticket].why}` : ''}`);
+  if (location === 'cloud' && admitted.includes(r)) say(`  ${runsText(placed[r.ticket])}`);
   if (r.needs_db) say(`  ! needs a database — ${DB_NOTE}`);
   if (co.length) say(`  ! collides with ${co.join(', ')} — must run sequentially`);
   for (const pa of r.prior_art ?? []) say(`  ! prior art: ${pa}`);
@@ -574,6 +604,11 @@ if (collisions.length) {
 }
 if (appendOnly.bad) say(`\ncollisions: ${appendOnly.bad} — read as none`);
 
+const spawning = order.filter((r) => admitted.includes(r));
+if (spawning.length > 1) {
+  say(`\nSPAWN ORDER — ${KEEP_ORDER ? KEEP_ORDER_RULE : SPAWN_ORDER_RULE}`);
+  spawning.forEach((r, i) => say(`  ${i + 1}. ${r.ticket}  gates ${gates[r.ticket] ?? 0}, ${filesOf(r)} planned file(s)`));
+}
 if (merging.length) {
   say(`\nMERGE ORDER — largest blast radius first (${KIND_ORDER.join(', ')}):`);
   merging.forEach((r, i) => {
@@ -600,9 +635,8 @@ const unsized = here.filter((r) => laneOk(r) && !r.size).map((r) => r.ticket);
 if (unsized.length) say(`\n! no size on ${unsized.length} ticket(s): ${unsized.join(', ')} — they run on their lane; size them (desk-jira's scale) so anything L or bigger is split`);
 if (otherLinks) say(`\n! ${otherLinks} Jira link(s) of another type ignored — only Blocks ("is blocked by") is honoured`);
 
-// Seed the queue in spawn order: blockers first, then the order the tickets were named in (pass
-// gates first). A ticket that collides with another is marked so the spawn loop will not run them
-// together. Park precedence: lane, size, cycle, then the dependency hold. A lane, size or design park
+// Seed the queue in spawn order (`order`). A ticket that collides with another is marked so the spawn
+// loop will not run them together. Park precedence: lane, size, cycle, then the dependency hold. A lane, size or design park
 // keeps its blockers in held_by beside it, so nothing releases it while its own park stands.
 // In feature mode nothing is seeded until the spine is filed and planned and the owner table is
 // settled: seeded without them, every child would start with nothing held behind the spine.
@@ -656,6 +690,8 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
       : null);
     if (park) execFileSync('node', [QUEUE, 'park', t, park], { stdio: 'ignore' });
   }
+  // add leaves a ticket already queued (an epic's admitted children) where it was, so the order is laid over them too.
+  execFileSync('node', [QUEUE, 'order', ...order.filter((r) => !elsewhere(r)).map((r) => r.ticket)], { stdio: 'ignore' });
   // Seeding admits the batch, so the calls taken on triage's judgement are logged now, as intake logs
   // a record's calls when it admits the ticket.
   if (taken.length) {

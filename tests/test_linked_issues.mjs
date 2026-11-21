@@ -1,12 +1,12 @@
 // suite: linked issues (a GitHub issue closes once every Jira ticket linking it is done)
 // linked-issues.mjs's closeLinkedIssues against a fake desk-jira and gh: each ticket's web links, a
 // text search that also finds tickets which only mention the issue, statuses, issue states and merged PRs.
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { closeLinkedIssues, issueOf, issueJql } from '../desk/bin/linked-issues.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -117,7 +117,7 @@ out = go(w, 'DS-49');
 t('a PR is matched to a key whole', out[0], `${REPO}#49 closed: Closed by desk: every ticket filed for this issue is done: DS-49 (#490).`);
 
 // The CLI does nothing in a repo with no Jira tracker.
-const T = mkdtempSync(join(tmpdir(), 'desk-linked-'));
+const T = scratch('desk-linked-');
 writeFileSync(join(T, 'config.md'), '## 0. Repo\n\n| Field | Value |\n|---|---|\n| GitHub repo | `acme/widgets` |\n\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Tracker | `none` |\n');
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(DESK_|AUTOPILOT_)/.test(k)));
 const r = spawnSync('node', [join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'linked-issues.mjs'), 'DS-1', '--repo', REPO],

@@ -30,7 +30,7 @@ desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 
 Read rows with `desk-env` (`desk-env ids` lists ids; a worker cannot read `CONFIG`). `EXISTS=no`
 means stop: say which slug was looked up and offer `/desk-setup`. A `TODO` in a §3 row is a `no`,
-so it makes the run report-only, never stops it. A `TODO` in any other row this skill needs is not a gap to guess: stop, ask, offer
+so it makes the run report-only, never stops it. A `TODO` in any other row this skill needs: stop, ask, offer
 `/desk-setup`. Then take:
 
 - §0 GitHub repo (`<owner>/<repo>` below) and Default branch (`<default>`); §1 GitHub handle (`<me>`).
@@ -51,7 +51,7 @@ the rows. A missing §3 row is `no`.
 ### Which review bar
 
 The bar is the one **at the reviewed commit**, `<TIP>` (Phase 1), never the current checkout's copy
-and never one remembered from an earlier run. A branch moves its bar with its code, and a PR is
+nor one remembered from an earlier run. A branch moves its bar with its code, and a PR is
 judged by the bar its own commit carries:
 
 1. §4 Review bar names a repo-relative path, and it exists at `<TIP>`
@@ -94,9 +94,8 @@ below marks its worker form. A sweep, or a review of someone else's PR, is never
 ## Phases
 
 Each phase's rules are in its own file under `references/`. **Read a phase's file when the review
-reaches it.** The phases overlap, so some are read together: Phase 3 dispatches Bea (Phase 5) in the
-same message as the finders, and its codex cold call follows Phase 4's quoting rules, so read all
-three at Phase 3.
+reaches it.** Some phases are read together: Phase 3 dispatches Bea (Phase 5) in the
+same message as the finders, and its codex cold call follows Phase 4's quoting rules.
 
 | # | Phase | Read at its start |
 |---|---|---|
@@ -106,7 +105,7 @@ three at Phase 3.
 | 3 | Find | `references/phase-3-find.md`, with `references/phase-5-requirements.md` and `references/phase-4-refute.md` |
 | 4 | Refute | `references/phase-4-refute.md` |
 | 5 | Requirements | `references/phase-5-requirements.md` (dispatched at Phase 3) |
-| 6 | Report | `references/phase-6-report.md` |
+| 6 | Report | `references/phase-6-report.md`; also at each round's end (findings line) |
 | 7 | Post | `references/phase-7-post.md`, after *The verdict* below |
 
 **A phase file you cannot read stops the review.** If the file for the phase you are starting is
@@ -138,7 +137,7 @@ Each Claude prompt carries, in order:
 6. The round, and on round 2+ the re-review rules below.
 
 **Every behavioural claim needs a `file:line` in real code.** An inference from a name is not
-evidence. `NO FINDINGS` is the expected result for most changes and is not a failure.
+evidence. `NO FINDINGS` is the expected result for most changes, not a failure.
 
 ```
 FINDING
@@ -197,38 +196,39 @@ round reads the whole branch again, and the report header says why. That applies
   range would hand the finders every base commit that merge brought in as this branch's fixes.
 
 **From round 2 a P2 can be carried** instead of blocking: `"carried": true` on its finding, which
-takes it out of `p2` and counts it on the carried line instead. Carry a P2 when fixing it would mean
-another round. A P0 or P1 is never carried; verdict.mjs refuses one, naming the finding, and a P2 on
-round 1 is fixed rather than carried. A carried finding needs `where` as `file:line`.
+counts it on the carried line, not in `p2`. Carry one when fixing it would mean another round. A P0
+or P1 is never carried (verdict.mjs refuses one), and a P2 on round 1 is fixed rather than carried,
+unless split to the filed ticket its `follow_up` names. A carried finding needs `where` as `file:line`.
 `node verdict.mjs --carried <results>` prints the PR body's `### Carried review findings` section,
-one `file:line` per finding (desk-pr places it).
+`file:line` each (desk-pr places it).
 
 ## The verdict
 
 **The body's opening lines are computed, never written by hand**: the review and verdict
 markers, the heading, from round 2 the carried line, then the method line. A hand count is how a
-review reads clean when it is not. Once every finder and refuter has answered, write the run's
-results with the Write tool to `<scratchpad>/desk-review-results-<run>.json` (`<run>`: Phase 3; a
-worker: at its worktree root, removed at the end with `git clean -f`):
+review reads clean when it is not. Once every finder and refuter has answered, Write the run's
+results to `<scratchpad>/desk-review-results-<run>.json` (`<run>`: Phase 3; a
+worker: at its worktree root, left in place, `phase-7-post.md`):
 
 ```json
 { "sha": "<full reviewed SHA>", "round": 1, "gaps": 0, "skipped_files": 0,
   "seats": [ { "role": "correctness", "agent": "lena-code-reviewer", "vendor": "claude", "status": "ran" },
              { "role": "codex", "vendor": "codex", "status": "ran" } ],
   "findings": [ { "id": "F1", "seat": "correctness", "severity": "P1", "where": "src/a.ts:12",
-                  "result": "CONFIRMED", "refuted_by": "codex", "deferred": false } ] }
+                  "result": "CONFIRMED", "refuted_by": "codex" },
+                { "id": "C1", "seat": "codex", "severity": "P2", "result": "REJECTED", "refuted_by": "claude" } ] }
 ```
 
 - `codex`: with the codex lever on, `{"finder": "<model>:<effort>", "refuter": "<model>:<effort>"}`
   as `desk-codex settings` prints them, and `login` (Phase 0); left out otherwise.
 - `seats`: every seat dispatched, Bea and simplicity included, each `ran` or `died` (Phase 3).
-- `reason`, on a seat that died, says why where it is known (`"timed out"`).
+- `reason`, on a seat that died, says why, where known (`"timed out"`).
   `"fallback": true` where its named agent did not resolve and general-purpose ran its brief (not
   simplicity or domain: general-purpose by design).
 - `findings`: every finding any seat raised, kept even when `REJECTED` or `DUPLICATE`, with its
-  refutation `result` and who refuted it (`refuted_by`, absent when `UNREFUTED`). Scope findings
-  are Bea's (`"seat": "requirements"`); `PREMISE` findings carry no result. `deferred: true` for a
-  finding deliberately left unfixed; `carried: true` for a P2 carried from round 2 (above). A
+  refutation `result` and the refuter's vendor (<!-- facts: refuted-by -->`refuted_by`: `claude` or `codex`, not an agent; absent when `UNREFUTED`<!-- /facts -->).
+  Scope findings are Bea's (`"seat": "requirements"`); `PREMISE` findings carry no result. `deferred: true` for a
+  finding deliberately left unfixed; `carried: true` for a carried P2 (above). A
   merged duplicate is `"result": "DUPLICATE"` with `duplicate_of` naming the finding kept, and it
   still counts unless that one is counted at the same severity or higher: merging must never drop a
   confirmed finding behind a rejected one.
@@ -246,9 +246,8 @@ node ~/.agents/skills/desk-review/bin/verdict.mjs <results>
 ```
 
 `<results>` is the file's full scratchpad path, or `desk-review-results-<run>.json` in a worker (run from
-its worktree root). `$DESK_SKILLS_DIR` goes in place of `~/.agents/skills` where it is set
-elsewhere. It prints four lines (five from round 2) and refuses (exit 2) any results file that
-is incomplete or contradicts itself. Its tests, `tests/test_review_verdict.mjs`, prove that no
+its worktree root). `$DESK_SKILLS_DIR` goes in place of `~/.agents/skills` where set. It prints four lines (five from round 2) and refuses (exit 2) any results file that
+is incomplete or contradicts itself. Its tests prove no
 combination with an open finding, a skipped file, a dead seat or an open gap prints the clean
 verdict. Use its output verbatim, then the report below it. The clean form, which the tests hold
 this line to:
@@ -262,7 +261,7 @@ this line to:
 | Field | Meaning |
 | --- | --- |
 | `sha` | The full SHA the finders read, equal to the PR head when posted. It attests that commit and no other |
-| `p0` `p1` `p2` | Findings **outstanding at this head**: `CONFIRMED` or `UNREFUTED`, deferred ones included, except P2s carried from round 2, which count only on the carried line. One raised and already fixed in this SHA is not in the results file |
+| `p0` `p1` `p2` | Findings **outstanding at this head**: `CONFIRMED` or `UNREFUTED`, deferred ones included, except carried P2s, which count only on the carried line. One raised and already fixed in this SHA is not in the results file |
 | `deferred` | Findings deliberately left unfixed, any severity (also counted in their `p` field). A body reading "clean" that defers one is `deferred=1` |
 | `gaps` | Open requirement gaps, excluding `UNVERIFIED CODE CLAIM` ones (never posted) |
 | `unrefuted` | Findings whose refutation did not run (also counted in their `p` field, or on the carried line when carried) |
@@ -271,7 +270,8 @@ this line to:
 | `round` | The round this review is |
 
 From round 2 a fourth line follows the heading, `<!-- desk-review:carried v=1 p2=<n> since=<full SHA> -->`:
-the P2 findings carried (counted there, **not** in `p2`) and the fix range's start. It never decides
+the P2 findings carried (counted there, **not** in `p2`) and the fix range's start (none on a round 1
+that carries). It never decides
 clean; the blocking counts above do. It sits after the heading, not in the verdict line: a repo's
 committed gate copy matches that line exactly, and would read an extra field as no verdict at all
 (`tests/test_review_gate.mjs`). So does `<!-- desk-review:accepted v=1 gaps=<n> -->`, next: the gaps
@@ -321,7 +321,7 @@ to a human skimming and to any regex over the summary.
 
 ## References
 
-- `references/phase-<n>-*.md`: each phase's rules (*Phases* above).
+- `references/phase-<n>-*.md`: *Phases* above.
 - `references/review-bar.md`: the default bar, and how a repo supplies its own.
 - `references/gotchas.md`: the sweep query, tiering patterns, base-merge count, bot comments, and the
   single-call review post. Read it when a command misbehaves.

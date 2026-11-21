@@ -22,9 +22,13 @@ one, and match their summary style (an `[Area]` prefix, a verb-first phrase, wha
 or `desk-jira lint body.md [<type>] [field=value ...]` for a draft, read as `create` would send it.
 It prints one line per finding and exits 1 on any blocking one:
 
-- **Blocking**, what makes triage ask or a worker park: no acceptance criteria; an open decision
+- **Blocking**, what makes triage ask or a worker park: no acceptance criteria (Given/When/Then
+  lines in a `{code}` or `{noformat}` block under the criteria heading count, and are checked as
+  prose criteria are; a block with no Given line does not); an open decision
   (TBD, TODO, decide, proposal for, needs a decision, or a question mark in Outcome, the criteria or
-  Out of scope); no design link and no `No UI.` line; Size unset (not asked of a Subtask); a
+  Out of scope); no design link and no `No UI.` line (any URL in the Design section counts, and a
+  Figma URL anywhere in the description; a Claude Design link counts only in the Design section,
+  where the saved-copy check reads it); Size unset (not asked of a Subtask); a
   criterion that needs a Jira write, a live production run or an operator step; and `desk-design`'s
   finding for a Claude Design link with no saved copy (advisory once autopilot has snapshotted the
   canvas, since the worker saves it).
@@ -47,6 +51,15 @@ tickets — those are the ones a new ticket ends up duplicating.
 Fill **every field §4 Priority and §4 Other fields ask for on a create, in the one `create` call.**
 Nothing flags a blank one later, so a ticket created without them stays unfinished until someone
 sweeps for blanks. `desk-jira meta <type>` lists the fields Jira itself requires.
+
+**A ticket drafted for the user to file carries the same fields.** Where the ticket is handed over
+as text rather than created (§3 `jira-create` is `no`, or the user files it themselves), the draft's
+`fields` line names every field §4 Required fields gives its type (`desk-env required-fields
+<type>`), §4 Priority, and each §4 Other fields value that applies to it, each with the value to
+choose or the question that settles it. The user files what they are given, so a field the draft
+leaves out is the one a bot flags afterwards. Where desk-jira is set up, run the draft through
+`desk-jira create <type> <summary> <body> field=value ... --check`, which runs every check `create`
+would and sends nothing, and show its result with the draft.
 
 | Field | Where it comes from |
 |---|---|

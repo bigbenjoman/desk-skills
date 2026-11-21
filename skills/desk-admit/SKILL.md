@@ -59,7 +59,7 @@ self-contained export, so ask once more for one that is, or for the artifact to 
 ## 1. Admit
 
 ```bash
-node ~/.claude/desk/bin/intake.mjs admit <TICKET>... --by <who> [--front]
+node ~/.claude/desk/bin/intake.mjs admit <TICKET>... --by <who> [--front] [--session]
 ```
 
 - `<TICKET>...`: every ticket the user named, in one call, so a blocker named alongside what it
@@ -68,6 +68,8 @@ node ~/.claude/desk/bin/intake.mjs admit <TICKET>... --by <who> [--front]
 - `--front`: only when the user asks for it first, or calls it urgent ("ASAP", "next"). It moves a
   ticket already in a batch too, unless its worker has started, it is finished, or the user placed it
   (`queue.mjs move`): the line after `is already in batch` says which.
+- `--session`: only when this session runs the batch (it started it with `/desk-autopilot`, and
+  runs its passes); step 2's `is run by a session` row says when.
 
 It triages each ticket afresh, which takes a minute or two each, as many at once as config §3b
 "Triage concurrency" allows, and admits each one as soon as it and its blockers in the call are
@@ -132,14 +134,22 @@ its own feature batch, on its own branch.
 
 ## 2. Refused (exit 11)
 
-Each `not admitted <TICKET>: <why>` line, and an `admits nothing: <why>` line, goes to the user in
+**First, settle a design question yourself.** An `open question(s): …` whose question is a value a
+design frame the ticket links shows (a colour, a gradient's stops, a size, a spacing) is not the
+user's while this session can read that frame: read it through the design connector this session
+has (the Figma MCP's `get_design_context` for a Figma frame, the Artifact tool for a Claude Design
+canvas), write the values into the ticket's Design section (`desk-jira`, under §3 `jira-edit`; with
+no tracker, the ticket file), and run step 1 again for it. It goes to the user only when no connector
+here can read the frame, saying which you tried.
+
+Each other `not admitted <TICKET>: <why>` line, and an `admits nothing: <why>` line, goes to the user in
 one `AskUserQuestion` round (at most four questions; header the ticket key). Put the first option
 below as `(Recommended)`, with its reason as the description:
 
 | `<why>` says | Recommended | Then |
 |---|---|---|
 | `lane C` or `lane D` | Work it in its own session: `/desk-ticket <TICKET>` (a worker would only park on it) | Leave it out of the batch |
-| `open question(s): …` | Answer each one now; record the answers on the ticket (`desk-jira`) | Run step 1 again for it |
+| `open question(s): …` | Answer each one now; record the answers on the ticket (`desk-jira`). One a linked design frame answers was read above | Run step 1 again for it |
 | `lint (blocking): …` | Fix the ticket as the finding says (`desk-jira`) | Run step 1 again for it |
 | `design not snapshotted: <URL>…` | Snapshot it as step 0 says, or, where it will not read, import its HTML export (step 0) | Run step 1 again for it |
 | `size L` or `XL` | Split it into tickets of size M or less (`desk-jira`) | Admit the new tickets |
@@ -147,9 +157,10 @@ below as `(Recommended)`, with its reason as the description:
 | `an epic, and its feature batch <B> is already running` | Admit the epic's children instead: they join `<B>` | Run step 1 for the children |
 | `an epic, and its feature batch was not started: …` | Settle what follows the colon (the line names the push or fix), as the rows here say for it; nothing was left behind | Run step 1 again for it, or plan it in a session: `/desk-autopilot <EPIC>` |
 | `is in batch <B>` or `is in the standing batch` | Leave it where it is: a ticket is in one batch at most. If it belongs elsewhere, move it from `/desk-needs-you` once it is parked or stopped (`move "<batch>"`) | Admit nothing for it |
+| `is already queued in <repo>'s standing batch` or `in batch <B> of <repo>` | Leave it there: a ticket is queued in one repo at most. If it belongs in this repo instead, drop it there first (`queue.mjs drop <TICKET>` in that repo's checkout) | Run step 1 again for it once it is dropped there |
 | `is a child of epic <E>, but not admitted into its feature batch: …` | Settle what follows the colon, as the row above for it says | Run step 1 again for it |
 | `runs on base <B> in the standing slot: move it to epic <E>'s own slot` (or `to its own slot <S>, named after its branch`, for a batch spanning several epics) | Move it: run the `node …/move-batch.mjs` the line names, which frees the standing slot on the default branch. With workers running it drains first (exit 12, new spawns paused): run it again once none is running | Run step 1 again |
-| `is run by a session, not the supervisor` | Send the tickets to that session: `ListAgents`, then `SendMessage` with each ticket and why it is wanted. That session asks and admits | Admit nothing here |
+| `is run by a session, not the supervisor` | If this session runs that batch, run the command the line names (`… --session`), never `queue.mjs admit` and never a message to yourself. Otherwise send the tickets to that session: `ListAgents`, then `SendMessage` with each ticket and why it is wanted. That session admits them | Admit nothing here unless this session runs it |
 | `no batch is live, and starting one … needs …` | Plan a batch: `/desk-autopilot <TICKET>...` | |
 | `triage failed` or anything else | Show the line; offer to run step 1 again | |
 

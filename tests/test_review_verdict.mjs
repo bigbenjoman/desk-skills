@@ -3,13 +3,13 @@
 // refuter results, and no results with an open finding, partial coverage or a dead seat can print
 // the clean verdict. Pure: no git, no GitHub, no codex.
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { render, tally, isClean, carriedSection, acceptedSection, postMergeSection, methodLine, CLEAN, VerdictError, gateRejects } from '../skills/desk-review/bin/verdict.mjs'
 import { reviewGaps, reviewFix, personGapsCall } from '../desk/bin/fix-tries.mjs'
 import { parseVerdict as undraftVerdict, verdictAt, postMergeIn, postMergeSteps } from '../desk/bin/undraft.mjs'
+import { scratch } from './scratch.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCRIPT = join(ROOT, 'skills', 'desk-review', 'bin', 'verdict.mjs')
@@ -172,6 +172,20 @@ t('DS-368 AC3 round 2 with a P1 is not clean', reads(r2([p2(), f({ id: 'F2' })])
 t('DS-368 AC3 round 2 with a P0 is not clean', reads(r2([f({ severity: 'P0' })])), false)
 t('DS-368 an uncarried P2 on round 2 still blocks', reads(r2([f({ severity: 'P2' })])), false)
 
+// ---- DS-648: on round 1 a P2 split to a filed follow-up ticket is carried, so no round 2 is needed
+const r1Split = base({ findings: [p2({ follow_up: 'DS-999' })] })
+const r1Lines = render(r1Split).split('\n')
+t('DS-648 AC1 round 1, only a split P2: the marker reads clean', reads(r1Split), true)
+t('DS-648 AC1 round 1, only a split P2: heading says none block and one carried', heading(r1Split).includes('round 1: No P0 or P1 findings; P2 findings carried: 1 at `0123456`**'), true)
+t('DS-648 AC1 round 1: the carried line counts it, with no since', r1Lines[3], '<!-- desk-review:carried v=1 p2=1 -->')
+t('DS-648 AC1 round 1: the method line follows the carried line', r1Lines[4], '<!-- desk-review:method v=1 fallback=0 -->')
+const r1Section = carriedSection(r1Split).split('\n')
+t('DS-648 AC1 round 1: the carried section reads the whole branch, not a fix range', r1Section[1], 'desk-review round 1 read the whole branch at 0123456. These P2 findings were split to the follow-up tickets named, rather than fixed here.')
+t('DS-648 AC1 round 1: the carried section names the follow-up', r1Section[2], '- `src/a.ts:12` name reads as a count (F1), follow-up DS-999')
+t('DS-648 a follow-up is named on a later round too', carriedSection(r2([p2({ follow_up: 'DS-999' })])).split('\n')[2], '- `src/a.ts:12` name reads as a count (F1), follow-up DS-999')
+t('DS-648 round 1, a split P2 beside an open P1: not clean', reads(base({ findings: [p2({ follow_up: 'DS-999' }), f({ id: 'F2' })] })), false)
+t('DS-648 round 1 with a follow-up on an uncarried P2: still blocks', reads(base({ findings: [f({ severity: 'P2', follow_up: 'DS-999' })] })), false)
+
 // ---- DS-317: a requirement gap the person accepted is out of gaps, and counted on a line of its own
 const URL = 'https://github.com/acme/shop/pull/705#issuecomment-2440001'
 const acc = (o = {}) => ({ gap: 'AC3', by: 'bigbenjoman', at: '2026-10-29', url: URL, ...o })
@@ -247,6 +261,12 @@ want('refuses fallback that is not a boolean', base({ seats: [{ ...seat('correct
 want('refuses a carried P1, naming it', r3([p2({ severity: 'P1' })]), 'finding F1 at src/a.ts:12 is P1: only a P2 can be carried')
 want('refuses a carried P0, naming it', r3([p2({ id: 'F7', severity: 'P0', where: 'src/x.ts:9' })]), 'finding F7 at src/x.ts:9 is P0: only a P2 can be carried')
 want('refuses a carried P2 on round 1', base({ findings: [p2()] }), 'carried only from round 2; on round 1 it is fixed')
+want('DS-648 AC2 refuses a round-1 carried P2 naming no follow-up, naming it', base({ findings: [p2({ id: 'F4', where: 'src/d.ts:7' })] }), 'finding F4 at src/d.ts:7: a P2 is carried only from round 2; on round 1 it is fixed, or split to a filed follow-up ticket named in follow_up')
+want('DS-648 AC3 refuses a round-1 carried P1 even with a follow-up', base({ findings: [p2({ severity: 'P1', follow_up: 'DS-999' })] }), 'finding F1 at src/a.ts:12 is P1: only a P2 can be carried')
+want('DS-648 AC3 refuses a round-1 carried P0 even with a follow-up', base({ findings: [p2({ id: 'F7', severity: 'P0', where: 'src/x.ts:9', follow_up: 'DS-999' })] }), 'finding F7 at src/x.ts:9 is P0: only a P2 can be carried')
+want('DS-648 refuses a follow-up that is not a ticket key', base({ findings: [p2({ follow_up: 'later' })] }), "finding F1: follow_up must be the follow-up ticket's key")
+want('DS-648 refuses an empty follow-up', base({ findings: [p2({ follow_up: '' })] }), "finding F1: follow_up must be the follow-up ticket's key")
+want('DS-648 a round-1 split P2 is still never deferred too', base({ findings: [p2({ follow_up: 'DS-999', deferred: true })] }), 'carried or deferred, not both')
 want('DS-368 refuses a carried P1 on round 2, naming it', r2([p2({ severity: 'P1' })]), 'finding F1 at src/a.ts:12 is P1: only a P2 can be carried')
 want('DS-368 refuses a carried P0 on round 2, naming it', r2([p2({ id: 'F7', severity: 'P0', where: 'src/x.ts:9' })]), 'finding F7 at src/x.ts:9 is P0: only a P2 can be carried')
 want('DS-368 AC1 refuses round 2 with no fix range', base({ round: 2 }), 'round 2 reads only the fix range')
@@ -272,6 +292,16 @@ want('refuses a finding from an unknown seat', base({ findings: [f({ seat: 'nadi
 want('refuses a finding from a dead seat', base({ seats: [seat('correctness'), seat('nadia', 'claude', 'died')], findings: [f({ seat: 'nadia' })] }), 'died, so it raised nothing')
 want('refuses a finding with no result', base({ findings: [f({ result: undefined })] }), 'result must be one of')
 want('refuses a refuted finding with no refuter', base({ findings: [f({ refuted_by: undefined })] }), 'refuted_by must be')
+want('#763 refuses an agent as the refuter, naming the vendor it wants', base({ findings: [f({ refuted_by: 'ada-devils-advocate' })] }), 'refuted_by must be the refuter\'s vendor, claude or codex, not its agent ("ada-devils-advocate")')
+{
+  const doc = readFileSync(join(ROOT, 'skills', 'desk-review', 'SKILL.md'), 'utf8')
+  const example = JSON.parse(doc.match(/desk-review-results-<run>\.json`[\s\S]*?```json\n([\s\S]*?)```/)[1].replace('<full reviewed SHA>', SHA))
+  t('DS-845 AC2 the skill\'s results example is accepted', refused(example), 'accepted')
+  t('DS-845 AC2 the example refutes each seat\'s finding by the other vendor',
+    example.findings.map((x) => `${x.seat}:${x.refuted_by}`).join(), 'correctness:codex,codex:claude')
+  t('DS-845 AC1 the field description names the vendor, not an agent',
+    /`refuted_by`: `claude` or `codex`, not an agent;\s+absent when `UNREFUTED`/.test(doc), true)
+}
 want('refuses an UNREFUTED finding naming a refuter', base({ findings: [f({ result: 'UNREFUTED' })] }), 'has no refuted_by')
 want('refuses P3', base({ findings: [f({ severity: 'P3' })] }), 'severity must be')
 want('refuses a finding listed twice', base({ findings: [f(), f()] }), 'listed twice')
@@ -293,8 +323,7 @@ for (const anchor of ['pullrequestreview-311', 'discussion_r12']) {
 }
 
 // ---- the CLI, and SKILL.md's documented forms
-const T = mkdtempSync(join(tmpdir(), 'desk-verdict-'))
-process.on('exit', () => rmSync(T, { recursive: true, force: true }))
+const T = scratch('desk-verdict-')
 writeFileSync(join(T, 'ok.json'), JSON.stringify(base()))
 writeFileSync(join(T, 'bad.json'), JSON.stringify(base({ gaps: undefined })))
 const ok = spawnSync('node', [SCRIPT, join(T, 'ok.json')], { encoding: 'utf8' })
@@ -343,7 +372,10 @@ t('DS-570 the body section names each criterion, its need and its step', pmSec[2
 t('DS-570 the section is empty when none is left for after the merge', postMergeSection(base()), '')
 t('DS-570 no post-merge line when none is left for after the merge', render(base({ post_merge: [] })).includes('desk-review:post-merge'), false)
 t('DS-570 AC2 the pass reads back each criterion from the posted body', JSON.stringify(postMergeIn(laterBody)), JSON.stringify(later.post_merge))
-t('DS-570 AC2 each one is a follow-on step naming no §3 row', JSON.stringify(postMergeSteps(laterBody)[1]), JSON.stringify({ step: 'Check after the merge: AC8 (needs staging): place a test call on staging -> it rings', row: null }))
+t('DS-570 AC2 DS-785 AC2 DS-788 AC5 each one is a follow-on step naming no §3 row, its step alone, a staging one gated on main', JSON.stringify(postMergeSteps(laterBody)[1]), JSON.stringify({ step: 'place a test call on staging -> it rings', row: null, from: 'review', after: 'main' }))
+t('DS-785 AC2 a production criterion is gated on production', postMergeSteps(laterBody)[0]?.after, 'production')
+const gateFor = (needs) => postMergeSteps(render(base({ gaps: 0, post_merge: [pm({ needs })] })))[0]?.after ?? 'none'
+t('DS-785 AC2 deployed is gated on main; device and third-party on the merge alone', ['deployed', 'device', 'third-party'].map(gateFor).join(), 'main,none,none')
 t('DS-570 AC2 a body with no post-merge line keeps none', JSON.stringify(postMergeSteps(render(base()))), '[]')
 t('DS-570 AC2 a post-merge line whose count disagrees with its items keeps none', postMergeIn(laterBody.replace('post-merge v=1 gaps=2', 'post-merge v=1 gaps=3')).length, 0)
 const pmAndGap = base({ gaps: 1, post_merge: [pm()] })
@@ -430,7 +462,7 @@ t('after a base merge', whole.includes('`git log --merges --oneline <since>..HEA
   t('DS-422 AC5 a heading contradicting a clean marker is rejected', /lists "1 P1"/.test(gateRejects(body(clean(), '## desk-review: 1 P1'), H, gate)), true)
   t('DS-422 AC5 counts handed on are no format fault', gateRejects(body(clean({ p1: 1 }), '## desk-review: 1 P1'), H, gate), null)
   t('DS-422 AC5 a repo gate exporting only parseVerdict still checks the marker and its head', `${gateRejects(body(clean()), H, { parseVerdict: gate.parseVerdict })} ${/attests/.test(gateRejects(body(clean({ sha: 'c'.repeat(40) })), H, { parseVerdict: gate.parseVerdict }))}`, 'null true')
-  const dir = mkdtempSync(join(tmpdir(), 'verdict-check-'))
+  const dir = scratch('verdict-check-')
   const f = join(dir, 'report.md')
   writeFileSync(f, body(clean({ sha: 'c'.repeat(40) })))
   const r = spawnSync('node', [SCRIPT, '--check', f, H], { cwd: dir, encoding: 'utf8' })

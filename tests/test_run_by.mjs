@@ -1,18 +1,19 @@
 // suite: run-by: who runs a batch (§3b Batches run by), at setup and at Stage 4
 // run-by.mjs against a fixture config (DESK_CONFIG), a fake supervisor.mjs (DESK_SUPERVISOR_MJS) that
 // keeps the agent's state in a file and fails a command on request, and a fake platform
-// (DESK_PLATFORM). Nothing touches launchd or your real state.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+// (DESK_PLATFORM), and a fake systemctl on PATH that answers only while $T/systemd exists. Nothing
+// touches launchd, systemd or your real state.
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'run-by.mjs');
-const T = realpathSync(mkdtempSync(join(tmpdir(), 'run-by-')));
+const T = realpathSync(scratch('run-by-'));
 const ROOT = join(T, 'repo');
 mkdirSync(ROOT, { recursive: true });
 
@@ -43,6 +44,12 @@ if (sub === 'install') {
 }
 `);
 
+// systemctl --user answers while `systemd` exists, as a WSL computer with systemd=true does.
+const FAKES = join(T, 'fakes');
+mkdirSync(FAKES);
+writeFileSync(join(FAKES, 'systemctl'), `#!/bin/sh\necho "$@" >> ${JSON.stringify(join(T, 'systemctl.calls'))}\n[ -f ${JSON.stringify(join(T, 'systemd'))} ] || { echo "Failed to connect to bus: No medium found" >&2; exit 1; }\n`, { mode: 0o755 });
+const systemd = (on) => (on ? writeFileSync(join(T, 'systemd'), '') : rmSync(join(T, 'systemd'), { force: true }));
+
 const CFG = join(T, 'config.md');
 const config = (runBy) => writeFileSync(CFG, `## 2. Paths\n\n| Field | Value |\n|---|---|\n| Primary repo root | \`${ROOT}\` |\n\n`
   + '## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `2 / 3` |\n'
@@ -53,7 +60,7 @@ const calls = () => (existsSync(join(T, 'calls')) ? readFileSync(join(T, 'calls'
 const run = (cmd, platform = 'darwin') => {
   rmSync(join(T, 'calls'), { force: true });
   const p = spawnSync(process.execPath, [BIN, cmd], { cwd: ROOT, encoding: 'utf8',
-    env: { PATH: process.env.PATH, HOME: join(T, 'home'), DESK_CONFIG: CFG, DESK_MACHINE: join(T, 'none.md'), DESK_REPO_DIR: ROOT,
+    env: { PATH: `${FAKES}:${process.env.PATH}`, HOME: join(T, 'home'), DESK_CONFIG: CFG, DESK_MACHINE: join(T, 'none.md'), DESK_REPO_DIR: ROOT,
       DESK_SUPERVISOR_MJS: FAKE, DESK_PLATFORM: platform } });
   let out = null;
   try { out = JSON.parse(p.stdout); } catch { out = { raw: p.stdout, err: p.stderr }; }
@@ -69,10 +76,19 @@ t('AC1 the values are supervisor and session', r.out.options?.join(' '), 'superv
 t('AC1 offering touches no supervisor', r.calls, '');
 
 // AC2: elsewhere it records session and says why in one line.
-r = run('offer', 'linux');
-t('AC2 not macOS does not ask', r.out.ask, false);
+r = run('offer', 'win32');
+t('AC2 neither macOS nor Linux does not ask', r.out.ask, false);
 t('AC2 records session', r.out.value, 'session');
-t('AC2 says the supervisor needs launchd', /needs macOS launchd/.test(r.out.line) && !r.out.line.includes('\n'), true);
+t('AC2 says the supervisor needs launchd or systemd', /needs macOS launchd or Linux systemd/.test(r.out.line) && !r.out.line.includes('\n'), true);
+
+// #735: Linux offers the row when systemctl --user answers, and records session when it does not.
+systemd(true);
+r = run('offer', 'linux');
+t('#735 Linux with systemd asks', `${r.out.ask} ${r.out.recommended} ${r.out.options?.join(' ')}`, 'true supervisor supervisor session');
+systemd(false);
+r = run('offer', 'linux');
+t('#735 Linux without systemd records session', `${r.out.ask} ${r.out.value}`, 'false session');
+t('#735 and says systemctl --user does not answer, in one line', /systemctl --user/.test(r.out.line) && !r.out.line.includes('\n'), true);
 
 // AC3: setup's ensure after a supervisor answer installs and loads it.
 config('`supervisor`');
@@ -138,8 +154,16 @@ config('`launchd`');
 r = run('stage4');
 t('an unreadable row reads as session', `${r.out.by} ${/want `supervisor` or `session`/.test(r.out.note ?? '')}`, 'session true');
 config('`supervisor`');
+r = run('stage4', 'win32');
+t('supervisor on neither macOS nor Linux runs in the session', `${r.code} ${r.out.by} ${/needs macOS launchd or Linux systemd/.test(r.out.note ?? '')} ${r.calls}`, '0 session true ');
+
+// #735: on Linux with systemd, Stage 4 installs the supervisor as on macOS; without it, the session runs it.
+systemd(true); setState('none');
 r = run('stage4', 'linux');
-t('supervisor off macOS runs in the session', `${r.code} ${r.out.by} ${/needs macOS launchd/.test(r.out.note ?? '')} ${r.calls}`, '0 session true ');
+t('#735 Linux with systemd: handed to the supervisor, installed', `${r.code} ${r.out.by} ${r.out.installed} ${r.calls}`, '0 supervisor true status install status');
+systemd(false); setState('none');
+r = run('stage4', 'linux');
+t('#735 Linux without systemd: runs in the session and says why', `${r.code} ${r.out.by} ${/systemctl --user/.test(r.out.note ?? '')} ${r.calls}`, '0 session true ');
 
 rmSync(T, { recursive: true, force: true });
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }

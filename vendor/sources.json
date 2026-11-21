@@ -148,12 +148,12 @@
         "path": "skills/context7-mcp"
       },
       "pin": {
-        "commit": "7fe6e09cf",
-        "date": "2026-11-17"
+        "commit": "32dccfd68",
+        "date": "2026-11-20"
       },
       "license": "MIT",
       "notes": "Single-file skill. Same blob is mirrored under plugins/{claude,codex,cursor,copilot}/context7/skills/context7-mcp at the same commit; canonical path is skills/context7-mcp. 2 newer commits; current HEAD blob 90542d4e differs.",
-      "tree_sha256": "7ece9068c82c6aae1facc8ff525066ee6102b3d8b56e174b00efafa2dd6f0c33"
+      "tree_sha256": "d632eb9a32361cd3df6a2ebdf7a902439ace7991a68b26ba185ca0a07bda0345"
     },
     "database-migration": {
       "source": {
@@ -176,12 +176,12 @@
         "path": "skills/directory-submissions"
       },
       "pin": {
-        "commit": "310ebb96a",
-        "date": "2026-11-11"
+        "commit": "ca400d998",
+        "date": "2026-11-20"
       },
       "license": "MIT",
       "notes": "Whole folder tree-identical (2b12b936); current upstream HEAD version (metadata.version 2.0.0). Installed 2026-09-27.",
-      "tree_sha256": "4b00d6598e8c9e226c0b7c9b67c06dfa27b62a21d6453459297972a24815de31"
+      "tree_sha256": "f0d34a2e13c3e6650d52ad330166f1a73f4432f6c4abadf496689777b07310e9"
     },
     "error-handling-patterns": {
       "source": {
@@ -470,12 +470,12 @@
         "path": "skills/neon"
       },
       "pin": {
-        "commit": "a874fd709",
-        "date": "2026-11-12"
+        "commit": "9503c93b0",
+        "date": "2026-11-17"
       },
       "license": "Apache-2.0",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 47 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 11). Listed in ~/skills-l",
-      "tree_sha256": "9ee7d3f10309ab2a9877bd37edee57a8ce358abf3af121bf1b17ce4eaf6ad3c1"
+      "tree_sha256": "9bc5de206b628e1c93b0a0f53149c61917470347f2ea2be5613e9e86d6497bce"
     },
     "nextjs-app-router-patterns": {
       "source": {
@@ -554,12 +554,12 @@
         "path": "skills/seo-audit"
       },
       "pin": {
-        "commit": "c01f0843c",
-        "date": "2026-11-09"
+        "commit": "71b8044dc",
+        "date": "2026-11-20"
       },
       "license": "MIT",
       "notes": "git blob of local SKILL.md == upstream blob at this commit (first commit introducing it; 18 versions checked); every local file in the skill dir is byte-identical upstream at this commit. upstream_newer_commits counts commits touching the skill dir after it (SKILL.md alone: 0). Installed via `npx sk",
-      "tree_sha256": "856c776b2f001bf18e747f839568b9dc41d20db8662ff1843b749db08a575de7"
+      "tree_sha256": "d8a2abec3ef08710cca2073cadeafc07e266787c7123eefcbab4b0966ca2268a"
     },
     "stripe-integration": {
       "source": {
@@ -610,12 +610,12 @@
         "path": "skills/ai-seo/"
       },
       "pin": {
-        "commit": "c01f0843c",
-        "date": "2026-11-09"
+        "commit": "71b8044dc",
+        "date": "2026-11-20"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Commit is the one that introduced this blob; it is also upstream HEAD.",
-      "tree_sha256": "f8527c33e3b53cad915b3c625664244c8aa17ad69e22958c0c87a4fd7d047d1a"
+      "tree_sha256": "b7f4b0ccb1127415fc81c9e60a03f6a7bee76d1cbfb41faf00e2c6a82756289b"
     },
     "async-python-patterns": {
       "source": {
@@ -834,12 +834,12 @@
         "path": "skills/web-design-guidelines/"
       },
       "pin": {
-        "commit": "ba4693888",
-        "date": "2026-01-16"
+        "commit": "53b6e3ddf",
+        "date": "2026-10-29"
       },
       "license": null,
       "notes": "Installed via `npx skills` 2026-02-04. Tree == lock hash 3116f3e; unchanged at upstream HEAD. Repo has no LICENSE file (GitHub reports none). The SKILL.md fetches its guideline text from a URL at runtime, so content can change without a repo commit.",
-      "tree_sha256": "f3bc47f890f42a44db1007ab390709ec368e4b8c089baee6b0007182236ac474"
+      "tree_sha256": "fcbcb524bfd79565d5140f0e6e29d36a88359b408551f1d27240b6c9cdb5b130"
     },
     "clerk": {
       "source": {

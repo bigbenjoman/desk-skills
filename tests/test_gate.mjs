@@ -1,11 +1,11 @@
 // suite: gate (one definition of green)
-import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold, holdKind, holdNeedsPerson, agentLast, NO_REASON, UNREAD_FILES } from '../desk/bin/gate.mjs';
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseFlaky, flakyWaiver, failureNotes, notesIn, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold, holdKind, holdNeedsPerson, agentLast, NO_REASON, UNREAD_FILES } from '../desk/bin/gate.mjs';
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { collectAnswers, capNotes, ANSWER_HEAD, SIBLING_HEAD, MAX_NOTES } from '../desk/bin/briefing.mjs';
 import { gateReviewersIn } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const cr = (name, status, conclusion, runId) => ({ name, status, conclusion, detailsUrl: runId ? `https://github.com/o/r/actions/runs/${runId}/job/1` : '' });
@@ -239,7 +239,7 @@ const lintPush = lintOn("on:\n  push:\n    branches: ['feature/**']\n  pull_requ
 t('DS-412 a push trigger on one child\'s branch does not excuse another child', Object.keys(baseUntriggered(['lint'], FEAT, { branches: ['feature/a', 'fix/b'], atBase: lintPush, atDefault: lintPush })).join(), 'lint');
 
 // Briefing answers survive a requeue: answer.mjs appends below the sibling-notes block.
-const brief = ['Orchestrator session name: x', '', 'These questions were put to the user before you started.', '',
+const brief = ['Answer file to wait on: x', '', 'These questions were put to the user before you started.', '',
   `${ANSWER_HEAD} (2026-10-09T04:40Z)`, '', 'credits from the homepage list', '',
   `${SIBLING_HEAD} in this batch have found`, '', '## MEMORY', 'cap tests', '',
   `${ANSWER_HEAD} (2026-10-09T05:30Z)`, '', 'BINDING FIX ROUND: + VAT beside each price', ''].join('\n');
@@ -274,6 +274,9 @@ t('DS-422 kinds and a bare check', sc(['🌿 Local Adversarial Code Review: verd
 t('DS-422 a check name may hold ": "', sc(['Gate: title: approval']), JSON.stringify({ checks: [{ name: 'Gate: title', kind: 'approval' }], errors: [] }));
 t('DS-422 none names none', sc(['none']), JSON.stringify({ checks: [], errors: [] }));
 t('DS-422 an unknown kind is an error, never a guess', parseStateChecks(['Review gate: approve']).errors.join(), '`Review gate: approve`');
+t('#737 external names the reviewer login', sc(['🔐 Review gate: external agent-pullbot']), JSON.stringify({ checks: [{ name: '🔐 Review gate', kind: 'external', login: 'agent-pullbot' }], errors: [] }));
+t('#737 external with no login is an error', parseStateChecks(['🔐 Review gate: external']).errors.length, 1);
+t('#737 a failing external check carries its login', JSON.stringify(stateFailing([{ name: '🔐 Review gate' }], parseStateChecks(['🔐 Review gate: external agent-pullbot']).checks)), JSON.stringify([{ name: '🔐 Review gate', kind: 'external', login: 'agent-pullbot' }]));
 t('DS-422 stateFailing keeps only the state checks, with their kinds', JSON.stringify(stateFailing([{ name: 'tests', runId: '1' }, { name: '🔐 Review gate', runId: '2' }], parseStateChecks(['🔐 Review gate: approval']).checks)),
   JSON.stringify([{ name: '🔐 Review gate', runId: '2', kind: 'approval' }]));
 {
@@ -313,7 +316,7 @@ t('DS-503 AC3 every hold on the checks desk-setup proposes stays a person\'s', `
 t('DS-503 negative control: a check with no ask-class word is an agent\'s', kinds(['claude.md: house rules', 'e2e/**: read the dry-run comment the docs bot posts']), 'agent,agent');
 t('DS-503 AC1 desk-setup sorts each proposed hold with hold-kind and gives an agent\'s a routine', /gate\.mjs hold-kind/.test(setup) && /\*\*`agent`\*\*: .*Write it a routine/.test(setup), true);
 // The CLI desk-setup and desk-update run: items given, else the config's §4 Merge holds.
-const gtmp = mkdtempSync(join(tmpdir(), 'gate-503-'));
+const gtmp = scratch('gate-503-');
 const gconf = join(gtmp, 'config.md');
 writeFileSync(gconf, `## 4. Tracker, tools and team\n\n| Field | Value |\n|---|---|\n| Merge holds | \`${dryRun}\`, \`content/legal/**: legal copy sign-off\`, \`db/**: check the plan; desk runs: ./plan.sh\` |\n`);
 const gcli = (args) => spawnSync(process.execPath, [new URL('../desk/bin/gate.mjs', import.meta.url).pathname, 'hold-kind', ...args], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: gconf } });
@@ -334,5 +337,161 @@ rmSync(gtmp, { recursive: true, force: true });
   t('DS-647 the gate lists each pending check with its run, null where none is named', JSON.stringify(g.running),
     '[{"name":"Lint","runId":31},{"name":"e2e","runId":null},{"name":"run Deploy","runId":41}]');
   t('DS-647 running matches pending one for one', g.running.map((r) => r.name).join(',') === g.pending.join(','), true);
+}
+// DS-662: the test lock's queue, counted machine-wide from a faked process list.
+{
+  const { lockWaiters, lockQueue } = await import('../desk/bin/suite-wait.mjs');
+  const procs = [
+    { pid: 11, ppid: 1, args: '/bin/bash /h/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh' }, // a mkdir holder
+    { pid: 12, ppid: 11, args: 'bash tests/run.sh' },
+    { pid: 21, ppid: 1, args: '/bin/bash /h/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck' }, // waits, polling
+    { pid: 22, ppid: 21, args: 'sleep 2' },
+    { pid: 31, ppid: 1, args: 'bash /other/repo/desk/bin/with-lock.sh test -- pnpm test' }, // another repo's, waiting
+    { pid: 41, ppid: 1, args: 'flock /tmp/desk-test.lock bash tests/run.sh' }, // a flock holder: it has a child
+    { pid: 42, ppid: 41, args: 'bash tests/run.sh' },
+    { pid: 51, ppid: 1, args: 'flock /tmp/desk-test.lock pnpm test' }, // a flock waiter: no child yet
+    { pid: 61, ppid: 1, args: 'claude -p Run ~/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh' }, // a prompt quoting it
+    { pid: 71, ppid: 1, args: '/bin/bash /h/.claude/desk/bin/with-lock.sh browser -- node shot.mjs' }, // another lock
+  ];
+  const holders = new Set([11, 12]);
+  t('DS-662 waiters: every unheld with-lock test|tsc wrapper and childless flock, whatever the worktree', lockWaiters({ procs, holders }), 3);
+  t('DS-662 waiters: none when ps cannot be read', lockWaiters({ procs: null, holders }), null);
+  // A light suite (§4 Suite weight) waits on the light lock, which holds no heavy run back: not counted.
+  const light = [...procs, { pid: 81, ppid: 1, args: '/bin/bash /h/.claude/desk/bin/with-lock.sh light --cwd . -- bash tests/run.sh' },
+    { pid: 91, ppid: 1, args: 'flock /tmp/desk-light.lock bash tests/run.sh' }];
+  t('a run waiting on the light lock is no waiter on the test lock', lockWaiters({ procs: light, holders }), 3);
+  // But a worker's suite on the light lock is still running or waiting: it is never taken for wedged.
+  const { suiteWait } = await import('../desk/bin/suite-wait.mjs');
+  const wt = '/w/T-1';
+  const at = (procs, cwds) => suiteWait(wt, { procs, cwds, holders: new Set() });
+  const runs = [{ pid: 100, ppid: 1, args: 'flock /tmp/desk-light.lock bash tests/run.sh' }, { pid: 101, ppid: 100, args: 'bash tests/run.sh' }];
+  t('a light suite running in the worktree is its suite', at(runs, [{ pid: 100, cwd: wt }]), 'suite');
+  t('one waiting for the light lock is waiting on its lock', at([{ pid: 110, ppid: 1, args: 'bash /h/.claude/desk/bin/with-lock.sh light -- bash tests/run.sh' }], [{ pid: 110, cwd: wt }]), 'lock');
+  t('and a light holder its holder file names is its suite', suiteWait(wt, { procs: [{ pid: 120, ppid: 1, args: 'bash tests/run.sh' }], cwds: [{ pid: 120, cwd: wt }], holders: new Set([120]) }), 'suite');
+  t('DS-662 AC1 a queue at slots x factor is deep, naming its depth', JSON.stringify(lockQueue({ waiting: 4, slots: 2, factor: 2 })),
+    JSON.stringify({ deep: true, unread: false, waiting: 4, at: 4, line: 'test lock queue: 4 run(s) waiting on its 2 slot(s), at or over the hold at 2 x 2 = 4' }));
+  t('DS-662 AC3 a queue below it holds nothing', lockQueue({ waiting: 3, slots: 2, factor: 2 }).deep, false);
+  const unread = lockQueue({ waiting: null, slots: 1, factor: 2 });
+  t('DS-662 AC5 a queue not read holds nothing and says so', `${unread.deep} ${unread.unread} ${unread.line}`, 'false true test lock queue: not read (ps could not be read), so workers start as they would without it');
+}
+// Who holds the test lock is named, whatever the repo, so a batch held behind it shows what it waits on.
+{
+  const { lockHolderRuns, holdersText, lockQueue, etimeSeconds } = await import('../desk/bin/suite-wait.mjs');
+  const procs = [
+    { pid: 11, ppid: 1, args: '/bin/bash /h/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh' }, // a mkdir holder and its command
+    { pid: 12, ppid: 11, args: 'bash tests/run.sh' },
+    { pid: 41, ppid: 1, args: 'flock /tmp/desk-test.lock pnpm test' }, // a flock holder, queued 20 min before its command started
+    { pid: 42, ppid: 41, args: 'pnpm test' },
+    { pid: 51, ppid: 1, args: 'flock /tmp/desk-test.lock pnpm test' }, // a waiter
+    { pid: 61, ppid: 1, args: 'vim notes.md' }, // a reused pid a stale flock holder file still names
+  ];
+  const now = Date.parse('2026-11-20T12:00:00Z');
+  const ages = new Map([[11, 2530], [12, 2529], [41, 3900], [42, 2700], [51, 30], [61, 60]]);
+  const stamps = new Map([[11, now - 2529000], [12, now - 2529000], [61, now - 600000]]);
+  const cwds = [{ pid: 11, cwd: '/home/u/code/repo-a' }, { pid: 41, cwd: '/home/u/code/wt/B-1' }, { pid: 61, cwd: '/home/u' }];
+  const runs = lockHolderRuns({ procs, holders: new Set([11, 12, 61]), cwds, ages, stamps, now });
+  t('a holder is named once, not with its command beside it; a waiter and a reused pid not at all', runs.map((r) => r.pid).join(','), '11,41');
+  t('its age is from its holder file, or a flock\'s command, both made once the lock is taken, not its wait', runs.map((r) => r.seconds).join(','), '2529,2700');
+  // A holder that exec'd into its command (a slotted flock): its file, not its youngest subprocess.
+  const execd = [{ pid: 70, ppid: 1, args: 'bash tests/run.sh' }, { pid: 71, ppid: 70, args: 'bash tests/test_x.sh' }];
+  t('an exec\'d holder with subprocesses is aged from its holder file', lockHolderRuns({ procs: execd, holders: new Set([70]), cwds: [], ages: new Map([[70, 2520], [71, 5]]), stamps: new Map([[70, now - 2400000]]), now })[0]?.seconds, 2400);
+  const home = process.env.HOME;
+  process.env.HOME = '/home/u';
+  try {
+    t('each with where it runs and how long its run has gone', holdersText(runs),
+      '~/code/repo-a: /bin/bash /h/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh, held 42m; ~/code/wt/B-1: flock /tmp/desk-test.lock pnpm test, held 45m');
+  } finally { process.env.HOME = home; }
+  t('one whose directory and age cannot be read is named by its pid', holdersText(lockHolderRuns({ procs, holders: new Set(), cwds: null, ages: null, now }).slice(0, 1)), 'pid 41: flock /tmp/desk-test.lock pnpm test, held for an unknown time');
+  t('a file-named pid whose age cannot be read names nobody', lockHolderRuns({ procs, holders: new Set([11, 12]), cwds, ages: null, stamps, now }).map((r) => r.pid).join(','), '41');
+  t('no holders when ps cannot be read', lockHolderRuns({ procs: null, holders: new Set(), cwds, ages, stamps, now }).length, 0);
+  t('the queue line names them', lockQueue({ waiting: 2, slots: 1, factor: 2, held: runs.slice(1) }).line, `test lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2; held by ${holdersText(runs.slice(1))}`);
+  t('and with none held, says nothing of holders', lockQueue({ waiting: 0, slots: 1, factor: 2 }).line.includes('held by'), false);
+  t('ps elapsed times read in seconds', [etimeSeconds('05:07'), etimeSeconds('01:00:00'), etimeSeconds('2-00:00:01'), etimeSeconds('x')].join(','), '307,3600,172801,');
+  // DS-924: the light lock's holders apart from the test lock's, for a run waiting on the light lock.
+  const light = [...procs, { pid: 80, ppid: 1, args: 'flock /tmp/desk-light.lock bash tests/related.sh' }, { pid: 81, ppid: 80, args: 'bash tests/related.sh' }];
+  t('DS-924 a run waiting on the light lock is told its holders and not the test lock\'s',
+    [lockHolderRuns({ procs: light, holders: new Set(), cwds, ages, now, locks: 'light' }).map((r) => r.pid).join(','),
+      lockHolderRuns({ procs: light, holders: new Set(), cwds, ages, now }).map((r) => r.pid).join(',')].join(' '), '80 41');
+  // DS-924: whether a run is already inside a slot, so tests/related.sh takes no second one.
+  const { inSlot } = await import('../desk/bin/suite-wait.mjs');
+  const slot = (pid, list = light) => inSlot(pid, { procs: list, holders: new Set([11, 12, 61]), ages, stamps, now });
+  t('DS-924 a run a current holder file names is in its slot', slot(12), true);
+  t('DS-924 a run a stale holder file names by a reused pid is not', slot(61), false);
+  t('DS-924 a run a test or light flock(1) runs as its child is in its slot, though no file names it', [slot(42), slot(81)].join(','), 'true,true');
+  t('DS-924 a waiting flock, a run beside the holders and an unlisted pid are not', [slot(51), slot(70, [...light, ...execd]), slot(99), inSlot(12, { procs: null, holders: new Set([12]) })].join(','), 'false,false,false,false');
+}
+// DS-909 AC12: with the slot kind on, a suite holds a slot lease and leaves no holder file, and the pass
+// reads the worktree as it did from the holder file with the kind off.
+{
+  const { lockHolders, lockHolderStamps, lockHolderRuns, suiteWait } = await import('../desk/bin/suite-wait.mjs');
+  const tmp = scratch('gate-leases-');
+  const was = process.env.DESK_LEASE_DIR;
+  process.env.DESK_LEASE_DIR = join(tmp, 'leases');
+  try {
+    const off = join(tmp, 'off'), on = join(tmp, 'on');
+    for (const d of [off, on, process.env.DESK_LEASE_DIR]) mkdirSync(d, { recursive: true });
+    writeFileSync(join(off, 'desk-test.lock.pid'), '200\n');
+    const wt = '/w/T-2', now = Date.now();
+    const procs = [{ pid: 200, ppid: 1, args: 'bash tests/run.sh' }, // a suite: the command with-lock.sh exec'd into
+      { pid: 210, ppid: 1, args: '/bin/bash /h/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck' }, // waits for a slot
+      { pid: 211, ppid: 210, args: 'node /h/.claude/desk/bin/slot-lease.mjs take tsc --pid 210 -- pnpm typecheck' }];
+    const read = (dir, list) => [String(suiteWait(wt,{ procs: list, cwds: list.map((p) => ({ pid: p.pid, cwd: wt })), holders: lockHolders(dir, { locks: 'both' }) })),
+      lockHolderRuns({ procs: list, holders: lockHolders(dir), cwds: [], ages: new Map([[200, 60]]), stamps: lockHolderStamps(dir), now }).map((r) => r.pid).join(',')].join(' ');
+    const lease = (key, pool, pid) => ({ id: `L-${pid}`, kind: 'slot', key, pool, units: 1, owner: { pid, start: 'x' }, label: `${key} ${wt}: bash tests/run.sh`,
+      ttl: 600, acquired: new Date(now - 30_000).toISOString(), expires: new Date(now + 570_000).toISOString() });
+    const kindOff = read(off, procs.slice(0, 1));
+    writeFileSync(join(process.env.DESK_LEASE_DIR, 'leases.json'), JSON.stringify({ leases: [lease('test', 'slot:heavy', 200)] }));
+    t('DS-909 AC12 a suite holding a slot lease reads as running its suite, as its holder file did', read(on, procs.slice(0, 1)), kindOff);
+    t('DS-909 AC12 and it is that suite', kindOff, 'suite 200');
+    t('DS-909 AC12 a wrapper waiting on the lease reads as waiting on the lock', suiteWait(wt, { procs: procs.slice(1), cwds: [{ pid: 210, cwd: wt }], holders: lockHolders(on, { locks: 'both' }) }), 'lock');
+    writeFileSync(join(process.env.DESK_LEASE_DIR, 'leases.json'), JSON.stringify({ leases: [lease('browser', 'slot:browser', 200)] }));
+    t('DS-909 AC12 a browser slot lease holds no test lock', read(on, procs.slice(0, 1)), 'null ');
+    writeFileSync(join(process.env.DESK_LEASE_DIR, 'leases.json'), JSON.stringify({ leases: [lease('light', 'slot:light', 200)] }));
+    t('DS-909 AC12 a light slot lease is its suite, though not a test lock holder', read(on, procs.slice(0, 1)), 'suite ');
+    writeFileSync(join(process.env.DESK_LEASE_DIR, 'leases.json'), '{not json');
+    t('DS-909 AC12 an unreadable store leaves the holder files read as before', read(off, procs.slice(0, 1)), kindOff);
+  } finally {
+    if (was === undefined) delete process.env.DESK_LEASE_DIR; else process.env.DESK_LEASE_DIR = was;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+// ---- #831: a §4 Known flaky checks item naming one test inside a check
+{
+  const row = parseFlaky(['`Integration: tests/orders.test.ts > retries a timed-out order`'.slice(1, -1), 'e2e: e2e/**', 'Unit: > no file', 'Unit: a b > two words']);
+  t('#831 the per-test form parses to its check, its file as its path and its test', JSON.stringify(row.flaky[0]), JSON.stringify({ name: 'Integration', paths: ['tests/orders.test.ts'], test: { file: 'tests/orders.test.ts', title: 'retries a timed-out order' } }));
+  t('#831 the whole-check form beside it is unchanged', JSON.stringify(row.flaky[1]), JSON.stringify({ name: 'e2e', paths: ['e2e/**'] }));
+  t('#831 a per-test item with no file, or a file with a space, is an error', row.errors.join(' '), '`Unit: > no file` `Unit: a b > two words`');
+  const whole = parseFlaky(['Run e2e tests: e2e/** playwright.config.ts', 'Lint:']);
+  t('DS-869 AC1 a whole-check item reads as its check and both globs', JSON.stringify(whole.flaky), JSON.stringify([{ name: 'Run e2e tests', paths: ['e2e/**', 'playwright.config.ts'] }]));
+  t('DS-869 AC2 an item with no glob is an error and waives nothing', `${whole.errors.join(' ')} ${whole.flaky.some((f) => f.name === 'Lint')}`, '`Lint:` false');
+  const checks = normaliseRollup([cr('test', 'COMPLETED', 'SUCCESS', 1), cr('Integration', 'COMPLETED', 'FAILURE', 9)]);
+  const listed = { path: 'tests/orders.test.ts', title: 'tests/orders.test.ts > retries a timed-out order', message: 'AssertionError: expected 200 to be 504' };
+  const other = { path: 'tests/orders.test.ts', title: 'tests/orders.test.ts > totals an order', message: 'AssertionError: expected 3 to be 4' };
+  const W = (notes, files = ['src/x.ts'], flaky = row.flaky.slice(0, 1)) => flakyWaiver(checks, { required: ['test'], flaky, files, notes: () => notes });
+  t('#831 only the listed test failing: waived', W([listed])?.applies, true);
+  t('DS-820 AC1 a waiver names the listed test it waives', JSON.stringify(W([listed])?.tests), JSON.stringify([{ check: 'Integration', file: 'tests/orders.test.ts', title: 'retries a timed-out order' }]));
+  t('#831 the test as the whole title, its file as ./path, counts too', W([{ ...listed, path: './tests/orders.test.ts', title: 'retries a timed-out order' }])?.applies, true);
+  t('#831 so does one after a describe path in another reporter\'s separator', W([{ ...listed, title: 'orders › retries a timed-out order' }])?.applies, true);
+  t('#831 a sibling test whose name starts with the listed one is not it', W([listed, { ...listed, title: 'tests/orders.test.ts > retries a timed-out order twice' }])?.reason, 'tests');
+  t('#831 nor is a test nested under it', W([{ ...listed, title: 'tests/orders.test.ts > retries a timed-out order > after a refund' }])?.reason, 'tests');
+  t('#831 a message quoting the listed name names nothing', W([{ path: 'tests/orders.test.ts', title: 'tests/orders.test.ts > totals an order', message: 'expected retries a timed-out order to be called' }])?.reason, 'tests');
+  t('#831 an annotation with no title names no test', W([{ path: 'tests/orders.test.ts', title: null, message: 'FAIL retries a timed-out order' }])?.reason, 'tests');
+  const beside = W([listed, other]);
+  t('#831 a listed test beside a failure in another test: not waived, naming it', `${beside?.applies} ${beside?.reason} ${beside?.lines}`, 'false tests tests/orders.test.ts > totals an order: AssertionError: expected 3 to be 4');
+  t('#831 a longer test name holding the listed one does not count', W([{ ...listed, title: 'tests/orders.test.ts > retries a timed-out orders' }])?.reason, 'tests');
+  t('#831 the listed title in another file does not count', W([{ ...listed, path: 'tests/carts.test.ts' }])?.reason, 'tests');
+  const touched = W([listed], ['src/x.ts', 'tests/orders.test.ts']);
+  t('#831 a PR changing the listed test\'s file: not waived', `${touched?.applies} ${touched?.reason}`, 'false paths');
+  t('#831 a check with no failure annotation is never waived', W([])?.reason, 'tests');
+  t('#831 annotations that could not be read: not waived', W(undefined)?.reason, 'annotations');
+  t('#831 as many as GitHub keeps for a step, which may have dropped another test\'s: not waived', W(Array(10).fill(listed))?.reason, 'annotations');
+  t('#831 one fewer is read as the whole list', W(Array(9).fill(listed))?.applies, true);
+  t('#831 a whole-check item for the same check waives it without its annotations', W(undefined, ['src/x.ts'], [...row.flaky.slice(0, 1), { name: 'Integration', paths: ['src/integration/**'] }])?.applies, true);
+  t('#831 failureNotes keeps path and title beside the line, exit-code lines aside', JSON.stringify(failureNotes([{ annotation_level: 'failure', path: 'a.ts', title: 'a > b', message: 'boom\nstack' }, { annotation_level: 'failure', message: 'Process completed with exit code 1.' }, { annotation_level: 'warning', message: 'w' }])),
+    JSON.stringify([{ path: 'a.ts', title: 'a > b', message: 'boom' }]));
+  const kept = checks.map((c) => (c.name === 'Integration' ? { ...c, error_notes: [listed] } : c));
+  const f = { name: 'Integration', runId: '9' };
+  t('#831 notesIn reads the error_notes the pass kept', JSON.stringify(notesIn(kept)(f)), JSON.stringify([listed]));
+  t('#831 notesIn is undefined where a run kept none', notesIn(checks)(f), undefined);
 }
 process.exit(fails ? 1 : 0);

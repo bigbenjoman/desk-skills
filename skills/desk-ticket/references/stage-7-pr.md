@@ -7,7 +7,7 @@ through Stage 4b: read its file again then.
 
 | # | Stage | What happens |
 |---|---|---|
-| 7 | PR | **Invoke the `desk-pr` skill and follow it. Do not write the body from memory.** It owns the hygiene block, the permitted sections, the Testing-bullet standard and the before/after image table. Ends with `gh pr create --repo <repo> --draft --base <default> --body-file` (that flag order; see `desk-pr`), then the image upload. **Then post the Stage 4b report to the new PR**, then, where config §3 permits, **undraft it, arm auto-merge and shepherd it until it merges**. See "Merging" below. |
+| 7 | PR | **Invoke the `desk-pr` skill and follow it. Do not write the body from memory.** It owns the hygiene block, the permitted sections, the Testing-bullet standard, the before/after image table and the preview-build lease taken before opening and before every push. Ends with `gh pr create --repo <repo> --draft --base <default> --body-file` (that flag order; see `desk-pr`), then the image upload. **Then post the Stage 4b report to the new PR**, then, where config §3 permits, **undraft it, arm auto-merge and shepherd it until it merges**. See "Merging" below. |
 
 ## The DIFF REVIEW block (gate 3)
 
@@ -76,6 +76,15 @@ Stage 4b post (the method is §4 Merge method, `desk-env get merge-method`):
 gh pr ready <n> && gh pr merge <n> --auto --<§4 Merge method> --match-head-commit <headRefOid>
 ```
 
+**Every merge is claimed and recorded** in the machine-wide merge log, so the merge driver and
+another session never race one PR and who merged it is on record. Before merging or arming:
+`node ~/.claude/desk/bin/merge-log.mjs claim <n> <head> --by "session <your session name>"`. When
+it refuses (exit 11), do not merge or arm it, and report the line it printed. Where another desk
+path already merged, armed or claimed the PR, that line names who did it and at which head; any
+other refusal (a usage error, an unreadable repo) is not another merger, so do not say it is. After: `merge-log.mjs record <n> <head> --by
+"session <your session name>" --event merged` (`armed` for auto-merge, `disarmed` when you turn it off, `failed` when gh refuses).
+`merge-log.mjs show --pr <n>` says who did.
+
 Where the repo does not allow auto-merge, undrafting is the same and the merge is yours to make on
 green under `pr-merge-green`, always pinned: `gh pr merge <n> --<§4 Merge method>
 --match-head-commit <the head SHA whose checks you read>`. **A PR that touches a glob in §4 Merge
@@ -117,6 +126,12 @@ prints nothing. The merge driver runs this itself after its own move to Done.
   Branch protection (`desk-env get branch-protection`) `none`, nothing on GitHub stops a red merge, so the check is entirely yours.
   Read check state with `gh pr checks <n> --json name,state,bucket`, or `awk -F'\t'` on the plain
   output: it is tab-separated, and a check name carrying an emoji breaks whitespace splitting.
+- **Wait for checks with `node ~/.claude/desk/bin/pr-watch.mjs checks <n>`** in the background, never
+  a loop over `gh pr checks`: GitHub runs no checks on a PR that conflicts with its base, so such a
+  loop never settles. The watch ends on that too, with a line `PR #<n> conflicts with <base>`: that
+  is `DIRTY`, below, with three additions. Update onto the base the line names, which for a stacked
+  PR is not `<default>`, by merge or rebase as §5 Repo instructions say. Re-run Stage 4's checks as
+  well as Stage 4b. A conflict you cannot resolve without a call that is not yours stops: say why.
 - **A review gate can fail on a fresh PR's first run when the review posts late.** Where a required
   check reads the posted verdict: CI typically runs only on open, reopen and push, so posting a review
   starts nothing. If the gate polls for the verdict briefly after the run starts, a review posted
@@ -127,7 +142,10 @@ prints nothing. The merge driver runs this itself after its own move to Done.
   and a fast loop starves the PR forever.
 - **A red preview-deploy check is often the host's builder running out of memory** (exit 137), not
   the code. Where §4 Vercel (`desk-env list vercel`) is set and §3 `read-vercel` allows,
-  `vercel inspect --logs <url> --scope <team slug from §4 Vercel>` first. One preview build at a time.
+  `vercel inspect --logs <url> --scope <team slug from §4 Vercel>` first. Opening the PR, every push
+  to it and a preview check's rerun each take the team's preview-build lease first: `desk-pr` §4
+  *Before opening the PR, and before every push to it* (off: open and push as before; shadow: take
+  it without waiting; on: wait for a unit, saying you wait on the preview build).
 - **`DIRTY` merges nothing.** Merge `origin/<default>`, typecheck, then re-run Stage 4b at the new
   head and post it: a gate that matches the verdict against the exact head SHA reads nothing older.
 - **Human review feedback lands while armed** and §3 `merge-feedback-first` is `yes`:

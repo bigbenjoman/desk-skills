@@ -11,7 +11,14 @@
 //                                                 with its sign-in command but never holding a spawn.
 //                                                 A listed login whose folder does not exist is a row
 //                                                 with nothing behind it, not a sign-out: named in the
-//                                                 health line's notes and pushed once per machine
+//                                                 health line's notes and pushed once per machine.
+//                                                 Each login whose sign-in passes also makes one real
+//                                                 call (usage-probe.mjs probeNow), as a sign-in the API
+//                                                 refuses (401, 403, a Cloudflare page) still passes
+//                                                 `claude auth status`. A refused call fails the login;
+//                                                 a passing one is not made again for 15 minutes, and
+//                                                 any other outcome (a usage limit, no answer) passes
+//                                                 unkept, for the pacing and stall checks to judge
 //   codex    `codex login status`                 unless config §3 codex-review is no (it catches a
 //                                                 sign-out, not a seat out of usage: only a real call does)
 //   browser  the browser profile's saved GitHub login (github-signin.mjs), unless §3 pr-images is no.
@@ -55,7 +62,8 @@ import { dirname, join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { parseDfAvailableGB } from './machine.mjs';
 import { isDir, loginEnv, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
-import { inUse, loginKey, workLoginDirs } from './claude-logins.mjs';
+import { inUse, loginKey, loginOf, workLoginDirs } from './claude-logins.mjs';
+import { probeNow } from './usage-probe.mjs';
 import { accountEnv } from './review-post.mjs';
 import { signedIn, SIGNIN_CMD } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
@@ -63,6 +71,8 @@ import { sessionFile } from './find-playwright.mjs';
 export const HEALTH_TTL_MS = 15 * 60 * 1000;
 export const CHECK_TIMEOUT_MS = 20 * 1000;
 export const RETRY_DELAY_MS = 5 * 1000;
+// A real call starts a whole `claude -p` session, so it gets longer than a status command.
+export const CALL_TIMEOUT_MS = 60 * 1000;
 export const DEFAULT_DISK_FLOOR_GB = 20;
 const FLOOR_ROW = E.CONFIG_ROWS['disk-floor'].row;
 
@@ -286,11 +296,23 @@ function readRecord(state) {
   try { return JSON.parse(readFileSync(healthFile(state), 'utf8')); } catch { return null; }
 }
 
+// The real call of a login whose sign-in passed: the one made under HEALTH_TTL_MS ago, kept in
+// health.json's `calls` under `key`, or a new one. -> { refused: { status, why } | null, kept: { at } | null }
+function realCall(key, login, env, prev, now) {
+  const was = prev?.calls?.[key]?.at;
+  const age = was ? now - Date.parse(was) : Infinity;
+  if (age >= 0 && age < HEALTH_TTL_MS) return { refused: null, kept: { at: was } };
+  const p = probeNow({ login, env, timeoutMs: CALL_TIMEOUT_MS });
+  return { refused: p.refused ?? null, kept: p.ok ? { at: new Date(now).toISOString() } : null };
+}
+
+const REFUSED_ELSE = "if the call is still refused once signed in, the API is turning away this machine's connection (a Cloudflare page says so), which no sign-in fixes";
 const dbCmd = (env = process.env) => ['docker', 'exec', perTicketDb(env).container, 'pg_isready'];
 const fixOf = (id, r) => {
   if (id === 'disk') return `free space on ${r.path ?? 'the worktrees disk'}`;
   if (id === 'database') return `start Docker and the container ${perTicketDb().container}; the queued tickets spawn on the first pass it answers`;
   if (r.kind === 'network') return `check this machine's connection to ${byId[id].name}; it is not reaching it, which is not a sign-in`;
+  if (r.refused) return `${byId[id].fix}; ${REFUSED_ELSE}`;
   return byId[id].fix;
 };
 const label = (id) => {
@@ -353,6 +375,7 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   let loginResults;
   let reviewer = null;
   let at;
+  const calls = {};
   if (reused) {
     ({ results, at, logins: loginResults = {} } = prev);
     reviewer = reviewerWanted ? prev.reviewer : null;
@@ -366,6 +389,16 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
     ]);
     results = Object.fromEntries(wanted.map((id, i) => [id, ran[i]]));
     loginResults = Object.fromEntries(others.map((l, i) => [loginKey(l), ranLogins[i]]));
+    // Once the rest have answered, as a real call waits on its session and would hold their timers.
+    const real = (key, login, r) => {
+      if (!r?.ok) return r;
+      const c = realCall(key, login, env, prev, now);
+      if (c.kept) calls[key] = c.kept;
+      return c.refused ? { ok: false, why: `a real call was refused: ${c.refused.why}`, kind: 'auth', refused: c.refused.status } : r;
+    };
+    const own = (() => { try { return loginOf(env.CLAUDE_CONFIG_DIR); } catch { return null; } })();
+    results.claude = real('claude', own, results.claude);
+    for (const l of others) loginResults[loginKey(l)] = real(`login:${loginKey(l)}`, l, loginResults[loginKey(l)]);
     reviewer = ranReviewer;
     at = new Date(now).toISOString();
   }
@@ -392,13 +425,15 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   // One whose profile could not be resolved names no login, so any login passing clears it.
   else if (wanted.includes('browser') && !reused && results.browser.file) { clearSignin(results.browser.file); clearSignin(null); }
   const streak = reused ? prev.streak ?? {} : nextStreak(prev, units);
-  const told = (u) => !isRemote(u.ids[0]) || (streak[u.key]?.n ?? 1) >= 2;
+  // A call the API refused is an answer, not a blip, so it is told at once.
+  const told = (u) => !isRemote(u.ids[0]) || results[u.key]?.refused || (streak[u.key]?.n ?? 1) >= 2;
   const unconfirmed = units.filter((u) => !told(u)).map((u) => u.key);
   // Recovery is news only from a fresh run: a reused one is the run that reported the failure.
   const recovered = reused ? [] : [...(prev?.failing ?? []).filter((id) => byId[id] && !failing.includes(id)),
     ...(prev?.reviewer && !prev.reviewer.ok && !reviewerOut ? ['reviewer'] : [])];
   // Another login failing holds no spawn: a pass starts no worker on it. It is told with its
-  // sign-in command once signed out, and a connection failure once it has lasted two runs.
+  // sign-in command once signed out or refused by the API, and a connection failure once it has lasted
+  // two runs. A refused one is also kept out of new work (refusedIn: pass.mjs repoLogin, the decider).
   const loginsOut = others.filter((l) => !loginResults[loginKey(l)]?.ok);
   const loginStreak = reused ? prev.login_streak ?? {}
     : nextStreak({ streak: prev?.login_streak ?? {} }, loginsOut.map((l) => ({ key: loginKey(l), kind: loginResults[loginKey(l)].kind ?? 'auth' })));
@@ -407,7 +442,8 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
     mkdirSync(state, { recursive: true });
     const kept = others.length ? { logins: loginResults, login_streak: loginStreak } : {};
     const rev = reviewer ? { reviewer: { ...reviewer, told: reviewerTold }, ...(reviewerOut ? { reviewer_streak: reviewerStreak } : {}) } : {};
-    writeFileSync(healthFile(state), `${JSON.stringify({ at, results, failing, streak, ...kept, ...rev }, null, 2)}\n`);
+    const answered = Object.keys(calls).length ? { calls } : {};
+    writeFileSync(healthFile(state), `${JSON.stringify({ at, results, failing, streak, ...kept, ...rev, ...answered }, null, 2)}\n`);
   }
 
   const when = reused ? `checked ${Math.round(age / 60000)} min ago, reused` : 'checked now';
@@ -420,7 +456,10 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   // A repo with no Postgres container has no database to check, so it is not named as skipped.
   const skipped = Object.entries(skip).filter(([id]) => id !== 'database' || perTicketDb(env).container).map(([id, why]) => `${byId[id].name} (${why})`);
   if (skipped.length) notes.push(`not required: ${skipped.join(', ')}`);
-  if (loginsOut.length) notes.push(`claude login${loginsOut.length > 1 ? 's' : ''} ${loginsOut.map((l) => l.name).join(', ')} failing, not holding spawns`);
+  const refusedOut = loginsOut.filter((l) => loginResults[loginKey(l)].refused);
+  const signedOutOrUnreached = loginsOut.filter((l) => !refusedOut.includes(l));
+  if (signedOutOrUnreached.length) notes.push(`claude login${signedOutOrUnreached.length > 1 ? 's' : ''} ${signedOutOrUnreached.map((l) => l.name).join(', ')} failing, not holding spawns`);
+  if (refusedOut.length) notes.push(`claude login${refusedOut.length > 1 ? 's' : ''} ${refusedOut.map((l) => l.name).join(', ')} refused by the API, no new worker or decider starts on ${refusedOut.length > 1 ? 'them' : 'it'}`);
   // The default is removed only once another login is the default.
   const missingFix = (l) => `${l.stored === 'default' ? 'make another login the default (desk-env logins default claude <name>) and then ' : ''}remove its row (desk-env logins remove claude ${l.name}) or sign it in (${signInCommand(l)})`;
   for (const l of missing) notes.push(`claude login ${l.name} listed at ${l.folder}, which does not exist: ${missingFix(l)}`);
@@ -435,9 +474,10 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
     : pushOf(slug, u.key, results[u.key])));
   for (const l of loginTold) {
     const r = loginResults[loginKey(l)];
-    const out = r.kind === 'network' ? `could not reach Claude (${r.why})` : `is signed out (${r.why})`;
-    const fix = r.kind === 'network' ? "check this machine's connection to Claude" : `sign it in, in another terminal: ${signInCommand(l)}`;
-    stalls.push(`health: Claude login ${l.name} (${l.folder}) ${out} — ${fix}; spawns are not held for it`);
+    const out = r.kind === 'network' ? `could not reach Claude (${r.why})` : r.refused ? `is refused by the Claude API (${r.why})` : `is signed out (${r.why})`;
+    const fix = r.kind === 'network' ? "check this machine's connection to Claude"
+      : `sign it in, in another terminal: ${signInCommand(l)}${r.refused ? `; ${REFUSED_ELSE}` : ''}`;
+    stalls.push(`health: Claude login ${l.name} (${l.folder}) ${out} — ${fix}; ${r.refused ? 'no new worker or decider starts on it' : 'spawns are not held for it'}`);
     push.push({ key: `health:${slug}:claude:${loginKey(l)}`, text: `desk ${slug}: Claude login ${l.name} ${out}. Fix: ${fix}` });
   }
   if (tellsBrowser) {
@@ -452,13 +492,29 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   let held = null;
   if (reviewerTold) {
     held = reviewerItem(slug, reviewerOut);
-    stalls.push(`health: reviewer: ${reviewerOut.why} — fix: ${reviewerOut.fix}; ${HELD_WORDS}`);
-    push.push({ key: held.key, text: `desk ${slug}: ${held.signin ? `the account desk posts review verdicts from cannot be read (${reviewerOut.why})` : reviewerOut.why}, so ${HELD_WORDS}. Fix: ${reviewerOut.fix}` });
+    const words = `${HELD_WORDS}${reviewerOut.kind === 'mismatch' ? MISMATCH_WORDS : ''}`;
+    stalls.push(`health: reviewer: ${reviewerOut.why} — fix: ${reviewerOut.fix}; ${words}`);
+    push.push({ key: held.key, text: `desk ${slug}: ${held.signin ? `the account desk posts review verdicts from cannot be read (${reviewerOut.why})` : reviewerOut.why}, so ${words}. Fix: ${reviewerOut.fix}` });
   }
-  return { off: false, reused, at, results, failing, holding, recovered, unconfirmed, notRequired: skip, line, stalls, push, reviewer: held };
+  return { off: false, reused, at, results, failing, holding, recovered, unconfirmed, notRequired: skip, line, stalls, push, reviewer: held, logins: loginResults };
 }
 
-const HELD_WORDS = 'no PR red only on a §4 State check of kind verdict gets a review or fix try until it passes, and build workers still start';
+// Why a health run (`rec`: health()'s result or its health.json record) found the API refusing a real
+// call on `login`, or null. A login with a config folder is judged by its own result; the caller's
+// login (`own`, or a null `login`) by the `claude` check's, which ran on it; any other was not called.
+// A pass starts no new worker on that login, and the supervisor no decider.
+export function refusedIn(rec, login, own) {
+  const r = (login?.configDir && rec?.logins?.[loginKey(login)])
+    || (!login || (own && login.dir === own.dir) ? rec?.results?.claude : null);
+  return r && !r.ok && r.refused ? r.why : null;
+}
+// The same, read from the last health run at `state`.
+export const refusedLogin = (state, login, own) => refusedIn(readRecord(state), login, own);
+
+const HELD_WORDS = 'no PR red only on a §4 State check of kind verdict gets a review or fix try until it passes, except a fix for a review at its head with findings, and build workers still start';
+// A mismatch still lets through the review the merge driver needs (pass/fix-tries.mjs heldReview): it
+// counts desk's verdict though the gate does not.
+export const MISMATCH_WORDS = ', except the review a head with no clean verdict needs, which the merge driver counts though the gate does not';
 // The repo item a failing reviewer check is told as, and that holds a PR's tries: a sign-in failure is
 // a sign-in item of its own, not a mismatch. { key, signin, why, fix, ... the check's result }.
 export function reviewerItem(slug, r) {

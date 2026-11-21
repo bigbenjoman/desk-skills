@@ -62,6 +62,12 @@ code_claim: yes | no
 settled_by: code | person
 ```
 
+**A criterion about every instance of something** ("every page", "an avatar wherever a person
+shows", "all the buttons") gets one gap naming **every site the diff misses that you can find**, each
+as `file:line`, never a sample: search the reviewed tree for the thing itself (`git grep` at `<TIP>`)
+and say in the gap how you searched. A sample leaves the next round to find the rest, and each fix
+try is spent finding sites rather than closing them.
+
 **Settled calls amend the criteria.** Bea's prompt carries, beside the ticket, every call already
 taken on it: each line of the PR body's `### Decisions taken` section (`desk-pr`), and each entry of
 the triage record's `decided` list (`$DESK_STATE/triage/<KEY>.json`, where one exists). She measures
@@ -144,7 +150,8 @@ the PR is not held for them. `node verdict.mjs --post-merge <results>` prints th
 merge` section, naming each criterion, what it needs and its step: it goes in the review body under
 the report. Once the PR merges, the autopilot pass reads the line from the PR's last review and keeps
 each criterion as a follow-on step (`desk/bin/pass.mjs`), which `desk-needs-you` lists to the person
-as the ticket's follow item. A tagged criterion stays in `post_merge` on every later round.
+as the ticket's follow item. Where the worker already declared follow-on steps of its own (any but
+kept link steps and an earlier PR's criteria still unrun), those stand and no criterion is added: the two word one check differently. A tagged criterion stays in `post_merge` on every later round.
 
 ### A gap the person accepted
 

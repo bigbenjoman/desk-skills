@@ -170,18 +170,26 @@ export function verdictAtHead(reviews, handle, head, clean, carry, scope = null)
 }
 
 // Whether a review verdict posted on `from` still holds at `head`: `head` is reached from `from` by
-// merges of the base alone, each a two-parent merge whose second parent is on `base` and whose tree
-// is exactly the one git merges the two to (git merge-tree), so it resolved no conflict and added
-// nothing, and the PR's own commits are the ones reviewed. git(args) runs git and returns { ok, out };
-// false whenever git cannot say.
+// merges of the base and empty commits alone. Each merge is a two-parent merge whose second parent is
+// on `base` and whose tree is exactly the one git merges the two to (git merge-tree), so it resolved
+// no conflict and added nothing; each empty commit has one parent and that parent's tree. The PR's own
+// commits are the ones reviewed. git(args) runs git and returns { ok, out }; false whenever git cannot
+// say.
 export function verdictCarries({ from, head, base, git }) {
-  const chain = baseMergeChain({ from, head, base, git });
-  return !!chain && chain.every(([c, ours, theirs]) => {
-    const merged = git(['merge-tree', '--write-tree', '--no-messages', ours, theirs]);
-    const tree = git(['rev-parse', `${c}^{tree}`]);
-    return merged.ok && tree.ok && merged.out.split('\n')[0] === tree.out;
-  });
+  const chain = firstParentChain({ from, head, base, git });
+  return !!chain && chain.every((c) => (c.length === 2
+    ? isEmptyCommit(c, git)
+    : isBaseMerge(c, base, git) && cleanMerge(c, git)));
 }
+const treeOf = (c, git) => { const r = git(['rev-parse', `${c}^{tree}`]); return r.ok ? r.out : null; };
+// A one-parent commit with its parent's tree: it changes nothing.
+const isEmptyCommit = ([c, parent], git) => { const t = treeOf(c, git); return !!t && t === treeOf(parent, git); };
+// A merge whose tree is the one git merges its two parents to.
+const cleanMerge = ([c, ours, theirs], git) => {
+  const merged = git(['merge-tree', '--write-tree', '--no-messages', ours, theirs]);
+  const tree = treeOf(c, git);
+  return merged.ok && !!tree && merged.out.split('\n')[0] === tree;
+};
 
 // The first-parent chain from `from` down to `head`, newest first, as [commit, ours, theirs, …] each;
 // null when `head` does not descend from `from` that way, or whenever git cannot say.
@@ -196,12 +204,6 @@ function firstParentChain({ from, head, base, git }) {
 }
 // A two-parent merge whose second parent is on `base`.
 const isBaseMerge = ([, , theirs, ...more], base, git) => !!theirs && !more.length && git(['merge-base', '--is-ancestor', theirs, base]).ok;
-
-// That chain when every commit on it is a merge from the base; null otherwise.
-function baseMergeChain({ from, head, base, git }) {
-  const chain = firstParentChain({ from, head, base, git });
-  return chain && chain.every((c) => isBaseMerge(c, base, git)) ? chain : null;
-}
 
 // Whether a merge from the base, conflicts resolved or not, last moved `head` since `from`: the newest
 // commit on the chain is one. Commits of the PR's own before it (a fix try's worker's) do not matter:
@@ -238,9 +240,19 @@ export function postMergeIn(body) {
   } catch { return []; }
 }
 // Those criteria as the follow-on steps a merged ticket keeps for the person (pass.mjs follow_on,
-// needs-you followItems): no §3 row runs them, since nothing of desk's checks a live system.
-const POST_MERGE_STEP ='Check after the merge: ';
-export const postMergeSteps = (body) => postMergeIn(body).map((p) => ({ step: `${POST_MERGE_STEP}${p.gap} (needs ${p.needs}): ${p.step}`, row: null }));
+// needs-you followItems): no §3 row runs them, since nothing of desk's checks a live system. What a
+// criterion needs is its gate (harvest.mjs FOLLOW_GATES): production waits on the production ref,
+// staging and a deploy on the default branch, anything else on the merge. Each keeps the criterion's
+// own step as written, marked `from: 'review'` so the pass tells it from a step the worker declared.
+// POST_MERGE_STEP opens a step an older pass recorded with the criterion's name and needs before it,
+// which reviewStep drops.
+const POST_MERGE_STEP = 'Check after the merge: ';
+const OLD_PREFIX = new RegExp(`^${POST_MERGE_STEP}.*? \\(needs [^)]*\\): `);
+export const fromReview = (s) => s?.from === 'review' || String(s?.step ?? '').startsWith(POST_MERGE_STEP);
+export const reviewStep = (step) => String(step ?? '').replace(OLD_PREFIX, '');
+const NEEDS_GATE = { production: 'production', staging: 'main', deployed: 'main' };
+export const postMergeSteps = (body) => postMergeIn(body).map((p) => ({ step: p.step, row: null, from: 'review',
+  ...(NEEDS_GATE[p.needs] ? { after: NEEDS_GATE[p.needs] } : {}) }));
 
 // Whether a path is a dependency manifest, a lockfile or repo configuration, which every review rests
 // on whatever its seats read: a change to one can change what the code does without touching it.
@@ -339,7 +351,7 @@ export const reviewScope = ({ reuse, from, head, base, body, git }) => (reuse
 
 // Whether a review posted on `from` holds at `head`, as every carry reads it, so the pass and the merge
 // driver never disagree: with the review-reuse lever on (`reuse`), only while the files it rests on
-// (from the review's `body`) are unchanged (restsOnCarries); off, across clean merges of the base alone
+// (from the review's `body`) are unchanged (restsOnCarries); off, across clean merges of the base and empty commits alone
 // (verdictCarries).
 export const reviewCarries = ({ reuse, from, head, base, body, git }) => (reuse
   ? restsOnCarries({ from, head, base, files: restsOn(body), git })
@@ -361,7 +373,7 @@ export function undraftComment(verdict, head, clean, carried = null, range = nul
     return `Out of draft: the ${what} posted on ${short(carried)} is clean under §4 Clean review verdict (\`${clean}\`), and it is ${carriedTo(head, range)}.\n\n> \`${line}\``;
   }
   if (carried) {
-    return `Out of draft: the ${what} posted on ${short(carried)} is clean under §4 Clean review verdict (\`${clean}\`), and it holds on this head (${short(head)}): every commit since is a clean merge of the base.\n\n> \`${line}\``;
+    return `Out of draft: the ${what} posted on ${short(carried)} is clean under §4 Clean review verdict (\`${clean}\`), and it holds on this head (${short(head)}): every commit since is a clean merge of the base or an empty commit.\n\n> \`${line}\``;
   }
   return `Out of draft: the ${what} posted on this head (${short(head)}) is clean under §4 Clean review verdict (\`${clean}\`).\n\n> \`${line}\``;
 }
@@ -465,14 +477,12 @@ function stuckCall(gate, checks, cfg, n) {
 // step), and nothing for a check still red after it (a plain red check).
 // A ready PR's fix tries (fix-tries.mjs fixCall) ask it about its §4 Check builds checks alone.
 export function buildCall(gate, cfg, n, head, t) {
-  const builds = new Map((cfg.builds ?? []).map((b) => [b.name, b.command]));
-  const failing = gate.failing;
-  if (cfg.rerun !== 'yes' || !builds.size || !failing.length || failing.some((f) => !builds.has(f.name))) return null;
-  const names = [...new Set(failing.map((f) => f.name))];
-  const checks = names.map((x) => `"${x}"`).join(', ');
+  const named = cfg.rerun === 'yes' ? buildsNamed(gate, cfg) : null;
+  if (!named) return null;
+  const { failing, names, checks } = named;
   const at = String(head ?? '?').slice(0, 9);
   const rec = cfg.built?.(head) ?? null;
-  const command = rec?.command ?? [...new Set(names.map((x) => builds.get(x)))].join(' && ');
+  const command = rec?.command ?? named.command;
   const runs = [...new Set(failing.map((f) => f.runId).filter(Boolean).map(String))];
   // The build needs nothing else to finish: it starts on the first pass that sees the check red.
   if (!rec) return { call: 'build', why: `${checks} red at ${at}, which §4 Check builds clears: \`${command}\` runs at the head, then the check is re-run`, command, checks: names, runs };
@@ -497,6 +507,32 @@ export function buildCall(gate, cfg, n, head, t) {
   if (toRerun) return { call: 'rebuilt', why: `its check build \`${command}\` ran at ${at}, so ${checks} is re-run`, command, checks: names, runs };
   if (!rec.reran.ok) return { call: 'person', why: `its check build \`${command}\` ran at ${at}, but the re-run of ${checks} was refused: ${rec.reran.out}`, action: `re-run ${checks} on #${n}`, lead: `its check build \`${command}\` ran, but the re-run was refused: ${rec.reran.out}`, each: { command: `re-run ${checks} on #${n}` } };
   return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}`, lead: `still red after its check build \`${command}\` ran and the check was re-run`, each: {} };
+}
+
+// The red gate's failing checks, their quoted names and their §4 Check builds command, when that row
+// names every one of them; null otherwise.
+function buildsNamed(gate, cfg) {
+  const builds = new Map((cfg.builds ?? []).map((b) => [b.name, b.command]));
+  const failing = gate.failing;
+  if (!builds.size || !failing.length || failing.some((f) => !builds.has(f.name))) return null;
+  const names = [...new Set(failing.map((f) => f.name))];
+  return { failing, names, checks: names.map((x) => `"${x}"`).join(', '), command: [...new Set(names.map((x) => builds.get(x)))].join(' && ') };
+}
+
+// A red gate whose every failing check §4 Check builds names, while §3 ci-rerun is not yes: the pass
+// builds none and re-runs none, and no change on the branch builds it, so it is the person's, with the
+// command and why it was not built, and whatever else holds the gate. A cancelled or timed-out check
+// tested nothing, so no build is blamed for it. Null otherwise.
+export function unbuiltCall(gate, cfg, n, head) {
+  const named = cfg.rerun === 'yes' ? null : buildsNamed(gate, cfg);
+  if (!named || named.failing.some((f) => INTERRUPTED.has(f.conclusion))) return null;
+  const { names, checks, command } = named;
+  const others = (gate.reasons ?? []).filter((r) => !names.some((x) => r.includes(`"${x}"`)));
+  return {
+    call: 'person',
+    why: `${checks} red at ${String(head ?? '?').slice(0, 9)} was not built, though §4 Check builds clears it: config §3 ci-rerun is "${cfg.rerun ?? 'no'}", so the pass neither runs \`${command}\` nor re-runs the check${others.length ? `; its checks are not green besides: ${others.join('; ')}` : ''}`,
+    action: `run \`${command}\` at the head of #${n}, then re-run ${checks}`,
+  };
 }
 
 // The words a park's not-reached tail may hold after its marker: the steps the worker contract has it
@@ -686,6 +722,8 @@ export function humanReviewed(pr, handle) {
 // [{ at, by }] oldest first: nothing in a batch converts a ticket's PR back, so any one is a person's.
 // REDRAFT_JQ reads them from the PR's issue events, one `<at>\t<by>` line each.
 export const REDRAFT_JQ = '.[] | select(.event == "convert_to_draft") | [.created_at, (.actor.login // "")] | @tsv';
+// How long a draft's head may go with no mergeability answer from GitHub before it is the person's.
+export const UNKNOWN_LIMIT_MS = 60 * 60 * 1000;
 export function personHold(t, n, redrafts = []) {
   const was = t.undraft?.pr == null || t.undraft.pr === n ? t.undraft ?? {} : {};
   if (was.call === 'held') return { why: was.why, action: was.action };
@@ -709,7 +747,8 @@ export function personHold(t, n, redrafts = []) {
 // for a required check that never reported, stale(base, head, branch, baseHead) -> staleTriggers's
 // { behind, reopen } for one the pass's base sync or reopen starts, runOf(runId), cancels(name) and now
 // for a check stuck pending (stuckCall), fault(check) -> gate.mjs runnerFault's why for a red check the
-// runner killed or lost, or null, and rerunsOk(name), the reruns GitHub accepted at this head }.
+// runner killed or lost, or null, rerunsOk(name), the reruns GitHub accepted at this head, and passAt,
+// the pass's ISO time, from which a head with no mergeability answer is aged }.
 export function undraftCall(t, pr, cfg) {
   const n = pr.number;
   if (cfg.spine) return null;
@@ -740,7 +779,20 @@ export function undraftCall(t, pr, cfg) {
     const c = person('it has a merge conflict with its base', `resolve the conflict on #${n}; it then needs a fresh review`);
     return (humanReviewed(pr, cfg.handle) ? cfg.conflictReviewed : cfg.conflictUnreviewed) === 'yes' ? { ...c, call: 'conflict' } : c;
   }
-  if (pr.mergeable !== 'MERGEABLE') return { call: 'wait', why: `GitHub has not yet worked out whether it conflicts with its base (${pr.mergeable ?? 'no answer'})` };
+  if (pr.mergeable !== 'MERGEABLE') {
+    // A merge ref can wedge: no answer for hours, and no run started for the head. Aged from when this
+    // head first had no answer (kept on the undraft record), it goes to the person after
+    // UNKNOWN_LIMIT_MS, naming what gives it a fresh merge ref.
+    const was = t.undraft;
+    const since = (was?.call === 'wait' || was?.call === 'person') && was.pr === n && was.sha === pr.head && was.unknown_since ? was.unknown_since : cfg.passAt ?? null;
+    const mins = since && cfg.passAt ? Math.floor((Date.parse(cfg.passAt) - Date.parse(since)) / 60000) : 0;
+    const said = `GitHub has not worked out whether it conflicts with its base (${pr.mergeable ?? 'no answer'})`;
+    if (mins * 60000 >= UNKNOWN_LIMIT_MS) {
+      return { ...person(`${said} at ${String(pr.head).slice(0, 12)} for ${mins} minutes: its merge ref looks wedged, and GitHub starts no run for that head`,
+        `push a new commit to #${n} (an empty one will do) for a fresh merge ref; if it still has no answer, open a new PR from its branch`), unknown_since: since };
+    }
+    return { call: 'wait', why: `GitHub has not yet worked out whether it conflicts with its base (${pr.mergeable ?? 'no answer'})`, unknown_since: since };
+  }
   let gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });
   // A required check that never reported may be one its workflow never runs on this PR's base.
   if (gate.state === 'absent' && pr.base && cfg.untriggered) {
@@ -749,7 +801,8 @@ export function undraftCall(t, pr, cfg) {
   }
   // A wait on a check that will never finish is no wait: it is re-run, or put to the person.
   const stuck = () => stuckCall(gate, pr.checks, cfg, n);
-  if (gate.state === 'pending') return stuck() ?? { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
+  const running = () => stuck() ?? { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
+  if (gate.state === 'pending') return running();
   // One the base's or the default branch's copy of the workflow runs waits for the pass, which syncs the
   // base and reopens the PR so it gets a run.
   if (gate.state === 'absent' && !gate.failing.length && pr.base && cfg.stale) {
@@ -773,12 +826,24 @@ export function undraftCall(t, pr, cfg) {
     const bc = buildCall(gate, cfg, n, pr.head, t);
     if (bc) return (bc.call === 'wait' && stuck()) || bc;
   }
+  // Past the reruns and builds, which start at once, checks still running are a wait, whatever is red so
+  // far: a gate that reads the others (a review or CI gate) is red until they finish, so a fix worker or
+  // the person gets the draft only once every check has finished. Only a check with an Actions run, which
+  // stuckCall can time out, holds it: a status or app check with no run could pend forever unseen.
+  const watched = latestPerCheck(pr.checks ?? []).some((c) => c.status !== 'completed' && c.runId && gate.pending.includes(c.name));
+  if (red && watched) return running();
+  const unbuilt = red ? unbuiltCall(gate, cfg, n, pr.head) : null;
+  if (unbuilt) return unbuilt;
   // §4 State checks read the PR's reviews or approvals, not its code, so no fix turns them green.
   const stateNames = new Set([VERDICT_CHECK, ...(cfg.stateChecks ?? []).map((x) => x.name)]);
   const codeRed = gate.failing.filter((f) => !stateNames.has(f.name));
   const stateRed = gate.failing.filter((f) => stateNames.has(f.name)).map((f) => f.name);
   // Red on state checks alone: the gate passes once they are set aside as advisory, with nothing else
   // missing or failing. Kept in the list, a green one still counts as the gate's one success.
+  // Red only on checks the merge driver waives (§4 Known flaky checks, cfg.waived): no fix worker, and the
+  // draft goes on as a green one does, for the driver to rerun them and waive them as it would out of draft.
+  const waived = red && codeRed.length > 0 && !stateRed.length && !codeRed.some((f) => (cfg.required ?? []).includes(f.name))
+    && !!cfg.waived?.([...new Set(codeRed.map((f) => f.name))]);
   const stateOnly = stateRed.length > 0 && evaluateGate(pr.checks ?? [],
     { required: (cfg.required ?? []).filter((c) => !stateNames.has(c)), advisory: [...(cfg.advisory ?? []), ...stateNames] }).state === 'pass';
   // No run exists to re-run: the workflow's trigger has to take the base, a change to the repo.
@@ -786,9 +851,17 @@ export function undraftCall(t, pr, cfg) {
     return person(`its checks are not green: ${gate.reasons.join('; ')}`,
       `add ${pr.base} (or a pattern such as feat/**) to the pull_request branches of the workflow that runs ${gate.untriggered.map((c) => `"${c}"`).join(', ')}, a change to the repo; once #${n}'s branch has it, its next push runs the check (re-running cannot, as no run exists)`);
   }
-  if (red && (codeRed.length || !gate.failing.length || (!stateOnly && !stateRed.includes(VERDICT_CHECK)))) {
+  if (red && !waived && (codeRed.length || !gate.failing.length || (!stateOnly && !stateRed.includes(VERDICT_CHECK)))) {
     const spent = cfg.rerun === 'yes' && gate.failing.some((f) => (cfg.reruns?.(f.name) ?? 0) >= RERUNS_MAX) ? `, still after ${RERUNS_MAX} reruns at this head` : '';
-    const notGreen = person(`its checks are not green: ${gate.reasons.join('; ')}${spent}`, `fix or re-run the checks on #${n}`);
+    // Red only on code checks §4 Required checks does not name: the gate passes once §4 Advisory checks names them.
+    const optional = codeRed.length === gate.failing.length && evaluateGate(pr.checks ?? [],
+      { required: cfg.required ?? [], advisory: [...(cfg.advisory ?? []), ...codeRed.map((f) => f.name)] }).state === 'pass'
+      ? [...new Set(codeRed.map((f) => `"${f.name}"`))] : [];
+    const one = optional.length === 1;
+    const notGreen = optional.length
+      ? person(`its checks are not green: ${gate.reasons.join('; ')}${spent}; ${one ? 'it is not' : 'none of them is'} a §4 Required check`,
+        `list ${optional.join(', ')} under §4 Advisory checks (/desk-setup) to let #${n} through without ${one ? 'it' : 'them'}, or fix ${one ? 'it' : 'them'} on #${n}: any red check holds the draft unless that row names it`)
+      : person(`its checks are not green: ${gate.reasons.join('; ')}${spent}`, `fix or re-run the checks on #${n}`);
     // A cancelled or timed-out run tested no code, so a fix worker has nothing to fix until its reruns are spent.
     if (!spent && codeRed.length && codeRed.every((f) => INTERRUPTED.has(f.conclusion))) return notGreen;
     // Beside a red code check, the red §4 State checks go with it, for the fix try to name as not its
@@ -812,6 +885,7 @@ export function undraftCall(t, pr, cfg) {
   if (cfg.perm === 'ask' && cfg.approved) {
     return withCarried({ call: 'ready', why: null, verdict: read, note: `- [${t.key}] undrafted #${n} at ${pr.head}: §3 ${cfg.permKey} is ask, batch approval given at Stage 3` });
   }
-  const state = red ? `clean, red only on §4 State checks (${stateRed.join(', ')})` : 'clean and green';
+  const state = waived ? `clean, red only on §4 Known flaky checks the merge driver waives (${[...new Set(codeRed.map((f) => f.name))].join(', ')})`
+    : red ? `clean, red only on §4 State checks (${stateRed.join(', ')})` : 'clean and green';
   return withCarried(person(`it is ${state}, and config §3 ${cfg.permKey} is "${cfg.perm}"${cfg.perm === 'ask' ? ' with no batch approval' : ''}`, `undraft #${n}`));
 }

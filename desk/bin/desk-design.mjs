@@ -737,6 +737,15 @@ export function callsHome(url, artifactUrl) {
   return /(^|\.)claude\.ai$/.test(h) || (!!own && h === own);
 }
 
+// A request for a template binding the runtime has not filled in yet (`<img src="{{logo}}">` outside
+// a <template>): the browser fetches the literal before the runtime sets the real file, so its 404
+// names no file, as `references` already treats it when saving.
+export function unbound(url) {
+  let u = String(url ?? '');
+  try { u = decodeURIComponent(u); } catch { /* keep it as written */ }
+  return u.includes('{{');
+}
+
 // One page at a width, loaded and settled with its fonts ready. A request to the design tool's host
 // is refused before it leaves the machine. `bad` lists every file that failed to load, named
 // relative to `origin` where it is served from there.
@@ -748,8 +757,8 @@ async function openAt(browser, url, width, { height, origin, artifact }) {
     bad.push(`${r.request().url()} (a request to the design tool's host, which a saved canvas must not make)`);
     return r.abort();
   });
-  page.on('requestfailed', (r) => { if (!callsHome(r.url(), artifact)) bad.push(`${name(r.url())} (${r.failure()?.errorText ?? 'failed'})`); });
-  page.on('response', (r) => { if (r.status() >= 400 && !/\/favicon\.ico$/.test(r.url())) bad.push(`${name(r.url())} (HTTP ${r.status()})`); });
+  page.on('requestfailed', (r) => { if (!callsHome(r.url(), artifact) && !unbound(r.url())) bad.push(`${name(r.url())} (${r.failure()?.errorText ?? 'failed'})`); });
+  page.on('response', (r) => { if (r.status() >= 400 && !/\/favicon\.ico$/.test(r.url()) && !unbound(r.url())) bad.push(`${name(r.url())} (HTTP ${r.status()})`); });
   await page.goto(url, { waitUntil: 'networkidle' });
   await page.evaluate(() => document.fonts.ready.then(() => true));
   return { page, bad };
@@ -932,6 +941,9 @@ export function designSection(text) {
   return s ? s.lines.map((l) => l.text).join('\n') : null;
 }
 
+// A Figma URL: what designFact reports as `figma`, and what ticket lint takes as a design link.
+export const FIGMA_URL = /https?:\/\/(?:[a-z0-9-]+\.)*figma\.com\//i;
+
 export function claudeDesignLinks(section) {
   const out = [];
   for (const m of String(section ?? '').matchAll(/https?:\/\/(?:[a-z0-9-]+\.)*claude\.ai\/[^\s|\])>"'}]+/gi)) {
@@ -1014,20 +1026,37 @@ export function propose(src, { root, dir, ref, worktrees }) {
   return { state: 'committed', branch, worktree: wt, path: r.path, ref, pushed, sha: git(wt, 'rev-parse', 'HEAD'), remote: r.remote };
 }
 
+// Whether the Design section says ticket <key> uses no board from the artifact at <url>: "no board for
+// this ticket", "no board on this canvas for <key>", "this ticket uses no board". The phrase names the
+// whole ticket, so "no board for the empty state" or "for this ticket's empty state" beside a named
+// board is not one. With several links it must sit on a line whose only link is <url>: a note on a line
+// linking two artifacts could be about either, so it clears neither, and a note about one artifact
+// never clears another.
+export function usesNoBoard(section, url, key) {
+  const ticket = `(?:(?:this|the)\\s+ticket|${key ? key.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') : '(?!)'})`;
+  const qualifier = `(?:exists?|yet|(?:on|in|from)\\s+(?:this|the|that|its\\s+epic['’]s)\\s+(?:canvas|artifact|design))`;
+  const re = new RegExp(`\\bno\\s+boards?\\s+(?:${qualifier}\\s+)*(?:for|in|specific\\s+to)\\s+${ticket}(?![\\w-]|['’]s\\b)|\\b${ticket}\\s+(?:uses|has|needs)\\s+no\\s+boards?\\b`, 'i');
+  const text = String(section ?? '');
+  const only = (l) => { const k = claudeDesignLinks(l); return k.length === 1 && canonicalUrl(k[0]) === canonicalUrl(url); };
+  // Each kept line is tested alone: joined, a phrase could run across a line left out between them.
+  return claudeDesignLinks(text).length > 1 ? text.split('\n').filter(only).some((l) => re.test(l)) : re.test(text);
+}
+
 // What a lane D worker can build from: {ref, canvases: [{url, saved, snapshot}], figma}. A canvas is
 // readable when it is saved under <dir> on <ref> (the batch's base) or snapshotted under <state>;
-// with no <dir> (the repo saves none) only a snapshot is.
-export function designFact(text, { root, dir, ref, state }) {
+// with no <dir> (the repo saves none) only a snapshot is. An artifact ticket <key> uses no board from
+// (usesNoBoard) is left out: nothing in it needs reading.
+export function designFact(text, { root, dir, ref, state, key }) {
   const section = designSection(String(text ?? '').replace(/\\([-_*+^~?#{}[\]|!])/g, '$1'));
   const saved = dir ? savedAt(root, dir, ref) : [];
   return {
     ref,
-    canvases: claudeDesignLinks(section).map((url) => ({
+    canvases: claudeDesignLinks(section).filter((url) => !usesNoBoard(section, url, key)).map((url) => ({
       url,
       saved: saved.find((c) => canonicalUrl(c.url) === canonicalUrl(url))?.path ?? null,
       snapshot: snapshotOf(state, url),
     })),
-    figma: /https?:\/\/(?:[a-z0-9-]+\.)*figma\.com\//i.test(section ?? ''),
+    figma: FIGMA_URL.test(section ?? ''),
   };
 }
 
@@ -1037,7 +1066,8 @@ export function designFact(text, { root, dir, ref, state }) {
 // when it has one, else under the ticket itself. One with a snapshot under <state> is advisory: the
 // worker saves it from there. A deck is saved and checked as a canvas is; a snapshot that is
 // neither (a single page) says so, and is advisory too. With neither a saved copy nor a snapshot
-// the link's kind is unknown, so it blocks.
+// the link's kind is unknown, so it blocks, unless the section says the ticket uses no board from it
+// (usesNoBoard): then nothing needs saving, and it is advisory.
 export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {
   const key = issue.key;
   // A Jira description is wiki markup, where desk-jira's markdown conversion escapes `-` and `_` in
@@ -1057,7 +1087,8 @@ export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {
       const message = `design: ${key}'s Design section links the Claude Design artifact ${url}, but no copy is saved under ${dir}/ on ${ref}: save it to ${join(dir, epic ?? key)}/ (desk-design save)`;
       const snap = state ? snapshotOf(state, url) : null;
       const page = snap && kindAt(snap) === 'page';
-      findings.push(!snap ? { severity: 'blocking', message }
+      findings.push(!snap && usesNoBoard(section, url, key) ? { severity: 'advisory', message: `design: ${key}'s Design section links the Claude Design artifact ${url} but says the ticket uses no board from it, so nothing needs saving` }
+        : !snap ? { severity: 'blocking', message }
         : page ? { severity: 'advisory', message: `${message}; it is snapshotted at ${snap}, a single page rather than a canvas or deck, so it does not block: the worker may save it from there` }
           : { severity: 'advisory', message: `${message}; it is snapshotted at ${snap}, so the worker saves it from there` });
     } else if (!section.includes(saved.path.replace(/\/$/, ''))) {
@@ -1221,7 +1252,7 @@ if (isMain) {
     } else if (cmd === 'snapshots') {
       if (!target) fail('usage: desk-design snapshots <KEY | ticket file> [--key <K>]');
       const issue = loadIssue(target, opt(rest, '--key'));
-      for (const s of designFact(issue.text ?? issue.fields?.description, { state: E.stateDir() }).canvases) console.log(`${s.url}\t${s.snapshot ?? '-'}`);
+      for (const s of designFact(issue.text ?? issue.fields?.description, { state: E.stateDir(), key: issue.key }).canvases) console.log(`${s.url}\t${s.snapshot ?? '-'}`);
     } else if (cmd === 'render') {
       if (!target) fail('usage: desk-design render <saved dir>');
       const s = await render(resolve(target), { chromium: await playwrightChromium() });

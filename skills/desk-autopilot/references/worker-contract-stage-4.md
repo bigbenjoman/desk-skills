@@ -36,21 +36,21 @@ including on a crash: **do not add a timeout and do not work around a wait; wait
 feature.** If `with-lock.sh` is refused, check headroom, drop to the lower cap, and **say in your
 output that you ran unlocked**.
 
-**A run the lock has not started in 20 minutes is skipped; a busy lock is never a park.** Silence is
-not proof: it has not started while `ps -ww -axo pid,ppid,etime,args` shows your `with-lock.sh`, or its
-`flock … desk-test.lock`, with no child running your command. At 20 minutes (`etime`) so, commit all
-your work, `TaskStop` it, and note the holder: a live pid in `desk-test.lock*{.pid,.d/pid}` in
-`DESK_LOCK_DIR`, else the `flock … desk-test.lock` that has a child. Record each suite
-in your verification and the PR's Testing as `not run locally: test lock busy (<holder>); CI's
-required tests cover it`, print one `engineering` `AUTOPILOT_DECISION` naming them and the holder,
-and carry on. A typecheck or lint does the same. A started run is yours: fix what fails.
+**A run the lock has not started in 20 minutes is skipped; a busy lock is never a park.** Give each
+run the Bash `timeout` 600000. One it backgrounds, wait on in one call, never a `ps`,
+`tail` or `TaskStop` loop: `~/.claude/desk/bin/desk-wait.mjs <its output file> --max 540`, same
+`timeout`. Call again on `started <pid>` or `waiting (<holder>) <min>`; `done ?` ends it with its
+last 30 lines. At 20 minutes waiting it stops the run and prints the line to record: commit all your
+work, record each suite in your verification and the PR's Testing as `not run locally: test lock
+busy (<holder>); CI's required tests cover it`, print one `engineering` `AUTOPILOT_DECISION` naming
+them and the holder, and carry on. A typecheck or lint does the same. A started run is yours: fix what fails.
 
 The typecheck takes the same lock, so typecheck and tests never overlap. Screenshot capture uses
 `with-lock.sh browser`: a dev server plus Chromium is hundreds of MB, not ten GB, and should not
 queue behind a suite. **Never end your turn with a suite running in the background**: `claude -p`
 kills it when the turn ends. A Stop hook blocks your first attempt to, naming the task; a second
 attempt ends the turn and your log records the rule as broken. A suite your tool timeout moved to the
-background is still yours: wait for it, or stop it with `TaskStop` and run it again in the foreground.
+background is still yours: wait for it with `desk-wait.mjs`, above; stop a server with `TaskStop`.
 
 **Before any heavy stage, read the right number:**
 
@@ -60,8 +60,7 @@ desk-env mem status   # gate on avail=, never on vmmem= or free's used
 
 Under ~4 GiB available, wait and retry rather than starting a suite; a sibling mid-suite will drain.
 Never raise the worker count because the machine looks idle: it looks idle until two workers hit Stage 4 together, and an OOM takes
-every worker, worktree, database and port with it. Your port is assigned in your briefing; never
-kill a server you did not start, it is likely another session's.
+every worker, worktree, database and port with it. Never kill a server you did not start.
 
 ### Then: the suites themselves
 
@@ -139,11 +138,10 @@ listed, and the line on why goes in the park on its run id, after the run id
 
 - **Every test is the exception.** A request for everything (`all`, or no filter) states why nothing
   narrower covers the change, such as a shared layout or config every journey loads. "To be safe" is
-  not a reason: a full run on a hosted runner can take over an hour, hang, and cost money, for a
-  change two specs cover.
+  not a reason: a full hosted run can take over an hour, hang and cost money.
 - **A tag the workflow does not offer is said, not widened.** Where the covering tests sit under a
-  tag the workflow has no input for (it offers `all`, `smoke` and `auth`, and yours are `@billing`),
-  never fall back to everything: say in the park that the workflow does not offer it, name the tag
+  tag the workflow has no input for (yours are `@billing`, it offers `all` and `smoke`), never fall
+  back to everything: say in the park that the workflow does not offer it, name the tag
   that would cover the change (`suite=billing`, or the specs by file), and leave the person to add the
   input or run those specs.
 
@@ -194,8 +192,8 @@ finders read-only, and when and how to call `codex`. Read that section before th
 - **A P0 you cannot fix**: park, naming the finding and its `file:line`. Do not push a branch
   carrying a P0 you have understood and left.
 - **Do not defer a P2.** A deferral keeps the verdict off clean, and a review gate that reads the
-  deferred count fails on any non-zero value, so a deferred finding is a PR that can never merge.
-  Carrying is not deferring: it exists only from round 2, only for a P2, and leaves the counts.
+  deferred count fails on any non-zero value, so a deferred finding never merges.
+  Carrying is not deferring: only a P2 is carried, from round 2 or when split, and it leaves the counts.
   Cost the fix before calling it out of scope: a "restructuring" is often ~30 lines. Fix it where it
   stands. **A fix that grows** (into a file, not its own spec, your diff does not touch)
   is a scope call: take it per `ask-or-take.md` where §3 `autopilot-judgement` is `yes`, else park
@@ -215,12 +213,13 @@ head again; still rejected, park. Exit 2: park.
 with the report). After `gh pr create --draft`, submit it as one `COMMENTED` review. Where the review
 command defines markers, its first line is exactly the command's local-review marker and its second
 the verdict marker it emits (the full `headRefOid`, the counts, the vendor and the round count). A
-later fix-up reply opens with the command's reply marker and carries no verdict: it posts at a head
-nothing has reviewed. **Never post a second verdict at a commit that already has one with different
-counts**, and never edit a posted verdict's counts: a gate reads the last one, so a re-count is
-indistinguishable from editing the result until it passes. A wrong count needs a new run. The one
-exception is a requirement gap the person accepted after the verdict posted (desk-review's
-`phase-5-requirements.md`, *A gap the person accepted*).
+later fix-up reply opens with the command's reply marker and carries no verdict. **Never post a
+second verdict at a commit that already has one with different counts**, nor edit one: a gate
+reads the last, so a wrong count needs a new run. After a fix (desk-review `phase-7-post.md`):
+
+<!-- facts: push-nothing -->
+If you pushed nothing, post no review: the head is unchanged, so a review of it would only repeat the last one. The one exception is a gap the person accepted: post that round's verdict again at the same head, from its results file, with only the accepted gaps moved from `gaps` into `accepted`, or park naming the file where there is none.
+<!-- /facts -->
 
 ```bash
 node ~/.claude/desk/bin/review-post.mjs <n> --repo <repo> --body-file <report>

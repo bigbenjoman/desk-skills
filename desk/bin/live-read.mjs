@@ -16,24 +16,16 @@
 //
 // A read that exits 0 having printed at most MAX_BYTES has its stdout saved, mode 0644, to
 // <fixtures>/<KEY>/<name>.json, where the requeued worker reads it as an untrusted API response.
-import { readFileSync, readdirSync, existsSync, mkdirSync, realpathSync, copyFileSync, chmodSync, statSync, lstatSync, appendFileSync, rmSync, openSync, writeSync, fchmodSync, closeSync, constants } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, mkdirSync, realpathSync, copyFileSync, chmodSync, statSync, lstatSync, appendFileSync, rmSync, unlinkSync, openSync, writeSync, fchmodSync, closeSync, constants } from 'node:fs';
 import { join, dirname, resolve, relative, isAbsolute, basename, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { repoStateOf } from './desk-env.mjs';
 import { startDetached, detachedRecord, anyRunning, hooklessGit, gitError, dirtyPaths } from './check-build.mjs';
-import { parseOperatorChecks } from './fix-tries.mjs';
 import { parkOnlyNames } from './undraft.mjs';
 
-// An entry's name is a file name too, so it holds no path.
-const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-
-// The row's items as { reads: [{ name, command }], errors: [item] }.
-export function parseLiveReads(items) {
-  const { checks, errors } = parseOperatorChecks(items);
-  const bad = checks.filter((c) => !NAME.test(c.name));
-  return { reads: checks.filter((c) => NAME.test(c.name)), errors: [...errors, ...bad.map((c) => `\`${c.name}: ${c.command}\` (a name holds only letters, digits, . _ and -)`)] };
-}
+// The row's grammar is the config schema's: the items as { reads: [{ name, command }], errors: [item] }.
+export { parseLiveReads } from './config-schema.mjs';
 
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // A name stands alone: a dot ends it only where no name character follows, so `gateway` is not named
@@ -132,7 +124,7 @@ export const WORKTREE_FIXTURES = '.desk-fixtures';
 function realDir(path) {
   let st = null;
   try { st = lstatSync(path); } catch { st = null; }
-  if (st && !st.isDirectory()) rmSync(path, { force: true });
+  if (st && !st.isDirectory()) unlinkSync(path);
   if (!st || !st.isDirectory()) mkdirSync(path);
 }
 

@@ -14,6 +14,16 @@ head, a whole fresh review and CI run. The cost is quadratic in how many you hol
 batch carried to all-open-before-any-merged pays a conflict resolution and a re-review for each PR
 ahead of it, none of which exist had each merged when it first went green.
 
+**A PR you open in the batch has a ticket.** The merge driver merges only the queue's tickets, so
+a PR opened with none (a fix for a flaky test the batch keeps hitting, say) has no owner: nothing
+merges it, and nothing lists it while it waits. Adopt it as you open it,
+`queue.mjs adopt <KEY> <PR>`: it is taken in as done on that PR, by its branch, so the driver merges
+it with the rest and the pass and desk-q show it. Its key is an id from §4 Other work id patterns
+(with no tracker, `issue-<n>` or a slug). Never make one up in the tracker's pattern: the driver
+moves that ticket to Done when the PR merges, so a tracker key goes in only as the ticket filed for
+this PR, with `--filed`. The PR must be yours (§1 GitHub handle) and open into the batch's base. No
+worker takes it: a draft, a finding or a red check is settled on the PR itself.
+
 **This section applies as written where config §3 `autopilot-merge` and `pr-merge-green` are both
 `yes`, or where the user approved merging this batch at Stage 3 (the queue's `approved.merge` is
 `true`; the §3 table under *Read the config first*).** Where neither holds, do everything below except the merge itself:
@@ -29,6 +39,15 @@ completed with success. With Required checks `none`, the second and third clause
 merge is pinned to that commit, `gh pr merge <n> --<§4 Merge method> --match-head-commit <sha>`, so a
 push after the checks cannot be merged unchecked. With §4 Branch protection `none`, GitHub will
 accept a merge with red checks, so the rule is enforced only by you and the driver.
+
+**Every merge is claimed and recorded** in the machine-wide merge log, so the merge driver and
+another session never race one PR and who merged it is on record. Before merging or arming:
+`node ~/.claude/desk/bin/merge-log.mjs claim <n> <head> --by "session <your session name>"`. When
+it refuses (exit 11), do not merge or arm it, and report the line it printed. Where another desk
+path already merged, armed or claimed the PR, that line names who did it and at which head; any
+other refusal (a usage error, an unreadable repo) is not another merger, so do not say it is. After: `merge-log.mjs record <n> <head> --by
+"session <your session name>" --event merged` (`armed` for auto-merge, `disarmed` when you turn it off, `failed` when gh refuses).
+`merge-log.mjs show --pr <n>` says who did.
 
 **Merge holds.** A PR into §0 Default branch whose diff touches any glob in §4 Merge holds (for a
 `<glob>#<key>` hold, changes that key of the file) is merged by a person, never by
@@ -51,11 +70,12 @@ one exits 0 and the head has not moved. A routine that fails is recorded with th
 You never run a routine yourself: it is the driver's, outside any session's permission mode.
 
 **Known flaky checks: the one written waiver.** A PR whose only red checks are named in §4 Known
-flaky checks (`` `<check>: <glob> [<glob>…]` ``) is merged by the driver, pinned to its head, once
+flaky checks (`` `<check>: <glob> [<glob>…]` ``, or `` `<check>: <test file> > <test name>` `` for one
+test in a check that runs others) is merged by the driver, pinned to its head, once
 each of them is still red after the driver's two reruns at that head, the PR's files touch none of
 the globs the row gives for that check, and nothing else in the gate is red or pending. It logs
-`WAIVED <check>`, and once merged files a ticket naming the check, the PR, the head SHA and the
-failing run (`desk-jira create`, under §3 `jira-create`). Where it cannot file one (§3 not `yes`,
+`WAIVED <check>` (with the listed test it waived, for a per-test item), and once merged files a
+ticket naming the check, any such test, the PR, the head SHA and the failing run (`desk-jira create`, under §3 `jira-create`). Where it cannot file one (§3 not `yes`,
 Tracker `none`, or `create` refused), its log names the body file under `<state>/merge-driver/`:
 put that under `WAITING ON YOU`. It never waives:
 
@@ -64,7 +84,14 @@ put that under `WAITING ON YOU`. It never waives:
 - a §4 Required check, whatever the row says: branch protection enforces it, and merging past it
   would be a bypass (§3 `merge-bypass` is `never`). The driver records it as `merge_blocked` and you
   report the PR;
-- a check the row does not name: it stays red.
+- a check the row does not name: it stays red;
+- a check the row names only by its tests that failed in any other: each of its failure annotations
+  (exit-code lines aside) must have a listed test's file as its path and a title that is that test's
+  name, or ends with it after ` > ` or ` › `. One with no such annotation, whose annotations could not be read, or with ten or more (as
+  many as GitHub keeps for a step, so the list may be cut short) is never waived, and the test's file counts as its path, so a PR changing it is not waived.
+
+A draft red only on checks the driver would waive gets no fix worker: it leaves draft as a green one
+does, and the driver reruns and waives them as above.
 
 A row that does not parse stops the driver at start, naming the row; fix it with `/desk-setup`.
 Unset waives nothing.
@@ -108,7 +135,11 @@ with those lines in its brief, once per PR and outside the two tries (`extra` in
 the stuck reason quotes the line. A check
 §4 Checks workers can't fix names is never a worker's. A PR red only on such a check is stuck with
 `<check> · <what fixes it>`. A PR red on one beside a fixable check is requeued for the fixable one,
-and its briefing says the other is not the worker's to fix. desk-q shows each ticket's try and
+and its briefing says the other is not the worker's to fix. A required check that no GitHub Actions
+run of the repo reports (a deploy or preview service's status), red on three or more ready PRs at
+once, reads as that platform failing: the pass says so once, and a PR red only on it is held
+(`OUTAGE`) with no fix try or stuck answer, naming the step: once the platform is back, redeploy
+there or push to the PR. A PR also red on another kind of check keeps that check's route. desk-q shows each ticket's try and
 what it is fixing. Usage pacing never holds a fix try: while 7-day usage is ahead of pace, new
 tickets wait and fix tries still start, within the batch's worker count.
 
@@ -161,6 +192,10 @@ Under §3 `autopilot-judgement` `yes`, tagged gaps that are all the review leave
 a review fix try instead: its worker carries out each recommendation
 and logs it as a decision. One gap with no recommendation, or in an ask category, sends them all to the
 person, and so does a recommended gap still open after its try.
+
+An empty commit carries a verdict as a clean merge of the base does: one with a single parent and that
+parent's tree adds nothing to the PR's own diff, so a head reached from the reviewed commit by those
+alone needs no fresh review.
 
 With the `review-reuse` lever on (config §3b Phase 0 levers), the carry rests on what the review read
 instead: after a rebase or any merge of the base, a verdict holds at the new head only while the PR's
@@ -223,6 +258,13 @@ no `>>` redirect: a redirect outside the working directory prompts every time, w
 rules say. **Where the batch is handed to the supervisor, do not start one**: it starts the driver for a
 handed-over batch and starts it again after a reboot (*The supervisor*).
 
+Each merge it makes is a `merged` line in the merge log naming the PR, the head it merged at, the
+ticket and the driver as the merger; a refused merge is a `failed` line, never `merged`.
+`node ~/.claude/desk/bin/merge-log.mjs show --pr <n> --latest` prints a PR's latest outcome as one
+JSON line (merged, else armed and not since disarmed, nor failed by its armer: who, at which head,
+when), and prints nothing when the log has none. A ticket's page in desk-q shows the same as its
+Merge line, and flags a merged PR the log has no entry for as merged outside desk.
+
 It loops every ~2 minutes over the batch's **ready** (non-draft) PRs by config §1's handle, **one at
 a time**: skips a PR with outstanding review feedback where `merge-feedback-first` is `yes` (first
 resolving each thread an earlier desk-review by that handle opened, once the latest desk-review
@@ -253,7 +295,7 @@ key pattern, §4 Other work id patterns, or the Tracker-`none` forms), and `--de
 exits 1 naming the holder's pid. Two things it must get right or it makes the problem worse: **never
 retrigger a run that is not `completed`** (per-PR `cancel-in-progress` kills the run in flight, and a
 loop that re-reads too soon after a rerun sees the stale `completed` and fires again, starving the PR
-forever) and **only one PR may be building a preview at a time** (see the preview-build cap below).
+forever) and **no preview build starts without its team's preview-build lease** (see below).
 
 - **Merge on green as defined, not on the checks you like.** A red check is advisory only when §4
   Advisory checks names it, and waivable only by the driver under §4 Known flaky checks (above),
@@ -299,7 +341,7 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   `convert_to_draft`, is recorded as `undraft` `held`. The pass then never undrafts it, re-runs or
   builds its checks, or sends it to a review or fix worker, and it is under WAITING ON YOU as `HELD` (desk-q and `/desk-needs-you` show it as needing the person). Their
   own `gh pr ready` releases it, and the driver merges it once green. The driver merges a ready PR,
-  pinned, the moment it is green with a clean review at its head (never a PR under a §4 Merge holds glob). Do not arm auto-merge.
+  pinned, the moment it is green with a clean review at its head (never a PR under a §4 Merge holds glob). Under a §4 State check of kind `external`, that check passing at the head is the review there: the outside reviewer's, so the driver wants no desk verdict at that head as well, and the pass sends no review worker for one. Do not arm auto-merge.
   Undrafting earlier pings the reviewer before the evidence is in.
 - **A draft whose every red check was cancelled or timed out is re-run by the pass**, where §3
   `ci-rerun` is `yes`: those runs never tested the code. It keeps the driver's cap of two reruns per
@@ -319,6 +361,10 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   spent, or when its red check is one §4 Checks workers can't fix names. With the `failure-class`
   lever on and §3 `ci-rerun` `yes`, a draft whose checks a worker would take all have error lines
   classed runner or resource is re-run once first; red again, its fix try says one rerun was tried.
+  With the lever on or off, so is one whose checks' error lines and annotation paths name no file the
+  PR changes (a flaky test elsewhere, or a job that crashed with no failed test), and that rerun
+  takes every job of each run, so a job reading other jobs' results (a test-report gate) reads the
+  new ones.
 - **A draft red only on checks §4 Check builds names gets their build from the pass**, where §3
   `ci-rerun` is `yes` (`check-build.mjs`): the row's command runs once per head on the host, from the
   pass's clean checkout of origin's default branch (`<state>/live-read-checkout`, the one Live reads
@@ -342,23 +388,39 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   (`undraft.mjs` `buildPark`), so this step builds it. A park that asks anything else stays a park.
   A PR out of draft gets the same build from its fix tries (`fix-tries.mjs` `fixCall`, which asks
   `undraft.mjs` `buildCall` about those checks alone), once no check a worker fixes is red or no
-  fix try is left.
+  fix try is left. A command that finds its image already there and builds nothing still exits 0, so
+  the checks are re-run all the same. Where `ci-rerun` is not `yes`, nothing is built or re-run, and a
+  draft red only on those checks goes to the person with the command, saying it was not built for
+  that reason (`undraft.mjs` `unbuiltCall`).
 - **A conflicted draft goes to a fix worker, not to `DRAFT`**, where §3 `pr-conflict-unreviewed`
   (no one but the user's handle has reviewed or commented) or `pr-conflict-reviewed` (someone has)
   is `yes`: it merges `<default>` in, reviews its new head and posts that review, within two tries of
   its own, one per head (`fix-tries.mjs` `conflictFix`): tries of another kind leave a conflict its own. A new head it leaves with no review of its
   own is a stale review, so it goes to a review worker as above. Such a draft reaches WAITING ON YOU
   only once its tries are spent, as `STUCK` with what the last try reported.
-- **One preview build at a time, where PRs deploy previews (§4 Vercel set). Two is already too
-  many.** A shared preview builder can OOM concurrent builds against each other: seven triggered
-  together have given one `Ready` and six `Error` (exit 137), and **two** PRs opening a minute apart
-  have killed *both* builds. A monorepo PR can trigger several previews at once (an app, docs, a
-  component catalogue), so two PRs can be four-plus concurrent builds. Stagger PR creation and
-  serialise every retrigger. Where this applies, it, not review or CI, caps how fast a batch can
-  merge, and it is what a red preview-deploy check almost always means. Where config §3
-  `read-vercel` allows, read the build log before treating it as broken code:
-  `vercel inspect --logs <url> --scope <team slug from §4 Vercel>`, looking for exit 137 or
-  "Out of Memory".
+- **Every preview build takes a unit of its Vercel team's preview-build lease first, where PRs
+  deploy previews (§4 Vercel set).** A shared preview builder can OOM concurrent builds against each
+  other: seven triggered together have given one `Ready` and six `Error` (exit 137), and **two** PRs
+  opening a minute apart have killed *both* builds. The lease is keyed on the team (the first item
+  `desk-env list vercel` prints), not the project, so it spans every repo, batch and session on this
+  computer whose builds share that builder, and a PR takes one unit for every preview it triggers (a
+  monorepo PR's app, docs and catalogue count once). Its size is the machine profile's
+  `preview-build-slots` row (default 1), and its mode the `preview-build` entry of `lease-kinds`
+  (`desk-env lease mode preview-build`): `off` takes nothing, `shadow` takes it without waiting and
+  logs a would-refuse, `on` waits. A worker or session takes it (`desk-env preview-slot`) before
+  opening its PR and before every push to it (`desk-pr` §4 *Before opening the PR, and before every
+  push to it*; a worker's `push-retry.mjs` takes it for each push). The merge
+  driver takes it before rerunning a red check whose name says it is a preview (Vercel, Netlify or
+  preview), and before updating a BEHIND PR's branch, labelled `<repo>#<n>`; while every unit is held
+  it reruns or updates nothing and logs that the PR waits on the preview build, then tries again next
+  loop. The pass does the same before each push it makes to a worker's branch, and leaves the push for
+  a later pass while every unit is held. A unit has no owner: the build outlives what
+  started it, so the unit lives until it is released or its 1200 seconds pass (`desk-env lease list`).
+  Serialise any retrigger you start by hand the same way. Where this applies, it, not review or CI,
+  caps how fast a batch can merge, and it is what a red preview-deploy check almost always means.
+  Where config §3 `read-vercel` allows, read the build log before treating it as broken code:
+  `vercel inspect --logs <url> --scope <team slug from §4 Vercel>`, looking for exit 137 or "Out of
+  Memory".
 
 **Act, do not watch.** The failure this stage exists to prevent is a green PR sitting unmerged while
 the orchestrator reports on it. If a PR can be merged, merge it before writing the next status

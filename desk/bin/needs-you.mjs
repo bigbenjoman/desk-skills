@@ -9,7 +9,9 @@
 //       own PR merged, with its ticket done (or in no tracker), is recorded done, and a worktree held for
 //       changes since committed and pushed is released, each with a line saying so. A draft whose
 //       review left requirement gaps quotes each gap from that review on GitHub, and a PR under a
-//       person's merge hold reads its files and checks there, to say once the hold's step is done
+//       person's merge hold reads its files and checks there, to say once the hold's step is done.
+//       --no-settle skips that settling, so it writes nothing; --json prints the list as data
+//       (listItems): each item's question, actions, `cause` and how many held tickets wait behind it
 //   needs-you.mjs record <repo> <TICKET> <action> ["<text>"]
 //       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
 //                           name the session to ask. On a lane C or D session item whose step the
@@ -53,10 +55,15 @@
 //                           item until its head moves. On a session item, the ticket finished outside
 //                           desk: its PR merged, or no PR, records it done; an unmerged PR is refused.
 //                           On a step the person approved that no worker can run, that step is done:
-//                           the ticket goes back to a worker with it in its briefing (queue.mjs step-done)
+//                           the ticket goes back to a worker with it in its briefing (queue.mjs step-done).
+//                           On a stopped ticket, or one held outside its batch, whose own PR merged in
+//                           another configured repo (that repo's queue, else a merged PR on GitHub whose
+//                           branch names it), recommended first: recorded done here with that PR, merged
 //   needs-you.mjs move <repo> <TICKET> <batch>        record's move alone: the one action the decider is
 //                                                     allowed, so its allow rule names no other
 //   needs-you.mjs left [<repo>]                       how many items desk-q still counts, and where passes stopped
+//   needs-you.mjs ask <repo> "<what to do>"           an action a session hands the person, as an item
+//                                                     `ask:<n>` of the repo's until they say done (asks.mjs)
 //
 // Two items are the repo's rather than a ticket's, and are named in place of one: `unset:<key>`, every
 // ticket parked naming a §3 row the repo's config does not set (done requeues them once it is set), and
@@ -64,8 +71,20 @@
 // checks them again). `reviewer` is the repo's too: its failing reviewer health check, naming every PR
 // the pass holds on it (done records nothing; the next pass checks again). `browser-signin:<id>` is the
 // machine's: a browser profile's GitHub login failing, which every repo's screenshot uploads with it wait on
-// (done records nothing; the next pass checks again). `step:<KEY>` is the repo's too: a step only the person takes, which every ticket
+// (done records nothing; the next pass checks again). `upload-page` is the machine's too: the upload queue
+// paused because the uploader found no comment composer on GitHub's PR page, a desk fault every repo's
+// screenshot uploads wait on (done records nothing; an upload after desk is installed again clears it). `step:<KEY>` is the repo's too: a step only the person takes, which every ticket
 // it names, in any of the repo's batches, waits on to merge (done records nothing; the pass reads the step from Jira).
+// `promotion:<n>` is a feature batch's: its promotion PR #<n>, still red once its check tries are spent,
+// listed above the follow items waiting on it (done records nothing; the next pass reads its checks again).
+// `ask:<n>` is the repo's too: an action a session handed the person (done takes it off the list).
+// `base-red:<branch>` is a batch's: its base red on checks that hold its PRs' fix tries, naming the
+// PRs held and the last merges desk made (done records nothing; each hold clears once its check passes there).
+// `base-sync` is a batch's: its base sync could not push while the base lags too far to spawn, so every
+// ticket ready to spawn is frozen; listed first, naming the command that pushes it (done records nothing;
+// the next pass clears it once the base is current).
+// `stalled` (`stalled:<batch>` for a named batch) is a batch's: a session runs it and its passes stopped
+// with work left (done records nothing; the next pass clears it).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
 // first, then most held tickets waiting behind it (each item says how many), then the longest waiting,
 // less any put off with not-now whose inputs are unchanged and, where its entry recorded the actions it
@@ -75,26 +94,34 @@
 import { existsSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
-import { cellPlan, parseVerdict, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
+import { cellPlan, parseVerdict, reviewStep, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
-import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, PERMISSION_KEYS } from './desk-env.mjs';
+import { deskHome, expandHome, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
-import { describeCond, personClears } from './clears-when.mjs';
+import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, EXIT } from './batch-state.mjs';
+import { landedPr } from './post-merge.mjs';
+import { promotionPr, readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, EXIT } from './batch-state.mjs';
+import { promotionTitle } from './pass/promotion-pr.mjs';
+import { dayAndTime } from './desk-q-eta.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
-import { readUploadQueue, SIGNIN_CMD } from './upload-queue.mjs';
+import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
-import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf } from './desk-q.mjs';
+import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, passesPaused } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
-import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord } from './batches.mjs';
-import { followOnPending } from './harvest.mjs';
+import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
+import { followOnPending, postMergeOwed } from './harvest.mjs';
+import { followKind, checkOf, settled, FOLLOW_WAIT_MS, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
+import { promotionRef } from './promotion.mjs';
 import { saveAnswer } from './briefing.mjs';
+import { addAsk, removeAsk } from './asks.mjs';
 import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
+import { prsNaming } from './recoveries.mjs';
 
 // The decisions a parked item offers to override, newest first.
 const DECISIONS_SHOWN = 3;
@@ -189,6 +216,8 @@ const prShows = (v) => (v.state === 'CLOSED' ? 'closed without merging' : `unmer
 // ticket whose PR merged, or a worktree pushed since the pass held it, stays listed until list reads
 // it again here. A read that fails is null, and the item stays as it was.
 const ghRepoOf = (r) => repoConfigValue(r.slug, 'gh-repo') ?? r.slug.replace('__', '/');
+// Batch `r`'s repo's default branch (§0), never a named batch's base.
+const defaultOf = (r) => repoConfigValue(r.slug, 'default-branch') ?? 'main';
 const quiet = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] };
 export const READS = {
   // The PR as GitHub has it now, which the queue's record may be a pass behind: { v, err }.
@@ -205,18 +234,85 @@ export const READS = {
     } catch { return null; }
   },
   git: (dir, args) => { try { return execFileSync('git', ['-C', dir, ...args], quiet).trim(); } catch { return null; } },
+  // origin fetched in `dir`, so its remote refs are as GitHub has them: true, or false when it failed.
+  fetch: (dir) => { try { execFileSync('git', ['-C', dir, 'fetch', '-q', 'origin'], { ...quiet, timeout: 120000 }); return true; } catch { return false; } },
+  // The newest PR merged in repo `slug` whose branch names `key` (a title is not enough: another
+  // ticket's PR often names it), read once per process: { pr, mergedAt }, or null, also when unread.
+  merged: (slug, key) => {
+    const id = `${slug}\t${key}`;
+    if (!mergedRead.has(id)) {
+      let hit = null;
+      try {
+        const p = prsNaming(ghRepoOf({ slug }), 'merged', key, { fields: 'mergedAt' }).sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))[0];
+        if (p) hit = { pr: Number(p.number), mergedAt: p.mergedAt ?? null };
+      } catch { /* unread: no PR found */ }
+      mergedRead.set(id, hit);
+    }
+    return mergedRead.get(id);
+  },
+  // The newest open PR whose title or branch names `key`: { pr, err }, pr null when none is open. Every
+  // open PR is read, as GitHub's text search never reads a branch name.
+  open: (r, key) => {
+    try {
+      const p = prsNaming(ghRepoOf(r), 'open', key, { fields: 'title', inTitle: true, search: false, limit: 500 }).sort((a, b) => Number(b.number) - Number(a.number))[0];
+      return { pr: p ? Number(p.number) : null, err: '' };
+    } catch (e) { return { pr: null, err: one(e.stderr || e.message) }; }
+  },
+  // The repo's open ci-main-red issues assigned to the person gh is signed in as: [{ number, title,
+  // url, createdAt }], none when unread.
+  ciRed: (r) => {
+    try { return JSON.parse(execFileSync('gh', ['issue', 'list', '--repo', ghRepoOf(r), '--label', 'ci-main-red', '--state', 'open', '--assignee', '@me', '--limit', '5', '--json', 'number,title,url,createdAt'], quiet)); }
+    catch { return []; }
+  },
 };
+const mergedRead = new Map();
+// The ticket's own PR merged in a configured repo other than r's, where it was built: that repo's
+// queue record of it first (a PR it records merged), then GitHub (READS.merged) where `reads` is given.
+// Only a tracker key both repos share is the same ticket there: an issue-<n> or ticket-file slug names
+// a different ticket in each repo. A ticket requeued after a merge here counts only a later merge, as
+// the pass's shippedElsewhere does. -> { slug, repo, pr, mergedAt }, or null.
+function mergedElsewhere(r, t, reads) {
+  const key = t.key;
+  if (!trackerTicket(r, key)) return null;
+  const own = Date.parse(t.merged_at);
+  const later = (e) => (Number.isNaN(own) || Date.parse(e.mergedAt) > own ? e : null);
+  let others;
+  try { others = repoPortClaims().map((c) => c.slug).filter((s) => s !== r.slug && trackerTicket({ slug: s }, key)); } catch { return null; }
+  for (const slug of others) {
+    let batches;
+    try { batches = listBatches(slug); } catch { continue; }
+    for (const b of batches) {
+      let o;
+      try { o = existsSync(b.queue) ? readQueue(b.queue).tickets?.[key] : null; } catch { continue; }
+      const s = prStatusOf(o);
+      const hit = o?.result?.pr != null && (o.merged_at || s?.state === 'MERGED') && later({ slug, repo: ghRepoOf({ slug }), pr: Number(o.result.pr), mergedAt: o.merged_at ?? s?.merged_at ?? null });
+      if (hit) return hit;
+    }
+  }
+  for (const slug of reads?.merged ? others : []) {
+    const hit = reads.merged(slug, key);
+    if (hit && later(hit)) return { slug, repo: ghRepoOf({ slug }), ...hit };
+  }
+  return null;
+}
+// An item's actions once its PR is found merged in another repo: done first, and every other action
+// kept, its recommendation said as a note.
+const shippedFirst = (actions, e) => (!e ? actions : [
+  ['done', `its PR #${e.pr} merged in ${e.repo}: done records it done here from that PR, and the tickets held behind it can start`],
+  ...actions.map(([name, why, note]) => (note ?? why ? [name, null, note ?? why] : [name]))]);
 // Whether a key is a ticket in the repo's tracker, by its §4 Ticket key pattern.
 function trackerTicket(r, key) {
   const pattern = repoConfigValue(r.slug, 'ticket-pattern');
   return !!pattern && !isNone(pattern) && fullMatch(pattern, key);
 }
 const ticketWords = (key, status) => (status === 'done' ? `${key} is done in Jira` : status ? `${key} is not done in Jira yet` : `${key}'s Jira status could not be read`);
-const mergedWords = (pr, v) => (pr == null ? 'it has no PR' : `PR #${pr} merged${v?.mergedAt ? ` at ${String(v.mergedAt).slice(0, 16).replace('T', ' ')} UTC` : ''}`);
+// A time, in ms or as an ISO string, to the minute in UTC: "2026-11-09 19:40 UTC".
+const utc = (at) => `${new Date(at).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+const mergedWords = (pr, v) => (pr == null ? 'it has no PR' : `PR #${pr} merged${v?.mergedAt ? ` at ${utc(v.mergedAt)}` : ''}`);
 const recordShipped = (r, t, how, pr, v) => queueCmd(r, shippedSet(t, how, pr, v?.mergedAt ?? null));
-// A park waiting on issue links only the person makes (clears-when personClears) holds them in its
-// clears_when alone: the pass records it done once each reads on Jira, so it is never closed here.
-const linksPending = (t) => (personClears(t.park?.clears_when) ? describeCond(t.park.clears_when) : null);
+// A park waiting on issue links only the person makes holds them in its clears_when alone: the pass
+// records it done once each reads on Jira, so it is never closed here.
+const linksPending = (t) => (t.park?.clears_when?.kind === 'links-made' ? describeCond(t.park.clears_when) : null);
 // A parked or session item that shipped: its own PR merged, and its ticket done or in no tracker. -> how, or null.
 function shippedOf(r, t, reads) {
   const pr = ownPr(t);
@@ -264,9 +360,34 @@ function worktreeClean(r, t, reads) {
 
 // What list settles before it lists, in the batches `word` names: a parked or session item that shipped
 // is recorded done, and a worktree hold found clean is dropped. -> one line for each.
-export function refresh({ word = null, now = Date.now(), repos = loadRepos(now), reads = READS } = {}) {
+export function refresh({ word = null, now = Date.now(), repos = loadRepos(now, word), reads = READS } = {}) {
   const lines = [];
-  for (const r of scopeOf(repos, word).scope.filter((x) => !x.error && x.q)) {
+  const scope = scopeOf(repos, word).scope.filter((x) => !x.error && x.q);
+  // A follow step gated on the default branch or production is judged from the repo root's remote refs
+  // and its PR's merge commit (gateHeld), which no pass keeps fresh once the batch is idle: origin is
+  // fetched once per repo root, and a PR whose merge was recorded with no merge commit (done here, a
+  // hand-ship) is read for it. So is a promotion PR that took a child with a production step to the
+  // default branch with no merge commit recorded (the merge driver's read failed, or a record from before
+  // the pass kept one): a rebase merge leaves gateHeld nothing else to find it by.
+  const fetched = new Set();
+  for (const r of scope) {
+    const promos = new Set();
+    for (const t of followsOf(r).filter(gatedFollow)) {
+      const root = gitRootOf(r);
+      if (root && !fetched.has(root)) { fetched.add(root); reads.fetch?.(root); }
+      if (!reads.pr) continue;
+      const p = (t.promoted_at || viaBase(r.q, t)) && t.follow_on.some((s) => gateOf(s) === 'production') ? promotionPr(r.q, t) : null;
+      if (p && !SHA40.test(String(p.merge_commit ?? '')) && /^\d+$/.test(String(p.pr)) && !promos.has(p.pr)) {
+        promos.add(p.pr);
+        const oid = reads.pr(r, p.pr, ',mergeCommit').v?.mergeCommit?.oid;
+        if (SHA40.test(String(oid ?? ''))) queueCmd(r, ['set-batch', `promotion_commits.${p.pr}=${oid}`]);
+      }
+      if (t.pr_status?.merge_commit || t.result?.pr == null) continue;
+      const oid = reads.pr(r, t.result.pr, ',mergeCommit').v?.mergeCommit?.oid;
+      if (SHA40.test(String(oid ?? ''))) queueCmd(r, ['set', t.key, `pr_status.merge_commit=${oid}`]);
+    }
+  }
+  for (const r of scope) {
     for (const x of needsRows(r)) {
       const t = x.t;
       if (worktreeBusy(t)) {
@@ -292,7 +413,9 @@ export function refresh({ word = null, now = Date.now(), repos = loadRepos(now),
 // No commit SHA, fix try or review-verdict wording: those are the pass's, for its log. Recorded text
 // quoted in one is kept whole, and a URL in it untouched, so the session can ask it as it stands.
 const URL_PART = /(https?:\/\/\S+)/;
-const passWords = (s) => s.replace(/,\s*at [0-9a-f]{7,40}\b,/g, '').replace(/\s*\bat [0-9a-f]{7,40}\b/g, '').replace(/\b[0-9a-f]{7,40}\b/g, 'its latest commit')
+// A commit SHA standing on its own: hex inside a path or file name (fix-338f2164.md) is not one.
+const SHA = String.raw`(?<![\w./-])[0-9a-f]{7,40}(?![\w/-]|\.\w)`;
+const passWords = (s) => s.replace(new RegExp(String.raw`,\s*at ${SHA},`, 'g'), '').replace(new RegExp(String.raw`\s*\bat ${SHA}`, 'g'), '').replace(new RegExp(SHA, 'g'), 'its latest commit')
   .replace(/\s*after \d+ fix tr(?:y|ies)/g, '').replace(/\bfix tr(?:y|ies)\b/g, 'repair').replace(/\breview verdict\b/g, 'review');
 const plainWords = (s) => one(one(s).split(URL_PART).map((p, i) => (i % 2 ? p : passWords(p))).join(''));
 // Once the person's step is done: desk merges it where it may, else merging is theirs too.
@@ -525,6 +648,7 @@ function prPlain(r, t, gapLines = null, reads = null) {
     case 'hold': return holdPlain(n, w, reads && holdStepDone(r, t, w, reads));
     case 'feedback': return `${n} is held for review: ${one(w.text)}. Resolve or answer it; desk then merges it.`;
     case 'approval': return `${n} waits on a person's approval: ${plainWords(w.text).replace(/: a person approves it before desk merges it$/, '')}. Review and approve it on GitHub; desk then merges it.`;
+    case 'merge-ref': return `${n} looks stuck on GitHub: ${plainWords(w.text).replace(/: push a new commit .*$/, '')}. Push a new commit to its branch (an empty one will do) for a fresh merge ref, or open a new PR from it; desk then merges it once it is green.`;
     case 'conflict': return conflictPlain(r, t, n, w.base);
     case 'red': {
       const red = ask ? ask.left : w.names;
@@ -545,7 +669,7 @@ function doneNote(t) {
   const d = t.done_check;
   if (!d || (d.head ?? null) !== (t.pr_status?.head ?? null)) return '';
   const shown = d.cells ? `with ${d.cells} screenshot cell(s) left` : d.state === 'CLOSED' ? 'closed without merging' : `unmerged${d.draft ? ', still a draft' : ''}`;
-  return `(You said done at ${String(d.at).slice(0, 16).replace('T', ' ')} UTC, and GitHub still showed it ${shown}.)`;
+  return `(You said done at ${utc(d.at)}, and GitHub still showed it ${shown}.)`;
 }
 
 // The batches `word` names: a repo's name is all of its batches, `<repo>:<name>` one named batch.
@@ -568,7 +692,7 @@ const MOVABLE = ['parked', 'stopped'];
 export function moveTargets(r) {
   try {
     checkoutOf(r, 'list its batches');
-    return otherRunningBatches(r.slug, r.queuePath, () => repoConfigValue(r.slug, 'default-branch') ?? 'main', finishedOnRecord).map(moveTarget);
+    return otherRunningBatches(r.slug, r.queuePath, () => defaultOf(r), finishedOnRecord).map(moveTarget);
   } catch { return []; /* no checkout to move it in: nothing to offer */ }
 }
 const moveAction = (r) => { const ts = moveTargets(r); return ts.length ? [['move', null, moveOffer(ts)]] : []; };
@@ -618,10 +742,18 @@ const usageRow = (r) => (usageHoldOf(r) ? { t: { key: USAGE_ITEM }, usage: true 
 // `approved.base_push` to every later pass of the batch.
 const BASE_PUSH_ITEM = 'base-push';
 const basePushRow = (r) => (r.q?.base_push_ask && r.q.approved?.base_push !== true ? { t: { key: BASE_PUSH_ITEM }, basePush: true } : null);
-const batchRows = (r) => [usageRow(r), basePushRow(r)].filter(Boolean);
-// The base-push items desk-q counts, one per batch of a repo row (each keyed in its batch, `b`): unlike
-// a usage hold it never lifts by itself, so it needs the person.
-const basePushRows = (r) => (r.batches ?? [r]).flatMap((b) => { const x = basePushRow(b); return x ? [{ ...x, b }] : []; });
+// A batch whose repo is pinned to a subscription set off (pass.mjs subscription_off) is one item, named
+// by this: no new work of the repo starts until the person moves the pin or sets the subscription unused.
+const SUB_OFF_ITEM = 'subscription-off';
+const subOffRow = (r) => (r.q?.subscription_off?.email ? { t: { key: SUB_OFF_ITEM }, subOff: true } : null);
+// A batch whose base sync merged but could not push while the base lags too far to spawn (pass.mjs
+// base_sync_stuck) is one item, named by this: every ticket ready to spawn waits on it, so it is listed first.
+const BASE_SYNC_ITEM = 'base-sync';
+const baseSyncRow = (r) => (r.q?.base_sync_stuck?.base ? { t: { key: BASE_SYNC_ITEM }, baseSync: true } : null);
+const batchRows = (r) => [baseSyncRow(r), usageRow(r), basePushRow(r), subOffRow(r)].filter(Boolean);
+// The base-sync, base-push and subscription-off items desk-q counts, one per batch of a repo row (each
+// keyed in its batch, `b`): unlike a usage hold none lifts by itself, so each needs the person.
+const countedBatchRows = (r) => (r.batches ?? [r]).flatMap((b) => [baseSyncRow(b), basePushRow(b), subOffRow(b)].filter(Boolean).map((x) => ({ ...x, b })));
 
 // ---- repo-level items: one for the repo, not one per ticket ------------------------------------
 // A §3 row the repo's config does not set reads as `no`, so every ticket whose worker needed it parks
@@ -675,12 +807,13 @@ const startSteps = (q, t, stepOf) => (holdsKept(t) ?keysOf(t.held_outside).filte
 // A needs row whose hold needs nothing but such a step: the step's item lists it, so it is not one of its own.
 const stepHeld = (b, x) => !heldAsks(x.t) && holdShown(b.q, x.t, b.ctx)?.step != null;
 // Every ticket in any of the repo's batches waiting on the step, read from the queues on disk, so a
-// step is put off under the same inputs whichever of the repo's batches a caller passed.
-const waitingOn = (slug, key) => listBatches(slug)
+// step is put off under the same inputs whichever of the repo's batches a caller passed. `at(dir)` is
+// the listing's object for state folder `dir`, which triageOf reads each record through once.
+const waitingOn = (slug, key, at) => listBatches(slug)
   .flatMap((b) => {
     let q;
     try { q = readQueue(b.queue); } catch { return []; /* no queue there */ }
-    const stepOf = personStepOf(b.state, slug);
+    const stepOf = personStepOf(at(b.state), slug);
     return Object.values(q.tickets ?? {}).filter((t) => keysOf(t.merge_after).includes(key) || startSteps(q, t, stepOf).includes(key));
   })
   .filter((t) => !t.merged_at && t.state !== 'failed').map((t) => t.key).sort();
@@ -688,7 +821,7 @@ const waitingOn = (slug, key) => listBatches(slug)
 // only to merge (batch-state.mjs triageGate): another ticket's code, which the pass lifts once it is Done
 // and landed, with nothing for the person to do.
 const mergeGate = (b, t, k) => {
-  const rec = triageOf(b.stateDir, t.key);
+  const rec = triageOf(b, t.key);
   const bl = (Array.isArray(rec?.blockers) ? rec.blockers : []).find((x) => x?.key === k);
   return triageGate(bl, rec, personStepLabels(b.slug), personInputLabels(b.slug));
 };
@@ -704,16 +837,20 @@ function stepItems(batches) {
     }
   }
   const standing = batches.find((b) => b.batch == null);
+  // A batch this listing loaded reads its triage records through its own object, and one it did not
+  // through one made here once, so every step item shares the reads.
+  const byDir = new Map(batches.map((b) => [b.stateDir, b]));
+  const at = (dir) => byDir.get(dir) ?? byDir.set(dir, { stateDir: dir }).get(dir);
   return [...waits].map(([key, ws]) => {
     const r = standing ?? ws.map((w) => w.b).sort((a, c) => String(a.batch).localeCompare(String(c.batch)))[0];
-    return { r, dir: standingDir(r), in: new Set(ws.map((w) => w.b)), t: { key: `${STEP}${key}` }, item: { ...stepItem(key, ws), waiting: waitingOn(r.slug, key) },
+    return { r, dir: standingDir(r), in: new Set(ws.map((w) => w.b)), t: { key: `${STEP}${key}` }, item: { ...stepItem(key, ws), waiting: waitingOn(r.slug, key, at) },
       // Ranked by every ticket waiting on it; its line names the waiting ones, so it adds the count only
       // where more are held behind them.
       behind: heldBehindAll(ws.map(({ b, t }) => [b, t.key]), true), said: heldBehindAll(ws.map(({ b, t }) => [b, t.key])) > 0 };
   });
 }
 function stepItem(key, ws) {
-  const summary = ws.map(({ b, t }) => (triageOf(b.stateDir, t.key)?.blockers ?? []).find((x) => x?.key === key)?.summary).find(Boolean);
+  const summary = ws.map(({ b, t }) => (triageOf(b, t.key)?.blockers ?? []).find((x) => x?.key === key)?.summary).find(Boolean);
   const what = ({ t }) => (t.state === 'done' && t.result?.pr != null ? `PR #${t.result.pr} (${t.key})` : `${t.key} (${t.state === 'running' ? 'being built' : t.state === 'done' ? 'no PR' : 'not built yet'})`);
   const starts = ws.filter((w) => w.start).map(({ t }) => t.key), mw = ws.filter((w) => !w.start);
   const n = mw.length, merges = mw.filter(({ b }) => b.ctx?.merges).length;
@@ -732,26 +869,260 @@ function stepItem(key, ws) {
 
 // ---- follow-on steps: what a ticket left for after its PR merges (pass.mjs follow_on) -------------
 // Once the PR has merged, its steps are one item, `follow:<KEY>`, each with the §3 row it names and
-// that row's value: nothing of desk's runs a step after the merge, so each is the person's. Done
-// records them run (follow_on_done) and the item leaves the list.
+// that row's value. A step that only reads CI, desk's logs or desk's state is a follow-step checker's
+// (follow-steps.mjs), which the pass starts: it is held off the list while one runs or is still to,
+// gone once one passed it, and listed with what it found once one failed it. Every other step is the
+// person's. Done records them settled (follow_on_done) and the item leaves the list.
 const FOLLOW = 'follow:';
-const followsOf = (r) => Object.values(r.q?.tickets ?? {}).filter(followOnPending);
-function followItems(r) {
-  return followsOf(r).map((t) => ({ r, t: { key: `${FOLLOW}${t.key}` }, item: followItem(r, t) }));
+// A child of a feature or epic batch merged into the base, not the default branch: its code is out once
+// a promotion PR merged after it, as the pass records each (promotion.merged, merged_at, since) or the
+// archive check stamps it on the ticket before archiving the batch (promoted_at, batch.mjs). Null until
+// then. A batch with a base desk opens no promotion PR for, and a ticket carried in from an earlier
+// batch, are judged by the ticket's own merge.
+const viaBase = (q, t) => !t.promoted_at && (q?.feature === true || epicBatch(q)) && !!q.base && !('carried_from' in t);
+export function outAt(q, t) {
+  if (t.promoted_at) return t.promoted_at;
+  return viaBase(q, t) ? promotedAt(q, t) : t.merged_at;
 }
-function followItem(r, t) {
+// Whether a step's gate (after: merge, main or production) holds once outAt does: { held, note }, `note`
+// saying why a gate was taken as held without being checked. A production gate read as held adds
+// `on: 'production'`, and `at` where a commit of production's own took it in: that commit's date. A gate is git reachability in the repo
+// root, from its remote refs as the last fetch left them: list's refresh and the pass fetch origin while
+// a gated step waits. The commit judged is the one that put the PR's code on the default branch: its merge commit
+// (pr_status.merge_commit), or for a batch child that a squash or rebase promotion left off it, the
+// merge commit of the promotion PR that took it there (batch-state promotionPr, merge_commit), else the default
+// branch's commit found by that PR's number. A batch
+// child's main gate is its promotion's merge, which outAt has already seen. A commit not read yet (no
+// merge commit recorded, or one not fetched) waits, as list's refresh and the pass fetch and record it;
+// only what no fetch brings (a ref the repo root does not have, a promotion desk has no record of) lists
+// the step saying it was not checked.
+const gitRootOf = (r) => { const x = expandHome(repoConfigValue(r.slug, 'repo-root') ?? ''); return x && !isNone(x) ? x : null; };
+const SHA40 = /^[0-9a-f]{40}$/;
+// `reads` is collect's (READS); its git reads the refs, READS.git where it has none.
+function gateHeld(r, t, s, reads = null) {
+  const after = s.after ?? 'merge';
+  if (after === 'merge') return { held: true, note: null };
+  const root = gitRootOf(r);
+  if (!root) return { held: true, note: 'its gate could not be checked: config §2 "Primary repo root" is unset' };
+  const git = (args) => (reads?.git ?? READS.git)(root, args);
+  const commit = (x) => git(['rev-parse', '--verify', '--quiet', `${x}^{commit}`]);
+  const within = (a, b) => git(['merge-base', a, b]) === a;
+  const pr = `PR #${t.result?.pr ?? '?'}`;
+  const unread = (ref) => ({ held: true, note: `${ref} could not be read in ${root}, so whether it has ${pr}'s merge was not checked` });
+  const wait = { held: false, note: null };
+  const def = defaultOf(r);
+  const main = commit(`origin/${def}`);
+  if (!main) return unread(`origin/${def}`);
+  const promoted = !!t.promoted_at || viaBase(r.q, t);
+  const own = t.pr_status?.merge_commit ? commit(t.pr_status.merge_commit) : null;
+  let landed = own && within(own, main) ? own : null;
+  if (after === 'main') return promoted || landed ? { held: true, note: null } : wait;
+  const ref = promotionRef(repoConfigValue(r.slug, 'promotion-ref'));
+  if (ref.why) return promoted || landed ? { held: true, note: `production could not be checked: ${ref.why}` } : wait;
+  if (!landed && promoted) {
+    // A squash or rebase promotion: the promotion PR's merge commit as the pass, the merge driver or list's
+    // refresh recorded it (promotionPr), which a rebase merge needs, as it writes no subject naming the PR.
+    // Until one is recorded, the default branch's commit by its number in the subject GitHub writes for a
+    // merge or squash ("Merge pull request #N from …", or "<title> (#N)"). Neither found yet waits, as an
+    // unread merge commit does: list's refresh reads the promotion PR for it.
+    const p = promotionPr(r.q, t);
+    if (!p) return { held: true, note: `production could not be checked: desk keeps no record of the promotion PR that took ${pr} to the default branch` };
+    if (SHA40.test(String(p.merge_commit ?? ''))) landed = commit(p.merge_commit);
+    else {
+      const n = String(p.pr);
+      const hit = String(git(['log', '--first-parent', '-n', '2000', '--format=%H%x09%s', main]) ?? '').split('\n')
+        .find((l) => { const sub = l.split('\t')[1] ?? ''; return landedPr(sub) === Number(n); });
+      landed = hit ? hit.split('\t')[0] : null;
+    }
+  }
+  if (!landed) return wait;
+  const prod = commit(ref.ref);
+  if (!prod) return unread(`production (\`${ref.ref}\`)`);
+  if (!within(landed, prod)) return wait;
+  // Production has had it since the oldest commit on its first-parent line that holds `landed`. Where that
+  // is `landed` itself, production was fast-forwarded to it, and git keeps no date for that: none is given.
+  const lines = (x) => String(x ?? '').split('\n').filter(Boolean);
+  const line = new Set(lines(git(['rev-list', '--first-parent', '-n', '2000', prod])));
+  const entry = line.has(landed) ? null : lines(git(['rev-list', '--ancestry-path', `${landed}..${prod}`])).reverse().find((c) => line.has(c));
+  const at = entry ? Date.parse(git(['log', '-1', '--format=%cI', entry]) ?? '') : NaN;
+  return { held: true, note: null, on: 'production', ...(Number.isFinite(at) ? { at } : {}) };
+}
+// Whether step `s` of ticket `t` in queue `q` of repo `slug` has its gate held, for the pass's follow-step
+// checker (pass/follow-steps.mjs), which runs a step only once needs-you would list it.
+export const followGateHeld = (slug, q, t, s) => gateHeld({ slug, q }, t, s).held;
+// A ticket's steps split by their gates: `ready` listed now (each with its note, `checked` where it is a
+// checker's to run, and `failed`, the checker's record, where one failed it), `waiting` not yet. A step a
+// checker passed is neither, nor is a runnable one not yet passed or failed while its checker runs (up
+// to FOLLOW_TIMEOUT_MS) or, for FOLLOW_WAIT_MS after the code went out, is still to.
+function followSplit(r, t, now = Date.now(), reads = null) {
+  const ready = [], waiting = [];
+  const labels = personStepLabels(r.slug);
+  const waited = now - (timeOf(outAt(r.q, t)) ?? now) >= FOLLOW_WAIT_MS;
+  const running = !!t.follow_run && now - Date.parse(t.follow_run.started) < FOLLOW_TIMEOUT_MS;
+  for (const s of t.follow_on) {
+    const c = checkOf(t, s);
+    if (c?.result === 'pass') continue;
+    const g = gateHeld(r, t, s, reads);
+    if (!g.held) { waiting.push(s); continue; }
+    // A step a checker ran stays its own, whatever the labels read now.
+    const checked = settled(c) || followKind(s, labels) === 'runnable';
+    const runnable = checked && !settled(c);
+    if (runnable && (running || !waited)) continue;
+    const note = runnable ? [g.note, 'no follow-step checker has passed or failed it yet'].filter(Boolean).join('; ') : g.note;
+    ready.push({ s, note, on: g.on, at: g.at, checked, ...(settled(c) ? { failed: c } : {}) });
+  }
+  return { ready, waiting };
+}
+// A merged PR whose kept status names criteria its review left for after the merge, which the pass has
+// not made follow-on steps yet (pass.mjs post_merge_read), is held off the list until it has: its item
+// would gain them after the person saw it, and done would take them as run unseen.
+const followsOf = (r) => Object.values(r.q?.tickets ?? {}).filter((t) => followOnPending(t) && outAt(r.q, t) && !postMergeOwed(t));
+const GATES = ['merge', 'main', 'production'];
+const gateOf = (s) => s?.after ?? 'merge';
+const gatedFollow = (t) => t.follow_on.some((s) => gateOf(s) !== 'merge');
+// A ticket's ready steps are one item per gate: `follow:<KEY>` for the merge's, `follow:<KEY>:<gate>` for
+// the others. Steps sharing a gate open together, so done records only the steps its item showed, and a
+// gate that opens after the list was read is a new item rather than one taken as run unseen. A checker's
+// step is an item of its own, `…:checked:<id>` (stepId), listed as soon as it failed or went unrun: its
+// result comes in on its own time, and would otherwise join an item the person was already shown.
+const stepId = (s) => createHash('sha1').update(String(s.step)).digest('hex').slice(0, 6);
+function followItems(r, reads = null) {
+  return followsOf(r).flatMap((t) => {
+    const { ready, waiting } = followSplit(r, t, Date.now(), reads);
+    const groups = GATES.flatMap((g) => {
+      const here = ready.filter((x) => gateOf(x.s) === g);
+      return [{ g, ready: here.filter((x) => !x.checked) }, ...here.filter((x) => x.checked).map((x) => ({ g, id: stepId(x.s), ready: [x] }))];
+    }).filter((x) => x.ready.length);
+    return groups.map(({ g, id, ready: shown }, i) => ({
+      r, t: { key: `${FOLLOW}${t.key}${g === 'merge' ? '' : `:${g}`}${id ? `:checked:${id}` : ''}` },
+      item: followItem(r, t, { gate: g, ready: shown, waiting: i === 0 ? waiting : [] }),
+    }));
+  });
+}
+const GATE_WORDS = { main: 'the default branch has', production: 'production runs' };
+// "<KEY> is on <where> since <date>.", then any gate left unchecked, then one "Check: <step>." per step,
+// a step's §3 row and its value named only where it has one.
+function followItem(r, t, { gate, ready, waiting }) {
   const rowSaid = (row) => {
-    if (!row) return 'it names no §3 row';
+    if (!row) return '';
     let v;
     try { v = repoPermission(r.slug, row); } catch { v = 'unread'; }
-    return `§3 ${row} is "${v}"`;
+    return ` (§3 ${row} is "${v}")`;
   };
-  const steps = t.follow_on.map((s, i) => `(${i + 1}) ${one(s.step)} (${rowSaid(s.row)})`).join(' ');
-  const n = t.follow_on.length;
-  return { kind: 'follow', ticket: t.key,
-    need: `PR #${t.result?.pr ?? '?'} (${t.key}) is merged, and ${n === 1 ? 'a step waits' : `${n} steps wait`} on it that no worker runs after a merge: ${steps} Run ${n === 1 ? 'it' : 'them'}, then say done`,
-    actions: [['done', `the PR has merged, so only you run ${n === 1 ? 'it' : 'them'}; done takes the item off your list`], ['not-now']],
-    since: timeOf(t.merged_at) };
+  // A step's own closing period gives way to the line's; any other last character (a command's `.`) is kept.
+  const stop = (x) => `${x}${x.endsWith('.') ? '' : '.'}`;
+  const checks = ready.map(({ s, failed }) => {
+    const said = `${reviewStep(one(s.step)).trim().replace(/([^\s.])\.$/, '$1')}${rowSaid(s.row)}`;
+    const ran = failed ? ` A follow-step checker ran it and it failed: ${one(failed.found).replace(/\.$/, '')} (evidence: ${one(failed.evidence)}).` : '';
+    return ` Check: ${stop(said)}${ran}`;
+  }).join('');
+  const notes = [...new Set(ready.map((x) => x.note).filter(Boolean))].map((x) => ` ${capital(x)}.`).join('');
+  const n = ready.length;
+  const m = waiting.length;
+  const later = m ? ` ${m === 1 ? 'Another step waits' : `${m} more steps wait`} until ${andList([...new Set(waiting.map((s) => GATE_WORDS[s.after]))])} its merge, and ${m === 1 ? 'is' : 'are'} listed then.` : '';
+  // Production is named only where its ref was read; unchecked, its steps were judged by the default branch.
+  const onProd = gate === 'production' && ready.every((x) => x.on === 'production');
+  const at = onProd ? Math.min(...ready.map((x) => x.at ?? Infinity)) : timeOf(outAt(r.q, t));
+  const day = Number.isFinite(at) ? ` since ${new Date(at).toISOString().slice(0, 10)}` : '';
+  const where = onProd ? 'production' : defaultOf(r);
+  return { kind: 'follow', ticket: t.key, steps: ready.map((x) => x.s),
+    need: `${t.key} is on ${where}${day}.${notes}${checks}${later} Then say done.`,
+    actions: [['done', `once ${n === 1 ? 'it has' : 'each has'} run, or ${t.result?.pr != null ? `PR #${t.result.pr}'s` : "the PR's"} own checks already cover ${n === 1 ? 'it' : 'them'}; done takes ${t.follow_on.length > n ? 'these steps' : 'the item'} off your list`], ['not-now']],
+    since: timeOf(outAt(r.q, t)) };
+}
+
+// ---- a feature batch's red promotion PR (pass.mjs promotion.red) ---------------------------------
+// A promotion PR still red once its check tries are spent is one `pr` item, `promotion:<n>`, naming the
+// checks it fails and what desk tried. The follow steps of every child merged into the base since the
+// last promotion wait on it reaching the default branch: outAt holds their follow items off the list
+// until it merges, so this item names them and ranks above any follow item, by their count. done
+// records nothing: the next pass reads the PR again and clears it once it is not red.
+const PROMOTION = 'promotion:';
+function promotionItems(r) {
+  const p = r.q?.promotion, red = p?.red;
+  if (!red || red.pr == null || red.pr !== p.pr || p.merged_at) return [];
+  const follows = Object.values(r.q.tickets ?? {}).filter((t) => followOnPending(t) && t.merged_at && !outAt(r.q, t)).map((t) => t.key);
+  const base = r.q.base ?? 'the base';
+  const checks = Array.isArray(red.checks) ? red.checks : [];
+  // `why` (base-fix.mjs promotionChecksCall) says how many check tries desk made and how the last ended.
+  const what = `it is ${plainWords(red.why ?? `still red after ${Number(red.tried) || 0} check tries`)}`;
+  const waits = follows.length ? `. The follow steps of ${andList(follows)} wait on it reaching the default branch` : '';
+  return [{ r, t: { key: `${PROMOTION}${red.pr}` }, behind: follows.length,
+    item: { kind: 'pr', promotion: red.pr, head: red.head ?? '', checks,
+      need: `promotion PR #${red.pr} (${base} into the default branch) is red, failing ${andList(checks)}; ${what}, so no more workers go to it. Fix what fails on ${base} and push it, then say done; merging it stays yours${waits}`,
+      actions: [['done', 'once it is fixed on the base, the next pass reads its checks again and this item goes while they pass'], ['not-now']],
+      since: timeOf(red.since) } }];
+}
+
+// ---- the base red under a batch's PRs (fix-tries.mjs againstBase, kept on each ticket as base_red) ---
+// A check red on the base holds every PR it fails on without a fix try (BASE RED), and no worker repairs
+// the base. While any open PR holds on one, one item says so: the checks, the PRs held and the last merges
+// desk made, which may be what turned it red. done records nothing: the next pass reads the base again,
+// each hold clears once its check passes there, and the item goes with the last.
+const BASE_RED = 'base-red:';
+const BASE_RED_MERGES = 3;
+function baseRedItems(r) {
+  const tickets = Object.values(r.q?.tickets ?? {});
+  // Held now: the last call held it, and its PR is open at the head the hold read, one of those checks
+  // still red there. A record a PR left on going green, closing or taking a fix try is not a hold.
+  // `live` is each held ticket's checks still red on its PR, the only ones the item names.
+  const liveOf = (t) => {
+    const b = t.base_red, st = prStatusOf(t);
+    if (!b?.held || !b.checks?.length || st?.state !== 'OPEN' || st.head !== b.head) return [];
+    // The status's checks are already the latest per workflow and name (readPrStatus), so read as they are.
+    return [...new Set((st.checks ?? []).filter((c) => b.checks.includes(c.name) && FAILED.has(c.conclusion)).map((c) => c.name))];
+  };
+  const held = tickets.map((t) => ({ t, live: liveOf(t) })).filter((x) => x.live.length);
+  if (!held.length) return [];
+  const base = r.q.base ?? 'the default branch';
+  const checks = [...new Set(held.flatMap((x) => x.live))].sort();
+  const prOf = (t) => (t.result?.pr != null ? `#${t.result.pr} (${t.key})` : t.key);
+  const merges = tickets.filter((t) => t.merged_at).sort((a, b) => Date.parse(b.merged_at) - Date.parse(a.merged_at)).slice(0, BASE_RED_MERGES)
+    .map((t) => `${prOf(t)} on ${dayAndTime(t.merged_at)}`);
+  const last = merges.length ? `. The last merges desk made: ${andList(merges)}` : '';
+  return [{ r, t: { key: `${BASE_RED}${r.q.base ?? 'default'}` }, behind: held.length,
+    item: { kind: 'base-red', repoLevel: true, checks,
+      need: `${base} is red on ${andList(checks.map((c) => `"${c}"`))}, so ${andList(held.map((x) => prOf(x.t)))} ${held.length === 1 ? 'holds' : 'hold'} with no fix try and no worker repairs ${base}${last}. Fix it on ${base}, or revert the merge that turned it red, then say done`,
+      actions: [['done', 'the next pass reads the base again; each hold clears once its check passes there, and this item goes with the last'], ['not-now']],
+      since: timeOf(held.map((x) => x.t.base_red.since).filter(Boolean).sort()[0]) } }];
+}
+
+// ---- one ticket queued in two repos (batches.mjs queuedCopies) -----------------------------------
+// A ticket is queued in one repo at most, so a copy here beside one in another configured repo's batch
+// is one item on this copy, keyed by its ticket. The copy held behind blockers its own batch lacks and
+// the other copy's batch has is the extra one: its item recommends drop, and the other copy lists none.
+// Where neither copy is held so, or both are, each lists the other, drop offered but not recommended.
+const awayHolds = (q, t, there) => (holdsKept(t) ? keysOf(t.held_by).filter((k) => !q?.tickets?.[k] && there?.tickets?.[k]) : []);
+function duplicateOf(r, t, copies = queuedCopies()) {
+  if (!r.q || t.state === 'done' || t.merged_at) return null;
+  const o = copiesElsewhere(t.key, r.slug, copies)[0];
+  if (!o) return null;
+  const mine = awayHolds(r.q, t, o.q), theirs = awayHolds(o.q, o.t, r.q);
+  if (theirs.length && !mine.length) return null;
+  return { o, mine: theirs.length ? [] : mine };
+}
+function duplicateItems(r) {
+  const copies = queuedCopies();
+  return Object.values(r.q?.tickets ?? {}).flatMap((t) => {
+    const d = duplicateOf(r, t, copies);
+    return d ? [{ r, t, item: duplicateItem(t, d) }] : [];
+  });
+}
+// The duplicate row of ticket `key` in r, as record takes it: null where its copy is the only one.
+function duplicateRow(r, key) {
+  const t = r.q?.tickets?.[key], d = t && duplicateOf(r, t);
+  return d ? { t, dup: duplicateItem(t, d) } : null;
+}
+function duplicateItem(t, { o, mine }) {
+  const there = `${copyWhere(o)} (${o.t.state})`;
+  const is = mine.length === 1 ? 'is' : 'are';
+  const need = mine.length
+    ? `${t.key} is queued here and in ${there}, and a ticket is queued in one repo at most. This copy is the extra one: it is held behind ${andList(mine)}, which ${is} in that batch and not this one, so nothing here releases it. Drop it; the copy in ${o.ghRepo} goes on as it is`
+    : `${t.key} is queued here and in ${there}, and a ticket is queued in one repo at most. Neither copy waits only on the other's batch, so which repo it belongs to is your call: drop the copy in the repo it does not belong to, and the other goes on as it is`;
+  const drop = mine.length
+    ? ['drop', `${andList(mine)} ${is} queued beside the copy in ${o.ghRepo}, so this copy is the extra one; drop takes it out of this batch and leaves that one as it is`]
+    : ['drop', null, `takes this copy out of this batch; the copy in ${o.ghRepo} stays`];
+  return { kind: 'duplicate', ticket: t.key, need, actions: [drop, ['not-now']], since: timeOf(t.added_at) };
 }
 
 // ---- links that no hold settles (pass.mjs wont_do_link, dropped_link, cycle_link) -----------------
@@ -765,10 +1136,13 @@ function followItem(r, t) {
 const LINK = 'link:';
 const LINK_KINDS = [['wont_do_link', 'wontDo'], ['dropped_link', 'dropped'], ['cycle_link', 'cycle']];
 function linkItems(r) {
+  const copies = queuedCopies();
   return Object.values(r.q?.tickets ?? {}).filter((t) => !t.merged_at && !(t.state === 'done' && !keysOf(t.merge_after).length))
     .flatMap((t) => {
+      // A hold on a ticket the other repo's copy has beside it is the duplicate's item (duplicateItems).
+      const dup = duplicateOf(r, t, copies);
       const seen = new Set();
-      return LINK_KINDS.flatMap(([field, kind]) => keysOf(t[field]).filter((b) => !seen.has(b) && seen.add(b))
+      return LINK_KINDS.flatMap(([field, kind]) => keysOf(t[field]).filter((b) => !seen.has(b) && seen.add(b) && !(kind === 'dropped' && dup?.o.q.tickets?.[b]))
         .map((b) => ({ r, t: { key: `${LINK}${t.key}:${b}` }, item: linkItem(r, t, b, kind), behind: linkBehind(r, t, b, kind) })));
     });
 }
@@ -784,14 +1158,21 @@ function linkBehind(r, t, b, kind) {
 // merge driver also waits on its --deps, which outlive a restart, so freed_from names `b` for it to skip.
 // A value holding `|` is quoted, or a shell would read it as a pipe.
 const shellArg = (s) => (/^[\w.,:=@+-]+$/.test(s) ? s : `'${s}'`);
-const freeCommand = (x, b) => {
+// Ticket `x` freed from `b` alone: the holds left (`rest`), whether nothing then holds it (`release`), and
+// its freed_from with `b` added (`freed`).
+const freeFrom = (x, b) => {
   const rest = keysOf(x.held_by).filter((k) => k !== b);
-  if (!rest.length && !parkedAtTriage(x)) return releaseCommand(x.key);
-  const freed = [...new Set([...keysOf(x.freed_from), b])].join('|');
+  return { rest, release: !rest.length && !parkedAtTriage(x), freed: [...new Set([...keysOf(x.freed_from), b])].join('|') };
+};
+const freeCommand = (x, b) => {
+  const { rest, release, freed } = freeFrom(x, b);
+  if (release) return releaseCommand(x.key);
   return `queue.mjs set ${x.key} ${shellArg(`held_by=${rest.join('|') || 'null'}`)} ${shellArg(`freed_from=${freed}`)}`;
 };
+// releaseCommand as queue.mjs argument lists: [set args, front args].
+const releaseSteps = (key) => releaseCommand(key, '').split(/, then /).map((s) => s.trim().split(/\s+/));
 function linkItem(r, t, b, kind = 'wontDo') {
-  const rec = (triageOf(r.stateDir, t.key)?.blockers ?? []).find((x) => x?.key === b);
+  const rec = (triageOf(r, t.key)?.blockers ?? []).find((x) => x?.key === b);
   const about = `${b}${rec?.summary ? ` ("${one(rec.summary)}")` : ''}`;
   const fixed = 'If not, remove it in Jira; the next pass that reads it lifts any hold and clears this';
   let need;
@@ -812,6 +1193,76 @@ function linkItem(r, t, b, kind = 'wontDo') {
   return { kind: 'triage', ticket: t.key, blocker: b, need,
     actions: [['done', kind === 'dropped' ? `once ${t.key} is released or ${b} is back in the batch, the next pass clears this item` : `once the link is fixed in Jira, the next pass that reads ${t.key}'s blockers clears this item`], ['not-now']],
     since: timeOf(t.added_at) };
+}
+
+// ---- a blocker Done with its code on another branch (pass.mjs unpromoted) -------------------------
+// A ticket held behind a blocker outside its batch that has been Done a day or more, with its PR merged
+// into another branch that no PR has promoted, waits for ever unless that branch is promoted. Each such
+// hold is one item, `unpromoted:<KEY>:<BLOCKER>`, naming the branch and its promotion PR's state: promote
+// opens that PR (or names the open one) and leaves the ticket held until it merges; start lifts the
+// hold on that blocker alone. Once promote has named a PR, the item is listed again only if that PR goes
+// red or is no longer open.
+const UNPROMOTED = 'unpromoted:';
+const promoteAnswered = (u) => u.promote != null && u.promote === u.pr && ['open', 'draft'].includes(u.state);
+function unpromotedItems(r) {
+  return Object.values(r.q?.tickets ?? {}).flatMap((t) => unpromotedHolds(t).filter(([, u]) => !promoteAnswered(u))
+    .map(([b, u]) => ({ r, t: { key: `${UNPROMOTED}${t.key}:${b}` }, item: unpromotedItem(r, t, b, u), behind: heldBehindAll([[r, t.key]], true) })));
+}
+function unpromotedItem(r, t, b, u) {
+  const def = defaultOf(r);
+  const rec = (triageOf(r, t.key)?.blockers ?? []).find((x) => x?.key === b);
+  const about = `${b}${rec?.summary ? ` ("${one(rec.summary)}")` : ''}`;
+  const promote = u.pr == null
+    ? `opens a PR from ${u.branch} into ${def}, ready for review; ${t.key} stays held until it merges`
+    : `names promotion PR #${u.pr}, which is ${promotionState(u)}; ${t.key} stays held until it merges`;
+  const where = u.pr == null ? `No PR promotes ${u.branch} into ${def}, so nothing lands it`
+    : `Promotion PR #${u.pr}, ${u.branch} into ${def}, is ${promotionState(u)}, and ${t.key} waits until it merges`;
+  return { kind: 'held', ticket: t.key, waitsOn: b, unpromoted: u,
+    need: `${t.key} is held behind ${about}, Done since ${u.since.slice(0, 10)}, whose code merged into ${u.branch}, not ${def}. ${where}. Promote ${u.branch}, or start ${t.key} without ${b}`,
+    actions: [['promote', promote], ['start', null, `lifts ${t.key}'s hold on ${b} alone and queues it, without ${b}'s code`], ['not-now']],
+    since: timeOf(u.since) };
+}
+// Promote: the open PR from the branch into the default branch, read now, else one opened ready for
+// review; recorded as the PR asked for, so the item leaves the list while that PR is open and not red.
+function promoteBase(i, say) {
+  const u = i.unpromoted, def = defaultOf(i.r), repo = ghRepoOf(i.r);
+  const gh = (args) => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  let open;
+  try { open = JSON.parse(gh(['pr', 'list', '--repo', repo, '--state', 'open', '--head', u.branch, '--base', def, '--json', 'number,isDraft']) || '[]'); }
+  catch (e) { return say(false, `could not read ${u.branch}'s promotion PR from GitHub (${one(e.stderr || e.message)}), so nothing was opened.`); }
+  let n = Array.isArray(open) ? open[0]?.number : null, state = open?.[0]?.isDraft ? 'draft' : 'open', how;
+  if (n == null) {
+    const key = /[A-Z][A-Z0-9]+-\d+/.exec(u.branch)?.[0] ?? null;
+    const body = `Promotes ${u.branch} into ${def}: ${i.waitsOn} merged into ${u.branch}, and ${i.ticket} is held until its code reaches ${def}.`;
+    let out;
+    try { out = gh(['pr', 'create', '--repo', repo, '--base', def, '--head', u.branch, '--title', promotionTitle(key, u.branch, def), '--body', body]); }
+    catch (e) { return say(false, `gh pr create failed (${one(e.stderr || e.message)}), so nothing was opened.`); }
+    n = Number(/\/pull\/(\d+)/.exec(out)?.[1]);
+    if (!n) return say(false, `gh pr create printed no PR link (${one(out) || 'no output'}), so nothing was recorded.`);
+    how = `opened promotion PR #${n} (${u.branch} into ${def}), ready for review`;
+  } else how = `promotion PR #${n} (${u.branch} into ${def}) is already open${state === 'draft' ? ', as a draft' : ''}`;
+  const at = `unpromoted.${i.waitsOn}`;
+  const m = queueCmd(i.r, ['set', i.ticket, `${at}.pr=${n}`, `${at}.state=${state}`, `${at}.promote=${n}`]);
+  if (!m.ok) return say(false, `${how}, but recording it was refused: ${m.out}`);
+  return say(true, `${how}; ${i.ticket} stays held behind ${i.waitsOn} until it merges, and this item comes back if it goes red or closes.`);
+}
+// Start: the ticket's hold on that blocker lifted, as a link item frees one (freeCommand), and its record
+// of the blocker dropped; queued at the front where nothing else holds it.
+function startWithout(i, say) {
+  const x = i.r.q?.tickets?.[i.ticket];
+  if (!x) return say(false, `${i.ticket} is no longer in the batch, so nothing was changed.`);
+  const b = i.waitsOn;
+  const { rest, release, freed } = freeFrom(x, b);
+  const rec = { ...(x.unpromoted ?? {}) };
+  delete rec[b];
+  // Its outside hold and its record of `b` go too, or the pass would read it held outside again.
+  const also = [`held_outside=${keysOf(x.held_outside).filter((k) => k !== b).join('|') || 'null'}`, `freed_from=${freed}`,
+    `unpromoted=${Object.keys(rec).length ? JSON.stringify(rec) : 'null'}`];
+  const [set, front] = releaseSteps(i.ticket);
+  const steps = release ? [[...set, ...also], front] : [['set', i.ticket, `held_by=${rest.join('|') || 'null'}`, ...also]];
+  for (const s of steps) { const q = queueCmd(i.r, s); if (!q.ok) return say(false, `refused: ${q.out}`); }
+  return say(true, release ? `hold on ${b} lifted and ${i.ticket} queued at the front; the next pass can start it.`
+    : `hold on ${b} lifted; ${rest.length ? `${i.ticket} is still held behind ${andList(rest)}` : `${i.ticket} keeps its own park`}.`);
 }
 
 // ---- the repo's reviewer check (health.mjs): one item, naming every PR it holds ------------------
@@ -854,7 +1305,7 @@ function signinItems(batches, only = null) {
     const r = live.find((b) => s.state && resolve(b.stateDir) === resolve(s.state)) ?? live.find(mine) ?? live[0];
     if (!r) return [];
     if (!jobs) { try { jobs = readUploadQueue().jobs; } catch { jobs = []; /* named as none waiting */ } }
-    const prs = [...new Set(jobs.filter((j) => !s.file || !j.profile || sessionFile(j.profile) === s.file).map((j) => `${j.repo} #${j.pr}`))];
+    const prs = waitingPrs(jobs.filter((j) => !s.file || !j.profile || sessionFile(j.profile) === s.file));
     return [{ r, dir: r.stateDir, t: { key: `${SIGNIN}:${s.id}` }, item: { kind: SIGNIN, repoLevel: true,
       need: `the browser profile's saved GitHub login is not signed in (${one(s.why)}), so no repo's screenshot upload with it runs; workers still start. Sign it in, in a terminal on this machine's screen: ${SIGNIN_CMD}`,
       note: prs.length ? `Waiting in the upload queue: ${andList(prs)}.` : 'No upload waits on it yet.',
@@ -863,11 +1314,86 @@ function signinItems(batches, only = null) {
   });
 }
 
+// ---- the machine's upload queue paused on GitHub's PR page (upload-queue.mjs page): one item --------
+// While the uploader finds no comment composer, no repo's screenshot upload runs, so it is one desk
+// fault for the machine, not a drag-it-in item per PR. It is listed in a batch of the repo whose upload
+// found it, else of a repo with an upload waiting; desk-q counts it only in the first (`home`). It is
+// put off for the machine, in desk's home, whichever repo lists it. done records nothing: the first
+// upload after desk is installed again that finds the composer drops it.
+const PAGE = 'upload-page';
+function pageItems(batches, { home = false } = {}) {
+  const pause = uploadPause();
+  if (!pause) return [];
+  const { page: p, jobs, prs } = pause;
+  const live = batches.filter((x) => !x.error && x.q);
+  const first = (bs) => bs.find((b) => b.batch == null) ?? bs[0];
+  // The queue holds the pass's GitHub repo as its origin spells it; GitHub's names are case-insensitive.
+  const isRepo = (b, repo) => repo != null && [b.slug, slugOf(ghRepoOf(b))].includes(slugOf(String(repo)));
+  const r = first(live.filter((b) => isRepo(b, p.repo))) ?? (home ? null : first(live.filter((b) => jobs.some((j) => isRepo(b, j.repo)))));
+  if (!r) return [];
+  return [{ r, dir: deskHome(), t: { key: PAGE }, item: { kind: PAGE, repoLevel: true,
+    need: `desk's screenshot uploader is broken by a GitHub page change (${one(p.why)}), so no repo's screenshot upload runs and ${prs.length} PR(s) wait in draft for their screenshots. ${PAGE_RESUMES}`,
+    note: prs.length ? `Waiting in the upload queue: ${andList(prs)}.` : 'No upload waits on it yet.',
+    actions: [['done', 'once desk is installed again with a fix, the next pass uploads what waits and drops this item'], ['not-now']],
+    since: timeOf(p.at) } }];
+}
+
+// ---- what a session handed the person (asks.mjs): one item an ask, on the repo's standing batch ----
+const ASK = 'ask:';
+const askItems = (batches) => batches.filter((b) => b.batch == null && !b.error).flatMap((r) => (r.asks ?? []).map((a) => ({ r, dir: r.stateDir, t: { key: `${ASK}${a.id}` },
+  item: { kind: 'ask', repoLevel: true, id: a.id, need: a.text, actions: [['done', 'a session handed this to you; say done once it is done, and it leaves the list'], ['not-now']], since: timeOf(a.at) } })));
+
+// ---- a red main assigned to the person (tests/ci_main_red.mjs): one item an issue -------------------
+// CI's alarm keeps one issue labelled ci-main-red open, assigned to the repo's owner, while a lane on
+// main is red, cancelled or stale. It is read through gh only when items are listed (`read`, READS.ciRed),
+// never for desk-q's count, and listed on the repo's standing batch. done records nothing: the alarm
+// closes the issue once every lane is green and fresh, and the item goes with it.
+const CI_RED = 'ci-red:';
+const ciRedItems = (repos, scope, read) => [...new Set(scope.filter((b) => !b.error).map((b) => b.slug))].flatMap((slug) => {
+  const r = repos.find((b) => b.slug === slug && b.batch == null && !b.error) ?? scope.find((b) => b.slug === slug && !b.error);
+  return (read(r) ?? []).map((i) => ({ r, dir: r.stateDir, t: { key: `${CI_RED}${i.number}` }, item: { kind: 'ci-red', repoLevel: true,
+    need: `main is red in ${ghRepoOf(r)}: issue #${i.number} (${one(i.title)}, ${i.url}) says which CI lane on main failed, was cancelled or went stale. Fix it on main, or rerun a lane that only flaked`,
+    actions: [['done', 'the alarm closes the issue once every lane on main is green and fresh, and this item goes with it; done records nothing'], ['not-now']],
+    since: timeOf(i.createdAt) } }));
+});
+
+// ---- a session-run batch whose passes stopped (desk-q passesPaused): one item a batch ---------------
+// A batch an interactive session runs (§3b Batches run by `session`) has no supervisor to start its
+// passes again, so when that session stalls (a turn that ended short of its next step, a request that
+// hung) nothing moves there. Once such a batch has run a pass and desk-q reads it paused (no pass for
+// LIVE_MS, its next pass due more than PASS_GRACE_MS ago, and a ticket autopilot could move), it is
+// one item, `stalled` for the standing batch and `stalled:<batch>` for a named one, listed and put
+// off in that batch alone, so every scope that lists it lists the same item. Its need names its last
+// pass, so not-now holds until a later stall; done records nothing: the next pass drops it.
+const STALLED = 'stalled';
+const stalledItems = (batches, now = Date.now()) => batches
+  .filter((b) => !b.error && b.q && b.last != null && b.run?.by === 'session' && passesPaused(b))
+  .map((b) => ({ r: b, dir: b.stateDir, t: { key: b.batch == null ? STALLED : `${STALLED}:${b.batch}` }, item: { kind: STALLED, repoLevel: true,
+    need: `passes stopped in ${b.name}, a batch a session runs, so nothing new starts or merges there: its last pass ran at ${utc(b.last)}${b.next != null ? `, and the next was due at ${utc(b.next)}` : ''}. The session running it looks stalled: resume it, or ${resumeOf(b)}`,
+    note: `Passes stopped ${since(now - b.last)} ago.${b.rows.some((x) => x.k === 'running') ? ' Running workers carry on.' : ''}`,
+    actions: [['done', 'once a pass runs again this item leaves the list; done records nothing'], ['not-now']],
+    since: b.last } }));
+
 // One item's kind, its one-line need and its actions, the recommended one first with its reason.
 // `reads` (READS) lets a draft's need quote the gaps its review lists; without it none is read.
-function itemOf(r, x, reads = null) {
+// `finds` (READS) lets a stopped or outside-held ticket's merged PR in another repo be looked for on
+// GitHub; without it only those repos' queues are read.
+function itemOf(r, x, reads = null, finds = reads) {
   const t = x.t;
+  if (x.dup) return x.dup;
   if (x.usage) return { kind: 'usage', need: usageHoldOf(r), actions: [['done', 'it lifts by itself; switch subscription to lift it sooner, then say done'], ['not-now']] };
+  if (x.subOff) {
+    const s = r.q.subscription_off;
+    return { kind: 'subscription-off', need: `${r.slug} is pinned to ${s.email}, which is off${s.login ? ` (claude ${s.login})` : ''}, so no new work starts for it: move it to another subscription (desk-env subscription set ${r.slug} <default|email>)${s.login ? `, or set ${s.login} unused (desk-env logins set claude ${s.login} unused)` : ''}`,
+      actions: [['done', 'once it is moved, or the subscription is unused, the next pass starts its work and drops this item'], ['not-now']] };
+  }
+  if (x.baseSync) {
+    const b = r.q.base_sync_stuck;
+    const n = b.frozen ?? 0;
+    return { kind: 'base-sync', holdsAll: true,
+      need: `the base sync of ${b.base} could not push, so ${n === 1 ? '1 ticket ready to spawn is' : `${n} tickets ready to spawn are`} frozen until ${b.base} takes ${b.source ?? 'the default branch'}: ${b.why}. Run it by hand to see the hook's full output and push it: ${b.cmd}`,
+      actions: [['done', 'once the base is pushed, the next pass finds it current, spawns again and drops this item'], ['not-now']] };
+  }
   if (x.basePush) {
     const a = r.q.base_push_ask;
     const base = a.base ?? 'the batch base', source = a.source ?? 'the default branch';
@@ -925,11 +1451,14 @@ function itemOf(r, x, reads = null) {
   // already, so a resume only records what the next worker should know.
   if (busyPark(t)) return { kind: 'worktree', need: one(busyPark(t).question), note: `${capital(worktreeBusyText(wb))}.`, actions: [['resume', 'say what you did about it; a worker finishes it, with your note in its briefing, once a pass finds its worktree clean'], ['not-now']] };
   if (wb) return { kind: 'worktree', need: worktreeBusyText(wb), actions: [['done', 'commit, push or discard its changes (or end the session working in it), then say done; the next pass that finds it clean starts it'], ['not-now']] };
-  if (x.k === 'failed' && sessionPark(parkText(r, t))) return { kind: 'stopped', need: `worker stopped: ${one(parkText(r, t))}`, actions: withDrop(r, t, [['open', sessionWhy(parkText(r, t))], ['not-now']]) };
+  // A stopped or outside-held ticket whose PR merged in another repo, where it was built, is done.
+  const elsewhere = x.k === 'failed' || x.k === 'stuck' ? mergedElsewhere(r, t, finds) : null;
+  const shipped = (item) => (elsewhere ? { ...item, elsewhere, actions: shippedFirst(item.actions, elsewhere) } : item);
+  if (x.k === 'failed' && sessionPark(parkText(r, t))) return shipped({ kind: 'stopped', need: `worker stopped: ${one(parkText(r, t))}`, actions: withDrop(r, t, [['open', sessionWhy(parkText(r, t))], ['not-now']]) });
   if (x.k === 'failed') {
     // A park file saying it has no worker work recommends drop over a requeue that would only park it again.
     const actions = [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now']];
-    return { kind: 'stopped', need: needText(r, x), actions: [...(noWorkerWork(parkText(r, t)) ? withDrop(r, t, actions) : actions), ...moveAction(r)] };
+    return shipped({ kind: 'stopped', need: needText(r, x), actions: [...(noWorkerWork(parkText(r, t)) ? withDrop(r, t, actions) : actions), ...moveAction(r)] });
   }
   // Held by open tickets outside the batch, held inside it or not, with its question on them open. A
   // blocker no batch holds is worked by nobody, so admitting it comes first when every such blocker is
@@ -938,19 +1467,19 @@ function itemOf(r, x, reads = null) {
   // start without them.
   if (x.k === 'stuck') {
     const outside = outsideHolds(r, t), freeHolds = outside.filter((o) => !o.batch), free = freeHolds.map((o) => o.key);
-    const one1 = free.length === 1;
-    const admitWhy = `${andList(free)} ${one1 ? 'is' : 'are'} in no batch, so nothing works ${one1 ? 'it' : 'them'}: admitting queues ${one1 ? 'it' : 'them'} for a worker`;
+    const single = free.length === 1;
+    const admitWhy = `${andList(free)} ${single ? 'is' : 'are'} in no batch, so nothing works ${single ? 'it' : 'them'}: admitting queues ${single ? 'it' : 'them'} for a worker`;
     const rules = free.length ? admitRules(r) : null;
     const notYours = freeHolds.map((o) => notAdmittable(o, rules)).filter(Boolean);
     const answerWhy = 'say whether it can start without the tickets outside; the next pass can then start it';
     const need = `held by ${andList(outside.map(holdWords))}, outside this batch`;
     if (notYours.length) {
-      return { kind: 'held', need, actions: [['not-now', `${notYours.join('; ')}. So ${notYours.length === 1 ? 'it is' : 'they are'} not yours to queue here; not-now puts this off until a blocker moves`],
-        ['admit', null, admitWhy], ['answer', null, answerWhy]] };
+      return shipped({ kind: 'held', need, outside: outside.map((o) => o.key), actions: [['not-now', `${notYours.join('; ')}. So ${notYours.length === 1 ? 'it is' : 'they are'} not yours to queue here; not-now puts this off until a blocker moves`],
+        ['admit', null, admitWhy], ['answer', null, answerWhy]] });
     }
     const admit = free.length ? [['admit', admitWhy]] : [];
-    return { kind: 'held', need,
-      actions: [...admit, admit.length ? ['answer', null, answerWhy] : ['answer', answerWhy], ['not-now']] };
+    return shipped({ kind: 'held', need, outside: outside.map((o) => o.key),
+      actions: [...admit, admit.length ? ['answer', null, answerWhy] : ['answer', answerWhy], ['not-now']] });
   }
   // A held ticket with a question of its own is asked that question, below.
   if (isHeld(t) && !heldAsks(t)) {
@@ -962,7 +1491,10 @@ function itemOf(r, x, reads = null) {
   if (t.state === 'parked' && !isHeld(t)) {
     const need = one(t.park?.question) || 'parked, with no question recorded';
     // What its worktree holds that origin does not, as the last pass read it.
-    const note = t.park?.unpushed ? `${capital(t.park.unpushed)}.` : undefined;
+    // A gated write's exact text (park.approve) is printed whole under the question by listText; the
+    // note points the session there, since it asks from this one line.
+    const approval = t.park?.approve?.body ? 'Its exact text awaiting approval follows this line: show it verbatim before you ask.' : '';
+    const note = [t.park?.unpushed ? `${capital(t.park.unpushed)}.` : '', approval].filter(Boolean).join(' ') || undefined;
     if (planPark(t)) return { kind: 'plan', need, note, actions: [['answer', 'say start, discard, or the edit to make; the supervisor acts on it at its next tick: an edit is applied and the batch starts, and one it cannot apply comes back here naming why'], ['not-now']] };
     const sp = spinePark(t);
     if (sp === 'approval') return { kind: 'spine', need, note, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };
@@ -973,7 +1505,7 @@ function itemOf(r, x, reads = null) {
     if (triagePark(t)) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', 'parked at triage: it needs splitting or its links fixing, which a requeue cannot do'], SESSION_DONE, ['not-now']]) };
     const { taken, overrides } = readDecisions(r.stateDir);
     const overridden = new Set(overrides.map((o) => o.override_of));
-    const offer = taken.filter((d) => d.ticket === t.key && !overridden.has(d.id)).slice(-DECISIONS_SHOWN).reverse()
+    const offer = taken.filter((d) => d.ticket === t.key && !d.lever && !overridden.has(d.id)).slice(-DECISIONS_SHOWN).reverse()
       .map((d) => [`override ${d.id}`, null, `took "${cut(one(d.chose), 40)}" on "${cut(one(d.question), 60)}"`]);
     // A step only the person or another account takes: nothing a worker does moves it, so no action is
     // the recommendation, and resume reads its PR on GitHub before it requeues (record).
@@ -981,10 +1513,10 @@ function itemOf(r, x, reads = null) {
     if (step) return { kind: 'parked', personOnly: step, need: `a step only you or another account takes: ${step}${one(parkText(r, t)) === step ? '' : ` (${need})`}`, note,
       actions: [['resume', null, PERSON_RESUME_NOTE], ['drop', null, DROP_NOTE], ['not-now'], ...moveAction(r), ...offer] };
     // No bare answer: it would leave the ticket parked, and desk-q still counting it.
-    return { kind: 'parked', need, note, actions: [...withDrop(r, t, [['resume', `lane ${laneOf(t, triageOf(r.stateDir, t.key))}: a worker finishes it once it has your answer`], ['not-now']]), ...moveAction(r), ...offer] };
+    return { kind: 'parked', need, note, actions: [...withDrop(r, t, [['resume', `lane ${laneOf(t, triageOf(r, t.key))}: a worker finishes it once it has your answer`], ['not-now']]), ...moveAction(r), ...offer] };
   }
   // Its questions as the digest page words them, so a put-off entry keys to the same text.
-  const need = one(openQuestions(digestList(r)[0]).find((q) => q.ticket === t.key && q.kind === 'triage')?.text) || `${t.open_questions} triage question(s) open`;
+  const need = one(openQuestions({ ...digestList(r)[0], triage: (k) => triageOf(r, k) }).find((q) => q.ticket === t.key && q.kind === 'triage')?.text) || `${t.open_questions} triage question(s) open`;
   return { kind: 'triage', need, actions: [['answer', 'answering clears its questions, so the next pass can start it'], ['not-now']] };
 }
 
@@ -1000,6 +1532,9 @@ function putOffKey(r, t, item) {
   if (item.kind === 'step') return { question: `${t.key} step`, inputs: { ticket: t.key, waiting: item.waiting.join(', ') } };
   if (item.kind === 'follow') return { question: `${t.key} follow-on`, inputs: { ticket: item.ticket, steps: item.need } };
   if (item.blocker) return { question: `${t.key} link`, inputs: { ticket: item.ticket, blocker: item.blocker } };
+  // A promotion PR opened, or one that changes state, brings it back.
+  if (item.unpromoted) return { question: `${t.key} unpromoted`, inputs: { ticket: item.ticket, blocker: item.waitsOn, branch: item.unpromoted.branch, pr: String(item.unpromoted.pr ?? 'none'), state: item.unpromoted.state } };
+  if (item.promotion != null) return { question: `${t.key} red`, inputs: { 'pr-head': item.head, checks: item.checks.join(', ') } };
   const inputs = { ticket: t.key };
   if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
   else inputs.need = item.need;
@@ -1068,7 +1603,7 @@ export const heldPutOff = (r, t) => ['put_off', 'holding'].includes(judged(r, { 
 export function stampActions({ stateDir, ticket, question, now = Date.now(), repos = loadRepos(now) }) {
   const r = repos.find((b) => b.q && resolve(b.stateDir) === resolve(stateDir));
   const x = r && needsRows(r).find((y) => y.t.key === ticket);
-  const item = x && itemOf(r, x);
+  const item = x && itemOf(r, x, null, READS);
   return item && questionKey(putOffKey(r, x.t, item).question) === questionKey(question) ? stampItem(r, x, item) : null;
 }
 function stampItem(r, x, item) {
@@ -1085,32 +1620,43 @@ function stampItem(r, x, item) {
 // is in `stepRows`, not `rows`, while a step holding it is not put off: it needs the person, but is
 // counted once, through its step item. A reader that draws "not in rows" as put off counts
 // `stepRows` as needing the person too, so a row whose every step is put off is drawn put off.
+// `items` are the counted items that are not ticket rows (steps, follow-ons, asks, sign-ins, …), each
+// { r, t, item }, so a reader can draw a row for every one it counts; `offItems` those put off.
 export function needsCount(r) {
   const registers = new Map();
   const register = (b) => { if (!registers.has(b.stateDir)) registers.set(b.stateDir, readRegister(b.stateDir)); return registers.get(b.stateDir); };
   const rows = [], held = [];
-  let putOff = 0, steps = 0;
-  for (const x of [...basePushRows(r), ...needsRows(r)]) {
+  let putOff = 0;
+  const items = [], offItems = [];
+  // A batch's base-sync, base-push and subscription-off items are no ticket's row, so they are items.
+  for (const x of countedBatchRows(r)) {
+    const { item, l } = judged(x.b, x, register(x.b));
+    if (l.status === 'put_off') { putOff++; offItems.push({ r: x.b, t: x.t, item }); } else items.push({ r: x.b, t: x.t, item });
+  }
+  for (const x of needsRows(r)) {
     const b = x.b ?? r;
     if (stepHeld(b, x)) { held.push(x); continue; }
     if (judged(b, x, register(b)).l.status === 'put_off') putOff++; else rows.push(x);
   }
   const live = new Set();
   for (const s of stepItems((r.batches ?? [r]).filter((x) => x.q))) {
-    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else { steps++; live.add(s.item.step); }
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else { items.push(s); live.add(s.item.step); }
   }
   const stepRows = held.filter((x) => { const b = x.b ?? r; return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)); });
-  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b)])) {
-    if (lookup(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') putOff++; else steps++;
+  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...promotionItems(b), ...baseRedItems(b), ...duplicateItems(b)])) {
+    if (lookup(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') { putOff++; offItems.push(f); } else items.push(f);
   }
   for (const s of reviewerItems((r.batches ?? [r]).filter((x) => x.q))) {
-    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
   }
   const own = (r.batches ?? [r]).filter((x) => x.q);
-  for (const s of signinItems(own, own)) {
-    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
+  for (const s of [...signinItems(own, own), ...pageItems(own, { home: true })]) {
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
   }
-  return { shown: rows.length + steps, putOff, rows, stepRows };
+  for (const s of [...askItems(r.batches ?? [r]), ...stalledItems(own)]) {
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
+  }
+  return { shown: rows.length + items.length, putOff, rows, stepRows, items, offItems };
 }
 
 // The batches `word` names, else every batch desk-q's home screen shows.
@@ -1118,9 +1664,10 @@ const scopeOf = (repos, word) => (word ? batchesNamed(repos, word) : { named: nu
 
 // Every item desk-q counts as needing the person, in the batches `word` names (all when null), less
 // those put off with unchanged inputs (`putOff` counts them). One whose inputs changed says what did.
-// A usage-limit hold is an item here, but not in desk-q's count; a base-push item is in both.
+// A usage-limit hold is an item here, but not in desk-q's count; a base-push or subscription-off item is in both.
 // `reads` (READS) is how a draft whose review left gaps quotes them from GitHub; null reads none.
-export function collect({ word = null, now = Date.now(), repos = loadRepos(now), reads = READS } = {}) {
+// `ciRed` (READS.ciRed) reads the red-main issues assigned to the person; null reads none.
+export function collect({ word = null, now = Date.now(), repos = loadRepos(now, word), reads = READS, ciRed = reads?.ciRed ?? null } = {}) {
   const { named, scope } = scopeOf(repos, word);
   const items = [];
   let putOff = 0;
@@ -1145,7 +1692,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now),
       if (stepHeld(r, x)) continue;
       const { item, l } = judged(r, x, register, reads);
       if (l.status === 'put_off') { putOff++; continue; }
-      const since = x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : timeOf(x.t.park?.since ?? x.t.added_at);
+      const since = x.baseSync ? timeOf(r.q.base_sync_stuck.since) : x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : x.subOff ? timeOf(r.q.subscription_off.since) : timeOf(x.t.park?.since ?? (x.pr ? x.t.undraft?.at : null) ?? x.t.added_at);
       const row = item.kind === 'parked' ? unsetRowOf(r, x.t, unsetIn) : null;
       if (row) {
         const id = `${r.slug}\t${row}`;
@@ -1165,11 +1712,19 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now),
       if ([...s.in].some((b) => dirs.has(resolve(b.stateDir)))) repoItem(s.r, s.t, s.item, s.item.since, s.dir, s.behind, s.said);
     }
   }
-  for (const f of inScope.flatMap((b) => [...followItems(b), ...linkItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
+  for (const f of inScope.flatMap((b) => [...followItems(b, reads), ...linkItems(b), ...unpromotedItems(b), ...duplicateItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
+  for (const f of inScope.flatMap(baseRedItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
+  // Its need names the follow items waiting on it, so it ranks by them without saying the count.
+  for (const f of inScope.flatMap(promotionItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
   for (const slug of new Set(inScope.map((x) => x.slug))) {
     for (const s of reviewerItems(repos.filter((x) => x.slug === slug && !x.error && x.q))) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   }
+  for (const s of stalledItems(inScope, now)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of signinItems(inScope, word ? inScope : null)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
+  for (const s of pageItems(inScope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
+  for (const s of askItems(scope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
+  // Unscoped, every configured repo: a quiet repo, which the home screen does not show, is where a lane goes stale.
+  if (ciRed) for (const s of ciRedItems(repos, word ? scope : repos, ciRed)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))), g.r.stateDir, heldBehindAll(g.parked.map((p) => [p.r, p.t.key])));
   const slugs = new Set((word ? scope : repos).map((x) => x.slug));
   for (const slug of slugs) {
@@ -1177,10 +1732,11 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now),
     const item = r && !r.error ? templatesItem(r, templatesRecord(slug)) : null;
     if (item) repoItem(r, { key: TEMPLATES }, item, item.since);
   }
+  for (const i of items) i.cause = causeOf(i);
   // Heads of one batch with tickets waiting behind them go in build order (its queue's), as a fork's do.
   const built = (x) => Object.keys(x.r?.q?.tickets ?? {}).indexOf(x.t.key);
   const heads = (a, b) => (a.r === b.r && (a.behind ?? 0) > 0 && built(a) >= 0 && built(b) >= 0 ? built(a) - built(b) : 0);
-  items.sort((a, b) => (b.broken - a.broken) || ((b.behind ?? 0) - (a.behind ?? 0)) || heads(a, b) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
+  items.sort((a, b) => (b.broken - a.broken) || (!!b.holdsAll - !!a.holdsAll) || ((b.behind ?? 0) - (a.behind ?? 0)) || heads(a, b) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
   return { repos, scope, items, named, putOff };
 }
 
@@ -1195,6 +1751,15 @@ const runLine = (r) => {
 // The put-off count, after the item count: they are not listed again until their inputs change.
 const putOffLine = (c) => (c.putOff ? ` ${c.putOff} put off with not-now, left out until ${c.putOff === 1 ? 'it changes' : 'they change'}.` : '');
 
+// A parked write awaiting approval, as listText prints it under its item: a header naming its kind and
+// target, the body line for line as the worker wrote it, and an end line, so the body is never cut or
+// reworded and nothing after it reads as part of it.
+export const approvalLines = (key, a) => [
+  `--- ${key} awaiting approval: ${a.kind} on ${a.target}, the exact text ---`,
+  ...String(a.body).split('\n'),
+  `--- end of ${key}'s text awaiting approval ---`,
+];
+
 export function listText(c, now = Date.now()) {
   if (!c.items.length) return `Nothing needs you${c.named ? ` in ${c.named.name}` : ''}.${putOffLine(c)}`;
   // A repo-level item is the person's own step, so who runs the batch says nothing about it.
@@ -1206,10 +1771,53 @@ export function listText(c, now = Date.now()) {
     // survive. A done note follows it whole: what GitHub showed when the person last said done.
     const need = `${i.need}${i.note ? ` ${i.note}` : ''}`;
     lines.push(`${i.r.word} ${i.t.key} ${i.kind}${waited} | ${need} | ${i.actions.map(actionText).join(' | ')}`);
+    // A write its park waits for the person to approve: the exact text, verbatim, under the question.
+    const a = i.t.state === 'parked' ? i.t.park?.approve : null;
+    if (a?.body) lines.push(...approvalLines(i.t.key, a));
   }
   const n = new Set(repos.map((r) => r.slug)).size;
   lines.push(`${c.items.length} item${c.items.length === 1 ? '' : 's'} in ${n} repo${n === 1 ? '' : 's'}.${putOffLine(c)}`);
   return lines.join('\n');
+}
+
+// What an item waits on, as a key items with the same cause share, so one answer can settle them all:
+// the approval, check or gate holding a PR, the tickets outside the batch holding a ticket, the step
+// only the person takes, a usage hold or a subscription that is off. Null where the item is its own,
+// as a failing check or a skipped draft is: each PR's is cleared on its own branch.
+const PR_CAUSES = { trigger: (w) => [w.base ?? '', ...[...w.names].sort()].join('|'), gate: (w) => one(w.text),
+  behind: (w) => w.base ?? '', green: () => '', running: () => '', hold: (w) => one(w.why ?? w.text) };
+export function causeOf(i) {
+  const at = (...parts) => [i.r.slug, ...parts].join(':');
+  if (i.kind === 'usage') return at('usage');
+  if (i.kind === 'subscription-off') return at('subscription-off', i.r.q?.subscription_off?.email ?? '');
+  if (i.kind === 'parked' && i.personOnly) return at('person-step', one(i.personOnly));
+  if (i.outside?.length) return at('outside', [...i.outside].sort().join('|'));
+  if (i.kind !== 'pr') return null;
+  const w = prWhy(i.r, i.t) ?? {};
+  const ask = approvalAsk(i.t, w);
+  if (ask && !ask.left.length) return at('approval', ask.cause.why);
+  return PR_CAUSES[w.code] ? at(`pr-${w.code}`, PR_CAUSES[w.code](w)) : null;
+}
+
+// One item as data: what listText prints for it, with its key, its cause and how many held tickets wait
+// behind it. `id` is stable while the item is the same item: its batch, key and kind.
+function itemJson(i, now) {
+  const ticket = i.ticket ?? (i.repoLevel || i.t.key.includes(':') ? null : i.t.key);
+  return { id: `${i.r.word}:${i.t.key}:${i.kind}`, cause: i.cause ?? null, kind: i.kind, repo: i.r.repo, batch: i.r.word, key: i.t.key, ticket,
+    ...(({ as_of, age_s }) => ({ since: as_of, waited_s: age_s }))(inputAge(i.since, now)),
+    question: i.need, note: i.note || null, behind: i.behind ?? 0, production_broken: !!i.broken, repo_level: !!i.repoLevel,
+    actions: i.actions.map(([action, why, note]) => ({ action, recommended: why != null, why: why ?? null, note: note ?? null })) };
+}
+
+// The list as data, what `list --json` prints. With `settle` it first settles what has shipped, as list
+// does (refresh), and `settled` holds the lines that says; without it, it writes nothing.
+export function listItems({ word = null, settle = false, now = Date.now(), repos = null, reads = READS } = {}) {
+  const settled = settle ? refresh({ word, now, ...(repos ? { repos } : {}), reads }) : [];
+  const c = collect({ word, now, repos: settle || !repos ? loadRepos(now) : repos, reads });
+  const batches = [...new Set(c.scope.filter((x) => !x.error && x.q))];
+  return { v: 1, generated_at: new Date(now).toISOString(), settled: settle, settled_lines: settled,
+    inputs: { queues: batches.map((b) => ({ batch: b.word, ...inputAge(mtimeOf(b.queuePath), now) })) },
+    scope: c.named ? c.named.name : null, count: c.items.length, put_off: c.putOff, items: c.items.map((i) => itemJson(i, now)) };
 }
 
 // A queue.mjs command run from the named repo's checkout, so the permissions and GitHub repo it reads
@@ -1254,8 +1862,8 @@ function namedFixturesText(r, ticket, text) {
 }
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
-export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket === TEMPLATES || ticket === REVIEWER || ticket.startsWith(`${SIGNIN}:`)) return recordRepoItem({ word, ticket, action, now, repos });
+export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED)) return recordRepoItem({ word, ticket, action, now, repos, reads });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -1264,9 +1872,13 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   const queued = r.q?.tickets?.[ticket], status = prStatusOf(queued);
   const shut = verb === 'resume' && status ? prShut(status.pr, queued.merged_at ? 'MERGED' : status.state) : null;
   if (shut) return { ok: false, line: `${r.name} ${ticket}: ${shut}` };
-  const x = !r.q ? null : [...batchRows(r), ...needsRows(r)].find((y) => y.t.key === ticket);
+  const row = !r.q ? null : [...batchRows(r), ...needsRows(r)].find((y) => y.t.key === ticket);
+  // A copy queued in another repo too is its duplicate item, which a drop answers whatever its own row
+  // offers, and a not-now puts off beside its own row's item.
+  const dup = r.q ? duplicateRow(r, ticket) : null;
+  const x = !row || verb === 'drop' ? dup ?? row : row;
   if (!x) return movedOn(r, ticket, verb, text, now);
-  const item = itemOf(r, x);
+  const item = itemOf(r, x, null, reads);
   // move is taken on any parked or stopped item, listed or not, so one naming no running batch is
   // refused naming those that are.
   const allowed = [...item.actions.map(([a]) => a.split(' ')[0]), ...(MOVABLE.includes(item.kind) ? ['move'] : [])];
@@ -1283,11 +1895,10 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   const putOff = () => addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString(), actions: verbsOf(item) }), r.stateDir);
   // A fix for the ticket's next worker, then the requeue that spawns it: written first so the spawn
   // reads it, and taken back if the requeue is refused. null once both are made, else what refused.
-  // With the failure-class lever on in its repo, the fix records its class first (failure-class.mjs);
-  // the person sent it, so a class that waits does not hold it.
+  // The fix records its class first (failure-class.mjs); the person sent it, so a class that waits
+  // does not hold it.
   const sendFix = (fix) => {
-    const lever = (() => { try { return parseLevers(repoConfigValues(r.slug, 'levers')).on.includes('failure-class'); } catch { return false; } })();
-    const classed = lever ? (({ class: c, class_rule }) => ({ class: c, class_rule }))(fixClass(fix, x.t)) : {};
+    const classed = (({ class: c, class_rule }) => ({ class: c, class_rule }))(fixClass(fix, x.t));
     const f = queueCmd(r, ['set', ticket, `fix=${JSON.stringify({ ...fix, ...classed, at: new Date(now).toISOString() })}`]);
     if (!f.ok) return `its fix was refused: ${f.out}`;
     const q = queueCmd(r, ['requeue', ticket]);
@@ -1367,16 +1978,42 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   };
   // Done on a session item: the person finished the ticket outside desk. Its PR and ticket are read now;
   // a merged PR, or none, is recorded done as list records one that shipped, and anything else is refused.
+  // Its PR is the one it recorded, else the one the last pass read (pr_status) unless that is the PR
+  // merged before a requeue or one GitHub shows closed unmerged (an earlier round's), else an open PR on
+  // GitHub naming its key: "no PR" is never assumed.
   const sessionDone = () => {
     const links = linksPending(x.t);
     if (links) return say(false, `it waits on ${links}, so it is not recorded done and stays on your list: the next pass records it done once each is on Jira.`);
-    const pr = ownPr(x.t);
-    const { v, err } = pr == null ? { v: null, err: '' } : readPr(pr);
+    const status = x.t.pr_status;
+    const earlier = x.t.merged_at != null && (status?.state === 'MERGED' || Number(status?.pr) === Number(x.t.result?.pr));
+    const own = ownPr(x.t);
+    let pr = own ?? (status?.pr != null && !earlier ? Number(status.pr) : null);
+    let read = pr == null ? null : readPr(pr);
+    if (own == null && read?.v?.state === 'CLOSED') { pr = null; read = null; }
+    if (pr == null && reads.open) {
+      const found = reads.open(r, ticket);
+      if (found.err) return say(false, `could not look on GitHub for an open PR naming ${ticket} (${found.err}), so it is not recorded done and stays on your list.`);
+      pr = found.pr;
+    }
+    const { v, err } = read ?? (pr == null ? { v: null, err: '' } : readPr(pr));
     if (pr != null && !v?.state) return say(false, `could not read PR #${pr}'s state from GitHub${err ? ` (${err})` : ''}, so it is not recorded done and stays on your list.`);
     if (pr != null && v.state !== 'MERGED') return say(false, `GitHub shows PR #${pr} ${prShows(v)}, so it is not recorded done and stays on your list. Say done once it has merged.`);
     const how = `you said done; ${mergedWords(pr, v)}${trackerTicket(r, ticket) ? `; ${ticketWords(ticket, reads.ticket(r, ticket))}` : ''}`;
     const m = recordShipped(r, x.t, how, pr, v);
     return m.ok ? say(true, `recorded done (${how}), so it is off your list.`) : say(false, `recording it done was refused: ${m.out}`);
+  };
+  // Done on a ticket whose PR merged in another repo: recorded done here with that PR, read as merged
+  // (pr_status and merged_at), so no pass reads its number as one of this repo's PRs and the tickets
+  // held behind it are released as behind any merge.
+  const elsewhereDone = ({ repo, pr, mergedAt }) => {
+    const at = mergedAt && !String(mergedAt).startsWith('0001-') ? new Date(mergedAt).toISOString() : new Date(now).toISOString();
+    const how = `you said done; PR #${pr} merged in ${repo}${mergedAt ? ` at ${utc(at)}` : ''}`;
+    const status = { pr, state: 'MERGED', merged_at: at, url: `https://github.com/${repo}/pull/${pr}` };
+    const m = queueCmd(r, [...shippedSet(x.t, how, pr, at), `pr_status=${JSON.stringify(status)}`]);
+    if (!m.ok) return say(false, `recording it done was refused: ${m.out}`);
+    const g = queueCmd(r, ['merged', ticket, at]);
+    if (!g.ok) return say(true, `recorded done (${how}), so it is off your list; its merge time was not recorded (${g.out}), which the next pass records.`);
+    return say(true, `recorded done (${how}), so it is off your list and the tickets held behind it can start.`);
   };
   switch (verb) {
     case 'answer': {
@@ -1429,8 +2066,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       return q.ok ? say(true, 'requeued; the next pass can spawn it.') : say(false, `requeue refused: ${q.out}`);
     }
     case 'start': {
-      const steps = releaseCommand(ticket, '').split(/, then /).map((s) => s.trim().split(/\s+/));
-      for (const s of steps) { const q = queueCmd(r, s); if (!q.ok) return say(false, `refused: ${q.out}`); }
+      for (const s of releaseSteps(ticket)) { const q = queueCmd(r, s); if (!q.ok) return say(false, `refused: ${q.out}`); }
       return say(true, 'hold lifted; the next pass can start it.');
     }
     // queue.mjs's own lines: they name any undraft or merge left for the person to do.
@@ -1454,6 +2090,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     case 'not-now': {
       // A park is put off by answer.mjs, keyed to its inputs, and its entry then records the actions it
       // offers; anything else here, as putOffKey keys it.
+      if (dup && x !== dup) addPutOff(putOffEntry({ ...putOffKey(r, dup.t, dup.dup), ticket, at: new Date(now).toISOString(), actions: verbsOf(dup.dup) }), r.stateDir);
       const still = stillListed(r, ticket);
       if (PARK_KINDS.includes(item.kind)) {
         const a = answer({ slug: r.slug, ticket, text: 'not now', list: digestList(r), now: new Date(now) });
@@ -1501,6 +2138,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       return say(true, `nothing recorded. Run /desk-admit ${free.join(' ')} in ${root ?? r.name}; ${ticket} stays held until ${free.length === 1 ? 'it is' : 'they are'} Done, or you answer that it can start without ${free.length === 1 ? 'it' : 'them'}.`);
     }
     case 'done': {
+      if (item.elsewhere) return elsewhereDone(item.elsewhere);
       if (x.t.park?.session_step) {
         const d = queueCmd(r, ['step-done', ticket]);
         return d.ok ? say(true, 'the step is recorded done and the ticket requeued, with it in its briefing; the next pass can spawn it.') : say(false, `not sent back: ${d.out}`);
@@ -1508,6 +2146,8 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       if (x.pr || heldDraft(x.t)) return prDone();
       if (item.kind === 'session') return sessionDone();
       if (item.kind === 'usage') return say(true, 'noted: the batch carries on by itself once the usage limit lifts.');
+      if (item.kind === 'base-sync') return say(true, 'noted: the next pass reads the base again, and spawns once it is current.');
+      if (item.kind === 'subscription-off') return say(true, 'noted: the next pass reads the repo\'s subscription again, and starts its work once that is not off.');
       if (item.kind === 'worktree') return say(true, 'noted: the next pass that finds the worktree clean drops the record and starts it.');
       return say(true, 'noted: the next pass reads it again and moves it on once your step shows.');
     }
@@ -1518,9 +2158,9 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
 // A repo-level or step item's answer. Done on an unset row requeues every ticket parked on it once the
 // row is set, each in its own batch (or names the live session to message); done on behind templates
 // checks the copies again now; done on a step records nothing, since the pass reads the step from Jira.
-function recordRepoItem({ word, ticket, action, now, repos }) {
-  const c = collect({ word, now, repos, reads: null });
-  let i = c.items.find((y) => (y.repoLevel || y.kind === 'step' || y.kind === 'follow' || y.blocker) && y.t.key === ticket);
+function recordRepoItem({ word, ticket, action, now, repos, reads = READS }) {
+  const c = collect({ word, now, repos, reads: null, ciRed: ticket.startsWith(CI_RED) ? (reads ?? READS).ciRed : null });
+  let i = c.items.find((y) => (y.repoLevel || y.kind === 'step' || y.kind === 'follow' || y.blocker || y.unpromoted || y.promotion != null) && y.t.key === ticket);
   // A row set since the list was shown no longer groups its parks there; done still finds them.
   if (!i && ticket.startsWith(UNSET) && c.named) {
     const key = ticket.slice(UNSET.length);
@@ -1540,13 +2180,25 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
     addPutOff(putOffEntry({ ...i.putOffKey, ticket, at: new Date(now).toISOString(), ...(i.kind === 'step' ? { actions: verbsOf(i) } : {}) }), i.putOffDir ?? i.r.stateDir);
     return say(true, `put off (${notNowPath(i.putOffDir ?? i.r.stateDir)}).`);
   }
+  // Done on a follow item records the steps it lists as settled (run, or closed on the PR's own evidence), each by its text and gate, under the queue
+  // lock, so the ticket's other steps (another gate's, or one written since this read) are kept.
   if (i.kind === 'follow') {
-    const m = queueCmd(i.r, ['set', i.ticket, `follow_on_done=${new Date(now).toISOString()}`]);
-    return m.ok ? say(true, 'recorded as run, so it is off your list.') : say(false, `recording it was refused: ${m.out}`);
+    const m = queueCmd(i.r, ['follow-ran', i.ticket, JSON.stringify(i.steps), new Date(now).toISOString()]);
+    return m.ok ? say(true, 'recorded done, so it is off your list.') : say(false, `recording it was refused: ${m.out}`);
   }
+  if (i.unpromoted) return verb === 'promote' ? promoteBase(i, say) : startWithout(i, say);
+  if (i.promotion != null) return say(true, `noted: the next pass reads promotion PR #${i.promotion}'s checks again, and this item goes once they pass.`);
   if (i.blocker) return say(true, `noted: the next pass that reads ${i.ticket}'s blockers clears this once ${i.blocker} is no longer linked, and lifts any hold on it.`);
   if (i.kind === REVIEWER) return say(true, 'noted: the next pass checks the account again, and lifts the hold on every PR it names once the check passes.');
+  if (i.kind === 'ask') {
+    try { removeAsk(i.r.stateDir, i.id); } catch (e) { return say(false, `it could not be taken off the list (${one(e.message)}).`); }
+    return say(true, 'done, so it is off your list.');
+  }
+  if (i.kind === STALLED) return say(true, 'noted: this item goes once a pass runs again; done records nothing.');
+  if (i.kind === 'base-red') return say(true, 'noted: the next pass reads the base again; each hold clears once its check passes there, and this item goes with the last; done records nothing.');
+  if (i.kind === 'ci-red') return say(true, 'noted: this item goes once the alarm closes the issue, when every CI lane on main is green and fresh; done records nothing.');
   if (i.kind === SIGNIN) return say(true, 'noted: the next pass checks the login again; once it passes this item goes and the upload queue resumes.');
+  if (i.kind === PAGE) return say(true, 'noted: once desk is installed again, the next upload checks the page; once it finds the composer this item goes and the upload queue resumes.');
   if (i.kind === 'step') return say(true, `noted: the next pass that reads ${i.step} from Jira lifts the hold on what waits for it once it is Done${i.r.ctx?.merges ? ', and desk then merges them' : ''}.`);
   if (i.kind === TEMPLATES) {
     let rec;
@@ -1576,10 +2228,10 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
 
 // What is left: desk-q's NEEDS YOU count in scope (needsCount's rule), then a line for each unfinished batch there whose passes are
 // stopped, needing the person or not: one just answered no longer does, and still waits on a pass.
-export function leftText({ word = null, now = Date.now(), repos = loadRepos(now) } = {}) {
+export function leftText({ word = null, now = Date.now(), repos = loadRepos(now, word) } = {}) {
   const c = scopeOf(repos, word);
   const where = c.named ? ` in ${c.named.name}` : '';
-  const counts = c.scope.filter((x) => !x.error && x.q).map(needsCount);
+  const counts = c.scope.filter((x) => !x.error && (x.q || x.asks?.length)).map(needsCount);
   const n = counts.reduce((a, y) => a + y.shown, 0);
   const lines = [`desk-q counts ${n} item${n === 1 ? '' : 's'} needing you${where}.${putOffLine({ putOff: counts.reduce((a, y) => a + y.putOff, 0) })}`];
   for (const r of (c.named ? c.scope : repos).filter((x) => !x.error && x.q && !x.live && (x.rows.length || x.prs.length))) {
@@ -1588,32 +2240,60 @@ export function leftText({ word = null, now = Date.now(), repos = loadRepos(now)
   return lines.join('\n');
 }
 
+// Records an action a session hands the person on the repo `word` names: { ok, line }.
+export function ask({ word, text, now = Date.now(), repos = loadRepos(now, word) }) {
+  const what = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!what) return { ok: false, line: 'say what the person is to do: needs-you.mjs ask <repo> "<what to do>"' };
+  const r = standingOf(repos, batchesNamed(repos, word).named);
+  const { id, added } = addAsk(r.stateDir, what, now);
+  return { ok: true, line: `${r.repo} ${ASK}${id}: ${added ? 'recorded' : 'already recorded'}; /desk-needs-you and desk-q list it until you say done.` };
+}
+
+// One run of the command line, in this process: { code, out, err }, which the entry below prints and exits
+// with. `reads` is what list's refresh and collect, and record, read through (READS where none is given).
+export function run(argv, { reads } = {}) {
+  const [cmd, ...rest] = argv;
+  const lines = [];
+  const end = (code, err = '') => ({ code, out: lines.map((l) => `${l}\n`).join(''), err });
+  const at = reads === undefined ? {} : { reads };
+  try {
+    const words = rest.filter((a) => !['--json', '--no-settle'].includes(a));
+    if (cmd === 'list' && words.length <= 1 && !words.some((a) => a.startsWith('--'))) {
+      const word = words[0] ?? null, settle = !rest.includes('--no-settle');
+      if (rest.includes('--json')) lines.push(JSON.stringify(listItems({ word, settle, ...at }), null, 2));
+      else lines.push([...(settle ? refresh({ word, ...at }) : []), listText(collect({ word, ...at }))].join('\n'));
+    }
+    else if (cmd === 'left' && rest.length <= 1) lines.push(leftText({ word: rest[0] ?? null }));
+    else if (cmd === 'record' && rest.length >= 3) {
+      const [word, ticket, verb, ...more] = rest;
+      // An override names its decision id before the choice.
+      const [action, text] = verb === 'override' ? [`override ${more[0] ?? ''}`, more.slice(1).join(' ')] : [verb, more.join(' ')];
+      const res = record({ word, ticket, action, text, ...at });
+      lines.push(res.line);
+      if (res.message) lines.push(`MESSAGE ${res.message.to ?? '(no batch name recorded)'}: ${res.message.text}`);
+      if (!res.ok) return end(EXIT.SHOW_PERSON);
+    } else if (cmd === 'move' && rest.length === 3) {
+      const [word, ticket, to] = rest;
+      const res = record({ word, ticket, action: 'move', text: to, ...at });
+      lines.push(res.line);
+      if (!res.ok) return end(EXIT.SHOW_PERSON);
+    } else if (cmd === 'ask' && rest.length === 2) {
+      const res = ask({ word: rest[0], text: rest[1] });
+      lines.push(res.line);
+      if (!res.ok) return end(EXIT.SHOW_PERSON);
+    } else return end(EXIT.SHOW_PERSON, 'usage: needs-you.mjs list [--json] [--no-settle] [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>"\n');
+  } catch (e) { return end(EXIT.SHOW_PERSON, `${e.message}\n`); }
+  return end(0);
+}
+
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
 })();
 if (isMain) {
-  const [cmd, ...rest] = process.argv.slice(2);
-  const refuse = (why) => { console.error(why); process.exit(EXIT.SHOW_PERSON); };
-  try {
-    if (cmd === 'list' && rest.length <= 1) {
-      const settled = refresh({ word: rest[0] ?? null });
-      console.log([...settled, listText(collect({ word: rest[0] ?? null }))].join('\n'));
-    }
-    else if (cmd === 'left' && rest.length <= 1) console.log(leftText({ word: rest[0] ?? null }));
-    else if (cmd === 'record' && rest.length >= 3) {
-      const [word, ticket, verb, ...more] = rest;
-      // An override names its decision id before the choice.
-      const [action, text] = verb === 'override' ? [`override ${more[0] ?? ''}`, more.slice(1).join(' ')] : [verb, more.join(' ')];
-      const res = record({ word, ticket, action, text });
-      console.log(res.line);
-      if (res.message) console.log(`MESSAGE ${res.message.to ?? '(no batch name recorded)'}: ${res.message.text}`);
-      if (!res.ok) process.exit(EXIT.SHOW_PERSON);
-    } else if (cmd === 'move' && rest.length === 3) {
-      const [word, ticket, to] = rest;
-      const res = record({ word, ticket, action: 'move', text: to });
-      console.log(res.line);
-      if (!res.ok) process.exit(EXIT.SHOW_PERSON);
-    } else refuse('usage: needs-you.mjs list [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>]');
-  } catch (e) { refuse(e.message); }
+  const { code, out, err } = run(process.argv.slice(2));
+  // Through console, which drops a write to a closed pipe rather than throwing EPIPE and exiting 1.
+  if (out) console.log(out.replace(/\n$/, ''));
+  if (err) console.error(err.replace(/\n$/, ''));
+  process.exitCode = code;
 }

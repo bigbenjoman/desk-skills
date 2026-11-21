@@ -1,10 +1,16 @@
-name: nightly macOS
+name: macOS
 
-# The full suite on macOS under the system /bin/bash (3.2.57), the bash every Mac running desk has.
-# Pull requests run Linux only (tests.yml), so this catches what only macOS or bash 3.2 shows: a BSD
-# tool's flags, a bash 4 feature at run time. Its job has its own name, never `tests`, so a dispatch
-# writes no check the merge gate counts. ci-main-red.yml opens an issue when it fails.
+# The full suite on macOS under the system /bin/bash (3.2.57), the bash every Mac running desk has, on
+# every push to main. Pull requests run Linux only (tests.yml), so this catches what only macOS or bash
+# 3.2 shows: a BSD tool's flags, a bash 4 feature at run time. The same shards also run on Linux under
+# Node 24, the current LTS, while tests.yml stays on Node 22, so a Node 24-only difference turns this
+# workflow red instead of first showing up on a developer's machine. It is not a required check: no job is
+# named `tests`, so nothing here writes a check the merge gate counts. The schedule is the quiet-day
+# fallback, running the suite only when no push or dispatch run on main passed in the last 24 h
+# (tests/ci_main_red.mjs nightly-due). ci-main-red.yml opens an issue while it is red, cancelled or stale.
 on:
+  push:
+    branches: [main]
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
@@ -12,15 +18,51 @@ on:
 permissions:
   contents: read
 
+# Every push to main gets its own run and finishes; scheduled and dispatched runs queue behind each other.
 concurrency:
-  group: nightly-macos
+  group: macos-${{ github.event_name == 'push' && github.run_id || 'nightly' }}
   cancel-in-progress: false
 
 jobs:
-  macos-full:
-    name: nightly macOS full suite
+  # Whether the suite runs, and tests/plan_shards.mjs's split of every suite into 4 shards. Its name is
+  # tests/ci_main_red.mjs PLAN_JOB: a passed run in which nothing else ran skipped the suite.
+  plan:
+    name: macOS plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      due: ${{ steps.due.outputs.due }}
+      matrix: ${{ steps.shards.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Due
+        id: due
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = schedule ]; then node tests/ci_main_red.mjs nightly-due --github-output
+          else echo due=true >> "$GITHUB_OUTPUT"; fi
+      - name: Plan the shards
+        id: shards
+        if: steps.due.outputs.due == 'true'
+        run: node tests/plan_shards.mjs --shards 4 --github-output
+
+  shard:
+    name: macOS shard ${{ matrix.shard }}/${{ matrix.of }}
+    needs: plan
+    if: needs.plan.outputs.due == 'true'
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,6 +89,53 @@ jobs:
           ln -sf /bin/bash "$RUNNER_TEMP/sysbash/bash"
           echo "$RUNNER_TEMP/sysbash" >> "$GITHUB_PATH"
       - name: Run tests
+        env:
+          SHARD: ${{ matrix.shard }}
+          OF: ${{ matrix.of }}
+          SUITES: ${{ matrix.suites }}
+          HOOK: ${{ matrix.hook }}
         run: |
           bash --version | head -1
-          bash tests/run.sh
+          # 2 suites at once on the 3 vCPU runner
+          bash tests/ci_shard.sh 2
+
+  # The same shards on Linux under Node 24 (tests.yml runs Node 22). A failure here fails this run,
+  # so tests/ci_main_red.mjs reports the macOS lane red.
+  node24:
+    name: Node 24 shard ${{ matrix.shard }}/${{ matrix.of }}
+    needs: plan
+    if: needs.plan.outputs.due == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    # As in tests.yml's Linux shards: shellcheck is preinstalled here, so test_lint.sh requires it.
+    env:
+      DESK_REQUIRE_SHELLCHECK: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
+      - name: Ensure jq
+        run: |
+          command -v jq >/dev/null || { sudo apt-get update && sudo apt-get install -y jq; }
+          jq --version
+      - name: Run tests
+        env:
+          SHARD: ${{ matrix.shard }}
+          OF: ${{ matrix.of }}
+          SUITES: ${{ matrix.suites }}
+          HOOK: ${{ matrix.hook }}
+        run: |
+          node_version=$(node --version)
+          echo "node $node_version"
+          case "$node_version" in v24.*) ;; *) echo "expected Node 24, got $node_version"; exit 1 ;; esac
+          # 3 suites at once on the 4 vCPU runner
+          bash tests/ci_shard.sh 3

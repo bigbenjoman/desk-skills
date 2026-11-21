@@ -1,5 +1,5 @@
 // suite: failure class (every park and fix try records one class; a red check is read against the base)
-import { CLASSES, WAITING_CLASSES, PARK_RULES, parkClass, FIX_RULES, fixClass, runsState, baseSplit } from '../desk/bin/failure-class.mjs';
+import { CLASSES, WAITING_CLASSES, PARK_RULES, parkClass, FIX_RULES, fixClass, runsState, baseSplit, keptHold } from '../desk/bin/failure-class.mjs';
 import { fixCall, fixBrief, draftChecksFix, parseOperatorChecks } from '../desk/bin/fix-tries.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -212,5 +212,44 @@ const heldFirst = draftOf([red('Lint', '9')], [spaced('Lint', '9')], crun(), { b
 t('DS-488 red on the base too stays held rather than re-run', heldFirst?.call, 'held');
 const beatsRecord = draftOf([red('Lint', '9'), red('Unit', '8')], [spaced('Lint', '9'), spaced('Unit', '8')], crun(), { baseRead: read({ Lint: 'fail' }) });
 t('DS-488 beside a base red check, only its own run is re-run and the hold is kept', `${beatsRecord?.call} ${beatsRecord?.gate.failedRuns} ${beatsRecord?.base_red?.checks}`, 'rerun 8 Lint');
+
+// ---- #805: a draft's red check whose failed log names no file the PR changes is re-run once at its head,
+// every job of its run, before a fix try, with the failure-class lever on or off.
+{
+const CHANGED = ['apps/web/src/cart.ts', 'apps/web/src/cart.test.ts'];
+const flaky = (name, runId, errors) => ({ ...red(name, runId), errors });
+const away = flaky('Integration', '9', ['FAIL src/orders.test.ts > retries a timed-out order', 'AssertionError: expected 200 to be 504']);
+const off805 = (o = {}) => crun({ classes: false, changed: CHANGED, ...o });
+const out = draftOf([red('Integration', '9')], [ok('tests'), away], off805());
+t('#805 a red check naming no changed file is re-run, lever off, with no fix try', `${out?.call} ${out?.fix} ${out?.gate?.failedRuns}`, 'rerun undefined 9');
+t('#805 its whole run is re-run, so a job reading other jobs\' results reads the new ones', out?.gate?.full, true);
+t('#805 and it says why', out?.why, 'its "Integration" check\'s failed log names no file this PR changes, so its run is re-run once at this head, every job, before any fix worker');
+const crashed = draftOf([red('Test report', '9')], [ok('tests'), flaky('Test report', '9', ['TypeError: Cannot read properties of undefined (reading \'suites\')'])], off805());
+t('#805 a job that crashed with no failed test is re-run too', crashed?.call, 'rerun');
+t('#805 so is one with no error line at all', draftOf([red('Lint', '9')], [red('Lint', '9')], off805())?.call, 'rerun');
+const inDiff = draftOf([red('Unit', '9')], [flaky('Unit', '9', ['FAIL src/cart.test.ts > totals the cart'])], off805());
+t('#805 a failure naming a changed file, as the package runner prints it, goes to a fix try', `${inDiff?.call} ${inDiff?.fix?.what}`, 'requeue red: Unit');
+t('#805 so does one whose annotation points at a changed file', draftOf([red('Unit', '9')], [{ ...flaky('Unit', '9', ['expected 3 to be 4']), error_paths: ['apps/web/src/cart.ts'] }], off805())?.call, 'requeue');
+t('#805 one check naming a changed file beside one that does not: a fix try', draftOf([red('Unit', '9'), red('Integration', '8')], [flaky('Unit', '9', ['FAIL src/cart.test.ts']), { ...away, runId: '8' }], off805())?.call, 'requeue');
+t('#805 the PR\'s files unread: as before', draftOf([red('Integration', '9')], [away], off805({ changed: null }))?.call, 'requeue');
+const after = draftOf([red('Integration', '9')], [away], off805({ reruns: () => 1, rerunsOk: () => 1 }));
+t('#805 red again after its rerun: the fix try goes ahead and says so', after?.fix?.what, 'red: Integration; its failed log names no file this PR changes; one rerun was already tried at this head and it failed again');
+t('#805 its brief says so too', fixBrief({ fix: after.fix }).includes('Their failed logs name no file this PR changes: its failed log names no file this PR changes; one rerun was already tried at this head and it failed again.'), true);
+t('#805 ci-rerun not yes: no rerun, and the item says so', draftOf([red('Integration', '9')], [away], off805({ perm: 'ask' }))?.fix?.what, 'red: Integration; its failed log names no file this PR changes; config §3 ci-rerun is "ask", so reruns are not granted');
+const runnerToo = draftOf([red('Lint', '9')], [spaced('Lint', '9')], crun({ changed: CHANGED }));
+t('#805 with the lever on, a runner fault keeps its words and reruns only the failed jobs', `${runnerToo?.why} | ${runnerToo?.gate?.full}`, `${once.why} | undefined`);
+t('#805 with the lever off, a runner fault naming no changed file is re-run as such a check', draftOf([red('Lint', '9')], [spaced('Lint', '9')], off805())?.gate?.full, true);
+}
+
+// The base red record a fix call leaves: when its hold began, and whether the call holds the PR.
+{
+  const rec = (checks) => ({ class: 'base red', head: 'h', merge_base: 'm', checks, cleared: [] });
+  const A = '2026-11-20T10:00:00.000Z', B = '2026-11-20T11:00:00.000Z';
+  t('keptHold: a new hold begins at this pass, held', JSON.stringify(keptHold(null, { call: 'held', base_red: rec(['Lint']) }, A)), JSON.stringify({ ...rec(['Lint']), since: A, held: true }));
+  t('keptHold: a hold still open keeps when it began', keptHold({ ...rec(['Lint']), since: A }, { call: 'held', base_red: rec(['Lint']) }, B).since, A);
+  t('keptHold: one after a cleared hold begins anew', keptHold({ ...rec([]), cleared: ['Lint'], since: A }, { call: 'held', base_red: rec(['Lint']) }, B).since, B);
+  t('keptHold: a fix try beside it does not hold the PR', keptHold(null, { call: 'requeue', base_red: rec(['Lint']) }, A).held, false);
+  t('keptHold: a call that clears it clears it', keptHold({ ...rec(['Lint']), since: A }, { call: 'requeue', base_red: null }, B), null);
+}
 
 if (fails) { console.log(`${fails} check(s) failed`); process.exit(1); }

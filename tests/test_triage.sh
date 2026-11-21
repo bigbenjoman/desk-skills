@@ -8,6 +8,7 @@
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin"
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state/tickets" "$T/skills/desk-ticket/references" "$T/stub"
+trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
 git config --global user.email t@example.com; git config --global user.name t
 unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_DEFAULT_BRANCH AUTOPILOT_SKIP_CHALLENGE \
@@ -63,7 +64,13 @@ if [ "${STUB_LIMIT:-}" = "$n" ]; then
   exit 1
 fi
 [ "${STUB_NOREC:-}" = "$n" ] && { echo "STUB-STDOUT"; exit 1; }
+# Call STUB_TIMEOUT writes nothing and ends as desk_timeout ends a call it cut off.
+[ "${STUB_TIMEOUT:-}" = "$n" ] && exit 124
+# Call STUB_REFUSED answers with the file it names, a recorded run the API refused.
+[ "${STUB_REFUSED_AT:-}" = "$n" ] && { cat "$STUB_REFUSED"; exit 1; }
 if [ "$n" = 0 ]; then
+  # STUB_ANSWER is an answer the person saves while the pass runs.
+  [ -z "${STUB_ANSWER:-}" ] || { mkdir -p "$DESK_STATE/briefings"; printf '%s' "$STUB_ANSWER" >> "$DESK_STATE/briefings/${STUB_TICKET:-fix-thing}.md"; }
   printf '{"ticket":"%s","lane":"%s","branch":"%s","change_kind":"%s"%s}' "${STUB_TICKET:-fix-thing}" "$STUB_LANE" "${STUB_BRANCH:-fix/fix-thing}" "${STUB_KIND-surface}" "${STUB_EXTRA:-}" > "$DESK_STATE/triage/${STUB_TICKET:-fix-thing}.json"
 else
   [ -n "${STUB_CHAL:-}" ] || STUB_CHAL=$(printf '{"verdict":"CONFIRM","lane":"%s","reason":"stub"}' "$STUB_LANE")
@@ -215,6 +222,16 @@ rm -f "$STUB_LOG".* "$TLOG"; stale
 out=$(STUB_LANE=A STUB_NOREC=0 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-505 AC3: any other run that writes no record fails as before, though an earlier record was on disk" \
   '[ $rc -eq 1 ] && [ ! -f "$T/state/triage/fix-thing.json" ] && grep -qF "FAIL: fix-thing produced no triage record at $T/state/triage/fix-thing.json" <<< "$out" && [[ "$out" != *"USAGE LIMIT"* ]]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$TLOG"
+out=$(STUB_LANE=A STUB_TIMEOUT=0 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-814 AC2: a first pass cut off at its timeout says it timed out" \
+  '[ $rc -eq 1 ] && grep -qxF "FAIL: fix-thing produced no triage record: claude timed out after 600s (log: $TLOG)" <<< "$out"'
+# DS-812: a run the API refused with 403 (tests/fixtures/api-refused-403.jsonl, recorded from a real
+# triage behind a Cloudflare block) is named as that, not as the session limit.
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$TLOG"
+out=$(STUB_LANE=A STUB_REFUSED_AT=0 STUB_REFUSED="$S/fixtures/api-refused-403.jsonl" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-812 AC4: an empty run whose log holds a 403 names the 403, not the session limit" \
+  '[ $rc -eq 1 ] && grep -qF "FAIL: fix-thing produced no triage record: the Claude API refused the call with HTTP 403 (Failed to authenticate. API Error: 403 Attention Required! | Cloudflare). That is the login, not the session limit" <<< "$out" && [[ "$out" != *"can also be the account session limit"* ]] && [[ "$out" != *"USAGE LIMIT"* ]]'
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$TLOG"
 out=$(STUB_LANE=C STUB_NOREC=1 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-505 AC3: a challenge that writes nothing for another reason keeps the first-pass lane, as before" \
@@ -435,6 +452,85 @@ out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-394 AC5: a call the person overrode binds as overridden, and the overridden choice is not listed" \
   '[ $rc -eq 0 ] && P0 | grep -qxF -- "- which retry backoff?: took \"fixed\", overriding \"exponential\" (ben) (engineering)" && ! P0 | grep -qF "took \"exponential\""'
 rm -rf "$T/state/briefings" "$T/state/decisions.jsonl"
+
+# DS-823: a re-triage carries the earlier record's open unknowns and person steps, unless the ticket now
+# settles them (named in dropped_earlier) or the person has answered since. The stub's pass returns none.
+EQ='Which legal wording ships on the consent page? (recommended: the current text)'
+ES='apply the migration to production'
+EARLY="$T/state/triage/fix-thing.earlier.json"
+earlier(){ printf '{"ticket":"fix-thing","lane":"A","branch":"fix/fix-thing","change_kind":"surface","unknowns":["%s"],"decided":[],"ben_steps":[{"step":"%s","blocker":"Ben applies it, unblocking fix-thing"}]%s}' "$EQ" "$ES" "${1:-}" >"$T/state/triage/fix-thing.json"; touch -t 202601010000 "$T/state/triage/fix-thing.json"; }
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC1: the prompt lists the earlier record's open unknown and person step" \
+  'P0 | grep -qF "**Still open from fix-thing'"'"'s earlier triage.**" && P0 | grep -qxF -- "- unknown: $EQ" && P0 | grep -qxF -- "- person step: $ES"'
+check "DS-823 AC1: a pass that returns neither keeps the same unknown and person step, and says so" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "$(jq -cn --arg q "$EQ" "[\$q]")" ] && [ "$(lc -r ".ben_steps[0].step")" = "$ES" ] && [ "$(lc ".ben_steps | length")" = 1 ] && [[ "$out" == *"carried 1 earlier unknown(s) and 1 earlier person step(s) this pass left out"* ]] && [ ! -f "$EARLY" ]'
+rm -f "$STUB_LOG".*
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC1: triaging again carries them again, never twice" \
+  '[ $rc -eq 0 ] && [ "$(lc ".unknowns | length")" = 1 ] && [ "$(lc ".ben_steps | length")" = 1 ]'
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A STUB_NOREC=0 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+rm -f "$STUB_LOG".*
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc2=$?
+check "DS-823 AC1: a triage that fails keeps the earlier record aside, and the next one still carries it" \
+  '[ $rc -ne 0 ] && [ $rc2 -eq 0 ] && [ "$(lc ".unknowns | length")" = 1 ] && [ "$(lc -r ".ben_steps[0].step")" = "$ES" ] && [ ! -f "$EARLY" ]'
+rm -f "$STUB_LOG".*; earlier
+DROP="\"dropped_earlier\":[{\"item\":\"$EQ\",\"why\":\"the ticket now says: ship the current consent text\"},{\"item\":\"$ES\",\"why\":\"the ticket no longer adds a migration\"}]"
+out=$(STUB_LANE=A STUB_EXTRA=",$DROP" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC2: an earlier unknown the ticket now answers is dropped, naming it and the text that answered it" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "[]" ] && [[ "$out" == *"dropped earlier unknown \"$EQ\": the ticket now says: ship the current consent text"* ]]'
+check "DS-823 AC3: an earlier person step the ticket now removes is dropped, naming it and why" \
+  '[ "$(lc -c .ben_steps)" = "[]" ] && [[ "$out" == *"dropped earlier person step \"$ES\": the ticket no longer adds a migration"* ]] && [ "$(lc ".dropped_earlier | length")" = 2 ]'
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A STUB_EXTRA=",\"dropped_earlier\":[{\"item\":\"$ES\",\"why\":\"\"}]" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC3: a drop that gives no reason does not drop the step" \
+  '[ $rc -eq 0 ] && [ "$(lc -r ".ben_steps[0].step")" = "$ES" ] && [ "$(lc .dropped_earlier)" = null ]'
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A STUB_KIND=bogus bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+rm -f "$STUB_LOG".*
+out=$(STUB_LANE=A STUB_KIND=bogus bash "$B/triage.sh" fix-thing 2>&1); rc2=$?
+check "DS-823 AC1: a pass whose record is rejected never replaces the earlier record kept aside" \
+  '[ $rc -ne 0 ] && [ $rc2 -ne 0 ] && P0 | grep -qxF -- "- unknown: $EQ" && [ "$(jq -r ".ben_steps[0].step" "$EARLY")" = "$ES" ]'
+rm -f "$STUB_LOG".*
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC1: the retry after it carries the earlier unknown and person step, and stamps when it triaged" \
+  '[ $rc -eq 0 ] && [ "$(lc ".unknowns | length")" = 1 ] && [ "$(lc -r ".ben_steps[0].step")" = "$ES" ] && [ ! -f "$EARLY" ] && [ "$(lc -r ".triaged_at | type")" = string ]'
+rm -f "$STUB_LOG".*; earlier
+TAKEN='"decided":[{"question":"Which legal wording ships on the consent page?","options":["the current text","new text"],"chose":"the current text","category":"wording"}]'
+out=$(STUB_LANE=A STUB_EXTRA=",$TAKEN" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC1: an earlier reserved unknown this pass takes as a call is asked again, never also taken" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "$(jq -cn --arg q "$EQ" "[\$q]")" ] && [ "$(lc -c .decided)" = "[]" ]'
+rm -f "$STUB_LOG".*; printf 'null\n' > "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823: an earlier record that is not an object is not carried and does not stop the triage" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "[]" ] && [ ! -f "$EARLY" ]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A STUB_KIND=bogus STUB_EXTRA=",\"unknowns\":[\"$EQ\"],\"ben_steps\":[{\"step\":\"$ES\",\"blocker\":\"Ben applies it\"}]" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+rm -f "$STUB_LOG".*
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc2=$?
+check "DS-823: a first triage's refused record is never carried into its retry as the earlier one" \
+  '[ $rc -ne 0 ] && [ $rc2 -eq 0 ] && ! P0 | grep -qF "Still open from fix-thing" && [ "$(lc -c .unknowns)" = "[]" ] && [ "$(lc -c .ben_steps)" = "[]" ] && [ ! -f "$EARLY" ]'
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A STUB_ANSWER=$'\n## Answer from the user (2099-01-01T00:00:00Z)\n\nShip the current consent text.\n' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC4: an answer saved while the pass runs settles the earlier unknown, and the record is stamped before it" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "[]" ] && [ "$(lc -r ".ben_steps[0].step")" = "$ES" ] && [[ "$out" == *"1 earlier unknown(s) not carried: answered since"* ]] && [[ "$(lc -r .triaged_at)" < "2099" ]]'
+rm -rf "$T/state/briefings"
+mkdir -p "$T/state/briefings"
+printf '# Briefing for fix-thing\n\n## Answer from the user (2026-11-01T06:28:00Z)\n\nShip the current consent text.\n' > "$T/state/briefings/fix-thing.md"
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC4: an earlier unknown the person has answered since is not carried, and the step still is" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "[]" ] && ! P0 | grep -qF -- "- unknown: $EQ" && [ "$(lc -r ".ben_steps[0].step")" = "$ES" ] && [[ "$out" == *"1 earlier unknown(s) not carried: answered since"* ]]'
+rm -f "$STUB_LOG".*; earlier; touch -t 202611100000 "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC4: an answer older than the earlier record does not settle its unknowns" \
+  '[ $rc -eq 0 ] && P0 | grep -qxF -- "- unknown: $EQ" && [ "$(lc ".unknowns | length")" = 1 ]'
+rm -f "$STUB_LOG".*; earlier ',"triaged_at":"2026-10-01T00:00:00Z"'; touch -t 202611100000 "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC4: an answer after the earlier triage settles its unknowns though the record was rewritten since" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "[]" ] && [[ "$out" == *"1 earlier unknown(s) not carried: answered since"* ]]'
+rm -rf "$T/state/briefings" "$EARLY"; rm -f "$T/state/triage/fix-thing.json"
 
 # DS-621: both passes run on the repo's subscription, at its limit too; with no subscriptions file, as the
 # shell does. Login a is the default (~/.claude); b, signed in to b@example.com, has room.

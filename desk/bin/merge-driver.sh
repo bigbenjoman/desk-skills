@@ -54,7 +54,7 @@
 #   - no clean review at its head            where §4 Local review command is set, green is not enough:
 #                                            the latest desk-review verdict must be clean at the head
 #                                            (§4 Clean review verdict; review-threads.mjs verdict), or
-#                                            carried to it by clean merges of the base alone (undraft.mjs
+#                                            carried to it by clean base merges and empty commits alone (undraft.mjs
 #                                            verdictCarries), or with the review-reuse lever on by a
 #                                            rebase or base merge that moved none of the files its review
 #                                            rests on (restsOnCarries). A carried P2 does not hold it. Held, it is
@@ -107,8 +107,9 @@
 # loops like a green head, and once merged a ticket naming the check, the PR, the head SHA and the
 # failing run is filed with `desk-jira create` where §3 jira-create is yes (otherwise the log names
 # its body file). A row that does not parse stops the driver at start.
-# The merge is pinned with `--match-head-commit <the sha the gate evaluated>`. Once it lands,
-# `queue.mjs merged <TICKET>` records merged_at on the ticket and its line in <state>/eta-history.jsonl,
+# The merge is pinned with `--match-head-commit <the sha the gate evaluated>`. Once it lands, the
+# merge log's `merged` line (merge-log.mjs) names the PR, that head, the ticket and this driver; a
+# refused merge writes `failed`, never `merged`. Then `queue.mjs merged <TICKET>` records merged_at on the ticket and its line in <state>/eta-history.jsonl,
 # and puts the merge time beside the ticket's first ship estimate in <state>/eta.jsonl. Where §4 Tracker
 # is jira and §3 jira-close-own-merged is yes, a ticket with no other PR still open on its key, by
 # anyone, is then moved to §4 Done state and read back; this is the only close anywhere in the batch.
@@ -137,6 +138,7 @@
 #   MERGE_DRIVER_ONE_LOOP=1      one full loop (join, release, at most one merge), then exit instead of
 #                                sleeping: 0, or 1 when the PR list could not be read
 #   MERGE_DRIVER_GREEN_SECS=<n>  how long a head must stay green before it merges (default 60)
+#   MERGE_DRIVER_UNKNOWN_SECS=<n>  how long a ready PR may have no mergeability answer at a head before the queue asks the person (default 3600)
 #
 # Exit codes: 2 bad arguments · 1 not permitted, missing tool or config row, another driver running, or
 # gh signed out (a PR list it refuses for that is logged and stops the driver, never read as empty).
@@ -233,6 +235,7 @@ if ! GRANT="$(node "$DESK_ENV_MJS" merge-grant 2>&1)"; then
   exit 1
 fi
 GRANT_BY="${GRANT%%"$TAB"*}"
+desk_load_config
 
 # How this repo merges, and what "green" means here — both from config §4, never assumed.
 MERGE_METHOD="$(desk_cfg merge-method 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}' || true)"
@@ -240,17 +243,17 @@ case "$MERGE_METHOD" in
   squash|merge|rebase) ;;
   *) echo "FAIL: config §4 Merge method is '${MERGE_METHOD:-unset}' — want squash, merge or rebase. Run /desk-setup." >&2; exit 1 ;;
 esac
-if ! REQUIRED="$(node "$DESK_ENV_MJS" list required-checks 2>/dev/null)"; then
+if ! REQUIRED="$(desk_list required-checks 2>/dev/null)"; then
   echo "FAIL: config §4 Required checks is not set — run /desk-setup (\`none\` when nothing is required; every non-advisory check must still pass)." >&2; exit 1
 fi
-node "$DESK_ENV_MJS" list merge-holds >/dev/null 2>&1 \
+desk_list merge-holds >/dev/null 2>&1 \
   || { echo "FAIL: config §4 Merge holds is not set — run /desk-setup (\`none\` if no path needs a person to merge it). Refusing to guess." >&2; exit 1; }
 RERUN_PERM="$(desk_perm ci-rerun)"
 UPDATE_PERM="$(desk_perm pr-update-branch)"
 # Unset, ask and no all leave a hold's routine unrun: only `yes` lets the driver run it unattended.
 ROUTINE_PERM="$(desk_perm merge-hold-routine)"
 # Strict unless explicitly relaxed: unset, ask and yes all mean feedback is worked before merging.
-FEEDBACK_RAW="$(node "$DESK_ENV_MJS" perm-or-unset merge-feedback-first 2>/dev/null || echo unset)"
+FEEDBACK_RAW="$(desk_perm_or_unset merge-feedback-first 2>/dev/null || echo unset)"
 if [ "$FEEDBACK_RAW" = no ]; then FEEDBACK_STRICT=""; else FEEDBACK_STRICT=1; fi
 
 desk_apply_batch_base || exit 1
@@ -269,6 +272,15 @@ JIRA_CREATE_PERM="$(desk_perm jira-create)"
 CLOSE_PERM="$(desk_perm jira-close-own-merged)"
 DONE_STATE="$(desk_cfg done-state 2>/dev/null || true)"
 SIZE_FIELD="$(desk_cfg jira-size-field 2>/dev/null || true)"
+# §4 Clean review verdict: the verdict at a head that settles the desk-review threads opened before it.
+# Read here, before the cd below, so it comes from the snapshot taken in this directory.
+CLEAN_ROW="$(desk_cfg clean-verdict 2>/dev/null || true)"
+# §4 Local review command: set, a green PR merges only on that review's clean verdict at its head.
+REVIEW_HOLD=""
+case "$(desk_cfg local-review 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}')" in
+  ''|todo|none) ;;
+  *) REVIEW_HOLD=1 ;;
+esac
 command -v jq >/dev/null 2>&1 || { echo "FAIL: jq is required" >&2; exit 1; }
 command -v gh >/dev/null 2>&1 || { echo "FAIL: gh is required" >&2; exit 1; }
 
@@ -287,8 +299,9 @@ while ! mkdir "$LOCKD" 2>/dev/null; do
 done
 echo "$$" > "$LOCKD/pid"; LOCK_HELD=1
 reopen_log
-# The desk version this driver runs, so the supervisor can tell it started before the last install.
-node "$DESK_RUN_BIN/installed.mjs" version > "$LOCKD/version" 2>/dev/null || true
+# The desk version this driver runs (its release's, not the installed one), so the supervisor can tell
+# it started before the last install.
+node "$DESK_RUN_BIN/installed.mjs" running > "$LOCKD/version" 2>/dev/null || true
 trap 'exit 130' INT
 # TERM is a request to stop: a driver between loops stops at once (pause), and one mid-loop finishes
 # the PR it is on first (stop_if_asked), so a stop never leaves a merge half-recorded.
@@ -331,15 +344,10 @@ Q="$DESK_RUN_BIN/queue.mjs"
 GATE="$DESK_RUN_BIN/gate.mjs"
 THREADS="$DESK_RUN_BIN/review-threads.mjs"
 THREADS_QUERY="$(node "$THREADS" query)" || { log "FAIL: review-threads.mjs could not be read"; exit 1; }
-# §4 Clean review verdict: the verdict at a head that settles the desk-review threads opened before it.
-CLEAN_ROW="$(desk_cfg clean-verdict 2>/dev/null || true)"
-# §4 Local review command: set, a green PR merges only on that review's clean verdict at its head.
-REVIEW_HOLD=""
-case "$(desk_cfg local-review 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}')" in
-  ''|todo|none) ;;
-  *) REVIEW_HOLD=1 ;;
-esac
 REPO="$DESK_GH_REPO"
+# This driver's name in the merge log (merge-log.mjs): its state directory under ~/.desk-autopilot, the
+# repo's slug or a named batch's, as one driver runs per state directory (its lock, below).
+MERGER="merge-driver ${DESK_STATE#"$HOME/.desk-autopilot/"}"
 AUTHOR="$DESK_GITHUB_HANDLE"
 # The logins whose review verdicts are desk's own: the handle, and the §4 Review account it posts from.
 VERDICT_BY="$(node "$DESK_ENV_MJS" verdict-logins 2>/dev/null || printf '%s' "$AUTHOR")"
@@ -396,10 +404,10 @@ feedback(){
     | node "$THREADS" read --handle "$VERDICT_BY" --clean "$CLEAN_ROW" 2>/dev/null
 }
 # Whether a clean review stands at the head, as review-threads.mjs readVerdict says (one JSON line).
-# Nothing when GitHub could not be read.
-head_verdict(){ # head_verdict <n> [<base>]
+# Nothing when GitHub could not be read. <key> is the PR's ticket, whose pin gives the review-reuse lever.
+head_verdict(){ # head_verdict <n> [<base>] [<key>]
   gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
-    | node "$THREADS" verdict --handle "$VERDICT_BY" --clean "$CLEAN_ROW" --base "${2:-$BASE_BRANCH}" --pr "$1" 2>/dev/null
+    | node "$THREADS" verdict --handle "$VERDICT_BY" --clean "$CLEAN_ROW" --base "${2:-$BASE_BRANCH}" --pr "$1" ${3:+--ticket "$3"} 2>/dev/null
 }
 # Prints true once GitHub has resolved the thread.
 resolve_thread(){
@@ -493,11 +501,13 @@ NODE
   # blocker whose PR is older than that (a long-lived draft, rebased and merged today) was never found
   # and held its successors forever. Lines in the shape `prs` prints; the PR is "?" when none is recorded.
   local merged known
-  known=$(node - "$DESK_QUEUE" <<'NODE'
-const fs = require('fs');
-let q = {};
-try { q = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
-for (const [k, t] of Object.entries(q)) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
+  known=$(node --input-type=module - "$DESK_QUEUE" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/queue-store.mjs" <<'NODE'
+import { readFileSync } from 'node:fs';
+const { attachArchive, everyTicket } = await import(process.argv[3]);
+const q = { tickets: {} };
+try { q.tickets = JSON.parse(readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
+// Done tickets whose PR merged move to the archive beside the queue (queue-store.mjs), live ones first.
+for (const [k, t] of Object.entries(everyTicket(attachArchive(q, process.argv[2])))) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
 NODE
 ) || known=""
   # One merged-PR listing for every predecessor at once, not one per predecessor per loop. A listing gh
@@ -525,10 +535,21 @@ EOF_PLAN
 
 backed_off(){ local f="$SD/backoff-$1"; [ -f "$f" ] && [ "$(date +%s)" -lt "$(cat "$f" 2>/dev/null || echo 0)" ]; }
 back_off(){ echo $(( $(date +%s) + ${2:-600} )) > "$SD/backoff-$1"; }
+# Turn off a PR's armed auto-merge (disarm <n> <its gate JSON>), and say so in the merge log, which
+# releases the hold an `armed` record keeps on it (merge-log.mjs): otherwise nothing would merge it.
+disarm(){
+  [ "$(printf '%s' "$2" | jq -r .autoMerge)" = true ] || return 0
+  gh pr merge "$1" --repo "$REPO" --disable-auto >/dev/null 2>&1 || return 0
+  local s; s=$(printf '%s' "$2" | jq -r '.sha // empty')
+  [ -n "$s" ] && node "$DESK_RUN_BIN/merge-log.mjs" record "$1" "$s" --by "$MERGER" --event disarmed --repo "$REPO" >/dev/null 2>&1
+  return 0
+}
 
 behind(){ # behind <n> <sha> <key>
   if [ "$UPDATE_PERM" = yes ]; then
     if [ -f "$SD/updated-$1-$2" ]; then log "#$1 BEHIND; update already requested at ${2:0:9} — waiting for it"; return; fi
+    # The update is a new head, so a new preview build: it takes the PR's preview-build unit first (rerun.sh).
+    preview_unit "$1" BEHIND "updating the branch" || return
     if out=$(gh pr update-branch "$1" --repo "$REPO" 2>&1); then touch "$SD/updated-$1-$2"; log "#$1 BEHIND -> gh pr update-branch (new head and fresh checks follow)"
     else log "#$1 BEHIND and update-branch refused: $(printf '%s' "$out" | tail -1)"; back_off "$1"; fi
   else
@@ -581,7 +602,8 @@ EOF_STALE
 }
 
 # waivable <n> <sha> <gate json> <key> -> 0 when the red head may merge on the written waiver (header),
-# with WAIVED set to its check names, quoted and comma-joined. Otherwise says why and returns 1.
+# with WAIVED set to its check names, quoted and comma-joined, then any listed tests it waives in
+# brackets. Otherwise says why and returns 1.
 # Only reruns GitHub accepted count, and the last must have had its cooldown to report.
 WAIVED=""
 waivable(){
@@ -599,6 +621,8 @@ waivable(){
       return 1 ;;
     paths) log "#$1 the waiver for $short does not apply: the diff touches $(printf '%s' "$w" | jq -r '[.hits[] | "\(.files[0]) (\(.glob), for \"\(.check)\")"] | join("; ")')"; return 1 ;;
     files) log "#$1 the waiver for $short does not apply: the PR's file list could not be read"; return 1 ;;
+    annotations) log "#$1 the waiver for $short does not apply: its failure annotations could not be read in full, so nothing says which test failed"; return 1 ;;
+    tests) log "#$1 the waiver for $short does not apply: it failed in a test §4 Known flaky checks does not list$(printf '%s' "$w" | jq -r 'if (.lines // []) | length > 0 then " (" + ((.lines // [])[:2] | join("; ")) + ")" else ", or its failures name no test" end')"; return 1 ;;
     gate) log "#$1 the waiver for $short does not apply: $(printf '%s' "$w" | jq -r '(.reasons // [])[:2] | join("; ")')"; return 1 ;;
     "") ;;
     *) return 1 ;;
@@ -613,15 +637,20 @@ $checks
 EOF_WAIVE
   last=$(cat "$SD/cooldown-$1" 2>/dev/null || echo 0)
   if [ $(( $(date +%s) - last )) -lt "$RERUN_COOLDOWN" ]; then log "#$1 $short is a known flaky check: waiting out the last rerun's cooldown before reading it as still red"; return 1; fi
-  WAIVED="$short"
+  # A check listed by its tests names the tests it is waived for, so the log and the ticket say which.
+  WAIVED="$short$(printf '%s' "$w" | jq -r '(.tests // []) | if length > 0 then " (test" + (if length > 1 then "s " else " " end) + (map("\"\(.file) > \(.title)\"") | join(", ")) + ")" else "" end')"
 }
 
 # flaky_ticket <n> <sha> <gate json> <key> <waived checks>: once a waived PR has merged, the ticket that
 # gets the flake fixed. Filed once per PR and head; the body stays in <state>/merge-driver for whoever
 # files it by hand.
 flaky_ticket(){
-  local body="$SD/flaky-$1-$2.md" summary="Flaky check $5 waived to merge PR #$1" out size=() sizeline=""
+  local body="$SD/flaky-$1-$2.md" summary="Flaky check $5 waived to merge PR #$1" out size=() sizeline="" by_hand
   [ -f "$SD/flaky-filed-$1-$2" ] && return 0
+  # Jira refuses a summary over 255 characters, which a long test name or several reach; the body names them all.
+  summary=$(jq -rn --arg s "$summary" '$s | if length > 255 then .[0:252] + "..." else . end')
+  # The command to file it by hand, quoted so it pastes as written: the summary holds quotes and a `>`.
+  by_hand="desk-jira create Bug $(printf '%q' "$summary") $(printf '%q' "$body")"
   # desk-jira's lint wants a size: the §4 Size field where there is one, else the body's first line.
   if [ -n "$SIZE_FIELD" ] && [ "$SIZE_FIELD" != none ]; then size=("$SIZE_FIELD=S"); else sizeline="Size: S"; fi
   printf '%s' "$3" | jq -r --arg repo "$REPO" --arg n "$1" --arg sha "$2" --arg key "$4" --arg size "$sizeline" '
@@ -631,6 +660,7 @@ flaky_ticket(){
     "The merge driver merged [PR #\($n)](https://github.com/\($repo)/pull/\($n)) (\($key)) at head `\($sha)` past a red check named in config §4 Known flaky checks. It was still red after two reruns and the PR touched none of the paths the row gives for it. This ticket is the cost of that waiver: make the check pass reliably, so nothing is merged past it again.",
     "",
     "- Check: \(.waiver.checks | map("`\(.)`") | join(", "))",
+    ((.waiver.tests // [])[] | "- Test: `\(.file) > \(.title)` in `\(.check)`"),
     "- PR: https://github.com/\($repo)/pull/\($n)",
     "- Head SHA: `\($sha)`",
     "- Failing run: \(if (.waiver.runs | length) > 0 then (.waiver.runs | map(run) | join(", ")) else "(no run id reported)" end)",
@@ -650,12 +680,12 @@ flaky_ticket(){
     log "#$1 WAIVED: no tracker (§4 Tracker is ${TRACKER:-unset}), so no ticket filed — the flake's details are in $body"; touch "$SD/flaky-filed-$1-$2"; return 0
   fi
   if [ "$JIRA_CREATE_PERM" != yes ]; then
-    log "#$1 WAIVED: ticket not filed, config §3 jira-create is $JIRA_CREATE_PERM — ask, then: desk-jira create Bug \"$summary\" $body"; touch "$SD/flaky-filed-$1-$2"; return 0
+    log "#$1 WAIVED: ticket not filed, config §3 jira-create is $JIRA_CREATE_PERM — ask, then: $by_hand"; touch "$SD/flaky-filed-$1-$2"; return 0
   fi
   if out=$(desk-jira create Bug "$summary" "$body" ${size[@]+"${size[@]}"} 2>&1); then
     touch "$SD/flaky-filed-$1-$2"; log "#$1 WAIVED: filed $(printf '%s' "$out" | grep -m1 '^created' | sed 's/^created //')"
   else
-    log "#$1 WAIVED: the ticket was not filed ($(printf '%s' "$out" | tail -1)) — file it by hand: desk-jira create Bug \"$summary\" $body"
+    log "#$1 WAIVED: the ticket was not filed ($(printf '%s' "$out" | tail -1)) — file it by hand: $by_hand"
     touch "$SD/flaky-filed-$1-$2"
   fi
 }
@@ -767,7 +797,7 @@ instruction_held(){ # instruction_held <n> <key> <gate json> -> 0 when the merge
   else
     return 1
   fi
-  [ "$(printf '%s' "$3" | jq -r .autoMerge)" = true ] && gh pr merge "$1" --repo "$REPO" --disable-auto >/dev/null 2>&1
+  disarm "$1" "$3"
   rm -f "$SD/green-$1"
 }
 
@@ -879,7 +909,7 @@ repair_held(){
     elif [ "$(printf '%s' "$rg" | jq -r .gate.state)" = fail ]; then why="it is red"
     fi
     if [ -n "$why" ]; then log "#$n hold behind repaired #$r ($rkey) ended: $why — merging in its usual order"; continue; fi
-    [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+    disarm "$n" "$g"
     log "#$n HELD: it changes $ours, as repaired #$r ($rkey) does, and that repair merges first — until it merges, goes red or parks, or 60 minutes after the repair"
     return 0
   done <<EOF_REPAIRS
@@ -927,12 +957,33 @@ NODE
   esac
 }
 
+# A ready PR GitHub has no mergeability answer for (UNKNOWN) is aged from the loop that first saw it at
+# that head (`unknown-<n>`: the head and that time). A merge ref can wedge: no answer for hours, and no
+# run started for the head. Past UNKNOWN_LIMIT_SECS the queue asks the person for a new commit, which
+# gives it a fresh merge ref. Any answer, or another head, starts it again and clears the note.
+UNKNOWN_LIMIT_SECS="${MERGE_DRIVER_UNKNOWN_SECS:-3600}"
+unknown_age(){ # unknown_age <n> <sha> <key> <merge state>
+  local f="$SD/unknown-$1" was="" at="" now age
+  if [ "$4" != UNKNOWN ]; then
+    if [ -f "$f" ]; then rm -f "$f"; blocked_clear "$3" "merge ref:"; fi
+    return 0
+  fi
+  read -r was at < "$f" 2>/dev/null || true
+  now=$(date +%s)
+  if [ "$was" != "$2" ] || [ -z "$at" ]; then printf '%s %s\n' "$2" "$now" > "$f"; blocked_clear "$3" "merge ref:"; return 0; fi
+  age=$(( now - at ))
+  [ "$age" -ge "$UNKNOWN_LIMIT_SECS" ] || return 0
+  log "#$1 at ${2:0:9} has had no mergeability answer from GitHub for $(( age / 60 )) minutes — its merge ref looks wedged; the person pushes a new commit"
+  queue_note "$3" "merge ref: GitHub has not worked out whether #$1 conflicts with its base at ${2:0:9} for $(( age / 60 )) minutes, and starts no run for that head: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch"
+}
+
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
   local n="$1" key="$2" g sha ms state holds met carried="" bare nbare bare_more routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH"
   EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
+  unknown_age "$n" "$sha" "$key" "$ms"
   # The epic PR merges the batch base into §0 Default branch.
   [ -n "$EPIC_KEY" ] && want=$(printf '%s' "$g" | jq -r .defaultBranch)
   [ "$(printf '%s' "$g" | jq -r .base)" = "$want" ] || { log "#$n is not based on $want — not the batch's to merge"; return 1; }
@@ -947,7 +998,7 @@ try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
     carried=$(printf '%s' "$holds" | paste -sd ';' -)
     log "#$n touches §4 Merge holds ($carried), but its base $BASE_BRANCH is not $(printf '%s' "$g" | jq -r .defaultBranch), so merging it deploys nothing; once it merges, the hold is the pass's to report on $BASE_BRANCH's own PR"
   elif [ -n "$holds" ]; then
-    [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+    disarm "$n" "$g"
     # A hold that names no routine is the person's step; one that does is run below, before the merge,
     # where §3 merge-hold-routine is yes. Each routine once, in the row's order.
     bare=$(printf '%s' "$g" | jq -r '.holds[] | select((.routine // "") == "") | "\(.why) — \(.glob), \(.count) file(s), e.g. \(.files[0] // "?")"')
@@ -1000,7 +1051,7 @@ $settled
 EOF_RESOLVE
     unresolved=$(printf '%s' "$held" | grep -c .)
     if [ "$decision" = "CHANGES_REQUESTED" ] || [ "$unresolved" -gt 0 ]; then
-      [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+      disarm "$n" "$g"
       log "#$n has outstanding review feedback ($decision, $unresolved unresolved) — work it first; not merging (§3 merge-feedback-first: $FEEDBACK_RAW)"
       approval_clear "$key"
       if [ "$unresolved" -gt 0 ]; then feedback_stall "$n" "$key" "$state" "$unresolved" "$(printf '%s\n' "$held" | head -1)"
@@ -1020,7 +1071,7 @@ EOF_RESOLVE
   review_required=""
   if [ "$(printf '%s' "$g" | jq -r .reviewDecision)" = REVIEW_REQUIRED ]; then
     review_required=1
-    [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+    disarm "$n" "$g"
     rm -f "$SD/green-$n"
     log "#$n at ${sha:0:9} needs an approving review (review decision REVIEW_REQUIRED) — not merging until a person approves it"
     queue_note "$key" "approval: an approving review is required at ${sha:0:9}: a person approves it before desk merges it"
@@ -1060,7 +1111,7 @@ EOF_RESOLVE
     log "#$n could not read the queue for its merge holds — not merging it this loop"; return 1
   fi
   if [ -n "${steps:-}" ]; then
-    [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+    disarm "$n" "$g"
     rm -f "$SD/green-$n"
     log "#$n $label at ${sha:0:9}, HELD until the person's step $steps is Done in Jira — the pass lifts the hold then"
     return 1
@@ -1070,11 +1121,16 @@ EOF_RESOLVE
 
   # A clean review at the head stands in for a person's approval, for every PR whatever its title. Green
   # alone does not show one: only a repo whose CI runs a §4 State check reading the verdict has it in green.
-  if [ -n "$REVIEW_HOLD" ]; then
-    verdict=$(head_verdict "$n" "$want")
+  # A §4 State check of kind external that passed at the head read that outside reviewer's review
+  # there: that review is the head's, so desk's own verdict is not wanted as well.
+  external_ok=$(printf '%s' "$g" | jq -r '.externalReview // empty | "\(.name) (\(.login))"')
+  if [ -n "$REVIEW_HOLD" ] && [ -n "$external_ok" ]; then
+    log "#$n its review at ${sha:0:9} is the outside reviewer's: $external_ok passed there, so no desk verdict is needed at that head"
+  elif [ -n "$REVIEW_HOLD" ]; then
+    verdict=$(head_verdict "$n" "$want" "$key")
     if [ -z "$verdict" ]; then log "#$n could not read its review verdict — not merging it this loop"; return 1; fi
     if [ "$(printf '%s' "$verdict" | jq -r --arg sha "$sha" '.clean == true and .head == $sha')" != true ]; then
-      [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+      disarm "$n" "$g"
       rm -f "$SD/green-$n"
       log "#$n $label at ${sha:0:9}, HELD with no clean review at its head: $(printf '%s' "$verdict" | jq -r '.why // "the head moved as it was read"') — the pass sends it to a review worker, or the person"
       return 1
@@ -1092,7 +1148,7 @@ EOF_RESOLVE
         fi
       fi
     elif [ -n "$carried_from" ]; then
-      log "#$n its clean review at ${carried_from:0:9} holds at ${sha:0:9}: only clean merges of $want came since"
+      log "#$n its clean review at ${carried_from:0:9} holds at ${sha:0:9}: only clean merges of $want and empty commits came since"
     fi
   fi
 
@@ -1111,7 +1167,7 @@ EOF_RESOLVE
   # Last before the merge, so a routine never runs for a PR that would not merge after it. The row is
   # read again here, as the grant is, so revoking it stops a driver that is already running.
   if [ -n "$routines" ]; then
-    ROUTINE_PERM="$(desk_perm merge-hold-routine)"
+    ROUTINE_PERM="$(desk_perm_fresh merge-hold-routine)"
     if [ "$ROUTINE_PERM" != yes ]; then
       log "#$n HELD by §4 Merge holds — its routine is not run, §3 merge-hold-routine is now $ROUTINE_PERM"
       routine_off_note "$key" "$routines" "§3 merge-hold-routine is $ROUTINE_PERM"; rm -f "$SD/green-$n"; return 1
@@ -1122,7 +1178,13 @@ EOF_RESOLVE
   instruction_held "$n" "$key" "$g" && return 1
   if [ -n "$waived" ]; then log "#$n WAIVED $waived at ${sha:0:9}: §4 Known flaky checks, still red after 2 reruns, no listed path touched — merging (pinned to that commit)"
   else log "#$n gate GREEN at ${sha:0:9} — merging (pinned to that commit)"; fi
+  # Claimed in the machine-wide merge log first (merge-log.mjs), so a session merging the same PR, or
+  # one that already did, stops this merge instead of racing it, and who merged it is recorded.
+  if ! claimed=$(node "$DESK_RUN_BIN/merge-log.mjs" claim "$n" "$sha" --by "$MERGER" --repo "$REPO" 2>&1); then
+    log "#$n NOT merged: ${claimed#merge-log: } — backing off 10m"; back_off "$n"; return 1
+  fi
   if out=$(gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); then
+    node "$DESK_RUN_BIN/merge-log.mjs" record "$n" "$sha" --by "$MERGER" --event merged ${key:+--ticket "$key"} --repo "$REPO" >/dev/null 2>&1 || log "#$n merge not written to the merge log"
     log "#$n MERGED ($key)"; rm -f "$SD/green-$n"
     # A hold it merged past goes with the ticket to the base's own PR into the default branch (pass.mjs).
     if [ -n "$carried" ]; then
@@ -1138,7 +1200,11 @@ EOF_RESOLVE
     # The merge time on the ticket, and its line in the eta history (the epic PR's on the queue's
     # promotion, which releases what waits on the epic). A failure here never undoes the merge.
     if [ -n "$EPIC_KEY" ]; then
-      if node "$Q" set-batch "promotion.merged_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null 2>&1; then log "#$n epic PR merged: recorded on the queue"
+      # Its merge commit gates its children's production steps (needs-you.mjs gateHeld), whatever the merge method.
+      moid=$(gh pr view "$n" --repo "$REPO" --json mergeCommit 2>/dev/null | jq -r '.mergeCommit.oid // empty' 2>/dev/null)
+      case "$moid" in *[!0-9a-f]*|'') moid= ;; esac
+      [ "${#moid}" -eq 40 ] || moid=
+      if node "$Q" set-batch "promotion.merged_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" ${moid:+"promotion.merge_commit=$moid"} >/dev/null 2>&1; then log "#$n epic PR merged: recorded on the queue"
       else log "#$n epic PR merge not recorded on the queue — the next pass reads it from GitHub"; fi
     elif rec=$(node "$Q" merged "$key" 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
     else log "#$n merge time not recorded: $(printf '%s' "$rec" | tail -1)"; fi
@@ -1146,6 +1212,7 @@ EOF_RESOLVE
     [ -n "$EPIC_KEY" ] || close_merged "$n" "$key"
     return 0
   fi
+  node "$DESK_RUN_BIN/merge-log.mjs" record "$n" "$sha" --by "$MERGER" --event failed ${key:+--ticket "$key"} --why "$(printf '%s' "$out" | tail -1)" --repo "$REPO" >/dev/null 2>&1
   if printf '%s' "$out" | grep -qiE 'not up to date|behind|out of date|update the branch'; then behind "$n" "$sha" "$key"
   else log "#$n merge refused: $(printf '%s' "$out" | tail -1) — backing off 10m, the rest carry on"; back_off "$n"; fi
   return 1

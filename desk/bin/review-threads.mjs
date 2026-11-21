@@ -5,7 +5,8 @@
 //
 //   review-threads.mjs query      the GraphQL query the payload answers
 //   review-threads.mjs read --handle <§1 GitHub handle[,§4 Review account]> --clean "<§4 Clean review verdict>" < payload.json
-//   review-threads.mjs verdict --handle <handle> --clean "<row>" --base <base branch> --pr <n> < payload.json
+//   review-threads.mjs verdict --handle <handle> --clean "<row>" --base <base branch> --pr <n> [--ticket <KEY>] < payload.json
+//     (the review-reuse lever is read from KEY's pin in the queue; with no pin, or no KEY, the row)
 //   review-threads.mjs approved --clean "<row>" < payload.json   (approvedAt)
 //
 // prints one JSON line: { decision, head, verdict, resolve: [thread], left: [thread] }, where a thread is
@@ -28,7 +29,8 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { latestReview, verdictAt, verdictAtHead, reviewCarries, carryComment, markerClean } from './undraft.mjs';
-import { pairs, leverOn } from './desk-env.mjs';
+import { pairs, queueFile } from './desk-env.mjs';
+import { leverOnFor } from './lever-pin.mjs';
 import { LOCAL_MARKERS } from '../templates/scripts/desk/review-gate.mjs';
 import { loginIn } from './gate.mjs';
 
@@ -38,6 +40,11 @@ export const THREADS_QUERY = `query($owner:String!,$name:String!,$n:Int!){reposi
   reviewThreads(first:100){nodes{id isResolved isOutdated path line originalLine
     comments(first:1){nodes{author{login} body pullRequestReview{id}}}}}}}}`;
 
+// An open review thread as the pass names it: { id, path, line, first (its first comment's first line), text }.
+const threadOf = (t) => {
+  const th = { id: t.id, path: t.path ?? '', line: t.line ?? t.originalLine ?? null, first: firstLine(t.comments?.nodes?.[0]?.body) };
+  return { ...th, text: threadLine(th) };
+};
 // Whether a §4 row is set to something: not empty, a TODO or none.
 const rowSet = (row) => { const s = String(row ?? '').trim(); return !!s && !/^(todo|none)\b/i.test(s); };
 const firstLine = (s) => String(s ?? '').split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? '';
@@ -67,10 +74,23 @@ export function readThreads(payload, { handle, clean }) {
     const opener = i == null ? null : reviews[i];
     const ours = settles && own(c?.author?.login) && own(opener?.author?.login)
       && LOCAL_MARKERS.includes(firstLine(opener?.body)) && i < at;
-    const th = { id: t.id, path: t.path ?? '', line: t.line ?? t.originalLine ?? null, first: firstLine(c?.body) };
-    (ours ? resolve : left).push({ ...th, text: threadLine(th) });
+    (ours ? resolve : left).push(threadOf(t));
   }
   return { decision: pr.reviewDecision || 'NONE', head: pr.headRefOid ?? '', verdict: settles ? latest.verdict.sha : null, review, resolve, left };
+}
+
+// An outside reviewer's read of the PR, for a §4 State check of kind external: whether `login` has
+// reviewed the head, that review's state and body, and the threads still open that its reviews began
+// (each { id, text }). payload: THREADS_QUERY's response. -> { head, reviewed, state, body, threads } | null.
+export function externalReview(payload, login) {
+  const pr = payload?.data?.repository?.pullRequest;
+  if (!pr) return null;
+  const head = pr.headRefOid ?? '';
+  const mine = (pr.reviews?.nodes ?? []).filter((r) => loginIn(r.author?.login, login));
+  const at = [...mine].reverse().find((r) => r.commit?.oid === head) ?? null;
+  const ids = new Set(mine.map((r) => r.id));
+  const threads = (pr.reviewThreads?.nodes ?? []).filter((t) => !t.isResolved && ids.has(t.comments?.nodes?.[0]?.pullRequestReview?.id)).map(threadOf);
+  return { head, reviewed: !!at, state: at?.state ?? null, body: String(at?.body ?? '').trim(), threads };
 }
 
 // Whether §4 Local review command names a review, so that a merge waits on its clean verdict.
@@ -150,7 +170,10 @@ if (!isMain) { /* imported */ } else if (a[0] === 'query') {
     const head = payload?.data?.repository?.pullRequest?.headRefOid;
     // Fetched only for a verdict at an older head, as the pass does before it asks the same thing, and
     // carried as the pass carries it: under the review-reuse lever, only while what it rests on holds.
-    const reuse = leverOn('review-reuse');
+    // The lever is the ticket's pin, as the pass reads it; a mangled pin reads no verdict.
+    let ticket = null;
+    if (at('--ticket')) { try { ticket = JSON.parse(readFileSync(queueFile(), 'utf8')).tickets?.[at('--ticket')] ?? null; } catch { /* no queue: the row */ } }
+    const reuse = leverOnFor('review-reuse', ticket);
     const carry = (sha, body) => git(['fetch', '-q', 'origin', base, `pull/${at('--pr')}/head`]).ok && reviewCarries({ reuse, from: sha, head, base: `origin/${base}`, body, git });
     r = readVerdict(payload, { handle: at('--handle'), clean: at('--clean'), carry });
   } catch { /* unreadable: null */ }
@@ -162,5 +185,5 @@ if (!isMain) { /* imported */ } else if (a[0] === 'query') {
   if (!r) { console.error('review-threads: no pull request in the payload'); process.exit(1); }
   console.log(JSON.stringify(r));
 } else {
-  console.error('usage: review-threads.mjs query | read --handle <login> --clean "<row>" < payload.json | verdict --handle <login> --clean "<row>" --base <branch> --pr <n> < payload.json | approved --clean "<row>" < payload.json'); process.exit(2);
+  console.error('usage: review-threads.mjs query | read --handle <login> --clean "<row>" < payload.json | verdict --handle <login> --clean "<row>" --base <branch> --pr <n> [--ticket <KEY>] < payload.json | approved --clean "<row>" < payload.json'); process.exit(2);
 }

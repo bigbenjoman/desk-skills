@@ -94,7 +94,7 @@ for (const f of formFiles) {
   t(`DS-338 AC3 the core routes to ${f} early`, to.length > 0, true);
   t(`DS-338 AC3 ${f} is read early at any stage, not only before it`, to.some((b) => b.includes('at any stage') && !/before Stage/.test(b)), true);
 }
-t('DS-338 AC1 the command forms hold the dev server\'s allowed form', formFiles.some((f) => /`nolock` for everything else \(lint, build, codegen, dev server\)/.test(read(f).replace(/\s+/g, ' ')) && read(f).includes('pass the port as an argument')), true);
+t('DS-338 AC1 the command forms hold the dev server\'s allowed form', formFiles.some((f) => /`nolock` for everything else \(build, codegen, dev server\)/.test(read(f).replace(/\s+/g, ' ')) && read(f).includes('pass the port as an argument')), true);
 t('DS-338 AC1 the core\'s table says the Stage 3 file holds the dev server\'s form', core.includes('§6 the command forms you may run, a dev server\'s too'), true);
 // Where a worker reads how to park, the core states the allowed park inputs form.
 t('DS-337 AC3 the core states park inputs are flat, lists allowed', core.includes('`AUTOPILOT_PARK_INPUTS: {…}` (flat; lists ok)'), true);
@@ -107,7 +107,7 @@ t('DS-335 AC1 under autopilot-judgement yes it opens the draft and posts the rev
 t('DS-368 AC1 from round 2 a round reads only the fix range since the previous round',
   stage4.includes('from round 2 a round reads **only the fix range**, the commits since the previous round\'s reviewed SHA') && stage4.includes('from round 2, the previous round\'s reviewed SHA'), true);
 t('DS-368 AC1 only round 1 fixes a P2', stage4.includes('- **P0, P1 or P2 on round 1**: fix it'), true);
-t('DS-368 AC2 round 2 carries its P2s as round 3 does', stage4.includes('- **Round 2 or 3, only P2s**: **carry them, do not park.**') && stage4.includes('it exists only from round 2, only for a P2'), true);
+t('DS-368 AC2 round 2 carries its P2s as round 3 does', stage4.includes('- **Round 2 or 3, only P2s**: **carry them, do not park.**') && stage4.includes('only a P2 is carried, from round 2 or when split'), true);
 t('DS-368 AC3 a round-2 P0 or P1 is fixed and round 3 runs on the fix range', stage4.includes('- **Round 2, a P0 or P1**: fix it, then run round 3 on the fix range since round 2\'s reviewed SHA.'), true);
 t('DS-335 AC1 and parks when no review is posted for the pass to read', stage4.includes('Where §3 `pr-self-review-comment` is not `yes` there is no posted review for the pass to read, so it parks as above.'), true);
 
@@ -129,23 +129,46 @@ t('DS-356 AC1 the Stage 3 workflow-dispatch rule points at the Stage 4 rule',
 const lockRule = stage4.split('**A run the lock has not started in 20 minutes is skipped; a busy lock is never a park.**')[1]?.split(' The typecheck takes the same lock')[0] ?? '';
 t('DS-587 AC1 the Stage 4 file skips a run the lock has not started in 20 minutes, and never parks on it', lockRule !== '' && !/\bpark/.test(lockRule), true);
 t('DS-587 AC1 it stops the queued run and records the suite as not run locally because the lock was busy',
-  lockRule.includes('`TaskStop` it') && lockRule.includes('Record each suite in your verification and the PR\'s Testing as `not run locally: test lock busy (<holder>); CI\'s required tests cover it`') && lockRule.includes('and carry on.'), true);
+  lockRule.includes('At 20 minutes waiting it stops the run and prints the line to record') && lockRule.includes('record each suite in your verification and the PR\'s Testing as `not run locally: test lock busy (<holder>); CI\'s required tests cover it`') && lockRule.includes('and carry on.'), true);
 t('DS-587 AC2 it logs one engineering decision naming the suites and the lock holder',
-  lockRule.includes('note the holder') && lockRule.includes('print one `engineering` `AUTOPILOT_DECISION` naming them and the holder'), true);
-t('DS-587 AC3 it commits its work before stopping the run and carrying on', /commit all your work, `TaskStop` it/.test(lockRule), true);
+  lockRule.includes('print one `engineering` `AUTOPILOT_DECISION` naming them and the holder'), true);
+t('DS-587 AC3 it commits its work before carrying on', /commit all your work, record each suite/.test(lockRule), true);
 t('DS-587 AC4 a run that started is not skipped: its failures are fixed', lockRule.includes('A started run is yours: fix what fails.'), true);
-t('DS-587 AC4 silence is not proof of a queued run: it has not started only while the wrapper or its flock has no child running the command',
-  lockRule.includes('Silence is not proof: it has not started while `ps -ww -axo pid,ppid,etime,args` shows your `with-lock.sh`, or its `flock … desk-test.lock`, with no child running your command.') && !lockRule.includes('no suite output'), true);
-t('DS-587 AC2 the holder is found on every lock path: a live holder file, else the single-slot flock with a child',
-  lockRule.includes('a live pid in `desk-test.lock*{.pid,.d/pid}` in `DESK_LOCK_DIR`, else the `flock … desk-test.lock` that has a child.') && !lockRule.includes('or `*.d/pid`'), true);
+t('DS-705 AC1 a backgrounded run is waited on in one desk-wait call inside the Bash timeout, never a ps, tail or TaskStop loop',
+  lockRule.includes('Give each run the Bash `timeout` 600000.') && lockRule.includes('never a `ps`, `tail` or `TaskStop` loop: `~/.claude/desk/bin/desk-wait.mjs <its output file> --max 540`, same `timeout`.') && !lockRule.includes('`TaskStop` it'), true);
+t('DS-705 AC1 it names the three answers and calls again on the two that are not done',
+  lockRule.includes('Call again on `started <pid>` or `waiting (<holder>) <min>`; `done ?` ends it with its last 30 lines.'), true);
+t('DS-705 a run the tool timeout moved to the background is waited on with desk-wait, not stopped and rerun',
+  stage4.includes('background is still yours: wait for it with `desk-wait.mjs`, above;') && !stage4.includes('stop it with `TaskStop` and run it again'), true);
+t('DS-705 a server, which never ends, is still stopped with TaskStop',
+  stage4.includes('above; stop a server with `TaskStop`.'), true);
 t('DS-587 the typecheck and lint follow the same rule', lockRule.includes('A typecheck or lint does the same.'), true);
 t('DS-587 AC5 the refused with-lock.sh rule is unchanged',
   stage4.includes('If `with-lock.sh` is refused, check headroom, drop to the lower cap, and **say in your output that you ran unlocked**.'), true);
 t('DS-587 the Stage 4 file no longer only says to report a long wait', /Blocked (over|more than) ~20 minutes/.test(stage4), false);
 const notes = read('batch-notes-header.md').replace(/\s+/g, ' ');
 t('DS-587 batch-notes-header states the same rule, so the stricter-wins reading agrees',
-  notes.includes('A busy lock is never a park: once your run has waited 20 minutes without starting, commit your work, stop it (`TaskStop`), record the suite as "not run locally: test lock busy (<holder>); CI\'s required tests cover it", log an engineering decision naming the suite and the holder, and carry on.') && !/Blocked (over|more than) ~20 minutes/.test(notes), true);
+  notes.includes('A busy lock is never a park: once your run has waited 20 minutes without starting, `desk-wait.mjs` stops it and prints the holder: commit your work, record the suite as "not run locally: test lock busy (<holder>); CI\'s required tests cover it", log an engineering decision naming the suite and the holder, and carry on. Wait on a backgrounded run with that one call, never a `ps`, `tail` or `TaskStop` loop.') && !/Blocked (over|more than) ~20 minutes/.test(notes), true);
+t('DS-855 AC1 the command forms run every lint item under the tsc lock, at the root too',
+  formFiles.some((f) => read(f).replace(/\s+/g, ' ').includes('`tsc` for §4 Typecheck and §4 Lint (never bare, even at the root)')), true);
+t('DS-855 a lint binary in node_modules runs under the tsc lock, not bare',
+  formFiles.some((f) => read(f).replace(/\s+/g, ' ').includes('eslint, biome, oxlint, stylelint so under `with-lock.sh tsc`'))
+  && !formFiles.some((f) => /A lint or format tool \(eslint/.test(read(f).replace(/\s+/g, ' '))), true);
+t('DS-855 AC2 batch-notes-header names lint with suites and typechecks on the one lock',
+  notes.includes('serialises suites, typechecks *and* lints on one lock') && notes.includes('run every §4 Lint item through `with-lock.sh tsc`**, at the root as well as in a directory, and a targeted run'), true);
 t('DS-587 AC5 batch-notes-header keeps its refused with-lock.sh rule', notes.includes('**If `with-lock.sh` is itself refused, say so explicitly** ("ran unlocked") and drop to the lower cap.'), true);
+
+// DS-839: a park is the park file and the marker, with no step that messages the orchestrator, and a
+// gated write's exact text goes in the park file's approve.
+{
+  const steps = core.split('When the call parks, or `desk-ticket` says stop and wait for anything else:')[1]?.split('**A park asking for a file**')[0] ?? '';
+  t('DS-839 AC5 the park steps write the park file and end the turn', steps.includes('**Write the park file**') && steps.includes('**End your turn.**'), true);
+  t('DS-839 AC5 and no step messages the orchestrator', /SendMessage|ListAgents|notify_when_idle/.test(steps), false);
+  t('DS-839 AC5 no contract file tells a worker to message the orchestrator', files.some((f) => /SendMessage` the orchestrator|notify_when_idle/.test(read(f))), false);
+  t('DS-839 AC1 the park file carries the approve object with kind, target and the exact body',
+    steps.includes('`"approve": {"kind": "jira-comment", "target": "<ticket, or PR number>", "body": "<the exact text>"}`'), true);
+  t('DS-839 AC1 Stage 8 puts a comment it may not post in the park file\'s approve', read('worker-contract-stage-8.md').replace(/\s+/g, ' ').includes('write the park file with the same body as its `approve`'), true);
+}
 
 // AC4: each heading of the contract before the split is in exactly one of the new files.
 const before = readFileSync(join(root, 'tests/fixtures/worker-contract-before-split.md'), 'utf8');
@@ -193,6 +216,20 @@ const REWRITTEN = [
   ['DS-587', 'A parallel test runner (Jest, Vitest and most others) sizes itself', 1],
   ['DS-587', 'For an item at the root (`<DIR>` `.`), `with-lock.sh test <CMD> …` works as well.', 1],
   ['DS-587', 'A brief spike is fine: sustained time up there is what hurts.', 1],
+  // a park is its park file, with a gated write's exact text as `approve`, and never a message
+  ['DS-839', '1. **Print the question**', 1],
+  ['DS-839', '`SendMessage` the orchestrator with `notify_when_idle: true`', 1],
+  ['DS-839', '3. If you are re-invoked, read the answer file', 1],
+  ['DS-839', '4. Otherwise **end your turn**.', 1],
+  ['DS-839', 'target, fields, the exact body), then `AUTOPILOT_PARK`.', 1],
+  ['DS-839', 'record, `{"question": "<one line>"}`) and', 1],
+  // shortened to fit the core's cap: the payload also goes in the park file as `approve` (Stage 8 file)
+  ['#775', '(the exact Jira text, the PR body, the diff, whatever needs approving)', 1],
+  ['#775', 'read-only to you apart from your park and image files', 1],
+  // shortened to fit the push-nothing region in the Stage 4 file's cap; the briefing's batch notes assign the port
+  ['DS-889', 'kill a server you did not start, it is likely another session\'s.', 1],
+  ['DS-889', 'it posts at a head nothing has reviewed.', 1], // the verdict rule shortened; desk-review phase-7-post.md holds it whole
+
 ];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
 const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));

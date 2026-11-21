@@ -1,21 +1,23 @@
 // suite: batch (start, discard and archive a feature batch)
+// budget: 45 DS-943 (every check runs batch.mjs or plan-batch.mjs against a real repo and bare origin; 34-36 s on CI)
 // batch.mjs against a scratch repo with a bare origin, a throwaway HOME and DESK_HOME: start refuses a
 // second batch, a second live feature batch and a bad base; discard removes an unstarted batch and
 // deletes its branch only when main has all of it; the archive check moves a done-with batch under
 // batches/.done/ and hands open ticket PRs to the digest. An epic planned, handed over and closed out
 // with --batch beside a live standing batch never writes the standing queue. PR states are injected, so
 // no gh runs.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
+import { SPAWN_ORDER_RULE, KEEP_ORDER_RULE } from '../desk/bin/spawn-order.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-batch-'));
+const T = scratch('desk-batch-');
 const HOME = join(T, 'home');
 const DESK_HOME = join(T, 'deskhome');
 const SLUG = 'acme__widgets';
@@ -301,6 +303,41 @@ a = res(archive('X-3', { 9: 'MERGED', 10: 'MERGED' }));
 t('AC5 a second X-3 archives beside the first', a.archived === true && existsSync(doneQ('X-3')) && (a.log ?? []).join(' ').includes('.done/X-3.'), true);
 t('AC5 a last promotion merged is logged as merged', (a.log ?? []).join(' ').includes('its promotion PR #9 is merged'), true);
 
+// DS-784: a child whose follow-on steps needs-you held until the last promotion merged keeps the batch,
+// stamped with that merge so needs-you lists it, and the batch is archived once the steps are done.
+const stepsLeft = { key: 'X-13', state: 'done', result: { pr: 13 }, merged_at: '2026-10-30T11:00:00Z', follow_on: [{ step: 'check on staging', row: 'staging-write' }] };
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': stepsLeft } });
+mkdirSync(namedS('X-12'), { recursive: true });
+a = res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' }));
+t('DS-784 follow-on steps not run: not archived', a.archived === false && existsSync(namedQ('X-12')), true);
+t('DS-784 the child is stamped with the promotion merge', readQ('X-12').tickets['X-13'].promoted_at, MERGED_AT);
+t('DS-784 the report says what the batch waits on', (a.lines ?? []).join(' ').includes('waits on the follow-on steps of X-13'), true);
+t('DS-784 a second check stamps nothing new and says nothing', (res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' })).lines ?? []).length, 0);
+writeQ('X-12', { ...readQ('X-12'), tickets: { 'X-13': { ...readQ('X-12').tickets['X-13'], follow_on_done: '2026-10-30T14:00:00Z' } } });
+// A blind audit its pass spawned into the batch's folder, not yet recorded, holds the archive.
+const auditQ = join(HOME, '.desk-autopilot', SLUG, 'audit-queue.json');
+mkdirSync(dirname(auditQ), { recursive: true });
+writeFileSync(auditQ, JSON.stringify({ items: { 'X-13': { ticket: 'X-13', key: 'audit.X-13', state: 'running', state_dir: namedS('X-12') } } }));
+a = res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' }));
+t('a blind audit running from the batch\'s folder: not archived, naming it', a.archived === false && existsSync(namedQ('X-12')) && (a.lines ?? []).join(' ').includes('the blind audit of X-13, not yet recorded'), true);
+rmSync(auditQ, { force: true });
+t('DS-784 once they are done, it is archived', res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' })).archived, true);
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': stepsLeft } });
+t('DS-784 a closed promotion never took them out, so it archives as before', res(archive('X-12', { 9: 'CLOSED', 13: 'MERGED' })).archived, true);
+// A child an earlier slice promoted is stamped with that slice's merge, not the last one's.
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9, merged: [{ pr: 7, slice: 1, merged_at: '2026-10-29T12:00:00Z' }] },
+  tickets: { 'X-13': { ...stepsLeft, merged_at: '2026-10-29T11:00:00Z' } } });
+res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' }));
+t('DS-784 an earlier slice\'s child keeps the age that slice gave it', readQ('X-12').tickets['X-13'].promoted_at, '2026-10-29T12:00:00.000Z');
+// DS-785: a child whose review's post-merge criteria no pass has made follow-on steps yet keeps the
+// batch too, so they are not archived away unseen; once a pass has read them, it archives.
+const owedSteps = { key: 'X-13', state: 'done', result: { pr: 13 }, merged_at: '2026-10-30T11:00:00Z', pr_status: { pr: 13, state: 'MERGED', post_merge: [{ step: 'check on production' }] } };
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': owedSteps } });
+t('DS-785 a child still owed its post-merge steps keeps the batch', res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' })).archived, false);
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': { ...owedSteps, post_merge_read: 13 } } });
+t('DS-785 once a pass has read them, it archives', res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' })).archived, true);
+rmSync(dirname(namedQ('X-12')), { recursive: true, force: true });
+
 // DS-523 AC3: a ticket left in a batch ready to archive is never archived with it. After a last
 // promotion a pass recorded, one admitted since moves to the standing batch, and the archive line names it.
 const standingLive = JSON.stringify({ version: 1, batch: 'standing-2', supervised: true, tickets: { 'S-1': { key: 'S-1', state: 'running' } } });
@@ -317,6 +354,19 @@ t('DS-523 AC3 a ticket left after the last promotion: the batch is archived', a.
 t('DS-523 AC3 the ticket is in the standing batch', JSON.parse(readFileSync(standingQ, 'utf8')).tickets['X-11']?.state, 'triaged');
 t('DS-523 AC3 and not in the archived queue', JSON.parse(readFileSync(doneQ('X-9'), 'utf8')).tickets['X-11'], undefined);
 t('DS-523 AC3 the archive line names it', (a.log ?? []).join(' ').includes('moved X-11 to the standing batch'), true);
+// DS-784: a batch kept for follow-on steps still moves a ticket left behind, so no pass starts it there.
+writeQ('X-17', { epic: 'X-17', base: 'feat/x-17', promotion: lastRecorded, tickets: {
+  'X-18': { key: 'X-18', state: 'done', result: { pr: 10 }, merged_at: '2026-10-30T11:00:00Z', follow_on: [{ step: 'check on staging', row: 'staging-write' }] },
+  'X-19': { key: 'X-19', state: 'triaged' },
+} });
+mkdirSync(join(namedS('X-17'), 'triage'), { recursive: true });
+writeFileSync(join(namedS('X-17'), 'triage', 'X-19.json'), JSON.stringify({ ticket: 'X-19', type: 'Task', lane: 'A', lane_reason: 'r', summary: 's', branch: 'fix/X-19', files_in_scope: ['f/X-19'], unknowns: [], blockers: [] }));
+a = res(archive('X-17', { 9: 'MERGED', 10: 'MERGED' }));
+t('DS-784 kept for its follow-on steps: not archived', a.archived === false && existsSync(namedQ('X-17')), true);
+t('DS-784 the ticket left behind is moved to the standing batch all the same', `${JSON.parse(readFileSync(standingQ, 'utf8')).tickets['X-19']?.state} ${readQ('X-17').tickets['X-19']}`, 'triaged undefined');
+t('DS-784 and the report says so', (a.lines ?? []).join(' ').includes('moved X-19 to the standing batch, and waits on follow-on steps'), true);
+rmSync(dirname(namedQ('X-17')), { recursive: true, force: true });
+rmSync(namedS('X-17'), { recursive: true, force: true });
 // DS-568: moved into a batch where its open blocker is parked as the person's step, a ticket merges after
 // that step rather than losing the hold: nothing builds the step, so it is no build hold either.
 const withStep = JSON.parse(readFileSync(standingQ, 'utf8'));
@@ -602,6 +652,53 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   const a = cli('queue.mjs', ['admit', 'HC-2', '--by', 'intake', '--hold-spine', '--hold-collisions'], env);
   const hc = JSON.parse(readFileSync(env.DESK_QUEUE, 'utf8')).tickets['HC-2'];
   t('DS-755 AC8 a ticket admitted sharing a file with unfinished tickets is held behind none of them', `${a.code} ${hc?.state} ${hc?.held_by} ${hc?.collides_with}`, '0 triaged null HC-1|HC-3|HC-4');
+}
+
+// DS-847: plan-batch seeds the queue blockers first, then the tickets that gate the most others, then
+// among those gating none the fewest planned files, then the order named; --keep-order keeps the order
+// named, blockers first.
+{
+  const SO = join(T, 'spawn-order');
+  mkdirSync(join(SO, 'triage'), { recursive: true });
+  const soCfg = join(SO, 'config.md');
+  writeFileSync(soCfg, `${readFileSync(base.DESK_CONFIG, 'utf8')}\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Tracker | \`jira\` |\n| Ticket key pattern | \`SO-[0-9]+\` |\n| Local database | \`none\` |\n`);
+  // rec(key, planned file count, keys it is blocked by)
+  const rec = (k, n = 1, by = []) => writeFileSync(join(SO, 'triage', `${k}.json`), JSON.stringify({ ticket: k, type: 'Task', lane: 'A', lane_reason: 'r', summary: 's', size: 'S', branch: `feat/${k}`,
+    files_in_scope: Array.from({ length: n }, (_, i) => `src/${k}/${i}.ts`), unknowns: [], blockers: by.map((key) => ({ key, category: 'new' })) }));
+  // Plans and seeds `keys` into a fresh queue -> { seeded: the queue's key order, msg: the plan }.
+  // `queued`: tickets already in the queue before it seeds, in that order, as an epic's admitted children are.
+  const seed = (keys, flags = [], queued = {}) => {
+    const env = { DESK_CONFIG: soCfg, DESK_QUEUE: join(SO, `queue-${Math.random().toString(36).slice(2)}.json`), DESK_AUTOPILOT_STATE: SO, AUTOPILOT_WRITE_QUEUE: '1' };
+    writeFileSync(env.DESK_QUEUE, JSON.stringify({ version: 1, batch: 'so', tickets: Object.fromEntries(Object.entries(queued).map(([k, t]) => [k, { key: k, state: 'parked', ...t }])) }));
+    const x = cli('plan-batch.mjs', ['--json', ...flags, ...keys], env);
+    let msg = x.out;
+    try { msg = String(JSON.parse(x.out).message); } catch { /* the raw output, to show what failed */ }
+    return { seeded: Object.keys(JSON.parse(readFileSync(env.DESK_QUEUE, 'utf8')).tickets ?? {}).join(' '), msg };
+  };
+  // SO-3 gates SO-4 and SO-6 directly and SO-5 through SO-4; SO-1 and SO-2 gate none.
+  rec('SO-1'); rec('SO-2'); rec('SO-3'); rec('SO-4', 1, ['SO-3']); rec('SO-5', 1, ['SO-4']); rec('SO-6', 1, ['SO-3']);
+  const hub = seed(['SO-1', 'SO-2', 'SO-3', 'SO-4', 'SO-5', 'SO-6']);
+  t('DS-847 AC1 a ticket gating three others, named after two gating none, is seeded before them', hub.seeded, 'SO-3 SO-4 SO-1 SO-2 SO-5 SO-6');
+  t('DS-847 AC6 the plan lists the spawn order with each ticket\'s transitive dependents count',
+    ['  1. SO-3  gates 3, 1 planned file(s)', '  2. SO-4  gates 1, 1 planned file(s)', '  3. SO-1  gates 0, 1 planned file(s)', '  6. SO-6  gates 0, 1 planned file(s)'].map((l) => hub.msg.includes(`\n${l}`)).join(' '), 'true true true true');
+  t('DS-886 AC2 the plan prints the spawn-order rule sentence above the order', hub.msg.includes(`\nSPAWN ORDER — ${SPAWN_ORDER_RULE}\n  1. SO-3  gates 3`), true);
+  const all = ['SO-1', 'SO-2', 'SO-3', 'SO-4', 'SO-5', 'SO-6'];
+  t('DS-847 AC1 tickets already queued in the order named (an epic\'s admitted children) are reordered too',
+    seed(all, [], Object.fromEntries(all.map((k) => [k, {}]))).seeded, 'SO-3 SO-4 SO-1 SO-2 SO-5 SO-6');
+  t('DS-847 a ticket the user placed keeps its slot when the order is laid over the queue',
+    seed(all, [], Object.fromEntries(all.map((k) => [k, k === 'SO-1' ? { placed: true } : {}]))).seeded, 'SO-1 SO-3 SO-4 SO-2 SO-5 SO-6');
+  rec('SO-11', 8); rec('SO-12', 2);
+  t('DS-847 AC2 of two tickets gating none, the one planned to touch two files comes before the one planned to touch eight', seed(['SO-11', 'SO-12']).seeded, 'SO-12 SO-11');
+  rec('SO-21', 2); rec('SO-22', 2);
+  t('DS-847 AC3 a tie on dependents and planned files keeps the order named', seed(['SO-22', 'SO-21']).seeded, 'SO-22 SO-21');
+  // SO-31 is smaller and named first, but blocked by SO-32.
+  rec('SO-31', 1, ['SO-32']); rec('SO-32', 8);
+  t('DS-847 AC4 a blocker comes before what it blocks', seed(['SO-31', 'SO-32']).seeded, 'SO-32 SO-31');
+  const kept = seed(['SO-1', 'SO-2', 'SO-3', 'SO-4', 'SO-5', 'SO-6'], ['--keep-order']);
+  t('DS-847 AC5 --keep-order seeds the order named', kept.seeded, 'SO-1 SO-2 SO-3 SO-4 SO-5 SO-6');
+  t('DS-847 AC5 --keep-order keeps a larger ticket named first ahead', seed(['SO-11', 'SO-12'], ['--keep-order']).seeded, 'SO-11 SO-12');
+  t('DS-847 AC5 --keep-order still puts a blocker first', seed(['SO-31', 'SO-32'], ['--keep-order']).seeded, 'SO-32 SO-31');
+  t('DS-847 AC5 and the plan says the order named is kept', kept.msg.includes(`\nSPAWN ORDER — ${KEEP_ORDER_RULE}\n  1. SO-1`), true);
 }
 
 // The standing batch is never archived, even with a promotion that would archive a named one.

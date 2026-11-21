@@ -48,6 +48,7 @@ on its feature branch while the standing batch carries on.
 | `desk-review-response` | Replying to and working a reviewer's comments | loads itself |
 | `desk-dev` | Running the app locally, optionally against a copy of staging data | loads itself |
 | `desk-update` | Brings every skill and plugin on the machine up to date, brew-style (see [Updating](#updating)) | `/desk-update` |
+| `desk-resume` | After a context handoff's `/clear`: reads the handoff and carries on from its next step | `/desk-resume` |
 | `desk-reboot` | Before a reboot: every session, heavy processes and unsaved worktrees; busy sessions save a handoff; never reboots | `/desk-reboot` |
 | `desk-ci` | Places each CI job self-hosted or hosted by a written rule, citing the line that decided it, and lints workflows so no self-hosted job receives a secret; measures CI minutes, red rate and time to green within an API call budget, and holds an autopilot batch's red rate to that baseline; saves and restores branch protection, pins required checks to GitHub Actions and makes the default workflow token read-only, each change shown first and gated on §3 `ci-protection` | `/desk-ci classify`, `/desk-ci ci-lint`, `/desk-ci measure`, `/desk-ci protection` |
 
@@ -171,7 +172,8 @@ default branch, and finds leaked dev servers eating memory. It acts only on tick
 their Gemini notes, Jira changes, GitHub PRs, your Claude Code sessions and your own Slack messages.
 It covers every desk repo that posts to the same §4 Check-out destination, and each source needs its
 own §3 row (`read-calendar`, `read-transcripts`, `read-slack-public`…); a skipped source is listed in
-the draft. It saves a Slack draft at most (§3 `slack-draft`), never sends.
+the draft. To a Slack channel at §3 `slack-draft` `yes` it saves the post as a draft there and says
+so, copying it to the clipboard only when the draft cannot be saved; it never sends.
 
 ```
 /desk-checkout                   today (before 10:00, yesterday)
@@ -233,18 +235,28 @@ node ~/.claude/desk/bin/desk-ci.mjs measure      CI cost and red rate over 90 da
 node ~/.claude/desk/bin/desk-ci.mjs protection   snapshot --ticket <KEY|none> | restore <file> | pin | token  [--apply <plan id>]
 ```
 
-**`supervisor.mjs`** runs autopilot passes from launchd, with no Claude session in the loop. Install
-it once per repo, from inside the repo. Its agent runs a pass at login and every 3 minutes for a batch
-the orchestrator handed over at Stage 4, and appends each report to `<state>/supervisor.log`. It keeps
-the batch's merge driver running, sends one macOS notification for each new set of items that need
-you, and stops once the batch is idle. It passes on only the approvals the batch recorded at Stage 3.
+**`supervisor.mjs`** runs autopilot passes from launchd on macOS, or from a systemd user timer on
+Linux (WSL needs `systemd=true` under `[boot]` in `/etc/wsl.conf`), with no Claude session in the loop.
+Install it once per repo, from inside the repo. Its agent runs a pass at login and every 3 minutes for a
+batch the orchestrator handed over at Stage 4, and appends each report to `<state>/supervisor.log`. On
+Linux, ticks stop at logout unless lingering is on (`loginctl enable-linger`); install says when it is
+off. On WSL, ticks run only while WSL is up, and lingering does not keep it up: WSL stops once every
+terminal closes. Keep a terminal open, or add a Windows Task Scheduler entry at logon that runs
+`wsl.exe --exec sleep infinity` (with `-d <distro>` if the supervisor's distro is not your default),
+with "Stop the task if it runs longer than 3 days" turned off; install says this on WSL. It keeps the batch's merge driver running, sends one desktop notification for each new set of items
+that need you (osascript on macOS; on Linux notify-send, else a Windows toast under WSL, else only the
+log), and stops once the batch is idle. It passes on only the approvals the batch recorded at Stage 3.
 Each tick does this for every batch the repo holds, one after another: the standing batch, then each
 named batch, each on its own base, with its own log and merge driver. A named batch whose last promotion
 PR is merged, or whose promotion PR is closed, with no ticket running and no ticket PR open, is archived under
 `batches/.done/` instead; a ticket PR still open then goes to the check-in digest for you to merge or
 close. A merge driver still running for such a batch has nothing left to merge, so the tick stops it
 (one mid-merge finishes that merge first) and a later tick archives the batch. `batch.mjs start <EPIC> <branch>` starts an epic's feature batch (one per repo at a time), and
-`batch.mjs discard <EPIC>` removes one no ticket has started in.
+`batch.mjs discard <EPIC>` removes one no ticket has started in. An epic's start that fails discards
+its batch with `--keep-triage`, which keeps the children's triage records, so admitting the epic again
+on the same branch within six hours triages only the children with none; a child whose triage fails is
+tried once more after 60 seconds first. `batch.mjs discard <EPIC>` on a slot holding only those records
+removes them, and `move-batch.mjs` clears them from the slot it moves into.
 `./install.sh` puts desk's scripts and templates in a release folder of their own,
 `~/.claude/desk/releases/<commit>/` (`<commit>-<time>` from a dirty checkout), and makes it live in one
 step by pointing `~/.claude/desk/current` at it; `~/.claude/desk/bin` and `templates` link through
@@ -542,6 +554,19 @@ node ~/.claude/desk/bin/bench-pr-text.mjs --tasks <tasks.json> --max-budget-usd 
 node ~/.claude/desk/bin/bench-pr-text.mjs report --tasks <tasks.json> [--out <dir>] [--blind <dir>]
 ```
 
+### A second Claude login
+
+desk runs every repo's work on this computer's default Claude login, unless a repo is pinned to
+another. To add a login from the command line:
+
+1. `CLAUDE_CONFIG_DIR=~/.claude-logins/<name> claude`, then `/login` with the other account, and quit.
+2. `desk-env logins check` lists it with its account and plan once it is signed in.
+3. `desk-env logins default claude <name>` makes it the default for every repo here, or
+   `desk-env subscription set <repo slug> <email>` pins one repo to it (that repo's config §3b
+   Subscription).
+
+desk-q does the same in view 6: press `a` to add a login, then choose the default there.
+
 ## Subagents
 
 Eleven named subagents, installed to `~/.claude/agents/` so they are available in every repo.
@@ -683,6 +708,7 @@ the expected skill, and Claude opened the index on the 3 ambiguous ones. To undo
 ./install.sh            # install or update
 ./install.sh --check    # report missing tools and unreachable skills, change nothing
 ./install.sh --yes      # accept the prompts (not large downloads)
+./install.sh --accept=hook-attribution,plugins --decline=statusline   # answer the prompts named, with no terminal
 ./install.sh --any-branch   # install a checkout off main or behind origin/main, which it otherwise refuses
 ./install.sh --rollback     # go back to the release installed before the current one
 ```
@@ -706,9 +732,20 @@ What it does:
 The four hooks: **`deny-ai-attribution.py`** (before each Bash command) refuses Claude trailers in a
 repo whose §5 AI attribution is `forbidden`, **`desk-update-check.sh`** (at session start, at
 most once a day) says when this checkout has new commits for `/desk-update` to install, and
-**`desk-handoff.py`** (on prompt submit, after each tool, at turn end and at session start) has a
+**`desk-handoff.py`** (on prompt submit, after each tool, at turn end, at session start and before a compaction) has a
 session in a configured repo write `.handoffs/<date>.md` once its context passes §2 Handoff at
-context % (default 45; on a 1M window §2 Handoff at context % on a 1M window, which setup proposes at 20 and unset takes the row above's value), and points the session after `/clear` or a compaction at it.
+context % (default 45; on a 1M window §2 Handoff at context % on a 1M window, which setup proposes at 20 and unset takes the row above's value), and points the session after `/clear` or a compaction at it. A hook cannot start a turn, so it asks
+you to type `/clear`, then `/desk-resume`, which carries on from the handoff's next step.
+
+With `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` set in Claude Code's environment (a percentage from 1 to 100
+under `env` in `~/.claude/settings.json`; `install.sh` offers to set it at 55 and keeps a value
+already there), nobody types anything: past §2 the session writes its
+handoff and keeps working, Claude Code compacts it on its own, the hook's `PreCompact` step names the
+handoff for the summary, and after the compaction the session is told to read it and carry on. Each
+later crossing refreshes that same handoff, and the turn cannot end until it has. A compaction does
+not mark it consumed, so the session's own later `/clear` still finds it, and from the moment it
+is named no other session's `/clear` takes it. Set §2 below the override, so the handoff is written before the compaction.
+
 **`desk-worker-stop.py`** is never registered in `settings.json`: each autopilot worker's own
 settings run it at turn end. It blocks the worker's first attempt to end its turn while a background
 task it started is still running, which `claude -p` would kill, and logs a second attempt.
@@ -844,6 +881,7 @@ hook then refuses Claude trailers in that repo only, and autopilot workers there
 
 ```bash
 desk-env where                   # which repo and config apply here; EXISTS=yes once set up
+desk-env show [3 5]              # the config's rules for the agent, headings and tables (no §3c unless named)
 desk-env get required-checks     # read any row by its id (desk-env ids lists them all)
 desk-env list required-checks    # every item of a list row, one per line
 desk-jira where                  # the Jira site, project and login this repo resolves to
@@ -860,6 +898,8 @@ AUTOPILOT_PREFLIGHT=1 ~/.claude/desk/bin/spawn-worker.sh <TICKET> <worktree> pre
 
 With the `preflight` lever on (config §3b Phase 0 levers), a ticket whose last preflight passed on
 the same inputs skips it; delete `<state dir>/workers/<TICKET>.preflight.json` to force one.
+A preflight session that ran no check (no reply, or no tool turn), or that read BLOCKED only on
+checks that should be OK, is run once more at default effort; a boundary failure is never retried.
 
 The desk-skills test suite runs against throwaway homes and repos, never yours:
 
@@ -870,25 +910,94 @@ bash tests/run.sh
 It also checks every shell script's and `.mjs` file's syntax, and runs `shellcheck -S warning` on
 every shell script when shellcheck is installed (it says when it is not). On macOS,
 `/bin/bash tests/run.sh` tests bash 3.2. `bash tests/run.sh test_jira.sh test_gate.mjs` runs only
-those suites, and `bash tests/related.sh` only the ones your branch's change reaches (every suite
-when that cannot be decided). `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite
+those suites, and `bash tests/related.sh` only the ones your branch's change reaches, chosen as CI
+chooses them, uncommitted and untracked files included (every suite when that cannot be decided;
+it runs as many at once as `run.sh` does without `-j`, or `DESK_TEST_JOBS` of them where that is
+set). `related.sh` takes a test slot first (`with-lock.sh test`), so it never runs beside the slots'
+holders: while it waits the wrapper says who holds them, and after `DESK_RELATED_WAIT` seconds (an
+hour by default) it exits 75 having run nothing. A run already inside a slot takes no second one.
+`bash tests/run.sh -j 3` runs up to three suites at once, the longest
+in `tests/suite_durations.json` first, each reported in one piece in name order (CI's shards do).
+Without `-j` it runs as many as `desk-env get test-cap` allows, or a quarter of the cores where that
+is unset; `-j 1` runs them one after another in name order. Each report gives the suite's CPU
+seconds, and every finished run appends a line to `~/.desk-autopilot/test-runs.jsonl` with its
+date, suites, job count, wall and CPU seconds and the load average at its start. A suite that fails
+runs once more: passing then, the run passes, the suite's report shows its first run's failure, and
+the summary names it under `flaked:` (CI's `tests` job prints each shard's); failing again, the run
+fails with both runs printed. `test_compare_pass.sh` is never retried. `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite
 needs no edit there: give it a `# suite: <label>` line (`// suite: <label>` in `.mjs`) near the top.
 A suite that reads a directory rather than naming files says so with a `# covers: <glob>` line.
-`run.sh` starts every suite without the caller's `DESK_*` variables (bar CI's `DESK_REQUIRE_SHELLCHECK`)
+`run.sh` starts every suite without the caller's `DESK_*` variables (bar CI's `DESK_REQUIRE_SHELLCHECK` and `DESK_REQUIRE_PLAYWRIGHT`)
 or `DATABASE_URL` and `DIRECT_DATABASE_URL`, so a desk worker's environment cannot reach a suite.
+
+`bash tests/compare_pass.sh <base> [<head>]` shows whether a change moved what `pass.mjs` does. It
+runs the base's `tests/test_pass*.sh` against both trees (a ref or a directory each; head defaults to
+`HEAD`), saves the queue and the pass's output after every pass run, and lists each queue field,
+output line and suite check that differs, with times, elapsed times, ids, ports and scratch paths
+left out, text the pass cut short compared up to the cut, and queue stamps (`updated_at`,
+`spawned_at`, `last_start`, `cloud.started`) compared only as set or unset. It exits 0
+when nothing differs, 1 when something does, and 2 when a run was not compared.
+
+`pass.mjs` moves into phase modules under `desk/bin/pass/`, one section at a time. A phase's decision
+is a pure function there: it takes a snapshot (the queue's tickets and whatever else it reads, the
+PR bodies it needs included) and returns actions such as `{ type: 'set', key, fields }`. It starts no
+process, calls no git, gh or Jira, and writes nothing. `pass.mjs` runs it through `runPhase`
+(`desk/bin/pass/run-phase.mjs`), which reads the snapshot when the phase starts and carries the
+actions out in order. The `set` and `report` handlers are shared, and anything that does I/O stays in
+`pass.mjs` as a handler. A decision that needs a read only some cases make (a gh call, the usage
+probe), or the result of a write (the issue links it made), is a generator run by `runSteps` instead:
+it yields each read or write as an action and gets the handler's answer back, so each is made only
+where, and in the order, the pass made it before. Advancing running tickets and the usage limit
+(`desk/bin/pass/advance.mjs`) are decided that way, one running ticket at a time, and so is the spawn
+loop (`desk/bin/pass/spawn-loop.mjs`), one candidate at a time: its last action is the verdict (skip,
+record-done, park, hand-away or start), and starting the worker stays in `pass.mjs`. So are failed
+evidence runs on drafts (`desk/bin/pass/evidence-failures.mjs`), which yield filing a fix and starting
+a run again and settle each PR on what came back, and the fix tries (`desk/bin/pass/fix-tries.mjs`),
+one ready PR at a time, whose `reads` action hands fix-tries.mjs's calls the reads they make only
+where they need them. Every park and
+hold a pass settles (`desk/bin/pass/parks.mjs`: parks whose clears-when holds, parks waiting on the
+base, person-step, date, outside and merge holds) has one decision for each point in the pass where it
+runs, each called there. So is the base gate (`desk/bin/pass/base-gate.mjs`), whose last action
+says whether it keeps the batch from idle. Each phase has its
+own unit suite, `tests/test_pass_<phase>.mjs`; the first was crashed uploads. Each suite runs its decision under `withNoIo` (`tests/pass_phase_trap.mjs`), which
+fails it on any process start or file write. Every phase's snapshot starts from `phaseSnapshot` in `desk/bin/pass/shared.mjs`:
+the tickets, the time, and the pass's one session-registry read, which reads as unread (`read`
+false, its session ids null) when it failed, never as a registry with no sessions. The pure helpers
+more than one phase calls live in that module too (`tests/test_pass_shared.mjs`); a phase imports
+them from there, never from `pass.mjs`. The batch base sync and its baseline checks
+(`desk/bin/pass/batch-base.mjs`) are generators too: the sync's `synced` action hands what it settled
+(the spawn hold, the base worktree, the base fix try) back to `pass.mjs` for the sections after it.
 
 CI (`.github/workflows/`): a pull request runs, on Linux, the suites its change reaches
 (`node tests/scope_sections.mjs --base origin/main` shows which, and why), plus the syntax and
-shellcheck pass and a bash 3.2 check of the shell scripts involved. A change it cannot place (a
-file no suite names, a test helper, `desk-env.mjs`, `install.sh`, CI itself, a deletion) runs every
-suite. Every push to main runs every suite on Linux, and every suite runs nightly on macOS under
-`/bin/bash` 3.2. While either is red an issue labelled `ci-main-red` stays open.
+shellcheck pass and a bash 3.2 check of the shell scripts involved. Test helpers and fixtures,
+`install.sh` and `desk-config.md` run the suites that name them. A change that only adds exports to
+`desk-env.mjs` runs the suites that use those exports. A change it cannot place runs every suite:
+a file no suite names, `tests/run.sh`, `scope_sections.mjs`, any other change to `desk-env.mjs`,
+CI itself, or a deletion. Every push to main runs every suite on Linux, and on macOS under `/bin/bash` 3.2 in four
+shards (the `macOS` workflow, not a required check), and the same workflow runs those shards on
+Linux under Node 24 (pull requests and the Linux `tests` run use Node 22); its nightly run only runs
+the suite when no macOS run on main passed in the last 24 hours. While the Linux run is red, or the macOS lane is red,
+cancelled or over 36 hours old, an issue labelled `ci-main-red` stays open, assigned to the repo's
+owner, and `/desk-needs-you` lists it for them.
 
 The Linux suites run in parallel `shard` jobs (`SHARDS` in `tests/plan_shards.mjs`, six), which it balances by each
-suite's recorded duration in `tests/suite_durations.json` (a suite with none is planned at the median).
+suite's duration on main's latest push run (its `suite-durations` artifact), or, when none can be
+fetched, the committed `tests/suite_durations.json`, and it says which. Each shard runs three suites
+at once, so it plans six times three lanes; a suite with no duration is planned at the 75th percentile.
 The one check named `tests` passes only when every shard and the bash 3.2 check did, and names each
-failed shard's suites. To refresh the durations from a green run on main:
+failed shard's suites. To refresh the committed durations from a green run on main:
 `gh run view <run id> --log | node tests/plan_shards.mjs --record`.
+
+Every suite has a CPU-second budget in CI: 30 for a `.mjs` suite and 150 for any other, or the N of a
+`# budget: N <ticket>` line (`//` in `.mjs`) in its first ten lines, which `test_lint.sh` requires to
+name a ticket and caps at 600. A suite that does more on a main push than on a pull request (as
+`test_compare_pass.sh` replays every pass suite there) writes `# budget: N (main M) <ticket>`: N on a
+pull request, M on a main push or a local run, and the cap holds N only. A suite over its budget prints a `::warning::`; on a pull request it
+fails the run from the date `BUDGETS_FAIL_FROM` in `tests/run.sh` gives. A push to main never fails on
+a budget: its `record` job opens or comments one issue labelled `ci-slow` for the suites over budget,
+and one labelled `ci-flaky` for those that failed and passed their retry, each assigned to the repo's
+owner. Neither is `ci-main-red`.
 
 ## Using autopilot
 

@@ -205,7 +205,10 @@ for (let i = items.length - 1; i >= 0; i--) {
   const forms = twins(p.cmd);
   const rows = items.filter((x) => x.id !== 'pre-push-checks' && normDir(x.dir) === normDir(p.dir));
   if (rows.some((x) => twins(x.cmd).some((c) => forms.includes(c)))) { items.splice(i, 1); continue; }
-  const locks = new Set(rows.filter((x) => E.lockFor(x.id) !== 'nolock' && twins(x.cmd).some((c) => forms.some((f) => f.startsWith(`${c} `) || c.startsWith(`${f} `)))).map((x) => E.lockFor(x.id)));
+  const near = rows.filter((x) => E.lockFor(x.id) !== 'nolock' && twins(x.cmd).some((c) => forms.some((f) => f.startsWith(`${c} `) || c.startsWith(`${f} `))));
+  const locks = new Set(near.map((x) => E.lockFor(x.id)));
+  // Near a lock-only row's item (§4 Lint, §4 Storybook), its bare prefix rule would run that row bare.
+  p.lockOnly = near.some((x) => E.LOCK_ONLY.has(x.id));
   if (locks.size > 1) items.splice(i, 1);
   else if (locks.size) p.lock = [...locks][0];
   else if (p.cmd.includes('typecheck')) p.lock = 'tsc';
@@ -358,12 +361,15 @@ if (mode === 'triage') {
   // An installed package binary, run from the worktree by relative or absolute path: named tools that
   // take no lock and write no database, never a wildcard, which would let a suite, a typecheck or a
   // migration skip with-lock.sh or the per-ticket database by any spelling of its path. A `..` is denied.
-  const NODE_BIN = ['./node_modules/.bin/', 'node_modules/.bin/', `${WT}/node_modules/.bin/`].flatMap(withPrefix);
-  const NODE_BIN_TOOLS = ['eslint', 'prettier', 'biome', 'oxlint', 'stylelint', 'tsx', 'prisma generate', 'prisma format', 'prisma validate'];
+  const NODE_BIN_DIRS = ['./node_modules/.bin/', 'node_modules/.bin/', `${WT}/node_modules/.bin/`];
+  const NODE_BIN = NODE_BIN_DIRS.flatMap(withPrefix);
+  const NODE_BIN_TOOLS = ['prettier', 'tsx', 'prisma generate', 'prisma format', 'prisma validate'];
+  // A lint tool may be type-aware, as heavy as a typecheck, so it runs only under the tsc lock (below).
+  const NODE_BIN_LINT = E.LINT_BINS;
 
   // ---- files ---------------------------------------------------------------------------------
-  // The worktree, and in the state dir only this ticket's park file, handoff briefing, resume file and
-  // screenshots. The resume file lives in the state dir because the harness write-protects the
+  // The worktree, and in the state dir only this ticket's park file, handoff briefing, resume file,
+  // screenshots and review results (reviews/<KEY>/, kept so a later accepted re-verdict can re-run them). The resume file lives in the state dir because the harness write-protects the
   // worktree's `.claude/`, where desk-ticket keeps it interactively. Not answers/ (a worker must not
   // answer itself), not workers/ (its own settings), not the queue or the locks.
   allow.push(
@@ -372,6 +378,7 @@ if (mode === 'triage') {
     `Edit(${abs(STATE)}/handoffs/${T}.json)`,
     `Edit(${abs(STATE)}/resume/${T}.json)`,
     `Edit(${abs(STATE)}/images/${T}/**)`, `Edit(${abs(STATE)}/images/${T}/**)`,
+    `Edit(${abs(STATE)}/reviews/${T}/**)`,
   );
   // Inside the worktree, the harness's own settings (which it may reload) and git's pointer file.
   deny.push(
@@ -403,6 +410,10 @@ if (mode === 'triage') {
     // Its own handoff briefing, written as JSON from flags, for this ticket only. Run bare, since
     // `node *..*` below refuses a criterion or a git range holding `..`.
     ...BIN_FORMS.map((b) => `Bash(${b}/handoff.mjs write ${T} *)`),
+    // desk-wait: one blocking call on its own background run. It reads the process table, takes only a
+    // task output file or a pid of this session, and stops nothing but that run's with-lock.sh, and
+    // only while it still waits for its slot.
+    ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-wait.mjs:*)`, `Bash(node ${b}/desk-wait.mjs:*)`]),
     // Whether its AUTOPILOT_PARK_CLEARS_WHEN line reads as a form a pass checks: reads and writes nothing.
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/clears-when.mjs --check:*)`, `Bash(node ${b}/clears-when.mjs --check:*)`]),
     // `render` and `compare` open Chromium on the saved boards (and a built Storybook), so only
@@ -424,8 +435,8 @@ if (mode === 'triage') {
     ...bash('gh', ...GH_DENY.filter((d) => d !== ' workflow' || !DISPATCH_RULES.length)),
     ...(DISPATCH_RULES.length ? bash('gh', ' workflow enable', ' workflow disable') : []),
     'Bash(node *..*)', ...NODE_BIN.map((c) => `Bash(${c}*..*)`), 'Bash(pkill:*)', 'Bash(killall:*)', 'Bash(merge-driver.sh:*)',
-    // The desk-env subcommands that write: the machine profile, the cost sources and the login rules
-    // are the user's to confirm. desk-env itself refuses them in a worker too, for the forms these miss.
+    // The desk-env subcommands that write: the machine profile, the cost sources, the login rules and
+    // the lever freeze are the user's to confirm. desk-env itself refuses them in a worker too, for the forms these miss.
     ...E.WORKER_DENIED_WRITES.flatMap((w) => [
       `Bash(desk-env ${w}:*)`, `Bash(${E.HOME}/.local/bin/desk-env ${w}:*)`, `Bash(~/.local/bin/desk-env ${w}:*)`,
       ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-env.mjs ${w}:*)`, `Bash(node ${b}/desk-env.mjs ${w}:*)`]),
@@ -457,10 +468,10 @@ if (mode === 'triage') {
   for (const it of items) {
     const form = (wrapped) => (c) => (it.id === 'install-cmd' && (wrapped || !depsOk) ? `Bash(${c})` : rule(c, ''));
     for (const cmd of twins(it.cmd)) {
-      if (it.dir === '.' && !E.LOCK_ONLY.has(it.id)) allow.push(...withPrefix(cmd).map(form(false)));
+      if (it.dir === '.' && !E.LOCK_ONLY.has(it.id) && !it.lockOnly) allow.push(...withPrefix(cmd).map(form(false)));
       // Every item also runs through with-lock.sh: under its lock where it has one, else `nolock`,
-      // which only changes directory. A directory item, or a lock-only row's (§4 Storybook), has no
-      // bare form (the worker cannot `cd`).
+      // which only changes directory. A directory item, or a lock-only row's (§4 Storybook, §4 Lint),
+      // has no bare form (the worker cannot `cd`).
       allow.push(...lockForms(it.lock ?? E.lockFor(it.id), it.dir, cmd).map(form(true)));
     }
     if (BIN_NAME.test(it.bin) && !NOT_A_TOOL.has(it.bin)) probeBins.add(it.bin);
@@ -469,6 +480,17 @@ if (mode === 'triage') {
   // covers, which the worker runs under the test lock like any suite line. workspace-test re-reads the
   // workspaces when it runs, so one rule covers a workspace the worker adds after spawn.
   allow.push(...lockForms('test', '.', 'desk-env workspace-test').map((c) => rule(c, '')));
+  // A lint binary runs at the root and in each directory a §4 item names, so a worker lints one file
+  // from its workspace package. A form a configured item holding `..` extends is left to that item's
+  // own rule: its `..` deny would refuse the item, and its prefix allow without the deny takes any `..`.
+  const lintDirs = [...new Set(['.', ...items.map((it) => normDir(it.dir))])];
+  const configured = items.flatMap((it) => twins(it.cmd).flatMap((cmd) => lockForms(it.lock ?? E.lockFor(it.id), it.dir, cmd)));
+  const allLint = lintDirs.flatMap((dir) => NODE_BIN_DIRS.flatMap((d) => NODE_BIN_LINT.flatMap((t) => lockForms('tsc', dir, `${d}${t}`))));
+  const extends_ = (k, c) => k.startsWith(c) && k.slice(c.length).includes('..');
+  const lintBins = allLint.filter((c) => !configured.some((k) => extends_(k, c)));
+  allow.push(...lintBins.map((c) => rule(c, '')));
+  // Such an item still takes no further `..` of the worker's.
+  deny.push(...lintBins.map((c) => `Bash(${c}*..*)`), ...configured.filter((k) => allLint.some((c) => extends_(k, c))).map((k) => `Bash(${k}*..*)`));
   if (PM && BIN_NAME.test(PM)) {
     probeBins.add(PM);
     allow.push(...withPrefix(`${PM} install`).map((c) => `Bash(${c})`)); // exactly, no arguments
@@ -559,10 +581,15 @@ if (mode === 'triage') {
   // the exact payload. Enforcement is the rule, not the wording. A row the config lacks reads as
   // `no` but is named `unset`: it was never asked, and /desk-update asks it.
   const setting = (id) => (E.permissionMissing(id) ? 'unset' : E.permission(id));
+  // A blind audit (levers-audit.mjs) reviews a merged PR and posts nothing: no tracker or PR write is
+  // granted to it, whatever §3 says.
+  const AUDIT = E.ticketKind(T).kind === 'audit';
+  const AUDIT_NEVER = new Set(['pr-open', 'pr-edit', 'pr-self-review-comment', 'pr-reply', 'pr-update-branch', 'ci-rerun', 'jira-comment', 'jira-transition', 'jira-create', 'jira-edit']);
   const grant = (id, rules, denyRules = rules) => {
-    const p = E.permission(id);
+    const audited = AUDIT && AUDIT_NEVER.has(id);
+    const p = audited ? 'never' : E.permission(id);
     if (p === 'yes') allow.push(...rules);
-    else { deny.push(...denyRules); denied.push(`${E.permissionKey(id)} (${setting(id)})`); }
+    else { deny.push(...denyRules); denied.push(`${E.permissionKey(id)} (${audited ? 'an audit posts nothing' : setting(id)})`); }
     return p === 'yes';
   };
 
@@ -619,7 +646,7 @@ if (mode === 'triage') {
   grant('jira-create', bash('desk-jira', ' create', ' create-batch'));
   grant('jira-edit', bash('desk-jira', ' edit', ' labels'));
   deny.push(...bash('desk-jira', ...JIRA_NEVER));
-  if (!(E.permission('jira-create') === 'yes' && E.permission('jira-edit') === 'yes')) deny.push(...bash('desk-jira', ' attach'));
+  if (AUDIT || !(E.permission('jira-create') === 'yes' && E.permission('jira-edit') === 'yes')) deny.push(...bash('desk-jira', ' attach'));
   else allow.push(...bash('desk-jira', ' attach'));
 
   // Cross-vendor refutation, read-only only. Without an allow rule `dontAsk` refuses the binary and
@@ -695,7 +722,7 @@ if (mode === 'triage') {
   const composeFile = !stackByEnv && base ? [base, override].filter(Boolean).join(' -f ') : null;
   const services = [];
   for (const raw of cfgList('local-services')) {
-    const name = /^[a-z0-9][a-z0-9_.-]*(?=\s|$)/.exec(raw.trim())?.[0];
+    const name = E.localServiceName(raw);
     if (name) services.push(name);
     else if (E.permission('worker-local-services') === 'yes') warns.push(`§4 Local services item "${raw}" does not start with a compose service name — not allow-listed`);
   }

@@ -4,17 +4,17 @@
 // and exits 3 while it is TODO or still says "Not mined". Every file a worker reads names each §3b
 // and §4 row it mentions with the `desk-env get|list|cmds <id>` call that reads it, at or before the
 // paragraph of its first mention, because a worker cannot read config.md and guesses ids from labels.
-import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { CONFIG_ROWS } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = join(ROOT, 'desk', 'bin', 'desk-env.mjs');
-const T = mkdtempSync(join(tmpdir(), 'desk-rowrefs-'));
+const T = scratch('desk-rowrefs-');
 
 // ---- AC1 / AC3: desk-env get review-asks ----------------------------------------------------
 const ASKS_HEAD = '## 4. Tracker, tools and team\n\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n\n'

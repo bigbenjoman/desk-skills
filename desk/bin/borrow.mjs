@@ -126,17 +126,20 @@ const runningIn = (q) => Object.values(q.tickets ?? {}).filter((t) => t?.state =
 //   running   this batch's running workers
 //   wanted    the slots this pass would otherwise fill
 //   queues    otherQueues()
+//   profiled  whether there is a machine profile, and capOf a repo's §3b cap by its slug: each read
+//             from the config unless given
 // -> { room, line }   room is Infinity with no machine total
-export function machineBudget({ running, wanted = 0, machine = machineCap(), queues = [] }) {
+export const repoCap = (slug) => E.concurrencyLimits(E.repoConfigValue(slug, 'concurrency')).cap;
+export function machineBudget({ running, wanted = 0, machine = machineCap(), queues = [], profiled, capOf = repoCap }) {
   if (machine == null) {
-    const why = E.machineProfile() != null ? 'the machine profile has no autopilot-concurrency' : 'no machine profile';
+    const why = (profiled ?? E.machineProfile() != null) ? 'the machine profile has no autopilot-concurrency' : 'no machine profile';
     return { room: Infinity, line: `machine budget: none — ${why}, so this repo uses its own §3b rows` };
   }
   let all = running;
   let why = '';
   for (const o of queues) {
     if (o.error) {
-      const counted = E.concurrencyLimits(E.repoConfigValue(o.slug, 'concurrency')).cap;
+      const counted = capOf(o.slug);
       why += `; ${queueName(o)}'s queue cannot be read (${o.error}), so it counts at its cap of ${workers(counted)}`;
       all += counted;
     } else all += runningIn(o.q);
@@ -293,6 +296,20 @@ export function borrowedLine(plan, { share, running, spawned }) {
 // mkdir and its write, unless it has sat that way for a minute. It waits at most `waitMs`; a pass
 // that cannot take it counts nothing that pass. -> { ok: true, release } | { ok: false, why }
 export async function takeBorrowLock({ dir = E.lockDir(), name = 'desk-borrow.lock.d', waitMs = 120000, pollMs = 250, pid = process.pid } = {}) {
+  const until = Date.now() + waitMs;
+  for (;;) {
+    const r = tryBorrowLock({ dir, name, pid });
+    if (r.ok || !r.held) return r.ok ? r : { ok: false, why: r.why };
+    if (Date.now() >= until) return { ok: false, why: `the borrow lock is held by pid ${r.holder ?? '?'} (waited ${Math.round(waitMs / 1000)}s)` };
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((res) => { setTimeout(res, pollMs); });
+  }
+}
+
+// One try at that lock, with no wait, for a caller that cannot await (usage-probe.mjs probeShared).
+// A stale holder is cleared as takeBorrowLock clears it.
+//   -> { ok: true, release } | { ok: false, held: true, holder } | { ok: false, why }
+export function tryBorrowLock({ dir = E.lockDir(), name = 'desk-borrow.lock.d', pid = process.pid } = {}) {
   const path = join(dir, name);
   const holder = () => { try { return Number(readFileSync(join(path, 'pid'), 'utf8').trim()) || null; } catch { return null; } };
   const alive = (p) => { try { process.kill(p, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
@@ -310,7 +327,6 @@ export async function takeBorrowLock({ dir = E.lockDir(), name = 'desk-borrow.lo
     try { if (stale()) rmSync(path, { recursive: true, force: true }); } finally { rmSync(clearing, { recursive: true, force: true }); }
     return true;
   };
-  const until = Date.now() + waitMs;
   for (;;) {
     try {
       mkdirSync(path);
@@ -321,8 +337,6 @@ export async function takeBorrowLock({ dir = E.lockDir(), name = 'desk-borrow.lo
       if (e.code !== 'EEXIST') return { ok: false, why: `the borrow lock ${path} cannot be made (${e.code ?? e.message})` };
     }
     if (stale() && clearStale()) continue;
-    if (Date.now() >= until) return { ok: false, why: `the borrow lock is held by pid ${holder() ?? '?'} (waited ${Math.round(waitMs / 1000)}s)` };
-    // eslint-disable-next-line no-await-in-loop
-    await new Promise((r) => { setTimeout(r, pollMs); });
+    return { ok: false, held: true, holder: holder() };
   }
 }

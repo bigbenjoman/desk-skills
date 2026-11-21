@@ -24,7 +24,7 @@ it has already actioned. So:
 ## A park means the worker is already gone
 
 A worker cannot block under `dontAsk` (every wait primitive, `timeout … until`, `sleep`, `Monitor`,
-`inotifywait`, is refused) so it prints `AUTOPILOT_PARK`, messages you, and exits within a turn or
+`inotifywait`, is refused) so it writes its park file, prints `AUTOPILOT_PARK` and exits within a turn or
 two. Treat every park as "worker gone now". Any answer that needs the user arrives after it left,
 so a worker parked holding an approved Jira comment exits and nothing receives the answer.
 
@@ -40,15 +40,15 @@ How to resume, by what was parked:
 
 | Parked on | Resume by |
 |---|---|
-| a Stage 3 unknown (state still `triaged`, open questions above 0) | answer every question; the count reaching 0 makes it eligible at the next pass |
+| a Stage 3 unknown (state still `triaged`, open questions above 0) | answer every question; the count reaching 0 makes it eligible at the next pass. One a linked design frame answers, read through this session's design connector and write into the ticket's Design section first (`desk-admit` §2) |
 | triage lane C, or lane D parked on its design (only in Figma, or a canvas not on the base) | **never requeued for a headless worker** (a lane D whose canvas is then saved on the base is triaged and planned again, and runs): it goes to an interactive `desk-ticket` session. Only if the user rules the lane itself wrong: `queue.mjs set <TICKET> lane=<A, B or E>`, answer its triage unknowns with `answer.mjs`, then `queue.mjs requeue <TICKET>` |
-| a worker's `AUTOPILOT_PARK` on a single remaining step (a Jira comment, the PR, the review post) | finish that step yourself from the worker's printed payload |
+| a worker's `AUTOPILOT_PARK` on a single remaining step (a Jira comment, the PR, the review post) | finish that step yourself from the exact text the park holds (its `approve`, in `queue.mjs get <TICKET>`; else the worker's printed payload), then record it done on its PR: `queue.mjs finish <TICKET> --pr <n>`, never a hand-written `queue.mjs set` (refused unless the PR is open or merged, on the ticket's branch, into the batch's base, and for a running, held or claimed ticket, a spine or plan park, and a feature spine or a child owning criteria, changing nothing) |
 | a worker's `AUTOPILOT_PARK` whose only blocker is a red check §4 Check builds names (`desk-env list check-builds`): someone to run its build | not the person's. The pass records one done at harvest when its draft PR is red on such checks alone, and its undraft step runs the build. One still parked on lane A, B, D or E: requeue it, as its worker finishes DONE on that check (worker contract Stage 5 file) |
 | a worker's `AUTOPILOT_PARK` that needs more agent work | requeue it: `queue.mjs requeue <TICKET>` (below) |
 | any park whose worker read an answer | clear `<state>/answers/<TICKET>.txt` yourself: workers cannot delete it, and a stale one answers the next park instantly. A requeue moves it aside for you |
 | a failed worktree setup | fix the cause the setup log names, then requeue; the failed worktree was already removed |
 | a park whose clears-when did not read (`kept for the decider to restate` under `clears-when:`) | restate it once, as the decider does in a batch the supervisor runs: where it names one fact a script can read, `queue.mjs clears-when <TICKET> "<a form>"`, keeping its meaning and adding nothing; where it names nothing a script can read, `queue.mjs clears-when <TICKET> none`, and it is the person's. One left unrestated for an hour a pass records `none` |
-| a park whose recorded `clears_when` now holds | nothing: the next pass settles it by these rules (lane C, or a lane D parked at triage on its design, left for a person, its own PR merged recorded done, otherwise requeued) and says so under `clears-when:` |
+| a park whose recorded `clears_when` now holds | nothing: the next pass settles it by these rules (lane C, or a lane D parked at triage on its design, left for a person, its own PR merged recorded done, a fix try parked before its worker started dropped and its PR read again for the try it needs now, otherwise requeued) and says so under `clears-when:` |
 | a worker's park naming only §4 Live reads entries (`desk-env list live-reads`) and the not-reached tail | nothing: the pass runs each on the host from its own clean checkout of the default branch (`<state>/live-read-checkout`, fetched before each run; never the ticket's worktree), saves up to 1 MiB of its output to `<state>/fixtures/<ticket>/<name>.json` and requeues it; one that exits non-zero, prints more, or finds that checkout unable to reach the default branch comes back as a park with the reason, which is the person's |
 | a worker's push or draft PR refused, with its `AUTOPILOT_PR_BODY_BEGIN:`/`END:` body in the log | nothing, where §3 `git-push` and `pr-open` are `yes`: the next pass pushes the branch as it stands (never a force-push), opens the draft from that body and records the ticket done on it, naming what else the park listed. A dirty worktree, an existing PR or a refused push leaves it parked, said once under `recovered:` |
 | a branch that adds nothing to `<default>`, where a merged PR names the ticket | nothing: the next pass records it done on that PR, removes its worktree and local branch, and deletes it on origin only where §3 `branch-delete` is `yes`. A dirty worktree leaves it parked |
@@ -62,8 +62,13 @@ pass and holds the pass lock while it works, so a pass started meanwhile refuses
 with no running worker and 2 for a key the queue does not hold. Stopping every worker is `/desk-reboot`.
 
 `SendMessage` to a live worker works and is worth trying first: check `ListAgents` rather than
-assuming. A parked worker that sent `SendMessage` with `notify_when_idle: true` is re-invoked when
-you go idle, which is the one wait that works.
+assuming. A parked worker never messages you: it writes its park file and ends its turn, and the
+pass reads the park.
+
+Sessions see and message only those on their own login. A worker on another login than yours (the
+repo's §3b Subscription, or a borrowed login) cannot be messaged, so `SendMessage` it only on your
+own; any worker's park reaches you at your next pass. A park on a write it may not make keeps the exact text
+as the park's `approve` (`{kind, target, body}`), which needs-you shows whole: relay that, verbatim.
 
 ## Answering a live worker
 
@@ -193,9 +198,13 @@ re-running a ticket from scratch.
 
 ## Stalls that do not look like stalls
 
-- **A hung `codex exec` keeps the log growing.** It emits a `tool_progress` heartbeat every 30s, so
-  log-growth stall detection never fires: one call sat 8h29m and only 4 workers spawned all night.
-  Check the newest `tool_progress` `elapsed_time_seconds` in the log tail; a single
+- **A hung `codex exec` keeps the log growing, for ten minutes.** It emits a `tool_progress`
+  heartbeat every 30s, so the log grows while it hangs. The harness caps a foreground Bash call at
+  600s: past that it moves the call to the background ("did not complete within its 600s timeout and
+  was moved to the background") and the heartbeats stop, and a backgrounded call still running ten
+  minutes later is stopped. So the log then goes quiet and the pass's quiet and wedged counts take
+  over (an older harness heartbeated one call for 8h29m). Inside those ten minutes, check the newest
+  `tool_progress` `elapsed_time_seconds` in the log tail; a single
   tool call past a few minutes is a hang. Kill **that worker's** codex by the PID you resolved
   (`ps -o etimes= -p <pid>`), never `pkill -f codex`: other sessions run codex concurrently.
 - **A worker at a usage limit is paused, not dead.** Any limit counts: the 5-hour one, the weekly
@@ -203,7 +212,8 @@ re-running a ticket from scratch.
   `pass.mjs` reads the limit from the worker's log (`usage-limit.mjs`), keeps the ticket running,
   reports `paused on the usage limit: <TICKET> on <limit> until <reset>`, and never stops it as
   wedged or marks it failed. While a limit holds, the batch holds every spawn and resume, and each
-  pass makes one probe call (`usage-probe.mjs`). Once the reset passes, or a probe succeeds (as it
+  pass makes one probe call (`usage-probe.mjs`), or, when another pass or desk-q started one on that
+  login under a minute ago, waits for that one's answer instead. Once the reset passes, or a probe succeeds (as it
   does as soon as the person switches subscription), the paused worker is resumed in its own
   session on its own model, and held tickets spawn as normal: never requeue one by hand. A worker
   whose session is still live and quiet half an hour after its reset falls back to the stall check.
@@ -233,10 +243,10 @@ re-running a ticket from scratch.
   items wait for the next one, while triage and epic planning still run on it. A subscription no
   login here is signed in to runs none of them: triage fails naming it, and none falls back to
   another login.
-- **A briefing's orchestrator name can be stale.** The orchestrator session is named after its
-  batch, so adding a ticket renames it. A worker whose `SendMessage` fails should run `ListAgents`
-  once; exactly one row that is the same batch with tickets added or removed is the same session.
-  No plausible row means nobody is listening: stop.
+- **A worker never reaches the orchestrator.** It runs with no setting sources, often on another
+  login, whose agent registry the orchestrator is not in. So a park is only its park file and its
+  `AUTOPILOT_PARK` line, read at the next pass; a gated write's exact text is the park file's
+  `approve`.
 - **A permission denial may be the filesystem, not the rule list.** Workers can only reach their
   worktree plus `additionalDirectories`. The lock directory (`DESK_LOCK_DIR`, default `/tmp`) and
   `/proc` (Linux meminfo) needed adding there; a `Bash(flock:*)` rule never could have fixed it.
