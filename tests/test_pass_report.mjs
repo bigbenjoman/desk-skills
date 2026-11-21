@@ -81,11 +81,6 @@ const opening = (fields = {}) => ({
     'collisions: the conflict record was not read (not JSON), so every file runs at its configured budget',
   ]));
 }
-{
-  const heldBack = [{ key: 'H-1', holds: [{ file: 'pass.mjs', by: ['R-1'], elsewhere: [{ key: 'X-1', label: 'batch XB-1' }, { key: 'X-2', label: 'the standing batch' }], k: 3 }] }];
-  t('DS-664 AC1 a held ticket names the tickets running in other batches after its own batch\'s, each with its batch',
-    lines(decideReportLines(after({ heldBack })))[0], 'held back by a collision: H-1 (pass.mjs has 3 running of its 3: R-1, X-1 in batch XB-1, X-2 in the standing batch)');
-}
 
 // ---- the report's lines after the promotion ledger
 const after = (fields = {}) => ({
@@ -93,6 +88,11 @@ const after = (fields = {}) => ({
   base: null, source: 'main', promotion: undefined, overrides: [], overridesSeen: [], reviewClash: null, reviewSeen: '',
   blocked: [], heldBack: [], resumeRows: [], register: { ok: true, entries: new Map() }, askedAgain: [], ...fields,
 });
+{
+  const heldBack = [{ key: 'H-1', holds: [{ file: 'pass.mjs', by: ['R-1'], elsewhere: [{ key: 'X-1', label: 'batch XB-1' }, { key: 'X-2', label: 'the standing batch' }], k: 3 }] }];
+  t('DS-664 AC1 a held ticket names the tickets running in other batches after its own batch\'s, each with its batch',
+    lines(decideReportLines(after({ heldBack })))[0], 'held back by a collision: H-1 (pass.mjs has 3 running of its 3: R-1, X-1 in batch XB-1, X-2 in the standing batch)');
+}
 {
   const tickets = byKey([
     { key: 'H', merged_at: '2026-11-18T10:00:00Z', promotion_hold: 'run the migration', result: { pr: 9 } },
