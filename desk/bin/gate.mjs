@@ -37,7 +37,7 @@
 //     every held file the base's CODEOWNERS gives to `merger` alone is satisfied
 //   parseFlaky(items)        §4 Known flaky checks items `<check>: <glob> [<glob>…]` or `<check>: <file> > <test>`
 //                            -> { flaky: [{ name, paths, test? }], errors }
-//   flakyWaiver(checks, { required, advisory, runs, flaky, files, notes }) -> null | { applies, reason, checks, hits }
+//   flakyWaiver(checks, { required, advisory, runs, flaky, files, notes }) -> null | { applies, reason, checks, hits, lines, tests }
 //   failureNotes(notes)      a job's failure annotations, exit-code lines aside -> [{ path, title, message }]
 //   notesIn(checks)          (failing check) -> the error_notes the pass kept on its runs, or undefined
 //   parseStateChecks(items)  §4 State checks items `<check>[: verdict|approval]` -> { checks: [{ name, kind }], errors }
@@ -529,8 +529,9 @@ export const stateFailing = (failing, stateChecks, lineOf = () => null) => (fail
 // bypass: §3 merge-bypass is never), a check listed only by its tests failed only in those (below),
 // the PR's files touch none of their globs, and the gate passes with them set aside. `reason` says
 // which test failed: unlisted, required, annotations (unreadable, or as many as GitHub keeps), tests (with `lines`, the failures
-// no listed test names), files (unreadable), paths (with `hits`), or gate (something else keeps it red
-// or pending). The driver's two reruns come first. notes(f) is a failing check's failureNotes, or
+// no listed test names, each led by its test's title where the annotation gives one), files (unreadable),
+// paths (with `hits`), or gate (something else keeps it red or pending). A waiver that applies carries
+// `tests`, the listed tests ({ check, file, title }) whose failures it waives. The driver's two reruns come first. notes(f) is a failing check's failureNotes, or
 // undefined when they could not be read. Each failure annotation of a check listed only by its tests
 // must name one of them: its path the test's file, its title ending in the test's name (namesTest). A
 // check with none is never waived, since nothing says which test failed.
@@ -545,6 +546,7 @@ export function flakyWaiver(checks, { required = [], advisory = [], runs = [], f
   if (unlisted.length) return no('unlisted', { checks: unlisted });
   const req = names.filter((n) => required.includes(n));
   if (req.length) return no('required', { checks: req });
+  const waivedTests = [];
   for (const n of names.filter((x) => !flaky.some((f) => f.name === x && !f.test))) {
     const tests = flaky.filter((f) => f.name === n).map((f) => f.test);
     const read = gate.failing.filter((f) => f.name === n).map((f) => notes(f));
@@ -553,7 +555,8 @@ export function flakyWaiver(checks, { required = [], advisory = [], runs = [], f
     if (read.some((x) => !Array.isArray(x) || x.length >= ANNOTATION_CAP)) return no('annotations', { checks: [n] });
     const fails = read.flat();
     const stray = fails.filter((a) => !tests.some((t) => namesTest(a, t)));
-    if (!fails.length || stray.length) return no('tests', { checks: [n], lines: stray.map((a) => a.message).slice(0, 3) });
+    if (!fails.length || stray.length) return no('tests', { checks: [n], lines: stray.map((a) => (a.title ? `${String(a.title).trim()}: ${a.message}` : a.message)).slice(0, 3) });
+    for (const t of tests) if (fails.some((a) => namesTest(a, t))) waivedTests.push({ check: n, file: t.file, title: t.title });
   }
   if (!files) return no('files');
   const hits = [];
@@ -567,7 +570,7 @@ export function flakyWaiver(checks, { required = [], advisory = [], runs = [], f
   if (hits.length) return no('paths', { hits });
   const rest = evaluateGate(checks, { required, advisory: [...advisory, ...names], runs });
   if (rest.state !== 'pass') return no('gate', { reasons: rest.reasons });
-  return { applies: true, reason: null, checks: names };
+  return { applies: true, reason: null, checks: names, tests: waivedTests };
 }
 
 export const ANNOTATION_CAP = 10;
