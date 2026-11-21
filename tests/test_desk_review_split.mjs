@@ -192,6 +192,9 @@ t('DS-596 AC3 a worker\'s logged call amends a criterion only by picking a readi
 t('DS-596 AC3 a gap a decision this ticket\'s worker logged caused is code, unless the decision keeps a later-merged ticket\'s behaviour', req.includes('- a gap whose cause is a decision this ticket\'s worker logged, which reversing that decision closes, unless the decision keeps a later-merged ticket\'s behaviour (next);'), true);
 t('DS-596 the later-merged-ticket decision still settles its gap on the next round', req.includes('so the next round reads it as a settled call'), true);
 t('DS-596 AC4 a gap only the person can close is still person', req.includes('`settled_by` is `person` only when no change the ticket allows can close the gap'), true);
+// A criterion about every instance of something gets one gap listing every site the seat can find, not a sample.
+t('an "every X" criterion\'s gap names every missed site it can find, each as file:line, not a sample', req.includes('gets one gap naming **every site the diff misses that you can find**, each as `file:line`, never a sample'), true);
+t('and says how it searched the reviewed tree', req.includes('search the reviewed tree for the thing itself (`git grep` at `<TIP>`) and say in the gap how you searched'), true);
 
 // DS-834: every finder's brief, codex's too, carries one paragraph sending it to where a
 // server-set value it branches on is set, and to say so rather than guess when that is not here.

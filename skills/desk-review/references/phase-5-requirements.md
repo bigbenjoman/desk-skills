@@ -62,6 +62,12 @@ code_claim: yes | no
 settled_by: code | person
 ```
 
+**A criterion about every instance of something** ("every page", "an avatar wherever a person
+shows", "all the buttons") gets one gap naming **every site the diff misses that you can find**, each
+as `file:line`, never a sample: search the reviewed tree for the thing itself (`git grep` at `<TIP>`)
+and say in the gap how you searched. A sample leaves the next round to find the rest, and each fix
+try is spent finding sites rather than closing them.
+
 **Settled calls amend the criteria.** Bea's prompt carries, beside the ticket, every call already
 taken on it: each line of the PR body's `### Decisions taken` section (`desk-pr`), and each entry of
 the triage record's `decided` list (`$DESK_STATE/triage/<KEY>.json`, where one exists). She measures
