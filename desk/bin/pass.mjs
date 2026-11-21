@@ -275,6 +275,7 @@ function writeLines(r) {
   return [
     ...r.conflicts.map((c) => `${c.ticket ?? 'batch'}: queue write not made for ${c.field === 'order' ? 'the spawn order' : c.field === '*' ? 'the whole ticket' : c.field}: ${c.gone ? 'another writer took the ticket out of the queue' : 'another writer changed it after this pass read the queue, and its value stays'}`),
     ...(r.archiveError ? [`queue archive: done tickets were not archived this pass (${r.archiveError})`] : []),
+    ...(r.ledgerMissed ? [`ledger: 1 missed append, queue.json was written (${r.ledgerMissed})`] : []),
   ];
 }
 // A command queue-writer.mjs does not apply in memory runs as queue.mjs, after the changes before it

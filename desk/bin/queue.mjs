@@ -106,8 +106,8 @@ function lock(dir = LOCK) {
 
 // Every command saves at most once, so the lock goes with the save: approve's gh call after it, or
 // reject's briefing write, never keeps another writer waiting. Each save is one version higher than
-// the queue it read (queue-store.mjs).
-const writeQueue = writeQueueFile;
+// the queue it read (queue-store.mjs), and the ticket ledger names this command as its writer.
+const writeQueue = (file, q) => writeQueueFile(file, q, { by: `queue.mjs ${cmd}` });
 function save(q) {
   writeQueue(QUEUE, q);
   unlock();

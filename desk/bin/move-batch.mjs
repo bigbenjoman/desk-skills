@@ -26,8 +26,9 @@ import { readQueue, crashShowsPerson, describeCrash, Refusal } from './batch-sta
 import { readCloseouts } from './closeout.mjs';
 import { slotFor, onlyKeptTriage } from './batches.mjs';
 import { lockPid, unlock, alive, tryLockFile } from './dir-lock.mjs';
-import { writeQueueFile, archivePath } from './queue-store.mjs';
+import { writeQueueFile, archivePath, readQueueAt, reportMissed } from './queue-store.mjs';
 import { auditsIn } from './levers-audit.mjs';
+import { ledgerOn, ledgerTarget, recordWrite } from './queue-ledger.mjs';
 
 crashShowsPerson((e) => console.error(`move-batch: ${describeCrash(e)}`));
 
@@ -35,9 +36,10 @@ crashShowsPerson((e) => console.error(`move-batch: ${describeCrash(e)}`));
 // agent's own log (launchd writes it for the repo), intake's register (intake admits into the slot),
 // the repo's asks (asks.mjs), and the levers' repo-level records with their locks: the lever log
 // (lever-log.mjs), the blind audits and their queue (levers-audit.mjs) and the evaluations with their
-// evidence (levers-evaluate.mjs). Each is kept once per repo, not per batch, and read from this folder.
+// evidence (levers-evaluate.mjs), and the ticket ledger (ticket-ledger.mjs), whose events name their
+// batch. Each is kept once per repo, not per batch, and read from this folder.
 const STAYS = [E.BATCHES_DIR, 'ref', 'orchestrator.lock', 'supervisor.lock', 'supervisor.agent.log', 'intake.json', 'asks.json'];
-const REPO_LEVEL = ['levers.jsonl', 'audit.jsonl', 'audit-queue.json', 'lever-evals.jsonl', 'levers-evidence'];
+const REPO_LEVEL = ['levers.jsonl', 'audit.jsonl', 'audit-queue.json', 'lever-evals.jsonl', 'levers-evidence', 'ledger'];
 const stays = (f) => STAYS.includes(f) || REPO_LEVEL.some((n) => f === n || f.startsWith(`${n}.lock`));
 // How long a stopped merge driver has to let go of its lock.
 const DRIVER_WAIT_MS = Number(process.env.DESK_MOVE_DRIVER_WAIT_MS) > 0 ? Number(process.env.DESK_MOVE_DRIVER_WAIT_MS) : 30_000;
@@ -96,7 +98,10 @@ const cur = readQueue(from.queue);
 if (cur.supervised !== true) refuse(`the standing batch ${name} is run by a session, not the supervisor: that session's next pass would look for it in the standing slot. Hand it to the supervisor first (queue.mjs set-batch supervised=true, desk-autopilot Stage 4), then run this again. Nothing was moved`);
 const running = [...Object.values(cur.tickets ?? {}).filter((t) => t?.state === 'running').map((t) => t.key), ...(cur.base_fix?.running ? ['the base fix'] : [])];
 const DRAIN = ['concurrency', 'concurrency_by', 'concurrency_user'];
-const writeQueue = writeQueueFile;
+const BY = 'move-batch.mjs';
+const writeQueue = (file, q, opts = {}) => writeQueueFile(file, q, { by: BY, ...opts });
+// The queue as it stands in the standing slot, which the ledger compares the moved one with.
+const before = readQueueAt(from.queue);
 if (running.length) {
   // A worker count of 0 is a pause pass.mjs and borrowing both honour, resumes and the base fix
   // included. The count it replaces is kept, unless this batch is already draining: a count the
@@ -165,7 +170,7 @@ try {
     moved.push(f);
   }
   if (images.length || drained) {
-    writeQueue(to.queue, cur);
+    writeQueue(to.queue, cur, { record: false });
     unlinkSync(from.queue);
   } else renameSync(from.queue, to.queue);
   if (existsSync(archivePath(from.queue))) renameSync(archivePath(from.queue), archivePath(to.queue));
@@ -176,6 +181,8 @@ try {
   try { rmdirSync(to.state); rmdirSync(dirname(to.queue)); } catch { /* not empty */ }
   refuse(`could not move the batch (${e.message})${stuck.length ? `; still in ${to.state}, to move back by hand: ${stuck.join(', ')}` : ': nothing was moved'}`);
 }
+// The ledger records the move once it has happened: a moved event per ticket naming both batches.
+if (ledgerOn()) reportMissed(to.queue)(recordWrite(to.queue, before, readQueueAt(to.queue), { by: BY, from: ledgerTarget(from.queue).batch }));
 
 const tickets = Object.keys(cur.tickets ?? {}).length;
 console.log(`move-batch: moved batch ${name} (base ${cur.base}, ${tickets} ticket${tickets === 1 ? '' : 's'}, run by the supervisor) from the standing slot to batch ${epic}`);

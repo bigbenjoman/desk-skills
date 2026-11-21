@@ -17,7 +17,7 @@ import { basename, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { lock, unlock } from './dir-lock.mjs';
-import { STATES, FINISHED } from './queue-writer.mjs';
+import { STATES, FINISHED } from './queue-states.mjs';
 import { batchFields, keys as keysOf, same } from './queue-store.mjs';
 
 export const SNAPSHOT_EVERY = 1000;
@@ -148,11 +148,12 @@ export function legality(state, ev) {
 }
 
 // Applies one envelope to `state` in place. An illegal transition is applied all the same: in shadow
-// mode the queue write it records has already happened.
+// mode the queue write it records has already happened. Every batch an event names gets an entry in
+// `state.batches`, so a batch with none has never been written to the log.
 function apply(state, ev) {
   const d = ev.data ?? {};
+  const b = (state.batches[ev.batch ?? ''] ??= {});
   if (EVENTS[ev.type].scope === 'batch') {
-    const b = (state.batches[ev.batch ?? ''] ??= {});
     if (ev.type === 'base_red') b.base_red = { ...d };
     else if (ev.type === 'base_green') delete b.base_red;
     else if (ev.type === 'platform_outage') b.platform_outage = { ...d };
