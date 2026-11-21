@@ -156,8 +156,9 @@ const prsNamingKey = (repo, state, key, fields) => {
 // another branch with its merge commit on origin/<base> or with a PR from that branch merged into `base`
 // after it (a squash or rebase promotion, which writes new commits), and when no PR is left to land
 // (none, or only closed ones); false while one is open or merged only elsewhere; null when GitHub cannot
-// be read.
-export function landedOn(key, base) {
+// be read. With `via` (the repo's default branch, where `base` is a batch's base that syncs from it), a
+// promotion merged into `via` after it lands it too, once its merge commit is on origin/<base>.
+export function landedOn(key, base, via = base) {
   let repo, root;
   try { repo = E.ghRepo(); root = E.repoRoot(); } catch { return null; }
   const list = (args) => ghPrList(repo, args);
@@ -169,9 +170,14 @@ export function landedOn(key, base) {
   let unread = false;
   for (const p of merged) {
     if (!p.baseRefName || !Date.parse(p.mergedAt)) continue;
+    const after = (q) => Date.parse(q?.mergedAt) >= Date.parse(p.mergedAt);
     const promotions = list(['--state', 'merged', '--head', p.baseRefName, '--base', base, '--json', 'number,mergedAt']);
     if (!promotions) { unread = true; continue; }
-    if (promotions.some((q) => Date.parse(q?.mergedAt) >= Date.parse(p.mergedAt))) return true;
+    if (promotions.some(after)) return true;
+    if (via === base || p.baseRefName === via) continue;
+    const viaPromotions = list(['--state', 'merged', '--head', p.baseRefName, '--base', via, '--json', 'number,mergedAt,mergeCommit']);
+    if (!viaPromotions) { unread = true; continue; }
+    if (viaPromotions.some((q) => after(q) && reaches(q.mergeCommit?.oid))) return true;
   }
   if (unread) return null;
   return !mine.some((p) => p.state === 'OPEN' || p.state === 'MERGED');
@@ -180,7 +186,8 @@ export function landedOn(key, base) {
 // Where ticket `key`'s code waits when landedOn finds it merged only into another branch: { branch, pr,
 // state }, `branch` the latest branch other than `base` a PR naming it merged into, and the open PR from
 // that branch into `base` as `pr` (its number, null for none) and `state`: none, draft, red (the latest
-// run of a check failed, as gate.mjs reads a rollup) or open. null when no PR naming it merged
+// run of a check failed, as gate.mjs reads a rollup) or open; with none open, one from that branch merged
+// into `base` after it is `merged`, its code on `base` already. null when no PR naming it merged
 // elsewhere, or GitHub cannot be read.
 export function unpromotedBase(key, base) {
   let repo;
@@ -193,7 +200,12 @@ export function unpromotedBase(key, base) {
   const open = ghPrList(repo, ['--state', 'open', '--head', away.baseRefName, '--base', base, '--json', 'number,isDraft,statusCheckRollup']);
   if (!open) return null;
   const p = open[0];
-  if (!p) return { branch: away.baseRefName, pr: null, state: 'none' };
+  if (!p) {
+    const merged = ghPrList(repo, ['--state', 'merged', '--head', away.baseRefName, '--base', base, '--json', 'number,mergedAt']);
+    if (!merged) return null;
+    const done = merged.find((q) => Date.parse(q?.mergedAt) >= Date.parse(away.mergedAt));
+    return done ? { branch: away.baseRefName, pr: done.number, state: 'merged' } : { branch: away.baseRefName, pr: null, state: 'none' };
+  }
   const red = latestPerCheck(normaliseRollup(p.statusCheckRollup)).some((c) => FAILED.has(c.conclusion));
   return { branch: away.baseRefName, pr: p.number, state: p.isDraft ? 'draft' : red ? 'red' : 'open' };
 }

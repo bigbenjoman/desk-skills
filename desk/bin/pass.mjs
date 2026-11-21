@@ -3651,7 +3651,7 @@ runSteps({
     ...EPIC_HANDLERS,
     'epic-merged': (a, s) => epicMerged(s.q, a.key),
     'other-repo': (a) => inOtherRepo(a.key),
-    landed: (a) => landedOn(a.key, DEFAULT_BRANCH),
+    landed: (a) => landedOn(a.key, DEFAULT_BRANCH, REPO_DEFAULT),
     unpromoted: (a) => unpromotedBase(a.key, a.into),
   },
   report,
