@@ -1726,14 +1726,18 @@ const linkLines = [];
 // allows. Its key is the spell's own (desk-env baseRedKey), so an earlier spell's repair is another
 // ticket, left as it is with any steps it still owes. A row under this key, live or archived, is this
 // spell's repair: none is admitted beside it while it is unfinished, nor a second once it merged with
-// the base still red. One archived with its PR closed unmerged is done with, and the key admitted again.
+// the base still red. One done with its PR closed unmerged is done with, and the key admitted again: an
+// archived row needs nothing first, and a live one (a batch that archives nothing) is dropped, which an
+// unmerged PR's row allows, since it owes no step after a merge. A drop that refuses (its worktree holds
+// commits no origin ref has) leaves it to the person, as needs-you offers for any closed PR.
 const BASE_RED = liveBaseRed(STATE, { branch: DEFAULT_BRANCH });
 let baseRedRepair = null;
 if (BASE_RED) {
   const key = BASE_RED.repair_key;
   const qB = queue();
   const was = qB.tickets[key] ?? null;
-  const had = was && !(isArchived(qB, key) && !was.merged_at && prClosed(was)) ? was : null;
+  const closed = was?.state === 'done' && !was.merged_at && prClosed(was);
+  const had = was && !closed ? was : null;
   if (had && !had.merged_at) baseRedRepair = { key, state: had.state };
   else if (had) baseRedRepair = { key, state: `merged at ${had.merged_at} with ${BASE_RED.branch} still red, so no second repair starts until it has gone green` };
   else if (!BASE_PUSH.ok) baseRedRepair = { off: `config §3 ${BASE_PUSH.key} is "${BASE_PUSH.perm}", so no worker is started to repair it` };
@@ -1746,8 +1750,11 @@ if (BASE_RED) {
     // A repair closed unmerged left its log under the same key, whose AUTOPILOT_DONE would keep this one
     // from spawning: moved aside, as a requeue does.
     E.rotateRound(key);
-    const r = qTry(['admit', key, '--by', 'base-red']);
-    baseRedRepair = r.ok ? { key, state: 'admitted to start as a slot frees' } : { off: `its repair ticket ${key} could not be admitted (${r.out.split('\n').pop()})` };
+    const dropped = closed && !isArchived(qB, key) ? qTry(['drop', key]) : { ok: true };
+    const r = dropped.ok ? qTry(['admit', key, '--by', 'base-red']) : null;
+    baseRedRepair = r?.ok ? { key, state: 'admitted to start as a slot frees' }
+      : !dropped.ok ? { key, state: `done with its PR #${was.result.pr} closed unmerged, and could not be dropped to start again (${dropped.out.split('\n').pop()}): drop or requeue it, which needs-you offers` }
+      : { off: `its repair ticket ${key} could not be admitted (${r.out.split('\n').pop()})` };
   }
 }
 // The PRs held on it, which its one line names in place of a BASE RED line each.

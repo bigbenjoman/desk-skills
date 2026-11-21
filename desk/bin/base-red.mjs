@@ -48,7 +48,7 @@ export function liveBaseRed(state, { branch = null, now = Date.now() } = {}) {
 // the branch's first-parent line from its tip, at most WALK commits. `read` gives
 //   tip(branch) / commit(sha) -> { sha, parent } | null, runs(sha) -> [{ name, status, conclusion, url }] | null
 // null meaning the read failed. -> { state: 'none' } with nothing required, { state: 'red', sha, checks }
-// when any check's newest completed run failed, { state: 'unknown', why } when a read failed or a check
+// when any check's newest completed run failed (whatever a later read gives), { state: 'unknown', why } when a read failed or a check
 // has no completed run in the walk, else { state: 'green' }.
 export function baseState({ required, branch, read }) {
   if (!required.length) return { state: 'none' };
@@ -58,7 +58,8 @@ export function baseState({ required, branch, read }) {
   const tip = c.sha, left = new Set(required), red = [];
   for (let i = 0; i < WALK && c && left.size; i++) {
     const runs = read.runs(c.sha);
-    if (runs == null) return unknown(`the check runs on ${branch} at ${short(c.sha)} could not be read`);
+    // A read that fails after a check was found red leaves the base red: that failure stands.
+    if (runs == null) { if (red.length) break; return unknown(`the check runs on ${branch} at ${short(c.sha)} could not be read`); }
     for (const name of [...left]) {
       const mine = runs.filter((r) => r?.name === name);
       const st = runsState(mine);
@@ -68,7 +69,7 @@ export function baseState({ required, branch, read }) {
     }
     if (!left.size || !c.parent || i === WALK - 1) break;
     c = read.commit(c.parent);
-    if (!c) return unknown(`a commit on ${branch} could not be read`);
+    if (!c) { if (red.length) break; return unknown(`a commit on ${branch} could not be read`); }
   }
   if (red.length) return { state: 'red', sha: tip, checks: red };
   if (left.size) return unknown(`no completed run of ${[...left].join(', ')} on the newest ${WALK} commits of ${branch}`);

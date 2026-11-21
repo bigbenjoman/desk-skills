@@ -66,6 +66,14 @@ test('a red check outranks another check left unknown; nothing required is none'
   assert.deepEqual(baseState({ required: [], branch: 'main', read: reader({}) }), { state: 'none' });
 });
 
+test('a check found red stays red when a later read in the walk fails', () => {
+  const tip = { [sha('b')]: { parent: sha('a'), runs: [run('tests', 'failure')] } };
+  const runsFail = baseState({ required: ['tests', 'lint'], branch: 'main', read: reader({ ...tip, [sha('a')]: { parent: null, runs: [] } }, { tip: sha('b'), failRuns: sha('a') }) });
+  assert.deepEqual([runsFail.state, runsFail.checks.map((c) => c.name)], ['red', ['tests']]);
+  const commitFails = baseState({ required: ['tests', 'lint'], branch: 'main', read: reader(tip, { tip: sha('b') }) });
+  assert.deepEqual([commitFails.state, commitFails.checks.map((c) => c.name)], ['red', ['tests']]);
+});
+
 test('the last merges are the repo\'s merged events, newest first', () => {
   const ev = [
     { repo: 'acme/w', pr: '1', event: 'merged', ticket: 'A-1', sha: 's1', at: 't1' },
