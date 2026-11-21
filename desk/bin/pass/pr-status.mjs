@@ -48,6 +48,13 @@ const commitOwed = (t) => gatedFollow(t) && !t.pr_status?.merge_commit;
 // A ticket's follow-on steps as the follow-on write compares them: as read, or as that write leaves them.
 export const followState = (x) => JSON.stringify([x.follow_on ?? null, x.follow_on_done ?? null]);
 
+// Ticket `t` parks on PR #n, which is not its own (`why`, notOwnPr's), and is said to: nothing is done to #n.
+function* parkForeign(t, n, why, state, s, prStates) {
+  prStates[n] = state;
+  if (!s.dry) yield { type: 'park', key: t.key, question: foreignQuestion(n, why) };
+  yield { type: 'out', line: `PR status: ${t.key}'s PR #${n} is not its own (${why}): ${s.dry ? 'would park it' : 'parked'}, and nothing is done to #${n}` };
+}
+
 export function* decidePrStatus(s) {
   const prStates = {};
   const merges = [];
@@ -66,6 +73,9 @@ export function* decidePrStatus(s) {
     const n = t.state === 'done' ? t.result?.pr : null;
     if (n == null) continue;
     let st = null;
+    // A status kept from an earlier pass is checked too, before a merged or closed one is taken as read.
+    const keptForeign = t.pr_status?.pr === n ? notOwnPr(t, t.pr_status, s.logins) : null;
+    if (keptForeign) { yield* parkForeign(t, n, keptForeign, t.pr_status.state, s, prStates); continue; }
     // A PR this pass's reopen closed and could not reopen is read again until it reopens.
     const owed = t.reopening != null && String(t.reopening) === String(n);
     if (t.pr_status?.pr === n && PR_FINAL.includes(t.pr_status.state) && !(owed && t.pr_status.state === 'CLOSED')) {
@@ -79,12 +89,7 @@ export function* decidePrStatus(s) {
       // A PR on a branch its worker did not make, or another person's, is never this ticket's: the
       // ticket parks before any list the reopen, undraft, fix-try or merge steps work from holds it.
       const foreign = notOwnPr(t, st, s.logins);
-      if (foreign) {
-        prStates[n] = st.state;
-        if (!s.dry) yield { type: 'park', key: t.key, question: foreignQuestion(n, foreign) };
-        yield { type: 'out', line: `PR status: ${t.key}'s PR #${n} is not its own (${foreign}): ${s.dry ? 'would park it' : 'parked'}, and nothing is done to #${n}` };
-        continue;
-      }
+      if (foreign) { yield* parkForeign(t, n, foreign, st.state, s, prStates); continue; }
       // A closed PR still owed its reopen counts as open, so the batch is not idle and no ticket held
       // behind it reads as stuck while the reopen is outstanding.
       prStates[n] = owed && st.state === 'CLOSED' ? 'OPEN' : st.state;

@@ -38,6 +38,11 @@ const lists = (acts) => acts.at(-1);
   t('a dry run parks nothing, and says it would', j([ofType(dry, 'park').length, /would park it/.test(ofType(dry, 'out')[0]?.line ?? '')]), j([0, true]));
   const own = run(snap([mine('F')], { logins: 'me,me-bot' }), read({ author: 'Me-Bot' }));
   t('its own PR is listed as before', j([ofType(own, 'park').length, lists(own).undrafted.length]), j([0, 1]));
+  const kept = (state) => mine('F', { pr_status: status(70, state, { branch: 'epic/E', merged_at: state === 'MERGED' ? '2026-11-19T09:00:00Z' : null }) });
+  const cachedMerged = run(snap([kept('MERGED')], { logins: 'me' }), {});
+  t('a merged status kept from an earlier pass on another branch parks it too, its merge not recorded and nothing read', j([ofType(cachedMerged, 'park').length, ofType(cachedMerged, 'merged').length, ofType(cachedMerged, 'read-pr').length]), j([1, 0, 0]));
+  const cachedClosed = run(snap([kept('CLOSED')], { logins: 'me' }), {});
+  t('and so does a closed one, so the ticket is not left done on it', j([ofType(cachedClosed, 'park').length, lists(cachedClosed).prStates[70]]), j([1, 'CLOSED']));
   const noHandle = run(snap([mine('F')], { logins: null }), read({ author: 'alice' }));
   t('with no account configured only the branch is checked', lists(noHandle).undrafted.length, 1);
 }
