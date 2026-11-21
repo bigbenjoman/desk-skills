@@ -41,7 +41,7 @@ budget_problem(){ local l n
   l=$(head -n 10 "$1" | grep -m 1 -E '^(#|//) budget:') || return 0
   n=$(budget_of "$1" pr)
   if [ -z "$n" ]; then echo "its budget line has no whole number of CPU seconds: $l"
-  elif printf '%s\n' "$l" | grep -qE '^(#|//) budget: [0-9]+ \(main' && ! printf '%s\n' "$l" | grep -qE '^(#|//) budget: [0-9]+ \(main [0-9]+\)( |$)'; then
+  elif printf '%s\n' "$l" | grep -qE '^(#|//) budget: [0-9]+ \(main' && [ -z "$(budget_main_of "$1")" ]; then
     echo "its budget line's main figure is no whole number of CPU seconds: $l"
   elif ! printf '%s\n' "$l" | grep -qE '(^|[^A-Za-z0-9])[A-Z][A-Z0-9]+-[0-9]+'; then echo "its budget line names no ticket key: $l"
   elif [ "$((10#$n))" -gt "$BUDGET_CAP" ]; then echo "its budget of $n CPU seconds is over the cap of $BUDGET_CAP"
