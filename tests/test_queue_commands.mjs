@@ -1,12 +1,12 @@
 // suite: queue.mjs command list (its switch and the flags each command reads equal QUEUE_COMMANDS; usage from it)
 // covers: desk/bin/queue.mjs desk/bin/queue-commands.mjs
 // Scratch directories only.
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { QUEUE_COMMANDS } from '../desk/bin/queue-commands.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -61,7 +61,7 @@ function parity(text, list) {
   return out;
 }
 
-t('the switch handles every listed command (29)', Object.keys(QUEUE_COMMANDS).length, 29);
+t('the switch handles every listed command (30)', Object.keys(QUEUE_COMMANDS).length, 30);
 t('the switch and its flags equal QUEUE_COMMANDS', parity(source, QUEUE_COMMANDS), []);
 
 // A branch that adds a command, or a flag read, without the list fails naming it.
@@ -72,7 +72,7 @@ const flagged = source.replace("const [key, to] = args;\n    if (!key || !to) th
 t('a flag the list lacks fails, naming command and flag', parity(flagged, QUEUE_COMMANDS), ['queue.mjs move reads --quiet, which its flag list lacks']);
 
 // An unknown command is refused with exit 11, as before, and its usage names every command.
-const S = mkdtempSync(join(tmpdir(), 'queue-cmds-'));
+const S = scratch('queue-cmds-');
 const run = (args) => spawnSync(process.execPath, [join(root, 'desk/bin/queue.mjs'), ...args], {
   encoding: 'utf8', cwd: S, env: { ...process.env, HOME: S, DESK_QUEUE: join(S, 'queue.json'), DESK_AUTOPILOT_STATE: join(S, 'state'), DESK_CONFIG: join(S, 'none.md') },
 });

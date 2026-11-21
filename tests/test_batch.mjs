@@ -5,17 +5,17 @@
 // batches/.done/ and hands open ticket PRs to the digest. An epic planned, handed over and closed out
 // with --batch beside a live standing batch never writes the standing queue. PR states are injected, so
 // no gh runs.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-batch-'));
+const T = scratch('desk-batch-');
 const HOME = join(T, 'home');
 const DESK_HOME = join(T, 'deskhome');
 const SLUG = 'acme__widgets';
@@ -643,6 +643,52 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   const a = cli('queue.mjs', ['admit', 'HC-2', '--by', 'intake', '--hold-spine', '--hold-collisions'], env);
   const hc = JSON.parse(readFileSync(env.DESK_QUEUE, 'utf8')).tickets['HC-2'];
   t('DS-755 AC8 a ticket admitted sharing a file with unfinished tickets is held behind none of them', `${a.code} ${hc?.state} ${hc?.held_by} ${hc?.collides_with}`, '0 triaged null HC-1|HC-3|HC-4');
+}
+
+// DS-847: plan-batch seeds the queue blockers first, then the tickets that gate the most others, then
+// among those gating none the fewest planned files, then the order named; --keep-order keeps the order
+// named, blockers first.
+{
+  const SO = join(T, 'spawn-order');
+  mkdirSync(join(SO, 'triage'), { recursive: true });
+  const soCfg = join(SO, 'config.md');
+  writeFileSync(soCfg, `${readFileSync(base.DESK_CONFIG, 'utf8')}\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Tracker | \`jira\` |\n| Ticket key pattern | \`SO-[0-9]+\` |\n| Local database | \`none\` |\n`);
+  // rec(key, planned file count, keys it is blocked by)
+  const rec = (k, n = 1, by = []) => writeFileSync(join(SO, 'triage', `${k}.json`), JSON.stringify({ ticket: k, type: 'Task', lane: 'A', lane_reason: 'r', summary: 's', size: 'S', branch: `feat/${k}`,
+    files_in_scope: Array.from({ length: n }, (_, i) => `src/${k}/${i}.ts`), unknowns: [], blockers: by.map((key) => ({ key, category: 'new' })) }));
+  // Plans and seeds `keys` into a fresh queue -> { seeded: the queue's key order, msg: the plan }.
+  // `queued`: tickets already in the queue before it seeds, in that order, as an epic's admitted children are.
+  const seed = (keys, flags = [], queued = {}) => {
+    const env = { DESK_CONFIG: soCfg, DESK_QUEUE: join(SO, `queue-${Math.random().toString(36).slice(2)}.json`), DESK_AUTOPILOT_STATE: SO, AUTOPILOT_WRITE_QUEUE: '1' };
+    writeFileSync(env.DESK_QUEUE, JSON.stringify({ version: 1, batch: 'so', tickets: Object.fromEntries(Object.entries(queued).map(([k, t]) => [k, { key: k, state: 'parked', ...t }])) }));
+    const x = cli('plan-batch.mjs', ['--json', ...flags, ...keys], env);
+    let msg = x.out;
+    try { msg = String(JSON.parse(x.out).message); } catch { /* the raw output, to show what failed */ }
+    return { seeded: Object.keys(JSON.parse(readFileSync(env.DESK_QUEUE, 'utf8')).tickets ?? {}).join(' '), msg };
+  };
+  // SO-3 gates SO-4 and SO-6 directly and SO-5 through SO-4; SO-1 and SO-2 gate none.
+  rec('SO-1'); rec('SO-2'); rec('SO-3'); rec('SO-4', 1, ['SO-3']); rec('SO-5', 1, ['SO-4']); rec('SO-6', 1, ['SO-3']);
+  const hub = seed(['SO-1', 'SO-2', 'SO-3', 'SO-4', 'SO-5', 'SO-6']);
+  t('DS-847 AC1 a ticket gating three others, named after two gating none, is seeded before them', hub.seeded, 'SO-3 SO-4 SO-1 SO-2 SO-5 SO-6');
+  t('DS-847 AC6 the plan lists the spawn order with each ticket\'s transitive dependents count',
+    ['  1. SO-3  gates 3, 1 planned file(s)', '  2. SO-4  gates 1, 1 planned file(s)', '  3. SO-1  gates 0, 1 planned file(s)', '  6. SO-6  gates 0, 1 planned file(s)'].map((l) => hub.msg.includes(`\n${l}`)).join(' '), 'true true true true');
+  const all = ['SO-1', 'SO-2', 'SO-3', 'SO-4', 'SO-5', 'SO-6'];
+  t('DS-847 AC1 tickets already queued in the order named (an epic\'s admitted children) are reordered too',
+    seed(all, [], Object.fromEntries(all.map((k) => [k, {}]))).seeded, 'SO-3 SO-4 SO-1 SO-2 SO-5 SO-6');
+  t('DS-847 a ticket the user placed keeps its slot when the order is laid over the queue',
+    seed(all, [], Object.fromEntries(all.map((k) => [k, k === 'SO-1' ? { placed: true } : {}]))).seeded, 'SO-1 SO-3 SO-4 SO-2 SO-5 SO-6');
+  rec('SO-11', 8); rec('SO-12', 2);
+  t('DS-847 AC2 of two tickets gating none, the one planned to touch two files comes before the one planned to touch eight', seed(['SO-11', 'SO-12']).seeded, 'SO-12 SO-11');
+  rec('SO-21', 2); rec('SO-22', 2);
+  t('DS-847 AC3 a tie on dependents and planned files keeps the order named', seed(['SO-22', 'SO-21']).seeded, 'SO-22 SO-21');
+  // SO-31 is smaller and named first, but blocked by SO-32.
+  rec('SO-31', 1, ['SO-32']); rec('SO-32', 8);
+  t('DS-847 AC4 a blocker comes before what it blocks', seed(['SO-31', 'SO-32']).seeded, 'SO-32 SO-31');
+  const kept = seed(['SO-1', 'SO-2', 'SO-3', 'SO-4', 'SO-5', 'SO-6'], ['--keep-order']);
+  t('DS-847 AC5 --keep-order seeds the order named', kept.seeded, 'SO-1 SO-2 SO-3 SO-4 SO-5 SO-6');
+  t('DS-847 AC5 --keep-order keeps a larger ticket named first ahead', seed(['SO-11', 'SO-12'], ['--keep-order']).seeded, 'SO-11 SO-12');
+  t('DS-847 AC5 --keep-order still puts a blocker first', seed(['SO-31', 'SO-32'], ['--keep-order']).seeded, 'SO-32 SO-31');
+  t('DS-847 AC5 and the plan says the order named is kept', kept.msg.includes('\nSPAWN ORDER — as named (--keep-order)'), true);
 }
 
 // The standing batch is never archived, even with a promotion that would archive a named one.

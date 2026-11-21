@@ -16,3 +16,7 @@ export AUTOPILOT_LOCK_QUEUE=off
 # Every bash suite runs under the bash running the caller, so `/bin/bash tests/run.sh` tests 3.2.
 # shellcheck disable=SC2034  # read by the caller
 SH="${BASH:-bash}"
+# The CPU budget a suite's header sets: the N of the first `# budget: N <ticket>` line (`//` in .mjs)
+# in its first ten lines, or nothing where it has none or N is not a whole number. run.sh budgets by
+# it, and test_lint.sh checks the same line.
+budget_of(){ head -n 10 "$1" | grep -m 1 -E '^(#|//) budget:' | grep -oE '^(#|//) budget: [0-9]+( |$)' | grep -oE '[0-9]+'; }

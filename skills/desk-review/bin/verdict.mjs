@@ -23,7 +23,8 @@
 //     "seats": [ { "role": "correctness", "vendor": "claude", "status": "ran" },
 //                { "role": "codex", "vendor": "codex", "status": "ran" } ],
 //     "findings": [ { "id": "F1", "seat": "correctness", "severity": "P1", "where": "src/a.ts:12",
-//                     "result": "CONFIRMED", "refuted_by": "codex", "deferred": false } ] }
+//                     "result": "CONFIRMED", "refuted_by": "codex", "deferred": false },
+//                   { "id": "C1", "seat": "codex", "severity": "P2", "result": "REJECTED", "refuted_by": "claude" } ] }
 //
 // A seat whose named agent was not available, and whose brief a general-purpose agent ran instead,
 // is "fallback": true; so is a named seat (NAMED_SEATS) whose "agent" is general-purpose, flag or

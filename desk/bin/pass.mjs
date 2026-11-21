@@ -10,13 +10,13 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { tryLockFile, filePid } from './dir-lock.mjs';
-import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApprove, approvalText, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, doneOnPr } from './batch-state.mjs';
+import { tryLockFile, filePid, writeJsonAtomic } from './dir-lock.mjs';
+import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApprove, approvalText, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, doneOnPr, readTriage } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
-import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, sameStep, settleSteps } from './harvest.mjs';
+import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, sameStep, settleSteps, keepReviewResults } from './harvest.mjs';
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
@@ -24,6 +24,7 @@ import { parseDecision, decisionEntry, appendDecisions, workerCalls, appendNotes
 import { readRegister, lookup, parseInputs, refreshInputs, clearPutOff } from './not-now.mjs';
 import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { REMOTE_GIT_MS, execGit, remoteHung, markRemoteHung } from './remote-git.mjs';
+import { prReads } from './pr-reads.mjs';
 import { checkinTimes, checkinRow, checkin, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, appendOnlyFrom } from './scope-report.mjs';
@@ -47,14 +48,14 @@ import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, U
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, stateFailing, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureLines, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
 import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
-import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, personCall, feedbackReply, RERUN_COOLDOWN_S } from './fix-tries.mjs';
-import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
+import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, personCall, redraftable, unrunFields, feedbackReply, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
@@ -72,19 +73,21 @@ import { decidePrStatus, followState } from './pass/pr-status.mjs';
 import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf } from './pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict } from './pass/report.mjs';
 import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
-  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, BUDGET_RESUME_USD } from './pass/shared.mjs';
+  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
 import { decideFixTries, tryLabel } from './pass/fix-tries.mjs';
 import { decideReopen, decideRenames, decideUndraft, decideRelease, undraftWrite } from './pass/undraft.mjs';
 import { decideBaseGate } from './pass/base-gate.mjs';
 import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
+import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
+import { leaseCli } from './leases.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -122,21 +125,13 @@ function verdict(status, message, fields = {}) {
   return code;
 }
 const refuse = (message) => process.exit(verdict('error', message));
-// A crash after the pass has changed something (started a worker, moved, parked or failed a ticket)
-// says what it had done, in the message and as `before_crash` in the JSON, so nobody reads the error
-// as "nothing happened this pass" and starts a ticket that already has a session.
-const doneSoFar = () => {
-  let r;
-  try { r = report; } catch { return null; } // a crash before the report exists changed nothing it records
-  const got = Object.fromEntries(['spawned', 'advanced', 'parked', 'failed'].map((k) => [k, [...(r?.[k] ?? [])]]).filter(([, v]) => v.length));
-  return Object.keys(got).length ? got : null;
-};
+// A crash says what the pass had already done (pass/report.mjs crashVerdict).
 const crashed = (e) => {
   const what = e instanceof Refusal ? describeCrash(e) : `pass.mjs crashed: ${describeCrash(e)}`;
-  const did = doneSoFar();
-  if (!did) return verdict('error', what);
-  const lines = Object.entries(did).flatMap(([k, v]) => [`before it stopped, this pass ${k}:`, ...v.map((l) => `  ${l}`)]);
-  return verdict('error', `${what}\n${lines.join('\n')}`, { before_crash: did });
+  let r = null;
+  try { r = report; } catch { /* a crash before the report exists changed nothing it records */ }
+  const { message, fields } = crashVerdict(what, r);
+  return verdict('error', message, fields);
 };
 crashShowsPerson(crashed);
 
@@ -226,15 +221,63 @@ try {
   writeBeat(STATE, QUEUE_FILE, { batch: JSON.parse(readFileSync(QUEUE_FILE, 'utf8')).batch ?? null, next: NEXT });
 } catch { /* advisory */ }
 
+// A PR read made twice in one pass through sh or shOut is answered from the first (pr-reads.mjs).
+const PR_READS = prReads();
+// `fresh: true` on a read that decides a write: it is always made, as the PR may have changed since
+// outside the pass (a background base gate, the merge driver, a person), and what it reads is kept.
+// Counts the git calls that may move a ref, so what was read from one (treeOf) is read again after.
+let refsMoved = 0;
+const REF_MOVES = new Set(['fetch', 'push', 'pull', 'merge', 'reset', 'update-ref', 'rebase']);
+const beforeRun = (cmd, args, fresh) => {
+  if (cmd === 'git' && REF_MOVES.has(args[args[0] === '-C' ? 2 : 0])) refsMoved++;
+  return fresh ? undefined : PR_READS.before(cmd, args);
+};
 // A git call that reaches a remote is bounded (remote-git.mjs), so a hung remote costs a pass one limit.
-const sh = (cmd, args, opts = {}) => {
-  try { return execGit(cmd, args, { encoding: 'utf8', ...opts }).trim(); }
+const sh = (cmd, args, { fresh, ...opts } = {}) => {
+  const kept = beforeRun(cmd, args, fresh);
+  if (kept !== undefined) return kept;
+  try { const out = execGit(cmd, args, { encoding: 'utf8', ...opts }).trim(); PR_READS.after(cmd, args, out); return out; }
   catch (e) { return opts.tolerant ? '' : `ERROR: ${e.message}`; }
 };
+// The preview-build slot a push of ticket `t`'s `branch` takes first (desk-env previewSlotArgs), labelled
+// with the branch's open PR as GitHub reads it, or the branch before one exists (E.previewLabel), as
+// push-retry.mjs and rerun.sh label it, waiting for none: a pass never blocks on a build. -> { wait }
+// naming why the push waits for a later pass, else { id, renewed, expires } of the lease taken
+// (`renewed`: the PR's unit was already held, for a build that may still run), or {} where there is
+// nothing to take (no §4 Vercel team, the lease kind off, or a lease store it cannot read, where
+// leases.mjs says to go on without it). A push that fails starts no build, so freeSlot gives back a
+// unit it placed, unless another taker renewed it since, and keeps one it only renewed.
+const LEASE_ENV = { machineValue: E.machineValue, testLockSlots: E.testLockSlots, psRows: E.psRows };
+const leaseQuiet = (args) => leaseCli(args, { env: LEASE_ENV, out: () => {}, err: () => {} });
+function previewSlot(t, branch) {
+  if (DRY || !E.previewSlotArgs('', 0)) return {};
+  const open = shOut('gh', ['pr', 'list', '--repo', GH_REPO, '--head', branch, '--state', 'open', '--json', 'number', '-q', '.[0].number']);
+  const args = E.previewSlotArgs(E.previewLabel(GH_REPO, { pr: open.ok && /^\d+$/.test(open.out) ? open.out : null, branch }), 0);
+  const said = [];
+  const code = leaseCli(args, { env: LEASE_ENV, out: (s) => said.push(s), err: (s) => said.push(s) });
+  if (code === 3 || code === 75) return { wait: `waits on the preview build for ${args[2]}: ${String(said.at(-1) ?? 'refused').replace(/^refused: /, '').split('\n')[0]}` };
+  if (code !== 0) return {};
+  const id = said.find((l) => /^L-\w+$/.test(l));
+  const listed = [];
+  if (id) leaseCli(['list', '--json'], { env: LEASE_ENV, out: (s) => listed.push(s), err: () => {} });
+  const expires = listed.flatMap((l) => l.split('\n')).map((l) => { try { return JSON.parse(l); } catch { return null; } }).find((l) => l?.id === id)?.expires;
+  return { id, renewed: said.some((l) => /^renewed /.test(l)), expires };
+}
+function freeSlot(slot) {
+  if (slot?.id && !slot.renewed) leaseQuiet(['release', slot.id, ...(slot.expires ? ['--if-expires', slot.expires] : [])]);
+}
+// A push that went through renews its slot from now, for its build: the push itself may have taken
+// minutes. `pr`, once the pass has opened the PR, puts its number on a unit taken for the branch.
+function keepSlot(slot, pr = null) {
+  const team = slot?.id && E.previewTeam();
+  if (team) leaseQuiet(['renew', slot.id, 'preview-build', team, '--ttl', String(E.PREVIEW_TTL_S), '--no-owner', ...(pr != null ? ['--label', E.previewLabel(GH_REPO, { pr })] : [])]);
+}
 // Like sh, but keeps what the command printed when it fails — a refusal's reason is the report.
 // `unreached`: a remote call that got no answer in time, or was not tried after one did not.
-const shOut = (cmd, args, opts = {}) => {
-  try { return { ok: true, out: execGit(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim() }; }
+const shOut = (cmd, args, { fresh, ...opts } = {}) => {
+  const kept = beforeRun(cmd, args, fresh);
+  if (kept !== undefined) return { ok: true, out: kept };
+  try { const out = execGit(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim(); PR_READS.after(cmd, args, out); return { ok: true, out }; }
   catch (e) { return { ok: false, code: e.status ?? null, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message, ...(e.unreached ? { unreached: true } : {}) }; }
 };
 function refusedLine(args, refused, why) {
@@ -784,8 +827,8 @@ const resumeRefusal = (t, why) => resumeRefusalOf(RESUME, t, why);
 
 // A cloud session (cloud-worker.mjs) writes no log here: its result is the PR it opened, on the branch
 // it was told to use or with the key in its title. Once one shows, the ticket is done on that PR's
-// branch, which the merge driver matches it by. Its tracker steps are left undone: the session has no
-// tracker access, and the report says so.
+// branch, which the merge driver matches it by. The session has no tracker access, so the tracker steps
+// a local worker's Stage 8 makes are made here, on its behalf (tracker_steps=due, below).
 function advanceCloud(t) {
   const c = t.cloud ?? {};
   // A session whose details were not recorded after it started has only `started` (spawnCloud).
@@ -801,8 +844,8 @@ function advanceCloud(t) {
   const cloud = { ...c, pr_at: pr.createdAt };
   const wall = wallTime(cloudWall(cloud) ?? 0);
   q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
-    `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`);
-  report.done.push(`${t.key}: PR #${pr.number} from cloud session ${where} in ${wall} (tokens and cost not reported for cloud; tracker not updated: the session has no tracker access)`);
+    `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`, 'tracker_steps=due');
+  report.done.push(`${t.key}: PR #${pr.number} from cloud session ${where} in ${wall} (tokens and cost not reported for cloud; its tracker steps are made by the pass)`);
 }
 
 // §4 Check builds, read here for a park that waits only on one (buildPark) and below for the undraft step.
@@ -894,7 +937,7 @@ const ADVANCE_HANDLERS = {
   'open-pr': (a) => sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', a.branch, '--state', 'open', '--json', 'number', '-q', '.[0].number'], { tolerant: true }),
   note: (a) => { notes.push(a.line); },
   hold: (a, s) => { usageHolds.push({ key: a.key, limit: a.limit, was: a.was, login: loginOf(loginDirOf(s.t)) }); },
-  'suite-wait': (a) => suiteWait(a.worktree ?? join(WORKTREES, a.key), { procs: processList(), cwds: processCwds(), holders: lockHolders(E.lockDir(), { light: true }) }),
+  'suite-wait': (a) => suiteWait(a.worktree ?? join(WORKTREES, a.key), { procs: processList(), cwds: processCwds(), holders: lockHolders(E.lockDir(), { locks: 'both' }) }),
   kill: (a) => { sh('kill', [String(a.pid)], { tolerant: true }); },
   park: (a) => { q('park', a.key, a.question); },
   'park-approve': (a) => {
@@ -934,7 +977,7 @@ const ADVANCE_HANDLERS = {
 };
 // A running ticket's log as the decision reads it: null where it has none yet, or runs in the cloud.
 function advanceLog(t) {
-  if (t.location === 'cloud' && t.cloud) return null;
+  if (runsInCloud(t) && t.cloud) return null;
   const path = join(STATE, 'logs', `${t.key}.log`);
   if (!existsSync(path)) return null;
   const h = sh('node', [join(BIN, 'harvest.mjs'), path], { tolerant: true });
@@ -1111,8 +1154,8 @@ const cached = (key, read) => {
   if (c.e) throw c.e;
   return c.v;
 };
-const readOrThrow = (what, cmd, args) => {
-  const r = shOut(cmd, args);
+const readOrThrow = (what, cmd, args, opts) => {
+  const r = shOut(cmd, args, opts);
   if (!r.ok) throw new Error(`${what}: ${r.out.split('\n').pop()}`);
   return r.out;
 };
@@ -1215,8 +1258,11 @@ function pushParked(t, c) {
   if (rows.length) stop(`config §3 ${rows.map((k) => `${k} is "${E.permission(k)}"`).join(' and ')}`);
   if (c.branch !== t.branch) stop(`it names ${c.branch}, and the ticket's branch is ${t.branch ?? 'not recorded'}`);
   if (!t.worktree || !existsSync(t.worktree)) stop('it has no worktree to push from');
+  const slot = previewSlot(t, c.branch);
+  if (slot.wait) return { holds: false, note: `it ${slot.wait}` };
   const push = shOut('git', ['-C', t.worktree, 'push', ...(c.lease ? [`--force-with-lease=${c.branch}:${c.lease}`] : []), 'origin', c.branch]);
-  if (push.ok) return { holds: true };
+  if (push.ok) { keepSlot(slot); return { holds: true }; }
+  freeSlot(slot);
   if (transientPush(push.out)) return { holds: false, note: 'GitHub still answers 5xx' };
   if (push.unreached || unreachedPush(push.out)) throw new Error(push.out.split('\n').pop());
   return stop(`git refused it: ${push.out.split('\n').pop()}`);
@@ -1251,7 +1297,7 @@ const runClears = (onBase) => runSteps({
   name: onBase ? 'parks waiting on the base' : 'parks whose condition cleared',
   snapshot: () => {
     const { tickets } = queue();
-    return { tickets, onBase, dry: DRY, putOff: new Set(Object.values(tickets).filter(putOff).map((t) => t.key)) };
+    return { tickets, onBase, dry: DRY, passAt: PASS_AT, putOff: new Set(Object.values(tickets).filter(putOff).map((t) => t.key)) };
   },
   decide: decideClears,
   handlers: CLEARS_HANDLERS,
@@ -1347,10 +1393,12 @@ function finishPush(t) {
   const open = shOut('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch, '--state', 'all', '--json', 'number', '-q', '.[0].number']);
   if (!open.ok) return false;
   if (/^\d+$/.test(open.out)) return left(`PR #${open.out} already exists from ${t.branch}`);
-  const push = shOut('git', ['-C', wt, 'push', 'origin', t.branch]);
-  if (!push.ok && (push.unreached || transientPush(push.out))) {
+  const slot = previewSlot(t, t.branch);
+  const push = slot.wait ? null : shOut('git', ['-C', wt, 'push', 'origin', t.branch]);
+  if (push) { if (push.ok) keepSlot(slot); else freeSlot(slot); }
+  if (slot.wait || (!push.ok && (push.unreached || transientPush(push.out)))) {
     q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'push-ok', branch: t.branch })}`);
-    report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but ${push.unreached ? `the push got no answer (${lastLine(push.out)})` : 'GitHub still answers 5xx'}: left parked, and each pass tries the push until it can requeue it`);
+    report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but ${slot.wait ? `the push ${slot.wait}` : (push.unreached ? `the push got no answer (${lastLine(push.out)})` : 'GitHub still answers 5xx')}: left parked, and each pass tries the push until it can requeue it`);
     return true;
   }
   if (!push.ok) return left(`git push origin ${t.branch} was refused (${lastLine(push.out)})`);
@@ -1361,6 +1409,7 @@ function finishPush(t) {
   const made = shOut('gh', ['pr', 'create', '--repo', GH_REPO, '--draft', '--base', DEFAULT_BRANCH, '--head', t.branch, '--title', title, '--body-file', bodyFile]);
   const n = /\/pull\/(\d+)/.exec(made.out)?.[1];
   if (!made.ok || !n) return left(`${t.branch} was pushed, but gh pr create failed (${lastLine(made.out)})`);
+  keepSlot(slot, n);
   q('set', t.key, ...doneOnPr(n, { draft: true, summary: `draft PR #${n} opened by the pass from its worker's PR body, after the worker's push or PR was refused` }));
   report.done.push(`${t.key}: PR #${n} pushed and opened as a draft by the pass from its worker's PR body; what else its park named is not done: ${shortQ(t.park.question)}`);
   return true;
@@ -1431,7 +1480,7 @@ for (const t of DRY ? [] : Object.values(queue().tickets)) {
 // listing what needs the person runs no git. Counted against every origin ref, so a branch never
 // pushed counts too.
 for (const t of DRY ? [] : Object.values(queue().tickets)) {
-  if (t.state !== 'parked' || isHeld(t) || t.location === 'cloud') continue;
+  if (t.state !== 'parked' || isHeld(t) || runsInCloud(t)) continue;
   const n = t.worktree && existsSync(t.worktree) ? shOut('git', ['-C', t.worktree, 'rev-list', '--count', 'HEAD', '--not', '--remotes=origin']) : null;
   const unpushed = n?.ok && Number(n.out) > 0 ? `its worktree ${t.worktree} has ${n.out} commit(s) not on origin` : null;
   if (unpushed !== (t.park?.unpushed ?? null)) q('set', t.key, `park.unpushed=${unpushed ?? 'null'}`);
@@ -1764,7 +1813,7 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
   return lockQueue({
     waiting: lockWaiters({ procs: processList(), holders }),
     held: lockHolderRuns({ procs: processList(), holders, cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(E.lockDir()) }),
-    slots: whole(process.env.DESK_TEST_LOCK_SLOTS || E.machineValue('test-lock-slots'), 1),
+    slots: E.testLockSlots(),
     factor: whole(E.machineValue('test-lock-queue-factor'), 2),
   });
 })();
@@ -1776,7 +1825,7 @@ const resumedStage = (t) => (t.fix && !t.fix.finished ? null : roundStage(t.last
 // at Stage 4 or 4b, a handoff to 4b, or a requeue resuming its last round there (resumeRound, which
 // resumes only in a kept worktree).
 const lockQueueHolds = (r) => {
-  if (!LOCK_QUEUE?.deep || r.location === 'cloud') return false;
+  if (!LOCK_QUEUE?.deep || runsInCloud(r)) return false;
   if (toResume(r)) return SUITE_STAGES.includes(roundStage(r.stage));
   if (toHandoff(r)) return SUITE_STAGES.includes(String(r.handoff_stage));
   const round = existsSync(join(WORKTREES, r.key)) ? resumedStage(r) : null;
@@ -1799,14 +1848,53 @@ const budgetFiles = (key) => {
   }
   return scopeOf.get(key);
 };
-// A file's length on the batch base, read once a pass; one the base does not have is 0 lines.
+// A file's length on the batch base, read once a pass; one the base does not have is 0 lines. Each ref's
+// tree is listed once a pass (one git call, not one per file), and each blob's length is kept across
+// passes by its id in LINE_COUNTS_FILE, so a pass reads only a blob it has not counted.
 const lineCounts = new Map();
+const GIT_BIG = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 };
+const trees = new Map();
+// ref -> Map(path -> blob id), or null when the ref cannot be listed.
+const treeOf = (ref) => {
+  if (!trees.has(ref)) {
+    let t = null;
+    try {
+      t = new Map();
+      for (const e of execFileSync('git', ['-C', MAIN, 'ls-tree', '-r', '-z', ref], GIT_BIG).split('\0')) {
+        const m = /^\d+ blob ([0-9a-f]+)\t(.*)$/s.exec(e);
+        if (m) t.set(m[2], m[1]);
+      }
+    } catch { t = null; }
+    trees.set(ref, t);
+  }
+  return trees.get(ref);
+};
+const LINE_COUNTS_FILE = join(STATE, 'line-counts.json');
+let blobLines = null;
+const linesOfBlob = (sha) => {
+  if (!blobLines) { try { blobLines = JSON.parse(readFileSync(LINE_COUNTS_FILE, 'utf8')); } catch { /* none yet */ } if (!blobLines || typeof blobLines !== 'object') blobLines = {}; }
+  if (Number.isInteger(blobLines[sha])) return blobLines[sha];
+  const n = execFileSync('git', ['-C', MAIN, 'cat-file', 'blob', sha], GIT_BIG).split('\n').length - 1;
+  blobLines[sha] = n;
+  if (!DRY) {
+    // Only blobs still on a listed ref are kept, so the file holds about one entry per counted file.
+    const live = new Set([...trees.values()].flatMap((t) => (t ? [...t.values()] : [])));
+    const keep = Object.fromEntries(Object.entries(blobLines).filter(([s]) => live.has(s)));
+    try { writeJsonAtomic(LINE_COUNTS_FILE, keep); } catch { /* counted again next pass */ }
+  }
+  return n;
+};
+// A fetch, push or sync since the trees were listed may have moved the base: they are listed again.
+let treesAt = 0;
 const linesOnBase = (f) => {
+  if (treesAt !== refsMoved) { treesAt = refsMoved; trees.clear(); lineCounts.clear(); }
   if (!lineCounts.has(f)) {
     const base = E.batchBase() ?? DEFAULT_BRANCH;
     let n = 0;
     for (const ref of [`origin/${base}`, base]) {
-      try { n = execFileSync('git', ['-C', MAIN, 'cat-file', 'blob', `${ref}:${f}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 }).split('\n').length - 1; break; } catch { /* not on that ref */ }
+      const sha = treeOf(ref)?.get(f);
+      if (!sha) continue;
+      try { n = linesOfBlob(sha); break; } catch { /* unreadable on that ref */ }
     }
     lineCounts.set(f, n);
   }
@@ -1833,11 +1921,14 @@ const placesFor = (f) => {
   const k = configuredPlaces(f);
   return conflictsBy.has(f) ? k - loweredBy(conflictsBy.get(f), k, PASS_MS) : k;
 };
+// A review try changes no file, so it neither waits on a file's places nor fills one.
+const reviewKeys = new Set(running.filter(reviewOnlyTry).map((r) => r.key));
 // Each file of r's at its budget: the file, its places and the running tickets that fill them.
 const budgetHolds = (r) => {
   const holds = [];
+  if (reviewOnlyTry(r)) return holds;
   for (const f of budgetFiles(r.key)) {
-    const by = [...runningKeys].filter((k) => k !== r.key && budgetFiles(k).includes(f));
+    const by = [...runningKeys].filter((k) => k !== r.key && !reviewKeys.has(k) && budgetFiles(k).includes(f));
     if (!by.length) continue;
     const k = placesFor(f);
     if (by.length >= k) holds.push({ file: f, k, by });
@@ -2074,7 +2165,8 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       'usage-hold': (a) => { USAGE_HOLD = a.hold; },
       'usage-stop': () => { usageStop = true; },
       'origin-sha': (a) => sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${a.branch}`], { tolerant: true }) || null,
-      sync: (a) => syncBase({ path: a.path, base: BASE, branch: SOURCE, push: mayPushBase, dry: DRY, check: mergedTreeCheck() }),
+      // A base push moves its PRs' merge state and the base's refs, and syncBase runs git without sh or shOut.
+      sync: (a) => (PR_READS.clear(), refsMoved++, syncBase({ path: a.path, base: BASE, branch: SOURCE, push: mayPushBase, dry: DRY, check: mergedTreeCheck() })),
       'drop-ref': (a) => { sh('git', ['-C', MAIN, 'update-ref', '-d', a.ref], quiet); },
       'note-conflict': (a) => noteConflict(a.what, a.entry),
       fetch: () => { fetchBase({ tolerant: true }); },
@@ -2128,19 +2220,19 @@ function readEpicPr(qx) {
 
 // A feature batch's promotion PR as GitHub has it: { pr, state, isDraft, head, checks }, or
 // { pr, unreadable }, or null with none recorded or one merged.
-function readPromotionPr(qx) {
-  const r = readBasePr(qx, 'statusCheckRollup');
+function readPromotionPr(qx, opts) {
+  const r = readBasePr(qx, 'statusCheckRollup', opts);
   if (!r || r.unreadable) return r;
   const { p, v } = r;
   return { pr: p.pr, state: v.state, isDraft: v.isDraft === true, head: v.headRefOid ?? null, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) };
 }
 // The batch's recorded promotion or epic PR read from GitHub with `extra` beside its state, draft and
 // head: { p (the record), v (gh's answer) }, or { pr, unreadable }, or null with none open.
-function readBasePr(qx, extra) {
+function readBasePr(qx, extra, { fresh = false } = {}) {
   const p = qx.promotion;
   if (p?.pr == null || p.merged_at) return null;
   let v = null;
-  try { v = JSON.parse(sh('gh', ['pr', 'view', String(p.pr), '--repo', GH_REPO, '--json', `state,isDraft,headRefOid,${extra}`], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { /* unreadable */ }
+  try { v = JSON.parse(sh('gh', ['pr', 'view', String(p.pr), '--repo', GH_REPO, '--json', `state,isDraft,headRefOid,${extra}`], { tolerant: true, fresh, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { /* unreadable */ }
   return v?.state ? { p, v } : { pr: p.pr, unreadable: true };
 }
 // The checks an open promotion PR fails, by name, or null when it fails none. A draft with children
@@ -2438,12 +2530,13 @@ const spawnRefusal = (out) => (/\[spawn\] ticket=/.test(out) ? null : `spawn ref
 // maintenance window stopped at its drain limit (resume=maintenance), or one asked to stop for a
 // planned reboot (resume=reboot), which names the restart, or that none came, as its reason. One
 // stopped at the per-worker budget (resume=budget) resumes once, with BUDGET_RESUME_USD more and the
-// instruction to commit, push and finish its stage; the advance step parks a second stop.
+// instruction to commit, push and finish its stage, not counted either; the advance step parks a
+// second stop in that session.
 async function resumeKilled(t) {
   const usage = t.resume === 'usage';
   const maint = t.resume === 'maintenance';
-  const boot = t.resume === 'reboot' ? rebootReady(t).why : null;
   const budget = t.resume === 'budget';
+  const boot = t.resume === 'reboot' ? rebootReady(t).why : null;
   if (boot) t = { ...t, resume_why: boot };
   const n = (t.resumes ?? 0) + (usage || maint || boot || budget ? 0 : 1);
   const ended = usage ? 'exited at the usage limit' : maint ? 'stopped for the maintenance window' : boot ? 'stopped for a planned reboot'
@@ -2493,7 +2586,7 @@ async function resumeKilled(t) {
     `${fixtures ? ` ${fixtures.trimEnd()}` : ''}`;
   const log = join(STATE, 'logs', `${t.key}.log`);
   logPreflight(t.key, pre.cost);
-  if (!recordRunning(t.key, ['resume=null', `resumes=${n}`, `port=${port}`, 'idle_passes=0', ...(boot ? ['reboot_stop_at=null'] : []), ...(budget ? ['budget_resumed=true'] : []), ...fixStarted(t),
+  if (!recordRunning(t.key, ['resume=null', `resumes=${n}`, `port=${port}`, 'idle_passes=0', ...(boot ? ['reboot_stop_at=null'] : []), ...fixStarted(t),
     `log_bytes=${existsSync(log) ? statSync(log).size : 0}`], 'no worker was resumed; it waits to resume on the next pass')) return undefined;
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, t.session_id, ...(existsSync(briefPath) ? [briefPath] : [])], {
     cwd: MAIN,
@@ -2504,6 +2597,7 @@ async function resumeKilled(t) {
   report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit lifted' : maint ? 'after the maintenance window' : boot ? 'after its stop for a planned reboot'
     : budget ? `once after it stopped at the per-worker budget, with $${BUDGET_RESUME_USD} more${wb?.usd ? ` ($${wb.usd + BUDGET_RESUME_USD})` : ''} to commit, push and finish its stage` : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}${INHERITS ? '' : ` login=${login.name}`}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
+  if (reviewOnlyTry(t)) reviewKeys.add(t.key);
 }
 
 // The review a fix worker runs and posts, as `desk-env review-cmd` prints it; null with no rows to read.
@@ -2628,18 +2722,6 @@ function spawnCloud(t) {
     q('park', t.key, line);
     report.parked.push(`${t.key}: ${line}`);
   };
-  // Back with its PR open (a fix try, a rework): a new session would start over from the base with no
-  // fix brief, and the PR it has would no longer count as its result. Nor can a local worker take it:
-  // its branch is the session's, on origin only, and setup-worktree.sh would cut it afresh from the
-  // base. The person resumes the session, or fixes the branch.
-  if (t.result?.pr != null) {
-    const line = `cloud ticket back for ${t.fix && !t.fix.finished ? `fix try ${t.fix.try} of ${t.fix.of} (${t.fix.what})` : 'more work'} on its PR #${t.result.pr}, ` +
-      `which neither a new cloud session nor a local worker can be given: its branch ${t.branch} is the session's own. ` +
-      `Resume the session with claude --teleport ${t.cloud?.session ?? '<its session>'} and give it the fix, or fix PR #${t.result.pr} on ${t.branch} by hand`;
-    q('park', t.key, line);
-    report.parked.push(`${t.key}: ${line}`);
-    return;
-  }
   // Placed before the effort lever went on, or with a malformed row: the plan keeps these local now.
   let effort;
   try { effort = E.workerEffort('0'); } catch (e) { park(e.message); return; }
@@ -2664,6 +2746,7 @@ function spawnCloud(t) {
   if (!t.spawned_at) q('set', t.key, `spawned_at=${started}`);
   report.spawned.push(`${t.key} in a cloud session: ${s.url}`);
   runningKeys.add(t.key);
+  if (reviewOnlyTry(t)) reviewKeys.add(t.key);
 }
 
 async function spawnHandoff(t, pick) {
@@ -2704,6 +2787,7 @@ async function spawnHandoff(t, pick) {
   if (spawnRefused) return fail(spawnRefused);
   report.spawned.push(`${t.key} fresh session from Stage ${stage} (handed off) port=${port} model=${model || 'default'}${pick.line}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
+  if (reviewOnlyTry(t)) reviewKeys.add(t.key);
   return undefined;
 }
 
@@ -2779,6 +2863,21 @@ async function spawnBaseFix({ wt, fix: asked }) {
   flushQueue();
   report.spawned.push(`${key} port=${port} model=${model || 'default'}${pick.line} (${tryWhat(fix)} try ${fix.try} of ${fix.of} on ${BASE}${review ? `, PR #${fix.pr}` : ''}); ${preflightNote(pre.cost)}`);
 }
+// The rows below are used only after the spawns, but read here, before the first: a row that cannot be
+// read stops the pass before it starts a worker rather than after, and still lets it record what the
+// running workers finished, the tickets' above and a base fix try's in the base sync.
+// §4 Evidence workflow, for the evidence runs of done tickets' draft PRs.
+const evidenceRow = parseEvidenceRow(E.configValues('evidence-workflow'));
+// §4 Checks workers can't fix, for a draft's red checks and a ready PR's in the fix tries.
+const operatorRow = parseOperatorChecks(E.configValues('operator-checks'));
+// §4 Pre-merge steps: what a person does first for a check, or a step in one, to go green (a migration
+// applied to staging), so no fix worker is sent for it and the person is told the step.
+const preMergeRow = parseOperatorChecks(E.configValues('pre-merge-steps'));
+// §4 State checks: red checks that read the PR's state, so no fix worker is sent for them (verdictTry
+// sends a review worker for one reading the verdict).
+const stateRow = parseStateChecks(E.configValues('state-checks'));
+// §4 Known flaky checks, for the fix tries and the draft path (waivedAt).
+const flakyRow = parseFlaky(E.configValues('flaky-checks'));
 const spawnedBefore = report.spawned.length;
 if (baseFix) await spawnBaseFix(baseFix);
 
@@ -2832,10 +2931,15 @@ if (baseFixResume) await resumeBaseFix(baseFixResume);
 // Untracked files do not count: setup-worktree.sh leaves its own (agent links, a disabled settings
 // file) in repos that do not ignore them. The ticket keeps its state, and the next pass looks again.
 // Commits up to the head the ticket's own last worker left (worker_head) are that worker's: with `push`
-// (the spawn about to start it) they are pushed, no force, and a refused push holds with git's words.
+// (the spawn about to start it) they are pushed, no force. A push refused because that worker rebased
+// the branch is retried with a lease on the origin tip just fetched, only when every commit origin has
+// that the head lacks is in the head by its patch (git cherry) and none is a merge (git cherry skips
+// merges, whose resolutions it cannot compare), so nothing on origin is lost; else it holds, naming the
+// exact lease push. Uncommitted changes at that head are its interrupted worker's:
+// the fix try spawns over them (fix.left_dirty names them) and its worker tests and commits them.
 // The branch is fetched first, so a stale origin ref never counts pushed commits as unpushed.
 function busyWorktree(t, { push = false } = {}) {
-  if (t.location === 'cloud') return null;
+  if (runsInCloud(t)) return null;
   const resumed = toResume(t) || toHandoff(t);
   const wt = resumed ? t.worktree : join(WORKTREES, t.key);
   if (!wt || !existsSync(wt)) return null;
@@ -2847,25 +2951,97 @@ function busyWorktree(t, { push = false } = {}) {
   if (branch && branch !== 'HEAD') git(['fetch', '-q', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
   // A worktree git cannot read is not held: setup-worktree.sh says so.
   const why = gitHold(wt, git) ?? null;
+  const own = Boolean(t.worker_head?.sha) && git(['rev-parse', 'HEAD']) === t.worker_head.sha;
+  // Uncommitted changes at the head its own last worker left: that worker was interrupted mid-try.
+  if (why && own && gitHeld(why)?.wt) {
+    const files = (git(['diff', '--name-only', 'HEAD']) ?? '').split('\n').filter(Boolean);
+    if (push && !DRY) {
+      q('set', t.key, `fix.left_dirty=${JSON.stringify(files)}`);
+      t.fix.left_dirty = files;
+      report.recovered.push(`${t.key}: its worktree holds its interrupted worker's uncommitted changes (${files.slice(0, 5).join(', ')}${files.length > 5 ? ', …' : ''}): its fix try spawns over them, to test and commit them`);
+    }
+    return null;
+  }
   // Only an ahead hold (gitHeld names no worktree) can be the last worker's own commits.
-  if (!why || gitHeld(why)?.wt !== null || !t.worker_head?.sha || git(['rev-parse', 'HEAD']) !== t.worker_head.sha) return why;
+  if (!why || gitHeld(why)?.wt !== null || !own) return why;
   if (E.permission('git-push') !== 'yes') return `${why}: they are its last worker's, but config §3 git-push is "${E.permission('git-push')}", so the pass does not push them`;
   if (!push || DRY) return null;
+  const slot = previewSlot(t, branch);
+  if (slot.wait) return `${why}: they are its last worker's, but the pass's push of them ${slot.wait}`;
   const pushed = shOut('git', ['-C', wt, 'push', 'origin', branch]);
   if (pushed.ok) {
+    keepSlot(slot);
     report.recovered.push(`${t.key}: pushed ${branch} to ${t.worker_head.sha.slice(0, 9)}, the head its last worker left, before its fix try`);
     return null;
   }
   const said = pushed.out.split('\n').map((l) => l.trim()).filter((l) => /^(remote:|!|error:|fatal:)/.test(l)).slice(-3);
+  // Refused as not a fast-forward: its last worker rebased the branch. The lease is origin's tip as just
+  // fetched, and every commit there that the head lacks must be in the head: by its patch (git cherry),
+  // or, where a worker folded its fix into the rebased commit and so changed that patch, held anyway
+  // (heldAnyway).
+  const tip = git(['rev-parse', `origin/${branch}`]);
+  if (/non-fast-forward|fetch first|\(rejected\)/.test(pushed.out) && tip) {
+    const lease = `--force-with-lease=${branch}:${tip}`;
+    const merges = git(['rev-list', '--merges', `HEAD..origin/${branch}`]);
+    const missing = merges ? null : git(['cherry', 'HEAD', `origin/${branch}`]);
+    const lost = missing == null ? null : missing.split('\n').filter((l) => l.startsWith('+'));
+    const anyway = lost?.length ? heldAnyway(git, wt, branch, tip, lost) : null;
+    if (lost && (!lost.length || anyway)) {
+      const forced = shOut('git', ['-C', wt, 'push', lease, 'origin', branch]);
+      if (forced.ok) {
+        keepSlot(slot);
+        const how = anyway ? `origin's ${lost.length} commit(s) differ from it by their patch, but ${anyway}` : 'every commit origin had is in it by its patch';
+        report.recovered.push(`${t.key}: pushed ${branch} to ${t.worker_head.sha.slice(0, 9)}, the head its last worker rebased it to, with ${lease}: ${how}`);
+        return null;
+      }
+      freeSlot(slot);
+      return `${why}: its last worker rebased it, and the pass's git push ${lease} origin ${branch} was refused (${lastLine(forced.out)})`;
+    }
+    const has = merges ? `${merges.split('\n').filter(Boolean).length} merge commit(s) the head does not hold, whose resolutions git cherry cannot compare`
+      : lost ? `${lost.length} commit(s) the head does not hold by their patch` : 'commits git cherry could not compare';
+    freeSlot(slot);
+    return `${why}: its last worker rebased it, but origin/${branch} has ${has}, so the pass does not overwrite them. Check them, then push with git push ${lease} origin ${branch} from ${wt}`;
+  }
+  freeSlot(slot);
   return `${why}: they are its last worker's, and the pass's git push origin ${branch} was refused (${said.length ? said.join('; ') : lastLine(pushed.out)})`;
 }
+// Origin's commits on `branch` (up to `tip`, none a merge) that git cherry finds no patch for (`lost`,
+// its '+ <sha>' lines) are still the head's when either holds, and the reason, else null:
+// - each is rewritten in the head by this worktree: this worktree once held it (it is reachable from an
+//   entry of the branch's or HEAD's reflog), and a commit since the merge base keeps its author, author
+//   date and subject, as a rebase, an amend or a fixup folded into it does. A commit dropped (a reset
+//   away, a rebase that drops it) has no such commit, and one someone rewrote on origin (an amend pushed
+//   over the worker's) was never in this worktree, so either holds;
+// - the head holds their change: origin's diff from the merge base applies to it in reverse.
+const REFLOG_ENTRIES = 200;
+function heldAnyway(git, wt, branch, tip, lost) {
+  const base = git(['merge-base', 'HEAD', tip]);
+  if (!base) return null;
+  const who = (range) => (git(['log', '--no-walk=unsorted', '--format=%ae %ad %s', '--date=raw', ...range]) ?? '').split('\n').filter(Boolean);
+  const ours = new Set((git(['log', '--format=%ae %ad %s', '--date=raw', `${base}..HEAD`]) ?? '').split('\n').filter(Boolean));
+  const shas = lost.map((l) => l.slice(2).trim());
+  const theirs = who(shas);
+  const entries = [...new Set([`refs/heads/${branch}`, 'HEAD']
+    .flatMap((ref) => (git(['reflog', 'show', '--format=%H', '-n', String(REFLOG_ENTRIES), ref]) ?? '').split('\n').filter(Boolean)))];
+  const local = entries.length ? new Set((git(['rev-list', ...entries, `^${base}`]) ?? '').split('\n').filter(Boolean)) : new Set();
+  if (theirs.length === shas.length && theirs.every((x) => ours.has(x)) && shas.every((x) => local.has(x))) {
+    return `each is rewritten in it: a commit there keeps its author, author date and subject`;
+  }
+  if (shOut('sh', ['-c', 'git -C "$1" diff --binary "$2" "$3" | git -C "$1" apply --check -R --cached', 'sh', wt, base, tip]).ok) {
+    return `the head holds their change: origin's diff from ${base.slice(0, 9)} applies to it in reverse`;
+  }
+  return null;
+}
+
 // Recorded each time the pass finds a worker exited: the head its worktree was left at.
 function recordWorkerHead(t) {
-  if (DRY || t.location === 'cloud') return;
+  if (DRY || runsInCloud(t)) return;
   const wt = t.worktree || join(WORKTREES, t.key);
   if (!existsSync(wt)) return;
   const head = shOut('git', ['-C', wt, 'rev-parse', 'HEAD']);
   if (head.ok && /^[0-9a-f]{40}$/.test(head.out) && head.out !== t.worker_head?.sha) q('set', t.key, `worker_head=${JSON.stringify({ sha: head.out, at: PASS_AT })}`);
+  // The review rounds it ran outlive its session, for a later worker's accepted re-verdict.
+  keepReviewResults(wt, STATE, t.key);
 }
 
 // A fix try is queued against its PR as it was then, and may wait passes for a slot: just before it
@@ -2897,10 +3073,10 @@ function fixTryStale(t) {
   const verb = resumed ? 'resumed' : ran ? 'spawned again' : 'spawned';
   // A renames fix holds the merge as an instruction does (merge-driver.sh instruction_held), so a moved
   // head does not end it either: its worker updates the migrations at the new head.
-  const headBound = Boolean(f.head) && !ran && !personCall(f) && !f.person && f.kind !== 'renames';
+  const headBound = Boolean(f.head) && !ran && redraftable(f);
   const what = `${tryLabel(f)} on PR #${f.pr}`;
   let v = null;
-  try { v = JSON.parse(readOrThrow(`gh pr view ${f.pr}`, 'gh', ['pr', 'view', String(f.pr), '--repo', GH_REPO, '--json', 'state,headRefOid,mergedAt'])); } catch (e) {
+  try { v = JSON.parse(readOrThrow(`gh pr view ${f.pr}`, 'gh', ['pr', 'view', String(f.pr), '--repo', GH_REPO, '--json', 'state,headRefOid,mergedAt'], { fresh: true })); } catch (e) {
     report.waiting.push(`${t.key}: its ${what} was not ${verb}: the PR could not be read to check it is still open${headBound ? ' at the try\'s head' : ''} (${e.message}). The next pass reads it again`);
     return true;
   }
@@ -2917,8 +3093,7 @@ function fixTryStale(t) {
   if (DRY) { report.done.push(`${line} (dry run: nothing recorded)`); return true; }
   // A try whose worker ran stays a try made. Its spawn cleared result, so the PR is put back for the
   // done tickets' reading below.
-  const tries = (t.fix_tries ?? []).filter((x) => !(x.at === f.at && x.kind === f.kind && !x.finished));
-  const unrun = ran ? [] : ['fix.no_worker=true', `fix_tries=${JSON.stringify(tries)}`];
+  const unrun = ran ? [] : unrunFields(t, f);
   q('set', t.key, `fix.finished=${PASS_AT}`, `fix.ended=${ended}`, ...unrun, `result.pr=${f.pr}`, 'state=done', 'handoff=null', ...(resumed ? ['resume=null'] : []), 'worktree_busy=null');
   if (merged) q('merged', t.key, ...(v.mergedAt ? [v.mergedAt] : []));
   report.done.push(merged ? `${line}, recorded merged` : line);
@@ -2986,7 +3161,10 @@ function setUpWorktree(t) {
     t.branch = fixed;
   }
   // --for-worker: the human's own .claude/settings.local.json never reaches a worker's worktree.
-  const runSetup = () => shOut('bash', [join(BIN, 'setup-worktree.sh'), '--for-worker', t.key, t.branch], { cwd: MAIN, env: { ...process.env, DESK_GIT_FETCH_TIMEOUT_S: SETUP_FETCH_S } });
+  // A cloud ticket's review try reviews the session's branch, which is on origin only: it is checked
+  // out from there, never cut afresh from the base.
+  const fromOrigin = cloudPrHere(t) ? { DESK_BRANCH_FROM_ORIGIN: '1' } : {};
+  const runSetup = () => shOut('bash', [join(BIN, 'setup-worktree.sh'), '--for-worker', t.key, t.branch], { cwd: MAIN, env: { ...process.env, DESK_GIT_FETCH_TIMEOUT_S: SETUP_FETCH_S, ...fromOrigin } });
   if (remoteHung()) return { wt, kept, renamed, hung: remoteHung() };
   const setUp = (r) => r.ok && [...r.out.matchAll(/\[setup-worktree\] worktree=(.+)/g)].pop()?.[1]?.trim() === wt && existsSync(wt);
   let setupRun = runSetup();
@@ -3155,8 +3333,9 @@ for (const t of spawnable) {
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
   // Only once spawn-worker.sh started it: a refused spawn ran no worker, so its try is still unrun.
   if (fixStarted(t).length) q('set', t.key, ...fixStarted(t));
-  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (${tryLabel(t.fix)} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
+  if (reviewOnlyTry(t)) reviewKeys.add(t.key);
 }
 const lockQueueHeldText = lockQueueHeld.length
   ? `${LOCK_QUEUE.line}: holding new workers and resumes into Stage 4 (${lockQueueHeld.join(', ')}); they start once the queue drains below ${LOCK_QUEUE.at}`
@@ -3224,6 +3403,16 @@ runSteps({
   report,
 });
 
+// One ticket comment made by the pass, posted once: none is posted where one holding `mark` is there.
+// -> { ok, posted, read, out }: `read` false when the comments could not be read, `out` desk-jira's last line.
+function postOnce(key, mark, body) {
+  const seen = shOut('desk-jira', ['comments', key]);
+  if (!seen.ok) return { ok: false, read: false, out: lastLine(seen.out) };
+  if (seen.out.includes(mark)) return { ok: true, posted: false };
+  const r = shOut('desk-jira', ['comment', key, body]);
+  return r.ok ? { ok: true, posted: true } : { ok: false, read: true, out: lastLine(r.out) };
+}
+
 // ---- follow-on comments --------------------------------------------------
 // A park recorded done because it waited only on who merges its PR (mergeParkOf) never reached its
 // worker's Stage 8 comment, so its follow-on is posted on the ticket here, as that comment would have
@@ -3249,15 +3438,41 @@ for (const t of Object.values(queue().tickets)) {
     report.waiting.push(`${t.key}: its follow-on for after PR #${pr} merges is not on the ticket: config §3 ${E.permissionKey('jira-comment')} is "${perm}". Post it with desk-jira comment ${t.key} and this text: ${body}`);
     continue;
   }
-  const seen = shOut('desk-jira', ['comments', t.key]);
-  if (!seen.ok) { report.failed.push(`${t.key}: follow-on comment not posted, its comments could not be read (${seen.out.split('\n').pop()}): tried again next pass`); continue; }
-  if (!seen.out.includes(mark)) {
-    const r = shOut('desk-jira', ['comment', t.key, body]);
-    if (!r.ok) { report.failed.push(`${t.key}: follow-on comment not posted (${r.out.split('\n').pop()}): tried again next pass`); continue; }
-  }
+  const posted = postOnce(t.key, mark, body);
+  if (!posted.ok) { report.failed.push(`${t.key}: follow-on comment not posted${posted.read === false ? `, its comments could not be read (${posted.out})` : ` (${posted.out})`}: tried again next pass`); continue; }
   q('set', t.key, `follow_on_comment=${new Date().toISOString()}`);
   report.advanced.push(`${t.key} follow-on for after PR #${pr} merges → ticket comment`);
 }
+
+// ---- a cloud ticket's tracker steps ---------------------------------------
+// The decision is pass/tracker-steps.mjs decideTrackerSteps: the steps a cloud session could not make.
+runSteps({
+  name: 'tracker steps',
+  snapshot: () => ({
+    tickets: queue().tickets, dry: DRY, repo: GH_REPO, now: new Date().toISOString(),
+    tracker: new Set(Object.keys(queue().tickets).filter((k) => { const kind = E.ticketKind(k); return onJira && kind.ok && kind.kind === 'tracker'; })),
+    comment: E.permission('jira-comment'), commentRow: E.permissionKey('jira-comment'),
+    move: E.permission('jira-transition'), moveRow: E.permissionKey('jira-transition'),
+    review: String(E.configValue('review-state') ?? '').trim(), done: String(E.configValue('done-state') ?? '').trim(),
+  }),
+  decide: decideTrackerSteps,
+  handlers: {
+    ...PHASE_HANDLERS,
+    'post-once': (a) => postOnce(a.key, a.mark, a.body),
+    status: (a) => {
+      const r = shOut('desk-jira', ['get', a.key, '--json']);
+      let status = null;
+      try { status = JSON.parse(r.out)?.fields?.status?.name ?? null; } catch { /* unread */ }
+      return { ok: r.ok, status, out: lastLine(r.out) };
+    },
+    transitions: (a) => {
+      const r = shOut('desk-jira', ['transitions', a.key]);
+      return { ok: r.ok, out: lastLine(r.out), list: r.ok ? r.out.split('\n').map((l) => l.split('\t')).filter((c) => c.length >= 3).map((c) => ({ id: c[0], to: c[2].replace(/^-> /, '').trim() })) : [] };
+    },
+    transition: (a) => { const r = shOut('desk-jira', ['transition', a.key, a.id]); return { ok: r.ok, out: lastLine(r.out) }; },
+  },
+  report,
+});
 
 // ---- outside blockers ----------------------------------------------------
 // The decision is pass/parks.mjs decideOutsideBlockers. Of the tickets the blocker links read above
@@ -3485,7 +3700,6 @@ function withUntriggered(s) {
 }
 const DRIVER_DIR = join(STATE, 'merge-driver');
 const EVIDENCE_DIR = join(STATE, 'evidence-runs');
-const evidenceRow = parseEvidenceRow(E.configValues('evidence-workflow'));
 // A run's status for evidence.mjs evidenceRecord, or null when gh cannot read it.
 const viewRun = (id) => { try { return clearsRead.run(id); } catch { return null; } };
 const driverLines = (f) => { try { return readFileSync(join(DRIVER_DIR, f), 'utf8').split('\n'); } catch { return []; } };
@@ -3503,6 +3717,14 @@ const prFiles = (n, head) => cached(`pr-files:${n}:${head}`, () => {
   const o = sh('gh', ['api', '--paginate', `repos/${GH_REPO}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   return o ? o.split('\n').filter(Boolean) : null;
 });
+// Whether the merge driver waives these red checks of PR n at head, read as it reads them: every name in
+// §4 Known flaky checks, the PR touching none of their paths, and a check listed by its tests failing in
+// only those (the error_notes withErrors kept). For a ready PR's fix tries and a draft's undraft.
+function waivedAt(n, head, checks, names) {
+  if (flakyRow.errors.length || !names.length || !names.every((x) => flakyRow.flaky.some((f) => f.name === x))) return false;
+  const files = prFiles(n, head);
+  return !!files && flakyWaiver(checks, { ...gateLists(), flaky: flakyRow.flaky, files, notes: notesIn(checks) })?.applies === true;
+}
 // What desk-q reads of a PR without a network call, beyond GitHub's own: the reruns the merge driver
 // tried per check at this head and when it last reran one (its reruns-<n>-<sha> and cooldown-<n>), and
 // when the head or a check result last changed, kept from the last read while neither has.
@@ -3516,7 +3738,8 @@ function withHistory(s, was) {
 }
 // An open PR's failed checks each keep the errors their job gave (`errors`, the first as `error`), for
 // needs-you, which makes no network call, and the gate tries: read once per job, and left unset where its
-// annotations could not be read, so the next pass reads them again. A job with no annotated error keeps
+// annotations could not be read, so the next pass reads them again. `error_notes` keeps each failure's
+// path and title beside its line, for a §4 Known flaky checks test item. A job with no annotated error keeps
 // what its failed log names as `log_errors` instead, read the same way: only a test reporter that
 // annotates puts a failing test's line in `errors`.
 function withErrors(s, was) {
@@ -3529,13 +3752,16 @@ function withErrors(s, was) {
   };
   const checks = s.checks.map((c) => {
     if (!c.jobId || !FAILED.has(c.conclusion)) return c;
-    const old = (was?.checks ?? []).find((x) => x.jobId === c.jobId);
-    const notes = old && 'error' in old ? null : jobAnnotations(GH_REPO, c.jobId);
-    const errors = old && 'error' in old ? old.errors ?? (old.error == null ? [] : [old.error]) : notes === undefined ? undefined : failureLines(notes);
+    const found = (was?.checks ?? []).find((x) => x.jobId === c.jobId);
+    const read = found && 'error' in found && Array.isArray(found.error_notes) ? null : jobAnnotations(GH_REPO, c.jobId);
+    // A record kept from before error_notes, whose read now fails, keeps its errors without them.
+    const old = read === null || (read === undefined && found && 'error' in found) ? found : null;
+    const notes = old ? null : read;
+    const errors = old ? old.errors ?? (old.error == null ? [] : [old.error]) : notes === undefined ? undefined : failureLines(notes);
     if (errors === undefined) return c;
     // The files its failure annotations point at, for the rerun a failure naming none of the PR's files gets.
     const paths = notes ? [...new Set(notes.filter((x) => x?.annotation_level === 'failure' && x.path).map((x) => String(x.path)))] : old?.error_paths ?? [];
-    return { ...c, error: old && 'error' in old ? old.error : errors[0] ?? null, errors, ...(paths.length ? { error_paths: paths } : {}), ...(errors.length ? {} : logErrors(c, old)) };
+    return { ...c, error: old ? old.error : errors[0] ?? null, errors, ...(old ? (old.error_notes ? { error_notes: old.error_notes } : {}) : { error_notes: failureNotes(notes) }), ...(paths.length ? { error_paths: paths } : {}), ...(errors.length ? {} : logErrors(c, found)) };
   });
   return { ...s, checks };
 }
@@ -3704,11 +3930,6 @@ runSteps({
 // writes they yield are the handlers below; the readers undraftCall and the fix tries call as they need
 // them go in the undraft snapshot's `reads`.
 const undraftErrors = [];
-// §4 Checks workers can't fix, for a draft's red checks here and a ready PR's in the fix tries below.
-const operatorRow = parseOperatorChecks(E.configValues('operator-checks'));
-// §4 Pre-merge steps: what a person does first for a check, or a step in one, to go green (a migration
-// applied to staging), so no fix worker is sent for it and the person is told the step.
-const preMergeRow = parseOperatorChecks(E.configValues('pre-merge-steps'));
 // What git says about a PR's head and the base, for a head of the ticket's branch: whether a verdict for
 // an older head still holds at it (carry), and whether a merge from the base last moved it (baseMerge):
 // such a head, since the last try's, gets its own review try, outside the fix tries. With the
@@ -3734,9 +3955,6 @@ const baseMoves = (t, head) => {
     },
   };
 };
-// §4 State checks: red checks that read the PR's state, so no fix worker is sent for them (verdictTry
-// sends a review worker for one reading the verdict).
-const stateRow = parseStateChecks(E.configValues('state-checks'));
 // A failing reviewer check (health.mjs: the account desk posts verdicts from is not one §4 Gate
 // reviewers counts, or cannot be read) holds every PR red only on a §4 State check of kind verdict,
 // with nothing pending: a review or fix try there posts a verdict the gate does not count. The PR
@@ -3897,7 +4115,8 @@ runSteps({
         const again = baseHead && String(baseHead) === String(qNow.reopened_at ?? '');
         return { behind: x.behind, reopen: again ? {} : x.reopen };
       },
-      baseMoves, driver: driverReruns, built: (n, head) => buildRecord(BUILD_DIR, n, head),
+      baseMoves, driver: driverReruns, built: (n, head) => buildRecord(BUILD_DIR, n, head), waived: waivedAt,
+      outside: scopeOutside, title: triageTitle,
       evidenceRun: (n, head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun),
       missingShots: (body, t) => missingShots(body, ticketShots(t, STATE)), shotDir: (t) => ticketShotDir(t, STATE),
       baseReads, reviewComments,
@@ -4126,7 +4345,6 @@ function reviewComments(id) {
 // recorded as stuck and put to the person: pass/fix-tries.mjs decides, and the handlers below read
 // git, gh and the driver's per-head rerun record, and write the queue. A §4 Check builds check gets its
 // build here as a draft's does (startCheckBuild).
-const flakyRow = parseFlaky(E.configValues('flaky-checks'));
 // The files a PR conflicts on, as git works them out against the base; null when it cannot.
 function conflictFiles(branch) {
   if (!branch) return null;
@@ -4148,6 +4366,17 @@ function humanSeen(n) {
 // The reads fix-tries.mjs's calls make for ready PR s of ticket t, each run only when a call makes it:
 // fixCall's ctx, the head against the base (baseMerge, and moves() read afresh for the verdict try), a
 // review's inline comments, and the verdict at the head.
+// What a review fix try weighs a widening round against (fix-tries.mjs widening): PR n's files at head
+// that its triaged scope does not cover, as the out-of-scope report reads them (null when either
+// cannot be read), and the ticket's title from its triage record.
+function scopeOutside(n, head, key) {
+  const scope = triagedScope(STATE, key);
+  const files = Array.isArray(scope) ? prFiles(n, head) : null;
+  return files ? outOfScope(files, scope, incidental) : null;
+}
+function triageTitle(key) {
+  try { return readTriage(STATE, key)?.summary ?? null; } catch { return null; }
+}
 function fixReads(t, s, dirty, dirtyFiles) {
   const n = s.pr;
   const { baseMerge, behind } = baseMoves(t, s.head);
@@ -4156,12 +4385,7 @@ function fixReads(t, s, dirty, dirtyFiles) {
     repo: GH_REPO, base: DEFAULT_BRANCH, ...gateLists(), ...clearsRows, stateChecks: stateRow.checks,
     build: (failing, gate) => buildCall({ pending: gate?.pending ?? [], running: gate?.running, failing }, { builds: buildRow.checks, rerun: E.permission('ci-rerun'), built: (head) => buildRecord(BUILD_DIR, n, head), behind }, n, s.head, t),
     ...driverReruns(n, s.head),
-    // Waived only as the driver waives: every name listed, and the PR touching none of their paths.
-    waived: (names) => {
-      if (flakyRow.errors.length || !names.every((x) => flakyRow.flaky.some((f) => f.name === x))) return false;
-      const files = prFiles(n, s.head);
-      return !!files && flakyWaiver(s.checks, { ...gateLists(), flaky: flakyRow.flaky, files })?.applies === true;
-    },
+    waived: (names) => waivedAt(n, s.head, s.checks, names),
     conflictFiles: () => (dirty ? dirtyFiles : conflictFiles(t.branch)),
     baseAt: () => baseAtOf(s.head),
     ...baseReads(s.head),
@@ -4170,6 +4394,8 @@ function fixReads(t, s, dirty, dirtyFiles) {
     ctx,
     baseMerge,
     moves: () => baseMoves(t, s.head),
+    outside: () => scopeOutside(n, s.head, t.key),
+    title: () => triageTitle(t.key),
     comments: (id) => {
       const r = reviewComments(id);
       if (r.error) out.push(`fix tries: PR #${n} (${t.key}): its review's inline comments could not be read (${r.error}), so only its body's findings count`);
@@ -4254,11 +4480,12 @@ function settleWorked(t, n, head, worked) {
 // wait is not requeued (the item says what it waits for), and `rerun` re-runs a draft's checks classed
 // runner or resource instead of spawning a fix worker, `wait` holding that rerun for the run to finish.
 function applyFix(t, n, head, c) {
-  if ('base_red' in c && JSON.stringify(t.base_red ?? null) !== JSON.stringify(c.base_red ?? null)) {
-    if (!DRY) q('set', t.key, `base_red=${JSON.stringify(c.base_red ?? null)}`);
-    t.base_red = c.base_red ?? null;
+  const rec = keptHold(t.base_red, c, PASS_AT);
+  if ('base_red' in c && JSON.stringify(t.base_red ?? null) !== JSON.stringify(rec)) {
+    if (!DRY) q('set', t.key, `base_red=${JSON.stringify(rec)}`);
+    t.base_red = rec;
   }
-  if (c.call === 'held') { report.waiting.push(`${t.key}: BASE RED — PR #${n}: ${c.why}`); return; }
+  if (c.call === 'held') { report.waiting.push(`${t.key}: ${c.label ?? 'BASE RED'} — PR #${n}: ${c.why}`); return; }
   if (c.call === 'wait') { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`); return; }
   if (c.call === 'rerun') {
     if (DRY) out.push(`undraft (dry run): would re-run run(s) ${c.gate.failedRuns.join(', ')} on PR #${n} (${t.key}): ${c.why}`);
@@ -4494,7 +4721,7 @@ if (featureBase) {
         return sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${BASE}`], { tolerant: true }) || null;
       },
       'pr-draft': (a) => {
-        try { return JSON.parse(sh('gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'state,isDraft'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return null; }
+        try { return JSON.parse(sh('gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'state,isDraft'], { tolerant: true, fresh: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return null; }
       },
       'undo-ready': (a) => shOut('gh', ['pr', 'ready', String(a.pr), '--repo', GH_REPO, '--undo']),
       flush: () => flushQueue(),
@@ -4522,8 +4749,8 @@ async function promotionChecksStep(qx) {
   const p = qx.promotion ?? {};
   const clear = () => { if (p.red && !DRY) q('set-batch', 'promotion.red=null'); };
   // Read again here: the base sync may have moved its head and the base gate put it back to draft since
-  // the pass began.
-  const now = promoPr ? readPromotionPr(qx) : null;
+  // the pass began, and its checks may have turned since. It decides a write, so it is made fresh.
+  const now = promoPr ? readPromotionPr(qx, { fresh: true }) : null;
   // Unread, what was recorded stands until a pass can read it, and a PR this pass found red keeps the
   // batch from idling until one does.
   if (now?.unreadable && p.pr === now.pr) { out.push(`promotion PR #${now.pr}: its checks could not be read; the next pass tries again`); return !!p.red || promoRed != null; }

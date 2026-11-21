@@ -3,17 +3,17 @@
 // tests/fixtures/bash32-newer.txt must fail the scan, each of tests/fixtures/bash32-ok.txt must pass,
 // and so must every shell script in the repo. The Docker half (`bash -n` under 3.2) runs in CI.
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { repoMap } from './scope_sections.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const g = JSON.stringify(got); const w = JSON.stringify(want); const ok = g === w; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${g}${ok ? '' : ` (want ${w})`}`); };
 const R = join(dirname(fileURLToPath(import.meta.url)), '..');
 const scan = (...files) => spawnSync('bash', [join(R, 'tests/bash32_check.sh'), '--scan-only', ...files], { encoding: 'utf8' });
 const lines = (f) => readFileSync(join(R, 'tests/fixtures', f), 'utf8').split('\n').filter((l) => l.trim());
-const T = mkdtempSync(join(tmpdir(), 'desk-bash32-'));
+const T = scratch('desk-bash32-');
 try {
   const one = (l, i) => { const f = join(T, `case${i}.sh`); writeFileSync(f, `#!/usr/bin/env bash\n${l}\n`); return scan(f); };
   const newer = lines('bash32-newer.txt');

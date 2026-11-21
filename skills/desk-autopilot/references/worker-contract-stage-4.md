@@ -219,8 +219,8 @@ later fix-up reply opens with the command's reply marker and carries no verdict:
 nothing has reviewed. **Never post a second verdict at a commit that already has one with different
 counts**, and never edit a posted verdict's counts: a gate reads the last one, so a re-count is
 indistinguishable from editing the result until it passes. A wrong count needs a new run. The one
-exception is a requirement gap the person accepted after the verdict posted (desk-review's
-`phase-5-requirements.md`, *A gap the person accepted*).
+exception is a gap the person accepted after it posted, re-posted at its head, nothing
+pushed, from its round's results (desk-review `phase-7-post.md`).
 
 ```bash
 node ~/.claude/desk/bin/review-post.mjs <n> --repo <repo> --body-file <report>

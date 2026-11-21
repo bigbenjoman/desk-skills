@@ -1,6 +1,7 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, syncSaid, recommendedOf, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, outageChecks, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
 import { readVerdict, readThreads, localReviewSet, externalReview } from '../desk/bin/review-threads.mjs';
@@ -57,6 +58,13 @@ const two = [...one, { try: 2, head: 'c'.repeat(40), kind: 'checks', what: 'red:
 const c5 = fixCall(tk({ fix_tries: two }), both, ctx());
 t('AC5 after 2 tries it is stuck, not requeued', c5?.call, 'stuck');
 t('AC5 the stuck text names the checks', c5?.why, 'still red after 2 fix tries: Backend tests, Lint');
+// With no try left, a red head is the person's while the driver's reruns or their gap are still to come,
+// and while another check still runs: the pass says so rather than wait on them in silence.
+t('with no try left, red before the driver\'s last rerun is stuck', fixCall(tk({ fix_tries: two }), both, ctx({ reruns: () => 1 }))?.why, 'still red after 2 fix tries: Backend tests, Lint');
+t('with no try left, red before the last rerun\'s gap is over is stuck', fixCall(tk({ fix_tries: two }), both, ctx({ cooledDown: false }))?.call, 'stuck');
+t('with no try left, red while another check still runs is stuck', fixCall(tk({ fix_tries: two }), pr([...both.checks, { name: 'e2e', status: 'in_progress', conclusion: null }]), ctx())?.call, 'stuck');
+t('with a try left, red before the last rerun still waits', fixCall(tk({ fix_tries: one }), both, ctx({ reruns: () => 1 })), null);
+t('with a try left, red while another check still runs still waits', fixCall(tk({ fix_tries: one }), pr([...both.checks, { name: 'e2e', status: 'in_progress', conclusion: null }]), ctx()), null);
 t('AC5 or the conflict, after 2 conflict tries', fixCall(tk({ fix_tries: two.map((x) => ({ ...x, kind: 'conflict' })) }), dirty, ctx())?.why, 'still in conflict with main after 2 fix tries');
 
 // AC6: red only on a check no worker can fix: stuck at once, with the command.
@@ -290,6 +298,30 @@ const stuckBeside = gapFix(`${p1Body}\n\n### Requirement gaps\n${PERSON_GAP}`, 1
 const sentBack = personReviewFix(tk(), { pr: 702, head: HEAD, why: stuckBeside?.why });
 t('DS-513 AC3 a try the person sends for the finding is not aimed at the person\'s gap', `${stuckBeside?.why.includes(PERSON_GAP.slice(2))} ${sentBack?.findings.length} ${sentBack?.findings.some((x) => x.text.includes('PERSON'))}`, 'true 1 false');
 t('DS-513 without autopilot-judgement yes nothing changes', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: onlyPerson }), null);
+// ---- a round whose gaps only widen a broad criterion an earlier try worked, past triage's files, asks the scope
+const BROAD1 = 'AC2: "an avatar wherever a person shows" — src/list.tsx:4 shows a name with no avatar';
+const BROAD2 = '- AC2: "an avatar wherever a person shows" — src/card.tsx:9 and src/menu.tsx:3 show a name with no avatar';
+const widened = [{ try: 1, head: 'b'.repeat(40), kind: 'review', gaps: [BROAD1] }];
+const wideOpts = (o = {}) => ({ judgement: 'yes', outside: () => ['src/list.tsx', 'src/card.tsx'], title: () => 'Show the avatar on the people list', ...o });
+const wideFix = (body, done = widened, o = {}) => reviewFix(tk({ fix_tries: done }), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body }, wideOpts(o));
+const round2 = wideFix(personBody(1, BROAD2));
+t('a round-2 gap that is only new sites of an AC try 1 worked, on a change past triage\'s files, spends no try 2', round2?.call, 'stuck');
+t('it puts one scope question to the person, the title\'s scope recommended and the rest a follow-up',
+  round2?.why, `review gaps only you can settle: PERSON'S CALL: AC2 reads wider than the title ("Show the avatar on the people list"): this round's gaps are all new sites of it, after an earlier try already worked it, and the change touches 2 file(s) triage did not list (src/list.tsx, src/card.tsx). Fix only what the title names and file the rest as a follow-up? (recommended)`);
+t('the question is the person\'s gap needs-you answers through', JSON.stringify(personGapsIn(round2?.why).map((x) => x.startsWith("PERSON'S CALL: AC2 reads wider"))), '[true]');
+t('a first round on the same AC gets its try', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: personBody(1, BROAD2) }, wideOpts())?.call, 'requeue');
+t('a gap on an AC no earlier try named gets its try', wideFix(personBody(1, '- AC3: "export includes VAT" — no VAT column'))?.call, 'requeue');
+t('a round with a new AC beside the widened one gets its try', wideFix(gapBody('p0=0 p1=0 p2=0', 2, ['### Requirement gaps', BROAD2, '- AC3: "export includes VAT" — no VAT column']), widened, {})?.call, 'requeue');
+t('a change still inside triage\'s files gets its try', wideFix(personBody(1, BROAD2), widened, { outside: () => [] })?.call, 'requeue');
+t('PR files or a triage scope that could not be read leave the try', wideFix(personBody(1, BROAD2), widened, { outside: () => null })?.call, 'requeue');
+t('a pass that reads no scope leaves the try', wideFix(personBody(1, BROAD2), widened, { outside: undefined })?.call, 'requeue');
+const withPerson = reviewFix(tk({ fix_tries: widened }), { pr: 702, head: HEAD, verdict: { gaps: '2' }, body: personBody(2, BROAD2, PERSON_GAP) }, wideOpts());
+t('a person\'s gap beside the widened one goes to the person with the scope question', JSON.stringify(personGapsIn(withPerson?.why).map((x) => [x.startsWith("PERSON'S CALL: AC2 reads wider"), x.endsWith(PERSON_GAP.slice(2))])), '[[true,true]]');
+t('a P1 beside the widened gap gets its try', reviewFix(tk({ fix_tries: widened }), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1', gaps: '1' }, body: `${p1Body}\n\n### Requirement gaps\n${BROAD2}` }, wideOpts())?.call, 'requeue');
+t('the same gap still open after its try is a survivor, as before', wideFix(personBody(1, `- ${BROAD1}`))?.why.startsWith('review not clean after 1 fix try'), true);
+t('one repeating the earlier gap\'s words at a new site is a new site, not a survivor', wideFix(personBody(1, `- ${BROAD1.replace('src/list.tsx:4', 'src/card.tsx:9')}`))?.why.startsWith("review gaps only you can settle: PERSON'S CALL: AC2"), true);
+t('one naming an earlier site beside new ones is still open there, so it is not only widening', wideFix(personBody(1, `- ${BROAD1.replace('src/list.tsx:4', 'src/list.tsx:4 and src/card.tsx:9')}`))?.call, 'requeue');
+t('one naming no site is not read as new sites', wideFix(personBody(1, '- AC2: "an avatar wherever a person shows" — the settings page shows a name with none'))?.call, 'requeue');
 const gapsCall = (body, verdict, opts = { judgement: 'yes' }) => personGapsCall({ verdict, body }, opts);
 t('DS-513 a ready PR with only the person\'s gaps is stuck on them, its reason readable', JSON.stringify(personGapsIn(gapsCall(onlyPerson, { gaps: '1' })?.why)), JSON.stringify([PERSON_GAP.slice(2)]));
 t('DS-513 AC3 a review stuck reason gives up the person\'s gap it carries', JSON.stringify(personGapsIn(stuckBeside?.why)), JSON.stringify([PERSON_GAP.slice(2)]));
@@ -342,7 +374,25 @@ t('DS-585 recommendedOf keeps the option as written, dropping only emphasis arou
 t('DS-585 askCategoryIn finds each category and none in a plain engineering call', JSON.stringify(['costs £5 a month', 'GDPR', 'the prod database', 'the SMS text', 'the catalog entry', 'split it to DS-12'].map(askCategoryIn)), JSON.stringify(['money', 'legal', 'production', 'customer-copy', 'user-fact', null]));
 t('DS-585 askCategoryIn covers every example in ask-or-take.md\'s table', JSON.stringify(['approve the spend', 'a paid plan', 'anything billed', 'the Stripe webhook', 'the cookie policy copy', 'privacy', 'compliance', 'a production database', 'a secret', 'the signing key', 'a live account', 'an SMS', 'a paid placement', 'copy billed by length', 'product data', 'a design URL', 'an asset', 'the brand name', 'who owns what'].map((x) => Boolean(askCategoryIn(x)))), JSON.stringify(Array(19).fill(true)));
 const readyCall = tk({ fix: gapsFix({ pr: 702, head: HEAD, ready: true, answer: 'accept it' }) });
+const leftDirty = fixBrief(tk({ fix: { ...readyCall.fix, left_dirty: ['src/a.ts', 'src/b.ts'] } }));
+t('a try spawned over its interrupted worker\'s changes names them first, to test and commit, never discard', ['## Your interrupted worker\'s changes', '- src/a.ts', 'test it and commit it as part of this try', 'never discard or stash them'].every((x) => leftDirty.includes(x)) && leftDirty.includes('## Your call on PR #702'), true);
 t('DS-513 the person\'s call on a ready PR keeps it out of draft', `${fixBrief(readyCall).includes('open and out of draft')} ${/leave the PR out of draft/.test(fixTask(readyCall))}`, 'true true');
+t('with the repo\'s own review, a gap-answer worker re-reviews the head with it so its verdict records the accepted gap', fixBrief(readyCall, '/pullbot').includes('review the head with /pullbot and post its review on the PR as its own instructions say, so its verdict records the accepted gap'), true);
+t('DS-833 with the repo\'s own review, the gaps brief carries no desk-review accepted re-verdict', fixBrief(readyCall, '/pullbot').includes('A gap the call accepts, with no code change'), false);
+// ---- DS-833: a gap the person accepted gets that round's re-verdict at the unchanged head
+const acceptCall = tk({ fix: gapsFix({ pr: 702, head: HEAD, ready: false, answer: 'accept AC3: I checked it on staging' }) });
+const briefAc = fixBrief(acceptCall), taskAc = fixTask(acceptCall);
+t('DS-833 AC1 the gaps brief asks for the accepted re-verdict at the same head, with nothing pushed', briefAc.includes(`Push nothing for it: post that round's verdict again at the same head ${HEAD.slice(0, 12)}, with each accepted gap moved from \`gaps\` into \`accepted\``), true);
+t('DS-833 AC1 each accepted gap names who accepted it and the link, in the same round', briefAc.includes("lower its `gaps` count by one and add an `accepted` entry (`gap`, `by`, `at`, `url`): who accepted it, the date and the link to the person's comment on the PR. Keep its `round` and `since`, run desk-review's verdict.mjs on it"), true);
+t('DS-833 AC3 it reads the round\'s results file from the worktree or the ticket\'s state folder', briefAc.includes('at your worktree root, or kept under `$DESK_STATE/reviews/T-1/`'), true);
+t('DS-833 the same file kept in both places is one round, and the accepted copy never overwrites the original', briefAc.includes('A file of the same name in both places is one round.') && briefAc.includes('as `desk-review-results-<run>-accepted.json` (`<run>` its own), never over the original'), true);
+t('DS-833 AC4 the round is the one whose verdict is the newest posted at the head, even with one file', briefAc.includes('The round is the one whose verdict.mjs output is the newest verdict marker posted at the head, even where only one file has that `sha`: where none is, treat it as missing'), true);
+t('DS-833 AC1 the re-verdict is confirmed by the count rising by one, not by a single marker', briefAc.includes("confirm it landed by Phase 7's count before and after, one higher, not by finding exactly one marker"), true);
+t('DS-833 AC4 with no results file for the head it parks, naming it, and never re-counts', briefAc.includes('With no results file for that head, post nothing: park (AUTOPILOT_PARK) naming the file you looked for') && briefAc.includes('Never count a verdict by hand'), true);
+t('DS-833 AC5 a call that changes code is reviewed as a new round', briefAc.includes('Where the call changes code, push it and review the new head as a new round') && taskAc.includes('then review the new head with desk-review'), true);
+t('DS-833 the gaps task exempts the accepted re-verdict from the push-nothing line', taskAc.includes('If you pushed nothing, post no review: the head is unchanged, so a review of it would only repeat the last one. The one exception is a gap the call accepts: post that round\'s accepted re-verdict at the unchanged head'), true);
+const instructionTask = fixTask(tk({ fix: { kind: 'instruction', pr: 702, head: HEAD, ready: false, answer: 'rename it' } }));
+t('DS-833 a person\'s instruction keeps the push-nothing line without the exception', `${instructionTask.includes('If you pushed nothing, post no review')} ${instructionTask.includes('The one exception is a gap the call accepts')}`, 'true false');
 t('DS-319 the findings parser ends a P1 run at the same bold heading, and a bold finding with its file:line still counts', JSON.stringify(reviewFindings('P1 (2)\n**src/a.ts:4 — dup**\n**Requirement gaps**\n- AC1: src/b.ts:9 not done').map((x) => x.text)), JSON.stringify(['**src/a.ts:4 — dup**']));
 
 // ---- DS-316: a draft with no verdict readable at its head goes to a review worker, a red one to a fix worker
@@ -745,6 +795,14 @@ t('#737 its brief names that reviewer and asks for no desk review', fixBrief(tk(
 t('#737 its task posts no desk review on the new head', /review the new head with desk-review|post that review/.test(fixTask(tk({ fix: ex737.fix }))), false);
 t('#737 the thread reply says the outside reviewer reviews next', feedbackReply(ex737.fix, 'd'.repeat(40)).includes('agent-pullbot reviews that head next'), true);
 t('#737 a plain feedback try still asks for a desk review', /review the new head with desk-review|post that review/.test(fixTask(tk({ fix: feedbackFix(tk(), { pr: 1, head: HEAD, decision: 'CHANGES_REQUESTED', threads: [{ id: 'T', text: 'x' }] }).fix }))), true);
+// A finding in the outside reviewer's review text is named as that, with its file:line, never as a thread.
+const body989 = extCtx(extPl([bot(HEAD, 'P2 (1): src/a.ts:3 drops the row')]));
+const ex989 = verdictTry(tk(), extRed, body989);
+t('#989 a review-body finding is named as the review body, with its file:line', ex989?.fix.what, "review feedback: agent-pullbot's review body (findings at src/a.ts:3)");
+t('#989 beside a thread, each is named for what it is', verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, 'P2: src/b.ts:9 x')], [thread('T1', 'R1', 'P1 y')])))?.fix.what, "review feedback: 1 unresolved thread, agent-pullbot's review body (findings at src/b.ts:9)");
+t('#989 a feedback try that pushed nothing has spent its try at that head: the person\'s, not requeued at the same number',
+  verdictTry(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'feedback', what: ex989.fix.what, at: 'T0' }] }), extRed, body989)?.call, 'stuck');
+t('#989 the brief says a carried finding keeps the outside reviewer\'s check red', fixBrief(tk({ fix: ex989.fix })).includes('carrying a finding, or leaving one for later, does not clear it: fix each finding quoted below, whatever its severity, or park (AUTOPILOT_PARK)'), true);
 t('#737 externalTry is undefined with no external check red', externalTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE }), undefined);
 t('#737 and waits while a check is pending', externalTry(tk(), pr([{ name: 'tests', status: 'in_progress' }, red('🔐 Review gate', '88')]), extCtx(extPl([bot(HEAD, 'P0')]))), null);
 t('DS-422 a red verdict check beside an unclean review at the head is reviewFix\'s, as before', verdictTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE, settled: true }), null);
@@ -760,6 +818,12 @@ t('DS-433 AC2 its task reviews the head and leaves it out of draft', /desk-revie
 t('DS-558 AC3 two review tries per head: tried twice here, it is the person\'s, naming the review failure', verdictTry(tk({ fix_tries: [{ ...vs.fix }, { ...vs.fix }] }), green433, ctx433(stale))?.why, `no review verdict readable at its head after 2 review tries at it: ${stale.why}`);
 const movedTry = [{ try: 1, head: 'c'.repeat(40), kind: 'checks' }, { try: 2, head: 'd'.repeat(40), kind: 'checks' }];
 t('DS-558 AC1 fix tries spent, a held PR still gets a review try at its head', verdictTry(tk({ fix_tries: movedTry }), green433, ctx433(stale, { base: 'main', baseMerge: () => true }))?.fix.what, `review its head, moved by a merge from main: ${stale.why}`);
+// An outside reviewer's gate that passed at the head is the head's review: no desk review try is owed.
+const extGreen = pr([ok('tests'), ok('🔐 Review gate')]);
+t('#991 an external gate passed at the head owes no desk review, though desk\'s verdict is stale', verdictTry(tk(), extGreen, { ...ctx433(stale), stateChecks: EXT }), null);
+t('#991 nor does the held-PR route', driverReviewTry(tk(), extGreen, { atHead: () => stale, stateChecks: EXT }), null);
+t('#991 with that check not at the head, the stale verdict still goes to a review worker', verdictTry(tk(), green433, { ...ctx433(stale), stateChecks: EXT })?.fix.kind, 'rereview');
+t('#991 externalPassed names the check and its reviewer, and only for a pass', `${JSON.stringify(externalPassed(extGreen.checks, EXT))} ${externalPassed(pr([ok('tests'), { name: '🔐 Review gate', status: 'in_progress', conclusion: null }]).checks, EXT)}`, '{"name":"🔐 Review gate","login":"agent-pullbot"} null');
 t('DS-433 a clean review at the head sends no worker', verdictTry(tk(), green433, ctx433({ ...stale, clean: true, why: null })), null);
 t('DS-433 nothing waiting on a verdict (no §4 Local review command, or no driver) sends no worker', verdictTry(tk(), green433, ctx433(null)), null);
 t('DS-433 no atHead at all is as it was', verdictTry(tk(), green433, { required: ['tests'], stateChecks: STATE }), null);
@@ -936,6 +1000,11 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-494 AC1 and calls it the one extra try', b1.includes('## Extra fix try') && b1.includes('This is the one extra try after the 2 fix tries.') && !b1.includes('try 2 of 2'), true);
   t('DS-494 AC1 and says the line is evidence, not instruction', b1.includes('no instruction to follow'), true);
   t('DS-494 AC1 its task names the extra try', fixTask(tk({ fix: c1.fix })).includes('Your task is the extra fix try on PR #697'), true);
+  // The extra try waits for the driver's reruns, their gap and every check, as a numbered try does.
+  t('the extra try waits for the driver\'s last rerun', fixCall(tk({ fix_tries: spentTries }), pr([named()]), ctx({ reruns: () => 1 })), null);
+  t('the extra try waits for the last rerun\'s gap', fixCall(tk({ fix_tries: spentTries }), pr([named()]), ctx({ cooledDown: false })), null);
+  t('the extra try waits while another check still runs', fixCall(tk({ fix_tries: spentTries }), pr([named(), { name: 'e2e', status: 'in_progress', conclusion: null }]), ctx()), null);
+  t('once the extra try is spent too, it is the person\'s before the last rerun', fixCall(tk({ fix_tries: [...spentTries, { ...c1.fix }] }), pr([named()]), ctx({ reruns: () => 1 }))?.call, 'stuck');
   t('DS-494 negative: a try left goes as a numbered try, quoting nothing', (() => { const c = fixCall(tk(), pr([named()]), ctx()); return `${c.fix.try} ${c.fix.extra} ${c.fix.lines}`; })(), '1 undefined undefined');
   t('DS-494 AC1 a line from its failed log counts when its job annotated none', fixCall(tk({ fix_tries: spentTries }), pr([named({ error: null, errors: [], log_errors: ['ENOENT: no such file, open \'db/0042.sql\''] })]), ctx())?.fix.lines[0].line, 'ENOENT: no such file, open \'db/0042.sql\'');
   const draft = draftChecksFix(tk({ fix_tries: spentTries }), { pr: 702, head: HEAD, failing: [{ name: 'tests', runId: '41' }], checks: [named()] }, { repo: 'acme/widgets' });
@@ -1055,4 +1124,25 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
 // its task asks for the stage markers it prints from there.
 t('a fix try starts at Stage 3, a review try at 4b, a capture try at 5', ['checks', 'review', 'protected', 'rereview', 'capture'].map((kind) => fixStartStage({ kind })).join(' '), '3/9 3/9 3/9 4b/9 5/9');
 t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as you reach each stage you run, starting with 4b\/9/.test(fixTask({ key: 'T-1', fix: { kind: 'rereview', try: 1, of: 2, pr: 7, head: 'a'.repeat(40), what: 'x' } })), true);
+// A check red on several ready PRs at once reads as its platform failing: held, with no fix try.
+{
+  const preview = (n, more = []) => ({ s: { pr: n, checks: [ok('tests'), red('Vercel Preview'), ...more] } });
+  const lists = { required: ['tests', 'Vercel Preview', 'Lint'], advisory: [] };
+  const many = outageChecks([preview(701), preview(702), preview(703, [red('Lint', '1')]), { s: { pr: 704, checks: [ok('tests'), ok('Vercel Preview')] } }], lists);
+  t('outage: a check red on 3 ready PRs is named with them, one red on fewer is not', JSON.stringify([...many]), '[["Vercel Preview",[701,702,703]]]');
+  t('outage: below the threshold there is none', outageChecks([preview(701), preview(702)], lists).size, 0);
+  t('outage: a workflow job red on as many PRs is not one: their code or the base may be its cause', outageChecks([701, 702, 703].map((n) => ({ s: { pr: n, checks: [ok('tests'), red('Lint', String(n))] } })), lists).size, 0);
+  t('outage: the threshold is 3 PRs', OUTAGE_PRS, 3);
+  const octx = (o = {}) => ctx({ required: lists.required, outage: many, ...o });
+  const held = fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx());
+  t('outage: a PR red only on it is held, with no fix try', `${held?.call} ${held?.label}`, 'held OUTAGE');
+  t('outage: its reason names the other PRs and the step that clears it', held?.why,
+    '"Vercel Preview" is red on 3 ready PRs at once (this one and #702, #703), which reads as its platform failing, not this PR\'s code, so no fix try is spent on it. Nothing desk reruns turns it green: once the platform is back, redeploy there or push to the PR, and it goes on as before once it passes or fewer PRs are red on it');
+  t('outage: held with tries left before any rerun, which the driver never makes for it', fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx({ reruns: () => 0, cooledDown: false }))?.label, 'OUTAGE');
+  t('outage: beside a check a person clears, that check keeps its route, not held', fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Flows image missing')], { pr: 701 }), octx({ required: [...lists.required, 'Flows image missing'] }))?.call !== 'held', true);
+  t('outage: with no try left it is held too, not the person\'s', fixCall(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'checks' }, { try: 2, head: 'c'.repeat(40), kind: 'checks' }] }), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx())?.call, 'held');
+  t('outage: a PR red on another check too still gets its fix try', fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Lint', '1')], { pr: 703 }), octx())?.call, 'requeue');
+  t('outage: with none, the same PR gets its fix try as before', fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), ctx({ required: lists.required }))?.call, 'requeue');
+}
+
 process.exit(fails ? 1 : 0);

@@ -1,9 +1,9 @@
 // suite: pass metrics (one line per pass, the collision warning over a series of lines)
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { heldCounts, collisionStep, warningText, appendMetrics, readWarnings, metricsPath, STREAK_PASSES } from '../desk/bin/pass-metrics.mjs';
 import { checkin } from '../desk/bin/digest.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -35,7 +35,7 @@ t('AC2 tickets held for memory count under memory, not collision', JSON.stringif
 t('a ticket left unspawned by full slots counts under no reason', JSON.stringify(heldCounts({ collision: 1, unspawned: 2, why: null })), '{"collision":1,"memory":0,"lock":0,"usage":0}');
 
 // The digest lists the warning a line carries, in its window, under its batch.
-const root = mkdtempSync(join(tmpdir(), 'desk-metrics-'));
+const root = scratch('desk-metrics-');
 process.env.DESK_CONFIG_ROOT = join(root, 'cfg');
 const state = join(root, 'state', 'acme__widgets');
 const queue = join(root, 'q', 'acme__widgets', 'queue.json');

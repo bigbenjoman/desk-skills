@@ -185,3 +185,14 @@ export function rebootReady(t, { bootMs, drainMins, drainRow, now = Date.now() }
 export const liveReadsUnparsed = (readRow) => (readRow.errors.length
   ? `live reads: none run this pass, since config §4 Live reads does not parse: ${readRow.errors.join(', ')} (want \`<name>: <command>\`). Run /desk-setup`
   : null);
+
+// A review try (kind rereview) reviews its PR's head and changes no file.
+export const reviewOnlyTry = (t) => Boolean(t?.fix && !t.fix.finished && t.fix.kind === 'rereview');
+// A cloud ticket runs in the cloud only until its PR is read (advanceCloud records result.pr and
+// cloud.pr_at): the session is then over, and its branch is on origin with no session pushing to it.
+// Any work after that, a fix try of any kind or a rework, is a local worker's on that branch at
+// origin's tip (setup-worktree.sh with DESK_BRANCH_FROM_ORIGIN), which pushes there; nothing reads it
+// for a cloud session again. cloud.pr_at outlives the local spawn, which clears result; a new cloud
+// start resets it.
+export const cloudPrHere = (t) => t?.location === 'cloud' && (t.result?.pr != null || t.cloud?.pr_at != null);
+export const runsInCloud = (t) => t?.location === 'cloud' && !cloudPrHere(t);

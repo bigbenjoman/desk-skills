@@ -32,7 +32,7 @@
 // check a worker can fix it is named in the brief as not theirs. Out of draft, where the pass builds a
 // §4 Check builds check (ctx.build), it goes the draft's way instead (buildStep): built once nothing a
 // worker fixes is red or no try is left, synced by a fix worker when its build failed behind the base.
-import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, PENDING_LIMIT_MS } from './gate.mjs';
+import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, externalPassed, PENDING_LIMIT_MS } from './gate.mjs';
 import { baseSplit, runnerOrResource } from './failure-class.mjs';
 import { stepFits } from './workflow-yaml.mjs';
 import { askCategoryIn } from './decisions.mjs';
@@ -290,7 +290,7 @@ export function fixCall(t, s, ctx) {
   const dirty = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
   const tree = dirty ? null : treeHeld(t, s);
   const conflict = dirty || !!tree;
-  let fix, split, base, now, built = null;
+  let fix, split, base, now, built = null, waiting = false;
   if (conflict) {
     const at = ctx.baseAt?.() ?? null;
     now = at ? { head: s.head, ...at } : undefined;
@@ -306,9 +306,15 @@ export function fixCall(t, s, ctx) {
     built = buildRead(rest, ctx, gate);
     // With checks still running, only the build of a PR red on nothing else goes ahead: it needs
     // none of them, and buildCall holds its re-run while a check in its own run is still running.
+    // With no try left at this head, a red check a worker would fix is the person's now: the driver's
+    // reruns still run, and a green head still merges, but the pass says so rather than wait in silence.
+    // Only that stuck answer skips the wait (`waiting`); the extra try, or a hold, still waits for it.
+    const noTryLeft = spent(done, fixedAt(done, s.head));
     if (gate.pending.length) {
       const only = built && rest.every((f) => built.names.includes(f.name));
-      return only && (built.call.call === 'build' || built.call.call === 'rebuilt') ? built.call : null;
+      if (only && (built.call.call === 'build' || built.call.call === 'rebuilt')) return built.call;
+      if (!noTryLeft) return null;
+      waiting = true;
     }
     split = splitFailing(built ? rest.filter((f) => !built.names.includes(f.name)) : rest, ctx);
     const { mine, notMine } = split;
@@ -323,9 +329,19 @@ export function fixCall(t, s, ctx) {
         : null;
     }
     if (ctx.waived?.(mine.map((f) => f.name))) return null;
-    if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) return null;
+    // A check red on many ready PRs at once (ctx.outage, outageChecks) reads as its platform failing,
+    // not this PR's code: held with no fix try, whose worker could not fix it. Only where every red
+    // check is one, so a check a person clears, a state check or a check build keeps its own route. It
+    // comes before the rerun gate: the driver reruns no such check, so that gate would wait in silence.
+    if (ctx.outage && !notMine.length && !state.length && !built && mine.every((f) => ctx.outage.has(f.name))) {
+      return { call: 'held', label: 'OUTAGE', why: outageWhy(mine.map((f) => f.name), ctx.outage, s.pr) };
+    }
+    if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) {
+      if (!noTryLeft) return null;
+      waiting = true;
+    }
     base = againstBase(t, s.head, mine, notMine, ctx);
-    if (base?.held) return base.held;
+    if (base?.held) return waiting ? null : base.held;
     fix = checksFix(base?.mine ?? mine, notMine, ctx.repo, base);
     if (base) split = { mine: base.mine, notMine: base.notMine, record: base.record };
   }
@@ -333,9 +349,31 @@ export function fixCall(t, s, ctx) {
   // A try beside a check the pass builds tells its worker to leave that check red. With no try left the
   // head is final, so its build runs beside the stuck answer (besideStuck).
   const withBuilds = (c) => (built && c.call === 'requeue' ? { ...c, fix: { ...c.fix, builds: built.names } } : besideStuck(c, built));
-  if (spent(done, fixedAt(done, s.head))) return withBuilds(spentOnRed(done, { pr: s.pr, head: s.head }, split.mine, split.notMine, ctx, s.checks, base));
+  if (spent(done, fixedAt(done, s.head))) {
+    const c = spentOnRed(done, { pr: s.pr, head: s.head }, split.mine, split.notMine, ctx, s.checks, base);
+    return waiting && c.call !== 'stuck' ? null : withBuilds(c);
+  }
   return withBuilds(withRecord(nextTry(done, s.pr, s.head, fix), split.record));
 }
+// A required check red on OUTAGE_PRS or more ready PRs at once, and reported by a platform rather than a
+// GitHub Actions run of the repo's own (no runId: a deploy or preview service's status), is taken for that
+// platform failing (down, its queue timing out), not for each PR's code: Map name -> the PRs it is red on.
+// A workflow's job red on many PRs is left alone: their code, or the base (againstBase), may be its cause.
+// undrafted: [{ s: { pr, checks } }], lists: { required, advisory }.
+export const OUTAGE_PRS = 3;
+export function outageChecks(undrafted, lists) {
+  const on = new Map();
+  for (const { s } of undrafted ?? []) {
+    const gate = evaluateGate(s?.checks ?? [], { required: lists?.required ?? [], advisory: lists?.advisory ?? [] });
+    for (const name of new Set(gate.failing.filter((f) => f.runId == null).map((f) => f.name))) on.set(name, [...(on.get(name) ?? []), s.pr]);
+  }
+  return new Map([...on].filter(([, prs]) => prs.length >= OUTAGE_PRS));
+}
+const outageWhy = (names, outage, pr) => {
+  const others = [...new Set(names.flatMap((x) => outage.get(x)))].filter((n) => n !== pr).sort((a, b) => a - b);
+  const one = names.length === 1;
+  return `${names.map((x) => `"${x}"`).join(', ')} ${one ? 'is' : 'are'} red on ${others.length + 1} ready PRs at once (this one and #${others.join(', #')}), which reads as ${one ? 'its' : 'their'} platform failing, not this PR's code, so no fix try is spent on ${one ? 'it' : 'them'}. Nothing desk reruns turns ${one ? 'it' : 'them'} green: once the platform is back, redeploy there or push to the PR, and it goes on as before once ${one ? 'it passes' : 'they pass'} or fewer PRs are red on ${one ? 'it' : 'them'}`;
+};
 // A requeue that read the base carries the base red record to keep, null once none is held.
 const withRecord = (c, record) => (record === undefined ? c : { ...c, base_red: record });
 
@@ -545,10 +583,40 @@ export function reviewFix(t, review, opts = {}) {
   const findings = [...listed, ...inline.map(({ sev, text }) => ({ sev, text }))];
   const gaps = codeGaps ? allGaps.filter((g) => !personsCall(g)) : [];
   if (counts ? !findings.length : !gaps.length && !taken.length) return null;
+  // Before survivors: a gap repeating an earlier one's words at new sites reads to survivors as the same gap.
+  const wide = !findings.length && !taken.length ? widening(done, gaps, opts) : null;
+  if (wide) return { call: 'stuck', why: `${PERSON_GAPS}${[scopeQuestion(wide, typeof opts.title === 'function' ? opts.title() : opts.title), ...personGaps].join('; ')}` };
   const survived = survivors(done, findings, [...gaps, ...taken.map((x) => x.gap)]);
   if (survived.length) return { call: 'stuck', why: `${after} — ${SURVIVED}${[...survived, ...personGaps].join('; ')}` };
   const verdict = Object.entries(review.verdict).map(([k, x]) => `${k}=${x}`).join(' ');
   return { call: 'requeue', fix: { try: made + 1, of: made + room, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}), ...(taken.length ? { taken } : {}), ...(personGaps.length ? { person_gaps: personGaps } : {}) } };
+}
+
+// The criterion a gap names (`AC<n>`), or null, and every file:line it names.
+const gapAc = (g) => /\bAC\s?(\d+)\b/i.exec(plain(g))?.[1] ?? null;
+const sitesIn = (text) => [...String(text).matchAll(new RegExp(AT.source, 'g'))].map((m) => m[0].replace(/^\((?![^)]*\))/, ''));
+// A round whose open gaps are all new sites of criteria an earlier try's gaps already named (each gap
+// naming its criterion and file:line sites, none of them an earlier gap's), on a change that already
+// touches files triage did not list: a broad criterion ("every X") that each round widens, so another
+// try only finds the next sites. -> { acs, outside } or null. opts.outside() gives the PR's files
+// outside triage's scope as scope-report.mjs outOfScope reads it (null when either cannot be read).
+function widening(done, gaps, opts) {
+  if (!gaps.length || typeof opts.outside !== 'function') return null;
+  const earlier = (done ?? []).filter(isReviewTry).flatMap((x) => x.gaps ?? []);
+  const worked = new Set(earlier.map(gapAc).filter(Boolean));
+  const seen = new Set(earlier.flatMap(sitesIn));
+  const fresh = (g) => { const at = sitesIn(g); return at.length > 0 && at.every((x) => !seen.has(x)); };
+  if (gaps.some((g) => !worked.has(gapAc(g)) || !fresh(g))) return null;
+  const acs = [...new Set(gaps.map(gapAc))];
+  const outside = opts.outside();
+  return Array.isArray(outside) && outside.length ? { acs, outside } : null;
+}
+// The one scope question a widening round puts to the person, with the recommended default.
+function scopeQuestion({ acs, outside }, title) {
+  const named = acs.map((a) => `AC${a}`).join(' and ');
+  const it = acs.length === 1 ? 'it' : 'them';
+  const files = `${outside.slice(0, 5).join(', ')}${outside.length > 5 ? `, and ${outside.length - 5} more` : ''}`;
+  return `PERSON'S CALL: ${named} read${acs.length === 1 ? 's' : ''} wider than the title${title ? ` ("${title}")` : ''}: this round's gaps are all new sites of ${it}, after an earlier try already worked ${it}, and the change touches ${outside.length} file(s) triage did not list (${files}). Fix only what the title names and file the rest as a follow-up? (recommended)`;
 }
 
 // A ready PR's review whose only open items are gaps it tags as the person's call, as the stuck call
@@ -588,6 +656,14 @@ export function instructionFix(t, { pr, head, ready, answer }) {
 }
 // A fix that carries out what the person said, rather than repairing what the pass found.
 export const personCall = (f) => f?.kind === 'gaps' || f?.kind === 'instruction';
+// A try drafted from the PR as it read then, so dropped rather than spawned once the PR moved past it or
+// it was parked before its worker started: not a person's call, a review they sent back, or a renames
+// try, each of which its worker carries out at the PR as it is now.
+export const redraftable = (f) => !personCall(f) && !f?.person && f?.kind !== 'renames';
+// The queue fields that drop try f as one no worker ran: marked no_worker, and taken out of fix_tries,
+// so it counts against none of the PR's tries.
+export const unrunFields = (t, f) => ['fix.no_worker=true',
+  `fix_tries=${JSON.stringify((t.fix_tries ?? []).filter((x) => !(x.at === f.at && x.kind === f.kind && !x.finished)))}`];
 
 // The findings a review stuck reason quotes (reviewFix's `stuck` why, `P0: <text>; P2: <text>`), as
 // { sev, text }; [] for a reason that is not a review's, or quotes none.
@@ -616,7 +692,13 @@ export function feedbackFix(t, { pr, head, decision, threads, external = null })
   const left = threads ?? [];
   const changes = decision === 'CHANGES_REQUESTED';
   if (!head || (!left.length && !changes)) return null;
-  const what = [left.length ? threadCount(left.length) : '', changes ? 'changes requested' : ''].filter(Boolean).join(', ');
+  // A review's own text (an outside reviewer's, externalTry) is no thread: it is named as that review's
+  // findings, with the file:line each names, so no one looks for a thread the PR does not have.
+  const threadsN = left.filter((x) => x.id).length;
+  const bodies = left.filter((x) => !x.id);
+  const at = [...new Set(bodies.flatMap((x) => String(x.text).match(new RegExp(AT.source, 'g')) ?? []))];
+  const body = bodies.length ? `${external?.login ? `${external.login}'s` : 'the'} review body${at.length ? ` (findings at ${at.slice(0, 3).join(', ')}${at.length > 3 ? ` and ${at.length - 3} more` : ''})` : ''}` : '';
+  const what = [threadsN ? threadCount(threadsN) : '', body, changes ? 'changes requested' : ''].filter(Boolean).join(', ');
   const done = t.fix_tries ?? [];
   // Changes requested with every thread resolved is the reviewer's to clear: no worker can.
   if (!left.length && done.some((x) => x.kind === 'feedback')) {
@@ -717,6 +799,9 @@ export function externalTry(t, s, ctx, gate = evaluateGate(s.checks ?? [], { req
 // one, and the person for a review at the head that no fix worker took. null where the head's verdict is
 // clean or nothing waits on one. ctx: { atHead, base, baseMerge }.
 export function driverReviewTry(t, s, ctx) {
+  // A §4 State check of kind external passed at the head: that reviewer's review is the head's review,
+  // and the merge driver takes it as one (merge-driver.sh), so no desk review is owed there.
+  if (externalPassed(s.checks, ctx.stateChecks)) return null;
   const at = ctx.atHead?.();
   if (!at || at.clean) return null;
   if (at.settle || at.person) return { call: 'stuck', why: at.why };
@@ -949,6 +1034,15 @@ const cap = (s) => s[0].toUpperCase() + s.slice(1);
 export function fixBrief(t, review = null) {
   const f = t.fix;
   if (!f || f.finished) return '';
+  // The ticket's own worker was interrupted mid-try, leaving these uncommitted (busyWorktree).
+  if (f.left_dirty?.length && !t.left_dirty_said) {
+    const rest = fixBrief({ ...t, left_dirty_said: true }, review);
+    return [`## Your interrupted worker's changes`, '',
+      'Your worktree holds uncommitted changes the worker before you left when it was interrupted:', '',
+      ...f.left_dirty.slice(0, 20).map((x) => `- ${x}`), ...(f.left_dirty.length > 20 ? [`- and ${f.left_dirty.length - 20} more (git status)`] : []), '',
+      'Read them first. Where they are this try\'s work, finish it, test it and commit it as part of this try. ' +
+      'Where they are not this ticket\'s work, change nothing and park naming the files: never discard or stash them.', '', rest].join('\n');
+  }
   if (f.kind === 'renames') {
     return [`## Migration rename try: PR #${f.pr}`, '',
       `Your PR #${f.pr} is ${f.draft ? 'a draft' : 'open and out of draft'} on this branch${f.head ? ` (head ${String(f.head).slice(0, 12)})` : ''}, and ${f.base} has renamed migrations your own files still name by the old filename, so their tests fail with ENOENT once ${f.base} is merged in:`, '',
@@ -968,7 +1062,12 @@ export function fixBrief(t, review = null) {
   if (f.kind === 'gaps') {
     return [`## Your call on PR #${f.pr}'s review gaps`, '',
       `Your PR #${f.pr} is ${f.ready ? 'open and out of draft' : 'a draft'} on this branch, and the ${reviewName(review)} posted on its head${f.head ? ` ${String(f.head).slice(0, 12)}` : ''} left requirement gaps. The person has ruled on them (also posted on the PR):`, '',
-      ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that call on each gap, and nothing else.', ''].join('\n');
+      ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that call on each gap, and nothing else.', '',
+      // A gap accepted changes no code, so only a verdict that records it settles it: without one the
+      // verdict at the head still counts it open, and the PR goes back to the person.
+      ...(ownReview(review)
+        ? [`A gap the person accepted is settled by the review's verdict, not by code: ${reviewStep(review, 'the head')}, so its verdict records the accepted gap, even when nothing else changes.`, '']
+        : acceptedReverdict(f, t.key))].join('\n');
   }
   if (f.kind === 'instruction') {
     return [`## The person's instruction on PR #${f.pr}`, '',
@@ -1016,7 +1115,8 @@ export function fixBrief(t, review = null) {
       'Do not run the check build yourself: once you push, the pass runs it at your new head and re-runs the check.');
   } else if (f.kind === 'feedback') {
     lines.push(f.external
-      ? `Your PR #${f.pr} is open and out of draft on this branch, and its "${f.external.check}" check, which reads ${f.external.login}'s review, is red: ${f.external.login} reviewed its head ${String(f.head).slice(0, 12)}${f.decision === 'CHANGES_REQUESTED' ? ' and requested changes' : ''}. Post no desk review on this PR: ${f.external.login}'s next review of the head you push is what the check reads.`
+      ? `Your PR #${f.pr} is open and out of draft on this branch, and its "${f.external.check}" check, which reads ${f.external.login}'s review, is red: ${f.external.login} reviewed its head ${String(f.head).slice(0, 12)}${f.decision === 'CHANGES_REQUESTED' ? ' and requested changes' : ''}. Post no desk review on this PR: ${f.external.login}'s next review of the head you push is what the check reads. ` +
+        `That check stays red while that review still lists a finding it blocks on, so carrying a finding, or leaving one for later, does not clear it: fix each finding quoted below, whatever its severity, or park (AUTOPILOT_PARK) naming the one you cannot fix and why. Ending with nothing pushed leaves the check red and spends this try.`
       : `Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not merge it while its review feedback is open (§3 merge-feedback-first)${f.decision === 'CHANGES_REQUESTED' ? ': a reviewer has requested changes' : ''}.`);
     if (f.threads?.length) {
       lines.push('Its unresolved review threads:', '');
@@ -1083,6 +1183,23 @@ export function fixBrief(t, review = null) {
   lines.push('', f.extra ? `This is the one extra try after the ${f.of} fix tries. A PR still ${left} after it goes to the person, with these lines quoted.`
     : `This is try ${f.try} of ${f.of}. A PR still ${left} after try ${f.of} goes to the person.`, '');
   return lines.join('\n');
+}
+
+// A gaps call that accepts a gap and changes no code leaves the head the review read, so the one review
+// posted there is that round's verdict again with the gap moved to `accepted` (desk-review
+// phase-7-post.md, *one exception*). It is read from the round's own results file, which the pass keeps
+// under <state>/reviews/<KEY>/ once the reviewing worker exits (harvest.mjs keepReviewResults); with
+// none for the head, the worker parks rather than re-count. A call that changes code is a new round.
+function acceptedReverdict(f, key) {
+  const head = f.head ? ` ${String(f.head).slice(0, 12)}` : '';
+  return ['### A gap the call accepts, with no code change', '',
+    `Push nothing for it: post that round's verdict again at the same head${head}, with each accepted gap moved from \`gaps\` into \`accepted\` (desk-review's references/phase-7-post.md, "The one exception", and phase-5-requirements.md, "A gap the person accepted"). ` +
+      `Read the round's results file, the \`desk-review-results-<run>.json\` whose \`sha\` is that head: at your worktree root, or kept under \`$DESK_STATE/reviews/${key ?? '<TICKET>'}/\` (desk-env paths prints DESK_STATE). ` +
+      "A file of the same name in both places is one round. The round is the one whose verdict.mjs output is the newest verdict marker posted at the head, even where only one file has that `sha`: where none is, treat it as missing (below), and where more than one is, park naming them. " +
+      "Copy it to your worktree root as `desk-review-results-<run>-accepted.json` (`<run>` its own), never over the original, and in the copy, for each gap the call accepts, and only those, lower its `gaps` count by one and add an `accepted` entry (`gap`, `by`, `at`, `url`): who accepted it, the date and the link to the person's comment on the PR. Keep its `round` and `since`, run desk-review's verdict.mjs on it, and post that verdict at the same head with its `--accepted` section, as desk-review Phase 7 posts a review. " +
+      "The head then carries two verdict markers, the newer one yours: confirm it landed by Phase 7's count before and after, one higher, not by finding exactly one marker.", '',
+    "With no results file for that head, post nothing: park (AUTOPILOT_PARK) naming the file you looked for and both places you looked. Never count a verdict by hand, nor post one built from another round's results.", '',
+    'Where the call changes code, push it and review the new head as a new round, as any fix does.', ''];
 }
 
 // A review try's narrowing (reviewTry `targeted`): the files the base moved and the PR's code that uses
@@ -1158,7 +1275,10 @@ function fixTaskText(t, review = null) {
         : 'read each failing run (gh run view <run id> --log-failed) and fix the cause, never the check';
   // A review fix is reviewed again on its new head, so the pass reads a verdict there before it undrafts.
   // A worker that pushed nothing left the head the last review read, so another review there changes nothing.
-  const after = reviewed ? `${afterReview}. If you pushed nothing, post no review: the head is unchanged, so a review of it would only repeat the last one` : '';
+  // The one exception is a gaps call that accepts a gap: its accepted re-verdict at the unchanged head,
+  // which only desk-review's verdict defines.
+  const after = reviewed ? `${afterReview}. If you pushed nothing, post no review: the head is unchanged, so a review of it would only repeat the last one` +
+    (gaps && !ownReview(review) ? `. The one exception is a gap the call accepts: post that round's accepted re-verdict at the unchanged head, or park when its results file is missing, as the "A gap the call accepts" section of your briefing says` : '') : '';
   // A conflict try's DONE line is the reason a PR stuck after its last try gives (stillInConflict).
   const said = f.kind === 'conflict' && f.check ? ' said=<one line: what you renumbered, or what still fails the check and why>'
     : f.kind === 'conflict' ? ' said=<one line: what you resolved, or what is still in conflict and why>'

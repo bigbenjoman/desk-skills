@@ -23,6 +23,8 @@
 #   §4 Database URL variable   every variable repointed at that database, or blanked when there is none
 #   §4 Database migrate        run against the per-ticket database only
 #
+# DESK_BRANCH_FROM_ORIGIN=1: a branch only origin has is checked out from origin/<branch> rather than cut
+# from the base (a review try on a cloud worker's branch).
 # DESK_GIT_FETCH_TIMEOUT_S (seconds, default 120) limits the fetch from origin, so a hung remote fails setup.
 # DESK_PSQL_TIMEOUT (seconds, default 30) limits each psql call, so a wedged container fails setup.
 # DESK_PSQL_RETRY_S (seconds, default 120) is how long the first psql call is retried, with backoff,
@@ -341,7 +343,11 @@ exclude_from_git() { # exclude_from_git <pattern>: out of `git status` without t
   local excl
   excl="$(git -C "$WT" rev-parse --git-path info/exclude)"
   case "$excl" in /*) ;; *) excl="$WT/$excl" ;; esac
-  mkdir -p "$(dirname "$excl")"; grep -qxF "$1" "$excl" 2>/dev/null || echo "$1" >> "$excl"
+  mkdir -p "$(dirname "$excl")"
+  grep -qxF "$1" "$excl" 2>/dev/null && return 0
+  # A file whose last line has no newline would join the pattern onto that line's rule.
+  if [ -s "$excl" ] && [ -n "$(tail -c 1 "$excl")" ]; then echo >> "$excl"; fi
+  echo "$1" >> "$excl"
 }
 mask_urls() { sed -E 's#(://[^:@/[:space:]]*):[^@/[:space:]]*@#\1:***@#g'; }
 migrate_db() { # a failure is kept, printed and reported on the machine-read lines, and setup carries on
@@ -385,6 +391,10 @@ cleanup() {
 trap cleanup EXIT
 
 finish() {
+  # A desk-review round's results file stays at the worktree root for the pass to keep (harvest.mjs
+  # keepReviewResults), so it must not dirty the tree a worker proves clean before it pushes.
+  # Not worth failing setup over: a worker would then git clean it, as before.
+  exclude_from_git '/desk-review-results-*.json' || say "WARNING: could not add desk-review results files to the git exclude"
   rm -f "$MARKER"
   say "done"
   say "worktree=$WT"
@@ -438,12 +448,27 @@ $stashed"
   say "branch $BRANCH was checked out in $holder, clean and level with origin — detached that worktree at ${head:0:12} to free the branch"
 }
 
+# A branch another session owns (DESK_BRANCH_FROM_ORIGIN) is brought to origin's tip in a worktree
+# that already has it, as a reader wants the head the PR is at. Fast-forward only: work there that
+# origin does not have fails setup, naming the branch, rather than be moved or lost.
+to_origin_tip(){ # to_origin_tip <worktree>
+  [ -n "${DESK_BRANCH_FROM_ORIGIN:-}" ] || return 0
+  local rc=0
+  desk_timeout "$FETCH_LIMIT" git -C "$MAIN" fetch origin --quiet || rc=$?
+  [ "$rc" -eq 0 ] || fail "git fetch origin failed ($rc), so $BRANCH could not be brought to origin's tip"
+  git -C "$MAIN" show-ref --verify --quiet "refs/remotes/origin/$BRANCH" || return 0
+  git -C "$1" merge --ff-only --quiet "origin/$BRANCH" 2>/dev/null \
+    || fail "$BRANCH in $1 cannot fast-forward to origin/$BRANCH (it has commits origin does not) — refusing to hand out a copy behind the PR"
+  say "brought $BRANCH to origin's tip $(git -C "$1" rev-parse --short=12 HEAD)"
+}
+
 mkdir -p "$DESK_WORKTREES_DIR"
 
 if [ -d "$WT" ] && [ ! -f "$MARKER" ]; then
   say "worktree already exists at $WT — leaving its code alone"
   have_branch="$(git -C "$WT" branch --show-current 2>/dev/null || true)"
   [ "$have_branch" = "$BRANCH" ] || fail "$WT is on branch '${have_branch:-?}', not $BRANCH — refusing to hand it out for this ticket"
+  to_origin_tip "$WT"
   # ...but ALWAYS re-sync the harness rules and the agent links (a worktree created before either
   # existed has none), and re-apply the database rule, so the `database=` line below is true now.
   sync_local_settings
@@ -460,6 +485,7 @@ if [ -d "$WT" ]; then
   say "found $MARKER — a previous setup did not finish; completing it"
   grep -q '^created_branch=1' "$MARKER" 2>/dev/null && CREATED_BRANCH=1
   CREATED_WT=1
+  [ "$(git -C "$WT" branch --show-current 2>/dev/null)" = "$BRANCH" ] && to_origin_tip "$WT"
 elif [ -n "$FROZEN" ]; then
   say "fetching $FROZEN from $MAIN, and only the history it reaches"
   CREATED_WT=1
@@ -478,6 +504,13 @@ else
     say "branch $BRANCH already exists — checking it out into the worktree"
     free_branch
     git -C "$MAIN" worktree add "$WT" "$BRANCH" --quiet
+    to_origin_tip "$WT"
+  elif [ -n "${DESK_BRANCH_FROM_ORIGIN:-}" ] && git -C "$MAIN" show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+    # A branch another session owns (a cloud worker's), checked out as origin has it for a worker that
+    # only reads it (a review try): never cut afresh from the base.
+    say "branch $BRANCH is on origin only — checking it out from origin/$BRANCH"
+    git -C "$MAIN" worktree add -b "$BRANCH" "$WT" "origin/$BRANCH" --quiet
+    CREATED_BRANCH=1
   else
     say "creating $BRANCH off $BASE"
     git -C "$MAIN" worktree add -b "$BRANCH" "$WT" "$BASE" --quiet

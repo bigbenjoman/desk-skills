@@ -50,7 +50,9 @@
 //                                             desk-env.sh's desk_load_config
 //   node desk-env.mjs ids                     print every id, the row it maps to, and its value
 //   node desk-env.mjs paths [--machine]       print KEY=value lines for the shell (--machine: only the ones
-//                                             no repo is needed for, DESK_SKILLS_DIR among them)
+//                                             no repo is needed for, DESK_SKILLS_DIR among them). Outside
+//                                             a configured repo: the machine ones, `# KEY unset` for the
+//                                             rest, and exit 4
 //   node desk-env.mjs take-batch [args...]    print, for desk_take_batch to eval, `export DESK_BATCH=` when
 //                                             the args named one, then DESK_ARGS=( the args without it )
 //   node desk-env.mjs identity                print GITHUB_HANDLE= and JIRA_NAME= (fails if unset)
@@ -69,8 +71,8 @@
 //   node desk-env.mjs mem watch [--interval s] [--window s]   runs until killed; prints SUSTAINED-HIGH
 //                                             when avail stays under the band for the window (default 300s)
 //                                             with nothing heavy running, and HEAVY-UNKNOWN while ps cannot be read
-//                                             (harmStep) SWAP-GROWING, OOM-KILL and TMPFS-HIGH on the
-//                                             harm signals, and OOM-UNKNOWN once when dmesg cannot be read
+//                                             (harmStep) SWAP-GROWING, OOM-KILL, TMPFS-HIGH and TMPFS-INODES on
+//                                             the harm signals, and OOM-UNKNOWN once when dmesg cannot be read
 //   node desk-env.mjs uuid
 //   node desk-env.mjs port-in-use <port>      exit 0 if something is listening
 //   node desk-env.mjs ports [--cap <n>]       every repo config's dev port and worker block (REPO), each
@@ -80,7 +82,8 @@
 //                                             the warning on stderr) when it is dontAsk
 //   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), `ask` rows
 //                                             an unattended batch parks on (STALLS), §4 command items no worker
-//                                             may run (UNLISTED), an app directory other command rows
+//                                             may run or, with worker-local-services yes, a Local services
+//                                             item with no service name (UNLISTED), an app directory other command rows
 //                                             name with no Dev server item (NODEV), a §4 Pre-merge steps item
 //                                             keyed to a job of several steps (JOBKEY), a dontAsk settings file (DONTASK);
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
@@ -128,6 +131,10 @@
 //                                             remove one login from the rules, leaving its folder and sign-in;
 //                                             a folder under the logins folder is not found again; refused
 //                                             while a repo's Subscription row runs on it
+//   node desk-env.mjs preview-slot [--wait <s>] <label>
+//                                             take the preview-build slot for §4 Vercel's team before a push
+//                                             that starts a preview build, waiting up to <s> (default 600)
+//                                             for the one in flight; nothing to take with no team (exit 0)
 //   node desk-env.mjs subscription [--json]   print the Claude subscription this repo's work runs on as
 //                                             SUBSCRIPTION=, LOGIN=, FOLDER=, CONFIG_DIR= and SOURCE=:
 //                                             DESK_SUBSCRIPTION, then config §3b Subscription (`row`), then
@@ -149,6 +156,7 @@ import net from 'node:net';
 import * as M from './machine.mjs';
 import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
+import { PERMISSION_KEYS, CONFIG_ROWS, norm } from './config-schema.mjs';
 
 export const HOME = process.env.HOME || homedir();
 export const expandHome = (p) => (typeof p === 'string' ? p.replace(/^~(?=\/|$)/, HOME) : p);
@@ -247,219 +255,14 @@ const configPathHint = () =>
   configPathOrNull() ?? '(no repo: run inside the repo, or set DESK_REPO_DIR or DESK_CONFIG)';
 
 // ---- the one map from what a script means to where the config says it ------------------------
-// Scripts never name a config row directly. They name a logical id below, and this is the only
-// place that knows which row that is, so a row renamed by /desk-setup is a one-line edit here.
+// Scripts never name a config row directly. They name a logical id, and the schema
+// (config-schema.mjs) is the only place that knows which row that is, so a row renamed by
+// /desk-setup is a one-line edit there. PERMISSION_KEYS and CONFIG_ROWS are derived from it.
 //
 // §3 rows are matched by their stable Key column. §1, §2 and §3b have no key column, so their rows
 // are matched by display name. Either way the match is EXACT (case, backticks and spacing aside):
 // a near-miss must read as unset, never borrow a neighbouring row's value.
-export const PERMISSION_KEYS = Object.freeze({
-  'read-own-work': 'read-own-work',
-  'read-local-git': 'read-local-git',
-  'read-others': 'read-others',
-  'read-slack-public': 'read-slack-public',
-  'read-figma': 'read-figma',
-  'read-vercel': 'read-vercel',
-  'read-confluence': 'read-confluence',
-  'read-transcripts': 'read-transcripts',
-  'read-calendar': 'read-calendar',
-  'read-slack-own': 'read-slack-own',
-  'jira-assign-self': 'jira-assign-self',
-  'jira-comment': 'jira-comment',
-  'jira-create': 'jira-create',
-  'jira-edit': 'jira-edit',
-  'jira-transition': 'jira-transition',
-  'jira-close-own-merged': 'jira-close-own-merged',
-  'jira-close': 'jira-close',
-  'jira-route': 'jira-route',
-  'jira-others': 'jira-others',
-  'git-commit': 'git-commit',
-  'git-push': 'git-push',
-  'git-force-with-lease': 'git-force-with-lease',
-  'pr-open': 'pr-open',
-  'pr-edit': 'pr-edit',
-  'pr-images': 'pr-images',
-  'pr-self-review-comment': 'pr-self-review-comment',
-  'pr-review-others': 'pr-review-others',
-  'pr-reply': 'pr-reply',
-  'pr-request-review': 'pr-request-review',
-  'pr-ready': 'pr-ready',
-  'pr-auto-merge': 'pr-auto-merge',
-  'pr-merge-green': 'pr-merge-green',
-  'merge-feedback-first': 'merge-feedback-first',
-  'pr-update-branch': 'pr-update-branch',
-  'pr-conflict-unreviewed': 'pr-conflict-unreviewed',
-  'pr-conflict-reviewed': 'pr-conflict-reviewed',
-  'ci-rerun': 'ci-rerun',
-  'codex-review': 'codex-review',
-  'ci-protection': 'ci-protection',
-  'gh-close-linked-issue': 'gh-close-linked-issue',
-  'gh-issue-create': 'gh-issue-create',
-  'gh-issue-comment': 'gh-issue-comment',
-  'autopilot-workers': 'autopilot-workers',
-  'autopilot-worker-mode': 'autopilot-worker-mode',
-  'autopilot-merge': 'autopilot-merge',
-  'merge-hold-routine': 'merge-hold-routine',
-  'batch-base-push': 'batch-base-push',
-  'autopilot-judgement': 'autopilot-judgement',
-  'autopilot-reclaim': 'autopilot-reclaim',
-  'machine-reboot': 'machine-reboot',
-  'worker-dependency-install': 'worker-dependency-install',
-  'worker-screenshots': 'worker-screenshots',
-  'worker-local-services': 'worker-local-services',
-  'worker-web-read': 'worker-web-read',
-  'worker-workflow-dispatch': 'worker-workflow-dispatch',
-  'db-per-ticket': 'db-per-ticket',
-  'db-clone-staging': 'db-clone-staging',
-  'staging-write': 'staging-write',
-  'local-reindex': 'local-reindex',
-  'tests-shared-db': 'tests-shared-db',
-  'worktree-remove': 'worktree-remove',
-  'branch-delete': 'branch-delete',
-  'server-stop': 'server-stop',
-  'skills-edit': 'skills-edit',
-  'vercel-env': 'vercel-env',
-  'slack-draft': 'slack-draft',
-  'slack-send': 'slack-send',
-  'merge-bypass': 'merge-bypass',
-  'others-prs': 'others-prs',
-  'product-calls': 'product-calls',
-  'legal-content': 'legal-content',
-});
-
-export const CONFIG_ROWS = Object.freeze({
-  'gh-repo': { section: '0', row: 'GitHub repo' },
-  'default-branch': { section: '0', row: 'Default branch' },
-  'repo-description': { section: '0', row: 'One-line description' },
-  'github-handle': { section: '1', row: 'GitHub handle' },
-  'jira-email': { section: '1', row: 'Jira email' },
-  'jira-display-name': { section: '1', row: 'Jira display name' },
-  'jira-account-id': { section: '1', row: 'Jira account id' },
-  'git-author': { section: '1', row: 'Git author name / email' },
-  name: { section: '1', row: 'Name' },
-  'repo-root': { section: '2', row: 'Primary repo root' },
-  'worktrees-dir': { section: '2', row: 'Worktrees directory' },
-  'handoff-dir': { section: '2', row: 'Handoff directory' },
-  'backups-dir': { section: '2', row: 'Backups directory' },
-  'design-dir': { section: '2', row: 'Design canvases directory' },
-  wsl: { section: '2', row: 'Running on WSL?' },
-  'browser-profile': { section: '2', row: 'Signed-in browser profile' },
-  'handoff-pct': { section: '2', row: 'Handoff at context %' },
-  'handoff-pct-1m': { section: '2', row: 'Handoff at context % on a 1M window' },
-  tracker: { section: '4', row: 'Tracker' },
-  'jira-site': { section: '4', row: 'Jira site' },
-  'jira-project': { section: '4', row: 'Jira project' },
-  'ticket-pattern': { section: '4', row: 'Ticket key pattern' },
-  'in-progress-state': { section: '4', row: 'In-progress state' },
-  'review-state': { section: '4', row: 'Review state' },
-  'done-state': { section: '4', row: 'Done state' },
-  'jira-priority': { section: '4', row: 'Priority' },
-  'jira-other-fields': { section: '4', row: 'Other fields' },
-  'jira-required-fields': { section: '4', row: 'Required fields' },
-  'jira-size-field': { section: '4', row: 'Size field' },
-  'jira-priority-user-only': { section: '4', row: 'Priorities only you set' },
-  'jira-cloudid': { section: '4', row: 'Jira cloudId' },
-  labels: { section: '4', row: 'Labels' },
-  'person-step-labels': { section: '4', row: 'Person-step labels' },
-  'person-input-labels': { section: '4', row: 'Person-input labels' },
-  'required-checks': { section: '4', row: 'Required checks' },
-  'work-id-patterns': { section: '4', row: 'Other work id patterns' },
-  'merge-holds': { section: '4', row: 'Merge holds' },
-  'incidental-paths': { section: '4', row: 'Incidental paths' },
-  'append-only-paths': { section: '4', row: 'Append-only paths' },
-  'merge-method': { section: '4', row: 'Merge method' },
-  'local-review': { section: '4', row: 'Local review command' },
-  'clean-verdict': { section: '4', row: 'Clean review verdict' },
-  'review-account': { section: '4', row: 'Review account' },
-  'gate-reviewers': { section: '4', row: 'Gate reviewers' },
-  'review-bar': { section: '4', row: 'Review bar' },
-  'review-experts': { section: '4', row: 'Review domain experts' },
-  'agents-sync': { section: '4', row: 'Project subagents sync' },
-  'package-manager': { section: '4', row: 'Package manager' },
-  'command-prefix': { section: '4', row: 'Command prefix' },
-  'install-cmd': { section: '4', row: 'Install' },
-  'dev-cmd': { section: '4', row: 'Dev server' },
-  'typecheck-cmd': { section: '4', row: 'Typecheck' },
-  'lint-cmd': { section: '4', row: 'Lint' },
-  'baseline-checks': { section: '4', row: 'Baseline checks' },
-  'test-cmd': { section: '4', row: 'Unit tests' },
-  'related-test-cmd': { section: '4', row: 'Related tests' },
-  'suite-weight': { section: '4', row: 'Suite weight' },
-  'e2e-cmd': { section: '4', row: 'E2E tests' },
-  'storybook-cmd': { section: '4', row: 'Storybook' },
-  'build-cmd': { section: '4', row: 'Build' },
-  'codegen-cmd': { section: '4', row: 'Codegen' },
-  'integration-cmd': { section: '4', row: 'Integration tests' },
-  'acceptance-specs': { section: '4', row: 'Acceptance specs' },
-  'pre-push-checks': { section: '4', row: 'Pre-push checks' },
-  'merged-tree-check-cmd': { section: '4', row: 'Merged-tree check' },
-  'pr-description-checks': { section: '4', row: 'PR-description checks' },
-  'seed-cmd': { section: '4', row: 'Seed' },
-  'db-url-var': { section: '4', row: 'Database URL variable' },
-  'db-migrate-cmd': { section: '4', row: 'Database migrate' },
-  'branch-protection': { section: '4', row: 'Branch protection' },
-  'advisory-checks': { section: '4', row: 'Advisory checks' },
-  'flaky-checks': { section: '4', row: 'Known flaky checks' },
-  'state-checks': { section: '4', row: 'State checks' },
-  'operator-checks': { section: '4', row: "Checks workers can't fix" },
-  'check-builds': { section: '4', row: 'Check builds' },
-  'live-reads': { section: '4', row: 'Live reads' },
-  'pre-merge-steps': { section: '4', row: 'Pre-merge steps' },
-  'evidence-workflow': { section: '4', row: 'Evidence workflow' },
-  'worker-workflows': { section: '4', row: 'Worker workflows' },
-  'worker-read-repos': { section: '4', row: 'Worker read-only repos' },
-  'worker-measure-cmds': { section: '4', row: 'Worker measuring commands' },
-  'repo-merge-settings': { section: '4', row: 'Repo merge settings' },
-  vercel: { section: '4', row: 'Vercel' },
-  'staging-bypass': { section: '4', row: 'Staging bypass token location' },
-  'slack-channels': { section: '4', row: 'Slack channels' },
-  // A `###` table of the user's own rows rather than one row: every Ask, with its Detail.
-  'review-asks': { section: '4', row: 'What review here consistently asks for', table: true },
-  'code-reviewer': { section: '4', row: 'Code reviewer' },
-  'product-owner': { section: '4', row: 'Product owner' },
-  'repo-instructions': { section: '5', row: 'Repo instructions' },
-  'subagents-without-asking': { section: '3b', row: 'Subagents that may run without asking' },
-  'test-cap': { section: '3b', row: 'Test worker cap under the test lock' },
-  'spawn-gate': { section: '3b', row: 'Spawn gate (available memory)' },
-  'park-after': { section: '3b', row: 'Park an unanswered question after (minutes)' },
-  'resume-killed': { section: '3b', row: 'Resume a killed worker (times)' },
-  'disk-floor': { section: '3b', row: 'Free disk floor (GB)' },
-  'promotion-slice': { section: '3b', row: 'Promotion slice size (children)' },
-  'claim-release': { section: '3b', row: 'Release idle claims after (hours)' },
-  'usage-pacing': { section: '3b', row: 'Usage pacing headroom (points)' },
-  subscription: { section: '3b', row: 'Subscription' },
-  'checkin-times': { section: '3b', row: 'Check-in times' },
-  'intake-query': { section: '3b', row: 'Intake query' },
-  'file-budget': { section: '3b', row: 'Per-file collision budget' },
-  'triage-concurrency': { section: '3b', row: 'Triage concurrency' },
-  'maintenance-window': { section: '3b', row: 'Maintenance window' },
-  'maintenance-drain': { section: '3b', row: 'Maintenance drain limit (minutes)' },
-  'env-files': { section: '4', row: 'Env files' },
-  'local-db': { section: '4', row: 'Local database' },
-  'local-services': { section: '4', row: 'Local services' },
-  staging: { section: '4', row: 'Staging' },
-  'promotion-ref': { section: '4', row: 'Promotion ref' },
-  'checkout-destination': { section: '4', row: 'Check-out destination' },
-  'ai-attribution': { section: '5', row: 'AI attribution' },
-  'branch-names': { section: '5', row: 'Branch names' },
-  'pr-title': { section: '5', row: 'PR title' },
-  breakpoints: { section: '5', row: 'Breakpoints' },
-  themes: { section: '5', row: 'Themes' },
-  'design-system': { section: '5', row: 'Design system' },
-  'dev-port': { section: '3b', row: 'Preferred dev-server port' },
-  concurrency: { section: '3b', row: 'Autopilot worker concurrency' },
-  'memory-ceiling': { section: '3b', row: 'Memory ceiling for parallel work (GB)' },
-  'worker-budget': { section: '3b', row: 'Autopilot per-worker budget (USD)' },
-  'batch-budget': { section: '3b', row: 'Autopilot batch budget (USD)' },
-  'worker-models': { section: '3b', row: 'Worker models' },
-  'worker-location': { section: '3b', row: 'Worker location' },
-  'borrow-idle': { section: '3b', row: 'Borrow idle workers' },
-  'batches-run-by': { section: '3b', row: 'Batches run by' },
-  'status-table': { section: '3b', row: 'Orchestrator status table' },
-  levers: { section: '3b', row: 'Phase 0 levers' },
-  'worker-effort': { section: '3b', row: 'Worker effort' },
-  'codex-models': { section: '3b', row: 'Codex review' },
-});
+export { PERMISSION_KEYS, CONFIG_ROWS };
 
 export class DeskConfigError extends Error {}
 // No config file resolves (outside a repo, or setup never ran): nothing was read, so nothing may be
@@ -474,7 +277,6 @@ export class NoRepoConfigError extends DeskConfigError {}
 // the wrong one would read the suggestion as the user's answer. The row id is the "Key" column
 // where the table has one, otherwise the first column.
 let cache = null;
-const norm = (s) => s.replace(/[*`]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
 // `<section>/<heading>` of every table id, as tableLines normalises a `###` heading.
 const TABLE_IDS = new Set(Object.values(CONFIG_ROWS).filter((r) => r.table).map((r) => `${r.section}/${norm(r.row)}`));
 
@@ -507,6 +309,13 @@ function tableLines(text) {
     out.rows.push({ i, section, sub, table, header, cells, label, declared: !!label && ['key', 'field', 'role'].includes(header[0]) });
   });
   return out;
+}
+// What a config file's text declares, for the schema's coverage check: its declared rows, and the
+// `###` headings of its tables of the person's own rows (the §3c ledger has none).
+export function declaredRows(text) {
+  const { rows } = tableLines(String(text));
+  const tables = new Map(rows.filter((r) => !r.declared && r.sub).map((r) => [`${r.section}/${r.sub}`, { section: r.section, heading: r.sub }]));
+  return { rows: rows.filter((r) => r.declared).map(({ section, label }) => ({ section, label })), tables: [...tables.values()] };
 }
 const settingCol = (header) => ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? 1;
 
@@ -547,24 +356,24 @@ export function unansweredRows(path) {
 // (`` `ABC` (not `parent`) `` is one item, ABC). With no spans, the whole cell is the one item.
 export function cellItems(raw) {
   // The template's notes show list values as `` `A` `B` `` (a code span holding backticks);
-  // copied into a value, the doubled backticks are display only.
-  const cell = raw.replace(/``\s?/g, '').replace(/\s?``/g, '').trim();
-  const spans = [...stripTrailingNote(cell).matchAll(/`([^`]*)`/g)].map((m) => m[1].trim());
-  return spans.length ? spans : [cell];
+  // copied into a value, the doubled backticks are display only. The note goes before they do, since
+  // a note may hold longer runs they are part of. A cell has one trailing note, so a parenthesis before
+  // it is value text (`` `A` (CI: `B`) (note) `` is A and B): only where none trailed the cell is one
+  // looked for again after, a note inside that display form.
+  const undoubled = (s) => s.replace(/``\s?/g, '').replace(/\s?``/g, '').trim();
+  const whole = raw.trim();
+  const noted = stripTrailingNote(whole);
+  const cell = noted === whole ? stripTrailingNote(undoubled(whole)) : undoubled(noted);
+  const spans = [...cell.matchAll(/`([^`]*)`/g)].map((m) => m[1].trim());
+  return spans.length ? spans : [undoubled(raw)];
 }
 
 // The cell less a trailing `(…)` note, found by walking back from the closing paren to its match.
-// Parens inside backtick spans are value text (a regex like `(-FIX)?`), so they are skipped. A
+// Parens inside code spans are value text (a regex like `(-FIX)?`), so they are skipped. A
 // cell that is only a note, or whose last paren never opens, is returned whole.
-// A code span, read as CommonMark does: a run of backticks closes only on a run of its own length, and
-// a run with no partner is left as text. evidence.mjs reads PR bodies with it too.
-export const CODE_SPAN = /(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g;
-
 function stripTrailingNote(cell) {
   if (!cell.endsWith(')')) return cell;
-  // Which characters sit inside a code span, so a note quoting ``` or ```` stays in step.
-  const inSpan = new Array(cell.length).fill(false);
-  for (const m of cell.matchAll(CODE_SPAN)) for (let k = m.index; k < m.index + m[0].length; k++) inSpan[k] = true;
+  const inSpan = codeSpanMask(cell);
   let depth = 0;
   for (let i = cell.length - 1; i >= 0; i--) {
     if (inSpan[i]) continue;
@@ -573,6 +382,18 @@ function stripTrailingNote(cell) {
     else if (c === '(' && --depth === 0) return cell.slice(0, i).trim() ? cell.slice(0, i) : cell;
   }
   return cell;
+}
+
+// A code span as CommonMark reads one: a run of N backticks opens a span that closes at the next run of
+// exactly N on its line, so ```` ```x ```` is one span; a run never closed is text. evidence.mjs reads
+// a PR body's spans by it too.
+export const CODE_SPAN = /(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g;
+
+// Which characters sit inside a code span.
+function codeSpanMask(s) {
+  const mask = new Array(s.length).fill(false);
+  for (const m of s.matchAll(CODE_SPAN)) mask.fill(true, m.index, m.index + m[0].length);
+  return mask;
 }
 
 const unset = (v) => v == null || v === '' || /^todo\b/i.test(v);
@@ -612,6 +433,12 @@ export function machineValue(key) {
   return unset(v) ? null : v;
 }
 export const machineWhy = (key) => machineProfile()?.sizing[key]?.why || null;
+// How many runs may hold the test lock at once: DESK_TEST_LOCK_SLOTS when set, else the profile's
+// test-lock-slots; anything but a whole number from 1 is 1. with-lock.sh is this rule's shell twin.
+export function testLockSlots() {
+  const v = String(process.env.DESK_TEST_LOCK_SLOTS || machineValue('test-lock-slots') || '').trim();
+  return /^\d+$/.test(v) && Number(v) >= 1 ? Number(v) : 1;
+}
 
 // ---- cost sources --------------------------------------------------------------------------
 // One per computer, beside the machine profile: which GitHub repo, Vercel team and AWS profile bill
@@ -739,7 +566,36 @@ function writeWithBackup(path, text) {
 // Exact lookup by logical id. Unset (missing row, blank, TODO) is null. The first item only: use
 // configValues for rows that hold a list (Required checks, Env files, several commands).
 export function configValue(id) {
-  return configValueIn(parseConfig(), id);
+  const parsed = parseConfig();
+  if (id === 'suite-weight') return suiteWeightIn(parsed, configRepoRoot(parsed)).value;
+  return configValueIn(parsed, id);
+}
+
+// The main checkout a config's repo settings live in: its §2 Primary repo root, else (with `cwd`,
+// for the cwd's own repo) the cwd's checkout, else null.
+const configRepoRoot = (parsed, { cwd = true } = {}) => {
+  const row = configValueIn(parsed, 'repo-root');
+  if (row) return expandHome(row);
+  return cwd ? git(currentRepo().dir, 'rev-parse', '--show-toplevel') || null : null;
+};
+
+// §4 Suite weight describes the repo's suites, so the repo's committed settings carry it, as
+// env.DESK_SUITE_WEIGHT in <root>/.claude/settings.json. -> { value, file } or null when unset.
+export function committedSuiteWeight(root) {
+  if (!root) return null;
+  const file = join(root, '.claude', 'settings.json');
+  let v;
+  try { v = JSON.parse(readFileSync(file, 'utf8'))?.env?.DESK_SUITE_WEIGHT; }
+  catch { return null; } // missing or unreadable: no committed value
+  return typeof v === 'string' && v.trim() ? { value: v.trim().toLowerCase(), file } : null;
+}
+
+// The committed value wins over the config's row; with neither, `heavy`.
+// -> { value, committed: {value, file} | null, row: the config's value | null }
+export function suiteWeightIn(parsed, root) {
+  const committed = committedSuiteWeight(root);
+  const row = repoValueIn(parsed, 'suite-weight')?.trim().toLowerCase() ?? null;
+  return { value: committed?.value ?? row ?? 'heavy', committed, row };
 }
 
 function configValueIn(parsed, id) {
@@ -843,6 +699,28 @@ function configValuesIn(parsed, id) {
   }
   return items;
 }
+// The preview-build slot (leases.mjs preview-build, one pool per §4 Vercel team, sized by the machine's
+// preview-build-slots row, default 1): a push that starts a preview build takes it first, so builds on
+// a shared builder never run at once and kill each other. It has no owner, since the build runs on
+// Vercel after the pusher exits, and lapses after PREVIEW_TTL_S unless released. It is labelled by
+// previewLabel, and taking it again under the same label renews that unit (leases.mjs sameHolder), so
+// all of one PR's builds hold one unit. Null where §4 Vercel names no team (unset, TODO or none).
+export const PREVIEW_TTL_S = 1200;
+// How long `desk-env preview-slot` waits by default for the build in flight.
+export const PREVIEW_WAIT_S = 600;
+// A preview-build unit's label: `<owner/repo>#<PR>` once the PR exists, `<owner/repo>@<branch>` before.
+export const previewLabel = (repo, { pr = null, branch = '' } = {}) => (pr != null && pr !== '' ? `${repo}#${pr}` : `${repo}@${branch}`);
+export function previewTeam() {
+  let v;
+  try { v = configValues('vercel'); } catch { return null; }
+  const team = [].concat(v ?? [])[0];
+  return !team || isNone(v) || /^TODO\b/.test(String(team)) ? null : String(team).trim();
+}
+export function previewSlotArgs(label, wait) {
+  const team = previewTeam();
+  return team && ['acquire', 'preview-build', team, '--ttl', String(PREVIEW_TTL_S), '--wait', String(wait), '--no-owner', '--label', label];
+}
+
 export const isNone = (v) => (Array.isArray(v) ? v.length === 1 && isNone(v[0]) : /^none$/i.test(String(v ?? '').trim()));
 // §4 Command prefix, '' with the row unset or `none`.
 export function commandPrefix() {
@@ -887,6 +765,9 @@ export const LOCK_OF = { 'test-cmd': 'test', 'related-test-cmd': 'test', 'integr
 // Rows a worker runs only under their lock, never bare. A type-aware lint is as heavy as a typecheck.
 export const LOCK_ONLY = new Set(['storybook-cmd', 'lint-cmd']);
 export const lockFor = (id) => LOCK_OF[id] ?? 'nolock';
+// The linters a worker runs as a node_modules binary, only under `with-lock.sh tsc`: worker-settings.mjs
+// allows them there, and slot-lease.mjs gives each run a `lint` slot.
+export const LINT_BINS = Object.freeze(['eslint', 'biome', 'oxlint', 'stylelint']);
 
 // A command item may name the directory it runs in, relative to the repo root: `apps/api: uv run pytest`.
 // -> { dir: 'apps/api' | '.', cmd }. The directory must be a plain relative path (no spaces, no ..).
@@ -1654,9 +1535,9 @@ export function parsePs(text, columns) {
   return rows;
 }
 // Every process, read whole from one `ps`. Throws when ps cannot be read, rather than giving a
-// partial or empty list.
-export function psRows(columns) {
-  const r = spawnSync('ps', ['-ww', '-axo', columns], { encoding: 'utf8', maxBuffer: PS_MAX_BUFFER, stdio: ['ignore', 'pipe', 'pipe'] });
+// partial or empty list. `env` adds to ps's environment (e.g. TZ and LC_ALL for lstart).
+export function psRows(columns, env = {}) {
+  const r = spawnSync('ps', ['-ww', '-axo', columns], { encoding: 'utf8', maxBuffer: PS_MAX_BUFFER, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
   if (r.error || r.status !== 0) {
     const why = r.error?.code ?? r.error?.message ?? (`${r.stderr ?? ''}`.trim().split('\n').pop() || `exit ${r.status ?? r.signal}`);
     throw new Error(`ps could not be read (${why})`);
@@ -1715,11 +1596,13 @@ export function sustainedStep(state, { now, avail, heavy }, { band, windowMs }) 
 // not: swap use growing by `swapGrowGiB` or more within `windowMs`, a kernel OOM kill newer than the
 // watch's first reading (`oom` is each kill's key as oomKills reads it, its kernel timestamp or its
 // line; null when the kernel log cannot be read, undefined off Linux, where none is watched),
-// and a tmpfs /tmp holding `tmpfsGiB` or more (its contents are pushed to swap, which looks like a
-// leak). Each line is said once, and again only after the signal has cleared.
-//   sample { now, swapGiB, oom, tmpGiB }  ->  { state, lines }
-export function harmStep(state, { now, swapGiB, oom, tmpGiB }, { swapGrowGiB = 2, windowMs = 600_000, tmpfsGiB = 4 } = {}) {
-  const st = { swap: [], oomKeys: null, swapFired: false, tmpFired: false, oomUnread: false, ...state };
+// a tmpfs /tmp holding `tmpfsGiB` or more (its contents are pushed to swap, which looks like a
+// leak), and a tmpfs /tmp with `inodeShare` or more of its fixed count of inodes used (`tmpInodes`:
+// { used, total }): once every one is used, no file can be made there, and every shell on the machine,
+// Claude Code's included, stops. Each line is said once, and again only after the signal has cleared.
+//   sample { now, swapGiB, oom, tmpGiB, tmpInodes }  ->  { state, lines }
+export function harmStep(state, { now, swapGiB, oom, tmpGiB, tmpInodes }, { swapGrowGiB = 2, windowMs = 600_000, tmpfsGiB = 4, inodeShare = 0.8 } = {}) {
+  const st = { swap: [], oomKeys: null, swapFired: false, tmpFired: false, inodesFired: false, oomUnread: false, ...state };
   const lines = [];
   if (swapGiB != null) {
     const swap = [...st.swap.filter((x) => now - x.at <= windowMs), { at: now, gib: swapGiB }];
@@ -1749,6 +1632,13 @@ export function harmStep(state, { now, swapGiB, oom, tmpGiB }, { swapGrowGiB = 2
     if (tmpGiB >= tmpfsGiB && !st.tmpFired) lines.push(`TMPFS-HIGH: /tmp (tmpfs) holds ${tmpGiB.toFixed(1)}G, which memory pressure pushes to swap, not a leak: see what holds it (du -sh /tmp/*)`);
     st.tmpFired = tmpGiB >= tmpfsGiB ? true : tmpGiB < tmpfsGiB / 2 ? false : st.tmpFired;
   }
+  if (tmpInodes?.total > 0) {
+    const share = tmpInodes.used / tmpInodes.total;
+    if (share >= inodeShare && !st.inodesFired) {
+      lines.push(`TMPFS-INODES: /tmp (tmpfs) has used ${Math.round(share * 100)}% of its inodes (${tmpInodes.used.toLocaleString('en-US')} of ${tmpInodes.total.toLocaleString('en-US')}); once all are used no shell on this computer can start: see what holds them (du --inodes -s /tmp/* | sort -n | tail)`);
+    }
+    st.inodesFired = share >= inodeShare ? true : share < inodeShare * 0.75 ? false : st.inodesFired;
+  }
   return { state: st, lines };
 }
 
@@ -1762,7 +1652,7 @@ export const oomKills = (dmesg) => String(dmesg).split('\n').filter((l) => /out 
 // when it is a tmpfs. Each is null where it cannot be read; off Linux none is read (oom undefined).
 export function harmSample() {
   // Off Linux there is no swap figure, kernel log or tmpfs to read: nothing is watched, and nothing said.
-  if (platform() !== 'linux') return { swapGiB: null, oom: undefined, tmpGiB: null };
+  if (platform() !== 'linux') return { swapGiB: null, oom: undefined, tmpGiB: null, tmpInodes: null };
   const m = linuxMeminfo();
   const swapGiB = m?.SwapTotal != null && m?.SwapFree != null ? (m.SwapTotal - m.SwapFree) / GiB : null;
   let oom = null;
@@ -1770,12 +1660,16 @@ export function harmSample() {
     const out = execFileSync('dmesg', [], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, maxBuffer: 64 * 1024 * 1024 });
     oom = oomKills(out);
   } catch { /* dmesg_restrict, or no dmesg */ }
-  let tmpGiB = null;
+  let tmpGiB = null, tmpInodes = null;
   try {
     const tmpfs = readFileSync('/proc/mounts', 'utf8').split('\n').some((l) => { const f = l.split(' '); return f[1] === '/tmp' && f[2] === 'tmpfs'; });
-    if (tmpfs) { const st = statfsSync('/tmp'); tmpGiB = ((st.blocks - st.bfree) * st.bsize) / GiB; }
+    if (tmpfs) {
+      const st = statfsSync('/tmp');
+      tmpGiB = ((st.blocks - st.bfree) * st.bsize) / GiB;
+      tmpInodes = { used: st.files - st.ffree, total: st.files };
+    }
   } catch { /* not Linux */ }
-  return { swapGiB, oom, tmpGiB };
+  return { swapGiB, oom, tmpGiB, tmpInodes };
 }
 
 // ---- misc ----------------------------------------------------------------------------------
@@ -1839,7 +1733,14 @@ export const STALLING_ROWS = Object.freeze({
 // Unprotected, nothing on GitHub stops a red merge, so these stay recommended at `ask` (desk-setup §2).
 const MERGE_ROWS = new Set(['pr-merge-green', 'autopilot-merge']);
 
-// -> { missing: [{section, label}], stalls: [{key, reason}], unlisted, noDev, dontAsk: file | null }
+// The compose service a §4 Local services item starts with, ending at whitespace or a colon (`search
+// :8108`, `search: 8108`, `search`), or null. worker-settings allow-lists a worker starting it by this
+// name, and drift names an item it cannot read.
+export function localServiceName(item) {
+  return /^[a-z0-9][a-z0-9_.-]*(?=[\s:]|$)/.exec(String(item ?? '').trim())?.[0] ?? null;
+}
+
+// -> { missing: [{section, label}], stalls: [{key, reason}], unlisted, noDev, weight, dontAsk: file | null }
 export function configDrift({ config, template = templatePath(), root = null, home = HOME }) {
   if (!existsSync(template)) throw new DeskConfigError(`desk-env drift: no template at ${template}: run ./install.sh, or set DESK_CONFIG_TEMPLATE`);
   const parsed = parseConfigFile(config);
@@ -1866,7 +1767,17 @@ export function configDrift({ config, template = templatePath(), root = null, ho
       if (why) unlisted.push({ row: CONFIG_ROWS[id].row, item, why });
     }
   }
-  return { missing, stalls, unlisted, noDev: root ? devServerGaps(parsed, root) : [], dontAsk: mode === 'dontAsk' ? file : null };
+  // With §3 worker-local-services yes, a §4 Local services item a worker starts by its leading name.
+  const services = configValuesIn(parsed, 'local-services');
+  if (/^yes\b/.test(perm('worker-local-services')) && services && !isNone(services)) {
+    for (const item of services) {
+      if (!localServiceName(item)) unlisted.push({ row: CONFIG_ROWS['local-services'].row, item, why: 'does not start with a compose service name (lowercase, then `:port` or a space)' });
+    }
+  }
+  // §4 Suite weight set in both places and disagreeing: the committed value wins, so the row is stale.
+  const w = suiteWeightIn(parsed, root);
+  const weight = w.committed && w.row != null && w.row !== w.committed.value ? { row: w.row, committed: w.committed.value, file: w.committed.file } : null;
+  return { missing, stalls, unlisted, noDev: root ? devServerGaps(parsed, root) : [], weight, dontAsk: mode === 'dontAsk' ? file : null };
 }
 
 // App directories the other §4 command rows name, whose package.json has a `dev` script, that §4 Dev
@@ -1949,12 +1860,13 @@ const jobKeyedLine = (j) => {
   return `JOBKEY   §4 Pre-merge steps item "${j.name}" names a job of ${j.steps} steps, so desk guesses from its words which failed step is yours: ${fix}`;
 };
 
-export function driftLines({ missing, stalls, unlisted = [], noDev = [], jobKeyed = [], dontAsk }) {
+export function driftLines({ missing, stalls, unlisted = [], noDev = [], weight = null, jobKeyed = [], dontAsk }) {
   const lines = [
     ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
     ...stalls.map((s) => `STALLS   §3 ${s.key} is ask with autopilot-workers yes: ${s.reason}`),
     ...unlisted.map((u) => `UNLISTED §4 ${u.row} item "${u.item}" ${u.why}: every worker is refused it`),
     ...noDev.map((g) => `NODEV    §4 Dev server has no item for ${g.dir}, which §4 ${g.rows.join(', ')} name${g.rows.length > 1 ? '' : 's'} and whose package.json has a dev script: a worker on a ticket there cannot run its dev server`),
+    ...(weight ? [`WEIGHT   §4 Suite weight is ${weight.row} in the config but ${weight.committed} in the repo's committed settings (env.DESK_SUITE_WEIGHT in ${weight.file}), which win: set the row to ${weight.committed} or remove it`] : []),
     ...jobKeyed.map(jobKeyedLine),
     ...(dontAsk ? [`DONTASK  ${dontAsk}: ${DONTASK_WARNING}`] : []),
   ];
@@ -2078,7 +1990,8 @@ const PATHS = {
   DESK_PG_CONTAINER: pgContainer, DESK_DEV_PORT: devPort, DESK_WORKER_PORT_FLOOR: workerPortFloor, DESK_IS_WSL: () => (isWSL() ? 'yes' : 'no'),
 };
 const IDENTITY = { DESK_GITHUB_HANDLE: githubHandle, DESK_JIRA_NAME: jiraName };
-const MACHINE_PATHS = ['DESK_HOME', 'DESK_BIN', 'DESK_RUN_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DIR', 'DESK_IS_WSL'];
+export const MACHINE_PATHS = ['DESK_HOME', 'DESK_BIN', 'DESK_RUN_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DIR', 'DESK_IS_WSL'];
+export const PATH_VARS = Object.keys(PATHS);
 // The subcommands that write the machine profile, the cost sources or the login rules: the user's to
 // confirm, so a worker is refused them here as well as by its deny rules. The deny rules match on the
 // command's start, and `--batch <name>` may come before the subcommand, so they cannot hold alone.
@@ -2114,7 +2027,7 @@ const printRead = (cmd, id) => {
 export const DESK_ENV_COMMANDS = Object.freeze(['where', 'list', 'cmds', 'required-fields', 'get', 'review-cmd', 'verdict-logins',
   'levers', 'lines', 'batch-base', 'ticket-kind', 'branch-check', 'perm-or-unset', 'perm', 'config', 'merge-grant', 'key', 'model',
   'effort', 'budget', 'ids', 'paths', 'take-batch', 'identity', 'git-author', 'mem', 'heavy', 'test-scope', 'workspace-test',
-  'baseline', 'uuid', 'default-mode', 'unanswered', 'show', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription']);
+  'baseline', 'uuid', 'default-mode', 'unanswered', 'show', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription', 'lease', 'preview-slot']);
 const deskEnvUsage = () => `usage: desk-env.mjs ${DESK_ENV_COMMANDS.join('|')}`;
 
 const isMain = (() => {
@@ -2287,14 +2200,29 @@ if (isMain) {
         break;
       case 'ids':
         for (const [id, key] of Object.entries(PERMISSION_KEYS)) console.log(`perm ${id} -> §3 ${key} = ${permission(id)}`);
-        for (const [id, r] of Object.entries(CONFIG_ROWS)) console.log(`get  ${id} -> §${r.section} "${r.row}" = ${configValue(id)?.replaceAll('\n', ' · ') ?? '(unset)'}`);
+        for (const [id, r] of Object.entries(CONFIG_ROWS)) {
+          // A row `list` refuses is not set, whatever its first item reads as through `get`.
+          let refused = null;
+          try { configValues(id); } catch (e) { if (!(e instanceof DeskConfigError)) throw e; refused = e.message; }
+          console.log(`get  ${id} -> §${r.section} "${r.row}" = ${refused ? `(not readable: ${refused})` : configValue(id)?.replaceAll('\n', ' · ') ?? '(unset)'}`);
+        }
         break;
       case 'paths': {
         // --machine: only the entries no repo is needed for, so a caller outside a configured repo
         // can still find desk's own directories.
+        // Outside a configured repo, the bare form prints the machine paths too, and each per-repo one
+        // as an unset comment rather than a fallback guessed without a repo, then still exits 4.
         const keys = args[0] === '--machine' ? MACHINE_PATHS : Object.keys(PATHS);
-        const lines = keys.map((k) => [k, PATHS[k]()]);
-        for (const [k, v] of lines) console.log(`${k}=${shellQuote(v)}`);
+        let noRepo = null;
+        if (keys.some((k) => !MACHINE_PATHS.includes(k))) {
+          try { repoRoot(); } catch (e) { if (!(e instanceof DeskConfigError)) throw e; noRepo = e; }
+        }
+        const lines = keys.map((k) => [k, noRepo && !MACHINE_PATHS.includes(k) ? null : PATHS[k]()]);
+        for (const [k, v] of lines) console.log(v == null ? `# ${k} unset: no repo config` : `${k}=${shellQuote(v)}`);
+        if (noRepo) {
+          console.error(`desk-env paths: no repo config found, so only the machine paths are set. ${noRepo.message}`);
+          process.exit(4);
+        }
         break;
       }
       case 'take-batch': {
@@ -2458,8 +2386,7 @@ if (isMain) {
           const config = configPathOrNull();
           if (!config || !existsSync(config)) throw new DeskConfigError(`desk-env drift: no config at ${configPathHint()}: run /desk-setup`);
           const parsed = parseConfigFile(config);
-          const rootRow = configValueIn(parsed, 'repo-root');
-          const root = rootRow ? expandHome(rootRow) : git(currentRepo().dir, 'rev-parse', '--show-toplevel') || process.cwd();
+          const root = configRepoRoot(parsed) || process.cwd();
           const gaps = appSetupGaps(parsed, root, dir);
           for (const l of appGapLines(gaps, dir)) console.log(l);
           process.exitCode = gaps.length ? 1 : 0;
@@ -2471,10 +2398,9 @@ if (isMain) {
         let drift = false;
         for (const { slug, config } of repos) {
           if (!config || !existsSync(config)) throw new DeskConfigError(`desk-env drift: no config at ${configPathHint()}: run /desk-setup`);
-          // A repo's settings live in its main checkout (§2 Primary repo root); this repo's, failing that, in the cwd's.
-          const rootRow = configValueIn(parseConfigFile(config), 'repo-root');
-          const root = rootRow ? expandHome(rootRow) : slug ? null : git(currentRepo().dir, 'rev-parse', '--show-toplevel') || null;
-          const premerge = configValuesIn(parseConfigFile(config), 'pre-merge-steps');
+          const parsed = parseConfigFile(config);
+          const root = configRepoRoot(parsed, { cwd: !slug });
+          const premerge = configValuesIn(parsed, 'pre-merge-steps');
           const jobKeyed = root && premerge && !isNone(premerge) ? jobKeyedPremerge(premerge, root) : [];
           const lines = driftLines({ ...configDrift({ config, root }), jobKeyed });
           if (lines[0] !== 'no drift') drift = true;
@@ -2575,6 +2501,9 @@ if (isMain) {
         if (sub === 'detect') {
           for (const k of M.HARDWARE_KEYS) console.log(`${k.padEnd(18)} ${hw[k]}`);
           if (!profile) { console.log(`\nno profile at ${path}: desk-env machine propose shows the sizes it would write`); break; }
+          const problems = M.profileProblems(profile);
+          if (problems.length) console.log(`\nrows in ${path} it cannot read (desk-env machine set <key>=<value> rewrites one):`);
+          for (const p of problems) console.log(`  ${p}`);
           // Listed before the no-sizes stop: `machine set` can start a profile holding only an override.
           const ovr = M.sizingOverrides(profile, proposal);
           if (ovr.length) console.log('\noverrides kept (a re-write keeps them; desk-env machine write --drop-override <key> drops one):');
@@ -2734,6 +2663,20 @@ if (isMain) {
         console.error('usage: desk-env.mjs subscription [--json] | list [--json] | set <slug> <default|email>');
         process.exit(2);
         break;
+      }
+      case 'lease':
+        process.exit((await import('./leases.mjs')).leaseCli(args, { env: { machineValue, testLockSlots, psRows } }));
+      case 'preview-slot': {
+        // preview-slot [--wait <seconds>] <label>: take the preview-build slot before a push, waiting
+        // for the build in flight (default PREVIEW_WAIT_S). Exit 0 taken or nothing to take, 3 refused, 75
+        // gave up waiting, as `lease acquire`.
+        const i = args.indexOf('--wait');
+        const wait = i < 0 ? PREVIEW_WAIT_S : Number(args[i + 1]);
+        if (!Number.isInteger(wait) || wait < 0) { console.error('usage: desk-env preview-slot [--wait <seconds>] <label>'); process.exit(2); }
+        const label = args.filter((_, k) => i < 0 || (k !== i && k !== i + 1)).join(' ').trim() || 'a push';
+        const lease = previewSlotArgs(label, wait);
+        if (!lease) { console.log('no preview slot to take: §4 Vercel names no team'); process.exit(0); }
+        process.exit((await import('./leases.mjs')).leaseCli(lease, { env: { machineValue, testLockSlots, psRows } }));
       }
       default:
         console.error(deskEnvUsage());

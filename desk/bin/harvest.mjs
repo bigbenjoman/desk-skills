@@ -2,9 +2,32 @@
 // Read a worker's stream-json log and print what the orchestrator needs: the
 // AUTOPILOT_* markers and the final result. Never print the whole log — that is
 // how the orchestrator's context stops being O(1).
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync, readdirSync, mkdirSync, openSync, closeSync, writeFileSync, constants } from 'node:fs';
+import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+
+// A desk-review round's results file, as a worker leaves it at its worktree root (desk-review's core,
+// *The verdict*): kept past the worker's session under <state>/reviews/<KEY>/, by the pass once the
+// worker has exited (keepReviewResults), so a later worker can post that round's accepted re-verdict.
+const REVIEW_RESULTS = /^desk-review-results-[A-Za-z0-9-]+\.json$/;
+// Copies each results file at `worktree`'s root into <state>/reviews/<KEY>/, under its own name. A
+// worktree that is gone or unreadable keeps nothing, and a copy that fails keeps that file only: it
+// never throws, so the pass goes on to record how the worker ended.
+export function keepReviewResults(worktree, stateDir, key) {
+  let names;
+  try { names = readdirSync(worktree, { withFileTypes: true }).filter((d) => d.isFile() && REVIEW_RESULTS.test(d.name)).map((d) => d.name); } catch { return; }
+  if (!names.length) return;
+  const dir = join(stateDir, 'reviews', key);
+  try { mkdirSync(dir, { recursive: true }); } catch { return; }
+  // Opened without following a link, so a worker cannot swap a file for a link to one it may not read.
+  for (const n of names) {
+    let fd;
+    try { fd = openSync(join(worktree, n), constants.O_RDONLY | constants.O_NOFOLLOW); writeFileSync(join(dir, n), readFileSync(fd)); }
+    catch { /* that file is not kept */ }
+    finally { if (fd !== undefined) closeSync(fd); }
+  }
+}
 
 // A worker log's text: a finished round is moved aside gzipped (`<KEY>.log.round<n>.gz`).
 export const readLogFile = (path) => (path.endsWith('.gz') ? gunzipSync(readFileSync(path)) : readFileSync(path)).toString('utf8');
@@ -92,26 +115,55 @@ export function lastStage(logText) {
 // command_lifecycle event, say) is not a turn, so only turn events after the last result count.
 // Lines that are not JSON (stderr) are skipped.
 const TURN_EVENTS = new Set(['assistant', 'user', 'stream_event', 'system']);
-export function endedNormally(logText) {
+// A fault of the computer, not the ticket: a tool call that failed (is_error) on ENOSPC, no space or no
+// inodes left, among the worker's last HOST_RESULTS tool results. The text naming it, cut to 200
+// characters, or null. Only a failed call counts: a file read, a grep or a passing run that merely
+// prints the words, and the prompt or the worker's own prose, never do. A worker that hits one cannot
+// run commands, so whatever it said or parked on then is no judgement on its ticket.
+const HOST_RESULTS = 12;
+const HOST_FAULT = /\bENOSPC\b|No space left on device/;
+export function hostFault(logText) {
+  const results = [];
+  for (const line of String(logText ?? '').split('\n')) {
+    if (!line.includes('tool_result')) continue;
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    const content = e?.type === 'user' ? e.message?.content : null;
+    if (!Array.isArray(content)) continue;
+    for (const c of content) if (c?.type === 'tool_result') results.push(c);
+  }
+  for (const c of results.slice(-HOST_RESULTS).reverse()) {
+    if (!c.is_error) continue;
+    const text = typeof c.content === 'string' ? c.content
+      : Array.isArray(c.content) ? c.content.map((x) => (typeof x?.text === 'string' ? x.text : '')).join('\n') : '';
+    const m = HOST_FAULT.exec(text);
+    if (!m) continue;
+    const at = Math.max(0, m.index - 80);
+    return text.slice(at, at + 200).replace(/\s+/g, ' ').trim();
+  }
+  return null;
+}
+
+// The result event that closed the log's last session, or null where it stopped mid-turn. With
+// `launch`, a launch boundary (desk_spawn, written before each spawn or resume) ends the search too:
+// a launch that wrote nothing since has no result of its own, whatever an earlier run ended with.
+function lastResult(logText, { launch = false } = {}) {
   const lines = logText.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     let d;
     try { d = JSON.parse(lines[i]); } catch { continue; }
-    if (d?.type === 'result') return true;
-    if (TURN_EVENTS.has(d?.type)) return false;
+    if (d?.type === 'result') return d;
+    if (TURN_EVENTS.has(d?.type) || (launch && d?.type === 'desk_spawn')) return null;
   }
-  return false;
+  return null;
 }
+// The subtype of a session claude -p ended at its --max-budget-usd, the per-worker budget.
+const BUDGET_SUBTYPE = 'error_max_budget_usd';
+// Whether the log's last launch ended at its per-worker budget: its own result event says so. With the
+// budget (desk-env.mjs workerBudget) off, no ceiling was passed, so that subtype is any other error.
+export const budgetStop = (logText, budget) => !budget?.off && lastResult(logText, { launch: true })?.subtype === BUDGET_SUBTYPE;
 
-// The result subtype the CLI ends a session with once it passes --max-budget-usd.
-const BUDGET_STOP = 'error_max_budget_usd';
-// Whether the session ended on the per-worker budget: its last turn closed with a result of that
-// subtype. A session with no ceiling (`budget` off) passed none, so its error is any other error.
-export function budgetStopped(logText, budget) {
-  if (!budget?.usd || !endedNormally(logText)) return false;
-  const { result } = readLog(logText);
-  return !!result?.is_error && result.subtype === BUDGET_STOP;
-}
+export const endedNormally = (logText) => lastResult(logText) != null;
 
 // How a worker that printed no marker ended, in a phrase: that its session wrote nothing after desk's
 // own lines (`desk_*` events, before and around the launch), else its session's error, else the last
@@ -227,10 +279,10 @@ if (isMain) {
     const park = markers.find(([k]) => k === 'AUTOPILOT_PARK');
     const done = markers.find(([k]) => k === 'AUTOPILOT_DONE');
     let budget = null;
-    if (!park && !done && result.subtype === BUDGET_STOP) {
-      try { budget = (await import('./desk-env.mjs')).workerBudget(); } catch { /* unreadable: any other error */ }
+    if (!park && !done && result.subtype === BUDGET_SUBTYPE) {
+      try { budget = (await import('./desk-env.mjs')).workerBudget(); } catch { /* unreadable: read as the pass reads it */ }
     }
-    const stopped = !park && !done && budgetStopped(logText, budget);
+    const stopped = !park && !done && budgetStop(logText, budget);
     console.log(`state:  ${park ? 'PARKED' : done ? 'DONE' : stopped ? 'BUDGET STOP' : result.is_error ? 'FAILED' : 'ENDED (no marker)'}`);
   } else {
     // No result event yet is the NORMAL state for a live worker. Exiting non-zero here made

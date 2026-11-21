@@ -68,7 +68,11 @@ node ~/.claude/desk/bin/push-retry.mjs origin <branch>   # or -u, --set-upstream
 It runs that `git push`, and while GitHub answers with a 5xx it retries with growing waits. Exit 0
 is pushed. **Exit 75** is GitHub still answering 5xx after about eight minutes: run the command it
 prints, the same one with `--more` first, which waits longer. **A second exit 75** is over ten
-minutes of 5xx: end with your park, naming the tail as ever, and the line after it says what clears it:
+minutes of 5xx: end with your park, naming the tail as ever, and the line after it says what clears it.
+**Exit 76** is the preview-build slot taken by another push's build: nothing was pushed. Run the
+`desk-env preview-slot --wait 540 …` it prints in a call of its own, which waits for that build and
+holds the slot for your push, then the same push again (the wait again if it exits 75). For the 5xx
+park:
 
 ```
 AUTOPILOT_PARK: GitHub answered the push of <branch> with a 5xx for over ten minutes
@@ -82,6 +86,12 @@ as a step no worker may run, and no pass tries it. Each pass tries that push and
 goes through, so you carry on from the steps you did not reach. **Any
 other exit is a refusal, not an outage** (a failed pre-push check, a non-fast-forward, a branch
 rule): it was not retried, so fix it or park on it as for any failed step.
+
+**Opening your PR takes the preview-build lease first too**, where §4 Vercel (`desk-env list
+vercel`) is set: `push-retry.mjs` takes it for each push, and before `gh pr create` you take it
+yourself and then put the PR's number on it, as `desk-pr` §4 *Before opening the PR, and before
+every push to it* says (off: as before; shadow: take it without waiting; on: wait for a unit, saying
+you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease renew` are yours to run.
 
 ## 5. What the orchestrator owns, not you
 

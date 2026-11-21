@@ -13,6 +13,8 @@ export GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_
 git config --global user.email t@example.com; git config --global user.name t
 unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG JIRA_SITE JIRA_TOKEN JIRA_EMAIL DESK_STATE DESK_REPO_DIR DESK_DEFAULT_BRANCH
 export PATH="$SRC/bin:$PATH" DESK_HOME="$SRC/desk" DESK_AUTOPILOT_STATE="$T/state" DESK_QUEUE="$T/queue.json" DESK_JIRA_NAME=Me
+# shellcheck source=../desk/bin/desk-env.sh
+. "$B/desk-env.sh"
 PASS=0; FAIL=0
 # bash 3.2 misparses JSON written inline with \" escapes inside a check's "$(...)": build it in a
 # variable first and pass "$q".
@@ -726,6 +728,20 @@ q='{"tickets":{"A":{"state":"failed"},"S":'"$H"'}}'
 check "held behind a failed predecessor: idle" '[ "$(idle "$q")" = idle ]'
 q='{"tickets":{"A":{"state":"parked","park":{"question":"lane C"}},"S":'"$H"'}}'
 check "held behind a predecessor parked for another reason: idle" '[ "$(idle "$q")" = idle ]'
+# A dense hold graph: D-1..D-30 each held by every ticket before it, with D-0 as given ($1), and with
+# $2 set, D-0 held behind D-30 (a cycle). It has exponentially many paths; cut off at 10 seconds.
+dense(){ desk_timeout 10 node --input-type=module -e "import {batchIdle, waitingOnMerge, waitingOnPark} from '$B/batch-state.mjs'
+const q = { tickets: { 'D-0': JSON.parse(process.argv[1]) } };
+for (let i = 1; i <= 30; i++) { const by = Array.from({ length: i }, (_, j) => 'D-' + j).join('|'); q.tickets['D-' + i] = { state: 'parked', held_by: by, park: { question: 'held by orchestrator: ' + by } }; }
+if (process.argv[2]) Object.assign(q.tickets['D-0'], { held_by: 'D-30', park: { question: 'held by orchestrator: D-30' } });
+const top = q.tickets['D-30'];
+console.log(batchIdle(q) ? 'idle' : 'busy', waitingOnMerge(q, top) ? 'waiting' : 'stuck', (waitingOnPark(q, top) ?? ['none']).join(','))" "$@"; }
+check "DS-794: a dense 30-ticket hold graph behind a running head: busy, the top waiting on a merge, in seconds" \
+  '[ "$(dense '"'"'{"state":"running"}'"'"')" = "busy waiting none" ]'
+check "DS-794: and behind a failed head: idle, the top waiting on that one park" \
+  '[ "$(dense '"'"'{"state":"failed"}'"'"')" = "idle stuck D-0" ]'
+check "DS-794: and with its head held behind its top (a cycle): idle, the top stuck" \
+  '[ "$(dense '"'"'{"state":"parked"}'"'"' cycle)" = "idle stuck none" ]'
 node "$B/queue.mjs" init t4 >/dev/null; node "$B/queue.mjs" add KAN-401 Task A >/dev/null; node "$B/queue.mjs" add KAN-402 Task A >/dev/null
 node "$B/queue.mjs" set KAN-401 state=failed >/dev/null; node "$B/queue.mjs" set KAN-402 held_by=KAN-401 >/dev/null
 node "$B/queue.mjs" park KAN-402 "held by orchestrator: blocked by KAN-401 (Jira link) — starts once their PRs merge" >/dev/null

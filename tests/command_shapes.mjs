@@ -18,7 +18,7 @@ export const MARKER = 'shape-ok:';
 const SHELL = new Set(['bash', 'sh', 'shell', 'zsh']);
 
 // A <placeholder> the reader fills in. Masked first, so its `>` never reads as a redirect.
-const PLACEHOLDER = /(?<!<)<[A-Za-z§.~][^<>\n]*?[^\s<>]>|(?<!<)<[A-Za-z]>/g;
+export const PLACEHOLDER = /(?<!<)<[A-Za-z§.~][^<>\n]*?[^\s<>]>|(?<!<)<[A-Za-z]>/g;
 const PH = '@PH@';
 
 // Splits a command into its code and its trailing comment, and returns the code masked: every
@@ -110,27 +110,33 @@ const delimiters = (line) => {
   }).filter(Boolean);
 };
 
-// Every hit in one markdown file's text, {line, shape, text} with line 1-based, and the lines an
-// exemption marker with a reason let through.
-export function scan(text) {
-  const lines = text.split('\n'), hits = [], exempt = [];
+// A line opening a fenced block: [1] the fence run, [2] the language. A block closes at a line of the
+// same fence character, at least as long, and nothing else.
+export const FENCE = /^\s*(`{3,}|~{3,})\s*([\w+-]*)/;
+export const closesFence = (raw, fence) => {
+  const t = raw.trim();
+  return t.startsWith(fence[0].repeat(fence.length)) && t.replace(/[`~]/g, '') === '';
+};
+
+// Every logical command in one markdown file's shell blocks, in order: {line, text, first} with line
+// 1-based, text the command joined over its continuation lines and first its first line. One still
+// inside a quote or `$(` when its block closes is marked `unterminated`.
+export function shellCommands(text) {
+  const lines = text.split('\n'), out = [];
   let fence = null, lang = '', pending = [], cmd = null;
   const flush = () => {
-    if (!cmd) return;
-    for (const shape of shapes(cmd.text)) hits.push({ line: cmd.line, shape, text: cmd.first });
-    if (/shape-ok:\s*\S/.test(split(cmd.text.replace(PLACEHOLDER, PH)).comment)) exempt.push({ line: cmd.line, text: cmd.first });
+    if (cmd) out.push({ line: cmd.line, text: cmd.text, first: cmd.first });
     cmd = null;
   };
   for (let n = 0; n < lines.length; n++) {
     const raw = lines[n];
-    const open = raw.match(/^\s*(`{3,}|~{3,})\s*([\w+-]*)/);
+    const open = raw.match(FENCE);
     if (!fence) {
       if (open) { fence = open[1]; lang = open[2].toLowerCase(); pending = []; cmd = null; }
       continue;
     }
-    if (raw.trim().startsWith(fence[0].repeat(fence.length)) && raw.trim().replace(/[`~]/g, '') === '') {
-      // Still open at the fence: everything after the open quote went unchecked, so say so.
-      if (cmd?.quoted) { hits.push({ line: cmd.line, shape: 'unterminated quote or $( )', text: cmd.first }); cmd = null; }
+    if (closesFence(raw, fence)) {
+      if (cmd?.quoted) { out.push({ line: cmd.line, text: cmd.text, first: cmd.first, unterminated: true }); cmd = null; }
       flush(); fence = null; continue;
     }
     if (!SHELL.has(lang) && lang !== 'console') continue;
@@ -158,6 +164,19 @@ export function scan(text) {
     if (s.open) continue;
     if (/\\$/.test(s.mask)) { cmd.text = cmd.text.replace(/\\$/, ''); continue; }
     flush();
+  }
+  return out;
+}
+
+// Every hit in one markdown file's text, {line, shape, text} with line 1-based, and the lines an
+// exemption marker with a reason let through.
+export function scan(text) {
+  const hits = [], exempt = [];
+  for (const cmd of shellCommands(text)) {
+    // Still open at the fence: everything after the open quote went unchecked, so say so.
+    if (cmd.unterminated) { hits.push({ line: cmd.line, shape: 'unterminated quote or $( )', text: cmd.first }); continue; }
+    for (const shape of shapes(cmd.text)) hits.push({ line: cmd.line, shape, text: cmd.first });
+    if (/shape-ok:\s*\S/.test(split(cmd.text.replace(PLACEHOLDER, PH)).comment)) exempt.push({ line: cmd.line, text: cmd.first });
   }
   return { hits, exempt };
 }

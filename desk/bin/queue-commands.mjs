@@ -22,6 +22,7 @@ export const QUEUE_COMMANDS = Object.freeze({
   reject: [],
   front: [],
   move: [],
+  order: [],
   transfer: [],
   running: [],
   drop: [],

@@ -240,7 +240,10 @@ Linux (WSL needs `systemd=true` under `[boot]` in `/etc/wsl.conf`), with no Clau
 Install it once per repo, from inside the repo. Its agent runs a pass at login and every 3 minutes for a
 batch the orchestrator handed over at Stage 4, and appends each report to `<state>/supervisor.log`. On
 Linux, ticks stop at logout unless lingering is on (`loginctl enable-linger`); install says when it is
-off. It keeps the batch's merge driver running, sends one desktop notification for each new set of items
+off. On WSL, ticks run only while WSL is up, and lingering does not keep it up: WSL stops once every
+terminal closes. Keep a terminal open, or add a Windows Task Scheduler entry at logon that runs
+`wsl.exe --exec sleep infinity` (with `-d <distro>` if the supervisor's distro is not your default),
+with "Stop the task if it runs longer than 3 days" turned off; install says this on WSL. It keeps the batch's merge driver running, sends one desktop notification for each new set of items
 that need you (osascript on macOS; on Linux notify-send, else a Windows toast under WSL, else only the
 log), and stops once the batch is idle. It passes on only the approvals the batch recorded at Stage 3.
 Each tick does this for every batch the repo holds, one after another: the standing batch, then each
@@ -907,9 +910,21 @@ bash tests/run.sh
 It also checks every shell script's and `.mjs` file's syntax, and runs `shellcheck -S warning` on
 every shell script when shellcheck is installed (it says when it is not). On macOS,
 `/bin/bash tests/run.sh` tests bash 3.2. `bash tests/run.sh test_jira.sh test_gate.mjs` runs only
-those suites, and `bash tests/related.sh` only the ones your branch's change reaches (every suite
-when that cannot be decided). `bash tests/run.sh -j 3` runs up to three suites at once, each
-reported in one piece in name order (CI's shards do). `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite
+those suites, and `bash tests/related.sh` only the ones your branch's change reaches, chosen as CI
+chooses them, uncommitted and untracked files included (every suite when that cannot be decided;
+it runs as many at once as `run.sh` does without `-j`, or `DESK_TEST_JOBS` of them where that is
+set). `related.sh` takes a test slot first (`with-lock.sh test`), so it never runs beside the slots'
+holders: while it waits the wrapper says who holds them, and after `DESK_RELATED_WAIT` seconds (an
+hour by default) it exits 75 having run nothing. A run already inside a slot takes no second one.
+`bash tests/run.sh -j 3` runs up to three suites at once, the longest
+in `tests/suite_durations.json` first, each reported in one piece in name order (CI's shards do).
+Without `-j` it runs as many as `desk-env get test-cap` allows, or a quarter of the cores where that
+is unset; `-j 1` runs them one after another in name order. Each report gives the suite's CPU
+seconds, and every finished run appends a line to `~/.desk-autopilot/test-runs.jsonl` with its
+date, suites, job count, wall and CPU seconds and the load average at its start. A suite that fails
+runs once more: passing then, the run passes, the suite's report shows its first run's failure, and
+the summary names it under `flaked:` (CI's `tests` job prints each shard's); failing again, the run
+fails with both runs printed. `test_compare_pass.sh` is never retried. `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite
 needs no edit there: give it a `# suite: <label>` line (`// suite: <label>` in `.mjs`) near the top.
 A suite that reads a directory rather than naming files says so with a `# covers: <glob>` line.
 `run.sh` starts every suite without the caller's `DESK_*` variables (bar CI's `DESK_REQUIRE_SHELLCHECK`)
@@ -918,7 +933,9 @@ or `DATABASE_URL` and `DIRECT_DATABASE_URL`, so a desk worker's environment cann
 `bash tests/compare_pass.sh <base> [<head>]` shows whether a change moved what `pass.mjs` does. It
 runs the base's `tests/test_pass*.sh` against both trees (a ref or a directory each; head defaults to
 `HEAD`), saves the queue and the pass's output after every pass run, and lists each queue field,
-output line and suite check that differs, with times, ids and scratch paths left out. It exits 0
+output line and suite check that differs, with times, elapsed times, ids, ports and scratch paths
+left out, text the pass cut short compared up to the cut, and queue stamps (`updated_at`,
+`spawned_at`, `last_start`, `cloud.started`) compared only as set or unset. It exits 0
 when nothing differs, 1 when something does, and 2 when a run was not compared.
 
 `pass.mjs` moves into phase modules under `desk/bin/pass/`, one section at a time. A phase's decision
@@ -953,19 +970,32 @@ them from there, never from `pass.mjs`. The batch base sync and its baseline che
 
 CI (`.github/workflows/`): a pull request runs, on Linux, the suites its change reaches
 (`node tests/scope_sections.mjs --base origin/main` shows which, and why), plus the syntax and
-shellcheck pass and a bash 3.2 check of the shell scripts involved. A change it cannot place (a
-file no suite names, a test helper, `desk-env.mjs`, `install.sh`, CI itself, a deletion) runs every
-suite. Every push to main runs every suite on Linux, and on macOS under `/bin/bash` 3.2 in four
-shards (the `macOS` workflow, not a required check); its nightly run only runs the suite when no
-macOS run on main passed in the last 24 hours. While the Linux run is red, or the macOS lane is red,
+shellcheck pass and a bash 3.2 check of the shell scripts involved. Test helpers and fixtures,
+`install.sh` and `desk-config.md` run the suites that name them. A change that only adds exports to
+`desk-env.mjs` runs the suites that use those exports. A change it cannot place runs every suite:
+a file no suite names, `tests/run.sh`, `scope_sections.mjs`, any other change to `desk-env.mjs`,
+CI itself, or a deletion. Every push to main runs every suite on Linux, and on macOS under `/bin/bash` 3.2 in four
+shards (the `macOS` workflow, not a required check), and the same workflow runs those shards on
+Linux under Node 24 (pull requests and the Linux `tests` run use Node 22); its nightly run only runs
+the suite when no macOS run on main passed in the last 24 hours. While the Linux run is red, or the macOS lane is red,
 cancelled or over 36 hours old, an issue labelled `ci-main-red` stays open, assigned to the repo's
 owner, and `/desk-needs-you` lists it for them.
 
 The Linux suites run in parallel `shard` jobs (`SHARDS` in `tests/plan_shards.mjs`, six), which it balances by each
-suite's recorded duration in `tests/suite_durations.json` (a suite with none is planned at the median).
+suite's duration on main's latest push run (its `suite-durations` artifact), or, when none can be
+fetched, the committed `tests/suite_durations.json`, and it says which. Each shard runs three suites
+at once, so it plans six times three lanes; a suite with no duration is planned at the 75th percentile.
 The one check named `tests` passes only when every shard and the bash 3.2 check did, and names each
-failed shard's suites. To refresh the durations from a green run on main:
+failed shard's suites. To refresh the committed durations from a green run on main:
 `gh run view <run id> --log | node tests/plan_shards.mjs --record`.
+
+Every suite has a CPU-second budget in CI: 30 for a `.mjs` suite and 150 for any other, or the N of a
+`# budget: N <ticket>` line (`//` in `.mjs`) in its first ten lines, which `test_lint.sh` requires to
+name a ticket and caps at 600. A suite over its budget prints a `::warning::`; on a pull request it
+fails the run from the date `BUDGETS_FAIL_FROM` in `tests/run.sh` gives. A push to main never fails on
+a budget: its `record` job opens or comments one issue labelled `ci-slow` for the suites over budget,
+and one labelled `ci-flaky` for those that failed and passed their retry, each assigned to the repo's
+owner. Neither is `ci-main-red`.
 
 ## Using autopilot
 

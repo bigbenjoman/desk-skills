@@ -1,5 +1,5 @@
 // suite: failure class (every park and fix try records one class; a red check is read against the base)
-import { CLASSES, WAITING_CLASSES, PARK_RULES, parkClass, FIX_RULES, fixClass, runsState, baseSplit } from '../desk/bin/failure-class.mjs';
+import { CLASSES, WAITING_CLASSES, PARK_RULES, parkClass, FIX_RULES, fixClass, runsState, baseSplit, keptHold } from '../desk/bin/failure-class.mjs';
 import { fixCall, fixBrief, draftChecksFix, parseOperatorChecks } from '../desk/bin/fix-tries.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -239,6 +239,17 @@ t('#805 ci-rerun not yes: no rerun, and the item says so', draftOf([red('Integra
 const runnerToo = draftOf([red('Lint', '9')], [spaced('Lint', '9')], crun({ changed: CHANGED }));
 t('#805 with the lever on, a runner fault keeps its words and reruns only the failed jobs', `${runnerToo?.why} | ${runnerToo?.gate?.full}`, `${once.why} | undefined`);
 t('#805 with the lever off, a runner fault naming no changed file is re-run as such a check', draftOf([red('Lint', '9')], [spaced('Lint', '9')], off805())?.gate?.full, true);
+}
+
+// The base red record a fix call leaves: when its hold began, and whether the call holds the PR.
+{
+  const rec = (checks) => ({ class: 'base red', head: 'h', merge_base: 'm', checks, cleared: [] });
+  const A = '2026-11-20T10:00:00.000Z', B = '2026-11-20T11:00:00.000Z';
+  t('keptHold: a new hold begins at this pass, held', JSON.stringify(keptHold(null, { call: 'held', base_red: rec(['Lint']) }, A)), JSON.stringify({ ...rec(['Lint']), since: A, held: true }));
+  t('keptHold: a hold still open keeps when it began', keptHold({ ...rec(['Lint']), since: A }, { call: 'held', base_red: rec(['Lint']) }, B).since, A);
+  t('keptHold: one after a cleared hold begins anew', keptHold({ ...rec([]), cleared: ['Lint'], since: A }, { call: 'held', base_red: rec(['Lint']) }, B).since, B);
+  t('keptHold: a fix try beside it does not hold the PR', keptHold(null, { call: 'requeue', base_red: rec(['Lint']) }, A).held, false);
+  t('keptHold: a call that clears it clears it', keptHold({ ...rec(['Lint']), since: A }, { call: 'requeue', base_red: null }, B), null);
 }
 
 if (fails) { console.log(`${fails} check(s) failed`); process.exit(1); }

@@ -8,6 +8,7 @@
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin"
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state/logs" "$T/desk/bin" "$T/stub" "$T/wt"
+trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
 git config --global user.email t@example.com; git config --global user.name t
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
@@ -230,7 +231,7 @@ else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
 else if (a[0] === 'workflow' && a[1] === 'run' && fs.existsSync('$T/wf-refuse-' + a[a.length - 1].replace('pr=', ''))) { console.error('HTTP 502: Bad Gateway'); process.exit(1); }
 else if (a[0] === 'workflow' && a[1] === 'run') console.log('https://github.com/acme/widgets/actions/runs/77' + a[a.length - 1].replace('pr=', ''));
 else if (a[0] === 'api' && /\/issues\/\d+\/events/.test(a[2])) { try { process.stdout.write(fs.readFileSync('$T/fr/' + a[2].match(/issues\/(\d+)\//)[1] + '.events', 'utf8')); } catch { /* not put back to draft */ } }
-else if (a[0] === 'api' && /check-runs\/\d+\/annotations$/.test(a[1] ?? '')) { try { process.stdout.write(fs.readFileSync('$T/fr/notes-' + a[1].match(/check-runs\/(\d+)\//)[1] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'api' && /check-runs\/\d+\/annotations(\?per_page=100)?$/.test(a[1] ?? '')) { try { process.stdout.write(fs.readFileSync('$T/fr/notes-' + a[1].match(/check-runs\/(\d+)\//)[1] + '.json', 'utf8')); } catch { process.exit(1); } }
 else process.exit(1);
 EOF
 chmod +x "$T/stub/gh"

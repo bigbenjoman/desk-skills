@@ -4,16 +4,16 @@
 // pass.mjs, with stub claude, gh, setup-worktree and spawn-worker, for the report, the spawn and two
 // passes racing for one slot. Nothing touches your real ~/.claude, ~/.config/desk or state.
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-borrow-'));
+const T = scratch('desk-borrow-');
 const env = {
   HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'),
   DESK_MACHINE: join(T, 'machine.md'), DESK_LOCK_DIR: join(T, 'locks'),

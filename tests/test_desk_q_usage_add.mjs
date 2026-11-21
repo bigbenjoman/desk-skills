@@ -3,16 +3,16 @@
 // DESK_LOCK_DIR, DESK_USAGE_DIR and subscriptions file, with fake claude and codex binaries the account
 // check (desk-env logins check) calls. A test signs a new folder in partway through the wait by writing
 // what the fake binary reads. Drawn at 104 columns under NO_COLOR.
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-q-usage-add-'));
+const T = scratch('desk-q-usage-add-');
 const H = join(T, 'home');
 mkdirSync(join(T, 'bin'));
 writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });

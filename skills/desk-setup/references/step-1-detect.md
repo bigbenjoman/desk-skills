@@ -154,6 +154,12 @@ How to turn what you find into rows:
   failed on most of them (it merged red, so it is not gating in practice), with the failure count,
   e.g. "`Run e2e tests` failed on 14 of 15". Never propose a required check. The user confirms each;
   `none` is the default. Everything not listed must pass for "green".
+- **Known flaky checks.** Propose nothing; ask. Each item is a whole check with the paths whose change
+  can break it for real (`` `<check>: <glob> [<glob>…]` ``), or one test inside a check that also runs
+  real tests (`` `<check>: <test file> > <test name>` ``, the name as its failure annotation's title
+  ends with it). Say that a check named only by its tests is waived only when each of its
+  failure annotations names a listed test, so it needs a reporter that annotates each failing test;
+  a failure in any other test still holds the PR. `none` is the default.
 - **State checks.** Search the workflows for checks that read the PR's state rather than its code:
   one that reads a desk-review (or other review) verdict from the PR's reviews, one that requires an
   approval, one that checks the title, and a gate job that only aggregates others (`needs:` on them).
@@ -351,7 +357,9 @@ How to turn what you find into rows:
   A Jest or Vitest suite of any size, a database-backed integration suite, or anything that has
   needed the Test worker cap, is `heavy`. Propose `light` only with a
   reason the user confirms. `light` moves the repo's suites off the test lock the heavy suites and
-  typechecks share, onto a box-wide light lock of their own.
+  typechecks share, onto a box-wide light lock of their own. Where the repo's committed
+  `.claude/settings.json` sets `env.DESK_SUITE_WEIGHT`, that value wins on every machine: propose
+  the row as it says, and `desk-env drift` names a row that disagrees.
 - **Codegen.** Always ask. The commands that regenerate code a fresh worktree or a schema change
   needs, one span each in the Build form: a `generate` script, `prisma generate` where there is a
   `schema.prisma`, an OpenAPI or GraphQL codegen step. Workers may run exactly these and nothing

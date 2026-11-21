@@ -13,10 +13,11 @@ Spend follows config §3b. Where "Autopilot batch budget (USD)" is `none`, leave
 asked-for work. Precedence: batch: the queue's `budget_usd`, `AUTOPILOT_BATCH_BUDGET_USD`, config,
 `none`; per worker: `AUTOPILOT_BUDGET_USD`, config, `25`. A malformed value holds spawns (batch,
 under `STALLED`) or fails the preflight (per worker); fix the value, never strip it. A worker whose
-session stops at the per-worker budget is not failed: the next pass queues it (`resume=budget`) and
-resumes it once in its own session with $5 more, told to commit, push and finish its stage. It waits
-like any spawn while the batch budget is spent, and the report says so. A second stop parks it, naming
-the budget and whether its worktree holds uncommitted work.
+session stops at the per-worker budget, often with its work done but not committed, is not failed: the
+next pass queues it (`resume=budget`) and resumes it once in its own session with $5 more
+(`AUTOPILOT_BUDGET_USD`), told to commit, push and finish its stage. It waits like any spawn while the
+batch budget is spent, and the report says so. A second stop in that session parks it, naming the
+budget and whether its worktree holds uncommitted work.
 
 **Which model each worker runs on is config §3b "Worker models".** At `default` (also when the row
 is absent) no `--model` is passed and every worker runs on the session default. At
@@ -78,6 +79,8 @@ prompt carrying the ticket's text, and the session pushes a branch and opens a d
 records the ticket done once that PR shows (on its branch, or with the key in its title, opened since
 the session started), on that PR's branch; the session cannot reach the tracker, so its Jira steps are
 left for you. A start that fails parks with the CLI's error and is never run locally without asking.
+Once its PR is read the session is over: any later work on that PR (a review try, a fix try of any
+kind, a rework) goes to a local worker on the PR's branch at origin's tip, which pushes there.
 The report's cost table shows a cloud worker's session URL and its wall time from session start to
 PR, and its tokens and cost as "not reported for cloud".
 

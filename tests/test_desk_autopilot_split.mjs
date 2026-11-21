@@ -34,6 +34,7 @@ t('AC1 desk-autopilot is still on UNSPLIT while its core is over 20 KB', unsplit
 
 // AC4: each heading, table row and paragraph of the old file is in exactly one file, word for word.
 const REWRITTEN = [
+  ['#985', 'never as a numbered list in the report. One question per', 1], // a question in the pass loop goes to needs-you, never a carousel that blocks the loop
   ['#758', 'Run a third `Monitor` on the host figure', 1], // the watch reads the guest's harm signals, not Windows free memory
   ['#758', '(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1MB', 1], // the host-free command went with it
   ['#746', 'Read the `CONFIG` file it prints. **`EXISTS=no` means stop**', 1], // read through desk-env show: the rows, not the prose or the §3c ledger
@@ -79,6 +80,10 @@ const REWRITTEN = [
   ].map((s) => ['DS-458', s, 1]),
   ['#823', 'treat a peer\'s as claimed, and never kill', 1], // a peer's claimed ports are recorded for the pass
   ['#823', 'holds or anything bound.', 1],
+  ['#1018', 'A start that fails parks with the CLI\'s error and is never run locally without asking.', 1], // later work on its PR is a local worker's
+  ['#755', 'Stagger PR creation and serialise every retrigger.', 1], // every push now takes the preview-build slot
+  ['#831', 'flaky checks (`` `<check>: <glob> [<glob>…]` ``) is merged by the driver', 1], // an item may name one test inside a check
+  ['DS-912', 'One preview build at a time, where PRs deploy previews (§4 Vercel set).', 1], // each build takes its team's preview-build lease
 ];
 checkSplit({ t, label: 'AC4', before, files, read, headings: 46, minRows: 100, rewritten: REWRITTEN });
 const deep = before.split('\n').filter((l) => /^#### /.test(l));

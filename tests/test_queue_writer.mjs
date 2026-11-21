@@ -1,12 +1,12 @@
 // suite: queue writer (a pass's changes in one locked, versioned write; done tickets archived)
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 const B = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-qw-'));
+const T = scratch('desk-qw-');
 for (const k of Object.keys(process.env)) if (k.startsWith('DESK_')) delete process.env[k];
 writeFileSync(join(T, 'config.md'), '## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | `acme/widgets` |\n| Default branch | `main` |\n');
 mkdirSync(join(T, 'home'));

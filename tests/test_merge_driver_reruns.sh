@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # suite: merge driver: red checks, reruns and waivers (offline, fake gh)
 # The real merge-driver.sh and gate.mjs, one loop at a time, set up by merge_driver_setup.sh: §4 Known
-# flaky checks waived, a signed-out gh, why a red PR is not merged, §4 State checks never rerun, and
-# an approval check rerun once for an approval its run never saw.
+# flaky checks waived, a signed-out gh, why a red PR is not merged, §4 State checks never rerun, an
+# approval check rerun once for an approval its run never saw, and a preview check's rerun and a
+# BEHIND update waiting on its Vercel team's preview-build lease.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -79,6 +80,44 @@ check "AC5: the ticket is filed once per PR and head"                  '[ "$(mer
 
 out=$(DESK_CONFIG="$T/config-bad.md" MERGE_DRIVER_ONE_LOOP=1 bash "$B/merge-driver.sh" --tickets "T-11" 2>&1); rc=$?
 check "AC9: a row that does not parse stops the driver, naming the row" '[ $rc -eq 1 ] && echo "$out" | grep -q "FAIL: config §4 Known flaky checks does not parse: \`lint\`" && ! echo "$out" | grep -q "merge driver up"'
+
+# ---- #831: a §4 Known flaky checks item naming one test inside a check ------------------------------
+sed '/^| Known flaky checks /d' "$T/config-flaky.md" > "$T/config-test.md"
+echo '| Known flaky checks | `Integration: tests/orders.test.ts > retries a timed-out order` |' >> "$T/config-test.md"
+SHA21=b111111111111111111111111111111111111111; SHA22=b222222222222222222222222222222222222222
+SHA23=b333333333333333333333333333333333333333; SHA24=b444444444444444444444444444444444444444
+cat > "$T/prs.json" <<EOF
+{
+  "121": { "head": "fix/T-21", "base": "main", "sha": "$SHA21", "state": "open", "draft": false, "files": ["src/x.ts"],
+           "checks": [["test", "SUCCESS", 9001], ["Integration", "FAILURE", 9121]] },
+  "122": { "head": "fix/T-22", "base": "main", "sha": "$SHA22", "state": "open", "draft": false, "files": ["src/y.ts"],
+           "checks": [["test", "SUCCESS", 9002], ["Integration", "FAILURE", 9122]] },
+  "123": { "head": "fix/T-23", "base": "main", "sha": "$SHA23", "state": "open", "draft": false, "files": ["src/z.ts", "tests/orders.test.ts"],
+           "checks": [["test", "SUCCESS", 9003], ["Integration", "FAILURE", 9123]] },
+  "124": { "head": "fix/T-24", "base": "main", "sha": "$SHA24", "state": "open", "draft": false, "files": ["src/w.ts"],
+           "checks": [["test", "SUCCESS", 9004], ["Integration", "FAILURE", 9124]] }
+}
+EOF
+LISTED='{ "annotation_level": "failure", "path": "tests/orders.test.ts", "title": "tests/orders.test.ts > retries a timed-out order", "message": "AssertionError: expected 200 to be 504" }'
+EXITED='{ "annotation_level": "failure", "message": "Process completed with exit code 1." }'
+cat > "$T/annotations.json" <<EOF
+{ "9121": [$LISTED, $EXITED],
+  "9122": [$LISTED, { "annotation_level": "failure", "path": "tests/orders.test.ts", "title": "tests/orders.test.ts > totals an order", "message": "AssertionError: expected 3 to be 4" }],
+  "9123": [$LISTED],
+  "9124": [$EXITED] }
+EOF
+q init merge-flaky-test
+for k in T-21 T-22 T-23 T-24; do q add "$k" Task A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
+for p in "121:$SHA21" "122:$SHA22" "123:$SHA23" "124:$SHA24"; do for f in reruns reruns-ok; do printf 'Integration\nIntegration\n' > "$SD/$f-${p%%:*}-${p#*:}"; done; done
+: > "$T/merges.log"
+tloop(){ out=$(DESK_CONFIG="$T/config-test.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-21 T-22 T-23 T-24" 2>&1); rc=$?; }
+tloop
+check "#831: a check red only on its listed test, after two reruns, is waived" '[ $rc -eq 0 ] && echo "$out" | grep -q "#121 green but for WAIVED \"Integration\" at b11111111"'
+check "#831: a listed test beside a failure in another test of that check is not waived" 'echo "$out" | grep -qF "#122 the waiver for \"Integration\" does not apply: it failed in a test §4 Known flaky checks does not list (AssertionError: expected 3 to be 4)"'
+check "#831: a PR changing the listed test'\''s file is not waived" 'echo "$out" | grep -qF "#123 the waiver for \"Integration\" does not apply: the diff touches tests/orders.test.ts (tests/orders.test.ts, for \"Integration\")"'
+check "#831: a check whose failures name no test is never waived" 'echo "$out" | grep -qF "#124 the waiver for \"Integration\" does not apply: it failed in a test §4 Known flaky checks does not list, or its failures name no test"'
+tloop
+check "#831: the waived PR merges pinned to its head, and only it" '[ "$(merged)" = 121 ] && grep -qx "121 main $SHA21" "$T/merges.log"'
 
 # ---- DS-225 AC2: gh signed out stops the driver, saying so -------------------------------------
 : > "$FAKE_SLEEPS"; touch "$T/gh.signedout"
@@ -216,5 +255,51 @@ check "DS-583 AC5: a clean verdict another account posted at the head after the 
 : > "$T/gh.log"
 vsloop
 check "DS-583 AC6: red again after its one rerun at that head, it is not rerun a second time" '! grep -q "run rerun" "$T/gh.log" && echo "$out" | grep -qF "#1583 \"🔐 Review gate\" was rerun once at d58300000 for the review its run started before, and is red again — not rerunning it a second time" && [ "$(qf T-583 .merge_blocked)" = null ]'
+
+# ---- DS-912: a preview check's rerun takes a unit of its Vercel team's preview-build lease first ----
+cp "$T/config-flaky.md" "$T/config-vercel.md"; echo '| Vercel | `acme` `web: prj_1` |' >> "$T/config-vercel.md"
+machine(){ printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `preview-build=on` | test |\n| `preview-build-slots` | `%s` | test |\n' "$2" > "$1"; }
+machine "$T/machine-one.md" 1; machine "$T/machine-two.md" 2
+LD="$T/leases"
+hold(){ DESK_LEASE_DIR="$LD" DESK_MACHINE="$1" node "$B/leases.mjs" acquire preview-build acme --ttl 1200 --no-owner --label "$2" >/dev/null 2>&1; }
+leases(){ DESK_LEASE_DIR="$LD" node "$B/leases.mjs" list --json 2>/dev/null | jq -r '"\(.label) \(.owner)"' | paste -sd',' -; }
+SHA912=e912000000000000000000000000000000000000; SHA913=e913000000000000000000000000000000000000; SHA914=e914000000000000000000000000000000000000
+SHA915=e915000000000000000000000000000000000000
+cat > "$T/prs.json" <<EOF
+{ "1912": { "head": "fix/T-912", "base": "main", "sha": "$SHA912", "state": "open", "draft": false, "checks": [["test", "SUCCESS", 9090], ["Vercel Preview", "FAILURE", 9912]] },
+  "1913": { "head": "fix/T-913", "base": "main", "sha": "$SHA913", "state": "open", "draft": false, "checks": [["test", "SUCCESS", 9090], ["build", "FAILURE", 9913]] },
+  "1914": { "head": "fix/T-914", "base": "main", "sha": "$SHA914", "state": "open", "draft": false, "checks": [["test", "SUCCESS", 9090], ["deploy-preview", "FAILURE", 9914]] },
+  "1915": { "head": "fix/T-915", "base": "main", "sha": "$SHA915", "state": "open", "draft": false, "checks": [["test", "SUCCESS", 9090], ["Vercel", "FAILURE"], ["build", "FAILURE", 9915]] } }
+EOF
+q init merge-preview
+for k in T-912 T-913 T-914 T-915; do q add "$k" Bug A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
+: > "$T/merges.log"; : > "$T/gh.log"
+pvloop(){ out=$(DESK_CONFIG="$T/config-vercel.md" DESK_MACHINE="$1" DESK_LEASE_DIR="$LD" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "$2" 2>&1); rc=$?; }
+hold "$T/machine-one.md" "acme/site#7"
+pvloop "$T/machine-one.md" "T-912 T-913 T-915"
+check "DS-912 AC3: with the team's one unit held, a preview check is not rerun, and the log says it waits on the preview build" '! grep -q "run rerun 9912" "$T/gh.log" && echo "$out" | grep -qF "#1912 red + completed, but waits on the preview build before rerunning: the preview-build slot for acme is held by acme/site#7 (no owner" && [ ! -e "$SD/reruns-1912-$SHA912" ] && [ ! -e "$SD/cooldown-1912" ]'
+check "DS-912 AC3: a red check that is no preview is rerun as before" 'grep -q "run rerun 9913 --repo acme/widgets --failed" "$T/gh.log" && [ "$(leases)" = "acme/site#7 null" ]'
+check "DS-912 AC3: a red Vercel status with no run is not rerun, so the build beside it reruns without the lease" 'grep -q "run rerun 9915 --repo acme/widgets --failed" "$T/gh.log" && ! echo "$out" | grep -q "#1915 .*waits on the preview build"'
+rm -rf "$LD"
+pvloop "$T/machine-one.md" "T-912"
+check "DS-912 AC3: once a unit is free the rerun takes it, labelled with the PR, and runs" 'grep -q "run rerun 9912 --repo acme/widgets --failed" "$T/gh.log" && [ "$(leases)" = "acme/widgets#1912 null" ]'
+rm -rf "$LD"; hold "$T/machine-two.md" "acme/site#7"; hold "$T/machine-two.md" "acme/docs#8"
+pvloop "$T/machine-two.md" "T-914"
+check "DS-912 AC5: with preview-build-slots 2 and both held, the third build waits" '! grep -q "run rerun 9914" "$T/gh.log" && echo "$out" | grep -qF "#1914 red + completed, but waits on the preview build before rerunning: all 2 preview-build slots for acme are held"'
+rm -rf "$LD"; : > "$T/gh.log"
+pvloop "$T/machine-two.md" "T-914"
+check "DS-912 AC5: and runs once a unit is free" 'grep -q "run rerun 9914 --repo acme/widgets --failed" "$T/gh.log" && [ "$(leases)" = "acme/widgets#1914 null" ]'
+# A BEHIND PR's update-branch is a new head, so a new preview build: it takes the PR's unit first too.
+awk '{ print } /^\| `pr-ready`/ { print "| `pr-update-branch` | Update branch | `yes` | `yes` |" }' "$T/config-vercel.md" > "$T/config-vercel-up.md"
+SHA916=e916000000000000000000000000000000000000
+jq --arg s "$SHA916" '. + { "1916": { head: "fix/T-916", base: "main", sha: $s, state: "open", draft: false, mergeState: "BEHIND", checks: [["test", "SUCCESS", 9090]] } }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+q add T-916 Bug A; q set T-916 branch=fix/T-916 state=done result.pr=1916
+uploop(){ out=$(DESK_CONFIG="$T/config-vercel-up.md" DESK_MACHINE="$T/machine-one.md" DESK_LEASE_DIR="$LD" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets T-916 2>&1); rc=$?; }
+rm -rf "$LD"; hold "$T/machine-one.md" "acme/site#7"; : > "$T/gh.log"
+uploop
+check "DS-912: with the team's one unit held, a BEHIND PR is not updated, and the log says it waits on the preview build" '! grep -q "pr update-branch 1916" "$T/gh.log" && echo "$out" | grep -qF "#1916 BEHIND, but waits on the preview build before updating the branch: the preview-build slot for acme is held by acme/site#7 (no owner" && [ ! -e "$SD/updated-1916-$SHA916" ]'
+rm -rf "$LD"
+uploop
+check "DS-912: once a unit is free the update takes it, labelled with the PR, and runs" 'grep -q "pr update-branch 1916 --repo acme/widgets" "$T/gh.log" && [ "$(leases)" = "acme/widgets#1916 null" ] && [ -e "$SD/updated-1916-$SHA916" ]'
 
 finish reruns

@@ -1,13 +1,13 @@
 // suite: check-in digest (slots, one digest per slot across repos, answers and overrides)
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, appendFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, appendFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkinTimes, latestSlot, checkin, answer, override, urgentParks, readDecisions, openQuestions, askAgain, doneParks, jiraTarget, jiraLine, repos, DEFAULT_TIMES } from '../desk/bin/digest.mjs';
 import { jiraSearch } from '../desk/bin/jira-search.mjs';
 import { addPutOff, putOffEntry } from '../desk/bin/not-now.mjs';
 import { takeBorrowLock } from '../desk/bin/borrow.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
@@ -22,7 +22,7 @@ t('before the first slot of the day, the latest is yesterday\'s last', latestSlo
 t('just past a slot, it is that slot', latestSlot(DEFAULT_TIMES, at('2026-10-22', '17:00')).id, '2026-10-22T17:00');
 
 // Three repos: parks in two, decisions in a third.
-const root = mkdtempSync(join(tmpdir(), 'desk-digest-'));
+const root = scratch('desk-digest-');
 // Each repo's Jira check reads its desk config from here: none, unless a test writes one.
 process.env.DESK_CONFIG_ROOT = join(root, 'cfg');
 const repo = (slug, tickets, decisions = []) => {

@@ -21,11 +21,15 @@ concurrency:
 jobs:
   # A pull request runs the suites its change reaches (tests/scope_sections.mjs, which runs every suite
   # when it cannot place a changed file); a push to main runs every suite. tests/plan_shards.mjs splits
-  # them into parallel shards by their recorded durations (tests/suite_durations.json).
+  # them into parallel shards by the durations main's latest push run recorded, else the committed
+  # tests/suite_durations.json.
   plan:
     name: plan
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
     outputs:
       matrix: ${{ steps.shards.outputs.matrix }}
       shells: ${{ steps.scope.outputs.shells }}
@@ -49,11 +53,17 @@ jobs:
           else
             node tests/scope_sections.mjs --full --github-output
           fi
+      - name: Fetch main's durations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: node tests/plan_shards.mjs --fetch "$RUNNER_TEMP/durations"
+      # Each shard runs 3 suites at once (the shard job's Run tests step), so it plans 3 lanes a shard.
       - name: Plan the shards
         id: shards
         env:
           SUITES: ${{ steps.scope.outputs.suites }}
-        run: node tests/plan_shards.mjs --suites "$SUITES" --github-output
+        run: node tests/plan_shards.mjs --suites "$SUITES" --jobs 3 --durations "$RUNNER_TEMP/durations/suite_durations.json" --github-output
 
   # The stock macOS bash (3.2.57) in Docker: `bash -n`, and a scan for bash 4+ features that parse
   # in 3.2 but fail when run, over the changed shell scripts and those the chosen suites run.
@@ -102,25 +112,27 @@ jobs:
           jq --version
           shellcheck --version | head -2
       # The result file is the shard's report to the tests job: written only once run.sh has finished,
-      # so a shard cancelled or timed out leaves none.
+      # so a shard cancelled or timed out leaves none. run.sh writes the suites' durations beside it.
+      # A suite over its CPU budget fails a pull request from the date in run.sh, and only warns on
+      # main, where the record job opens a ci-slow issue for it instead.
       - name: Run tests
         env:
           SHARD: ${{ matrix.shard }}
           OF: ${{ matrix.of }}
           SUITES: ${{ matrix.suites }}
           HOOK: ${{ matrix.hook }}
+          DESK_SUITE_BUDGETS: ${{ github.event_name == 'pull_request' && 'enforce' || 'warn' }}
         run: |
           bash --version | head -1
-          echo "shard $SHARD/$OF: $SUITES"
-          flags="-j 3 --no-hook-test"
-          [ "$HOOK" = true ] && flags="-j 3"
           set +e
-          # shellcheck disable=SC2086  # flags (3 suites at once on the 4 vCPU runner) and suite names, one per word
-          bash tests/run.sh $flags $SUITES 2>&1 | tee "$RUNNER_TEMP/run.log"
-          rc=${PIPESTATUS[0]}
           mkdir -p "$RUNNER_TEMP/result"
+          # 3 suites at once on the 4 vCPU runner
+          DESK_SUITE_DURATIONS="$RUNNER_TEMP/result/durations-$SHARD.json" bash tests/ci_shard.sh 3 2>&1 | tee "$RUNNER_TEMP/run.log"
+          rc=${PIPESTATUS[0]}
           failed=$(grep -m 1 '^failed suites:' "$RUNNER_TEMP/run.log" | cut -d: -f2-)
-          printf 'rc=%s\nfailed=%s\n' "$rc" "${failed# }" > "$RUNNER_TEMP/result/shard-$SHARD.txt"
+          flaked=$(grep -m 1 '^flaked:' "$RUNNER_TEMP/run.log" | cut -d: -f2-)
+          slow=$(grep -m 1 '^over budget:' "$RUNNER_TEMP/run.log" | cut -d: -f2-)
+          printf 'rc=%s\nfailed=%s\nflaked=%s\nslow=%s\n' "$rc" "${failed# }" "${flaked# }" "${slow# }" > "$RUNNER_TEMP/result/shard-$SHARD.txt"
           exit "$rc"
       - name: Save the result
         if: always()
@@ -162,8 +174,57 @@ jobs:
           for n in $(printf '%s' "$MATRIX" | jq -r '.include[].shard' 2>/dev/null); do
             f="results/shard-$n.txt"
             if [ ! -f "$f" ]; then echo "shard $n/$of did not finish: cancelled, timed out or stopped before its suites ran"; bad=1; continue; fi
-            rc=$(sed -n 's/^rc=//p' "$f"); failed=$(sed -n 's/^failed=//p' "$f")
+            rc=$(sed -n 's/^rc=//p' "$f"); failed=$(sed -n 's/^failed=//p' "$f"); flaked=$(sed -n 's/^flaked=//p' "$f")
             if [ "$rc" = 0 ]; then echo "shard $n/$of passed"; else echo "shard $n/$of failed: ${failed:-exit $rc}"; bad=1; fi
+            [ -z "$flaked" ] || echo "shard $n/$of flaked (failed, then passed its retry): $flaked"
+            slow=$(sed -n 's/^slow=//p' "$f")
+            [ -z "$slow" ] || echo "shard $n/$of over CPU budget (<suite>=<CPU seconds>/<budget>): $slow"
           done
           [ "$SHARDS" = success ] || { echo "shards: $SHARDS"; bad=1; }
           exit "$bad"
+
+  # A push to main records its suites' durations, which later runs plan from, and opens or comments the
+  # ci-slow and ci-flaky issues (tests/ci_main_red.mjs suites). A suite over budget or flaked fails
+  # nothing; a step here that cannot record fails the run, so the red-main alarm shows it.
+  record:
+    name: record main
+    needs: [plan, shard, tests]
+    if: always() && github.event_name == 'push' && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fetch the shard results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: shard-*
+          path: results
+          merge-multiple: true
+      - name: Merge the durations
+        env:
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+        run: node tests/plan_shards.mjs --merge results --of "$(printf '%s' "$MATRIX" | jq -r '.include | length')" --out durations/suite_durations.json
+      - name: Save the durations
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-durations
+          path: durations/
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Open or update the ci-slow and ci-flaky issues
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_SHA: ${{ github.sha }}
+        run: node tests/ci_main_red.mjs suites results

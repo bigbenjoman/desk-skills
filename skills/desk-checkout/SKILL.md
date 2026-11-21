@@ -50,12 +50,14 @@ If they name no day, use `auto`: that's today, except before 10:00, when it's ye
 because a check-out written first thing is for the day before. Say which day you covered in
 one line. Evidence from outside the day is context, not content.
 
-**A second check-out of the same day starts where the first ended.** Step 2 reads the
-destination back (the channel's, or the file's, previous check-out). If one that covered this same
-day (its header or date names it) was posted during it, run the collectors again with `--since <the
-time it was posted>`: their window then starts there, and their headers say `from HH:MM`. A
-check-out for an earlier day, even one posted this morning, leaves the window whole, and a draft
-never sent posted nothing, so it moves nothing.
+**A check-out starts where the previous one ended.** Step 2 reads the destination back (the
+channel's, or the file's, previous check-out). Run the collectors again with `--since <the time it
+was posted, as an ISO timestamp>` and `--since-for <the day it covered, YYYY-MM-DD, as its header or
+date names it>`: their window then starts where that check-out stopped, the evening before
+included, so nothing posted between it and midnight drops out, and their headers say from when. One
+written the next morning for its own day covered only that day, so the window starts at midnight.
+A draft never sent posted nothing, so it moves nothing. Every item it called in review or WIP is
+read again for its state now (step 3).
 Where the destination cannot be read back (no connector, no permission, or `none`), cover the whole
 day and say so. Say the window in your one line.
 
@@ -71,7 +73,8 @@ python3 $S/jira_activity.py --day $D; python3 $S/github_activity.py --day $D; py
 ```
 
 `claude_activity.py` cuts off any session at the point where it loads this skill, so the
-drafting session never reports itself.
+drafting session never reports itself, and nor does the one that drafted an earlier check-out that
+day.
 
 | Source | How | Permission (per repo) | What it's good for |
 |---|---|---|---|
@@ -128,6 +131,17 @@ repo) and PR number first, then by topic. One item per piece of work, not one pe
 headless worker session (`headless worker`) on the ticket it worked: join it to that ticket's PR
 and Jira item like any other session, and report what changed and where it stands. Never what ran
 it: no "the autopilot", "a worker" or "the batch" in the post, unless the user asks for that.
+- **A batch's own sessions are never items.** A triage, preflight or worker session is evidence
+  for the ticket it worked, never work in its own right; one that names no ticket, branch or PR to
+  join it to is left out.
+- **A ticket a worker parked with no PR** gets an item only if Jira or GitHub shows a change to it
+  that day (a status move, a comment, a commit), and the item says what that change was. A session
+  alone is not a change.
+- **To have the batch named**, set `DESK_CHECKOUT_NAME_BATCH=1` in your shell or the `env` block of
+  `~/.claude/settings.json` (`printenv DESK_CHECKOUT_NAME_BATCH` reads it). Then one line after
+  the substantive work names the items a batch built by key, e.g. "Built by an autopilot batch:
+  ABC-12, ABC-14.", and the items themselves still read as above. Unset, or any other value, no
+  such line.
 
 For each item, settle:
 - **What was wrong or needed, in user or team terms.** Take it from the ticket summary, the PR
@@ -142,6 +156,12 @@ For each item, settle:
   green since the collectors' day belongs in the item's state. **Read each PR's state again as you
   write its line** (`gh pr view <n> --repo <owner/name> --json state,isDraft,mergedAt,reviewDecision`):
   the collectors ran earlier, and a PR undrafted, approved or merged since is described as it is now.
+  That read wins over the collector's: `MERGED` is `(merged)`, an open PR no longer a draft is
+  `(in review)` (or waiting on the approval its review decision shows), and only `isDraft` true is
+  a draft. If that read fails, use the collector's state and name the PR under **Check before
+  posting** as read earlier in the run. Read only in a repo the GitHub collector read (its
+  `read-own-work` `yes`, or `ask` and the user agreed). Never read a PR in any other repo: its
+  state stays as its source gave it.
 - **What anyone else needs to do**, with the person named (§4 People for roles).
 
 Then sort:
@@ -166,7 +186,10 @@ Then sort:
 - Messages Claude drafted for the user to send (a Slack reply, an update to one of the §4 Slack
   channels), unless they posted it. Read the channel or thread after the draft's time to see: their
   message there settles it. Only when no read can (no Slack connector, or §3 bars that channel),
-  use the facts and put "was the <channel> update sent?" under Check before posting, saying why.
+  use the facts and put "was the <channel> update sent?" under Check before posting, saying why,
+  and name the Slack role under Missing sources with its fix. §3 bars it when the channel's row
+  (`read-slack-public`, or `read-slack-own` for a DM or private channel) is not `yes`; an `ask` row
+  bars it only once the user says no to the read (**Permissions**, step 2).
 - Claude Code housekeeping: auth errors, `/login`, model switching, context-size prompts.
 - Anything sensitive, from any source (meeting notes, DMs, private channels, transcripts): HR,
   pay, probation, investor terms, individual performance, personal matters, customer or user
@@ -182,6 +205,8 @@ layout; `references/style.md` has the conventions and a worked example for when 
 short version:
 - The header is whatever their previous check-out used; with none, `Check-out`, with the day if it
   isn't today.
+- When the window starts at a previous check-out (step 1), say so in one line under the header, e.g.
+  `Since my 12:00 check-out:`, so nobody reads the post as the whole day.
 - Lead each item with the problem in plain words, then the fix and its state.
   Use `(merged)`, `(in review)`, `(raised)`, `WIP`, `waiting on @Name`.
 - Name tickets by their key (`ABC-1891`) and PRs as `#1533`. Slack auto-links neither, so don't add
@@ -218,11 +243,15 @@ says, and give the path. Under it, briefly:
   read §3 grants can answer (a PR's state on GitHub, a ticket's in Jira, whether a message reached
   a channel) and put the answer in the post. What is left, each with its source and the read that
   was missing ("was the #release update sent? No Slack connector"; "#1534 in review per Claude's
-  narration; GitHub not readable: §3 read-own-work is no"). Then each meeting left out for want of
+  narration; GitHub not readable: §3 read-own-work is no"), and each PR whose state could not be
+  read again when its line was written ("#1534's state is from the collectors, read earlier in the
+  run"). Then each meeting left out for want of
   attendance evidence (step 3), one question each: "Were you in <meeting> (<time>)? It has no
   line until you say so".
 - **Left out**: the out-of-scope or sensitive items you dropped, one line each.
-- **Missing sources**: any role with no connector or no permission, and the fix.
+- **Missing sources**: any role with no connector or no permission, and the fix: for a missing
+  connector, the one **Connectors** (step 2) gives; for a permission, the §3 row to set to `yes`
+  with `/desk-setup` ("Slack: §3 read-slack-public is no; set it to yes with /desk-setup").
 
 Then stop. The user edits and posts it. If they ask for changes, or say they were in a meeting you
 asked about (that meeting then gets its line), redraft the whole post and put it where the first

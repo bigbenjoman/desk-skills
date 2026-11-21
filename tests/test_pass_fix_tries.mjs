@@ -166,6 +166,15 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
   const rv = drive(snap([[tk(), green]]), { feedback: fb });
   const c = applied(rv)[0]?.call;
   t('a review at its head that is not clean goes to a review fix, out of draft', j([c?.call, c?.fix?.kind, c?.fix?.ready]), j(['requeue', 'review', true]));
+  // A round whose gaps only widen a broad AC an earlier try worked, past triage's files: the scope question.
+  const broad1 = 'AC2: "an avatar wherever a person shows" — src/list.tsx:4 shows a name with no avatar';
+  const wideTk = tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review', gaps: [broad1] }] });
+  const wideFb = { ...fb, review: { id: 'R2', verdict: { p0: '0', p1: '0', gaps: '1' }, body: '### Requirement gaps\n- AC2: "an avatar wherever a person shows" — src/card.tsx:9 shows a name with no avatar\n' } };
+  const wideReads = (outside) => () => reads({ reads: { outside: () => outside, title: () => 'Show the avatar on the people list' } });
+  const wide = applied(drive(snap([[wideTk, green]]), { feedback: wideFb, reads: wideReads(['src/card.tsx']) }))[0]?.call;
+  t('a ready PR\'s widening round past triage\'s files is the person\'s scope question, not a fix try', j([wide?.call, /^review gaps only you can settle: PERSON'S CALL: AC2 reads wider than the title \("Show the avatar on the people list"\)/.test(wide?.why ?? '')]), j(['stuck', true]));
+  const inside = applied(drive(snap([[wideTk, green]]), { feedback: wideFb, reads: wideReads([]) }))[0]?.call;
+  t('inside triage\'s files it is not', inside?.why?.startsWith('review gaps only you can settle'), false);
   const moved = drive(snap([[tk(), green]]), { feedback: { ...fb, head: 'd'.repeat(40) } });
   t('threads read at another head make no try', applied(moved).length, 0);
   const worked = { head: HEAD, left: [{ id: 'TH1', text: 'a thread' }], decision: null, review: null, payload: {} };
@@ -189,6 +198,19 @@ t('tryLabel: a review try', tryLabel({ kind: 'rereview', try: 2, of: 2 }), 'revi
 t('tryLabel: a protected files try', tryLabel({ kind: 'protected', try: 1, of: 2 }), 'protected files try 1 of 2');
 t('tryLabel: an extra try', tryLabel({ kind: 'checks', extra: true }), 'extra fix try');
 t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
+
+// A check red on several ready PRs at once is said once, and each PR red only on it is held.
+{
+  const G = { required: ['tests', 'Vercel Preview'], advisory: [] };
+  const three = [701, 702, 703].map((n) => [tk({ key: `O-${n}`, branch: `task/O-${n}` }), pr([ok('tests'), red('Vercel Preview')], { pr: n })]);
+  const as = drive(snap(three, { gate: G }), { reads: () => reads({ ctx: { required: G.required } }) });
+  const lines = as.filter((a) => a.type === 'out').map((a) => a.line);
+  t('outage: the pass says it once, naming the PRs', lines.filter((l) => l.includes('red on 3 ready PRs at once')).join('|'),
+    'fix tries: "Vercel Preview" is red on 3 ready PRs at once (#701, #702, #703), which reads as its platform failing, not their code: no fix try is spent on it, and nothing desk reruns turns it green; once the platform is back, redeploy there or push to the PRs');
+  t('outage: each PR is held as an outage, none requeued', applied(as).map((a) => `${a.key} ${a.call.call} ${a.call.label}`).join(), 'O-701 held OUTAGE,O-702 held OUTAGE,O-703 held OUTAGE');
+  const two = drive(snap(three.slice(0, 2), { gate: G }), { reads: () => reads({ ctx: { required: G.required } }) });
+  t('outage: on two PRs it is not one, and each gets its fix try', applied(two).map((a) => a.call.call).join(), 'requeue,requeue');
+}
 
 if (fails) { console.log(`${fails} failure(s)`); process.exit(1); }
 console.log('all passed');

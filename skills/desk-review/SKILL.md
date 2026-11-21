@@ -30,7 +30,7 @@ desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 
 Read rows with `desk-env` (`desk-env ids` lists ids; a worker cannot read `CONFIG`). `EXISTS=no`
 means stop: say which slug was looked up and offer `/desk-setup`. A `TODO` in a §3 row is a `no`,
-so it makes the run report-only, never stops it. A `TODO` in any other row this skill needs is not a gap to guess: stop, ask, offer
+so it makes the run report-only, never stops it. A `TODO` in any other row this skill needs: stop, ask, offer
 `/desk-setup`. Then take:
 
 - §0 GitHub repo (`<owner>/<repo>` below) and Default branch (`<default>`); §1 GitHub handle (`<me>`).
@@ -207,16 +207,17 @@ one `file:line` per finding (desk-pr places it).
 
 **The body's opening lines are computed, never written by hand**: the review and verdict
 markers, the heading, from round 2 the carried line, then the method line. A hand count is how a
-review reads clean when it is not. Once every finder and refuter has answered, write the run's
-results with the Write tool to `<scratchpad>/desk-review-results-<run>.json` (`<run>`: Phase 3; a
-worker: at its worktree root, removed at the end with `git clean -f`):
+review reads clean when it is not. Once every finder and refuter has answered, Write the run's
+results to `<scratchpad>/desk-review-results-<run>.json` (`<run>`: Phase 3; a
+worker: at its worktree root, left in place, `phase-7-post.md`):
 
 ```json
 { "sha": "<full reviewed SHA>", "round": 1, "gaps": 0, "skipped_files": 0,
   "seats": [ { "role": "correctness", "agent": "lena-code-reviewer", "vendor": "claude", "status": "ran" },
              { "role": "codex", "vendor": "codex", "status": "ran" } ],
   "findings": [ { "id": "F1", "seat": "correctness", "severity": "P1", "where": "src/a.ts:12",
-                  "result": "CONFIRMED", "refuted_by": "codex", "deferred": false } ] }
+                  "result": "CONFIRMED", "refuted_by": "codex" },
+                { "id": "C1", "seat": "codex", "severity": "P2", "result": "REJECTED", "refuted_by": "claude" } ] }
 ```
 
 - `codex`: with the codex lever on, `{"finder": "<model>:<effort>", "refuter": "<model>:<effort>"}`
@@ -247,9 +248,8 @@ node ~/.agents/skills/desk-review/bin/verdict.mjs <results>
 ```
 
 `<results>` is the file's full scratchpad path, or `desk-review-results-<run>.json` in a worker (run from
-its worktree root). `$DESK_SKILLS_DIR` goes in place of `~/.agents/skills` where it is set
-elsewhere. It prints four lines (five from round 2) and refuses (exit 2) any results file that
-is incomplete or contradicts itself. Its tests, `tests/test_review_verdict.mjs`, prove that no
+its worktree root). `$DESK_SKILLS_DIR` goes in place of `~/.agents/skills` where it is set. It prints four lines (five from round 2) and refuses (exit 2) any results file that
+is incomplete or contradicts itself. Its tests prove that no
 combination with an open finding, a skipped file, a dead seat or an open gap prints the clean
 verdict. Use its output verbatim, then the report below it. The clean form, which the tests hold
 this line to:
@@ -322,7 +322,7 @@ to a human skimming and to any regex over the summary.
 
 ## References
 
-- `references/phase-<n>-*.md`: each phase's rules (*Phases* above).
+- `references/phase-<n>-*.md`: *Phases* above.
 - `references/review-bar.md`: the default bar, and how a repo supplies its own.
 - `references/gotchas.md`: the sweep query, tiering patterns, base-merge count, bot comments, and the
   single-call review post. Read it when a command misbehaves.

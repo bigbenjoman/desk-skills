@@ -4,19 +4,19 @@
 // records and a stub gh; a main checkout behind origin with uncommitted files that the report leaves
 // exactly as it found it; and the §3b Phase 0 levers row read through desk-env, with no row, known
 // names and a name desk does not know.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, utimesSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, utimesSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { logFacts, commandKey, report, spawnLine, spawnRecords, archivedBatches, DAY_MS } from '../desk/bin/phase0-report.mjs';
 import { parseLevers, LEVERS } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const has = (name, lines, re) => t(name, lines.some((l) => re.test(l)), true);
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ENV_BIN = join(ROOT, 'desk', 'bin', 'desk-env.mjs');
-const T = mkdtempSync(join(tmpdir(), 'desk-phase0-'));
+const T = scratch('desk-phase0-');
 
 // ---- AC5 / AC6: the levers row --------------------------------------------------------------
 const config = (rows) => {

@@ -76,6 +76,8 @@
 // `promotion:<n>` is a feature batch's: its promotion PR #<n>, still red once its check tries are spent,
 // listed above the follow items waiting on it (done records nothing; the next pass reads its checks again).
 // `ask:<n>` is the repo's too: an action a session handed the person (done takes it off the list).
+// `base-red:<branch>` is a batch's: its base red on checks that hold its PRs' fix tries, naming the
+// PRs held and the last merges desk made (done records nothing; each hold clears once its check passes there).
 // `base-sync` is a batch's: its base sync could not push while the base lags too far to spawn, so every
 // ticket ready to spawn is frozen; listed first, naming the command that pushes it (done records nothing;
 // the next pass clears it once the base is current).
@@ -102,6 +104,7 @@ import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, approvalText, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, EXIT } from './batch-state.mjs';
 import { promotionTitle } from './pass/promotion-pr.mjs';
+import { dayAndTime } from './desk-q-eta.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
@@ -642,6 +645,7 @@ function prPlain(r, t, gapLines = null, reads = null) {
     case 'hold': return holdPlain(n, w, reads && holdStepDone(r, t, w, reads));
     case 'feedback': return `${n} is held for review: ${one(w.text)}. Resolve or answer it; desk then merges it.`;
     case 'approval': return `${n} waits on a person's approval: ${plainWords(w.text).replace(/: a person approves it before desk merges it$/, '')}. Review and approve it on GitHub; desk then merges it.`;
+    case 'merge-ref': return `${n} looks stuck on GitHub: ${plainWords(w.text).replace(/: push a new commit .*$/, '')}. Push a new commit to its branch (an empty one will do) for a fresh merge ref, or open a new PR from it; desk then merges it once it is green.`;
     case 'conflict': return conflictPlain(r, t, n, w.base);
     case 'red': {
       const red = ask ? ask.left : w.names;
@@ -903,12 +907,13 @@ function promotionOf(q, t) {
   return m ? { pr: m.pr, merge_commit: m.merge_commit ?? q?.promotion_commits?.[String(m.pr)] ?? null } : null;
 }
 const SHA40 = /^[0-9a-f]{40}$/;
-function gateHeld(r, t, s) {
+// `reads` is collect's (READS); its git reads the refs, READS.git where it has none.
+function gateHeld(r, t, s, reads = null) {
   const after = s.after ?? 'merge';
   if (after === 'merge') return { held: true, note: null };
   const root = gitRootOf(r);
   if (!root) return { held: true, note: 'its gate could not be checked: config §2 "Primary repo root" is unset' };
-  const git = (args) => READS.git(root, args);
+  const git = (args) => (reads?.git ?? READS.git)(root, args);
   const commit = (x) => git(['rev-parse', '--verify', '--quiet', `${x}^{commit}`]);
   const within = (a, b) => git(['merge-base', a, b]) === a;
   const pr = `PR #${t.result?.pr ?? '?'}`;
@@ -958,7 +963,7 @@ export const followGateHeld = (slug, q, t, s) => gateHeld({ slug, q }, t, s).hel
 // checker's to run, and `failed`, the checker's record, where one failed it), `waiting` not yet. A step a
 // checker passed is neither, nor is a runnable one not yet passed or failed while its checker runs (up
 // to FOLLOW_TIMEOUT_MS) or, for FOLLOW_WAIT_MS after the code went out, is still to.
-function followSplit(r, t, now = Date.now()) {
+function followSplit(r, t, now = Date.now(), reads = null) {
   const ready = [], waiting = [];
   const labels = personStepLabels(r.slug);
   const waited = now - (timeOf(outAt(r.q, t)) ?? now) >= FOLLOW_WAIT_MS;
@@ -966,7 +971,7 @@ function followSplit(r, t, now = Date.now()) {
   for (const s of t.follow_on) {
     const c = checkOf(t, s);
     if (c?.result === 'pass') continue;
-    const g = gateHeld(r, t, s);
+    const g = gateHeld(r, t, s, reads);
     if (!g.held) { waiting.push(s); continue; }
     // A step a checker ran stays its own, whatever the labels read now.
     const checked = settled(c) || followKind(s, labels) === 'runnable';
@@ -990,9 +995,9 @@ const gatedFollow = (t) => t.follow_on.some((s) => gateOf(s) !== 'merge');
 // step is an item of its own, `…:checked:<id>` (stepId), listed as soon as it failed or went unrun: its
 // result comes in on its own time, and would otherwise join an item the person was already shown.
 const stepId = (s) => createHash('sha1').update(String(s.step)).digest('hex').slice(0, 6);
-function followItems(r) {
+function followItems(r, reads = null) {
   return followsOf(r).flatMap((t) => {
-    const { ready, waiting } = followSplit(r, t);
+    const { ready, waiting } = followSplit(r, t, Date.now(), reads);
     const groups = GATES.flatMap((g) => {
       const here = ready.filter((x) => gateOf(x.s) === g);
       return [{ g, ready: here.filter((x) => !x.checked) }, ...here.filter((x) => x.checked).map((x) => ({ g, id: stepId(x.s), ready: [x] }))];
@@ -1056,6 +1061,39 @@ function promotionItems(r) {
       need: `promotion PR #${red.pr} (${base} into the default branch) is red, failing ${andList(checks)}; ${what}, so no more workers go to it. Fix what fails on ${base} and push it, then say done; merging it stays yours${waits}`,
       actions: [['done', 'once it is fixed on the base, the next pass reads its checks again and this item goes while they pass'], ['not-now']],
       since: timeOf(red.since) } }];
+}
+
+// ---- the base red under a batch's PRs (fix-tries.mjs againstBase, kept on each ticket as base_red) ---
+// A check red on the base holds every PR it fails on without a fix try (BASE RED), and no worker repairs
+// the base. While any open PR holds on one, one item says so: the checks, the PRs held and the last merges
+// desk made, which may be what turned it red. done records nothing: the next pass reads the base again,
+// each hold clears once its check passes there, and the item goes with the last.
+const BASE_RED = 'base-red:';
+const BASE_RED_MERGES = 3;
+function baseRedItems(r) {
+  const tickets = Object.values(r.q?.tickets ?? {});
+  // Held now: the last call held it, and its PR is open at the head the hold read, one of those checks
+  // still red there. A record a PR left on going green, closing or taking a fix try is not a hold.
+  // `live` is each held ticket's checks still red on its PR, the only ones the item names.
+  const liveOf = (t) => {
+    const b = t.base_red, st = prStatusOf(t);
+    if (!b?.held || !b.checks?.length || st?.state !== 'OPEN' || st.head !== b.head) return [];
+    // The status's checks are already the latest per workflow and name (readPrStatus), so read as they are.
+    return [...new Set((st.checks ?? []).filter((c) => b.checks.includes(c.name) && FAILED.has(c.conclusion)).map((c) => c.name))];
+  };
+  const held = tickets.map((t) => ({ t, live: liveOf(t) })).filter((x) => x.live.length);
+  if (!held.length) return [];
+  const base = r.q.base ?? 'the default branch';
+  const checks = [...new Set(held.flatMap((x) => x.live))].sort();
+  const prOf = (t) => (t.result?.pr != null ? `#${t.result.pr} (${t.key})` : t.key);
+  const merges = tickets.filter((t) => t.merged_at).sort((a, b) => Date.parse(b.merged_at) - Date.parse(a.merged_at)).slice(0, BASE_RED_MERGES)
+    .map((t) => `${prOf(t)} on ${dayAndTime(t.merged_at)}`);
+  const last = merges.length ? `. The last merges desk made: ${andList(merges)}` : '';
+  return [{ r, t: { key: `${BASE_RED}${r.q.base ?? 'default'}` }, behind: held.length,
+    item: { kind: 'base-red', repoLevel: true, checks,
+      need: `${base} is red on ${andList(checks.map((c) => `"${c}"`))}, so ${andList(held.map((x) => prOf(x.t)))} ${held.length === 1 ? 'holds' : 'hold'} with no fix try and no worker repairs ${base}${last}. Fix it on ${base}, or revert the merge that turned it red, then say done`,
+      actions: [['done', 'the next pass reads the base again; each hold clears once its check passes there, and this item goes with the last'], ['not-now']],
+      since: timeOf(held.map((x) => x.t.base_red.since).filter(Boolean).sort()[0]) } }];
 }
 
 // ---- one ticket queued in two repos (batches.mjs queuedCopies) -----------------------------------
@@ -1615,7 +1653,7 @@ export function needsCount(r) {
     if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else { items.push(s); live.add(s.item.step); }
   }
   const stepRows = held.filter((x) => { const b = x.b ?? r; return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)); });
-  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...promotionItems(b), ...duplicateItems(b)])) {
+  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...promotionItems(b), ...baseRedItems(b), ...duplicateItems(b)])) {
     if (lookup(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') { putOff++; offItems.push(f); } else items.push(f);
   }
   for (const s of reviewerItems((r.batches ?? [r]).filter((x) => x.q))) {
@@ -1684,7 +1722,8 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
       if ([...s.in].some((b) => dirs.has(resolve(b.stateDir)))) repoItem(s.r, s.t, s.item, s.item.since, s.dir, s.behind, s.said);
     }
   }
-  for (const f of inScope.flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...duplicateItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
+  for (const f of inScope.flatMap((b) => [...followItems(b, reads), ...linkItems(b), ...unpromotedItems(b), ...duplicateItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
+  for (const f of inScope.flatMap(baseRedItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
   // Its need names the follow items waiting on it, so it ranks by them without saying the count.
   for (const f of inScope.flatMap(promotionItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
   for (const slug of new Set(inScope.map((x) => x.slug))) {
@@ -1781,7 +1820,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED)) return recordRepoItem({ word, ticket, action, now, repos, reads });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED)) return recordRepoItem({ word, ticket, action, now, repos, reads });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -2114,6 +2153,7 @@ function recordRepoItem({ word, ticket, action, now, repos, reads = READS }) {
     return say(true, 'done, so it is off your list.');
   }
   if (i.kind === STALLED) return say(true, 'noted: this item goes once a pass runs again; done records nothing.');
+  if (i.kind === 'base-red') return say(true, 'noted: the next pass reads the base again; each hold clears once its check passes there, and this item goes with the last; done records nothing.');
   if (i.kind === 'ci-red') return say(true, 'noted: this item goes once the alarm closes the issue, when every CI lane on main is green and fresh; done records nothing.');
   if (i.kind === SIGNIN) return say(true, 'noted: the next pass checks the login again; once it passes this item goes and the upload queue resumes.');
   if (i.kind === PAGE) return say(true, 'noted: once desk is installed again, the next upload checks the page; once it finds the composer this item goes and the upload queue resumes.');
@@ -2167,36 +2207,49 @@ export function ask({ word, text, now = Date.now(), repos = loadRepos(now, word)
   return { ok: true, line: `${r.repo} ${ASK}${id}: ${added ? 'recorded' : 'already recorded'}; /desk-needs-you and desk-q list it until you say done.` };
 }
 
+// One run of the command line, in this process: { code, out, err }, which the entry below prints and exits
+// with. `reads` is what list's refresh and collect, and record, read through (READS where none is given).
+export function run(argv, { reads } = {}) {
+  const [cmd, ...rest] = argv;
+  const lines = [];
+  const end = (code, err = '') => ({ code, out: lines.map((l) => `${l}\n`).join(''), err });
+  const at = reads === undefined ? {} : { reads };
+  try {
+    if (cmd === 'list' && rest.length <= 1) {
+      const settled = refresh({ word: rest[0] ?? null, ...at });
+      lines.push([...settled, listText(collect({ word: rest[0] ?? null, ...at }))].join('\n'));
+    }
+    else if (cmd === 'left' && rest.length <= 1) lines.push(leftText({ word: rest[0] ?? null }));
+    else if (cmd === 'record' && rest.length >= 3) {
+      const [word, ticket, verb, ...more] = rest;
+      // An override names its decision id before the choice.
+      const [action, text] = verb === 'override' ? [`override ${more[0] ?? ''}`, more.slice(1).join(' ')] : [verb, more.join(' ')];
+      const res = record({ word, ticket, action, text, ...at });
+      lines.push(res.line);
+      if (res.message) lines.push(`MESSAGE ${res.message.to ?? '(no batch name recorded)'}: ${res.message.text}`);
+      if (!res.ok) return end(EXIT.SHOW_PERSON);
+    } else if (cmd === 'move' && rest.length === 3) {
+      const [word, ticket, to] = rest;
+      const res = record({ word, ticket, action: 'move', text: to, ...at });
+      lines.push(res.line);
+      if (!res.ok) return end(EXIT.SHOW_PERSON);
+    } else if (cmd === 'ask' && rest.length === 2) {
+      const res = ask({ word: rest[0], text: rest[1] });
+      lines.push(res.line);
+      if (!res.ok) return end(EXIT.SHOW_PERSON);
+    } else return end(EXIT.SHOW_PERSON, 'usage: needs-you.mjs list [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>"\n');
+  } catch (e) { return end(EXIT.SHOW_PERSON, `${e.message}\n`); }
+  return end(0);
+}
+
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
 })();
 if (isMain) {
-  const [cmd, ...rest] = process.argv.slice(2);
-  const refuse = (why) => { console.error(why); process.exit(EXIT.SHOW_PERSON); };
-  try {
-    if (cmd === 'list' && rest.length <= 1) {
-      const settled = refresh({ word: rest[0] ?? null });
-      console.log([...settled, listText(collect({ word: rest[0] ?? null }))].join('\n'));
-    }
-    else if (cmd === 'left' && rest.length <= 1) console.log(leftText({ word: rest[0] ?? null }));
-    else if (cmd === 'record' && rest.length >= 3) {
-      const [word, ticket, verb, ...more] = rest;
-      // An override names its decision id before the choice.
-      const [action, text] = verb === 'override' ? [`override ${more[0] ?? ''}`, more.slice(1).join(' ')] : [verb, more.join(' ')];
-      const res = record({ word, ticket, action, text });
-      console.log(res.line);
-      if (res.message) console.log(`MESSAGE ${res.message.to ?? '(no batch name recorded)'}: ${res.message.text}`);
-      if (!res.ok) process.exit(EXIT.SHOW_PERSON);
-    } else if (cmd === 'move' && rest.length === 3) {
-      const [word, ticket, to] = rest;
-      const res = record({ word, ticket, action: 'move', text: to });
-      console.log(res.line);
-      if (!res.ok) process.exit(EXIT.SHOW_PERSON);
-    } else if (cmd === 'ask' && rest.length === 2) {
-      const res = ask({ word: rest[0], text: rest[1] });
-      console.log(res.line);
-      if (!res.ok) process.exit(EXIT.SHOW_PERSON);
-    } else refuse('usage: needs-you.mjs list [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>"');
-  } catch (e) { refuse(e.message); }
+  const { code, out, err } = run(process.argv.slice(2));
+  // Through console, which drops a write to a closed pipe rather than throwing EPIPE and exiting 1.
+  if (out) console.log(out.replace(/\n$/, ''));
+  if (err) console.error(err.replace(/\n$/, ''));
+  process.exitCode = code;
 }

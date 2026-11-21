@@ -2,15 +2,15 @@
 // merged-branch.mjs's tidy against a real scratch repo: a branch whose tip is the merged head, one
 // squash-merged (no ancestry), a backup branch, one holding work the base lacks, a PR not merged, and
 // each §3 branch-delete value. desk-env's reading of `merged`, which only branch-delete takes.
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { tidy } from '../desk/bin/merged-branch.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
-const T = mkdtempSync(join(tmpdir(), 'merged-branch-'));
+const T = scratch('merged-branch-');
 const R = join(T, 'repo');
 const env = { ...process.env, GIT_CONFIG_GLOBAL: join(T, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
 const git = (...a) => { const r = spawnSync('git', ['-C', R, ...a], { encoding: 'utf8', env }); return r.stdout.trim(); };

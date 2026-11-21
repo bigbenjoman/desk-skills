@@ -2,11 +2,11 @@
 // The machine profile: hardware parsing from fixture output, the sizing rules, the profile file, and
 // the §3b fallback through desk-env. Scratch directories only; nothing reads this computer.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList, rewrittenSizing, sizesProposed, sizingOverrides, isOverride } from '../desk/bin/machine.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const sized = (hw) => Object.fromEntries(propose(hw).map((r) => [r.key, r]));
@@ -167,7 +167,7 @@ t('memory change re-proposes', sizingChanges(back, propose(more)).some((c) => c.
 // desk-env refuses its config writes inside an autopilot worker; these tests are not one.
 delete process.env.DESK_AUTOPILOT_WORKER;
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-env.mjs');
-const T = mkdtempSync(join(tmpdir(), 'desk-machine-'));
+const T = scratch('desk-machine-');
 const profile = join(T, 'machine.md');
 // A stray park-after row, so the repo-only check below fails if the fallback ever reaches every id.
 writeFileSync(profile, `${renderProfile(small, propose(small), '2026-10-17')}| \`park-after\` | \`99\` | stray |\n`);
@@ -276,6 +276,20 @@ t('a §3b TODO row still has nothing to fall back to', env(['get', 'test-cap'], 
 t('detect still offers the proposal', env(['machine', 'detect'], absent, fresh).includes('no sizes proposed'), true);
 const proposedOver = parseProfile(renderProfile(small, rewrittenSizing(started, propose(small)), '2026-11-08'));
 t('a later write keeps the bench rows and proposes the sizes', `${sizesProposed(proposedOver)} ${proposedOver.sizing['bench-cap-points']?.value} ${proposedOver.sizing['memory-ceiling-gb']?.value}`, 'true 12 8');
+
+// lease-kinds, the lease broker's per-kind lever, is a Sizing row set by machine set.
+const kinds = join(T, 'lease-kinds.md');
+t('machine set stores a lease-kinds row', setErr(['lease-kinds=port=on slot=shadow,merge=off'], kinds), 'exit 0');
+t('it reads back whole', env(['machine', 'get', 'lease-kinds'], absent, kinds), 'port=on slot=shadow,merge=off');
+t('DS-908 AC17: machine set refuses an entry it does not know, naming it',
+  setErr(['lease-kinds=port=on sockets=on'], kinds).startsWith('exit 1: nothing written: `lease-kinds` names an entry it does not know: "sockets=on": want <kind>=<mode> entries'), true);
+t('and an empty row', setErr(['lease-kinds='], kinds).startsWith('exit 1: nothing written: `lease-kinds` is empty'), true);
+t('and a value broken across lines, which the row would cut short', setErr(['lease-kinds=port=on\nslot=on'], kinds), 'exit 1: nothing written: `lease-kinds` holds a line break: give it on one line');
+const handEdited = join(T, 'lease-kinds-bad.md');
+writeFileSync(handEdited, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `port=maybe sockets=on slot=on` | by hand |\n');
+t('DS-908 AC17: the profile check names each entry a hand-edited row holds that it does not know',
+  env(['machine', 'detect'], absent, handEdited).includes('`lease-kinds` names entries it does not know: "port=maybe", "sockets=on"'), true);
+t('a good row is no problem to detect', env(['machine', 'detect'], absent, kinds).includes('cannot read'), false);
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'machine: all checks passed');
