@@ -216,6 +216,23 @@ check "DS-763 AC5 a pass that fails to run on one tree is reported not compared,
 cmp "$T/crash" "$T/base"
 check "DS-763 AC5 a crash on the base is not compared either" '[ $rc = 2 ] && echo "$out" | grep -qF "not compared: the pass failed to run on the base"'
 
+# PASS_CMP_KEEP=1 ($1 is 1 or empty), each run in its own scratch TMPDIR $2: the list on stdout, the
+# directory it kept (if it says so) and the command it prints to list them again.
+keep(){ mkdir -p "$T/$2"
+  err=$(PASS_CMP_KEEP=$1 TMPDIR="$T/$2" bash "$S/compare_pass.sh" "$3" "$4" 2>&1 >"$T/$2.out"); rc=$?
+  out=$(cat "$T/$2.out"); kept=; redo=$(echo "$err" | grep '^  node ')
+  case "$err" in *"kept the recordings and both trees in "*) kept=${err#*kept the recordings and both trees in }; kept=${kept%%; list them again*} ;; esac; }
+keep 1 keepfield "$T/base" "$T/field"
+check "DS-962 AC1 with the keep switch, a run that differs keeps its recordings and both trees and prints where" '[ $rc = 1 ] && [ -n "$kept" ] && [ -d "$kept/rec/base/test_pass.sh" ] && [ -d "$kept/rec/head/test_pass.sh" ] && [ -f "$kept/base/desk/bin/pass.mjs" ] && [ -f "$kept/head/desk/bin/pass.mjs" ]'
+first=$out; out=$(eval "$redo" 2>/dev/null); rc=$?
+check "DS-962 AC4 the printed diff on the kept directory lists the same differences again" '[ $rc = 1 ] && [ -n "$out" ] && [ "$out" = "$first" ]'
+keep 1 keepsame "$T/base" "$T/same"
+check "DS-962 AC2 with the keep switch, a run that lists nothing removes its scratch directory" '[ $rc = 0 ] && [ -z "$kept" ] && [ -z "$(ls -A "$T/keepsame")" ]'
+keep '' keepoff "$T/base" "$T/field"
+check "DS-962 AC3 without the keep switch, a run that differs removes its scratch directory" '[ $rc = 1 ] && [ -z "$kept" ] && [ -z "$(ls -A "$T/keepoff")" ]'
+keep 1 keepcrash "$T/base" "$T/crash"
+check "DS-962 AC5 with the keep switch, a run not compared keeps its recordings too" '[ $rc = 2 ] && [ -n "$kept" ] && [ -d "$kept/rec/head/test_pass.sh" ] && [ -f "$kept/head/desk/bin/pass.mjs" ]'
+
 # The head moved its second case into a unit suite: the base's two cases still run against it.
 mktree moved running running
 printf '#!/usr/bin/env bash\nSRC="$(cd "$(dirname "$0")/.." && pwd)"; B="$SRC/desk/bin"\nnode -e 1; echo "ok   the first pass, all that is left"\n' > "$T/moved/tests/test_pass.sh"
