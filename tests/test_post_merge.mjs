@@ -111,5 +111,20 @@ const local = { tickets: { 'T-H': { merged_at: iso(mergedA), pr_status: { pr: 1,
 postMergeScan({ state: join(tmp, 'state12'), queue: local, repo: 'O/Here', log, runs: () => [], now: NOW });
 t('this repo\'s PR, its url spelt in another case, still gets its revert record', readPostMerge(join(tmp, 'state12')).filter((r) => r.kind === 'revert').map((r) => r.ticket).join(), 'T-H');
 
+// Renamed from O/Old to O/Here with origin still on the old name: this repo's PR urls name O/Here, and
+// GitHub's url for the repo does too, so its tickets are watched and another repo's #1 still is not.
+const renamed = { tickets: { ...local.tickets, 'T-G': foreign.tickets['T-G'] } };
+const revertsOf = (s) => readPostMerge(join(tmp, s)).filter((r) => r.kind === 'revert').map((r) => r.ticket).sort().join();
+const r13 = postMergeScan({ state: join(tmp, 'state13'), queue: renamed, repo: 'O/Old', repoUrl: () => 'https://github.com/O/Here\n', log, runs: () => [], now: NOW });
+t('after a rename with a stale origin, this repo\'s ticket gets its revert record', revertsOf('state13'), 'T-H');
+t('after a rename, the scan is complete', readPostMerge(join(tmp, 'state13')).find((r) => r.kind === 'scan')?.complete, true);
+t('after a rename, the pass line names the revert', /T-H reverted by/.test(r13.line), true);
+const r14 = postMergeScan({ state: join(tmp, 'state14'), queue: renamed, repo: 'O/Old', repoUrl: () => { throw new Error('gh: HTTP 502'); }, log, runs: () => [], now: NOW });
+const scan14 = readPostMerge(join(tmp, 'state14')).find((r) => r.kind === 'scan');
+t('with GitHub\'s repo url unread, another repo\'s #1 is still left out', revertsOf('state14'), '');
+t('with GitHub\'s repo url unread, the scan is incomplete', scan14?.complete, false);
+t('saying it judged by the remote\'s name', /repo url not read, so judged by the remote's name O\/Old: gh: HTTP 502/.test(scan14?.why), true);
+t('and the pass line says so', /scan incomplete/.test(r14.line), true);
+
 rmSync(tmp, { recursive: true, force: true });
 if (fails) { console.log(`${fails} failed`); process.exit(1); }

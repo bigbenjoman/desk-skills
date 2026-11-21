@@ -102,12 +102,23 @@ export function postMergeDue({ state, queue, now = Date.now() }) {
 
 // One scan, if one is due: `log(sinceIso)` gives the default branch's commits and `runs(sinceIso)` its
 // runs since then, each throwing when it cannot read all of them. -> {ran, written: [records], line}
-export function postMergeScan({ state, queue, log, runs, repo = null, now = Date.now() }) {
+// `repo` is the remote's spelling of this repo, which a rename leaves behind; `repoUrl()`, where given,
+// is the url GitHub gives it now, and is what a ticket's PR url is judged against. Unread, the scan
+// judges by `repo` and says so: it is then incomplete, as it may have left out this repo's own tickets.
+export function postMergeScan({ state, queue, log, runs, repo = null, repoUrl = null, now = Date.now() }) {
   const have = readPostMerge(state);
   if (now - lastScan(have) < SCAN_EVERY_MS) return { ran: false, written: [], line: null };
   const at = new Date(now).toISOString();
-  const merges = watched(queue, now, repo);
   const why = [];
+  let here = repo;
+  if (repo && repoUrl) {
+    try {
+      const m = /^https:\/\/github\.com\/([^/]+\/[^/]+?)\/?$/i.exec(String(repoUrl() ?? '').trim());
+      if (!m) throw new Error(`not a GitHub repo url`);
+      here = m[1];
+    } catch (e) { why.push(`repo url not read, so judged by the remote's name ${repo}: ${firstLine(e)}`); }
+  }
+  const merges = watched(queue, now, here);
   let commits = [];
   let runList = null;
   if (merges.length) {
@@ -152,6 +163,8 @@ export function postMergeWatch({ state, queue, repo, branch, cwd }) {
   try {
     return postMergeScan({
       state, queue, repo,
+      // GitHub follows a rename, so this names the repo as its PR urls do.
+      repoUrl: () => execFileSync('gh', ['repo', 'view', repo, '--json', 'url', '--jq', '.url'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
       log: (since) => {
         execFileSync('git', ['-C', cwd, 'fetch', '-q', 'origin', branch], { stdio: 'ignore' });
         return gitLog(cwd, `origin/${branch}`, since);
