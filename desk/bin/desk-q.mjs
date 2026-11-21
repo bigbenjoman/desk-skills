@@ -2603,10 +2603,33 @@ function quietNotes(shown) {
   }));
 }
 
+// Each old desk code note, keyed by the batch it shows under. The supervisor agent runs per repo, so
+// each kind (supervisor, merge driver) is one note on the first batch of a repo that has it, and where
+// several repos have it, one note naming them all, on the first one's batch.
+const OLD_CODE = [
+  ['supervisor', 'the supervisor runs old desk code. ', (repos) => `the supervisors of ${repos} run old desk code. `, 'Run ./install.sh in desk-skills.'],
+  // The supervisor restarts its driver on the installed code by itself, so the driver's note has no fix.
+  ['driver', 'the merge driver runs old desk code. It moves to the installed code when it next waits between loops.',
+    (repos) => `the merge drivers of ${repos} run old desk code. Each moves to the installed code when it next waits between loops.`, null],
+];
+function oldCodeNotes(shown) {
+  const at = new Map();
+  for (const [kind, one, many, fix] of OLD_CODE) {
+    const first = new Map();
+    for (const r of shown) if (r.stall?.oldCode?.[kind] && !first.has(r.slug)) first.set(r.slug, r);
+    const rs = [...first.values()];
+    if (!rs.length) continue;
+    const note = rs.length === 1 ? { tag: `▲ ${rs[0].repo}`, text: one } : { tag: '▲ desk code', text: many(andList(rs.map((r) => r.repo))) };
+    at.set(rs[0], [...(at.get(rs[0]) ?? []), { tag: note.tag, sgr: WARN, text: [[note.text, null], ...(fix ? [[fix, BOLD]] : [])] }]);
+  }
+  return at;
+}
+
 // The amber notes for a batch that runs but does not move, each with its fix where there is one.
-// `quiet` is quietNotes's, which says which batch carries its repo's no-progress note. With `allOut`,
-// Home's note on the Claude default's limit stands for the batch's hold on it.
-function stallNotes(r, quiet, allOut = false) {
+// `quiet` is quietNotes's, which says which batch carries its repo's no-progress note, and `old`
+// oldCodeNotes's, which batch carries the old desk code notes. With `allOut`, Home's note on the
+// Claude default's limit stands for the batch's hold on it.
+function stallNotes(r, quiet, old, allOut = false) {
   const s = r.stall, tag = `▲ ${r.repo}`;
   if (!s) return [];
   const note = (text, fix) => ({ tag, sgr: WARN, text: [[text, null], ...(fix ? [[fix, BOLD]] : [])] });
@@ -2621,9 +2644,7 @@ function stallNotes(r, quiet, allOut = false) {
     const fix = /signed out/i.test(reason) ? 'Run gh auth login.' : null;
     out.push(note(`${what}: ${reason}.${fix ? ' ' : ''}`, fix));
   }
-  if (s.oldCode?.supervisor) out.push(note('the supervisor runs old desk code. ', 'Run ./install.sh in desk-skills.'));
-  // The supervisor restarts its driver on the installed code by itself, so the driver's note has no fix.
-  if (s.oldCode?.driver) out.push(note('the merge driver runs old desk code. It moves to the installed code when it next waits between loops.'));
+  out.push(...(old.get(r) ?? []));
   return out;
 }
 
@@ -2739,10 +2760,10 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     const more = `${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`;
     foot.push('', ...(width == null ? [[[more, DIM]]] : wrapSegs([[more, DIM]], Math.max(12, width - 2))).map((segs) => segLine([['  ', null], ...segs])));
   }
-  const readable = shown.filter((r) => !r.error), quiet = quietNotes(readable);
+  const readable = shown.filter((r) => !r.error), quiet = quietNotes(readable), old = oldCodeNotes(readable);
   const out = claude?.limit ? claude : null;
   const notes = [...(out ? [defaultOutNote(out, now)] : []), ...list.flatMap((r) => (r.unreadable ?? []).map((b) => ({ tag: `▲ ${r.name}`, sgr: WARN, text: [[unreadableText(b), null]] }))),
-    ...readable.flatMap((r) => stallNotes(r, quiet, !!out && out.follows(r.slug))), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
+    ...readable.flatMap((r) => stallNotes(r, quiet, old, !!out && out.follows(r.slug))), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
   // GitHub's page change pauses every repo's uploads, so it is one note for the machine, not one per PR.
   const pause = uploadPause();
   if (pause) notes.unshift({ tag: '▲ uploads', sgr: WARN, text: [[uploadPauseText(pause), null]] });

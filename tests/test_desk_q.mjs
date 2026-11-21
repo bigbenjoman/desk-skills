@@ -1864,12 +1864,13 @@ t('DS-219 AC3 a session running passes beside the loaded supervisor: ▲ supervi
 t('DS-219 AC4 a merge driver that died, never started, or whose retry died too: one note with the reason from its log',
   `${notesOf('drv').join(' / ').replace(/\d\d:\d\d/, 'HH:MM')} | ${notesOf('drv2').join(' / ')} | ${notesOf('drv3').join(' / ')}`,
   'the merge driver stopped at HH:MM: gh is signed out. Run gh auth login. | the merge driver could not start: spawn EACCES. | the merge driver stopped: no PR for DL-1.');
+// old and unreloaded both run old code, so their notes fold into one (DS-944).
 t('DS-219 AC5 a supervisor on old desk code: one note to run ./install.sh in desk-skills',
-  notesOf('old').join(' / '), 'the supervisor runs old desk code. Run ./install.sh in desk-skills.');
+  `${notesOf('old').length} ${notesOf('desk code').join(' / ')}`, '0 the supervisors of old and unreloaded run old desk code. Run ./install.sh in desk-skills.');
 t('DS-512 AC1 an agent reloaded at the installed commit, whose last pass recorded itself as old code: no note',
   notesOf('reloaded').length, 0);
-t('DS-512 AC2 an agent install.sh did not reload, whose last record reads as current: the supervisor note',
-  notesOf('unreloaded').join(' / '), 'the supervisor runs old desk code. Run ./install.sh in desk-skills.');
+t('DS-512 AC2 an agent install.sh did not reload, whose last record reads as current: the supervisor note names it',
+  `${notesOf('unreloaded').length} ${/ and unreloaded run old desk code/.test(notesOf('desk code').join(' / '))}`, '0 true');
 t('DS-512 AC3 / DS-666 AC3 a driver whose lock names another version: the merge driver note says it moves by itself, with no install to run',
   notesOf('drvold').join(' / '), 'the merge driver runs old desk code. It moves to the installed code when it next waits between loops.');
 t('DS-512 AC4 / DS-666 AC4 a driver whose lock names the installed version, whatever its last record says: no note',
@@ -2743,6 +2744,62 @@ try {
   // The stopped-driver note is one of the overview's health notes; the Queue shows no running segment.
   t('DS-935 AC3 a stopped merge driver: the stopped note shows and no running segment does',
     `${/▲ stop +the merge driver stopped at \d\d:\d\d: gh is signed out/.test(W935.run('--plain').out)} ${W935.run('--plain', 'stop').out.includes('merge driver up')}`, 'true false');
+}
+
+// ---- DS-944: the old desk code notes show once per repo, and once naming every repo that needs the install.
+{
+  const none944 = { voicepa: null, 'desk-skills': null, 'pr-ninja': null, pranicuk: null, forewatt: null, 'yield-index': null, 'gygg-platform': null };
+  const sup944 = (name, port) => ({ port, conc: '2 / 3', beat: 1, runBy: 'supervisor', queue: { batch: name, concurrency: 2, supervised: true, tickets: { [`${name.toUpperCase()}-1`]: run215 } } });
+  // A world of supervised repos, each `{ port, batches, agent, driver }`: its named batches beside the
+  // standing one, the code its agent loaded, and the code each batch's live driver runs (a batch left
+  // out has no driver; `stopped` is one that failed). install.sh installed new1.
+  const make944 = (repos) => {
+    const W = world({ ...none944, ...Object.fromEntries(Object.entries(repos).map(([n, r]) => [n, sup944(n, r.port)])) });
+    writeFileSync(join(W.env.DESK_HOME, 'installed.json'), JSON.stringify({ commit: 'new1' }));
+    mkdirSync(join(W.env.HOME, 'Library', 'LaunchAgents'), { recursive: true });
+    for (const [name, r] of Object.entries(repos)) {
+      const slug = `acme__${name}`;
+      writeFileSync(join(W.env.HOME, 'Library', 'LaunchAgents', `com.desk-skills.supervisor.${slug}.plist`),
+        `<plist><dict><key>EnvironmentVariables</key><dict><key>DESK_AGENT_VERSION</key><string>${r.agent}</string></dict></dict></plist>\n`);
+      for (const b of r.batches ?? []) {
+        const q = join(W.env.DESK_HOME, 'repos', slug, 'batches', b, 'queue.json');
+        const s = join(W.env.HOME, '.desk-autopilot', slug, 'batches', b, 'orchestrators');
+        mkdirSync(dirname(q), { recursive: true });
+        mkdirSync(s, { recursive: true });
+        writeFileSync(q, JSON.stringify({ version: 1, batch: b, concurrency: 2, supervised: true, tickets: { [`${b}-1`]: { key: `${b}-1`, ...run215 } } }));
+        writeFileSync(join(s, 'q.json'), JSON.stringify({ queue: q, batch: b, pid: 1, at: minsAgo(1) }));
+      }
+      for (const [b, v] of Object.entries(r.driver ?? {})) {
+        const state = join(W.env.HOME, '.desk-autopilot', slug, ...(b === 'standing' ? [] : ['batches', b]));
+        if (v === 'stopped') {
+          writeFileSync(join(state, 'supervisor.json'), JSON.stringify({ driver: { pid: null, started: minsAgo(20), from: 0, failures: 1, notified: false, code: 1, reason: 'FAIL: no ready batch PRs' } }));
+          writeFileSync(join(state, 'merge-driver.log'), 'FAIL: no ready batch PRs\nmerge driver exited 1\n');
+          continue;
+        }
+        mkdirSync(join(state, 'merge-driver.lock.d'), { recursive: true });
+        writeFileSync(join(state, 'merge-driver.lock.d', 'pid'), `${process.pid}\n`);
+        writeFileSync(join(state, 'merge-driver.lock.d', 'version'), `${v}\n`);
+      }
+    }
+    W.loaded(...Object.keys(repos));
+    return lines(W.run('--plain').out);
+  };
+  const tagged944 = (ls, tag) => ls.filter((l) => new RegExp(`^(note| {4}) {2}▲ ${tag} +`).test(l)).map((l) => l.replace(new RegExp(`^(note| {4}) {2}▲ ${tag} +`), ''));
+  const four = make944({ stw: { port: 5900, batches: ['b1', 'b2', 'b3'], agent: 'old1', driver: { standing: 'old1', b1: 'old1', b2: 'old1', b3: 'stopped' } } });
+  const stw = tagged944(four, 'stw');
+  t('DS-944 AC1 a repo with four supervised batches on old desk code: one supervisor note',
+    stw.filter((n) => n.startsWith('the supervisor runs old desk code')).join(' / '), 'the supervisor runs old desk code. Run ./install.sh in desk-skills.');
+  t('DS-944 AC2 the same repo\'s merge drivers on old desk code: one merge driver note',
+    stw.filter((n) => n.startsWith('the merge driver runs old desk code')).length, 1);
+  t('DS-944 AC4 a batch whose merge driver stopped keeps its own note beside the old code ones',
+    `${stw.filter((n) => /^the merge driver stopped at \d\d:\d\d: no ready batch PRs\.$/.test(n)).length} ${stw.length}`, '1 3');
+  const three = make944({ sa: { port: 5910, agent: 'old1', driver: { standing: 'old1' } }, sb: { port: 5920, batches: ['b1'], agent: 'old1', driver: { standing: 'old1', b1: 'old1' } },
+    sc: { port: 5930, agent: 'old1' } });
+  t('DS-944 AC3 three repos whose supervisors run old desk code: one note names them all and says to run ./install.sh once',
+    `${tagged944(three, 'desk code').join(' / ')} | ${three.filter((l) => /^(note| {4}) {2}▲ s[abc] /.test(l)).length}`,
+    'the supervisors of sa, sb and sc run old desk code. Run ./install.sh in desk-skills. / the merge drivers of sa and sb run old desk code. Each moves to the installed code when it next waits between loops. | 0');
+  const fresh = make944({ up: { port: 5940, batches: ['b1', 'b2'], agent: 'new1', driver: { standing: 'new1', b1: 'new1' } } });
+  t('DS-944 AC5 no repo on old desk code: no old code note', fresh.some((l) => l.includes('old desk code')), false);
 }
 
 // ---- DS-937: a ticket page says who merged or armed its PR at which head, from the merge log
