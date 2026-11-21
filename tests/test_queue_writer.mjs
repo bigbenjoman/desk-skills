@@ -164,6 +164,8 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
     R: tk('R', { state: 'done', result: { pr: 8 }, pr_status: { pr: 8, state: 'CLOSED' }, reopening: 8 }),
     // A requeued ticket with an earlier round's merge whose new PR's reopen failed: its status still reads OPEN.
     S: tk('S', { state: 'done', result: { pr: 9 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 9, state: 'OPEN' }, reopening: 9 }),
+    // Its reopen failed, then needs-you recorded the PR merged before a pass read it: nothing to reopen.
+    T: tk('T', { state: 'done', result: { pr: 10 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 10, state: 'MERGED' }, reopening: 10 }),
     A: tk('A'),
   } });
   const w = queueWriter(f);
@@ -177,11 +179,12 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('AC6 the archive sits beside the queue', archivePath(f), join(dirname(f), 'queue.archive.json'));
   t('AC6 merged and closed tickets leave the live queue', `${'M' in q.tickets} ${'X' in q.tickets}`, 'false false');
   t('AC6 and are in the archive, with when', `${a.tickets.M.state} ${a.tickets.X.state} ${!!a.tickets.M.archived_at}`, 'done done true');
-  t('AC6 the write says which moved', r.archived.join(','), 'M,X,Q');
+  t('AC6 the write says which moved', r.archived.join(','), 'M,X,Q,T');
   t('DS-785 a merged ticket whose post-merge criteria the pass has not made steps yet stays live; one it has is archived', `${'P' in q.tickets} ${'Q' in q.tickets}`, 'true false');
   t('AC7 a done ticket whose PR is open stays live', 'O' in q.tickets, true);
   t('DS-796 a closed PR still owed its reopen stays live, so the next pass retries it', 'R' in q.tickets, true);
   t('DS-796 an owed reopen keeps the ticket live whatever its stored state, an earlier merge included', 'S' in q.tickets, true);
+  t('DS-796 but a PR recorded merged owes no reopen, so its ticket is archived', 'T' in q.tickets, false);
   t('a merged ticket with follow-on steps waiting stays live', 'F' in q.tickets, true);
   t('a merged ticket another ticket is held behind stays live', 'H' in q.tickets, true);
 

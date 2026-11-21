@@ -65,8 +65,10 @@ export const archivedOf = (q) => (q?.[ARCHIVED] ? q[ARCHIVED]() : {});
 export const isArchived = (q, key) => !!q?.tickets && !Object.hasOwn(q.tickets, key) && Object.hasOwn(archivedOf(q), key);
 
 // Ticket t owes its PR a reopen: the pass closed it to start its CI and has still to reopen it
-// (`reopening` names the ticket's own PR).
-export const owesReopen = (t) => t?.reopening != null && String(t.reopening) === String(t.result?.pr);
+// (`reopening` names the ticket's own PR). A PR recorded merged (needs-you's done can record it before
+// any pass reads it again) has nothing left to reopen, whatever `reopening` still says.
+export const owesReopen = (t) => t?.reopening != null && String(t.reopening) === String(t.result?.pr)
+  && !(String(t.pr_status?.pr) === String(t.result.pr) && t.pr_status?.state === 'MERGED');
 
 const HOLD_FIELDS = ['held_by', 'held_outside', 'merge_after'];
 export const keys = (v) => String(v ?? '').split('|').filter(Boolean);

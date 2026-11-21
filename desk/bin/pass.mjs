@@ -1240,19 +1240,17 @@ const foreignPr = (t, n, here) => n != null && foreign(recordedPr(t, n), here);
 // The pairs a spawn writes beside result=null: every PR of its own it has recorded since its first merge,
 // kept as merged_pr with the url its status gave it, so a spawn never forgets one, nor whose repo it is in
 // once a later PR's status replaces that one. Whose repo each is in is judged when it is read. A kept bare
-// number (an older row) is judged by the PR status as it stands.
+// number was kept with no url, so no status named another repo's PR of it: it is this repo's, and is never
+// given the url of a PR status that may now name another repo's PR of its number.
 const mergedPrs = (t) => [].concat(t.merged_pr ?? []).filter((x) => x != null)
-  .map((x) => (typeof x === 'object' ? { pr: Number(x.pr), url: x.url ?? null } : recordedPr(t, x)));
+  .map((x) => (typeof x === 'object' ? { pr: Number(x.pr), url: x.url ?? null } : { pr: Number(x), url: null }));
 // Kept by repo and number, so another repo's PR of the same number (needs-you's elsewhereDone) never
-// replaces this repo's own: a PR with no url, or this repo's, is this repo's. A kept bare number stays
-// bare, not given the url of a PR status that may now name another repo's PR of its number.
+// replaces this repo's own: a PR with no url, or this repo's, is this repo's.
 const keepMergedPr = (t) => {
   if (!t.merged_at || t.result?.pr == null) return [];
   const here = hereRepo();
   const keyOf = (x) => `${foreign(x, here) ? repoOfPr(x.url) : ''}#${x.pr}`;
-  const was = [].concat(t.merged_pr ?? []).filter((x) => x != null)
-    .map((x) => (typeof x === 'object' ? { pr: Number(x.pr), url: x.url ?? null } : { pr: Number(x), url: null }));
-  const kept = new Map([...was, recordedPr(t, t.result.pr)].map((x) => [keyOf(x), x]));
+  const kept = new Map([...mergedPrs(t), recordedPr(t, t.result.pr)].map((x) => [keyOf(x), x]));
   return [`merged_pr=${JSON.stringify([...kept.values()].map((x) => (x.url ? x : x.pr)))}`];
 };
 const statusPr = (t, here) => {

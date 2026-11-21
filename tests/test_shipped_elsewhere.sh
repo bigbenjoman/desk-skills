@@ -266,15 +266,20 @@ check "DS-796 nor a kept bare own number, which stays bare" \
 # finishes on this repo's #370, whose status replaces the other repo's, and it is requeued. This repo's
 # #365 has merged from its branch since: the kept other-repo PR of that number is not this one, so #365
 # shipped it.
-q set DS-394 state=done; q set DS-391 state=triaged
+q set DS-394 state=done; q set DS-395 state=done; q set DS-391 state=triaged
 q set DS-393 state=triaged result.pr=370 'pr_status={"pr":370,"state":"OPEN","url":"https://github.com/acme/renamed/pull/370"}'
+# DS-396 is requeued with its status still naming o/other's #373, and this repo's own #373 (its kept bare
+# number) has merged from its branch since: that is its own merge, not one outside its worker.
+q set DS-396 state=triaged
 : > "$T/spawned"
-addmerged "365 fix/DS-393-own 2026-10-31T10:57:00Z"
+addmerged "365 fix/DS-393-own 2026-10-31T10:57:00Z" "373 fix/DS-396-own 2026-10-31T10:58:00Z"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-796 a requeued ticket whose spawn kept its merged and open PRs is not shipped on its own merged one" \
   'spawned DS-391 && [ "$(field DS-391 state)" != "\"done\"" ] && ! grep -q "DS-391: PR #361" <<< "$out"'
 check "DS-796 a kept other-repo PR is still judged that repo's after the spawn: #365 here shipped it" \
   '[ "$(got DS-393 .state)" = done ] && [ "$(got DS-393 .result.pr)" = 365 ] && ! spawned DS-393'
+check "DS-796 a kept bare own number stays this repo's when its status names another repo's PR of that number" \
+  'spawned DS-396 && [ "$(field DS-396 state)" != "\"done\"" ] && ! grep -q "DS-396: PR #373" <<< "$out"'
 
 # A failed GitHub read spawns as before.
 q add DS-380 Bug A; q set DS-380 state=triaged branch=fix/DS-380-x added_at=2026-10-31T10:00:00Z
