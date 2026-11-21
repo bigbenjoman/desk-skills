@@ -6,6 +6,7 @@
 //   bashCalls(text)    -> [{ line, session, command, exit }], every Bash call with a result, 0 when it
 //                         did not error, null when it was refused
 //   codexCalls(text)   -> bashCalls narrowed to the review's desk-codex finder and refuter calls
+//   waitCalls(text)    -> [{ line, session, kind }], each desk-wait, ps, tail or TaskStop call
 export const DENIED = /Permission to use \S+.*\bdenied\b/;
 const EXIT = /^Exit code (\d+)/;
 export const textOf = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map((x) => x?.text ?? '').join('\n') : '');
@@ -66,6 +67,26 @@ export function bashCalls(text) {
     const m = error && !denied ? EXIT.exec(body.trim()) : null;
     return { line, session, command: String(input?.command ?? ''), exit: !error ? 0 : m ? Number(m[1]) : null };
   });
+}
+
+// The calls a worker spends waiting on its own suite or the test lock, so a report can count them per
+// session (DS-705): `desk-wait` (desk-wait.mjs, any path before it), `ps` or `tail` (a Bash call that
+// starts with one), or `TaskStop` (the tool, or the KillShell and KillBash it replaced). In order, once
+// per tool_use id, as [{ line, session, kind }]; a call refused still counts, since it cost a turn.
+const WAIT_CALL = /(?:^|[\s/;&|])desk-wait\.mjs(?:\s|$)/;
+const LEADING = /^\s*(?:\S*\/)?(ps|tail)(?:\s|$)/;
+export function waitCalls(text) {
+  const out = [];
+  for (const { line, session, tool, input } of outcomes(text)) {
+    let kind = null;
+    if (['TaskStop', 'KillShell', 'KillBash'].includes(tool)) kind = 'TaskStop';
+    else if (tool === 'Bash') {
+      const cmd = String(input?.command ?? '');
+      kind = WAIT_CALL.test(cmd) ? 'desk-wait' : LEADING.exec(cmd)?.[1] ?? null;
+    }
+    if (kind) out.push({ line, session, kind });
+  }
+  return out;
 }
 
 // A review's call through desk-codex for a finder or a refutation, any path before it.

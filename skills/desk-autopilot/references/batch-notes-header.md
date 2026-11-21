@@ -45,9 +45,10 @@ sustained-high case that takes the machine down. One lock covers the machine, ac
 and sessions, for unit, integration, Playwright and headless Chromium suites. It blocks until the
 lock frees and releases on exit, including on a crash. **Do not add a timeout and do not work around
 a wait: waiting is the feature.** A busy lock is never a park: once your run has waited 20 minutes
-without starting, commit your work, stop it (`TaskStop`), record the suite as "not run locally: test
-lock busy (<holder>); CI's required tests cover it", log an engineering decision naming the suite and
-the holder, and carry on. The Stage 4 worker contract says how. A run that started is yours to finish.
+without starting, `desk-wait.mjs` stops it and prints the holder: commit your work, record the suite
+as "not run locally: test lock busy (<holder>); CI's required tests cover it", log an engineering
+decision naming the suite and the holder, and carry on. Wait on a backgrounded run with that one
+call, never a `ps`, `tail` or `TaskStop` loop. The Stage 4 worker contract says how. A run that started is yours to finish.
 
 **Use `with-lock.sh`, not bare `flock`.** Bare `flock <file> -c '<cmd>'` is refused: the permission
 matcher will not auto-approve a wrapper whose inner command it cannot statically verify, so the

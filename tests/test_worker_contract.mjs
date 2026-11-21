@@ -129,22 +129,26 @@ t('DS-356 AC1 the Stage 3 workflow-dispatch rule points at the Stage 4 rule',
 const lockRule = stage4.split('**A run the lock has not started in 20 minutes is skipped; a busy lock is never a park.**')[1]?.split(' The typecheck takes the same lock')[0] ?? '';
 t('DS-587 AC1 the Stage 4 file skips a run the lock has not started in 20 minutes, and never parks on it', lockRule !== '' && !/\bpark/.test(lockRule), true);
 t('DS-587 AC1 it stops the queued run and records the suite as not run locally because the lock was busy',
-  lockRule.includes('`TaskStop` it') && lockRule.includes('Record each suite in your verification and the PR\'s Testing as `not run locally: test lock busy (<holder>); CI\'s required tests cover it`') && lockRule.includes('and carry on.'), true);
+  lockRule.includes('At 20 minutes waiting it stops the run and prints the line to record') && lockRule.includes('record each suite in your verification and the PR\'s Testing as `not run locally: test lock busy (<holder>); CI\'s required tests cover it`') && lockRule.includes('and carry on.'), true);
 t('DS-587 AC2 it logs one engineering decision naming the suites and the lock holder',
-  lockRule.includes('note the holder') && lockRule.includes('print one `engineering` `AUTOPILOT_DECISION` naming them and the holder'), true);
-t('DS-587 AC3 it commits its work before stopping the run and carrying on', /commit all your work, `TaskStop` it/.test(lockRule), true);
+  lockRule.includes('print one `engineering` `AUTOPILOT_DECISION` naming them and the holder'), true);
+t('DS-587 AC3 it commits its work before carrying on', /commit all your work, record each suite/.test(lockRule), true);
 t('DS-587 AC4 a run that started is not skipped: its failures are fixed', lockRule.includes('A started run is yours: fix what fails.'), true);
-t('DS-587 AC4 silence is not proof of a queued run: it has not started only while the wrapper or its flock has no child running the command',
-  lockRule.includes('Silence is not proof: it has not started while `ps -ww -axo pid,ppid,etime,args` shows your `with-lock.sh`, or its `flock … desk-test.lock`, with no child running your command.') && !lockRule.includes('no suite output'), true);
-t('DS-587 AC2 the holder is found on every lock path: a live holder file, else the single-slot flock with a child',
-  lockRule.includes('a live pid in `desk-test.lock*{.pid,.d/pid}` in `DESK_LOCK_DIR`, else the `flock … desk-test.lock` that has a child.') && !lockRule.includes('or `*.d/pid`'), true);
+// DS-705: desk-wait.mjs, one blocking call, decides started, waiting and done and finds the holder
+// (tests/test_desk_wait.mjs), so the contract no longer walks the worker through ps and the lock files.
+t('DS-705 AC1 a backgrounded run is waited on in one desk-wait call inside the Bash timeout, never a ps, tail or TaskStop loop',
+  lockRule.includes('Give each run the Bash `timeout` 600000.') && lockRule.includes('never a `ps`, `tail` or `TaskStop` loop: `~/.claude/desk/bin/desk-wait.mjs <its output file> --max 540`, same `timeout`.') && !lockRule.includes('`TaskStop` it'), true);
+t('DS-705 AC1 it names the three answers and calls again on the two that are not done',
+  lockRule.includes('Call again on `started <pid>` or `waiting (<holder>) <min>`; `done ?` ends it with its last 30 lines.'), true);
+t('DS-705 a run the tool timeout moved to the background is waited on with desk-wait, not stopped and rerun',
+  stage4.includes('background is still yours: wait for it with `desk-wait.mjs`, above.') && !stage4.includes('stop it with `TaskStop` and run it again'), true);
 t('DS-587 the typecheck and lint follow the same rule', lockRule.includes('A typecheck or lint does the same.'), true);
 t('DS-587 AC5 the refused with-lock.sh rule is unchanged',
   stage4.includes('If `with-lock.sh` is refused, check headroom, drop to the lower cap, and **say in your output that you ran unlocked**.'), true);
 t('DS-587 the Stage 4 file no longer only says to report a long wait', /Blocked (over|more than) ~20 minutes/.test(stage4), false);
 const notes = read('batch-notes-header.md').replace(/\s+/g, ' ');
 t('DS-587 batch-notes-header states the same rule, so the stricter-wins reading agrees',
-  notes.includes('A busy lock is never a park: once your run has waited 20 minutes without starting, commit your work, stop it (`TaskStop`), record the suite as "not run locally: test lock busy (<holder>); CI\'s required tests cover it", log an engineering decision naming the suite and the holder, and carry on.') && !/Blocked (over|more than) ~20 minutes/.test(notes), true);
+  notes.includes('A busy lock is never a park: once your run has waited 20 minutes without starting, `desk-wait.mjs` stops it and prints the holder: commit your work, record the suite as "not run locally: test lock busy (<holder>); CI\'s required tests cover it", log an engineering decision naming the suite and the holder, and carry on. Wait on a backgrounded run with that one call, never a `ps`, `tail` or `TaskStop` loop.') && !/Blocked (over|more than) ~20 minutes/.test(notes), true);
 t('DS-855 AC1 the command forms run every lint item under the tsc lock, at the root too',
   formFiles.some((f) => read(f).replace(/\s+/g, ' ').includes('`tsc` for §4 Typecheck and §4 Lint (never bare, even at the root)')), true);
 t('DS-855 a lint binary in node_modules runs under the tsc lock, not bare',
