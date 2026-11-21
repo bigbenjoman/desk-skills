@@ -2603,6 +2603,9 @@ function quietNotes(shown) {
   }));
 }
 
+// An amber note: its text, then its fix in bold where there is one.
+const warnNote = (tag, text, fix) => ({ tag, sgr: WARN, text: [[text, null], ...(fix ? [[fix, BOLD]] : [])] });
+
 // Each old desk code note, keyed by the batch it shows under. The supervisor agent runs per repo, so
 // each kind (supervisor, merge driver) is one note on the first batch of a repo that has it, and where
 // several repos have it, one note naming them all, on the first one's batch.
@@ -2619,8 +2622,8 @@ function oldCodeNotes(shown) {
     for (const r of shown) if (r.stall?.oldCode?.[kind] && !first.has(r.slug)) first.set(r.slug, r);
     const rs = [...first.values()];
     if (!rs.length) continue;
-    const note = rs.length === 1 ? { tag: `▲ ${rs[0].repo}`, text: one } : { tag: '▲ desk code', text: many(andList(rs.map((r) => r.repo))) };
-    at.set(rs[0], [...(at.get(rs[0]) ?? []), { tag: note.tag, sgr: WARN, text: [[note.text, null], ...(fix ? [[fix, BOLD]] : [])] }]);
+    const note = rs.length === 1 ? warnNote(`▲ ${rs[0].repo}`, one, fix) : warnNote('▲ desk code', many(andList(rs.map((r) => r.repo))), fix);
+    at.set(rs[0], [...(at.get(rs[0]) ?? []), note]);
   }
   return at;
 }
@@ -2632,7 +2635,7 @@ function oldCodeNotes(shown) {
 function stallNotes(r, quiet, old, allOut = false) {
   const s = r.stall, tag = `▲ ${r.repo}`;
   if (!s) return [];
-  const note = (text, fix) => ({ tag, sgr: WARN, text: [[text, null], ...(fix ? [[fix, BOLD]] : [])] });
+  const note = (text, fix) => warnNote(tag, text, fix);
   const out = [];
   const u = allOut ? null : usageHoldOf(r);
   if (u) out.push(note(`${u}. `, 'Switch subscription to lift it sooner.'));
