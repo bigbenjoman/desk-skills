@@ -1,0 +1,6 @@
+[
+{"file":"skills/desk-a/SKILL.md","kind":"state-path","value":"designs/<TICKET>/","context":"out_dir: $DESK_STATE/designs/<TICKET>/"},
+{"file":"skills/desk-a/SKILL.md","kind":"script","value":"…/move-batch.mjs","context":"node …/move-batch.mjs"},
+{"file":"skills/desk-a/SKILL.md","kind":"subcommand","value":"frobnicate","context":"node queue.mjs frobnicate <KEY>"},
+{"file":"skills/desk-b/references/one.md","kind":"state","value":"snoozed","context":"a ticket left snoozed"}
+]

@@ -646,6 +646,15 @@ export function personGapsCall(review, opts = {}) {
 // out of draft.
 export const gapsFix = ({ pr, head, ready, answer }) => ({ kind: 'gaps', pr, head: head ?? null, ready: ready === true, what: 'review gaps: your call', answer });
 
+// The rule a reviewed fix worker's task states for a push of nothing, and its one exception, which only
+// a gaps call carries (fixTaskText). Whether the call accepts a gap is the worker's reading of the
+// person's free text, as desk-review's is of the same comment on the PR, so every gaps call carries it.
+// desk-review's post phase and the worker contract's Stage 4 show the same text, generated from these
+// (tests/prose_facts.mjs `push-nothing`).
+export const PUSH_NOTHING = 'If you pushed nothing, post no review: the head is unchanged, so a review of it would only repeat the last one.';
+export const PUSH_NOTHING_ACCEPTED = "The one exception is a gap the person accepted: post that round's verdict again at the same head, from its results file, with only the accepted gaps moved from `gaps` into `accepted`, or park naming the file where there is none.";
+export const pushNothing = (excepted) => (excepted ? `${PUSH_NOTHING} ${PUSH_NOTHING_ACCEPTED}` : PUSH_NOTHING);
+
 // The person's instruction on an open PR (desk-needs-you `resume`), as the fix it sends back: like a
 // gaps call, not one of the pass's tries; numbered as the last of the tries made, for the views that
 // show a try's number. `ready` is a PR out of draft, which its worker leaves out of draft and the merge
@@ -1276,9 +1285,9 @@ function fixTaskText(t, review = null) {
   // A review fix is reviewed again on its new head, so the pass reads a verdict there before it undrafts.
   // A worker that pushed nothing left the head the last review read, so another review there changes nothing.
   // The one exception is a gaps call that accepts a gap: its accepted re-verdict at the unchanged head,
-  // which only desk-review's verdict defines.
-  const after = reviewed ? `${afterReview}. If you pushed nothing, post no review: the head is unchanged, so a review of it would only repeat the last one` +
-    (gaps && !ownReview(review) ? `. The one exception is a gap the call accepts: post that round's accepted re-verdict at the unchanged head, or park when its results file is missing, as the "A gap the call accepts" section of your briefing says` : '') : '';
+  // which only desk-review's verdict defines (pushNothing, in desk-review's own words).
+  const excepted = gaps && !ownReview(review);
+  const after = reviewed ? `${afterReview}. ${pushNothing(excepted)}${excepted ? ' The "A gap the call accepts" section of your briefing says how.' : ''}` : '.';
   // A conflict try's DONE line is the reason a PR stuck after its last try gives (stillInConflict).
   const said = f.kind === 'conflict' && f.check ? ' said=<one line: what you renumbered, or what still fails the check and why>'
     : f.kind === 'conflict' ? ' said=<one line: what you resolved, or what is still in conflict and why>'
@@ -1289,6 +1298,6 @@ function fixTaskText(t, review = null) {
     : `Your task is ${f.person ? 'the fix try the person sent' : f.extra ? 'the extra fix try' : `fix try ${f.try} of ${f.of}`} on PR #${f.pr}, already open on your branch: the "Fix try" section of your briefing says what is wrong. `;
   return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. Your worktree is $WT. Your dev-server port is $PORT. ` +
     task +
-    `Fix only that: ${how}. Then verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), and push to the same branch with git push origin <your branch>${after}. ` +
+    `Fix only that: ${how}. Then verify what you changed (desk-ticket Stage 4) and self-review it (Stage 4b), and push to the same branch with git push origin <your branch>${after} ` +
     `Open no new PR, leave the PR ${inDraft ? 'in' : 'out of'} draft, and leave the ticket's Jira ${f.gaps?.length || f.taken?.length ? 'status as it is, apart from the comments recording your calls' : 'as it is'}. End with AUTOPILOT_DONE: pr=${f.pr} jira=<its status>${said}.`;
 }

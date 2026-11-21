@@ -159,8 +159,9 @@ function lastResult(logText, { launch = false } = {}) {
 }
 // The subtype of a session claude -p ended at its --max-budget-usd, the per-worker budget.
 const BUDGET_SUBTYPE = 'error_max_budget_usd';
-// Whether the log's last launch ended at its per-worker budget: its own result event says so.
-export const budgetStop = (logText) => lastResult(logText, { launch: true })?.subtype === BUDGET_SUBTYPE;
+// Whether the log's last launch ended at its per-worker budget: its own result event says so. With the
+// budget (desk-env.mjs workerBudget) off, no ceiling was passed, so that subtype is any other error.
+export const budgetStop = (logText, budget) => !budget?.off && lastResult(logText, { launch: true })?.subtype === BUDGET_SUBTYPE;
 
 export const endedNormally = (logText) => lastResult(logText) != null;
 
@@ -252,7 +253,8 @@ if (isMain) {
   const wantBody = process.argv.includes('--pr-body');
   if (!log) { console.error('usage: harvest.mjs <worker.log> [--pr-body]'); process.exit(1); }
 
-  const { texts, said, result } = readLog(readLogFile(log));
+  const logText = readLogFile(log);
+  const { texts, said, result } = readLog(logText);
 
   // --pr-body prints only the last body a worker wrote between AUTOPILOT_PR_BODY_BEGIN: and
   // AUTOPILOT_PR_BODY_END:, verbatim, and exits 3 when there is none.
@@ -276,7 +278,12 @@ if (isMain) {
     console.log(`\nresult: error=${result.is_error} turns=${result.num_turns} notional=$${(result.total_cost_usd ?? 0).toFixed(2)}`);
     const park = markers.find(([k]) => k === 'AUTOPILOT_PARK');
     const done = markers.find(([k]) => k === 'AUTOPILOT_DONE');
-    console.log(`state:  ${park ? 'PARKED' : done ? 'DONE' : result.is_error ? 'FAILED' : 'ENDED (no marker)'}`);
+    let budget = null;
+    if (!park && !done && result.subtype === BUDGET_SUBTYPE) {
+      try { budget = (await import('./desk-env.mjs')).workerBudget(); } catch { /* unreadable: read as the pass reads it */ }
+    }
+    const stopped = !park && !done && budgetStop(logText, budget);
+    console.log(`state:  ${park ? 'PARKED' : done ? 'DONE' : stopped ? 'BUDGET STOP' : result.is_error ? 'FAILED' : 'ENDED (no marker)'}`);
   } else {
     // No result event yet is the NORMAL state for a live worker. Exiting non-zero here made
     // pass.mjs (which runs this tolerantly) discard every marker until the worker finished,

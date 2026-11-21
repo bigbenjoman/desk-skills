@@ -579,15 +579,6 @@ check "DS-553 AC1 a killed worker's fixtures are copied into its worktree on res
   '[ "$(cat "$T/wt/K-2/.desk-fixtures/K-2/post.json")" = "{\"k\":2}" ] && grep -qF "copied into your worktree at $T/wt/K-2/.desk-fixtures/K-2/ (untracked, and kept out of git status): post.json." "$T/resume-prompt-K-2"'
 check "DS-145 AC2 a worker whose process died with the computer up is resumed, and the report says so" 'echo "$out" | grep -q "K-2 resumed after it was killed (1 of 2) — its process died while the computer stayed up" && spawned_for K-2 | grep -q "resume=yes" && ! echo "$out" | grep -q "K-1 resumed"'
 q set K-2 state=done
-# A worker its per-worker budget stopped (its last result event says so) resumes once in its own session,
-# on a small allowance, told to commit and push first.
-killed KB-1 sess-kb1
-printf '%s\n' '{"type":"result","subtype":"error_max_budget_usd","is_error":true}' >> "$T/state-k/logs/KB-1.log"; touch -t 202601010000 "$T/state-k/logs/KB-1.log"
-out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
-check "a worker stopped at its per-worker budget resumes in its own session, and the pass says so" 'echo "$out" | grep -q "KB-1 resumed after its per-worker budget, with \$5 to commit, push and finish" && spawned_for KB-1 | grep -q "^KB-1 sess-kb1 .*resume=yes budget=5$"'
-check "its resume prompt tells it to commit and push first" 'grep -q "commit and push what is done first, then finish your current stage" "$T/resume-prompt-KB-1"'
-check "the budget resume is not counted against the killed-worker resumes" '[ "$(field KB-1 resumes)" = 0 ] && [ "$(field KB-1 budget_resumed)" = "\"sess-kb1\"" ]'
-q set KB-1 state=done
 # K-1's resumed worker is killed again, once it has had both resumes the row allows. Its log was last
 # written by the resume's preflight line: set it back, or it reads as a worker the registry has not listed yet.
 q set K-1 session_id=sess-k1 resumes=2; touch -t 202601010000 "$T/state-k/logs/K-1.log"
@@ -601,6 +592,30 @@ check "DS-145 AC4 a session that ended normally with no marker is marked failed,
 killed K-4b sess-k4b; { result_event; echo '{"type":"command_lifecycle","state":"completed","session_id":"sess-k4b"}'; } >> "$T/state-k/logs/K-4b.log"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-145 AC4 bookkeeping after the result still reads as a normal end" '[ "$(field K-4b state)" = "\"failed\"" ] && ! spawned_for K-4b'
+# B-1's session ended on the per-worker budget with its change uncommitted.
+budget_event(){ node -e 'console.log(JSON.stringify({ type: "result", subtype: process.argv[1], is_error: true, num_turns: 90, total_cost_usd: 25.02, result: "" }))' "${1:-error_max_budget_usd}"; }
+killed B-1 sess-b1; budget_event >> "$T/state-k/logs/B-1.log"; echo change > "$T/wt/B-1/new.txt"; git -C "$T/wt/B-1" init -q
+out=$(AUTOPILOT_BUDGET_USD=25 node "$B/pass.mjs" 2>&1)
+check "DS-849 AC1 a worker stopped at the per-worker budget is resumed once in its own session, not failed" \
+  'spawned_for B-1 | grep -q "^B-1 sess-b1 .*resume=yes budget=5$" && [ "$(field B-1 state)" = "\"running\"" ] && [ "$(field B-1 budget_resumed)" = "\"sess-b1\"" ] && [ "$(field B-1 resumes)" = 0 ] && echo "$out" | grep -q "B-1 resumed once after it stopped at the per-worker budget, with \$5 more to commit, push and finish its stage"'
+check "DS-849 AC1 with \$5 more, told to commit, push and finish its stage" \
+  'grep -q "spend it on committing your work, pushing it and finishing the stage you were in" "$T/resume-prompt-B-1"'
+# Its resumed session ends on the budget too.
+budget_event >> "$T/state-k/logs/B-1.log"; touch -t 202601010000 "$T/state-k/logs/B-1.log"
+out=$(AUTOPILOT_BUDGET_USD=25 node "$B/pass.mjs" 2>&1)
+check "DS-849 AC2 a second budget stop parks, naming the budget and the uncommitted work" \
+  '[ "$(field B-1 state)" = "\"parked\"" ] && field B-1 park.question | grep -q "stopped at the per-worker budget (\$25, config §3b ..Autopilot per-worker budget (USD)..) again after its one resume with \$5 more, and its worktree $T/wt/B-1 holds uncommitted work (1 changed file(s))" && [ "$(spawned_for B-1 | wc -l | tr -d " ")" = 1 ]'
+# B-3's session ended in another error; B-4's on the budget subtype, with no per-worker budget set.
+killed B-3 sess-b3; budget_event error_during_execution >> "$T/state-k/logs/B-3.log"
+killed B-4 sess-b4; budget_event >> "$T/state-k/logs/B-4.log"
+out=$(AUTOPILOT_BUDGET_USD=none node "$B/pass.mjs" 2>&1)
+check "DS-849 AC3 another error is marked failed as before" '[ "$(field B-3 state)" = "\"failed\"" ] && ! spawned_for B-3'
+check "DS-849 AC4 with the per-worker budget none, a budget-stop subtype is any other error" '[ "$(field B-4 state)" = "\"failed\"" ] && ! spawned_for B-4 && [ "$(field B-4 resume)" = null ]'
+h=$(AUTOPILOT_BUDGET_USD=25 node "$B/harvest.mjs" "$T/state-k/logs/B-4.log" 2>&1)
+h3=$(AUTOPILOT_BUDGET_USD=25 node "$B/harvest.mjs" "$T/state-k/logs/B-3.log" 2>&1)
+hn=$(AUTOPILOT_BUDGET_USD=none node "$B/harvest.mjs" "$T/state-k/logs/B-4.log" 2>&1)
+check "DS-849 harvest names a budget stop, and any other error, or one with no budget, as failed" \
+  'echo "$h" | grep -qx "state:  BUDGET STOP" && echo "$h3" | grep -qx "state:  FAILED" && echo "$hn" | grep -qx "state:  FAILED"'
 # K-9's log was written seconds ago: before a boot a minute from now it was a reboot, so resumed at
 # once; with the computer up it may be a worker the registry has not listed yet, so it is left.
 killed K-9 sess-k9; touch "$T/state-k/logs/K-9.log"
