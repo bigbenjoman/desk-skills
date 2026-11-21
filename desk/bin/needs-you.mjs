@@ -104,7 +104,8 @@ import { deskHome, expandHome, slugOf, repoConfigValue, repoConfigValues, parseL
 import { fixClass } from './failure-class.mjs';
 import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, EXIT } from './batch-state.mjs';
+import { landedPr } from './post-merge.mjs';
+import { promotionPr, readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, EXIT } from './batch-state.mjs';
 import { promotionTitle } from './pass/promotion-pr.mjs';
 import { dayAndTime } from './desk-q-eta.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
@@ -375,7 +376,7 @@ export function refresh({ word = null, now = Date.now(), repos = loadRepos(now, 
       const root = gitRootOf(r);
       if (root && !fetched.has(root)) { fetched.add(root); reads.fetch?.(root); }
       if (!reads.pr) continue;
-      const p = (t.promoted_at || viaBase(r.q, t)) && t.follow_on.some((s) => gateOf(s) === 'production') ? promotionOf(r.q, t) : null;
+      const p = (t.promoted_at || viaBase(r.q, t)) && t.follow_on.some((s) => gateOf(s) === 'production') ? promotionPr(r.q, t) : null;
       if (p && !SHA40.test(String(p.merge_commit ?? '')) && /^\d+$/.test(String(p.pr)) && !promos.has(p.pr)) {
         promos.add(p.pr);
         const oid = reads.pr(r, p.pr, ',mergeCommit').v?.mergeCommit?.oid;
@@ -889,25 +890,13 @@ export function outAt(q, t) {
 // root, from its remote refs as the last fetch left them: list's refresh and the pass fetch origin while
 // a gated step waits. The commit judged is the one that put the PR's code on the default branch: its merge commit
 // (pr_status.merge_commit), or for a batch child that a squash or rebase promotion left off it, the
-// merge commit of the promotion PR that took it there (promotionOf, merge_commit), else the default
+// merge commit of the promotion PR that took it there (batch-state promotionPr, merge_commit), else the default
 // branch's commit found by that PR's number. A batch
 // child's main gate is its promotion's merge, which outAt has already seen. A commit not read yet (no
 // merge commit recorded, or one not fetched) waits, as list's refresh and the pass fetch and record it;
 // only what no fetch brings (a ref the repo root does not have, a promotion desk has no record of) lists
 // the step saying it was not checked.
 const gitRootOf = (r) => { const x = expandHome(repoConfigValue(r.slug, 'repo-root') ?? ''); return x && !isNone(x) ? x : null; };
-// The promotion PR that took batch child `t` to the default branch: the first merged after it (batch-state
-// promotedAt), as { pr, merge_commit }, or null where the batch keeps no record of one. Its merge commit
-// is the pass's or the merge driver's record of it, else list's refresh's (promotion_commits, by PR
-// number, which no promotion PR opened since can take for its own).
-function promotionOf(q, t) {
-  const own = Date.parse(t.merged_at);
-  const p = q?.promotion ?? {};
-  const all = [...(p.merged ?? []), ...(p.merged_at ? [{ pr: p.pr, merged_at: p.merged_at, merge_commit: p.merge_commit }] : [])]
-    .filter((m) => m?.pr != null && Date.parse(m.merged_at) > own).sort((a, b) => Date.parse(a.merged_at) - Date.parse(b.merged_at));
-  const m = all[0];
-  return m ? { pr: m.pr, merge_commit: m.merge_commit ?? q?.promotion_commits?.[String(m.pr)] ?? null } : null;
-}
 const SHA40 = /^[0-9a-f]{40}$/;
 // `reads` is collect's (READS); its git reads the refs, READS.git where it has none.
 function gateHeld(r, t, s, reads = null) {
@@ -932,17 +921,17 @@ function gateHeld(r, t, s, reads = null) {
   if (ref.why) return promoted || landed ? { held: true, note: `production could not be checked: ${ref.why}` } : wait;
   if (!landed && promoted) {
     // A squash or rebase promotion: the promotion PR's merge commit as the pass, the merge driver or list's
-    // refresh recorded it (promotionOf), which a rebase merge needs, as it writes no subject naming the PR.
+    // refresh recorded it (promotionPr), which a rebase merge needs, as it writes no subject naming the PR.
     // Until one is recorded, the default branch's commit by its number in the subject GitHub writes for a
     // merge or squash ("Merge pull request #N from …", or "<title> (#N)"). Neither found yet waits, as an
     // unread merge commit does: list's refresh reads the promotion PR for it.
-    const p = promotionOf(r.q, t);
+    const p = promotionPr(r.q, t);
     if (!p) return { held: true, note: `production could not be checked: desk keeps no record of the promotion PR that took ${pr} to the default branch` };
     if (SHA40.test(String(p.merge_commit ?? ''))) landed = commit(p.merge_commit);
     else {
       const n = String(p.pr);
       const hit = String(git(['log', '--first-parent', '-n', '2000', '--format=%H%x09%s', main]) ?? '').split('\n')
-        .find((l) => { const sub = l.split('\t')[1] ?? ''; return sub.startsWith(`Merge pull request #${n} `) || sub.endsWith(`(#${n})`); });
+        .find((l) => { const sub = l.split('\t')[1] ?? ''; return landedPr(sub) === Number(n); });
       landed = hit ? hit.split('\t')[0] : null;
     }
   }

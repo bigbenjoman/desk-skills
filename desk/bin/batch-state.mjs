@@ -746,6 +746,18 @@ export function promotedAt(q, t) {
     .filter(Boolean).map((x) => Date.parse(x)).filter((x) => x > own);
   return after.length ? new Date(Math.min(...after)).toISOString() : null;
 }
+// The promotion PR that took batch child `t` to the default branch: the first merged after it
+// (promotedAt), as { pr, merged_at, merge_commit }, or null where the batch keeps no record of one. Its
+// merge commit is the pass's or the merge driver's record of it, else list's refresh's
+// (promotion_commits, by PR number, which no promotion PR opened since can take for its own).
+export function promotionPr(q, t) {
+  const own = Date.parse(t?.merged_at);
+  const p = q?.promotion ?? {};
+  const all = [...(p.merged ?? []), ...(p.merged_at ? [{ pr: p.pr, merged_at: p.merged_at, merge_commit: p.merge_commit }] : [])]
+    .filter((m) => m?.pr != null && Date.parse(m.merged_at) > own).sort((a, b) => Date.parse(a.merged_at) - Date.parse(b.merged_at));
+  const m = all[0];
+  return m ? { pr: m.pr, merged_at: m.merged_at, merge_commit: m.merge_commit ?? q?.promotion_commits?.[String(m.pr)] ?? null } : null;
+}
 // What the next epic PR's record carries from promotion `p`: the last merge as `since` and every merge
 // so far in `merged`, kept through a retry whose record has neither `pr` nor `merged_at`.
 export function epicCarry(p) {
