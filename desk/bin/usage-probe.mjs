@@ -144,20 +144,22 @@ export async function probe({ dir = usageDir(), lockDir = E.lockDir(), claude = 
 // `refused` is the API turning the call away with HTTP 401 or 403 (usage-limit.mjs apiRefusal), which
 // no reset time lifts.
 //   -> { ok: true } | { ok: false, limit: { type, resetsAt } | null, refused: { status, why } | null, why }
+// Its stamp is written as the call ends, before its log, and only with output to log: a pass that finds
+// the stamp under a minute old waits for a log written since it (probeShared), so one with no log to
+// follow would keep that pass waiting out its time limit.
 export function probeNow({ dir = usageDir(), claude = 'claude', env = process.env, login = null, timeoutMs = 120_000 } = {}) {
-  const answer = runProbe({ dir, claude, env, login, timeoutMs });
-  try { writeFileSync(probeStamp(dir, login), String(Date.now())); } catch { /* unstamped */ }
-  return answer;
+  return runProbe({ dir, claude, env, login, timeoutMs, stampEnd: true });
 }
 
 // The call itself, its output kept as the login's probe log. The log is written beside it and moved
 // over it whole, so a pass waiting on this probe (probeShared) never reads it half written.
-function runProbe({ dir, claude, env, login, timeoutMs }) {
+function runProbe({ dir, claude, env, login, timeoutMs, stampEnd = false }) {
   const r = spawnSync(claude, PROBE_ARGS, { env: probeEnv(env, login), encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });
   const out = r.stdout ?? '';
   try {
     mkdirSync(dir, { recursive: true });
     if (out) {
+      if (stampEnd) writeFileSync(probeStamp(dir, login), String(Date.now()));
       const log = loginProbeLog(dir, login), part = `${log}.${process.pid}.part`;
       writeFileSync(part, out);
       renameSync(part, log);
