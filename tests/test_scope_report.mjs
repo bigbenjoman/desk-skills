@@ -76,11 +76,10 @@ writeFileSync(join(st, 'batches/E-1/triage', 'T-2.json'), JSON.stringify({ files
 mkdirSync(join(st, 'batches/.done/E-0/triage'), { recursive: true });
 writeFileSync(join(st, 'batches/.done/E-0/triage', 'T-4.json'), JSON.stringify({ files_in_scope: ['old.js'] }));
 writeFileSync(join(st, 'batches/.done/E-0/triage', 'T-2.json'), JSON.stringify({ files_in_scope: ['stale.js'] }));
-writeFileSync(join(st, 'batches', 'stray.txt'), '');
-const recs = scopeRecords(st);
-t('records: the standing batch wins, a named then an archived batch add, ./ and repeats folded, challenges and bad JSON skipped',
+const recs = scopeRecords([st, join(st, 'batches/E-1'), join(dir, 'nope'), join(st, 'batches/.done/E-0')]);
+t('records: the first batch wins a key, later batches add, a missing folder is skipped, ./ and repeats folded, challenges and bad JSON skipped',
   S([...recs]), '[["T-1",["a.js","lib/"]],["T-2",["b.js"]],["T-4",["old.js"]]]');
-t('records: no state folder is none', scopeRecords(join(dir, 'nope')).size, 0);
+t('records: no batch folder is none', scopeRecords([join(dir, 'nope')]).size, 0);
 
 const joined = joinTickets(new Map([['T-1', ['a.js']], ['T-12', ['c.js']], ['T-2', ['b.js']]]), [
   { headRefName: 'feat/T-12-x', files: ['c.js'] },
