@@ -64,7 +64,7 @@ import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
 import { liveBaseRed, batchLine, repairTicket, repairTriage } from './base-red.mjs';
-import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
+import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
@@ -1914,18 +1914,42 @@ const lowMemory = MIN_AVAIL_GB > 0 && (availGB < MIN_AVAIL_GB || HARM.length > 0
 // default 2 / 3). The report says whose number it is, and whether memory lowered it.
 const CONC = batchConcurrency(fresh, E.concurrencyLimits(), { avail: availGB, start: MIN_AVAIL_GB });
 const concurrency = CONC.n;
-// Test lock gate: while the machine-wide queue on the test lock is test-lock-slots x
-// test-lock-queue-factor runs deep (machine profile; 1 and 2 without one), no new local worker starts
-// and none resumes into a stage that runs suites, since each would only join the queue. Every other
+// Test lock gate: each repo gets a share of the machine-wide queue on the test lock. The hold point is
+// test-lock-slots x test-lock-queue-factor runs waiting (machine profile; 1 and 2 without one). At or
+// over it, each repo with a run holding or waiting on the lock (this one always counted) gets an equal
+// share of the hold point, and this repo starts at most its share less its own runs; below it, at most
+// the hold point less the runs waiting. A run is a repo's when it works in that repo's main checkout or
+// worktrees directory (configured repos; the rest count as one, `other`). The gate covers new local
+// workers and resumes into a stage that runs suites, since each would only join the queue; every other
 // resume goes ahead. AUTOPILOT_LOCK_QUEUE=off skips the read, as the test runner does: its passes must
 // not be held by this machine's real queue.
 const SUITE_STAGES = ['4', '4b'];
 const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
   const whole = (v, d) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) >= 1 ? Number(v) : d);
   const holders = lockHolders(E.lockDir());
+  const held = lockHolderRuns({ procs: processList(), holders, cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(E.lockDir()) });
+  let slug = null;
+  try { slug = E.repoSlug(); } catch { /* no slug: this repo is still listed, by its checkout */ }
+  // Another repo whose config cannot be read is left out, so its runs count under `other`.
+  let others = [];
+  try { others = E.configuredRepos().map((r) => r.slug).filter((s) => s !== slug); } catch { /* none listed: every other run counts under `other` */ }
+  // Named as desk-q names them, so two repos of one name under different owners keep separate shares.
+  const names = E.shownNames(slug ? [slug, ...others] : others);
+  const self = slug ? names.shift() : 'this repo';
+  // This repo first, so a run in its checkout is its own even where another repo's row names the same
+  // directory.
+  const repos = [{ name: self, dirs: [MAIN, WORKTREES] }];
+  others.forEach((s, i) => {
+    try {
+      const d = E.repoDirs(s);
+      if (d.root) repos.push({ name: names[i], dirs: [d.root, d.worktrees] });
+    } catch { /* unreadable: its runs count under `other` */ }
+  });
   return lockQueue({
     waiting: lockWaiters({ procs: processList(), holders }),
-    held: lockHolderRuns({ procs: processList(), holders, cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(E.lockDir()) }),
+    held,
+    counts: lockRunsByRepo(repos, { procs: processList(), holders, cwds: processCwds(), held }),
+    self,
     slots: E.testLockSlots(),
     factor: whole(E.machineValue('test-lock-queue-factor'), 2),
   });
@@ -1934,15 +1958,25 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
 // or an unfinished fix try, whose next worker gets the try's own task (fixTask), which runs suites.
 // resumeRound and the test lock gate both read it, so they agree on where a requeue starts.
 const resumedStage = (t) => (t.fix && !t.fix.finished ? null : roundStage(t.last_round?.stage));
-// Held by the gate: a local session that starts at Stage 0 or one that runs suites: a killed worker last
-// at Stage 4 or 4b, a handoff to 4b, or a requeue resuming its last round there (resumeRound, which
+// Bound for the suites: a local session that starts at Stage 0 or one that runs suites: a killed worker
+// last at Stage 4 or 4b, a handoff to 4b, or a requeue resuming its last round there (resumeRound, which
 // resumes only in a kept worktree).
-const lockQueueHolds = (r) => {
-  if (!LOCK_QUEUE?.deep || runsInCloud(r)) return false;
+const suiteBound = (r) => {
+  if (runsInCloud(r)) return false;
   if (toResume(r)) return SUITE_STAGES.includes(roundStage(r.stage));
   if (toHandoff(r)) return SUITE_STAGES.includes(String(r.handoff_stage));
   const round = existsSync(join(WORKTREES, r.key)) ? resumedStage(r) : null;
   return !round || SUITE_STAGES.includes(round);
+};
+// The gate's room left this pass: each suite-bound ticket let through uses one, and once none is left
+// the rest are held. A ticket skipped later in the pass keeps its unit used, which errs on the side of
+// starting fewer.
+let lockRoom = LOCK_QUEUE?.room ?? Infinity;
+const lockQueueHolds = (r) => {
+  if (!suiteBound(r)) return false;
+  if (lockRoom <= 0) return true;
+  lockRoom -= 1;
+  return false;
 };
 const lockQueueHeld = [];
 const runningKeys = new Set(running.map((r) => r.key));
@@ -2149,7 +2183,7 @@ const promoPr = featureOn ? readPromotionPr(fresh) : null;
 const promoRed = promotionRed(fresh, promoPr);
 const baseWorkerHeld = held === PACE_HELD ? null : held;
 // The holds on a base worker that come before the slot count; baseFixRoom adds the budgets.
-const baseWorkerMay = !baseWorkerHeld && !lowMemory && !LOCK_QUEUE?.deep && running.length < concurrency;
+const baseWorkerMay = !baseWorkerHeld && !lowMemory && !LOCK_QUEUE?.holds && running.length < concurrency;
 // A draft epic PR's review try is a worker with no ticket to spawn, so it claims its one slot as a due
 // gate conflict fix does, but only when this pass could start it: a claim it cannot use would keep the
 // slot from a sibling batch every pass. Only a clean review not yet acted on is counted wrongly, for
@@ -2283,7 +2317,7 @@ const baseFixRoom = baseWorkerMay && MACHINE.room > 0 && REPO.room > 0 && !repoU
 // Why no base worker may start this pass, the first of the holds baseFixRoom tests.
 const noBaseFixRoom = () => baseWorkerHeld ?? (harmWhy ? harmWhy
   : lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
-  : LOCK_QUEUE?.deep ? LOCK_QUEUE.line
+  : LOCK_QUEUE?.holds ? LOCK_QUEUE.line
   : running.length >= concurrency ? `the batch's ${running.length} running worker(s) fill its number of ${concurrency}`
   : MACHINE.room <= 0 ? MACHINE.line
   : repoUnlocked ? repoLine
@@ -2987,6 +3021,10 @@ async function spawnBaseFix({ wt, fix: asked }) {
   const texts = fix.kind === 'checks' ? { ticket: promotionChecksTicket, brief: promotionChecksBrief, task: promotionChecksTask }
     : review ? { ticket: epicReviewTicket, brief: epicReviewBrief, task: epicReviewTask }
       : { ticket: baseFixTicket, brief: baseFixBrief, task: baseFixTask };
+  // A base try runs suites as a ticket's worker does, so it takes a unit of the test lock gate's room
+  // first: with room for one, a pass starts the base try or a ticket, not both.
+  if (lockRoom <= 0) { out.push(`base ${tryWhat(fix)}: held, ${LOCK_QUEUE.line}`); return; }
+  lockRoom -= 1;
   if (DRY) { out.push(`base ${tryWhat(fix)} (dry run): would start try ${fix.try} of ${fix.of} on ${BASE} in ${wt}`); return; }
   // No login to start on: no try is spent, and the next pass looks again.
   const pick = repoLogin();
@@ -3538,7 +3576,7 @@ for (const t of spawnable) {
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
 }
 const lockQueueHeldText = lockQueueHeld.length
-  ? `${LOCK_QUEUE.line}: holding new workers and resumes into Stage 4 (${lockQueueHeld.join(', ')}); they start once the queue drains below ${LOCK_QUEUE.at}`
+  ? `${LOCK_QUEUE.line}: holding new workers and resumes into Stage 4 (${lockQueueHeld.join(', ')}), past the ${LOCK_QUEUE.room} this pass had room for`
   : null;
 if (lockQueueHeldText) report.stalled.push(lockQueueHeldText);
 // A worktree held at an earlier pass and not this one: dropped once it is clean, or the ticket has
