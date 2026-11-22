@@ -67,39 +67,8 @@ if (cmdName !== 'json' && (!CONFIG || !existsSync(CONFIG))) {
   die(`no desk config for ${r.slug ?? 'this directory (not inside a repo with an origin remote)'} at ${CONFIG ?? '(none)'} - run /desk-setup in the repo first. Refusing to guess.`)
 }
 
-// Rows desk-env's CONFIG_ROWS does not (yet) name are read by section and row name, with the same
-// rules desk-env uses: the value column, the first backtick span, TODO reads as unset. configValue
-// is tried first so a row added to CONFIG_ROWS later is picked up without touching this file.
-function rawRow(section, rowName) {
-  let text = ''
-  try { text = readFileSync(CONFIG, 'utf8') } catch { return null }
-  const norm = (x) => x.replace(/[*`]/g, '').replace(/\s+/g, ' ').trim().toLowerCase()
-  let sec = null
-  let header = null
-  for (const raw of text.split('\n')) {
-    const line = raw.trim()
-    const h = /^##\s+(\d+[a-z]?)[.)]?\s/i.exec(line)
-    if (h) { sec = h[1].toLowerCase(); header = null; continue }
-    if (sec !== section) continue
-    if (!line.startsWith('|')) { header = null; continue }
-    const cells = line.replace(/^\||\|$/g, '').split('|').map((c) => c.trim())
-    if (cells.every((c) => /^:?-{2,}:?$/.test(c) || c === '')) continue
-    if (!header) { header = cells.map(norm); continue }
-    let col = ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? -1
-    if (col < 0) col = 1
-    const keyCol = header.indexOf('key')
-    const id = norm(cells[keyCol >= 0 ? keyCol : 0] ?? '')
-    if (id !== norm(rowName)) continue
-    const cell = cells[col] ?? ''
-    const tick = /`([^`]*)`/.exec(cell)
-    const v = (tick ? tick[1] : cell).trim()
-    return !v || /^todo\b/i.test(v) ? null : v
-  }
-  return null
-}
-function cfg(id, section, rowName) {
-  try { return E.configValue(id) } catch { return rawRow(section, rowName) }
-}
+// A row's value through desk-env's reader, by its id. null when unset.
+const cfg = (id) => E.configValue(id)
 // A list row: one item per backtick span, never split on commas (a check can be called
 // `Lint, Type Check & Build`). null when unset; [] for `none`.
 function cfgList(id) {
@@ -127,7 +96,7 @@ const PREV = join(DIR, 'state.prev.json')
 // The branch every PR should target: config §0 Default branch, else GitHub's own answer. Never an
 // assumed name.
 async function resolveDefaultBranch() {
-  const v = cfg('default-branch', '0', 'Default branch')
+  const v = cfg('default-branch')
   if (v) return { branch: v, source: 'config §0 Default branch' }
   const b = (await gh(['repo', 'view', GH.full, '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name'], { json: false })).trim()
   if (!b) die(`cannot resolve the default branch: config §0 Default branch is unset and gh returned nothing for ${GH.full}`)
@@ -143,7 +112,7 @@ async function resolveAuthor() {
     ['--author', argOf('--author')],
     ['DESK_GITHUB_HANDLE', process.env.DESK_GITHUB_HANDLE],
     ['DESK_GH_HANDLE', process.env.DESK_GH_HANDLE],
-    [`${CONFIG} §1 "GitHub handle"`, cfg('github-handle', '1', 'GitHub handle')],
+    [`${CONFIG} §1 "GitHub handle"`, cfg('github-handle')],
   ]
   for (const [src, v] of sources) {
     if (v && v.trim()) return validHandle(v.trim(), src)
@@ -162,7 +131,7 @@ function validHandle(h, src) {
 
 // git behind-counts and ancestry need a checkout: --repo -> config §2 "Primary repo root".
 function resolveRepo() {
-  const v = argOf('--repo') || cfg('repo-root', '2', 'Primary repo root')
+  const v = argOf('--repo') || cfg('repo-root')
   const p = E.expandHome(v)
   if (!p) die(`no repo path: pass --repo <checkout of ${GH.full}>, set §2 "Primary repo root" in ${CONFIG}, or use --no-git`)
   if (!existsSync(join(p, '.git'))) die(`${p} is not a git checkout (from --repo or config §2)`)
@@ -204,7 +173,7 @@ function feedbackFirst() {
 // §4 Merge method: what `gh pr merge` and merge-async are given. Checked against what the ruleset
 // allows, when a ruleset says. Unset is reported, never guessed: the skill does not merge without it.
 function resolveMergeMethod(allowed) {
-  const raw = (cfg('merge-method', '4', 'Merge method') || '').toLowerCase()
+  const raw = (cfg('merge-method') || '').toLowerCase()
   const m = /^(squash|merge|rebase)\b/.exec(raw)?.[1] ?? null
   const warn = m && allowed?.length && !allowed.includes(m)
     ? `config §4 Merge method is ${m} but the ruleset allows only ${allowed.join(', ')} - re-run /desk-setup`
@@ -806,7 +775,7 @@ async function availableGB() {
 // every platform: DESK_CLEARANCE_MEM_GB -> config §3b "Memory ceiling for parallel work
 // (GB)" -> 16 on WSL, physical RAM minus 8 elsewhere.
 function isWsl() {
-  const row = cfg('wsl', '2', 'Running on WSL?')
+  const row = cfg('wsl')
   if (row) return row.toLowerCase() === 'yes'
   if (platform() !== 'linux') return false
   try { return /microsoft/i.test(readFileSync('/proc/version', 'utf8')) } catch { return false }
@@ -815,10 +784,11 @@ const WSL_DEFAULT_CEILING_GB = 16
 function ceilingGB() {
   const declared = Number(process.env.DESK_CLEARANCE_MEM_GB)
   if (Number.isFinite(declared) && declared > 0) return { gb: declared, source: 'DESK_CLEARANCE_MEM_GB' }
-  const fromCfg = Number((cfg('memory-ceiling', '3b', 'Memory ceiling for parallel work (GB)') || '').match(/\d+(\.\d+)?/)?.[0])
+  // desk-env names whose figure it is: the repo's row, or the machine profile's (its fallback, or its cap).
+  const row = E.configValueSource('memory-ceiling')
+  const fromCfg = Number(String(row.value ?? '').match(/\d+(\.\d+)?/)?.[0])
   if (Number.isFinite(fromCfg) && fromCfg > 0) {
-    // An unset repo row reaches here through desk-env's fallback to the machine profile.
-    const source = rawRow('3b', 'Memory ceiling for parallel work (GB)') ? 'config §3b Memory ceiling for parallel work (GB)' : 'machine profile memory-ceiling-gb'
+    const source = row.source === 'repo' ? 'config §3b Memory ceiling for parallel work (GB)' : 'machine profile memory-ceiling-gb'
     return { gb: fromCfg, source }
   }
   if (isWsl()) return { gb: WSL_DEFAULT_CEILING_GB, source: 'WSL default ceiling - set it in config §3b' }
@@ -839,7 +809,7 @@ async function capacity(prs) {
   const byCpu = Math.floor((cores - Math.ceil(load) - 2) / 2)
   const implement = Math.max(1, Math.min(byMem, byCpu, 12))
   const servers = Math.max(1, Math.min(Math.floor(budgetGB / 4), 4))
-  const configured = cfg('subagents-without-asking', '3b', 'Subagents that may run without asking')
+  const configured = cfg('subagents-without-asking')
 
   const assess = prs ? prs.filter((p) => p.worksComments).length : 0
   console.log(`# capacity  ${cores} cores, ${usedGB.toFixed(1)}G used of ${cap.gb.toFixed(0)}G ceiling (${cap.source}), ${budgetGB.toFixed(1)}G to spend after a ${RESERVE_GB}G reserve, load ${load.toFixed(2)}\n`)

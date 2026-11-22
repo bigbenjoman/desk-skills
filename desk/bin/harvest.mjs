@@ -6,6 +6,7 @@ import { readFileSync, realpathSync, readdirSync, mkdirSync, openSync, closeSync
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+import { toolResults } from './log-tool-calls.mjs';
 
 // A desk-review round's results file, as a worker leaves it at its worktree root (desk-review's core,
 // *The verdict*): kept past the worker's session under <state>/reviews/<KEY>/, by the pass once the
@@ -123,19 +124,8 @@ const TURN_EVENTS = new Set(['assistant', 'user', 'stream_event', 'system']);
 const HOST_RESULTS = 12;
 const HOST_FAULT = /\bENOSPC\b|No space left on device/;
 export function hostFault(logText) {
-  const results = [];
-  for (const line of String(logText ?? '').split('\n')) {
-    if (!line.includes('tool_result')) continue;
-    let e;
-    try { e = JSON.parse(line); } catch { continue; }
-    const content = e?.type === 'user' ? e.message?.content : null;
-    if (!Array.isArray(content)) continue;
-    for (const c of content) if (c?.type === 'tool_result') results.push(c);
-  }
-  for (const c of results.slice(-HOST_RESULTS).reverse()) {
-    if (!c.is_error) continue;
-    const text = typeof c.content === 'string' ? c.content
-      : Array.isArray(c.content) ? c.content.map((x) => (typeof x?.text === 'string' ? x.text : '')).join('\n') : '';
+  for (const { failed, text } of toolResults(logText).slice(-HOST_RESULTS).reverse()) {
+    if (!failed) continue;
     const m = HOST_FAULT.exec(text);
     if (!m) continue;
     const at = Math.max(0, m.index - 80);

@@ -225,6 +225,13 @@ out=$(cd "$A" && "$J" create Task s body.md assignee=me --no-lint 2>&1); rc=$?
 check "create assignee=me goes through without --route" '[ $rc -eq 0 ] && [ "$(sent_assignee)" = "{\"accountId\":\"abc\"}" ]'
 out=$(cd "$A" && "$J" create Task s body.md assignee=null --no-lint 2>&1); rc=$?
 check "create assignee=null stays unassigned" '[ $rc -eq 0 ] && [ "$(sent_assignee)" = "null" ] && printf "%s" "$out" | grep -q "^  assignee: -$"'
+out=$(cd "$A" && "$J" create Task s body.md assignee=none --no-lint 2>&1); rc=$?
+check "create assignee=none sends a null assignee, so the ticket is born unassigned" '[ $rc -eq 0 ] && [ "$(sent_assignee)" = "null" ] && printf "%s" "$out" | grep -q "^  assignee: -$"'
+n1=$(creates)
+err=$(cd "$A" && "$J" create Task s body.md assignee=pat@example.com --route --no-lint 2>&1); rc=$?
+check "an assignee that cannot be an accountId is refused before any call, naming the forms" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -qF "assignee=pat@example.com is not a form desk-jira sends: assignee=me for you, assignee=none (or null) for no one, or assignee=<accountId>" && [ "$(creates)" -eq "$n1" ]'
+err=$(cd "$A" && "$J" create Task s body.md "assignee=Pat Doe" --route --no-lint 2>&1); rc=$?
+check "and so is a display name" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -qF "is not a form desk-jira sends" && [ "$(creates)" -eq "$n1" ]'
 n0=$(creates)
 err=$(cd "$A" && "$J" create Task s body.md assignee=xyz --no-lint 2>&1); rc=$?
 check "create for someone else refused without --route" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q -- "--route" && [ "$(creates)" -eq "$n0" ]'

@@ -57,7 +57,9 @@ case "$1" in
 esac
 `);
 chmodSync(join(W, 'stub', 'claude'), 0o755);
-writeFileSync(join(W, 'stub', 'gh'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+// `gh pr view` answers with GH_PR's JSON while that file exists, and with nothing otherwise.
+const GH_PR = join(T, 'gh-pr.json');
+writeFileSync(join(W, 'stub', 'gh'), `#!/bin/sh\nif [ "$1 $2" = "pr view" ] && [ -f "${GH_PR}" ]; then cat "${GH_PR}"; fi\nexit 0\n`, { mode: 0o755 });
 const slug = 'acme__widgets';
 const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: join(W, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
 writeFileSync(gitEnv.GIT_CONFIG_GLOBAL, '[user]\n  email = t@example.com\n  name = t\n');
@@ -66,13 +68,13 @@ spawnSync('git', ['-C', join(W, 'repo'), 'commit', '-q', '--allow-empty', '-m', 
 const state = join(H, '.desk-autopilot', slug);
 const config = join(process.env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md');
 mkdirSync(dirname(config), { recursive: true });
-// `sub` is the repo's §3b Subscription row, left out when null.
-const writeConfig = (sub, to = config) => writeFileSync(to, [
+// `sub` is the repo's §3b Subscription row, left out when null; `levers` sets the Phase 0 levers row to auto.
+const writeConfig = (sub, to = config, levers = false) => writeFileSync(to, [
   '## 0. Repo', '| Field | Value |', '|---|---|', '| GitHub repo | `acme/widgets` |', '| Default branch | `main` |', '',
   '## 2. Paths', '| Field | Value |', '|---|---|', `| Primary repo root | \`${join(W, 'repo')}\` |`, `| Worktrees directory | \`${join(W, 'wt')}\` |`, '',
   '## 3. Permissions', '| Key | Capability | Recommended | Your setting |', '|---|---|---|---|', '| `autopilot-workers` | Run workers | `yes` | `yes` |', '',
   '## 3b. Cost and autonomy', '| Field | Recommended | Your setting |', '|---|---|---|', '| Autopilot worker concurrency | `3 / 3` | `3 / 3` |', '| Usage pacing headroom (points) | `5` | `off` |',
-  ...(sub ? [`| Subscription | \`default\` | \`${sub}\` |`] : []), '',
+  ...(sub ? [`| Subscription | \`default\` | \`${sub}\` |`] : []), ...(levers ? ['| Phase 0 levers | `auto` | `auto` |'] : []), '',
 ].join('\n'));
 const QF = join(process.env.DESK_HOME, 'repos', slug, 'queue.json');
 mkdirSync(dirname(QF), { recursive: true });
@@ -89,12 +91,12 @@ function writeSubs(logins) {
   const rows = logins.map(([n, r]) => `| \`claude\` | \`${n}\` | \`${n === 'default' ? '~/.claude' : `~/.claude-logins/${n}`}\` | \`${r}\` |`);
   writeFileSync(process.env.DESK_SUBSCRIPTIONS, `| Tool | Name | Folder | Rule |\n|---|---|---|---|\n${rows.join('\n')}\n`);
 }
-function world(logins, tickets, { sub = null } = {}) {
+function world(logins, tickets, { sub = null, levers = false } = {}) {
   for (const p of [state, process.env.DESK_USAGE_DIR, CALLS, AUTHS, SIGNED_OUT, LIMITED, process.env.DESK_SUBSCRIPTIONS, join(H, '.claude-logins'), join(H, '.claude.json')]) rmSync(p, { recursive: true, force: true });
   mkdirSync(join(state, 'logs'), { recursive: true });
   mkdirSync(join(state, 'workers'), { recursive: true });
   mkdirSync(process.env.DESK_USAGE_DIR, { recursive: true });
-  writeConfig(sub);
+  writeConfig(sub, config, levers);
   if (logins) {
     writeSubs(logins);
     for (const [n, , five, week] of logins) {
@@ -409,6 +411,30 @@ t('DS-621 AC7 to AC9 a caller under its own config folder stays on it', `${got.d
 env = world([['default', 'default', 50, 50]], {});
 got = calling(env);
 t('DS-621 one login in a subscriptions file: every call runs as today', `${got.decider} ${got.triage} ${got.epic}`, 'unset keep unset');
+
+// DS-783 AC5: a blind audit whose preflight the repo's subscription refuses at its limit holds the batch,
+// and the hold the pass saves names it: no ticket spawns, so the audit's is the pass's only preflight.
+{
+  env = world([['b', 'default', 10, 10], ['c', 'unused', 90, 90]], {}, { levers: true });
+  atLimit(dirOf('b'));
+  const here = E_SLUG();
+  const { append } = await import(join(BIN, 'lever-log.mjs'));
+  const { trialId } = await import(join(BIN, 'levers-auto.mjs'));
+  const { auditQueueFile } = await import(join(BIN, 'levers-audit.mjs'));
+  // The codex lever on trial since yesterday, and one of its merged PRs queued for audit.
+  const e = append(here, { kind: 'override', lever: 'codex', from: 'off', to: 'trial', actor: 'ben', reason_code: 'ben_override', reason: 'trial codex', at: new Date(Date.now() - 86_400_000).toISOString() });
+  const head = spawnSync('git', ['-C', join(W, 'repo'), 'rev-parse', 'HEAD'], { env: gitEnv, encoding: 'utf8' }).stdout.trim();
+  writeFileSync(GH_PR, JSON.stringify({ mergeCommit: { oid: head }, commits: [] }));
+  mkdirSync(dirname(auditQueueFile(here)), { recursive: true });
+  // This week's spend, measured today, leaves the audit its share.
+  writeFileSync(auditQueueFile(here), JSON.stringify({ v: 1, trials: {}, spend: { day: new Date().toISOString().slice(0, 10), usd: 1000 }, items: {
+    'A-1': { ticket: 'A-1', key: 'audit.A-1', pr: 7, lever: 'codex', arm: 'on', trial_id: trialId(here, 'codex', { id: e.id }), model: 'default', state: 'queued',
+      merged_at: new Date(Date.now() - 3_600_000).toISOString(), tries: 0 } } }));
+  out = pass(env);
+  rmSync(GH_PR);
+  t('DS-783 AC5 the audit\'s preflight ran on the repo\'s subscription, and nothing else did', `${calls('audit.A-1').join(' ')} ${readFileSync(CALLS, 'utf8').trim().split('\n').length}`, `audit.A-1|preflight|${dirOf('b')}| 1`);
+  t('DS-783 AC5 the batch\'s saved usage hold includes it, with the reset time', JSON.stringify([batchOf().usage_hold?.preflight, batchOf().usage_hold?.resets_at]), JSON.stringify(['audit.A-1', RESET]));
+}
 
 rmSync(T, { recursive: true, force: true });
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }

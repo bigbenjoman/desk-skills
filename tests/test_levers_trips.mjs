@@ -327,6 +327,22 @@ t('every registered trip has a detector, or names the module that applies it', O
   const fresh = [log[0], { id: 'o3', at: restoreAt, kind: 'override', lever: 'codex', actor: 'ben', reason_code: 'ben_override', from: 'overridden', to: 'trial', decision_id: 'd3', reason: 'trial' }];
   t('a trip read on one trial writes nothing on a fresh trial started since', tripEvents({ events: fresh, name: 'acme', at: early, x }), []);
 }
+// An audit-p0 trip and its needs_you are one write to the lever log, so no crash falls between them, and
+// a pass replaying the trip writes neither again.
+{
+  const { applyTrips } = await import('../desk/bin/levers-trips.mjs');
+  const { logFile } = await import('../desk/bin/lever-log.mjs');
+  const AP = 'acme__auditp0';
+  repo(AP);
+  append(AP, { kind: 'override', lever: 'codex', from: 'off', to: 'trial', actor: 'ben', reason_code: 'ben_override', reason: 'trial codex', at: at(-300) });
+  const x = { lever: 'codex', trip: 'audit-p0', ticket: 'K-2', from: 'trial', file: join(stateOf(AP), 'audit.jsonl'), line: 1, why: 'the blind audit of PR #7 found 1 P0', defect: 'a.mjs:1: x' };
+  const before = readFileSync(logFile(AP), 'utf8').split('\n').filter(Boolean).length;
+  const first = applyTrips({ slug: AP, name: 'auditp0', trips: [x], now: NOW });
+  const lines = readFileSync(logFile(AP), 'utf8').split('\n').filter(Boolean).slice(before).map((l) => JSON.parse(l));
+  t('AC3 the audit-p0 trip and its needs_you are written together, in one append', [first.map((e) => e.kind), lines.map((e) => e.kind), new Set(lines.map((e) => e.at)).size], [['trip', 'needs_you'], ['trip', 'needs_you'], 1]);
+  applyTrips({ slug: AP, name: 'auditp0', trips: [x], now: NOW + HOUR });
+  t('AC3 a pass that replays the trip leaves exactly one needs_you for it', [eventsOf(AP, 'trip').length, eventsOf(AP, 'needs_you').filter((e) => e.evidence_file === x.file && e.evidence_line === 1).length], [1, 1]);
+}
 t('a trip event missing its record\'s line is refused', (() => { try { append(A9, { kind: 'trip', lever: 'memory', from: 'trial', to: 'reverted', actor: 'trip', reason_code: 'post_merge_revert', reason: 'x', ticket: 'M-9', evidence_file: 'f' }); return 'appended'; } catch (e) { return /evidence_line/.test(e.message); } })(), true);
 
 console.log(fails ? `${fails} failed` : 'all passed');

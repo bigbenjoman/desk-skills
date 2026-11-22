@@ -5,7 +5,8 @@
 //                               label, ttl, acquired, renewed?, expires }] }, rewritten whole under
 //                               <dir>/leases.json.lock
 //   <dir>/leases.log.jsonl    one line per change: grant, would-refuse, refuse, gave-up, renew,
-//                               re-create, release, force-release, lapse, reset
+//                               re-create, release, force-release, lapse, reset, trial (a restart of
+//                               the shadow kinds' trial, trialOf)
 //
 // <dir> is DESK_LEASE_DIR, else ~/.desk-autopilot/machine. A lease's owner is a pid and that process's
 // start time, read inside the store lock, so a lease whose owner has exited, or whose pid now belongs
@@ -423,38 +424,64 @@ export const overdue = (l, t) => t > Date.parse(l.expires);
 export const forceReleaseCommand = (id) => `desk-env lease force-release ${id} --reason <why>`;
 export const RESET_COMMAND = 'desk-env lease reset --reason <why>';
 
-// Each kind's would-refuse entries in the log, counted per 24 hours back from now, newest first:
-// { <kind>: [n, …] } with `days` counts, holding only kinds that have one. A line that is not JSON is
-// skipped; a log that cannot be read throws LeaseStoreError.
-export function wouldRefuseByDay({ dir = leaseDir(), now = Date.now, days = 7 } = {}) {
+// The log as the screens read it: when it began (its first entry), the latest trial restart, and each
+// would-refuse entry, oldest first, as logged. A line that is not JSON is skipped; a missing log is an
+// empty one; a log that cannot be read throws LeaseStoreError.
+export function readLog({ dir = leaseDir() } = {}) {
   let raw;
   try { raw = readFileSync(logFile(dir), 'utf8'); } catch (e) {
-    if (e.code === 'ENOENT') return {};
+    if (e.code === 'ENOENT') return { first: null, restarted: null, clashes: [] };
     throw new LeaseStoreError(`the lease log ${logFile(dir)} is unreadable: ${e.message}`);
   }
-  const t = now();
-  const out = {};
+  let first = null, restarted = null;
+  const clashes = [];
   for (const line of raw.split('\n')) {
-    if (!line.includes('"would-refuse"')) continue;
+    if (!line.trim()) continue;
+    const at = first == null || line.includes('"would-refuse"') || line.includes(`"${TRIAL_EVENT}"`);
+    if (!at) continue;
     let e;
     try { e = JSON.parse(line); } catch { continue; }
-    if (e?.event !== 'would-refuse' || !KINDS.includes(e.kind)) continue;
-    const day = Math.floor((t - Date.parse(e.at)) / 86_400_000);
-    if (day >= 0 && day < days) (out[e.kind] ??= Array(days).fill(0))[day]++;
+    const t = Date.parse(e?.at);
+    if (!Number.isFinite(t)) continue;
+    first ??= t;
+    if (e.event === TRIAL_EVENT) restarted = Math.max(restarted ?? t, t);
+    else if (e.event === 'would-refuse' && KINDS.includes(e.kind)) clashes.push(e);
   }
-  return out;
+  return { first, restarted, clashes };
+}
+
+// The trial: kinds in shadow grant what on would refuse and log each as a would-refuse, for TRIAL_DAYS
+// from the log's first entry or its latest restart (an answer to the day-7 question restarts it for
+// the kinds still in shadow). `log` is readLog's. -> { start, ends } in ms, or null with no log.
+export const TRIAL_DAYS = 7;
+export const TRIAL_EVENT = 'trial';
+export function trialOf(log) {
+  const start = log.restarted ?? log.first;
+  return start == null ? null : { start, ends: start + TRIAL_DAYS * 86_400_000 };
+}
+// Restarts the trial for the kinds still in shadow, logging `reason`, under the store lock.
+export function restartTrial(reason, { dir = leaseDir() } = {}) {
+  const lockDir = lockStore(dir);
+  try { appendLog(dir, [{ event: TRIAL_EVENT, reason: String(reason ?? '').trim() || 'restarted' }], 0); } finally { unlock(lockDir); }
 }
 
 export const listRow = (l) => [l.id, l.kind, l.key, l.units, l.owner ? `pid ${l.owner.pid}` : 'no owner', l.label, `${l.ttl}s`, l.acquired, l.expires].join('\t');
 const LIST_HEAD = ['ID', 'KIND', 'KEY', 'UNITS', 'OWNER', 'LABEL', 'TTL', 'ACQUIRED', 'EXPIRES'].join('\t');
 const listJson = (l) => JSON.stringify({ id: l.id, kind: l.kind, key: l.key, units: l.units, owner: l.owner, label: l.label, ttl: l.ttl, acquired: l.acquired, ...(l.renewed ? { renewed: l.renewed } : {}), expires: l.expires });
 
+// `lease list --clashes`: each would-refuse of the last CLASH_DAYS days (or --days), oldest first,
+// with who asked and who held it.
+const CLASH_DAYS = 7;
+const CLASH_HEAD = ['KIND', 'KEY', 'AT', 'REQUESTER', 'HOLDER'].join('\t');
+const clashRow = (e) => ({ kind: e.kind, key: e.key, at: e.at, requester: e.label ?? 'unlabelled',
+  holder: (e.holders ?? []).map((h) => h.label ?? 'unlabelled').join('; ') || 'unknown' });
+
 export const LEASE_USAGE = `usage: desk-env lease acquire <kind> <key> --ttl <seconds> [--units <n>] [--wait <seconds>] [--label <text>] [<owner>]
        desk-env lease renew <lease id> <kind> <key> --ttl <seconds> [--units <n>] [--label <text>] [<owner>]
        desk-env lease release <lease id> [--pid <owner pid>] [--if-expires <its expires, unrenewed since>]
        ${forceReleaseCommand('<lease id>')}
        ${RESET_COMMAND}
-       desk-env lease list [--json]
+       desk-env lease list [--json] [--clashes [--days <n>]]
        desk-env lease mode [<kind>]
 kinds: port <number> | slot ${Object.keys(SLOTS).join('|')} | preview-build <vercel team> | merge <owner>/<repo>@<base> | mem <what for> (units in GiB)
 <owner>: --pid <pid>, --owner claude (the nearest Claude Code session above the caller), or --no-owner
@@ -558,8 +585,19 @@ export function leaseCli(args, { env, dir = leaseDir(), out = (s) => console.log
       return r.code;
     }
     if (sub === 'list') {
-      const { pos, opt } = parseArgs(rest, [], ['json']);
+      const { pos, opt } = parseArgs(rest, ['days'], ['json', 'clashes']);
       if (pos.length) throw usage(`list takes no arguments, not "${pos[0]}"`);
+      if (opt.days != null && !opt.clashes) throw usage('--days goes with --clashes');
+      if (opt.clashes) {
+        const days = opt.days == null ? CLASH_DAYS : whole(opt.days);
+        if (!days) throw usage(`--days is a whole number of days, 1 or more, not "${opt.days}"`);
+        const t = Date.now();
+        const rows = readLog({ dir }).clashes.filter((e) => t - Date.parse(e.at) < days * 86_400_000);
+        if (opt.json) for (const e of rows) out(JSON.stringify(clashRow(e)));
+        else if (!rows.length) out(`no clashes in the last ${days} days`);
+        else { out(CLASH_HEAD); for (const e of rows) out(Object.values(clashRow(e)).join('\t')); }
+        return EXIT_OK;
+      }
       const leases = list({ env, dir });
       if (opt.json) for (const l of leases) out(listJson(l));
       else if (!leases.length) out('no leases');

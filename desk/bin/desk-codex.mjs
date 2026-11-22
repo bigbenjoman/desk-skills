@@ -22,12 +22,11 @@
 //
 // Exit: 0 answered · codex's own non-zero exit · 124 timed out · 75 no Codex login can take it · 2 usage
 // · 3 lever off or §3 refuses.
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { codexCallLogin } from './codex-login.mjs';
-import { codexExec, execArgs } from './codex-exec.mjs';
+import { cdAndPrompt, readOnlyCall, reportCall } from './codex-exec.mjs';
 
 const PROBE_PROMPT = 'Reply with exactly: CODEX_OK';
 const PROBE_FRESH_MS = 60 * 60 * 1000;
@@ -65,22 +64,12 @@ const writeRecord = (ok) => {
 
 function run(role, prompt, cd) {
   const { model, effort } = role === 'probe' ? cfg.refuter : cfg[role];
-  const dir = mkdtempSync(join(tmpdir(), 'desk-codex-'));
-  const last = join(dir, 'last-message.txt');
   if (onLogin()) say(`on Codex login ${onLogin()}`);
-  // Sets the exit code and returns, never process.exit: a pipe write on macOS is asynchronous, and
-  // exiting at once would cut a long final message short.
-  codexExec({ args: execArgs({ sandbox: 'read-only', cd, model, effort, last, prompt }), last, env: pick.env, timeout: cfg.timeout }).then(({ code, timedOut, message: msg, tail, error }) => {
-    rmSync(dir, { recursive: true, force: true });
-    if (error) { writeRecord(false); say(`codex did not start: ${error}`); process.exit(127); }
-    if (timedOut) { writeRecord(false); say(`timed out after ${cfg.timeout}s (${role}, ${model} at ${effort})`); process.exitCode = 124; return; }
-    const answered = code === 0 && msg.trim() !== '' && (role !== 'probe' || msg.includes('CODEX_OK'));
+  const refuse = (m) => (!m.trim() ? 'with no final message' : role === 'probe' && !m.includes('CODEX_OK') ? 'without CODEX_OK' : null);
+  readOnlyCall({ prompt, cd, model, effort, env: pick.env, timeout: cfg.timeout }).then((r) => {
+    const answered = reportCall(r, { say, timeout: cfg.timeout, label: `${role}, ${model} at ${effort}`, refuse });
     writeRecord(answered);
-    if (msg) process.stdout.write(msg.endsWith('\n') ? msg : `${msg}\n`);
-    if (code !== 0) { say(`codex exited ${code} (${role}, ${model} at ${effort}): ${tail.trim().split('\n').slice(-5).join(' | ') || 'no error text'}`); process.exitCode = code; return; }
-    if (!answered) { say(`codex answered ${msg.trim() ? 'without CODEX_OK' : 'with no final message'} (${role}, ${model} at ${effort})`); process.exitCode = 1; return; }
-    if (role === 'probe') say(describe());
-    process.exitCode = 0;
+    if (answered && role === 'probe') say(describe());
   });
 }
 
@@ -98,13 +87,7 @@ if (role === 'settings') {
     say(`a probe passed ${Math.round(age / 60000)} min ago${onLogin() ? ` on Codex login ${onLogin()}` : ''}, so none ran · ${describe()}`);
   } else run('probe', PROBE_PROMPT);
 } else if (E.CODEX_ROLES.includes(role)) {
-  let cd = null;
-  if (rest[0] === '--cd') {
-    cd = rest[1];
-    try { if (!cd || !statSync(cd).isDirectory()) throw new Error(); } catch { say(`--cd ${cd ?? ''} is not a directory`); process.exit(2); }
-    rest.splice(0, 2);
-  }
-  if (rest.length !== 1 || !rest[0].trim()) usage();
+  const { cd, prompt } = cdAndPrompt(rest, say, usage);
   choose();
-  run(role, rest[0], cd);
+  run(role, prompt, cd);
 } else usage();

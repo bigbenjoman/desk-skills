@@ -78,6 +78,7 @@ ticketed. Nothing else waives a check, and nothing ever merges past a required o
 | Slug | `TODO` (`owner__name`; the folder this file lives in) |
 | Default branch | `TODO` (e.g. `main`) |
 | One-line description | `TODO` (what the product is; used to brief subagents) |
+| Other names | `TODO` (other repo names this repo's code answers to, one span each, e.g. a repo since moved into this monorepo; or `none`. A ticket whose Jira Repository, or files-in-scope prefix, is one of them runs here) |
 
 ## 1. Who you are in this repo
 
@@ -265,6 +266,9 @@ These are not oversights. Editing them to `yes` changes nothing; the skills refu
 | Autopilot worker concurrency | `2 / 3` (default / cap) | `TODO` |
 | Memory ceiling for parallel work (GB) | WSL: `16` · otherwise physical RAM minus ~8 | `TODO` (`DESK_CLEARANCE_MEM_GB` overrides) |
 | Spawn gate (available memory) | start work > 8 GiB · hold 4–8 · drop to 1 below 4 | `TODO` |
+| Swap growth that holds spawns (GB) | `2` | `TODO` (a number of GB: on Linux, `desk-env mem watch` says `SWAP-GROWING` when swap used grows by this much within 10 minutes, and the pass holds new workers for 10 minutes after. Unset is `2`) |
+| tmpfs /tmp size that holds spawns (GB) | `2` | `TODO` (a number of GB: on Linux, with `/tmp` a tmpfs, the watch says `TMPFS-HIGH` when it holds this much, and the pass holds new workers while it does and for 10 minutes after. Unset is `2`) |
+| WSL VM share of its grant that holds spawns (%) | `90` | `TODO` (a whole number of percent, read only where §2 "Running on WSL?" is `yes`: the watch says `VMMEM-HIGH` when the VM holds this share of its `.wslconfig` grant, and the pass holds new workers while it does and for 10 minutes after. Unset is `90`) |
 | Per-file collision budget | `3 over 1000 lines, else 1; serial: none` | `TODO` (how many running tickets may name one file before a ticket naming it waits: `<k> over <n> lines, else <k>`, by the file's length on the batch base, then `; serial: <glob>, ...` for files kept at 1, or a bare `1` for one at a time everywhere, all in one code span. Unset is the recommended value; a row that does not read is 1 for every file, and the pass report says so) |
 | Test worker cap under the test lock | `4`, `2` while the spawn gate says hold | `TODO` |
 | Autopilot per-worker budget (USD) | `25` (a runaway guard) | `TODO` (`none` turns it off) |
@@ -401,6 +405,7 @@ such thing.
 | Merged-tree check | `TODO` (a quick check any merged tree must pass that git cannot see, such as exactly one migration head and no repeated revision, one span each in the form Unit tests takes, e.g. `` `apps/api: uv run python scripts/check_alembic_heads.py` ``; it runs in a plain checkout with no database, env files or install, and is stopped after 5 minutes. A batch base's sync runs it after merging and before pushing, and a failure pushes nothing and goes to a base fix worker; fix tries that merge a base run it too. The merge driver runs it on each PR merged into its base's head before merging it, and a failure holds the PR for a fix worker. `none` pushes every clean merge, and the driver merges without it) |
 | PR-description checks | `TODO` (the script CI runs on a PR's description, so it can run before the PR is opened or edited, e.g. `node scripts/check-pr-body.mjs`; desk-pr runs each span with the draft body's file path appended, so the script must accept one; or `none`) |
 | Env files | `TODO` (the `.env*` files a new worktree needs copied from the primary checkout, one span each, e.g. `` `frontend/.env.local` `portal/.env.local` ``; or `none`) |
+| Test sign-in | `TODO` (one span per app a worker signs in to for screenshots, in the Dev server form: the email of an existing user in that app's development auth instance who already holds the app's grant, e.g. `` `dev-user@example.test` `apps/portal/apps/web: portal-dev@example.test` ``; never a password, and never a production user. Read with `desk-env cmds test-signin`; `desk-env drift --app <dir>` names an app with a Dev server item and none here. `none` where no app needs signing in to) |
 
 ### Environments and services
 

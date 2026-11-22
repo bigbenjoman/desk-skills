@@ -11,6 +11,8 @@
 #   PASS_CMP_KEEP=1 bash tests/compare_pass.sh ...              keep the recordings and both trees when a run
 #                                                               differs or was not compared, and print the
 #                                                               diff command that lists them again
+#   PASS_CMP_SERIAL=1 bash tests/compare_pass.sh ...            run the trees and suites one after the
+#                                                               other rather than side by side
 # A base given as a commit is replayed once: its recording is cached in
 # ${XDG_CACHE_HOME:-~/.cache}/desk-skills/compare-pass (the last 5), keyed by the commit, the node, git
 # and bash versions, the suites and these scripts. PASS_CMP_CACHE=0 replays both trees.
@@ -22,7 +24,7 @@ suites=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --suite) [ $# -ge 2 ] || { echo "compare_pass: --suite needs a suite name" >&2; exit 2; }; suites+=("${2##*/}"); shift 2 ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     -*) echo "compare_pass: unknown option $1" >&2; exit 2 ;;
     *) break ;;
   esac
@@ -73,21 +75,17 @@ export PASS_CMP_NODE="$NODE" PASS_CMP_RECORDER="$S/compare_pass.mjs"
 # second, so one tree could show a single SHA where the other shows two.
 GIT_AUTHOR_DATE="$(date +%s) +0000"; GIT_COMMITTER_DATE=$GIT_AUTHOR_DATE
 export GIT_AUTHOR_DATE GIT_COMMITTER_DATE
-# The two trees run one after the other, each suite in its own scratch HOME: side by side, one tree's
-# queue.mjs stop ends the other's stand-in worker, which it finds by session id across the machine.
-side(){ mkdir -p "$W/rec/$1"
-  for s in "${suites[@]}"; do
-    echo "compare_pass: $s on the $1" >&2
-    (cd "$W/$1" && PATH="$W/shim:$PATH" PASS_CMP_OUT="$W/rec/$1/$s" PASS_CMP_SUITE_LOG="$W/rec/$1/$s.log" \
-      "$SH" "tests/$s" > "$W/rec/$1/$s.log" 2>&1 < /dev/null)
-    # A suite stopped, or failing a check (perhaps for want of a tool here), leaves the base uncached.
-    st=$?; [ $st = 0 ] && ! grep -q '^FAIL ' "$W/rec/$1/$s.log" || unclean=1
-    mkdir -p "$W/rec/$1/$s"
-  done; }
+# One suite $2 on the tree $1, in its own scratch HOME. Its exit status is kept beside its log, as a
+# suite run side by side cannot hand it back.
+run(){ echo "compare_pass: $2 on the $1" >&2
+  (cd "$W/$1" && PATH="$W/shim:$PATH" PASS_CMP_OUT="$W/rec/$1/$2" PASS_CMP_SUITE_LOG="$W/rec/$1/$2.log" \
+    "$SH" "tests/$2" > "$W/rec/$1/$2.log" 2>&1 < /dev/null)
+  echo $? > "$W/st/$1/$2"
+  mkdir -p "$W/rec/$1/$2"; }
 
 # The cache key: everything the base's recording depends on besides the base tree itself, as the
 # recorder and suite_env.sh come from this checkout rather than the base.
-C="${XDG_CACHE_HOME:-$HOME/.cache}/desk-skills/compare-pass"; key=; hit=; unclean=
+C="${XDG_CACHE_HOME:-$HOME/.cache}/desk-skills/compare-pass"; key=; hit=
 if [ "${PASS_CMP_CACHE:-1}" != 0 ] && [ ! -d "$base" ]; then
   key=$({ echo "$base"; "$NODE" --version; git --version; echo "$BASH_VERSION"
     printf '%s\n' "${suites[@]}" | sort; cat "$S/compare_pass.sh" "$S/compare_pass.mjs" "$S/suite_env.sh"
@@ -95,25 +93,53 @@ if [ "${PASS_CMP_CACHE:-1}" != 0 ] && [ ! -d "$base" ]; then
 fi
 # Each entry holds the base's records and the paths that tree ran at, which the diff masks as it does
 # this run's own.
-brec="$W/rec/base"; broots=("$W/base" "$W")
+brec="$W/rec/base"; broots=("$W/base" "$W"); trees="base head"
 if [ -n "$key" ] && [ -f "$C/$key.tar" ] && mkdir -p "$W/cached" && tar -xf "$C/$key.tar" -C "$W/cached" 2>/dev/null \
   && [ -d "$W/cached/rec/base" ] && [ -f "$W/cached/roots" ]; then
-  hit=1; brec="$W/cached/rec/base"; broots=()
+  hit=1; brec="$W/cached/rec/base"; broots=(); trees=head
   while IFS= read -r r; do broots+=("$r"); done < "$W/cached/roots"
   touch "$C/$key.tar"
   echo "compare_pass: the base's recording is cached, so only the head is replayed (PASS_CMP_CACHE=0 replays both)" >&2
+fi
+mkdir -p "$W/rec/base" "$W/rec/head" "$W/st/base" "$W/st/head"
+# Both trees and every suite run side by side, each suite's stand-in workers under session ids of its own
+# (tests/pass_setup.sh SID_SUFFIX), as queue.mjs stop finds a worker by session id across the machine.
+# PASS_CMP_SERIAL=1 runs them one after the other, as does a base whose suites predate those ids.
+if [ "${PASS_CMP_SERIAL:-}" = 1 ] || ! grep -q '^SID_SUFFIX=' "$W/base/tests/pass_setup.sh" 2>/dev/null; then
+  for t in $trees; do for s in "${suites[@]}"; do run "$t" "$s"; done; done
 else
-  side base
+  # Stopped, it ends each suite it started and everything under it before the scratch dir goes: a
+  # suite started with & ignores SIGINT.
+  tree_kill(){ local c; for c in $(ps -A -o pid= -o ppid= | awk -v p="$1" '$2 == p { print $1 }'); do tree_kill "$c"; done
+    kill -TERM "$1" 2>/dev/null; }
+  stop_suites(){ local p; trap "" INT TERM
+    for p in ${pids[@]+"${pids[@]}"}; do tree_kill "$p"; done; wait; exit 130; }
+  pids=()
+  trap stop_suites INT TERM
+  for t in $trees; do for s in "${suites[@]}"; do run "$t" "$s" & pids+=($!); done; done
+  wait
+  trap 'exit 130' INT; trap 'exit 143' TERM
 fi
 # A base replay whose suites all passed, with no pass crashing, is cached; the oldest entries past 5 go.
-if [ -n "$key" ] && [ -z "$hit" ] && [ -z "$unclean" ] && "$NODE" "$S/compare_pass.mjs" clean "$W/rec/base" \
-  && mkdir -p "$C" 2>/dev/null; then
-  printf '%s\n' "$W/base" "$(cd "$W/base" && pwd -P)" "$W" "$(cd "$W" && pwd -P)" > "$W/roots"
-  tar -cf "$C/.$key.$$" -C "$W" rec/base roots 2>/dev/null && mv -f "$C/.$key.$$" "$C/$key.tar"
-  rm -f "$C/.$key.$$"
-  ls -1t "$C"/*.tar 2>/dev/null | tail -n +6 | while IFS= read -r f; do rm -f "$f"; done
+# Otherwise it says why not: a suite that stopped, or failed a check (perhaps for want of a tool here).
+if [ -n "$key" ] && [ -z "$hit" ]; then
+  why=
+  for s in "${suites[@]}"; do
+    st=$(cat "$W/st/base/$s" 2>/dev/null) || st='with no status'
+    f=$(grep -m 1 '^FAIL ' "$W/rec/base/$s.log" 2>/dev/null)
+    if [ -n "$f" ]; then why="${why:+$why; }$s: $f"; elif [ "$st" != 0 ]; then why="${why:+$why; }$s exited $st"; fi
+  done
+  [ -n "$why" ] || why=$("$NODE" "$S/compare_pass.mjs" clean "$W/rec/base" 2>&1) || [ -n "$why" ] || why='a pass crashed'
+  if [ -z "$why" ] && mkdir -p "$C" 2>/dev/null; then
+    printf '%s\n' "$W/base" "$(cd "$W/base" && pwd -P)" "$W" "$(cd "$W" && pwd -P)" > "$W/roots"
+    tar -cf "$C/.$key.$$" -C "$W" rec/base roots 2>/dev/null && mv -f "$C/.$key.$$" "$C/$key.tar" \
+      && echo "compare_pass: cached the base's recording as $C/$key.tar" >&2
+    rm -f "$C/.$key.$$"
+    ls -1t "$C"/*.tar 2>/dev/null | tail -n +6 | while IFS= read -r f; do rm -f "$f"; done
+  else
+    echo "compare_pass: the base's recording is not cached: ${why:-$C could not be made}" >&2
+  fi
 fi
-side head
 # A cached base ran long before the head, which the diff is told so it matches times by run only.
 dargs=("$S/compare_pass.mjs" diff ${hit:+"--base-cached"} "$brec" "$W/rec/head" "${broots[@]}" "$W/head" "$W")
 "$NODE" "${dargs[@]}"; rc=$?

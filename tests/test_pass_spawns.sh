@@ -61,12 +61,14 @@ X1Q="$DESK_HOME/repos/acme__widgets/batches/X-1/queue.json"; X1S="$HOME/.desk-au
 STQ="$DESK_HOME/repos/acme__widgets/queue.json"
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
 node "$B/desk-env.mjs" paths | grep -E '^DESK_(QUEUE|STATE)=' > "$T/x1-setup"
-mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
+mkdir -p "$T/wt/\$2"; echo "[setup-worktree] steps=config:1,checkout:2,install:41"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
 EOF
 cat > "$T/desk/bin/spawn-worker.sh" <<EOF
 if [ "\$3" = preflight ]; then echo "[preflight] pass"; else node "$B/desk-env.mjs" paths | grep -E '^DESK_(QUEUE|STATE)=' > "$T/x1-spawn"; echo "[spawn] ticket=\$1"; fi
 EOF
 q --batch X-1 init x1; q --batch X-1 add X-9; q --batch X-1 set X-9 state=triaged
+# X-11's worktree is left from a setup that did not finish: setup-worktree.sh completes it, install included.
+mkdir -p "$T/wt/X-11"; : > "$T/wt/X-11/.desk-setup-incomplete"; q --batch X-1 add X-11; q --batch X-1 set X-11 state=triaged
 out=$(node "$B/pass.mjs" --batch X-1 2>&1)
 x1field(){ DESK_QUEUE="$X1Q" field "$@"; }
 want="DESK_STATE='$X1S'
@@ -75,6 +77,12 @@ check "DS-303 AC3 pass.mjs --batch X-1 spawns X-1's ticket" '[ "$(x1field X-9 st
 check "DS-303 AC3 the worktree setup it starts acts on X-1" '[ "$(cat "$T/x1-setup" 2>/dev/null)" = "$want" ]'
 check "DS-303 AC3 the worker it starts acts on X-1" '[ "$(cat "$T/x1-spawn" 2>/dev/null)" = "$want" ]'
 check "DS-303 AC3 the pass keeps its own state in X-1's folder" '[ -d "$X1S/logs" ]'
+check "DS-698 AC1 the pass's metrics line carries each setup step's duration for the ticket it spawned" \
+  'tail -n 1 "$X1S/passes.jsonl" | jq -e ".setup | map(select(.key == \"X-9\")) == [{\"key\":\"X-9\",\"kept\":false,\"steps\":{\"config\":1,\"checkout\":2,\"install\":41}}]" >/dev/null'
+check "DS-698 a worktree resumed from an unfinished setup is timed as a new one, not a kept one" \
+  'tail -n 1 "$X1S/passes.jsonl" | jq -e ".setup | map(select(.key == \"X-11\")) | .[0].kept == false" >/dev/null'
+# X-11 was only here to be timed: its running worker would hold one of the repo's worker slots from every test below.
+q --batch X-1 set X-11 state=done session_id=null
 
 # ---- DS-124: cloud workers
 # A ticket plan-batch placed in the cloud starts as one `claude --cloud` session, run through script
@@ -585,6 +593,9 @@ q add P-2; q set P-2 lane=A branch=fix/P-2 "worktree=$T/wt/P-2"; q park P-2 "$PQ
 say "AUTOPILOT_PR_BODY_BEGIN:" "## Summary" "Makes p." "AUTOPILOT_PR_BODY_END:" "AUTOPILOT_PARK: $PQ" > "$T/state-rc/logs/P-2.log"
 q add P-3; q set P-3 lane=A branch=fix/P-3 "worktree=$T/wt/P-3"; q park P-3 "${PQ//P-2/P-3}"
 say "AUTOPILOT_PR_BODY_BEGIN:" "## Summary" "Makes q." "AUTOPILOT_PR_BODY_END:" "AUTOPILOT_PARK: ${PQ//P-2/P-3}" > "$T/state-rc/logs/P-3.log"
+# DS-948: P-8's body asks for an issue to be closed later with a closing keyword before it.
+mkdir -p "$T/wt-p8"; q add P-8; q set P-8 lane=A branch=fix/P-8 "worktree=$T/wt-p8"; q park P-8 "${PQ//P-2/P-8}"
+say "AUTOPILOT_PR_BODY_BEGIN:" "## Summary" "Makes r." "- [ ] Close #1090 after a week of clean main runs." "AUTOPILOT_PR_BODY_END:" "AUTOPILOT_PARK: ${PQ//P-2/P-8}" > "$T/state-rc/logs/P-8.log"
 RQ='R-1: widen this PR to cover the CSV export too (recommended), or split the export into a follow-up?'
 q add R-1; q set R-1 state=running lane=A branch=fix/R-1 session_id=gone
 say "AUTOPILOT_PARK: $RQ" 'AUTOPILOT_PARK_RECOMMENDS: {"options": ["widen this PR", "split it into a follow-up"], "chose": "widen this PR", "category": "scope"}' > "$T/state-rc/logs/R-1.log"
@@ -607,6 +618,8 @@ check "DS-397 AC5 and its draft opened from that body, with the title its worker
   'grep -qE "^pr create --repo acme/widgets --draft --base main --head fix/P-2 --title fix\(p\): P-2 make p --body-file .*/state-rc/pr-bodies/P-2.md$" "$T/rc-gh.log" && [ "$(cat "$T/state-rc/pr-bodies/P-2.md")" = "$(printf "## Summary\nMakes p.")" ]'
 check "DS-397 AC5 the ticket is recorded done on the draft, naming what its park left" \
   '[ "$(field P-2 state)" = "\"done\"" ] && [ "$(field P-2 result.pr)" = 91 ] && [ "$(field P-2 draft_pr)" = 91 ] && echo "$out" | grep -qF "P-2: PR #91 pushed and opened as a draft by the pass from its worker'"'"'s PR body; what else its park named is not done: git push origin fix/P-2 was refused"'
+check "DS-948 AC1 a body with a closing keyword mid-line is not pushed or opened, and the park says which line" \
+  '[ "$(field P-8 state)" = "\"parked\"" ] && ! grep -q "fix/P-8" "$T/rc-gh.log" && echo "$out" | grep -qF "P-8: parked on a refused push or draft PR with its PR body in the log, but its PR body has a closing keyword outside a line of its own, which GitHub would act on at merge (line 3: Close #1090): left parked"'
 check "DS-397 AC3 a take call with a recommended option is answered with it and requeued" \
   '[ "$(field R-1 state)" != "\"parked\"" ] && [ "$(field R-1 prev_park.question)" = "\"$RQ\"" ] && [ "$(field R-1 auto_answered.chose)" = "\"widen this PR\"" ] && grep -q "^widen this PR. This was the option the last worker recommended" "$T/state-rc/briefings/R-1.md" && echo "$out" | grep -qF "R-1: took the recommended option on its scope call (\"widen this PR\"), answered it and requeued; logged as a decision"'
 check "DS-397 AC3 and the decision is logged as taken by the pass" 'jq -e "select(.ticket == \"R-1\" and .chose == \"widen this PR\" and .category == \"scope\" and .source == \"pass\")" "$T/state-rc/decisions.jsonl" >/dev/null'
@@ -1489,14 +1502,23 @@ dragbody 764 "Before | After
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-492 AC2 every cell filled, the next pass takes it out of draft though the upload was partial" \
   '[ "$(field S-4 images_uploaded)" = "\"partial\"" ] && grep -q "^pr ready 764" "$T/gh-calls"'
-# S-5: an upload that matched no cell at all still goes to the person, as before.
+# S-5: an upload that matched no cell at all is partial, and never a person's: its cell goes to the undraft step.
 q add S-5; q set S-5 state=running session_id=gone lane=A branch=fix/S-5 result.pr=765; frx 765 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 765 "_drag s-5.png_"
 mkdir -p "$T/state-s/images/S-5"; : > "$T/state-s/images/S-5/other.png"
 say "AUTOPILOT_IMAGES: $T/state-s/images/S-5/" "AUTOPILOT_DONE: pr=765 jira=Done" > "$T/state-s/logs/S-5.log"
 printf '%s\n' '[upload] uploaded, but found no _drag placeholders matching the files' > "$T/upload-left"
 out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/upload-left"
-check "DS-492 an upload that matched no cell is partial and put to the person, never re-uploaded" \
-  '[ "$(field S-5 images_uploaded)" = "\"partial\"" ] && echo "$out" | grep -q "S-5: image upload to PR #765 is INCOMPLETE — .*do not re-upload\.$"'
+check "DS-492 an upload that matched no cell is partial, never re-uploaded, and not put to the person" \
+  '[ "$(field S-5 images_uploaded)" = "\"partial\"" ] && echo "$out" | grep -q "S-5: image upload to PR #765 placed no image: none of its files matches a cell in the body — .*nothing is re-uploaded, and any cell left goes to the undraft step$" && ! echo "$out" | grep -q "INCOMPLETE"'
+# S-9: every before/after pair is byte for byte the same, so the body has no table: nothing to upload,
+# images_uploaded=none, and nothing for the person.
+q add S-9; q set S-9 state=running session_id=gone lane=A branch=fix/S-9 result.pr=769; frx 769 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 769 "No visual change: every before/after pair is identical."
+mkdir -p "$T/state-s/images/S-9"; for v in desktop mobile; do printf 'same-%s' "$v" > "$T/state-s/images/S-9/before-$v.png"; printf 'same-%s' "$v" > "$T/state-s/images/S-9/after-$v.png"; done
+say "AUTOPILOT_IMAGES: $T/state-s/images/S-9/" "AUTOPILOT_DONE: pr=769 jira=Done" > "$T/state-s/logs/S-9.log"
+ups=$(grep -c . "$T/uploads" 2>/dev/null || echo 0)
+out=$(node "$B/pass.mjs" 2>&1)
+check "identical before/after pairs record images_uploaded=none, with no upload and nothing for the person" \
+  '[ "$(field S-9 images_uploaded)" = "\"none\"" ] && [ "$(grep -c . "$T/uploads" 2>/dev/null || echo 0)" = "$ups" ] && ! echo "$out" | grep -q "S-9.*INCOMPLETE\|S-9: image upload"'
 # S-6: an evidence workflow that cannot start asks for it to be run, never for an upload.
 q add S-6; q set S-6 state=done lane=A branch=fix/S-6 result.pr=766 images_uploaded=none; frx 766 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 766 "$mixed"
 : > "$T/wf-refuse-766"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/wf-refuse-766"
@@ -1729,10 +1751,24 @@ q add LG-1; q set LG-1 state=triaged lane=A branch=fix/LG-1
 out=$(DESK_CONFIG="$T/config-lg.md" node "$B/pass.mjs" 2>&1)
 check "DS-893 AC2 with the ledger lever on, a pass's spawn is a spawned event naming the pass" \
   '[ "$(field LG-1 state)" = "\"running\"" ] && [ "$(jq -sc "[.[] | select(.key == \"LG-1\" and .type == \"spawned\") | .by.proc]" "$T/lg/ledger/events.jsonl")" = "[\"pass\"]" ]'
-q add LG-2; q set LG-2 state=triaged lane=A branch=fix/LG-2
+# DS-894: the pass then compares queue.json with the queue rebuilt from the log, and its metrics line
+# records the counts. lgm is the last pass's [differences, missed appends].
+lgm(){ tail -1 "$T/state-lg/passes.jsonl" | jq -c "[.ledger_diffs, .ledger_missed]"; }
+check "DS-894 AC1/AC4 a batch with no log, seeded by the pass's writes, matches it: no difference line, and the metrics record zero" \
+  '! echo "$out" | grep -q "differ between queue.json" && [ "$(lgm)" = "[0,0]" ]'
+jq '.tickets["LG-1"].lane = "Z"' "$T/lg/queue.json" > "$T/lg/q.tmp" && mv "$T/lg/q.tmp" "$T/lg/queue.json"
+out=$(DESK_CONFIG="$T/config-lg.md" node "$B/pass.mjs" 2>&1)
+check "DS-894 AC2 a field written past the queue store: the report names the ticket and field, and the metrics count it" \
+  'echo "$out" | grep -q "ledger: 1 field(s) differ between queue.json and the queue rebuilt from the log, 0 missed append(s) this pass: LG-1 lane" && [ "$(lgm)" = "[1,0]" ]'
+DESK_CONFIG="$T/config-lg.md" q add LG-2; DESK_CONFIG="$T/config-lg.md" q set LG-2 state=triaged lane=A branch=fix/LG-2
 mkdir "$T/lg/ledger/.lock"; echo $$ > "$T/lg/ledger/.lock/pid"
 out=$(DESK_CONFIG="$T/config-lg.md" node "$B/pass.mjs" 2>&1); rm -rf "$T/lg/ledger/.lock"
 check "DS-893 AC10 the ledger locked past its wait: the spawn is still recorded, and the report names the missed append" \
   '[ "$(field LG-2 state)" = "\"running\"" ] && echo "$out" | grep -q "ledger: 1 missed append" && ! jq -e "select(.key == \"LG-2\" and .type == \"spawned\")" "$T/lg/ledger/events.jsonl" >/dev/null'
+check "DS-894 AC5 the pass whose spawn missed its append counts it, and names the field it left unrecorded" \
+  'echo "$out" | grep -qE "ledger: [1-9][0-9]* field\(s\) differ between queue.json and the queue rebuilt from the log, [1-9][0-9]* missed append\(s\) this pass: LG-1 lane, LG-2 " && [ "$(lgm | jq ".[0] > 1 and .[1] > 0")" = true ] && DESK_CONFIG="$T/config-lg.md" node "$B/queue.mjs" rebuild | grep -q "^LG-2 state: queue.json \"running\", rebuilt \"triaged\""'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-894 AC7 with the lever off, no difference line and no difference count" \
+  '! echo "$out" | grep -q "differ between queue.json" && [ "$(tail -1 "$T/state-lg/passes.jsonl" | jq "has(\"ledger_diffs\") or has(\"ledger_missed\")")" = false ]'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

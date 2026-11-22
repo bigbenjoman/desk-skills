@@ -138,6 +138,10 @@ How to turn what you find into rows:
   task ids (`P1-M14-FIX-1`), bug numbers (`BUG-119-5`). Propose a regex per family, one span each,
   with the count of branches or titles each matched and two examples; the user confirms or writes
   `none`. Such ids are then accepted as tickets whose text comes from a ticket file, never Jira.
+- **Other names.** Ask whether the code of another repo now lives in this one (a repo moved into a
+  monorepo, or a renamed repo whose old name tickets still carry), and offer each such name for §0
+  Other names, one span each, or `none`. A ticket whose Jira Repository, or files-in-scope prefix, is
+  one of them is then planned and built here rather than asked about as no repo on this computer.
 - **Workflow states.** From the project's statuses, propose In-progress, Review and Done states; the
   user confirms. `none` for Review is fine.
 - **Required fields.** Propose them from `desk-jira meta`, then ask which fields the team expects on
@@ -408,6 +412,15 @@ How to turn what you find into rows:
 - **Env files.** The `.env*` files the primary checkout has that a fresh worktree lacks
   (`git -C <root> ls-files --others --ignored --exclude-standard | grep -E '(^|/)\.env'`). Names
   only; never read them.
+- **Test sign-in.** Always ask, once per app a §4 Dev server item names, the second app of a
+  monorepo included: propose one item per app in the Dev server form, `` `<dir>: <email>` `` (bare
+  for the root), e.g. `` `apps/portal/apps/web: <email>` ``, and say what the user must hold: an
+  existing user in that app's development auth instance (never production, never a new one) who
+  already holds the grant its signed-in pages need, so a worker can sign in as them for screenshots.
+  The email is a fact only the user has: never guess one, and never take a password. `none` is a
+  fine answer where no app has a page behind sign-in. `desk-env drift --app <dir>` names an app with
+  a Dev server item and no item here `NOSIGNIN`; propose its item on every run, a re-run's
+  included.
 - **Database URL variable.** **Every** variable name in those env files (and `.env.example`) that
   holds a database URL or name, e.g. `` `DATABASE_URL` `DATABASE_URL_UNPOOLED` `GYGG_DB_NAME` ``,
   one span each, from the name scan above; never read a value. Missing one matters: a worker's

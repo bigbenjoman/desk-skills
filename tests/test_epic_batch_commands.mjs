@@ -60,8 +60,8 @@ for (const f of EPIC_PATH) {
 // and a worker's checks in its worktree.
 const SHARED = {
   'feature-branch.md': ['queue.mjs set-batch', 'batch.mjs start', 'desk-env baseline'],
-  'supervisor.md': ['run-by.mjs stage4', 'pass.mjs --json', 'supervisor.mjs status', 'queue.mjs init',
-    'queue.mjs admit', 'intake.mjs forget', 'intake.mjs admit'],
+  'supervisor.md': ['run-by.mjs stage4', 'pass.mjs --json', 'desk-env get', 'desk-env drift', 'supervisor.mjs status', 'queue.mjs init',
+    'queue.mjs admit', 'intake.mjs forget', 'intake.mjs admit', 'intake.mjs push'],
 };
 const verb = (c) => /([\w.-]+\.(?:mjs|sh)|desk-env)[ \t]+([\w-]+)/.exec(c)?.slice(1).join(' ') ?? c;
 const untwinned = (text, exempt = []) => {

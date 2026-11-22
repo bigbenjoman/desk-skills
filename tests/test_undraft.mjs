@@ -1022,13 +1022,42 @@ t('DS-576 and another login still is', humanReviewed({ reviews: [review('looks o
     { perm: 'yes', localReview: '/code-review', clean: ALL_ZERO, handle: 'ben', required: ['tests'], passAt: NOW });
   const first = wedged(undefined);
   t('#752 a first pass with no answer waits, from now', `${first?.call} ${first?.unknown_since}`, `wait ${NOW}`);
-  const later = wedged({ call: 'wait', pr: 752, sha: HEAD, unknown_since: ago(30) });
-  t('#752 within the hour it still waits, from when it was first seen at that head', `${later?.call} ${later?.unknown_since}`, `wait ${ago(30)}`);
+  const later = wedged({ call: 'wait', pr: 752, sha: HEAD, unknown_since: ago(29) });
+  t('#752 DS-856 AC3 within the limit it still waits, from when it was first seen at that head, with no repair', `${later?.call} ${later?.unknown_since} ${later?.unknown_repair}`, `wait ${ago(29)} undefined`);
   const late = wedged({ call: 'wait', pr: 752, sha: HEAD, unknown_since: ago(61) });
-  t('#752 past the hour it is the person\'s, naming the wedged merge ref and what gives a fresh one', `${late?.call} | ${late?.why} | ${late?.action}`,
-    `person | GitHub has not worked out whether it conflicts with its base (UNKNOWN) at ${HEAD.slice(0, 12)} for 61 minutes: its merge ref looks wedged, and GitHub starts no run for that head | push a new commit to #752 (an empty one will do) for a fresh merge ref; if it still has no answer, open a new PR from its branch`);
+  t('#752 DS-856 AC5 past the limit with no repair permitted it is the person\'s, naming the wedged merge ref, that no repair was permitted, and what gives a fresh one', `${late?.call} | ${late?.why} | ${late?.action}`,
+    `person | GitHub has not worked out whether it conflicts with its base (UNKNOWN) at ${HEAD.slice(0, 12)} for 61 minutes: its merge ref looks wedged, and GitHub starts no run for that head; no repair was permitted, as config §3 pr-update-branch is "no" | push a new commit to #752 (an empty one will do) for a fresh merge ref; if it still has no answer, open a new PR from its branch`);
   t('#752 once the person\'s, it stays theirs from the same time', wedged({ call: 'person', pr: 752, sha: HEAD, unknown_since: ago(90) })?.unknown_since, ago(90));
   t('#752 a new head starts the clock again', wedged({ call: 'wait', pr: 752, sha: OLD, unknown_since: ago(90) })?.call, 'wait');
+}
+
+// DS-856: past the limit, where §3 pr-update-branch is yes, the branch is updated once; past the limit
+// again after that, across the new head, it is the person's, naming the repair.
+{
+  const NOW = '2026-11-20T12:00:00.000Z';
+  const ago = (m) => new Date(Date.parse(NOW) - m * 60000).toISOString();
+  const wedged = (undraft, { head = HEAD, mergeable = 'UNKNOWN', updateBranch = 'yes' } = {}) => undraftCall({ key: 'T-856', undraft }, { number: 856, head, mergeable, mergeState: mergeable === 'MERGEABLE' ? 'CLEAN' : 'UNKNOWN', body: '', reviews: [review(marker(ALL_ZERO, head), head)], checks: [{ name: 'tests', status: 'in_progress', conclusion: null }] },
+    { perm: 'yes', localReview: '/code-review', clean: ALL_ZERO, handle: 'ben', required: ['tests'], passAt: NOW, updateBranch });
+  const within = wedged({ call: 'wait', pr: 856, sha: HEAD, unknown_since: ago(29) });
+  t('DS-856 AC3 within the limit it waits, with no repair', within?.call, 'wait');
+  const due = wedged({ call: 'wait', pr: 856, sha: HEAD, unknown_since: ago(31) });
+  t('DS-856 AC1 past the limit it repairs the head once, saying which head, how long and why', `${due?.call} | ${due?.why} | ${due?.unknown_since}`,
+    `repair | GitHub has not worked out whether it conflicts with its base (UNKNOWN) at ${HEAD.slice(0, 12)} for 31 minutes: its merge ref looks wedged, and GitHub starts no run for that head, so its branch is updated from its base once (gh pr update-branch) for a fresh merge ref | ${ago(31)}`);
+  const tried = { at: ago(10), head: OLD, ok: true };
+  const after = wedged({ call: 'wait', pr: 856, sha: OLD, unknown_since: ago(41), unknown_repair: tried });
+  t('DS-856 after the repair, at its new head, it waits out the limit again from the repair, keeping both records', `${after?.call} ${after?.unknown_since} ${after?.unknown_repair === tried}`, `wait ${ago(41)} true`);
+  const still = wedged({ call: 'wait', pr: 856, sha: OLD, unknown_since: ago(70), unknown_repair: { ...tried, at: ago(31) } });
+  t('DS-856 AC2 still no answer past the limit after the repair, it is the person\'s, naming the PR, how long, and the repair', `${still?.call} | ${still?.why} | ${still?.action}`,
+    `person | GitHub has not worked out whether it conflicts with its base (UNKNOWN) at ${HEAD.slice(0, 12)} for 70 minutes: its merge ref looks wedged, and GitHub starts no run for that head; desk already updated its branch from its base once (gh pr update-branch at ${OLD.slice(0, 12)}, ${ago(31)}), and GitHub still has no answer | push a new commit to #856 (an empty one will do) for a fresh merge ref; if it still has no answer, open a new PR from its branch`);
+  const refused = wedged({ call: 'person', pr: 856, sha: HEAD, unknown_since: ago(40), unknown_repair: { at: ago(5), head: HEAD, ok: false, out: 'HTTP 422: no new commits on the base branch' } });
+  t('DS-856 a refused repair is not tried again: it stays the person\'s, saying why it was refused', `${refused?.call} ${/was refused: HTTP 422: no new commits on the base branch$/.test(refused?.why ?? '')}`, 'person true');
+  const answered = wedged({ call: 'wait', pr: 856, sha: HEAD, unknown_since: ago(70), unknown_repair: tried }, { mergeable: 'MERGEABLE' });
+  t('DS-856 AC4 once GitHub answers, the call carries no unknown_since or repair', `${answered?.call} ${answered?.unknown_since} ${answered?.unknown_repair}`, 'wait undefined undefined');
+  const rec = { call: answered.call, why: answered.why, action: null, sha: HEAD, carried_from: null, pr: 856 };
+  const w = undraftWrite({ key: 'T-856', undraft: { call: 'wait', why: answered.why, action: null, sha: HEAD, carried_from: null, pr: 856, unknown_since: ago(70), unknown_repair: tried } }, rec, { dry: false, at: NOW });
+  t('DS-856 AC4 and the undraft record is rewritten without them', w && !/unknown_/.test(w.fields[0]), true);
+  const fresh = wedged({ call: 'wait', why: answered.why, pr: 856, sha: HEAD });
+  t('DS-856 AC4 so a later spell with no answer starts a fresh count, from now', `${fresh?.call} ${fresh?.unknown_since}`, `wait ${NOW}`);
 }
 
 
@@ -1046,10 +1075,10 @@ t('DS-576 and another login still is', humanReviewed({ reviews: [review('looks o
   const legacy = { key: 'T-752', undraft: { call: 'wait', why: 'GitHub has not yet worked out whether it conflicts with its base (UNKNOWN)', action: null, sha: HEAD752, carried_from: null, pr: 752, at: '2026-11-20T08:00:00.000Z' } };
   const p1 = pass(legacy, '2026-11-20T10:00:00.000Z');
   t('#752 a pre-change wait record gains unknown_since on its first pass', `${p1.wrote} ${p1.t.undraft.unknown_since}`, 'true 2026-11-20T10:00:00.000Z');
-  const p2 = pass(p1.t, '2026-11-20T10:30:00.000Z');
-  t('#752 a pass within the hour writes nothing and keeps it', `${p2.wrote} ${p2.c.call} ${p2.c.unknown_since}`, 'false wait 2026-11-20T10:00:00.000Z');
+  const p2 = pass(p1.t, '2026-11-20T10:20:00.000Z');
+  t('#752 a pass within the limit writes nothing and keeps it', `${p2.wrote} ${p2.c.call} ${p2.c.unknown_since}`, 'false wait 2026-11-20T10:00:00.000Z');
   const p3 = pass(p2.t, '2026-11-20T11:05:00.000Z');
-  t('#752 a pass past the hour is the person\'s', `${p3.c.call} ${p3.wrote}`, 'person true');
+  t('#752 a pass past the limit is the person\'s', `${p3.c.call} ${p3.wrote}`, 'person true');
 }
 
 process.exit(fails ? 1 : 0);
