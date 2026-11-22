@@ -91,11 +91,12 @@ t(`AC2: ${WORKER_FILES.length} worker files checked, rows named without an id`, 
 // Only desk-setup and desk-update, which write the file, open it whole. A whole read is a Read of
 // the `CONFIG` file, a `cat` of it, or `desk-env show` with no section named (every section).
 const WRITERS = new Set(['desk-setup', 'desk-update']);
+const NOT = String.raw`(?<!(?:not|never|cannot) )`;
 const WHOLE = [
-  /\bread (?:the |this repo's )?(?:`CONFIG`|config) file\b/i,
-  /\bread (?:the |this repo's )?(?:`CONFIG`|config)(?=[.,;)*]|$)/im,
+  new RegExp(String.raw`${NOT}\bread (?:the |this repo's )?(?:\`CONFIG\`|config) file\b`, 'i'),
+  new RegExp(String.raw`${NOT}\bread (?:the |this repo's )?(?:\`CONFIG\`|config)(?=[.,;)*]|$)`, 'im'),
   /\bcat\s+"?\$\{?CONFIG\b/,
-  /\bdesk-env show(?![ \t]+(?:§?\d|rules)\b)/,
+  /\bdesk-env show(?![ \t]+(?:§?\d[a-c]?|rules)\b)/,
 ];
 const SECTION_READ = /\bdesk-env show(?:[ \t]+(?:§?\d[a-c]?|rules)\b)+|\bdesk-env get --json(?: --where)? --section\b/;
 const wholeReads = (text) => text.replace(/^---\n[\s\S]*?\n---\n/, '').split(/\n\s*\n/)
@@ -105,6 +106,8 @@ t('DS-875 can fail: Read the config, in a parenthesis', wholeReads('(resolve it 
 t('DS-875 can fail: desk-env show with no section', wholeReads('Read `desk-env show` (rules and rows, no §3c).').length, 1);
 t('DS-875 passes: a section read', wholeReads('Read `desk-env show rules 0 3 5` (never the `CONFIG` file whole).').length, 0);
 t('DS-875 passes: a row of a section', wholeReads('**Read the config §4 People table** for who reviews.').length, 0);
+t('DS-875 passes: saying a worker cannot read it', wholeReads('Read rows with `desk-env` (a worker cannot read `CONFIG`).').length, 0);
+t('DS-875 passes: a §3b section first', wholeReads('Read `desk-env show 3b 4`.').length, 0);
 const SKILLS = join(ROOT, 'skills');
 const skillDirs = readdirSync(SKILLS).filter((d) => statSync(join(SKILLS, d)).isDirectory());
 let whole = 0;
