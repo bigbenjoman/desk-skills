@@ -6,7 +6,8 @@
 //     node ($PASS_CMP_NODE) with the same arguments, passing its stdin, stdout, stderr and exit status
 //     through unchanged, then saves run <n>.json in $PASS_CMP_OUT: when the run started and ended, the exit
 //     status, stdout and stderr as they arrived, the queue at $DESK_QUEUE and the archive beside it,
-//     and how many lines the suite had printed to $PASS_CMP_SUITE_LOG when the run started.
+//     and how many lines the suite had printed to $PASS_CMP_SUITE_LOG when the run started. Before the
+//     run, it holds each usage probe start stamp under the age a pass probes again at (holdProbeStamps).
 //
 //   node compare_pass.mjs diff <base records> <head records> <base tree> <head tree>
 //     Lists, per suite and run, every queue field and output line that differs once ids and paths
@@ -18,6 +19,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFi
 import { constants } from 'node:os';
 import { join } from 'node:path';
 import { lock, unlock } from '../desk/bin/dir-lock.mjs';
+import { PROBE_EVERY_MS, PROBE_GAP_MS, usageDir } from '../desk/bin/usage-probe.mjs';
 import { flattenQueue } from '../desk/bin/queue-fields.mjs';
 
 const [mode, ...args] = process.argv.slice(2);
@@ -37,7 +39,22 @@ function nextRun(dir) {
   } finally { unlock(held); }
 }
 
+// A pass with no usage reading probes for one only when its login's last probe started over
+// PROBE_EVERY_MS ago (usage-probe.mjs noReadingProbeDue), so which of a suite's passes probe depends on
+// how fast the machine runs the suite, and the two trees, run side by side, cross that line at
+// different runs. Each pass starts with every probe start stamp held under that age, past the minute a
+// pass joins another's probe for, so no run's probe depends on the machine's speed.
+function holdProbeStamps() {
+  const dir = usageDir(), held = Date.now() - (PROBE_EVERY_MS - PROBE_GAP_MS);
+  let names = [];
+  try { names = readdirSync(dir).filter((f) => /^probe.*\.at$/.test(f)); } catch { return; }
+  for (const f of names) {
+    try { const at = Number(readFileSync(join(dir, f), 'utf8')); if (at > 0 && at < held) writeFileSync(join(dir, f), String(held)); } catch { /* left as it is */ }
+  }
+}
+
 function record(argv) {
+  holdProbeStamps();
   const dir = process.env.PASS_CMP_OUT;
   mkdirSync(dir, { recursive: true });
   const run = nextRun(dir);
