@@ -18,6 +18,9 @@ const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringi
 const BINDIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const waitFor = async (pred, ms = 3000) => { const end = Date.now() + ms; while (Date.now() < end) { if (pred()) return true; await sleep(20); } return !!pred(); };
+// Waits until no rebuild has started for 600 ms (up to 10 s), so a slow one on a loaded machine has
+// landed before a check counts from here.
+const quiet = async () => { const end = Date.now() + 10_000; for (let n = -1; n !== builds.length && Date.now() < end;) { n = builds.length; await sleep(600); } };
 
 const T = scratch('desk-ui-events-');
 const PORT = await freePort();
@@ -134,7 +137,7 @@ t('the snapshot names its revision as its event id', first?.id, first?.data?.rev
 t('the snapshot carries the usage and Levers figures the home event keeps current, and not the inputs\' ages', ['usage', 'levers', 'inputs'].map((k) => k in (first?.data ?? {})), [true, true, false]);
 t('a ticket row carries its stage', first?.data?.tickets?.acme__gadgets?.find((x) => x.key === 'GAD-2')?.stage, '4/9');
 t('the snapshot\'s counts are desk-q\'s', counts(view(w.events)), deskQ());
-await sleep(300); // anything desk-q's own read wrote has settled
+await quiet(); // anything desk-q's own read wrote has settled
 
 // ---- AC9: a quiet stream is pinged
 const quietFrom = w.events.length;
@@ -144,6 +147,7 @@ t('AC9 a stream with no change is sent a ping once the interval passes', quiet.l
 t('AC9 a ping carries the time and no revision', [quiet[0]?.id ?? null, !Number.isNaN(Date.parse(quiet[0]?.data?.at))], [null, true]);
 
 // ---- AC3: logs growing change nothing
+await quiet();
 const builtBefore = builds.length, seenBefore = w.real().length;
 for (let i = 0; i < 10; i++) {
   appendFileSync(join(stateOf('acme__widgets'), 'logs', 'WID-1.log'), `{"type":"assistant","n":${i}}\n`);
@@ -171,7 +175,7 @@ t('AC5 its repo event carries its summary', change.filter((e) => e.event === 're
 const tix = change.filter((e) => e.event === 'tickets').map((e) => e.data);
 t('AC5 only the ticket rows that changed or left, by key', [tix.flatMap((x) => x.upsert.map((r) => r.key)).sort(), tix.flatMap((x) => x.remove)], [['WID-2', 'WID-3'], ['WID-4']]);
 t('each event has its own revision, in order', change.every((e, i) => Number.isInteger(e.id) && (i === 0 || e.id === change[i - 1].id + 1)), true);
-await sleep(300);
+await quiet();
 
 // ---- AC4: a burst of writes is one rebuild per 250 ms at most
 const burstFrom = builds.length;
@@ -179,7 +183,8 @@ for (let i = 0; i < 20; i++) {
   writeQueue('acme__widgets', [WID[1], { key: 'WID-2', state: 'running', stage: `${(i % 8) + 1}/9` }, { key: 'WID-3', state: 'queued', n: i }]);
   await sleep(10);
 }
-await sleep(1200);
+await waitFor(() => feed.snapshot().tickets.acme__widgets.find((x) => x.key === 'WID-2')?.stage === '4/9', 5000);
+await quiet();
 const burst = builds.slice(burstFrom);
 const gaps = burst.slice(1).map((x, i) => x - burst[i]);
 t('AC4 20 writes in 200 ms are rebuilt at least once', burst.length >= 1, true);

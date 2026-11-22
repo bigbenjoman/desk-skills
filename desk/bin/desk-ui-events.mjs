@@ -144,11 +144,16 @@ export function makeFeed({ build = readModel, stale = livenessMoved, now = Date.
     });
     return building;
   }
+  // How long until DEBOUNCE_MS has passed since the last rebuild started, rounded up.
+  const untilDebounced = () => Math.max(0, Math.ceil(lastBuild + debounceMs - mono()));
+  // Resolves once DEBOUNCE_MS has passed since the last rebuild started. A timer may fire a
+  // millisecond early, so the wait is checked again on waking.
+  const debounced = async () => { for (let ms = untilDebounced(); ms > 0; ms = untilDebounced()) await new Promise((r) => setTimeout(r, ms)); };
   // A rebuild once DEBOUNCE_MS has passed since the last one started, so a burst of writes costs one.
   function schedule() {
     dirty = true;
     if (timer || building) return;
-    timer = setTimeout(run, Math.max(0, lastBuild + debounceMs - mono()));
+    timer = setTimeout(() => { timer = null; if (untilDebounced() > 0) schedule(); else run(); }, untilDebounced());
     timer.unref?.();
   }
 
@@ -183,7 +188,7 @@ export function makeFeed({ build = readModel, stale = livenessMoved, now = Date.
   async function current({ fresh = false } = {}) {
     start();
     const asked = rebuilds; // a rebuild started after this read was asked for is fresh enough
-    if (fresh && model) await new Promise((r) => setTimeout(r, Math.max(0, lastBuild + debounceMs - mono())));
+    if (fresh && model) await debounced();
     if (building) await building;
     if (!model || (fresh && rebuilds === asked)) await run();
     else if (dirty) await new Promise((r) => waiting.push(r));

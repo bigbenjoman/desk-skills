@@ -171,6 +171,7 @@ const opened = await new Promise((resolve) => {
   const req = request({ host: '127.0.0.1', port: PORT, path: '/api/events', headers: { Host: `127.0.0.1:${PORT}`, Cookie: `desk_ui=${f.cookies[0].value}`, ...streamSent } },
     (res) => { resolve(res.statusCode); req.destroy(); });
   req.on('error', () => resolve(null));
+  req.end(); // a request is only sent once ended: without this the server drops the idle socket
 });
 t('the window\'s stream request carries the app\'s Origin and opens', [streamSent.Origin, 'origin' in streamSent, opened], [ORIGIN, false, 200]);
 t('no other request, nor another frame\'s stream, gets an Origin added',
