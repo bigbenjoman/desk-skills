@@ -120,6 +120,11 @@ const lists = (acts) => acts.at(-1);
   const kept = run(snap([withCommit]));
   t('one with its merge commit is not read again', ofType(kept, 'read-pr').length, 0);
   t('origin is still fetched for its gated step', ofType(kept, 'fetch-origin').length, 1);
+  const failed = run(snap([noCommit]), {});
+  t('DS-853 a merged PR whose merge-commit read fails is read, and is not unread', j([ofType(failed, 'read-pr').length, lists(failed).unread]), j([1, []]));
+  t('DS-853 it stays merged in the PR states', lists(failed).prStates[27], 'MERGED');
+  const owedPost = done('V2', 30, { merged_at: 'x', pr_status: status(30, 'MERGED', { post_merge: [{ step: 'p' }] }) });
+  t('DS-853 nor is one read for its post-merge criteria', j(lists(run(snap([owedPost]), {})).unread), j([]));
   const mergeOnly = done('X', 29, { merged_at: 'x', follow_on: [{ step: 's', row: null }], pr_status: status(29, 'MERGED', { merged_at: 'x' }) });
   t('a step gated on the merge alone needs neither', j(run(snap([mergeOnly])).map((a) => a.type)), j(['prune-builds', 'lists']));
 }
@@ -149,6 +154,7 @@ const lists = (acts) => acts.at(-1);
   t('one PR two tickets share is read once', ofType(acts, 'read-pr').length, 1);
   t('an open PR whose base now runs its untriggered checks is in the reopens', j(lists(acts).reopens.map(({ t: x, owed }) => [x.key, owed])), j([['I', false]]));
   t('a read that fails keeps nothing for that PR', j(run(snap([done('L', 20)]), {}).filter((a) => a.type !== 'read-pr').map((a) => a.type)), j(['prune-builds', 'lists']));
+  t('and lists it as unread, for the outage hold', j(lists(run(snap([done('L', 20)]), {})).unread), j([20]));
 }
 {
   const owed = done('M', 21, { reopening: 21 });

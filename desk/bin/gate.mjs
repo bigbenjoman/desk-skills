@@ -139,6 +139,8 @@ export function normaliseCheck(c) {
 export const normaliseRollup = (nodes) => (nodes || []).filter((n) => n && (n.name || n.context)).map((n) => ({
   ...normaliseCheck(n), workflow: n.workflowName ?? null, startedAt: n.startedAt ?? null, completedAt: n.completedAt ?? null,
   jobId: /\/job\/(\d+)/.exec(n.detailsUrl ?? '')?.[1] ?? null,
+  // A status context's own words (a deploy service's "Deployment has failed"): its only error line.
+  ...(n.description ? { description: String(n.description) } : {}),
 }));
 
 // The latest run of each check, as GitHub's own `gh pr checks` and branch protection read it.
