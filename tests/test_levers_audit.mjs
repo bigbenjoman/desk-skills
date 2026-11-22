@@ -1,5 +1,5 @@
 // suite: levers audit (a blind audit sample measures review quality independently of the levers on trial)
-// covers: desk/bin/levers-audit.mjs desk/bin/lever-registry.mjs desk/bin/lever-log.mjs desk/bin/levers-auto.mjs desk/bin/desk-env.mjs desk/bin/pass.mjs desk/bin/spawn-worker.sh
+// covers: desk/bin/levers-audit.mjs desk/bin/merge-landed.mjs desk/bin/lever-registry.mjs desk/bin/lever-log.mjs desk/bin/levers-auto.mjs desk/bin/desk-env.mjs desk/bin/pass.mjs desk/bin/spawn-worker.sh
 // runAudits() runs on synthetic queues and lever logs in a scratch HOME, with a stub review worker:
 // its spawn, merge-commit read, end and log are functions the test supplies.
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -342,6 +342,11 @@ t('AC3 the audit model is recorded on the trial when it is first seen running, b
   t('AC1 tickets filling the batch\'s number leave the audit none', slotsFor({ auditWanted: true, spawnable: 5 }).repo.room, 2);
   writeQueue(SQ, { 'C-on5': { ticket: 'C-on5', state: 'deferred', deferred: { reason: 'weekly_cap', until: iso(NOW + DAY) }, merged_at: iso(NOW - DAY) } });
   t('AC1 an audit capped for the week is not wanted until the week ends', [A.auditWanted(SQ, NOW), A.auditWanted(SQ, NOW + 2 * DAY)], [false, true]);
+  // runAudits takes the earliest merged next and defers it again while capped, so a later one queued
+  // behind it wants no slot either.
+  writeQueue(SQ, { 'C-on5': { ticket: 'C-on5', state: 'deferred', deferred: { reason: 'weekly_cap', until: iso(NOW + DAY) }, merged_at: iso(NOW - DAY) },
+    'C-off5': { ticket: 'C-off5', state: 'queued', merged_at: iso(NOW - DAY + MIN) } });
+  t('AC1 an audit queued behind one capped for the week is not wanted until the week ends', [A.auditWanted(SQ, NOW), A.auditWanted(SQ, NOW + 2 * DAY)], [false, true]);
 
   // AC4: a start left part way past its retry window holds no slot; a fresh one does.
   writeQueue(SQ, { 'C-on5': { ticket: 'C-on5', state: 'starting', starting_at: iso(NOW - 2 * 3_600_000), merged_at: iso(NOW - DAY) } });
@@ -356,13 +361,8 @@ t('AC3 the audit model is recorded on the trial when it is first seen running, b
   t('AC2 a running audit that has not exited does not wake the batch', A.auditEnded(SQ, st), false);
   writeFileSync(join(st, 'workers', 'audit.C-on5.exit.json'), JSON.stringify({ session: 's-1', at: iso(NOW) }));
   t('AC2 once its worker exits, the batch it was spawned into wants a pass; another batch does not', [A.auditEnded(SQ, st), A.auditEnded(SQ, join(T, 'state-other'))], [true, false]);
-  const sup = readFileSync(join(import.meta.dirname, '..', 'desk', 'bin', 'supervisor.mjs'), 'utf8');
-  t('AC2 the supervisor leaves an idle batch only for an ended audit', /!watchDue && !auditDone\)/.test(sup) && /auditEnded\(E\.repoSlug\(\), state\)/.test(sup), true);
-
-  // AC5: a usage-limit refusal of an audit's preflight, after the pass first saved its hold, is saved.
-  const passSrc = readFileSync(join(import.meta.dirname, '..', 'desk', 'bin', 'pass.mjs'), 'utf8');
-  const auditsAt = passSrc.indexOf('await runAudits(');
-  t('AC5 the pass saves the usage hold again once its audits have run', auditsAt > 0 && /saveUsage\(\);/.test(passSrc.slice(auditsAt, passSrc.indexOf('\n}\n', auditsAt) + 3)), true);
+  // The supervisor's tick on an idle batch is tests/test_supervisor.sh's, and AC5's real pass is
+  // tests/test_login_rotation.mjs's.
 
   // AC6: a failed start's preflight still counts once its trial ended and the item was dropped.
   const S12 = 'acme__dropped';
@@ -381,12 +381,18 @@ t('AC3 the audit model is recorded on the trial when it is first seen running, b
   t('AC6 the next week they no longer count', [h12b.spawns.length, queueOf(S12).preflights.length], [1, 0]);
 
   // AC7: the merge commit says how a PR merged, whatever the repo's merge method.
-  const c = (at, subject) => ({ at, subject });
+  const { mergeMethodOf, landedOf } = await import('../desk/bin/merge-landed.mjs');
+  const c = (at, subject) => ({ authoredDate: at, messageHeadline: subject });
+  const l = (at, subject, parents = 1) => ({ parents, at, subject });
   const pr = [c('2026-11-01T10:00:00Z', 'one'), c('2026-11-01T11:00:00Z', 'two'), c('2026-11-01T12:00:00Z', 'three')];
+  const rebased = pr.map((x) => l(x.authoredDate, x.messageHeadline)).reverse();
   t('AC7 a PR merged by rebase landed its own commits; by squash it did not; two parents is a merge',
-    [A.mergeMethodOf({ parents: 1, landed: [...pr].reverse(), commits: pr }), A.mergeMethodOf({ parents: 1, landed: [c('2026-11-02T09:00:00Z', 'Feature (#12)'), c('2026-11-01T08:00:00Z', 'other')], commits: pr }),
-      A.mergeMethodOf({ parents: 2, landed: [], commits: pr }), A.mergeMethodOf({ parents: 0, landed: [], commits: pr })],
+    [mergeMethodOf({ landed: rebased, commits: pr }), mergeMethodOf({ landed: [l('2026-11-02T09:00:00Z', 'Feature (#12)'), l('2026-11-01T08:00:00Z', 'other')], commits: pr }),
+      mergeMethodOf({ landed: [l('2026-11-02T09:00:00Z', 'Merge pull request #12', 2)], commits: pr }), mergeMethodOf({ landed: [], commits: pr })],
     ['rebase', 'squash', 'merge', null]);
+  t('AC7 a squash keeping its last commit\'s date and subject is not read as a rebase of the rest', mergeMethodOf({ landed: [rebased[0], l('2026-10-30T09:00:00Z', 'earlier work')], commits: pr }), 'squash');
+  t('AC7 git log\'s lines read as parents, author date and subject', landedOf('p1 p2\t2026-11-02T09:00:00+00:00\tMerge\tit\nq1\t2026-11-01T12:00:00+00:00\tthree\n'),
+    [l('2026-11-02T09:00:00+00:00', 'Merge\tit', 2), l('2026-11-01T12:00:00+00:00', 'three')]);
   const S13 = 'acme__squash';
   const h13 = harness(S13, tickets(repo(S13), 5, 5));
   await h13.pass(NOW, { mergeMethod: 'rebase', mergeCommit: async (item) => ({ sha: sha(item.pr), commits: 4, method: 'squash' }) });

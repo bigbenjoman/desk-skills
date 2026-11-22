@@ -223,21 +223,27 @@ const startingNow = (i, now) => i.state === 'starting' && now - Date.parse(i.sta
 export const auditsRunning = (slug, now = Date.now()) => Object.values(loadQueue(auditQueueFile(slug)).items)
   .filter((i) => i.state === 'running' || startingNow(i, now)).length;
 
+// The audit a pass starts next: none while one is running or part way through starting (one at a time
+// per repo), else the earliest merged of those queued, deferred, or left starting past the retry window.
+function dueOf(items, now) {
+  if (items.some((i) => i.state === 'running' || startingNow(i, now))) return null;
+  return items.filter((i) => ['queued', 'deferred', 'starting'].includes(i.state))
+    .sort((a, b) => Date.parse(a.merged_at) - Date.parse(b.merged_at))[0] ?? null;
+}
+
 // Whether the repo has an audit a pass may start, so the pass counts its one slot in its worker demand:
-// none running or starting, and one queued, deferred for a tight window, deferred for a weekly cap whose
-// week has ended, or left starting past its retry window. A sample a pass has not queued yet is not
-// counted until it is.
+// the one runAudits would take next, unless it is deferred for a weekly cap whose week has not ended,
+// which runAudits defers again rather than starting. A sample a pass has not queued yet is not counted
+// until it is.
 export function auditWanted(slug, now = Date.now()) {
-  const items = Object.values(loadQueue(auditQueueFile(slug)).items);
-  if (items.some((i) => i.state === 'running' || startingNow(i, now))) return false;
-  return items.some((i) => i.state === 'queued' || i.state === 'starting'
-    || (i.state === 'deferred' && !(i.deferred?.reason === 'weekly_cap' && now < Date.parse(i.deferred.until))));
+  const due = dueOf(Object.values(loadQueue(auditQueueFile(slug)).items), now);
+  return due != null && !(due.state === 'deferred' && due.deferred?.reason === 'weekly_cap' && now < Date.parse(due.deferred.until));
 }
 
 // Whether an audit spawned into batch state folder `state` has ended and waits for a pass to record it,
 // so the supervisor runs one for a batch it would otherwise leave idle.
-export function auditEnded(slug, state, ended = endedFromExit) {
-  return (auditsIn(slug, state) ?? []).some((i) => i.state === 'recording' || !!ended(i));
+export function auditEnded(slug, state) {
+  return (auditsIn(slug, state) ?? []).some((i) => i.state === 'recording' || !!endedFromExit(i));
 }
 
 // The repo's audits running, or ended and not yet recorded, whose worker was spawned into state folder
@@ -258,20 +264,6 @@ export function auditsIn(slug, state) {
 
 // What an item's preflights cost: all of them, or those since `from` (ms).
 const preflightUsd = (item, from = -Infinity) => (item.preflights ?? []).filter((p) => Date.parse(p.at) >= from).reduce((n, p) => n + (Number(p.usd) || 0), 0);
-
-// How a PR merged, from its merge commit: `parents` its parent count, `landed` the first-parent chain's
-// last commits ending at it, newest first, and `commits` the PR's own commits, oldest first, each
-// { at: author date, subject }. A rebase keeps each commit's author date and subject, so it landed as
-// the PR's commits; a single-parent commit that did not is a squash, and two parents a merge commit.
-//   -> 'merge' | 'rebase' | 'squash' | null when unread
-export function mergeMethodOf({ parents, landed, commits }) {
-  if (parents > 1) return 'merge';
-  if (parents !== 1 || !Array.isArray(commits) || !Array.isArray(landed)) return null;
-  // GitHub's headline is the subject's first line; git's subject joins its first paragraph's lines.
-  const same = (a, b) => a && b && Date.parse(a.at) === Date.parse(b.at) && String(b.subject ?? '').startsWith(String(a.subject ?? '').replace(/…$/, ''));
-  const mine = [...commits].reverse();
-  return mine.length > 0 && landed.length >= mine.length && mine.every((c, k) => same(c, landed[k])) ? 'rebase' : 'squash';
-}
 
 // The audit row for an ended item, and its line in audit.jsonl once written. Each write is skipped
 // where an earlier, interrupted recording of the same session already made it, so recording again
@@ -371,7 +363,7 @@ export function auditP0Replay({ slug, name = slug, events, states, at, registry 
 //   spawn({ key, item, sha, model, task, brief, env }) -> { session, worktree, state, preflight_usd }
 //     | { error, preflight_usd } | { wait: 'window_tight' | <why>, why, preflight_usd }
 //   mergeCommit(item) -> sha | { sha, commits, method? } | null              mergeMethod: config §4's,
-//     for a PR whose `method` (mergeMethodOf) was not read
+//     for a PR whose `method` (merge-landed.mjs mergeMethodOf) was not read
 //   ended(item) -> { at } | null     log(item) -> text
 //   cleanup(item)                          pace() -> { hold }                 spend({ slug, now }) -> usd
 //   room() -> why no worker may start now, or null
@@ -438,9 +430,7 @@ export async function runAudits({
     }
     const items = Object.values(q.items);
     // One audit at a time per repo; a spawn a crashed pass left part way counts as queued again.
-    if (items.some((i) => i.state === 'running' || startingNow(i, now))) return null;
-    const due = items.filter((i) => ['queued', 'deferred', 'starting'].includes(i.state))
-      .sort((a, b) => Date.parse(a.merged_at) - Date.parse(b.merged_at))[0];
+    const due = dueOf(items, now);
     if (!due) return null;
     // Deferred while usage pacing holds spawns, or once this week's audits have spent their share.
     let reason = null;
