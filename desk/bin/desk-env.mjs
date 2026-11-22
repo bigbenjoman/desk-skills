@@ -178,7 +178,7 @@ import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, localServiceName,
   permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, leverRow, leverWords, parseLevers,
   EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS, CODEX_DEFAULTS, parseCodexReview, spawnGateOf,
-  fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, checkRow, DECLARED_ROWS,
+  fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, checkRow, DECLARED_ROWS, readsAsList,
 } from './config-schema.mjs';
 
 export const HOME = process.env.HOME || homedir();
@@ -748,12 +748,17 @@ function tableItemsIn(parsed, id) {
   return items.length ? items : null;
 }
 
-function configValuesIn(parsed, id, rows = CONFIG_ROWS) {
+// A row's set items as the file has them, before configValuesIn refuses any: -> [item] or null.
+function rowSpansIn(parsed, id, rows = CONFIG_ROWS) {
   const { section, row, table } = rowFor(id, rows);
   if (table) return tableItemsIn(parsed, id);
   const e = parsed.sections[section]?.byName[norm(row)];
-  if (!e || unset(e.value)) return null;
-  const items = e.items.filter((x) => !unset(x)).map(expandSlug);
+  return !e || unset(e.value) ? null : e.items.filter((x) => !unset(x)).map(expandSlug);
+}
+function configValuesIn(parsed, id, rows = CONFIG_ROWS) {
+  const { section, row, table } = rowFor(id, rows);
+  const items = rowSpansIn(parsed, id, rows);
+  if (table || !items) return items;
   // `none` beside other items is a note written in backticks: every span is an item, so the note
   // would be read as a command or check. Refuse rather than guess which one was meant.
   if (mixesNone(items)) {
@@ -1800,7 +1805,7 @@ export function invalidRows(parsed) {
 }
 
 // An INVALID line: the row, then the reader's own words where they already name the row, else the item.
-const invalidLine = ({ section, label, item, error }) => {
+export const invalidLine = ({ section, label, item, error }) => {
   const own = error.replace(/^desk(-env)?: /, '');
   const head = `config §${section} "${label}" `;
   if (own.startsWith(head)) return `INVALID  §${section} ${label} ${own.slice(head.length)}`;
@@ -2132,9 +2137,15 @@ function valueRow(id) {
   const e = ROW_ENTRY.get(id);
   const { value, source, fromRow } = rowValue(id, DECLARED_ROWS);
   const { items, refused } = rowItems(id, DECLARED_ROWS);
-  const read = fromRow ? items : value == null ? null : [value];
+  // `list` refuses `none` beside other items on every row, but only some rows are read that way
+  // (readsAsList): most value rows' readers take the first item. So the row's spans are checked as its
+  // own reader reads them, and the refusal is fatal only where checkRow says that reader refuses it (a
+  // cell type whose reader catches it, such as the collision budget, does not).
+  const read = fromRow ? (refused ? rowSpansIn(parseConfig(), id, DECLARED_ROWS)?.map(expandHome) : items) : value == null ? null : [value];
   const checked = read ? checkRow(e, read) : { value: null, errors: [] };
-  const errors = [...(refused ? [{ item: null, error: refused.message, fatal: true }] : []), ...checked.errors];
+  const errors = !refused ? checked.errors
+    : readsAsList(e) ? checked.errors.map((x) => ({ ...x, error: refused.message }))
+      : [{ item: null, error: refused.message, fatal: false }, ...checked.errors];
   return { ...rowHead(e), set: source !== 'default' && source !== 'unset', source, value, items,
     parsed: errors.length ? null : checked.value, default: e.default ?? null, errors };
 }
@@ -2146,7 +2157,7 @@ function valueRow(id) {
 // caller learns the repo and its rows in one run. Asked for jira-required-fields as well, it adds
 // `required_fields`, what `required-fields` prints for every type the rules name (requiredFieldsByType).
 class GetJsonUsage extends Error {}
-const SECTIONS = Object.freeze([...new Set(ROWS.map((e) => e.section))]);
+export const SECTIONS = Object.freeze([...new Set(ROWS.map((e) => e.section))]);
 function whereJson() {
   const r = currentRepo(); const p = configPathOrNull();
   return { slug: r.slug ?? '', gh_repo: r.ownerRepo ?? '', config: p ?? '', creds: repoConfigDir() ?? '', exists: !!(p && existsSync(p)) };
