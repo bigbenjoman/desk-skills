@@ -45,7 +45,7 @@ export REPO_TPL_ROOT="$T/run2"; : > "$T/builds"; touch "$T/slow"
 wait; rm -f "$T/slow"
 check "AC2 two racing suites build the template once" '[ "$(builds)" = 1 ]'
 check "AC2 neither racing suite reads a half-built template" '[ "$(cat "$T/r1" 2>/dev/null)" = whole ] && [ "$(cat "$T/r2" 2>/dev/null)" = whole ]'
-# DS-941: the lock holds where mkdir is not atomic (uutils mkdir on ubuntu-26.04 lets racing callers
+# The lock holds where mkdir is not atomic (uutils mkdir on ubuntu-26.04 lets racing callers
 # all succeed). This mkdir succeeds even when its path exists, the worst such race.
 mkdir -p "$T/bin"; printf '#!/bin/sh\nexec /bin/mkdir -p "$@"\n' > "$T/bin/mkdir"; chmod +x "$T/bin/mkdir"
 export REPO_TPL_ROOT="$T/run2b"; : > "$T/builds"; rm -f "$T/r1" "$T/r2"; touch "$T/slow"
