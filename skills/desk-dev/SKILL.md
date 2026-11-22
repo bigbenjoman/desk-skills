@@ -22,16 +22,18 @@ renders, and serves synthetic seed data as if it were the real thing.
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 ```
 
-Read the `CONFIG` file. `EXISTS=no` means stop: say which slug was looked up and offer `/desk-setup`.
+Read `desk-env show rules 2 3 5` (never the `CONFIG` file whole). `EXISTS=no` means stop: say which
+slug was looked up and offer `/desk-setup`.
 Running the app is **entirely per repo**; nothing below assumes a toolchain, a database or a host.
 
-An autopilot worker cannot read that file, so each row below is a `desk-env` read: §3b Preferred
+§3b and §4 are read a row at a time, an autopilot worker included, so each row below is a `desk-env` read: §3b Preferred
 dev-server port `desk-env get dev-port`; §4 Package manager `desk-env get package-manager`, Command
 prefix `desk-env get command-prefix`, Install `desk-env cmds install-cmd`, Dev server
 `desk-env cmds dev-cmd`, Env files `desk-env list env-files`, Database URL variable
 `desk-env list db-url-var`, Local database `desk-env get local-db`, Local services
 `desk-env list local-services`, Staging `desk-env list staging`, Staging bypass token location
-`desk-env get staging-bypass` and Vercel `desk-env list vercel`.
+`desk-env get staging-bypass` and Vercel `desk-env list vercel`; §4 People "Infra and security
+owner" `desk-env get --json infra-owner` and Product owner `desk-env get product-owner`.
 
 | Config | Used for |
 |---|---|

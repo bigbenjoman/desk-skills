@@ -1,4 +1,5 @@
 // suite: skill size (every desk SKILL.md a core of 20 KB or less, and its reference files resolve)
+// layer: L1
 // covers: skills/desk-*/** agents/** tests/prose_facts.mjs desk/bin/spawn-order.mjs
 // Every skills/desk-*/SKILL.md is at most 20,480 bytes unless it is on UNSPLIT, every
 // `references/<file>.md` a core names exists, and every file under a skill's references/ is named

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: vendor PRs (a new desk-update vendor PR closes the older ones it supersedes)
+# layer: L2
 # covers: desk/bin/vendor-prs.sh skills/desk-update/**
 # vendor-prs.sh against a fake gh and a throwaway checkout with an origin: the PR opens, then only the
 # other open chore/vendor-* PRs from this repo whose every moved pin the new branch upgrades, or main

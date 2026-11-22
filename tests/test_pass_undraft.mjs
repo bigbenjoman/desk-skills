@@ -1,4 +1,5 @@
 // suite: pass phase: reopen and undraft (the decisions)
+// layer: L1
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideReopen, decideRenames, decideUndraft, decideRelease, undraftWrite } from '../desk/bin/pass/undraft.mjs';
 import { conflictFilesIn, fixTryQuote } from '../desk/bin/pass/shared.mjs';
@@ -193,6 +194,10 @@ const acts = (as) => as.filter((a) => ACTS.has(a.type)).map((a) => a.type);
   t('DS-856 one waiting on the preview build records no try, so the next pass makes it', `${rec(slot).call} ${rec(slot).unknown_repair}`, 'wait undefined');
   const dry = drive(decideUndraft, { ...snap('yes'), dry: true }, unknown).actions;
   t('DS-856 a dry run only says it would update the branch', `${acts(dry).length} ${/^undraft \(dry run\): would update PR #701 \(A\)'s branch/.test(lines(dry).at(-1))}`, '0 true');
+  // DS-901: the first pass to read UNKNOWN on a draft keeps that time on its undraft record, which the
+  // deadline sweep (pass/deadlines.mjs) takes as when the draft's wait on mergeability started.
+  const first = drive(decideUndraft, undraftSnap([{ t: ticket('A'), s: status() }]), unknown).actions;
+  t('DS-901 the first pass to read UNKNOWN records it as first seen then, and waits', `${rec(first).call} ${rec(first).unknown_since}`, `wait ${AT}`);
 }
 
 // The migration renames: a draft a person holds keeps its place; one renamed goes to its worker.

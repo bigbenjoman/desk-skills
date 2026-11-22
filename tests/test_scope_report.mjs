@@ -1,4 +1,5 @@
 // suite: scope report (files a worker changed outside its triaged scope)
+// layer: L2
 // claims: imports (repo file names below are test data, not what this suite runs)
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';

@@ -1,4 +1,5 @@
 // suite: ticket ledger (typed events in one append-only log per repo, the reducer, the projection and the diff)
+// layer: L1
 import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
@@ -254,6 +255,25 @@ const env = (seq, e, atTime = `2026-11-20T10:00:${String(seq).padStart(2, '0')}Z
   t('DS-895 a second answer adds its own question, after the first', j(L.project(b, 'B1').tickets['DS-1'].answered_questions), j([qs[1], qs[0]]));
   const c = L.reduce([env(4, ev('legacy_set', { fields: { answered_questions: null } }))], b);
   t('DS-895 a field write that clears the list leaves none answered', j([c.tickets['DS-1'].answered, L.project(c, 'B1').tickets['DS-1'].answered_questions]), j([[], null]));
+}
+
+// DS-901: a waiting event opens a wait the rebuilt queue keeps as `waits`, carrying its start, deadline and
+// escalation; a waited event closes the one it names, and the field stays, as null, once none is open.
+{
+  const merge = { on: 'mergeability', since: '2026-11-20T10:00:00Z', deadline: '2026-11-20T10:30:00Z', escalate_to: 'person', pr: 40 };
+  const hand = { on: 'handoff', since: '2026-11-20T10:00:00Z', deadline: '2026-11-20T10:15:00Z', escalate_to: 'requeue', stage: '4b' };
+  const s = L.reduce([seed('DS-1', { key: 'DS-1', state: 'done', result: { pr: 40 } }, 1), seed('DS-2', { key: 'DS-2', state: 'triaged' }, 2),
+    env(3, ev('waiting', merge)), env(4, ev('waiting', hand, 'DS-2'))]);
+  const q = L.project(s, 'B1').tickets;
+  t('AC6 a waiting event\'s wait is in the rebuilt queue, with its start, deadline and escalation', j(q['DS-1'].waits), j({ mergeability: { since: merge.since, deadline: merge.deadline, escalate_to: 'person', pr: 40 } }));
+  t('AC6 a done ticket may wait, on its PR\'s mergeability', L.legality(L.reduce([seed('DS-1', { key: 'DS-1', state: 'done' }, 1)]), ev('waiting', merge)).legal, true);
+  const esc = L.reduce([env(5, ev('waiting', { ...hand, escalated: '2026-11-20T10:16:00Z' }, 'DS-2'))], s);
+  t('a waiting event again for the same wait carries its escalation', L.project(esc, 'B1').tickets['DS-2'].waits.handoff.escalated, '2026-11-20T10:16:00Z');
+  const ended = L.reduce([env(6, ev('waited', { on: 'mergeability' })), env(7, ev('waited', { on: 'handoff' }, 'DS-2'))], esc);
+  t('AC7 a waited event closes the wait it names, leaving the field null', j(Object.values(L.project(ended, 'B1').tickets).map((x) => x.waits)), '[null,null]');
+  t('a ticket that never waited has no waits field', 'waits' in L.project(L.reduce([seed('DS-3', { key: 'DS-3', state: 'queued' }, 1)]), 'B1').tickets['DS-3'], false);
+  const seeded = L.reduce([seed('DS-4', { key: 'DS-4', state: 'triaged', waits: { handoff: { since: 'x', deadline: 'y', escalate_to: 'requeue' } } }, 1), env(2, ev('waited', { on: 'handoff' }, 'DS-4'))]);
+  t('a wait seeded from queue.json is closed by its waited event', L.project(seeded, 'B1').tickets['DS-4'].waits, null);
 }
 
 // The lock: an append waits for the ledger lock at most its wait, then throws and writes nothing.

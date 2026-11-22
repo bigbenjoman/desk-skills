@@ -59,7 +59,7 @@ It may also write its resume file, `$DESK_STATE/resume/<TICKET>.json`: the harne
 worktree's `.claude/`, where `desk-ticket` keeps one interactively.
 
 **A second repo a ticket depends on is read from a clone the pass keeps.** Each `owner/name` in §4
-Worker read-only repos gets one shallow clone at `~/.desk-autopilot/<slug>/ref/<owner>__<name>`,
+Worker read-only repos gets one shallow clone at `~/.desk-autopilot/<slug>/ref/<owner>__<name>`, <!-- prose-ok: the repo's own folder (desk-env readRepoDir), not a batch's state folder -->
 shared by the repo's batches, and the pass brings it to the head of that repo's default branch before
 it starts a local worker. One that cannot be refreshed parks the ticket, naming the repo and the
 failure, so no worker reads a stale copy; requeue it once the repo is reachable. A clone delisted is

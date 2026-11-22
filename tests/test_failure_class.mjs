@@ -1,4 +1,5 @@
 // suite: failure class (every park and fix try records one class; a red check is read against the base)
+// layer: L1
 import { CLASSES, WAITING_CLASSES, PARK_RULES, parkClass, FIX_RULES, fixClass, runsState, baseSplit, keptHold } from '../desk/bin/failure-class.mjs';
 import { fixCall, fixBrief, draftChecksFix, parseOperatorChecks } from '../desk/bin/fix-tries.mjs';
 let fails = 0;

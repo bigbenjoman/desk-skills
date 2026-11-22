@@ -1,4 +1,5 @@
 // suite: pass phase: the shared snapshot and helpers (the registry read, logins, specs, link parks, resumes)
+// layer: L1
 import * as S from '../desk/bin/pass/shared.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;

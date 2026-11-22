@@ -19,7 +19,7 @@ import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck, ownDraftWhy
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory, sizeOf } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
-import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
+import { queueFile, stateDir, wakeMergeDriver, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, githubHandle, ticketKind, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation } from './desk-env.mjs';
 import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
@@ -1179,6 +1179,7 @@ switch (cmd) {
     if (permission('pr-ready') === 'yes') {
       try {
         execFileSync('gh', ['pr', 'ready', String(pr), '--repo', repo], { stdio: ['ignore', 'pipe', 'pipe'] });
+        wakeMergeDriver(stateDir());
         lines.push(`PR #${pr} is ready for review`);
       } catch (e) {
         needsPerson = true;

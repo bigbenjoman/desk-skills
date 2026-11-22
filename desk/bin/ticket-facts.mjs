@@ -29,6 +29,9 @@
 //   epic         {key, summary, children: [{key, done}]} when its Jira parent is an epic, else null; the
 //                children list is left out, with epic_error, when it could not be read
 //   labels       the issue's labels, as written (a feature-mode batch promotes when a `milestone` merges)
+//   priority_proposal  {label, to, line} when the ticket carries a pending proposal on its priority (a
+//                label §4 Priority proposal labels matches, or a description line asking a person to
+//                promote it or reject it: priority-proposal.mjs), else null; needs-you lists it
 // or, when the read fails, facts_error instead (and no blockers), which plan-batch turns into a
 // question: an unread link list must never read as "no blockers".
 // A key that is not a tracker key gets links: "n/a".
@@ -39,7 +42,8 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { ghRepo, queueFile, stateDir, ticketKind, personStepLabels, personInputLabels } from './desk-env.mjs';
+import { ghRepo, queueFile, stateDir, ticketKind, personStepLabels, personInputLabels, proposalLabelPatterns } from './desk-env.mjs';
+import { priorityProposal } from './priority-proposal.mjs';
 import { lintTicket, designRoot, SIZE_LINE } from './ticket-lint.mjs';
 import { baseRef, designFact } from './desk-design.mjs';
 import { SIZES, epicFact, blockersFact, splitOwnEpic, queueEpic } from './desk-q-eta.mjs';
@@ -165,7 +169,7 @@ if (!kind.ok) { console.error(kind.error); process.exit(2); }
 const path = join(stateDir(), 'triage', `${key}.json`);
 if (!existsSync(path)) { console.error(`no triage record at ${path}`); process.exit(1); }
 const rec = JSON.parse(readFileSync(path, 'utf8'));
-for (const f of ['blockers', 'own_epic_blockers', 'other_links', 'size', 'repository', 'labels','epic', 'epic_error', 'facts_error', 'links', 'lint', 'lint_error', 'design', 'design_error']) delete rec[f];
+for (const f of ['blockers', 'own_epic_blockers', 'other_links', 'size', 'repository', 'labels', 'priority_proposal', 'epic', 'epic_error', 'facts_error', 'links', 'lint', 'lint_error', 'design', 'design_error']) delete rec[f];
 
 // The design fact, read against the base a worker branches from, as origin has it where fetched.
 function design(text) {
@@ -215,6 +219,7 @@ if (kind.kind !== 'tracker') {
     const repoField = fieldNamed(issue, /^repository$/i);
     rec.repository = repoField ? asText(issue.fields?.[repoField]) : null;
     rec.labels = Array.isArray(issue.fields?.labels) ? issue.fields.labels.map(String) : [];
+    rec.priority_proposal = priorityProposal({ labels: rec.labels, description: issue.fields?.description }, proposalLabelPatterns());
     Object.assign(rec, epicOf(issue));
     design(issue.fields?.description);
     // Exit 1 with findings on stdout is a blocking finding, still a result; anything else is a lint

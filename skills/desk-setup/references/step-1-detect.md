@@ -147,6 +147,8 @@ How to turn what you find into rows:
 - **Required fields.** Propose them from `desk-jira meta`, then ask which fields the team expects on
   a new ticket that Jira does not require (a house rule, often enforced by a bot after creation), and
   add those to the row too: desk reads the row, not Jira, for the tickets it creates and drafts.
+  Then ask what each one is on a follow-up nobody set it for, for §4 Field defaults: a value (a
+  source such as Tech Debt) or `from parent` (a repository the parent ticket names).
 - **Branch protection and Required checks.** Merge what classic protection and the rulesets
   (`rules/branches/<default>`: `required_status_checks` rules, `pull_request` rules for approvals,
   `required_linear_history`) say; name which source each check came from. A repo that answers 404
@@ -180,12 +182,12 @@ How to turn what you find into rows:
   sends no review or fix try to a PR red only on that check until it is fixed.
 - **Checks workers can't fix.** Search the repo instructions and the workflows for checks that fail
   until a person does something outside the code: an image built by hand, a credential, a service
-  only they can reach ("run `ensure-flows-image.sh` if the Flows check says the image is missing").
+  only they can reach ("run `ensure-flows-image.sh` if the Flows check says the image is missing"). <!-- prose-ok: an example of a repo's own script -->
   Propose each as `` `<check>: <what fixes it>` ``, the check named exactly as GitHub shows it; the
   user confirms each, and `none` is the default. Say that autopilot never sends a PR red only on one
   of these back to a worker: it is put to the user as stuck, with what fixes it.
 - **Check builds.** Where what fixes such a check is a command run on this computer (a script that
-  builds and pushes an image, "build it from the branch with: `./scripts/ensure-flows-image.sh`"),
+  builds and pushes an image, "build it from the branch with: `./scripts/ensure-flows-image.sh`"), <!-- prose-ok: an example of a repo's own script -->
   propose it for §4 Check builds as well as the row above, as `` `<check>: <command>` ``, the check
   named exactly as GitHub shows it and the command as the instructions give it, run from the repo
   root. Never leave it as prose only. The user confirms each; `none` is the default. Say that the
@@ -245,7 +247,7 @@ How to turn what you find into rows:
   connection string, which are the user's. `none` is the default, and a migration PR's evidence is
   taken as before. Set, it goes with §3 `worker-preview-db`.
 - **Merge holds.** Search the repo instructions for steps a person must do before merging certain
-  changes ("before merging backend changes run `./scripts/build-lambda-images-local.sh`"). Propose
+  changes ("before merging backend changes run `./scripts/build-lambda-images-local.sh`"). Propose <!-- prose-ok: an example of a repo's own script -->
   each as `` `<glob>: <why>` ``, e.g. `` `backend/**: build and push Lambda images first` ``; the
   user confirms or writes `none`. **The row must be set**: `none` is a fine answer, but while it is
   unset the merge driver refuses to start and clearance parks every PR. Say that clearance never merges a held PR, and
@@ -414,7 +416,7 @@ How to turn what you find into rows:
   is a fine answer.
 - **PR-description checks.** A workflow step that reads `github.event.pull_request.body` (or a
   `PR_BODY`-style variable set from it) and runs a script is the candidate: propose that script's
-  command, e.g. `` `node scripts/check-pr-body.mjs` ``. desk-pr runs it with the draft body's file
+  command, e.g. `` `node scripts/check-pr-body.mjs` ``. desk-pr runs it with the draft body's file <!-- prose-ok: an example of a repo's own script -->
   path appended, so **read the script** and say whether it accepts a file path. One that reads only
   the event or an environment variable cannot run before the PR exists: propose `none` and say that
   adding a file-path argument is a change to the repo, for its own PR. No such step: `none`.

@@ -1,4 +1,5 @@
 // suite: promotion PR ledger (one row per child, in one PR comment only the autopilot writes)
+// layer: L1
 import { LEDGER_BEGIN, LEDGER_END, ledgerState, renderLedger, findLedgerComment, syncLedger, ledgerHash } from '../desk/bin/ledger.mjs';
 import { HELD_PREFIX } from '../desk/bin/batch-state.mjs';
 let fails = 0;

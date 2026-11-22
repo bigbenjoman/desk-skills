@@ -11,6 +11,7 @@
 # wrapper says on whom. It waits up to DESK_RELATED_WAIT seconds (an hour by default), then exits with
 # the wrapper's 75 having run nothing. A run already in a slot (with-lock.sh exports DESK_LOCK_HELD to
 # its command) takes no second one. With no with-lock.sh to find, as in CI, it runs with no slot.
+# run.sh's record of the run carries the scope it chose (full or changed) and why.
 set -u
 T="$(cd "$(dirname "$0")" && pwd)"
 SH="${BASH:-bash}"
@@ -39,7 +40,9 @@ fi
 jobs=()
 [ -z "${DESK_TEST_JOBS:-}" ] || jobs=(-j "$DESK_TEST_JOBS")
 base="origin/$(desk-env get default-branch 2>/dev/null || echo main)"
-every(){ echo "related: $1, so every suite runs" >&2; "$SH" "$T/run.sh" ${jobs[@]+"${jobs[@]}"}; exit $?; }
+# The scope run.sh records for the run (full or changed), and why.
+export DESK_RUN_SCOPE=full DESK_RUN_REASON=
+every(){ echo "related: $1, so every suite runs" >&2; DESK_RUN_REASON=$1; "$SH" "$T/run.sh" ${jobs[@]+"${jobs[@]}"}; exit $?; }
 git merge-base "$base" HEAD >/dev/null 2>&1 || every "no merge base with $base"
 OUT="$(mktemp "${TMPDIR:-/tmp}/desk-related.XXXXXX")" || exit 1
 trap 'rm -f "$OUT"' EXIT
@@ -49,10 +52,12 @@ fi
 scope=$(grep -m 1 '^scope=' "$OUT"); scope=${scope#scope=}
 reason=$(grep -m 1 '^reason=' "$OUT"); reason=${reason#reason=}
 suites=$(grep -m 1 '^suites=' "$OUT"); suites=${suites#suites=}
+DESK_RUN_REASON=${reason:-no reason given}
 if [ "$scope" = full ] || [ -z "$suites" ]; then
   echo "related: scope ${scope:-unknown} against $base (${reason:-no reason given}), so every suite runs"
   "$SH" "$T/run.sh" ${jobs[@]+"${jobs[@]}"}; exit $?
 fi
+DESK_RUN_SCOPE=changed
 echo "related: scope $scope against $base: $suites"
 # Suite names never hold spaces, so the word split is the list.
 # shellcheck disable=SC2086

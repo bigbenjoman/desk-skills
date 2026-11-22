@@ -1,4 +1,5 @@
 // suite: merged branch (a merged ticket's local branches deleted where §3 branch-delete allows)
+// layer: L2
 // merged-branch.mjs's tidy against a real scratch repo: a branch whose tip is the merged head, one
 // squash-merged (no ancestry), a backup branch, one holding work the base lacks, a PR not merged, and
 // each §3 branch-delete value. desk-env's reading of `merged`, which only branch-delete takes.

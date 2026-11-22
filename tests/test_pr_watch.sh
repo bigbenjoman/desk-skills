@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: pr watch (waiting on one PR's checks, head or merge under Monitor)
+# layer: L2
 # pr-watch.mjs against a fake gh whose PR is a JSON file the test rewrites: each watch is quiet while
 # nothing it waits on has happened, prints one line when it does, and exits; an unreadable PR prints
 # its error once and exits non-zero.

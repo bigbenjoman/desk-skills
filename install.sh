@@ -516,6 +516,14 @@ if need gh 1 "brew install gh" "see https://github.com/cli/cli/blob/trunk/docs/i
         esac
       done
     fi
+  elif printf '%s\n' "$status" | grep -qi 'rate limit' && ! printf '%s\n' "$status" | grep -qiE 'HTTP 401|bad credentials'; then
+    # A spent API budget fails auth status on a valid token; the rate_limit endpoint is not counted against it.
+    # Both reads may fail (set -e is on): an unreadable reset falls back to "its hourly reset".
+    reset="$(gh api rate_limit --hostname github.com --jq .resources.core.reset 2>/dev/null || true)"
+    at=""
+    case "$reset" in ''|*[!0-9]*) ;; *) at="$(date -r "$reset" '+%H:%M' 2>/dev/null || date -d "@$reset" '+%H:%M' 2>/dev/null || true)" ;; esac
+    warn "gh is signed in, but the GitHub API is rate-limited until ${at:-its hourly reset}. The install goes on; gh calls fail until then."
+    warn "gh token scopes are unreadable while the API is rate-limited. The skills need repo + workflow."
   else
     bad "gh is not signed in. Run: gh auth login -h github.com -s repo,workflow"
   fi
@@ -1330,9 +1338,9 @@ for c in "$CONFIG_ROOT"/repos/*/config.md; do
   [ -f "$c" ] || continue
   configured=$((configured + 1))
   slug="$(basename "$(dirname "$c")")"
-  # Rows whose value is still `TODO`, read as every desk read reads a value (desk-env unanswered): a
-  # TODO in a note is not one, nor a row the template leaves `TODO` to follow the machine profile.
-  todos="$(node "$DESKDIR/bin/desk-env.mjs" unanswered "$c" 2>/dev/null || echo 0)"
+  # The rows that still need an answer, as desk-env reads them (desk-env unset): no value of their own,
+  # none from the machine profile and no schema default. A TODO in a note is not one.
+  todos="$(DESK_CONFIG="$c" node "$DESKDIR/bin/desk-env.mjs" unset 2>/dev/null | grep -c . || true)"
   if [ "${todos:-0}" -gt 0 ]; then warn "$slug: $todos unanswered fields (run /desk-setup in that repo)"
   else ok "$slug"; fi
   # A user-level skill (a vendored one this install links, say) with the name of a skill the repo

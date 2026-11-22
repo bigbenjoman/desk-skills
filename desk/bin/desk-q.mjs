@@ -42,7 +42,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
+import { repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, unpromotedHolds, promotionWords, openUnknowns } from './batch-state.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { describeCond, restating } from './clears-when.mjs';
@@ -832,7 +832,9 @@ function whoRuns(r) {
 //   sessionToo  a session ran a pass within LIVE_MS of a batch the loaded supervisor runs
 //   cannotStart the loaded agent's failed last run, { code, why }, `why` its own log's last line
 //   driver      { at, reason }: the merge driver the supervisor started stopped with a failure, or
-//               could not start, and none runs now
+//               could not start, and none runs now. a stopped one's `reason` is only a FAIL line, or null; with
+//               `code` 143 it was stopped (a release install, a supervisor stop). None while
+//               supervisor.json records the batch idle, unless the driver started after it went idle
 //   oldCode     which of the loaded supervisor agent and its running merge driver run other desk code than
 //               is installed, read now: a pass's own record can predate the install, or outlive the reload
 const NO_PROGRESS_MS = HOUR;
@@ -853,13 +855,21 @@ function stallOf(r, now) {
   const cannotStart = loaded && r.run.exit ? { ...r.run.exit, why: tailLines(join(r.stateDir, 'supervisor.agent.log')).at(-1) ?? r.run.exit.why } : null;
   const holder = mergeDriverHolder(r.stateDir);
   let driver = null;
-  if (sup && holder == null && unfinished(r)) {
+  // An idle batch runs no driver, but the repo's one driver keeps its record here in the standing batch,
+  // so one started for another batch since this one went idle still counts.
+  const idle = sup?.idle && !(timeOf(sup.driver?.started) > (timeOf(sup.idle_at) ?? Infinity));
+  if (sup && !idle && holder == null && unfinished(r)) {
     const d = sup.driver;
     let at = null;
     try { at = statSync(join(r.stateDir, 'merge-driver.log')).mtimeMs; } catch { /* no log */ }
     // A retry the supervisor started after a failure keeps its pid recorded once it dies too, so with
-    // no driver running, failures alone say it stopped.
-    if (d && (d.failures ?? 0) > 0) driver = { at, reason: String(d.reason ?? 'it wrote nothing to its log') };
+    // no driver running, failures alone say it stopped. The supervisor keeps the driver's last line as
+    // its reason when it logged no FAIL line, which is then only what it was doing, so none is shown.
+    if (d && (d.failures ?? 0) > 0) {
+      const said = String(d.reason ?? '');
+      const code = Number.isInteger(d.code) ? d.code : null;
+      driver = { at, code, reason: /^FAIL/.test(said) ? said : null };
+    }
     else {
       const last = tailLines(join(r.stateDir, 'supervisor.log')).filter((l) => l.includes('merge driver: ')).at(-1) ?? '';
       const m = /merge driver: could not start: (.*)/.exec(last);
@@ -2671,10 +2681,15 @@ function stallNotes(r, quiet, old, allOut = false) {
   if (quiet.has(r)) out.push(note(quiet.get(r)));
   if (s.sessionToo) out.push(note('a session is also running this supervised batch. Close the session, or run: ', `desk-q ${r.repo} supervisor off`));
   if (s.driver) {
-    const what = s.driver.start ? 'the merge driver could not start' : `the merge driver stopped${s.driver.at == null ? '' : ` at ${clock(s.driver.at)}`}`;
-    const reason = s.driver.reason.replace(/^FAIL:\s*/, '').replace(/\.$/, '');
-    const fix = /signed out/i.test(reason) ? 'Run gh auth login.' : null;
-    out.push(note(`${what}: ${reason}.${fix ? ' ' : ''}`, fix));
+    const d = s.driver, at = d.at == null ? '' : ` at ${clock(d.at)}`;
+    if (d.code === 143) out.push(note(`the merge driver was stopped${at} (exit 143) and is not running.`));
+    else if (d.reason == null) out.push(note(`the merge driver stopped${at} (${d.code == null ? 'no exit code logged' : `exit ${d.code}`}) and logged no failure.`));
+    else {
+      const what = d.start ? 'the merge driver could not start' : `the merge driver stopped${at}`;
+      const reason = d.reason.replace(/^FAIL:\s*/, '').replace(/\.$/, '');
+      const fix = /signed out/i.test(reason) ? 'Run gh auth login.' : null;
+      out.push(note(`${what}: ${reason}.${fix ? ' ' : ''}`, fix));
+    }
   }
   out.push(...(old.get(r) ?? []));
   return out;
@@ -2846,7 +2861,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
 }
 
 // Leases reach the Queue view only as notes: a ▲ note for each lease whose holder stopped checking in
-// (alive, past its expiry), with the command that frees it, tagged with the holder's repo; a ▲ note
+// (alive, past its expiry; never a slot's, which nothing renews), with the command that frees it, tagged with the holder's repo; a ▲ note
 // when the store or log cannot be read; and, for each kind on trial (shadow) that let a clash through
 // in the last 24 hours, one grey note naming the latest. Healthy leases show nothing: desk-env lease
 // list is the full table. It only reads: lapsing and freeing a lease stay with desk-env lease.
@@ -2882,7 +2897,7 @@ function stuckNote(l, repos, now) {
   const h = leaseHolder(l.kind, l.label);
   const repo = h.repo ? repos.find((r) => r.slug.toLowerCase() === slugOf(h.repo))?.name ?? h.repo.split('/').pop() : null;
   const who = h.worker ? `${h.name}'s worker` : capital(h.name);
-  const what = l.kind === 'port' ? 'the port' : l.kind === 'slot' ? 'the slot' : 'it';
+  const what = l.kind === 'port' ? 'the port' : 'it';
   return { tag: `▲ ${repo ?? 'leases'}`, sgr: WARN,
     text: [[`${who} holds ${leaseThing(l.kind, l.key, l.units)} but stopped checking in ${span(now - Date.parse(l.expires))} ago.`, null]],
     more: [[[`If it is stuck, free ${what}:`, null]]], cmd: forceReleaseCommand(l.id) };
@@ -3747,8 +3762,8 @@ export const NEEDS_LAUNCHD = 'The supervisor needs macOS launchd or Linux system
 // The named repo's own checkout, { cwd, env }, so a child run there acts as that repo (its slug,
 // config and GitHub repo) and not as the one this process runs in. `doing` ends the refusal.
 export function checkoutOf(r, doing) {
-  const root = expandHome(repoConfigValue(r.slug, 'repo-root') ?? '');
-  if (!root || /^(TODO|none)$/i.test(root)) throw new Usage(`${r.name}'s config has no §2 Primary repo root, so desk-q cannot find the repo to ${doing} in. Nothing changed.`);
+  const root = repoDirs(r.slug).root;
+  if (!root || /^TODO$/i.test(root)) throw new Usage(`${r.name}'s config has no §2 Primary repo root, so desk-q cannot find the repo to ${doing} in. Nothing changed.`);
   if (!existsSync(root)) throw new Usage(`${r.name}'s §2 Primary repo root, ${root}, does not exist here. Nothing changed.`);
   return { cwd: root, env: { ...otherRepoEnv(), DESK_REPO_DIR: root, DESK_REPO_ROOT: root } };
 }

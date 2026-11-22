@@ -1,4 +1,5 @@
 // suite: port leases (a pass picks a worker's port around the ports other sessions lease, hands the lease to the worker, and an orchestrator leases its range)
+// layer: L2
 // covers: desk/bin/port-lease.mjs
 // pickPort, handToWorker and leaseRange against a scratch lease directory and a fixture machine profile,
 // with real sleep processes as the peer session, the worker and the orchestrator. Nothing listens on

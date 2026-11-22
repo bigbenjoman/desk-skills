@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: worker-settings (shell-script toolchain)
+# layer: L2
 # worker-settings.mjs and a shell-script toolchain: `bash|sh <repo-relative .sh path>` is allowed exactly
 # and probed with `<shell> --version`; any other shell item (flags, a command string, an absolute or
 # parent path, another shell) is still refused. Scratch HOME and repo only.

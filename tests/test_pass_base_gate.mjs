@@ -1,4 +1,5 @@
 // suite: pass phase: the base gate (the decision, run through the generator runner)
+// layer: L1
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideBaseGate, sliceLabel } from '../desk/bin/pass/base-gate.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';

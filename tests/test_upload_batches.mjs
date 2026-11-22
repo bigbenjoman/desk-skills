@@ -1,4 +1,5 @@
 // suite: upload batches (the uploader's file list, batches, tags file, resume, stall stop and sha256 reuse)
+// layer: L1
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { runUpload, tagsPath, fileSha, altOf, batchesOf, linkIn, BATCH_SIZE, EXIT_THROTTLED, EXIT_PACED, THROTTLE_MS } from '../desk/bin/upload-batches.mjs';

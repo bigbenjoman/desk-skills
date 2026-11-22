@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: triage (claude -p receives every flag)
+# layer: L2
 # triage.sh's headless claude -p calls must receive every flag they are written with: a stub claude on
 # PATH records its argv, and the first pass and the lane challenge are each checked for the flags,
 # the redirects and the `|| true` (the stub exits non-zero). Scratch HOME and repo only.
@@ -304,6 +305,13 @@ check "DS-687 AC1: a record with no blocker_needs at all names every open blocke
 jtriage ',"blocker_needs":{"X-1":{"needs":"build","why":"builds what it calls"},"X-2":{"needs":"merge","why":"lands first"}}'
 check "DS-687 AC1: a call for every open blocker is kept, with its blockers listed" \
   '[ $rc -eq 0 ] && [ "$(jq -c "[.blockers[].key]" "$T/state/triage/FIX-1.json")" = "[\"X-1\",\"X-2\",\"X-3\"]" ]'
+
+# A ticket carrying a pending priority proposal: its label, by §4 Priority proposal labels, is on the record.
+awk '{ print } /^\| Ticket key pattern \|/ { print "| Priority proposal labels | `lp-proposed-(p[0-9])` |" }' "$T/config-jira.md" > "$T/config-jira.tmp" && mv "$T/config-jira.tmp" "$T/config-jira.md"
+printf '{"key":"FIX-1","fields":{"summary":"Fix it","labels":["lp-proposed-p1"],"description":"Promote to P1, or reject within one working day.","issuelinks":[]}}\n' > "$T/fix-1.json"
+jtriage ''
+check "issue-1222: triage records a pending priority proposal the ticket's label carries" \
+  '[ $rc -eq 0 ] && [ "$(jq -c .priority_proposal "$T/state/triage/FIX-1.json")" = "{\"label\":\"lp-proposed-p1\",\"to\":\"P1\",\"line\":\"Promote to P1, or reject within one working day.\"}" ]'
 
 # The challenge (AC5) on a lane C fixture: its prompt carries AC1 to AC3, a DOWNGRADE moves the ticket
 # to A or B and keeps its ben_steps, and a CONFIRM on an L-sized ticket keeps C (AC3).

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: maintenance (the weekly window drains, updates, checks and restarts, then resumes)
+# layer: L3
 # The real pass.mjs on a fixed clock (DESK_MAINT_NOW), with a running worker whose session is a real
 # process, a fake desk-skills checkout cloned from a scratch origin, a fake reboot check and a fake
 # restart command that records its calls. One week per case, so each

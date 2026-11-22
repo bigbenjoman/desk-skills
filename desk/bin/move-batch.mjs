@@ -142,13 +142,18 @@ if (!inAudit) refuse(`the repo's audit queue (${join(from.state, 'audit-queue.js
 const audits = inAudit.map((i) => i.ticket);
 if (audits.length) refuse(`the blind audit of ${audits.join(', ')} is running or not yet recorded, and its log is read from the standing slot: run this again once a pass has recorded it. Nothing was moved`);
 
-const driver = E.mergeDriverHolder(from.state);
-if (driver === 'starting') refuse('the merge driver is starting: run this again in a minute. Nothing was moved');
-if (driver) {
-  try { process.kill(driver, 'SIGTERM'); } catch { /* already gone */ }
+// The batch's own driver, and the repo's one driver, whose lock lives in this folder too: both stop
+// before anything moves, and the supervisor's next tick starts the repo's again in the standing slot.
+let driver = null;
+for (const lock of [undefined, E.REPO_DRIVER_LOCK]) {
+  const pid = E.mergeDriverHolder(from.state, lock);
+  if (pid === 'starting') refuse('the merge driver is starting: run this again in a minute. Nothing was moved');
+  if (!pid) continue;
+  try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
   const until = Date.now() + DRIVER_WAIT_MS;
-  while (E.mergeDriverHolder(from.state) && Date.now() < until) sleep(200);
-  if (E.mergeDriverHolder(from.state)) refuse(`the merge driver (pid ${driver}) was asked to stop and is still running after ${DRIVER_WAIT_MS / 1000}s: stop it, then run this again. Nothing was moved`);
+  while (E.mergeDriverHolder(from.state, lock) && Date.now() < until) sleep(200);
+  if (E.mergeDriverHolder(from.state, lock)) refuse(`the merge driver (pid ${pid}) was asked to stop and is still running after ${DRIVER_WAIT_MS / 1000}s: stop it, then run this again. Nothing was moved`);
+  driver ??= pid;
 }
 
 // Everything moves, or nothing does: a failed rename puts back what went before it.

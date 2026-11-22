@@ -1,4 +1,5 @@
 // suite: promotion window (one question a day at the last check-in, staging-check page, go, production-broken)
+// layer: L1
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';

@@ -127,13 +127,14 @@ if (a[0] === 'pr' && a[1] === 'list') {
   out({ data: { repository: { pullRequest: pr } } });
 } else if (a[0] === 'api' && /^repos\/acme\/widgets\/commits\/[^/?]+(\/check-runs\?filter=latest\b.*)?$/.test(a[1] ?? '')) {
   // The base's first-parent line and its check runs (base-red.mjs), from base.json:
-  // { tip, commits: { <sha>: { parent, runs: [[name, status, conclusion, url]] } } }. With none, main's
-  // tip passes every check; with base.broken, GitHub refuses the read.
+  // { tip, tips?: { <branch>: <sha> }, commits: { <sha>: { parent, runs: [[name, status, conclusion, url]] } } },
+  // where a branch in tips has a tip of its own. With none, main's tip passes every check; with
+  // base.broken, GitHub refuses the read.
   if (fs.existsSync('$T/base.broken')) { console.error('gh: Server Error (HTTP 502)'); process.exit(1); }
   const tip = 'b'.repeat(40);
   const b = fs.existsSync('$T/base.json') ? JSON.parse(fs.readFileSync('$T/base.json', 'utf8')) : { tip, commits: { [tip]: { parent: null, runs: [['test', 'completed', 'success']] } } };
   const m = /commits\/([^/?]+)(\/check-runs)?/.exec(a[1]);
-  const sha = /^[0-9a-f]{40}$/.test(m[1]) ? m[1] : b.tip;
+  const sha = /^[0-9a-f]{40}$/.test(m[1]) ? m[1] : (b.tips ?? {})[decodeURIComponent(m[1])] ?? b.tip;
   const c = b.commits[sha];
   if (!c) { console.error('gh: Not Found (HTTP 404)'); process.exit(1); }
   if (m[2]) out((c.runs ?? []).map(([name, status, conclusion, url]) => ({ name, status, conclusion, url: url ?? null })));

@@ -1,4 +1,5 @@
 // suite: markers (every AUTOPILOT_ name the code uses is exactly one of a marker or a variable)
+// layer: L1
 // covers: desk/bin/markers.mjs desk/bin/prose-facts.mjs desk/bin/harvest.mjs
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';

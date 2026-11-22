@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: lane D (a design build runs on a worker when its canvas is saved)
+# layer: L2
 # ticket-facts.mjs records what a ticket's Design section links and where each Claude Design canvas is
 # saved; plan-batch queues a lane D ticket whose canvas is on the base branch or snapshotted, and parks
 # one whose design is only in Figma or whose canvas is not on the base, naming which. queue.mjs requeues

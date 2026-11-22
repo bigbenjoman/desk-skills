@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: pass: workers (screenshots go to the current round's PR; requeue; stalls, limits, kills, handoffs)
+# layer: L3
 # pass.mjs after a requeue: screenshots go to the PR the current log names, not the one an earlier
 # round stored, and a respawn clears the stored PR and image flags and starts a fresh log and park
 # record. queue.mjs requeue moves a finished round's files aside so it respawns. A worker whose log
@@ -327,6 +328,74 @@ printf '{not json' > "$T/leases/leases.json"
 spawn_one P-912
 check "DS-910 AC9 an unreadable lease store picks by the legacy rule and the report says so" '[ "$(field P-912 state)" = "\"running\"" ] && [ "$(field P-912 port)" = 47501 ] && echo "$out" | grep -qF "ports: leases were unreadable ("'
 kill "$WPID" 2>/dev/null; mv "$T/spawn-worker.kept" "$T/desk/bin/spawn-worker.sh"; unset DESK_LEASE_DIR DESK_MACHINE
+
+# DS-916: memory reservations. A worker's share is the machine profile's 48 GB ceiling over its cap of
+# 6 workers, 8 GB. The peer session and the worker are sleep processes, and spawn-worker.sh prints the
+# worker's pid.
+export DESK_LEASE_DIR="$T/leases-mem" DESK_MACHINE="$T/machine-mem.md"
+mem_kind(){ { printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `mem=%s` | test |\n| `autopilot-concurrency` | `3 / 6` | test |\n' "$1"
+  [ "${2:-48}" = none ] || printf '| `memory-ceiling-gb` | `%s` | test |\n' "${2:-48}"; } > "$DESK_MACHINE"; }
+memlist(){ node "$B/leases.mjs" list --json 2>/dev/null | jq -c 'select(.kind == "mem")'; }
+new_worker(){ WPID=$( (sleep 300 >/dev/null 2>&1 & echo $!) )
+  printf 'if [ "$3" = preflight ]; then echo "[preflight] pass"; else echo "[spawn] ticket=$1 pid=%s port=$AUTOPILOT_PORT"; fi\n' "$WPID" > "$T/desk/bin/spawn-worker.sh"; }
+other '{"tickets":{}}'
+cp "$T/desk/bin/spawn-worker.sh" "$T/spawn-worker.kept"
+PEER=$( (sleep 300 >/dev/null 2>&1 & echo $!) )
+new_worker; mem_kind on
+node "$B/leases.mjs" acquire mem 'full suite' --units 10 --ttl 3600 --label 'acme/shop full suite' --pid "$PEER" >/dev/null
+spawn_one M-4
+check "DS-916 AC4 a pass counts the 10 GB a session in another repo reserved for a full suite" 'echo "$out" | grep -qF "memory reservations: 10G of the 48G ceiling reserved, a worker'"'"'s share 8G; largest holders: acme/shop full suite 10G (pid $PEER)"'
+check "DS-916 AC2 with room under the ceiling the worker starts, its share reserved and held by its process" '[ "$(field M-4 state)" = "\"running\"" ] && memlist | jq -e --argjson p "$WPID" "select(.key == \"worker M-4\" and .units == 8 and .owner.pid == \$p and .label == \"acme/widgets standing M-4\")" >/dev/null'
+kill "$WPID"; while kill -0 "$WPID" 2>/dev/null; do sleep 0.1; done
+check "DS-916 AC3 once the worker's process exits, its reservation is back in the pool" '[ -z "$(memlist | jq -r "select(.key == \"worker M-4\") | .id")" ] && [ "$(memlist | jq -s "map(.units) | add")" = 10 ]'
+new_worker
+# A session reserves 34 GB more while the pass runs the preflight, after the pass counted 10 GB: the
+# share is refused under the store's lock, so the worker does not start.
+printf 'if [ "$3" = preflight ]; then node "%s/leases.mjs" acquire mem build --units 34 --ttl 3600 --label "acme/shop build" --pid %s >/dev/null; echo "[preflight] pass"; else echo "[spawn] ticket=$1 pid=%s port=$AUTOPILOT_PORT"; fi\n' "$B" "$PEER" "$WPID" > "$T/desk/bin/spawn-worker.sh"
+spawn_one M-9
+check "DS-916 with the kind on, a share refused since the pass counted starts no worker and says why" '[ "$(field M-9 state)" != "\"running\"" ] && [ -z "$(memlist | jq -r "select(.key == \"worker M-9\") | .id")" ] && echo "$out" | grep -qF "memory: M-9 not started, its 8G share no longer fits under the 48G ceiling: 44 of 48 GiB of memory are held, and this asks for 8"'
+new_worker
+spawn_one M-1
+check "DS-916 AC1 with 44 of 48 GB reserved and an 8 GB share, nothing spawns, naming the ceiling, the total and the largest holders" '[ "$(field M-1 state)" = "\"triaged\"" ] && [ -z "$(memlist | jq -r "select(.key == \"worker M-1\") | .id")" ] && echo "$out" | grep -qF "memory reservations: 44G of the 48G ceiling reserved, a worker'"'"'s share 8G; largest holders: acme/shop build 34G (pid $PEER), acme/shop full suite 10G (pid $PEER): no worker'"'"'s share fits under the ceiling, so nothing starts this pass"'
+mem_kind shadow
+spawn_one M-8
+check "DS-916 AC8 in shadow a full pool still spawns by the legacy rules, and the lease log records a would-refuse with the reserved total" '[ "$(field M-8 state)" = "\"running\"" ] && memlist | jq -e --argjson p "$WPID" "select(.key == \"worker M-8\" and .owner.pid == \$p)" >/dev/null && grep "\"would-refuse\"" "$DESK_LEASE_DIR/leases.log.jsonl" | grep "\"kind\":\"mem\"" | grep -qF "44 of 48 GiB of memory are held, and this asks for 8"'
+kill "$PEER" "$WPID" 2>/dev/null; rm -rf "$DESK_LEASE_DIR"; new_worker
+mem_kind on none
+spawn_one M-7
+check "DS-916 AC7 with no memory ceiling in the machine profile nothing is reserved and the worker starts as before" '[ "$(field M-7 state)" = "\"running\"" ] && [ -z "$(memlist)" ] && ! echo "$out" | grep -q "memory reservations:"'
+# A harm line the memory watch wrote a minute ago, for the pass to hold on; the gate needs a start above 0.
+harm(){ mkdir -p "$T/state-$1"; printf '{"SWAP-GROWING":{"at":%s,"line":"SWAP-GROWING: swap used went from 1.0G to 4.0G, up 3.0G in 10m: hold new spawns"}}\n' "$(( ($(date +%s) - 60) * 1000 ))" > "$T/state-$1/mem-harm.json"; }
+awk '{ print } /Worktrees directory/ { print "| Running on WSL? | `yes` |" }' "$T/config.md" > "$T/config-wsl.md"
+export DESK_CONFIG="$T/config-wsl.md"
+mem_kind off; harm M-10
+AUTOPILOT_MIN_AVAIL_GB=0.01 spawn_one M-10
+check "DS-916 AC10 with the kind off nothing is reserved, and memory is judged by the avail ladder alone" '[ "$(field M-10 state)" = "\"running\"" ] && [ -z "$(memlist)" ] && ! echo "$out" | grep -qE "memory harm|memory reservations:"'
+for k in shadow on; do
+  mem_kind "$k"; harm "M-5$k"
+  AUTOPILOT_MIN_AVAIL_GB=0.01 spawn_one "M-5$k"
+  check "DS-916 AC5 with the kind $k on WSL a recent harm line holds every spawn, naming the signal" '[ "$(field "M-5$k" state)" = "\"triaged\"" ] && echo "$out" | grep -qF "memory harm: SWAP-GROWING within the last 10m"'
+done
+# Windows reports 1.2 GB free, as the host figure did on the 3-day batch, with no harm signal. Nothing
+# on the pass's path reads that figure, which is AC6: a hold added on it would fail this case.
+printf '#!/bin/sh\necho 1.2\n' > "$T/stub/powershell.exe"; chmod +x "$T/stub/powershell.exe"
+mem_kind shadow
+AUTOPILOT_MIN_AVAIL_GB=0.01 spawn_one M-6
+check "DS-916 AC6 on WSL with Windows free RAM under 3 GB and no harm signal, the pass spawns as the reservations and the ladder allow" '[ "$(field M-6 state)" = "\"running\"" ] && memlist | jq -e "select(.key == \"worker M-6\")" >/dev/null'
+rm -f "$T/stub/powershell.exe"; export DESK_CONFIG="$T/config.md"
+mem_kind on; printf '{not json' > "$DESK_LEASE_DIR/leases.json"
+spawn_one M-12
+check "DS-916 AC12 with the lease store unreadable the pass spawns by the legacy rules, saying leases were unreadable" '[ "$(field M-12 state)" = "\"running\"" ] && echo "$out" | grep -qF "memory reservations: leases were unreadable (" && echo "$out" | grep -qF "so memory is judged by the legacy rules"'
+# A lease directory that is a file cannot be locked: the broker's error is not the store's, and the
+# pass still judges memory by the legacy rules rather than stopping.
+new_worker; printf 'x' > "$T/leases-file"; export DESK_LEASE_DIR="$T/leases-file"
+spawn_one M-13
+check "DS-916 AC12 a lease directory that cannot be locked still spawns by the legacy rules, saying leases were unreadable" '[ "$(field M-13 state)" = "\"running\"" ] && echo "$out" | grep -qF "memory reservations: leases were unreadable ("'
+kill "$WPID" 2>/dev/null; mv "$T/spawn-worker.kept" "$T/desk/bin/spawn-worker.sh"; unset DESK_LEASE_DIR DESK_MACHINE
+# What an orchestrator on WSL is told at Stage 0b, by the mem kind's mode.
+WSLREF="$SRC/skills/desk-autopilot/references/wsl-memory.md"
+check "DS-916 AC9 with the kind shadow or on, the WSL reference starts no Monitor on Windows free memory" 'grep -qF -- "- **\`shadow\` or \`on\`**: start no \`Monitor\` on Windows free memory." "$WSLREF"'
+check "DS-916 AC11 with the kind off, it runs the Windows free memory Monitor as before" 'grep -qF -- "- **\`off\`**: the pass ignores those signals, so run a third \`Monitor\` on the host figure as before" "$WSLREF" && grep -qF "(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1MB" "$WSLREF"'
 
 # DS-121: a worker at the 5-hour usage limit. The event is the rejection recorded from a real worker,
 # with its reset moved to suit each case. Each case is a running ticket whose log stopped growing
@@ -810,15 +879,17 @@ q set Y-6 state=done
 q set-batch concurrency=2 concurrency_by=user
 wreset=$(( $(date +%s) + 3 * 86400 ))
 probe_says limited "$wreset" seven_day; : > "$T/probes"
-killed W-1 sess-w1; q set W-1 model_tier=standard model=sonnet; usage_exit W-1 "$wreset" seven_day
+killed W-1 sess-w1; q set W-1 model_tier=standard model=sonnet progress_at=2026-01-01T00:00:00.000Z; usage_exit W-1 "$wreset" seven_day
 q add W-2; q set W-2 state=triaged lane=A branch=fix/W-2
 out=$(node "$B/pass.mjs" 2>&1)
+check "a worker paused at the limit is not reported not progressing, however old its last progress" '! echo "$out" | grep -q "W-1: NOT PROGRESSING" && [ "$(field W-1 waits)" = null ]'
 check "DS-344 AC1 a worker that exited at the weekly limit is not failed, and is paused with the reset time" '[ "$(field W-1 state)" = "\"running\"" ] && [ "$(field W-1 usage_paused.type)" = "\"seven_day\"" ] && [ "$(field W-1 usage_paused.resets_at)" = "$wreset" ] && echo "$out" | grep -q "^paused on the usage limit: W-1 on the weekly usage limit until .* UTC" && ! spawned_for W-1'
 check "DS-344 AC1 the batch holds every spawn on it, after one probe" '[ "$(field W-2 state)" = "\"triaged\"" ] && ! grep -qx W-2 "$T/preflights" && echo "$out" | grep -q "the weekly usage limit until .* holds every spawn and resume" && [ "$(wc -l < "$T/probes" | tr -d " ")" = 1 ] && [ "$(bfield usage_hold.type)" = "\"seven_day\"" ]'
 # AC3: a subscription switch, so a probe succeeds days before the reset.
 probe_says ok
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-344 AC3 once a probe succeeds before the reset, the paused worker resumes in its own session on its model" 'echo "$out" | grep -q "W-1 exited at the weekly usage limit, which lifted (a probe call succeeded): queued to resume in its own session" && spawned_for W-1 | grep -q "^W-1 sess-w1 .*resume=yes$" && [ "$(field W-1 model_tier)" = "\"standard\"" ] && [ "$(field W-1 model)" = "\"sonnet\"" ] && [ "$(field W-1 usage_paused)" = null ]'
+check "its resumed session starts its progress clock again: no earlier progress time, and nothing reported not progressing" '[ "$(field W-1 progress_at)" = null ] && ! echo "$out" | grep -q "W-1: NOT PROGRESSING"'
 check "DS-344 AC3 and the held ticket spawns as normal, with no requeue" '[ "$(field W-2 state)" = "\"running\"" ] && [ "$(bfield usage_hold)" = null ]'
 q set W-1 state=done; q set W-2 state=done
 

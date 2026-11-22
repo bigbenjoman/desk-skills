@@ -79,12 +79,12 @@ node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> <action> "<text>"
 node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> override <id> "<choice>"
 ```
 
-Leave `"<text>"` off for every action but `answer`, `resume`, `reject`, `override` and `move`. Each
-prints what it recorded.
+Leave `"<text>"` off for every action but `answer`, `resume`, `reject`, `override`, `move` and
+`promote`. Each prints what it records.
 
 - **`MESSAGE <name>: <text>`** on the next line: a live session runs that batch, so the ticket was
   answered but not requeued. `SendMessage` that text to the session named `<name>`. If that name is
-  unreachable, run `ListAgents` once and send to the one row for the same batch. If none matches,
+  unreachable, run `ListAgents` once and send to the one row for the same batch. If none does,
   tell the user to give the message to that repo's session themselves.
 - **`drop`**: out of its batch, its clean worktree removed (`queue.mjs drop`).
 - **`open`** (lane C or D) and **`admit`**: record nothing; show the line naming the

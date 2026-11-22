@@ -1,4 +1,5 @@
 // suite: conflict record (merge-time conflicts per file, and the per-file budget they lower)
+// layer: L1
 import { readFileSync, writeFileSync, mkdirSync, chmodSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy, recentCount, CONFLICT_WINDOW_MS } from '../desk/bin/conflict-record.mjs';

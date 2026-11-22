@@ -1,4 +1,5 @@
 // suite: notify: which notifier the supervisor uses on each computer
+// layer: L1
 // notify.mjs's notifiers() with a fake platform and a fake PATH lookup: osascript on macOS; on Linux
 // notify-send where it is there, then a Windows toast through powershell.exe (WSL); else none. Runs nothing.
 import { dirname, join } from 'node:path';

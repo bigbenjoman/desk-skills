@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: exit codes (pass, plan-batch, queue and answer: 0 go on, 10 nothing yet, 11 show the person)
+# layer: L3
 # The four orchestration scripts share one exit-code contract (EXIT in desk/bin/batch-state.mjs), and
 # pass.mjs --json prints one object carrying the same verdict. Runs the real scripts with stub claude,
 # gh, setup-worktree and spawn-worker, as tests/pass_setup.sh does for the pass suites. Scratch HOME only.
