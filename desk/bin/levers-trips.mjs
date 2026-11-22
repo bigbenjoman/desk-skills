@@ -55,7 +55,7 @@ import { priorRevertsOf, revertTarget, frozenText } from './levers-evaluate.mjs'
 import { answerEntriesSince } from './handoff.mjs';
 import { recordLeverDecision } from './lever-changes.mjs';
 import { batchPaths } from './desk-env.mjs';
-import { everyTicket } from './queue-store.mjs';
+import { everyTicket, owesReopen } from './queue-store.mjs';
 
 export const ACTOR = 'trip';
 // The states a trip reverts from.
@@ -250,7 +250,7 @@ export const DETECTORS = Object.freeze({
     // leaves the ticket done (pass.mjs), and a closed PR owed its reopen still counts as open.
     if (w.pr == null || String(w.pr) !== String(t.result?.pr)) return [];
     const closed = String(t.pr_status?.pr) === String(w.pr) && t.pr_status?.state === 'CLOSED';
-    if (closed && String(t.reopening ?? '') !== String(w.pr)) return [];
+    if (closed && !owesReopen(t)) return [];
     let settled = null;
     let what = null;
     if (w.class === 'dependency wait') {
