@@ -186,9 +186,7 @@ if command -v flock >/dev/null 2>&1; then
       if [ -z "$timeout" ]; then flock 9 || exit 2; else flock -w "$timeout" 9 || gave_up; fi
     fi
     holder 1
-    # The grant is logged beside the command, never before it: its readings must not hold up the start.
-    # It keeps fd 9, so the next waiter is not granted until it is logged, and counts in its queue.
-    held; granted "$$" "$@" </dev/null >/dev/null 2>&1 &
+    held; granted "$$" "$@"
     exec "$@"
   fi
   # Several slots: try each without blocking, and wait 2 s between rounds.
@@ -197,7 +195,7 @@ if command -v flock >/dev/null 2>&1; then
     i=1
     while [ "$i" -le "$slots" ]; do
       exec 9>>"$(slot_path "$i")" || exit 2
-      flock -n 9 && { holder "$i"; held; granted "$$" "$@" </dev/null >/dev/null 2>&1 & exec "$@"; }
+      flock -n 9 && { holder "$i"; held; granted "$$" "$@"; exec "$@"; }
       exec 9>&-
       i=$((i + 1))
     done

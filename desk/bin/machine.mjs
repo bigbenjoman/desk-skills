@@ -226,7 +226,7 @@ export function parseLinux({ cpuinfo = '', meminfo = '', nproc = '', cpuCore = '
     hw['performance-cores'] = known(p) ? p : total;
     hw['efficiency-cores'] = known(e) ? e : known(p) ? total - p : 0;
   }
-  const memKB = num(/^MemTotal:\s*(\d+)/m.exec(meminfo)?.[1]);
+  const memKB = num(parseMeminfo(meminfo).MemTotal) / 1024;
   if (known(memKB)) hw['memory-gb'] = kbToGB(memKB);
 
   hw['disk-free-gb'] = parseDfAvailableGB(df);

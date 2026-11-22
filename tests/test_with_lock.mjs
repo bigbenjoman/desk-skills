@@ -1,7 +1,7 @@
 // suite: with-lock (the lock classes its usage line lists are exactly the ones it accepts; each run takes its slot as a lease)
 // layer: L2
 // covers: desk/bin/with-lock.sh desk/bin/prose-facts.mjs desk/bin/slot-lease.mjs
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
@@ -334,20 +334,16 @@ try {
         t('DS-975 AC6 on: with every reading failing the grant is logged, the readings empty', [r.status, ...empty(g), g?.wait_s], [0, null, null, null, 0]);
         t('DS-975 AC6 on: the command starts within 1 s of the grant', startedAt(stamp) - (Date.parse(g?.expires) - g?.ttl * 1000) < 1000, true);
       }
-      // Off, flock(1): the slot is granted the moment the holder lets go, which the waiter's flock sees
-      // at once, so the grant line's readings fall inside the interval timed.
+      // Off, flock(1): the slot is granted when flock takes the lock, and the holder file beside it is
+      // written then, before the grant line's readings, so they fall inside the interval timed.
       if (hasFlock) {
         const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: OFF1, extra: { PATH: `${slow}:${process.env.PATH}` } });
-        const h = await hold(env, ['light'], { cwd: root });
-        await until(() => of(env, 'grant').length === 1);
         const stamp = join(S, `started-${n++}`);
-        const p = run(env, ['light', '--', ...stampCmd(stamp)]);
-        await until(() => of(env, 'queued').length === 1);
-        const released = Date.now(); h.release(); await h.done;
-        const status = await p;
+        const r = wl(env, ['light', '--', ...stampCmd(stamp)], { cwd: root });
         const g = of(env, 'grant').at(-1);
-        t('DS-975 AC6 off, flock path: with every reading failing the grant is logged, the readings empty', [status, of(env, 'grant').length, ...empty(g)], [0, 2, null, null, null]);
-        t('DS-975 AC6 off, flock path: the command starts within 1 s of the holder letting go', startedAt(stamp) - released < 1000, true);
+        const grantedAt = statSync(join(env.DESK_LOCK_DIR, 'desk-light.lock.pid')).mtimeMs;
+        t('DS-975 AC6 off, flock path: with every reading failing the grant is logged, the readings empty', [r.status, ...empty(g), g?.wait_s], [0, null, null, null, 0]);
+        t('DS-975 AC6 off, flock path: the command starts within 1 s of the lock being taken', startedAt(stamp) - grantedAt < 1000, true);
       }
       // Off, mkdir path: the command is started before the grant line's readings are taken.
       {

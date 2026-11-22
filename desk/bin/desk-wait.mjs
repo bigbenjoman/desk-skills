@@ -50,6 +50,7 @@ const LIGHT = wrapperOf('light');
 // name the lock's holders, and the load and memory reading its wait's log lines carry.
 const HELPER = /^(?:\S*\/)?(?:flock|sleep|cat|mkdir|find|mv|rm|git|dirname|pwd|lsof|ps|sysctl)(?:\s|$)/;
 const NODE_HELPER = /^(?:\S*\/)?node\s+\S*(?:slot-lease|desk-env)\.mjs(?:\s|$)/;
+const LEASE_CLIENT = /^(?:\S*\/)?node\s+\S*slot-lease\.mjs(?:\s|$)/;
 // A Bash tool background task's output file.
 const TASK_OUTPUT = /\/tasks\/[^/]+\.output$/;
 
@@ -75,9 +76,9 @@ export function treeOf(pids, procs) {
 export function standing(run) {
   if (!run.length) return { state: 'done' };
   const top = (ps) => ps.find((p) => !ps.some((q) => q.pid === p.ppid)) ?? ps[0];
-  // Whatever the lease client or a config read runs (a git shim, the load reading, a process read) is
-  // part of the wait too: the command is never their child.
-  const helped = treeOf(run.filter((p) => NODE_HELPER.test(p.args)).map((p) => p.pid), run);
+  // Whatever the lease client runs (a git shim, the load reading, a process read) is part of the wait
+  // too: the command is never its child. Not desk-env.mjs's: `desk-env workspace-test` runs the suite.
+  const helped = treeOf(run.filter((p) => LEASE_CLIENT.test(p.args)).map((p) => p.pid), run);
   const cmd = run.filter((p) => !isWaiter(p.args) && !helped.has(p.pid));
   if (cmd.length) return { state: 'started', pid: top(cmd).pid };
   const wrappers = run.filter((p) => WRAPPER.test(p.args) || BROWSER.test(p.args));

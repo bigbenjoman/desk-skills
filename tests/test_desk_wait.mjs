@@ -45,6 +45,9 @@ t('DS-975 the wait\'s log line, with its holder read and load reading, is a wait
 t('anything the lease client runs, however it is named, is a wait too',
   standing([wrapper, { pid: 12, ppid: 11, etime: '00:01', args: '/opt/node/bin/node /x/slot-lease.mjs holders' },
     { pid: 13, ppid: 12, etime: '00:00', args: '/usr/bin/xcrun git rev-parse --show-toplevel' }, { pid: 15, ppid: 13, etime: '00:00', args: '/Library/Developer/CommandLineTools/usr/bin/git-x' }]).state, 'waiting');
+t('a suite desk-env workspace-test runs under the mkdir path\'s wrapper has started',
+  standing([wrapper, { pid: 12, ppid: 11, etime: '00:01', args: 'node /x/desk-env.mjs workspace-test apps/web' },
+    { pid: 13, ppid: 12, etime: '00:01', args: 'pnpm vitest run' }]), { state: 'started', pid: 13 });
 t('the command, exec\'d into the wrapper\'s pid, has started', standing([shell, { ...wrapper, args: 'bash tests/run.sh' }, { pid: 14, ppid: 11, etime: '00:01', args: 'node tests/test_x.mjs' }]), { state: 'started', pid: 11 });
 t('a run that takes no lock has started from its shell', standing([{ pid: 20, ppid: 1, etime: '00:03', args: '/bin/zsh -c bash tests/run.sh' }]), { state: 'started', pid: 20 });
 t('AC2 the record line is the one the contract records',
