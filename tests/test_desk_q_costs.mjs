@@ -1,5 +1,5 @@
 // suite: desk-q Costs tab (every name's charge this month)
-// layer: L1
+// layer: L2
 // desk-q against the October fixture cost cache and cost sources (tests/fixtures/costs-october), a
 // fixed clock and a throwaway HOME, DESK_HOME, DESK_CONFIG_ROOT and cost directory. One check or more
 // per acceptance criterion of DS-290 and of DS-291 (each row's tag and note, o to a billing page);

@@ -1,5 +1,5 @@
 // suite: bench quota (the per-computer cap, the interactive reserve and unreadable readings)
-// layer: L1
+// layer: L2
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { scratch } from './scratch.mjs';

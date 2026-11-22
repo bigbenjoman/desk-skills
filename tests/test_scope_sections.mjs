@@ -237,13 +237,16 @@ t('DS-985 AC1 a second layer line, an unknown layer or none is no layer', ['// s
 const textOf = (p) => { try { return readFileSync(join(R, p), 'utf8'); } catch { return ''; } };
 const layerOf = (f) => real.suites.find((s) => s.file === f)?.layer;
 // End to end: the suites built on the pass, batch and merge driver setups, and those running the real
-// pass.mjs themselves. A claims: imports suite's text is test data, so it is not read for this.
-const endToEnd = real.suites.filter((s) => !s.importsOnly).map((s) => s.file).filter((f) => /^\s*(source|\.) .*(pass_setup|batch_e2e_setup|merge_driver_setup|base_sync_setup)\.sh/m.test(textOf(`tests/${f}`)) || /node "\$B\/pass\.mjs"|join\(BIN, 'pass\.mjs'\)/.test(textOf(`tests/${f}`)));
+// pass.mjs or merge-driver.sh themselves. A claims: imports suite's text is test data, so it is not read
+// for this.
+const endToEnd = real.suites.filter((s) => !s.importsOnly).map((s) => s.file).filter((f) => /^\s*(source|\.) .*(pass_setup|batch_e2e_setup|merge_driver_setup|base_sync_setup)\.sh/m.test(textOf(`tests/${f}`)) || /node "\$B\/pass\.mjs"|join\(BIN, 'pass\.mjs'\)|bash "\$B\/merge-driver\.sh" --tickets/.test(textOf(`tests/${f}`)));
 t('DS-985 AC3 a suite that runs a pass, batch or merge driver end to end is L3', endToEnd.filter((f) => layerOf(f) !== 'L3'), []);
-t('DS-985 AC3 those include the pass, batch, merge driver and installer suites', ['test_pass_spawns.sh', 'test_batch_e2e.sh', 'test_merge_driver_loop.sh', 'test_install_skips.sh'].map(layerOf), ['L3', 'L3', 'L3', 'L3']);
+t('DS-985 AC3 those include the pass, batch, merge driver and installer suites', ['test_pass_spawns.sh', 'test_batch_e2e.sh', 'test_merge_driver_loop.sh', 'test_epic.sh', 'test_install_skips.sh'].map(layerOf), ['L3', 'L3', 'L3', 'L3', 'L3']);
 // In process: a .mjs suite that, with the tests/ helpers it imports, never loads child_process (the
-// pass-phase trap loads it only to refuse every call).
-const inProcess = (f) => f.endsWith('.mjs') && importClosure(`tests/${f}`, textOf).filter((p) => p.startsWith('tests/') && p !== 'tests/pass_phase_trap.mjs').every((p) => !/child_process/.test(textOf(p)));
+// pass-phase trap loads it only to refuse every call) and writes no executable stub, which is there only
+// for the module under test to start.
+const startsNothing = (p) => !/child_process|(chmodSync\(.*|mode: )0o7[57][57]\b/.test(textOf(p));
+const inProcess = (f) => f.endsWith('.mjs') && importClosure(`tests/${f}`, textOf).filter((p) => p.startsWith('tests/') && p !== 'tests/pass_phase_trap.mjs').every(startsNothing);
 t('DS-985 AC4 a suite whose cases import modules and start no process is L1', real.suites.map((s) => s.file).filter((f) => inProcess(f) && layerOf(f) !== 'L1'), []);
 t('DS-985 AC4 and an L1 suite starts no process', real.suites.filter((s) => s.layer === 'L1' && !inProcess(s.file)).map((s) => s.file), []);
 const cw = decide(M('desk/bin/clears-when.mjs'), real);

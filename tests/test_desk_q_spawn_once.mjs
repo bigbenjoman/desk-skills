@@ -1,5 +1,5 @@
 // suite: desk-q asks each git, launchctl and ps question once per build of a view
-// layer: L1
+// layer: L2
 // desk-q's home view built in this process against four fixture repos under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT, with git, ps, vm_stat and launchctl on PATH as fakes that log every
 // call (git and ps then run the real ones). Nothing touches launchd or your real state.

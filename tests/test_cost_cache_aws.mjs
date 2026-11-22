@@ -1,5 +1,5 @@
 // suite: cost cache, AWS (each profile's month by service and record type, read at most once a day)
-// layer: L1
+// layer: L2
 // The AWS reading against `aws ce get-cost-and-usage` output grouped by SERVICE then RECORD_TYPE:
 // forewatt's is a real reply, recorded on 29 October 2026 for 1 to 28 October
 // (fixtures/aws-ce-forewatt-2026-10.json, as the CLI printed it); the credit, paging and twin cases

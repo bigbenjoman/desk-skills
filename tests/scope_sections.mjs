@@ -207,13 +207,14 @@ export function mentions(text) {
 //   L3  end to end: it runs a pass, a batch, the merge driver or the installer through
 export const LAYERS = ['L1', 'L2', 'L3'];
 const LAYER_LINE = /^(#|\/\/) layer:/;
-// What is wrong with a suite's layer declaration, or '' when it declares exactly one known layer.
-export function layerProblem(text) {
+// A suite's declared layer, or what is wrong with its declaration: { layer, problem }, layer null and
+// problem set unless it declares exactly one known layer.
+function readLayer(text) {
   const lines = String(text).split('\n').slice(0, 10).filter((l) => LAYER_LINE.test(l));
-  if (!lines.length) return `declares no layer: add a \`# layer: <${LAYERS.join('|')}>\` line (\`//\` in .mjs) in its first ten lines`;
-  if (lines.length > 1) return `declares ${lines.length} layers: ${lines.join(' / ')}`;
+  if (!lines.length) return { layer: null, problem: `declares no layer: add a \`# layer: <${LAYERS.join('|')}>\` line (\`//\` in .mjs) in its first ten lines` };
+  if (lines.length > 1) return { layer: null, problem: `declares ${lines.length} layers: ${lines.join(' / ')}` };
   const v = lines[0].replace(LAYER_LINE, '').trim();
-  return LAYERS.includes(v) ? '' : `declares an unknown layer: ${lines[0]} (one of ${LAYERS.join(', ')})`;
+  return LAYERS.includes(v) ? { layer: v, problem: '' } : { layer: null, problem: `declares an unknown layer: ${lines[0]} (one of ${LAYERS.join(', ')})` };
 }
 
 // A suite's header, its first 30 lines: the `suite:` label ('' when none), its layer (null unless it
@@ -222,7 +223,7 @@ export function suiteHeader(text) {
   const head = String(text).split('\n').slice(0, 30);
   return {
     label: (head.slice(0, 10).find((l) => /^(#|\/\/) suite: /.test(l)) ?? '').replace(/^(#|\/\/) suite: /, ''),
-    layer: layerProblem(text) ? null : head.slice(0, 10).find((l) => LAYER_LINE.test(l)).replace(LAYER_LINE, '').trim(),
+    layer: readLayer(text).layer,
     covers: head.filter((l) => /^(#|\/\/) covers: /.test(l)).flatMap((l) => l.replace(/^(#|\/\/) covers: /, '').trim().split(/\s+/)),
     importsOnly: head.some((l) => /^(#|\/\/) claims: imports\b/.test(l)),
   };
@@ -424,7 +425,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     let bad = 0;
     for (const p of paths) {
       let problem;
-      try { problem = layerProblem(readFileSync(given.length ? p : join(root, p), 'utf8')); } catch (e) { problem = `is unreadable: ${e.message}`; }
+      try { problem = readLayer(readFileSync(given.length ? p : join(root, p), 'utf8')).problem; } catch (e) { problem = `is unreadable: ${e.message}`; }
       if (problem) { bad++; console.log(`${p}: ${problem}`); }
     }
     process.exit(bad ? 1 : 0);
