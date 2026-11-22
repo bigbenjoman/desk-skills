@@ -46,6 +46,7 @@
 //   register {key, question, cond} -> the park against the "not now" register: {inputs, status, entry, line}
 //   recommends {key, question}     -> the call the park recommends, or null
 //   approval {key, question}       -> the write the park awaits approval for: {approve, missing} (batch-state.mjs parkApproval)
+//   park-file {key, question}      -> what the park file holds that it does not declare, or null (batch-state.mjs parkFileFault)
 //   keep-links {key, needs, pr}    keep links not made as follow-on steps
 //   decisions {key, pr}            log the calls the worker took
 //   refuse-lease {key, question}   -> true where the park went back to a worker, told to name its lease
@@ -325,6 +326,9 @@ export function* decideAdvance(s) {
     const approve = approval?.approve ?? null;
     const awaiting = approve ? ` — awaiting approval, ${approvalText(approve)}`
       : approval?.missing ? ` — incomplete: ${approval.missing}` : '';
+    // A field its park file does not declare is logged, never a reason to refuse the park.
+    const undeclared = yield { type: 'park-file', key: t.key, question };
+    if (undeclared) yield say(t.key, 'inputs', `${t.key}: ${undeclared}, taken in as it is`);
     // A merge question keeps the park's words as its follow-on too, so a merge by hand still lists them.
     yield set(t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(cleared)}`,
       ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []), ...(approve ? [`park.approve=${JSON.stringify(approve)}`] : []),

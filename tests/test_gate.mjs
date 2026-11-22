@@ -368,11 +368,43 @@ rmSync(gtmp, { recursive: true, force: true });
   t('a light suite running in the worktree is its suite', at(runs, [{ pid: 100, cwd: wt }]), 'suite');
   t('one waiting for the light lock is waiting on its lock', at([{ pid: 110, ppid: 1, args: 'bash /h/.claude/desk/bin/with-lock.sh light -- bash tests/run.sh' }], [{ pid: 110, cwd: wt }]), 'lock');
   t('and a light holder its holder file names is its suite', suiteWait(wt, { procs: [{ pid: 120, ppid: 1, args: 'bash tests/run.sh' }], cwds: [{ pid: 120, cwd: wt }], holders: new Set([120]) }), 'suite');
-  t('DS-662 AC1 a queue at slots x factor is deep, naming its depth', JSON.stringify(lockQueue({ waiting: 4, slots: 2, factor: 2 })),
-    JSON.stringify({ deep: true, unread: false, waiting: 4, at: 4, line: 'test lock queue: 4 run(s) waiting on its 2 slot(s), at or over the hold at 2 x 2 = 4' }));
-  t('DS-662 AC3 a queue below it holds nothing', lockQueue({ waiting: 3, slots: 2, factor: 2 }).deep, false);
+  t('DS-662 AC1 a queue at slots x factor is deep, naming its depth', JSON.stringify(lockQueue({ waiting: 4, slots: 2, factor: 2, counts: new Map([['a', 4]]), self: 'a' })),
+    JSON.stringify({ deep: true, holds: true, room: 0, share: 4, own: 4, unread: false, waiting: 4, at: 4, line: "test lock queue: 4 run(s) waiting on its 2 slot(s), at or over the hold at 2 x 2 = 4; runs by repo: a 4; this repo's share ceil(4 / 1) = 4, 4 its own" }));
+  t('DS-662 AC3 a queue below it holds nothing', lockQueue({ waiting: 3, slots: 2, factor: 2, counts: new Map(), self: 'a' }).deep, false);
   const unread = lockQueue({ waiting: null, slots: 1, factor: 2 });
   t('DS-662 AC5 a queue not read holds nothing and says so', `${unread.deep} ${unread.unread} ${unread.line}`, 'false true test lock queue: not read (ps could not be read), so workers start as they would without it');
+}
+// Each repo gets a share of a deep queue on the test lock, so one busy repo cannot stall the rest.
+{
+  const { lockRunsByRepo, lockQueue } = await import('../desk/bin/suite-wait.mjs');
+  const w = (pid) => ({ pid, ppid: 1, args: 'bash /h/.claude/desk/bin/with-lock.sh test --cwd . -- pnpm test' });
+  // Repo a: one holder in a worktree and 9 waiters; repo b: one waiter in a subdirectory; repo c: one
+  // waiter in its main checkout; and one waiter in no configured repo.
+  const procs = [w(11), ...[21, 22, 23, 24, 25, 26, 27, 28, 29].map(w), w(31), w(41), w(51)];
+  const holders = new Set([11]);
+  const cwds = [{ pid: 11, cwd: '/u/a-wt/A-1' }, ...[21, 22, 23, 24, 25, 26, 27, 28, 29].map((pid) => ({ pid, cwd: '/u/a-wt/A-2' })),
+    { pid: 31, cwd: '/u/b-wt/B-1/src' }, { pid: 41, cwd: '/u/c' }, { pid: 51, cwd: '/tmp/x' }];
+  const held = [{ pid: 11, cwd: '/u/a-wt/A-1', args: procs[0].args, seconds: 60 }];
+  const repos = [{ name: 'a', dirs: ['/u/a', '/u/a-wt'] }, { name: 'b', dirs: ['/u/b', '/u/b-wt'] }, { name: 'c', dirs: ['/u/c', '/u/c-wt'] }];
+  const counts = lockRunsByRepo(repos, { procs, holders, cwds, held });
+  t('a repo\'s runs are those holding or waiting in its main checkout or worktrees; the rest are other\'s',
+    JSON.stringify([...counts].sort()), JSON.stringify([['a', 10], ['b', 1], ['c', 1], ['other', 1]]));
+  t('a checkout whose name starts another\'s is not inside it', lockRunsByRepo([{ name: 'a', dirs: ['/u/a'] }], { procs: [w(61)], holders: new Set(), cwds: [{ pid: 61, cwd: '/u/ab' }] }).get('a'), undefined);
+  t('whose runs they are is unknown when working directories cannot be read', lockRunsByRepo(repos, { procs, holders, cwds: null, held }), null);
+  // Three repos on the lock (a 10, b 1, c 1), so each one's share of a hold at 3 x 2 = 6 is 2.
+  const three = new Map([['a', 10], ['b', 1], ['c', 1]]);
+  const q = (self, c = three, waiting = 11) => lockQueue({ waiting, slots: 3, factor: 2, counts: c, self });
+  const none = new Map([['a', 10], ['c', 1]]);
+  t('DoD1 a repo with no run on a deep queue, three repos active, may start its share of 2',
+    `${q('b', none).share} ${q('b', none).room} ${q('b', none).holds}`, '2 2 false');
+  t('DoD2 the repo whose runs fill the queue is held', `${q('a').room} ${q('a').holds}`, '0 true');
+  t('DoD3 a repo with one run under its share of 2 may start 1', `${q('b').room} ${q('b').holds}`, '1 false');
+  t('DoD3 and one at its share is held', q('b', new Map([['a', 10], ['b', 2], ['c', 1]])).holds, true);
+  t('DoD4 the line names each active repo\'s runs, most first, and the share', q('b').line,
+    "test lock queue: 11 run(s) waiting on its 3 slot(s), at or over the hold at 3 x 2 = 6; runs by repo: a 10, b 1, c 1; this repo's share ceil(6 / 3) = 2, 1 its own");
+  t('DoD5 below the hold, a pass may start the hold less those waiting', `${q('a', three, 4).room} ${q('a', three, 4).holds} ${q('a', three, 6).holds}`, '2 false true');
+  t('a deep queue whose runs cannot be placed gives no room, and says so', `${q('b', null).room} ${q('b', null).line.includes('whose runs they are is unknown')}`, '0 true');
+  t('below the hold, unplaced runs still give the hold less those waiting', q('b', null, 2).room, 4);
 }
 // Who holds the test lock is named, whatever the repo, so a batch held behind it shows what it waits on.
 {
@@ -404,8 +436,8 @@ rmSync(gtmp, { recursive: true, force: true });
   t('one whose directory and age cannot be read is named by its pid', holdersText(lockHolderRuns({ procs, holders: new Set(), cwds: null, ages: null, now }).slice(0, 1)), 'pid 41: flock /tmp/desk-test.lock pnpm test, held for an unknown time');
   t('a file-named pid whose age cannot be read names nobody', lockHolderRuns({ procs, holders: new Set([11, 12]), cwds, ages: null, stamps, now }).map((r) => r.pid).join(','), '41');
   t('no holders when ps cannot be read', lockHolderRuns({ procs: null, holders: new Set(), cwds, ages, stamps, now }).length, 0);
-  t('the queue line names them', lockQueue({ waiting: 2, slots: 1, factor: 2, held: runs.slice(1) }).line, `test lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2; held by ${holdersText(runs.slice(1))}`);
-  t('and with none held, says nothing of holders', lockQueue({ waiting: 0, slots: 1, factor: 2 }).line.includes('held by'), false);
+  t('the queue line names them', lockQueue({ waiting: 2, slots: 1, factor: 2, held: runs.slice(1), counts: new Map([['b', 3]]), self: 'b' }).line, `test lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2; runs by repo: b 3; this repo's share ceil(2 / 1) = 2, 3 its own; held by ${holdersText(runs.slice(1))}`);
+  t('and with none held, says nothing of holders', lockQueue({ waiting: 0, slots: 1, factor: 2, counts: new Map(), self: 'b' }).line.includes('held by'), false);
   t('ps elapsed times read in seconds', [etimeSeconds('05:07'), etimeSeconds('01:00:00'), etimeSeconds('2-00:00:01'), etimeSeconds('x')].join(','), '307,3600,172801,');
   // DS-924: the light lock's holders apart from the test lock's, for a run waiting on the light lock.
   const light = [...procs, { pid: 80, ppid: 1, args: 'flock /tmp/desk-light.lock bash tests/related.sh' }, { pid: 81, ppid: 80, args: 'bash tests/related.sh' }];

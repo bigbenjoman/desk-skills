@@ -156,7 +156,7 @@ export function jiraTarget(r, root = E.deskConfigRoot()) {
   const tracker = String(val('tracker') ?? '').trim().split(/\s+/)[0].toLowerCase();
   if (tracker !== 'jira') return { why: `its §4 Tracker is ${tracker || 'unset'}` };
   if (self) return { cwd: process.cwd(), env: process.env };
-  const cwd = E.expandHome(String(val('repo-root') ?? '').trim());
+  const cwd = E.repoDirs(r.slug, root).root;
   if (!cwd || !existsSync(cwd)) return { why: `its checkout (config §2 Primary repo root) is ${cwd ? `not at ${cwd}` : 'unset'}` };
   return { cwd, env: E.otherRepoEnv() };
 }
