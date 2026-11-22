@@ -175,6 +175,9 @@ t('DS-587 AC5 batch-notes-header keeps its refused with-lock.sh rule', notes.inc
   t('DS-839 AC5 no contract file tells a worker to message the orchestrator', files.some((f) => /SendMessage` the orchestrator|notify_when_idle/.test(read(f))), false);
   t('DS-839 AC1 the park file carries the approve object with kind, target and the exact body',
     steps.includes('`"approve": {"kind": "jira-comment", "target": "<ticket, or PR number>", "body": "<the exact text>"}`'), true);
+  const flat = steps.replace(/\s+/g, ' ');
+  t('DS-887 AC1 and AC2 the park steps print the marker, and a re-invoked worker reads its answer file before it continues',
+    flat.includes('`AUTOPILOT_PARK: <one-line question>`') && flat.includes('the answer file named in yours if you are invoked again: read it, continue'), true);
   t('DS-839 AC1 Stage 8 puts a comment it may not post in the park file\'s approve', read('worker-contract-stage-8.md').replace(/\s+/g, ' ').includes('write the park file with the same body as its `approve`'), true);
 }
 
