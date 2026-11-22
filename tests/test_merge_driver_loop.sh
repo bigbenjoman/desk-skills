@@ -290,7 +290,7 @@ q drop T-835
 
 # ---- DS-850: a red main takes no merge but its repair ticket's; green or unread, it merges as before --
 # main's tip R1 has Lint's run still going; its parent R0's run of the required check `test` failed.
-R1=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1; R0=a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0; R2=a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2; R3=a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3
+R1=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1; R0=a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0; R2=a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2; R3=a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3; R4=a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4
 cat > "$T/prs.json" <<EOF
 {
   "851": { "head": "fix/T-851", "base": "main", "sha": "$SHA1", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] },
@@ -320,9 +320,10 @@ rm -f "$T/base.broken"
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-853" 2>&1)
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-853" 2>&1)
 check "DS-969 AC4: once main can be read again, the held PR merges with no person step" '[ "$(merged)" = "852 851 853" ]'
-# Every read answers, but no completed run of the required check is on main's newest commits.
+# Every read answers, but no completed run of the required check is on main's newest commits. A new
+# tip, as a merge gives: R1's completed runs are kept from the loops above.
 jq --arg s "$SHA5" '."855" = { head: "fix/T-855", base: "main", sha: $s, state: "open", draft: false, checks: [["test", "SUCCESS"]] }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
-printf '{"tip":"%s","commits":{"%s":{"parent":null,"runs":[["test","in_progress",null]]}}}\n' "$R1" "$R1" > "$T/base.json"
+printf '{"tip":"%s","commits":{"%s":{"parent":null,"runs":[["test","in_progress",null]]}}}\n' "$R4" "$R4" > "$T/base.json"
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-855" 2>&1); first="$out"
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-855" 2>&1)
 check "DS-969 AC2: with every read answered but no completed run on main, the driver merges as today" \
