@@ -325,6 +325,10 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   const off = advance(ended('B-4', 'error_max_budget_usd', {}, { off: true }), { 'exit-code': 1 });
   t('DS-849 AC4 with the per-worker budget none, a budget-stop subtype is failed as any error',
     j([types(off).includes('fail'), sets(off).some((f) => f.startsWith('resume='))]), '[true,false]');
+  t('DS-898 AC2 the fail carries the subtype its session ended in',
+    j([off.find((a) => a.type === 'fail')?.subtype, other.find((a) => a.type === 'fail')?.subtype]), j(['error_max_budget_usd', 'error_during_execution']));
+  t('DS-898 a session that ended with no error fails with no subtype',
+    advance(snap(ticket('N-9'), logOf('N-9', '', [said('working'), RESULT])), { 'exit-code': 0 }).find((a) => a.type === 'fail')?.subtype, null);
 }
 
 // The text a park's write waits on, from the worker's park file: only for the question it parked on.

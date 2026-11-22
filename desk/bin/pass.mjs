@@ -90,7 +90,7 @@ import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
-  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD } from './pass/shared.mjs';
+  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD, failedField } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideTicketless } from './pass/ticketless-prs.mjs';
 import { decideDeadlines } from './pass/deadlines.mjs';
@@ -342,9 +342,10 @@ const recordRunning = (key, pairs, what = 'no worker was started') => {
 const queue = () => QW.view();
 process.on('exit', () => { try { if (RECORDS && QW.pending()) QW.flush(); } catch { /* nothing more to report to */ } });
 // A failed ticket keeps why (`failed`), which the status table, desk-q and needs-you quote: a reason in
-// this pass's report alone is gone by the next. The report gets the same reason, then `tail`.
-const markFailed = (key, why, { sets = [], tail = '' } = {}) => {
-  q('set', key, 'state=failed', `failed=${JSON.stringify({ why: String(why).replace(/\s+/g, ' ').trim().slice(0, 600), at: new Date().toISOString() })}`, ...sets);
+// this pass's report alone is gone by the next. The report gets the same reason, then `tail`. `subtype`
+// is the error its session ended with, which the ticket ledger's failed event records.
+const markFailed = (key, why, { sets = [], tail = '', subtype = null } = {}) => {
+  q('set', key, 'state=failed', failedField(why, { subtype }), ...sets);
   report.failed.push(`${key}: ${why}${tail}`);
 };
 // The exit code spawn-worker.sh recorded when session `sid`'s process ended, or null when it recorded none.
@@ -1026,7 +1027,7 @@ const ADVANCE_HANDLERS = {
     if (!s.t.worktree || !existsSync(s.t.worktree)) return null;
     try { return uncommitted(s.t.worktree).length; } catch { return null; }
   },
-  fail: (a) => markFailed(a.key, a.why, { tail: a.tail }),
+  fail: (a) => markFailed(a.key, a.why, { tail: a.tail, subtype: a.subtype }),
 };
 // A running ticket's log as the decision reads it: null where it has none yet, or runs in the cloud.
 function advanceLog(t) {

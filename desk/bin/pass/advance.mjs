@@ -55,10 +55,10 @@
 //   lifted {key, limit}            -> whether the limit on the worker's login has lifted
 //   exit-code {key}                -> the exit code spawn-worker.sh recorded, or null
 //   uncommitted {key}              -> how many files git status lists in the worktree, or null unread
-//   fail {key, why, tail}          mark the ticket failed
+//   fail {key, why, tail, subtype} mark the ticket failed, with the error its session ended in (or null)
 import { expandHome, SCREENSHOT_FILE } from '../desk-env.mjs';
 import { LIVE_READ, needsSession, unnamedForcePush, approvalText } from '../batch-state.mjs';
-import { endedNormally, followOnIn, workerEnd, budgetStop, hostFault } from '../harvest.mjs';
+import { endedNormally, followOnIn, workerEnd, budgetStop, hostFault, errorSubtype } from '../harvest.mjs';
 import { noteLine } from '../decisions.mjs';
 import { usageLimit, resetText, limitName } from '../usage-limit.mjs';
 import { wroteSince, heartbeatOnly } from '../worker-cost.mjs';
@@ -455,7 +455,7 @@ export function* decideAdvance(s) {
         yield* hostPark(t, hostFault(log.text), 'stopped');
       } else {
         const code = yield { type: 'exit-code', key: t.key };
-        yield { type: 'fail', key: t.key, why: `exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at ${limitName(limit.type)}${limit.resetsAt != null ? ` (resets ${resetText(limit.resetsAt)})` : ''}` : ''} (${workerEnd(log.text)}, ${exitText(code)})`, tail: ` — check ${log.path}` };
+        yield { type: 'fail', key: t.key, why: `exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at ${limitName(limit.type)}${limit.resetsAt != null ? ` (resets ${resetText(limit.resetsAt)})` : ''}` : ''} (${workerEnd(log.text)}, ${exitText(code)})`, tail: ` — check ${log.path}`, subtype: errorSubtype(log.text) };
       }
     }
   }
