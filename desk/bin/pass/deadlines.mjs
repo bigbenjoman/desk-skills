@@ -68,11 +68,13 @@ export function waitsOf(t, at) {
   if (t.state === 'triaged' && toHandoff(t)) now.handoff = { id: { stage: String(t.handoff_stage ?? '?') }, owner: false, said: null };
   if (t.state === 'running' && !t.usage_paused && Date.parse(t.progress_at) < Date.parse(at)) {
     // Progress made this pass (after the pass started) closes the wait, and the next pass with none opens
-    // one from it. A suite wait the advance step holds owns it, and moves progress_at on once it ends, so
+    // one from it. Progress a pass recorded and then ended before this sweep is a new stage or head, so a
+    // new wait too. A suite wait the advance step holds owns it, and moves progress_at on once it ends, so
     // the wait follows progress_at until it is escalated. A usage hold opens none: the clock starts again
     // when it lifts.
     const stage = String(t.stage ?? '?');
-    now.progress = { id: { stage }, since: t.progress_at, follows: true, ms: progressMs(stage), owner: t.suite_wait_since != null, said: null };
+    const read = t.progress_sha && typeof t.progress_sha === 'object' ? t.progress_sha : {};
+    now.progress = { id: { stage, head: read.head ?? null, pushed: read.pushed ?? null }, since: t.progress_at, follows: true, ms: progressMs(stage), owner: t.suite_wait_since != null, said: null };
   }
   return now;
 }

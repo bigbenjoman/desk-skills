@@ -168,7 +168,7 @@ t('and progress at Stage 5 90 minutes', EVIDENCE_PROGRESS_MS, 5400000);
   const made = pass([w], 0);
   t('progress made this pass opens no wait', j([w.waits ?? null, made.lines.length]), j([null, 0]));
   pass([w], 5);
-  t('the next pass with none opens one from the progress time', j(w.waits), j({ progress: { since: at(0), deadline: at(45), escalate_to: 'person', stage: '3/9' } }));
+  t('the next pass with none opens one from the progress time', j(w.waits), j({ progress: { since: at(0), deadline: at(45), escalate_to: 'person', stage: '3/9', head: null, pushed: null } }));
   t('AC1 short of its deadline, nothing is escalated, however much its log grew', pass([w], 44).lines.length, 0);
   const due = pass([w], 46);
   t('AC1 past it, the worker is reported not progressing, to the person', j(due.lines), j([NOT('W', '3/9', 46, 45)]));
@@ -216,6 +216,13 @@ t('and progress at Stage 5 90 minutes', EVIDENCE_PROGRESS_MS, 5400000);
   const later = pass([q], 80);
   t('AC2 an escalated wait whose progress_at a suite wait moved on is not escalated again: it keeps its start and escalation', j([q.waits.progress.since, q.waits.progress.escalated, writes(later)]), j([at(0), at(46), 0]));
   t('AC2 and its line stays the same decider item', j(ids(later.lines)), j(ids(first.lines)));
+  // A pass that recorded a push and ended before its sweep: the next pass's sweep reads the push.
+  const r = running('R', { progress_sha: { head: HEAD, pushed: null } });
+  pass([r], 1);
+  pass([r], 46);
+  Object.assign(r, { progress_at: at(50.5), progress_sha: { head: HEAD, pushed: HEAD } });
+  const after = pass([r], 55);
+  t('an escalated wait ends at a push a cut-off pass recorded: the next pass\'s wait runs from it, not escalated, and nothing is said', j([r.waits.progress.since, r.waits.progress.escalated ?? null, after.lines.length]), j([at(50.5), null, 0]));
 
   const u = running('U');
   pass([u], 1);
