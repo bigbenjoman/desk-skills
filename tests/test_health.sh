@@ -117,6 +117,9 @@ case "\$(cat "$T/mode.$c" 2>/dev/null || echo ok)" in
   # The last line gh auth status printed on 2026-11-22 with the token's API limit used up, as health.json kept it.
   limit) echo "- Error: HTTP 403: API rate limit exceeded for user ID 111733264. If you reach out to GitHub Support for help, please include the request ID FACA:317F01:1FC663D" >&2; exit 1 ;;
   net) printf '%s\n' "error connecting to api.example.com: dial tcp: lookup api.example.com: no such host" "- Active account: true" >&2; exit 1 ;;
+  # Unreachable on the first try, then the API limit on the retry.
+  netlimit) [ -f "$T/netl.$c" ] || { : > "$T/netl.$c"; echo "error connecting to api.example.com: dial tcp: lookup api.example.com: no such host" >&2; exit 1; }
+            echo "- Error: HTTP 403: API rate limit exceeded for user ID 111733264." >&2; exit 1 ;;
   unreach) echo "desk-jira: could not reach https://acme.atlassian.net (see the curl error above)" >&2; exit 1 ;;
   hang) sleep 5 ;;
   once) [ -f "$T/hung.$c" ] || { : > "$T/hung.$c"; sleep 5; } ;;
@@ -191,6 +194,9 @@ check "DS-969 AC3 it names the API limit and its reset"      'grep -qF "GitHub C
 check "DS-969 AC3 no sign-in stall or push, so nothing is asked" '! grep -q "fix: gh auth login" <<< "$out" && ! grep -q "GitHub CLI (gh auth status) failed" <<< "$out" && [ -z "$(pushes)" ] && [ "$(calls gh)" = 1 ]'
 pj
 check "DS-969 AC3 a second run is still not told as a sign-out" '! grep -q "fix: gh auth login" <<< "$out" && [ -z "$(pushes)" ]'
+mode gh netlimit; : > "$T/calls.gh"; rm -f "$T/netl.gh"
+pj
+check "DS-969 AC3 a limit met on the network retry is still the limit" '[ "$(calls gh)" = 2 ] && grep -qF "the GitHub API limit is used up, not a sign-in" <<< "$out" && ! grep -q "fix: gh auth login" <<< "$out" && [ -z "$(pushes)" ]'
 mode gh ok
 pj
 check "DS-969 AC4 once the limit resets, gh passes again"     'grep -q "recovered: gh" <<< "$out"'
@@ -523,6 +529,7 @@ cat > "$T/stub/gh" <<EOF
 case "\$1 \$2" in
   "api user") echo "\${GH_CONFIG_DIR:-default}" >> "$T/calls.ghuser"; echo "\${GH_TOKEN-unset}" >> "$T/calls.ghtoken"
     [ "\$(cat "$T/mode.ghuser" 2>/dev/null || echo ok)" = out ] && { echo "To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4; }
+    [ "\$(cat "$T/mode.ghuser" 2>/dev/null || echo ok)" = limit ] && { echo "gh: API rate limit exceeded for user ID 111733264. (HTTP 403)" >&2; exit 1; }
     cat "$T/ghuser"; exit 0 ;;
   "pr view") [ -f "$T/fx/\$3.json" ] || exit 1; cat "$T/fx/\$3.json"; exit 0 ;;
   "pr list") echo '[]'; exit 0 ;;
@@ -570,6 +577,9 @@ mode ghuser out
 hl
 check "DS-577 AC6 a sign-in failure is a sign-in item, not a mismatch"   '[[ "$(pushes)" =~ ^health:.+:reviewer-signin$ ]] && ! grep -q "desk posts verdicts as" <<< "$out"'
 check "DS-577 AC6 it names the sign-in error and its sign-in command"    'grep -qF "To get started with GitHub CLI" <<< "$out" && grep -qF "GH_CONFIG_DIR=$T/gh-pullbot gh auth login" <<< "$out"'
+mode ghuser limit
+hl
+check "DS-969 AC3 the reviewer's API limit used up is noted, not told as a sign-in" '[ "$rv" = null ] && [ -z "$(pushes)" ] && ! grep -q "gh auth login" <<< "$out" && grep -qF "reviewer: the GitHub API limit is used up, not a sign-in; not holding review or fix tries" <<< "$out"'
 mode ghuser ok
 EXTRA='| Gate reviewers | `agent pullbot` |' config yes yes
 hl

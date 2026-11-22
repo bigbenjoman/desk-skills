@@ -109,8 +109,11 @@
 #                                            (base-red-<base>-<spell start>), and the loop logs the hold naming the
 #                                            check. The record it keeps in <state>/base-red.json is the
 #                                            pass's to report and repair; it goes once the check passes
-#                                            there. A base whose runs cannot be read merges as before,
-#                                            logging that its state is unknown
+#                                            there. A base GitHub could not be asked about (an API
+#                                            error or limit, or base-red.mjs failing) takes no merge,
+#                                            logged as "base unreadable on <base>", until a later loop
+#                                            reads it. One whose reads all answered with no completed
+#                                            run merges as before, logging that its state is unknown
 # The one red that merges is a written waiver: every failing check is named in §4 Known flaky checks,
 # none is a §4 Required check (merging past one is a bypass, and §3 merge-bypass is never), the PR's
 # files touch none of the paths the row gives for it, each is still red after two reruns the driver
