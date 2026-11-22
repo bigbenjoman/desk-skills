@@ -2,12 +2,12 @@
 // hold the skills to the code. Importing it prints nothing and runs no script's command.
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { QUEUE_COMMANDS } from './queue-commands.mjs';
 import { DESK_ENV_COMMANDS, WORKER_COMMAND_IDS, lockFor, PATH_VARS, MACHINE_PATHS } from './desk-env.mjs';
 import { MARKERS, ENV } from './markers.mjs';
 import { STATES } from './queue-writer.mjs';
-import { STATE_PATHS } from './batch-state.mjs';
+import { STATE_PATHS, validatePark } from './batch-state.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -39,6 +39,15 @@ export const states = () => [...STATES];
 // ones shared by every repo), and the files batch-state.mjs reads under a batch's state folder
 // (STATE_PATHS), `<KEY>` for the ticket.
 export const statePaths = () => ({ vars: [...PATH_VARS], machine: [...MACHINE_PATHS], state: { ...STATE_PATHS } });
+
+// The validator the running code checks each file a skill shows an example of with, each returning why
+// it refuses (results) or what it logs (park), else null: results, the review results file
+// desk-review's verdict reads; park, a worker's park file as the pass takes it in. The verdict sits in
+// the desk-review skill's bin, so it is read from `root` when asked for.
+export async function contracts(root = ROOT) {
+  const { validateResults } = await import(pathToFileURL(join(root, 'skills', 'desk-review', 'bin', 'verdict.mjs')).href);
+  return { results: validateResults, park: validatePark };
+}
 
 // The lock classes with-lock.sh's usage line lists: `usage: with-lock.sh <test|tsc|…>`.
 export function usageLocks(text) {

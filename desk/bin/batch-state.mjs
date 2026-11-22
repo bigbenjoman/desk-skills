@@ -164,6 +164,24 @@ export function parkApproval(stateDir, key, question) {
       : 'its park file carries no approve object ({"kind", "target", "body"}) holding the exact text to approve' };
 }
 
+// The fields a worker's park file declares: its question, and the write it awaits approval of.
+export const PARK_FILE_FIELDS = Object.freeze({ question: null, approve: Object.freeze([...APPROVE_FIELDS]) });
+// What a park file holds that it does not declare, as the pass logs it, or null where it holds nothing
+// else. It never refuses a park: a worker written before a field changed still parks.
+export function validatePark(rec) {
+  if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return null;
+  const extra = Object.keys(rec).filter((k) => !Object.hasOwn(PARK_FILE_FIELDS, k));
+  const a = rec.approve;
+  if (a && typeof a === 'object' && !Array.isArray(a)) extra.push(...Object.keys(a).filter((k) => !PARK_FILE_FIELDS.approve.includes(k)).map((k) => `approve.${k}`));
+  return extra.length ? `its park file holds ${extra.length === 1 ? 'a field' : 'fields'} the park file does not declare: ${extra.join(', ')}` : null;
+}
+// validatePark on ticket `key`'s park file; null where it has none, it is half-written, or it is on
+// another question than the one parked on (an earlier round's, as parkApproval reads it).
+export function parkFileFault(stateDir, key, question) {
+  const file = readPark(stateDir, key);
+  return String(file?.question ?? '').trim() === String(question ?? '').trim() ? validatePark(file) : null;
+}
+
 // The text a park awaits approval of, as both needs-you and the pass report relay it: its kind and
 // target, then the body as JSON so its line breaks survive on one line.
 export const approvalText = (ap) => `its exact text (${ap.kind}${ap.target ? ` on ${ap.target}` : ''}, as JSON): ${JSON.stringify(ap.body)}`;
