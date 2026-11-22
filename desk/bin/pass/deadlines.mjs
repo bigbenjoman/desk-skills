@@ -66,11 +66,13 @@ export function waitsOf(t, at) {
     };
   }
   if (t.state === 'triaged' && toHandoff(t)) now.handoff = { id: { stage: String(t.handoff_stage ?? '?') }, owner: false, said: null };
-  if (t.state === 'running' && Date.parse(t.progress_at) < Date.parse(at)) {
+  if (t.state === 'running' && !t.usage_paused && Date.parse(t.progress_at) < Date.parse(at)) {
     // Progress made this pass (after the pass started) closes the wait, and the next pass with none opens
-    // one from it. A suite wait the advance step holds owns it.
+    // one from it. A suite wait the advance step holds owns it, and moves progress_at on once it ends, so
+    // the wait follows progress_at until it is escalated. A usage hold opens none: the clock starts again
+    // when it lifts.
     const stage = String(t.stage ?? '?');
-    now.progress = { id: { since: t.progress_at, stage }, ms: progressMs(stage), owner: t.suite_wait_since != null, said: null };
+    now.progress = { id: { stage }, since: t.progress_at, follows: true, ms: progressMs(stage), owner: t.suite_wait_since != null, said: null };
   }
   return now;
 }
@@ -101,9 +103,11 @@ export function nextWaits(t, at) {
   const was = t.waits && typeof t.waits === 'object' ? t.waits : {};
   const next = {};
   const lines = [];
-  for (const [on, { id, since: first, ms = WAITS[on].ms, owner, said }] of Object.entries(waitsOf(t, at))) {
-    const open = was[on] && Object.entries(id).every(([k, v]) => was[on][k] === v) ? was[on] : null;
-    const since = open?.since ?? id.since ?? (Number.isFinite(Date.parse(first)) ? first : at);
+  for (const [on, { id, since: first, follows = false, ms = WAITS[on].ms, owner, said }] of Object.entries(waitsOf(t, at))) {
+    const matched = was[on] && Object.entries(id).every(([k, v]) => was[on][k] === v) ? was[on] : null;
+    // A wait that follows its start keeps it only once escalated: until then its start and deadline move with it.
+    const open = matched && !(follows && !matched.escalated) ? matched : null;
+    const since = open?.since ?? (Number.isFinite(Date.parse(first)) ? first : at);
     let w = open ?? { since, deadline: new Date(Date.parse(since) + ms).toISOString(), escalate_to: WAITS[on].escalate_to, ...id };
     const due = said != null || (!owner && Date.parse(at) >= Date.parse(w.deadline));
     if (!w.escalated && due) w = { ...w, escalated: at };

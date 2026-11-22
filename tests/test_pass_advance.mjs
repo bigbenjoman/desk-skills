@@ -186,6 +186,10 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   t('AC4 a suite wait that ended under its ceiling is not counted: its progress time moves on by the wait', j(waited), j([P(NOW - HOUR + 20 * 60000)]));
   const over = progress(advance(at3({ suite_wait_since: NOW - 50 * 60000 })));
   t('and only up to the ceiling', j(over), j([P(NOW - HOUR + 30 * 60000)]));
+  const lifted = sets(advance(at3({ usage_paused: { type: 'five_hour', resets_at: null } })));
+  t('a usage hold that lifted starts the clock again, once, as it clears the hold', j(lifted.filter((f) => /^(progress_at|usage_paused)=/.test(f))), j(['usage_paused=null', P(NOW)]));
+  const liftedExited = sets(advance(snap(ticket('Y', { stage: '3/9', usage_paused: { type: 'five_hour', resets_at: null } }), logOf('Y', '', [said('x'), RESULT]))));
+  t('and so for a worker that exited at the limit, whose progress is not read', liftedExited.includes(P(NOW)), true);
   const exited = advance(snap(ticket('X', { stage: '3/9' }), logOf('X', 'AUTOPILOT_DONE: pr=3 jira=none', [said('AUTOPILOT_DONE: pr=3 jira=none'), RESULT])));
   t('an exited worker\'s progress is not read', types(exited).includes('progress'), false);
   t('nor a wedged one\'s', types(advance(snap(ticket('Q', { stage: '3/9', session_id: 'live-q', idle_passes: 5, log_bytes: 0 }), logOf('Q', '', []), { sessions: [{ sessionId: 'live-q', pid: 5 }] }))).includes('progress'), false);

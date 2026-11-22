@@ -330,8 +330,10 @@ function flushQueue() {
 // The one exception: a spawn's state=running write, made by queue.mjs against the file as it stands,
 // before the worker starts. Refused, nothing may start, since the queue would still read the ticket as
 // waiting and the next pass would start a second worker on it.
+// Every session start restarts the progress clock: an earlier session's progress_at, hours old after a
+// park, a handoff or a usage limit, would read as a stall the pass it starts (pass/deadlines.mjs).
 const recordRunning = (key, pairs, what = 'no worker was started') => {
-  const args = ['set', key, 'state=running', ...pairs];
+  const args = ['set', key, 'state=running', ...pairs, 'progress_at=null', 'progress_sha=null'];
   const r = qRun(args);
   if (r.ok) return true;
   report.failed.push(refusedLine(args, `not recorded, so ${what}`, r.out));

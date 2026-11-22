@@ -152,8 +152,10 @@ export function* decideAdvance(s) {
   }
   const pausedOnLimit = pausedOn(limit, s.now);
   // Kept by the usage-limit step only while the ticket is still running once every ticket has had its turn.
+  // Waiting for a reset is not a stall either: the progress clock starts again once the hold lifts.
+  const unpaused = !pausedOnLimit && !!t.usage_paused;
   if (pausedOnLimit) yield { type: 'hold', key: t.key, limit, was: t.usage_paused };
-  else if (t.usage_paused) yield set(t.key, 'usage_paused=null');
+  else if (unpaused) yield set(t.key, 'usage_paused=null', `progress_at=${new Date(s.now).toISOString()}`);
 
   // Log growth is the honest liveness signal: it comes from the harness, not from self-reporting.
   // It is not sufficient on its own: a hung call (a `codex exec`) keeps the harness writing a
@@ -258,7 +260,7 @@ export function* decideAdvance(s) {
   }
 
   // A worker still at work (or one the unread registry cannot tell apart from it): its progress time.
-  if ((live || !registry.read) && !wedged && !done && !handoff && !reboot && !park) yield* progressOf(t, s.now, stage, suitePaused);
+  if ((live || !registry.read) && !wedged && !done && !handoff && !reboot && !park) yield* progressOf(t, s.now, stage, suitePaused, unpaused);
 
   let stopped = '';
   if (live && (done || handoff || reboot)) {
@@ -462,15 +464,16 @@ export function* decideAdvance(s) {
 // A running worker's progress time (progress_at, ISO) and what it was read from (progress_sha: its
 // worktree's HEAD and its branch's pushed head). Progress is a stage change, a new commit or a push, never
 // log growth alone, so a hung call that heartbeats into the log still ages. `paused` is a suite wait that
-// ended this pass under its ceiling, which the clock does not count. The deadline sweep reads both
+// ended this pass under its ceiling, which the clock does not count; `restarted`, a usage hold that
+// lifted this pass, has already started it again at `now`. The deadline sweep reads both
 // (pass/deadlines.mjs, the progress wait). A read that fails changes nothing but a stage change.
-function* progressOf(t, now, stage, paused) {
+function* progressOf(t, now, stage, paused, restarted) {
   const read = yield { type: 'progress', key: t.key };
   const was = t.progress_sha && typeof t.progress_sha === 'object' ? t.progress_sha : null;
   const sha = read?.head ? { head: read.head, pushed: read.pushed ?? null } : was;
   const moved = (stage != null && stage !== t.stage) || !Number.isFinite(Date.parse(t.progress_at))
     || (!!read?.head && (!was || was.head !== sha.head || was.pushed !== sha.pushed));
-  const at = moved ? now : paused ? Math.min(now, Date.parse(t.progress_at) + paused) : null;
+  const at = restarted ? null : moved ? now : paused ? Math.min(now, Date.parse(t.progress_at) + paused) : null;
   const fields = [
     ...(at != null && new Date(at).toISOString() !== t.progress_at ? [`progress_at=${new Date(at).toISOString()}`] : []),
     ...(sha && JSON.stringify(sha) !== JSON.stringify(was) ? [`progress_sha=${JSON.stringify(sha)}`] : []),

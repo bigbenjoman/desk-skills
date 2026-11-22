@@ -879,15 +879,17 @@ q set Y-6 state=done
 q set-batch concurrency=2 concurrency_by=user
 wreset=$(( $(date +%s) + 3 * 86400 ))
 probe_says limited "$wreset" seven_day; : > "$T/probes"
-killed W-1 sess-w1; q set W-1 model_tier=standard model=sonnet; usage_exit W-1 "$wreset" seven_day
+killed W-1 sess-w1; q set W-1 model_tier=standard model=sonnet progress_at=2026-01-01T00:00:00.000Z; usage_exit W-1 "$wreset" seven_day
 q add W-2; q set W-2 state=triaged lane=A branch=fix/W-2
 out=$(node "$B/pass.mjs" 2>&1)
+check "a worker paused at the limit is not reported not progressing, however old its last progress" '! echo "$out" | grep -q "W-1: NOT PROGRESSING" && [ "$(field W-1 waits)" = null ]'
 check "DS-344 AC1 a worker that exited at the weekly limit is not failed, and is paused with the reset time" '[ "$(field W-1 state)" = "\"running\"" ] && [ "$(field W-1 usage_paused.type)" = "\"seven_day\"" ] && [ "$(field W-1 usage_paused.resets_at)" = "$wreset" ] && echo "$out" | grep -q "^paused on the usage limit: W-1 on the weekly usage limit until .* UTC" && ! spawned_for W-1'
 check "DS-344 AC1 the batch holds every spawn on it, after one probe" '[ "$(field W-2 state)" = "\"triaged\"" ] && ! grep -qx W-2 "$T/preflights" && echo "$out" | grep -q "the weekly usage limit until .* holds every spawn and resume" && [ "$(wc -l < "$T/probes" | tr -d " ")" = 1 ] && [ "$(bfield usage_hold.type)" = "\"seven_day\"" ]'
 # AC3: a subscription switch, so a probe succeeds days before the reset.
 probe_says ok
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-344 AC3 once a probe succeeds before the reset, the paused worker resumes in its own session on its model" 'echo "$out" | grep -q "W-1 exited at the weekly usage limit, which lifted (a probe call succeeded): queued to resume in its own session" && spawned_for W-1 | grep -q "^W-1 sess-w1 .*resume=yes$" && [ "$(field W-1 model_tier)" = "\"standard\"" ] && [ "$(field W-1 model)" = "\"sonnet\"" ] && [ "$(field W-1 usage_paused)" = null ]'
+check "its resumed session starts its progress clock again: no earlier progress time, and nothing reported not progressing" '[ "$(field W-1 progress_at)" = null ] && ! echo "$out" | grep -q "W-1: NOT PROGRESSING"'
 check "DS-344 AC3 and the held ticket spawns as normal, with no requeue" '[ "$(field W-2 state)" = "\"running\"" ] && [ "$(bfield usage_hold)" = null ]'
 q set W-1 state=done; q set W-2 state=done
 

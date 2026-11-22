@@ -202,6 +202,26 @@ t('and progress at Stage 5 90 minutes', EVIDENCE_PROGRESS_MS, 5400000);
   pass([p], 55);
   t('AC6 and the next pass\'s wait runs from the push, not escalated', j([p.waits.progress.since, p.waits.progress.deadline, p.waits.progress.escalated ?? null]), j([at(50.5), at(95.5), null]));
   t('a running ticket with no progress time has no progress wait', j(waitsOf({ key: 'N', state: 'running' }, at(5))), '{}');
+
+  // The advance step moves progress_at on by a suite wait that ended under its ceiling.
+  const m = running('M');
+  pass([m], 1);
+  Object.assign(m, { progress_at: at(20) });
+  pass([m], 50);
+  t('a wait not yet escalated follows progress_at moved on by a suite wait: its deadline moves too', j([m.waits.progress.since, m.waits.progress.deadline, m.waits.progress.escalated ?? null]), j([at(20), at(65), null]));
+  const q = running('Q');
+  pass([q], 1);
+  const first = pass([q], 46);
+  Object.assign(q, { progress_at: at(20) });
+  const later = pass([q], 80);
+  t('AC2 an escalated wait whose progress_at a suite wait moved on is not escalated again: it keeps its start and escalation', j([q.waits.progress.since, q.waits.progress.escalated, writes(later)]), j([at(0), at(46), 0]));
+  t('AC2 and its line stays the same decider item', j(ids(later.lines)), j(ids(first.lines)));
+
+  const u = running('U');
+  pass([u], 1);
+  Object.assign(u, { usage_paused: { type: 'five_hour', resets_at: null } });
+  const held = pass([u], 120);
+  t('a worker held at a usage limit has no progress wait, so nothing is escalated however long the hold', j([u.waits, held.lines.length]), j([null, 0]));
 }
 
 // Two waits on two tickets in one pass, a dry run, and the decision starts no process and writes nothing.
