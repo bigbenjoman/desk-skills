@@ -76,6 +76,7 @@ import { grantPush } from './batch-state.mjs';
 import { baseRefspec } from './base-fix.mjs';
 import { wrappersFile } from './desk-lines.mjs';
 import { parseEvidenceRow } from './evidence.mjs';
+import { parseRecipe } from './preview-db.mjs';
 
 const [mode, ...rest] = process.argv.slice(2);
 const opt = {};
@@ -642,6 +643,16 @@ if (mode === 'triage') {
   if (DISPATCH !== 'yes') denied.push(`${E.permissionKey('worker-workflow-dispatch')} (${setting('worker-workflow-dispatch')})`);
   else if (!DISPATCH_RULES.length && !EVIDENCE_RULES.length) warns.push(`§3 worker-workflow-dispatch is yes, but ${dispatchRef ? '§4 Worker workflows names no usable workflow' : 'this ticket has no branch of its own to run one on'} — no workflow is allowed`);
   allow.push(...DISPATCH_RULES, ...EVIDENCE_RULES);
+  // §3 worker-preview-db: §4 Preview database's recipe for this ticket's own PR, through preview-db.mjs up
+  // with this ticket's branch fixed by the rule; it checks the PR is the branch's own open one and adds
+  // a migration. The error-page check reads and moves only this ticket's screenshots. A repo with no
+  // recipe has nothing to deny, so its workers are not told of the row.
+  const recipe = parseRecipe(cfgList('preview-db'));
+  if (recipe?.errors) warns.push(`§4 Preview database ${recipe.errors.join('; ')} — not allow-listed`);
+  else if (recipe && !baseFix && dispatchRef) {
+    grant('worker-preview-db', BIN_FORMS.map((b) => `Bash(node ${b}/preview-db.mjs up ${BRANCH} *)`), []);
+  }
+  allow.push(...BIN_FORMS.flatMap((b) => ['', '/'].map((s) => `Bash(node ${b}/preview-db.mjs check ${STATE}/images/${T}${s})`)));
   deny.push(...bash('gh', ' issue comment', ' issue edit', ' issue close', ' issue create'));
   grant('jira-comment', bash('desk-jira', ' comment'));
   grant('jira-transition', bash('desk-jira', ' transition'), JIRA_TRANSITION_DENY);
@@ -756,6 +767,7 @@ if (mode === 'triage') {
       ...bash('git', ' push'),
       ...bash('gh', ' pr create', ' pr edit', ' pr review', ' pr comment', ' issue comment', ' pr update-branch', ' run rerun', ' workflow'),
       ...BIN_FORMS.map((b) => `Bash(node ${b}/evidence.mjs dispatch:*)`),
+      ...BIN_FORMS.map((b) => `Bash(node ${b}/preview-db.mjs up:*)`),
       ...bash('desk-jira', ' edit', ' comment', ' create', ' create-batch', ' attach', ' labels', ...JIRA_NEVER), ...JIRA_TRANSITION_DENY,
     );
   }

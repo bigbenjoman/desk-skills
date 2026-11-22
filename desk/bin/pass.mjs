@@ -58,6 +58,7 @@ import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
+import { parseRecipe, readRecords as readPreviewRecords, teardownCalls, teardown as previewTeardown, runCommand, DELETE_STEP_MS } from './preview-db.mjs';
 import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.mjs';
 import { leverOnFor } from './lever-pin.mjs';
@@ -3808,6 +3809,30 @@ runPhase({
   },
   decide: decideDrift,
   handlers: { drift: (a) => drift.push(a.line) },
+  report,
+});
+
+// ---- preview databases ---------------------------------------------------
+// The decision is preview-db.mjs teardownCalls: each database branch a worker made for its PR (§4
+// Preview database) is deleted, with that branch's preview override, by the recipe's delete steps
+// once the PR merges or closes, run from the main checkout. What it removed goes to the report and to
+// <state>/preview-db/removed.log; a failure is tried again next pass, and after a few is the person's.
+runPhase({
+  name: 'preview databases',
+  snapshot: () => {
+    const records = readPreviewRecords(STATE);
+    let recipe = null;
+    if (records.length) { try { recipe = parseRecipe(E.configValues('preview-db')); } catch (e) { recipe = { errors: [e.message] }; } }
+    return { records, recipe, states: Object.fromEntries(records.map((r) => [r.pr, batchPrState(r.pr)])) };
+  },
+  decide: teardownCalls,
+  handlers: {
+    ...PHASE_HANDLERS,
+    teardown: (a) => {
+      const r = previewTeardown(a, { state: STATE, run: (cmd) => runCommand(cmd, { cwd: MAIN, timeout: DELETE_STEP_MS }) });
+      report[r.list].push(r.line);
+    },
+  },
   report,
 });
 

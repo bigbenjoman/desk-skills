@@ -1,0 +1,283 @@
+// §4 Preview database: the repo's recipe that gives a PR adding a migration a database branch and a
+// preview of its own, so the PR's evidence is taken against its own migrations rather than a shared
+// staging database that does not have them yet. The recipe is commands, one span per step, each
+// `<step>: <command>` (config-schema.mjs previewDbStepOf):
+//
+//   create    make the database branch {db}                  (needed)
+//   migrate   apply the PR's migrations to it, from the worktree (needed)
+//   seed      load the seed rows into it                     (optional)
+//   override  point {branch}'s preview, and only it, at {db} (needed)
+//   rebuild   rebuild {branch}'s preview with the override, returning once it serves (needed)
+//   delete    remove the override and the database branch   (needed; the pass runs each once the PR
+//             merges or closes)
+//
+// A step may have several items, run in order. {branch} is the PR's git branch, {db} the database
+// branch named after it (dbName), {pr} the PR number; each goes in shell-quoted.
+//
+// The worker runs `up` from its worktree, where §3 worker-preview-db is yes:
+//
+//   node preview-db.mjs up <branch> <pr>     create, migrate, seed, override and rebuild, in order
+//   node preview-db.mjs check <shot dir>     move every shot whose page text is an error page aside
+//
+// Once create succeeds, <state>/preview-db/<pr>.json records { pr, branch, db, repo, at, steps }, so
+// the pass deletes what was made even where a later step failed (teardownCalls, teardown).
+import { spawnSync, execFileSync } from 'node:child_process';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { basename, extname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { PREVIEW_DB_STEPS, previewDbStepOf, isNone } from './config-schema.mjs';
+import { MIGRATION_DIR } from './migration-renames.mjs';
+
+export const UP_STEPS = Object.freeze(['create', 'migrate', 'seed', 'override', 'rebuild']);
+const NEEDED = Object.freeze(['create', 'migrate', 'override', 'rebuild', 'delete']);
+export const TEARDOWN_TRIES = 3;
+const UP_STEP_MS = 15 * 60 * 1000;
+export const DELETE_STEP_MS = 2 * 60 * 1000;
+
+// The §4 Preview database row's items (desk-env configValues) as { steps: { <step>: [cmd, …] } } or
+// { errors }, or null when it is unset or `none`.
+export function parseRecipe(items) {
+  if (!items || !items.length || isNone(items)) return null;
+  const steps = {};
+  const errors = [];
+  for (const item of items) {
+    const s = previewDbStepOf(item);
+    if (!s) { errors.push(`"${String(item).trim()}" is not \`<step>: <command>\` with a step of ${PREVIEW_DB_STEPS.join(', ')} and placeholders only {branch}, {db}, {pr}`); continue; }
+    (steps[s.step] ??= []).push(s.cmd);
+  }
+  const missing = NEEDED.filter((s) => !steps[s]);
+  if (missing.length) errors.push(`no ${missing.join(', ')} step`);
+  return errors.length ? { errors } : { steps };
+}
+
+// The database branch named after git branch `branch`: lowercase letters, digits and dashes, at most
+// 63 characters (a Postgres identifier's limit), a longer name ending in a hash of the whole branch so
+// two long branches never share one. null for a branch with no letter or digit.
+export const DB_NAME_MAX = 63;
+export function dbName(branch) {
+  const slug = String(branch ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!slug) return null;
+  if (slug.length <= DB_NAME_MAX) return slug;
+  const hash = createHash('sha1').update(String(branch)).digest('hex').slice(0, 8);
+  return `${slug.slice(0, DB_NAME_MAX - hash.length - 1).replace(/-+$/, '')}-${hash}`;
+}
+
+// A value as one shell word: bare where it holds nothing the shell reads, else single-quoted.
+export const shellWord = (v) => (/^[A-Za-z0-9._/:@%+=,-]+$/.test(String(v)) ? String(v) : `'${String(v).replace(/'/g, `'\\''`)}'`);
+// A recipe command with its placeholders filled; a shell `${…}` is left for the shell.
+export const fill = (cmd, vars) => String(cmd).replace(/(?<!\$)\{(branch|db|pr)\}/g, (_, k) => shellWord(vars[k]));
+
+// Whether a PR's added files hold a migration: `added` is `git diff --name-only --diff-filter=A`'s lines.
+export const addsMigration = (added) => String(added ?? '').split('\n').some((f) => f.trim() && MIGRATION_DIR.test(f.trim()));
+
+// The worker's `up`. view: gh pr view's { headRefName, state, isCrossRepository } for the PR, or null
+// when it could not be read; added: the branch's added files against the default branch; prior: the
+// record an earlier `up` for this PR left, whose database is deleted first so this one starts fresh.
+// -> { refused } saying why, or { vars, plan: [{ step, cmd }] } with every command filled.
+export function upCall({ argv, view, recipe, allowed, added, prior = null }) {
+  if (argv.length !== 2) return { refused: 'usage: preview-db.mjs up <branch> <pr>' };
+  const [branch, pr] = argv;
+  if (!/^[1-9]\d*$/.test(pr)) return { refused: `"${pr}" is not a PR number` };
+  if (!recipe) return { refused: 'no §4 Preview database recipe: the evidence step runs as it does without one' };
+  if (recipe.errors) return { refused: `§4 Preview database does not parse: ${recipe.errors.join('; ')}` };
+  if (!allowed) return { refused: '§3 worker-preview-db is not yes' };
+  if (!view) return { refused: `PR #${pr} could not be read` };
+  if (view.headRefName !== branch || view.isCrossRepository) return { refused: `PR #${pr} is not ${branch}'s own PR` };
+  if (view.state !== 'OPEN') return { refused: `PR #${pr} is ${String(view.state).toLowerCase()}` };
+  if (!addsMigration(added)) return { refused: `${branch} adds no migration, so its preview needs no database of its own` };
+  const db = dbName(branch);
+  if (!db) return { refused: `no database branch name can be made from ${branch}` };
+  const vars = { branch, db, pr };
+  const reset = prior?.steps?.length ? recipe.steps.delete.map((cmd) => ({ step: 'delete', cmd: fill(cmd, { branch: prior.branch, db: prior.db, pr: prior.pr }) })) : [];
+  return { vars, plan: [...reset, ...UP_STEPS.flatMap((step) => (recipe.steps[step] ?? []).map((cmd) => ({ step, cmd: fill(cmd, vars) })))] };
+}
+
+// What a failed command said, for the park that quotes it: the lines naming an error, else its last
+// lines, at most three, each cut at 300 characters.
+const ERRORISH = /\b(?:error|errors|fatal|failed|failure|denied|forbidden|unauthori[sz]ed|not found|exception|refused|invalid)\b/i;
+export function stepError(out) {
+  const lines = String(out ?? '').split(/\r?\n/).map((l) => l.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').trim()).filter(Boolean);
+  const named = lines.filter((l) => ERRORISH.test(l));
+  return (named.length ? named.slice(0, 3) : lines.slice(-3)).map((l) => (l.length > 300 ? `${l.slice(0, 299)}…` : l)).join(' / ') || 'no output';
+}
+
+// Runs one command in `cwd` through sh. -> { ok, code, out }.
+export function runCommand(cmd, { cwd, timeout }) {
+  const r = spawnSync('sh', ['-c', cmd], { cwd, encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'] });
+  const out = `${r.stderr ?? ''}\n${r.stdout ?? ''}`;
+  if (r.error) return { ok: false, code: null, out: `${r.error.code === 'ETIMEDOUT' ? `timed out after ${Math.round(timeout / 1000)}s` : r.error.message}\n${out}` };
+  return { ok: r.status === 0, code: r.status, out };
+}
+
+// The records of the preview databases made: [{ file, pr, branch, db, … }], unreadable ones left out.
+export const recordsDir = (state) => join(state, 'preview-db');
+const recordFile = (state, pr) => join(recordsDir(state), `${pr}.json`);
+export function readRecords(state) {
+  let names = [];
+  try { names = readdirSync(recordsDir(state)).filter((f) => /^\d+\.json$/.test(f)); } catch { return []; }
+  return names.flatMap((f) => {
+    try { return [{ ...JSON.parse(readFileSync(join(recordsDir(state), f), 'utf8')), file: join(recordsDir(state), f) }]; } catch { return []; }
+  });
+}
+export function writeRecord(state, rec) {
+  mkdirSync(recordsDir(state), { recursive: true });
+  const { file: _f, ...body } = rec;
+  writeFileSync(recordFile(state, rec.pr), `${JSON.stringify(body)}\n`);
+}
+
+// `up`'s steps in order, stopping at the first failure. run(cmd) -> { ok, code, out }; record(rec) is
+// called once create succeeds and after each step, so a failure past it is still cleaned up.
+// -> { ok: true, done } or { ok: false, step, cmd, error, done }.
+export function runUp({ call, run, record, repo, now = () => new Date().toISOString() }) {
+  const done = [];
+  let rec = null;
+  for (const { step, cmd } of call.plan) {
+    const r = run(cmd);
+    if (!r.ok) return { ok: false, step, cmd, code: r.code, error: stepError(r.out), done };
+    if (step === 'delete') continue;
+    done.push(step);
+    rec = { pr: call.vars.pr, branch: call.vars.branch, db: call.vars.db, repo, at: rec?.at ?? now(), steps: [...new Set(done)] };
+    record(rec);
+  }
+  return { ok: true, done };
+}
+
+// ---- the pass: delete each once its PR merges or closes --------------------------------------
+// snap: { records, states: { [pr]: 'OPEN' | 'MERGED' | 'CLOSED' | null }, recipe }. A PR whose state
+// cannot be read is left until it can be.
+// -> [{ type: 'teardown', pr, rec, cmds, why }] and [{ type: 'report', list, line }].
+export function teardownCalls({ records, states, recipe }) {
+  const actions = [];
+  for (const rec of records) {
+    const st = states[rec.pr];
+    if (st !== 'MERGED' && st !== 'CLOSED') continue;
+    const why = `#${rec.pr} ${st.toLowerCase()}`;
+    if (!recipe || recipe.errors || !recipe.steps.delete) {
+      actions.push({ type: 'report', list: 'failed', line: `preview database ${rec.db} for ${rec.branch} (${why}) is not deleted: §4 Preview database ${recipe?.errors ? `does not parse (${recipe.errors.join('; ')})` : 'has no delete step'}. Delete it and ${rec.branch}'s preview override yourself, then remove ${rec.file}` });
+      continue;
+    }
+    const vars = { branch: rec.branch, db: rec.db, pr: rec.pr };
+    actions.push({ type: 'teardown', pr: rec.pr, rec, why, cmds: recipe.steps.delete.map((c) => fill(c, vars)) });
+  }
+  return actions;
+}
+
+// Runs one teardown: every delete command, past a failure, so one that fails leaves the rest done.
+// All passing removes the record and logs what was removed to <state>/preview-db/removed.log; a
+// failure keeps the record for the next pass, and after TEARDOWN_TRIES moves it to <pr>.failed.json
+// for the person. -> { list, line } for the report.
+export function teardown(a, { state, run, now = () => new Date().toISOString() }) {
+  const ran = a.cmds.map((cmd) => ({ cmd, ...run(cmd) }));
+  const failed = ran.filter((r) => !r.ok);
+  const what = `preview database ${a.rec.db} and the preview override for ${a.rec.branch} (${a.why})`;
+  if (!failed.length) {
+    mkdirSync(recordsDir(state), { recursive: true });
+    appendFileSync(join(recordsDir(state), 'removed.log'), `${JSON.stringify({ at: now(), pr: a.pr, branch: a.rec.branch, db: a.rec.db, why: a.why, ran: a.cmds })}\n`);
+    try { unlinkSync(a.rec.file); } catch { /* gone */ }
+    return { list: 'done', line: `removed ${what}: ${a.cmds.map((c) => `\`${c}\``).join(', ')}` };
+  }
+  const tries = (a.rec.tries ?? 0) + 1;
+  const errs = failed.map((r) => `\`${r.cmd}\`: ${stepError(r.out)}`).join('; ');
+  if (tries >= TEARDOWN_TRIES) {
+    try { renameSync(a.rec.file, a.rec.file.replace(/\.json$/, '.failed.json')); } catch { /* gone */ }
+    return { list: 'failed', line: `could not remove ${what} after ${tries} tries: ${errs}. Run the failed commands yourself from the main checkout` };
+  }
+  writeRecord(state, { ...a.rec, tries, last_error: errs });
+  return { list: 'advanced', line: `could not remove ${what} (try ${tries} of ${TEARDOWN_TRIES}, again next pass): ${errs}` };
+}
+
+// ---- the error-page check ------------------------------------------------------------------
+// A screenshot's page text (`<shot>.txt` beside it, the page's body text the capture saved) that is an
+// error page rather than the screen: a framework's crash page, a host's failed function, a server
+// error, a not-found page, or a database error naming a table or column the preview's database lacks.
+const ERROR_PAGES = [
+  /Application error: a (?:server|client)-side exception has occurred/i,
+  /Unhandled Runtime Error/,
+  /\bInternal Server Error\b/i,
+  /\b50[0234]\b[^\n]{0,60}\b(?:Bad Gateway|Service Unavailable|Gateway Time-?out|Server Error)\b/i,
+  /\b(?:FUNCTION_INVOCATION_FAILED|FUNCTION_INVOCATION_TIMEOUT|DEPLOYMENT_NOT_FOUND|MIDDLEWARE_INVOCATION_FAILED|INTERNAL_FUNCTION_INVOCATION_FAILED)\b/,
+  /This Serverless Function has crashed/i,
+  /\b404\b[^\n]{0,60}(?:This page could not be found|Page not found|Not[ _]Found)/i,
+  /\bPrismaClient\w*Error\b/,
+  /\bThe (?:table|column) `[^`]+` does not exist/,
+  /\b(?:relation|column) "[^"]+"(?: of relation "[^"]+")? does not exist/i,
+];
+// The first line of `text` that marks an error page, or null.
+export function errorPageLine(text) {
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    if (ERROR_PAGES.some((re) => re.test(line))) return line.trim().slice(0, 200);
+  }
+  return null;
+}
+
+const SHOT = /\.(png|jpe?g)$/i;
+export const REJECTED_DIR = 'error-pages';
+// Each shot in `dir` read against its page text: -> [{ shot, call: 'ok' | 'error' | 'no-text', line? }].
+export function checkShots(dir) {
+  let names = [];
+  try { names = readdirSync(dir).filter((f) => SHOT.test(f)); } catch { return []; }
+  return names.sort().map((shot) => {
+    const txt = join(dir, `${basename(shot, extname(shot))}.txt`);
+    if (!existsSync(txt)) return { shot, call: 'no-text' };
+    const line = errorPageLine(readFileSync(txt, 'utf8'));
+    return line ? { shot, call: 'error', line } : { shot, call: 'ok' };
+  });
+}
+// Moves each error-page shot, and its text, into <dir>/error-pages/, where no upload reads it.
+export function setAside(dir, results) {
+  const bad = results.filter((r) => r.call === 'error');
+  if (bad.length) mkdirSync(join(dir, REJECTED_DIR), { recursive: true });
+  for (const r of bad) {
+    for (const f of [r.shot, `${basename(r.shot, extname(r.shot))}.txt`]) {
+      try { renameSync(join(dir, f), join(dir, REJECTED_DIR, f)); } catch { /* gone */ }
+    }
+  }
+  return bad;
+}
+
+const isMain = (() => {
+  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+})();
+if (isMain) {
+  const [cmd, ...argv] = process.argv.slice(2);
+  const usage = 'usage: preview-db.mjs up <branch> <pr> | check <screenshot dir>';
+  if (cmd === 'check') {
+    if (argv.length !== 1) { console.error(usage); process.exit(2); }
+    const results = checkShots(argv[0]);
+    const bad = setAside(argv[0], results);
+    const bare = results.filter((r) => r.call === 'no-text');
+    for (const r of bad) console.log(`ERROR PAGE ${r.shot}: "${r.line}" (moved to ${join(argv[0], REJECTED_DIR)}/)`);
+    for (const r of bare) console.log(`NO TEXT    ${r.shot}: save the page's text beside it as ${basename(r.shot, extname(r.shot))}.txt and check again`);
+    if (!results.length) console.log(`no screenshots in ${argv[0]}`);
+    else if (!bad.length && !bare.length) console.log(`${results.length} screenshot(s), none an error page`);
+    process.exit(bad.length || bare.length ? 1 : 0);
+  }
+  if (cmd !== 'up') { console.error(usage); process.exit(2); }
+  const E = await import('./desk-env.mjs');
+  const safe = (f) => { try { return f(); } catch { return null; } };
+  const repo = safe(E.ghRepo);
+  const base = String(safe(() => E.configValue('default-branch')) ?? '').trim() || 'main';
+  const view = /^[1-9]\d*$/.test(argv[1] ?? '') && repo ? safe(() => JSON.parse(execFileSync('gh', ['pr', 'view', argv[1], '--repo', repo, '--json', 'headRefName,state,isCrossRepository'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }))) : null;
+  const added = safe(() => execFileSync('git', ['diff', '--name-only', '--diff-filter=A', `origin/${base}...HEAD`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+  const call = upCall({
+    argv, view, added,
+    recipe: parseRecipe(safe(() => E.configValues('preview-db'))),
+    allowed: safe(() => E.permission('worker-preview-db')) === 'yes',
+    prior: readRecords(E.stateDir()).find((x) => String(x.pr) === argv[1]) ?? null,
+  });
+  if (call.refused) { console.error(`preview-db.mjs: refused: ${call.refused}`); process.exit(1); }
+  const state = E.stateDir();
+  const r = runUp({
+    call, repo,
+    run: (c) => { console.log(`preview-db: ${c}`); return runCommand(c, { cwd: process.cwd(), timeout: UP_STEP_MS }); },
+    record: (rec) => writeRecord(state, rec),
+  });
+  if (!r.ok) {
+    console.log(`preview-db: the ${r.step} step failed${r.code != null ? ` (exit ${r.code})` : ''}: ${r.error}`);
+    console.log(`PARK: preview database for ${call.vars.branch}: the ${r.step} step (\`${r.cmd}\`) failed: "${r.error}"`);
+    if (r.done.includes('create')) console.log(`preview-db: ${call.vars.db} was created, so the pass deletes it once PR #${call.vars.pr} merges or closes`);
+    process.exit(1);
+  }
+  console.log(`preview-db: ${call.vars.db} is ${call.vars.branch}'s preview database (${r.done.join(', ')} done); the pass deletes it and the override once PR #${call.vars.pr} merges or closes`);
+}

@@ -235,6 +235,15 @@ How to turn what you find into rows:
   `none` is the default. Say that the autopilot pass starts it once per head for a draft whose body
   still has `_drag` cells and an `evidence` block, so those screenshots are never put to the user
   while it can take them.
+- **Preview database.** Where the repo has migrations and its previews read a shared staging
+  database (a Neon or other branching database host, a preview env file or a Vercel project whose
+  Preview database variable is staging's), ask how the user gives a migration PR a database of its
+  own, and write it as §4 Preview database, one `` `<step>: <command>` `` span per step (`create`,
+  `migrate`, `seed`, `override`, `rebuild`, `delete`) with `{branch}`, `{db}` and `{pr}` for the PR's
+  branch, its database branch and its number. Propose commands only from what the repo already
+  has (its scripts, its database host's CLI); never invent a project id, a variable name or a
+  connection string, which are the user's. `none` is the default, and a migration PR's evidence is
+  taken as before. Set, it goes with §3 `worker-preview-db`.
 - **Merge holds.** Search the repo instructions for steps a person must do before merging certain
   changes ("before merging backend changes run `./scripts/build-lambda-images-local.sh`"). Propose
   each as `` `<glob>: <why>` ``, e.g. `` `backend/**: build and push Lambda images first` ``; the

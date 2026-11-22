@@ -494,6 +494,32 @@ done
 settings '`bash tests/run.sh`' '| Evidence workflow | `pr evidence.sh` |' "$(rows3 worker-workflow-dispatch=yes)"
 check "DS-549 a malformed evidence row warns and allows nothing" '[ $rc -eq 0 ] && [[ "$out" == *"CONFIG_WARN: §4 Evidence workflow"* ]] && [ "$(ev_rules)" = "[]" ] && denies "Bash(gh workflow:*)"'
 
+# ---- DS-550: §4 Preview database, provisioned for the worker's own PR through preview-db.mjs up ----
+PDB='| Preview database | `create: neonctl branches create --name {db}` `migrate: pnpm db:migrate` `override: ./env.sh set {branch} {db}` `rebuild: ./env.sh redeploy {branch}` `delete: neonctl branches delete {db}` |'
+PDBUP="node $B/preview-db.mjs up fix/fix-thing 935"
+PDBCHECK="node $B/preview-db.mjs check $T/state/images/fix-thing"
+pdb_rules(){ jq -c '[.permissions.allow[] | select(test("preview-db\\.mjs up"))]' "$T/ws.json"; }
+settings '`bash tests/run.sh`' "$PDB" "$(rows3 worker-preview-db=yes)"
+check "DS-550 AC1 preview-db yes: its own branch's up is allowed, fixed to that branch" \
+  '[ $rc -eq 0 ] && ok "$PDBUP" && [ "$(pdb_rules)" = "[\"Bash(node $B/preview-db.mjs up fix/fix-thing *)\"]" ] && [[ "$out" != *"CONFIG_DENIED: worker-preview-db"* ]]'
+check "DS-550 AC1 another branch, or another subcommand, is refused" \
+  'no "node $B/preview-db.mjs up fix/other 935" "node $B/preview-db.mjs up main 935" "node $B/preview-db.mjs down 935" "node $B/preview-db.mjs up fix/fix-thing-2 935"'
+check "DS-550 AC2 the error-page check is allowed on its own screenshots only" \
+  'ok "$PDBCHECK" "$PDBCHECK/" && no "node $B/preview-db.mjs check $T/state/images/other" "node $B/preview-db.mjs check $T/state"'
+for v in ask no; do
+  settings '`bash tests/run.sh`' "$PDB" "$(rows3 worker-preview-db=$v)"
+  check "DS-550 preview-db $v: up is refused and the row named" '[ $rc -eq 0 ] && no "$PDBUP" && [ "$(pdb_rules)" = "[]" ] && denied_line worker-preview-db $v'
+done
+settings '`bash tests/run.sh`' '' "$(rows3 worker-preview-db=yes)"
+check "DS-550 AC5 no recipe: no up rule, and the row is not named" '[ $rc -eq 0 ] && no "$PDBUP" && [ "$(pdb_rules)" = "[]" ] && [[ "$out" != *"worker-preview-db"* ]]'
+settings '`bash tests/run.sh`' '| Preview database | `create: neonctl branches create --name {name}` |' "$(rows3 worker-preview-db=yes)"
+check "DS-550 a malformed recipe warns and allows no up" '[ $rc -eq 0 ] && [[ "$out" == *"CONFIG_WARN: §4 Preview database"* ]] && [ "$(pdb_rules)" = "[]" ]'
+settings '`bash tests/run.sh`' "$PDB" "$(rows3 worker-preview-db=yes)"
+out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" --branch fix/fix-thing --out "$T/ws.json" --dry 2>&1); rc=$?
+check "DS-550 a dry run provisions nothing" '[ $rc -eq 0 ] && no "$PDBUP" && denies "Bash(node $B/preview-db.mjs up:*)"'
+out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" --branch main --out "$T/ws.json" 2>&1); rc=$?
+check "DS-550 no branch of its own: no up" '[ $rc -eq 0 ] && no "node $B/preview-db.mjs up main 935" && [ "$(pdb_rules)" = "[]" ]'
+
 # ---- DS-390: a force-push the person approved once, and no rebase of a pushed branch without one ----
 PUSH3="$(rows3 git-push=yes git-force-with-lease=ask)"
 SHA=$(git -C "$T/repo" rev-parse HEAD)

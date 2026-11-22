@@ -40,6 +40,11 @@ a worker cannot:
   `node <bin>/evidence.mjs dispatch <its branch> <n>`, its branch fixed by the rule: that refuses a
   `<n>` that is not digits or not its branch's own open PR, then runs `gh workflow run <file>.yml
   --repo <§0 GitHub repo> --ref <§0 Default branch> -f pr=<n>` as the pass does;
+- run §4 Preview database other than as `node <bin>/preview-db.mjs up <its branch> <n>`, where §3
+  `worker-preview-db` is `yes` and the row is set: its branch fixed by the rule, and the script
+  refuses a `<n>` that is not its branch's own open PR or a PR that adds no migration; none in a dry
+  run. The error-page check, `node <bin>/preview-db.mjs check <its screenshot directory>`, is always
+  its own;
 - run the package manager beyond `install` with no arguments and the configured rows (no `add`,
   no `exec`/`dlx`/`x`, no `npx`/`bunx`/`uvx`), or the §4 Command prefix on its own;
 - run `sed`, `awk`, `cp`, `mv`, `sort`, `uniq`, `xargs` or `tee`; `codex` other than

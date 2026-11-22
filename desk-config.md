@@ -203,6 +203,7 @@ protection is `none`, nothing on GitHub stops a red merge, so `pr-merge-green` a
 | `worker-local-services` | Let a worker start a §4 Local services entry in the main checkout's compose project (`docker compose -f <main checkout>/compose.yaml up -d --no-recreate --no-deps <service>`); stopping, removing or recreating one stays refused | `ask` | `TODO` |
 | `worker-web-read` | Let a worker search the web and read public pages (WebSearch, WebFetch), so a public figure or a site's terms is looked up rather than parked for you | `ask` | `TODO` |
 | `worker-workflow-dispatch` | Let a worker start a §4 Worker workflows entry on its own branch (`gh workflow run <file>.yml --ref <its branch> -f …`), exactly as listed; never on the default branch or a batch base. Also the §4 Evidence workflow for its own PR, as the pass starts it (`gh workflow run <file>.yml --ref <default branch> -f pr=<n>`), through `evidence.mjs dispatch`, which runs it only for its branch's own open PR; `gh workflow enable` or `disable` stays refused | `ask` | `TODO` |
+| `worker-preview-db` | Let a worker run §4 Preview database for its own open PR when that PR adds a migration (`preview-db.mjs up <its branch> <n>`): a database branch named after the PR branch, the PR's migrations and seed applied to it, an override for that preview branch only, and a rebuild of that preview; the pass deletes the database branch and the override once the PR merges or closes. Never a shared, staging or production database or value | `ask` | `TODO` |
 
 `autopilot-worker-mode` values: `dontAsk + generated allow-list` (workers are launched with
 `--setting-sources ""`, so your own Claude Code settings, including any broad `Bash(*)` allow, never
@@ -221,8 +222,8 @@ Code's permission mode.
 `machine-reboot` is `yes`, `ask` or `no`, and unset reads as `ask`: at `ask` the maintenance window
 puts "ready to reboot" in the next check-in rather than restarting, and at `no` it does neither. With
 FileVault on, `yes` does as `ask` does: a restarted Mac waits at the unlock screen until you log in.
-`worker-dependency-install`, `worker-screenshots`, `worker-local-services`, `worker-web-read` and
-`worker-workflow-dispatch` are read by `worker-settings.mjs` when a worker spawns: anything short of
+`worker-dependency-install`, `worker-screenshots`, `worker-local-services`, `worker-web-read`,
+`worker-workflow-dispatch` and `worker-preview-db` are read by `worker-settings.mjs` when a worker spawns: anything short of
 `yes`, unset included, is refused to the worker, which parks naming the row. At `worker-web-read`
 `yes` the supervisor's decider also requeues a park that asks only for a public fact, rather than
 handing it to you. At `worker-workflow-dispatch` `yes` a worker that starts a run parks with
@@ -415,6 +416,7 @@ such thing.
 | Database URL variable | `TODO` (every env var that holds a database URL or name, one span each, e.g. `` `DATABASE_URL` `DATABASE_URL_UNPOOLED` ``; or `none`. In a worker's worktree each one is repointed at its own per-ticket database or, when none was provisioned, blanked, so no worker can reach a shared, staging or production database) |
 | Database migrate | `TODO` (command that brings a fresh database up to schema, e.g. `pnpm db:migrate`; or `none`) |
 | Seed | `TODO` (command that loads local data into a fresh database, or `none`) |
+| Preview database | `TODO` (how a PR that adds a migration gets a database of its own for its preview, so its evidence is not taken against a staging database that lacks the migration: one span per step, `` `<step>: <command>` ``, the steps `create`, `migrate`, `seed` (optional), `override`, `rebuild` and `delete`, a step taking several spans run in order. A command names the PR's branch as `{branch}`, the database branch named after it as `{db}` and the PR number as `{pr}`; anything else in braces is refused, and a shell `${…}` is the shell's. E.g. `` `create: neonctl branches create --name {db} --parent staging` `migrate: ./scripts/preview-db.sh migrate {db}` `seed: ./scripts/preview-db.sh seed {db}` `override: ./scripts/preview-env.sh set {branch} {db}` `rebuild: ./scripts/preview-env.sh redeploy {branch}` `delete: ./scripts/preview-env.sh unset {branch}` `delete: neonctl branches delete {db}` ``. `migrate` and `seed` run in the worker's worktree, so the PR's own migrations apply; `override` sets the variable for that preview branch only, never every preview, staging or production; `rebuild` returns once the preview serves the new build; `delete` runs from the main checkout once the PR merges or closes, so make it safe to run when a step was never reached. A worker runs it where §3 `worker-preview-db` is `yes`. `none` takes a migration PR's evidence as before) |
 | Local services | `TODO` (search, mail catcher, queues, with ports, one span each starting with its docker compose service name, e.g. `` `typesense :8108` `mailpit :8025` ``; or `none`. §3 `worker-local-services` lets a worker start exactly these services) |
 | Staging | `TODO` (one span per app, `` `<app>: <url>` ``, and how access is protected; or `none`) |
 | Staging bypass token location | `TODO` (a file only you read, e.g. `~/.config/desk/repos/<slug>/vercel-staging-bypass`: the path, never the token) |

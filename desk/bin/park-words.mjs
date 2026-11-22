@@ -102,6 +102,7 @@ export const GRANT_WORDS = {
   'worker-screenshots': 'take screenshots',
   'worker-web-read': 'read web pages',
   'worker-workflow-dispatch': 'start GitHub workflows',
+  'worker-preview-db': 'make a preview database for its PR',
   'git-commit': 'commit',
   'git-push': 'push',
   'git-force-with-lease': 'force-push',
