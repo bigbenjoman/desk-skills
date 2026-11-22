@@ -11,7 +11,9 @@
 # URL under that directory is stored relative to it, so no copy holds the template's path; a build
 # that leaves the path anywhere else fails.
 # Only one process builds a name: the others wait for its lock, and a template appears by rename
-# once it is whole. A lock whose builder has died is taken over.
+# once it is whole. A lock whose builder has died is taken over. The lock is a file holding the
+# builder's pid, created with noclobber, because mkdir is not atomic everywhere (uutils mkdir lets
+# racing callers all succeed).
 REPO_TPL_DATE="2020-01-01T00:00:00Z"
 REPO_TPL_MARK="@REPO_TPL@"
 
@@ -34,8 +36,7 @@ repo_template(){
   mkdir -p "$root" || return 2
   dir="$root/$name"; lock="$root/$name.lock"
   while [ ! -d "$dir" ]; do
-    if mkdir "$lock" 2>/dev/null; then
-      echo "$$" > "$lock/pid"
+    if (set -C; echo "$$" > "$lock") 2>/dev/null; then
       if [ ! -d "$dir" ]; then
         build="$root/$name.build.$$"; rm -rf "$build"; mkdir "$build"
         if (export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t \
@@ -58,7 +59,7 @@ repo_template(){
       fi
       rm -rf "$lock"
     else
-      pid=$(cat "$lock/pid" 2>/dev/null)
+      pid=$(cat "$lock" 2>/dev/null)
       if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then rm -rf "$lock"; continue; fi
       sleep 0.1
     fi
