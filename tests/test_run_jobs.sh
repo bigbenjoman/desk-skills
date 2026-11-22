@@ -102,9 +102,16 @@ checks(){ B=$1; v=$("$B" -c 'echo "${BASH_VERSINFO[0]}"'); at="(bash $v)"
   # AC6: the run appends one line: date, suites, job count, wall and CPU seconds, load at start.
   out=$(tail -n 1 "$LOGF")
   check "AC6 $at the run appends its record to ~/.desk-autopilot/test-runs.jsonl" \
-    'printf "%s" "$out" | grep -qE "^\{\"date\":\"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\",\"suites\":\[\"test_burn.sh\",\"test_one.sh\"\],\"jobs\":2,\"wall_s\":[0-9]+,\"cpu_s\":[0-9]+\.[0-9]{3},\"load\":([0-9]+(\.[0-9]+)?|null)\}$" && node -e "JSON.parse(process.argv[1])" "$out"'
+    'printf "%s" "$out" | grep -qE "^\{\"date\":\"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\",\"suites\":\[\"test_burn.sh\",\"test_one.sh\"\],\"jobs\":2,\"wall_s\":[0-9]+,\"cpu_s\":[0-9]+\.[0-9]{3},\"load\":([0-9]+(\.[0-9]+)?|null)," && node -e "JSON.parse(process.argv[1])" "$out"'
+  rec=$(cd "$R/.." && pwd -P)
+  check "DS-975 AC5 $at a run.sh with suites named and no wrapper records scope changed, why, its worktree and no lock" \
+    'printf "%s" "$out" | grep -qF ",\"scope\":\"changed\",\"reason\":\"suites named on the command line\",\"worktree\":\"$rec\",\"lock\":null,\"wait_s\":null}"'
   cpu=$(printf '%s' "$out" | grep -oE '"cpu_s":[0-9.]+' | grep -oE '[0-9.]+$' | tr -d .)
   check "AC6 $at its CPU seconds are the suites' own" '[ -n "$cpu" ] && [ $((10#$cpu)) -ge $((10#$burn)) ]'
+  DESK_RUN_SCOPE=full DESK_RUN_REASON='a "root" file' DESK_LOCK_CLASS=light DESK_LOCK_WAITED=40 "$B" "$R/run.sh" --no-hook-test -j 1 test_one.sh >/dev/null 2>&1
+  out=$(tail -n 1 "$LOGF")
+  check "DS-975 AC5 $at the scope and reason related.sh gives, and the lock and wait with-lock.sh gives, are recorded" \
+    'printf "%s" "$out" | grep -qF ",\"scope\":\"full\",\"reason\":\"a \\\"root\\\" file\",\"worktree\":\"$rec\",\"lock\":\"light\",\"wait_s\":40}" && node -e "JSON.parse(process.argv[1])" "$out"'
   n=$(wc -l < "$LOGF")
   out=$(TEST_RUNS_LOG='' "$B" "$R/run.sh" --no-hook-test -j 1 test_one.sh 2>&1)
   check "AC6 $at a run with TEST_RUNS_LOG empty (a run.sh a suite starts) records nothing" '[ "$(wc -l < "$LOGF")" = "$n" ]'
