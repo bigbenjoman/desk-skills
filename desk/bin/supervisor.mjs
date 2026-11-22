@@ -32,7 +32,8 @@
 //   - once every batch has run, starts the repo's one merge driver (merge-driver.sh --all-batches) when a
 //     batch's pass left tickets to merge (where §3 autopilot-merge and pr-merge-green are both `yes`, or
 //     the batch's `approved.merge` is true where they are `yes` or `ask`: the driver reads it itself)
-//     and no driver holds the standing batch's <state>/merge-driver.lock.d, its output in that batch's
+//     and no driver holds the repo's lock, the standing batch's <state>/merge-driver/repo.lock.d (a batch's
+//     own <state>/merge-driver.lock.d is a session's driver of that batch, which it leaves), its output in that batch's
 //     <state>/merge-driver.log. A running driver logs nothing; once the one it started has stopped, the
 //     next tick logs why from that log (and keeps it in the standing batch's supervisor.json), and after
 //     2 failed starts in a row sends one notification naming the repo and the reason;
@@ -90,7 +91,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, describeCrash, isHeld, spinePark, IDLE_RECHECK_MS, RUN_RECHECK_MS, waitingOnRun } from './batch-state.mjs';
-import { listBatches, batchPinned, alive, orchestratorHolder } from './batches.mjs';
+import { batchPinned, runBatches, alive, orchestratorHolder } from './batches.mjs';
 import { tryLockFile, unlockFile, writeTextAtomic } from './dir-lock.mjs';
 import { archiveCheck } from './batch.mjs';
 import { intakeQuery, prOpen, handedByIntake, takePushed, pushWaiting } from './intake.mjs';
@@ -348,34 +349,38 @@ function noteCode(state) {
 
 // A running merge driver on old code is restarted on the installed one once it waits between loops,
 // as install.sh's restart does (installed.mjs restartDriver); one mid-loop is left for a later tick.
-// -> the line to log, or null. A driver left for the same reason as last tick is not logged again.
-function moveDriver(state, s) {
-  const pid = driverHolder(state);
-  if (typeof pid !== 'number' || !oldCode(lockVersion(state))) {
-    if (s.driver_left) { delete s.driver_left; writeState(state, s); }
-    return null;
-  }
+// `b` is the batch ({name, state, queue}) whose lock it holds, or, with `lock` E.REPO_DRIVER_LOCK, the
+// repo's one driver. -> the line to log, or null. A driver left for the same reason as last tick is not
+// logged again.
+function moveDriver(b) {
+  const { state, lock } = b;
+  const left = lock ? 'repo_driver_left' : 'driver_left';
+  const pid = driverHolder(state, lock);
+  const old = typeof pid === 'number' && oldCode(lockVersion(state, lock));
+  if (!old && !readState(state)[left]) return null;
   // A pass running now reads the driver, and its own copy of supervisor.json would undo this one's.
   const busy = takeLock(state);
   if (busy) return null;
-  const from = logSize(driverLog(state));
-  let line;
-  try { line = restartDriver({ slug: E.repoSlug(), batch: E.batchName(), dir: state, pid, queue: E.queueFile() }); }
-  finally { dropLock(state); }
-  const now = driverHolder(state);
-  if (now !== pid) {
-    // The driver this supervisor started carries on under its new pid, so its stop is still read, from
-    // where the new one's output starts.
-    if (s.driver?.pid === pid && typeof now === 'number') Object.assign(s.driver, { pid: now, started: new Date().toISOString(), from });
-    delete s.driver_left;
-    s.code = codeRecord(state);
+  try {
+    const s = readState(state);
+    if (!old) { delete s[left]; writeState(state, s); return null; }
+    const from = logSize(driverLog(state));
+    const line = restartDriver({ slug: E.repoSlug(), batch: b.name, dir: state, pid, queue: b.queue });
+    const now = driverHolder(state, lock);
+    if (now !== pid) {
+      // The driver this supervisor started carries on under its new pid, so its stop is still read, from
+      // where the new one's output starts.
+      if (s.driver?.pid === pid && typeof now === 'number') Object.assign(s.driver, { pid: now, started: new Date().toISOString(), from });
+      delete s[left];
+      s.code = codeRecord(state);
+      writeState(state, s);
+      return line;
+    }
+    if (s[left] === line) return null;
+    s[left] = line;
     writeState(state, s);
     return line;
-  }
-  if (s.driver_left === line) return null;
-  s.driver_left = line;
-  writeState(state, s);
-  return line;
+  } finally { dropLock(state); }
 }
 
 // Tickets whose PR is still to merge: one still to start or running, one held behind a merge or a
@@ -461,9 +466,7 @@ function enterBatch(name) {
   else delete process.env.DESK_BATCH;
 }
 
-// -> [{ name, queue, state }]: the one batch named explicitly, else every batch the repo holds, the
-// standing first.
-const tickBatches = (named = batchPinned()) => (named ? [{ name: E.batchName(), queue: E.queueFile(), state: E.stateDir() }] : listBatches());
+const tickBatches = runBatches;
 
 // The exit files workers left in `dir`, as [{ file, at }] with `at` their mtime. A dot-named file is one
 // still being written, before its rename.
@@ -571,7 +574,7 @@ function intervalRound(named) {
     }
   });
   if (!named) enterBatch(null);
-  try { mkdirSync(batches[0].state, { recursive: true }); driverRound(batches[0].state); } catch (e) {
+  try { mkdirSync(batches[0].state, { recursive: true }); driverRound(batches); } catch (e) {
     try { logTo(batches[0].state)([`== ${stamp()} merge driver: the tick could not watch or start it, and the next tries again: ${describeCrash(e)}`]); } catch { /* nowhere to say it */ }
   }
   leversRefresh(batches[0].state);
@@ -919,8 +922,8 @@ function runPass(state, q, s, log, stamp, intake = []) {
 }
 
 // ---- the merge driver ------------------------------------------------------------------------
-// One driver runs for all of the repo's batches (merge-driver.sh --all-batches): it holds the standing
-// batch's lock and points each named batch's lock it merges for, and its record and log are the
+// One driver runs for all of the repo's batches (merge-driver.sh --all-batches): it holds the repo's
+// lock (E.REPO_DRIVER_LOCK) and points the lock of each batch it merges for, and its record and log are the
 // standing batch's (the one batch's, for a tick that names one). s.driver is the last driver this
 // supervisor started ({pid, started, from, failures, notified, reason, code}): `from` is where its
 // output starts in merge-driver.log, and `failures` counts the starts in a row that stopped with a
@@ -930,14 +933,28 @@ const driverLog = (state) => join(state, 'merge-driver.log');
 // Whether a batch's pass this round left tickets to merge under a merge grant, with no driver running.
 let driverWanted = false;
 
-// Once every batch has had its round: a driver on old code is moved to the installed code, one that
-// stopped is logged, and the one driver is started when a batch wants it and none holds the lock.
-function driverRound(state) {
+// Once every batch has had its round: the repo's driver, and any batch's own driver (one a session
+// started, or one from before the repo had one driver), on old code is moved to the installed code;
+// the repo's driver that stopped is logged, and it is started when a batch wants it and none holds
+// the repo's lock. Its record is the first batch's (the standing one, or the one a tick names), read
+// and written under that batch's lock: a tick that finds it held leaves the driver to the next.
+function driverRound(batches) {
+  const state = batches[0].state;
+  const repo = { name: E.batchName(), state, queue: E.queueFile(), lock: E.REPO_DRIVER_LOCK };
+  const ours = driverHolder(state, repo.lock);
+  const lines = [repo, ...batches.filter((b) => driverHolder(b.state) !== ours)].map(moveDriver).filter(Boolean);
+  if (takeLock(state)) {
+    if (lines.length) logTo(state)([`== ${stamp()} merge driver`, ...lines]);
+    return;
+  }
+  try { lines.push(...watchOrStart(state)); } finally { dropLock(state); }
+  if (lines.length) logTo(state)([`== ${stamp()} merge driver`, ...lines]);
+}
+function watchOrStart(state) {
   const s = readState(state);
-  const moved = moveDriver(state, s);
-  const lines = moved ? [moved] : [];
+  const lines = [];
   const was = JSON.stringify(s.driver ?? null);
-  const holder = driverHolder(state);
+  const holder = driverHolder(state, E.REPO_DRIVER_LOCK);
   lines.push(...watchDriver(state, s, holder));
   if (driverWanted && !holder) {
     // The driver takes in every batch's queue tickets and holds (held_by) on each sweep by itself. Its
@@ -958,7 +975,7 @@ function driverRound(state) {
   }
   // A running driver ends a run of failed starts, which is kept though nothing is logged.
   if (lines.length || JSON.stringify(s.driver ?? null) !== was) writeState(state, s);
-  if (lines.length) logTo(state)([`== ${stamp()} merge driver`, ...lines]);
+  return lines;
 }
 const logSize = (f) => { try { return statSync(f).size; } catch { return 0; } };
 const STAMP = /^\d\d:\d\d:\d\dZ /;

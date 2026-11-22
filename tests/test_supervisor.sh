@@ -94,17 +94,20 @@ link_bin "$B" "$T/bin"
 # The merge driver, whose output the supervisor sends to merge-driver.log. By default it ends as the
 # real one does, with its exit line; driver.mode `fail` stops it at once as a signed-out gh does, and
 # `hang` keeps it running, holding the lock. driver.calls is written last, once its log lines are out.
+# Started with --all-batches, as the supervisor starts it, the lock it holds is the repo's.
 cat > "$T/bin/merge-driver.sh" <<EOF
 #!/bin/sh
 echo "\${DESK_BATCH:--} \$*" >> "$T/driver.batches"
 case "\$(cat "$T/driver.mode" 2>/dev/null)" in
   fail) echo "00:00:01Z FAIL: gh is signed out (HTTP 401: Bad credentials) — nothing can merge until \\\`gh auth login\\\`; stopping"
         echo "00:00:01Z merge driver exited 1"; echo "\$@" >> "$T/driver.calls"; exit 1 ;;
-  hang) mkdir -p "$T/state/merge-driver.lock.d"; echo \$\$ > "$T/state/merge-driver.lock.d/pid"
+  hang) mkdir -p "$T/state/merge-driver/repo.lock.d"; echo \$\$ > "$T/state/merge-driver/repo.lock.d/pid"
         echo "\$@" >> "$T/driver.calls"; exec sleep 30 ;;
   # loop: as the real one at rest, it records the version of the release it runs from in its lock,
   # sleeps between loops (or, with $T/busy, is mid-loop: its child is not sleep), and on TERM drops the lock.
-  loop) D="\$DESK_AUTOPILOT_STATE/merge-driver.lock.d"; mkdir -p "\$D"; echo \$\$ > "\$D/pid"
+  loop) D="\${DESK_AUTOPILOT_STATE:-$HOME/.desk-autopilot/acme__widgets}/merge-driver.lock.d"
+        case "\$*" in *--all-batches*) D="\${D%/merge-driver.lock.d}/merge-driver/repo.lock.d" ;; esac
+        mkdir -p "\$D"; echo \$\$ > "\$D/pid"
         node "\$(dirname "\$0")/installed.mjs" running > "\$D/version"
         echo "\$@" >> "$T/driver.calls"
         trap 'rm -rf "\$D"; exit 143' TERM
@@ -192,14 +195,16 @@ waitlines "$T/driver.calls" 2
 
 # ---- AC4: a driver holding the lock means no second one -----------------------------------------
 sleep 30 & HOLDER=$!
-mkdir -p "$T/state/merge-driver.lock.d"; echo "$HOLDER" > "$T/state/merge-driver.lock.d/pid"
+RL="$T/state/merge-driver/repo.lock.d"
+mkdir -p "$RL"; echo "$HOLDER" > "$RL/pid"
 n=$(started)
 out=$(tick)
-check "AC4: no second merge driver while one holds the lock" '[ "$(started)" = "$n" ]'
+check "AC4: no second merge driver while one holds the repo's lock" '[ "$(started)" = "$n" ]'
 kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null
 out=$(tick)
 check "a dead driver's lock does not stop a new one" '[ "$(started)" = $((n + 1)) ]'
-rm -rf "$T/state/merge-driver.lock.d"
+rm -rf "$RL"
+waitlines "$T/driver.calls" "$(started)"
 waitlines "$T/driver.calls" "$(started)"
 check "DS-225: a driver that exits 0 is logged as stopped, not failed, and notifies nothing" 'grep -q "^merge driver: stopped (pid [0-9]*, started .*, exit 0): it wrote nothing to its log$" "$LOG" && [ "$(count "$T/notify.calls")" = 0 ]'
 
@@ -217,12 +222,12 @@ out=$(tick); waitlines "$T/driver.calls" "$(started)"
 check "DS-225 AC3: a third failed start sends no second notification" '[ "$(count "$T/notify.calls")" = 1 ] && [ "$(drv failures)" = 3 ]'
 echo hang > "$T/driver.mode"
 out=$(tick)
-i=0; while [ ! -s "$T/state/merge-driver.lock.d/pid" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+i=0; while [ ! -s "$RL/pid" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
 before=$(grep -c "merge driver" "$LOG")
 out=$(tick); out=$(tick)
 check "DS-225 AC4: a driver running normally gets nothing new in the log" '[ "$(grep -c "merge driver" "$LOG")" = "$before" ] && grep -q "pass: exit 10" "$LOG"'
 check "DS-225 AC4: a running driver ends the run of failures" '[ "$(drv failures)" = 0 ] && [ "$(drv notified)" = false ]'
-kill "$(cat "$T/state/merge-driver.lock.d/pid")" 2>/dev/null; rm -rf "$T/state/merge-driver.lock.d" "$T/driver.mode"
+kill "$(cat "$RL/pid")" 2>/dev/null; rm -rf "$RL" "$T/driver.mode"
 out=$(tick)
 check "DS-225: a running driver that is killed is logged with no exit code" 'grep -q "^merge driver: stopped (pid [0-9]*, started .*, no exit code logged)" "$LOG"'
 waitlines "$T/driver.calls" "$(started)"
@@ -230,14 +235,14 @@ waitlines "$T/driver.calls" "$(started)"
 # ---- DS-972 AC4: a driver that is stopped is started again, once, on the next tick -------------
 echo hang > "$T/driver.mode"; n=$(started); calls=$(count "$T/driver.calls")
 out=$(tick)
-i=0; while [ ! -s "$T/state/merge-driver.lock.d/pid" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
-p=$(cat "$T/state/merge-driver.lock.d/pid" 2>/dev/null); kill "$p" 2>/dev/null
+i=0; while [ ! -s "$RL/pid" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+p=$(cat "$RL/pid" 2>/dev/null); kill "$p" 2>/dev/null
 i=0; while kill -0 "$p" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
 out=$(tick); waitlines "$T/driver.calls" $((calls + 2))
 check "DS-972 AC4: the next tick logs the stopped driver and starts the one driver again" '[ -n "$p" ] && [ "$(started)" = $((n + 2)) ] && grep -q "^merge driver: stopped (pid $p, " "$LOG" && [ "$(count "$T/driver.calls")" = $((calls + 2)) ] && [ "$(tail -1 "$T/driver.calls")" = "--all-batches --log" ]'
 out=$(tick)
 check "DS-972 AC4: and only once: a tick with it running starts no other" '[ "$(started)" = $((n + 2)) ]'
-kill "$(cat "$T/state/merge-driver.lock.d/pid")" 2>/dev/null; rm -rf "$T/state/merge-driver.lock.d" "$T/driver.mode"
+kill "$(cat "$RL/pid")" 2>/dev/null; rm -rf "$RL" "$T/driver.mode"
 out=$(tick); waitlines "$T/driver.calls" "$(started)"
 # The notification counts below start from none.
 rm -f "$T/notify.calls"
@@ -640,6 +645,8 @@ olddriver(){
 setdriver(){ node -e 'const f = process.argv[1]; const s = JSON.parse(require("fs").readFileSync(f, "utf8")); s.driver = { failures: 0, notified: false, pid: Number(process.argv[2]), started: "then", from: Number(process.argv[3]) }; require("fs").writeFileSync(f, JSON.stringify(s))' "$T/state/supervisor.json" "$1" "$2"; }
 driverrec(){ node -e 'const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).driver; console.log(`${d.pid} ${d.started === "then"} ${d.from}`)' "$T/state/supervisor.json"; }
 stopdriver(){ p="$(held)"; [ -n "$p" ] && { kill "$p" 2>/dev/null; pkill -P "$p" 2>/dev/null; }; i=0; while [ -n "$(held)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; rm -rf "$T/state/merge-driver.lock.d"; }
+# The repo's one driver, on the installed code, runs throughout: only the batch's own driver moves.
+sleep 300 & REPOHOLD=$!; mkdir -p "$RL"; echo "$REPOHOLD" > "$RL/pid"; echo new1 > "$RL/version"
 olddriver; old="$(held)"; n=$(count "$T/driver.calls")
 check "DS-810: the supervisor's driver here, started from an older release, holds a lock naming that release (the real driver's write: test_merge_driver_loop.sh)" '[ "$(cat "$T/state/merge-driver.lock.d/version")" = old0 ]'
 # A pass running holds supervisor.lock: the driver is not moved under it.
@@ -662,6 +669,7 @@ out=$(DESK_AGENT_VERSION=new1 tick); out=$(DESK_AGENT_VERSION=new1 tick)
 check "DS-666 AC2: a driver on old code that is mid-loop is left running" 'kill -0 "$busy" && [ "$(held)" = "$busy" ] && [ "$(count "$T/driver.calls")" = "$n" ]'
 check "DS-666 AC2: the log says, once, it was left because it is mid-loop" '[ "$(grep -c "merge driver for acme__widgets (pid $busy): left running on the old code, it is mid-loop and may be merging" "$LOG")" = 1 ]'
 rm -f "$T/busy"; stopdriver; rm -f "$T/driver.mode"
+kill "$REPOHOLD" 2>/dev/null; wait "$REPOHOLD" 2>/dev/null; rm -rf "$RL"
 
 # ---- DS-309: a tick runs every batch in the repo, each on its own base ---------------------------
 # No explicit queue or state here: the repo's own paths, the standing batch and batches/<name>/ under it.
@@ -710,6 +718,24 @@ bq "$ZQ" Z-1 true '{"Z1":{"key":"Z1","state":"running"}}' feat/z; : > "$T/driver
 out=$(mtick); waitlines "$T/driver.batches" 1; sleep 0.5
 check "DS-972 AC1: a standing batch and two named batches still get exactly one merge driver" '[ "$(cat "$T/driver.batches")" = "- --all-batches --log" ] && ! grep -q "^merge driver: started" "$ZS/supervisor.log"'
 rm -rf "$(dirname "$ZQ")" "$ZS"
+# A session's driver of the standing batch holds that batch's lock, not the repo's: the repo's one
+# driver still starts for X-1, and leaves the standing batch to it.
+sleep 30 & HOLDER=$!
+mkdir -p "$SS/merge-driver.lock.d"; echo "$HOLDER" > "$SS/merge-driver.lock.d/pid"; : > "$T/driver.batches"
+out=$(mtick); waitlines "$T/driver.batches" 1
+check "DS-972: a session's driver on the standing batch does not stop the repo's one driver starting for X-1" '[ "$(cat "$T/driver.batches")" = "- --all-batches --log" ]'
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -rf "$SS/merge-driver.lock.d"
+# ---- DS-972: a tick moves a named batch's own driver on old code to the installed code -----------
+sleep 300 & REPOHOLD=$!; mkdir -p "$SS/merge-driver/repo.lock.d"; echo "$REPOHOLD" > "$SS/merge-driver/repo.lock.d/pid"; echo new1 > "$SS/merge-driver/repo.lock.d/version"
+echo loop > "$T/driver.mode"; rm -rf "$XS/merge-driver.lock.d"
+(cd "$T/repo" && DESK_AUTOPILOT_STATE="$XS" DESK_BATCH=X-1 "$OLDREL/bin/merge-driver.sh" --tickets X1 --deps "X1:X0" --log </dev/null >/dev/null 2>&1 &)
+xheld(){ cat "$XS/merge-driver.lock.d/pid" 2>/dev/null; }
+i=0; while { [ -z "$(xheld)" ] || ! pgrep -x -P "$(xheld)" sleep >/dev/null; } && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+xold="$(xheld)"
+out=$(DESK_AGENT_VERSION=new1 mtick); xnew="$(xheld)"
+check "DS-972: a tick moves a named batch's own driver on old code to the installed code" '[ -n "$xold" ] && ! kill -0 "$xold" 2>/dev/null && [ -n "$xnew" ] && [ "$xnew" != "$xold" ] && grep -q "merge driver for acme__widgets batch X-1: restarted on the new code (pid $xold -> $xnew)" "$SS/supervisor.log"'
+kill "$xnew" 2>/dev/null; pkill -P "$xnew" 2>/dev/null; kill "$REPOHOLD" 2>/dev/null; wait "$REPOHOLD" 2>/dev/null
+rm -rf "$XS/merge-driver.lock.d" "$SS/merge-driver/repo.lock.d" "$T/driver.mode"
 notified=$(count "$T/notify.calls")
 printf '%s\n' '{"status":"show_person","code":11,"message":"x","waiting":[],"parked":[],"notify":true,"push":[{"key":"urgent:acme__widgets:X1","text":"X1: PRODUCTION BROKEN: checkout 500s"}]}' > "$T/verdict.X-1.json"
 out=$(mtick)

@@ -939,8 +939,12 @@ export const permissionKey = (id) => PERMISSION_KEYS[id];
 export function wakeMergeDriver(state = stateDir()) {
   try { mkdirSync(join(state, 'merge-driver'), { recursive: true }); writeFileSync(join(state, 'merge-driver', 'wake'), `${Date.now()}\n`); } catch { /* see above */ }
 }
-export function mergeDriverHolder(state) {
-  const d = join(state, 'merge-driver.lock.d');
+// `lock` is the lock's path under the state folder: a batch's own, or REPO_DRIVER_LOCK, which the repo's
+// one driver (merge-driver.sh --all-batches) holds under the standing batch's state, or the one batch's
+// a tick names.
+export const REPO_DRIVER_LOCK = join('merge-driver', 'repo.lock.d');
+export function mergeDriverHolder(state, lock = 'merge-driver.lock.d') {
+  const d = join(state, lock);
   if (!existsSync(d)) return null;
   const pid = Number((() => { try { return readFileSync(join(d, 'pid'), 'utf8').trim(); } catch { return ''; } })());
   if (pid) { try { process.kill(pid, 0); return pid; } catch (e) { return e.code === 'EPERM' ? pid : null; } }

@@ -52,21 +52,24 @@ EOF
 chmod +x "$T/stub/sleep"
 sweep(){ : > "$T/gh.log"; rm -f "$T/sleeps"; out=$(MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --all-batches 2>&1); rc=$?; }
 lists(){ grep -c "^pr list" "$T/gh.log"; }
-locks(){ for d in "$SS" "$XS" "$YS"; do cat "$d/merge-driver.lock.d/pid" 2>/dev/null || echo -; done | paste -sd' ' -; }
+# The repo's lock, then the standing batch's, X-1's and Y-1's: each lock's pid, or - with none.
+RL="$SS/merge-driver/repo.lock.d"
+locks(){ for d in "$RL" "$SS/merge-driver.lock.d" "$XS/merge-driver.lock.d" "$YS/merge-driver.lock.d"; do cat "$d/pid" 2>/dev/null || echo -; done | paste -sd' ' -; }
 
 # ---- AC1: one driver, one pid on every batch's lock ---------------------------------------------
 # At the PR list, every batch's lock is read: the sweep's driver holds or points each one by then.
-echo "for d in '$SS' '$XS' '$YS'; do cat \"\$d/merge-driver.lock.d/pid\" 2>/dev/null || echo -; done | paste -sd' ' - > '$T/locks.seen'; cp '$SS/merge-driver.lock.d/version' '$T/version.seen' 2>/dev/null; cp '$XS/merge-driver.lock.d/version' '$T/xversion.seen' 2>/dev/null" > "$T/gh.atlist"
+atlist(){ echo "for d in '$RL' '$SS/merge-driver.lock.d' '$XS/merge-driver.lock.d' '$YS/merge-driver.lock.d'; do cat \"\$d/pid\" 2>/dev/null || echo -; done | paste -sd' ' - > '$T/locks.seen'; cp '$RL/version' '$T/version.seen' 2>/dev/null; cp '$XS/merge-driver.lock.d/version' '$T/xversion.seen' 2>/dev/null" > "$T/gh.atlist"; }
+atlist
 sweep
 seen=$(cat "$T/locks.seen" 2>/dev/null)
-check "AC1: one pid holds the standing batch's lock and points both named batches' locks" '[ -n "$seen" ] && [ "$(echo "$seen" | tr " " "\n" | sort -u | wc -l | tr -d " ")" = 1 ] && [ "${seen%% *}" != - ]'
-check "AC1: a named batch's lock carries the driver's version, as the standing one's does" '[ -f "$T/version.seen" ] && cmp -s "$T/version.seen" "$T/xversion.seen"'
+check "AC1: one pid holds the repo's lock and points the standing batch's and both named batches' locks" '[ -n "$seen" ] && [ "$(echo "$seen" | tr " " "\n" | sort -u | wc -l | tr -d " ")" = 1 ] && [ "${seen%% *}" != - ]'
+check "AC1: a batch's lock carries the driver's version, as the repo's does" '[ -f "$T/version.seen" ] && cmp -s "$T/version.seen" "$T/xversion.seen"'
 check "AC1: the driver says it is up once, for every batch, and each batch's loop says its own base" 'echo "$out" | grep -q "merge driver up for every batch: repo=acme/widgets" && echo "$out" | grep -q "merge driver up: .*base=main" && echo "$out" | grep -q "merge driver up: .*base=feat/x" && echo "$out" | grep -q "merge driver up: .*base=feat/y"'
 check "one gh pr list serves the whole sweep" '[ "$(lists)" = 1 ]'
 check "a first sweep confirms the green heads and merges nothing" '[ ! -s "$T/merges.log" ] && echo "$out" | grep -q "#201 green at 111111111" && echo "$out" | grep -q "#202 green at 222222222"'
 check "AC3: feat/y's red base holds its own PR, naming the check" 'echo "$out" | grep -q "HOLDING on red feat/y" || echo "$out" | grep -q "red .*feat/y"'
 check "with green heads waiting, the sweep pauses 120s" '[ "$(cat "$T/sleeps")" = 120 ]'
-check "the driver's exit lets every lock go, and it writes the one exit line" '[ "$(locks)" = "- - -" ] && [ "$(echo "$out" | grep -c "merge driver exited")" = 1 ] && echo "$out" | tail -1 | grep -q "merge driver exited 143$"'
+check "the driver's exit lets every lock go, and it writes the one exit line" '[ "$(locks)" = "- - - -" ] && [ "$(echo "$out" | grep -c "merge driver exited")" = 1 ] && echo "$out" | tail -1 | grep -q "merge driver exited 143$"'
 
 # ---- AC2 and AC3: each green PR merges onto its own base; the red base holds only its own -------
 sweep
@@ -92,25 +95,36 @@ check "each batch's loop says it is up only on the first sweep" '[ "$(echo "$out
 touch "$T/sleep.real"; rm -f "$T/sleep.pass" "$T/sleeps"
 (MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --all-batches --log </dev/null >/dev/null 2>&1 &)
 i=0; while ! grep -q "^120$" "$T/sleeps" 2>/dev/null && [ $i -lt 150 ]; do sleep 0.1; i=$((i + 1)); done
-pid=$(cat "$SS/merge-driver.lock.d/pid" 2>/dev/null)
-check "a running driver points both named batches' locks" '[ -n "$pid" ] && [ "$(locks)" = "$pid $pid $pid" ]'
+pid=$(cat "$RL/pid" 2>/dev/null)
+check "a running driver holds the repo's lock and points every batch's" '[ -n "$pid" ] && [ "$(locks)" = "$pid $pid $pid $pid" ]'
 kill -TERM "$pid" 2>/dev/null
 i=0; while kill -0 "$pid" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
-check "TERM stops it and lets the standing lock and both pointers go" '! kill -0 "$pid" 2>/dev/null && [ "$(locks)" = "- - -" ] && tail -1 "$SS/merge-driver.log" | grep -q "merge driver exited 143$"'
+check "TERM stops it and lets the repo's lock and every pointer go" '! kill -0 "$pid" 2>/dev/null && [ "$(locks)" = "- - - -" ] && tail -1 "$SS/merge-driver.log" | grep -q "merge driver exited 143$"'
 check "--log writes each batch's loop into that batch's own log" 'grep -q "#204" "$XS/merge-driver.log" && ! grep -q "#204" "$SS/merge-driver.log"'
 rm -f "$T/sleep.real"
 
-# ---- a batch with a driver of its own is left to it ---------------------------------------------
+# ---- a batch with a driver of its own is left to it, the standing batch too ---------------------
 /bin/sleep 30 & OWN=$!
-mkdir -p "$YS/merge-driver.lock.d"; echo "$OWN" > "$YS/merge-driver.lock.d/pid"
-sweep
-check "a batch whose own driver runs is left to it, its lock untouched" 'echo "$out" | grep -q "batch Y-1: its own merge driver (pid $OWN) runs it, so this one leaves it" && [ "$(cat "$YS/merge-driver.lock.d/pid")" = "$OWN" ]'
-kill "$OWN" 2>/dev/null; wait "$OWN" 2>/dev/null; rm -rf "$YS/merge-driver.lock.d"
+mkdir -p "$SS/merge-driver.lock.d"; echo "$OWN" > "$SS/merge-driver.lock.d/pid"
+atlist; sweep; seen=$(cat "$T/locks.seen" 2>/dev/null)
+check "a session's driver on the standing batch does not stop the repo's driver, which leaves that batch to it" 'echo "$out" | grep -q "batch standing: its own merge driver (pid $OWN) runs it, so this one leaves it" && [ "$(cat "$SS/merge-driver.lock.d/pid")" = "$OWN" ] && echo "$out" | grep -q "merge driver up: .*base=feat/x" && ! echo "$out" | grep -q "merge driver up: .*base=main"'
+check "the repo's driver holds its own lock, not the standing batch's" '[ "${seen%% *}" != - ] && [ "${seen%% *}" != "$OWN" ] && [ "$(echo "$seen" | cut -d" " -f2)" = "$OWN" ]'
+kill "$OWN" 2>/dev/null; wait "$OWN" 2>/dev/null; rm -rf "$SS/merge-driver.lock.d"
+
+# ---- a standing batch it does not cover keeps its lock free --------------------------------------
+cp "$SQ" "$T/sq.json"; jq '.supervised = false' "$T/sq.json" > "$SQ"
+atlist; sweep; seen=$(cat "$T/locks.seen" 2>/dev/null)
+check "a standing batch not handed over gets no pointer, while the named batches do" '[ "$(echo "$seen" | cut -d" " -f2)" = - ] && [ "${seen%% *}" != - ] && [ "$(echo "$seen" | cut -d" " -f3)" = "${seen%% *}" ]'
+cp "$T/sq.json" "$SQ"
+
+# ---- a list as long as its limit falls back to each batch's own --------------------------------
+: > "$T/gh.log"; out=$(MERGE_DRIVER_LIST_LIMIT=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --all-batches 2>&1); rc=$?
+check "a PR list at its limit is said once, and each batch lists its own PRs that sweep" 'echo "$out" | grep -q "the open PR list reached its limit of 1, so each batch lists its own this sweep" && [ "$(grep -c "^pr list.*--base" "$T/gh.log")" -ge 3 ]'
 
 # ---- signed out, the one PR list stops the driver -----------------------------------------------
 touch "$T/gh.signedout"
 sweep
-check "a signed-out gh stops the driver, saying so" '[ $rc -eq 1 ] && echo "$out" | grep -q "FAIL: gh is signed out" && [ "$(locks)" = "- - -" ]'
+check "a signed-out gh stops the driver, saying so" '[ $rc -eq 1 ] && echo "$out" | grep -q "FAIL: gh is signed out" && [ "$(locks)" = "- - - -" ]'
 rm -f "$T/gh.signedout"
 
 finish repo

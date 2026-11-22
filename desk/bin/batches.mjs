@@ -85,6 +85,9 @@ export function slotFor(q) {
 // Whether the environment already pins one batch: a batch named (--batch, DESK_BATCH), or an explicit
 // queue or state path.
 export const batchPinned = (env = process.env) => Boolean(env.DESK_BATCH || env.DESK_QUEUE || env.DESK_AUTOPILOT_STATE);
+// The batches a supervisor tick, or the repo's one merge driver, runs: the one batch named explicitly,
+// else every batch the repo holds, the standing first. -> [{ name, queue, state }]
+export const runBatches = (named = batchPinned()) => (named ? [{ name: E.batchName(), queue: E.queueFile(), state: E.stateDir() }] : listBatches());
 
 // Points a command about one ticket, and every child it starts, at the batch holding `key` by setting
 // DESK_BATCH. A batch already pinned wins, and the key is not looked up. A key in the standing batch
