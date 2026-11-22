@@ -203,32 +203,54 @@ ESCAPE=OK or ESCAPE=BLOCKED — run: touch $CANARY.bash
 CODEX=OK or CODEX=BLOCKED — run: codex --version
 AGENTS=OK or AGENTS=BLOCKED — AGENTS=OK only if every one of these is a subagent type your Agent tool offers (do not launch any): $AGENT_NAMES"
   NCHECKS=$((i + 8))
-  # With the preflight lever on (config §3b Phase 0 levers), a pass on these same inputs stands, and a
+  # With the preflight lever on (config §3b Phase 0 levers), a pass on these same inputs stands: the
+  # ticket's own pass, or for a day another ticket's in this repo, since the ticket's worktree, key,
+  # branch and database, and the other worktrees its settings deny, are placeholders in the hash (the
+  # rules naming those other worktrees are then left out of it, preflight-fingerprint.mjs). A
   # preflight that does run is at low effort. Off, the preflight runs as it always has.
   PRE_EFFORT_ARGS=()
   PASSED=""
+  FINGERPRINT=""
   if [ "$(node "$DESK_ENV_MJS" levers preflight 2>/dev/null </dev/null || true)" = on ]; then
     PRE_EFFORT_ARGS=(--effort low)
+    MASK_ARGS=(--mask "WORKTREE=$WT" --mask "TICKET=$TICKET" --mask "BRANCH=$BRANCH")
+    case "$DATABASE" in ''|none|shared) ;; *) MASK_ARGS+=(--mask "DATABASE=$DATABASE") ;; esac
+    # The main checkout is listed first and is the same for every ticket, so it stays as it is.
+    first=1
+    while IFS= read -r other; do
+      if [ -n "$first" ]; then first=""
+      elif [ "$other" != "$WT" ]; then MASK_ARGS+=(--mask "OTHER_WORKTREE=$other"); fi
+    done < <(git -C "$WT" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
     FINGERPRINT="$(node "$BIN/preflight-fingerprint.mjs" --file "settings=$SETTINGS" --file "agents=$AGENTS" \
       --part "tools=${TOOL_ARGS[*]-}" --part "model=$MODEL" --part "finder=${AUTOPILOT_FINDER_MODEL:-}" --part "text=${AUTOPILOT_TEXT_MODEL:-}" \
-      --part "worktree=$WT" --part "dirs=${ADD_DIRS[*]}" --part "checks=$CHECKS" \
-      --part "gates=$TRACKER $CODEX_PERM jira:$HAVE_JIRA codex:$HAVE_CODEX ${AUTOPILOT_ALLOW_NO_CODEX:-}" </dev/null)" || FINGERPRINT=""
+      --part "dirs=${ADD_DIRS[*]}" --part "checks=$CHECKS" \
+      --part "gates=$TRACKER $CODEX_PERM jira:$HAVE_JIRA codex:$HAVE_CODEX ${AUTOPILOT_ALLOW_NO_CODEX:-}" \
+      "${MASK_ARGS[@]}" </dev/null)" || FINGERPRINT=""
     [ -n "$FINGERPRINT" ] && PASSED="{\"fingerprint\":\"$FINGERPRINT\"}"
+    SKIP_WHY=""; CROSS=""
     if [ -n "$PASSED" ] && [ "$(cat "$PREFLIGHT_RECORD" 2>/dev/null || true)" = "$PASSED" ]; then
+      SKIP_WHY="its last pass had this fingerprint"
+    elif [ -n "$PASSED" ]; then
+      CROSS="$(node "$BIN/preflight-fingerprint.mjs" cross "$STATE" "$FINGERPRINT" "$TICKET" </dev/null 2>/dev/null || true)"
+      [ -n "$CROSS" ] && SKIP_WHY="cross-ticket: ${CROSS%% *}'s pass at ${CROSS#* } had this fingerprint"
+    fi
+    if [ -n "$SKIP_WHY" ]; then
       # The skip and what the preflight would have checked go in the run record, where the
       # skipped-preflight trip reads them (levers-trips.mjs).
       SKIP_ARGS=(--worktree "$WT")
       for p in ${TOOL_PROBES[@]+"${TOOL_PROBES[@]}"}; do SKIP_ARGS+=(--probe "$p"); done
       [ "$(printf '%s' "$TRACKER" | tr 'A-Z' 'a-z')" != none ] && [ -n "$HAVE_JIRA" ] && SKIP_ARGS+=(--jira 1)
       [ "$CODEX_PERM" = yes ] && [ -n "$HAVE_CODEX" ] && SKIP_ARGS+=(--codex 1)
+      [ -n "$CROSS" ] && SKIP_ARGS+=(--cross "${CROSS%% *}")
       node "$BIN/levers-trips.mjs" record-skip --state "$STATE" --ticket "$TICKET" "${SKIP_ARGS[@]}" </dev/null >/dev/null 2>&1 || true
       echo "[preflight] $TICKET"
-      echo "[preflight] skipped: its last pass had this fingerprint"
+      echo "[preflight] skipped: $SKIP_WHY"
       echo "[preflight] pass"
       exit 0
     fi
   fi
   rm -f "$PREFLIGHT_RECORD"
+  [ -z "$FINGERPRINT" ] || node "$BIN/preflight-fingerprint.mjs" forget "$STATE" "$FINGERPRINT" </dev/null >/dev/null 2>&1 || true
   PRE_PROMPT="Perform these $NCHECKS checks and reply with EXACTLY $NCHECKS lines, nothing else. Do not stop early if one is refused.
 $CHECKS"
   # The json result carries the reply, its cost and its turns. With no result line (a rejected model,
@@ -386,7 +408,10 @@ $CHECKS"
   [ -z "$RESULT" ] && echo "  !! preflight produced no output — check for an account session limit (HTTP 429) before debugging permissions" >&2
 
   if [ "$fail" -eq 0 ]; then
-    [ -z "$PASSED" ] || printf '%s\n' "$PASSED" > "$PREFLIGHT_RECORD"
+    if [ -n "$PASSED" ]; then
+      printf '%s\n' "$PASSED" > "$PREFLIGHT_RECORD"
+      node "$BIN/preflight-fingerprint.mjs" passed "$STATE" "$FINGERPRINT" "$TICKET" </dev/null >/dev/null 2>&1 || true
+    fi
     echo "[preflight] pass"
     exit 0
   fi
