@@ -11,6 +11,7 @@
 // checks those too.
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { PROSE_OPT_OUT } from './prose_check.mjs';
 
 export const norm = (s) => s.replace(/\s+/g, ' ').trim();
 
@@ -45,8 +46,9 @@ export function checkRewritten({ t, label, rewritten, items }) {
 }
 
 // A prose check opt-out (tests/prose_check.mjs) annotates a line for that check and is no part of its
-// text, so a split reads each file without them.
-export const withoutOptOuts = (s) => s.replace(/[ \t]*<!--\s*prose-ok:.*?-->/g, '');
+// text, so a split reads each file without them. One in a code span is text, as the check reads it.
+const OPT_OUT_OR_SPAN = new RegExp(`(\`+)[^\`]*?\\1|[ \\t]*${PROSE_OPT_OUT.source}`, 'g');
+export const withoutOptOuts = (s) => s.replace(OPT_OUT_OR_SPAN, (m, span) => (span ? m : ''));
 
 export function checkSplit({ t, label, before, files, read: readRaw, headings: headingCount, minRows, rewritten = [] }) {
   const read = (f) => withoutOptOuts(readRaw(f));

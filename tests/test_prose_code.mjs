@@ -58,9 +58,9 @@ t('AC1 the CLI exits 1 and prints it', [sub.status, sub.stdout.includes('queue-s
 
 // ---- AC2: a script outside desk/bin and the skills' bins ------------------------------------------
 t('AC2 a missing bin script and a repo script are named; desk/bin and a skill bin, installed or not, pass',
-  lines('script.md'), '4 script ~/.claude/desk/bin/no-such-script.mjs, 9 script scripts/make-thing.sh');
-t('DS-890 install.sh, an installed hook, a template, a skill script, an elided path and a file in this repo pass',
-  found('script.md').filter((x) => x.line > 9).map((x) => x.value).join(', '), '');
+  lines('script.md').split(', ').slice(0, 2).join(', '), '4 script ~/.claude/desk/bin/no-such-script.mjs, 9 script scripts/make-thing.sh');
+t('DS-890 install.sh, an installed hook, a template, a skill script, an elided path and a file in this repo pass; an absolute path is not read as one in this repo',
+  found('script.md').filter((x) => x.line > 9).map((x) => `${x.line} ${x.value}`).join(', '), '13 /tests/run.sh');
 t('AC2 the report names the file, the line and the script', report(found('script.md')[0]).startsWith(
   'tests/fixtures/prose-code/script.md:4: the script ~/.claude/desk/bin/no-such-script.mjs is not under desk/bin or a skill\'s bin folder'), true);
 
@@ -88,8 +88,8 @@ t('AC7 the unknown state, and not parked', lines('state.md'), '4 state snoozed')
 t('AC7 the report names the state', found('state.md')[0].message, 'the queue writer has no state snoozed');
 
 // ---- AC8: a path under the state folder that is not declared --------------------------------------
-t('AC8 the undeclared path; a declared one under any placeholder, and its folder, pass; DS-890 so does a name the code builds under the state folder, but not an undeclared file in a STATE_PATHS folder',
-  lines('state-path.md'), '3 state-path no-such/<TICKET>.json, 6 state-path parks/<TICKET>.txt');
+t('AC8 the undeclared path; a declared one under any placeholder, and its folder, pass; DS-890 so does a name the code builds under the state folder, but not an undeclared file in a STATE_PATHS folder, nor a path under a file the code builds there',
+  lines('state-path.md'), '3 state-path no-such/<TICKET>.json, 6 state-path parks/<TICKET>.txt, 7 state-path not-now.jsonl/missing.md');
 t('AC8 the report names the path', found('state-path.md')[0].message, 'no-such/<TICKET>.json is not a declared state path');
 
 // ---- DS-885: a tagged JSON example is checked by its contract's validator -------------------------

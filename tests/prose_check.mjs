@@ -1,7 +1,7 @@
 // The prose check: every reference tests/prose_scan.mjs finds in the skills and agents is held to the
 // code's own lists (desk/bin/prose-facts.mjs), and one the code lacks fails, unless the baseline
-// already holds it. The baseline held the drift there was the day the check landed and is empty since
-// DS-890; an entry is keyed by file, kind, value and context, never by line, and it only shrinks.
+// already holds it. An entry is keyed by file, kind, value and context, never by line, so moving text
+// keeps it held; the check refuses an entry that no longer matches, and only --write-baseline adds one.
 //
 //   node tests/prose_check.mjs [--write-baseline] [<file or dir> ...]   # default: skills/ and agents/
 //
@@ -37,7 +37,9 @@ const CONTRACTS = await contracts(ROOT);
 const UNHELD = new Set(['region', 'contract']);
 export const BASELINE = join(ROOT, 'tests', 'fixtures', 'prose_baseline.json');
 export const OPT_OUT = 'prose-ok:';
-const PROSE_OPT_OUT = /<!--\s*prose-ok:(.*?)-->/;
+export const PROSE_OPT_OUT = /<!--\s*prose-ok:(.*?)-->/;
+// A name the code builds under the state folder that is a file, so nothing is under it: `not-now.jsonl`.
+const FILE_NAME = /\.(?:jsonl?|log|txt|md|pid|lock|mjs|sh)$/;
 const SHELL_OPT_OUT = /prose-ok:(.*)$/;
 // Read by every desk script, queue.mjs included, before its command (desk-env.mjs takeBatchArg).
 const EVERY_COMMAND_FLAGS = ['--batch'];
@@ -52,13 +54,13 @@ export function facts(root = ROOT) {
     for (let d = p.split('/').slice(0, -1); d.length; d.pop()) { declared.add(d.join('/')); declared.add(`${d.join('/')}/`); }
   }
   // A folder STATE_PATHS declares files in holds only those; any other name the code builds under
-  // the state folder holds whatever a skill names inside it.
+  // the state folder is a file, or a folder holding whatever a skill names inside it (FILE_NAME).
   const strict = new Set(Object.values(sp.state).map((p) => p.split('/')[0]));
   return {
     queue: c.queue,
     deskEnv: new Set(c.deskEnv),
     scripts: [...c.scripts, ...c.shipped],
-    inRepo: (p) => !p.split('/').includes('..') && existsSync(join(root, p)),
+    inRepo: (p) => !isAbsolute(p) && !p.split('/').includes('..') && existsSync(join(root, p)),
     autopilot: new Set([...a.markers, ...a.variables]),
     lockClasses: new Set(l.classes),
     lockOf: l.commands,
@@ -144,7 +146,9 @@ export function problem(r, f) {
     case 'state-path': {
       const p = f.holes(v);
       if (/^<>\/?$/.test(p)) return null;
-      return f.statePaths.has(p) || f.stateNames.has(p.split('/')[0]) ? null : `${v} is not a declared state path`;
+      const [head, ...under] = p.split('/');
+      const named = f.stateNames.has(head) && (!under.some(Boolean) || !FILE_NAME.test(head));
+      return f.statePaths.has(p) || named ? null : `${v} is not a declared state path`;
     }
     case 'contract':
       return contractProblem(v, r.body, f.contracts);

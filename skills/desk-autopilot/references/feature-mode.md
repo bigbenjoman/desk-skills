@@ -78,7 +78,7 @@ spine is never left done: it parks, and its PR stays draft.
      coupled to an internal module path, and an expected failure that would come from something other
      than the assertion (an import error, a typo). It changes no spec. Save its final text to
      `<state>/spine-review-<SPINE>.txt` and check `git -C <its worktree> status --porcelain` is clean. <!-- prose-ok: you save this file; no code builds its path -->
-  3. `node ~/.claude/desk/bin/spine-review.mjs questions <SPINE> <state>/spine-review-<SPINE>.txt --batch <EPIC>` <!-- prose-ok: the file you saved in step 2 -->
+  3. `node ~/.claude/desk/bin/spine-review.mjs questions <SPINE> <the file saved in step 2> --batch <EPIC>`
      prints one question per spec, each with its criterion, its file and the findings for it. A
      reviewer that failed or returned nothing (leave the file off) makes every question say its spec
      was not reviewed; never present those as clean. Findings naming no reviewed spec come back as

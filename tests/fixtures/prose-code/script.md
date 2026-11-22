@@ -10,3 +10,4 @@ Run `scripts/make-thing.sh` first, then `desk/bin/merge-log.mjs`.
 
 Desk ships `./install.sh`, `~/.claude/hooks/desk-handoff.py`, `scripts/desk/pre-push.sh` and
 `claude_activity.py`; `…/merge-driver.sh` is elided and `tests/run.sh` is in this repo.
+Run `bash /tests/run.sh`, an absolute path no one has.
