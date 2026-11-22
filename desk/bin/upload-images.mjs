@@ -55,11 +55,21 @@ import { permission, permissionKey, browserProfile, ghRepo, stateDir, DeskConfig
 import { checkedShas } from './preview-db.mjs';
 import { findPlaywright, importPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies, loginState } from './find-playwright.mjs';
 
+// --state <dir>: the state dir of the batch whose job this is, where its PR's preview-database record
+// is (pass.mjs passes it on every job, as a job another batch's pass runs has that pass's environment).
+// By hand, without it, this batch's own (desk-env stateDir).
 const args = process.argv.slice(2);
-const maxAt = args.indexOf('--max');
-const max = maxAt < 0 ? null : Number(args[maxAt + 1]);
-const [pr, dir] = maxAt < 0 ? args : args.filter((_, i) => i !== maxAt && i !== maxAt + 1);
-if (!pr || !dir || (max != null && !(Number.isInteger(max) && max > 0))) { console.error('usage: upload-images.mjs <pr-number> <image-dir> [--max <images>]'); process.exit(1); }
+const flags = {};
+const rest = [];
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--max' || args[i] === '--state') flags[args[i].slice(2)] = args[++i];
+  else rest.push(args[i]);
+}
+const max = 'max' in flags ? Number(flags.max) : null;
+const [pr, dir] = rest;
+if (!pr || !dir || rest.length > 2 || (max != null && !(Number.isInteger(max) && max > 0)) || ('state' in flags && !flags.state)) {
+  console.error('usage: upload-images.mjs <pr-number> <image-dir> [--max <images>] [--state <batch state dir>]'); process.exit(1);
+}
 if (!existsSync(dir)) { console.error(`no such directory: ${dir}`); process.exit(1); }
 
 const perm = permission('pr-images');
@@ -105,7 +115,7 @@ if (!shotIndex(dir).size) { console.error(`no images in ${dir} or a folder under
 // route queued this upload: the advance step, the undraft step, a crashed upload tried again, a paced job.
 let passed;
 try {
-  passed = checkedShas(stateDir(), pr);
+  passed = checkedShas(flags.state ?? stateDir(), pr);
 } catch (e) {
   console.error(`[upload] whether PR #${pr} has a preview database could not be read (${e.message}), so nothing is uploaded`);
   process.exit(6);

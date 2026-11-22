@@ -132,6 +132,20 @@ t('AC2 a file the check never read is held, named', /after-plans\.png did not pa
 writeFileSync(join(upDir, 'after-home.png'), 'home, taken again');
 t('AC2 a file changed since its check is held', uploadHold(state, '43', upDir, ['after-home.png']) != null, true);
 t('AC2 a PR with no preview database is never held (negative control)', uploadHold(state, '45', upDir, ['after-plans.png']), null);
+// AC2: the gate fails closed. Only a record that is not there opens it; one it cannot read or parse
+// (a reader catching a write part-way) throws, and the uploader posts nothing.
+const throws = (f) => { try { f(); return 'no throw'; } catch (e) { return e.message; } };
+const torn = scratch('preview-bad-');
+mkdirSync(join(torn, 'preview-db'));
+writeFileSync(join(torn, 'preview-db', '46.json'), '{"pr":"46","branch":"feat/d","checked":{"fi');
+t('AC2 a half-written record shuts the gate rather than reading as no preview database', /46\.json is not JSON/.test(throws(() => checkedShas(torn, '46'))), true);
+writeFileSync(join(torn, 'preview-db', '47.json'), '{"pr":"48"}\n');
+t('AC2 a record naming another PR shuts the gate', /not PR #47's record/.test(throws(() => checkedShas(torn, '47'))), true);
+mkdirSync(join(torn, 'preview-db', '49.json'));
+t('AC2 a record that cannot be read shuts the gate', /49\.json could not be read/.test(throws(() => checkedShas(torn, '49'))), true);
+t('AC5 a PR with no record beside unreadable ones opens the gate (negative control)', checkedShas(torn, '45'), null);
+t('AC5 a state dir with no preview-db folder at all opens the gate (negative control)', checkedShas(scratch('preview-none-'), '43'), null);
+t('AC2 a record is written aside and renamed in, leaving no part-written file', readdirSync(join(state, 'preview-db')).filter((f) => f.endsWith('.tmp')), []);
 const idxDir = scratch('preview-index-');
 writeFileSync(join(idxDir, 'a.png'), 'a'); mkdirSync(join(idxDir, REJECTED_DIR)); writeFileSync(join(idxDir, REJECTED_DIR, 'b.png'), 'b');
 mkdirSync(join(idxDir, 'mobile')); writeFileSync(join(idxDir, 'mobile', 'c.png'), 'c');

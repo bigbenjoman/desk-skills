@@ -148,9 +148,25 @@ export function checkedRecord(rec, results, head, at, files = {}) {
 // The sha256s of the files PR `pr`'s last passing check read, which are all the uploader may post for
 // it (upload-batches.mjs runUpload `passed`): an empty Set before any check passed, null for a PR with
 // no preview database.
+// Read strictly, as it opens or shuts a gate: only a record file that is not there is "no preview
+// database"; one that cannot be read or parsed, or names another PR, throws, and the uploader posts nothing.
 export function checkedShas(state, pr) {
-  const rec = readRecords(state).find((r) => String(r.pr) === String(pr));
+  const rec = readRecordStrict(state, pr);
   return rec ? new Set(Object.values(rec.checked?.files ?? {})) : null;
+}
+// PR `pr`'s record, null only where its file does not exist; anything else unreadable throws.
+export function readRecordStrict(state, pr) {
+  if (!isPrNumber(String(pr))) throw new Error(`"${pr}" is not a PR number`);
+  const file = recordFile(state, pr);
+  let text;
+  try { text = readFileSync(file, 'utf8'); } catch (e) {
+    if (e.code === 'ENOENT') return null;
+    throw new Error(`${file} could not be read (${e.code ?? e.message})`);
+  }
+  let rec;
+  try { rec = JSON.parse(text); } catch (e) { throw new Error(`${file} is not JSON (${e.message})`); }
+  if (!rec || typeof rec !== 'object' || String(rec.pr) !== String(pr)) throw new Error(`${file} is not PR #${pr}'s record`);
+  return { ...rec, file };
 }
 // Why the screenshots `shots` (file names in `dir`) may not be uploaded to PR `pr`, or null when they may:
 // for a PR with a preview database, each must be a file the last passing check read, unchanged since.
@@ -164,7 +180,10 @@ export function uploadHold(state, pr, dir, shots) {
 export function writeRecord(state, rec) {
   mkdirSync(recordsDir(state), { recursive: true });
   const { file: _f, ...body } = rec;
-  writeFileSync(recordFile(state, rec.pr), `${JSON.stringify(body)}\n`);
+  // Written aside and renamed in, so no reader (checkedShas, the gate) ever sees a half-written record.
+  const file = recordFile(state, rec.pr);
+  writeFileSync(`${file}.${process.pid}.tmp`, `${JSON.stringify(body)}\n`);
+  renameSync(`${file}.${process.pid}.tmp`, file);
 }
 
 // `up`'s steps in order, stopping at the first failure. run(cmd) -> { ok, code, out }; record(rec) is

@@ -3,8 +3,9 @@
 // upload-log.mjs on its own: a fake upload's line, and a fake stall's counting the uploads in the
 // minute and the hour before it. Then upload-images.mjs against a fake Playwright and a stub gh: each
 // file uploaded is logged, and a stall is logged as throttled for the file it was waiting on.
-import { chmodSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileSha } from '../desk/bin/upload-batches.mjs';
 import { logUpload, readUploadLog, uploadsBefore } from '../desk/bin/upload-log.mjs';
 import { uploadSandbox } from './upload_harness.mjs';
 import { scratch } from './scratch.mjs';
@@ -46,7 +47,7 @@ const loc = { first: () => loc, last: () => loc, or: () => loc, locator: () => l
   waitFor: async () => {}, scrollIntoViewIfNeeded: async () => {}, click: async () => {},
   setInputFiles: async (paths) => {
     for (const p of paths) {
-      const f = p.split('/').pop(); const base = f.replace(/\\.[^.]+$/, '');
+      const f = (typeof p === 'string' ? p : p.name).split('/').pop(); const base = f.replace(/\\.[^.]+$/, '');
       if (f !== process.env.FAKE_STALL) value += '<img alt="' + base + '" src="https://github.com/user-attachments/assets/' + base + '">';
     }
   },
@@ -63,10 +64,10 @@ else process.stdout.write(fs.readFileSync(${JSON.stringify(body)}, 'utf8'));
 `);
 chmodSync(join(sandbox.fakes, 'gh'), 0o755);
 const { deskHome } = sandbox;
-const upload = (stall = '') => {
+const upload = (stall = '', env = {}, args = []) => {
   rmSync(join(T, 'images.tags.json'), { force: true });   // each run uploads afresh, not from the last run's links
   writeFileSync(body, '| _drag after-desktop.png_ | _drag after-mobile.png_ |\n');
-  return sandbox.upload({ DESK_PLAYWRIGHT: join(T, 'pw.mjs'), FAKE_STALL: stall });
+  return sandbox.upload({ DESK_PLAYWRIGHT: join(T, 'pw.mjs'), FAKE_STALL: stall, ...env }, args);
 };
 
 const machineLog = join(deskHome, 'upload-log.jsonl');
@@ -84,6 +85,24 @@ t('AC2: the stall says where it was logged', r.stderr.includes(`stalled on after
 t('AC2: the stalled file is logged throttled, counting the uploads by when each finished', readUploadLog(machineLog).slice(2).map(shape),
   ['acme/widgets #7 after-desktop.png uploaded', 'acme/widgets #7 after-mobile.png throttled minute=0 hour=3']);
 t('AC2: a stalled run leaves the stalled file\'s cell for the next run', readFileSync(body, 'utf8').includes('_drag after-mobile.png_'), true);
+
+// ---- DS-550: the preview-database gate reads the job's own batch's state, not the pumping pass's ----
+// A job another batch's pass pumps runs with that pass's DESK_AUTOPILOT_STATE; --state names its own.
+const own = join(T, 'own-state');
+const pumping = join(T, 'pumping-state');
+mkdirSync(join(own, 'preview-db'), { recursive: true });
+mkdirSync(pumping, { recursive: true });
+writeFileSync(join(own, 'preview-db', '7.json'), `${JSON.stringify({ pr: '7', branch: 'feat/x', db: 'feat-x', steps: ['create'],
+  checked: { head: 'a'.repeat(40), at: 'T', shots: 1, files: { 'after-desktop.png': fileSha(join(sandbox.images, 'after-desktop.png')) } } })}\n`);
+r = upload('', { DESK_AUTOPILOT_STATE: pumping }, ['--state', own]);
+t('DS-550 AC2: with the job\'s --state, only the file its own check passed is uploaded', `${r.status} ${readFileSync(body, 'utf8').includes('_drag after-mobile.png_')} ${readFileSync(body, 'utf8').includes('_drag after-desktop.png_')}`, '4 true false');
+r = upload('', { DESK_AUTOPILOT_STATE: own });
+t('DS-550 AC2: by hand, with no --state, the batch\'s own state dir is read', `${r.status} ${readFileSync(body, 'utf8').includes('_drag after-mobile.png_')}`, '4 true');
+writeFileSync(join(own, 'preview-db', '7.json'), '{"pr":"7","che');
+r = upload('', { DESK_AUTOPILOT_STATE: pumping }, ['--state', own]);
+t('DS-550 AC2: a record it cannot read uploads nothing (exit 6)', `${r.status} ${/could not be read/.test(r.stderr)} ${readFileSync(body, 'utf8').includes('_drag after-desktop.png_')}`, '6 true true');
+r = upload('', { DESK_AUTOPILOT_STATE: pumping });
+t('DS-550 AC5: a state dir with no record uploads every file (negative control)', `${r.status}`, '0');
 
 rmSync(T, { recursive: true, force: true });
 console.log(`${fails ? 'FAIL ' : ''}${fails} failed`);

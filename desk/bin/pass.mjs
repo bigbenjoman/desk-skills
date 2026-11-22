@@ -38,6 +38,7 @@ import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
+import { EXIT_PACED } from './upload-batches.mjs';
 import { renderLedger, syncLedger } from './ledger.mjs';
 import { limitName } from './usage-limit.mjs';
 import { probeShared, probeDue, noReadingProbeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
@@ -734,7 +735,13 @@ function runUploadJob(job, max) {
   const env = { ...(own ? process.env : E.otherRepoEnv()) };
   if (job.approved) env.DESK_UPLOAD_APPROVED = '1';
   else delete env.DESK_UPLOAD_APPROVED;
-  const run = shOut('node', [join(BIN, 'upload-images.mjs'), String(job.pr), job.dir, '--max', String(max)], { env, ...(own ? {} : { cwd: job.root }) });
+  // The job's own batch's state dir, where its PR's preview-database record is: another batch's job run
+  // here keeps this pass's DESK_BATCH and DESK_AUTOPILOT_STATE (otherRepoEnv), which name this batch. A
+  // job queued before jobs carried it is not run here: it is left queued, as a paced job is, for its own
+  // pass, which reads its own state.
+  const state = own ? STATE : job.state;
+  if (!state) return { code: EXIT_PACED, out: `[upload] job ${job.key} for #${job.pr} names no state dir, so whether its PR has a preview database cannot be read here; left queued for its own pass` };
+  const run = shOut('node', [join(BIN, 'upload-images.mjs'), String(job.pr), job.dir, '--max', String(max), '--state', state], { env, ...(own ? {} : { cwd: job.root }) });
   return { code: run.ok ? 0 : run.code, out: run.out };
 }
 function pumpUploads() {
@@ -780,7 +787,7 @@ function uploadShots(t, prNo, imgDir) {
     const round = t.upload_round ?? null;
     const queued = UQ.readUploadQueue().jobs.find((j) => j.queue === QUEUE_FILE && j.key === t.key && String(j.pr) === String(prNo) && (j.round ?? null) === round);
     const before = queued && 'cells_before' in queued ? queued.cells_before : cellsIn(prNo);
-    UQ.enqueue({ queue: QUEUE_FILE, repo: GH_REPO, root: MAIN, key: t.key, round, pr: Number(prNo), dir: imgDir, approved: uploadPerm !== 'yes' && !!process.env.DESK_UPLOAD_APPROVED, cells_before: before, profile: E.browserProfile() });
+    UQ.enqueue({ queue: QUEUE_FILE, repo: GH_REPO, root: MAIN, key: t.key, round, pr: Number(prNo), dir: imgDir, state: STATE, approved: uploadPerm !== 'yes' && !!process.env.DESK_UPLOAD_APPROVED, cells_before: before, profile: E.browserProfile() });
   } catch (e) {
     report.failed.push(`${t.key}: image upload to PR #${prNo} did not join the machine's upload queue: ${e.message}; a later pass tries again`);
     return;
