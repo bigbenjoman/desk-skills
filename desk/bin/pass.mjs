@@ -2230,10 +2230,11 @@ const otherRepos = MACHINE_CAP != null || borrowLock || SIBLINGS ? otherQueues({
 if (MACHINE_CAP != null || borrowLock || SIBLINGS) countElsewhere(otherRepos);
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
 // The memory every worker and peer session has reserved from the machine profile's ceiling
-// (mem-lease.mjs); a worker's share is the ceiling over this repo's worker cap. This read only sizes
-// the pass's slots: each spawn reserves its share under the store's lock first (memHeld), and with
-// the kind on one that no longer fits does not start.
-const MEM_POOL = memPool({ env: LEASE_ENV, cap: E.concurrencyLimits().cap, take: !DRY });
+// (mem-lease.mjs); a worker's share is the ceiling over the machine's worker cap, or this repo's
+// where the machine profile sets none, so every repo's workers take the same share. This read only
+// sizes the pass's slots: each spawn reserves its share under the store's lock first (memHeld), and
+// with the kind on one that no longer fits does not start.
+const MEM_POOL = memPool({ env: LEASE_ENV, cap: MACHINE_CAP ?? E.concurrencyLimits().cap, take: !DRY });
 const SLOTS_SNAP = {
   borrowOn: BORROW.on, concurrency, cap: E.concurrencyLimits().cap, running: running.length, spawnable: spawnable.length,
   others, machineCap: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, spawnHeld, lockWhy,

@@ -5,9 +5,9 @@
 //           past the ceiling is granted and the lease log records the would-refuse;
 //   on      a pass starts no worker whose share does not fit under the ceiling beside what is
 //           already reserved.
-// A worker's share is the machine profile's memory-ceiling-gb divided by the cap of the autopilot
-// worker concurrency row, at least 1 GiB, so a pool of reservations caps workers as the machine budget
-// does. An interactive session reserves for a heavy run with `desk-env lease acquire mem <what for>
+// A worker's share is the machine profile's memory-ceiling-gb divided by the machine profile's
+// autopilot-concurrency cap (the repo's own cap where the profile sets none), at least 1 GiB, so a
+// pool of reservations caps workers as the machine budget does. An interactive session reserves for a heavy run with `desk-env lease acquire mem <what for>
 // --units <GiB> --owner claude --ttl <seconds>`, and every pass counts it. The pass reserves under its
 // own pid with a short TTL, then hands the reservation to the worker's pid once the worker has
 // started, so it returns to the pool when the worker exits. With no memory-ceiling-gb nothing is reserved.
@@ -21,7 +21,8 @@ const MOST_HOLDERS = 3;
 const holderOf = (l) => `${l.label} ${l.units}G (${l.owner ? `pid ${l.owner.pid}` : 'no owner'})`;
 const memReq = (key, units, ttl, label, pid) => ({ kind: 'mem', key: `worker ${key}`, units, ttl, label, pid });
 
-// The memory pool as a pass reads it. `cap` is the worker cap of §3b "Autopilot worker concurrency";
+// The memory pool as a pass reads it. `cap` is the machine's worker cap (borrow.mjs machineCap), or
+// the repo's §3b "Autopilot worker concurrency" cap where the machine profile sets none;
 // with `take` false (a dry run) nothing is lapsed. A store that cannot be read, or a broker that fails
 // any other way (a lease directory it cannot lock), is `unreadable`, so the pass judges memory by the
 // legacy rules.
