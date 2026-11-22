@@ -3,7 +3,8 @@
 # layer: L2
 # tests/related.sh in a scratch repo holding copies of it, tests/run.sh and tests/scope_sections.mjs,
 # a toy desk/bin/desk-env.mjs, and four toy suites: test_a.sh, test_b.sh and test_c.sh name lib/a.sh,
-# lib/b.sh and lib/c.sh (test_c.sh also an export desk-env.mjs gains), test_lint.sh always runs.
+# lib/b.sh and lib/c.sh (test_c.sh also an export desk-env.mjs gains), test_lint.sh always runs; later
+# main gains test_e2e.sh, an L3 suite reaching lib/a.sh only through lib/top.sh.
 # Scratch HOME and repo only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
@@ -113,6 +114,29 @@ ci_suites=$(grep -m 1 '^suites=' "$T/gh_out" | grep -oE 'test_[a-z]+\.sh' | tr '
 out="local: $local_suites ci: $ci_suites"
 check "DS-818 AC8 related.sh and CI choose the same suites"  '[ "$local_suites" = "test_a.sh test_b.sh test_lint.sh " ] && [ "$ci_suites" = "$local_suites" ]'
 git -C "$R" checkout -q fix/x
+
+# DS-986: main gains an end-to-end suite, test_e2e.sh (L3), naming lib/top.sh, which sources lib/a.sh. The
+# branch's change to lib/a.sh reaches it only through that: it is left for CI, and the record counts it.
+git -C "$R" checkout -q main
+printf '. "$ROOT/lib/a.sh"\n' > "$R/lib/top.sh"
+printf '# layer: L3\n# runs lib/top.sh\necho "ok suite e2e"\n' > "$R/tests/test_e2e.sh"
+git -C "$R" add -A; git -C "$R" commit -q -m 'an e2e suite'
+git -C "$R" update-ref refs/remotes/origin/main HEAD; git -C "$R" checkout -q fix/x; git -C "$R" merge -q --no-edit origin/main
+related
+check "DS-986 AC1 an L3 suite the change reaches only through imports does not run, and is named as left for CI" \
+  '[ $rc -eq 0 ] && ran a && ! ran e2e && [[ "$out" == *"related: left for CI, as the change reaches these L3 suites only through imports: test_e2e.sh"* ]]'
+check "DS-986 AC6 the run's record counts the suites left for CI" '[ "$(rec left_for_ci)" = 1 ] && [ "$(rec scope)" = changed ]'
+(cd "$R" && GITHUB_OUTPUT="$T/gh_e2e" node tests/scope_sections.mjs --base origin/main --head HEAD --github-output >/dev/null)
+check "DS-986 AC5 CI's call on the same branch still selects it" 'grep -q "^suites=.*test_e2e.sh" "$T/gh_e2e" && ! grep -q "^ci=" "$T/gh_e2e"'
+printf '. "$ROOT/lib/a.sh"\necho top\n' > "$R/lib/top.sh"
+related
+check "DS-986 AC2 a change to a file it claims directly runs it, with none left for CI" \
+  '[ $rc -eq 0 ] && ran e2e && [[ "$out" != *"left for CI"* ]] && [ "$(rec left_for_ci)" = 0 ]'
+git -C "$R" checkout -q -- lib/top.sh
+printf 'x\n' > "$R/.gitignore"
+related
+check "DS-986 AC4 a full scope runs every suite, L3 included" '[ $rc -eq 0 ] && ran e2e && ran b && [ "$(rec left_for_ci)" = 0 ]'
+git -C "$R" clean -q -f .gitignore
 
 cp "$R/tests/scope_sections.mjs" "$T/scope_sections.mjs"
 printf 'process.exit(1);\n' > "$R/tests/scope_sections.mjs"
