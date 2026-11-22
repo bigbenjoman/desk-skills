@@ -44,7 +44,7 @@ jobs=()
 [ -z "${DESK_TEST_JOBS:-}" ] || jobs=(-j "$DESK_TEST_JOBS")
 base="origin/$(desk-env get default-branch 2>/dev/null || echo main)"
 # The scope run.sh records for the run (full or changed), why, and how many suites it left for CI.
-export DESK_RUN_SCOPE=full DESK_RUN_REASON= DESK_RUN_LEFT_FOR_CI=0
+export DESK_RUN_SCOPE=full DESK_RUN_REASON='' DESK_RUN_LEFT_FOR_CI=0
 every(){ echo "related: $1, so every suite runs" >&2; DESK_RUN_REASON=$1; "$SH" "$T/run.sh" ${jobs[@]+"${jobs[@]}"}; exit $?; }
 git merge-base "$base" HEAD >/dev/null 2>&1 || every "no merge base with $base"
 OUT="$(mktemp "${TMPDIR:-/tmp}/desk-related.XXXXXX")" || exit 1
