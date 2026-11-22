@@ -89,22 +89,32 @@ t(`AC2: ${WORKER_FILES.length} worker files checked, rows named without an id`, 
 
 // ---- DS-875: skills read the config by section or row, never the file whole -------------------
 // Only desk-setup and desk-update, which write the file, open it whole. A whole read is a Read of
-// the `CONFIG` file, a `cat` of it, or `desk-env show` with no section named (every section).
+// the `CONFIG` file, a `cat` of it, a Read of what `desk-env where` resolved, a brief handing on the
+// file's path, or `desk-env show` with no section named (every section). §3c is not a section here:
+// show refuses it.
 const WRITERS = new Set(['desk-setup', 'desk-update']);
 const NOT = String.raw`(?<!(?:not|never|cannot) )`;
 const WHOLE = [
-  new RegExp(String.raw`${NOT}\bread (?:the |this repo's )?(?:\`CONFIG\`|config) file\b`, 'i'),
-  new RegExp(String.raw`${NOT}\bread (?:the |this repo's )?(?:\`CONFIG\`|config)(?=[.,;)*]|$)`, 'im'),
+  new RegExp(String.raw`${NOT}\bread (?:the |this repo's )?(?:repo )?(?:\`CONFIG\`|config) file\b`, 'i'),
+  new RegExp(String.raw`${NOT}\bread (?:the |this repo's )?(?:repo )?(?:\`CONFIG\`|config)(?=[.,;)*]|$| at\b)`, 'im'),
+  /\bdesk-env where`?,?\s+then\s+read it\b(?!\s+with\b)/i,
+  /<CONFIG path>/,
   /\bcat\s+"?\$\{?CONFIG\b/,
-  /\bdesk-env show(?![ \t]+(?:§?\d[a-c]?|rules)\b)/,
+  /\bdesk-env show(?![ \t]+(?:§?\d[ab]?|rules)\b)/,
 ];
-const SECTION_READ = /\bdesk-env show(?:[ \t]+(?:§?\d[a-c]?|rules)\b)+|\bdesk-env get --json(?: --where)? --section\b/;
+const SECTION_READ = /\bdesk-env show(?:[ \t]+(?:§?\d[ab]?|rules)\b)+|\bdesk-env get --json(?: --where)? --section\b/;
 const wholeReads = (text) => text.replace(/^---\n[\s\S]*?\n---\n/, '').split(/\n\s*\n/)
   .filter((p) => WHOLE.some((re) => re.test(p))).map((p) => p.trim().split('\n')[0].slice(0, 80));
 t('DS-875 can fail: Read the CONFIG file', wholeReads('Read the `CONFIG` file. `EXISTS=no` means stop.').length, 1);
 t('DS-875 can fail: Read the config, in a parenthesis', wholeReads('(resolve it with `desk-env where`, then Read the config)').length, 1);
 t('DS-875 can fail: desk-env show with no section', wholeReads('Read `desk-env show` (rules and rows, no §3c).').length, 1);
-t('DS-875 passes: a section read', wholeReads('Read `desk-env show rules 0 3 5` (never the `CONFIG` file whole).').length, 0);
+t('DS-875 can fail: desk-env where, then Read it', wholeReads('§-references are to this config (`desk-env where`, then Read it).').length, 1);
+t('DS-875 can fail: a brief reading the repo config at its path', wholeReads('> Read the repo config at `<CONFIG path>`: §4 and §5.').length, 1);
+t('DS-875 can fail: a brief handed the path', wholeReads('> The repo config is at\n> `<CONFIG path>`.').length, 1);
+t('DS-875 can fail: §3c is no section', wholeReads('Read `desk-env show 3c`.').length, 1);
+t('DS-875 passes: desk-env where, then read it by section', wholeReads('(resolve it with `desk-env where`, then read it with `desk-env show 5`)').length, 0);
+t('DS-875 a §3c read is not a section read', SECTION_READ.test('Read `desk-env show 3c`.'), false);
+t('DS-875 passes: a section read',wholeReads('Read `desk-env show rules 0 3 5` (never the `CONFIG` file whole).').length, 0);
 t('DS-875 passes: a row of a section', wholeReads('**Read the config §4 People table** for who reviews.').length, 0);
 t('DS-875 passes: saying a worker cannot read it', wholeReads('Read rows with `desk-env` (a worker cannot read `CONFIG`).').length, 0);
 t('DS-875 passes: a §3b section first', wholeReads('Read `desk-env show 3b 4`.').length, 0);

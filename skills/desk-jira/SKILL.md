@@ -26,7 +26,10 @@ A `TODO` in any row this skill needs is not a gap to guess: stop, ask, and offer
 Jira project `desk-env list jira-project`, Ticket key pattern `desk-env get ticket-pattern`, Priority
 `desk-env list jira-priority`, Other fields `desk-env list jira-other-fields`, Labels
 `desk-env list labels`, In-progress state `desk-env get in-progress-state`, Review state
-`desk-env get review-state` and Done state `desk-env get done-state`.
+`desk-env get review-state` and Done state `desk-env get done-state`. The rows no plain `get` prints
+read with `desk-env get --json <id>`: Workflow `jira-workflow`, desk-jira set up? `desk-jira-setup`,
+Production `production`, and §4 People's Designer `designer`, QA filers `qa-filers` and Deletes
+tickets `ticket-deleters`; Product owner is `desk-env get product-owner`.
 
 - **§4 Tracker `none`: there is no tracker for this repo.** Say so and stop. Nothing below applies;
   a ticket in this repo is a plain description or a GitHub issue, which `desk-ticket` handles.

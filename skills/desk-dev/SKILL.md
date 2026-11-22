@@ -32,7 +32,8 @@ prefix `desk-env get command-prefix`, Install `desk-env cmds install-cmd`, Dev s
 `desk-env cmds dev-cmd`, Env files `desk-env list env-files`, Database URL variable
 `desk-env list db-url-var`, Local database `desk-env get local-db`, Local services
 `desk-env list local-services`, Staging `desk-env list staging`, Staging bypass token location
-`desk-env get staging-bypass` and Vercel `desk-env list vercel`.
+`desk-env get staging-bypass` and Vercel `desk-env list vercel`; §4 People "Infra and security
+owner" `desk-env get --json infra-owner` and Product owner `desk-env get product-owner`.
 
 | Config | Used for |
 |---|---|

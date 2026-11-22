@@ -2292,20 +2292,26 @@ function whereJson() {
   const r = currentRepo(); const p = configPathOrNull();
   return { slug: r.slug ?? '', gh_repo: r.ownerRepo ?? '', config: p ?? '', creds: repoConfigDir() ?? '', exists: !!(p && existsSync(p)) };
 }
+// The section names a reader was asked for, as SECTIONS spells them ('§3B' is '3b'). A GetJsonUsage
+// for §3c, the harness rule ledger only /desk-setup reads, or for a name outside SECTIONS and `extra`.
+function checkSections(cmd, names, extra = []) {
+  const want = names.map((s) => String(s ?? '').replace(/^§/, '').toLowerCase());
+  if (want.includes('3c')) throw new GetJsonUsage(`${cmd}: §3c, the harness rule ledger, is read by /desk-setup alone`);
+  const bad = want.filter((s) => !extra.includes(s) && !SECTIONS.includes(s));
+  if (bad.length) throw new GetJsonUsage(`${cmd}: unknown section ${bad.map((s) => `"${s}"`).join(', ')} (known: ${[...extra, ...SECTIONS].join(', ')})`);
+  return want;
+}
 function getJson(args) {
-  const ids = [], sections = [];
+  const ids = [], named = [];
   let where = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--json') continue;
     if (args[i] === '--where') { where = true; continue; }
-    if (args[i] === '--section') { sections.push(String(args[++i] ?? '').replace(/^§/, '').toLowerCase()); continue; }
+    if (args[i] === '--section') { named.push(args[++i]); continue; }
     ids.push(args[i]);
   }
-  if (!ids.length && !sections.length) throw new GetJsonUsage('usage: desk-env.mjs get --json [--where] [--section <n>] [<id>...]');
-  for (const s of sections) {
-    if (s === '3c') throw new GetJsonUsage('desk-env get --json: §3c, the harness rule ledger, is read by /desk-setup alone; it has no rows here');
-    if (!SECTIONS.includes(s)) throw new GetJsonUsage(`desk-env get --json: unknown section "${s}" (known: ${SECTIONS.join(', ')})`);
-  }
+  if (!ids.length && !named.length) throw new GetJsonUsage('usage: desk-env.mjs get --json [--where] [--section <n>] [<id>...]');
+  const sections = checkSections('desk-env get --json', named);
   const unknown = ids.filter((id) => !ROW_ENTRY.has(id));
   if (unknown.length) throw new GetJsonUsage(`desk-env get --json: unknown config id ${unknown.map((id) => `"${id}"`).join(', ')} (the schema does not declare it)`);
   const parsed = parseConfig();
@@ -2399,10 +2405,8 @@ if (isMain) {
       }
       case 'show': {
         const p = configPathOrNull();
-        const want = args.map((s) => String(s).replace(/^§/, '').toLowerCase());
-        if (want.includes('3c')) { console.error('desk-env show: §3c, the harness rule ledger, is read by /desk-setup alone'); process.exit(2); }
-        const bad = want.filter((s) => s !== 'rules' && !SECTIONS.includes(s));
-        if (bad.length) { console.error(`desk-env show: unknown section ${bad.map((s) => `"${s}"`).join(', ')} (known: rules, ${SECTIONS.join(', ')})`); process.exit(2); }
+        let want;
+        try { want = checkSections('desk-env show', args, ['rules']); } catch (e) { if (!(e instanceof GetJsonUsage)) throw e; console.error(e.message); process.exit(2); }
         if (!p || !existsSync(p)) { console.error('desk-env show: no config for this repo (run /desk-setup)'); process.exit(3); }
         console.log(configRows(readFileSync(p, 'utf8'), want));
         break;
