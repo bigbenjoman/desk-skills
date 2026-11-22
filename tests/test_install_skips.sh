@@ -3,7 +3,8 @@
 # covers: skills/** vendor/** agents/** commands/**
 # install.sh run with no terminal (as /desk-update runs it: stdin from /dev/null) skips every
 # settings prompt; each skip must be listed at the end with the way to apply it. Runs the whole
-# installer under a throwaway HOME with stub claude, gh and codex. Nothing touches your real ~/.claude.
+# installer under a throwaway HOME with stub claude, gh, codex, npm and open. Nothing touches your
+# real ~/.claude, and no Desk.app is built or opened.
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
@@ -69,6 +70,11 @@ OLD=("$HOME/.claude/desk/bin/$VM" "$HOME/.claude/desk/bin/runner-slot.sh" "$HOME
 mkdir -p "$HOME/.claude/desk/bin" "$HOME/.local/bin" "$HOME/Library/LaunchAgents"
 for f in "${OLD[@]}"; do case "$f" in */runner|*/memory-turns) mkdir -p "$f" ;; *) touch "$f" ;; esac; done
 printf '#!/bin/sh\necho "$@" >> "%s/launchctl.calls"\nexit 1\n' "$T" > "$T/bin/launchctl"; chmod +x "$T/bin/launchctl"
+# Desk.app: launchctl above starts no server, so a Desk.app built and opened here would retry it for
+# good, and Electron writes under the real ~/Library/Application Support/Desk whatever HOME is. npm
+# fails, so nothing is built, and open only records that something asked for it.
+printf '#!/bin/sh\necho "$@" >> "%s/npm.calls"\nexit 1\n' "$T" > "$T/bin/npm"
+printf '#!/bin/sh\necho "$@" >> "%s/open.calls"\n' "$T" > "$T/bin/open"; chmod +x "$T/bin/npm" "$T/bin/open"
 # Its VM runs outside launchd, so the old tool's own down is what stops it.
 # Tart holds the runner's VM and its base image by tag and by digest (deleting the tag takes the
 # digest with it), beside a VM and an image that are not the runner's. TART_REFUSE names one it won't delete.
@@ -297,5 +303,10 @@ Left `TODO` or absent, each falls back to the machine profile.
 UEOF
 check "#828 only a value of TODO counts: not a note's, not another column's, not a row with a default" \
   '[ "$(DESK_CONFIG="$T/uc.md" node "$S/../desk/bin/desk-env.mjs" unset | tr "\t" " " | tr "\n" ",")" = "§2 Primary repo root,§3 pr-open,§3b Autopilot worker concurrency,§3b Memory ceiling for parallel work (GB),§3b Test worker cap under the test lock," ]'
+
+# DS-973 AC1: none of the installs above built a Desk.app with the real npm or opened one. On macOS
+# the Desk.app step ran, against the stub npm.
+check "DS-973 AC1 no install built Desk.app or called open" \
+  '[ ! -e "$T/open.calls" ] && [ ! -e "$HOME/Applications/Desk.app" ] && { [ "$(uname)" != Darwin ] || [ -s "$T/npm.calls" ]; }'
 
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]
