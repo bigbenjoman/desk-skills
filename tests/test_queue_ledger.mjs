@@ -472,9 +472,9 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   pass(70, ['M']);
   const evs = since(f, from);
   t('AC7 progress_at and progress_sha are never appended', evs.some((e) => e.type === 'legacy_set' && ('progress_at' in e.data.fields || 'progress_sha' in e.data.fields)), false);
-  t('AC7 the progress waits are, the stalled one\'s escalation and the end of its wait with them',
+  t('AC7 the progress waits are, the stalled one\'s escalation, the end of each wait at progress, and the wait after it',
     j(evs.filter((e) => /^wait/.test(e.type)).map((e) => `${e.type} ${e.key}${e.data.escalated ? ' escalated' : ''}`)),
-    j(['waiting S', 'waiting M', 'waiting S escalated', 'waited S', 'waited M']));
+    j(['waiting S', 'waiting M', 'waiting S escalated', 'waited S', 'waited M', 'waiting S']));
   t('AC7 the log reads no illegal transition', readLog(dirname(f)).illegal.length, 0);
   const d = queueDifference(f);
   t('AC7 the rebuild matches and the pass prints no difference line',
