@@ -16,7 +16,8 @@ description: >-
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no  (exit 3 outside a repo)
 ```
 
-Then **Read the `CONFIG` file**. `EXISTS=no` means stop: say which slug was looked up and offer
+Then **read `desk-env show rules 0 1 2 3 3b 4 5`**, the sections below, never the `CONFIG` file
+whole. `EXISTS=no` means stop: say which slug was looked up and offer
 `/desk-setup`. Never borrow another repo's config, and never fall back to defaults invented on the
 spot.
 

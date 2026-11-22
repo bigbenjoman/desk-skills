@@ -4,7 +4,7 @@ For anything the user will send or paste as themselves: PR review replies, Jira 
 drafts to colleagues, standup points.
 
 **Config §5 "Messages to colleagues" is the source of truth** for this repo (resolve it with
-`desk-env where`, then Read the config). What follows is the default register behind that row's
+`desk-env where`, then read it with `desk-env show 5`). What follows is the default register behind that row's
 default wording. If the user has changed that row, the row wins.
 If you have seen enough of the user's own writing this session — their Slack messages, Jira comments,
 PR replies — let it tune the details, within the rules below.

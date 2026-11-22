@@ -82,6 +82,7 @@ for (const r of rows) {
 const REWRITTEN = [
   ['DS-460', 'your copy predates 2.0: re-run `install.sh`', 1], // every installed copy is past 2.0
   ['DS-824', 'park: no acceptance criteria; an open decision', 1], // preformatted criteria and a Figma URL anywhere count
+  ['DS-875', 'Read the `CONFIG` file. `EXISTS=no` means stop', 1], // read by section through desk-env show, never whole
 ];
 checkRewritten({ t, label: 'AC2', rewritten: REWRITTEN, items: paras });
 const after = norm(files.map(read).join('\n\n'));

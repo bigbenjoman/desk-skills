@@ -49,7 +49,7 @@ Restatement and commented-out code report in their own `commentary` band and nev
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 ```
 
-Read the `CONFIG` file. `EXISTS=no` is not a stop here: this skill writes nothing, so it runs with
+Read `desk-env show rules 0 3 5` (never the `CONFIG` file whole). `EXISTS=no` is not a stop here: this skill writes nothing, so it runs with
 no config, reaches intent from the PR and the commits only (Phase 2), and says
 `config: none` in the report header. With a config, take:
 

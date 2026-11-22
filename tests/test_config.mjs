@@ -553,12 +553,17 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   t('#746 and the §3c ledger', /3c|Bash\(x\)/.test(all), false);
   t('#746 the rules for the agent reading it are printed whole, prose and all', all.includes("## Rules for the agent reading this file\n\n5. **The Recommended column is not this user's answer.**"), true);
   t('#746 but not when a section is named', configRows(text, ['1']).includes('Rules for the agent'), false);
-  t('#746 a named section is printed alone, §3c included when named', `${configRows(text, ['1'])} / ${/Bash\(x\)/.test(configRows(text, ['§3c']))}`, '## 1. You\n| Field | Value |\n|---|---|\n| GitHub handle | `me` | / true');
+  t('#746 a named section is printed alone', configRows(text, ['1']), '## 1. You\n| Field | Value |\n|---|---|\n| GitHub handle | `me` |');
+  t('DS-875 AC4 §3c is never printed, even when named', /3c|Bash\(x\)|Ledger/.test(configRows(text, ['§3c', '3', '1', 'rules'])), false);
+  t('DS-875 AC4 `rules` names the rules for the agent, prose and all', configRows(text, ['rules', '1']).startsWith("## Rules for the agent reading this file\n\n5. **The Recommended column is not this user's answer.**\n\n## 1. You"), true);
   const showEnv = { ...process.env, DESK_CONFIG: join(T, 'show.md'), DESK_MACHINE: join(T, 'none.md'), HOME: T };
   writeFileSync(join(T, 'show.md'), text);
-  t('#746 desk-env show prints the same', execFileSync('node', [BIN, 'show', '3'], { encoding: 'utf8', env: showEnv }).trim(), configRows(text, ['3']));
-  let code = 0; try { execFileSync('node', [BIN, 'show'], { stdio: 'ignore', env: { ...showEnv, DESK_CONFIG: join(T, 'missing.md') } }); } catch (e) { code = e.status; }
-  t('#746 with no config it exits 3', code, 3);
+  t('#746 desk-env show prints the same', execFileSync('node', [BIN, 'show', 'rules', '3'], { encoding: 'utf8', env: showEnv }).trim(), configRows(text, ['rules', '3']));
+  const showRun = (args, env = showEnv) => spawnSync('node', [BIN, 'show', ...args], { encoding: 'utf8', env });
+  t('#746 with no config it exits 3', showRun([], { ...showEnv, DESK_CONFIG: join(T, 'missing.md') }).status, 3);
+  t('DS-875 AC4 desk-env show 3c exits 2 and prints no ledger', (({ status, stdout }) => `${status} ${/Bash\(x\)/.test(stdout)}`)(showRun(['3', '§3c'])), '2 false');
+  t('DS-875 an unknown section exits 2, naming it', (({ status, stderr }) => `${status} ${/"9"/.test(stderr)}`)(showRun(['9'])), '2 true');
+  t('DS-875 AC4 every section show prints leaves the ledger out', /Bash\(x\)|3c/.test(showRun([]).stdout), false);
 }
 // The schema (config-schema.mjs) against the shipped template, both ways, and the id tables desk-env
 // derives from it against the literals they replaced.

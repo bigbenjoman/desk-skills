@@ -1,7 +1,7 @@
 # The repo facts desk-clearance depends on, and where to get them
 
-No repo's facts are written here. Each one lives in a config row (resolve the config with
-`desk-env where`, then Read it) **and** on the platform. The platform is the authority: a row is
+No repo's facts are written here. Each one lives in a config row (in the
+sections read at the skill's start, or by its row's `desk-env get` call) **and** on the platform. The platform is the authority: a row is
 what setup detected at the time, and it drifts. Re-verify rather than trust whenever behaviour
 disagrees, and when the two differ, act on the live answer and tell the user the row needs
 `/desk-setup`.
