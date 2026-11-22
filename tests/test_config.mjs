@@ -574,7 +574,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
 
   // AC4: the literals desk-env held before the schema, as `id|section|row`, `|table` marking a table id.
   const BEFORE_ROWS = [
-    'gh-repo|0|GitHub repo', 'default-branch|0|Default branch', 'repo-description|0|One-line description', 'other-names|0|Other names', 'github-handle|1|GitHub handle',
+    'gh-repo|0|GitHub repo', 'default-branch|0|Default branch', 'repo-description|0|One-line description', 'github-handle|1|GitHub handle',
     'jira-email|1|Jira email', 'jira-display-name|1|Jira display name', 'jira-account-id|1|Jira account id', 'git-author|1|Git author name / email',
     'name|1|Name', 'repo-root|2|Primary repo root', 'worktrees-dir|2|Worktrees directory', 'handoff-dir|2|Handoff directory',
     'backups-dir|2|Backups directory', 'design-dir|2|Design canvases directory', 'wsl|2|Running on WSL?', 'browser-profile|2|Signed-in browser profile',
@@ -625,6 +625,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   // lost or renamed still fails while a deliberate addition is recorded here.
   const ADDED_ROWS = [
     'test-signin|4|Test sign-in', // DS-804
+    'other-names|0|Other names', // DS-805
   ];
   const sorted = (a) => [...a].sort().join('\n');
   const rowsNow = Object.entries(CONFIG_ROWS).map(([id, r]) => [id, r.section, r.row, ...(r.table ? ['table'] : [])].join('|'));
