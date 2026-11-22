@@ -58,7 +58,7 @@ and per-ticket database, and the other worktrees its settings deny, are placehol
 tickets in a repo with the same settings share a fingerprint. A spawn or resume with the fingerprint
 of its ticket's last pass runs no preflight, makes no line in the ticket's log, and its spawn line
 says it was skipped. So does a spawn with the fingerprint of another ticket's pass in the repo within
-the last 24 hours, recorded in `$DESK_STATE/workers/preflight-passes.json`: its spawn line and run record
+the last 24 hours, recorded in `$DESK_STATE/workers/preflight-passes.json`: its spawn line and run record <!-- prose-ok: written by preflight-fingerprint.mjs beside the per-ticket workers records, not a batch-state path -->
 name it a cross-ticket skip and the ticket whose pass it took. Any change runs one, at low effort, and
 so does a spawn after a failure or a usage limit, which leave the ticket no record of its own (another
 ticket's pass can still stand for it), or with an input that cannot be read. Delete both records to force one. Off, every preflight runs as it did, with no `--effort`.
