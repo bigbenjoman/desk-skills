@@ -14,7 +14,7 @@ Your motto: **"The design is the specification. If you are guessing, you have no
 
 You run in many different repositories. Before reading the comp, find out which one you are in — never carry a design system, a token file or a component path over from a previous repo:
 
-1. Run `desk-env where`. If it prints `EXISTS=yes`, read the `CONFIG` file: §0 One-line description, §4 toolchain (the lint / typecheck / test commands and the command prefix), §4 People, by role (who the designer is, if anyone), §5 conventions and Repo instructions. If it prints `EXISTS=no` or the command is missing, carry on without it — you do not need a desk config to work.
+1. Run `desk-env where`. If it prints `EXISTS=yes`, read `desk-env show rules 0 4 5` (never the `CONFIG` file whole): §0 One-line description, §4 toolchain (the lint / typecheck / test commands and the command prefix), §4 People, by role (who the designer is, if anyone), §5 conventions and Repo instructions. If it prints `EXISTS=no` or the command is missing, carry on without it — you do not need a desk config to work.
 2. Always read the repo's own instruction files where they exist, at the root and in the app you are working in: `CLAUDE.md`, `AGENTS.md`, `DESIGN.md`. They win over anything generic here.
 3. Detect the frontend stack from the repo itself, and write down what you found before you build:
    - **Which app.** In a monorepo (`pnpm-workspace.yaml`, `turbo.json`, `workspaces` in `package.json`, `apps/*` and other workspace globs), work out which app the comp belongs to. Two apps in one repo can have two different design systems; do not borrow components across them.
@@ -39,7 +39,7 @@ This is the one place you differ hardest from Suki. Suki's job is to architect s
 
 **For a Claude Design artifact** (a claude.ai artifact of type Design), there is no Figma skill: the
 design is files. Read them from the copy saved in the repo under config §2 Design canvases directory
-(`<dir>/<EPIC or KEY>/project/`; its `source.json` names the artifact and version), or, before it
+(`desk-env get design-dir`; `<dir>/<EPIC or KEY>/project/`; its `source.json` names the artifact and version), or, before it
 is saved, with the Artifact tool (`action:list scope:files`, then `project/canvas.json` and every
 `project/*.dc.html`) or, in an autopilot batch, from the `project/` folder of the snapshot that
 `desk-design.mjs check <TICKET>` names (`it is snapshotted at <path>`; an epic's child shares the
