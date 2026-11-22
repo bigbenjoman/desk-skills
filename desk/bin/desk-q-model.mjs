@@ -858,6 +858,7 @@ const supervisorOff = (r) => r.run?.agent === 'off';
 // How many of the repo's tickets and unmerged PRs are in a shown state.
 const count = (r, k) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === k).length;
 // A batch's base conflict fix holds a worker while it runs: the pass counts it against both caps.
+/** @type {(r: any) => number} */
 const baseFixes = (r) => (r.batches ? r.batches.reduce((a, b) => a + baseFixes(b), 0) : r.q?.base_fix?.running ? 1 : 0);
 // The workers a repo or batch has running: its running tickets and its base conflict fix.
 const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
@@ -2071,7 +2072,7 @@ const leversDue = (p) => !p.page || p.old || !!leversFault(p);
 // shown when the pass runs on desk-q's login. Weekly pacing per login is not built yet. `logins` is
 // loginsNow's.
 const NO_READING = { five_hour: null, seven_day: null, at: null, none: [] };
-/** @param {Batch[]} repos @param {number} now @param {Batch[]} [shown] */
+/** @param {RowRef[]} repos @param {number} now @param {RowRef[]} [shown] */
 export function usageOf(repos, now, shown = repos) {
   const logins = loginsNow(repos, now);
   const own = readUsage({ dirs: stateDirs({ self: usageDir() }), login: lineLogin(), now });
@@ -3858,10 +3859,14 @@ function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () =
 /** @typedef {{ reading: UsageReading, running: number, held: boolean, held_by: string[] }} UsageFigures */
 /** @typedef {{ id: string, slug: string, name: string }} RepoIdentity */
 /**
- * A loaded batch or repo row (loadBatch, lightBatch, repoRow), as the views read it: the fields their
- * JSON copies are typed, so a field computed from the wrong one fails the check; the rest stay open.
+ * A repo row (repoRow) as homeJson and repoFigures read it: only the fields their JSON copies, so a
+ * field computed from the wrong one, or from one not listed here, fails the check.
  * @typedef {RepoIdentity & { error: string | null, live: boolean, last: number | null, done: number,
- *   workers: number | null, cap: number, [k: string]: any }} Batch
+ *   workers: number | null, cap: number }} Batch
+ */
+/**
+ * Any loaded batch or repo row, as usageOf reads it: its name typed, the rest open.
+ * @typedef {{ slug: string, name: string, [k: string]: any }} RowRef
  */
 /**
  * @typedef {RepoIdentity & { error: null, live: boolean, last_pass_at: string | null, last_pass: string,
