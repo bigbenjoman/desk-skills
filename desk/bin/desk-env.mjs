@@ -48,7 +48,7 @@
 //   node desk-env.mjs required-fields <type>  print §4 Required fields for an issue type as JSON (requiredFields)
 //   node desk-env.mjs branch-check <name>     exit 1, saying why, if the name is no usable ticket branch
 //   node desk-env.mjs perm-or-unset <id>      as perm, but exit 3 (no output) when the row is unset
-//   node desk-env.mjs ticket-kind <id>        print tracker|work-id|base|audit|issue|slug, exit 2 if the id is not accepted
+//   node desk-env.mjs ticket-kind <id>        print tracker|work-id|base|base-red|audit|issue|slug, exit 2 if the id is not accepted
 //   node desk-env.mjs perm <permission id>    print yes|ask|no|never|stop, or merged for branch-delete (PERMISSION_KEYS; unset -> no),
 //                                             exit 3 if no repo config is found
 //   node desk-env.mjs key <permission id>     print the §3 key it maps to
@@ -1258,6 +1258,27 @@ export function applyBatchBase() {
 // The id a batch base's conflict fix worker runs under: its base worktree's directory name
 // (base-sync.mjs baseWorktreePath), so its log, settings and ticket file sit beside the tickets'.
 export const baseFixKey = (base) => `base-${String(base).replace(/[^A-Za-z0-9._-]/g, '-')}`;
+// The id of the ticket that repairs a red base (base-red.mjs): the branch the batch merges into, and,
+// given `since`, the red spell it repairs (when that spell was first read, to the second, UTC), so each
+// spell's repair is a ticket of its own and an earlier one's row, steps and worktree are left as they are.
+// A branch name too long to fit beside the spell within a ticket id's 100 characters (SAFE_ID) is cut,
+// with a hash of the whole name kept so two long branches sharing a start still get two keys.
+export const baseRedKey = (branch, since = null) => {
+  const slug = String(branch).replace(/[^A-Za-z0-9._-]/g, '-');
+  const t = Date.parse(since ?? '');
+  if (!Number.isFinite(t)) return `base-red-${slug}`;
+  const spell = new Date(t).toISOString().replace(/\D/g, '').slice(0, 14);
+  const k = `base-red-${slug}-${spell}`;
+  if (k.length <= 100) return k;
+  const h = createHash('sha1').update(String(branch)).digest('hex').slice(0, 8);
+  return `base-red-${slug.slice(0, 100 - 'base-red-'.length - h.length - spell.length - 2)}-${h}-${spell}`;
+};
+// Whether `k` is a repair key baseRedKey gives for `branch`, any spell's.
+const isBaseRedKey = (k, branch) => {
+  if (k === baseRedKey(branch)) return true;
+  const m = /-(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(k);
+  return !!m && k === baseRedKey(branch, `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`);
+};
 // Whether a sync of the batch base may push it: §3 batch-base-push, unset meaning `ask`, which is one
 // approval per batch passed to every pass (and every base conflict fix worker) as
 // AUTOPILOT_BASE_PUSH_APPROVED=1. The pass, the base gate and the worker's settings all read it here.
@@ -1392,11 +1413,16 @@ export function ticketKind(key) {
     let b = null;
     try { b = batchBase(); } catch { /* no usable base */ }
     if (b && k === baseFixKey(b)) return { ok: true, kind: 'base' };
+    // The repair of a red base the batch merges into: its batch base, or the default branch as the merge
+    // driver reads it (defaultBranch, so an exported DESK_DEFAULT_BRANCH counts).
+    let d = null;
+    try { d = defaultBranch(); } catch { /* no usable base */ }
+    if ([b, d].some((x) => x && isBaseRedKey(k, x))) return { ok: true, kind: 'base-red' };
   }
   // A merged ticket's blind audit (levers-audit.mjs), worked under `audit.<its key>`.
   if (k.startsWith('audit.')) {
     const inner = ticketKind(k.slice('audit.'.length));
-    if (inner.ok && !['audit', 'base'].includes(inner.kind)) return { ok: true, kind: 'audit' };
+    if (inner.ok && !['audit', 'base', 'base-red'].includes(inner.kind)) return { ok: true, kind: 'audit' };
   }
   if (/^none\b/.test(tracker)) {
     if (/^issue-[0-9]+$/.test(k)) return { ok: true, kind: 'issue' };
