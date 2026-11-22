@@ -43,7 +43,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
-import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, unpromotedHolds, promotionWords }from './batch-state.mjs';
+import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, unpromotedHolds, promotionWords, openUnknowns } from './batch-state.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
@@ -3399,7 +3399,7 @@ function warningsOf(t, tr, lane) {
   for (const l of tr.lint ?? []) if (l?.severity === 'blocking') out.push(`Triage's ticket check: ${l.message}`);
   const c = tr.lane_challenge;
   if (c?.verdict && c.verdict !== 'CONFIRM') out.push(`Triage's lane check did not confirm lane ${lane} (${String(c.verdict).toLowerCase()}): ${c.reason ?? 'no reason recorded'}`);
-  if ((t.open_questions ?? 0) > 0) for (const u of tr.unknowns ?? []) out.push(`Open from triage: ${u?.question ?? u}`);
+  if ((t.open_questions ?? 0) > 0) for (const u of openUnknowns(tr.unknowns, t)) out.push(`Open from triage: ${u}`);
   const extra = Array.isArray(t.out_of_scope) ? t.out_of_scope : [];
   if (extra.length) out.push(`Its branch changes ${extra.length} file${extra.length === 1 ? '' : 's'} outside its triaged scope: ${extra.join(', ')}.`);
   if (t.spec_check?.ok === false) out.push(`The last pass found its acceptance specs not done: ${(t.spec_check.problems ?? []).join('; ') || 'no detail recorded'}.`);

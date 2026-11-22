@@ -14,9 +14,11 @@
 // differs from it: the pass reports that after its writes, and `queue.mjs rebuild` writes the rebuild out.
 import { basename, dirname } from 'node:path';
 import { BATCHES_DIR, leverOn } from './desk-env.mjs';
-import { append, fold, invalid, diffQueues, project, withoutProjectionOnly, PARK_KINDS, TRANSITIONS } from './ticket-ledger.mjs';
+import { append, fold, invalid, diffQueues, project, withoutProjectionOnly, parkOf, ANSWERED, PARK_KINDS, TRANSITIONS } from './ticket-ledger.mjs';
 import { fieldDiffs, flattenQueue } from './queue-fields.mjs';
-import { readQueueAt } from './queue-store.mjs';
+import { readQueueAt, same } from './queue-store.mjs';
+import { FINISHED } from './queue-states.mjs';
+import { parkKindOf } from './batch-state.mjs';
 import { lock, unlock } from './dir-lock.mjs';
 
 // What the log calls the standing batch, as `queue.mjs transfer <TICKET> standing` does.
@@ -53,9 +55,12 @@ function stateEvent(from, now, at) {
     case 'queued': return from == null || from === 'done' ? { type: 'admitted', data: {} } : { type: 'requeued', data: {} };
     case 'triaged': return { type: 'triaged', data: { questions: Array.isArray(now.questions) ? now.questions : [] } };
     case 'running': return { type: 'spawned', data: { worker: text(now.session_id) ?? text(now.stage), round: count(now.resumes) ?? 0, login: text(now.login?.name), port: count(now.port) } };
+    // The whole park, so its replay is the park queue.json keeps: its kind (worked out from its question
+    // for a park recorded before parks carried one) and the write it awaits approval of, verbatim.
     case 'parked': {
-      const p = now.park ?? {};
-      return { type: 'parked', data: { kind: PARK_KINDS.includes(p.kind) ? p.kind : 'question', question: text(p.question), approve: p.approve && typeof p.approve === 'object' ? p.approve : null, since: text(p.since) ?? at, deadline: text(p.deadline) } };
+      const p = now.park && typeof now.park === 'object' ? now.park : {};
+      return { type: 'parked', data: { ...p, kind: PARK_KINDS.includes(p.kind) ? p.kind : parkKindOf(p.question),
+        question: text(p.question), approve: p.approve && typeof p.approve === 'object' ? p.approve : null, since: text(p.since) ?? at, deadline: text(p.deadline) } };
     }
     case 'done': return { type: 'finished', data: { pr: count(now.result?.pr) } };
     case 'failed': return { type: 'failed', data: { subtype: text(now.failed?.subtype) ?? 'unknown' } };
@@ -89,6 +94,20 @@ function stateEvents(was, now, at) {
 // The typed events whose replay clears a ticket's park (ticket-ledger.mjs apply).
 const CLEARS_PARK = ['admitted', 'requeued', 'spawned', 'finished', 'unparked'];
 
+// The triage questions ticket `was` gained as answered in becoming `now`, each an answered event, taken
+// out of the fields `fields` records with it. Only answers added to the list it had, on a ticket already
+// in the queue and not finished: any other change to that list is recorded as the field.
+function newlyAnswered(was, now, fields) {
+  if (was === undefined || !own(fields, ANSWERED) || FINISHED.includes(now.state)) return [];
+  const before = Array.isArray(was[ANSWERED]) ? was[ANSWERED] : [];
+  const after = now[ANSWERED];
+  if (!Array.isArray(after) || after.length <= before.length || !before.every((q, i) => same(q, after[i]))) return [];
+  const added = after.slice(before.length);
+  if (!added.every((q) => text(q))) return [];
+  delete fields[ANSWERED];
+  return added;
+}
+
 // The events queue `before` (the file as it stood, or null) becoming queue `after` records in `batch`.
 // `archived` holds each ticket this write moved to the archive, as it was archived. `elsewhere(key)`
 // says the log already has that ticket in another batch, so its leaving this one records nothing.
@@ -121,10 +140,14 @@ export function queueEvents(before, after, { batch, archived = {}, elsewhere = (
         if (typed.length && typed.every((e) => !invalid({ ...e, batch, key }))) {
           for (const e of typed) ev(key, e.type, e.data);
           if (reached) delete fields.state;
-          // A park the queue keeps is laid back over one an event's replay cleared.
-          if (now.park != null && typed.some((e) => CLEARS_PARK.includes(e.type))) fields.park = now.park;
+          // A park the queue keeps is laid back over one an event's replay cleared, and one a parked
+          // event's replay leaves as it is needs no field of its own.
+          const parked = typed.findLast((e) => e.type === 'parked');
+          if (parked && same(parkOf(parked.data), now.park)) delete fields.park;
+          else if (now.park != null && typed.some((e) => CLEARS_PARK.includes(e.type))) fields.park = now.park;
         }
       }
+      for (const qid of newlyAnswered(was, now, fields)) ev(key, 'answered', { qid });
       if (Object.keys(fields).length) ev(key, 'legacy_set', { fields });
     }
     if (own(archived, key)) ev(key, 'archived', {});
