@@ -44,7 +44,7 @@ const ADMISSION_RULES = Object.freeze({
 });
 const ADMISSION_KEYS = Object.freeze(Object.keys(ADMISSION_RULES));
 // Proposed rows whose value is another row's: each follows that row's override when a write keeps one.
-const FOLLOWS = Object.freeze({ 'test-lock-max': 'test-lock-slots', 'admit-run-load': 'test-cap' });
+const FOLLOWS = Object.freeze({ 'test-lock-max': 'test-lock-slots', 'light-lock-max': 'light-lock-slots', 'admit-run-load': 'test-cap' });
 const ADMISSION_FIXED = Object.freeze({ 'lock-admission': 'off', 'admit-reserve-gb': '8', 'heavy-run-gb': '16', 'light-run-gb': '16', 'admit-max-pressure': '2', 'admit-ramp-s': '90' });
 // admit-max-load's default: this many times every CPU core, efficiency cores at full weight.
 const ADMIT_LOAD_PER_CORE = 1.67;

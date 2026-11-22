@@ -246,6 +246,8 @@ t('a re-write drops only the override named', `${dropped.sizing['test-cap'].valu
 t('DS-977 a re-write proposes test-lock-max and admit-run-load from the overrides it keeps, so the ceiling is never under the floor',
   `${reWritten.sizing['test-lock-max'].value} ${reWritten.sizing['admit-run-load'].value} ${isOverride(reWritten.sizing['test-lock-max'])} [${profileProblems(reWritten).join(' | ')}]`, '3 6 false []');
 t('DS-977 a dropped override leaves the row it was followed by at the proposal', dropped.sizing['admit-run-load'].value, '16');
+const lightOv = rewrittenSizing({ sizing: { 'light-lock-slots': { value: '2', why: 'override: measured' } } }, propose(small));
+t('DS-977 a re-write proposes light-lock-max from a kept light-lock-slots override', lightOv.find((s) => s.key === 'light-lock-max')?.value, '2');
 t('DS-977 a profile row written TODO is one that does not read', profileProblems({ sizing: { 'admit-max-load': { value: 'TODO' } } })[0]?.startsWith('`admit-max-load` is "TODO"'), true);
 t('clearing an override puts the proposal for the recorded hardware back', `${setErr(['test-cap='], ov)} ${env(['machine', 'get', 'test-cap'], absent, ov)} ${env(['machine', 'why', 'test-cap'], absent, ov)}`, 'exit 0 16 the 16 performance cores');
 // detect and write size from this computer, so the override is one more slot than it proposes: an

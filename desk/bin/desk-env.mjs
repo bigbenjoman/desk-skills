@@ -477,8 +477,7 @@ export function machineProfile() {
 }
 // A profile value by key (hardware or sizing), or null.
 export function machineValue(key) {
-  const p = machineProfile();
-  const v = p?.sizing[key]?.value ?? p?.hardware[key]?.value;
+  const v = M.profileValue(machineProfile(), key);
   return unset(v) ? null : v;
 }
 export const machineWhy = (key) => machineProfile()?.sizing[key]?.why || null;
