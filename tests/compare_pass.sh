@@ -167,7 +167,7 @@ fi
 # A cached base ran long before the head, which the diff is told so it matches times by run only, in
 # the suites whose base records came from the cache and no others.
 clist=$(printf '%s' "$cached" | tr '\n' ',')
-dargs=("$S/compare_pass.mjs" diff ${hit:+"--base-cached=${clist%,}"}"$W/rec/base" "$W/rec/head" ${broots[@]+"${broots[@]}"} "$W/head" "$W")
+dargs=("$S/compare_pass.mjs" diff ${hit:+"--base-cached=${clist%,}"} "$W/rec/base" "$W/rec/head" ${broots[@]+"${broots[@]}"} "$W/head" "$W")
 "$NODE" "${dargs[@]}"; rc=$?
 if [ "${PASS_CMP_KEEP:-}" = 1 ] && [ $rc -ne 0 ]; then
   trap - EXIT
