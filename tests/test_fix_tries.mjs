@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, outageChecks, outageLine, outageText, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, stuckLessHeld, outageChecks, outageLine, outageText, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
@@ -1189,6 +1189,19 @@ t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as 
   const draftBeside = draftChecksFix(tk(), { pr: 703, head: 'a'.repeat(40), failing: [{ name: 'Vercel Preview', runId: null }, { name: 'Lint', runId: '1' }], checks: [ok('tests'), red('Vercel Preview'), red('Lint', '1')] }, octx());
   t('outage: so does a draft', JSON.stringify([draftBeside?.call, draftBeside?.fix?.checks?.map((c) => c.name), draftBeside?.fix?.not_mine?.map((c) => c.name)]), '["requeue",["Lint"],["Vercel Preview"]]');
   t('outage: with none, the same PR gets its fix try as before', fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), ctx({ required: lists.required }))?.call, 'requeue');
+  // DS-853 fix try 2: a held check is the pass's, so a stuck record never keeps it.
+  const spentTk = tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'checks' }, { try: 2, head: 'c'.repeat(40), kind: 'checks' }] });
+  const stuckBeside = fixCall(spentTk, pr([ok('tests'), red('Vercel Preview'), red('Lint', '1')], { pr: 703 }), octx());
+  t('outage: with no try left beside a real red check, the stuck record names the real one alone', JSON.stringify([stuckBeside?.call, stuckBeside?.checks?.map((c) => c.name), /Vercel Preview/.test(stuckBeside?.why ?? '')]), '["stuck",["Lint"],false]');
+  const draftStuck = draftChecksFix(spentTk, { pr: 703, head: 'a'.repeat(40), failing: [{ name: 'Vercel Preview', runId: null }, { name: 'Lint', runId: '1' }], checks: [ok('tests'), red('Vercel Preview'), red('Lint', '1')] }, octx());
+  t('outage: so does a draft\'s', JSON.stringify([draftStuck?.call, draftStuck?.checks?.map((c) => c.name)]), '["stuck",["Lint"]]');
+  const heldMap = new Map([['Vercel Preview', { prs: [701, 703] }]]);
+  const rec = { why: 'x', pr: 703, head: 'a', lead: 'still red after 2 tries', checks: [{ name: 'Lint' }, { name: 'Vercel Preview', command: 'its platform is failing' }] };
+  t('stuckLessHeld: a record naming a held check drops it', JSON.stringify(stuckLessHeld(rec, 703, heldMap)), JSON.stringify({ ...rec, checks: [{ name: 'Lint' }], why: 'still red after 2 tries: Lint' }));
+  t('stuckLessHeld: none left is null', stuckLessHeld({ ...rec, checks: [rec.checks[1]] }, 703, heldMap), null);
+  t('stuckLessHeld: one the hold does not cover on this PR is unchanged', stuckLessHeld(rec, 705, heldMap), undefined);
+  t('stuckLessHeld: a record with no checks (a conflict, a review) is unchanged', stuckLessHeld({ why: 'still in conflict' }, 703, heldMap), undefined);
+  t('stuckLessHeld: with no outage it is unchanged', stuckLessHeld(rec, 703, null), undefined);
 }
 
 process.exit(fails ? 1 : 0);

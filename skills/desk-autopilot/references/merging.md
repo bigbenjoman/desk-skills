@@ -143,7 +143,10 @@ batch-wide, kept in the batch's state folder from pass to pass: one `OUTAGE` lin
 the error line, and each PR red only on it is held with no fix try or stuck answer. The pass re-runs
 it on one PR whose run has completed, the driver's 12-minute rerun gap after the hold begins, doubling
 after each re-run that stays red up to 30 minutes. Once a PR it held passes it, the hold clears and
-the other PRs' runs are re-run. A check with no Actions run is never re-run: once the platform is
+the other PRs' runs are re-run. A re-run it cannot make yet (the PR's run still going, or the
+preview build taken) is kept as owed, made by a later pass even after the PR that passed has merged,
+and the PR gets no fix try until it is made. A check an outage holds never goes into a PR's stuck
+answer. A check with no Actions run is never re-run: once the platform is
 back, redeploy there or push to the PRs. A check red on the base too stays base red. A PR also red on
 another kind of check keeps that check's route. desk-q shows each ticket's try and
 what it is fixing. Usage pacing never holds a fix try: while 7-day usage is ahead of pace, new

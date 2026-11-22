@@ -58,7 +58,7 @@ import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
-import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.mjs';
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
@@ -4728,7 +4728,13 @@ function applyFix(t, n, head, c) {
     return;
   }
   // An outage's PRs are named in its one waiting line (pass/fix-tries.mjs decideOutage).
-  if (c.call === 'held' && c.label === 'OUTAGE') { out.push(`outage: PR #${n} (${t.key}) is held, with no fix try: ${c.why}`); return; }
+  if (c.call === 'held' && c.label === 'OUTAGE') {
+    // Held on the outage alone, a stuck record naming its checks drops them (a draft's: fixTry does a ready PR's).
+    const less = stuckLessHeld(t.stuck, n, outageHeld);
+    if (less !== undefined && !DRY) { q('set', t.key, `stuck=${JSON.stringify(less)}`); t.stuck = less; }
+    out.push(`outage: PR #${n} (${t.key}) is held, with no fix try: ${c.why}`);
+    return;
+  }
   if (c.call === 'held') { report.waiting.push(`${t.key}: ${c.label ?? 'BASE RED'} — PR #${n}: ${c.why}`); return; }
   if (c.call === 'wait') { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`); return; }
   if (c.call === 'rerun') {

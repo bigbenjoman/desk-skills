@@ -274,9 +274,36 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   t('one PR still red with the hold\'s line and more with a new one: all of them are held', j(both.held.held.get('Deploy preview')?.prs), j([701, 703, 704, 705]));
   // A re-run waiting on the preview build as the hold clears: the hold is kept, and that PR waits too.
   const clearing = outage(green, { was: later.hold, now: T0 + 20 * 60 * 1000 }, { 'outage-rerun': (a) => (a.pr === 703 ? { ok: false, wait: true, why: 'waits on the preview build for o/r#701' } : { ok: true }) });
-  t('a re-run waiting on the preview build as it clears keeps the hold for the next pass', j([clearing.hold, clearing.held.rerun]), j([undefined, [701, 703]]));
-  t('and says so', lines(clearing.as).some((l) => l.includes('re-ran it on #701; #703 waits on the preview build, and the next pass re-runs it')), true);
+  t('a re-run waiting on the preview build as it clears is kept as owed for the next pass', j([clearing.hold, clearing.held.rerun]), j([{ 'Deploy preview': { cleared: true, text: LINE, owed: [{ pr: 703, head: HEAD, run: '1603' }] } }, [701, 703]]));
+  t('and says so', lines(clearing.as).some((l) => l.includes('re-ran it on #701; #703 waits on the preview build, and a later pass re-runs it')), true);
   t('neither gets a fix try this pass', applied(fixes(green, clearing)).length, 0);
+  // DS-853 fix try 2: the owed re-run is made though the PR that passed has merged since, and the PR
+  // waits for it rather than going to a fix try.
+  const merged = [entry(701, [ok('tests'), { name: 'Deploy preview', status: 'in_progress', conclusion: null, runId: '1601' }]), entry(703, [ok('tests'), deploy(703)])];
+  const paid = outage(merged, { was: clearing.hold, now: T0 + 25 * 60 * 1000 });
+  t('an owed re-run is made once the PR that passed has merged', j([paid.reruns.map((a) => [a.pr, a.run]), paid.hold, paid.held.rerun]), j([[[703, '1603']], {}, [703]]));
+  t('and says so', lines(paid.as).some((l) => l === 'outage: "Deploy preview"\'s platform is back, and the re-run its hold owed PR #703 is made now'), true);
+  t('and that PR gets no fix try this pass', applied(fixes(merged, paid)).length, 0);
+  const again = outage(merged, { was: clearing.hold, now: T0 + 25 * 60 * 1000 }, { 'outage-rerun': { ok: false, wait: true, why: 'waits on the preview build for o/r#9' } });
+  // Unchanged, the kept hold is not rewritten: it stays owed as the file holds it.
+  t('an owed re-run that waits again stays owed', j([again.hold, again.held.rerun, again.reruns.length]), j([undefined, [703], 1]));
+  const gotGreen = outage([entry(703, [ok('tests'), ok('Deploy preview')])], { was: clearing.hold, now: T0 + 25 * 60 * 1000 });
+  t('an owed re-run on a PR now green is dropped, with nothing re-run', j([gotGreen.reruns.length, gotGreen.hold, gotGreen.held.rerun]), j([0, {}, []]));
+  const pushed = outage([entry(703, [ok('tests'), deploy(703)], { head: 'f'.repeat(40) })], { was: clearing.hold, now: T0 + 25 * 60 * 1000 });
+  t('one on a PR pushed to since is dropped: its new head\'s runs are its own', j([pushed.reruns.length, pushed.hold]), j([0, {}]));
+  // A PR whose run is still going as the hold clears (another job of it running) is owed its re-run too.
+  const going = entry(703, [ok('tests'), deploy(703), { name: 'Build', status: 'in_progress', conclusion: null, runId: '1603' }]);
+  const unfinished = outage([green[0], green[1], going], { was: later.hold, now: T0 + 20 * 60 * 1000 });
+  t('a PR whose run is still going as it clears is owed its re-run, not re-run yet', j([unfinished.reruns.map((a) => a.pr), unfinished.hold, [...unfinished.held.rerun].sort()]), j([[701], { 'Deploy preview': { cleared: true, text: LINE, owed: [{ pr: 703, head: HEAD, run: '1603' }] } }, [701, 703]]));
+  t('and the pass says a later pass re-runs it', lines(unfinished.as).some((l) => l.includes('re-ran it on #701; #703 has a run still going, and a later pass re-runs it')), true);
+  const still = outage([going], { was: unfinished.hold, now: T0 + 22 * 60 * 1000 });
+  t('while that run goes on, it stays owed, with no fix try', j([still.reruns.length, still.hold, still.held.rerun]), j([0, undefined, [703]]));
+  const done = outage([entry(703, [ok('tests'), deploy(703)])], { was: unfinished.hold, now: T0 + 25 * 60 * 1000 });
+  t('once that run completes red, the next pass re-runs it', j([done.reruns.map((a) => [a.pr, a.run]), done.hold]), j([[[703, '1603']], {}]));
+  // A stuck record naming a held check drops it, whatever the PR's route this pass.
+  const stuckT = tk({ key: 'O-701', branch: 'task/O-701', stuck: { why: 'x', pr: 701, head: HEAD, lead: 'still red after 2 tries', checks: [{ name: 'Lint' }, { name: 'Deploy preview' }] } });
+  const dropped = drive(snap([[stuckT, three[0].s]], { gate: G, outage: first.held.held, outageRerun: [] }), { reads: () => reads({ ctx: { required: G.required } }) });
+  t('a stuck record naming a check the outage now holds drops it', dropped.filter((a) => a.type === 'set').map((a) => a.fields.join()).join(), `stuck=${j({ ...stuckT.stuck, checks: [{ name: 'Lint' }], why: 'still red after 2 tries: Lint' })}`);
   // A re-run waiting on the preview build another PR holds is no re-run tried: the back-off does not grow.
   const leased = outage(three, { was: first.hold, now: T0 + 13 * 60 * 1000 }, { 'outage-rerun': { ok: false, wait: true, why: 'waits on the preview build for o/r#9' } });
   t('a re-run waiting on the preview build is not counted', j([leased.reruns.length, leased.hold]), j([1, undefined]));

@@ -41,7 +41,7 @@
 //   settle-worked {key, pr, head, worked}   -> the ids of the threads a finished feedback try worked, replied on and resolved
 //   check-build {key, pr, head, call}   -> the build's record: `call` 'person' where it could not start or re-run
 //   apply {key, pr, head, call}         carry out the call: stuck, requeue, held, wait or rerun
-import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck, outagePlan, outageGap, OUTAGE_PRS, OUTAGE_GAP_MAX_S } from '../fix-tries.mjs';
+import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck, stuckLessHeld, outagePlan, outageGap, OUTAGE_PRS, OUTAGE_GAP_MAX_S } from '../fix-tries.mjs';
 import { reviewerGated, set, say } from './shared.mjs';
 import { externalReview } from '../review-threads.mjs';
 
@@ -72,24 +72,37 @@ export function* decideFixTries(s) {
 //                                             §3 ci-rerun, once it has the PR's preview-build lease; `wait` where another build holds it)
 //   outage-hold {hold}                        keep the hold for the next pass
 //   outage-held {held, rerun}                 the checks held this pass (Map), and the PRs re-run as it
-//                                             cleared, or whose re-run waits on the preview build
+//                                             cleared, or still owed a re-run (their run still going,
+//                                             or waiting on the preview build)
 const clock = (ms) => new Date(ms).toISOString().slice(11, 16);
 const prList = (prs) => `#${prs.join(', #')}`;
 export function* decideOutage(s) {
   if (s.rowErrors?.length) return;
   const plan = outagePlan({ prs: s.prs, lists: s.gate, was: s.was ?? {}, now: s.now });
   const keep = { ...plan.keep };
-  const reran = [];
+  // A PR a cleared hold still owes a re-run waits for it, with no fix try, until it is made.
+  const reran = [...plan.owing];
+  const owe = (name, text, r) => {
+    const k = keep[name] ?? { cleared: true, text, owed: [] };
+    keep[name] = { ...k, owed: [...(k.owed ?? []), { pr: r.pr, head: r.head, run: String(r.run) }] };
+    reran.push(r.pr);
+  };
+  for (const r of plan.owe) {
+    const x = yield { type: 'outage-rerun', key: r.key, branch: r.branch, pr: r.pr, head: r.head, run: r.run, name: r.name };
+    if (x?.ok) reran.push(r.pr); else if (x?.wait) owe(r.name, s.was[r.name]?.text, r);
+    yield out(`outage: "${r.name}"'s platform is back, and the re-run its hold owed PR #${r.pr} ${x?.ok ? 'is made now' : x?.wait ? `waits on the preview build (${x.why}), so the next pass makes it` : `could not be made (${x?.why ?? 'refused'}), so it goes on as before`}`);
+  }
   for (const c of plan.cleared) {
     const done = [], refused = [], waits = [];
     for (const r of c.rerun) {
       const x = yield { type: 'outage-rerun', key: r.key, branch: r.branch, pr: r.pr, head: r.head, run: r.run, name: c.name };
-      if (x?.ok) { done.push(r.pr); reran.push(r.pr); } else if (x?.wait) waits.push(r.pr); else refused.push(`#${r.pr} (${x?.why ?? 'refused'})`);
+      if (x?.ok) { done.push(r.pr); reran.push(r.pr); } else if (x?.wait) { waits.push(r.pr); owe(c.name, c.text, r); } else refused.push(`#${r.pr} (${x?.why ?? 'refused'})`);
     }
-    // A re-run waiting on the preview build another PR holds: the hold is kept, so the next pass clears
-    // it again and re-runs those PRs, and until then they wait, with no fix try.
-    if (waits.length) { keep[c.name] = s.was[c.name]; reran.push(...waits); }
-    yield out(`outage: "${c.name}" passes on PR #${c.by} again, so its platform is back and the hold is cleared: ${done.length ? `re-ran it on ${prList(done)}` : waits.length ? 'nothing re-run yet' : 'no other PR had a run to re-run'}${waits.length ? `; ${prList(waits)} ${waits.length === 1 ? 'waits' : 'wait'} on the preview build, and the next pass re-runs ${waits.length === 1 ? 'it' : 'them'}` : ''}${refused.length ? `; not re-run on ${refused.join(', ')}, which go on as before` : ''}${c.push.length ? `; ${prList(c.push)} ${c.push.length === 1 ? 'has' : 'have'} no Actions run for it: redeploy there or push to ${c.push.length === 1 ? 'it' : 'them'}` : ''}`);
+    // A re-run waiting on the preview build another PR holds, or on its own run still going, is owed:
+    // kept on the hold file (outagePlan's `owed`), so the next pass makes it, though the PR that passed
+    // has merged by then, and until then those PRs wait, with no fix try.
+    const owed = [...waits, ...c.later];
+    yield out(`outage: "${c.name}" passes on PR #${c.by} again, so its platform is back and the hold is cleared: ${done.length ? `re-ran it on ${prList(done)}` : owed.length ? 'nothing re-run yet' : 'no other PR had a run to re-run'}${waits.length ? `; ${prList(waits)} ${waits.length === 1 ? 'waits' : 'wait'} on the preview build` : ''}${c.later.length ? `; ${prList(c.later)} ${c.later.length === 1 ? 'has' : 'have'} a run still going` : ''}${owed.length ? `, and a later pass re-runs ${owed.length === 1 ? 'it' : 'them'}` : ''}${refused.length ? `; not re-run on ${refused.join(', ')}, which go on as before` : ''}${c.push.length ? `; ${prList(c.push)} ${c.push.length === 1 ? 'has' : 'have'} no Actions run for it: redeploy there or push to ${c.push.length === 1 ? 'it' : 'them'}` : ''}`);
   }
   for (const l of plan.lifted) yield out(`outage: "${l.name}" is no longer red with one error line on ${OUTAGE_PRS} or more open PRs, so its hold is lifted and each PR goes on as before`);
   const probed = new Map(), tried = new Set();
@@ -150,6 +163,10 @@ function* fixTry(t, p, s) {
   }
   const { ctx: read, baseMerge, ...reads } = yield { type: 'reads', key: t.key, dirty, dirtyFiles };
   const ctx = s.outage ? { ...read, outage: s.outage } : read;
+  // A check an outage holds is the pass's, so a stuck record naming it (written before the outage, or
+  // beside it) drops it, whatever route the PR goes this pass: held, a build's wait or any other.
+  const less = stuckLessHeld(t.stuck, n, s.outage);
+  if (less !== undefined && !s.dry) { yield set(t.key, `stuck=${JSON.stringify(less)}`); t = { ...t, stuck: less }; }
   // A red check a change on the branch may clear (an unneeded protected file, a stale verdict) goes to a
   // worker before anything is put to the person.
   let c = gateTry(t, p, { ...ctx, baseMerge }) ?? fixCall(t, p, ctx) ?? (yield* feedbackCall(t, p, s, ctx.waived, reads));
