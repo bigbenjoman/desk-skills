@@ -180,7 +180,7 @@ check "AC1: a pass runs" '[ "$(count "$T/pass.calls")" = 1 ]'
 check "AC1: its report is appended to the supervisor log" 'grep -q "pass: exit 10 (nothing_yet)" "$LOG" && grep -q "^no change this pass$" "$LOG"'
 check "DS-185 AC6 and DS-221 AC4: the pass is named the supervisor's, and records the next tick, one interval away, as its next pass" 'grep -qx -- "--json --by supervisor --next +300" "$T/pass.args"'
 waitlines "$T/driver.calls" 1
-check "AC3: the merge driver starts for the batch's tickets" '[ "$(started)" = 1 ] && grep -qx -- "--tickets A B --log" "$T/driver.calls"'
+check "AC3: the merge driver starts, the repo's one driver for all its batches" '[ "$(started)" = 1 ] && grep -qx -- "--all-batches --log" "$T/driver.calls"'
 
 # ---- AC2 by launchd's own path: a plain tick returns at once and the work lands -----------------
 out=$(sup tick); rc=$?
@@ -226,6 +226,19 @@ kill "$(cat "$T/state/merge-driver.lock.d/pid")" 2>/dev/null; rm -rf "$T/state/m
 out=$(tick)
 check "DS-225: a running driver that is killed is logged with no exit code" 'grep -q "^merge driver: stopped (pid [0-9]*, started .*, no exit code logged)" "$LOG"'
 waitlines "$T/driver.calls" "$(started)"
+
+# ---- DS-972 AC4: a driver that is stopped is started again, once, on the next tick -------------
+echo hang > "$T/driver.mode"; n=$(started); calls=$(count "$T/driver.calls")
+out=$(tick)
+i=0; while [ ! -s "$T/state/merge-driver.lock.d/pid" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+p=$(cat "$T/state/merge-driver.lock.d/pid" 2>/dev/null); kill "$p" 2>/dev/null
+i=0; while kill -0 "$p" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+out=$(tick); waitlines "$T/driver.calls" $((calls + 2))
+check "DS-972 AC4: the next tick logs the stopped driver and starts the one driver again" '[ -n "$p" ] && [ "$(started)" = $((n + 2)) ] && grep -q "^merge driver: stopped (pid $p, " "$LOG" && [ "$(count "$T/driver.calls")" = $((calls + 2)) ] && [ "$(tail -1 "$T/driver.calls")" = "--all-batches --log" ]'
+out=$(tick)
+check "DS-972 AC4: and only once: a tick with it running starts no other" '[ "$(started)" = $((n + 2)) ]'
+kill "$(cat "$T/state/merge-driver.lock.d/pid")" 2>/dev/null; rm -rf "$T/state/merge-driver.lock.d" "$T/driver.mode"
+out=$(tick); waitlines "$T/driver.calls" "$(started)"
 # The notification counts below start from none.
 rm -f "$T/notify.calls"
 
@@ -690,8 +703,13 @@ out=$(DESK_DEFAULT_BRANCH=feat/x mtick)
 check "DS-309 AC1: intake runs once and each batch gets one pass, the standing batch first" '[ "$(count "$T/intake.calls")" = 3 ] && [ "$(count "$T/pass.batches")" = 2 ]'
 check "DS-309 AC1: each pass is logged in its own state folder" '[ "$(grep -c "pass: exit 10" "$XS/supervisor.log")" = 1 ] && [ "$(grep -c "pass: exit 10" "$SS/supervisor.log")" = 3 ] && ! grep -q "intake:" "$XS/supervisor.log"'
 check "DS-309 AC2: the standing pass targets main and X-1 its own base, though feat/x was inherited" '[ "$(head -1 "$T/pass.batches")" = "- main" ] && [ "$(tail -1 "$T/pass.batches")" = "X-1 feat/x" ]'
-waitlines "$T/driver.batches" 2
-check "DS-309 AC4: each batch starts its own merge driver on its own queue" 'grep -qx -- "- --tickets A B --log" "$T/driver.batches" && grep -qx -- "X-1 --tickets X1 --log" "$T/driver.batches" && grep -q "^merge driver: started" "$XS/supervisor.log"'
+waitlines "$T/driver.batches" 1
+check "DS-972 AC1: the standing batch and X-1 get one merge driver for both, with no batch or base of its own" '[ "$(cat "$T/driver.batches")" = "- --all-batches --log" ] && grep -q "^merge driver: started" "$SS/supervisor.log" && ! grep -q "^merge driver: started" "$XS/supervisor.log"'
+ZQ="$DESK_HOME/repos/acme__widgets/batches/Z-1/queue.json"; ZS="$SS/batches/Z-1"
+bq "$ZQ" Z-1 true '{"Z1":{"key":"Z1","state":"running"}}' feat/z; : > "$T/driver.batches"
+out=$(mtick); waitlines "$T/driver.batches" 1; sleep 0.5
+check "DS-972 AC1: a standing batch and two named batches still get exactly one merge driver" '[ "$(cat "$T/driver.batches")" = "- --all-batches --log" ] && ! grep -q "^merge driver: started" "$ZS/supervisor.log"'
+rm -rf "$(dirname "$ZQ")" "$ZS"
 notified=$(count "$T/notify.calls")
 printf '%s\n' '{"status":"show_person","code":11,"message":"x","waiting":[],"parked":[],"notify":true,"push":[{"key":"urgent:acme__widgets:X1","text":"X1: PRODUCTION BROKEN: checkout 500s"}]}' > "$T/verdict.X-1.json"
 out=$(mtick)

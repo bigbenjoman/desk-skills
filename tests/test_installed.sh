@@ -39,7 +39,8 @@ EOF
 
 # installed.mjs beside the real supervisor and the modules it imports, and a fake merge driver that
 # behaves as the real one does at rest: it holds the lock, sleeps between loops, and on TERM drops the
-# lock once its sleep returns. With $T/busy it is mid-loop instead (its child is not `sleep`).
+# lock once its sleep returns. With $T/busy it is mid-loop instead (its child is not `sleep`). With no
+# state folder named, as the repo's one driver runs, its lock is the standing batch's.
 # shellcheck source=link_bin.sh
 . "$S/link_bin.sh"
 cp "$B/installed.mjs" "$T/bin/"
@@ -49,7 +50,7 @@ cat > "$T/bin/merge-driver.sh" <<EOF
 echo "\$(pwd) \$*" >> "$T/driver.calls"
 echo "\$DESK_AUTOPILOT_STATE|\${DESK_QUEUE:-}|\${DESK_BATCH:-}" >> "$T/driver.env"
 env | grep '^DESK_' | sort > "$T/driver.fullenv"
-D="\$DESK_AUTOPILOT_STATE/merge-driver.lock.d"
+D="\${DESK_AUTOPILOT_STATE:-$HOME/.desk-autopilot/acme__widgets}/merge-driver.lock.d"
 mkdir -p "\$D"; echo \$\$ > "\$D/pid"
 trap 'rm -rf "\$D"; exit 143' TERM
 while true; do if [ -f "$T/busy" ]; then tail -f /dev/null; else sleep 30; fi; done
@@ -212,6 +213,28 @@ kill "$new" 2>/dev/null; pkill -P "$new"
 i=0; while [ -n "$(held)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 rm -rf "$DST/merge-driver.lock.d"; DST=""
 
+# ---- DS-972: a repo's per-batch drivers restart as its one driver for all its batches -----------
+for q in "$T/desk/repos/acme__widgets/queue.json" "$T/desk/repos/acme__widgets/batches/X-1/queue.json"; do
+  mkdir -p "$(dirname "$q")"; printf '{"version":1,"batch":"b","supervised":true,"approved":{},"tickets":{}}\n' > "$q"
+done
+driver --tickets "A" --log; olds="$(held)"
+DST="$ST/batches/X-1"; driver --tickets "X-2" --log; oldx="$(held)"; DST=""
+n=$(count "$T/driver.calls")
+out=$(restart); rc=$?
+new="$(held)"
+check "DS-972: the standing batch's and X-1's drivers are both stopped" '[ $rc -eq 0 ] && ! kill -0 "$olds" 2>/dev/null && ! kill -0 "$oldx" 2>/dev/null'
+check "DS-972: one driver for all the batches takes their place, from the repo root, naming no state, queue or batch" '[ "$(count "$T/driver.calls")" = $((n + 1)) ] && [ "$(tail -1 "$T/driver.calls")" = "$T/repo --all-batches --log" ] && [ "$(tail -1 "$T/driver.env")" = "||" ] && [ -n "$new" ] && kill -0 "$new"'
+check "DS-972: the lines say the standing one restarted as the repo's one driver, and X-1's left to it" 'grep -q "^merge driver for acme__widgets: restarted on the new code as the repo.s one driver for all its batches (pid $olds -> $new)$" <<< "$out" && grep -q "^merge driver for acme__widgets batch X-1 (pid $oldx): stopped, and the repo.s one driver (pid $new) merges for its batch from its next sweep$" <<< "$out"'
+# The one driver points X-1's lock too: it is listed, and restarted, once.
+mkdir -p "$ST/batches/X-1/merge-driver.lock.d"; echo "$new" > "$ST/batches/X-1/merge-driver.lock.d/pid"
+i=0; while ! pgrep -P "$new" >/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+out=$(restart)
+new2="$(held)"
+check "DS-972: the repo's one driver, pointing X-1's lock, restarts once as the one driver" '[ "$(grep -c "^merge driver" <<< "$out")" = 1 ] && grep -q "(pid $new -> $new2)$" <<< "$out" && [ "$(tail -1 "$T/driver.calls")" = "$T/repo --all-batches --log" ]'
+kill "$new2" 2>/dev/null; pkill -P "$new2"
+i=0; while [ -n "$(held)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+rm -rf "$ST/merge-driver.lock.d" "$ST/batches/X-1/merge-driver.lock.d" "$T/desk/repos/acme__widgets"
+
 # ---- AC3: a loaded supervisor agent is rewritten with this node and reloaded --------------------
 AG="$HOME/Library/LaunchAgents"; PL="$AG/com.desk-skills.supervisor.acme__widgets.plist"; mkdir -p "$AG"
 cat > "$PL" <<EOF
@@ -308,8 +331,9 @@ console.log(JSON.stringify([
   driverArgs('/bin/bash /x/merge-driver.sh --tickets A,B C --log --deps D:A,B'),
   driverArgs('bash /x/merge-driver.sh --log'),
   driverArgs('node /x/other.mjs --tickets A'),
+  driverArgs('/bin/bash /x/merge-driver.sh --all-batches --log'),
 ]));")
-check "driverArgs reads comma or space separated tickets, keeps each deps entry, and needs tickets" '[ "$out" = "[{\"tickets\":[\"A\",\"B\",\"C\"],\"deps\":[\"D:A,B\"]},null,null]" ]'
+check "driverArgs reads comma or space separated tickets, keeps each deps entry, and needs tickets or --all-batches" '[ "$out" = "[{\"tickets\":[\"A\",\"B\",\"C\"],\"deps\":[\"D:A,B\"]},null,null,{\"tickets\":[],\"deps\":[],\"all\":true}]" ]'
 
 # ---- install.sh installs only desk's release: the default branch, not behind origin ----------------
 # A scratch origin and a checkout cloned from it. guard <dir> [args] runs install.sh's checkout guard,

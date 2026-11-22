@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The autopilot supervisor: launchd on macOS, or a systemd user timer on Linux, runs a pass in this
 // repo every few minutes while a batch is live, and within seconds of a worker exiting (its exit file in
-// <repo state>/exits wakes a tick), keeps the batch's merge driver running, and starts both again at
+// <repo state>/exits wakes a tick), keeps the repo's merge driver running, and starts both again at
 // login. No model is in the loop.
 // Run it from inside the repo (or with DESK_REPO_DIR set): the repo decides which config applies.
 //   node supervisor.mjs install [--interval <s>] [--reload]
@@ -29,12 +29,13 @@
 //   - sends one desktop notification (notify.mjs) for the pass's `push` entries the last notification did not carry
 //     (the check-in digest, a production-broken park, a failing health check), or for a pass that
 //     refused or failed;
-//   - starts the merge driver (where §3 autopilot-merge and pr-merge-green are both `yes`, or the batch's
-//     `approved.merge` is true where they are `yes` or `ask`: the driver reads it itself) while tickets
-//     are still to merge and no driver holds <state>/merge-driver.lock.d, its output in
+//   - once every batch has run, starts the repo's one merge driver (merge-driver.sh --all-batches) when a
+//     batch's pass left tickets to merge (where §3 autopilot-merge and pr-merge-green are both `yes`, or
+//     the batch's `approved.merge` is true where they are `yes` or `ask`: the driver reads it itself)
+//     and no driver holds the standing batch's <state>/merge-driver.lock.d, its output in that batch's
 //     <state>/merge-driver.log. A running driver logs nothing; once the one it started has stopped, the
-//     next tick logs why from that log (and keeps it in supervisor.json), and after 2 failed starts in a
-//     row sends one notification naming the repo and the reason;
+//     next tick logs why from that log (and keeps it in the standing batch's supervisor.json), and after
+//     2 failed starts in a row sends one notification naming the repo and the reason;
 //   - when a pass exits needing the person, hands what the recovery rules never settle to the check-in
 //     digest and starts one headless decider session (decider.mjs) for the rest, unless one is still
 //     running; each tick stops a decider past its time, and records what an ended one cost, settled
@@ -56,9 +57,9 @@
 // Each tick also keeps `code` in supervisor.json: the installed version (installed.mjs), and whether
 // this agent and the running merge driver started at an older one (`old_code`). It records what that
 // tick saw; desk-q judges old code for itself, from the loaded agent's plist and the driver's lock.
-// For a handed-over batch, a driver on old code that waits between loops is restarted on the installed
-// code with the same tickets and deps (installed.mjs restartDriver); one mid-loop is left, logged once,
-// and none is moved while a pass runs (it holds supervisor.lock for the restart).
+// A driver on old code that waits between loops is restarted on the installed code (installed.mjs
+// restartDriver); one mid-loop is left, logged once, and none is moved while a pass runs (it holds
+// supervisor.lock for the restart).
 //
 // A worker's exit wakes a tick too: spawn-worker.sh renames <KEY>.<ts>.json into <repo state>/exits,
 // which launchd watches (WatchPaths, at most one tick per 20s) or a systemd path unit does. A tick
@@ -71,15 +72,16 @@
 // batch's templates.json which of the repo's committed copies of desk's templates are behind them.
 // After every batch, each tick refreshes the machine-wide Levers page (levers-refresh.mjs).
 // A tick runs intake once, then every batch the repo holds (batches.mjs listBatches), one after another:
-// the standing batch, then each named batch. Each runs as above in its own state folder, with its own
-// merge driver and notifications titled with the repo and the batch, and with DESK_BATCH naming it and
-// DESK_DEFAULT_BRANCH removed, so its pass and driver read its own base. One batch that fails leaves
+// the standing batch, then each named batch. Each runs as above in its own state folder, with
+// notifications titled with the repo and the batch, and with DESK_BATCH naming it and
+// DESK_DEFAULT_BRANCH removed, so its pass reads its own base; the one merge driver merges each onto
+// its own base too. One batch that fails leaves
 // the rest to run. A named batch whose epic's plan has been answered in /desk-needs-you is acted on
 // before its pass (epic-plan.mjs actOnPlan): started, started with the edit applied, asked again
 // naming what could not be applied, or discarded. Each named batch first gets its archive check (batch.mjs archiveCheck): once its
 // last promotion PR is merged, or its promotion PR closed, with no ticket running and no ticket PR open, it is moved under
-// batches/.done/, logged in the standing batch's log, and not run. A merge driver still running for such
-// a batch is stopped first, and the batch is not run until a later tick archives it. An explicit DESK_BATCH, DESK_QUEUE or
+// batches/.done/, logged in the standing batch's log, and not run. A merge driver still merging for such
+// a batch is stopped first (the repo's one driver, started again without it), and the batch is not run until a later tick archives it. An explicit DESK_BATCH, DESK_QUEUE or
 // DESK_AUTOPILOT_STATE names one batch, and a tick runs only that one, with no archive check.
 import { existsSync, readFileSync, readdirSync, writeFileSync, appendFileSync, mkdirSync, rmSync, renameSync, statSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
@@ -546,6 +548,7 @@ function interval() {
 // -> false when a batch's pass was skipped because another run held its lock.
 function intervalRound(named) {
   let ran = true;
+  driverWanted = false;
   const batches = tickBatches(named);
   tickStates = batches.map((b) => b.state);
   // Standing intake first, in the standing batch's environment: it may start the batch this tick passes.
@@ -567,6 +570,10 @@ function intervalRound(named) {
       } catch { /* nowhere to say it */ }
     }
   });
+  if (!named) enterBatch(null);
+  try { mkdirSync(batches[0].state, { recursive: true }); driverRound(batches[0].state); } catch (e) {
+    try { logTo(batches[0].state)([`== ${stamp()} merge driver: the tick could not watch or start it, and the next tries again: ${describeCrash(e)}`]); } catch { /* nowhere to say it */ }
+  }
   leversRefresh(batches[0].state);
   return ran;
 }
@@ -607,9 +614,10 @@ function archived(b, standing) {
   if (a.lines.length) { mkdirSync(b.state, { recursive: true }); logTo(b.state)([`== ${stamp()} ${a.lines.join('\n')}`]); }
   if (a.archived) { mkdirSync(standing, { recursive: true }); logTo(standing)(a.log.map((l) => `== ${stamp()} ${l}`)); }
   if (a.stopped) {
-    // A driver stopped for the archive did not fail, so it counts no failed start.
-    const s = readState(b.state);
-    if (s.driver?.pid) { s.driver.pid = null; writeState(b.state, s); }
+    // A driver stopped for the archive did not fail, so it counts no failed start. It is the repo's
+    // one driver, whose record the standing batch keeps.
+    const s = readState(standing);
+    if (s.driver?.pid) { s.driver.pid = null; writeState(standing, s); }
   }
   return a.archived || Boolean(a.stopped);
 }
@@ -653,8 +661,6 @@ function batchInterval(intake) {
     }
     return;
   }
-  const moved = moveDriver(state, s);
-  if (moved) log([`== ${stamp()} ${moved}`]);
   // An answer leaves its ticket parked, so it does not change the fingerprint: an answer to an item
   // handed on, or to any park since the batch went idle, ends idle by itself, so a pass lists it and a
   // decider can act on the answer.
@@ -687,12 +693,8 @@ function batchInterval(intake) {
   const auditDone = (() => { try { return auditEnded(E.repoSlug(), state); } catch { return false; } })();
   if (s.idle && s.idle === fingerprint(q) && !answeredNow && !closedOut && !recheck && !watchDue && !auditDone) {
     intakeAlone();
-    // A driver an earlier pass started can still be merging the batch's last PRs, or stop doing so.
     const reaped = reapDecider(state, s);
-    const driver = watchDriver(state, s, driverHolder(state));
-    if (reaped.length || driver.length) writeState(state, s);
-    if (reaped.length) log([`== ${stamp()} ${reaped.join('\n')}`]);
-    if (driver.length) log([`== ${stamp()} idle: the merge driver`, ...driver]);
+    if (reaped.length) { writeState(state, s); log([`== ${stamp()} ${reaped.join('\n')}`]); }
     idleBeat(state, q);
     idleCheckin(state, s, log, stamp);
     return;
@@ -753,9 +755,8 @@ function configRefused(state, s, log, intake) {
   const { sent, line } = pushFresh(state, { notified: recorded }, pushes, (ps) => (ps.length === 1 ? 'this row' : `these ${ps.length} rows`), 'tick');
   writeConfigPushed(state, sent ? [...keys] : recorded);
   const reaped = reapDecider(state, s);
-  const driver = watchDriver(state, s, driverHolder(state));
   writeState(state, s);
-  log([`== ${stamp()} config check: no pass run, no worker spawned`, ...pushes.map((p) => p.text), line, ...reaped, ...driver, ...intake]);
+  log([`== ${stamp()} config check: no pass run, no worker spawned`, ...pushes.map((p) => p.text), line, ...reaped, ...intake]);
   return true;
 }
 
@@ -889,29 +890,13 @@ function runPass(state, q, s, log, stamp, intake = []) {
   out.push(...reaped, ...decide(state, s, v, qAfter));
   s.idle = null;
   const driver = driverHolder(state);
-  out.push(...watchDriver(state, s, driver));
   if (v.status !== 'idle') {
     const keys = toMerge(qAfter);
     const grant = E.mergeGrant(qAfter);
     if (!keys.length) { /* nothing to merge */ }
     else if (driver) { /* running: nothing new to log */ }
     else if (!grant.by) out.push(`merge driver: not started, since ${grant.why}: green PRs wait for you`);
-    else {
-      // The driver takes in every queue ticket and its holds (held_by) on each loop by itself. Its
-      // output goes to its log from the first line, so what it says before it takes --log is kept too.
-      const tickets = Object.keys(qAfter.tickets ?? {});
-      const from = logSize(driverLog(state));
-      let fd;
-      try {
-        fd = openSync(driverLog(state), 'a');
-        const child = spawn(join(HERE, 'merge-driver.sh'), ['--tickets', tickets.join(' '), '--log'], { cwd: process.cwd(), env: process.env, detached: true, stdio: ['ignore', fd, fd] });
-        child.on('error', () => {});
-        child.unref();
-        s.driver = { failures: 0, notified: false, ...s.driver, pid: child.pid, started: new Date().toISOString(), from };
-        out.push(`merge driver: started (pid ${child.pid}) for ${tickets.join(' ')}; its log is ${driverLog(state)}`);
-      } catch (e) { out.push(`merge driver: could not start: ${e.message}`); }
-      finally { if (fd !== undefined) closeSync(fd); }
-    }
+    else driverWanted = true;
   }
 
   // A pass that crashed or hung gave no verdict, and needs the person as much as one that said so.
@@ -934,11 +919,46 @@ function runPass(state, q, s, log, stamp, intake = []) {
 }
 
 // ---- the merge driver ------------------------------------------------------------------------
-// s.driver is the last driver this supervisor started ({pid, started, from, failures, notified,
-// reason, code}): `from` is where its output starts in merge-driver.log, and `failures` counts the
-// starts in a row that stopped with a failure before a tick found a driver running.
+// One driver runs for all of the repo's batches (merge-driver.sh --all-batches): it holds the standing
+// batch's lock and points each named batch's lock it merges for, and its record and log are the
+// standing batch's (the one batch's, for a tick that names one). s.driver is the last driver this
+// supervisor started ({pid, started, from, failures, notified, reason, code}): `from` is where its
+// output starts in merge-driver.log, and `failures` counts the starts in a row that stopped with a
+// failure before a tick found a driver running.
 const DRIVER_NOTIFY_AFTER = 2;
 const driverLog = (state) => join(state, 'merge-driver.log');
+// Whether a batch's pass this round left tickets to merge under a merge grant, with no driver running.
+let driverWanted = false;
+
+// Once every batch has had its round: a driver on old code is moved to the installed code, one that
+// stopped is logged, and the one driver is started when a batch wants it and none holds the lock.
+function driverRound(state) {
+  const s = readState(state);
+  const moved = moveDriver(state, s);
+  const lines = moved ? [moved] : [];
+  const holder = driverHolder(state);
+  lines.push(...watchDriver(state, s, holder));
+  if (driverWanted && !holder) {
+    // The driver takes in every batch's queue tickets and holds (held_by) on each sweep by itself. Its
+    // output goes to its log from the first line, so what it says before it takes --log is kept too.
+    const env = { ...process.env };
+    delete env.DESK_DEFAULT_BRANCH;
+    const from = logSize(driverLog(state));
+    let fd;
+    try {
+      fd = openSync(driverLog(state), 'a');
+      const child = spawn(join(HERE, 'merge-driver.sh'), ['--all-batches', '--log'], { cwd: process.cwd(), env, detached: true, stdio: ['ignore', fd, fd] });
+      child.on('error', () => {});
+      child.unref();
+      s.driver = { failures: 0, notified: false, ...s.driver, pid: child.pid, started: new Date().toISOString(), from };
+      lines.push(`merge driver: started (pid ${child.pid}) for the repo's batches; its log is ${driverLog(state)}`);
+    } catch (e) { lines.push(`merge driver: could not start: ${e.message}`); }
+    finally { if (fd !== undefined) closeSync(fd); }
+  }
+  if (!lines.length) return;
+  writeState(state, s);
+  logTo(state)([`== ${stamp()} merge driver`, ...lines]);
+}
 const logSize = (f) => { try { return statSync(f).size; } catch { return 0; } };
 const STAMP = /^\d\d:\d\d:\d\dZ /;
 const EXITED = /^merge driver exited (\d+)$/;
