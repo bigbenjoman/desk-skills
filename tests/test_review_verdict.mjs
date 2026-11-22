@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { render, tally, isClean, carriedSection, acceptedSection, postMergeSection, methodLine, CLEAN, VerdictError, gateRejects } from '../skills/desk-review/bin/verdict.mjs'
+import { render, tally, isClean, carriedSection, acceptedSection, postMergeSection, methodLine, CLEAN, VerdictError, gateRejects, validateResults } from '../skills/desk-review/bin/verdict.mjs'
 import { reviewGaps, reviewFix, personGapsCall } from '../desk/bin/fix-tries.mjs'
 import { parseVerdict as undraftVerdict, verdictAt, postMergeIn, postMergeSteps } from '../desk/bin/undraft.mjs'
 import { scratch } from './scratch.mjs';
@@ -333,6 +333,16 @@ const bad = spawnSync('node', [SCRIPT, join(T, 'bad.json')], { encoding: 'utf8' 
 t('CLI refuses with exit 2 and prints nothing', `${bad.status} ${bad.stdout === ''} ${bad.stderr.includes('gaps is required')}`, '2 true true')
 const none = spawnSync('node', [SCRIPT], { encoding: 'utf8' })
 t('CLI with no file refuses', none.status, 2)
+// DS-882: the verdict refuses through the exported results validator, and prints what it returns.
+{
+  const agentRefuter = base({ findings: [f({ refuted_by: 'ada-devils-advocate' })] })
+  writeFileSync(join(T, 'agent.json'), JSON.stringify(agentRefuter))
+  const AGENT = 'finding F1: refuted_by must be the refuter\'s vendor, claude or codex, not its agent ("ada-devils-advocate")'
+  const r = spawnSync('node', [SCRIPT, join(T, 'agent.json')], { encoding: 'utf8' })
+  t('DS-882 AC1 an agent as refuter is refused with the same message and exit code', JSON.stringify([r.status, r.stdout, r.stderr]), JSON.stringify([2, '', `verdict.mjs: ${AGENT}\n`]))
+  t('DS-882 AC2 the results validator returns the message the verdict printed', validateResults(agentRefuter), r.stderr.replace(/^verdict\.mjs: /, '').trimEnd())
+  t('DS-882 a results file the verdict reads gives null', validateResults(base()), null)
+}
 writeFileSync(join(T, 'r3.json'), JSON.stringify(onlyCarried))
 const r3cli = spawnSync('node', [SCRIPT, join(T, 'r3.json')], { encoding: 'utf8' })
 t('CLI on round 3 prints five lines', `${r3cli.status} ${r3cli.stdout.trim().split('\n').length}`, '0 5')
