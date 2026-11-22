@@ -139,6 +139,7 @@ function normalizer(roots) {
 // digits, and no time the pass prints has 9, 12 or 40 digits.
 // The id the pass hashes from its own start time into an evidence fix's key (`evidence-fix-<id>`,
 // `fix-<id>.md`) is treated the same way, digits or not: each tree's pass started at a different time.
+// So is a lease id (`L-<id>`, ten random hex characters): about one in 110 is all digits.
 // Ports are treated the same way: two runs take different free ports, but two tickets given one port
 // on one tree and two on the other still differ.
 // Text the pass cut short ("…") is cut at a different place on each tree, so a SHA or port in it can be
@@ -147,7 +148,7 @@ function normalizer(roots) {
 // with nothing, so the values after it stay in step whichever tree cut.
 // What is shown of a difference names each tree's SHAs and ports by the order they first appear in
 // (renamer), and within text the pass cut short, by that text alone (<SHA?1>).
-const SHA = /\b(?:(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}|[0-9a-f]{40}|[0-9a-f]{12}|[0-9a-f]{9}|(?<=\bfix-)[0-9a-f]{8})\b(?!…)|\b[0-9a-f]{1,40}(?=…)/g;
+const SHA = /\b(?:(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}|[0-9a-f]{40}|[0-9a-f]{12}|[0-9a-f]{9}|(?<=\bfix-)[0-9a-f]{8}|(?<=\bL-)[0-9a-f]{10})\b(?!…)|\b[0-9a-f]{1,40}(?=…)/g;
 function namer(tag) {
   const seen = new Map();
   return {
