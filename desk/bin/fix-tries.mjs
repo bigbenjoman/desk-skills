@@ -39,6 +39,8 @@ import { normaliseLine } from './evidence.mjs';
 import { stepFits } from './workflow-yaml.mjs';
 import { askCategoryIn } from './decisions.mjs';
 import { parseVerdict as markerOf, COUNTS } from '../templates/scripts/desk/review-gate.mjs';
+import { statesPhrase, leftOver } from './review-plain.mjs';
+import { pairs } from './desk-env.mjs';
 
 export const FIX_TRIES_MAX = 2;
 // merge-driver.sh's own cap and gap: reruns per check per head, and the seconds between them.
@@ -998,18 +1000,25 @@ export function verdictTry(t, s, ctx) {
   return driverReviewTry(t, s, ctx);
 }
 
-// A finding a review lists only to say it does not stand: refuted (a cross-vendor refutation), or not a finding.
-const REFUTED = /\b(?:refuted|refutes?|not a finding|not-a-finding|false positive|withdrawn|dismissed|rejected)\b/i;
+// A finding a review lists only to say it does not stand, labelled so: `(refuted)`, `refuted by codex`,
+// `: not a finding`, `— false positive`, `**Refuted**`. A word in a finding's own prose ("the rejected
+// promise", "this refutes the claim") is no such label.
+const WORDS = '(?:refuted|not a finding|not-a-finding|false positive)';
+const REFUTED = new RegExp(`\\(\\s*${WORDS}\\b[^)]*\\)|\\b(?:refuted|withdrawn|dismissed)\\s+by\\b|(?:^|[:—–-]\\s*|\\s)${WORDS}\\s*(?:[.:;,)—–-]|$)|\\*\\*${WORDS}\\*\\*`, 'i');
+// A heading over findings that do not stand: one naming refuted (dismissed, withdrawn, rejected)
+// findings, findings refuted or not findings, false positives, or opening with Refuted (after a severity,
+// as `### P2 — Refuted`). "## Rejected payments" is none.
+const REFUTED_HEADING = /\b(?:refuted|dismissed|withdrawn|rejected)\s+(?:[\w-]+\s+){0,2}?findings?\b|\bfindings?\b.*\b(?:refuted|not a finding)\b|\bfalse positives?\b|^[#>*_\s-]*(?:P[0-3]\b[^A-Za-z]*)?(?:refuted|not a finding|false positives?)\b/i;
 // A review body with the sections a heading marks as refuted findings taken out: a `#` heading's section
 // runs to the next heading as deep or shallower, another heading's to the next heading.
 function standingPart(body) {
   let cut = null;
   return String(body ?? '').split(/\r?\n/).filter((line) => {
     const text = line.trim();
-    if (isHeading(text) && !/^[#>*_\s-]*(?:F\d+\s*·\s*)?P[0-3]\b/.test(text)) {
+    if (isHeading(text)) {
       const depth = /^(#{1,6})\s/.exec(text)?.[1].length ?? 7;
       if (cut != null && depth <= cut) cut = null;
-      if (cut == null && REFUTED.test(text)) { cut = depth; return false; }
+      if (cut == null && REFUTED_HEADING.test(text)) { cut = depth; return false; }
     }
     return cut == null;
   }).join('\n');
@@ -1035,9 +1044,11 @@ export function bodyFeedback(body, clean = null) {
   if (standing.length) return true;
   const c = textCounts(text);
   const zero = ['p0', 'p1', 'p2'].every((k) => c[k] === 0) && Object.values(c).every((n) => n === 0);
-  const phrase = String(clean ?? '').trim().toLowerCase();
-  const said = phrase && !/=/.test(phrase) && !/^(?:none|todo)\b/.test(phrase)
-    && text.split(/\r?\n/).some((l) => l.replace(/^[\s>*#_-]+/, '').replace(/[*_`]/g, '').trim().toLowerCase().startsWith(phrase));
+  // A plain §4 Clean review verdict (no counts in it) stated as the body's outcome, leaving nothing open,
+  // as undraft.mjs plainVerdictAt reads one (review-plain.mjs).
+  const phrase = String(clean ?? '').trim();
+  const said = !!phrase && !Object.keys(pairs(phrase)).length && !/^(?:none|todo)\b/i.test(phrase)
+    && statesPhrase(text, phrase) != null && !leftOver(text).length;
   return !(zero || said || listed.length > 0);
 }
 

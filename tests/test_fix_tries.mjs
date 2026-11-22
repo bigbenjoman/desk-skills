@@ -828,6 +828,17 @@ t('#1249 a verdict marker with a count is feedback', bodyFeedback(`${LOCAL_MARKE
 t('#1249 the §4 clean phrase opening a line, with no finding standing, is clean', bodyFeedback('No findings. Nothing deferred.', 'no findings'), false);
 t('#1249 counts written out that are not all 0 are feedback', bodyFeedback('p0=0 p1=1 p2=0'), true);
 t('#1249 review text with no finding read and nothing saying clean is feedback, as before', bodyFeedback('Please rename the helper.'), true);
+// A refutation is a label, not a word in the finding's own prose, and a heading over refuted findings cuts its section.
+for (const [body, why] of [
+  ['- P1 src/a.ts:3 the rejected promise from save() is never caught', '"rejected" in its prose'],
+  ['### Findings\n- P2 src/m.tsx:12 a dismissed modal leaves focus trapped', '"dismissed" in its prose'],
+  ['## Rejected payments\n- P1 src/pay.ts:40 refund applied twice', 'a heading naming no findings'],
+  ['- P1 src/a.ts:3 this refutes the claim in the PR that rows are kept; rows are dropped', '"refutes" in its prose'],
+  ['p0=0 p1=0 p2=0\n### P2 — Refuted\n- P2 src/a.ts:3 x\n### Standing\n- P2 src/c.ts:4 y', 'a standing section after a refuted one'],
+]) t(`#1249 a finding with ${why} still stands`, bodyFeedback(body), true);
+t('#1249 a severity heading saying refuted cuts its findings', bodyFeedback('p0=0 p1=0 p2=0\n### P2 — Refuted\n- P2 src/a.ts:3 x'), false);
+t('#1249 the clean phrase with an item left after it is no clean statement', bodyFeedback('No findings blocking merge except:\n- something vague', 'no findings'), true);
+t('#1249 nor is the phrase with more after it on its line', bodyFeedback('No findings yet, still reading', 'no findings'), true);
 t('#737 externalTry is undefined with no external check red', externalTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE }), undefined);
 t('#737 and waits while a check is pending', externalTry(tk(), pr([{ name: 'tests', status: 'in_progress' }, red('🔐 Review gate', '88')]), extCtx(extPl([bot(HEAD, 'P0')]))), null);
 t('DS-422 a red verdict check beside an unclean review at the head is reviewFix\'s, as before', verdictTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE, settled: true }), null);
