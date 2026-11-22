@@ -47,9 +47,8 @@ export function testSigninOf(item) {
 }
 
 // The compose service a §4 Local services item starts with, ending at whitespace or a colon (`search
-// :8108`, `search: 8108`, `search`), or null. worker-settings allow-lists a worker starting it by this
-// name, and drift names an item it cannot read.
-export function localServiceName(item) {
+// :8108`, `search: 8108`, `search`), or null. The service-port type reads an item's service by it.
+function localServiceName(item) {
   return /^[a-z0-9][a-z0-9_.-]*(?=[\s:]|$)/.exec(String(item ?? '').trim())?.[0] ?? null;
 }
 
@@ -312,6 +311,12 @@ const servicePort = (s) => {
   const port = service == null ? null : PORT_TAIL.exec(s.slice(service.length));
   return port && (port[1] == null || Number(port[1]) <= 65535) ? { service, port: port[1] == null ? null : Number(port[1]) } : null;
 };
+// The form of a §4 Local services item, as the service-port type's error and drift's UNLISTED line name it.
+export const SERVICE_PORT_FORM = '`<service> [:<port>]`';
+// One §4 Local services item read by the row's service-port type: -> { value: { service, port } } or
+// { error } naming the form. worker-settings allow-lists a worker starting the service by this read,
+// and drift names an item it refuses. desk-env re-exports it.
+export const parseServicePort = (item) => TYPES['service-port'].parse(String(item ?? '').trim());
 // §3b Check-in times: every span joined, then local HH:MM times split on commas or spaces. The digest
 // reads the row through these (digest.mjs checkinTimes) and falls back to its default on a bad row, so
 // the type's error is not fatal.
@@ -460,7 +465,7 @@ export const TYPES = Object.freeze({
   regex: matching('a regular expression', (s) => { try { new RegExp(s); return true; } catch { return false; } }),
   command: matching('a command', () => true, parseCommandItem),
   'test-signin': matching('`[<app dir>: ]<email>`', (s) => testSigninOf(s) != null, testSigninOf),
-  'service-port': matching('`<service> [:<port>]`', (s) => servicePort(s) != null, servicePort),
+  'service-port': matching(SERVICE_PORT_FORM, (s) => servicePort(s) != null, servicePort),
   'required-fields': matching('`<Type>[, <Type>…]: <field>[, <field>…]`', (s) => !requiredFieldsIn([s], null).malformed.length,
     (s) => ({ types: requiredRule(s)?.types ?? [], fields: requiredFieldsIn([s], null).need })),
   // The whole cell is checked, as `desk-env levers` reads it; the value stays one entry per span.
