@@ -69,7 +69,9 @@ const ok = await call('POST', '/api/auth/exchange', { headers: { Origin: ORIGIN,
 const cookie = String(ok.headers['set-cookie'] ?? '').split(';')[0];
 const load = JSON.parse(ok.text).loadToken;
 const signedIn = { Cookie: cookie, 'X-Desk-Load': load };
-const app = { ...signedIn, Origin: ORIGIN }; // what the window sends to open its stream
+// What the window's page sends to open its stream: a same-origin GET carries no Origin, and the
+// browser adds Sec-Fetch-Site itself.
+const app = { ...signedIn, 'Sec-Fetch-Site': 'same-origin' };
 
 // A window's stream: every event as { id, event, data, at }, in order.
 function stream({ since = null, headers = app, path = '/api/events' } = {}) {
@@ -243,15 +245,20 @@ for (const o of ['http://evil.example', 'null', `http://localhost:${PORT}`, `htt
   t(`AC2 a stream with Origin ${o} is refused`, [bad.status, bad.events.length], [403, 0]);
   bad.close();
 }
-const none = stream({ headers: signedIn });
-await waitFor(() => none.status != null);
-await sleep(100);
-t('AC2 a stream with no Origin is refused, as a POST is', [none.status, none.events.length], [403, 0]);
-none.close();
-const right = stream({ headers: app });
-await waitFor(() => right.status != null);
-t('AC2 a stream with the app\'s Origin opens', right.status, 200);
-right.close();
+for (const [what, headers] of [['no Origin and no word from the browser', signedIn], ['no Origin from another site', { ...signedIn, 'Sec-Fetch-Site': 'cross-site' }],
+  ['Origin null from the app\'s own page', { ...app, Origin: 'null' }]]) {
+  const bad = stream({ headers });
+  await waitFor(() => bad.status != null);
+  await sleep(100);
+  t(`AC2 a stream with ${what} is refused, as a POST is`, [bad.status, bad.events.length], [403, 0]);
+  bad.close();
+}
+for (const [what, headers] of [['the app\'s Origin', { ...signedIn, Origin: ORIGIN }], ['no Origin from the app\'s own page', app]]) {
+  const right = stream({ headers });
+  await waitFor(() => right.status != null);
+  t(`AC2 a stream with ${what} opens`, right.status, 200);
+  right.close();
+}
 const outsider = stream({ headers: { Cookie: cookie, Origin: ORIGIN } });
 await waitFor(() => outsider.status != null);
 t('a stream without the per-load token is refused', outsider.status, 401);
@@ -276,6 +283,11 @@ await sleep(100);
 t('a closed window is dropped', feed.clients, 0);
 feed.stop();
 server.close();
+
+// ---- which names the watcher and desk-q's stamp leave out
+const { quietStateName } = await import(join(BINDIR, 'desk-env.mjs'));
+t('logs, clones and log files are quiet, a rotated round included', ['logs', 'ref', 'WID-1.log', 'WID-1.log.round2', 'WID-1.log.round2.gz'].map(quietStateName), [true, true, true, true, true]);
+t('a repo slug with .log. in it is not', ['acme__build.log.tools', 'queue.json', 'catalog'].map(quietStateName), [false, false, false]);
 
 // ---- a feed on its own: a failed read on the tick, and a window that leaves while the model is read
 const { makeFeed } = await import(join(BINDIR, 'desk-ui-events.mjs'));

@@ -82,6 +82,7 @@ function diff(prev, next) {
   return out;
 }
 
+const mono = () => performance.now();
 const frame = (event, data, id = null) => `${id == null ? '' : `id: ${id}\n`}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 
 // The feed one server holds. `build(now)` reads the model (readModel), `stale(model, now)` says the clock
@@ -89,7 +90,8 @@ const frame = (event, data, id = null) => `${id == null ? '' : `id: ${id}\n`}eve
 // rebuild starts (the tests count them). Timers never hold the process open.
 export function makeFeed({ build = readModel, stale = livenessMoved, now = Date.now, roots = stateRoots, debounceMs = DEBOUNCE_MS,
   tickMs = TICK_MS, pingMs = PING_MS, ring = RING, onBuild = () => {}, onError = (e) => console.error(`desk-ui: events: ${e.message}`) } = {}) {
-  let model = null, rev = 0, dirty = false, timer = null, building = null, lastBuild = -Infinity, ticker = null, started = false;
+  // `lastBuild` is on the monotonic clock, so a wall-clock jump never stretches the debounce.
+  let model = null, rev = 0, dirty = false, timer = null, building = null, lastBuild = -Infinity, rebuilds = 0, ticker = null, started = false;
   const held = []; // the last `ring` events: { id, event, data }
   const clients = new Set();
   const watchers = new Map(); // root -> FSWatcher
@@ -118,8 +120,9 @@ export function makeFeed({ build = readModel, stale = livenessMoved, now = Date.
   async function rebuild() {
     clearTimeout(timer); timer = null;
     dirty = false;
-    lastBuild = Date.now();
-    onBuild(lastBuild);
+    lastBuild = mono();
+    rebuilds += 1;
+    onBuild(Date.now());
     try {
       const next = await build(now());
       if (!model) rev += 1; // the first model is a revision of its own, which only a snapshot carries
@@ -139,7 +142,7 @@ export function makeFeed({ build = readModel, stale = livenessMoved, now = Date.
   function schedule() {
     dirty = true;
     if (timer || building) return;
-    timer = setTimeout(run, Math.max(0, lastBuild + debounceMs - Date.now()));
+    timer = setTimeout(run, Math.max(0, lastBuild + debounceMs - mono()));
     timer.unref?.();
   }
 
@@ -173,10 +176,10 @@ export function makeFeed({ build = readModel, stale = livenessMoved, now = Date.
   // DEBOUNCE_MS has passed since the last rebuild started, unless one started since it was asked for.
   async function current({ fresh = false } = {}) {
     start();
-    const asked = Date.now();
-    if (fresh && model) await new Promise((r) => setTimeout(r, Math.max(0, lastBuild + debounceMs - asked)));
+    const asked = rebuilds; // a rebuild started after this read was asked for is fresh enough
+    if (fresh && model) await new Promise((r) => setTimeout(r, Math.max(0, lastBuild + debounceMs - mono())));
     if (building) await building;
-    if (!model || (fresh && lastBuild < asked)) await run();
+    if (!model || (fresh && rebuilds === asked)) await run();
     else if (dirty) await new Promise((r) => waiting.push(r));
     return model;
   }

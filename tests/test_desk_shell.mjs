@@ -6,11 +6,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
-import { request } from 'node:http';
 import { runInNewContext } from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
-import { freePort } from './local-http.mjs';
+import { call as callPort, freePort } from './local-http.mjs';
 import { homedir } from 'node:os';
 import { createShell, deskPaths, exchange, externalUrl, jiraSites, parseCookie, run, tokenFile, PARTITION } from '../desk/shell/app.mjs';
 
@@ -50,15 +49,8 @@ async function stopServer() {
 }
 process.on('exit', () => srv?.kill());
 
-function call(path, headers = {}) {
-  return new Promise((resolve) => {
-    const req = request({ host: '127.0.0.1', port: PORT, method: 'GET', path, headers: { Host: `127.0.0.1:${PORT}`, ...headers } }, (res) => {
-      let text = ''; res.on('data', (d) => { text += d; }); res.on('end', () => resolve({ status: res.statusCode, text, headers: res.headers }));
-    });
-    req.on('error', () => resolve({ status: 0 }));
-    req.end();
-  });
-}
+// A GET to the server; status 0 when nothing answers.
+const call = (path, headers = {}) => callPort(PORT, 'GET', path, { headers }).catch(() => ({ status: 0 }));
 
 // ---- a stubbed Electron ------------------------------------------------------------------------
 function fakeElectron({ lock = true } = {}) {
