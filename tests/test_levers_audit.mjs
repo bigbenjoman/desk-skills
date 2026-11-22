@@ -4,7 +4,7 @@
 // its spawn, merge-commit read, end and log are functions the test supplies.
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -320,6 +320,77 @@ t('AC3 the audit model is recorded on the trial when it is first seen running, b
   const off = await hO.pass(NOW + 2 * MIN, { states: Object.fromEntries(LEVERS.map((n) => [n, 'off'])) });
   t('auto off: the started audit is still recorded, and nothing new starts', [off.recorded.map((r) => r.ticket), off.started.length, 'O-on5' in queueOf(SO).items], [['O-on5'], 0, false]);
   t('auto off: its line says so', /O-on5 audited/.test(off.line ?? ''), true);
+}
+
+// ---- DS-783: the audit's slot, its wake, its hold and its spend -----------------------------------
+{
+  const { decideSlots } = await import('../desk/bin/pass/eligibility.mjs');
+  const writeQueue = (slug, items, extra = {}) => { mkdirSync(dirname(A.auditQueueFile(slug)), { recursive: true }); writeFileSync(A.auditQueueFile(slug), JSON.stringify({ v: 1, trials: {}, items, ...extra })); };
+  // A batch of 2 with nothing to spawn, beside a live sibling batch of the repo with nothing ready.
+  const slotsFor = (o = {}) => decideSlots({
+    borrowOn: false, concurrency: 2, cap: 4, running: 0, spawnable: 0, others: [], machineCap: null, memory: { avail: 20, start: 4 }, spawnHeld: null, lockWhy: null,
+    ownBaseFix: 0, auditWorkers: 0, baseWanted: false, machineProfiled: false, repoCaps: {}, otherRepos: [],
+    repoBatches: [{ slug: 'acme__slot', batch: 'other', live: true, running: 1, ready: 0, share: 2, last: null }], batch: null, lastStart: null, maintHold: false, ...o,
+  })[0];
+  const SQ = 'acme__slot';
+  writeQueue(SQ, { 'C-on5': { ticket: 'C-on5', state: 'queued', merged_at: iso(NOW - DAY) } });
+  t('AC1 a queued audit is wanted', A.auditWanted(SQ, NOW), true);
+  const due = slotsFor({ auditWanted: A.auditWanted(SQ, NOW) });
+  t('AC1 a queued audit with a live sibling batch and nothing to spawn is counted in the demand and gets a slot', due.repo.room, 1);
+  t('AC1 without it, the sibling batch leaves the pass no room', slotsFor({ auditWanted: false }).repo.room, 0);
+  t('AC1 a batch already at its own number counts no audit slot', slotsFor({ auditWanted: true, running: 2 }).repo.room, 0);
+  t('AC1 tickets filling the batch\'s number leave the audit none', slotsFor({ auditWanted: true, spawnable: 5 }).repo.room, 2);
+  writeQueue(SQ, { 'C-on5': { ticket: 'C-on5', state: 'deferred', deferred: { reason: 'weekly_cap', until: iso(NOW + DAY) }, merged_at: iso(NOW - DAY) } });
+  t('AC1 an audit capped for the week is not wanted until the week ends', [A.auditWanted(SQ, NOW), A.auditWanted(SQ, NOW + 2 * DAY)], [false, true]);
+
+  // AC4: a start left part way past its retry window holds no slot; a fresh one does.
+  writeQueue(SQ, { 'C-on5': { ticket: 'C-on5', state: 'starting', starting_at: iso(NOW - 2 * 3_600_000), merged_at: iso(NOW - DAY) } });
+  t('AC4 a start a crashed pass left past its retry window holds no worker slot, and is wanted again', [A.auditsRunning(SQ, NOW), A.auditWanted(SQ, NOW)], [0, true]);
+  writeQueue(SQ, { 'C-on5': { ticket: 'C-on5', state: 'starting', starting_at: iso(NOW - MIN), merged_at: iso(NOW - DAY) } });
+  t('AC4 a start still within its window holds one', [A.auditsRunning(SQ, NOW), A.auditWanted(SQ, NOW)], [1, false]);
+
+  // AC2: an idle batch's supervisor runs a pass once the audit spawned into its state has exited.
+  const st = join(T, 'state-wake');
+  mkdirSync(join(st, 'workers'), { recursive: true });
+  writeQueue(SQ, { 'C-on5': { ticket: 'C-on5', key: 'audit.C-on5', state: 'running', session: 's-1', state_dir: st, started_at: iso(NOW - MIN), merged_at: iso(NOW - DAY) } });
+  t('AC2 a running audit that has not exited does not wake the batch', A.auditEnded(SQ, st), false);
+  writeFileSync(join(st, 'workers', 'audit.C-on5.exit.json'), JSON.stringify({ session: 's-1', at: iso(NOW) }));
+  t('AC2 once its worker exits, the batch it was spawned into wants a pass; another batch does not', [A.auditEnded(SQ, st), A.auditEnded(SQ, join(T, 'state-other'))], [true, false]);
+  const sup = readFileSync(join(import.meta.dirname, '..', 'desk', 'bin', 'supervisor.mjs'), 'utf8');
+  t('AC2 the supervisor leaves an idle batch only for an ended audit', /!watchDue && !auditDone\)/.test(sup) && /auditEnded\(E\.repoSlug\(\), state\)/.test(sup), true);
+
+  // AC5: a usage-limit refusal of an audit's preflight, after the pass first saved its hold, is saved.
+  const passSrc = readFileSync(join(import.meta.dirname, '..', 'desk', 'bin', 'pass.mjs'), 'utf8');
+  const auditsAt = passSrc.indexOf('await runAudits(');
+  t('AC5 the pass saves the usage hold again once its audits have run', auditsAt > 0 && /saveUsage\(\);/.test(passSrc.slice(auditsAt, passSrc.indexOf('\n}\n', auditsAt) + 3)), true);
+
+  // AC6: a failed start's preflight still counts once its trial ended and the item was dropped.
+  const S12 = 'acme__dropped';
+  const h12 = harness(S12, tickets(repo(S12), 5, 5));
+  h12.spendUsd = 40; // a $2 week
+  await h12.pass(NOW, { spawn: async () => ({ error: 'refused', preflight_usd: 2.5 }) });
+  append(S12, { kind: 'override', lever: 'codex', from: 'trial', to: 'off', actor: 'ben', reason_code: 'ben_override', reason: 'end it', at: iso(NOW + MIN) });
+  await h12.pass(NOW + 2 * MIN);
+  t('AC6 the ended trial\'s unstarted audit is dropped, its preflight kept', [Object.keys(queueOf(S12).items), queueOf(S12).preflights.map((p) => p.usd)], [[], [2.5]]);
+  const next = append(S12, { kind: 'override', lever: 'codex', from: 'off', to: 'trial', actor: 'ben', reason_code: 'ben_override', reason: 'again', at: iso(NOW + 3 * MIN) });
+  const h12b = harness(S12, tickets(trialId(S12, 'codex', { id: next.id }), 5, 5, 'N'));
+  h12b.spendUsd = 40;
+  await h12b.pass(NOW + 4 * MIN);
+  t('AC6 those charges still count in the week\'s audit spend: the next trial\'s audit is capped', [h12b.spawns.length, queueOf(S12).items['N-on5']?.deferred?.reason], [0, 'weekly_cap']);
+  await h12b.pass(Date.parse('2026-11-23T08:00:00Z'));
+  t('AC6 the next week they no longer count', [h12b.spawns.length, queueOf(S12).preflights.length], [1, 0]);
+
+  // AC7: the merge commit says how a PR merged, whatever the repo's merge method.
+  const c = (at, subject) => ({ at, subject });
+  const pr = [c('2026-11-01T10:00:00Z', 'one'), c('2026-11-01T11:00:00Z', 'two'), c('2026-11-01T12:00:00Z', 'three')];
+  t('AC7 a PR merged by rebase landed its own commits; by squash it did not; two parents is a merge',
+    [A.mergeMethodOf({ parents: 1, landed: [...pr].reverse(), commits: pr }), A.mergeMethodOf({ parents: 1, landed: [c('2026-11-02T09:00:00Z', 'Feature (#12)'), c('2026-11-01T08:00:00Z', 'other')], commits: pr }),
+      A.mergeMethodOf({ parents: 2, landed: [], commits: pr }), A.mergeMethodOf({ parents: 0, landed: [], commits: pr })],
+    ['rebase', 'squash', 'merge', null]);
+  const S13 = 'acme__squash';
+  const h13 = harness(S13, tickets(repo(S13), 5, 5));
+  await h13.pass(NOW, { mergeMethod: 'rebase', mergeCommit: async (item) => ({ sha: sha(item.pr), commits: 4, method: 'squash' }) });
+  t('AC7 a PR squashed in a rebase repo is audited over only its own change', [h13.spawns[0].task.includes(`${sha(105)}^1..${sha(105)}`), h13.spawns[0].task.includes('~4')], [true, false]);
 }
 
 console.log(fails ? `\n${fails} failed` : '\nall passed');

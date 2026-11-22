@@ -188,8 +188,8 @@ export function readAudit(text, sha) {
 function loadQueue(file) {
   try {
     const q = JSON.parse(readFileSync(file, 'utf8'));
-    return { v: 1, trials: q?.trials ?? {}, items: q?.items ?? {}, spend: q?.spend ?? null };
-  } catch { return { v: 1, trials: {}, items: {}, spend: null }; }
+    return { v: 1, trials: q?.trials ?? {}, items: q?.items ?? {}, spend: q?.spend ?? null, preflights: q?.preflights ?? [] };
+  } catch { return { v: 1, trials: {}, items: {}, spend: null, preflights: [] }; }
 }
 // Runs `fn(queue)` on the repo's audit queue under its lock and writes it back.
 function withQueue(slug, fn) {
@@ -215,9 +215,30 @@ function deferIn(due, reason, now, why = null) {
   return { defer: due, fresh };
 }
 
+// Whether `item` is part way through a start no crashed pass has left past its retry window.
+const startingNow = (i, now) => i.state === 'starting' && now - Date.parse(i.starting_at) < STARTING_MS;
+
 // How many of the repo's audit workers are running or part way through starting, for the pass's worker
-// counts.
-export const auditsRunning = (slug) => Object.values(loadQueue(auditQueueFile(slug)).items).filter((i) => ['running', 'starting'].includes(i.state)).length;
+// counts. A start a crashed pass left past its retry window holds no slot: the next due audit is it.
+export const auditsRunning = (slug, now = Date.now()) => Object.values(loadQueue(auditQueueFile(slug)).items)
+  .filter((i) => i.state === 'running' || startingNow(i, now)).length;
+
+// Whether the repo has an audit a pass may start, so the pass counts its one slot in its worker demand:
+// none running or starting, and one queued, deferred for a tight window, deferred for a weekly cap whose
+// week has ended, or left starting past its retry window. A sample a pass has not queued yet is not
+// counted until it is.
+export function auditWanted(slug, now = Date.now()) {
+  const items = Object.values(loadQueue(auditQueueFile(slug)).items);
+  if (items.some((i) => i.state === 'running' || startingNow(i, now))) return false;
+  return items.some((i) => i.state === 'queued' || i.state === 'starting'
+    || (i.state === 'deferred' && !(i.deferred?.reason === 'weekly_cap' && now < Date.parse(i.deferred.until))));
+}
+
+// Whether an audit spawned into batch state folder `state` has ended and waits for a pass to record it,
+// so the supervisor runs one for a batch it would otherwise leave idle.
+export function auditEnded(slug, state, ended = endedFromExit) {
+  return (auditsIn(slug, state) ?? []).some((i) => i.state === 'recording' || !!ended(i));
+}
 
 // The repo's audits running, or ended and not yet recorded, whose worker was spawned into state folder
 // `state`: its log and exit record are read from there (logOf, endedFromExit), so moving that folder's
@@ -237,6 +258,20 @@ export function auditsIn(slug, state) {
 
 // What an item's preflights cost: all of them, or those since `from` (ms).
 const preflightUsd = (item, from = -Infinity) => (item.preflights ?? []).filter((p) => Date.parse(p.at) >= from).reduce((n, p) => n + (Number(p.usd) || 0), 0);
+
+// How a PR merged, from its merge commit: `parents` its parent count, `landed` the first-parent chain's
+// last commits ending at it, newest first, and `commits` the PR's own commits, oldest first, each
+// { at: author date, subject }. A rebase keeps each commit's author date and subject, so it landed as
+// the PR's commits; a single-parent commit that did not is a squash, and two parents a merge commit.
+//   -> 'merge' | 'rebase' | 'squash' | null when unread
+export function mergeMethodOf({ parents, landed, commits }) {
+  if (parents > 1) return 'merge';
+  if (parents !== 1 || !Array.isArray(commits) || !Array.isArray(landed)) return null;
+  // GitHub's headline is the subject's first line; git's subject joins its first paragraph's lines.
+  const same = (a, b) => a && b && Date.parse(a.at) === Date.parse(b.at) && String(b.subject ?? '').startsWith(String(a.subject ?? '').replace(/…$/, ''));
+  const mine = [...commits].reverse();
+  return mine.length > 0 && landed.length >= mine.length && mine.every((c, k) => same(c, landed[k])) ? 'rebase' : 'squash';
+}
 
 // The audit row for an ended item, and its line in audit.jsonl once written. Each write is skipped
 // where an earlier, interrupted recording of the same session already made it, so recording again
@@ -335,7 +370,8 @@ export function auditP0Replay({ slug, name = slug, events, states, at, registry 
 // stub review worker stands in for one in tests:
 //   spawn({ key, item, sha, model, task, brief, env }) -> { session, worktree, state, preflight_usd }
 //     | { error, preflight_usd } | { wait: 'window_tight' | <why>, why, preflight_usd }
-//   mergeCommit(item) -> sha | { sha, commits } | null                       mergeMethod: config §4's
+//   mergeCommit(item) -> sha | { sha, commits, method? } | null              mergeMethod: config §4's,
+//     for a PR whose `method` (mergeMethodOf) was not read
 //   ended(item) -> { at } | null     log(item) -> text
 //   cleanup(item)                          pace() -> { hold }                 spend({ slug, now }) -> usd
 //   room() -> why no worker may start now, or null
@@ -388,25 +424,31 @@ export async function runAudits({
     // A trial's audit model is the review model when the trial is first seen running, fixed for its life.
     for (const id of live) q.trials[id] ??= { model: model(), at: new Date(now).toISOString() };
     // An audit not yet started whose trial has ended (adopted, reverted, or left to the row) is dropped.
-    for (const [k, i] of Object.entries(q.items)) if (['queued', 'deferred', 'failed'].includes(i.state) && !live.has(i.trial_id)) delete q.items[k];
+    // What its preflights cost stays in the queue's `preflights` for the week's spend; earlier weeks go.
+    const week = weekStart(now);
+    q.preflights = q.preflights.filter((p) => Date.parse(p.at) >= week);
+    for (const [k, i] of Object.entries(q.items)) {
+      if (!['queued', 'deferred', 'failed'].includes(i.state) || live.has(i.trial_id)) continue;
+      q.preflights.push(...(i.preflights ?? []).filter((p) => Date.parse(p.at) >= week));
+      delete q.items[k];
+    }
     for (const s of sample) {
       if (audited.has(s.ticket) || q.items[s.ticket]) continue;
       q.items[s.ticket] = { ...s, key: auditKey(s.ticket), model: q.trials[s.trial_id].model, state: 'queued', queued_at: new Date(now).toISOString(), tries: 0 };
     }
     const items = Object.values(q.items);
     // One audit at a time per repo; a spawn a crashed pass left part way counts as queued again.
-    if (items.some((i) => i.state === 'running' || (i.state === 'starting' && now - Date.parse(i.starting_at) < STARTING_MS))) return null;
+    if (items.some((i) => i.state === 'running' || startingNow(i, now))) return null;
     const due = items.filter((i) => ['queued', 'deferred', 'starting'].includes(i.state))
       .sort((a, b) => Date.parse(a.merged_at) - Date.parse(b.merged_at))[0];
     if (!due) return null;
     // Deferred while usage pacing holds spawns, or once this week's audits have spent their share.
-    const week = weekStart(now);
     let reason = null;
     if (pace()?.hold) reason = 'window_tight';
     else {
-      // Recorded audits, and the preflights of those not yet recorded, started or not.
+      // Recorded audits, and the preflights of those not yet recorded, started or not, dropped or not.
       const spent = rows.filter((r) => Date.parse(r.rec.at) >= week).reduce((n, r) => n + (Number(r.rec.usd) || 0), 0)
-        + items.reduce((n, i) => n + preflightUsd(i, week), 0);
+        + items.reduce((n, i) => n + preflightUsd(i, week), 0) + preflightUsd(q, week);
       // The spend reads every ticket's logs, so it is measured once a day and kept in the queue file.
       const day = new Date(now).toISOString().slice(0, 10);
       if (q.spend?.day !== day || !Number.isFinite(q.spend?.usd)) q.spend = { day, usd: Number(spend({ slug, now })) || 0 };
@@ -465,7 +507,8 @@ export async function runAudits({
     const sha = typeof m === 'string' ? m : m?.sha;
     if (!/^[0-9a-f]{40}$/.test(String(sha ?? ''))) fail(`the merge commit of PR #${item.pr} could not be read`);
     else {
-      const ctx = { ticket: item.ticket, pr: item.pr, sha, base: auditBase({ sha, method: mergeMethod, commits: m?.commits }), repo };
+      // How this PR merged, where its merge commit shows it, before the repo's configured method.
+      const ctx = { ticket: item.ticket, pr: item.pr, sha, base: auditBase({ sha, method: m?.method ?? mergeMethod, commits: m?.commits }), repo };
       let s;
       try { s = await spawn({ key: item.key, item, sha, model: item.model, task: auditTask(ctx), brief: auditBrief(ctx), env: { DESK_LEVERS: 'none' } }); } catch (e) { s = { error: e?.message ?? String(e) }; }
       if (s?.wait) wait(s);

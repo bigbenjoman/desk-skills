@@ -75,7 +75,7 @@ import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { runAudits, endedFromExit, auditsRunning } from './levers-audit.mjs';
+import { runAudits, endedFromExit, auditsRunning, auditWanted, mergeMethodOf } from './levers-audit.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference } from './queue-ledger.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
@@ -2159,7 +2159,11 @@ const epicReviewDue = baseWorkerMay && epicPr?.state === 'OPEN' && epicPr.isDraf
 // A red promotion PR's check try claims its one slot the same way, while no base gate holds the worktree.
 const promotionChecksDue = baseWorkerMay && promoRed != null && !fresh.base_fix?.running && fresh.gate?.state !== 'running'
   && promotionChecksCall(fresh.base_fix, { pr: promoPr.pr, head: promoPr.head, failing: promoRed }, { alive: false, push: BASE_PUSH }).call === 'spawn';
-const lockWanted = (spawnable.length && !spawnHeld) || (gateFixDue && !baseWorkerHeld) || epicReviewDue || promotionChecksDue;
+// A blind audit due in the repo (levers-audit.mjs) claims its one slot too, within the batch's own
+// number, where this pass could start it; runAudits defers it under pacing rather than starting it.
+const auditDue = !DRY && REPO_SLUG != null && !lowMemory && !MAINT.hold && !PACE.hold && !usageStop && running.length < concurrency
+  && (() => { try { return Object.values(E.leverStates({}).states).includes('auto') && auditWanted(REPO_SLUG); } catch { return false; } })();
+const lockWanted = (spawnable.length && !spawnHeld) || (gateFixDue && !baseWorkerHeld) || epicReviewDue || promotionChecksDue || auditDue;
 if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && lockWanted && !lowMemory) {
   const l = await takeBorrowLock();
   if (l.ok) {
@@ -2182,6 +2186,7 @@ const SLOTS_SNAP = {
   auditWorkers: (() => { try { return auditsRunning(REPO_SLUG); } catch { return 0; } })(),
   // A base conflict fix, epic review or promotion check try due with no ticket to spawn still wants its one slot.
   baseWanted: !!(gateFixDue || epicReviewDue || promotionChecksDue),
+  auditWanted: auditDue,
   machineProfiled: MACHINE_CAP != null || E.machineProfile() != null,
   repoCaps: MACHINE_CAP == null ? {} : Object.fromEntries(otherRepos.filter((o) => o.error).map((o) => [o.slug, repoCap(o.slug)])),
   otherRepos, repoBatches: otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) }),
@@ -3539,7 +3544,8 @@ if (!DRY) {
 if (!DRY && report.spawned.length > spawnedBefore) q('set-batch', `last_start=${new Date().toISOString()}`);
 // An epic review or promotion check try starts in decideEpicPr or promotionChecksStep, after which the lock
 // is released once the slot it counted is taken.
-if (!((epicReviewDue || promotionChecksDue) && baseFixRoom && !baseFix)) borrowLock?.release();
+// So does a due blind audit, which starts after the levers trips, until runAudits has started it.
+if (!((epicReviewDue || promotionChecksDue) && baseFixRoom && !baseFix) && !auditDue) borrowLock?.release();
 // The batch's hold on the usage limit, for desk-q, needs-you and the next pass: one record, kept from
 // the first pass that held until the one that finds it lifted. Saved again after the epic PR's review
 // try, which spawns after this point and may meet the limit.
@@ -4777,12 +4783,21 @@ async function spawnAudit({ key, item, sha, model, task, brief }) {
   report.spawned.push(`${key} port=${port} model=${model}${pick.line} (blind audit of PR #${item.pr} at ${sha.slice(0, 12)}); ${preflightNote(pre.cost)}`);
   return { session: sid, worktree: wt, state: STATE, preflight_usd };
 }
-// The PR's merge commit, and how many commits it had, so a rebase merge is audited whole.
+// The PR's merge commit, how many commits it had, and how it merged (levers-audit.mjs mergeMethodOf),
+// so a rebase merge is audited whole and a squash in a rebase repo is not.
 function auditMergeCommit(item) {
-  const out = sh('gh', ['pr', 'view', String(item.pr), '--repo', GH_REPO, '--json', 'mergeCommit,commits', '--jq', '[.mergeCommit.oid, (.commits | length)] | @tsv'],
-    { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
-  const [sha, n] = String(out ?? '').trim().split('\t');
-  return sha ? { sha, commits: Number(n) } : null;
+  const quiet = { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] };
+  const raw = sh('gh', ['pr', 'view', String(item.pr), '--repo', GH_REPO, '--json', 'mergeCommit,commits'], quiet);
+  let pr = null;
+  try { pr = JSON.parse(raw); } catch { return null; }
+  const sha = pr?.mergeCommit?.oid;
+  if (!sha) return null;
+  const commits = (pr.commits ?? []).map((c) => ({ at: c.authoredDate, subject: c.messageHeadline }));
+  if (!shOut('git', ['-C', MAIN, 'cat-file', '-e', `${sha}^{commit}`]).ok) sh('git', ['-C', MAIN, 'fetch', '-q', 'origin'], quiet);
+  const parents = String(sh('git', ['-C', MAIN, 'rev-list', '--parents', '-n', '1', sha], quiet) ?? '').trim().split(/\s+/).filter(Boolean).length - 1;
+  const landed = String(sh('git', ['-C', MAIN, 'log', '--first-parent', `-n${Math.max(1, commits.length)}`, '--format=%aI%x09%s', sha], quiet) ?? '')
+    .split('\n').filter(Boolean).map((l) => { const [at, ...s] = l.split('\t'); return { at, subject: s.join('\t') }; });
+  return { sha, commits: commits.length, method: mergeMethodOf({ parents, landed, commits }) };
 }
 if (!DRY) {
   try {
@@ -4795,12 +4810,16 @@ if (!DRY) {
       ended: (item) => endedFromExit(item) ?? (registryOk && !REGISTRY.liveSids.has(item.session) && Date.now() - Date.parse(item.started_at) > 120_000 ? { at: new Date().toISOString() } : null),
       cleanup: (item) => { if (item.worktree) shOut('git', ['-C', MAIN, 'worktree', 'remove', '--force', item.worktree]); },
       pace: () => PACE,
-      // The room the pass counted, less what it has spawned since.
-      room: () => (lowMemory || usageStop || MAINT.hold || repoUnlocked || MACHINE.room - report.spawned.length <= 0 || REPO.room - report.spawned.length <= 0 ? 'no room' : null),
+      // The room the pass counted, less what it has spawned since, within the batch's own number.
+      room: () => (lowMemory || usageStop || MAINT.hold || repoUnlocked || MACHINE.room - report.spawned.length <= 0 || REPO.room - report.spawned.length <= 0
+        || attempts >= Math.min(concurrency - running.length, MACHINE.room, REPO.room) ? 'no room' : null),
     });
     if (au.line) out.push(au.line);
   } catch (e) { out.push(`levers audits: not run (${String(e?.message ?? e).split('\n')[0]})`); }
+  // An audit's preflight the usage limit refused held the batch after the save.
+  saveUsage();
 }
+if (auditDue && !((epicReviewDue || promotionChecksDue) && baseFixRoom && !baseFix)) borrowLock?.release();
 // The levers are evaluated once a day across every repo, by the first pass to take its lock.
 if (!DRY) {
   try { const ev = evaluateDue(); if (ev.line) out.push(ev.line); } catch (e) { out.push(`levers evaluate: not run (${String(e?.message ?? e).split('\n')[0]})`); }

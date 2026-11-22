@@ -95,6 +95,7 @@ import { intakeQuery, prOpen, handedByIntake, takePushed, pushWaiting } from './
 import { actOnPlan } from './epic-plan.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { postMergeDue } from './post-merge.mjs';
+import { auditEnded } from './levers-audit.mjs';
 import { readInstalled, oldCode, lockVersion, AGENTS, plistPath, unitDir, unitPath, readUnit, restartDriver } from './installed.mjs';
 import { supervisorLabel, launchdDomain, supervisorLoaded, backend, systemctl } from './run-by.mjs';
 import { notify as show } from './notify.mjs';
@@ -679,7 +680,9 @@ function batchInterval(intake) {
     || ((all.some((t) => (t.state === 'parked' && !isHeld(t)) || t.state === 'failed' || heldOutside(t)) || ticketlessHeld(q)) && since >= IDLE_RECHECK_MS);
   // And a post-merge scan falling due while a merged PR is still watched: only a pass runs it.
   const watchDue = postMergeDue({ state, queue: q });
-  if (s.idle && s.idle === fingerprint(q) && !answeredNow && !closedOut && !recheck && !watchDue) {
+  // And a blind audit spawned into this batch's state that has ended: only a pass records it.
+  const auditDone = (() => { try { return auditEnded(E.repoSlug(), state); } catch { return false; } })();
+  if (s.idle && s.idle === fingerprint(q) && !answeredNow && !closedOut && !recheck && !watchDue && !auditDone) {
     intakeAlone();
     // A driver an earlier pass started can still be merging the batch's last PRs, or stop doing so.
     const reaped = reapDecider(state, s);
