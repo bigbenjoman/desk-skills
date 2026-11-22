@@ -465,6 +465,15 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   const badAfter = followOnIn('pr=1 follow_on=[{"step": "run x", "row": null}, {"step": "run y", "row": null, "after": "staging"}]');
   t('DS-785 AC7 an "after" that is not merge, main or production keeps nothing and names the entry',
     `${badAfter.steps.length} ${badAfter.error}`, '0 an entry\'s "after" is not one of merge, main, production: {"step":"run y","row":null,"after":"staging"}');
+  t('DS-966 AC2 a step\'s "wait_days" is kept',
+    fo('pr=1 follow_on=[{"step": "read audit.jsonl", "row": null, "wait_days": 14}]'), JSON.stringify({ steps: [{ step: 'read audit.jsonl', row: null, wait_days: 14 }], error: null }));
+  t('DS-966 a "wait_days" that is not a positive number keeps nothing',
+    followOnIn('pr=1 follow_on=[{"step": "read audit.jsonl", "row": null, "wait_days": "2w"}]').error?.startsWith('an entry\'s "wait_days" is not a positive number'), true);
+  const twins = followOnIn('pr=1 follow_on=[{"step": "read audit.jsonl", "row": null, "wait_days": 7}, {"step": "read audit.jsonl", "row": null, "wait_days": 28}]');
+  t('DS-966 two steps alike but for their wait keep nothing, as one would settle the other',
+    `${twins.steps.length} ${twins.error}`, '0 two entries have the same "step" and "after": "read audit.jsonl"');
+  t('DS-966 the same text under two gates is two steps',
+    followOnIn('pr=1 follow_on=[{"step": "read audit.jsonl", "row": null}, {"step": "read audit.jsonl", "row": null, "after": "main"}]').steps.length, 2);
   const step = [{ step: 'run x', row: null }];
   t('DS-509 AC5 a merged ticket with steps not yet run waits on the person', followOnPending({ merged_at: '2026-11-08T10:00:00Z', follow_on: step }), true);
   t('DS-509 AC5 one not merged, one said run, and one with no steps do not',
