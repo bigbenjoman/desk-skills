@@ -1000,15 +1000,21 @@ export function verdictTry(t, s, ctx) {
   return driverReviewTry(t, s, ctx);
 }
 
-// A finding a review lists only to say it does not stand, labelled so: `(refuted)`, `refuted by codex`,
-// `: not a finding`, `— false positive`, `**Refuted**`. A word in a finding's own prose ("the rejected
-// promise", "this refutes the claim") is no such label.
+// A finding a review lists only to say it does not stand, labelled so apart from its prose: a parenthesis
+// holding only the label (`(refuted)`, `(refuted by codex)`, `(not a finding)`), the label just after a
+// colon or a dash (`: refuted by codex, …`, `— false positive`), or set in bold (`**Refuted**`). The
+// same words in a finding's own prose ("dismissed by the next render", "a false positive, blocking",
+// "(false positive rate near 40%)") are none.
 const WORDS = '(?:refuted|not a finding|not-a-finding|false positive)';
-const REFUTED = new RegExp(`\\(\\s*${WORDS}\\b[^)]*\\)|\\b(?:refuted|withdrawn|dismissed)\\s+by\\b|(?:^|[:—–-]\\s*|\\s)${WORDS}\\s*(?:[.:;,)—–-]|$)|\\*\\*${WORDS}\\*\\*`, 'i');
-// A heading over findings that do not stand: one naming refuted (dismissed, withdrawn, rejected)
-// findings, findings refuted or not findings, false positives, or opening with Refuted (after a severity,
-// as `### P2 — Refuted`). "## Rejected payments" is none.
-const REFUTED_HEADING = /\b(?:refuted|dismissed|withdrawn|rejected)\s+(?:[\w-]+\s+){0,2}?findings?\b|\bfindings?\b.*\b(?:refuted|not a finding)\b|\bfalse positives?\b|^[#>*_\s-]*(?:P[0-3]\b[^A-Za-z]*)?(?:refuted|not a finding|false positives?)\b/i;
+const REFUTED = new RegExp(`\\(\\s*${WORDS}(?:\\s+by\\s+[^)]*)?\\s*\\)|(?:[:—–]|\\s-)\\s*${WORDS}(?:\\s+by\\s+[\\w.@-]+)?\\s*(?:[.,;)]|$)|\\*\\*${WORDS}\\*\\*`, 'i');
+// A heading that labels its whole section as findings that do not stand: `Refuted (2)`, `### P2 — Refuted`,
+// `Cross-vendor findings refuted (2)`, `Findings: not a finding`, `Rejected findings`, `False positives`,
+// the whole heading. One that only mentions them ("Findings (1 of 2 refuted)", "False positives in the
+// fraud filter", "Rejected payments") is none.
+const REFUTED_HEADING = new RegExp('^[#>*_\\s-]*(?:P[0-3]\\b[^A-Za-z]*)?(?:'
+  + '(?:[\\w-]+\\s+){0,2}?(?:refuted|dismissed|withdrawn|rejected)(?:\\s+[\\w-]+){0,2}?\\s+findings?'
+  + '|(?:[\\w-]+\\s+){0,2}?findings?\\s*(?:[—–:-]\\s*)?(?:refuted|not a finding|not findings)'
+  + '|refuted|not a finding|false positives?)\\s*(?:\\(\\d+\\))?[*_:\\s]*$', 'i');
 // A review body with the sections a heading marks as refuted findings taken out: a `#` heading's section
 // runs to the next heading as deep or shallower, another heading's to the next heading.
 function standingPart(body) {
@@ -1024,7 +1030,9 @@ function standingPart(body) {
   }).join('\n');
 }
 // standingPart less each finding line marked refuted on its own: the body as feedback quotes it.
-const standingText = (body) => standingPart(body).split('\n').filter((l) => !(/^[#>*_\s-]*(?:F\d+\s*·\s*)?P[0-3]\b/.test(l) && REFUTED.test(l))).join('\n');
+// A refuted finding is taken out whether its line carries its severity or sits under a severity heading:
+// any line labelled refuted that names a file:line, as reviewFindings reads a finding.
+const standingText = (body) => standingPart(body).split('\n').filter((l) => !(REFUTED.test(l) && /[\w./-]+:\d+/.test(l))).join('\n');
 // A review body's counts written as text (`p0=0 p1=0 p2=0`, `P1: 0`): { p0, p1, … } as numbers.
 const textCounts = (body) => Object.fromEntries([...String(body ?? '').matchAll(/\b(p[0-3])\s*[=:]\s*(\d+)\b/gi)].map(([, k, n]) => [k.toLowerCase(), Number(n)]));
 

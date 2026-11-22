@@ -835,7 +835,17 @@ for (const [body, why] of [
   ['## Rejected payments\n- P1 src/pay.ts:40 refund applied twice', 'a heading naming no findings'],
   ['- P1 src/a.ts:3 this refutes the claim in the PR that rows are kept; rows are dropped', '"refutes" in its prose'],
   ['p0=0 p1=0 p2=0\n### P2 — Refuted\n- P2 src/a.ts:3 x\n### Standing\n- P2 src/c.ts:4 y', 'a standing section after a refuted one'],
+  ['- P1 `src/toast.ts:12` the error toast is dismissed by the next render, so the user never sees the failure', '"dismissed by" in its prose'],
+  ['- P0 `src/ledger.ts:40` funds withdrawn by the user are counted twice in the balance', '"withdrawn by" in its prose'],
+  ['- P2 `src/spam.ts:5` the filter returns a false positive, blocking valid users', '"a false positive," in its prose'],
+  ['- P1 `src/fraud.ts:5` threshold too low (false positive rate near 40%) blocks payouts', 'a parenthesis that is not only the label'],
+  ['## Findings (1 of 2 refuted)\n- P1 `src/a.ts:1` the handler never checks ownership\n- P2 `src/b.ts:2` (refuted) unused import', 'a heading that only counts refutations'],
+  ['## False positives in the fraud filter\n- P1 `src/fraud.ts:9` rule flags every refund', 'a heading that only mentions false positives'],
 ]) t(`#1249 a finding with ${why} still stands`, bodyFeedback(body), true);
+t('#1249 a heading that is only the label cuts its section', bodyFeedback('## Refuted (2)\n- P1 src/a.ts:3 x\n- P2 src/b.ts:4 y'), false);
+// A refuted bullet under a severity heading, beside a standing one: the try quotes only the standing one.
+const mixed1249 = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, '## P2 (2)\n- src/a.ts:3 obsolete (refuted)\n- src/b.ts:4 standing')])));
+t('#1249 a refuted bullet under a severity heading is left out of the try', `${mixed1249?.fix?.what} ${/src\/a\.ts:3|obsolete/.test(JSON.stringify(mixed1249?.fix?.threads))}`, "review feedback: agent-pullbot's review body (findings at src/b.ts:4) false");
 t('#1249 a severity heading saying refuted cuts its findings', bodyFeedback('p0=0 p1=0 p2=0\n### P2 — Refuted\n- P2 src/a.ts:3 x'), false);
 t('#1249 the clean phrase with an item left after it is no clean statement', bodyFeedback('No findings blocking merge except:\n- something vague', 'no findings'), true);
 t('#1249 nor is the phrase with more after it on its line', bodyFeedback('No findings yet, still reading', 'no findings'), true);
