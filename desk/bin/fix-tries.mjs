@@ -524,8 +524,9 @@ export function outagePlan({ prs, lists, was, now, read = null }) {
         continue;
       }
       // Any PR it held with the check running again (its own re-run, or the merge driver's) has not
-      // answered yet, so the hold stays until each has.
-      if (!g && !(prs ?? []).some(({ s }) => w.prs.includes(s.pr) && runningOn(s, name))) {
+      // answered yet, so the hold stays until each has. So does a PR it held that the pass could not
+      // read: it may be re-running it, and its `seen` run is owed a re-run if the hold clears meanwhile.
+      if (!g && !w.prs.some(unread) && !(prs ?? []).some(({ s }) => w.prs.includes(s.pr) && runningOn(s, name))) {
         lifted.push({ name });
         if (owedKept(w.text)) keep[name] = owedKept(w.text);
         continue;

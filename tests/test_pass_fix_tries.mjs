@@ -338,6 +338,13 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   t('and once read red on that run it is re-run', j(outage([entry(703, [ok('tests'), deploy(703)])], { was: clearsUnread.hold, now: T0 + 25 * 60 * 1000 }).reruns.map((a) => [a.pr, a.run])), j([[703, '1603']]));
   const clearsGoing = outage([green[0], green[1], rerunning], { was: reHold, now: T0 + 20 * 60 * 1000 });
   t('a hold clearing while that run is still going owes it too, with no fix try', j([clearsGoing.hold?.['Deploy preview']?.owed, clearsGoing.held.rerun.includes(703)]), j([[{ pr: 703, head: HEAD, run: '1603' }], true]));
+  // A two-PR hold with one PR not read this pass is not lifted: it stays until that PR is read, so the
+  // other PR is still re-run once the unread one reads green.
+  const pair = outage([three[0], three[1]]);
+  const halfRead = outage([three[0]], { was: pair.hold, now: T0 + 5 * 60 * 1000, read: new Set([701]) });
+  t('a hold with a held PR not read this pass is not lifted, and its other PR stays held', j([lines(halfRead.as).some((l) => l.includes('its hold is lifted')), halfRead.held.held.get('Deploy preview')?.prs, (halfRead.hold ?? pair.hold)['Deploy preview']?.seen?.map((x) => x.pr)]), j([false, [701], [701, 702]]));
+  const pairBack = outage([three[0], entry(702, [ok('tests'), ok('Deploy preview')])], { was: halfRead.hold ?? pair.hold, now: T0 + 10 * 60 * 1000 });
+  t('so once that PR reads green, the hold clears and the other PR is re-run', j(pairBack.reruns.map((a) => [a.pr, a.run])), j([[701, '1601']]));
   t('a seen entry at an old head is not kept', outage([three[0], three[1], entry(703, [ok('tests'), { name: 'Deploy preview', status: 'in_progress', conclusion: null, runId: '1603' }], { head: 'f'.repeat(40) })], { was: first.hold, now: T0 + 5 * 60 * 1000 }).hold?.['Deploy preview']?.seen?.some((x) => x.pr === 703), false);
   // A stuck record naming a held check drops it, whatever the PR's route this pass.
   const stuckT = tk({ key: 'O-701', branch: 'task/O-701', stuck: { why: 'x', pr: 701, head: HEAD, lead: 'still red after 2 tries', checks: [{ name: 'Lint' }, { name: 'Deploy preview' }] } });
