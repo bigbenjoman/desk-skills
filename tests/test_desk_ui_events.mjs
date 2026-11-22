@@ -320,5 +320,14 @@ res.emit('close');
 await opening;
 t('a window that leaves while the model is read is never added', [slow.clients, !!res.opened], [0, false]);
 slow.stop();
+// A stream still opening when the server stops is answered and ended, never opened, so it cannot hold the exit.
+const stopping = makeFeed({ build: () => sleep(150).then(() => empty), roots: () => [], tickMs: 60_000 });
+const late = Object.assign(new EventEmitter(), { writableLength: 0, writeHead(s) { this.status = s; }, flushHeaders() {}, write() {}, end() { this.ended = true; } });
+const lateOpening = stopping.subscribe({ headers: {} }, late);
+stopping.stop();
+await lateOpening;
+t('a stream still opening at the stop is answered 503 and ended, and never added', [late.status, !!late.ended, stopping.clients], [503, true, 0]);
+const afterStop = await Promise.race([stopping.current().then(() => 'answered'), sleep(1000).then(() => 'waiting')]);
+t('a read after the stop is answered, not left waiting on a rebuild that will never run', afterStop, 'answered');
 console.log(fails ? `\n${fails} failed` : '\nall passed');
 process.exit(fails ? 1 : 0);

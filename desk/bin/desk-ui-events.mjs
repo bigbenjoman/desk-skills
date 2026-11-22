@@ -97,7 +97,7 @@ const frame = (event, data, id = null) => `${id == null ? '' : `id: ${id}\n`}eve
 export function makeFeed({ build = readModel, stale = livenessMoved, now = Date.now, roots = stateRoots, debounceMs = DEBOUNCE_MS,
   tickMs = TICK_MS, pingMs = PING_MS, ring = RING, onBuild = () => {}, onError = (e) => console.error(`desk-ui: events: ${e.message}`) } = {}) {
   // `lastBuild` is on the monotonic clock, so a wall-clock jump never stretches the debounce.
-  let model = null, rev = 0, dirty = false, timer = null, building = null, lastBuild = -Infinity, rebuilds = 0, ticker = null, started = false;
+  let model = null, rev = 0, dirty = false, timer = null, building = null, lastBuild = -Infinity, rebuilds = 0, ticker = null, started = false, stopped = false;
   const held = []; // the last `ring` events: { id, event, data }
   const clients = new Set();
   const watchers = new Map(); // root -> FSWatcher
@@ -152,7 +152,7 @@ export function makeFeed({ build = readModel, stale = livenessMoved, now = Date.
   // A rebuild once DEBOUNCE_MS has passed since the last one started, so a burst of writes costs one.
   function schedule() {
     dirty = true;
-    if (timer || building) return;
+    if (timer || building || stopped) return;
     timer = setTimeout(() => { timer = null; if (untilDebounced() > 0) schedule(); else run(); }, untilDebounced());
     timer.unref?.();
   }
@@ -175,7 +175,7 @@ export function makeFeed({ build = readModel, stale = livenessMoved, now = Date.
     } catch (e) { onError(e); }
   }
   function start() {
-    if (started) return;
+    if (started || stopped) return;
     started = true;
     watchRoots();
     ticker = setInterval(tick, tickMs);
@@ -191,7 +191,7 @@ export function makeFeed({ build = readModel, stale = livenessMoved, now = Date.
     if (fresh && model) await debounced();
     if (building) await building;
     if (!model || (fresh && rebuilds === asked)) await run();
-    else if (dirty) await new Promise((r) => waiting.push(r));
+    else if (dirty && !stopped) await new Promise((r) => waiting.push(r));
     return model;
   }
   // /api/snapshot's whole read. The stream's leaves out `inputs`, the ages of what it was read from,
@@ -210,6 +210,8 @@ export function makeFeed({ build = readModel, stale = livenessMoved, now = Date.
     res.once('close', () => { gone = true; });
     const m = await current();
     if (gone) return true; // the window left while the model was read: nothing to open
+    // The server stopped while the model was read: no stream opens after the stop, or it would hold the exit.
+    if (stopped) { res.writeHead(503, { ...headers, 'Content-Type': 'text/plain; charset=utf-8', Connection: 'close' }); res.end('desk-ui is stopping.\n'); return true; }
     if (!m) return false;
     const after = since(req, query);
     const floor = held.length ? held[0].id - 1 : rev;
@@ -224,11 +226,15 @@ export function makeFeed({ build = readModel, stale = livenessMoved, now = Date.
     return true;
   }
 
+  // Ends the feed for good: open streams are ended, and a read waiting on a rebuild that will now never
+  // run is released, so no request still opening holds the server's close.
   function stop() {
-    clearInterval(ticker); clearTimeout(timer);
+    stopped = true;
+    clearInterval(ticker); clearTimeout(timer); timer = null;
     for (const w of watchers.values()) w.close();
     watchers.clear();
     for (const c of [...clients]) { drop(c); c.res.end(); }
+    for (const r of waiting.splice(0)) r();
     started = false;
   }
 
