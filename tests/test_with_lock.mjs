@@ -373,18 +373,24 @@ try {
       a.release(); await a.done;
     }
     // The watcher judging a waiting run is not a second with-lock.sh on ps, which suite-wait.mjs would
-    // count as another run waiting on the lock.
+    // count as another run waiting on the lock; and it reads the profile afresh, so admission turned off
+    // while the run waits stops it.
     {
-      const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: SHADOW_ADMIT, extra: { DESK_ADMIT_SAMPLE: sample, DESK_ADMIT_RECHECK_S: '1' } });
+      const rows = { 'lease-kinds': 'slot=off', 'lock-admission': 'shadow', 'test-lock-slots': '1', 'test-cap': '4', 'admit-max-load': '30' };
+      const profile = machine(rows);
+      const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile, extra: { DESK_ADMIT_SAMPLE: sample, DESK_ADMIT_RECHECK_S: '1' } });
       const a = await hold(env, ['test']);
-      const w = spawn('bash', [script, 'test', '--timeout', '4', '--', 'true'], { env, stdio: 'ignore' });
+      const w = spawn('bash', [script, 'test', '--timeout', '8', '--', 'true'], { env, stdio: 'ignore' });
       const done = new Promise((r) => w.on('exit', r));
+      const children = (re) => spawnSync('ps', ['-axo', 'pid=,ppid=,args='], { encoding: 'utf8' }).stdout.split('\n')
+        .map((l) => l.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter((m) => m && Number(m[2]) === w.pid && re.test(m[3])).length;
+      const watchers = () => children(/admission\.mjs\s+watch\s/);
       // A second in: the wrapper's own brief subshells (the holders it names as it starts to wait) are done.
       await until(() => admitLines(env).length > 0); await sleep(1000);
-      const rows = spawnSync('ps', ['-axo', 'pid=,ppid=,args='], { encoding: 'utf8' }).stdout.split('\n')
-        .map((l) => l.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter(Boolean);
-      const twins = rows.filter((m) => Number(m[2]) === w.pid && /with-lock\.sh\s+test(\s|$)/.test(m[3])).length;
-      t('DS-977 while a run waits under shadow, its admission watcher is not a second with-lock.sh test on ps', [admitLines(env).length > 0, twins], [true, 0]);
+      t('DS-977 while a run waits under shadow, its admission watcher is not a second with-lock.sh test on ps',
+        [admitLines(env).length > 0, children(/with-lock\.sh\s+test(\s|$)/), watchers()], [true, 0, 1]);
+      writeFileSync(profile, readFileSync(machine({ ...rows, 'lock-admission': 'off' }), 'utf8'));
+      t('DS-977 admission turned off while a run waits stops its watcher', await until(() => watchers() === 0, 4000), true);
       await done; a.release(); await a.done;
     }
     // AC1: no lock-admission row: the heavy pool grants its test-lock-slots, the light pool 1, and no line is logged.

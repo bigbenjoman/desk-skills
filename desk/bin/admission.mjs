@@ -4,7 +4,7 @@
 // log (leases.mjs) and nothing is granted; off, or any admission row that does not read, logs nothing.
 //
 //   node admission.mjs judge <test|tsc|light> --pid <wrapper pid> [--last <outcome:reason>]
-//   node admission.mjs watch <test|tsc|light> --pid <wrapper pid>
+//   node admission.mjs watch <test|tsc|light> --pid <wrapper pid> --marker <its waiting marker>
 //
 // `judge` judges the run once, with what the last judge printed: a line is logged only when the
 // outcome or reason changes. It prints `<outcome>:<reason>`, nothing with admission off, and always
@@ -23,6 +23,7 @@
 // headroom, stays in the ledger while it waits and counts as holding a slot of its pool, so the floor
 // and the ceiling are judged on what on would hold. A would-admit on the floor logs no line: on would
 // grant it at once, as it does a free floor slot.
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -144,9 +145,7 @@ const fixtureSample = () => {
   try { return process.env.DESK_ADMIT_SAMPLE ? JSON.parse(process.env.DESK_ADMIT_SAMPLE) : null; } catch { return null; }
 };
 
-// A judge of the run `pid` of lock class `cls`: (last) -> its `<outcome>:<reason>` key, or null with
-// admission off or on any failure, since a measurement never holds a run up.
-async function judgeOf(cls, pid) {
+async function judgeCli(cls, pid, last) {
   const E = await import('./desk-env.mjs');
   const { leaseDir } = await import('./leases.mjs');
   // Every run that waits found its pool's real slots full: today's grants, heavy test-lock-slots, light 1.
@@ -154,24 +153,22 @@ async function judgeOf(cls, pid) {
   // The rows as the profile holds them, as machine detect's check reads them: a TODO is a row that
   // does not read, not one left unset.
   const env = { machineValue: (k) => profileValue(E.machineProfile(), k), testLockSlots: E.testLockSlots };
-  const dir = E.lockDir();
-  const judgeNow = (last) => {
-    try { return admit({ cls, pid, last, env, dir, held, logDir: leaseDir(), ...(fixtureSample() ? { sample: fixtureSample() } : {}) }); }
-    catch { return null; }
-  };
-  return { judgeNow, marker: join(waitingDir(cls, dir), String(pid)) };
+  const key = admit({ cls, pid, last, env, dir: E.lockDir(), held, logDir: leaseDir(), ...(fixtureSample() ? { sample: fixtureSample() } : {}) });
+  if (key) console.log(key);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // with-lock.sh's look at its run while it waits, as a process of its own: a forked shell would carry the
 // wrapper's command line, and suite-wait.mjs would count it as a second run waiting on the lock. Once
-// the run's marker is in the waiting directory (looked for every 0.2 s: a lease's wait can be its 2 s
-// poll and no longer) it is judged, then again every DESK_ADMIT_RECHECK_S seconds (30). It ends when the
-// marker goes, when the wrapper does, or at once with admission off.
-async function watch(cls, pid) {
+// the run's marker (the wrapper's own path to it) exists, looked for every 0.2 s since a lease's wait can
+// be its 2 s poll and no longer, the run is judged, then again every DESK_ADMIT_RECHECK_S seconds (30).
+// Each judge is a fresh process, so it reads the profile as it stands then. It ends when the marker
+// goes, when the wrapper does, or at once when a judge prints nothing (admission off).
+async function watch(cls, pid, marker) {
   const every = /^[1-9]\d*$/.test(process.env.DESK_ADMIT_RECHECK_S ?? '') ? Number(process.env.DESK_ADMIT_RECHECK_S) : 30;
-  const { judgeNow, marker } = await judgeOf(cls, pid);
+  const judgeNow = (last) => spawnSync(process.execPath, [fileURLToPath(import.meta.url), 'judge', cls, '--pid', String(pid), ...(last ? ['--last', last] : [])],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).stdout?.trim() || null;
   let key = null; let seen = false; let n = 0;
   while (alive(pid)) {
     if (existsSync(marker)) {
@@ -190,16 +187,13 @@ async function cli(argv) {
   const [sub, cls, ...rest] = argv;
   const opt = (n) => { const i = rest.indexOf(`--${n}`); return i < 0 ? null : rest[i + 1]; };
   const pid = Number(opt('pid'));
-  if ((sub !== 'judge' && sub !== 'watch') || !poolOf(cls) || !Number.isInteger(pid) || pid <= 0) {
-    console.error('usage: admission.mjs judge <test|tsc|light> --pid <wrapper pid> [--last <outcome:reason>]\n       admission.mjs watch <test|tsc|light> --pid <wrapper pid>');
+  if (!['judge', 'watch'].includes(sub) || !poolOf(cls) || !Number.isInteger(pid) || pid <= 0 || (sub === 'watch' && !opt('marker'))) {
+    console.error('usage: admission.mjs judge <test|tsc|light> --pid <wrapper pid> [--last <outcome:reason>]\n       admission.mjs watch <test|tsc|light> --pid <wrapper pid> --marker <its waiting marker>');
     return 2;
   }
   try {
-    if (sub === 'watch') await watch(cls, pid);
-    else {
-      const key = (await judgeOf(cls, pid)).judgeNow(opt('last'));
-      if (key) console.log(key);
-    }
+    if (sub === 'watch') await watch(cls, pid, opt('marker'));
+    else await judgeCli(cls, pid, opt('last'));
   } catch { /* a measurement: it never holds a run up */ }
   return 0;
 }

@@ -135,7 +135,7 @@ gave_up() { unwatch; unqueue; note gave-up; echo "with-lock.sh: gave up waiting 
 admit_pid=""
 watch_admission() {
   case "$name" in test|tsc|light) ;; *) return 0 ;; esac
-  node "$here/admission.mjs" watch "$name" --pid "$$" 9>&- </dev/null >/dev/null 2>&1 &
+  node "$here/admission.mjs" watch "$name" --pid "$$" --marker "$wdir/$$" 9>&- </dev/null >/dev/null 2>&1 &
   admit_pid=$!
 }
 unwatch() { [ -z "$admit_pid" ] || kill "$admit_pid" 2>/dev/null; admit_pid=""; }
