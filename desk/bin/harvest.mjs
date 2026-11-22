@@ -152,6 +152,11 @@ const BUDGET_SUBTYPE = 'error_max_budget_usd';
 // Whether the log's last launch ended at its per-worker budget: its own result event says so. With the
 // budget (desk-env.mjs workerBudget) off, no ceiling was passed, so that subtype is any other error.
 export const budgetStop = (logText, budget) => !budget?.off && lastResult(logText, { launch: true })?.subtype === BUDGET_SUBTYPE;
+// The subtype of the error that ended the log's last launch, or null where it ended without one or was killed.
+export const errorSubtype = (logText) => {
+  const r = lastResult(logText, { launch: true });
+  return r?.is_error && typeof r.subtype === 'string' && r.subtype ? r.subtype : null;
+};
 
 export const endedNormally = (logText) => lastResult(logText) != null;
 

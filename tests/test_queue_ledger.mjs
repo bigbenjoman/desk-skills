@@ -191,6 +191,46 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   t('AC3 the log they wrote reads back with no illegal transition', illegal.join(', '), '');
 }
 
+// DS-898: a worker spawned, failed and requeued, written as the pass writes each (queue.mjs for the
+// spawn's state=running, the pass's writer for the failure): each is its own typed event.
+{
+  const f = fixture({ version: 1, batch: 'b', tickets: { A: tk('A'), B: tk('B'), C: tk('C') } });
+  const w = queueWriter(f);
+  w.apply(['set', 'C', 'stage=1/9']);
+  w.flush();
+  const asPass = (...args) => spawnSync(process.execPath, [join(B, 'queue.mjs'), ...args], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: ON, DESK_QUEUE: f, DESK_LEDGER_BY: 'pass' } });
+  const running = (key, sid, port, more = []) => asPass('set', key, 'state=running', `session_id=${sid}`, `port=${port}`, `login=${JSON.stringify({ name: 'work', config_dir: '/x' })}`, 'resumes=null', ...more);
+  const at = log(f).length;
+  running('A', 's-A', 3231);
+  running('B', 's-B', 3232);
+  // The pass then crashes with a change applied and never flushed.
+  w.apply(['set', 'C', 'stage=2/9']);
+  const spawned = since(f, at).filter((e) => e.type === 'spawned');
+  t('AC1 a spawn appends a spawned event with its login, port, worker and round',
+    JSON.stringify(spawned[0]?.data), JSON.stringify({ worker: 's-A', round: 0, login: 'work', port: 3231 }));
+  t('AC3 a pass that spawned two workers and crashed leaves both spawned events in the log', shape(spawned), 'spawned A, spawned B');
+
+  // A resumed worker's round is how many times it was resumed.
+  asPass('set', 'B', 'state=triaged', 'resume=pending');
+  const atR = log(f).length;
+  asPass('set', 'B', 'state=running', 'resumes=2', 'port=3233', 'resume=null');
+  t('AC1 a resume\'s spawned event carries its round', since(f, atR).find((e) => e.type === 'spawned')?.data.round, 2);
+
+  // The failure as markFailed writes it, with the subtype its session ended in.
+  const w2 = queueWriter(f);
+  const atF = log(f).length;
+  w2.apply(['set', 'A', 'state=failed', `failed=${JSON.stringify({ why: 'exited with no marker', at: '2026-11-22T10:00:00.000Z', subtype: 'error_max_budget_usd' })}`]);
+  w2.flush();
+  t('AC2 a failure appends a failed event with its session\'s subtype', JSON.stringify(since(f, atF).find((e) => e.type === 'failed')?.data), JSON.stringify({ subtype: 'error_max_budget_usd' }));
+
+  const atQ = log(f).length;
+  const rq = q(f, ON, 'requeue', 'A');
+  t('AC4 a failed ticket requeued appends a requeued event', `${rq.status} ${shape(since(f, atQ).filter((e) => e.type !== 'legacy_set'))}`, '0 requeued A, triaged A');
+
+  const d = queueDifference(f, { by: 'test' });
+  t('AC5 after the spawns, the failure and the requeue the difference stays at zero', d.diffs.map((x) => x.path).join(', '), '');
+}
+
 // A pass taking a running ticket back to triage, which no typed event does: the state is recorded with
 // its other fields, never as an illegal triaged event.
 {
