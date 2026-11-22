@@ -3,7 +3,7 @@
 // as workers failing one by one.
 //
 // Each check, and when it is required:
-//   gh       `gh auth status`                     always
+//   gh       `gh auth status --active`            always
 //   jira     `desk-jira whoami`                   where §4 Tracker is jira
 //   claude   `claude auth status`                 always; and in the folder of the Claude default and of
 //                                                 the login this repo's Subscription row pins, where the
@@ -78,7 +78,7 @@ export const DEFAULT_DISK_FLOOR_GB = 20;
 const FLOOR_ROW = E.CONFIG_ROWS['disk-floor'].row;
 
 export const CHECKS = Object.freeze([
-  { id: 'gh', name: 'GitHub CLI', cmd: ['gh', 'auth', 'status'], fix: 'gh auth login' },
+  { id: 'gh', name: 'GitHub CLI', cmd: ['gh', 'auth', 'status', '--active'], fix: 'gh auth login' },
   { id: 'jira', name: 'Jira', cmd: ['desk-jira', 'whoami'], fix: 'renew the Jira API token with /desk-setup' },
   { id: 'claude', name: 'Claude', cmd: ['claude', 'auth', 'status'], fix: 'claude auth login' },
   { id: 'codex', name: 'Codex', cmd: ['codex', 'login', 'status'], fix: 'codex login' },
@@ -97,7 +97,12 @@ const NETWORK = /timed? ?out|timeout|could not resolve|couldn't resolve|no such 
 const failureKind = (out) => (NETWORK.test(out ?? '') ? 'network' : 'auth');
 // What `gh auth status` says when the token is signed in but its API limit is used up ("HTTP 403: API
 // rate limit exceeded for user ID …"). That is no sign-out: it is told with its reset time and holds no spawn.
+// A 401 or bad credentials beside it is a sign-out. The check reads only the active account (`--active`),
+// the one desk uses, so another account's error cannot stand in for it. install.sh's gh check applies
+// the same rule to the same read: change both together.
 const GH_LIMIT = /rate limit exceeded/i;
+const GH_SIGNED_OUT = /HTTP 401|bad credentials/i;
+const ghLimited = (out) => GH_LIMIT.test(out) && !GH_SIGNED_OUT.test(out);
 // When the token's core API limit resets, as an ISO time, or null. The rate_limit endpoint answers
 // while the limit is used up. `cmdEnv`: the account's environment, where it is not gh as it stands.
 async function ghLimitReset(timeoutMs, cmdEnv) {
@@ -202,7 +207,7 @@ function runCommand([cmd, ...args], timeoutMs, cmdEnv = undefined, keepOut = fal
     child.on('close', (code, signal) => {
       if (code === 0) finish(keepOut ? { ok: true, out: out.trim() } : { ok: true });
       const last = out.trim().split('\n').map((l) => l.trim()).filter(Boolean).at(-1);
-      finish({ ok: false, why: `${last ? `${last.slice(0, 160)}; ` : ''}exited ${code ?? signal}`, kind: failureKind(out), ...(GH_LIMIT.test(out) ? { limited: true } : {}) });
+      finish({ ok: false, why: `${last ? `${last.slice(0, 160)}; ` : ''}exited ${code ?? signal}`, kind: failureKind(out), ...(ghLimited(out) ? { limited: true } : {}) });
     });
   });
 }

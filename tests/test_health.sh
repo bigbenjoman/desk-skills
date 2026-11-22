@@ -120,6 +120,11 @@ case "\$(cat "$T/mode.$c" 2>/dev/null || echo ok)" in
   # Unreachable on the first try, then the API limit on the retry.
   netlimit) [ -f "$T/netl.$c" ] || { : > "$T/netl.$c"; echo "error connecting to api.example.com: dial tcp: lookup api.example.com: no such host" >&2; exit 1; }
             echo "- Error: HTTP 403: API rate limit exceeded for user ID 111733264." >&2; exit 1 ;;
+  # Two gh accounts: the active one's line, then (without --active) the other account's.
+  twolimited) echo "- HTTP 403: API rate limit exceeded for user ID 1." >&2
+              case " \$* " in *" --active "*) ;; *) echo "- HTTP 401: Bad credentials (https://api.github.com/)" >&2 ;; esac; exit 1 ;;
+  tworevoked) echo "- HTTP 401: Bad credentials (https://api.github.com/)" >&2
+              case " \$* " in *" --active "*) ;; *) echo "- HTTP 403: API rate limit exceeded for user ID 1." >&2 ;; esac; exit 1 ;;
   unreach) echo "desk-jira: could not reach https://acme.atlassian.net (see the curl error above)" >&2; exit 1 ;;
   hang) sleep 5 ;;
   once) [ -f "$T/hung.$c" ] || { : > "$T/hung.$c"; sleep 5; } ;;
@@ -169,7 +174,7 @@ check "AC2 a first failing run is rechecked, not told"      'grep -q "health: 1 
 check "AC2 an auth failure is not retried"                  '[ "$(calls gh)" = 2 ]'
 pj
 check "DS-333 AC3 failing two runs in a row is told"        '[ "$(field H-2 state)" = triaged ] && ! grep -q "rechecking" <<< "$out"'
-check "AC2 the report names the failed check"               'grep -q "health: GitHub CLI (gh auth status) failed: You are not logged in to gh" <<< "$out"'
+check "AC2 the report names the failed check"               'grep -q "health: GitHub CLI (gh auth status --active) failed: You are not logged in to gh" <<< "$out"'
 check "AC2 the report names the fix"                        'grep -q "fix: gh auth login" <<< "$out"'
 check "AC2 the health line says spawns are held"            'grep -q "health: 1 check(s) failing — gh — holding new spawns" <<< "$out"'
 check "AC2 the pass pushes the gh check"                    '[[ "$(pushes)" =~ ^health:.+:gh$ ]]'
@@ -191,7 +196,7 @@ mode gh limit; : > "$T/calls.gh"
 pj
 check "DS-969 AC3 a used-up API limit holds no spawn"        '[ "$(field H-L state)" = running ] && grep -q "health: 1 check(s) failing — gh — not holding spawns" <<< "$out"'
 check "DS-969 AC3 it names the API limit and its reset"      'grep -qF "GitHub CLI: the GitHub API limit is used up, not a sign-in; it resets at 2026-11-18T11:06:40.000Z; not holding spawns" <<< "$out"'
-check "DS-969 AC3 no sign-in stall or push, so nothing is asked" '! grep -q "fix: gh auth login" <<< "$out" && ! grep -q "GitHub CLI (gh auth status) failed" <<< "$out" && [ -z "$(pushes)" ] && [ "$(calls gh)" = 1 ]'
+check "DS-969 AC3 no sign-in stall or push, so nothing is asked" '! grep -q "fix: gh auth login" <<< "$out" && ! grep -q "GitHub CLI (gh auth status --active) failed" <<< "$out" && [ -z "$(pushes)" ] && [ "$(calls gh)" = 1 ]'
 pj
 check "DS-969 AC3 a second run is still not told as a sign-out" '! grep -q "fix: gh auth login" <<< "$out" && [ -z "$(pushes)" ]'
 mode gh netlimit; : > "$T/calls.gh"; rm -f "$T/netl.gh"
@@ -201,6 +206,24 @@ mode gh ok
 pj
 check "DS-969 AC4 once the limit resets, gh passes again"     'grep -q "recovered: gh" <<< "$out"'
 q set H-L state=done
+
+# ---- DS-995: with two gh accounts, only the active one's state counts --------------------------
+q add H-A; q set H-A state=triaged branch=fix/H-A
+mode gh twolimited; : > "$T/calls.gh"
+pj
+check "DS-995 AC2 active limited, other revoked: the limit with its reset, no spawn held" \
+  '[ "$(field H-A state)" = running ] && grep -qF "GitHub CLI: the GitHub API limit is used up, not a sign-in; it resets at 2026-11-18T11:06:40.000Z; not holding spawns" <<< "$out" && ! grep -q "fix: gh auth login" <<< "$out"'
+check "DS-995 it reads the active account only"              'grep -q -- "--active" "$T/calls.gh"'
+q set H-A state=done
+q add H-B; q set H-B state=triaged branch=fix/H-B
+mode gh tworevoked
+pj
+check "DS-995 AC3 active revoked, other limited: spawns are held" '[ "$(field H-B state)" = triaged ] && grep -q "health: 1 check(s) failing — gh — holding new spawns" <<< "$out"'
+pj
+check "DS-995 AC3 it is told as not signed in"               'grep -qF "health: GitHub CLI (gh auth status --active) failed: - HTTP 401: Bad credentials" <<< "$out" && grep -q "fix: gh auth login" <<< "$out" && ! grep -q "API limit is used up" <<< "$out"'
+mode gh ok
+pj
+q set H-B state=done
 q add H-3; q set H-3 state=triaged branch=fix/H-3
 DESK_FREE_DISK_GB=12 pj
 check "AC6 low disk holds spawns"                           '[ "$(field H-3 state)" = triaged ]'

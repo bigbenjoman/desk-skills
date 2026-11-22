@@ -4,6 +4,7 @@
 # install.sh --check under a throwaway HOME with a stub gh whose `auth status` prints what gh prints
 # signed in, rate-limited, signed out and with a revoked token. A rate limit is a warning and leaves the
 # missing count where a signed-in gh leaves it; only a signed-out or revoked gh is counted as missing.
+# With two accounts signed in, only the active one's state counts.
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
@@ -22,7 +23,14 @@ if [ "\$1 \$2" = "api rate_limit" ]; then
   echo $RESET; exit 0
 fi
 [ "\$1 \$2" = "auth status" ] || exit 1
+# Two accounts: gh prints both, and with --active only the active one (the first block).
+lim='  X Failed to log in to github.com account someone (keyring)\n  - Active account: true\n  - HTTP 403: API rate limit exceeded for user ID 1. (https://api.github.com/)\n'
+rev='  X Failed to log in to github.com account someone (keyring)\n  - Active account: true\n  - HTTP 401: Bad credentials (https://api.github.com/)\n'
+case " \$* " in *" --active "*) active=1 ;; *) active="" ;; esac
+two(){ inactive="\$(printf '%s' "\$2" | sed 's/someone/other/; s/Active account: true/Active account: false/')"; printf "github.com\n\$1" >&2; [ -n "\$active" ] || printf "\$inactive" >&2; exit 1; }
 case "\$GH_MODE" in
+  twolimited) two "\$lim" "\$rev" ;;
+  tworevoked) two "\$rev" "\$lim" ;;
   ok) printf 'github.com\n  ✓ Logged in to github.com account someone (keyring)\n  - Token scopes: '"'"'repo'"'"', '"'"'workflow'"'"'\n'; exit 0 ;;
   limited) printf 'github.com\n  X Failed to log in to github.com account someone (keyring)\n  - Active account: true\n  - The token in keyring is invalid.\n  - HTTP 403: API rate limit exceeded for user ID 1. (https://api.github.com/)\n  - To re-authenticate, run: gh auth login -h github.com\n' >&2; exit 1 ;;
   out) printf 'You are not logged into any GitHub hosts. To log in, run: gh auth login\n' >&2; exit 1 ;;
@@ -63,5 +71,13 @@ for m in out revoked bad401 limited401; do
   check "AC2 $m: gh is not signed in, and counted as missing" \
     '[ "$missing" = "$((base + 1))" ] && [[ "$out" == *"MISS  gh is not signed in. Run: gh auth login"* ]] && [[ "$out" != *"rate-limited"* ]]'
 done
+
+# DS-995: with two accounts, only the active one's state counts
+run twolimited
+check "DS-995 AC1 active rate-limited, other revoked: a warning naming the reset time, not missing" \
+  '[[ "$out" == *"WARN  gh is signed in, but the GitHub API is rate-limited until $at. The install goes on"* ]] && [ "$missing" = "$base" ] && [[ "$out" != *"gh is not signed in"* ]]'
+run tworevoked
+check "DS-995 AC3 active revoked, other rate-limited: gh is not signed in, and counted as missing" \
+  '[ "$missing" = "$((base + 1))" ] && [[ "$out" == *"MISS  gh is not signed in. Run: gh auth login"* ]] && [[ "$out" != *"rate-limited"* ]]'
 
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]
