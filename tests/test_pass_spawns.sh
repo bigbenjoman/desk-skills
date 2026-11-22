@@ -61,12 +61,14 @@ X1Q="$DESK_HOME/repos/acme__widgets/batches/X-1/queue.json"; X1S="$HOME/.desk-au
 STQ="$DESK_HOME/repos/acme__widgets/queue.json"
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
 node "$B/desk-env.mjs" paths | grep -E '^DESK_(QUEUE|STATE)=' > "$T/x1-setup"
-mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
+mkdir -p "$T/wt/\$2"; echo "[setup-worktree] steps=config:1,checkout:2,install:41"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
 EOF
 cat > "$T/desk/bin/spawn-worker.sh" <<EOF
 if [ "\$3" = preflight ]; then echo "[preflight] pass"; else node "$B/desk-env.mjs" paths | grep -E '^DESK_(QUEUE|STATE)=' > "$T/x1-spawn"; echo "[spawn] ticket=\$1"; fi
 EOF
 q --batch X-1 init x1; q --batch X-1 add X-9; q --batch X-1 set X-9 state=triaged
+# X-11's worktree is left from a setup that did not finish: setup-worktree.sh completes it, install included.
+mkdir -p "$T/wt/X-11"; : > "$T/wt/X-11/.desk-setup-incomplete"; q --batch X-1 add X-11; q --batch X-1 set X-11 state=triaged
 out=$(node "$B/pass.mjs" --batch X-1 2>&1)
 x1field(){ DESK_QUEUE="$X1Q" field "$@"; }
 want="DESK_STATE='$X1S'
@@ -75,6 +77,12 @@ check "DS-303 AC3 pass.mjs --batch X-1 spawns X-1's ticket" '[ "$(x1field X-9 st
 check "DS-303 AC3 the worktree setup it starts acts on X-1" '[ "$(cat "$T/x1-setup" 2>/dev/null)" = "$want" ]'
 check "DS-303 AC3 the worker it starts acts on X-1" '[ "$(cat "$T/x1-spawn" 2>/dev/null)" = "$want" ]'
 check "DS-303 AC3 the pass keeps its own state in X-1's folder" '[ -d "$X1S/logs" ]'
+check "DS-698 AC1 the pass's metrics line carries each setup step's duration for the ticket it spawned" \
+  'tail -n 1 "$X1S/passes.jsonl" | jq -e ".setup | map(select(.key == \"X-9\")) == [{\"key\":\"X-9\",\"kept\":false,\"steps\":{\"config\":1,\"checkout\":2,\"install\":41}}]" >/dev/null'
+check "DS-698 a worktree resumed from an unfinished setup is timed as a new one, not a kept one" \
+  'tail -n 1 "$X1S/passes.jsonl" | jq -e ".setup | map(select(.key == \"X-11\")) | .[0].kept == false" >/dev/null'
+# X-11 was only here to be timed: its running worker would hold one of the repo's worker slots from every test below.
+q --batch X-1 set X-11 state=done session_id=null
 
 # ---- DS-124: cloud workers
 # A ticket plan-batch placed in the cloud starts as one `claude --cloud` session, run through script
@@ -624,6 +632,9 @@ q add P-2; q set P-2 lane=A branch=fix/P-2 "worktree=$T/wt/P-2"; q park P-2 "$PQ
 say "AUTOPILOT_PR_BODY_BEGIN:" "## Summary" "Makes p." "AUTOPILOT_PR_BODY_END:" "AUTOPILOT_PARK: $PQ" > "$T/state-rc/logs/P-2.log"
 q add P-3; q set P-3 lane=A branch=fix/P-3 "worktree=$T/wt/P-3"; q park P-3 "${PQ//P-2/P-3}"
 say "AUTOPILOT_PR_BODY_BEGIN:" "## Summary" "Makes q." "AUTOPILOT_PR_BODY_END:" "AUTOPILOT_PARK: ${PQ//P-2/P-3}" > "$T/state-rc/logs/P-3.log"
+# DS-948: P-8's body asks for an issue to be closed later with a closing keyword before it.
+mkdir -p "$T/wt-p8"; q add P-8; q set P-8 lane=A branch=fix/P-8 "worktree=$T/wt-p8"; q park P-8 "${PQ//P-2/P-8}"
+say "AUTOPILOT_PR_BODY_BEGIN:" "## Summary" "Makes r." "- [ ] Close #1090 after a week of clean main runs." "AUTOPILOT_PR_BODY_END:" "AUTOPILOT_PARK: ${PQ//P-2/P-8}" > "$T/state-rc/logs/P-8.log"
 RQ='R-1: widen this PR to cover the CSV export too (recommended), or split the export into a follow-up?'
 q add R-1; q set R-1 state=running lane=A branch=fix/R-1 session_id=gone
 say "AUTOPILOT_PARK: $RQ" 'AUTOPILOT_PARK_RECOMMENDS: {"options": ["widen this PR", "split it into a follow-up"], "chose": "widen this PR", "category": "scope"}' > "$T/state-rc/logs/R-1.log"
@@ -646,6 +657,8 @@ check "DS-397 AC5 and its draft opened from that body, with the title its worker
   'grep -qE "^pr create --repo acme/widgets --draft --base main --head fix/P-2 --title fix\(p\): P-2 make p --body-file .*/state-rc/pr-bodies/P-2.md$" "$T/rc-gh.log" && [ "$(cat "$T/state-rc/pr-bodies/P-2.md")" = "$(printf "## Summary\nMakes p.")" ]'
 check "DS-397 AC5 the ticket is recorded done on the draft, naming what its park left" \
   '[ "$(field P-2 state)" = "\"done\"" ] && [ "$(field P-2 result.pr)" = 91 ] && [ "$(field P-2 draft_pr)" = 91 ] && echo "$out" | grep -qF "P-2: PR #91 pushed and opened as a draft by the pass from its worker'"'"'s PR body; what else its park named is not done: git push origin fix/P-2 was refused"'
+check "DS-948 AC1 a body with a closing keyword mid-line is not pushed or opened, and the park says which line" \
+  '[ "$(field P-8 state)" = "\"parked\"" ] && ! grep -q "fix/P-8" "$T/rc-gh.log" && echo "$out" | grep -qF "P-8: parked on a refused push or draft PR with its PR body in the log, but its PR body has a closing keyword outside a line of its own, which GitHub would act on at merge (line 3: Close #1090): left parked"'
 check "DS-397 AC3 a take call with a recommended option is answered with it and requeued" \
   '[ "$(field R-1 state)" != "\"parked\"" ] && [ "$(field R-1 prev_park.question)" = "\"$RQ\"" ] && [ "$(field R-1 auto_answered.chose)" = "\"widen this PR\"" ] && grep -q "^widen this PR. This was the option the last worker recommended" "$T/state-rc/briefings/R-1.md" && echo "$out" | grep -qF "R-1: took the recommended option on its scope call (\"widen this PR\"), answered it and requeued; logged as a decision"'
 check "DS-397 AC3 and the decision is logged as taken by the pass" 'jq -e "select(.ticket == \"R-1\" and .chose == \"widen this PR\" and .category == \"scope\" and .source == \"pass\")" "$T/state-rc/decisions.jsonl" >/dev/null'
@@ -715,10 +728,23 @@ check "DS-431 a killed worker waits with its session kept, and parks take the sl
 q drop R-8; q drop R-9; q drop R-10; q set-batch concurrency=5
 mv "$T/remotes/acme/gone.git" "$T/remotes/acme/web.git"
 
-mkdir -p "$T/hung-git"; printf '#!/bin/sh\ncase "$*" in *fetch*) echo "$*" >> "%s"; exec sleep 30;; esac\nexec "%s" "$@"\n' "$T/hung-fetches" "$(command -v git)" > "$T/hung-git/git"; chmod +x "$T/hung-git/git"
-ready R-11; : > "$T/hung-fetches"; t0=$(date +%s); out=$(PATH="$T/hung-git:$PATH" DESK_READ_REPO_REFRESH_MS=1000 node "$B/pass.mjs" 2>&1); took=$(( $(date +%s) - t0 ))
+# Every fetch hangs. It writes its arguments, and when it ends, how many whole seconds it ran before
+# the pass stopped it, or "answered" if the pass waited the hang out.
+mkdir -p "$T/hung-git"; cat > "$T/hung-git/git" <<EOF
+#!/bin/sh
+case "\$*" in *fetch*)
+  s=\$(date +%s); trap 'echo "stopped after \$(( \$(date +%s) - s ))s" >> "$T/hung-ends"; kill \$! 2>/dev/null; exit 143' TERM
+  echo "\$*" >> "$T/hung-fetches"
+  sleep 30 </dev/null >/dev/null 2>&1 & wait \$!
+  echo answered >> "$T/hung-ends"; exit 0;;
+esac
+exec "$(command -v git)" "\$@"
+EOF
+chmod +x "$T/hung-git/git"
+ready R-11; : > "$T/hung-fetches"; : > "$T/hung-ends"; out=$(PATH="$T/hung-git:$PATH" DESK_READ_REPO_REFRESH_MS=1000 node "$B/pass.mjs" 2>&1)
 check "DS-431 a hung remote parks within the refresh's own limit" '[ "$(field R-11 state)" = "\"parked\"" ] && field R-11 park.question | grep -q "acme/web: the refresh ran past its 1 seconds"'
-check "DS-779 a hung remote holds the pass for the refresh limit, not for as long as git hangs" '[ "$took" -lt 5 ]'
+check "DS-779 a hung remote holds the pass for the refresh limit, not for as long as git hangs" \
+  '[ -s "$T/hung-ends" ] && [ "$(wc -l < "$T/hung-ends")" = "$(wc -l < "$T/hung-fetches")" ] && ! grep -qv "^stopped after [0-3]s$" "$T/hung-ends"'
 check "DS-779 once one remote call runs out, the pass tries no more: the refresh's fetch and one of its own" '[ "$(wc -l < "$T/hung-fetches")" -le 2 ]'
 q drop R-11
 
@@ -913,7 +939,9 @@ check "DS-785 the pass keeps the merged PR's merge commit, which needs-you judge
 check "DS-570 a review that left none, or one by anyone but the §1 handle, adds no follow-on step" \
   '[ "$(field PM-2 merged_at)" != null ] && [ "$(field PM-2 follow_on)" = null ] && [ "$(field PM-3 follow_on)" = null ] && [ "$(pending PM-3)" = false ]'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
-check "DS-570 the next pass reads no PR again and adds no step twice" '[ ! -s "$T/gh-calls" ] && [ "$(field PM-1 follow_on.length)" = 2 ] && [ "$(field PM-10 follow_on.length)" = 2 ] && [ "$(field PM-11 follow_on.length)" = 3 ] && [ "$(field PM-13 follow_on.length)" = 3 ] && [ "$(field PM-14 follow_on.length)" = 3 ]'
+# The one call a settled pass still makes is DS-836's list of the handle's open PRs (ticketless PRs): it
+# reads no merged PR again.
+check "DS-570 the next pass reads no PR again and adds no step twice" '! grep -v "^pr list .* --author ben " "$T/gh-calls" | grep -q . &&[ "$(field PM-1 follow_on.length)" = 2 ] && [ "$(field PM-10 follow_on.length)" = 2 ] && [ "$(field PM-11 follow_on.length)" = 3 ] && [ "$(field PM-13 follow_on.length)" = 3 ] && [ "$(field PM-14 follow_on.length)" = 3 ]'
 # A merge recorded before the pass read it still gains its steps: the merge driver's (merged_at set, its
 # kept status still open), and needs-you's done or a hand-shipped ticket's (the kept status set merged,
 # carrying the criteria an earlier read of the open PR kept).
@@ -1293,6 +1321,67 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC10 a row split over two code spans is 1 for every file, and the report says so" \
   'spawned FB-51 && ! spawned FB-52 && echo "$out" | grep -qF "collisions: config §3b \"Per-file collision budget\" holds more than one code span" && echo "$out" | grep -qF "read as 1 for every file"'
 
+# ---- The tickets running in this repo's other batches fill places in the per-file budget too.
+# Batch XB-1 of this repo (acme__widgets) and the standing batch of acme__third each run a ticket.
+XBQ="$DESK_HOME/repos/acme__widgets/batches/XB-1"; XBS="$HOME/.desk-autopilot/acme__widgets/batches/XB-1"
+X3Q="$DESK_HOME/repos/acme__third"; X3S="$HOME/.desk-autopilot/acme__third"
+mkdir -p "$XBQ" "$XBS/triage" "$X3Q" "$X3S/triage"
+# xb <state> [fix]: XB-1's queue, its one ticket XO-1 in that state (a review try with `fix`); XO-1's
+# triage record names src/big.ts.
+xb(){
+  local fix=''
+  if [ -n "${2:-}" ]; then fix=',"fix":{"kind":"rereview","try":1,"of":2,"pr":9,"head":"aaa","what":"review its head","at":"T0","started":"T0"}'; fi
+  printf '{"tickets":{"XO-1":{"key":"XO-1","state":"%s"%s}}}\n' "$1" "$fix" > "$XBQ/queue.json"
+}
+printf '{"files_in_scope":["src/big.ts"]}\n' > "$XBS/triage/XO-1.json"
+fbq xba '1'; xb running
+fbt XA-1 triaged src/big.ts; fbt XA-2 triaged src/solo.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-664 AC1 a ticket naming a file at its budget once another batch's running ticket counts does not start, naming the batch, ticket and file" \
+  '! spawned XA-1 && spawned XA-2 && [ "$(field XA-1 state)" = "\"triaged\"" ] && echo "$out" | grep "^held back by a collision:" | grep -qF "XA-1 (src/big.ts has 1 running of its 1: XO-1 in batch XB-1)"'
+check "DS-664 the metrics line names the other batch's ticket among those filling the file" \
+  'tail -n 1 "$T/state-xba/passes.jsonl" | jq -e "(.collisions | map(select(.key == \"XA-1\")) == [{\"key\":\"XA-1\",\"with\":[\"XO-1\"],\"files\":[\"src/big.ts\"]}])" >/dev/null'
+xb 'done'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-664 AC2 once the other batch's ticket stops running, the held ticket starts" 'spawned XA-1'
+xb running fix; fbq xbr '1'; fbt XR-1 triaged src/big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1001 DS-664 a review try running in another batch fills no place either" 'spawned XR-1'
+rm -f "$XBQ/queue.json"
+printf '{"tickets":{"XT-1":{"key":"XT-1","state":"running"}}}\n' > "$X3Q/queue.json"
+printf '{"files_in_scope":["src/big.ts"]}\n' > "$X3S/triage/XT-1.json"
+# A decoy where this repo's standing batch keeps its records, so counting the other repo's ticket holds.
+XWS="$HOME/.desk-autopilot/acme__widgets/triage"; mkdir -p "$XWS"
+printf '{"files_in_scope":["src/big.ts"]}\n' > "$XWS/XT-1.json"
+fbq xbc '1'; fbt XC-1 triaged src/big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-664 AC3 a file shared only with a ticket running in another repo's batch holds nothing" 'spawned XC-1 && ! echo "$out" | grep "^held back by a collision:" | grep -qF "XT-1"'
+rm -f "$XWS/XT-1.json"
+printf '{"tickets": not json\n' > "$XBQ/queue.json"
+fbq xbd '1'; fbt XD-1 triaged src/big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+# AC4 as the person reworded it on PR #725: "Given another batch's queue that cannot be read, when
+# the pass runs, then the per-file budget does not hold the ticket, and the report says that batch
+# was not checked." DS-308's repo worker cap still counts an unreadable queue at the cap (borrow.mjs,
+# unchanged), so nothing starts this pass on that account.
+check "DS-664 AC4 another batch's queue that does not read holds no ticket on the per-file budget, and the report says that batch was not checked" \
+  '! echo "$out" | grep "^held back by a collision:" | grep -qF "XD-1" && echo "$out" | grep -qF "collisions: $XBQ/queue.json is not valid JSON (" && echo "$out" | grep -qF "that batch'"'"'s running tickets were not counted toward the per-file budget" && echo "$out" | grep -qF "batch XB-1 unreadable ("'
+xb running
+fbq xbe ''; fbt XE-1 triaged src/big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-664 AC5 a file shared with another batch's running ticket, with room counting both batches, starts" 'spawned XE-1'
+# XO-1 starts running in XB-1 while this pass waits for the borrow lock, which a live process holds:
+# the pass counts it from the queues read under the lock, so XF-1 does not start beside it.
+xb triaged; fbq xbf '1'; fbt XF-1 triaged src/big.ts
+mkdir -p "$T/xlocks/desk-borrow.lock.d"; sleep 30 & holder=$!
+echo "$holder" > "$T/xlocks/desk-borrow.lock.d/pid"
+DESK_LOCK_DIR="$T/xlocks" node "$B/pass.mjs" > "$T/xbf.out" 2>&1 & passpid=$!
+sleep 3; xb running; kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null; wait "$passpid"
+out=$(cat "$T/xbf.out")
+check "DS-664 a ticket another batch starts while the pass waits for the borrow lock holds the file" \
+  '! spawned XF-1 && echo "$out" | grep "^held back by a collision:" | grep -qF "XF-1 (src/big.ts has 1 running of its 1: XO-1 in batch XB-1)"'
+rm -rf "${XBQ:?}" "${XBS:?}" "${X3Q:?}" "${X3S:?}"
+
 # ---- DS-575: admitted tickets naming one file start in queue order within its budget, and none is asked
 # about. RK-182, RK-147 and RK-181 all name desk/bin/desk-q.mjs (budget 1), queued in that order, not
 # key order; collides_with is each one's two others, both ways as admission records it. RK-90 and RK-91
@@ -1452,14 +1541,23 @@ dragbody 764 "Before | After
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-492 AC2 every cell filled, the next pass takes it out of draft though the upload was partial" \
   '[ "$(field S-4 images_uploaded)" = "\"partial\"" ] && grep -q "^pr ready 764" "$T/gh-calls"'
-# S-5: an upload that matched no cell at all still goes to the person, as before.
+# S-5: an upload that matched no cell at all is partial, and never a person's: its cell goes to the undraft step.
 q add S-5; q set S-5 state=running session_id=gone lane=A branch=fix/S-5 result.pr=765; frx 765 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 765 "_drag s-5.png_"
 mkdir -p "$T/state-s/images/S-5"; : > "$T/state-s/images/S-5/other.png"
 say "AUTOPILOT_IMAGES: $T/state-s/images/S-5/" "AUTOPILOT_DONE: pr=765 jira=Done" > "$T/state-s/logs/S-5.log"
 printf '%s\n' '[upload] uploaded, but found no _drag placeholders matching the files' > "$T/upload-left"
 out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/upload-left"
-check "DS-492 an upload that matched no cell is partial and put to the person, never re-uploaded" \
-  '[ "$(field S-5 images_uploaded)" = "\"partial\"" ] && echo "$out" | grep -q "S-5: image upload to PR #765 is INCOMPLETE — .*do not re-upload\.$"'
+check "DS-492 an upload that matched no cell is partial, never re-uploaded, and not put to the person" \
+  '[ "$(field S-5 images_uploaded)" = "\"partial\"" ] && echo "$out" | grep -q "S-5: image upload to PR #765 placed no image: none of its files matches a cell in the body — .*nothing is re-uploaded, and any cell left goes to the undraft step$" && ! echo "$out" | grep -q "INCOMPLETE"'
+# S-9: every before/after pair is byte for byte the same, so the body has no table: nothing to upload,
+# images_uploaded=none, and nothing for the person.
+q add S-9; q set S-9 state=running session_id=gone lane=A branch=fix/S-9 result.pr=769; frx 769 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 769 "No visual change: every before/after pair is identical."
+mkdir -p "$T/state-s/images/S-9"; for v in desktop mobile; do printf 'same-%s' "$v" > "$T/state-s/images/S-9/before-$v.png"; printf 'same-%s' "$v" > "$T/state-s/images/S-9/after-$v.png"; done
+say "AUTOPILOT_IMAGES: $T/state-s/images/S-9/" "AUTOPILOT_DONE: pr=769 jira=Done" > "$T/state-s/logs/S-9.log"
+ups=$(grep -c . "$T/uploads" 2>/dev/null || echo 0)
+out=$(node "$B/pass.mjs" 2>&1)
+check "identical before/after pairs record images_uploaded=none, with no upload and nothing for the person" \
+  '[ "$(field S-9 images_uploaded)" = "\"none\"" ] && [ "$(grep -c . "$T/uploads" 2>/dev/null || echo 0)" = "$ups" ] && ! echo "$out" | grep -q "S-9.*INCOMPLETE\|S-9: image upload"'
 # S-6: an evidence workflow that cannot start asks for it to be run, never for an upload.
 q add S-6; q set S-6 state=done lane=A branch=fix/S-6 result.pr=766 images_uploaded=none; frx 766 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 766 "$mixed"
 : > "$T/wf-refuse-766"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/wf-refuse-766"
@@ -1680,5 +1778,36 @@ check "DS-843 AC4 an unreadable Evidence workflow row stops the pass with its er
 jout=$(DESK_CONFIG="$T/config-771.md" node "$B/pass.mjs" --json 2>/dev/null)
 check "DS-843 AC4 and its JSON error names no spawned ticket" \
   'echo "$jout" | jq -e ".status == \"error\" and (has(\"spawned\") | not)" >/dev/null'
+
+# ---- DS-893: with the ledger lever on, a pass's spawn (its state=running write, made as queue.mjs)
+# appends a spawned event naming the pass; with the ledger's lock held past its wait, the queue is still
+# written and the pass's report names the missed append. The queue sits in a folder of its own, so the
+# log beside it is this case's alone.
+export DESK_QUEUE="$T/lg/queue.json" DESK_AUTOPILOT_STATE="$T/state-lg"; mkdir -p "$T/lg" "$T/state-lg/logs"
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n'; } > "$T/config-lg.md"
+q init lg; q set-batch concurrency=2
+q add LG-1; q set LG-1 state=triaged lane=A branch=fix/LG-1
+out=$(DESK_CONFIG="$T/config-lg.md" node "$B/pass.mjs" 2>&1)
+check "DS-893 AC2 with the ledger lever on, a pass's spawn is a spawned event naming the pass" \
+  '[ "$(field LG-1 state)" = "\"running\"" ] && [ "$(jq -sc "[.[] | select(.key == \"LG-1\" and .type == \"spawned\") | .by.proc]" "$T/lg/ledger/events.jsonl")" = "[\"pass\"]" ]'
+# DS-894: the pass then compares queue.json with the queue rebuilt from the log, and its metrics line
+# records the counts. lgm is the last pass's [differences, missed appends].
+lgm(){ tail -1 "$T/state-lg/passes.jsonl" | jq -c "[.ledger_diffs, .ledger_missed]"; }
+check "DS-894 AC1/AC4 a batch with no log, seeded by the pass's writes, matches it: no difference line, and the metrics record zero" \
+  '! echo "$out" | grep -q "differ between queue.json" && [ "$(lgm)" = "[0,0]" ]'
+jq '.tickets["LG-1"].lane = "Z"' "$T/lg/queue.json" > "$T/lg/q.tmp" && mv "$T/lg/q.tmp" "$T/lg/queue.json"
+out=$(DESK_CONFIG="$T/config-lg.md" node "$B/pass.mjs" 2>&1)
+check "DS-894 AC2 a field written past the queue store: the report names the ticket and field, and the metrics count it" \
+  'echo "$out" | grep -q "ledger: 1 field(s) differ between queue.json and the queue rebuilt from the log, 0 missed append(s) this pass: LG-1 lane" && [ "$(lgm)" = "[1,0]" ]'
+DESK_CONFIG="$T/config-lg.md" q add LG-2; DESK_CONFIG="$T/config-lg.md" q set LG-2 state=triaged lane=A branch=fix/LG-2
+mkdir "$T/lg/ledger/.lock"; echo $$ > "$T/lg/ledger/.lock/pid"
+out=$(DESK_CONFIG="$T/config-lg.md" node "$B/pass.mjs" 2>&1); rm -rf "$T/lg/ledger/.lock"
+check "DS-893 AC10 the ledger locked past its wait: the spawn is still recorded, and the report names the missed append" \
+  '[ "$(field LG-2 state)" = "\"running\"" ] && echo "$out" | grep -q "ledger: 1 missed append" && ! jq -e "select(.key == \"LG-2\" and .type == \"spawned\")" "$T/lg/ledger/events.jsonl" >/dev/null'
+check "DS-894 AC5 the pass whose spawn missed its append counts it, and names the field it left unrecorded" \
+  'echo "$out" | grep -qE "ledger: [1-9][0-9]* field\(s\) differ between queue.json and the queue rebuilt from the log, [1-9][0-9]* missed append\(s\) this pass: LG-1 lane, LG-2 " && [ "$(lgm | jq ".[0] > 1 and .[1] > 0")" = true ] && DESK_CONFIG="$T/config-lg.md" node "$B/queue.mjs" rebuild | grep -q "^LG-2 state: queue.json \"running\", rebuilt \"triaged\""'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-894 AC7 with the lever off, no difference line and no difference count" \
+  '! echo "$out" | grep -q "differ between queue.json" && [ "$(tail -1 "$T/state-lg/passes.jsonl" | jq "has(\"ledger_diffs\") or has(\"ledger_missed\")")" = false ]'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

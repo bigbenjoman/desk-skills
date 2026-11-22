@@ -55,7 +55,8 @@ function budgetOf(budget) {
 //   checkin       checkinTimes's {ok, why}
 //   health        health.mjs's {stalls, holding}
 //   pace          usage-pace.mjs's {bad, hold, line}, and paceProbe what a probe call for it read
-//   memory        {low, avail, hold, start, dropTo}: the spawn gate (config §3b "Spawn gate")
+//   memory        {low, avail, hold, start, dropTo, harm}: the spawn gate (config §3b "Spawn gate"), and
+//                 harm, the memory watch's recent harm signal that also holds it, or null
 //   lockQueue     suite-wait.mjs lockQueue's reading, or null where it is not read
 //   spawnGrant    {may, key, perm, queueBin}: config §3 autopilot-workers, and the queue.mjs path
 //   maintHold     whether the maintenance window holds
@@ -79,7 +80,8 @@ export function* decideEligibility(s) {
   else if (s.pace.hold) yield say(null, 'stalled', `${s.pace.line} (${running} running carry on; fix tries still start${s.paceProbe})`);
   // Low memory only delays a spawn by a pass; it never kills anything.
   const m = s.memory;
-  if (m.low) {
+  if (m.harm) yield say(null, 'stalled', `${m.harm} — holding spawns (${running} running carry on)`);
+  else if (m.low) {
     yield say(null, 'stalled', m.avail < m.hold
       ? `memory: ${m.avail.toFixed(1)}G available, under the ${m.hold}G floor — §3b says drop to ${m.dropTo} worker(s); ` +
         `holding spawns (${running} running; a worker mid-suite will drain)`
@@ -123,6 +125,7 @@ export function* decideEligibility(s) {
     : !s.checkin.ok ? 'config §3b "Check-in times" holds every spawn'
     : s.health.holding.length ? `a failing health check (${s.health.holding.join(', ')}) holds every spawn`
     : !g.may ? `config §3 ${g.key} is "${g.perm}"`
+    : s.memory.harm ? s.memory.harm
     : s.pace.bad ? `config §3b "${s.pacingRow}" holds every spawn`
     : s.pace.hold ? PACE_HELD : null;
   // Pacing holds new tickets, never a fix try: its PR is already out and stalls until the try runs, so
@@ -145,12 +148,16 @@ const planOf =(s, workers, on = s.borrowOn) => borrowPlan({
 //   running       this batch's running tickets, and ownBaseFix 1 while its base conflict fix runs
 //   auditWorkers  the repo's blind audits running (levers-audit.mjs), which belong to no batch's queue
 //   baseWanted    whether a base worker with no ticket to spawn wants its one slot
+//   auditWanted   whether a blind audit due in the repo wants its one slot, within the batch's own number
 //   machineProfiled  whether there is a machine profile; repoCaps each repo's §3b cap, by slug
 //   otherRepos    every other queue (borrow.mjs otherQueues), and repoBatches this repo's other batches
 //   batch, lastStart, maintHold
 export function decideSlots(s) {
   const plan = planOf(s, s.running);
-  const wanted = Math.min(plan.slots, s.spawnable) || (s.baseWanted ? 1 : 0);
+  const tickets = Math.min(plan.slots, s.spawnable);
+  // A due audit adds its one slot where the batch's own number has one the tickets leave free.
+  const audit = s.auditWanted && tickets < s.concurrency - s.running - s.ownBaseFix ? 1 : 0;
+  const wanted = (tickets + audit) || (s.baseWanted ? 1 : 0);
   // The batch's own workers, its base conflict fix and the repo's blind audits, as other batches count them.
   const busy = s.running + s.ownBaseFix + (s.auditWorkers ?? 0);
   const machine = machineBudget({

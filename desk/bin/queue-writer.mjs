@@ -10,8 +10,10 @@ import { readFileSync } from 'node:fs';
 import { lock, unlock } from './dir-lock.mjs';
 import { parkClass } from './failure-class.mjs';
 import { versionOf, writeQueueFile, mergeQueue, archiveDone, attachArchive, same } from './queue-store.mjs';
+import { STATES, FINISHED, PARK_KINDS } from './queue-states.mjs';
+import { parkKindOf } from './batch-state.mjs';
 
-export const STATES = ['queued', 'triaged', 'running', 'parked', 'done', 'failed'];
+export { STATES, FINISHED };
 
 // Keys a ticket carries under `result`, never at the top: `set <KEY> pr=12` would write a top-level pr
 // that release and STUCK never read (they read result.pr), so set refuses it and names the right one.
@@ -37,12 +39,23 @@ export function coerce(v) {
   return v === 'null' ? null : v === 'true' ? true : v === 'false' ? false : /^-?\d+$/.test(v) ? Number(v) : v;
 }
 
-// A new park, with its failure class (failure-class.mjs parkClass) whether or not the lever is on.
-export const newPark = (question, since = new Date().toISOString()) => ({ question, since, ...parkClass(question) });
+// A new park, with its kind (`kind` where the writer names one, else the one its question opens as) and
+// its failure class (failure-class.mjs parkClass) whether or not the lever is on.
+export const newPark = (question, since = new Date().toISOString(), kind = null) => ({ question, since,
+  kind: PARK_KINDS.includes(kind) ? kind : parkKindOf(question), ...parkClass(question) });
+
+// `park <KEY> [--kind <kind>] <question…>`'s arguments after the key: { question, kind }. A kind that is
+// not one of PARK_KINDS is refused.
+export function parkArgs(args) {
+  const at = args.indexOf('--kind');
+  if (at < 0) return { question: args.join(' '), kind: null };
+  const kind = args[at + 1];
+  if (!PARK_KINDS.includes(kind)) throw new Error(`bad park kind "${kind ?? ''}" (want: ${PARK_KINDS.join('|')})`);
+  return { question: args.filter((_, i) => i !== at && i !== at + 1).join(' '), kind };
+}
 
 // pass.mjs spawns eligible tickets in `.tickets` key order. A ticket's place in that order is its
 // position among the unfinished tickets; done and failed ones keep their slots and are never counted.
-export const FINISHED = ['done', 'failed'];
 export const unfinished = (q) => Object.keys(q.tickets).filter((k) => !FINISHED.includes(q.tickets[k].state));
 export const position = (q, key) => unfinished(q).indexOf(key) + 1;
 
@@ -92,7 +105,8 @@ export function applySetBatch(q, pairs, setBase) {
 // wait into forever or nothing.
 export const LOCK_WAIT_MS = Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) > 0 ? Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) : 10_000;
 
-// The writer for queue `file`, read now. `waitMs` is how long a flush waits for the queue lock.
+// The writer for queue `file`, read now. `waitMs` is how long a flush waits for the queue lock. The
+// ticket ledger names the pass as the writer of its writes.
 //   view()       the queue as it stands: the file now, with this writer's changes not yet written on top
 //   apply(args)  one queue.mjs command, in memory: { ok, out } | { ok: false, why } | { direct: true }
 //                for one it does not apply here (any other command, the batch base, a claim, or a
@@ -102,8 +116,9 @@ export const LOCK_WAIT_MS = Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) > 0 ? Nu
 //   flush({ archive })  writes every change applied since the last flush, under the queue lock, and
 //                with `archive` (a pass's last write, once it has handled every ticket) moves done
 //                tickets whose PR merged or closed to the archive:
-//                { ok: true, wrote, version, conflicts, skipped, archived, archiveError, ops }, `skipped`
-//                naming the tickets whose conditional set no longer held, or, when the lock
+//                { ok: true, wrote, version, conflicts, skipped, archived, archiveError, ops, ledgerMissed },
+//                `skipped` naming the tickets whose conditional set no longer held, `ledgerMissed` why
+//                the ledger lever's append for the write was missed (else null), or, when the lock
 //                is not taken within its wait, { ok: false, why, lost } with nothing written
 export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
   // The file's text as last read or written, so an unchanged file costs one read and no parse.
@@ -150,7 +165,7 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
     let out;
     try {
       if (cmd === 'set') { applySet(t, more); out = `${key}: ${more.join(' ')}`; }
-      else if (cmd === 'park') { t.state = 'parked'; t.park = newPark(more.join(' ')); out = `${key} parked`; }
+      else if (cmd === 'park') { const p = parkArgs(more); t.state = 'parked'; t.park = newPark(p.question, undefined, p.kind); out = `${key} parked`; }
       else out = `${key} ${toFront(mine, key)}`;
     } catch (e) { return { ok: false, why: e.message }; }
     ops.push(args);
@@ -185,8 +200,11 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
     return undone;
   }
 
+  // With `archive`, done tickets move to the archive even when nothing else is pending; with neither,
+  // nothing is written.
   function flush({ archive = false } = {}) {
-    if (!ops.length) return { ok: true, wrote: false, version: versionOf(base), conflicts: [], skipped: [], archived: [], archiveError: null, ops: [] };
+    const none = () => ({ ok: true, wrote: false, version: versionOf(base), conflicts: [], skipped: [], archived: [], archiveError: null, ops: [], ledgerMissed: null });
+    if (!ops.length && !archive) return none();
     const dir = `${file}.lock`;
     try {
       lock(dir, { waitMs, timeout: (pid) => new Error(`the queue is locked by pid ${pid ?? '? (no pid written yet)'}, which has held it past the ${waitMs / 1000}s wait`) });
@@ -202,10 +220,13 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
       const kept = conflicts.filter((c) => !skipped.some((s) => s.key === c.ticket && s.fields.includes(c.field)));
       const out = structuredClone(mine);
       let archived = []; let archiveError = null;
+      const live = { ...out.tickets };
       if (archive) { try { archived = archiveDone(file, out); } catch (e) { archiveError = e.message; } }
+      if (!ops.length && !archived.length) return { ...none(), archiveError };
       out.version = versionOf(base);
-      const version = writeQueueFile(file, out);
-      const r = { ok: true, wrote: true, version, conflicts: kept, skipped: skipped.map((s) => s.key), archived, archiveError, ops };
+      let ledger = null;
+      const version = writeQueueFile(file, out, { by: 'pass', archived: Object.fromEntries(archived.map((k) => [k, live[k]])), onLedger: (l) => { ledger = l; } });
+      const r = { ok: true, wrote: true, version, conflicts: kept, skipped: skipped.map((s) => s.key), archived, archiveError, ops, ledgerMissed: ledger?.missed ? ledger.why : null };
       base = out; baseText = readFileSync(file, 'utf8'); mine = structuredClone(out); ops = []; conflicts = []; guards = [];
       return r;
     } finally { unlock(dir); }

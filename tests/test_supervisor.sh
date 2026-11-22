@@ -23,6 +23,8 @@ PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
 
 # config <autopilot-workers> <autopilot-merge> [<running on WSL?>, default no, so a WSL host reads as plain Linux]
+# $SECTION4, where set, is a §4 table's rows, written after §3.
+SECTION4=""
 config(){ mkdir -p "$T/cfg/repos/acme__widgets"; cat > "$T/cfg/repos/acme__widgets/config.md" <<EOF
 ## 0. Repo
 | Field | Value |
@@ -42,6 +44,7 @@ config(){ mkdir -p "$T/cfg/repos/acme__widgets"; cat > "$T/cfg/repos/acme__widge
 | \`autopilot-merge\` | The merge driver merges | \`ask\` | \`$2\` |
 | \`pr-merge-green\` | Merge on green | \`ask\` | \`yes\` |
 EOF
+if [ -n "$SECTION4" ]; then printf '\n## 4. Tools\n| Field | Value |\n|---|---|\n%s\n' "$SECTION4" >> "$T/cfg/repos/acme__widgets/config.md"; fi
 }
 config yes yes
 
@@ -54,10 +57,20 @@ cp "$B/supervisor.mjs" "$B/installed.mjs" "$T/bin/"
 # The fake pass reads its batch's base as the real one does, so a base it inherited is refused here too.
 # verdict.<batch>.json (standing for the standing batch), where it exists, is that batch's own verdict.
 cat > "$T/bin/pass.mjs" <<EOF
-import { appendFileSync, readFileSync, existsSync } from 'node:fs';
+import { appendFileSync, readFileSync, existsSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import * as E from './desk-env.mjs';
 appendFileSync('$T/pass.calls', \`\${process.env.AUTOPILOT_USER_APPROVED ?? '-'} \${process.env.AUTOPILOT_BASE_PUSH_APPROVED ?? '-'}\\n\`);
+// exit.during: a worker exits while this pass runs, once.
+if (existsSync('$T/exit.during')) { rmSync('$T/exit.during'); mkdirSync(E.exitsDir(), { recursive: true }); writeFileSync(\`\${E.exitsDir()}/B.2.json\`, '{}\\n'); }
+// exit.burst: ten workers exit over a second from now, the first while this pass runs, once.
+if (existsSync('$T/exit.burst')) {
+  rmSync('$T/exit.burst'); writeFileSync(\`\${E.exitsDir()}/A.b1.json\`, '{}\\n');
+  const more = "const fs = require('fs'); let i = 1; const t = setInterval(() => { i += 1; fs.writeFileSync(process.argv[1] + '/A.b' + i + '.json', '{}'); if (i === 10) clearInterval(t); }, 100);";
+  spawn(process.execPath, ['-e', more, E.exitsDir()], { detached: true, stdio: 'ignore' }).unref();
+}
 appendFileSync('$T/pass.args', \`\${process.argv.slice(2).join(' ')}\\n\`);
+appendFileSync('$T/pass.woken', \`\${process.env.DESK_BATCH ?? '-'} \${process.argv.includes('--woken')}\\n\`);
 let base;
 try { E.applyBatchBase(); base = E.defaultBranch(); } catch { base = 'REFUSED'; }
 appendFileSync('$T/pass.batches', \`\${process.env.DESK_BATCH ?? '-'} \${base}\\n\`);
@@ -138,6 +151,8 @@ check "the agent runs a tick of this supervisor" 'grep -q "<string>$T/bin/superv
 check "the agent works in the repo root" 'grep -A1 "<key>WorkingDirectory</key>" "$PL" | grep -q "$T/repo"'
 check "the agent leaves the merge driver running" 'grep -A1 "<key>AbandonProcessGroup</key>" "$PL" | grep -q "<true/>"'
 check "install bootstraps the agent" 'grep -q "^bootstrap gui/[0-9]* $PL$" "$T/launchctl.calls"'
+EX="$T/state/exits"
+check "DS-695: install makes the exits folder, and the agent ticks when it changes, at most every 20s" '[ -d "$EX" ] && grep -A2 "<key>WatchPaths</key>" "$PL" | grep -qF "<string>$EX</string>" && grep -A1 "<key>ThrottleInterval</key>" "$PL" | grep -q "<integer>20</integer>"'
 out=$(sup install)
 check "an unchanged install does not reload" '[ "$(grep -c "^bootstrap" "$T/launchctl.calls")" = 1 ] && grep -q "unchanged" <<< "$out"'
 out=$(sup install --interval 300)
@@ -146,6 +161,10 @@ out=$(sup install --interval 5); rc=$?
 check "an interval under a minute is refused" '[ $rc -eq 2 ]'
 out=$(sup status); rc=$?
 check "status names the agent as loaded" '[ $rc -eq 0 ] && grep -q "installed (every 300s), loaded" <<< "$out"'
+out=$(DESK_CONFIG_PREFLIGHT=off sup install --interval 300)
+check "DS-872 AC7: DESK_CONFIG_PREFLIGHT=off at install is carried into the launchd agent's environment" 'grep -A1 "<key>DESK_CONFIG_PREFLIGHT</key>" "$PL" | grep -q "<string>off</string>"'
+out=$(sup install --interval 300)
+check "DS-872: an install without it leaves it out" '! grep -q "DESK_CONFIG_PREFLIGHT" "$PL"'
 
 # ---- a batch not handed over -------------------------------------------------------------------
 queue false '{}' "$RUNNING"; verdict "$NOTHING"
@@ -241,6 +260,73 @@ for lock in supervisor.lock orchestrator.lock; do
 done
 check "a finished run releases its lock" '[ ! -f "$T/state/supervisor.lock" ]'
 
+# ---- DS-695: a worker's exit file wakes a tick, which consumes it -----------------------------------
+# old <file>: an exit file written before any round now starts. No gap between rounds here but where set.
+old(){ printf '{}\n' > "$EX/$1"; touch -t 202001010000 "$EX/$1"; }
+export DESK_WAKE_GAP_MS=0
+WAKE="$T/state/supervisor.wake"; COUNTED="$T/state/supervisor.counted"
+rm -f "$WAKE" "$COUNTED"
+before=$(count "$T/pass.calls")
+old A.1.json; printf '{}\n' > "$EX/.A.9.tmp"
+out=$(tick)
+check "DS-695 AC1: a tick runs a pass and deletes the exit file it saw, not one still being written" '[ "$(count "$T/pass.calls")" = $((before + 1)) ] && [ ! -e "$EX/A.1.json" ] && [ -e "$EX/.A.9.tmp" ]'
+check "DS-695: the first pass in an interval counts a quiet pass" '[ "$(tail -1 "$T/pass.args" | grep -c -- "--woken")" = 0 ]'
+rm -f "$EX/.A.9.tmp"
+out=$(tick)
+check "DS-695 AC2: the wake that deletion causes runs no pass" '[ "$(count "$T/pass.calls")" = $((before + 1)) ]'
+# The tick intake push starts (DS-207) runs though it lands in that quiet window, and takes the push's lines.
+printf 'intake: admitted ACME-9\n' > "$T/state/intake.pushed"
+out=$(tick)
+check "DS-695: a tick intake push starts runs inside the quiet window after a deletion" '[ "$(count "$T/pass.calls")" = $((before + 2)) ] && [ ! -e "$T/state/intake.pushed" ]'
+before=$((before + 1))
+# Ten exits over a second, from inside a pass that takes no time: the gap folds them into one round.
+rm -f "$WAKE" "$COUNTED"; old A.10.json; touch "$T/exit.burst"
+out=$(DESK_WAKE_GAP_MS=3000 tick)
+check "DS-695 AC2: ten exits in a burst run at most two passes, and every file goes" '[ "$(count "$T/pass.calls")" = $((before + 3)) ] && [ -z "$(ls -A "$EX")" ]'
+check "DS-695: a pass an exit adds within the interval counts no quiet pass" '[ "$(tail -1 "$T/pass.args" | grep -c -- " --woken")" = 1 ]'
+# Two more exits of the burst, each starting its own tick (as a systemd path unit does): the first waits
+# out the gap from the burst's last round and passes both; the second then finds nothing left.
+printf '{}\n' > "$EX/G.2.json"; (DESK_WAKE_GAP_MS=3000 tick >/dev/null) & T2=$!
+sleep 0.5; printf '{}\n' > "$EX/G.3.json"; (DESK_WAKE_GAP_MS=3000 tick >/dev/null) & T3=$!
+wait "$T2" "$T3"
+check "DS-695 AC2: separate ticks within one burst run one more pass between them, no more" '[ "$(count "$T/pass.calls")" = $((before + 4)) ] && [ -z "$(ls -A "$EX")" ]'
+rm -f "$WAKE"
+# A tick holding the repo's tick lock: one woken meanwhile waits for it, then runs only for what it left.
+HOLDER=$(sh -c 'sleep 4 >/dev/null 2>&1 & echo $!')
+printf '{"pid":%s,"since":"x"}\n' "$HOLDER" > "$T/state/supervisor.tick.lock"
+old A.11.json; ( sleep 2; rm -f "$EX/A.11.json" ) &
+out=$(tick); wait
+check "DS-695 AC2: a tick woken while another runs its rounds waits, and passes nothing that one consumed" '[ "$(count "$T/pass.calls")" = $((before + 4)) ] && [ ! -e "$T/state/supervisor.tick.lock" ]'
+# The same, with a push landing while it waits: the push's lines still get their pass.
+HOLDER=$(sh -c 'sleep 4 >/dev/null 2>&1 & echo $!')
+printf '{"pid":%s,"since":"x"}\n' "$HOLDER" > "$T/state/supervisor.tick.lock"
+old A.13.json; ( sleep 2; rm -f "$EX/A.13.json"; printf 'intake: admitted ACME-10\n' > "$T/state/intake.pushed" ) &
+out=$(tick); wait
+check "DS-695: a woken tick that waited still passes a push that landed meanwhile" '[ "$(count "$T/pass.calls")" = $((before + 5)) ] && [ ! -e "$T/state/intake.pushed" ]'
+before=$((before + 1))
+# An interval after the last counted pass, a pass counts whatever woke it: an exit file never stops it.
+old A.12.json; printf '2020-01-01T00:00:00.000Z\n' > "$COUNTED"
+out=$(tick)
+check "DS-695: once an interval has passed, the pass counts a quiet pass though an exit woke it" '[ "$(count "$T/pass.calls")" = $((before + 5)) ] && [ "$(tail -1 "$T/pass.args" | grep -c -- "--woken")" = 0 ]'
+before=$((before + 4))
+old A.3.json; touch "$T/exit.during"
+out=$(tick)
+check "DS-695 AC2: an exit landing while the pass runs gets one more round, no more, and both files go" '[ "$(count "$T/pass.calls")" = $((before + 3)) ] && [ -z "$(ls -A "$EX")" ]'
+sleep 30 & HOLDER=$!
+printf '{"pid":%s,"since":"x"}\n' "$HOLDER" > "$T/state/supervisor.lock"
+old A.4.json
+out=$(tick)
+check "DS-695: a tick whose pass is skipped for a lock leaves the exit for the run holding it" '[ "$(count "$T/pass.calls")" = $((before + 3)) ] && [ -e "$EX/A.4.json" ]'
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -f "$T/state/supervisor.lock"
+out=$(tick)
+check "DS-695: the next tick passes and consumes it" '[ "$(count "$T/pass.calls")" = $((before + 4)) ] && [ ! -e "$EX/A.4.json" ]'
+old A.5.json; chmod 555 "$EX"
+out=$(tick); out=$(tick)
+chmod 755 "$EX"
+check "DS-695 AC3: an exits folder that cannot be written to still gets a pass every tick, one round each" '[ "$(count "$T/pass.calls")" = $((before + 6)) ] && [ -e "$EX/A.5.json" ]'
+rm -f "$EX/A.5.json" "$WAKE" "$COUNTED"
+unset DESK_WAKE_GAP_MS
+
 # ---- AC6 and AC7: one notification per new push, and nothing else pushed ---------------------
 check "no notification while nothing needs the person" '[ "$(count "$T/notify.calls")" = 0 ]'
 verdict '{"status":"show_person","code":11,"message":"NOTIFY: 2 item(s) need you","waiting":["B: FAILED — requeue it"],"parked":[{"key":"A","question":"which copy?"}],"notify":true,"push":[]}'
@@ -272,6 +358,52 @@ queue true '{"workers":true,"base_push":true}' "$RUNNING"; : > "$T/pass.calls"
 out=$(tick)
 check "the recorded approvals are passed on" '[ "$(cat "$T/pass.calls")" = "1 1" ] && grep "approvals passed on:" "$LOG" | tail -1 | grep -q "approvals passed on: workers, base push$"'
 config yes yes; queue true '{}' "$RUNNING"
+
+# ---- DS-872: a config row today's readers refuse stops the tick before the pass ---------------------
+EVIDENCE_BAD='| Evidence workflow | `none` `pr-evidence.yml` |'
+SECTION4="$EVIDENCE_BAD"; config yes yes; verdict "$NOTHING"
+calls=$(count "$T/pass.calls"); n=$(started); notified=$(count "$T/notify.calls")
+out=$(tick); rc=$?
+check "DS-872 AC1: a refused row runs no pass and starts no driver that tick" '[ $rc -eq 0 ] && [ "$(count "$T/pass.calls")" = "$calls" ] && [ "$(started)" = "$n" ] && grep -q "config check: no pass run, no worker spawned" "$LOG"'
+check "DS-872 AC2: one push names the row, the items and the form expected" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && tail -1 "$T/notify.calls" | grep -qF "config check: no pass runs until this row is fixed: INVALID  §4 Evidence workflow mixes \`none\` with other items (none | pr-evidence.yml)" && tail -1 "$T/notify.calls" | grep -qF "\`none\` must stand alone"'
+check "DS-872 AC2: the log records the same line" 'grep -qF "config check: no pass runs until this row is fixed: INVALID  §4 Evidence workflow mixes \`none\` with other items (none | pr-evidence.yml)" "$LOG" && grep -q "^notification: sent for this row$" "$LOG"'
+out=$(tick)
+check "DS-872 AC3: a second tick with the row unchanged sends no second push and still runs no pass" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && [ "$(count "$T/pass.calls")" = "$calls" ] && grep -q "^notification: not sent, the last one already named this row$" "$LOG"'
+out=$(DESK_CONFIG_PREFLIGHT=off tick)
+check "DS-872 AC6: with DESK_CONFIG_PREFLIGHT=off the pass runs as today, and the log says the check is off" '[ "$(count "$T/pass.calls")" = $((calls + 1)) ] && grep -q "config check: off (DESK_CONFIG_PREFLIGHT=off)" "$LOG" && [ "$(count "$T/notify.calls")" = $((notified + 1)) ]'
+SECTION4='| Evidence workflow | `pr-evidence.yml` |'; config yes yes
+out=$(tick)
+check "DS-872 AC4: once the row is fixed the pass runs as normal" '[ "$(count "$T/pass.calls")" = $((calls + 2)) ] && [ "$(count "$T/notify.calls")" = $((notified + 1)) ]'
+SECTION4='| Local services | `Typesense on port 8108` |'; config yes yes
+out=$(tick)
+check "DS-872 AC5: a row that only warns today (Local services written in words) never blocks: the pass runs, nothing is pushed" '[ "$(count "$T/pass.calls")" = $((calls + 3)) ] && [ "$(count "$T/notify.calls")" = $((notified + 1)) ]'
+SECTION4="$EVIDENCE_BAD"; config yes yes
+out=$(tick)
+check "DS-872: the row refused again after a fix is pushed again" '[ "$(count "$T/notify.calls")" = $((notified + 2)) ] && [ "$(count "$T/pass.calls")" = $((calls + 3)) ]'
+# Two rows refused: one fixed while the other still blocks, then broken again, is pushed again.
+CHECKS_BAD='| Required checks | `none` `ci` |'
+SECTION4="$EVIDENCE_BAD"$'\n'"$CHECKS_BAD"; config yes yes
+out=$(tick)
+check "DS-872: a second refused row is pushed, the first is not again" '[ "$(count "$T/notify.calls")" = $((notified + 3)) ] && tail -1 "$T/notify.calls" | grep -qF "§4 Required checks" && ! tail -1 "$T/notify.calls" | grep -qF "§4 Evidence workflow" && grep -q "^notification: sent for this row$" "$LOG"'
+SECTION4="$CHECKS_BAD"; config yes yes
+out=$(tick)
+check "DS-872: the row still refused is not pushed again while the other is fixed" '[ "$(count "$T/notify.calls")" = $((notified + 3)) ] && [ "$(count "$T/pass.calls")" = $((calls + 3)) ]'
+SECTION4="$EVIDENCE_BAD"$'\n'"$CHECKS_BAD"; config yes yes
+out=$(tick)
+check "DS-872: a row fixed while another still blocked is pushed again when it comes back" '[ "$(count "$T/notify.calls")" = $((notified + 4)) ] && tail -1 "$T/notify.calls" | grep -qF "§4 Evidence workflow" && [ "$(count "$T/pass.calls")" = $((calls + 3)) ]'
+# `none` beside a note on a value row is read as `none` today, and the collision budget's reader catches
+# the refusal and falls back: neither blocks.
+SECTION4='| In-progress state | `none` `(no tracker)` |'; config yes yes
+out=$(tick)
+check "DS-872: a value row holding \`none\` beside a note never blocks: the pass runs, nothing is pushed" '[ "$(count "$T/pass.calls")" = $((calls + 4)) ] && [ "$(count "$T/notify.calls")" = $((notified + 4)) ]'
+SECTION4='| Package manager | `none` `pnpm` |'; config yes yes
+out=$(tick)
+check "DS-872: a value row a worker reads as a list (Package manager) holding \`none\` beside an item blocks and is pushed" '[ "$(count "$T/pass.calls")" = $((calls + 4)) ] && [ "$(count "$T/notify.calls")" = $((notified + 5)) ] && tail -1 "$T/notify.calls" | grep -qF "§4 Package manager"'
+SECTION4=$'| Done state | `Done` |\n\n## 3b. Tuning\n| Field | Value |\n|---|---|\n| Per-file collision budget | `none` `2` |'; config yes yes
+out=$(tick)
+check "DS-872: a collision budget mixing \`none\`, which the pass reads past, never blocks" '[ "$(count "$T/pass.calls")" = $((calls + 5)) ] && [ "$(count "$T/notify.calls")" = $((notified + 5)) ]'
+SECTION4=""; config yes yes
+out=$(tick)
 
 # ---- AC9: an idle batch runs nothing until it changes -------------------------------------------
 DONE='{"A":{"key":"A","state":"done","result":{"pr":7}},"B":{"key":"B","state":"failed"}}'
@@ -386,6 +518,39 @@ out=$(tick); backdate 600
 out=$(DESK_IDLE_RECHECK_MS=300000 tick)
 check "DS-815 AC2 a batch held only behind blockers inside it, an outside key a release left behind included, runs no extra pass on the interval" '[ "$(count "$T/pass.calls")" = 1 ]'
 queue true '{}' "$DONE" b8
+
+# ---- DS-836: an idle batch recording a PR no ticket owns rechecks on the timer, so a pass drops it ---
+# Every ticket done and nothing parked, failed or held, so only the recorded PR can make it recheck.
+SETTLED='{"A":{"key":"A","state":"done","result":{"pr":7}}}'
+tl_queue(){ printf '{"version":1,"batch":"%s","supervised":true,"approved":{},%s"tickets":%s}\n' "$1" "$2" "$SETTLED" > "$DESK_QUEUE"; }
+tl_queue b836 '"ticketless_prs":[{"pr":10,"title":"t","branch":"fix/x","since":null}],'
+: > "$T/pass.calls"
+out=$(tick); out=$(tick)
+check "DS-836 AC2 an idle batch recording a ticketless PR runs no pass before the recheck interval" '[ "$(count "$T/pass.calls")" = 1 ] && grep -q "or a PR no ticket owns still recorded" "$LOG"'
+backdate 600
+out=$(DESK_IDLE_RECHECK_MS=300000 tick)
+check "DS-836 AC2 once the interval has passed, it runs a pass, which reads the PR merged or closed" '[ "$(count "$T/pass.calls")" = 2 ]'
+tl_queue b836c ''
+: > "$T/pass.calls"
+out=$(tick); backdate 600
+out=$(DESK_IDLE_RECHECK_MS=300000 tick)
+check "DS-836 the same settled batch with no PR recorded runs no pass on the interval" '[ "$(count "$T/pass.calls")" = 1 ]'
+queue true '{}' "$DONE" b836b
+
+# ---- DS-783 AC2: an idle batch whose blind audit has exited runs a pass, which records it -----------
+verdict '{"status":"idle","code":11,"message":"IDLE","waiting":[],"parked":[],"notify":true,"push":[]}'
+AQ=$(node -e 'import(process.argv[1]).then((m) => console.log(m.auditQueueFile("acme__widgets")))' "$B/levers-audit.mjs")
+mkdir -p "$(dirname "$AQ")" "$T/state/workers"
+printf '{"v":1,"trials":{},"items":{"A-1":{"ticket":"A-1","key":"audit.A-1","state":"running","session":"s-783","state_dir":"%s","started_at":"2026-10-23T09:00:00.000Z"}}}\n' "$T/state" > "$AQ"
+tl_queue b783 ''
+: > "$T/pass.calls"
+out=$(tick); out=$(tick)
+check "DS-783 AC2 an idle batch whose audit is still running runs no pass" '[ "$(count "$T/pass.calls")" = 1 ]'
+printf '{"session":"s-783","at":"2026-10-23T09:30:00.000Z"}\n' > "$T/state/workers/audit.A-1.exit.json"
+out=$(tick)
+check "DS-783 AC2 once the audit's worker exits, the idle batch runs a pass" '[ "$(count "$T/pass.calls")" = 2 ]'
+rm -f "$AQ" "$T/state/workers/audit.A-1.exit.json"
+queue true '{}' "$DONE" b783b
 
 # ---- DS-852: an idle batch whose park waits on an Actions run rechecks on the shorter interval -----
 verdict '{"status":"idle","code":11,"message":"IDLE","waiting":[],"parked":[],"notify":true,"push":[]}'
@@ -502,6 +667,8 @@ import { appendFileSync } from 'node:fs';
 export const intakeQuery = () => 'project = ACME';
 export const prOpen = () => true;
 export const handedByIntake = () => [];
+export const takePushed = () => [];
+export const pushWaiting = () => false;
 if (process.argv[2] === 'run') { appendFileSync('$T/intake.calls', 'run\n'); console.log(JSON.stringify({ lines: ['intake: nothing new'] })); }
 EOF
 # gh answers each PR's state from $T/gh/<n>, OPEN where there is none.
@@ -567,6 +734,40 @@ out=$(mtick)
 check "DS-309 AC7: a batch not handed over is not driven, and its own log says so" '! grep -q "^Y-1 " "$T/pass.batches" && [ "$(count "$T/pass.batches")" = 2 ] && grep -q "batch Y-1 is not handed over" "$YS/supervisor.log"'
 out=$(unset DESK_QUEUE DESK_AUTOPILOT_STATE; sup status)
 check "DS-309 AC6: status lists every batch with its state" 'grep -q "^batch s1: handed over$" <<< "$out" && grep -q "^X-1: batch X-1: handed over$" <<< "$out" && grep -q "^Y-1: batch Y-1: not handed over" <<< "$out"'
+# DS-872: a refused config row is recorded for the repo, so Y-1, not run when it was pushed, does not
+# push the same unchanged row again when it next runs.
+SECTION4="$EVIDENCE_BAD"; config yes yes; notified=$(count "$T/notify.calls"); : > "$T/pass.batches"
+out=$(mtick)
+check "DS-872: a refused row is pushed once across the batches that tick" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && [ ! -s "$T/pass.batches" ] && grep -q "config check: no pass run" "$XS/supervisor.log"'
+bq "$YQ" Y-1 true "$XRUN"
+out=$(mtick)
+check "DS-872: a batch not run when the row was pushed does not push it again when it runs" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && [ ! -s "$T/pass.batches" ] && grep -q "^notification: not sent, the last one already named this row$" "$YS/supervisor.log"'
+SECTION4=""; config yes yes; bq "$YQ" Y-1 false "$XRUN"; out=$(mtick)
+check "DS-872: a clean check forgets the repo's record of pushed rows" 'grep -q "\"keys\": \[\]" "$SS/config-pushed.json"'
+# An exit landing during the standing batch's pass: the round it adds runs every batch again, though
+# the round before it ended inside the last batch it entered.
+: > "$T/pass.batches"; mkdir -p "$SS/exits"; printf '{}\n' > "$SS/exits/A.1.json"; touch -t 202001010000 "$SS/exits/A.1.json"; touch "$T/exit.during"
+out=$(DESK_WAKE_GAP_MS=0 mtick)
+check "DS-695: the round an exit adds passes every batch, the standing one included" '[ "$(grep -c "^- " "$T/pass.batches")" = 2 ] && [ "$(grep -c "^X-1 " "$T/pass.batches")" = 2 ] && [ -z "$(ls -A "$SS/exits")" ]'
+# Each batch counts its own quiet pass, decided as its pass starts. One batch skipped for its pass lock
+# leaves the round unconsumed, but X-1, which passed, has counted: the next woken round counts it no
+# second time, while the standing batch, which passed nothing, counts.
+rm -f "$SS/supervisor.wake" "$SS/supervisor.counted" "$XS/supervisor.counted"
+sleep 30 & HOLDER=$!
+printf '{"pid":%s,"since":"x"}\n' "$HOLDER" > "$SS/supervisor.lock"
+printf '{}\n' > "$SS/exits/A.6.json"; touch -t 202001010000 "$SS/exits/A.6.json"; : > "$T/pass.woken"
+out=$(DESK_WAKE_GAP_MS=0 mtick)
+check "DS-695: a round with one batch skipped for its lock still counts the batch that passed" '[ "$(cat "$T/pass.woken")" = "X-1 false" ] && [ -e "$SS/exits/A.6.json" ] && [ -s "$XS/supervisor.counted" ] && [ ! -e "$SS/supervisor.counted" ]'
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -f "$SS/supervisor.lock"; : > "$T/pass.woken"
+out=$(DESK_WAKE_GAP_MS=0 mtick)
+check "DS-695: the next woken round counts the skipped batch and not again the one that passed" '[ "$(grep -c "^- false$" "$T/pass.woken")" = 1 ] && [ "$(grep -c "^X-1 true$" "$T/pass.woken")" = 1 ] && [ -z "$(ls -A "$SS/exits")" ]'
+# A batch whose quiet pass is due counts it though another batch in the same round is not due: the
+# standing batch counted just now, X-1 an interval ago.
+date -u +%Y-%m-%dT%H:%M:%SZ > "$SS/supervisor.counted"; printf '2020-01-01T00:00:00.000Z\n' > "$XS/supervisor.counted"
+printf '{}\n' > "$SS/exits/A.7.json"; touch -t 202001010000 "$SS/exits/A.7.json"; : > "$T/pass.woken"
+out=$(DESK_WAKE_GAP_MS=0 mtick)
+check "DS-695: each batch's count is decided by its own last counted pass" '[ "$(head -1 "$T/pass.woken")" = "- true" ] && [ "$(sed -n 2p "$T/pass.woken")" = "X-1 false" ]'
+rm -f "$SS/supervisor.wake" "$SS/supervisor.counted" "$XS/supervisor.counted"
 
 # ---- DS-311: a feature batch whose promotion PR is merged or closed is archived -------------------
 # xq <tickets json>: X-1 on feat/x, handed over, its promotion PR #9.
@@ -648,10 +849,10 @@ cat > "$T/fakes/systemctl" <<EOF
 #!/bin/sh
 echo "\$@" >> "$T/systemctl.calls"
 case "\$2" in
-  is-active) [ -f "$T/active" ] ;;
+  is-active) case "\$4" in *.path) [ -f "$T/active" ] && [ ! -f "$T/path.failed" ] ;; *) [ -f "$T/active" ] ;; esac ;;
   enable) touch "$T/active" ;;
   disable) rm -f "$T/active" ;;
-  restart) [ -f "$T/active" ] ;;
+  restart) rm -f "$T/path.failed"; [ -f "$T/active" ] ;;
   show) r=\$(cat "$T/result" 2>/dev/null || echo success)
         printf 'ActiveState=inactive\nResult=%s\nExecMainStatus=%s\n' "\$r" "\$([ "\$r" = success ] && echo 0 || echo 3)" ;;
 esac
@@ -667,15 +868,23 @@ check "#735 AC1: install on Linux exits 0 and writes no launchd agent" '[ $rc -e
 check "#735 AC1: the service runs a tick of this supervisor in the repo root" 'grep -qxF "ExecStart=\"$(node -p process.execPath)\" \"$T/bin/supervisor.mjs\" tick" "$SV" && grep -qxF "WorkingDirectory=$T/repo" "$SV"'
 check "#735 AC1: the service leaves the merge driver running and passes the repo on" 'grep -qx "KillMode=process" "$SV" && grep -qxF "Environment=\"DESK_REPO_DIR=$T/repo\"" "$SV"'
 check "#735 AC1: the timer runs it at once and every 180s by default" 'grep -qx "OnActiveSec=0" "$TM" && grep -qx "OnUnitActiveSec=180s" "$TM" && grep -qx "WantedBy=timers.target" "$TM"'
-check "#735 AC1: install reloads systemd and enables the timer now" 'grep -qx -- "--user daemon-reload" "$T/systemctl.calls" && grep -qx -- "--user enable --now com.desk-skills.supervisor.acme__widgets.timer" "$T/systemctl.calls"'
+check "#735 AC1: install reloads systemd and enables the timer now" 'grep -qx -- "--user daemon-reload" "$T/systemctl.calls" && grep -qx -- "--user enable --now com.desk-skills.supervisor.acme__widgets.timer com.desk-skills.supervisor.acme__widgets.path" "$T/systemctl.calls"'
+PU="$UD/com.desk-skills.supervisor.acme__widgets.path"
+check "DS-695: the path unit runs the service whenever the exits folder changes" '[ -d "$T/lstate/exits" ] && grep -qxF "PathChanged=$T/lstate/exits" "$PU" && grep -qx "Unit=com.desk-skills.supervisor.acme__widgets.service" "$PU" && grep -qx "WantedBy=paths.target" "$PU"'
 check "#735 AC1: with lingering off, install says ticks stop at logout and how to keep them" 'grep -q "loginctl enable-linger" <<< "$out"'
 check "DS-838 AC3: on plain Linux, install says nothing about WSL" '! grep -q "WSL" <<< "$out"'
 out=$(sup install)
 check "#735 AC1: an unchanged install enables nothing again" '[ "$(grep -c " enable " "$T/systemctl.calls")" = 1 ] && grep -q "unchanged" <<< "$out"'
+check "DS-695: the service lifts systemd's start limit, so a burst of exits cannot fail it" 'grep -qx "StartLimitIntervalSec=0" "$SV"'
+touch "$T/path.failed"; out=$(sup install)
+check "DS-695: an install finding the path unit failed clears it and restarts it, not unchanged" '! grep -q "unchanged" <<< "$out" && grep -qx -- "--user reset-failed com.desk-skills.supervisor.acme__widgets.service com.desk-skills.supervisor.acme__widgets.timer com.desk-skills.supervisor.acme__widgets.path" "$T/systemctl.calls" && [ ! -f "$T/path.failed" ]'
 out=$(sup install --interval 300)
-check "#735 AC1: a new interval rewrites the timer and restarts it" 'grep -qx "OnUnitActiveSec=300s" "$TM" && grep -qx -- "--user restart com.desk-skills.supervisor.acme__widgets.timer" "$T/systemctl.calls"'
+check "#735 AC1: a new interval rewrites the timer and restarts it" 'grep -qx "OnUnitActiveSec=300s" "$TM" && grep -qx -- "--user restart com.desk-skills.supervisor.acme__widgets.timer com.desk-skills.supervisor.acme__widgets.path" "$T/systemctl.calls"'
 out=$(sup status); rc=$?
 check "#735 AC2: status names the timer as loaded, with its interval" '[ $rc -eq 0 ] && grep -q "installed (every 300s), loaded" <<< "$out"'
+out=$(DESK_CONFIG_PREFLIGHT=off sup install --interval 300)
+check "DS-872 AC7: DESK_CONFIG_PREFLIGHT=off at install is carried into the systemd service's environment" 'grep -qxF "Environment=\"DESK_CONFIG_PREFLIGHT=off\"" "$SV"'
+out=$(sup install --interval 300)
 agent(){ node --input-type=module -e "import { supervisorAgent } from '$T/bin/run-by.mjs'; console.log(JSON.stringify(supervisorAgent('acme__widgets')))"; }
 out=$(agent)
 check "#735 AC2: a loaded timer whose last run succeeded reports no failed exit" '[ "$out" = "{\"loaded\":true,\"exit\":null}" ]'
@@ -718,7 +927,7 @@ fi
 waitlines "$T/driver.calls" "$(started)"
 
 out=$(sup uninstall); rc=$?
-check "#735 AC4: uninstall disables the timer and removes both units" '[ $rc -eq 0 ] && grep -qx -- "--user disable --now com.desk-skills.supervisor.acme__widgets.timer" "$T/systemctl.calls" && [ ! -f "$SV" ] && [ ! -f "$TM" ] && [ ! -f "$T/active" ]'
+check "#735 AC4: uninstall disables the timer and removes the units" '[ $rc -eq 0 ] && grep -qx -- "--user disable --now com.desk-skills.supervisor.acme__widgets.timer com.desk-skills.supervisor.acme__widgets.path" "$T/systemctl.calls" && [ ! -f "$SV" ] && [ ! -f "$TM" ] && [ ! -f "$PU" ] && [ ! -f "$T/active" ]'
 out=$(sup status); rc=$?
 check "#735 AC4: status then says not installed" '[ $rc -eq 1 ] && grep -q "not installed" <<< "$out"'
 unset XDG_CONFIG_HOME; export DESK_PLATFORM=darwin

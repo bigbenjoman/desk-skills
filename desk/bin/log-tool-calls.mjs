@@ -12,6 +12,23 @@ const EXIT = /^Exit code (\d+)/;
 export const textOf = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map((x) => x?.text ?? '').join('\n') : '');
 const firstLine = (s) => String(s ?? '').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
 
+// The tool results in one parsed log event, as [{ id, failed, text }]: `failed` is the tool's own
+// is_error, `text` its output as the tool returned it (decoded, not as the log escapes it).
+export const resultsIn = (d) => (d?.type === 'user' && Array.isArray(d.message?.content) ? d.message.content : [])
+  .filter((c) => c?.type === 'tool_result').map((c) => ({ id: c.tool_use_id ?? null, failed: !!c.is_error, text: textOf(c.content) }));
+
+// Every tool result in a log's text, in order, through resultsIn. Lines that are not JSON are skipped.
+export function toolResults(text) {
+  const out = [];
+  for (const raw of String(text ?? '').split('\n')) {
+    if (!raw.includes('tool_result')) continue;
+    let d;
+    try { d = JSON.parse(raw); } catch { continue; }
+    out.push(...resultsIn(d));
+  }
+  return out;
+}
+
 // Every tool call's outcome in a stream-json log, in order, once per tool_use id: a permission_denied
 // event, or a tool result. `line` is the 1-based line it is on, `session` the start that line is in,
 // `body` the result's text (null for a permission_denied event), `error` whether it errored and
@@ -35,12 +52,8 @@ function outcomes(text) {
       for (const c of d.message?.content ?? []) if (c?.type === 'tool_use') calls.set(c.id, { name: c.name, input: c.input });
     } else if (d?.type === 'system' && d.subtype === 'permission_denied') {
       push(d.tool_use_id, d.tool_name, { error: true, denied: true, body: null });
-    } else if (d?.type === 'user') {
-      for (const c of d.message?.content ?? []) {
-        if (c?.type !== 'tool_result') continue;
-        const body = textOf(c.content);
-        push(c.tool_use_id, null, { error: !!c.is_error, denied: !!c.is_error && DENIED.test(body), body });
-      }
+    } else {
+      for (const { id, failed, text: body } of resultsIn(d)) push(id, null, { error: failed, denied: failed && DENIED.test(body), body });
     }
   });
   return out;

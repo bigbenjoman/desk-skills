@@ -42,12 +42,12 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames } from './desk-env.mjs';
-import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, unpromotedHolds, promotionWords }from './batch-state.mjs';
-import { attachArchive } from './queue-store.mjs';
+import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
+import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, unpromotedHolds, promotionWords, openUnknowns } from './batch-state.mjs';
+import { attachArchive, owesReopen } from './queue-store.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
-import { LeaseStoreError, RESET_COMMAND, forceReleaseCommand, kindMode, overdue, peek, wouldRefuseByDay } from './leases.mjs';
+import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
@@ -67,12 +67,13 @@ import { claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogi
 import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
-import { needsCount } from './needs-you.mjs';
+import { leaseTrialAsk, leaseTrialHome, needsCount } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
 import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merge-log.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
 import { pageState, refresh as refreshLevers, whereOf } from './levers-refresh.mjs';
 import { PAGE_RESUMES, uploadPause, uploadQueueFile } from './upload-queue.mjs';
+import { newBuild, oneBuild } from './build-memo.mjs';
 
 export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour. The screen draws five, named
@@ -598,8 +599,6 @@ export const landing = (t) => prStatusOf(t)?.state === 'OPEN';
 // The open child PRs whose required checks only the default branch's copy of the workflow runs on the
 // base (pr_status.behind), as `PR #n`: syncing the base starts their CI.
 export const behindPrs = (q) => Object.values(q?.tickets ?? {}).filter((t) => landing(t) && Object.keys(t.pr_status.behind ?? {}).length).map((t) => `PR #${t.result.pr}`);
-// A PR the pass closed to start its CI and has still to reopen (the ticket's `reopening`).
-const owesReopen = (t) => t?.reopening != null && String(t.reopening) === String(t.result?.pr);
 // How long an open PR's head and check results have gone unchanged, as the last pass read it
 // (pr_status changed_at), once that is STALL_MS or more; else null. desk-q flags a Merging row that
 // is, and the check-in digest lists it (stalledPrs). One waiting on the person's step (merge_after), or
@@ -665,7 +664,7 @@ export function triageOf(at, key) {
   return m.get(key);
 }
 // A ticket's lane: the queue's, else its triage record's `tr`.
-export const laneOf = (t, tr) => (t.lane && t.lane !== '?' ? t.lane : tr?.lane ?? '?');
+const laneOf = (t, tr) => (t.lane && t.lane !== '?' ? t.lane : tr?.lane ?? '?');
 
 // How much of a worker log's end is read for its stage: a log runs to several MB, and a marker
 // further back than this is one the last pass has already put on the queue.
@@ -1010,10 +1009,12 @@ export function repoPlace(repos, id) {
 // ---- ship dates --------------------------------------------------------------------------------
 
 const MINUTE = 60_000;
+// The last forecast worked out for each batch and each repo's merged row, with what it was worked from.
 const forecasts = new Map();
 
-// The repo's forecast, or null with no batch. Worked out to the minute and kept, so the screen's
-// 2-second reread runs the simulation again only when the queue, the history or the minute changes.
+// The repo's forecast, or null with no batch. Worked out to the minute and kept per batch, so the
+// screen's 2-second reread runs the simulation again only when the queue, the history or the minute
+// changes, however many batches are set up.
 // A batch that is not live (liveBeat: no pass for LIVE_MS, and no next pass recorded that is still to
 // come) is `paused` while it still has a ticket autopilot could move: its dates assume passes that are
 // not happening, so they are not shown and not saved. With none left it is `idle`: nothing is late,
@@ -1034,17 +1035,19 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   // An epic with nothing left to run has shipped, so it is not run forward.
   const open = Object.fromEntries(Object.values(ep.epics).filter((e) => e.queued || e.missing > 0).map((e) => [e.key, { missing: e.missing }]));
   const id = JSON.stringify([r.id, at, checkin, r.live, r.workers, rows, open, ep.unread, history.map((l) => [l.key, l.size, l.hours])]);
-  if (!forecasts.has(id)) {
-    if (forecasts.size > 64) forecasts.clear();
+  const slot = JSON.stringify([r.id, Boolean(r.batches), checkin]);
+  const kept = forecasts.get(slot);
+  if (kept?.id !== id) {
     const sizes = Object.fromEntries(rows.map((x) => [x.key, x.size]));
     const paused = passesPaused(r);
     const F = { ...forecast({ rows, workers: r.workers, history, now: at, checkin, epics: open }), d: durations(history), sizes,
       paused, idle: !r.live && !paused, epics: ep.epics, of: ep.of, noEpic: ep.noEpic, unread: ep.unread };
     // A state directory desk-q cannot write to costs the saved estimate, never the screen.
     if (!F.none && r.live && !checkin) try { saveEstimates(r.stateDir, F.T, at); } catch { /* shown, not saved */ }
-    forecasts.set(id, F);
+    forecasts.set(slot, { id, F });
+    return F;
   }
-  return forecasts.get(id);
+  return kept.F;
 }
 
 const SOON = MINUTE;
@@ -2015,9 +2018,9 @@ const oldestNeed = (ok, c) => {
   const waited = ok.flatMap((r) => c.get(r).rows.filter((x) => x.k === 'needs').map((x) => timeOf(x.t.park?.since ?? x.t.added_at))).filter((t) => t != null);
   return waited.length ? Math.min(...waited) : null;
 };
-function needsLine(list, now) {
+function needsLine(list, now, count = needsCount) {
   const ok = list.filter((r) => !r.error);
-  const c = new Map(ok.map((r) => [r, needsCount(r)])), n = (r) => c.get(r).shown;
+  const c = new Map(ok.map((r) => [r, count(r)])), n = (r) => c.get(r).shown;
   const you = ok.reduce((a, r) => a + n(r), 0);
   const per = ok.filter((r) => n(r)).sort((a, x) => n(x) - n(a))
     .flatMap((r, i) => [...(i ? [[' · ', GREY]] : []), [`${r.name} `, GREY], [String(n(r)), BOLD]]);
@@ -2678,12 +2681,16 @@ function stallNotes(r, quiet, old, allOut = false) {
 }
 
 // The overview's notes, one per line under a grey "note": a glyph and what it names in its colour,
-// then the text.
+// then the text. A note's `more` are further lines of text, each starting a line of its own, and its
+// `cmd` a command to copy, last, bold, on a line of its own that is never wrapped.
 // With `width`, a note's text wraps between words, each further line indented under its first.
 function noteLines(notes, w, width = null) {
   const lead = 4 + 2 + w + 1;
-  return notes.flatMap((n, i) => (width == null ? [n.text] : wrapSegs(n.text, Math.max(12, width - lead))).map((text, j) =>
-    segLine(j ? [[' '.repeat(lead), null], ...text] : [[i ? '    ' : 'note', GREY], ['  ', null], [pad(n.tag, w + 1), n.sgr], ...text])));
+  return notes.flatMap((n, i) => [
+    ...[n.text, ...(n.more ?? [])].flatMap((segs) => (width == null ? [segs] : wrapSegs(segs, Math.max(12, width - lead)))).map((text, j) =>
+      segLine(j ? [[' '.repeat(lead), null], ...text] : [[i ? '    ' : 'note', GREY], ['  ', null], [pad(n.tag, w + 1), n.sgr], ...text])),
+    ...(n.cmd ? [{ ...segLine([[' '.repeat(lead), null], [n.cmd, BOLD]]), whole: true }] : []),
+  ]);
 }
 
 // Coloured runs broken between words into lines of at most `w` columns, each word keeping its run's colour.
@@ -2714,10 +2721,10 @@ const needsYouSkill = () => existsSync(join(skillsDir(), 'desk-needs-you', 'SKIL
 
 // Every repo's header: a band for each batch no pass can run, what needs the user in each repo, the
 // machine, then usage.
-function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), pinUsage = false, levers = null } = {}) {
+function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), pinUsage = false, levers = null, count = needsCount } = {}) {
   const running = machineRunning(repos);
   const each = byRepo(list);
-  return [...list.flatMap(bandsOf), needsLine(each, now), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail, machineDrivers(repos, now)), ...(levers ? [levers] : []),
+  return [...list.flatMap(bandsOf), needsLine(each, now, count), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail, machineDrivers(repos, now)), ...(levers ? [levers] : []),
     ...(pinUsage ? [] : usageLines(usageOf(repos, now, each), { now, solid }))];
 }
 
@@ -2758,14 +2765,17 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   const none = repos.filter((r) => !repos.some((x) => x.slug === r.slug && hasBatch(x)));
   // REPO fits the names with a row; with a width, only those on screen.
   const w = Math.max(14, ...(width == null ? repos : [...list, ...(all ? none : [])]).map((r) => r.repo.length + 2));
-  const needs = new Map(list.filter((r) => !r.error).map((r) => [r, needsCount(r)]));
+  // The lease trial's day-7 question is the machine's, counted once, in the row /desk-needs-you lists it under.
+  const trialHome = leaseTrialAsk(now) ? leaseTrialHome(repos) : null;
+  const needOf = (r) => { const c = needsCount(r); return r.slug === trialHome ? { ...c, shown: c.shown + 1 } : c; };
+  const needs = new Map(list.filter((r) => !r.error).map((r) => [r, needOf(r)]));
   const claude = loginsNow(repos, now)?.claude;
   const runsOn = runsOnOf(claude);
   const lay = homeLayout(list, w, width, now, checkin, needs, runsOn && Math.max(R_RUNS_HOME, ...[...list, ...(all ? none : [])].map((r) => runsOn(r.slug).length + 2)));
   // RUNS ON's cell, empty while the column is not shown.
   const runs = (r) => (!lay.runsW ? ['', null] : ((t) => [pad(t, lay.runsW), t === '—' ? GREY : null])(runsOn(r.slug)));
   const head = [
-    ...overviewHead(repos, shown, { now, solid: interactive && !process.env.NO_COLOR, avail, cap, gate, perWorker, pinUsage, levers: leversLine(pageState({ now }), now) }),
+    ...overviewHead(repos, shown, { now, solid: interactive && !process.env.NO_COLOR, avail, cap, gate, perWorker, pinUsage, levers: leversLine(pageState({ now }), now), count: needOf }),
     '',
     bold(`  ${pad('REPO', w)}${lay.runsW ? pad('RUNS ON', lay.runsW) : ''}${pad('LAST PASS', lay.lastW)}${lay.cols.map(([h, , cw]) => rpad(h, cw)).join('')}  ${pad('ALL DONE BY', lay.qdW)}  WORKERS`),
   ];
@@ -2791,7 +2801,8 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   }
   const readable = shown.filter((r) => !r.error), quiet = quietNotes(readable), old = oldCodeNotes(readable);
   const out = claude?.limit ? claude : null;
-  const notes = [...(out ? [defaultOutNote(out, now)] : []), ...list.flatMap((r) => (r.unreadable ?? []).map((b) => warnNote(`▲ ${r.name}`, unreadableText(b)))),
+  const leases = leaseNotes(repos, now);
+  const notes = [...(out ? [defaultOutNote(out, now)] : []), ...leases.warn, ...list.flatMap((r) => (r.unreadable ?? []).map((b) => warnNote(`▲ ${r.name}`, unreadableText(b)))),
     ...readable.flatMap((r) => stallNotes(r, quiet, old, !!out && out.follows(r.slug))), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
   // GitHub's page change pauses every repo's uploads, so it is one note for the machine, not one per PR.
   const pause = uploadPause();
@@ -2821,6 +2832,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   }
   if (!lay.slot) for (const r of ok.filter((x) => triagingText(x))) notes.push({ tag: `  ${r.name}`, sgr: GREY, text: [[`${capital(triagingText(r))}: the batch admits ${r.triaging.length === 1 ? 'it' : 'them'} once triage finishes.`, null]] });
   if (!lay.slot) for (const r of ok.filter((x) => unslotted(x) > 0)) notes.push({ tag: `  ${r.name}`, sgr: GREY, text: [[`${unslotted(r)} ready with no free slot: ${unslotted(r) === 1 ? 'it starts' : 'they start'} as its running workers finish.`, null]] });
+  notes.push(...leases.trial);
   const you = [...needs.values()].reduce((a, y) => a + y.shown, 0);
   if (you && needsYouSkill()) notes.push({ tag: '◆ needs you', sgr: YOU, text: [['/desk-needs-you', BOLD], [`, in a Claude session, asks you about ${you === 1 ? 'the 1 ticket' : `all ${you}`}.`, null]] });
   const unset = new Set(repos.filter((r) => r.run?.unset).map((r) => r.slug)).size;
@@ -2830,55 +2842,89 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   }
   if (badge) notes.push({ tag: '  dates', sgr: GREY, text: [[badge, null]] });
   if (notes.length) foot.push('', ...noteLines(notes, w, width));
-  foot.push('', ...leaseLines({ now, width }));
   return { head, rows, foot };
 }
 
-// The Queue view's Leases section: each live lease with its holder, age and time to expiry, an overdue
-// one with the command that frees it, then each kind's shadow would-refuse counts by day. It only
-// reads: lapsing and freeing a lease stay with desk-env lease.
-const LEASE_DAYS = 7;
-function leaseLines({ now, width }) {
-  const env = { psRows, machineValue };
-  const at = { env, now: () => now };
-  // A failure stays in this section, so the rest of the Queue still draws: an unreadable store or log
-  // names itself (the store with the command that starts an empty one); anything else, such as ps
-  // failing while the owners are checked, is shown as it is.
-  const trouble = (e, reset) => (e instanceof LeaseStoreError
-    ? [...wrapped([[`▲ ${capital(e.message)}.`, WARN]], width), ...(reset ? [{ ...segLine([['    to start an empty one: ', GREY], [RESET_COMMAND, BOLD]]), whole: true }] : [])]
-    : wrapped([[`▲ The leases could not be read: ${printable(String(e?.message ?? e))}.`, WARN]], width));
-  const section = (lines, reset) => { try { return lines(); } catch (e) { return trouble(e, reset); } };
-  return [bold('Leases'), ...section(() => heldLines(peek(at), now), true), ...section(() => refusedLines(wouldRefuseByDay({ ...at, days: LEASE_DAYS }), env, width), false)];
-}
-
-// `segs` as lines indented two columns; with `width`, wrapped between words, each further line indented
-// two more.
-const wrapped = (segs, width) => (width == null ? [segs] : wrapSegs(segs, Math.max(12, width - 4)))
-  .map((s, j) => segLine([[j ? '    ' : '  ', null], ...s]));
-
-// Each held lease's row, its stored text made printable, and an overdue one's command line.
-function heldLines(held, now) {
-  if (!held.length) return ['  No leases are held.'];
-  const text = (v) => printable(String(v ?? '?'));
-  const holder = (l) => `${text(l.label)} (${l.owner ? `pid ${l.owner.pid}` : 'no owner'})`;
-  const key = (l) => `${text(l.key)}${l.units > 1 ? ` ×${l.units}` : ''}`;
-  const kw = Math.max(6, ...held.map((l) => text(l.kind).length + 2)), yw = Math.max(5, ...held.map((l) => key(l).length + 2)), hw = Math.max(8, ...held.map((l) => holder(l).length + 2));
-  const out = [segLine([[`  ${pad('KIND', kw)}${pad('KEY', yw)}${pad('HOLDER', hw)}${pad('AGE', 9)}EXPIRES`, GREY]])];
-  for (const l of held) {
-    const late = overdue(l, now), expires = Date.parse(l.expires);
-    out.push(segLine([[`  ${pad(text(l.kind), kw)}${pad(key(l), yw)}${pad(holder(l), hw)}${pad(span(now - Date.parse(l.acquired)), 9)}`, null],
-      late ? [`▲ overdue ${span(now - expires)}`, WARN] : [`in ${span(expires - now)}`, null]]));
-    if (late) out.push({ ...segLine([['    to free it: ', GREY], [forceReleaseCommand(l.id), BOLD]]), whole: true });
+// Leases reach the Queue view only as notes: a ▲ note for each lease whose holder stopped checking in
+// (alive, past its expiry), with the command that frees it, tagged with the holder's repo; a ▲ note
+// when the store or log cannot be read; and, for each kind on trial (shadow) that let a clash through
+// in the last 24 hours, one grey note naming the latest. Healthy leases show nothing: desk-env lease
+// list is the full table. It only reads: lapsing and freeing a lease stay with desk-env lease.
+// -> { warn, trial }, the ▲ notes and the grey ones.
+const LEASE_ENV = { psRows, machineValue };
+function leaseNotes(repos, now) {
+  const warn = [], trial = [];
+  const broken = (e, reset) => warn.push(e instanceof LeaseStoreError
+    ? { tag: '▲ leases', sgr: WARN, text: [[`${capital(printable(e.message))}.`, null]], ...(reset ? { more: [[['Move it aside and start an empty one:', null]]], cmd: RESET_COMMAND } : {}) }
+    : warnNote('▲ leases', `The leases could not be read: ${printable(String(e?.message ?? e))}.`));
+  try {
+    for (const l of peek({ env: LEASE_ENV, now: () => now }).filter((x) => overdue(x, now))) warn.push(stuckNote(l, repos, now));
+  } catch (e) { broken(e, true); }
+  let log;
+  try { log = readLog(); } catch (e) { broken(e, false); return { warn, trial }; }
+  const t = trialOf(log);
+  for (const k of LEASE_KINDS) {
+    let mode;
+    try { ({ mode } = kindMode(k, LEASE_ENV)); } catch { mode = null; }
+    const today = mode === 'shadow' ? log.clashes.filter((e) => e.kind === k && now - Date.parse(e.at) < 86_400_000 && Date.parse(e.at) <= now) : [];
+    if (!today.length) continue;
+    const e = today.at(-1);
+    const held = (e.holders ?? []).map((h) => leaseHolder(h.kind ?? e.kind, h.label).name);
+    const who = held.length ? `${held[0]}${held.length > 1 ? ` and ${held.length - 1} other${held.length > 2 ? 's' : ''}` : ''}` : 'another holder';
+    trial.push({ tag: '  leases', sgr: GREY, text: [[`${today.length} clash${today.length === 1 ? '' : 'es'} today: ${leaseHolder(e.kind, e.label).name} was given ${leaseThing(e.kind, e.key, e.units)} while ${who} held it, at ${clock(Date.parse(e.at))}.`, null]],
+      more: [[[`Leases are on trial, so it went through.${t ? ` The trial ${t.ends > now ? 'ends' : 'ended'} ${dmy(t.ends)}.` : ''}`, null]]] });
   }
-  return out;
+  return { warn, trial };
 }
 
-// Each kind's shadow would-refuse counts: the last 24 hours, then each day of the window.
-function refusedLines(refused, env, width) {
-  const kinds = LEASE_KINDS.filter((k) => refused[k]);
-  if (!kinds.length) return [segLine([[`  No shadow would-refuse in the last ${LEASE_DAYS} days.`, GREY]])];
-  return kinds.flatMap((k) => wrapped([[`${pad(k, 15)}${pad(kindMode(k, env).mode, 8)}`, null], [String(refused[k][0]), BOLD],
-    [` would-refuse in 24h · each of the last ${LEASE_DAYS} days, newest first: ${refused[k].join(' ')}`, GREY]], width));
+// A stuck lease's note: who holds what, since when it stopped checking in, and the command that frees it.
+function stuckNote(l, repos, now) {
+  const h = leaseHolder(l.kind, l.label);
+  const repo = h.repo ? repos.find((r) => r.slug.toLowerCase() === slugOf(h.repo))?.name ?? h.repo.split('/').pop() : null;
+  const who = h.worker ? `${h.name}'s worker` : capital(h.name);
+  const what = l.kind === 'port' ? 'the port' : l.kind === 'slot' ? 'the slot' : 'it';
+  return { tag: `▲ ${repo ?? 'leases'}`, sgr: WARN,
+    text: [[`${who} holds ${leaseThing(l.kind, l.key, l.units)} but stopped checking in ${span(now - Date.parse(l.expires))} ago.`, null]],
+    more: [[[`If it is stuck, free ${what}:`, null]]], cmd: forceReleaseCommand(l.id) };
+}
+
+// Who a lease's label names, as a person reads it: a worker's ticket (`worker`), the session holding
+// a batch's port range, what a slot's run is and where, a preview build's PR, else the label itself.
+// `repo` is the owner/name the label names, where it names one.
+const SLOT_RUN = { test: 'test run', tsc: 'typecheck', lint: 'lint run', browser: 'browser run', light: 'light run' };
+function leaseHolder(kind, label) {
+  const s = printable(String(label ?? ''));
+  const port = kind === 'port' && /^(\S+\/\S+) (\S+) (\S+)$/.exec(s);
+  if (port) return port[3] === 'range' ? { name: `the session running ${port[2] === 'standing' ? 'the standing batch' : `batch ${port[2]}`}`, repo: port[1] } : { name: port[3], worker: true, repo: port[1] };
+  const slot = kind === 'slot' && /^([\w-]+) (\S+): /.exec(s);
+  if (slot) {
+    const dir = slot[2].split('/').pop();
+    return { name: `a ${SLOT_RUN[slot[1]] ?? `${slot[1]} run`} in ${/^[A-Z][A-Z0-9]*-\d+$/.test(dir) ? `${dir}'s worktree` : slot[2]}` };
+  }
+  const pr = kind === 'preview-build' && /^(\S+\/\S+?)(#\d+|@\S+)$/.exec(s);
+  if (pr) return { name: pr[2].startsWith('#') ? `PR ${pr[2]}` : `branch ${pr[2].slice(1)}`, repo: pr[1] };
+  return { name: s || 'an unlabelled holder' };
+}
+// What a lease holds, as a person reads it.
+function leaseThing(kind, key, units = 1) {
+  const k = printable(String(key ?? '?'));
+  if (kind === 'port') return `port ${k}`;
+  if (kind === 'slot') return SLOTS[k] === 'heavy' ? 'a heavy slot' : `the ${SLOTS[k] ?? k} slot`;
+  if (kind === 'preview-build') return `the preview-build slot for ${k}`;
+  if (kind === 'merge') return `the merge lock for ${k}`;
+  return `${units} GiB of memory for ${k}`;
+}
+
+// The port lease a ticket's worker holds in this repo, or null: none, or a store that cannot be read
+// (the Queue view carries that warning).
+function portLeaseOf(r, key, now) {
+  let held;
+  try { held = peek({ env: LEASE_ENV, now: () => now }); } catch { return null; }
+  const repo = r.slug.toLowerCase();
+  return held.filter((l) => {
+    const h = l.kind === 'port' && leaseHolder('port', l.label);
+    return h?.worker && h.name === key && slugOf(h.repo) === repo;
+  }).sort((a, b) => Date.parse(b.acquired) - Date.parse(a.acquired))[0] ?? null;
 }
 
 export const overview = (repos, opts) => joined(overviewParts(repos, opts));
@@ -3353,7 +3399,7 @@ function warningsOf(t, tr, lane) {
   for (const l of tr.lint ?? []) if (l?.severity === 'blocking') out.push(`Triage's ticket check: ${l.message}`);
   const c = tr.lane_challenge;
   if (c?.verdict && c.verdict !== 'CONFIRM') out.push(`Triage's lane check did not confirm lane ${lane} (${String(c.verdict).toLowerCase()}): ${c.reason ?? 'no reason recorded'}`);
-  if ((t.open_questions ?? 0) > 0) for (const u of tr.unknowns ?? []) out.push(`Open from triage: ${u?.question ?? u}`);
+  if ((t.open_questions ?? 0) > 0) for (const u of openUnknowns(tr.unknowns, t)) out.push(`Open from triage: ${u}`);
   const extra = Array.isArray(t.out_of_scope) ? t.out_of_scope : [];
   if (extra.length) out.push(`Its branch changes ${extra.length} file${extra.length === 1 ? '' : 's'} outside its triaged scope: ${extra.join(', ')}.`);
   if (t.spec_check?.ok === false) out.push(`The last pass found its acceptance specs not done: ${(t.spec_check.problems ?? []).join('; ') || 'no detail recorded'}.`);
@@ -3497,7 +3543,18 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
     if (whole || FIELD_W + text.length <= ww) return out.push(segLine([[pad(label, FIELD_W), DIM], ...segs]));
     wrap(text, ww - FIELD_W).forEach((l, i) => out.push(segLine([[pad(i ? '' : label, FIELD_W), DIM], [l, i ? DIM : segs[0][1]]])));
   };
-  if (row && !row.pr) { for (const [label, segs] of timingFields(r, forecastOf(r, { now, checkin }), row, h, now)) field(label, segs); out.push(''); }
+  // The port its worker leases, after Based on: when held, or, stuck, that it stopped checking in and
+  // the command that frees it.
+  const port = portLeaseOf(r, key, now);
+  const portField = () => {
+    if (!port) return;
+    const at = Date.parse(port.acquired), expires = Date.parse(port.expires);
+    if (!overdue(port, now)) return field('Port', [[printable(String(port.key)), null], [` · its dev server, held since ${new Date(at).toDateString() === new Date(now).toDateString() ? clock(at) : dayAndTime(at)}`, DIM]]);
+    field('Port', [[`${printable(String(port.key))} · stopped checking in ${span(now - expires)} ago`, WARN]]);
+    out.push({ ...segLine([[pad('', FIELD_W), null], [forceReleaseCommand(port.id), BOLD]]), whole: true });
+  };
+  if (row && !row.pr) { for (const [label, segs] of timingFields(r, forecastOf(r, { now, checkin }), row, h, now)) field(label, segs); portField(); out.push(''); }
+  else if (port) { portField(); out.push(''); }
   // The PR's fix try and what no fix try can move, as the last pass recorded them on the ticket.
   const stuck = t.stuck && !t.merged_at ? stuckOf(t, r.ctx) : null;
   if (personCall(t.fix)) field('Your call', [[t.fix.what, null]]);
@@ -3769,7 +3826,10 @@ function scopeWord(argv) {
   return first && !['costs', ...SHIPS, 'days', 'levers'].includes(first.toLowerCase()) && verb !== 'workers' ? first : null;
 }
 
-export function run(argv, { now = Date.now(), opener = systemOpener, rebuild = () => refreshLevers(), say = (s) => console.log(s) } = {}) {
+// One build: each git, launchctl and ps question it asks runs once (build-memo.mjs).
+export const run = (argv, opts) => oneBuild(() => runView(argv, opts));
+
+function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () => refreshLevers(), say = (s) => console.log(s) } = {}) {
   if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships|days [<repo>] | desk-q costs [<repo>]\n'
     + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>\n'
     + '       desk-q <repo> supervisor [on|off] | desk-q levers [--plain]\n'
@@ -3788,8 +3848,11 @@ export function run(argv, { now = Date.now(), opener = systemOpener, rebuild = (
   if (v.kind === 'costs') return v.name !== undefined ? supplierScreen(repos, v.name, { now, label: v.label ?? v.name }) : costsScreen(repos, { now });
   if (isWrite(v)) {
     const said = apply(repos, v);
-    const after = loadOrRefuse(now, word);
-    return `${said}\n\n${repoScreen(after.find((x) => x.id === v.slug), { now, usage: usageOf(after, now, after.filter((x) => x.id === v.slug)) })}`;
+    // The change read back in a build of its own, so nothing the first build remembered is shown.
+    return newBuild(() => {
+      const after = loadOrRefuse(now, word);
+      return `${said}\n\n${repoScreen(after.find((x) => x.id === v.slug), { now, usage: usageOf(after, now, after.filter((x) => x.id === v.slug)) })}`;
+    });
   }
   const r = v.kind === 'repo' ? repoPlace(repos, v.slug) : repos.find((x) => x.id === v.slug);
   return v.kind === 'repo' ? repoScreen(r, { now, usage: usageOf(repos, now, [r]) }) : ticketScreen(r, v.key, { now });
@@ -4252,12 +4315,15 @@ export function interactive({
   }
 
   // Rebuilds the screen from disk, then writes it.
+  // One build, joined by the refresh's reread where it made one (build-memo.mjs).
   function draw() {
-    if (done) return;
-    try { widen(); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
-    try { screen = build(); } catch (e) { screen = { head: [`Could not draw this screen: ${describeCrash(e)}`], rows: [], foot: [], keys: 'esc back · q quit' }; }
-    crumbs = crumbParts();
-    frame();
+    oneBuild(() => {
+      if (done) return;
+      try { widen(); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
+      try { screen = build(); } catch (e) { screen = { head: [`Could not draw this screen: ${describeCrash(e)}`], rows: [], foot: [], keys: 'esc back · q quit' }; }
+      crumbs = crumbParts();
+      frame();
+    });
   }
 
   // Writes the screen last built, reading nothing: all a change of selection, window or command line
@@ -4704,7 +4770,7 @@ export function interactive({
   // A change, then the queues reread so the screen shows it; the message stays until the next view.
   function act(v) {
     try { widen(v.kind === 'workers'); msg = apply(repos, v); } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); }
-    try { repos = reload(); } catch (e) { msg = `${msg} Could not reread the queues: ${describeCrash(e)}`; }
+    try { repos = newBuild(reload); } catch (e) { msg = `${msg} Could not reread the queues: ${describeCrash(e)}`; }
   }
 
   function runCommand(line) {
@@ -4841,15 +4907,15 @@ export function interactive({
   input.resume?.();
   output.on?.('resize', draw);
   output.write(ENTER_SCREEN);
-  // Every tick redraws; the queues are reread only once the state stamp has changed, or REREAD_MS has
-  // passed, so a heartbeat ageing past LIVE_MS or a countdown still moves.
-  timer = setInterval(() => {
+  // Every tick redraws, as one build; the queues are reread only once the state stamp has changed, or
+  // REREAD_MS has passed, so a heartbeat ageing past LIVE_MS or a countdown still moves.
+  timer = setInterval(() => oneBuild(() => {
     try {
       const stamp = stateStamp();
       if (lastRead == null || stamp !== lastRead.stamp || clock() - lastRead.at >= REREAD_MS) repos = reload(stamp);
     } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
     draw();
-  }, refreshMs);
+  }), refreshMs);
   // Only while this screen is open: the usage probe, for each login no worker keeps fresh (probesDue),
   // and the cost cache's reading, workers or not.
   probeTimer = setInterval(() => {
@@ -4872,14 +4938,15 @@ if (isMain) {
   try {
     // A terminal on both ends gets the screen; anything piped, --plain and a change typed in the
     // shell get the plain output.
-    let start = null;
-    const word = scopeWord(argv);
-    if (process.stdin.isTTY && process.stdout.isTTY && !['--plain', '--help', '--json'].some((f) => argv.includes(f))) {
+    // The screen's first load, its own reload and its first draw are one build (build-memo.mjs).
+    const ui = oneBuild(() => {
+      const word = scopeWord(argv);
+      if (!process.stdin.isTTY || !process.stdout.isTTY || ['--plain', '--help', '--json'].some((f) => argv.includes(f))) return null;
       checkFlags(argv);
-      start = target(loadOrRefuse(Date.now(), word), argv);
-    }
-    if (start && !isCommand(start)) {
-      const ui = interactive({ start, word });
+      const start = target(loadOrRefuse(Date.now(), word), argv);
+      return start && !isCommand(start) ? interactive({ start, word }) : null;
+    });
+    if (ui) {
       process.on('SIGTERM', () => ui.finish(143));
       process.on('SIGHUP', () => ui.finish(129));
     } else console.log(run(argv));

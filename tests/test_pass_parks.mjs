@@ -2,7 +2,9 @@
 import { runPhase, runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds,
   decideMergeHolds } from '../desk/bin/pass/parks.mjs';
-import { HELD_PREFIX, badLabelText, IDLE_RECHECK_MS } from '../desk/bin/batch-state.mjs';
+import { HELD_PREFIX, STOPPED_PREFIX, badLabelText, IDLE_RECHECK_MS, isHeld, parkKind, personStepPark } from '../desk/bin/batch-state.mjs';
+import { newPark } from '../desk/bin/queue-writer.mjs';
+import { shownState } from '../desk/bin/desk-q.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -132,13 +134,13 @@ const dates = (s) => drive(decideDateHolds, s, {}, false);
 {
   const as = dates(dateSnap(byKey({ key: 'A', state: 'triaged' }), { A: { labels: ['blocked-until-2026-13-45'] } }));
   t('AC2 an unreadable blocked-until label holds the ticket for the person',
-    j(as.filter((a) => a.type !== 'date-line')), j([{ type: 'park', key: 'A', question: `${HELD_PREFIX}: ${badLabelText('blocked-until-2026-13-45')}` }, { type: 'set', key: 'A', fields: ['held_label=blocked-until-2026-13-45'] }]));
+    j(as.filter((a) => a.type !== 'date-line')), j([{ type: 'park', key: 'A', kind: 'date', question: `${HELD_PREFIX}: ${badLabelText('blocked-until-2026-13-45')}` }, { type: 'set', key: 'A', fields: ['held_label=blocked-until-2026-13-45'] }]));
 }
 // AC3: a triaged ticket whose blocked-until date is later than today is held until that date.
 {
   const as = dates(dateSnap(byKey({ key: 'A', state: 'triaged' }), { A: { labels: ['blocked-until-2026-12-01'] } }));
   t('AC3 a later blocked-until date holds the ticket until that date',
-    j(as), j([{ type: 'park', key: 'A', question: `${HELD_PREFIX}: blocked until 2026-12-01 (label blocked-until-2026-12-01) — starts on that date by itself` }, { type: 'set', key: 'A', fields: ['held_label=blocked-until-2026-12-01'] }]));
+    j(as), j([{ type: 'park', key: 'A', kind: 'date', question: `${HELD_PREFIX}: blocked until 2026-12-01 (label blocked-until-2026-12-01) — starts on that date by itself` }, { type: 'set', key: 'A', fields: ['held_label=blocked-until-2026-12-01'] }]));
   t('a date that has come holds nothing', j(dates(dateSnap(byKey({ key: 'A', state: 'triaged' }), { A: { labels: ['blocked-until-2026-11-18'] } }))), '[]');
   t('a label the person let start is not held on again', j(dates(dateSnap(byKey({ key: 'A', state: 'triaged', held_label: 'blocked-until-2026-12-01' }), { A: { labels: ['blocked-until-2026-12-01'] } }))), '[]');
 }
@@ -275,6 +277,15 @@ const dates = (s) => drive(decideDateHolds, s, {}, false);
   drive(decideOutsideHolds, { ...snap(48), defaultBranch: 'feat/DS-700-other', repoDefault: 'main' }, { unpromoted: (a) => { into.push(a.into); return base; } });
   t('DS-811 in a named batch its promotion PR is read into the repo default branch, which needs-you promotes into, not the batch base', j(into), '["main"]');
   t('DS-811 a dry run says it and writes nothing', j([sets(drive(decideOutsideHolds, { ...snap(48), dry: true }, { unpromoted: base })), lines(drive(decideOutsideHolds, { ...snap(48), dry: true }, { unpromoted: base }), 'epic-line')[0]?.startsWith('outside hold (dry run): DS-705')]), '[[],true]');
+  // DS-947: its branch's promotion PR into the default branch has merged, and the batch base has not synced it yet.
+  const promoted = { ...base, pr: 871, state: 'merged' };
+  const named = { ...snap(48), defaultBranch: 'feat/DS-691-desk-app', repoDefault: 'main' };
+  const waits = drive(decideOutsideHolds, named, { landed: false, unpromoted: promoted });
+  t('DS-947 AC1 a merged promotion raises nothing: the hold stays, waiting for the base to sync', j([sets(waits), lines(waits, 'epic-line')]), j([[stamp], []]));
+  const raisedBefore = drive(decideOutsideHolds, { ...named, tickets: byKey(recorded) }, { landed: false, unpromoted: promoted });
+  t('DS-947 AC1 and a promote item raised before it merged is dropped, the ticket still held', j([sets(raisedBefore), lines(raisedBefore, 'epic-line')]), j([['unpromoted=null', stamp], []]));
+  const synced = drive(decideOutsideHolds, named, { landed: true, unpromoted: () => { throw new Error('asked'); } });
+  t('DS-947 AC2 once the base holds it the hold lifts', j(sets(synced)), j(['state=triaged', 'park=null', 'held_by=null', 'held_outside=null', 'outside_read=null']));
 }
 
 // ---- merge holds ----
@@ -292,6 +303,34 @@ const dates = (s) => drive(decideDateHolds, s, {}, false);
   const free = drive(decideMergeHolds, s, { 'landed-here': true });
   t('both lifted frees the merge', lines(free, 'epic-line')[0], 'merge hold: A: P-1, G-2 Done; free to merge');
   t('a merged ticket waits on nothing', j(drive(decideMergeHolds, { ...s, tickets: byKey({ ...tk, merged_at: 'x' }) })), '[]');
+}
+
+// ---- DS-895: a park's kind ----
+// AC1: a ticket held behind a sibling, its park question since reworded, still reads as held.
+{
+  const sib = { key: 'S-1', state: 'running' };
+  const was = held('A', 'S-1', { park: { question: `${HELD_PREFIX}: blocked by S-1`, kind: 'hold' } });
+  const reworded = { ...was, park: { question: 'waits for S-1 to merge, then starts', kind: 'hold' } };
+  const qOf = (x) => ({ tickets: byKey(sib, x) });
+  t('DS-895 AC1 a hold whose question was reworded is still held', isHeld(reworded), true);
+  t('DS-895 AC1 and desk-q shows it as it showed the hold before the rewording', `${shownState(qOf(reworded), reworded)}`, `${shownState(qOf(was), was)}`);
+  t('DS-895 AC1 a cleared condition does not settle it as a park of its own',
+    j(settles(clears(clearsSnap(byKey(sib, { ...reworded, park: { ...reworded.park, clears_when: PR_MERGED } })), { check: { holds: true } }))), '[]');
+  t('DS-895 AC1 a park of its own whose question opens like a hold is not one', isHeld({ key: 'B', state: 'parked', park: { question: `${HELD_PREFIX}?`, kind: 'question' } }), false);
+}
+// AC3: a park recorded before parks carried their kind, or taken in from a park file holding only a
+// question, gets the kind its question opens as.
+{
+  const kinds = (qs) => qs.map((x) => newPark(x).kind).join(' ');
+  t('DS-895 AC3 a park taken in from its question alone gets the kind the question opens as',
+    kinds(['which colour?', "the person's step: apply the migration", `${HELD_PREFIX}: blocked by X-1`, `${STOPPED_PREFIX} at x`, `${HELD_PREFIX}: blocked until 2026-12-01 (label b)`, `${HELD_PREFIX}: ${badLabelText('b')}`]),
+    'question person-step hold stopped date date');
+  t('DS-895 AC3 a writer that names the kind records that kind', newPark(`${HELD_PREFIX}: blocked by X-1`, 'x', 'stopped').kind, 'stopped');
+  t('DS-895 AC3 a park recorded with no kind is read by its question', j(['which colour?', `${HELD_PREFIX}: blocked by X-1`, `${STOPPED_PREFIX} at x`].map((x) => parkKind({ park: { question: x } }))), '["question","hold","stopped"]');
+  t('DS-895 AC3 an unknown kind on a park is read by its question', parkKind({ park: { question: 'which colour?', kind: 'held' } }), 'question');
+  t('DS-895 a person step is read by its kind, its question reworded or not',
+    j([{ question: 'apply the migration on staging', kind: 'person-step' }, { question: "the person's step: apply the migration" }, { question: "the person's step: apply it", kind: 'question' }]
+      .map((park) => personStepPark({ state: 'parked', park }))), '[true,true,false]');
 }
 
 // AC5: the decisions start no process, call no git, gh or Jira, and write nothing, the queue included.

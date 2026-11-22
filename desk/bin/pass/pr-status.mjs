@@ -13,6 +13,7 @@
 // for this step: the same objects the steps after it read) adds:
 //   dry      a dry run: nothing is written but pr_status
 //   passAt    the pass's start time, ISO
+//   logins    desk's accounts, as E.verdictLogins gives them (null when unset)
 //
 // Actions ("->" is what the handler returns):
 //   fix-finished {key, at, fixTries}   the ticket's fix try is over: fix.finished=at, and, for a
@@ -27,12 +28,14 @@
 //   out {line}                         a report line
 //   fetch-origin {}                    git fetch origin in the repo root
 //   prune-builds {open}                remove the check-build checkouts of every PR not in `open`
+//   park {key, question}               park the ticket: its PR is not its own (shared.mjs notOwnPr)
 //   lists {drafts, undrafted, reopens, prStates, merges}   what the steps after this one work from:
 //                                      each list of { t, s } (reopens with `owed`), each PR's state by
 //                                      number, and the merge lines
 import { FOLLOW_ON_MAX, followOnPending, postMergeOwed } from '../harvest.mjs';
 import { fromReview, reviewStep } from '../undraft.mjs';
-import { LINK_STEP } from './shared.mjs';
+import { LINK_STEP, notOwnPr, foreignQuestion } from './shared.mjs';
+import { owesReopen } from '../queue-store.mjs';
 
 // A PR recorded merged or closed is not read again, unless it merged and the ticket has no merged_at yet.
 // A merged PR whose kept status names post-merge criteria not yet made follow-on steps is read on
@@ -45,6 +48,13 @@ const gatedFollow = (t) => followOnPending(t) && t.follow_on.some((x) => (x?.aft
 const commitOwed = (t) => gatedFollow(t) && !t.pr_status?.merge_commit;
 // A ticket's follow-on steps as the follow-on write compares them: as read, or as that write leaves them.
 export const followState = (x) => JSON.stringify([x.follow_on ?? null, x.follow_on_done ?? null]);
+
+// Ticket `t` parks on PR #n, which is not its own (`why`, notOwnPr's), and is said to: nothing is done to #n.
+function* parkForeign(t, n, why, state, s, prStates) {
+  prStates[n] = state;
+  if (!s.dry) yield { type: 'park', key: t.key, question: foreignQuestion(n, why) };
+  yield { type: 'out', line: `PR status: ${t.key}'s PR #${n} is not its own (${why}): ${s.dry ? 'would park it' : 'parked'}, and nothing is done to #${n}` };
+}
 
 export function* decidePrStatus(s) {
   const prStates = {};
@@ -64,8 +74,11 @@ export function* decidePrStatus(s) {
     const n = t.state === 'done' ? t.result?.pr : null;
     if (n == null) continue;
     let st = null;
+    // A status kept from an earlier pass is checked too, before a merged or closed one is taken as read.
+    const keptForeign = t.pr_status?.pr === n ? notOwnPr(t, t.pr_status, s.logins) : null;
+    if (keptForeign) { yield* parkForeign(t, n, keptForeign, t.pr_status.state, s, prStates); continue; }
     // A PR this pass's reopen closed and could not reopen is read again until it reopens.
-    const owed = t.reopening != null && String(t.reopening) === String(n);
+    const owed = owesReopen(t);
     if (t.pr_status?.pr === n && PR_FINAL.includes(t.pr_status.state) && !(owed && t.pr_status.state === 'CLOSED')) {
       prStates[n] = t.pr_status.state;
       if (t.pr_status.state !== 'MERGED' || (t.merged_at && !postMergeOwed(t, n) && !commitOwed(t))) continue;
@@ -74,6 +87,10 @@ export function* decidePrStatus(s) {
     if (!st) {
       st = yield { type: 'read-pr', key: t.key, pr: n, was: t.pr_status };
       if (!st) continue;
+      // A PR on a branch its worker did not make, or another person's, is never this ticket's: the
+      // ticket parks before any list the reopen, undraft, fix-try or merge steps work from holds it.
+      const foreign = notOwnPr(t, st, s.logins);
+      if (foreign) { yield* parkForeign(t, n, foreign, st.state, s, prStates); continue; }
       // A closed PR still owed its reopen counts as open, so the batch is not idle and no ticket held
       // behind it reads as stuck while the reopen is outstanding.
       prStates[n] = owed && st.state === 'CLOSED' ? 'OPEN' : st.state;

@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { RESUME_STAGES, SAFE_ID, stateDir } from './desk-env.mjs';
 import { prsNaming } from './recoveries.mjs';
+import { execGit, REMOTE_GIT_MS } from './remote-git.mjs';
 
 // The stages a session may start at, and the stage each one follows.
 export const HANDOFF_STAGES = { '4b': '4', 7: '6' };
@@ -164,11 +165,12 @@ export function handoffTarget({ worktree, branch }) {
 
 // The ticket's own open PR as { number, head, recorded }, or null. Its recorded PR (`pr`) when that one
 // is open, read by its number, else the one open PR whose title or head branch names `key`; a fork's PR
-// is never its own. `recorded` says which, since an unrecorded one is only a PR naming the ticket.
-export function openPrOf({ key, pr = null, repo, worktree }) {
+// is never its own. `recorded` says which, since an unrecorded one is only a PR naming the ticket;
+// `naming: false` reads only the recorded one. Its read is bounded as a remote git call is.
+export function openPrOf({ key, pr = null, repo, worktree, naming: byName = true }) {
   const gh = (...a) => {
     try {
-      return JSON.parse(execFileSync('gh', [...a, ...(repo ? ['--repo', repo] : [])], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], ...(worktree && existsSync(worktree) ? { cwd: worktree } : {}) }) || 'null');
+      return JSON.parse(execFileSync('gh', [...a, ...(repo ? ['--repo', repo] : [])], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: REMOTE_GIT_MS, ...(worktree && existsSync(worktree) ? { cwd: worktree } : {}) }) || 'null');
     } catch { return null; }
   };
   const ownOpen = (p) => p?.headRefName && !p.isCrossRepository && (p.state == null || p.state === 'OPEN');
@@ -177,6 +179,7 @@ export function openPrOf({ key, pr = null, repo, worktree }) {
     const v = gh('pr', 'view', String(pr), '--json', 'number,state,headRefName,isCrossRepository');
     if (ownOpen(v)) return as(v, true);
   }
+  if (!byName) return null;
   let naming;
   try {
     naming = prsNaming(repo, 'open', key, { fields: 'title,isCrossRepository', inTitle: true, search: false, limit: 500, ...(worktree && existsSync(worktree) ? { cwd: worktree } : {}) }).filter(ownOpen);
@@ -185,13 +188,14 @@ export function openPrOf({ key, pr = null, repo, worktree }) {
 }
 
 // Brings origin's copy of the PR's head into the worktree, as refs/remotes/origin/<head>: null once
-// fetched, else why not. Kept apart from repointToPr so the network call runs before the queue lock.
+// fetched, else why not. Kept apart from repointToPr so the network call runs before the queue lock, and
+// bounded (execGit), since a pass's requeue waits on it.
 export function fetchPrHead({ worktree, pr }) {
   if (!pr?.head || !worktree || !existsSync(worktree)) return null;
   try {
-    execFileSync('git', ['-C', worktree, 'fetch', '-q', 'origin', `+refs/heads/${pr.head}:refs/remotes/origin/${pr.head}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    execGit('git',['-C', worktree, 'fetch', '-q', 'origin', `+refs/heads/${pr.head}:refs/remotes/origin/${pr.head}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     return null;
-  } catch (e) { return String(e.stderr ?? e.message).trim().split('\n').pop(); }
+  } catch (e) { return String(e.stderr || e.message).trim().split('\n').pop(); }
 }
 
 // A worktree whose queued branch is not its open PR's head (or is its head's name, but missing), moved

@@ -25,7 +25,14 @@ const before = readFileSync(join(root, 'tests/fixtures/desk-ci-before-split.md')
 checkSize({ t, root, name: 'desk-ci', core, before });
 
 // AC2: each heading, table row and paragraph of the old file is in exactly one file, word for word.
-checkSplit({ t, label: 'AC2', before, files, read, headings: 10, minRows: 26 });
+// The fixture stays frozen, so a paragraph a later ticket rewrote is named by text only it holds
+// (`split_check.mjs`'s `rewritten`).
+const REWRITTEN = [
+  ['DS-259', '"Can resolve" means any value other than a GitHub-hosted image label', 1], // a repo's declared AWS runner labels resolve to its own cloud runner
+  ['DS-261', 'and the protection writes below, each shown first', 1], // `aws-fallback off` is a write too
+  ['DS-261', '--- name: desk-ci description: >-', 1], // the frontmatter names aws-fallback in its description and argument-hint
+];
+checkSplit({ t, label: 'AC2', before, files, read, headings: 10, minRows: 26, rewritten: REWRITTEN });
 
 // AC3: the core's step table names, for each step, the sections it moved and the one file to read.
 const table = stepTable(core);
@@ -65,7 +72,7 @@ const resolves = (label, cite, name) => {
 };
 const hint = core.match(/^argument-hint: "([^"]+)"/m)?.[1] ?? '';
 const COMMANDS = [...new Set([...hint.matchAll(/(?:^|\| )([a-z][a-z-]+)/g)].map((m) => m[1]))];
-t('AC4 the commands are read from the argument-hint', COMMANDS, ['classify', 'ci-lint', 'profile', 'measure', 'batch-red', 'protection']);
+t('AC4 the commands are read from the argument-hint', COMMANDS, ['classify', 'ci-lint', 'profile', 'measure', 'batch-red', 'protection', 'aws-fallback']);
 // Commands whose rules sit under a section of another name.
 const ALIAS = { classify: 'The placement rule' };
 for (const c of COMMANDS) resolves('the argument-hint', c, ALIAS[c] ?? c);

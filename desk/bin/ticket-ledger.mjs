@@ -1,5 +1,5 @@
 // The ticket ledger: every change to a ticket or a batch as one typed event, in one append-only log per
-// repo, <repo state>/ledger/events.jsonl, from which any ticket's state and any batch's queue.json shape
+// repo, <repo>/ledger/events.jsonl beside the standing queue (~/.claude/desk/repos/<slug>), from which any ticket's state and any batch's queue.json shape
 // is rebuilt.
 //
 // Each line is an envelope {v, seq, id, at, batch, key, type, by, data}. seq is assigned under the
@@ -17,7 +17,7 @@ import { basename, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { lock, unlock } from './dir-lock.mjs';
-import { STATES, FINISHED } from './queue-writer.mjs';
+import { STATES, FINISHED, PARK_KINDS } from './queue-states.mjs';
 import { batchFields, keys as keysOf, same } from './queue-store.mjs';
 
 export const SNAPSHOT_EVERY = 1000;
@@ -25,7 +25,7 @@ export const LOCK_WAIT_MS = 2000;
 export const MODES = ['shadow', 'record'];
 // Observations a pass recomputes on every run: written to queue.json, never appended, ignored by the diff.
 export const PROJECTION_ONLY = ['log_bytes', 'idle_passes', 'pr_status', 'suite_wait_since', 'progress_sha', 'progress_at'];
-export const PARK_KINDS = ['person-step', 'question', 'hold', 'stopped', 'date', 'failure'];
+export { PARK_KINDS };
 export const ESCALATE_TO = ['person', 'repair', 'requeue'];
 // How many of the latest event ids a fold keeps, so a retry that straddles a snapshot is still skipped.
 const ID_WINDOW = 1000;
@@ -126,7 +126,9 @@ export function invalid(ev) {
 export const emptyState = () => ({ v: 1, seq: 0, tickets: {}, batches: {}, ids: [] });
 const newTicket = (key) => ({ key, batch: null, state: null, archived: false, fields: {}, park: null, holds: [], pr: null, merge: null,
   questions: [], answered: [], waits: {}, automerge: null, spawn: null });
-const withoutProjectionOnly = (fields) => Object.fromEntries(Object.entries(fields).filter(([f]) => !PROJECTION_ONLY.includes(f)));
+// The queue.json field holding the triage questions answered so far, each an answered event's qid.
+export const ANSWERED = 'answered_questions';
+export const withoutProjectionOnly = (fields) => Object.fromEntries(Object.entries(fields ?? {}).filter(([f]) => !PROJECTION_ONLY.includes(f)));
 
 // Lays queue.json fields onto ticket `t`: the fields with a typed home (state, park, held_by, result.pr,
 // merge) go there too, so a typed event and a field set agree on one value.
@@ -138,6 +140,7 @@ function overlay(t, fields) {
   if ('held_by' in f) t.holds = keysOf(f.held_by);
   if ('result' in f) t.pr = f.result?.pr ?? null;
   if ('merge' in f) t.merge = f.merge ?? null;
+  if (ANSWERED in f) t.answered = Array.isArray(f[ANSWERED]) ? [...f[ANSWERED]] : [];
 }
 
 // Whether `ev` is legal from its ticket's state in `state`: { legal, from }. Batch events always are.
@@ -147,12 +150,18 @@ export function legality(state, ev) {
   return { legal: TRANSITIONS[ev.type].from.includes(from), from };
 }
 
+// The park a parked event leaves: its data, which is the whole park record, less a typed field it
+// carries as null because that park has none (an approval, a deadline).
+const PARK_NULLABLE = Object.entries(EVENTS.parked.data).filter(([, c]) => c.endsWith('?')).map(([f]) => f);
+export const parkOf = (d) => Object.fromEntries(Object.entries(d ?? {}).filter(([f, v]) => !(v == null && PARK_NULLABLE.includes(f))));
+
 // Applies one envelope to `state` in place. An illegal transition is applied all the same: in shadow
-// mode the queue write it records has already happened.
+// mode the queue write it records has already happened. Every batch an event names gets an entry in
+// `state.batches`, so a batch with none has never been written to the log.
 function apply(state, ev) {
   const d = ev.data ?? {};
+  const b = (state.batches[ev.batch ?? ''] ??= {});
   if (EVENTS[ev.type].scope === 'batch') {
-    const b = (state.batches[ev.batch ?? ''] ??= {});
     if (ev.type === 'base_red') b.base_red = { ...d };
     else if (ev.type === 'base_green') delete b.base_red;
     else if (ev.type === 'platform_outage') b.platform_outage = { ...d };
@@ -170,7 +179,7 @@ function apply(state, ev) {
     case 'triaged': t.questions = [...d.questions]; break;
     case 'answered': t.answered.push(d.qid); break;
     case 'spawned': t.spawn = { ...d }; t.park = null; break;
-    case 'parked': t.park = Object.fromEntries(Object.entries(d).filter(([, v]) => v != null)); break;
+    case 'parked': t.park = parkOf(d); break;
     case 'unparked': case 'requeued': t.park = null; break;
     case 'held': t.holds = [...new Set([...t.holds, ...d.by])]; break;
     case 'released': t.holds = t.holds.filter((k) => k !== d.by); break;
@@ -223,6 +232,7 @@ export function project(state, batch, current = null) {
     if (t.holds.length || 'held_by' in t.fields) out.held_by = t.holds.length ? t.holds.join('|') : null;
     if (t.pr != null) out.result = { ...(t.fields.result ?? {}), pr: t.pr };
     if (t.merge) { out.merge = { ...t.merge }; out.merged_at = t.merge.at ?? t.fields.merged_at; }
+    if (t.answered.length) out[ANSWERED] = [...t.answered];
     tickets[t.key] = out;
   }
   return { ...batchFields(current), batch, tickets };

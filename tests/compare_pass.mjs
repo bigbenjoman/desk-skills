@@ -4,7 +4,7 @@
 //   node compare_pass.mjs record <node args...>
 //     What the `node` shim runs in place of the real node when its argv names pass.mjs: runs the real
 //     node ($PASS_CMP_NODE) with the same arguments, passing its stdin, stdout, stderr and exit status
-//     through unchanged, then saves run <n>.json in $PASS_CMP_OUT: when the run started, the exit
+//     through unchanged, then saves run <n>.json in $PASS_CMP_OUT: when the run started and ended, the exit
 //     status, stdout and stderr as they arrived, the queue at $DESK_QUEUE and the archive beside it,
 //     and how many lines the suite had printed to $PASS_CMP_SUITE_LOG when the run started.
 //
@@ -18,6 +18,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFi
 import { constants } from 'node:os';
 import { join } from 'node:path';
 import { lock, unlock } from '../desk/bin/dir-lock.mjs';
+import { flattenQueue } from '../desk/bin/queue-fields.mjs';
 
 const [mode, ...args] = process.argv.slice(2);
 
@@ -52,7 +53,7 @@ function record(argv) {
   child.on('close', (code, signal) => {
     const q = process.env.DESK_QUEUE;
     writeFileSync(join(dir, `${run}.json`), JSON.stringify({
-      run, started, at_line: atLine, exit: code, signal, out: Buffer.concat(chunks).toString('utf8'),
+      run, started, ended: Date.now(), at_line: atLine, exit: code, signal, out: Buffer.concat(chunks).toString('utf8'),
       queue: q ? readJson(q) : null, archive: q ? readJson(q.replace(/\.json$/, '') + '.archive.json') : null,
     }));
     // The pass died by a signal: die by it too, so the suite sees the status it would without the shim.
@@ -201,12 +202,24 @@ function item(s, rn) {
   return { text: shown.text, shape: shown.shape, cmp: k.shape, times: k.times, vals: t.vals };
 }
 
-// When a tree's runs of one suite started, to find the run a time was made in or worked out for.
+// When a tree's runs of one suite started and ended, to find the run a time was made in or worked out for.
 function clock(recs) {
   const starts = [...recs.values()].filter((r) => Number.isFinite(r.started)).map((r) => [r.started, r.run])
     .sort((a, b) => a[0] - b[0]);
+  const end = (n) => recs.get(n)?.ended;
   return {
     start: (n) => recs.get(n)?.started,
+    // Where t falls among the runs: `in n` while run n ran, `before n` after run n - 1 ended and before
+    // run n started, the time the suite spends between two passes.
+    slots(t) {
+      const out = new Set();
+      for (const [s, n] of starts) {
+        const e = end(n), pe = end(n - 1);
+        if (Number.isFinite(e) && s <= t && t <= e) out.add(`in ${n}`);
+        if (Number.isFinite(pe) && pe < t && t < s) out.add(`before ${n}`);
+      }
+      return out;
+    },
     // The runs that started around t: the last to start before it, and its neighbours.
     around(t) {
       let lo = 0, hi = starts.length;
@@ -216,15 +229,19 @@ function clock(recs) {
   };
 }
 
-// Two times match when they are the same, a few seconds apart, or the same offset from the start of
-// one run on each tree: a time a run made, or one its suite worked out just before it, sits there
-// however far apart the two trees ran. A time worked out differently (an hour on, not two) does not.
+// Two times match when they are the same, a few seconds apart, made in the same run or the same gap
+// between two runs on each tree, or the same offset from the start of one run on each tree: a time a
+// run made, or one its suite worked out just before it, sits there however far apart the two trees ran
+// and however much longer one tree's run took to reach it. A time worked out differently (an hour on,
+// not two) does not.
 function sameTime(a, b, run, cb, ch) {
   if (a === b) return true;
   const ta = ms(a), tb = ms(b);
   if (!Number.isFinite(ta) || !Number.isFinite(tb)) return false;
   const within = Math.max(slack(a), slack(b));
   if (Math.abs(ta - tb) <= within) return true;
+  const slotsH = ch.slots(tb);
+  for (const s of cb.slots(ta)) if (slotsH.has(s) && Number(s.split(' ')[1]) <= run) return true;
   for (const j of new Set([run, ...cb.around(ta), ...ch.around(tb)])) {
     if (j > run) continue;
     const sb = cb.start(j), sh = ch.start(j);
@@ -291,32 +308,12 @@ const show = (x, others) => (others.some((y) => y.shape === x.shape) ? x.text : 
 // write in its run, so it is compared as set or not, and by its type: <STAMP:string> when it holds a
 // string.
 const STAMP = /(?:^|[ .])(?:updated_at|spawned_at|last_start|cloud\.started)$/;
-function flatten(rec, norm, rn) {
-  const out = new Map();
-  const key = (k) => rn(norm(k));
-  const leaf = (v, path) => (Number.isInteger(v) && /(?:^|\.)pid$/.test(path) ? '<PID>'
+const flatten = (rec, norm, rn) => flattenQueue(rec, {
+  key: (k) => rn(norm(k)),
+  leaf: (v, path) => (Number.isInteger(v) && /(?:^|\.)pid$/.test(path) ? '<PID>'
     : Number.isInteger(v) && /(?:^|[ .])port$/.test(path) ? `port ${v}`
-      : v != null && STAMP.test(path) ? `<STAMP:${typeof v}>` : norm(JSON.stringify(v)));
-  const walk = (v, path) => {
-    if (v && typeof v === 'object' && Object.keys(v).length) {
-      for (const [k, x] of Object.entries(v)) walk(x, path ? `${path}.${key(k)}` : key(k));
-    } else out.set(path, leaf(v, path));
-  };
-  const top = (doc, prefix) => {
-    if (!doc) return;
-    for (const [k, v] of Object.entries(doc)) {
-      if (k === 'tickets' && v && typeof v === 'object') {
-        for (const [t, x] of Object.entries(v)) {
-          if (x && typeof x === 'object') for (const [f, y] of Object.entries(x)) walk(y, `${prefix}${key(t)} ${key(f)}`);
-          else out.set(`${prefix}${key(t)}`, norm(JSON.stringify(x)));
-        }
-      } else walk(v, `${prefix || 'queue '}${key(k)}`);
-    }
-  };
-  top(rec.queue, '');
-  top(rec.archive, 'archive ');
-  return out;
-}
+      : v != null && STAMP.test(path) ? `<STAMP:${typeof v}>` : norm(JSON.stringify(v))),
+});
 
 const crashed = (r) => r.signal || (r.exit !== 0 && /^Node\.js v\d+/m.test(r.out));
 const firstError = (r) => (r.signal ? `killed by ${r.signal}`

@@ -30,8 +30,9 @@ import { checkinTimes, checkinRow, checkin, readDecisions, repos as digestRepos,
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, appendOnlyFrom } from './scope-report.mjs';
 import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy, recentCount } from './conflict-record.mjs';
-import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath } from './pass-metrics.mjs';
+import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, parseSetupSteps } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
+import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
@@ -48,6 +49,7 @@ import { health, markFailed as markHealthFailed, refusedIn, MISMATCH_WORDS } fro
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
+import { strayClosings } from './closing-keywords.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
@@ -61,18 +63,21 @@ import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
+import { liveBaseRed, batchLine, repairTicket, repairTriage } from './base-red.mjs';
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
 import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
-import { borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
+import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, prState as batchPrState } from './batches.mjs';
 import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
-import { queueWriter } from './queue-writer.mjs';
-import { runAudits, endedFromExit, auditsRunning } from './levers-audit.mjs';
+import { queueWriter, LOCK_WAIT_MS } from './queue-writer.mjs';
+import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-audit.mjs';
+import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
+import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference } from './queue-ledger.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
@@ -80,13 +85,14 @@ import { decidePrStatus, followState } from './pass/pr-status.mjs';
 import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict } from './pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict, ledgerLine } from './pass/report.mjs';
 import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
   tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
+import { decideTicketless } from './pass/ticketless-prs.mjs';
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
 import { decideFixTries, tryLabel } from './pass/fix-tries.mjs';
 import { decideReopen, decideRenames, decideUndraft, decideRelease, undraftWrite } from './pass/undraft.mjs';
@@ -95,6 +101,7 @@ import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
 import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 import { leaseCli } from './leases.mjs';
+import { isArchived, prClosed, owesReopen } from './queue-store.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -164,6 +171,10 @@ const BY_AT = process.argv.indexOf('--by');
 const PASS_BY = BY_AT < 0 ? 'session' : process.argv[BY_AT + 1];
 if (!['supervisor', 'session'].includes(PASS_BY)) refuse(`--by wants supervisor or session, not "${PASS_BY ?? ''}"`);
 const PASS_AT = new Date().toISOString();
+// --woken: the supervisor ran this pass between intervals, for a worker's exit, before a quiet pass is
+// due (supervisor.mjs). It counts none toward WEDGE_PASSES, so extra passes never stop a quiet worker
+// sooner than the interval would.
+const WOKEN = process.argv.includes('--woken');
 
 if (!existsSync(QUEUE_FILE)) {
   refuse(`no queue at ${QUEUE_FILE} — run: node ${SHOWN_BIN}/queue.mjs init <batch-name>`);
@@ -275,11 +286,19 @@ function writeLines(r) {
   return [
     ...r.conflicts.map((c) => `${c.ticket ?? 'batch'}: queue write not made for ${c.field === 'order' ? 'the spawn order' : c.field === '*' ? 'the whole ticket' : c.field}: ${c.gone ? 'another writer took the ticket out of the queue' : 'another writer changed it after this pass read the queue, and its value stays'}`),
     ...(r.archiveError ? [`queue archive: done tickets were not archived this pass (${r.archiveError})`] : []),
+    ...(r.ledgerMissed ? [`${MISSED_PREFIX}, queue.json was written (${r.ledgerMissed})`] : []),
   ];
 }
 // A command queue-writer.mjs does not apply in memory runs as queue.mjs, after the changes before it
-// are written, so it reads them.
-const qRun = (args) => { flushQueue(); return shOut('node', [join(BIN, 'queue.mjs'), ...args]); };
+// are written, so it reads them. The ticket ledger names the pass as that write's writer, and a missed
+// append the command reports goes in the report, as a flush's does.
+const qRun = (args) => {
+  flushQueue();
+  const r = spawnSync('node', [join(BIN, 'queue.mjs'), ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, [LEDGER_BY_ENV]: 'pass' } });
+  if (r.status !== 0) return { ok: false, code: r.status ?? null, out: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim() || String(r.error?.message ?? 'queue.mjs did not run') };
+  report.failed.push(...String(r.stderr ?? '').split('\n').filter((l) => l.startsWith(MISSED_PREFIX)));
+  return { ok: true, out: r.stdout.trim() };
+};
 // One queue command, in the pass's write where queue-writer.mjs applies it, else as queue.mjs, without
 // reporting a refusal: -> { ok, out }, out being the refusal when not ok.
 const qTry = (args) => {
@@ -296,6 +315,8 @@ const qWrite = (args, refused = 'not recorded') => {
   return '';
 };
 const q = (...args) => qWrite(args);
+// A park action's kind (batch-state.mjs PARK_KINDS) as queue.mjs park takes it, where the action names one.
+const kindArgs = (a) => (a.kind ? ['--kind', a.kind] : []);
 // Writes every change applied since the last write, in one locked write. A change another writer
 // made to the same field since is kept, and the report names the ticket and field; when the lock is
 // not taken in time, nothing is written and the report names each change.
@@ -762,6 +783,18 @@ function uploadShots(t, prNo, imgDir) {
   try { waiting = UQ.isQueued(UQ.readUploadQueue(), QUEUE_FILE, t.key); } catch { /* reported by the pump */ }
   if (waiting) report.advanced.push(`${t.key} images → #${prNo} wait in the machine's upload queue: ${uploadStop ?? 'part are uploaded, at the most the pace allows, and a later pass uploads the rest'}`);
 }
+// The screenshots in `dir` that are one half of a before-<view>/after-<view> pair whose two files are
+// byte for byte the same (desk-pr screenshots.md names them so). [] where a file cannot be read.
+function samePairs(dir, shots) {
+  const out = [];
+  for (const f of shots) {
+    const m = /^before-(.+)$/i.exec(f);
+    const pair = m && shots.find((g) => g.toLowerCase() === `after-${m[1]}`.toLowerCase());
+    if (!pair) continue;
+    try { if (readFileSync(join(dir, f)).equals(readFileSync(join(dir, pair)))) out.push(f, pair); } catch { /* read as changed */ }
+  }
+  return out;
+}
 // What the uploader's run for t's PR #prNo ended with, recorded on t; `before` is the body's cells
 // when its job joined the queue (null where unread).
 function recordUpload(t, prNo, imgDir, run, before) {
@@ -780,13 +813,14 @@ function recordUpload(t, prNo, imgDir, run, before) {
     report.advanced.push(`${t.key} #${prNo} evidence complete — still draft`);
   } else if (doneLine || /uploaded, but found no/.test(up)) {
     // The assets now exist on GitHub but the body is not finished (placeholders left, or none
-    // matched). Re-uploading would duplicate them, so mark it partial — never uploaded=true —
-    // keep the full output, and put it in front of the user.
+    // matched). Re-uploading would duplicate them, so mark it partial — never uploaded=true — and
+    // keep the full output. A shortfall is desk's to settle, never a person's: the cells left go to
+    // the undraft step, which says what fills each.
     save();
     q('set', t.key, 'images_uploaded=partial', ...ended);
     // The cells left go to whatever fills them at the undraft step, which says if nothing can.
     if (Number(doneLine?.[2]) > 0) report.advanced.push(`${t.key} images → #${prNo}, ${doneLine[2]} cell(s) left for the undraft step (tags saved in ${saved})`);
-    else report.waiting.push(`${t.key}: image upload to PR #${prNo} is INCOMPLETE — ${tail}. Its tags are saved in ${saved}; do not re-upload.`);
+    else report.advanced.push(`${t.key}: image upload to PR #${prNo} placed no image: none of its files matches a cell in the body — ${tail}. Its tags are saved in ${saved}, nothing is re-uploaded, and any cell left goes to the undraft step`);
   } else if (run.code === 2) {
     save();
     q('set', t.key, `upload_crash=${JSON.stringify({ pr: Number(prNo), dir: imgDir, tries: was?.tries ?? 0, log: saved, busy: true })}`);
@@ -937,7 +971,13 @@ const ADVANCE_HANDLERS = {
   note: (a) => { notes.push(a.line); },
   hold: (a, s) => { usageHolds.push({ key: a.key, limit: a.limit, was: a.was, login: loginOf(loginDirOf(s.t)) }); },
   'suite-wait': (a) => suiteWait(a.worktree ?? join(WORKTREES, a.key), { procs: processList(), cwds: processCwds(), holders: lockHolders(E.lockDir(), { locks: 'both' }) }),
-  kill: (a) => { sh('kill', [String(a.pid)], { tolerant: true }); },
+  // With a session id, every process of that session and its groups, so a hung child goes too; else the pid.
+  kill: (a) => {
+    let target = null;
+    if (a.sid) { try { target = workerProcs(a.sid, processRows()); } catch { /* ps unreadable: the pid alone */ } }
+    if (target && (target.groups.length || target.pids.length)) endProcs(target, { graceMs: 5000 });
+    else if (a.pid) sh('kill', [String(a.pid)], { tolerant: true });
+  },
   park: (a) => { q('park', a.key, a.question); },
   'build-park': (a, s) => buildParkOf(s.t, a.question),
   'merge-park': (a, s) => {
@@ -945,10 +985,15 @@ const ADVANCE_HANDLERS = {
     return m?.call === 'done' ? { ...m, grant: E.mergeGrant(queue()).why } : m;
   },
   shots: (a) => { try { return readdirSync(a.dir); } catch { return []; } },
+  'same-pairs': (a) => samePairs(a.dir, a.shots),
   cells: (a) => cellsFor(a.pr, a.shots),
   upload: (a, s) => uploadShots(s.t, a.pr, a.dir),
   'open-question': (a) => openQuestion(STATE, a.key),
   'worker-head': (a, s) => recordWorkerHead(s.t),
+  // The branch and author of the PR a worker's DONE marker names, or null when GitHub cannot be read.
+  'pr-owner': (a) => {
+    try { const v = JSON.parse(sh('gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'headRefName,author'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); return { pr: a.pr, branch: v?.headRefName ?? null, author: v?.author?.login ?? null }; } catch { return null; }
+  },
   done: (a, s) => recordDone(s.t, { log: s.log.path, h: s.log.h, pr: a.pr, summary: a.summary, line: a.line, sets: a.sets }),
   'settle-links': (a, s) => settleLinks(s.t, s.log.path),
   'park-links': (a, s) => parkLinks(s.t, a.needs, a.pr),
@@ -985,9 +1030,9 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     name: 'advance',
     snapshot: () => {
       const log = advanceLog(t);
-      return { t, log, registry: REGISTRY, now: Date.now(), stateDir: STATE, resume: RESUME, bootMs, budget: WORKER_BUDGET,
+      return { t, log, registry: REGISTRY, now: Date.now(), woken: WOKEN, stateDir: STATE, resume: RESUME, bootMs, budget: WORKER_BUDGET,
         upload: { allowed: uploadPerm === 'yes' || !!process.env.DESK_UPLOAD_APPROVED, ...UPLOAD_GRANT },
-        read: { branch: READ_BRANCH, checkout: READ_CHECKOUT } };
+        read: { branch: READ_BRANCH, checkout: READ_CHECKOUT }, logins: conflictHandle };
     },
     decide: decideAdvance,
     handlers: ADVANCE_HANDLERS,
@@ -1380,6 +1425,8 @@ function finishPush(t) {
   };
   const rows = ['git-push', 'pr-open'].filter((k) => E.permission(k) !== 'yes');
   if (rows.length) return left(`config §3 ${rows.map((k) => `${k} is "${E.permission(k)}"`).join(' and ')}`);
+  const stray = strayClosings(body);
+  if (stray.length) return left(`its PR body has a closing keyword outside a line of its own, which GitHub would act on at merge (line ${stray.map((s) => `${s.line}: ${s.uses.join(', ')}`).join('; line ')})`);
   const wt = t.worktree;
   if (sh('git', ['-C', wt, 'status', '--porcelain'], { tolerant: true })) return left(`its worktree ${wt} has uncommitted changes`);
   const own = sh('git', ['-C', wt, 'rev-list', '--count', `origin/${DEFAULT_BRANCH}..${t.branch}`], { tolerant: true });
@@ -1560,7 +1607,7 @@ const holdsSnapshot = (more = {}) => {
 const HOLD_HANDLERS = {
   ...PHASE_HANDLERS,
   front: (a) => { q('front', a.key); },
-  park: (a) => { q('park', a.key, a.question); },
+  park: (a) => { q('park', a.key, ...kindArgs(a), a.question); },
   'date-line': (a) => { dateLines.push(a.line); },
 };
 const personLabels = () => ({ stepLabels: E.personStepLabels(), inputLabels: E.personInputLabels() });
@@ -1669,9 +1716,9 @@ const linkLines = [];
         return;
       }
       const question = `${HELD_PREFIX}: blocked by ${all.join(', ')} — starts once their PRs merge`;
-      q('park', key, question);
+      q('park', key, '--kind', 'hold', question);
       q('set', key, `held_by=${all.join('|')}`, ...outsideSet, ...(dateHeld(t) ? ['held_label=null'] : []));
-      Object.assign(t, { state: 'parked', park: { question }, held_by: all.join('|') });
+      Object.assign(t, { state: 'parked', park: { question, kind: 'hold' }, held_by: all.join('|') });
       linkLines.push(`blocker link: ${key}: newly linked as blocked by ${holds.join(', ')}${inNoBatch}: HELD behind ${all.join(', ')}`);
     };
     for (const { key } of due) {
@@ -1707,6 +1754,50 @@ const linkLines = [];
     if (left.length !== cycles.length && !DRY) q('set', t.key, `cycle_link=${left.join('|') || 'null'}`);
   }
 }
+
+// ---- red base --------------------------------------------------------------
+// The base the merge driver holds on (base-red.mjs): reported once for the batch, below, and repaired by
+// one ticket of its own, admitted here so this pass can spawn it, where the base worker's push grant
+// allows. Its key is the spell's own (desk-env baseRedKey), so an earlier spell's repair is another
+// ticket, left as it is with any steps it still owes. A row under this key, live or archived, is this
+// spell's repair: none is admitted beside it while it is unfinished, nor a second once it merged with
+// the base still red. One done with its PR closed unmerged is done with, and the key admitted again: an
+// archived row needs nothing first, and a live one (a batch that archives nothing) is dropped, which an
+// unmerged PR's row allows, since it owes no step after a merge. A drop that refuses (its worktree holds
+// commits no origin ref has) leaves it to the person, as needs-you offers for any closed PR.
+const BASE_RED = liveBaseRed(STATE, { branch: DEFAULT_BRANCH });
+let baseRedRepair = null;
+if (BASE_RED) {
+  const key = BASE_RED.repair_key;
+  const qB = queue();
+  const was = qB.tickets[key] ?? null;
+  // A PR the pass closed to reopen for its CI (reopening, naming that PR) is not closed for good; a marker
+  // left from an earlier PR owes the current one nothing.
+  const closed = was?.state === 'done' && !was.merged_at && !owesReopen(was) && prClosed(was);
+  const had = was && !closed ? was : null;
+  if (had && !had.merged_at) baseRedRepair = { key, state: had.state };
+  else if (had) baseRedRepair = { key, state: `merged at ${had.merged_at} with ${BASE_RED.branch} still red, so no second repair starts until it has gone green` };
+  else if (!BASE_PUSH.ok) baseRedRepair = { off: `config §3 ${BASE_PUSH.key} is "${BASE_PUSH.perm}", so no worker is started to repair it` };
+  else if (DRY) baseRedRepair = { key, state: 'to be admitted (dry run)' };
+  else {
+    // Dropped first, so one that refuses leaves its round's files as they were.
+    const dropped = closed && !isArchived(qB, key) ? qTry(['drop', key]) : { ok: true };
+    if (!dropped.ok) baseRedRepair = { key, state: `done with its PR #${was.result.pr} closed unmerged, and could not be dropped to start again (${dropped.out.split('\n').pop()}): drop or requeue it, which needs-you offers` };
+    else {
+      mkdirSync(join(STATE, 'tickets'), { recursive: true });
+      mkdirSync(join(STATE, 'triage'), { recursive: true });
+      writeFileSync(join(STATE, 'tickets', `${key}.md`), repairTicket(BASE_RED));
+      writeFileSync(join(STATE, 'triage', `${key}.json`), `${JSON.stringify(repairTriage(BASE_RED), null, 2)}\n`);
+      // A repair closed unmerged left its log under the same key, whose AUTOPILOT_DONE would keep this one
+      // from spawning: moved aside, as a requeue does.
+      E.rotateRound(key);
+      const r = qTry(['admit', key, '--by', 'base-red']);
+      baseRedRepair = r.ok ? { key, state: 'admitted to start as a slot frees' } : { off: `its repair ticket ${key} could not be admitted (${r.out.split('\n').pop()})` };
+    }
+  }
+}
+// The PRs held on it, which its one line names in place of a BASE RED line each.
+const baseRedHeld = [];
 
 // ---- spawn ---------------------------------------------------------------
 const fresh = queue();
@@ -1812,7 +1903,12 @@ const tierFor = (t) => {
 const GATE = E.spawnGate();
 const MIN_AVAIL_GB = GATE.start;
 const availGB = E.availableGiB();
-const lowMemory = MIN_AVAIL_GB > 0 && availGB < MIN_AVAIL_GB;
+// A harm signal `desk-env mem watch` said or still sees within its window (swap growth, an OOM kill,
+// a worker's heap OOM or exit 137, a full tmpfs, the WSL VM near its grant) holds spawns as low
+// memory does, whatever avail reads. AUTOPILOT_MIN_AVAIL_GB=0 turns this off with the rest of the gate.
+const HARM = MIN_AVAIL_GB > 0 ? E.harmHold(STATE) : [];
+const harmWhy = HARM.length ? `memory harm: ${HARM.map((h) => h.signal).join(', ')} within the last ${E.HARM_WINDOW_MS / 60000}m (${HARM[0].line})` : null;
+const lowMemory = MIN_AVAIL_GB > 0 && (availGB < MIN_AVAIL_GB || HARM.length > 0);
 // Concurrency: the queue's field (the orchestrator's per-pass ladder decision, or a count the user
 // set), never above the cap from config §3b "Autopilot worker concurrency" (`<default> / <cap>`,
 // default 2 / 3). The report says whose number it is, and whether memory lowered it.
@@ -1891,14 +1987,39 @@ const runningKeys = new Set(running.map((r) => r.key));
 const FILE_BUDGET = E.fileBudget();
 const budgetAppendOnly = appendOnlyFrom(() => E.configValues('append-only-paths')).globs.map(globToRegExp);
 const budgetSerial = FILE_BUDGET.serial.map(globToRegExp);
+const scopeFiles = (rec) => {
+  const files = rec?.files_in_scope;
+  return [...new Set(Array.isArray(files) ? files.map((f) => String(f).replace(/^\.\//, '')) : [])].filter((f) => f && !budgetAppendOnly.some((re) => re.test(f)));
+};
 const scopeOf = new Map();
 const budgetFiles = (key) => {
-  if (!scopeOf.has(key)) {
-    const files = triageRec(key)?.files_in_scope;
-    scopeOf.set(key, [...new Set(Array.isArray(files) ? files.map((f) => String(f).replace(/^\.\//, '')) : [])].filter((f) => f && !budgetAppendOnly.some((re) => re.test(f))));
-  }
+  if (!scopeOf.has(key)) scopeOf.set(key, scopeFiles(triageRec(key)));
   return scopeOf.get(key);
 };
+// The tickets running in this repo's other batches fill places too, each as { key, batch, files } from
+// its batch's queue and triage record; a review try there fills none, as here. A queue that does not
+// read counts nothing, and is named in the report.
+// Read here for the ready list, and again from the queues read under the borrow lock before any spawn.
+const elsewhereRunning = [];
+const budgetUnread = [];
+let budgetSlug = null;
+try { budgetSlug = E.repoSlug(); } catch { /* outside a repo there are no other batches */ }
+const countElsewhere = (queues) => {
+  elsewhereRunning.length = 0;
+  budgetUnread.length = 0;
+  for (const o of budgetSlug == null ? [] : queues) {
+    if (o.slug !== budgetSlug) continue;
+    if (o.error) { budgetUnread.push(o.error); continue; }
+    const triageDir = join(E.batchPaths(budgetSlug, o.batch).state, 'triage');
+    for (const t of Object.values(o.q.tickets ?? {})) {
+      if (t?.state !== 'running' || !t.key || reviewOnlyTry(t)) continue;
+      let rec = null;
+      try { rec = JSON.parse(readFileSync(join(triageDir, `${t.key}.json`), 'utf8')); } catch { /* no record: names no file */ }
+      elsewhereRunning.push({ key: t.key, batch: o.batch, files: scopeFiles(rec) });
+    }
+  }
+};
+countElsewhere(otherQueues({ self: QUEUE_FILE }));
 // A file's length on the batch base, read once a pass; one the base does not have is 0 lines. Each ref's
 // tree is listed once a pass (one git call, not one per file), and each blob's length is kept across
 // passes by its id in LINE_COUNTS_FILE, so a pass reads only a blob it has not counted.
@@ -1974,15 +2095,17 @@ const placesFor = (f) => {
 };
 // A review try changes no file, so it neither waits on a file's places nor fills one.
 const reviewKeys = new Set(running.filter(reviewOnlyTry).map((r) => r.key));
-// Each file of r's at its budget: the file, its places and the running tickets that fill them.
+// Each file of r's at its budget: the file, its places, the running tickets of this batch that fill
+// them (`by`) and those of the repo's other batches (`elsewhere`, { key, batch }).
 const budgetHolds = (r) => {
   const holds = [];
   if (reviewOnlyTry(r)) return holds;
   for (const f of budgetFiles(r.key)) {
     const by = [...runningKeys].filter((k) => k !== r.key && !reviewKeys.has(k) && budgetFiles(k).includes(f));
-    if (!by.length) continue;
+    const elsewhere = elsewhereRunning.filter((o) => o.key !== r.key && !runningKeys.has(o.key) && o.files.includes(f)).map(({ key, batch }) => ({ key, batch }));
+    if (!by.length && !elsewhere.length) continue;
     const k = placesFor(f);
-    if (by.length >= k) holds.push({ file: f, k, by });
+    if (by.length + elsewhere.length >= k) holds.push({ file: f, k, by, elsewhere });
   }
   return holds;
 };
@@ -2013,7 +2136,7 @@ runSteps({
   snapshot: () => ({
     tickets: fresh.tickets, budget: BUDGET, modelsBad, checkin: CHECKIN, health: { stalls: HEALTH.stalls, holding: HEALTH.holding },
     pace: { bad: PACE.bad, hold: PACE.hold, line: PACE.line }, paceProbe,
-    memory: { low: lowMemory, avail: availGB, hold: GATE.hold, start: GATE.start, dropTo: GATE.dropTo }, lockQueue: LOCK_QUEUE,
+    memory: { low: lowMemory, avail: availGB, hold: GATE.hold, start: GATE.start, dropTo: GATE.dropTo, harm: harmWhy }, lockQueue: LOCK_QUEUE,
     spawnGrant: { may: maySpawn, key: HEADLESS_KEY, perm: headlessPerm, queueBin: join(SHOWN_BIN, 'queue.mjs') },
     maintHold: MAINT.hold, usageHold: USAGE_HOLD, probes: [...PROBES.values()].map((p) => p.why), pacingRow: E.CONFIG_ROWS['usage-pacing'].row,
   }),
@@ -2071,7 +2194,12 @@ const epicReviewDue = baseWorkerMay && epicPr?.state === 'OPEN' && epicPr.isDraf
 // A red promotion PR's check try claims its one slot the same way, while no base gate holds the worktree.
 const promotionChecksDue = baseWorkerMay && promoRed != null && !fresh.base_fix?.running && fresh.gate?.state !== 'running'
   && promotionChecksCall(fresh.base_fix, { pr: promoPr.pr, head: promoPr.head, failing: promoRed }, { alive: false, push: BASE_PUSH }).call === 'spawn';
-const lockWanted = (spawnable.length && !spawnHeld) || (gateFixDue && !baseWorkerHeld) || epicReviewDue || promotionChecksDue;
+// A blind audit due in the repo (levers-audit.mjs) claims its one slot too, within the batch's own
+// number, where this pass could start it; runAudits defers it under pacing rather than starting it.
+const auditDue = !DRY && REPO_SLUG != null && !lowMemory && !MAINT.hold && !PACE.hold && !usageStop
+  && running.length + (fresh.base_fix?.running ? 1 : 0) < concurrency
+  && (() => { try { return Object.values(E.leverStates({}).states).includes('auto') && auditWanted(REPO_SLUG); } catch { return false; } })();
+const lockWanted = (spawnable.length && !spawnHeld) || (gateFixDue && !baseWorkerHeld) || epicReviewDue || promotionChecksDue || auditDue;
 if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && lockWanted && !lowMemory) {
   const l = await takeBorrowLock();
   if (l.ok) {
@@ -2081,6 +2209,9 @@ if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && lockWan
 }
 // Read under the lock when it was taken; without it the count may race another pass, and says so.
 const otherRepos = MACHINE_CAP != null || borrowLock || SIBLINGS ? otherQueues({ self: QUEUE_FILE }) : [];
+// The per-file budget counts the other batches' running tickets from this read too, so a ticket another
+// batch started while this pass waited for the lock holds its files here.
+if (MACHINE_CAP != null || borrowLock || SIBLINGS) countElsewhere(otherRepos);
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
 const SLOTS_SNAP = {
   borrowOn: BORROW.on, concurrency, cap: E.concurrencyLimits().cap, running: running.length, spawnable: spawnable.length,
@@ -2091,6 +2222,7 @@ const SLOTS_SNAP = {
   auditWorkers: (() => { try { return auditsRunning(REPO_SLUG); } catch { return 0; } })(),
   // A base conflict fix, epic review or promotion check try due with no ticket to spawn still wants its one slot.
   baseWanted: !!(gateFixDue || epicReviewDue || promotionChecksDue),
+  auditWanted: auditDue,
   machineProfiled: MACHINE_CAP != null || E.machineProfile() != null,
   repoCaps: MACHINE_CAP == null ? {} : Object.fromEntries(otherRepos.filter((o) => o.error).map((o) => [o.slug, repoCap(o.slug)])),
   otherRepos, repoBatches: otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) }),
@@ -2183,7 +2315,8 @@ let gateConflict = null;
 // machine budget and the repo's shared §3b cap bind it as they bind every worker.
 const baseFixRoom = baseWorkerMay && MACHINE.room > 0 && REPO.room > 0 && !repoUnlocked;
 // Why no base worker may start this pass, the first of the holds baseFixRoom tests.
-const noBaseFixRoom = () => baseWorkerHeld ?? (lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
+const noBaseFixRoom = () => baseWorkerHeld ?? (harmWhy ? harmWhy
+  : lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
   : LOCK_QUEUE?.holds ? LOCK_QUEUE.line
   : running.length >= concurrency ? `the batch's ${running.length} running worker(s) fill its number of ${concurrency}`
   : MACHINE.room <= 0 ? MACHINE.line
@@ -2199,7 +2332,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       queue: fresh, base: BASE, source: SOURCE, willSpawn: slots > 0 && spawnable.length > 0, frozen: spawnable.length, epicOpen: epicPr?.state === 'OPEN', sliceBad: SLICE.bad,
       behindMax: BASE_BEHIND_MAX, gateBusy, resumeHeld: (held === PACE_HELD ? null : held) ?? (lowMemory ? 'low memory' : null),
       registry: REGISTRY, fixKey: BASE_FIX_KEY, fixRoom: baseFixRoom, noFixRoom: noBaseFixRoom(), conflictPerm: E.permission('pr-conflict-unreviewed'),
-      push: BASE_PUSH, passBy: PASS_BY, passAt: PASS_AT, usageHold: USAGE_HOLD, repoLogin: REPO_LOGIN, baselineOn, dry: DRY, now: Date.now(),
+      push: BASE_PUSH, passBy: PASS_BY, passAt: PASS_AT, usageHold: USAGE_HOLD, repoLogin: REPO_LOGIN, baselineOn, dry: DRY, now: Date.now(), woken: WOKEN,
     }),
     decide: decideBaseSync,
     handlers: {
@@ -3233,6 +3366,8 @@ for (const { name, why } of pruneReadRepos()) report.failed.push(`read-only clon
 let readRepoFailures = null;
 // health.mjs markFailed's line, stall and push once a worktree setup in this pass has not reached the local database.
 let dbDown = null;
+// Each worktree set up this pass, with the seconds each step took: the metrics line carries them.
+const setupTimes = [];
 const SETUP_FETCH_S = String(Math.max(1, Math.ceil(REMOTE_GIT_MS / 1000)));
 // A local spawn's worktree, set up by setup-worktree.sh for decideSpawn's `setup` action: { wt, kept,
 // renamed, hung } where origin was found hung before it ran, else { wt, kept, renamed, ok, exitOk, out,
@@ -3243,6 +3378,9 @@ function setUpWorktree(t) {
   // Read before setup-worktree.sh, which makes a worktree that is not there: a round left in one the
   // requeue removed for a fresh branch is not resumed.
   const kept = existsSync(wt);
+  // A kept dir still holding setup-worktree.sh's incomplete marker gets the full setup, install
+  // included, so its step times count as a new worktree's (DS-698).
+  const reused = kept && !existsSync(join(wt, '.desk-setup-incomplete'));
   // A queued branch no worker could push (a convention placeholder left in at triage) is replaced
   // from the key and summary before setup-worktree.sh cuts it.
   let renamed = '';
@@ -3272,7 +3410,10 @@ function setUpWorktree(t) {
     retried = `first try: ${first}; re-fetched ${staleRef[2]}${refetch.ok ? '' : ` (that fetch failed: ${lastLine(refetch.out)})`} and retried once: `;
     if (setUp(setupRun)) report.recovered.push(`${t.key}: worktree setup could not lock the stale ref ${staleRef[1]}; re-fetched ${staleRef[2]} and the retry set it up`);
   }
-  return { wt, kept, renamed, ok: setUp(setupRun), exitOk: setupRun.ok, out: setupRun.out, retried };
+  const ok = setUp(setupRun);
+  const steps = ok ? parseSetupSteps(setupRun.out) : null;
+  if (steps) setupTimes.push({ key: t.key, kept: reused, steps });
+  return { wt, kept, renamed, ok, exitOk: setupRun.ok, out: setupRun.out, retried };
 }
 // The decision is pass/spawn-loop.mjs decideSpawn, run for each candidate in turn: its snapshot is the
 // loop's state as the candidate's turn comes, its reads and locked writes are the handlers below, made
@@ -3310,7 +3451,9 @@ const SPAWN_HANDLERS = {
     if (report.failed.length === before) report.done.push(a.line);
   },
   park: (a) => {
-    q('park', a.key, a.line);
+    // The spawn loop parks only when a ticket could not be spawned (an unreachable host, a failed
+    // worktree setup): a failure, not a question.
+    q('park', a.key, '--kind', 'failure', a.line);
     report.parked.push(`${a.key}: ${a.line}`);
   },
   'hand-away': (a, s) => handAway(s.t, a.placement),
@@ -3449,7 +3592,9 @@ if (!DRY) {
 if (!DRY && report.spawned.length > spawnedBefore) q('set-batch', `last_start=${new Date().toISOString()}`);
 // An epic review or promotion check try starts in decideEpicPr or promotionChecksStep, after which the lock
 // is released once the slot it counted is taken.
-if (!((epicReviewDue || promotionChecksDue) && baseFixRoom && !baseFix)) borrowLock?.release();
+// So does a due blind audit, which starts after the levers trips, until runAudits has started it.
+const baseKeepsLock = (epicReviewDue || promotionChecksDue) && baseFixRoom && !baseFix;
+if (!baseKeepsLock && !auditDue) borrowLock?.release();
 // The batch's hold on the usage limit, for desk-q, needs-you and the next pass: one record, kept from
 // the first pass that held until the one that finds it lifted. Saved again after the epic PR's review
 // try, which spawns after this point and may meet the limit.
@@ -3689,7 +3834,7 @@ runSteps({
     ...EPIC_HANDLERS,
     'epic-merged': (a, s) => epicMerged(s.q, a.key),
     'other-repo': (a) => inOtherRepo(a.key),
-    landed: (a) => landedOn(a.key, DEFAULT_BRANCH),
+    landed: (a) => landedOn(a.key, DEFAULT_BRANCH, REPO_DEFAULT),
     unpromoted: (a) => unpromotedBase(a.key, a.into),
   },
   report,
@@ -3701,7 +3846,7 @@ runSteps({
   name: 'merge holds',
   snapshot: () => holdsSnapshot(personLabels()),
   decide: decideMergeHolds,
-  handlers: { ...EPIC_HANDLERS, 'landed-here': (a) => inOtherRepo(a.key) || landedOn(a.key, DEFAULT_BRANCH) === true },
+  handlers: { ...EPIC_HANDLERS, 'landed-here': (a) => inOtherRepo(a.key) || landedOn(a.key, DEFAULT_BRANCH, REPO_DEFAULT) === true },
   report,
 });
 
@@ -3730,7 +3875,7 @@ runPhase({
   name: 'report',
   snapshot: () => ({
     ...baseSnapshot(), report, baseLines, maintLines: MAINT.lines, dateLines, linkLines, epicLines,
-    incidentalBad, appendOnlyBad, fileBudgetBad: FILE_BUDGET.bad, conflictRecordBad: conflictRecord.bad,
+    incidentalBad, appendOnlyBad, fileBudgetBad: FILE_BUDGET.bad, budgetUnread: [...budgetUnread], conflictRecordBad: conflictRecord.bad,
     conflicts: [...conflictsBy].map(([f, times]) => ({ file: f, configured: configuredPlaces(f), now: placesFor(f), recent: recentCount(times, PASS_MS) })),
     unreadableQueues: [...unreadableQueues], portLeaseLines: [...portLeaseLines], concurrency, eligible: eligible.length, queueBin: join(SHOWN_BIN, 'queue.mjs'),
   }),
@@ -3747,7 +3892,7 @@ const prStates = {};
 // as pr_status. `head_at` is when the head commit was committed, as GitHub holds it: desk-q's STARTS
 // counts a Merging row's age from it, so a restart or a migration does not reset it and a new head does.
 function readPrStatus(n) {
-  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,reviews,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,baseRefOid,statusCheckRollup,commits,mergeCommit'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,reviews,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,baseRefOid,author,statusCheckRollup,commits,mergeCommit'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   let v;
   try { v = JSON.parse(raw); } catch { return null; }
   if (!v?.state) return null;
@@ -3765,7 +3910,7 @@ function readPrStatus(n) {
     pr: n, state: v.state, url: v.url ?? null, merged_at: time(v.mergedAt), merge_commit: v.mergeCommit?.oid ?? null,
     isDraft: v.isDraft ?? null, reviewDecision: v.reviewDecision || null, approvals, mergeable: v.mergeable ?? null,
     mergeState: v.mergeStateStatus ?? null, head: v.headRefOid ?? null, head_at: time(headCommit?.committedDate),
-    base: v.baseRefName ?? null, branch: v.headRefName ?? null, base_head: v.baseRefOid ?? null,
+    base: v.baseRefName ?? null, branch: v.headRefName ?? null, author: v.author?.login ?? null, base_head: v.baseRefOid ?? null,
     checks, at: new Date().toISOString(),
   };
 }
@@ -3869,7 +4014,7 @@ const undrafted = [];
 const reopens = [];
 runSteps({
   name: 'PR status',
-  snapshot: () => ({ ...phaseSnapshot({ tickets: qNow.tickets, registry: REGISTRY, now: Date.now() }), dry: DRY, passAt: PASS_AT }),
+  snapshot: () => ({ ...phaseSnapshot({ tickets: qNow.tickets, registry: REGISTRY, now: Date.now() }), dry: DRY, passAt: PASS_AT, logins: conflictHandle }),
   decide: decidePrStatus,
   handlers: {
     ...OUT_HANDLERS,
@@ -3878,6 +4023,8 @@ runSteps({
       q('set', a.key, `fix.finished=${a.at}`); t.fix.finished = a.at;
       if (a.fixTries) { t.fix_tries = a.fixTries; q('set', a.key, `fix_tries=${JSON.stringify(a.fixTries)}`); }
     },
+    // A ticket whose PR is not its own parks, and the steps after this one in the pass see it parked.
+    park: (a) => { q('park', a.key, a.question); const t = qNow.tickets[a.key]; if (t) Object.assign(t, { state: 'parked', park: { question: a.question } }); },
     'read-pr': (a) => {
       const s = readPrStatus(a.pr);
       return s && withErrors(withUntriggered(withHistory(s, a.was)), a.was);
@@ -4169,6 +4316,14 @@ const UNDRAFT_HANDLERS = {
   rebuilt: (a) => rerunBuilt(a.t, a.pr, a.head, a.c, a.rec),
   evidence: (a) => startEvidence(a.t, a.pr, a.head, a.c, a.rec),
   ready: (a) => shOut('gh', ['pr', 'ready', String(a.pr), '--repo', GH_REPO]),
+  // The update is a new head, so a new preview build: it takes the branch's preview-build unit first.
+  'update-branch': (a) => {
+    const slot = a.branch ? previewSlot(a.t, a.branch) : {};
+    if (slot.wait) return { wait: slot.wait };
+    const r = shOut('gh', ['pr', 'update-branch', String(a.pr), '--repo', GH_REPO]);
+    if (r.ok) keepSlot(slot, a.pr); else freeSlot(slot);
+    return r;
+  },
   comment: (a) => shOut('gh', ['pr', 'comment', String(a.pr), '--repo', GH_REPO, '--body', a.body]),
   'record-carry': (a) => recordCarry(STATE, a.t.key, { head: a.head, from: a.from, reviews: a.reviews, handle: conflictHandle }),
   carried: (a) => { try { mkdirSync(DRIVER_DIR, { recursive: true }); writeFileSync(join(DRIVER_DIR, `carried-${a.pr}-${a.head}`), ''); } catch { /* the driver says it once more */ } },
@@ -4193,6 +4348,7 @@ runSteps({
     drafts: [...drafts], spine: qNow.spine, dry: DRY, at: PASS_AT, repo: GH_REPO, base: DEFAULT_BRANCH,
     cfg: {
       perm: E.permission('pr-ready'), permKey: E.permissionKey('pr-ready'), approved: qNow.approved?.undraft === true, rerun: E.permission('ci-rerun'),
+      updateBranch: E.permission('pr-update-branch'),
       localReview: E.configValue('local-review'), clean: E.configValue('clean-verdict'), judgement: E.permission('autopilot-judgement'),
       conflictUnreviewed: E.permission('pr-conflict-unreviewed'), conflictReviewed: E.permission('pr-conflict-reviewed'),
       handle: conflictHandle,
@@ -4582,6 +4738,13 @@ function applyFix(t, n, head, c) {
     if (!DRY) q('set', t.key, `base_red=${JSON.stringify(rec)}`);
     t.base_red = rec;
   }
+  // Held only on checks the red base names, it is one of the PRs the batch's red base line names; held on
+  // another too, it keeps its own line, as needs-you keeps its item.
+  const heldOn = c.base_red?.checks ?? [];
+  if (c.call === 'held' && !c.label && BASE_RED && heldOn.length && heldOn.every((x) => BASE_RED.checks.some((b) => b.name === x))) {
+    baseRedHeld.push(`#${n} (${t.key})`);
+    return;
+  }
   if (c.call === 'held') { report.waiting.push(`${t.key}: ${c.label ?? 'BASE RED'} — PR #${n}: ${c.why}`); return; }
   if (c.call === 'wait') { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`); return; }
   if (c.call === 'rerun') {
@@ -4669,12 +4832,19 @@ async function spawnAudit({ key, item, sha, model, task, brief }) {
   report.spawned.push(`${key} port=${port} model=${model}${pick.line} (blind audit of PR #${item.pr} at ${sha.slice(0, 12)}); ${preflightNote(pre.cost)}`);
   return { session: sid, worktree: wt, state: STATE, preflight_usd };
 }
-// The PR's merge commit, and how many commits it had, so a rebase merge is audited whole.
+// The PR's merge commit, how many commits it had, and how it merged (merge-landed.mjs), so a rebase
+// merge is audited whole and a squash in a rebase repo is not.
 function auditMergeCommit(item) {
-  const out = sh('gh', ['pr', 'view', String(item.pr), '--repo', GH_REPO, '--json', 'mergeCommit,commits', '--jq', '[.mergeCommit.oid, (.commits | length)] | @tsv'],
-    { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
-  const [sha, n] = String(out ?? '').trim().split('\t');
-  return sha ? { sha, commits: Number(n) } : null;
+  const quiet = { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] };
+  const raw = sh('gh', ['pr', 'view', String(item.pr), '--repo', GH_REPO, '--json', 'mergeCommit,commits'], quiet);
+  let pr = null;
+  try { pr = JSON.parse(raw); } catch { return null; }
+  const sha = pr?.mergeCommit?.oid;
+  if (!sha) return null;
+  const commits = pr.commits ?? [];
+  if (!shOut('git', ['-C', MAIN, 'cat-file', '-e', `${sha}^{commit}`]).ok) sh('git', ['-C', MAIN, 'fetch', '-q', 'origin'], quiet);
+  const landed = landedOf(sh('git', ['-C', MAIN, 'log', '--first-parent', `-n${Math.max(1, commits.length)}`, `--format=${LANDED_FORMAT}`, sha], quiet));
+  return { sha, commits: commits.length, method: mergeMethodOf({ landed, commits }) };
 }
 if (!DRY) {
   try {
@@ -4687,12 +4857,17 @@ if (!DRY) {
       ended: (item) => endedFromExit(item) ?? (registryOk && !REGISTRY.liveSids.has(item.session) && Date.now() - Date.parse(item.started_at) > 120_000 ? { at: new Date().toISOString() } : null),
       cleanup: (item) => { if (item.worktree) shOut('git', ['-C', MAIN, 'worktree', 'remove', '--force', item.worktree]); },
       pace: () => PACE,
-      // The room the pass counted, less what it has spawned since.
-      room: () => (lowMemory || usageStop || MAINT.hold || repoUnlocked || MACHINE.room - report.spawned.length <= 0 || REPO.room - report.spawned.length <= 0 ? 'no room' : null),
+      // The room the pass counted, less what it has spawned since, within the batch's own number less
+      // its base conflict fix, running or started this pass.
+      room: () => (lowMemory || usageStop || MAINT.hold || repoUnlocked || MACHINE.room - report.spawned.length <= 0 || REPO.room - report.spawned.length <= 0
+        || attempts >= Math.min(concurrency - running.length - (baseFixLive || baseFix ? 1 : 0), MACHINE.room, REPO.room) ? 'no room' : null),
     });
     if (au.line) out.push(au.line);
   } catch (e) { out.push(`levers audits: not run (${String(e?.message ?? e).split('\n')[0]})`); }
+  // An audit's preflight the usage limit refused held the batch after the save.
+  saveUsage();
 }
+if (auditDue && !baseKeepsLock) borrowLock?.release();
 // The levers are evaluated once a day across every repo, by the first pass to take its lock.
 if (!DRY) {
   try { const ev = evaluateDue(); if (ev.line) out.push(ev.line); } catch (e) { out.push(`levers evaluate: not run (${String(e?.message ?? e).split('\n')[0]})`); }
@@ -5040,6 +5215,40 @@ runSteps({
   report,
 });
 
+// ---- ticketless PRs --------------------------------------------------------
+// The open PRs into the base that a desk session opened and no ticket in any of the repo's batches owns:
+// pass/ticketless-prs.mjs decideTicketless, recorded as `ticketless_prs` for needs-you.
+runPhase({
+  name: 'ticketless PRs',
+  snapshot: () => {
+    const qx = queue();
+    let handle = null;
+    try { handle = E.githubHandle() || null; } catch { /* unread: nothing is listed or dropped */ }
+    const tickets = [...Object.values(qx.tickets)];
+    const heads = qx.base ? [qx.base] : [];
+    if (REPO_SLUG != null) {
+      for (const b of listBatches(REPO_SLUG)) {
+        if (resolve(b.queue) === resolve(QUEUE_FILE) || !existsSync(b.queue)) continue;
+        try {
+          const o = readQueue(b.queue);
+          tickets.push(...Object.values(o.tickets ?? {}));
+          if (o.base) heads.push(o.base);
+        } catch { /* an unreadable batch owns nothing it can show */ }
+      }
+    }
+    let prs = null;
+    if (handle) {
+      const r = shOut('gh', ['pr', 'list', '--repo', GH_REPO, '--state', 'open', '--base', DEFAULT_BRANCH, '--author', handle, '--limit', '200',
+        '--json', 'number,title,headRefName,baseRefName,body,createdAt,author']);
+      try { prs = r.ok ? JSON.parse(r.out || '[]') : null; } catch { prs = null; }
+    }
+    return { prs, tickets, heads, base: DEFAULT_BRANCH, handle, recorded: qx.ticketless_prs ?? null, dry: DRY };
+  },
+  decide: decideTicketless,
+  handlers: { ...OUT_HANDLERS, 'set-batch': (a) => q('set-batch', ...a.fields) },
+  report,
+});
+
 // The report's lines after the ledger (pass/report.mjs decideReportLines): a §4 Merge hold on the
 // promotion, overridden calls, the review rows, WAITING ON YOU, BLOCKED ON ANSWERS, the held-back,
 // resume and reboot waits, put-off parks asked again, PARKED and the rest, and the base drift.
@@ -5086,12 +5295,15 @@ runPhase({
       base: BASE, source: SOURCE, promotion: qx.promotion,
       overrides: readDecisions(STATE).overrides, overridesSeen: seenRead('overrides-reported.json', JSON.parse, []),
       reviewClash, reviewSeen: reviewClash ? seenRead('review-rows-reported.txt', (x) => x, '') : '',
-      blocked, heldBack: heldBack.map((r) => ({ key: r.key, holds: budgetHolds(r) })),
+      blocked, heldBack: heldBack.map((r) => ({
+        key: r.key, holds: budgetHolds(r).map((h) => ({ ...h, elsewhere: h.elsewhere.map((o) => ({ key: o.key, label: batchLabel(o.batch) })) })),
+      })),
       resumeRows: Object.values(qNow.tickets).filter((r) => r.state === 'triaged').map((r) => ({
         key: r.key, resume: r.resume, resume_why: r.resume_why, toResume: toResume(r), rebootWait: r.resume === 'reboot' ? rebootReady(r).wait ?? null : null,
       })),
       register: REGISTER,
       askedAgain: askedAgain.filter((p) => !takenBack.includes(p.key)),
+      baseRed: BASE_RED ? batchLine(BASE_RED, { held: baseRedHeld, repair: baseRedRepair }) : null,
     };
   },
   decide: decideReportLines,
@@ -5174,11 +5386,30 @@ runPhase({
   report,
 });
 const heldWhy = heldWhyOf({
-  spawned: report.spawned.length, eligible: eligible.length, held, baseHold, baseLag, lowMemory, availGB, minAvailGB: MIN_AVAIL_GB,
+  spawned: report.spawned.length, eligible: eligible.length, held, baseHold, baseLag, lowMemory, harmWhy, availGB, minAvailGB: MIN_AVAIL_GB,
   lockQueueHeldText, machine: MACHINE, repoUnlocked, repoLine, repo: REPO, concurrency,
 });
 const heldEnd = Object.values(qEnd.tickets).filter(isHeld).map((t) => t.key);
 const mergedEnd = Object.values(qEnd.tickets).filter((t) => t.merged_at).map((t) => t.key);
+
+// ---- ledger difference ---------------------------------------------------------
+// With the ledger lever on, the pass's changes so far are written and its done tickets archived, then
+// queue.json is compared with the queue rebuilt from the log (queue-ledger.mjs queueDifference, seeding
+// a batch the log has never named), and the count goes in the report (pass/report.mjs ledgerLine) and
+// the metrics line. The pass record's write after it changes the batch's own fields, which a rebuild
+// carries over, and archives only a ticket another writer finished since.
+const ledgerLate = [];
+let ledgerRec = {};
+if (!DRY && ledgerOn()) {
+  ledgerLate.push(...writeLines(QW.flush({ archive: true })));
+  const missed = [...report.failed, ...ledgerLate].filter((l) => l.startsWith(MISSED_PREFIX)).length;
+  let check;
+  try { check = queueDifference(QUEUE_FILE, { seed: true, by: 'pass', waitMs: LOCK_WAIT_MS }); }
+  catch (e) { check = { error: String(e?.message ?? e).split('\n')[0] }; }
+  const l = ledgerLine({ check, missed, queueBin: join(SHOWN_BIN, 'queue.mjs') });
+  if (l) lines.push(l);
+  ledgerRec = { ledger_diffs: check.error ? null : check.diffs.length, ledger_missed: missed };
+}
 
 // ---- pass metrics ------------------------------------------------------------
 // One line per pass (pass-metrics.mjs). An eligible ticket left unspawned counts under the hold that
@@ -5190,10 +5421,11 @@ if (!DRY) {
   const runningEnd = Object.values(qEnd.tickets).filter((t) => t.state === 'running');
   const unspawned = eligible.filter((r) => qEnd.tickets[r.key]?.state === 'triaged').length;
   // usageStop and USAGE_HOLD also cover a limit met mid-pass, after `held` was fixed.
-  const holdWhy = !MAINT.hold && (held === PACE_HELD || USAGE_HOLD || usageStop) ? 'usage' : held ? null : lowMemory ? 'memory' : repoUnlocked ? 'lock' : null;
+  // A harm signal holds through `held` and is a memory hold all the same.
+  const holdWhy = !MAINT.hold && (held === PACE_HELD || USAGE_HOLD || usageStop) ? 'usage' : held && held !== harmWhy ? null : lowMemory ? 'memory' : repoUnlocked ? 'lock' : null;
   const collisions = heldBack.map((r) => {
     const holds = budgetHolds(r);
-    return { key: r.key, with: [...new Set(holds.flatMap((h) => h.by))], files: holds.map((h) => h.file) };
+    return { key: r.key, with: [...new Set(holds.flatMap((h) => [...h.by, ...h.elsewhere.map((o) => o.key)]))], files: holds.map((h) => h.file) };
   });
   let batch = null;
   try { batch = E.batchName(); } catch { /* the standing batch */ }
@@ -5204,6 +5436,8 @@ if (!DRY) {
     spawned: report.spawned.length, duration_ms: Date.now() - Date.parse(PASS_AT),
     queue_write_failures: report.failed.filter((x) => x.includes('queue write refused')).length,
     collisions,
+    ...ledgerRec,
+    setup: setupTimes,
   };
   const step = collisionStep({ streak: prevPass.collision_streak, warned: prevPass.collision_warned }, line);
   // The warning carries the time it is written, not the pass's start: a check-in sent since the pass
@@ -5215,14 +5449,14 @@ if (!DRY) {
   // A warning whose line was not written was not given: the next pass gives it.
   collisionRec = { collision_streak: step.streak, collision_warned: step.warn && !wrote.ok ? false : step.warned };
 }
-const late = recordPass((prev) => {
+const late = [...ledgerLate, ...recordPass((prev) => {
   const released = (prev.held_tickets ?? []).some((k) => qEnd.tickets[k] && !heldEnd.includes(k));
   // A merge is progress once, in the pass that first finds it merged, whoever recorded it: a merge
   // time later than the previous pass's start would count again a merge that pass already recorded.
   const merged = merges.length > 0 || (Array.isArray(prev.merged_tickets) && mergedEnd.some((k) => !prev.merged_tickets.includes(k)));
   const moved = report.spawned.length > 0 || merged || released;
   return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, undraft_errors: undraftErrors, pace_blind: PACE_BLIND, ...collisionRec };
-});
+})];
 lines[tableAt] = sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true });
 // The last write's refusals, and fields another writer had changed, are the person's too.
 if (late.length) {

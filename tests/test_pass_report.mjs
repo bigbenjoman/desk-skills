@@ -73,6 +73,14 @@ const opening = (fields = {}) => ({
   ]));
   t('a worker count of 0 with nothing triaged waiting is not a pause', j(lines(decideReportOpening(opening({ concurrency: 0, eligible: 0 })))), '[]');
 }
+{
+  const got = lines(decideReportOpening(opening({ fileBudgetBad: 'bad budget', budgetUnread: ['/q/XB-1/queue.json is not valid JSON (x)'], conflictRecordBad: 'not JSON' })));
+  t('DS-664 AC4 each other batch whose queue did not read is named after the budget row, as not counted toward the per-file budget', j(got), j([
+    'collisions: bad budget — read as 1 for every file, so no two tickets naming one file run at once',
+    'collisions: /q/XB-1/queue.json is not valid JSON (x) — that batch\'s running tickets were not counted toward the per-file budget',
+    'collisions: the conflict record was not read (not JSON), so every file runs at its configured budget',
+  ]));
+}
 
 // ---- the report's lines after the promotion ledger
 const after = (fields = {}) => ({
@@ -80,6 +88,11 @@ const after = (fields = {}) => ({
   base: null, source: 'main', promotion: undefined, overrides: [], overridesSeen: [], reviewClash: null, reviewSeen: '',
   blocked: [], heldBack: [], resumeRows: [], register: { ok: true, entries: new Map() }, askedAgain: [], ...fields,
 });
+{
+  const heldBack = [{ key: 'H-1', holds: [{ file: 'pass.mjs', by: ['R-1'], elsewhere: [{ key: 'X-1', label: 'batch XB-1' }, { key: 'X-2', label: 'the standing batch' }], k: 3 }] }];
+  t('DS-664 AC1 a held ticket names the tickets running in other batches after its own batch\'s, each with its batch',
+    lines(decideReportLines(after({ heldBack })))[0], 'held back by a collision: H-1 (pass.mjs has 3 running of its 3: R-1, X-1 in batch XB-1, X-2 in the standing batch)');
+}
 {
   const tickets = byKey([
     { key: 'H', merged_at: '2026-11-18T10:00:00Z', promotion_hold: 'run the migration', result: { pr: 9 } },
@@ -261,6 +274,7 @@ const vsnap = (tickets, fields = {}) => {
     heldWhyOf({ ...free, repoUnlocked: true }), heldWhyOf({ ...free, repo: { room: 0, line: 'R 3/3' } }), heldWhyOf({ ...free, concurrency: 0 }), heldWhyOf(free),
   ]), j(['usage', 'the batch base sync holds every spawn: 30 behind', 'memory: 3.2G available, under the 6G spawn gate', 'the lock queue',
     'the machine budget: m 9/9', 'the repo\'s shared cap: r', 'the repo\'s shared cap: R 3/3', 'the batch\'s worker count is 0', null]));
+  t('a harm signal is named rather than avail', heldWhyOf({ ...free, lowMemory: true, harmWhy: 'memory harm: OOM-KILL within the last 10m (…)' }), 'memory harm: OOM-KILL within the last 10m (…)');
 }
 
 // AC4: each decision returns its actions without starting a process, calling git, gh or Jira, or

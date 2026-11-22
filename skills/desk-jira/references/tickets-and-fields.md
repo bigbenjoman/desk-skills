@@ -101,7 +101,8 @@ a value in §4 Priorities only you set: that one is the user's call (above).
 ticket to the user when no `assignee=` is given; otherwise pass `assignee=me` (which waits on that
 row). `create` prints the assignee read back from Jira; `(empty - the assignment did not stick)`
 means set it with `desk-jira edit`. Anyone else is routing (gate item 3): `create` refuses an
-assignee other than the user unless `--route` is given.
+assignee other than the user unless `--route` is given. `assignee=none` (or `null`) files it
+unassigned, for someone else to pick up.
 
 **Labels.** Use the vocabulary in §4 Labels (`any` means the project's existing labels: list them
 before choosing). Pick the ones that genuinely apply. There is no unconditional set: a label is

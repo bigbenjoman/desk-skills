@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { personClears } from './clears-when.mjs';
 import { attachArchive } from './queue-store.mjs';
+import { PARK_KINDS } from './queue-states.mjs';
 import { postMergeUnmade } from './harvest.mjs';
 
 // pass.mjs, plan-batch.mjs, queue.mjs and answer.mjs exit only with these, so the orchestrator branches
@@ -45,6 +46,13 @@ export function statePath(stateDir, name, key) {
 export const readQueue = (path) => attachArchive(readJsonOrRefuse(path,
   `restore it, or re-create ${path} (queue.mjs init <batch-name>, then re-seed it with plan-batch.mjs) — refusing to read it as an empty batch`), path);
 export const readTriage = (stateDir, t) => readJsonOrRefuse(statePath(stateDir, 'triage', t), `re-run triage.sh ${t}`);
+// A triage record's unknowns as text, each once, in its order.
+export const unknownsOf = (unknowns) => [...new Set((Array.isArray(unknowns) ? unknowns : []).map((u) => String(u?.question ?? u ?? '').trim()).filter(Boolean))];
+// Those of queue ticket `t` still open: less each one answer.mjs recorded answered (answered_questions).
+export const openUnknowns = (unknowns, t) => {
+  const done = new Set(Array.isArray(t?.answered_questions) ? t.answered_questions : []);
+  return unknownsOf(unknowns).filter((u) => !done.has(u));
+};
 
 // The PR state the last pass recorded for a done ticket's PR (pr_status), or null when none was read.
 // Nothing here calls GitHub.
@@ -180,12 +188,28 @@ export const IDLE_RECHECK_MS = Number(process.env.DESK_IDLE_RECHECK_MS) || 30 * 
 export const HELD_PREFIX = 'held by orchestrator';
 // A held ticket whose worker queue.mjs stop ended: held behind no blocker, so only the person starts it.
 export const STOPPED_PREFIX = `${HELD_PREFIX}: stopped by queue.mjs stop`;
-export const stoppedHold = (t) => t?.state === 'parked' && !String(t.held_by ?? '').split('|').some(Boolean)
-  && String(t.park?.question ?? '').startsWith(STOPPED_PREFIX);
+// The park kinds the orchestrator holds a ticket on, rather than its own step: a blocker, a stop, a date.
+const HELD_KINDS = ['hold', 'stopped', 'date'];
 
-// Parked "held by orchestrator" (a dependency chain, released by merge-driver.sh release_chain or by
+// The kind of park `question` opens as: what a park recorded before parks carried their kind is read
+// as, and what a new park whose writer names none is recorded as.
+export function parkKindOf(question) {
+  const q = String(question ?? '');
+  if (q.startsWith(STOPPED_PREFIX)) return 'stopped';
+  // A blocked-until label's hold (pass/parks.mjs), its date read or not (badLabelText).
+  if (q.startsWith(`${HELD_PREFIX}: blocked until `) || q.startsWith(`${HELD_PREFIX}: its label `)) return 'date';
+  if (q.startsWith(HELD_PREFIX)) return 'hold';
+  if (q.startsWith(PERSON_STEP_PREFIX)) return 'person-step';
+  return 'question';
+}
+// Ticket `t`'s park kind: the one its park records, else the one its question opens as.
+export const parkKind = (t) => (PARK_KINDS.includes(t?.park?.kind) ? t.park.kind : parkKindOf(t?.park?.question));
+
+export const stoppedHold = (t) => t?.state === 'parked' && !String(t.held_by ?? '').split('|').some(Boolean) && parkKind(t) === 'stopped';
+
+// Parked on a hold, a stop or a date (a dependency chain, released by merge-driver.sh release_chain or by
 // the one sanctioned manual release once every predecessor's PR has merged).
-export const isHeld = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(HELD_PREFIX);
+export const isHeld = (t) => t?.state === 'parked' && HELD_KINDS.includes(parkKind(t));
 
 // Waiting behind the blockers in its held_by: held by the orchestrator, or parked at triage for its own
 // reason (triagePark) with holds kept beside the park. Every reader that follows a chain of holds asks
@@ -315,7 +339,9 @@ export const needsPersonLane = (r) => r?.lane === 'C' || (r?.lane === 'D' && des
 const SHA = /^[0-9a-f]{40}$/;
 // Each needs a word saying the worker could not do it, so a park mentioning the tool in passing is not caught.
 // "needs" counts only right before the tool ("needs curl"): most questions say need somewhere.
-const NEVER = [['aws', /\baws\b/i], ['ssm', /\bssm\b/i], ['curl', /\bcurl\b/], ['wget', /\bwget\b/], ['gh api', /\bgh api\b/],
+// The CLI's name, a full path to it included, not a package scope or directory that holds it
+// ("@aws-sdk/client-s3" is a dependency; "/opt/homebrew/bin/aws" is the CLI).
+const NEVER = [['aws', /(?<![@\w-])aws\b(?![-/])/i], ['ssm', /(?<![@\w-])ssm\b(?![-/])/i], ['curl', /\bcurl\b/], ['wget', /\bwget\b/], ['gh api', /\bgh api\b/],
   ['.claude/ write', /(?:^|[^\w.])\.claude\//]];
 const REFUSED = /\b(?:refus\w*|denied|den(?:y|ies)|not (?:allowed|granted|permitted)|blocked|can(?:not|'t) (?:run|use|reach|write|call))\b|\bneed(?:s|ed)? (?:the |to (?:run|use) )?(?:aws|ssm|curl|wget|gh api)\b/i;
 const FORCE_PUSH = /\bforce[- ]?push\w*|\bforce-with-lease\b/i;
@@ -523,7 +549,7 @@ export function labelPark(r, stepLabels = [], inputLabels = []) {
   const l = input ?? stepLabel(r?.labels, stepLabels);
   return l ? `${PERSON_STEP_PREFIX}labelled ${l} ${input ? INPUT_ROW : '(config §4 Person-step labels)'}, so no worker can do it. Take the step, mark it Done in Jira, then drop it from the batch` : null;
 }
-export const personStepPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(PERSON_STEP_PREFIX);
+export const personStepPark = (t) => t?.state === 'parked' && parkKind(t) === 'person-step';
 // A queue ticket parked at triage for its own reason (lanePark, designPark, sizePark, labelPark): a hold
 // waits beside that park rather than replacing it, so no release sends it to a worker.
 export const triagePark = (t) => {

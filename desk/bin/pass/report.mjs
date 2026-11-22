@@ -1,4 +1,5 @@
-// What a pass says, as decisions: base drift, the report's lines, the ticket groups and the verdict.
+// What a pass says, as decisions: base drift, the report's lines, the ticket groups, the verdict and
+// the ledger difference.
 // Pure: each reads only the snapshot it is given. pass.mjs reads what each needs (a worktree's git
 // count, a seen-file, the groups desk-q finds, the check-in) into the snapshot, and carries out the
 // actions; each decision runs at the point in the pass whose state it reads.
@@ -47,6 +48,8 @@ export function decideDrift(s) {
 //   report                 the pass's report lists
 //   baseLines, maintLines, dateLines, linkLines, epicLines   each phase's own lines, in that order
 //   incidentalBad, appendOnlyBad, fileBudgetBad, conflictRecordBad   a row read as its default, or null
+//   budgetUnread           why each of this repo's other batches' queues did not read, so its running
+//                          tickets were not counted toward the per-file budget
 //   conflicts              [{ file, configured, now, recent }] for each file with merge-time conflicts
 //   unreadableQueues       the other queues whose running workers' ports were not read
 //   portLeaseLines         what the port leases and claims did this pass: unreadable, a stale holder or claim dropped
@@ -64,6 +67,7 @@ export function decideReportOpening(s) {
   if (s.incidentalBad) acts.push(out(`scope: ${s.incidentalBad} — read as the default (lockfiles)`));
   if (s.appendOnlyBad) acts.push(out(`collisions: ${s.appendOnlyBad} — read as none, so a shared append-only file still collides`));
   if (s.fileBudgetBad) acts.push(out(`collisions: ${s.fileBudgetBad} — read as 1 for every file, so no two tickets naming one file run at once`));
+  for (const why of s.budgetUnread ?? []) acts.push(out(`collisions: ${why} — that batch's running tickets were not counted toward the per-file budget`));
   if (s.conflictRecordBad) acts.push(out(`collisions: the conflict record was not read (${s.conflictRecordBad}), so every file runs at its configured budget`));
   for (const c of s.conflicts) {
     if (c.now < c.configured) acts.push(out(`collisions: ${c.file} runs ${c.now} of its configured ${c.configured}, after ${c.recent} merge-time conflict(s) in the last 7 days`));
@@ -128,12 +132,15 @@ export function* decidePutOffRefresh(s) {
 //                           read clean, and the clash last logged: logged once for that pair of rows,
 //                           since workers run /desk-review in its place until /desk-setup settles it
 //   blocked                 blockedOf the pass's rows
-//   heldBack                [{ key, holds: [{ file, by, k }] }] the triaged tickets a running one's file holds
+//   heldBack                [{ key, holds: [{ file, by, elsewhere, k }] }] the triaged tickets a running one's
+//                           file holds: `by` this batch's running keys, `elsewhere` [{ key, label }] those
+//                           running in the repo's other batches, each with its batch's label
 //   resumeRows              the pass's triaged rows as the held phase read them, each
 //                           { key, resume, resume_why, toResume, rebootWait }
 //   askedAgain              [{ key, question, now }] the put-off parks decidePutOffRefresh asked again,
 //                           whose refreshed inputs `now` were written and not taken back
 //   register                the "not now" register
+//   baseRed                 the red base's one line for the batch (base-red.mjs batchLine), or null
 export function decideReportLines(s) {
   const acts = [];
   const waiting = [...s.report.waiting];
@@ -151,10 +158,15 @@ export function decideReportLines(s) {
   if (s.reviewClash && s.reviewSeen !== s.reviewClash) {
     acts.push(out(`review rows: ${s.reviewClash}`), { type: 'seen', file: 'review-rows-reported.txt', text: s.reviewClash });
   }
+  // A red base is the batch's, not one of the person's own steps, so it is listed apart from them.
+  if (s.baseRed) acts.push(out(`RED BASE:\n  ${s.baseRed}`));
   if (waiting.length) acts.push(out(`WAITING ON YOU:\n  ${waiting.join('\n  ')}`));
 
   if (s.blocked.length) acts.push(out(`BLOCKED ON ANSWERS: ${s.blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${s.answerBin} <TICKET> "<answer>"`));
-  const budgetText = (h) => `${h.file} has ${h.by.length} running of its ${h.k}: ${h.by.join(', ')}`;
+  const budgetText = (h) => {
+    const names = [...h.by, ...(h.elsewhere ?? []).map((o) => `${o.key} in ${o.label}`)];
+    return `${h.file} has ${names.length} running of its ${h.k}: ${names.join(', ')}`;
+  };
   if (s.heldBack.length) acts.push(out(`held back by a collision: ${s.heldBack.map((x) => `${x.key} (${x.holds.map(budgetText).join('; ')})`).join(', ')}`));
   const resumeWaits = s.resumeRows.filter((r) => r.toResume && !(r.resume === 'reboot' && r.rebootWait));
   if (resumeWaits.length) acts.push(out(`waiting to resume (killed; resumed ahead of new tickets when a slot frees): ${resumeWaits.map((r) => `${r.key} (${r.resume_why})`).join(', ')}`));
@@ -284,10 +296,27 @@ export function decideVerdictLines(s) {
   return acts;
 }
 
+// ---- ledger difference ---------------------------------------------------------
+// The ledger lever's line, or null when the queue rebuilt from the log matches queue.json and no write
+// of this pass missed its append. `check` is queue-ledger.mjs queueDifference's result, or { error }
+// when it did not run; `missed` counts this pass's missed appends; `queueBin` is queue.mjs as the
+// person runs it. It names the first LEDGER_SHOWN differing fields.
+const LEDGER_SHOWN = 10;
+export function ledgerLine({ check, missed, queueBin }) {
+  if (check.error) return `ledger: the difference check did not run (${check.error})`;
+  const n = check.diffs.length;
+  const seeded = check.seeded ? `ledger: seeded the log from queue.json (${check.seeded} ticket(s)); ` : '';
+  if (!n && !missed && !seeded) return null;
+  const named = check.diffs.slice(0, LEDGER_SHOWN).map((d) => d.path).join(', ');
+  const more = n > LEDGER_SHOWN ? `, and ${n - LEDGER_SHOWN} more` : '';
+  return `${seeded || 'ledger: '}${n} field(s) differ between queue.json and the queue rebuilt from the log, ${missed} missed append(s) this pass${n ? `: ${named}${more}. See each with node ${queueBin} rebuild` : ''}`;
+}
+
 // Why nothing spawned while something could have: the first hold that applied this pass, or null.
 export function heldWhyOf(s) {
   if (s.spawned || !s.eligible) return null;
   return s.held ?? (s.baseHold ? `the batch base sync holds every spawn${s.baseLag ? `: ${s.baseLag}` : ''}`
+    : s.harmWhy ? s.harmWhy
     : s.lowMemory ? `memory: ${s.availGB.toFixed(1)}G available, under the ${s.minAvailGB}G spawn gate`
     : s.lockQueueHeldText ?? (s.machine.room <= 0 ? `the machine budget: ${s.machine.line}`
     : s.repoUnlocked ? `the repo's shared cap: ${s.repoLine}`

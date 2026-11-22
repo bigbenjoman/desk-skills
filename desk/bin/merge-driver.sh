@@ -64,6 +64,9 @@
 #                                            sends it to a fix worker (fix-tries.mjs)
 #   - BEHIND                                 updated with `gh pr update-branch` where §3 pr-update-branch
 #                                            is yes (once per head), else parked for a person
+#   - UNKNOWN past the limit                 no mergeability answer (a wedged merge ref): updated once with
+#                                            `gh pr update-branch` where §3 pr-update-branch is yes, then
+#                                            noted for the person (unknown_age)
 #   - fails §4 Merged-tree check             last before the merge, its head merged into the base's head
 #                                            in a throwaway checkout must pass the check (base-sync.mjs
 #                                            prTreeCheck), once per head and base commit. GitHub reports
@@ -100,6 +103,14 @@
 #                                            it merges, goes red or parks, or 60 minutes after its repair.
 #                                            Repaired PRs are not held behind each other
 #   - refused by `gh pr merge`               backed off for 10 minutes, then retried
+#   - its base is red                        the newest completed run of a §4 Required check on the base
+#                                            failed (base-red.mjs, read once per loop down its newest
+#                                            commits): no PR merges into it but its repair ticket's
+#                                            (base-red-<base>-<spell start>), and the loop logs the hold naming the
+#                                            check. The record it keeps in <state>/base-red.json is the
+#                                            pass's to report and repair; it goes once the check passes
+#                                            there. A base whose runs cannot be read merges as before,
+#                                            logging that its state is unknown
 # The one red that merges is a written waiver: every failing check is named in §4 Known flaky checks,
 # none is a §4 Required check (merging past one is a bypass, and §3 merge-bypass is never), the PR's
 # files touch none of the paths the row gives for it, each is still red after two reruns the driver
@@ -138,7 +149,9 @@
 #   MERGE_DRIVER_ONE_LOOP=1      one full loop (join, release, at most one merge), then exit instead of
 #                                sleeping: 0, or 1 when the PR list could not be read
 #   MERGE_DRIVER_GREEN_SECS=<n>  how long a head must stay green before it merges (default 60)
-#   MERGE_DRIVER_UNKNOWN_SECS=<n>  how long a ready PR may have no mergeability answer at a head before the queue asks the person (default 3600)
+#   MERGE_DRIVER_UNKNOWN_SECS=<n>  how long a ready PR may have no mergeability answer before its one
+#                                branch update, and again after it before the queue asks the person
+#                                (default DESK_UNKNOWN_SECS, which the pass's undraft reads too, else 1800)
 #
 # Exit codes: 2 bad arguments · 1 not permitted, missing tool or config row, another driver running, or
 # gh signed out (a PR list it refuses for that is logged and stops the driver, never read as empty).
@@ -321,7 +334,7 @@ log(){
     *$'\n'*) ;;
     '#'[0-9]*' '*) key="${msg%% *}"; key="${key#\#}" ;;
     'epic PR #'[0-9]*' '*) key="${msg#epic PR \#}"; key="${key%% *}" ;;
-    'draft (still reviewing): '*|'no ready batch PRs'*) key=loop ;;
+    'draft (still reviewing): '*|'no ready batch PRs'*|'HOLDING on red '*|'base state unknown on '*) key=loop ;;
   esac
   case "$key" in loop) ;; *[!0-9]*) key="" ;; esac
   if [ -n "$key" ] && [ -n "$SAID" ] && said "$key" "$msg"; then return 0; fi
@@ -466,17 +479,17 @@ NODE
 # Release a held ticket once EVERY predecessor has merged. Its predecessors are the union of all its
 # --deps entries (a successor named twice, e.g. a collision chain and a Jira chain, waits for both) and
 # the queue's held_by (so a blocker added mid-batch counts without a restart). Only a ticket still
-# parked "held by orchestrator" is ever released.
+# parked on a hold (batch-state.mjs isHeld) is ever released.
 release_chain(){
   local plan succ preds got n pred all
   plan=$(node --input-type=module - "$DESK_RUN_BIN/batch-state.mjs" "$DESK_QUEUE" ${DEP_LIST[@]+"${DEP_LIST[@]}"} <<'NODE'
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 const [mod, qf, ...pairs] = process.argv.slice(2);
-const { stoppedHold } = await import(pathToFileURL(mod).href);
+const { stoppedHold, isHeld } = await import(pathToFileURL(mod).href);
 let q = {}; let spine = null;
 try { const all = JSON.parse(readFileSync(qf, 'utf8')); q = all.tickets || {}; spine = all.feature === true ? all.spine : null; } catch { /* no queue: nothing is held */ }
-const held = (t) => t && t.state === 'parked' && String(t.park?.question ?? '').startsWith('held by orchestrator');
+const held = (t) => !!t && isHeld(t);
 const m = {};
 const add = (s, ps) => { m[s] ??= new Set(); for (const p of ps) if (p) m[s].add(p); };
 // A --deps predecessor the ticket was freed from by hand (freed_from, needs-you link items) no longer holds
@@ -545,13 +558,20 @@ disarm(){
   return 0
 }
 
+# update_branch <n> <why> -> 0 updated, 1 refused (gh's output in UPDATE_OUT), 2 waiting for the
+# PR's preview-build unit. The update is a new head, so a new preview build: it takes that unit first (rerun.sh).
+update_branch(){
+  preview_unit "$1" "$2" "updating the branch" || return 2
+  UPDATE_OUT=$(gh pr update-branch "$1" --repo "$REPO" 2>&1) || return 1
+}
+
 behind(){ # behind <n> <sha> <key>
+  local rc=0
   if [ "$UPDATE_PERM" = yes ]; then
     if [ -f "$SD/updated-$1-$2" ]; then log "#$1 BEHIND; update already requested at ${2:0:9} — waiting for it"; return; fi
-    # The update is a new head, so a new preview build: it takes the PR's preview-build unit first (rerun.sh).
-    preview_unit "$1" BEHIND "updating the branch" || return
-    if out=$(gh pr update-branch "$1" --repo "$REPO" 2>&1); then touch "$SD/updated-$1-$2"; log "#$1 BEHIND -> gh pr update-branch (new head and fresh checks follow)"
-    else log "#$1 BEHIND and update-branch refused: $(printf '%s' "$out" | tail -1)"; back_off "$1"; fi
+    update_branch "$1" BEHIND || rc=$?
+    if [ "$rc" = 0 ]; then touch "$SD/updated-$1-$2"; log "#$1 BEHIND -> gh pr update-branch (new head and fresh checks follow)"
+    elif [ "$rc" = 1 ]; then log "#$1 BEHIND and update-branch refused: $(printf '%s' "$UPDATE_OUT" | tail -1)"; back_off "$1"; fi
   else
     log "#$1 BEHIND and §3 pr-update-branch is $UPDATE_PERM — parked for a person to update"
     queue_note "$3" "behind $BASE_BRANCH; §3 pr-update-branch is $UPDATE_PERM"
@@ -959,22 +979,45 @@ NODE
 
 # A ready PR GitHub has no mergeability answer for (UNKNOWN) is aged from the loop that first saw it at
 # that head (`unknown-<n>`: the head and that time). A merge ref can wedge: no answer for hours, and no
-# run started for the head. Past UNKNOWN_LIMIT_SECS the queue asks the person for a new commit, which
-# gives it a fresh merge ref. Any answer, or another head, starts it again and clears the note.
-UNKNOWN_LIMIT_SECS="${MERGE_DRIVER_UNKNOWN_SECS:-3600}"
+# run started for the head. Past UNKNOWN_LIMIT_SECS its branch is updated from its base once where §3
+# pr-update-branch is yes (`unknown-repair-<n>`: when the spell began, and `updated` or `refused`), and
+# past the limit again at the new head the queue asks the person for a new commit, which gives it a
+# fresh merge ref. Any answer starts it again and clears the note; so does another head with no repair.
+UNKNOWN_LIMIT_SECS="${MERGE_DRIVER_UNKNOWN_SECS:-${DESK_UNKNOWN_SECS:-1800}}"
 unknown_age(){ # unknown_age <n> <sha> <key> <merge state>
-  local f="$SD/unknown-$1" was="" at="" now age
+  local f="$SD/unknown-$1" r="$SD/unknown-repair-$1" was="" at="" first="" tried="" now age total how rc=0
   if [ "$4" != UNKNOWN ]; then
-    if [ -f "$f" ]; then rm -f "$f"; blocked_clear "$3" "merge ref:"; fi
+    if [ -f "$f" ] || [ -f "$r" ]; then rm -f "$f" "$r"; blocked_clear "$3" "merge ref:"; fi
     return 0
   fi
   read -r was at < "$f" 2>/dev/null || true
+  if [ -f "$r" ]; then read -r first tried < "$r" || true; fi
   now=$(date +%s)
-  if [ "$was" != "$2" ] || [ -z "$at" ]; then printf '%s %s\n' "$2" "$now" > "$f"; blocked_clear "$3" "merge ref:"; return 0; fi
-  age=$(( now - at ))
+  if [ "$was" != "$2" ] || [ -z "$at" ]; then
+    printf '%s %s\n' "$2" "$now" > "$f"
+    [ -n "$tried" ] || blocked_clear "$3" "merge ref:"
+    return 0
+  fi
+  age=$(( now - at )); total=$(( now - ${first:-$at} ))
   [ "$age" -ge "$UNKNOWN_LIMIT_SECS" ] || return 0
-  log "#$1 at ${2:0:9} has had no mergeability answer from GitHub for $(( age / 60 )) minutes — its merge ref looks wedged; the person pushes a new commit"
-  queue_note "$3" "merge ref: GitHub has not worked out whether #$1 conflicts with its base at ${2:0:9} for $(( age / 60 )) minutes, and starts no run for that head: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch"
+  if [ -z "$tried" ] && [ "$UPDATE_PERM" = yes ]; then
+    update_branch "$1" "with no mergeability answer for $(( total / 60 )) minutes" || rc=$?
+    [ "$rc" = 2 ] && return 0
+    if [ "$rc" = 0 ]; then
+      printf '%s updated\n' "$at" > "$r"; printf '%s %s\n' "$2" "$now" > "$f"
+      log "#$1 at ${2:0:9} has had no mergeability answer from GitHub for $(( total / 60 )) minutes — its merge ref looks wedged; gh pr update-branch once for a fresh merge ref"
+      return 0
+    fi
+    printf '%s refused\n' "$at" > "$r"; tried=refused
+    log "#$1 at ${2:0:9} has had no mergeability answer from GitHub for $(( total / 60 )) minutes, and gh pr update-branch was refused: $(printf '%s' "$UPDATE_OUT" | tail -1)"
+  fi
+  case "$tried" in
+    updated) how="; desk already updated its branch from its base once, and GitHub still has no answer" ;;
+    refused) how="; desk's one repair, updating its branch from its base, was refused" ;;
+    *) how="; no repair was permitted, as §3 pr-update-branch is $UPDATE_PERM" ;;
+  esac
+  log "#$1 at ${2:0:9} has had no mergeability answer from GitHub for $(( total / 60 )) minutes — its merge ref looks wedged$how; the person pushes a new commit"
+  queue_note "$3" "merge ref: GitHub has not worked out whether #$1 conflicts with its base at ${2:0:9} for $(( total / 60 )) minutes, and starts no run for that head$how: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch"
 }
 
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
@@ -983,12 +1026,12 @@ try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
-  unknown_age "$n" "$sha" "$key" "$ms"
   # The epic PR merges the batch base into §0 Default branch.
   [ -n "$EPIC_KEY" ] && want=$(printf '%s' "$g" | jq -r .defaultBranch)
   [ "$(printf '%s' "$g" | jq -r .base)" = "$want" ] || { log "#$n is not based on $want — not the batch's to merge"; return 1; }
   # First, so nothing updates or reruns a branch a worker is on, and an armed auto-merge is disarmed red or green.
   instruction_held "$n" "$key" "$g" && return 1
+  unknown_age "$n" "$sha" "$key" "$ms"
 
   holds=$(printf '%s' "$g" | jq -r '.holds[] | "\(.why) — \(.glob), \(.count) file(s), e.g. \(.files[0] // "?")"')
   met=$(printf '%s' "$g" | jq -r '(.holdsMet // [])[] | "\(.why) — \(.glob)"' | paste -sd ';' -)
@@ -1247,6 +1290,23 @@ while true; do
   ready=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "false" { print $1 "\t" $3 "\t-" }')
   epic=$(epic_pr </dev/null)
   [ -n "$epic" ] && ready="${ready:+$ready$'\n'}$epic"
+
+  # The base is read every loop, PRs ready or not, so the record the pass reports from is current: a
+  # red base takes no merge but its repair ticket's PR, which may be none this loop. A base whose runs
+  # cannot be read merges as before.
+  fixkey=""
+  if base_state=$(node "$DESK_RUN_BIN/base-red.mjs" check --branch "$BASE_BRANCH" --repo "$REPO" --state "$DESK_STATE" --by "$MERGER" 2>/dev/null </dev/null); then
+    case "$(printf '%s' "$base_state" | jq -r '.state // empty' 2>/dev/null)" in
+      red)
+        log "$(printf '%s' "$base_state" | jq -r .line)"
+        fixkey=$(printf '%s' "$base_state" | jq -r .repair_key) ;;
+      green|none) ;;
+      *) log "base state unknown on $BASE_BRANCH ($(printf '%s' "$base_state" | jq -r '.why // "unread"' 2>/dev/null)) — merging as before" ;;
+    esac
+  else
+    log "base state unknown on $BASE_BRANCH (base-red.mjs could not read it) — merging as before"
+  fi
+
   if [ -z "$ready" ]; then
     # A driver started on the wrong base lists nothing and would say only that, forever: name the batch
     # PRs open on any other base, so the mismatch shows in the log.
@@ -1254,6 +1314,11 @@ while true; do
     if [ -n "$elsewhere" ]; then log "no ready batch PRs on $BASE_BRANCH, the only base this driver watches; batch PRs open on another base: $elsewhere"
     else log "no ready batch PRs"; fi
     pause 60; continue
+  fi
+
+  if [ -n "$fixkey" ]; then
+    ready=$(printf '%s\n' "$ready" | awk -F'\t' -v k="$fixkey" '$2 == k')
+    if [ -z "$ready" ]; then pause 120; continue; fi
   fi
 
   REPAIRS=$(repaired_prs "$(printf '%s\n' "$list" | cut -f1 | paste -sd ' ' -)" </dev/null)

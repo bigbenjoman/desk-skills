@@ -140,6 +140,13 @@ def config_path(slug):
     return os.path.join(config_root(), "repos", slug, "config.md") if slug else None
 
 
+def attribution_value(text):
+    """The §5 AI attribution value ROW reads from a config's text, lower-cased, or None.
+    tests/test_deny_ai_attribution.mjs holds it to `desk-env get ai-attribution`."""
+    m = ROW.search(text)
+    return m.group(1).strip().lower() if m else None
+
+
 _policy = {}
 
 
@@ -155,8 +162,7 @@ def forbidden(target_dir=None, owner_repo=None):
         if path:
             try:
                 with open(path, encoding="utf-8") as f:
-                    m = ROW.search(f.read())
-                verdict = bool(m) and m.group(1).strip().lower().startswith("forbidden")
+                    verdict = (attribution_value(f.read()) or "").startswith("forbidden")
             except OSError:
                 pass
         _policy[key] = verdict

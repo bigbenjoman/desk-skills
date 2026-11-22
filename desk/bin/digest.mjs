@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { CHECKIN_TIME, checkinTimesOf } from './config-schema.mjs';
 import { jiraSearch, keySearch } from './jira-search.mjs';
-import { isHeld, settlesByScript, localDay } from './batch-state.mjs';
+import { isHeld, settlesByScript, localDay, openUnknowns } from './batch-state.mjs';
 import { stalledPrs as stalledOf, STALL_FOR } from './desk-q.mjs';
 import { namedBatches } from './batches.mjs';
 import { takeBorrowLock } from './borrow.mjs';
@@ -219,8 +219,8 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
       const why = handed.find((x) => x.kind === 'parked' && x.ticket === t.key && x.text === String(t.park?.question ?? ''))?.why;
       if (!answered[key]) out.push({ ticket: t.key, kind: 'parked', text: why ? `${text} (handed on: ${why})` : text, key });
     } else if ((t.state === 'triaged' || isHeld(t)) && (t.open_questions ?? 0) > 0) {
-      const unknowns = (r.triage ? r.triage(t.key) : readJson(join(r.state, 'triage', `${t.key}.json`), {}))?.unknowns;
-      const text = Array.isArray(unknowns) && unknowns.length ? unknowns.join(' · ') : `${t.open_questions} triage question(s) open`;
+      const unknowns = openUnknowns((r.triage ? r.triage(t.key) : readJson(join(r.state, 'triage', `${t.key}.json`), {}))?.unknowns, t);
+      const text = unknowns.length ? unknowns.join(' · ') : `${t.open_questions} triage question(s) open`;
       const key = questionKey(r.slug, t.key, text);
       if (!answered[key]) out.push({ ticket: t.key, kind: 'triage', text, key });
     }

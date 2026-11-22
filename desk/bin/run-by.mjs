@@ -19,9 +19,10 @@ import { realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
+import { runOnce } from './build-memo.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const supervisorMjs = () => process.env.DESK_SUPERVISOR_MJS || join(HERE, 'supervisor.mjs');
+export const supervisorMjs = () => process.env.DESK_SUPERVISOR_MJS || join(HERE, 'supervisor.mjs');
 export const platform = () => process.env.DESK_PLATFORM || process.platform;
 const ROW = () => E.CONFIG_ROWS['batches-run-by'].row;
 export const VALUES = ['supervisor', 'session'];
@@ -42,15 +43,17 @@ export const launchdDomain = () => `gui/${process.getuid()}`;
 export const systemctl = (...args) => spawnSync('systemctl', ['--user', ...args], { encoding: 'utf8' });
 // `exit` is a loaded agent's last run's exit, as { code, why } with launchctl's name for the code
 // where it prints one (systemd's Result), when that was not 0 and the agent is not running now; otherwise null.
+// Each read is runOnce's, so a build of a desk-q view asks once per label.
 export function supervisorAgent(slug) {
   if (backend() === 'systemd') {
-    if (systemctl('is-active', '--quiet', `${supervisorLabel(slug)}.timer`).status !== 0) return { loaded: false, exit: null };
-    const show = systemctl('show', `${supervisorLabel(slug)}.service`, '-p', 'ActiveState', '-p', 'Result', '-p', 'ExecMainStatus');
+    const ask = (...args) => runOnce('systemctl', ['--user', ...args]);
+    if (ask('is-active', '--quiet', `${supervisorLabel(slug)}.timer`).status !== 0) return { loaded: false, exit: null };
+    const show = ask('show', `${supervisorLabel(slug)}.service`, '-p', 'ActiveState', '-p', 'Result', '-p', 'ExecMainStatus');
     const p = Object.fromEntries(String(show.stdout ?? '').split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
     const failed = p.Result && p.Result !== 'success' && p.ActiveState !== 'activating';
     return { loaded: true, exit: failed ? { code: Number(p.ExecMainStatus) || 1, why: p.Result } : null };
   }
-  const r = spawnSync('launchctl', ['print', `${launchdDomain()}/${supervisorLabel(slug)}`], { encoding: 'utf8' });
+  const r = runOnce('launchctl', ['print', `${launchdDomain()}/${supervisorLabel(slug)}`]);
   if (r.status !== 0) return { loaded: false, exit: null };
   const out = r.stdout ?? '';
   const m = /^\s*last exit code = (-?\d+)(?::\s*(.*\S))?/m.exec(out);

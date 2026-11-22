@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { cellItems, configRows, declaredRows, CONFIG_ROWS, PATH_VARS, MACHINE_FALLBACK_ROWS } from '../desk/bin/desk-env.mjs';
+import { cellItems, configRows, declaredRows, CONFIG_ROWS, PATH_VARS } from '../desk/bin/desk-env.mjs';
 import { ROWS, coverage, TYPES, parseRow, norm, MACHINE_FALLBACK, requiredFieldsIn, requiredFieldsByType } from '../desk/bin/config-schema.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
@@ -173,11 +173,11 @@ writeFileSync(tpl, `${P3}${['autopilot-workers', 'git-push', 'pr-ready', 'pr-mer
   + `${P2}| Primary repo root | \`TODO\` | |\n\n${P4}| Branch protection | \`TODO\` |\n`);
 const repoDir = join(T, 'repo');
 mkdirSync(join(repoDir, '.claude'), { recursive: true });
-const conf = ({ omit = [], perms = {}, protection = 'ruleset main', b3 = true } = {}) => {
+const conf = ({ omit = [], perms = {}, protection = 'ruleset main', b3 = true, b3rows = '' } = {}) => {
   const base = ['autopilot-workers', 'git-push', 'pr-ready', 'pr-merge-green', 'batch-base-push'];
   const keys = [...base, ...Object.keys(perms).filter((k) => !base.includes(k))].filter((k) => !omit.includes(k));
   return `${P3}${keys.map((k) => row3(k, perms[k] ?? 'yes')).join('')}\n`
-    + `${B3}${b3 ? '| Worker models | `default` | `default` |\n' : ''}| Check-in times | \`08:00, 17:00\` | \`08:00\` |\n\n`
+    + `${B3}${b3 ? '| Worker models | `default` | `default` |\n' : ''}| Check-in times | \`08:00, 17:00\` | \`08:00\` |\n${b3rows}\n`
     + `${P2}| Primary repo root | \`${repoDir}\` | |\n\n${P4}| Branch protection | \`${protection}\` |\n`;
 };
 const driftEnv = (extra) => ({ ...process.env, DESK_CONFIG_TEMPLATE: tpl, DESK_MACHINE: join(T, 'none.md'), HOME: T, DESK_REPO_DIR: T, ...extra });
@@ -245,13 +245,42 @@ t('DS-395 AC4 and so is a compound one', d.out.split('\n')[1].startsWith(`UNLIST
 t('DS-395 AC4 only the items workers cannot run are reported', d.out.split('\n').length, 2);
 t('DS-395 AC4 and exits 1', d.code, 1);
 
-// A §4 Local services item a worker cannot start by its leading name is named, where workers may start them.
+// A §4 Local services item the service-port type cannot read is named, where workers may start them.
+const badService = 'INVALID  §4 Local services: "Typesense on port 8108" is not `<service> [:<port>]`';
 d = drift(`${conf({ perms: { 'worker-local-services': 'yes' } })}| Local services | \`search: 8108\` \`mailpit\` \`Typesense on port 8108\` |\n`);
-t('a Local services item with no service name is named, where workers start services', d.out,
-  'UNLISTED §4 Local services item "Typesense on port 8108" does not start with a compose service name (lowercase, then `:port` or a space): every worker is refused it');
+t('a Local services item with no service name is named, where workers start services', d.out, [badService,
+  'UNLISTED §4 Local services item "Typesense on port 8108" is not `<service> [:<port>]`: every worker is refused it'].join('\n'));
+// An item worker-settings refuses for what follows the name, not the name itself, is named UNLISTED too.
+d = drift(`${conf({ perms: { 'worker-local-services': 'yes' } })}| Local services | \`search 8108\` |\n`);
+t('DS-873 an item worker-settings refuses for its tail is UNLISTED, as worker-settings reads it', d.out.split('\n').includes(
+  'UNLISTED §4 Local services item "search 8108" is not `<service> [:<port>]`: every worker is refused it'), true);
 t('and `name: port` reads as its name', d.code, 1);
-t('with workers starting no service it is not drift', drift(`${conf({ perms: { 'worker-local-services': 'no' } })}| Local services | \`Typesense on port 8108\` |\n`).out, 'no drift');
 t('DS-395 AC4 a script run as bash <path>.sh is not drift', drift(`${conf()}| Related tests | \`bash tests/related.sh\` |\n`).out, 'no drift');
+
+// A set row whose value does not fit the type the schema declares for it is named INVALID, report-only.
+d = drift(`${conf({ perms: { 'worker-local-services': 'no' } })}| Local services | \`Typesense on port 8108\` |\n`);
+t('DS-871 AC1 a Local services item that is no `<service> [:<port>]` is INVALID, naming the row, the item and the form', d.out, badService);
+t('DS-871 AC1 and exits 1', d.code, 1);
+t('DS-871 AC2 `search: 8108` fits, so says nothing about Local services', drift(`${conf()}| Local services | \`search: 8108\` |\n`).out, 'no drift');
+d = drift(conf({ b3rows: '| Worker effort | `none` | `0=medium bogus=high` |\n' }));
+t('DS-871 AC3 a Worker effort start desk does not know is INVALID, naming the row and that item',
+  `${d.code} ${d.out.split('\n').length} ${d.out.startsWith('INVALID  §3b Worker effort is "0=medium bogus=high" — unknown start `bogus`;')}`, '1 1 true');
+d = drift(`${conf()}| Evidence workflow | \`none\` \`pr-evidence.yml\` |\n`);
+t('DS-871 AC4 an Evidence workflow cell mixing none with another item is INVALID', d.out,
+  'INVALID  §4 Evidence workflow: `none` must stand alone, not beside other items (none | pr-evidence.yml)');
+t('DS-871 AC4 and exits 1', d.code, 1);
+t('DS-871 a single span holding none beside a lever is INVALID, as `desk-env levers` reads it',
+  drift(conf({ b3rows: '| Phase 0 levers | `none` | `none, codex` |\n' })).out.startsWith('INVALID  §3b Phase 0 levers: `none` cannot sit beside another name'), true);
+t('DS-871 none beside a lever across spans is INVALID, as the whole cell is read',
+  drift(conf({ b3rows: '| Phase 0 levers | `none` | `none,` `effort` |\n' })).out.startsWith('INVALID  §3b Phase 0 levers: `none` cannot sit beside another name'), true);
+d = drift(`${conf({ perms: { 'worker-local-services': 'yes' } })}| Local services | \`none\` \`search: 8108\` |\n| Pre-merge steps | \`none\` \`Migrate: run migration\` |\n`);
+t('DS-871 a row its reader refuses for none beside other items is INVALID, not an abort', `${d.code}\n${d.out}`,
+  '1\nINVALID  §4 Pre-merge steps: `none` must stand alone, not beside other items (none | Migrate: run migration)\nINVALID  §4 Local services: `none` must stand alone, not beside other items (none | search: 8108)');
+d = drift(`${conf()}| Dev server | \`pnpm dev\` |\n| Lint | \`none\` \`pnpm lint\` |\n`);
+t('DS-871 a worker command row with none beside a command is INVALID, not an abort, with a Dev server set', `${d.code} ${d.out}`,
+  '1 INVALID  §4 Lint: `none` must stand alone, not beside other items (none | pnpm lint)');
+t('DS-871 a §3 value that is no permission is INVALID', drift(conf({ perms: { 'git-push': 'maybe' } })).out.startsWith('INVALID  §3 git-push: "maybe" is not'), true);
+t('DS-871 AC5 every row unset or fitting its type is no drift', drift(`${conf({ b3rows: '| Worker effort | `none` | `0=medium 4b=high` |\n| Phase 0 levers | `none` | `codex` `effort` |\n| Promotion slice size (children) | `8` | `TODO` |\n' })}| Local services | \`search: 8108\` \`mailpit :8025\` |\n| Evidence workflow | \`pr-evidence.yml\` |\n| Merge method | \`squash\` |\n`).out, 'no drift');
 
 // An app directory other command rows name, with a dev script and no Dev server item, is named NODEV.
 mkdirSync(join(repoDir, 'apps/portal/apps/web'), { recursive: true });
@@ -277,20 +306,34 @@ rmSync(join(repoDir, 'apps'), { recursive: true, force: true });
 mkdirSync(join(repoDir, 'apps/portal'), { recursive: true });
 writeFileSync(join(repoDir, 'apps/portal/package.json'), JSON.stringify({ name: 'portal', scripts: { dev: 'next dev' } }));
 for (const f of ['.env.local', '.env', '.env.example']) writeFileSync(join(repoDir, 'apps/portal', f), '');
-const appRows = (dev, env) => `${conf()}| Package manager | \`pnpm\` |\n| Dev server | ${dev} |\n| Env files | ${env} |\n`;
-d = drift(appRows('`apps/web: pnpm dev`', '`apps/web/.env.local`'), '--app', 'apps/portal');
-t('DS-571 AC1 an app missing from Dev server and Env files gets both rows, each with its value', d.out, [
+const appRows = (dev, env, signin = '`apps/portal: portal-dev@example.test`') => `${conf()}| Package manager | \`pnpm\` |\n| Dev server | ${dev} |\n| Env files | ${env} |\n${signin == null ? '' : `| Test sign-in | ${signin} |\n`}`;
+const NOSIGNIN = (dir, value) => `NOSIGNIN §4 Test sign-in has no item for ${dir}, which a worker runs for screenshots: add \`${value}<email of an existing development user who holds the app's grant>\`, never a password (\`none\` where no app needs signing in to)`;
+d = drift(appRows('`apps/web: pnpm dev`', '`apps/web/.env.local`', null), '--app', 'apps/portal');
+t('DS-571 AC1 an app missing from Dev server, Env files and Test sign-in gets every row, each with its value', d.out, [
   'NODEV    §4 Dev server has no item for apps/portal, whose package.json has a dev script: add `apps/portal: pnpm run dev`',
   'NOENV    §4 Env files has no item under apps/portal, whose primary checkout holds .env, .env.local: add `apps/portal/.env` `apps/portal/.env.local`',
+  NOSIGNIN('apps/portal', 'apps/portal: '),
 ].join('\n'));
 t('DS-571 AC1 and exits 1', d.code, 1);
 d = drift(appRows('`apps/web: pnpm dev` `apps/portal: pnpm dev`', '`apps/web/.env.local`'), '--app', 'apps/portal');
 t('DS-571 AC2 an app missing only from Env files gets that row only', d.out,
   'NOENV    §4 Env files has no item under apps/portal, whose primary checkout holds .env, .env.local: add `apps/portal/.env` `apps/portal/.env.local`');
-t('DS-571 an app with both rows has no gaps', drift(appRows('`pnpm --filter portal dev`', '`apps/portal/.env.local`'), '--app', './apps/portal/').out, 'no setup gaps for ./apps/portal/');
+t('DS-571 an app with every row has no gaps', drift(appRows('`pnpm --filter portal dev`', '`apps/portal/.env.local`'), '--app', './apps/portal/').out, 'no setup gaps for ./apps/portal/');
 t('a row of none is a decision, not a gap', drift(appRows('`none`', '`none`'), '--app', 'apps/portal').out, 'no setup gaps for apps/portal');
+// DS-804: an app with a Dev server item needs a Test sign-in item for it.
+const both = ['`apps/web: pnpm dev` `apps/portal: pnpm dev`', '`apps/web/.env.local` `apps/portal/.env.local`'];
+d = drift(appRows(...both, null), '--app', 'apps/portal');
+t('DS-804 AC3 an app with a Dev server item and the Test sign-in row unset is named NOSIGNIN, and nothing else', d.out, NOSIGNIN('apps/portal', 'apps/portal: '));
+t('DS-804 AC3 and exits 1', d.code, 1);
+t('DS-804 AC3 an item for another app only still names this one', drift(appRows(...both, '`apps/web: web-dev@example.test`'), '--app', 'apps/portal').out, NOSIGNIN('apps/portal', 'apps/portal: '));
+t('DS-804 AC3 a Test sign-in row of none is a decision, not a gap', drift(appRows(...both, '`none`'), '--app', 'apps/portal').out, 'no setup gaps for apps/portal');
+t('DS-804 AC2 an app whose items sit second in each row is not named missing from them', drift(appRows(...both, '`apps/web: web-dev@example.test` `apps/portal: portal-dev@example.test`'), '--app', 'apps/portal').out, 'no setup gaps for apps/portal');
+t('DS-804 AC3 the root app\'s item is a bare email', drift(appRows('`pnpm dev`', '`.env.local`', '`apps/web: web-dev@example.test`'), '--app', '.').out, NOSIGNIN('.', ''));
+t('DS-804 AC3 an app with no Dev server item is no sign-in gap', drift(appRows('`apps/web: pnpm dev`', '`apps/portal/.env.local`', null), '--app', 'apps/api').out, 'no setup gaps for apps/api');
 rmSync(join(repoDir, 'apps'), { recursive: true, force: true });
 t('no env files in the checkout proposes none', drift(appRows('`none`', '`apps/web/.env.local`'), '--app', 'apps/portal').out, 'no setup gaps for apps/portal');
+t('DS-804 a Test sign-in item that is not an email is INVALID', drift(`${conf()}| Test sign-in | \`apps/portal: hunter2\` |\n`).out,
+  'INVALID  §4 Test sign-in: "apps/portal: hunter2" is not `[<app dir>: ]<email>`');
 
 // A §4 Pre-merge steps item keyed to a job of several steps is named JOBKEY, with the step it is for.
 mkdirSync(join(repoDir, '.github/workflows'), { recursive: true });
@@ -328,6 +371,11 @@ t('AC7 each repo is reported by slug', d.out, '== acme__clean\n  no drift\n== ac
 t('AC7 any drift exits 1', d.code, 1);
 rmSync(join(croot, 'repos', 'acme__stale'), { recursive: true });
 t('AC7 no drift anywhere exits 0', all().code, 0);
+mkdirSync(join(croot, 'repos', 'acme__typo'), { recursive: true });
+writeFileSync(join(croot, 'repos', 'acme__typo', 'config.md'), `${conf()}| Local services | \`Typesense on port 8108\` |\n`);
+d = all();
+t('DS-871 AC6 the INVALID line is under the slug of the repo with the invalid row only', `${d.code}\n${d.out}`, `1\n== acme__clean\n  no drift\n== acme__typo\n  ${badService}`);
+rmSync(join(croot, 'repos', 'acme__typo'), { recursive: true });
 
 // `desk-env add-row`: a row drift names MISSING, copied from the template with the person's answer.
 const added = join(T, 'add.md');
@@ -577,9 +625,18 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     + 'worker-dependency-install worker-screenshots worker-local-services worker-web-read worker-workflow-dispatch db-per-ticket '
     + 'db-clone-staging staging-write local-reindex tests-shared-db worktree-remove branch-delete server-stop skills-edit vercel-env '
     + 'slack-draft slack-send merge-bypass others-prs product-calls legal-content').split(' ');
+  // Rows the schema gained after it replaced those literals, each named with its ticket, so a row
+  // lost or renamed still fails while a deliberate addition is recorded here.
+  const ADDED_ROWS = [
+    'test-signin|4|Test sign-in', // DS-804
+    'other-names|0|Other names', // DS-805
+    'harm-swap-growth|3b|Swap growth that holds spawns (GB)', // DS-848
+    'harm-tmpfs|3b|tmpfs /tmp size that holds spawns (GB)', // DS-848
+    'harm-vmmem|3b|WSL VM share of its grant that holds spawns (%)', // DS-848
+  ];
   const sorted = (a) => [...a].sort().join('\n');
   const rowsNow = Object.entries(CONFIG_ROWS).map(([id, r]) => [id, r.section, r.row, ...(r.table ? ['table'] : [])].join('|'));
-  t('DS-867 AC4 CONFIG_ROWS holds exactly the ids, sections and rows it held', sorted(rowsNow), sorted(BEFORE_ROWS));
+  t('DS-867 AC4 CONFIG_ROWS holds exactly the ids, sections and rows it held, and the ones added since', sorted(rowsNow), sorted([...BEFORE_ROWS, ...ADDED_ROWS]));
   t('DS-867 AC4 and nothing else on any entry', Object.values(CONFIG_ROWS).filter((r) => Object.keys(r).some((k) => !['section', 'row', 'table'].includes(k))).length, 0);
   t('DS-867 AC4 PERMISSION_KEYS holds exactly the ids and keys it held', sorted(Object.entries(PERMISSION_KEYS).map(([id, k]) => `${id}=${k}`)), sorted(BEFORE_PERMS.map((k) => `${k}=${k}`)));
   t('DS-867 AC4 both stay frozen', Object.isFrozen(CONFIG_ROWS) && Object.isFrozen(PERMISSION_KEYS), true);
@@ -619,7 +676,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     ['yes-no', 'no', 'maybe', false], ['on-off', 'on', 'yes', false], ['tracker', 'none', 'linear', false],
     ['merge-method', 'rebase', 'squash-merge', false], ['suite-weight', 'heavy', 'medium', false], ['status-table', 'quiet', 'loud', false],
     ['batches-run-by', 'session', 'cron', false], ['ai-attribution', 'allowed', 'sometimes', false], ['regex', 'KAN-[0-9]+', 'KAN-[0-9', false],
-    ['command', 'apps/api: uv run pytest', null], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
+    ['command', 'apps/api: uv run pytest', null], ['test-signin', 'apps/portal: dev@example.test', 'apps/portal: hunter2', false], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
     ['required-fields', 'Bug: customfield_1', 'customfield_1', false], ['lever', 'codex, effort', 'turbo', false],
     ['budget', '25', '25 USD', true], ['worker-models', 'default', 'fast', true], ['worker-effort', 'task=low', '4b=extreme', true],
     ['worker-location', 'cloud', 'remote', true], ['codex-review', 'timeout=60', 'timeout=soon', true],
@@ -659,11 +716,12 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   t('DS-868 a collision budget of two spans is refused, not fatal, as its reader reads it as 1', parseRow(row('file-budget'), ['2', 'serial: x']).fatal, false);
   t('DS-868 Git author as two spans parses', JSON.stringify(parseRow(row('git-author'), ['Pat', 'pat@example.com']).value), '{"name":"Pat","email":"pat@example.com"}');
   t('DS-868 Check-in times reads as the digest does', [parseRow(row('checkin-times'), ['08:00', '17:00']).error ?? 'ok', parseRow(row('checkin-times'), '08:00 17:00').error ?? 'ok', !!parseRow(row('checkin-times'), '25:00').error].join(' '), 'ok ok true');
+  t('DS-871 Phase 0 levers is checked whole, its value still one entry per span', [JSON.stringify(parseRow(row('levers'), ['codex', 'effort']).value),
+    JSON.stringify(parseRow(row('levers'), ['none']).value), !!parseRow(row('levers'), ['none,', 'effort']).error].join(' '), '[["codex"],["effort"]] ["none"] true');
   t('DS-868 a default is only where the reader has one fixed value', ['memory-ceiling', 'handoff-pct-1m'].filter((id) => 'default' in row(id)).join(' '), '');
 
   // The machine profile fallback desk-env reads.
   t('DS-868 MACHINE_FALLBACK is the three machine rows', JSON.stringify(MACHINE_FALLBACK), '{"concurrency":"autopilot-concurrency","memory-ceiling":"memory-ceiling-gb","test-cap":"test-cap"}');
-  t('DS-868 MACHINE_FALLBACK_ROWS is their labels', MACHINE_FALLBACK_ROWS.join(' / '), 'autopilot worker concurrency / memory ceiling for parallel work (gb) / test worker cap under the test lock');
 }
 
 // `desk-env get --json`: typed rows with where each value came from, its default and its type errors.
@@ -729,6 +787,37 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   const fields = (x) => JSON.stringify([x?.set, x?.source, x?.value, x?.items, x?.default]);
   t('DS-870 AC11 an unset row is not set, source unset, with a null value', fields(r.json?.rows?.['local-services']), '[false,"unset",null,null,null]');
   t('DS-870 AC11 the schema default is reported in its own field, never as the value', fields(r.json?.rows?.['append-only-paths']), '[false,"unset",null,null,["none"]]');
+
+  // `desk-env unset`: the rows that still need an answer, which install.sh counts.
+  {
+    const u = join(T, 'unset-874.md');
+    writeFileSync(u, '## 1. Who you are\n\n| Field | Value |\n|---|---|\n| GitHub handle | `TODO` |\n| Name | `Pat` |\n| Pronouns (optional) | `TODO` (a note) |\n\n'
+      + '## 2. Paths\n\n| Field | Value | Notes |\n|---|---|---|\n| Worktrees directory | `~/wt` | not `TODO` |\n| Primary repo root | `~/r` (not `TODO`) | x |\n| Handoff at context % | `TODO` | |\n\n'
+      + `${B3}| Autopilot worker concurrency | \`2 / 3\` | \`TODO\` |\n| Memory ceiling for parallel work (GB) | \`16\` | \`TODO\` |\n`
+      + '| Test worker cap under the test lock | `4` | `TODO` |\n| Triage concurrency | `1` | `3` (left `TODO` it is 1) |\n| Intake query | `none` | `TODO` |\n| Not a schema row | `x` | `TODO` |\n\n'
+      + '## 3. Permissions\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n| `pr-open` | Open a PR | `yes` | `TODO` |\n| `git-push` | Push | `yes` | `yes` |\n');
+    const unsetJson = (extra) => {
+      const x = node(jenv(u, extra), ['unset', '--json']);
+      let j = null; try { j = JSON.parse(x.stdout); } catch { /* not JSON */ }
+      return { code: x.status, j };
+    };
+    const listed = (x) => (x.j?.rows ?? []).map((e) => `${e.section}|${e.label}`).join(' / ');
+    let u1 = unsetJson();
+    t('DS-874 AC4 unset --json lists the rows with no value of their own, none from the machine profile and no default, each with section and label',
+      `${u1.code} ${listed(u1)}`, '0 1|GitHub handle / 1|Pronouns (optional) / 3|pr-open / 3b|Autopilot worker concurrency / 3b|Memory ceiling for parallel work (GB) / 3b|Test worker cap under the test lock');
+    t('DS-874 AC4 it names the config it read', u1.j?.config, u);
+    writeFileSync(join(T, 'machine-874.md'), '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `4 / 8` | x |\n| memory-ceiling-gb | `24` | x |\n| test-cap | `3` | x |\n');
+    u1 = unsetJson({ DESK_MACHINE: join(T, 'machine-874.md') });
+    t('DS-874 AC4 a machine profile that sets the three machine rows answers them', listed(u1), '1|GitHub handle / 1|Pronouns (optional) / 3|pr-open');
+    t('DS-874 AC4 each row carries its id', (u1.j?.rows ?? []).map((e) => e.id).join(' '), 'github-handle pronouns pr-open');
+    writeFileSync(join(T, 'machine-874b.md'), '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| test-cap | `3` | x |\n');
+    u1 = unsetJson({ DESK_MACHINE: join(T, 'machine-874b.md') });
+    t('DS-874 AC4 a machine row the profile does not set still counts, its schema default aside', listed(u1).includes('3b|Autopilot worker concurrency') && !listed(u1).includes('Test worker cap'), true);
+    const plain = node(jenv(u), ['unset']);
+    t('DS-874 plain unset prints one §<section> TAB <label> line per row', plain.stdout.split('\n')[0], '§1\tGitHub handle');
+    const none = node(jenv(join(T, 'absent-874.md')), ['unset', '--json']);
+    t('DS-874 with no config it exits 3, printing nothing', `${none.status} ${none.stdout === ''}`, '3 true');
+  }
 
   // Where something other than the row gives the value, its type is checked on that value, not the row.
   const label = (id) => ROWS.find((e) => e.id === id).label;

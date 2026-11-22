@@ -33,6 +33,15 @@ exit 1
 EOF
 printf '#!/bin/sh\nexit 0\n' > "$T/bin/codex"
 chmod +x "$T/bin/claude" "$T/bin/gh" "$T/bin/codex"
+# A node that answers --version with $NODE_V and is the real node otherwise, so each installer run
+# below sees the Node version it names, whatever node runs this suite.
+NODE_REAL="$(command -v node)"
+cat > "$T/bin/node" <<EOF
+#!/bin/sh
+[ "\$1" = --version ] && [ -n "\${NODE_V:-}" ] && { echo "\$NODE_V"; exit 0; }
+exec "$NODE_REAL" "\$@"
+EOF
+chmod +x "$T/bin/node"
 export PATH="$T/bin:$PATH"
 
 # AC3: stdin that is not a terminal means no terminal, whatever /dev/tty says.
@@ -88,7 +97,8 @@ echo mine > "$HOME/.claude/desk/bin/my-own.sh"
 
 # --any-branch: this checkout is a feature branch, or CI's detached merge commit (the guard: test_installed.sh).
 # No git protocol allowed: the guard's fetch never reaches the network or this checkout's origin refs.
-out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
+# On Node 22, so the Dependencies section warns of it.
+out="$(NODE_V=v22.11.0 GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
 # shellcheck disable=SC2034  # rc and summary are read inside check's eval strings
 rc=$?
 # shellcheck disable=SC2034
@@ -151,6 +161,8 @@ check "DS-428 AC5: a delete that fails is a warning naming the command, and the 
 w="$(PATH=/usr/bin:/bin; purge_runner_tart; echo "gone=$RUNNER_TART_GONE")"
 check "DS-428 AC4: with no tart on PATH, nothing is called or named" \
   '[ "$w" = "gone=" ] && [ ! -s "$T/tart.deletes" ] && grep -qx "local $VM" "$TV"'
+check "DS-953 AC3: on Node 22 the Dependencies section warns, naming the version found and Node 24, and the install goes on" \
+  '[ $rc -eq 0 ] && printf "%s\n" "$out" | sed -n "/^== Dependencies$/,/^== [^D]/p" | grep -qx "  WARN  node v22.11.0 is older than Node 24, the version desk runs on and CI tests. Install Node 24 from your version manager (nvm, fnm, mise) or https://nodejs.org/en/download"'
 check "DS-760 AC3: a script the repo no longer has is removed, and the install names it" \
   '[ ! -e "$HOME/.claude/desk/bin/retired-tool.mjs" ] && printf "%s\n" "$out" | grep -qx "  ok    removed ~/.claude/desk/bin/retired-tool.mjs (no longer in desk)"'
 check "DS-760 AC5: a file desk never installed is left alone" '[ "$(cat "$HOME/.claude/desk/bin/my-own.sh")" = mine ]'
@@ -185,7 +197,9 @@ check "nothing was written to settings.json" '[ ! -f "$HOME/.claude/settings.jso
 rm -rf "$HOME/.agents/skills/ui-designer" "$HOME/.agents/.desk-pristine/.agents/skills/ui-designer" "$HOME/.claude/skills/ui-designer"
 mkdir -p "$HOME/.claude/skills/ui-designer"; echo mine > "$HOME/.claude/skills/ui-designer/SKILL.md"
 # shellcheck disable=SC2034  # own_out is read inside check's eval strings
-own_out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
+own_out="$(NODE_V=v24.22.3 GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
+check "DS-953 AC4: on Node 24 the install prints no Node version warning" \
+  '[[ "$own_out" == *"== Dependencies"* ]] && [[ "$own_out" != *"older than Node 24"* ]]'
 check "#734 moving a skill folder desk did not install is asked, saying it differs, and skipped with no terminal" \
   '[[ "$own_out" == *"~/.claude/skills/ui-designer is a skill folder desk did not install (yours, or another tool'"'"'s); it differs from desk'"'"'s"* ]] && [[ "$own_out" == *"  SKIP  Move your ~/.claude/skills/ui-designer to the backup and install desk'"'"'s ui-designer in its place?"* ]]'
 check "#734 the folder stays where it was, and desk's copy is not installed beside it" \
@@ -218,6 +232,21 @@ check "#733 the file is kept, and the install says so" \
 check "#733 a kept hook script is not registered or described as desk's" \
   '[[ "$summary" != *"Register the attribution hook"* ]] && [[ "$out" == *"registration left as it is: the hook script there is yours"* ]] && [[ "$out" != *"Aimed at a repo whose desk config"* ]]'
 
+# DS-874: three repo configs for the Repo configs section's count, read by the next run (no machine
+# profile) and the last (one that sets the three machine rows).
+mkdir -p "$HOME/.config/desk/repos/acme__machine" "$HOME/.config/desk/repos/acme__handle" "$HOME/.config/desk/repos/acme__noted"
+cat > "$HOME/.config/desk/repos/acme__machine/config.md" <<'UEOF'
+## 3b. Cost and autonomy
+| Field | Recommended | Your setting |
+|---|---|---|
+| Autopilot worker concurrency | `2 / 3` (default / cap) | `TODO` |
+| Memory ceiling for parallel work (GB) | WSL: `16` | `TODO` |
+| Test worker cap under the test lock | `4` | `TODO` |
+| Triage concurrency | `1` | `3` |
+UEOF
+printf '## 1. Who you are\n\n| Field | Value |\n|---|---|\n| Name | `Pat` |\n| GitHub handle | `TODO` |\n' > "$HOME/.config/desk/repos/acme__handle/config.md"
+printf '## 2. Paths\n\n| Field | Value |\n|---|---|\n| Worktrees directory | `~/wt` (still `TODO` in the template) |\n' > "$HOME/.config/desk/repos/acme__noted/config.md"
+
 # --accept and --decline answer the prompts they name with no terminal; an unknown id is a warning.
 rm -f "$HOME/.claude/hooks/deny-ai-attribution.py"
 acc_out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch --accept=hook-attribution --decline=plugins --accept=no-such-prompt </dev/null 2>&1)"
@@ -229,9 +258,20 @@ check "#736 a declined prompt is answered no and not listed as skipped" \
   '[[ "$acc_out" == *"(--decline=plugins)"* ]] && [[ "$acc_summary" != *"Install the missing plugins now"* ]]'
 check "#736 an unknown id is a warning naming it" '[[ "$acc_out" == *"no prompt has the id \"no-such-prompt\""* ]]'
 
-# #828: the repo-config count of unanswered fields (desk-env unanswered, which install.sh runs) reads
-# each row's value column as every desk read does, not a note or another column, and leaves out the
-# rows the template keeps `TODO` to follow the machine profile.
+check "DS-874 AC5 with no machine profile, the machine rows left TODO are counted" '[[ "$acc_out" == *"WARN  acme__machine: 3 unanswered fields"* ]]'
+check "DS-874 AC2 a GitHub handle left TODO is one unanswered field" '[[ "$acc_out" == *"WARN  acme__handle: 1 unanswered fields"* ]]'
+check "DS-874 AC3 an answered row whose note mentions TODO is not counted" '[[ "$acc_out" == *"ok    acme__noted"* ]]'
+mkdir -p "$HOME/.config/desk"
+printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `autopilot-concurrency` | `4 / 8` | x |\n| `memory-ceiling-gb` | `24` | x |\n| `test-cap` | `3` | x |\n' > "$HOME/.config/desk/machine.md"
+# shellcheck disable=SC2034  # prof_out is read inside check's eval string
+prof_out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
+check "DS-874 AC1 a machine profile setting the three machine rows answers them: ok, with no warning" \
+  '[[ "$prof_out" == *"ok    acme__machine"* ]] && [[ "$prof_out" != *"acme__machine: "*"unanswered"* ]]'
+rm -f "$HOME/.config/desk/machine.md"
+
+# #828, DS-874: the repo-config count of unanswered fields (desk-env unset, which install.sh runs)
+# reads each row's value column as every desk read does, not a note or another column; a row with a
+# schema default is answered by it, and a machine row only by a profile that sets it.
 cat > "$T/uc.md" <<'UEOF'
 ## 2. Paths
 | Field | Value | Notes |
@@ -255,7 +295,7 @@ cat > "$T/uc.md" <<'UEOF'
 | `pr-open` | Open a PR | `yes` | `TODO` |
 Left `TODO` or absent, each falls back to the machine profile.
 UEOF
-check "#828 only a value of TODO counts: not a note's, not another column's, not the rows that follow the machine profile" '[ "$(node "$S/../desk/bin/desk-env.mjs" unanswered "$T/uc.md")" = 4 ]'
-check "#828 install.sh counts with it" 'grep -q "desk-env.mjs\" unanswered \"\$c\"" "$S/../install.sh"'
+check "#828 only a value of TODO counts: not a note's, not another column's, not a row with a default" \
+  '[ "$(DESK_CONFIG="$T/uc.md" node "$S/../desk/bin/desk-env.mjs" unset | tr "\t" " " | tr "\n" ",")" = "§2 Primary repo root,§3 pr-open,§3b Autopilot worker concurrency,§3b Memory ceiling for parallel work (GB),§3b Test worker cap under the test lock," ]'
 
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]

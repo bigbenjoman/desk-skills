@@ -218,6 +218,17 @@ need() {
   return 1
 }
 
+# node_version_check — warns, without stopping the install, when node is older than Node 24,
+# the version desk runs on and CI tests
+node_version_check() {
+  local v major
+  v="$(node --version 2>/dev/null)" || return 0
+  major="${v#v}"; major="${major%%.*}"
+  case "$major" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$major" -ge 24 ] && return 0
+  warn "node $v is older than Node 24, the version desk runs on and CI tests. Install Node 24 from your version manager (nvm, fnm, mise) or https://nodejs.org/en/download"
+}
+
 # save_edit <src> <dest> — keeps a copy of <dest> if you had edited it since the last install
 save_edit() {
   local src="$1" dest="$2" rel pristine
@@ -485,9 +496,11 @@ need claude 1 "curl -fsSL https://claude.ai/install.sh | bash" "curl -fsSL https
 need git 1 "xcode-select --install" "sudo apt install git" || true
 need jq 1 "brew install jq" "sudo apt install jq" || true
 need python3 1 "brew install python" "sudo apt install python3" || true
-need node 1 "brew install node, or Node 24 from your version manager (nvm, fnm, mise)" \
+if need node 1 "brew install node, or Node 24 from your version manager (nvm, fnm, mise)" \
   "Node 24 from your version manager (nvm, fnm, mise) or https://nodejs.org/en/download" \
-  "the autopilot and clearance scripts are Node" || true
+  "the autopilot and clearance scripts are Node"; then
+  node_version_check
+fi
 
 if need gh 1 "brew install gh" "see https://github.com/cli/cli/blob/trunk/docs/install_linux.md"; then
   if status="$(gh auth status -h github.com 2>&1)"; then
@@ -1317,9 +1330,9 @@ for c in "$CONFIG_ROOT"/repos/*/config.md; do
   [ -f "$c" ] || continue
   configured=$((configured + 1))
   slug="$(basename "$(dirname "$c")")"
-  # Rows whose value is still `TODO`, read as every desk read reads a value (desk-env unanswered): a
-  # TODO in a note is not one, nor a row the template leaves `TODO` to follow the machine profile.
-  todos="$(node "$DESKDIR/bin/desk-env.mjs" unanswered "$c" 2>/dev/null || echo 0)"
+  # The rows that still need an answer, as desk-env reads them (desk-env unset): no value of their own,
+  # none from the machine profile and no schema default. A TODO in a note is not one.
+  todos="$(DESK_CONFIG="$c" node "$DESKDIR/bin/desk-env.mjs" unset 2>/dev/null | grep -c . || true)"
   if [ "${todos:-0}" -gt 0 ]; then warn "$slug: $todos unanswered fields (run /desk-setup in that repo)"
   else ok "$slug"; fi
   # A user-level skill (a vendored one this install links, say) with the name of a skill the repo

@@ -216,6 +216,23 @@ check "DS-763 AC5 a pass that fails to run on one tree is reported not compared,
 cmp "$T/crash" "$T/base"
 check "DS-763 AC5 a crash on the base is not compared either" '[ $rc = 2 ] && echo "$out" | grep -qF "not compared: the pass failed to run on the base"'
 
+# PASS_CMP_KEEP=1 ($1 is 1 or empty), each run in its own scratch TMPDIR $2: the list on stdout, the
+# directory it kept (if it says so) and the command it prints to list them again.
+keep(){ mkdir -p "$T/$2"
+  err=$(PASS_CMP_KEEP=$1 TMPDIR="$T/$2" bash "$S/compare_pass.sh" "$3" "$4" 2>&1 >"$T/$2.out"); rc=$?
+  out=$(cat "$T/$2.out"); kept=; redo=$(echo "$err" | grep '^  node ')
+  case "$err" in *"kept the recordings and both trees in "*) kept=${err#*kept the recordings and both trees in }; kept=${kept%%; list them again*} ;; esac; }
+keep 1 keepfield "$T/base" "$T/field"
+check "DS-962 AC1 with the keep switch, a run that differs keeps its recordings and both trees and prints where" '[ $rc = 1 ] && [ -n "$kept" ] && [ -d "$kept/rec/base/test_pass.sh" ] && [ -d "$kept/rec/head/test_pass.sh" ] && [ -f "$kept/base/desk/bin/pass.mjs" ] && [ -f "$kept/head/desk/bin/pass.mjs" ]'
+first=$out; out=$(eval "$redo" 2>/dev/null); rc=$?
+check "DS-962 AC4 the printed diff on the kept directory lists the same differences again" '[ $rc = 1 ] && [ -n "$out" ] && [ "$out" = "$first" ]'
+keep 1 keepsame "$T/base" "$T/same"
+check "DS-962 AC2 with the keep switch, a run that lists nothing removes its scratch directory" '[ $rc = 0 ] && [ -z "$kept" ] && [ -z "$(ls -A "$T/keepsame")" ]'
+keep '' keepoff "$T/base" "$T/field"
+check "DS-962 AC3 without the keep switch, a run that differs removes its scratch directory" '[ $rc = 1 ] && [ -z "$kept" ] && [ -z "$(ls -A "$T/keepoff")" ]'
+keep 1 keepcrash "$T/base" "$T/crash"
+check "DS-962 AC5 with the keep switch, a run not compared keeps its recordings too" '[ $rc = 2 ] && [ -n "$kept" ] && [ -d "$kept/rec/head/test_pass.sh" ] && [ -f "$kept/head/desk/bin/pass.mjs" ]'
+
 # The head moved its second case into a unit suite: the base's two cases still run against it.
 mktree moved running running
 printf '#!/usr/bin/env bash\nSRC="$(cd "$(dirname "$0")/.." && pwd)"; B="$SRC/desk/bin"\nnode -e 1; echo "ok   the first pass, all that is left"\n' > "$T/moved/tests/test_pass.sh"
@@ -228,19 +245,69 @@ git init -q -b main "$T/repo"; cp -R "$T/base/." "$T/repo/"
 git -C "$T/repo" add -A; git -C "$T/repo" -c user.name=t -c user.email=t@example.com commit -qm base
 cp "$T/field/desk/bin/pass.mjs" "$T/repo/desk/bin/pass.mjs"
 git -C "$T/repo" -c user.name=t -c user.email=t@example.com commit -qam head
-mkdir -p "$T/repo/tests"; cp "$S/compare_pass.sh" "$S/compare_pass.mjs" "$S/suite_env.sh" "$T/repo/tests/"; cp "$SRC/desk/bin/dir-lock.mjs" "$T/repo/desk/bin/"
+mkdir -p "$T/repo/tests"; cp "$S/compare_pass.sh" "$S/compare_pass.mjs" "$S/suite_env.sh" "$T/repo/tests/"; cp "$SRC/desk/bin/dir-lock.mjs" "$SRC/desk/bin/queue-fields.mjs" "$T/repo/desk/bin/"
 out=$(bash "$T/repo/tests/compare_pass.sh" HEAD~1 HEAD 2>/dev/null); rc=$?
 check "DS-763 base and head given as commits compare those commits" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 state: base \"running\", head \"parked\""'
 cmp --suite test_nope.sh "$T/base" "$T/same"
 check "DS-763 a suite the base lacks is refused" '[ $rc = 2 ]'
+
+# Records as the recorder saves them, of one suite whose two runs park P-1: run 1 ran from $2 to $3 ms
+# after an epoch of its tree's own ($7), parking at $4 ms with question $5; run 2 started at $6 ms and
+# holds the park, as run 1 does once it was written. What a loaded machine makes of one park: written further into its run on one tree.
+recs(){ mkdir -p "$T/recs/$1/s.sh"; node -e '
+  const [dir, epoch, s, e, at, question, s2] = process.argv.slice(1), t = (ms) => Number(epoch) + Number(ms);
+  const park = { question, since: new Date(t(at)).toISOString() };
+  const rec = (run, started, ended) => JSON.stringify({ run, started: t(started), ended: t(ended), at_line: 0, exit: 0, signal: null, out: "",
+    queue: { tickets: t(ended) < t(at) && t(at) < t(s2) ? {} : { "P-1": { state: "parked", park } } }, archive: null });
+  require("fs").writeFileSync(dir + "/1.json", rec(1, s, e));
+  require("fs").writeFileSync(dir + "/2.json", rec(2, s2, Number(s2) + 1000));
+' "$T/recs/$1/s.sh" "$7" "$2" "$3" "$4" "$5" "$6"; }
+pdiff(){ out=$(node "$S/compare_pass.mjs" diff "$T/recs/$1" "$T/recs/$2" "$T/recs/$1" "$T/recs/$2"); rc=$?; }
+recs pb 0 2000 1250 'repo could not be refreshed' 3000 1795273210286
+recs ph 0 31000 30280 'repo could not be refreshed' 32000 1795273672907
+pdiff pb ph
+check "DS-945 AC1 a park written 29 s further into the same run on one tree is not listed" '[ $rc = 0 ] && [ "$out" = "compare_pass: 2 pass run(s) compared, 0 differ, 0 not compared" ]'
+recs pq 0 31000 30280 'which colour?' 32000 1795273672907
+pdiff pb pq
+check "DS-945 AC2 a park asking something else in the same run is still listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue P-1 park.question: base \"repo could not be refreshed\", head \"which colour?\""'
+recs pl 0 31000 3630280 'repo could not be refreshed' 32000 1795273672907
+pdiff pb pl
+check "DS-945 a park dated an hour past its run on one tree is still listed" '[ $rc = 1 ] && echo "$out" | grep -qE "^  queue P-1 park.since: base \"[0-9T:.-]+Z\", head \"[0-9T:.-]+Z\"$"'
+recs gb 0 1000 1500 'stopped by hand' 2000 1795273210286
+recs gh 0 20000 21000 'stopped by hand' 41000 1795273672907
+pdiff gb gh
+check "DS-945 a park the suite wrote between the same two runs on both trees is not listed" '[ $rc = 0 ]'
 
 # A pass stopped by a signal: the recorder in its place ends with the same status, and records it.
 echo "process.kill(process.pid, 'SIGTERM'); setTimeout(() => {}, 5000);" > "$T/stopped.mjs"
 PASS_CMP_NODE="$(command -v node)" PASS_CMP_OUT="$T/stopped" node "$S/compare_pass.mjs" record "$T/stopped.mjs"; rc=$?
 check "DS-763 a pass stopped by a signal ends the recorder with its status" '[ $rc = 143 ] && [ "$(jq -r .signal "$T/stopped/1.json")" = SIGTERM ]'
 
+# Two suites on each tree, each noting in one file when it starts and when it ends, waiting up to 3 s
+# for all four to start, then running one pass: side by side every one starts before the first ends;
+# one after the other each ends before the next starts. Only a base whose tests/pass_setup.sh mints
+# SID_SUFFIX runs side by side.
+mkdir -p "$T/order/desk/bin" "$T/order/tests"; echo 'SID_SUFFIX=x' > "$T/order/tests/pass_setup.sh"
+echo "console.log('ran');" > "$T/order/desk/bin/pass.mjs"
+for s in test_pass.sh test_pass_b.sh; do cat > "$T/order/tests/$s" <<'EOF'
+#!/usr/bin/env bash
+echo start >> "$CMP_ORDER"
+for _ in $(seq 30); do [ "$(grep -c start "$CMP_ORDER")" -ge 4 ] && break; sleep 0.1; done
+node desk/bin/pass.mjs >/dev/null; echo "ok   ran"
+echo end >> "$CMP_ORDER"
+EOF
+done
+cp -R "$T/order" "$T/order-old"; rm "$T/order-old/tests/pass_setup.sh"
+order(){ CMP_ORDER="$T/$1.order" PASS_CMP_SERIAL=$2 bash "$S/compare_pass.sh" "$3" "$3" >/dev/null 2>&1; rc=$?; out=$(tr '\n' ' ' < "$T/$1.order"); }
+order side '' "$T/order"
+check "DS-960 AC2 with no suite option, every suite of both trees starts before the first one ends" '[ $rc = 0 ] && [ "$out" = "start start start start end end end end " ]'
+order serial 1 "$T/order"
+check "DS-960 AC4 with PASS_CMP_SERIAL=1 the trees and suites run one after the other" '[ $rc = 0 ] && [ "$out" = "start end start end start end start end " ]'
+order old '' "$T/order-old"
+check "DS-960 a base whose suites mint no SID_SUFFIX runs one after the other" '[ $rc = 0 ] && [ "$out" = "start end start end start end start end " ]'
+
 # The real pass suites against themselves: whatever differs between two runs of one tree is noise.
-# The whole replay takes 9 to 14 minutes, so a pull request replays one small suite instead; a main
+# The whole replay takes over 1000 CPU seconds, so a pull request replays one small suite instead; a main
 # push and a local run (GITHUB_EVENT_NAME unset) still replay them all.
 if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
   out=$(bash "$S/compare_pass.sh" --suite test_pass_other_repo.sh "$SRC" "$SRC" 2>/dev/null); rc=$?

@@ -107,10 +107,12 @@ budget" (`desk-env get file-budget`). Unset, it is `3 over 1000 lines, else 1; s
 three tickets whose triage records name a file longer than 1,000 lines on the batch base run at
 once, one for any other file, and one for any file the `serial:` globs name, whatever its length. A
 bare `1` restores one at a time everywhere. A pass works the budget out at spawn time from the triage
-records of the tickets running then, so a finished ticket holds nothing, and a ready ticket with any
-file at its budget waits, in queue order. The report's `held back by a collision:` line names each
-such file and the running tickets filling it. A row that does not read is 1 for every file, and the
-report says so.
+records of the tickets running then in every batch of the repo, its own and the others, so a
+finished ticket holds nothing, and a ready ticket with any file at its budget waits, in queue order.
+The report's `held back by a collision:` line names each such file and the running tickets filling
+it, each one from another batch as `<ticket> in batch <name>` (or `in the standing batch`). Another
+batch's queue that does not read counts nothing, and a `collisions:` line names it as not checked. A
+row that does not read is 1 for every file, and the report says so.
 
 **A file whose merge-time conflicts rise runs fewer at once, on its own.** Each time a pass meets a
 ready PR in conflict with its base, or a base sync that stops on one, it records one entry per
@@ -132,19 +134,29 @@ never write a shell loop around `render` and `mem status` instead, which Claude 
 time. Both keep their state in the process, so re-arm one when its `Monitor` expires. Killing a
 runaway process is a call to make from the monitor, not a park.
 
-**On Linux the watch also reads the signals that came before real harm**, beside `avail`, each said
-once until it clears:
+**The watch also reads the signals that came before real harm**, beside `avail`, each said once
+until it clears. The thresholds are §3b rows (`desk-env get harm-swap-growth`, `desk-env get
+harm-tmpfs`, `desk-env get harm-vmmem`); unset, they are the figures below:
 
-- `SWAP-GROWING`: swap used up 2 GiB or more within 10 minutes. Hold new spawns until it settles.
-- `OOM-KILL`: the kernel killed a process for memory since the watch started. Drop to the ladder's
-  lowest count (§3b "Spawn gate (available memory)" `drop to`), and read which process it was in
-  `dmesg` before raising again.
-- `TMPFS-HIGH`: `/tmp` is a tmpfs holding 4 GiB or more. Memory pressure pushes it to swap, which
-  looks like a leak and is not one: see what holds it before lowering anything.
+- `SWAP-GROWING` (Linux): swap used up 2 GiB or more within 10 minutes. Hold new spawns until it
+  settles.
+- `OOM-KILL` (Linux): the kernel killed a process for memory since the watch started; the line names
+  it. Drop to the ladder's lowest count (§3b "Spawn gate (available memory)" `drop to`) before
+  raising again.
+- `WORKER-OOM`: a worker's log, since the watch started, shows Node's `JavaScript heap out of memory`
+  or a command killed with exit 137; the line names the ticket. Drop to the ladder's lowest count.
+- `TMPFS-HIGH` (Linux): `/tmp` is a tmpfs holding 2 GiB or more. Memory pressure pushes it to swap,
+  which looks like a leak and is not one: see what holds it before lowering anything.
+- `VMMEM-HIGH` (WSL): the VM holds 90% or more of its `.wslconfig` grant, past which it can only
+  swap. Hold new spawns until it falls.
 - `OOM-UNKNOWN`, once: `dmesg` cannot be read here (`kernel.dmesg_restrict`), so OOM kills go
-  unwatched. Say so in the batch notes.
+  unwatched. Say so in the batch notes; the watch keeps reading the rest.
 
-Say which line moved the count when you lower it. On macOS none of these is read.
+Each harm line is also written, with its time, to `mem-harm.json` in the batch's state folder, and
+every pass holds new spawns while a signal there was said, or still stood, within the last 10
+minutes, naming it in its report; running workers carry on. So the hold does not wait on you, but it
+needs the watch running. Say which line moved the count when you lower it. On macOS only
+`WORKER-OOM` is read.
 
 **Waiting on one PR is a watch command too.** Under `Monitor`, run
 `node ~/.claude/desk/bin/pr-watch.mjs checks <n>` (one line once every check on the head has

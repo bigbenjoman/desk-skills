@@ -25,7 +25,8 @@ import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
-import { newPark, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
+import { LEDGER_BY_ENV, queueDifference } from './queue-ledger.mjs';
+import { newPark, parkArgs, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { followOnPending, postMergeUnmade, workerMarkers, lastStage, settleSteps } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
@@ -68,7 +69,7 @@ const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback'
 }
 const QUEUE = queueFile();
 // The park a hold writes (queue.mjs hold, admit --hold): released once every blocker's PR merges.
-const heldPark = (blockers) => newPark(`held by orchestrator: blocked by ${blockers.join(', ')} — starts once their PRs merge`);
+const heldPark = (blockers) => newPark(`held by orchestrator: blocked by ${blockers.join(', ')} — starts once their PRs merge`, undefined, 'hold');
 // A ticket's levers pin as it enters the queue (levers-auto.mjs), saying why when its repo could not
 // be assigned trial arms.
 const admissionPin = (key, size) => {
@@ -106,8 +107,9 @@ function lock(dir = LOCK) {
 
 // Every command saves at most once, so the lock goes with the save: approve's gh call after it, or
 // reject's briefing write, never keeps another writer waiting. Each save is one version higher than
-// the queue it read (queue-store.mjs).
-const writeQueue = writeQueueFile;
+// the queue it read (queue-store.mjs), and the ticket ledger names this command as its writer, or the
+// process it runs for (queue-ledger.mjs LEDGER_BY_ENV: the pass).
+const writeQueue = (file, q) => writeQueueFile(file, q, { by: process.env[LEDGER_BY_ENV] || `queue.mjs ${cmd}` });
 function save(q) {
   writeQueue(QUEUE, q);
   unlock();
@@ -217,7 +219,7 @@ function passRunning() {
 // Read before the queue lock (the registry read can outlast another writer's wait for it), for the
 // ticket `requeue` names on the command line, as { key, session, park }.
 let exitedPark = null;
-// Read before the queue lock too, for the ticket `handback` names: { key, worktree, branch, recordedPr,
+// Read before the queue lock too, for the ticket `handback` or a requeue names: { key, worktree, branch, recordedPr,
 // pr, fetchError }, its own open PR (handoff.mjs openPrOf), whether its head could be fetched, and the
 // queue fields that chose it, checked again under the lock.
 let prePr = null;
@@ -252,6 +254,24 @@ function finish(q, key, n, pr) {
     ...(t.branch ? [] : [`branch=${pr.headRefName}`])]);
   save(q);
   return `${key} recorded done on PR #${n} (${pr.isDraft ? 'a draft' : pr.state.toLowerCase()}, ${pr.headRefName} into ${base}): no longer parked`;
+}
+
+// A requeued ticket whose recorded PR is open on another branch goes back on that branch, so its worker
+// is spawned on, and may push, the PR's head: the worktree moves onto it and the queued branch is kept
+// as a backup ref, unless that branch holds commits the PR's head lacks. The PR was read and fetched
+// before the queue lock (prePr). Returns the clause the requeue line adds.
+function repointRequeued(t, key) {
+  const pre = prePr?.key === key ? prePr : null;
+  if (!pre?.pr?.recorded) return '';
+  if (pre.worktree !== t.worktree || pre.branch !== t.branch || pre.recordedPr !== ownPr(t)) {
+    return `; its worktree, branch or recorded PR changed while its PR #${pre.pr.number} was being read, so its branch ${t.branch} was left as it was`;
+  }
+  const moved = repointToPr({ worktree: t.worktree, branch: t.branch, pr: pre.pr, fetchError: pre.fetchError });
+  if (moved?.why) return `; left on its branch ${t.branch}: ${moved.why}`;
+  if (!moved?.branch) return '';
+  const was = t.branch;
+  t.branch = moved.branch;
+  return `; its branch ${was} re-pointed to its open PR #${pre.pr.number}'s ${moved.branch}${moved.backup ? `, the old one kept as ${moved.backup}` : ''}`;
 }
 
 function requeue(q, key, { handedBack = false } = {}) {
@@ -306,6 +326,9 @@ function requeue(q, key, { handedBack = false } = {}) {
     ? `; PR #${t.result.pr} left draft when it was approved: put it back (gh pr ready ${t.result.pr} --repo ${ghRepo()} --undo) before the merge driver merges it`
     : '';
   const moved = rotateRound(key, { answers: true });
+  // After the round's files move, which can throw: from here only the queue write can fail, and a requeue
+  // run again after it finds the worktree on the PR's branch and records it.
+  const repointed = handedBack ? '' : repointRequeued(t, key);
   // A ticket whose sessions handed off starts again at the stage the last handoff named, in its
   // worktree, rather than at Stage 0 (pass.mjs spawnHandoff). `handoff_stage=null` first starts it over.
   const fromStage = t.handoff_stage ?? null;
@@ -330,7 +353,7 @@ function requeue(q, key, { handedBack = false } = {}) {
   if (calls?.entries.length) appendDecisions(calls.entries, stateDir());
   if (p?.notes.length) appendNotes(p.notes, stateDir());
   save(q);
-  return `${key} requeued: ${placed}${harvested}${pending.length ? `; held behind ${pending.join(', ')} until they merge` : ''}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
+  return `${key} requeued: ${placed}${harvested}${repointed}${pending.length ? `; held behind ${pending.join(', ')} until they merge` : ''}${fromStage ? `; it starts again at Stage ${fromStage}, where its last session was handed off` : ''}${bumped}${moved.length ? `; moved aside: ${moved.join(', ')}` : ''}${undrafted}`;
 }
 
 // A lane C or D park whose step the person has done (desk-needs-you's resume on a session item), handed
@@ -467,7 +490,7 @@ function stop(key) {
     unlock();
     throw new Error(`${key}'s worker (pid ${ended.ended.join(', ')}) ended and its work so far is ${kept}, but the queue changed meanwhile (${key} is now ${now?.state ?? 'not in the queue'}), so its record was left as it is`);
   }
-  Object.assign(now, { state: 'parked', park: newPark(`${STOPPED_PREFIX} at ${at}; its work so far is ${kept}. Starts again only once you let it`, at),
+  Object.assign(now, { state: 'parked', park: newPark(`${STOPPED_PREFIX} at ${at}; its work so far is ${kept}. Starts again only once you let it`, at, 'stopped'),
     // held_outside a release left behind would let pass.mjs's outside-hold lift release the stop.
     held_by: null, held_outside: null, last_round: stage ? { stage, question: `stopped by queue.mjs stop; its work so far is ${kept}`, at } : now.last_round ?? null,
     session_id: null, pid: null, resume: null, resume_why: null, usage_paused: null, idle_passes: 0, updated_at: at });
@@ -751,11 +774,13 @@ if (cmd === 'requeue' && args[0] && existsSync(QUEUE)) {
   const t = readQueue(QUEUE).tickets?.[args[0]];
   if (t?.state === 'running') exitedPark = { key: args[0], session: t.session_id ?? null, park: exitedOnPark(t) };
 }
-// handback's gh read and git fetch can outlast another writer's wait for the queue lock, so they run first.
-if (cmd === 'handback' && args[0] && existsSync(QUEUE)) {
+// handback's gh read and git fetch can outlast another writer's wait for the queue lock, so they run
+// first. So do those of a requeue (and the commands that requeue) of a ticket with a recorded PR.
+if (['handback', 'requeue', 'step-done', 'reject'].includes(cmd) && args[0] && existsSync(QUEUE)) {
   const t = readQueue(QUEUE).tickets?.[args[0]];
-  if (t?.worktree && existsSync(t.worktree)) {
-    const pr = openPrOf({ key: args[0], pr: ownPr(t), repo: hereRepo(), worktree: t.worktree });
+  if (t?.worktree && existsSync(t.worktree) && (cmd === 'handback' || ownPr(t) != null)) {
+    // A requeue moves only to its recorded PR: one found by naming the ticket may be another's.
+    const pr = openPrOf({ key: args[0], pr: ownPr(t), repo: hereRepo(), worktree: t.worktree, naming: cmd === 'handback' });
     prePr = { key: args[0], worktree: t.worktree, branch: t.branch, recordedPr: ownPr(t), pr, fetchError: fetchPrHead({ worktree: t.worktree, pr }) };
   }
 }
@@ -771,7 +796,9 @@ if (cmd === 'finish') {
   finishPr.n = n;
 }
 if (WRITES.includes(cmd) || (cmd === 'backfill-holds' && !args.includes('--dry-run'))) lock();
-const q = cmd === 'init' ? empty() : load(); // init must be able to repair a corrupt queue
+// init must be able to repair a corrupt queue, and rebuild reads its own batch's queue (under its lock),
+// so a corrupt current one must not stop it rebuilding another batch.
+const q = cmd === 'init' ? empty() : cmd === 'rebuild' ? null : load();
 
 switch (cmd) {
   case 'init': {
@@ -1039,8 +1066,10 @@ switch (cmd) {
   case 'park': {
     const at = args.indexOf('--claimed-by');
     const session = at < 0 ? null : args[at + 1];
-    const [key, ...rest] = at < 0 ? args : args.filter((_, i) => i !== at && i !== at + 1);
+    const [key, ...more] = at < 0 ? args : args.filter((_, i) => i !== at && i !== at + 1);
     if (at >= 0 && !SESSION_ID.test(session ?? '')) throw new Error('usage: queue.mjs park <TICKET> --claimed-by <session id> [<question>]');
+    const { question, kind } = parkArgs(more);
+    const rest = question ? [question] : [];
     // A session name, or a session from another computer, has no transcript to read idleness from.
     if (session && !transcriptOf(session)) throw new Error(`no transcript for session ${session} under ${projectsDirs().join(' or ')}: --claimed-by wants the session id of a session on this computer`);
     const t = ticket(q, key);
@@ -1052,7 +1081,7 @@ switch (cmd) {
     const kept = session && t.state === 'parked' && t.park ? t.park : null;
     t.state = 'parked';
     t.park = kept ? { ...kept, claim: { session, at: now } }
-      : { ...newPark(rest.join(' ') || (session ? claimQuestion(session) : ''), now), ...(session ? { claim: { session, at: now } } : {}) };
+      : { ...newPark(question || (session ? claimQuestion(session) : ''), now, kind), ...(session ? { claim: { session, at: now } } : {}) };
     save(q);
     console.log(session ? `${key} parked, claimed by session ${session}` : `${key} parked`);
     break;
@@ -1181,9 +1210,10 @@ switch (cmd) {
     const t = ticket(q, key);
     if (!spinePark(t)) throw new Error(`${key} is not a feature spine parked for approval (state ${t.state})`);
     const pr = t.result?.pr;
+    // After the requeue, which may re-point the ticket to its PR's branch: the note names the one its worker is on.
+    const msg = requeue(q, key);
     const text = `The person sent this spine's acceptance specs back: ${note}` +
       (pr != null ? `\nYour PR #${pr} on ${t.branch} stays open and in draft: fix the specs on that branch and push, rather than opening another PR.` : '');
-    const msg = requeue(q, key);
     saveAnswer(stateDir(), key, text, new Date().toISOString());
     console.log(`${key} sent back with the note in its briefing; ${msg}`);
     break;
@@ -1307,6 +1337,26 @@ switch (cmd) {
   case 'render':
     console.log(render(q));
     break;
+
+  // rebuild [<batch | standing>]: the batch's queue rebuilt from the ticket ledger, written to
+  // queue.rebuilt.json beside its queue.json, and each ticket field where queue.json differs from it.
+  // queue.json and the log are left as they are. Without a batch, this queue's.
+  case 'rebuild': {
+    const [name] = args;
+    let file = QUEUE;
+    if (name) {
+      const want = /^standing$/i.test(name) ? null : name;
+      const b = listBatches(repoSlug()).find((x) => x.name === want);
+      if (!b) throw new Error(`no batch ${name} in this repo: its batches are ${listBatches(repoSlug()).map((x) => x.name ?? 'standing').join(', ')}`);
+      file = b.queue;
+    }
+    const { rebuilt, diffs } = queueDifference(file, { waitMs: LOCK_WAIT_MS });
+    const out = join(dirname(file), 'queue.rebuilt.json');
+    writeFileSync(out, `${JSON.stringify(rebuilt, null, 2)}\n`);
+    for (const d of diffs) console.log(`${d.path}: queue.json ${d.queue ?? '(absent)'}, rebuilt ${d.rebuilt ?? '(absent)'}`);
+    console.log(`wrote ${out}: ${diffs.length} field(s) differ from ${file}`);
+    break;
+  }
 
   // The orchestrator's status monitor, run under Monitor: one plain command, so starting it never
   // prompts. Prints the table and the memory line once, then again only when a ticket's state or

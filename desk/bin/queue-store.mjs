@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { writeJsonAtomic } from './dir-lock.mjs';
 import { followOnPending, postMergeUnmade } from './harvest.mjs';
+import { ledgerOn, missedLine, recordWrite } from './queue-ledger.mjs';
 
 export const versionOf = (q) => {
   const n = Number(q?.version);
@@ -19,10 +20,24 @@ export const versionOf = (q) => {
 };
 
 // Writes queue `q` to `file` as the version after the one it was read as. -> the version written.
-export function writeQueueFile(file, q) {
+// With the ledger lever on, it then appends to the ticket ledger what the write changed from the file
+// it replaced (queue-ledger.mjs recordWrite), naming `by` as the writer; `archived` holds the tickets
+// the write moved to the archive. `onLedger(result)` hears the append's outcome; by default a missed
+// append is printed to stderr. `record: false` is a writer that records its write itself (move-batch).
+export function writeQueueFile(file, q, { by, archived, record = true, onLedger = reportMissed(file) } = {}) {
+  const on = record && ledgerOn();
+  const before = on ? readQueueAt(file) : null;
   q.version = versionOf(q) + 1;
   writeJsonAtomic(file, q);
+  if (on) onLedger(recordWrite(file, before, q, { by, archived }));
   return q.version;
+}
+
+export const reportMissed = (file) => (r) => { const l = missedLine(r, file); if (l) console.error(l); };
+
+// Queue `file` as plain JSON, for the log to compare a write with: null when there is none or it does not read.
+export function readQueueAt(file) {
+  try { return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : null; } catch { return null; }
 }
 
 export const archivePath = (file) => join(dirname(file), `${basename(file).replace(/\.json$/, '')}.archive.json`);
@@ -68,6 +83,12 @@ export const everyTicket = (q) => ({ ...archivedOf(q), ...(q?.tickets ?? {}) });
 // Whether `key` is archived and not live in queue `q`.
 export const isArchived = (q, key) => !!q?.tickets && !Object.hasOwn(q.tickets, key) && Object.hasOwn(archivedOf(q), key);
 
+// Whether ticket `t`'s own PR (result.pr) was last read closed unmerged.
+export const prClosed = (t) => t?.result?.pr != null && Number(t.pr_status?.pr) === Number(t.result.pr) && t.pr_status?.state === 'CLOSED';
+// Whether ticket `t`'s own PR (result.pr) was closed by the pass to restart its CI and is still owed
+// its reopen (`reopening` names that PR). A marker naming an earlier PR owes nothing.
+export const owesReopen = (t) => t?.reopening != null && t?.result?.pr != null && String(t.reopening) === String(t.result.pr);
+
 const HOLD_FIELDS = ['held_by', 'held_outside', 'merge_after'];
 export const keys = (v) => String(v ?? '').split('|').filter(Boolean);
 
@@ -79,8 +100,10 @@ export function archivable(q, key) {
   if (q.base || q.epic || q.feature === true) return false;
   const t = q.tickets[key];
   if (t?.state !== 'done' || t.result?.pr == null || followOnPending(t)) return false;
-  const closed = Number(t.pr_status?.pr) === Number(t.result.pr) && t.pr_status?.state === 'CLOSED';
+  const closed = prClosed(t);
   if (!t.merged_at && !closed) return false;
+  // A PR the pass closed to reopen for its CI is not closed for good: archived, the reopen is never retried.
+  if (closed && owesReopen(t)) return false;
   // A merged PR's criteria its review left for after the merge that the pass has not made follow-on
   // steps yet: an append it skipped is owed to the next pass, so the ticket stays.
   if (!closed && postMergeUnmade(t)) return false;
