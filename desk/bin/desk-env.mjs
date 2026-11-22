@@ -935,6 +935,11 @@ export const permissionKey = (id) => PERMISSION_KEYS[id];
 
 // The merge driver holding <state>/merge-driver.lock.d: its pid while that process lives (one another
 // user owns counts), 'starting' for a lock made under a minute ago that has no pid yet, else null.
+// A PR out of draft ends the batch's merge driver's idle pause: it reads <state>/merge-driver/wake's
+// time between sleeps. A write that fails costs at most the driver's longest pause.
+export function wakeMergeDriver(state = stateDir()) {
+  try { mkdirSync(join(state, 'merge-driver'), { recursive: true }); writeFileSync(join(state, 'merge-driver', 'wake'), `${Date.now()}\n`); } catch { /* see above */ }
+}
 export function mergeDriverHolder(state) {
   const d = join(state, 'merge-driver.lock.d');
   if (!existsSync(d)) return null;

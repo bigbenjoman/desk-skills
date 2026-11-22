@@ -153,8 +153,9 @@
 #                                the pause after a loop with nothing it may merge: the first, doubled on
 #                                each such loop in a row up to the most (defaults 60 and 600), and how
 #                                often within it the driver looks for a worker's exit or an undraft by the
-#                                pass, either of which ends it (default 60). After a merge it waits 30s,
-#                                and with ready PRs still waiting on CI 120s, as before
+#                                pass, either of which ends it (default 60); each a whole number of
+#                                seconds above 0. After a merge it waits 30s, and with ready PRs still
+#                                waiting on CI 120s
 #   MERGE_DRIVER_UNKNOWN_SECS=<n>  how long a ready PR may have no mergeability answer before its one
 #                                branch update, and again after it before the queue asks the person
 #                                (default DESK_UNKNOWN_SECS, which the pass's undraft reads too, else 1800)
@@ -1284,6 +1285,9 @@ pause(){
 # WAKE_SECS and ends early once the repo's exits folder (a worker exited) or $SD/wake (the pass took a
 # PR out of draft) has changed since this loop began, so a long pause never holds back a new PR.
 IDLE_SECS="${MERGE_DRIVER_IDLE_SECS:-60}"; IDLE_MAX_SECS="${MERGE_DRIVER_IDLE_MAX_SECS:-600}"; WAKE_SECS="${MERGE_DRIVER_WAKE_SECS:-60}"
+for v in IDLE_SECS IDLE_MAX_SECS WAKE_SECS; do
+  case "${!v}" in ''|0*|*[!0-9]*) echo "FAIL: MERGE_DRIVER_$v is '${!v}' — want a whole number of seconds above 0" >&2; exit 2 ;; esac
+done
 IDLE_RUN=0; LOOP_MARK="$SD/loop-began"
 idle_pause(){
   local secs="$IDLE_SECS" i=0 left slice woke

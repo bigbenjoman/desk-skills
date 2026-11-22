@@ -150,8 +150,9 @@ check "a spine PR merged without approval releases nothing"          '[ "$(qf T-
 jq '."107".state = "open"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
 loop
 check "the spine's draft PR is not merged before approval"           '! grep -q "^107 " "$T/merges.log" && echo "$out" | grep -q "draft (still reviewing): #107"'
-out=$(node "$B/queue.mjs" approve T-7 2>&1); rc=$?
+rm -f "$SD/wake"; out=$(node "$B/queue.mjs" approve T-7 2>&1); rc=$?
 check "approve undrafts the spine PR and hands it to the merge driver, exit 0" '[ $rc -eq 0 ] && [ "$(qf T-7 .state)" = done ] && [ "$(jq -r ".\"107\".draft" "$T/prs.json")" = false ] && echo "$out" | grep -q "the merge driver merges PR #107 once it is green; T-8 is released once it merges"'
+check "DS-971 AC2: approving the spine wakes the merge driver from an idle pause" '[ -f "$SD/wake" ]'
 loop; loop
 check "the approved spine merges, pinned, and its child is released" 'grep -qx "107 main $SHA7" "$T/merges.log" && [ "$(qf T-8 .state)" = triaged ] && echo "$out" | grep -q "RELEASED T-8"'
 
@@ -274,6 +275,8 @@ loops 4
 check "DS-971 AC3: a loop that merged pauses 30s as before, and the next idle run starts at a minute" \
   '[ $rc -eq 143 ] && grep -q "^971 main $SHA971" "$T/merges.log" && [ "$(paste -sd" " - < "$T/sleeps")" = "60 120 30 60" ] && ! echo "$out" | grep -q "next look in"'
 rm -f "$T/between.1"; q drop T-971
+out=$(MERGE_DRIVER_WAKE_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1" 2>&1); rc=$?
+check "DS-971: a pause setting that is not a whole number above 0 stops the driver at start" '[ $rc -eq 2 ] && echo "$out" | grep -q "MERGE_DRIVER_WAKE_SECS is .0."'
 
 # ---- DS-835: a merge GitHub refuses leaves no merged entry in the merge log -----------------------
 SHA835=8358358358358358358358358358358358358358
