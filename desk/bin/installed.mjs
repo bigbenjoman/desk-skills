@@ -14,7 +14,9 @@
 // started again. A driver is restarted only while it waits between loops (its one child is `sleep`):
 // one mid-loop may be merging, so it is left, and a supervisor tick restarts it the same way once it
 // waits between loops (supervisor.mjs moveDriver). Each one is
-// started again with the tickets and deps it was given, from its repo's §2 Primary repo root.
+// started again with the tickets and deps it was given, from its repo's §2 Primary repo root, except
+// that the repo's one driver (--all-batches) starts again as one, and so does a handed-over batch's
+// driver that was given no deps: a repo's per-batch drivers become its one driver.
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, openSync, closeSync, realpathSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { dirname, join, basename } from 'node:path';
@@ -132,17 +134,20 @@ function waitFor(ok, ms = WAIT_MS) {
   for (const end = Date.now() + ms; Date.now() < end; sleep(200)) if (ok()) return true;
   return ok();
 }
-const lockPid = (dir) => { try { return Number(readFileSync(join(dir, 'merge-driver.lock.d', 'pid'), 'utf8').trim()) || null; } catch { return null; } };
+// `lock` is a batch's own lock, or E.REPO_DRIVER_LOCK, the one the repo's one driver holds.
+const BATCH_LOCK = 'merge-driver.lock.d';
+const lockPid = (dir, lock = BATCH_LOCK) => { try { return Number(readFileSync(join(dir, lock, 'pid'), 'utf8').trim()) || null; } catch { return null; } };
 // The desk version the driver holding the lock in `dir` started at, or null with none written.
-export const lockVersion = (dir) => { try { return readFileSync(join(dir, 'merge-driver.lock.d', 'version'), 'utf8').trim() || null; } catch { return null; } };
+export const lockVersion = (dir, lock = BATCH_LOCK) => { try { return readFileSync(join(dir, lock, 'version'), 'utf8').trim() || null; } catch { return null; } };
 
 // Every process as {pid, ppid, comm, args}, from one ps. Throws when ps cannot be read.
 function processes() {
   return E.psRows('pid=,ppid=,comm=,args=').map((p) => ({ ...p, comm: basename(p.comm) }));
 }
 
-// --tickets and --deps from a driver's command line, or null when it names no tickets. No id or deps
-// entry starts with `--`, so each flag's words run to the next flag.
+// --tickets and --deps from a driver's command line, and `all` for the repo's one driver
+// (--all-batches), or null when it names no tickets and is not that. No id or deps entry starts with
+// `--`, so each flag's words run to the next flag.
 export function driverArgs(args) {
   const words = String(args).trim().split(/\s+/);
   const at = words.findIndex((w) => /(^|\/)merge-driver\.sh$/.test(w));
@@ -152,24 +157,29 @@ export function driverArgs(args) {
   for (const w of words.slice(at + 1)) {
     if (w === '--tickets') into = out.tickets;
     else if (w === '--deps') into = out.deps;
+    else if (w === '--all-batches') { out.all = true; into = null; }
     else if (w.startsWith('--')) into = null;
     // A deps entry keeps its commas (succ:pred,pred); tickets may be comma-separated.
     else if (into === out.deps) into.push(w);
     else if (into) into.push(...w.split(',').filter(Boolean));
   }
-  return out.tickets.length ? out : null;
+  return out.tickets.length || out.all ? out : null;
 }
 
 // The batch state directories under ~/.desk-autopilot whose merge driver is alive: each repo's standing
-// batch (`batch` null), then its named batches under `batches/<name>/`.
+// batch (`batch` null), then its named batches under `batches/<name>/`, after the repo's one driver. A
+// driver is listed once, at the first lock it holds: the repo's one driver holds the repo's lock and
+// points the lock of each batch it merges for.
 function runningDrivers(root) {
   const out = [];
+  const seen = new Set();
+  const add = (slug, batch, dir, lock) => {
+    const pid = lockPid(dir, lock);
+    if (pid && alive(pid) && !seen.has(pid)) { seen.add(pid); out.push({ slug, batch, dir, pid }); }
+  };
   for (const slug of existsSync(root) ? readdirSync(root).sort() : []) {
-    for (const batch of [null, ...namedBatches(join(root, slug))]) {
-      const dir = batch ? join(root, slug, E.BATCHES_DIR, batch) : join(root, slug);
-      const pid = lockPid(dir);
-      if (pid && alive(pid)) out.push({ slug, batch, dir, pid });
-    }
+    add(slug, null, join(root, slug), E.REPO_DRIVER_LOCK);
+    for (const batch of [null, ...namedBatches(join(root, slug))]) add(slug, batch, batch ? join(root, slug, E.BATCHES_DIR, batch) : join(root, slug));
   }
   return out;
 }
@@ -183,9 +193,14 @@ export function driverEnv(env = process.env) {
   return out;
 }
 
+// Whether the batch's queue is handed over to the supervisor, whose one driver merges for it.
+const supervised = (queue) => { try { return JSON.parse(readFileSync(queue, 'utf8')).supervised === true; } catch { return false; } };
+
 // One line saying what became of a running driver. `queue`, where given, is the queue it is started on
 // again; a named batch's is otherwise that batch's, the standing batch's the repo's own. It reads a
-// fresh ps: a partial list could miss its tickets, so a ps that fails leaves it running.
+// fresh ps: a partial list could miss its tickets, so a ps that fails leaves it running. The repo's one
+// driver, or a handed-over batch's driver with no deps, is started again as the repo's one driver; a
+// named batch's so is stopped, and the repo's one driver takes the batch on, started here when none runs.
 export function restartDriver({ slug, batch = null, dir, pid, queue = null }) {
   const who = batch ? `${slug} batch ${batch}` : slug;
   const name = `merge driver for ${who} (pid ${pid})`;
@@ -194,6 +209,7 @@ export function restartDriver({ slug, batch = null, dir, pid, queue = null }) {
   const me = ps.find((p) => p.pid === pid);
   const args = me && driverArgs(me.args);
   if (!args) return `${name}: left running on the old code, its command line names no tickets to start it again with`;
+  const asRepo = args.all || (!args.deps.length && supervised(queue ?? E.batchPaths(slug, batch).queue));
   const kids = ps.filter((p) => p.ppid === pid);
   if (!kids.length || kids.some((k) => k.comm !== 'sleep')) {
     return `${name}: left running on the old code, it is mid-loop and may be merging; a supervisor tick moves it to the new code once it waits between loops`;
@@ -202,26 +218,56 @@ export function restartDriver({ slug, batch = null, dir, pid, queue = null }) {
   if (!root || !existsSync(root)) return `${name}: left running on the old code, ${slug} has no §2 Primary repo root here to start it from`;
   // The driver stops on TERM in its pause; its sleep is stopped too.
   for (const p of [pid, ...kids.map((k) => k.pid)]) { try { process.kill(p, 'SIGTERM'); } catch { /* gone */ } }
-  if (!waitFor(() => !alive(pid) && lockPid(dir) !== pid)) return `${name}: did not stop within ${WAIT_MS / 1000}s of SIGTERM, so it was not started again`;
+  if (!waitFor(() => !alive(pid) && lockPid(dir, args.all ? E.REPO_DRIVER_LOCK : BATCH_LOCK) !== pid)) return `${name}: did not stop within ${WAIT_MS / 1000}s of SIGTERM, so it was not started again`;
+  if (asRepo) return restartRepo({ slug, batch, dir, pid, queue, args, root, name });
   const env = { ...driverEnv(), DESK_REPO_DIR: root, DESK_AUTOPILOT_STATE: dir };
   // A named batch's driver acts on that batch's queue, and reads its base as the batch does.
   if (batch) Object.assign(env, { DESK_BATCH: batch, DESK_QUEUE: E.batchPaths(slug, batch).queue });
   if (queue) env.DESK_QUEUE = queue;
   const argv = ['--tickets', args.tickets.join(' '), ...(args.deps.length ? ['--deps', args.deps.join(' ')] : []), '--log'];
+  const now = startDriver({ argv, env, root, dir, lock: BATCH_LOCK, pid });
+  if (typeof now === 'string') return `${name}: stopped, but could not be started again: ${now}`;
+  return now
+    ? `merge driver for ${who}: restarted on the new code (pid ${pid} -> ${now}) for ${args.tickets.join(' ')}`
+    : `${name}: stopped and started again, but no new driver holds the lock yet; see ${join(dir, 'merge-driver.log')}`;
+}
+
+// Starts a driver detached, logging to <dir>/merge-driver.log, and waits for a new pid in its lock.
+// -> that pid, null when none holds it in time, or the error that stopped the start.
+function startDriver({ argv, env, root, dir, lock, pid }) {
   let fd;
   try {
+    mkdirSync(dir, { recursive: true });
     fd = openSync(join(dir, 'merge-driver.log'), 'a');
     const child = spawn(join(HERE, 'merge-driver.sh'), argv, { cwd: root, env, detached: true, stdio: ['ignore', fd, fd] });
     child.on('error', () => {});
     child.unref();
-  } catch (e) { return `${name}: stopped, but could not be started again: ${e.message}`; }
+  } catch (e) { return e.message; }
   finally { if (fd !== undefined) closeSync(fd); }
-  const now = waitFor(() => { const p = lockPid(dir); return Boolean(p && p !== pid && alive(p)); }) ? lockPid(dir) : null;
+  const now = waitFor(() => { const p = lockPid(dir, lock); return Boolean(p && p !== pid && alive(p)); }) ? lockPid(dir, lock) : null;
   // It writes its version just after its pid, so what reads the lock next reads it as current.
-  if (now) waitFor(() => Boolean(lockVersion(dir)) || lockPid(dir) !== now);
+  if (now) waitFor(() => Boolean(lockVersion(dir, lock)) || lockPid(dir, lock) !== now);
+  return now;
+}
+
+// The stopped driver's place taken by the repo's one driver, which holds the repo's lock under the
+// standing batch's state: the same driver started again, or one that also merges for a batch whose own
+// driver stopped. A driver that named its batch or state explicitly (DESK_BATCH, DESK_AUTOPILOT_STATE,
+// DESK_QUEUE) is started on that one again.
+function restartRepo({ slug, batch, dir, pid, queue, args, root, name }) {
+  const own = E.batchPaths(slug);
+  const at = args.all || !batch ? dir : own.state;
+  const env = { ...driverEnv(), DESK_REPO_DIR: root };
+  if (at !== own.state) env.DESK_AUTOPILOT_STATE = at;
+  if (args.all && batch) env.DESK_BATCH = batch;
+  if (queue && queue !== own.queue && (args.all || !batch)) env.DESK_QUEUE = queue;
+  const running = lockPid(at, E.REPO_DRIVER_LOCK);
+  if (running && running !== pid && alive(running)) return `${name}: stopped, and the repo's one driver (pid ${running}) merges for its batch from its next sweep`;
+  const now = startDriver({ argv: ['--all-batches', '--log'], env, root, dir: at, lock: E.REPO_DRIVER_LOCK, pid });
+  if (typeof now === 'string') return `${name}: stopped, but the repo's one driver could not be started: ${now}`;
   return now
-    ? `merge driver for ${who}: restarted on the new code (pid ${pid} -> ${now}) for ${args.tickets.join(' ')}`
-    : `${name}: stopped and started again, but no new driver holds the lock yet; see ${join(dir, 'merge-driver.log')}`;
+    ? `merge driver for ${slug}: restarted on the new code (pid ${pid} -> ${now}), as the repo's one driver for all its batches`
+    : `${name}: stopped and the repo's one driver started, but it holds no lock yet; see ${join(at, 'merge-driver.log')}`;
 }
 
 // ---- supervisor agents -----------------------------------------------------------------------
