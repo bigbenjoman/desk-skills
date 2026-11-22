@@ -120,6 +120,20 @@ export function nextWaits(t, at) {
   return { waits: next, lines };
 }
 
+// The red base under a batch (pass/base-gate.mjs decideBaseRed) is a wait of the batch's, kept as the
+// queue's `base_red`, with its deadline BASE_RED_MS after it began. -> { rec, line }: past its deadline
+// it is escalated to the person once (`escalated`, kept on the record), and its WAITING ON YOU line is
+// said while it stays red, as a ticket's escalated wait's is, led by the branch and its class so the
+// decider keys it as one item while its minutes grow (decider.mjs waitKey). Before it, line is null.
+export const BASE_RED_MS = 60 * MIN;
+export function baseRedWait(rec, at) {
+  if (!rec.escalated && Date.parse(at) < Date.parse(rec.deadline)) return { rec, line: null };
+  const w = rec.escalated ? rec : { ...rec, escalated: at };
+  const merges = w.merges?.length ? w.merges.map((m) => `#${m.pr}${m.ticket ? ` (${m.ticket})` : ''}`).join(', ') : 'none in the merge log';
+  return { rec: w, line: `${w.branch}: RED BASE — it has been red for ${minsSince(w.since, at)} minutes, since ${w.since}, past its ${minsSince(w.since, w.deadline)}-minute deadline: ` +
+    `${w.check} still fails there, so the merge driver merges nothing into it. The last merges desk made: ${merges}` };
+}
+
 export function decideDeadlines(snap) {
   const actions = [];
   for (const t of Object.values(snap.tickets)) {

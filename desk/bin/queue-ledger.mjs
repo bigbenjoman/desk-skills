@@ -2,7 +2,8 @@
 //
 // With the ledger lever on, every queue write (queue-store.mjs writeQueueFile) appends the difference
 // between the queue on disk before it and the queue it wrote: per ticket, a typed event for a change
-// of state and one legacy_set for every other field changed with it. It records what queue.json kept,
+// of state and one legacy_set for every other field changed with it, and for the batch, its red base
+// starting or clearing (base_red, base_green). It records what queue.json kept,
 // never the changes a writer asked for. A ticket leaving the queue is archived, or moved out of the
 // batch; one arriving with a moved_from record is moved in. The first write the lever sees for a batch
 // the log has never named first seeds one event per ticket from the queue as it stood.
@@ -170,7 +171,20 @@ export function queueEvents(before, after, { batch, archived = {}, elsewhere = (
     }
     if (own(archived, key)) ev(key, 'archived', {});
   }
+  for (const e of redBaseEvents(before, after)) ev(null, e.type, e.data);
   return out;
+}
+
+// The batch's red base (the queue's `base_red`, pass/base-gate.mjs decideBaseRed) starting or clearing
+// in this write: one base_red event as a spell is first recorded, one base_green as it is cleared. Its
+// escalation, a change to the same spell's record, appends nothing.
+function redBaseEvents(before, after) {
+  const was = before?.base_red ?? null;
+  const now = after?.base_red ?? null;
+  if (was && !now) return [{ type: 'base_green', data: {} }];
+  if (!now || typeof now !== 'object' || (was && was.branch === now.branch && was.since === now.since)) return [];
+  const e = { type: 'base_red', data: { check: now.check, since: now.since, deadline: now.deadline, merges: now.merges } };
+  return invalid({ ...e, batch: STANDING, key: null }) ? [] : [e];
 }
 
 // One seeded event per ticket of queue `q` (the file as it stood) in `batch`, but for any in `skip`.

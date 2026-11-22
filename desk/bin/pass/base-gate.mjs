@@ -36,6 +36,8 @@
 //   flush                  -> the queue flush's result: { ok, conflicts }
 //   start-gate             -> the pid of the base gate started in the background
 //   pending {pending}      the last action: whether the gate keeps the batch from being idle
+import { BASE_RED_MS, baseRedWait } from './deadlines.mjs';
+
 export function* decideBaseGate(s) {
   const pending = yield* gate(s);
   yield { type: 'pending', pending };
@@ -183,6 +185,37 @@ function* gate(s) {
     yield waiting(`BASE GATE: failed on ${at}${g.pr != null && !undoFailed ? `, so promotion PR #${g.pr} stays draft` : ''}. Fix it on ${BASE}: the gate runs again once ${BASE} moves, or now with queue.mjs set-batch gate=null`);
   }
   return waits;
+}
+
+// ---- the red base ----------------------------------------------------------
+// A red base (base-red.mjs: the merge driver's record of its base failing a §4 Required check) is a
+// condition of the batch, kept as the queue's `base_red` { branch, check, since, deadline, merges,
+// escalated? } for as long as the spell lasts, and never copied onto the PRs it holds. Its one line is
+// said on the pass that first records the spell, and not again; past its deadline it is escalated once
+// (pass/deadlines.mjs baseRedWait). It is cleared once the driver reads the base green, and left as it
+// is while the base cannot be read: the driver's record gone stale says nothing about the base now.
+//
+// The snapshot:
+//   recorded   the queue's `base_red`, or null
+//   red        the driver's live record (base-red.mjs liveBaseRed), or null
+//   known      whether the base's state is known: false when the driver's record is there but stale
+//   line       the red base's one line for the batch (base-red.mjs batchLine), with `red`
+//   at, dry    the pass's time (ISO), and a dry run
+// Actions: set-batch {fields}, notice {line} (the line for the report's RED BASE), and the shared report.
+export function decideBaseRed(s) {
+  const was = s.recorded ?? null;
+  if (!s.red) return was && s.known && !s.dry ? [setBatch('base_red=null')] : [];
+  const acts = [];
+  let rec = was?.branch === s.red.branch && was.since === s.red.since ? was : null;
+  if (!rec) {
+    rec = { branch: s.red.branch, check: s.red.checks.map((c) => c.name).join(', '), since: s.red.since,
+      deadline: new Date(Date.parse(s.red.since) + BASE_RED_MS).toISOString(), merges: (s.red.merges ?? []).map((m) => ({ pr: m.pr, ticket: m.ticket ?? null })) };
+    acts.push({ type: 'notice', line: s.line });
+  }
+  const { rec: next, line } = baseRedWait(rec, s.at);
+  if (line) acts.push(waiting(line));
+  if (!s.dry && JSON.stringify(next) !== JSON.stringify(was)) acts.unshift(setBatch(`base_red=${JSON.stringify(next)}`));
+  return acts;
 }
 
 const out = (line) => ({ type: 'out', line });

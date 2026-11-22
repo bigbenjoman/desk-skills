@@ -64,7 +64,7 @@ import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
-import { liveBaseRed, batchLine, repairTicket, repairTriage } from './base-red.mjs';
+import { liveBaseRed, readBaseRed, batchLine, repairTicket, repairTriage } from './base-red.mjs';
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
@@ -98,7 +98,7 @@ import { decideDeadlines } from './pass/deadlines.mjs';
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
 import { decideFixTries, decideOutage, tryLabel } from './pass/fix-tries.mjs';
 import { decideReopen, decideRenames, decideUndraft, decideRelease, undraftWrite } from './pass/undraft.mjs';
-import { decideBaseGate } from './pass/base-gate.mjs';
+import { decideBaseGate, decideBaseRed } from './pass/base-gate.mjs';
 import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
 import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
@@ -5380,6 +5380,24 @@ runPhase({
 // deadline; one past it is escalated once (pass/deadlines.mjs).
 runPhase({ name: 'deadlines', snapshot: () => ({ tickets: queue().tickets, at: PASS_AT, dry: DRY }), decide: decideDeadlines, handlers: PHASE_HANDLERS, report });
 
+// The red base as the batch's record (pass/base-gate.mjs decideBaseRed): its one line, the report's RED
+// BASE, only on the pass that records the spell, and its escalation once past its deadline. A record the
+// driver left stale says nothing about the base now, so the batch's is kept as it is.
+let baseRedNotice = null;
+{
+  const kept = readBaseRed(STATE);
+  runPhase({
+    name: 'red base',
+    snapshot: () => ({
+      recorded: queue().base_red ?? null, red: BASE_RED, known: !(!BASE_RED && kept?.branch === DEFAULT_BRANCH),
+      line: BASE_RED ? batchLine(BASE_RED, { held: baseRedHeld, repair: baseRedRepair }) : null, at: PASS_AT, dry: DRY,
+    }),
+    decide: decideBaseRed,
+    handlers: { ...PHASE_HANDLERS, 'set-batch': (a) => q('set-batch', ...a.fields), notice: (a) => { baseRedNotice = a.line; } },
+    report,
+  });
+}
+
 // The report's lines after the ledger (pass/report.mjs decideReportLines): a §4 Merge hold on the
 // promotion, overridden calls, the review rows, WAITING ON YOU, BLOCKED ON ANSWERS, the held-back,
 // resume and reboot waits, put-off parks asked again, PARKED and the rest, and the base drift.
@@ -5434,7 +5452,7 @@ runPhase({
       })),
       register: REGISTER,
       askedAgain: askedAgain.filter((p) => !takenBack.includes(p.key)),
-      baseRed: BASE_RED ? batchLine(BASE_RED, { held: baseRedHeld, repair: baseRedRepair }) : null,
+      baseRed: baseRedNotice,
     };
   },
   decide: decideReportLines,

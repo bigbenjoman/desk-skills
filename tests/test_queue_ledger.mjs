@@ -522,6 +522,34 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
     `${d.diffs.map((x) => x.path).join(', ')}|${ledgerLine({ check: d, missed: 0, queueBin: '/bin/queue.mjs' })}`, '|null');
 }
 
+// DS-903: the batch's red base, as the pass records it (pass/base-gate.mjs decideBaseRed): one base_red
+// batch event as it starts, none as it is escalated, one base_green as it clears, and the rebuild matches.
+{
+  const j = JSON.stringify;
+  const f = fixture({ version: 1, batch: 'b', tickets: { D: tk('D', { state: 'done', result: { pr: 813 } }) } });
+  queueDifference(f, { seed: true, by: 'pass' });
+  const rec = { branch: 'main', check: 'tests', since: '2026-11-20T10:00:00.000Z', deadline: '2026-11-20T11:00:00.000Z', merges: [{ pr: 802, ticket: 'T-2' }, { pr: 801, ticket: null }] };
+  const w = queueWriter(f);
+  const at = log(f).length;
+  w.apply(['set-batch', `base_red=${j(rec)}`]);
+  w.flush();
+  const started = since(f, at);
+  t('AC5 a red base starting is one base_red batch event with no ticket', j(started.map((e) => [e.type, e.key])), j([['base_red', null]]));
+  t('AC5 carrying its check, start, deadline and merges', j(started[0]?.data), j({ check: rec.check, since: rec.since, deadline: rec.deadline, merges: rec.merges }));
+  const at2 = log(f).length;
+  w.apply(['set-batch', `base_red=${j({ ...rec, escalated: '2026-11-20T11:05:00.000Z' })}`]);
+  w.flush();
+  t('its escalation appends nothing', since(f, at2).length, 0);
+  const at3 = log(f).length;
+  w.apply(['set-batch', 'base_red=null']);
+  w.flush();
+  t('AC6 a red base clearing is one base_green batch event with no ticket', j(since(f, at3).map((e) => [e.type, e.key])), j([['base_green', null]]));
+  t('and the fold holds no red base for the batch', fold(dirname(f)).batches.b?.base_red, undefined);
+  const d = queueDifference(f);
+  t('AC7 with the base gone red and green, nothing differs and the pass prints no difference line',
+    `${d.diffs.map((x) => x.path).join(', ')}|${ledgerLine({ check: d, missed: 0, queueBin: '/bin/queue.mjs' })}`, '|null');
+}
+
 rmSync(T, { recursive: true, force: true });
 console.log(fails ? `${fails} failed` : 'all checks passed');
 process.exit(fails ? 1 : 0);

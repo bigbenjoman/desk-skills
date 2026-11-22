@@ -223,8 +223,8 @@ check "DS-850 AC3 with the grant, one repair ticket is started, its ticket namin
   '{ [ -e "$T/state-fb/logs/base-red-main.log.round1.gz" ] || [ -e "$T/state-fb/logs/base-red-main.log.round1" ]; } && [ "$(field base-red-main state)" = "\"running\"" ] && [ "$(echo "$out" | grep -o "base-red-main port=" | wc -l | tr -d " ")" = 1 ] && grep -qF "run https://github.com/acme/widgets/actions/runs/77" "$T/state-fb/tickets/base-red-main.md" && grep -qF "PR #802 (FB-0)" "$T/state-fb/tickets/base-red-main.md"'
 q set base-red-main session_id=live-1
 out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
-check "DS-850 AC4 with the repair running, no second one starts, and the line names it" \
-  '[ "$(field base-red-main state)" = "\"running\"" ] && ! echo "$out" | grep -q "base-red-main port=" && echo "$out" | grep -A1 "^RED BASE:" | grep -qF "Repair ticket base-red-main is running"'
+check "DS-850 AC4 with the repair running, no second one starts, and (DS-903 AC2) the same red spell sends no second notice" \
+  '[ "$(field base-red-main state)" = "\"running\"" ] && ! echo "$out" | grep -q "base-red-main port=" && ! echo "$out" | grep -q "^RED BASE:" && [ "$(jq -r .base_red.check "$DESK_QUEUE")" = Lint ]'
 # This spell's repair, its PR closed unmerged and archived: done with, so the key is admitted again. Its
 # reopening marker names an earlier PR (700), so owes #901 nothing.
 q set base-red-main state=done session_id=null result.pr=901 'pr_status={"pr":901,"state":"CLOSED"}' reopening=700
