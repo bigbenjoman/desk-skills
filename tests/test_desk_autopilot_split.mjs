@@ -85,6 +85,8 @@ const REWRITTEN = [
   ['#831', 'flaky checks (`` `<check>: <glob> [<glob>…]` ``) is merged by the driver', 1], // an item may name one test inside a check
   ['DS-912', 'One preview build at a time, where PRs deploy previews (§4 Vercel set).', 1], // each build takes its team's preview-build lease
   ['DS-842', '`usage: no recent data` (no reading, or the newest one\'s window has reset)', 1], // the line names the login, and a blind guard is told
+  ['DS-972', 'starts the merge driver for the queue\'s tickets (it reads their holds from the queue)', 1], // one driver runs for all of a repo's batches
+  ['DS-972', 'it starts the driver for a handed-over batch and starts it again after a reboot', 1],
 ];
 checkSplit({ t, label: 'AC4', before, files, read, headings: 46, minRows: 100, rewritten: REWRITTEN });
 const deep = before.split('\n').filter((l) => /^#### /.test(l));

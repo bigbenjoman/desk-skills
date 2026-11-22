@@ -415,8 +415,8 @@ out=$(tick)
 check "AC2: with no batch, intake starts a standing one for the ticket" 'grep -q "^standing-" <<< "$(qget batch)" && [ "$(qget tickets.A-9.state)" = triaged ]'
 check "AC2: the standing batch is handed over to the supervisor" '[ "$(qget supervised)" = true ]'
 check "AC2: the same tick runs a pass for it, reporting the start" '[ "$(count "$T/pass.calls")" = $((p + 1)) ] && grep -B1 "intake: started standing batch standing-" "$T/state/supervisor.log" | grep -q "pass: exit 10"'
-i=0; while ! grep -q -- "--tickets A-9 --log" "$T/driver.calls" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
-check "AC2: the merge driver picks it up" 'grep -q -- "--tickets A-9 --log" "$T/driver.calls"'
+i=0; while ! grep -q -- "--all-batches --log" "$T/driver.calls" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+check "AC2: the merge driver picks it up" 'grep -q -- "--all-batches --log" "$T/driver.calls"'
 # A finished batch is not live either: the next ticket starts a new one. A blocker in it is outside the
 # new one, so a ticket it blocks is held by it there.
 printf '{"version":1,"batch":"old","supervised":true,"tickets":{"Z":{"key":"Z","state":"done","result":{"pr":null}}}}\n' > "$DESK_QUEUE"
