@@ -466,6 +466,7 @@ export const TYPES = Object.freeze({
   command: matching('a command', () => true, parseCommandItem),
   'test-signin': matching('`[<app dir>: ]<email>`', (s) => testSigninOf(s) != null, testSigninOf),
   'service-port': matching(SERVICE_PORT_FORM, (s) => servicePort(s) != null, servicePort),
+  'field-defaults': matching('`<field> = <value>` or `<field> = from parent`', (s) => /^\s*[^=\s]+\s*=\s*\S/.test(s)),
   'required-fields': matching('`<Type>[, <Type>…]: <field>[, <field>…]`', (s) => !requiredFieldsIn([s], null).malformed.length,
     (s) => ({ types: requiredRule(s)?.types ?? [], fields: requiredFieldsIn([s], null).need })),
   // The whole cell is checked, as `desk-env levers` reads it; the value stays one entry per span.
@@ -626,6 +627,7 @@ export const ROWS = Object.freeze([
   l('jira-priority', '4', 'Priority', 'text', ['customfield_10300', 'P0', 'P1', 'P2']),
   l('jira-other-fields', '4', 'Other fields', 'text', ['customfield_10210']),
   l('jira-required-fields', '4', 'Required fields', 'required-fields', ['Epic, Story, Task, Bug: customfield_10208, customfield_10207']),
+  l('jira-field-defaults', '4', 'Field defaults', 'field-defaults', ['customfield_10209 = Tech Debt', 'customfield_10211 = from parent']),
   v('jira-size-field', '4', 'Size field', 'text', 'customfield_10208'),
   l('jira-priority-user-only', '4', 'Priorities only you set', 'text', ['P0', 'P1']),
   l('labels', '4', 'Labels', 'text', ['any']),

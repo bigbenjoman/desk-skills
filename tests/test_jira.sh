@@ -41,9 +41,13 @@ cat > "$T/fixture.json" <<EOF
   "KAN-6": {"summary": "bare"},
   "KAN-7": {"summary": "links down"},
   "KAN-20": {"summary": "a story", "issuetype": {"name": "Story"}, "customfield_10208": {"value": "M"}},
-  "KAN-30": {}, "KAN-31": {}, "KAN-32": {}, "KAN-33": {}, "KAN-34": {}},
+  "KAN-30": {}, "KAN-31": {}, "KAN-32": {}, "KAN-33": {}, "KAN-34": {},
+  "KAN-40": {"summary": "a parent", "customfield_10211": {"self": "https://x/option/5", "value": "alpha", "id": "5"}},
+  "KAN-41": {"summary": "a parent with no repository"}},
  "fields": [{"id": "customfield_10207", "name": "Launch Priority", "custom": true, "schema": {"type": "option"}},
-            {"id": "customfield_10208", "name": "Size", "custom": true, "schema": {"type": "option"}}],
+            {"id": "customfield_10208", "name": "Size", "custom": true, "schema": {"type": "option"}},
+            {"id": "customfield_10209", "name": "Source", "custom": true, "schema": {"type": "option"}},
+            {"id": "customfield_10211", "name": "Repository", "custom": true, "schema": {"type": "option"}}],
  "remotelinks": {"KAN-5": [{"id": 1, "relationship": "mentioned in",
    "object": {"url": "https://github.com/acme/alpha/pull/7", "title": "PR 7"}}]},
  "remotelink_fail": ["KAN-7"],
@@ -303,6 +307,27 @@ check "create with every required field goes, options wrapped by name" '[ $rc -e
 check "create reads back every field it sent" 'printf "%s" "$out" | grep -q "^  customfield_10208: M$" && printf "%s" "$out" | grep -q "^  customfield_10207: P2$"'
 out=$(cd "$C" && "$J" create Story dropped body.md customfield_10208=M customfield_10207=P2 --no-lint 2>&1); rc=$?
 check "create names a field that came back empty" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "^  customfield_10207: (empty - the write did not stick)$" && printf "%s" "$out" | grep -q "^  customfield_10208: M$"'
+
+# §4 Field defaults fill a required field the create leaves out: a value, or the parent's own.
+SLUG_FD=$(mkrepo fd "https://github.com/acme/defaults" jira "http://127.0.0.1:$PORT"); FD="$T/repos/fd"
+printf '| Required fields | `Task: customfield_10209, customfield_10211` `Bug: customfield_10212` |\n| Field defaults | `customfield_10209 = Tech Debt` `customfield_10211 = from parent` |\n' \
+  >> "$DESK_CONFIG_ROOT/repos/$SLUG_FD/config.md"
+printf good-token > "$DESK_CONFIG_ROOT/repos/$SLUG_FD/atlassian-token"; chmod 600 "$DESK_CONFIG_ROOT/repos/$SLUG_FD/atlassian-token"
+printf 'a body' > "$FD/body.md"
+filled() { jq -sc '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue")] | last | .body | fromjson | .fields | {src: .customfield_10209, repo: .customfield_10211}' "$LOG"; }
+calls() { wc -l < "$LOG"; }
+out=$(cd "$FD" && "$J" create Task "a follow-up" body.md parent=KAN-40 --no-lint 2>&1); rc=$?
+check "a follow-up gets the configured source and the parent's repository" '[ $rc -eq 0 ] && [ "$(filled)" = "{\"src\":{\"value\":\"Tech Debt\"},\"repo\":{\"value\":\"alpha\"}}" ]'
+out=$(cd "$FD" && "$J" create Task "its own source" body.md parent=KAN-40 customfield_10209=Operations --no-lint 2>&1); rc=$?
+check "a field the create gives is not replaced by its default" '[ $rc -eq 0 ] && [ "$(filled)" = "{\"src\":{\"value\":\"Operations\"},\"repo\":{\"value\":\"alpha\"}}" ]'
+n0=$(calls)
+err=$(cd "$FD" && "$J" create Bug s body.md --no-lint 2>&1); rc=$?
+check "a required field with no default is refused before any call, naming it" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "a Bug needs customfield_10212 (config §4 Required fields)" && printf "%s" "$err" | grep -q "customfield_10212: §4 Field defaults gives it none" && [ "$(calls)" -eq "$n0" ]'
+err=$(cd "$FD" && "$J" create Task s body.md --no-lint 2>&1); rc=$?
+check "a field taken from the parent, on a create with none, is refused before any call" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "a Task needs customfield_10211" && printf "%s" "$err" | grep -q "customfield_10211: §4 Field defaults takes it from the parent, and this create names none" && [ "$(calls)" -eq "$n0" ]'
+n0=$(creates)
+err=$(cd "$FD" && "$J" create Task s body.md parent=KAN-41 --no-lint 2>&1); rc=$?
+check "a parent with the field empty is refused, and nothing is created" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "KAN-41 has no customfield_10211 to give the new ticket" && [ "$(creates)" -eq "$n0" ]'
 out=$(cd "$C" && "$J" create Story dropped-labels body.md customfield_10208=M customfield_10207=P2 'labels=["a"]' --no-lint 2>&1); rc=$?
 check "create names a list field that came back as []" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "^  labels: (empty - the write did not stick)$"'
 sent_labels() { jq -sc '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue")] | last | .body | fromjson | .fields.labels' "$LOG"; }
@@ -876,6 +901,14 @@ check "create-batch: a row with no body file is refused" '[ $rc -ne 0 ] && [ "$(
 printf 'Story\tmissing body\tlint/nope.md\tcustomfield_10208=S\n' > "$LD/nobody.tsv"
 batch "$A" lint/nobody.tsv
 check "create-batch: a body file that does not exist is refused" '[ $rc -ne 0 ] && [ "$(bcreates)" -eq "$n0" ] && printf "%s\n" "$out" | grep -q "body file not found: lint/nope.md"'
+# A create-batch row whose parent is an earlier row: its check passes, and the field is read off that row's ticket when it is sent.
+cp "$CB" "$FD/clean.md"
+printf 'Epic\tthe epic\tclean.md\tcustomfield_10208=M\tcustomfield_10211=alpha\nTask\ta follow-up\tclean.md\tcustomfield_10208=S\tparent=@1\n' > "$FD/defaults.tsv"
+n0=$(bcreates)
+out=$(cd "$FD" && JIRA_SITE="http://127.0.0.1:$BTPORT" "$J" create-batch defaults.tsv 2>&1); rc=$?
+check "a create-batch row takes a field from its parent row's ticket" '[ $rc -eq 0 ] && [ "$(bcreates)" -eq $((n0 + 2)) ] &&
+  [ "$(jq -sc "[.[] | select(.method == \"POST\" and .path == \"/rest/api/2/issue\")] | last | .body | fromjson | .fields | [.parent.key, .customfield_10211, .customfield_10209]" "$BL")" = "[\"$(printf "%s\n" "$out" | grep -o "^created KAN-[0-9]*" | head -1 | cut -d" " -f2)\",\"alpha\",\"Tech Debt\"]" ]'
+
 
 # AC7: the skill tells Claude to file an epic's children with create-batch, and shows no helper.
 EPIC=$(awk '/^\*\*Writing an epic\*\*/{p=1} p&&/^## /{exit} p' "$SRC/skills/desk-jira/SKILL.md")

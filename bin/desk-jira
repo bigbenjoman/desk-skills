@@ -73,7 +73,7 @@ fallback_slug() {
 # Which repo, where its config and credentials live, and every config row read below, from one
 # desk-env.mjs run: `get --json --where`, whose `where` is what `desk-env where` prints. Parsed with jq,
 # never eval'd. CONFIG_JSON stays empty where that run gave no `where`, and each read then runs node.
-CONFIG_ROW_IDS=(tracker jira-site jira-project jira-priority jira-size-field jira-required-fields jira-priority-user-only jira-assign-self)
+CONFIG_ROW_IDS=(tracker jira-site jira-project jira-priority jira-size-field jira-required-fields jira-field-defaults jira-priority-user-only jira-assign-self)
 SLUG="" CONFIG_PATH="" REPO_DIR="" CONFIG_JSON=""
 if [[ -r "$DESK_ENV_MJS" ]] && command -v node >/dev/null 2>&1; then
   CONFIG_JSON=$({ node "$DESK_ENV_MJS" get --json --where "${CONFIG_ROW_IDS[@]}" 2>/dev/null || true; } | jq -c 'select(.where | type == "object")' 2>/dev/null || true)
@@ -325,10 +325,14 @@ cfg_required() {
 #   Priorities only you set  values of the §4 Priority field a headless autopilot worker may never set
 #                            (spawn-worker.sh exports DESK_AUTOPILOT_WORKER), and an interactive session
 #                            sets only with --approved, which is recorded on the ticket as a comment
-RULES_LOADED=0 RULES_REQ='[]' RULES_TOP='[]' RULES_SIZE=''
+#   Field defaults           one item per field, `<field> = <value>` or `<field> = from parent`: what create
+#                            fills a required field the call leaves out with
+RULES_LOADED=0 RULES_REQ='[]' RULES_TOP='[]' RULES_SIZE='' RULES_DEF='{}'
 load_rules() {
   (( RULES_LOADED )) && return 0
   RULES_REQ=$(cfg_list jira-required-fields)
+  RULES_DEF=$(cfg_list jira-field-defaults | jq -c 'map(capture("^\\s*(?<k>[^=\\s]+)\\s*=\\s*(?<v>.*\\S)\\s*$")
+    | {(.k): (if (.v | ascii_downcase) == "from parent" then {parent: true} else {value: .v} end)}) | add // {}')
   RULES_TOP=$(cfg_list jira-priority-user-only)
   RULES_SIZE=$(cfg jira-size-field | grep -oE 'customfield_[0-9]+' | head -n1 || true)
   RULES_LOADED=1
@@ -376,6 +380,49 @@ rule_errors() {
          elif $approved != "" and ($topset | not) then
            "desk-jira: --approved is only for setting a value in config §4 Priorities only you set, and this write sets none"
          else empty end)'
+}
+
+# The §4 Required fields a create's field=value pairs leave out, filled from §4 Field defaults. Sets
+# DEFAULT_PAIRS (field=value pairs for fields_from_args), FROM_PARENT (the fields to copy off the
+# parent once it is read) and DEFAULT_HINTS (why a field stays unfilled, said beside the rules'
+# refusal of it: one with no default, or one taken from the parent when the create names none).
+# <type> <parent key, or @<row> of a create-batch, or ""> <pairs…>
+DEFAULT_PAIRS=() FROM_PARENT=() DEFAULT_HINTS=''
+fill_defaults() {
+  local type="$1" parent="$2" need k d
+  shift 2
+  load_rules
+  need=$(cfg_required "$type" | jq -c --argjson given "$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(length > 0) | sub("=.*"; ""))')" \
+    '.need | unique | map(select(. as $k | $given | index($k) | not))')
+  while IFS= read -r k; do
+    [[ -n "$k" ]] || continue
+    d=$(jq -c --arg k "$k" '.[$k] // empty' <<<"$RULES_DEF")
+    if [[ -z "$d" ]]; then
+      DEFAULT_HINTS+="  $k: §4 Field defaults gives it none"$'\n'
+    elif jq -e '.parent' <<<"$d" >/dev/null; then
+      if [[ -n "$parent" ]]; then FROM_PARENT+=("$k")
+      else DEFAULT_HINTS+="  $k: §4 Field defaults takes it from the parent, and this create names none: add parent=<KEY> or $k=<value>"$'\n'; fi
+    else DEFAULT_PAIRS+=("$k=$(jq -r '.value' <<<"$d")"); fi
+  done < <(jq -r '.[]' <<<"$need")
+}
+
+# The FROM_PARENT fields read off the parent, each as a write takes it (an option by its value, a user
+# by accountId), merged into the fields json <extra>: a field the parent has empty is refused.
+inherit_fields() {  # parent-key extra-json
+  local back missing
+  back=$(api GET "api/2/issue/$1?fields=$(IFS=,; printf '%s' "${FROM_PARENT[*]}")") || die "desk-jira: could not read $1 for the fields §4 Field defaults takes from it"
+  missing=$(jq -r --argjson ks "$(printf '%s\n' "${FROM_PARENT[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" \
+    '.fields as $f | $ks[] | select($f[.] == null or $f[.] == "" or $f[.] == [])' <<<"$back")
+  [[ -z "$missing" ]] || die "$(printf '%s\n' "$missing" | sed "s|.*|desk-jira: $1 has no & to give the new ticket (config §4 Field defaults takes it from the parent): add &=<value>|")"
+  jq -c --argjson e "$2" --argjson ks "$(printf '%s\n' "${FROM_PARENT[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" '
+    def norm: if type == "array" then map(norm)
+      elif type != "object" then .
+      elif has("accountId") then {accountId}
+      elif has("value") then {value} + (if .child then {child: (.child | norm)} else {} end)
+      elif has("name") then {name}
+      elif has("key") then {key}
+      else . end;
+    .fields as $f | $e + ([$ks[] | {(.): ($f[.] | norm)}] | add)' <<<"$back"
 }
 
 # After a write that set a priority under --approved: the user's decision goes on the ticket.
@@ -1364,7 +1411,25 @@ case "$cmd" in
       [[ "$pending" =~ ^@[0-9]+$ ]] && (( check )) && [[ -n "$PENDING_PARENT" ]] \
         || die "desk-jira: parent must be an issue key (e.g. ABC-12), got: $pending (parent=@<row> is for create-batch)"
     fi
-    extra=$(fields_from_args ${pairs[@]+"${pairs[@]}"}) || exit 2
+    # The type the rules read: an issuetype= pair's name over <type>.
+    rtype="$type"
+    for a in ${pairs[@]+"${pairs[@]}"}; do
+      [[ "$a" == issuetype=* ]] && rtype=$(jq -rn --arg v "${a#issuetype=}" '($v | try fromjson catch $v) | if type == "object" then (.name // "") elif type == "string" then . else "" end')
+    done
+    parent_key=$pending
+    for a in ${pairs[@]+"${pairs[@]}"}; do [[ "$a" == parent=?* ]] && parent_key="${a#parent=}"; done
+    fill_defaults "$rtype" "$parent_key" ${pairs[@]+"${pairs[@]}"}
+    if [[ -z "$DEFAULT_HINTS" ]]; then
+      extra=$(fields_from_args ${pairs[@]+"${pairs[@]}"} ${DEFAULT_PAIRS[@]+"${DEFAULT_PAIRS[@]}"}) || exit 2
+    else   # refused below whatever the defaults hold, so they go in as written, with no call to shape them
+      extra=$(fields_from_args ${pairs[@]+"${pairs[@]}"}) || exit 2
+      extra=$(printf '%s\n' ${DEFAULT_PAIRS[@]+"${DEFAULT_PAIRS[@]}"} | jq -Rsc --argjson e "$extra" '$e + ([split("\n")[] | select(length > 0) | capture("^(?<k>[^=]*)=(?<v>.*)$") | {(.k): .v}] | add // {})')
+    fi
+    # A parent that is an earlier create-batch row does not exist yet: its fields are read when the row is sent.
+    # The parent is read only for a create the rules can pass: one a field with no default leaves short is refused first.
+    if (( ${#FROM_PARENT[@]} )) && [[ "$parent_key" != @* && -z "$DEFAULT_HINTS" ]]; then extra=$(inherit_fields "$parent_key" "$extra")
+    elif (( ${#FROM_PARENT[@]} )); then   # a --check, which sends nothing: the field stands in as given
+      extra=$(jq -c --arg ks "${FROM_PARENT[*]}" '. + ([$ks | split(" ")[] | {(.): "(from the parent)"}] | add)' <<<"$extra"); fi
     if printf '%s' "$extra" | jq -e 'has("parent") and .parent == null' >/dev/null; then
       die "desk-jira: parent= clears a parent, which only edit does: leave parent out to file the issue under none"
     fi
@@ -1375,7 +1440,7 @@ case "$cmd" in
       (.issuetype | if type == "object" and keys == ["name"] and (.name | type) == "string" then .name else empty end) else $t end')
     [[ -n "$type" ]] || die "desk-jira: pass issuetype by its name, so the field rules know the type"
     errs=$(rule_errors create "$type" "$extra" "$APPROVED") || die "desk-jira: could not check the field rules"
-    [[ -z "$errs" ]] || die "$errs"
+    [[ -z "$errs" ]] || die "$errs${DEFAULT_HINTS:+$'\n'${DEFAULT_HINTS%$'\n'}}"
     # A description= pair replaces the positional one in the payload, so it is checked the same way.
     if printf '%s' "$extra" | jq -e '.description | type == "string"' >/dev/null; then
       errs=$(desc_errors "$(printf '%s' "$extra" | jq -r '.description')") || die "desk-jira: could not check the description"
