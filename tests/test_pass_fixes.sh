@@ -408,8 +408,10 @@ check "DS-281 AC2 a new head with no review of its own is not undrafted, and goe
   '! grep -q "^pr ready 721" "$T/gh-calls" && [ "$(field R-1 fix_tries | jq -c "[.[].kind]")" = "[\"review\",\"rereview\"]" ] && [ "$(field R-1 state)" = "\"triaged\"" ] && field R-1 undraft.why | grep -q "not the head 222222222"'
 # Its review of H2 is clean: out of draft, with one comment quoting the verdict.
 q set R-1 state=done session_id=null result.pr=721; frx 721 "$H2" "$H2" 'p0=0 p1=0 p2=0'
+rm -f "$DESK_AUTOPILOT_STATE/merge-driver/wake"
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-281 AC3 a clean re-review on the new head undrafts it" '[ "$(grep -c "^pr ready 721 --repo acme/widgets" "$T/gh-calls")" = 1 ]'
+check "DS-971 AC2 the undraft leaves the merge driver its wake file" '[ -f "$DESK_AUTOPILOT_STATE/merge-driver/wake" ]'
 check "DS-281 AC3 with one comment saying its review on that head was clean, quoting the verdict" \
   '[ "$(grep -c "^pr comment 721 --repo acme/widgets --body Out of draft: the desk-review verdict posted on this head (.222222222222.) is clean" "$T/gh-calls")" = 1 ] && grep -q "^> .sha=$H2 p0=0 p1=0 p2=0 deferred=0" "$T/gh-calls"'
 # R-4, stuck on its P1 at H2, was fixed by hand at H3, whose review has only a P2; R-5 is still at H1.

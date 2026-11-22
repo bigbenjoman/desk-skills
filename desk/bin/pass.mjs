@@ -3901,6 +3901,8 @@ function withUntriggered(s) {
   return keep.length ? { ...s, ...Object.fromEntries(keep) } : s;
 }
 const DRIVER_DIR = join(STATE, 'merge-driver');
+// Takes a PR out of draft, and wakes the merge driver from its idle pause once it has.
+const readyPr = (a) => { const r = shOut('gh', ['pr', 'ready', String(a.pr), '--repo', GH_REPO]); if (r.ok) E.wakeMergeDriver(STATE); return r; };
 const EVIDENCE_DIR = join(STATE, 'evidence-runs');
 // A run's status for evidence.mjs evidenceRecord, or null when gh cannot read it.
 const viewRun = (id) => { try { return clearsRead.run(id); } catch { return null; } };
@@ -4277,7 +4279,7 @@ const UNDRAFT_HANDLERS = {
   build: (a) => startCheckBuild(a.t, a.pr, a.head, a.c, a.rec),
   rebuilt: (a) => rerunBuilt(a.t, a.pr, a.head, a.c, a.rec),
   evidence: (a) => startEvidence(a.t, a.pr, a.head, a.c, a.rec),
-  ready: (a) => shOut('gh', ['pr', 'ready', String(a.pr), '--repo', GH_REPO]),
+  ready: readyPr,
   // The update is a new head, so a new preview build: it takes the branch's preview-build unit first.
   'update-branch': (a) => {
     const slot = a.branch ? previewSlot(a.t, a.branch) : {};
@@ -5142,7 +5144,7 @@ runSteps({
       const carry = (sha, body) => git(['fetch', '-q', 'origin', SOURCE, BASE]).ok && reviewCarries({ reuse: ROW_LEVERS.on.includes('review-reuse'), from: sha, head: fb.head, base: `origin/${SOURCE}`, body, git });
       return readVerdict(fb.payload, { handle: conflictHandle, clean: E.configValue('clean-verdict'), carry });
     },
-    ready: (a) => shOut('gh', ['pr', 'ready', String(a.pr), '--repo', GH_REPO]),
+    ready: readyPr,
     'start-try': (a) => { epicTry = startBaseTry(a.fix); },
     merger: () => spineMerger(queue()),
     'driver-running': () => E.mergeDriverHolder(STATE) != null,
