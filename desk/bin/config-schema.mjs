@@ -630,6 +630,7 @@ export const ROWS = Object.freeze([
   l('jira-priority-user-only', '4', 'Priorities only you set', 'text', ['P0', 'P1']),
   l('labels', '4', 'Labels', 'text', ['any']),
   l('person-step-labels', '4', 'Person-step labels', 'text', ['ben-step', 'operator-task'], dflt(['none'])),
+  l('proposal-labels', '4', 'Priority proposal labels', 'regex', ['lp-proposed-(p[0-9])'], dflt(['none'])),
   l('person-input-labels', '4', 'Person-input labels', 'text', ['ben-input'], dflt(['none'])),
   v('desk-jira-setup', '4', 'desk-jira set up?', 'yes-no', 'yes', unread),
   // §4 GitHub and CI
