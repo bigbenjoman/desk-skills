@@ -165,6 +165,7 @@ EOF_P
   done <<EOF_C
 $COVER
 EOF_C
+  # shellcheck disable=SC2034  # IDLE_RUN is read by idle_pause in merge-driver-lib.sh
   if [ -n "$merged" ]; then IDLE_RUN=0; pause 30
   elif [ -n "$busy" ]; then IDLE_RUN=0; pause 120
   else idle_pause "$R_MARK" sweep "${wakes[@]}"; fi

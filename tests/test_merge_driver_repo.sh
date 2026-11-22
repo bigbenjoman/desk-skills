@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: merge driver: one driver for all of a repo's batches (offline, fake gh)
+# layer: L3
 # The real merge-driver.sh --all-batches (merge-driver-repo.sh) over the standing batch and two named
 # batches on bases of their own, set up by merge_driver_setup.sh with the repo's own paths in place of
 # an explicit queue and state: one pid holds or points every batch's lock, a green PR in each batch

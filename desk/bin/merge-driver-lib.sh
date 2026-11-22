@@ -14,6 +14,7 @@ lock_take(){
   while ! mkdir "$d" 2>/dev/null; do
     holder="$(cat "$d/pid" 2>/dev/null || true)"
     [ "$holder" = "$$" ] && return 0
+    # shellcheck disable=SC2034  # read by the scripts that source this file, in their lock-held message
     if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then LOCK_HOLDER="$holder"; return 1; fi
     if [ -z "$holder" ] && [ -z "$(find "$d" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
       [ "${2:-}" = point ] && return 1

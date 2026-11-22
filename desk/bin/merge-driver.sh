@@ -1364,6 +1364,7 @@ while true; do
     else log "no ready batch PRs"; fi
     idle_pause "$LOOP_MARK" loop "${DESK_EXITS_DIR:-$SD/no-exits}" "$SD/wake"; continue
   fi
+  # shellcheck disable=SC2034  # IDLE_RUN is read by idle_pause in merge-driver-lib.sh
   IDLE_RUN=0; outcome 11
 
   if [ -n "$fixkey" ]; then
