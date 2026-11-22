@@ -37,6 +37,7 @@
 // status, and changes no config row or approval. The one other write is a repo's <state>/eta.jsonl,
 // which gains a ticket's first ship estimate the first time a live batch's forecast dates it.
 import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
@@ -74,6 +75,7 @@ import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.m
 import { pageState, refresh as refreshLevers, whereOf } from './levers-refresh.mjs';
 import { PAGE_RESUMES, uploadPause, uploadQueueFile } from './upload-queue.mjs';
 import { newBuild, oneBuild } from './build-memo.mjs';
+import { writeJsonAtomic } from './dir-lock.mjs';
 
 export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour. The screen draws five, named
@@ -2669,9 +2671,10 @@ function oldCodeNotes(shown) {
 
 // The amber notes for a batch that runs but does not move, each with its fix where there is one.
 // `quiet` is quietNotes's, which says which batch carries its repo's no-progress note, and `old`
-// oldCodeNotes's, which batch carries the old desk code notes. With `allOut`, Home's note on the
+// oldCodeNotes's, which batch carries the old desk code notes, and `drivers` which batch carries its
+// repo's stopped merge driver note: the driver is the repo's, so it is one note. With `allOut`, Home's note on the
 // Claude default's limit stands for the batch's hold on it.
-function stallNotes(r, quiet, old, allOut = false) {
+function stallNotes(r, quiet, old, drivers, allOut = false) {
   const s = r.stall, tag = `▲ ${r.repo}`;
   if (!s) return [];
   const note = (text, fix) => warnNote(tag, text, fix);
@@ -2680,7 +2683,7 @@ function stallNotes(r, quiet, old, allOut = false) {
   if (u) out.push(note(`${u}. `, 'Switch subscription to lift it sooner.'));
   if (quiet.has(r)) out.push(note(quiet.get(r)));
   if (s.sessionToo) out.push(note('a session is also running this supervised batch. Close the session, or run: ', `desk-q ${r.repo} supervisor off`));
-  if (s.driver) {
+  if (s.driver && drivers.get(r.slug) === r) {
     const d = s.driver, at = d.at == null ? '' : ` at ${clock(d.at)}`;
     if (d.code === 143) out.push(note(`the merge driver was stopped${at} (exit 143) and is not running.`));
     else if (d.reason == null) out.push(note(`the merge driver stopped${at} (${d.code == null ? 'no exit code logged' : `exit ${d.code}`}) and logged no failure.`));
@@ -2698,12 +2701,13 @@ function stallNotes(r, quiet, old, allOut = false) {
 // The overview's notes, one per line under a grey "note": a glyph and what it names in its colour,
 // then the text. A note's `more` are further lines of text, each starting a line of its own, and its
 // `cmd` a command to copy, last, bold, on a line of its own that is never wrapped.
-// With `width`, a note's text wraps between words, each further line indented under its first.
+// With `width`, a note's text wraps between words, each further line indented under its first. A note
+// with no tag starts its text where the tag would.
 function noteLines(notes, w, width = null) {
   const lead = 4 + 2 + w + 1;
   return notes.flatMap((n, i) => [
     ...[n.text, ...(n.more ?? [])].flatMap((segs) => (width == null ? [segs] : wrapSegs(segs, Math.max(12, width - lead)))).map((text, j) =>
-      segLine(j ? [[' '.repeat(lead), null], ...text] : [[i ? '    ' : 'note', GREY], ['  ', null], [pad(n.tag, w + 1), n.sgr], ...text])),
+      segLine(j ? [[' '.repeat(lead), null], ...text] : [[i ? '    ' : 'note', GREY], ['  ', null], ...(n.tag == null ? [] : [[pad(n.tag, w + 1), n.sgr]]), ...text])),
     ...(n.cmd ? [{ ...segLine([[' '.repeat(lead), null], [n.cmd, BOLD]]), whole: true }] : []),
   ]);
 }
@@ -2721,6 +2725,37 @@ function wrapSegs(segs, w) {
       len += word.length;
     }
   }
+  return out;
+}
+
+// ---- Home's hidden warnings ----------------------------------------------------------------------
+// The ▲ notes hidden on Home with h, one file per computer: { hidden: { <noteKey>: <ISO time hidden> } }.
+// A note is known by its tag and its wording with each clock time (and its weekday), duration and amount
+// in it masked, so those moving on keep it hidden while new wording shows it again. Any other number, a
+// batch, a port, a ticket or a PR, is wording: a note naming another one is another warning. Each shows
+// again HIDE_MS after it was hidden, so a fault that lasts cannot stay out of sight.
+export const HIDE_MS = DAY;
+export const hiddenWarningsFile = () => join(process.env.HOME || homedir(), '.desk-autopilot', 'machine', 'hidden-warnings.json');
+const isWarning = (n) => typeof n.tag === 'string' && n.tag.startsWith('▲');
+const FIGURE = /\$\d[\d,]*(?:\.\d+)?|(?:\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) )?\b\d{1,2}:\d{2}\b|\b\d+(?:\.\d+)?\s?(?:%|(?:ms|mins?|GiB|GB|MB|KB|[smhdwk])\b)/g;
+export function noteKey(n) {
+  const words = [n.text, ...(n.more ?? [])].flatMap((segs) => segs.map(([s]) => s)).join('') + (n.cmd ?? '');
+  return `${n.tag} ${words.replace(FIGURE, '#').replace(/#(?:\s+#)+/g, '#').replace(/\s+/g, ' ').trim()}`;
+}
+// The notes still hidden at `now`, each key to when it was hidden.   -> Map
+export function readHidden(now = Date.now(), file = hiddenWarningsFile()) {
+  const h = readJson(file)?.hidden;
+  if (!h || typeof h !== 'object') return new Map();
+  return new Map(Object.entries(h).map(([k, at]) => [k, Date.parse(at)]).filter(([, at]) => Number.isFinite(at) && now - at < HIDE_MS));
+}
+export const writeHidden = (hidden, file = hiddenWarningsFile()) =>
+  writeJsonAtomic(file, { hidden: Object.fromEntries([...hidden].map(([k, at]) => [k, new Date(at).toISOString()])) });
+// Home's notes less those `hidden` holds, one grey line counting them where the first was.
+function withoutHidden(notes, hidden) {
+  const off = hidden ? notes.filter((n) => isWarning(n) && hidden.has(noteKey(n))) : [];
+  if (!off.length) return notes;
+  const out = notes.filter((n) => !off.includes(n));
+  out.splice(notes.indexOf(off[0]), 0, { tag: null, sgr: GREY, text: [[`${off.length} warning${off.length === 1 ? '' : 's'} hidden · H shows them`, GREY]] });
   return out;
 }
 
@@ -2791,7 +2826,7 @@ function cutCells(cells, width) {
 }
 const cutLine = (cells, width) => cutCells(cells.map((s) => [s, null]), width).map(([s]) => s).join('');
 
-function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false, width = null, badge = '', pinUsage = false, costs, cache } = {}) {
+function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false, width = null, badge = '', pinUsage = false, costs, cache, hidden = null } = {}) {
   // One row per repo, adding up its batches on screen.
   const shown = shownRepos(repos, all), list = byRepo(shown);
   const cost = homeCost({ costs, cache });
@@ -2833,10 +2868,12 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     foot.push('', ...(width == null ? [[[more, DIM]]] : wrapSegs([[more, DIM]], Math.max(12, width - 2))).map((segs) => segLine([['  ', null], ...segs])));
   }
   const readable = shown.filter((r) => !r.error), quiet = quietNotes(readable), old = oldCodeNotes(readable);
+  const drivers = new Map();
+  for (const r of readable) if (r.stall?.driver && !drivers.has(r.slug)) drivers.set(r.slug, r);
   const out = claude?.limit ? claude : null;
   const leases = leaseNotes(repos, now);
   const notes = [...(out ? [defaultOutNote(out, now)] : []), ...leases.warn, ...list.flatMap((r) => (r.unreadable ?? []).map((b) => warnNote(`▲ ${r.name}`, unreadableText(b)))),
-    ...readable.flatMap((r) => stallNotes(r, quiet, old, !!out && out.follows(r.slug))), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
+    ...readable.flatMap((r) => stallNotes(r, quiet, old, drivers, !!out && out.follows(r.slug))), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
   // GitHub's page change pauses every repo's uploads, so it is one note for the machine, not one per PR.
   const pause = uploadPause();
   if (pause) notes.unshift(warnNote('▲ uploads', uploadPauseText(pause)));
@@ -2874,8 +2911,11 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
       ['/desk-setup', BOLD], [' sets it.', GREY]] });
   }
   if (badge) notes.push({ tag: '  dates', sgr: GREY, text: [[badge, null]] });
-  if (notes.length) foot.push('', ...noteLines(notes, w, width));
-  return { head, rows, foot };
+  // `warnings` keys every ▲ note, hidden or not, for h to hide.
+  const warnings = notes.filter(isWarning).map(noteKey);
+  const kept = withoutHidden(notes, hidden);
+  if (kept.length) foot.push('', ...noteLines(kept, w, width));
+  return { head, rows, foot, warnings };
 }
 
 // Leases reach the Queue view only as notes: a ▲ note for each lease whose holder stopped checking in
@@ -4321,8 +4361,8 @@ export function interactive({
     }
     if (view.kind === 'overview') {
       // Home's parked note goes in its notes, not on the tab line, where a 100-column terminal cuts it.
-      return { badge: '', ...overviewParts(repos, { all: view.all, now, avail, interactive: true, checkin, width: w, badge: badge(repos), pinUsage: true }), ...claude(shownRepos(repos, view.all)),
-        keys: `↑↓ select · enter open · ${VIEW_KEYS} · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · s supervisor · v levers · ${cmdKeys}` };
+      return { badge: '', ...overviewParts(repos, { all: view.all, now, avail, interactive: true, checkin, width: w, badge: badge(repos), pinUsage: true, hidden: readHidden(now) }), ...claude(shownRepos(repos, view.all)),
+        keys: `↑↓ select · enter open · ${VIEW_KEYS} · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · s supervisor · v levers · h hide warnings · H show hidden warnings · ${cmdKeys}` };
     }
     if (view.kind === 'repo') {
       const rp = repoPlace(repos, view.slug);
@@ -4902,6 +4942,17 @@ export function interactive({
       else if (state) act({ ...v, op: 'on' });
     }
     else if (str === 'v' && view.kind === 'overview' && tab === 'queue') openLevers();
+    else if ((str === 'h' || str === 'H') && view.kind === 'overview' && tab === 'queue') {
+      // h hides the ▲ notes on Home now, keeping when each already hidden was; H shows every one again.
+      const at = Date.now(), hidden = readHidden(at), keys = screen?.warnings ?? [];
+      const fresh = keys.filter((k) => !hidden.has(k));
+      if (str === 'h' && !fresh.length) msg = 'No warnings to hide.';
+      else if (str === 'H' && !keys.some((k) => hidden.has(k))) msg = 'No warnings are hidden.';
+      else {
+        try { writeHidden(str === 'H' ? new Map() : new Map([...hidden, ...fresh.map((k) => [k, at])])); msg = ''; }
+        catch (e) { msg = `Could not save the hidden warnings: ${describeCrash(e)}`; }
+      }
+    }
     else if (str === 'z' && hasTabs() && tab === 'timeline') { zoom = ZOOMS[(ZOOMS.indexOf(zoom) + 1) % ZOOMS.length]; msg = ''; }
     else if (str === 'c' && view.kind !== 'log') {
       checkin = !checkin;
