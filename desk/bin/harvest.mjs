@@ -186,7 +186,8 @@ export function prBodyIn(texts) {
 }
 
 // The steps a DONE marker names as waiting on its PR's merge: `follow_on=` then a one-line JSON array of
-// {"step": "<one line>", "row": "<the §3 key it needs>", "after": "<gate>"} (row null where none says),
+// {"step": "<one line>", "row": "<the §3 key it needs>", "after": "<gate>", "wait_days": <n>} (row null
+// where none says; wait_days, the days after the merge it falls due, only where it waits),
 // before any said=, which runs to the line's end. -> { steps, error }: steps [] with no follow_on=, and
 // with an error naming why where one is there but does not read.
 export const FOLLOW_ON_MAX = 500;
@@ -210,7 +211,10 @@ export function followOnIn(done) {
   if (bad !== undefined) return { steps: [], error: `an entry is not {"step": "…", "row": "…"}: ${JSON.stringify(bad)}` };
   const badGate = list.find((x) => x.after != null && !FOLLOW_GATES.includes(x.after));
   if (badGate !== undefined) return { steps: [], error: `an entry's "after" is not one of ${FOLLOW_GATES.join(', ')}: ${JSON.stringify(badGate)}` };
-  return { steps: list.map((x) => ({ step: x.step.trim().slice(0, FOLLOW_ON_MAX), row: x.row?.trim() || null, ...gateOf(x.after) })), error: null };
+  const badWait = list.find((x) => x.wait_days != null && !(typeof x.wait_days === 'number' && x.wait_days > 0 && Number.isFinite(x.wait_days)));
+  if (badWait !== undefined) return { steps: [], error: `an entry's "wait_days" is not a positive number: ${JSON.stringify(badWait)}` };
+  return { steps: list.map((x) => ({ step: x.step.trim().slice(0, FOLLOW_ON_MAX), row: x.row?.trim() || null, ...gateOf(x.after),
+    ...(x.wait_days != null ? { wait_days: x.wait_days } : {}) })), error: null };
 }
 // A queue entry whose follow-on steps wait on the person: its PR merged, steps kept, none said run yet.
 // Two follow-on steps are the same step by their text and gate (`after`, none for the merge).

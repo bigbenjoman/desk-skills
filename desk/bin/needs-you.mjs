@@ -120,7 +120,7 @@ import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } fro
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
 import { followOnPending, postMergeOwed } from './harvest.mjs';
-import { followKind, checkOf, settled, FOLLOW_WAIT_MS, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
+import { followKind, checkOf, settled, followDue, followDueAt, FOLLOW_WAIT_MS, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 import { promotionRef } from './promotion.mjs';
 import { kindMode, readLog, restartTrial, trialOf, TRIAL_DAYS } from './leases.mjs';
 import { LEASE_KINDS } from './machine.mjs';
@@ -963,16 +963,19 @@ function gateHeld(r, t, s, reads = null) {
 export const followGateHeld = (slug, q, t, s) => gateHeld({ slug, q }, t, s).held;
 // A ticket's steps split by their gates: `ready` listed now (each with its note, `checked` where it is a
 // checker's to run, and `failed`, the checker's record, where one failed it), `waiting` not yet. A step a
-// checker passed is neither, nor is a runnable one not yet passed or failed while its checker runs (up
-// to FOLLOW_TIMEOUT_MS) or, for FOLLOW_WAIT_MS after the code went out, is still to.
+// checker passed is neither, nor is one not due yet (follow-steps.mjs followDelayMs after the code went
+// out), nor a runnable one not yet passed or failed while its checker runs (up to FOLLOW_TIMEOUT_MS) or,
+// for FOLLOW_WAIT_MS after it fell due, is still to.
 function followSplit(r, t, now = Date.now(), reads = null) {
   const ready = [], waiting = [];
   const labels = personStepLabels(r.slug);
-  const waited = now - (timeOf(outAt(r.q, t)) ?? now) >= FOLLOW_WAIT_MS;
+  const out = timeOf(outAt(r.q, t)) ?? now;
   const running = !!t.follow_run && now - Date.parse(t.follow_run.started) < FOLLOW_TIMEOUT_MS;
   for (const s of t.follow_on) {
     const c = checkOf(t, s);
     if (c?.result === 'pass') continue;
+    if (!settled(c) && !followDue(s, out, now)) continue;
+    const waited = now - followDueAt(s, out) >= FOLLOW_WAIT_MS;
     const g = gateHeld(r, t, s, reads);
     if (!g.held) { waiting.push(s); continue; }
     // A step a checker ran stays its own, whatever the labels read now.
