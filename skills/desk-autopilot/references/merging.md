@@ -139,7 +139,7 @@ and its briefing says the other is not the worker's to fix. A check red on two o
 (draft or ready) whose runs have completed, all with the same error line once ids and numbers are
 taken out, and a line that names no file, reads as its deploy or preview platform failing, not their
 code (a platform's own status with no Actions run counts by its description). The pass holds it
-batch-wide in `<state>/outage-hold.json`: one `OUTAGE` line under `WAITING ON YOU` names the check and
+batch-wide, kept in the batch's state folder from pass to pass: one `OUTAGE` line under `WAITING ON YOU` names the check and
 the error line, and each PR red only on it is held with no fix try or stuck answer. The pass re-runs
 it on one PR whose run has completed, the driver's 12-minute rerun gap after the hold begins, doubling
 after each re-run that stays red up to 30 minutes. Once a PR it held passes it, the hold clears and
