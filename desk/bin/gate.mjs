@@ -85,6 +85,10 @@ import { ASK_TERMS } from './decisions.mjs';
 import { parseFlaky, parseStateChecks, STATE_KINDS, DEFAULT_STATE_CHECKS, parseHolds, ROUTINE_MARK, NO_REASON } from './config-schema.mjs';
 
 export const FAILED = new Set(['failure', 'error', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
+// A preview deploy's check, by its name, matched case-insensitively: rerun.sh takes a preview-build unit
+// before rerunning one, and the pass frees the unit once they finish (pass/pr-status.mjs). Written to
+// read the same as a POSIX extended regex (grep -iE) and a JavaScript RegExp.
+export const PREVIEW_CHECK = '(^|[^a-zA-Z0-9])(vercel|netlify|preview)([^a-zA-Z0-9]|$)';
 // How long a check may stay queued or running before it is taken as stuck: GitHub Actions' default
 // job timeout-minutes (360), past which a job that is still running has lost its runner.
 export const PENDING_LIMIT_MS = 6 * 60 * 60 * 1000;

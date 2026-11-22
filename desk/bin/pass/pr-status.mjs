@@ -30,9 +30,9 @@
 //   fetch-origin {}                    git fetch origin in the repo root
 //   prune-builds {open}                remove the check-build checkouts of every PR not in `open`
 //   park {key, question}               park the ticket: its PR is not its own (shared.mjs notOwnPr)
-//   free-previews {done}               -> { freed: [pr] } or { unreadable: why }: release the
-//                                      preview-build unit of each { pr, at, reason } in done, unless
-//                                      taken again since `at`
+//   free-previews {done}               -> { freed: [pr] }, { unreadable: why } or { failed: why }:
+//                                      release the preview-build unit of each { pr, at, reason } in
+//                                      done, unless taken or renewed after `at`, when its preview finished
 //   lists {drafts, undrafted, reopens, prStates, merges}   what the steps after this one work from:
 //                                      each list of { t, s } (reopens with `owed`), each PR's state by
 //                                      number, and the merge lines
@@ -40,16 +40,19 @@ import { FOLLOW_ON_MAX, followOnPending, postMergeOwed } from '../harvest.mjs';
 import { fromReview, reviewStep } from '../undraft.mjs';
 import { LINK_STEP, notOwnPr, foreignQuestion } from './shared.mjs';
 import { owesReopen } from '../queue-store.mjs';
-import { FAILED } from '../gate.mjs';
+import { FAILED, PREVIEW_CHECK } from '../gate.mjs';
 
-// A preview deploy's check, by its name, as rerun.sh PREVIEW_CHECK tells one.
-const PREVIEW_CHECK = /(^|[^a-z0-9])(vercel|netlify|preview)([^a-z0-9]|$)/i;
-// A PR's preview once every preview check on its head has finished: { failed: [names] }, or null while
-// one runs or none has reported (its unit then lapses at its TTL).
-export function previewFinished(checks) {
-  const p = (checks ?? []).filter((c) => PREVIEW_CHECK.test(c?.name ?? ''));
+const IS_PREVIEW = new RegExp(PREVIEW_CHECK, 'i');
+// A PR's preview once every preview check on its head has finished: { failed: [names], at }, `at` the
+// earliest of their finish times (a check run's completion, a status context's last state). null while
+// one runs, none has reported, or one carries no time (its unit then lapses at its TTL). A unit taken
+// after `at` is for a build these checks predate, as a rerun's, so freeing waits for that build's own.
+function previewFinished(checks) {
+  const p = (checks ?? []).filter((c) => IS_PREVIEW.test(c?.name ?? ''));
   if (!p.length || p.some((c) => c.status !== 'completed')) return null;
-  return { failed: p.filter((c) => FAILED.has(c.conclusion)).map((c) => c.name) };
+  const times = p.map((c) => Date.parse(c.completed ?? c.started ?? ''));
+  if (times.some(Number.isNaN)) return null;
+  return { failed: p.filter((c) => FAILED.has(c.conclusion)).map((c) => c.name), at: new Date(Math.min(...times)).toISOString() };
 }
 
 // A PR recorded merged or closed is not read again, unless it merged and the ticket has no merged_at yet.
@@ -113,7 +116,7 @@ export function* decidePrStatus(s) {
       yield { type: 'pr-status', key: t.key, status: st };
       // A finished preview frees its PR's preview-build unit for the next build, not at its TTL.
       const preview = s.previews && !s.dry ? previewFinished(st.checks) : null;
-      if (preview) previews.push({ pr: n, at: st.at ?? null, failed: preview.failed, reason: preview.failed.length ? `preview finished: ${preview.failed.join(', ')} failed` : 'preview finished' });
+      if (preview) previews.push({ pr: n, at: preview.at, failed: preview.failed, reason: preview.failed.length ? `preview finished: ${preview.failed.join(', ')} failed` : 'preview finished' });
       if (st.state === 'OPEN' && st.isDraft === true) drafts.push({ t, s: st });
       if (st.state === 'OPEN' && st.isDraft === false) undrafted.push({ t, s: st });
       if ((st.state === 'OPEN' && Object.keys(st.reopen ?? {}).length && st.base_head) || (owed && st.state === 'CLOSED')) reopens.push({ t, s: st, owed });
@@ -152,6 +155,7 @@ export function* decidePrStatus(s) {
   if (previews.length) {
     const r = yield { type: 'free-previews', done: previews };
     if (r?.unreadable) yield { type: 'out', line: `preview builds: leases were unreadable, so no preview-build unit was freed this pass (${r.unreadable})` };
+    if (r?.failed) yield { type: 'out', line: `preview builds: freeing finished previews' preview-build units failed (${r.failed}); a unit still held lapses at its TTL` };
     for (const p of previews.filter((x) => r?.freed?.includes(x.pr))) {
       yield { type: 'out', line: `preview builds: PR #${p.pr}'s preview ${p.failed.length ? `failed (${p.failed.join(', ')})` : 'finished'}, so its preview-build unit is free for the next build` };
     }

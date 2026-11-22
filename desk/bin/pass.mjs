@@ -4088,8 +4088,8 @@ runSteps({
         const freed = releasePreviews(PREVIEW_TEAM, a.done.map((d) => ({ label: label(d.pr), at: d.at, reason: d.reason })), { env: LEASE_ENV });
         return { freed: a.done.filter((d) => freed.some((f) => f.label === label(d.pr))).map((d) => d.pr) };
       } catch (e) {
-        if (e instanceof LeaseStoreError) return { unreadable: e.message };
-        throw e;
+        // Any other failure (an unwritable lease directory, a full disk) is reported too: the pass runs on.
+        return e instanceof LeaseStoreError ? { unreadable: e.message } : { failed: String(e?.message ?? e).split('\n')[0] };
       }
     },
     merged: (a) => q('merged', a.key, ...(a.at ? [a.at] : [])),

@@ -609,10 +609,10 @@ try {
     t('DS-959 --days reaches further back for a trial question that has waited', deskEnv(d, ['list', '--clashes', '--days', '9']).out.split('\n').length - 1, 3);
     t('DS-959 AC10 with no clash in the last 7 days it says so', deskEnv(fresh(), ['list', '--clashes']).out, 'no clashes in the last 7 days');
   }
-  // DS-913: the pass frees a PR's preview-build unit once its preview finishes (releasePreviews).
+  // The pass frees a PR's preview-build unit once its preview finishes (releasePreviews).
   {
     const lenv = { machineValue: (k) => (k === 'lease-kinds' ? ALL_ON : null), testLockSlots: () => 1, psRows: () => [] };
-    const unit = (d, label) => cli(d, ['acquire', 'preview-build', 'acme', '--ttl', '1200', '--label', label, '--no-owner']).out;
+    const unit = (d, label) => pb(d, 'acme', label).out;
     const later = new Date(Date.now() + 60_000).toISOString();
     const d1 = fresh();
     unit(d1, 'acme/web#12');
@@ -628,14 +628,10 @@ try {
     const d3 = fresh();
     unit(d3, 'acme/web#15');
     const before = new Date(Date.now() - 60_000).toISOString();
-    t('DS-913: a unit taken again after the PR was read is kept for the build that read did not see', [releasePreviews('acme', [{ label: 'acme/web#15', at: before, reason: 'preview finished' }], { env: lenv, dir: d3 }).length, json(d3).map((l) => l.label)], [0, ['acme/web#15']]);
+    t('DS-913: a unit taken again after the preview finished is kept for the build those checks are not', [releasePreviews('acme', [{ label: 'acme/web#15', at: before, reason: 'preview finished' }], { env: lenv, dir: d3 }).length, json(d3).map((l) => l.label)], [0, ['acme/web#15']]);
     t('DS-913 AC3: a unit no finished preview names stays held', [releasePreviews('acme', [{ label: 'acme/web#16', at: later, reason: 'preview finished' }], { env: lenv, dir: d3 }).length, json(d3).map((l) => l.label)], [0, ['acme/web#15']]);
     const d4 = fresh();
-    const id = unit(d4, 'acme/web#17');
-    const st = store(d4); const l = st.leases.find((x) => x.id === id);
-    const at = Date.now() - 1201 * 1000;
-    l.acquired = new Date(at).toISOString(); l.expires = new Date(at + l.ttl * 1000).toISOString();
-    writeFileSync(join(d4, 'leases.json'), JSON.stringify(st));
+    age(d4, unit(d4, 'acme/web#17'), 1201);
     t('DS-913 AC4: a unit unreported for 1200 seconds has lapsed at the next lease command', json(d4), []);
     const lapse = log(d4).find((e) => e.event === 'lapse');
     t('DS-913 AC4: the lease log names the PR whose preview timed out', `${lapse?.kind} ${lapse?.label} ${lapse?.why}`, 'preview-build acme/web#17 TTL passed');

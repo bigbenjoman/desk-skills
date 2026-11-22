@@ -369,8 +369,8 @@ export function release(id, pid, { env, dir = leaseDir(), now = Date.now, ifExpi
 }
 
 // Frees the ownerless preview-build units of team `team` that `done` names by label, in one store
-// lock, logging each release with its `reason`. A unit taken or renewed after `at` (when the PR was
-// read) is kept: a push or rerun since started a build that read did not see. done: [{ label, at,
+// lock, logging each release with its `reason`. A unit taken or renewed after `at` (when the PR's
+// preview finished) is kept: a push or rerun since started a build those checks are not. done: [{ label, at,
 // reason }] -> the items of `done` released. Throws LeaseStoreError when the store cannot be read.
 export function releasePreviews(team, done, { env, dir = leaseDir(), now = Date.now }) {
   return withStore(dir, (store, log) => {

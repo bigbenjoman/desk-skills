@@ -20,9 +20,9 @@ RERUN_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # reruns; a deploy service's own status has none), and so may a `full` rerun, which restarts every job
 # of its runs, passed ones included. Either first takes a unit of §4 Vercel's preview-build lease,
 # labelled with the PR, or waits for a later loop while every unit is held. -> 0 to rerun, 1 to wait.
-PREVIEW_CHECK='(^|[^[:alnum:]])(vercel|netlify|preview)([^[:alnum:]]|$)'
 preview_lease(){ # preview_lease <n> <names> <full>
-  [ "$3" = true ] || printf '%s\n' "$2" | grep -qiE "$PREVIEW_CHECK" || return 0
+  # gate.mjs PREVIEW_CHECK tells a preview check by its name; unread, every name counts as one.
+  [ "$3" = true ] || printf '%s\n' "$2" | grep -qiE "$(node -e 'import(process.argv[1] + "/gate.mjs").then((m) => console.log(m.PREVIEW_CHECK))' "$RERUN_BIN" 2>/dev/null)" || return 0
   preview_unit "$1" "red + completed" "rerunning"
 }
 # The lease step itself, for anything the driver does to PR <n> that starts a preview build (a preview
