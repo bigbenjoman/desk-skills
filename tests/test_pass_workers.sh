@@ -391,7 +391,33 @@ check "DS-916 AC12 with the lease store unreadable the pass spawns by the legacy
 new_worker; printf 'x' > "$T/leases-file"; export DESK_LEASE_DIR="$T/leases-file"
 spawn_one M-13
 check "DS-916 AC12 a lease directory that cannot be locked still spawns by the legacy rules, saying leases were unreadable" '[ "$(field M-13 state)" = "\"running\"" ] && echo "$out" | grep -qF "memory reservations: leases were unreadable ("'
-kill "$WPID" 2>/dev/null; mv "$T/spawn-worker.kept" "$T/desk/bin/spawn-worker.sh"; unset DESK_LEASE_DIR DESK_MACHINE
+kill "$WPID" 2>/dev/null
+# DS-992: a worker's share is the ceiling over the machine profile's cap, whatever the repo's own cap:
+# 56 GB over a machine cap of 18 is 3 GB for a repo at 2 / 3 and for one at 8 / 12 alike.
+export DESK_LEASE_DIR="$T/leases-992"; WPIDS=""
+mem_profile(){ { printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `mem=%s` | test |\n| `memory-ceiling-gb` | `56` | test |\n' "$1"
+  [ "$2" = none ] || printf '| `autopilot-concurrency` | `%s` | test |\n' "$2"; } > "$DESK_MACHINE"; }
+repo_cap(){ { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `%s` |\n' "$2"; } > "$T/config-cap-$1.md"; }
+repo_cap small '2 / 3'; repo_cap large '8 / 12'
+# spawn_at <small|large> <KEY>: a pass in a repo with that cap starts KEY's worker.
+spawn_at(){ new_worker; WPIDS="$WPIDS $WPID"; DESK_CONFIG="$T/config-cap-$1.md" spawn_one "$2"; }
+share_of(){ memlist | jq -r --arg k "worker $1" 'select(.key == $k) | .units'; }
+mem_profile on '9 / 18'
+spawn_at small M-20
+check "DS-992 AC1 under a 56 GB ceiling and a machine cap of 18, a worker in a repo capped at 3 reserves 3 GB" '[ "$(field M-20 state)" = "\"running\"" ] && [ "$(share_of M-20)" = 3 ]'
+spawn_at large M-21
+check "DS-992 AC2 a worker in a repo capped at 12 reserves the same 3 GB" '[ "$(field M-21 state)" = "\"running\"" ] && [ "$(share_of M-21)" = 3 ]'
+mem_profile on none
+spawn_at small M-22
+check "DS-992 AC3 with no machine cap in the profile, the share is the ceiling over the repo's own cap of 3" '[ "$(share_of M-22)" = 18 ]'
+# shellcheck disable=SC2086
+kill $WPIDS 2>/dev/null; rm -rf "$DESK_LEASE_DIR"; WPIDS=""
+mem_profile shadow '9 / 18'
+for k in F-1 F-2; do spawn_at small "M-$k"; done
+for k in N-1 N-2 N-3 N-4 N-5 N-6; do spawn_at large "M-$k"; done
+check "DS-992 AC4 two workers from a repo capped at 3 and six from one capped at 12 reserve 24 GB, and the lease log holds no mem would-refuse" '[ "$(memlist | jq -s "map(.units) | add")" = 24 ] && ! grep "\"would-refuse\"" "$DESK_LEASE_DIR/leases.log.jsonl" | grep -q "\"kind\":\"mem\""'
+# shellcheck disable=SC2086
+kill $WPIDS 2>/dev/null; mv "$T/spawn-worker.kept" "$T/desk/bin/spawn-worker.sh"; unset DESK_LEASE_DIR DESK_MACHINE
 # What an orchestrator on WSL is told at Stage 0b, by the mem kind's mode.
 WSLREF="$SRC/skills/desk-autopilot/references/wsl-memory.md"
 check "DS-916 AC9 with the kind shadow or on, the WSL reference starts no Monitor on Windows free memory" 'grep -qF -- "- **\`shadow\` or \`on\`**: start no \`Monitor\` on Windows free memory." "$WSLREF"'
