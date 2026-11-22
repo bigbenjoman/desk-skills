@@ -23,11 +23,12 @@
 //
 // The decision, which fails closed: anything it cannot place runs every suite.
 //   full  - a foundational file (tests/run.sh and the environment it gives suites, this script, the
-//           bash 3.2 check, .github/, desk-env.sh, and desk-env.mjs unless the change only adds
-//           exports), a root file that is not a document or a script (.gitignore, a lockfile), a
+//           bash 3.2 check, .github/, desk-env.sh, and desk-env.mjs and config-schema.mjs unless the
+//           change only adds exports), a root file that is not a document or a script (.gitignore, a lockfile), a
 //           deleted or renamed file, or a changed file no suite claims
 //   some  - the suites that claim a changed file, plus every changed suite and the suites claiming it;
-//           for a change that only adds exports to desk-env.mjs, the suites that name a new export
+//           for a change that only adds exports to desk-env.mjs or config-schema.mjs, the suites that
+//           name a new export
 //   none  - nothing changed
 // The suites in ALWAYS (the syntax and shellcheck pass) run on every pull request whatever the scope,
 // and claim nothing: a file only they cover has no behavioural suite, so changing it runs everything.
@@ -52,8 +53,8 @@ import { Script } from 'node:vm';
 export const ALWAYS = ['test_lint.sh'];
 // Shared by everything: a change here can move any suite.
 const FOUNDATION = [/^tests\/(run\.sh|suite_env\.sh|scope_sections\.mjs|bash32_check\.sh|bash32_features\.txt)$/, /^\.github\//, /^desk\/bin\/desk-env\.(mjs|sh)$/, /^desk\/bin\/config-schema\.mjs$/];
-// A foundational module whose change, when it only adds exports, reaches only the suites using them.
-const EXPORTS_ONLY = new Set(['desk/bin/desk-env.mjs']);
+// Foundational modules whose change, when it only adds exports, reaches only the suites using them.
+const EXPORTS_ONLY = new Set(['desk/bin/desk-env.mjs', 'desk/bin/config-schema.mjs']);
 const CODE_EXT = /\.(sh|bash|mjs|cjs|js|py)$/;
 const DIR_ROOTS = /^(skills|vendor|docs)\//;
 

@@ -113,6 +113,7 @@ const claimed = {
   'tests/test_pass_x.sh': '# suite: pass x\n. "$S/pass_setup.sh"',
   'tests/test_prose.mjs': "// suite: prose\n// covers: skills/writing/**\nimport { scan } from './prose_scan.mjs';\nread('tests/fixtures/prose_baseline.json')",
   'tests/test_env_user.mjs': "// suite: env user\nimport { newThing } from '../desk/bin/desk-env.mjs';",
+  'tests/test_schema_user.mjs': "// suite: schema user\nimport { newRow } from '../desk/bin/config-schema.mjs';",
 };
 const cmap = buildMap(Object.keys(claimed), (p) => claimed[p]);
 const cscope = (ch) => { const d = decide(ch, cmap); return `${d.scope}: ${d.scope === 'full' ? d.reason : d.suites.join(' ')}`; };
@@ -125,6 +126,12 @@ t('DS-818 tests/run.sh and the scoping script stay foundational', [cscope(M('tes
 const E = (exports) => [{ status: 'M', path: 'desk/bin/desk-env.mjs', exports }];
 t('DS-818 AC2 desk-env.mjs gaining exports runs the suites that use them', [cscope(E(['newThing'])), cscope([...E(['newThing']), ...M('install.sh')])], ['some: test_env_user.mjs test_lint.sh', 'some: test_env_user.mjs test_install.sh test_lint.sh']);
 t('DS-818 AC3 any other desk-env.mjs change runs everything', cscope(E(undefined)), 'full: desk/bin/desk-env.mjs is shared by every suite');
+// config-schema.mjs takes the same exports-only rule, checked on the real module.
+const schema = readFileSync(join(R, 'desk/bin/config-schema.mjs'), 'utf8');
+const S = (after) => [{ status: 'M', path: 'desk/bin/config-schema.mjs', exports: addedExports(schema, after) ?? undefined }];
+t('DS-976 AC1 config-schema.mjs gaining an export runs the suites that use it', cscope(S(`${schema}export const newRow = 1;\n`)), 'some: test_lint.sh test_schema_user.mjs');
+t('DS-976 AC2 an edited config-schema.mjs export runs everything', cscope(S(schema.replace("export const EXTRA_MODELS = ['finder', 'text'];", "export const EXTRA_MODELS = ['finder', 'text', 'other'];"))), 'full: desk/bin/config-schema.mjs is shared by every suite');
+t('DS-976 AC3 a removed config-schema.mjs export runs everything', cscope(S(schema.replace("export const LEVERS_AUTO = 'auto';\n", ''))), 'full: desk/bin/config-schema.mjs is shared by every suite');
 const env = 'import { x } from "./y.mjs";\n\nexport const one = 1;\n\nexport function two(a) {\n  return a;\n}\n';
 t('DS-818 addedExports: new exports, in any place, with comments', addedExports(env, 'import { x } from "./y.mjs";\n\nexport const one = 1;\n// three\nexport const three = (a) => a;\n\nexport function two(a) {\n  return a;\n}\n/** four */\nexport async function four() {}\nexport const FIVE = [\'a\'];\n'), ['three', 'four', 'FIVE']);
 t('DS-818 addedExports: an unchanged module adds none', addedExports(env, env), []);
