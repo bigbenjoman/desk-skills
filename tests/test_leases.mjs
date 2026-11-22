@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, 
 import { join, dirname } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { claudeAncestor, kindMode, leaseCli, listRow } from '../desk/bin/leases.mjs';
+import { claudeAncestor, kindMode, leaseCli, listRow, releasePreviews, LeaseStoreError } from '../desk/bin/leases.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -608,6 +608,43 @@ try {
       'port|3204|true|acme/desk-skills standing DS-806|acme/desk-skills standing DS-796\nslot|test|true|test ~/w/DS-1: bash t.sh|test ~/w/DS-2: bash t.sh; test ~/w/DS-3: bash t.sh');
     t('DS-959 --days reaches further back for a trial question that has waited', deskEnv(d, ['list', '--clashes', '--days', '9']).out.split('\n').length - 1, 3);
     t('DS-959 AC10 with no clash in the last 7 days it says so', deskEnv(fresh(), ['list', '--clashes']).out, 'no clashes in the last 7 days');
+  }
+  // DS-913: the pass frees a PR's preview-build unit once its preview finishes (releasePreviews).
+  {
+    const lenv = { machineValue: (k) => (k === 'lease-kinds' ? ALL_ON : null), testLockSlots: () => 1, psRows: () => [] };
+    const unit = (d, label) => cli(d, ['acquire', 'preview-build', 'acme', '--ttl', '1200', '--label', label, '--no-owner']).out;
+    const later = new Date(Date.now() + 60_000).toISOString();
+    const d1 = fresh();
+    unit(d1, 'acme/web#12');
+    const freed = releasePreviews('acme', [{ label: 'acme/web#12', at: later, reason: 'preview finished' }], { env: lenv, dir: d1 });
+    t('DS-913 AC1: a PR whose preview finished has its unit released', [freed.map((f) => f.label), json(d1)], [['acme/web#12'], []]);
+    const rel = log(d1).find((e) => e.event === 'release');
+    t('DS-913 AC1: the lease log names the PR and "preview finished"', `${rel?.label} ${rel?.reason}`, 'acme/web#12 preview finished');
+    t('DS-913: the next PR\'s build then takes the unit', cli(d1, ['acquire', 'preview-build', 'acme', '--ttl', '1200', '--wait', '0', '--label', 'acme/web#13', '--no-owner']).code, 0);
+    const d2 = fresh();
+    unit(d2, 'acme/web#14');
+    releasePreviews('acme', [{ label: 'acme/web#14', at: later, reason: 'preview finished: Vercel failed' }], { env: lenv, dir: d2 });
+    t('DS-913 AC2: a failed preview releases its unit too, the log saying which check failed', [json(d2), log(d2).find((e) => e.event === 'release')?.reason], [[], 'preview finished: Vercel failed']);
+    const d3 = fresh();
+    unit(d3, 'acme/web#15');
+    const before = new Date(Date.now() - 60_000).toISOString();
+    t('DS-913: a unit taken again after the PR was read is kept for the build that read did not see', [releasePreviews('acme', [{ label: 'acme/web#15', at: before, reason: 'preview finished' }], { env: lenv, dir: d3 }).length, json(d3).map((l) => l.label)], [0, ['acme/web#15']]);
+    t('DS-913 AC3: a unit no finished preview names stays held', [releasePreviews('acme', [{ label: 'acme/web#16', at: later, reason: 'preview finished' }], { env: lenv, dir: d3 }).length, json(d3).map((l) => l.label)], [0, ['acme/web#15']]);
+    const d4 = fresh();
+    const id = unit(d4, 'acme/web#17');
+    const st = store(d4); const l = st.leases.find((x) => x.id === id);
+    const at = Date.now() - 1201 * 1000;
+    l.acquired = new Date(at).toISOString(); l.expires = new Date(at + l.ttl * 1000).toISOString();
+    writeFileSync(join(d4, 'leases.json'), JSON.stringify(st));
+    t('DS-913 AC4: a unit unreported for 1200 seconds has lapsed at the next lease command', json(d4), []);
+    const lapse = log(d4).find((e) => e.event === 'lapse');
+    t('DS-913 AC4: the lease log names the PR whose preview timed out', `${lapse?.kind} ${lapse?.label} ${lapse?.why}`, 'preview-build acme/web#17 TTL passed');
+    const d5 = fresh();
+    mkdirSync(d5, { recursive: true });
+    writeFileSync(join(d5, 'leases.json'), '{not json');
+    let threw = null;
+    try { releasePreviews('acme', [{ label: 'acme/web#18', at: later, reason: 'preview finished' }], { env: lenv, dir: d5 }); } catch (e) { threw = e; }
+    t('DS-913 AC6: an unreadable store throws LeaseStoreError, for the pass to report', threw instanceof LeaseStoreError, true);
   }
 } finally {
   for (const c of owners) c.kill();

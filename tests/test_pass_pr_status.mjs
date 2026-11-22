@@ -181,5 +181,41 @@ const lists = (acts) => acts.at(-1);
   t('AC5 and the actions are there', j(out.map((a) => a.type)), j(['read-pr', 'pr-status', 'merged', 'fix-finished', 'out', 'prune-builds', 'lists']));
 }
 
+// ---- DS-913: a PR's preview-build unit is freed once its preview checks finish
+{
+  const check = (name, st, conclusion = null) => ({ name, status: st, conclusion });
+  const read = (pr, checks) => status(pr, 'OPEN', { at: '2026-11-19T10:00:01.000Z', checks });
+  // free-previews answered as releasePreviews would with every unit held: each PR named is freed.
+  const freeing = (reads, answer = (a) => ({ freed: a.done.map((d) => d.pr) })) => (a) => (a.type === 'free-previews' ? answer(a) : answers(reads)(a));
+  const go = (s, reads, answer) => drive(decidePrStatus(s), freeing(reads, answer));
+  const reads = {
+    31: read(31, [check('tests', 'completed', 'success'), check('Vercel', 'completed', 'success'), check('Vercel Preview Comments', 'completed', 'success')]),
+    32: read(32, [check('Vercel', 'completed', 'failure'), check('tests', 'in_progress')]),
+    33: read(33, [check('Vercel', 'in_progress'), check('tests', 'completed', 'success')]),
+    34: read(34, [check('tests', 'completed', 'success')]),
+  };
+  const list = [done('V', 31), done('W', 32), done('X', 33), done('Y', 34)];
+  const acts = go(snap(list, { previews: true }), reads);
+  const free = ofType(acts, 'free-previews');
+  t('DS-913 AC1 one release for the pass, naming each PR whose preview checks all passed or failed, with when it was read',
+    j(free.map((a) => a.done.map((d) => [d.pr, d.at, d.reason]))), j([[[31, '2026-11-19T10:00:01.000Z', 'preview finished'], [32, '2026-11-19T10:00:01.000Z', 'preview finished: Vercel failed']]]));
+  t('DS-913 AC3 a PR whose preview is still pending, or that has no preview check, is not released', free[0].done.some((d) => d.pr === 33 || d.pr === 34), false);
+  const lines = ofType(acts, 'out').map((a) => a.line);
+  t('DS-913 AC1 the report says the finished preview freed its unit', lines.includes("preview builds: PR #31's preview finished, so its preview-build unit is free for the next build"), true);
+  t('DS-913 AC2 the report names the failed preview', lines.includes("preview builds: PR #32's preview failed (Vercel), so its preview-build unit is free for the next build"), true);
+  const none = go(snap(list, { previews: true }), reads, () => ({ freed: [] }));
+  t('DS-913 a PR holding no unit gets no report line', ofType(none, 'out').some((a) => a.line.startsWith('preview builds:')), false);
+  const off = go(snap(list, { previews: false }), reads);
+  t('DS-913 AC5 with the kind off (or no §4 Vercel team) it reads and releases no lease and reports as before',
+    j([ofType(off, 'free-previews').length, ofType(off, 'out').length, ofType(off, 'pr-status').length]), j([0, 0, 4]));
+  const bad = go(snap(list, { previews: true }), reads, () => ({ unreadable: 'the lease store /x/leases.json is unreadable: bad JSON' }));
+  t('DS-913 AC6 an unreadable store is a report line', j(ofType(bad, 'out').map((a) => a.line)), j(['preview builds: leases were unreadable, so no preview-build unit was freed this pass (the lease store /x/leases.json is unreadable: bad JSON)']));
+  t('DS-913 AC6 and the rest of the pass runs as before', j([ofType(bad, 'pr-status').length, lists(bad).undrafted.length]), j([4, 4]));
+  const dry = go(snap(list, { previews: true, dry: true }), reads);
+  t('DS-913 a dry run frees nothing', ofType(dry, 'free-previews').length, 0);
+  const kept = go(snap([done('Z', 35, { pr_status: status(35, 'MERGED', { merged_at: 'm', checks: [check('Vercel', 'completed', 'success')] }) })], { previews: true }), {});
+  t('DS-913 a status kept from an earlier pass, not read now, frees nothing', ofType(kept, 'free-previews').length, 0);
+}
+
 if (fails) { console.log(`${fails} failed`); process.exit(1); }
 console.log('all passed');
