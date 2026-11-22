@@ -97,6 +97,9 @@
 //                                             --cap sizes this repo's block instead of its concurrency row
 //   node desk-env.mjs default-mode            print DEFAULT_MODE= and SOURCE= for the cwd's repo; exit 1 (with
 //                                             the warning on stderr) when it is dontAsk
+//   node desk-env.mjs unset [--json]          the config's rows that still need an answer (unsetRows), one
+//                                             `§<section><TAB><label>` line each; --json: {config, rows:
+//                                             [{id, section, label}]}. Exit 3 with no config
 //   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), set rows
 //                                             whose value does not fit the schema's type (INVALID), `ask` rows
 //                                             an unattended batch parks on (STALLS), §4 command items no worker
@@ -400,17 +403,6 @@ function parseConfigText(path, text) {
   return parsed;
 }
 
-// How many rows of a config file are unanswered: the value (first span of the value column, as every
-// read takes it) is `TODO`. A TODO in a note, or in another column, is not one. The rows the template
-// keeps `TODO` on purpose to follow the machine profile are not counted (MACHINE_FALLBACK_ROWS).
-export const MACHINE_FALLBACK_ROWS = ROWS.filter((e) => e.machine).map((e) => norm(e.label));
-export function unansweredRows(path) {
-  if (!path || !existsSync(path)) return 0;
-  return tableLines(readFileSync(path, 'utf8')).rows
-    .filter(({ cells, label, header }) => !MACHINE_FALLBACK_ROWS.includes(norm(label)) && cellItems(cells[settingCol(header)] ?? '')[0] === 'TODO')
-    .length;
-}
-
 // A value cell's items: every backtick span, except those in a trailing parenthesised note
 // (`` `ABC` (not `parent`) `` is one item, ABC). With no spans, the whole cell is the one item.
 export function cellItems(raw) {
@@ -688,6 +680,20 @@ function repoValueIn(parsed, id, rows = CONFIG_ROWS) {
   const e = parsed.sections[section]?.byName[norm(row)];
   if (unset(e?.value)) return null;
   return NO_SLUG_EXPANSION.has(id) ? e.value : expandSlug(e.value);
+}
+
+// The rows the config file holds that still need an answer: declared by the schema, and with no value
+// of their own (blank or `TODO`), none from the machine profile and no schema default. A row that
+// falls back to the machine profile is answered only by a profile that sets it, whatever its default.
+//   -> [{ id, section, label }]
+export function unsetRows(parsed = parseConfig()) {
+  return ROWS.filter((e) => {
+    if (e.kind === 'table') return false;
+    const s = parsed.sections[e.section];
+    const entry = e.kind === 'perm' ? s?.byKey[norm(e.label)] : s?.byName[norm(e.label)];
+    if (!entry || !unset(entry.value)) return false;
+    return e.machine ? machineValue(e.machine) == null : !('default' in e);
+  }).map(({ id, section, label }) => ({ id, section, label }));
 }
 
 // A repo memory ceiling above the machine profile's reads as the machine's.
@@ -2246,6 +2252,8 @@ function rowValue(id, rows = CONFIG_ROWS) {
   const r = id === 'default-branch' ? defaultBranchFrom() : id === 'suite-weight' ? suiteWeightFrom(parseConfig()) : configValueFrom(parseConfig(), id, rows);
   return { ...r, value: expandHome(r.value) ?? null };
 }
+// What `get` prints for a config id, with where it came from: -> { value, source } (rowValue's).
+export const configValueSource = (id) => { const { value, source } = rowValue(id); return { value, source }; };
 // What `list` prints for a config id: -> { items, refused }, refused the DeskConfigError list throws.
 function rowItems(id, rows = CONFIG_ROWS) {
   try { return { items: configValuesIn(parseConfig(), id, rows)?.map(expandHome) ?? null, refused: null }; }
@@ -2359,7 +2367,7 @@ export function treeStatus(porcelain, { run } = {}) {
 export const DESK_ENV_COMMANDS = Object.freeze(['where', 'list', 'cmds', 'required-fields', 'get', 'review-cmd', 'verdict-logins',
   'levers', 'lines', 'batch-base', 'ticket-kind', 'branch-check', 'perm-or-unset', 'perm', 'config', 'merge-grant', 'key', 'model',
   'effort', 'budget', 'ids', 'paths', 'take-batch', 'identity', 'git-author', 'mem', 'heavy', 'test-scope', 'workspace-test',
-  'baseline', 'uuid', 'default-mode', 'unanswered', 'show', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription', 'lease', 'preview-slot', 'tree-status']);
+  'baseline', 'uuid', 'default-mode', 'unset', 'show', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription', 'lease', 'preview-slot', 'tree-status']);
 const deskEnvUsage = () => `usage: desk-env.mjs ${DESK_ENV_COMMANDS.join('|')}`;
 
 const isMain = (() => {
@@ -2762,10 +2770,14 @@ if (isMain) {
         if (mode === 'dontAsk') { console.error(`WARNING: ${DONTASK_WARNING} (${file})`); process.exit(1); }
         break;
       }
-      // unanswered <config.md>: how many of its rows are still `TODO` (install.sh's per-repo line).
-      case 'unanswered':
-        console.log(unansweredRows(args[0]));
+      case 'unset': {
+        const parsed = parseConfig();
+        if (!parsed.exists) { console.error(`desk: no repo config found at ${configPathHint()}. Run inside the repo, or /desk-setup.`); process.exit(3); }
+        const rows = unsetRows(parsed);
+        if (args.includes('--json')) console.log(JSON.stringify({ config: parsed.path, rows }));
+        else for (const r of rows) console.log(`§${r.section}\t${r.label}`);
         break;
+      }
       case 'drift': {
         const ai = args.indexOf('--app');
         if (ai >= 0) {
