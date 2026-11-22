@@ -7,7 +7,10 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, 
 import { join, dirname } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { claudeAncestor, kindMode, leaseCli, listRow, releasePreviews, LeaseStoreError } from '../desk/bin/leases.mjs';
+import { claudeAncestor, kindMode, leaseCli, listRow, releasePreviews } from '../desk/bin/leases.mjs';
+import { decidePrStatus } from '../desk/bin/pass/pr-status.mjs';
+import { latestPerCheck, normaliseRollup } from '../desk/bin/gate.mjs';
+import { previewLabel } from '../desk/bin/desk-env.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -616,20 +619,20 @@ try {
     const later = new Date(Date.now() + 60_000).toISOString();
     const d1 = fresh();
     unit(d1, 'acme/web#12');
-    const freed = releasePreviews('acme', [{ label: 'acme/web#12', at: later, reason: 'preview finished' }], { env: lenv, dir: d1 });
-    t('DS-913 AC1: a PR whose preview finished has its unit released', [freed.map((f) => f.label), json(d1)], [['acme/web#12'], []]);
+    const freed = releasePreviews('acme', [{ pr: 12, label: 'acme/web#12', at: later, reason: 'preview finished' }], { env: lenv, dir: d1 });
+    t('DS-913 AC1: a PR whose preview finished has its unit released', [freed, json(d1)], [{ freed: [12] }, []]);
     const rel = log(d1).find((e) => e.event === 'release');
     t('DS-913 AC1: the lease log names the PR and "preview finished"', `${rel?.label} ${rel?.reason}`, 'acme/web#12 preview finished');
     t('DS-913: the next PR\'s build then takes the unit', cli(d1, ['acquire', 'preview-build', 'acme', '--ttl', '1200', '--wait', '0', '--label', 'acme/web#13', '--no-owner']).code, 0);
     const d2 = fresh();
     unit(d2, 'acme/web#14');
-    releasePreviews('acme', [{ label: 'acme/web#14', at: later, reason: 'preview finished: Vercel failed' }], { env: lenv, dir: d2 });
+    releasePreviews('acme', [{ pr: 14, label: 'acme/web#14', at: later, reason: 'preview finished: Vercel failed' }], { env: lenv, dir: d2 });
     t('DS-913 AC2: a failed preview releases its unit too, the log saying which check failed', [json(d2), log(d2).find((e) => e.event === 'release')?.reason], [[], 'preview finished: Vercel failed']);
     const d3 = fresh();
     unit(d3, 'acme/web#15');
     const before = new Date(Date.now() - 60_000).toISOString();
-    t('DS-913: a unit taken again after the preview finished is kept for the build those checks are not', [releasePreviews('acme', [{ label: 'acme/web#15', at: before, reason: 'preview finished' }], { env: lenv, dir: d3 }).length, json(d3).map((l) => l.label)], [0, ['acme/web#15']]);
-    t('DS-913 AC3: a unit no finished preview names stays held', [releasePreviews('acme', [{ label: 'acme/web#16', at: later, reason: 'preview finished' }], { env: lenv, dir: d3 }).length, json(d3).map((l) => l.label)], [0, ['acme/web#15']]);
+    t('DS-913: a unit taken again after the preview finished is kept for the build those checks are not', [releasePreviews('acme', [{ pr: 15, label: 'acme/web#15', at: before, reason: 'preview finished' }], { env: lenv, dir: d3 }), json(d3).map((l) => l.label)], [{ freed: [] }, ['acme/web#15']]);
+    t('DS-913 AC3: a unit no finished preview names stays held', [releasePreviews('acme', [{ pr: 16, label: 'acme/web#16', at: later, reason: 'preview finished' }], { env: lenv, dir: d3 }), json(d3).map((l) => l.label)], [{ freed: [] }, ['acme/web#15']]);
     const d4 = fresh();
     age(d4, unit(d4, 'acme/web#17'), 1201);
     t('DS-913 AC4: a unit unreported for 1200 seconds has lapsed at the next lease command', json(d4), []);
@@ -638,9 +641,40 @@ try {
     const d5 = fresh();
     mkdirSync(d5, { recursive: true });
     writeFileSync(join(d5, 'leases.json'), '{not json');
-    let threw = null;
-    try { releasePreviews('acme', [{ label: 'acme/web#18', at: later, reason: 'preview finished' }], { env: lenv, dir: d5 }); } catch (e) { threw = e; }
-    t('DS-913 AC6: an unreadable store throws LeaseStoreError, for the pass to report', threw instanceof LeaseStoreError, true);
+    const bad = releasePreviews('acme', [{ pr: 18, label: 'acme/web#18', at: later, reason: 'preview finished' }], { env: lenv, dir: d5 });
+    t('DS-913 AC6: an unreadable store is answered as unreadable, never thrown, for the pass to report', Object.keys(bad).join(), 'unreadable');
+    // A lease directory under a plain file cannot be made: a failure that is not the store's, answered too.
+    const d6 = join(fresh(), 'leases');
+    writeFileSync(dirname(d6), 'a file');
+    t('DS-913 AC6: any other lease failure is answered as failed, never thrown', Object.keys(releasePreviews('acme', [], { env: lenv, dir: d6 })).join(), 'failed');
+
+    // End to end: a PR's check rollup as gh exports it, through the pass's PR status decision, into the
+    // lease store. Vercel's own deploy status is a status context, its time its last state's.
+    const d7 = fresh();
+    unit(d7, previewLabel('acme/web', { pr: 21 }));
+    unit(d7, previewLabel('acme/web', { pr: 22 }));
+    const after = (s) => new Date(Date.now() + s * 1000).toISOString().replace(/\.\d+Z$/, 'Z');
+    const rollup = {
+      21: [{ __typename: 'StatusContext', context: 'Vercel', state: 'SUCCESS', startedAt: after(30), targetUrl: 'https://vercel.com/acme/web/1' },
+        { __typename: 'CheckRun', name: 'Vercel Preview Comments', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: after(5), completedAt: after(6) },
+        { __typename: 'CheckRun', name: 'tests', status: 'IN_PROGRESS', conclusion: '', startedAt: after(1), completedAt: '0001-01-01T00:00:00Z' }],
+      22: [{ __typename: 'StatusContext', context: 'Vercel', state: 'PENDING', startedAt: after(2), targetUrl: 'https://vercel.com/acme/web/2' }],
+    };
+    // The fields of each check the pass keeps (pass.mjs readPrStatus), gh's zero time as none.
+    const time = (s) => (s && !s.startsWith('0001-') ? s : null);
+    const read = (pr) => ({ pr, state: 'OPEN', isDraft: false, merged_at: null, base_head: 'b1', at: after(60),
+      checks: latestPerCheck(normaliseRollup(rollup[pr])).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, started: time(c.startedAt), completed: time(c.completedAt) })) });
+    const steps = decidePrStatus({ tickets: { A: { key: 'A', state: 'done', result: { pr: 21 } }, B: { key: 'B', state: 'done', result: { pr: 22 } } }, dry: false, passAt: after(60), previews: true });
+    const out = [];
+    for (let r = steps.next(); !r.done;) {
+      const a = r.value;
+      if (a.type === 'out') out.push(a.line);
+      r = steps.next(a.type === 'read-pr' ? read(a.pr) : a.type === 'free-previews'
+        ? releasePreviews('acme', a.done.map((d) => ({ ...d, label: previewLabel('acme/web', { pr: d.pr }) })), { env: lenv, dir: d7 }) : undefined);
+    }
+    t('DS-913 AC1 end to end: the finished preview\'s unit is released and the pending one\'s held', json(d7).map((l) => l.label).join(), 'acme/web#22');
+    t('DS-913 AC1 end to end: the lease log names the PR and "preview finished"', log(d7).filter((e) => e.event === 'release').map((e) => `${e.label} ${e.reason}`).join(), 'acme/web#21 preview finished');
+    t('DS-913 AC1 end to end: the pass report says so', out.join('\n'), "preview builds: PR #21's preview finished, so its preview-build unit is free for the next build");
   }
 } finally {
   for (const c of owners) c.kill();

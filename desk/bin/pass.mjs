@@ -100,7 +100,7 @@ import { decideBaseGate } from './pass/base-gate.mjs';
 import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
 import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
-import { kindMode, leaseCli, releasePreviews, LeaseStoreError } from './leases.mjs';
+import { kindMode, leaseCli, releasePreviews } from './leases.mjs';
 import { handToWorker as handMemToWorker, memPool, reserveForWorker } from './mem-lease.mjs';
 import { isArchived, prClosed, owesReopen } from './queue-store.mjs';
 
@@ -4082,16 +4082,7 @@ runSteps({
       return s && withErrors(withUntriggered(withHistory(s, a.was)), a.was);
     },
     'pr-status': (a) => q('set', a.key, `pr_status=${JSON.stringify(a.status)}`),
-    'free-previews': (a) => {
-      const label = (pr) => E.previewLabel(GH_REPO, { pr });
-      try {
-        const freed = releasePreviews(PREVIEW_TEAM, a.done.map((d) => ({ label: label(d.pr), at: d.at, reason: d.reason })), { env: LEASE_ENV });
-        return { freed: a.done.filter((d) => freed.some((f) => f.label === label(d.pr))).map((d) => d.pr) };
-      } catch (e) {
-        // Any other failure (an unwritable lease directory, a full disk) is reported too: the pass runs on.
-        return e instanceof LeaseStoreError ? { unreadable: e.message } : { failed: String(e?.message ?? e).split('\n')[0] };
-      }
-    },
+    'free-previews': (a) => releasePreviews(PREVIEW_TEAM, a.done.map((d) => ({ ...d, label: E.previewLabel(GH_REPO, { pr: d.pr }) })), { env: LEASE_ENV }),
     merged: (a) => q('merged', a.key, ...(a.at ? [a.at] : [])),
     'follow-on': (a) => {
       const args = ['set', a.key, ...a.fields];
