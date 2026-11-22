@@ -19,7 +19,8 @@ rploop(){ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge
 rp_setup(){
   local at; at=$("$NODE" -p "new Date(Date.now()-$3).toISOString()")
   : > "$T/merges.log"
-  find "$T/state" \( -name 'green-41*' -o -name 'dirty-41*' -o -name 'repaired-41*' \) -delete
+  # pr-files.json too: each setup gives #411 new files at the same head, which only a test does.
+  find "$T/state" \( -name 'green-41*' -o -name 'dirty-41*' -o -name 'repaired-41*' -o -name 'pr-files.json' \) -delete
   q init repaired
   cat > "$T/prs.json" <<EOF
 {

@@ -7,14 +7,15 @@
 //   base-red.mjs check --branch <name> [--repo <owner/name>] [--state <dir>] [--by <merger>]
 //       one JSON line, { state: red | green | unknown | unread | none, checks?, why?, line? }, exit 0. It
 //       keeps <state>/base-red.json while the base is red, removes it once it is green or nothing is
-//       required, and leaves it as it was when the base could not be read or stays unknown.
+//       required, and leaves it as it was when the base could not be read or stays unknown. The walk's
+//       reads are kept in <state>/base-walk.json (cachedRead).
 //
 // The record, <state>/base-red.json:
 //   { branch, sha, checks: [{ name, sha, url }], merges: [{ pr, ticket, sha, at }], repair_key, since, at }
 // `merges` are the last MERGES_SHOWN merges the merge log holds for the repo by `--by`, newest first, and `since`
 // when this red spell was first read. `repair_key` is this spell's own repair ticket (desk-env baseRedKey),
 // so no two spells share one.
-import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync, realpathSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -75,6 +76,57 @@ export function baseState({ required, branch, read }) {
   if (red.length) return { state: 'red', sha: tip, checks: red };
   if (left.size) return { state: 'unknown', why: `no completed run of ${[...left].join(', ')} on the newest ${WALK} commits of ${branch}` };
   return { state: 'green' };
+}
+
+// The walk's reads the driver keeps between loops, <state>/base-walk.json:
+//   { repo, commits: { <sha>: { parent, at } }, runs: { <sha>: { runs, at } } }
+// so a loop on an unmoved tip reads only its ref. A commit's runs are kept once every one has completed
+// and no required check failed (a failed one may be rerun green on the same commit); every entry is
+// read again once older than STALE_MS.
+export const WALK_FILE = 'base-walk.json';
+const walkPath = (state) => join(state, WALK_FILE);
+export function readWalk(state, repo) {
+  try {
+    const w = JSON.parse(readFileSync(walkPath(state), 'utf8'));
+    if (w?.repo === repo && w.commits && typeof w.commits === 'object' && w.runs && typeof w.runs === 'object') return w;
+  } catch { /* none kept */ }
+  return { repo, commits: {}, runs: {} };
+}
+export function writeWalk(state, walk, now = Date.now()) {
+  for (const k of ['commits', 'runs']) for (const [sha, e] of Object.entries(walk[k])) if (!(now - e?.at <= STALE_MS)) delete walk[k][sha];
+  mkdirSync(state, { recursive: true });
+  const tmp = `${walkPath(state)}.${process.pid}`;
+  writeFileSync(tmp, `${JSON.stringify(walk)}\n`);
+  renameSync(tmp, walkPath(state));
+}
+// `read` (ghRead's shape, with head(branch) -> sha | null) through `walk`, for baseState.
+export function cachedRead(read, walk, { required = [], now = Date.now() } = {}) {
+  const fresh = (e) => e != null && now - e.at <= STALE_MS;
+  const commit = (sha) => {
+    const hit = walk.commits[sha];
+    if (fresh(hit)) return { sha, parent: hit.parent ?? null };
+    const c = read.commit(sha);
+    if (c) walk.commits[c.sha] = { parent: c.parent ?? null, at: now };
+    return c;
+  };
+  let tip = null;
+  const mine = (runs, name) => runs.filter((r) => r?.name === name);
+  const settled = (runs, sha) => runs.length > 0 && runs.every((r) => String(r?.status ?? '').toLowerCase() === 'completed')
+    && !required.some((name) => runsState(mine(runs, name)) === 'fail')
+    && (sha !== tip || required.every((name) => mine(runs, name).length));
+  return {
+    // A required check not yet on the tip is one still to start there, so the tip's runs are kept only with every one on it.
+    tip: (branch) => { tip = read.head(branch); return tip ? commit(tip) : null; },
+    commit,
+    runs: (sha) => {
+      const hit = walk.runs[sha];
+      if (fresh(hit)) return hit.runs;
+      const runs = read.runs(sha);
+      if (runs && settled(runs, sha)) walk.runs[sha] = { runs, at: now };
+      else delete walk.runs[sha];
+      return runs;
+    },
+  };
 }
 
 // The last merges the merge log holds for `repo` by merger `by`, newest first. The log names no target
@@ -146,6 +198,11 @@ export function ghRead(repo) {
   };
   return {
     tip: commit, commit,
+    // The branch's tip sha alone, from its ref: not a commits/ read.
+    head: (branch) => {
+      const s = String(gh(['api', `repos/${repo}/git/ref/heads/${branch.split('/').map(encodeURIComponent).join('/')}`, '--jq', '.object.sha']) ?? '').trim();
+      return /^[0-9a-f]{40}$/.test(s) ? s : null;
+    },
     runs: (sha) => {
       const r = json(gh(['api', `repos/${repo}/commits/${sha}/check-runs?filter=latest&per_page=100`, '--jq', '[.check_runs[] | {name, status, conclusion, url: (.details_url // .html_url)}]']));
       return Array.isArray(r) ? r : null;
@@ -167,7 +224,9 @@ if (isMain) {
   const repo = flag('--repo') ?? E.ghRepo();
   const state = flag('--state') ?? E.stateDir();
   const required = [].concat(E.configValues('required-checks') ?? []).filter((c) => c && !E.isNone(c));
-  const s = baseState({ required, branch, read: ghRead(repo) });
+  const walk = readWalk(state, repo);
+  const s = baseState({ required, branch, read: cachedRead(ghRead(repo), walk, { required }) });
+  try { writeWalk(state, walk); } catch { /* read fresh next loop */ }
   const path = baseRedPath(state);
   if (s.state === 'red') {
     const rec = nextRecord(readBaseRed(state), s, { branch, merges: lastMerges(readLog(), repo, flag('--by')), at: new Date().toISOString() });

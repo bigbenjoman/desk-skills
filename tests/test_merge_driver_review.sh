@@ -176,6 +176,8 @@ ep_q carried false; q set T-31 'promotion_hold=deploys the stack — infra/**'; 
 check "DS-508 AC3: §4 Merge holds its children carried into the base leave the epic PR to a person" '[ -z "$(merged)" ] && echo "$out" | grep -q "epic PR #301 HELD: its children carried §4 Merge holds into feat/E"'
 sed 's/| Merge holds | `none` |/| Merge holds | `infra\/**: deploys the stack` |/' "$T/config-rv.md" > "$T/config-rv-hold.md"
 ep_q hold false; jq '."301".files = ["infra/x.tf"]' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+# New files at the same head, which only a test does: drop the list the driver kept for it.
+find "$T" -name 'pr-files.json' -delete
 RV_CONFIG="$T/config-rv-hold.md"; rvloop; rvloop
 check "DS-508 AC3: a §4 Merge hold the epic PR touches holds it, noted on the queue's promotion" '[ -z "$(merged)" ] && jq -r .promotion.merge_blocked "$DESK_QUEUE" | grep -q "^merge hold: deploys the stack — infra/\*\*, 1 file(s)"'
 out=$(DESK_CONFIG="$T/config-rv-hold.md" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off node "$B/pass.mjs" --json 2>/dev/null); rc=$?; RV_CONFIG=""

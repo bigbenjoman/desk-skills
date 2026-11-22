@@ -1,6 +1,6 @@
 // suite: gate (one definition of green)
 // layer: L2
-import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseFlaky, flakyWaiver, failureNotes, notesIn, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold, holdKind, holdNeedsPerson, agentLast, NO_REASON, UNREAD_FILES } from '../desk/bin/gate.mjs';
+import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseFlaky, flakyWaiver, failureNotes, notesIn, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold, holdKind, holdNeedsPerson, agentLast, NO_REASON, UNREAD_FILES, cachedPrFiles, PR_FILES_KEEP_MS } from '../desk/bin/gate.mjs';
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -526,5 +526,22 @@ rmSync(gtmp, { recursive: true, force: true });
   const f = { name: 'Integration', runId: '9' };
   t('#831 notesIn reads the error_notes the pass kept', JSON.stringify(notesIn(kept)(f)), JSON.stringify([listed]));
   t('#831 notesIn is undefined where a run kept none', notesIn(checks)(f), undefined);
+}
+{
+  // DS-989: a PR's file list is read once per base and head, and again once it is PR_FILES_KEEP_MS old.
+  const dir = scratch('gate-pr-files-');
+  let reads = 0;
+  const read = () => { reads++; return [`f${reads}.ts`]; };
+  const now = Date.now();
+  const at = (o = {}) => cachedPrFiles({ dir, n: '7', base: 'main', head: 'h1', read, now, ...o }).join();
+  t('DS-989 AC3 the first read of a PR head reads its files', at(), 'f1.ts');
+  t('DS-989 AC3 the same head again reads nothing', `${at()} ${reads}`, 'f1.ts 1');
+  t('DS-989 AC4 a moved head reads fresh', `${at({ head: 'h2' })} ${reads}`, 'f2.ts 2');
+  t('DS-989 AC4 a new base reads fresh', `${at({ base: 'dev' })} ${reads}`, 'f3.ts 3');
+  t('DS-989 AC4 a list older than PR_FILES_KEEP_MS reads fresh', `${at({ now: now + PR_FILES_KEEP_MS + 1 })} ${reads}`, 'f4.ts 4');
+  t('DS-989 with no cache dir every call reads', `${at({ dir: null })} ${at({ dir: null })} ${reads}`, 'f5.ts f6.ts 6');
+  let threw = false;
+  try { cachedPrFiles({ dir, n: '8', base: 'main', head: 'h1', read: () => { throw new Error('502'); }, now }); } catch { threw = true; }
+  t('DS-989 an unreadable list throws and keeps nothing', `${threw} ${at({ n: '8' })}`, 'true f7.ts');
 }
 process.exit(fails ? 1 : 0);

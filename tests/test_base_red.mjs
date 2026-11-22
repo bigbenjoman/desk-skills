@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { scratch } from './scratch.mjs';
 
 process.env.DESK_AUTOPILOT_STATE ??= scratch('base-red-');
-const { baseState, lastMerges, liveBaseRed, nextRecord, holdLine, batchLine, repairTicket, repairTriage, WALK, STALE_MS } = await import('../desk/bin/base-red.mjs');
+const { baseState, cachedRead, readWalk, writeWalk, lastMerges, liveBaseRed, nextRecord, holdLine, batchLine, repairTicket, repairTriage, WALK, STALE_MS } = await import('../desk/bin/base-red.mjs');
 const E = await import('../desk/bin/desk-env.mjs');
 
 let pass = 0;
@@ -74,6 +74,86 @@ test('a check found red stays red when a later read in the walk fails', () => {
   assert.deepEqual([runsFail.state, runsFail.checks.map((c) => c.name)], ['red', ['tests']]);
   const commitFails = baseState({ required: ['tests', 'lint'], branch: 'main', read: reader(tip, { tip: sha('b') }) });
   assert.deepEqual([commitFails.state, commitFails.checks.map((c) => c.name)], ['red', ['tests']]);
+});
+
+// A reader that counts each read by kind, with head(branch) for cachedRead.
+const counting = (commits, tip = Object.keys(commits)[0]) => {
+  const calls = { head: 0, commit: 0, runs: 0 };
+  return { calls, read: {
+    head: () => { calls.head++; return tip; },
+    commit: (s) => { calls.commit++; return commits[s] ? { sha: s, parent: commits[s].parent ?? null } : null; },
+    runs: (s) => { calls.runs++; return commits[s]?.runs ?? []; },
+  } };
+};
+const loops = (read, walk, n, { required = ['tests'], now = Date.now() } = {}) => {
+  let s;
+  for (let i = 0; i < n; i++) s = baseState({ required, branch: 'main', read: cachedRead(read, walk, { required, now }) });
+  return s;
+};
+const emptyWalk = () => ({ repo: 'acme/w', commits: {}, runs: {} });
+
+test('DS-989 AC1 a second loop on an unmoved tip reads only its ref, no commit and no check runs', () => {
+  const { calls, read } = counting({ [sha('a')]: { parent: null, runs: [run('tests', 'success')] } });
+  const walk = emptyWalk();
+  assert.equal(loops(read, walk, 1).state, 'green');
+  assert.deepEqual(calls, { head: 1, commit: 1, runs: 1 });
+  assert.equal(loops(read, walk, 1).state, 'green');
+  assert.deepEqual(calls, { head: 2, commit: 1, runs: 1 });
+});
+
+test('DS-989 AC1 a check still pending on the tip, or a required one not yet there, has the tip\'s runs read again', () => {
+  // Pending on the tip: the walk stops there, read on both loops. Not there yet: the tip on both, its parent once.
+  for (const [runs, want] of [[[run('tests', 'success'), { name: 'lint', status: 'in_progress', conclusion: null }], 2], [[run('lint', 'success')], 3]]) {
+    const { calls, read } = counting({ [sha('a')]: { parent: sha('b'), runs }, [sha('b')]: { parent: null, runs: [run('tests', 'success')] } });
+    const walk = emptyWalk();
+    loops(read, walk, 2);
+    assert.equal(calls.runs, want, JSON.stringify(runs));
+  }
+});
+
+test('DS-989 AC2 a walked commit whose runs all completed is kept: later loops read none of the walk again', () => {
+  const commits = {
+    [sha('a')]: { parent: sha('b'), runs: [run('lint', 'success')] },
+    [sha('b')]: { parent: sha('c'), runs: [run('lint', 'success')] },
+    [sha('c')]: { parent: null, runs: [run('tests', 'success'), run('lint', 'success')] },
+  };
+  const { calls, read } = counting(commits);
+  const walk = emptyWalk();
+  // The tip lacks `tests`, so its runs are read each loop; b and c are kept.
+  loops(read, walk, 3);
+  assert.deepEqual(calls, { head: 3, commit: 3, runs: 5 });
+});
+
+test('DS-989 a required check that failed is read again, so a rerun that passes clears the base', () => {
+  const commits = { [sha('a')]: { parent: null, runs: [run('tests', 'failure', 'u/1')] } };
+  const { read } = counting(commits);
+  const walk = emptyWalk();
+  assert.equal(loops(read, walk, 1).state, 'red');
+  commits[sha('a')].runs = [run('tests', 'success')];
+  assert.equal(loops(read, walk, 1).state, 'green');
+});
+
+test('DS-989 AC4 a moved tip is read fresh, and a kept read older than STALE_MS is read again', () => {
+  const commits = { [sha('a')]: { parent: null, runs: [run('tests', 'success')] }, [sha('n')]: { parent: sha('a'), runs: [run('tests', 'failure')] } };
+  const now = Date.now();
+  const walk = emptyWalk();
+  const first = counting(commits, sha('a'));
+  loops(first.read, walk, 1, { now });
+  const moved = counting(commits, sha('n'));
+  assert.equal(loops(moved.read, walk, 1, { now }).state, 'red');
+  assert.deepEqual(moved.calls, { head: 1, commit: 1, runs: 1 });
+  const later = counting(commits, sha('a'));
+  loops(later.read, walk, 1, { now: now + STALE_MS + 1 });
+  assert.deepEqual(later.calls, { head: 1, commit: 1, runs: 1 });
+});
+
+test('DS-989 the walk is kept in the state dir for its repo, and entries past STALE_MS are dropped on write', () => {
+  const dir = scratch('base-walk-');
+  const now = Date.now();
+  writeWalk(dir, { repo: 'acme/w', commits: { [sha('a')]: { parent: null, at: now }, [sha('b')]: { parent: null, at: now - STALE_MS - 1 } }, runs: {} }, now);
+  assert.deepEqual(Object.keys(readWalk(dir, 'acme/w').commits), [sha('a')]);
+  assert.deepEqual(readWalk(dir, 'acme/other').commits, {});
+  assert.deepEqual(readWalk(scratch('base-walk-none-'), 'acme/w'), emptyWalk());
 });
 
 test('the last merges are the repo\'s merged events, newest first', () => {

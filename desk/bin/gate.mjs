@@ -33,6 +33,8 @@
 //   agentLast(holds)         the holds with every 'agent' one after the rest, the row's order otherwise
 //   matchHolds(files, holds, contents) -> [{ glob, why, routine, files }]
 //   readKeyedFiles({ repo, base, head, files, holds, run }) -> contents, for the `#<key>` holds
+//   cachedPrFiles({ dir, n, base, head, read }) -> PR n's files, read once per base and head and kept in
+//     <dir>/pr-files.json for PR_FILES_KEEP_MS
 //   codeOwnerHolds(held, { repo, base, merger, run }) -> { held, satisfied }: a code-owner hold whose
 //     every held file the base's CODEOWNERS gives to `merger` alone is satisfied
 //   parseFlaky(items)        §4 Known flaky checks items `<check>: <glob> [<glob>…]` or `<check>: <file> > <test>`
@@ -58,7 +60,8 @@
 //   since(ms)                a span as "4m", "3h 24m" or "3d 4h" (desk-q's ages, the pass's stuck-check log)
 //
 // CLI (merge-driver.sh):
-//   node gate.mjs pr <number> [--repo owner/name] [--merger <login>]   one JSON object: title, sha, base,
+//   node gate.mjs pr <number> [--repo owner/name] [--merger <login>] [--cache <dir>]
+//     (--cache: keep the PR's file list in <dir>, cachedPrFiles)   one JSON object: title, sha, base,
 //     head, mergeState, reviewDecision, gate (as above, plus failedRuns: run ids of failing non-advisory
 //     checks that are not §4 State checks, failedJobs: [{ runId, jobId, name }] for the one in a run that
 //     also holds a failing state check, rerun by job instead, and stateFailing: the failing state checks,
@@ -78,7 +81,8 @@
 //   node gate.mjs state                            print each §4 State check as `<check>\t<kind>`;
 //     exit 1 naming the row when it does not parse
 import { execFileSync } from 'node:child_process';
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseWorkflow, branchEvents, checkNameOf, checkIsJob } from './desk-ci.mjs';
 import { ASK_TERMS } from './decisions.mjs';
@@ -387,6 +391,28 @@ export const agentLast = (holds) => [...holds].sort((a, b) => (holdKind(a) === '
 // The PR's files for matchHolds, from `gh api pulls/<n>/files`: both sides of a rename, so a file
 // moved out of a held path is still held.
 export const PR_FILES_JQ = '.[] | .filename, (.previous_filename // empty)';
+// PR n's files, read by `read()` (which throws on failure) once per base and head and kept in
+// <dir>/pr-files.json for PR_FILES_KEEP_MS; with no dir, read every time.
+export const PR_FILES_FILE = 'pr-files.json';
+export const PR_FILES_KEEP_MS = 30 * 60 * 1000;
+export function cachedPrFiles({ dir, n, base, head, read, now = Date.now() }) {
+  if (!dir) return read();
+  const path = join(dir, PR_FILES_FILE), key = `${n}:${base}:${head}`;
+  let kept = {};
+  try { const k = JSON.parse(readFileSync(path, 'utf8')); if (k && typeof k === 'object') kept = k; } catch { /* none kept */ }
+  const fresh = (e) => Array.isArray(e?.files) && now - e.at <= PR_FILES_KEEP_MS;
+  if (fresh(kept[key])) return kept[key].files;
+  const files = read();
+  for (const [k, e] of Object.entries(kept)) if (!fresh(e)) delete kept[k];
+  kept[key] = { files, at: now };
+  try {
+    mkdirSync(dir, { recursive: true });
+    const tmp = `${path}.${process.pid}`;
+    writeFileSync(tmp, `${JSON.stringify(kept)}\n`);
+    renameSync(tmp, path);
+  } catch { /* read again next time */ }
+  return files;
+}
 
 // gitignore-flavoured globs: `**` crosses directories, `*` and `?` do not, a trailing `/` means the
 // whole directory, and a pattern with no `/` matches that name at any depth.
@@ -782,7 +808,11 @@ if (isMain) {
       }
       let files = [];
       let filesOk = true;
-      try { files = gh(['api', '--paginate', `repos/${repo}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ]).split('\n').filter(Boolean); }
+      const ci = rest.indexOf('--cache');
+      try {
+        files = cachedPrFiles({ dir: ci >= 0 ? rest[ci + 1] : null, n, base: pr.baseRefName, head: pr.headRefOid,
+          read: () => gh(['api', '--paginate', `repos/${repo}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ]).split('\n').filter(Boolean) });
+      }
       catch { filesOk = false; }
       const contents = filesOk ? await readKeyedFiles({ repo, base: pr.baseRefName, head: pr.headRefOid, files, holds, run: gh }) : new Map();
       // A code-owner hold is met only on the merge into the default branch, against its CODEOWNERS:

@@ -329,13 +329,14 @@ check "DS-969 AC2: with every read answered but no completed run on main, the dr
   '[ "$(merged)" = "852 851 853 855" ] && echo "$first" | grep -qF "base state unknown on main (no completed run of test on the newest 5 commits of main) — merging as before"'
 rm -f "$T/base.json"
 # With no PR ready (only drafts), the driver still reads the base every loop, so the record the pass reports
-# from is written when main goes red and goes once it is green.
+# from is written when main goes red and goes once it is green. A new tip R2: R1's passing runs are kept.
+R2=a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2
 printf '{"854": { "head": "fix/T-854", "base": "main", "sha": "%s", "state": "open", "draft": true, "checks": [["test", "FAILURE"]] }}\n' "$SHA4" > "$T/prs.json"
-printf '{"tip":"%s","commits":{"%s":{"parent":null,"runs":[["test","completed","failure","https://github.com/acme/widgets/actions/runs/854"]]}}}\n' "$R1" "$R1" > "$T/base.json"
+printf '{"tip":"%s","commits":{"%s":{"parent":null,"runs":[["test","completed","failure","https://github.com/acme/widgets/actions/runs/854"]]}}}\n' "$R2" "$R2" > "$T/base.json"
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-854" 2>&1)
 check "DS-850 AC1: with only drafts open, a red main is still read and recorded for the pass" \
   'echo "$out" | grep -qF "HOLDING on red main" && [ "$(jq -r ".checks[0].url" "$T/state/base-red.json")" = https://github.com/acme/widgets/actions/runs/854 ]'
-printf '{"tip":"%s","commits":{"%s":{"parent":null,"runs":[["test","completed","success"]]}}}\n' "$R1" "$R1" > "$T/base.json"
+printf '{"tip":"%s","commits":{"%s":{"parent":null,"runs":[["test","completed","success"]]}}}\n' "$R2" "$R2" > "$T/base.json"
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-854" 2>&1)
 check "DS-850 AC6: with only drafts open, a main green again drops the record" '[ ! -e "$T/state/base-red.json" ]'
 rm -f "$T/base.json"
