@@ -1489,7 +1489,8 @@ case "$cmd" in
     fi
     if (( check )); then
       # create-batch reads the fields a row will carry, so a later row taking one from it is checked against them.
-      [[ -z "${DESK_JIRA_CHECK_CARRIES:-}" ]] || jq -c 'keys' <<<"$extra" > "$DESK_JIRA_CHECK_CARRIES"
+      # Only a field with a value: one sent empty (null, "", [], {}) gives a later row nothing.
+      [[ -z "${DESK_JIRA_CHECK_CARRIES:-}" ]] || jq -c '[to_entries[] | select(.value | . == null or . == "" or . == [] or . == {} | not) | .key]' <<<"$extra" > "$DESK_JIRA_CHECK_CARRIES"
       echo "ok: $type \"$summary\" passes every check (nothing sent)"; exit 0
     fi
     payload=$(jq -n \

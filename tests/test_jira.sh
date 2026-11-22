@@ -915,6 +915,9 @@ n0=$(bcreates)
 out=$(cd "$FD" && JIRA_SITE="http://127.0.0.1:$BTPORT" "$J" create-batch short.tsv 2>&1); rc=$?
 check "a create-batch row taking a field its parent row will not carry is refused before any row is sent" '[ $rc -ne 0 ] && [ "$(bcreates)" -eq "$n0" ] &&
   printf "%s\n" "$out" | grep -q "its parent row 1 will have no customfield_10211 to give it"'
+printf 'Epic\tthe epic\tclean.md\tcustomfield_10208=M\tcustomfield_10211=null\nTask\ta follow-up\tclean.md\tcustomfield_10208=S\tparent=@1\n' > "$FD/blank.tsv"
+out=$(cd "$FD" && JIRA_SITE="http://127.0.0.1:$BTPORT" "$J" create-batch blank.tsv 2>&1); rc=$?
+check "and so is one whose parent row sends the field empty" '[ $rc -ne 0 ] && [ "$(bcreates)" -eq "$n0" ] && printf "%s\n" "$out" | grep -q "its parent row 1 will have no customfield_10211"'
 
 
 # AC7: the skill tells Claude to file an epic's children with create-batch, and shows no helper.
