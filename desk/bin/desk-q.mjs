@@ -2753,7 +2753,8 @@ function runsOnOf(claude) {
 
 // Home's table, widest first. With a `width` it sheds what it can until a row fits: the "ready with
 // no free slot" count moves into the notes, LAST PASS and ALL DONE BY narrow to their longest cells,
-// then DONE goes, then MERGING, whose counts move into the notes, then RUNS ON (`runsW` wide, or none).
+// then DONE goes, then MERGING, whose counts move into the notes, then RUNS ON (`runsW` wide, or none),
+// then WORKERS reads "8/12 cap 12". A row still too wide is cut at a whole cell (cutCells).
 // DONE counts merged tickets only. NEEDS YOU is needsCount's, the count /desk-needs-you lists, with any
 // put off after it, and widens to fit.
 const NUM_COLS = [['RUN', 'running', 4], ['READY', 'ready', 7], ['MERGING', 'merging', 9], ['WAIT', 'waiting', 6], ['NEEDS YOU', 'needs', 11], ['DONE', 'done', 6]];
@@ -2762,15 +2763,31 @@ function homeLayout(list, w, width, now, checkin, needs, runsW = null) {
   const ok = list.filter((r) => !r.error);
   const needsW = Math.max(11, ...ok.map((r) => needsCell(needs.get(r)).length + 2));
   const numCols = NUM_COLS.map((c) => (c[1] === 'needs' ? [c[0], c[1], needsW] : c));
-  const workers = (r, slot) => `  ${r.workers == null ? '—' : `${workersRunning(r)} of ${r.workers}`} · cap ${r.cap}${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}${slot && triagingText(r) ? ` · ${triagingText(r)}` : ''}`;
+  const workers = (r, slot, compact) => (compact ? `  ${r.workers == null ? '—' : `${workersRunning(r)}/${r.workers}`} cap ${r.cap}`
+    : `  ${r.workers == null ? '—' : `${workersRunning(r)} of ${r.workers}`} · cap ${r.cap}${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}${slot && triagingText(r) ? ` · ${triagingText(r)}` : ''}`);
   const lastFit = Math.max(24, ...ok.map((r) => lastPass(r, now)[0].length + 2)), qdFit = Math.max(12, ...ok.map((r) => queueDone(r, now, checkin).length));
   const wide = { lastW: LAST_W, qdW: QD_W, drop: [], runsW }, fit = { lastW: lastFit, qdW: qdFit, slot: false, runsW };
   const steps = [{ ...wide, slot: true }, { ...wide, slot: false }, { ...fit, drop: [] }, { ...fit, drop: ['DONE'] }, { ...fit, drop: ['DONE', 'MERGING'] },
     ...(runsW ? [{ ...fit, drop: ['DONE', 'MERGING'], runsW: null }] : [])];
+  steps.push({ ...steps.at(-1), compact: true });
   const span = (l) => 2 + w + (l.runsW ?? 0) + l.lastW + numCols.filter(([h]) => !l.drop.includes(h)).reduce((a, c) => a + c[2], 0) + 2 + l.qdW;
-  const fits = (l) => span(l) + Math.max(9, ...ok.map((r) => workers(r, l.slot).length)) <= width;
+  const fits = (l) => span(l) + Math.max(9, ...ok.map((r) => workers(r, l.slot, l.compact).length)) <= width;
   const l = width == null ? steps[0] : steps.find(fits) ?? steps.at(-1);
-  return { ...l, cols: numCols.filter(([h]) => !l.drop.includes(h)), workers: (r) => workers(r, l.slot) };
+  return { ...l, cols: numCols.filter(([h]) => !l.drop.includes(h)), workers: (r) => workers(r, l.slot, l.compact) };
+}
+
+// Cells cut to `width` at the last whole cell that leaves room for " …", so no cell shows in part.
+function cutCells(cells, width) {
+  if (width == null || cells.reduce((a, [s]) => a + s.length, 0) <= width) return cells;
+  const out = [];
+  let len = 0;
+  for (const [s, k] of cells) {
+    if (len + s.trimEnd().length + 2 > width) break;
+    out.push([s, k]);
+    len += s.length;
+  }
+  if (out.length) out.at(-1)[0] = out.at(-1)[0].trimEnd();
+  return [...out, [' …', null]];
 }
 
 function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false, width = null, badge = '', pinUsage = false, costs, cache } = {}) {
@@ -2792,7 +2809,8 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   const head = [
     ...overviewHead(repos, shown, { now, solid: interactive && !process.env.NO_COLOR, avail, cap, gate, perWorker, pinUsage, levers: leversLine(pageState({ now }), now), count: needOf }),
     '',
-    bold(`  ${pad('REPO', w)}${lay.runsW ? pad('RUNS ON', lay.runsW) : ''}${pad('LAST PASS', lay.lastW)}${lay.cols.map(([h, , cw]) => rpad(h, cw)).join('')}  ${pad('ALL DONE BY', lay.qdW)}  WORKERS`),
+    bold(cutCells([`  ${pad('REPO', w)}`, lay.runsW ? pad('RUNS ON', lay.runsW) : '', pad('LAST PASS', lay.lastW), ...lay.cols.map(([h, , cw]) => rpad(h, cw)), `  ${pad('ALL DONE BY', lay.qdW)}`, '  WORKERS']
+      .map((s) => [s, null]), width).map(([s]) => s).join('')),
   ];
   const rows = [], foot = [];
   const row = (r, line) => rows.push({ id: r.id, line, open: { kind: 'repo', slug: r.id } });
@@ -2805,8 +2823,8 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
       const c = k === 'done' ? r.done : count(r, k); return [rpad(c, cw), c ? (k === 'done' ? null : STATE_SGR[k]) : DIM];
     };
     const qd = queueDone(r, now, checkin);
-    rows.push(segRow(r.id, [[`  ${pad(r.name, w)}`, null], runs(r), [pad(last, lay.lastW), lastSgr], ...lay.cols.map(n),
-      ['  ', null], [pad(qd, lay.qdW), ['passes stopped', 'no history'].includes(qd) ? DIM : null], [lay.workers(r), null]], { kind: 'repo', slug: r.id }));
+    rows.push(segRow(r.id, cutCells([[`  ${pad(r.name, w)}`, null], runs(r), [pad(last, lay.lastW), lastSgr], ...lay.cols.map(n),
+      ['  ', null], [pad(qd, lay.qdW), ['passes stopped', 'no history'].includes(qd) ? DIM : null], [lay.workers(r), null]], width), { kind: 'repo', slug: r.id }));
   }
   if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${runs(r)[0]}${pad('no batch', lay.lastW + lay.cols.reduce((a, c) => a + c[2], 0) + 2 + lay.qdW)}  cap ${r.cap}`);
   if (!list.length && !(all && none.length)) foot.push('  No batch is live, and no quiet batch needs you.');
