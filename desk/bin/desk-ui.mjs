@@ -340,8 +340,9 @@ async function serve() {
   const server = makeServer({ p });
   server.on('error', (e) => { console.error(e.code === 'EADDRINUSE' ? `desk-ui: port ${p} on ${HOST} is in use by another process; not serving.` : `desk-ui: ${e.message}`); process.exit(3); });
   server.listen(p, HOST, () => console.log(`${new Date().toISOString()} desk-ui ${version()} listening on http://${HOST}:${p}`));
-  // Open change streams never end by themselves, so they are closed rather than waited for.
-  const stop = () => { server.feed.stop(); server.close(() => process.exit(0)); server.closeAllConnections(); };
+  // Open change streams never end by themselves, so they are ended (each closes its connection), while
+  // a write in flight is let finish, so its command's result is answered and audited.
+  const stop = () => { server.feed.stop(); server.close(() => process.exit(0)); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
 }

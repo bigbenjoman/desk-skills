@@ -213,7 +213,7 @@ export function makeFeed({ build = readModel, stale = livenessMoved, now = Date.
     if (!m) return false;
     const after = since(req, query);
     const floor = held.length ? held[0].id - 1 : rev;
-    res.writeHead(200, { ...headers, 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+    res.writeHead(200, { ...headers, 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no', Connection: 'close' });
     res.flushHeaders?.();
     const c = { res, ping: null };
     clients.add(c);
