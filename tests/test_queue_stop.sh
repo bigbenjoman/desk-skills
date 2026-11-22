@@ -56,6 +56,7 @@ sha=$(git -C "$T/wt/S-1" rev-parse HEAD)
 check "AC1: its worker's processes end, its child too"                   '[ $rc -eq 0 ] && gone "$WPID" && gone "$WCHILD"'
 check "AC1: the changes are committed on its branch"                      '[ "$(git -C "$T/wt/S-1" rev-parse --abbrev-ref HEAD)" = fix/S-1 ] && [ -z "$(git -C "$T/wt/S-1" status --porcelain)" ] && git -C "$T/wt/S-1" show --stat HEAD | grep -q widget.txt'
 check "AC1: the ticket is held, behind no blocker, not failed"            '[ "$(f S-1 state)" = "\"parked\"" ] && [[ "$(f S-1 park.question)" == "\"held by orchestrator: stopped by queue.mjs stop"* ]] && [ "$(f S-1 held_by)" = null ]'
+check "DS-895 AC2: the hold records its park kind, stopped"                '[ "$(f S-1 park.kind)" = "\"stopped\"" ]'
 check "AC1: its session is cleared and its stage kept for the next worker" '[ "$(f S-1 session_id)" = null ] && [ "$(f S-1 last_round.stage)" = "\"6/9\"" ]'
 check "AC8: the output names the ticket, the commit and the hold"         '[[ "$out" == *"S-1 stopped"* ]] && [[ "$out" == *"committed as ${sha:0:12} on fix/S-1"* ]] && [[ "$out" == *"S-1 is held"* ]]'
 

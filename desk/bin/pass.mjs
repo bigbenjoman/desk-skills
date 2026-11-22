@@ -314,6 +314,8 @@ const qWrite = (args, refused = 'not recorded') => {
   return '';
 };
 const q = (...args) => qWrite(args);
+// A park action's kind (batch-state.mjs PARK_KINDS) as queue.mjs park takes it, where the action names one.
+const kindArgs = (a) => (a.kind ? ['--kind', a.kind] : []);
 // Writes every change applied since the last write, in one locked write. A change another writer
 // made to the same field since is kept, and the report names the ticket and field; when the lock is
 // not taken in time, nothing is written and the report names each change.
@@ -1604,7 +1606,7 @@ const holdsSnapshot = (more = {}) => {
 const HOLD_HANDLERS = {
   ...PHASE_HANDLERS,
   front: (a) => { q('front', a.key); },
-  park: (a) => { q('park', a.key, a.question); },
+  park: (a) => { q('park', a.key, ...kindArgs(a), a.question); },
   'date-line': (a) => { dateLines.push(a.line); },
 };
 const personLabels = () => ({ stepLabels: E.personStepLabels(), inputLabels: E.personInputLabels() });
@@ -1713,9 +1715,9 @@ const linkLines = [];
         return;
       }
       const question = `${HELD_PREFIX}: blocked by ${all.join(', ')} — starts once their PRs merge`;
-      q('park', key, question);
+      q('park', key, '--kind', 'hold', question);
       q('set', key, `held_by=${all.join('|')}`, ...outsideSet, ...(dateHeld(t) ? ['held_label=null'] : []));
-      Object.assign(t, { state: 'parked', park: { question }, held_by: all.join('|') });
+      Object.assign(t, { state: 'parked', park: { question, kind: 'hold' }, held_by: all.join('|') });
       linkLines.push(`blocker link: ${key}: newly linked as blocked by ${holds.join(', ')}${inNoBatch}: HELD behind ${all.join(', ')}`);
     };
     for (const { key } of due) {

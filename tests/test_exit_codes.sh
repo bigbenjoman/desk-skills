@@ -133,6 +133,20 @@ q add T-32; q set T-32 state=triaged lane=A branch=fix/T-32 open_questions=0
 ans T-32 "a late note"
 check "DS-846 AC5: with none open, an answer leaves the count at zero" '[ $rc -eq 0 ] && [ "$(oq T-32 open_questions)" = 0 ]'
 q drop T-32
+# DS-895 AC6: with the ledger lever on, an answer to the second of three triage questions closes that
+# one alone: an answered event naming it, and the other two stay open.
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n'; } > "$T/config-ledger.md"
+printf '{"ticket": "T-33", "type": "Bug", "lane": "A", "size": "S", "branch": "fix/T-33", "files_in_scope": [], "unknowns": ["which colour?", "which size?", "which font?"], "links": "n/a"}\n' > "$T/state/triage/T-33.json"
+q add T-33; q set T-33 state=triaged lane=A branch=fix/T-33 open_questions=3
+DESK_CONFIG="$T/config-ledger.md" ans T-33 --question 2 "large"
+answered(){ jq -rs '[.[] | select(.key == "T-33" and .type == "answered") | .data.qid] | join("|")' "$T/ledger/events.jsonl"; }
+check "DS-895 AC6: the second question is closed, by an answered event naming it" '[ $rc -eq 0 ] && [ "$(answered)" = "which size?" ] && echo "$out" | grep -q "^T-33: closed triage question 2: which size?"'
+check "DS-895 AC6: and the other two stay open" '[ "$(oq T-33 open_questions)" = 2 ] && [ "$(node "$B/queue.mjs" get T-33 | jq -c .answered_questions)" = "[\"which size?\"]" ]'
+DESK_CONFIG="$T/config-ledger.md" ans T-33 --question 2 "small"
+check "DS-895 AC6: a question already answered is refused, nothing recorded" '[ $rc -eq 11 ] && echo "$out" | grep -q "already answered" && [ "$(oq T-33 open_questions)" = 2 ] && [ "$(answered)" = "which size?" ]'
+DESK_CONFIG="$T/config-ledger.md" ans T-33 "red"
+check "DS-895 AC6: an answer naming no question closes the first still open" '[ "$(answered)" = "which size?|which colour?" ] && [ "$(oq T-33 open_questions)" = 1 ]'
+q drop T-33
 q set T-1 "idle_passes=$t1_idle"
 
 # A worker that exits with no marker and no PR fails in this pass, while T-1 still runs.

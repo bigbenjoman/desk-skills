@@ -238,6 +238,24 @@ const env = (seq, e, atTime = `2026-11-20T10:00:${String(seq).padStart(2, '0')}Z
   t('AC10 key order inside a value is no difference', L.diffQueues({ tickets: { A: { r: { x: 1, y: 2 } } } }, { tickets: { A: { r: { y: 2, x: 1 } } } }).length, 0);
 }
 
+// DS-895: a parked event carries the whole park, its kind and the write it awaits approval of among it;
+// an answered event names the question it closes, and the rest stay open.
+{
+  const approve = { kind: 'jira-comment', target: 'DS-1', body: 'Root cause: x.\nFix: y.' };
+  const park = { kind: 'person-step', question: 'awaiting approval', approve, since: 'z', class: 'unclassified', inputs: { pr: 4 } };
+  const s = L.reduce([seed('DS-1', { key: 'DS-1', state: 'running' }, 1), env(2, ev('parked', { ...park, deadline: null }))]);
+  t('DS-895 a parked event\'s replay is the park it carries, kind and approval verbatim', j(L.project(s, 'B1').tickets['DS-1'].park), j(park));
+  t('DS-895 a parked event with an unknown kind is refused', L.invalid(ev('parked', { ...VALID.parked, kind: 'held' })), 'parked: field "kind" is not a valid kind');
+  const qs = ['which colour?', 'which size?', 'which font?'];
+  const a = L.reduce([seed('DS-1', { key: 'DS-1', state: 'triaged', open_questions: 3 }, 1), env(2, ev('answered', { qid: qs[1] }))]);
+  t('DS-895 an answered event closes the question it names', j(a.tickets['DS-1'].answered), j([qs[1]]));
+  t('DS-895 and the rebuilt queue lists it answered', j(L.project(a, 'B1').tickets['DS-1'].answered_questions), j([qs[1]]));
+  const b = L.reduce([env(3, ev('answered', { qid: qs[0] }))], a);
+  t('DS-895 a second answer adds its own question, after the first', j(L.project(b, 'B1').tickets['DS-1'].answered_questions), j([qs[1], qs[0]]));
+  const c = L.reduce([env(4, ev('legacy_set', { fields: { answered_questions: null } }))], b);
+  t('DS-895 a field write that clears the list leaves none answered', j([c.tickets['DS-1'].answered, L.project(c, 'B1').tickets['DS-1'].answered_questions]), j([[], null]));
+}
+
 // The lock: an append waits for the ledger lock at most its wait, then throws and writes nothing.
 {
   const dir = repo();
