@@ -218,6 +218,19 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   };
   const fixes = (prs, o) => drive(snap(prs.map((e) => [e.t, e.s]), { gate: G, outage: o.held.held.size ? o.held.held : null, outageRerun: o.held.rerun }), { reads: () => reads({ ctx: { required: G.required } }) });
 
+  // #1250: 14 PRs red only on a review gate waiting for its reviewer are no outage: no hold, no OUTAGE line.
+  const GATED = { required: ['tests', '🔐 Review gate', 'desk-review verdict', 'Deploy preview'], advisory: [] };
+  const STATE = [{ name: '🔐 Review gate', kind: 'external', login: 'agent-pullbot' }];
+  const waits = (n) => ({ ...red('🔐 Review gate', String(1200 + n)), errors: [`No PullBot review from agent-pullbot at ${'a'.repeat(9)} yet`] });
+  const gated = Array.from({ length: 14 }, (_, i) => entry(800 + i, [ok('tests'), waits(800 + i)]));
+  const quiet = outage(gated, { gate: GATED, stateChecks: STATE });
+  t('#1250 14 PRs red only on a review gate waiting for its reviewer raise no outage', `${quiet.held?.held?.size ?? 0} ${j(quiet.hold ?? {})}`, '0 {}');
+  t('#1250 and the pass says no OUTAGE line', lines(quiet.as, 'report').filter((l) => /OUTAGE/.test(l)).length, 0);
+  const verdictWaits = Array.from({ length: 3 }, (_, i) => entry(830 + i, [ok('tests'), { ...red('desk-review verdict', String(1300 + i)), errors: ['No desk-review verdict on this PR. Run /desk-review and post it.'] }]));
+  t('#1250 nor does desk\'s own verdict check red on many PRs', outage(verdictWaits, { gate: GATED, stateChecks: STATE }).held?.held?.size ?? 0, 0);
+  const shared = [...gated.slice(0, 3).map((e, i) => entry(800 + i, [ok('tests'), waits(800 + i), deploy(800 + i)]))];
+  t('#1250 the same deploy error on a check that is no gate still raises the outage', j(outage(shared, { gate: GATED, stateChecks: STATE }).held?.held?.get('Deploy preview')?.prs), j([800, 801, 802]));
+
   // AC1: the same check red on three PRs with one platform line: no fix try for any.
   const first = outage(three);
   t('AC1 the check is held for the batch, with its three PRs', j(first.held.held.get('Deploy preview')?.prs), j([701, 702, 703]));

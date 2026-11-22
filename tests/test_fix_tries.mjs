@@ -1,7 +1,7 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 // layer: L1
 import { readFileSync } from 'node:fs';
-import { fixCall, stuckLessHeld, outageChecks, outageLine, outageText, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
@@ -1153,6 +1153,12 @@ t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as 
   t('outage: a platform status red on 3 open PRs is named with them, one green is not', JSON.stringify([...many]), '[["Vercel Preview",{"line":"","text":"","prs":[701,702,703]}]]');
   t('outage: on one PR there is none', outageChecks([preview(701)], lists).size, 0);
   t('outage: the threshold is 2 PRs', OUTAGE_PRS, 2);
+  // #1250: a review or approval gate is never an outage, however many PRs it holds red.
+  const gates = reviewGates([{ name: '🔐 Review gate', kind: 'external', login: 'agent-pullbot' }, { name: 'Protected', kind: 'approval' }, { name: 'Lint', kind: null }]);
+  t('#1250 the review gates are the external, approval and verdict state checks and desk\'s verdict job', [...gates].join('|'), 'desk-review verdict|🔐 Review gate|Protected');
+  const waiting = (n) => ({ s: { pr: n, checks: [ok('tests'), { ...red('🔐 Review gate', String(n)), errors: ['No PullBot review from agent-pullbot at abc yet'] }] } });
+  t('#1250 a review gate red on many PRs is no outage', outageChecks([701, 702, 703].map(waiting), { required: ['tests', '🔐 Review gate'], advisory: [], gates }).size, 0);
+  t('#1250 without the gates named it would read as one', outageChecks([701, 702, 703].map(waiting), { required: ['tests', '🔐 Review gate'], advisory: [] }).size, 1);
   // A workflow job counts by its error line: the same platform line on each PR is one, build output is not.
   const job = (n, line, o = {}) => ({ s: { pr: n, checks: [ok('tests'), { ...red('Deploy preview', String(900 + n)), errors: [line], ...o }] } });
   const blocked = (n) => `Error: The project is blocked by the platform (request ${n}a7f3c9e1d2), please retry later`;
