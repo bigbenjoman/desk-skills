@@ -46,9 +46,10 @@ test('AC6 a newest completed run that passed is green, whatever ran before it', 
   assert.deepEqual(s, { state: 'green' });
 });
 
-test('AC7 a read that fails is unknown, never green', () => {
-  assert.equal(baseState({ required: ['tests'], branch: 'main', read: reader({}, { tip: null }) }).state, 'unknown');
-  assert.equal(baseState({ required: ['tests'], branch: 'main', read: reader({ [sha('a')]: { runs: [] } }, { failRuns: sha('a') }) }).state, 'unknown');
+test('DS-969 AC1 a read that fails is unread, never green nor unknown', () => {
+  assert.equal(baseState({ required: ['tests'], branch: 'main', read: reader({}, { tip: null }) }).state, 'unread');
+  assert.equal(baseState({ required: ['tests'], branch: 'main', read: reader({ [sha('a')]: { runs: [] } }, { failRuns: sha('a') }) }).state, 'unread');
+  assert.equal(baseState({ required: ['tests'], branch: 'main', read: reader({ [sha('a')]: { parent: sha('b'), runs: [] } }) }).state, 'unread');
 });
 
 test('AC7 a check with no completed run in the walk is unknown, and the walk stops at WALK commits', () => {

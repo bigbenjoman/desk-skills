@@ -97,6 +97,8 @@ for c in gh claude codex desk-jira; do
 case "\$1" in
   agents) echo '[{"sessionId": "live-1"}]'; exit 0 ;;
   auth|login|whoami) echo "\$@" >> "$T/calls.$c" ;;
+  # The rate_limit endpoint answers while the limit is used up: the core reset, as epoch seconds.
+  api) case "\$*" in *rate_limit*) echo 1795000000 ;; esac; exit 0 ;;
   # A real call: refused with the HTTP status in \$T/mode.api (the default login) or in the login
   # folder's \`refused\` file, else answered.
   -p) echo "\${CLAUDE_CONFIG_DIR:-default}" >> "$T/calls.$c-p"
@@ -111,6 +113,8 @@ esac
 [ -n "\${CLAUDE_CONFIG_DIR:-}" ] && [ -f "\$CLAUDE_CONFIG_DIR/signed-out" ] && { echo "Not logged in" >&2; exit 1; }
 case "\$(cat "$T/mode.$c" 2>/dev/null || echo ok)" in
   out) echo "You are not logged in to $c" >&2; exit 1 ;;
+  # The last line gh auth status printed on 2026-11-22 with the token's API limit used up, as health.json kept it.
+  limit) echo "- Error: HTTP 403: API rate limit exceeded for user ID 111733264. If you reach out to GitHub Support for help, please include the request ID FACA:317F01:1FC663D" >&2; exit 1 ;;
   net) printf '%s\n' "error connecting to api.example.com: dial tcp: lookup api.example.com: no such host" "- Active account: true" >&2; exit 1 ;;
   unreach) echo "desk-jira: could not reach https://acme.atlassian.net (see the curl error above)" >&2; exit 1 ;;
   hang) sleep 5 ;;
@@ -176,6 +180,20 @@ check "AC5 nothing is pushed once it recovers"              '[ -z "$(pushes)" ]'
 # ---- AC6: free disk under the floor ------------------------------------------------------------
 # Finished tickets free their slots, so only the health checks can hold the next one.
 q set H-1 state=done; q set H-2 state=done
+
+# ---- DS-969: gh's API limit used up is not a sign-out --------------------------------------------
+q add H-L; q set H-L state=triaged branch=fix/H-L
+mode gh limit; : > "$T/calls.gh"
+pj
+check "DS-969 AC3 a used-up API limit holds no spawn"        '[ "$(field H-L state)" = running ] && grep -q "health: 1 check(s) failing — gh — not holding spawns" <<< "$out"'
+check "DS-969 AC3 it names the API limit and its reset"      'grep -qF "GitHub CLI: the GitHub API limit is used up, not a sign-in; it resets at 2026-11-18T11:06:40.000Z; not holding spawns" <<< "$out"'
+check "DS-969 AC3 no sign-in stall or push, so nothing is asked" '! grep -q "fix: gh auth login" <<< "$out" && ! grep -q "GitHub CLI (gh auth status) failed" <<< "$out" && [ -z "$(pushes)" ] && [ "$(calls gh)" = 1 ]'
+pj
+check "DS-969 AC3 a second run is still not told as a sign-out" '! grep -q "fix: gh auth login" <<< "$out" && [ -z "$(pushes)" ]'
+mode gh ok
+pj
+check "DS-969 AC4 once the limit resets, gh passes again"     'grep -q "recovered: gh" <<< "$out"'
+q set H-L state=done
 q add H-3; q set H-3 state=triaged branch=fix/H-3
 DESK_FREE_DISK_GB=12 pj
 check "AC6 low disk holds spawns"                           '[ "$(field H-3 state)" = triaged ]'

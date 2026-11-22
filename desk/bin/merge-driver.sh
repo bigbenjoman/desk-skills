@@ -334,7 +334,7 @@ log(){
     *$'\n'*) ;;
     '#'[0-9]*' '*) key="${msg%% *}"; key="${key#\#}" ;;
     'epic PR #'[0-9]*' '*) key="${msg#epic PR \#}"; key="${key%% *}" ;;
-    'draft (still reviewing): '*|'no ready batch PRs'*|'HOLDING on red '*|'base state unknown on '*) key=loop ;;
+    'draft (still reviewing): '*|'no ready batch PRs'*|'HOLDING on red '*|'base state unknown on '*|'base unreadable on '*) key=loop ;;
   esac
   case "$key" in loop) ;; *[!0-9]*) key="" ;; esac
   if [ -n "$key" ] && [ -n "$SAID" ] && said "$key" "$msg"; then return 0; fi
@@ -1292,19 +1292,25 @@ while true; do
   [ -n "$epic" ] && ready="${ready:+$ready$'\n'}$epic"
 
   # The base is read every loop, PRs ready or not, so the record the pass reports from is current: a
-  # red base takes no merge but its repair ticket's PR, which may be none this loop. A base whose runs
-  # cannot be read merges as before.
-  fixkey=""
+  # red base takes no merge but its repair ticket's PR, which may be none this loop. A base GitHub could
+  # not be asked about (an API error or limit) takes no merge until a later loop reads it; one whose
+  # reads all answered but with no completed run of a required check merges as before.
+  fixkey=""; unread=""
   if base_state=$(node "$DESK_RUN_BIN/base-red.mjs" check --branch "$BASE_BRANCH" --repo "$REPO" --state "$DESK_STATE" --by "$MERGER" 2>/dev/null </dev/null); then
     case "$(printf '%s' "$base_state" | jq -r '.state // empty' 2>/dev/null)" in
       red)
         log "$(printf '%s' "$base_state" | jq -r .line)"
         fixkey=$(printf '%s' "$base_state" | jq -r .repair_key) ;;
       green|none) ;;
-      *) log "base state unknown on $BASE_BRANCH ($(printf '%s' "$base_state" | jq -r '.why // "unread"' 2>/dev/null)) — merging as before" ;;
+      unknown) log "base state unknown on $BASE_BRANCH ($(printf '%s' "$base_state" | jq -r '.why // "unread"' 2>/dev/null)) — merging as before" ;;
+      *)
+        unread=$(printf '%s' "$base_state" | jq -r '.why // empty' 2>/dev/null)
+        log "base unreadable on $BASE_BRANCH (${unread:-base-red.mjs gave no state}) — holding merges until it can be read"
+        unread=1 ;;
     esac
   else
-    log "base state unknown on $BASE_BRANCH (base-red.mjs could not read it) — merging as before"
+    unread=1
+    log "base unreadable on $BASE_BRANCH (base-red.mjs could not read it) — holding merges until it can be read"
   fi
 
   if [ -z "$ready" ]; then
@@ -1316,6 +1322,7 @@ while true; do
     pause 60; continue
   fi
 
+  if [ -n "$unread" ]; then pause 120; continue; fi
   if [ -n "$fixkey" ]; then
     ready=$(printf '%s\n' "$ready" | awk -F'\t' -v k="$fixkey" '$2 == k')
     if [ -z "$ready" ]; then pause 120; continue; fi

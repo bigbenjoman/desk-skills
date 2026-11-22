@@ -283,9 +283,20 @@ jq --arg s "$SHA4" '."853" = { head: "fix/T-853", base: "main", sha: $s, state: 
 touch "$T/base.broken"
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-853" 2>&1); first="$out"
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-853" 2>&1)
-check "DS-850 AC7: with main's check runs unread, the driver merges as today and logs the base state unknown" \
-  '[ "$(merged)" = "852 851 853" ] && echo "$first" | grep -qF "base state unknown on main (the tip of main could not be read) — merging as before"'
-rm -f "$T/base.broken" "$T/base.json"
+check "DS-969 AC1: with main unreadable (an API error), the driver merges nothing and says it holds" \
+  '[ "$(merged)" = "852 851" ] && echo "$first" | grep -qF "base unreadable on main (the tip of main could not be read) — holding merges until it can be read" && ! echo "$first$out" | grep -q "merging as before"'
+rm -f "$T/base.broken"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-853" 2>&1)
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-853" 2>&1)
+check "DS-969 AC4: once main can be read again, the held PR merges with no person step" '[ "$(merged)" = "852 851 853" ]'
+# Every read answers, but no completed run of the required check is on main's newest commits.
+jq --arg s "$SHA5" '."855" = { head: "fix/T-855", base: "main", sha: $s, state: "open", draft: false, checks: [["test", "SUCCESS"]] }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+printf '{"tip":"%s","commits":{"%s":{"parent":null,"runs":[["test","in_progress",null]]}}}\n' "$R1" "$R1" > "$T/base.json"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-855" 2>&1); first="$out"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-855" 2>&1)
+check "DS-969 AC2: with every read answered but no completed run on main, the driver merges as today" \
+  '[ "$(merged)" = "852 851 853 855" ] && echo "$first" | grep -qF "base state unknown on main (no completed run of test on the newest 5 commits of main) — merging as before"'
+rm -f "$T/base.json"
 # With no PR ready (only drafts), the driver still reads the base every loop, so the record the pass reports
 # from is written when main goes red and goes once it is green.
 printf '{"854": { "head": "fix/T-854", "base": "main", "sha": "%s", "state": "open", "draft": true, "checks": [["test", "FAILURE"]] }}\n' "$SHA4" > "$T/prs.json"

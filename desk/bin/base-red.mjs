@@ -5,9 +5,9 @@
 // starts the repair ticket where config allows (pass.mjs).
 //
 //   base-red.mjs check --branch <name> [--repo <owner/name>] [--state <dir>] [--by <merger>]
-//       one JSON line, { state: red | green | unknown | none, checks?, why?, line? }, exit 0. It keeps
-//       <state>/base-red.json while the base is red, removes it once it is green or nothing is required,
-//       and leaves it as it was when the base could not be read.
+//       one JSON line, { state: red | green | unknown | unread | none, checks?, why?, line? }, exit 0. It
+//       keeps <state>/base-red.json while the base is red, removes it once it is green or nothing is
+//       required, and leaves it as it was when the base could not be read or stays unknown.
 //
 // The record, <state>/base-red.json:
 //   { branch, sha, checks: [{ name, sha, url }], merges: [{ pr, ticket, sha, at }], repair_key, since, at }
@@ -48,18 +48,19 @@ export function liveBaseRed(state, { branch = null, now = Date.now() } = {}) {
 // the branch's first-parent line from its tip, at most WALK commits. `read` gives
 //   tip(branch) / commit(sha) -> { sha, parent } | null, runs(sha) -> [{ name, status, conclusion, url }] | null
 // null meaning the read failed. -> { state: 'none' } with nothing required, { state: 'red', sha, checks }
-// when any check's newest completed run failed (whatever a later read gives), { state: 'unknown', why } when a read failed or a check
-// has no completed run in the walk, else { state: 'green' }.
+// when any check's newest completed run failed (whatever a later read gives), { state: 'unread', why } when
+// a read failed (an API error or limit: the driver holds its merges), { state: 'unknown', why } when every
+// read answered but a check has no completed run in the walk, else { state: 'green' }.
 export function baseState({ required, branch, read }) {
   if (!required.length) return { state: 'none' };
-  const unknown = (why) => ({ state: 'unknown', why });
+  const unread = (why) => ({ state: 'unread', why });
   let c = read.tip(branch);
-  if (!c) return unknown(`the tip of ${branch} could not be read`);
+  if (!c) return unread(`the tip of ${branch} could not be read`);
   const tip = c.sha, left = new Set(required), red = [];
   for (let i = 0; i < WALK && c && left.size; i++) {
     const runs = read.runs(c.sha);
     // A read that fails after a check was found red leaves the base red: that failure stands.
-    if (runs == null) { if (red.length) break; return unknown(`the check runs on ${branch} at ${short(c.sha)} could not be read`); }
+    if (runs == null) { if (red.length) break; return unread(`the check runs on ${branch} at ${short(c.sha)} could not be read`); }
     for (const name of [...left]) {
       const mine = runs.filter((r) => r?.name === name);
       const st = runsState(mine);
@@ -69,10 +70,10 @@ export function baseState({ required, branch, read }) {
     }
     if (!left.size || !c.parent || i === WALK - 1) break;
     c = read.commit(c.parent);
-    if (!c) { if (red.length) break; return unknown(`a commit on ${branch} could not be read`); }
+    if (!c) { if (red.length) break; return unread(`a commit on ${branch} could not be read`); }
   }
   if (red.length) return { state: 'red', sha: tip, checks: red };
-  if (left.size) return unknown(`no completed run of ${[...left].join(', ')} on the newest ${WALK} commits of ${branch}`);
+  if (left.size) return { state: 'unknown', why: `no completed run of ${[...left].join(', ')} on the newest ${WALK} commits of ${branch}` };
   return { state: 'green' };
 }
 
@@ -174,7 +175,7 @@ if (isMain) {
     writeFileSync(path, `${JSON.stringify(rec, null, 2)}\n`);
     console.log(JSON.stringify({ ...s, repair_key: rec.repair_key, line: holdLine(rec) }));
   } else {
-    if (s.state !== 'unknown' && existsSync(path)) rmSync(path, { force: true });
+    if (s.state !== 'unknown' && s.state !== 'unread' && existsSync(path)) rmSync(path, { force: true });
     console.log(JSON.stringify(s));
   }
 }

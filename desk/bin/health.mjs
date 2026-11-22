@@ -42,7 +42,8 @@
 // counts. The results are kept in <state>/health.json and, while every check passes, reused for 15
 // minutes, so a pass every few minutes does not run them each time; a failing run is not reused.
 //
-// A pass holds every new spawn while a required check other than the browser fails (`holding`). A
+// A pass holds every new spawn while a required check other than the browser fails (`holding`), but
+// not for gh whose only failure is a used-up API limit, told in the health line with its reset time. A
 // remote check is told to the person (a stall line and a push) only once it has failed on two runs in
 // a row, as a blip clears by itself; the local ones (browser, disk, database) on the first. Every remote check failing together, with at
 // least one of them not reaching its host, is the network, one item (`health:<slug>:network`) with no
@@ -94,6 +95,16 @@ const HOLDS_NO_SPAWN = new Set(['browser']);
 // It is read over the whole output: a CLI often prints the connection error above a closing hint.
 const NETWORK = /timed? ?out|timeout|could not resolve|couldn't resolve|no such host|name resolution|getaddrinfo|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|network is unreachable|connection (refused|reset)|error connecting|failed to connect|unable to connect|could not connect|could not reach|internet connection|dial tcp|offline/i;
 const failureKind = (out) => (NETWORK.test(out ?? '') ? 'network' : 'auth');
+// What `gh auth status` says when the token is signed in but its API limit is used up ("HTTP 403: API
+// rate limit exceeded for user ID …"). That is no sign-out: it is told with its reset time and holds no spawn.
+const GH_LIMIT = /rate limit exceeded/i;
+// When the token's core API limit resets, as an ISO time, or null. The rate_limit endpoint answers
+// while the limit is used up.
+async function ghLimitReset(timeoutMs) {
+  const r = await runCommand(['gh', 'api', 'rate_limit', '--jq', '.resources.core.reset'], timeoutMs, undefined, true);
+  const at = Number(r.ok ? r.out : NaN);
+  return Number.isFinite(at) && at > 0 ? new Date(at * 1000).toISOString() : null;
+}
 
 export const healthFile = (state) => join(state, 'health.json');
 // One marker file per listed Claude login whose folder is missing, shared by every repo and batch on
@@ -191,7 +202,7 @@ function runCommand([cmd, ...args], timeoutMs, cmdEnv = undefined, keepOut = fal
     child.on('close', (code, signal) => {
       if (code === 0) finish(keepOut ? { ok: true, out: out.trim() } : { ok: true });
       const last = out.trim().split('\n').map((l) => l.trim()).filter(Boolean).at(-1);
-      finish({ ok: false, why: `${last ? `${last.slice(0, 160)}; ` : ''}exited ${code ?? signal}`, kind: failureKind(out) });
+      finish({ ok: false, why: `${last ? `${last.slice(0, 160)}; ` : ''}exited ${code ?? signal}`, kind: failureKind(out), ...(GH_LIMIT.test(out) ? { limited: true } : {}) });
     });
   });
 }
@@ -261,6 +272,8 @@ async function runCheck(id, env, timeoutMs, retryMs) {
     return r;
   }
   const r = await runCommand(byId[id].cmd, timeoutMs);
+  if (id === 'gh' && r.limited) { delete r.limited; return { ...r, kind: 'limit', reset: await ghLimitReset(timeoutMs) }; }
+  delete r.limited;
   if (r.ok || r.kind !== 'network') return r;
   await new Promise((res) => setTimeout(res, retryMs));
   return { ...(await runCommand(byId[id].cmd, timeoutMs)), retried: true };
@@ -409,7 +422,9 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
     : nextStreak({ streak: prev?.reviewer_streak ?? {} }, reviewerOut ? [{ key: 'reviewer', kind: reviewerOut.kind }] : []);
   const reviewerTold = !!reviewerOut && (reviewerOut.kind !== 'network' || reviewerStreak.reviewer?.n >= 2);
   const failing = wanted.filter((id) => !results[id].ok);
-  const holding = failing.filter((id) => !HOLDS_NO_SPAWN.has(id));
+  // A used-up GitHub API limit holds no spawn and is no sign-in item: it clears by itself at its reset.
+  const limited = failing.filter((id) => results[id].kind === 'limit');
+  const holding = failing.filter((id) => !HOLDS_NO_SPAWN.has(id) && !limited.includes(id));
   const remote = wanted.filter(isRemote);
   const network = remote.length > 1 && remote.every((id) => !results[id].ok) && remote.some((id) => results[id].kind === 'network');
   // The browser is told as the machine's one sign-in item for its login, below, not as this slot's.
@@ -451,6 +466,7 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   if (recovered.length) notes.push(`recovered: ${recovered.join(', ')}`);
   const rechecking = [...unconfirmed, ...(reviewerOut && !reviewerTold ? ['reviewer'] : [])];
   if (rechecking.length) notes.push(`rechecking before telling you: ${rechecking.join(', ')}`);
+  for (const id of limited) notes.push(`${byId[id].name}: the GitHub API limit is used up, not a sign-in${results[id].reset ? `; it resets at ${results[id].reset}` : ''}; not holding spawns`);
   if (reviewerTold) notes.push(`reviewer failing, holding review and fix tries on PRs red only on a verdict state check, not spawns`);
   if (browserOut) notes.push(`browser failing, not holding spawns: every repo's screenshot uploads with that login wait in the machine's upload queue${tellsBrowser ? '' : `, told once for the machine by ${browserSignins().find((s) => s.id === signinId(browserOut.file))?.slug ?? 'another slot'}'s pass`}`);
   // A repo with no Postgres container has no database to check, so it is not named as skipped.
