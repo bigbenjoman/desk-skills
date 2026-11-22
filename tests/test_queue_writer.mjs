@@ -225,6 +225,12 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   const idle = (t) => batchIdle({ tickets: { P: t } }, () => 'MERGED');
   t('DS-785 a batch whose merged ticket is owed its post-merge steps is not idle; once read, never merged, or requeued and parked (no pass reads it), it is',
     `${idle(owedTk({}))} ${idle(owedTk({ post_merge_read: 6 }))} ${idle(owedTk({ merged_at: null }))} ${idle(owedTk({ state: 'parked' }))}`, 'false true true true');
+  // DS-796: done on another repo's PR (needs-you's elsewhereDone): the pass keeps no state for this
+  // repo's PR of that number, so the ticket's own merged status settles it; an open one of its own does not.
+  const elsewhere = tk('P', { state: 'done', result: { pr: 7 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 7, state: 'MERGED', url: 'https://github.com/other/repo/pull/7' } });
+  const unread = (t) => batchIdle({ tickets: { P: t } }, () => null);
+  t('DS-796 a batch whose ticket was done on another repo\'s merged PR is idle with no state read for that number; one with its own PR open is not',
+    `${unread(elsewhere)} ${unread({ ...elsewhere, pr_status: { pr: 7, state: 'OPEN' } })}`, 'true false');
 }
 
 // A batch on a base, or an epic's, counts its finished children: it archives nothing.

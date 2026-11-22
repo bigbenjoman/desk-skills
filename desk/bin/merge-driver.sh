@@ -500,9 +500,10 @@ NODE
   # by this driver) has merged, whatever GitHub lists: `prs` sees only the newest 100 merged PRs, so a
   # blocker whose PR is older than that (a long-lived draft, rebased and merged today) was never found
   # and held its successors forever. Lines in the shape `prs` prints; the PR is "?" when none is recorded.
-  # merged_at keeps only a ticket's first merge, so a live ticket requeued after it (merged_pr, which a
-  # spawn keeps) or done again on a PR the queue reads open is not merged on it, nor on a listed older PR
-  # naming its key: only its current PR merging releases what waits on it (HOLD lines, the PR or "?").
+  # merged_at keeps only a ticket's first merge, so a live ticket requeued after it (back to triaged or
+  # running, or done again with merged_pr, which its spawn keeps) is not merged on it, nor on a listed
+  # older PR naming its key: only its current PR merging releases what waits on it (HOLD lines, the PR
+  # or "?"). A parked ticket, or a done one never respawned, keeps the merge it records.
   local merged known listed holds h
   known=$(node --input-type=module - "$DESK_QUEUE" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" <<'NODE'
 import { readFileSync } from 'node:fs';
@@ -512,10 +513,10 @@ const q = { tickets: {} };
 try { q.tickets = JSON.parse(readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
 const live = q.tickets;
 const through = (t) => t.state === 'done' && (t.result?.pr == null || prStatusOf(t)?.state === 'MERGED');
-const requeued = (t) => !through(t) && (mergedPrs(t).length > 0 || (t.state === 'done' && prStatusOf(t)?.state === 'OPEN'));
+const requeued = (t) => !through(t) && (['triaged', 'running'].includes(t.state) || (t.state === 'done' && mergedPrs(t).length > 0));
 // Done tickets whose PR merged move to the archive beside the queue (queue-store.mjs), live ones first.
 for (const [k, t] of Object.entries(everyTicket(attachArchive(q, process.argv[2])))) {
-  if (t && Object.hasOwn(live, k) && t.merged_at && requeued(t)) console.log(`HOLD\t${t.result?.pr ?? '?'}\t${k}`);
+  if (t && Object.hasOwn(live, k) && t.merged_at && requeued(t)) console.log(`HOLD\t${t.state === 'done' ? t.result?.pr ?? '?' : '?'}\t${k}`);
   else if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
 }
 NODE

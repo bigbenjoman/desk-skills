@@ -324,5 +324,18 @@ check "DS-796 a blocker never requeued still releases on its recorded merge" '[ 
 node --input-type=module -e "import { readFileSync, writeFileSync } from 'node:fs'; const f = process.argv[1]; const p = JSON.parse(readFileSync(f, 'utf8')); p['141'].state = 'merged'; writeFileSync(f, JSON.stringify(p))" "$T/prs.json"
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-41" 2>&1)
 check "DS-796 and its new PR merging releases them" '[ "$(qg T-42 .state)" = triaged ] && echo "$out" | grep -q "merged: T-41#141 -> RELEASED T-42"'
+# T-45 is requeued (back to triaged, no spawn yet), its first PR #145 merged and listed: what waits on it
+# waits for its new round. T-47, never requeued, was just merged by the driver: its status still reads
+# open until a pass reads it, and GitHub does not list it, but its recorded merge releases T-48.
+cat > "$T/prs.json" <<EOF
+{ "145": { "head": "fix/T-45", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] } }
+EOF
+q add T-45 Task A; q set T-45 state=done branch=fix/T-45 result.pr=145 'pr_status={"pr":145,"state":"MERGED"}'; q merged T-45 2026-11-12T00:00:00.000Z; q set T-45 state=triaged
+q add T-47 Task A; q set T-47 state=done branch=fix/T-47 result.pr=147 'pr_status={"pr":147,"state":"OPEN"}'; q merged T-47 2026-11-12T00:00:00.000Z
+q add T-46 Task A; q set T-46 state=triaged branch=fix/T-46; q hold T-46 T-45
+q add T-48 Task A; q set T-48 state=triaged branch=fix/T-48; q hold T-48 T-47
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-45" 2>&1)
+check "DS-796 a blocker requeued before its new worker starts does not release on its first merge" '[ "$(qg T-46 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-46"'
+check "DS-796 a blocker the driver just merged releases on that merge before a pass reads its status" '[ "$(qg T-48 .state)" = triaged ] && echo "$out" | grep -q "merged: T-47#147 -> RELEASED T-48"'
 
 finish loop

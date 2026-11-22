@@ -700,12 +700,13 @@ export function batchSettled(q, prState) {
 }
 
 // Idle: settled, and every done ticket's PR merged or closed, so the merge driver has nothing left.
-// A done ticket with no PR is finished; a PR whose state is unknown counts as open. A merged ticket
+// A done ticket with no PR is finished, as is one whose own status names its PR merged (another repo's
+// PR, needs-you's elsewhereDone, which prStates never holds); a PR whose state is unknown counts as open. A merged ticket
 // whose review's post-merge criteria the pass has not made follow-on steps yet is not: only a pass adds
 // them, so the batch keeps getting passes until one has.
 export function batchIdle(q, prState = () => null) {
   return batchSettled(q, prState) && Object.values(q.tickets ?? {})
-    .every((t) => (t.state !== 'done' || t.result?.pr == null || ['MERGED', 'CLOSED'].includes(prState(t.result.pr))) && !postMergeUnmade(t));
+    .every((t) => (t.state !== 'done' || t.result?.pr == null || prStatusOf(t)?.state === 'MERGED' || ['MERGED', 'CLOSED'].includes(prState(t.result.pr))) && !postMergeUnmade(t));
 }
 
 // An epic batch not in feature mode lands its base on the default branch through one epic PR (the
