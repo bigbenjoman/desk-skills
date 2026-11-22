@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: decider (a headless session settles what a pass needs the person for)
+# layer: L2
 # supervisor.mjs with a fake pass that exits 11 with set reports, a fake claude that records its
 # arguments and prompt and answers as told, and the real digest's question list as the intake: a lane
 # A park is requeued and noted, a lane C or D park and an ungranted §3 row go to the digest, an item

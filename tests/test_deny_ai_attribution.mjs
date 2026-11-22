@@ -1,4 +1,5 @@
 // suite: attribution hook (its §5 AI attribution read, held to desk-env's)
+// layer: L2
 // covers: hooks/deny-ai-attribution.py
 // The hook keeps its own one-row pattern, as it runs on every Bash call; this holds that pattern's read
 // to `desk-env get ai-attribution` on the same config, for every value the schema's type accepts.

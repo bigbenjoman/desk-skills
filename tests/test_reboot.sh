@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: reboot-check (worktrees across repos, heavy, FileVault)
+# layer: L2
 # reboot-check.mjs across several configured repos: a worktree with uncommitted changes and one with
 # commits on no remote are each counted and named, clean trees are not, and a repo with no root or a
 # root that is not a checkout is reported rather than skipped.

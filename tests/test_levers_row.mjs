@@ -1,4 +1,5 @@
 // suite: desk-env levers (the levers row's auto, pins and none; the machine-wide freeze; the row's changes logged)
+// layer: L2
 // covers: desk/bin/desk-env.mjs desk/bin/lever-log.mjs desk/bin/lever-pin.mjs desk/bin/lever-changes.mjs desk/bin/queue.mjs desk-config.md
 // `desk-env levers` says where each lever's state comes from, refuses `none` beside another name,
 // sets and clears ~/.desk-autopilot/levers.freeze and logs it in every repo's lever log, and logs a

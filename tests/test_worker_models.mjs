@@ -1,4 +1,5 @@
 // suite: worker models (the tier decision and the §3b row)
+// layer: L2
 // Config §3b "Worker models" and the per-ticket tier pass.mjs takes from a triage record. The spawn
 // arguments, the preflight and the requeue bump run end to end in test_batch_e2e.sh.
 import { spawnSync } from 'node:child_process';

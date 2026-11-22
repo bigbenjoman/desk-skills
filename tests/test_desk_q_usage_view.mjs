@@ -1,4 +1,5 @@
 // suite: desk-q Usage view (view 6: every Claude and Codex login with its plan, use and both windows)
+// layer: L2
 // desk-q's view 6 against a subscriptions file, each Claude login's .claude.json and probe log, each Codex
 // login's session logs, each repo's Subscription row and a queue's usage hold, on a fixed clock, under
 // a throwaway HOME, DESK_HOME, DESK_CONFIG_ROOT, DESK_LOCK_DIR and DESK_USAGE_DIR, with fake claude and

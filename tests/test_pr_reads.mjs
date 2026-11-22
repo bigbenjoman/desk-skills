@@ -1,4 +1,5 @@
 // suite: PR reads kept for one pass (DS-794: a pass's repeated gh pr view calls)
+// layer: L1
 import { prReads, prViewOf, mayChangePr } from '../desk/bin/pr-reads.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };

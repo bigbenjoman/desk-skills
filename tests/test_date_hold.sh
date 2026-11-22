@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: date hold (blocked-until-<date> labels hold a ticket until that day)
+# layer: L3
 # pass.mjs with triage records labelled blocked-until-<date>: a date after today holds the ticket and
 # spawns nothing, today or earlier spawns it, a held ticket is released on the first pass on or after
 # its day, and a label whose date cannot be read holds it for the person, who can let it start. Runs the

@@ -1,4 +1,5 @@
 // suite: spine review (the read-only review of a spine's specs, and one approval question per spec)
+// layer: L1
 import { specsForReview, reviewBrief, parseReply, approvalQuestions } from '../desk/bin/spine-review.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };

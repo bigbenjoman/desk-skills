@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: pass: tracker (preflight cost, the test lock, PR status and merges, outside blockers, undraft, evidence)
+# layer: L3
 # pass.mjs with Jira as the tracker: each spawn's preflight cost, a worker quiet under the test lock,
 # a done ticket's PR status and merge, blockers outside the batch, a draft leaving draft, a supervised
 # batch admitting a held ticket's blocker, and evidence runs that fail the same way. Runs the real

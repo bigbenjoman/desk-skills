@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: queue.mjs stop ends one running worker, commits its work and holds its ticket
+# layer: L3
 # A running ticket's worker processes (found by the session id on their command line) are ended, what
 # its worktree holds is committed on its branch, and the ticket is held behind no blocker, which only
 # the person's start releases. A ticket with no running worker exits 11, a key the queue does not hold

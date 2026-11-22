@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: worker location (config §3b row, the batch plan's workers line, desk-setup's question)
+# layer: L2
 # plan-batch on fixture triage records under three configs: no Worker location row, `cloud`, and a
 # typo. At cloud, each ticket is placed in the cloud or locally with its reason, and the queue records
 # it. Scratch HOME, state and queue only.

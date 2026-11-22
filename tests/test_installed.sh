@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: installed version and restart (install.sh moves running autopilot onto new code)
+# layer: L3
 # installed.mjs with fake merge drivers (detached, as a supervisor tick leaves them) and a fake
 # launchctl and systemctl: `record` writes the commit installed from, `restart` restarts a driver waiting between
 # loops with the same tickets, leaves one mid-loop, rewrites and reloads each loaded supervisor agent

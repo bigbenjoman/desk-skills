@@ -1,4 +1,5 @@
 // suite: follow steps (which follow steps a checker runs, the pass phase that starts and reads it, and what it found)
+// layer: L1
 // covers: desk/bin/follow-steps.mjs desk/bin/pass/follow-steps.mjs
 // Pure functions, plus scratch output files under a throwaway directory.
 import { writeFileSync } from 'node:fs';

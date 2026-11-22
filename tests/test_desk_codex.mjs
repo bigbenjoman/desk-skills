@@ -1,4 +1,5 @@
 // suite: desk-codex (codex review calls: final message only, timed out, no stdin, model and effort per role)
+// layer: L2
 // covers: desk/bin/desk-codex.mjs desk/bin/codex-exec.mjs
 // A fake codex on PATH records its argv and behaves as $T/mode says: answer (progress, then a final
 // message), hang, read stdin, or fail. Scratch config and state only.

@@ -1,4 +1,5 @@
 // suite: prose scanner, the inventory of code references in skills
+// layer: L2
 // covers: tests/fixtures/prose-scan/*.md skills/**/*.md agents/*.md
 // Each fixture under tests/fixtures/prose-scan/ holds one kind of reference; the scanner must report
 // it with its file and line, and read nothing outside code spans, shell blocks and tagged regions.

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: triage (claude -p receives every flag)
+# layer: L2
 # triage.sh's headless claude -p calls must receive every flag they are written with: a stub claude on
 # PATH records its argv, and the first pass and the lane challenge are each checked for the flags,
 # the redirects and the `|| true` (the stub exits non-zero). Scratch HOME and repo only.

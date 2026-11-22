@@ -1,4 +1,5 @@
 // suite: the repo's subscription (a new session starts on it; a resume stays on its own login; a limit holds)
+// layer: L3
 // The real pass.mjs against a fake claude whose sign-in answers
 // per config folder, a stub spawn-worker.sh that records the login each call was given, and each login's
 // reading in its own probe log. A throwaway HOME: nothing reads this computer's logins.

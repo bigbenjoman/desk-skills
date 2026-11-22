@@ -1,4 +1,5 @@
 // suite: config values (list items, trailing notes)
+// layer: L2
 // Config value cells: one item per backtick span, except spans inside a trailing parenthesised note.
 import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';

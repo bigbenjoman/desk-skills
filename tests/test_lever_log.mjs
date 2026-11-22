@@ -1,4 +1,5 @@
 // suite: lever log (every lever action as one line in the repo's levers.jsonl)
+// layer: L2
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';

@@ -1,4 +1,5 @@
 // suite: move-batch (a standing batch on a base moves to its epic's own batch slot)
+// layer: L2
 // move-batch.mjs against fixture queues and state folders in a throwaway HOME and DESK_HOME.
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
