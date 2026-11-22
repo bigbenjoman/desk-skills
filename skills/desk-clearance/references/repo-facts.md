@@ -233,8 +233,8 @@ is the user's call — park it.
 ### Failures that are not the branch, and not fixed by rerunning
 
 - **`Your deployment failed. Please retry later.`** on every PR at once (only where §4 Vercel is not
-  `none`): check whether the Vercel project is `BLOCKED`. `vercel list --scope <§4 Vercel team> 2>&1`
-  (the table goes to **stderr**); status `UNKNOWN` with `Duration ?` means no build started; compare
+  `none`): check whether the Vercel project is `BLOCKED`. `vercel list --scope <team> 2>&1`, the
+  team being §4 Vercel's first item (the table goes to **stderr**); status `UNKNOWN` with `Duration ?` means no build started; compare
   another project in the same team; the deployment API's `state: BLOCKED` is the proof. If a required
   check depends on the preview, **a blocked project stops every merge in the repo.** Do not retry or
   reconfigure — report to §4 People "Infra and security owner" with that evidence.

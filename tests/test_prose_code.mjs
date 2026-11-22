@@ -1,4 +1,4 @@
-// suite: prose check, every code reference a skill makes is one the code has, and every tagged JSON example passes its contract's validator, with today's drift in a baseline
+// suite: prose check, every code reference a skill makes is one the code has, and every tagged JSON example passes its contract's validator, and the baseline is empty
 // layer: L2
 // covers: tests/prose_check.mjs tests/prose_scan.mjs tests/prose_facts.mjs desk/bin/spawn-order.mjs desk/bin/fix-tries.mjs skills/desk-review/bin/verdict.mjs tests/command_shapes.mjs tests/fixtures/prose_baseline.json tests/fixtures/prose-code/*.md desk/bin/prose-facts.mjs desk/bin/queue-commands.mjs desk/bin/markers.mjs desk/bin/queue-writer.mjs desk/bin/batch-state.mjs desk/bin/with-lock.sh skills/**/*.md agents/*.md
 // covers: desk/bin/desk-env.mjs desk/bin/config-schema.mjs desk/bin/machine.mjs desk/bin/test-scope.mjs desk/bin/workflow-yaml.mjs desk/bin/dir-lock.mjs desk/bin/failure-class.mjs desk/bin/queue-store.mjs desk/bin/clears-when.mjs desk/bin/harvest.mjs desk/bin/spine-check.mjs desk/bin/scope-report.mjs desk/bin/baseline.mjs desk/bin/gate.mjs desk/bin/desk-ci.mjs desk/bin/aws-fallback.mjs desk/bin/decisions.mjs desk/templates/scripts/desk/review-gate.mjs
@@ -13,7 +13,7 @@
 // so a change to any of them runs this suite.
 // Each fixture under tests/fixtures/prose-code/ adds one kind of drift beside a reference the code has;
 // the check must name the bad one and pass the good one. Then the real skills and agents tree, against
-// the baseline, in-process and under two seconds.
+// the empty baseline, in-process and under two seconds.
 import childProcess from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
@@ -46,8 +46,8 @@ const lines = (f) => found(f).map((x) => `${x.line} ${x.kind} ${x.value}`).join(
 const cli = (...args) => childProcess.spawnSync(process.execPath, [join(R, 'tests/prose_check.mjs'), ...args], { cwd: R, encoding: 'utf8' });
 
 // ---- AC12: the whole tree, in-process ------------------------------------------------------------
-t('AC12 the full skills and agents tree is checked in under two seconds', ms < 2000 ? 'under 2s' : `${Math.round(ms)}ms`, 'under 2s');
-t('AC12 without starting another process', started.join(', '), '');
+t('AC12 / DS-890 AC2 the full skills and agents tree, with every kind of check, is checked in under two seconds', ms < 2000 ? 'under 2s' : `${Math.round(ms)}ms`, 'under 2s');
+t('AC12 / DS-890 AC2 without starting another process', started.join(', '), '');
 
 // ---- AC1: a queue subcommand the code does not have -----------------------------------------------
 t('AC1 the unknown subcommand, and not the known one', lines('queue-sub.md'), '4 subcommand frobnicate');
@@ -59,6 +59,8 @@ t('AC1 the CLI exits 1 and prints it', [sub.status, sub.stdout.includes('queue-s
 // ---- AC2: a script outside desk/bin and the skills' bins ------------------------------------------
 t('AC2 a missing bin script and a repo script are named; desk/bin and a skill bin, installed or not, pass',
   lines('script.md'), '4 script ~/.claude/desk/bin/no-such-script.mjs, 9 script scripts/make-thing.sh');
+t('DS-890 install.sh, an installed hook, a template, a skill script, an elided path and a file in this repo pass',
+  found('script.md').filter((x) => x.line > 9).map((x) => x.value).join(', '), '');
 t('AC2 the report names the file, the line and the script', report(found('script.md')[0]).startsWith(
   'tests/fixtures/prose-code/script.md:4: the script ~/.claude/desk/bin/no-such-script.mjs is not under desk/bin or a skill\'s bin folder'), true);
 
@@ -86,7 +88,8 @@ t('AC7 the unknown state, and not parked', lines('state.md'), '4 state snoozed')
 t('AC7 the report names the state', found('state.md')[0].message, 'the queue writer has no state snoozed');
 
 // ---- AC8: a path under the state folder that is not declared --------------------------------------
-t('AC8 the undeclared path; a declared one under any placeholder, and its folder, pass', lines('state-path.md'), '3 state-path no-such/<TICKET>.json');
+t('AC8 the undeclared path; a declared one under any placeholder, and its folder, pass; DS-890 so does a name the code builds under the state folder, but not an undeclared file in a STATE_PATHS folder',
+  lines('state-path.md'), '3 state-path no-such/<TICKET>.json, 6 state-path parks/<TICKET>.txt');
 t('AC8 the report names the path', found('state-path.md')[0].message, 'no-such/<TICKET>.json is not a declared state path');
 
 // ---- DS-885: a tagged JSON example is checked by its contract's validator -------------------------
@@ -177,17 +180,19 @@ const added = check([join(R, PHASE0)], { values: { 'known-untracked': { files: [
 t('DS-888 AC4 a file added to the known-untracked list fails Phase 0\'s unregenerated region, naming it and the regenerate command',
   `${added.map((x) => `${x.file} ${x.value}`).join(', ')} ${added.every((x) => x.message.includes(WRITE))}`, `${PHASE0} known-untracked true`);
 
-// ---- AC9: main's drift is held by the baseline ----------------------------------------------------
+// ---- AC9 / DS-890 AC1: the real tree has no finding, and the baseline is empty ---------------------
 const baseline = readBaseline();
 const g = gate(tree, baseline);
-for (const x of g.fresh.slice(0, 20)) console.log(`  new: ${report(x)}`);t('AC9 the real tree has no finding the baseline does not hold', g.fresh.length, 0);
-t('AC9 the baseline holds drift, keyed by file, kind, value and context, never line',
-  baseline.length > 0 && baseline.every((e) => Object.keys(e).join() === 'file,kind,value,context'), true);
+for (const x of g.fresh.slice(0, 20)) console.log(`  new: ${report(x)}`);
+t('AC9 the real tree has no finding the baseline does not hold', g.fresh.length, 0);
+tj('DS-890 AC1 the baseline is empty', baseline, []);
 const run = cli();
-t('AC9 the CLI passes and prints how many baseline entries remain',
-  [run.status, new RegExp(`^0 finding\\(s\\) the baseline does not hold; ${g.remaining} baseline entries remain`, 'm').test(run.stdout)].join(' '), '0 true');
-t('a baseline entry matches its finding wherever the line moves', gate(tree.map((x) => ({ ...x, line: x.line + 7 })), baseline).fresh.length, 0);
+t('DS-890 AC1 the CLI passes and reports zero baseline entries',
+  [run.status, /^0 finding\(s\) the baseline does not hold; 0 baseline entries remain$/m.test(run.stdout)].join(' '), '0 true');
 tj('DS-884 AC4 every baseline entry still matches a finding in the real tree', g.stale.map(staleReport), []);
+const heldTree = baselineEntries(found('queue-sub.md'));
+t('a baseline entry matches its finding wherever the line moves', gate(found('queue-sub.md').map((x) => ({ ...x, line: x.line + 7 })), heldTree).fresh.length, 0);
+t('a baseline entry is keyed by file, kind, value and context, never line', heldTree.every((e) => Object.keys(e).join() === 'file,kind,value,context'), true);
 
 // ---- DS-884 AC3 / AC4: lines inserted above a baselined reference, and the reference fixed --------
 const T = scratch('desk-prose-check-');

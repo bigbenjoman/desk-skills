@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stateDir, configValue, SAFE_ID } from './desk-env.mjs';
 
-export const notNowPath = (dir = stateDir()) => join(dir, 'not-now.jsonl');
+export const notNowPath = (state = stateDir()) => join(state, 'not-now.jsonl');
 // An answer that puts the question off: "not now", "Not now.", "not now — after the launch".
 export const NOT_NOW = /^\s*not now\b/i;
 

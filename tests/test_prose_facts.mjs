@@ -45,6 +45,25 @@ t('#881 a state added to the queue writer is read with no edit to the registry',
 STATES.pop();
 t('#881 state paths include batch-state\'s STATE_PATHS and DESK_STATE', [statePaths().state, statePaths().vars.includes('DESK_STATE')], [{ ...STATE_PATHS }, true]);
 
+// DS-890: the names the code builds under the state folder, and the files desk ships beside its bins.
+const code = statePaths().code;
+t('DS-890 a name a module joins onto the state folder, through STATE, stateDir(), r.stateDir or batchPaths(slug).state, is read',
+  ['briefings', 'handoffs', 'not-now.jsonl', 'supervisor.log', 'ref'].filter((n) => !code.includes(n)), []);
+t('DS-890 a name a shell script builds on $DESK_STATE or $STATE is read', ['merge-driver.lock.d', 'resume'].filter((n) => !code.includes(n)), []);
+t('DS-890 a joined path keeps only its first name, and a name that is only a ${…} is dropped', code.filter((n) => n.includes('/') || n.startsWith('<>')), []);
+{
+  const tmp = scratch('ds890-facts-');
+  mkdirSync(join(tmp, 'desk', 'bin'), { recursive: true });
+  writeFileSync(join(tmp, 'desk', 'bin', 'a.mjs'), "join(state, `spine-${key}.md`); join(root, 'tests'); join(STATE, 'logs', 'x.log'); join(state, `${k}.json`);");
+  writeFileSync(join(tmp, 'desk', 'bin', 'b.sh'), 'cat "$LOG_STATE/merge.log" "$ROOT/other"');
+  writeFileSync(join(tmp, 'desk', 'bin', 'c.mjs.md'), "join(state, 'not-code')");
+  t('DS-890 only joins onto a state value are read, ${…} written <>, from .mjs, .js and .sh files', statePaths(tmp).code, ['logs', 'merge.log', 'spine-<>.md']);
+}
+const shipped = c.shipped;
+t('DS-890 shipped: install.sh, the hooks, each skill\'s scripts and the repo templates',
+  ['install.sh', 'hooks/desk-handoff.py', 'skills/desk-checkout/scripts/claude_activity.py', 'desk/templates/scripts/desk/pre-push.sh'].filter((f) => !shipped.includes(f)), []);
+t('DS-890 shipped holds no bin file', shipped.filter((f) => c.scripts.includes(f)), []);
+
 // DS-882 AC5: the contracts are the validators the running code calls, each giving its message.
 {
   const k = await contracts();

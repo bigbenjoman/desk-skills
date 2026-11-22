@@ -1,7 +1,7 @@
 // The prose check: every reference tests/prose_scan.mjs finds in the skills and agents is held to the
 // code's own lists (desk/bin/prose-facts.mjs), and one the code lacks fails, unless the baseline
-// already holds it. The baseline is the drift there was the day the check landed, keyed by file, kind,
-// value and context, never by line, so moving text does not unbaseline it and new drift is refused.
+// already holds it. The baseline held the drift there was the day the check landed and is empty since
+// DS-890; an entry is keyed by file, kind, value and context, never by line, and it only shrinks.
 //
 //   node tests/prose_check.mjs [--write-baseline] [<file or dir> ...]   # default: skills/ and agents/
 //
@@ -20,7 +20,7 @@
 // A JSON example tagged `<!-- contract: <name> -->` on the line before its fence is checked by that
 // contract's validator (desk/bin/prose-facts.mjs contracts): one it refuses, one that is not JSON, and a
 // name no contract has are findings no baseline holds.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scan, DEFAULT_PATHS } from './prose_scan.mjs';
@@ -44,22 +44,27 @@ const EVERY_COMMAND_FLAGS = ['--batch'];
 
 // Everything the check holds a reference to, read once from the code.
 export function facts(root = ROOT) {
-  const c = commands(root), a = autopilot(), l = locks(root), sp = statePaths();
+  const c = commands(root), a = autopilot(), l = locks(root), sp = statePaths(root);
   const holes = (p) => p.replace(PLACEHOLDER, '<>');
   const declared = new Set();
   for (const p of Object.values(sp.state)) {
     declared.add(holes(p));
     for (let d = p.split('/').slice(0, -1); d.length; d.pop()) { declared.add(d.join('/')); declared.add(`${d.join('/')}/`); }
   }
+  // A folder STATE_PATHS declares files in holds only those; any other name the code builds under
+  // the state folder holds whatever a skill names inside it.
+  const strict = new Set(Object.values(sp.state).map((p) => p.split('/')[0]));
   return {
     queue: c.queue,
     deskEnv: new Set(c.deskEnv),
-    scripts: c.scripts,
+    scripts: [...c.scripts, ...c.shipped],
+    inRepo: (p) => !p.split('/').includes('..') && existsSync(join(root, p)),
     autopilot: new Set([...a.markers, ...a.variables]),
     lockClasses: new Set(l.classes),
     lockOf: l.commands,
     states: new Set(states()),
     statePaths: declared,
+    stateNames: new Set(sp.code.filter((n) => !strict.has(n))),
     holes,
     rowIds: new Set([...Object.keys(CONFIG_ROWS), ...Object.keys(PERMISSION_KEYS)]),
     rowNames: new Set(Object.values(CONFIG_ROWS).map((r) => `§${r.section} ${r.row}`.toLowerCase())),
@@ -80,20 +85,24 @@ function contractProblem(name, body, validators) {
 }
 
 // Where a script is installed, read back to its place in the repo: ~/.claude/desk/bin and $DESK_BIN are
-// desk/bin, and the skills folder (~/.claude/skills, ~/.agents/skills, $DESK_SKILLS_DIR) is skills/.
+// desk/bin, the skills folder (~/.claude/skills, ~/.agents/skills, $DESK_SKILLS_DIR) is skills/, and
+// ~/.claude/hooks is hooks/.
 const INSTALLED = [
   [/^(?:~|\$HOME|\$\{HOME\})\/\.claude\/desk\/bin\//, 'desk/bin/'],
   [/^\$\{?DESK_(?:RUN_)?BIN\}?\//, 'desk/bin/'],
   [/^(?:~|\$HOME|\$\{HOME\})\/\.(?:claude|agents)\/skills\//, 'skills/'],
   [/^\$\{?DESK_SKILLS_DIR\}?\//, 'skills/'],
+  [/^(?:~|\$HOME|\$\{HOME\})\/\.claude\/hooks\//, 'hooks/'],
 ];
-// A script is known when it is a bin file, or the tail of one's path: `pass.mjs`, `desk/bin/pass.mjs`.
-// One whose path still holds a placeholder or a variable (`<script>.py`, `$WT/run.sh`) is not judged.
-function scriptKnown(value, scripts) {
-  let p = value.replace(/^\.\//, '');
+// A script is known when it is a bin file or a file desk ships, or the tail of one's path: `pass.mjs`,
+// `desk/bin/pass.mjs`, `…/pass.mjs`, `scripts/desk/pre-push.sh` (a template); or a file at that path in
+// this repo (`tests/test_x.mjs`). One whose path still holds a placeholder or a variable (`<script>.py`,
+// `$WT/run.sh`) is not judged.
+function scriptKnown(value, f) {
+  let p = value.replace(/^(?:\.|…)\//, '');
   for (const [re, to] of INSTALLED) p = p.replace(re, to);
   if (/<[^<>]*>|\$/.test(p)) return true;
-  return scripts.some((s) => s === p || s.endsWith(`/${p}`));
+  return f.scripts.some((s) => s === p || s.endsWith(`/${p}`)) || f.inRepo(p);
 }
 
 // What is wrong with one reference, or null when the code has it.
@@ -112,7 +121,7 @@ export function problem(r, f) {
       return f.queue[sub].includes(v) ? null : `${r.of} does not read the flag ${v}`;
     }
     case 'script':
-      return scriptKnown(v, f.scripts) ? null : `the script ${v} is not under desk/bin or a skill's bin folder`;
+      return scriptKnown(v, f) ? null : `the script ${v} is not under desk/bin or a skill's bin folder, nor a file desk ships or this repo holds`;
     case 'row':
       if (v.startsWith('§')) {
         const key = /^§\d+[a-z]?\s+([a-z][a-z0-9]*(?:-[a-z0-9]+)+)$/.exec(v);
@@ -135,7 +144,7 @@ export function problem(r, f) {
     case 'state-path': {
       const p = f.holes(v);
       if (/^<>\/?$/.test(p)) return null;
-      return f.statePaths.has(p) ? null : `${v} is not a declared state path`;
+      return f.statePaths.has(p) || f.stateNames.has(p.split('/')[0]) ? null : `${v} is not a declared state path`;
     }
     case 'contract':
       return contractProblem(v, r.body, f.contracts);
