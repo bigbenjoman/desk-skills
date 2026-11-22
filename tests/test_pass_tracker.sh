@@ -89,7 +89,7 @@ q set W-5 state=running lane=A branch=feat/W-5 session_id=live-1 "worktree=$T/wt
 touch "$T/ps.fail"
 out=$(node "$B/pass.mjs" 2>&1)
 check "a quiet worker is not stopped while ps cannot be read, and the pass says ps could not be read" '[ "$(field W-5 state)" = "\"running\"" ] && echo "$out" | grep -q "W-5: quiet for 6 passes, ps could not be read, so whether it is running its suite is unknown"'
-rm -f "$T/ps.fail" "$T/ps.out" "$T/lsof.out"; unset DESK_LOCK_DIR
+rm -f "$T/ps.fail" "$T/ps.out" "$T/lsof.out"; export DESK_LOCK_DIR="$T/lockdir"
 
 # ---- DS-194: each done ticket's PR state and checks are recorded as pr_status, until it merges or closes
 export DESK_QUEUE="$T/queue-g.json" DESK_AUTOPILOT_STATE="$T/state-g"
