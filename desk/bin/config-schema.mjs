@@ -39,6 +39,13 @@ export function parseCommandItem(item) {
   return { dir: '.', cmd: String(item).trim() };
 }
 
+// A §4 Test sign-in item, `<app dir>: <email>` or a bare email for the root: an existing development
+// user's address, never a password. -> { dir, email }, or null where the rest is not one address.
+export function testSigninOf(item) {
+  const { dir, cmd } = parseCommandItem(item);
+  return /^[^\s@:]+@[^\s@:]+\.[^\s@:]+$/.test(cmd) ? { dir, email: cmd } : null;
+}
+
 // The compose service a §4 Local services item starts with, ending at whitespace or a colon (`search
 // :8108`, `search: 8108`, `search`), or null. worker-settings allow-lists a worker starting it by this
 // name, and drift names an item it cannot read.
@@ -452,6 +459,7 @@ export const TYPES = Object.freeze({
   'ai-attribution': oneOf('forbidden', 'allowed'),
   regex: matching('a regular expression', (s) => { try { new RegExp(s); return true; } catch { return false; } }),
   command: matching('a command', () => true, parseCommandItem),
+  'test-signin': matching('`[<app dir>: ]<email>`', (s) => testSigninOf(s) != null, testSigninOf),
   'service-port': matching('`<service> [:<port>]`', (s) => servicePort(s) != null, servicePort),
   'required-fields': matching('`<Type>[, <Type>…]: <field>[, <field>…]`', (s) => !requiredFieldsIn([s], null).malformed.length,
     (s) => ({ types: requiredRule(s)?.types ?? [], fields: requiredFieldsIn([s], null).need })),
@@ -664,6 +672,7 @@ export const ROWS = Object.freeze([
   l('merged-tree-check-cmd', '4', 'Merged-tree check', 'command', ['apps/api: uv run python scripts/check_alembic_heads.py']),
   l('pr-description-checks', '4', 'PR-description checks', 'command', ['node scripts/check-pr-body.mjs']),
   l('env-files', '4', 'Env files', 'text', ['frontend/.env.local', 'portal/.env.local']),
+  l('test-signin', '4', 'Test sign-in', 'test-signin', ['dev-user@example.test', 'apps/portal: portal-dev@example.test']),
   // §4 Environments and services
   v('local-db', '4', 'Local database', 'text', 'postgres container voicepa-postgres-1'),
   l('db-url-var', '4', 'Database URL variable', 'text', ['DATABASE_URL', 'DATABASE_URL_UNPOOLED']),

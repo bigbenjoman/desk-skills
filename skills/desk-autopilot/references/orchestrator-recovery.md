@@ -203,7 +203,10 @@ re-running a ticket from scratch.
   600s: past that it moves the call to the background ("did not complete within its 600s timeout and
   was moved to the background") and the heartbeats stop, and a backgrounded call still running ten
   minutes later is stopped. So the log then goes quiet and the pass's quiet and wedged counts take
-  over (an older harness heartbeated one call for 8h29m). Inside those ten minutes, check the newest
+  over (an older harness heartbeated one call for 8h29m). Where a harness keeps heartbeating, the
+  pass does: a worker whose log grew only by `tool_progress` for one call whose
+  `elapsed_time_seconds` is past 30 minutes is stopped and parked as wedged, naming the call, and
+  only that worker's session and process groups are signalled. Before then, by hand, check the newest
   `tool_progress` `elapsed_time_seconds` in the log tail; a single
   tool call past a few minutes is a hang. Kill **that worker's** codex by the PID you resolved
   (`ps -o etimes= -p <pid>`), never `pkill -f codex`: other sessions run codex concurrently.
