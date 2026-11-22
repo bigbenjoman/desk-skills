@@ -53,10 +53,13 @@
 # Ordering is load-bearing: env files must land before the install, because an install step can run
 # code generation that hard-fails without them.
 #
-# The last lines printed are machine-read by pass.mjs: `worktree=`, `branch=`, `database=`
+# The last lines printed are machine-read by pass.mjs: `steps=` (each step this run took, as
+# `<step>:<seconds>` joined by commas, in the order run), `worktree=`, `branch=`, `database=`
 # (`database=<name>` only when that per-ticket database exists; otherwise `database=none`), and
 # `migrate=failed` only when migrations did not complete on this run.
 set -euo pipefail
+STEPS=""; STEP_T0=$SECONDS
+step_done() { STEPS="${STEPS:+$STEPS,}$1:$((SECONDS - STEP_T0))"; STEP_T0=$SECONDS; }
 
 PG_CONTAINER_ENV="${DESK_PG_CONTAINER:-}"   # an explicit env override beats the config text below
 # shellcheck source=desk-env.sh
@@ -397,6 +400,7 @@ finish() {
   exclude_from_git '/desk-review-results-*.json' || say "WARNING: could not add desk-review results files to the git exclude"
   rm -f "$MARKER"
   say "done"
+  say "steps=$STEPS"
   say "worktree=$WT"
   say "branch=$BRANCH"
   case "$DB_MODE" in ticket) say "database=$DB" ;; *) say "database=none" ;; esac
@@ -463,18 +467,19 @@ to_origin_tip(){ # to_origin_tip <worktree>
 }
 
 mkdir -p "$DESK_WORKTREES_DIR"
+step_done config
 
 if [ -d "$WT" ] && [ ! -f "$MARKER" ]; then
   say "worktree already exists at $WT — leaving its code alone"
   have_branch="$(git -C "$WT" branch --show-current 2>/dev/null || true)"
   [ "$have_branch" = "$BRANCH" ] || fail "$WT is on branch '${have_branch:-?}', not $BRANCH — refusing to hand it out for this ticket"
-  to_origin_tip "$WT"
+  to_origin_tip "$WT"; step_done checkout
   # ...but ALWAYS re-sync the harness rules and the agent links (a worktree created before either
   # existed has none), and re-apply the database rule, so the `database=` line below is true now.
-  sync_local_settings
-  sync_agents lenient
-  databases
-  remigrate_if_needed
+  sync_local_settings; step_done settings
+  sync_agents lenient; step_done agents
+  databases; step_done databases
+  remigrate_if_needed; step_done migrate
   finish
   exit 0
 fi
@@ -520,27 +525,28 @@ else
   printf 'ticket=%s\nbranch=%s\ncreated_branch=%s\nstarted=%s\n' "$TICKET" "$BRANCH" "${CREATED_BRANCH:-0}" "$(date -u +%FT%TZ)" > "$MARKER"
   exclude_from_git '/.desk-setup-incomplete'
 fi
+step_done checkout
 
 # copy-env.sh finds the primary checkout via the shared git common dir, so it is
 # portable and must run from inside the new worktree.
 say "seeding env files"
-( cd "$WT" && DESK_ENV_FROM="${FROZEN:+$MAIN}" bash "$DESK_ENV_DIR/copy-env.sh" )
+( cd "$WT" && DESK_ENV_FROM="${FROZEN:+$MAIN}" bash "$DESK_ENV_DIR/copy-env.sh" ); step_done env
 
-sync_local_settings
-databases
+sync_local_settings; step_done settings
+databases; step_done databases
 
 if [ -n "$INSTALL_CMDS" ]; then
   say "installing dependencies (this is the slow part)"
-  install_twice
+  install_twice; step_done install
 else
   say "config §4 Install is none — no install step"
 fi
 
 if [ -z "$FROZEN" ]; then
   say "linking subagents"
-  sync_agents strict
+  sync_agents strict; step_done agents
 fi
 
-if [ "$DB_MODE" = ticket ]; then migrate_db; fi
+if [ "$DB_MODE" = ticket ]; then migrate_db; step_done migrate; fi
 
 finish

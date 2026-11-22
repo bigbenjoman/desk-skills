@@ -175,6 +175,35 @@ mktree shahead running running 1 ' at origin/main 4a1f0c2e9'
 cmp "$T/shabase" "$T/shahead"
 check "DS-763 AC4 an abbreviated SHA that is all digits matches the other tree's" '[ $rc = 0 ] && [ "$out" = "compare_pass: 2 pass run(s) compared, 0 differ, 0 not compared" ]'
 
+# A tree whose suite leaves the usage probe start stamp in its own usage dir ($CMP_PROBE_USAGE when
+# set) ten minutes old before its first pass and 90 seconds old before its second, and whose pass
+# prints how old it reads that stamp as: the base's prints what a suite run in under five minutes
+# sees, the head's reads it.
+probetree(){ mktree "$1" running running
+  cat >> "$T/$1/desk/bin/pass.mjs" <<EOF
+const age = Date.now() - Number(readFileSync(process.env.DESK_USAGE_DIR + '/probe.at', 'utf8'));
+console.log($2);
+EOF
+  cat > "$T/$1/tests/test_pass.sh" <<'EOF'
+#!/usr/bin/env bash
+SRC="$(cd "$(dirname "$0")/.." && pwd)"; B="$SRC/desk/bin"; D="$(mktemp -d)"
+export DESK_QUEUE="$D/queue.json" DESK_USAGE_DIR="${CMP_PROBE_USAGE:-$D/usage}"; mkdir -p "$DESK_USAGE_DIR"
+echo '{"tickets":{"A-1":{"state":"triaged"}}}' > "$DESK_QUEUE"
+echo $(( $(date +%s) * 1000 - 600000 )) > "$DESK_USAGE_DIR/probe.at"
+out=$(node "$B/pass.mjs" 2>&1); echo "ok   the first pass"
+echo $(( $(date +%s) * 1000 - 90000 )) > "$DESK_USAGE_DIR/probe.at"
+out=$(node "$B/pass.mjs" 2>&1); echo "ok   the second pass"
+rm -rf "$D"
+EOF
+}
+probetree probebase "'past the gap'"
+probetree probehead "age > 300e3 ? 'probe due' : age > 60e3 ? 'past the gap' : 'in the gap'"
+cmp "$T/probebase" "$T/probehead"
+check "a probe stamp a suite left over five minutes old reads as under it, and one past the minute stays past it" '[ $rc = 0 ] && [ "$out" = "compare_pass: 2 pass run(s) compared, 0 differ, 0 not compared" ]'
+# The same suite with the machine's usage dir as its own: its stamp is left ten minutes old.
+out=$(env -u DESK_USAGE_DIR HOME="$T/live" CMP_PROBE_USAGE="$T/live/.desk-autopilot/usage" bash "$S/compare_pass.sh" "$T/probebase" "$T/probehead" 2>/dev/null); rc=$?
+check "a usage dir that is the machine's own keeps its probe stamps as the suite left them" '[ $rc = 1 ] && echo "$out" | grep -qxF "  output head: probe due"'
+
 # An evidence fix keyed by the id each tree's pass hashed from its own start time, one of them all
 # digits, filed between two tickets so the key sorts differently on each tree, and its key printed.
 fixtree(){ mkdir -p "$T/$1/desk/bin" "$T/$1/tests"; cp "$T/base/tests/test_pass.sh" "$T/$1/tests/"
@@ -250,6 +279,33 @@ out=$(bash "$T/repo/tests/compare_pass.sh" HEAD~1 HEAD 2>/dev/null); rc=$?
 check "DS-763 base and head given as commits compare those commits" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 state: base \"running\", head \"parked\""'
 cmp --suite test_nope.sh "$T/base" "$T/same"
 check "DS-763 a suite the base lacks is refused" '[ $rc = 2 ]'
+
+# Records as the recorder saves them, of one suite whose two runs park P-1: run 1 ran from $2 to $3 ms
+# after an epoch of its tree's own ($7), parking at $4 ms with question $5; run 2 started at $6 ms and
+# holds the park, as run 1 does once it was written. What a loaded machine makes of one park: written further into its run on one tree.
+recs(){ mkdir -p "$T/recs/$1/s.sh"; node -e '
+  const [dir, epoch, s, e, at, question, s2] = process.argv.slice(1), t = (ms) => Number(epoch) + Number(ms);
+  const park = { question, since: new Date(t(at)).toISOString() };
+  const rec = (run, started, ended) => JSON.stringify({ run, started: t(started), ended: t(ended), at_line: 0, exit: 0, signal: null, out: "",
+    queue: { tickets: t(ended) < t(at) && t(at) < t(s2) ? {} : { "P-1": { state: "parked", park } } }, archive: null });
+  require("fs").writeFileSync(dir + "/1.json", rec(1, s, e));
+  require("fs").writeFileSync(dir + "/2.json", rec(2, s2, Number(s2) + 1000));
+' "$T/recs/$1/s.sh" "$7" "$2" "$3" "$4" "$5" "$6"; }
+pdiff(){ out=$(node "$S/compare_pass.mjs" diff "$T/recs/$1" "$T/recs/$2" "$T/recs/$1" "$T/recs/$2"); rc=$?; }
+recs pb 0 2000 1250 'repo could not be refreshed' 3000 1795273210286
+recs ph 0 31000 30280 'repo could not be refreshed' 32000 1795273672907
+pdiff pb ph
+check "DS-945 AC1 a park written 29 s further into the same run on one tree is not listed" '[ $rc = 0 ] && [ "$out" = "compare_pass: 2 pass run(s) compared, 0 differ, 0 not compared" ]'
+recs pq 0 31000 30280 'which colour?' 32000 1795273672907
+pdiff pb pq
+check "DS-945 AC2 a park asking something else in the same run is still listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue P-1 park.question: base \"repo could not be refreshed\", head \"which colour?\""'
+recs pl 0 31000 3630280 'repo could not be refreshed' 32000 1795273672907
+pdiff pb pl
+check "DS-945 a park dated an hour past its run on one tree is still listed" '[ $rc = 1 ] && echo "$out" | grep -qE "^  queue P-1 park.since: base \"[0-9T:.-]+Z\", head \"[0-9T:.-]+Z\"$"'
+recs gb 0 1000 1500 'stopped by hand' 2000 1795273210286
+recs gh 0 20000 21000 'stopped by hand' 41000 1795273672907
+pdiff gb gh
+check "DS-945 a park the suite wrote between the same two runs on both trees is not listed" '[ $rc = 0 ]'
 
 # A pass stopped by a signal: the recorder in its place ends with the same status, and records it.
 echo "process.kill(process.pid, 'SIGTERM'); setTimeout(() => {}, 5000);" > "$T/stopped.mjs"

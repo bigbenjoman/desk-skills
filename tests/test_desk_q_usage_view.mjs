@@ -81,6 +81,10 @@ const subscriptions = (rows) => writeFileSync(env.DESK_SUBSCRIPTIONS,
   `| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n${rows.map((r) => `| ${[...r.slice(0, 3), pinOf(r), r[3]].map((c) => `\`${c}\``).join(' | ')} |`).join('\n')}\n`);
 const ROWS = [['claude', 'personal', '~/.claude-logins/personal', 'default'], ['claude', 'work', '~/.claude-logins/work', 'unused'],
   ['codex', 'codexmain', '~/.codex', 'default'], ['codex', 'alt', '~/.codex-logins/alt', 'unused']];
+// ROWS with spare pinned, unused, as desk-q leaves the file once it has pinned the found folder. A section
+// that resets the file to ROWS has the next open desk-q pin spare in the background, its write landing
+// mid-section; resetting to PINNED leaves it nothing to pin.
+const PINNED = [...ROWS.slice(0, 2), ['claude', 'spare', '~/.claude-logins/spare', 'unused'], ...ROWS.slice(2)];
 
 // A Claude login's probe log holding one reading, written `ago` before FIXED.
 function claudeReading(key, five, seven, ago = MIN) {
@@ -170,6 +174,9 @@ S.done();
 S = await usage();
 // spare, found under ~/.claude-logins, is shown once desk-q has pinned it to its account (DS-533 AC19).
 f = await S.until((x) => !!rowOf(x, 'spare@example.test'));
+// Its pin is desk-env run in the background, which outlives this screen: wait for it to reach the file,
+// or it lands in a later section and changes the file and the rows under it.
+await S.until(() => ruleIn('claude', 'spare') === 'unused');
 const HEAD = '  SUBSCRIPTION             PLAN     USE           5H                   7D                       WORKERS';
 t('AC1 the Claude table\'s columns are SUBSCRIPTION, PLAN, USE, 5H, 7D and WORKERS', f.includes(HEAD), true);
 t('AC1 the default reads ◉ default, with its plan, both windows and its 2 workers', rowOf(f, 'me@example.test'),
@@ -280,7 +287,7 @@ f = S.frame();
 t('DS-624 AC3 the default changed: each ○ default row runs on the new default', `${rowOf(f, 'pr-ninja')} | ${rowOf(f, 'idle')}`,
   `${repoLine(0, 'pr-ninja', 'work@example.test ▾', '○ default', '2', '8')} | ${repoLine(0, 'idle', 'work@example.test ▾', '○ default', '0', '0')}`);
 S.done();
-subscriptions(ROWS);
+subscriptions(PINNED);
 for (const slug of FOUR) { config(slug, false); rmSync(join(env.DESK_HOME, 'repos', slug), { recursive: true, force: true }); }
 
 // ---- AC2: two repos pinned to one subscription
@@ -338,7 +345,7 @@ t('AC13 the message names it the Codex default', f[f.findIndex((l) => l.startsWi
 t('AC13 and the view shows it', `${useOf(f, 'alt')} | ${useOf(f, 'codexmain')} | ${useOf(f, 'me@example.test')}`, '◉ default | ○ unused | ◉ default');
 S.done();
 // spare pinned to its account (DS-528), as desk-q pins a found folder.
-subscriptions([...ROWS.slice(0, 2), ['claude', 'spare', '~/.claude-logins/spare', 'unused'], ...ROWS.slice(2)]);
+subscriptions(PINNED);
 
 // ---- DS-472 AC10, AC11, AC15: a signed-out login says so, the headline too, and y copies its sign-in command
 writeFileSync(join(SPARE, '.signed-out'), '');
@@ -396,7 +403,7 @@ const back = deskEnv('set', 'claude', 'office', 'unused');
 t('u after x on a login named apart from its folder puts back that folder', `${back.status} ${/^\| `claude` \| `office` \| `~\/.claude-logins\/work` \| `[^`]+` \| `unused` \|$/m.test(subsText())} ${/^## Removed/m.test(subsText())}`, '0 true false');
 
 // ---- AC4: the default at its 5-hour limit still reads default, its 5H bar at 100% with the reset time
-subscriptions(ROWS);
+subscriptions(PINNED);
 repo({ since: new Date(FIXED - 20 * MIN).toISOString(), type: 'five_hour', resets_at: at(24, 14, 5), preflight: 'S-1', paused: [], login_dir: PERSONAL });
 claudeReading('personal', [1, at(24, 14, 5)], [0.66, at(27, 6, 0)]);
 const B = await usage();

@@ -419,8 +419,9 @@ export function peek({ env, dir = leaseDir(), now = Date.now }) {
   const t = now();
   return store.leases.filter((l) => !lapseOf(l, starts, t));
 }
-// A held lease past its expiry: its owner is alive and has not renewed it (a slot's, while it runs).
-export const overdue = (l, t) => t > Date.parse(l.expires);
+// A held lease past its expiry: its owner is alive and has not renewed it. A slot lease is never
+// overdue: nothing renews it, and like lapseOf's hard lapse it is held for as long as its owner runs.
+export const overdue = (l, t) => l.kind !== 'slot' && t > Date.parse(l.expires);
 export const forceReleaseCommand = (id) => `desk-env lease force-release ${id} --reason <why>`;
 export const RESET_COMMAND = 'desk-env lease reset --reason <why>';
 

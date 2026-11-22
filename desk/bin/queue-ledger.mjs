@@ -14,7 +14,7 @@
 // differs from it: the pass reports that after its writes, and `queue.mjs rebuild` writes the rebuild out.
 import { basename, dirname } from 'node:path';
 import { BATCHES_DIR, leverOn } from './desk-env.mjs';
-import { append, fold, invalid, diffQueues, project, withoutProjectionOnly, parkOf, ANSWERED, PARK_KINDS, TRANSITIONS } from './ticket-ledger.mjs';
+import { append, fold, invalid, diffQueues, project, withoutProjectionOnly, parkOf, waitsOfField, ANSWERED, WAITS, PARK_KINDS, TRANSITIONS } from './ticket-ledger.mjs';
 import { fieldDiffs, flattenQueue } from './queue-fields.mjs';
 import { readQueueAt, same } from './queue-store.mjs';
 import { FINISHED } from './queue-states.mjs';
@@ -108,6 +108,23 @@ function newlyAnswered(was, now, fields) {
   return added;
 }
 
+// The waits ticket `was` ended, started or escalated in becoming `now`, each a waited or waiting event,
+// taken out of the fields `fields` records with it. A waits field that is not a map of whole waits is
+// recorded as the field.
+function waitEvents(was, now, fields) {
+  if (!own(fields, WAITS)) return [];
+  const before = waitsOfField(was?.[WAITS]);
+  const after = waitsOfField(now[WAITS]);
+  if (!before || !after) return [];
+  const out = [
+    ...Object.keys(before).filter((on) => !own(after, on)).map((on) => ({ type: 'waited', data: { on } })),
+    ...Object.entries(after).filter(([on, w]) => !same(w, before[on])).map(([, w]) => ({ type: 'waiting', data: w })),
+  ];
+  if (out.some((e) => invalid({ ...e, batch: STANDING, key: now.key ?? 'ticket' }))) return [];
+  delete fields[WAITS];
+  return out;
+}
+
 // The events queue `before` (the file as it stood, or null) becoming queue `after` records in `batch`.
 // `archived` holds each ticket this write moved to the archive, as it was archived. `elsewhere(key)`
 // says the log already has that ticket in another batch, so its leaving this one records nothing.
@@ -148,6 +165,7 @@ export function queueEvents(before, after, { batch, archived = {}, elsewhere = (
         }
       }
       for (const qid of newlyAnswered(was, now, fields)) ev(key, 'answered', { qid });
+      for (const e of waitEvents(was, now, fields)) ev(key, e.type, e.data);
       if (Object.keys(fields).length) ev(key, 'legacy_set', { fields });
     }
     if (own(archived, key)) ev(key, 'archived', {});

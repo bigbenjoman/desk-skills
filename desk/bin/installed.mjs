@@ -198,8 +198,7 @@ export function restartDriver({ slug, batch = null, dir, pid, queue = null }) {
   if (!kids.length || kids.some((k) => k.comm !== 'sleep')) {
     return `${name}: left running on the old code, it is mid-loop and may be merging; a supervisor tick moves it to the new code once it waits between loops`;
   }
-  const raw = E.repoConfigValue(slug, 'repo-root');
-  const root = raw && E.expandHome(raw).replace(/\/+$/, '');
+  const root = E.repoDirs(slug).root;
   if (!root || !existsSync(root)) return `${name}: left running on the old code, ${slug} has no §2 Primary repo root here to start it from`;
   // The driver stops on TERM in its pause; its sleep is stopped too.
   for (const p of [pid, ...kids.map((k) => k.pid)]) { try { process.kill(p, 'SIGTERM'); } catch { /* gone */ } }

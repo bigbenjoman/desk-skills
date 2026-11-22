@@ -537,8 +537,7 @@ export function repoPlacement(repository, root = deskConfigRoot()) {
     otherName = true;
   }
   if (hits.length !== 1) return { repository, unknown: true, slugs: hits.map((r) => r.slug) };
-  const dir = String(repoConfigValue(hits[0].slug, 'repo-root', root) ?? '').trim();
-  return { repository, slug: hits[0].slug, ghRepo: hits[0].ghRepo, root: dir && !isNone(dir) ? expandHome(dir) : null, otherName };
+  return { repository, slug: hits[0].slug, ghRepo: hits[0].ghRepo, root: repoDirs(hits[0].slug, root).root, otherName };
 }
 
 // Where a triage record puts a ticket's code when that is wholly another repo, or null to build it
@@ -937,6 +936,11 @@ export const permissionKey = (id) => PERMISSION_KEYS[id];
 
 // The merge driver holding <state>/merge-driver.lock.d: its pid while that process lives (one another
 // user owns counts), 'starting' for a lock made under a minute ago that has no pid yet, else null.
+// A PR out of draft ends the batch's merge driver's idle pause: it reads <state>/merge-driver/wake's
+// time between sleeps. A write that fails costs at most the driver's longest pause.
+export function wakeMergeDriver(state = stateDir()) {
+  try { mkdirSync(join(state, 'merge-driver'), { recursive: true }); writeFileSync(join(state, 'merge-driver', 'wake'), `${Date.now()}\n`); } catch { /* see above */ }
+}
 export function mergeDriverHolder(state) {
   const d = join(state, 'merge-driver.lock.d');
   if (!existsSync(d)) return null;
@@ -1006,6 +1010,17 @@ const statesOfRow = (r, { auto = true } = {}) =>
 export const rowStates = (items) => statesOfRow(leverRow(items));
 // A slug's name without its owner: the part after the first `__`, or the slug with none.
 export const shortName = (slug) => slug.split('__').slice(1).join('__') || slug;
+// A configured repo's directories from its own config: §2 Repo root, and §2 Worktrees directory, else
+// `<repo root>-worktrees` beside the root. Each is trimmed, home-expanded and without a trailing slash,
+// and null where unset or `none`.
+export function repoDirs(slug, root = deskConfigRoot()) {
+  const dir = (id) => {
+    const v = repoConfigValue(slug, id, root);
+    return v && !isNone(v) ? String(expandHome(String(v).trim())).replace(/\/+$/, '') || null : null;
+  };
+  const repo = dir('repo-root');
+  return { root: repo, worktrees: dir('worktrees-dir') ?? (repo ? `${repo}-worktrees` : null) };
+}
 // Each slug's name as desk-q shows it: the part after the owner, or owner/name where two repos share it.
 export function shownNames(slugs) {
   const short = slugs.map(shortName);

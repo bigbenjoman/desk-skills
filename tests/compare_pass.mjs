@@ -4,9 +4,10 @@
 //   node compare_pass.mjs record <node args...>
 //     What the `node` shim runs in place of the real node when its argv names pass.mjs: runs the real
 //     node ($PASS_CMP_NODE) with the same arguments, passing its stdin, stdout, stderr and exit status
-//     through unchanged, then saves run <n>.json in $PASS_CMP_OUT: when the run started, the exit
+//     through unchanged, then saves run <n>.json in $PASS_CMP_OUT: when the run started and ended, the exit
 //     status, stdout and stderr as they arrived, the queue at $DESK_QUEUE and the archive beside it,
-//     and how many lines the suite had printed to $PASS_CMP_SUITE_LOG when the run started.
+//     and how many lines the suite had printed to $PASS_CMP_SUITE_LOG when the run started. Before the
+//     run, it holds each usage probe start stamp under the age a pass probes again at (holdProbeStamps).
 //
 //   node compare_pass.mjs diff <base records> <head records> <base tree> <head tree>
 //     Lists, per suite and run, every queue field and output line that differs once ids and paths
@@ -16,7 +17,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { constants } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { lock, unlock } from '../desk/bin/dir-lock.mjs';
 import { flattenQueue } from '../desk/bin/queue-fields.mjs';
 
@@ -37,7 +38,30 @@ function nextRun(dir) {
   } finally { unlock(held); }
 }
 
-function record(argv) {
+// A pass with no usage reading probes for one only when its login's last probe started over
+// PROBE_EVERY_MS ago (usage-probe.mjs noReadingProbeDue), so which of a suite's passes probe depends on
+// how fast the machine runs the suite, and the two trees, run side by side, cross that line at
+// different runs. Each pass starts with every probe start stamp held under that age, past the minute a
+// pass joins another's probe for, so no run's probe depends on the machine's speed. Only a suite's own
+// usage dir is held: one that is the machine's ($PASS_CMP_LIVE_USAGE, or unnamed) is left as it is. A
+// tree without usage-probe.mjs has no probe to hold.
+async function holdProbeStamps() {
+  const live = process.env.PASS_CMP_LIVE_USAGE;
+  const probeMod = new URL('../desk/bin/usage-probe.mjs', import.meta.url);
+  if (!live || !existsSync(probeMod)) return;
+  const m = await import(probeMod.href);
+  const { PROBE_EVERY_MS, PROBE_GAP_MS, usageDir } = m, dir = usageDir();
+  if (resolve(dir) === resolve(live)) return;
+  const held = Date.now() - (PROBE_EVERY_MS - PROBE_GAP_MS);
+  let names = [];
+  try { names = readdirSync(dir).filter((f) => /^probe.*\.at$/.test(f)); } catch { return; }
+  for (const f of names) {
+    try { const at = Number(readFileSync(join(dir, f), 'utf8')); if (at > 0 && at < held) writeFileSync(join(dir, f), String(held)); } catch { /* left as it is */ }
+  }
+}
+
+async function record(argv) {
+  await holdProbeStamps();
   const dir = process.env.PASS_CMP_OUT;
   mkdirSync(dir, { recursive: true });
   const run = nextRun(dir);
@@ -53,7 +77,7 @@ function record(argv) {
   child.on('close', (code, signal) => {
     const q = process.env.DESK_QUEUE;
     writeFileSync(join(dir, `${run}.json`), JSON.stringify({
-      run, started, at_line: atLine, exit: code, signal, out: Buffer.concat(chunks).toString('utf8'),
+      run, started, ended: Date.now(), at_line: atLine, exit: code, signal, out: Buffer.concat(chunks).toString('utf8'),
       queue: q ? readJson(q) : null, archive: q ? readJson(q.replace(/\.json$/, '') + '.archive.json') : null,
     }));
     // The pass died by a signal: die by it too, so the suite sees the status it would without the shim.
@@ -202,12 +226,24 @@ function item(s, rn) {
   return { text: shown.text, shape: shown.shape, cmp: k.shape, times: k.times, vals: t.vals };
 }
 
-// When a tree's runs of one suite started, to find the run a time was made in or worked out for.
+// When a tree's runs of one suite started and ended, to find the run a time was made in or worked out for.
 function clock(recs) {
   const starts = [...recs.values()].filter((r) => Number.isFinite(r.started)).map((r) => [r.started, r.run])
     .sort((a, b) => a[0] - b[0]);
+  const end = (n) => recs.get(n)?.ended;
   return {
     start: (n) => recs.get(n)?.started,
+    // Where t falls among the runs: `in n` while run n ran, `before n` after run n - 1 ended and before
+    // run n started, the time the suite spends between two passes.
+    slots(t) {
+      const out = new Set();
+      for (const [s, n] of starts) {
+        const e = end(n), pe = end(n - 1);
+        if (Number.isFinite(e) && s <= t && t <= e) out.add(`in ${n}`);
+        if (Number.isFinite(pe) && pe < t && t < s) out.add(`before ${n}`);
+      }
+      return out;
+    },
     // The runs that started around t: the last to start before it, and its neighbours.
     around(t) {
       let lo = 0, hi = starts.length;
@@ -217,15 +253,19 @@ function clock(recs) {
   };
 }
 
-// Two times match when they are the same, a few seconds apart, or the same offset from the start of
-// one run on each tree: a time a run made, or one its suite worked out just before it, sits there
-// however far apart the two trees ran. A time worked out differently (an hour on, not two) does not.
+// Two times match when they are the same, a few seconds apart, made in the same run or the same gap
+// between two runs on each tree, or the same offset from the start of one run on each tree: a time a
+// run made, or one its suite worked out just before it, sits there however far apart the two trees ran
+// and however much longer one tree's run took to reach it. A time worked out differently (an hour on,
+// not two) does not.
 function sameTime(a, b, run, cb, ch) {
   if (a === b) return true;
   const ta = ms(a), tb = ms(b);
   if (!Number.isFinite(ta) || !Number.isFinite(tb)) return false;
   const within = Math.max(slack(a), slack(b));
   if (Math.abs(ta - tb) <= within) return true;
+  const slotsH = ch.slots(tb);
+  for (const s of cb.slots(ta)) if (slotsH.has(s) && Number(s.split(' ')[1]) <= run) return true;
   for (const j of new Set([run, ...cb.around(ta), ...ch.around(tb)])) {
     if (j > run) continue;
     const sb = cb.start(j), sh = ch.start(j);
