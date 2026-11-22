@@ -80,6 +80,8 @@
 // `promotion:<n>` is a feature batch's: its promotion PR #<n>, still red once its check tries are spent,
 // listed above the follow items waiting on it (done records nothing; the next pass reads its checks again).
 // `ask:<n>` is the repo's too: an action a session handed the person (done takes it off the list).
+// `proposal:<KEY>` is a ticket's: a pending proposal on its priority that triage found (priority-proposal.mjs),
+// which holds no work; promote ["<value>"] or reject writes the answer to the ticket (desk-jira) and keeps it.
 // `base-red:<branch>` is a batch's: its base red on checks that hold its PRs' fix tries, naming the
 // PRs held and the last merges desk made (done records nothing; each hold clears once its check passes there).
 // `base-sync` is a batch's: its base sync failed (could not push, fetch or recreate the base) while that
@@ -243,6 +245,11 @@ export const READS = {
       const at = checkoutOf(r, 'read its ticket');
       return JSON.parse(execFileSync('desk-jira', ['get', key, '--json'], { ...quiet, cwd: at.cwd, env: at.env }))?.fields?.status?.statusCategory?.key ?? null;
     } catch { return null; }
+  },
+  // desk-jira run in the repo's own checkout, so its own Jira is the one written: its stdout, or a throw.
+  jira: (r, args) => {
+    const at = checkoutOf(r, 'write to its ticket');
+    return execFileSync('desk-jira', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], cwd: at.cwd, env: at.env, maxBuffer: 64 << 20 });
   },
   git: (dir, args) => outOrNull(runOnce('git', ['-C', dir, ...args])),
   // origin fetched in `dir`, so its remote refs are as GitHub has them: true, or false when it failed.
@@ -1458,6 +1465,58 @@ const ASK = 'ask:';
 const askItems = (batches) => batches.filter((b) => b.batch == null && !b.error).flatMap((r) => (r.asks ?? []).map((a) => ({ r, dir: r.stateDir, t: { key: `${ASK}${a.id}` },
   item: { kind: 'ask', repoLevel: true, id: a.id, need: a.text, actions: [['done', 'a session handed this to you; say done once it is done, and it leaves the list'], ['not-now']], since: timeOf(a.at) } })));
 
+// ---- a pending priority proposal on a ticket (priority-proposal.mjs): one item a ticket --------------
+// A ticket whose triage record carries `priority_proposal` (ticket-facts.mjs: a label §4 Priority
+// proposal labels matches, or a description line asking a person to promote it or reject it) is one
+// item, `proposal:<KEY>`, until the person answers it. It holds no work: the ticket is built either way.
+// promote sets §4 Priority to the value proposed (or the one the answer names), reject leaves it; both
+// take the label off and comment on the ticket (proposalAnswer), and the answer is kept on the queue
+// ticket (priority_proposal_answer), so the item goes.
+const PROPOSAL = 'proposal:';
+const proposalItems = (batches) => batches.filter((b) => !b.error && b.q).flatMap((r) => Object.values(r.q.tickets ?? {}).flatMap((t) => {
+  if (t.merged_at || t.state === 'failed' || t.priority_proposal_answer) return [];
+  const p = triageOf(r, t.key)?.priority_proposal;
+  if (!p || typeof p !== 'object') return [];
+  const asked = `${p.label ? `the label ${p.label}` : 'its description'}${p.line ? ` ("${cut(one(p.line), 160)}")` : ''}`;
+  const off = p.label ? ' and takes the label off' : '';
+  return [{ r, dir: r.stateDir, t: { key: `${PROPOSAL}${t.key}` }, item: { kind: 'proposal', proposal: true, ticket: t.key, to: p.to ?? null, label: p.label ?? null,
+    need: `${t.key} carries a pending proposal to make its priority ${p.to ?? 'higher'}, from ${asked}, which a person promotes or rejects. It is built either way: promote sets its priority${p.to ? ` to ${p.to}` : ' to the value you name'}${off}, and reject leaves the priority as it is${off}; both comment on ${t.key}`,
+    actions: [p.to ? ['promote', `desk admitted ${t.key} to build now, so its priority is the one proposed`] : ['promote', null, 'name the value: promote "P1"'],
+      ['reject', null, 'the priority stays as it is'], ['not-now']],
+    since: timeOf(t.added_at) } }];
+}));
+
+// The answer to proposal item `i`, written to its ticket through desk-jira in the repo's own checkout
+// (`reads.jira`): §4 Priority set to the value (promote only, with --approved when it is one of §4
+// Priorities only you set, as the person's answer is that approval), the label taken off (desk-jira
+// labels remove), and a comment;
+// then kept on the queue ticket. A write that fails stops there, saying what was written before it.
+function proposalAnswer(i, verb, text, reads, now, say) {
+  const to = verb === 'promote' ? (one(text).replace(/^["']|["']$/g, '') || i.to || '').toUpperCase() : null;
+  if (verb === 'promote' && !to) return say(false, 'promote needs the value to set, as promote "P1", since the proposal names none.');
+  const pr = [].concat(repoConfigValues(i.r.slug, 'jira-priority') ?? []).map(String);
+  const field = pr.find((v) => /^customfield_\d+$/.test(v.trim()))?.trim() ?? 'priority';
+  const top = [].concat(repoConfigValues(i.r.slug, 'jira-priority-user-only') ?? []).map((v) => String(v).trim().toLowerCase());
+  const done = [];
+  const run = (what, args) => {
+    try { reads.jira(i.r, args); done.push(what); return null; }
+    catch (e) { return say(false, `${what} failed (${one(e.stderr || e.message)})${done.length ? `, after ${andList(done)}` : ', so nothing was written'}; it stays on your list.`); }
+  };
+  let no = to ? run(`setting ${field} to ${to}`, ['edit', i.ticket, `${field}=${to}`,
+    ...(top.includes(to.toLowerCase()) ? ['--approved', `promoted to ${to} through desk-needs-you, answering the pending priority proposal`] : [])]) : null;
+  if (no) return no;
+  if (i.label) {
+    // Jira's own remove, which touches that label alone: a label added meanwhile is kept.
+    no = run(`taking ${i.label} off`, ['labels', i.ticket, 'remove', i.label]);
+    if (no) return no;
+  }
+  const body = `Priority proposal ${verb === 'promote' ? `promoted: ${field} set to ${to}` : 'rejected: the priority stays as it was'}${i.label ? `, and the label ${i.label} taken off` : ''}. Answered by the person through desk-needs-you.`;
+  no = run('the comment', ['comment', i.ticket, body]);
+  if (no) return no;
+  const q = queueCmd(i.r, ['set', i.ticket, `priority_proposal_answer=${JSON.stringify({ answer: verb, to, at: new Date(now).toISOString() })}`]);
+  return q.ok ? say(true, `${andList(done)} on ${i.ticket}, so it is off your list.`) : say(false, `${andList(done)} on ${i.ticket}, but keeping the answer was refused (${q.out}): it may be listed again.`);
+}
+
 // ---- a red main assigned to the person (tests/ci_main_red.mjs): one item an issue -------------------
 // CI's alarm keeps one issue labelled ci-main-red open, assigned to the repo's owner, while a lane on
 // main is red, cancelled or stale. It is read through gh only when items are listed (`read`, READS.ciRed),
@@ -1811,7 +1870,7 @@ export function needsCount(r) {
   for (const s of [...signinItems(own, own), ...pageItems(own, { home: true })]) {
     if (lookupItem(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
   }
-  for (const s of [...askItems(r.batches ?? [r]), ...stalledItems(own), ...ticketlessItems(own)]) {
+  for (const s of [...askItems(r.batches ?? [r]), ...stalledItems(own), ...ticketlessItems(own), ...proposalItems(own)]) {
     if (lookupItem(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
   }
   return { shown: rows.length + items.length, putOff, rows, stepRows, items, offItems };
@@ -1882,6 +1941,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   for (const s of pageItems(inScope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of leaseTrialItems(repos, named, now)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of askItems(scope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
+  for (const s of proposalItems(inScope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of ticketlessItems(inScope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   // Unscoped, every configured repo: a quiet repo, which the home screen does not show, is where a lane goes stale.
   if (ciRed) for (const s of ciRedItems(repos, word ? scope : repos, ciRed)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
@@ -2023,7 +2083,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS)) return recordRepoItem({ word, ticket, action, now, repos, reads });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(PROPOSAL)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -2318,9 +2378,9 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
 // A repo-level or step item's answer. Done on an unset row requeues every ticket parked on it once the
 // row is set, each in its own batch (or names the live session to message); done on behind templates
 // checks the copies again now; done on a step records nothing, since the pass reads the step from Jira.
-function recordRepoItem({ word, ticket, action, now, repos, reads = READS }) {
+function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = READS }) {
   const c = collect({ word, now, repos, reads: null, ciRed: ticket.startsWith(CI_RED) ? (reads ?? READS).ciRed : null });
-  let i = c.items.find((y) => (y.repoLevel || y.kind === 'step' || y.kind === 'follow' || y.blocker || y.unpromoted || y.promotion != null) && y.t.key === ticket);
+  let i = c.items.find((y) => (y.repoLevel || y.proposal || y.kind === 'step' || y.kind === 'follow' || y.blocker || y.unpromoted || y.promotion != null) && y.t.key === ticket);
   // A row set since the list was shown no longer groups its parks there; done still finds them.
   if (!i && ticket.startsWith(UNSET) && c.named) {
     const key = ticket.slice(UNSET.length);
@@ -2346,6 +2406,7 @@ function recordRepoItem({ word, ticket, action, now, repos, reads = READS }) {
     const m = queueCmd(i.r, ['follow-ran', i.ticket, JSON.stringify(i.steps), new Date(now).toISOString()]);
     return m.ok ? say(true, 'recorded done, so it is off your list.') : say(false, `recording it was refused: ${m.out}`);
   }
+  if (i.proposal) return proposalAnswer(i, verb, text, reads ?? READS, now, say);
   if (i.unpromoted) return verb === 'promote' ? promoteBase(i, say) : startWithout(i, say);
   if (i.promotion != null) return say(true, `noted: the next pass reads promotion PR #${i.promotion}'s checks again, and this item goes once they pass.`);
   if (i.blocker) return say(true, `noted: the next pass that reads ${i.ticket}'s blockers clears this once ${i.blocker} is no longer linked, and lifts any hold on it.`);

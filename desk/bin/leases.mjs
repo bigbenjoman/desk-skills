@@ -368,6 +368,28 @@ export function release(id, pid, { env, dir = leaseDir(), now = Date.now, ifExpi
   });
 }
 
+// Frees the ownerless preview-build units of team `team` that `done` names by label, in one store
+// lock, logging each release with its `reason`. A unit taken or renewed after `at` (when the PR's
+// preview finished) is kept: a push or rerun since started a build those checks are not. done: [{ pr,
+// label, at, reason }] -> { freed: [pr] }, or, never throwing, { unreadable: why } when the store
+// cannot be read and { failed: why } for any other failure (an unwritable lease directory, a full disk).
+export function releasePreviews(team, done, { env, dir = leaseDir(), now = Date.now }) {
+  try {
+    return { freed: withStore(dir, (store, log) => {
+      sweep(store, log, ownerStarts(store, env), now());
+      return done.filter((d) => {
+        const l = store.leases.find((x) => x.kind === 'preview-build' && x.key === team && x.owner === null && x.label === d.label);
+        if (!l || (d.at && Date.parse(l.renewed ?? l.acquired) > Date.parse(d.at))) return false;
+        store.leases = store.leases.filter((x) => x !== l);
+        log({ event: 'release', ...brief(l), reason: d.reason });
+        return true;
+      });
+    }).map((d) => d.pr) };
+  } catch (e) {
+    return e instanceof LeaseStoreError ? { unreadable: e.message } : { failed: String(e?.message ?? e).split('\n')[0] };
+  }
+}
+
 // Frees lease `id` whoever holds it, for a person clearing a stuck lease; `reason` is required and
 // logged with the holder. -> { code, why }.
 export function forceRelease(id, reason, { env, dir = leaseDir(), now = Date.now }) {

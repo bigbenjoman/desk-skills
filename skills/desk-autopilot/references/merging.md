@@ -255,8 +255,9 @@ nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2 ABC-3" --deps "A
 
 `--log` has the driver append its own output to `<state>/merge-driver.log`, so the command carries
 no `>>` redirect: a redirect outside the working directory prompts every time, whatever the allow
-rules say. **Where the batch is handed to the supervisor, do not start one**: it starts the driver for a
-handed-over batch and starts it again after a reboot (*The supervisor*).
+rules say. **Where the batch is handed to the supervisor, do not start one**: it starts one driver for
+all of the repo's handed-over batches (`--all-batches`, each batch merged onto its own base, the
+author's open PRs read once per sweep) and starts it again after a reboot (*The supervisor*).
 
 Each merge it makes is a `merged` line in the merge log naming the PR, the head it merged at, the
 ticket and the driver as the merger; a refused merge is a `failed` line, never `merged`.

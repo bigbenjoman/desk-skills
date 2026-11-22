@@ -258,6 +258,52 @@ t('DS-873 an item worker-settings refuses for its tail is UNLISTED, as worker-se
 t('and `name: port` reads as its name', d.code, 1);
 t('DS-395 AC4 a script run as bash <path>.sh is not drift', drift(`${conf()}| Related tests | \`bash tests/related.sh\` |\n`).out, 'no drift');
 
+// DS-877: rows another row settles are schema data; drift names a set row that contradicts its rule,
+// and `desk-env forced` lists the values setup writes unasked.
+const JIRA_PERMS = ROWS.filter((e) => e.kind === 'perm' && e.id.startsWith('jira-')).map((e) => e.id);
+d = drift(`${conf({ perms: { 'jira-create': 'yes' } })}| Tracker | \`none\` |\n`);
+t('DS-877 AC1 a Jira permission set yes with Tracker none is one CONFLICT line naming the row, its value and the rule', d.out,
+  'CONFLICT §3 jira-create is yes, but §4 Tracker is none, which settles it no: there is no Jira to act on');
+t('DS-877 AC1 and exits 1', d.code, 1);
+d = drift(`${conf({ perms: Object.fromEntries(JIRA_PERMS.map((k) => [k, 'no'])) })}| Tracker | \`none\` |\n`);
+t(`DS-877 AC2 every Jira permission no with Tracker none is no conflict (${JIRA_PERMS.length} rows)`, d.out, 'no drift');
+t('DS-877 an ask contradicts a rule that settles the row no', /^CONFLICT §3 jira-comment is ask,/.test(drift(`${conf({ perms: { 'jira-comment': 'ask' } })}| Tracker | \`none\` |\n`).out), true);
+t('DS-877 Tracker jira settles nothing', drift(`${conf({ perms: { 'jira-create': 'yes' } })}| Tracker | \`jira\` |\n`).out, 'no drift');
+const forced = (rows) => {
+  const c = join(T, 'forced.md');
+  writeFileSync(c, `${conf()}${rows}`);
+  try { return { code: 0, out: execFileSync('node', [BIN, 'forced', '--json'], { encoding: 'utf8', env: driftEnv({ DESK_CONFIG: c }), stdio: 'pipe' }).trim() }; }
+  catch (e) { return { code: e.status, out: String(e.stdout).trim() }; }
+};
+const forcedOf = (rows) => JSON.parse(forced(rows).out).map((f) => `${f.id}=${f.value} (${f.reason})`).join(' | ');
+const noDb = '(there is no local database to act on)';
+t('DS-877 AC3 Local database none forces each database row no with the reason, and nothing else',
+  forcedOf('| Local database | `none` |\n'), `db-per-ticket=no ${noDb} | db-clone-staging=no ${noDb} | tests-shared-db=no ${noDb}`);
+t('DS-877 AC4 Repo merge settings with auto-merge off force pr-auto-merge no with the reason',
+  forcedOf('| Repo merge settings | `auto-merge off; delete_branch_on_merge on` |\n'), 'pr-auto-merge=no (gh pr merge --auto cannot arm where the repo has auto-merge off)');
+t('DS-877 auto-merge allowed forces nothing, whatever else is off', forcedOf('| Repo merge settings | `auto-merge allowed; delete_branch_on_merge off` |\n'), '');
+for (const text of ['auto-merge allowed and delete_branch_on_merge off', 'auto-merge on. delete_branch_on_merge off', 'auto-merge allowed']) {
+  t(`DS-877 "${text}" forces nothing: another setting's off is not auto-merge's`, forcedOf(`| Repo merge settings | \`${text}\` |\n`), '');
+}
+for (const text of ['auto-merge allowed: no', 'allow_auto_merge: false', 'no auto-merge', 'Auto-merge is disabled, delete_branch_on_merge on']) {
+  t(`DS-877 "${text}" forces pr-auto-merge no`, forcedOf(`| Repo merge settings | \`${text}\` |\n`), 'pr-auto-merge=no (gh pr merge --auto cannot arm where the repo has auto-merge off)');
+}
+t('DS-877 auto-merge off in its own item of several forces pr-auto-merge no',
+  forcedOf('| Repo merge settings | `auto-merge off` `delete_branch_on_merge on` |\n'), 'pr-auto-merge=no (gh pr merge --auto cannot arm where the repo has auto-merge off)');
+t('DS-877 Staging none with a local database forces the staging rows no, each with its own reason',
+  forcedOf('| Local database | `postgres container x-postgres-1` |\n| Staging | `none` |\n'),
+  'db-clone-staging=no (there is no staging to clone) | staging-write=no (there is no staging to write to)');
+t('DS-877 a row two rules settle is listed once, by the first',
+  forcedOf('| Local database | `none` |\n| Staging | `none` |\n').split(' | ').filter((f) => f.startsWith('db-clone-staging=')).join(' | '), `db-clone-staging=no ${noDb}`);
+d = drift(`${conf({ perms: { 'db-clone-staging': 'yes' } })}| Local database | \`postgres container x-postgres-1\` |\n| Staging | \`none\` |\n`);
+t('DS-877 db-clone-staging yes with Staging none is a CONFLICT', d.out,
+  'CONFLICT §3 db-clone-staging is yes, but §4 Staging is none, which settles it no: there is no staging to clone');
+const none = forced('| Local database | `postgres container x-postgres-1` |\n| Tracker | `jira` |\n');
+t('DS-877 AC5 no forcing row set prints an empty list', none.out, '[]');
+t('DS-877 AC5 and exits 0', none.code, 0);
+const badRule = ROWS.filter((e) => e.forced && (!e.forced.length || e.forced.some((f) => !(ROWS.some((x) => x.id === f.row && x.kind !== 'perm') && (e.kind !== 'perm' || ['yes', 'ask', 'no'].includes(f.value)) && f.reason))));
+t('DS-877 every forced rule names a declared §0-§5 row, a value its row takes and a reason', badRule.map((e) => e.id).join(' '), '');
+
 // A set row whose value does not fit the type the schema declares for it is named INVALID, report-only.
 d = drift(`${conf({ perms: { 'worker-local-services': 'no' } })}| Local services | \`Typesense on port 8108\` |\n`);
 t('DS-871 AC1 a Local services item that is no `<service> [:<port>]` is INVALID, naming the row, the item and the form', d.out, badService);
@@ -639,6 +685,8 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'harm-swap-growth|3b|Swap growth that holds spawns (GB)', // DS-848
     'harm-tmpfs|3b|tmpfs /tmp size that holds spawns (GB)', // DS-848
     'harm-vmmem|3b|WSL VM share of its grant that holds spawns (%)', // DS-848
+    'jira-field-defaults|4|Field defaults',
+    'proposal-labels|4|Priority proposal labels',
   ];
   const sorted = (a) => [...a].sort().join('\n');
   const rowsNow = Object.entries(CONFIG_ROWS).map(([id, r]) => [id, r.section, r.row, ...(r.table ? ['table'] : [])].join('|'));
@@ -683,7 +731,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     ['merge-method', 'rebase', 'squash-merge', false], ['suite-weight', 'heavy', 'medium', false], ['status-table', 'quiet', 'loud', false],
     ['batches-run-by', 'session', 'cron', false], ['ai-attribution', 'allowed', 'sometimes', false], ['regex', 'KAN-[0-9]+', 'KAN-[0-9', false],
     ['command', 'apps/api: uv run pytest', null], ['test-signin', 'apps/portal: dev@example.test', 'apps/portal: hunter2', false], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
-    ['required-fields', 'Bug: customfield_1', 'customfield_1', false], ['lever', 'codex, effort', 'turbo', false],
+    ['required-fields', 'Bug: customfield_1', 'customfield_1', false], ['field-defaults', 'customfield_1 = from parent', 'customfield_1', false], ['lever', 'codex, effort', 'turbo', false],
     ['budget', '25', '25 USD', true], ['worker-models', 'default', 'fast', true], ['worker-effort', 'task=low', '4b=extreme', true],
     ['worker-location', 'cloud', 'remote', true], ['codex-review', 'timeout=60', 'timeout=soon', true],
     ['spawn-gate', 'start work > 8 GiB', null], ['file-budget', '2', 'two', false],

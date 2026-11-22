@@ -283,6 +283,17 @@ t('red CI for the evaluation is one list call, no per-run view', [ghCalls, liste
   t('a parked ticket with no rounds and no notes counts none', got[4], 0);
 }
 {
+  // A red main its workflow has since gone green on is not counted against the ticket.
+  const { withOutcomes } = await import('../desk/bin/levers-evaluate.mjs');
+  const st = join(T, 'recovered-state');
+  mkdirSync(st, { recursive: true });
+  const rec = (kind, ticket, id) => ({ kind, ticket, pr: 1, merged_at: at(-3), run: { id }, ...(kind === 'red_recovered' ? { green: { id: id + 1 } } : {}), at: at(-2) });
+  writeFileSync(join(st, 'post-merge.jsonl'), [rec('red_main', 'R-1', 10), rec('red_recovered', 'R-1', 10), rec('red_main', 'R-1', 20), rec('red_recovered', 'R-2', 30),
+    { kind: 'scan', at: at(-1), complete: true }].map((l) => `${JSON.stringify(l)}\n`).join(''));
+  const rows = ['R-1', 'R-2'].map((key) => ({ key, batch: 'rec', state: 'done', merged_at: null }));
+  t('a red main later recovered, or recorded recovered, does not count; one not recovered does', withOutcomes(rows, [{ name: 'rec', state: st }]).rows.map((r) => r.post_merge), [1, 0]);
+}
+{
   // A finished, merged ticket moves to the queue's archive (queue-store.mjs archiveDone): it is still evidence.
   const { repoRows } = await import('../desk/bin/levers-evaluate.mjs');
   const dir = join(T, 'archived-batch');

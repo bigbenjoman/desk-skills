@@ -147,6 +147,8 @@ How to turn what you find into rows:
 - **Required fields.** Propose them from `desk-jira meta`, then ask which fields the team expects on
   a new ticket that Jira does not require (a house rule, often enforced by a bot after creation), and
   add those to the row too: desk reads the row, not Jira, for the tickets it creates and drafts.
+  Then ask what each one is on a follow-up nobody set it for, for §4 Field defaults: a value (a
+  source such as Tech Debt) or `from parent` (a repository the parent ticket names).
 - **Branch protection and Required checks.** Merge what classic protection and the rulesets
   (`rules/branches/<default>`: `required_status_checks` rules, `pull_request` rules for approvals,
   `required_linear_history`) say; name which source each check came from. A repo that answers 404

@@ -90,7 +90,7 @@ import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
-  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD } from './pass/shared.mjs';
+  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD, failedField } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideTicketless } from './pass/ticketless-prs.mjs';
 import { decideDeadlines } from './pass/deadlines.mjs';
@@ -101,7 +101,7 @@ import { decideBaseGate } from './pass/base-gate.mjs';
 import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
 import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
-import { kindMode, leaseCli } from './leases.mjs';
+import { kindMode, leaseCli, releasePreviews } from './leases.mjs';
 import { handToWorker as handMemToWorker, memPool, reserveForWorker } from './mem-lease.mjs';
 import { isArchived, prClosed, owesReopen } from './queue-store.mjs';
 
@@ -330,8 +330,10 @@ function flushQueue() {
 // The one exception: a spawn's state=running write, made by queue.mjs against the file as it stands,
 // before the worker starts. Refused, nothing may start, since the queue would still read the ticket as
 // waiting and the next pass would start a second worker on it.
+// Every session start restarts the progress clock: an earlier session's progress_at, hours old after a
+// park, a handoff or a usage limit, would read as a stall the pass it starts (pass/deadlines.mjs).
 const recordRunning = (key, pairs, what = 'no worker was started') => {
-  const args = ['set', key, 'state=running', ...pairs];
+  const args = ['set', key, 'state=running', ...pairs, 'progress_at=null', 'progress_sha=null'];
   const r = qRun(args);
   if (r.ok) return true;
   report.failed.push(refusedLine(args, `not recorded, so ${what}`, r.out));
@@ -340,9 +342,10 @@ const recordRunning = (key, pairs, what = 'no worker was started') => {
 const queue = () => QW.view();
 process.on('exit', () => { try { if (RECORDS && QW.pending()) QW.flush(); } catch { /* nothing more to report to */ } });
 // A failed ticket keeps why (`failed`), which the status table, desk-q and needs-you quote: a reason in
-// this pass's report alone is gone by the next. The report gets the same reason, then `tail`.
-const markFailed = (key, why, { sets = [], tail = '' } = {}) => {
-  q('set', key, 'state=failed', `failed=${JSON.stringify({ why: String(why).replace(/\s+/g, ' ').trim().slice(0, 600), at: new Date().toISOString() })}`, ...sets);
+// this pass's report alone is gone by the next. The report gets the same reason, then `tail`. `subtype`
+// is the error its session ended with, which the ticket ledger's failed event records.
+const markFailed = (key, why, { sets = [], tail = '', subtype = null } = {}) => {
+  q('set', key, 'state=failed', failedField(why, { subtype }), ...sets);
   report.failed.push(`${key}: ${why}${tail}`);
 };
 // The exit code spawn-worker.sh recorded when session `sid`'s process ended, or null when it recorded none.
@@ -973,6 +976,15 @@ const ADVANCE_HANDLERS = {
   note: (a) => { notes.push(a.line); },
   hold: (a, s) => { usageHolds.push({ key: a.key, limit: a.limit, was: a.was, login: loginOf(loginDirOf(s.t)) }); },
   'suite-wait': (a) => suiteWait(a.worktree ?? join(WORKTREES, a.key), { procs: processList(), cwds: processCwds(), holders: lockHolders(E.lockDir(), { locks: 'both' }) }),
+  // Two git reads: the worktree's HEAD, and its branch as last pushed (the remote-tracking ref a push updates).
+  progress: (a, s) => {
+    const wt = s.t.worktree;
+    if (!wt || !existsSync(wt)) return null;
+    const head = sh('git', ['-C', wt, 'rev-parse', 'HEAD'], { tolerant: true });
+    if (!/^[0-9a-f]{40}$/.test(head)) return null;
+    const pushed = s.t.branch ? sh('git', ['-C', wt, 'rev-parse', '--verify', '-q', `refs/remotes/origin/${s.t.branch}`], { tolerant: true }) : '';
+    return { head, pushed: /^[0-9a-f]{40}$/.test(pushed) ? pushed : null };
+  },
   // With a session id, every process of that session and its groups, so a hung child goes too; else the pid.
   kill: (a) => {
     let target = null;
@@ -1015,7 +1027,7 @@ const ADVANCE_HANDLERS = {
     if (!s.t.worktree || !existsSync(s.t.worktree)) return null;
     try { return uncommitted(s.t.worktree).length; } catch { return null; }
   },
-  fail: (a) => markFailed(a.key, a.why, { tail: a.tail }),
+  fail: (a) => markFailed(a.key, a.why, { tail: a.tail, subtype: a.subtype }),
 };
 // A running ticket's log as the decision reads it: null where it has none yet, or runs in the cloud.
 function advanceLog(t) {
@@ -4063,9 +4075,11 @@ const merges = [];
 const drafts = [];
 const undrafted = [];
 const reopens = [];
+// The preview-build team whose units a finished preview frees: null with no §4 Vercel team or the kind off.
+const PREVIEW_TEAM = (() => { try { const team = E.previewTeam(); return team && kindMode('preview-build', LEASE_ENV).mode !== 'off' ? team : null; } catch { return null; } })();
 runSteps({
   name: 'PR status',
-  snapshot: () => ({ ...phaseSnapshot({ tickets: qNow.tickets, registry: REGISTRY, now: Date.now() }), dry: DRY, passAt: PASS_AT, logins: conflictHandle }),
+  snapshot: () => ({ ...phaseSnapshot({ tickets: qNow.tickets, registry: REGISTRY, now: Date.now() }), dry: DRY, passAt: PASS_AT, logins: conflictHandle, previews: !!PREVIEW_TEAM }),
   decide: decidePrStatus,
   handlers: {
     ...OUT_HANDLERS,
@@ -4081,6 +4095,7 @@ runSteps({
       return s && withErrors(withUntriggered(withHistory(s, a.was)), a.was);
     },
     'pr-status': (a) => q('set', a.key, `pr_status=${JSON.stringify(a.status)}`),
+    'free-previews': (a) => releasePreviews(PREVIEW_TEAM, a.done.map((d) => ({ ...d, label: E.previewLabel(GH_REPO, { pr: d.pr }) })), { env: LEASE_ENV }),
     merged: (a) => q('merged', a.key, ...(a.at ? [a.at] : [])),
     'follow-on': (a) => {
       const args = ['set', a.key, ...a.fields];

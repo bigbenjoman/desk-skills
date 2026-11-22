@@ -82,7 +82,8 @@ self-contained and state:
 - the role it owns, and that it owns only that role
 - that role's `entries` and `prefixes`
 - the app(s) in scope, the routing model, and where routes, auth/role checks and e2e specs live
-  (from step 0), plus the desk config path if `EXISTS=yes`
+  (from step 0), plus, if `EXISTS=yes`, the §0 One-line description and §5 Repo instructions
+  (`desk-env get repo-description`, `desk-env list repo-instructions`), never the config's path
 - the labels other shards are likely to use for cross-role destinations, so `toRole` edges
   line up — at minimum the landing screen of each other role
 

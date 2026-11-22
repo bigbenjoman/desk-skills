@@ -25,6 +25,7 @@ const { versionOf } = await import('../desk/bin/queue-store.mjs');
 const { read: readLog, ledgerPaths, reduce, fold } = await import('../desk/bin/ticket-ledger.mjs');
 const { recordWrite, ledgerTarget, STANDING, queueDifference } = await import('../desk/bin/queue-ledger.mjs');
 const { ledgerLine } = await import('../desk/bin/pass/report.mjs');
+const { failedField } = await import('../desk/bin/pass/shared.mjs');
 const { lock, unlock } = await import('../desk/bin/dir-lock.mjs');
 
 let fails = 0;
@@ -189,6 +190,46 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   const illegal = [];
   reduce(log(f), null, { onIllegal: (ev, from) => illegal.push(`${ev.type} ${ev.key} from ${from}`) });
   t('AC3 the log they wrote reads back with no illegal transition', illegal.join(', '), '');
+}
+
+// DS-898: a worker spawned, failed and requeued, written as the pass writes each (queue.mjs for the
+// spawn's state=running, the pass's writer for the failure): each is its own typed event.
+{
+  const f = fixture({ version: 1, batch: 'b', tickets: { A: tk('A'), B: tk('B'), C: tk('C') } });
+  const w = queueWriter(f);
+  w.apply(['set', 'C', 'stage=1/9']);
+  w.flush();
+  const asPass = (...args) => spawnSync(process.execPath, [join(B, 'queue.mjs'), ...args], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: ON, DESK_QUEUE: f, DESK_LEDGER_BY: 'pass' } });
+  const running = (key, sid, port, more = []) => asPass('set', key, 'state=running', `session_id=${sid}`, `port=${port}`, `login=${JSON.stringify({ name: 'work', config_dir: '/x' })}`, 'resumes=null', ...more);
+  const at = log(f).length;
+  running('A', 's-A', 3231);
+  running('B', 's-B', 3232);
+  // The pass then crashes with a change applied and never flushed.
+  w.apply(['set', 'C', 'stage=2/9']);
+  const spawned = since(f, at).filter((e) => e.type === 'spawned');
+  t('AC1 a spawn appends a spawned event with its login, port, worker and round',
+    JSON.stringify(spawned[0]?.data), JSON.stringify({ worker: 's-A', round: 0, login: 'work', port: 3231 }));
+  t('AC3 a pass that spawned two workers and crashed leaves both spawned events in the log', shape(spawned), 'spawned A, spawned B');
+
+  // A resumed worker's round is how many times it was resumed.
+  asPass('set', 'B', 'state=triaged', 'resume=pending');
+  const atR = log(f).length;
+  asPass('set', 'B', 'state=running', 'resumes=2', 'port=3233', 'resume=null');
+  t('AC1 a resume\'s spawned event carries its round', since(f, atR).find((e) => e.type === 'spawned')?.data.round, 2);
+
+  // The failure as markFailed writes it, with the subtype its session ended in.
+  const w2 = queueWriter(f);
+  const atF = log(f).length;
+  w2.apply(['set', 'A', 'state=failed', failedField('exited with no marker', { subtype: 'error_max_budget_usd' })]);
+  w2.flush();
+  t('AC2 a failure appends a failed event with its session\'s subtype', JSON.stringify(since(f, atF).find((e) => e.type === 'failed')?.data), JSON.stringify({ subtype: 'error_max_budget_usd' }));
+
+  const atQ = log(f).length;
+  const rq = q(f, ON, 'requeue', 'A');
+  t('AC4 a failed ticket requeued appends a requeued event', `${rq.status} ${shape(since(f, atQ).filter((e) => e.type !== 'legacy_set'))}`, '0 requeued A, triaged A');
+
+  const d = queueDifference(f, { by: 'test' });
+  t('AC5 after the spawns, the failure and the requeue the difference stays at zero', d.diffs.map((x) => x.path).join(', '), '');
 }
 
 // A pass taking a running ticket back to triage, which no typed event does: the state is recorded with
@@ -437,6 +478,48 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   w.flush();
   t('a waits field that is no map of waits is recorded as the field', `${shape(since(f, at4))} ${since(f, at4)[0]?.data.fields.waits}`, 'legacy_set D soon');
   t('and still matches', queueDifference(f).diffs.length, 0);
+}
+
+// DS-902 AC7: workers that made progress and stalled, as the advance step and the deadline sweep write
+// them pass after pass: progress_at and progress_sha are never appended, the progress wait is, and the
+// rebuild still matches with no difference line.
+{
+  const j = JSON.stringify;
+  const { nextWaits } = await import('../desk/bin/pass/deadlines.mjs');
+  // Seeded as a live queue's tickets are, each with the stamp every write sets.
+  const running = (key) => tk(key, { state: 'running', stage: '3/9', updated_at: '2026-11-20T09:00:00.000Z' });
+  const f = fixture({ version: 1, batch: 'b', tickets: { M: running('M'), S: running('S') } });
+  queueDifference(f, { seed: true, by: 'pass' });
+  const from = log(f).length;
+  const w = queueWriter(f);
+  const at = (mins) => new Date(Date.parse('2026-11-20T10:00:00.000Z') + mins * 60000).toISOString();
+  // One pass at `mins`: the advance step's progress for each worker that moved, then the sweep's waits.
+  const pass = (mins, moved) => {
+    for (const k of moved) w.apply(['set', k, `progress_at=${at(mins + 0.5)}`, `progress_sha=${j({ head: 'a'.repeat(40), pushed: `${mins}`.padStart(40, '0') })}`]);
+    w.flush();
+    for (const k of ['M', 'S']) {
+      const tq = read(f).tickets[k];
+      const { waits } = nextWaits(tq, at(mins));
+      const open = Object.keys(waits).length ? waits : null;
+      if (j(open) !== j(tq.waits ?? null)) w.apply(['set', k, `waits=${j(open)}`]);
+    }
+    w.flush();
+  };
+  pass(0, ['M', 'S']);
+  pass(10, ['M']);
+  pass(20, ['M']);
+  pass(50, []);
+  pass(60, ['S']);
+  pass(70, ['M']);
+  const evs = since(f, from);
+  t('AC7 progress_at and progress_sha are never appended', evs.some((e) => e.type === 'legacy_set' && ('progress_at' in e.data.fields || 'progress_sha' in e.data.fields)), false);
+  t('AC7 the progress waits are, the stalled one\'s escalation, the end of each wait at progress, and the wait after it',
+    j(evs.filter((e) => /^wait/.test(e.type)).map((e) => `${e.type} ${e.key}${e.data.escalated ? ' escalated' : ''}`)),
+    j(['waiting S', 'waiting M', 'waiting S escalated', 'waited S', 'waited M', 'waiting S']));
+  t('AC7 the log reads no illegal transition', readLog(dirname(f)).illegal.length, 0);
+  const d = queueDifference(f);
+  t('AC7 the rebuild matches and the pass prints no difference line',
+    `${d.diffs.map((x) => x.path).join(', ')}|${ledgerLine({ check: d, missed: 0, queueBin: '/bin/queue.mjs' })}`, '|null');
 }
 
 rmSync(T, { recursive: true, force: true });

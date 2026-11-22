@@ -44,7 +44,6 @@
 {"file":"skills/desk-autopilot/references/stalls-and-spend.md","kind":"state-path","value":"handoffs/<TICKET>.json","context":"$DESK_STATE/handoffs/<TICKET>.json"},
 {"file":"skills/desk-autopilot/references/supervisor.md","kind":"state-path","value":"orchestrator.lock","context":"<state>/orchestrator.lock"},
 {"file":"skills/desk-autopilot/references/supervisor.md","kind":"state-path","value":"supervisor.log","context":"<state>/supervisor.log"},
-{"file":"skills/desk-autopilot/references/supervisor.md","kind":"state-path","value":"merge-driver.lock.d","context":"<state>/merge-driver.lock.d"},
 {"file":"skills/desk-autopilot/references/supervisor.md","kind":"state-path","value":"handed.json","context":"<state>/handed.json"},
 {"file":"skills/desk-autopilot/references/supervisor.md","kind":"state-path","value":"intake.json","context":"<state>/intake.json"},
 {"file":"skills/desk-autopilot/references/worker-contract-stage-3.md","kind":"state-path","value":"designs/","context":"$DESK_STATE/designs/"},
