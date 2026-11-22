@@ -24,7 +24,7 @@ references, `Closes #<n>`, which is how a PR meant to close an issue says so; it
 use and names the line. Reword a flagged line (the-body.md, "A step that closes an issue later")
 and re-run; never move a step's issue onto a `Closes` line to pass.
 
-Then, where `desk-env cmds pr-description-checks` prints items, CI checks the PR's description, and a
+Where `desk-env cmds pr-description-checks` prints items, CI checks the PR's description, and a
 body that fails is a red check on the first run. Write the body to its file first, then run each
 item in its directory with the file's absolute path appended:
 

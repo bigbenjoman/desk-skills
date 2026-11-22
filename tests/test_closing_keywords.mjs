@@ -1,10 +1,10 @@
 // suite: closing keywords (desk-pr's check that a PR body closes only the issues it says it closes)
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { strayClosings, closesOnly } from '../desk/bin/closing-keywords.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const lines = (body) => strayClosings(body).map((s) => s.line);
@@ -32,9 +32,18 @@ for (const l of ['Closes #12', 'closes #12.', '- Fixes #3, closes #4', '**Resolv
 }
 t('AC3 a closing line beside a flagged one flags only the other', lines('Closes #12\n\nClose #1090 after a week.'), [3]);
 
+// A long run of references before prose is read in linear time: two optional runs of spaces side by
+// side once backtracked exponentially (26 references took 21.6 s), and the pass checks worker bodies.
+const refs = (n, sep) => Array.from({ length: n }, (_, i) => `#${i + 1}`).join(sep);
+for (const sep of [' ', '  ', ', ', ' and ', ' & ']) {
+  const started = Date.now();
+  const got = [lines(`Closes ${refs(200, sep)} once the fleet is quiet.`), lines(`Closes ${refs(200, sep)}.`)];
+  t(`a closing line of 200 references joined by ${JSON.stringify(sep)} is read at once`, [got, Date.now() - started < 1000], [[[1], []], true]);
+}
+
 // The command: exit 0 clean, 1 flagged with the line, 2 usage.
 const bin = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'closing-keywords.mjs');
-const dir = mkdtempSync(join(tmpdir(), 'closing-kw-'));
+const dir = scratch('closing-kw-');
 const run = (body, args) => {
   const f = join(dir, 'body.md');
   if (body != null) writeFileSync(f, body);
@@ -47,7 +56,6 @@ t('AC1 the command fails a flagged body', bad.code, 1);
 t('AC1 and names the line', bad.out.split('\n')[0].startsWith('line 3: Close #1090 would close that issue at merge: AC1 can only'), true);
 t('the command wants one file', run(null, []).code, 2);
 t('an unreadable file is a usage error', run(null, [join(dir, 'missing.md')]).code, 2);
-rmSync(dir, { recursive: true, force: true });
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);
