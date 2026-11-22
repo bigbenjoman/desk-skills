@@ -1512,6 +1512,27 @@ t('DS-215 AC16 (DS-279 AC14) at 104 columns home drops DONE and MERGING, no line
 t('DS-215 AC16 (DS-279 AC14) at 120 columns the done column comes back, no line wider; at 160 the row says it has a ready ticket with no free slot',
   `${cols215(f120)} ${wider(f120, 120)} | ${f160.find((l) => l.startsWith('  mixed '))?.endsWith(' of 2 · cap 3 · 1 ready with no free slot')}`,
   'REPO|LAST PASS|RUN|READY|MERGING|WAIT|NEEDS YOU|DONE|ALL DONE BY|WORKERS 0 | true');
+put(I.T, I.env, 'capped', { port: 5300, conc: '12 / 12', beat: 1, queue: { batch: 'capped', concurrency: 12,
+  tickets: Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`CA-${i + 1}`, { state: 'running', stage: '4/9' }])) } });
+const repos990 = Q.loadRepos(NOW).filter((r) => r.name === 'capped');
+const fit990 = (width) => lines(Q.overview(repos990, { now: NOW, avail: 30, width }));
+const table990 = (ls) => ls.slice(ls.findIndex((l) => l.startsWith('  REPO ')), ls.findIndex((l) => l.startsWith('  capped ')) + 1);
+const row990 = (width) => fit990(width).find((l) => l.startsWith('  capped '));
+const compact990 = Array.from({ length: 161 }, (_, i) => 200 - i).filter((n) => row990(n)?.endsWith('  8/12 cap 12'));
+const least990 = compact990.at(-1);
+t('DS-990 AC1 where no other layout fits, WORKERS reads 8/12 cap 12, and the table ends within the width',
+  `${compact990.length > 0} ${compact990.every((n) => table990(fit990(n)).every((l) => l.length <= n))} ${row990(compact990[0] + 1).endsWith('  8 of 12 · cap 12')}`, 'true true true');
+const cut990 = [least990 - 1, least990 - 10, 40].map((n) => ({ n, row: row990(n), table: table990(fit990(n)) }));
+t('DS-990 AC2 narrower still, the row ends with an ellipsis after a whole cell, and no line is wider',
+  cut990.map(({ n, row, table }) => `${row.endsWith(' …')} ${row990(least990).startsWith(row.slice(0, -2))} ${/\d$/.test(row.slice(0, -2)) ? row990(least990).charAt(row.length - 2) === ' ' : true} ${table.every((l) => l.length <= n)}`).join('|'),
+  'true true true true|true true true true|true true true true');
+t('DS-990 AC3 wide enough for the widest layout, WORKERS reads as it did', `${row990(240).endsWith('  8 of 12 · cap 12')} ${rowOf(Q.overview(repos990, { now: NOW, avail: 30 }), 'capped').endsWith('  8 of 12 · cap 12')}`, 'true true');
+put(I.T, I.env, 'idlecap', { port: 5301, conc: '12 / 12' });
+const idle990 = (width) => lines(Q.overview(Q.loadRepos(NOW).filter((r) => ['capped', 'idlecap'].includes(r.name)), { now: NOW, avail: 30, width, all: true })).find((l) => l.startsWith('  idlecap '));
+t('DS-990 AC2 with every repo listed, a repo with no batch shows its whole cap or ends with an ellipsis after a whole cell, within the width',
+  [240, least990, least990 - 10, 40].map((n) => { const l = idle990(n) ?? ''; return `${l.endsWith('  cap 12') || (l.endsWith(' …') && !/\d …$/.test(l))} ${l.length <= n}`; }).join('|'),
+  'true true|true true|true true|true true');
+for (const d of ['capped', 'idlecap'].flatMap((n) => [join(I.env.DESK_CONFIG_ROOT, 'repos', `acme__${n}`), join(I.env.DESK_HOME, 'repos', `acme__${n}`), join(I.env.HOME, '.desk-autopilot', `acme__${n}`)])) rmSync(d, { recursive: true, force: true });
 const setup104 = f104.findIndex((l) => /^(note| {4}) {4}setup /.test(l));
 t('DS-215 AC17 a note wider than the terminal wraps between words, the rest indented under its text',
   `${setup104 >= 0} ${/^ {21}\S/.test(f104[setup104 + 1] ?? '')} ${wider(f104, 104)}`, 'true true 0');
