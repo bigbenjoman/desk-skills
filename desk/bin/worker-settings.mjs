@@ -730,7 +730,7 @@ if (mode === 'triage') {
   for (const raw of cfgList('local-services')) {
     const item = E.parseServicePort(raw);
     if (!item.error) services.push(item.value.service);
-    else if (E.permission('worker-local-services') === 'yes') warns.push(`§4 Local services item ${item.error} (a compose service name, then an optional :port) — not allow-listed`);
+    else if (E.permission('worker-local-services') === 'yes') warns.push(`§4 Local services item ${item.error} — not allow-listed`);
   }
   const ups = !composeFile ? [] : services.flatMap((s) => [...exact('docker', ` compose -f ${composeFile} up -d --no-recreate --no-deps ${s}`),
     ...exact('docker-compose', ` -f ${composeFile} up -d --no-recreate --no-deps ${s}`)]);
