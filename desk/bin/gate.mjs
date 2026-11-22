@@ -391,7 +391,7 @@ export const agentLast = (holds) => [...holds].sort((a, b) => (holdKind(a) === '
 export const PR_FILES_JQ = '.[] | .filename, (.previous_filename // empty)';
 // The files PR n changes at `head`, from `cache` (read-cache.mjs openCache) when it holds them for that
 // head, else from `read()` (which throws when it cannot read), kept for the next caller. A new head is
-// a new key, so it is read afresh (DS-989).
+// a new key, so it is read afresh.
 export function prFilesAt({ cache, repo, n, head, read }) {
   const key = `${String(repo).toLowerCase()}#${n}@${head}`;
   const kept = head ? cache.get(key) : undefined;

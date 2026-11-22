@@ -1,6 +1,6 @@
 // GitHub reads kept on disk between merge-driver loops, each keyed by something that names one fixed
 // answer (a commit SHA, a PR at its head SHA), so a driver looping every minute or two reads each once
-// per CACHE_MS instead of once per loop (DS-989). An entry older than CACHE_MS is read again: a check
+// per CACHE_MS instead of once per loop. An entry older than CACHE_MS is read again: a check
 // rerun on an unchanged commit, or a PR's file list against a base that moved, shows within that.
 //
 //   const c = openCache(path);   // path null: nothing kept, every read goes through

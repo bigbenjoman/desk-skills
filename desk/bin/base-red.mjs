@@ -139,12 +139,16 @@ export function nextRecord(was, s, { branch, merges, at }) {
 }
 
 // `read` for baseState with what does not change kept in `cache` (read-cache.mjs openCache), so a driver
-// whose base has not moved reads no commit and no check runs on its next loop (DS-989): each commit's
-// parent, and each commit's check runs once there is at least one and every one has completed. A
-// commit with a run still queued or going is read again every loop until they have all completed. The
-// tip is always read; a tip read that gives no parent (git ls-remote) takes it from commit(), kept too.
+// whose base has not moved reads no commit and no check runs on its next loop: each commit's parent,
+// and each commit's check runs once there is at least one and every one has completed. A commit with a
+// run still queued or going is read again every loop until they have all completed, and so is the tip
+// while any of `required` has no run on it yet: a run GitHub creates late (a workflow_run workflow, an
+// app that posts its check afterwards) is pending as far as the base is concerned, and a kept list
+// without it would read the tip's parent in its place. The tip is always read; a tip read that gives no
+// parent (git ls-remote) takes it from commit(), kept too.
 const completed = (runs) => Array.isArray(runs) && runs.length > 0 && runs.every((r) => String(r?.status ?? '').toLowerCase() === 'completed');
-export function cachedRead(read, cache) {
+export function cachedRead(read, cache, required = []) {
+  let tipSha = null;
   const keep = (c) => { if (c && cache.get(`commit:${c.sha}`) === undefined) cache.set(`commit:${c.sha}`, c.parent ?? null); return c; };
   const commit = (sha) => {
     const parent = cache.get(`commit:${sha}`);
@@ -154,6 +158,7 @@ export function cachedRead(read, cache) {
     tip: (branch) => {
       const t = read.tip(branch);
       if (!t) return null;
+      tipSha = t.sha;
       return t.parent === undefined ? commit(t.sha) : keep(t);
     },
     commit,
@@ -161,7 +166,7 @@ export function cachedRead(read, cache) {
       const kept = cache.get(`runs:${sha}`);
       if (kept !== undefined) return kept;
       const runs = read.runs(sha);
-      if (completed(runs)) cache.set(`runs:${sha}`, runs);
+      if (completed(runs) && (sha !== tipSha || required.every((name) => runs.some((r) => r?.name === name)))) cache.set(`runs:${sha}`, runs);
       return runs;
     },
   };
@@ -172,13 +177,10 @@ function gh(args) {
   return r.status === 0 ? r.stdout : null;
 }
 const json = (s) => { try { return s == null ? null : JSON.parse(s); } catch { return null; } };
-// The owner/name a GitHub remote URL names (https or ssh), lowercased, or null.
-export const remoteRepo = (url) => /github\.com[:/]+([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/i.exec(String(url ?? '').trim())?.[1].toLowerCase() ?? null;
-// Whether this checkout's origin is `repo`, so its branches are the ones base-red reads.
-const originIs = (repo) => {
-  const r = spawnSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf8' });
-  return r.status === 0 && remoteRepo(r.stdout) === String(repo).toLowerCase();
-};
+// Whether this checkout's origin is `repo`, so its branches are the ones base-red reads. The URL is
+// read as desk-env reads it (ownerRepoFromUrl), an ssh host alias included.
+const originUrl = () => { const r = spawnSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf8' }); return r.status === 0 ? r.stdout : null; };
+export const originIs = (repo, url = originUrl()) => url != null && E.ownerRepoFromUrl(url)?.toLowerCase() === String(repo).toLowerCase();
 // The SHA `branch` points at on origin, read with git rather than the REST API, which a driver loop
 // would otherwise spend a core call on every time. Null when it cannot be read.
 export function lsRemoteTip(branch, run = (args) => execGit('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })) {
@@ -224,7 +226,7 @@ if (isMain) {
   // A cache shared across repos would answer one repo's SHA from another's, so its keys are repo-scoped
   // by living in the repo's own state directory, which the driver passes.
   const cache = openCache(flag('--cache') || null);
-  const s = required.length ? baseState({ required, branch, read: cachedRead(ghRead(repo), cache) }) : { state: 'none' };
+  const s = required.length ? baseState({ required, branch, read: cachedRead(ghRead(repo), cache, required) }) : { state: 'none' };
   cache.save();
   const path = baseRedPath(state);
   if (s.state === 'red') {
