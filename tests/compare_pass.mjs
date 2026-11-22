@@ -18,6 +18,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFi
 import { constants } from 'node:os';
 import { join } from 'node:path';
 import { lock, unlock } from '../desk/bin/dir-lock.mjs';
+import { flattenQueue } from '../desk/bin/queue-fields.mjs';
 
 const [mode, ...args] = process.argv.slice(2);
 
@@ -291,32 +292,12 @@ const show = (x, others) => (others.some((y) => y.shape === x.shape) ? x.text : 
 // write in its run, so it is compared as set or not, and by its type: <STAMP:string> when it holds a
 // string.
 const STAMP = /(?:^|[ .])(?:updated_at|spawned_at|last_start|cloud\.started)$/;
-function flatten(rec, norm, rn) {
-  const out = new Map();
-  const key = (k) => rn(norm(k));
-  const leaf = (v, path) => (Number.isInteger(v) && /(?:^|\.)pid$/.test(path) ? '<PID>'
+const flatten = (rec, norm, rn) => flattenQueue(rec, {
+  key: (k) => rn(norm(k)),
+  leaf: (v, path) => (Number.isInteger(v) && /(?:^|\.)pid$/.test(path) ? '<PID>'
     : Number.isInteger(v) && /(?:^|[ .])port$/.test(path) ? `port ${v}`
-      : v != null && STAMP.test(path) ? `<STAMP:${typeof v}>` : norm(JSON.stringify(v)));
-  const walk = (v, path) => {
-    if (v && typeof v === 'object' && Object.keys(v).length) {
-      for (const [k, x] of Object.entries(v)) walk(x, path ? `${path}.${key(k)}` : key(k));
-    } else out.set(path, leaf(v, path));
-  };
-  const top = (doc, prefix) => {
-    if (!doc) return;
-    for (const [k, v] of Object.entries(doc)) {
-      if (k === 'tickets' && v && typeof v === 'object') {
-        for (const [t, x] of Object.entries(v)) {
-          if (x && typeof x === 'object') for (const [f, y] of Object.entries(x)) walk(y, `${prefix}${key(t)} ${key(f)}`);
-          else out.set(`${prefix}${key(t)}`, norm(JSON.stringify(x)));
-        }
-      } else walk(v, `${prefix || 'queue '}${key(k)}`);
-    }
-  };
-  top(rec.queue, '');
-  top(rec.archive, 'archive ');
-  return out;
-}
+      : v != null && STAMP.test(path) ? `<STAMP:${typeof v}>` : norm(JSON.stringify(v))),
+});
 
 const crashed = (r) => r.signal || (r.exit !== 0 && /^Node\.js v\d+/m.test(r.out));
 const firstError = (r) => (r.signal ? `killed by ${r.signal}`

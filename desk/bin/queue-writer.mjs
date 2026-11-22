@@ -187,8 +187,11 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
     return undone;
   }
 
+  // With `archive`, done tickets move to the archive even when nothing else is pending; with neither,
+  // nothing is written.
   function flush({ archive = false } = {}) {
-    if (!ops.length) return { ok: true, wrote: false, version: versionOf(base), conflicts: [], skipped: [], archived: [], archiveError: null, ops: [], ledgerMissed: null };
+    const none = () => ({ ok: true, wrote: false, version: versionOf(base), conflicts: [], skipped: [], archived: [], archiveError: null, ops: [], ledgerMissed: null });
+    if (!ops.length && !archive) return none();
     const dir = `${file}.lock`;
     try {
       lock(dir, { waitMs, timeout: (pid) => new Error(`the queue is locked by pid ${pid ?? '? (no pid written yet)'}, which has held it past the ${waitMs / 1000}s wait`) });
@@ -206,6 +209,7 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
       let archived = []; let archiveError = null;
       const live = { ...out.tickets };
       if (archive) { try { archived = archiveDone(file, out); } catch (e) { archiveError = e.message; } }
+      if (!ops.length && !archived.length) return { ...none(), archiveError };
       out.version = versionOf(base);
       let ledger = null;
       const version = writeQueueFile(file, out, { by: 'pass', archived: Object.fromEntries(archived.map((k) => [k, live[k]])), onLedger: (l) => { ledger = l; } });

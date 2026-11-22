@@ -1,4 +1,5 @@
-// What a pass says, as decisions: base drift, the report's lines, the ticket groups and the verdict.
+// What a pass says, as decisions: base drift, the report's lines, the ticket groups, the verdict and
+// the ledger difference.
 // Pure: each reads only the snapshot it is given. pass.mjs reads what each needs (a worktree's git
 // count, a seen-file, the groups desk-q finds, the check-in) into the snapshot, and carries out the
 // actions; each decision runs at the point in the pass whose state it reads.
@@ -293,6 +294,22 @@ export function decideVerdictLines(s) {
     if (s.costTable) acts.push(line(s.costTable));
   }
   return acts;
+}
+
+// ---- ledger difference ---------------------------------------------------------
+// The ledger lever's line, or null when the queue rebuilt from the log matches queue.json and no write
+// of this pass missed its append. `check` is queue-ledger.mjs queueDifference's result, or { error }
+// when it did not run; `missed` counts this pass's missed appends; `queueBin` is queue.mjs as the
+// person runs it. It names the first LEDGER_SHOWN differing fields.
+const LEDGER_SHOWN = 10;
+export function ledgerLine({ check, missed, queueBin }) {
+  if (check.error) return `ledger: the difference check did not run (${check.error})`;
+  const n = check.diffs.length;
+  const seeded = check.seeded ? `ledger: seeded the log from queue.json (${check.seeded} ticket(s)); ` : '';
+  if (!n && !missed && !seeded) return null;
+  const named = check.diffs.slice(0, LEDGER_SHOWN).map((d) => d.path).join(', ');
+  const more = n > LEDGER_SHOWN ? `, and ${n - LEDGER_SHOWN} more` : '';
+  return `${seeded || 'ledger: '}${n} field(s) differ between queue.json and the queue rebuilt from the log, ${missed} missed append(s) this pass${n ? `: ${named}${more}. See each with node ${queueBin} rebuild` : ''}`;
 }
 
 // Why nothing spawned while something could have: the first hold that applied this pass, or null.
