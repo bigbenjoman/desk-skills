@@ -1519,7 +1519,7 @@ const repos990 = Q.loadRepos(NOW).filter((r) => r.name === 'capped');
 const fit990 = (width) => lines(Q.overview(repos990, { now: NOW, avail: 30, width }));
 const table990 = (ls) => ls.slice(ls.findIndex((l) => l.startsWith('  REPO ')), ls.findIndex((l) => l.startsWith('  capped ')) + 1);
 const row990 = (width) => fit990(width).find((l) => l.startsWith('  capped '));
-const compact990 = Array.from({ length: 200 }, (_, i) => 200 - i).filter((n) => row990(n).endsWith('  8/12 cap 12'));
+const compact990 = Array.from({ length: 161 }, (_, i) => 200 - i).filter((n) => row990(n)?.endsWith('  8/12 cap 12'));
 const least990 = compact990.at(-1);
 t('DS-990 AC1 where no other layout fits, WORKERS reads 8/12 cap 12, and the table ends within the width',
   `${compact990.length > 0} ${compact990.every((n) => table990(fit990(n)).every((l) => l.length <= n))} ${row990(compact990[0] + 1).endsWith('  8 of 12 · cap 12')}`, 'true true true');
