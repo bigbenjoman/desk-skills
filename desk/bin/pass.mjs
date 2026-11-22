@@ -3829,12 +3829,16 @@ runPhase({
   handlers: {
     ...PHASE_HANDLERS,
     teardown: (a) => {
+      if (DRY) { report.advanced.push(`preview database ${a.rec.db} for ${a.rec.branch} (${a.why}, dry run): would run ${a.cmds.map((c) => `\`${c}\``).join(', ')}`); return; }
       const r = previewTeardown(a, { state: STATE, run: (cmd) => runCommand(cmd, { cwd: MAIN, timeout: DELETE_STEP_MS }) });
       report[r.list].push(r.line);
     },
   },
   report,
 });
+// A record left (its PR still open, or a delete to try again) keeps the batch from going idle, so the
+// supervisor keeps running its passes until each is deleted or handed to the person.
+const previewDbPending = readPreviewRecords(STATE).length > 0;
 
 // ---- report --------------------------------------------------------------
 // The decisions are pass/report.mjs: the report's opening here, its lines after the promotion ledger
@@ -5292,7 +5296,7 @@ if (!DRY) {
 const qEnd = queue();
 const verdictSnap = {
   ...baseSnapshot(), tickets: qEnd.tickets, queue: qEnd, report, blocked, putOff: new Set(Object.values(qEnd.tickets).filter(putOff).map((t) => t.key)),
-  parkNotes, prStates, gatePending, epicPending, promotionPending, followPending, spawned: report.spawned.length,
+  parkNotes, prStates, gatePending, epicPending, promotionPending, followPending, previewDbPending, spawned: report.spawned.length,
 };
 const { waiting, parked, idle, status } = verdictOf(verdictSnap);
 const lines = [];

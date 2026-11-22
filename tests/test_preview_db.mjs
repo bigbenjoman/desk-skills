@@ -79,9 +79,15 @@ const failRun = (cmd) => (cmd.includes('migrate') ? { ok: false, code: 1, out: '
 const bad = runUp({ call, repo: 'acme/w', run: failRun, record: (r) => recs2.push(r), now: () => 'T' });
 t('AC4 a failed step is named with its command and quoted error', [bad.ok, bad.step, bad.cmd, bad.error],
   [false, 'migrate', 'DATABASE_URL="$(neonctl cs feat-a)" pnpm prisma migrate deploy', 'Error: P3018 relation "users" already exists']);
-t('AC4 the database made before it is recorded, so the pass still deletes it', recs2.map((r) => r.steps), [['create']]);
-const none = runUp({ call, repo: 'acme/w', run: () => ({ ok: false, code: 2, out: 'boom' }), record: (r) => recs2.push(r) });
-t('a failed create records nothing (negative control)', [none.step, recs2.length], ['create', 1]);
+t('AC4 the database is recorded before create runs and after it, so the pass still deletes it', recs2.map((r) => r.steps), [[], ['create']]);
+const recs3 = [];
+const none = runUp({ call, repo: 'acme/w', run: () => ({ ok: false, code: 2, out: 'boom' }), record: (r) => recs3.push(r) });
+t('a create that fails part-way is still recorded, so what it made is deleted', [none.step, recs3.map((r) => [r.db, r.steps])], ['create', [['feat-a', []]]]);
+const recs4 = [];
+const resetCall = up({ prior: { pr: '42', branch: 'feat/a', db: 'feat-a', steps: [] } });
+const reset = runUp({ call: resetCall, repo: 'acme/w', run: (c) => (c.includes('delete') ? { ok: false, code: 1, out: 'Error: branch not found' } : { ok: true, code: 0, out: '' }), record: (r) => recs4.push(r) });
+t('a reset delete that finds nothing does not stop up', [reset.ok, reset.done], [true, ['create', 'migrate', 'seed', 'override', 'rebuild']]);
+t('an up with no earlier record runs no reset (negative control)', up().plan.some((p) => p.step === 'delete'), false);
 t('an error with no error word quotes the last lines', stepError('a\nb\nc\nd'), 'b / c / d');
 t('a real command runs through sh, and its failure is read', [runCommand('echo hi', { cwd: '.', timeout: 5000 }).ok, runCommand('exit 3', { cwd: '.', timeout: 5000 }).code], [true, 3]);
 
@@ -120,7 +126,9 @@ t('AC2 a Next.js crash page is an error page', errorPageLine('Application error:
 t('AC2 a missing table is an error page', errorPageLine('Invalid `prisma.user.findMany()` invocation:\nThe table `public.Thing` does not exist in the current database.') != null, true);
 t('AC2 a Postgres missing column is an error page', errorPageLine('error: column "plan_id" of relation "users" does not exist') != null, true);
 t('AC2 a Vercel crash is an error page', errorPageLine('500: INTERNAL_SERVER_ERROR\nCode: FUNCTION_INVOCATION_FAILED') != null, true);
-t('AC2 a 404 is an error page', errorPageLine('404\nThis page could not be found.') ?? errorPageLine('404 | This page could not be found.'), '404 | This page could not be found.');
+t('AC2 a 404 split over two lines, as Next.js renders it, is an error page', errorPageLine('404\nThis page could not be found.'), '404 | This page could not be found.');
+t('AC2 a 404 on one line is an error page', errorPageLine('404 | This page could not be found.'), '404 | This page could not be found.');
+t('a 404 count beside an unrelated line is not one (negative control)', errorPageLine('Requests\n404\nEverything is fine'), null);
 t('a page mentioning errors is not one (negative control)', errorPageLine('Settings\nNo errors in the last 24 hours\nEmail is required\nError rate: 0%'), null);
 const shots = scratch('preview-shots-');
 writeFileSync(join(shots, 'after-home.png'), 'png'); writeFileSync(join(shots, 'after-home.txt'), 'Welcome back\nYour plans');
