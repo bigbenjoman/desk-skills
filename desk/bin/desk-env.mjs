@@ -356,8 +356,11 @@ export function declaredRows(text) {
 const settingCol = (header) => ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? 1;
 
 // A config file's parse, by path, kept while its inode, size and modification time are unchanged:
-// desk-q reads many rows of every repo's config on each refresh. A missing file is not kept.
+// desk-q reads many rows of every repo's config on each refresh. A missing file is not kept. Past
+// PARSED_MAX files the oldest goes, one at a time: clearing the lot each time it filled made a scan of
+// more repos than that reread and reparsed every config, every time.
 const parsedFiles = new Map();
+const PARSED_MAX = 1024;
 const fileStamp = (st) => `${st.ino}:${st.size}:${st.mtimeNs}`;
 
 // Any config file, not only this repo's: `ports` reads every repo's to keep dev ports apart.
@@ -370,7 +373,8 @@ function parseConfigFile(path) {
   const hit = parsedFiles.get(path);
   if (hit?.stamp === stamp) return hit.parsed;
   const parsed = parseConfigText(path, readFileSync(path, 'utf8'));
-  if (parsedFiles.size > 64) parsedFiles.clear();
+  parsedFiles.delete(path);
+  if (parsedFiles.size >= PARSED_MAX) parsedFiles.delete(parsedFiles.keys().next().value);
   parsedFiles.set(path, { stamp, parsed });
   return parsed;
 }
