@@ -535,8 +535,7 @@ export function repoPlacement(repository, root = deskConfigRoot()) {
     otherName = true;
   }
   if (hits.length !== 1) return { repository, unknown: true, slugs: hits.map((r) => r.slug) };
-  const dir = String(repoConfigValue(hits[0].slug, 'repo-root', root) ?? '').trim();
-  return { repository, slug: hits[0].slug, ghRepo: hits[0].ghRepo, root: dir && !isNone(dir) ? expandHome(dir) : null, otherName };
+  return { repository, slug: hits[0].slug, ghRepo: hits[0].ghRepo, root: repoDirs(hits[0].slug, root).root, otherName };
 }
 
 // Where a triage record puts a ticket's code when that is wholly another repo, or null to build it
