@@ -925,10 +925,10 @@ function permissionIn(parsed, id) {
 // Tri-state for guard rows, where "unset" must mean the strict default rather than `no`:
 // returns yes|ask|no|never|stop, or null when the row is missing, blank or TODO. A value it cannot
 // read is a `no`, as in permission(): a typo must never borrow the unset default.
-export function permissionOrUnset(id) {
+export function permissionOrUnset(id, parsed) {
   const key = PERMISSION_KEYS[id];
   if (!key) throw new Error(`desk-env: unknown permission id "${id}" (known: ${Object.keys(PERMISSION_KEYS).join(', ')})`);
-  const v = parseConfig().sections['3']?.byKey[norm(key)]?.value;
+  const v = (parsed ?? parseConfig()).sections?.['3']?.byKey[norm(key)]?.value;
   if (unset(v)) return null;
   return permValue(key, v);
 }
@@ -1936,11 +1936,7 @@ export const forcedIn = (parsed) => forcedRows((id) => driftValues(parsed, id));
 // Each set row that contradicts the value a forced rule settles it to: -> [{ ...forced row, set }].
 export function forcedConflicts(parsed) {
   return forcedIn(parsed).flatMap((f) => {
-    let set;
-    if (PERMISSION_KEYS[f.id]) {
-      const raw = parsed.sections['3']?.byKey[norm(f.label)]?.value;
-      set = unset(raw) ? null : permValue(f.id, raw);
-    } else set = repoValueIn(parsed, f.id, DECLARED_ROWS);
+    const set = PERMISSION_KEYS[f.id] ? permissionOrUnset(f.id, parsed) : repoValueIn(parsed, f.id, DECLARED_ROWS);
     return set == null || set.toLowerCase() === f.value ? [] : [{ ...f, set }];
   });
 }

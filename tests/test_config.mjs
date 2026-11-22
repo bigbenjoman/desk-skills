@@ -282,10 +282,26 @@ t('DS-877 AC3 Local database none forces each database row no with the reason, a
 t('DS-877 AC4 Repo merge settings with auto-merge off force pr-auto-merge no with the reason',
   forcedOf('| Repo merge settings | `auto-merge off; delete_branch_on_merge on` |\n'), 'pr-auto-merge=no (gh pr merge --auto cannot arm where the repo has auto-merge off)');
 t('DS-877 auto-merge allowed forces nothing, whatever else is off', forcedOf('| Repo merge settings | `auto-merge allowed; delete_branch_on_merge off` |\n'), '');
+for (const text of ['auto-merge allowed and delete_branch_on_merge off', 'auto-merge on. delete_branch_on_merge off', 'auto-merge allowed']) {
+  t(`DS-877 "${text}" forces nothing: another setting's off is not auto-merge's`, forcedOf(`| Repo merge settings | \`${text}\` |\n`), '');
+}
+for (const text of ['auto-merge allowed: no', 'allow_auto_merge: false', 'no auto-merge', 'Auto-merge is disabled, delete_branch_on_merge on']) {
+  t(`DS-877 "${text}" forces pr-auto-merge no`, forcedOf(`| Repo merge settings | \`${text}\` |\n`), 'pr-auto-merge=no (gh pr merge --auto cannot arm where the repo has auto-merge off)');
+}
+t('DS-877 auto-merge off in its own item of several forces pr-auto-merge no',
+  forcedOf('| Repo merge settings | `auto-merge off` `delete_branch_on_merge on` |\n'), 'pr-auto-merge=no (gh pr merge --auto cannot arm where the repo has auto-merge off)');
+t('DS-877 Staging none with a local database forces the staging rows no, each with its own reason',
+  forcedOf('| Local database | `postgres container x-postgres-1` |\n| Staging | `none` |\n'),
+  'db-clone-staging=no (there is no staging to clone) | staging-write=no (there is no staging to write to)');
+t('DS-877 a row two rules settle is listed once, by the first',
+  forcedOf('| Local database | `none` |\n| Staging | `none` |\n').split(' | ').filter((f) => f.startsWith('db-clone-staging=')).join(' | '), `db-clone-staging=no ${noDb}`);
+d = drift(`${conf({ perms: { 'db-clone-staging': 'yes' } })}| Local database | \`postgres container x-postgres-1\` |\n| Staging | \`none\` |\n`);
+t('DS-877 db-clone-staging yes with Staging none is a CONFLICT', d.out,
+  'CONFLICT §3 db-clone-staging is yes, but §4 Staging is none, which settles it no: there is no staging to clone');
 const none = forced('| Local database | `postgres container x-postgres-1` |\n| Tracker | `jira` |\n');
 t('DS-877 AC5 no forcing row set prints an empty list', none.out, '[]');
 t('DS-877 AC5 and exits 0', none.code, 0);
-const badRule = ROWS.filter((e) => e.forced && !(ROWS.some((x) => x.id === e.forced.row && x.kind !== 'perm') && (e.kind !== 'perm' || ['yes', 'ask', 'no'].includes(e.forced.value)) && e.forced.reason));
+const badRule = ROWS.filter((e) => e.forced && (!e.forced.length || e.forced.some((f) => !(ROWS.some((x) => x.id === f.row && x.kind !== 'perm') && (e.kind !== 'perm' || ['yes', 'ask', 'no'].includes(f.value)) && f.reason))));
 t('DS-877 every forced rule names a declared §0-§5 row, a value its row takes and a reason', badRule.map((e) => e.id).join(' '), '');
 
 // A set row whose value does not fit the type the schema declares for it is named INVALID, report-only.

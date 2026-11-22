@@ -16,7 +16,7 @@
 //   machine  the machine profile key the row falls back to when the repo leaves it unset
 //   unread   true for a row no script reads through desk-env yet: it stays out of CONFIG_ROWS, so
 //            `desk-env ids`, `get` and `config` print only the rows scripts read
-//   forced   { row, when, value, reason } where another row settles this one (settledBy, forcedRows)
+//   forced   [{ row, when, value, reason }] where another row settles this one (settledBy, forcedRows)
 // The §3c rule ledger and the rows inside a 'table' entry's table are the person's own, so they have
 // no entries.
 
@@ -528,15 +528,21 @@ const listRead = { listRead: true };
 const dflt = (value, extra) => ({ default: value, ...extra });
 const never = { example: 'never' };
 const stop = { example: 'stop' };
-// A row another row settles: `forced` names the settling row's id, when it settles (`none`, or a regex
-// its items joined by spaces match, case-blind), the value it forces and why. drift names a set row that
-// contradicts it, and `desk-env forced` lists the values setup writes unasked. forcedRows reads them.
-const settledBy = (row, when, value, reason) => ({ forced: Object.freeze({ row, when, value, reason }) });
-const noTracker = settledBy('tracker', 'none', 'no', 'there is no Jira to act on');
-// §4 Repo merge settings saying auto-merge is off, within one clause (`auto-merge off; …`).
-export const AUTO_MERGE_OFF = '\\bauto-?merge\\b[^;,]*?\\b(?:off|disabled|not allowed|false)\\b';
-const noLocalDb = settledBy('local-db', 'none', 'no', 'there is no local database to act on');
-const noServices = settledBy('local-services', 'none', 'no', 'there are no local services to act on');
+// A row another row settles: each rule of `forced` names the settling row's id, when it settles (`none`,
+// or { clause: <regex> } that one clause of its items matches whole, case-blind), the value it forces
+// and why. drift names a set row that contradicts it, and `desk-env forced` lists the values setup
+// writes unasked. forcedRows reads them; the first rule that settles a row is the one it names.
+const settledBy = (row, when, value, reason) => Object.freeze({ row, when, value, reason });
+const forces = (...rules) => ({ forced: Object.freeze(rules) });
+// One clause of §4 Repo merge settings saying auto-merge is off: `auto-merge off`, `auto-merge allowed:
+// no`, `allow_auto_merge: false`, `no auto-merge`. Anchored, so another setting's `off` never counts.
+const AUTO_MERGE = '(?:allow[-_ ]?)?auto[-_ ]?merge(?:[-_ ](?:allowed|enabled))?';
+const AUTO_MERGE_OFF = `^(?:${AUTO_MERGE}\\s*(?:[:=]|is)?\\s*(?:off|no|false|disabled|not allowed)|no ${AUTO_MERGE})$`;
+const STAGING_NONE = (reason) => settledBy('staging', 'none', 'no', reason);
+const LOCAL_DB_NONE = settledBy('local-db', 'none', 'no', 'there is no local database to act on');
+const noTracker = forces(settledBy('tracker', 'none', 'no', 'there is no Jira to act on'));
+const noLocalDb = forces(LOCAL_DB_NONE);
+const noServices = forces(settledBy('local-services', 'none', 'no', 'there are no local services to act on'));
 
 export const ROWS = Object.freeze([
   // §0 This repo
@@ -575,7 +581,7 @@ export const ROWS = Object.freeze([
   // §3 Git and pull requests
   p('git-commit'), p('git-push'), p('git-force-with-lease'), p('pr-open'), p('pr-edit'), p('pr-images'),
   p('pr-self-review-comment'), p('pr-review-others'), p('pr-reply'), p('pr-request-review'), p('pr-ready'),
-  p('pr-auto-merge', settledBy('repo-merge-settings', { matches: AUTO_MERGE_OFF }, 'no', 'gh pr merge --auto cannot arm where the repo has auto-merge off')),
+  p('pr-auto-merge', forces(settledBy('repo-merge-settings', { clause: AUTO_MERGE_OFF }, 'no', 'gh pr merge --auto cannot arm where the repo has auto-merge off'))),
   p('pr-merge-green'), p('merge-feedback-first'), p('pr-update-branch'),
   p('pr-conflict-unreviewed'), p('pr-conflict-reviewed'), p('ci-rerun'), p('codex-review'), p('ci-protection'),
   p('gh-close-linked-issue'), p('gh-issue-create'), p('gh-issue-comment'),
@@ -585,7 +591,8 @@ export const ROWS = Object.freeze([
   p('worker-dependency-install'), p('worker-screenshots'), p('worker-local-services', noServices), p('worker-web-read'),
   p('worker-workflow-dispatch'),
   // §3 Local and shared state
-  p('db-per-ticket', noLocalDb), p('db-clone-staging', noLocalDb), p('staging-write', settledBy('staging', 'none', 'no', 'there is no staging to write to')),
+  p('db-per-ticket', noLocalDb), p('db-clone-staging', forces(LOCAL_DB_NONE, STAGING_NONE('there is no staging to clone'))),
+  p('staging-write', forces(STAGING_NONE('there is no staging to write to'))),
   p('local-reindex', noServices), p('tests-shared-db', noLocalDb),
   p('worktree-remove'), p('branch-delete', { type: 'perm-merged', example: 'merged' }), p('server-stop'), p('skills-edit'), p('vercel-env'), p('slack-draft'),
   // §3 Not configurable
@@ -747,18 +754,21 @@ export const CONFIG_ROWS = Object.freeze(Object.fromEntries(ROWS.filter((e) => e
 export const DECLARED_ROWS = Object.freeze(Object.fromEntries(ROWS.filter((e) => e.kind !== 'perm').map(idRow)));
 // The rows another row settles, given read(id): the settling row's items, or null where it is unset.
 // -> [{ id, section, label, value, reason, by: { id, section, label, value } }] in schema order, by.value
-// the settling row's items joined by spaces. A rule whose settling row is unset settles nothing.
+// the settling row's items joined by spaces. A rule whose settling row is unset settles nothing, and a
+// row two rules settle is listed once, by the first.
+const CLAUSE_BREAK = /[;,.·]|\band\b/i;
+const settles = (when, items) => (when === 'none' ? isNone(items)
+  : items.flatMap((item) => item.split(CLAUSE_BREAK)).some((c) => new RegExp(when.clause, 'i').test(c.trim())));
 export function forcedRows(read) {
   const out = [];
   for (const e of ROWS) {
-    if (!e.forced) continue;
-    const { row, when, value, reason } = e.forced;
-    const items = read(row);
-    if (!items?.length) continue;
-    const settles = when === 'none' ? isNone(items) : new RegExp(when.matches, 'i').test(items.join(' '));
-    if (!settles) continue;
-    const by = ROWS.find((x) => x.id === row);
-    out.push({ id: e.id, section: e.section, label: e.label, value, reason, by: { id: row, section: by.section, label: by.label, value: items.join(' ') } });
+    for (const { row, when, value, reason } of e.forced ?? []) {
+      const items = read(row);
+      if (!items?.length || !settles(when, items)) continue;
+      const by = ROWS.find((x) => x.id === row);
+      out.push({ id: e.id, section: e.section, label: e.label, value, reason, by: { id: row, section: by.section, label: by.label, value: items.join(' ') } });
+      break;
+    }
   }
   return out;
 }
