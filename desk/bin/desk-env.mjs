@@ -1523,11 +1523,7 @@ export function branchFor({ key, type, summary, from }) {
 const GiB = 1024 ** 3;
 function linuxMeminfo() {
   try {
-    const m = {};
-    for (const l of readFileSync('/proc/meminfo', 'utf8').split('\n')) {
-      const x = /^(\w+):\s+(\d+)/.exec(l);
-      if (x) m[x[1]] = Number(x[2]) * 1024;
-    }
+    const m = M.parseMeminfo(readFileSync('/proc/meminfo', 'utf8'));
     return m.MemTotal ? m : null;
   } catch { return null; }
 }

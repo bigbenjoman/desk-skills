@@ -170,6 +170,9 @@ try {
     const r = wl(env, ['test', '--timeout', '0', '--', 'true']);
     t(`DS-909 AC6 kind off, ${path} path: the suite holds the test lock and a second waits on it`, [lockHeld, r.status], [true, 75]);
     t(`DS-909 AC6 kind off, ${path} path: no lease is taken`, [existsSync(join(env.DESK_LEASE_DIR, 'leases.json')), leaseLog(env.DESK_LEASE_DIR).filter((e) => e.id).length], [false, 0]);
+    const { readLog, trialOf } = await import('../desk/bin/leases.mjs');
+    t(`DS-909 AC6 kind off, ${path} path: the lock runs' wait lines do not start the lease trial`,
+      [leaseLog(env.DESK_LEASE_DIR).length > 0, trialOf(readLog({ dir: env.DESK_LEASE_DIR }))], [true, null]);
     h.release(); await h.done;
   }
   if (!hasFlock) console.log('skip DS-909 AC6 kind off, flock path: no flock(1) here (CI\'s Linux lane runs it)');
@@ -271,7 +274,7 @@ try {
     hl.release(); await hl.done;
     h.release(); await h.done;
   }
-  // DS-975: every wait, grant and give-up is in the lease log with the run's class, worktree, seconds
+  // Every wait, grant and give-up is in the lease log with the run's class, worktree, seconds
   // waited, the queue behind the lock and the load and memory then, whatever the slot kind's mode.
   {
     const ON1 = machine({ 'lease-kinds': 'slot=on', 'test-lock-slots': '1' });
@@ -319,17 +322,41 @@ try {
     if (process.platform === 'darwin') {
       const slow = fresh('slow');
       writeFileSync(join(slow, 'sysctl'), '#!/bin/sh\nexec sleep 5\n'); chmodSync(join(slow, 'sysctl'), 0o755);
-      for (const [label, profile] of [['off', OFF1], ['on', ON1]]) {
-        const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile, extra: { PATH: `${slow}:${process.env.PATH}` } });
+      const stampCmd = (stamp) => [process.execPath, '-e', 'require("fs").writeFileSync(process.argv[1], String(Date.now()))', stamp];
+      const startedAt = (stamp) => Number(existsSync(stamp) ? readFileSync(stamp, 'utf8') : NaN);
+      const empty = (g) => [g?.load_1m, g?.mem_free_pct, g?.compressed_gb];
+      // On: the slot is granted when the lease is taken, its expiry less its TTL, before any reading.
+      {
+        const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: ON1, extra: { PATH: `${slow}:${process.env.PATH}` } });
         const stamp = join(S, `started-${n++}`);
-        const r = wl(env, ['light', '--', process.execPath, '-e', 'require("fs").writeFileSync(process.argv[1], String(Date.now()))', stamp], { cwd: root });
+        const r = wl(env, ['light', '--', ...stampCmd(stamp)], { cwd: root });
         const g = of(env, 'grant').at(-1);
-        const started = Number(existsSync(stamp) ? readFileSync(stamp, 'utf8') : NaN);
-        t(`DS-975 AC6 ${label}: with every reading failing the grant is logged, the readings empty`, [r.status, g?.load_1m, g?.mem_free_pct, g?.compressed_gb, g?.wait_s], [0, null, null, null, 0]);
-        // The slot is granted when the lease is taken (its expiry less its TTL), or with no lease when the
-        // lock directory is: the mkdir path starts the command before it logs the grant.
-        const at = g?.id ? Date.parse(g.expires) - g.ttl * 1000 : Date.parse(g?.at);
-        t(`DS-975 AC6 ${label}: the command starts within 1 s of the grant`, started - at < 1000, true);
+        t('DS-975 AC6 on: with every reading failing the grant is logged, the readings empty', [r.status, ...empty(g), g?.wait_s], [0, null, null, null, 0]);
+        t('DS-975 AC6 on: the command starts within 1 s of the grant', startedAt(stamp) - (Date.parse(g?.expires) - g?.ttl * 1000) < 1000, true);
+      }
+      // Off, flock(1): the slot is granted the moment the holder lets go, which the waiter's flock sees
+      // at once, so the grant line's readings fall inside the interval timed.
+      if (hasFlock) {
+        const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: OFF1, extra: { PATH: `${slow}:${process.env.PATH}` } });
+        const h = await hold(env, ['light'], { cwd: root });
+        await until(() => of(env, 'grant').length === 1);
+        const stamp = join(S, `started-${n++}`);
+        const p = run(env, ['light', '--', ...stampCmd(stamp)]);
+        await until(() => of(env, 'queued').length === 1);
+        const released = Date.now(); h.release(); await h.done;
+        const status = await p;
+        const g = of(env, 'grant').at(-1);
+        t('DS-975 AC6 off, flock path: with every reading failing the grant is logged, the readings empty', [status, of(env, 'grant').length, ...empty(g)], [0, 2, null, null, null]);
+        t('DS-975 AC6 off, flock path: the command starts within 1 s of the holder letting go', startedAt(stamp) - released < 1000, true);
+      }
+      // Off, mkdir path: the command is started before the grant line's readings are taken.
+      {
+        const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: OFF1, extra: { PATH: `${slow}:${noFlock}` } });
+        const stamp = join(S, `started-${n++}`);
+        const r = wl(env, ['light', '--', ...stampCmd(stamp)], { cwd: root });
+        const g = of(env, 'grant').at(-1);
+        t('DS-975 AC6 off, mkdir path: with every reading failing the grant is logged, the readings empty', [r.status, ...empty(g), g?.wait_s], [0, null, null, null, 0]);
+        t('DS-975 AC6 off, mkdir path: the command starts before the grant line is read', startedAt(stamp) < Date.parse(g?.at), true);
       }
     } else console.log('skip DS-975 AC6 with a failing sysctl: this is not macOS (test_leases.mjs covers a failing /proc read)');
   }

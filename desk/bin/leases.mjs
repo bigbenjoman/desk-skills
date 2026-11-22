@@ -37,7 +37,7 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lock, sleepSync, unlock, writeJsonAtomic } from './dir-lock.mjs';
-import { DEFAULT_LEASE_MODE, LEASE_KINDS, leaseKindsProblem, parseLeaseKinds } from './machine.mjs';
+import { DEFAULT_LEASE_MODE, LEASE_KINDS, leaseKindsProblem, parseLeaseKinds, parseMeminfo } from './machine.mjs';
 
 const HOME = process.env.HOME || homedir();
 const expandHome = (p) => p.replace(/^~(?=\/|$)/, HOME);
@@ -212,20 +212,19 @@ const runQuiet = (cmd, args) => execFileSync(cmd, args, { encoding: 'utf8', time
 // (mem_free_pct is kern.memorystatus_level, memory_pressure's free %; mem_pressure the kernel's level,
 // 1 normal, 2 warn, 4 critical); Linux reads /proc (mem_free_pct is MemAvailable of MemTotal,
 // mem_pressure /proc/pressure/memory's `some avg10` %, compressed_gb zswap's pool). The one sampler:
-// lock admission reads the same.
+// anything else that reads the machine's load or memory for a lock calls this, not a copy.
 export function sampleLoad({ platform = process.platform, proc = '/proc', run = runQuiet, read = (p) => readFileSync(p, 'utf8') } = {}) {
   const out = { load_1m: null, mem_free_pct: null, mem_pressure: null, compressed_gb: null, swap_used_gb: null, mem_total_gb: null };
   const tryRead = (p) => { try { return read(p); } catch { return ''; } };
   if (platform === 'linux') {
     out.load_1m = num(tryRead(join(proc, 'loadavg')).split(/\s+/)[0]);
-    const kb = {};
-    for (const m of tryRead(join(proc, 'meminfo')).matchAll(/^(\w+):\s+(\d+)\s*kB/gm)) kb[m[1]] = Number(m[2]);
-    const total = kb.MemTotal ?? null;
-    const avail = ratio(kb.MemAvailable ?? null, total);
+    const b = parseMeminfo(tryRead(join(proc, 'meminfo')));
+    const total = b.MemTotal ?? null;
+    const avail = ratio(b.MemAvailable ?? null, total);
     out.mem_free_pct = round(avail == null ? null : avail * 100, 1);
-    out.mem_total_gb = round(total == null ? null : total * 1024 / GIB, 2);
-    out.swap_used_gb = round(kb.SwapTotal == null || kb.SwapFree == null ? null : (kb.SwapTotal - kb.SwapFree) * 1024 / GIB, 2);
-    out.compressed_gb = round(kb.Zswap == null ? null : kb.Zswap * 1024 / GIB, 2);
+    out.mem_total_gb = round(ratio(total, GIB), 2);
+    out.swap_used_gb = round(b.SwapTotal == null || b.SwapFree == null ? null : (b.SwapTotal - b.SwapFree) / GIB, 2);
+    out.compressed_gb = round(ratio(b.Zswap ?? null, GIB), 2);
     out.mem_pressure = num(/^some\b.*?\bavg10=([\d.]+)/m.exec(tryRead(join(proc, 'pressure', 'memory')))?.[1]);
     return out;
   }
@@ -529,9 +528,10 @@ export const overdue = (l, t) => l.kind !== 'slot' && t > Date.parse(l.expires);
 export const forceReleaseCommand = (id) => `desk-env lease force-release ${id} --reason <why>`;
 export const RESET_COMMAND = 'desk-env lease reset --reason <why>';
 
-// The log as the screens read it: when it began (its first entry), the latest trial restart, and each
-// would-refuse entry, oldest first, as logged. A line that is not JSON is skipped; a missing log is an
-// empty one; a log that cannot be read throws LeaseStoreError.
+// The log as the screens read it: when it began (its first entry but a slot line with no lease, a
+// lock run's wait line, which with-lock.sh logs with every kind off, so it never starts the trial),
+// the latest trial restart, and each would-refuse entry, oldest first, as logged. A line that is not JSON is
+// skipped; a missing log is an empty one; a log that cannot be read throws LeaseStoreError.
 export function readLog({ dir = leaseDir() } = {}) {
   let raw;
   try { raw = readFileSync(logFile(dir), 'utf8'); } catch (e) {
@@ -548,7 +548,7 @@ export function readLog({ dir = leaseDir() } = {}) {
     try { e = JSON.parse(line); } catch { continue; }
     const t = Date.parse(e?.at);
     if (!Number.isFinite(t)) continue;
-    first ??= t;
+    if (!(e.kind === 'slot' && e.id === undefined)) first ??= t;
     if (e.event === TRIAL_EVENT) restarted = Math.max(restarted ?? t, t);
     else if (e.event === 'would-refuse' && KINDS.includes(e.kind)) clashes.push(e);
   }

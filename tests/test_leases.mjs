@@ -679,7 +679,7 @@ try {
     t('DS-913 AC1 end to end: the lease log names the PR and "preview finished"', log(d7).filter((e) => e.event === 'release').map((e) => `${e.label} ${e.reason}`).join(), 'acme/web#21 preview finished');
     t('DS-913 AC1 end to end: the pass report says so', out.join('\n'), "preview builds: PR #21's preview finished, so its preview-build unit is free for the next build");
   }
-  // DS-975: the load and memory sampler a lock wait's lines carry, with fake readings.
+  // The load and memory sampler a lock wait's lines carry, with fake readings.
   {
     const mac = ['vm.loadavg: { 2.47 1.98 1.75 }', 'kern.memorystatus_level: 37', 'kern.memorystatus_vm_pressure_level: 2',
       `vm.compressor_bytes_used: ${3 * 2 ** 30 + 2 ** 29}`, 'hw.memsize: 25769803776', 'vm.swapusage: total = 3072.00M  used = 1536.00M  free = 1536.00M  (encrypted)'].join('\n');

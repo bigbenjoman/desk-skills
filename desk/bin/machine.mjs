@@ -193,6 +193,17 @@ export function parseMac({ systemProfiler = '', sysctl = '', swVers = '', df = '
   return hw;
 }
 
+// /proc/meminfo's text as { <field>: bytes }, e.g. { MemTotal, MemAvailable, SwapFree, Zswap }; a
+// field it does not hold is absent.
+export function parseMeminfo(text) {
+  const m = {};
+  for (const l of String(text ?? '').split('\n')) {
+    const x = /^(\w+):\s+(\d+)/.exec(l);
+    if (x) m[x[1]] = Number(x[2]) * 1024;
+  }
+  return m;
+}
+
 // Linux and WSL: /proc/cpuinfo, /proc/meminfo, nproc, the hybrid-CPU lists
 // (/sys/devices/cpu_core/cpus, /sys/devices/cpu_atom/cpus), the DMI product name, /etc/os-release,
 // `df -k /`, the /sys/class/power_supply/*/type values and /proc/version.

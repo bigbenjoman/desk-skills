@@ -23,6 +23,7 @@ import { mkdirSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
+import { alive } from './dir-lock.mjs';
 import { tilde } from './logins.mjs';
 import { EXIT_GAVE_UP, EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, LeaseStoreError, SAMPLE_TIMEOUT_MS, acquire, capacities, kindMode, logEvent, poolOf, sampleLoad, waitFields } from './leases.mjs';
 
@@ -57,9 +58,8 @@ function isLint(words) {
 // queue at any moment is the markers whose pid is alive: a waiter killed mid-wait counts no longer.
 const LOCK_OF = Object.freeze({ test: 'test', tsc: 'test', lint: 'test', light: 'light', browser: 'browser' });
 const waitingDir = (cls) => join(E.lockDir(), `desk-${LOCK_OF[cls] ?? cls}.waiting`);
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 // How many runs other than `self` wait for `cls`'s lock now.
-export function queueDepth(cls, self, dir = waitingDir(cls)) {
+function queueDepth(cls, self, dir = waitingDir(cls)) {
   let names = [];
   try { names = readdirSync(dir); } catch { return 0; }
   return names.filter((n) => /^\d+$/.test(n) && Number(n) !== self && alive(Number(n))).length;
