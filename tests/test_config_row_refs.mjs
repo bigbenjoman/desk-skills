@@ -1,5 +1,5 @@
-// suite: config row references (review-asks reads §4's house bar; worker skills name §3b/§4 rows with their desk-env call)
-// covers: desk/bin/desk-env.mjs desk-config.md skills/desk-setup/SKILL.md skills/desk-ticket/** skills/desk-review/** skills/desk-pr/** skills/desk-review-response/** skills/desk-dev/** skills/desk-jira/** skills/desk-kiss/** skills/desk-autopilot/references/**
+// suite: config row references (review-asks reads §4's house bar; worker skills name §3b/§4 rows with their desk-env call; no skill but setup and update reads the config whole)
+// covers: desk/bin/desk-env.mjs desk-config.md skills/**/*.md
 // `desk-env get review-asks` prints §4 "What review here consistently asks for", one ask per line,
 // and exits 3 while it is TODO or still says "Not mined". Every file a worker reads names each §3b
 // and §4 row it mentions with the `desk-env get|list|cmds <id>` call that reads it, at or before the
@@ -86,6 +86,42 @@ for (const f of WORKER_FILES) {
   if (ids.length) t(`AC2: ${relative(ROOT, f)} names every row with its id`, ids.join(' '), '');
 }
 t(`AC2: ${WORKER_FILES.length} worker files checked, rows named without an id`, bare, 0);
+
+// ---- DS-875: skills read the config by section or row, never the file whole -------------------
+// Only desk-setup and desk-update, which write the file, open it whole. A whole read is a Read of
+// the `CONFIG` file, a `cat` of it, or `desk-env show` with no section named (every section).
+const WRITERS = new Set(['desk-setup', 'desk-update']);
+const WHOLE = [
+  /\bread (?:the |this repo's )?(?:`CONFIG`|config) file\b/i,
+  /\bread (?:the |this repo's )?(?:`CONFIG`|config)(?=[.,;)*]|$)/im,
+  /\bcat\s+"?\$\{?CONFIG\b/,
+  /\bdesk-env show(?![ \t]+(?:§?\d|rules)\b)/,
+];
+const SECTION_READ = /\bdesk-env show(?:[ \t]+(?:§?\d[a-c]?|rules)\b)+|\bdesk-env get --json(?: --where)? --section\b/;
+const wholeReads = (text) => text.replace(/^---\n[\s\S]*?\n---\n/, '').split(/\n\s*\n/)
+  .filter((p) => WHOLE.some((re) => re.test(p))).map((p) => p.trim().split('\n')[0].slice(0, 80));
+t('DS-875 can fail: Read the CONFIG file', wholeReads('Read the `CONFIG` file. `EXISTS=no` means stop.').length, 1);
+t('DS-875 can fail: Read the config, in a parenthesis', wholeReads('(resolve it with `desk-env where`, then Read the config)').length, 1);
+t('DS-875 can fail: desk-env show with no section', wholeReads('Read `desk-env show` (rules and rows, no §3c).').length, 1);
+t('DS-875 passes: a section read', wholeReads('Read `desk-env show rules 0 3 5` (never the `CONFIG` file whole).').length, 0);
+t('DS-875 passes: a row of a section', wholeReads('**Read the config §4 People table** for who reviews.').length, 0);
+const SKILLS = join(ROOT, 'skills');
+const skillDirs = readdirSync(SKILLS).filter((d) => statSync(join(SKILLS, d)).isDirectory());
+let whole = 0;
+for (const d of skillDirs.filter((x) => !WRITERS.has(x))) {
+  for (const f of walk(join(SKILLS, d))) {
+    const hits = wholeReads(readFileSync(f, 'utf8'));
+    whole += hits.length;
+    if (hits.length) t(`DS-875 AC3: ${relative(ROOT, f)} reads the config whole`, hits.join(' | '), '');
+  }
+}
+t(`DS-875 AC3: ${skillDirs.length - WRITERS.size} skills checked, whole-file config reads`, whole, 0);
+// AC1, AC2, AC6: the two entry points name a section read, and still stop on EXISTS=no.
+for (const s of ['desk-ticket', 'desk-autopilot']) {
+  const core = readFileSync(join(SKILLS, s, 'SKILL.md'), 'utf8');
+  t(`DS-875 ${s === 'desk-ticket' ? 'AC1' : 'AC2'}: ${s} reads the config by section`, SECTION_READ.test(core), true);
+  t(`DS-875 AC6: ${s} still stops and offers /desk-setup on EXISTS=no`, /`EXISTS=no` means stop[^]{0,120}\/desk-setup/.test(core), true);
+}
 
 // ---- desk-setup asks every §3b row of the template -------------------------------------------
 // The §3b step reads its rows from the template, or, if it lists them by hand, names every one by

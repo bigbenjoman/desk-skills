@@ -20,8 +20,9 @@
 //   node desk-env.mjs where                   print SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS= for the cwd's repo
 //   node desk-env.mjs show [<section>...]     print the config's rules for the agent, then its headings and
 //                                             table rows, no other prose
-//                                             (configRows): the named sections (e.g. 3 5), else every one but
-//                                             §3c, the rule ledger only /desk-setup reads; exit 3 with no config
+//                                             (configRows): the named sections (e.g. rules 3 5), else every
+//                                             one; never §3c, the rule ledger only /desk-setup reads (exit 2
+//                                             when named, as for an unknown section); exit 3 with no config
 //   node desk-env.mjs get <config id>         print the value (CONFIG_ROWS; first item), exit 3 if unset;
 //                                             default-branch honours a batch base (DESK_DEFAULT_BRANCH);
 //                                             review-asks prints every ask, one per line
@@ -245,10 +246,11 @@ export const repoConfigDir = (slug = currentRepo().slug) => (slug ? join(deskCon
 export const credsDir = () => repoConfigDir();
 
 // A config file's headings and tables, without its prose: what a skill reads at its start. `sections`
-// names the ones wanted ('3', '3b', '5'); empty is every section but 3c, the rule ledger, which
-// grows with each rule setup grants, is kept in harness-rules.json too, and only /desk-setup reads.
-// An unnumbered section (the rules for the agent reading the file) is printed whole, prose and all,
-// when no section is named: its prose is what it says.
+// names the ones wanted ('3', '3b', '5', and 'rules' for the rules for the agent reading the file);
+// empty is every section. Never 3c, the rule ledger, which grows with each rule setup grants, is kept
+// in harness-rules.json too, and only /desk-setup reads, from the file itself.
+// An unnumbered section is printed whole, prose and all, when no section is named, and the rules
+// section when `rules` is: its prose is what it says.
 export function configRows(text, sections = []) {
   const want = sections.map((x) => String(x).replace(/^§/, '').toLowerCase());
   let keep = false, whole = false, fence = false;
@@ -258,8 +260,8 @@ export function configRows(text, sections = []) {
     if (/^##\s/.test(line)) {
       fence = false;
       const id = /^##\s+(\d+[a-z]?)[.)]?\s/i.exec(line)?.[1]?.toLowerCase() ?? null;
-      whole = id == null && !want.length;
-      keep = id == null ? whole : want.length ? want.includes(id) : id !== '3c';
+      whole = id == null && (!want.length || (want.includes('rules') && /^##\s+rules\b/i.test(line)));
+      keep = id == null ? whole : id !== '3c' && (!want.length || want.includes(id));
       if (keep) { if (out.length) out.push(''); out.push(line); }
       continue;
     }
@@ -2397,8 +2399,12 @@ if (isMain) {
       }
       case 'show': {
         const p = configPathOrNull();
+        const want = args.map((s) => String(s).replace(/^§/, '').toLowerCase());
+        if (want.includes('3c')) { console.error('desk-env show: §3c, the harness rule ledger, is read by /desk-setup alone'); process.exit(2); }
+        const bad = want.filter((s) => s !== 'rules' && !SECTIONS.includes(s));
+        if (bad.length) { console.error(`desk-env show: unknown section ${bad.map((s) => `"${s}"`).join(', ')} (known: rules, ${SECTIONS.join(', ')})`); process.exit(2); }
         if (!p || !existsSync(p)) { console.error('desk-env show: no config for this repo (run /desk-setup)'); process.exit(3); }
-        console.log(configRows(readFileSync(p, 'utf8'), args));
+        console.log(configRows(readFileSync(p, 'utf8'), want));
         break;
       }
       case 'list':

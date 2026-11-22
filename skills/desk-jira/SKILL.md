@@ -17,10 +17,11 @@ description: >-
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 ```
 
-Read the `CONFIG` file. `EXISTS=no` means stop: say which slug was looked up and offer `/desk-setup`.
+Read `desk-env show rules 0 1 3 5` (never the `CONFIG` file whole). `EXISTS=no` means stop: say
+which slug was looked up and offer `/desk-setup`.
 A `TODO` in any row this skill needs is not a gap to guess: stop, ask, and offer `/desk-setup`.
 
-An autopilot worker cannot read that file, so each row below is a `desk-env` read: §4 Tracker
+§4 is read a row at a time, an autopilot worker included, so each row below is a `desk-env` read: §4 Tracker
 `desk-env get tracker`, Jira site `desk-env get jira-site`, Jira cloudId `desk-env get jira-cloudid`,
 Jira project `desk-env list jira-project`, Ticket key pattern `desk-env get ticket-pattern`, Priority
 `desk-env list jira-priority`, Other fields `desk-env list jira-other-fields`, Labels
