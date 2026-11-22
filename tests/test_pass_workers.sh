@@ -348,7 +348,12 @@ check "DS-916 AC2 with room under the ceiling the worker starts, its share reser
 kill "$WPID"; while kill -0 "$WPID" 2>/dev/null; do sleep 0.1; done
 check "DS-916 AC3 once the worker's process exits, its reservation is back in the pool" '[ -z "$(memlist | jq -r "select(.key == \"worker M-4\") | .id")" ] && [ "$(memlist | jq -s "map(.units) | add")" = 10 ]'
 new_worker
-node "$B/leases.mjs" acquire mem 'build' --units 34 --ttl 3600 --label 'acme/shop build' --pid "$PEER" >/dev/null
+# A session reserves 34 GB more while the pass runs the preflight, after the pass counted 10 GB: the
+# share is refused under the store's lock, so the worker does not start.
+printf 'if [ "$3" = preflight ]; then node "%s/leases.mjs" acquire mem build --units 34 --ttl 3600 --label "acme/shop build" --pid %s >/dev/null; echo "[preflight] pass"; else echo "[spawn] ticket=$1 pid=%s port=$AUTOPILOT_PORT"; fi\n' "$B" "$PEER" "$WPID" > "$T/desk/bin/spawn-worker.sh"
+spawn_one M-9
+check "DS-916 with the kind on, a share refused since the pass counted starts no worker and says why" '[ "$(field M-9 state)" != "\"running\"" ] && [ -z "$(memlist | jq -r "select(.key == \"worker M-9\") | .id")" ] && echo "$out" | grep -qF "memory: M-9 not started, its 8G share no longer fits under the 48G ceiling: 44 of 48 GiB of memory are held, and this asks for 8"'
+new_worker
 spawn_one M-1
 check "DS-916 AC1 with 44 of 48 GB reserved and an 8 GB share, nothing spawns, naming the ceiling, the total and the largest holders" '[ "$(field M-1 state)" = "\"triaged\"" ] && [ -z "$(memlist | jq -r "select(.key == \"worker M-1\") | .id")" ] && echo "$out" | grep -qF "memory reservations: 44G of the 48G ceiling reserved, a worker'"'"'s share 8G; largest holders: acme/shop build 34G (pid $PEER), acme/shop full suite 10G (pid $PEER): no worker'"'"'s share fits under the ceiling, so nothing starts this pass"'
 mem_kind shadow
@@ -370,7 +375,8 @@ for k in shadow on; do
   AUTOPILOT_MIN_AVAIL_GB=0.01 spawn_one "M-5$k"
   check "DS-916 AC5 with the kind $k on WSL a recent harm line holds every spawn, naming the signal" '[ "$(field "M-5$k" state)" = "\"triaged\"" ] && echo "$out" | grep -qF "memory harm: SWAP-GROWING within the last 10m"'
 done
-# Windows reports 1.2 GB free, as the host figure did on the 3-day batch, with no harm signal.
+# Windows reports 1.2 GB free, as the host figure did on the 3-day batch, with no harm signal. Nothing
+# on the pass's path reads that figure, which is AC6: a hold added on it would fail this case.
 printf '#!/bin/sh\necho 1.2\n' > "$T/stub/powershell.exe"; chmod +x "$T/stub/powershell.exe"
 mem_kind shadow
 AUTOPILOT_MIN_AVAIL_GB=0.01 spawn_one M-6
@@ -379,6 +385,11 @@ rm -f "$T/stub/powershell.exe"; export DESK_CONFIG="$T/config.md"
 mem_kind on; printf '{not json' > "$DESK_LEASE_DIR/leases.json"
 spawn_one M-12
 check "DS-916 AC12 with the lease store unreadable the pass spawns by the legacy rules, saying leases were unreadable" '[ "$(field M-12 state)" = "\"running\"" ] && echo "$out" | grep -qF "memory reservations: leases were unreadable (" && echo "$out" | grep -qF "so memory is judged by the legacy rules"'
+# A lease directory that is a file cannot be locked: the broker's error is not the store's, and the
+# pass still judges memory by the legacy rules rather than stopping.
+new_worker; printf 'x' > "$T/leases-file"; export DESK_LEASE_DIR="$T/leases-file"
+spawn_one M-13
+check "DS-916 AC12 a lease directory that cannot be locked still spawns by the legacy rules, saying leases were unreadable" '[ "$(field M-13 state)" = "\"running\"" ] && echo "$out" | grep -qF "memory reservations: leases were unreadable ("'
 kill "$WPID" 2>/dev/null; mv "$T/spawn-worker.kept" "$T/desk/bin/spawn-worker.sh"; unset DESK_LEASE_DIR DESK_MACHINE
 # What an orchestrator on WSL is told at Stage 0b, by the mem kind's mode.
 WSLREF="$SRC/skills/desk-autopilot/references/wsl-memory.md"

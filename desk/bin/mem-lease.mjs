@@ -11,21 +11,23 @@
 // --units <GiB> --owner claude --ttl <seconds>`, and every pass counts it. The pass reserves under its
 // own pid with a short TTL, then hands the reservation to the worker's pid once the worker has
 // started, so it returns to the pool when the worker exits. With no memory-ceiling-gb nothing is reserved.
-import { EXIT_OK, LeaseStoreError, capacities, kindMode, list, peek, renew, tryAcquire } from './leases.mjs';
-import { PICK_TTL, WORKER_TTL } from './port-lease.mjs';
+import { capacities, kindMode, list, peek, tryAcquire } from './leases.mjs';
+import { PICK_TTL, handLeaseToWorker } from './port-lease.mjs';
 
 // A worker's share of `ceiling` GiB with a worker cap of `cap`: at least 1, null with no ceiling.
-export const memShare = (ceiling, cap) => (ceiling > 0 ? Math.max(1, Math.floor(ceiling / Math.max(1, cap || 1))) : null);
+const memShare = (ceiling, cap) => (ceiling > 0 ? Math.max(1, Math.floor(ceiling / Math.max(1, cap || 1))) : null);
 
 const MOST_HOLDERS = 3;
 const holderOf = (l) => `${l.label} ${l.units}G (${l.owner ? `pid ${l.owner.pid}` : 'no owner'})`;
+const memReq = (key, units, ttl, label, pid) => ({ kind: 'mem', key: `worker ${key}`, units, ttl, label, pid });
 
 // The memory pool as a pass reads it. `cap` is the worker cap of §3b "Autopilot worker concurrency";
-// with `take` false (a dry run) nothing is lapsed.
+// with `take` false (a dry run) nothing is lapsed. A store that cannot be read, or a broker that fails
+// any other way (a lease directory it cannot lock), is `unreadable`, so the pass judges memory by the
+// legacy rules.
 // -> { mode, ceiling, share, reserved, holders: [lease], unreadable } (ceiling null with none set;
-//    unreadable the store's error, with reserved and holders unset).
-export function memPool({ env, cap, take = true, dir }) {
-  const at = dir == null ? {} : { dir };
+//    unreadable the error, with reserved and holders unset).
+export function memPool({ env, cap, take = true }) {
   let mode;
   try { ({ mode } = kindMode('mem', env)); } catch (e) { return { mode: 'shadow', ceiling: null, share: null, unreadable: e.message }; }
   if (mode === 'off') return { mode, ceiling: null, share: null };
@@ -33,10 +35,7 @@ export function memPool({ env, cap, take = true, dir }) {
   const share = memShare(ceiling, cap);
   if (ceiling == null) return { mode, ceiling, share };
   let leases;
-  try { leases = take ? list({ env, ...at }) : peek({ env, ...at }); } catch (e) {
-    if (e instanceof LeaseStoreError) return { mode, ceiling, share, unreadable: e.message };
-    throw e;
-  }
+  try { leases = take ? list({ env }) : peek({ env }); } catch (e) { return { mode, ceiling, share, unreadable: e.message }; }
   const holders = leases.filter((l) => l.kind === 'mem').sort((a, b) => b.units - a.units);
   return { mode, ceiling, share, reserved: holders.reduce((n, l) => n + l.units, 0), holders };
 }
@@ -62,23 +61,17 @@ export function memBudget(pool, { wanted = 0 } = {}) {
 }
 
 // Reserves a worker's share for `key` under the pass's pid, for PICK_TTL, until handToWorker moves it
-// to the worker. A refusal (the kind on, and a session reserved since the pass counted) or an
-// unreadable store reserves nothing.  -> { id } or { why }.
-export function reserveForWorker({ env, pool, label, key, pid = process.pid, dir }) {
+// to the worker. -> {} where nothing is reserved (the kind off, no ceiling, the store unreadable),
+// { id } once reserved, { refused } where the kind on refuses it under the store lock (a session or
+// another pass reserved since this pass counted), so the worker must not start, or { why } where the
+// broker failed, which reserves nothing and holds nothing, as the legacy rules would not.
+export function reserveForWorker({ env, pool, label, key }) {
   if (!pool || pool.mode === 'off' || pool.ceiling == null || pool.unreadable) return {};
-  const at = dir == null ? {} : { dir };
   try {
-    const r = tryAcquire({ kind: 'mem', key: `worker ${key}`, units: pool.share, ttl: PICK_TTL, label, pid, final: true }, { env, ...at, mode: pool.mode });
-    return r.lease ? { id: r.lease.id } : { why: r.refused };
+    const r = tryAcquire({ ...memReq(key, pool.share, PICK_TTL, label, process.pid), final: true }, { env, mode: pool.mode });
+    return r.lease ? { id: r.lease.id } : { refused: r.refused };
   } catch (e) { return { why: e.message }; }
 }
 
 // Hands reservation `id` from the pass to the worker's process. -> null, or why it stays with the pass.
-export function handToWorker({ env, id, key, share, workerPid, label, dir }) {
-  if (!id) return null;
-  if (!(Number(workerPid) > 0)) return 'spawn-worker.sh printed no worker pid';
-  try {
-    const r = renew(id, { kind: 'mem', key: `worker ${key}`, units: share, ttl: WORKER_TTL, label, pid: Number(workerPid) }, { env, ...(dir == null ? {} : { dir }) });
-    return r.code === EXIT_OK ? null : r.why;
-  } catch (e) { return e.message; }
-}
+export const handToWorker = ({ env, id, key, share, workerPid, label }) => handLeaseToWorker({ env, id, req: memReq(key, share, null, label, null), workerPid });

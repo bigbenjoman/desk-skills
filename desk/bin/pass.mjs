@@ -2183,7 +2183,9 @@ const otherRepos = MACHINE_CAP != null || borrowLock || SIBLINGS ? otherQueues({
 if (MACHINE_CAP != null || borrowLock || SIBLINGS) countElsewhere(otherRepos);
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
 // The memory every worker and peer session has reserved from the machine profile's ceiling
-// (mem-lease.mjs); a worker's share is the ceiling over this repo's worker cap.
+// (mem-lease.mjs); a worker's share is the ceiling over this repo's worker cap. This read only sizes
+// the pass's slots: each spawn reserves its share under the store's lock first (memHeld), and with
+// the kind on one that no longer fits does not start.
 const MEM_POOL = memPool({ env: LEASE_ENV, cap: E.concurrencyLimits().cap, take: !DRY });
 const SLOTS_SNAP = {
   borrowOn: BORROW.on, concurrency, cap: E.concurrencyLimits().cap, running: running.length, spawnable: spawnable.length,
@@ -2199,7 +2201,6 @@ const SLOTS_SNAP = {
   repoCaps: MACHINE_CAP == null ? {} : Object.fromEntries(otherRepos.filter((o) => o.error).map((o) => [o.slug, repoCap(o.slug)])),
   otherRepos, repoBatches: otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) }),
   batch: E.batchName(), lastStart: fresh.last_start ?? null, maintHold: MAINT.hold,
-  // Read under the lock too, so a pass in another repo that reserves after this read waits for it.
   memPool: MEM_POOL,
 };
 let SLOTS = null;
@@ -2602,12 +2603,21 @@ async function freePort(own = null, key = own?.key ?? BASE_FIX_KEY) {
   const p = await pickPort({ env: E, taken, inUse: (n) => E.portInUse(n), own: own?.port, floor: E.workerPortFloor(), repo: GH_REPO, batch: leaseBatch, key, take: !DRY });
   for (const l of p.notes) portLeaseLines.add(l);
   portLeases.set(key, p.lease ? { port: p.port, id: p.lease } : null);
-  // Every spawn picks its port here, so its memory share is reserved here too, under this pass's pid.
-  // The report's port lines carry a reservation that could not be taken.
-  const mem = DRY ? {} : reserveForWorker({ env: LEASE_ENV, pool: MEM_POOL, key, label: workerLabel(GH_REPO, leaseBatch, key) });
-  if (mem.why) portLeaseLines.add(`memory: ${key} starts with no memory reservation: ${mem.why}`);
-  memLeases.set(key, mem.id ?? null);
   return p.port;
+}
+// Reserves `key`'s memory share under this pass's pid, before its port is picked and its worker
+// spawned (mem-lease.mjs). -> null, or why the mem kind on refuses it: the share no longer fits beside
+// what a session or another pass reserved since this pass counted, so the worker is not started and
+// waits for a later pass. A broker that failed reserves nothing and holds nothing, and says so.
+function memHeld(key) {
+  if (DRY) return null;
+  const mem = reserveForWorker({ env: LEASE_ENV, pool: MEM_POOL, key, label: workerLabel(GH_REPO, leaseBatch, key) });
+  memLeases.set(key, mem.id ?? null);
+  if (mem.why) portLeaseLines.add(`memory: ${key} starts with no memory reservation: ${mem.why}`);
+  if (!mem.refused) return null;
+  const why = `memory: ${key} not started, its ${MEM_POOL.share}G share no longer fits under the ${MEM_POOL.ceiling}G ceiling: ${mem.refused}`;
+  portLeaseLines.add(why);
+  return why;
 }
 // Once spawn-worker.sh has started `key`'s worker, its port lease and memory reservation move from this
 // pass to the worker's pid.
@@ -2772,6 +2782,8 @@ async function resumeKilled(t) {
   const pre = preflight(t.key, t.worktree, workerEnv);
   if (pre.limit) return preflightHitLimit(t, pre.cost, login);
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
+  const memWhy = memHeld(t.key);
+  if (memWhy) { logPreflight(t.key, pre.cost); report.waiting.push(`${t.key}: ${memWhy}; it waits to resume on the next pass`); return undefined; }
   const port = await freePort(t);
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
   const fixtures = fixturesBrief(t.key, t.worktree, { heading: false });
@@ -2977,6 +2989,8 @@ async function spawnHandoff(t, pick) {
   const pre = preflight(t.key, t.worktree, workerEnv);
   if (pre.limit) return preflightHitLimit(t, pre.cost, pick.login);
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
+  const memWhy = memHeld(t.key);
+  if (memWhy) { logPreflight(t.key, pre.cost); report.waiting.push(`${t.key}: ${memWhy}; the handoff waits for the next pass`); return undefined; }
   const sid = E.uuid();
   const port = await freePort(t);
   E.rotateRound(t.key);
@@ -3051,6 +3065,9 @@ async function spawnBaseFix({ wt, fix: asked }) {
   // Refused at the usage limit: no try is spent, and the batch holds until the limit lifts.
   if (pre.limit) { unstart(); preflightHitLimit({ key }, pre.cost, pick.login); return; }
   if (pre.failure) { logPreflight(key, pre.cost); failed('failed its preflight', `preflight failed, not spawned —\n${pre.failure}`); return; }
+  // No room under the memory ceiling: no try is spent, as at the usage limit, and the next pass looks again.
+  const memWhy = memHeld(key);
+  if (memWhy) { unstart(); logPreflight(key, pre.cost); report.waiting.push(`${key}: ${memWhy}; the ${tryWhat(fix)} try waits for the next pass`); return; }
   const sid = E.uuid();
   const port = await freePort();
   E.rotateRound(key);
@@ -3112,6 +3129,8 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   // Refused at the usage limit: the try stays running, paused, and the batch holds, as a ticket's does.
   if (pre.limit) return preflightHitLimit({ key }, pre.cost, login);
   if (pre.failure) { logPreflight(key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
+  const memWhy = memHeld(key);
+  if (memWhy) { logPreflight(key, pre.cost); report.waiting.push(`${key}: ${memWhy}; it waits to resume on the next pass`); return undefined; }
   const port = await freePort();
   const briefPath = join(STATE, 'briefings', `${key}.md`);
   const prompt = `Your previous run of this session ended (${ended}). Carry on with your base ${tryWhat(bf.tries[bf.tries.length - 1])} on ${BASE} from where you stopped, in your worktree ${wt}. ` +
@@ -3496,6 +3515,15 @@ for (const t of spawnable) {
     // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
     markFailed(t.key, `preflight failed, not spawned —\n${pre.failure}`, { sets: ['spawn_failed=true'] });
     continue;
+  }
+
+  // The mem kind on refused its share since the slots were counted: it stays queued, and so does every
+  // ticket after it, since the same share fits no better for them this pass.
+  const memWhy = memHeld(t.key);
+  if (memWhy) {
+    logPreflight(t.key, pre.cost);
+    report.waiting.push(`${t.key}: ${memWhy}; it and the tickets after it wait for the next pass`);
+    break;
   }
 
   const sid = E.uuid();
@@ -4798,6 +4826,8 @@ async function spawnAudit({ key, item, sha, model, task, brief }) {
   // Refused at the usage limit, it holds the batch as a ticket's would, and the audit waits untried.
   if (pre.limit) { preflightHitLimit({ key }, pre.cost, pick.login); return { wait: 'window_tight', why: 'its preflight was refused at the usage limit', preflight_usd }; }
   if (pre.failure) { logPreflight(key, pre.cost); return { error: `preflight failed — ${pre.failure.split('\n')[0]}`, preflight_usd }; }
+  const memWhy = memHeld(key);
+  if (memWhy) { logPreflight(key, pre.cost); return { wait: 'memory', why: memWhy, preflight_usd }; }
   const sid = E.uuid();
   const port = await freePort(null, key);
   E.rotateRound(key);
