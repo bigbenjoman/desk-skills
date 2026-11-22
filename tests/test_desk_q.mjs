@@ -1903,13 +1903,13 @@ const ov991 = Q.overview(Q.loadRepos(NOW).filter((r) => ['idlb', 'rdyf', 'rdys',
 const driverNotes991 = (name) => notesIn(lines(ov991), name).filter((n) => n.includes('merge driver')).map((n) => n.replace(/\d\d:\d\d/, 'HH:MM')).join(' / ');
 t('DS-991 AC1 a batch the supervisor recorded idle, its driver stopped 143 on an informational line: no merge driver note',
   `[${driverNotes991('idlb')}] ${ov991.includes('base state unknown')}`, '[] false');
-t('DS-991 AC2 a ready PR and a driver that exited on a FAIL line: the note says it stopped and gives the FAIL reason',
+t('DS-991 AC2 a ready PR and a driver that exited on a failure line: the note says it stopped and gives the failure reason',
   driverNotes991('rdyf'), 'the merge driver stopped at HH:MM: gh is signed out. Run gh auth login.');
 t('DS-991 AC3 a ready PR and a driver stopped with exit 143 and not restarted: the note says it was stopped and is not running, quoting no log line',
   driverNotes991('rdys'), 'the merge driver was stopped at HH:MM (exit 143) and is not running.');
-t('DS-991 a driver gone with no FAIL line and no exit code: the note says so, quoting no log line',
+t('DS-991 a driver gone with no failure line and no exit code: the note says so, quoting no log line',
   driverNotes991('rdyi'), 'the merge driver stopped at HH:MM (no exit code logged) and logged no failure.');
-t('DS-991 an idle batch whose record holds the repo driver started since it went idle: its FAIL is still shown',
+t('DS-991 an idle batch whose record holds the repo driver started since it went idle: its failure is still shown',
   driverNotes991('idlr'), 'the merge driver stopped at HH:MM: gh is signed out. Run gh auth login.');
 // old and unreloaded both run old code, so their notes fold into one.
 t('DS-219 AC5 a supervisor on old desk code: one note to run ./install.sh in desk-skills',
