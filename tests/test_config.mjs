@@ -258,6 +258,36 @@ t('DS-873 an item worker-settings refuses for its tail is UNLISTED, as worker-se
 t('and `name: port` reads as its name', d.code, 1);
 t('DS-395 AC4 a script run as bash <path>.sh is not drift', drift(`${conf()}| Related tests | \`bash tests/related.sh\` |\n`).out, 'no drift');
 
+// DS-877: rows another row settles are schema data; drift names a set row that contradicts its rule,
+// and `desk-env forced` lists the values setup writes unasked.
+const JIRA_PERMS = ROWS.filter((e) => e.kind === 'perm' && e.id.startsWith('jira-')).map((e) => e.id);
+d = drift(`${conf({ perms: { 'jira-create': 'yes' } })}| Tracker | \`none\` |\n`);
+t('DS-877 AC1 a Jira permission set yes with Tracker none is one CONFLICT line naming the row, its value and the rule', d.out,
+  'CONFLICT §3 jira-create is yes, but §4 Tracker is none, which settles it no: there is no Jira to act on');
+t('DS-877 AC1 and exits 1', d.code, 1);
+d = drift(`${conf({ perms: Object.fromEntries(JIRA_PERMS.map((k) => [k, 'no'])) })}| Tracker | \`none\` |\n`);
+t(`DS-877 AC2 every Jira permission no with Tracker none is no conflict (${JIRA_PERMS.length} rows)`, d.out, 'no drift');
+t('DS-877 an ask contradicts a rule that settles the row no', /^CONFLICT §3 jira-comment is ask,/.test(drift(`${conf({ perms: { 'jira-comment': 'ask' } })}| Tracker | \`none\` |\n`).out), true);
+t('DS-877 Tracker jira settles nothing', drift(`${conf({ perms: { 'jira-create': 'yes' } })}| Tracker | \`jira\` |\n`).out, 'no drift');
+const forced = (rows) => {
+  const c = join(T, 'forced.md');
+  writeFileSync(c, `${conf()}${rows}`);
+  try { return { code: 0, out: execFileSync('node', [BIN, 'forced', '--json'], { encoding: 'utf8', env: driftEnv({ DESK_CONFIG: c }), stdio: 'pipe' }).trim() }; }
+  catch (e) { return { code: e.status, out: String(e.stdout).trim() }; }
+};
+const forcedOf = (rows) => JSON.parse(forced(rows).out).map((f) => `${f.id}=${f.value} (${f.reason})`).join(' | ');
+const noDb = '(there is no local database to act on)';
+t('DS-877 AC3 Local database none forces each database row no with the reason, and nothing else',
+  forcedOf('| Local database | `none` |\n'), `db-per-ticket=no ${noDb} | db-clone-staging=no ${noDb} | tests-shared-db=no ${noDb}`);
+t('DS-877 AC4 Repo merge settings with auto-merge off force pr-auto-merge no with the reason',
+  forcedOf('| Repo merge settings | `auto-merge off; delete_branch_on_merge on` |\n'), 'pr-auto-merge=no (gh pr merge --auto cannot arm where the repo has auto-merge off)');
+t('DS-877 auto-merge allowed forces nothing, whatever else is off', forcedOf('| Repo merge settings | `auto-merge allowed; delete_branch_on_merge off` |\n'), '');
+const none = forced('| Local database | `postgres container x-postgres-1` |\n| Tracker | `jira` |\n');
+t('DS-877 AC5 no forcing row set prints an empty list', none.out, '[]');
+t('DS-877 AC5 and exits 0', none.code, 0);
+const badRule = ROWS.filter((e) => e.forced && !(ROWS.some((x) => x.id === e.forced.row && x.kind !== 'perm') && (e.kind !== 'perm' || ['yes', 'ask', 'no'].includes(e.forced.value)) && e.forced.reason));
+t('DS-877 every forced rule names a declared §0-§5 row, a value its row takes and a reason', badRule.map((e) => e.id).join(' '), '');
+
 // A set row whose value does not fit the type the schema declares for it is named INVALID, report-only.
 d = drift(`${conf({ perms: { 'worker-local-services': 'no' } })}| Local services | \`Typesense on port 8108\` |\n`);
 t('DS-871 AC1 a Local services item that is no `<service> [:<port>]` is INVALID, naming the row, the item and the form', d.out, badService);

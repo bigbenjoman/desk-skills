@@ -187,7 +187,7 @@ import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, parseServicePort, SERVICE_PORT_FORM,
   permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, leverRow, leverWords, parseLevers,
   EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS, CODEX_DEFAULTS, parseCodexReview, spawnGateOf,
-  fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, checkRow, DECLARED_ROWS, readsAsList,
+  fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, checkRow, DECLARED_ROWS, readsAsList, forcedRows,
 } from './config-schema.mjs';
 
 export const HOME = process.env.HOME || homedir();
@@ -1883,7 +1883,7 @@ export const STALLING_ROWS = Object.freeze({
 // Unprotected, nothing on GitHub stops a red merge, so these stay recommended at `ask` (desk-setup §2).
 const MERGE_ROWS = new Set(['pr-merge-green', 'autopilot-merge']);
 
-// -> { missing: [{section, label}], stalls: [{key, reason}], unlisted, noDev, weight, dontAsk: file | null }
+// -> { missing: [{section, label}], stalls: [{key, reason}], unlisted, invalid, conflicts, noDev, weight, dontAsk: file | null }
 // A row's items for drift's own checks, or null where configValuesIn refuses the row (`none` beside
 // other items): invalidRows names that row INVALID, so drift reports it and goes on to the next repo.
 function driftValues(parsed, id) {
@@ -1927,8 +1927,26 @@ export function configDrift({ config, template = templatePath(), root = null, ho
   // §4 Suite weight set in both places and disagreeing: the committed value wins, so the row is stale.
   const w = suiteWeightIn(parsed, root);
   const weight = w.committed && w.row != null && w.row !== w.committed.value ? { row: w.row, committed: w.committed.value, file: w.committed.file } : null;
-  return { missing, stalls, unlisted, invalid: invalidRows(parsed), noDev: root ? devServerGaps(parsed, root) : [], weight, dontAsk: mode === 'dontAsk' ? file : null };
+  return { missing, stalls, unlisted, invalid: invalidRows(parsed), conflicts: forcedConflicts(parsed), noDev: root ? devServerGaps(parsed, root) : [], weight, dontAsk: mode === 'dontAsk' ? file : null };
 }
+
+// The rows another row settles (the schema's forced rules), as the config file has the settling rows:
+// -> forcedRows' list. A settling row drift names INVALID settles nothing here.
+export const forcedIn = (parsed) => forcedRows((id) => driftValues(parsed, id));
+// Each set row that contradicts the value a forced rule settles it to: -> [{ ...forced row, set }].
+export function forcedConflicts(parsed) {
+  return forcedIn(parsed).flatMap((f) => {
+    let set;
+    if (PERMISSION_KEYS[f.id]) {
+      const raw = parsed.sections['3']?.byKey[norm(f.label)]?.value;
+      set = unset(raw) ? null : permValue(f.id, raw);
+    } else set = repoValueIn(parsed, f.id, DECLARED_ROWS);
+    return set == null || set.toLowerCase() === f.value ? [] : [{ ...f, set }];
+  });
+}
+const conflictLine = (c) => `CONFLICT §${c.section} ${c.label} is ${c.set}, but §${c.by.section} ${c.by.label} is ${c.by.value}, which settles it ${c.value}: ${c.reason}`;
+// A `desk-env forced` line: the row, the value it is settled to, and why.
+export const forcedLine = (f) => `FORCED   §${f.section} ${f.label} ${f.value}: §${f.by.section} ${f.by.label} is ${f.by.value}, so ${f.reason}`;
 
 // Every set row of the config file whose items do not fit the type the schema declares for it, as the
 // file has it (no machine fallback or override): -> [{ section, label, item, error, fatal }].
@@ -2050,10 +2068,11 @@ const jobKeyedLine = (j) => {
   return `JOBKEY   §4 Pre-merge steps item "${j.name}" names a job of ${j.steps} steps, so desk guesses from its words which failed step is yours: ${fix}`;
 };
 
-export function driftLines({ missing, stalls, unlisted = [], invalid = [], noDev = [], weight = null, jobKeyed = [], dontAsk }) {
+export function driftLines({ missing, stalls, unlisted = [], invalid = [], conflicts = [], noDev = [], weight = null, jobKeyed = [], dontAsk }) {
   const lines = [
     ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
     ...invalid.map(invalidLine),
+    ...conflicts.map(conflictLine),
     ...stalls.map((s) => `STALLS   §3 ${s.key} is ask with autopilot-workers yes: ${s.reason}`),
     ...unlisted.map((u) => `UNLISTED §4 ${u.row} item "${u.item}" ${u.why}: every worker is refused it`),
     ...noDev.map((g) => `NODEV    §4 Dev server has no item for ${g.dir}, which §4 ${g.rows.join(', ')} name${g.rows.length > 1 ? '' : 's'} and whose package.json has a dev script: a worker on a ticket there cannot run its dev server`),
@@ -2394,7 +2413,7 @@ export function treeStatus(porcelain, { run } = {}) {
 export const DESK_ENV_COMMANDS = Object.freeze(['where', 'list', 'cmds', 'required-fields', 'get', 'review-cmd', 'verdict-logins',
   'levers', 'lines', 'batch-base', 'ticket-kind', 'branch-check', 'perm-or-unset', 'perm', 'config', 'merge-grant', 'key', 'model',
   'effort', 'budget', 'ids', 'paths', 'take-batch', 'identity', 'git-author', 'mem', 'heavy', 'test-scope', 'workspace-test',
-  'baseline', 'uuid', 'default-mode', 'unset', 'show', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription', 'lease', 'preview-slot', 'tree-status']);
+  'baseline', 'uuid', 'default-mode', 'unset', 'show', 'drift', 'forced', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription', 'lease', 'preview-slot', 'tree-status']);
 const deskEnvUsage = () => `usage: desk-env.mjs ${DESK_ENV_COMMANDS.join('|')}`;
 
 const isMain = (() => {
@@ -2838,6 +2857,15 @@ if (isMain) {
           for (const l of lines) console.log(slug ? `  ${l}` : l);
         }
         process.exitCode = drift ? 1 : 0;
+        break;
+      }
+      case 'forced': {
+        // The rows this repo's settled rows force, with the value and why: what /desk-setup writes unasked.
+        const config = configPathOrNull();
+        if (!config || !existsSync(config)) { console.error(`desk: no repo config found at ${configPathHint()}. Run inside the repo, or /desk-setup.`); process.exit(3); }
+        const forced = forcedIn(parseConfigFile(config));
+        if (args.includes('--json')) console.log(JSON.stringify(forced, null, 2));
+        else console.log(forced.length ? forced.map(forcedLine).join('\n') : 'no forced rows');
         break;
       }
       case 'add-row': {
