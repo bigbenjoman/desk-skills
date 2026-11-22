@@ -87,11 +87,17 @@ run(){ echo "compare_pass: $2 on the $1" >&2
   mkdir -p "$W/rec/$1/$2"; }
 
 # The cache key: everything the base's recording depends on besides the base tree itself, as the
-# recorder and suite_env.sh come from this checkout rather than the base.
+# recorder and suite_env.sh come from this checkout rather than the base. So do the usage probe's
+# timings and usage dir the recorder holds probe stamps by (compare_pass.mjs holdProbeStamps), and
+# the machine's usage dir it leaves alone.
 C="${XDG_CACHE_HOME:-$HOME/.cache}/desk-skills/compare-pass"; key=; hit=
 if [ "${PASS_CMP_CACHE:-1}" != 0 ] && [ ! -d "$base" ]; then
   key=$({ echo "$base"; "$NODE" --version; git --version; echo "$BASH_VERSION"
     printf '%s\n' "${suites[@]}" | sort; cat "$S/compare_pass.sh" "$S/compare_pass.mjs" "$S/suite_env.sh"
+    echo "$PASS_CMP_LIVE_USAGE"
+    for f in "$S/../desk/bin/usage-probe.mjs" "$S/../desk/bin/usage-pace.mjs"; do
+      if [ -f "$f" ]; then cat "$f"; else echo "no ${f##*/}"; fi
+    done
   } | git hash-object --stdin) || key=
 fi
 # Each entry holds the records of the base's suites that ran clean, their names, and the paths that

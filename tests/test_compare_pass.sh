@@ -318,6 +318,11 @@ for f in compare_pass.sh compare_pass.mjs suite_env.sh; do
   check "DS-963 AC3 a changed $f replays the base" 'replayed && [ "$out" = "$first" ]'
   cp "$T/$f.orig" "$T/crepo/tests/$f"
 done
+# The usage probe the recorder holds stamps by, which the fixture checkout lacked until now.
+printf 'export const PROBE_EVERY_MS = 300000, PROBE_GAP_MS = 60000;\nexport const usageDir = () => process.env.DESK_USAGE_DIR || "%s";\n' "$T/nousage" > "$T/crepo/desk/bin/usage-probe.mjs"
+ccmp HEAD~1 HEAD
+check "DS-963 AC3 a changed usage-probe.mjs, whose timings the recorder holds probe stamps by, replays the base" 'replayed && [ "$out" = "$first" ]'
+rm "$T/crepo/desk/bin/usage-probe.mjs"
 touch "$T/mark"; ccmp "$T/base" "$T/same"; ccmp "$T/base" "$T/same"
 check "DS-963 AC4 a base given as a directory is replayed every time and never cached" 'replayed && [ $rc = 0 ] && ! find "$CD" -newer "$T/mark" -name "*.tar" | grep -q .'
 # A base whose pass crashes, and one whose suite is stopped by a signal, as Ctrl-C stops one.

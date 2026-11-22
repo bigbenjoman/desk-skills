@@ -961,7 +961,8 @@ suite gives its stand-in workers session ids of its own (`SID_SUFFIX` in `tests/
 `PASS_CMP_SERIAL=1`, or a base whose suites predate those ids, runs them one after the other. A base given as a
 commit is replayed once: its recording is cached under `${XDG_CACHE_HOME:-~/.cache}/desk-skills/compare-pass`
 (the 5 most recently used), keyed by the commit, the node, git and bash versions, the suites and
-`compare_pass.sh`, `compare_pass.mjs` and `suite_env.sh`, and a later comparison against it replays
+`compare_pass.sh`, `compare_pass.mjs`, `suite_env.sh` and the usage probe the recorder holds probe stamps
+by, and a later comparison against it replays
 only the head. A base suite that failed a check or exited non-zero (for want of a tool, or on a busy
 machine) is left out of the entry and replayed on the base next time, and the comparison names the
 check; a base replay that was interrupted, or in which a pass crashed, is not cached at all, and the
