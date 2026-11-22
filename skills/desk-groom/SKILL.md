@@ -66,10 +66,10 @@ before the scan, and stop if the SHAs still differ after a fetch.
 `desk-jira`, the repo through `git`.
 
 ```bash
-node ~/.agents/skills/desk-groom/bin/groom-scan.mjs scan --repo <§2 Primary repo root> --default <§0 Default branch> --project <§4 Jira project key> --priority <§4 Priority> --fields <§4 Other fields, comma-separated> --size <§4 Size field> --done '<§4 Done state>' --in-progress '<§4 In-progress state>' --queue <DESK_QUEUE>
+node ~/.agents/skills/desk-groom/bin/groom-scan.mjs scan --repo <§2 Primary repo root> --default <§0 Default branch> --project <§4 Jira project> --priority <§4 Priority> --fields <§4 Other fields> --size <§4 Size field> --done '<§4 Done state>' --in-progress '<§4 In-progress state>' --queue <DESK_QUEUE>
 ```
 
-`--queue` is the autopilot queue `desk-env paths` prints as `DESK_QUEUE`; each named batch's queue
+`--fields` takes §4 Other fields' items joined with commas. `--queue` is the autopilot queue `desk-env paths` prints as `DESK_QUEUE`; each named batch's queue
 beside it (`batches/<name>/`) is read too. Every finding that would write to a ticket any batch holds
 (queued, triaged, held, parked, running or failed) is `left`: no proposal, no question and no
 verifier, only the line naming the ticket, its state and its batch.

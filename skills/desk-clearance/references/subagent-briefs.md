@@ -17,7 +17,7 @@ because the parent turns it straight into a carousel question.
 
 Fill the `<>` fields from the config sections you read at the skill's start, never the `CONFIG`
 file whole. The subagent reads its sections the same way, from the same repo, so it needs
-no config path. Fill `<§3 limits>` from config §3 before sending: if `git-push` or `pr-reply` is not `yes`, the
+no config path. Fill `<limits from §3>` from config §3 before sending: if `git-push` or `pr-reply` is not `yes`, the
 IMPLEMENT subagent stops before that step and returns what it would have
 pushed or posted, and the parent asks.
 
@@ -97,7 +97,7 @@ to two subagents, and never give two PRs that share a source file to subagents r
 > Anything not on that list stays untouched, however tempting. Fixing extra things is the single most
 > common reason a hand-back turns into another round.
 >
-> **Permissions for this run:** \<§3 limits>
+> **Permissions for this run:** \<limits from §3>
 >
 > Then, in this order:
 > 1. Confirm the worktree is yours and clean, and that `HEAD` matches the PR head. If it does not,
