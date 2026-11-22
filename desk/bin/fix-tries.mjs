@@ -901,7 +901,8 @@ const OUTSIDE = 'its failed log names no file this PR changes';
 // under four letters, is no evidence the failure is this PR's.
 // dbt's node types (model, seed, snapshot, ...) open every node id it prints: `model.shop.fct_orders`.
 const GENERIC = new Set(['index', 'main', 'init', '__init__', 'setup', 'config', 'schema', 'utils', 'test', 'tests', 'spec', 'types', 'readme', 'package', 'models', 'sources', 'conftest', 'settings',
-  'model', 'seed', 'snapshot', 'source', 'macro', 'analysis', 'exposure', 'metric', 'unit_test']);
+  'model', 'seed', 'snapshot', 'source', 'macro', 'analysis', 'exposure', 'metric', 'unit_test', 'data_test', 'semantic_model', 'saved_query',
+  'function', 'group', 'operation']);
 const stem = (p) => String(p).split('/').pop().replace(/\.[^.]*$/, '');
 const wordIn = (name) => new RegExp(`(?:^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_])`);
 function namesChanged(c, changed) {
