@@ -74,9 +74,9 @@ import { listBatches, prState as batchPrState } from './batches.mjs';
 import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
-import { queueWriter } from './queue-writer.mjs';
+import { queueWriter, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { runAudits, endedFromExit, auditsRunning } from './levers-audit.mjs';
-import { MISSED_PREFIX, LEDGER_BY_ENV } from './queue-ledger.mjs';
+import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference } from './queue-ledger.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
@@ -84,7 +84,7 @@ import { decidePrStatus, followState } from './pass/pr-status.mjs';
 import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict } from './pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict, ledgerLine } from './pass/report.mjs';
 import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
@@ -5315,6 +5315,25 @@ const heldWhy = heldWhyOf({
 const heldEnd = Object.values(qEnd.tickets).filter(isHeld).map((t) => t.key);
 const mergedEnd = Object.values(qEnd.tickets).filter((t) => t.merged_at).map((t) => t.key);
 
+// ---- ledger difference ---------------------------------------------------------
+// With the ledger lever on, the pass's changes so far are written and its done tickets archived, then
+// queue.json is compared with the queue rebuilt from the log (queue-ledger.mjs queueDifference, seeding
+// a batch the log has never named), and the count goes in the report (pass/report.mjs ledgerLine) and
+// the metrics line. The pass record's write after it changes the batch's own fields, which a rebuild
+// carries over, and archives only a ticket another writer finished since.
+const ledgerLate = [];
+let ledgerRec = {};
+if (!DRY && ledgerOn()) {
+  ledgerLate.push(...writeLines(QW.flush({ archive: true })));
+  const missed = [...report.failed, ...ledgerLate].filter((l) => l.startsWith(MISSED_PREFIX)).length;
+  let check;
+  try { check = queueDifference(QUEUE_FILE, { seed: true, by: 'pass', waitMs: LOCK_WAIT_MS }); }
+  catch (e) { check = { error: String(e?.message ?? e).split('\n')[0] }; }
+  const l = ledgerLine({ check, missed, queueBin: join(SHOWN_BIN, 'queue.mjs') });
+  if (l) lines.push(l);
+  ledgerRec = { ledger_diffs: check.error ? null : check.diffs.length, ledger_missed: missed };
+}
+
 // ---- pass metrics ------------------------------------------------------------
 // One line per pass (pass-metrics.mjs). An eligible ticket left unspawned counts under the hold that
 // kept it: the usage limit or pacing, then the memory gate, then the repo's shared cap with no lock.
@@ -5339,6 +5358,7 @@ if (!DRY) {
     spawned: report.spawned.length, duration_ms: Date.now() - Date.parse(PASS_AT),
     queue_write_failures: report.failed.filter((x) => x.includes('queue write refused')).length,
     collisions,
+    ...ledgerRec,
   };
   const step = collisionStep({ streak: prevPass.collision_streak, warned: prevPass.collision_warned }, line);
   // The warning carries the time it is written, not the pass's start: a check-in sent since the pass
@@ -5350,14 +5370,14 @@ if (!DRY) {
   // A warning whose line was not written was not given: the next pass gives it.
   collisionRec = { collision_streak: step.streak, collision_warned: step.warn && !wrote.ok ? false : step.warned };
 }
-const late = recordPass((prev) => {
+const late = [...ledgerLate, ...recordPass((prev) => {
   const released = (prev.held_tickets ?? []).some((k) => qEnd.tickets[k] && !heldEnd.includes(k));
   // A merge is progress once, in the pass that first finds it merged, whoever recorded it: a merge
   // time later than the previous pass's start would count again a merge that pass already recorded.
   const merged = merges.length > 0 || (Array.isArray(prev.merged_tickets) && mergedEnd.some((k) => !prev.merged_tickets.includes(k)));
   const moved = report.spawned.length > 0 || merged || released;
   return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, undraft_errors: undraftErrors, pace_blind: PACE_BLIND, ...collisionRec };
-});
+})];
 lines[tableAt] = sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true });
 // The last write's refusals, and fields another writer had changed, are the person's too.
 if (late.length) {
