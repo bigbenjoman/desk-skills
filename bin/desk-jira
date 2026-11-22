@@ -350,13 +350,15 @@ PRIORITY_KEY="${PRIORITY_FIELD:-priority}"
 # when the write may go. An option is read by name only: a bare name, or an object whose one key is
 # "value" or "name". Any other object (an id, both keys, anything extra) is refused, because Jira
 # may write a key the rules did not read: an id over a name, or a name over a value.
+# A field value the rules read as empty: null, "", [], {}, or an option named by an empty value or name.
+JQ_BLANK='def byname: type == "object" and (keys == ["value"] or keys == ["name"]);
+    def blank: . == null or . == "" or . == [] or . == {} or (byname and ((.value // .name // "") == ""));'
 rule_errors() {
   load_rules
   jq -rn --arg mode "$1" --arg type "$2" --argjson f "$3" --arg approved "$4" \
     --argjson req "$(cfg_required "$2")" --argjson top "$RULES_TOP" --arg size "$RULES_SIZE" \
     --arg pf "$PRIORITY_KEY" --arg headless "${DESK_AUTOPILOT_WORKER:-}" '
-    def byname: type == "object" and (keys == ["value"] or keys == ["name"]);
-    def blank: . == null or . == "" or . == [] or . == {} or (byname and ((.value // .name // "") == ""));
+    '"$JQ_BLANK"'
     def oname: if type == "string" then . elif byname then (.value // .name) else null end;
     ($type | ascii_downcase) as $t
     | ($req.need | unique) as $need
@@ -1489,8 +1491,8 @@ case "$cmd" in
     fi
     if (( check )); then
       # create-batch reads the fields a row will carry, so a later row taking one from it is checked against them.
-      # Only a field with a value: one sent empty (null, "", [], {}) gives a later row nothing.
-      [[ -z "${DESK_JIRA_CHECK_CARRIES:-}" ]] || jq -c '[to_entries[] | select(.value | . == null or . == "" or . == [] or . == {} | not) | .key]' <<<"$extra" > "$DESK_JIRA_CHECK_CARRIES"
+      # Only a field with a value: one sent empty (JQ_BLANK) gives a later row nothing.
+      [[ -z "${DESK_JIRA_CHECK_CARRIES:-}" ]] || jq -c "$JQ_BLANK"' [to_entries[] | select(.value | blank | not) | .key]' <<<"$extra" > "$DESK_JIRA_CHECK_CARRIES"
       echo "ok: $type \"$summary\" passes every check (nothing sent)"; exit 0
     fi
     payload=$(jq -n \
