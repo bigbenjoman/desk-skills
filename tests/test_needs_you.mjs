@@ -2297,6 +2297,39 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-798 AC2 done on the failed step settles it', `${done.ok} ${typeof queueOf('follow798').tickets['K-2'].follow_on_done} ${k2 in byKey()}`, 'true string false');
 }
 
+// DS-966: a step reading desk's reports is the checker's, and a step that waits a set time after the
+// merge is not listed until then.
+{
+  const DAY = 24 * 60;
+  const merged = (pr, mins, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(mins), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(mins) }, ...more });
+  const REPORT = { step: "compare wait calls per session (phase0-report --per-ticket's wait_calls) in DS-692's report", row: null };
+  const LATER = { step: 'two weeks after the merge, compare wait calls per session (phase0-report --per-ticket\'s wait_calls)', row: null };
+  const LATER_PERSON = { step: 'two weeks after the merge, check the invoice totals look right', row: null };
+  const STAGING = { step: 'phase0-report --per-ticket on staging shows the wait calls down', row: null };
+  put('follow966', { port: 4966, beat: 1, supervised: true, merge: 'yes', tickets: {
+    'K-1': merged(91, 5, { follow_on: [REPORT] }),
+    'K-2': merged(92, 5, { follow_on: [LATER, LATER_PERSON] }),
+    'K-3': merged(93, 14 * DAY + 5, { follow_on: [LATER_PERSON] }),
+    'K-4': merged(94, 14 * DAY + 300, { follow_on: [LATER], follow_checks: [{ ...LATER, pr: 94, result: 'fail', found: 'no wait_calls column', evidence: '/x', at: minsAgo(1) }] }),
+    'K-5': merged(95, 5, { follow_on: [STAGING] }),
+    'K-6': merged(96, 14 * DAY + 5, { follow_on: [LATER] }),
+    'K-7': merged(97, 14 * DAY + 5, { follow_on: [{ step: 'check the invoice totals look right', row: null }, LATER_PERSON] }),
+  } });
+  const items = N.collect({ word: 'follow966' }).items.filter((i) => i.kind === 'follow');
+  const listed = (k) => items.filter((i) => i.t.key === `follow:${k}` || i.t.key.startsWith(`follow:${k}:`));
+  t('DS-966 AC1 a step reading a desk report with a --flag is the checker\'s, not listed while one is still to run', listed('K-1').length, 0);
+  t('DS-966 AC2 steps two weeks after the merge are not listed before then, the checker\'s nor the person\'s', listed('K-2').length, 0);
+  t('DS-966 a person\'s delayed step is listed once due', /Check: two weeks after the merge, check the invoice totals look right\./.test(listed('K-3')[0]?.need ?? ''), true);
+  t('DS-966 AC3 a delayed step the checker failed is listed with its evidence', /it failed: no wait_calls column \(evidence: \/x\)/.test(listed('K-4')[0]?.need ?? ''), true);
+  t('DS-966 AC3 a delayed step just due is held for the checker', listed('K-6').length, 0);
+  t('DS-966 AC4 a report step naming staging is still the person\'s', /Check: phase0-report --per-ticket on staging/.test(listed('K-5')[0]?.need ?? ''), true);
+  // A delayed step falls due after the person may have been shown the ticket's other steps: done on that
+  // item must not settle it unseen, so it is an item of its own.
+  const k7 = Object.fromEntries(listed('K-7').map((i) => [i.t.key.replace(/:later:[0-9a-f]+$/, ':later'), i.steps.map((s) => s.step)]));
+  t('DS-966 a person\'s delayed step, once due, is an item of its own beside the ticket\'s other steps',
+    JSON.stringify(k7), JSON.stringify({ 'follow:K-7': ['check the invoice totals look right'], 'follow:K-7:later': [LATER_PERSON.step] }));
+}
+
 // A follow step's gate: `main` waits on the merge commit reaching origin/<default>, `production` on it
 // reaching config §4 Promotion ref. Each repo root holds a real origin/main and origin/production.
 {

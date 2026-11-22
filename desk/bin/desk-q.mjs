@@ -42,7 +42,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
+import { repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, unpromotedHolds, promotionWords, openUnknowns } from './batch-state.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { describeCond, restating } from './clears-when.mjs';
@@ -2846,7 +2846,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
 }
 
 // Leases reach the Queue view only as notes: a ▲ note for each lease whose holder stopped checking in
-// (alive, past its expiry), with the command that frees it, tagged with the holder's repo; a ▲ note
+// (alive, past its expiry; never a slot's, which nothing renews), with the command that frees it, tagged with the holder's repo; a ▲ note
 // when the store or log cannot be read; and, for each kind on trial (shadow) that let a clash through
 // in the last 24 hours, one grey note naming the latest. Healthy leases show nothing: desk-env lease
 // list is the full table. It only reads: lapsing and freeing a lease stay with desk-env lease.
@@ -2882,7 +2882,7 @@ function stuckNote(l, repos, now) {
   const h = leaseHolder(l.kind, l.label);
   const repo = h.repo ? repos.find((r) => r.slug.toLowerCase() === slugOf(h.repo))?.name ?? h.repo.split('/').pop() : null;
   const who = h.worker ? `${h.name}'s worker` : capital(h.name);
-  const what = l.kind === 'port' ? 'the port' : l.kind === 'slot' ? 'the slot' : 'it';
+  const what = l.kind === 'port' ? 'the port' : 'it';
   return { tag: `▲ ${repo ?? 'leases'}`, sgr: WARN,
     text: [[`${who} holds ${leaseThing(l.kind, l.key, l.units)} but stopped checking in ${span(now - Date.parse(l.expires))} ago.`, null]],
     more: [[[`If it is stuck, free ${what}:`, null]]], cmd: forceReleaseCommand(l.id) };
@@ -3747,8 +3747,8 @@ export const NEEDS_LAUNCHD = 'The supervisor needs macOS launchd or Linux system
 // The named repo's own checkout, { cwd, env }, so a child run there acts as that repo (its slug,
 // config and GitHub repo) and not as the one this process runs in. `doing` ends the refusal.
 export function checkoutOf(r, doing) {
-  const root = expandHome(repoConfigValue(r.slug, 'repo-root') ?? '');
-  if (!root || /^(TODO|none)$/i.test(root)) throw new Usage(`${r.name}'s config has no §2 Primary repo root, so desk-q cannot find the repo to ${doing} in. Nothing changed.`);
+  const root = repoDirs(r.slug).root;
+  if (!root || /^TODO$/i.test(root)) throw new Usage(`${r.name}'s config has no §2 Primary repo root, so desk-q cannot find the repo to ${doing} in. Nothing changed.`);
   if (!existsSync(root)) throw new Usage(`${r.name}'s §2 Primary repo root, ${root}, does not exist here. Nothing changed.`);
   return { cwd: root, env: { ...otherRepoEnv(), DESK_REPO_DIR: root, DESK_REPO_ROOT: root } };
 }
