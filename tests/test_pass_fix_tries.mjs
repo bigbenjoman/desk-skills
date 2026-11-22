@@ -1,6 +1,6 @@
 // suite: pass phase: fix tries (the decision, run through the generator runner)
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
-import { decideFixTries, tryLabel } from '../desk/bin/pass/fix-tries.mjs';
+import { decideFixTries, decideOutage, tryLabel } from '../desk/bin/pass/fix-tries.mjs';
 import { reviewerGated } from '../desk/bin/pass/shared.mjs';
 import { parseOperatorChecks } from '../desk/bin/fix-tries.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
@@ -199,17 +199,67 @@ t('tryLabel: a protected files try', tryLabel({ kind: 'protected', try: 1, of: 2
 t('tryLabel: an extra try', tryLabel({ kind: 'checks', extra: true }), 'extra fix try');
 t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
 
-// A check red on several ready PRs at once is said once, and each PR red only on it is held.
+// A deploy platform failing for every PR: one outage for the batch (decideOutage), its PRs held from
+// fix tries, re-run on one PR on a back-off, and cleared once a PR passes it.
 {
-  const G = { required: ['tests', 'Vercel Preview'], advisory: [] };
-  const three = [701, 702, 703].map((n) => [tk({ key: `O-${n}`, branch: `task/O-${n}` }), pr([ok('tests'), red('Vercel Preview')], { pr: n })]);
-  const as = drive(snap(three, { gate: G }), { reads: () => reads({ ctx: { required: G.required } }) });
-  const lines = as.filter((a) => a.type === 'out').map((a) => a.line);
-  t('outage: the pass says it once, naming the PRs', lines.filter((l) => l.includes('red on 3 ready PRs at once')).join('|'),
-    'fix tries: "Vercel Preview" is red on 3 ready PRs at once (#701, #702, #703), which reads as its platform failing, not their code: no fix try is spent on it, and nothing desk reruns turns it green; once the platform is back, redeploy there or push to the PRs');
-  t('outage: each PR is held as an outage, none requeued', applied(as).map((a) => `${a.key} ${a.call.call} ${a.call.label}`).join(), 'O-701 held OUTAGE,O-702 held OUTAGE,O-703 held OUTAGE');
-  const two = drive(snap(three.slice(0, 2), { gate: G }), { reads: () => reads({ ctx: { required: G.required } }) });
-  t('outage: on two PRs it is not one, and each gets its fix try', applied(two).map((a) => a.call.call).join(), 'requeue,requeue');
+  const G = { required: ['tests', 'Deploy preview'], advisory: [] };
+  const LINE = 'Error: The project is blocked by the platform, please retry later';
+  const T0 = Date.parse('2026-11-22T10:00:00Z');
+  const deploy = (n, o = {}) => ({ ...red('Deploy preview', String(900 + n)), errors: [o.line ?? LINE], ...o.check });
+  const entry = (n, checks, o = {}) => ({ t: tk({ key: `O-${n}`, branch: `task/O-${n}` }), s: pr(checks, { pr: n, ...o }) });
+  const three = [701, 702, 703].map((n) => entry(n, [ok('tests'), deploy(n)]));
+  const handlersFor = (answers) => Object.fromEntries(['out', 'report', 'outage-rerun', 'outage-hold', 'outage-held'].map((type) => [type, (a) => (typeof answers[type] === 'function' ? answers[type](a) : answers[type])]));
+  const outage = (prs, o = {}, answers = {}) => {
+    const report = { failed: [] };
+    const as = runSteps({ name: 'outage', snapshot: () => ({ prs, gate: G, was: {}, now: T0, dry: false, rowErrors: [], ...o }), decide: decideOutage, handlers: handlersFor({ 'outage-rerun': { ok: true }, ...answers }), report });
+    if (report.failed.length) { fails++; console.log(`FAIL a handler was missing: ${j(report.failed)}`); }
+    return { as, held: as.find((a) => a.type === 'outage-held'), hold: as.find((a) => a.type === 'outage-hold')?.hold, reruns: as.filter((a) => a.type === 'outage-rerun') };
+  };
+  const fixes = (prs, o) => drive(snap(prs.map((e) => [e.t, e.s]), { gate: G, outage: o.held.held.size ? o.held.held : null, outageRerun: o.held.rerun }), { reads: () => reads({ ctx: { required: G.required } }) });
+
+  // AC1: the same check red on three PRs with one platform line: no fix try for any.
+  const first = outage(three);
+  t('AC1 the check is held for the batch, with its three PRs', j(first.held.held.get('Deploy preview')?.prs), j([701, 702, 703]));
+  t('AC1 no fix try is spent on it for any of them', applied(fixes(three, first)).map((a) => `${a.key} ${a.call.call} ${a.call.label}`).join(), 'O-701 held OUTAGE,O-702 held OUTAGE,O-703 held OUTAGE');
+  t('AC1 the hold is kept from the pass it began', j(first.hold), j({ 'Deploy preview': { line: 'error: the project is blocked by the platform, please retry later', text: LINE, prs: [701, 702, 703], since: '2026-11-22T10:00:00.000Z', reruns: [] } }));
+  // AC2: one line, naming the check and the error line, and no STUCK line.
+  const said = lines(first.as, 'report');
+  t('AC2 the pass says it once, naming the check and the error line', said.length === 1 && said[0].startsWith(`OUTAGE — the deploy platform is failing for every PR: "Deploy preview" is red on 3 open PRs (#701, #702, #703) with the same error, "${LINE}", so no fix try is spent on it and none of them is stuck.`), true);
+  t('AC2 and says when the next re-run is', /next re-run on one PR whose run has completed is due at 10:12 UTC/.test(said[0]), true);
+  t('AC2 no rerun before the back-off has passed', first.reruns.length, 0);
+  // AC3: once the back-off has passed, the check is re-run on one PR whose run has completed.
+  const running = entry(701, [ok('tests'), deploy(701), { name: 'Build', status: 'in_progress', conclusion: null, runId: '1601' }]);
+  running.s.checks[1] = { ...running.s.checks[1], runId: '1601' };
+  const later = outage([running, ...three.slice(1)], { was: first.hold, now: T0 + 13 * 60 * 1000 });
+  t('AC3 after the gap, one PR is re-run, never one whose run is still in progress', j(later.reruns.map((a) => [a.pr, a.run])), j([[702, '1602']]));
+  t('AC3 the re-run is kept on the hold', j(later.hold['Deploy preview'].reruns.map((x) => [x.pr, x.ok])), j([[702, true]]));
+  const after = outage(three, { was: later.hold, now: T0 + 30 * 60 * 1000 });
+  t('AC3 the next waits twice as long after one that stayed red', after.reruns.length, 0);
+  t('AC3 then it is due again', outage(three, { was: later.hold, now: T0 + 38 * 60 * 1000 }).reruns.length, 1);
+  // While that re-run runs, the hold stays though only two PRs are red on it.
+  const probing = [entry(701, [ok('tests'), deploy(701)]), entry(702, [ok('tests'), { name: 'Deploy preview', status: 'in_progress', conclusion: null, runId: '1602' }]), entry(703, [ok('tests'), deploy(703)])];
+  const mid = outage(probing.filter((e) => e.s.pr !== 703), { was: later.hold, now: T0 + 14 * 60 * 1000 });
+  t('a hold whose re-run is still running stays, with one PR left red', j(mid.held.held.get('Deploy preview')?.prs), j([701]));
+  // AC4: that re-run goes green: the hold clears, and the other PRs' checks are re-run.
+  const green = [entry(701, [ok('tests'), deploy(701)]), entry(702, [ok('tests'), ok('Deploy preview')]), entry(703, [ok('tests'), deploy(703)])];
+  const cleared = outage(green, { was: later.hold, now: T0 + 20 * 60 * 1000 });
+  t('AC4 the hold clears', j([cleared.held.held.size, cleared.hold]), j([0, {}]));
+  t('AC4 the other PRs\' checks are re-run', j(cleared.reruns.map((a) => [a.pr, a.run])), j([[701, '1601'], [703, '1603']]));
+  t('AC4 the pass says so', lines(cleared.as).some((l) => l.startsWith('outage: "Deploy preview" passes on PR #702 again, so its platform is back and the hold is cleared: re-ran it on #701, #703')), true);
+  t('AC4 a PR re-run as it cleared waits for that run, with no fix try', applied(fixes(green, cleared)).length, 0);
+  // AC5: red on one PR only, it goes on as today.
+  const one = outage([three[0]]);
+  t('AC5 red on one PR there is no hold', j([one.held.held.size, one.reruns.length, lines(one.as, 'report').length]), j([0, 0, 0]));
+  t('AC5 and it gets its fix try as today', applied(fixes([three[0]], one)).map((a) => a.call.call).join(), 'requeue');
+  // AC6: red on several PRs with build-output lines that differ, each goes to its fix tries.
+  const differ = [entry(701, [ok('tests'), deploy(701, { line: 'Type error: x is not a string' })]), entry(702, [ok('tests'), deploy(702, { line: 'Module not found: y' })]), entry(703, [ok('tests'), deploy(703, { line: 'Lint failed: 4 problems' })])];
+  const dif = outage(differ);
+  t('AC6 lines that differ make no hold', dif.held.held.size, 0);
+  t('AC6 each PR goes to its fix tries', applied(fixes(differ, dif)).map((a) => a.call.call).join(), 'requeue,requeue,requeue');
+  // A hold no longer red as one, with no re-run running, is lifted.
+  const gone = outage([three[0]], { was: first.hold, now: T0 + 60 * 1000 });
+  t('a hold red on one PR alone, with nothing re-running, is lifted', j([gone.held.held.size, gone.hold, lines(gone.as).some((l) => l.includes('its hold is lifted'))]), j([0, {}, true]));
+  t('a dry run keeps no hold', outage(three, { dry: true }).hold, undefined);
 }
 
 if (fails) { console.log(`${fails} failure(s)`); process.exit(1); }

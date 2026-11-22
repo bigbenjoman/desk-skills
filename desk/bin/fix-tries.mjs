@@ -32,8 +32,9 @@
 // check a worker can fix it is named in the brief as not theirs. Out of draft, where the pass builds a
 // §4 Check builds check (ctx.build), it goes the draft's way instead (buildStep): built once nothing a
 // worker fixes is red or no try is left, synced by a fix worker when its build failed behind the base.
-import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, externalPassed, PENDING_LIMIT_MS } from './gate.mjs';
+import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, externalPassed, PENDING_LIMIT_MS, FAILED } from './gate.mjs';
 import { baseSplit, runnerOrResource } from './failure-class.mjs';
+import { IDLE_RECHECK_MS } from './batch-state.mjs';
 import { stepFits } from './workflow-yaml.mjs';
 import { askCategoryIn } from './decisions.mjs';
 
@@ -329,12 +330,13 @@ export function fixCall(t, s, ctx) {
         : null;
     }
     if (ctx.waived?.(mine.map((f) => f.name))) return null;
-    // A check red on many ready PRs at once (ctx.outage, outageChecks) reads as its platform failing,
-    // not this PR's code: held with no fix try, whose worker could not fix it. Only where every red
-    // check is one, so a check a person clears, a state check or a check build keeps its own route. It
-    // comes before the rerun gate: the driver reruns no such check, so that gate would wait in silence.
-    if (ctx.outage && !notMine.length && !state.length && !built && mine.every((f) => ctx.outage.has(f.name))) {
-      return { call: 'held', label: 'OUTAGE', why: outageWhy(mine.map((f) => f.name), ctx.outage, s.pr) };
+    // A check red on several open PRs at once with the same error line (ctx.outage, outagePlan) reads as
+    // its platform failing, not this PR's code: held with no fix try, whose worker could not fix it. Only
+    // where every red check is one, so a check a person clears, a state check or a check build keeps its
+    // own route. It comes before the rerun gate: the outage's own rerun (outagePlan) stands in for the driver's.
+    if (!notMine.length && !state.length && !built) {
+      const o = outageHeld(t, s.head, s.pr, mine, ctx);
+      if (o) return o;
     }
     if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) {
       if (!noTryLeft) return null;
@@ -355,24 +357,129 @@ export function fixCall(t, s, ctx) {
   }
   return withBuilds(withRecord(nextTry(done, s.pr, s.head, fix), split.record));
 }
-// A required check red on OUTAGE_PRS or more ready PRs at once, and reported by a platform rather than a
-// GitHub Actions run of the repo's own (no runId: a deploy or preview service's status), is taken for that
-// platform failing (down, its queue timing out), not for each PR's code: Map name -> the PRs it is red on.
-// A workflow's job red on many PRs is left alone: their code, or the base (againstBase), may be its cause.
-// undrafted: [{ s: { pr, checks } }], lists: { required, advisory }.
-export const OUTAGE_PRS = 3;
-export function outageChecks(undrafted, lists) {
-  const on = new Map();
-  for (const { s } of undrafted ?? []) {
-    const gate = evaluateGate(s?.checks ?? [], { required: lists?.required ?? [], advisory: lists?.advisory ?? [] });
-    for (const name of new Set(gate.failing.filter((f) => f.runId == null).map((f) => f.name))) on.set(name, [...(on.get(name) ?? []), s.pr]);
+// A platform outage: one check red on OUTAGE_PRS or more open PRs (ready or draft) with a completed run,
+// every one of them with the same error line once normalised (outageLine), is taken for its deploy or
+// preview platform failing (blocked, "retry later", a queue timing out), not for each PR's code. A line
+// that points at a file (an annotation with a path, or a `file:line`) is build output and never one, and
+// a workflow job with no error line to compare is not one either; a platform's own status (no Actions
+// run) with no description is compared by its empty line. PRs red on the check with another line go
+// their own way.
+export const OUTAGE_PRS = 2;
+// The hold reruns the check on one PR at a time: the merge driver's rerun gap after the hold begins,
+// doubling after each rerun that did not turn it green, up to the pass interval of a batch with nothing
+// to spawn (IDLE_RECHECK_MS).
+export const OUTAGE_GAP_S = RERUN_COOLDOWN_S;
+export const OUTAGE_GAP_MAX_S = Math.max(OUTAGE_GAP_S, IDLE_RECHECK_MS / 1000);
+export const outageGap = (reruns) => Math.min(OUTAGE_GAP_S * 2 ** reruns, OUTAGE_GAP_MAX_S);
+const FILE_AT = /[\w.-]+\.[A-Za-z]\w*:\d+/;
+// A red check's platform line as it reads: its first error line (or, for a platform's own status, its
+// description), or null where it has none to compare or points at a file.
+export function outageText(c) {
+  if (!c || c.error_paths?.length) return null;
+  const line = errorLines(c)[0] ?? (c.runId == null ? String(c.description ?? '') : null);
+  return line == null || FILE_AT.test(line) ? null : line.slice(0, LINE_CHARS);
+}
+// The line compared across PRs: lower case, with URLs, ids and numbers taken out, so a request id or a
+// timestamp in it does not split one outage into many.
+export const outageLine = (text) => String(text).toLowerCase()
+  .replace(/https?:\/\/\S+/g, '<url>')
+  .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/g, '<id>')
+  .replace(/\b(?=[0-9a-f]*\d)[0-9a-f]{7,}\b/g, '<id>')
+  .replace(/\d+/g, '#')
+  .replace(/\s+/g, ' ')
+  .trim();
+const isFailed = (c) => FAILED.has(String(c?.conclusion ?? '').toLowerCase());
+// Each open PR's red checks that read as their platform's: [{ name, line, text, key, pr, head, run, running }],
+// `running` where another job of its run has not completed, so no rerun is made of it yet.
+function platformReds(prs, lists) {
+  const out = [];
+  for (const { t, s } of prs ?? []) {
+    const checks = s?.checks ?? [];
+    const gate = evaluateGate(checks, { required: lists?.required ?? [], advisory: lists?.advisory ?? [] });
+    for (const name of new Set(gate.failing.map((f) => f.name))) {
+      const c = latestPerCheck(checks).find((x) => x.name === name && isFailed(x));
+      const text = outageText(c);
+      if (text == null) continue;
+      const running = c.runId != null && checks.some((x) => String(x.runId) === String(c.runId) && x.status !== 'completed');
+      out.push({ name, line: outageLine(text), text, key: t?.key ?? null, pr: s.pr, head: s.head ?? null, run: c.runId ?? null, running });
+    }
   }
-  return new Map([...on].filter(([, prs]) => prs.length >= OUTAGE_PRS));
+  return out;
+}
+// The checks red as one outage now: Map name -> { line, text, prs }, the largest group by line where
+// one check has more than one. prs: [{ t, s }] (the pass's drafts and ready PRs), lists: { required, advisory }.
+export function outageChecks(prs, lists) {
+  const groups = new Map();
+  for (const r of platformReds(prs, lists)) {
+    const k = `${r.name}\u0000${r.line}`;
+    groups.set(k, { name: r.name, line: r.line, text: groups.get(k)?.text ?? r.text, prs: [...(groups.get(k)?.prs ?? []), r.pr] });
+  }
+  const out = new Map();
+  for (const g of groups.values()) {
+    if (g.prs.length < OUTAGE_PRS || (out.get(g.name)?.prs.length ?? 0) >= g.prs.length) continue;
+    out.set(g.name, { line: g.line, text: g.text, prs: [...g.prs].sort((a, b) => a - b) });
+  }
+  return out;
+}
+const passes = (s, name) => {
+  const runs = latestPerCheck(s?.checks ?? []).filter((c) => c.name === name);
+  return runs.length > 0 && runs.every((c) => c.status === 'completed' && !isFailed(c)) && runs.some((c) => c.conclusion === 'success');
+};
+const runningOn = (s, name) => (s?.checks ?? []).some((c) => c.name === name && c.status !== 'completed');
+// The batch's outage hold, a pass at a time. was: the hold kept from the last pass, { <check>: { line,
+// text, prs (every open PR it has held), since, reruns: [{ pr, head, run, at, ok }] } }; now: ms.
+// -> keep: the hold to keep (before this pass's reruns), held: Map name -> { line, text, prs, runnable,
+//    due (ms) } for the checks held this pass, the PRs being those red with its line now; rerun: [{ name,
+//    key, pr, head, run }], the one PR per check whose rerun is due, its run completed; cleared: [{ name,
+//    text, by, rerun, push }], a check a PR it held now passes, so its platform is back: `rerun` the
+//    other PRs red with its line whose runs desk re-runs, `push` those with none; lifted: [{ name }],
+//    no longer red as one and with no rerun of it still running, so each PR goes its own way again.
+export function outagePlan({ prs, lists, was, now }) {
+  const groups = outageChecks(prs, lists);
+  const reds = platformReds(prs, lists);
+  const open = new Set((prs ?? []).map(({ s }) => s.pr));
+  const keep = {}, held = new Map(), rerun = [], cleared = [], lifted = [];
+  for (const name of new Set([...Object.keys(was ?? {}), ...groups.keys()])) {
+    const w = was?.[name] ?? null, g = groups.get(name) ?? null;
+    const line = g?.line ?? w.line;
+    const red = reds.filter((r) => r.name === name && r.line === line);
+    const tried = w?.reruns ?? [];
+    const last = tried.at(-1);
+    const running = !!last && (prs ?? []).some(({ s }) => s.pr === last.pr && s.head === last.head && runningOn(s, name));
+    if (w) {
+      const back = (prs ?? []).find(({ s }) => w.prs.includes(s.pr) && passes(s, name));
+      if (back) {
+        cleared.push({ name, text: w.text, by: back.s.pr, rerun: red.filter((r) => r.run != null && !r.running), push: red.filter((r) => r.run == null).map((r) => r.pr) });
+        continue;
+      }
+      if (!g && !running) { lifted.push({ name }); continue; }
+    }
+    const text = g?.text ?? w.text;
+    const since = w?.since ?? new Date(now).toISOString();
+    keep[name] = { line, text, prs: [...new Set([...(w?.prs ?? []).filter((n) => open.has(n)), ...red.map((r) => r.pr)])].sort((a, b) => a - b), since, reruns: tried };
+    const due = Date.parse(last?.at ?? since) + outageGap(tried.length) * 1000;
+    const runnable = red.filter((r) => r.run != null);
+    held.set(name, { line, text, prs: red.map((r) => r.pr).sort((a, b) => a - b), runnable: runnable.length > 0, due });
+    const pick = !running && now >= due ? runnable.filter((r) => !r.running).sort((a, b) => a.pr - b.pr)[0] : null;
+    if (pick) rerun.push({ name, key: pick.key, pr: pick.pr, head: pick.head, run: pick.run });
+  }
+  return { keep, held, rerun, cleared, lifted };
+}
+// Held as an outage: every check a worker would fix is one ctx.outage (outagePlan's `held`) holds this
+// PR on. A check red on the base too is the base's (againstBase), not the platform's.
+function outageHeld(t, head, pr, mine, ctx) {
+  if (!ctx.outage || !mine.length || !mine.every((f) => ctx.outage.get(f.name)?.prs.includes(pr))) return null;
+  const base = againstBase(t, head, mine, [], ctx);
+  if (base?.held) return base.held;
+  return { call: 'held', label: 'OUTAGE', why: outageWhy(mine.map((f) => f.name), ctx.outage, pr) };
 }
 const outageWhy = (names, outage, pr) => {
-  const others = [...new Set(names.flatMap((x) => outage.get(x)))].filter((n) => n !== pr).sort((a, b) => a - b);
+  const others = [...new Set(names.flatMap((x) => outage.get(x).prs))].filter((n) => n !== pr).sort((a, b) => a - b);
   const one = names.length === 1;
-  return `${names.map((x) => `"${x}"`).join(', ')} ${one ? 'is' : 'are'} red on ${others.length + 1} ready PRs at once (this one and #${others.join(', #')}), which reads as ${one ? 'its' : 'their'} platform failing, not this PR's code, so no fix try is spent on ${one ? 'it' : 'them'}. Nothing desk reruns turns ${one ? 'it' : 'them'} green: once the platform is back, redeploy there or push to the PR, and it goes on as before once ${one ? 'it passes' : 'they pass'} or fewer PRs are red on ${one ? 'it' : 'them'}`;
+  const runnable = names.some((x) => outage.get(x).runnable);
+  return `${names.map((x) => `"${x}" ("${outage.get(x).text}")`).join(', ')} ${one ? 'is' : 'are'} red with the same error on ${others.length + 1} open PRs at once (this one and #${others.join(', #')}), which reads as ${one ? 'its' : 'their'} platform failing, not this PR's code, so no fix try is spent on ${one ? 'it' : 'them'}. ${runnable
+    ? `The pass re-runs ${one ? 'it' : 'them'} on one PR at a time, further apart each time, and once one passes the hold clears and the other PRs' runs are re-run`
+    : `No Actions run reports ${one ? 'it' : 'them'}, so nothing desk re-runs turns ${one ? 'it' : 'them'} green: once the platform is back, redeploy there or push to the PR, and it goes on as before once ${one ? 'it passes' : 'they pass'} or fewer PRs are red on ${one ? 'it' : 'them'}`}`;
 };
 // A requeue that read the base carries the base red record to keep, null once none is held.
 const withRecord = (c, record) => (record === undefined ? c : { ...c, base_red: record });
@@ -962,6 +1069,8 @@ export function draftChecksFix(t, { pr, head, failing, checks }, ctx) {
     return kept.length ? { ...c, checks: kept } : { call: 'stuck', why: c.why };
   };
   if (!mine.length) return notMine.length ? unstated(operatorStuck(notMine, ctx)) : null;
+  const outage = notMine.length ? null : outageHeld(t, head, pr, mine, ctx);
+  if (outage) return outage;
   const base = againstBase(t, head, mine, notMine, ctx);
   if (base?.held) return base.held;
   const classed = classedRerun(base?.mine ?? mine, checks, ctx);

@@ -25,7 +25,8 @@
 //   conflictRows  { 'pr-conflict-reviewed', 'pr-conflict-unreviewed' }: each { perm, key }, its §3 value and key
 //   feedbackFirst config §3 merge-feedback-first is not `no`
 //   judgement     config §3 autopilot-judgement
-//   outage        set here: outageChecks's map of the checks red on many ready PRs at once
+//   outage        the outage step's held checks (decideOutage, fix-tries.mjs outagePlan), or null
+//   outageRerun   the PRs that step re-ran as a hold cleared: each waits for that run, with no fix try
 //
 // Actions, beside the shared `set` and `report` ({ type, key, ... }; "->" is what the handler returns):
 //   out {line}                          a line of the pass's report
@@ -40,7 +41,7 @@
 //   settle-worked {key, pr, head, worked}   -> the ids of the threads a finished feedback try worked, replied on and resolved
 //   check-build {key, pr, head, call}   -> the build's record: `call` 'person' where it could not start or re-run
 //   apply {key, pr, head, call}         carry out the call: stuck, requeue, held, wait or rerun
-import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck, outageChecks } from '../fix-tries.mjs';
+import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck, outagePlan, outageGap, OUTAGE_PRS, OUTAGE_GAP_MAX_S } from '../fix-tries.mjs';
 import { reviewerGated, set, say } from './shared.mjs';
 import { externalReview } from '../review-threads.mjs';
 
@@ -50,13 +51,59 @@ const waiting = (key, line) => say(key, 'waiting', line);
 export function* decideFixTries(s) {
   if (s.rowErrors.length && s.undrafted.length) yield out(`fix tries: none this pass, since config ${s.rowErrors.join('; ')}. Run /desk-setup`);
   if (s.rowErrors.length) return;
-  // A check red on many ready PRs at once is said once here, and each PR it holds is held (fixCall).
-  const outage = outageChecks(s.undrafted, s.gate);
-  for (const [name, prs] of outage) {
-    yield out(`fix tries: "${name}" is red on ${prs.length} ready PRs at once (#${[...prs].sort((a, b) => a - b).join(', #')}), which reads as its platform failing, not their code: no fix try is spent on it, and nothing desk reruns turns it green; once the platform is back, redeploy there or push to the PRs`);
+  // A PR the outage step re-ran this pass, its hold cleared, waits for that run rather than a fix try.
+  const snap = s.outage?.size ? s : { ...s, outage: null };
+  for (const { t, s: p } of s.undrafted) {
+    if (s.outageRerun?.includes(p.pr)) continue;
+    yield* fixTry(t, p, snap);
   }
-  const snap = outage.size ? { ...s, outage } : s;
-  for (const { t, s: p } of s.undrafted) yield* fixTry(t, p, snap);
+}
+
+// ---- the outage hold ---------------------------------------------------------
+// A check red with the same platform line on several open PRs at once is one outage for the batch
+// (fix-tries.mjs outagePlan): said once as waiting, every PR red with it held from fix tries (fixCall,
+// draftChecksFix), and re-run on one PR at a time on a back-off until a PR it held passes it, when the
+// hold clears and the other PRs' runs are re-run. Runs before the undraft step, so drafts are held too.
+//
+// The snapshot: { prs (the pass's drafts and ready PRs, [{ t, s }]), gate, was (the hold kept from the
+// last pass, or {}), now (ms), dry, rowErrors }.
+// Actions, beside `report` and `out`:
+//   outage-rerun {key, pr, head, run, name}   -> { ok, why } (gh run rerun --failed, under §3 ci-rerun)
+//   outage-hold {hold}                        keep the hold for the next pass
+//   outage-held {held, rerun}                 the checks held this pass (Map), and the PRs re-run as it cleared
+const clock = (ms) => new Date(ms).toISOString().slice(11, 16);
+const prList = (prs) => `#${prs.join(', #')}`;
+export function* decideOutage(s) {
+  if (s.rowErrors?.length) return;
+  const plan = outagePlan({ prs: s.prs, lists: s.gate, was: s.was ?? {}, now: s.now });
+  const keep = { ...plan.keep };
+  const reran = [];
+  for (const c of plan.cleared) {
+    const done = [], refused = [];
+    for (const r of c.rerun) {
+      const x = yield { type: 'outage-rerun', key: r.key, pr: r.pr, head: r.head, run: r.run, name: c.name };
+      if (x?.ok) { done.push(r.pr); reran.push(r.pr); } else refused.push(`#${r.pr} (${x?.why ?? 'refused'})`);
+    }
+    yield out(`outage: "${c.name}" passes on PR #${c.by} again, so its platform is back and the hold is cleared: ${done.length ? `re-ran it on ${prList(done)}` : 'no other PR had a run to re-run'}${refused.length ? `; not re-run on ${refused.join(', ')}, which go on as before` : ''}${c.push.length ? `; ${prList(c.push)} ${c.push.length === 1 ? 'has' : 'have'} no Actions run for it: redeploy there or push to ${c.push.length === 1 ? 'it' : 'them'}` : ''}`);
+  }
+  for (const l of plan.lifted) yield out(`outage: "${l.name}" is no longer red with one error line on ${OUTAGE_PRS} or more open PRs, so its hold is lifted and each PR goes on as before`);
+  const probed = new Map();
+  for (const r of plan.rerun) {
+    const x = yield { type: 'outage-rerun', key: r.key, pr: r.pr, head: r.head, run: r.run, name: r.name };
+    const tried = { pr: r.pr, head: r.head, run: String(r.run), at: new Date(s.now).toISOString(), ok: !!x?.ok };
+    keep[r.name] = { ...keep[r.name], reruns: [...keep[r.name].reruns, tried] };
+    probed.set(r.name, x?.ok ? `was re-run on PR #${r.pr} now` : `could not be re-run on PR #${r.pr} (${x?.why ?? 'refused'})`);
+  }
+  for (const [name, h] of plan.held) {
+    const n = keep[name].reruns.length;
+    const next = probed.has(name) ? s.now + outageGap(n) * 1000 : Math.max(h.due, s.now);
+    const how = !h.runnable
+      ? 'No Actions run reports it, so nothing desk re-runs turns it green: once the platform is back, redeploy there or push to the PRs'
+      : `${probed.has(name) ? `It ${probed.get(name)}; the` : 'The'} next re-run on one PR whose run has completed is due at ${clock(next)} UTC (${Math.round(outageGap(n) / 60)} minutes after the last, doubling to ${Math.round(OUTAGE_GAP_MAX_S / 60)}); once one passes, the hold clears and the other PRs' runs are re-run`;
+    yield say(null, 'waiting', `OUTAGE — the deploy platform is failing for every PR: "${name}" is red on ${h.prs.length} open PRs (${prList(h.prs)}) with the same error, "${h.text}", so no fix try is spent on it and none of them is stuck. ${how}`);
+  }
+  if (!s.dry && JSON.stringify(keep) !== JSON.stringify(s.was ?? {})) yield { type: 'outage-hold', hold: keep };
+  yield { type: 'outage-held', held: plan.held, rerun: reran };
 }
 
 // How the report names a try: "capture try", "extra review try", "protected files try 1 of 2".

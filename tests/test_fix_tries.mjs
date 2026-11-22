@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, outageChecks, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, outageChecks, outageLine, outageText, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
@@ -1138,15 +1138,32 @@ t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as 
   const preview = (n, more = []) => ({ s: { pr: n, checks: [ok('tests'), red('Vercel Preview'), ...more] } });
   const lists = { required: ['tests', 'Vercel Preview', 'Lint'], advisory: [] };
   const many = outageChecks([preview(701), preview(702), preview(703, [red('Lint', '1')]), { s: { pr: 704, checks: [ok('tests'), ok('Vercel Preview')] } }], lists);
-  t('outage: a check red on 3 ready PRs is named with them, one red on fewer is not', JSON.stringify([...many]), '[["Vercel Preview",[701,702,703]]]');
-  t('outage: below the threshold there is none', outageChecks([preview(701), preview(702)], lists).size, 0);
-  t('outage: a workflow job red on as many PRs is not one: their code or the base may be its cause', outageChecks([701, 702, 703].map((n) => ({ s: { pr: n, checks: [ok('tests'), red('Lint', String(n))] } })), lists).size, 0);
-  t('outage: the threshold is 3 PRs', OUTAGE_PRS, 3);
-  const octx = (o = {}) => ctx({ required: lists.required, outage: many, ...o });
+  t('outage: a platform status red on 3 open PRs is named with them, one green is not', JSON.stringify([...many]), '[["Vercel Preview",{"line":"","text":"","prs":[701,702,703]}]]');
+  t('outage: on one PR there is none', outageChecks([preview(701)], lists).size, 0);
+  t('outage: the threshold is 2 PRs', OUTAGE_PRS, 2);
+  // A workflow job counts by its error line: the same platform line on each PR is one, build output is not.
+  const job = (n, line, o = {}) => ({ s: { pr: n, checks: [ok('tests'), { ...red('Deploy preview', String(900 + n)), errors: [line], ...o }] } });
+  const blocked = (n) => `Error: The project is blocked by the platform (request ${n}a7f3c9e1d2), please retry later`;
+  t('outage: a job red on 2 PRs with one platform line (its request id aside) is one', JSON.stringify(outageChecks([job(701, blocked(1)), job(702, blocked(2))], lists).get('Deploy preview')?.prs), '[701,702]');
+  t('outage: a job red with lines that differ is not one', outageChecks([job(701, 'src/a.ts: Type error: x is not a string'), job(702, 'Lint failed in b')], lists).size, 0);
+  t('outage: a line naming a file is build output, even the same on each PR', outageChecks([job(701, 'src/app.ts:12 Cannot find module x'), job(702, 'src/app.ts:12 Cannot find module x')], lists).size, 0);
+  t('outage: so is one whose annotation points at a file', outageChecks([job(701, 'Cannot find module x', { error_paths: ['src/app.ts'] }), job(702, 'Cannot find module x', { error_paths: ['src/app.ts'] })], lists).size, 0);
+  t('outage: a job with no error line to compare is not one', outageChecks([701, 702, 703].map((n) => ({ s: { pr: n, checks: [ok('tests'), red('Lint', String(n))] } })), lists).size, 0);
+  t('outage: a PR red with another line is left out of it', JSON.stringify(outageChecks([job(701, blocked(1)), job(702, blocked(2)), job(703, 'tests failed: 3 of 40')], lists).get('Deploy preview')?.prs), '[701,702]');
+  t('outage: the line drops ids, numbers and URLs', outageLine('Build 4812 failed: see https://x.dev/r/9 (id 0a1b2c3d4e)'), 'build # failed: see <url> (id <id>)');
+  t('outage: a description is a platform status\'s line', outageText({ name: 'Vercel', conclusion: 'failure', runId: null, description: 'Deployment has failed' }), 'Deployment has failed');
+  const octx = (o = {}) => ctx({ required: lists.required, outage: new Map([...many].map(([k, v]) => [k, { ...v, runnable: false }])), ...o });
   const held = fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx());
   t('outage: a PR red only on it is held, with no fix try', `${held?.call} ${held?.label}`, 'held OUTAGE');
   t('outage: its reason names the other PRs and the step that clears it', held?.why,
-    '"Vercel Preview" is red on 3 ready PRs at once (this one and #702, #703), which reads as its platform failing, not this PR\'s code, so no fix try is spent on it. Nothing desk reruns turns it green: once the platform is back, redeploy there or push to the PR, and it goes on as before once it passes or fewer PRs are red on it');
+    '"Vercel Preview" ("") is red with the same error on 3 open PRs at once (this one and #702, #703), which reads as its platform failing, not this PR\'s code, so no fix try is spent on it. No Actions run reports it, so nothing desk re-runs turns it green: once the platform is back, redeploy there or push to the PR, and it goes on as before once it passes or fewer PRs are red on it');
+  const runCtx = ctx({ required: lists.required, outage: new Map([['Deploy preview', { line: 'x', text: 'retry later', prs: [701, 702], runnable: true }]]) });
+  t('outage: a job it holds says the pass re-runs it', /re-runs it on one PR at a time, further apart each time/.test(fixCall(tk(), pr([ok('tests'), red('Deploy preview', '9')], { pr: 701 }), runCtx)?.why ?? ''), true);
+  t('outage: a PR the hold does not cover gets its fix try', fixCall(tk(), pr([ok('tests'), red('Deploy preview', '9')], { pr: 705 }), runCtx)?.call, 'requeue');
+  const baseRed = { atMergeBase: () => 'fail', mergeBase: () => 'm'.repeat(40), latestOnBase: () => 'fail' };
+  t('outage: a check red on the base too stays base red', fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx({ baseRead: baseRed }))?.class, 'base red');
+  const draftHeld = draftChecksFix(tk(), { pr: 701, head: 'a'.repeat(40), failing: [{ name: 'Vercel Preview', runId: null }], checks: [ok('tests'), red('Vercel Preview')] }, octx());
+  t('outage: a draft red only on it is held too, with no fix try', `${draftHeld?.call} ${draftHeld?.label}`, 'held OUTAGE');
   t('outage: held with tries left before any rerun, which the driver never makes for it', fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx({ reruns: () => 0, cooledDown: false }))?.label, 'OUTAGE');
   t('outage: beside a check a person clears, that check keeps its route, not held', fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Flows image missing')], { pr: 701 }), octx({ required: [...lists.required, 'Flows image missing'] }))?.call !== 'held', true);
   t('outage: with no try left it is held too, not the person\'s', fixCall(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'checks' }, { try: 2, head: 'c'.repeat(40), kind: 'checks' }] }), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx())?.call, 'held');

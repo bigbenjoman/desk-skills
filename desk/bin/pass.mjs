@@ -93,7 +93,7 @@ import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOff
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideTicketless } from './pass/ticketless-prs.mjs';
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
-import { decideFixTries, tryLabel } from './pass/fix-tries.mjs';
+import { decideFixTries, decideOutage, tryLabel } from './pass/fix-tries.mjs';
 import { decideReopen, decideRenames, decideUndraft, decideRelease, undraftWrite } from './pass/undraft.mjs';
 import { decideBaseGate } from './pass/base-gate.mjs';
 import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
@@ -3833,7 +3833,7 @@ function readPrStatus(n) {
   if (!v?.state) return null;
   // gh writes a time GitHub has not set as the zero time, 0001-01-01.
   const time = (s) => (s && !s.startsWith('0001-') ? s : null);
-  const checks = latestPerCheck(normaliseRollup(v.statusCheckRollup)).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, started: time(c.startedAt), completed: time(c.completedAt), runner: c.status !== 'queued', runId: c.runId ?? null, jobId: c.jobId ?? null }));
+  const checks = latestPerCheck(normaliseRollup(v.statusCheckRollup)).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, started: time(c.startedAt), completed: time(c.completedAt), runner: c.status !== 'queued', runId: c.runId ?? null, jobId: c.jobId ?? null, ...(c.runId == null && c.description ? { description: c.description.slice(0, 300) } : {}) }));
   const headCommit = (v.commits ?? []).find((c) => c?.oid && c.oid === v.headRefOid);
   // Who approved this head: `latestReviews` carries no commit, so `reviews` is read.
   const approvals = [...new Set((v.reviews ?? []).filter((r) => r?.state === 'APPROVED' && r.commit?.oid === v.headRefOid).map((r) => r.author?.login).filter(Boolean))].sort();
@@ -4270,6 +4270,37 @@ const UNDRAFT_HANDLERS = {
   'undraft-error': (a) => { undraftErrors.push(a.line); },
   'evidence-failures': (a) => settleEvidenceFailures(a.items),
 };
+// A deploy or preview platform failing for every PR at once is one outage for the batch
+// (pass/fix-tries.mjs decideOutage): its hold is kept in OUTAGE_FILE from pass to pass, and the undraft
+// and fix tries steps hold each PR it covers. Its reruns are `gh run rerun --failed`, under §3 ci-rerun,
+// and not rerun.sh, whose two reruns per head the driver has spent by the time a hold reruns anything.
+const OUTAGE_FILE = join(STATE, 'outage-hold.json');
+let outageHeld = null, outageRerun = [];
+function readOutageHold() {
+  try { const v = JSON.parse(readFileSync(OUTAGE_FILE, 'utf8')); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch { return {}; }
+}
+function outageRerunRun(a) {
+  if (DRY) { out.push(`outage (dry run): would re-run run ${a.run} on PR #${a.pr} (${a.key}) for "${a.name}"`); return { ok: false, why: 'a dry run' }; }
+  const perm = E.permission('ci-rerun');
+  if (perm !== 'yes') return { ok: false, why: `config §3 ${E.permissionKey('ci-rerun')} is "${perm}"` };
+  const r = shOut('gh', ['run', 'rerun', String(a.run), '--repo', GH_REPO, '--failed']);
+  return r.ok ? { ok: true } : { ok: false, why: r.out.split('\n').pop() };
+}
+runSteps({
+  name: 'outage',
+  snapshot: () => ({ prs: [...drafts, ...undrafted], gate: gateLists(), was: readOutageHold(), now: Date.now(), dry: DRY, rowErrors: fixRowErrors }),
+  decide: decideOutage,
+  handlers: {
+    ...OUT_HANDLERS,
+    'outage-rerun': outageRerunRun,
+    'outage-hold': (a) => {
+      try { if (Object.keys(a.hold).length) writeFileSync(OUTAGE_FILE, `${JSON.stringify(a.hold, null, 2)}\n`); else if (existsSync(OUTAGE_FILE)) unlinkSync(OUTAGE_FILE); }
+      catch (e) { out.push(`outage: its hold could not be kept (${e.message}), so the next pass starts it again`); }
+    },
+    'outage-held': (a) => { outageHeld = a.held.size ? a.held : null; outageRerun = a.rerun; },
+  },
+  report,
+});
 runSteps({
   name: 'migration renames',
   snapshot: () => ({ drafts, undrafted, base: DEFAULT_BRANCH }),
@@ -4292,7 +4323,7 @@ runSteps({
       upload: uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED ? 'yes' : uploadPerm,
     },
     gates: gateLists(), evidenceErrors: evidenceRow?.errors ?? null, buildErrors: buildRow.errors, fixRowErrors, clearsRows, failureClass: (t) => leverFor('failure-class', t),
-    gatedByReviewer, reviewerMismatch: HEALTH.reviewer?.kind === 'mismatch',
+    gatedByReviewer, reviewerMismatch: HEALTH.reviewer?.kind === 'mismatch', outage: outageHeld,
     reads: {
       untriggered: untriggeredOf, runOf, fault: faultOf,
       // A reopen already made at this base head is not waited on again: the check is the person's then.
@@ -4601,6 +4632,7 @@ function fixReads(t, s, dirty, dirtyFiles) {
       conflictRows: Object.fromEntries(['pr-conflict-reviewed', 'pr-conflict-unreviewed'].map((r) => [r, { perm: E.permission(r), key: E.permissionKey(r) }])),
       feedbackFirst: E.permissionOrUnset('merge-feedback-first') !== 'no',
       judgement: E.permission('autopilot-judgement'),
+      outage: outageHeld, outageRerun,
     }),
     decide: decideFixTries,
     report,
@@ -4680,6 +4712,8 @@ function applyFix(t, n, head, c) {
     baseRedHeld.push(`#${n} (${t.key})`);
     return;
   }
+  // An outage's PRs are named in its one waiting line (pass/fix-tries.mjs decideOutage).
+  if (c.call === 'held' && c.label === 'OUTAGE') { out.push(`outage: PR #${n} (${t.key}) is held, with no fix try: ${c.why}`); return; }
   if (c.call === 'held') { report.waiting.push(`${t.key}: ${c.label ?? 'BASE RED'} — PR #${n}: ${c.why}`); return; }
   if (c.call === 'wait') { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`); return; }
   if (c.call === 'rerun') {
