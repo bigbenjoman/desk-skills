@@ -289,13 +289,15 @@ t('a repo slug with .log. in it is not', ['acme__build.log.tools', 'queue.json',
 // ---- which writes the watcher rebuilds for, by path under its root
 const { makeFeed, counts: writeCounts } = await import(join(BINDIR, 'desk-ui-events.mjs'));
 const under = (...p) => p.join(sep);
-t('a queue write counts, in a repo whose slug ends in .log or holds .log.', [
+t('a queue write counts, in a repo whose slug ends in .log or holds .log., and in a batch named logs, ref or x.log', [
   under('acme__build.log', 'batches', 'B-1', 'queue.json'), under('acme__build.log.tools', 'batches', 'B-1', 'queue.json'), under('acme__widgets', 'batches', 'B-1', 'queue.json'),
-].map(writeCounts), [true, true, true]);
+  under('acme__widgets', 'batches', 'logs', 'queue.json'), under('acme__widgets', 'batches', 'ref', 'parks', 'X-1.json'), under('acme__widgets', 'batches', 'x.log'),
+].map(writeCounts), [true, true, true, true, true, true]);
 t('a log, a rotated log, anything under logs/ or ref/, and the server\'s ui/ do not', [
   under('acme__build.log', 'batches', 'B-1', 'WID-1.log'), under('acme__widgets', 'batches', 'B-1', 'WID-1.log.round2.gz'),
-  under('acme__widgets', 'batches', 'B-1', 'logs', 'x.json'), under('acme__widgets', 'ref', 'repo', 'README.md'), under('ui', 'state.json'),
-].map(writeCounts), [false, false, false, false, false]);
+  under('acme__widgets', 'batches', 'B-1', 'logs', 'x.json'), under('acme__widgets', 'batches', 'logs', 'logs', 'x.json'), under('acme__widgets', 'ref', 'repo', 'README.md'),
+  under('acme__widgets', 'supervisor.log'), under('ui', 'state.json'),
+].map(writeCounts), [false, false, false, false, false, false, false]);
 
 // ---- a feed on its own: a failed read on the tick, and a window that leaves while the model is read
 const empty = { at: 0, body: { repos: [] }, tickets: {}, batches: [] };

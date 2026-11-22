@@ -28,13 +28,17 @@ const MAX_BACKLOG = 8 * 1024 * 1024;
 const stateRoots = () => [join(E.HOME, '.desk-autopilot'), join(E.deskHome(), 'repos'), join(E.deskConfigRoot(), 'repos')];
 
 // Whether a write at `file` (relative to the watched root) can change the read model: not the server's
-// own folder (ui/), nor anything quietStateName leaves out of desk-q's state stamp. A log's name is
-// only ever the file's own: a folder above it (a repo slug ending in .log) is checked for logs/ and ref/.
+// own folder (ui/), nor anything quietStateName leaves out of desk-q's state stamp. Paths run
+// <slug>/[batches/<batch>/]<entry>: only an entry is read as quiet, never a repo slug or a batch name,
+// since a slug may end in .log and a batch may be named logs or ref.
 export function counts(file) {
   if (file == null) return true; // the platform did not say which file: assume it counts
   const segs = String(file).split(/[\\/]/).filter(Boolean);
-  const folders = segs.slice(0, -1);
-  return segs[0] !== 'ui' && !folders.some((s) => s === 'logs' || s === 'ref') && !E.quietStateName(segs.at(-1) ?? '');
+  const at = segs[1] === 'batches' ? 3 : 1; // where the entry sits
+  const last = segs.length - 1;
+  if (segs[0] === 'ui') return false;
+  if (last > at && (segs[at] === 'logs' || segs[at] === 'ref')) return false;
+  return !(last >= at && E.quietStateName(segs[last]));
 }
 
 // The read model: desk-q's home view for every repo with a batch, each repo's ticket rows as its
