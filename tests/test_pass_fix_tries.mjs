@@ -269,7 +269,14 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   const other = 'Error: Build queue timed out';
   const shifted = [entry(701, [ok('tests'), deploy(701)]), entry(702, [ok('tests'), ok('Deploy preview')]), ...[703, 704, 705].map((n) => entry(n, [ok('tests'), deploy(n, { line: other })]))];
   const kept = outage(shifted, { was: { 'Deploy preview': { ...first.hold['Deploy preview'], prs: [701, 702] } }, now: T0 + 20 * 60 * 1000 });
-  t('a hold cleared while more PRs are red with another line re-runs its own', j(kept.reruns.map((a) => a.pr)), j([701]));
+  t('a hold cleared while more PRs are red with another line re-runs its own and theirs', j(kept.reruns.map((a) => a.pr)), j([701, 703, 704, 705]));
+  const both = outage(shifted.filter((e) => e.s.pr !== 702), { was: { 'Deploy preview': { ...first.hold['Deploy preview'], prs: [701, 702] } }, now: T0 + 5 * 60 * 1000 });
+  t('one PR still red with the hold\'s line and more with a new one: all of them are held', j(both.held.held.get('Deploy preview')?.prs), j([701, 703, 704, 705]));
+  // A re-run waiting on the preview build as the hold clears: the hold is kept, and that PR waits too.
+  const clearing = outage(green, { was: later.hold, now: T0 + 20 * 60 * 1000 }, { 'outage-rerun': (a) => (a.pr === 703 ? { ok: false, wait: true, why: 'waits on the preview build for o/r#701' } : { ok: true }) });
+  t('a re-run waiting on the preview build as it clears keeps the hold for the next pass', j([clearing.hold, clearing.held.rerun]), j([undefined, [701, 703]]));
+  t('and says so', lines(clearing.as).some((l) => l.includes('re-ran it on #701; #703 waits on the preview build, and the next pass re-runs it')), true);
+  t('neither gets a fix try this pass', applied(fixes(green, clearing)).length, 0);
   // A re-run waiting on the preview build another PR holds is no re-run tried: the back-off does not grow.
   const leased = outage(three, { was: first.hold, now: T0 + 13 * 60 * 1000 }, { 'outage-rerun': { ok: false, wait: true, why: 'waits on the preview build for o/r#9' } });
   t('a re-run waiting on the preview build is not counted', j([leased.reruns.length, leased.hold]), j([1, undefined]));

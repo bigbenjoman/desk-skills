@@ -320,7 +320,11 @@ export function fixCall(t, s, ctx) {
     }
     split = splitFailing(built ? rest.filter((f) => !built.names.includes(f.name)) : rest, ctx);
     let { mine, notMine } = split;
-    if (built && !mine.length) return buildStep(t, s, built, notMine, ctx);
+    // Beside a check that is not a worker's, a check an outage holds on this PR is set aside first, so
+    // the PR goes that check's way, and a try it gets is told to leave the held one red.
+    const aside = notMine.length || state.length || built ? outageOn(s.pr, mine, ctx) : [];
+    mine = mine.filter((f) => !aside.includes(f));
+    if (built && !mine.length) return buildStep(t, s, built, [...notMine, ...outageNotMine(aside)], ctx);
     if (!mine.length && notMine.length) return operatorStuck(notMine, ctx);
     if (!mine.length) {
       // Red only on state checks. One reading the verdict or an approval has its route; one reading other
@@ -339,7 +343,9 @@ export function fixCall(t, s, ctx) {
       const o = outageHeld(t, s.head, s.pr, mine, ctx);
       if (o) return o;
     }
-    ({ mine, notMine } = outageAside(s.pr, mine, notMine, ctx));
+    const held = [...aside, ...outageOn(s.pr, mine, ctx)];
+    mine = mine.filter((f) => !held.includes(f));
+    notMine = [...notMine, ...outageNotMine(held)];
     split = { ...split, mine, notMine };
     if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) {
       if (!noTryLeft) return null;
@@ -386,7 +392,8 @@ export function outageText(c) {
 }
 // The line compared across PRs: evidence.mjs normaliseLine's, with URLs and every number taken out too
 // and in lower case, so a request id or a link in it does not split one outage into many.
-export const outageLine = (text) => normaliseLine(String(text).replace(/https?:\/\/\S+/g, '<url>')).toLowerCase().replace(/\d+/g, '#');
+export const outageLine = (text) => normaliseLine(String(text).replace(/https?:\/\/\S+/g, '<url>')
+  .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '<id>')).toLowerCase().replace(/\d+/g, '#');
 const isFailed = (c) => FAILED.has(String(c?.conclusion ?? '').toLowerCase());
 // Each open PR's red checks that read as their platform's: [{ name, line, text, key, branch, pr, head, run, running }],
 // `running` where another job of its run has not completed, so no rerun is made of it yet.
@@ -440,9 +447,10 @@ export function outagePlan({ prs, lists, was, now }) {
   const keep = {}, held = new Map(), rerun = [], cleared = [], lifted = [];
   for (const name of new Set([...Object.keys(was ?? {}), ...groups.keys()])) {
     const w = was?.[name] ?? null, g = groups.get(name) ?? null;
-    // The hold's own line while a PR is still red with it, so its PRs are the ones re-run as it clears.
+    // The hold's own line while a PR is still red with it, and the line red on most PRs now too: a PR
+    // red with either is held, and re-run as it clears.
     const line = w && (!g || reds.some((r) => r.name === name && r.line === w.line)) ? w.line : g.line;
-    const red = reds.filter((r) => r.name === name && r.line === line);
+    const red = reds.filter((r) => r.name === name && (r.line === line || r.line === g?.line));
     const tried = w?.reruns ?? [];
     const last = tried.at(-1);
     const running = !!last && (prs ?? []).some(({ s }) => s.pr === last.pr && s.head === last.head && runningOn(s, name));
@@ -475,13 +483,10 @@ function outageHeld(t, head, pr, mine, ctx) {
   if (base?.held) return base.held;
   return { call: 'held', label: 'OUTAGE', why: outageWhy(mine.map((f) => f.name), ctx.outage, pr) };
 }
-// Beside a check of its own, a check an outage holds on this PR is left out of the worker's try, which
-// is told to leave it red: -> { mine, notMine }, as they were where it holds none or every one (outageHeld).
-function outageAside(pr, mine, notMine, ctx) {
-  const held = ctx.outage ? mine.filter((f) => ctx.outage.get(f.name)?.prs.includes(pr)) : [];
-  if (!held.length || held.length === mine.length) return { mine, notMine };
-  return { mine: mine.filter((f) => !held.includes(f)), notMine: [...notMine, ...held.map((f) => ({ ...f, command: 'its platform is failing for every PR: the pass holds it and re-runs it' }))] };
-}
+// The checks a worker would fix that an outage holds on this PR. Beside any other red check they are
+// left out of its route and of a try it gets, which is told to leave them red (outageNotMine).
+const outageOn = (pr, mine, ctx) => (ctx.outage ? mine.filter((f) => ctx.outage.get(f.name)?.prs.includes(pr)) : []);
+const outageNotMine = (held) => held.map((f) => ({ ...f, command: 'its platform is failing for every PR: the pass holds it and re-runs it' }));
 const outageWhy = (names, outage, pr) => {
   const others = [...new Set(names.flatMap((x) => outage.get(x).prs))].filter((n) => n !== pr).sort((a, b) => a - b);
   const one = names.length === 1;
@@ -1077,10 +1082,15 @@ export function draftChecksFix(t, { pr, head, failing, checks }, ctx) {
     const kept = c.checks.filter((x) => !state.some((s) => s.name === x.name));
     return kept.length ? { ...c, checks: kept } : { call: 'stuck', why: c.why };
   };
+  // As fixCall: beside a check that is not a worker's, a held check is set aside first.
+  const aside = notMine.length ? outageOn(pr, mine, ctx) : [];
+  mine = mine.filter((f) => !aside.includes(f));
   if (!mine.length) return notMine.length ? unstated(operatorStuck(notMine, ctx)) : null;
   const outage = notMine.length ? null : outageHeld(t, head, pr, mine, ctx);
   if (outage) return outage;
-  ({ mine, notMine } = outageAside(pr, mine, notMine, ctx));
+  const held = [...aside, ...outageOn(pr, mine, ctx)];
+  mine = mine.filter((f) => !held.includes(f));
+  notMine = [...notMine, ...outageNotMine(held)];
   const base = againstBase(t, head, mine, notMine, ctx);
   if (base?.held) return base.held;
   const classed = classedRerun(base?.mine ?? mine, checks, ctx);

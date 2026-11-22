@@ -71,7 +71,8 @@ export function* decideFixTries(s) {
 //   outage-rerun {key, branch, pr, head, run, name}   -> { ok, why, wait } (gh run rerun --failed, under
 //                                             §3 ci-rerun, once it has the PR's preview-build lease; `wait` where another build holds it)
 //   outage-hold {hold}                        keep the hold for the next pass
-//   outage-held {held, rerun}                 the checks held this pass (Map), and the PRs re-run as it cleared
+//   outage-held {held, rerun}                 the checks held this pass (Map), and the PRs re-run as it
+//                                             cleared, or whose re-run waits on the preview build
 const clock = (ms) => new Date(ms).toISOString().slice(11, 16);
 const prList = (prs) => `#${prs.join(', #')}`;
 export function* decideOutage(s) {
@@ -80,12 +81,15 @@ export function* decideOutage(s) {
   const keep = { ...plan.keep };
   const reran = [];
   for (const c of plan.cleared) {
-    const done = [], refused = [];
+    const done = [], refused = [], waits = [];
     for (const r of c.rerun) {
       const x = yield { type: 'outage-rerun', key: r.key, branch: r.branch, pr: r.pr, head: r.head, run: r.run, name: c.name };
-      if (x?.ok) { done.push(r.pr); reran.push(r.pr); } else refused.push(`#${r.pr} (${x?.why ?? 'refused'})`);
+      if (x?.ok) { done.push(r.pr); reran.push(r.pr); } else if (x?.wait) waits.push(r.pr); else refused.push(`#${r.pr} (${x?.why ?? 'refused'})`);
     }
-    yield out(`outage: "${c.name}" passes on PR #${c.by} again, so its platform is back and the hold is cleared: ${done.length ? `re-ran it on ${prList(done)}` : 'no other PR had a run to re-run'}${refused.length ? `; not re-run on ${refused.join(', ')}, which go on as before` : ''}${c.push.length ? `; ${prList(c.push)} ${c.push.length === 1 ? 'has' : 'have'} no Actions run for it: redeploy there or push to ${c.push.length === 1 ? 'it' : 'them'}` : ''}`);
+    // A re-run waiting on the preview build another PR holds: the hold is kept, so the next pass clears
+    // it again and re-runs those PRs, and until then they wait, with no fix try.
+    if (waits.length) { keep[c.name] = s.was[c.name]; reran.push(...waits); }
+    yield out(`outage: "${c.name}" passes on PR #${c.by} again, so its platform is back and the hold is cleared: ${done.length ? `re-ran it on ${prList(done)}` : waits.length ? 'nothing re-run yet' : 'no other PR had a run to re-run'}${waits.length ? `; ${prList(waits)} ${waits.length === 1 ? 'waits' : 'wait'} on the preview build, and the next pass re-runs ${waits.length === 1 ? 'it' : 'them'}` : ''}${refused.length ? `; not re-run on ${refused.join(', ')}, which go on as before` : ''}${c.push.length ? `; ${prList(c.push)} ${c.push.length === 1 ? 'has' : 'have'} no Actions run for it: redeploy there or push to ${c.push.length === 1 ? 'it' : 'them'}` : ''}`);
   }
   for (const l of plan.lifted) yield out(`outage: "${l.name}" is no longer red with one error line on ${OUTAGE_PRS} or more open PRs, so its hold is lifted and each PR goes on as before`);
   const probed = new Map(), tried = new Set();
