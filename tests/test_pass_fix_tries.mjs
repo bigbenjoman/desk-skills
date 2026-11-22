@@ -291,6 +291,18 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   t('an owed re-run on a PR now green is dropped, with nothing re-run', j([gotGreen.reruns.length, gotGreen.hold, gotGreen.held.rerun]), j([0, {}, []]));
   const pushed = outage([entry(703, [ok('tests'), deploy(703)], { head: 'f'.repeat(40) })], { was: clearing.hold, now: T0 + 25 * 60 * 1000 });
   t('one on a PR pushed to since is dropped: its new head\'s runs are its own', j([pushed.reruns.length, pushed.hold]), j([0, {}]));
+  // A PR whose status could not be read this pass keeps its debt; one the pass read as gone drops it.
+  const unread = outage([merged[0]], { was: clearing.hold, now: T0 + 25 * 60 * 1000, read: new Set([701]) });
+  t('an owed re-run on a PR not read this pass is kept', j([unread.reruns.length, unread.hold]), j([0, undefined]));
+  const closed = outage([merged[0]], { was: clearing.hold, now: T0 + 25 * 60 * 1000, read: new Set([701, 703]) });
+  t('one on a PR read as merged or closed is dropped', j([closed.reruns.length, closed.hold]), j([0, {}]));
+  // A newer run of the check at the same head (a reopen's) is its own: the debt is dropped, not re-run.
+  const replaced = outage([entry(703, [ok('tests'), deploy(703, { check: { runId: '2603' }, line: 'src/app.ts:12 Type error' })])], { was: clearing.hold, now: T0 + 25 * 60 * 1000 });
+  t('an owed re-run whose run a newer one replaced is dropped, with nothing re-run', j([replaced.reruns.length, replaced.hold]), j([0, {}]));
+  // PRs owed a re-run are not counted toward a new outage: their red runs are the cleared one's.
+  const bothWait = outage(green, { was: later.hold, now: T0 + 20 * 60 * 1000 }, { 'outage-rerun': { ok: false, wait: true, why: 'waits on the preview build for o/r#9' } });
+  const twoOwed = outage([entry(701, [ok('tests'), deploy(701)]), entry(703, [ok('tests'), deploy(703)])], { was: bothWait.hold, now: T0 + 25 * 60 * 1000 });
+  t('two PRs owed a re-run make no new outage, and both are re-run', j([twoOwed.held.held.size, twoOwed.reruns.map((a) => a.pr), twoOwed.hold, lines(twoOwed.as, 'report').length]), j([0, [701, 703], {}, 0]));
   // A PR whose run is still going as the hold clears (another job of it running) is owed its re-run too.
   const going = entry(703, [ok('tests'), deploy(703), { name: 'Build', status: 'in_progress', conclusion: null, runId: '1603' }]);
   const unfinished = outage([green[0], green[1], going], { was: later.hold, now: T0 + 20 * 60 * 1000 });

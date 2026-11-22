@@ -4303,7 +4303,7 @@ function outageRerunRun(a) {
 }
 runSteps({
   name: 'outage',
-  snapshot: () => ({ prs: [...drafts, ...undrafted], gate: gateLists(), was: readOutageHold(), now: Date.now(), dry: DRY, rowErrors: fixRowErrors }),
+  snapshot: () => ({ prs: [...drafts, ...undrafted], gate: gateLists(), was: readOutageHold(), now: Date.now(), read: new Set(Object.keys(prStates).map(Number)), dry: DRY, rowErrors: fixRowErrors }),
   decide: decideOutage,
   handlers: {
     ...OUT_HANDLERS,

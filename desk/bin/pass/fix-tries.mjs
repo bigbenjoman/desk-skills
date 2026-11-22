@@ -66,7 +66,8 @@ export function* decideFixTries(s) {
 // hold clears and the other PRs' runs are re-run. Runs before the undraft step, so drafts are held too.
 //
 // The snapshot: { prs (the pass's drafts and ready PRs, [{ t, s }]), gate, was (the hold kept from the
-// last pass, or {}), now (ms), dry, rowErrors }.
+// last pass, or {}), now (ms), read (a Set of the PRs whose state the pass read: one owed a re-run and
+// not read keeps it), dry, rowErrors }.
 // Actions, beside `report` and `out`:
 //   outage-rerun {key, branch, pr, head, run, name}   -> { ok, why, wait } (gh run rerun --failed, under
 //                                             §3 ci-rerun, once it has the PR's preview-build lease; `wait` where another build holds it)
@@ -78,7 +79,7 @@ const clock = (ms) => new Date(ms).toISOString().slice(11, 16);
 const prList = (prs) => `#${prs.join(', #')}`;
 export function* decideOutage(s) {
   if (s.rowErrors?.length) return;
-  const plan = outagePlan({ prs: s.prs, lists: s.gate, was: s.was ?? {}, now: s.now });
+  const plan = outagePlan({ prs: s.prs, lists: s.gate, was: s.was ?? {}, now: s.now, read: s.read ?? null });
   const keep = { ...plan.keep };
   // A PR a cleared hold still owes a re-run waits for it, with no fix try, until it is made.
   const reran = [...plan.owing];
@@ -165,7 +166,7 @@ function* fixTry(t, p, s) {
   const ctx = s.outage ? { ...read, outage: s.outage } : read;
   // A check an outage holds is the pass's, so a stuck record naming it (written before the outage, or
   // beside it) drops it, whatever route the PR goes this pass: held, a build's wait or any other.
-  const less = stuckLessHeld(t.stuck, n, s.outage);
+  const less = stuckLessHeld(t.stuck, n, s.outage, (ctx.builds ?? []).map((b) => b.name));
   if (less !== undefined && !s.dry) { yield set(t.key, `stuck=${JSON.stringify(less)}`); t = { ...t, stuck: less }; }
   // A red check a change on the branch may clear (an unneeded protected file, a stale verdict) goes to a
   // worker before anything is put to the person.

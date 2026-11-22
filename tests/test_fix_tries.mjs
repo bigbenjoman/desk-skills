@@ -1202,6 +1202,8 @@ t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as 
   t('stuckLessHeld: one the hold does not cover on this PR is unchanged', stuckLessHeld(rec, 705, heldMap), undefined);
   t('stuckLessHeld: a record with no checks (a conflict, a review) is unchanged', stuckLessHeld({ why: 'still in conflict' }, 703, heldMap), undefined);
   t('stuckLessHeld: with no outage it is unchanged', stuckLessHeld(rec, 703, null), undefined);
+  t('stuckLessHeld: a check a person clears (its own command) stays, though red with the outage line', stuckLessHeld({ ...rec, checks: [{ name: 'Vercel Preview', command: 'redeploy it: deploy.sh' }] }, 703, heldMap), undefined);
+  t('stuckLessHeld: so does a §4 Check builds check, which the pass builds', stuckLessHeld({ ...rec, checks: [{ name: 'Vercel Preview' }] }, 703, heldMap, ['Vercel Preview']), undefined);
 }
 
 process.exit(fails ? 1 : 0);
