@@ -345,8 +345,18 @@ cat > "$T/prs.json" <<EOF
 { "151": { "head": "fix/T-51", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] },
   "153": { "head": "fix/T-53", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] },
   "156": { "head": "fix/T-57", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] },
-  "161": { "head": "fix/T-61", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] } }
+  "161": { "head": "fix/T-61", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] },
+  "163": { "head": "fix/T-63", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] },
+  "165": { "head": "fix/T-65", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] },
+  "166": { "head": "fix/T-67", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] } }
 EOF
+# T-63 was requeued after #163 merged, and its next spawn failed its preflight: no worker ran. T-67 was
+# respawned before merged_pr was kept and is done again on #167, its status still naming #166. T-65, never
+# requeued, was stopped (held behind nothing) and then its draft #165 merged: that merge counts.
+q add T-63 Task A; q set T-63 state=failed branch=fix/T-63 result.pr=163 spawn_failed=true; q merged T-63 2026-11-13T00:00:00.000Z
+q add T-67 Task A; q set T-67 state=done branch=fix/T-67 result.pr=167 'pr_status={"pr":166,"state":"MERGED"}'; q merged T-67 2026-11-13T00:00:00.000Z
+q add T-65 Task A; q set T-65 state=parked branch=fix/T-65 draft_pr=165 'park={"question":"held by orchestrator: stopped by queue.mjs stop at 2026-11-13T00:00:00.000Z"}'; q merged T-65 2026-11-14T00:00:00.000Z
+for s in 64:63 68:67 66:65; do q add "T-${s%%:*}" Task A; q set "T-${s%%:*}" state=triaged branch="fix/T-${s%%:*}"; q hold "T-${s%%:*}" "T-${s##*:}"; done
 q add T-51 Task A; q set T-51 state=parked branch=fix/T-51 merged_pr=151 'park={"question":"Stage 8: comment"}'; q merged T-51 2026-11-13T00:00:00.000Z
 q add T-61 Task A; q set T-61 state=failed branch=fix/T-61 merged_pr=161; q merged T-61 2026-11-13T00:00:00.000Z
 q add T-55 Task A; q set T-55 state=triaged branch=fix/T-55
@@ -361,8 +371,13 @@ check "DS-796 a blocker held behind its own blockers at its requeue does not rel
   '[ "$(qg T-54 .state)" = parked ] && [ "$(qg T-53 .state)" = parked ] && ! echo "$out" | grep -qE "RELEASED T-5[34]"'
 check "DS-796 a blocker respawned before merged_pr, its new PR read open after its merge, does not release on that merge" \
   '[ "$(qg T-58 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-58"'
-node --input-type=module -e "import { readFileSync, writeFileSync } from 'node:fs'; const f = process.argv[1]; const p = JSON.parse(readFileSync(f, 'utf8')); p['157'] = { ...p['156'], state: 'merged' }; writeFileSync(f, JSON.stringify(p))" "$T/prs.json"
+check "DS-796 a requeued blocker whose next spawn failed before any worker ran does not release on its first merge" \
+  '[ "$(qg T-64 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-64"'
+check "DS-796 a blocker respawned before merged_pr, done on a PR its status does not name yet, does not release on its first merge" \
+  '[ "$(qg T-68 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-68"'
+check "DS-796 a stopped blocker never requeued releases on the merge it records" '[ "$(qg T-66 .state)" = triaged ] && echo "$out" | grep -q "RELEASED T-66"'
+node --input-type=module -e "import { readFileSync, writeFileSync } from 'node:fs'; const f = process.argv[1]; const p = JSON.parse(readFileSync(f, 'utf8')); p['157'] = { ...p['156'], state: 'merged' }; p['167'] = { ...p['166'], state: 'merged' }; writeFileSync(f, JSON.stringify(p))" "$T/prs.json"
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-51" 2>&1)
-check "DS-796 and its current PR merging releases what waits on it" '[ "$(qg T-58 .state)" = triaged ] && echo "$out" | grep -q "merged: T-57#157 -> RELEASED T-58"'
+check "DS-796 and its current PR merging releases what waits on it" '[ "$(qg T-58 .state)" = triaged ] && echo "$out" | grep -q "merged: T-57#157 -> RELEASED T-58" && [ "$(qg T-68 .state)" = triaged ] && echo "$out" | grep -q "merged: T-67#167 -> RELEASED T-68"'
 
 finish loop
