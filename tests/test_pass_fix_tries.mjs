@@ -221,7 +221,7 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   const first = outage(three);
   t('AC1 the check is held for the batch, with its three PRs', j(first.held.held.get('Deploy preview')?.prs), j([701, 702, 703]));
   t('AC1 no fix try is spent on it for any of them', applied(fixes(three, first)).map((a) => `${a.key} ${a.call.call} ${a.call.label}`).join(), 'O-701 held OUTAGE,O-702 held OUTAGE,O-703 held OUTAGE');
-  t('AC1 the hold is kept from the pass it began', j(first.hold), j({ 'Deploy preview': { line: 'error: the project is blocked by the platform, please retry later', text: LINE, prs: [701, 702, 703], since: '2026-11-22T10:00:00.000Z', reruns: [] } }));
+  t('AC1 the hold is kept from the pass it began', j(first.hold), j({ 'Deploy preview': { line: 'error: the project is blocked by the platform, please retry later', text: LINE, prs: [701, 702, 703], since: '2026-11-22T10:00:00.000Z', reruns: [], seen: [701, 702, 703].map((n) => ({ pr: n, head: HEAD, run: String(900 + n) })) } }));
   // AC2: one line, naming the check and the error line, and no STUCK line.
   const said = lines(first.as, 'report');
   t('AC2 the pass says it once, naming the check and the error line', said.length === 1 && said[0].startsWith(`OUTAGE — the deploy platform is failing for every PR: "Deploy preview" is red on 3 open PRs (#701, #702, #703) with the same error, "${LINE}", so no fix try is spent on it and none of them is stuck.`), true);
@@ -299,6 +299,14 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   // A newer run of the check at the same head (a reopen's) is its own: the debt is dropped, not re-run.
   const replaced = outage([entry(703, [ok('tests'), deploy(703, { check: { runId: '2603' }, line: 'src/app.ts:12 Type error' })])], { was: clearing.hold, now: T0 + 25 * 60 * 1000 });
   t('an owed re-run whose run a newer one replaced is dropped, with nothing re-run', j([replaced.reruns.length, replaced.hold]), j([0, {}]));
+  // A same-name check of another kind (a status that passed) is not the run owed: the debt stands.
+  const sameName = outage([entry(703, [ok('tests'), { name: 'Deploy preview', status: 'completed', conclusion: 'success', runId: null, workflow: null }, deploy(703, { check: { workflow: 'Deploy' } })])], { was: clearing.hold, now: T0 + 25 * 60 * 1000 });
+  t('an owed re-run is matched on its run, not a same-name status that passed', j(sameName.reruns.map((a) => [a.pr, a.run])), j([[703, '1603']]));
+  // A held PR the pass could not read as the hold clears is owed its re-run of the run last seen red.
+  const clearUnread = outage([green[0], green[1]], { was: later.hold, now: T0 + 20 * 60 * 1000, read: new Set([701, 702]) });
+  t('a held PR not read as the hold clears is owed its last red run', j(clearUnread.hold?.['Deploy preview']?.owed), j([{ pr: 703, head: HEAD, run: '1603' }]));
+  const readAgain = outage([entry(703, [ok('tests'), deploy(703)])], { was: clearUnread.hold, now: T0 + 25 * 60 * 1000 });
+  t('and is re-run once it is read again, red on that run', j(readAgain.reruns.map((a) => [a.pr, a.run])), j([[703, '1603']]));
   // PRs owed a re-run are not counted toward a new outage: their red runs are the cleared one's.
   const bothWait = outage(green, { was: later.hold, now: T0 + 20 * 60 * 1000 }, { 'outage-rerun': { ok: false, wait: true, why: 'waits on the preview build for o/r#9' } });
   const twoOwed = outage([entry(701, [ok('tests'), deploy(701)]), entry(703, [ok('tests'), deploy(703)])], { was: bothWait.hold, now: T0 + 25 * 60 * 1000 });

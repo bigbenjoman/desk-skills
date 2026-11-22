@@ -1196,14 +1196,15 @@ t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as 
   const draftStuck = draftChecksFix(spentTk, { pr: 703, head: 'a'.repeat(40), failing: [{ name: 'Vercel Preview', runId: null }, { name: 'Lint', runId: '1' }], checks: [ok('tests'), red('Vercel Preview'), red('Lint', '1')] }, octx());
   t('outage: so does a draft\'s', JSON.stringify([draftStuck?.call, draftStuck?.checks?.map((c) => c.name)]), '["stuck",["Lint"]]');
   const heldMap = new Map([['Vercel Preview', { prs: [701, 703] }]]);
-  const rec = { why: 'x', pr: 703, head: 'a', lead: 'still red after 2 tries', checks: [{ name: 'Lint' }, { name: 'Vercel Preview', command: 'its platform is failing' }] };
+  const rec = { why: 'x', pr: 703, head: 'a', lead: 'still red after 2 tries', checks: [{ name: 'Lint' }, { name: 'Vercel Preview' }] };
   t('stuckLessHeld: a record naming a held check drops it', JSON.stringify(stuckLessHeld(rec, 703, heldMap)), JSON.stringify({ ...rec, checks: [{ name: 'Lint' }], why: 'still red after 2 tries: Lint' }));
   t('stuckLessHeld: none left is null', stuckLessHeld({ ...rec, checks: [rec.checks[1]] }, 703, heldMap), null);
   t('stuckLessHeld: one the hold does not cover on this PR is unchanged', stuckLessHeld(rec, 705, heldMap), undefined);
   t('stuckLessHeld: a record with no checks (a conflict, a review) is unchanged', stuckLessHeld({ why: 'still in conflict' }, 703, heldMap), undefined);
   t('stuckLessHeld: with no outage it is unchanged', stuckLessHeld(rec, 703, null), undefined);
   t('stuckLessHeld: a check a person clears (its own command) stays, though red with the outage line', stuckLessHeld({ ...rec, checks: [{ name: 'Vercel Preview', command: 'redeploy it: deploy.sh' }] }, 703, heldMap), undefined);
-  t('stuckLessHeld: so does a §4 Check builds check, which the pass builds', stuckLessHeld({ ...rec, checks: [{ name: 'Vercel Preview' }] }, 703, heldMap, ['Vercel Preview']), undefined);
+  t('stuckLessHeld: so does a §4 Check builds check, which the pass builds', stuckLessHeld({ ...rec, checks: [{ name: 'Vercel Preview' }] }, 703, heldMap, { builds: ['Vercel Preview'] }), undefined);
+  t('stuckLessHeld: held on the outage alone, an entry from another route (red on the base before) goes too', stuckLessHeld({ ...rec, checks: [{ name: 'Vercel Preview', command: 'red on main too' }] }, 703, heldMap, { whole: true }), null);
 }
 
 process.exit(fails ? 1 : 0);

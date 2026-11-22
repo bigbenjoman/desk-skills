@@ -4729,8 +4729,9 @@ function applyFix(t, n, head, c) {
   }
   // An outage's PRs are named in its one waiting line (pass/fix-tries.mjs decideOutage).
   if (c.call === 'held' && c.label === 'OUTAGE') {
-    // Held on the outage alone, a stuck record naming its checks drops them (a draft's: fixTry does a ready PR's).
-    const less = stuckLessHeld(t.stuck, n, outageHeld);
+    // Held on the outage alone, every red check is a held one, so a stuck record naming one drops it,
+    // whatever route wrote it (red on the base before the base recovered, say).
+    const less = stuckLessHeld(t.stuck, n, outageHeld, { whole: true });
     if (less !== undefined && !DRY) { q('set', t.key, `stuck=${JSON.stringify(less)}`); t.stuck = less; }
     out.push(`outage: PR #${n} (${t.key}) is held, with no fix try: ${c.why}`);
     return;

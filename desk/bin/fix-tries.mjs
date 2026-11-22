@@ -416,10 +416,10 @@ function platformReds(prs, lists) {
 }
 // The checks red as one outage now: Map name -> { line, text, prs }, the largest group by line where
 // one check has more than one. prs: [{ t, s }] (the pass's drafts and ready PRs), lists: { required, advisory }.
-export const outageChecks = (prs, lists) => outageGroups(platformReds(prs, lists));
-function outageGroups(reds) {
+// skip(r): a red to leave out (outagePlan's PRs still owed a re-run).
+export function outageChecks(prs, lists, skip = () => false) {
   const groups = new Map();
-  for (const r of reds) {
+  for (const r of platformReds(prs, lists).filter((x) => !skip(x))) {
     const k = `${r.name}\u0000${r.line}`;
     groups.set(k, { name: r.name, line: r.line, text: groups.get(k)?.text ?? r.text, prs: [...(groups.get(k)?.prs ?? []), r.pr] });
   }
@@ -438,10 +438,12 @@ const runningOn = (s, name) => (s?.checks ?? []).some((c) => c.name === name && 
 // A check a cleared hold still owes a re-run of `run` on a PR, as it reads now: 'pass', 'running' (that
 // run, or another job of it, has not completed), { run } red with that run completed, or null where its
 // latest run is another (a reopen's new run: its own result goes its own way) or there is none.
+// The check is matched on its name and that run together: another workflow's check, or a status, of the
+// same name is not it, and a newer run of its own replaces it in latestPerCheck, so none is found.
 function owedState(s, name, run) {
   if (passes(s, name)) return 'pass';
-  const c = latestPerCheck(s?.checks ?? []).find((x) => x.name === name);
-  if (!c || c.runId == null || String(c.runId) !== String(run)) return null;
+  const c = latestPerCheck(s?.checks ?? []).find((x) => x.name === name && x.runId != null && String(x.runId) === String(run));
+  if (!c) return null;
   if ((s.checks ?? []).some((x) => String(x.runId) === String(c.runId) && x.status !== 'completed')) return 'running';
   return isFailed(c) ? { run: c.runId } : null;
 }
@@ -476,9 +478,12 @@ export function outagePlan({ prs, lists, was, now, read = null }) {
     }
     owedOf.set(name, owed);
   }
-  const debtor = (name, pr) => (owedOf.get(name) ?? []).some((o) => o.pr === pr) || owe.some((o) => o.name === name && o.pr === pr);
-  const reds = platformReds(prs, lists).filter((r) => !debtor(r.name, r.pr));
-  const groups = outageGroups(reds);
+  const debtor = (r) => (owedOf.get(r.name) ?? []).some((o) => o.pr === r.pr) || owe.some((o) => o.name === r.name && o.pr === r.pr);
+  const reds = platformReds(prs, lists).filter((r) => !debtor(r));
+  const groups = outageChecks(prs, lists, debtor);
+  // A PR the pass could not read this pass: its last red run (the hold's `seen`) stays on the hold, and
+  // is owed its re-run if the hold clears meanwhile.
+  const unread = (pr) => !byPr.has(pr) && !!read && !read.has(pr);
   const open = new Set(byPr.keys());
   const keep = {}, held = new Map(), rerun = [], cleared = [], lifted = [];
   for (const name of new Set([...Object.keys(was ?? {}), ...groups.keys()])) {
@@ -501,6 +506,8 @@ export function outagePlan({ prs, lists, was, now, read = null }) {
         const ows = new Set([...owed, ...owe.filter((o) => o.name === name)].map((o) => o.pr));
         const later = red.filter((r) => r.run != null && r.running && !ows.has(r.pr));
         for (const r of later) { owed.push({ pr: r.pr, head: r.head, run: String(r.run) }); owing.push(r.pr); }
+        // A held PR not read this pass is owed its re-run of the run last seen red, checked once it is read.
+        for (const x of w.seen ?? []) if (unread(x.pr) && !ows.has(x.pr)) owed.push(x);
         cleared.push({ name, text: w.text, by: back.s.pr, rerun: red.filter((r) => r.run != null && !r.running && !ows.has(r.pr)), later: later.map((r) => r.pr), push: red.filter((r) => r.run == null).map((r) => r.pr) });
         if (owedKept(w.text)) keep[name] = owedKept(w.text);
         continue;
@@ -515,7 +522,9 @@ export function outagePlan({ prs, lists, was, now, read = null }) {
     }
     const text = g?.text ?? w.text;
     const since = w?.since ?? new Date(now).toISOString();
-    keep[name] = { line, text, prs: [...new Set([...(w?.prs ?? []).filter((n) => open.has(n)), ...red.map((r) => r.pr)])].sort((a, b) => a - b), since, reruns: tried, ...(owed.length ? { owed } : {}) };
+    // `seen`: each held PR's red run, kept for a PR the pass could not read until it is read again.
+    const seen = [...red.filter((r) => r.run != null).map((r) => ({ pr: r.pr, head: r.head, run: String(r.run) })), ...(w?.seen ?? []).filter((x) => unread(x.pr))];
+    keep[name] = { line, text, prs: [...new Set([...(w?.prs ?? []).filter((n) => open.has(n) || unread(n)), ...red.map((r) => r.pr)])].sort((a, b) => a - b), since, reruns: tried, ...(seen.length ? { seen } : {}), ...(owed.length ? { owed } : {}) };
     const due = Date.parse(last?.at ?? since) + outageGap(tried.length) * 1000;
     const runnable = red.filter((r) => r.run != null);
     held.set(name, { line, text, prs: red.map((r) => r.pr).sort((a, b) => a - b), runnable: runnable.length > 0, due });
@@ -545,9 +554,11 @@ const outageNotMine = (held) => held.map((f) => ({ ...f, held: true, command: HE
 // Only a check a worker would fix is held (outageOn): one a person clears (a `command` of its own, an
 // operator check, a check build's step, red on the base) keeps its route's stuck answer, so it stays,
 // and so does a §4 Check builds check (`builds`, its names), which the pass builds and never holds.
-export function stuckLessHeld(stuck, pr, outage, builds = []) {
+// `whole`: the PR is held on the outage alone (its route's call is `held OUTAGE`), so every red check is
+// a held one and a record naming one by any route (red on the base before the base recovered) is stale.
+export function stuckLessHeld(stuck, pr, outage, { builds = [], whole = false } = {}) {
   if (!outage?.size || !Array.isArray(stuck?.checks)) return undefined;
-  const heldHere = (c) => (!c.command || c.command === HELD_COMMAND) && !builds.includes(c.name) && outage.get(c.name)?.prs.includes(pr);
+  const heldHere = (c) => (whole || ((!c.command || c.command === HELD_COMMAND) && !builds.includes(c.name))) && outage.get(c.name)?.prs.includes(pr);
   const kept = stuck.checks.filter((c) => !heldHere(c));
   if (kept.length === stuck.checks.length) return undefined;
   return kept.length ? { ...stuck, checks: kept, why: stuckWhy({ lead: stuck.lead ?? null, checks: kept }) } : null;

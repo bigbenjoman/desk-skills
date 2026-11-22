@@ -166,7 +166,7 @@ function* fixTry(t, p, s) {
   const ctx = s.outage ? { ...read, outage: s.outage } : read;
   // A check an outage holds is the pass's, so a stuck record naming it (written before the outage, or
   // beside it) drops it, whatever route the PR goes this pass: held, a build's wait or any other.
-  const less = stuckLessHeld(t.stuck, n, s.outage, (ctx.builds ?? []).map((b) => b.name));
+  const less = stuckLessHeld(t.stuck, n, s.outage, { builds: (ctx.builds ?? []).map((b) => b.name) });
   if (less !== undefined && !s.dry) { yield set(t.key, `stuck=${JSON.stringify(less)}`); t = { ...t, stuck: less }; }
   // A red check a change on the branch may clear (an unneeded protected file, a stale verdict) goes to a
   // worker before anything is put to the person.
