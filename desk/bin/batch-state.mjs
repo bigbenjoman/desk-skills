@@ -130,6 +130,12 @@ export const moveOffer = (ts) => `move <batch> takes it out of this batch and qu
 function readPark(stateDir, key) {
   try { return JSON.parse(readFileSync(statePath(stateDir, 'parks', key), 'utf8')); } catch { return null; }
 }
+// Ticket `key`'s park file as `file`, and as `rec` only where it is on `question`: a file on another
+// question than the one parked on is an earlier round's, read as no file.
+function currentPark(stateDir, key, question) {
+  const file = readPark(stateDir, key);
+  return { file, rec: file && String(file.question ?? '').trim() === String(question ?? '').trim() ? file : null };
+}
 
 // The question a worker parked on and nobody has answered yet, or null: its park file's `question`
 // while no answer file sits beside it. A half-written park file is not an error.
@@ -149,9 +155,8 @@ const APPROVE_FIELDS = ['kind', 'target', 'body'];
 // A file on another question than the one parked on is an earlier round's, read as no file. A PR
 // number given as a number is its target as text.
 export function parkApproval(stateDir, key, question) {
-  const file = readPark(stateDir, key);
+  const { file, rec } = currentPark(stateDir, key, question);
   const fileQ = String(file?.question ?? '').trim();
-  const rec = file && fileQ === String(question ?? '').trim() ? file : null;
   const raw = rec?.approve && typeof rec.approve === 'object' ? rec.approve : null;
   const a = raw && typeof raw.target === 'number' ? { ...raw, target: String(raw.target) } : raw;
   const lacks = a ? APPROVE_FIELDS.filter((f) => typeof a[f] !== 'string' || !a[f].trim()) : APPROVE_FIELDS;
@@ -165,7 +170,7 @@ export function parkApproval(stateDir, key, question) {
 }
 
 // The fields a worker's park file declares: its question, and the write it awaits approval of.
-export const PARK_FILE_FIELDS = Object.freeze({ question: null, approve: Object.freeze([...APPROVE_FIELDS]) });
+const PARK_FILE_FIELDS = Object.freeze({ question: null, approve: Object.freeze([...APPROVE_FIELDS]) });
 // What a park file holds that it does not declare, as the pass logs it, or null where it holds nothing
 // else. It never refuses a park: a worker written before a field changed still parks.
 export function validatePark(rec) {
@@ -176,11 +181,8 @@ export function validatePark(rec) {
   return extra.length ? `its park file holds ${extra.length === 1 ? 'a field' : 'fields'} the park file does not declare: ${extra.join(', ')}` : null;
 }
 // validatePark on ticket `key`'s park file; null where it has none, it is half-written, or it is on
-// another question than the one parked on (an earlier round's, as parkApproval reads it).
-export function parkFileFault(stateDir, key, question) {
-  const file = readPark(stateDir, key);
-  return String(file?.question ?? '').trim() === String(question ?? '').trim() ? validatePark(file) : null;
-}
+// another question than the one parked on.
+export const parkFileFault = (stateDir, key, question) => validatePark(currentPark(stateDir, key, question).rec);
 
 // The text a park awaits approval of, as both needs-you and the pass report relay it: its kind and
 // target, then the body as JSON so its line breaks survive on one line.
