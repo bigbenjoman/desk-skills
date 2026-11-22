@@ -3,8 +3,8 @@
 // covers: desk/bin/admission.mjs desk/bin/machine.mjs
 // admit() against a scratch lock directory and lease log, with fixture readings and a fixed clock; the
 // CLI as eight real processes for the admission lock.
-import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { admit, judge, ledgerFile, parseLedger, pressureLevel } from '../desk/bin/admission.mjs';
@@ -16,7 +16,7 @@ const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringi
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const S = scratch('admission-');
 let n = 0;
-const fresh = () => { const d = join(S, `c${n++}`); spawnSync('mkdir', ['-p', d]); return d; };
+const fresh = () => { const d = join(S, `c${n++}`); mkdirSync(d, { recursive: true }); return d; };
 
 // A profile's rows as desk-env would read them, and the readings: GB free from mem_free_pct of 80 GB.
 const BASE = { 'lock-admission': 'shadow', 'test-lock-slots': '2', 'test-lock-max': '4', 'light-lock-slots': '1', 'light-lock-max': '3',

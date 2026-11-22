@@ -319,7 +319,7 @@ t('DS-977 AC13 the check names each admission row and what it wants, and that th
 const lightMax = join(T, 'admission-light-max.md');
 writeFileSync(lightMax, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `light-lock-slots` | `2` | t |\n| `light-lock-max` | `1` | t |\n');
 t('DS-977 AC13 a light-lock-max below light-lock-slots is named', env(['machine', 'detect'], absent, lightMax).includes('`light-lock-max` is "1": want a whole number of slots, at least `light-lock-slots` (2)'), true);
-t('DS-977 AC13 a profile with no admission rows has no admission problem', profileProblems(parseProfile(renderProfile(small, propose(small).filter((s) => !s.key.startsWith('admit') && !s.key.includes('lock-max') && s.key !== 'lock-admission' && s.key !== 'light-lock-slots'), '2026-11-22'))), []);
+t('DS-977 AC13 a profile with no admission rows has no admission problem', profileProblems(parseProfile(renderProfile(small, propose(small).filter((s) => !s.key.startsWith('admit') && !s.key.includes('lock-max') && s.key !== 'lock-admission' && s.key !== 'light-lock-slots'), '2026-11-22'))).join(' | '), '');
 t('DS-977 machine set takes lock-admission shadow, and refuses on', `${setErr(['lock-admission=shadow'], join(T, 'admission-set.md'))} | ${setErr(['lock-admission=on'], join(T, 'admission-set.md'))}`,
   'exit 0 | exit 1: nothing written: `lock-admission` is "on": want off or shadow');
 rmSync(T, { recursive: true, force: true });
