@@ -234,7 +234,8 @@ about immediately, not at the bottom of a finished PR description.
 | Stripping a trailer the repo requires where §5 says `allowed` | Follow the repo's instructions exactly |
 | "Verified it works" in Testing | Give the number, the path, or the name that proves it |
 | Pushing because "the hook will catch it" | The hook runs only where `core.hooksPath` is set; run `scripts/desk/pre-push.sh --head` yourself |
-| Opening the PR and letting CI judge the body | Run §4 PR-description checks (`desk-env cmds pr-description-checks`) on the body file first |
+| Opening the PR and letting CI judge the body | Run desk's closing-keyword check, then §4 PR-description checks (`desk-env cmds pr-description-checks`), on the body file first |
+| "Close #N after …" in a step for later | GitHub closes #N at merge. Name the issue first: "#N can be closed after …" |
 | A one-off script in the diff | Run it from the branch, delete it, don't merge it |
 | An infra PR with no ping drafted | Draft the note to the §4 infra owner; never send it |
 | `gh pr edit --body-file` from your local draft | It wipes what CI and bots added. Fetch the live body and change only what sits between desk's markers |
