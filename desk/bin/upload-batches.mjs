@@ -17,6 +17,7 @@ import { readFileSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
 import { join, basename, relative, sep } from 'node:path';
 import { SCREENSHOT_FILE } from './desk-env.mjs';
 import { dragFiles, dragCells, swapCells } from './evidence.mjs';
+import { REJECTED_DIR } from './preview-db.mjs';
 
 export const BATCH_SIZE = 15;
 export const STALL_MS = 180_000;
@@ -49,12 +50,13 @@ export function writeTags(path, tags) {
 }
 
 // Every screenshot file in dir and the folders under it, by its path relative to dir ('/'-separated).
+// The folder preview-db.mjs check moves error pages into is never read: nothing in it is evidence.
 export function shotIndex(dir) {
   const found = new Map();
   const walk = (d) => {
     for (const e of readdirSync(d, { withFileTypes: true })) {
       const p = join(d, e.name);
-      if (e.isDirectory()) walk(p);
+      if (e.isDirectory()) { if (e.name !== REJECTED_DIR) walk(p); }
       else if (SCREENSHOT_FILE.test(e.name)) found.set(relative(dir, p).split(sep).join('/'), p);
     }
   };

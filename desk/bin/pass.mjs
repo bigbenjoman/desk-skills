@@ -58,7 +58,7 @@ import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
-import { parseRecipe, readRecords as readPreviewRecords, evidenceHold, teardownCalls, teardown as previewTeardown, runCommand, DELETE_STEP_MS } from './preview-db.mjs';
+import { parseRecipe, readRecords as readPreviewRecords, evidenceHold, uploadHold, teardownCalls, teardown as previewTeardown, runCommand, DELETE_STEP_MS } from './preview-db.mjs';
 import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.mjs';
 import { leverOnFor } from './lever-pin.mjs';
@@ -987,6 +987,7 @@ const ADVANCE_HANDLERS = {
   shots: (a) => { try { return readdirSync(a.dir); } catch { return []; } },
   'same-pairs': (a) => samePairs(a.dir, a.shots),
   cells: (a) => cellsFor(a.pr, a.shots),
+  'upload-hold': (a) => uploadHold(STATE, a.pr, a.dir, a.shots),
   upload: (a, s) => uploadShots(s.t, a.pr, a.dir),
   'open-question': (a) => openQuestion(STATE, a.key),
   'worker-head': (a, s) => recordWorkerHead(s.t),
@@ -4346,6 +4347,7 @@ runSteps({
       baseMoves, driver: driverReruns, built: (n, head) => buildRecord(BUILD_DIR, n, head), waived: waivedAt,
       outside: scopeOutside, title: triageTitle,
       evidenceRun: (n, head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun), evidenceHold: (n, head) => evidenceHold(STATE, n, head),
+      uploadHold: (n, t, shots) => uploadHold(STATE, n, ticketShotDir(t, STATE), shots),
       missingShots: (body, t) => missingShots(body, ticketShots(t, STATE)), shotDir: (t) => ticketShotDir(t, STATE),
       baseReads, reviewComments,
     },

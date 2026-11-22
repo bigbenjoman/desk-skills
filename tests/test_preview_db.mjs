@@ -1,8 +1,9 @@
 // suite: preview database (a PR adding a migration gets a database branch and preview of its own)
 // covers: desk/bin/preview-db.mjs skills/desk-autopilot/references/worker-contract-stage-5.md
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { shotIndex } from '../desk/bin/upload-batches.mjs';
 import { join } from 'node:path';
-import { parseRecipe, dbName, fill, shellWord, addsMigration, upCall, runUp, stepError, readRecords, writeRecord, evidenceHold, checkedRecord, teardownCalls, teardown,
+import { parseRecipe, dbName, fill, shellWord, addsMigration, upCall, runUp, stepError, readRecords, writeRecord, evidenceHold, checkedRecord, uploadHold, shotSha, teardownCalls, teardown,
   errorPageLine, checkShots, setAside, runCommand, TEARDOWN_TRIES, DB_NAME_MAX, REJECTED_DIR } from '../desk/bin/preview-db.mjs';
 import { previewDbStepOf, TYPES } from '../desk/bin/config-schema.mjs';
 import { scratch } from './scratch.mjs';
@@ -120,6 +121,19 @@ t('AC2 a check of no shots does not pass', checkedRecord(rec43, [], H1, 'T').che
 t('AC2 a check whose PR head could not be read does not pass', checkedRecord(rec43, ok2, null, 'T').checked, undefined);
 writeRecord(state, checkedRecord(readRecords(state).find((r) => r.pr === '43'), [{ shot: 'c.png', call: 'error' }], H1, 'T'));
 t('AC2 so after a failed check the workflow is held again', evidenceHold(state, '43', H1) != null, true);
+// AC2: a preview-database PR uploads only the files a passing check read, unchanged since.
+const upDir = scratch('preview-upload-');
+writeFileSync(join(upDir, 'after-home.png'), 'home'); writeFileSync(join(upDir, 'after-plans.png'), 'plans');
+writeRecord(state, checkedRecord(readRecords(state).find((r) => r.pr === '43'), ok2, H1, 'T', { 'after-home.png': shotSha(join(upDir, 'after-home.png')) }));
+t('AC2 a file the passing check read, unchanged, may be uploaded', uploadHold(state, '43', upDir, ['after-home.png']), null);
+t('AC2 a file the check never read is held, named', /after-plans\.png did not pass/.test(uploadHold(state, '43', upDir, ['after-home.png', 'after-plans.png']) ?? ''), true);
+writeFileSync(join(upDir, 'after-home.png'), 'home, taken again');
+t('AC2 a file changed since its check is held', uploadHold(state, '43', upDir, ['after-home.png']) != null, true);
+t('AC2 a PR with no preview database is never held (negative control)', uploadHold(state, '45', upDir, ['after-plans.png']), null);
+const idxDir = scratch('preview-index-');
+writeFileSync(join(idxDir, 'a.png'), 'a'); mkdirSync(join(idxDir, REJECTED_DIR)); writeFileSync(join(idxDir, REJECTED_DIR, 'b.png'), 'b');
+mkdirSync(join(idxDir, 'mobile')); writeFileSync(join(idxDir, 'mobile', 'c.png'), 'c');
+t('AC2 the uploader never reads a shot set aside as an error page', [...shotIndex(idxDir).keys()].sort(), ['a.png', 'mobile/c.png']);
 const s5 = readFileSync(new URL('../skills/desk-autopilot/references/worker-contract-stage-5.md', import.meta.url), 'utf8');
 t('AC2 the contract dispatches the evidence workflow only after the check passed', /dispatch it[^]*only once your capture[^]*passed the check below/.test(s5), true);
 t('a recipe gone from the config is the person\'s', teardownCalls({ records: records.slice(0, 1), recipe: null, states: { 42: 'MERGED' } }).map((a) => [a.type, a.list]), [['report', 'failed']]);

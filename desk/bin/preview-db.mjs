@@ -140,10 +140,21 @@ export function evidenceHold(state, pr, head) {
 }
 // The record after a `check` of its PR's shots at `head`: `checked` set when there were shots, every one
 // with its page text and none an error page; cleared otherwise, so a failed check holds the workflow again.
-export function checkedRecord(rec, results, head, at) {
+// `files` ({ [shot]: sha256 }) is what passed, so an upload sends only those files as they were checked.
+export function checkedRecord(rec, results, head, at, files = {}) {
   const { checked: _c, ...rest } = rec;
   const passed = !!head && results.length > 0 && results.every((r) => r.call === 'ok');
-  return passed ? { ...rest, checked: { head, at, shots: results.length } } : rest;
+  return passed ? { ...rest, checked: { head, at, shots: results.length, files } } : rest;
+}
+export const shotSha = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
+// Why the screenshots `shots` (file names in `dir`) may not be uploaded to PR `pr`, or null when they may:
+// for a PR with a preview database, each must be a file the last passing check read, unchanged since.
+export function uploadHold(state, pr, dir, shots) {
+  const rec = readRecords(state).find((r) => String(r.pr) === String(pr));
+  if (!rec) return null;
+  const passed = rec.checked?.files ?? {};
+  const unchecked = shots.filter((f) => { try { return passed[f] !== shotSha(join(dir, f)); } catch { return true; } });
+  return unchecked.length ? `#${pr} has a preview database, and ${unchecked.join(', ')} did not pass preview-db.mjs check as ${unchecked.length === 1 ? 'it is' : 'they are'}` : null;
 }
 export function writeRecord(state, rec) {
   mkdirSync(recordsDir(state), { recursive: true });
@@ -297,7 +308,8 @@ if (isMain) {
     if (rec) {
       const view = readPrView(rec.repo ?? safe(E.ghRepo), rec.pr);
       const head = ownOpenPrRefusal(branch, rec.pr, view) ? null : view.headRefOid ?? null;
-      const next = checkedRecord(rec, results, head, new Date().toISOString());
+      const files = Object.fromEntries(results.filter((r) => r.call === 'ok').map((r) => [r.shot, shotSha(join(argv[0], r.shot))]));
+      const next = checkedRecord(rec, results, head, new Date().toISOString(), files);
       writeRecord(state, next);
       console.log(next.checked
         ? `preview-db: PR #${rec.pr} passed at ${head.slice(0, 9)}, so its evidence workflow may run there`

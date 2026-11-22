@@ -35,7 +35,7 @@ const snap = (tk, log, { sessions = [], read = true, upload = true } = {}) => ({
 // The runner with stub handlers: each read answers from `answers` (a value, or a function of the
 // action), else from what the pass reads when nothing is there.
 const READS = {
-  'open-pr': '', 'suite-wait': null, 'build-park': null, 'merge-park': null, shots: [], 'same-pairs': [], cells: null, 'open-question': null,
+  'open-pr': '', 'suite-wait': null, 'build-park': null, 'merge-park': null, shots: [], 'same-pairs': [], cells: null, 'upload-hold': null, 'open-question': null,
   'settle-links': [], 'live-read': null, 'clears-when': { kind: 'none' }, register: { inputs: {}, status: 'new' }, recommends: null,
   'refuse-lease': false, lifted: false, 'exit-code': null, uncommitted: null, approval: { approve: null, missing: null }, 'pr-owner': null,
 };
@@ -136,6 +136,9 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   t('and nothing is uploaded or put to the person', j([types(same).includes('upload'), lines(same, 'waiting').length]), j([false, 0]));
   const one = advance(snap(ticket('D'), log()), { shots: pairs, 'same-pairs': pairs.slice(0, 2) });
   t('a changed pair beside them is uploaded as before', j([types(one).includes('upload'), sets(one).includes('images_uploaded=none')]), j([true, false]));
+  // DS-550 AC2: a preview-database PR's screenshots that did not pass its error-page check are not uploaded.
+  const held = advance(snap(ticket('D'), log()), { shots: pairs, 'same-pairs': pairs.slice(0, 2), 'upload-hold': '#12 has a preview database, and after-mobile.png did not pass' });
+  t('DS-550 AC2 screenshots held by the error-page check are not uploaded, and the report says why', j([types(held).includes('upload'), lines(held, 'waiting').some((l) => /not uploaded: #12 has a preview database/.test(l))]), j([false, true]));
 }
 
 // The cases tests/test_pass_workers.sh runs end to end, decided here.
