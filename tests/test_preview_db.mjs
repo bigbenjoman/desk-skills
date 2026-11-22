@@ -1,4 +1,5 @@
 // suite: preview database (a PR adding a migration gets a database branch and preview of its own)
+// layer: L1
 // covers: desk/bin/preview-db.mjs skills/desk-autopilot/references/worker-contract-stage-5.md
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { shotIndex, fileSha } from '../desk/bin/upload-batches.mjs';
