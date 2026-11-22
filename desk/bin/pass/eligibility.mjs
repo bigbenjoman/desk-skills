@@ -18,7 +18,7 @@
 //   slots {plan, machine, repo, repoUnlocked, slots, machineLine, repoLine}
 //                      what decideSlots decided
 import { parseBudget } from '../desk-env.mjs';
-import { keysOf } from '../desk-q.mjs';
+import { keysOf } from '../desk-q-model.mjs';
 import { borrowPlan, machineBudget, repoBudget } from '../borrow.mjs';
 import { say, usageHeldText } from './shared.mjs';
 
@@ -55,7 +55,8 @@ function budgetOf(budget) {
 //   checkin       checkinTimes's {ok, why}
 //   health        health.mjs's {stalls, holding}
 //   pace          usage-pace.mjs's {bad, hold, line}, and paceProbe what a probe call for it read
-//   memory        {low, avail, hold, start, dropTo}: the spawn gate (config §3b "Spawn gate")
+//   memory        {low, avail, hold, start, dropTo, harm}: the spawn gate (config §3b "Spawn gate"), and
+//                 harm, the memory watch's recent harm signal that also holds it, or null
 //   lockQueue     suite-wait.mjs lockQueue's reading, or null where it is not read
 //   spawnGrant    {may, key, perm, queueBin}: config §3 autopilot-workers, and the queue.mjs path
 //   maintHold     whether the maintenance window holds
@@ -79,7 +80,8 @@ export function* decideEligibility(s) {
   else if (s.pace.hold) yield say(null, 'stalled', `${s.pace.line} (${running} running carry on; fix tries still start${s.paceProbe})`);
   // Low memory only delays a spawn by a pass; it never kills anything.
   const m = s.memory;
-  if (m.low) {
+  if (m.harm) yield say(null, 'stalled', `${m.harm} — holding spawns (${running} running carry on)`);
+  else if (m.low) {
     yield say(null, 'stalled', m.avail < m.hold
       ? `memory: ${m.avail.toFixed(1)}G available, under the ${m.hold}G floor — §3b says drop to ${m.dropTo} worker(s); ` +
         `holding spawns (${running} running; a worker mid-suite will drain)`
@@ -123,6 +125,7 @@ export function* decideEligibility(s) {
     : !s.checkin.ok ? 'config §3b "Check-in times" holds every spawn'
     : s.health.holding.length ? `a failing health check (${s.health.holding.join(', ')}) holds every spawn`
     : !g.may ? `config §3 ${g.key} is "${g.perm}"`
+    : s.memory.harm ? s.memory.harm
     : s.pace.bad ? `config §3b "${s.pacingRow}" holds every spawn`
     : s.pace.hold ? PACE_HELD : null;
   // Pacing holds new tickets, never a fix try: its PR is already out and stalls until the try runs, so

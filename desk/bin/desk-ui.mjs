@@ -115,11 +115,14 @@ function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
   const hosts = new Set([`${HOST}:${p}`, `localhost:${p}`]);
   const sessions = new Map(); // session id -> { load, expires }
   const lanes = new Map(); // repo slug -> the end of its last queued write
+  // Names this run of the server on every response, so Desk.app can tell a restart (which signed
+  // everyone out) from the same server refusing it again. It grants nothing.
+  const boot = randomBytes(8).toString('hex');
   let rev = 0, lastBody = null;
 
   const send = (res, status, body, type = 'application/json; charset=utf-8', extra = {}) => {
     const text = type.startsWith('application/json') ? JSON.stringify(body) : String(body);
-    res.writeHead(status, { ...BASE_HEADERS, 'Content-Type': type, 'Content-Length': Buffer.byteLength(text), ...extra });
+    res.writeHead(status, { ...BASE_HEADERS, 'X-Desk-Boot': boot, 'Content-Type': type, 'Content-Length': Buffer.byteLength(text), ...extra });
     res.end(text);
   };
   const refuse = (res, status, code, message) => send(res, status, { error: { code, message } });
@@ -141,7 +144,7 @@ function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
   }
 
   async function snapshot() {
-    const Q = await import('./desk-q.mjs');
+    const Q = await import('./desk-q-model.mjs');
     const now = Date.now();
     E.forgetReads(); // this process outlives edits to the machine profile and configs
     const { lines, generated_at, inputs, ...body } = Q.homeJson(Q.loadRepos(now), { all: true, now });
@@ -171,7 +174,7 @@ function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
   }
 
   async function loadAll() {
-    const Q = await import('./desk-q.mjs');
+    const Q = await import('./desk-q-model.mjs');
     E.forgetReads();
     return { Q, all: Q.loadRepos(Date.now()) };
   }

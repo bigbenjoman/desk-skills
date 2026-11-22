@@ -396,7 +396,7 @@ const liveKeys = new Set(admitted.map((r) => r.ticket));
 // even where another hold already implies the order. The holds a person changes are one ticket's own:
 // with C sharing a file with A and B and held behind B alone, dropping B (queue.mjs drop) or freeing
 // C from B (needs-you's free command) would let C start while A's PR is unmerged. The list's hold walk
-// reads each blocker once (desk-q.mjs blockerHold's memo), so a whole chain does not multiply its paths.
+// reads each blocker once (desk-q-model.mjs blockerHold's memo), so a whole chain does not multiply its paths.
 for (const c of collisions) {
   if (!liveKeys.has(c.a) || !liveKeys.has(c.b)) continue;
   const [a, b] = [byKey[c.a], byKey[c.b]];
@@ -497,7 +497,7 @@ if (notOurs.length) {
 }
 
 const ticketVerdict = (r) => (elsewhere(r)?.unknown ? `NOT ADMITTED (${awayWhy(r)} — where does it run?)`
-  : elsewhere(r) ? `ELSEWHERE (${elsewhere(r).repository})`
+  : elsewhere(r) ? `ELSEWHERE (${elsewhere(r).otherName ? elsewhere(r).ghRepo.split('/').pop() : elsewhere(r).repository})`
   : stepParked(r) ? `PARK (${stepPark(r)})`
   : ownPark(r) && held(r.ticket) ? `HELD (blocked by ${holdsOf(r.ticket).join(', ')} — until ${heldUntil(r.ticket)}, and parked: ${ownPark(r)})`
   : ownPark(r) ? `PARK (${ownPark(r)})`

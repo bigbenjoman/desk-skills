@@ -12,6 +12,18 @@ The §4 rows this file names are read with `desk-env get repo-merge-settings`,
 
 ### Before `gh pr create` or `gh pr edit`: the PR-description checks
 
+**Every body first goes through desk's closing-keyword check**, whatever the repo configures:
+
+```bash
+node ~/.claude/desk/bin/closing-keywords.mjs <absolute path to the body file>
+```
+
+GitHub closes an issue at merge wherever close, fix or resolve (any form, any case) sits right before
+a reference to it, mid-sentence included. The check passes a line that holds only the keywords and
+references, `Closes #<n>`, which is how a PR meant to close an issue says so; it flags any other
+use and names the line. Reword a flagged line (the-body.md, "A step that closes an issue later")
+and re-run; never move a step's issue onto a `Closes` line to pass.
+
 Where `desk-env cmds pr-description-checks` prints items, CI checks the PR's description, and a
 body that fails is a red check on the first run. Write the body to its file first, then run each
 item in its directory with the file's absolute path appended:

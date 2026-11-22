@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // The autopilot supervisor: launchd on macOS, or a systemd user timer on Linux, runs a pass in this
-// repo every few minutes while a batch is live, keeps the batch's merge driver running, and starts both
-// again at login. No model is in the loop.
+// repo every few minutes while a batch is live, and within seconds of a worker exiting (its exit file in
+// <repo state>/exits wakes a tick), keeps the batch's merge driver running, and starts both again at
+// login. No model is in the loop.
 // Run it from inside the repo (or with DESK_REPO_DIR set): the repo decides which config applies.
 //   node supervisor.mjs install [--interval <s>] [--reload]
 //                                                  install or update this repo's launchd agent, or its
-//                                                  systemd service and timer (default 180s); --reload
+//                                                  systemd service, timer and path unit (default 180s); --reload
 //                                                  reloads it even when unchanged
 //   node supervisor.mjs uninstall                  remove it: no further passes run for this repo
 //   node supervisor.mjs status                     the agent, then each batch: whether it is handed over, its log's tail
@@ -17,6 +18,10 @@
 // the log says so once per batch. For a handed-over batch, each tick:
 //   - skips, saying so in the log, while a pass holds <state>/orchestrator.lock or the previous tick's
 //     run still holds <state>/supervisor.lock;
+//   - first reads every declared config row through `desk-env get --json`: a fatal error (a value the
+//     row's reader refuses today) runs no pass that tick and pushes one item naming the row, once until
+//     the row changes. An error that is not fatal never blocks; DESK_CONFIG_PREFLIGHT=off, in the tick's
+//     environment or when `install` runs, turns the check off;
 //   - runs `pass.mjs --json` with only the Stage 3 approvals recorded with the batch: `approved.workers`
 //     becomes AUTOPILOT_USER_APPROVED=1, `approved.base_push` AUTOPILOT_BASE_PUSH_APPROVED=1, and either
 //     one inherited from the environment is dropped, so the supervisor never grants what it was not given;
@@ -55,6 +60,13 @@
 // code with the same tickets and deps (installed.mjs restartDriver); one mid-loop is left, logged once,
 // and none is moved while a pass runs (it holds supervisor.lock for the restart).
 //
+// A worker's exit wakes a tick too: spawn-worker.sh renames <KEY>.<ts>.json into <repo state>/exits,
+// which launchd watches (WatchPaths, at most one tick per 20s) or a systemd path unit does. A tick
+// deletes the exit files its passes have seen, runs another round when exits landed while one ran, and
+// runs nothing when it finds none within a minute of deleting some, since that deletion woke it. One
+// tick at a time runs woken rounds (supervisor.tick.lock), each at least 20s after the last, and a
+// round's passes count a quiet pass only once an interval has passed since the last that did.
+//
 // After intake, each tick runs repo-templates.mjs check, which at most hourly records in the standing
 // batch's templates.json which of the repo's committed copies of desk's templates are behind them.
 // After every batch, each tick refreshes the machine-wide Levers page (levers-refresh.mjs).
@@ -69,7 +81,7 @@
 // batches/.done/, logged in the standing batch's log, and not run. A merge driver still running for such
 // a batch is stopped first, and the batch is not run until a later tick archives it. An explicit DESK_BATCH, DESK_QUEUE or
 // DESK_AUTOPILOT_STATE names one batch, and a tick runs only that one, with no archive check.
-import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, renameSync, statSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync, appendFileSync, mkdirSync, rmSync, renameSync, statSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
@@ -77,9 +89,9 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, describeCrash, isHeld, spinePark, IDLE_RECHECK_MS, RUN_RECHECK_MS, waitingOnRun } from './batch-state.mjs';
 import { listBatches, batchPinned, alive, orchestratorHolder } from './batches.mjs';
-import { tryLockFile, unlockFile } from './dir-lock.mjs';
+import { tryLockFile, unlockFile, writeTextAtomic } from './dir-lock.mjs';
 import { archiveCheck } from './batch.mjs';
-import { intakeQuery, prOpen, handedByIntake, takePushed } from './intake.mjs';
+import { intakeQuery, prOpen, handedByIntake, takePushed, pushWaiting } from './intake.mjs';
 import { actOnPlan } from './epic-plan.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { postMergeDue } from './post-merge.mjs';
@@ -95,8 +107,24 @@ const DEFAULT_INTERVAL = 180;
 const MIN_INTERVAL = 60;
 // A pass takes seconds; one still going after this is hung, and launchd or systemd starts no tick while one runs.
 const PASS_TIMEOUT_MS = 10 * 60 * 1000;
-// Location roots an install passes on to the agent, so the tick reads the same config and scripts.
-const PASS_ON = ['DESK_HOME', 'DESK_CONFIG_ROOT'];
+// What an install passes on to the agent: the location roots, so the tick reads the same config and
+// scripts, and the config check's switch.
+const PASS_ON = ['DESK_HOME', 'DESK_CONFIG_ROOT', 'DESK_CONFIG_PREFLIGHT'];
+// A worker's exit wakes a tick: spawn-worker.sh renames <KEY>.<ts>.json into the repo's exits folder,
+// whichever batch the worker is in, and launchd starts a tick at most once per WAKE_THROTTLE_S.
+const WAKE_THROTTLE_S = 20;
+// The tick's own deletion of the exit files it consumed wakes it again: a tick that finds none this soon
+// after one deleted some runs nothing.
+const WAKE_QUIET_MS = 60 * 1000;
+// Exits that land while a tick's passes run get another round of passes, up to this many in all.
+const WAKE_ROUNDS = 3;
+// A round starts at least this long after the one before it, on either backend, so the exits of one
+// burst fold into one more round however short a pass is (the tests shorten it).
+const WAKE_GAP_MS = Number(process.env.DESK_WAKE_GAP_MS) >= 0 && process.env.DESK_WAKE_GAP_MS ? Number(process.env.DESK_WAKE_GAP_MS) : WAKE_THROTTLE_S * 1000;
+const exitsDir = E.exitsDir;
+const repoFile = (name) => join(E.repoStateOf(E.stateDir()), name);
+const wakeFile = () => repoFile('supervisor.wake');
+const sleep = (ms) => { if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
 
 const die = (msg, code = 1) => { console.error(`supervisor: ${msg}`); process.exit(code); };
 const label = supervisorLabel;
@@ -118,9 +146,12 @@ function installedInterval(slug) {
 // A value inside a unit's double quotes: systemd reads C escapes there and % as a specifier.
 const unitQuote = (v) => `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%')}"`;
 // The service runs one tick; the timer runs it at once when started (at install and at login) and an
-// interval after each run, and systemd starts no second run while one is still active.
+// interval after each run, the path unit whenever an entry in the exits folder changes, and systemd
+// starts no second run while one is still active. The tick returns at once, so a burst of exits (and the
+// deletions that consume them) starts the service many times a minute: with systemd's start limit (5 in
+// 10 s by default) that would fail the service, and with it the path unit and the timer, so it is lifted.
 function units(slug, job) {
-  const service = ['[Unit]', `Description=desk-skills supervisor for ${slug}`, '', '[Service]', 'Type=oneshot',
+  const service = ['[Unit]', `Description=desk-skills supervisor for ${slug}`, 'StartLimitIntervalSec=0', '', '[Service]', 'Type=oneshot',
     `ExecStart=${[process.execPath, job.script].map(unitQuote).join(' ')} tick`,
     `WorkingDirectory=${job.cwd.replace(/%/g, '%%')}`,
     ...Object.entries(job.env).map(([k, v]) => `Environment=${unitQuote(`${k}=${v}`)}`),
@@ -129,7 +160,9 @@ function units(slug, job) {
     'KillMode=process', ''].join('\n');
   const timer = ['[Unit]', `Description=desk-skills supervisor for ${slug}, every ${job.interval}s`, '', '[Timer]',
     'OnActiveSec=0', `OnUnitActiveSec=${job.interval}s`, 'AccuracySec=1s', '', '[Install]', 'WantedBy=timers.target', ''].join('\n');
-  return { service, timer };
+  const path = ['[Unit]', `Description=desk-skills supervisor for ${slug}, on a worker's exit`, '', '[Path]',
+    `PathChanged=${job.exits.replace(/%/g, '%%')}`, `Unit=${label(slug)}.service`, '', '[Install]', 'WantedBy=paths.target', ''].join('\n');
+  return { service, timer, path };
 }
 const sysFail = (what, r) => die(`systemctl --user ${what} failed: ${(r.stderr || r.stdout || r.error?.message || '').trim()}`);
 // Without lingering, systemd stops a user's timers once their last session ends. On WSL that is not
@@ -143,24 +176,26 @@ function lingerNote() {
 }
 
 function installSystemd(slug, job, reload) {
-  const { service, timer } = units(slug, job);
-  const timerName = `${label(slug)}.timer`;
-  const same = existsSync(unitPath(slug, 'service')) && existsSync(unitPath(slug, 'timer'))
-    && readFileSync(unitPath(slug, 'service'), 'utf8') === service && readFileSync(unitPath(slug, 'timer'), 'utf8') === timer;
-  if (!reload && same && loaded(slug)) {
+  const text = units(slug, job);
+  const names = [`${label(slug)}.timer`, `${label(slug)}.path`];
+  const same = ['service', 'timer', 'path'].every((k) => existsSync(unitPath(slug, k)) && readFileSync(unitPath(slug, k), 'utf8') === text[k]);
+  // A path unit that failed (an older service's start limit) wakes nothing, though the timer still runs.
+  const pathUp = () => systemctl('is-active', '--quiet', `${label(slug)}.path`).status === 0;
+  if (!reload && same && loaded(slug) && pathUp()) {
     console.log(`supervisor: ${label(slug)} is already installed and loaded, unchanged (every ${job.interval}s, log ${join(job.state, 'supervisor.log')})`);
     return;
   }
   mkdirSync(unitDir(), { recursive: true });
-  writeFileSync(unitPath(slug, 'service'), service);
-  writeFileSync(unitPath(slug, 'timer'), timer);
+  for (const k of ['service', 'timer', 'path']) writeFileSync(unitPath(slug, k), text[k]);
   let r = systemctl('daemon-reload');
   if (r.status !== 0) sysFail('daemon-reload', r);
   const was = loaded(slug);
-  r = was ? systemctl('restart', timerName) : systemctl('enable', '--now', timerName);
-  if (r.status !== 0) sysFail(`${was ? 'restart' : 'enable --now'} ${timerName}`, r);
-  // `enable` covers the next login; a timer restarted while loaded may still be disabled.
-  if (was) systemctl('enable', timerName);
+  // A unit a start limit failed starts again only once its failed state is cleared; one not failed is unaffected.
+  systemctl('reset-failed', `${label(slug)}.service`, ...names);
+  r = was ? systemctl('restart', ...names) : systemctl('enable', '--now', ...names);
+  if (r.status !== 0) sysFail(`${was ? 'restart' : 'enable --now'} ${names.join(' ')}`, r);
+  // `enable` covers the next login; a unit restarted while loaded may still be disabled.
+  if (was) systemctl('enable', ...names);
   console.log(`supervisor: installed ${label(slug)}: a pass every ${job.interval}s and at login for a batch handed over at Stage 4 (queue.mjs set-batch supervised=true); log ${join(job.state, 'supervisor.log')}.${lingerNote()}`);
 }
 
@@ -172,7 +207,10 @@ function install(interval, reload = false) {
   if (!existsSync(root)) die(`§2 Primary repo root ${root} does not exist here`);
   const state = E.stateDir();
   mkdirSync(state, { recursive: true });
-  const env = { PATH: process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin', DESK_REPO_DIR: root };
+  const exits = exitsDir();
+  // launchd and systemd both watch a folder that is not there yet; it only means no worker exit wakes a tick.
+  try { mkdirSync(exits, { recursive: true }); } catch { /* the interval still runs every tick */ }
+  const env ={ PATH: process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin', DESK_REPO_DIR: root };
   for (const k of PASS_ON) if (process.env[k]) env[k] = process.env[k];
   // The desk version the agent was loaded at, so a tick can tell its plist or service predates the install.
   const version = readInstalled()?.commit;
@@ -181,7 +219,7 @@ function install(interval, reload = false) {
   // release current then and never one an install has since pruned.
   const dir = E.runBin() === HERE ? E.binDir() : HERE;
   if (backend() === 'systemd') {
-    installSystemd(slug, { script: join(dir, 'supervisor.mjs'), cwd: root, env, interval, state, log: join(state, 'supervisor.agent.log') }, reload);
+    installSystemd(slug, { script: join(dir, 'supervisor.mjs'), cwd: root, env, interval, state, exits, log: join(state, 'supervisor.agent.log') }, reload);
     return;
   }
   const job = {
@@ -189,9 +227,12 @@ function install(interval, reload = false) {
     ProgramArguments: [process.execPath, join(dir, 'supervisor.mjs'), 'tick'],
     WorkingDirectory: root,
     EnvironmentVariables: env,
-    // At login, then every interval. launchd starts no second tick while one still runs.
+    // At login, then every interval, and whenever a worker's exit file lands in the exits folder, at
+    // most once per ThrottleInterval. launchd starts no second tick while one still runs.
     RunAtLoad: true,
     StartInterval: interval,
+    WatchPaths: [exits],
+    ThrottleInterval: WAKE_THROTTLE_S,
     StandardOutPath: join(state, 'supervisor.agent.log'),
     StandardErrorPath: join(state, 'supervisor.agent.log'),
     // The tick leaves the merge driver behind it; launchd would otherwise kill it when the tick exits.
@@ -214,15 +255,15 @@ function install(interval, reload = false) {
 function uninstall() {
   const slug = E.repoSlug();
   if (backend() === 'systemd') {
-    const timerName = `${label(slug)}.timer`;
+    const names = [`${label(slug)}.timer`, `${label(slug)}.path`];
     const was = loaded(slug);
     if (was) {
-      const r = systemctl('disable', '--now', timerName);
-      if (r.status !== 0) sysFail(`disable --now ${timerName}`, r);
+      const r = systemctl('disable', '--now', ...names);
+      if (r.status !== 0) sysFail(`disable --now ${names.join(' ')}`, r);
     }
-    const had = existsSync(unitPath(slug, 'service')) || existsSync(unitPath(slug, 'timer'));
-    rmSync(unitPath(slug, 'service'), { force: true });
-    rmSync(unitPath(slug, 'timer'), { force: true });
+    const kinds = ['service', 'timer', 'path'];
+    const had = kinds.some((k) => existsSync(unitPath(slug, k)));
+    for (const k of kinds) rmSync(unitPath(slug, k), { force: true });
     if (had) systemctl('daemon-reload');
     console.log(was || had
       ? `supervisor: removed ${label(slug)}: no further passes run for this repo. A merge driver it started keeps running until it is stopped`
@@ -386,7 +427,8 @@ const sentThisTick = new Set();
 // Whether another batch has sent `key`: the repo's own pushes reach every batch, and go out once. Any
 // key sent this tick counts. From another batch's stored list only a key that names what it is about
 // counts, since it never comes back: the check-in digest (its slot) and main's failed release (its
-// commit). An idle batch's stored keys never change, and would silence a repeat of any other.
+// commit). An idle batch's stored keys never change, and would silence a repeat of any other. A refused
+// config row is recorded for the whole repo instead (configRefused).
 const ONCE_EVER = ['digest:', 'release-failed-'];
 const sentElsewhere = (state, key) => sentThisTick.has(key)
   || (ONCE_EVER.some((p) => key.startsWith(p)) && tickStates.some((d) => d !== state && readState(d).notified.includes(key)));
@@ -400,11 +442,92 @@ function enterBatch(name) {
 
 // -> [{ name, queue, state }]: the one batch named explicitly, else every batch the repo holds, the
 // standing first.
-const tickBatches = () => (batchPinned() ? [{ name: E.batchName(), queue: E.queueFile(), state: E.stateDir() }] : listBatches());
+const tickBatches = (named = batchPinned()) => (named ? [{ name: E.batchName(), queue: E.queueFile(), state: E.stateDir() }] : listBatches());
 
+// The exit files workers left in `dir`, as [{ file, at }] with `at` their mtime. A dot-named file is one
+// still being written, before its rename.
+function exitFiles(dir) {
+  let names;
+  try { names = readdirSync(dir); } catch { return []; }
+  return names.filter((n) => !n.startsWith('.') && n.endsWith('.json')).flatMap((n) => {
+    try { return [{ file: join(dir, n), at: statSync(join(dir, n)).mtimeMs }]; } catch { return []; }
+  });
+}
+// <repo state>/supervisor.wake, { consumed, round }: when a tick last deleted exit files and last started
+// a round. Unreadable reads as never.
+const readWake = () => { try { return JSON.parse(readFileSync(wakeFile(), 'utf8')) ?? {}; } catch { return {}; } };
+const wakeAt = (k) => Date.parse(readWake()[k] ?? '') || 0;
+const noteWake = (k, ms) => { try { writeFileSync(wakeFile(), `${JSON.stringify({ ...readWake(), [k]: new Date(ms).toISOString() })}\n`); } catch { /* the next tick runs as if never */ } };
+// <batch state>/supervisor.counted: when the batch's last pass that counted a quiet pass started. Its own
+// file, read and replaced only under the batch's supervisor.lock, so two ticks passing different batches
+// at once never write over each other's. Unreadable reads as never.
+const countedFile = (state) => join(state, 'supervisor.counted');
+const countedAt = (state) => { try { return Date.parse(readFileSync(countedFile(state), 'utf8').trim()) || 0; } catch { return 0; } };
+const noteCounted = (state, ms) => { try { writeTextAtomic(countedFile(state), `${new Date(ms).toISOString()}\n`); } catch { /* the next pass counts as if never */ } };
+// Deletes the exit files a round of passes has seen, and records when, so the wake that deletion causes
+// runs nothing. A file that cannot be deleted stays and wakes nothing again.
+function consumeExits(files) {
+  let gone = 0;
+  for (const f of files) { try { rmSync(f.file); gone += 1; } catch { /* left for the next tick */ } }
+  if (gone) noteWake('consumed', Date.now());
+}
+// A batch's pass counts a quiet pass once an interval has passed since that batch's last pass that did,
+// decided as the pass starts, whatever started the tick: so exits never bring a quiet worker's wedge
+// limit sooner (a slow batch before it, or a batch skipped for its lock, moves no other batch's count),
+// nor an exit file left behind stop it coming. The slack covers a tick starting a moment early.
+const COUNT_SLACK_MS = 5000;
+const countDueMs = () => (Number(installedInterval(E.repoSlug())) || DEFAULT_INTERVAL) * 1000 - COUNT_SLACK_MS;
+
+// The repo's tick lock: one tick at a time runs rounds for exits. -> whether this process holds it.
+const TICK_LOCK_WAIT_MS = 30 * 60 * 1000;
+const tickLock = () => repoFile('supervisor.tick.lock');
+function takeTickLock(wait) {
+  const until = Date.now() + TICK_LOCK_WAIT_MS;
+  for (;;) {
+    let got;
+    try { got = tryLockFile(tickLock()); } catch { return false; }
+    if (got === true) return true;
+    if (!wait || Date.now() > until) return false;
+    sleep(1000);
+  }
+}
+// One tick: a round of every batch, and another while workers exited after the last round started and
+// before it ended, so their exits are not left for the next interval. A round whose pass was skipped for
+// a lock consumes nothing: the run holding it sees the exits when its own round ends. A tick woken by an
+// exit while another tick runs rounds waits for it, then runs only for exits that one left. Every woken
+// round starts WAKE_GAP_MS after the last round any tick started, so a burst runs at most two.
 function interval() {
-  const named = batchPinned();
-  const batches = tickBatches();
+  const exits = exitsDir();
+  const woken = exitFiles(exits).length > 0;
+  // A push's lines waiting mean intake push started this tick, which runs whenever it lands.
+  if (!woken && !pushWaiting(E.stateDir()) && Date.now() - wakeAt('consumed') < WAKE_QUIET_MS) return;
+  // An interval's tick that finds the lock held runs as it always has; it takes the lock when free, so a
+  // woken tick waits for its round.
+  const held = takeTickLock(woken);
+  if (woken && !held) return;
+  try {
+    if (woken) sleep(wakeAt('round') + WAKE_GAP_MS - Date.now());
+    if (woken && !exitFiles(exits).length && !pushWaiting(E.stateDir())) return;
+    // Pinned once: a round enters each batch in turn, which would read as a pin to the next round.
+    const named = batchPinned();
+    for (let round = 1; ; round += 1) {
+      const start = Date.now();
+      noteWake('round', start);
+      if (!intervalRound(named)) return;
+      const left = exitFiles(exits);
+      consumeExits(left.filter((f) => f.at < start));
+      if (round >= WAKE_ROUNDS || !left.some((f) => f.at >= start)) return;
+      sleep(start + WAKE_GAP_MS - Date.now());
+    }
+  } finally {
+    if (held) unlockFile(tickLock());
+  }
+}
+
+// -> false when a batch's pass was skipped because another run held its lock.
+function intervalRound(named) {
+  let ran = true;
+  const batches = tickBatches(named);
   tickStates = batches.map((b) => b.state);
   // Standing intake first, in the standing batch's environment: it may start the batch this tick passes.
   if (!named) enterBatch(null);
@@ -417,7 +540,7 @@ function interval() {
     try {
       if (!named && b.name && archived(b, batches[0].state)) return;
       if (b.name && planAnswered(b, batches[0].state)) return;
-      batchInterval(i === 0 ? intake : []);
+      if (batchInterval(i === 0 ? intake : []) === 'skipped') ran = false;
     } catch (e) {
       try {
         mkdirSync(b.state, { recursive: true });
@@ -426,6 +549,7 @@ function interval() {
     }
   });
   leversRefresh(batches[0].state);
+  return ran;
 }
 
 // The Levers page, refreshed after the batches (levers-refresh.mjs): built only when an input changed
@@ -552,9 +676,78 @@ function batchInterval(intake) {
     return;
   }
   const holder = takeLock(state);
-  if (holder) { log([`== ${stamp()} skipped: a pass is still running (pid ${holder})`, ...intake]); return; }
-  try { runPass(state, q, s, log, stamp, intake); }
+  if (holder) { log([`== ${stamp()} skipped: a pass is still running (pid ${holder})`, ...intake]); return 'skipped'; }
+  try { if (!configRefused(state, s, log, intake)) runPass(state, q, s, log, stamp, intake); }
   finally { dropLock(state); }
+}
+
+// The config check before a pass: every declared row read through `desk-env get --json`. A fatal error
+// is a value the row's reader refuses today, which would stop the pass after it spawned workers, tick
+// after tick; so the tick runs no pass and pushes one item per refused row, keyed by what the row
+// holds, so a row left as it is is not pushed again. An error that is not fatal never blocks: drift
+// reports it. A check that cannot run is logged and blocks nothing. -> whether the pass is held back.
+// A tick that runs no pass still reaps an ended or overdue decider and watches the merge driver, as an
+// idle tick does. The config is the repo's, so the rows pushed are recorded once for the repo, in
+// <repo state>/config-pushed.json, not in any batch's state: a batch idle when a row was pushed finds it
+// recorded when it wakes. Every check that runs reconciles it: only the rows refused now stay
+// recorded, so a row fixed while another still blocks is pushed again if it comes back, and a clean
+// check forgets them all.
+const CONFIG_CHECK_MS = 60 * 1000;
+const CONFIG_KEY = 'config-invalid:';
+const configPushedFile = (state) => join(E.repoStateOf(state), 'config-pushed.json');
+function readConfigPushed(state) {
+  try { const k = JSON.parse(readFileSync(configPushedFile(state), 'utf8')).keys; return Array.isArray(k) ? k : []; } catch { return []; }
+}
+function writeConfigPushed(state, keys) {
+  const had = readConfigPushed(state);
+  if (had.length === keys.length && keys.every((k) => had.includes(k))) return;
+  mkdirSync(E.repoStateOf(state), { recursive: true });
+  writeFileSync(configPushedFile(state), `${JSON.stringify({ keys }, null, 2)}\n`);
+}
+// Config keys an earlier version kept in a batch's own notified list: nothing reads them now.
+const forgetRows = (s) => { s.notified = s.notified.filter((k) => !k.startsWith(CONFIG_KEY)); };
+function configRefused(state, s, log, intake) {
+  if (String(process.env.DESK_CONFIG_PREFLIGHT ?? '').trim().toLowerCase() === 'off') {
+    log([`== ${stamp()} config check: off (DESK_CONFIG_PREFLIGHT=off), so the pass runs whatever the config holds`]);
+    return false;
+  }
+  const r = spawnSync(process.execPath, [join(HERE, 'desk-env.mjs'), 'get', '--json', ...E.SECTIONS.flatMap((x) => ['--section', x])], {
+    cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: CONFIG_CHECK_MS, maxBuffer: 16 * 1024 * 1024,
+  });
+  // Exit 3 is no config: the pass says so itself.
+  if (r.status === 3) return false;
+  let rows;
+  try { rows = JSON.parse(String(r.stdout ?? '')).rows; } catch { /* said below */ }
+  if (!rows || ![0, 4].includes(r.status)) {
+    log([`== ${stamp()} config check: could not run, so the pass runs (${`${r.stderr ?? ''}${r.error?.message ?? ''}`.trim().split('\n')[0] || `exited ${r.status ?? r.signal}`})`]);
+    return false;
+  }
+  const refused = Object.values(rows).flatMap((row) => row.errors.filter((e) => e.fatal).map((e) => E.invalidLine({ ...row, ...e })));
+  forgetRows(s);
+  if (!refused.length) { writeConfigPushed(state, []); return false; }
+  const pushes = [...new Set(refused)].map((line) => ({ key: `${CONFIG_KEY}${line}`, text: `config check: no pass runs until this row is fixed: ${line}` }));
+  const keys = new Set(pushes.map((p) => p.key));
+  const recorded = readConfigPushed(state).filter((k) => keys.has(k));
+  const { sent, line } = pushFresh(state, { notified: recorded }, pushes, (ps) => (ps.length === 1 ? 'this row' : `these ${ps.length} rows`), 'tick');
+  writeConfigPushed(state, sent ? [...keys] : recorded);
+  const reaped = reapDecider(state, s);
+  const driver = watchDriver(state, s, driverHolder(state));
+  writeState(state, s);
+  log([`== ${stamp()} config check: no pass run, no worker spawned`, ...pushes.map((p) => p.text), line, ...reaped, ...driver, ...intake]);
+  return true;
+}
+
+// One notification for the pushes whose keys have not gone out, from this batch or another this tick:
+// -> { sent, line }. sent is false only when the notification failed, so the caller records nothing
+// and the next run tries again; line is what the log says, null with nothing to push. named(pushes)
+// names them in the log, and `again` is what tries again.
+function pushFresh(state, s, pushes, named, again) {
+  const fresh = pushes.filter((p) => !s.notified.includes(p.key) && !sentElsewhere(state, p.key));
+  if (!fresh.length) return { sent: true, line: pushes.length ? `notification: not sent, the last one already named ${named(pushes)}` : null };
+  const { err, said } = notify(title(), fresh.map((p) => p.text).join(' · '));
+  if (err) return { sent: false, line: `notification: failed (${err}) for ${named(fresh)}; the next ${again} tries again` };
+  fresh.forEach((p) => sentThisTick.add(p.key));
+  return { sent: true, line: `notification: ${said} for ${named(fresh)}` };
 }
 
 // Takes <state>/supervisor.lock for this process: -> null, or the pid of the live run that holds it
@@ -654,7 +847,11 @@ function runPass(state, q, s, log, stamp, intake = []) {
   // The pass reads its time from it, so a read it records is at most the interval before the pass the
   // idle recheck starts (pass/parks.mjs decideOutsideHolds), however long each pass took to reach it.
   env.DESK_PASS_AT = startedAt;
-  const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', '--by', 'supervisor', ...(every > 0 ? ['--next', `+${every}`] : [])], {
+  // Before this batch's quiet pass is due (an exit woke the tick), pass.mjs --woken counts none.
+  const passStart = Date.parse(startedAt);
+  const woken = passStart - countedAt(state) < countDueMs();
+  if (!woken) noteCounted(state, passStart);
+  const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', '--by', 'supervisor', ...(every > 0 ? ['--next', `+${every}`] : []), ...(woken ? ['--woken'] : [])], {
     cwd: process.cwd(), env, encoding: 'utf8', timeout: PASS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,
   });
   let v;
@@ -698,14 +895,8 @@ function runPass(state, q, s, log, stamp, intake = []) {
   // A pass that crashed or hung gave no verdict, and needs the person as much as one that said so.
   const pushes = toPush(v);
   const items = pushes.map((p) => p.key);
-  const fresh = pushes.filter((p) => !s.notified.includes(p.key) && !sentElsewhere(state, p.key));
-  let sent = true;
-  if (fresh.length) {
-    const { err, said } = notify(title(), fresh.map((p) => p.text).join(' · '));
-    sent = !err;
-    if (sent) fresh.forEach((p) => sentThisTick.add(p.key));
-    out.push(err ? `notification: failed (${err}) for ${fresh.map((p) => p.key).join(', ')}; the next pass tries again` : `notification: ${said} for ${fresh.map((p) => p.key).join(', ')}`);
-  } else if (items.length) out.push(`notification: not sent, the last one already named ${items.join(', ')}`);
+  const { sent, line } = pushFresh(state, s, pushes, (ps) => ps.map((p) => p.key).join(', '), 'pass');
+  if (line) out.push(line);
   // A failed notification records nothing new, so the next pass sends it again. A pass that refused
   // or failed checked nothing, so it keeps the keys already sent rather than dropping them.
   if (v.status === 'error') s.notified = sent ? [...new Set([...s.notified, ...items])] : s.notified;

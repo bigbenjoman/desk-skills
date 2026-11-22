@@ -196,6 +196,8 @@ const batchWrites = (as) => as.filter((a) => a.type === 'set-batch').flatMap((a)
   const live = sync(snap({ base_fix: running }, { registry: registryView({ live: [{ sessionId: 'sid-fix', pid: 4321 }] }) }));
   t('one still at it, with a quiet log, has its idle count kept', j(batchWrites(live)), j([`base_fix=${JSON.stringify({ ...running, log_bytes: 0, idle_passes: 1 })}`]));
   t('and the record kept for the rest of the pass', state(live).bf.idle_passes, 1);
+  const woken = sync(snap({ base_fix: running }, { woken: true, registry: registryView({ live: [{ sessionId: 'sid-fix', pid: 4321 }] }) }));
+  t('DS-695 a pass a worker\'s exit woke counts no quiet pass for it', state(woken).bf.idle_passes, 0);
   t('an unread registry reads it as still at it, never ended', j([types(sync(snap({ base_fix: running }, { registry: registryView({ why: 'x' }) }))).includes('end-try'), state(sync(snap({ base_fix: running }, { registry: registryView({ why: 'x' }) }))).baseFixLive]), '[false,true]');
 }
 

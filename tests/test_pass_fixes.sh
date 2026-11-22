@@ -201,6 +201,48 @@ check "DS-614 a merged branch's own commit is not read as the base: its red run 
 check "DS-614 AC4 with no levers set, a check red on the base's latest run since the merge base is held as base red, and no fix worker" \
   '[ "$(field FB-4 state)" = "\"done\"" ] && [ "$(field FB-4 fix)" = null ] && [ "$(field FB-4 fix_tries)" = null ] && [ "$(field FB-4 base_red | jq -c "[.class, .head, .merge_base, .checks, .latest]")" = "[\"base red\",\"$H4\",\"$MB4\",[\"Lint\"],[\"Lint\"]]" ] && ! grep -q "^FB-4" "$T/spawns"'
 check "DS-614 AC4 and the item says so" 'echo "$out" | grep -qF "FB-4: BASE RED — PR #813: base red: Lint is red on main'"'"'s latest run of that job since the merge base 111111111111, so no fix try is spent on it"'
+# DS-850: main as the merge driver records it red (base-red.mjs), after desk merged #801 and #802.
+redrec(){ printf '%s\n' '{"branch":"main","sha":"'"$MB5"'","checks":[{"name":"Lint","sha":"'"$MB5"'","url":"https://github.com/acme/widgets/actions/runs/77"}],"merges":[{"pr":802,"ticket":"FB-0","sha":null,"at":null},{"pr":801,"ticket":null,"sha":null,"at":null}],"repair_key":"base-red-main","since":"'"$1"'","at":"'"$1"'"}' > "$T/state-fb/base-red.json"; }
+isoago(){ node -e 'console.log(new Date(Date.now() - Number(process.argv[1]) * 1000).toISOString())' "$1"; }
+# A record the driver last wrote two hours ago was left by a driver that stopped: it says nothing now.
+redrec "$(isoago 7200)"
+out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
+check "DS-850 a red base record no driver has rewritten for two hours is not reported, and no repair is admitted" \
+  '! echo "$out" | grep -q "^RED BASE:" && [ "$(field base-red-main state)" = null ]'
+redrec "$(isoago 60)"
+out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1); red=$(printf '%s\n' "$out" | grep -A1 '^RED BASE:' | tail -1)
+check "DS-850 AC2 a red main is one line for the batch, naming the check, its run and the last merges, in place of each PR's BASE RED line" \
+  '! echo "$out" | grep -q "FB-4: BASE RED" && echo "$red" | grep -qF "main is red: \"Lint\" (run https://github.com/acme/widgets/actions/runs/77) failed" && echo "$red" | grep -qF "The last merges desk made: #802 (FB-0), #801." && echo "$red" | grep -qF "It holds #813 (FB-4)."'
+check "DS-850 AC5 with no grant for a base worker, no repair is started, and the line says no ticket in the batch owns it, apart from WAITING ON YOU" \
+  'echo "$red" | grep -qF "The repair is a change on main that no ticket in the batch owns, so it is not one of your own steps" && [ "$(field base-red-main state)" = null ] && ! printf "%s\n" "$out" | sed -n "/^WAITING ON YOU:/,\$p" | grep -q "main is red"'
+# An earlier red spell's repair left a finished log under the same key: it must not keep this one from starting.
+mkdir -p "$T/state-fb/logs"; printf 'AUTOPILOT_DONE: pr=700 jira=none\n' > "$T/state-fb/logs/base-red-main.log"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
+check "DS-850 AC3 with the grant, one repair ticket is started, its ticket naming the failing run and the last merges, an earlier spell's log moved aside" \
+  '{ [ -e "$T/state-fb/logs/base-red-main.log.round1.gz" ] || [ -e "$T/state-fb/logs/base-red-main.log.round1" ]; } && [ "$(field base-red-main state)" = "\"running\"" ] && [ "$(echo "$out" | grep -o "base-red-main port=" | wc -l | tr -d " ")" = 1 ] && grep -qF "run https://github.com/acme/widgets/actions/runs/77" "$T/state-fb/tickets/base-red-main.md" && grep -qF "PR #802 (FB-0)" "$T/state-fb/tickets/base-red-main.md"'
+q set base-red-main session_id=live-1
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
+check "DS-850 AC4 with the repair running, no second one starts, and the line names it" \
+  '[ "$(field base-red-main state)" = "\"running\"" ] && ! echo "$out" | grep -q "base-red-main port=" && echo "$out" | grep -A1 "^RED BASE:" | grep -qF "Repair ticket base-red-main is running"'
+# This spell's repair, its PR closed unmerged and archived: done with, so the key is admitted again. Its
+# reopening marker names an earlier PR (700), so owes #901 nothing.
+q set base-red-main state=done session_id=null result.pr=901 'pr_status={"pr":901,"state":"CLOSED"}' reopening=700
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
+[ "$(field base-red-main state)" = "\"running\"" ] || out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
+check "DS-850 AC3 a repair archived with its PR closed unmerged, a reopening marker left from an earlier PR, does not stop the base being repaired" \
+  '[ "$(field base-red-main state)" = "\"running\"" ] && echo "$out" | grep -q "base-red-main port="'
+# The repair merged in an earlier red spell and is still in the live queue, kept there by the follow-on
+# step it owes: the base red again is a new spell under a key of its own, so its
+# repair is admitted and started, and the earlier row is left as it is, its step and all.
+q set base-red-main state=done session_id=null result.pr=900 merged_at="$(isoago 7200)" 'follow_on=[{"step":"check main is green","row":null}]'
+redrec "$(isoago 60)"; jq '.repair_key = "base-red-main-20261121090000"' "$T/state-fb/base-red.json" > "$T/state-fb/base-red.tmp" && mv "$T/state-fb/base-red.tmp" "$T/state-fb/base-red.json"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
+check "DS-850 AC3 a repair merged in an earlier red spell does not stop the next spell's repair, and keeps its own row and steps" \
+  '[ "$(field base-red-main-20261121090000 state)" = "\"running\"" ] && echo "$out" | grep -q "base-red-main-20261121090000 port=" && [ "$(field base-red-main state)" = "\"done\"" ] && [ "$(field base-red-main merged_at)" != null ] && [ "$(field base-red-main follow_on | jq -r ".[0].step")" = "check main is green" ]'
+q set base-red-main-20261121090000 state=done session_id=null; q drop base-red-main-20261121090000
+rm -f "$T/state-fb/base-red.json"; q set base-red-main state=done; q drop base-red-main
+out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
+check "DS-850 AC6 once the driver reads main green, the pass drops the line" '! echo "$out" | grep -q "^RED BASE:" && echo "$out" | grep -q "FB-4: BASE RED"'
 runs "$MB5" Lint '[{"status":"completed","conclusion":"success"}]'
 out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-614 AC2 once the job passes on the base, the hold clears and a fix try proceeds as today" \

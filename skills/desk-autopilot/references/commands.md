@@ -27,6 +27,7 @@ node ~/.claude/desk/bin/queue.mjs set-batch approved.undraft=true     # Stage 3:
 node ~/.claude/desk/bin/queue.mjs set-batch approved.merge=true       # Stage 3: §3 autopilot-merge / pr-merge-green are ask and the user approved merging this batch's green PRs (=false when declined)
 node ~/.claude/desk/bin/desk-env.mjs merge-grant                      # config, batch or none, and why: whether the merge driver may merge this batch
 node ~/.claude/desk/bin/queue.mjs render                              # status
+node ~/.claude/desk/bin/queue.mjs rebuild ABC-120                     # ledger lever: the batch's queue rebuilt from the log, written to queue.rebuilt.json beside queue.json, and each field that differs (`standing`, or none: this batch)
 node ~/.claude/desk/bin/queue.mjs front ABC-123                       # move a released ticket to the front of the spawn order (one the user placed stays put)
 node ~/.claude/desk/bin/queue.mjs move ABC-123 2                      # the user's order: position among unfinished tickets, or `last`; marks it placed
 node ~/.claude/desk/bin/queue.mjs hold ABC-124 ABC-123               # hold a ticket behind a blocker (recorded; released on its merge)
@@ -67,7 +68,8 @@ desk-env heavy                   # suites, typechecks, dev servers actually runn
 # the two Monitors, started once at Stage 0b (change-only; the second fires on sustained only)
 node ~/.claude/desk/bin/queue.mjs watch   # table + memory line at start, then only on a state or question change, not a stage step (--stages adds them; quiet: one line per changed ticket); every 90s, or --interval <s>
 desk-env mem watch               # SUSTAINED-HIGH: avail=<x>G below <band>G for 5m with nothing heavy running
-                                  # on Linux also SWAP-GROWING, OOM-KILL, TMPFS-HIGH (concurrency-and-memory.md)
+                                  # also WORKER-OOM; on Linux SWAP-GROWING, OOM-KILL, TMPFS-HIGH; on WSL VMMEM-HIGH;
+                                  # each held by the pass for 10m (concurrency-and-memory.md)
 
 # waiting on one PR, under Monitor: one line, then exit (never a loop around gh pr checks / gh pr view)
 node ~/.claude/desk/bin/pr-watch.mjs checks 123          # every check done: "none failed", or each failed check named

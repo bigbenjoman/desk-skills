@@ -7,7 +7,7 @@
 #   ./install.sh --check   reports dependencies and any skill ~/.claude/skills cannot reach, changes nothing
 #   ./install.sh --any-branch   installs a checkout that is off the default branch or behind origin
 #   ./install.sh --rollback     makes the release before the current one current, installs nothing
-#   ./install.sh --uninstall-ui stops the desk app's server and removes its launchd job, nothing else
+#   ./install.sh --uninstall-ui stops the desk app's server, removes its launchd job and Desk.app, nothing else
 #   ./install.sh --accept=<id,...> --decline=<id,...>   answers the prompts named, with or without a
 #                               terminal; each prompt's id is shown in the Skipped list (and below)
 #
@@ -102,10 +102,13 @@ if [ "$ROLLBACK" = 1 ]; then
   exit 0
 fi
 
-# --uninstall-ui unloads the desk-ui server's launchd job and removes its plist. No queue or state file changes.
+# --uninstall-ui unloads the desk-ui server's launchd job, removes its plist and ~/Applications/Desk.app.
+# No queue or state file changes.
 if [ "$UNINSTALL_UI" = 1 ]; then
-  DESK_HOME="$DESKDIR" node "$SRC/desk/bin/desk-ui.mjs" uninstall
-  exit $?
+  rc=0
+  DESK_HOME="$DESKDIR" node "$SRC/desk/bin/desk-ui.mjs" uninstall || rc=$?
+  DESK_HOME="$DESKDIR" node "$SRC/desk/bin/desk-app.mjs" uninstall || rc=$?
+  exit $rc
 fi
 
 case "$(uname -s)" in
@@ -1412,6 +1415,27 @@ install_desk_ui() {
   fi
 }
 install_desk_ui
+
+# ---------------------------------------------------------------------------------------------
+section "Desk.app  -> ~/Applications/Desk.app (built from desk/shell)"
+
+# Rebuilt only when desk/shell changed since the last build. A failed build keeps the previous
+# Desk.app and is a warning, never a failed install. The first build opens Desk.app, which signs
+# itself in to the server; nothing prints the token.
+install_desk_app() {
+  local out
+  if [ "$OS" != mac ]; then
+    note "skipped: Desk.app is built on macOS only"
+  elif ! has npm; then
+    warn "Desk.app was not built: npm is not on PATH"
+  elif out="$(DESK_HOME="$DESKDIR" node "$DESKDIR/bin/desk-app.mjs" install --src "$SRC/desk/shell" 2>&1)"; then
+    ok "$out"
+    case "$out" in *unchanged*) ;; *) wrote "Desk.app ~/Applications/Desk.app (./install.sh --uninstall-ui removes it)" ;; esac
+  else
+    warn "Desk.app was not rebuilt"; show_err "$out"
+  fi
+}
+install_desk_app
 
 # ---------------------------------------------------------------------------------------------
 section "Running autopilot  -> onto the code just installed"

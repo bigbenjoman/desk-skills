@@ -19,17 +19,20 @@ PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 trap 'rm -rf "$T"' EXIT
 
-# This repo (acme/zendesk) and another configured one (acme/studia-web), each with a checkout.
+# This repo (acme/zendesk) and another configured one (acme/studia-web, which answers to studia-portal
+# too), each with a checkout.
 for r in zendesk studia-web; do
   git init -q -b main "$T/$r"; git -C "$T/$r" commit -q --allow-empty -m init
   git -C "$T/$r" remote add origin "git@github.com:acme/$r.git"
   mkdir -p "$DESK_CONFIG_ROOT/repos/acme__$r"
+  other='`none`'; [ "$r" = studia-web ] && other='`studia-portal`'
   cat > "$DESK_CONFIG_ROOT/repos/acme__$r/config.md" <<EOF
 ## 0. Repo
 | Field | Value |
 |---|---|
 | GitHub repo | \`acme/$r\` |
 | Default branch | \`main\` |
+| Other names | $other |
 
 ## 2. Paths
 | Field | Value |
@@ -91,6 +94,7 @@ scope(){ printf '[{"question": "Where does it run?", "options": ["%s", "keep it 
 q init other
 q set-batch concurrency=9
 rec SV-3986 '["studia-web: apps/portal/a.ts", "acme/studia-web: apps/portal/b.ts"]'
+rec SV-3010 '["studia-portal: apps/portal/f.ts"]'
 rec SV-3994 '["src/hook.js"]' "$(scope 'Drop SV-3994 from this zendesk batch and run it in a studia-web batch')"
 rec SV-3001 '["studia-web: apps/portal/a.ts", "src/handler.js"]'
 rec SV-3002 '["studia-mobile: app/screen.ts"]'
@@ -118,6 +122,8 @@ check "AC4: a repo with no config here: no worker, parked naming it, nothing adm
   '! spawned SV-3002 && ! admitted SV-3002 && [ "$(qg SV-3002 .state)" = parked ] && qg SV-3002 .park.question | grep -qF "its files in scope are all in studia-mobile, and studia-mobile is no repo configured on this computer, so no worker was spawned: which repo does it run in?"'
 check "AC5: the admit there fails: no worker, parked with the failure and the command that admits it" \
   '! spawned SV-3003 && [ "$(qg SV-3003 .state)" = parked ] && qg SV-3003 .park.question | grep -qF "admitting it into acme/studia-web failed (not admitted SV-3003: the queue is locked). Admit it there: cd $T/studia-web && DESK_ADMIT_FROM=acme__zendesk node $T/desk/bin/intake.mjs admit SV-3003 --by pass"'
+check "DS-805 AC3: files all prefixed with another repo's Other name are handed to that repo" \
+  '! spawned SV-3010 && admitted SV-3010 && [ "$(qg SV-3010 "")" = null ] && grep -qF "SV-3010: its files in scope are all in acme/studia-web, so it was admitted into acme/studia-web" <<< "$out"'
 # The batch runs three workers at once: those finish, and a second pass reaches the rest.
 while read -r k; do q set "$k" state=done; done < "$T/spawned"
 out=$(node "$B/pass.mjs" 2>&1)
@@ -127,5 +133,14 @@ check "a call outside the scope category spawns" 'spawned SV-3006 && ! admitted 
 check "a ticket with a PR in this repo already stays here" 'spawned SV-3007 && ! admitted SV-3007'
 check "a ticket another is held behind here: no worker, nothing admitted, parked naming the one held" \
   '! spawned SV-3008 && ! admitted SV-3008 && [ "$(qg SV-3008 .state)" = parked ] && qg SV-3008 .park.question | grep -qF "but SV-3009 is held behind it here: release or drop it, then admit SV-3008 in acme/studia-web'"'"'s checkout with DESK_ADMIT_FROM=acme__zendesk node intake.mjs admit SV-3008 and queue.mjs drop SV-3008 here"'
+
+# The same ticket reached by a pass in the repo that answers to that name is built there.
+cd "$T/studia-web" || exit 1
+export DESK_QUEUE="$T/web-queue.json"
+q init web
+rec SV-3011 '["studia-portal: apps/portal/g.ts"]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-805 AC3: in the repo whose Other names hold the prefix, it is built there, not handed elsewhere or parked" \
+  'spawned SV-3011 && ! admitted SV-3011 && [ "$(qg SV-3011 .state)" = running ]'
 
 echo "pass other repo: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

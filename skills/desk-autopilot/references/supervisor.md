@@ -10,8 +10,11 @@ hold, that is in the core or in the file the core's reference table names.
 `supervisor.mjs` runs passes from launchd on macOS, or a systemd user timer on Linux, with no model in
 the loop, so a batch keeps moving while no session is open and after a reboot. `install` (run inside the
 repo, once per repo) writes the agent `com.desk-skills.supervisor.<slug>` (on Linux, that name's
-`.service` and `.timer` in `~/.config/systemd/user`, enabled with `systemctl --user`): a tick at login
-and every 3 minutes (`--interval <s>` to change it). On Linux, ticks stop at logout unless lingering is
+`.service`, `.timer` and `.path` in `~/.config/systemd/user`, enabled with `systemctl --user`): a tick at login
+and every 3 minutes (`--interval <s>` to change it), and within seconds of a worker exiting: the exit
+file a worker leaves in the repo's state folder wakes a tick, which deletes the exit files its passes
+saw. Exits landing while it runs get one more round, at least 20 seconds after the last, so a burst of
+exits runs at most two passes, and a pass an exit woke counts no quiet pass toward stopping a worker. On Linux, ticks stop at logout unless lingering is
 on (`loginctl enable-linger`), and install says when it is off. On WSL, ticks run only while WSL is up,
 and lingering does not keep it up: WSL stops once every terminal closes. Keep a terminal open, or add a
 Windows Task Scheduler entry at logon that runs `wsl.exe --exec sleep infinity` (with `-d <distro>` if
@@ -21,6 +24,15 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
 
 - skips while a pass holds `<state>/orchestrator.lock`, or the previous tick's pass still runs, and
   logs the skip;
+- first reads every declared config row through `desk-env get --json`. A fatal error (a value the
+  row's reader refuses today, such as `none` beside another item) runs no pass and spawns no worker
+  that tick, logs the row, and pushes one notification naming the row, the item and the form
+  expected, not repeated while the row stays as it is (a row fixed and then broken again is pushed
+  again). Such a tick still stops a decider past its time and watches the merge driver, as an idle
+  tick does. An error that is not fatal never blocks
+  (`desk-env drift` reports it). `DESK_CONFIG_PREFLIGHT=off` turns the check off: in a tick's
+  environment, or set when `install` runs, which carries it into the installed agent; the log then
+  says the check is off;
 - runs `pass.mjs --json`, passing on only the approvals recorded with the batch (`approved.workers`
   as `AUTOPILOT_USER_APPROVED=1`, `approved.base_push` as `AUTOPILOT_BASE_PUSH_APPROVED=1`). It never
   grants one it was not given, so a batch whose `ask` was never answered spawns nothing and the pass

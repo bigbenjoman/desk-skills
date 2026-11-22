@@ -24,7 +24,7 @@ import * as E from './desk-env.mjs';
 import { CHECKIN_TIME, checkinTimesOf } from './config-schema.mjs';
 import { jiraSearch, keySearch } from './jira-search.mjs';
 import { isHeld, settlesByScript, localDay } from './batch-state.mjs';
-import { stalledPrs as stalledOf, STALL_FOR } from './desk-q.mjs';
+import { stalledPrs as stalledOf, STALL_FOR } from './desk-q-model.mjs';
 import { namedBatches } from './batches.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';

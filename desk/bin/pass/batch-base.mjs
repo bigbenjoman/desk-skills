@@ -62,7 +62,7 @@ import { usageLimit, limitName } from '../usage-limit.mjs';
 import { wroteSince } from '../worker-cost.mjs';
 import { baseFixCall, baseFixOutcome, lockWaitPark, mergeTry, FIX_TRIES_MAX } from '../base-fix.mjs';
 import { tries } from '../fix-tries.mjs';
-import { behindPrs } from '../desk-q.mjs';
+import { behindPrs } from '../desk-q-model.mjs';
 import { summary } from '../baseline.mjs';
 import { QUIET_PASSES, WEDGE_PASSES, sameLogin, liftedHow, untilText, pausedOn, usageHeldText, tryWhat, tryNo } from './shared.mjs';
 
@@ -152,7 +152,8 @@ export function* decideBaseSync(s) {
     const usage = !said ? usageLimit(text) : null;
     const atLimit = usage?.last?.kind === 'limit' && !usage.last.resumed ? usage.last : null;
     const paused = pausedOn(atLimit, s.now);
-    const idle = wroteSince(raw, bf.log_bytes ?? 0) || paused ? 0 : (bf.idle_passes ?? 0) + 1;
+    // A pass a worker's exit woke counts no quiet pass, as for a ticket's worker (advance.mjs).
+    const idle = wroteSince(raw, bf.log_bytes ?? 0) || paused ? 0 : (bf.idle_passes ?? 0) + (s.woken ? 0 : 1);
     const sidLive = reg.read && reg.liveSids.has(bf.running);
     const exited = reg.read && !sidLive && !(recent && !endedNormally(text));
     // A headless worker ends its session at the limit rather than waiting for it to lift. As a ticket's

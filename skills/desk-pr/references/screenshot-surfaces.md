@@ -108,7 +108,9 @@ preview page.
 
 For a page behind real auth, on a development instance only. It needs §4 Env files
 (`desk-env list env-files`) to hold the instance's key pair for the app under test, and a test user
-who already holds the app's grant.
+who already holds the app's grant: §4 Test sign-in (`desk-env cmds test-signin`) gives one per app as
+`DIR<TAB>EMAIL`, so take the line whose directory is the app's, exactly as for the dev server. An
+app with no line there has no user to sign in as: `desk-env drift --app <dir>` names it `NOSIGNIN`.
 
 1. **Start the right app.** `desk-env cmds dev-cmd` gives one `DIR<TAB>CMD` line per app, so in a
    multi-app repo pick the line whose directory holds the page. Run it through `with-lock.sh nolock
@@ -120,7 +122,9 @@ who already holds the app's grant.
    ./<script>.mjs <port> <path> <out.png> <test user email> <env file holding the instance's keys>`. A script elsewhere, or an argument holding `..`, is
    refused. Delete the script afterwards.
 3. **Refuse any key but a development one.** Mint the token server-side, sign in from a page where
-   ClerkJS has loaded, and print what the session token carries before looking at the page:
+   ClerkJS has loaded, and print what the session token carries before looking at the page. A
+   refusal is the end of it: stop and report the env file and the reason it names (an autopilot
+   worker parks on it), and never look for another key:
 
 ```js
 import { readFileSync, chmodSync } from 'node:fs';
@@ -129,7 +133,7 @@ import { resolve } from 'node:path';
 
 const [port, path, out, email, envFile] = process.argv.slice(2);
 const key = /^CLERK_SECRET_KEY="?([^"\n]+)"?$/m.exec(readFileSync(envFile, 'utf8'))?.[1] ?? '';
-if (!key.startsWith('sk_test_')) throw new Error('not a development instance key');
+if (!key.startsWith('sk_test_')) throw new Error(`${envFile}: its CLERK_SECRET_KEY is not a development instance's (sk_test_), so no sign-in`);
 const clerk = async (method, p, body) => {
   const r = await fetch(`https://api.clerk.com/v1${p}`, {
     method,

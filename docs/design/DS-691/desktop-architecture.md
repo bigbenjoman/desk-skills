@@ -33,7 +33,7 @@ You described this as "an Electron app". I first recommended a PWA, arguing it c
                          │  - BrowserWindow.loadURL(http://127.0.0.1:4823), hidden-inset title bar   │
                          │  - Tray popover, globalShortcut (⌃⌥D), Dock badge                         │
                          │  - desk:// + single-instance lock, native Notification, openExternal      │
-                         │  - main process signs in from ui-token; preload sends the per-load token  │
+                         │  - main process signs in from ui-token; and adds the per-load token itself│
                          │  React 19 + shadcn/ui + Tailwind v4 SPA (static build, served by desk-ui) │
                          └───────┬───────────────────────────▲──────────────────────▲───────────────┘
                      fetch /api  │ cookie + Origin + JSON    │ SSE /api/events      │ WS /api/sessions/:id
@@ -128,7 +128,7 @@ Every response carries `{ at: ISO, rev: n }`. Errors are `{ error: { code, messa
 | Method / path | Body → response |
 |---|---|
 | (no browser sign-in page) | Desk.app's main process reads the token file and posts it to the exchange below (Ben, 2026-11-16). |
-| `POST /api/auth/exchange` | `{ token }` → `204` + `Set-Cookie: desk_ui=<random session>; HttpOnly; SameSite=Strict; Path=/`, held only in Desk.app's own session store, plus `{ loadToken }`, which the preload sends as a header on every `/api` call (`challenge.md` D-2) |
+| `POST /api/auth/exchange` | `{ token }` → `204` + `Set-Cookie: desk_ui=<random session>; HttpOnly; SameSite=Strict; Path=/`, held only in Desk.app's own session store, plus `{ loadToken }`, which Desk.app's main process adds as a header to the window's own requests to the server, so the page never holds it (`challenge.md` D-2) |
 | `GET /api/meta` | `{ version, deskCommit, nodeVersion, shell: "electron", features: { ptyd:boolean, agentSdk:boolean }, port }` |
 
 ### 4.2 Reads
@@ -365,7 +365,7 @@ cwd = the ticket's worktree when no worker holds it, else a read-only scratch cl
 | Loopback bind | `127.0.0.1` only. The server refuses to start if asked to bind elsewhere. |
 | DNS-rebinding guard | Reject unless `Host` is exactly `127.0.0.1:4823` or `localhost:4823`. |
 | CSRF / cross-origin | Non-GET requests and WebSocket upgrades require `Origin` equal to the app origin and `Content-Type: application/json`. No CORS headers, ever. `SameSite=Strict` cookie. |
-| Auth token | 32 random bytes in `~/.config/desk/ui-token` (chmod 600), written by `install.sh`. Desk.app's main process reads it and posts it to `/api/auth/exchange`; it never appears in a URL, a log or a window. It is exchanged for an `HttpOnly` session cookie that lasts 30 days, held only in Desk.app's own session store, plus a per-load token the preload sends as a header (D-2). On a refusal the main process signs in again once; if that fails the window says to re-run `install.sh` (Ben, 2026-11-16). Rotating the token revokes every session. |
+| Auth token | 32 random bytes in `~/.config/desk/ui-token` (chmod 600), written by `install.sh`. Desk.app's main process reads it and posts it to `/api/auth/exchange`; it never appears in a URL, a log or a window. It is exchanged for an `HttpOnly` session cookie that lasts 30 days, held only in Desk.app's own session store, plus a per-load token the main process adds as a header to the window's requests (D-2). On a refusal the main process signs in again once; if that fails the window says to re-run `install.sh` (Ben, 2026-11-16). Rotating the token revokes every session. |
 | No arbitrary execution | Commands come from a fixed allowlist with server-built argv, and every value is validated: ticket keys `^[A-Z][A-Z0-9]+-\d+$`, slugs taken from `loadRepos()`, actions from the item's own action list. Sessions take `purpose` + `ticket`, never a prompt template or flags. Free text goes only into the stream-json user message or as `answer.mjs`'s final argv element. |
 | Session limits | Not counted in `machineBudget` (queue workers only, updated 15 Nov), usage-guarded, at most 4 concurrent UI sessions, at most 10 creations per 10 min. |
 | Secrets server-side | Jira tokens and `gh` auth never reach the browser. No `VITE_*` variables carry anything secret. The SPA bundle is public-safe. |

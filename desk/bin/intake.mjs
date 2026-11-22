@@ -1130,6 +1130,8 @@ const pushedPath = (state) => join(state, 'intake.pushed');
 function noteForTick(state, lines) {
   try { appendFileSync(pushedPath(state), `${lines.join('\n')}\n`); } catch { /* the push still printed them */ }
 }
+// Whether a push has left lines no tick has taken yet: the tick it started is one to run.
+export const pushWaiting = (state) => existsSync(pushedPath(state));
 // The lines pushes left since the last tick took them, taken: -> [line].
 export function takePushed(state) {
   const file = pushedPath(state);

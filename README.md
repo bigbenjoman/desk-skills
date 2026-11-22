@@ -913,6 +913,10 @@ changed to the repo's ticket ledger, `~/.claude/desk/repos/<slug>/ledger/events.
 writer: a typed event for a ticket's change of state and a `legacy_set` for its other fields. A
 batch the ledger has not seen starts with one `seeded` event per ticket. queue.json is still written
 first and read by everything; a missed append is reported by the writer and never fails the write.
+Each pass then compares queue.json with the queue rebuilt from the log: its report names each ticket
+field that differs and counts the pass's missed appends, and its line in `passes.jsonl` records both
+counts (`ledger_diffs`, `ledger_missed`). `queue.mjs rebuild [<batch | standing>]` writes the rebuilt
+queue to `queue.rebuilt.json` beside queue.json and prints each field that differs.
 
 The desk-skills test suite runs against throwaway homes and repos, never yours:
 
@@ -952,7 +956,9 @@ left out, text the pass cut short compared up to the cut, and queue stamps (`upd
 when nothing differs, 1 when something does, and 2 when a run was not compared. With
 `PASS_CMP_KEEP=1` set, a run that exits 1 or 2 leaves its recordings and both trees in its scratch
 directory and prints that directory and the `compare_pass.mjs diff` command that lists them again,
-in seconds and without replaying a suite.
+in seconds and without replaying a suite. Both trees and every suite run side by side, as each pass
+suite gives its stand-in workers session ids of its own (`SID_SUFFIX` in `tests/pass_setup.sh`);
+`PASS_CMP_SERIAL=1`, or a base whose suites predate those ids, runs them one after the other.
 
 `pass.mjs` moves into phase modules under `desk/bin/pass/`, one section at a time. A phase's decision
 is a pure function there: it takes a snapshot (the queue's tickets and whatever else it reads, the

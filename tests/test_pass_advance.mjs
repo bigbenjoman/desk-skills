@@ -5,6 +5,7 @@ import { registryView, BUDGET_RESUME_USD } from '../desk/bin/pass/shared.mjs';
 import { budgetStop } from '../desk/bin/harvest.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 import { parkApproval } from '../desk/bin/batch-state.mjs';
+import { workerProcs } from '../desk/bin/worker-stop.mjs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { scratch } from './scratch.mjs';
@@ -34,7 +35,7 @@ const snap = (tk, log, { sessions = [], read = true, upload = true } = {}) => ({
 // The runner with stub handlers: each read answers from `answers` (a value, or a function of the
 // action), else from what the pass reads when nothing is there.
 const READS = {
-  'open-pr': '', 'suite-wait': null, 'build-park': null, 'merge-park': null, shots: [], cells: null, 'open-question': null,
+  'open-pr': '', 'suite-wait': null, 'build-park': null, 'merge-park': null, shots: [], 'same-pairs': [], cells: null, 'open-question': null,
   'settle-links': [], 'live-read': null, 'clears-when': { kind: 'none' }, register: { inputs: {}, status: 'new' }, recommends: null,
   'refuse-lease': false, lifted: false, 'exit-code': null, uncommitted: null, approval: { approve: null, missing: null }, 'pr-owner': null,
 };
@@ -78,6 +79,14 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   t('AC1 and a quiet worker it cannot stop is counted, not parked as wedged', j(sets(advance(tickets[2]))), '["idle_passes=6"]');
 }
 
+// DS-695: a pass another worker's exit woke counts no quiet pass, so it never stops a quiet worker sooner.
+{
+  const quiet = snap(ticket('W', { session_id: 'live-1', log_bytes: 0, idle_passes: 5 }), logOf('W', '', []), { sessions: [{ sessionId: 'live-1', pid: 7 }] });
+  const as = advance({ ...quiet, woken: true });
+  t('DS-695 a woken pass leaves a quiet worker\'s count and running', j([sets(as), types(as).includes('park'), types(as).includes('kill')]), j([[], false, false]));
+  t('DS-695 the interval\'s pass still counts it, and stops it at six', j([sets(advance(quiet)).includes('idle_passes=6'), types(advance(quiet)).includes('park')]), j([true, true]));
+}
+
 // AC2: workers the registry lists, whose logs show them still working, get no action that moves them on.
 {
   const sessions = [{ sessionId: 'sid-A', pid: 11 }, { sessionId: 'sid-B', pid: 12 }];
@@ -115,6 +124,20 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   t('a PR whose owner could not be read is recorded done, the fix tries checking it again', types(advance({ ...snap(ticket('D'), log()), logins: 'me' })).includes('done'), true);
 }
 
+// Before/after pairs whose two files are the same show no change: nothing to upload, and the ticket
+// records none, with no upload and nothing for the person.
+{
+  const DONE = 'AUTOPILOT_DONE: pr=12 jira=Done';
+  const h = `AUTOPILOT_IMAGES: /state/images/D/\n${DONE}`;
+  const log = () => logOf('D', h, [said('AUTOPILOT_IMAGES: /state/images/D/'), said(DONE), RESULT]);
+  const pairs = ['before-desktop.png', 'after-desktop.png', 'before-mobile.png', 'after-mobile.png'];
+  const same = advance(snap(ticket('D'), log()), { shots: pairs, 'same-pairs': pairs });
+  t('identical before/after pairs record images_uploaded=none', sets(same).includes('images_uploaded=none'), true);
+  t('and nothing is uploaded or put to the person', j([types(same).includes('upload'), lines(same, 'waiting').length]), j([false, 0]));
+  const one = advance(snap(ticket('D'), log()), { shots: pairs, 'same-pairs': pairs.slice(0, 2) });
+  t('a changed pair beside them is uploaded as before', j([types(one).includes('upload'), sets(one).includes('images_uploaded=none')]), j([true, false]));
+}
+
 // The cases tests/test_pass_workers.sh runs end to end, decided here.
 {
   const DONE = 'AUTOPILOT_DONE: pr=10 jira=none';
@@ -137,6 +160,56 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   const suite = advance(quiet('T-13', 'AUTOPILOT_STAGE: 4/9 verify'), { 'suite-wait': 'suite' });
   t('a quiet worker running its suite under the test lock is quiet, not wedged',
     j([types(suite).includes('park'), sets(suite), lines(suite, 'quiet')]), j([false, ['idle_passes=6', `suite_wait_since=${NOW}`], ['T-13: quiet for 6 passes, running its suite']]));
+}
+
+// DS-857: a log that grew only by the harness's tool_progress heartbeat, for one call.
+{
+  const beat = (secs, id = 'toolu_hung') => ({ type: 'tool_progress', tool_use_id: `${id}-heartbeat-${secs / 30}`, tool_name: 'Bash', parent_tool_use_id: id, elapsed_time_seconds: secs, heartbeat: true });
+  // A worker at Stage 4b whose last pass saw its log up to the first event; `after` are the events since.
+  const beating = (key, after, fields = {}) => {
+    const before = [said('AUTOPILOT_STAGE: 4b/9 self-review')];
+    const log = logOf(key, 'AUTOPILOT_STAGE: 4b/9 self-review', [...before, ...after]);
+    const seen = Buffer.byteLength(`${before.map((e) => JSON.stringify(e)).join('\n')}\n`);
+    return snap(ticket(key, { session_id: `sid-${key}`, stage: '4b/9', log_bytes: seen, idle_passes: 0, ...fields }), log, { sessions: [{ sessionId: `sid-${key}`, pid: 91 }] });
+  };
+  const past = advance(beating('H-1', [beat(1770), beat(1800), beat(1830)]));
+  const park = past.find((a) => a.type === 'park')?.question ?? '';
+  t('DS-857 AC1 one call past the ceiling, with only its heartbeat since, is stopped and parked as wedged',
+    j([/^wedged — one Bash call \(toolu_hung\) running for 30 minutes, past the 30-minute ceiling/.test(park), lines(past, 'stalled').length, past.filter((a) => a.type === 'kill').length]), '[true,1,1]');
+  t('DS-857 AC4 the stop names only that worker\'s session', j(past.filter((a) => a.type === 'kill').map((a) => [a.sid, a.pid])), j([['sid-H-1', 91]]));
+  t('DS-857 AC1 its log is counted, so the next pass does not read it again', sets(past).some((f) => f.startsWith('log_bytes=')), true);
+
+  const under = advance(beating('H-2', [beat(600), beat(630)]));
+  t('DS-857 AC2 a call still under the ceiling is left running, as alive',
+    j([types(under).filter((a) => ['kill', 'park'].includes(a)), sets(under).includes('idle_passes=0')]), j([[], true]));
+
+  const more = advance(beating('H-3', [beat(1830), said('the refutation came back')]));
+  t('DS-857 AC3 a log that grew by anything else is alive as today',
+    j([types(more).filter((a) => ['kill', 'park'].includes(a)), sets(more).includes('idle_passes=0')]), j([[], true]));
+
+  const unread = advance({ ...beating('H-4', [beat(1830)]), registry: registryView({ why: 'claude agents failed' }) });
+  t('DS-857 with the registry unread, a hung call is not stopped', types(unread).filter((a) => ['kill', 'park'].includes(a)).length, 0);
+
+  // A session that exited mid-call is the exit handling's: never parked wedged and then recorded done or failed too.
+  const exited = advance({ ...beating('H-5', [beat(1830)]), registry: registryView({ live: [] }) });
+  t('DS-857 a hung call whose session has exited is not parked as wedged',
+    j([lines(exited, 'stalled').length, exited.filter((a) => a.type === 'park' && /^wedged/.test(a.question)).length]), '[0,0]');
+}
+
+// DS-857 AC4: ending a session's processes takes its own groups (its hung codex's too) and no other session's.
+{
+  const rows = [
+    { pid: 1, ppid: 0, pgid: 1, args: 'launchd' },
+    { pid: 10, ppid: 1, pgid: 10, args: 'bash spawn-worker.sh --session-id sid-A' },
+    { pid: 11, ppid: 10, pgid: 10, args: 'claude -p --session-id sid-A' },
+    { pid: 12, ppid: 11, pgid: 12, args: 'codex exec --sandbox read-only x' },
+    { pid: 20, ppid: 1, pgid: 20, args: 'bash spawn-worker.sh --session-id sid-B' },
+    { pid: 21, ppid: 20, pgid: 20, args: 'claude -p --session-id sid-B' },
+    { pid: 22, ppid: 21, pgid: 22, args: 'codex exec --sandbox read-only y' },
+    { pid: 30, ppid: 1, pgid: 30, args: 'node pass.mjs' },
+  ];
+  const target = workerProcs('sid-A', rows, 30);
+  t('DS-857 AC4 only the wedged worker\'s groups, its codex\'s included, are signalled', j([target.groups.sort((a, b) => a - b), target.pids]), j([[10, 12], []]));
 }
 
 // A worker its per-worker budget stopped resumes once in its own session to commit, push and finish.
