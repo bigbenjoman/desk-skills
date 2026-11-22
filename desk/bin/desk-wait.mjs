@@ -75,7 +75,10 @@ export function treeOf(pids, procs) {
 export function standing(run) {
   if (!run.length) return { state: 'done' };
   const top = (ps) => ps.find((p) => !ps.some((q) => q.pid === p.ppid)) ?? ps[0];
-  const cmd = run.filter((p) => !isWaiter(p.args));
+  // Whatever the lease client or a config read runs (a git shim, the load reading, a process read) is
+  // part of the wait too: the command is never their child.
+  const helped = treeOf(run.filter((p) => NODE_HELPER.test(p.args)).map((p) => p.pid), run);
+  const cmd = run.filter((p) => !isWaiter(p.args) && !helped.has(p.pid));
   if (cmd.length) return { state: 'started', pid: top(cmd).pid };
   const wrappers = run.filter((p) => WRAPPER.test(p.args) || BROWSER.test(p.args));
   if (!wrappers.length) return { state: 'started', pid: top(run).pid };
