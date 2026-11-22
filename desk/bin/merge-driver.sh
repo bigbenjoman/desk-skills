@@ -108,7 +108,9 @@
 #   - refused by `gh pr merge`               backed off for 10 minutes, then retried
 #   - its base is red                        the newest completed run of a §4 Required check on the base
 #                                            failed (base-red.mjs, read once per loop down its newest
-#                                            commits): no PR merges into it but its repair ticket's
+#                                            commits, each commit's completed runs kept for 30 minutes
+#                                            in <state>/merge-driver/base-runs.json, as each PR's file
+#                                            list at its head is in pr-files.json): no PR merges into it but its repair ticket's
 #                                            (base-red-<base>-<spell start>), and the loop logs the hold naming the
 #                                            check. The record it keeps in <state>/base-red.json is the
 #                                            pass's to report and repair; it goes once the check passes
@@ -966,7 +968,7 @@ repair_held(){
   mine=$(printf '%s' "$g" | jq -c '.files // empty'); [ -n "$mine" ] || return 1
   while IFS="$TAB" read -r r rkey fin rhead parked; do
     [ -n "$r" ] || continue
-    rg=$(node "$GATE" pr "$r" --repo "$REPO" --merger "$AUTHOR" 2>/dev/null) || continue
+    rg=$(node "$GATE" pr "$r" --repo "$REPO" --merger "$AUTHOR" --files-cache "$SD/pr-files.json" 2>/dev/null) || continue
     [ "$(printf '%s' "$rg" | jq -r .sha)" != "$rhead" ] || continue
     theirs=$(printf '%s' "$rg" | jq -c '.files // []')
     ours=$(jq -rn --argjson a "$mine" --argjson b "$theirs" '[$a[] | select(. as $f | $b | index($f))] | .[:3] | join(", ")')
@@ -1072,7 +1074,7 @@ try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
   local n="$1" key="$2" g sha ms state holds met carried="" bare nbare bare_more routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH"
   EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
-  g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
+  g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" --files-cache "$SD/pr-files.json" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
   # The epic PR merges the batch base into §0 Default branch.
   [ -n "$EPIC_KEY" ] && want=$(printf '%s' "$g" | jq -r .defaultBranch)
@@ -1348,7 +1350,7 @@ while true; do
   # not be asked about (an API error or limit) takes no merge until a later loop reads it; one whose
   # reads all answered but with no completed run of a required check merges as before.
   fixkey=""; unread=""
-  if base_state=$(node "$DESK_RUN_BIN/base-red.mjs" check --branch "$BASE_BRANCH" --repo "$REPO" --state "$DESK_STATE" --by "$MERGER" 2>/dev/null </dev/null); then
+  if base_state=$(node "$DESK_RUN_BIN/base-red.mjs" check --branch "$BASE_BRANCH" --repo "$REPO" --state "$DESK_STATE" --by "$MERGER" --cache "$SD/base-runs.json" 2>/dev/null </dev/null); then
     case "$(printf '%s' "$base_state" | jq -r '.state // empty' 2>/dev/null)" in
       red)
         log "$(printf '%s' "$base_state" | jq -r .line)"

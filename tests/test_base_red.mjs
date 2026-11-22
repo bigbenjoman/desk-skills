@@ -171,4 +171,96 @@ test('AC3 the repair key is a ticket id for the branch the driver merges into, a
   assert.deepEqual([kind('base-red-develop', { DESK_DEFAULT_BRANCH: 'develop' }), kind('base-red-main', { DESK_DEFAULT_BRANCH: 'develop' })], ['base-red', 'exit 2']);
 });
 
+// DS-989: the walk through cachedRead, with every read the inner reader makes counted, and the cache
+// saved and reopened between loops as the driver's processes do.
+const { cachedRead, lsRemoteTip, remoteRepo } = await import('../desk/bin/base-red.mjs');
+const { openCache, CACHE_MS } = await import('../desk/bin/read-cache.mjs');
+const counted = (commits, opts) => {
+  const r = reader(commits, opts), calls = { tip: 0, commit: 0, runs: 0 };
+  return { calls, read: { tip: (b) => (calls.tip++, r.tip(b)), commit: (s) => (calls.commit++, r.commit(s)), runs: (s) => (calls.runs++, r.runs(s)) } };
+};
+const loop = (path, read, now) => {
+  const c = openCache(path, { now });
+  const s = baseState({ required: ['tests'], branch: 'main', read: cachedRead(read, c) });
+  c.save();
+  return s;
+};
+const t0 = Date.parse('2026-11-22T10:00:00Z');
+const below = { [sha('b')]: { parent: sha('a'), runs: [run('lint', 'success')] }, [sha('a')]: { parent: null, runs: [run('tests', 'failure', 'u/1')] } };
+
+test('DS-989 AC1 AC2 a second loop on an unchanged tip whose runs all completed makes no commit or check-runs read', () => {
+  const path = join(scratch('base-red-cache-'), 'base-runs.json');
+  const { calls, read } = counted(below);
+  const first = loop(path, read, t0);
+  assert.equal(first.state, 'red');
+  assert.deepEqual(calls, { tip: 1, commit: 1, runs: 2 });
+  const second = loop(path, read, t0 + 60_000);
+  assert.deepEqual(second, first);
+  assert.deepEqual(calls, { tip: 2, commit: 1, runs: 2 });
+});
+
+test('DS-989 AC1 a tip with a run still going is read again, and only it: the commits below stay kept', () => {
+  const path = join(scratch('base-red-cache-'), 'base-runs.json');
+  const commits = { [sha('c')]: { parent: sha('b'), runs: [{ name: 'tests', status: 'in_progress', conclusion: null }] }, ...below };
+  const { calls, read } = counted(commits, { tip: sha('c') });
+  loop(path, read, t0);
+  assert.deepEqual(calls, { tip: 1, commit: 2, runs: 3 });
+  loop(path, read, t0 + 60_000);
+  assert.deepEqual(calls, { tip: 2, commit: 2, runs: 4 });
+});
+
+test('DS-989 AC2 a commit with no runs yet is not kept, so its runs are read once they appear', () => {
+  const path = join(scratch('base-red-cache-'), 'base-runs.json');
+  const commits = { [sha('d')]: { parent: null, runs: [] } };
+  const { calls, read } = counted(commits, { tip: sha('d') });
+  assert.equal(loop(path, read, t0).state, 'unknown');
+  commits[sha('d')].runs = [run('tests', 'success')];
+  assert.equal(loop(path, read, t0 + 60_000).state, 'green');
+  assert.equal(calls.runs, 2);
+});
+
+test('DS-989 AC4 a tip that moved is walked from the new tip, the commits below it still kept', () => {
+  const path = join(scratch('base-red-cache-'), 'base-runs.json');
+  const commits = { ...below };
+  const { calls, read } = counted(commits, { tip: sha('b') });
+  loop(path, read, t0);
+  const moved = counted({ [sha('e')]: { parent: sha('b'), runs: [run('lint', 'success')] }, ...commits }, { tip: sha('e') });
+  assert.equal(loop(path, moved.read, t0 + 60_000).state, 'red');
+  assert.deepEqual(moved.calls, { tip: 1, commit: 0, runs: 1 });
+  assert.deepEqual(calls, { tip: 1, commit: 1, runs: 2 });
+});
+
+test('DS-989 AC4 a kept read older than 30 minutes is read afresh: a rerun that passed on the same tip shows', () => {
+  const path = join(scratch('base-red-cache-'), 'base-runs.json');
+  const commits = { [sha('f')]: { parent: null, runs: [run('tests', 'failure')] } };
+  const { calls, read } = counted(commits, { tip: sha('f') });
+  assert.equal(loop(path, read, t0).state, 'red');
+  commits[sha('f')].runs = [run('tests', 'success')];
+  assert.equal(loop(path, read, t0 + CACHE_MS).state, 'red');
+  assert.equal(loop(path, read, t0 + CACHE_MS + 1).state, 'green');
+  assert.equal(calls.runs, 2);
+});
+
+test('DS-989 a tip read with no parent (git ls-remote) takes it from a commit read, kept for the next loop', () => {
+  const path = join(scratch('base-red-cache-'), 'base-runs.json');
+  const r = reader(below, { tip: sha('b') }), calls = { commit: 0, runs: 0 };
+  const read = { tip: () => ({ sha: sha('b') }), commit: (s) => (calls.commit++, r.commit(s)), runs: (s) => (calls.runs++, r.runs(s)) };
+  assert.equal(loop(path, read, t0).state, 'red');
+  assert.equal(loop(path, read, t0 + 60_000).state, 'red');
+  assert.deepEqual(calls, { commit: 2, runs: 2 });
+});
+
+test('DS-989 lsRemoteTip takes the branch\'s own line, and null for none or a failed read', () => {
+  const out = `${sha('1')}\trefs/heads/x/refs/heads/main\n${sha('2')}\trefs/heads/main\n`;
+  assert.deepEqual(lsRemoteTip('main', () => out), { sha: sha('2') });
+  assert.equal(lsRemoteTip('main', () => ''), null);
+  assert.equal(lsRemoteTip('main', () => { throw new Error('no remote'); }), null);
+});
+
+test('DS-989 remoteRepo reads owner/name from an https or ssh GitHub remote, and nothing else', () => {
+  assert.deepEqual(['https://github.com/Acme/Widgets.git', 'git@github.com:acme/widgets.git', 'https://github.com/acme/widgets/', 'ssh://git@github.com/acme/widgets'].map(remoteRepo),
+    ['acme/widgets', 'acme/widgets', 'acme/widgets', 'acme/widgets']);
+  assert.deepEqual(['/tmp/origin.git', 'https://gitlab.com/acme/widgets.git', ''].map(remoteRepo), [null, null, null]);
+});
+
 console.log(`base-red: ${pass} passed, 0 failed`);
