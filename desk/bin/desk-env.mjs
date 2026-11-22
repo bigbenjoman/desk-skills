@@ -949,6 +949,17 @@ const statesOfRow = (r, { auto = true } = {}) =>
 export const rowStates = (items) => statesOfRow(leverRow(items));
 // A slug's name without its owner: the part after the first `__`, or the slug with none.
 export const shortName = (slug) => slug.split('__').slice(1).join('__') || slug;
+// A configured repo's directories from its own config: §2 Repo root, and §2 Worktrees directory, else
+// `<repo root>-worktrees` beside the root. Each is trimmed, home-expanded and without a trailing slash,
+// and null where unset or `none`.
+export function repoDirs(slug, root = deskConfigRoot()) {
+  const dir = (id) => {
+    const v = repoConfigValue(slug, id, root);
+    return v && !isNone(v) ? String(expandHome(String(v).trim())).replace(/\/+$/, '') || null : null;
+  };
+  const repo = dir('repo-root');
+  return { root: repo, worktrees: dir('worktrees-dir') ?? (repo ? `${repo}-worktrees` : null) };
+}
 // Each slug's name as desk-q shows it: the part after the owner, or owner/name where two repos share it.
 export function shownNames(slugs) {
   const short = slugs.map(shortName);

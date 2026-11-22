@@ -166,4 +166,15 @@ pass
 check "DS-339 a base fix try moves an earlier try's resume file and handoff aside" \
   'grep -q "^base-feat-x " "$T/spawns" && [ ! -e "$C/state/resume/base-feat-x.json" ] && [ -e "$C/state/resume/base-feat-x.json.old" ] && [ ! -e "$C/state/handoffs/base-feat-x.json" ]'
 
+# DS-958: a base try runs suites, so it takes a unit of the test lock gate's room. One run holds the
+# lock and one waits, under the hold at 1 x 2 = 2: room for 1. The base fix takes it, and T-1 is held.
+mkdir -p "$T/stub-lq" "$T/locks-lq/desk-test.lock.d"; echo "9101 9102" > "$T/locks-lq/desk-test.lock.d/pid"
+printf ' 9101     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh\n 9102  9101 bash tests/run.sh\n 9201     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck\n' > "$T/ps-lq.out"
+printf '#!/bin/sh\n[ "$*" = "-ww -axo pid=,ppid=,args=" ] && exec cat "%s/ps-lq.out"\n[ "$*" = "-ww -axo pid=,etime=" ] && exit 0\nexec "%s" "$@"\n' "$T" "$(command -v ps)" > "$T/stub-lq/ps"
+printf '#!/bin/sh\nexit 0\n' > "$T/stub-lq/lsof"; chmod +x "$T/stub-lq/ps" "$T/stub-lq/lsof"
+: > "$T/spawns"; fresh blockroom; fixrow yes; conflict; age_probes
+out=$(PATH="$T/stub-lq:$PATH" AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" node "$B/pass.mjs" 2>&1); rc=$?
+check "DS-958 with room for one on the test lock, the base fix starts and the ready ticket is held" \
+  'grep -q "^base-feat-x " "$T/spawns" && ! grep -q "^T-1 " "$T/spawns" && [[ "$out" == *"Stage 4 (T-1), past the 1 this pass had room for"* ]]'
+
 finish fix

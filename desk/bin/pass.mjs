@@ -1834,22 +1834,21 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
   const held = lockHolderRuns({ procs: processList(), holders, cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(E.lockDir()) });
   let slug = null;
   try { slug = E.repoSlug(); } catch { /* no slug: this repo is still listed, by its checkout */ }
-  const self = slug ? E.shortName(slug) : 'this repo';
+  // Another repo whose config cannot be read is left out, so its runs count under `other`.
+  let others = [];
+  try { others = E.configuredRepos().map((r) => r.slug).filter((s) => s !== slug); } catch { /* none listed: every other run counts under `other` */ }
+  // Named as desk-q names them, so two repos of one name under different owners keep separate shares.
+  const names = E.shownNames(slug ? [slug, ...others] : others);
+  const self = slug ? names.shift() : 'this repo';
   // This repo first, so a run in its checkout is its own even where another repo's row names the same
   // directory.
   const repos = [{ name: self, dirs: [MAIN, WORKTREES] }];
-  // Another repo whose config cannot be read is left out, so its runs count under `other`.
-  let others = [];
-  try { others = E.configuredRepos(); } catch { /* none listed: every other run counts under `other` */ }
-  for (const r of others) {
-    if (r.slug === slug) continue;
+  others.forEach((s, i) => {
     try {
-      const root = String(E.expandHome(E.repoConfigValue(r.slug, 'repo-root')) ?? '').trim().replace(/\/+$/, '');
-      if (!root) continue;
-      const wt = String(E.expandHome(E.repoConfigValue(r.slug, 'worktrees-dir')) ?? '').trim().replace(/\/+$/, '') || `${root}-worktrees`;
-      repos.push({ name: E.shortName(r.slug), dirs: [root, wt] });
+      const d = E.repoDirs(s);
+      if (d.root) repos.push({ name: names[i], dirs: [d.root, d.worktrees] });
     } catch { /* unreadable: its runs count under `other` */ }
-  }
+  });
   return lockQueue({
     waiting: lockWaiters({ procs: processList(), holders }),
     held,
@@ -2889,6 +2888,10 @@ async function spawnBaseFix({ wt, fix: asked }) {
   const texts = fix.kind === 'checks' ? { ticket: promotionChecksTicket, brief: promotionChecksBrief, task: promotionChecksTask }
     : review ? { ticket: epicReviewTicket, brief: epicReviewBrief, task: epicReviewTask }
       : { ticket: baseFixTicket, brief: baseFixBrief, task: baseFixTask };
+  // A base try runs suites as a ticket's worker does, so it takes a unit of the test lock gate's room
+  // first: with room for one, a pass starts the base try or a ticket, not both.
+  if (lockRoom <= 0) { out.push(`base ${tryWhat(fix)}: held, ${LOCK_QUEUE.line}`); return; }
+  lockRoom -= 1;
   if (DRY) { out.push(`base ${tryWhat(fix)} (dry run): would start try ${fix.try} of ${fix.of} on ${BASE} in ${wt}`); return; }
   // No login to start on: no try is spent, and the next pass looks again.
   const pick = repoLogin();

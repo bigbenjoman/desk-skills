@@ -318,6 +318,15 @@ check "DoD1 with the queue deep and three repos on it, this repo with no run sta
 check "DoD4 the held note names the runs of each active repo, and this repo share, and the third ticket" \
   'echo "$out" | grep -q "Stage 4 (LQ-1[012]), past the 2" && echo "$out" | grep -qF "6 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 6 = 6; runs by repo: api 4, other 3; this repo'"'"'s share ceil(6 / 3) = 2, 0 its own" && echo "$out" | grep -qF "past the 2 this pass had room for"'
 for k in LQ-10 LQ-11 LQ-12; do q set "$k" state=done session_id=null; done
+# Two configured repos of one name under different owners are two repos, each named owner/name as
+# desk-q names them: the three runs in /elsewhere are now beta/api's, not merged into acme's api.
+mkdir -p "$T/cfg-lq/repos/beta__api"
+printf '## 2. Paths\n\n| Field | Value |\n|---|---|\n| Primary repo root | `/elsewhere` |\n' > "$T/cfg-lq/repos/beta__api/config.md"
+for k in LQ-13 LQ-14 LQ-15; do q add "$k"; q set "$k" state=triaged lane=A "branch=fix/$k"; done
+out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" DESK_CONFIG="$T/config-lq.md" DESK_CONFIG_ROOT="$T/cfg-lq" DESK_MACHINE="$T/machine-lq.md" node "$B/pass.mjs" 2>&1)
+check "DS-958 two repos named api under different owners keep separate counts, named owner/name" \
+  'echo "$out" | grep -qF "runs by repo: acme/api 4, beta/api 3; this repo'"'"'s share ceil(6 / 3) = 2, 0 its own" && [ $(( $(spawns_of LQ-13) + $(spawns_of LQ-14) + $(spawns_of LQ-15) )) = 2 ]'
+for k in LQ-13 LQ-14 LQ-15; do q set "$k" state=done session_id=null; done
 rm -f "$T/ps.out" "$T/lsof.out"
 rm "$T/desk/bin/queue.mjs"; ln -s "$B/queue.mjs" "$T/desk/bin/queue.mjs"
 
