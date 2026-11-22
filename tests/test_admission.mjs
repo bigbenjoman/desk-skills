@@ -26,9 +26,9 @@ const reading = ({ load = 10, freeGb = 40, pressure = 1 } = {}) => ({ load_1m: l
 const T0 = 1_800_000_000_000;
 const lines = (dir) => (existsSync(join(dir, 'leases.log.jsonl')) ? readFileSync(join(dir, 'leases.log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
 // One run starting to wait: its pool's floor `held` full, judged against case directory `dir`.
-const wait = (dir, { cls = 'light', pid = process.pid, rows = BASE, held = 1, sample = reading(), now = T0, last = null, isAlive = () => true } = {}) =>
-  admit({ cls, pid, last, env: envOf(rows), dir, logDir: dir, held, sample, platform: 'darwin', now: () => now, isAlive });
-const ledger = (dir, entries) => writeFileSync(ledgerFile(dir), entries.map((e) => `${e.at} ${e.pool} ${e.pid} ${e.gb} ${e.load}\n`).join(''));
+const wait = (dir, { cls = 'light', pid = process.pid, rows = BASE, held = 1, sample = reading(), now = T0, last = null, isAlive = () => true, isWaiting = () => false } = {}) =>
+  admit({ cls, pid, last, env: envOf(rows), dir, logDir: dir, held, sample, platform: 'darwin', now: () => now, isAlive, isWaiting });
+const ledger = (dir, entries) => writeFileSync(ledgerFile(dir), entries.map((e) => `${e.at} ${e.pool} ${e.pid} ${e.gb} ${e.load} ${e.reason ?? 'headroom'}\n`).join(''));
 
 // AC2: a second light run, one holding the floor slot, has headroom: the would-admit names everything.
 {
@@ -105,11 +105,29 @@ const ledger = (dir, entries) => writeFileSync(ledgerFile(dir), entries.map((e) 
   t('DS-977 a run judged again is not counted against itself, and adds no second ledger entry',
     [again, lines(d).length, parseLedger(readFileSync(ledgerFile(d), 'utf8')).length], ['would-admit:headroom', 2, 1]);
 }
-// The floor: a light floor of 2 with one slot held is a would-admit on the floor, no readings needed.
+// The floor: a light floor of 2 with one slot held is a would-admit on the floor, no readings needed,
+// and logs no line (on grants it at once). While it waits it holds that slot, so the next run is
+// judged above the floor.
 {
   const d = fresh();
-  wait(d, { rows: { ...BASE, 'light-lock-slots': '2' }, sample: reading({ load: null }) });
-  t('DS-977 a free floor slot is a would-admit on the floor', lines(d).map((l) => [l.event, l.reason, l.floor]), [['would-admit', 'floor', 2]]);
+  const rows = { ...BASE, 'light-lock-slots': '2' };
+  t('DS-977 a free floor slot is a would-admit on the floor that logs no line',
+    [wait(d, { rows, sample: reading({ load: null }) }), lines(d).length, parseLedger(readFileSync(ledgerFile(d), 'utf8')).map((e) => e.reason)], ['would-admit:floor', 0, ['floor']]);
+  wait(d, { rows, pid: process.ppid, sample: reading({ load: null }), isWaiting: () => true });
+  t('DS-977 the floor run still waiting holds its floor slot: the next is judged above it', lines(d).map((l) => [l.event, l.reason, l.held, l.shadow_held]), [['would-deny', 'load-unreadable', 2, 1]]);
+}
+// The ceiling counts the runs shadow would have let in that still wait: light floor 1, ceiling 2.
+{
+  const d = fresh();
+  const rows = { ...BASE, 'light-lock-max': '2' };
+  wait(d, { rows });
+  wait(d, { rows, pid: process.ppid, isWaiting: () => true });
+  t('DS-977 a second would-admit past the ceiling is a would-deny naming the ceiling', lines(d).map((l) => `${l.event}:${l.reason}`), ['would-admit:headroom', 'would-deny:ceiling']);
+  const d2 = fresh();
+  wait(d2, { rows });
+  wait(d2, { rows, pid: process.ppid, now: T0 + 200_000, isWaiting: () => false });
+  t('DS-977 one that no longer waits, its ramp over, holds nothing and is dropped', [lines(d2).map((l) => `${l.event}:${l.reason}`), parseLedger(readFileSync(ledgerFile(d2), 'utf8')).map((e) => e.pid)],
+    [['would-admit:headroom', 'would-admit:headroom'], [process.ppid]]);
 }
 // AC1, AC13: admission off, unset or a row that does not read: nothing is judged or logged.
 {
@@ -153,6 +171,17 @@ t('DS-977 judge is pure: the same input, the same answer', JSON.stringify(judge(
   for (const s of sleepers) s.kill();
   t('DS-977 AC9 eight light runs at once: exactly one would-admit, the rest would-deny', [keys.filter((k) => k === 'would-admit:headroom').length, keys.filter((k) => k === 'would-deny:load').length], [1, 7]);
   t('DS-977 AC9 and each is logged once', [lines(d).filter((l) => l.event === 'would-admit').length, lines(d).filter((l) => l.event === 'would-deny').length], [1, 7]);
+  // A row written TODO does not read, as machine detect says: admission is off and nothing is logged.
+  const todo = join(S, 'machine-todo.md');
+  writeFileSync(todo, readFileSync(profile, 'utf8').replace('| `admit-max-load` | `30` |', '| `admit-max-load` | `TODO` |'));
+  const d2 = fresh();
+  const s = spawn('sleep', ['30'], { stdio: 'ignore' });
+  const out = await new Promise((r) => {
+    const c = spawn(process.execPath, [join(root, 'desk', 'bin', 'admission.mjs'), 'judge', 'light', '--pid', String(s.pid)], { env: { ...env, DESK_LOCK_DIR: d2, DESK_LEASE_DIR: d2, DESK_MACHINE: todo }, stdio: ['ignore', 'pipe', 'ignore'] });
+    let o = ''; c.stdout.on('data', (b) => { o += b; }); c.on('close', () => r(o.trim()));
+  });
+  s.kill();
+  t('DS-977 AC13 an admission row written TODO turns admission off', [out, lines(d2).length], ['', 0]);
 }
 
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }

@@ -28,7 +28,7 @@ const numberAtLeast = (min) => (v) => /^\d+(\.\d+)?$/.test(v) && Number(v) >= mi
 // only while the machine's load, free memory and memory pressure leave room for it (admission.mjs).
 // lock-admission says whether that runs: off, or shadow, which logs what it would do and grants
 // nothing. A row here that does not read makes admission off, so a typo never takes a slot away.
-export const ADMISSION_MODES = Object.freeze(['off', 'shadow']);
+const ADMISSION_MODES = Object.freeze(['off', 'shadow']);
 const ADMISSION_RULES = Object.freeze({
   'lock-admission': { ok: (v) => ADMISSION_MODES.includes(v), want: ADMISSION_MODES.join(' or ') },
   'light-lock-slots': { ok: wholeAtLeast(1), want: 'a whole number of slots, 1 or more' },
@@ -42,10 +42,12 @@ const ADMISSION_RULES = Object.freeze({
   'admit-max-pressure': { ok: numberAtLeast(1), want: 'a pressure level, 1 normal, 2 warn, 4 critical' },
   'admit-ramp-s': { ok: wholeAtLeast(0), want: 'a whole number of seconds' },
 });
-export const ADMISSION_KEYS = Object.freeze(Object.keys(ADMISSION_RULES));
+const ADMISSION_KEYS = Object.freeze(Object.keys(ADMISSION_RULES));
+// Proposed rows whose value is another row's: each follows that row's override when a write keeps one.
+const FOLLOWS = Object.freeze({ 'test-lock-max': 'test-lock-slots', 'admit-run-load': 'test-cap' });
 const ADMISSION_FIXED = Object.freeze({ 'lock-admission': 'off', 'admit-reserve-gb': '8', 'heavy-run-gb': '16', 'light-run-gb': '16', 'admit-max-pressure': '2', 'admit-ramp-s': '90' });
 // admit-max-load's default: this many times every CPU core, efficiency cores at full weight.
-export const ADMIT_LOAD_PER_CORE = 1.67;
+const ADMIT_LOAD_PER_CORE = 1.67;
 const admitMaxLoad = (cores) => String(Math.round(ADMIT_LOAD_PER_CORE * (known(num(cores)) ? num(cores) : 4)));
 
 // The admission rows, read through `get(key)` (a profile value or null), each with its default where
@@ -141,11 +143,12 @@ export function leaseKindsProblem(raw) {
 }
 // The checks on Sizing rows a person may have edited by hand, one line each: lease-kinds and the
 // admission rows, whose problems end with the locks granting as with lock-admission off.
+// A profile row's value as written (Sizing, else Hardware), TODO and all, or null.
+export const profileValue = (profile, k) => profile?.sizing?.[k]?.value ?? profile?.hardware?.[k]?.value ?? null;
 export function profileProblems(profile) {
   const v = profile?.sizing?.['lease-kinds']?.value;
   const bad = v == null ? null : leaseKindsProblem(v);
-  const get = (k) => profile?.sizing?.[k]?.value ?? profile?.hardware?.[k]?.value ?? null;
-  const admit = admissionRows(get).problems.map((p) => `${p}; the locks grant as with \`lock-admission\` off`);
+  const admit = admissionRows((k) => profileValue(profile, k)).problems.map((p) => `${p}; the locks grant as with \`lock-admission\` off`);
   return [...(bad ? [bad] : []), ...admit];
 }
 // `bench-run-limit-<provider>`: the most runs the bench may start in a rolling week on a provider it
@@ -537,7 +540,12 @@ export const sizesProposed = (profile) => Object.keys(profile?.hardware ?? {}).l
 export function rewrittenSizing(profile, proposal, drop = []) {
   const proposed = new Set(proposal.map((s) => s.key));
   const sizing = profile?.sizing ?? {};
-  const placed = proposal.map((s) => (isOverride(sizing[s.key]) && !drop.includes(s.key) ? { key: s.key, value: sizing[s.key].value, why: sizing[s.key].why } : s));
+  const keeps = (k) => isOverride(sizing[k]) && !drop.includes(k);
+  const overridden = proposal.map((s) => (keeps(s.key) ? { key: s.key, value: sizing[s.key].value, why: sizing[s.key].why } : s));
+  // A proposed row that is another's value takes the override kept for that one, so the write never
+  // leaves a ceiling under the floor it was proposed as.
+  const valueOf = (k) => overridden.find((s) => s.key === k)?.value;
+  const placed = overridden.map((s) => (FOLLOWS[s.key] && !keeps(s.key) && keeps(FOLLOWS[s.key]) ? { ...s, value: valueOf(FOLLOWS[s.key]) } : s));
   const kept = Object.entries(sizing).filter(([k]) => !proposed.has(k)).map(([key, s]) => ({ key, value: s.value, why: s.why }));
   return [...placed, ...kept];
 }

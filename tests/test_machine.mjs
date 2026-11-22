@@ -243,6 +243,10 @@ const reWritten = parseProfile(renderProfile(small, rewrittenSizing(ovProfile, p
 t('a re-write keeps each override', `${reWritten.sizing['test-lock-slots'].value} ${reWritten.sizing['test-cap'].value} ${isOverride(reWritten.sizing['test-lock-slots'])}`, '3 6 true');
 const dropped = parseProfile(renderProfile(small, rewrittenSizing(ovProfile, propose(small), ['test-cap']), '2026-11-15'));
 t('a re-write drops only the override named', `${dropped.sizing['test-cap'].value} ${isOverride(dropped.sizing['test-cap'])} ${dropped.sizing['test-lock-slots'].value}`, '16 false 3');
+t('DS-977 a re-write proposes test-lock-max and admit-run-load from the overrides it keeps, so the ceiling is never under the floor',
+  `${reWritten.sizing['test-lock-max'].value} ${reWritten.sizing['admit-run-load'].value} ${isOverride(reWritten.sizing['test-lock-max'])} [${profileProblems(reWritten).join(' | ')}]`, '3 6 false []');
+t('DS-977 a dropped override leaves the row it was followed by at the proposal', dropped.sizing['admit-run-load'].value, '16');
+t('DS-977 a profile row written TODO is one that does not read', profileProblems({ sizing: { 'admit-max-load': { value: 'TODO' } } })[0]?.startsWith('`admit-max-load` is "TODO"'), true);
 t('clearing an override puts the proposal for the recorded hardware back', `${setErr(['test-cap='], ov)} ${env(['machine', 'get', 'test-cap'], absent, ov)} ${env(['machine', 'why', 'test-cap'], absent, ov)}`, 'exit 0 16 the 16 performance cores');
 // detect and write size from this computer, so the override is one more slot than it proposes: an
 // override equal to the proposal would read as no change whether or not it is kept.

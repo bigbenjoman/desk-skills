@@ -128,7 +128,7 @@ unqueue() { [ -z "$queued" ] || rm -f "$wdir/$$" 2>/dev/null; }
 gave_up() { unwatch; unqueue; note gave-up; echo "with-lock.sh: gave up waiting for the $name lock after ${timeout}s" >&2; exit 75; }
 # Headroom admission's look at this run while it waits (admission.mjs): in the background, so the wait
 # itself is unchanged. Once this run's marker is in the waiting directory, which it is from the moment
-# it waits on the lock files or on a lease, it is judged, then again every DESK_ADMIT_RECHECK_S seconds
+# it waits on the lock files or on a lease (looked for every 0.2 s), it is judged, then again every DESK_ADMIT_RECHECK_S seconds
 # (30), and judge logs a line only when the outcome or reason changes. It ends when the marker goes,
 # when this wrapper does, or at once with admission off (judge prints nothing). It closes the lock's
 # descriptor, so it never holds the lock, and it is stopped before the command runs.
@@ -149,7 +149,8 @@ watch_admission() {
         fi
       elif [ -n "$seen" ]; then exit 0
       fi
-      sleep 1; n=$((n + 1))
+      # Until the marker is first seen, look often: a lease's wait can be its 2 s poll and no longer.
+      if [ -n "$seen" ]; then sleep 1; n=$((n + 1)); else sleep 0.2; fi
     done
   ) </dev/null >/dev/null 2>&1 &
   admit_pid=$!

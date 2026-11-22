@@ -16,14 +16,21 @@
 // Recent means within admit-ramp-s, across both pools, from a ledger beside the lock files that a
 // would-admit is added to, so shadow counts what on would have let in. The ledger is read, judged and
 // written under an admission lock, so runs starting to wait in the same second see each other.
-import { readFileSync, realpathSync } from 'node:fs';
+//
+// Shadow grants nothing, so a run it would have let in still waits. Each such run, on its floor or on
+// headroom, stays in the ledger while it waits and counts as holding a slot of its pool, so the floor
+// and the ceiling are judged on what on would hold. A would-admit on the floor logs no line: on would
+// grant it at once, as it does a free floor slot.
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { alive, lock, unlock, writeTextAtomic } from './dir-lock.mjs';
-import { logEvent, sampleLoad } from './leases.mjs';
-import { admissionRows } from './machine.mjs';
+import { SLOTS, logEvent, sampleLoad } from './leases.mjs';
+import { admissionRows, profileValue } from './machine.mjs';
+import { waitingDir } from './slot-lease.mjs';
 
-export const POOL_OF = Object.freeze({ test: 'heavy', tsc: 'heavy', lint: 'heavy', light: 'light' });
+// A lock class's pool (the broker's SLOTS), where admission judges it: heavy or light, else null.
+const poolOf = (cls) => (SLOTS[cls] === 'heavy' || SLOTS[cls] === 'light' ? SLOTS[cls] : null);
 const LOCK_WAIT_MS = 2000;
 const LOCK_MAX_AGE_MS = 5000;
 
@@ -39,14 +46,15 @@ export function pressureLevel(sample, platform = process.platform) {
   return p < 10 ? 1 : p < 40 ? 2 : 4;
 }
 
-// The ledger's lines, `<epoch s> <pool> <pid> <gb> <load>`, as [{ at, pool, pid, gb, load }]; a line
-// that does not read is dropped.
+// The ledger's lines, `<epoch s> <pool> <pid> <gb> <load> <reason>`, as [{ at, pool, pid, gb, load,
+// reason }], reason the would-admit's (headroom or floor); a line that does not read is dropped.
 export function parseLedger(text) {
-  return String(text ?? '').split('\n').map((l) => l.trim().split(/\s+/)).filter((f) => f.length === 5)
-    .map(([at, pool, pid, gb, load]) => ({ at: Number(at), pool, pid: Number(pid), gb: Number(gb), load: Number(load) }))
-    .filter((e) => Number.isFinite(e.at) && Number.isInteger(e.pid) && e.pid > 0 && Number.isFinite(e.gb));
+  return String(text ?? '').split('\n').map((l) => l.trim().split(/\s+/)).filter((f) => f.length === 6)
+    .map(([at, pool, pid, gb, load, reason]) => ({ at: Number(at), pool, pid: Number(pid), gb: Number(gb), load: Number(load), reason }))
+    .filter((e) => Number.isFinite(e.at) && Number.isInteger(e.pid) && e.pid > 0 && Number.isFinite(e.gb)
+      && (e.reason === 'headroom' || e.reason === 'floor'));
 }
-const ledgerText = (entries) => entries.map((e) => `${e.at} ${e.pool} ${e.pid} ${e.gb} ${e.load ?? '-'}\n`).join('');
+const ledgerText = (entries) => entries.map((e) => `${e.at} ${e.pool} ${e.pid} ${e.gb} ${e.load ?? '-'} ${e.reason}\n`).join('');
 
 // The decision for a run of pool `pool` ('heavy' or 'light') that finds `held` of its slots held.
 // `sample` is sampleLoad's, `level` its pressure level (pressureLevel), `recent` the admits within
@@ -80,12 +88,16 @@ export function judge({ pool, held, sample, level, recent, rows }) {
 }
 
 // One waiting run's admission, in shadow: judges it under the admission lock against the ledger in
-// `dir` (dead pids and admits older than admit-ramp-s dropped), adds a would-admit to the ledger, and
-// logs the line unless `last` (`<outcome>:<reason>`) says the same. `env` gives machineValue and
-// testLockSlots (desk-env's), `held` the slots its pool holds. -> the `<outcome>:<reason>` key, or
-// null with admission off.
-export function admit({ cls, pid, last = null, env, dir, held, logDir, sample = null, platform = process.platform, now = Date.now, isAlive = alive }) {
-  const pool = POOL_OF[cls];
+// `dir`, adds a would-admit to the ledger, and logs the line unless `last` (`<outcome>:<reason>`)
+// says the same or it is a would-admit on the floor. `env` gives machineValue (raw profile values)
+// and testLockSlots (desk-env's), `held` the real slots its pool holds; the ledger's runs of its pool
+// still waiting (a marker in `waitingDir`) are added to them. A run already in the ledger keeps its
+// would-admit and is not judged again: on would be running it. Dead pids are dropped, and an entry
+// older than admit-ramp-s once its run no longer waits. -> the `<outcome>:<reason>` key, or null with
+// admission off.
+export function admit({ cls, pid, last = null, env, dir, held, logDir, sample = null, platform = process.platform, now = Date.now, isAlive = alive,
+  isWaiting = (e) => existsSync(join(waitingDir(e.pool === 'heavy' ? 'test' : 'light', dir), String(e.pid))) }) {
+  const pool = poolOf(cls);
   if (!pool) return null;
   const { rows, mode } = admissionRows((k) => env.machineValue(k), { testSlots: env.testLockSlots() });
   if (mode !== 'shadow') return null;
@@ -103,19 +115,25 @@ export function admit({ cls, pid, last = null, env, dir, held, logDir, sample = 
     try {
       let text = '';
       try { text = readFileSync(ledgerFile(dir), 'utf8'); } catch { /* no ledger yet */ }
-      const fresh = parseLedger(text).filter((e) => at - e.at < ramp);
-      const kept = fresh.filter((e) => e.pid !== pid && isAlive(e.pid));
-      d = judge({ pool, held, sample, level, recent: kept, rows });
-      // This run's own admit stands for its ramp, whatever a later look at it says: on would have
-      // let it in then. A would-admit adds one where it has none.
-      const mine = fresh.find((e) => e.pid === pid);
-      const admitted = d.outcome === 'would-admit' && d.reason === 'headroom';
-      const keep = mine ? [...kept, mine] : admitted ? [...kept, { at, pool, pid, gb: d.fields.run_gb, load: d.fields.load_1m }] : kept;
+      const entries = parseLedger(text);
+      const mine = entries.find((e) => e.pid === pid);
+      const others = entries.filter((e) => e.pid !== pid && isAlive(e.pid));
+      const waiting = others.filter((e) => isWaiting(e));
+      const kept = others.filter((e) => at - e.at < ramp || waiting.includes(e));
+      if (mine) d = { outcome: 'would-admit', reason: mine.reason, fields: { pool, held } };
+      else {
+        const holding = waiting.filter((e) => e.pool === pool).length;
+        const recent = others.filter((e) => e.reason === 'headroom' && at - e.at < ramp);
+        d = judge({ pool, held: held + holding, sample, level, recent, rows });
+        d.fields.shadow_held = holding;
+      }
+      const added = !mine && d.outcome === 'would-admit' ? [{ at, pool, pid, gb: d.fields.run_gb, load: d.fields.load_1m, reason: d.reason }] : [];
+      const keep = [...kept, ...(mine ? [mine] : added)];
       if (ledgerText(keep) !== text) writeTextAtomic(ledgerFile(dir), ledgerText(keep));
     } finally { unlock(lockPath(dir)); }
   }
   const key = `${d.outcome}:${d.reason}`;
-  if (key !== last) logEvent({ event: d.outcome, kind: 'slot', key: cls, mode, reason: d.reason, pid, ...d.fields }, { dir: logDir });
+  if (key !== last && key !== 'would-admit:floor') logEvent({ event: d.outcome, kind: 'slot', key: cls, mode, reason: d.reason, pid, ...d.fields }, { dir: logDir });
   return key;
 }
 
@@ -128,7 +146,7 @@ async function cli(argv) {
   const [sub, cls, ...rest] = argv;
   const opt = (n) => { const i = rest.indexOf(`--${n}`); return i < 0 ? null : rest[i + 1]; };
   const pid = Number(opt('pid'));
-  if (sub !== 'judge' || !POOL_OF[cls] || !Number.isInteger(pid) || pid <= 0) {
+  if (sub !== 'judge' || !poolOf(cls) || !Number.isInteger(pid) || pid <= 0) {
     console.error('usage: admission.mjs judge <test|tsc|light> --pid <wrapper pid> [--last <outcome:reason>]');
     return 2;
   }
@@ -136,8 +154,11 @@ async function cli(argv) {
     const E = await import('./desk-env.mjs');
     const { leaseDir } = await import('./leases.mjs');
     // Every run that waits found its pool's real slots full: today's grants, heavy test-lock-slots, light 1.
-    const held = POOL_OF[cls] === 'heavy' ? E.testLockSlots() : 1;
-    const key = admit({ cls, pid, last: opt('last'), env: E, dir: E.lockDir(), held, logDir: leaseDir(), ...(fixtureSample() ? { sample: fixtureSample() } : {}) });
+    const held = poolOf(cls) === 'heavy' ? E.testLockSlots() : 1;
+    // The rows as the profile holds them, as machine detect's check reads them: a TODO is a row that
+    // does not read, not one left unset.
+    const env = { machineValue: (k) => profileValue(E.machineProfile(), k), testLockSlots: E.testLockSlots };
+    const key = admit({ cls, pid, last: opt('last'), env, dir: E.lockDir(), held, logDir: leaseDir(), ...(fixtureSample() ? { sample: fixtureSample() } : {}) });
     if (key) console.log(key);
   } catch { /* a measurement: it never holds a run up */ }
   return 0;
