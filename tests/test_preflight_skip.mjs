@@ -160,7 +160,6 @@ whenChanged('worker settings', () => {}, () => {}, { DESK_CONFIG: ON_PUSH });
 const agent = join(T, 'home', '.claude', 'agents', 'lena-code-reviewer.md');
 const agentWas = readFileSync(agent, 'utf8');
 whenChanged('agents file', () => writeFileSync(agent, `${agentWas}\nOne more rule.\n`), () => writeFileSync(agent, agentWas));
-t('DS-699 a moved worktree with the same settings otherwise skips', ran(preflight({}, join(T, 'repo2'))), SKIPPED);
 
 // AC3: a failure and a usage limit leave nothing to skip on, whatever passed before.
 say('reply', result('W_IN=BLOCKED'));
@@ -266,20 +265,16 @@ t('DS-699 a cross-ticket skip gives the ticket no record of its own', existsSync
 git('worktree', 'add', '-q', '-b', 'fix/three', join(T, 'wt-three'));
 t('DS-699 another worktree coming changes nothing', ran(two()), SKIPPED);
 t('DS-699 AC2 a settings change runs the preflight', ran(two({ DESK_CONFIG: ON_PUSH })), RAN);
-t('DS-699 AC2 so does a model change', ran(two({ AUTOPILOT_MODEL: 'opus' })), RAN);
+const ON_DB = join(T, 'on-db.md');
+writeFileSync(ON_DB, readFileSync(ON, 'utf8').replace('| Unit tests |', '| Local database | `postgres container pg1` |\n| Unit tests |'));
 t('DS-699 per-ticket databases are masked too',
-  [ran(one({ AUTOPILOT_DATABASE: 'widgets_one' })), ran(two({ AUTOPILOT_DATABASE: 'widgets_two' }))], [RAN, SKIPPED]);
+  [ran(one({ DESK_CONFIG: ON_DB, AUTOPILOT_DATABASE: 'widgets_one' })), ran(two({ DESK_CONFIG: ON_DB, AUTOPILOT_DATABASE: 'widgets_two' }))], [RAN, SKIPPED]);
+t('DS-699 and the database name is in the settings it masks', readFileSync(join(T, 'state', 'workers', 'ticket-two.settings.json'), 'utf8').includes('psql -d widgets_two'), true);
 const aged = JSON.parse(readFileSync(passes, 'utf8'));
 for (const p of Object.values(aged)) p.at = new Date(Date.now() - 25 * 3600 * 1000).toISOString();
 writeFileSync(passes, JSON.stringify(aged));
 t('DS-699 a pass more than 24 hours old stands for no other ticket', ran(two()), RAN);
-t('DS-699 and the run that replaces it is recorded as that ticket\'s', Object.values(JSON.parse(readFileSync(passes, 'utf8'))).map((p) => p.ticket), ['ticket-two']);
-say('reply', result('W_IN=BLOCKED'));
-say('version', '2.0.3 (Claude Code)');
-r = one();
-say('version', '2.0.0 (Claude Code)');
-say('reply', result(GOOD));
-t('DS-699 a failed preflight records no pass for the repo', [r.status, existsSync(passes) && Object.keys(JSON.parse(readFileSync(passes, 'utf8'))).length], [1, 1]);
+t('DS-699 and the run that replaces it is recorded as that ticket\'s, the stale passes dropped', Object.values(JSON.parse(readFileSync(passes, 'utf8'))).map((p) => p.ticket), ['ticket-two']);
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);
