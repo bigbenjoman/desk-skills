@@ -175,9 +175,10 @@ mktree shahead running running 1 ' at origin/main 4a1f0c2e9'
 cmp "$T/shabase" "$T/shahead"
 check "DS-763 AC4 an abbreviated SHA that is all digits matches the other tree's" '[ $rc = 0 ] && [ "$out" = "compare_pass: 2 pass run(s) compared, 0 differ, 0 not compared" ]'
 
-# A tree whose suite leaves the usage probe start stamp ten minutes old before its first pass and 90
-# seconds old before its second, and whose pass prints how old it reads that stamp as: the base's prints
-# what a suite run in under five minutes sees, the head's reads it.
+# A tree whose suite leaves the usage probe start stamp in its own usage dir ($CMP_PROBE_USAGE when
+# set) ten minutes old before its first pass and 90 seconds old before its second, and whose pass
+# prints how old it reads that stamp as: the base's prints what a suite run in under five minutes
+# sees, the head's reads it.
 probetree(){ mktree "$1" running running
   cat >> "$T/$1/desk/bin/pass.mjs" <<EOF
 const age = Date.now() - Number(readFileSync(process.env.DESK_USAGE_DIR + '/probe.at', 'utf8'));
@@ -186,7 +187,7 @@ EOF
   cat > "$T/$1/tests/test_pass.sh" <<'EOF'
 #!/usr/bin/env bash
 SRC="$(cd "$(dirname "$0")/.." && pwd)"; B="$SRC/desk/bin"; D="$(mktemp -d)"
-export DESK_QUEUE="$D/queue.json" DESK_USAGE_DIR="$D/usage"; mkdir -p "$DESK_USAGE_DIR"
+export DESK_QUEUE="$D/queue.json" DESK_USAGE_DIR="${CMP_PROBE_USAGE:-$D/usage}"; mkdir -p "$DESK_USAGE_DIR"
 echo '{"tickets":{"A-1":{"state":"triaged"}}}' > "$DESK_QUEUE"
 echo $(( $(date +%s) * 1000 - 600000 )) > "$DESK_USAGE_DIR/probe.at"
 out=$(node "$B/pass.mjs" 2>&1); echo "ok   the first pass"
@@ -199,6 +200,9 @@ probetree probebase "'past the gap'"
 probetree probehead "age > 300e3 ? 'probe due' : age > 60e3 ? 'past the gap' : 'in the gap'"
 cmp "$T/probebase" "$T/probehead"
 check "a probe stamp a suite left over five minutes old reads as under it, and one past the minute stays past it" '[ $rc = 0 ] && [ "$out" = "compare_pass: 2 pass run(s) compared, 0 differ, 0 not compared" ]'
+# The same suite with the machine's usage dir as its own: its stamp is left ten minutes old.
+out=$(env -u DESK_USAGE_DIR HOME="$T/live" CMP_PROBE_USAGE="$T/live/.desk-autopilot/usage" bash "$S/compare_pass.sh" "$T/probebase" "$T/probehead" 2>/dev/null); rc=$?
+check "a usage dir that is the machine's own keeps its probe stamps as the suite left them" '[ $rc = 1 ] && echo "$out" | grep -qxF "  output head: probe due"'
 
 # An evidence fix keyed by the id each tree's pass hashed from its own start time, one of them all
 # digits, filed between two tickets so the key sorts differently on each tree, and its key printed.

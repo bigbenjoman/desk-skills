@@ -63,6 +63,9 @@ chmod +x "$W/shim/node"
 # shellcheck source=suite_env.sh
 . "$S/suite_env.sh"
 export PASS_CMP_NODE="$NODE" PASS_CMP_RECORDER="$S/compare_pass.mjs"
+# The machine's own usage dir, whose probe stamps the recorder never holds (compare_pass.mjs holdProbeStamps).
+PASS_CMP_LIVE_USAGE=$("$NODE" --input-type=module -e "import { usageDir } from '$SRC/desk/bin/usage-pace.mjs'; console.log(usageDir())") || exit 2
+export PASS_CMP_LIVE_USAGE
 # Every commit a suite makes is dated when the comparison started, on both trees. Otherwise a commit's
 # SHA depends on the second it was made in: two identical commits share one when made in the same
 # second, so one tree could show a single SHA where the other shows two.

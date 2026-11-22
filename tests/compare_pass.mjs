@@ -17,7 +17,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { constants } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { lock, unlock } from '../desk/bin/dir-lock.mjs';
 import { PROBE_EVERY_MS, PROBE_GAP_MS, usageDir } from '../desk/bin/usage-probe.mjs';
 import { flattenQueue } from '../desk/bin/queue-fields.mjs';
@@ -43,9 +43,12 @@ function nextRun(dir) {
 // PROBE_EVERY_MS ago (usage-probe.mjs noReadingProbeDue), so which of a suite's passes probe depends on
 // how fast the machine runs the suite, and the two trees, run side by side, cross that line at
 // different runs. Each pass starts with every probe start stamp held under that age, past the minute a
-// pass joins another's probe for, so no run's probe depends on the machine's speed.
+// pass joins another's probe for, so no run's probe depends on the machine's speed. Only a suite's own
+// usage dir is held: one that is the machine's ($PASS_CMP_LIVE_USAGE, or unnamed) is left as it is.
 function holdProbeStamps() {
-  const dir = usageDir(), held = Date.now() - (PROBE_EVERY_MS - PROBE_GAP_MS);
+  const dir = usageDir(), live = process.env.PASS_CMP_LIVE_USAGE;
+  if (!live || resolve(dir) === resolve(live)) return;
+  const held = Date.now() - (PROBE_EVERY_MS - PROBE_GAP_MS);
   let names = [];
   try { names = readdirSync(dir).filter((f) => /^probe.*\.at$/.test(f)); } catch { return; }
   for (const f of names) {
