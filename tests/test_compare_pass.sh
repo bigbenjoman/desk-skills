@@ -300,8 +300,10 @@ ccmp HEAD HEAD~2; ccmp HEAD HEAD~2
 check "DS-963 AC5 a base replay that was stopped is not cached, and says so" 'replayed && grep -q "^compare_pass: the base.s recording is not cached: .*test_pass\.sh" "$T/err"'
 # A base suite that fails a check, as one does on a machine that lacks a tool it uses.
 cp "$T/base/tests/test_pass.sh" "$T/crepo/tests/test_pass.sh"; echo 'echo "FAIL a tool this machine lacks"' >> "$T/crepo/tests/test_pass.sh"; commit failing
-ccmp HEAD HEAD~3; ccmp HEAD HEAD~3
-check "DS-963 a base replay in which a suite failed a check is not cached, and names the check" 'replayed && grep -qF "the base'"'"'s recording is not cached: test_pass.sh: FAIL a tool this machine lacks" "$T/err"'
+ccmp HEAD HEAD~3
+check "DS-963 a base suite that failed a check is left out of the entry, which names the check" 'grep -qE "^compare_pass: cached the base.s recording as $CD/[0-9a-f]+\.tar, but for test_pass\.sh: FAIL a tool this machine lacks$" "$T/err"'
+ccmp HEAD HEAD~3
+check "DS-963 only the base suite the entry lacks is replayed on the base again" 'grep -q "^compare_pass: the base.s recording is cached but for test_pass.sh, so only those are replayed" "$T/err" && grep -q "test_pass.sh on the base$" "$T/err" && ! grep -q "test_pass_b.sh on the base$" "$T/err"'
 rm -rf "$CD"; mkdir -p "$CD"
 for i in 1 2 3 4 5; do touch -t "20200101000$i" "$CD/old$i.tar"; done
 ccmp HEAD~4 HEAD~3

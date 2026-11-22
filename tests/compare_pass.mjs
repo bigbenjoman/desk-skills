@@ -16,8 +16,8 @@
 //     compared. --base-cached: the base was recorded by an earlier comparison, so hours or days
 //     before the head.
 //
-//   node compare_pass.mjs clean <records>
-//     Exit 0 when no pass in one tree's records crashed, 1 when one did.
+//   node compare_pass.mjs clean <records> [<suite>...]
+//     Exit 0 when no pass in one tree's records (of those suites only) crashed, 1 naming one that did.
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { constants } from 'node:os';
@@ -421,9 +421,10 @@ function diff(args) {
   process.exitCode = notCompared ? 2 : differ ? 1 : 0;
 }
 
-// Exit 0 when no pass in a tree's records crashed, 1 when one did, naming the first that did.
-function clean([dir]) {
-  for (const s of readdirSync(dir).filter((f) => !f.endsWith('.log')).sort()) {
+// Exit 0 when no pass in a tree's records (of only the suites named, if any) crashed, 1 when one did,
+// naming the first that did.
+function clean([dir, ...only]) {
+  for (const s of readdirSync(dir).filter((f) => !f.endsWith('.log') && (!only.length || only.includes(f))).sort()) {
     const r = [...runs(join(dir, s)).values()].find(crashed);
     if (r) { console.log(`${s} run ${r.run}: the pass failed to run: ${firstError(r)}`); process.exitCode = 1; return; }
   }
@@ -432,4 +433,4 @@ function clean([dir]) {
 if (mode === 'record') record(args);
 else if (mode === 'diff') diff(args);
 else if (mode === 'clean') clean(args);
-else { console.error('usage: compare_pass.mjs record <node args...> | diff [--base-cached] <base records> <head records> <tree>... | clean <records>'); process.exitCode = 2; }
+else { console.error('usage: compare_pass.mjs record <node args...> | diff [--base-cached] <base records> <head records> <tree>... | clean <records> [<suite>...]'); process.exitCode = 2; }
