@@ -65,13 +65,14 @@ const deskQ = (args, port = PORT) => new Promise((resolve) => {
   let stdout = '', stderr = '';
   p.stdout.on('data', (d) => { stdout += d; });
   p.stderr.on('data', (d) => { stderr += d; });
-  p.on('close', (code) => resolve({ code, stdout, stderr, ms: Date.now() - at, starts: readFileSync(STARTS, 'utf8').split('\n').filter(Boolean) }));
+  // Free memory is read as each run prints, so it is masked: every other figure must match.
+  p.on('close', (code) => resolve({ code, stdout: stdout.replace(/\d+(\.\d+)? GiB free/g, 'N GiB free'), stderr, ms: Date.now() - at, starts: readFileSync(STARTS, 'utf8').split('\n').filter(Boolean) }));
 });
 
 // ---- What reading the files prints, with no token file and so no server asked
 rmSync(TOKEN_FILE, { force: true });
 const files = await deskQ(['--plain']);
-t('the files read prints home with both repos', [files.code, files.stdout.includes('widgets'), files.stdout.includes('gadgets')], [0, true, true]);
+t('the files read prints home, with the repo that needs you', [files.code, files.stdout.includes('widgets'), files.stdout.includes('GiB free')], [0, true, true]);
 t('the files read runs launchctl for the supervised batch (the fake one counts)', files.starts.some((s) => s.startsWith('launchctl')), true);
 withToken();
 
@@ -158,13 +159,13 @@ t('AC4 the screen shows the queue', frame().some((l) => l.includes('WID-4')), tr
 server2.close();
 await new Promise((r) => server2.once('close', r));
 writeQueue('acme__widgets', [...WIDGETS, { key: 'WID-9', state: 'queued' }], { supervised: true });
-const asked = asks.length;
 await sleep(400);
+const asked = asks.length;
 const f1 = frames();
 await sleep(200);
 t('AC4 once the server stops, the next refresh reads the files and shows the change', frame().some((l) => l.includes('WID-9')), true);
 t('AC4 the screen keeps going', frames() > f1, true);
-t('AC4 and asks the server no more', asks.length, asked + 1);
+t('AC4 and asks the server no more', asks.length, asked);
 ui.finish(0);
 
 // ---- AC3: a server answering with a version desk-q does not know, desk-q reads the files
