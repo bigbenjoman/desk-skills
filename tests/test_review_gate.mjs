@@ -1,4 +1,5 @@
 // suite: desk-gate template (verdict marker, CLAUDE.md size, protected-path approval)
+// layer: L2
 // The desk-gate template's checks on fixture reviews and files: the desk-review verdict (clean,
 // missing, stale SHA, each non-zero count, heading mismatch), CLAUDE.md size, and the protected-path
 // approval with its small fix/docs/chore exemption.

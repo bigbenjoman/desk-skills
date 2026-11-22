@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: clears-when (a park says what clears it, and a pass settles it without a model)
+# layer: L3
 # A worker's AUTOPILOT_PARK_CLEARS_WHEN is stored on its park, and queue.mjs clears-when sets one. Each
 # pass checks every recorded condition: a lane C or D park stays for a person, one whose own PR merged
 # is recorded done, any other is requeued, and a check that cannot run leaves the park as it is. The

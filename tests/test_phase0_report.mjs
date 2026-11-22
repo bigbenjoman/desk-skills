@@ -1,4 +1,5 @@
 // suite: phase 0 baseline report and levers row (phase0-report.mjs, desk-env levers)
+// layer: L2
 // covers: desk/bin/phase0-report.mjs desk/bin/desk-env.mjs desk/bin/spawn-worker.sh desk/bin/lever-registry.mjs desk/bin/rework.mjs
 // The report on fixture worker logs (stream-json), fix tries, digest answers, usage readings, spawn
 // records and a stub gh; a main checkout behind origin with uncommitted files that the report leaves

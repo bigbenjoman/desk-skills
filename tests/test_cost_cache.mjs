@@ -1,4 +1,5 @@
 // suite: cost cache (GitHub's month summary per repo, the shared line, and the refresh desk-q starts)
+// layer: L1
 // The cost cache against fixture month summary responses (the usageItems shape GitHub documents for
 // GET /users/{username}/settings/billing/usage/summary), a fixed clock (27 October, 1 and 2 November
 // 2026) and a scratch costs.md, cache dir and lock dir. No check calls GitHub: gh is a function here,

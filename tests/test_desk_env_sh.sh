@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: desk-env.sh config snapshot (desk_cfg, desk_perm, desk_budget read once per script)
+# layer: L2
 # A script that sources desk-env.sh starts node once for its config, not once per value, gets the
 # same answers desk-env.mjs gives, and falls back to node when its inputs change. A shim counts the
 # node runs. Scratch HOME, repo and config.

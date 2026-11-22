@@ -1,4 +1,5 @@
 // suite: handoff briefing write command and lenient readers (raw control characters in strings)
+// layer: L2
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';

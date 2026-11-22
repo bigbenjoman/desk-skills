@@ -1,4 +1,5 @@
 // suite: spine check (a feature child's owned specs, and the specs it must leave alone)
+// layer: L1
 import { mkdirSync, writeFileSync, realpathSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { declarations, scanChild, specsCommand, runSpecs } from '../desk/bin/spine-check.mjs';

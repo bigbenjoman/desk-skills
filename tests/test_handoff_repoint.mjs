@@ -1,4 +1,5 @@
 // suite: handback and requeue re-point a ticket to its open PR's branch (queue.mjs handback and requeue, handoff.mjs repointToPr)
+// layer: L2
 // covers: desk/bin/handoff.mjs desk/bin/queue.mjs
 // Each case is a throwaway origin and worktree, a queue under a throwaway DESK_HOME, and a fake gh whose
 // `pr list` answers with $T/prs.json. Nothing touches your real ~/.claude, state or GitHub.

@@ -1,4 +1,5 @@
 // suite: desk-q Usage view with Claude accounts pinned to folders (DS-528: DS-532, DS-533)
+// layer: L2
 // desk-q's view 6 against a subscriptions file whose Claude rows carry an Account, each Claude folder's
 // .claude.json and probe log, and each Codex login's auth.json, on a fixed clock, under a throwaway HOME,
 // DESK_HOME, DESK_CONFIG_ROOT, DESK_LOCK_DIR and DESK_USAGE_DIR, with fake claude and codex binaries the

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: syntax and shellcheck (every shell script and .mjs)
+# layer: L2
 # Every tracked desk script, one file at a time: `bash -n` on each shell script (by extension or
 # shebang), `node --check` on each .mjs, and, when it is installed, `shellcheck -S warning` on each
 # shell script. DESK_REQUIRE_SHELLCHECK=1 (CI) makes a missing shellcheck a failure. Every suite's CPU
@@ -68,6 +69,17 @@ for f in tests/test_*.sh tests/test_*.mjs; do
   [ -f "$f" ] || continue
   p=$(budget_problem "$f"); if [ -z "$p" ]; then ok "budget $f"; else bad "budget $f: $p"; fi
 done
+
+# Every suite declares exactly one test layer, L1, L2 or L3, in a `# layer:` line (`//` in .mjs) in its
+# first ten lines: scope_sections.mjs --layers names each suite whose line is missing, doubled or unknown.
+printf '#!/usr/bin/env bash\n# suite: x\n' > "$BT/test_nolayer.sh"
+printf '// suite: x\n// layer: L1\n' > "$BT/test_layered.mjs"
+out=$(node "$S/scope_sections.mjs" --layers "$BT/test_nolayer.sh" "$BT/test_layered.mjs" 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && grep -qF "$BT/test_nolayer.sh: declares no layer" <<< "$out" && ! grep -qF test_layered.mjs <<< "$out"; then
+  ok "DS-985 AC2 layer: a suite with no layer line fails and is named"
+else bad "DS-985 AC2 layer: a suite with no layer line is not refused by name (rc $rc): $out"; fi
+if out=$(node "$S/scope_sections.mjs" --layers 2>&1); then ok "layer: every suite declares one"
+else while IFS= read -r l; do bad "layer $l"; done <<< "$out"; fi
 
 if command -v shellcheck >/dev/null 2>&1; then
   for f in "${shells[@]}"; do

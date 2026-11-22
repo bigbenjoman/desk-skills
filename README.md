@@ -1021,6 +1021,12 @@ a budget: its `record` job opens or comments one issue labelled `ci-slow` for th
 and one labelled `ci-flaky` for those that failed and passed their retry, each assigned to the repo's
 owner. Neither is `ci-main-red`.
 
+Every suite declares its test layer in one `# layer: <layer>` line (`//` in `.mjs`) in its first ten
+lines, which `test_lint.sh` requires (`node tests/scope_sections.mjs --layers` names any suite
+without exactly one). `L1` is in process: its cases import modules and start no process. `L2` is one
+process boundary: its cases start a desk script or command each. `L3` is end to end: it runs a pass,
+a batch, the merge driver or the installer through.
+
 ## Using autopilot
 
 ```

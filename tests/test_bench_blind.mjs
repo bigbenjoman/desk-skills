@@ -1,4 +1,5 @@
 // suite: bench blind (diffs exported under random letters, scores joined back to arms)
+// layer: L2
 // covers: desk/bin/bench-rubric.md
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';

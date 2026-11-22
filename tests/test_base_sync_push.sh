@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: base sync: logins, the push row, pre-push hooks, worktrees and baselines
+# layer: L3
 # The base sync, set up by base_sync_setup.sh: a base worker held on its login's limit, the §3
 # batch-base-push row, a refused or raced push, the repo's pre-push hook and env files, a base held in
 # another checkout, and the baseline checks taken at the synced base.

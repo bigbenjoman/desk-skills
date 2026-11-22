@@ -1,4 +1,5 @@
 // suite: linked issues (a GitHub issue closes once every Jira ticket linking it is done)
+// layer: L2
 // linked-issues.mjs's closeLinkedIssues against a fake desk-jira and gh: each ticket's web links, a
 // text search that also finds tickets which only mention the issue, statuses, issue states and merged PRs.
 import { writeFileSync, rmSync } from 'node:fs';

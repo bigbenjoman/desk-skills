@@ -1,4 +1,5 @@
 // suite: no local CI runner (nothing in desk points at the retired runner VM)
+// layer: L2
 // desk no longer ships a CI runner VM, its slots or the memory turns, and nothing points a repo's CI
 // at one. A tracked file that names any of them fails, outside the design records under docs/design/
 // and the blocks marked `retired local CI runner` that remove an old install's files.

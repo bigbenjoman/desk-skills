@@ -1,4 +1,5 @@
 // suite: desk-setup subscription (each repo asked once which subscription runs it, and no rotation question)
+// layer: L1
 // covers: skills/desk-setup/SKILL.md skills/desk-setup/references/step-1-this-computer.md
 // What /desk-setup says about this computer's subscriptions and this repo's Subscription row: the
 // question, its options and descriptions in order, the row each answer saves, the cases that ask

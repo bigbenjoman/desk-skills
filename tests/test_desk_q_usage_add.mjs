@@ -1,4 +1,5 @@
 // suite: desk-q Usage view adds an account or login (a, y, esc and the wait for its sign-in)
+// layer: L1
 // desk-q's view 6 adding a Claude account and a Codex login, under a throwaway HOME, DESK_HOME, DESK_CONFIG_ROOT,
 // DESK_LOCK_DIR, DESK_USAGE_DIR and subscriptions file, with fake claude and codex binaries the account
 // check (desk-env logins check) calls. A test signs a new folder in partway through the wait by writing

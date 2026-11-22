@@ -1,4 +1,5 @@
 // suite: bench report (each arm beside the Phase 0 baseline)
+// layer: L2
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';

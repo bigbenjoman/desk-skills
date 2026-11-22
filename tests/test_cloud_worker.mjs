@@ -1,4 +1,5 @@
 // suite: cloud worker (placement, start, PR lookup and report rows)
+// layer: L1
 // cloud-worker.mjs against the outputs recorded in tests/fixtures/cloud/: placement from triage
 // records, the start parsed from `claude --cloud`, a real start through `script` with no terminal of
 // its own (a fake claude that prints the recording, and one that refuses the way --print does), the

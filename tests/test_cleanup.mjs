@@ -1,4 +1,5 @@
 // suite: desk-cleanup scans (verdicts, whole keys, backups, watchman, instruction files)
+// layer: L2
 // desk-cleanup's scripted scans against fixture worktrees, a fixture PR list and a fake process
 // table: verdicts, whole-key matching, the ignored-file backup on removal, watchman, and the audit of
 // the instruction files a fixture repo and home load at launch. Nothing reads this computer's

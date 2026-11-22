@@ -1,4 +1,5 @@
 // suite: desk-gh (the read-only gh api a worker may run)
+// layer: L2
 // covers: desk/bin/desk-gh.mjs
 // desk-gh read runs `gh api` only when its arguments cannot write: a GraphQL query, or a REST GET.
 // A mutation, a non-GET method, --input, a file field or an unknown flag is refused with exit 1 and

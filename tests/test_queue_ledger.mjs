@@ -1,4 +1,5 @@
 // suite: queue ledger (with the ledger lever on, every queue write appends what it changed to the ticket ledger)
+// layer: L2
 // The pass's writer in process, queue.mjs commands and move-batch.mjs as processes, each against a
 // fixture queue whose ledger sits beside it, with the lever on; and the same writes with it off.
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';

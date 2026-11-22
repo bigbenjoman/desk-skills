@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: claims (a ticket an idle interactive session claimed goes back to the workers)
+# layer: L3
 # queue.mjs park --claimed-by records the session and the claim time. Each pass reads how long the
 # session's transcript under ~/.claude/projects has been still: past config §3b "Release idle claims
 # after (hours)", a ticket whose worktree is clean is requeued with its branch kept and pushed once,

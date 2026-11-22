@@ -1,4 +1,5 @@
 // suite: preflight skip (with the lever on, a preflight is skipped on a passed fingerprint and otherwise runs at low effort)
+// layer: L2
 // budget: 80 DS-943 (about 50 whole spawn-worker.sh preflights, each a dozen node starts; 50-81 s on CI before DS-943's cuts)
 // covers: desk/bin/preflight-fingerprint.mjs desk/bin/spawn-worker.sh desk/bin/preflight-record.mjs desk/bin/model-list.mjs
 // A stub claude on PATH answers the version and account reads from files, and each -p call as the

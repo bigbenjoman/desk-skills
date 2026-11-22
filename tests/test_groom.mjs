@@ -1,4 +1,5 @@
 // suite: desk-groom ticket and epic checks (landed work, duplicates, links, stale text, fields, blockers, epics)
+// layer: L2
 // budget: 40 DS-943 (each scan runs the real desk-jira against a stub server; 35-41 s on CI before DS-943's desk-jira cut)
 // desk-groom's scripted checks against a stub Jira and a fixture repo with its own origin: one case
 // per DS-238 criterion (per ticket) and per DS-239 criterion (per epic), plus the close rule a
