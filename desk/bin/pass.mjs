@@ -100,7 +100,8 @@ import { decideBaseGate } from './pass/base-gate.mjs';
 import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
 import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
-import { leaseCli } from './leases.mjs';
+import { kindMode, leaseCli } from './leases.mjs';
+import { handToWorker as handMemToWorker, memPool, reserveForWorker } from './mem-lease.mjs';
 import { isArchived, prClosed, owesReopen } from './queue-store.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -1905,8 +1906,10 @@ const MIN_AVAIL_GB = GATE.start;
 const availGB = E.availableGiB();
 // A harm signal `desk-env mem watch` said or still sees within its window (swap growth, an OOM kill,
 // a worker's heap OOM or exit 137, a full tmpfs, the WSL VM near its grant) holds spawns as low
-// memory does, whatever avail reads. AUTOPILOT_MIN_AVAIL_GB=0 turns this off with the rest of the gate.
-const HARM = MIN_AVAIL_GB > 0 ? E.harmHold(STATE) : [];
+// memory does, whatever avail reads. AUTOPILOT_MIN_AVAIL_GB=0 turns this off with the rest of the gate,
+// and so does the mem lease kind set off (desk-env lease mode mem), which restores the avail ladder alone.
+const MEM_MODE = (() => { try { return kindMode('mem', LEASE_ENV).mode; } catch { return null; } })();
+const HARM = MIN_AVAIL_GB > 0 && MEM_MODE !== 'off' ? E.harmHold(STATE) : [];
 const harmWhy = HARM.length ? `memory harm: ${HARM.map((h) => h.signal).join(', ')} within the last ${E.HARM_WINDOW_MS / 60000}m (${HARM[0].line})` : null;
 const lowMemory = MIN_AVAIL_GB > 0 && (availGB < MIN_AVAIL_GB || HARM.length > 0);
 // Concurrency: the queue's field (the orchestrator's per-pass ladder decision, or a count the user
@@ -2179,6 +2182,9 @@ const otherRepos = MACHINE_CAP != null || borrowLock || SIBLINGS ? otherQueues({
 // batch started while this pass waited for the lock holds its files here.
 if (MACHINE_CAP != null || borrowLock || SIBLINGS) countElsewhere(otherRepos);
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
+// The memory every worker and peer session has reserved from the machine profile's ceiling
+// (mem-lease.mjs); a worker's share is the ceiling over this repo's worker cap.
+const MEM_POOL = memPool({ env: LEASE_ENV, cap: E.concurrencyLimits().cap, take: !DRY });
 const SLOTS_SNAP = {
   borrowOn: BORROW.on, concurrency, cap: E.concurrencyLimits().cap, running: running.length, spawnable: spawnable.length,
   others, machineCap: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, spawnHeld, lockWhy,
@@ -2193,10 +2199,12 @@ const SLOTS_SNAP = {
   repoCaps: MACHINE_CAP == null ? {} : Object.fromEntries(otherRepos.filter((o) => o.error).map((o) => [o.slug, repoCap(o.slug)])),
   otherRepos, repoBatches: otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) }),
   batch: E.batchName(), lastStart: fresh.last_start ?? null, maintHold: MAINT.hold,
+  // Read under the lock too, so a pass in another repo that reserves after this read waits for it.
+  memPool: MEM_POOL,
 };
 let SLOTS = null;
 runPhase({ name: 'slots', snapshot: () => SLOTS_SNAP, decide: decideSlots, handlers: { slots: (a) => { SLOTS = a; } }, report });
-const { machine: MACHINE, repo: REPO, repoUnlocked, slots, machineLine, repoLine } = SLOTS;
+const { machine: MACHINE, repo: REPO, repoUnlocked, slots, machineLine, repoLine, memLine } = SLOTS;
 const CEILING = E.memoryCeiling();
 
 // ---- batch base ------------------------------------------------------------
@@ -2582,6 +2590,7 @@ function otherQueuePorts() {
 // kind is off, the port is leased to this pass, and leaseToWorker hands it to the worker it spawns.
 const portLeaseLines = new Set();
 const portLeases = new Map();
+const memLeases = new Map();
 let leaseBatch;
 try { leaseBatch = E.batchName(); } catch { leaseBatch = null; }
 async function freePort(own = null, key = own?.key ?? BASE_FIX_KEY) {
@@ -2593,13 +2602,23 @@ async function freePort(own = null, key = own?.key ?? BASE_FIX_KEY) {
   const p = await pickPort({ env: E, taken, inUse: (n) => E.portInUse(n), own: own?.port, floor: E.workerPortFloor(), repo: GH_REPO, batch: leaseBatch, key, take: !DRY });
   for (const l of p.notes) portLeaseLines.add(l);
   portLeases.set(key, p.lease ? { port: p.port, id: p.lease } : null);
+  // Every spawn picks its port here, so its memory share is reserved here too, under this pass's pid.
+  // The report's port lines carry a reservation that could not be taken.
+  const mem = DRY ? {} : reserveForWorker({ env: LEASE_ENV, pool: MEM_POOL, key, label: workerLabel(GH_REPO, leaseBatch, key) });
+  if (mem.why) portLeaseLines.add(`memory: ${key} starts with no memory reservation: ${mem.why}`);
+  memLeases.set(key, mem.id ?? null);
   return p.port;
 }
-// Once spawn-worker.sh has started `key`'s worker, its port lease moves from this pass to the worker's pid.
+// Once spawn-worker.sh has started `key`'s worker, its port lease and memory reservation move from this
+// pass to the worker's pid.
 function leaseToWorker(key, port, spawnOut) {
+  const label = workerLabel(GH_REPO, leaseBatch, key);
+  const mem = memLeases.get(key);
+  const memWhy = handMemToWorker({ env: LEASE_ENV, id: mem, key, share: MEM_POOL.share, workerPid: spawnedPid(spawnOut), label });
+  if (memWhy) portLeaseLines.add(`memory: ${key}'s reservation stays with this pass, which returns it on exit: ${memWhy}`);
   const l = portLeases.get(key);
   if (!l || l.port !== port) return;
-  const why = handToWorker({ env: E, id: l.id, port, workerPid: spawnedPid(spawnOut), label: workerLabel(GH_REPO, leaseBatch, key) });
+  const why = handToWorker({ env: E, id: l.id, port, workerPid: spawnedPid(spawnOut), label });
   if (why) portLeaseLines.add(`ports: ${key}'s lease on port ${port} stays with this pass, which frees it on exit: ${why}`);
 }
 
@@ -4780,7 +4799,7 @@ async function spawnAudit({ key, item, sha, model, task, brief }) {
   if (pre.limit) { preflightHitLimit({ key }, pre.cost, pick.login); return { wait: 'window_tight', why: 'its preflight was refused at the usage limit', preflight_usd }; }
   if (pre.failure) { logPreflight(key, pre.cost); return { error: `preflight failed — ${pre.failure.split('\n')[0]}`, preflight_usd }; }
   const sid = E.uuid();
-  const port = await freePort();
+  const port = await freePort(null, key);
   E.rotateRound(key);
   logPreflight(key, pre.cost);
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, sid, briefPath], {
@@ -4789,6 +4808,7 @@ async function spawnAudit({ key, item, sha, model, task, brief }) {
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return { error: refused, preflight_usd };
+  leaseToWorker(key, port, spawned.out);
   // It takes a slot, as a ticket worker does, so a promotion check try later this pass counts it.
   attempts += 1;
   report.spawned.push(`${key} port=${port} model=${model}${pick.line} (blind audit of PR #${item.pr} at ${sha.slice(0, 12)}); ${preflightNote(pre.cost)}`);
@@ -5337,6 +5357,7 @@ runPhase({
   name: 'verdict lines',
   snapshot: () => {
     const footer = [HEALTH.line, ...(paceBlindLine ? [paceBlindLine] : []), PACE.line, `memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G`, CEILING.line, CONC.line, machineLine];
+    if (memLine) footer.push(memLine);
     if (repoLine) footer.push(repoLine);
     if (BORROW.bad) footer.push(`borrowing: ${BORROW.bad}`);
     if (borrowLine) footer.push(borrowLine);
