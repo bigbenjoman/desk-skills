@@ -27,7 +27,7 @@ Jira project `desk-env list jira-project`, Ticket key pattern `desk-env get tick
 `desk-env list jira-priority`, Other fields `desk-env list jira-other-fields`, Labels
 `desk-env list labels`, In-progress state `desk-env get in-progress-state`, Review state
 `desk-env get review-state` and Done state `desk-env get done-state`. The rows no plain `get` prints
-read with `desk-env get --json <id>`: Workflow `jira-workflow`, desk-jira set up? `desk-jira-setup`,
+read with `desk-env get --json <id>`: §4 Workflow `jira-workflow`, desk-jira set up? `desk-jira-setup`,
 Production `production`, and §4 People's Designer `designer`, QA filers `qa-filers` and Deletes
 tickets `ticket-deleters`; Product owner is `desk-env get product-owner`.
 
