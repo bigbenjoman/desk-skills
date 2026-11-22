@@ -333,7 +333,9 @@ kill "$WPID" 2>/dev/null; mv "$T/spawn-worker.kept" "$T/desk/bin/spawn-worker.sh
 # 6 workers, 8 GB. The peer session and the worker are sleep processes, and spawn-worker.sh prints the
 # worker's pid.
 export DESK_LEASE_DIR="$T/leases-mem" DESK_MACHINE="$T/machine-mem.md"
-mem_kind(){ { printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `mem=%s` | test |\n| `autopilot-concurrency` | `3 / 6` | test |\n' "$1"
+# mem_kind <mode> [<ceiling GB>|none] [<machine cap>|none]: the machine profile, by default 48 GB and 3 / 6.
+mem_kind(){ { printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `mem=%s` | test |\n' "$1"
+  [ "${3:-3 / 6}" = none ] || printf '| `autopilot-concurrency` | `%s` | test |\n' "${3:-3 / 6}"
   [ "${2:-48}" = none ] || printf '| `memory-ceiling-gb` | `%s` | test |\n' "${2:-48}"; } > "$DESK_MACHINE"; }
 memlist(){ node "$B/leases.mjs" list --json 2>/dev/null | jq -c 'select(.kind == "mem")'; }
 new_worker(){ WPID=$( (sleep 300 >/dev/null 2>&1 & echo $!) )
@@ -395,24 +397,22 @@ kill "$WPID" 2>/dev/null
 # DS-992: a worker's share is the ceiling over the machine profile's cap, whatever the repo's own cap:
 # 56 GB over a machine cap of 18 is 3 GB for a repo at 2 / 3 and for one at 8 / 12 alike.
 export DESK_LEASE_DIR="$T/leases-992"; WPIDS=""
-mem_profile(){ { printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `mem=%s` | test |\n| `memory-ceiling-gb` | `56` | test |\n' "$1"
-  [ "$2" = none ] || printf '| `autopilot-concurrency` | `%s` | test |\n' "$2"; } > "$DESK_MACHINE"; }
 repo_cap(){ { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `%s` |\n' "$2"; } > "$T/config-cap-$1.md"; }
 repo_cap small '2 / 3'; repo_cap large '8 / 12'
 # spawn_at <small|large> <KEY>: a pass in a repo with that cap starts KEY's worker.
 spawn_at(){ new_worker; WPIDS="$WPIDS $WPID"; DESK_CONFIG="$T/config-cap-$1.md" spawn_one "$2"; }
 share_of(){ memlist | jq -r --arg k "worker $1" 'select(.key == $k) | .units'; }
-mem_profile on '9 / 18'
+mem_kind on 56 '9 / 18'
 spawn_at small M-20
 check "DS-992 AC1 under a 56 GB ceiling and a machine cap of 18, a worker in a repo capped at 3 reserves 3 GB" '[ "$(field M-20 state)" = "\"running\"" ] && [ "$(share_of M-20)" = 3 ]'
 spawn_at large M-21
 check "DS-992 AC2 a worker in a repo capped at 12 reserves the same 3 GB" '[ "$(field M-21 state)" = "\"running\"" ] && [ "$(share_of M-21)" = 3 ]'
-mem_profile on none
+mem_kind on 56 none
 spawn_at small M-22
 check "DS-992 AC3 with no machine cap in the profile, the share is the ceiling over the repo's own cap of 3" '[ "$(share_of M-22)" = 18 ]'
 # shellcheck disable=SC2086
 kill $WPIDS 2>/dev/null; rm -rf "$DESK_LEASE_DIR"; WPIDS=""
-mem_profile shadow '9 / 18'
+mem_kind shadow 56 '9 / 18'
 for k in F-1 F-2; do spawn_at small "M-$k"; done
 for k in N-1 N-2 N-3 N-4 N-5 N-6; do spawn_at large "M-$k"; done
 check "DS-992 AC4 two workers from a repo capped at 3 and six from one capped at 12 reserve 24 GB, and the lease log holds no mem would-refuse" '[ "$(memlist | jq -s "map(.units) | add")" = 24 ] && ! grep "\"would-refuse\"" "$DESK_LEASE_DIR/leases.log.jsonl" | grep -q "\"kind\":\"mem\""'
