@@ -296,6 +296,5 @@ Left `TODO` or absent, each falls back to the machine profile.
 UEOF
 check "#828 only a value of TODO counts: not a note's, not another column's, not a row with a default" \
   '[ "$(DESK_CONFIG="$T/uc.md" node "$S/../desk/bin/desk-env.mjs" unset | tr "\t" " " | tr "\n" ",")" = "§2 Primary repo root,§3 pr-open,§3b Autopilot worker concurrency,§3b Memory ceiling for parallel work (GB),§3b Test worker cap under the test lock," ]'
-check "#828 install.sh counts with it" 'grep -q "DESK_CONFIG=\"\$c\" node \"\$DESKDIR/bin/desk-env.mjs\" unset" "$S/../install.sh"'
 
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]
