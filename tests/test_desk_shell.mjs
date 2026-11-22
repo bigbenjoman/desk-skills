@@ -12,7 +12,7 @@ import { runInNewContext } from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
 import { homedir } from 'node:os';
-import { createShell, deskPaths, exchange, parseCookie, run, tokenFile, PARTITION } from '../desk/shell/app.mjs';
+import { createShell, deskPaths, exchange, externalUrl, jiraSites, parseCookie, run, tokenFile, PARTITION } from '../desk/shell/app.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -63,10 +63,14 @@ function call(path, headers = {}) {
 
 // ---- a stubbed Electron ------------------------------------------------------------------------
 function fakeElectron({ lock = true } = {}) {
-  const ipc = {}, appEvents = {}, windows = [], cookies = [];
-  let completed = null, ready = null, quit = 0;
+  const ipc = {}, appEvents = {}, windows = [], cookies = [], opened = [], notes = [], badges = [];
+  let completed = null, sending = null, ready = null, quit = 0, permRequest = null, permCheck = null;
   class BrowserWindow {
-    constructor(opts) { this.opts = opts; this.loads = []; this.events = {}; this.minimized = false; this.focused = 0; this.webContents = { on: (ev, fn) => { this.events[ev] = fn; } }; windows.push(this); }
+    constructor(opts) {
+      this.opts = opts; this.loads = []; this.events = {}; this.sent = []; this.minimized = false; this.focused = 0;
+      this.webContents = { id: 40 + windows.length, on: (ev, fn) => { this.events[ev] = fn; }, setWindowOpenHandler: (fn) => { this.openHandler = fn; }, send: (ch, ...a) => { this.sent.push([ch, ...a]); } };
+      windows.push(this);
+    }
     loadURL(u) { this.loads.push(u); }
     loadFile(p, { query } = {}) { this.loads.push(`card:${query.state}`); this.page = p; this.query = query; }
     isMinimized() { return this.minimized; }
@@ -75,9 +79,19 @@ function fakeElectron({ lock = true } = {}) {
     focus() { this.focused += 1; }
     on(ev, fn) { this.events[ev] = fn; }
   }
-  const ses = { partition: null, cookies: { set: async (c) => { cookies.push(c); } }, webRequest: { onCompleted: (filter, fn) => { completed = { filter, fn }; } } };
+  const ses = {
+    partition: null, cookies: { set: async (c) => { cookies.push(c); } },
+    webRequest: { onCompleted: (filter, fn) => { completed = { filter, fn }; }, onBeforeSendHeaders: (filter, fn) => { sending = { filter, fn }; } },
+    setPermissionRequestHandler: (fn) => { permRequest = fn; }, setPermissionCheckHandler: (fn) => { permCheck = fn; },
+  };
+  class Notification {
+    static isSupported() { return true; }
+    constructor(o) { this.o = o; }
+    show() { notes.push(this.o); }
+  }
   const electron = {
-    BrowserWindow,
+    BrowserWindow, Notification,
+    shell: { openExternal: async (u) => { opened.push(u); } },
     session: { fromPartition: (p) => { ses.partition = p; return ses; } },
     ipcMain: { handle: (name, fn) => { ipc[name] = fn; } },
     app: {
@@ -85,16 +99,26 @@ function fakeElectron({ lock = true } = {}) {
       quit: () => { quit += 1; },
       on: (ev, fn) => { appEvents[ev] = fn; },
       whenReady: () => new Promise((r) => { ready = r; }),
+      dock: { setBadge: (s) => { badges.push(s); } },
     },
   };
-  return { electron, ipc, appEvents, windows, cookies, ses, completed: () => completed, ready: () => ready?.(), quits: () => quit };
+  return { electron, ipc, appEvents, windows, cookies, ses, opened, notes, badges, completed: () => completed, sending: () => sending,
+    permRequest: () => permRequest, permCheck: () => permCheck, ready: () => ready?.(), quits: () => quit };
+}
+// What the preload's call looks like to the main process: from this window, on this frame's URL.
+const from = (w, url = `${ORIGIN}/`) => ({ sender: w.webContents, senderFrame: { url } });
+// The headers the window's request to the server goes out with, after the session's listener.
+function sentHeaders(f, w, { url = `${ORIGIN}/api/snapshot`, frame = `${ORIGIN}/`, headers = {} } = {}) {
+  let out = null;
+  f.sending().fn({ url, webContentsId: w.webContents.id, frame: frame === null ? null : { url: frame }, requestHeaders: headers }, (r) => { out = r.requestHeaders; });
+  return out;
 }
 
 // What the window does when it loads a server URL: the request with the cookie its store holds, then
 // the response handed to the session's webRequest listener, as Chromium does.
 async function windowLoads(f, path = '/') {
   const c = f.cookies.at(-1);
-  const r = await call(path, c ? { Cookie: `${c.name}=${c.value}` } : {});
+  const r = await call(path, sentHeaders(f, f.windows.at(-1), { url: `${ORIGIN}${path}`, headers: c ? { Cookie: `${c.name}=${c.value}` } : {} }));
   f.completed()?.fn({ url: `${ORIGIN}${path}`, statusCode: r.status, resourceType: 'mainFrame', responseHeaders: { 'X-Desk-Boot': [r.headers?.['x-desk-boot']] } });
   return r;
 }
@@ -123,8 +147,10 @@ let exchanges = 0;
 const timers = [];
 const signIn = (o, tok) => { exchanges += 1; return exchange(o, tok); };
 const opts = (more = {}) => ({ origin: ORIGIN, preload: join(SHELL, 'preload.cjs'), page: join(SHELL, 'status.html'), token: () => shellToken, signIn,
-  install: () => '~/src/desk-skills', watch: (fn) => { watchers.push(fn); }, setTimer: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimer: () => {}, ...more });
+  install: () => '~/src/desk-skills', watch: (fn) => { watchers.push(fn); }, setTimer: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimer: () => {},
+  jira: async () => ['acme.atlassian.net'], kick: async () => { kicks += 1; }, ...more });
 const watchers = [];
+let kicks = 0;
 const f = fakeElectron();
 const shell = createShell(f.electron, opts());
 const win = shell.open();
@@ -137,11 +163,15 @@ t('the window loads the server, not a card', [win.loads, shell.view], [[`${ORIGI
 const page = await windowLoads(f);
 t('the window\'s request to the server is signed in', page.status, 200);
 
-// The per-load token, through the preload's IPC, to the server's own pages only.
-const load = await f.ipc['desk:load-token']({ senderFrame: { url: `${ORIGIN}/` } });
+// The per-load token goes on the window's own requests to the server, from the server's page only.
+const sent = sentHeaders(f, win, { headers: { 'x-desk-load': 'from-the-page' } });
+const load = sent['X-Desk-Load'];
 const meta = await call('/api/meta', { Cookie: `desk_ui=${f.cookies[0].value}`, 'X-Desk-Load': load ?? '' });
-t('the load token answers the server\'s page and works on /api', [typeof load, load?.length, meta.status], ['string', 64, 200]);
-t('the load token is refused to any other page', [await f.ipc['desk:load-token']({ senderFrame: { url: 'https://example.com/' } }), await f.ipc['desk:load-token']({ senderFrame: { url: 'file:///x/status.html' } })], [null, null]);
+t('the load token is added to the window\'s requests and works on /api, over any the page set', [typeof load, load?.length, meta.status, 'x-desk-load' in sent], ['string', 64, 200, false]);
+t('the load token is not added for another frame, another window, or a request the page could not make',
+  [sentHeaders(f, win, { frame: 'https://example.com/' })['X-Desk-Load'], sentHeaders(f, win, { frame: 'file:///x/status.html' })['X-Desk-Load'],
+    sentHeaders(f, { webContents: { id: 999 } })['X-Desk-Load']], [undefined, undefined, undefined]);
+t('the load token is only for the server', f.sending().filter.urls, [`${ORIGIN}/*`]);
 t('the token never reaches a window load', win.loads.some((u) => u.includes(TOKEN)), false);
 
 // ---- AC2: the sign-in is Desk's alone -----------------------------------------------------------
@@ -177,7 +207,9 @@ t('a changed token file signs in again', [exchanges, win.loads.at(-1), shell.vie
 
 // A refusal straight after signing in, before anything succeeded, does not loop.
 exchanges = 0;
-const refusedFresh = await windowLoads(f, '/api/snapshot'); // the server refuses the new session
+// The server refuses the new session (here, a load token it did not issue).
+const refusedFresh = await call('/api/snapshot', { Cookie: `desk_ui=${f.cookies.at(-1).value}`, 'X-Desk-Load': 'f'.repeat(64) });
+f.completed().fn({ url: `${ORIGIN}/api/snapshot`, statusCode: refusedFresh.status, responseHeaders: { 'X-Desk-Boot': [refusedFresh.headers?.['x-desk-boot']] } });
 await settle();
 t('a refusal straight after signing in shows the card rather than signing in again', [refusedFresh.status, exchanges, shell.view], [401, 0, 'signed-out']);
 // Unless the server restarted between the sign-in and the refusal: that is a new server, so sign in again.
@@ -214,6 +246,9 @@ t('a load another navigation replaced is not a failure', win.query?.attempt, '1'
 await timers.at(-1).fn();
 await settle();
 t('each retry counts its attempt', [shell.view, win.query?.attempt], ['unreachable', '2']);
+t('Try now on the unreachable card starts the server\'s job and tries at once', [await f.ipc['desk:start-server'](from(win, 'file:///x/status.html')), kicks], [true, 1]);
+await settle();
+t('Try now from another window does nothing', [await f.ipc['desk:start-server']({ sender: {}, senderFrame: { url: 'file:///x/status.html' } }), kicks], [false, 1]);
 t('the server starts again', await startServer(), true);
 await timers.at(-1).fn();
 await settle();
@@ -286,15 +321,73 @@ const out = card({ state: 'signed-out', checkout: '~/src/desk-skills' });
 t('the not-signed-in card is the one shown, with the spec\'s copy and the checkout\'s command', [out['signed-out']?.includes("This window isn't signed in to Desk"),
   out['signed-out']?.includes("Re-run install.sh in Terminal. It writes Desk's sign-in again, and this window signs in by itself."), out['install-cmd'], 'unreachable' in out],
   [true, true, 'cd ~/src/desk-skills && ./install.sh', false]);
-await f.ipc['desk:retry']();
-t('Try now only acts on the unreachable card', shell.view, 'signed-out');
+kicks = 0;
+t('Try now only acts on the unreachable card', [await f.ipc['desk:start-server'](from(win, 'file:///x/status.html')), kicks, shell.view], [false, 0, 'signed-out']);
 
-// The preload exposes the two calls and nothing else.
-const exposed = {};
+// ---- the hardened window -----------------------------------------------------------------------
+// AC1: the page reaches no Node, and only the preload's five calls.
+const exposed = {}, invoked = [], listeners = {};
 runInNewContext(readFileSync(join(SHELL, 'preload.cjs'), 'utf8'), {
-  require: (m) => (m === 'electron' ? { contextBridge: { exposeInMainWorld: (k, v) => { exposed[k] = Object.keys(v); } }, ipcRenderer: { invoke: () => null } } : null),
+  require: (m) => (m === 'electron' ? {
+    contextBridge: { exposeInMainWorld: (k, v) => { exposed[k] = v; } },
+    ipcRenderer: { invoke: (ch, ...a) => { invoked.push([ch, ...a]); return null; }, on: (ch, fn) => { listeners[ch] = fn; } },
+  } : null),
 });
-t('the preload exposes desk.loadToken and desk.retryNow only', exposed, { desk: ['loadToken', 'retryNow'] });
+t('the preload exposes desk.badge, notify, openExternal, onDeepLink and startServer only',
+  Object.fromEntries(Object.entries(exposed).map(([k, v]) => [k, Object.keys(v)])), { desk: ['badge', 'notify', 'openExternal', 'onDeepLink', 'startServer'] });
+exposed.desk.badge(3); exposed.desk.notify({ title: 'T', body: 'B', extra: 1 }); exposed.desk.openExternal('https://github.com/x'); exposed.desk.startServer();
+t('each call goes to its own channel, passing only plain values', invoked,
+  [['desk:badge', 3], ['desk:notify', { title: 'T', body: 'B' }], ['desk:open-external', 'https://github.com/x'], ['desk:start-server']]);
+const routes = [];
+exposed.desk.onDeepLink((...a) => routes.push(a));
+listeners['desk:deep-link']({ sender: 'the IPC event' }, '/inbox/x');
+t('a deep link reaches the page as its route alone, never the IPC event', routes, [['/inbox/x']]);
+t('the main process answers only those channels', Object.keys(f.ipc).sort(), ['desk:badge', 'desk:notify', 'desk:open-external', 'desk:start-server']);
+t('no webview tag', prefs.webviewTag, false);
+
+// AC2: the page cannot leave the server or open a window.
+const nav = (ev, url) => { let blocked = false; win.events[ev]({ url, preventDefault: () => { blocked = true; } }, url); return blocked; };
+t('navigating to another site, a file, or another port is blocked',
+  ['https://evil.example/', 'file:///etc/passwd', 'http://127.0.0.1:1/', 'http://localhost:4823/', 'javascript:alert(1)'].map((u) => nav('will-navigate', u)), [true, true, true, true, true]);
+t('a redirect away from the server is blocked', nav('will-redirect', 'https://evil.example/'), true);
+t('navigating within the server is not', [nav('will-navigate', `${ORIGIN}/inbox`), nav('will-redirect', `${ORIGIN}/`)], [false, false]);
+t('no new window opens, for any URL', ['https://github.com/a', `${ORIGIN}/`, 'about:blank'].map((url) => win.openHandler({ url }).action), ['deny', 'deny', 'deny']);
+t('no camera, microphone, location or web notifications; the Copy buttons may write the clipboard',
+  [['media', 'geolocation', 'notifications', 'openExternal', 'clipboard-read', 'clipboard-sanitized-write'].map((p) => { let r = null; f.permRequest()(null, p, (x) => { r = x; }); return r; }),
+    f.permCheck()(null, 'media'), f.permCheck()(null, 'clipboard-sanitized-write')],
+  [[false, false, false, false, false, true], false, true]);
+
+// AC3 and AC4: openExternal opens GitHub and the configured Jira sites, and nothing else.
+await shell.connect();
+await settle();
+const ext = async (url, frame = `${ORIGIN}/`) => [await f.ipc['desk:open-external'](from(win, frame), url), f.opened.at(-1) === url];
+f.opened.length = 0;
+t('a GitHub link opens in the browser', await ext('https://github.com/bigbenjoman/desk-skills/pull/1'), [true, true]);
+t('a configured Jira site\'s link opens in the browser', await ext('https://acme.atlassian.net/browse/DS-721'), [true, true]);
+const refused = ['file:///etc/passwd', 'https://evil.example/', 'http://github.com/x', 'https://github.com.evil.example/', 'https://github.com@evil.example/',
+  'https://user:pw@github.com/', 'https://gist.github.com/x', 'https://other.atlassian.net/browse/X', 'javascript:alert(1)', 'not a url', 42, { href: 'https://github.com/' }];
+const before2 = f.opened.length;
+t('any other URL opens nothing', [await Promise.all(refused.map((u) => f.ipc['desk:open-external'](from(win), u))), f.opened.length - before2], [refused.map(() => false), 0]);
+t('a page that is not the server\'s cannot open even a GitHub link',
+  [await f.ipc['desk:open-external'](from(win, 'file:///x/status.html'), 'https://github.com/'), await f.ipc['desk:open-external']({ sender: {}, senderFrame: { url: `${ORIGIN}/` } }, 'https://github.com/'), f.opened.length - before2], [false, false, 0]);
+
+// The badge and notifications, from the server's page only, with plain values only.
+t('the badge shows a count, and clears at 0', [await f.ipc['desk:badge'](from(win), 25), await f.ipc['desk:badge'](from(win), 0), f.badges], [true, true, ['25', '']]);
+t('the badge refuses anything but a count, or another page', [await f.ipc['desk:badge'](from(win), -1), await f.ipc['desk:badge'](from(win), '9'), await f.ipc['desk:badge'](from(win, 'https://evil.example/'), 9), f.badges.length], [false, false, false, 2]);
+t('a notification shows its title and body', [await f.ipc['desk:notify'](from(win), { title: ' Parked ', body: 'DS-1 needs you' }), f.notes], [true, [{ title: 'Parked', body: 'DS-1 needs you' }]]);
+t('a notification with no title, or from another page, shows nothing', [await f.ipc['desk:notify'](from(win), { body: 'x' }), await f.ipc['desk:notify'](from(win, 'file:///x'), { title: 'x' }), f.notes.length], [false, false, 1]);
+t('a long notification is cut short', (await f.ipc['desk:notify'](from(win), { title: 'x'.repeat(500), body: 'y'.repeat(5000) }), [f.notes.at(-1).title.length, f.notes.at(-1).body.length]), [120, 500]);
+
+// The Jira sites come from each configured repo's config, through desk-env.
+const cfgRoot = join(T, 'jira-config');
+for (const [slug, site] of [['acme__a', 'acme.atlassian.net'], ['acme__b', 'https://Other.Example.com/'], ['acme__c', 'none']]) {
+  mkdirSync(join(cfgRoot, 'repos', slug), { recursive: true });
+  writeFileSync(join(cfgRoot, 'repos', slug, 'config.md'), `## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Jira site | \`${site}\` |\n`);
+}
+t('each configured repo\'s Jira site, from desk-env', await jiraSites({ configRoot: cfgRoot, deskHome: T }, join(ROOT, 'desk', 'bin', 'desk-env.mjs')), ['acme.atlassian.net', 'other.example.com']);
+t('no desk-env to read: no Jira site', await jiraSites({ configRoot: cfgRoot, deskHome: join(T, 'nowhere') }), []);
+t('externalUrl matches a Jira site by its whole host', [await externalUrl('https://acme.atlassian.net/x', async () => ['acme.atlassian.net']), await externalUrl('https://acme.atlassian.net.evil.example/x', async () => ['acme.atlassian.net'])],
+  ['https://acme.atlassian.net/x', null]);
 
 // ---- AC4: one copy only ------------------------------------------------------------------------
 const second = fakeElectron({ lock: false });
