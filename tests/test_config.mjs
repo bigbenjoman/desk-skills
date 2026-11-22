@@ -686,6 +686,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'harm-tmpfs|3b|tmpfs /tmp size that holds spawns (GB)', // DS-848
     'harm-vmmem|3b|WSL VM share of its grant that holds spawns (%)', // DS-848
     'jira-field-defaults|4|Field defaults',
+    'proposal-labels|4|Priority proposal labels',
   ];
   const sorted = (a) => [...a].sort().join('\n');
   const rowsNow = Object.entries(CONFIG_ROWS).map(([id, r]) => [id, r.section, r.row, ...(r.table ? ['table'] : [])].join('|'));

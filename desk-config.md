@@ -348,6 +348,7 @@ such thing.
 | Labels | `TODO` (labels the skills may apply, or `any`) |
 | Person-step labels | `none` (labels that mark a ticket as a step only you take, one span each, e.g. `` `ben-step` `operator-task` ``; or `none`. Autopilot admits a ticket carrying one parked as your step, so no worker spawns on it, and a ticket it blocks is built now and merged only once it is Done) |
 | Person-input labels | `none` (labels that mark a ticket as a step only you take whose output the build reads (a fixture, a recorded response, a key), one span each, e.g. `` `ben-input` ``; or `none`. Autopilot admits a ticket carrying one parked as your step, as Person-step labels does, but a ticket it blocks waits to be built until it is Done. A ticket carrying both is an input) |
+| Priority proposal labels | `none` (patterns for a label proposing a new priority that a person promotes or rejects, one span each, its first group the value proposed, e.g. `` `lp-proposed-(p[0-9])` ``; or `none`. Triage records a ticket carrying one, or a description line asking a person to promote it to a value or reject it, and desk-needs-you lists it as one item that holds no work; the answer sets the §4 Priority field, takes the label off and comments on the ticket) |
 | `desk-jira` set up? | `TODO` (`yes` / `no`; reads the email and token in this repo's credentials folder) |
 
 ### GitHub and CI

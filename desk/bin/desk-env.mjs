@@ -739,6 +739,12 @@ export function personStepLabels(slug = null) { return labelsRow('person-step-la
 // §4 Person-input labels: a step only the person takes that produces something the build reads (a
 // fixture, a recorded response, a key), which holds the build of a ticket it blocks.
 export function personInputLabels(slug = null) { return labelsRow('person-input-labels', slug); }
+// §4 Priority proposal labels: patterns for a label proposing a new priority, which a person promotes or
+// rejects (priority-proposal.mjs), as written: a pattern is not lowercased, so its groups stay as given.
+export function proposalLabelPatterns(slug = null) {
+  try { return [].concat((slug == null ? configValues('proposal-labels') : repoConfigValues(slug, 'proposal-labels')) ?? []).filter((v) => v && !isNone(v)).map((v) => String(v).trim()); }
+  catch { return []; }
+}
 
 // §4 Required fields for an issue type, or for every type with none named: {need: [field id, in rule order],
 // malformed: [item that is not `<Type>[, <Type>…]: <field>[, <field>…]`]}. No config reads as no rules. The
