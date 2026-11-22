@@ -100,6 +100,7 @@ export const ghLogin = () => run('gh', ['api', 'user', '--jq', '.login']).trim()
 const vercelGet = async (path, token) => JSON.parse(await vercelText(path, token));
 
 // -> { auth, teams: [{ id, slug, name, plan, projects: [name] }], error }
+/** @returns {Promise<{ auth: string, teams: { id: string, slug: string, name: string, plan: string, projects: string[] }[], error: string | null }>} */
 export async function detectVercel() {
   const auth = vercelAuthPath();
   const token = vercelToken(auth);

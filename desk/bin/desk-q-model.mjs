@@ -1,3 +1,4 @@
+// @ts-check
 // desk-q's model: everything desk-q does without a terminal. It reads the repo configs, each repo's
 // queue.json, its orchestrator heartbeats and its triage records, and builds every view from them: the
 // screens' lines (the *Parts functions, drawn by desk-q.mjs or printed as plain text), the same views as
@@ -857,6 +858,7 @@ const supervisorOff = (r) => r.run?.agent === 'off';
 // How many of the repo's tickets and unmerged PRs are in a shown state.
 const count = (r, k) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === k).length;
 // A batch's base conflict fix holds a worker while it runs: the pass counts it against both caps.
+/** @type {(r: any) => number} */
 const baseFixes = (r) => (r.batches ? r.batches.reduce((a, b) => a + baseFixes(b), 0) : r.q?.base_fix?.running ? 1 : 0);
 // The workers a repo or batch has running: its running tickets and its base conflict fix.
 const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
@@ -864,6 +866,7 @@ const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
 // machineBudget): a batch whose queue cannot be read counts at its repo's cap, the most it could run.
 // A scoped load's other batches (loadRepos `others`) count too.
 const withOthers = (repos) => [...repos, ...(repos.find((r) => r.machine)?.machine.others ?? [])];
+/** @type {(repos: any[]) => number} */
 export const machineRunning = (repos) => withOthers(repos).reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
 // A batch's merge driver while it holds its lock: how long it has held it (the lock's mtime, set as it
 // writes its pid) and the last line of its log. Null once it has stopped, which stallOf's note covers.
@@ -922,6 +925,7 @@ const lineLogin = () => { const own = ownLogin(); return own?.configDir && other
 // True when the subscriptions file pins Claude folders to accounts; false with none, or one unreadable.
 const pinnedFile = () => { try { return multiAccount(readSubscriptions(subscriptionsPath())); } catch { return false; } };
 const pinnedOwn = (own) => !!own && !own.configDir && pinnedFile();
+/** @param {any[]} repos @param {{ now?: number }} [opts] */
 export function probesDue(repos, { now } = {}) {
   const own = ownLogin();
   const others = otherLogins(own);
@@ -1080,6 +1084,7 @@ function undatedWhy(r, F, x) {
 // When the repo's last dated ticket ships.
 // A repo's batches together (DS-357 AC2): the latest of their dates, or "no date yet" if any batch
 // with work left has none. A repo with one batch left says what that batch says ("no history" too).
+/** @returns {string} */
 function queueDone(r, now, checkin) {
   if (r.batches) {
     const left = r.batches.filter((b) => { const F = forecastOf(b, { now, checkin }); return F && !F.idle; });
@@ -1831,7 +1836,7 @@ const AWS_SERVICE = {
 };
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 // "2027-03-31" -> "31 Mar 2027"; anything else as it is.
-const ymdText = (s) => { const m = /^(\d{4})-(\d\d)-(\d\d)$/.exec(s ?? ''); return m ? `${Number(m[3])} ${MONTHS[m[2] - 1]} ${m[1]}` : String(s ?? ''); };
+const ymdText = (s) => { const m = /^(\d{4})-(\d\d)-(\d\d)$/.exec(s ?? ''); return m ? `${Number(m[3])} ${MONTHS[Number(m[2]) - 1]} ${m[1]}` : String(s ?? ''); };
 
 // A name's AWS lines for `period`, its profiles' merged by service, largest use first and tax last.
 const awsLinesOf = (cache, name, period) => [...(awsByName(cache?.aws, period)[name]?.lines ?? [])]
@@ -1850,6 +1855,7 @@ function awsParts(lines, mine) {
   const most = (k, f = usd) => Math.max(f(sum(k) / 100).length, ...lines.map((l) => f(l[k]).length));
   const uw = Math.max(9, most('used') + 3), kw = Math.max(11, most('credits', neg) + 3), aw = Math.max(11, most('charged') + 3);
   const lead = (l) => [[`  ${pad(l.plain, ww)}`, null], [pad(l.own, nw), GREY]];
+  /** @type {any[]} */
   const out = [''];
   if (!credited) {
     out.push(bold(`  ${pad('SERVICE', ww)}${pad('AWS NAME', nw)}${rpad('CHARGED', aw)}`),
@@ -1940,6 +1946,7 @@ const gateGiB = (repos) => (repos.length ? Math.max(...repos.map((r) => spawnGat
 const LAST_W = 26;
 // ALL DONE BY fits "passes stopped".
 const QD_W = 14;
+/** @returns {[text: string, sgr: string]} */
 function lastPass(r, now) {
   const age = r.last == null ? null : now - r.last;
   if (supervisorOff(r)) return [`✕ supervisor off${age == null ? '' : ` · ${since(age)}`}`, FAIL];
@@ -2038,6 +2045,7 @@ function leversLine(p, now) {
   return { ...segLine(segs), link: 'levers' };
 }
 // The Levers line as plain text, less its arrow.
+/** @type {(p: any, now: number) => string} */
 const leversText = (p, now) => leversLine(p, now).line.replace(new RegExp(`${LEVERS_ARROW}$`), '');
 
 // What opening the page says, once any rebuild has ended: `p` as it is now, `before` the page's build
@@ -2064,6 +2072,7 @@ const leversDue = (p) => !p.page || p.old || !!leversFault(p);
 // shown when the pass runs on desk-q's login. Weekly pacing per login is not built yet. `logins` is
 // loginsNow's.
 const NO_READING = { five_hour: null, seven_day: null, at: null, none: [] };
+/** @param {RowRef[]} repos @param {number} now @param {RowRef[]} [shown] */
 export function usageOf(repos, now, shown = repos) {
   const logins = loginsNow(repos, now);
   const own = readUsage({ dirs: stateDirs({ self: usageDir() }), login: lineLogin(), now });
@@ -2247,7 +2256,7 @@ function usageTable(repos, now, checked = null) {
   const listed = claudeLogins();
   const gone = multi ? readSubscriptions(subscriptionsPath()).logins.filter((l) => l.tool === 'claude' && l.account && !listed.some((o) => o.dir === l.dir)) : [];
   const claude = [...listed, ...gone].map((l) => ({ tool: 'claude', login: l, plan: accountOf(l).plan, reading: readUsage({ dirs, login: l, now }), out: holdOut(repos, l, now),
-    workers: runningOn(repos, l), check: checkOf(l), use: useOf(l), multi }));
+    workers: runningOn(repos, l), check: checkOf(l), use: useOf(l), multi, limit: null }));
   const codex = codexLogins().map((l) => codexReading(l, now)).map((x) => ({ tool: 'codex', login: x.login, plan: accountOf(x.login).plan, reading: x.claude,
     out: x.until != null ? { at: x.until, type: x.reading.five_hour?.limited ? 'five_hour' : 'seven_day' } : null, workers: null, check: checkOf(x.login), use: useOf(x.login) }));
   // One login of a tool is its default, whatever the file says.
@@ -2603,6 +2612,7 @@ function quietNotes(shown) {
 // Each old desk code note, keyed by the batch it shows under. The supervisor agent runs per repo, so
 // each kind (supervisor, merge driver) is one note on the first batch of a repo that has it, and where
 // several repos have it, one note naming them all, on the first one's batch.
+/** @type {[kind: string, one: string, many: (repos: string) => string, fix: string | null][]} */
 const OLD_CODE = [
   ['supervisor', 'the supervisor runs old desk code. ', (repos) => `the supervisors of ${repos} run old desk code. `, 'Run ./install.sh in desk-skills.'],
   // The supervisor restarts its driver on the installed code by itself, so the driver's note has no fix.
@@ -2706,12 +2716,13 @@ function runsOnOf(claude) {
 // then DONE goes, then MERGING, whose counts move into the notes, then RUNS ON (`runsW` wide, or none).
 // DONE counts merged tickets only. NEEDS YOU is needsCount's, the count /desk-needs-you lists, with any
 // put off after it, and widens to fit.
+/** @type {[head: string, group: string, width: number][]} */
 const NUM_COLS = [['RUN', 'running', 4], ['READY', 'ready', 7], ['MERGING', 'merging', 9], ['WAIT', 'waiting', 6], ['NEEDS YOU', 'needs', 11], ['DONE', 'done', 6]];
 const needsCell = ({ shown, putOff }) => `${shown}${putOff ? ` (+${putOff} put off)` : ''}`;
 function homeLayout(list, w, width, now, checkin, needs, runsW = null) {
   const ok = list.filter((r) => !r.error);
   const needsW = Math.max(11, ...ok.map((r) => needsCell(needs.get(r)).length + 2));
-  const numCols = NUM_COLS.map((c) => (c[1] === 'needs' ? [c[0], c[1], needsW] : c));
+  const numCols = NUM_COLS.map((c) => /** @type {typeof c} */ (c[1] === 'needs' ? [c[0], c[1], needsW] : c));
   const workers = (r, slot) => `  ${r.workers == null ? '—' : `${workersRunning(r)} of ${r.workers}`} · cap ${r.cap}${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}${slot && triagingText(r) ? ` · ${triagingText(r)}` : ''}`;
   const lastFit = Math.max(24, ...ok.map((r) => lastPass(r, now)[0].length + 2)), qdFit = Math.max(12, ...ok.map((r) => queueDone(r, now, checkin).length));
   const wide = { lastW: LAST_W, qdW: QD_W, drop: [], runsW }, fit = { lastW: lastFit, qdW: qdFit, slot: false, runsW };
@@ -2723,6 +2734,7 @@ function homeLayout(list, w, width, now, checkin, needs, runsW = null) {
   return { ...l, cols: numCols.filter(([h]) => !l.drop.includes(h)), workers: (r) => workers(r, l.slot) };
 }
 
+/** @param {any[]} repos @param {{ all?: boolean, now?: number, avail?: number, cap?: number | null, gate?: number, perWorker?: number, interactive?: boolean, checkin?: boolean, width?: number | null, badge?: string, pinUsage?: boolean, costs?: any, cache?: any }} [opts] */
 function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false, width = null, badge = '', pinUsage = false, costs, cache } = {}) {
   // One row per repo, adding up its batches on screen.
   const shown = shownRepos(repos, all), list = byRepo(shown);
@@ -3000,6 +3012,7 @@ const NO_RUNNER_MS = 10 * MINUTE;
 const checkFailed = (c) => c.status === 'completed' && FAILED.has(c.conclusion);
 const startedMs = (c) => Date.parse(c.started ?? '') || null;
 // "tests (macos-latest)" waits for a macOS runner; a check with no runner label is named itself.
+/** @type {[RegExp, string][]} */
 const OS_NAMES = [[/macos/i, 'macOS'], [/windows/i, 'Windows'], [/ubuntu|linux/i, 'Linux']];
 const runnerOf = (name) => {
   const m = /\(([^)]*)\)\s*$/.exec(name);
@@ -3191,7 +3204,9 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     // A session's asks need the person with no batch yet: each is a row, as in a batch's Queue.
     const nc = needsCount(r), nw = width == null ? NEED_W : Math.max(NEED_MIN, Math.min(NEED_W, width - ROW_LEAD - TITLE_MIN));
     const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD - nw);
-    const groups = [['Needs you', 'needs', nc.items], ['Put off', PUT_OFF, nc.offItems]].filter(([, , xs]) => xs.length);
+    /** @type {[name: string, k: string, xs: any[]][]} */
+    const both = [['Needs you', 'needs', nc.items], ['Put off', PUT_OFF, nc.offItems]];
+    const groups = both.filter(([, , xs]) => xs.length);
     if (!groups.length) return { head: [setUp, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
     const rows = groups.flatMap(([name, k, xs]) => [segRow(null, [[`  ${name}`, k === PUT_OFF ? GREY : BOLD], [` · ${xs.length}`, GREY]], null), ...xs.map(itemRowOf(r, k, { now, nw, tw }))]);
     return { head: [...(title ? [`desk-q › ${r.name} · ${clock(now)}`] : []), setUp, '', bold(`  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', STATE_W)}${pad('WHAT IT NEEDS', nw)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`)],
@@ -3826,20 +3841,116 @@ function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () =
 // ---- --json: the same views as data ------------------------------------------------------------
 // Each view's figures, read by the same functions its screen draws them with, beside the screen's
 // plain lines (`lines`). Every input carries its age, as levers-view.mjs's view.json does.
+// The typedefs below are the views' JSON as desk-ui reads it; CI's type check holds the code to them.
+
+/** @typedef {{ as_of: string | null, age_s: number | null }} InputAge */
+/** @typedef {InputAge & { batch: string }} QueueAge */
+/** @typedef {{ kind: string, [k: string]: unknown }} RowOpen */
+/** @typedef {{ head: string[], rows: { id: string | null, line: string, open: RowOpen | null }[], foot: string[] }} PlainLines */
+/**
+ * Every view's envelope: the format version, the view's name, when it was built, each input's age and
+ * the screen's plain lines.
+ * @template {string} V
+ * @template I
+ * @typedef {{ v: number, view: V, generated_at: string, inputs: I, lines: PlainLines }} JsonEnvelope
+ */
+/** @typedef {{ utilization: number, resetsAt: number }} UsageWindow */
+/** @typedef {{ five_hour: UsageWindow | null, seven_day: UsageWindow | null, at: number | null, none: string[] }} UsageReading */
+/** @typedef {{ reading: UsageReading, running: number, held: boolean, held_by: string[] }} UsageFigures */
+/** @typedef {{ id: string, slug: string, name: string }} RepoIdentity */
+/**
+ * A repo row (repoRow) as homeJson and repoFigures read it: only the fields their JSON copies, so a
+ * field computed from the wrong one, or from one not listed here, fails the check.
+ * @typedef {RepoIdentity & { error: string | null, live: boolean, last: number | null, done: number,
+ *   workers: number | null, cap: number }} Batch
+ */
+/**
+ * Any loaded batch or repo row, as usageOf reads it: its name typed, the rest open.
+ * @typedef {{ slug: string, name: string, [k: string]: any }} RowRef
+ */
+/**
+ * @typedef {RepoIdentity & { error: null, live: boolean, last_pass_at: string | null, last_pass: string,
+ *   running: number, ready: number, merging: number, waiting: number, needs_you: number, put_off: number, done: number,
+ *   workers: { running: number, allowed: number | null, cap: number, ready_no_slot: number },
+ *   all_done_by: string, wait_cause: string | null }} RepoFigures
+ */
+/** @typedef {RepoIdentity & { error: string }} RepoFault */
+/**
+ * @typedef {{ state: string, text: string, fault: string | null, page: string | null, built: InputAge,
+ *   figures: Record<string, unknown> | null }} LeversFigures
+ */
+/**
+ * @typedef {JsonEnvelope<'home', { queues: QueueAge[], usage: InputAge, levers: InputAge, memory: InputAge }> & {
+ *   needs_you: { count: number, put_off: number, oldest_at: string | null },
+ *   machine: { running: number, cap: number | null, room: number, avail_gib: number },
+ *   levers: LeversFigures, usage: UsageFigures, repos: (RepoFigures | RepoFault)[], no_batch: string[] }} HomeView
+ */
+/**
+ * @typedef {{ key: string, group: string | null, state: string | null, pos: number | null, placed: boolean,
+ *   lane: string | null, pr: number | null, line: string }} RepoTicket
+ */
+/**
+ * @typedef {JsonEnvelope<'repo', { queues: QueueAge[], usage: InputAge }> & {
+ *   repo: RepoFigures | (RepoIdentity & { error: string | null }), tickets: RepoTicket[], usage: UsageFigures }} RepoView
+ */
+/**
+ * @typedef {JsonEnvelope<'ticket', { queues: QueueAge[] }> & { ticket: { key: string, repo: string, state: string | null,
+ *   group: string | null, pos: number | null, lane: string | null, stage: number | string | null, pr: number | null } }} TicketView
+ */
+/**
+ * @typedef {{ tool: string, label: string | null, plan: string | null, default: boolean, pinned: string[],
+ *   workers: number | null, reading: UsageReading | null, read: InputAge, limit: { type: string, at: number | null } | null }} UsageLogin
+ */
+/**
+ * @typedef {JsonEnvelope<'usage', { usage: (InputAge & { login: string | null })[] }> & {
+ *   logins: UsageLogin[], following: string[] }} UsageView
+ */
+/**
+ * @typedef {{ name: string, total: number | null, by: Record<string, number>, credits: number,
+ *   cantRead: { account?: string, supplier?: string, text?: string } | null, free: boolean, freePlan: boolean,
+ *   reads: { supplier: string, at: string | number | null, failedAt: string | number | null }[] }} CostName
+ */
+/**
+ * The month the charges are for (cost-cache.mjs fullMonth): `from` and `to` are YYYY-MM-DD.
+ * @typedef {{ year: number, month: number, from: string, to: string }} CostPeriod
+ */
+/**
+ * @typedef {{ period: CostPeriod, total: number, suppliers: { supplier: string, total: number }[], names: CostName[],
+ *   shared: number | null, credits: number }} CostCharges
+ */
+/**
+ * @typedef {JsonEnvelope<'costs', { costs: (InputAge & { supplier: string })[] }> & {
+ *   name: string | null, charges: CostCharges | { period: CostPeriod, name: CostName | null } | null }} CostsView
+ */
 
 export const JSON_VERSION = 1;
 const JSON_VIEWS = ['home', 'repo', 'ticket', 'usage', 'costs'];
 const msOf = (t) => (typeof t === 'number' ? (Number.isFinite(t) ? t : null) : t == null ? null : ((n) => (Number.isNaN(n) ? null : n))(Date.parse(t)));
 const isoOf = (t) => ((ms) => (ms == null ? null : new Date(ms).toISOString()))(msOf(t));
 // When an input was read, and how many seconds old that is now.
+/** @type {(t: number | string | null | undefined, now: number) => InputAge} */
 export const inputAge = (t, now) => ((ms) => ({ as_of: isoOf(ms), age_s: ms == null ? null : Math.max(0, Math.round((now - ms) / 1000)) }))(msOf(t));
 export const mtimeOf = (f) => { try { return statSync(f).mtimeMs; } catch { return null; } };
+/** @type {(s: any) => PlainLines} */
 const plainParts = (s) => ({ head: s.head.map(textOf), rows: s.rows.map((x) => ({ id: x.id ?? null, line: textOf(x), open: x.open ?? null })), foot: s.foot.map(textOf) });
+/**
+ * @template {string} V
+ * @template I
+ * @template B
+ * @param {V} view
+ * @param {number} now
+ * @param {I} inputs
+ * @param {B} body
+ * @param {any} parts
+ * @returns {JsonEnvelope<V, I> & B}
+ */
 const envelope = (view, now, inputs, body, parts) => ({ v: JSON_VERSION, view, generated_at: new Date(now).toISOString(), inputs, ...body, lines: plainParts(parts) });
 // Each batch's queue, by its file's last write.
+/** @type {(list: any[], now: number) => QueueAge[]} */
 const queueAges = (list, now) => list.flatMap((r) => r.batches ?? [r]).filter((b) => b.queuePath).map((b) => ({ batch: b.word ?? b.name, ...inputAge(mtimeOf(b.queuePath), now) }));
 
 // A repo row's figures, each the home table's column of the same name.
+/** @param {Batch} r @param {ReturnType<typeof needsCount>} needs @param {number} now @param {boolean} checkin @returns {RepoFigures | RepoFault} */
 function repoFigures(r, needs, now, checkin) {
   const id = { id: r.id, slug: r.slug, name: r.name };
   if (r.error) return { ...id, error: r.error };
@@ -3852,6 +3963,7 @@ function repoFigures(r, needs, now, checkin) {
 
 // The Levers line's figures: `state` is the line's (`fault`, `unbuilt`, `stale`, else the view's own),
 // `figures` the view.json line it reads, `text` the line as home shows it.
+/** @returns {LeversFigures} */
 export function leversJson(p, now) {
   const fault = leversFault(p);
   const state = fault ? 'fault' : !p.page ? 'unbuilt' : p.stale ? 'stale' : p.view.line.state;
@@ -3859,12 +3971,19 @@ export function leversJson(p, now) {
     page: p.page ? p.file : null, built: inputAge(p.builtAt, now), figures: p.view?.line ?? null };
 }
 
+/** @type {(u: ReturnType<typeof usageOf>) => UsageFigures} */
 const usageJson = (u) => ({ reading: u.reading, running: u.running, held: u.held, held_by: u.heldBy });
 
+/**
+ * @param {Batch[]} repos
+ * @param {{ all?: boolean, now?: number, avail?: number, cap?: number | null, gate?: number, perWorker?: number, checkin?: boolean }} [opts]
+ * @returns {HomeView}
+ */
 export function homeJson(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), checkin = false } = {}) {
-  const shown = shownRepos(repos, all), list = byRepo(shown);
+  const shown = shownRepos(repos, all), list = /** @type {Batch[]} */ (byRepo(shown));
   const ok = list.filter((r) => !r.error);
-  const needs = new Map(ok.map((r) => [r, needsCount(r)]));
+  /** @type {Map<Batch, ReturnType<typeof needsCount>>} */
+  const needs = new Map(ok.map((r) => /** @type {[Batch, ReturnType<typeof needsCount>]} */ ([r, needsCount(r)])));
   const running = machineRunning(repos);
   const levers = pageState({ now });
   const usage = usageOf(repos, now, list);
@@ -3881,6 +4000,7 @@ export function homeJson(repos, { all = false, now = Date.now(), avail = availab
 }
 
 // One repo's or batch's Queue: its home figures, and each ticket row under the group the screen shows it in.
+/** @returns {RepoView} */
 export function repoJson(repos, r, { now = Date.now(), checkin = false } = {}) {
   const usage = usageOf(repos, now, [r]);
   const parts = repoParts(r, { now, usage, title: true });
@@ -3897,6 +4017,7 @@ export function repoJson(repos, r, { now = Date.now(), checkin = false } = {}) {
   return envelope('repo', now, { queues: queueAges([r], now), usage: inputAge(usage.reading?.at, now) }, { repo, tickets, usage: usageJson(usage) }, parts);
 }
 
+/** @returns {TicketView} */
 export function ticketJson(r, key, { now = Date.now() } = {}) {
   const x = [...(r.rows ?? []), ...(r.prs ?? [])].find((y) => y.t.key === key);
   const t = x?.t ?? r.q?.tickets?.[key] ?? null;
@@ -3905,6 +4026,7 @@ export function ticketJson(r, key, { now = Date.now() } = {}) {
 }
 
 // Every Claude and Codex login on this computer, as the Usage view lists them.
+/** @returns {UsageView} */
 export function usageViewJson(repos, { now = Date.now() } = {}) {
   const u = usageTable(repos, now);
   const login = (x) => ({ tool: x.tool, label: loginLabel(x.login), plan: x.plan ?? null, default: !!x.use?.isDefault, pinned: x.use?.pinned ?? [],
@@ -3914,6 +4036,7 @@ export function usageViewJson(repos, { now = Date.now() } = {}) {
 }
 
 // This month's charges by name, or one name's by supplier, from the cost cache.
+/** @returns {CostsView} */
 export function costsJson(repos, v, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache() } = {}) {
   const c = costs.exists && costs.entries.length ? chargesByName({ cache: forCosts(cache, costs), names: [...new Set(costs.entries.map((e) => e.name))] }) : null;
   const inputs = { costs: SUPPLIERS.filter((s) => cache?.[s]).map((s) => ({ supplier: s, ...inputAge(cache[s].at, now) })) };

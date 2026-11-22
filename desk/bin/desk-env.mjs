@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ts-check
 // Shared resolver for the desk/bin scripts: one place that turns "who am I, where is the repo,
 // what am I allowed to do" into values, so no script hardcodes a person or a machine.
 //
@@ -847,6 +848,7 @@ export function commandItemProblem(cmd) {
 }
 
 // env -> config -> fallback. Identity-shaped values have no fallback and fail loudly.
+/** @param {{ env?: string, id?: string, fallback?: any, identity?: boolean }} opts */
 export function resolve({ env, id, fallback, identity = false }) {
   const fromEnv = env ? process.env[env] : undefined;
   if (!unset(fromEnv)) return expandHome(fromEnv);
@@ -1010,6 +1012,7 @@ export function codexReview() {
 
 // Which tier a ticket's worker runs on, from its triage: a lane A or E ticket sized XS or S is
 // `standard`; lane B, size M and an unsized ticket are `high`.
+/** @param {{ lane?: string | null, size?: string | null }} [triage] */
 export function modelTier({ lane, size } = {}) {
   return ['A', 'E'].includes(String(lane ?? '').toUpperCase()) && ['XS', 'S'].includes(String(size ?? '').toUpperCase())
     ? 'standard' : 'high';
@@ -2070,11 +2073,20 @@ function logRowChange(row, LL) {
 //     parsed   the value as the row's type reads it, null where value is null or errors is not empty
 //     default  the schema's default, never substituted into value; null where it has none
 //     errors   [{ item, error, fatal }]: each item that does not fit the type, and list's refusal (fatal) }
+/** @typedef {{ item: string | null, error: string, fatal: boolean }} RowError */
+/**
+ * @typedef {{ section: string, label: string, kind: string, type: string, set: boolean,
+ *   source: 'environment' | 'repo' | 'machine' | 'default' | 'unset', value: string | null, items: string[] | null,
+ *   parsed: unknown, default: unknown, errors: RowError[] }} ConfigRowJson
+ */
+/** @typedef {ConfigRowJson & { id: string }} ConfigRowRead */
 const ROW_ENTRY = new Map(ROWS.map((e) => [e.id, e]));
 const rowHead = (e) => ({ id: e.id, section: e.section, label: e.label, kind: e.kind, type: e.type });
+/** @returns {ConfigRowRead} */
 function readRow(id) {
   return PERMISSION_KEYS[id] ? permRow(id) : valueRow(id);
 }
+/** @returns {ConfigRowRead} */
 function permRow(id) {
   const parsed = parseConfig();
   const e = ROW_ENTRY.get(id);
@@ -2098,6 +2110,7 @@ function rowItems(id, rows = CONFIG_ROWS) {
 }
 // A declared row other than a permission. Its type is checked on the row's items where the value is
 // the row's own, and on the value itself where something else gave it (a cap, an override, a fallback).
+/** @returns {ConfigRowRead} */
 function valueRow(id) {
   const e = ROW_ENTRY.get(id);
   const { value, source, fromRow } = rowValue(id, DECLARED_ROWS);
@@ -2105,7 +2118,7 @@ function valueRow(id) {
   const read = fromRow ? items : value == null ? null : [value];
   const checked = read ? checkRow(e, read) : { value: null, errors: [] };
   const errors = [...(refused ? [{ item: null, error: refused.message, fatal: true }] : []), ...checked.errors];
-  return { ...rowHead(e), set: source !== 'default' && source !== 'unset', source, value, items,
+  return { ...rowHead(e), set: source !== 'default' && source !== 'unset', source: /** @type {ConfigRowJson['source']} */ (source), value, items,
     parsed: errors.length ? null : checked.value, default: e.default ?? null, errors };
 }
 
@@ -2115,12 +2128,20 @@ function valueRow(id) {
 // and with no config it returns that with no rows (`noConfig` set, exit 3) rather than throwing, so a
 // caller learns the repo and its rows in one run. Asked for jira-required-fields as well, it adds
 // `required_fields`, what `required-fields` prints for every type the rules name (requiredFieldsByType).
+/** @typedef {{ slug: string, gh_repo: string, config: string, creds: string, exists: boolean }} WhereJson */
+/**
+ * What `desk-env get --json` prints.
+ * @typedef {{ where?: WhereJson, config: string | null, rows: Record<string, ConfigRowJson>,
+ *   required_fields?: { need: Record<string, string[]>, malformed: string[] } }} GetJson
+ */
 class GetJsonUsage extends Error {}
 const SECTIONS = Object.freeze([...new Set(ROWS.map((e) => e.section))]);
+/** @returns {WhereJson} */
 function whereJson() {
   const r = currentRepo(); const p = configPathOrNull();
   return { slug: r.slug ?? '', gh_repo: r.ownerRepo ?? '', config: p ?? '', creds: repoConfigDir() ?? '', exists: !!(p && existsSync(p)) };
 }
+/** @returns {GetJson & { noConfig?: boolean }} */
 function getJson(args) {
   const ids = [], sections = [];
   let where = false;
@@ -2186,6 +2207,7 @@ const templateRe = (t, fill) => new RegExp(`^${t.split(/(<[A-Za-z]+>)/).map((p) 
 
 // The lines of `git status --porcelain --untracked-files=all` output that are changes: every line but an
 // untracked known file, or with `run`, an untracked scratch file of that review run.
+/** @param {string} porcelain @param {{ run?: string }} [opts] */
 export function treeStatus(porcelain, { run } = {}) {
   const known = KNOWN_UNTRACKED.map((k) => templateRe(k.path, () => '[^/]+'));
   if (run) known.push(...REVIEW_SCRATCH.map((s) => templateRe(s, (p) => (p === '<run>' ? escapeRe(run) : '[^/]+'))));

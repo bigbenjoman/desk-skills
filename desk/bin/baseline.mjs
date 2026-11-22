@@ -136,6 +136,7 @@ export function newProblems(problems, recorded) {
 }
 
 // One command item, in `root`, under its lock. -> { out, code }
+/** @param {{ bin: string, root: string, dir: string, cmd: string, lock: string, prefix?: string, env?: NodeJS.ProcessEnv, timeout?: number }} item */
 export function runItem({ bin, root, dir, cmd, lock, prefix = '', env, timeout }) {
   const full = prefix ? `${prefix} ${cmd}` : cmd;
   const r = spawnSync(join(bin, 'with-lock.sh'), [lock, '--cwd', dir, '--', 'sh', '-c', full], { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, env, timeout });

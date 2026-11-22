@@ -3,5 +3,6 @@
 *.bak*
 *.tmp-desk
 node_modules/
+desk/types/
 __pycache__/
 .claude/settings.local.json
