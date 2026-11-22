@@ -19,9 +19,15 @@ const CAP = 20480;
 const SKILLS = {
   'desk-cleanup': {
     unit: 'step', steps: ['1', '2', '3', '4', '5', '6'], headings: 19, kept: ['portable-checks.md'],
-    rewritten: [['DS-460', 'the path with `/` turned into `-`', 1]], // the folder name maps every non-alphanumeric character
+    rewritten: [
+      ['DS-460', 'the path with `/` turned into `-`', 1], // the folder name maps every non-alphanumeric character
+      ['DS-875', 'Then **Read the `CONFIG` file**.', 1], // read by section through desk-env show, never whole
+    ],
   },
-  'desk-clearance': { unit: 'phase', steps: ['1', '2', '3', '4', '5', '6', '7', '8'], headings: 30, kept: ['hazards.md', 'repo-facts.md', 'reviewer-patterns.md', 'subagent-briefs.md'] },
+  'desk-clearance': {
+    unit: 'phase', steps: ['1', '2', '3', '4', '5', '6', '7', '8'], headings: 30, kept: ['hazards.md', 'repo-facts.md', 'reviewer-patterns.md', 'subagent-briefs.md'],
+    rewritten: [['DS-875', 'Then **Read the `CONFIG` file**.', 1]], // read by section through desk-env show, never whole
+  },
 };
 
 const loaded = {};
