@@ -1,4 +1,5 @@
 // suite: skill eval harness (task set with and without a skill, keep/trim/drop)
+// layer: L2
 import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';

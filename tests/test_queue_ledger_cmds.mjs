@@ -1,4 +1,5 @@
 // suite: queue ledger commands (with the ledger lever on, every queue.mjs command that writes the queue appends what it changed, naming itself)
+// layer: L2
 // budget: 60 DS-893
 // The writing commands test_queue_ledger.mjs does not run: each run as a process
 // against its own fixture queue whose ledger sits beside it, with the lever on, a stub gh on PATH for

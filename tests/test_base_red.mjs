@@ -1,4 +1,5 @@
 // suite: base-red: reading a red base, its record, its lines and its repair ticket (base-red.mjs)
+// layer: L2
 // The pure parts of base-red.mjs, on canned commits and check runs: which check is red on the base's
 // newest completed run, what stays unknown, the record's `since`, and the text the driver, the pass and
 // the repair worker read.

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: queue lock (every write locked; reads never wait)
+# layer: L2
 # queue.mjs holds a lock from its read to its save on every command that changes the queue, so writes
 # started together all land. A lock left by an exited process is cleared; one a live process holds past
 # the wait is refused naming its pid, with the queue unchanged. list reads without waiting. Scratch

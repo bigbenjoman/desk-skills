@@ -19,7 +19,8 @@ argument-hint: "[--jql <jql>] [--priority <EPIC>...] [--report]"
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no  (exit 3 outside a repo)
 ```
 
-Then **Read the `CONFIG` file**. `EXISTS=no` means stop: say which slug was looked up and offer
+Then **read `desk-env show rules 0 2 3 3b 4`**, the sections below, never the `CONFIG` file whole.
+`EXISTS=no` means stop: say which slug was looked up and offer
 `/desk-setup`. **§4 Tracker `none` means stop too**: there is no backlog to groom here. Never borrow
 another repo's config.
 

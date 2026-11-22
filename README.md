@@ -888,7 +888,7 @@ hook then refuses Claude trailers in that repo only, and autopilot workers there
 
 ```bash
 desk-env where                   # which repo and config apply here; EXISTS=yes once set up
-desk-env show [3 5]              # the config's rules for the agent, headings and tables (no §3c unless named)
+desk-env show [rules 3 5]        # the config's rules for the agent, headings and tables (never §3c)
 desk-env get required-checks     # read any row by its id (desk-env ids lists them all)
 desk-env list required-checks    # every item of a list row, one per line
 desk-jira where                  # the Jira site, project and login this repo resolves to
@@ -1020,6 +1020,12 @@ fails the run from the date `BUDGETS_FAIL_FROM` in `tests/run.sh` gives. A push 
 a budget: its `record` job opens or comments one issue labelled `ci-slow` for the suites over budget,
 and one labelled `ci-flaky` for those that failed and passed their retry, each assigned to the repo's
 owner. Neither is `ci-main-red`.
+
+Every suite declares its test layer in one `# layer: <layer>` line (`//` in `.mjs`) in its first ten
+lines, which `test_lint.sh` requires (`node tests/scope_sections.mjs --layers` names any suite
+without exactly one). `L1` is in process: its cases import modules and start no process. `L2` is one
+process boundary: its cases start a desk script or command each. `L3` is end to end: it runs a pass,
+a batch, the merge driver or the installer through.
 
 ## Using autopilot
 

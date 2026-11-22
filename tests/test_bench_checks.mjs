@@ -1,4 +1,5 @@
 // suite: bench checks (the checks a merged PR added or changed, and how many of them a run passed)
+// layer: L2
 import { mkdirSync, writeFileSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';

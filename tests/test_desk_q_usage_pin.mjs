@@ -1,4 +1,5 @@
 // suite: desk-q Usage view pins a repo (enter or a click opens its dropdown, 1-N or ↑↓ enter save, esc, u)
+// layer: L2
 // desk-q's view 6 changing a repo's Subscription row from its dropdown, under a throwaway HOME, DESK_HOME,
 // DESK_CONFIG_ROOT, DESK_LOCK_DIR, DESK_USAGE_DIR and subscriptions file, with fake claude and codex
 // binaries the account check calls. A pick runs desk-env's subscription set for real, writing the fixture

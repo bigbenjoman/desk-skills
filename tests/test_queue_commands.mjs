@@ -1,4 +1,5 @@
 // suite: queue.mjs command list (its switch and the flags each command reads equal QUEUE_COMMANDS; usage from it)
+// layer: L2
 // covers: desk/bin/queue.mjs desk/bin/queue-commands.mjs
 // Scratch directories only.
 import { readFileSync, rmSync } from 'node:fs';

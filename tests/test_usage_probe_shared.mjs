@@ -1,4 +1,5 @@
 // suite: usage probe shared (a pass's probe joins the per-login probe lock and stamp desk-q's probe uses)
+// layer: L2
 // usage-probe.mjs probeShared, each call in its own node process as two passes would make it, against a
 // stub claude that takes a second to answer and logs each call with its login folder, under a scratch
 // usage directory and lock directory. Nothing reads this computer's logins or usage.

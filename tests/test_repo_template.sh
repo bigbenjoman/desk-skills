@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: repo templates (tests/lib/repo_template.sh: built once per run, copied per case)
+# layer: L2
 # repo_template builds a template once per REPO_TPL_ROOT, however many suites ask for it or race to
 # build it, and repo_copy gives each case its own copy with its remotes pointed at the copy. Scratch
 # HOME only; the suites that race are background subshells of this one.
@@ -45,12 +46,20 @@ export REPO_TPL_ROOT="$T/run2"; : > "$T/builds"; touch "$T/slow"
 wait; rm -f "$T/slow"
 check "AC2 two racing suites build the template once" '[ "$(builds)" = 1 ]'
 check "AC2 neither racing suite reads a half-built template" '[ "$(cat "$T/r1" 2>/dev/null)" = whole ] && [ "$(cat "$T/r2" 2>/dev/null)" = whole ]'
+# The lock holds where mkdir is not atomic (uutils mkdir on ubuntu-26.04 lets racing callers
+# all succeed). This mkdir succeeds even when its path exists, the worst such race.
+mkdir -p "$T/bin"; printf '#!/bin/sh\nexec /bin/mkdir -p "$@"\n' > "$T/bin/mkdir"; chmod +x "$T/bin/mkdir"
+export REPO_TPL_ROOT="$T/run2b"; : > "$T/builds"; rm -f "$T/r1" "$T/r2"; touch "$T/slow"
+( PATH="$T/bin:$PATH"; repo_template two two_repos && [ -f "$REPO_TPL_ROOT/two/whole" ] && echo whole > "$T/r1" ) 2>/dev/null &
+( PATH="$T/bin:$PATH"; repo_template two two_repos && [ -f "$REPO_TPL_ROOT/two/whole" ] && echo whole > "$T/r2" ) 2>/dev/null &
+wait; rm -f "$T/slow"
+check "DS-941 racing suites build once where mkdir is not atomic" '[ "$(builds)" = 1 ] && [ "$(cat "$T/r1" 2>/dev/null)" = whole ] && [ "$(cat "$T/r2" 2>/dev/null)" = whole ]'
 
 # A lock whose builder died is taken over rather than waited on for ever.
-export REPO_TPL_ROOT="$T/run3"; : > "$T/builds"; mkdir -p "$REPO_TPL_ROOT/two.lock"
-(sh -c 'echo $$' > "$REPO_TPL_ROOT/two.lock/pid")
+export REPO_TPL_ROOT="$T/run3"; : > "$T/builds"; mkdir -p "$REPO_TPL_ROOT"
+(sh -c 'echo $$' > "$REPO_TPL_ROOT/two.lock")
 repo_template two two_repos; rc=$?
-check "a dead builder's lock is taken over" '[ $rc = 0 ] && [ -f "$REPO_TPL_ROOT/two/whole" ] && [ ! -d "$REPO_TPL_ROOT/two.lock" ]'
+check "a dead builder's lock is taken over" '[ $rc = 0 ] && [ -f "$REPO_TPL_ROOT/two/whole" ] && [ ! -e "$REPO_TPL_ROOT/two.lock" ]'
 # A builder that fails leaves no template and no lock, and says so.
 broken(){ git init -q "$1/repo" && false; }
 says(){ printf '%s\n' "$out" | grep -qF "$1"; }

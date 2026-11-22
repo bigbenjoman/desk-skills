@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: merge driver: clean review verdicts and epic PRs (offline, fake gh)
+# layer: L3
 # The real merge-driver.sh and gate.mjs, one loop at a time, set up by merge_driver_setup.sh: a PR
 # merges on a clean desk-review verdict at its head (carried across a clean base merge, by the review
 # account, under the review-reuse lever), and an epic batch's PR into main (and pass.mjs on its hold).

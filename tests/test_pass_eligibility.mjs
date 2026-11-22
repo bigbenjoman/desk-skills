@@ -1,4 +1,5 @@
 // suite: pass phase: eligibility, the batch budget and slots (the candidates, what holds every spawn, the slot count)
+// layer: L1
 import { runPhase, runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { PACE_HELD, decideEligibility, decideSlots, ticketSlotsOf, toResume, toHandoff } from '../desk/bin/pass/eligibility.mjs';
 import { usageHeldText } from '../desk/bin/pass/shared.mjs';
@@ -225,6 +226,34 @@ function slots(s) {
   t('a live base conflict fix in a batch of 1 holds its one worker', j(ticketSlotsOf(s, 1, { baseFixLive: true, baseFixOn: true })), j({ workers: 1, plan: { slots: 0, own: 0, borrow: 0, line: null }, slots: 0 }));
   t('with none, a ticket takes the slot', ticketSlotsOf(s, 1, { baseFixLive: false, baseFixOn: false }).slots, 1);
   t('the ticket slots are never above the pass\'s', ticketSlotsOf(slotsSnap(e), 1, { baseFixLive: false, baseFixOn: false }).slots, 1);
+}
+
+// DS-916: the memory reservations sit beside the machine's worker count, and the stricter decides.
+{
+  const e = eligibility(snap(byKey(triaged('A'), triaged('B'))));
+  const held = (label, units, pid) => ({ id: `L-${pid}`, kind: 'mem', key: `worker ${label}`, units, owner: { pid, start: '1' }, label });
+  const full = { ceiling: 48, share: 8, reserved: 44, holders: [held('acme/shop full suite', 20, 11), held('acme/widgets standing P-1', 8, 12), held('acme/widgets standing P-2', 8, 13), held('acme/widgets standing P-3', 8, 14)] };
+  const on = slots(slotsSnap(e, { memPool: { mode: 'on', ...full } }));
+  t('DS-916 AC1 with the kind on and 44 of 48 GB reserved, an 8 GB share starts nothing', j([on.slots, on.machine.room]), j([0, 0]));
+  t('DS-916 AC1 the reservations decide, so the held reason is their line', on.machine.line, on.memLine);
+  t('DS-916 AC1 the report names the ceiling, the reserved total and the largest holders', on.memLine,
+    "memory reservations: 44G of the 48G ceiling reserved, a worker's share 8G; largest holders: acme/shop full suite 20G (pid 11), acme/widgets standing P-1 8G (pid 12), acme/widgets standing P-2 8G (pid 13) and 1 more: no worker's share fits under the ceiling, so nothing starts this pass");
+  const room = slots(slotsSnap(e, { memPool: { mode: 'on', ceiling: 48, share: 8, reserved: 32, holders: [] } }));
+  t('DS-916 with room for two shares, two start, and the line is said beside the machine budget', j([room.slots, room.machineLine.startsWith('machine budget:'), room.memLine]),
+    j([2, true, "memory reservations: 32G of the 48G ceiling reserved, a worker's share 8G"]));
+  const one = slots(slotsSnap(e, { memPool: { mode: 'on', ceiling: 48, share: 8, reserved: 40, holders: [] } }));
+  t('DS-916 with room for one share, one starts', j([one.slots, one.memLine.endsWith(': starting at most 1')]), j([1, true]));
+  const strict = slots(slotsSnap(e, { machineCap: 1, machineProfiled: true, memPool: { mode: 'on', ceiling: 48, share: 8, reserved: 0, holders: [] } }));
+  t('DS-916 the worker count still decides where it is the stricter', j([strict.slots, strict.machine.line.startsWith('machine budget:')]), j([1, true]));
+  const shadow = slots(slotsSnap(e, { memPool: { mode: 'shadow', ...full } }));
+  t('DS-916 AC8 in shadow a full pool starts by the legacy rules, saying what on would have done', j([shadow.slots, shadow.memLine.endsWith(': on would start at most 0; in shadow the legacy rules decide')]), j([2, true]));
+  const off = slots(slotsSnap(e, { memPool: { mode: 'off', ceiling: null, share: null } }));
+  t('DS-916 AC10 with the kind off the pool limits nothing and says nothing', j([off.slots, off.memLine]), j([2, null]));
+  const none = slots(slotsSnap(e, { memPool: { mode: 'on', ceiling: null, share: null } }));
+  t('DS-916 AC7 with no memory ceiling the pool limits nothing and says nothing', j([none.slots, none.memLine]), j([2, null]));
+  const bad = slots(slotsSnap(e, { memPool: { mode: 'on', ceiling: 48, share: 8, unreadable: 'the lease store x is unreadable: y' } }));
+  t('DS-916 AC12 an unreadable store limits nothing, and the report says leases were unreadable', j([bad.slots, bad.memLine]),
+    j([2, 'memory reservations: leases were unreadable (the lease store x is unreadable: y), so memory is judged by the legacy rules']));
 }
 
 // AC7: the decisions start no process, call no git, gh or Jira, and write nothing.

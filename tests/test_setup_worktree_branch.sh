@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: setup-worktree branch held by another worktree
+# layer: L2
 # A ticket's branch checked out in another worktree that is clean, level with origin and used by no
 # process is detached there, so setup-worktree.sh can check the branch out for the ticket. Anything
 # that could be lost or disturbed there fails setup, naming the folder and why. Scratch HOME and repos.

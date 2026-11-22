@@ -1,4 +1,5 @@
 // suite: bench arm 4 (PR text on Opus, on Haiku and from the template with no model)
+// layer: L2
 // covers: desk/bin/bench-pr-text.mjs desk/bin/bench-pr-text-rubric.md
 // A stub claude on PATH, and two scratch repos: one with a PR template and a PR-description check that
 // fails on a missing section, one with neither.

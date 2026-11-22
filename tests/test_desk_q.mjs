@@ -1,4 +1,5 @@
 // suite: desk-q plain output (overview, one repo, one ticket)
+// layer: L2
 // budget: 95 DS-943 (dozens of desk-q runs, each a node start reading seven fixture repos; 38-71 s on CI)
 // desk-q against fixture repo configs, queues, heartbeats and triage records under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. Nothing touches your real ~/.claude, ~/.config/desk or state.
@@ -20,6 +21,9 @@ const minsAgo = (m) => new Date(NOW - m * 60000).toISOString();
 const QUICK_TIMES = 5;
 const QUICK_FLOOR_MS = 1000;
 const quick = (ms, baseline) => ms < Math.max(QUICK_FLOOR_MS, QUICK_TIMES * baseline) || `${ms} ms (same work on a small world: ${baseline} ms)`;
+// Every desk-q this suite starts shares one V8 compile cache, so only the first compiles desk-q's
+// megabyte of modules: the rest load them from the cache, and the suite's CPU is mostly what desk-q does.
+const COMPILE_CACHE = scratch('desk-q-compile-');
 
 // One fixture world: seven repos by default, or `repos` to override, each { port, conc, queue, beat, triage }.
 function world(overrides = {}) {
@@ -40,7 +44,7 @@ function world(overrides = {}) {
     '',
   ].join('\n'), { mode: 0o755 });
   const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'),
-    DESK_PLATFORM: 'darwin', DESK_SKILLS_DIR: join(T, 'skills'), PATH: `${join(T, 'bin')}:${process.env.PATH}` };
+    DESK_PLATFORM: 'darwin', DESK_SKILLS_DIR: join(T, 'skills'), NODE_COMPILE_CACHE: COMPILE_CACHE, PATH: `${join(T, 'bin')}:${process.env.PATH}` };
   writeFileSync(env.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
   const held = (by) => ({ state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by.split('|').join(', ')} — starts once their PRs merge` } });
   const repos = {
@@ -2910,12 +2914,26 @@ try {
   const firstPlain = stuckNotes.findIndex((l) => /^(note|    ) {2}[^▲ ]/.test(l) || /^(note|    ) {4}\S/.test(l));
   t('DS-959 AC2 the stuck note sorts with the other ▲ notes', at796 >= 0 && (firstPlain < 0 || at796 < firstPlain), true);
 
+  // DS-968: a slot lease is never renewed, so one past its TTL with a live owner is not stuck.
   const slot = dir('slot');
-  const s945 = take(slot, 'slot', 'test', 60, 'test ~/studia/acme-worktrees/DS-945: bash tests/run.sh');
-  age(slot, s945, 0, 3 * 3600);
+  const s882 = take(slot, 'slot', 'light', 600, 'light ~/studia/acme-worktrees/DS-882: bash tests/related.sh');
+  age(slot, s882, 0, 12 * 60);
+  const p797 = take(slot, 'port', '3205', DAY, 'acme/desk-skills standing DS-797');
+  age(slot, p797, 0, LATE);
   const slotNotes = noteBlock(run(slot));
-  t('DS-959 AC3 an overdue slot lease no ticket holds names what its holder runs',
-    slotNotes.find((l) => l.includes('▲ leases'))?.replace(/^(note| {4}) {2}▲ leases +/, ''), "A test run in DS-945's worktree holds a heavy slot but stopped checking in 3h ago.");
+  t('DS-968 AC1 a slot lease whose owner is alive, 12 minutes past its TTL, has no ▲ note',
+    slotNotes.filter((l) => /DS-882|▲ leases/.test(l) || l.trim() === `desk-env lease force-release ${s882} --reason <why>`).length, 0);
+  t('DS-968 AC2 a port lease whose owner is alive and past its expiry still has its ▲ note and force-release command',
+    `${slotNotes.some((l) => /▲ desk-skills +DS-797's worker holds port 3205 but stopped checking in 1h 12m ago\.$/.test(l))} ${slotNotes.some((l) => l.trim() === `desk-env lease force-release ${p797} --reason <why>`)}`, 'true true');
+  const gone = dir('gone');
+  const s883 = take(gone, 'slot', 'light', 600, 'light ~/studia/acme-worktrees/DS-883: bash tests/related.sh');
+  age(gone, s883, 0, 12 * 60);
+  { // Its owner exits: the lease names a pid that has already been reaped.
+    const p = join(gone, 'leases.json'); const st = JSON.parse(readFileSync(p, 'utf8'));
+    st.leases.find((x) => x.id === s883).owner.pid = spawnSync('true').pid; writeFileSync(p, JSON.stringify(st));
+  }
+  t('DS-968 AC3 a slot lease whose owner has exited has no stuck note',
+    noteBlock(run(gone)).filter((l) => /DS-883|stopped checking in|force-release/.test(l)).length, 0);
 
   const two = dir('two');
   const a1 = take(two, 'port', '3204', DAY, 'acme/desk-skills standing DS-796'), a2 = take(two, 'port', '3205', DAY, 'acme/desk-skills standing DS-797');

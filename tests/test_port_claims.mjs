@@ -1,4 +1,5 @@
 // suite: port claims (ports a peer session claimed at handshake)
+// layer: L2
 // port-claims.mjs records the dev-server ports a peer's handshake claimed, machine-wide: passClaims
 // holds each claimer's last claim until it is released or lapses, a new claim replaces the claimer's
 // last, and the CLI refuses a range it cannot read.

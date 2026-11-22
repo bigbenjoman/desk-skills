@@ -1,4 +1,5 @@
 // suite: machine budget (one memory ceiling and worker cap across every repo)
+// layer: L3
 // The real pass.mjs in a throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT holding a machine profile and
 // several repos' configs and queues, with stub claude, gh, setup-worktree and spawn-worker; one case
 // per DS-147 criterion. Nothing touches your real ~/.claude, ~/.config/desk or state.

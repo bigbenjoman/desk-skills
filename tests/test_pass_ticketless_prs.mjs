@@ -1,4 +1,5 @@
 // suite: pass phase: ticketless PRs (the open PRs a desk session opened that no ticket owns)
+// layer: L1
 import { decideTicketless, ticketlessPrs, ownerOf, DESK_PR_FENCE } from '../desk/bin/pass/ticketless-prs.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };

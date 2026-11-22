@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: setup-worktree install (a §4 Install item in a subdirectory)
+# layer: L2
 # A §4 Install item that names a directory (`backend: uv sync --frozen`) runs there when
 # setup-worktree.sh --for-worker builds a worker's worktree, so the virtualenv is in place before the
 # worker spawns and the worktree is still clean. Stub uv and pnpm only; scratch HOME and repos.

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: worker Stop hook (no ending a turn with a background task running)
+# layer: L2
 # hooks/desk-worker-stop.py fed a fake Stop event and a fixture transcript whose background Bash task
 # is a real `sleep` holding the task's output file open: one block naming the task (AC1), nothing
 # with no task running (AC2) or outside a worker (AC3), and a second Stop that ends the turn and

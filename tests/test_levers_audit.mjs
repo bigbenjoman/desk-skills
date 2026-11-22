@@ -1,4 +1,5 @@
 // suite: levers audit (a blind audit sample measures review quality independently of the levers on trial)
+// layer: L2
 // covers: desk/bin/levers-audit.mjs desk/bin/merge-landed.mjs desk/bin/lever-registry.mjs desk/bin/lever-log.mjs desk/bin/levers-auto.mjs desk/bin/desk-env.mjs desk/bin/pass.mjs desk/bin/spawn-worker.sh
 // runAudits() runs on synthetic queues and lever logs in a scratch HOME, with a stub review worker:
 // its spawn, merge-commit read, end and log are functions the test supplies.

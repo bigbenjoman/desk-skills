@@ -20,8 +20,9 @@
 //   node desk-env.mjs where                   print SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS= for the cwd's repo
 //   node desk-env.mjs show [<section>...]     print the config's rules for the agent, then its headings and
 //                                             table rows, no other prose
-//                                             (configRows): the named sections (e.g. 3 5), else every one but
-//                                             §3c, the rule ledger only /desk-setup reads; exit 3 with no config
+//                                             (configRows): the named sections (e.g. rules 3 5), else every
+//                                             one; never §3c, the rule ledger only /desk-setup reads (exit 2
+//                                             when named, as for an unknown section); exit 3 with no config
 //   node desk-env.mjs get <config id>         print the value (CONFIG_ROWS; first item), exit 3 if unset;
 //                                             default-branch honours a batch base (DESK_DEFAULT_BRANCH);
 //                                             review-asks prints every ask, one per line
@@ -245,10 +246,11 @@ export const repoConfigDir = (slug = currentRepo().slug) => (slug ? join(deskCon
 export const credsDir = () => repoConfigDir();
 
 // A config file's headings and tables, without its prose: what a skill reads at its start. `sections`
-// names the ones wanted ('3', '3b', '5'); empty is every section but 3c, the rule ledger, which
-// grows with each rule setup grants, is kept in harness-rules.json too, and only /desk-setup reads.
-// An unnumbered section (the rules for the agent reading the file) is printed whole, prose and all,
-// when no section is named: its prose is what it says.
+// names the ones wanted ('3', '3b', '5', and 'rules' for the rules for the agent reading the file);
+// empty is every section. Never 3c, the rule ledger, which grows with each rule setup grants, is kept
+// in harness-rules.json too, and only /desk-setup reads, from the file itself.
+// An unnumbered section is printed whole, prose and all, when no section is named, and the rules
+// section when `rules` is: its prose is what it says.
 export function configRows(text, sections = []) {
   const want = sections.map((x) => String(x).replace(/^§/, '').toLowerCase());
   let keep = false, whole = false, fence = false;
@@ -258,8 +260,8 @@ export function configRows(text, sections = []) {
     if (/^##\s/.test(line)) {
       fence = false;
       const id = /^##\s+(\d+[a-z]?)[.)]?\s/i.exec(line)?.[1]?.toLowerCase() ?? null;
-      whole = id == null && !want.length;
-      keep = id == null ? whole : want.length ? want.includes(id) : id !== '3c';
+      whole = id == null && (!want.length || (want.includes('rules') && /^##\s+rules\b/i.test(line)));
+      keep = id == null ? whole : id !== '3c' && (!want.length || want.includes(id));
       if (keep) { if (out.length) out.push(''); out.push(line); }
       continue;
     }
@@ -535,8 +537,7 @@ export function repoPlacement(repository, root = deskConfigRoot()) {
     otherName = true;
   }
   if (hits.length !== 1) return { repository, unknown: true, slugs: hits.map((r) => r.slug) };
-  const dir = String(repoConfigValue(hits[0].slug, 'repo-root', root) ?? '').trim();
-  return { repository, slug: hits[0].slug, ghRepo: hits[0].ghRepo, root: dir && !isNone(dir) ? expandHome(dir) : null, otherName };
+  return { repository, slug: hits[0].slug, ghRepo: hits[0].ghRepo, root: repoDirs(hits[0].slug, root).root, otherName };
 }
 
 // Where a triage record puts a ticket's code when that is wholly another repo, or null to build it
@@ -935,6 +936,11 @@ export const permissionKey = (id) => PERMISSION_KEYS[id];
 
 // The merge driver holding <state>/merge-driver.lock.d: its pid while that process lives (one another
 // user owns counts), 'starting' for a lock made under a minute ago that has no pid yet, else null.
+// A PR out of draft ends the batch's merge driver's idle pause: it reads <state>/merge-driver/wake's
+// time between sleeps. A write that fails costs at most the driver's longest pause.
+export function wakeMergeDriver(state = stateDir()) {
+  try { mkdirSync(join(state, 'merge-driver'), { recursive: true }); writeFileSync(join(state, 'merge-driver', 'wake'), `${Date.now()}\n`); } catch { /* see above */ }
+}
 export function mergeDriverHolder(state) {
   const d = join(state, 'merge-driver.lock.d');
   if (!existsSync(d)) return null;
@@ -1004,6 +1010,17 @@ const statesOfRow = (r, { auto = true } = {}) =>
 export const rowStates = (items) => statesOfRow(leverRow(items));
 // A slug's name without its owner: the part after the first `__`, or the slug with none.
 export const shortName = (slug) => slug.split('__').slice(1).join('__') || slug;
+// A configured repo's directories from its own config: §2 Repo root, and §2 Worktrees directory, else
+// `<repo root>-worktrees` beside the root. Each is trimmed, home-expanded and without a trailing slash,
+// and null where unset or `none`.
+export function repoDirs(slug, root = deskConfigRoot()) {
+  const dir = (id) => {
+    const v = repoConfigValue(slug, id, root);
+    return v && !isNone(v) ? String(expandHome(String(v).trim())).replace(/\/+$/, '') || null : null;
+  };
+  const repo = dir('repo-root');
+  return { root: repo, worktrees: dir('worktrees-dir') ?? (repo ? `${repo}-worktrees` : null) };
+}
 // Each slug's name as desk-q shows it: the part after the owner, or owner/name where two repos share it.
 export function shownNames(slugs) {
   const short = slugs.map(shortName);
@@ -2290,20 +2307,26 @@ function whereJson() {
   const r = currentRepo(); const p = configPathOrNull();
   return { slug: r.slug ?? '', gh_repo: r.ownerRepo ?? '', config: p ?? '', creds: repoConfigDir() ?? '', exists: !!(p && existsSync(p)) };
 }
+// The section names a reader was asked for, as SECTIONS spells them ('§3B' is '3b'). A GetJsonUsage
+// for §3c, the harness rule ledger only /desk-setup reads, or for a name outside SECTIONS and `extra`.
+function checkSections(cmd, names, extra = []) {
+  const want = names.map((s) => String(s ?? '').replace(/^§/, '').toLowerCase());
+  if (want.includes('3c')) throw new GetJsonUsage(`${cmd}: §3c, the harness rule ledger, is read by /desk-setup alone`);
+  const bad = want.filter((s) => !extra.includes(s) && !SECTIONS.includes(s));
+  if (bad.length) throw new GetJsonUsage(`${cmd}: unknown section ${bad.map((s) => `"${s}"`).join(', ')} (known: ${[...extra, ...SECTIONS].join(', ')})`);
+  return want;
+}
 function getJson(args) {
-  const ids = [], sections = [];
+  const ids = [], named = [];
   let where = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--json') continue;
     if (args[i] === '--where') { where = true; continue; }
-    if (args[i] === '--section') { sections.push(String(args[++i] ?? '').replace(/^§/, '').toLowerCase()); continue; }
+    if (args[i] === '--section') { named.push(args[++i]); continue; }
     ids.push(args[i]);
   }
-  if (!ids.length && !sections.length) throw new GetJsonUsage('usage: desk-env.mjs get --json [--where] [--section <n>] [<id>...]');
-  for (const s of sections) {
-    if (s === '3c') throw new GetJsonUsage('desk-env get --json: §3c, the harness rule ledger, is read by /desk-setup alone; it has no rows here');
-    if (!SECTIONS.includes(s)) throw new GetJsonUsage(`desk-env get --json: unknown section "${s}" (known: ${SECTIONS.join(', ')})`);
-  }
+  if (!ids.length && !named.length) throw new GetJsonUsage('usage: desk-env.mjs get --json [--where] [--section <n>] [<id>...]');
+  const sections = checkSections('desk-env get --json', named);
   const unknown = ids.filter((id) => !ROW_ENTRY.has(id));
   if (unknown.length) throw new GetJsonUsage(`desk-env get --json: unknown config id ${unknown.map((id) => `"${id}"`).join(', ')} (the schema does not declare it)`);
   const parsed = parseConfig();
@@ -2397,8 +2420,10 @@ if (isMain) {
       }
       case 'show': {
         const p = configPathOrNull();
+        let want;
+        try { want = checkSections('desk-env show', args, ['rules']); } catch (e) { if (!(e instanceof GetJsonUsage)) throw e; console.error(e.message); process.exit(2); }
         if (!p || !existsSync(p)) { console.error('desk-env show: no config for this repo (run /desk-setup)'); process.exit(3); }
-        console.log(configRows(readFileSync(p, 'utf8'), args));
+        console.log(configRows(readFileSync(p, 'utf8'), want));
         break;
       }
       case 'list':

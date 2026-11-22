@@ -90,8 +90,10 @@ export const TRANSITIONS = Object.freeze({
   moved: { from: ANY, to: KEEP },
   archived: { from: ANY, to: KEEP },
   legacy_set: { from: ANY, to: KEEP },
-  ...Object.fromEntries(['answered', 'waiting', 'waited', 'held', 'released', 'automerge_armed', 'automerge_disarmed', 'unparked']
+  ...Object.fromEntries(['answered', 'held', 'released', 'automerge_armed', 'automerge_disarmed', 'unparked']
     .map((t) => [t, { from: UNFINISHED, to: KEEP }])),
+  // A done ticket's PR can still wait, on GitHub's mergeability answer.
+  ...Object.fromEntries(['waiting', 'waited'].map((t) => [t, { from: STATES, to: KEEP }])),
 });
 
 export const ledgerPaths = (repoDir) => {
@@ -128,6 +130,15 @@ const newTicket = (key) => ({ key, batch: null, state: null, archived: false, fi
   questions: [], answered: [], waits: {}, automerge: null, spawn: null });
 // The queue.json field holding the triage questions answered so far, each an answered event's qid.
 export const ANSWERED = 'answered_questions';
+// The queue.json field holding a ticket's open waits, { <on>: a waiting event's data less its `on` }, or
+// null once none is open (pass/deadlines.mjs).
+export const WAITS = 'waits';
+// Queue field `v` as the fold keeps it, each wait with its `on`, or null when it is not a map of waits.
+export const waitsOfField = (v) => {
+  if (v == null) return {};
+  if (typeof v !== 'object' || Array.isArray(v) || !Object.values(v).every((w) => w && typeof w === 'object' && !Array.isArray(w))) return null;
+  return Object.fromEntries(Object.entries(v).map(([on, w]) => [on, { ...w, on }]));
+};
 export const withoutProjectionOnly = (fields) => Object.fromEntries(Object.entries(fields ?? {}).filter(([f]) => !PROJECTION_ONLY.includes(f)));
 
 // Lays queue.json fields onto ticket `t`: the fields with a typed home (state, park, held_by, result.pr,
@@ -141,6 +152,7 @@ function overlay(t, fields) {
   if ('result' in f) t.pr = f.result?.pr ?? null;
   if ('merge' in f) t.merge = f.merge ?? null;
   if (ANSWERED in f) t.answered = Array.isArray(f[ANSWERED]) ? [...f[ANSWERED]] : [];
+  if (WAITS in f) t.waits = waitsOfField(f[WAITS]) ?? {};
 }
 
 // Whether `ev` is legal from its ticket's state in `state`: { legal, from }. Batch events always are.
@@ -183,8 +195,9 @@ function apply(state, ev) {
     case 'unparked': case 'requeued': t.park = null; break;
     case 'held': t.holds = [...new Set([...t.holds, ...d.by])]; break;
     case 'released': t.holds = t.holds.filter((k) => k !== d.by); break;
-    case 'waiting': t.waits[d.on] = { ...d }; break;
-    case 'waited': delete t.waits[d.on]; break;
+    // queue.json keeps the field once a wait has started, as null when none is open.
+    case 'waiting': t.waits[d.on] = { ...d }; t.fields[WAITS] = null; break;
+    case 'waited': delete t.waits[d.on]; t.fields[WAITS] = null; break;
     case 'pr_opened': t.pr = d.pr; break;
     case 'automerge_armed': t.automerge = { ...d }; break;
     case 'automerge_disarmed': t.automerge = null; break;
@@ -233,6 +246,8 @@ export function project(state, batch, current = null) {
     if (t.pr != null) out.result = { ...(t.fields.result ?? {}), pr: t.pr };
     if (t.merge) { out.merge = { ...t.merge }; out.merged_at = t.merge.at ?? t.fields.merged_at; }
     if (t.answered.length) out[ANSWERED] = [...t.answered];
+    const waits = Object.entries(t.waits);
+    if (waits.length || WAITS in t.fields) out[WAITS] = waits.length ? Object.fromEntries(waits.map(([on, { on: _, ...w }]) => [on, w])) : t.fields[WAITS] ?? null;
     tickets[t.key] = out;
   }
   return { ...batchFields(current), batch, tickets };
