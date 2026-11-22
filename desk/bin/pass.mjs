@@ -93,6 +93,7 @@ import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOff
   tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideTicketless } from './pass/ticketless-prs.mjs';
+import { decideDeadlines } from './pass/deadlines.mjs';
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
 import { decideFixTries, tryLabel } from './pass/fix-tries.mjs';
 import { decideReopen, decideRenames, decideUndraft, decideRelease, undraftWrite } from './pass/undraft.mjs';
@@ -5301,6 +5302,11 @@ runPhase({
   handlers: { ...OUT_HANDLERS, 'set-batch': (a) => q('set-batch', ...a.fields) },
   report,
 });
+
+// ---- deadlines -----------------------------------------------------------
+// Each wait a ticket is in, read once this pass's PR reads, undrafts and spawns are made, with its
+// deadline; one past it is escalated once (pass/deadlines.mjs).
+runPhase({ name: 'deadlines', snapshot: () => ({ tickets: queue().tickets, at: PASS_AT, dry: DRY }), decide: decideDeadlines, handlers: PHASE_HANDLERS, report });
 
 // The report's lines after the ledger (pass/report.mjs decideReportLines): a §4 Merge hold on the
 // promotion, overridden calls, the review rows, WAITING ON YOU, BLOCKED ON ANSWERS, the held-back,

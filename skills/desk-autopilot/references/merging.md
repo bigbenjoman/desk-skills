@@ -338,7 +338,11 @@ forever) and **no preview build starts without its team's preview-build lease** 
   merge ref leaves a PR with no mergeability answer for good, so a draft or ready PR with none for 30 minutes
   (`DESK_UNKNOWN_SECS`) has its branch updated once with `gh pr update-branch` where §3
   `pr-update-branch` is `yes`, and with still no answer 30 minutes after that, or with no update
-  permitted, it is the person's, named with how long and what was tried. Any other draft it may not undraft is under WAITING ON
+  permitted, it is the person's, named with how long and what was tried. The pass's deadline sweep also
+  keeps each wait on the ticket as `waits`, with its start and deadline: an open PR with no mergeability
+  answer 30 minutes after the pass first saw it is under WAITING ON YOU once as `NO MERGE ANSWER`, and a
+  handoff whose next session has not started 15 minutes after it once as `HANDOFF NOT STARTED`, with the
+  requeue to run. Neither is said again until that wait ends and a new one starts. Any other draft it may not undraft is under WAITING ON
   YOU as `DRAFT`, with the reason and what to do. Either way it is recorded on the
   ticket as `undraft`; a feature spine is left to `queue.mjs approve`. **A draft the person put back
   to draft is theirs to hold**: one the pass undrafted before, or whose PR events hold a
