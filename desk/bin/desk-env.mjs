@@ -534,7 +534,8 @@ export function repoPlacement(repository, root = deskConfigRoot()) {
     const selfHit = [...labelsRow('other-names'), ...(self.slug ? labelsRow('other-names', self.slug, root) : [])].some(names);
     hits = repos.filter((r) => r.slug !== self.slug && labelsRow('other-names', r.slug, root).some(names));
     if (selfHit && !hits.length) return null;
-    if (selfHit) hits = [{ slug: self.slug ?? own ?? 'this repo' }, ...hits];
+    // This repo and another both answer to the name: ambiguous, so `hits` keeps only configured repos.
+    if (selfHit) return { repository, unknown: true, slugs: [self.slug ?? own ?? 'this repo', ...hits.map((r) => r.slug)] };
     otherName = true;
   }
   if (hits.length !== 1) return { repository, unknown: true, slugs: hits.map((r) => r.slug) };
