@@ -479,17 +479,17 @@ NODE
 # Release a held ticket once EVERY predecessor has merged. Its predecessors are the union of all its
 # --deps entries (a successor named twice, e.g. a collision chain and a Jira chain, waits for both) and
 # the queue's held_by (so a blocker added mid-batch counts without a restart). Only a ticket still
-# parked "held by orchestrator" is ever released.
+# parked on a hold (batch-state.mjs isHeld) is ever released.
 release_chain(){
   local plan succ preds got n pred all
   plan=$(node --input-type=module - "$DESK_RUN_BIN/batch-state.mjs" "$DESK_QUEUE" ${DEP_LIST[@]+"${DEP_LIST[@]}"} <<'NODE'
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 const [mod, qf, ...pairs] = process.argv.slice(2);
-const { stoppedHold } = await import(pathToFileURL(mod).href);
+const { stoppedHold, isHeld } = await import(pathToFileURL(mod).href);
 let q = {}; let spine = null;
 try { const all = JSON.parse(readFileSync(qf, 'utf8')); q = all.tickets || {}; spine = all.feature === true ? all.spine : null; } catch { /* no queue: nothing is held */ }
-const held = (t) => t && t.state === 'parked' && String(t.park?.question ?? '').startsWith('held by orchestrator');
+const held = (t) => !!t && isHeld(t);
 const m = {};
 const add = (s, ps) => { m[s] ??= new Set(); for (const p of ps) if (p) m[s].add(p); };
 // A --deps predecessor the ticket was freed from by hand (freed_from, needs-you link items) no longer holds

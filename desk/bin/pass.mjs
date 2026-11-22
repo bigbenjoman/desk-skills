@@ -74,9 +74,9 @@ import { listBatches, prState as batchPrState } from './batches.mjs';
 import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
-import { queueWriter } from './queue-writer.mjs';
+import { queueWriter, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { runAudits, endedFromExit, auditsRunning } from './levers-audit.mjs';
-import { MISSED_PREFIX, LEDGER_BY_ENV } from './queue-ledger.mjs';
+import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference } from './queue-ledger.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
@@ -84,7 +84,7 @@ import { decidePrStatus, followState } from './pass/pr-status.mjs';
 import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict } from './pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict, ledgerLine } from './pass/report.mjs';
 import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
@@ -314,6 +314,8 @@ const qWrite = (args, refused = 'not recorded') => {
   return '';
 };
 const q = (...args) => qWrite(args);
+// A park action's kind (batch-state.mjs PARK_KINDS) as queue.mjs park takes it, where the action names one.
+const kindArgs = (a) => (a.kind ? ['--kind', a.kind] : []);
 // Writes every change applied since the last write, in one locked write. A change another writer
 // made to the same field since is kept, and the report names the ticket and field; when the lock is
 // not taken in time, nothing is written and the report names each change.
@@ -1604,7 +1606,7 @@ const holdsSnapshot = (more = {}) => {
 const HOLD_HANDLERS = {
   ...PHASE_HANDLERS,
   front: (a) => { q('front', a.key); },
-  park: (a) => { q('park', a.key, a.question); },
+  park: (a) => { q('park', a.key, ...kindArgs(a), a.question); },
   'date-line': (a) => { dateLines.push(a.line); },
 };
 const personLabels = () => ({ stepLabels: E.personStepLabels(), inputLabels: E.personInputLabels() });
@@ -1713,9 +1715,9 @@ const linkLines = [];
         return;
       }
       const question = `${HELD_PREFIX}: blocked by ${all.join(', ')} — starts once their PRs merge`;
-      q('park', key, question);
+      q('park', key, '--kind', 'hold', question);
       q('set', key, `held_by=${all.join('|')}`, ...outsideSet, ...(dateHeld(t) ? ['held_label=null'] : []));
-      Object.assign(t, { state: 'parked', park: { question }, held_by: all.join('|') });
+      Object.assign(t, { state: 'parked', park: { question, kind: 'hold' }, held_by: all.join('|') });
       linkLines.push(`blocker link: ${key}: newly linked as blocked by ${holds.join(', ')}${inNoBatch}: HELD behind ${all.join(', ')}`);
     };
     for (const { key } of due) {
@@ -1900,7 +1902,12 @@ const tierFor = (t) => {
 const GATE = E.spawnGate();
 const MIN_AVAIL_GB = GATE.start;
 const availGB = E.availableGiB();
-const lowMemory = MIN_AVAIL_GB > 0 && availGB < MIN_AVAIL_GB;
+// A harm signal `desk-env mem watch` said or still sees within its window (swap growth, an OOM kill,
+// a worker's heap OOM or exit 137, a full tmpfs, the WSL VM near its grant) holds spawns as low
+// memory does, whatever avail reads. AUTOPILOT_MIN_AVAIL_GB=0 turns this off with the rest of the gate.
+const HARM = MIN_AVAIL_GB > 0 ? E.harmHold(STATE) : [];
+const harmWhy = HARM.length ? `memory harm: ${HARM.map((h) => h.signal).join(', ')} within the last ${E.HARM_WINDOW_MS / 60000}m (${HARM[0].line})` : null;
+const lowMemory = MIN_AVAIL_GB > 0 && (availGB < MIN_AVAIL_GB || HARM.length > 0);
 // Concurrency: the queue's field (the orchestrator's per-pass ladder decision, or a count the user
 // set), never above the cap from config §3b "Autopilot worker concurrency" (`<default> / <cap>`,
 // default 2 / 3). The report says whose number it is, and whether memory lowered it.
@@ -2094,7 +2101,7 @@ runSteps({
   snapshot: () => ({
     tickets: fresh.tickets, budget: BUDGET, modelsBad, checkin: CHECKIN, health: { stalls: HEALTH.stalls, holding: HEALTH.holding },
     pace: { bad: PACE.bad, hold: PACE.hold, line: PACE.line }, paceProbe,
-    memory: { low: lowMemory, avail: availGB, hold: GATE.hold, start: GATE.start, dropTo: GATE.dropTo }, lockQueue: LOCK_QUEUE,
+    memory: { low: lowMemory, avail: availGB, hold: GATE.hold, start: GATE.start, dropTo: GATE.dropTo, harm: harmWhy }, lockQueue: LOCK_QUEUE,
     spawnGrant: { may: maySpawn, key: HEADLESS_KEY, perm: headlessPerm, queueBin: join(SHOWN_BIN, 'queue.mjs') },
     maintHold: MAINT.hold, usageHold: USAGE_HOLD, probes: [...PROBES.values()].map((p) => p.why), pacingRow: E.CONFIG_ROWS['usage-pacing'].row,
   }),
@@ -2267,7 +2274,8 @@ let gateConflict = null;
 // machine budget and the repo's shared §3b cap bind it as they bind every worker.
 const baseFixRoom = baseWorkerMay && MACHINE.room > 0 && REPO.room > 0 && !repoUnlocked;
 // Why no base worker may start this pass, the first of the holds baseFixRoom tests.
-const noBaseFixRoom = () => baseWorkerHeld ?? (lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
+const noBaseFixRoom = () => baseWorkerHeld ?? (harmWhy ? harmWhy
+  : lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
   : LOCK_QUEUE?.deep ? LOCK_QUEUE.line
   : running.length >= concurrency ? `the batch's ${running.length} running worker(s) fill its number of ${concurrency}`
   : MACHINE.room <= 0 ? MACHINE.line
@@ -3390,7 +3398,9 @@ const SPAWN_HANDLERS = {
     if (report.failed.length === before) report.done.push(a.line);
   },
   park: (a) => {
-    q('park', a.key, a.line);
+    // The spawn loop parks only when a ticket could not be spawned (an unreachable host, a failed
+    // worktree setup): a failure, not a question.
+    q('park', a.key, '--kind', 'failure', a.line);
     report.parked.push(`${a.key}: ${a.line}`);
   },
   'hand-away': (a, s) => handAway(s.t, a.placement),
@@ -5348,11 +5358,30 @@ runPhase({
   report,
 });
 const heldWhy = heldWhyOf({
-  spawned: report.spawned.length, eligible: eligible.length, held, baseHold, baseLag, lowMemory, availGB, minAvailGB: MIN_AVAIL_GB,
+  spawned: report.spawned.length, eligible: eligible.length, held, baseHold, baseLag, lowMemory, harmWhy, availGB, minAvailGB: MIN_AVAIL_GB,
   lockQueueHeldText, machine: MACHINE, repoUnlocked, repoLine, repo: REPO, concurrency,
 });
 const heldEnd = Object.values(qEnd.tickets).filter(isHeld).map((t) => t.key);
 const mergedEnd = Object.values(qEnd.tickets).filter((t) => t.merged_at).map((t) => t.key);
+
+// ---- ledger difference ---------------------------------------------------------
+// With the ledger lever on, the pass's changes so far are written and its done tickets archived, then
+// queue.json is compared with the queue rebuilt from the log (queue-ledger.mjs queueDifference, seeding
+// a batch the log has never named), and the count goes in the report (pass/report.mjs ledgerLine) and
+// the metrics line. The pass record's write after it changes the batch's own fields, which a rebuild
+// carries over, and archives only a ticket another writer finished since.
+const ledgerLate = [];
+let ledgerRec = {};
+if (!DRY && ledgerOn()) {
+  ledgerLate.push(...writeLines(QW.flush({ archive: true })));
+  const missed = [...report.failed, ...ledgerLate].filter((l) => l.startsWith(MISSED_PREFIX)).length;
+  let check;
+  try { check = queueDifference(QUEUE_FILE, { seed: true, by: 'pass', waitMs: LOCK_WAIT_MS }); }
+  catch (e) { check = { error: String(e?.message ?? e).split('\n')[0] }; }
+  const l = ledgerLine({ check, missed, queueBin: join(SHOWN_BIN, 'queue.mjs') });
+  if (l) lines.push(l);
+  ledgerRec = { ledger_diffs: check.error ? null : check.diffs.length, ledger_missed: missed };
+}
 
 // ---- pass metrics ------------------------------------------------------------
 // One line per pass (pass-metrics.mjs). An eligible ticket left unspawned counts under the hold that
@@ -5364,7 +5393,8 @@ if (!DRY) {
   const runningEnd = Object.values(qEnd.tickets).filter((t) => t.state === 'running');
   const unspawned = eligible.filter((r) => qEnd.tickets[r.key]?.state === 'triaged').length;
   // usageStop and USAGE_HOLD also cover a limit met mid-pass, after `held` was fixed.
-  const holdWhy = !MAINT.hold && (held === PACE_HELD || USAGE_HOLD || usageStop) ? 'usage' : held ? null : lowMemory ? 'memory' : repoUnlocked ? 'lock' : null;
+  // A harm signal holds through `held` and is a memory hold all the same.
+  const holdWhy = !MAINT.hold && (held === PACE_HELD || USAGE_HOLD || usageStop) ? 'usage' : held && held !== harmWhy ? null : lowMemory ? 'memory' : repoUnlocked ? 'lock' : null;
   const collisions = heldBack.map((r) => {
     const holds = budgetHolds(r);
     return { key: r.key, with: [...new Set(holds.flatMap((h) => [...h.by, ...h.elsewhere.map((o) => o.key)]))], files: holds.map((h) => h.file) };
@@ -5378,6 +5408,7 @@ if (!DRY) {
     spawned: report.spawned.length, duration_ms: Date.now() - Date.parse(PASS_AT),
     queue_write_failures: report.failed.filter((x) => x.includes('queue write refused')).length,
     collisions,
+    ...ledgerRec,
   };
   const step = collisionStep({ streak: prevPass.collision_streak, warned: prevPass.collision_warned }, line);
   // The warning carries the time it is written, not the pass's start: a check-in sent since the pass
@@ -5389,14 +5420,14 @@ if (!DRY) {
   // A warning whose line was not written was not given: the next pass gives it.
   collisionRec = { collision_streak: step.streak, collision_warned: step.warn && !wrote.ok ? false : step.warned };
 }
-const late = recordPass((prev) => {
+const late = [...ledgerLate, ...recordPass((prev) => {
   const released = (prev.held_tickets ?? []).some((k) => qEnd.tickets[k] && !heldEnd.includes(k));
   // A merge is progress once, in the pass that first finds it merged, whoever recorded it: a merge
   // time later than the previous pass's start would count again a merge that pass already recorded.
   const merged = merges.length > 0 || (Array.isArray(prev.merged_tickets) && mergedEnd.some((k) => !prev.merged_tickets.includes(k)));
   const moved = report.spawned.length > 0 || merged || released;
   return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, undraft_errors: undraftErrors, pace_blind: PACE_BLIND, ...collisionRec };
-});
+})];
 lines[tableAt] = sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true });
 // The last write's refusals, and fields another writer had changed, are the person's too.
 if (late.length) {

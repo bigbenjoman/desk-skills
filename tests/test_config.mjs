@@ -245,11 +245,15 @@ t('DS-395 AC4 and so is a compound one', d.out.split('\n')[1].startsWith(`UNLIST
 t('DS-395 AC4 only the items workers cannot run are reported', d.out.split('\n').length, 2);
 t('DS-395 AC4 and exits 1', d.code, 1);
 
-// A §4 Local services item a worker cannot start by its leading name is named, where workers may start them.
+// A §4 Local services item the service-port type cannot read is named, where workers may start them.
 const badService = 'INVALID  §4 Local services: "Typesense on port 8108" is not `<service> [:<port>]`';
 d = drift(`${conf({ perms: { 'worker-local-services': 'yes' } })}| Local services | \`search: 8108\` \`mailpit\` \`Typesense on port 8108\` |\n`);
 t('a Local services item with no service name is named, where workers start services', d.out, [badService,
-  'UNLISTED §4 Local services item "Typesense on port 8108" does not start with a compose service name (lowercase, then `:port` or a space): every worker is refused it'].join('\n'));
+  'UNLISTED §4 Local services item "Typesense on port 8108" is not `<service> [:<port>]`: every worker is refused it'].join('\n'));
+// An item worker-settings refuses for what follows the name, not the name itself, is named UNLISTED too.
+d = drift(`${conf({ perms: { 'worker-local-services': 'yes' } })}| Local services | \`search 8108\` |\n`);
+t('DS-873 an item worker-settings refuses for its tail is UNLISTED, as worker-settings reads it', d.out.split('\n').includes(
+  'UNLISTED §4 Local services item "search 8108" is not `<service> [:<port>]`: every worker is refused it'), true);
 t('and `name: port` reads as its name', d.code, 1);
 t('DS-395 AC4 a script run as bash <path>.sh is not drift', drift(`${conf()}| Related tests | \`bash tests/related.sh\` |\n`).out, 'no drift');
 
@@ -626,6 +630,9 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   const ADDED_ROWS = [
     'test-signin|4|Test sign-in', // DS-804
     'other-names|0|Other names', // DS-805
+    'harm-swap-growth|3b|Swap growth that holds spawns (GB)', // DS-848
+    'harm-tmpfs|3b|tmpfs /tmp size that holds spawns (GB)', // DS-848
+    'harm-vmmem|3b|WSL VM share of its grant that holds spawns (%)', // DS-848
   ];
   const sorted = (a) => [...a].sort().join('\n');
   const rowsNow = Object.entries(CONFIG_ROWS).map(([id, r]) => [id, r.section, r.row, ...(r.table ? ['table'] : [])].join('|'));

@@ -43,7 +43,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
-import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, unpromotedHolds, promotionWords }from './batch-state.mjs';
+import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, unpromotedHolds, promotionWords, openUnknowns } from './batch-state.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
@@ -1009,10 +1009,12 @@ export function repoPlace(repos, id) {
 // ---- ship dates --------------------------------------------------------------------------------
 
 const MINUTE = 60_000;
+// The last forecast worked out for each batch and each repo's merged row, with what it was worked from.
 const forecasts = new Map();
 
-// The repo's forecast, or null with no batch. Worked out to the minute and kept, so the screen's
-// 2-second reread runs the simulation again only when the queue, the history or the minute changes.
+// The repo's forecast, or null with no batch. Worked out to the minute and kept per batch, so the
+// screen's 2-second reread runs the simulation again only when the queue, the history or the minute
+// changes, however many batches are set up.
 // A batch that is not live (liveBeat: no pass for LIVE_MS, and no next pass recorded that is still to
 // come) is `paused` while it still has a ticket autopilot could move: its dates assume passes that are
 // not happening, so they are not shown and not saved. With none left it is `idle`: nothing is late,
@@ -1033,17 +1035,19 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   // An epic with nothing left to run has shipped, so it is not run forward.
   const open = Object.fromEntries(Object.values(ep.epics).filter((e) => e.queued || e.missing > 0).map((e) => [e.key, { missing: e.missing }]));
   const id = JSON.stringify([r.id, at, checkin, r.live, r.workers, rows, open, ep.unread, history.map((l) => [l.key, l.size, l.hours])]);
-  if (!forecasts.has(id)) {
-    if (forecasts.size > 64) forecasts.clear();
+  const slot = JSON.stringify([r.id, Boolean(r.batches), checkin]);
+  const kept = forecasts.get(slot);
+  if (kept?.id !== id) {
     const sizes = Object.fromEntries(rows.map((x) => [x.key, x.size]));
     const paused = passesPaused(r);
     const F = { ...forecast({ rows, workers: r.workers, history, now: at, checkin, epics: open }), d: durations(history), sizes,
       paused, idle: !r.live && !paused, epics: ep.epics, of: ep.of, noEpic: ep.noEpic, unread: ep.unread };
     // A state directory desk-q cannot write to costs the saved estimate, never the screen.
     if (!F.none && r.live && !checkin) try { saveEstimates(r.stateDir, F.T, at); } catch { /* shown, not saved */ }
-    forecasts.set(id, F);
+    forecasts.set(slot, { id, F });
+    return F;
   }
-  return forecasts.get(id);
+  return kept.F;
 }
 
 const SOON = MINUTE;
@@ -3395,7 +3399,7 @@ function warningsOf(t, tr, lane) {
   for (const l of tr.lint ?? []) if (l?.severity === 'blocking') out.push(`Triage's ticket check: ${l.message}`);
   const c = tr.lane_challenge;
   if (c?.verdict && c.verdict !== 'CONFIRM') out.push(`Triage's lane check did not confirm lane ${lane} (${String(c.verdict).toLowerCase()}): ${c.reason ?? 'no reason recorded'}`);
-  if ((t.open_questions ?? 0) > 0) for (const u of tr.unknowns ?? []) out.push(`Open from triage: ${u?.question ?? u}`);
+  if ((t.open_questions ?? 0) > 0) for (const u of openUnknowns(tr.unknowns, t)) out.push(`Open from triage: ${u}`);
   const extra = Array.isArray(t.out_of_scope) ? t.out_of_scope : [];
   if (extra.length) out.push(`Its branch changes ${extra.length} file${extra.length === 1 ? '' : 's'} outside its triaged scope: ${extra.join(', ')}.`);
   if (t.spec_check?.ok === false) out.push(`The last pass found its acceptance specs not done: ${(t.spec_check.problems ?? []).join('; ') || 'no detail recorded'}.`);

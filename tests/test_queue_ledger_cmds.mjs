@@ -104,7 +104,9 @@ const run = (q0, args, { file, env = {} } = {}) => {
   const worker = spawn('bash', ['-c', 'sleep 300 & wait', 'x', 'claude', '-p', 'x', '--session-id', 's-ST-1'], { detached: true, stdio: 'ignore' });
   const { r, evs, said } = run({ tickets: { 'ST-1': tk('ST-1', { state: 'running', session_id: 's-ST-1', branch: 'fix/ST-1', worktree: wt, stage: '4/9' }) } }, ['stop', 'ST-1']);
   try { process.kill(-worker.pid, 'SIGKILL'); } catch { /* ended by stop */ }
-  t('AC3 stop: parked on its question, then the fields it cleared', `${r.status} ${said} ${evs[0]?.data.kind}`, '0 parked ST-1, legacy_set ST-1 / queue.mjs stop question');
+  t('AC3 stop: parked, then the fields it cleared', `${r.status} ${said}`, '0 parked ST-1, legacy_set ST-1 / queue.mjs stop');
+  t('DS-895 AC5 stop: the parked event is of kind stopped, and no legacy event holds the park',
+    `${evs[0]?.data.kind} ${evs.some((e) => e.type === 'legacy_set' && 'park' in e.data.fields)}`, 'stopped false');
 }
 
 // handback: a lane C park whose session step the person did goes back to a worker at Stage 4b.

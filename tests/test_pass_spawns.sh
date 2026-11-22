@@ -1743,10 +1743,24 @@ q add LG-1; q set LG-1 state=triaged lane=A branch=fix/LG-1
 out=$(DESK_CONFIG="$T/config-lg.md" node "$B/pass.mjs" 2>&1)
 check "DS-893 AC2 with the ledger lever on, a pass's spawn is a spawned event naming the pass" \
   '[ "$(field LG-1 state)" = "\"running\"" ] && [ "$(jq -sc "[.[] | select(.key == \"LG-1\" and .type == \"spawned\") | .by.proc]" "$T/lg/ledger/events.jsonl")" = "[\"pass\"]" ]'
-q add LG-2; q set LG-2 state=triaged lane=A branch=fix/LG-2
+# DS-894: the pass then compares queue.json with the queue rebuilt from the log, and its metrics line
+# records the counts. lgm is the last pass's [differences, missed appends].
+lgm(){ tail -1 "$T/state-lg/passes.jsonl" | jq -c "[.ledger_diffs, .ledger_missed]"; }
+check "DS-894 AC1/AC4 a batch with no log, seeded by the pass's writes, matches it: no difference line, and the metrics record zero" \
+  '! echo "$out" | grep -q "differ between queue.json" && [ "$(lgm)" = "[0,0]" ]'
+jq '.tickets["LG-1"].lane = "Z"' "$T/lg/queue.json" > "$T/lg/q.tmp" && mv "$T/lg/q.tmp" "$T/lg/queue.json"
+out=$(DESK_CONFIG="$T/config-lg.md" node "$B/pass.mjs" 2>&1)
+check "DS-894 AC2 a field written past the queue store: the report names the ticket and field, and the metrics count it" \
+  'echo "$out" | grep -q "ledger: 1 field(s) differ between queue.json and the queue rebuilt from the log, 0 missed append(s) this pass: LG-1 lane" && [ "$(lgm)" = "[1,0]" ]'
+DESK_CONFIG="$T/config-lg.md" q add LG-2; DESK_CONFIG="$T/config-lg.md" q set LG-2 state=triaged lane=A branch=fix/LG-2
 mkdir "$T/lg/ledger/.lock"; echo $$ > "$T/lg/ledger/.lock/pid"
 out=$(DESK_CONFIG="$T/config-lg.md" node "$B/pass.mjs" 2>&1); rm -rf "$T/lg/ledger/.lock"
 check "DS-893 AC10 the ledger locked past its wait: the spawn is still recorded, and the report names the missed append" \
   '[ "$(field LG-2 state)" = "\"running\"" ] && echo "$out" | grep -q "ledger: 1 missed append" && ! jq -e "select(.key == \"LG-2\" and .type == \"spawned\")" "$T/lg/ledger/events.jsonl" >/dev/null'
+check "DS-894 AC5 the pass whose spawn missed its append counts it, and names the field it left unrecorded" \
+  'echo "$out" | grep -qE "ledger: [1-9][0-9]* field\(s\) differ between queue.json and the queue rebuilt from the log, [1-9][0-9]* missed append\(s\) this pass: LG-1 lane, LG-2 " && [ "$(lgm | jq ".[0] > 1 and .[1] > 0")" = true ] && DESK_CONFIG="$T/config-lg.md" node "$B/queue.mjs" rebuild | grep -q "^LG-2 state: queue.json \"running\", rebuilt \"triaged\""'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-894 AC7 with the lever off, no difference line and no difference count" \
+  '! echo "$out" | grep -q "differ between queue.json" && [ "$(tail -1 "$T/state-lg/passes.jsonl" | jq "has(\"ledger_diffs\") or has(\"ledger_missed\")")" = false ]'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

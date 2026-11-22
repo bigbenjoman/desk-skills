@@ -464,6 +464,7 @@ q add H-10; q set H-10 state=triaged branch=fix/H-10
 echo other > "$T/mode.setup"
 pj
 check "DS-589 AC4 any other setup failure parks as today"            '[ "$(field H-10 state)" = parked ] && grep -q "H-10: worktree setup failed, not spawned — FAIL: §4 Install failed twice" <<< "$out" && ! grep -q "local database" <<< "$out"'
+check "DS-895 a failed setup parks as a failure, not a question"     '[ "$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).tickets[\"H-10\"].park.kind)" "$DESK_QUEUE")" = failure ]'
 check "DS-589 a ticket that waited and spawned keeps no wait mark"   '[ "$(field H-8 db_wait)" = null ]'
 q set H-10 state=done
 q add H-11; q set H-11 state=triaged branch=fix/H-11
