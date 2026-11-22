@@ -321,10 +321,11 @@ export function fixCall(t, s, ctx) {
     split = splitFailing(built ? rest.filter((f) => !built.names.includes(f.name)) : rest, ctx);
     let { mine, notMine } = split;
     // Beside a check that is not a worker's, a check an outage holds on this PR is set aside first, so
-    // the PR goes that check's way, and a try it gets is told to leave the held one red.
+    // the PR goes that check's way, and a try it gets is told to leave the held one red. A held check is
+    // the pass's, never a person's: beside a check build it neither stops the build nor joins a stuck answer.
     const aside = notMine.length || state.length || built ? outageOn(s.pr, mine, ctx) : [];
     mine = mine.filter((f) => !aside.includes(f));
-    if (built && !mine.length) return buildStep(t, s, built, [...notMine, ...outageNotMine(aside)], ctx);
+    if (built && !mine.length) return buildStep(t, s, built, notMine, ctx);
     if (!mine.length && notMine.length) return operatorStuck(notMine, ctx);
     if (!mine.length) {
       // Red only on state checks. One reading the verdict or an approval has its route; one reading other

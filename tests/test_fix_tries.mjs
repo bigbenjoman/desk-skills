@@ -1127,6 +1127,17 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-548 AC5 a pre-merge step beside it is the person\'s alone, and the build starts with it', `${a5?.call} | ${a5?.why} | ${a5?.build?.call}`, 'stuck | Check portal schema mirror · apply the PR\'s migrations to staging first | build');
   t('DS-548 AC5 while the build runs, that step alone is stuck', fixCall(tk(), both, bctx({ state: 'running', command: built.command }, steps))?.why, 'Check portal schema mirror · apply the PR\'s migrations to staging first');
   t('DS-548 AC5 negative control: a pre-merge step alone is the person\'s, as today', fixCall(tk(), pr([ok('tests'), red('Check portal schema mirror', '905')]), bctx(null, steps))?.why, 'Check portal schema mirror · apply the PR\'s migrations to staging first');
+  // DS-853: a check an outage holds beside a check build is the pass's, so the build goes its way and
+  // the held check is named as no person's.
+  const outage = new Map([['Deploy preview', { line: 'x', text: 'retry later', prs: [697, 698], runnable: true }]]);
+  const withHeld = pr([ok('tests'), red('Flows image', '903'), red('Deploy preview', '906')]);
+  t('DS-853 beside a held check, a check build not run at its head runs', fixCall(tk(), withHeld, bctx(null, { outage }))?.call, 'build');
+  t('DS-853 beside a held check, a check build running waits', fixCall(tk(), withHeld, bctx({ state: 'running', command: built.command }, { outage }))?.call, 'wait');
+  t('DS-853 beside a held check, a check build that succeeded is re-run', fixCall(tk(), withHeld, bctx(built, { outage }))?.call, 'rebuilt');
+  const heldFailed = fixCall(tk(), withHeld, bctx(failed, { outage }));
+  t('DS-853 beside a held check, a failed build is stuck on itself alone', `${heldFailed?.call} | ${heldFailed?.checks?.map((c) => c.name)}`, 'stuck | Flows image');
+  const heldStep = fixCall(tk(), pr([ok('tests'), red('Flows image', '903'), red('Check portal schema mirror', '905'), red('Deploy preview', '906')]), bctx(null, { ...steps, outage }));
+  t('DS-853 beside a held check and a pre-merge step, only the step is the person\'s, and the build starts', `${heldStep?.call} | ${heldStep?.why} | ${heldStep?.build?.call}`, 'stuck | Check portal schema mirror · apply the PR\'s migrations to staging first | build');
 }
 
 // A requeued fix try's row reads where its worker is: it starts at the stage the try begins at, and
