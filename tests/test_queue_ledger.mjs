@@ -25,6 +25,7 @@ const { versionOf } = await import('../desk/bin/queue-store.mjs');
 const { read: readLog, ledgerPaths, reduce, fold } = await import('../desk/bin/ticket-ledger.mjs');
 const { recordWrite, ledgerTarget, STANDING, queueDifference } = await import('../desk/bin/queue-ledger.mjs');
 const { ledgerLine } = await import('../desk/bin/pass/report.mjs');
+const { failedField } = await import('../desk/bin/pass/shared.mjs');
 const { lock, unlock } = await import('../desk/bin/dir-lock.mjs');
 
 let fails = 0;
@@ -219,7 +220,7 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   // The failure as markFailed writes it, with the subtype its session ended in.
   const w2 = queueWriter(f);
   const atF = log(f).length;
-  w2.apply(['set', 'A', 'state=failed', `failed=${JSON.stringify({ why: 'exited with no marker', at: '2026-11-22T10:00:00.000Z', subtype: 'error_max_budget_usd' })}`]);
+  w2.apply(['set', 'A', 'state=failed', failedField('exited with no marker', { subtype: 'error_max_budget_usd' })]);
   w2.flush();
   t('AC2 a failure appends a failed event with its session\'s subtype', JSON.stringify(since(f, atF).find((e) => e.type === 'failed')?.data), JSON.stringify({ subtype: 'error_max_budget_usd' }));
 

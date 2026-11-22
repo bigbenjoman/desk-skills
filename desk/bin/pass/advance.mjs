@@ -437,7 +437,7 @@ export function* decideAdvance(s) {
         yield say(t.key, 'parked', `${t.key}: ${why}`);
       } else if (stop?.fail) {
         const code = yield { type: 'exit-code', key: t.key };
-        yield { type: 'fail', key: t.key, why: `killed before it finished (${killed}), with no marker and no open PR on ${t.branch} (${workerEnd(log.text)}, ${exitText(code)}). ${stop.fail}`, tail: ` — check ${log.path}`, subtype: errorSubtype(log.text) };
+        yield { type: 'fail', key: t.key, why: `killed before it finished (${killed}), with no marker and no open PR on ${t.branch} (${workerEnd(log.text)}, ${exitText(code)}). ${stop.fail}`, tail: ` — check ${log.path}` };
       } else if (stop?.park) {
         yield { type: 'park', key: t.key, question: stop.park };
         yield say(t.key, 'parked', `${t.key}: ${stop.park}`);
