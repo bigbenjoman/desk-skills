@@ -103,6 +103,10 @@ const failureKind = (out) => (NETWORK.test(out ?? '') ? 'network' : 'auth');
 const GH_LIMIT = /rate limit exceeded/i;
 const GH_SIGNED_OUT = /HTTP 401|bad credentials/i;
 const ghLimited = (out) => GH_LIMIT.test(out) && !GH_SIGNED_OUT.test(out);
+// A gh older than `--active` (Ubuntu 24.04's 2.45) refuses the flag, which is no sign-out: there the
+// check reads every account, as it did before the flag. install.sh falls back the same way.
+const GH_NO_ACTIVE = /unknown flag: --active/;
+const GH_ALL_ACCOUNTS = ['gh', 'auth', 'status'];
 // When the token's core API limit resets, as an ISO time, or null. The rate_limit endpoint answers
 // while the limit is used up. `cmdEnv`: the account's environment, where it is not gh as it stands.
 async function ghLimitReset(timeoutMs, cmdEnv) {
@@ -207,7 +211,7 @@ function runCommand([cmd, ...args], timeoutMs, cmdEnv = undefined, keepOut = fal
     child.on('close', (code, signal) => {
       if (code === 0) finish(keepOut ? { ok: true, out: out.trim() } : { ok: true });
       const last = out.trim().split('\n').map((l) => l.trim()).filter(Boolean).at(-1);
-      finish({ ok: false, why: `${last ? `${last.slice(0, 160)}; ` : ''}exited ${code ?? signal}`, kind: failureKind(out), ...(ghLimited(out) ? { limited: true } : {}) });
+      finish({ ok: false, why: `${last ? `${last.slice(0, 160)}; ` : ''}exited ${code ?? signal}`, kind: failureKind(out), ...(ghLimited(out) ? { limited: true } : {}), ...(GH_NO_ACTIVE.test(out) ? { noActive: true } : {}) });
     });
   });
 }
@@ -278,7 +282,9 @@ async function runCheck(id, env, timeoutMs, retryMs) {
   }
   // Both tries go through this, so a limit the retry meets is still a limit, not a sign-out.
   const attempt = async () => {
-    const r = await runCommand(byId[id].cmd, timeoutMs);
+    let r = await runCommand(byId[id].cmd, timeoutMs);
+    if (id === 'gh' && r.noActive) r = await runCommand(GH_ALL_ACCOUNTS, timeoutMs);
+    delete r.noActive;
     if (id === 'gh' && r.limited) { delete r.limited; return { ...r, kind: 'limit', reset: await ghLimitReset(timeoutMs) }; }
     delete r.limited;
     return r;

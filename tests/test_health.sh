@@ -125,6 +125,9 @@ case "\$(cat "$T/mode.$c" 2>/dev/null || echo ok)" in
               case " \$* " in *" --active "*) ;; *) echo "- HTTP 401: Bad credentials (https://api.github.com/)" >&2 ;; esac; exit 1 ;;
   tworevoked) echo "- HTTP 401: Bad credentials (https://api.github.com/)" >&2
               case " \$* " in *" --active "*) ;; *) echo "- HTTP 403: API rate limit exceeded for user ID 1." >&2 ;; esac; exit 1 ;;
+  # A gh older than --active refuses the flag; without it, signed in (oldgh) or limited (oldlimit).
+  oldgh|oldlimit) case " \$* " in *" --active "*) printf 'unknown flag: --active\n\nUsage:  gh auth status [flags]\n' >&2; exit 1 ;; esac
+                  [ "\$(cat "$T/mode.$c")" = oldlimit ] && { echo "- HTTP 403: API rate limit exceeded for user ID 1." >&2; exit 1; } ;;
   unreach) echo "desk-jira: could not reach https://acme.atlassian.net (see the curl error above)" >&2; exit 1 ;;
   hang) sleep 5 ;;
   once) [ -f "$T/hung.$c" ] || { : > "$T/hung.$c"; sleep 5; } ;;
@@ -224,6 +227,20 @@ check "DS-995 AC3 it is told as not signed in"               'grep -qF "health: 
 mode gh ok
 pj
 q set H-B state=done
+# A gh older than --active (Ubuntu 24.04's 2.45) refuses the flag: that is no sign-out.
+q add H-O; q set H-O state=triaged branch=fix/H-O
+mode gh oldgh; : > "$T/calls.gh"
+pj
+check "DS-995 a gh without --active, signed in: it passes and holds no spawn" \
+  '[ "$(field H-O state)" = running ] && ! grep -q "failing — gh" <<< "$out" && ! grep -q "fix: gh auth login" <<< "$out"'
+check "DS-995 it reads every account once the flag is refused" 'grep -qx -- "auth status --active" "$T/calls.gh" && grep -qx "auth status" "$T/calls.gh"'
+q set H-O state=done
+mode gh oldlimit
+pj
+check "DS-995 a gh without --active, limited: the limit with its reset, no spawn held" \
+  'grep -qF "GitHub CLI: the GitHub API limit is used up, not a sign-in; it resets at 2026-11-18T11:06:40.000Z; not holding spawns" <<< "$out"'
+mode gh ok
+pj
 q add H-3; q set H-3 state=triaged branch=fix/H-3
 DESK_FREE_DISK_GB=12 pj
 check "AC6 low disk holds spawns"                           '[ "$(field H-3 state)" = triaged ]'

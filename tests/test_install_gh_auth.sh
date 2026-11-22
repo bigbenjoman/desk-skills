@@ -28,6 +28,10 @@ lim='  X Failed to log in to github.com account someone (keyring)\n  - Active ac
 rev='  X Failed to log in to github.com account someone (keyring)\n  - Active account: true\n  - HTTP 401: Bad credentials (https://api.github.com/)\n'
 case " \$* " in *" --active "*) active=1 ;; *) active="" ;; esac
 two(){ inactive="\$(printf '%s' "\$2" | sed 's/someone/other/; s/Active account: true/Active account: false/')"; printf "github.com\n\$1" >&2; [ -n "\$active" ] || printf "\$inactive" >&2; exit 1; }
+# old<mode>: a gh older than --active refuses the flag, then answers as <mode> without it.
+case "\$GH_MODE" in old*)
+  [ -n "\$active" ] && { printf 'unknown flag: --active\n\nUsage:  gh auth status [flags]\n' >&2; exit 1; }
+  GH_MODE="\${GH_MODE#old}" ;; esac
 case "\$GH_MODE" in
   twolimited) two "\$lim" "\$rev" ;;
   tworevoked) two "\$rev" "\$lim" ;;
@@ -79,5 +83,16 @@ check "DS-995 AC1 active rate-limited, other revoked: a warning naming the reset
 run tworevoked
 check "DS-995 AC3 active revoked, other rate-limited: gh is not signed in, and counted as missing" \
   '[ "$missing" = "$((base + 1))" ] && [[ "$out" == *"MISS  gh is not signed in. Run: gh auth login"* ]] && [[ "$out" != *"rate-limited"* ]]'
+
+# A gh older than --active (Ubuntu 24.04's 2.45) refuses the flag: that is no sign-out
+run oldok
+check "DS-995 a gh without --active, signed in: the scopes are read, not missing" \
+  '[ "$missing" = "$base" ] && [[ "$out" == *"ok    gh token has the workflow scope"* ]] && [[ "$out" != *"gh is not signed in"* ]]'
+run oldlimited
+check "DS-995 a gh without --active, rate-limited: the warning with its reset, not missing" \
+  '[[ "$out" == *"rate-limited until $at. The install goes on"* ]] && [ "$missing" = "$base" ]'
+run oldrevoked
+check "DS-995 a gh without --active, revoked: still not signed in" \
+  '[ "$missing" = "$((base + 1))" ] && [[ "$out" == *"MISS  gh is not signed in. Run: gh auth login"* ]]'
 
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]
