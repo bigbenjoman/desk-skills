@@ -6,8 +6,17 @@
 // fewer workers run than IDLE_SHARE of the batch's concurrency. It is given once per streak; the
 // streak and whether it was warned live on the queue's `pass` record (collision_streak,
 // collision_warned), and a pass where the condition does not hold resets both.
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+//
+// A line also carries `setup`: one entry per worktree setup-worktree.sh finished this pass, with the
+// seconds each step took. `node pass-metrics.mjs setup-medians [<state dir> ...]` reports each repo's
+// median per step over its new worktrees: every repo under ~/.desk-autopilot when none is named, each
+// one's standing batch and named batches together, else each named state dir on its own.
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as E from './desk-env.mjs';
+import { namedBatches } from './batches.mjs';
+import { quantile } from './quantile.mjs';
 
 export const STREAK_PASSES = 10;
 export const IDLE_SHARE = 0.25;
@@ -68,4 +77,84 @@ export function readWarnings(state) {
     try { const e = JSON.parse(l); const at = e?.warned_at ?? e?.at; if (at && e.warning) out.push({ at, text: e.warning }); } catch { /* a torn line */ }
   }
   return out;
+}
+
+// setup-worktree.sh's `steps=` line as {step: seconds}, in the order run; null when the output has none.
+export function parseSetupSteps(out) {
+  const m = [...String(out ?? '').matchAll(/\[setup-worktree\] steps=(\S*)/g)].pop();
+  if (!m) return null;
+  const steps = {};
+  for (const part of m[1].split(',')) {
+    const [name, secs] = part.split(':');
+    if (name && /^\d+$/.test(secs ?? '')) steps[name] = (steps[name] ?? 0) + Number(secs);
+  }
+  return steps;
+}
+
+const median = (xs) => quantile(xs, 0.5);
+
+// Each repo's state dirs under `root`, its standing batch first, then its named batches, then its
+// archived ones, keeping only those with a metrics file: [{ slug, states }]. A batch pass logs under
+// `batches/<name>/`, and batch.mjs moves that folder to `batches/.done/<name>/` when it archives it.
+export function repoStates(root = join(E.HOME, '.desk-autopilot')) {
+  let slugs = [];
+  try { slugs = readdirSync(root).sort(); } catch { /* no autopilot state yet */ }
+  const subdirs = (d) => { try { return readdirSync(d).sort().map((n) => join(d, n)); } catch { return []; } };
+  return slugs
+    .map((slug) => {
+      const dir = join(root, slug);
+      const named = namedBatches(dir).map((b) => join(dir, E.BATCHES_DIR, b));
+      const archived = subdirs(join(dir, E.BATCHES_DIR, '.done'));
+      const states = [dir, ...named, ...archived].filter((d) => existsSync(metricsPath(d)));
+      return { slug, states };
+    })
+    .filter((r) => r.states.length);
+}
+
+// A repo's setup durations from the metrics files of one state dir or several (its batches). Medians
+// are over new worktrees only: a kept one skips the install.
+// { new, kept, from, to, total, steps: {step: {median, max, n}} }; a torn line is skipped.
+export function setupMedians(states) {
+  const runs = [];
+  let kept = 0;
+  for (const state of [states].flat()) {
+    let raw = '';
+    try { raw = readFileSync(metricsPath(state), 'utf8'); } catch { /* no metrics yet */ }
+    for (const l of raw.split('\n')) {
+      if (!l.includes('"setup"')) continue;
+      let e;
+      try { e = JSON.parse(l); } catch { continue; }
+      for (const s of e?.setup ?? []) {
+        if (!s?.steps) continue;
+        if (s.kept) { kept += 1; continue; }
+        runs.push({ at: e.at, steps: s.steps });
+      }
+    }
+  }
+  runs.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  const by = {};
+  for (const r of runs) for (const [k, v] of Object.entries(r.steps)) (by[k] ??= []).push(v);
+  const steps = Object.fromEntries(Object.entries(by).map(([k, xs]) => [k, { median: median(xs), max: Math.max(...xs), n: xs.length }]));
+  const totals = runs.map((r) => Object.values(r.steps).reduce((a, b) => a + b, 0));
+  return { new: runs.length, kept, from: runs[0]?.at ?? null, to: runs.at(-1)?.at ?? null, total: median(totals), steps };
+}
+
+export function setupMediansText(slug, m) {
+  if (!m.new) return `${slug}: no new worktree setups recorded${m.kept ? ` (${m.kept} kept)` : ''}`;
+  const rows = Object.entries(m.steps).map(([k, s]) => `  ${k.padEnd(10)} median ${String(s.median).padStart(5)}s  max ${String(s.max).padStart(5)}s  n=${s.n}`);
+  return [`${slug}: ${m.new} new worktree setups, ${m.from.slice(0, 10)} to ${m.to.slice(0, 10)}, median total ${m.total}s${m.kept ? ` (${m.kept} kept, not counted)` : ''}`, ...rows].join('\n');
+}
+
+const isMain = (() => {
+  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return false; }
+})();
+
+if (isMain) {
+  const [cmd, ...dirs] = process.argv.slice(2);
+  if (cmd !== 'setup-medians') { console.error('usage: pass-metrics.mjs setup-medians [<state dir> ...]'); process.exit(2); }
+  const root = join(E.HOME, '.desk-autopilot');
+  const repos = dirs.length ? dirs.map((d) => ({ slug: basename(d), states: [d] })) : repoStates(root);
+  if (!repos.length) { console.log(`no passes.jsonl under ${root}`); process.exit(0); }
+  console.log(repos.map((r) => setupMediansText(r.slug, setupMedians(r.states))).join('\n\n'));
 }

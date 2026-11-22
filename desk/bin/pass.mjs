@@ -30,7 +30,7 @@ import { checkinTimes, checkinRow, checkin, readDecisions, repos as digestRepos,
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, appendOnlyFrom } from './scope-report.mjs';
 import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy, recentCount } from './conflict-record.mjs';
-import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath } from './pass-metrics.mjs';
+import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, parseSetupSteps } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
@@ -3328,6 +3328,8 @@ for (const { name, why } of pruneReadRepos()) report.failed.push(`read-only clon
 let readRepoFailures = null;
 // health.mjs markFailed's line, stall and push once a worktree setup in this pass has not reached the local database.
 let dbDown = null;
+// Each worktree set up this pass, with the seconds each step took: the metrics line carries them.
+const setupTimes = [];
 const SETUP_FETCH_S = String(Math.max(1, Math.ceil(REMOTE_GIT_MS / 1000)));
 // A local spawn's worktree, set up by setup-worktree.sh for decideSpawn's `setup` action: { wt, kept,
 // renamed, hung } where origin was found hung before it ran, else { wt, kept, renamed, ok, exitOk, out,
@@ -3338,6 +3340,9 @@ function setUpWorktree(t) {
   // Read before setup-worktree.sh, which makes a worktree that is not there: a round left in one the
   // requeue removed for a fresh branch is not resumed.
   const kept = existsSync(wt);
+  // A kept dir still holding setup-worktree.sh's incomplete marker gets the full setup, install
+  // included, so its step times count as a new worktree's (DS-698).
+  const reused = kept && !existsSync(join(wt, '.desk-setup-incomplete'));
   // A queued branch no worker could push (a convention placeholder left in at triage) is replaced
   // from the key and summary before setup-worktree.sh cuts it.
   let renamed = '';
@@ -3367,7 +3372,10 @@ function setUpWorktree(t) {
     retried = `first try: ${first}; re-fetched ${staleRef[2]}${refetch.ok ? '' : ` (that fetch failed: ${lastLine(refetch.out)})`} and retried once: `;
     if (setUp(setupRun)) report.recovered.push(`${t.key}: worktree setup could not lock the stale ref ${staleRef[1]}; re-fetched ${staleRef[2]} and the retry set it up`);
   }
-  return { wt, kept, renamed, ok: setUp(setupRun), exitOk: setupRun.ok, out: setupRun.out, retried };
+  const ok = setUp(setupRun);
+  const steps = ok ? parseSetupSteps(setupRun.out) : null;
+  if (steps) setupTimes.push({ key: t.key, kept: reused, steps });
+  return { wt, kept, renamed, ok, exitOk: setupRun.ok, out: setupRun.out, retried };
 }
 // The decision is pass/spawn-loop.mjs decideSpawn, run for each candidate in turn: its snapshot is the
 // loop's state as the candidate's turn comes, its reads and locked writes are the handlers below, made
@@ -5391,6 +5399,7 @@ if (!DRY) {
     queue_write_failures: report.failed.filter((x) => x.includes('queue write refused')).length,
     collisions,
     ...ledgerRec,
+    setup: setupTimes,
   };
   const step = collisionStep({ streak: prevPass.collision_streak, warned: prevPass.collision_warned }, line);
   // The warning carries the time it is written, not the pass's start: a check-in sent since the pass
