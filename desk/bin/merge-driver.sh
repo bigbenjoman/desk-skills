@@ -149,6 +149,12 @@
 #   MERGE_DRIVER_ONE_LOOP=1      one full loop (join, release, at most one merge), then exit instead of
 #                                sleeping: 0, or 1 when the PR list could not be read
 #   MERGE_DRIVER_GREEN_SECS=<n>  how long a head must stay green before it merges (default 60)
+#   MERGE_DRIVER_IDLE_SECS=<n>, MERGE_DRIVER_IDLE_MAX_SECS=<n>, MERGE_DRIVER_WAKE_SECS=<n>
+#                                the pause after a loop with nothing it may merge: the first, doubled on
+#                                each such loop in a row up to the most (defaults 60 and 600), and how
+#                                often within it the driver looks for a worker's exit or an undraft by the
+#                                pass, either of which ends it (default 60). After a merge it waits 30s,
+#                                and with ready PRs still waiting on CI 120s, as before
 #   MERGE_DRIVER_UNKNOWN_SECS=<n>  how long a ready PR may have no mergeability answer before its one
 #                                branch update, and again after it before the queue asks the person
 #                                (default DESK_UNKNOWN_SECS, which the pass's undraft reads too, else 1800)
@@ -1273,9 +1279,35 @@ pause(){
   wait "$SLEEP_PID"; kill "$SLEEP_PID" 2>/dev/null; SLEEP_PID=""
   stop_if_asked
 }
+# idle_pause: the wait after a loop with nothing it may merge. Each such loop in a row doubles it, from
+# IDLE_SECS up to IDLE_MAX_SECS; a loop with a ready PR starts the run again. It sleeps in slices of
+# WAKE_SECS and ends early once the repo's exits folder (a worker exited) or $SD/wake (the pass took a
+# PR out of draft) has changed since this loop began, so a long pause never holds back a new PR.
+IDLE_SECS="${MERGE_DRIVER_IDLE_SECS:-60}"; IDLE_MAX_SECS="${MERGE_DRIVER_IDLE_MAX_SECS:-600}"; WAKE_SECS="${MERGE_DRIVER_WAKE_SECS:-60}"
+IDLE_RUN=0; LOOP_MARK="$SD/loop-began"
+idle_pause(){
+  local secs="$IDLE_SECS" i=0 left slice woke
+  while [ "$i" -lt "$IDLE_RUN" ] && [ "$secs" -lt "$IDLE_MAX_SECS" ]; do secs=$((secs * 2)); i=$((i + 1)); done
+  [ "$secs" -le "$IDLE_MAX_SECS" ] || secs="$IDLE_MAX_SECS"
+  IDLE_RUN=$((IDLE_RUN + 1))
+  [ "$IDLE_RUN" -eq 1 ] || log "idle loop $IDLE_RUN in a row: next look in ${secs}s, sooner once a worker exits or a PR leaves draft"
+  left="$secs"
+  while [ "$left" -gt 0 ]; do
+    slice="$WAKE_SECS"; [ "$slice" -le "$left" ] || slice="$left"
+    pause "$slice"
+    left=$((left - slice))
+    [ "$left" -gt 0 ] || break
+    woke=$(find "${DESK_EXITS_DIR:-$SD/no-exits}" "$SD/wake" -maxdepth 0 -newer "$LOOP_MARK" 2>/dev/null | head -1)
+    if [ -n "$woke" ]; then
+      case "$woke" in "$SD/wake") log "woken: a PR left draft — looking again now" ;; *) log "woken: a worker exited — looking again now" ;; esac
+      return 0
+    fi
+  done
+}
 while true; do
   stop_if_asked
   LOOP=$((LOOP + 1))
+  touch "$LOOP_MARK"
   reopen_log
   join_queue_tickets
   release_chain
@@ -1313,13 +1345,14 @@ while true; do
     elsewhere=$(PRS_BASE='' prs open </dev/null | awk -F'\t' -v b="$BASE_BRANCH" '$4 != b { printf "%s#%s (%s) on %s", s, $1, $3, $4; s = ", " }')
     if [ -n "$elsewhere" ]; then log "no ready batch PRs on $BASE_BRANCH, the only base this driver watches; batch PRs open on another base: $elsewhere"
     else log "no ready batch PRs"; fi
-    pause 60; continue
+    idle_pause; continue
   fi
 
   if [ -n "$fixkey" ]; then
     ready=$(printf '%s\n' "$ready" | awk -F'\t' -v k="$fixkey" '$2 == k')
-    if [ -z "$ready" ]; then pause 120; continue; fi
+    if [ -z "$ready" ]; then idle_pause; continue; fi
   fi
+  IDLE_RUN=0
 
   REPAIRS=$(repaired_prs "$(printf '%s\n' "$list" | cut -f1 | paste -sd ' ' -)" </dev/null)
   merged=""
