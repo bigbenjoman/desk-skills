@@ -13,6 +13,9 @@
 #            the spawn order) once EVERY pred's PR has merged. Chain only real file collisions.
 # --log      append stdout and stderr to <state>/merge-driver.log (no value: the file is fixed).
 # --batch    the named batch whose queue and state it drives, as DESK_BATCH=<name> does.
+# --all-batches  in place of --tickets and --deps: one driver for every handed-over batch of the repo,
+#            as the supervisor runs it (merge-driver-repo.sh). Each sweep reads the author's open PRs
+#            once and runs one loop of this driver per batch, onto that batch's base.
 #
 # Which PRs are the batch's: open, authored by config §1's GitHub handle, based on §0 Default branch
 # (never a promotion PR such as main -> production), and whose head branch is the branch recorded in
@@ -148,6 +151,12 @@
 #   MERGE_DRIVER_RELEASE_ONLY=1  one release pass, then exit 0
 #   MERGE_DRIVER_ONE_LOOP=1      one full loop (join, release, at most one merge), then exit instead of
 #                                sleeping: 0, or 1 when the PR list could not be read
+#   MERGE_DRIVER_SWEEP=<pid>, MERGE_DRIVER_LOOP=<n>, MERGE_DRIVER_OPEN_PRS=<file>
+#                                set by --all-batches for each batch's loop: the lock it runs under is
+#                                that pid's, n numbers the sweep, and the open PRs are read from the file.
+#                                Its one loop exits 10 after a merge and 11 with ready PRs left
+#   MERGE_DRIVER_LIST_LIMIT=<n>  with --all-batches, the most open PRs its one list reads (default 1000);
+#                                a list that long has each batch list its own that sweep
 #   MERGE_DRIVER_GREEN_SECS=<n>  how long a head must stay green before it merges (default 60)
 #   MERGE_DRIVER_IDLE_SECS=<n>, MERGE_DRIVER_IDLE_MAX_SECS=<n>, MERGE_DRIVER_WAKE_SECS=<n>
 #                                the pause after a loop with no ready PR: the first, doubled on
@@ -165,23 +174,32 @@
 # Once its arguments are accepted, the last line it writes is always `merge driver exited <code>`.
 set -uo pipefail
 
-usage(){ echo "usage: merge-driver.sh --tickets \"<TICKET> <TICKET>\" [--deps \"<succ>:<pred>[,<pred>]\"] [--log] [--batch <name>]" >&2; exit 2; }
+usage(){ echo "usage: merge-driver.sh --tickets \"<TICKET> <TICKET>\" [--deps \"<succ>:<pred>[,<pred>]\"] [--log] [--batch <name>] | --all-batches [--log]" >&2; exit 2; }
 
 # shellcheck source=desk-env.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/desk-env.sh"
+# shellcheck source=merge-driver-lib.sh
+. "$DESK_ENV_DIR/merge-driver-lib.sh"
 
 # ---- arguments: validated before anything else runs ---------------------------------------------
 desk_take_batch "$@" || exit 2
 set -- ${DESK_ARGS[@]+"${DESK_ARGS[@]}"}
-TICKETS=""; DEPS=""; LOG=""
+TICKETS=""; DEPS=""; LOG=""; ALL=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --tickets) [ "$#" -ge 2 ] || usage; TICKETS="$2"; shift 2 ;;
     --deps)    [ "$#" -ge 2 ] || usage; DEPS="$2"; shift 2 ;;
     --log)     LOG=1; shift ;;
+    --all-batches) ALL=1; shift ;;
     *) usage ;;
   esac
 done
+if [ -n "$ALL" ]; then
+  [ -z "$TICKETS$DEPS" ] || usage
+  # shellcheck source=merge-driver-repo.sh
+  . "$DESK_ENV_DIR/merge-driver-repo.sh"
+  exit 1
+fi
 
 is_key(){ node "$DESK_ENV_MJS" ticket-kind "$1" >/dev/null 2>&1; }
 key_error(){ node "$DESK_ENV_MJS" ticket-kind "$1" 2>&1 >/dev/null | sed 's/^desk: //'; }
@@ -243,7 +261,13 @@ if [ -n "$LOG" ]; then exec >>"$LOG_STATE/merge-driver.log" 2>&1; fi
 # The last line is always the exit code, so the supervisor can tell a driver that failed from one it
 # never saw stop. The lock is removed only once this driver holds it, never another driver's.
 LOCK_HELD=""
-on_exit(){ rc=$?; [ -n "${SLEEP_PID:-}" ] && kill "$SLEEP_PID" 2>/dev/null; [ -n "$LOCK_HELD" ] && rm -rf "$LOCKD"; [ -n "${SAID:-}" ] && rm -rf "$SAID"; echo "$(date -u +%H:%M:%SZ) merge driver exited $rc"; }
+on_exit(){
+  rc=$?; [ -n "${SLEEP_PID:-}" ] && kill "$SLEEP_PID" 2>/dev/null; [ -n "$LOCK_HELD" ] && rm -rf "$LOCKD"
+  # A batch's loop in a sweep (merge-driver-repo.sh) keeps what it said for the next sweep, and the
+  # sweep's driver writes the exit line.
+  [ -n "${MERGE_DRIVER_SWEEP:-}" ] && return
+  [ -n "${SAID:-}" ] && rm -rf "$SAID"; echo "$(date -u +%H:%M:%SZ) merge driver exited $rc"
+}
 trap on_exit EXIT
 
 # Who lets this driver merge: config §3 (`config`), or the batch's Stage 3 approval (`batch`). It is
@@ -308,20 +332,19 @@ command -v gh >/dev/null 2>&1 || { echo "FAIL: gh is required" >&2; exit 1; }
 # Two drivers would each merge and rerun the same PRs, and double reruns cancel each other.
 mkdir -p "$DESK_STATE"
 LOCKD="$DESK_STATE/merge-driver.lock.d"
-while ! mkdir "$LOCKD" 2>/dev/null; do
-  holder="$(cat "$LOCKD/pid" 2>/dev/null || true)"
-  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
-    echo "FAIL: another merge driver is running (pid $holder, lock $LOCKD). Stop it first; if it is dead, remove the lock." >&2
-    exit 1
-  fi
-  if [ -z "$holder" ] && [ -z "$(find "$LOCKD" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then sleep 1; continue; fi
-  mv "$LOCKD" "$LOCKD.stale.$$" 2>/dev/null && rm -rf "$LOCKD.stale.$$"   # atomic takeover of a dead holder's lock
-done
-echo "$$" > "$LOCKD/pid"; LOCK_HELD=1
+# A batch's loop in a sweep runs under the lock the sweep's driver holds or points for it.
+if [ -n "${MERGE_DRIVER_SWEEP:-}" ]; then
+  [ "$(cat "$LOCKD/pid" 2>/dev/null)" = "$MERGE_DRIVER_SWEEP" ] \
+    || { echo "FAIL: --all-batches driver $MERGE_DRIVER_SWEEP does not hold $LOCKD" >&2; exit 1; }
+fi
+if [ -z "${MERGE_DRIVER_SWEEP:-}" ]; then
+  lock_take "$LOCKD" || { echo "FAIL: another merge driver is running (pid $LOCK_HOLDER, lock $LOCKD). Stop it first; if it is dead, remove the lock." >&2; exit 1; }
+  LOCK_HELD=1
+fi
 reopen_log
 # The desk version this driver runs (its release's, not the installed one), so the supervisor can tell
 # it started before the last install.
-node "$DESK_RUN_BIN/installed.mjs" running > "$LOCKD/version" 2>/dev/null || true
+if [ -n "$LOCK_HELD" ]; then node "$DESK_RUN_BIN/installed.mjs" running > "$LOCKD/version" 2>/dev/null || true; fi
 trap 'exit 130' INT
 # TERM is a request to stop: a driver between loops stops at once (pause), and one mid-loop finishes
 # the PR it is on first (stop_if_asked), so a stop never leaves a merge half-recorded.
@@ -374,8 +397,15 @@ VERDICT_BY="$(node "$DESK_ENV_MJS" verdict-logins 2>/dev/null || printf '%s' "$A
 BASE_BRANCH="$DESK_DEFAULT_BRANCH"
 SD="$DESK_STATE/merge-driver"; mkdir -p "$SD"
 # What this run has logged per PR starts empty, so each start says every PR's state once. Only the
-# lock holder gets here, so a killed run's record is no one's.
-rm -rf "$SD"/said.*; SAID="$SD/said.$$"; mkdir -p "$SAID"
+# lock holder gets here, so a killed run's record is no one's. A sweep's batch loops share one record
+# per sweep driver, numbered by its sweep, so a line said on the last sweep is not said again.
+SWEEP_FIRST=""
+if [ -n "${MERGE_DRIVER_SWEEP:-}" ]; then
+  SAID="$SD/said.$MERGE_DRIVER_SWEEP"; LOOP=$(( ${MERGE_DRIVER_LOOP:-1} - 1 ))
+  if [ ! -d "$SAID" ]; then rm -rf "$SD"/said.*; mkdir -p "$SAID"; SWEEP_FIRST=1; fi
+else
+  rm -rf "$SD"/said.*; SAID="$SD/said.$$"; mkdir -p "$SAID"
+fi
 GREEN_HOLD_SECS="${MERGE_DRIVER_GREEN_SECS:-60}"
 
 # The id -> (branch, regex) map, rebuilt each loop because the queue learns branches as tickets spawn.
@@ -402,10 +432,14 @@ prs(){
   local base="${PRS_BASE-$BASE_BRANCH}" any="${PRS_ANY:-}" author="$AUTHOR"
   [ -n "$any" ] && author=""
   local map raw rc; if [ "$#" -gt 0 ]; then map="$(ticket_map "$@")"; else map="$(ticket_map "${KEY_LIST[@]}")"; fi || return 1
-  raw="$(gh pr list --repo "$REPO" --state "$st" ${author:+--author "$author"} ${base:+--base "$base"} --limit 100 \
-      --json number,title,headRefName,baseRefName,isDraft 2>"$GH_ERR")"; rc=$?
+  # In a sweep, the author's open PRs on every base were read once for all the repo's batches.
+  if [ "$st" = open ] && [ -n "$author" ] && [ -n "${MERGE_DRIVER_OPEN_PRS:-}" ]; then raw="$(cat "$MERGE_DRIVER_OPEN_PRS" 2>"$GH_ERR")"; rc=$?
+  else
+    raw="$(gh pr list --repo "$REPO" --state "$st" ${author:+--author "$author"} ${base:+--base "$base"} --limit 100 \
+        --json number,title,headRefName,baseRefName,isDraft 2>"$GH_ERR")"; rc=$?
+  fi
   if [ "$rc" -ne 0 ]; then
-    { [ "$rc" -eq 4 ] || grep -qiE 'gh auth login|not logged in|HTTP 401|bad credentials' "$GH_ERR"; } && return 4
+    signed_out "$rc" "$GH_ERR" && return 4
     return 1
   fi
   printf '%s' "$raw" \
@@ -867,8 +901,12 @@ EOF_EPIC
 # conflicted head. A PR GitHub has not worked out yet (UNKNOWN) keeps its mark for the next loop.
 note_repairs(){
   local raw n sha ms was
-  raw=$(gh pr list --repo "$REPO" --state open ${AUTHOR:+--author "$AUTHOR"} ${BASE_BRANCH:+--base "$BASE_BRANCH"} --limit 100 \
-      --json number,headRefOid,mergeStateStatus 2>/dev/null) || return 0
+  if [ -n "${MERGE_DRIVER_OPEN_PRS:-}" ]; then
+    raw=$(jq -c --arg b "$BASE_BRANCH" '[.[] | select(.baseRefName == $b)]' "$MERGE_DRIVER_OPEN_PRS" 2>/dev/null) || return 0
+  else
+    raw=$(gh pr list --repo "$REPO" --state open ${AUTHOR:+--author "$AUTHOR"} ${BASE_BRANCH:+--base "$BASE_BRANCH"} --limit 100 \
+        --json number,headRefOid,mergeStateStatus 2>/dev/null) || return 0
+  fi
   while IFS="$TAB" read -r n sha ms; do
     [ -n "$n" ] || continue
     case "$ms" in
@@ -1268,46 +1306,21 @@ EOF_RESOLVE
   return 1
 }
 
-log "merge driver up: repo=$REPO base=$BASE_BRANCH author=$AUTHOR tickets=[${KEY_LIST[*]}] deps=[${DEP_LIST[*]:-none}] method=$MERGE_METHOD merge-by=$GRANT_BY required=[$(printf '%s' "$REQUIRED" | paste -sd ',' -)] ci-rerun=$RERUN_PERM update-branch=$UPDATE_PERM feedback-first=$FEEDBACK_RAW flaky=[$(printf '%s' "$FLAKY" | cut -f1 | paste -sd ',' -)] state=[$(printf '%s' "$STATE_CHECKS" | cut -f1 | paste -sd ',' -)]"
+[ -n "${MERGE_DRIVER_SWEEP:-}" ] && [ -z "$SWEEP_FIRST" ] || log "merge driver up: repo=$REPO base=$BASE_BRANCH author=$AUTHOR tickets=[${KEY_LIST[*]}] deps=[${DEP_LIST[*]:-none}] method=$MERGE_METHOD merge-by=$GRANT_BY required=[$(printf '%s' "$REQUIRED" | paste -sd ',' -)] ci-rerun=$RERUN_PERM update-branch=$UPDATE_PERM feedback-first=$FEEDBACK_RAW flaky=[$(printf '%s' "$FLAKY" | cut -f1 | paste -sd ',' -)] state=[$(printf '%s' "$STATE_CHECKS" | cut -f1 | paste -sd ',' -)]"
 # One release pass and out: for tests, and for checking by hand what would be released now.
 if [ -n "${MERGE_DRIVER_RELEASE_ONLY:-}" ]; then release_chain </dev/null; exit 0; fi
-# pause <secs> [<one-loop exit code>]: the wait between loops, or the end of a one-loop run. The sleep
-# runs in the background, since `wait` returns as soon as TERM arrives where a foreground sleep would not.
+# pause <secs> [<one-loop exit code>]: the wait between loops (merge-driver-lib.sh pause_for), or the
+# end of a one-loop run. In a sweep, the loop's exit says what it did: SWEEP_RC is 10 after a merge, 11 with ready PRs left.
+SWEEP_RC=0
+outcome(){ if [ -n "${MERGE_DRIVER_SWEEP:-}" ]; then SWEEP_RC="$1"; fi; }
 pause(){
-  if [ -n "${MERGE_DRIVER_ONE_LOOP:-}" ]; then exit "${2:-0}"; fi
-  stop_if_asked
-  sleep "$1" & SLEEP_PID=$!
-  wait "$SLEEP_PID"; kill "$SLEEP_PID" 2>/dev/null; SLEEP_PID=""
-  stop_if_asked
+  if [ -n "${MERGE_DRIVER_ONE_LOOP:-}" ]; then exit "${2:-$SWEEP_RC}"; fi
+  pause_for "$1"
 }
-# idle_pause: the wait after a loop with no ready PR. Each such loop in a row doubles it, from
-# IDLE_SECS up to IDLE_MAX_SECS; a loop with a ready PR starts the run again. It sleeps in slices of
-# WAKE_SECS and ends early once the repo's exits folder (a worker exited) or $SD/wake (the pass took a
-# PR out of draft) has changed since this loop began, so a long pause never holds back a new PR.
-IDLE_SECS="${MERGE_DRIVER_IDLE_SECS:-60}"; IDLE_MAX_SECS="${MERGE_DRIVER_IDLE_MAX_SECS:-600}"; WAKE_SECS="${MERGE_DRIVER_WAKE_SECS:-60}"
-for v in IDLE_SECS IDLE_MAX_SECS WAKE_SECS; do
-  case "${!v}" in ''|0*|*[!0-9]*) echo "FAIL: MERGE_DRIVER_$v is '${!v}' — want a whole number of seconds above 0" >&2; exit 2 ;; esac
-done
-IDLE_RUN=0; LOOP_MARK="$SD/loop-began"
-idle_pause(){
-  local secs="$IDLE_SECS" i=0 left slice woke
-  while [ "$i" -lt "$IDLE_RUN" ] && [ "$secs" -lt "$IDLE_MAX_SECS" ]; do secs=$((secs * 2)); i=$((i + 1)); done
-  [ "$secs" -le "$IDLE_MAX_SECS" ] || secs="$IDLE_MAX_SECS"
-  IDLE_RUN=$((IDLE_RUN + 1))
-  [ "$IDLE_RUN" -eq 1 ] || log "idle loop $IDLE_RUN in a row: next look in ${secs}s, sooner once a worker exits or a PR leaves draft"
-  left="$secs"
-  while [ "$left" -gt 0 ]; do
-    slice="$WAKE_SECS"; [ "$slice" -le "$left" ] || slice="$left"
-    pause "$slice"
-    left=$((left - slice))
-    [ "$left" -gt 0 ] || break
-    woke=$(find "${DESK_EXITS_DIR:-$SD/no-exits}" "$SD/wake" -maxdepth 0 -newer "$LOOP_MARK" 2>/dev/null | head -1)
-    if [ -n "$woke" ]; then
-      case "$woke" in "$SD/wake") log "woken: a PR left draft — looking again now" ;; *) log "woken: a worker exited — looking again now" ;; esac
-      return 0
-    fi
-  done
-}
+# After a loop with no ready PR the wait backs off (merge-driver-lib.sh idle_pause), and ends early once
+# a worker exits or the pass takes a PR out of draft ($SD/wake), so a long pause never holds back a new PR.
+idle_settings
+LOOP_MARK="$SD/loop-began"
 while true; do
   stop_if_asked
   LOOP=$((LOOP + 1))
@@ -1349,9 +1362,10 @@ while true; do
     elsewhere=$(PRS_BASE='' prs open </dev/null | awk -F'\t' -v b="$BASE_BRANCH" '$4 != b { printf "%s#%s (%s) on %s", s, $1, $3, $4; s = ", " }')
     if [ -n "$elsewhere" ]; then log "no ready batch PRs on $BASE_BRANCH, the only base this driver watches; batch PRs open on another base: $elsewhere"
     else log "no ready batch PRs"; fi
-    idle_pause; continue
+    idle_pause "$LOOP_MARK" loop "${DESK_EXITS_DIR:-$SD/no-exits}" "$SD/wake"; continue
   fi
-  IDLE_RUN=0
+  # shellcheck disable=SC2034  # IDLE_RUN is read by idle_pause in merge-driver-lib.sh
+  IDLE_RUN=0; outcome 11
 
   if [ -n "$fixkey" ]; then
     ready=$(printf '%s\n' "$ready" | awk -F'\t' -v k="$fixkey" '$2 == k')
@@ -1368,5 +1382,5 @@ while true; do
   done <<EOF_READY
 $ready
 EOF_READY
-  if [ -n "$merged" ]; then pause 30; else pause 120; fi
+  if [ -n "$merged" ]; then outcome 10; pause 30; else pause 120; fi
 done

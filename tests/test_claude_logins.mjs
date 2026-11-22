@@ -1,4 +1,5 @@
 // suite: claude logins (every reader of Claude state covers each login: registry, probe, transcripts)
+// layer: L2
 // A fake claude whose `agents --json`, probe and sign-in answer per CLAUDE_CONFIG_DIR, under a scratch
 // HOME with a second login at ~/.claude-logins/b: the registry read across logins and its failure, a
 // worker's login from its login file, the maintenance stop, the spawn lookup's CLI, the claim's transcript,

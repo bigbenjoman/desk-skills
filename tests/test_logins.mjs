@@ -1,4 +1,5 @@
 // suite: logins (desk-env logins list, check, set; subscriptions.md)
+// layer: L2
 // The subscriptions file and the account check: parsing with no file, two logins, a malformed row and
 // an unknown rule; a fake claude for signed-in, signed-out and same-account logins; a fake codex for
 // signed-in and signed-out; no fixture token in anything shown; rule changes through the CLI. A

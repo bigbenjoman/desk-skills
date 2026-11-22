@@ -1,4 +1,5 @@
 // suite: cost cache, Neon (each org's use this month, priced from costs.md, per repo)
+// layer: L1
 // The Neon reading of the cost cache against Neon's own documented example reply for
 // GET /consumption_history/v2/projects (tests/fixtures/neon, from the docs, not a live account), for
 // three orgs: org-voice (one name), org-shared (two names, read in pages) and org-free (the free plan),

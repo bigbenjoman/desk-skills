@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: run.sh runs up to test-cap suites at once, longest first, and records CPU seconds per suite and per run
+# layer: L2
 # A copy of run.sh in a scratch repo, with a stub desk-env for the cap, runs fixture suites that log
 # when they start and end, count how many run at once, or burn CPU. Every check runs under this
 # suite's bash and again under /bin/bash where that is bash 3.2 (stock macOS).

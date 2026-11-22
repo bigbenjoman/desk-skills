@@ -1,4 +1,5 @@
 // suite: leases (desk-env lease: acquire, refuse, wait, release, list, a lease lapsing when its owner exits or its time is up, shadow and off kinds, renew, Claude-session owners, force-release and reset)
+// layer: L2
 // covers: desk/bin/leases.mjs desk/bin/dir-lock.mjs skills/desk-pr/SKILL.md skills/desk-pr/references/opening.md skills/desk-autopilot/references/worker-contract-stage-5.md skills/desk-autopilot/references/merging.md
 // The real CLI against a scratch lease directory, with real child processes as owners. A reused pid is
 // a live owner whose recorded start time is a fixture, and a lease's age is set by rewriting its times.

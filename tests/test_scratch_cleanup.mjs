@@ -1,4 +1,5 @@
 // suite: scratch cleanup (every suite removes its temp dirs, pass or fail)
+// layer: L2
 // A suite's scratch directories under the temp dir are removed when it exits: an .mjs suite makes them
 // with scratch.mjs, and a shell suite that runs `mktemp -d` removes its directory in an EXIT trap. Left
 // behind, a day of local runs once used every inode of a tmpfs /tmp and stopped every shell on the machine.

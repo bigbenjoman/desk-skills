@@ -1,4 +1,5 @@
 // suite: batch state (every path batch-state.mjs builds under the state folder is a declared state path)
+// layer: L1
 // covers: desk/bin/batch-state.mjs
 import { readFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';

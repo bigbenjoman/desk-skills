@@ -1,4 +1,5 @@
-// suite: prose check, every code reference a skill makes is one the code has, with today's drift in a baseline
+// suite: prose check, every code reference a skill makes is one the code has, and every tagged JSON example passes its contract's validator, with today's drift in a baseline
+// layer: L2
 // covers: tests/prose_check.mjs tests/prose_scan.mjs tests/prose_facts.mjs desk/bin/spawn-order.mjs desk/bin/fix-tries.mjs skills/desk-review/bin/verdict.mjs tests/command_shapes.mjs tests/fixtures/prose_baseline.json tests/fixtures/prose-code/*.md desk/bin/prose-facts.mjs desk/bin/queue-commands.mjs desk/bin/markers.mjs desk/bin/queue-writer.mjs desk/bin/batch-state.mjs desk/bin/with-lock.sh skills/**/*.md agents/*.md
 // covers: desk/bin/desk-env.mjs desk/bin/config-schema.mjs desk/bin/machine.mjs desk/bin/test-scope.mjs desk/bin/workflow-yaml.mjs desk/bin/dir-lock.mjs desk/bin/failure-class.mjs desk/bin/queue-store.mjs desk/bin/clears-when.mjs desk/bin/harvest.mjs desk/bin/spine-check.mjs desk/bin/scope-report.mjs desk/bin/baseline.mjs desk/bin/gate.mjs desk/bin/desk-ci.mjs desk/bin/aws-fallback.mjs desk/bin/decisions.mjs desk/templates/scripts/desk/review-gate.mjs
 // covers: desk/bin/base-red.mjs desk/bin/costs.mjs desk/bin/desk-lines.mjs desk/bin/leases.mjs desk/bin/logins.mjs desk/bin/quantile.mjs desk/bin/queue-fields.mjs desk/bin/queue-ledger.mjs desk/bin/queue-states.mjs desk/bin/ticket-ledger.mjs desk/bin/build-memo.mjs
@@ -38,6 +39,7 @@ syncBuiltinESMExports();
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
+const tj = (name, got, want) => t(name, JSON.stringify(got), JSON.stringify(want));
 const F = join(R, 'tests/fixtures/prose-code');
 const found = (f) => check([join(F, f)]);
 const lines = (f) => found(f).map((x) => `${x.line} ${x.kind} ${x.value}`).join(', ');
@@ -86,6 +88,24 @@ t('AC7 the report names the state', found('state.md')[0].message, 'the queue wri
 // ---- AC8: a path under the state folder that is not declared --------------------------------------
 t('AC8 the undeclared path; a declared one under any placeholder, and its folder, pass', lines('state-path.md'), '3 state-path no-such/<TICKET>.json');
 t('AC8 the report names the path', found('state-path.md')[0].message, 'no-such/<TICKET>.json is not a declared state path');
+
+// ---- DS-885: a tagged JSON example is checked by its contract's validator -------------------------
+const { scan } = await import('./prose_scan.mjs');
+const tagged = found('contract.md');
+t('DS-885 the refused, unknown and unreadable examples are named; the ones their validators take, and an untagged one, pass',
+  lines('contract.md'), '6 contract results, 24 contract park, 36 contract invoice, 41 contract park');
+t('DS-885 AC1 the report names the file, the line and the validator\'s message that the refuter is claude or codex', report(tagged[0]).startsWith(
+  'tests/fixtures/prose-code/contract.md:6: the results example fails its validator: finding F1: refuted_by must be the refuter\'s vendor, claude or codex, not its agent ("lena-code-reviewer")'), true);
+t('DS-885 AC2 a park file field it does not declare is named', tagged[1].message, 'the park example fails its validator: its park file holds a field the park file does not declare: colour');
+t('DS-885 AC3 a contract no validator has is named', tagged[2].message, 'no contract is named invoice: tag the example with one of results, park (desk/bin/prose-facts.mjs contracts)');
+t('DS-885 a tagged block that is not JSON is named', tagged[3].message.startsWith('the park example is not JSON: '), true);
+t('DS-885 a refused example is never held by the baseline', gate(tagged, baselineEntries(tagged)).fresh.length + baselineEntries(tagged).length, 4);
+const REVIEW_SKILL = 'skills/desk-review/SKILL.md', WORKER = 'skills/desk-autopilot/references/autopilot-worker-contract.md';
+tj('DS-885 AC4 the desk-review results example and the worker contract\'s park file example are tagged with their contracts',
+  [REVIEW_SKILL, WORKER].map((p) => scan(readFileSync(join(R, p), 'utf8')).filter((x) => x.kind === 'contract').map((x) => `${p} ${x.value}`)).flat(),
+  [`${REVIEW_SKILL} results`, `${WORKER} park`]);
+tj('DS-885 AC4 and both pass their validators', check([join(R, REVIEW_SKILL), join(R, WORKER)]).filter((x) => x.kind === 'contract').map(report), []);
+tj('DS-885 AC4 the baseline holds nothing for a tagged example', readBaseline().filter((e) => e.kind === 'contract'), []);
 
 // ---- AC10 / AC11: the opt-out ---------------------------------------------------------------------
 t('AC10 an opt-out with no reason is named, in prose and in shell, and opts nothing out; AC11 one with a reason opts its line out',
@@ -167,7 +187,6 @@ const run = cli();
 t('AC9 the CLI passes and prints how many baseline entries remain',
   [run.status, new RegExp(`^0 finding\\(s\\) the baseline does not hold; ${g.remaining} baseline entries remain`, 'm').test(run.stdout)].join(' '), '0 true');
 t('a baseline entry matches its finding wherever the line moves', gate(tree.map((x) => ({ ...x, line: x.line + 7 })), baseline).fresh.length, 0);
-const tj = (name, got, want) => t(name, JSON.stringify(got), JSON.stringify(want));
 tj('DS-884 AC4 every baseline entry still matches a finding in the real tree', g.stale.map(staleReport), []);
 
 // ---- DS-884 AC3 / AC4: lines inserted above a baselined reference, and the reference fixed --------

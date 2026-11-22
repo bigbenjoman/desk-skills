@@ -888,7 +888,7 @@ hook then refuses Claude trailers in that repo only, and autopilot workers there
 
 ```bash
 desk-env where                   # which repo and config apply here; EXISTS=yes once set up
-desk-env show [3 5]              # the config's rules for the agent, headings and tables (no §3c unless named)
+desk-env show [rules 3 5]        # the config's rules for the agent, headings and tables (never §3c)
 desk-env get required-checks     # read any row by its id (desk-env ids lists them all)
 desk-env list required-checks    # every item of a list row, one per line
 desk-jira where                  # the Jira site, project and login this repo resolves to
@@ -958,7 +958,18 @@ when nothing differs, 1 when something does, and 2 when a run was not compared. 
 directory and prints that directory and the `compare_pass.mjs diff` command that lists them again,
 in seconds and without replaying a suite. Both trees and every suite run side by side, as each pass
 suite gives its stand-in workers session ids of its own (`SID_SUFFIX` in `tests/pass_setup.sh`);
-`PASS_CMP_SERIAL=1`, or a base whose suites predate those ids, runs them one after the other.
+`PASS_CMP_SERIAL=1`, or a base whose suites predate those ids, runs them one after the other. A base given as a
+commit is replayed once: its recording is cached under `${XDG_CACHE_HOME:-~/.cache}/desk-skills/compare-pass`
+(the 5 most recently used), keyed by the commit, the node, git and bash versions, the suites and
+`compare_pass.sh`, `compare_pass.mjs`, `suite_env.sh` and the usage probe the recorder holds probe stamps
+by, and a later comparison against it replays
+only the head. A base suite that failed a check or exited non-zero (for want of a tool, or on a busy
+machine) is left out of the entry and replayed on the base next time, and the comparison names the
+check; a base replay that was interrupted, or in which a pass crashed, is not cached at all, and the
+comparison says which suite kept it out. A directory base never is cached, and
+`PASS_CMP_CACHE=0` replays both trees. `test_compare_pass.sh` replays every pass suite against itself
+only on a main push and the nightly run; a pull request and a local run replay
+`test_pass_other_repo.sh` alone, unless `PASS_CMP_FULL=1` opts the run in.
 
 `pass.mjs` moves into phase modules under `desk/bin/pass/`, one section at a time. A phase's decision
 is a pure function there: it takes a snapshot (the queue's tickets and whatever else it reads, the
@@ -1020,6 +1031,12 @@ fails the run from the date `BUDGETS_FAIL_FROM` in `tests/run.sh` gives. A push 
 a budget: its `record` job opens or comments one issue labelled `ci-slow` for the suites over budget,
 and one labelled `ci-flaky` for those that failed and passed their retry, each assigned to the repo's
 owner. Neither is `ci-main-red`.
+
+Every suite declares its test layer in one `# layer: <layer>` line (`//` in `.mjs`) in its first ten
+lines, which `test_lint.sh` requires (`node tests/scope_sections.mjs --layers` names any suite
+without exactly one). `L1` is in process: its cases import modules and start no process. `L2` is one
+process boundary: its cases start a desk script or command each. `L3` is end to end: it runs a pass,
+a batch, the merge driver or the installer through.
 
 ## Using autopilot
 

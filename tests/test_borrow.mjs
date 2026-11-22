@@ -1,4 +1,5 @@
 // suite: borrow (a batch borrows worker slots other live batches are not using)
+// layer: L3
 // borrow.mjs against fixture queues, heartbeats and repo configs in a throwaway HOME, DESK_HOME and
 // DESK_CONFIG_ROOT, with a fixture machine profile and the available memory injected; then the real
 // pass.mjs, with stub claude, gh, setup-worktree and spawn-worker, for the report, the spawn and two

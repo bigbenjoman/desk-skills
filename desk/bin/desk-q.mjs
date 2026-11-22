@@ -2846,7 +2846,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
 }
 
 // Leases reach the Queue view only as notes: a ▲ note for each lease whose holder stopped checking in
-// (alive, past its expiry), with the command that frees it, tagged with the holder's repo; a ▲ note
+// (alive, past its expiry; never a slot's, which nothing renews), with the command that frees it, tagged with the holder's repo; a ▲ note
 // when the store or log cannot be read; and, for each kind on trial (shadow) that let a clash through
 // in the last 24 hours, one grey note naming the latest. Healthy leases show nothing: desk-env lease
 // list is the full table. It only reads: lapsing and freeing a lease stay with desk-env lease.
@@ -2882,7 +2882,7 @@ function stuckNote(l, repos, now) {
   const h = leaseHolder(l.kind, l.label);
   const repo = h.repo ? repos.find((r) => r.slug.toLowerCase() === slugOf(h.repo))?.name ?? h.repo.split('/').pop() : null;
   const who = h.worker ? `${h.name}'s worker` : capital(h.name);
-  const what = l.kind === 'port' ? 'the port' : l.kind === 'slot' ? 'the slot' : 'it';
+  const what = l.kind === 'port' ? 'the port' : 'it';
   return { tag: `▲ ${repo ?? 'leases'}`, sgr: WARN,
     text: [[`${who} holds ${leaseThing(l.kind, l.key, l.units)} but stopped checking in ${span(now - Date.parse(l.expires))} ago.`, null]],
     more: [[[`If it is stuck, free ${what}:`, null]]], cmd: forceReleaseCommand(l.id) };

@@ -21,10 +21,11 @@ You run in many different repositories and you have no shell, so you cannot run 
 yourself. Establish the repo before mapping anything:
 
 1. **Use what the spawn prompt gives you.** `/userflow` passes the repo's stack, the app(s) in
-   scope, the route and auth locations it found, where the e2e specs live, and the desk config
-   path if one exists. If it names a config path, Read it (§0 One-line description, §5 Repo
-   instructions). If you were spawned without that context, carry on from the repo alone — you do
-   not need a desk config to work.
+   scope, the route and auth locations it found, where the e2e specs live, and, where the repo has a
+   desk config, its §0 One-line description and §5 Repo instructions, which `/userflow` reads for
+   you with `desk-env get repo-description` and `desk-env list repo-instructions`. Never open the
+   config file itself. If you were spawned without that context, carry
+   on from the repo alone — you do not need a desk config to work.
 2. **Always read the repo's own instruction files** where they exist: `CLAUDE.md`, `AGENTS.md`,
    `DESIGN.md`, at the root and in the app you are mapping.
 3. **Detect the routing model** from the repo rather than assuming one: Next.js App Router

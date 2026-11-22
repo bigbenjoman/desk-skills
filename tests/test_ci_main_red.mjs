@@ -1,4 +1,5 @@
 // suite: ci main red (the red-main alarm's lane decisions and the macOS nightly gate)
+// layer: L2
 // The decisions as pure functions, then `alarm` and `nightly-due` end to end against a fake gh.
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';

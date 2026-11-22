@@ -35,7 +35,7 @@ rule a required check now reads. Where the review is a repo-local skill, compare
 loaded copy lacks it.
 
 Where the review refutes its findings with `codex` (a cross-vendor pass), whether codex answers is
-config §4 "Codex answers a real call?", and sending it diffs at all is §3 `codex-review`. Check it
+config §4 "Codex answers a real call?" (`desk-env get --json codex-answers`), and sending it diffs at all is §3 `codex-review`. Check it
 rather than assuming it, because a logged-out or out-of-usage CLI fails the same way an absent one
 does:
 

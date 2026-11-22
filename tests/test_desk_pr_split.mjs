@@ -1,4 +1,5 @@
 // suite: desk-pr split (a core of 20 KB or less, and the rest in reference files read at their step)
+// layer: L1
 // covers: skills/** agents/** docs/** README.md
 // tests/fixtures/desk-pr-before-split.md is desk-pr's SKILL.md as one file. Every heading, table row
 // and paragraph of it must still be in the core or one reference file, the core must name the file
@@ -38,6 +39,7 @@ const REWRITTEN = [
   ['DS-405', 'letting CI judge the body', 1],
   ['DS-405', "Merging with `--squash` because it's the usual", 1],
   ['DS-460', 'see "Editing the body later" in §4). Keep', 1], // names opening.md, the file holding it
+  ['DS-875', 'Read the `CONFIG` file. `EXISTS=no` means stop', 1], // read by section through desk-env show, never whole
   ['DS-611', 'committed here. Say so, push as before, and offer', 1], // the items run under their locks instead
   // the uploader takes only the cells' files, in batches, keeps a tags file and stops on a stall
   ['DS-672', 'It uploads every png/jpg in the directory', 1],

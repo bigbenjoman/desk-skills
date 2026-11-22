@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: batch end to end (triage records to done, offline, scripted workers)
+# layer: L3
 # One autopilot batch driven through the real queue.mjs admit, pass.mjs, setup-worktree.sh,
 # spawn-worker.sh (preflight included), harvest.mjs and answer.mjs. Only `claude` and `gh` are
 # replaced, by scripts on PATH: the fake claude answers the preflight checks and

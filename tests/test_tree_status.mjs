@@ -1,4 +1,5 @@
 // suite: desk-env tree-status (git status without the files desk skills leave untracked, and a review run's scratch)
+// layer: L2
 // covers: desk/bin/desk-env.mjs skills/desk-review/references/phase-0-preflight.md skills/desk-review/references/phase-3-find.md skills/desk-ticket/references/stage-4b-self-review.md
 // The real CLI in a scratch git repo with a linked worktree.
 import { writeFileSync, mkdirSync } from 'node:fs';

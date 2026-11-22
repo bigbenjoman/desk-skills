@@ -1,4 +1,5 @@
 // suite: bin main guard (every installed script runs its command through the install's symlinks)
+// layer: L2
 // covers: desk/bin/*.mjs desk/bin/desk-env.sh skills/*/bin/*.mjs
 // install.sh links ~/.claude/desk/bin through current/ to releases/<commit>/bin. Node runs the real
 // file, so import.meta.url is the real path while process.argv[1] keeps the linked one: a guard that

@@ -6,17 +6,23 @@
 //     node ($PASS_CMP_NODE) with the same arguments, passing its stdin, stdout, stderr and exit status
 //     through unchanged, then saves run <n>.json in $PASS_CMP_OUT: when the run started and ended, the exit
 //     status, stdout and stderr as they arrived, the queue at $DESK_QUEUE and the archive beside it,
-//     and how many lines the suite had printed to $PASS_CMP_SUITE_LOG when the run started.
+//     and how many lines the suite had printed to $PASS_CMP_SUITE_LOG when the run started. Before the
+//     run, it holds each usage probe start stamp under the age a pass probes again at (holdProbeStamps).
 //
-//   node compare_pass.mjs diff <base records> <head records> <base tree> <head tree>
+//   node compare_pass.mjs diff [--base-cached[=<suite>,...]] <base records> <head records> <tree>...
 //     Lists, per suite and run, every queue field and output line that differs once ids and paths
-//     that change between runs are normalized and times are matched across the trees; and every run
-//     that only one tree recorded, or that crashed on only one, as not compared. Exit 0 when nothing
-//     differs, 1 on a difference, 2 when anything was not compared.
+//     that change between runs (each <tree> the runs saw included) are normalized and times are
+//     matched across the trees; and every run that only one tree recorded, or that crashed on only
+//     one, as not compared. Exit 0 when nothing differs, 1 on a difference, 2 when anything was not
+//     compared. --base-cached: the base was recorded by an earlier comparison, so hours or days
+//     before the head; =<suite>,... names the only suites whose base records were.
+//
+//   node compare_pass.mjs clean <records> [<suite>...]
+//     Exit 0 when no pass in one tree's records (of those suites only) crashed, 1 naming one that did.
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { constants } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { lock, unlock } from '../desk/bin/dir-lock.mjs';
 import { flattenQueue } from '../desk/bin/queue-fields.mjs';
 
@@ -37,7 +43,30 @@ function nextRun(dir) {
   } finally { unlock(held); }
 }
 
-function record(argv) {
+// A pass with no usage reading probes for one only when its login's last probe started over
+// PROBE_EVERY_MS ago (usage-probe.mjs noReadingProbeDue), so which of a suite's passes probe depends on
+// how fast the machine runs the suite, and the two trees, run side by side, cross that line at
+// different runs. Each pass starts with every probe start stamp held under that age, past the minute a
+// pass joins another's probe for, so no run's probe depends on the machine's speed. Only a suite's own
+// usage dir is held: one that is the machine's ($PASS_CMP_LIVE_USAGE, or unnamed) is left as it is. A
+// tree without usage-probe.mjs has no probe to hold.
+async function holdProbeStamps() {
+  const live = process.env.PASS_CMP_LIVE_USAGE;
+  const probeMod = new URL('../desk/bin/usage-probe.mjs', import.meta.url);
+  if (!live || !existsSync(probeMod)) return;
+  const m = await import(probeMod.href);
+  const { PROBE_EVERY_MS, PROBE_GAP_MS, usageDir } = m, dir = usageDir();
+  if (resolve(dir) === resolve(live)) return;
+  const held = Date.now() - (PROBE_EVERY_MS - PROBE_GAP_MS);
+  let names = [];
+  try { names = readdirSync(dir).filter((f) => /^probe.*\.at$/.test(f)); } catch { return; }
+  for (const f of names) {
+    try { const at = Number(readFileSync(join(dir, f), 'utf8')); if (at > 0 && at < held) writeFileSync(join(dir, f), String(held)); } catch { /* left as it is */ }
+  }
+}
+
+async function record(argv) {
+  await holdProbeStamps();
   const dir = process.env.PASS_CMP_OUT;
   mkdirSync(dir, { recursive: true });
   const run = nextRun(dir);
@@ -233,13 +262,15 @@ function clock(recs) {
 // between two runs on each tree, or the same offset from the start of one run on each tree: a time a
 // run made, or one its suite worked out just before it, sits there however far apart the two trees ran
 // and however much longer one tree's run took to reach it. A time worked out differently (an hour on,
-// not two) does not.
+// not two) does not. Where the base was cached, any gap between the trees can make two such times a
+// few seconds apart, so there only an elapsed time matches by its length.
+let baseCached = false;
 function sameTime(a, b, run, cb, ch) {
   if (a === b) return true;
   const ta = ms(a), tb = ms(b);
   if (!Number.isFinite(ta) || !Number.isFinite(tb)) return false;
   const within = Math.max(slack(a), slack(b));
-  if (Math.abs(ta - tb) <= within) return true;
+  if (Math.abs(ta - tb) <= within && (!baseCached || (SPAN.test(a) && SPAN.test(b)))) return true;
   const slotsH = ch.slots(tb);
   for (const s of cb.slots(ta)) if (slotsH.has(s) && Number(s.split(' ')[1]) <= run) return true;
   for (const j of new Set([run, ...cb.around(ta), ...ch.around(tb)])) {
@@ -351,13 +382,18 @@ function lineDiff(a, b, eq = (x, y) => x === y) {
   return { base: base.concat(a.slice(i)), head: head.concat(b.slice(j)), matched };
 }
 
-function diff([baseDir, headDir, baseRoot, headRoot]) {
-  const norm = normalizer([baseRoot, headRoot]);
+function diff(args) {
+  // Which suites' base records an earlier comparison made: all of them, or those named.
+  const flag = /^--base-cached(?:=(.*))?$/.exec(args[0] || '');
+  const cachedSuites = flag && flag[1] !== undefined ? new Set(flag[1].split(',').filter(Boolean)) : null;
+  const [baseDir, headDir, ...roots] = flag ? args.slice(1) : args;
+  const norm = normalizer(roots);
   const suites = [...new Set([...readdirSync(baseDir), ...readdirSync(headDir)])]
     .filter((s) => !s.endsWith('.log')).sort();
   let differ = 0, notCompared = 0, compared = 0;
   const say = (s) => console.log(s);
   for (const suite of suites) {
+    baseCached = !!flag && (!cachedSuites || cachedSuites.has(suite));
     const b = runs(join(baseDir, suite)), h = runs(join(headDir, suite));
     const cb = clock(b), ch = clock(h);
     const label = labeller(join(baseDir, `${suite}.log`));
@@ -412,6 +448,16 @@ function diff([baseDir, headDir, baseRoot, headRoot]) {
   process.exitCode = notCompared ? 2 : differ ? 1 : 0;
 }
 
+// Exit 0 when no pass in a tree's records (of only the suites named, if any) crashed, 1 when one did,
+// naming the first that did.
+function clean([dir, ...only]) {
+  for (const s of readdirSync(dir).filter((f) => !f.endsWith('.log') && (!only.length || only.includes(f))).sort()) {
+    const r = [...runs(join(dir, s)).values()].find(crashed);
+    if (r) { console.log(`${s} run ${r.run}: the pass failed to run: ${firstError(r)}`); process.exitCode = 1; return; }
+  }
+}
+
 if (mode === 'record') record(args);
 else if (mode === 'diff') diff(args);
-else { console.error('usage: compare_pass.mjs record <node args...> | diff <base records> <head records> <base tree> <head tree>'); process.exitCode = 2; }
+else if (mode === 'clean') clean(args);
+else { console.error('usage: compare_pass.mjs record <node args...> | diff [--base-cached[=<suite>,...]] <base records> <head records> <tree>... | clean <records> [<suite>...]'); process.exitCode = 2; }

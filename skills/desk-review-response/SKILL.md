@@ -21,7 +21,8 @@ but not always, and finding out after you've rewritten the file is expensive in 
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 ```
 
-Read the `CONFIG` file. `EXISTS=no` means stop: say which slug was looked up and offer `/desk-setup`.
+Read `desk-env show rules 0 1 3 4 5` (never the `CONFIG` file whole). `EXISTS=no` means stop: say
+which slug was looked up and offer `/desk-setup`.
 A `TODO` in a row this skill needs is not a gap to guess: stop, ask, and offer `/desk-setup`. Then:
 §0 for the GitHub repo, §1 for the user's GitHub handle, §3 for whether you may push (`git-push`),
 post replies and resolve threads (`pr-reply`), §4 People for who the code reviewer and product owner
