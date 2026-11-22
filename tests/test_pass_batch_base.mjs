@@ -1,4 +1,5 @@
 // suite: pass phase: the batch base sync and its baseline checks (the decisions, run through the generator runner)
+// layer: L1
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideBaseSync, decideBaseline } from '../desk/bin/pass/batch-base.mjs';
 import { registryView } from '../desk/bin/pass/shared.mjs';

@@ -62,13 +62,21 @@ and on WSL its figure counts page cache; neither it nor `vmmem` is a reason to s
 line; a count below the user's with `avail` above it reads "memory did not lower it", and goes back
 to the user's number.
 
-**The test lock's queue holds spawns too.** Each pass counts the runs waiting on the test lock
-machine-wide (`with-lock.sh test` and `tsc`, from every repo and session). While that count is at least
-the machine profile's `test-lock-slots` × `test-lock-queue-factor` (1 × 2 with no profile), the pass
-holds new local workers, fix tries, base workers, handoffs to 4b and resumes of a worker or a requeued
-round last at Stage 4 or 4b, and its STALLED line names the queue depth. A resume at any other stage
-goes ahead. Where ps
-cannot be read, the pass starts workers as it would without the gate, and says the queue was not read.
+**The test lock's queue holds spawns too, by each repo's share.** Each pass counts the runs waiting on
+the test lock machine-wide (`with-lock.sh test` and `tsc`, from every repo and session), and the runs
+holding or waiting by repo: a run is a repo's when it works in that repo's main checkout or worktrees
+directory, and runs in no configured repo count as one, `other`. Repos are named as desk-q names them,
+so two of one name under different owners are two. The hold point is the machine profile's
+`test-lock-slots` × `test-lock-queue-factor` (1 × 2 with no profile). At or over it, each repo with a
+run on the lock, this one always counted, gets a share of ceil(hold / active repos), and the pass starts
+at most its share less its own runs; below it, at most the hold less the runs waiting. That room covers
+new local workers, fix tries, handoffs to 4b, resumes of a worker or a requeued round last at Stage 4
+or 4b, and a base try (conflict fix, epic review, promotion checks), which takes its unit first; the
+ones past it are held, and the STALLED line names the queue depth, each repo's runs and the share. A
+resume at any other stage goes ahead. So
+one busy repo's queue holds that repo, not every other. Where ps cannot be read, the pass starts workers
+as it would without the gate, and says the queue was not read; where the runs' working directories
+cannot be read, a deep queue holds every repo.
 
 **A worker count the user set is theirs.** When the user names a count (or 0 to pause new spawns),
 record it as theirs with `set-batch concurrency=<n> concurrency_by=user`; the queue keeps their
@@ -145,10 +153,23 @@ harm-tmpfs`, `desk-env get harm-vmmem`); unset, they are the figures below:
   unwatched. Say so in the batch notes; the watch keeps reading the rest.
 
 Each harm line is also written, with its time, to `mem-harm.json` in the batch's state folder, and
-every pass holds new spawns while a signal there was said, or still stood, within the last 10
-minutes, naming it in its report; running workers carry on. So the hold does not wait on you, but it
-needs the watch running. Say which line moved the count when you lower it. On macOS only
-`WORKER-OOM` is read.
+with the mem lease kind `shadow` or `on` (`desk-env lease mode mem`) every pass holds new spawns
+while a signal there was said, or still stood, within the last 10 minutes, naming it in its report;
+running workers carry on. So the hold does not wait on you, but it needs the watch running. With the
+kind `off` the pass reads no harm signal and judges memory by the ladder alone. Say which line moved
+the count when you lower it. On macOS only `WORKER-OOM` is read.
+
+**Memory is reserved from the machine's ceiling as leases**, where the machine profile sets
+`memory-ceiling-gb`. Each worker a pass starts reserves its share (that ceiling over the profile's
+`autopilot-concurrency` cap, or over the cap of §3b "Autopilot worker concurrency" where the profile
+sets none, at least 1 GiB), held by the worker's process and returned when it
+exits. Before a heavy run of your own (a full suite, a build), reserve for it so every pass counts
+it: `desk-env lease acquire mem <what for> --units <GiB> --owner claude --ttl <seconds>`, which
+your session holds until it exits or twice the TTL passes unrenewed, and `desk-env lease release <id> --pid <the owner pid desk-env
+lease list shows>` once the run ends. With the kind `on`, a pass starts no worker whose share does not
+fit beside what is reserved, naming the ceiling, the reserved total and the largest holders; in
+`shadow` it starts by the rules above and the lease log records each would-refuse; `off` reserves
+nothing. The avail ladder still applies beside it, and the stricter decides.
 
 **Waiting on one PR is a watch command too.** Under `Monitor`, run
 `node ~/.claude/desk/bin/pr-watch.mjs checks <n>` (one line once every check on the head has

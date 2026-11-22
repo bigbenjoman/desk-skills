@@ -1,4 +1,5 @@
 // suite: desk-ci measure (minutes, red rate, round trips, call budget)
+// layer: L1
 // desk-ci.mjs measure on fixture runs, jobs and pull requests: each job rounds up to the minute and a
 // hosted one stops at 6 h, red rate, round trips and time to green read a PR's pushes and re-runs,
 // sampled jobs scale back up within their month, and the API collector stays inside its call budget

@@ -1,4 +1,5 @@
 // suite: lever pin (a ticket's levers are fixed at admission, and every worker for it runs with them)
+// layer: L2
 // covers: desk/bin/lever-pin.mjs desk/bin/desk-env.mjs desk/bin/queue.mjs desk/bin/spawn-worker.sh
 // queue.mjs admit and add pin the row's levers; desk-env levers prints DESK_LEVERS over the row; and
 // spawn-worker.sh exports a pinned ticket's set to its preflight, its spawn line and its worker, and

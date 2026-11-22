@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: vendor patches (a local change re-applied on upgrade)
+# layer: L2
 # Tests sources.json `patches`: `skills-upstream upgrade` re-applies a skill's local patch to the new
 # upstream before it lands in vendor/, records the tree hash after patching, and refuses the skill,
 # leaving vendor/ and the pin alone, when the patch no longer applies. An upgrade rewrites

@@ -3,8 +3,8 @@
 // groom proposes from evidence rather than prose re-derived by hand across the whole backlog. It only
 // reads: Jira through desk-jira, the repo through git against origin/<default>.
 //
-//   node groom-scan.mjs scan --repo <root> --default <branch> --project <§4 Jira project key>
-//        [--priority <§4 Priority field>] [--fields <§4 Other fields, comma-separated>]
+//   node groom-scan.mjs scan --repo <root> --default <branch> --project <§4 Jira project>
+//        [--priority <§4 Priority field>] [--fields <§4 Other fields, joined with commas>]
 //        [--done <§4 Done state>] [--in-progress <§4 In-progress state>] [--size <§4 Size field>]
 //        [--jql <jql>] [--queue <DESK_QUEUE>] [--json]   a finding that writes to a ticket the running
 //        batch holds is left alone (kind `left`, nothing proposed)

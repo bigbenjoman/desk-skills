@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: queue watch (the orchestrator's change-only status monitor)
+# layer: L2
 # queue.mjs watch prints the table and memory line once, again only when the table changes, never
 # for an interval where only memory moved, and exits non-zero naming the queue when there is none.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.

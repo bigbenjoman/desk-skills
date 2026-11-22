@@ -1,4 +1,5 @@
 // suite: aws fallback (the watchdog that turns a repo's AWS fallback on, and desk-ci's off and status)
+// layer: L2
 // covers: desk/bin/aws-fallback.mjs .github/workflows/aws-fallback-watch.yml
 // The watchdog, off and status in-process against fixtures of the contents, variables, runs and jobs
 // API, then `desk-ci.mjs aws-fallback` end to end against a fake gh.

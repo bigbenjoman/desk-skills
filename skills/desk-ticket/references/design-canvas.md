@@ -30,10 +30,10 @@ canvas or deck` needs nothing saved before the build.
 **Two kinds of file a board needs are not among the published files.** Its images are `/_blob/<id>`
 asset ids, in its attributes or in strings in its script: read each by its id, one `read` with
 `path: "/_blob/<id>"` apiece (a `paths` read refuses asset ids), into the same `out_dir` as the files
-below. And the `./support.js` a board loads is the type's runtime, which the artifact serves rather
-than publishes: read `artifact-type/dc-runtime.js` instead. The save finds an asset by its id as the
-file name, saves it as `assets/<id>.<ext>` and points the boards at it, and saves `dc-runtime.js` as the
-`support.js` they load. `missing: asset <id>` is an asset still to read.
+below. And the `./support.js` a board loads is the type's runtime, which the artifact serves rather <!-- prose-ok: a design artifact's file, not desk's -->
+than publishes: read `artifact-type/dc-runtime.js` instead. The save finds an asset by its id as the <!-- prose-ok: a design artifact's file, not desk's -->
+file name, saves it as `assets/<id>.<ext>` and points the boards at it, and saves `dc-runtime.js` as the <!-- prose-ok: a design artifact's file, not desk's -->
+`support.js` they load. `missing: asset <id>` is an asset still to read. <!-- prose-ok: a design artifact's file, not desk's -->
 
 **An `advisory` that says `uses no board from it`** means the Design section links a canvas (often
 its epic's) but says no board applies to this ticket: nothing needs saving, and the ticket builds
@@ -46,7 +46,7 @@ and ask for access or an export (below), saving nothing. Otherwise carry on as b
 
 A `blocking` line means no copy is saved yet. With the Artifact tool, list the artifact's files
 (`action:list scope:files`) and read `project/canvas.json`, every board's `project/*.dc.html`, and
-the `support.js`, stylesheets and fonts they load, with `paths` and `out_dir: $DESK_STATE/designs/<TICKET>/`.
+the `support.js`, stylesheets and fonts they load, with `paths` and `out_dir: $DESK_STATE/designs/<TICKET>/`. <!-- prose-ok: support.js is a design artifact's file, not desk's -->
 Then, on the branch after Stage 1:
 
 ```bash

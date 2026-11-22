@@ -211,3 +211,7 @@ export const reviewOnlyTry = (t) => Boolean(t?.fix && !t.fix.finished && t.fix.k
 // start resets it.
 export const cloudPrHere = (t) => t?.location === 'cloud' && (t.result?.pr != null || t.cloud?.pr_at != null);
 export const runsInCloud = (t) => t?.location === 'cloud' && !cloudPrHere(t);
+// The `failed=` field pass.mjs markFailed sets on a failed ticket: why, when, and the error subtype its
+// session ended with where there is one, which the ticket ledger's failed event records.
+export const failedField = (why, { subtype = null, at = new Date().toISOString() } = {}) =>
+  `failed=${JSON.stringify({ why: String(why).replace(/\s+/g, ' ').trim().slice(0, 600), at, ...(subtype ? { subtype } : {}) })}`;

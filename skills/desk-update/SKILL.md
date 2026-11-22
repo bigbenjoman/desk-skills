@@ -24,7 +24,7 @@ of truth; this skill checks every kind and upgrades only what the user chooses.
 | **pinned third-party** (e.g. Yummy's ux/ui-designer, context-audit) | `~/.agents/skills/<name>`, linked from `~/.claude/skills` | `vendor/sources.json`: a GitHub repo path or a Google Drive folder | `skills-upstream upgrade` + review + `./install.sh` |
 | **your own / tracked live** (`checkout` entries, e.g. clerk) | a git clone at `~/.agents/skills/<name>`, or `~/.agents/sources/<name>` with `subskills` linked in | `vendor/sources.json`: `{repo, branch}` | `skills-upstream upgrade <name>` (`git pull --ff-only`; nothing to commit in desk-skills) |
 | plugin skills (superpowers, vercel, …) | the plugin cache | the plugin's marketplace | `claude plugin marketplace update` + `claude plugin update` |
-| **the status line** (a `tools` entry, not a skill) | `~/.claude/statusline-command.sh` and settings.json's `statusLine` | `vendor/sources.json` `tools.claude-statusline`: the whole repo at a pinned commit | `skills-upstream upgrade claude-statusline` (the pin only) + review, then `skills-upstream statusline install` (its own installer) |
+| **the status line** (a `tools` entry, not a skill) | `~/.claude/statusline-command.sh` and settings.json's `statusLine` | `vendor/sources.json` `tools.claude-statusline`: the whole repo at a pinned commit | `skills-upstream upgrade claude-statusline` (the pin only) + review, then `skills-upstream statusline install` (its own installer) <!-- prose-ok: its installer writes it --> |
 
 Anything else in `~/.agents/skills` or `~/.claude/skills` is **untracked**: its source is not
 recorded, so it cannot be checked. Report those; never guess a source for one.
@@ -270,7 +270,7 @@ For the status line, an upgrade is the same branch-and-PR flow as a vendored ski
 installed on confirmation: copy `~/.claude/settings.json` to `~/.claude/settings.json.bak-desk-<date>`,
 then `skills-upstream statusline install`, which runs the repo's own installer at the pin (it copies
 the old script aside first). Where `statusline other` printed anything (a status line desk did not
-install, even one at `~/.claude/statusline-command.sh`), the row says it **replaces** that, and it is
+install, even one at its path), the row says it **replaces** that, and it is
 never part of "All outdated": the user picks it on its own or it stays.
 
 For chosen plugins: `claude plugin update <plugin>` each, then `claude plugin list --json` to show

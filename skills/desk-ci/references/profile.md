@@ -17,7 +17,7 @@ A job is **full** if any of these holds, and **light** otherwise:
 
 | Needs | What fires it |
 |---|---|
-| a database | a `services:` or `container:` image of Postgres, PostGIS, MySQL, MariaDB, MongoDB, Redis, Valkey, SQL Server, CockroachDB or ClickHouse; a database setup action; `psql`, `pg_isready`, `mysqladmin`, `mongosh`, `redis-cli`, `prisma migrate`/`db push`, `supabase start`/`db`, `manage.py migrate` or `rails db:`; a `*DATABASE_URL`, `PGHOST`, `PGDATABASE` or `PGURL` variable |
+| a database | a `services:` or `container:` image of Postgres, PostGIS, MySQL, MariaDB, MongoDB, Redis, Valkey, SQL Server, CockroachDB or ClickHouse; a database setup action; `psql`, `pg_isready`, `mysqladmin`, `mongosh`, `redis-cli`, `prisma migrate`/`db push`, `supabase start`/`db`, `manage.py migrate` or `rails db:`; a `*DATABASE_URL`, `PGHOST`, `PGDATABASE` or `PGURL` variable <!-- prose-ok: a Django repo's manage.py, not desk's --> |
 | a preview | a staging or preview URL (as in the placement rule, workflow-level `env:` included), or a `vercel` or `netlify` action or CLI |
 | a browser | Playwright, Cypress, Puppeteer, Selenium, WebdriverIO, TestCafe, a browser driver or a browser setup action |
 | a full job | a `needs:` naming a full job, which would be skipped with it |

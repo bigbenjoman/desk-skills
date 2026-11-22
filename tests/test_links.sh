@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: skill links (skills-upstream links)
+# layer: L2
 # Tests `skills-upstream links` (and its use by `verify` and `install.sh --check`) against a scratch
 # desk-skills tree and a throwaway HOME. Nothing touches your real ~/.claude or ~/.agents.
 set -u

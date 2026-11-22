@@ -1,9 +1,10 @@
 // suite: pass phase: parks and holds (the clears-when, person-step, date, outside and merge hold decisions)
+// layer: L1
 import { runPhase, runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds,
   decideMergeHolds } from '../desk/bin/pass/parks.mjs';
 import { HELD_PREFIX, STOPPED_PREFIX, badLabelText, IDLE_RECHECK_MS, isHeld, parkKind, personStepPark } from '../desk/bin/batch-state.mjs';
-import { newPark } from '../desk/bin/queue-writer.mjs';
+import { newPark, applySet } from '../desk/bin/queue-writer.mjs';
 import { shownState } from '../desk/bin/desk-q.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
@@ -54,6 +55,21 @@ const BASE_CONTAINS = 'base-contains';
   const as = clears(clearsSnap(byKey(parked('A', PR_MERGED))), { check: { holds: false, note: 'still open' } });
   t('a condition not yet holding is reported as waited on, and settles nothing', j([settles(as), lines(as)]), j([[], ['A: waiting on "PR #41 merged" (still open): left parked']]));
   t('one with no note says nothing', j(clears(clearsSnap(byKey(parked('A', PR_MERGED)))).filter((a) => a.type === 'report')), '[]');
+}
+// DS-864 AC1: a condition that can never hold is recorded none, with why, for the person: needs-you lists it
+// and desk-q shows it as needs you, no longer waiting.
+{
+  const ON = { kind: 'commit-on', sha: '68c709f5a', branch: 'fix/A' };
+  const never = 'the branch origin/fix/A has moved to 41736d45a, which 68c709f5a does not build on, so 68c709f5a can no longer land there: the push it waits on is stale';
+  const as = clears(clearsSnap(byKey(parked('A', ON))), { check: { holds: false, never } });
+  t('DS-864 AC1 a stale commit-on is recorded none, its why kept on the park, and nothing requeued',
+    j([types(settles(as)), sets(as)]), j([['set'], ['park.clears_when={"kind":"none"}', `park.stale=${never}`]]));
+  t('DS-864 AC1 and the pass says so', j(lines(as)), j([`A: "commit 68c709f5a on origin/fix/A" can never hold (${never}): recorded as none, for the person`]));
+  const before = { ...parked('A', ON), lane: 'A', park: { question: 'push 68c709f5a onto fix/A', clears_when: ON } };
+  // The state desk-q reads is the one the pass's own writes leave.
+  const after = structuredClone(before);
+  applySet(after, sets(as));
+  t('DS-864 AC4 desk-q shows it as needs you, where it showed waiting before', `${shownState({ tickets: byKey(before) }, before)} → ${shownState({ tickets: byKey(after) }, after)}`, 'waiting → needs');
 }
 {
   const s = clearsSnap(byKey(parked('A', PR_MERGED, { park: { question: 'which colour?', clears_when: PR_MERGED, inputs: {} } })), { putOff: new Set(['A']) });

@@ -1,4 +1,5 @@
 // suite: baseline checks (record a base's typecheck and lint errors, fail a worker only on new ones)
+// layer: L1
 import { rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseTsc, parseEslint, parseMypy, readRun, recordBaseline, readBaseline, compareRun, activeBaseline, summary } from '../desk/bin/baseline.mjs';

@@ -1,4 +1,5 @@
 // suite: desk-setup split (a core of 20 KB or less, and each step's rules in a reference file)
+// layer: L1
 // covers: skills/** agents/** docs/** README.md
 // tests/fixtures/desk-setup-before-split.md is desk-setup's SKILL.md as one file. Every heading,
 // table row and paragraph of it must still be in the core or one reference file, the core must name
@@ -43,6 +44,8 @@ const REWRITTEN = [
   ['#827', 'Offer it as the starting point; ask the row.', 1],
   ['#827', 'Four per round, as many rounds as it takes. |', 1],
   ['#827', '**Before the autopilot round, say this plainly:**', 1],
+  ['DS-890', 'git commit -m "<§5 PR title format>: add the desk', 2], // config's row is §5 PR title
+  ['DS-890', '`vercel switch <§4 Vercel team>`', 1], // the team is §4 Vercel's first item
 ];
 checkSplit({ t, label: 'AC2', before, files, read, headings: 33, minRows: 40, rewritten: REWRITTEN });
 

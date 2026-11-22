@@ -47,7 +47,7 @@ AUTOPILOT_DRY_RUN=1 …                                                 # no pus
 AUTOPILOT_USER_APPROVED=1 node ~/.claude/desk/bin/pass.mjs            # only when §3 autopilot-workers is `ask` and the user confirmed this batch
 AUTOPILOT_BASE_PUSH_APPROVED=1 node ~/.claude/desk/bin/pass.mjs       # only when §3 batch-base-push is `ask`/unset and the user approved syncing this batch's base
 AUTOPILOT_ALLOW_NO_CODEX=1 node ~/.claude/desk/bin/pass.mjs           # codex-review is yes but codex is not installed: accept same-vendor reviews knowingly
-nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2" --deps "ABC-2:ABC-1" --log &   # output to <state>/merge-driver.log; not for a batch handed to the supervisor
+nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2" --deps "ABC-2:ABC-1" --log &   # output to <state>/merge-driver.log; not for a batch handed to the supervisor, whose one driver (merge-driver.sh --all-batches --log) merges every handed-over batch of the repo
 
 AUTOPILOT_DEFAULT_TOOLS=1 node ~/.claude/desk/bin/pass.mjs            # workers, preflights and triage get Claude Code's default tool list, not worker-tools.mjs's
 

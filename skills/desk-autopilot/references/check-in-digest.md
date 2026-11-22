@@ -22,7 +22,8 @@ its ticket queued, not parked, and fails the database check, holding spawns from
 times out or cannot reach its host is run once more before it counts. Results are reused for 15
 minutes while every check passes, and a failing run is checked again on the next pass. The report
 always carries one `health:` line. A failing required check holds every new spawn (running workers
-carry on), except the browser profile's: only screenshot uploads need it, and the machine's upload
+carry on), except `gh` failing only on a used-up GitHub API limit, which the line names with its reset
+time and which clears by itself, and except the browser profile's: only screenshot uploads need it, and the machine's upload
 queue runs none with a login that is missing, expired or turned away by GitHub, so every repo's
 uploads with it wait there without spending a try, and uploads with another login (a repo's own §2
 profile) still run. It is one item for the machine per login, `health:browser-signin:<id>`, told by

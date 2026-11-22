@@ -15,8 +15,9 @@ other way mid-run, so a subagent never waits on a reply.
 Everything sent that way must arrive **as a question with drafted options and a recommendation**,
 because the parent turns it straight into a carousel question.
 
-Fill the `<>` fields from this repo's config (`desk-env where`, then Read it) — the subagent reads
-the same file, so pass it the `CONFIG` path too. Fill `<§3 limits>` from config §3 before sending: if `git-push` or `pr-reply` is not `yes`, the
+Fill the `<>` fields from the config sections you read at the skill's start, never the `CONFIG`
+file whole. The subagent reads its sections the same way, from the same repo, so it needs
+no config path. Fill `<limits from §3>` from config §3 before sending: if `git-push` or `pr-reply` is not `yes`, the
 IMPLEMENT subagent stops before that step and returns what it would have
 pushed or posted, and the parent asks.
 
@@ -31,8 +32,9 @@ Read-only. No worktree, no branch checkout, no dev server.
 > run typecheck, lint or the spec suite.**
 >
 > Load the **desk-review-response** skill first and follow it, including `references/voice.md` —
-> every reply you draft posts publicly as the user. Read the repo config at `<CONFIG path>`: §4
-> (including "What review here consistently asks for" and People) and §5.
+> every reply you draft posts publicly as the user. Read the repo config's §4 (including "What
+> review here consistently asks for" and People) and §5 with `desk-env show 4 5`, never the file
+> whole.
 >
 > Gather the feedback from three places, not one: unresolved review threads, review bodies, and
 > issue comments. Ignore anything authored by a bot. Paginate every `gh api` list. Read the PR diff
@@ -82,11 +84,10 @@ Owns a worktree and pushes. Run as many as `clearance-state.mjs capacity` allows
 to two subagents, and never give two PRs that share a source file to subagents running at once.
 
 > You are working the agreed review fixes on \<§0 GitHub repo> PR **#\<n>** in the worktree at
-> **\<config §2 worktrees dir>/\<TICKET>** (branch `\<branch>`). The repo config is at
-> `<CONFIG path>`.
+> **\<config §2 worktrees dir>/\<TICKET>** (branch `\<branch>`).
 >
 > Load **desk-review-response** and follow it, including `references/voice.md`. Read config §4
-> "What review here consistently asks for" and run it against your own diff before you push —
+> "What review here consistently asks for" (`desk-env get review-asks`) and run it against your own diff before you push —
 > fixing one of those now saves a round trip. (Empty or `TODO`: there is no recorded house bar yet;
 > say so in your return rather than inventing one.)
 >
@@ -96,7 +97,7 @@ to two subagents, and never give two PRs that share a source file to subagents r
 > Anything not on that list stays untouched, however tempting. Fixing extra things is the single most
 > common reason a hand-back turns into another round.
 >
-> **Permissions for this run:** \<§3 limits>
+> **Permissions for this run:** \<limits from §3>
 >
 > Then, in this order:
 > 1. Confirm the worktree is yours and clean, and that `HEAD` matches the PR head. If it does not,

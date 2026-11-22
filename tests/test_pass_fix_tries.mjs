@@ -1,4 +1,5 @@
 // suite: pass phase: fix tries (the decision, run through the generator runner)
+// layer: L1
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideFixTries, decideOutage, tryLabel } from '../desk/bin/pass/fix-tries.mjs';
 import { reviewerGated } from '../desk/bin/pass/shared.mjs';

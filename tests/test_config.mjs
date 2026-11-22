@@ -1,10 +1,11 @@
 // suite: config values (list items, trailing notes)
+// layer: L2
 // Config value cells: one item per backtick span, except spans inside a trailing parenthesised note.
 import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { cellItems, configRows, declaredRows, CONFIG_ROWS, PATH_VARS, MACHINE_FALLBACK_ROWS } from '../desk/bin/desk-env.mjs';
+import { cellItems, configRows, declaredRows, CONFIG_ROWS, PATH_VARS } from '../desk/bin/desk-env.mjs';
 import { ROWS, coverage, TYPES, parseRow, norm, MACHINE_FALLBACK, requiredFieldsIn, requiredFieldsByType } from '../desk/bin/config-schema.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
@@ -256,6 +257,52 @@ t('DS-873 an item worker-settings refuses for its tail is UNLISTED, as worker-se
   'UNLISTED §4 Local services item "search 8108" is not `<service> [:<port>]`: every worker is refused it'), true);
 t('and `name: port` reads as its name', d.code, 1);
 t('DS-395 AC4 a script run as bash <path>.sh is not drift', drift(`${conf()}| Related tests | \`bash tests/related.sh\` |\n`).out, 'no drift');
+
+// DS-877: rows another row settles are schema data; drift names a set row that contradicts its rule,
+// and `desk-env forced` lists the values setup writes unasked.
+const JIRA_PERMS = ROWS.filter((e) => e.kind === 'perm' && e.id.startsWith('jira-')).map((e) => e.id);
+d = drift(`${conf({ perms: { 'jira-create': 'yes' } })}| Tracker | \`none\` |\n`);
+t('DS-877 AC1 a Jira permission set yes with Tracker none is one CONFLICT line naming the row, its value and the rule', d.out,
+  'CONFLICT §3 jira-create is yes, but §4 Tracker is none, which settles it no: there is no Jira to act on');
+t('DS-877 AC1 and exits 1', d.code, 1);
+d = drift(`${conf({ perms: Object.fromEntries(JIRA_PERMS.map((k) => [k, 'no'])) })}| Tracker | \`none\` |\n`);
+t(`DS-877 AC2 every Jira permission no with Tracker none is no conflict (${JIRA_PERMS.length} rows)`, d.out, 'no drift');
+t('DS-877 an ask contradicts a rule that settles the row no', /^CONFLICT §3 jira-comment is ask,/.test(drift(`${conf({ perms: { 'jira-comment': 'ask' } })}| Tracker | \`none\` |\n`).out), true);
+t('DS-877 Tracker jira settles nothing', drift(`${conf({ perms: { 'jira-create': 'yes' } })}| Tracker | \`jira\` |\n`).out, 'no drift');
+const forced = (rows) => {
+  const c = join(T, 'forced.md');
+  writeFileSync(c, `${conf()}${rows}`);
+  try { return { code: 0, out: execFileSync('node', [BIN, 'forced', '--json'], { encoding: 'utf8', env: driftEnv({ DESK_CONFIG: c }), stdio: 'pipe' }).trim() }; }
+  catch (e) { return { code: e.status, out: String(e.stdout).trim() }; }
+};
+const forcedOf = (rows) => JSON.parse(forced(rows).out).map((f) => `${f.id}=${f.value} (${f.reason})`).join(' | ');
+const noDb = '(there is no local database to act on)';
+t('DS-877 AC3 Local database none forces each database row no with the reason, and nothing else',
+  forcedOf('| Local database | `none` |\n'), `db-per-ticket=no ${noDb} | db-clone-staging=no ${noDb} | tests-shared-db=no ${noDb}`);
+t('DS-877 AC4 Repo merge settings with auto-merge off force pr-auto-merge no with the reason',
+  forcedOf('| Repo merge settings | `auto-merge off; delete_branch_on_merge on` |\n'), 'pr-auto-merge=no (gh pr merge --auto cannot arm where the repo has auto-merge off)');
+t('DS-877 auto-merge allowed forces nothing, whatever else is off', forcedOf('| Repo merge settings | `auto-merge allowed; delete_branch_on_merge off` |\n'), '');
+for (const text of ['auto-merge allowed and delete_branch_on_merge off', 'auto-merge on. delete_branch_on_merge off', 'auto-merge allowed']) {
+  t(`DS-877 "${text}" forces nothing: another setting's off is not auto-merge's`, forcedOf(`| Repo merge settings | \`${text}\` |\n`), '');
+}
+for (const text of ['auto-merge allowed: no', 'allow_auto_merge: false', 'no auto-merge', 'Auto-merge is disabled, delete_branch_on_merge on']) {
+  t(`DS-877 "${text}" forces pr-auto-merge no`, forcedOf(`| Repo merge settings | \`${text}\` |\n`), 'pr-auto-merge=no (gh pr merge --auto cannot arm where the repo has auto-merge off)');
+}
+t('DS-877 auto-merge off in its own item of several forces pr-auto-merge no',
+  forcedOf('| Repo merge settings | `auto-merge off` `delete_branch_on_merge on` |\n'), 'pr-auto-merge=no (gh pr merge --auto cannot arm where the repo has auto-merge off)');
+t('DS-877 Staging none with a local database forces the staging rows no, each with its own reason',
+  forcedOf('| Local database | `postgres container x-postgres-1` |\n| Staging | `none` |\n'),
+  'db-clone-staging=no (there is no staging to clone) | staging-write=no (there is no staging to write to)');
+t('DS-877 a row two rules settle is listed once, by the first',
+  forcedOf('| Local database | `none` |\n| Staging | `none` |\n').split(' | ').filter((f) => f.startsWith('db-clone-staging=')).join(' | '), `db-clone-staging=no ${noDb}`);
+d = drift(`${conf({ perms: { 'db-clone-staging': 'yes' } })}| Local database | \`postgres container x-postgres-1\` |\n| Staging | \`none\` |\n`);
+t('DS-877 db-clone-staging yes with Staging none is a CONFLICT', d.out,
+  'CONFLICT §3 db-clone-staging is yes, but §4 Staging is none, which settles it no: there is no staging to clone');
+const none = forced('| Local database | `postgres container x-postgres-1` |\n| Tracker | `jira` |\n');
+t('DS-877 AC5 no forcing row set prints an empty list', none.out, '[]');
+t('DS-877 AC5 and exits 0', none.code, 0);
+const badRule = ROWS.filter((e) => e.forced && (!e.forced.length || e.forced.some((f) => !(ROWS.some((x) => x.id === f.row && x.kind !== 'perm') && (e.kind !== 'perm' || ['yes', 'ask', 'no'].includes(f.value)) && f.reason))));
+t('DS-877 every forced rule names a declared §0-§5 row, a value its row takes and a reason', badRule.map((e) => e.id).join(' '), '');
 
 // A set row whose value does not fit the type the schema declares for it is named INVALID, report-only.
 d = drift(`${conf({ perms: { 'worker-local-services': 'no' } })}| Local services | \`Typesense on port 8108\` |\n`);
@@ -552,12 +599,17 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   t('#746 and the §3c ledger', /3c|Bash\(x\)/.test(all), false);
   t('#746 the rules for the agent reading it are printed whole, prose and all', all.includes("## Rules for the agent reading this file\n\n5. **The Recommended column is not this user's answer.**"), true);
   t('#746 but not when a section is named', configRows(text, ['1']).includes('Rules for the agent'), false);
-  t('#746 a named section is printed alone, §3c included when named', `${configRows(text, ['1'])} / ${/Bash\(x\)/.test(configRows(text, ['§3c']))}`, '## 1. You\n| Field | Value |\n|---|---|\n| GitHub handle | `me` | / true');
+  t('#746 a named section is printed alone', configRows(text, ['1']), '## 1. You\n| Field | Value |\n|---|---|\n| GitHub handle | `me` |');
+  t('DS-875 AC4 §3c is never printed, even when named', /3c|Bash\(x\)|Ledger/.test(configRows(text, ['§3c', '3', '1', 'rules'])), false);
+  t('DS-875 AC4 `rules` names the rules for the agent, prose and all', configRows(text, ['rules', '1']).startsWith("## Rules for the agent reading this file\n\n5. **The Recommended column is not this user's answer.**\n\n## 1. You"), true);
   const showEnv = { ...process.env, DESK_CONFIG: join(T, 'show.md'), DESK_MACHINE: join(T, 'none.md'), HOME: T };
   writeFileSync(join(T, 'show.md'), text);
-  t('#746 desk-env show prints the same', execFileSync('node', [BIN, 'show', '3'], { encoding: 'utf8', env: showEnv }).trim(), configRows(text, ['3']));
-  let code = 0; try { execFileSync('node', [BIN, 'show'], { stdio: 'ignore', env: { ...showEnv, DESK_CONFIG: join(T, 'missing.md') } }); } catch (e) { code = e.status; }
-  t('#746 with no config it exits 3', code, 3);
+  t('#746 desk-env show prints the same', execFileSync('node', [BIN, 'show', 'rules', '3'], { encoding: 'utf8', env: showEnv }).trim(), configRows(text, ['rules', '3']));
+  const showRun = (args, env = showEnv) => spawnSync('node', [BIN, 'show', ...args], { encoding: 'utf8', env });
+  t('#746 with no config it exits 3', showRun([], { ...showEnv, DESK_CONFIG: join(T, 'missing.md') }).status, 3);
+  t('DS-875 AC4 desk-env show 3c exits 2 and prints no ledger', (({ status, stdout }) => `${status} ${/Bash\(x\)/.test(stdout)}`)(showRun(['3', '§3c'])), '2 false');
+  t('DS-875 an unknown section exits 2, naming it', (({ status, stderr }) => `${status} ${/"9"/.test(stderr)}`)(showRun(['9'])), '2 true');
+  t('DS-875 AC4 every section show prints leaves the ledger out', /Bash\(x\)|3c/.test(showRun([]).stdout), false);
 }
 // The schema (config-schema.mjs) against the shipped template, both ways, and the id tables desk-env
 // derives from it against the literals they replaced.
@@ -633,6 +685,8 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'harm-swap-growth|3b|Swap growth that holds spawns (GB)', // DS-848
     'harm-tmpfs|3b|tmpfs /tmp size that holds spawns (GB)', // DS-848
     'harm-vmmem|3b|WSL VM share of its grant that holds spawns (%)', // DS-848
+    'jira-field-defaults|4|Field defaults',
+    'proposal-labels|4|Priority proposal labels',
   ];
   const sorted = (a) => [...a].sort().join('\n');
   const rowsNow = Object.entries(CONFIG_ROWS).map(([id, r]) => [id, r.section, r.row, ...(r.table ? ['table'] : [])].join('|'));
@@ -677,7 +731,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     ['merge-method', 'rebase', 'squash-merge', false], ['suite-weight', 'heavy', 'medium', false], ['status-table', 'quiet', 'loud', false],
     ['batches-run-by', 'session', 'cron', false], ['ai-attribution', 'allowed', 'sometimes', false], ['regex', 'KAN-[0-9]+', 'KAN-[0-9', false],
     ['command', 'apps/api: uv run pytest', null], ['test-signin', 'apps/portal: dev@example.test', 'apps/portal: hunter2', false], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
-    ['required-fields', 'Bug: customfield_1', 'customfield_1', false], ['lever', 'codex, effort', 'turbo', false],
+    ['required-fields', 'Bug: customfield_1', 'customfield_1', false], ['field-defaults', 'customfield_1 = from parent', 'customfield_1', false], ['lever', 'codex, effort', 'turbo', false],
     ['budget', '25', '25 USD', true], ['worker-models', 'default', 'fast', true], ['worker-effort', 'task=low', '4b=extreme', true],
     ['worker-location', 'cloud', 'remote', true], ['codex-review', 'timeout=60', 'timeout=soon', true],
     ['spawn-gate', 'start work > 8 GiB', null], ['file-budget', '2', 'two', false],
@@ -722,7 +776,6 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
 
   // The machine profile fallback desk-env reads.
   t('DS-868 MACHINE_FALLBACK is the three machine rows', JSON.stringify(MACHINE_FALLBACK), '{"concurrency":"autopilot-concurrency","memory-ceiling":"memory-ceiling-gb","test-cap":"test-cap"}');
-  t('DS-868 MACHINE_FALLBACK_ROWS is their labels', MACHINE_FALLBACK_ROWS.join(' / '), 'autopilot worker concurrency / memory ceiling for parallel work (gb) / test worker cap under the test lock');
 }
 
 // `desk-env get --json`: typed rows with where each value came from, its default and its type errors.
@@ -788,6 +841,37 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   const fields = (x) => JSON.stringify([x?.set, x?.source, x?.value, x?.items, x?.default]);
   t('DS-870 AC11 an unset row is not set, source unset, with a null value', fields(r.json?.rows?.['local-services']), '[false,"unset",null,null,null]');
   t('DS-870 AC11 the schema default is reported in its own field, never as the value', fields(r.json?.rows?.['append-only-paths']), '[false,"unset",null,null,["none"]]');
+
+  // `desk-env unset`: the rows that still need an answer, which install.sh counts.
+  {
+    const u = join(T, 'unset-874.md');
+    writeFileSync(u, '## 1. Who you are\n\n| Field | Value |\n|---|---|\n| GitHub handle | `TODO` |\n| Name | `Pat` |\n| Pronouns (optional) | `TODO` (a note) |\n\n'
+      + '## 2. Paths\n\n| Field | Value | Notes |\n|---|---|---|\n| Worktrees directory | `~/wt` | not `TODO` |\n| Primary repo root | `~/r` (not `TODO`) | x |\n| Handoff at context % | `TODO` | |\n\n'
+      + `${B3}| Autopilot worker concurrency | \`2 / 3\` | \`TODO\` |\n| Memory ceiling for parallel work (GB) | \`16\` | \`TODO\` |\n`
+      + '| Test worker cap under the test lock | `4` | `TODO` |\n| Triage concurrency | `1` | `3` (left `TODO` it is 1) |\n| Intake query | `none` | `TODO` |\n| Not a schema row | `x` | `TODO` |\n\n'
+      + '## 3. Permissions\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n| `pr-open` | Open a PR | `yes` | `TODO` |\n| `git-push` | Push | `yes` | `yes` |\n');
+    const unsetJson = (extra) => {
+      const x = node(jenv(u, extra), ['unset', '--json']);
+      let j = null; try { j = JSON.parse(x.stdout); } catch { /* not JSON */ }
+      return { code: x.status, j };
+    };
+    const listed = (x) => (x.j?.rows ?? []).map((e) => `${e.section}|${e.label}`).join(' / ');
+    let u1 = unsetJson();
+    t('DS-874 AC4 unset --json lists the rows with no value of their own, none from the machine profile and no default, each with section and label',
+      `${u1.code} ${listed(u1)}`, '0 1|GitHub handle / 1|Pronouns (optional) / 3|pr-open / 3b|Autopilot worker concurrency / 3b|Memory ceiling for parallel work (GB) / 3b|Test worker cap under the test lock');
+    t('DS-874 AC4 it names the config it read', u1.j?.config, u);
+    writeFileSync(join(T, 'machine-874.md'), '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `4 / 8` | x |\n| memory-ceiling-gb | `24` | x |\n| test-cap | `3` | x |\n');
+    u1 = unsetJson({ DESK_MACHINE: join(T, 'machine-874.md') });
+    t('DS-874 AC4 a machine profile that sets the three machine rows answers them', listed(u1), '1|GitHub handle / 1|Pronouns (optional) / 3|pr-open');
+    t('DS-874 AC4 each row carries its id', (u1.j?.rows ?? []).map((e) => e.id).join(' '), 'github-handle pronouns pr-open');
+    writeFileSync(join(T, 'machine-874b.md'), '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| test-cap | `3` | x |\n');
+    u1 = unsetJson({ DESK_MACHINE: join(T, 'machine-874b.md') });
+    t('DS-874 AC4 a machine row the profile does not set still counts, its schema default aside', listed(u1).includes('3b|Autopilot worker concurrency') && !listed(u1).includes('Test worker cap'), true);
+    const plain = node(jenv(u), ['unset']);
+    t('DS-874 plain unset prints one §<section> TAB <label> line per row', plain.stdout.split('\n')[0], '§1\tGitHub handle');
+    const none = node(jenv(join(T, 'absent-874.md')), ['unset', '--json']);
+    t('DS-874 with no config it exits 3, printing nothing', `${none.status} ${none.stdout === ''}`, '3 true');
+  }
 
   // Where something other than the row gives the value, its type is checked on that value, not the row.
   const label = (id) => ROWS.find((e) => e.id === id).label;

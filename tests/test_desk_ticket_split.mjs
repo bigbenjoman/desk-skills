@@ -1,4 +1,5 @@
 // suite: desk-ticket split (a short core, and each stage's rules in its own file)
+// layer: L1
 // covers: skills/**/*.md README.md
 // tests/fixtures/desk-ticket-before-split.md is desk-ticket's SKILL.md as one file. Every heading,
 // table row and paragraph of it must still be in the core or one stage file, the core must stay
@@ -6,7 +7,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { rewrittenBy, checkRewritten } from './split_check.mjs';
+import { rewrittenBy, checkRewritten, withoutOptOuts } from './split_check.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -45,6 +46,7 @@ const REWRITTEN = [
   ['DS-427', '```bash codex exec --sandbox read-only ', 1], // the probe skips the trusted-directory check
   ['DS-912', 'the Testing-bullet standard and the before/after image table. Ends with', 1], // desk-pr also owns the preview-build lease
   ['DS-888', '`git status --porcelain` after every round; a dirty tree is an aborted round', 1], // the round-end check runs desk-env tree-status
+  ['DS-875', 'Where the review refutes its findings with `codex` (a cross-vendor pass), whether codex answers is', 1], // names the row's desk-env read
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 
@@ -101,7 +103,7 @@ for (const r of rows.filter(kept)) {
 // word (whitespace aside): the split moves text, it does not reword it. A table is checked row by
 // row above, since its rows now sit in the files of the stages they belong to.
 const norm = (s) => s.replace(/\s+/g, ' ').trim();
-const after = norm(files.map(read).join('\n\n'));
+const after = norm(files.map((f) => withoutOptOuts(read(f))).join('\n\n'));
 const paras = before.split(/\n[ \t]*\n|\n(?=[ \t]*(?:[-*]|\d+\.) )/).filter((p) => !/^\|/.test(p.trimStart())).map(norm).filter(Boolean);
 checkRewritten({ t, label: 'AC3', rewritten: REWRITTEN, items: [...paras, ...body] });
 const dropped = paras.filter((p) => !after.includes(p) && kept(p));

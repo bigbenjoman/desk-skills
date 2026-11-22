@@ -11,6 +11,10 @@
 # wrapper says on whom. It waits up to DESK_RELATED_WAIT seconds (an hour by default), then exits with
 # the wrapper's 75 having run nothing. A run already in a slot (with-lock.sh exports DESK_LOCK_HELD to
 # its command) takes no second one. With no with-lock.sh to find, as in CI, it runs with no slot.
+# An end-to-end (L3) suite the change reaches only through imports, not claiming a changed file
+# directly, is not run here but named as left for CI, which runs it before merge (scope_sections.mjs
+# --l3-direct). run.sh's record of the run carries the scope it chose (full or changed), why, and how
+# many suites it left for CI.
 set -u
 T="$(cd "$(dirname "$0")" && pwd)"
 SH="${BASH:-bash}"
@@ -39,21 +43,32 @@ fi
 jobs=()
 [ -z "${DESK_TEST_JOBS:-}" ] || jobs=(-j "$DESK_TEST_JOBS")
 base="origin/$(desk-env get default-branch 2>/dev/null || echo main)"
-every(){ echo "related: $1, so every suite runs" >&2; "$SH" "$T/run.sh" ${jobs[@]+"${jobs[@]}"}; exit $?; }
+# The scope run.sh records for the run (full or changed), why, and how many suites it left for CI.
+export DESK_RUN_SCOPE=full DESK_RUN_REASON='' DESK_RUN_LEFT_FOR_CI=0
+every(){ echo "related: $1, so every suite runs" >&2; DESK_RUN_REASON=$1; "$SH" "$T/run.sh" ${jobs[@]+"${jobs[@]}"}; exit $?; }
 git merge-base "$base" HEAD >/dev/null 2>&1 || every "no merge base with $base"
 OUT="$(mktemp "${TMPDIR:-/tmp}/desk-related.XXXXXX")" || exit 1
 trap 'rm -f "$OUT"' EXIT
-if ! GITHUB_OUTPUT="$OUT" node "$T/scope_sections.mjs" --base "$base" --worktree --github-output >/dev/null; then
+if ! GITHUB_OUTPUT="$OUT" node "$T/scope_sections.mjs" --base "$base" --worktree --l3-direct --github-output >/dev/null; then
   every "scope_sections.mjs failed against $base"
 fi
 scope=$(grep -m 1 '^scope=' "$OUT"); scope=${scope#scope=}
 reason=$(grep -m 1 '^reason=' "$OUT"); reason=${reason#reason=}
 suites=$(grep -m 1 '^suites=' "$OUT"); suites=${suites#suites=}
+ci=$(grep -m 1 '^ci=' "$OUT"); ci=${ci#ci=}
+DESK_RUN_REASON=${reason:-no reason given}
 if [ "$scope" = full ] || [ -z "$suites" ]; then
   echo "related: scope ${scope:-unknown} against $base (${reason:-no reason given}), so every suite runs"
   "$SH" "$T/run.sh" ${jobs[@]+"${jobs[@]}"}; exit $?
 fi
+DESK_RUN_SCOPE=changed
 echo "related: scope $scope against $base: $suites"
+# End-to-end (L3) suites the change reaches only through imports: CI runs them before merge, not this.
+if [ -n "$ci" ]; then
+  # shellcheck disable=SC2086
+  set -- $ci; DESK_RUN_LEFT_FOR_CI=$#
+  echo "related: left for CI, as the change reaches these L3 suites only through imports: $ci"
+fi
 # Suite names never hold spaces, so the word split is the list.
 # shellcheck disable=SC2086
 "$SH" "$T/run.sh" ${jobs[@]+"${jobs[@]}"} $suites

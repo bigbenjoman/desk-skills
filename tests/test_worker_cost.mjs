@@ -1,4 +1,5 @@
 // suite: worker cost (tokens, cost and wall time per worker in the batch report)
+// layer: L2
 // worker-cost.mjs on stub stream-json logs in a scratch state directory: a finished worker, one woken
 // again after its turn ended, a requeued one whose rounds add up, one with no result event, a round
 // left by an earlier batch, and a ticket no worker ran; and per-stage tokens from logs with

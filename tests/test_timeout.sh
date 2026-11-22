@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: timeout (process group, hung psql in setup-worktree)
+# layer: L2
 # desk_timeout kills the command's whole process group on timeout, not just the command, and
 # setup-worktree.sh's psql calls run under it: a database that never answers fails setup within the
 # limit, names the container, removes the half-built worktree and leaves no docker or psql behind.

@@ -1,4 +1,5 @@
 // suite: review findings (each review round's counts, harvested from the marker it prints)
+// layer: L2
 // verdict.mjs --findings prints a round's counts from its results file, and the pass records each
 // AUTOPILOT_FINDINGS line a worker printed in the ticket's findings file, once, and a round that ended
 // without one in its run record. Pure: no git, no GitHub; a scratch state directory only.

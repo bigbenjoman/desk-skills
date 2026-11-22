@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: setup-worktree install (a §4 Install item in a subdirectory)
+# layer: L2
 # A §4 Install item that names a directory (`backend: uv sync --frozen`) runs there when
 # setup-worktree.sh --for-worker builds a worker's worktree, so the virtualenv is in place before the
 # worker spawns and the worktree is still clean. Stub uv and pnpm only; scratch HOME and repos.
@@ -76,6 +77,8 @@ check "AC3 the backend item runs in backend/"                     'grep -qxF "uv
 check "AC3 backend/.venv exists before the worker spawns"         '[ -f "$W/backend/.venv/bin/python" ] && [ ! -e "$W/.venv" ]'
 st=$(git -C "$W" status --porcelain 2>&1)
 check "AC3 the worktree is clean after the install"               '[ -z "$st" ]'
+check "DS-698 AC1 a new worktree names one duration per step, in the order run" \
+  'echo "$out" | grep -Eqx "\[setup-worktree\] steps=config:[0-9]+,checkout:[0-9]+,env:[0-9]+,settings:[0-9]+,databases:[0-9]+,install:[0-9]+,agents:[0-9]+"'
 
 # DS-346: a new worktree is refused on a name no worker can push; a finished one already on such a
 # branch is handed back, so a kept round resumes.
@@ -86,6 +89,8 @@ done
 git -C "$T/repo" worktree add -q -b 'fix/T-3-<slug>' "$T/wt/T-3" main
 out=$(bash "$B/setup-worktree.sh" --for-worker T-3 'fix/T-3-<slug>' 2>&1); rc=$?
 check "DS-346 a finished worktree on a placeholder branch is handed back" '[ $rc -eq 0 ] && [[ "$out" == *"worktree=$T/wt/T-3"* ]]'
+check "DS-698 AC1 a kept worktree names the steps it ran, with no install" \
+  'echo "$out" | grep -Eqx "\[setup-worktree\] steps=config:[0-9]+,checkout:[0-9]+,settings:[0-9]+,agents:[0-9]+,databases:[0-9]+,migrate:[0-9]+"'
 
 # A §4 Install that fails once runs again and setup goes on; failing twice fails setup.
 echo 1 > "$T/pnpm.fails"; : > "$T/tools.log"

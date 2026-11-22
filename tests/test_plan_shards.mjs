@@ -1,4 +1,5 @@
 // suite: CI shards (tests/plan_shards.mjs balances the suites over parallel jobs by recorded duration)
+// layer: L2
 // tests/plan_shards.mjs on fixture durations, then on this repo's suites and tests/suite_durations.json.
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';

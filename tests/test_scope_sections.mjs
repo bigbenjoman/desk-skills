@@ -1,11 +1,12 @@
 // suite: CI scope (the suites a pull request's change reaches; anything unplaced runs every suite)
+// layer: L2
 // claims: imports (repo file names below are test data, not what this suite runs)
 // tests/scope_sections.mjs on a made-up tree, then on this repo, then tests/run.sh's suite filter.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildMap, decide, mentions, globRe, loads, parseNameStatus, repoMap, addedExports, ALWAYS } from './scope_sections.mjs';
+import { buildMap, decide, mentions, globRe, loads, parseNameStatus, repoMap, addedExports, ALWAYS, LAYERS, suiteHeader, importClosure } from './scope_sections.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const g = JSON.stringify(got); const w = JSON.stringify(want); const ok = g === w; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${g}${ok ? '' : ` (want ${w})`}`); };
@@ -95,6 +96,31 @@ t('DS-920 a covers: glob claims the suites it matches', [[...(rmap.claims.get('t
 t('DS-920 a changed suite runs the suite that covers it', [rscope(M('tests/test_drive.sh')), rscope(M('tests/test_pass.mjs'))], ['test_drive.sh test_lint.sh test_replay.sh', 'test_lint.sh test_pass.mjs']);
 t('DS-920 a covered suite does not pass on what it names', rscope(M('desk/bin/drive.sh')), 'test_drive.sh test_lint.sh');
 
+// DS-986: with l3Direct (tests/related.sh), an L3 suite runs only for a change it claims directly; one it
+// reaches only through imports is left for CI. test_e2e.sh names pass.mjs, which imports queue.mjs, which
+// imports lock.mjs; test_e2e_lock.sh names lock.mjs. test_pass.mjs (L1) and test_drive.sh (L2) reach all three.
+const layered = {
+  ...tree,
+  'tests/test_pass.mjs': "// suite: pass\n// layer: L1\nimport { run } from '../desk/bin/pass.mjs';",
+  'tests/test_drive.sh': '# suite: drive\n# layer: L2\n"$SRC/desk/bin/drive.sh"\n"$SRC/bin/tool"\nnode "$SRC/desk/bin/pass.mjs"',
+  'tests/test_e2e.sh': '# suite: e2e\n# layer: L3\nnode "$SRC/desk/bin/pass.mjs" --once',
+  'tests/test_e2e_lock.sh': '# suite: e2e lock\n# layer: L3\nnode "$SRC/desk/bin/lock.mjs"',
+};
+const lmap = buildMap(Object.keys(layered), (p) => layered[p]);
+const local = (ch) => { const d = decide(ch, lmap, { l3Direct: true }); return [d.scope, d.suites.join(' '), (d.ci ?? []).join(' ')]; };
+t('DS-986 AC1 an L3 suite a change reaches only through imports does not run, and is left for CI', local(M('desk/bin/queue.mjs')), ['some', 'test_drive.sh test_lint.sh test_pass.mjs', 'test_e2e.sh']);
+t('DS-986 AC1 the reason counts it', decide(M('desk/bin/queue.mjs'), lmap, { l3Direct: true }).reason, '1 changed file(s) reach 3 of 8 suites, and 1 L3 suite(s) only through imports, left for CI');
+t('DS-986 AC1 one changed file one L3 suite claims directly, another it reaches through imports', local(M('desk/bin/lock.mjs')), ['some', 'test_data.mjs test_drive.sh test_e2e_lock.sh test_lint.sh test_pass.mjs', 'test_e2e.sh']);
+t('DS-986 AC2 an L3 suite runs for a file it claims directly', local(M('desk/bin/pass.mjs')), ['some', 'test_drive.sh test_e2e.sh test_lint.sh test_pass.mjs', '']);
+t('DS-986 AC2 and for a change to the suite itself', local(M('tests/test_e2e.sh')), ['some', 'test_e2e.sh test_lint.sh', '']);
+t('DS-986 AC2 one direct claim among the changed files runs it, and it is not left for CI', local(M('desk/bin/queue.mjs', 'desk/bin/pass.mjs')), ['some', 'test_drive.sh test_e2e.sh test_lint.sh test_pass.mjs', '']);
+t('DS-986 AC3 L1 and L2 suites reached through imports run as without l3Direct', [local(M('desk/bin/queue.mjs'))[1], decide(M('desk/bin/queue.mjs'), lmap).suites.filter((s) => !s.startsWith('test_e2e')).join(' ')], ['test_drive.sh test_lint.sh test_pass.mjs', 'test_drive.sh test_lint.sh test_pass.mjs']);
+t('DS-986 AC4 a full scope runs every suite, L3 included', local(M('install.sh')), ['full', lmap.suites.map((s) => s.file).join(' '), '']);
+t('DS-986 AC5 without l3Direct (CI) L3 suites are selected through imports as before, and nothing is left',
+  [decide(M('desk/bin/queue.mjs'), lmap).suites.join(' '), 'ci' in decide(M('desk/bin/queue.mjs'), lmap), decide(M('desk/bin/queue.mjs'), lmap).reason],
+  ['test_drive.sh test_e2e.sh test_lint.sh test_pass.mjs', false, '1 changed file(s) reach 4 of 8 suites']);
+t('DS-986 direct claims are what a suite names or globs, before any load is followed', [[...(lmap.direct.get('desk/bin/pass.mjs') ?? [])].sort(), [...(lmap.direct.get('desk/bin/queue.mjs') ?? [])]], [['test_drive.sh', 'test_e2e.sh', 'test_pass.mjs'], []]);
+
 // DS-818: root documents and scripts, and files under tests/ that are not suites, are claimed like any
 // other file; desk-env.mjs gaining exports runs the suites that use them.
 const claimed = {
@@ -112,6 +138,7 @@ const claimed = {
   'tests/test_pass_x.sh': '# suite: pass x\n. "$S/pass_setup.sh"',
   'tests/test_prose.mjs': "// suite: prose\n// covers: skills/writing/**\nimport { scan } from './prose_scan.mjs';\nread('tests/fixtures/prose_baseline.json')",
   'tests/test_env_user.mjs': "// suite: env user\nimport { newThing } from '../desk/bin/desk-env.mjs';",
+  'tests/test_schema_user.mjs': "// suite: schema user\nimport { newRow } from '../desk/bin/config-schema.mjs';",
 };
 const cmap = buildMap(Object.keys(claimed), (p) => claimed[p]);
 const cscope = (ch) => { const d = decide(ch, cmap); return `${d.scope}: ${d.scope === 'full' ? d.reason : d.suites.join(' ')}`; };
@@ -124,6 +151,12 @@ t('DS-818 tests/run.sh and the scoping script stay foundational', [cscope(M('tes
 const E = (exports) => [{ status: 'M', path: 'desk/bin/desk-env.mjs', exports }];
 t('DS-818 AC2 desk-env.mjs gaining exports runs the suites that use them', [cscope(E(['newThing'])), cscope([...E(['newThing']), ...M('install.sh')])], ['some: test_env_user.mjs test_lint.sh', 'some: test_env_user.mjs test_install.sh test_lint.sh']);
 t('DS-818 AC3 any other desk-env.mjs change runs everything', cscope(E(undefined)), 'full: desk/bin/desk-env.mjs is shared by every suite');
+// config-schema.mjs takes the same exports-only rule, checked on the real module.
+const schema = readFileSync(join(R, 'desk/bin/config-schema.mjs'), 'utf8');
+const S = (after) => [{ status: 'M', path: 'desk/bin/config-schema.mjs', exports: addedExports(schema, after) ?? undefined }];
+t('DS-976 AC1 config-schema.mjs gaining an export runs the suites that use it', cscope(S(`${schema}export const newRow = 1;\n`)), 'some: test_lint.sh test_schema_user.mjs');
+t('DS-976 AC2 an edited config-schema.mjs export runs everything', cscope(S(schema.replace("export const EXTRA_MODELS = ['finder', 'text'];", "export const EXTRA_MODELS = ['finder', 'text', 'other'];"))), 'full: desk/bin/config-schema.mjs is shared by every suite');
+t('DS-976 AC3 a removed config-schema.mjs export runs everything', cscope(S(schema.replace("export const LEVERS_AUTO = 'auto';\n", ''))), 'full: desk/bin/config-schema.mjs is shared by every suite');
 const env = 'import { x } from "./y.mjs";\n\nexport const one = 1;\n\nexport function two(a) {\n  return a;\n}\n';
 t('DS-818 addedExports: new exports, in any place, with comments', addedExports(env, 'import { x } from "./y.mjs";\n\nexport const one = 1;\n// three\nexport const three = (a) => a;\n\nexport function two(a) {\n  return a;\n}\n/** four */\nexport async function four() {}\nexport const FIVE = [\'a\'];\n'), ['three', 'four', 'FIVE']);
 t('DS-818 addedExports: an unchanged module adds none', addedExports(env, env), []);
@@ -230,6 +263,24 @@ t('a suite with claims: imports claims nothing it only names, only what it impor
 const walks = /\b(readdirSync|readdir|walk|markdownFiles)\s*\(\s*(\[?\s*join\(\s*(root|R|ROOT|SRC)\b|refs\b|skill\b)|git ls-files/;
 const uncovered = real.suites.filter((s) => !ALWAYS.includes(s.file) && !s.importsOnly && !s.covers.length && walks.test(readFileSync(join(R, 'tests', s.file), 'utf8'))).map((s) => s.file);
 t('every suite that walks the repo tree has a covers: line', uncovered, []);
+// Each suite's test layer: L1 in process, L2 one process boundary, L3 end to end.
+t('DS-985 AC1 every suite in the repo declares exactly one layer, L1, L2 or L3', real.suites.filter((s) => !LAYERS.includes(s.layer)).map((s) => s.file), []);
+t('DS-985 AC1 a second layer line, an unknown layer or none is no layer', ['// suite: x\n// layer: L1\n// layer: L2\n', '# suite: x\n# layer: L4\n', '# suite: x\n', '# suite: x\n# layer: L2\n'].map((h) => suiteHeader(h).layer), [null, null, null, 'L2']);
+const textOf = (p) => { try { return readFileSync(join(R, p), 'utf8'); } catch { return ''; } };
+const layerOf = (f) => real.suites.find((s) => s.file === f)?.layer;
+// End to end: the suites built on the pass, batch and merge driver setups, and those running the real
+// pass.mjs or merge-driver.sh themselves. A claims: imports suite's text is test data, so it is not read
+// for this.
+const endToEnd = real.suites.filter((s) => !s.importsOnly).map((s) => s.file).filter((f) => /^\s*(source|\.) .*(pass_setup|batch_e2e_setup|merge_driver_setup|base_sync_setup)\.sh/m.test(textOf(`tests/${f}`)) || /node "\$B\/pass\.mjs"|join\(BIN, 'pass\.mjs'\)|bash "\$B\/merge-driver\.sh" --tickets/.test(textOf(`tests/${f}`)));
+t('DS-985 AC3 a suite that runs a pass, batch or merge driver end to end is L3', endToEnd.filter((f) => layerOf(f) !== 'L3'), []);
+t('DS-985 AC3 those include the pass, batch, merge driver and installer suites', ['test_pass_spawns.sh', 'test_batch_e2e.sh', 'test_merge_driver_loop.sh', 'test_epic.sh', 'test_install_skips.sh'].map(layerOf), ['L3', 'L3', 'L3', 'L3', 'L3']);
+// In process: a .mjs suite that, with the tests/ helpers it imports, never loads child_process (the
+// pass-phase trap loads it only to refuse every call) and writes no executable stub, which is there only
+// for the module under test to start.
+const startsNothing = (p) => !/child_process|(chmodSync\(.*|mode: )0o7[57][57]\b/.test(textOf(p));
+const inProcess = (f) => f.endsWith('.mjs') && importClosure(`tests/${f}`, textOf).filter((p) => p.startsWith('tests/') && p !== 'tests/pass_phase_trap.mjs').every(startsNothing);
+t('DS-985 AC4 a suite whose cases import modules and start no process is L1', real.suites.map((s) => s.file).filter((f) => inProcess(f) && layerOf(f) !== 'L1'), []);
+t('DS-985 AC4 and an L1 suite starts no process', real.suites.filter((s) => s.layer === 'L1' && !inProcess(s.file)).map((s) => s.file), []);
 const cw = decide(M('desk/bin/clears-when.mjs'), real);
 t('clears-when.mjs, reached through queue.mjs, runs the suites that claim it', [cw.scope, cw.suites], ['some', real.suites.map((s) => s.file).filter((s) => ALWAYS.includes(s) || real.claims.get('desk/bin/clears-when.mjs')?.has(s))]);
 // A script no suite names is unclaimed, and changing it runs everything: each of these has a claim.
@@ -256,6 +307,15 @@ t('a desk-pr reference reaches the desk-pr split suite', decide(M('skills/desk-p
 const cli = spawnSync(process.execPath, [join(R, 'tests/scope_sections.mjs'), '--files', 'desk/bin/merge-driver.sh', '--json'], { encoding: 'utf8' });
 const j = JSON.parse(cli.stdout || '{}');
 t('cli --files --json', [cli.status, j.scope, j.suites?.includes('test_merge_driver_loop.sh'), j.shells?.includes('desk/bin/merge-driver.sh')], [0, 'some', true, true]);
+// DS-986 on this repo: what related.sh leaves for CI is L3, and with what it runs makes CI's selection.
+for (const f of ['desk/bin/clears-when.mjs', 'desk/bin/queue.mjs']) {
+  const ci = decide(M(f), real), loc = decide(M(f), real, { l3Direct: true });
+  t(`DS-986 ${f}: related.sh leaves only L3 suites for CI, and runs the rest of CI's selection`,
+    [loc.ci.length > 0, loc.ci.filter((s) => layerOf(s) !== 'L3'), [...loc.suites, ...loc.ci].sort().join(' ') === [...ci.suites].sort().join(' ')], [true, [], true]);
+}
+const lcli = spawnSync(process.execPath, [join(R, 'tests/scope_sections.mjs'), '--files', 'desk/bin/queue.mjs', '--l3-direct', '--json'], { encoding: 'utf8' });
+const lj = JSON.parse(lcli.stdout || '{}');
+t('DS-986 cli --l3-direct --json names the suites left for CI', [lcli.status, Array.isArray(lj.ci) && lj.ci.length > 0, lj.ci?.some((s) => lj.suites.includes(s))], [0, true, false]);
 const T = scratch('desk-scope-');
 try {
   const out = join(T, 'out');
