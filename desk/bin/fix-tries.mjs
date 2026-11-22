@@ -894,12 +894,19 @@ export function draftGateTry(t, s, ctx) {
 // hold each one's error lines and annotation paths.
 const CLASSED = 'classed runner or resource';
 const OUTSIDE = 'its failed log names no file this PR changes';
-// Whether a check's error lines or annotation paths name a changed file: its full path, or that path less
-// leading folders while two segments are left, as a runner working in a package folder prints it.
+// Whether a check's error lines or annotation paths name a changed file: its full path, that path less
+// leading folders while two segments are left, as a runner working in a package folder prints it, or its
+// name less the extension as a whole word, as a log names a model, test, module or class (dbt's
+// `orders::orders_totals`, `model.shop.orders`). A name a log prints for many files (GENERIC), or one
+// under four letters, is no evidence the failure is this PR's.
+const GENERIC = new Set(['index', 'main', 'init', '__init__', 'setup', 'config', 'schema', 'utils', 'test', 'tests', 'spec', 'types', 'readme', 'package', 'models', 'sources', 'conftest', 'settings']);
+const stem = (p) => String(p).split('/').pop().replace(/\.[^.]*$/, '');
+const wordIn = (name) => new RegExp(`(?:^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_])`);
 function namesChanged(c, changed) {
   const text = [...errorLines(c), ...(c?.error_paths ?? [])];
   const tails = changed.flatMap((p) => { const s = p.split('/'); return [p, ...s.slice(1, -1).map((_, i) => s.slice(i + 1).join('/'))]; });
-  return text.some((l) => tails.some((p) => l.includes(p)));
+  const names = [...new Set(changed.map(stem))].filter((n) => n.length >= 4 && !GENERIC.has(n.toLowerCase())).map(wordIn);
+  return text.some((l) => tails.some((p) => l.includes(p)) || names.some((re) => re.test(l)));
 }
 // A `rerun` call while a rerun is left at this head, a `wait` while another job of a run to re-run is still
 // going (GitHub refuses a run in progress, and a refusal counts as a rerun tried) and the run is inside
