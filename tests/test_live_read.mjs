@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync, existsSync, rmSync, statSync, mkdirSync, symlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { parseLiveReads, liveReadPark, readRecord, startRead, saveFixture, prepareCheckout, copyFixtures, WORKTREE_FIXTURES } from '../desk/bin/live-read.mjs';
+import { parseLiveReads, liveReadPark, readRecord, startRead, saveFixture, prepareCheckout, copyFixtures, WORKTREE_FIXTURES, estimateOf, capRefusal, spentOn, logSpend, spendFile, spendDay } from '../desk/bin/live-read.mjs';
 import { repoStateOf } from '../desk/bin/desk-env.mjs';
 import { waitingOnRead, batchSettled } from '../desk/bin/batch-state.mjs';
 import { shownState } from '../desk/bin/desk-q.mjs';
@@ -31,6 +31,33 @@ t('a park naming no entry is left as it is', names('Which price should the plan 
 t('a question beside the entry is left for the person', names('Need gateway-models. Should the fallback model be gw-2?'), null);
 t('a tail clause holding an ask is not the tail', names('Need gateway-models. Not reached: the PR, so confirm the fee'), null);
 t('no entries in the row asks for nothing', liveReadPark('Need gateway-models.', []), null);
+
+// A paid entry carries both its caps after the name; the park gives its estimate beside the name.
+const paidRow = parseLiveReads(['gateway-chat [£0.10/call, £2/day]: ./scripts/chat.sh', 'half [£0.10/call]: ./h', 'zero [£0/call, £2/day]: ./z', 'odd [ten pence]: ./o', 'gateway-models: ./gm']);
+t('DS-574 a paid entry parses to its name, command and caps', JSON.stringify(paidRow.reads[0]), JSON.stringify({ name: 'gateway-chat', command: './scripts/chat.sh', caps: { call: 0.1, day: 2 } }));
+t('DS-574 a free entry has no caps', paidRow.reads[1].caps, null);
+t('DS-574 AC5 a bracket missing a cap, with a £0 cap, or not in the cap form is refused', paidRow.errors.length, 3);
+t('DS-574 AC5 the refusal says both caps are needed', paidRow.errors[0].includes('a paid call takes both caps'), true);
+const paid = paidRow.reads[0];
+t('DS-574 a park naming a paid entry with its estimate asks for it', liveReadPark('need live read gateway-chat (est £0.03). Not reached: the PR', paidRow.reads)?.map((r) => r.name).join(' '), 'gateway-chat');
+t('DS-574 the estimate is read from beside the name', estimateOf('need live read gateway-chat (est £0.03). Not reached: the PR', 'gateway-chat'), 0.03);
+t('DS-574 a park with no estimate in that form gives none', estimateOf('need live read gateway-chat, about 3p', 'gateway-chat'), null);
+t('DS-574 AC1 a call within both caps may run', capRefusal(paid, 0.03, 0), null);
+t('DS-574 AC2 one over the per-call cap is refused naming its estimate', capRefusal(paid, 0.12, 0), 'live read gateway-chat is estimated at £0.12, over its £0.10/call cap');
+t('DS-574 AC3 one once the day\'s spend reached the daily cap is refused naming the spend so far', capRefusal(paid, 0.03, 2), 'live read gateway-chat has spent £2.00 today of its £2.00/day cap, so a call estimated at £0.03 would pass it');
+t('DS-574 a call that just fits the daily cap may run', capRefusal(paid, 0.03, 1.97), null);
+t('DS-574 a paid call with no estimate is refused', capRefusal(paid, null, 0)?.includes('the park gave no estimate for it, as `gateway-chat (est £0.03)`'), true);
+t('DS-574 a free read is never capped', capRefusal(paidRow.reads[1], null, 99), null);
+{
+  const sd = scratch('desk-live-spend-');
+  const f = spendFile(sd);
+  t('DS-574 the spend log is the repo state\'s, shared by its batches', spendFile(join(sd, 'batches', 'b1')), f);
+  t('DS-574 nothing logged is nothing spent', spentOn(f, 'gateway-chat', '2026-11-22'), 0);
+  for (const [day, name, est] of [['2026-11-22', 'gateway-chat', 0.03], ['2026-11-22', 'gateway-chat', 0.07], ['2026-11-21', 'gateway-chat', 1], ['2026-11-22', 'other', 1]]) logSpend(f, { day, name, est });
+  t('DS-574 a day\'s spend sums that entry\'s calls on that day only', spentOn(f, 'gateway-chat', '2026-11-22'), 0.1);
+  t('DS-574 the day is the local date', spendDay(new Date(2026, 10, 2, 23, 59)), '2026-11-02');
+  rmSync(sd, { recursive: true, force: true });
+}
 
 const dir = scratch('desk-live-read-');
 const head = 'c'.repeat(40);

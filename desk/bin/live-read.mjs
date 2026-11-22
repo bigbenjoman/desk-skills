@@ -4,7 +4,8 @@
 // host, never inside a worker, and never in the ticket's worktree or the person's own checkout: in a
 // clean, detached checkout of origin's default branch the pass owns (prepareCheckout), fetched and
 // brought to that branch before each run, so what runs is code that has been merged, not code the
-// worker wrote. The park supplies only the entry's name; the command is the config's, with no
+// worker wrote. The park supplies only the entry's name, and for a paid call its estimate, which is
+// checked against the entry's caps and never reaches the command; the command is the config's, with no
 // argument added. Once per ticket, head (the ticket's, so a worker parking on it again after its
 // requeue is the person's) and entry, detached as check-build.mjs runs a build, so the next pass
 // reads how it ended:
@@ -24,7 +25,7 @@ import { repoStateOf } from './desk-env.mjs';
 import { startDetached, detachedRecord, anyRunning, hooklessGit, gitError, dirtyPaths } from './check-build.mjs';
 import { parkOnlyNames } from './undraft.mjs';
 
-// The row's grammar is the config schema's: the items as { reads: [{ name, command }], errors: [item] }.
+// The row's grammar is the config schema's: the items as { reads: [{ name, command, caps }], errors: [item] }.
 export { parseLiveReads } from './config-schema.mjs';
 
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -40,6 +41,56 @@ export function liveReadPark(question, reads) {
   const q = String(question ?? '');
   if (!parkOnlyNames(q, (s) => reads.some((r) => names(s, r.name)))) return null;
   return reads.filter((r) => names(q.toLowerCase(), r.name));
+}
+
+// ---- paid calls ----
+// An entry with caps (`<name> [£0.10/call, £2/day]`) is a paid call. The park states each call's
+// estimate beside its name, as `<name> (est £0.03)`; the pass runs it only within both caps, and logs
+// every one it starts to the repo's spend log, one JSON line { at, day, name, key, head, est }, which
+// the daily cap is checked against. Amounts are pounds, compared in ten-thousandths of a pound.
+const units = (pounds) => Math.round(Number(pounds) * 1e4);
+export const pounds = (n) => { const u = units(n); return `£${u % 100 ? (u / 1e4).toString() : (u / 1e4).toFixed(2)}`; };
+
+// The estimate the park gives entry `name`, in pounds, or null when it gives none in that form.
+export function estimateOf(question, name) {
+  const m = new RegExp(`(?<![\\w-]|[\\w-]\\.)${escape(name.toLowerCase())}\\s*\\(\\s*est\\.?\\s*£\\s*(\\d+(?:\\.\\d+)?)\\s*\\)`).exec(String(question ?? '').toLowerCase());
+  return m ? Number(m[1]) : null;
+}
+
+// The day a spend counts against: the local calendar date, YYYY-MM-DD.
+export const spendDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+// The repo's spend log, shared by every batch of the repo, as the caps are the repo's config.
+export const spendFile = (state) => join(repoStateOf(state), 'live-read-spend.jsonl');
+
+// What entry `name` has spent on `day`, in pounds, from the spend log at `file`.
+export function spentOn(file, name, day) {
+  let text = '';
+  try { text = readFileSync(file, 'utf8'); } catch { return 0; }
+  let u = 0;
+  for (const line of text.split('\n')) {
+    let r = null;
+    try { r = JSON.parse(line); } catch { continue; }
+    if (r?.name === name && r.day === day && Number.isFinite(Number(r.est))) u += units(r.est);
+  }
+  return u / 1e4;
+}
+
+export function logSpend(file, rec) {
+  mkdirSync(dirname(file), { recursive: true });
+  appendFileSync(file, `${JSON.stringify(rec)}\n`);
+}
+
+// Why paid entry `read` ({ name, caps }) may not run at estimate `est` with `spent` already spent
+// today, or null when it may. A free read (no caps) always may.
+export function capRefusal(read, est, spent) {
+  if (!read.caps) return null;
+  const { name, caps } = read;
+  const at = `${pounds(caps.call)}/call, ${pounds(caps.day)}/day`;
+  if (est == null) return `live read ${name} is a paid call (${at}), and the park gave no estimate for it, as \`${name} (est £0.03)\``;
+  if (units(est) > units(caps.call)) return `live read ${name} is estimated at ${pounds(est)}, over its ${pounds(caps.call)}/call cap`;
+  if (units(spent) + units(est) > units(caps.day)) return `live read ${name} has spent ${pounds(spent)} today of its ${pounds(caps.day)}/day cap, so a call estimated at ${pounds(est)} would pass it`;
+  return null;
 }
 
 const stem = (key, head, name) => `${key}-${head}-${name}`;

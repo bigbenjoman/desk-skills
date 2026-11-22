@@ -754,6 +754,11 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     try { r = type.parse(badItem); } catch (e) { r = { error: `threw ${e.message}`, threw: true }; }
     t(`DS-868 ${name} refuses "${badItem}" without throwing, ${fatal ? '' : 'not '}fatal`, `${!!r.error && !r.threw} ${r.fatal}`, `true ${fatal}`);
   }
+  const paidRead = (item) => TYPES['live-read'].parse(item);
+  t('DS-574 AC5 a paid Live reads entry with both caps is written', JSON.stringify(paidRead('gateway-chat [£0.10/call, £2/day]: ./chat.sh').value?.caps), '{"call":0.1,"day":2}');
+  t('DS-574 AC5 one missing its daily cap is refused, saying both are needed', paidRead('gateway-chat [£0.10/call]: ./chat.sh').error?.includes('a paid call takes both caps'), true);
+  t('DS-574 AC5 one missing its per-call cap is refused', !!paidRead('gateway-chat [£2/day]: ./chat.sh').error, true);
+  t('DS-574 AC5 an empty bracket is refused', !!paidRead('gateway-chat []: ./chat.sh').error, true);
   const svc = TYPES['service-port'].parse('Typesense on port 8108');
   t('DS-868 AC3 the service-port error names the form <service> [:<port>]', svc.error?.includes('`<service> [:<port>]`'), true);
   t('DS-868 AC3 the decision: a service with no port parses', JSON.stringify(TYPES['service-port'].parse('mailpit').value), '{"service":"mailpit","port":null}');
