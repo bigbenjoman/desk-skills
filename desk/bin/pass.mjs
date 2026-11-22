@@ -32,6 +32,7 @@ import { incidentalGlobs, outOfScope, triagedScope, changedFiles, appendOnlyFrom
 import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy, recentCount } from './conflict-record.mjs';
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
+import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
@@ -61,6 +62,7 @@ import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
+import { liveBaseRed, batchLine, repairTicket, repairTriage } from './base-red.mjs';
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
@@ -97,6 +99,7 @@ import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
 import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 import { leaseCli } from './leases.mjs';
+import { isArchived, prClosed, owesReopen } from './queue-store.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -166,6 +169,10 @@ const BY_AT = process.argv.indexOf('--by');
 const PASS_BY = BY_AT < 0 ? 'session' : process.argv[BY_AT + 1];
 if (!['supervisor', 'session'].includes(PASS_BY)) refuse(`--by wants supervisor or session, not "${PASS_BY ?? ''}"`);
 const PASS_AT = new Date().toISOString();
+// --woken: the supervisor ran this pass between intervals, for a worker's exit, before a quiet pass is
+// due (supervisor.mjs). It counts none toward WEDGE_PASSES, so extra passes never stop a quiet worker
+// sooner than the interval would.
+const WOKEN = process.argv.includes('--woken');
 
 if (!existsSync(QUEUE_FILE)) {
   refuse(`no queue at ${QUEUE_FILE} — run: node ${SHOWN_BIN}/queue.mjs init <batch-name>`);
@@ -772,6 +779,18 @@ function uploadShots(t, prNo, imgDir) {
   try { waiting = UQ.isQueued(UQ.readUploadQueue(), QUEUE_FILE, t.key); } catch { /* reported by the pump */ }
   if (waiting) report.advanced.push(`${t.key} images → #${prNo} wait in the machine's upload queue: ${uploadStop ?? 'part are uploaded, at the most the pace allows, and a later pass uploads the rest'}`);
 }
+// The screenshots in `dir` that are one half of a before-<view>/after-<view> pair whose two files are
+// byte for byte the same (desk-pr screenshots.md names them so). [] where a file cannot be read.
+function samePairs(dir, shots) {
+  const out = [];
+  for (const f of shots) {
+    const m = /^before-(.+)$/i.exec(f);
+    const pair = m && shots.find((g) => g.toLowerCase() === `after-${m[1]}`.toLowerCase());
+    if (!pair) continue;
+    try { if (readFileSync(join(dir, f)).equals(readFileSync(join(dir, pair)))) out.push(f, pair); } catch { /* read as changed */ }
+  }
+  return out;
+}
 // What the uploader's run for t's PR #prNo ended with, recorded on t; `before` is the body's cells
 // when its job joined the queue (null where unread).
 function recordUpload(t, prNo, imgDir, run, before) {
@@ -790,13 +809,14 @@ function recordUpload(t, prNo, imgDir, run, before) {
     report.advanced.push(`${t.key} #${prNo} evidence complete — still draft`);
   } else if (doneLine || /uploaded, but found no/.test(up)) {
     // The assets now exist on GitHub but the body is not finished (placeholders left, or none
-    // matched). Re-uploading would duplicate them, so mark it partial — never uploaded=true —
-    // keep the full output, and put it in front of the user.
+    // matched). Re-uploading would duplicate them, so mark it partial — never uploaded=true — and
+    // keep the full output. A shortfall is desk's to settle, never a person's: the cells left go to
+    // the undraft step, which says what fills each.
     save();
     q('set', t.key, 'images_uploaded=partial', ...ended);
     // The cells left go to whatever fills them at the undraft step, which says if nothing can.
     if (Number(doneLine?.[2]) > 0) report.advanced.push(`${t.key} images → #${prNo}, ${doneLine[2]} cell(s) left for the undraft step (tags saved in ${saved})`);
-    else report.waiting.push(`${t.key}: image upload to PR #${prNo} is INCOMPLETE — ${tail}. Its tags are saved in ${saved}; do not re-upload.`);
+    else report.advanced.push(`${t.key}: image upload to PR #${prNo} placed no image: none of its files matches a cell in the body — ${tail}. Its tags are saved in ${saved}, nothing is re-uploaded, and any cell left goes to the undraft step`);
   } else if (run.code === 2) {
     save();
     q('set', t.key, `upload_crash=${JSON.stringify({ pr: Number(prNo), dir: imgDir, tries: was?.tries ?? 0, log: saved, busy: true })}`);
@@ -947,7 +967,13 @@ const ADVANCE_HANDLERS = {
   note: (a) => { notes.push(a.line); },
   hold: (a, s) => { usageHolds.push({ key: a.key, limit: a.limit, was: a.was, login: loginOf(loginDirOf(s.t)) }); },
   'suite-wait': (a) => suiteWait(a.worktree ?? join(WORKTREES, a.key), { procs: processList(), cwds: processCwds(), holders: lockHolders(E.lockDir(), { locks: 'both' }) }),
-  kill: (a) => { sh('kill', [String(a.pid)], { tolerant: true }); },
+  // With a session id, every process of that session and its groups, so a hung child goes too; else the pid.
+  kill: (a) => {
+    let target = null;
+    if (a.sid) { try { target = workerProcs(a.sid, processRows()); } catch { /* ps unreadable: the pid alone */ } }
+    if (target && (target.groups.length || target.pids.length)) endProcs(target, { graceMs: 5000 });
+    else if (a.pid) sh('kill', [String(a.pid)], { tolerant: true });
+  },
   park: (a) => { q('park', a.key, a.question); },
   'build-park': (a, s) => buildParkOf(s.t, a.question),
   'merge-park': (a, s) => {
@@ -955,6 +981,7 @@ const ADVANCE_HANDLERS = {
     return m?.call === 'done' ? { ...m, grant: E.mergeGrant(queue()).why } : m;
   },
   shots: (a) => { try { return readdirSync(a.dir); } catch { return []; } },
+  'same-pairs': (a) => samePairs(a.dir, a.shots),
   cells: (a) => cellsFor(a.pr, a.shots),
   upload: (a, s) => uploadShots(s.t, a.pr, a.dir),
   'open-question': (a) => openQuestion(STATE, a.key),
@@ -999,7 +1026,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     name: 'advance',
     snapshot: () => {
       const log = advanceLog(t);
-      return { t, log, registry: REGISTRY, now: Date.now(), stateDir: STATE, resume: RESUME, bootMs, budget: WORKER_BUDGET,
+      return { t, log, registry: REGISTRY, now: Date.now(), woken: WOKEN, stateDir: STATE, resume: RESUME, bootMs, budget: WORKER_BUDGET,
         upload: { allowed: uploadPerm === 'yes' || !!process.env.DESK_UPLOAD_APPROVED, ...UPLOAD_GRANT },
         read: { branch: READ_BRANCH, checkout: READ_CHECKOUT }, logins: conflictHandle };
     },
@@ -1722,6 +1749,50 @@ const linkLines = [];
   }
 }
 
+// ---- red base --------------------------------------------------------------
+// The base the merge driver holds on (base-red.mjs): reported once for the batch, below, and repaired by
+// one ticket of its own, admitted here so this pass can spawn it, where the base worker's push grant
+// allows. Its key is the spell's own (desk-env baseRedKey), so an earlier spell's repair is another
+// ticket, left as it is with any steps it still owes. A row under this key, live or archived, is this
+// spell's repair: none is admitted beside it while it is unfinished, nor a second once it merged with
+// the base still red. One done with its PR closed unmerged is done with, and the key admitted again: an
+// archived row needs nothing first, and a live one (a batch that archives nothing) is dropped, which an
+// unmerged PR's row allows, since it owes no step after a merge. A drop that refuses (its worktree holds
+// commits no origin ref has) leaves it to the person, as needs-you offers for any closed PR.
+const BASE_RED = liveBaseRed(STATE, { branch: DEFAULT_BRANCH });
+let baseRedRepair = null;
+if (BASE_RED) {
+  const key = BASE_RED.repair_key;
+  const qB = queue();
+  const was = qB.tickets[key] ?? null;
+  // A PR the pass closed to reopen for its CI (reopening, naming that PR) is not closed for good; a marker
+  // left from an earlier PR owes the current one nothing.
+  const closed = was?.state === 'done' && !was.merged_at && !owesReopen(was) && prClosed(was);
+  const had = was && !closed ? was : null;
+  if (had && !had.merged_at) baseRedRepair = { key, state: had.state };
+  else if (had) baseRedRepair = { key, state: `merged at ${had.merged_at} with ${BASE_RED.branch} still red, so no second repair starts until it has gone green` };
+  else if (!BASE_PUSH.ok) baseRedRepair = { off: `config §3 ${BASE_PUSH.key} is "${BASE_PUSH.perm}", so no worker is started to repair it` };
+  else if (DRY) baseRedRepair = { key, state: 'to be admitted (dry run)' };
+  else {
+    // Dropped first, so one that refuses leaves its round's files as they were.
+    const dropped = closed && !isArchived(qB, key) ? qTry(['drop', key]) : { ok: true };
+    if (!dropped.ok) baseRedRepair = { key, state: `done with its PR #${was.result.pr} closed unmerged, and could not be dropped to start again (${dropped.out.split('\n').pop()}): drop or requeue it, which needs-you offers` };
+    else {
+      mkdirSync(join(STATE, 'tickets'), { recursive: true });
+      mkdirSync(join(STATE, 'triage'), { recursive: true });
+      writeFileSync(join(STATE, 'tickets', `${key}.md`), repairTicket(BASE_RED));
+      writeFileSync(join(STATE, 'triage', `${key}.json`), `${JSON.stringify(repairTriage(BASE_RED), null, 2)}\n`);
+      // A repair closed unmerged left its log under the same key, whose AUTOPILOT_DONE would keep this one
+      // from spawning: moved aside, as a requeue does.
+      E.rotateRound(key);
+      const r = qTry(['admit', key, '--by', 'base-red']);
+      baseRedRepair = r.ok ? { key, state: 'admitted to start as a slot frees' } : { off: `its repair ticket ${key} could not be admitted (${r.out.split('\n').pop()})` };
+    }
+  }
+}
+// The PRs held on it, which its one line names in place of a BASE RED line each.
+const baseRedHeld = [];
+
 // ---- spawn ---------------------------------------------------------------
 const fresh = queue();
 const all = Object.values(fresh.tickets);
@@ -2209,7 +2280,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       queue: fresh, base: BASE, source: SOURCE, willSpawn: slots > 0 && spawnable.length > 0, frozen: spawnable.length, epicOpen: epicPr?.state === 'OPEN', sliceBad: SLICE.bad,
       behindMax: BASE_BEHIND_MAX, gateBusy, resumeHeld: (held === PACE_HELD ? null : held) ?? (lowMemory ? 'low memory' : null),
       registry: REGISTRY, fixKey: BASE_FIX_KEY, fixRoom: baseFixRoom, noFixRoom: noBaseFixRoom(), conflictPerm: E.permission('pr-conflict-unreviewed'),
-      push: BASE_PUSH, passBy: PASS_BY, passAt: PASS_AT, usageHold: USAGE_HOLD, repoLogin: REPO_LOGIN, baselineOn, dry: DRY, now: Date.now(),
+      push: BASE_PUSH, passBy: PASS_BY, passAt: PASS_AT, usageHold: USAGE_HOLD, repoLogin: REPO_LOGIN, baselineOn, dry: DRY, now: Date.now(), woken: WOKEN,
     }),
     decide: decideBaseSync,
     handlers: {
@@ -4177,6 +4248,14 @@ const UNDRAFT_HANDLERS = {
   rebuilt: (a) => rerunBuilt(a.t, a.pr, a.head, a.c, a.rec),
   evidence: (a) => startEvidence(a.t, a.pr, a.head, a.c, a.rec),
   ready: (a) => shOut('gh', ['pr', 'ready', String(a.pr), '--repo', GH_REPO]),
+  // The update is a new head, so a new preview build: it takes the branch's preview-build unit first.
+  'update-branch': (a) => {
+    const slot = a.branch ? previewSlot(a.t, a.branch) : {};
+    if (slot.wait) return { wait: slot.wait };
+    const r = shOut('gh', ['pr', 'update-branch', String(a.pr), '--repo', GH_REPO]);
+    if (r.ok) keepSlot(slot, a.pr); else freeSlot(slot);
+    return r;
+  },
   comment: (a) => shOut('gh', ['pr', 'comment', String(a.pr), '--repo', GH_REPO, '--body', a.body]),
   'record-carry': (a) => recordCarry(STATE, a.t.key, { head: a.head, from: a.from, reviews: a.reviews, handle: conflictHandle }),
   carried: (a) => { try { mkdirSync(DRIVER_DIR, { recursive: true }); writeFileSync(join(DRIVER_DIR, `carried-${a.pr}-${a.head}`), ''); } catch { /* the driver says it once more */ } },
@@ -4201,6 +4280,7 @@ runSteps({
     drafts: [...drafts], spine: qNow.spine, dry: DRY, at: PASS_AT, repo: GH_REPO, base: DEFAULT_BRANCH,
     cfg: {
       perm: E.permission('pr-ready'), permKey: E.permissionKey('pr-ready'), approved: qNow.approved?.undraft === true, rerun: E.permission('ci-rerun'),
+      updateBranch: E.permission('pr-update-branch'),
       localReview: E.configValue('local-review'), clean: E.configValue('clean-verdict'), judgement: E.permission('autopilot-judgement'),
       conflictUnreviewed: E.permission('pr-conflict-unreviewed'), conflictReviewed: E.permission('pr-conflict-reviewed'),
       handle: conflictHandle,
@@ -4589,6 +4669,13 @@ function applyFix(t, n, head, c) {
   if ('base_red' in c && JSON.stringify(t.base_red ?? null) !== JSON.stringify(rec)) {
     if (!DRY) q('set', t.key, `base_red=${JSON.stringify(rec)}`);
     t.base_red = rec;
+  }
+  // Held only on checks the red base names, it is one of the PRs the batch's red base line names; held on
+  // another too, it keeps its own line, as needs-you keeps its item.
+  const heldOn = c.base_red?.checks ?? [];
+  if (c.call === 'held' && !c.label && BASE_RED && heldOn.length && heldOn.every((x) => BASE_RED.checks.some((b) => b.name === x))) {
+    baseRedHeld.push(`#${n} (${t.key})`);
+    return;
   }
   if (c.call === 'held') { report.waiting.push(`${t.key}: ${c.label ?? 'BASE RED'} — PR #${n}: ${c.why}`); return; }
   if (c.call === 'wait') { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`); return; }
@@ -5136,6 +5223,7 @@ runPhase({
       })),
       register: REGISTER,
       askedAgain: askedAgain.filter((p) => !takenBack.includes(p.key)),
+      baseRed: BASE_RED ? batchLine(BASE_RED, { held: baseRedHeld, repair: baseRedRepair }) : null,
     };
   },
   decide: decideReportLines,

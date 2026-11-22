@@ -10,8 +10,11 @@ hold, that is in the core or in the file the core's reference table names.
 `supervisor.mjs` runs passes from launchd on macOS, or a systemd user timer on Linux, with no model in
 the loop, so a batch keeps moving while no session is open and after a reboot. `install` (run inside the
 repo, once per repo) writes the agent `com.desk-skills.supervisor.<slug>` (on Linux, that name's
-`.service` and `.timer` in `~/.config/systemd/user`, enabled with `systemctl --user`): a tick at login
-and every 3 minutes (`--interval <s>` to change it). On Linux, ticks stop at logout unless lingering is
+`.service`, `.timer` and `.path` in `~/.config/systemd/user`, enabled with `systemctl --user`): a tick at login
+and every 3 minutes (`--interval <s>` to change it), and within seconds of a worker exiting: the exit
+file a worker leaves in the repo's state folder wakes a tick, which deletes the exit files its passes
+saw. Exits landing while it runs get one more round, at least 20 seconds after the last, so a burst of
+exits runs at most two passes, and a pass an exit woke counts no quiet pass toward stopping a worker. On Linux, ticks stop at logout unless lingering is
 on (`loginctl enable-linger`), and install says when it is off. On WSL, ticks run only while WSL is up,
 and lingering does not keep it up: WSL stops once every terminal closes. Keep a terminal open, or add a
 Windows Task Scheduler entry at logon that runs `wsl.exe --exec sleep infinity` (with `-d <distro>` if
@@ -29,10 +32,10 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
   records `base_push_ask` on the queue rather than listing it as waiting, so no decider takes it:
   `/desk-needs-you` asks it once as the batch's `base-push` item, and its `approve` sets
   `approved.base_push`;
-- where a base sync merged but its push was refused while the base lags too far for anything to
-  spawn, the pass records `base_sync_stuck` on the queue: `/desk-needs-you` lists it first as the
-  batch's `base-sync` item, naming the frozen tickets and the command that pushes the base, and the
-  next pass that finds the base current clears it;
+- where a base sync fails (its push refused, the base not fetched or not recreated) while that holds
+  every spawn, the pass records `base_sync_stuck` on the queue: `/desk-needs-you` lists it first as
+  the batch's `base-sync` item, naming the frozen tickets, the failure and, for a refused push, the
+  command that pushes the base, and the next pass that finds the base current clears it;
 - appends the report to `<state>/supervisor.log`;
 - sends one desktop notification, titled with the repo, for the pass's `push` entries the last
   notification did not carry (the check-in digest, a production-broken park), or for a pass that

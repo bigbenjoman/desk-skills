@@ -956,7 +956,9 @@ left out, text the pass cut short compared up to the cut, and queue stamps (`upd
 when nothing differs, 1 when something does, and 2 when a run was not compared. With
 `PASS_CMP_KEEP=1` set, a run that exits 1 or 2 leaves its recordings and both trees in its scratch
 directory and prints that directory and the `compare_pass.mjs diff` command that lists them again,
-in seconds and without replaying a suite.
+in seconds and without replaying a suite. Both trees and every suite run side by side, as each pass
+suite gives its stand-in workers session ids of its own (`SID_SUFFIX` in `tests/pass_setup.sh`);
+`PASS_CMP_SERIAL=1`, or a base whose suites predate those ids, runs them one after the other.
 
 `pass.mjs` moves into phase modules under `desk/bin/pass/`, one section at a time. A phase's decision
 is a pure function there: it takes a snapshot (the queue's tickets and whatever else it reads, the

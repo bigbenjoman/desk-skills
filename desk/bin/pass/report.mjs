@@ -140,6 +140,7 @@ export function* decidePutOffRefresh(s) {
 //   askedAgain              [{ key, question, now }] the put-off parks decidePutOffRefresh asked again,
 //                           whose refreshed inputs `now` were written and not taken back
 //   register                the "not now" register
+//   baseRed                 the red base's one line for the batch (base-red.mjs batchLine), or null
 export function decideReportLines(s) {
   const acts = [];
   const waiting = [...s.report.waiting];
@@ -157,6 +158,8 @@ export function decideReportLines(s) {
   if (s.reviewClash && s.reviewSeen !== s.reviewClash) {
     acts.push(out(`review rows: ${s.reviewClash}`), { type: 'seen', file: 'review-rows-reported.txt', text: s.reviewClash });
   }
+  // A red base is the batch's, not one of the person's own steps, so it is listed apart from them.
+  if (s.baseRed) acts.push(out(`RED BASE:\n  ${s.baseRed}`));
   if (waiting.length) acts.push(out(`WAITING ON YOU:\n  ${waiting.join('\n  ')}`));
 
   if (s.blocked.length) acts.push(out(`BLOCKED ON ANSWERS: ${s.blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${s.answerBin} <TICKET> "<answer>"`));

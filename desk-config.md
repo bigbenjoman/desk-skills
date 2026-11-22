@@ -78,6 +78,7 @@ ticketed. Nothing else waives a check, and nothing ever merges past a required o
 | Slug | `TODO` (`owner__name`; the folder this file lives in) |
 | Default branch | `TODO` (e.g. `main`) |
 | One-line description | `TODO` (what the product is; used to brief subagents) |
+| Other names | `TODO` (other repo names this repo's code answers to, one span each, e.g. a repo since moved into this monorepo; or `none`. A ticket whose Jira Repository, or files-in-scope prefix, is one of them runs here) |
 
 ## 1. Who you are in this repo
 
@@ -401,6 +402,7 @@ such thing.
 | Merged-tree check | `TODO` (a quick check any merged tree must pass that git cannot see, such as exactly one migration head and no repeated revision, one span each in the form Unit tests takes, e.g. `` `apps/api: uv run python scripts/check_alembic_heads.py` ``; it runs in a plain checkout with no database, env files or install, and is stopped after 5 minutes. A batch base's sync runs it after merging and before pushing, and a failure pushes nothing and goes to a base fix worker; fix tries that merge a base run it too. The merge driver runs it on each PR merged into its base's head before merging it, and a failure holds the PR for a fix worker. `none` pushes every clean merge, and the driver merges without it) |
 | PR-description checks | `TODO` (the script CI runs on a PR's description, so it can run before the PR is opened or edited, e.g. `node scripts/check-pr-body.mjs`; desk-pr runs each span with the draft body's file path appended, so the script must accept one; or `none`) |
 | Env files | `TODO` (the `.env*` files a new worktree needs copied from the primary checkout, one span each, e.g. `` `frontend/.env.local` `portal/.env.local` ``; or `none`) |
+| Test sign-in | `TODO` (one span per app a worker signs in to for screenshots, in the Dev server form: the email of an existing user in that app's development auth instance who already holds the app's grant, e.g. `` `dev-user@example.test` `apps/portal/apps/web: portal-dev@example.test` ``; never a password, and never a production user. Read with `desk-env cmds test-signin`; `desk-env drift --app <dir>` names an app with a Dev server item and none here. `none` where no app needs signing in to) |
 
 ### Environments and services
 
