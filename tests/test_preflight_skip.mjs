@@ -9,6 +9,7 @@ import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
+import { maskText } from '../desk/bin/preflight-fingerprint.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -101,9 +102,9 @@ const env = (extra) => {
     AUTOPILOT_PORT: '3999', AUTOPILOT_BRANCH: 'fix/fix-thing', AUTOPILOT_PREFLIGHT: '1', ...extra };
 };
 // One preflight: what it printed, its exit code, and the -p calls it made.
-const preflight = (extra = {}, wt = join(T, 'repo')) => {
+const preflight = (extra = {}, wt = join(T, 'repo'), key = KEY) => {
   rmSync(join(T, 'calls'), { force: true });
-  const r = spawnSync('bash', [join(root, 'desk/bin/spawn-worker.sh'), KEY, wt, 'preflight'], { cwd: join(T, 'repo'), env: env(extra), encoding: 'utf8', timeout: 60000 });
+  const r = spawnSync('bash', [join(root, 'desk/bin/spawn-worker.sh'), key, wt, 'preflight'], { cwd: join(T, 'repo'), env: env(extra), encoding: 'utf8', timeout: 60000 });
   return { status: r.status, out: r.stdout + r.stderr, calls: calls(), skipped: /^\[preflight\] skipped/m.test(r.stdout), passed: /^\[preflight\] pass$/m.test(r.stdout) };
 };
 const ran = (r) => [r.status, r.skipped, r.calls.length > 0];
@@ -159,9 +160,7 @@ whenChanged('worker settings', () => {}, () => {}, { DESK_CONFIG: ON_PUSH });
 const agent = join(T, 'home', '.claude', 'agents', 'lena-code-reviewer.md');
 const agentWas = readFileSync(agent, 'utf8');
 whenChanged('agents file', () => writeFileSync(agent, `${agentWas}\nOne more rule.\n`), () => writeFileSync(agent, agentWas));
-r = preflight({}, join(T, 'repo2'));
-t('AC2 a changed worktree runs the preflight', ran(r), RAN);
-writeFileSync(record, first);
+t('DS-699 a moved worktree with the same settings otherwise skips', ran(preflight({}, join(T, 'repo2'))), SKIPPED);
 
 // AC3: a failure and a usage limit leave nothing to skip on, whatever passed before.
 say('reply', result('W_IN=BLOCKED'));
@@ -247,6 +246,40 @@ say('write-w-in', '');
 r = fresh(result(GOOD.replace('W_IN=OK', 'W_IN=BLOCKED')));
 t('#731 W_IN reads OK from the file in the worktree, whatever the reply says', [r.calls.length, r.status, existsSync(join(T, 'repo', '.preflight.tmp'))], [1, 0, false]);
 rmSync(join(T, 'write-w-in'));
+
+// DS-699: a pass on one ticket stands for another ticket in the repo with the same settings, for a day.
+t('DS-699 a value is masked whole, never inside a longer word', maskText('a/DS-69/x DS-699 DS-69-b xDS-69', [['TICKET', 'DS-69']]), 'a/<TICKET>/x DS-699 <TICKET>-b xDS-69');
+t('DS-699 the longest value is masked first', maskText('fix/DS-6-x DS-6', [['TICKET', 'DS-6'], ['BRANCH', 'fix/DS-6-x']]), '<BRANCH> <TICKET>');
+git('worktree', 'add', '-q', '-b', 'fix/one', join(T, 'wt-one'));
+git('worktree', 'add', '-q', '-b', 'fix/two', join(T, 'wt-two'));
+const passes = join(T, 'state', 'workers', 'preflight-passes.json');
+const one = (extra = {}) => preflight({ AUTOPILOT_BRANCH: 'fix/one', ...extra }, join(T, 'wt-one'), 'ticket-one');
+const two = (extra = {}) => preflight({ AUTOPILOT_BRANCH: 'fix/two', ...extra }, join(T, 'wt-two'), 'ticket-two');
+r = one();
+t('DS-699 the first ticket runs its preflight, and the repo records its pass', [ran(r), Object.values(JSON.parse(readFileSync(passes, 'utf8'))).map((p) => p.ticket).includes('ticket-one')], [RAN, true]);
+r = two();
+t('DS-699 AC1 a second ticket, different only in worktree, key and branch, makes no call', ran(r), SKIPPED);
+t('DS-699 AC1 its spawn line names a cross-ticket skip and whose pass it took', /^\[preflight\] skipped: cross-ticket: ticket-one's pass at \S+ had this fingerprint$/m.test(r.out), true);
+const lastRun = (key) => JSON.parse(readFileSync(join(T, 'state', 'workers', `${key}.runs.jsonl`), 'utf8').trim().split('\n').at(-1));
+t('DS-699 AC1 its run record logs a cross-ticket skip', [lastRun('ticket-two').preflight, lastRun('ticket-two').cross_ticket], ['skipped', 'ticket-one']);
+t('DS-699 a cross-ticket skip gives the ticket no record of its own', existsSync(join(T, 'state', 'workers', 'ticket-two.preflight.json')), false);
+git('worktree', 'add', '-q', '-b', 'fix/three', join(T, 'wt-three'));
+t('DS-699 another worktree coming changes nothing', ran(two()), SKIPPED);
+t('DS-699 AC2 a settings change runs the preflight', ran(two({ DESK_CONFIG: ON_PUSH })), RAN);
+t('DS-699 AC2 so does a model change', ran(two({ AUTOPILOT_MODEL: 'opus' })), RAN);
+t('DS-699 per-ticket databases are masked too',
+  [ran(one({ AUTOPILOT_DATABASE: 'widgets_one' })), ran(two({ AUTOPILOT_DATABASE: 'widgets_two' }))], [RAN, SKIPPED]);
+const aged = JSON.parse(readFileSync(passes, 'utf8'));
+for (const p of Object.values(aged)) p.at = new Date(Date.now() - 25 * 3600 * 1000).toISOString();
+writeFileSync(passes, JSON.stringify(aged));
+t('DS-699 a pass more than 24 hours old stands for no other ticket', ran(two()), RAN);
+t('DS-699 and the run that replaces it is recorded as that ticket\'s', Object.values(JSON.parse(readFileSync(passes, 'utf8'))).map((p) => p.ticket), ['ticket-two']);
+say('reply', result('W_IN=BLOCKED'));
+say('version', '2.0.3 (Claude Code)');
+r = one();
+say('version', '2.0.0 (Claude Code)');
+say('reply', result(GOOD));
+t('DS-699 a failed preflight records no pass for the repo', [r.status, existsSync(passes) && Object.keys(JSON.parse(readFileSync(passes, 'utf8'))).length], [1, 1]);
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

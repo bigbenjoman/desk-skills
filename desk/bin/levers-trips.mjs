@@ -32,7 +32,8 @@
 //
 // The records the trips read beyond post-merge.jsonl and the worker logs are lines in the ticket's run
 // record, <state>/workers/<KEY>.runs.jsonl, beside spawn-worker.sh's start records:
-//   {at, ticket, preflight: 'skipped', worktree, probes: [command], jira: bool, codex: bool}
+//   {at, ticket, preflight: 'skipped', worktree, probes: [command], jira: bool, codex: bool, cross_ticket?: KEY}
+//     (cross_ticket: the ticket whose pass stood for this one, on a skip across tickets)
 //   {at, ticket, session?, lever_step: {lever, step, exit, error?}}
 //   {at, ticket, fix_wait: {class, waiting, blockers: [KEY], pr, head}}
 //
@@ -420,7 +421,7 @@ if (isMain) {
     const yes = (v) => v === '1' || v === 'yes' || v === 'true';
     let line;
     if (cmd === 'record-skip') {
-      line = recordRun(o.state, o.ticket, { preflight: 'skipped', worktree: o.worktree ?? null, probes: o.probe.filter(Boolean), jira: yes(o.jira), codex: yes(o.codex) });
+      line = recordRun(o.state, o.ticket, { preflight: 'skipped', worktree: o.worktree ?? null, probes: o.probe.filter(Boolean), jira: yes(o.jira), codex: yes(o.codex), ...(o.cross ? { cross_ticket: o.cross } : {}) });
     } else if (cmd === 'record-step') {
       if (!Object.hasOwn(REGISTRY, o.lever) || !o.step || !/^\d+$/.test(String(o.exit))) throw new Error('--lever <registry lever> --step <step> --exit <n> are required');
       line = recordRun(o.state, o.ticket, { ...(o.session ? { session: o.session } : {}), lever_step: { lever: o.lever, step: o.step, exit: Number(o.exit), ...(o.error ? { error: o.error } : {}) } });
