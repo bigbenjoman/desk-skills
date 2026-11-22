@@ -245,7 +245,7 @@ git init -q -b main "$T/repo"; cp -R "$T/base/." "$T/repo/"
 git -C "$T/repo" add -A; git -C "$T/repo" -c user.name=t -c user.email=t@example.com commit -qm base
 cp "$T/field/desk/bin/pass.mjs" "$T/repo/desk/bin/pass.mjs"
 git -C "$T/repo" -c user.name=t -c user.email=t@example.com commit -qam head
-mkdir -p "$T/repo/tests"; cp "$S/compare_pass.sh" "$S/compare_pass.mjs" "$S/suite_env.sh" "$T/repo/tests/"; cp "$SRC/desk/bin/dir-lock.mjs" "$T/repo/desk/bin/"
+mkdir -p "$T/repo/tests"; cp "$S/compare_pass.sh" "$S/compare_pass.mjs" "$S/suite_env.sh" "$T/repo/tests/"; cp "$SRC/desk/bin/dir-lock.mjs" "$SRC/desk/bin/queue-fields.mjs" "$T/repo/desk/bin/"
 out=$(bash "$T/repo/tests/compare_pass.sh" HEAD~1 HEAD 2>/dev/null); rc=$?
 check "DS-763 base and head given as commits compare those commits" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 state: base \"running\", head \"parked\""'
 cmp --suite test_nope.sh "$T/base" "$T/same"
