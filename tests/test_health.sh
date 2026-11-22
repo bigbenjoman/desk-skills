@@ -203,14 +203,15 @@ q set H-1 state=done; q set H-2 state=done
 
 # ---- DS-994: the test lock gate reads this suite's listing, never the machine's queue --------------
 # Two wrappers in this repo's checkout wait on the test lock (1 slot x 2 with no profile), in a lock
-# dir of the suite's own: the queue is deep and all of it this repo's, so a ready ticket is held.
+# dir of the suite's own: the queue is deep and all of it this repo's (whatever slug the pass gives
+# the scratch checkout, which has no remote), so a ready ticket is held.
 mkdir -p "$T/locks-lq"
 printf ' 9201     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh\n 9202     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck\n' > "$T/ps.out"
 printf 'p9201\ncbash\nfcwd\nn%s/repo\np9202\ncbash\nfcwd\nn%s/repo\n' "$T" "$T" > "$T/lsof.out"
 q add H-Q; q set H-Q state=triaged branch=fix/H-Q
 out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" node "$B/pass.mjs" 2>&1)
 check "DS-994 AC2 the suite's own deep queue still holds the ticket and names the stall" \
-  '[ "$(field H-Q state)" = triaged ] && grep -qF "test lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2; runs by repo: widgets 2" <<< "$out" && grep -q "holding new workers and resumes into Stage 4 (H-Q)" <<< "$out"'
+  '[ "$(field H-Q state)" = triaged ] && grep -qE "test lock queue: 2 run\(s\) waiting on its 1 slot\(s\), at or over the hold at 1 x 2 = 2; runs by repo: [^ ,;]+ 2; this repo.s share ceil\(2 / 1\) = 2, 2 its own: holding new workers and resumes into Stage 4 \(H-Q\)" <<< "$out"'
 rm -f "$T/ps.out" "$T/lsof.out"
 q set H-Q state=done
 
