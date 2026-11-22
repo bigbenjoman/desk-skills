@@ -26,6 +26,7 @@ import { readRegister, lookup, parseInputs, refreshInputs, clearPutOff } from '.
 import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { REMOTE_GIT_MS, execGit, remoteHung, markRemoteHung } from './remote-git.mjs';
 import { prReads } from './pr-reads.mjs';
+import { openCache } from './read-cache.mjs';
 import { checkinTimes, checkinRow, checkin, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, appendOnlyFrom } from './scope-report.mjs';
@@ -52,7 +53,7 @@ import { transientPush, unreachedPush } from './push-retry.mjs';
 import { strayClosings } from './closing-keywords.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, prFilesAt, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
 import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
@@ -4015,10 +4016,16 @@ const driverReruns = (n, head) => ({
   cancels: (name) => driverLines(`cancels-${n}-${head}`).filter((l) => l === name).length,
   cooledDown: Date.now() / 1000 - (Number(driverLines(`cooldown-${n}`)[0]) || 0) >= RERUN_COOLDOWN_S,
 });
-// The files PR n changes at head (renames by both names), read once per pass, or null unread.
+// The files PR n changes at head (renames by both names), or null unread: read once per pass, and taken
+// from the merge driver's pr-files.json where it read them at this head (gate.mjs prFilesAt).
 const prFiles = (n, head) => cached(`pr-files:${n}:${head}`, () => {
-  const o = sh('gh', ['api', '--paginate', `repos/${GH_REPO}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
-  return o ? o.split('\n').filter(Boolean) : null;
+  try {
+    return prFilesAt({ cache: openCache(join(DRIVER_DIR, 'pr-files.json')), repo: GH_REPO, n, head, read: () => {
+      const o = sh('gh', ['api', '--paginate', `repos/${GH_REPO}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      if (!o) throw new Error('unread');
+      return o.split('\n').filter(Boolean);
+    } });
+  } catch { return null; }
 });
 // Whether the merge driver waives these red checks of PR n at head, read as it reads them: every name in
 // §4 Known flaky checks, the PR touching none of their paths, and a check listed by its tests failing in

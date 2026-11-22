@@ -151,7 +151,8 @@ check "DS-448: lever on, a review that records no files is held for a review" '[
 SHA301=e301111111111111111111111111111111111111
 git -C "$T/repo" push -q origin main:feat/E
 ep_q(){
-  : > "$T/merges.log"; : > "$T/gh.log"; rm -f "$SD"/green-*; q init "merge-epic-$1"
+  # pr-files.json too: a scenario may give #301 other files at the same head SHA (DS-989 keeps them by head).
+  : > "$T/merges.log"; : > "$T/gh.log"; rm -f "$SD"/green-* "$SD/pr-files.json"; q init "merge-epic-$1"
   q set-batch base=feat/E epic=T-300 feature=false 'promotion={"pr":301}'
   q add T-31 Story A; q set T-31 branch=fix/T-31 state=done result.pr=310 merged_at=2026-11-06T10:00:00Z
   jq -n --arg s "$SHA301" --arg pl "$T/vp-301.json" --argjson d "$2" \

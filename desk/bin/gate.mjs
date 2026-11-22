@@ -58,7 +58,8 @@
 //   since(ms)                a span as "4m", "3h 24m" or "3d 4h" (desk-q's ages, the pass's stuck-check log)
 //
 // CLI (merge-driver.sh):
-//   node gate.mjs pr <number> [--repo owner/name] [--merger <login>]   one JSON object: title, sha, base,
+//   node gate.mjs pr <number> [--repo owner/name] [--merger <login>] [--files-cache <file>]
+//     (the PR's file list kept in <file> by head SHA, prFilesAt)   one JSON object: title, sha, base,
 //     head, mergeState, reviewDecision, gate (as above, plus failedRuns: run ids of failing non-advisory
 //     checks that are not §4 State checks, failedJobs: [{ runId, jobId, name }] for the one in a run that
 //     also holds a failing state check, rerun by job instead, and stateFailing: the failing state checks,
@@ -82,6 +83,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseWorkflow, branchEvents, checkNameOf, checkIsJob } from './desk-ci.mjs';
 import { ASK_TERMS } from './decisions.mjs';
+import { openCache } from './read-cache.mjs';
 import { parseFlaky, parseStateChecks, STATE_KINDS, DEFAULT_STATE_CHECKS, parseHolds, ROUTINE_MARK, NO_REASON } from './config-schema.mjs';
 
 export const FAILED = new Set(['failure', 'error', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
@@ -387,6 +389,17 @@ export const agentLast = (holds) => [...holds].sort((a, b) => (holdKind(a) === '
 // The PR's files for matchHolds, from `gh api pulls/<n>/files`: both sides of a rename, so a file
 // moved out of a held path is still held.
 export const PR_FILES_JQ = '.[] | .filename, (.previous_filename // empty)';
+// The files PR n changes at `head`, from `cache` (read-cache.mjs openCache) when it holds them for that
+// head, else from `read()` (which throws when it cannot read), kept for the next caller. A new head is
+// a new key, so it is read afresh.
+export function prFilesAt({ cache, repo, n, head, read }) {
+  const key = `${String(repo).toLowerCase()}#${n}@${head}`;
+  const kept = head ? cache.get(key) : undefined;
+  if (Array.isArray(kept)) return kept;
+  const files = read();
+  if (head) { cache.set(key, files); cache.save(); }
+  return files;
+}
 
 // gitignore-flavoured globs: `**` crosses directories, `*` and `?` do not, a trailing `/` means the
 // whole directory, and a pattern with no `/` matches that name at any depth.
@@ -782,8 +795,11 @@ if (isMain) {
       }
       let files = [];
       let filesOk = true;
-      try { files = gh(['api', '--paginate', `repos/${repo}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ]).split('\n').filter(Boolean); }
-      catch { filesOk = false; }
+      const fi = rest.indexOf('--files-cache');
+      try {
+        files = prFilesAt({ cache: openCache(fi >= 0 ? rest[fi + 1] || null : null), repo, n, head: pr.headRefOid,
+          read: () => gh(['api', '--paginate', `repos/${repo}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ]).split('\n').filter(Boolean) });
+      } catch { filesOk = false; }
       const contents = filesOk ? await readKeyedFiles({ repo, base: pr.baseRefName, head: pr.headRefOid, files, holds, run: gh }) : new Map();
       // A code-owner hold is met only on the merge into the default branch, against its CODEOWNERS:
       // into a batch base every hold is carried, for that base's own PR to be judged.
