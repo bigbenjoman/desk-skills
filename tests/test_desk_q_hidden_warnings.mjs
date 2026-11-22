@@ -114,6 +114,13 @@ t('AC6 a warning whose clock time moved on stays hidden', `${warns(s.frame()).le
 const amount = (usd, at) => ({ tag: '▲ credits', text: [[`AWS credits are covering ${usd} of use, at ${at}.`, null]] });
 t('AC6 a dollar amount or a time that moves on keeps the note\'s key', Q.noteKey(amount('$12.50', '14:02')) === Q.noteKey(amount('$1,013.07', '15:10')), true);
 t('AC6 a duration that moves on keeps the note\'s key', Q.noteKey({ tag: '▲ x', text: [['nothing started for 59m.', null]] }) === Q.noteKey({ tag: '▲ x', text: [['nothing started for 2h 5m.', null]] }), true);
+const until = (at) => ({ tag: '▲ usage', text: [[`ben, the default, is at its weekly limit until ${at}. Its workers start again then.`, null]] });
+t('AC6 a reset time that gains or loses its weekday keeps the note\'s key', Q.noteKey(until('Mon 14:00')) === Q.noteKey(until('14:00')), true);
+const unreadable = (n) => ({ tag: '▲ alpha', text: [[`Batch ${n}'s queue is unreadable: Unexpected end of JSON input.`, null]] });
+t('AC3 a note naming another batch is another warning', Q.noteKey(unreadable(2)) === Q.noteKey(unreadable(3)), false);
+const ports = (a, b) => ({ tag: '▲ ports', text: [[`beta + gamma share ${a}–${b}. Two batches there at once can get the same worker port.`, null]] });
+t('AC3 a port clash on other ports is another warning', Q.noteKey(ports(5200, 5201)) === Q.noteKey(ports(5300, 5301)), false);
+t('AC3 a ticket key is wording', Q.noteKey({ tag: '▲ alpha', text: [['no PR for AL-1.', null]] }) === Q.noteKey({ tag: '▲ alpha', text: [['no PR for AL-7.', null]] }), false);
 
 // ---- AC3: the merge driver's wording changes.
 stopped('alpha', null, 'no PR for AL-1');

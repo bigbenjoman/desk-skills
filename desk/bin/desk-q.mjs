@@ -36,7 +36,7 @@
 // is made then, with the label it is listed under. The supervisor command runs that repo's supervisor.mjs install, uninstall or
 // status, and changes no config row or approval. The one other write is a repo's <state>/eta.jsonl,
 // which gains a ticket's first ship estimate the first time a live batch's forecast dates it.
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
@@ -75,6 +75,7 @@ import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.m
 import { pageState, refresh as refreshLevers, whereOf } from './levers-refresh.mjs';
 import { PAGE_RESUMES, uploadPause, uploadQueueFile } from './upload-queue.mjs';
 import { newBuild, oneBuild } from './build-memo.mjs';
+import { writeJsonAtomic } from './dir-lock.mjs';
 
 export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour. The screen draws five, named
@@ -2729,13 +2730,14 @@ function wrapSegs(segs, w) {
 
 // ---- Home's hidden warnings ----------------------------------------------------------------------
 // The ▲ notes hidden on Home with h, one file per computer: { hidden: { <noteKey>: <ISO time hidden> } }.
-// A note is known by its tag and its wording with each number, time and amount in it masked, so a clock
-// or a figure moving on keeps it hidden while new wording shows it again; and each shows again HIDE_MS
-// after it was hidden, so a fault that lasts cannot stay out of sight.
+// A note is known by its tag and its wording with each clock time (and its weekday), duration and amount
+// in it masked, so those moving on keep it hidden while new wording shows it again. Any other number, a
+// batch, a port, a ticket or a PR, is wording: a note naming another one is another warning. Each shows
+// again HIDE_MS after it was hidden, so a fault that lasts cannot stay out of sight.
 export const HIDE_MS = DAY;
 export const hiddenWarningsFile = () => join(process.env.HOME || homedir(), '.desk-autopilot', 'machine', 'hidden-warnings.json');
 const isWarning = (n) => typeof n.tag === 'string' && n.tag.startsWith('▲');
-const FIGURE = /\$?\d[\d,.:]*(?:\s?(?:ms|mins?|GiB|GB|MB|KB|[smhdwk])\b)?/gi;
+const FIGURE = /\$\d[\d,]*(?:\.\d+)?|(?:\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) )?\b\d{1,2}:\d{2}\b|\b\d+(?:\.\d+)?\s?(?:%|(?:ms|mins?|GiB|GB|MB|KB|[smhdwk])\b)/g;
 export function noteKey(n) {
   const words = [n.text, ...(n.more ?? [])].flatMap((segs) => segs.map(([s]) => s)).join('') + (n.cmd ?? '');
   return `${n.tag} ${words.replace(FIGURE, '#').replace(/#(?:\s+#)+/g, '#').replace(/\s+/g, ' ').trim()}`;
@@ -2746,12 +2748,8 @@ export function readHidden(now = Date.now(), file = hiddenWarningsFile()) {
   if (!h || typeof h !== 'object') return new Map();
   return new Map(Object.entries(h).map(([k, at]) => [k, Date.parse(at)]).filter(([, at]) => Number.isFinite(at) && now - at < HIDE_MS));
 }
-export function writeHidden(hidden, file = hiddenWarningsFile()) {
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify({ hidden: Object.fromEntries([...hidden].map(([k, at]) => [k, new Date(at).toISOString()])) }, null, 2)}\n`);
-  renameSync(tmp, file);
-}
+export const writeHidden = (hidden, file = hiddenWarningsFile()) =>
+  writeJsonAtomic(file, { hidden: Object.fromEntries([...hidden].map(([k, at]) => [k, new Date(at).toISOString()])) });
 // Home's notes less those `hidden` holds, one grey line counting them where the first was.
 function withoutHidden(notes, hidden) {
   const off = hidden ? notes.filter((n) => isWarning(n) && hidden.has(noteKey(n))) : [];
