@@ -126,33 +126,16 @@ note() { node "$here/slot-lease.mjs" note "$1" "$name" --pid "$$" --waited "$(wa
 queue() { queued=1; mkdir -p "$wdir" 2>/dev/null && : > "$wdir/$$" 2>/dev/null; note queued; }
 unqueue() { [ -z "$queued" ] || rm -f "$wdir/$$" 2>/dev/null; }
 gave_up() { unwatch; unqueue; note gave-up; echo "with-lock.sh: gave up waiting for the $name lock after ${timeout}s" >&2; exit 75; }
-# Headroom admission's look at this run while it waits (admission.mjs): in the background, so the wait
-# itself is unchanged. Once this run's marker is in the waiting directory, which it is from the moment
-# it waits on the lock files or on a lease (looked for every 0.2 s), it is judged, then again every DESK_ADMIT_RECHECK_S seconds
-# (30), and judge logs a line only when the outcome or reason changes. It ends when the marker goes,
-# when this wrapper does, or at once with admission off (judge prints nothing). It closes the lock's
+# Headroom admission's look at this run while it waits (admission.mjs watch): in the background, so the
+# wait itself is unchanged. It judges the run once its marker is in the waiting directory, which it is
+# from the moment it waits on the lock files or on a lease, and again while it waits, logging a line
+# only when the outcome or reason changes. It is node, never a forked shell: a subshell keeps this
+# wrapper's command line, and suite-wait.mjs would count it as a second run waiting. It closes the lock's
 # descriptor, so it never holds the lock, and it is stopped before the command runs.
 admit_pid=""
 watch_admission() {
   case "$name" in test|tsc|light) ;; *) return 0 ;; esac
-  local every="${DESK_ADMIT_RECHECK_S:-30}"
-  case "$every" in ''|*[!0-9]*|0) every=30 ;; esac
-  (
-    exec 9>&-
-    key=""; seen=""; n=0
-    while kill -0 "$$" 2>/dev/null; do
-      if [ -e "$wdir/$$" ]; then
-        if [ -z "$seen" ] || [ "$n" -ge "$every" ]; then
-          k="$(node "$here/admission.mjs" judge "$name" --pid "$$" ${key:+--last "$key"} 2>/dev/null)"
-          [ -n "$k" ] || exit 0
-          key="$k"; seen=1; n=0
-        fi
-      elif [ -n "$seen" ]; then exit 0
-      fi
-      # Until the marker is first seen, look often: a lease's wait can be its 2 s poll and no longer.
-      if [ -n "$seen" ]; then sleep 1; n=$((n + 1)); else sleep 0.2; fi
-    done
-  ) </dev/null >/dev/null 2>&1 &
+  node "$here/admission.mjs" watch "$name" --pid "$$" 9>&- </dev/null >/dev/null 2>&1 &
   admit_pid=$!
 }
 unwatch() { [ -z "$admit_pid" ] || kill "$admit_pid" 2>/dev/null; admit_pid=""; }
