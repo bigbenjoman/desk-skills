@@ -626,6 +626,9 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   const ADDED_ROWS = [
     'test-signin|4|Test sign-in', // DS-804
     'other-names|0|Other names', // DS-805
+    'harm-swap-growth|3b|Swap growth that holds spawns (GB)', // DS-848
+    'harm-tmpfs|3b|tmpfs /tmp size that holds spawns (GB)', // DS-848
+    'harm-vmmem|3b|WSL VM share of its grant that holds spawns (%)', // DS-848
   ];
   const sorted = (a) => [...a].sort().join('\n');
   const rowsNow = Object.entries(CONFIG_ROWS).map(([id, r]) => [id, r.section, r.row, ...(r.table ? ['table'] : [])].join('|'));
