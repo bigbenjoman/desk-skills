@@ -522,6 +522,7 @@ export const ROWS = Object.freeze([
   v('slug', '0', 'Slug', 'text', 'acme__widgets', unread),
   v('default-branch', '0', 'Default branch', 'text', 'main', dflt('main')),
   v('repo-description', '0', 'One-line description', 'text', 'A voice assistant for clinics'),
+  l('other-names', '0', 'Other names', 'text', ['widgets-portal']),
   // §1 Who you are in this repo
   v('name', '1', 'Name', 'text', 'Pat Example'),
   v('short-name', '1', 'Short form colleagues use', 'text', 'Pat', unread),
