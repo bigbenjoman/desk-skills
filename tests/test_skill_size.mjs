@@ -1,5 +1,5 @@
 // suite: skill size (every desk SKILL.md a core of 20 KB or less, and its reference files resolve)
-// covers: skills/desk-*/** agents/**
+// covers: skills/desk-*/** agents/** tests/prose_facts.mjs desk/bin/spawn-order.mjs
 // Every skills/desk-*/SKILL.md is at most 20,480 bytes unless it is on UNSPLIT, every
 // `references/<file>.md` a core names exists, and every file under a skill's references/ is named
 // by some file of that skill. Each desk-autopilot worker-contract-stage-*.md is held to the same cap,
@@ -9,6 +9,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname, basename, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { regenerate } from './prose_facts.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -16,7 +17,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CAP = 20480;
 // The skills over the cap that are not split yet (DS-228's children). Each split takes its skill
 // off; a listed skill is not size-checked, so feature tickets can still grow it until then.
-const UNSPLIT = ['desk-autopilot', 'desk-ci'];
+const UNSPLIT = ['desk-autopilot'];
 // Reference files install.sh writes from another file in the checkout, so they are not in skills/.
 const INSTALLED = { 'desk-setup/references/desk-config.template.md': 'desk-config.md' };
 
@@ -107,6 +108,8 @@ const skills = loadSkills(join(root, 'skills'));
 const installed = (path) => path in INSTALLED && existsSync(join(root, INSTALLED[path]));
 t(`the desk skills are read (${skills.length})`, skills.length >= 15, true);
 t('AC1 AC3 every core is within the cap, or on UNSPLIT and over it', sizeProblems(skills, UNSPLIT), []);
+const regenerated = skills.map((s) => ({ ...s, core: regenerate(s.core).text }));
+t('DS-886 every core is within the cap with its generated regions as the code renders them', sizeProblems(regenerated, UNSPLIT), []);
 t('AC2 UNSPLIT is exactly the skills over the cap', UNSPLIT, skills.filter((s) => Buffer.byteLength(s.core) > CAP).map((s) => s.name));
 t(`AC4 the references/ paths the cores name are read (${skills.reduce((n, s) => n + cited(s.name, s.core).length, 0)})`, skills.reduce((n, s) => n + cited(s.name, s.core).length, 0) >= 50, true);
 t('AC4 every references/ path a core names exists', refProblems(skills, installed), []);

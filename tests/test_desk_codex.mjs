@@ -1,13 +1,13 @@
 // suite: desk-codex (codex review calls: final message only, timed out, no stdin, model and effort per role)
-// covers: desk/bin/desk-codex.mjs
+// covers: desk/bin/desk-codex.mjs desk/bin/codex-exec.mjs
 // A fake codex on PATH records its argv and behaves as $T/mode says: answer (progress, then a final
 // message), hang, read stdin, or fail. Scratch config and state only.
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, existsSync, chmodSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseCodexReview } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -25,7 +25,7 @@ t('an unknown role is refused', /unknown role `probe`/.test(parse('probe=a:low')
 t('a timeout that is not whole seconds is refused', /timeout `1.5`/.test(parse('timeout=1.5')), true);
 t('a role named twice is refused', /`finder` is named twice/.test(parse('finder=a:low finder=b:low')), true);
 
-const T = mkdtempSync(join(tmpdir(), 'desk-codex-'));
+const T = scratch('desk-codex-');
 for (const d of ['bin', 'state']) mkdirSync(join(T, d), { recursive: true });
 const fake = join(T, 'bin', 'codex');
 writeFileSync(fake, `#!/usr/bin/env bash
@@ -152,6 +152,26 @@ r = codex(['probe'], { cfg: OFF });
 t('AC7 lever off: refused, and codex is not run', [r.status, r.calls, /codex lever is off/.test(r.err)], [3, 0, true]);
 t('a flag in the role\'s place is refused', codex(['-m', 'x', 'finder', 'y']).status, 2);
 t('a second prompt is refused rather than passed on', codex(['finder', 'a', '--model', 'b']).status, 2);
+
+// DS-857 AC5: with the lever off, a finder or refuter call runs through codex-exec's review form,
+// which is read-only at ~/.codex/config.toml's model and ends a hung call at the row's timeout.
+const EXEC = join(root, 'desk', 'bin', 'codex-exec.mjs');
+const OFF_TIMED = config('off-timed', '`none`', '| Codex review | `none` | `timeout=2` |');
+const review = (args) => {
+  const start = Date.now();
+  const x = spawnSync('node', [EXEC, 'review', ...args], { env: env(OFF_TIMED), encoding: 'utf8', timeout: 30000, input: 'typed\n' });
+  return { status: x.status, out: x.stdout, err: x.stderr, secs: (Date.now() - start) / 1000 };
+};
+mode('answer');
+r = review(['--cd', T, 'Refute this finding: a.ts:1 drops the error']);
+t('DS-857 AC5 the review form prints the final message alone', [r.status, r.out], [0, 'FINAL ANSWER\nsecond line\n']);
+t('DS-857 AC5 it is a read-only exec with no model or effort, --cd passed on', [argv().slice(0, 4), argv().includes('-m'), argv().includes('-c'), pair('--cd'), argv().slice(-2)],
+  [['exec', '--sandbox', 'read-only', '--skip-git-repo-check'], false, false, T, ['--', 'Refute this finding: a.ts:1 drops the error']]);
+mode('hang');
+r = review(['x']);
+t('DS-857 AC5 a hung lever-off call is ended at the timeout, exit 124, saying timed out', [r.status, r.secs < 10, /timed out after 2s/.test(r.err), r.out], [124, true, true, '']);
+t('DS-857 AC5 codex and its children are gone', [alive(join(T, 'pid')), alive(join(T, 'sleep'))], [false, false]);
+t('DS-857 the review form takes no codex flag', [review(['-m', 'x', 'y']).status, review(['a', '--model', 'b']).status], [2, 2]);
 
 rmSync(T, { recursive: true, force: true });
 console.log(fails ? `${fails} failed` : 'desk-codex: all checks passed');

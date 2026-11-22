@@ -5,20 +5,27 @@
 //
 //   ticket-facts.mjs <KEY>
 //   ticket-facts.mjs --epic <KEY>...   fill in `epic` alone, for records written before it existed
-//   ticket-facts.mjs --blockers <KEY>...   read `blockers` again, alone; a key that cannot be read
-//                                          is left as it was and named on stderr with exit 1
+//   ticket-facts.mjs --blockers <KEY>...   read `blockers` again, alone, for every key in one Jira
+//                                          search (and their blockers in one more); a key that cannot
+//                                          be read is left as it was and named on stderr with exit 1
 //
 // --epic touches nothing but `epic` and `epic_error`, so a record keeps the rest of its triage. A
 // key whose issue cannot be read is left as it was, its record still without `epic`, and named on
 // stderr with exit 1; pass.mjs runs this for every unfinished ticket whose record has no `epic` key.
 //
 // Adds, for a tracker key:
-//   blockers     [{key, category, summary, type}] — "is blocked by" (Blocks) links, with the blocker's
-//                status category, summary and issue type, less any to its own epic (its parent epic
-//                or the batch's), which can never be Done before it
+//   blockers     [{key, category, summary, type, resolution?, resolved?, assignee?, labels?}] — "is blocked by" (Blocks)
+//                links, with the blocker's status category, summary and issue type, a Done one's
+//                resolution (name, null when none is set, absent when it could not be read) and resolution
+//                date (`resolved`, ISO, null when none is set, absent when it could not be read), an open one's assignee (display name,
+//                null when unassigned, absent when it could not be read), and its labels where §4
+//                Person-step labels or Person-input labels names any, less any to its own epic (its parent epic or the
+//                batch's), which can never be Done before it
 //   own_epic_blockers  [key] — those links to its own epic, ignored; absent when there are none
 //   other_links  how many links of another type (not Blocks, not Relates) were ignored
 //   size         XS|S|M|L|XL from the field named "Size", else a first description line "Size: M", else null
+//   repository   the field named "Repository", as text, else null: plan-batch sends a ticket that names
+//                another configured repo there (desk-env.mjs repoPlacement)
 //   epic         {key, summary, children: [{key, done}]} when its Jira parent is an epic, else null; the
 //                children list is left out, with epic_error, when it could not be read
 //   labels       the issue's labels, as written (a feature-mode batch promotes when a `milestone` merges)
@@ -32,17 +39,52 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { ghRepo, queueFile, stateDir, ticketKind } from './desk-env.mjs';
+import { ghRepo, queueFile, stateDir, ticketKind, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { lintTicket, designRoot, SIZE_LINE } from './ticket-lint.mjs';
 import { baseRef, designFact } from './desk-design.mjs';
 import { SIZES, epicFact, blockersFact, splitOwnEpic, queueEpic } from './desk-q-eta.mjs';
+import { jiraSearch, keySearch } from './jira-search.mjs';
 
 const lastLine = (e) => String(e.stderr ?? e.message ?? e).trim().split('\n').pop();
 const jira = (args) => JSON.parse(execFileSync('desk-jira', [...args, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 }));
 
 // `blockers` from the issue, less a link to the ticket's own epic, which is kept as own_epic_blockers.
-function setBlockers(rec, issue) {
+// Each open blocker is read for what a link does not carry: its assignee, by display name or null when
+// unassigned, so needs-you can tell whose it is to queue; and, where §4 Person-step labels or
+// Person-input labels names any, its labels, so personStep can tell a blocker labelled as the person's
+// step. One that cannot be read gets neither: no `assignee` key, and it holds as an ordinary blocker.
+// A Done blocker is read once for its resolution (name, or null when none is set) and when it was
+// resolved (`resolved`, Jira's resolution date, or null), which the link does not carry, so a pass can
+// tell one closed without landing (closedUnlanded) and how long one has been Done; the record's last
+// read is kept while it stays Done, and one that cannot be read has neither key.
+// `fieldsOf(key)` reads a blocker's fields, or undefined when it cannot be read.
+const getFields = (key) => { try { return jira(['get', key]).fields; } catch { return undefined; } };
+// The record's blockers as last read, by key.
+const lastRead = (rec) => new Map((Array.isArray(rec.blockers) ? rec.blockers : []).map((b) => [b?.key, b]));
+// A blocker last read Done with its resolution and its date, which are kept rather than read again.
+const resolutionKept = (p) => p?.category === 'done' && 'resolution' in p && 'resolved' in p;
+// The blockers in `issue`'s links that setBlockers reads fields for, given its record `rec`.
+const blockersToRead = (rec, issue) => {
+  const was = lastRead(rec);
+  return blockersFact(issue).filter((b) => b.category !== 'done' || !resolutionKept(was.get(b.key))).map((b) => b.key);
+};
+function setBlockers(rec, issue, fieldsOf = getFields) {
   const { blockers, own } = splitOwnEpic(blockersFact(issue), epicFact(issue, null)?.key, queueEpic(queueFile()));
+  const labelled = personStepLabels().length > 0 || personInputLabels().length > 0;
+  const was = lastRead(rec);
+  for (const b of blockers.filter((x) => x.category === 'done')) {
+    const p = was.get(b.key);
+    if (resolutionKept(p)) { b.resolution = p.resolution; b.resolved = p.resolved; continue; }
+    const f = fieldsOf(b.key); // unread: its resolution unknown, an ordinary Done blocker
+    if (f && typeof f === 'object') { b.resolution = f.resolution?.name ?? null; b.resolved = f.resolutiondate ?? null; }
+  }
+  for (const b of blockers.filter((x) => x.category !== 'done')) {
+    const f = fieldsOf(b.key);
+    if (f === undefined) continue; // its assignee unknown, and unlabelled
+    const who = !f || typeof f !== 'object' ? undefined : f.assignee == null ? null : f.assignee.displayName;
+    if (who === null || typeof who === 'string') b.assignee = who;
+    if (labelled && Array.isArray(f?.labels)) b.labels = f.labels.map(String);
+  }
   rec.blockers = blockers;
   if (own.length) rec.own_epic_blockers = own;
   else delete rec.own_epic_blockers;
@@ -66,15 +108,32 @@ function epicOf(issue, kids = new Map()) {
   return out;
 }
 
+// `keys`' issues with `fields` beside desk-jira's own, in one search per KEY_CHUNK keys (keySearch).
+const searchIssues = (keys, fields) => keySearch(keys, (jql, max) => jiraSearch({}, jql, max, fields));
+
 if (process.argv[2] === '--blockers') {
   let failed = 0;
+  const recs = new Map();
   for (const key of process.argv.slice(3)) {
     const path = join(stateDir(), 'triage', `${key}.json`);
-    let rec;
-    try { rec = JSON.parse(readFileSync(path, 'utf8')); } catch (e) { failed++; console.error(`[facts] ${key}  blockers NOT READ: no readable triage record at ${path}`); continue; }
-    let issue;
-    try { issue = jira(['get', key]); } catch (e) { failed++; console.error(`[facts] ${key}  blockers NOT READ: ${lastLine(e) || 'desk-jira get failed'}`); continue; }
-    setBlockers(rec, issue);
+    try { recs.set(key, { path, rec: JSON.parse(readFileSync(path, 'utf8')) }); } catch (e) { failed++; console.error(`[facts] ${key}  blockers NOT READ: no readable triage record at ${path}`); }
+  }
+  // Every key's links in one search, then every blocker that needs reading in one more, never a read
+  // per ticket. Either search failing leaves every record as it was, each key named as not read.
+  const notRead = (why) => {
+    for (const key of recs.keys()) console.error(`[facts] ${key}  blockers NOT READ: ${why}`);
+    process.exit(1);
+  };
+  const links = recs.size ? searchIssues([...recs.keys()], ['issuelinks', 'parent']) : { ok: true, issues: new Map() };
+  if (!links.ok) notRead(links.why);
+  const issues = links.issues;
+  const wanted = [...new Set([...recs].flatMap(([key, { rec }]) => (issues.has(key) ? blockersToRead(rec, issues.get(key)) : [])))];
+  const details = wanted.length ? searchIssues(wanted, ['resolution', 'resolutiondate']) : { ok: true, issues: new Map() };
+  if (!details.ok) notRead(`their blockers' search failed: ${details.why}`);
+  for (const [key, { path, rec }] of recs) {
+    const issue = issues.get(key);
+    if (!issue) { failed++; console.error(`[facts] ${key}  blockers NOT READ: not returned by the Jira search`); continue; }
+    setBlockers(rec, issue, (k) => details.issues.get(k)?.fields);
     writeFileSync(path, `${JSON.stringify(rec, null, 2)}\n`);
     console.log(`[facts] ${key}  blocked by ${rec.blockers.map((b) => `${b.key} (${b.category})`).join(', ') || 'nothing'}${ownEpicNote(rec)}`);
   }
@@ -106,13 +165,13 @@ if (!kind.ok) { console.error(kind.error); process.exit(2); }
 const path = join(stateDir(), 'triage', `${key}.json`);
 if (!existsSync(path)) { console.error(`no triage record at ${path}`); process.exit(1); }
 const rec = JSON.parse(readFileSync(path, 'utf8'));
-for (const f of ['blockers', 'own_epic_blockers', 'other_links', 'size', 'labels', 'epic', 'epic_error', 'facts_error', 'links', 'lint', 'lint_error', 'design', 'design_error']) delete rec[f];
+for (const f of ['blockers', 'own_epic_blockers', 'other_links', 'size', 'repository', 'labels','epic', 'epic_error', 'facts_error', 'links', 'lint', 'lint_error', 'design', 'design_error']) delete rec[f];
 
 // The design fact, read against the base a worker branches from, as origin has it where fetched.
 function design(text) {
   try {
     const { root = process.cwd(), dir = null, ref = baseRef(root) } = designRoot();
-    rec.design = designFact(text, { root, dir, ref, state: stateDir() });
+    rec.design = designFact(text, { root, dir, ref, state: stateDir(), key });
   } catch (e) { rec.design_error = lastLine(e) || 'design not read'; }
 }
 
@@ -120,6 +179,12 @@ const asSize = (v) => {
   const s = String((v && typeof v === 'object' ? v.value ?? v.name : v) ?? '').trim().toUpperCase();
   return SIZES.includes(s) ? s : null;
 };
+// A text, select or multi-select field's value as one string, or null when it is empty.
+const asText = (v) => {
+  const s = Array.isArray(v) ? v.map(asText).filter(Boolean).join(', ') : String((v && typeof v === 'object' ? v.value ?? v.name : v) ?? '').trim();
+  return s || null;
+};
+const fieldNamed = (issue, re) => Object.entries(issue.names ?? {}).find(([, n]) => re.test(String(n).trim()))?.[0];
 
 if (kind.kind !== 'tracker') {
   rec.links = 'n/a';
@@ -143,10 +208,12 @@ if (kind.kind !== 'tracker') {
     const links = issue.fields?.issuelinks ?? [];
     setBlockers(rec, issue);
     rec.other_links = links.filter((l) => !/block/i.test(l.type?.name ?? '') && !/^relates$/i.test(l.type?.name ?? '')).length;
-    const sizeField = Object.entries(issue.names ?? {}).find(([, n]) => /^(t-shirt )?size$/i.test(String(n).trim()))?.[0];
+    const sizeField = fieldNamed(issue, /^(t-shirt )?size$/i);
     const firstLine = String(issue.fields?.description ?? '').split('\n').find((l) => l.trim()) ?? '';
     rec.size = (sizeField && asSize(issue.fields?.[sizeField]))
       ?? asSize(SIZE_LINE.exec(firstLine)?.[1]);
+    const repoField = fieldNamed(issue, /^repository$/i);
+    rec.repository = repoField ? asText(issue.fields?.[repoField]) : null;
     rec.labels = Array.isArray(issue.fields?.labels) ? issue.fields.labels.map(String) : [];
     Object.assign(rec, epicOf(issue));
     design(issue.fields?.description);

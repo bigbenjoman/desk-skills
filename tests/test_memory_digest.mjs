@@ -3,17 +3,17 @@
 // A fixture memory folder: an index over the 6 KB cap is cut at a whole entry and says how many were
 // cut; one within it is whole and says nothing was cut; no folder, no index or an empty index is no
 // digest. The CLI prints the digest and appends its size to a log. Scratch directories only.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { memoryDigest, indexEntries, digestLine, DIGEST_CAP } from '../desk/bin/memory-digest.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'memory-digest.mjs');
-const T = mkdtempSync(join(tmpdir(), 'desk-memdigest-'));
+const T = scratch('desk-memdigest-');
 const folder = (name, index) => {
   const d = join(T, name);
   mkdirSync(d, { recursive: true });

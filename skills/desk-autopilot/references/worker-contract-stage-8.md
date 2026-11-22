@@ -36,7 +36,13 @@ that comment, one line each under "Once this merges:", with the §3 row it needs
 the merge path: a follow-on never holds the merge, and never makes this comment a park.
 
 **Not granted:** print `desk-jira`'s full block (`JIRA COMMENT — awaiting approval`,
-target, fields, the exact body), then `AUTOPILOT_PARK`. **The safeguard is not calling the command,
+target, fields, the exact body), write the park file with the same body as its `approve` (`kind`
+`jira-comment`, or `jira-transition`, `jira-edit`, `jira-ticket`; `target` the ticket key; core
+section 1), then `AUTOPILOT_PARK` with "awaiting approval" in the question. **The safeguard is not calling the command,
 not the block**: a worker can print a flawless block and then post anyway, which is why the
 command is denied rather than discouraged. Everything else the config grants (pushing,
 the draft PR, the review post) still happens before you park, so only the Jira step is left.
+The pass keeps the park file's `approve` with the park and needs-you shows it whole, so the
+orchestrator relays it from there rather than from your log. The file adds to the block and never
+replaces it. A park on any other write you may not make (a PR comment, a description edit) keeps its
+text the same way.

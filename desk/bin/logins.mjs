@@ -1,19 +1,27 @@
 // Subscriptions: the Claude and Codex logins desk may use on this computer, each a config folder
-// with a rule (in rotation, standby or off).
+// marked as its tool's one `default` or as `unused`. Every reader still gets a rule: default reads as
+// in rotation and unused as standby. A file in the older rules (in rotation, standby, off) is migrated
+// by migrateLogins: each tool's first login in rotation, or its first listed, becomes its default.
 //
 // One file per computer, ~/.config/desk/subscriptions.md (desk-env.mjs owns the path), beside
 // machine.md and costs.md and read by every repo. With no file, desk has one login per tool: Claude's
-// ~/.claude and Codex's ~/.codex, both in rotation, with no config folder override. A tool the file
-// lists no login for keeps that default.
+// ~/.claude and Codex's ~/.codex, each its tool's default, with no config folder override. A tool the
+// file lists no login for keeps that default.
 //
 // The account check signs nothing in and reads no credential: a Claude login's account is what
 // `claude auth status --json` says under its CLAUDE_CONFIG_DIR, and its plan is oauthAccount's
 // planDisplayName in that folder's .claude.json (~/.claude.json for the default login). A Codex login
-// is only `codex login status` under its CODEX_HOME, whose output is never shown: it can quote part
-// of an API key. Signed-in folders under ~/.claude-logins and ~/.codex-logins that the file does not
-// list are found: on standby when there is a file, with no rule when there is none. A login removed
+// is `codex login status` under its CODEX_HOME, whose output is never shown: it can quote part of an
+// API key. Its email and plan are the id_token's payload in that folder's auth.json (codexAccount);
+// the access and refresh tokens are never read out. Signed-in folders under ~/.claude-logins and ~/.codex-logins that the file does not
+// list are found: unused when there is a file, with no rule when there is none. A login removed
 // from the rules leaves its folder and sign-in alone: the file's Removed table names the folder, so it
 // is not found again.
+//
+// A Claude row may carry an Account: the email the folder belongs to, lowercased. Once any Claude row
+// has one the file is in multi-account mode: ~/.claude is no longer one of the Claude logins, and a
+// folder is used only while it is signed in to the account it is pinned to. Background code only reads
+// the file; the commands a person runs write the pins.
 //
 // This module imports nothing from desk-env.mjs: desk-env's CLI imports it at run time, and a cycle
 // through a module still running its top-level await never settles.
@@ -45,18 +53,31 @@ export const signInParts = (login) => TOOL[login.tool].signIn(login);
 export const signInCommand = (login) => { const p = signInParts(login); return p.then ? `${p.shell}, then ${p.then}` : p.shell; };
 
 // `in rotation`, `In-Rotation` and `in  rotation` are one rule; anything else is null.
+const ruleWords = (v) => String(v ?? '').trim().toLowerCase().replace(/[\s-]+/g, ' ');
 export function normRule(v) {
-  const s = String(v ?? '').trim().toLowerCase().replace(/[\s-]+/g, ' ');
+  const s = ruleWords(v);
   return RULES.includes(s) ? s : null;
 }
+// What the file may say in place of a rule, and the rule every reader gets for it: a tool's one
+// `default` login reads as in rotation and each `unused` one as standby. A login read from one keeps
+// the word as `stored`, so writing the file back keeps it.
+export const STORED_RULES = Object.freeze({ default: 'in rotation', unused: 'standby' });
+const storedRule = (v) => { const s = ruleWords(v); return Object.hasOwn(STORED_RULES, s) ? s : null; };
 export const ruleError = (v) => `"${v}" is not a rule: use one of ${RULES.map((r) => `\`${r}\``).join(', ')}`;
+// What a person is shown for a login: its stored word, else its rule.
+export const ruleWord = (l) => l.stored ?? l.rule;
 
 // A login as every reader gets it. configDir is the folder to point the tool at, or null for the
 // tool's own default folder (no override).
-export function login({ tool, name, folder, rule, source }) {
+// account is a Claude login's pinned email, lowercased, or null.
+export function login({ tool, name, folder, rule, source, stored, account = null }) {
   const dir = resolve(expand(folder));
-  return { tool, name, folder: tilde(dir), dir, configDir: dir === TOOL[tool].dir() ? null : dir, rule, source };
+  return { tool, name, folder: tilde(dir), dir, configDir: dir === TOOL[tool].dir() ? null : dir, rule, source, ...(stored ? { stored } : {}), account: account ? String(account).toLowerCase() : null };
 }
+// True when the file has an Account column (`accounts`, which parseSubscriptions sets even when every
+// pinned row in it failed to read) or any Claude login has an account: the file is then in
+// multi-account mode.
+export const multiAccount = (subs) => subs?.accounts === true || (subs?.logins ?? []).some((l) => l.tool === 'claude' && l.account);
 export const defaultLogin = (tool) => login({ tool, name: 'default', folder: TOOL[tool].dir(), rule: 'in rotation', source: 'default' });
 
 // The environment a login's tool runs in: the caller's, never with an API key (the call stays on the
@@ -68,16 +89,20 @@ export function loginEnv(l, env = process.env) {
 
 // ---- the file --------------------------------------------------------------------------------
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const unquote = (s) => String(s ?? '').trim().replace(/^`(.*)`$/, '$1').trim();
 
-// -> { exists, logins, removed: [{ tool, name, folder, dir }], errors: ["line <n>: <why>"] }. A malformed
-// row is named and left out; a tool with no good row keeps its default login. `removed` are the logins
-// the Removed table (Tool, Name, Folder) names, so setting a rule on one puts back its own folder.
+// -> { exists, accounts, logins, removed: [{ tool, name, folder, dir }], errors: ["line <n>: <why>"] }. A
+// malformed row is named and left out; a tool with no good row keeps its default login, except Claude in
+// a file with an Account column (`accounts`), which stays in multi-account mode with no login rather
+// than fall back to ~/.claude. `removed` are the logins the Removed table (Tool, Name, Folder) names, so
+// setting a rule on one puts back its own folder.
 export function parseSubscriptions(text, { exists = true } = {}) {
   const logins = [];
   const removed = [];
   const errors = [];
   let header = null;
+  let accounts = false;
   String(text ?? '').split('\n').forEach((raw, i) => {
     const line = raw.trim();
     if (!line.startsWith('|')) { header = null; return; }
@@ -91,23 +116,32 @@ export function parseSubscriptions(text, { exists = true } = {}) {
       else removed.push(removedLogin(tool, name, folder));
       return;
     }
-    if (header.join('|') !== 'tool|name|folder|rule') return;
-    const [tool, name, folder, ruleText] = c;
-    const rule = normRule(ruleText);
-    if (c.length !== 4) errors.push(`${at}: want 4 cells (Tool, Name, Folder, Rule), got ${c.length}`);
+    const pinned = header.join('|') === 'tool|name|folder|account|rule';
+    if (!pinned && header.join('|') !== 'tool|name|folder|rule') return;
+    if (pinned) accounts = true;
+    const [tool, name, folder, ...rest] = c;
+    const ruleText = rest.at(-1);
+    const accountText = pinned ? rest[0] : '';
+    const account = accountText === '-' ? '' : accountText;
+    const stored = storedRule(ruleText);
+    const rule = stored ? STORED_RULES[stored] : normRule(ruleText);
+    if (c.length !== (pinned ? 5 : 4)) errors.push(`${at}: want ${pinned ? '5 cells (Tool, Name, Folder, Account, Rule)' : '4 cells (Tool, Name, Folder, Rule)'}, got ${c.length}`);
     else if (!TOOLS.includes(tool)) errors.push(`${at}: tool "${tool}" is neither claude nor codex`);
     else if (!NAME.test(name)) errors.push(`${at}: name "${name}" wants letters, digits, dots, dashes or underscores`);
     else if (!folder) errors.push(`${at}: ${tool} ${name} has no folder`);
+    else if (account && tool === 'codex') errors.push(`${at}: codex ${name}: a Codex row takes no account`);
+    else if (account && !EMAIL.test(account)) errors.push(`${at}: claude ${name}: account "${account}" is not an email`);
     else if (!rule) errors.push(`${at}: ${tool} ${name}: ${ruleError(ruleText)}`);
     else {
-      const l = login({ tool, name, folder, rule, source: 'file' });
+      const l = login({ tool, name, folder, rule, source: 'file', stored, account });
       const same = logins.find((o) => o.tool === tool && (o.name === name || o.dir === l.dir));
       if (same) errors.push(`${at}: ${tool} ${name} repeats ${same.name === name ? 'the name' : `the folder of ${same.name}`}`);
       else logins.push(l);
     }
   });
-  for (const tool of TOOLS) if (!logins.some((l) => l.tool === tool)) logins.push(defaultLogin(tool));
-  return { exists, logins: sortLogins(logins), removed: removed.filter((r) => !logins.some((l) => l.tool === r.tool && l.dir === r.dir)), errors };
+  // A file with pins has no ~/.claude login unless it lists one.
+  for (const tool of TOOLS) if (!logins.some((l) => l.tool === tool) && !(tool === 'claude' && multiAccount({ accounts, logins }))) logins.push(defaultLogin(tool));
+  return { exists, accounts, logins: sortLogins(logins), removed: removed.filter((r) => !logins.some((l) => l.tool === r.tool && l.dir === r.dir)), errors };
 }
 const sortLogins = (ls) => [...ls].sort((a, b) => TOOLS.indexOf(a.tool) - TOOLS.indexOf(b.tool));
 const removedLogin = (tool, name, folder) => { const dir = resolve(expand(folder)); return { tool, name, folder: tilde(dir), dir }; };
@@ -116,21 +150,48 @@ export const readSubscriptions = (path) => (path && existsSync(path)
   ? parseSubscriptions(readFileSync(path, 'utf8'))
   : parseSubscriptions('', { exists: false }));
 
+// ---- default and unused ----------------------------------------------------------------------
+const asWord = (l, word) => ({ ...l, rule: STORED_RULES[word], stored: word });
+// A tool's default among `logins`: the one marked default, else its first in rotation, else its first
+// not off, else its first (off: no work runs until a person names a default).
+export const defaultOf = (logins, tool) => {
+  const own = logins.filter((l) => l.tool === tool);
+  return own.find((l) => l.stored === 'default') ?? own.find((l) => l.rule === 'in rotation')
+    ?? own.find((l) => l.rule !== 'off') ?? own[0] ?? null;
+};
+// A tool's rows want migrating while they hold other than one default, or a rule of in rotation or
+// standby: an `off` set beside a default is kept, and rows that are all off stay off.
+const wantsWords = (rows) => rows.length > 0 && rows.some((l) => l.rule !== 'off')
+  && (rows.filter((l) => l.stored === 'default').length !== 1 || rows.some((l) => !l.stored && l.rule !== 'off'));
+// The logins with each such tool's default marked default and every other login of the tool unused.
+export function migrateLogins(logins) {
+  const moved = TOOLS.filter((tool) => wantsWords(logins.filter((l) => l.tool === tool)));
+  const defaults = moved.map((tool) => defaultOf(logins, tool));
+  return logins.map((l) => (moved.includes(l.tool) ? asWord(l, defaults.includes(l) ? 'default' : 'unused') : l));
+}
+// Whether the file's own rows want migrating, so the file wants writing.
+export const needsMigration = (subs) => subs.exists
+  && TOOLS.some((tool) => wantsWords(subs.logins.filter((l) => l.tool === tool && l.source === 'file')));
+export const migrateSubscriptions = (subs) => ({ ...subs, logins: migrateLogins(subs.logins) });
+// The login `logins list` shows as a tool's default, whether or not the file says default yet.
+export const toolDefault = (subs, tool) => defaultOf(migrateLogins(subs.logins), tool);
+
 const cell = (v) => `\`${String(v).replace(/\|/g, '\\|')}\``;
 export function renderSubscriptions(logins, removed = []) {
+  const pinned = logins.some((l) => l.account);
   return [
     '# Subscriptions',
     '',
     'The Claude and Codex logins desk may use on this computer, shared by every repo here. Each is a',
-    'config folder (CLAUDE_CONFIG_DIR for Claude, CODEX_HOME for Codex) with a rule: `in rotation`',
-    '(new workers start on whichever has the most room), `standby` (used only when every login in',
-    'rotation is at its limit) or `off` (never used). `desk-env logins set` changes a rule and',
-    '`desk-env logins remove` removes a login, each keeping the previous copy as subscriptions.md.bak;',
-    '`desk-env logins check` confirms each is signed in. No token or credential is kept here.',
+    'config folder (CLAUDE_CONFIG_DIR for Claude, CODEX_HOME for Codex), marked `default` (the one',
+    'subscription of its tool this computer runs on) or `unused`. `desk-env logins default` changes a',
+    'tool\'s default and `desk-env logins remove` removes a login, each keeping the previous copy as',
+    'subscriptions.md.bak; `desk-env logins check` confirms each is signed in. No token or credential',
+    'is kept here.',
+    ...(pinned ? ['Account is the Claude account a folder belongs to: desk uses the folder only while it is signed in to that account.'] : []),
     '',
-    '| Tool | Name | Folder | Rule |',
-    '|---|---|---|---|',
-    ...sortLogins(logins).map((l) => `| ${cell(l.tool)} | ${cell(l.name)} | ${cell(l.folder)} | ${cell(l.rule)} |`),
+    ...(pinned ? ['| Tool | Name | Folder | Account | Rule |', '|---|---|---|---|---|'] : ['| Tool | Name | Folder | Rule |', '|---|---|---|---|']),
+    ...sortLogins(logins).map((l) => `| ${cell(l.tool)} | ${cell(l.name)} | ${cell(l.folder)} | ${pinned ? `${cell(l.account ?? '-')} | ` : ''}${cell(l.stored ?? l.rule)} |`),
     '',
     ...(removed.length ? [
       '## Removed',
@@ -165,7 +226,7 @@ export function checkLogin(l, { claude = 'claude', codex = 'codex', env = proces
   if (l.tool === 'codex') {
     const r = run(codex, ['login', 'status'], loginEnv(l, env));
     if (r.error) return { ...out, state: 'error', why: r.error };
-    return r.code === 0 ? { ...out, state: 'signed in' } : out;
+    return r.code === 0 ? { ...out, state: 'signed in', ...codexAccount(l) } : out;
   }
   const r = run(claude, ['auth', 'status', '--json'], loginEnv(l, env));
   if (r.error) return { ...out, state: 'error', why: r.error };
@@ -178,6 +239,26 @@ export function checkLogin(l, { claude = 'claude', codex = 'codex', env = proces
   const account = claudeAccount(l);
   const email = [status.email, account.email].find((e) => typeof e === 'string' && e) ?? null;
   return { ...out, state: 'signed in', email, plan: account.plan ?? 'unknown' };
+}
+
+// A Codex login's account as its folder's auth.json records it, with no call and no signature check:
+// the email and the https://api.openai.com/auth claim's chatgpt_plan_type, title-cased (pro -> Pro),
+// from the id_token's payload alone. The access and refresh tokens are never read out. Each is null
+// with no file, an API key only, or an id_token that is not three parts with a JSON middle.
+//   -> { email, plan }
+export const codexAuthPath = (l) => join(l.dir, 'auth.json');
+const titleCase = (s) => s.split(/[_\s-]+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(' ');
+export function codexAccount(l) {
+  const none = { email: null, plan: null };
+  const jwt = readJson(codexAuthPath(l))?.tokens?.id_token;
+  const parts = typeof jwt === 'string' ? jwt.split('.') : [];
+  if (parts.length !== 3) return none;
+  let p = null;
+  try { p = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')); } catch { return none; }
+  if (!p || typeof p !== 'object') return none;
+  const text = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  const plan = text(p['https://api.openai.com/auth']?.chatgpt_plan_type);
+  return { email: text(p.email), plan: plan && titleCase(plan) };
 }
 
 // A Claude login's account as its folder's .claude.json records it (~/.claude.json for the default),
@@ -226,8 +307,8 @@ export function dropNewFolder(dir) {
   return !existsSync(dir);
 }
 
-// A folder the file does not list, as a login: on standby when there is a file, with no rule without one.
-export const foundLogin = (tool, dir, subs) => login({ tool, name: basename(dir), folder: dir, rule: subs.exists ? 'standby' : null, source: 'found' });
+// A folder the file does not list, as a login: unused when there is a file, with no rule without one.
+export const foundLogin = (tool, dir, subs) => login({ tool, name: basename(dir), folder: dir, rule: subs.exists ? STORED_RULES.unused : null, source: 'found', stored: subs.exists ? 'unused' : undefined });
 
 // A tool's logins, each once by folder: its default folder first, then the file's rows for the tool,
 // then the folders under its logins folder the file neither lists nor removed, then `extra`. The default keeps its
@@ -235,36 +316,69 @@ export const foundLogin = (tool, dir, subs) => login({ tool, name: basename(dir)
 // the tool but not this one gives it no rule. Folders that do not exist are kept: the caller filters.
 //   -> [login]
 export function toolLogins(tool, subs, extra = []) {
-  const out = [defaultLogin(tool)];
-  const add = (l) => { if (!out.some((o) => o.dir === l.dir)) out.push(l); };
+  // With pins, Claude has no default login: every account has its own folder.
+  const own = tool === 'claude' && multiAccount(subs);
+  const out = own ? [] : [defaultLogin(tool)];
+  const add = (l) => { if (!out.some((o) => o.dir === l.dir) && !(own && !l.configDir)) out.push(l); };
   for (const l of subs.logins) if (l.tool === tool) add(l);
   for (const dir of unlistedFolders(tool, out, subs.removed)) add(foundLogin(tool, dir, subs));
   for (const l of extra) add(l);
-  const fileDefault = subs.logins.find((l) => l.tool === tool && l.dir === out[0].dir);
-  out[0] = fileDefault ?? { ...out[0], rule: null };
+  if (!own) {
+    const fileDefault = subs.logins.find((l) => l.tool === tool && l.dir === out[0].dir);
+    out[0] = fileDefault ?? { ...out[0], rule: null };
+  }
   return out;
 }
 
-// Every login checked, the found ones added, duplicates refused, and the usable ones named.
-//   -> { exists, errors, logins: [{ ...login, state, email, plan, why, duplicateOf }], usable: [login] }
-// state is 'signed in', 'signed out', 'error' or 'duplicate'; a usable login is signed in with a rule
-// of in rotation or standby. `tools` narrows the check to those tools' logins.
+// Every login checked, the found ones added, and the usable ones named.
+//   -> { exists, errors, logins: [{ ...login, state, email, plan, why, liveEmail, pinnable }], usable: [login] }
+// state is 'signed in', 'signed out', 'error', 'wrong account' or 'not set up'; a usable login is signed
+// in with a rule of in rotation or standby. `tools` narrows the check to those tools' logins.
+//   email     the pinned email when there is a pin, else the live one
+//   liveEmail what the folder is signed in to, or null
+//   pinnable  true only for a not set up folder signed in to an email no other login is pinned to
+//   sameAs    for a not set up folder on an account another login has, that login's name, else null
+// Without pins, a second Claude folder on one account is not set up, and the first keeps it. With pins
+// (multi-account mode) ~/.claude is never checked: a pinned folder is signed in only on its own account,
+// wrong account on another, and a check that fails leaves its state as the check reported it, never
+// re-pinning; an unpinned folder is not set up; two rows pinned to one email leave it to the first.
 export function checkLogins(subs, { tools = TOOLS, ...opts } = {}) {
-  const checked = subs.logins.filter((l) => tools.includes(l.tool)).map((l) => ({ ...l, ...checkLogin(l, opts), duplicateOf: null }));
+  const multi = multiAccount(subs);
+  const skip = (l) => multi && l.tool === 'claude' && !l.configDir;
+  const checked = subs.logins.filter((l) => tools.includes(l.tool) && !skip(l)).map((l) => ({ ...l, ...checkLogin(l, opts) }));
   for (const tool of tools) {
     for (const dir of unlistedFolders(tool, subs.logins, subs.removed)) {
       const l = foundLogin(tool, dir, subs);
       const c = checkLogin(l, opts);
-      if (c.state === 'signed in') checked.push({ ...l, ...c, duplicateOf: null });
+      if (c.state === 'signed in') checked.push({ ...l, ...c });
     }
   }
-  // Two Claude names on one account: the first keeps it.
+  const claude = checked.filter((l) => l.tool === 'claude');
+  const pins = new Map();
+  for (const l of claude) if (l.account && !pins.has(l.account)) pins.set(l.account, l);
   const owner = new Map();
   for (const l of checked) {
-    if (l.tool !== 'claude' || l.state !== 'signed in' || !l.email) continue;
-    const key = l.email.toLowerCase();
-    if (owner.has(key)) Object.assign(l, { state: 'duplicate', duplicateOf: owner.get(key).name, why: `the same account as ${owner.get(key).name}` });
-    else owner.set(key, l);
+    l.liveEmail = l.tool === 'claude' ? l.email : null;
+    l.pinnable = false;
+    l.sameAs = null;
+    if (l.tool !== 'claude') continue;
+    const live = l.liveEmail?.toLowerCase() ?? null;
+    if (multi) {
+      if (l.account && pins.get(l.account) !== l) Object.assign(l, { state: 'not set up', why: `pinned to the same account as ${pins.get(l.account).name}`, sameAs: pins.get(l.account).name });
+      else if (l.account) {
+        l.email = l.account;
+        if (l.state === 'signed in' && !live) Object.assign(l, { state: 'error', why: 'its account could not be read' });
+        else if (l.state === 'signed in' && live !== l.account) Object.assign(l, { state: 'wrong account', why: `signed in to ${l.liveEmail}` });
+      } else if (l.state === 'signed in') {
+        const other = live ? pins.get(live) : null;
+        Object.assign(l, { state: 'not set up', why: other ? `the same account as ${other.name}` : null, sameAs: other?.name ?? null, pinnable: !!live && !other });
+      }
+      else if (l.state === 'signed out') Object.assign(l, { state: 'not set up', why: `signed out${l.why ? ` (${l.why})` : ''}` });
+    } else if (l.state === 'signed in' && live) {
+      // Two Claude names on one account: the first keeps it.
+      if (owner.has(live)) Object.assign(l, { state: 'not set up', why: `the same account as ${owner.get(live).name}`, sameAs: owner.get(live).name });
+      else owner.set(live, l);
+    }
   }
   const logins = sortLogins(checked);
   return { exists: subs.exists, errors: subs.errors, logins, usable: logins.filter(isUsable) };
@@ -272,15 +386,31 @@ export function checkLogins(subs, { tools = TOOLS, ...opts } = {}) {
 export const isUsable = (l) => l.state === 'signed in' && (l.rule === 'in rotation' || l.rule === 'standby');
 
 // ---- changing a rule -------------------------------------------------------------------------
-// The file's text with one login's rule changed. A login the file does not list is added: a tool's
+// What `desk-env logins set` takes, and the rule each is read as. The default is chosen by name with
+// `desk-env logins default`, never set as a rule, and the older rules are refused rather than mapped, so
+// a stale script fails loudly.
+export const SET_WORDS = Object.freeze({ unused: STORED_RULES.unused, off: 'off' });
+export const setWordError = (tool, v) => {
+  const how = `choose the default with desk-env logins default ${TOOLS.includes(tool) ? tool : '<claude|codex>'} <name>, and set any other login ${Object.keys(SET_WORDS).map((w) => `\`${w}\``).join(' or ')}`;
+  const s = ruleWords(v);
+  return s === 'default' || s === 'in rotation' || s === 'standby'
+    ? `logins: "${v}" is not a rule desk sets any more: ${how}` : `logins: "${v}" is not a rule: ${how}`;
+};
+// The file's text with one login set unused or off. A login the file does not list is added: a tool's
 // default (named `default`), a login the Removed table names, with its own folder, or a folder of that
 // name under the tool's logins folder. Turning off the last usable Claude login is refused; `check` is
-// called only then, -> checkLogins' result.
+// called only then, -> checkLogins' result. So is turning off a login a repo's Subscription row runs
+// on: `repos(login)` names those repos.
 //   -> { text, login }, or throws with the reason
-export function setRule(subs, { tool, name, rule: ruleText, check }) {
+export function setRule(subs, { tool, name, rule: word, check, repos = () => [] }) {
   if (!TOOLS.includes(tool)) throw new Error(`logins: tool "${tool}" is neither claude nor codex`);
-  const rule = normRule(ruleText);
-  if (!rule) throw new Error(`logins: ${ruleError(ruleText)}`);
+  const w = ruleWords(word);
+  const rule = Object.hasOwn(SET_WORDS, w) ? SET_WORDS[w] : null;
+  if (!rule) throw new Error(setWordError(tool, word));
+  return writeRule(subs, { tool, name, rule, check, repos });
+}
+// setRule's write, given the rule a reader gets (in rotation for the tool's default, standby for unused).
+function writeRule(subs, { tool, name, rule, check, repos = () => [] }) {
   if (subs.errors.length) throw new Error(`logins: the subscriptions file has rows desk cannot read; fix them first:\n  ${subs.errors.join('\n  ')}`);
   // Listed, then removed (its own folder), then a folder of that name, then the tool's own default.
   let target = subs.logins.find((l) => l.tool === tool && l.name === name);
@@ -294,13 +424,99 @@ export function setRule(subs, { tool, name, rule: ruleText, check }) {
     const names = subs.logins.filter((l) => l.tool === tool).map((l) => l.name);
     throw new Error(`logins: no ${tool} login "${name}": the logins are ${names.join(', ')}, or a folder under ${tilde(loginsFolder(tool))}`);
   }
-  if (rule === 'off') lastUsable(tool, name, target, check, 'turning this one off');
+  if (rule !== 'in rotation' && toolDefault(subs, tool)?.dir === target.dir) throw notDefault(tool, name);
+  if (rule === 'off') {
+    pinnedOn(repos(target), tool, name);
+    lastUsable(tool, name, target, check, 'turning this one off');
+  }
   // In place, so the order (which name keeps a shared account) stays; an added login goes last, and
-  // leaves the Removed table.
-  const changed = { ...target, rule, source: 'file' };
+  // leaves the Removed table. Where the tool's rows say default and unused, the rule is written in
+  // those words: in rotation makes this login the tool's one default and its old default unused.
+  const words = subs.logins.some((l) => l.tool === tool && l.stored);
+  const stored = words ? Object.keys(STORED_RULES).find((k) => STORED_RULES[k] === rule) : undefined;
+  const { stored: _was, ...rest } = target;
+  const changed = { ...rest, rule, source: 'file', ...(stored ? { stored } : {}) };
+  const down = demotedBy(subs.logins, { tool, name: target.name, rule });
+  const demoted = (l) => (down.includes(l) ? { ...l, rule: STORED_RULES.unused, stored: 'unused' } : l);
   const listed = subs.logins.some((l) => l.tool === tool && l.name === target.name);
-  const logins = listed ? subs.logins.map((l) => (l.tool === tool && l.name === target.name ? changed : l)) : [...subs.logins, changed];
+  const logins = listed
+    ? subs.logins.map((l) => (l.tool !== tool ? l : l.name === target.name ? changed : demoted(l)))
+    : [...subs.logins.map((l) => (l.tool === tool ? demoted(l) : l)), changed];
   return { text: renderSubscriptions(logins, subs.removed.filter((r) => !(r.tool === tool && r.dir === changed.dir))), login: changed };
+}
+// The tool's logins that setting `name` to `rule` turns from default to unused: setting one in
+// rotation, where the tool's rows say default and unused, makes it the tool's one default. An undo
+// puts each back in rotation once the login itself is back.   -> [login]
+export function demotedBy(logins, { tool, name, rule }) {
+  if (normRule(rule) !== 'in rotation' || !logins.some((l) => l.tool === tool && l.stored)) return [];
+  return logins.filter((l) => l.tool === tool && l.name !== name && l.stored === 'default');
+}
+
+// ---- changing the default --------------------------------------------------------------------
+// The file's text, in default and unused, with `who` as its tool's one default and its previous
+// default unused; a login set off stays off. `who` is a login's name or, for Claude, the account its
+// folder is signed in to (any case). A login the file does not list is added as setRule adds one.
+//   -> { text, login, was: the tool's previous default, or null }, or throws with the reason
+export function setDefault(subs, { tool, who }) {
+  if (!TOOLS.includes(tool)) throw new Error(`logins: tool "${tool}" is neither claude nor codex`);
+  const moved = migrateSubscriptions(subs);
+  const key = String(who ?? '').trim();
+  let name = key;
+  if (tool === 'claude' && key.includes('@') && !moved.logins.some((l) => l.tool === tool && l.name === key)) {
+    const on = signedInTo(moved, key);
+    if (on.length > 1) throw new Error(`logins: ${on.map((l) => l.name).join(' and ')} are all signed in to ${key}: name the login instead`);
+    if (!on.length) throw new Error(`logins: no claude login is signed in to ${key}: the logins are ${moved.logins.filter((l) => l.tool === tool).map((l) => l.name).join(', ')}`);
+    // writeRule finds a login by name, a listed or removed one before a folder, so a name another
+    // folder holds would make that folder the default.
+    const clash = [...moved.logins, ...moved.removed].find((l) => l.tool === tool && l.name === on[0].name && l.dir !== on[0].dir);
+    if (clash) throw new Error(`logins: ${key} is signed in at ${on[0].folder}, but the file's claude ${clash.name} is ${clash.folder}: give one of them another name in the subscriptions file first`);
+    name = on[0].name;
+  }
+  const was = defaultOf(moved.logins, tool);
+  const r = writeRule(moved, { tool, name, rule: 'in rotation', check: () => null });
+  return { text: r.text, login: r.login, was: was && was.dir !== r.login.dir ? was : null };
+}
+
+// ---- a repo's subscription -------------------------------------------------------------------
+// The Claude logins whose folder is signed in to `email`, any case, as each .claude.json records it.
+function signedInTo(subs, email) {
+  const key = String(email ?? '').trim().toLowerCase();
+  // A folder pinned to another account is never this one's, whatever it is signed in to now.
+  return key ? toolLogins('claude', subs).filter((l) => isDir(l.dir) && (!l.account || l.account === key) && claudeAccount(l).email?.toLowerCase() === key) : [];
+}
+// The Claude login not set off that is signed in to `email`: the first where two share an account
+// (setDefault refuses those instead). null for none: a login set off runs no repo's work.
+export function subscriptionLogin(subs, email) {
+  return signedInTo(subs, email).find((l) => l.rule !== 'off') ?? null;
+}
+// The login set off that is signed in to `email`, where no login not set off is: what a pin to it is
+// refused for. null otherwise.
+export function offSubscriptionLogin(subs, email) {
+  const on = signedInTo(subs, email);
+  return on.some((l) => l.rule !== 'off') ? null : on[0] ?? null;
+}
+// What a repo's subscription resolves to. `value` is `default` or an account email, read from `source`
+// (DESK_SUBSCRIPTION or the repo's row); unset or `default` is this computer's Claude default, and no
+// login while that default is off. An email no login here is signed in to, or only an off one,
+// resolves to no login, never to the default; `off` is the login set off it names, else null.
+//   -> { email, login, source: source | 'default' | 'unknown email', off }
+export function repoSubscription(subs, { value, source }) {
+  const v = String(value ?? '').trim().toLowerCase();
+  if (!v || v === 'default') {
+    // With accounts pinned and no pinned row readable there is no default: no login, never ~/.claude.
+    const l = toolDefault(subs, 'claude');
+    return { email: l ? (l.account ?? claudeAccount(l).email?.toLowerCase() ?? null) : null, login: l?.rule === 'off' ? null : l, source: 'default', off: null };
+  }
+  const l = subscriptionLogin(subs, v);
+  return { email: v, login: l, source: l ? source : 'unknown email', off: l ? null : offSubscriptionLogin(subs, v) };
+}
+
+// A tool's default is changed by naming another, never by taking it off, on standby or out.
+const notDefault = (tool, name) => new Error(`logins: ${tool} ${name} is the ${tool === 'claude' ? 'Claude' : 'Codex'} default: make another subscription the default first (desk-env logins default ${tool} <name>)`);
+
+// Refuses to take away a login the repos `on` run on, by their config's Subscription row.
+function pinnedOn(on, tool, name) {
+  if (on.length) throw new Error(`logins: ${on.join(', ')} ${on.length > 1 ? 'run' : 'runs'} on ${tool} ${name}, by ${on.length > 1 ? 'their' : 'its'} config's Subscription row: move ${on.length > 1 ? 'them' : 'it'} to another subscription first (desk-env subscription set <slug> <default|email>)`);
 }
 
 // Refuses to take away the last Claude login desk can use. Asked whatever the target's rule: a found
@@ -317,9 +533,10 @@ function lastUsable(tool, name, target, check, doing) {
 // The file's text with one login removed from the rules: its row dropped and its folder added to the
 // Removed table, so a folder under the logins folder is not found on standby again. The folder and its
 // sign-in are left alone. A tool's default folder is not removed (turn it off), nor the last Claude
-// login desk can use; `check` is called only for a Claude login, -> checkLogins' result.
+// login desk can use, nor a login a repo's Subscription row runs on: `repos(login)` names those repos.
+// `check` is called only for a Claude login, -> checkLogins' result.
 //   -> { text, login }, or throws with the reason
-export function removeLogin(subs, { tool, name, check }) {
+export function removeLogin(subs, { tool, name, check, repos = () => [] }) {
   if (!TOOLS.includes(tool)) throw new Error(`logins: tool "${tool}" is neither claude nor codex`);
   if (subs.errors.length) throw new Error(`logins: the subscriptions file has rows desk cannot read; fix them first:\n  ${subs.errors.join('\n  ')}`);
   const dir = NAME.test(name) ? join(loginsFolder(tool), name) : null;
@@ -330,13 +547,102 @@ export function removeLogin(subs, { tool, name, check }) {
     throw new Error(`logins: no ${tool} login "${name}": the logins are ${names.join(', ')}, or a folder under ${tilde(loginsFolder(tool))}`);
   }
   if (!target.configDir) throw new Error(`logins: ${tool} ${name} is ${tilde(TOOL[tool].dir())}, ${tool === 'claude' ? 'Claude' : 'Codex'}'s own folder, which desk always knows: turn it off instead (desk-env logins set ${tool} ${name} off)`);
+  if (toolDefault(subs, tool)?.dir === target.dir) throw notDefault(tool, name);
+  pinnedOn(repos(target), tool, name);
   lastUsable(tool, name, target, check, 'removing this one');
+  // The last pinned account is kept whatever its state: without a pin the file would leave
+  // multi-account mode, and desk would go back to ~/.claude, the person's own Claude Code.
+  if (tool === 'claude' && target.account && !subs.logins.some((l) => l.tool === 'claude' && l.account && l.dir !== target.dir)) {
+    throw new Error(`logins: claude ${name} is the only Claude account desk has, and removing it would put desk back on ${tilde(TOOL.claude.dir())}: add another account first, or sign this one in again (${signInCommand(target)})`);
+  }
   const logins = subs.logins.filter((l) => !(l.tool === tool && l.dir === target.dir));
   return { text: renderSubscriptions(logins, [...subs.removed, { tool, name: target.name, folder: target.folder, dir: target.dir }]), login: target };
 }
 
+// ---- pinning a folder to its account ---------------------------------------------------------
+const underLogins = (l) => l.dir.startsWith(`${loginsFolder(l.tool)}/`);
+// A listed ~/.claude row has no place once pins are written: it goes to Removed, as migration does.
+const defaultRows = (subs) => subs.logins.filter((l) => l.tool === 'claude' && !l.configDir);
+const removedFrom = (subs, rows) => [...subs.removed, ...rows.map((l) => ({ tool: l.tool, name: l.name, folder: l.folder, dir: l.dir }))];
+// `logins` once the ~/.claude rows are gone: where one of them was Claude's default, the folder pinned
+// to the account ~/.claude was signed in to (`live`) takes over as the default, and every other Claude
+// login is unused; with no such folder, nothing is marked and the first in rotation reads as default.
+function defaultKept(subs, logins, live) {
+  const was = toolDefault(subs, 'claude');
+  if (!was || was.configDir) return logins;
+  const next = live && logins.find((l) => l.tool === 'claude' && l.account === live && l.rule !== 'off');
+  if (!next) return logins;
+  return logins.map((l) => (l.tool !== 'claude' || l.rule === 'off' ? l : asWord(l, l === next ? 'default' : 'unused')));
+}
+const ownLive = (checked) => checked.logins.find((l) => l.tool === 'claude' && !l.configDir)?.liveEmail?.toLowerCase() ?? null;
+
+// The file's text with one Claude folder pinned to the email it is signed in to. A folder the file does
+// not list is added unused (a Removed one with its own folder, or a folder of that name under
+// ~/.claude-logins); a listed one keeps its rule. `check` is -> checkLogins' result.
+//   -> { text, login }, or throws with the reason
+export function pinLogin(subs, { tool, name, check }) {
+  if (tool !== 'claude') throw new Error(`logins: only a Claude login is pinned, not ${tool}`);
+  if (subs.errors.length) throw new Error(`logins: the subscriptions file has rows desk cannot read; fix them first:\n  ${subs.errors.join('\n  ')}`);
+  const dir = NAME.test(name) ? join(loginsFolder(tool), name) : null;
+  const gone = subs.removed.find((r) => r.tool === tool && r.name === name);
+  const target = subs.logins.find((l) => l.tool === tool && l.name === name)
+    ?? (gone ? login({ tool, name, folder: gone.dir, rule: STORED_RULES.unused, source: 'file', stored: 'unused' }) : null)
+    ?? (dir && isDir(dir) ? login({ tool, name, folder: dir, rule: STORED_RULES.unused, source: 'file', stored: 'unused' }) : null);
+  if (!target) {
+    const names = subs.logins.filter((l) => l.tool === tool).map((l) => l.name);
+    throw new Error(`logins: no ${tool} login "${name}": the logins are ${names.join(', ')}, or a folder under ${tilde(loginsFolder(tool))}`);
+  }
+  if (!target.configDir) throw new Error(`logins: ${tool} ${name} is ${tilde(TOOL[tool].dir())}, which desk does not pin: sign a folder under ${tilde(loginsFolder(tool))} in to the account instead`);
+  const checked = check();
+  const c = checked.logins.find((l) => l.tool === tool && l.dir === target.dir) ?? checkLogin(target);
+  if (c.state === 'error') throw new Error(`logins: claude ${name} could not be checked: ${c.why}`);
+  const live = ('liveEmail' in c ? c.liveEmail : c.email)?.toLowerCase() ?? null;
+  if (!live) throw new Error(`logins: claude ${name} is not signed in`);
+  const other = subs.logins.find((l) => l.tool === tool && l.account === live && l.dir !== target.dir);
+  if (other) throw new Error(`logins: ${live} is already pinned to ${other.name}`);
+  const listed = subs.logins.some((l) => l.tool === tool && l.dir === target.dir);
+  const changed = { ...target, account: live, source: 'file' };
+  const kept = subs.logins.filter((l) => !defaultRows(subs).includes(l));
+  const logins = listed ? kept.map((l) => (l.dir === changed.dir ? changed : l)) : [...kept, changed];
+  const removed = removedFrom({ removed: subs.removed.filter((r) => !(r.tool === tool && r.dir === changed.dir)) }, defaultRows(subs));
+  const kept2 = defaultKept(subs, logins, ownLive(checked));
+  return { text: renderSubscriptions(kept2, removed), login: kept2.find((l) => l.dir === changed.dir) };
+}
+
+// True when the file exists, has no pins, and lists or finds a Claude folder under ~/.claude-logins that
+// the Removed table does not name. A file for Codex rules or a rule on ~/.claude alone is left alone.
+// (needsMigration and migrateSubscriptions above are the default-and-unused words' migration.)
+export function needsPinMigration(subs) {
+  if (!subs.exists || multiAccount(subs)) return false;
+  return subs.logins.some((l) => l.tool === 'claude' && l.configDir && underLogins(l)) || unlistedFolders('claude', subs.logins, subs.removed).length > 0;
+}
+
+// The file's text migrated to account pins: each signed-in folder, listed or found, pinned to its email
+// (the first in file order keeps one that two share, the other stays unpinned with its rule), and the
+// ~/.claude row moved to Removed. `check` is -> checkLogins' result.
+//   -> { text, hint }; text is null, and nothing is to be written, when no folder can be pinned (~/.claude
+//   then stays as it is); hint is the email ~/.claude was signed in to when no folder is pinned to it, else null
+export function migratePins(subs, check) {
+  if (subs.errors.length) throw new Error(`logins: the subscriptions file has rows desk cannot read; fix them first:\n  ${subs.errors.join('\n  ')}`);
+  const checked = check();
+  const claude = checked.logins.filter((l) => l.tool === 'claude');
+  const pins = new Map();
+  for (const l of claude.filter((x) => x.configDir)) {
+    const live = l.liveEmail?.toLowerCase();
+    if (live && !pins.has(live)) pins.set(live, l.dir);
+  }
+  if (!pins.size) return { text: null, hint: null };
+  const pin = (l) => ({ ...l, account: [...pins].find(([, d]) => d === l.dir)?.[0] ?? null });
+  const own = defaultRows(subs);
+  const listed = subs.logins.filter((l) => !own.includes(l)).map((l) => (l.tool === 'claude' ? pin(l) : l));
+  const found = claude.filter((l) => l.configDir && !subs.logins.some((o) => o.dir === l.dir)).map((l) => pin(foundLogin('claude', l.dir, subs)));
+  const live = claude.find((l) => !l.configDir)?.liveEmail?.toLowerCase() ?? null;
+  const rows = own.length ? own : [defaultLogin('claude')];
+  return { text: renderSubscriptions(defaultKept(subs, [...listed, ...found], live), removedFrom(subs, rows)), hint: live && !pins.has(live) ? live : null };
+}
+
 // ---- what the person is shown ----------------------------------------------------------------
-const STATE = { 'signed in': 'signed in', 'signed out': 'signed out', error: 'not checked', duplicate: 'refused' };
+const STATE = { 'signed in': 'signed in', 'signed out': 'signed out', error: 'not checked', 'wrong account': 'wrong account', 'not set up': 'not set up' };
 
 // The file's status line, its unreadable rows, then the rows as aligned columns.
 function tableLines(subs, path, head, body) {
@@ -353,16 +659,18 @@ function tableLines(subs, path, head, body) {
 export function checkLines(r, path) {
   const head = ['TOOL', 'NAME', 'FOLDER', 'STATE', 'ACCOUNT', 'PLAN', 'RULE'];
   const body = r.logins.map((l) => [l.tool, l.name, l.folder, STATE[l.state] ?? l.state,
-    l.tool === 'claude' ? l.email ?? '-' : '-', l.tool === 'claude' ? l.plan ?? '-' : '-', l.rule ?? 'found, no rule']);
+    l.tool === 'claude' ? l.email ?? '-' : '-', l.tool === 'claude' ? l.plan ?? '-' : '-', ruleWord(l) ?? 'found, no rule']);
   const notes = [];
   for (const l of r.logins) {
     if (l.state === 'signed out') notes.push(`${l.tool} ${l.name} is signed out${l.why ? ` (${l.why})` : ''}: sign it in, in another terminal: ${signInCommand(l)}`);
     if (l.state === 'error') notes.push(`${l.tool} ${l.name} could not be checked: ${l.why}`);
-    if (l.state === 'duplicate') notes.push(`${l.tool} ${l.name} refused: ${l.name} and ${l.duplicateOf} are signed in to the same account; desk uses ${l.duplicateOf}`);
+    if (l.state === 'wrong account') notes.push(`${l.tool} ${l.name} is signed in to ${l.liveEmail}, not ${l.account}: desk won't use it until it is signed back in`);
+    if (l.state === 'not set up') notes.push(l.pinnable ? `${l.tool} ${l.name} is not set up: desk-env logins pin ${l.tool} ${l.name} pins it to the account it is signed in to`
+      : `${l.tool} ${l.name} is not set up: ${l.why ?? 'it is not signed in to an account'}; desk won't use it`);
   }
   const found = r.logins.filter((l) => l.source === 'found');
-  if (found.length && !r.exists) notes.push(`found ${found.map((l) => `${l.tool} ${l.name}`).join(', ')}: no rule until one is set (desk-env logins set <tool> <name> <rule>)`);
-  if (found.length && r.exists) notes.push(`found ${found.map((l) => `${l.tool} ${l.name}`).join(', ')}, not in the file: on standby`);
+  if (found.length && !r.exists) notes.push(`found ${found.map((l) => `${l.tool} ${l.name}`).join(', ')}: no rule until one is set (desk-env logins set <tool> <name> unused)`);
+  if (found.length && r.exists) notes.push(`found ${found.map((l) => `${l.tool} ${l.name}`).join(', ')}, not in the file: unused`);
   return [
     ...tableLines(r, path, head, body),
     ...(notes.length ? ['', ...notes] : []),
@@ -372,9 +680,10 @@ export function checkLines(r, path) {
 }
 
 export function listLines(subs, path) {
-  return tableLines(subs, path, ['TOOL', 'NAME', 'FOLDER', 'RULE'], subs.logins.map((l) => [l.tool, l.name, l.folder, l.rule]));
+  return tableLines(subs, path, ['TOOL', 'NAME', 'FOLDER', 'RULE'], subs.logins.map((l) => [l.tool, l.name, l.folder, ruleWord(l)]));
 }
 
 // The JSON a script reads: nothing from a status call but the fields above.
 export const loginJson = (l) => ({ tool: l.tool, name: l.name, folder: l.folder, configDir: l.configDir, rule: l.rule, source: l.source,
-  ...(l.state ? { state: l.state, email: l.email, plan: l.plan, why: l.why, duplicateOf: l.duplicateOf, signIn: l.state === 'signed out' ? signInCommand(l) : null } : {}) });
+  ...(l.account ? { account: l.account } : {}),
+  ...(l.state ? { state: l.state, email: l.email, plan: l.plan, why: l.why, account: l.account ?? null, liveEmail: l.liveEmail ?? null, pinnable: !!l.pinnable, sameAs: l.sameAs ?? null, signIn: l.state === 'signed out' ? signInCommand(l) : null } : {}) });

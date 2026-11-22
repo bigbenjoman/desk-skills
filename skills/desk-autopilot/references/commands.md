@@ -15,11 +15,11 @@ node ~/.claude/desk/bin/batch.mjs start ABC-900 feat/ABC-900-<slug> --batch ABC-
 node ~/.claude/desk/bin/batch.mjs discard ABC-900 --batch ABC-900    # its plan declined: removes the batch, and its branch when main has all of it
 node ~/.claude/desk/bin/expand-parent.mjs ABC-900 --batch ABC-900     # an epic -> its batch keys (stdout), drops on stderr
 ~/.claude/desk/bin/triage.sh ABC-123                                  # read-only, no worktree
-AUTOPILOT_WRITE_QUEUE=1 node ~/.claude/desk/bin/plan-batch.mjs --json ABC-GATE ABC-123 ABC-124   # gates first: arg order = spawn order
-node ~/.claude/desk/bin/answer.mjs ABC-123 "<answer>"
+AUTOPILOT_WRITE_QUEUE=1 node ~/.claude/desk/bin/plan-batch.mjs --json ABC-GATE ABC-123 ABC-124   # prints SPAWN ORDER under its rule (order-and-holds.md)
+node ~/.claude/desk/bin/answer.mjs ABC-123 "<answer>"                # settles one open question (the first, or triage question n with --question <n>); --all before the answer settles every one
 node ~/.claude/desk/bin/pass.mjs --json                               # one pass; drive with /loop unless the supervisor runs passes; exit 0 go on, 10 nothing yet, 11 show the person
 node ~/.claude/desk/bin/queue.mjs next-pass +1500                     # after scheduling the next pass: when it runs (here 25 minutes), so desk-q counts the batch live until then
-node ~/.claude/desk/bin/supervisor.mjs install                        # passes and the merge driver from launchd, at login and every 3 minutes
+node ~/.claude/desk/bin/supervisor.mjs install                        # passes and the merge driver from launchd or systemd, at login and every 3 minutes
 node ~/.claude/desk/bin/supervisor.mjs status                         # exit 0 while installed and loaded; uninstall removes it
 node ~/.claude/desk/bin/run-by.mjs stage4                             # Stage 4: who runs the batch (§3b Batches run by); installs the supervisor at supervisor; exit 11 an install failed
 node ~/.claude/desk/bin/queue.mjs set-batch supervised=true approved.workers=true   # Stage 4 with the supervisor: only the approvals the user gave
@@ -27,12 +27,16 @@ node ~/.claude/desk/bin/queue.mjs set-batch approved.undraft=true     # Stage 3:
 node ~/.claude/desk/bin/queue.mjs set-batch approved.merge=true       # Stage 3: §3 autopilot-merge / pr-merge-green are ask and the user approved merging this batch's green PRs (=false when declined)
 node ~/.claude/desk/bin/desk-env.mjs merge-grant                      # config, batch or none, and why: whether the merge driver may merge this batch
 node ~/.claude/desk/bin/queue.mjs render                              # status
+node ~/.claude/desk/bin/queue.mjs rebuild ABC-120                     # ledger lever: the batch's queue rebuilt from the log, written to queue.rebuilt.json beside queue.json, and each field that differs (`standing`, or none: this batch)
 node ~/.claude/desk/bin/queue.mjs front ABC-123                       # move a released ticket to the front of the spawn order (one the user placed stays put)
 node ~/.claude/desk/bin/queue.mjs move ABC-123 2                      # the user's order: position among unfinished tickets, or `last`; marks it placed
 node ~/.claude/desk/bin/queue.mjs hold ABC-124 ABC-123               # hold a ticket behind a blocker (recorded; released on its merge)
+node ~/.claude/desk/bin/queue.mjs backfill-holds --dry-run           # once, by hand: lane, size and design parks with no held_by gain their blockers' holds (drop --dry-run to write)
 node ~/.claude/desk/bin/queue.mjs admit ABC-125                      # add one triaged ticket mid-batch (never re-run plan-batch to do it)
+node ~/.claude/desk/bin/queue.mjs adopt flaky-spec-fix 512           # a PR you opened in the batch with no ticket (a flaky-test fix), keyed by a §4 work id or slug: taken in as done on that PR, so the merge driver merges it and the pass and desk-q list it (--filed for the tracker ticket filed for it)
 node ~/.claude/desk/bin/intake.mjs run --force                        # standing intake now (§3b Intake query); the supervisor runs it every 15 minutes
 node ~/.claude/desk/bin/intake.mjs admit ABC-128 --by ben --front     # /desk-admit: intake's checks on named tickets, into the supervisor's batch; exit 11 refused
+node ~/.claude/desk/bin/intake.mjs admit ABC-129 --session            # the same, into the batch this session runs (not handed to the supervisor)
 node ~/.claude/desk/bin/intake.mjs forget ABC-127                     # a ticket intake handed to the digest, once fixed: the next intake tries it again
 node ~/.claude/desk/bin/spine-review.mjs brief ABC-126                # the read-only reviewer's prompt for a spine awaiting approval
 node ~/.claude/desk/bin/spine-review.mjs questions ABC-126 <reply>    # one approval question per spec, with the review's findings
@@ -64,6 +68,8 @@ desk-env heavy                   # suites, typechecks, dev servers actually runn
 # the two Monitors, started once at Stage 0b (change-only; the second fires on sustained only)
 node ~/.claude/desk/bin/queue.mjs watch   # table + memory line at start, then only on a state or question change, not a stage step (--stages adds them; quiet: one line per changed ticket); every 90s, or --interval <s>
 desk-env mem watch               # SUSTAINED-HIGH: avail=<x>G below <band>G for 5m with nothing heavy running
+                                  # also WORKER-OOM; on Linux SWAP-GROWING, OOM-KILL, TMPFS-HIGH; on WSL VMMEM-HIGH;
+                                  # each held by the pass for 10m (concurrency-and-memory.md)
 
 # waiting on one PR, under Monitor: one line, then exit (never a loop around gh pr checks / gh pr view)
 node ~/.claude/desk/bin/pr-watch.mjs checks 123          # every check done: "none failed", or each failed check named

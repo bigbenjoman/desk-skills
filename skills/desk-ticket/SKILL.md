@@ -27,7 +27,8 @@ it, then runs the same tail every time so nothing gets forgotten.
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no  (exit 3 outside a repo)
 ```
 
-Read the `CONFIG` file it prints, before anything else. **`EXISTS=no` means stop**: say which slug
+Then read it, before anything else, with `desk-env show`: the `CONFIG` file's rules for the agent
+reading it, then its headings and tables, without the rest of its prose or the §3c rule ledger. **`EXISTS=no` means stop**: say which slug
 was looked up and offer `/desk-setup`. Exit 3 means you are not inside a git repo; say so and stop.
 A `TODO` in any row this skill needs is a question, not a default: stop, ask, and offer
 `/desk-setup`. A row the file lacks is unset (a `no` in §3); name it and offer `/desk-setup`.
@@ -99,6 +100,14 @@ Report at **every stage boundary**: one or two lines, what finished, what's next
 about to do before any step that takes more than a minute or two, and surface findings as you hit
 them rather than saving them for the end. People run several sessions at once; going quiet is the
 problem. Full rule in `references/desk-ticket-working-style.md`.
+
+**An action you hand the person is recorded, not only said.** Whenever your reply leaves them a step
+to take (file this issue, merge that PR, sign in, run a command), record it as well, so
+`/desk-needs-you` and desk-q list it until they say done:
+
+```
+node ~/.claude/desk/bin/needs-you.mjs ask <repo> "<what to do>"
+```
 
 **Ask or take.** Before asking anything, sort it. Ask only in the five ask categories: money, legal
 or regulatory, production data or credentials, customer copy where length means cost, and facts

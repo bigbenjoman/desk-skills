@@ -7,27 +7,37 @@
 //
 //   digest.mjs checkin                                    this repo's check-in now, as JSON (the supervisor's idle ticks)
 //   digest.mjs answer <slug> <TICKET> "<answer>"          record it through that repo's answer.mjs
-//   digest.mjs override <slug> <decision-id> "<choice>"   record an override in that repo's decision log
+//   digest.mjs override <slug> <decision-id> "<choice>"   record an override in that repo's decision log;
+//                                                         a lever's adopt or revert takes on or off, and
+//                                                         sets the lever by hand in its lever log too
 //   digest.mjs ask-again <slug> <TICKET>                  take its put-off question out of the not-now register
 //
 // The page and its state live in ~/.desk-autopilot/digest/ (DESK_DIGEST_DIR overrides). Exits 0 once
 // recorded, 11 (show the person) on anything it refuses: EXIT in batch-state.mjs.
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, realpathSync } from 'node:fs';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { isHeld, settlesByScript, localDay } from './batch-state.mjs';
+import { CHECKIN_TIME, checkinTimesOf } from './config-schema.mjs';
+import { jiraSearch, keySearch } from './jira-search.mjs';
+import { isHeld, settlesByScript, localDay, openUnknowns } from './batch-state.mjs';
 import { stalledPrs as stalledOf, STALL_FOR } from './desk-q.mjs';
 import { namedBatches } from './batches.mjs';
 import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
 import { digestNotes } from './maintenance.mjs';
 import { readHanded } from './decider.mjs';
+import { readWarnings } from './pass-metrics.mjs';
+import { browserSignins, SIGNIN_STALL } from './health.mjs';
 import { handedByIntake } from './intake.mjs';
 import { PRODUCTION_BROKEN, promotionSlot, promotionFor, promotionInputs, promotionQuestion, recordOffered, approve } from './promotion.mjs';
+import { read as readLeverLog, appendChecked as appendCheckedLeverLog, isStateChange, stampAfter } from './lever-log.mjs';
+import { changeLine, overrideEvent, isDecided, recordLeverDecision } from './lever-changes.mjs';
+import { leversDir } from './levers-view.mjs';
+import { pageState as leversPageState, refresh as refreshLevers } from './levers-refresh.mjs';
 
 export const DEFAULT_TIMES = ['08:00', '17:00'];
 export { PRODUCTION_BROKEN };
@@ -40,8 +50,8 @@ export const checkinRow = () => (E.configValues('checkin-times') ?? []).join(' '
 // The §3b row as sorted HH:MM strings: {ok, times} or {ok: false, why}. Unset is the default.
 export function checkinTimes(raw) {
   if (raw == null || raw === '' || /^todo\b/i.test(raw)) return { ok: true, times: DEFAULT_TIMES };
-  const parts = String(raw).split(/[\s,]+/).filter(Boolean);
-  const bad = parts.filter((p) => !/^([01]\d|2[0-3]):[0-5]\d$/.test(p));
+  const parts = checkinTimesOf(String(raw));
+  const bad = parts.filter((p) => !CHECKIN_TIME.test(p));
   if (!parts.length || bad.length) {
     return { ok: false, why: `config §3b "Check-in times" is "${raw}": want local HH:MM times, e.g. \`08:00, 17:00\`` };
   }
@@ -134,9 +144,6 @@ export function putOffQuestions(r, register = readRegister(r.state)) {
 
 // A key `key in (...)` can take: anything else a queue holds (a work id, an issue slug) is not asked about.
 const JIRA_KEY = /^[A-Z][A-Z0-9_]*-\d+$/;
-// Keys per search: Jira's largest page for a search returning fields.
-export const DONE_CHUNK = 100;
-const SEARCH_TIMEOUT_MS = 30 * 1000;
 
 // Where to run a repo's own desk-jira, so its search uses that repo's config and credentials:
 // {cwd, env}, or {why} when its Jira status cannot be checked. The calling repo runs it as this process
@@ -149,26 +156,13 @@ export function jiraTarget(r, root = E.deskConfigRoot()) {
   const tracker = String(val('tracker') ?? '').trim().split(/\s+/)[0].toLowerCase();
   if (tracker !== 'jira') return { why: `its §4 Tracker is ${tracker || 'unset'}` };
   if (self) return { cwd: process.cwd(), env: process.env };
-  const cwd = E.expandHome(String(val('repo-root') ?? '').trim());
+  const cwd = E.repoDirs(r.slug, root).root;
   if (!cwd || !existsSync(cwd)) return { why: `its checkout (config §2 Primary repo root) is ${cwd ? `not at ${cwd}` : 'unset'}` };
   return { cwd, env: E.otherRepoEnv() };
 }
 
-// One desk-jira search, one page: {ok, issues} or {ok: false, why}. A page with more behind it read
-// nothing about the keys past it, so it is a failure rather than a partial answer.
-export function jiraSearch({ cwd, env }, jql, max) {
-  const r = spawnSync('desk-jira', ['search', jql, String(max), '--json'], { cwd, env, encoding: 'utf8', timeout: SEARCH_TIMEOUT_MS, maxBuffer: 64 << 20 });
-  const why = `${r.stderr ?? ''}${r.error?.message ?? ''}`.trim().split('\n').pop() || `desk-jira exited ${r.status ?? r.signal}`;
-  if (r.status !== 0) return { ok: false, why };
-  let res;
-  try { res = JSON.parse(r.stdout); } catch { return { ok: false, why: 'desk-jira search did not return JSON' }; }
-  if (!Array.isArray(res?.issues)) return { ok: false, why: `desk-jira search returned no issue list${res?.errorMessages?.length ? ` (${res.errorMessages.join('; ')})` : ''}` };
-  if (res.nextPageToken) return { ok: false, why: `Jira returned fewer than ${max} issues a page` };
-  return { ok: true, issues: res.issues };
-}
-
 // One repo's parked tickets that Jira has moved to a Done status: {done: [keys]}, {unchecked: why}, or
-// null when it has no park to check. One `key in (...)` search per DONE_CHUNK keys, never one per ticket;
+// null when it has no park to check. One `key in (...)` search per KEY_CHUNK keys (keySearch), never one per ticket;
 // any search failing leaves the whole repo unchecked. Reads the queue, never writes it.
 export function doneParks(r, { target = jiraTarget, search = jiraSearch } = {}) {
   const q = readJson(r.queue, null);
@@ -176,17 +170,9 @@ export function doneParks(r, { target = jiraTarget, search = jiraSearch } = {}) 
   if (!keys.length) return null;
   const where = target(r);
   if (where.why) return { unchecked: where.why };
-  const asked = keys.filter((k) => JIRA_KEY.test(k)).sort();
-  const done = [];
-  for (let i = 0; i < asked.length; i += DONE_CHUNK) {
-    const chunk = asked.slice(i, i + DONE_CHUNK);
-    let res;
-    try { res = search(where, `key in (${chunk.join(', ')})`, chunk.length); } catch (e) { res = { ok: false, why: e.message }; }
-    if (!res?.ok) return { unchecked: res?.why ?? 'the search failed' };
-    const wanted = new Set(chunk);
-    for (const issue of res.issues) if (wanted.has(issue?.key) && issue.fields?.status?.statusCategory?.key === 'done') done.push(issue.key);
-  }
-  return { done: done.sort() };
+  const res = keySearch(keys.filter((k) => JIRA_KEY.test(k)).sort(), (jql, max) => search(where, jql, max));
+  if (!res.ok) return { unchecked: res.why };
+  return { done: [...res.issues.values()].filter((issue) => issue.fields?.status?.statusCategory?.key === 'done').map((issue) => issue.key).sort() };
 }
 
 // The page's line for a repo's Done check, or null when there is nothing to say.
@@ -201,14 +187,20 @@ export function jiraLine(slug, j) {
 
 // One repo's open questions: each parked ticket's question (a hold is not one, nor a question the
 // person put off with the same inputs, nor a park waiting on a recorded clears-when, which a pass
-// settles unless only a session may take the ticket or only the person's step makes it hold) and each triaged ticket's unanswered triage unknowns. Questions
+// settles unless only a session may take the ticket or only the person's step makes it hold) and each triaged or held ticket's unanswered triage unknowns. Questions
 // already answered from a digest are left out. A put-off question whose inputs changed says what changed.
+// `r.triage(key)`, where given, reads a ticket's triage record in place of its file, so a listing that
+// has read it already reads it once.
 export function openQuestions(r, answered = {}, register = readRegister(r.state)) {
   const q = readJson(r.queue, null);
   const out = [];
   // What the decider handed on: a park says why beside its question, anything else is its own line.
+  // A browser sign-in is the machine's: once a slot finds its login passing it is gone, even from a
+  // slot that has run no pass since. A stall names its login's session file.
+  const signins = browserSignins();
+  const signinOpen = (text) => !SIGNIN_STALL.test(text) || signins.some((s) => !s.file || text.includes(s.file));
   const handed = Object.values(readHanded(r.state));
-  for (const h of handed.filter((x) => x.kind !== 'parked')) {
+  for (const h of handed.filter((x) => x.kind !== 'parked' && signinOpen(String(x.text)))) {
     const key = questionKey(r.slug, h.ticket, `${h.text}\0${h.at}`);
     if (!answered[key]) out.push({ ticket: h.ticket, kind: ['batch', 'archive'].includes(h.kind) ? h.kind : 'handed on', text: `${h.text} (${h.why})`, key });
   }
@@ -226,9 +218,9 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
       const key = questionKey(r.slug, t.key, `${text}\0${t.park?.since ?? ''}`);
       const why = handed.find((x) => x.kind === 'parked' && x.ticket === t.key && x.text === String(t.park?.question ?? ''))?.why;
       if (!answered[key]) out.push({ ticket: t.key, kind: 'parked', text: why ? `${text} (handed on: ${why})` : text, key });
-    } else if (t.state === 'triaged' && (t.open_questions ?? 0) > 0) {
-      const unknowns = readJson(join(r.state, 'triage', `${t.key}.json`), {})?.unknowns;
-      const text = Array.isArray(unknowns) && unknowns.length ? unknowns.join(' · ') : `${t.open_questions} triage question(s) open`;
+    } else if ((t.state === 'triaged' || isHeld(t)) && (t.open_questions ?? 0) > 0) {
+      const unknowns = openUnknowns((r.triage ? r.triage(t.key) : readJson(join(r.state, 'triage', `${t.key}.json`), {}))?.unknowns, t);
+      const text = unknowns.length ? unknowns.join(' · ') : `${t.open_questions} triage question(s) open`;
       const key = questionKey(r.slug, t.key, text);
       if (!answered[key]) out.push({ ticket: t.key, kind: 'triage', text, key });
     }
@@ -239,15 +231,83 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
 // One repo's Merging PRs with no change for desk-q's STALL_MS, as desk-q words them.
 const stalledPrs = (r, now) => stalledOf({ slug: r.slug, stateDir: r.state, queuePath: r.queue, q: readJson(r.queue, null), now: now.getTime() });
 
+// The Levers page the digest's Levers section links.
+export const leversPageUrl = (dir = leversDir()) => `file://${join(dir, 'index.html')}`;
+
+// How late a lever event may land in its log after the time it carries: an evaluation stamps its
+// transitions when it starts, so one a digest built meanwhile has not seen is listed by the next.
+export const LEVER_GRACE_MS = 3_600_000;
+
+// The lever changes since the last digest, every repo's, oldest first: one per adopt, revert, settle,
+// trip or override in a repo's lever log (lever-changes.mjs changeLine), each adopt or revert with its
+// decision's id and override, `open` while it can still be overridden. `seen` is the ids the last digest
+// read inside the grace: an event carrying an earlier time than `since` is listed when it is not among
+// them. An adopt or revert whose decision was never written is recorded in the repo's standing log here.
+// A repo whose lever log cannot be read gives none. -> { changes: [{slug, line, open}], seen: [id] }
+export function leverChanges({ list, since = null, now = new Date(), seen = null, cmd = 'digest.mjs' }) {
+  const to = now.getTime();
+  // A digest before the ids were kept has none, so its own watermark holds.
+  const from = since == null ? null : Date.parse(since) - (Array.isArray(seen) ? LEVER_GRACE_MS : 0);
+  const listed = new Set(seen ?? []);
+  const out = [];
+  const recent = [];
+  for (const slug of [...new Set(list.map((r) => r.slug))]) {
+    let evs = [];
+    try { evs = readLeverLog(slug).events; } catch { continue; }
+    const taken = [];
+    const overridden = new Set();
+    for (const r of list.filter((x) => x.slug === slug)) {
+      const d = readDecisions(r.state);
+      taken.push(...d.taken.filter((x) => x.lever));
+      for (const o of d.overrides) overridden.add(o.override_of);
+    }
+    // The repo's own decision log, where its producers write: a repo with only named batches has no
+    // standing entry in the list until that log exists.
+    const standingState = list.find((x) => x.slug === slug && !x.batch)?.state ?? join(stateRoot(), slug);
+    for (const e of evs) {
+      const t = Date.parse(e.at);
+      if (!(t <= to) || (from != null && t <= from)) continue;
+      if (t > to - LEVER_GRACE_MS) recent.push(e.id);
+      if (listed.has(e.id)) continue;
+      let decision = taken.find((d) => d.lever_event === e.id) ?? null;
+      // Its producer may write the decision between the reads above and this one, which then appends
+      // nothing: the decision is read back from the log either way.
+      if (!decision && isDecided(e)) {
+        decision = recordLeverDecision([e], { slug, state: standingState })[0]
+          ?? readDecisions(standingState).taken.find((d) => d.lever_event === e.id) ?? null;
+      }
+      const open = !!decision && !overridden.has(decision.id);
+      const line = changeLine({ ...e, repo: e.repo ?? slug }, { decision: decision && { ...decision, slug }, overridden: !open, cmd });
+      if (line) out.push({ at: e.at, slug, line, open });
+    }
+  }
+  const changes = out.sort((a, b) => a.at.localeCompare(b.at)).map(({ at, ...c }) => c);
+  return { changes, seen: recent };
+}
+
+// Brings the Levers page the digest links up to date (levers-refresh.mjs), keeping the last good page
+// when a build fails. -> null, or why it could not be: this refresh's failure, else one a recent
+// refresh recorded (a refresh skips a failed build while its inputs are unchanged), else no page.
+const buildLeversPage = () => {
+  try {
+    const r = refreshLevers();
+    if (r.ran && !r.ok) return r.where;
+    const p = leversPageState();
+    return p.failed?.where ?? (p.page ? null : 'no Levers page has been built yet');
+  } catch (e) { return e.message; }
+};
+
 // The page: every repo with something to answer or something taken, questions first.
-// The weekly maintenance window's notes are the computer's, not a repo's, so they head the page.
-export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance = [] }) {
+// The weekly maintenance window's notes are the computer's, not a repo's, so they head the page, and so
+// do the lever changes, which end on the Levers page's link.
+export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance = [], levers = [], leversPage = leversPageUrl() }) {
   const nq = groups.reduce((n, g) => n + g.questions.length, 0);
   const nd = groups.reduce((n, g) => n + g.decisions.length, 0);
   const nc = groups.reduce((n, g) => n + (g.checks?.length ?? 0), 0);
   const np = groups.reduce((n, g) => n + (g.putOff?.length ?? 0), 0);
   const nm = maintenance.length;
   const ns = groups.reduce((n, g) => n + (g.stalled?.length ?? 0), 0);
+  const nw = groups.reduce((n, g) => n + (g.warnings?.length ?? 0), 0);
   const npr = groups.filter((g) => g.promotion?.key).length;
   const nj = groups.filter((g) => jiraLine(g.slug, g.jira)).length;
   const ndone = groups.reduce((n, g) => n + (g.jira?.done?.length ?? 0), 0);
@@ -256,20 +316,32 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   // A repo the promotion window skipped says why, last, whatever else the page holds.
   const skipped = groups.filter((g) => g.promotion?.why).map((g) => `No promotion question for ${g.slug}: ${g.promotion.why}.`);
   const footer = () => (skipped.length ? [...lines, '## Promotion', '', ...skipped, ''] : lines).join('\n');
-  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns) {
+  const nl = levers.length;
+  const nlc = levers.filter((l) => l.slug).length;
+  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns && !nw && !nl) {
     lines.push(`Nothing to answer, and no decisions taken${since ? ` since ${since}` : ''}.`, '');
     return footer();
   }
-  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}.`, '');
+  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${nlc ? `; ${nlc} lever change(s)` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nw ? `; ${nw} warning(s)` : ''}.`, '');
   if (nm) {
     lines.push('## Maintenance', '');
     for (const m of maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);
     lines.push('');
   }
-  for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length)) {
+  if (nl) {
+    lines.push('## Levers', '');
+    for (const l of levers) lines.push(`- ${l.open ? '[ ] ' : ''}${l.line}`);
+    lines.push('', `open: ${leversPage}`, '');
+  }
+  for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length || x.warnings?.length)) {
     lines.push(batchHeading(g), '');
     const jl = jiraLine(g.slug, g.jira);
     if (jl) lines.push(jl, '');
+    if (g.warnings?.length) {
+      lines.push('### Warnings', '');
+      for (const w of g.warnings) lines.push(`- ${w.at.slice(0, 16).replace('T', ' ')}: ${w.text}`);
+      lines.push('');
+    }
     const p = g.promotion;
     if (p?.key) {
       lines.push('### Promotion', '');
@@ -368,30 +440,42 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
         slug: r.slug,
         batch: r.batch ?? null,
         questions: openQuestions(r, answered, register).filter((q) => !(q.kind === 'parked' && done.has(q.ticket))),
-        decisions: taken.filter((d) => inWindow(d) && !overridden.has(d.id)),
+        // A lever's adopt or revert is listed with its evidence under Levers instead.
+        decisions: taken.filter((d) => inWindow(d) && !overridden.has(d.id) && !d.lever),
         checks: checks.filter(inWindow),
         putOff: putOffQuestions(r, register).map((p) => ({ ...p, tickets: p.tickets.filter((k) => !done.has(k)) })).filter((p) => p.tickets.length),
         promotion: promotionOf(r),
         jira,
         stalled: stalledPrs(r, now),
+        warnings: readWarnings(r.state).filter(inWindow),
       };
     });
     const maintenance = digestNotes().filter(inWindow);
+    const { changes: levers, seen: leverSeen } = leverChanges({ list, since, now, seen: last?.lever_seen ?? null, cmd: join(bin, 'digest.mjs') });
+    if (levers.length) {
+      const why = buildLeversPage();
+      if (why) levers.push({ slug: null, line: `the Levers page could not be rebuilt, so it may be out of date: ${why}`, open: false });
+    }
     const page = join(dir, `${name}.md`);
-    writeFileSync(page, renderPage({ slot: slot.id, since, groups, bin, maintenance }));
+    writeFileSync(page, renderPage({ slot: slot.id, since, groups, bin, maintenance, levers }));
     const nq = groups.reduce((n, g) => n + g.questions.length, 0);
     const nd = groups.reduce((n, g) => n + g.decisions.length, 0);
     const nc = groups.reduce((n, g) => n + g.checks.length, 0);
     const nm = maintenance.length;
+    const nw = groups.reduce((n, g) => n + g.warnings.length, 0);
     const asks = groups.filter((g) => g.promotion?.key);
     const listed = [...groups.flatMap((g) => g.questions.map((q) => q.key)), ...asks.map((g) => g.promotion.key)];
     const fresh = listed.filter((k) => !(last?.listed ?? []).includes(k));
-    const repoCount = new Set(groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.promotion?.key).map((g) => g.slug)).size;
+    const repoCount = new Set([
+      ...groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.warnings.length || g.promotion?.key).map((g) => g.slug),
+      ...levers.filter((l) => l.slug).map((l) => l.slug),
+    ]).size;
     // Put-off questions and checks are listed, never pushed: neither asks anything of the person.
-    const push = nd || nm || fresh.length
-      ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s)${asks.length ? `, ${asks.length} promotion question(s)` : ''}, ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''} across ${repoCount} repo(s). ${page}` }
+    const nl = levers.filter((l) => l.slug).length;
+    const push = nd || nm || nw || nl || fresh.length
+      ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s)${asks.length ? `, ${asks.length} promotion question(s)` : ''}, ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nl ? `, ${nl} lever change(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''}${nw ? `, ${nw} warning(s)` : ''} across ${repoCount} repo(s). ${page}` }
       : null;
-    writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd, listed, by: self, push }, null, 2)}\n`);
+    writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd, listed, lever_seen: leverSeen, by: self, push }, null, 2)}\n`);
     return { status: 'sent', slot: slot.id, page, questions: nq, promotions: asks.length, decisions: nd, push };
   } finally { lock.release(); }
 }
@@ -401,14 +485,15 @@ export const urgentParks = (parked, slug) => parked
   .filter((p) => PRODUCTION_BROKEN.test(p.question ?? ''))
   .map((p) => ({ key: `urgent:${slug}:${p.key}`, text: `${p.key}: ${p.question}` }));
 
-// Marks a line of the latest page: the question or decision named by `match`, with `note`.
-function markPage(dir, match, note) {
+// Marks a line of the latest page: the question or decision named by `match`, with `note`, after `trim`
+// takes off what no longer applies.
+function markPage(dir, match, note, trim = (l) => l) {
   const page = readJson(lastFile(dir), null)?.page;
   if (!page || !existsSync(page)) return false;
   const lines = readFileSync(page, 'utf8').split('\n');
   const at = lines.findIndex((l) => l.startsWith('- [ ] ') && match(l));
   if (at < 0) return false;
-  lines[at] = `${lines[at].replace('- [ ] ', '- [x] ')} — ${note}`;
+  lines[at] = `${trim(lines[at]).replace('- [ ] ', '- [x] ')} — ${note}`;
   writeFileSync(page, lines.join('\n'));
   return true;
 }
@@ -418,14 +503,15 @@ const who = () => {
   return userInfo().username;
 };
 
-// Records an answer through the named repo's answer.mjs, as an answer given there would be.
-export function answer({ slug, ticket, text, dir = digestDir(), list = repos(), bin = E.binDir(), now = new Date() }) {
+// Records an answer through the named repo's answer.mjs, as an answer given there would be. The page
+// lists a ticket once, its triage unknowns joined into one item, so the answer settles all of them.
+export function answer({ slug, ticket, text, dir = digestDir(), list = repos(), bin = E.runBin(), now = new Date() }) {
   const r = batchFor(list, slug, ticket);
   if (!r) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
   const question = openQuestions(r).find((q) => q.ticket === ticket);
   let out;
   try {
-    out = execFileSync('node', [join(bin, 'answer.mjs'), ticket, text], {
+    out = execFileSync('node', [join(bin, 'answer.mjs'), ticket, '--all', text], {
       encoding: 'utf8', env: { ...process.env, DESK_AUTOPILOT_STATE: r.state, DESK_QUEUE: r.queue }, stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) { return { ok: false, why: `answer.mjs refused: ${`${e.stdout ?? ''}${e.stderr ?? ''}`.trim()}` }; }
@@ -450,6 +536,9 @@ function pageRepo(dir, line, slug) {
 
 // Records an override of a taken call in its repo's decision log, with who and when. The next pass
 // in that repo lists the ticket under WAITING ON YOU (pass.mjs).
+// A lever's adopt or revert takes `on` or `off`, and is set by hand first: one `override` event in the
+// repo's lever log (lever-changes.mjs), written under its lock, so a lever whose log refuses it keeps its
+// decision unoverridden.
 export function override({ slug, id, choice, dir = digestDir(), list = repos(), by = who(), now = new Date() }) {
   const inRepo = list.filter((x) => x.slug === slug);
   if (!inRepo.length) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
@@ -459,14 +548,42 @@ export function override({ slug, id, choice, dir = digestDir(), list = repos(), 
   const d = taken.find((x) => x.id === id);
   if (!d) return { ok: false, why: `no decision ${id} in ${slug}'s log` };
   if (overrides.some((o) => o.override_of === id)) return { ok: false, why: `decision ${id} is already overridden` };
-  const at = now.toISOString();
+  let at = now.toISOString();
+  let leverEvent = null;
+  let superseded = false;
+  if (d.lever) {
+    let why = null;
+    try {
+      ({ why } = appendCheckedLeverLog(slug, (events) => {
+        // An override this decision already has (a run that stopped before its decision log entry, or
+        // one alongside this) is finished, never written twice; one to the other value is refused.
+        const had = events.find((e) => e.kind === 'override' && e.decision_id === id);
+        if (had) {
+          if (had.value !== choice) return { why: `decision ${id} is already overridden ${had.value} in ${slug}'s lever log` };
+          leverEvent = had;
+          at = had.at;
+          // A state change written after it (another decision's override, a trip) is what admission reads now.
+          superseded = events.slice(events.indexOf(had) + 1).some((e) => e.lever === d.lever && isStateChange(e));
+          return null;
+        }
+        at = stampAfter(events, at);
+        const o = overrideEvent(d, choice, events, { at });
+        if (o.why) return { why: o.why };
+        leverEvent = o.event;
+        return o.event;
+      }));
+    } catch (e) { why = `${slug}'s lever log refused it: ${e.message}`; }
+    if (why) return { ok: false, why };
+  }
   const entry = {
     id: createHash('sha256').update(['override', id, choice, at].join('\0')).digest('hex').slice(0, 16),
     override_of: id, at, repo: d.repo, ticket: d.ticket, question: d.question, was: d.chose, chose: choice, by,
+    ...(d.lever ? { lever: d.lever } : {}),
   };
   appendFileSync(join(r.state, 'decisions.jsonl'), `${JSON.stringify(entry)}\n`);
-  const marked = markPage(dir, (l) => l.includes(`id \`${id}\``), `overridden to **${choice}** by ${by} at ${at}`);
-  return { ok: true, entry, marked };
+  // A lever's line carries its override command, done with once used.
+  const marked = markPage(dir, (l) => l.includes(`id \`${id}\``), `overridden to **${choice}** by ${by} at ${at}`, (l) => (d.lever ? l.replace(/ · override: `[^`]*`$/, '') : l));
+  return { ok: true, entry, marked, leverEvent, superseded };
 }
 
 // A "go" on a promotion question: recorded in that repo's batch notes with the range, and marked on
@@ -533,7 +650,11 @@ if (isMain) {
   } else {
     const r = override({ slug, id: target, choice: text });
     if (!r.ok) refuse(r.why);
-    console.log(`digest: decision ${target} overridden to "${text}" by ${r.entry.by}; the next pass in ${slug} lists ${r.entry.ticket} under WAITING ON YOU`);
+    console.log(r.leverEvent && r.superseded
+      ? `digest: decision ${target} overridden to ${r.leverEvent.value} earlier, now recorded; ${r.leverEvent.lever} has changed in ${slug} since, so admission reads its latest state (desk-env levers)`
+      : r.leverEvent
+      ? `digest: decision ${target} overridden: ${r.leverEvent.lever} is ${r.leverEvent.value} in ${slug} by hand, for every ticket admitted from now on`
+      : `digest: decision ${target} overridden to "${text}" by ${r.entry.by}; the next pass in ${slug} lists ${r.entry.ticket} under WAITING ON YOU`);
     if (!r.marked) console.log('digest: the latest page does not list that decision');
   }
 }

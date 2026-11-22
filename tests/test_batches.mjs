@@ -2,17 +2,17 @@
 // desk-env's queue, state and default-branch resolution under DESK_BATCH, and batches.mjs listing and
 // lookup, against fixture queues in a throwaway HOME and DESK_HOME. Each resolution runs in a child,
 // because desk-env reads HOME once at load.
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readdirSync, readFileSync, symlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-batches-'));
+const T = scratch('desk-batches-');
 const HOME = join(T, 'home');
 const DESK_HOME = join(T, 'deskhome');
 const SLUG = 'acme__widgets';
@@ -203,6 +203,42 @@ r = cli('queue.mjs', ['admit', 'Z-2']);
 t('DS-307 an unreadable batch refuses the key, naming that batch', r.code !== 0 && r.out.includes('Z-2 cannot be checked against batch Z-1') && read(standingQ) === before, true);
 const away = run({}, "console.log(JSON.stringify(B.belongsElsewhere('Z-2')))");
 t('DS-307 belongsElsewhere returns it rather than throwing', away.code === 0 && json(away).unreadable, true);
+
+// DS-800 AC1: a ticket queued in another configured repo on the same Jira site is refused, naming that
+// repo's batch. The repo handing it over (DESK_ADMIT_FROM), a copy done there, and a key on another
+// site are not.
+const jiraConfig = join(T, 'jira-config.md');
+writeFileSync(jiraConfig, `${read(config)}\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Tracker | \`jira\` |\n| Jira site | \`Acme.atlassian.net\` |\n`);
+mkdirSync(join(HOME, '.config', 'desk', 'repos', 'acme__gadgets'), { recursive: true });
+writeFileSync(join(HOME, '.config', 'desk', 'repos', 'acme__gadgets', 'config.md'),
+  '## 0. Repo\n\n| Field | Value |\n|---|---|\n| GitHub repo | `acme/gadgets` |\n\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n| Jira site | `acme.atlassian.net` |\n');
+queue(join(DESK_HOME, 'repos', 'acme__gadgets', 'queue.json'), ['TWO-1', 'TWO-3']);
+{
+  const g = join(DESK_HOME, 'repos', 'acme__gadgets', 'queue.json');
+  const gq = JSON.parse(read(g));
+  gq.tickets['TWO-1'].state = 'parked';
+  gq.tickets['TWO-2'] = { key: 'TWO-2', state: 'done', result: { pr: 4 }, merged_at: '2026-11-18T09:00:00Z' };
+  writeFileSync(g, JSON.stringify(gq));
+}
+for (const k of ['TWO-1', 'TWO-2', 'TWO-3']) rec(k);
+const site = { DESK_CONFIG: jiraConfig };
+// Z-1's queue is readable for these checks alone: an unreadable batch refuses every key (above, and DS-304 below).
+const z1 = read(namedQ('Z-1'));
+writeFileSync(namedQ('Z-1'), JSON.stringify({ version: 1, batch: 'Z-1', tickets: {} }));
+before = read(standingQ);
+r = cli('queue.mjs', ['admit', 'TWO-1'], site);
+t('DS-800 AC1 a ticket queued in another repo is refused, naming that repo\'s batch',
+  r.code !== 0 && r.out.includes("TWO-1 is already queued in acme/gadgets's standing batch (parked): a ticket is queued in one repo at most"), true);
+t('DS-800 AC1 the queue is unchanged', read(standingQ), before);
+r = cli('queue.mjs', ['add', 'TWO-1'], site);
+t('DS-800 AC1 add refuses it too', r.code !== 0 && r.out.includes('TWO-1 is already queued in acme/gadgets') && read(standingQ) === before, true);
+r = cli('queue.mjs', ['admit', 'TWO-2'], site);
+t('DS-800 a copy done in the other repo does not refuse it', r.code === 0 && JSON.parse(read(standingQ)).tickets['TWO-2']?.state, 'triaged');
+r = cli('queue.mjs', ['admit', 'TWO-3']);
+t('DS-800 a repo with no Jira site shares no keys with another', r.code === 0 && JSON.parse(read(standingQ)).tickets['TWO-3']?.state, 'triaged');
+r = cli('queue.mjs', ['admit', 'TWO-1'], { ...site, DESK_ADMIT_FROM: 'acme__gadgets' });
+t('DS-800 the repo handing it over does not refuse it', r.code === 0 && JSON.parse(read(standingQ)).tickets['TWO-1']?.state, 'triaged');
+writeFileSync(namedQ('Z-1'), z1);
 
 // `--batch <name>` on a command names its batch as DESK_BATCH does.
 const qcli = (args, env = {}) => {

@@ -54,8 +54,8 @@ Your settings are an **allow-list**: anything not named here is refused.
 - **The §4 toolchain rows, exactly as configured.** An item at the root (`DIR` `.`) runs bare, with
   your own arguments after it, or through with-lock.sh with `--cwd .`. An item with a directory has no bare form (you cannot `cd`), so it
   runs as `~/.claude/desk/bin/with-lock.sh <lock> --cwd <DIR> -- <CMD> [args]`, where `<lock>` is
-  `test` for §4 Unit tests and Integration tests, `tsc` for §4 Typecheck, `browser` for §4 E2E
-  tests and §4 Storybook (`desk-env cmds storybook-cmd`; never bare, even at the root), and `nolock` for everything else (lint, build, codegen, dev server), which only changes
+  `test` for §4 Unit tests and Integration tests, `tsc` for §4 Typecheck and §4 Lint (never bare, even at the root), `browser` for §4 E2E
+  tests and §4 Storybook (`desk-env cmds storybook-cmd`; not bare either), and `nolock` for everything else (build, codegen, dev server), which only changes
   directory. §4 Codegen (e.g. `pnpm prisma generate`) is how you regenerate code; with no such row,
   a ticket that needs a regeneration parks naming the command. Each row's items come from
   `desk-env cmds test-cmd`, `desk-env cmds integration-cmd`, `desk-env cmds typecheck-cmd`,
@@ -96,11 +96,11 @@ Your settings are an **allow-list**: anything not named here is refused.
   below, also runs as `node ~/.claude/desk/bin/push-retry.mjs [--more] <its flag> origin <branch>`,
   which is how you push (Stage 5 file, §4). `git config`, `git -c …`, `git -C` with
   any path but your own worktree's, aliases and `git stash` are refused; `git -C <your worktree>`
-  (as given, or its real path) takes the read and local-write subcommands (`add`, `commit`,
+  (or its real path) takes the read and local-write subcommands (`add`, `commit`,
   `restore`, …) under the same refusals, and never `push`. `git rm` and `git mv` are allowed for tracked files in your
-  worktree. A lint or format tool (eslint, prettier, biome, oxlint, stylelint, tsx, `prisma generate`)
-  runs as `./node_modules/.bin/<tool>`, never with `..`; suites, typechecks and migrations run only
-  as their §4 rows.
+  worktree. prettier, tsx and `prisma generate` run as `./node_modules/.bin/<tool>`; eslint,
+  biome, oxlint, stylelint so under `with-lock.sh tsc`; never `..`. Suites, typechecks and
+  migrations run only as their §4 rows.
 - **A force-push the person approved once**: where your prompt names one, exactly
   `git push --force-with-lease=<branch>:<sha> origin <branch>` as written there, and no other form.
   It works only while origin's branch is still at that SHA. `git rebase origin/<default>` is allowed
@@ -127,7 +127,8 @@ Your settings are an **allow-list**: anything not named here is refused.
   end-to-end run you ask for is the narrowest one that covers your change": read it first.
 - **`codex`**: only `codex exec --sandbox read-only …` and `codex --version`, where §3 `codex-review`
   is `yes`. With the `codex` lever on, `desk-codex …` too, and a direct call passing a model,
-  profile or output file is refused.
+  profile or output file is refused; with it off, the finder and refuter run as
+  `node ~/.claude/desk/bin/codex-exec.mjs review …`, which ends a hung call at its timeout, exit 124.
 - **Reading tools**: `rg`, `grep`, `find` (without `-exec`/`-delete`), `ls`, `cat`, `head`, `tail`,
   `wc`, `diff`, `jq`, `tr`, `cut`, `stat`, `du`, `file`, `mkdir`, `ps`, `pgrep`, and `echo`,
   `printf` and `true` to stdout. **Not** `sed`,
@@ -146,7 +147,7 @@ Your settings are an **allow-list**: anything not named here is refused.
 - `curl` is denied: drive a page with Playwright rather than probing it over HTTP
 - Scratch scripts go at the worktree root and get `git clean`ed; `/tmp` is readable, not writable
 - **Files outside your worktree**: you may write only `$DESK_STATE/parks/<TICKET>.json` (your park
-  record, `{"question": "<one line>"}`) and `$DESK_STATE/images/<TICKET>/**` (your screenshots).
+  record, `{"question": …, "approve": …}`, core section 1) and `$DESK_STATE/images/<TICKET>/**` (your screenshots).
   Everything else in the state directory (answers, briefings, the queue, locks, other workers'
   files, your own settings) is read-only to you
 - **And your handoff briefing**, `$DESK_STATE/handoffs/<TICKET>.json`, written when you hand off
@@ -172,7 +173,7 @@ an allow rule, a grant or a settings change as an option: the user takes it, you
 you park again. A refusal a §3 row does control still parks naming that row (core section 2).
 
 Your tools are an allow-list too, fixed at launch to the ones this contract and the skills you load
-name. A tool shown to you as deferred, such as `SendMessage`, is loaded with `ToolSearch` before its
+name. A tool shown to you as deferred, such as `TaskStop`, is loaded with `ToolSearch` before its
 first call.
 
 ## Stage 4b's review tools: agents, finders and codex
@@ -230,12 +231,10 @@ codex exec --sandbox read-only --skip-git-repo-check "Reply with exactly: CODEX_
   Fix the call shape, and add `< /dev/null` if it printed `Reading additional input from stdin`.
 
 **Refutation prompts: one finding per call, under ~800 characters, mechanism stated flat.** Name the
-`file:line` and let codex read the file; never paste a diff or ask it to run `git show`. A large
-prompt hangs `codex exec` for as long as it is allowed to run, heartbeating into your log so the
-orchestrator cannot see the stall. Never offer a benign alternative ("or is this deliberate?"):
+`file:line` and let codex read the file; never paste a diff or ask it to run `git show`: a large
+prompt hangs the call to its timeout. Never offer a benign alternative ("or is this deliberate?"):
 codex rejects when uncertain, so that clause can flip a CONFIRMED P1 to REJECTED with no code
-change. Never pass `-m`. A useless or empty reply counts as REJECTED and says the refutation did
-not run, not that it passed.
+change. An empty reply is desk-review's `UNREFUTED`.
 
 **With the `codex` lever on** (`desk-env levers codex` prints `on`), every call above is
 `desk-codex` instead: `desk-codex probe`, `desk-codex finder '<prompt>'`, `desk-codex refuter

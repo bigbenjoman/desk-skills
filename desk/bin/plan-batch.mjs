@@ -4,7 +4,8 @@
 // triage records (with the facts ticket-facts.mjs merged into them) and, for an epic batch,
 // $DESK_STATE/expansion.json from expand-parent.mjs and the feature plan the orchestrator drafts into
 // $DESK_STATE/feature.json. Seeding the queue (AUTOPILOT_WRITE_QUEUE), it logs each call it took on
-// triage's judgement to the decision log (decisions.mjs).
+// triage's judgement to the decision log (decisions.mjs), and admits each ticket whose Jira Repository
+// names another configured repo into that repo instead (intake.mjs admit, run in its checkout).
 // Exits 0 when every ticket can start with nothing to put to the person first, or 11 (show the
 // person) when one needs them before Stage 3 (`needs_person`) and on any refusal or error: EXIT in
 // batch-state.mjs. With --json, stdout is one object: status (go_on | show_person | error), code,
@@ -13,14 +14,21 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
-import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, leverOn, ghRepo } from './desk-env.mjs';
+import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, sizePark, labelPark, stepLabel, blockerHold, startWithout, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
+import { stateDir, runBin, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, levers, ghRepo,
+  repoPlacement, admitInRepo, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { decisionEntry, appendDecisions } from './decisions.mjs';
-import { placement } from './cloud-worker.mjs';
+import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { SIZES, queueEpic } from './desk-q-eta.mjs';
 import { belongsElsewhere } from './batches.mjs';
+import { perTicketDb } from './health.mjs';
+import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
+import { leverOnFor } from './lever-pin.mjs';
+import { SPAWN_ORDER_RULE, KEEP_ORDER_RULE, bySpawnOrder } from './spawn-order.mjs';
 
 const AS_JSON = process.argv.includes('--json');
+// --keep-order: spawn in the order the tickets were named (blockers still first), not by what they gate.
+const KEEP_ORDER = process.argv.includes('--keep-order');
 const plan = [];
 const say = (s) => (AS_JSON ? plan.push(s) : console.log(s));
 function verdict(status, message, needsPerson = []) {
@@ -32,9 +40,9 @@ function verdict(status, message, needsPerson = []) {
 const refuse = (message) => process.exit(verdict('error', message));
 crashShowsPerson((e) => verdict('error', describeCrash(e)));
 const STATE = stateDir();
-const QUEUE = join(binDir(), 'queue.mjs');
-const tickets = process.argv.slice(2).filter((a) => a !== '--json');
-if (!tickets.length) refuse('usage: plan-batch.mjs [--json] <TICKET> [<TICKET> ...]');
+const QUEUE = join(runBin(), 'queue.mjs');
+const tickets = process.argv.slice(2).filter((a) => a !== '--json' && a !== '--keep-order');
+if (!tickets.length) refuse('usage: plan-batch.mjs [--json] [--keep-order] <TICKET> [<TICKET> ...]');
 
 const records = [];
 for (const t of tickets) {
@@ -42,7 +50,9 @@ for (const t of tickets) {
   if (!existsSync(join(STATE, 'triage', `${t}.json`))) refuse(`missing triage record for ${t} — run triage.sh ${t}`);
   records.push(readTriage(STATE, t));
   const elsewhere = belongsElsewhere(t, records.at(-1), queueFile());
-  if (elsewhere) refuse(`${elsewhere.why}: leave it out of this plan`);
+  // Queued already in the repo its Jira Repository names: handOver finds it in place there.
+  const inPlace = elsewhere?.repo && repoPlacement(records.at(-1).repository)?.ghRepo === elsewhere.repo;
+  if (elsewhere && !inPlace) refuse(`${elsewhere.why}: leave it out of this plan`);
 }
 
 // Ownership boundary, the ticket equivalent of desk-clearance's "only your own PRs".
@@ -59,34 +69,68 @@ const isOwner = (a) => (noTracker ? String(a).toLowerCase() === OWNER.toLowerCas
 const notOurs = records.filter((r) => r.assignee && !isOwner(r.assignee));
 const ours = records.filter((r) => !r.assignee || isOwner(r.assignee));
 
+// A ticket whose Jira Repository (ticket-facts.mjs) names another repo is never built here. One
+// configured on this computer is handed to that repo when the queue is seeded (handOver); one that is
+// not is asked about. Neither goes in this queue. A ticket here blocked by a handed one is held until
+// that one is Done in Jira, since its code lands in the other repo, never on this base.
+const placedIn = Object.fromEntries(ours.map((r) => [r.ticket, repoPlacement(r.repository)]));
+const elsewhere = (r) => placedIn[r?.ticket] ?? null;
+const handedOff = (k) => !!elsewhere({ ticket: k }) && !elsewhere({ ticket: k }).unknown;
+const handed = ours.filter((r) => handedOff(r.ticket));
+const unplaced = ours.filter((r) => elsewhere(r)?.unknown);
+const here = ours.filter((r) => !elsewhere(r));
+const awayWhy = (r) => (elsewhere(r).unknown
+  ? `its Jira Repository, ${elsewhere(r).repository}, is ${elsewhere(r).slugs.length ? `the name of ${elsewhere(r).slugs.length} repos configured on this computer (${elsewhere(r).slugs.join(', ')})` : 'no repo configured on this computer'}`
+  : `its Jira Repository is ${elsewhere(r).repository}, so it runs in ${elsewhere(r).ghRepo}`);
+
 // Admission. C parks at triage: it needs an agreed plan or a product answer before any code. D runs
 // when every Claude Design canvas its Design section links is saved on the base or snapshotted, since
 // the worker builds from it and the PR's canvas table is where it is agreed; a design only in Figma,
 // or a canvas not on the base, parks. A ticket sized L or XL parks too: it is to be split, not run
-// whole. Those parks always win over a dependency hold, so a release can never send one to a
-// headless worker.
-const laneOk = (r) => ['A', 'B', 'D', 'E'].includes(r.lane) && !needsPersonLane(r);
-const sizeParked = (r) => laneOk(r) && ['L', 'XL'].includes(String(r.size ?? '').toUpperCase());
-const parked = ours.filter(needsPersonLane);
+// whole. Those parks are still planned: their blockers go in held_by beside the park, which always
+// wins over the hold, so a release can never send one to a headless worker.
+// A ticket labelled as the person's own step (config §4 Person-step or Person-input labels) parks on
+// that whatever its lane or size: no worker takes it. A ticket a Person-step one blocks merges after it
+// instead of waiting on it; one a Person-input step blocks waits on it, as its build reads what it makes.
+const STEP_LABELS = personStepLabels();
+const INPUT_LABELS = personInputLabels();
+const stepPark = (r) => labelPark(r, STEP_LABELS, INPUT_LABELS);
+const stepParked = (r) => stepPark(r) !== null;
+const inputStep = (r) => stepLabel(r?.labels, INPUT_LABELS) !== null;
+const stepped = here.filter(stepParked);
+const laneOk = (r) => !stepParked(r) && ['A', 'B', 'D', 'E'].includes(r.lane) && !needsPersonLane(r);
+const sizeParked = (r) => laneOk(r) && sizePark(r.size) !== null;
+const parked = here.filter((r) => !stepParked(r) && needsPersonLane(r));
 // A C or D whose challenge could not read the code is shown as unchecked and asked about.
 const unchecked = parked.filter(laneUnchecked);
 const failedReads = (r) => (r.lane_challenge?.failed_reads ?? []).join('; ') || 'none listed';
-const sized = ours.filter(sizeParked);
+const sized = here.filter(sizeParked);
 // A ticket in any lane that links a Claude Design canvas no worker can read parks until a session
 // snapshots it. It is still planned (its blockers, collisions and spine hold), so its held_by is
 // written beside the design park and a requeue holds it behind what has not merged (queue.mjs requeue).
 const designParked = (r) => laneOk(r) && !sizeParked(r) && designPark(r) !== null;
-const undesigned = ours.filter(designParked);
-let admitted = ours.filter((r) => laneOk(r) && !sizeParked(r));
+const undesigned = here.filter(designParked);
+let admitted = here.filter((r) => laneOk(r) && !sizeParked(r));
+// Every ticket this batch will build, now or once a person has settled its park: its Blocks links are
+// read, and it holds what it blocks. The person's own steps are not built, so they hold nothing.
+const planned = here.filter((r) => !stepParked(r));
+const plannedKeys = new Set(planned.map((r) => r.ticket));
+// The park a planned ticket has of its own (lane, size or design), which any hold waits beside.
+const ownPark = (r) => (laneUnchecked(r) ? `lane ${r.lane}, UNCHECKED — the challenge could not read the code; confirm or re-lane`
+  : needsPersonLane(r) ? `lane ${r.lane} — ${r.lane === 'D' ? `${designGap(r)}, so ` : ''}run manually`
+  : sizeParked(r) ? sizePark(r.size)
+  : designParked(r) ? designPark(r)
+  : null);
 
 // Collision detection. Two tickets that touch the same file cannot run concurrently:
 // they would conflict on the file, and worse, each is blind to a helper the other just
-// added — a duplicate by this repo's own rules.
+// added — a duplicate by this repo's own rules. A file §4 Append-only paths covers is only added to,
+// so sharing it is no collision; a row that is not a list of globs reads as none and is said below.
+const appendOnly = appendOnlyFrom(() => configValues('append-only-paths'));
 const collisions = [];
 for (let i = 0; i < admitted.length; i++) {
   for (let j = i + 1; j < admitted.length; j++) {
-    const a = new Set(admitted[i].files_in_scope ?? []);
-    const shared = (admitted[j].files_in_scope ?? []).filter((f) => a.has(f));
+    const shared = sharedFiles(admitted[i].files_in_scope, admitted[j].files_in_scope, appendOnly.globs);
     if (shared.length) collisions.push({ a: admitted[i].ticket, b: admitted[j].ticket, shared });
   }
 }
@@ -111,10 +155,12 @@ const mergesFirst = (a, b) => radius(a) - radius(b) || sizeRank(a) - sizeRank(b)
 
 // Dependencies from Jira "is blocked by" links (ticket-facts.mjs). A blocker in the batch holds its
 // successor until the blocker's PR merges (merge-driver.sh release_chain releases anything parked
-// "held by orchestrator" once every --deps predecessor has merged). Anything the batch cannot settle
-// by itself is a question, never a silent "no blockers": a blocker outside the batch that is not
-// done and that triage did not judge (outsideHolds, below), a blocker the batch will not build
-// (parked, or someone else's), and a link list that was never read. An epic's container stories
+// "held by orchestrator" once every --deps predecessor has merged). A ticket parked for its own reason
+// is held the same way, its held_by beside its park, and a blocker parked for its own reason holds
+// what it blocks like any other. Anything the batch cannot settle by itself is a question, never a
+// silent "no blockers": a blocker outside the batch that is not done and that triage did not judge
+// (outsideHolds, below), a blocker the batch will not build (someone else's, another repo's, or the
+// person's step), and a link list that was never read. An epic's container stories
 // hand their links to the subtasks that replaced them.
 const expansionPath = join(STATE, 'expansion.json');
 // Only the expansion of this batch's own epic (queue.mjs set-batch epic=<KEY>): a file left by an
@@ -141,22 +187,19 @@ const holdBehind = (t, p, why) => {
 const ask = (t, q) => (added[t] ??= []).push(q);
 const note = (t, n) => (notes[t] ??= []).push(n);
 let otherLinks = 0;
-// An open blocker in no batch, as triage judged it in `blocker_needs`: one the ticket needs holds it
-// as intake does (held_outside, lifted by pass.mjs once the blocker is Done and on the base); one it
-// does not need starts without it, a call taken where §3 autopilot-judgement is yes. With no
-// judgement recorded, it is asked. So is a blocker inherited from a container story: the pass checks a
+// An open blocker in no batch, as triage called it in `blocker_needs` and as intake acts on it
+// (batch-state.mjs blockerHold): one the ticket needs to build holds it (held_outside, lifted by pass.mjs
+// once the blocker is Done and on the base); one it needs only to merge holds its merge (merge_after);
+// one it does not need starts without it, a call taken where §3 autopilot-judgement is yes. With no
+// call recorded, it is asked. So is a blocker inherited from a container story: the pass checks a
 // held_outside key against the ticket's own links, and would read an inherited one as unlinked and
 // release it while it is still open.
 const outsideHolds = {};  // ticket -> blockers in no batch it is held behind
+const mergeAfter = {};    // ticket -> the person's steps it merges after (merge_after), built meanwhile
 const taken = [];         // {ticket, decision}: calls plan-batch takes on triage's judgement
 const judgement = permission('autopilot-judgement') === 'yes';
-const blockerNeed = (r, k) => {
-  if (!r.blockers.some((b) => b?.key === k)) return null;
-  const n = r.blocker_needs?.[k];
-  return n && typeof n === 'object' && typeof n.needs === 'boolean' ? { needs: n.needs, why: String(n.why ?? '').trim() || 'no reason given' } : null;
-};
 
-for (const r of admitted) {
+for (const r of planned) {
   const t = r.ticket;
   if (r.facts_error) { ask(t, `dependencies could not be read (${r.facts_error}): check its Jira links, then answer to let it start`); continue; }
   if (r.links === 'n/a' || ticketKind(t).kind !== 'tracker') continue;
@@ -171,21 +214,43 @@ for (const r of admitted) {
       if (k === t || seen.has(k)) continue;
       seen.add(k);
       const br = byKey[k];
-      if (br && admittedKeys.has(k)) holdBehind(t, k, 'Jira link');
-      else if (br) {
-        const why = !ours.includes(br) ? `assigned to ${br.assignee}` : sizeParked(br) ? `parked: size ${br.size}` : `parked: lane ${br.lane}`;
+      // Held on its own link only: the pass reads a held_outside key against the ticket's own links.
+      const direct = handedOff(k) ? r.blockers.find((x) => x?.key === k) : null;
+      // A step in the batch that triage called needed to build holds the build as an input step does.
+      const own = r.blockers.find((x) => x?.key === k);
+      const call = own ? blockerHold(own, r, STEP_LABELS, INPUT_LABELS) : null;
+      const buildCall = call?.by === 'triage' && call.needs === 'build';
+      if (br && plannedKeys.has(k)) holdBehind(t, k, 'Jira link');
+      else if (direct?.category === 'done') note(t, `blocker ${k} is done (${awayWhy(br)})`);
+      else if (direct) {
+        (outsideHolds[t] ??= []).push(k);
+        (holdWhy[t] ??= {})[k] = `${direct.category === 'indeterminate' ? 'in progress' : 'not started'}; ${awayWhy(br)}`;
+      } else if (
+        // Only on the ticket's own link: the pass lifts merge_after once its own links no longer list the
+        // step, so one inherited from a container would be lifted at once, and is asked below instead. A
+        // step whose Jira Repository this computer cannot place is asked about too.
+        br && b.category !== 'done' && r.blockers.some((x) => x?.key === k) && !elsewhere(br) && stepParked(br) && !inputStep(br) && !buildCall) {
+        (mergeAfter[t] ??= []).push(k);
+        note(t, `built now, merged only once ${k} (your step) is Done`);
+      } else if (br) {
+        const why = !ours.includes(br) ? `assigned to ${br.assignee}` : elsewhere(br) ? awayWhy(br) : inputStep(br) ? 'your input step: the build reads what it makes' : stepParked(br) && buildCall ? `your step, which triage found it needs to build: ${call.why}` : 'your step';
         ask(t, `${t} is blocked by ${k}, which this batch will not build (${why}): finish ${k} first, or confirm ${t} can start without it`);
       } else if (b.category === 'done') note(t, `blocker ${k} is done`);
       else {
+        // In no batch, judged as intake judges it (blockerHold): the person's step and triage's call, the
+        // one that holds more winning. On its own link only, as above.
         const status = b.category === 'indeterminate' ? 'in progress' : 'not started';
-        const need = blockerNeed(r, k);
-        if (need?.needs) {
+        const hold = r.blockers.some((x) => x?.key === k) ? blockerHold(b, r, STEP_LABELS, INPUT_LABELS) : null;
+        const said = hold?.by === 'triage' ? `triage: ${hold.why}` : hold?.why;
+        if (hold?.needs === 'build') {
           (outsideHolds[t] ??= []).push(k);
-          (holdWhy[t] ??= {})[k] = `${status}, not in this batch; triage: ${need.why}`;
-        } else if (need && judgement) {
-          note(t, `starts without blocker ${k} (${status}, not in this batch): triage found it is not needed (${need.why})`);
-          taken.push({ ticket: t, decision: { question: `${t} is blocked by ${k} (${status}), which is not in this batch: start without it? Triage: ${need.why}`,
-            options: [`start without ${k}`, `wait for ${k}`], chose: `start without ${k}`, category: 'engineering' } });
+          (holdWhy[t] ??= {})[k] = `${status}, not in this batch; ${said}`;
+        } else if (hold?.needs === 'merge') {
+          (mergeAfter[t] ??= []).push(k);
+          note(t, hold.by === 'step' ? `built now, merged only once ${k} (your step) is Done` : `built now, merged only once ${k} is Done (${said})`);
+        } else if (hold && judgement) {
+          note(t, `starts without blocker ${k} (${status}, not in this batch): triage found it is not needed (${hold.why})`);
+          taken.push({ ticket: t, decision: startWithout(t, k, status, hold.why) });
         } else ask(t, `${t} is blocked by ${k} (${status}), which is not in this batch: add ${k} to the batch, or confirm ${t} can start without it`);
       }
     }
@@ -270,7 +335,7 @@ const onCycle = new Map();
       if (group.length > 1) { const label = `${group.reverse().join(' ↔ ')}`; for (const g of group) onCycle.set(g, label); }
     }
   };
-  for (const r of admitted) if (idx[r.ticket] === undefined) strong(r.ticket);
+  for (const r of planned) if (idx[r.ticket] === undefined) strong(r.ticket);
 }
 // A cycle through a feature-plan hold keeps the queue unseeded: one through an owner-table hold is the
 // table's to fix; one through the spine hold alone is the spine's Jira links to a child.
@@ -302,8 +367,8 @@ admitted = admitted.filter((r) => !onCycle.has(r.ticket));
 // named in. Tickets that share no files are never chained, whatever their kinds. A Jira link (or the
 // feature plan) that already orders a pair wins, and the plan names where it contradicts the kinds,
 // except the spine hold, which every child has by design.
-// Holds are only added between two tickets neither of which already waits on the other, so the chain
-// cannot close a cycle.
+// A pair one of which already waits on the other is held in that order, and any other pair in the
+// order the kinds give, so the chain cannot close a cycle.
 const waitsOn = (t, p) => {
   const seen = new Set(); const stack = [t];
   while (stack.length) {
@@ -327,13 +392,21 @@ for (const r of admitted) {
   }
 }
 const liveKeys = new Set(admitted.map((r) => r.ticket));
+// Each ticket is held behind every earlier one it shares a file with, not only the one just before it,
+// even where another hold already implies the order. The holds a person changes are one ticket's own:
+// with C sharing a file with A and B and held behind B alone, dropping B (queue.mjs drop) or freeing
+// C from B (needs-you's free command) would let C start while A's PR is unmerged. The list's hold walk
+// reads each blocker once (desk-q.mjs blockerHold's memo), so a whole chain does not multiply its paths.
 for (const c of collisions) {
   if (!liveKeys.has(c.a) || !liveKeys.has(c.b)) continue;
   const [a, b] = [byKey[c.a], byKey[c.b]];
   const files = `shares ${c.shared.join(', ')}`;
   if (waitsOn(c.a, c.b) || waitsOn(c.b, c.a)) {
     const [first, then] = waitsOn(c.a, c.b) ? [b, a] : [a, b];
-    if (!preds[then.ticket]?.includes(first.ticket)) contradicts(first, then, `they share files, and its dependencies already put ${first.ticket} first, which wins`);
+    if (!preds[then.ticket]?.includes(first.ticket)) {
+      contradicts(first, then, `they share files, and its dependencies already put ${first.ticket} first, which wins`);
+      holdBehind(then.ticket, first.ticket, `${files}; its other holds already put ${first.ticket} first`);
+    }
     continue;
   }
   const [first, then] = mergesFirst(a, b) < 0 ? [a, b] : [b, a];
@@ -345,11 +418,16 @@ for (const c of collisions) {
 const holdsOf = (t) => [...(preds[t] ?? []), ...(outsideHolds[t] ?? [])];
 const held = (t) => holdsOf(t).length > 0;
 const heldBy = (t) => holdsOf(t).map((p) => `${p} (${holdWhy[t][p]})`).join(', ');
-// What a hold waits for: the in-batch blockers' PRs to merge, and each one in no batch to be Done and
-// on the base.
-const heldUntil = (t) => [preds[t]?.length && 'their PRs merge', outsideHolds[t]?.length && `${outsideHolds[t].join(', ')} ${outsideHolds[t].length === 1 ? 'is' : 'are'} Done and on the base`]
-  .filter(Boolean).join(', and ');
-const depsArg = Object.entries(preds).map(([t, ps]) => `${t}:${ps.join(',')}`).join(' ');
+// What a hold waits for: the in-batch blockers' PRs to merge, each one in no batch to be Done and on
+// the base, and each one handed to another repo to be Done in Jira.
+const heldUntil = (t) => {
+  const each = (ks, what) => ks.length > 0 && `${ks.join(', ')} ${ks.length === 1 ? 'is' : 'are'} ${what}`;
+  const out = outsideHolds[t] ?? [];
+  return [preds[t]?.length && 'their PRs merge', each(out.filter((k) => !handedOff(k)), 'Done and on the base'), each(out.filter(handedOff), 'Done in Jira')]
+    .filter(Boolean).join(', and ');
+};
+// Only a ticket the driver may release: one parked for its own reason keeps that park whatever merges.
+const depsArg = Object.entries(preds).filter(([t]) => liveKeys.has(t)).map(([t, ps]) => `${t}:${ps.join(',')}`).join(' ');
 
 // Blockers before what they block; otherwise the order given.
 const topo = (list) => {
@@ -361,26 +439,36 @@ const topo = (list) => {
   }
   return out;
 };
-// Spawn order keeps the order the tickets were named in, so a gate the user names first starts first;
-// the merge order puts the larger blast radius first. The holds keep the two consistent where it matters.
-const order = topo(ours);
+// How many tickets in the batch each one holds, directly or through another (preds, transitively).
+const gates = (() => {
+  const succ = {};
+  for (const [t, ps] of Object.entries(preds)) for (const p of ps) (succ[p] ??= []).push(t);
+  const out = {};
+  for (const r of ours) {
+    const seen = new Set(); const stack = [...(succ[r.ticket] ?? [])];
+    while (stack.length) { const t = stack.pop(); if (seen.has(t) || t === r.ticket) continue; seen.add(t); stack.push(...(succ[t] ?? [])); }
+    out[r.ticket] = seen.size;
+  }
+  return out;
+})();
+const filesOf = (r) => (Array.isArray(r.files_in_scope) ? r.files_in_scope.length : 0);
+// Spawn order is SPAWN_ORDER_RULE (KEEP_ORDER_RULE with --keep-order); topo puts blockers first. The
+// merge order puts the larger blast radius first; the holds keep the two consistent where it matters.
+const order = topo(KEEP_ORDER ? ours : ours.slice().sort(bySpawnOrder(gates, filesOf, named)));
 const merging = topo(admitted.slice().sort((a, b) => radius(a) - radius(b) || named(a) - named(b)));
 
-// What a ticket that needs a database will actually get, from the same rules setup-worktree.sh applies.
-const localDb = (configValue('local-db') ?? '').trim();
-const DB_NOTE = !localDb
-  ? 'config §4 Local database is unset, so no per-ticket database is made and its database variables are blanked — a database-backed check will park'
-  : /^none\b/i.test(localDb)
-    ? 'config §4 Local database is none, so it gets NO database: every §4 Database URL variable is blanked in its worktree, and a database-backed check parks'
-    : !/^postgres container\s+\S+$/i.test(localDb)
-      ? `config §4 Local database is "${localDb}", which is not \`postgres container <name>\`, so no per-ticket database is made and its database variables are blanked — a database-backed check will park`
-      : permission('db-per-ticket') !== 'yes'
-        ? `config §3 db-per-ticket is ${permission('db-per-ticket')}, so no per-ticket database is made and its database variables are blanked — a database-backed check will park`
-        : 'its own per-ticket database will be created in the local Postgres, or the worktree is not set up';
+// What a ticket that needs a database will actually get.
+const noDb = perTicketDb().none;
+const DB_NOTE = noDb
+  ? `${noDb}, so no per-ticket database is made and its database variables are blanked — a database-backed check will park`
+  : 'its own per-ticket database will be created in the local Postgres, or the worktree is not set up';
 
 const collidesWith = (t) => collisions.flatMap((c) => (c.a === t ? [c.b] : c.b === t ? [c.a] : []));
 // desk-jira lint's blocking findings (ticket-facts.mjs): each is something a worker would park on.
 const lintBlocking = (r) => (r.lint ?? []).filter((f) => f.severity === 'blocking');
+
+// Admits `r` into the repo its Jira Repository names (desk-env.mjs admitInRepo).
+const handOver = (r) => admitInRepo(elsewhere(r), r.ticket, { by: 'plan-batch' });
 
 // Config §3b "Worker location". At cloud, each admitted ticket that needs nothing on this computer
 // runs in a cloud session (cloud-worker.mjs placement), and the plan says where each runs, and why a
@@ -388,11 +476,14 @@ const lintBlocking = (r) => (r.lint ?? []).filter((f) => f.severity === 'blockin
 let location;
 let budget;
 try { location = workerLocation(); budget = location === 'cloud' ? workerBudget() : null; } catch (e) { refuse(e.message); }
-const featureRole = (k) => (!feature?.on ? null
-  : k === feature.spine ? 'it is the feature spine, whose specs are checked in a local worktree before it parks for approval'
-    : Object.values(feature.plan?.owners ?? {}).includes(k) ? 'it owns acceptance specs, which are checked in a local worktree when it finishes' : null);
-const effort = location === 'cloud' && leverOn('effort');
-const placed = Object.fromEntries(records.map((r) => [r.ticket, placement(r, location, { feature: featureRole(r.ticket), effort })]));
+const featureBatch = feature?.on ? { spine: feature.spine, owners: feature.plan?.owners } : null;
+// The effort lever is read per ticket: from the pin of one already in the queue (an epic's child,
+// seeded before its plan), else from the row, which `queue.mjs add` pins it with.
+let pinned = {};
+try { pinned = JSON.parse(readFileSync(queueFile(), 'utf8')).tickets ?? {}; } catch { /* no queue yet: every ticket reads the row */ }
+const rowLevers = levers();
+const effortFor = (k) => { try { return location === 'cloud' && leverOnFor('effort', pinned[k], rowLevers); } catch (e) { return refuse(e.message); } };
+const placed = Object.fromEntries(records.map((r) => [r.ticket, placement(r, location, { feature: featureRole(featureBatch, r.ticket), effort: effortFor(r.ticket) })]));
 
 say(`\nBATCH PLAN — ${records.length} ticket(s)\n${'='.repeat(60)}`);
 if (location === 'cloud') {
@@ -405,10 +496,11 @@ if (notOurs.length) {
   for (const r of notOurs) say(`  ${r.ticket}: assigned to ${r.assignee}`);
 }
 
-const ticketVerdict = (r) => (laneUnchecked(r) ? `PARK (lane ${r.lane}, UNCHECKED — the challenge could not read the code; confirm or re-lane)`
-  : needsPersonLane(r) ? `PARK (lane ${r.lane} — ${r.lane === 'D' ? `${designGap(r)}, so ` : ''}run manually)`
-  : sizeParked(r) ? `PARK (size ${String(r.size).toUpperCase()} — split it before batching)`
-  : designParked(r) ? `PARK (${designPark(r)})`
+const ticketVerdict = (r) => (elsewhere(r)?.unknown ? `NOT ADMITTED (${awayWhy(r)} — where does it run?)`
+  : elsewhere(r) ? `ELSEWHERE (${elsewhere(r).otherName ? elsewhere(r).ghRepo.split('/').pop() : elsewhere(r).repository})`
+  : stepParked(r) ? `PARK (${stepPark(r)})`
+  : ownPark(r) && held(r.ticket) ? `HELD (blocked by ${holdsOf(r.ticket).join(', ')} — until ${heldUntil(r.ticket)}, and parked: ${ownPark(r)})`
+  : ownPark(r) ? `PARK (${ownPark(r)})`
   : onCycle.has(r.ticket) ? `PARK (dependency cycle: ${onCycle.get(r.ticket)})`
   : held(r.ticket) ? `HELD (blocked by ${holdsOf(r.ticket).join(', ')} — starts once ${heldUntil(r.ticket)})`
   : 'ADMIT');
@@ -417,7 +509,8 @@ for (const r of order) {
   say(`\n${r.ticket}  lane ${r.lane}  size ${r.size ?? '-'}  ${ticketVerdict(r)}`);
   say(`  ${r.summary}`);
   say(`  branch: ${r.branch}`);
-  if (location === 'cloud' && admitted.includes(r)) say(`  runs: ${placed[r.ticket].where}${placed[r.ticket].why ? ` — ${placed[r.ticket].why}` : ''}`);
+  if (elsewhere(r) && !elsewhere(r).unknown) say(`  ~ ${awayWhy(r)}: admitted there, not here, when the queue is seeded`);
+  if (location === 'cloud' && admitted.includes(r)) say(`  ${runsText(placed[r.ticket])}`);
   if (r.needs_db) say(`  ! needs a database — ${DB_NOTE}`);
   if (co.length) say(`  ! collides with ${co.join(', ')} — must run sequentially`);
   for (const pa of r.prior_art ?? []) say(`  ! prior art: ${pa}`);
@@ -452,7 +545,7 @@ if (feature?.on) {
   }
 }
 
-const linted = ours.filter((r) => lintBlocking(r).length || r.lint_error);
+const linted = here.filter((r) => lintBlocking(r).length || r.lint_error);
 if (linted.length) {
   say(`\n${'='.repeat(60)}\nLINT — ${linted.length} ticket(s) a worker would park on; fix each ticket (desk-jira lint <KEY>) before spawning:`);
   for (const r of linted) say(`  ${r.ticket}: ${r.lint_error ? `lint did not run (${r.lint_error})` : `${lintBlocking(r).length} blocking finding(s)`}`);
@@ -460,6 +553,10 @@ if (linted.length) {
 if (sized.length) {
   say(`\n${'='.repeat(60)}\nPARKED ON SIZE (${sized.length}) — L and XL are split before they are batched:`);
   for (const r of sized) say(`  ${r.ticket}: size ${String(r.size).toUpperCase()}`);
+}
+if (stepped.length) {
+  say(`\n${'='.repeat(60)}\nYOUR STEPS (${stepped.length}) — labelled as your own step (config §4 Person-step or Person-input labels), so no worker spawns on them:`);
+  for (const r of stepped) say(`  ${r.ticket}: labelled ${stepLabel(r.labels, INPUT_LABELS) ?? stepLabel(r.labels, STEP_LABELS)}`);
 }
 if (undesigned.length) {
   say(`\n${'='.repeat(60)}\nPARKED ON DESIGN (${undesigned.length}) — snapshot each artifact before any worker starts:`);
@@ -484,10 +581,12 @@ for (const r of unchecked) {
   ask(r.ticket, `lane ${r.lane} is unchecked: its challenge could not read the code (${failedReads(r)}). Confirm lane ${r.lane}, or re-lane it to A, B or E`);
 }
 const qsOf = (r) => [...(r.unknowns ?? []), ...(added[r.ticket] ?? [])];
-// A parked ticket's own unknowns wait for whoever works it; only its lane question is asked now.
+// A parked ticket's own unknowns wait for whoever works it; only its lane and blocker questions are
+// asked now.
 const questions = [
   ...admitted.flatMap((r) => qsOf(r).map((u) => ({ ticket: r.ticket, q: u }))),
-  ...unchecked.flatMap((r) => (added[r.ticket] ?? []).map((u) => ({ ticket: r.ticket, q: u }))),
+  ...[...parked, ...sized].flatMap((r) => (added[r.ticket] ?? []).map((u) => ({ ticket: r.ticket, q: u }))),
+  ...unplaced.map((r) => ({ ticket: r.ticket, q: `${r.ticket} is not admitted here: ${awayWhy(r)}. Which repo does it run in? Admit it there (/desk-admit ${r.ticket}), or correct its Repository field and plan it again` })),
   ...featureQs.map((u) => ({ ticket: batchEpic, q: u })),
 ];
 say(`\n${'='.repeat(60)}`);
@@ -503,7 +602,13 @@ if (collisions.length) {
   say(`\nCOLLISIONS — ${collisions.length}:`);
   for (const c of collisions) say(`  ${c.a} ~ ${c.b}: ${c.shared.join(', ')}`);
 }
+if (appendOnly.bad) say(`\ncollisions: ${appendOnly.bad} — read as none`);
 
+const spawning = order.filter((r) => admitted.includes(r));
+if (spawning.length > 1) {
+  say(`\nSPAWN ORDER — ${KEEP_ORDER ? KEEP_ORDER_RULE : SPAWN_ORDER_RULE}`);
+  spawning.forEach((r, i) => say(`  ${i + 1}. ${r.ticket}  gates ${gates[r.ticket] ?? 0}, ${filesOf(r)} planned file(s)`));
+}
 if (merging.length) {
   say(`\nMERGE ORDER — largest blast radius first (${KIND_ORDER.join(', ')}):`);
   merging.forEach((r, i) => {
@@ -516,21 +621,23 @@ if (contradictions.length) {
   for (const c of contradictions) say(`  ${c}`);
 }
 
-if (depsArg) {
-  say(`\nDEPENDENCIES — from Jira links, the merge chain${feature?.on ? ' and the feature plan' : ''} (held tickets start once every blocker's PR merges):`);
-  for (const [t, ps] of Object.entries(preds)) say(`  ${t} held: blocked by ${heldBy(t)}`);
-  say(`--deps "${depsArg}"`);
-  say('Pass it to merge-driver.sh as it stands: it already carries the merge chain (one entry per successor, predecessors unioned).');
+if (Object.keys(preds).length) {
+  say(`\nDEPENDENCIES — from Jira links, the merge chain${feature?.on ? ' and the feature plan' : ''} (held tickets start once every blocker's PR merges; a parked one stays parked):`);
+  for (const [t] of Object.entries(preds)) say(`  ${t} held${liveKeys.has(t) ? '' : ', and parked'}: blocked by ${heldBy(t)}`);
+  if (depsArg) {
+    say(`--deps "${depsArg}"`);
+    say('Pass it to merge-driver.sh as it stands: it already carries the merge chain (one entry per successor, predecessors unioned).');
+  }
 }
-const unkinded = ours.filter((r) => laneOk(r) && !kindOf(r)).map((r) => r.ticket);
+const unkinded = here.filter((r) => laneOk(r) && !kindOf(r)).map((r) => r.ticket);
 if (unkinded.length) say(`\n! no change kind on ${unkinded.length} ticket(s): ${unkinded.join(', ')} — ordered as surface work; re-run triage.sh to record one`);
-const unsized = ours.filter((r) => laneOk(r) && !r.size).map((r) => r.ticket);
+const unsized = here.filter((r) => laneOk(r) && !r.size).map((r) => r.ticket);
 if (unsized.length) say(`\n! no size on ${unsized.length} ticket(s): ${unsized.join(', ')} — they run on their lane; size them (desk-jira's scale) so anything L or bigger is split`);
 if (otherLinks) say(`\n! ${otherLinks} Jira link(s) of another type ignored — only Blocks ("is blocked by") is honoured`);
 
-// Seed the queue in spawn order: blockers first, then the order the tickets were named in (pass
-// gates first). A ticket that collides with another is marked so the spawn loop will not run them
-// together. Park precedence: lane, size, cycle, then the dependency hold.
+// Seed the queue in spawn order (`order`). A ticket that collides with another is marked so the spawn
+// loop will not run them together. Park precedence: lane, size, cycle, then the dependency hold. A lane, size or design park
+// keeps its blockers in held_by beside it, so nothing releases it while its own park stands.
 // In feature mode nothing is seeded until the spine is filed and planned and the owner table is
 // settled: seeded without them, every child would start with nothing held behind the spine.
 const featureUnsettled = feature?.on && (!feature.filed || featureQs.length)
@@ -538,6 +645,7 @@ const featureUnsettled = feature?.on && (!feature.filed || featureQs.length)
     : !feature.filed ? 'the spine is not filed and planned: file it once approved, triage it, set its key as spine in feature.json and plan it with the rest'
       : `${featureQs.length} question(s) on the owner table: settle them in feature.json`)
   : null;
+const handFailed = [];  // needs_person entries for tickets the other repo did not admit
 if (process.env.AUTOPILOT_WRITE_QUEUE && featureUnsettled) refuse(`feature mode is on for ${batchEpic}, so the queue is not seeded: ${featureUnsettled}, then re-run plan-batch`);
 if (process.env.AUTOPILOT_WRITE_QUEUE) {
   // pass.mjs reads this decision rather than re-deriving it from feature.json, which can name the
@@ -548,8 +656,17 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
   const spineIds = feature?.on ? feature.criteria.map((c) => c.id).filter((id) => feature.plan.owners?.[id] || !feature.plan.untestable?.[id]) : null;
   execFileSync('node', [QUEUE, 'set-batch', `feature=${feature?.on === true}`, `spine=${feature?.on ? feature.spine : 'null'}`,
     `spine_ids=${spineIds ? JSON.stringify(spineIds) : 'null'}`, `owners=${feature?.on ? JSON.stringify(feature.plan.owners ?? {}) : 'null'}`], { stdio: 'ignore' });
+  // An epic's children are in this queue before its plan is seeded (epic-plan.mjs startEpic): one that
+  // runs in another repo is taken out, or its dependants here would wait on it as an in-batch blocker.
+  let queued = {};
+  try { queued = JSON.parse(readFileSync(queueFile(), 'utf8')).tickets ?? {}; } catch { /* no queue to take it out of */ }
+  const takenOut = [];
   for (const r of order) {
     const t = r.ticket;
+    if (elsewhere(r)) {
+      if (queued[t]) { execFileSync('node', [QUEUE, 'drop', t], { stdio: 'ignore' }); takenOut.push(t); }
+      continue;
+    }
     execFileSync('node', [QUEUE, 'add', t, r.type ?? 'Bug', r.lane], { stdio: 'ignore' });
     const runnable = admitted.includes(r) && !held(t) && !designParked(r);
     const sets = [
@@ -557,19 +674,24 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
       `state=${runnable ? 'triaged' : 'parked'}`,
       `collides_with=${collidesWith(t).join('|') || 'null'}`,
       `open_questions=${laneOk(r) ? qsOf(r).length : (r.unknowns ?? []).length}`,
+      // The questions plan-batch adds are printed and nowhere else: the decider reads them here.
+      `plan_questions=${laneOk(r) && added[t]?.length ? JSON.stringify(added[t]) : 'null'}`,
       `held_by=${held(t) ? holdsOf(t).join('|') : 'null'}`,
       `held_outside=${outsideHolds[t]?.length ? outsideHolds[t].join('|') : 'null'}`,
+      `merge_after=${mergeAfter[t]?.length ? mergeAfter[t].join('|') : 'null'}`,
       `location=${placed[t].where === 'cloud' ? 'cloud' : 'null'}`,
     ];
     execFileSync('node', [QUEUE, 'set', t, ...sets], { stdio: 'ignore' });
-    const park = lanePark(r)
-      ?? (sizeParked(r) ? `size ${String(r.size).toUpperCase()} — split it before batching`
+    const park = stepPark(r) ?? lanePark(r)
+      ?? (sizeParked(r) ? sizePark(r.size)
       : designParked(r) ? designPark(r)
       : onCycle.has(t) ? `dependency cycle: ${onCycle.get(t)} — ${cycleFix(onCycle.get(t))}`
       : held(t) ? `held by orchestrator: blocked by ${heldBy(t)} — starts once ${heldUntil(t)}`
       : null);
     if (park) execFileSync('node', [QUEUE, 'park', t, park], { stdio: 'ignore' });
   }
+  // add leaves a ticket already queued (an epic's admitted children) where it was, so the order is laid over them too.
+  execFileSync('node', [QUEUE, 'order', ...order.filter((r) => !elsewhere(r)).map((r) => r.ticket)], { stdio: 'ignore' });
   // Seeding admits the batch, so the calls taken on triage's judgement are logged now, as intake logs
   // a record's calls when it admits the ticket.
   if (taken.length) {
@@ -578,13 +700,24 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
     appendDecisions(taken.map(({ ticket, decision }) => decisionEntry({ decision, ticket, run: 'plan-batch', repo, source: 'triage' })), STATE);
   }
   say('\nqueue seeded.');
+  if (takenOut.length) say(`taken out of this queue, since each runs in another repo: ${takenOut.join(', ')}`);
+  if (handed.length) say(`\nELSEWHERE — ${handed.length} ticket(s) admitted into the repo their Jira Repository names, not this queue:`);
+  for (const r of handed) {
+    const h = handOver(r);
+    if (h.ok) say(`  ${r.ticket} → ${elsewhere(r).ghRepo}: ${h.line}`);
+    else {
+      say(`  ${r.ticket} → ${elsewhere(r).ghRepo}: NOT ADMITTED (${h.why}). Admit it there: ${h.cmd}`);
+      handFailed.push({ ticket: r.ticket, why: 'question', detail: `${r.ticket} was not admitted in ${elsewhere(r).ghRepo} (${h.why}): admit it there with ${h.cmd}` });
+    }
+  }
 }
 
 // ---- verdict -------------------------------------------------------------
 // Everything the person settles before Stage 3, so the orchestrator branches on this rather than on
 // the plan's wording: each question, each ticket a worker would park on for its lint, each lane C or D
 // park whose challenge did not confirm it, and each park (lane, size, cycle; a hold is not one).
-const cycled = ours.filter((r) => onCycle.has(r.ticket));
+// A park of its own is listed once, as that park.
+const cycled = ours.filter((r) => onCycle.has(r.ticket) && !parked.includes(r) && !sized.includes(r));
 const needsPerson = [
   ...questions.map((q) => ({ ticket: q.ticket, why: 'question', detail: q.q })),
   ...linted.map((r) => ({ ticket: r.ticket, why: 'lint',
@@ -592,7 +725,8 @@ const needsPerson = [
   ...parked.filter((r) => r.lane_challenge?.verdict !== 'CONFIRM').map((r) => (laneUnchecked(r)
     ? { ticket: r.ticket, why: 'challenge_inconclusive', detail: `lane ${r.lane} is unchecked, reads failed: ${failedReads(r)}` }
     : { ticket: r.ticket, why: 'challenge_not_run', detail: `lane ${r.lane} is unreviewed: ${r.lane_challenge?.reason ?? 'no challenge recorded'}` })),
-  ...[...parked, ...sized, ...undesigned, ...cycled].map((r) => ({ ticket: r.ticket, why: 'parked', detail: ticketVerdict(r) })),
+  ...[...stepped, ...parked, ...sized, ...undesigned, ...cycled].map((r) => ({ ticket: r.ticket, why: 'parked', detail: ticketVerdict(r) })),
+  ...handFailed,
   ...(feature?.on && !feature.filed ? [{ ticket: batchEpic, why: 'feature_plan',
     detail: feature.plan ? 'approve the drafted spine and owner table, then file the spine under the epic and plan it with the rest' : `draft the spine and the owner table into ${featurePath}, then re-run plan-batch` }] : []),
 ];

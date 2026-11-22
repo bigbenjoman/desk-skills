@@ -78,8 +78,16 @@ t('DS-328 AC1 typecheck and specs re-run after the rebase', n5.includes('**Re-ru
 t('DS-328 AC2 a hand-written resolution gets a fresh desk-review before the push', n5.includes('**A fresh `desk-review` at the new head, before you push**'), true);
 t('DS-328 AC3 it parks only when both sides cannot stand, naming the files and the decision', n5.includes('**Park only when the two sides cannot both stand**') && n5.includes('Park naming the files and the decision needed'), true);
 t('DS-328 AC3 the core keeps only that park', core.includes('- **A merge conflict only a product or design call settles** (Stage 5 file, §4).'), true);
-t('DS-571 AC1 a screenshot park checks the whole app with drift --app first', n5.includes('Before any park on it, run `desk-env drift --app <its directory>`: it prints every §4 row the app lacks, `NODEV` (Dev server) and `NOENV` (Env files), each with the value to add'), true);
-t('DS-571 AC1 and parks once naming every row drift printed, each with its value', n5.includes('park once naming every row `drift --app` printed, and only those, each with its value') && n5.includes('"config:env-files": "<what desk-env get env-files prints>"'), true);
+t('DS-571 AC1 a screenshot park checks the whole app with drift --app first', n5.includes('Before any park on it, run `desk-env drift --app <its directory>`: it prints every §4 row the app lacks, `NODEV` (Dev server), `NOENV` (Env files) and `NOSIGNIN` (Test sign-in), each with the value to add'), true);
+t('DS-571 AC1 and parks once naming every row drift printed, each with its value', n5.includes('park once naming every row `drift --app` printed, and only those, each with its value') && n5.includes('one `"config:<row id>": "<what desk-env get <row id> prints>"` for each row it names (`dev-cmd`, `env-files`, `test-signin`), and no other row'), true);
+// DS-804: a configured second app is never reported missing, and one with a sign-in user is captured locally.
+t('DS-804 AC2 a row of several items is read whole, never with get', n5.includes('`desk-env cmds dev-cmd`, `desk-env list env-files` and `desk-env cmds test-signin` print every app\'s item; `desk-env get` prints only a row\'s first')
+  && n5.includes('An app `drift --app` does not name for a row has that row: a park never says it is missing.'), true);
+t('DS-804 AC1 an app with a Dev server and a Test sign-in item is captured locally, signed in, without parking', n5.includes('**A Dev server item and a Test sign-in item for the app?** Capture from your own dev server on your port, signed in as that user')
+  && n5.includes('never park for a preview you cannot sign in to'), true);
+t('DS-804 AC5 a key that is not a development instance\'s parks naming the env file and the reason', n5.includes('that is a park naming the env file and the reason') && n5.includes('holds a CLERK_SECRET_KEY that is not a development instance\'s (sk_test_)'), true);
+t('DS-804 AC6 the one park names the Test sign-in row with its value', n5.includes('§4 Test sign-in "apps/portal: <email of an existing development user who holds the app\'s grant>"')
+  && n5.includes('a page behind sign-in and no §4 Test sign-in item for it?'), true);
 t('DS-571 AC2 an app missing only its env files names that row alone', n5.includes('parks the same way, naming the Env files row alone.'), true);
 t('DS-328 AC4 without git-force-with-lease a pushed branch merges the default branch in', n5.includes('with `git-force-with-lease` not `yes` takes `git merge origin/<default>` instead: no rebase, no force push.'), true);
 
@@ -94,7 +102,7 @@ for (const f of formFiles) {
   t(`DS-338 AC3 the core routes to ${f} early`, to.length > 0, true);
   t(`DS-338 AC3 ${f} is read early at any stage, not only before it`, to.some((b) => b.includes('at any stage') && !/before Stage/.test(b)), true);
 }
-t('DS-338 AC1 the command forms hold the dev server\'s allowed form', formFiles.some((f) => /`nolock` for everything else \(lint, build, codegen, dev server\)/.test(read(f).replace(/\s+/g, ' ')) && read(f).includes('pass the port as an argument')), true);
+t('DS-338 AC1 the command forms hold the dev server\'s allowed form', formFiles.some((f) => /`nolock` for everything else \(build, codegen, dev server\)/.test(read(f).replace(/\s+/g, ' ')) && read(f).includes('pass the port as an argument')), true);
 t('DS-338 AC1 the core\'s table says the Stage 3 file holds the dev server\'s form', core.includes('§6 the command forms you may run, a dev server\'s too'), true);
 // Where a worker reads how to park, the core states the allowed park inputs form.
 t('DS-337 AC3 the core states park inputs are flat, lists allowed', core.includes('`AUTOPILOT_PARK_INPUTS: {…}` (flat; lists ok)'), true);
@@ -107,7 +115,7 @@ t('DS-335 AC1 under autopilot-judgement yes it opens the draft and posts the rev
 t('DS-368 AC1 from round 2 a round reads only the fix range since the previous round',
   stage4.includes('from round 2 a round reads **only the fix range**, the commits since the previous round\'s reviewed SHA') && stage4.includes('from round 2, the previous round\'s reviewed SHA'), true);
 t('DS-368 AC1 only round 1 fixes a P2', stage4.includes('- **P0, P1 or P2 on round 1**: fix it'), true);
-t('DS-368 AC2 round 2 carries its P2s as round 3 does', stage4.includes('- **Round 2 or 3, only P2s**: **carry them, do not park.**') && stage4.includes('it exists only from round 2, only for a P2'), true);
+t('DS-368 AC2 round 2 carries its P2s as round 3 does', stage4.includes('- **Round 2 or 3, only P2s**: **carry them, do not park.**') && stage4.includes('only a P2 is carried, from round 2 or when split'), true);
 t('DS-368 AC3 a round-2 P0 or P1 is fixed and round 3 runs on the fix range', stage4.includes('- **Round 2, a P0 or P1**: fix it, then run round 3 on the fix range since round 2\'s reviewed SHA.'), true);
 t('DS-335 AC1 and parks when no review is posted for the pass to read', stage4.includes('Where §3 `pr-self-review-comment` is not `yes` there is no posted review for the pass to read, so it parks as above.'), true);
 
@@ -129,23 +137,49 @@ t('DS-356 AC1 the Stage 3 workflow-dispatch rule points at the Stage 4 rule',
 const lockRule = stage4.split('**A run the lock has not started in 20 minutes is skipped; a busy lock is never a park.**')[1]?.split(' The typecheck takes the same lock')[0] ?? '';
 t('DS-587 AC1 the Stage 4 file skips a run the lock has not started in 20 minutes, and never parks on it', lockRule !== '' && !/\bpark/.test(lockRule), true);
 t('DS-587 AC1 it stops the queued run and records the suite as not run locally because the lock was busy',
-  lockRule.includes('`TaskStop` it') && lockRule.includes('Record each suite in your verification and the PR\'s Testing as `not run locally: test lock busy (<holder>); CI\'s required tests cover it`') && lockRule.includes('and carry on.'), true);
+  lockRule.includes('At 20 minutes waiting it stops the run and prints the line to record') && lockRule.includes('record each suite in your verification and the PR\'s Testing as `not run locally: test lock busy (<holder>); CI\'s required tests cover it`') && lockRule.includes('and carry on.'), true);
 t('DS-587 AC2 it logs one engineering decision naming the suites and the lock holder',
-  lockRule.includes('note the holder') && lockRule.includes('print one `engineering` `AUTOPILOT_DECISION` naming them and the holder'), true);
-t('DS-587 AC3 it commits its work before stopping the run and carrying on', /commit all your work, `TaskStop` it/.test(lockRule), true);
+  lockRule.includes('print one `engineering` `AUTOPILOT_DECISION` naming them and the holder'), true);
+t('DS-587 AC3 it commits its work before carrying on', /commit all your work, record each suite/.test(lockRule), true);
 t('DS-587 AC4 a run that started is not skipped: its failures are fixed', lockRule.includes('A started run is yours: fix what fails.'), true);
-t('DS-587 AC4 silence is not proof of a queued run: it has not started only while the wrapper or its flock has no child running the command',
-  lockRule.includes('Silence is not proof: it has not started while `ps -ww -axo pid,ppid,etime,args` shows your `with-lock.sh`, or its `flock … desk-test.lock`, with no child running your command.') && !lockRule.includes('no suite output'), true);
-t('DS-587 AC2 the holder is found on every lock path: a live holder file, else the single-slot flock with a child',
-  lockRule.includes('a live pid in `desk-test.lock*{.pid,.d/pid}` in `DESK_LOCK_DIR`, else the `flock … desk-test.lock` that has a child.') && !lockRule.includes('or `*.d/pid`'), true);
+t('DS-705 AC1 a backgrounded run is waited on in one desk-wait call inside the Bash timeout, never a ps, tail or TaskStop loop',
+  lockRule.includes('Give each run the Bash `timeout` 600000.') && lockRule.includes('never a `ps`, `tail` or `TaskStop` loop: `~/.claude/desk/bin/desk-wait.mjs <its output file> --max 540`, same `timeout`.') && !lockRule.includes('`TaskStop` it'), true);
+t('DS-705 AC1 it names the three answers and calls again on the two that are not done',
+  lockRule.includes('Call again on `started <pid>` or `waiting (<holder>) <min>`; `done ?` ends it with its last 30 lines.'), true);
+t('DS-705 a run the tool timeout moved to the background is waited on with desk-wait, not stopped and rerun',
+  stage4.includes('background is still yours: wait for it with `desk-wait.mjs`, above;') && !stage4.includes('stop it with `TaskStop` and run it again'), true);
+t('DS-705 a server, which never ends, is still stopped with TaskStop',
+  stage4.includes('above; stop a server with `TaskStop`.'), true);
 t('DS-587 the typecheck and lint follow the same rule', lockRule.includes('A typecheck or lint does the same.'), true);
 t('DS-587 AC5 the refused with-lock.sh rule is unchanged',
   stage4.includes('If `with-lock.sh` is refused, check headroom, drop to the lower cap, and **say in your output that you ran unlocked**.'), true);
 t('DS-587 the Stage 4 file no longer only says to report a long wait', /Blocked (over|more than) ~20 minutes/.test(stage4), false);
 const notes = read('batch-notes-header.md').replace(/\s+/g, ' ');
 t('DS-587 batch-notes-header states the same rule, so the stricter-wins reading agrees',
-  notes.includes('A busy lock is never a park: once your run has waited 20 minutes without starting, commit your work, stop it (`TaskStop`), record the suite as "not run locally: test lock busy (<holder>); CI\'s required tests cover it", log an engineering decision naming the suite and the holder, and carry on.') && !/Blocked (over|more than) ~20 minutes/.test(notes), true);
+  notes.includes('A busy lock is never a park: once your run has waited 20 minutes without starting, `desk-wait.mjs` stops it and prints the holder: commit your work, record the suite as "not run locally: test lock busy (<holder>); CI\'s required tests cover it", log an engineering decision naming the suite and the holder, and carry on. Wait on a backgrounded run with that one call, never a `ps`, `tail` or `TaskStop` loop.') && !/Blocked (over|more than) ~20 minutes/.test(notes), true);
+t('DS-855 AC1 the command forms run every lint item under the tsc lock, at the root too',
+  formFiles.some((f) => read(f).replace(/\s+/g, ' ').includes('`tsc` for §4 Typecheck and §4 Lint (never bare, even at the root)')), true);
+t('DS-855 a lint binary in node_modules runs under the tsc lock, not bare',
+  formFiles.some((f) => read(f).replace(/\s+/g, ' ').includes('eslint, biome, oxlint, stylelint so under `with-lock.sh tsc`'))
+  && !formFiles.some((f) => /A lint or format tool \(eslint/.test(read(f).replace(/\s+/g, ' '))), true);
+t('DS-855 AC2 batch-notes-header names lint with suites and typechecks on the one lock',
+  notes.includes('serialises suites, typechecks *and* lints on one lock') && notes.includes('run every §4 Lint item through `with-lock.sh tsc`**, at the root as well as in a directory, and a targeted run'), true);
 t('DS-587 AC5 batch-notes-header keeps its refused with-lock.sh rule', notes.includes('**If `with-lock.sh` is itself refused, say so explicitly** ("ran unlocked") and drop to the lower cap.'), true);
+
+// DS-839: a park is the park file and the marker, with no step that messages the orchestrator, and a
+// gated write's exact text goes in the park file's approve.
+{
+  const steps = core.split('When the call parks, or `desk-ticket` says stop and wait for anything else:')[1]?.split('**A park asking for a file**')[0] ?? '';
+  t('DS-839 AC5 the park steps write the park file and end the turn', steps.includes('**Write the park file**') && steps.includes('**End your turn.**'), true);
+  t('DS-839 AC5 and no step messages the orchestrator', /SendMessage|ListAgents|notify_when_idle/.test(steps), false);
+  t('DS-839 AC5 no contract file tells a worker to message the orchestrator', files.some((f) => /SendMessage` the orchestrator|notify_when_idle/.test(read(f))), false);
+  t('DS-839 AC1 the park file carries the approve object with kind, target and the exact body',
+    steps.includes('`"approve": {"kind": "jira-comment", "target": "<ticket, or PR number>", "body": "<the exact text>"}`'), true);
+  const flat = steps.replace(/\s+/g, ' ');
+  t('DS-887 AC1 and AC2 the park steps print the marker, and a re-invoked worker reads its answer file before it continues',
+    flat.includes('`AUTOPILOT_PARK: <one-line question>`') && flat.includes('the answer file named in yours if you are invoked again: read it, continue'), true);
+  t('DS-839 AC1 Stage 8 puts a comment it may not post in the park file\'s approve', read('worker-contract-stage-8.md').replace(/\s+/g, ' ').includes('write the park file with the same body as its `approve`'), true);
+}
 
 // AC4: each heading of the contract before the split is in exactly one of the new files.
 const before = readFileSync(join(root, 'tests/fixtures/worker-contract-before-split.md'), 'utf8');
@@ -193,6 +227,22 @@ const REWRITTEN = [
   ['DS-587', 'A parallel test runner (Jest, Vitest and most others) sizes itself', 1],
   ['DS-587', 'For an item at the root (`<DIR>` `.`), `with-lock.sh test <CMD> …` works as well.', 1],
   ['DS-587', 'A brief spike is fine: sustained time up there is what hurts.', 1],
+  // a park is its park file, with a gated write's exact text as `approve`, and never a message
+  ['DS-839', '1. **Print the question**', 1],
+  ['DS-839', '`SendMessage` the orchestrator with `notify_when_idle: true`', 1],
+  ['DS-839', '3. If you are re-invoked, read the answer file', 1],
+  ['DS-839', '4. Otherwise **end your turn**.', 1],
+  ['DS-839', 'target, fields, the exact body), then `AUTOPILOT_PARK`.', 1],
+  ['DS-839', 'record, `{"question": "<one line>"}`) and', 1],
+  // shortened to fit the core's cap: the payload also goes in the park file as `approve` (Stage 8 file)
+  ['#775', '(the exact Jira text, the PR body, the diff, whatever needs approving)', 1],
+  ['#775', 'read-only to you apart from your park and image files', 1],
+  // shortened to fit the push-nothing region in the Stage 4 file's cap; the briefing's batch notes assign the port
+  ['DS-889', 'kill a server you did not start, it is likely another session\'s.', 1],
+  ['DS-889', 'it posts at a head nothing has reviewed.', 1], // the verdict rule shortened; desk-review phase-7-post.md holds it whole
+  // shortened to fit the Stage 3 file's cap: a hung call now ends at its timeout, and desk-review's Phase 4 holds UNREFUTED
+  ['DS-857', 'heartbeating into your log so the orchestrator cannot see the stall', 1],
+
 ];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
 const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));

@@ -19,6 +19,7 @@ import { markedResult, answers } from './decider.mjs';
 import { NOT_NOW } from './not-now.mjs';
 import { admissionRefusal } from './gate.mjs';
 import { callLogin } from './call-login.mjs';
+import { writeJsonAtomic } from './dir-lock.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DRAFT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -58,6 +59,27 @@ function runLater(cmd, args, env, opts = {}) {
 }
 export const triageRun = (key, env) => runLater(join(HERE, 'triage.sh'), [key], env);
 
+// The wait before an epic child's failed triage is run again.
+const retryEnv = process.env.DESK_TRIAGE_RETRY_MS;
+export const TRIAGE_RETRY_MS = retryEnv != null && retryEnv !== '' && Number(retryEnv) >= 0 ? Number(retryEnv) : 60_000;
+
+// What a triage.sh run `t` that left no record failed on, from how it ended and its last stderr line:
+// 'timeout', 'auth', 'lint' (its record was refused as malformed) or 'unknown'.
+export function triageErrorClass(t) {
+  const line = String(t?.stderr ?? '').trim().split('\n').pop() ?? '';
+  if (t?.signal || [124, 137].includes(t?.status) || /\btimed? ?out\b/i.test(line)) return 'timeout';
+  if (/\b(401|403)\b|\blog ?in\b|\bsign(ed)? (it )?in\b|unauthori[sz]ed|authenticat/i.test(line)) return 'auth';
+  if (/malformed|\blint\b/i.test(line)) return 'lint';
+  return 'unknown';
+}
+
+// The children a start of the epic triaged in full, in its state's triage/kept.json ({KEY: {base, at}}),
+// whose records a later start of the same epic reuses. Only a triage.sh run that exited 0 is listed, so
+// a record it had not finished or had refused is never reused; one triaged on another base, or longer
+// ago than KEPT_TRIAGE_MS (its assignee or text may have changed since), is triaged again.
+const KEPT = 'kept.json';
+export const KEPT_TRIAGE_MS = 6 * 60 * 60 * 1000;
+
 // In a batch's state from its start until it is handed to the supervisor. A start killed in between
 // (the supervisor's intake timeout) never reaches its discard, so the next one finds this left behind
 // by a pid that has exited.
@@ -77,7 +99,7 @@ export function clearAbandoned() {
     try { supervised = readQueue(b.queue).supervised === true; } catch { /* unreadable: batch.mjs discard says so */ }
     // Cut off after the hand-over: the batch is whole, and only the mark is left.
     if (supervised) { rmSync(join(b.state, START_MARK), { force: true }); continue; }
-    const d = node('batch.mjs', ['discard', b.name], batchEnv(b.name));
+    const d = node('batch.mjs', ['discard', b.name, '--keep-triage'], batchEnv(b.name));
     out.push({ batch: b.name, text: `feature batch ${b.name}'s start was cut off (pid ${m.pid}) before it was handed to the supervisor: ${d.status === 0 ? 'discarded' : `not discarded (${lastLine(d)})`}` });
   }
   return out;
@@ -316,12 +338,20 @@ export function readDraft(text) {
   return s ? { ...s, cost } : { why: 'the drafter gave no spine draft or owner table' };
 }
 
-// One headless session with no tools, answering `prompt`: the spawn result. It runs on a Claude login
-// that is not benched (call-login.mjs), or as the caller does when every one is.
+// One headless session with no tools, answering `prompt`: the spawn result. It runs on the repo's
+// subscription (call-login.mjs), at its limit too. A subscription no login here is signed in to runs
+// none: `refused` is the failed result the caller reports, and nothing falls back to the caller's login.
 const headlessArgs = (prompt) => ['-p', prompt, '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config',
   '--permission-mode', 'dontAsk', '--tools', '', '--max-budget-usd', String(DRAFT_BUDGET_USD)];
-export const headlessEnv = (env) => callLogin({ env }).env;
-const headless = (claude, prompt, env) => run(claude, headlessArgs(prompt), headlessEnv(env), { timeout: DRAFT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] });
+const headlessCall = (env) => {
+  const c = callLogin({ env });
+  return c.refuse ? { env: null, refused: { status: 1, stdout: '', stderr: `not run: ${c.refuse}` } } : { env: c.env, refused: null };
+};
+export const headlessEnv = (env) => headlessCall(env).env;
+const headless = (claude, prompt, env) => {
+  const c = headlessCall(env);
+  return c.refused ?? run(claude, headlessArgs(prompt), c.env, { timeout: DRAFT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] });
+};
 
 // One headless session drafts the plan: {plan} or {why}.
 async function draft({ epic, state, children, env, claude }) {
@@ -329,7 +359,8 @@ async function draft({ epic, state, children, env, claude }) {
   const expansion = readJson(join(state, 'expansion.json'), {});
   const prompt = draftPrompt({ epic, epicText: epicText.status === 0 ? epicText.stdout : '', criteria: expansion.criteria, children, fields: fieldsSection(DRAFT_FIELDS, env) });
   writeFileSync(join(state, 'plan-draft.prompt.md'), prompt);
-  const r = await runLater(claude, headlessArgs(prompt), headlessEnv(env), { timeout: DRAFT_TIMEOUT_MS });
+  const c = headlessCall(env);
+  const r = c.refused ?? await runLater(claude, headlessArgs(prompt), c.env, { timeout: DRAFT_TIMEOUT_MS });
   if (r.error || r.status !== 0) return { why: `the plan drafter failed (${lastLine(r)})` };
   const p = readDraft(r.stdout);
   return p.why ? p : { plan: { epic, spine: null, draft: p.draft, owners: p.owners, contributors: p.contributors, untestable: p.untestable }, cost: p.cost };
@@ -359,6 +390,8 @@ export const planQuestion = (epic, n, path, feature, ask = null) => `${FEATURE_P
 // its plan for the person. -> {batch, children, lines} or {why}; a `why` has left no batch behind, and
 // carries `limited`, the child's triage.sh run, when that triage stopped at a usage limit (exit 3).
 // `say` is called with each of `lines` as it happens, and as each child's triage starts and ends.
+// A child whose triage fails is run once more after TRIAGE_RETRY_MS, and a second failure is refused
+// naming its triageErrorClass.
 export async function startEpic(key, rec, { by = 'hand', claude = 'claude', say = () => {} } = {}) {
   const branch = rec?.branch;
   if (!branch) return { why: `its triage record names no branch for the feature batch: run /desk-autopilot ${key}` };
@@ -373,8 +406,9 @@ export async function startEpic(key, rec, { by = 'hand', claude = 'claude', say 
   const lines = [];
   const tell = (line) => { lines.push(line); say(line); };
   tell(`started feature batch ${key} on ${branch}, beside the standing batch`);
+  // The children's triage records outlive the discard, so admitting the epic again triages only the rest.
   const discard = (why) => {
-    const d = node('batch.mjs', ['discard', key], env);
+    const d = node('batch.mjs', ['discard', key, '--keep-triage'], env);
     return { why: `${why}; batch ${key} ${d.status === 0 ? 'discarded' : `not discarded (${lastLine(d)})`}` };
   };
 
@@ -385,14 +419,39 @@ export async function startEpic(key, rec, { by = 'hand', claude = 'claude', say 
   if (!children.length) return discard(`expand-parent named no children of ${key}`);
 
   const recs = {};
+  const keptPath = join(state, 'triage', KEPT);
+  const keptList = readJson(keptPath, {});
   for (const c of children) {
-    const began = Date.now();
-    say(`triage: started ${c} in batch ${key}`);
-    // eslint-disable-next-line no-await-in-loop
-    const t = await triageRun(c, env);
-    const r = t.status === 0 ? readJson(join(state, 'triage', `${c}.json`), null) : null;
-    say(triageDone(c, r, Date.now() - began));
-    if (!r) return { ...discard(`child ${c} could not be triaged (${t.status === 0 ? 'triage wrote no record' : lastLine(t)})`), ...(t.status === 3 ? { limited: t } : {}) };
+    const recPath = join(state, 'triage', `${c}.json`);
+    const k = keptList[c];
+    const kept = k?.base === branch && Date.now() - Date.parse(k.at) < KEPT_TRIAGE_MS ? readJson(recPath, null) : null;
+    if (kept) {
+      say(`triage: kept ${c}'s record from an earlier start of batch ${key}`);
+      recs[c] = kept;
+      continue;
+    }
+    // Unlisted before triage.sh replaces the record, so a run that then fails leaves nothing listed.
+    if (k) { delete keptList[c]; writeJsonAtomic(keptPath, keptList); }
+    let t, r;
+    for (let tries = 1; ; tries += 1) {
+      const began = Date.now();
+      say(`triage: started ${c} in batch ${key}`);
+      // eslint-disable-next-line no-await-in-loop
+      t = await triageRun(c, env);
+      r = t.status === 0 ? readJson(recPath, null) : null;
+      say(triageDone(c, r, Date.now() - began));
+      // A usage limit does not lift in a minute, so it is never retried.
+      if (r || t.status === 3 || tries > 1) break;
+      say(`triage: ${c} failed (${triageErrorClass(t)}), so it is tried once more in ${elapsed(TRIAGE_RETRY_MS)}`);
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((res) => { setTimeout(res, TRIAGE_RETRY_MS); });
+    }
+    if (!r) {
+      if (t.status === 3) return { ...discard(`child ${c} could not be triaged (${lastLine(t)})`), limited: t };
+      return discard(`child ${c} could not be triaged, twice (${triageErrorClass(t)}: ${t.status === 0 ? 'triage wrote no record' : lastLine(t)})`);
+    }
+    keptList[c] = { base: branch, at: new Date().toISOString() };
+    writeJsonAtomic(keptPath, keptList);
     recs[c] = r;
   }
   const never = untriggeredOn(branch, children.map((c) => recs[c].branch ?? null));
@@ -417,8 +476,8 @@ export async function startEpic(key, rec, { by = 'hand', claude = 'claude', say 
   mkdirSync(state, { recursive: true });
   writeFileSync(planPath, `# The plan for ${key}\n\n${[].concat(v.message ?? []).join('\n')}\n${ask ? `\nBefore it can start, ${ask}.\n` : ''}`);
   const q = queueIn(env);
-  // A child parked for its own reason (a lane C or D park, a size) cannot be held as well: it waits on that.
-  const admit = (c) => (q(['admit', c, '--by', by, '--hold', key]) && q(['admit', c, '--by', by]));
+  // A child parked for its own reason (a lane C or D park, a size) keeps that park, its hold beside it.
+  const admit = (c) => q(['admit', c, '--by', by, '--hold', key]);
   const why = q(['add', key, 'Epic', EPIC_LANE])
     ?? q(['park', key, planQuestion(key, children.length, planPath, wantsPlan, ask)])
     ?? children.reduce((w, c) => w ?? admit(c), null)
@@ -578,9 +637,16 @@ function startPlan({ epic, state, env, children }) {
   // triaged; it is cleared so the queue says what the ticket waits on.
   const after = readQueue(env.DESK_QUEUE);
   const stale = Object.values(after.tickets ?? {}).filter((t) => t.key !== epic && t.state === 'triaged' && t.park);
-  const why = stale.reduce((w, t) => w ?? q(['set', t.key, 'park=null']), null) ?? q(['drop', epic]);
+  // A child the seed took out of this queue while still asking the person about it (one its own repo
+  // refused to admit, say) has no park of its own for needs-you or the digest to read, so the epic stays,
+  // parked on those asks, rather than leaving the queue with them unread. No worker takes an epic.
+  const away = (sv.needs_person ?? []).filter((n) => n.ticket !== epic && children.includes(n.ticket) && !after.tickets?.[n.ticket]);
+  const keys = [...new Set(away.map((n) => n.ticket))];
+  const ask = keys.length ? `${epic}'s feature batch started without ${keys.join(', ')}, which ${keys.length === 1 ? 'needs' : 'need'} you: ${away.map((n) => n.detail).join('; ')}. Once settled, take ${epic} out of this queue: no worker has work on it` : null;
+  const why = stale.reduce((w, t) => w ?? q(['set', t.key, 'park=null']), null) ?? (ask ? q(['park', epic, ask]) : q(['drop', epic]));
   if (why) return { why: `its queue could not be written (${why})` };
-  return { lines: [`${epic}'s feature batch started on ${after.base ?? 'its feature branch'}${spine ? `, with its spine ${spine} first` : ''}: ${children.length} ${children.length === 1 ? 'child' : 'children'} seeded by plan-batch`] };
+  return { lines: [`${epic}'s feature batch started on ${after.base ?? 'its feature branch'}${spine ? `, with its spine ${spine} first` : ''}: ${children.length} ${children.length === 1 ? 'child' : 'children'} seeded by plan-batch`,
+    ...(ask ? [`${epic} stays parked for you in /desk-needs-you: ${ask}`] : [])] };
 }
 
 // Applies an edit to the plan, then starts the batch: -> {lines} or {why} (asked again).

@@ -3,6 +3,7 @@
 // No config read here, so desk-env.mjs can import it without importing itself back.
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { parseOperatorChecks } from './config-schema.mjs';
 
 // ---- a line scanner for workflow YAML ---------------------------------------------------------
 // Workflows are block YAML, and every rule here needs the line it fired on, which a YAML parser
@@ -93,22 +94,8 @@ export const unquote = (s) => s.replace(/^(["'])([\s\S]*)\1$/, '$2');
 export const checkNameOf = (job) => (job.keys.name?.value ? unquote(job.keys.name.value) : job.id);
 
 // ---- §4 Pre-merge steps and the steps of a job ---------------------------------------------------
-// §4 Checks workers can't fix, Check builds and Pre-merge steps items: `<check>: <what fixes it>`,
-// split on the first `: `, so the command may hold one. An item with no check or no command is an
-// error, never a guess.
-export function parseOperatorChecks(items) {
-  const checks = [];
-  const errors = [];
-  for (const x of items || []) {
-    if (!x || /^none$/i.test(x.trim())) continue;
-    const i = x.indexOf(': ');
-    const name = i < 0 ? '' : x.slice(0, i).trim();
-    const command = i < 0 ? '' : x.slice(i + 2).trim();
-    if (!name || !command) errors.push(`\`${x}\``);
-    else checks.push({ name, command });
-  }
-  return { checks, errors };
-}
+// The §4 Checks workers can't fix, Check builds and Pre-merge steps grammar is the config schema's.
+export { parseOperatorChecks };
 
 // The words that say what a step does: four letters or more, singular, none any CI step could use.
 const STEP_STOPWORDS = new Set(['apply', 'applied', 'first', 'then', 'before', 'after', 'with', 'from', 'into', 'onto', 'this', 'that',
@@ -124,21 +111,21 @@ export function stepFits(step, item) {
   return stepWords(step).some((w) => want.has(w));
 }
 
-// A job's steps in order, each by its `name:`, or null for a step with none.
-function stepNames(job) {
+// A job's steps in order, each as the mapping of its keys (`mapping`): an item's first line, its `- `
+// taken off, sits at the indent of the keys under it.
+export function jobSteps(job) {
   const block = job.keys.steps?.block ?? [];
   const at = block.find((l) => !l.scalar && !l.blank && /^-(\s|$)/.test(l.text))?.indent;
-  const names = [];
+  const items = [];
   for (const l of block) {
-    if (l.scalar || l.blank || at === undefined) continue;
-    const item = l.indent === at && /^-(\s|$)/.test(l.text);
-    if (item) names.push(null);
-    if (!item && l.indent !== at + 2) continue;
-    const kv = keyOf(l);
-    if (kv?.key === 'name' && names.length && kv.value) names[names.length - 1] = unquote(kv.value);
+    if (!l.scalar && !l.blank && l.indent === at && /^-(\s|$)/.test(l.text)) items.push([{ ...l, indent: at + 2, text: l.text.replace(/^-\s*/, '') }]);
+    else items.at(-1)?.push(l);
   }
-  return names;
+  return items.map(mapping);
 }
+
+// A job's steps in order, each by its `name:`, or null for a step with none.
+const stepNames = (job) => jobSteps(job).map((s) => (s.name?.value ? unquote(s.name.value) : null));
 
 // Each job in a repo's workflows, by the check name it reports under, with its steps (stepNames).
 export function workflowJobs(root) {

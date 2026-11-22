@@ -2,7 +2,7 @@
 # suite: exit codes (pass, plan-batch, queue and answer: 0 go on, 10 nothing yet, 11 show the person)
 # The four orchestration scripts share one exit-code contract (EXIT in desk/bin/batch-state.mjs), and
 # pass.mjs --json prints one object carrying the same verdict. Runs the real scripts with stub claude,
-# gh, setup-worktree and spawn-worker, as tests/test_pass.sh does. Scratch HOME only.
+# gh, setup-worktree and spawn-worker, as tests/pass_setup.sh does for the pass suites. Scratch HOME only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -50,7 +50,8 @@ cat > "$T/config.md" <<EOF
 EOF
 
 # The real queue and harvest beside stubs for everything that would make a worktree or a worker.
-for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"; link_bin "$B" "$T/desk/bin"
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
 mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
 EOF
@@ -107,6 +108,52 @@ q add T-4; q set T-4 state=triaged lane=A branch=fix/T-4 open_questions=2
 pj
 check "pass: open questions exit 11 and are listed as waiting"  '[ $rc -eq 11 ] && js ".waiting[]" | grep -q "^T-4: 2 question(s) open"'
 q drop T-4
+
+# An answer settles one triage question, or every one with --all, and the count never goes below zero.
+ans(){ out=$(node "$B/answer.mjs" "$@" 2>&1); rc=$?; }
+oq(){ node "$B/queue.mjs" get "$1" | jq -r ".$2"; }
+# T-1's log does not change in these passes: they must not count toward stopping it as wedged.
+t1_idle=$(oq T-1 idle_passes); q set T-1 idle_passes=0
+q add T-30; q set T-30 state=triaged lane=A branch=fix/T-30 open_questions=3
+ans T-30 "use the helper"
+check "DS-846 AC1: one answer of three leaves two open, and says so" '[ $rc -eq 0 ] && [ "$(oq T-30 open_questions)" = 2 ] && echo "$out" | grep -q "^T-30: answered; 2 question(s) still open"'
+pj
+check "DS-846 AC2: with two open, the pass does not spawn it and lists it as waiting on answers" '[ $rc -eq 11 ] && js ".waiting[]" | grep -q "^T-30: 2 question(s) open" && ! js .message | grep -q "spawned: T-30"'
+q set T-30 open_questions=3
+ans T-30 --all "use the helper, keep the copy, skip the flag"
+check "DS-846 AC3: one answer with --all settles all three" '[ $rc -eq 0 ] && [ "$(oq T-30 open_questions)" = 0 ] && echo "$out" | grep -q "^T-30: answered\.$"'
+pj
+check "DS-846 AC3: and the next pass spawns it" 'js .message | grep -q "spawned: T-30"'
+q drop T-30
+q add T-31; q set T-31 state=triaged lane=A branch=fix/T-31 open_questions=2; q hold T-31 T-1
+ans T-31 "use the helper"
+check "DS-846 AC4: a held ticket answered once keeps one open and its hold" '[ "$(oq T-31 open_questions)" = 1 ] && [ "$(oq T-31 held_by)" = T-1 ] && echo "$out" | grep -q "^T-31: answered; 1 question(s) still open.*It is held"'
+q drop T-31
+q add T-32; q set T-32 state=triaged lane=A branch=fix/T-32 open_questions=0
+ans T-32 "a late note"
+check "DS-846 AC5: with none open, an answer leaves the count at zero" '[ $rc -eq 0 ] && [ "$(oq T-32 open_questions)" = 0 ]'
+q drop T-32
+# DS-895 AC6: with the ledger lever on, an answer to the second of three triage questions closes that
+# one alone: an answered event naming it, and the other two stay open.
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n'; } > "$T/config-ledger.md"
+printf '{"ticket": "T-33", "type": "Bug", "lane": "A", "size": "S", "branch": "fix/T-33", "files_in_scope": [], "unknowns": ["which colour?", "which size?", "which font?"], "links": "n/a"}\n' > "$T/state/triage/T-33.json"
+q add T-33; q set T-33 state=triaged lane=A branch=fix/T-33 open_questions=3
+DESK_CONFIG="$T/config-ledger.md" ans T-33 --question 2 "large"
+answered(){ jq -rs '[.[] | select(.key == "T-33" and .type == "answered") | .data.qid] | join("|")' "$T/ledger/events.jsonl"; }
+check "DS-895 AC6: the second question is closed, by an answered event naming it" '[ $rc -eq 0 ] && [ "$(answered)" = "which size?" ] && echo "$out" | grep -q "^T-33: closed triage question 2: which size?"'
+check "DS-895 AC6: and the other two stay open" '[ "$(oq T-33 open_questions)" = 2 ] && [ "$(node "$B/queue.mjs" get T-33 | jq -c .answered_questions)" = "[\"which size?\"]" ]'
+DESK_CONFIG="$T/config-ledger.md" ans T-33 --question 2 "small"
+check "DS-895 AC6: a question already answered is refused, nothing recorded" '[ $rc -eq 11 ] && echo "$out" | grep -q "already answered" && [ "$(oq T-33 open_questions)" = 2 ] && [ "$(answered)" = "which size?" ]'
+DESK_CONFIG="$T/config-ledger.md" ans T-33 "red"
+check "DS-895 AC6: an answer naming no question, with two open, lowers the count and records none answered" '[ "$(answered)" = "which size?" ] && [ "$(oq T-33 open_questions)" = 1 ] && [ "$(node "$B/queue.mjs" get T-33 | jq -c .answered_questions)" = "[\"which size?\"]" ] && echo "$out" | grep -q -- "--question <n> \"<answer>\", <n> one of 1, 3"'
+q drop T-33
+# With one question open, an answer naming none closes that one.
+printf '{"ticket": "T-34", "type": "Bug", "lane": "A", "size": "S", "branch": "fix/T-34", "files_in_scope": [], "unknowns": ["which colour?", "which size?"], "links": "n/a"}\n' > "$T/state/triage/T-34.json"
+q add T-34; q set T-34 state=triaged lane=A branch=fix/T-34 open_questions=1 'answered_questions=["which colour?"]'
+DESK_CONFIG="$T/config-ledger.md" ans T-34 "large"
+check "DS-895 AC6: with one question open, an answer naming none closes it" '[ "$(oq T-34 open_questions)" = 0 ] && [ "$(node "$B/queue.mjs" get T-34 | jq -c .answered_questions)" = "[\"which colour?\",\"which size?\"]" ]'
+q drop T-34
+q set T-1 "idle_passes=$t1_idle"
 
 # A worker that exits with no marker and no PR fails in this pass, while T-1 still runs.
 q add T-9; q set T-9 state=running lane=A branch=fix/T-9 session_id=gone

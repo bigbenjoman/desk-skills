@@ -1,13 +1,17 @@
+#!/usr/bin/env node
 // A worker's handoff to a fresh session: at the end of Stage 4 it hands off to Stage 4b, and at the
 // end of Stage 6 to Stage 7, so self-review and the PR stage each start on a short briefing rather
 // than on a context that has grown through the build. The worker writes $DESK_STATE/handoffs/<TICKET>.json
-// and prints `AUTOPILOT_HANDOFF: <stage>`; pass.mjs reads the file, adds the branch and its commits
+// with `handoff.mjs write` (below) and prints `AUTOPILOT_HANDOFF: <stage>`; pass.mjs reads the file, adds the branch and its commits
 // from git, and spawns the next session with the rendered briefing in its first message.
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
-import { RESUME_STAGES } from './desk-env.mjs';
+import { RESUME_STAGES, SAFE_ID, stateDir } from './desk-env.mjs';
+import { prsNaming } from './recoveries.mjs';
+import { execGit, REMOTE_GIT_MS } from './remote-git.mjs';
 
 // The stages a session may start at, and the stage each one follows.
 export const HANDOFF_STAGES = { '4b': '4', 7: '6' };
@@ -22,12 +26,37 @@ export const handoffPath = (stateDir, key) => join(stateDir, 'handoffs', `${key}
 
 const list = (v) => (Array.isArray(v) ? v : v == null || v === '' ? [] : [v]).map((x) => String(x).trim()).filter(Boolean);
 
-// The worker's file, as { ok, data } with only the fields a briefing holds, or { ok: false, why }.
+// The text with every raw control character inside a string literal escaped, so a file written by
+// hand with a tab or a newline in a string parses. Anything outside a string is left as it is.
+export function escapeRawControls(text) {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (const ch of text) {
+    if (inString && !escaped && ch < ' ') { out += `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`; continue; }
+    if (escaped) escaped = false;
+    else if (inString && ch === '\\') escaped = true;
+    else if (ch === '"') inString = !inString;
+    out += ch;
+  }
+  return out;
+}
+
+// JSON.parse, and on its error a second try with raw control characters in strings escaped. A file
+// neither reads throws the first error.
+export function parseJsonLenient(text) {
+  try { return JSON.parse(text); } catch (e) {
+    try { return JSON.parse(escapeRawControls(text)); } catch { throw e; }
+  }
+}
+
+// The worker's file, as { ok, data } with only the fields a briefing holds, or { ok: false, why },
+// with `unreadable: true` when the file is there but is not JSON.
 export function readHandoff(stateDir, key) {
   const path = handoffPath(stateDir, key);
   if (!existsSync(path)) return { ok: false, why: `its handoff briefing ${path} does not exist` };
   let d;
-  try { d = JSON.parse(readFileSync(path, 'utf8')); } catch (e) { return { ok: false, why: `its handoff briefing ${path} is not JSON (${e.message})` }; }
+  try { d = parseJsonLenient(readFileSync(path, 'utf8')); } catch (e) { return { ok: false, unreadable: true, why: `its handoff briefing ${path} is not JSON (${e.message})` }; }
   if (d?.ticket != null && String(d.ticket) !== key) return { ok: false, why: `its handoff briefing ${path} is for ${d.ticket}, not ${key}` };
   const criteria = list(d?.criteria);
   if (!criteria.length) return { ok: false, why: `its handoff briefing ${path} lists no acceptance criteria` };
@@ -60,6 +89,69 @@ export function writeHandback(stateDir, { key, lane, note, at = new Date().toISO
   return path;
 }
 
+// A handoff briefing that is not JSON even with its control characters escaped, moved aside to
+// `<path>.unreadable` and replaced by one that tells the session to read the criteria from the ticket,
+// so the stage still starts. Returns the path the unreadable file was kept at.
+export function replaceUnreadable(stateDir, { key, stage }) {
+  const path = handoffPath(stateDir, key);
+  const kept = `${path}.unreadable`;
+  renameSync(path, kept);
+  writeFileSync(path, `${JSON.stringify({
+    ticket: key,
+    stage,
+    criteria: [`Not handed on: the earlier session's handoff briefing could not be read (kept as ${kept}), so read them from ${key} at the start of Stage ${stage}`],
+    lane: 'not recorded: read it from your resume file',
+    verification: [],
+    review: [],
+    evidence: [],
+  }, null, 2)}\n`);
+  return kept;
+}
+
+const WRITE_USAGE = 'usage: handoff.mjs write <TICKET> --stage <4b|7> --criterion <text> [--criterion <text> …] [--lane <text>] ' +
+  '[--verification <text> …] [--review <text> …] [--evidence <path> …]';
+const WRITE_LISTS = { '--criterion': 'criteria', '--verification': 'verification', '--review': 'review', '--evidence': 'evidence' };
+
+// `handoff.mjs write`'s arguments as the briefing it writes, or { error }. Each flag takes the next
+// argument whole, whatever it starts with; the list flags repeat.
+export function handoffFromArgs(args) {
+  const [key, ...rest] = args;
+  if (!key || key.startsWith('--')) return { error: WRITE_USAGE };
+  if (!SAFE_ID.test(key) || key.includes('..')) return { error: `'${key}' is not usable as a ticket id (letters, digits, . _ - only; no ..)` };
+  const d = { ticket: key, stage: null, criteria: [], lane: '', verification: [], review: [], evidence: [] };
+  for (let i = 0; i < rest.length; i += 2) {
+    const flag = rest[i];
+    const value = rest[i + 1];
+    if (value === undefined) return { error: `${flag} needs a value. ${WRITE_USAGE}` };
+    if (WRITE_LISTS[flag]) d[WRITE_LISTS[flag]].push(value);
+    else if (flag === '--stage') d.stage = value;
+    else if (flag === '--lane') d.lane = value;
+    else return { error: `unknown argument ${flag}. ${WRITE_USAGE}` };
+  }
+  const stage = handoffStage(d.stage);
+  if (!stage || String(d.stage).trim().toLowerCase() !== stage) return { error: `--stage takes 4b or 7, not ${d.stage == null ? 'nothing' : `'${d.stage}'`}` };
+  d.stage = stage;
+  if (!d.criteria.some((c) => c.trim())) return { error: 'a criterion is required: pass --criterion <text> once for each acceptance criterion, verbatim' };
+  return { data: d };
+}
+
+const isMain = (() => {
+  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return false; }
+})();
+
+if (isMain) {
+  const [cmd, ...args] = process.argv.slice(2);
+  if (cmd !== 'write') { console.error(WRITE_USAGE); process.exit(2); }
+  const got = handoffFromArgs(args);
+  if (got.error) { console.error(got.error); process.exit(2); }
+  const dir = stateDir();
+  const path = handoffPath(dir, got.data.ticket);
+  mkdirSync(join(dir, 'handoffs'), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(got.data, null, 2)}\n`);
+  console.log(`wrote ${path}: ${got.data.criteria.length} criteria, for Stage ${got.data.stage}`);
+}
+
 // null when the session can start in this worktree on this branch, else what is missing.
 export function handoffTarget({ worktree, branch }) {
   if (!worktree || !existsSync(worktree)) return `its worktree ${worktree ?? '(none recorded)'} no longer exists`;
@@ -69,6 +161,92 @@ export function handoffTarget({ worktree, branch }) {
   const on = git('branch', '--show-current');
   if (on !== branch) return `its worktree ${worktree} is on ${on || 'a detached HEAD'}, not its branch ${branch}`;
   return null;
+}
+
+// The ticket's own open PR as { number, head, recorded }, or null. Its recorded PR (`pr`) when that one
+// is open, read by its number, else the one open PR whose title or head branch names `key`; a fork's PR
+// is never its own. `recorded` says which, since an unrecorded one is only a PR naming the ticket;
+// `naming: false` reads only the recorded one. Its read is bounded as a remote git call is.
+export function openPrOf({ key, pr = null, repo, worktree, naming: byName = true }) {
+  const gh = (...a) => {
+    try {
+      return JSON.parse(execFileSync('gh', [...a, ...(repo ? ['--repo', repo] : [])], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: REMOTE_GIT_MS, ...(worktree && existsSync(worktree) ? { cwd: worktree } : {}) }) || 'null');
+    } catch { return null; }
+  };
+  const ownOpen = (p) => p?.headRefName && !p.isCrossRepository && (p.state == null || p.state === 'OPEN');
+  const as = (p, recorded) => ({ number: Number(p.number), head: String(p.headRefName), recorded });
+  if (pr != null) {
+    const v = gh('pr', 'view', String(pr), '--json', 'number,state,headRefName,isCrossRepository');
+    if (ownOpen(v)) return as(v, true);
+  }
+  if (!byName) return null;
+  let naming;
+  try {
+    naming = prsNaming(repo, 'open', key, { fields: 'title,isCrossRepository', inTitle: true, search: false, limit: 500, ...(worktree && existsSync(worktree) ? { cwd: worktree } : {}) }).filter(ownOpen);
+  } catch { return null; }
+  return naming.length === 1 ? as(naming[0], false) : null;
+}
+
+// Brings origin's copy of the PR's head into the worktree, as refs/remotes/origin/<head>: null once
+// fetched, else why not. Kept apart from repointToPr so the network call runs before the queue lock, and
+// bounded (execGit), since a pass's requeue waits on it.
+export function fetchPrHead({ worktree, pr }) {
+  if (!pr?.head || !worktree || !existsSync(worktree)) return null;
+  try {
+    execGit('git',['-C', worktree, 'fetch', '-q', 'origin', `+refs/heads/${pr.head}:refs/remotes/origin/${pr.head}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    return null;
+  } catch (e) { return String(e.stderr || e.message).trim().split('\n').pop(); }
+}
+
+// A worktree whose queued branch is not its open PR's head (or is its head's name, but missing), moved
+// onto that head as fetched (fetchPrHead): checked out, a local copy behind the PR fast-forwarded, and
+// the queued branch, where it still exists, renamed to a backup ref. Returns { branch, backup } once on
+// the PR's head; { why, ahead } when the queued branch (or a detached HEAD) holds commits the PR's head
+// does not, `ahead` listing them; { why } when anything else stops it, before any change; and null when
+// there is nothing to move to.
+export function repointToPr({ worktree, branch, pr, fetchError = null }) {
+  if (!pr?.head || !worktree || !existsSync(worktree)) return null;
+  const run = (...a) => { try { return { ok: true, out: execFileSync('git', ['-C', worktree, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }; } catch (e) { return { ok: false, out: String(e.stderr ?? e.message).trim() }; } };
+  const has = (ref) => run('rev-parse', '--verify', '-q', ref).ok;
+  const last = (r) => r.out.split('\n').pop();
+  const on = run('branch', '--show-current').out;
+  if (pr.head === branch && has(`refs/heads/${branch}`)) return null;
+  const remote = `refs/remotes/origin/${pr.head}`;
+  if (fetchError || !has(remote)) return { why: `its open PR #${pr.number} is on ${pr.head}, which could not be fetched (${fetchError ?? 'no copy of it from origin'})` };
+  const hasQueued = branch !== pr.head && has(`refs/heads/${branch}`);
+  const keep = [...(hasQueued ? [`refs/heads/${branch}`] : []), ...(on ? [] : ['HEAD'])];
+  if (keep.length) {
+    const extra = run('log', '--format=%h %s', ...keep, '--not', remote);
+    if (!extra.ok) return { why: `its open PR #${pr.number} is on ${pr.head}, and the commits not on it could not be listed (${last(extra)})` };
+    if (extra.out) return { why: `its open PR #${pr.number} is on ${pr.head}, but ${hasQueued ? `its branch ${branch}` : 'its detached HEAD'} has commits that are not on it, so it was not re-pointed: ${extra.out.split('\n').join('; ')}`, ahead: extra.out };
+  }
+  // A local copy of the PR's head must hold everything the PR does, or the worker reviews stale code:
+  // behind it is fast-forwarded below, and diverged from it is refused here, before anything moves.
+  const local = has(`refs/heads/${pr.head}`);
+  const behind = local && !run('merge-base', '--is-ancestor', remote, `refs/heads/${pr.head}`).ok;
+  if (behind && !run('merge-base', '--is-ancestor', `refs/heads/${pr.head}`, remote).ok) {
+    const own = run('log', '--format=%h %s', `refs/heads/${pr.head}`, '--not', remote).out.split('\n').join('; ');
+    return { why: `its open PR #${pr.number} is on ${pr.head}, but the local ${pr.head} has diverged from it, so it was not re-pointed: ${own}` };
+  }
+  if (on !== pr.head || behind) {
+    const dirty = run('status', '--porcelain', '--untracked-files=no');
+    if (!dirty.ok || dirty.out) return { why: `its open PR #${pr.number} is on ${pr.head}, but its worktree ${worktree} has uncommitted changes, so it was not re-pointed` };
+  }
+  // One step each way, so a failure leaves the worktree where it was: a local copy behind the PR is
+  // reset to it as it is checked out (it holds nothing the PR lacks), and one already checked out is
+  // fast-forwarded in place.
+  if (on !== pr.head) {
+    const moved = !local || behind ? run('checkout', '-q', '-B', pr.head, remote) : run('checkout', '-q', pr.head);
+    if (!moved.ok) return { why: `its open PR #${pr.number} is on ${pr.head}, which its worktree could not be moved onto (${last(moved)})` };
+  } else if (behind) {
+    const ff = run('merge', '-q', '--ff-only', remote);
+    if (!ff.ok) return { why: `its open PR #${pr.number} is on ${pr.head}, and its worktree is on it, but could not be brought up to the PR (${last(ff)})` };
+  }
+  if (!hasQueued) return { branch: pr.head, backup: null };
+  let backup = `desk-backup/${branch}`;
+  for (let n = 2; run('rev-parse', '--verify', '-q', `refs/heads/${backup}`).ok; n++) backup = `desk-backup/${branch}-${n}`;
+  const renamed = run('branch', '-m', branch, backup);
+  return { branch: pr.head, backup: renamed.ok ? backup : branch };
 }
 
 // The branch's own commits, oldest first, as `<sha> <subject>`.
@@ -106,7 +284,7 @@ export function resumeCheck({ worktree, key, branch, stateDir }) {
   if (!found) return { ok: true, path: workerResumePath(stateDir, key) };
   const no = (why) => ({ ok: false, why, path: found });
   let d;
-  try { d = JSON.parse(readFileSync(found, 'utf8')); } catch (e) { return no(`its resume file ${found} is not JSON (${e.message})`); }
+  try { d = parseJsonLenient(readFileSync(found, 'utf8')); } catch (e) { return no(`its resume file ${found} is not JSON (${e.message})`); }
   if (!d?.branch) return no(`its resume file ${found} records no branch`);
   if (String(d.branch) !== branch) return no(`its resume file is for branch ${d.branch}, not the queue's ${branch}`);
   return { ok: true, path: found };
@@ -162,41 +340,6 @@ export function renderNoResume({ round, why, path }) {
       'Your first stage line says why, as:',
     '',
     `AUTOPILOT_STAGE: 0/9 triage (not resumed from Stage ${round.stage}: ${why})`,
-    '',
-  ].join('\n');
-}
-
-// A worker stopped at one login's usage limit and moved to another (pass.mjs moveRound): its session's
-// transcript lives under the first login's folder, so the new one is a fresh session. It starts at the
-// stage the stopped one reached where that can be resumed (`stage`), else at Stage 0 saying `why`. Any
-// uncommitted changes the stopped session left in the worktree (`changes`, as git status --porcelain
-// prints them) are named, so the new session builds on them. A fix try (`task`) has no stage: it
-// starts its task again.
-export function renderMoved({ key, from, to, limit, task = false, stage, why, branch, worktree, base, commits, resumePath, changes = [] }) {
-  const items = (xs, none) => (xs.length ? xs.map((x) => `- ${x}`) : [`- ${none}`]);
-  const stopped = `The last session of ${key} stopped at ${limit} on login ${from}. Its transcript stays under that login, so this is a fresh session on login ${to}.`;
-  return [
-    ...(task
-      ? ['## Moved logins: this session starts its task again', '',
-        `${stopped} Carry out your task from its start, checking git status and git log in your worktree first for what the stopped session did.`]
-      : stage
-      ? [`## Moved logins: this session resumes at Stage ${stage}`, '',
-        `${stopped} It had reached Stage ${stage}, so this session starts there rather than at Stage 0: do not redo the stages before it. ` +
-          `Check git status and git log in your worktree, and read your resume file ${resumePath}.`]
-      : ['## Moved logins: not resumed, this session starts at Stage 0', '',
-        `${stopped} It is not resumed from a later stage: ${why}. Start at Stage 0${resumePath ? `, and do not resume from its resume file ${resumePath}` : ''}. Your first stage line says why, as:`, '',
-        `AUTOPILOT_STAGE: 0/9 triage (not resumed after moving logins: ${why})`]),
-    '',
-    ...(changes.length
-      ? ['### Uncommitted changes in your worktree', '',
-        'The stopped session left these uncommitted. They are its work on this ticket: keep them, read them, and build on them rather than starting over.', '',
-        ...changes.map((c) => `- \`${c}\``), '']
-      : []),
-    '### Branch and its commits',
-    '',
-    `\`${branch}\` in ${worktree}. Its commits since \`${base}\`:`,
-    '',
-    ...items(commits, 'none'),
     '',
   ].join('\n');
 }

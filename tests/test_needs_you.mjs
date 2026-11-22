@@ -1,13 +1,16 @@
 // suite: needs-you (every item desk-q counts as needing the person, and recording each answer)
-// covers: desk/bin/needs-you.mjs desk/bin/decider.mjs skills/desk-needs-you/**
+// budget: 115 DS-943 (831 checks over a dozen fixture worlds, each with git repos; 49-88 s on CI)
+// covers: desk/bin/needs-you.mjs desk/bin/asks.mjs desk/bin/decider.mjs skills/desk-needs-you/**
 // Fixture repos, queues, heartbeats, triage records and decision logs under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. DESK_HOME/bin links the real scripts, except answer.mjs: a fake
 // that logs each call and then runs the real one. Nothing touches your real ~/.claude or state.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, existsSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
+import { scratch } from './scratch.mjs';
+const require = createRequire(import.meta.url);
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -16,17 +19,36 @@ const REAL_BIN = join(ROOT, 'desk', 'bin');
 const NOW = Date.now();
 const minsAgo = (m) => new Date(NOW - m * 60000).toISOString();
 
-const T = mkdtempSync(join(tmpdir(), 'desk-needs-you-'));
+const T = scratch('desk-needs-you-');
 mkdirSync(join(T, 'bin'));
+// A fake's rule, as a script's body: the fake in bin/ runs it as its own process, and the suite's in-process
+// reads (launchctl's and STUB's, below) call the same function. Self-contained: it takes its paths as arguments.
+const fakeScript = (fn, ...args) => `#!${process.execPath}\nconst r = (${fn})(${args.join(', ')});\nif (r.err) process.stderr.write(r.err + '\\n');\nprocess.stdout.write(r.out ?? '');\nprocess.exit(r.code);\n`;
 // macOS, with a fake launchctl that has each label in bin/loaded loaded.
-writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\ngrep -qxF "${2##*/}" "$(dirname "$0")/loaded" 2>/dev/null || exit 1\nexit 0\n', { mode: 0o755 });
-writeFileSync(join(T, 'bin', 'loaded'), 'com.desk-skills.supervisor.acme__alpha\n');
-// A fake gh that logs its arguments, and answers `pr view <n>` with prs/<n>.json, failing with none.
+const LOADED = join(T, 'bin', 'loaded');
+const launchctlPrint = (loaded, target) => {
+  const { readFileSync } = require('node:fs');
+  let labels = [];
+  try { labels = readFileSync(loaded, 'utf8').split('\n'); } catch { /* none loaded */ }
+  return { code: labels.includes(String(target ?? '').split('/').pop()) ? 0 : 1 };
+};
+writeFileSync(join(T, 'bin', 'launchctl'), fakeScript(launchctlPrint, JSON.stringify(LOADED), 'process.argv[3]'), { mode: 0o755 });
+writeFileSync(LOADED, 'com.desk-skills.supervisor.acme__alpha\n');
+// A fake gh that logs its arguments, and answers `pr view <n>` with prs/<n>.json, failing with none, and
+// `pr list --repo <r> --state <s>` with prs/list-<s>.json, or nothing.
 const GH_LOG = join(T, 'gh.log');
 const GH_PRS = join(T, 'prs');
 mkdirSync(GH_PRS);
+const prView = (dir, pr) => {
+  const { readFileSync, existsSync } = require('node:fs');
+  const f = `${dir}/${pr}.json`;
+  return existsSync(f) ? { code: 0, out: readFileSync(f, 'utf8') } : { code: 1, err: `GraphQL: Could not resolve to a PullRequest (${pr})` };
+};
+writeFileSync(join(T, 'bin', 'gh-pr-view'), fakeScript(prView, JSON.stringify(GH_PRS), 'process.argv[2]'), { mode: 0o755 });
 writeFileSync(join(T, 'bin', 'gh'), `#!/bin/sh\necho "$*" >> ${JSON.stringify(GH_LOG)}\n` +
-  `if [ "$1 $2" = "pr view" ]; then f=${JSON.stringify(GH_PRS)}/"$3".json; [ -f "$f" ] || { echo "GraphQL: Could not resolve to a PullRequest ($3)" >&2; exit 1; }; cat "$f"; fi\n`, { mode: 0o755 });
+  `if [ "$1 $2" = "pr view" ]; then exec "$(dirname "$0")/gh-pr-view" "$3"; fi\n` +
+  `if [ "$1 $2 $5" = "pr list --state" ]; then f=${JSON.stringify(GH_PRS)}/list-"$6".json; [ -f "$f" ] && cat "$f"; fi\n` +
+  `if [ "$1 $2" = "pr create" ]; then echo "https://github.com/$4/pull/931"; fi\nexit 0\n`, { mode: 0o755 });
 const onGitHub = (pr, v) => writeFileSync(join(GH_PRS, `${pr}.json`), JSON.stringify(v));
 const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'),
   DESK_PLATFORM: 'darwin', DESK_SKILLS_DIR: join(T, 'skills'), DESK_LOCK_DIR: join(T, 'locks'), PATH: `${join(T, 'bin')}:${process.env.PATH}` };
@@ -39,11 +61,25 @@ const BIN = join(env.DESK_HOME, 'bin');
 mkdirSync(BIN, { recursive: true });
 for (const f of readdirSync(REAL_BIN)) if (f !== 'answer.mjs') symlinkSync(join(REAL_BIN, f), join(BIN, f));
 const ANSWERS = join(T, 'answers.log');
+// The fake answer.mjs logs its call, then runs the real one in its own process (one node, not two). Its
+// launchctl prints are answered in that process by bin/launchctl's own rule, as the suite's are below:
+// every repo load asks once per supervised batch, so a fake launchctl process per ask cost about 23
+// node starts per answer once the fixture holds that many batches (DS-929 AC3).
 writeFileSync(join(BIN, 'answer.mjs'), `import { appendFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
+const require = createRequire(import.meta.url);
 appendFileSync(${JSON.stringify(ANSWERS)}, JSON.stringify({ args: process.argv.slice(2), queue: process.env.DESK_QUEUE }) + '\\n');
-const r = spawnSync(process.execPath, [${JSON.stringify(join(REAL_BIN, 'answer.mjs'))}, ...process.argv.slice(2)], { stdio: 'inherit' });
-process.exit(r.status ?? 1);
+const launchctlPrint = ${launchctlPrint};
+const cp = require('node:child_process');
+const spawnSync = cp.spawnSync;
+cp.spawnSync = function (cmd, args, ...rest) {
+  if (String(cmd).split('/').pop() !== 'launchctl' || args?.[0] !== 'print') return spawnSync.call(this, cmd, args, ...rest);
+  const { code } = launchctlPrint(${JSON.stringify(LOADED)}, args[1]);
+  return { pid: 0, output: [null, '', ''], stdout: '', stderr: '', status: code, signal: null };
+};
+syncBuiltinESMExports();
+process.argv[1] = ${JSON.stringify(join(REAL_BIN, 'answer.mjs'))};
+await import(process.argv[1]);
 `);
 const answers = () => (existsSync(ANSWERS) ? readFileSync(ANSWERS, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
 
@@ -56,14 +92,23 @@ function put(name, r) {
   spawnSync('git', ['-C', root, 'remote', 'add', 'origin', `https://github.com/acme/${name}.git`]);
   mkdirSync(join(env.DESK_CONFIG_ROOT, 'repos', slug), { recursive: true });
   writeFileSync(join(env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md'),
+    (r.handle ? `## 1. Who you are\n\n| Field | Value |\n|---|---|\n| GitHub handle | \`${r.handle}\` |\n\n` : '') +
     `## 2. Paths\n\n| Field | Value |\n|---|---|\n| Primary repo root | \`${root}\` |\n\n` +
     `## 3. Permissions\n\n| Key | Action | Recommended | Your setting |\n|---|---|---|---|\n| \`pr-ready\` | Undraft | \`ask\` | \`${r.prReady ?? 'no'}\` |\n` +
-    `| \`autopilot-merge\` | The merge driver merges | \`ask\` | \`${r.merge ?? 'no'}\` |\n| \`pr-merge-green\` | Merge a green PR | \`ask\` | \`${r.merge ?? 'no'}\` |\n\n` +
+    `| \`autopilot-merge\` | The merge driver merges | \`ask\` | \`${r.merge ?? 'no'}\` |\n| \`pr-merge-green\` | Merge a green PR | \`ask\` | \`${r.merge ?? 'no'}\` |\n` +
+    Object.entries(r.rows ?? {}).map(([k, v]) => `| \`${k}\` | ${k} | \`ask\` | \`${v}\` |\n`).join('') + '\n' +
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n` +
     `| Batches run by | \`supervisor\` | \`${r.supervised ? 'supervisor' : 'session'}\` |\n` +
     (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : '') +
+    (r.gateReviewers ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Gate reviewers | \`${r.gateReviewers}\` |\n` : '') +
     (r.evidence ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Evidence workflow | \`${r.evidence}\` |\n` : '') +
     (r.pattern ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Tracker | \`jira\` |\n| Ticket key pattern | \`${r.pattern}\` |\n` : '') +
+    (r.site ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Tracker | \`jira\` |\n| Jira site | \`${r.site}\` |\n` : '') +
+    (r.project ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Jira project | \`${r.project}\` |\n` : '') +
+    (r.owner ? `\n## 1. Who you are\n\n| Field | Value |\n|---|---|\n| Jira display name | \`${r.owner}\` |\n` : '') +
+    (r.promotionRef ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Promotion ref | \`${r.promotionRef}\` |\n` : '') +
+    (r.inputLabels ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Person-input labels | \`${r.inputLabels}\` |\n` : '') +
+    (r.stepLabels ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Person-step labels | \`${r.stepLabels}\` |\n` : '') +
     (r.people ? `\n## 4. Repo\n\n### People, by role\n\n| Role | Currently | Confirmed |\n|---|---|---|\n${Object.entries(r.people).map(([k, v]) => `| ${k} | \`${v}\` | \`yes\` |`).join('\n')}\n` : ''));
   const state = join(env.HOME, '.desk-autopilot', slug);
   if (!r.tickets) return;
@@ -96,10 +141,72 @@ put('gamma', { port: 3300, beat: 120, tickets: { 'G-1': parked('A', 240, 'Retry 
 put('delta', { port: 3400, beat: 3, tickets: { 'D-1': { state: 'running', lane: 'A' } } });
 put('epsilon', { port: 3600 });
 
-const N = await import('../desk/bin/needs-you.mjs');
+// ---- DS-929: an in-process collect or refresh starts no process. Every child process this suite's own
+// process starts goes through these wrappers (syncBuiltinESMExports carries them into the modules' named
+// imports). launchctl, which loadRepos asks once per supervised batch, is answered here by bin/launchctl's
+// own rule (launchctlPrint). A gh, git, desk-jira or launchctl process started while a collect or refresh
+// runs on the suite's stubs (onStubs, below) is recorded, and the last check reads that none was.
+// The cli() runs still start needs-you.mjs and the fakes in bin/, end to end.
+const cpCjs = require('node:child_process');
+const FAKED = new Set(['gh', 'git', 'desk-jira', 'launchctl']);
+let onStubDepth = 0;
+const startedOnStubs = [];
+const launchctlHere = (args) => {
+  const { code } = launchctlPrint(LOADED, args[1]);
+  return { pid: 0, output: [null, '', ''], stdout: '', stderr: '', status: code, signal: null };
+};
+for (const f of ['spawnSync', 'execFileSync', 'execSync', 'spawn', 'execFile', 'exec']) {
+  const real = cpCjs[f];
+  cpCjs[f] = function (cmd, ...rest) {
+    const bin = String(cmd).trim().split(/\s+/)[0].split('/').pop();
+    const args = Array.isArray(rest[0]) ? rest[0] : [];
+    if (f === 'spawnSync' && bin === 'launchctl' && args[0] === 'print') return launchctlHere(args);
+    if (onStubDepth > 0 && FAKED.has(bin)) startedOnStubs.push(`${bin} ${args.join(' ')}`.trim());
+    return real.call(this, cmd, ...rest);
+  };
+}
+syncBuiltinESMExports();
+
+const NY = await import('../desk/bin/needs-you.mjs');
+const { dayAndTime } = await import('../desk/bin/desk-q-eta.mjs');
 const { loadRepos, repoScreen } = await import('../desk/bin/desk-q.mjs');
+// The reads every in-process collect and refresh is given unless a case passes its own: GitHub's PRs from
+// the fixtures the fake gh serves (onGitHub), and no ticket status, worktree, fetch, merged PR elsewhere or
+// red-main issue, which is what the real reads find under this suite's fakes. A case that means to test a
+// real read passes it (DS-546 AC3's git, the follow gates' git, DS-925's ciRed), and its starts are not counted.
+const STUB = {
+  pr: (_r, pr) => {
+    const { code, out, err } = prView(GH_PRS, pr);
+    return code === 0 ? { v: JSON.parse(out), err: '' } : { v: null, err };
+  },
+  ticket: () => null,
+  git: () => null,
+  fetch: () => false,
+  merged: () => null,
+  ciRed: () => [],
+};
+// collect and refresh as the suite calls them: on that batch's repos, loaded here as the CLI loads them, and
+// on STUB, unless the case passes its own reads (null too).
+const realReads = new Set(Object.values(NY.READS));
+const onStubs = (fn) => (o = {}) => {
+  const reads = 'reads' in o ? o.reads : STUB;
+  const counted = !Object.values(reads ?? {}).some((r) => realReads.has(r));
+  if (counted) onStubDepth++;
+  try { return fn({ ...o, repos: o.repos ?? loadRepos(o.now ?? Date.now(), o.word ?? null), reads }); } finally { if (counted) onStubDepth--; }
+};
+const N = { ...NY, collect: onStubs(NY.collect), refresh: onStubs(NY.refresh) };
 const queueOf = (name) => JSON.parse(readFileSync(join(env.DESK_HOME, 'repos', `acme__${name}`, 'queue.json'), 'utf8'));
-const cli = (...args) => { const r = spawnSync(process.execPath, [join(REAL_BIN, 'needs-you.mjs'), ...args], { encoding: 'utf8', env: process.env, cwd: T }); return { code: r.status, out: r.stdout, err: r.stderr }; };
+const cliRan = new Set();
+const cli = (...args) => { cliRan.add(args[0]); const r = spawnSync(process.execPath, [join(REAL_BIN, 'needs-you.mjs'), ...args], { encoding: 'utf8', env: process.env, cwd: T }); return { code: r.status, out: r.stdout, err: r.stderr }; };
+// A CLI command run in this process through needs-you.mjs's own run(), which its entry prints, for a check
+// that tests what the command decides rather than the script. list runs on STUB, as collect and refresh do
+// here; record, left and ask on their own reads, as before. Each command keeps cli() runs too, end to end,
+// and the last checks read that it did (DS-929 AC2).
+const here = (cmd, ...rest) => {
+  if (cmd !== 'list') return NY.run([cmd, ...rest]);
+  onStubDepth++;
+  try { return NY.run([cmd, ...rest], { reads: STUB }); } finally { onStubDepth--; }
+};
 
 // ---- AC1: every item desk-q counts, in every repo, and nothing it does not
 const c = N.collect();
@@ -116,7 +223,7 @@ t('AC12 the list is one script call that exits 0', list.code, 0);
 t('AC12 one line per item', itemLines.length, c.items.length);
 t('AC3 each line names its repo and ticket, then what is needed, then the recommendation first',
   itemLines.every((l) => /^[a-z]+ [A-Z]-\d+ (parked|session|triage|held|spine)\b[^|]* \| .+ \| 1\. [a-z-]+ \(recommended: [^)]+\)/.test(l)), true);
-t('AC3 a triage item asks its unknowns, numbered when there are several', itemLines.some((l) => l.startsWith('alpha A-3 triage') && l.includes('| (1) What is the cap? (2) Which page? |')), true);
+t('AC3 a triage item asks its unknowns', itemLines.some((l) => l.startsWith('alpha A-3 triage') && l.includes('| What is the cap? · Which page? |')), true);
 t('AC3 (DS-279 AC16) a hold only you can let start recommends start, never release', itemLines.some((l) => l.startsWith('alpha A-4 held') && l.includes('A-9 is not in this queue') && l.includes('1. start (recommended:') && !/releas/.test(l)), true);
 t('AC12 each repo with items says who runs it', ['@ alpha: run by the supervisor', '@ beta: run by a live session (beta-batch)', '@ gamma: passes stopped'].every((s) => list.out.includes(s)), true);
 t('AC5 a parked item offers to override its worker\'s decision', itemLines.some((l) => l.startsWith('alpha A-1 parked') && l.includes('override d1 (took "h2" on "Which heading level?")')), true);
@@ -139,7 +246,7 @@ t('AC4 answer on a parked item is refused and records nothing', `${an1.ok} ${ans
 // ---- AC4, AC6, AC14: an answer goes through digest.mjs answer; a resume requeues; a supervised repo needs nothing more
 const res = N.record({ word: 'alpha', ticket: 'A-1', action: 'resume', text: 'the short one' });
 const a1 = queueOf('alpha').tickets['A-1'];
-t('AC4 the answer went through answer.mjs for that repo', JSON.stringify(answers().at(-1)), JSON.stringify({ args: ['A-1', 'the short one'], queue: join(env.DESK_HOME, 'repos', 'acme__alpha', 'queue.json') }));
+t('AC4 the answer went through answer.mjs for that repo', JSON.stringify(answers().at(-1)), JSON.stringify({ args: ['A-1', '--all', 'the short one'], queue: join(env.DESK_HOME, 'repos', 'acme__alpha', 'queue.json') }));
 t('AC6 the resumed ticket is requeued, ready for the next pass', `${res.ok} ${a1.state} ${a1.open_questions} ${a1.park}`, 'true triaged 0 null');
 t('AC14 under the supervisor nothing more is asked of the session', `${res.message} ${/requeued; the next pass can spawn it/.test(res.line)}`, 'null true');
 t('AC4 desk-q no longer counts it', N.collect().items.some((i) => i.t.key === 'A-1'), false);
@@ -160,18 +267,19 @@ t('DS-297 AC3 answer on a lane C park is refused', `${ca2.ok} ${/answer is not a
 // ---- AC8: "not now" goes in the not-now register
 const n6 = N.record({ word: 'alpha', ticket: 'A-6', action: 'not-now' });
 const reg = readFileSync(join(env.HOME, '.desk-autopilot', 'acme__alpha', 'not-now.jsonl'), 'utf8');
-t('AC8 a parked item put off is in the register, through answer.mjs', `${n6.ok} ${reg.includes('PRODUCTION BROKEN: checkout returns 500')} ${answers().at(-1).args.join(' ')}`, 'true true A-6 not now');
+t('AC8 a parked item put off is in the register, through answer.mjs', `${n6.ok} ${reg.includes('PRODUCTION BROKEN: checkout returns 500')} ${answers().at(-1).args.join(' ')}`, 'true true A-6 --all not now');
 const n4 = N.record({ word: 'alpha', ticket: 'A-4', action: 'not-now' });
 t('AC8 a hold put off is in the register too, and stays held', `${n4.ok} ${readFileSync(join(env.HOME, '.desk-autopilot', 'acme__alpha', 'not-now.jsonl'), 'utf8').includes('"ticket":"A-4"')} ${queueOf('alpha').tickets['A-4'].held_by}`, 'true true A-9');
 // DS-324 AC1, AC3: a put-off item is not listed again, on this run or a later one, and the count leaves it out.
-const offList = cli('list', 'alpha');
+const offList = here('list', 'alpha');
 t('DS-324 AC1 a put-off park and hold are not listed', `${N.collect({ word: 'alpha' }).items.some((i) => ['A-4', 'A-6'].includes(i.t.key))} ${/^alpha A-[46] /m.test(offList.out)}`, 'false false');
 t('DS-324 AC1 the count line leaves them out and says so', offList.out.trim().split('\n').at(-1), `${offList.out.split('\n').filter((l) => / \| /.test(l)).length} items in 1 repo. 2 put off with not-now, left out until they change.`);
 t('DS-324 AC3 a later run with nothing changed still leaves them out', N.collect({ word: 'alpha', repos: loadRepos(NOW + 86400000) }).items.some((i) => ['A-4', 'A-6'].includes(i.t.key)), false);
 
 // ---- A spine approval runs as its own repo, and what is left for the person is shown, not refused
 const s7 = N.record({ word: 'alpha', ticket: 'A-7', action: 'approve' });
-const gh = existsSync(GH_LOG) ? readFileSync(GH_LOG, 'utf8') : '';
+// The listings above read each repo's red-main issues (`issue list`); the approve's own call is the rest.
+const gh = (existsSync(GH_LOG) ? readFileSync(GH_LOG, 'utf8') : '').split('\n').filter((l) => !l.startsWith('issue list ')).join('\n');
 t('approve undrafts the PR in the spine\'s repo, under its config, not this checkout\'s', gh.trim(), 'pr ready 41 --repo acme/alpha');
 t('approve that leaves the merge to the person is recorded, and says so', `${s7.ok} ${queueOf('alpha').tickets['A-7'].state} ${/merge PR #41 yourself/.test(s7.line)}`, 'true done true');
 
@@ -179,13 +287,13 @@ t('approve that leaves the merge to the person is recorded, and says so', `${s7.
 t('AC9 one repo', N.collect({ word: 'beta' }).items.map((i) => `${i.r.name} ${i.t.key}`).join(), 'beta B-1');
 
 // ---- AC10: nothing needing the person is one line
-t('AC10 nothing in a named repo', cli('list', 'delta').out.trim(), 'Nothing needs you in delta.');
+t('AC10 nothing in a named repo', here('list', 'delta').out.trim(), 'Nothing needs you in delta.');
 const quiet = loadRepos().filter((r) => ['delta', 'epsilon'].includes(r.name));
 t('AC10 nothing anywhere', N.listText(N.collect({ repos: quiet })), 'Nothing needs you.');
 
 // ---- AC15: a live session's batch is not requeued; the session is named to message
 const b1 = cli('record', 'beta', 'B-1', 'resume', 'the v2 one');
-t('AC15 answered, not requeued', `${b1.code} ${queueOf('beta').tickets['B-1'].state} ${answers().at(-1).args.join(' ')}`, '0 parked B-1 the v2 one');
+t('AC15 answered, not requeued', `${b1.code} ${queueOf('beta').tickets['B-1'].state} ${answers().at(-1).args.join(' ')}`, '0 parked B-1 --all the v2 one');
 t('AC15 the session to message is named, with the requeue', /^MESSAGE beta-batch: B-1 was answered .*queue\.mjs requeue B-1/m.test(b1.out), true);
 // DS-297 AC1: marked answered, so desk-q shows it waiting on the session, and it is not asked again.
 const betaRow = () => loadRepos().find((r) => r.name === 'beta').rows.find((x) => x.t.key === 'B-1');
@@ -203,9 +311,10 @@ t('AC16 the record line says passes are stopped', /Passes are stopped in gamma/.
 
 // ---- AC11: the end prints the desk-q count left, then each stopped repo and how to resume it
 const left = cli('left').out.trim().split('\n');
-// A-1, A-3, A-7, B-1 and G-1 are settled; A-4 and A-6 are put off; A-2 and A-8 still need you.
-t('AC11 (DS-324 AC4) the count left is what list prints', left[0], 'desk-q counts 2 items needing you. 2 put off with not-now, left out until they change.');
-t('DS-324 AC4 left matches list', N.collect().items.length, 2);
+// A-1, A-3, A-7, B-1 and G-1 are settled; A-4 and A-6 are put off; A-2 and A-8 still need you, and so do
+// gamma's stopped passes (#911): G-1 requeued waits on a pass its session no longer runs.
+t('AC11 (DS-324 AC4) the count left is what list prints', left[0], 'desk-q counts 3 items needing you. 2 put off with not-now, left out until they change.');
+t('DS-324 AC4 left matches list', N.collect().items.map((i) => i.t.key).sort().join(), 'A-2,A-8,stalled');
 
 // ---- desk-q's NEEDS YOU and left's count are one number, the put-off items said beside it
 const { overview } = await import('../desk/bin/desk-q.mjs');
@@ -216,8 +325,8 @@ const needsCell = () => {
   return h.find((l) => l.startsWith('  alpha '))?.slice(0, end).match(/(\d+(?: \(\+\d+ put off\))?)$/)?.[1];
 };
 t('DS-376 AC1 the NEEDS YOU cell shows what needs you, then how many are put off', needsCell(), '2 (+2 put off)');
-t('DS-376 AC1 the header counts what needs you, as the cell does', home()[0].startsWith('◆ 2 tickets need you'), true);
-t('DS-376 AC2 left attributes to desk-q the count its table shows', `${left[0].match(/^desk-q counts (\d+) /)?.[1]} ${N.needsCount(loadRepos().find((r) => r.name === 'alpha'))?.shown}`, '2 2');
+t('DS-376 AC1 the header counts what needs you, as the cell does', home()[0].startsWith('◆ 3 tickets need you'), true);
+t('DS-376 AC2 left attributes to desk-q the count its table shows', `${left[0].match(/^desk-q counts (\d+) /)?.[1]} ${N.needsCount(loadRepos().find((r) => r.name === 'alpha'))?.shown}`, '3 2');
 
 // ---- DS-324 AC2: a put-off item comes back once its blocker or its inputs change
 const aq = queueOf('alpha');
@@ -228,7 +337,7 @@ const back = N.collect({ word: 'alpha' }).items;
 t('DS-324 AC2 a hold whose blocker went done is listed again, saying what changed', /^A-9 finished with no PR: let it start \(Changed since it was put off on \d{4}-\d\d-\d\d: blockers A-9:none → A-9:done; need .*\.\)$/.test(back.find((i) => i.t.key === 'A-4')?.need ?? ''), true);
 t('DS-324 AC2 a park whose inputs changed is listed again, saying what changed', /^PRODUCTION BROKEN: checkout returns 500 \(Changed since it was put off on \d{4}-\d\d-\d\d: pr-head \(new\) → bbb\.\)$/.test(back.find((i) => i.t.key === 'A-6')?.need ?? ''), true);
 t('DS-376 AC3, AC4 both count the changed ones as needing you, and the cell is the count alone with none put off',
-  `${needsCell()} ${N.needsCount(loadRepos().find((r) => r.name === 'alpha')).shown} ${back.length} ${cli('left', 'alpha').out.split('\n')[0]}`, '4 4 4 desk-q counts 4 items needing you in alpha.');
+  `${needsCell()} ${N.needsCount(loadRepos().find((r) => r.name === 'alpha')).shown} ${back.length} ${here('left', 'alpha').out.split('\n')[0]}`, '4 4 4 desk-q counts 4 items needing you in alpha.');
 // DS-324 AC1, AC3: two holds with the same words are put off each on its own; the second does not bring the first back.
 const held = (k) => ({ key: k, state: 'parked', lane: 'A', held_by: 'A-9', added_at: minsAgo(25), park: { question: `held by orchestrator: blocked by A-9 — starts once their PRs merge (${k})` } });
 const tq = queueOf('alpha');
@@ -261,13 +370,13 @@ writeFileSync(xq, JSON.stringify({ version: 1, batch: 'x1-batch', base: 'feat/x'
   'X-2': { key: 'X-2', added_at: minsAgo(600), ...parked('A', 400, 'Which banner?') },
   'X-3': { key: 'X-3', added_at: minsAgo(600), ...parked('A', 5, 'Which footer?') } } }));
 writeFileSync(join(xs, 'orchestrators', 'q.json'), JSON.stringify({ queue: xq, batch: 'x1-batch', pid: 1, at: minsAgo(1) }));
-const xList = cli('list', 'alpha');
+const xList = here('list', 'alpha');
 t('DS-310 AC3 the item names the named batch, as record takes it', xList.out.split('\n').some((l) => l.startsWith('alpha:X-1 X-2 parked') && l.includes('| Which banner? |')), true);
 t('DS-310 AC3 the repo\'s name lists its standing batch\'s items and the named batch\'s', `${xList.out.includes('\nalpha A-2 ')} ${/^@ alpha · X-1 \(feat\/x\): run by the supervisor/m.test(xList.out)}`, 'true true');
 t('DS-310 AC3 the named batch on its own lists only its items', cli('list', 'alpha:X-1').out.split('\n').filter((l) => / \| /.test(l)).map((l) => l.split(' ')[1]).join(), 'X-2,X-3');
 const x2 = cli('record', 'alpha:X-1', 'X-2', 'resume', 'the red one');
 const xQueue = () => JSON.parse(readFileSync(xq, 'utf8'));
-t('DS-310 AC3 the answer went through answer.mjs for the named batch', JSON.stringify(answers().at(-1)), JSON.stringify({ args: ['X-2', 'the red one'], queue: xq }));
+t('DS-310 AC3 the answer went through answer.mjs for the named batch', JSON.stringify(answers().at(-1)), JSON.stringify({ args: ['X-2', '--all', 'the red one'], queue: xq }));
 t('DS-310 AC3 the ticket is requeued in the named batch', `${x2.code} ${xQueue().tickets['X-2'].state}`, '0 triaged');
 const x3 = N.record({ word: 'alpha', ticket: 'X-3', action: 'resume', text: 'the plain one' });
 t('DS-310 AC3 a repo\'s name finds the batch that holds the ticket', `${x3.ok} ${answers().at(-1).queue === xq} ${xQueue().tickets['X-3'].state} ${queueOf('alpha').tickets['X-3']}`, 'true true triaged undefined');
@@ -277,9 +386,9 @@ put('eta', { port: 3700, beat: 1, supervised: true, tickets: {
   'E-1': { state: 'failed', lane: 'A', park: { question: 'tests red', since: minsAgo(15) } },
   'E-2': { state: 'done', lane: 'A', result: { pr: 61 }, pr_status: { pr: 61, state: 'OPEN', url: null, isDraft: false, mergeable: 'MERGEABLE', checks: [{ name: 'build', status: 'completed', conclusion: 'success' }], at: minsAgo(1) } },
 } });
-put('theta', { port: 3800, beat: 1, supervised: true, tickets: {
+put('theta', { port: 3800, beat: 1, supervised: true, project: 'X', tickets: {
   'H-1': { state: 'running', lane: 'A' },
-  'H-2': { state: 'parked', lane: 'A', held_by: 'H-1', open_questions: 1, outside_blockers: [{ key: 'X-9' }], park: { question: 'held by orchestrator: blocked by H-1 — starts once their PRs merge' } },
+  'H-2': { state: 'parked', lane: 'A', held_by: 'H-1', open_questions: 1, outside_blockers: [{ key: 'X-9', assignee: null }], park: { question: 'held by orchestrator: blocked by H-1 — starts once their PRs merge' } },
 } });
 const NN = await import('../desk/bin/not-now.mjs');
 const thetaState = join(env.HOME, '.desk-autopilot', 'acme__theta');
@@ -307,14 +416,73 @@ N.record({ word: 'theta', ticket: 'H-2', action: 'not-now' });
 t('DS-401 AC4 put off as a held row, with nothing changed, it stays put off', theta()['H-2'], undefined);
 const moveBlocker = (category) => { const q = queueOf('theta'); q.tickets['H-2'].outside_blockers = [{ key: 'X-9', category }]; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__theta', 'queue.json'), JSON.stringify(q)); };
 moveBlocker('indeterminate');
-t('DS-401 AC2 an outside blocker moving in flight (To Do to In Progress) leaves it put off', theta()['H-2'], undefined);
+t('DS-401 AC2 (DS-599) a blocker moving to In Progress is no longer yours to queue, so it is listed again, saying what changed',
+  /\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers H-1:open,X-9:open\+yours → H-1:open,X-9:open\.\)$/.test(theta()['H-2']?.need ?? ''), true);
+N.record({ word: 'theta', ticket: 'H-2', action: 'not-now' });
+moveBlocker('new');
+t('DS-401 AC2 an outside blocker moving in flight (In Progress to To Do), still not yours, leaves it put off', theta()['H-2'], undefined);
 moveBlocker('done');
 t('DS-401 AC2 once its outside blocker is Done it is listed again, saying what changed',
   /\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers H-1:open,X-9:open → H-1:open,X-9:done\.\)$/.test(theta()['H-2']?.need ?? ''), true);
+// Admit is recommended only for a blocker in no batch that is the person's to queue: in To Do, in this
+// repo's Jira project, and unassigned or theirs. Otherwise not-now is, naming why, and admit is offered.
+const outsideOne = (b) => ({ state: 'triaged', lane: 'A', open_questions: 1, outside_blockers: [b] });
+put('admit599', { port: 3860, beat: 1, supervised: true, project: 'P', owner: 'Ben Example', tickets: {
+  'A-1': outsideOne({ key: 'P-1', category: 'new', assignee: 'Sam Other' }),
+  'A-2': outsideOne({ key: 'P-2', category: 'new', assignee: 'Ben Example' }),
+  'A-3': outsideOne({ key: 'P-3', category: 'indeterminate', assignee: 'Ben Example' }),
+  'A-4': outsideOne({ key: 'Q-4', category: 'new', assignee: null }),
+  'A-5': outsideOne({ key: 'P-5', category: 'new' }),
+} });
+const a599 = Object.fromEntries(N.collect({ word: 'admit599' }).items.map((i) => [i.t.key, i]));
+const lead599 = (k) => `${a599[k]?.actions.map((a) => a[0]).join()} | ${a599[k]?.actions[0][1]}`;
+const admit599 = (k) => { const a = a599[k]?.actions.find(([n]) => n === 'admit'); return a ? `${a[1]} | ${a[2] != null}` : 'none'; };
+t('DS-599 AC1 a blocker in no batch assigned to someone else recommends not-now, naming the assignee', lead599('A-1'),
+  'not-now,admit,answer | P-1: it is assigned to Sam Other. So it is not yours to queue here; not-now puts this off until a blocker moves');
+t('DS-599 AC1 admit is still offered, without a recommendation', admit599('A-1'), 'null | true');
+t('DS-599 AC2 a blocker in no batch in To Do assigned to the person recommends admit', lead599('A-2'),
+  'admit,answer,not-now | P-2 is in no batch, so nothing works it: admitting queues it for a worker');
+t('DS-599 AC3 a blocker in progress does not recommend admit', lead599('A-3'), 'not-now,admit,answer | P-3: it is in progress. So it is not yours to queue here; not-now puts this off until a blocker moves');
+t('DS-599 AC4 a blocker in another Jira project does not recommend admit', lead599('A-4'), 'not-now,admit,answer | Q-4: it is in Jira project Q, not P. So it is not yours to queue here; not-now puts this off until a blocker moves');
+t('DS-599 AC5 a blocker whose assignee was not read does not recommend admit', lead599('A-5'), 'not-now,admit,answer | P-5: its assignee could not be read. So it is not yours to queue here; not-now puts this off until a blocker moves');
+t('DS-599 admit, offered unrecommended, still names the /desk-admit to run', /Run \/desk-admit P-1 in /.test(N.record({ word: 'admit599', ticket: 'A-1', action: 'admit' }).line ?? ''), true);
+const a599now = () => Object.fromEntries(N.collect({ word: 'admit599' }).items.map((i) => [i.t.key, i]));
+const reassign599 = (assignee) => { const q = queueOf('admit599'); q.tickets['A-1'].outside_blockers = [{ key: 'P-1', category: 'new', assignee }]; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__admit599', 'queue.json'), JSON.stringify(q)); };
+N.record({ word: 'admit599', ticket: 'A-1', action: 'not-now' });
+t('DS-599 put off as someone else\'s, it stays put off while the blocker is still theirs', a599now()['A-1'], undefined);
+reassign599('Alex Else');
+t('DS-599 a blocker passed to another person who is not you does not bring it back', a599now()['A-1'], undefined);
+reassign599(null);
+t('DS-599 once that blocker is unassigned it is listed again, recommending admit and saying what changed',
+  `${a599now()['A-1']?.actions[0][0]} | ${/\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers P-1:open → P-1:open\+yours\.\)$/.test(a599now()['A-1']?.need ?? '')}`, 'admit | true');
+// DS-669: a ticket held inside its batch with a triage question of its own is asked that question.
+put('zeta', { port: 3850, beat: 1, supervised: true, tickets: {
+  'Z-1': { state: 'running', lane: 'A' },
+  'Z-2': { state: 'parked', lane: 'A', held_by: 'Z-1', open_questions: 1, park: { question: 'held by orchestrator: blocked by Z-1 — starts once their PRs merge' } },
+  'Z-3': { state: 'parked', lane: 'A', held_by: 'Z-1', open_questions: 1, park: { question: 'held by orchestrator: blocked by Z-1 — starts once their PRs merge' } },
+}, triage: { 'Z-2': { summary: 'Audit runs', unknowns: ['What is the cost of one blind audit run?'] } } });
+const zeta = () => Object.fromEntries(N.collect({ word: 'zeta' }).items.map((i) => [i.t.key, i]));
+t('DS-669 AC1 a held, parked ticket\'s item is its triage question word for word', `${zeta()['Z-2']?.kind} | ${zeta()['Z-2']?.need}`, 'triage | What is the cost of one blind audit run?');
+t('DS-669 AC3 with no triage record it still reads as a count', zeta()['Z-3']?.need, '1 triage question(s) open');
+N.record({ word: 'zeta', ticket: 'Z-2', action: 'not-now' });
+t('DS-669 put off, it stays put off while nothing changes', zeta()['Z-2'], undefined);
+const zq = queueOf('zeta');
+zq.tickets['Z-1'].state = 'parked';
+writeFileSync(join(env.DESK_HOME, 'repos', 'acme__zeta', 'queue.json'), JSON.stringify(zq));
+t('DS-669 a blocker moving between in-flight stages leaves it put off', zeta()['Z-2'], undefined);
+zq.tickets['Z-1'].state = 'done';
+writeFileSync(join(env.DESK_HOME, 'repos', 'acme__zeta', 'queue.json'), JSON.stringify(zq));
+const { openQuestions: digestQuestions } = await import('../desk/bin/digest.mjs');
+const zetaRepo = { slug: 'acme__zeta', state: join(env.HOME, '.desk-autopilot', 'acme__zeta'), queue: join(env.DESK_HOME, 'repos', 'acme__zeta', 'queue.json') };
+const zDigest = digestQuestions(zetaRepo).find((q) => q.ticket === 'Z-2');
+const zEntry = [...NN.readRegister(zetaRepo.state).entries.values()].find((x) => x.ticket === 'Z-2');
+t('DS-669 AC4 once a blocker is done it comes back quoting the question', /^What is the cost of one blind audit run\? \(Changed since it was put off/.test(zeta()['Z-2']?.need ?? ''), true);
+t('DS-669 AC4 its not-now entry is keyed to the digest\'s text for the same question', `${zDigest?.kind} | ${zEntry?.inputs?.need === zDigest?.text}`, 'triage | true');
+
 const e = N.collect({ word: 'eta' });
 const { needsRows } = await import('../desk/bin/desk-q.mjs');
 t('DS-279 a stopped worker and a PR to merge are items, as many as desk-q counts', `${e.items.map((i) => `${i.t.key} ${i.kind} ${i.need}`).join(' | ')} | ${needsRows(e.named).length}`,
-  'E-2 pr PR #61 has its check green, and desk may not merge in this repo. Merge it on GitHub; the ticket is then done. | E-1 stopped worker stopped: tests red · requeue it | 2');
+  'E-2 pr PR #61 has its check green, and desk may not merge in this repo. Merge it on GitHub; the ticket is then done. | E-1 stopped worker stopped: tests red | 2');
 const rq1 = N.record({ word: 'eta', ticket: 'E-1', action: 'requeue' });
 t('DS-279 requeue sends a stopped worker\'s ticket back, under the supervisor', `${rq1.ok} ${queueOf('eta').tickets['E-1'].state !== 'failed'} ${N.collect({ word: 'eta' }).items.some((i) => i.t.key === 'E-1')}`, 'true true false');
 // DS-554: a failed ticket's item quotes the reason the pass recorded on it, and one with none says so.
@@ -353,17 +521,17 @@ put('iota', { port: 3900, beat: 1, supervised: true, tickets: {
 } });
 const iota = N.collect({ word: 'iota' }).items;
 const i1 = iota.find((i) => i.t.key === 'I-1');
-t('DS-323 AC1 a draft with review gaps offers answer first, then done and not-now', `${i1?.need} | ${i1?.actions.map((a) => a[0]).join()}`, 'PR #71 is a draft, and its code review left 2 requirement gaps. Say how to settle them; a worker on the PR carries out your call. | answer,done,resume,not-now');
-t('DS-323 AC1 its listed line recommends the answer', cli('list', 'iota').out.split('\n').some((l) => l.startsWith('iota I-1 pr') && l.includes('| 1. answer (recommended:')), true);
+t('DS-323 AC1 a draft with review gaps offers answer first, then done and not-now', `${i1?.need} | ${i1?.actions.map((a) => a[0]).join()}`, 'PR #71 is a draft, and its code review left 2 requirement gaps. Desk could not read the review to quote the gaps, so read them on the PR. Say how to settle them; a worker on the PR carries out your call. | answer,done,resume,not-now');
+t('DS-323 AC1 its listed line recommends the answer', here('list', 'iota').out.split('\n').some((l) => l.startsWith('iota I-1 pr') && l.includes('| 1. answer (recommended:')), true);
 const i2 = iota.find((i) => i.t.key === 'I-2');
 t('DS-323 AC3 a draft an older pass recorded as not green, whose only red checks were skipped, says CI does not run on a draft, and to undraft it', i2?.need, 'PR #72 is a draft, and CI does not run on drafts, so its checks were skipped. Undraft it so they run; then merge it on GitHub once its checks are green.');
 t('DS-323 AC1 a PR with no review gaps takes no answer', `${i2?.actions.map((a) => a[0]).join()} ${N.record({ word: 'iota', ticket: 'I-2', action: 'answer', text: 'x' }).ok}`, 'done,resume,not-now false');
 const call323 = 'Split gap 1 into its own ticket; fix gap 2 in this PR';
-const gr = cli('record', 'iota', 'I-1', 'answer', call323);
+const gr = here('record', 'iota', 'I-1', 'answer', call323);
 const i1q = queueOf('iota').tickets['I-1'];
 const ghLog = readFileSync(GH_LOG, 'utf8');
 t('DS-323 AC2 the answer is posted on the PR', `${gr.code} ${ghLog.includes('pr comment 71 --repo acme/iota --body') && ghLog.includes(`> ${call323}`)}`, '0 true');
-t('DS-323 AC2 it is kept in the briefing for the next worker', `${JSON.stringify(answers().at(-1).args)} ${readFileSync(join(env.HOME, '.desk-autopilot', 'acme__iota', 'briefings', 'I-1.md'), 'utf8').includes(call323)}`, `${JSON.stringify(['I-1', call323])} true`);
+t('DS-323 AC2 it is kept in the briefing for the next worker', `${JSON.stringify(answers().at(-1).args)} ${readFileSync(join(env.HOME, '.desk-autopilot', 'acme__iota', 'briefings', 'I-1.md'), 'utf8').includes(call323)}`, `${JSON.stringify(['I-1', '--all', call323])} true`);
 t('DS-323 AC2 and requeued for a worker on the PR, carrying the call', `${i1q.state} ${i1q.fix?.kind} ${i1q.fix?.pr} ${i1q.fix?.head} ${i1q.fix?.answer === call323}`, 'triaged gaps 71 h71 true');
 const { fixBrief, fixTask } = await import('../desk/bin/fix-tries.mjs');
 t('DS-323 AC2 the fix worker\'s briefing quotes the call, and its task is to carry it out', `${fixBrief(i1q).includes(`> ${call323}`)} ${/carry out the person's call on the review gaps of PR #71/.test(fixTask(i1q))} ${/leave the PR in draft/.test(fixTask(i1q))}`, 'true true true');
@@ -418,11 +586,46 @@ put('mu', { port: 4200, beat: 1, supervised: true, tickets: {
 const mu = Object.fromEntries(N.collect({ word: 'mu' }).items.map((i) => [i.t.key, i]));
 t('DS-345 AC1 a findings draft with gaps offers answer first', mu['M-1']?.actions.map((a) => a[0]).join(), 'answer,done,resume,not-now');
 const call345 = 'Drop the 7-day row for the old subscription; keep the rest';
-const mr = cli('record', 'mu', 'M-1', 'answer', call345);
+const mr = here('record', 'mu', 'M-1', 'answer', call345);
 const m1q = queueOf('mu').tickets['M-1'];
 t('DS-345 AC2 the call is posted on the PR', `${mr.code} ${readFileSync(GH_LOG, 'utf8').includes('pr comment 81 --repo acme/mu --body')}`, '0 true');
 t('DS-345 AC2 and a fix worker on the branch is queued with it', `${m1q.state} ${m1q.fix?.kind} ${m1q.fix?.pr} ${m1q.fix?.head} ${m1q.fix?.answer === call345}`, 'triaged gaps 81 h81 true');
 t('DS-345 AC3 a findings draft with no gaps keeps its actions', mu['M-2']?.actions.map((a) => a[0]).join(), 'done,resume,not-now');
+
+// ---- A park on a file the person is asked to make is listed; one a script makes is not
+const fileQ = 'Please run bash tests/compare_pass.sh on the host and save its output to $DESK_STATE/fixtures/F-1/compare-pass.txt';
+const filePark = (question, cond) => { const p = parked('A', 30, question); return { ...p, park: { ...p.park, clears_when: { kind: 'file-exists', root: 'state', ...cond } } }; };
+put('file807', { port: 4807, beat: 1, supervised: true, tickets: {
+  'F-1': filePark(fileQ, { path: 'fixtures/F-1/compare-pass.txt', person: true }),
+  'F-2': filePark('waiting on the recall capture to write $DESK_STATE/fixtures/F-2/meet.json', { path: 'fixtures/F-2/meet.json' }),
+} });
+const f807 = Object.fromEntries(N.collect({ word: 'file807' }).items.map((i) => [i.t.key, i]));
+t('DS-807 AC1 a park on a file its question asks the person to make is listed with its question and resume',
+  `${f807['F-1']?.need === fileQ} ${f807['F-1']?.actions.map((a) => a[0])[0]}`, 'true resume');
+t('DS-807 AC3 one a script makes is still left out', 'F-2' in f807, false);
+
+// ---- DS-586: a draft whose review left gaps quotes them from that review, as a ready PR's item does.
+const SHA586 = '65ad4e75a1b2c3d4e5f60718293a4b5c6d7e8f90';
+const review586 = (login, sha, lines) => ({ author: { login }, body: `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${sha} p0=0 p1=0 p2=0 deferred=0 gaps=${lines.length} unrefuted=0 partial=0 vendor=codex round=1 -->\n## desk-review: ${lines.length} requirement gaps\n\n### Requirement gaps\n${lines.map((l) => `- ${l}`).join('\n')}\n` });
+const GAP1 = 'PERSON\'S CALL · AC1: "the export lists every order" — the ticket does not say whether refunded orders count.';
+const GAP2 = 'PERSON\'S CALL · AC2: "totals match the invoice" — rounding differs by a cent on multi-currency orders.\n  Recommended: round per line, as the invoice does.';
+put('gq', { handle: 'me', port: 4207, beat: 1, supervised: true, tickets: {
+  'GQ-1': draftPr(301, passed, { call: 'person', why: `its review verdict at ${SHA586.slice(0, 9)} is not clean (gaps=2)`, action: 'settle the findings or gaps on #301' }),
+  'GQ-2': draftPr(302, passed, { call: 'person', why: `its review verdict at ${SHA586.slice(0, 9)} is not clean (gaps=2)`, action: 'settle the findings or gaps on #302' }),
+} });
+onGitHub(301, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: SHA586, reviews: [
+  review586('me', '1111111aaaaaaa', ['PERSON\'S CALL · AC9: an older round\'s gap']),
+  review586('me', SHA586, [GAP1, GAP2]),
+  review586('stranger', SHA586, ['PERSON\'S CALL · AC1: a gap someone else posted']),
+] });
+const gq = Object.fromEntries(N.collect({ word: 'gq' }).items.map((i) => [i.t.key, i]));
+t('DS-586 AC1 a draft\'s two gaps are quoted, each criterion with what is open', /AC1: "the export lists every order" — the ticket does not say whether refunded orders count; PERSON'S CALL · AC2: "totals match the invoice" — rounding differs by a cent/.test(gq['GQ-1']?.need ?? ''), true);
+t('DS-586 AC1 negative: an older round\'s gaps and another login\'s review are not quoted', /AC9|someone else/.test(gq['GQ-1']?.need ?? ''), false);
+t('DS-586 AC2 a gap\'s recommendation is shown beside it', gq['GQ-1']?.need,
+  'PR #301 is a draft, and its code review left 2 requirement gaps: PERSON\'S CALL · AC1: "the export lists every order" — the ticket does not say whether refunded orders count; PERSON\'S CALL · AC2: "totals match the invoice" — rounding differs by a cent on multi-currency orders. Recommended: round per line, as the invoice does. Say how to settle them; a worker on the PR carries out your call.');
+t('DS-586 AC3 a review that cannot be read gives the count and says so', gq['GQ-2']?.need,
+  'PR #302 is a draft, and its code review left 2 requirement gaps. Desk could not read the review to quote the gaps, so read them on the PR. Say how to settle them; a worker on the PR carries out your call.');
+t('DS-586 the item still offers answer first', gq['GQ-1']?.actions.map((a) => a[0]).join(), 'answer,done,resume,not-now');
 
 // ---- An open PR takes the person's instruction for a worker on it; a merged or closed one says why not.
 const readyPr = (pr, extra = {}) => { const d = draftPr(pr, passed); return { ...d, ...extra, pr_status: { ...d.pr_status, isDraft: false } }; };
@@ -440,7 +643,7 @@ t('DS-513 AC1 negative: a reason from an older head offers no answer', pg['PG-2'
 t('DS-513 AC3 a finding that outlasted its tries beside the person\'s gap offers answer and fix, and names the gap', `${pg['PG-3']?.actions.map((a) => a[0]).join()} ${pg['PG-3']?.need.includes("only you can settle: PERSON'S CALL · AC2")}`, 'answer,fix,done,resume,not-now true');
 t('DS-513 AC3 a code gap that outlasted its try beside the person\'s gap offers answer', `${pg['PG-4']?.actions.map((a) => a[0]).join()} ${pg['PG-4']?.need.includes("only you can settle: PERSON'S CALL · AC2")}`, 'answer,done,resume,not-now true');
 const pgCall = 'Accept AC2 as built';
-const pgr = cli('record', 'pg', 'PG-1', 'answer', pgCall);
+const pgr = here('record', 'pg', 'PG-1', 'answer', pgCall);
 const pgq = queueOf('pg').tickets['PG-1'];
 t('DS-513 AC1 the call is posted and a worker is queued on the ready PR', `${pgr.code} ${readFileSync(GH_LOG, 'utf8').includes('pr comment 85 --repo acme/pg --body')} ${pgq.state} ${pgq.fix?.kind} ${pgq.fix?.ready} ${pgq.fix?.answer === pgCall}`, '0 true triaged gaps true true');
 
@@ -462,16 +665,16 @@ t('DS-501 AC1 a PR with review gaps and a plain open PR both offer resume, with 
   `${sg0['SG-1']?.actions.map((a) => a[0]).join()} ${sg0['SG-2']?.actions.map((a) => a[0]).join()} ${sg0['SG-2']?.actions.find((a) => a[0] === 'resume')?.[1]}`,
   'answer,done,resume,not-now done,resume,not-now null');
 t('DS-501 AC1 negative: a closed PR does not', sg0['SG-6']?.actions.map((a) => a[0]).join(), 'drop,requeue,not-now');
-t('DS-501 AC1 its listed line says what resume does', cli('list', 'instr').out.split('\n').some((l) => l.startsWith('instr SG-2 pr') && /\d\. resume \(resume "<instruction>" keeps it for the next worker/.test(l)), true);
+t('DS-501 AC1 its listed line says what resume does', here('list', 'instr').out.split('\n').some((l) => l.startsWith('instr SG-2 pr') && /\d\. resume \(resume "<instruction>" keeps it for the next worker/.test(l)), true);
 
 // AC2: GitHub is read first, then the instruction is kept and the ticket goes back on its branch.
 const loggedBefore = readFileSync(GH_LOG, 'utf8').length;
 const told = 'Fix the issues, then send it back\nand keep the title';
 onGitHub(92, { state: 'OPEN', isDraft: false, headRefOid: 'live92' });
-const resumed = cli('record', 'instr', 'SG-2', 'resume', told);
+const resumed = here('record', 'instr', 'SG-2', 'resume', told);
 const sg2 = sq()['SG-2'];
 const sgBrief = readFileSync(join(env.HOME, '.desk-autopilot', 'acme__instr', 'briefings', 'SG-2.md'), 'utf8');
-t('DS-501 AC2 the instruction is kept in the briefing for the next worker', `${resumed.code} ${JSON.stringify(answers().at(-1).args)} ${sgBrief.includes(told)}`, `0 ${JSON.stringify(['SG-2', told])} true`);
+t('DS-501 AC2 the instruction is kept in the briefing for the next worker', `${resumed.code} ${JSON.stringify(answers().at(-1).args)} ${sgBrief.includes(told)}`, `0 ${JSON.stringify(['SG-2', '--all', told])} true`);
 t('DS-501 AC2 and requeued on its branch, at the head GitHub shows', `${sg2.state} ${sg2.branch} ${sg2.fix?.kind} ${sg2.fix?.pr} ${sg2.fix?.head} ${sg2.fix?.ready} ${sg2.fix?.answer === told}`, 'triaged fix/SG-2-x instruction 92 live92 true true');
 t('DS-501 AC2 it is not one of the pass\'s fix tries', `${(sg2.fix_tries ?? []).length} ${sg2.fix?.try} of ${sg2.fix?.of}`, '0 1 of 1');
 t('DS-501 triage call: resume posts nothing on the PR (answer stays that path)', readFileSync(GH_LOG, 'utf8').slice(loggedBefore).includes('pr comment'), false);
@@ -495,7 +698,7 @@ t('DS-501 triage call: requeued whoever runs the batch, with no message to send'
 const untouched = (k) => `${sq()[k].state} ${sq()[k].fix}`;
 const answersBefore = answers().length;
 onGitHub(93, { state: 'MERGED', isDraft: false, headRefOid: 'h93', mergedAt: minsAgo(1) });
-const sMerged = cli('record', 'instr', 'SG-3', 'resume', 'x');
+const sMerged = here('record', 'instr', 'SG-3', 'resume', 'x');
 t('DS-501 AC3 a PR merged since the last pass is refused, saying why', `${sMerged.code} ${/PR #93 is merged, so no worker can carry out an instruction on it/.test(sMerged.out + sMerged.err)} ${untouched('SG-3')}`, '11 true done undefined');
 onGitHub(94, { state: 'CLOSED', isDraft: false, headRefOid: 'h94' });
 const sClosed = N.record({ word: 'instr', ticket: 'SG-4', action: 'resume', text: 'x' });
@@ -526,27 +729,49 @@ put('kappa', { port: 4000, beat: 1, supervised: true, tickets: {
   'K-7': parked('D', 15, 'Lane D, its canvas is saved on main, but the empty state is not on it: which board?'),
   'K-8': parked('A', 5, 'lane C, build it in an interactive desk-ticket session'),
   'K-9': { state: 'failed', lane: 'A' },
-}, triage: { 'K-5': { lane: 'B' } } });
+  'K-11': { state: 'failed', lane: 'A' },
+  // DS-806: the SV-4017 park from 2026-11-19, as its ticket quotes it.
+  'K-10': parked('A', 2, 'K-10 needs two new Merl dependencies and worker-dependency-install is not granted. Please run `bun add --cwd apps/merl @aws-sdk/client-s3` and requeue. Not reached: Merl\'s pipeline tools and tests (AC1–AC4), Stage 4 verify, 4b self-review, push, draft PR, review post, Jira comment, Jira transition to Review/QA.'),
+}, triage: { 'K-5': { lane: 'B' } },
+  // SV-4017's repo sets the row it parked on to no: an unset one would make it the repo's unset-row item.
+  rows: { 'worker-dependency-install': 'no' } });
 mkdirSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks'), { recursive: true });
 writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks', 'K-4.json'), JSON.stringify({ question: 'Please take it out of the autopilot queue: lane C' }));
 writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks', 'K-9.json'), JSON.stringify({ question: 'Ben runs this step: there is no worker work left' }));
+// DS-806: a stopped worker with no reason of its own shows its park file's question in plain words.
+writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks', 'K-11.json'), JSON.stringify({ question: 'Stage 5 needs worker-screenshots, which is not granted. Allow it, or skip the screenshots? Not reached: Stage 7 PR, Jira comment.' }));
 const kappa = Object.fromEntries(N.collect({ word: 'kappa' }).items.map((i) => [i.t.key, i]));
 const firstOf = (k) => `${kappa[k]?.actions[0][0]} (${kappa[k]?.actions[0][1]})`;
 const offers = (k) => kappa[k]?.actions.map((a) => a[0]).join();
-t('DS-322 AC1 a park naming lane C offers open, not resume', `${firstOf('K-1')} ${offers('K-1')}`, 'open (lane C/D: a worker would only park on it) open,done,drop,not-now');
-t('DS-322 AC1 a lane D park without a saved canvas offers open, not resume', `${firstOf('K-2')} ${offers('K-2')}`, 'open (lane C/D: a worker would only park on it) open,done,drop,not-now');
-t('DS-322 AC1 a park opening "lane C" on a lane A ticket gives the lane C/D reason', firstOf('K-8'), 'open (lane C/D: a worker would only park on it)');
+// DS-806 AC2: each reason in plain words, with no lane letter.
+const SESSION_REASON = "it needs a plan or design agreed with you first, which a worker can't do, so it needs you";
+t('DS-322 AC1 a park naming lane C offers open, not resume', `${firstOf('K-1')} ${offers('K-1')}`, `open (${SESSION_REASON}) open,done,drop,not-now`);
+t('DS-322 AC1 a lane D park without a saved canvas offers open, not resume', `${firstOf('K-2')} ${offers('K-2')}`, `open (${SESSION_REASON}) open,done,drop,not-now`);
+t('DS-322 AC1 a park opening "lane C" on a lane A ticket gives the session reason (DS-806: in plain words)', firstOf('K-8'), `open (${SESSION_REASON})`);
+t('DS-806 AC1 a lane C park\'s need names no lane letter', kappa['K-1']?.need, 'Demoted to plan-first work, build it in an interactive desk-ticket session');
+t('DS-806 AC1 AC3 AC4 the SV-4017 park is listed in plain words, without its not-reached list', kappa['K-10']?.need,
+  "K-10 needs two new Merl dependencies and workers can't install packages. Please run `bun add --cwd apps/merl @aws-sdk/client-s3` and send it back to a worker.");
+t('DS-806 AC3 the queue keeps the raw question, not-reached list and all', /Not reached: Merl's pipeline tools/.test(kappa['K-10']?.t.park.question), true);
+t('DS-806 AC1 AC3 AC4 a stopped worker\'s park, with no reason of its own, is listed in plain words', kappa['K-11']?.need,
+  "worker stopped: screenshots needs the setting that lets workers take screenshots, which is not granted. Allow it, or skip the screenshots?");
+t('DS-806 AC2 its resume reason is plain words, the "@aws-sdk" it names being no aws command', firstOf('K-10'), 'resume (a worker finishes it once it has your answer)');
 const { presort } = await import('../desk/bin/decider.mjs');
 t('DS-322 AC1 the decider hands the same park to a session, never a requeue', presort([{ kind: 'parked', lane: 'A', text: 'Demoted to lane C, build it in an interactive desk-ticket session' }]).hand.length, 1);
-t('DS-322 AC2 a stopped worker whose park names lane C offers open, not requeue (DS-556: asking to leave the queue, it recommends drop)', `${kappa['K-4']?.kind} ${offers('K-4')} ${kappa['K-4']?.actions[1][2]}`, 'stopped drop,open,not-now lane C/D: a worker would only park on it');
+t('DS-322 AC2 a stopped worker whose park names lane C offers open, not requeue (DS-556: asking to leave the queue, it recommends drop)', `${kappa['K-4']?.kind} ${offers('K-4')} ${kappa['K-4']?.actions[1][2]}`, `stopped drop,open,not-now ${SESSION_REASON}`);
 t('DS-556 AC3 a stopped worker whose park says it has no worker work, in no lane C, recommends drop over requeue', `${kappa['K-9']?.kind} ${firstOf('K-9')} ${offers('K-9')} ${kappa['K-9']?.actions[1][2]}`,
-  `stopped drop (its park says it has no worker work, so a requeue would only park it again: drop takes it out of the batch and removes its clean worktree, and leaves Jira as it is) drop,requeue,not-now its worker gave up; a requeue lets the next pass start it again`);
-t('DS-322 AC2 its need shows the park, not "requeue it"', kappa['K-4']?.need, 'worker stopped: Please take it out of the autopilot queue: lane C');
+  `stopped drop (its worker says nothing is left for a worker to do, so sending it back would only stop it again: drop takes it out of the batch and removes its clean worktree, and leaves Jira as it is) drop,requeue,not-now its worker gave up; requeue sends it back for a new worker to start again`);
+t('DS-322 AC2 its need shows the park, not "requeue it" (DS-806: in plain words)', kappa['K-4']?.need, 'worker stopped: Please take it out of the autopilot queue: plan-first work');
 t('DS-322 AC2 requeue is refused for it', N.record({ word: 'kappa', ticket: 'K-4', action: 'requeue' }).ok, false);
-t('DS-322 AC3 a lane D park resumes, naming the queue\'s lane', firstOf('K-3'), 'resume (lane D: a worker finishes it once it has your answer)');
-t('DS-322 AC3 a lane D park with its canvas saved resumes, naming lane D', firstOf('K-7'), 'resume (lane D: a worker finishes it once it has your answer)');
-t('DS-322 AC3 a park that rules lane C out resumes', firstOf('K-6'), 'resume (lane A: a worker finishes it once it has your answer)');
-t('DS-322 AC3 a resume names the triage record\'s lane when the queue has none', firstOf('K-5'), 'resume (lane B: a worker finishes it once it has your answer)');
+// DS-806 AC2: a resume's reason names no lane letter, whichever lane the queue or triage record has.
+t('DS-322 AC3 a lane D park resumes, naming no lane', firstOf('K-3'), 'resume (a worker finishes it once it has your answer)');
+t('DS-322 AC3 a lane D park with its canvas saved resumes, naming no lane', firstOf('K-7'), 'resume (a worker finishes it once it has your answer)');
+t('DS-322 AC3 a park that rules lane C out resumes', firstOf('K-6'), 'resume (a worker finishes it once it has your answer)');
+t('DS-322 AC3 a resume on the triage record\'s lane names no lane', firstOf('K-5'), 'resume (a worker finishes it once it has your answer)');
+// DS-806: a stopped worker's item is put off by its raw park, so a change of wording brings it back to no one.
+N.record({ word: 'kappa', ticket: 'K-11', action: 'not-now' });
+const k11Off = [...NN.readRegister(join(env.HOME, '.desk-autopilot', 'acme__kappa')).entries.values()].find((x) => x.ticket === 'K-11');
+t('DS-806 a reworded stopped item is put off by its raw park, not its plain words', k11Off?.inputs?.need,
+  'worker stopped: Stage 5 needs worker-screenshots, which is not granted. Allow it, or skip the screenshots? Not reached: Stage 7 PR, Jira comment.');
 
 // ---- DS-344: a batch held on a usage limit. Its paused workers and held ticket are none of them
 // stopped: needs-you lists one item for the hold, and desk-q shows each paused worker with the reset.
@@ -559,6 +784,14 @@ const lambda = N.collect({ word: 'lambda' }).items;
 t('DS-344 AC5 a batch held on the usage limit is one item, and no ticket is one', lambda.map((i) => `${i.t.key} ${i.kind}`).join(), 'usage-limit usage');
 t('DS-344 AC5 its need names the limit and how many workers wait', /^held on the weekly usage limit until .+: nothing new starts, and 2 paused workers wait\. It carries on by itself once the limit lifts$/.test(lambda[0]?.need ?? ''), true);
 t('DS-344 AC5 it offers done and not-now, and done is recorded', `${lambda[0]?.actions.map((a) => a[0]).join()} ${N.record({ word: 'lambda', ticket: 'usage-limit', action: 'done' }).ok}`, 'done,not-now true');
+// A repo pinned to a subscription since set off: its queued work starts nowhere, and that is one item.
+put('studia', { port: 4110, beat: 1, supervised: true, batch: { subscription_off: { since: minsAgo(5), email: 'ops@studia.example', login: 'work-2' } }, tickets: { 'S-1': { state: 'triaged', lane: 'A' } } });
+const studia = N.collect({ word: 'studia' }).items;
+t('a repo pinned to an off subscription is one item, and its queued ticket is none', studia.map((i) => `${i.t.key} ${i.kind}`).join(), 'subscription-off subscription-off');
+t('its need names the repo, the email and the command that moves it', studia[0]?.need,
+  'acme__studia is pinned to ops@studia.example, which is off (claude work-2), so no new work starts for it: move it to another subscription (desk-env subscription set acme__studia <default|email>), or set work-2 unused (desk-env logins set claude work-2 unused)');
+t('and desk-q\'s NEEDS YOU count, and left, count it', `${N.needsCount(loadRepos().find((r) => r.name === 'studia')).shown} ${here('left', 'studia').out.split('\n')[0]}`, '1 desk-q counts 1 item needing you in studia.');
+t('it offers done and not-now, and done is recorded', `${studia[0]?.actions.map((a) => a[0]).join()} ${N.record({ word: 'studia', ticket: 'subscription-off', action: 'done' }).ok}`, 'done,not-now true');
 const { needText: rowText } = await import('../desk/bin/desk-q.mjs');
 const lr = loadRepos().find((r) => r.name === 'lambda');
 const l1 = rowText(lr, lr.rows.find((x) => x.t.key === 'L-1'));
@@ -618,6 +851,13 @@ t('DS-419 AC1 a held thread with a fix try left is not the person\'s: a worker t
 t('DS-433 AC3 a green PR GitHub requires an approving review on asks the person for one', xi.find((i) => i.t.key === 'X-4')?.need, 'PR #94 waits on a person\'s approval: an approving review is required. Review and approve it on GitHub; desk then merges it.');
 t('DS-433 AC1 a green PR with no merge note, the driver\'s to merge, lists nothing', xi.some((i) => i.t.key === 'X-1'), false);
 
+// #752: a PR the merge driver found with no mergeability answer for past its limit is the person's.
+put('wr', { port: 4301, beat: 1, supervised: true, merge: 'yes', tickets: {
+  'W-1': greenPr(97, { merge_blocked: 'merge ref: GitHub has not worked out whether #97 conflicts with its base at d97777777 for 75 minutes, and starts no run for that head: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch' }),
+} });
+t('#752 a wedged merge ref is the person\'s, saying how to give it a fresh one', N.collect({ word: 'wr' }).items.find((i) => i.t.key === 'W-1')?.need,
+  'PR #97 looks stuck on GitHub: GitHub has not worked out whether #97 conflicts with its base for 75 minutes, and starts no run for that head. Push a new commit to its branch (an empty one will do) for a fresh merge ref, or open a new PR from it; desk then merges it once it is green.');
+
 // ---- DS-420: a red PR the merge driver declined is the person's as its reason says, never called green.
 const redPr = (pr, more = {}) => { const g = greenPr(pr, more); return { ...g, pr_status: { ...g.pr_status, checks: [{ name: 'build', status: 'completed', conclusion: 'failure' }] } }; };
 put('xi420', { port: 4301, beat: 1, supervised: true, merge: 'yes', tickets: {
@@ -637,8 +877,9 @@ const behindP = { state: 'parked', lane: 'A', held_by: 'P-1', park: { question: 
 put('omicron', { port: 4555, beat: 1, supervised: true, tickets: { 'P-1': { ...parked('epic', 5, planQ), type: 'Epic' }, 'P-2': behindP, 'P-3': behindP } });
 const om = N.collect({ word: 'omicron' }).items;
 t('DS-351 AC2 the plan is one needs-you item, of kind plan, its children waiting', om.map((i) => `${i.t.key} ${i.kind}`).join(), 'P-1 plan');
-t('DS-351 AC2 its need is the plan park, and its recommendation is to answer it', `${om[0]?.need === planQ} ${om[0]?.actions.map(([a]) => a).join()}`, 'true answer,not-now');
-t('DS-351 AC2 an answer to it is recorded on the epic', `${N.record({ word: 'omicron', ticket: 'P-1', action: 'answer', text: 'start' }).ok} ${answers().at(-1)?.args.join(' ')}`, 'true P-1 start');
+// DS-806: in plain words, "the spine" being the feature's acceptance specs.
+t('DS-351 AC2 its need is the plan park, and its recommendation is to answer it', `${om[0]?.need === `${planQ.replace('the spine', 'the acceptance specs')} (2 tickets wait behind this)`} ${om[0]?.actions.map(([a]) => a).join()}`, 'true answer,not-now');
+t('DS-351 AC2 an answer to it is recorded on the epic', `${N.record({ word: 'omicron', ticket: 'P-1', action: 'answer', text: 'start' }).ok} ${answers().at(-1)?.args.join(' ')}`, 'true P-1 --all start');
 
 // ---- DS-375: a PR stuck after its fix tries is read against its checks now, names the step its run
 // failed at, and recommends done only when the step is on GitHub.
@@ -665,6 +906,13 @@ put('ds494', { port: 4610, beat: 1, supervised: true, merge: 'yes', tickets: {
   'E-2': stuckPr(202, [lintRed, ...passed], why375([{ name: LINT }])),
 } });
 const e494 = Object.fromEntries(N.collect({ word: 'ds494' }).items.map((i) => [i.t.key, i]));
+// A PR held for the person is aged from when it became theirs (undraft.at), not from its admit.
+put('ds897', { port: 4612, beat: 1, supervised: true, merge: 'yes', tickets: {
+  'G-1': { ...stuckPr(301, [lintRed, ...passed], why375([{ name: LINT }])), undraft: { call: 'person', why: 'w', at: minsAgo(5) } },
+} });
+const g897 = N.collect({ word: 'ds897' }).items.find((i) => i.t.key === 'G-1');
+t('#897 a PR item is aged from when it became the person\'s, not from its admit', Math.round((NOW - g897?.since) / 60000), 5);
+
 t('DS-494 AC2 the item quotes the error line', e494['E-1']?.need, `PR #201: "${LINT}" is failing, and desk's own repairs did not fix it. "${LINT}" says: "ReferenceError: React is not defined". Fix it on its branch; desk then merges it once its checks are green.`);
 t('DS-494 AC2 and is not worded as a step only the person can do', /only you can/.test(e494['E-1']?.actions[0][1] ?? 'only you can'), false);
 t('DS-494 AC3 with no error line it is as today', `${e494['E-2']?.need} | ${e494['E-2']?.actions[0][1]}`, `PR #202: "${LINT}" is failing, and desk's own repairs did not fix it. Fix it on its branch; desk then merges it once its checks are green. | only you can do this step; say done once you have, and the PR is checked on GitHub there and then`);
@@ -676,7 +924,7 @@ t('DS-375 AC3 a §4 Check builds check names its command as what unblocks it', s
 t('DS-375 AC4 a step outside GitHub: done is offered but not recommended, and says what the step is',
   `${sg['S-2']?.actions.map(([a]) => a).join()} ${recommends(sg['S-2'])} ${sg['S-2']?.actions[0][2]}`,
   'done,resume,not-now false the step is outside GitHub (./scripts/ensure-flows-image.sh); it drops off once "Flows image" is green');
-t('DS-375 AC4 its listed line carries no recommendation', cli('list', 'sigma').out.split('\n').some((l) => l.startsWith('sigma S-2 pr') && !l.includes('recommended')), true);
+t('DS-375 AC4 its listed line carries no recommendation', here('list', 'sigma').out.split('\n').some((l) => l.startsWith('sigma S-2 pr') && !l.includes('recommended')), true);
 t('DS-375 AC5 a §4 Pre-merge steps step is named from the config, with no done recommended',
   `${sg['S-3']?.need} | ${recommends(sg['S-3'])}`, `PR #103: "${LINT}" (failed at "Check portal schema mirror") needs a step outside GitHub: apply the PR's migrations to staging first. Do that step; desk then merges it once its checks are green. | false`);
 t('DS-375 AC4 beside a check on GitHub, it drops off only once every check it is stuck on is green',
@@ -730,6 +978,12 @@ const gateTickets = {
 put('phi', { port: 4620, beat: 1, supervised: true, merge: 'yes', people: { 'Code reviewer': 'Chris Anthony (@mousedown)', 'Product owner': 'Sam' }, tickets: gateTickets });
 const vi = () => Object.fromEntries(N.collect({ word: 'phi' }).items.map((i) => [i.t.key, i]));
 const v1 = vi();
+// DS-701: items held by the same thing share a `cause`, so one answer can settle them together.
+const phi701 = Object.fromEntries(N.listItems({ word: 'phi', reads: null }).items.map((i) => [i.key, i.cause]));
+t('DS-701 two PRs held by the same approval share a cause', `${phi701['V-1'] != null} ${phi701['V-1'] === phi701['V-8']}`, 'true true');
+t('DS-701 a different approval is another cause', phi701['V-2'] !== phi701['V-1'] && phi701['V-2'] != null, true);
+t('DS-701 a PR held by a failing check beside the approval has no shared cause', phi701['V-6'], null);
+t('DS-701 the cause is keyed to its repo', phi701['V-1']?.startsWith('acme__phi:approval:'), true);
 const TAIL = 'No code change clears it, only an approving review on GitHub at its latest commit; desk then merges it once its checks are green.';
 t('DS-499 AC1 protected files: the reason in plain words and the approver, not "fix it on its branch"', v1['V-1']?.need, `PR #121 needs Chris Anthony's approval: it changes a database migration and the database schema. ${TAIL}`);
 t('DS-499 AC1 the file limit', v1['V-2']?.need, `PR #122 needs Chris Anthony's approval: it has 37 changed files, over the 30-file limit. ${TAIL}`);
@@ -779,6 +1033,12 @@ t('DS-410 AC1 a ready PR whose required check never runs on its base names the t
   `PR #111 is not green: required check "${LINT}" ${why410}. Re-running cannot help, as no run exists: add feat/E-1 (or a pattern such as feat/**) to the pull_request branches of the workflow that runs "${LINT}", a change to the repo; its next push then runs the check, and desk then merges it once its checks are green. | false`);
 t('DS-410 negative control: with no untriggered record it still says the check has not reported',
   u410['U-2']?.need, `PR #112 is not green: required check "${LINT}" has not reported. Fix that check, or §4 Required checks if it should not be required; desk then merges it once its checks are green.`);
+// DS-701: a check no workflow triggers on a base is settled per base, so PRs into two bases are two causes.
+const onBase701 = (pr, base) => ((x) => ({ ...x, pr_status: { ...x.pr_status, base } }))(ready410(pr, { [LINT]: why410 }));
+put('tau701', { port: 4710, beat: 1, supervised: true, merge: 'yes', required: [LINT], tickets: { 'U-1': onBase701(113, 'feat/E-1'), 'U-2': onBase701(114, 'feat/E-1'), 'U-3': onBase701(115, 'feat/E-2') } });
+const c701 = Object.fromEntries(N.listItems({ word: 'tau701', reads: null }).items.map((i) => [i.key, i.cause]));
+t('DS-701 PRs whose check never runs on the same base share a cause; another base is another cause',
+  `${c701['U-1'] != null} ${c701['U-1'] === c701['U-2']} ${c701['U-3'] != null && c701['U-3'] !== c701['U-1']}`, 'true true true');
 const sr = loadRepos().find((x) => x.slug === 'acme__sigma');
 t('DS-375 AC1 the ticket page reads it the same way', /For you +still red after 1 fix try: Lint, Type Check & Build \(failed step: Run eslint\)$/m.test(ticketScreen(sr, 'S-1')), true);
 
@@ -826,7 +1086,7 @@ writeFileSync(join(dpWt('P-2'), 'notes.txt'), 'x');
 const dp = Object.fromEntries(N.collect({ word: 'dropper' }).items.map((i) => [i.t.key, i]));
 const dpActs = (k) => dp[k]?.actions.map(([a, why]) => `${a}${why ? '*' : ''}`).join();
 t('DS-556 AC3 a park saying it has no worker work recommends drop first, and resume stays on offer', `${dp['P-1']?.kind} ${dpActs('P-1')}`, 'parked drop*,resume,not-now');
-t('DS-556 AC3 the resume it displaced keeps its reason as a note', /^lane A: /.test(dp['P-1']?.actions[1][2] ?? ''), true);
+t('DS-556 AC3 the resume it displaced keeps its reason as a note', dp['P-1']?.actions[1][2], 'a worker finishes it once it has your answer');
 t('DS-556 any other park offers drop before not-now, unrecommended', dpActs('P-2'), 'resume*,drop,not-now');
 t('DS-556 AC3 a session park saying it has no worker work recommends drop first', `${dp['P-3']?.kind} ${dpActs('P-3')}`, 'session drop*,open,done,not-now');
 t('DS-556 any other session park offers drop too', dpActs('P-4'), 'open*,done,drop,not-now');
@@ -871,6 +1131,7 @@ put('ypsilon', { port: 4950, beat: 1, supervised: true, tickets: {
   'Y-2': { state: 'parked', lane: 'A', park: { question: refused, since: minsAgo(40), unpushed } },
   'Y-3': { state: 'triaged', lane: 'A', session_id: 'sess-y3', worktree_busy: { why: heldWhy, at: minsAgo(10) }, prev_park: { question: refused, since: minsAgo(40), round: 1 } },
   'Y-4': { state: 'parked', lane: 'A', park: { question: 'which plan?', since: minsAgo(40) } },
+  'Y-5': { state: 'parked', lane: 'A', park: { question: 'post the comment below on ABC-9?', since: minsAgo(40), approve: { kind: 'jira-comment', target: 'ABC-9', body: 'Line one.\n"Quoted" line two.' } } },
 } });
 const yr = () => loadRepos().find((x) => x.slug === 'acme__ypsilon');
 const yItems = () => Object.fromEntries(N.collect({ word: 'ypsilon' }).items.map((i) => [i.t.key, i]));
@@ -882,6 +1143,10 @@ t('DS-497 AC1 a ticket requeued off its park and held by its worktree is one ite
 t('DS-497 AC1 a parked ticket with unpushed commits keeps its park\'s item, with them as its note',
   `${yList.filter((l) => l.startsWith('ypsilon Y-2 ')).length} ${yItems()['Y-2'].kind} ${yLine('Y-2').includes(`${refused} Its worktree /w/Y-2 has 1 commit(s) not on origin.`)} ${yItems()['Y-2'].actions[0][0]}`, '1 parked true resume');
 t('a park with nothing unpushed has no note', yItems()['Y-4'].note, undefined);
+t('#775 a park awaiting approval of a write carries its exact text, whole, under its line',
+  yList.slice(yList.indexOf(yLine('Y-5')) + 2, yList.indexOf(yLine('Y-5')) + 4).join('\n'), 'Line one.\n"Quoted" line two.');
+t('#775 and its one line, which the session asks from, points to that text',
+  yLine('Y-5').includes('post the comment below on ABC-9? Its exact text awaiting approval follows this line: show it verbatim before you ask.'), true);
 t('DS-497 AC2 a park older than the last worker to start says nothing of the worktree hold', `${yItems()['Y-3'].need} ${yItems()['Y-3'].actions.map(([a]) => a).join()}`,
   `worktree in use: ${heldWhy} · commit, push or discard it done,not-now`);
 t('DS-497 AC1 desk-q leads the row and the ticket page with the reason', `${/Y-1 +◆ needs you +git push was refused/.test(strip(repoScreen(yr())))} ${strip(ticketScreen(yr(), 'Y-1')).includes('Its last worker parked: git push was refused')}`, 'true true');
@@ -995,6 +1260,91 @@ t('DS-413 AC3 a hold that is not a code-owner approval quotes its reason as the 
 t('DS-413 AC3 negative control: it never says only "merge it on GitHub"', /^PR #161 [^"]*\. Merge it on GitHub/.test(h413['H-1']?.need ?? ''), false);
 t('DS-413 AC2 a code-owner hold another person owns names that owner\'s approval', /"CODEOWNERS path, needs your code-owner approval \(code-owner approval from @alice\)"/.test(h413['H-2']?.need ?? ''), true);
 
+// ---- A person's merge hold whose step reads done on GitHub (the PR changes the file its
+// reason names, and its checks are green) says only the merge is left; otherwise the line is unchanged.
+const why657 = 'call-script sign-off: Ben signs off in docs/signoff/call-script.md';
+const hold657 = (why) => `merge hold: ${why} — prompts/**, 1 file(s), e.g. prompts/call.md`;
+put('hold657', { port: 5657, beat: 1, supervised: true, merge: 'yes', tickets: {
+  'S-1': greenPr(181, { merge_blocked: hold657(why657) }),
+  'S-2': greenPr(182, { merge_blocked: hold657(why657) }),
+  'S-3': greenPr(183, { merge_blocked: hold657(why657) }),
+  'S-4': greenPr(184, { merge_blocked: hold657('a person runs `scripts/verify.sh` first') }),
+  'S-5': greenPr(185, { merge_blocked: hold657('a person approves every change to `prompts/**`') }),
+  'S-6': greenPr(186, { merge_blocked: hold657('Ben approves prompts/call.md before merge') }),
+  'S-7': greenPr(187, { merge_blocked: 'merge hold: Ben approves package.json script changes — package.json#scripts, 1 file(s), e.g. package.json' }),
+  'S-8': greenPr(188, { merge_blocked: `${hold657(why657)} (and 1 more merge hold(s))` }),
+} });
+const green657 = [{ __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: minsAgo(1) }];
+const signed657 = [{ path: 'prompts/call.md' }, { path: 'docs/signoff/call-script.md' }];
+const gh657 = {
+  181: { state: 'OPEN', files: signed657, statusCheckRollup: green657 },
+  182: { state: 'OPEN', files: [{ path: 'prompts/call.md' }], statusCheckRollup: green657 },
+  183: { state: 'OPEN', files: signed657, statusCheckRollup: [{ ...green657[0], status: 'IN_PROGRESS', conclusion: null }] },
+  184: { state: 'OPEN', files: [{ path: 'prompts/call.md' }, { path: 'scripts/verify.sh' }], statusCheckRollup: green657 },
+  185: { state: 'OPEN', files: [{ path: 'prompts/call.md' }], statusCheckRollup: green657 },
+  186: { state: 'OPEN', files: [{ path: 'prompts/call.md' }], statusCheckRollup: green657 },
+  187: { state: 'OPEN', files: [{ path: 'package.json' }], statusCheckRollup: green657 },
+  188: { state: 'OPEN', files: signed657, statusCheckRollup: green657 },
+};
+const h657 = Object.fromEntries(N.collect({ word: 'hold657', reads: { ...STUB, pr: (r, pr) => ({ v: gh657[pr] ?? null, err: '' }) } }).items.map((i) => [i.t.key, i]));
+const step657 = (pr, why = why657) => `PR #${pr} is under a merge hold, so desk never merges it itself: "${why}" (prompts/**, 1 file(s), e.g. prompts/call.md).`;
+const ask657 = ' Do what it asks first, then merge it on GitHub; the ticket is then done.';
+t('DS-657 AC5 a sign-off hold whose file is changed and checks are green says its step is done and only the merge is left', h657['S-1']?.need,
+  `${step657(181)} Its step is done: the PR changes \`docs/signoff/call-script.md\`, and its checks are green. Only the merge is left: merge it on GitHub; the ticket is then done.`);
+t('DS-657 AC6 the sign-off file not changed: the line is unchanged', h657['S-2']?.need, `${step657(182)}${ask657}`);
+t('DS-657 AC6 a check still running: the line is unchanged', h657['S-3']?.need, `${step657(183)}${ask657}`);
+t('DS-657 AC6 a script the reason names is a step to run, not a file the step changes: the line is unchanged', h657['S-4']?.need, `${step657(184, 'a person runs `scripts/verify.sh` first')}${ask657}`);
+t('DS-657 AC6 a hold whose reason names no file is unchanged', h413['H-1']?.need.endsWith(ask657), true);
+t('DS-657 AC6 a reason naming the glob the hold guards is no sign-off file: the line is unchanged', h657['S-5']?.need, `${step657(185, 'a person approves every change to `prompts/**`')}${ask657}`);
+t('DS-657 AC6 a reason naming a file the hold guards is no sign-off file: the line is unchanged', h657['S-6']?.need, `${step657(186, 'Ben approves prompts/call.md before merge')}${ask657}`);
+t('DS-657 AC6 a keyed hold (path#key) whose reason names its own file is no sign-off file: the line is unchanged', h657['S-7']?.need,
+  `PR #187 is under a merge hold, so desk never merges it itself: "Ben approves package.json script changes" (package.json#scripts, 1 file(s), e.g. package.json).${ask657}`);
+t('DS-657 AC6 a PR under another hold with no routine never reads as only the merge left: the line is unchanged', h657['S-8']?.need, `${step657(188)}${ask657}`);
+
+// ---- A live item says how many held tickets wait behind it, directly or through
+// another, and ranks by that after PRODUCTION BROKEN, ahead of one that has waited longer.
+const behind657 = (by) => ({ state: 'parked', lane: 'A', held_by: by, park: { question: `held by orchestrator: blocked by ${by} — starts once their PRs merge` } });
+put('wait657', { port: 5658, beat: 1, supervised: true, tickets: {
+  'W-1': parked('A', 30, 'Which copy?'), 'W-2': parked('A', 300, 'Which endpoint?'), 'W-3': parked('A', 5, 'PRODUCTION BROKEN: login returns 500'),
+  'W-4': behind657('W-1'), 'W-5': behind657('W-1'), 'W-6': behind657('W-4'), 'W-7': behind657('W-3'),
+} });
+const w657 = N.collect({ word: 'wait657' }).items;
+const need657 = (k) => w657.find((i) => i.t.key === k)?.need;
+t('DS-657 AC1 a live item says how many tickets wait behind it, the one behind another counted', need657('W-1'), 'Which copy? (3 tickets wait behind this)');
+t('DS-657 AC1 one with a single ticket behind it says so', need657('W-3'), 'PRODUCTION BROKEN: login returns 500 (1 ticket waits behind this)');
+t('DS-657 AC1 negative control: one with none behind it says nothing', need657('W-2'), 'Which endpoint?');
+t('DS-657 AC2 PRODUCTION BROKEN first, then most tickets behind, ahead of one that has waited longer', w657.map((i) => i.t.key).join(), 'W-3,W-1,W-2');
+
+// ---- DS-701: the list as data (listItems, list --json): each item with its question as listed, its
+// actions, how many tickets wait behind it and its cause.
+const j701 = N.listItems({ word: 'wait657', reads: null });
+const ji701 = Object.fromEntries(j701.items.map((i) => [i.key, i]));
+t('DS-701 listItems lists what collect does, in its order', j701.items.map((i) => i.key).join(), w657.map((i) => i.t.key).join());
+t('DS-701 the "waiting behind" count is in the item', ['W-1', 'W-3', 'W-2'].map((k) => ji701[k]?.behind).join(), '3,1,0');
+t('DS-701 its question is the listed need, word for word', ji701['W-1']?.question, need657('W-1'));
+t('DS-701 a PRODUCTION BROKEN park is marked so', `${ji701['W-3']?.production_broken} ${ji701['W-1']?.production_broken}`, 'true false');
+t('DS-701 the item names its batch, key, kind and ticket, and its actions with the recommendation', JSON.stringify((({ id, batch, key, kind, ticket, actions }) => ({ id, batch, key, kind, ticket, first: actions[0] }))(ji701['W-1'])),
+  JSON.stringify({ id: 'wait657:W-1:parked', batch: 'wait657', key: 'W-1', kind: 'parked', ticket: 'W-1', first: { action: 'resume', recommended: true, why: 'a worker finishes it once it has your answer', note: null } }));
+t('DS-701 an item waiting on its own has no cause', ji701['W-1']?.cause, null);
+t('DS-701 without settling, it says so and settles nothing', `${j701.settled} ${j701.settled_lines.length} ${j701.v}`, 'false 0 1');
+t('DS-701 its queue carries its age', j701.inputs.queues.map((x) => `${x.batch} ${typeof x.age_s}`).join(), 'wait657 number');
+// A repo-level item counts and ranks the same: an unset row's group by the tickets held behind its
+// parked tickets, a person's step by the tickets waiting on it and those held behind them.
+put('nu657', { port: 5659, beat: 1, supervised: true, tickets: {
+  'U-1': parked('A', 5, 'CONFIG_DENIED: worker-web-read (unset): needs the published rate'), 'U-2': parked('A', 300, 'Which copy?'),
+  'U-3': behind657('U-1'), 'U-4': behind657('U-3'),
+} });
+const u657 = N.collect({ word: 'nu657' }).items;
+t('DS-657 AC1 an unset row\'s item says how many tickets wait behind its parked tickets', /\(2 tickets wait behind this\)$/.test(u657.find((i) => i.kind === 'config')?.need ?? ''), true);
+t('DS-657 AC2 and ranks ahead of one that has waited longer', u657.map((i) => i.t.key).join(), 'unset:worker-web-read,U-2');
+put('kappa657', { port: 5660, beat: 1, supervised: true, tickets: {
+  'K-1': { state: 'done', lane: 'A', result: { pr: 76 }, pr_status: { pr: 76, state: 'OPEN', isDraft: false, checks: [] }, merge_after: 'OPS-6' },
+  'K-2': parked('A', 300, 'Which endpoint?'), 'K-3': behind657('K-1'),
+} });
+const k657 = N.collect({ word: 'kappa657' }).items;
+t('DS-657 AC1 a person\'s step says how many tickets wait behind it, those held behind its waiting tickets counted', /\(2 tickets wait behind this\)$/.test(k657.find((i) => i.kind === 'step')?.need ?? ''), true);
+t('DS-657 AC2 and ranks ahead of one that has waited longer', k657.map((i) => i.t.key).join(), 'step:OPS-6,K-2');
+
 // ---- DS-415: drafts whose evidence run failed wait on one fix ticket: no PR item each, and the fix's
 // park, naming a setting only the person holds, is the one item.
 const evWhy = (n) => `its evidence workflow \`pr-evidence.yml\` failed at aaaaaaaaa and left 2 screenshot cell(s): "Error: did not set a _vercel_jwt cookie"; EV-9 fixes it for the repo, then the run is started again`;
@@ -1021,14 +1371,14 @@ const q1 = N.record({ word: 'psi', ticket: 'Q-1', action: 'done' });
 t('DS-378 AC1 done on a PR still open says GitHub still shows it unmerged', `${q1.ok} ${q1.line}`, 'false psi Q-1: GitHub still shows PR #141 unmerged, so it stays on your list with that note.');
 t('DS-378 AC1 it is read from the repo\'s GitHub', readFileSync(GH_LOG, 'utf8').includes('pr view 141 --repo acme/psi --json state,mergedAt,isDraft,headRefOid'), true);
 t('DS-378 AC1 it is listed again with that note', /^\(You said done at \d{4}-\d\d-\d\d \d\d:\d\d UTC, and GitHub still showed it unmerged\.\)$/.test(psi()['Q-1']?.note ?? ''), true);
-const q1Line = cli('list', 'psi').out.split('\n').find((l) => l.startsWith('psi Q-1 pr')) ?? '';
+const q1Line = here('list', 'psi').out.split('\n').find((l) => l.startsWith('psi Q-1 pr')) ?? '';
 t('DS-378 AC1 the listed line keeps the need and the note whole', q1Line.includes(`| ${psi()['Q-1'].need} ${psi()['Q-1'].note} |`), true);
 // AC4 on the listed line: a long recorded text a need quotes never takes the next step off it.
 const longHold = withHead(psiPr(147, { merge_blocked: `merge hold: ${'needs a sign-off on a very long list of held paths, '.repeat(6)}` }));
 const qhl = queueOf('psi'); qhl.tickets['Q-7'] = { key: 'Q-7', ...longHold };
 writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qhl));
 t('DS-378 AC4 a long merge hold still says what happens next on its listed line',
-  (cli('list', 'psi').out.split('\n').find((l) => l.includes('| PR #147 ')) ?? '').includes('Do what it asks first, then merge it on GitHub; the ticket is then done. |'), true);
+  (here('list', 'psi').out.split('\n').find((l) => l.includes('| PR #147 ')) ?? '').includes('Do what it asks first, then merge it on GitHub; the ticket is then done. |'), true);
 delete qhl.tickets['Q-7']; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qhl));
 // ---- DS-411: a merge hold's item names its step, the routine desk did not run, or the step it failed at
 const migr = 'merge hold: apply the migration to staging and production first — prisma/migrations/**, 1 file(s), e.g. prisma/migrations/2026_brand/migration.sql';
@@ -1105,6 +1455,14 @@ const c560 = Object.fromEntries(N.collect({ word: 'comma560' }).items.map((i) =>
 t('DS-560 AC1 a comma-wrapped SHA is taken out with its commas', c560['C-1'], 'PR #181 is a draft: latest review does not open a line with "x" as its outcome. Settle it on #181; the next pass then picks it up.');
 t('DS-560 AC2 an unwrapped SHA is taken out as before', c560['C-2'], 'PR #182 is a draft: review states "x". Settle it on #182; the next pass then picks it up.');
 t('DS-560 AC3 a URL holding a hex run is left whole', c560['C-3']?.includes(shaUrl), true);
+// ---- DS-854: a refused fix ticket's body file is quoted with its id; a SHA beside it still goes.
+const bodyFile = '/home/me/.desk-autopilot/acme__p854/batches/VPL-861/evidence-runs/fix-338f2164.md';
+put('path854', { port: 5172, beat: 1, supervised: true, tickets: {
+  'P-1': draftPr(191, passed, { call: 'person', why: `its evidence workflow failed at 57e3a9253; no fix could be started for it for the repo (desk-jira create was refused (desk-jira: refusing to send ${bodyFile}: a body must be inside $DESK_STATE))`, action: 'settle it on #191' }),
+} });
+const p854 = N.collect({ word: 'path854' }).items.find((i) => i.t.key === 'P-1')?.need ?? '';
+t('DS-854 AC3 a path holding a hex id is quoted whole', `${p854.includes(bodyFile)} ${p854.includes('its latest commit.md')}`, 'true false');
+t('DS-854 AC3 a SHA on its own in the same reason is still taken out', /failed;/.test(p854) && !p854.includes('57e3a9253'), true);
 
 t('DS-417 AC3 a done note still follows the need whole', /\| PR #161 [^|]*\. \(You said done at [^|]*, and GitHub still showed it unmerged, still a draft\.\) \|/.test(longLine('L-3')), true);
 
@@ -1131,7 +1489,7 @@ const chi = Object.fromEntries(N.collect({ word: 'chi' }).items.map((i) => [i.t.
 t('DS-379 AC3 a stuck capture try says what to do', chi['C-1']?.need,
   'PR #151 is a draft, and desk\'s capture try could not take 2 of its screenshots, so nothing desk has can fill their cells. Edit the PR body so no cell is left; the next pass then takes it out of draft.');
 t('DS-379 AC3 its note names each screen and the worker\'s reason, whole', chi['C-1']?.note, `(Not taken: s-2-before.png, s-2-after.png. The capture try said: ${said379})`);
-const c1Line = cli('list', 'chi').out.split('\n').find((l) => l.startsWith('chi C-1 pr')) ?? '';
+const c1Line = here('list', 'chi').out.split('\n').find((l) => l.startsWith('chi C-1 pr')) ?? '';
 t('DS-379 AC3 the listed line keeps the need and the note whole', c1Line.includes(`| ${chi['C-1'].need} ${chi['C-1'].note} |`), true);
 t('DS-379 AC3 one screen with nothing said still names it', `${chi['C-2']?.need} ${chi['C-2']?.note}`,
   'PR #152 is a draft, and desk\'s capture try could not take one of its screenshots, so nothing desk has can fill its cell. Edit the PR body so no cell is left; the next pass then takes it out of draft. (Not taken: a-after.png.)');
@@ -1238,7 +1596,7 @@ const fs = join(env.HOME, '.desk-autopilot', 'acme__omega', 'batches', 'F-1');
 mkdirSync(dirname(fq), { recursive: true });
 writeFileSync(fq, JSON.stringify({ version: 1, batch: 'f1-batch', base: 'feat/f', concurrency: 1, supervised: true, tickets: { 'F-2': { key: 'F-2', state: 'running', lane: 'A', added_at: minsAgo(60) } } }));
 const fQueue = () => JSON.parse(readFileSync(fq, 'utf8'));
-const omegaList = cli('list', 'omega').out.split('\n');
+const omegaList = here('list', 'omega').out.split('\n');
 t('DS-380 a parked ticket offers move, naming the running batch and its base', omegaList.some((l) => l.startsWith('omega M-1 parked') && l.includes('move (move <batch> takes it out of this batch and queues it in another, its next worker on that base: F-1 (on feat/f))')), true);
 const m1 = N.record({ word: 'omega', ticket: 'M-1', action: 'move', text: 'F-1' });
 const mv1 = fQueue().tickets['M-1'];
@@ -1384,7 +1742,7 @@ const grT2 = queueOf('grantee').tickets['GR-2'];
 t('DS-390 AC5 an answer that approves nothing records no grant', `${gr2.ok} ${grT2.state} ${grT2.grant ?? null}`, 'true triaged null');
 const grI3 = N.collect({ word: 'grantee' }).items.find((i) => i.t.key === 'GR-3');
 t('DS-390 AC3 a park on a step no worker is allowed is a session item, offering open, done, drop and not-now, never resume',
-  `${grI3?.kind} ${grI3?.actions.map((a) => a[0]).join()} ${/never allowed aws/.test(grI3?.actions[0][1] ?? '')}`, 'session open,done,drop,not-now true');
+  `${grI3?.kind} ${grI3?.actions.map((a) => a[0]).join()} ${grI3?.actions[0][1]}`, "session open,done,drop,not-now a worker can't run aws commands, so it needs you");
 const gr3 = N.record({ word: 'grantee', ticket: 'GR-3', action: 'resume', text: 'Yes, read it yourself' });
 t('DS-390 AC3 an answer approving it is not requeued to a worker', `${gr3.ok} ${queueOf('grantee').tickets['GR-3'].state} ${queueOf('grantee').tickets['GR-3'].grant ?? null}`, 'false parked null');
 t('DS-390 AC3 open names the session and says why', /not requeued \(a step no worker is allowed\).*\/desk-ticket GR-3/.test(N.record({ word: 'grantee', ticket: 'GR-3', action: 'open' }).line), true);
@@ -1439,8 +1797,10 @@ put('nu', { port: 5300, beat: 1, supervised: true, tickets: {
 const nu = () => N.collect({ word: 'nu' }).items;
 t('DS-389 AC3 two parks on one unset row are one item for the repo; the others stay their own', nu().map((i) => `${i.t.key} ${i.kind}`).sort().join(), 'N-3 parked,N-4 parked,N-5 parked,unset:worker-web-read config');
 const nuRow = nu().find((i) => i.kind === 'config');
-t('DS-389 AC3 its need names the row and both tickets, and recommends done', `${nuRow?.need.startsWith("§3 worker-web-read is not set in nu's config, so desk reads it as no, and 2 tickets parked on it (N-1 and N-2). Answer it once with /desk-update in ")} ${nuRow?.actions.map((x) => x[0]).join()}`, 'true done,not-now');
-t('DS-389 AC3 the list shows it as one line', cli('list', 'nu').out.split('\n').filter((l) => l.startsWith('nu unset:worker-web-read config')).length, 1);
+// DS-806 AC1: it says what the row lets workers do, not the row's id.
+t('DS-389 AC3 its need names the row and both tickets, and recommends done', `${nuRow?.need.startsWith("2 tickets (N-1 and N-2) parked because nu's desk config does not say whether workers may read web pages, so they can't. Answer it once with /desk-update in ")} ${nuRow?.actions.map((x) => x[0]).join()}`, 'true done,not-now');
+t('DS-806 AC2 its done reason is plain words', nuRow?.actions[0][1], 'once you have answered it, done sends all 2 tickets parked on it back to a worker');
+t('DS-389 AC3 the list shows it as one line', here('list', 'nu').out.split('\n').filter((l) => l.startsWith('nu unset:worker-web-read config')).length, 1);
 const stillUnset = N.record({ word: 'nu', ticket: 'unset:worker-web-read', action: 'done' });
 t('DS-389 AC3 done while the row is still unset requeues nothing', `${stillUnset.ok} ${queueOf('nu').tickets['N-1'].state} ${/still not set/.test(stillUnset.line)}`, 'false parked true');
 const nuConfig = join(env.DESK_CONFIG_ROOT, 'repos', 'acme__nu', 'config.md');
@@ -1463,6 +1823,103 @@ t('DS-389 AC7 it has waited since the copy was first found behind', Math.round((
 const tDone = N.record({ word: 'nu', ticket: 'templates', action: 'done' });
 t('DS-389 AC7 done checks the copies again, and clears once none is behind', `${tDone.ok} ${tDone.line} ${nu().some((i) => i.kind === 'templates')}`, 'true nu templates: no copy is behind on origin/main now, so it is off your list. false');
 
+// ---- DS-577 AC8: the repo's failing reviewer check is one item, naming every PR the pass holds on it
+const rvWhy = 'the review gate counts agent-pullbot; desk posts verdicts as bigbenjoman';
+const gated = (pr) => redPr(pr, { gate_hold: { item: 'health:acme__rv:reviewer', head: `h${pr}`, why: rvWhy, at: minsAgo(30 + pr - 300) } });
+put('rv', { port: 4302, beat: 1, supervised: true, gateReviewers: 'agent-pullbot', tickets: {
+  'RV-1': gated(301), 'RV-2': gated(302), 'RV-3': gated(303), 'RV-4': gated(304), 'RV-5': gated(305),
+  'RV-6': redPr(306),
+  'RV-7': { ...gated(307), pr_status: { ...gated(307).pr_status, head: 'h307-moved' } },
+} });
+writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__rv', 'health.json'), JSON.stringify({ at: minsAgo(2), results: {}, failing: [], streak: {},
+  reviewer: { ok: false, kind: 'mismatch', gate: ['agent-pullbot'], login: 'bigbenjoman', why: rvWhy, fix: 'set §4 Review account to agent-pullbot with its gh config directory, or add bigbenjoman to the gate\'s reviewer list and to §4 Gate reviewers', told: true } }));
+const rv = () => N.collect({ word: 'rv' }).items;
+const rvItem = rv().find((i) => i.kind === 'reviewer');
+t('DS-577 AC8 one item for the repo, and no per-PR item for the PRs it holds', rv().map((i) => `${i.t.key} ${i.kind}`).sort().join(), 'RV-6 pr,RV-7 pr,reviewer reviewer');
+t('DS-577 AC8 its note names the five PRs it holds', rvItem?.note, 'Held on it: PR #301 (RV-1), PR #302 (RV-2), PR #303 (RV-3), PR #304 (RV-4) and PR #305 (RV-5).');
+t('DS-577 AC8 its need names both logins and what it holds', `${rvItem?.need.includes(rvWhy)} ${/no PR red only on that gate gets a review or fix try; build workers still start$/.test(rvItem?.need)} ${rvItem?.actions.map((a) => a[0]).join()}`, 'true true done,not-now');
+t('DS-577 AC8 desk-q counts it once, beside the PRs it does not hold', N.needsCount(N.collect({ word: 'rv' }).scope[0]).shown, 3);
+t('DS-577 AC8 the list shows it as one line', here('list', 'rv').out.split('\n').filter((l) => l.startsWith('rv reviewer reviewer')).length, 1);
+const rvDone = N.record({ word: 'rv', ticket: 'reviewer', action: 'done' });
+t('DS-577 AC8 done records nothing and says the next pass checks again', `${rvDone.ok} ${/next pass checks the account again/.test(rvDone.line)}`, 'true true');
+{
+  const c = join(env.DESK_CONFIG_ROOT, 'repos', 'acme__rv', 'config.md');
+  const was = readFileSync(c, 'utf8');
+  writeFileSync(c, was.replace('| Gate reviewers | `agent-pullbot` |', '| Gate reviewers | `any` |'));
+  t('DS-577 a failure recorded before Gate reviewers became any lists no item', rv().some((i) => i.kind === 'reviewer'), false);
+  writeFileSync(c, was);
+}
+writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__rv', 'health.json'), JSON.stringify({ at: minsAgo(2), results: {}, failing: [], streak: {}, reviewer: { ok: true, gate: ['agent-pullbot'], login: 'agent-pullbot' } }));
+t('DS-577 AC4 a passing reviewer check lists no item', rv().some((i) => i.kind === 'reviewer'), false);
+
+// ---- DS-675: the browser profile's login failing is one item for the machine, whatever waits on it
+{
+  const rvState = join(env.HOME, '.desk-autopilot', 'acme__rv');
+  const { signinId } = await import('../desk/bin/health.mjs');
+  const signinDir = join(env.HOME, '.desk-autopilot', 'health-browser-signin');
+  const signinFile = join(signinDir, `${signinId('/p.github-session.json')}.json`);
+  mkdirSync(signinDir, { recursive: true });
+  const uq = join(env.DESK_HOME, 'upload-queue.json');
+  const why = 'the GitHub login in /p.github-session.json expired at 2026-11-16T08:00:00.000Z';
+  const stall = `health: browser profile failed: ${why} — fix: node ~/.claude/desk/bin/github-signin.mjs, in a terminal on this machine's screen; every repo's screenshot uploads with that login wait in the machine's upload queue until it passes, and new workers still start`;
+  const { openQuestions } = await import('../desk/bin/digest.mjs');
+  const rvBatch = () => N.collect({ word: 'rv' }).scope[0];
+  const alphaBatch = () => N.collect({ word: 'alpha' }).scope[0];
+  const [rvBefore, alphaBefore] = [N.needsCount(rvBatch()).shown, N.needsCount(alphaBatch()).shown];
+  writeFileSync(signinFile, JSON.stringify({ at: minsAgo(20), why, state: rvState, slug: 'acme__rv', file: '/p.github-session.json' }));
+  writeFileSync(uq, JSON.stringify({ jobs: [{ repo: 'acme/rv', pr: 301, key: 'RV-1', profile: '/p' }, { repo: 'acme/rv', pr: 302, key: 'RV-2' }, { repo: 'acme/alpha', pr: 9, key: 'A-9', profile: '/p' }, { repo: 'acme/beta', pr: 4, key: 'B-4', profile: '/own' }] }));
+  writeFileSync(join(rvState, 'handed.json'), JSON.stringify({ 'wait-x': { id: 'wait-x', ticket: 'health', kind: 'batch', text: stall, why: 'a sign-in', at: minsAgo(20) } }));
+  const items = N.collect().items.filter((i) => i.kind === 'browser-signin');
+  t('DS-675 AC1 one sign-in item for every repo that waits on it', `${items.length} ${items[0]?.r.slug}`, '1 acme__rv');
+  t('DS-675 AC1 it names the sign-in command and every upload waiting', `${items[0]?.need.endsWith('Sign it in, in a terminal on this machine\'s screen: node ~/.claude/desk/bin/github-signin.mjs')} ${items[0]?.note}`, 'true Waiting in the upload queue: acme/rv #301, acme/rv #302 and acme/alpha #9.');
+  t('DS-675 AC1 desk-q counts it once, in the repo whose pass tells it', `${N.needsCount(rvBatch()).shown - rvBefore} ${N.needsCount(alphaBatch()).shown - alphaBefore}`, '1 0');
+  t('DS-675 AC1 a repo named that does not tell it lists no sign-in item', N.collect({ word: 'alpha' }).items.some((i) => i.kind === 'browser-signin'), false);
+  t('DS-675 AC1 the digest lists the handed sign-in item while it fails', openQuestions({ slug: 'acme__rv', state: rvState, queue: join(env.DESK_HOME, 'repos', 'acme__rv', 'queue.json') }).some((q) => q.text.startsWith(stall)), true);
+  t('DS-675 an upload with another login is not named as waiting on it', items[0]?.note.includes('acme/beta'), false);
+  t('DS-675 the item is keyed by its login', items[0]?.t.key, `browser-signin:${signinId('/p.github-session.json')}`);
+  const done = N.record({ word: 'rv', ticket: items[0]?.t.key, action: 'done' });
+  t('DS-675 done records nothing and says the next pass checks again', `${done.ok} ${/next pass checks the login again/.test(done.line)}`, 'true true');
+  rmSync(signinFile);
+  t('DS-675 AC2 signed in again, the item is gone from needs-you', `${N.collect().items.some((i) => i.kind === 'browser-signin')} ${N.needsCount(rvBatch()).shown - rvBefore}`, 'false 0');
+  t('DS-675 AC2 and from the digest, though the slot that handed it has run no pass since', openQuestions({ slug: 'acme__rv', state: rvState, queue: join(env.DESK_HOME, 'repos', 'acme__rv', 'queue.json') }).some((q) => q.text.startsWith(stall)), false);
+  rmSync(uq); rmSync(join(rvState, 'handed.json')); rmSync(signinDir, { recursive: true });
+}
+
+// ---- DS-790: GitHub's PR page changing pauses the upload queue: one desk item, not one per PR -------
+{
+  const uq = join(env.DESK_HOME, 'upload-queue.json');
+  const rvBatch = () => N.collect({ word: 'rv' }).scope[0];
+  const alphaBatch = () => N.collect({ word: 'alpha' }).scope[0];
+  const [rvBefore, alphaBefore] = [N.needsCount(rvBatch()).shown, N.needsCount(alphaBatch()).shown];
+  const why = "GitHub's PR page changed: no comment composer found by role, placeholder or legacy id";
+  writeFileSync(uq, JSON.stringify({ jobs: [{ repo: 'acme/rv', pr: 301, key: 'RV-1' }, { repo: 'acme/alpha', pr: 9, key: 'A-9' }],
+    page: { at: minsAgo(20), why, repo: 'acme/rv', pr: 301, install: '/desk/releases/aaa/bin' } }));
+  const pageOf = (word) => N.collect({ word }).items.filter((i) => i.kind === 'upload-page');
+  for (const word of ['rv', 'alpha']) {
+    const items = pageOf(word);
+    t(`DS-790 AC2 listing ${word}: one item saying the uploader is broken by a GitHub page change, naming how many PRs wait`,
+      `${items.length} ${items[0]?.need.startsWith(`desk's screenshot uploader is broken by a GitHub page change (${why}), so no repo's screenshot upload runs and 2 PR(s) wait in draft`)}`, '1 true');  }
+  const all = N.collect().items.filter((i) => i.kind === 'upload-page');
+  t('DS-790 AC2 one item for the machine, in the repo whose upload found it, naming every upload waiting', `${all.length} ${all[0]?.r.slug} ${all[0]?.note}`, '1 acme__rv Waiting in the upload queue: acme/rv #301 and acme/alpha #9.');
+  t('DS-790 AC2 desk-q counts it once, in that repo', `${N.needsCount(rvBatch()).shown - rvBefore} ${N.needsCount(alphaBatch()).shown - alphaBefore}`, '1 0');
+  const done = N.record({ word: 'rv', ticket: 'upload-page', action: 'done' });
+  t('DS-790 done records nothing and says an upload after desk is installed again clears it', `${done.ok} ${/once desk is installed again/.test(done.line)}`, 'true true');
+  // Put off from the other repo, where it is listed in alpha's batch, it is put off for the machine.
+  const off = N.record({ word: 'alpha', ticket: 'upload-page', action: 'not-now' });
+  const offFile = join(env.DESK_HOME, 'not-now.jsonl');
+  t('DS-790 put off from alpha, it is in the machine\'s register, and off both lists and rv\'s count', `${off.ok} ${off.line.endsWith(`put off (${offFile}).`)} ${pageOf('alpha').length} ${pageOf('rv').length} ${N.needsCount(rvBatch()).shown - rvBefore}`, 'true true 0 0 0');
+  rmSync(offFile, { force: true });
+  t('DS-790 its put-off cleared, it is listed again', pageOf('alpha').length, 1);
+  // The queue holds the repo as the pass's origin spells it, which GitHub does not care about.
+  writeFileSync(uq, JSON.stringify({ jobs: [{ repo: 'Acme/RV', pr: 301, key: 'RV-1' }],
+    page: { at: minsAgo(20), why, repo: 'Acme/RV', pr: 301, install: '/desk/releases/aaa/bin' } }));
+  const cased = N.collect().items.filter((i) => i.kind === 'upload-page');
+  t('DS-790 a repo spelled in other case is still its repo: listed and counted there', `${cased.length} ${cased[0]?.r.slug} ${N.needsCount(rvBatch()).shown - rvBefore}`, '1 acme__rv 1');
+  writeFileSync(uq, JSON.stringify({ jobs: [], page: null }));
+  t('DS-790 AC4 the pause cleared, the item is gone', `${N.collect().items.some((i) => i.kind === 'upload-page')} ${N.needsCount(rvBatch()).shown - rvBefore}`, 'false 0');
+  rmSync(uq);
+}
+
 // ---- DS-396: an idle batch the loaded supervisor runs is not stopped; one with no agent is
 // Each last passed 20 minutes ago. omicron's supervisor has ticked idle since, refreshing its heartbeat as
 // supervisor.mjs idleBeat does (test_supervisor.sh proves the tick writes it); pi's agent is not loaded.
@@ -1476,7 +1933,7 @@ writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__omicron', 'orchestrators'
   batch: 'omicron-batch', pid: 2, at: minsAgo(1), pass: minsAgo(20), next: new Date(NOW + 2 * 60000).toISOString() }));
 const runOf = (word) => N.listText(N.collect({ word })).split('\n').find((l) => l.startsWith('@ '));
 t('DS-396 AC1 an idle supervised batch says the supervisor runs it and an answer wakes it, not passes stopped',
-  `${runOf('omicron')} ${/passes stopped/i.test(cli('left', 'omicron').out)}`, '@ omicron: run by the supervisor; an answer wakes it, and its next pass picks the answer up false');
+  `${runOf('omicron')} ${/passes stopped/i.test(here('left', 'omicron').out)}`, '@ omicron: run by the supervisor; an answer wakes it, and its next pass picks the answer up false');
 t('DS-396 AC3 a batch with no supervisor agent loaded and no pass for 20 minutes still says passes stopped',
   /^@ pi: passes stopped; answers wait until they resume\. To resume: /.test(runOf('pi') ?? ''), true);
 t('DS-396 AC4 desk-q counts the idle supervised batch live, so its answered park waits rather than needing you',
@@ -1502,7 +1959,7 @@ const sigmaQ = () => readFileSync(join(env.DESK_HOME, 'repos', 'acme__sigma', 'q
 const sgItems = () => N.collect({ word: 'sigma' }).items;
 const verbs = (k) => sgItems().find((i) => i.t.key === k)?.actions.map((a) => a[0]).join();
 t('DS-399 AC1 a lane D session item with its worktree offers resume beside open and not-now', `${sgItems().find((i) => i.t.key === 'S-1')?.kind} ${verbs('S-1')}`, 'session open,resume,done,drop,not-now');
-t('DS-399 AC1 the list line says what resume does', cli('list', 'sigma').out.split('\n').some((l) => l.startsWith('sigma S-1 session') && l.includes('2. resume (once its step is done, resume "<what you did>" hands it back to a worker that starts at self-review)')), true);
+t('DS-399 AC1 the list line says what resume does', here('list', 'sigma').out.split('\n').some((l) => l.startsWith('sigma S-1 session') && l.includes('2. resume (once its step is done, resume "<what you did>" hands it back to a worker that starts at self-review)')), true);
 t('DS-399 a lane C park no worker ever worked has no worktree to start in, so no resume', verbs('S-2'), 'open,done,drop,not-now');
 t('DS-399 a park on a step no worker is allowed is not offered resume, worktree or not', verbs('S-4'), 'open,done,drop,not-now');
 const sgBefore = sigmaQ();
@@ -1595,7 +2052,13 @@ t('DS-403 AC1 one base-push item for the batch, and no ticket is one', bp.map((i
 t('DS-403 AC1 its need names the base, the source and the row, and approve is recommended',
   `${bp[0]?.need} | ${bp[0]?.actions.map((a) => a[0]).join()} ${!!bp[0]?.actions[0][1]}`,
   'feat/x is behind main, and config §3 batch-base-push is "ask", so no pass merges main into it: approve it once for this batch | approve,not-now true');
-t('DS-403 AC1 it has waited since the pass first asked', Math.round((NOW - bp[0]?.since) / 60000), 40);
+put('rho964', { port: 3964, beat: 1, supervised: true, batch: { base: 'feat/x', base_push_ask: { since: minsAgo(40), base: 'feat/x', source: 'main', recreate: true } },
+  tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+const bpGone = N.collect({ word: 'rho964' }).items[0];
+t('a base-push item for a merged, deleted base asks to recreate it',
+  `${bpGone?.need} | ${bpGone?.actions[0][1]}`,
+  'feat/x is missing on origin (merged into main, then deleted), and config §3 batch-base-push is "ask", so no pass recreates it: approve it once for this batch | it is only code: the next pass pushes main\'s head back as feat/x, and every later sync in this batch runs without asking');
+t('DS-403 AC1 it has waited since the pass first asked',Math.round((NOW - bp[0]?.since) / 60000), 40);
 const rho2Count = () => N.needsCount(loadRepos().find((r) => r.name === 'rho2')).shown;
 t('DS-403 AC1 desk-q counts it as needing you, since it never lifts by itself', rho2Count(), 1);
 const bpOk = N.record({ word: 'rho2', ticket: 'base-push', action: 'approve' });
@@ -1603,6 +2066,33 @@ t('DS-403 AC2 approve records approved.base_push on the batch queue', `${bpOk.ok
 t('DS-403 AC3 with the approval recorded there is no item, and desk-q counts none', `${rho2().length} ${rho2Count()}`, '0 0');
 put('rho2', { port: 3830, beat: 1, supervised: true, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
 t('DS-403 AC4 with no ask recorded there is no item', `${rho2().length} ${N.record({ word: 'rho2', ticket: 'base-push', action: 'approve' }).ok}`, '0 false');
+// ---- DS-808: a base sync that merged but could not push, while the base lags too far for anything to
+// spawn, is one item for the batch, listed first, naming the base, how many tickets it freezes and the command.
+const CMD808 = 'git -C /wt/base-feat-x fetch -q origin && git -C /wt/base-feat-x merge --no-edit origin/main && git -C /wt/base-feat-x push origin HEAD:refs/heads/feat/x || git -C /wt/base-feat-x reset -q --hard origin/feat/x';
+const stuck808 = { since: minsAgo(20), base: 'feat/x', source: 'main', behind: 61, frozen: 3, why: 'the push to feat/x was refused: ! [remote rejected] feat/x -> feat/x (protected branch hook declined)', path: '/wt/base-feat-x', cmd: CMD808 };
+put('rho808', { port: 3832, beat: 1, supervised: true, batch: { base: 'feat/x', base_sync_stuck: stuck808 },
+  tickets: { 'R-1': { state: 'triaged', lane: 'A' }, 'R-2': { state: 'parked', lane: 'A', park: { question: 'which plan?', since: minsAgo(90) } } } });
+const bs = N.collect({ word: 'rho808' }).items;
+t('DS-808 AC4 the base-sync item is first, ahead of an older park', bs.map((i) => `${i.t.key} ${i.kind}`).join(), 'base-sync base-sync,R-2 parked');
+t('DS-808 AC4 it names the base, the tickets frozen and the one command that fixes it', bs[0]?.need,
+  `the base sync of feat/x could not push, so 3 tickets ready to spawn are frozen until feat/x takes main: the push to feat/x was refused: ! [remote rejected] feat/x -> feat/x (protected branch hook declined). Run it by hand to see the hook's full output and push it: ${CMD808}`);
+t('DS-808 AC4 its age is the freeze\'s', Math.round((NOW - bs[0]?.since) / 60000), 20);
+t('DS-808 AC4 desk-q counts it', N.needsCount(loadRepos().find((r) => r.name === 'rho808')).shown, 2);
+t('DS-808 done records nothing, and says the next pass reads the base again', N.record({ word: 'rho808', ticket: 'base-sync', action: 'done' }).line.includes('the next pass reads the base again'), true);
+put('rho808', { port: 3832, beat: 1, supervised: true, batch: { base: 'feat/x' }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+t('DS-808 with no stuck sync recorded there is no item', N.collect({ word: 'rho808' }).items.length, 0);
+// ---- A base sync that could not fetch the base, while that holds every spawn, is the same item,
+// naming the failure and what clears it rather than a push command.
+const stuck965 = { since: minsAgo(20), base: 'feat/x', source: 'main', behind: null, frozen: 1, why: "could not fetch feat/x and main from origin: fatal: couldn't find remote ref refs/heads/feat/x", path: '/wt/base-feat-x' };
+put('rho808', { port: 3832, beat: 1, supervised: true, batch: { base: 'feat/x', base_sync_stuck: stuck965 }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+const bs965 = N.collect({ word: 'rho808' }).items;
+t('DS-965 AC1 one base-sync item for the batch', bs965.map((i) => `${i.t.key} ${i.kind}`).join(), 'base-sync base-sync');
+t('DS-965 AC1 it names the base, the fetch failure and what clears it', bs965[0]?.need,
+  "the base sync of feat/x failed, so 1 ticket ready to spawn is frozen until feat/x takes main: could not fetch feat/x and main from origin: fatal: couldn't find remote ref refs/heads/feat/x. It clears once a pass syncs feat/x: fix what stopped it (a base missing on origin is restored or recreated there)");
+t('DS-965 AC1 the list prints it', here('list', 'rho808').out.split('\n').some((l) => l.startsWith('rho808 base-sync base-sync')), true);
+put('rho808', { port: 3832, beat: 1, supervised: true, batch: { base: 'feat/x' }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+t('DS-965 AC2 once a pass clears the record the item is gone', N.collect({ word: 'rho808' }).items.length, 0);
+
 // ---- DS-416: a child PR whose required check only the default branch's workflow runs on the base is
 // no item of its own under ask: the base-push item says syncing the base starts its CI.
 const behind416 = { [LINT]: 'has not reported because feat/x is behind main, whose copy of its workflow runs it on PRs into feat/x: syncing feat/x with main and reopening the PR starts it' };
@@ -1622,13 +2112,21 @@ const kp = () => N.collect({ word: 'kappa407' }).items;
 t('DS-407 AC2 one item for the step, and none for each PR waiting on it', kp().map((i) => `${i.t.key} ${i.kind}`).join(), 'step:OPS-9 step');
 t('DS-407 AC2 it names the step and every PR and ticket waiting on it', kp()[0].need.startsWith('OPS-9 ("Apply the billing migration") is a step only you can take, and 3 tickets wait to merge on it: PR #71 (K-1), PR #72 (K-2) and K-3 (being built). Do it and move OPS-9 to Done in Jira'), true);
 t('DS-407 its actions are done and not-now', kp()[0].actions.map((a) => a[0]).join(), 'done,not-now');
-t('DS-407 the list prints it as a line of its batch', cli('list', 'kappa407').out.split('\n').some((l) => l.startsWith('kappa407 step:OPS-9 step')), true);
+t('DS-407 the list prints it as a line of its batch', here('list', 'kappa407').out.split('\n').some((l) => l.startsWith('kappa407 step:OPS-9 step')), true);
 const kpCount = () => N.needsCount(loadRepos().find((r) => r.name === 'kappa407'));
 t('DS-407 desk-q counts the step as needing you, as the list shows it', `${kpCount().shown} ${kpCount().putOff}`, '1 0');
 const kpDone = N.record({ word: 'kappa407', ticket: 'step:OPS-9', action: 'done' });
 t('DS-407 done records nothing: the pass reads the step from Jira', `${kpDone.ok} ${/next pass that reads OPS-9 from Jira lifts the hold/.test(kpDone.line)}`, 'true true');
 const kpOff = N.record({ word: 'kappa407', ticket: 'step:OPS-9', action: 'not-now' });
 t('DS-407 not-now puts it off, in the list and in desk-q\'s count', `${kpOff.ok} ${kp().length} ${kpCount().shown} ${kpCount().putOff}`, 'true 0 0 1');
+// DS-687: a blocker triage called needed only to merge is another ticket's code, not the person's step, so
+// it is no item; a step triage also called merge still is one.
+const gate687 = (k, b, needs = 'merge') => ({ blockers: [b], blocker_needs: { [b.key]: { needs, why: 'lands the flag it ships behind' } } });
+put('kappa687', { port: 5687, beat: 1, supervised: true, tickets: { 'K-7': { ...waitsOn(77), merge_after: 'OUT-7' }, 'K-8': { ...waitsOn(78), merge_after: 'OPS-8' }, 'K-9': { ...waitsOn(79), merge_after: 'OPS-9' } },
+  triage: { 'K-7': gate687('K-7', { key: 'OUT-7', category: 'new', type: 'Story', summary: 'Add the export endpoint' }),
+    'K-8': gate687('K-8', { key: 'OPS-8', category: 'new', type: 'Task', summary: 'Apply the billing migration' }),
+    'K-9': gate687('K-9', { key: 'OPS-9', category: 'new', type: 'Task', summary: 'Apply the search migration' }, 'build') } });
+t('DS-687 a merge-only gate triage called is no step item; a step called merge or build still is', N.collect({ word: 'kappa687' }).items.filter((i) => i.kind === 'step').map((i) => i.t.key).sort().join(), 'step:OPS-8,step:OPS-9');
 // A step two of the repo's batches wait on is still one item, naming the PRs in both.
 const kfq = join(env.DESK_HOME, 'repos', 'acme__kappa407', 'batches', 'KF', 'queue.json');
 const kfs = join(env.HOME, '.desk-autopilot', 'acme__kappa407', 'batches', 'KF');
@@ -1648,6 +2146,53 @@ const kfBatch = () => loadRepos().find((r) => r.slug === 'acme__kappa407' && r.b
 const kfOnly = () => N.needsCount(repoRow([kfBatch()]));
 t('DS-407 AC2 put off from the feature batch, it is put off in the standing batch\'s register', `${kfOff.ok} ${kfOff.line.includes(join('.desk-autopilot', 'acme__kappa407', 'not-now'))}`, 'true true');
 t('DS-407 AC2 and every count reads it put off: the repo, the feature batch alone, and the list', `${N.needsCount(kRow()).shown} ${N.needsCount(kfBatch()).putOff} ${kfOnly().shown} ${kp().filter((i) => i.kind === 'step').length}`, '0 1 0 0');
+
+// ---- DS-685: a step only the person takes that holds a ticket's build (held_outside) is a step item too
+{
+  const held = (by) => ({ state: 'parked', lane: 'A', held_by: by, held_outside: by, park: { question: `held by orchestrator: blocked by ${by}` } });
+  const input = { key: 'OPS-7', category: 'new', type: 'Task', summary: 'Record the webhook payload', labels: ['ben-input'] };
+  const code = { key: 'CODE-1', category: 'indeterminate', type: 'Story', summary: 'Build the gateway' };
+  put('lambda685', { port: 5685, beat: 1, supervised: true, inputLabels: 'ben-input', tickets: { 'H-1': held('OPS-7'), 'H-3': held('CODE-1') },
+    triage: { 'H-1': { blockers: [input] }, 'H-3': { blockers: [code] } } });
+  const la = () => N.collect({ word: 'lambda685' }).items;
+  t('DS-685 AC1 one step item for the input step holding a ticket\'s build, and none for the ticket itself', la().map((i) => `${i.t.key} ${i.kind}`).join(), 'step:OPS-7 step');
+  t('DS-685 AC1 it names the ticket as waiting to start on it', la()[0]?.need,
+    'OPS-7 ("Record the webhook payload") is a step only you can take, and one ticket waits to start on it: H-1. Do it and move OPS-7 to Done in Jira; the next pass that reads it lifts the hold, and H-1 can start');
+  t('DS-685 AC3 a ticket held behind a code ticket in no batch gets no step item (nor any item: it waits on that ticket)', la().some((i) => /CODE-1|H-3/.test(`${i.t.key} ${i.need}`)), false);
+  const laCount = () => N.needsCount(loadRepos().find((r) => r.name === 'lambda685'));
+  t('DS-685 AC5 desk-q counts the step once, as needing you, and not the ticket waiting on it as a second', `${laCount().shown} ${laCount().rows.length}`, '1 0');
+  // AC4: the triage record now reads the step Done, so it holds nothing as a step and leaves the list.
+  writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__lambda685', 'triage', 'H-1.json'), JSON.stringify({ ticket: 'H-1', epic: null, blockers: [{ ...input, category: 'done' }] }));
+  t('DS-685 AC4 once the triage record reads the step Done, its item leaves needs-you', `${la().filter((i) => i.kind === 'step').length} ${laCount().shown}`, '0 0');
+  // AC2: the same step also holds a second ticket's merge.
+  put('nu685', { port: 5686, beat: 1, supervised: true, inputLabels: 'ben-input', tickets: { 'H-1': held('OPS-7'),
+    'H-2': { state: 'done', lane: 'A', result: { pr: 91 }, pr_status: { pr: 91, state: 'OPEN', isDraft: false, checks: [] }, merge_after: 'OPS-7' } },
+    triage: { 'H-1': { blockers: [input] }, 'H-2': { blockers: [input] } } });
+  const nu = N.collect({ word: 'nu685' }).items;
+  t('DS-685 AC2 one item for a step holding one ticket\'s build and another\'s merge', nu.map((i) => `${i.t.key} ${i.kind}`).join(), 'step:OPS-7 step');
+  t('DS-685 AC2 it names one ticket waiting to start and the other waiting to merge', nu[0]?.need,
+    'OPS-7 ("Record the webhook payload") is a step only you can take, and one ticket waits to start on it: H-1, and one waits to merge on it: PR #91 (H-2). Do it and move OPS-7 to Done in Jira; the next pass that reads it lifts the hold, and H-1 can start, and you merge them on GitHub');
+  t('DS-685 AC2 its put-off inputs name both tickets waiting on it', nu[0]?.waiting.join(), 'H-1,H-2');
+  // Held behind the step and behind a blocker that needs its own action, the ticket keeps its own item
+  // for that blocker; released from the step by hand (held_outside left behind) and held again, the
+  // step no longer holds it.
+  put('mu685', { port: 5687, beat: 1, supervised: true, inputLabels: 'ben-input', tickets: {
+    'B-9': { state: 'done', lane: 'A', result: {} },
+    'H-4': { ...held('OPS-7'), held_by: 'OPS-7|B-9' },
+    'H-5': { ...held('OPS-7'), held_by: 'B-9', park: { question: 'held by orchestrator: blocked by B-9' } } },
+    triage: { 'H-4': { blockers: [input] }, 'H-5': { blockers: [input] } } });
+  const mu = N.collect({ word: 'mu685' }).items;
+  t('DS-685 a step never hides another blocker that needs you: the ticket keeps its own item for it', mu.some((i) => i.t.key === 'H-4' && /B-9 finished with no PR: let it start/.test(i.need)), true);
+  t('DS-685 the step item names only the ticket its held_by still holds behind it', mu.find((i) => i.kind === 'step')?.waiting.join(), 'H-4');
+  // The ticket the step holds is drawn with the step: under Needs you while the step needs the
+  // person, and under Put off once the step is put off with not-now.
+  put('xi685', { port: 5688, beat: 1, supervised: true, inputLabels: 'ben-input', tickets: { 'H-6': held('OPS-7') }, triage: { 'H-6': { blockers: [input] } } });
+  const xi = () => loadRepos().find((r) => r.name === 'xi685');
+  const xiGroup = () => { let g = null; for (const l of strip(repoScreen(xi())).split('\n')) { const h = l.match(/^ {2}(Needs you|Put off|Waiting|Ready|Running|Merging) · \d+$/); if (h) g = h[1]; else if (/^ +\S+ {2}H-6 /.test(l)) return g; } return null; };
+  t('DS-685 AC5 the held ticket is a step row, drawn under Needs you', `${N.needsCount(xi()).stepRows.map((x) => x.t.key).join()} ${xiGroup()}`, 'H-6 Needs you');
+  const xiOff = N.record({ word: 'xi685', ticket: 'step:OPS-7', action: 'not-now' });
+  t('DS-685 AC5 the step put off, the ticket it holds is drawn under Put off and counted nowhere', `${xiOff.ok} ${N.needsCount(xi()).stepRows.length} ${N.needsCount(xi()).shown} ${N.needsCount(xi()).putOff} ${xiGroup()}`, 'true 0 0 1 Put off');
+}
 
 // The pass undrafted a PR on the desk-review a worker posted, so nothing is left for the person.
 put('tau', { port: 4300, beat: 1, supervised: true, tickets: {
@@ -1670,11 +2215,562 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const fi = () => N.collect({ word: 'upsilon509' }).items.filter((i) => i.kind === 'follow');
   const f1 = fi();
   t('DS-509 AC5 only the merged ticket with steps not yet run is listed', f1.map((i) => i.t.key).join(), 'follow:F-1');
-  t('DS-509 AC5 it names that one step and the §3 row it needs, and says the PR is merged',
-    /^PR #81 \(F-1\) is merged, and a step waits on it that no worker runs after a merge: \(1\) run provision-telnyx-assistant\.ts --env staging \(§3 staging-write is "[a-z]+"\)/.test(f1[0]?.need ?? ''), true);
+  t('DS-509 AC5 DS-788 AC2 AC4 AC6 it says the code is on the default branch since the merge, and names the step and its §3 row and value once',
+    `${/^F-1 is on main since \d{4}-\d\d-\d\d\. Check: run provision-telnyx-assistant\.ts --env staging \(§3 staging-write is "[a-z]+"\)\. Then say done\.$/.test(f1[0]?.need ?? '')} ${(f1[0]?.need ?? '').split('§3').length - 1}`, 'true 1');
   t('DS-509 AC5 desk-q counts it', N.needsCount(loadRepos().find((r) => r.slug === 'acme__upsilon509')).shown, 1);
   const done509 = N.record({ word: 'upsilon509', ticket: 'follow:F-1', action: 'done' });
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
+}
+
+// Every item desk-q counts has a Queue row, even when every ticket is done.
+{
+  const merged = (pr, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(5), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(5) }, ...more });
+  put('phi934', { port: 4410, beat: 1, supervised: true, merge: 'yes', tickets: {
+    'P-1': merged(71, { follow_on: [{ step: 'check the invoice totals look right', row: null }] }),
+  } });
+  const scr = () => strip(repoScreen(loadRepos().find((r) => r.slug === 'acme__phi934')));
+  t('DS-934 every ticket done: the follow item is a Needs you row, the count matches it, and the Queue does not say there is nothing',
+    `${N.needsCount(loadRepos().find((r) => r.slug === 'acme__phi934')).shown} ${/Needs you · 1\b/.test(scr())} ${/P-1 +◆ needs you +Check: check the invoice totals look right/.test(scr())} ${scr().includes('No unfinished tickets')}`, '1 true true false');
+  N.record({ word: 'phi934', ticket: 'follow:P-1', action: 'not-now' });
+  t('DS-934 put off, it is a grey Put off row, and the Queue still does not say there is nothing',
+    `${/Put off · 1\b/.test(scr())} ${/P-1 +◇ put off/.test(scr())} ${/Needs you ·/.test(scr())} ${scr().includes('No unfinished tickets')}`, 'true true false false');
+  // A batch's base-push item is the repo's, not a ticket's, and is a Needs you row all the same.
+  put('chi934', { port: 4411, beat: 1, supervised: true, batch: { base: 'feat/x', base_push_ask: { since: minsAgo(40), base: 'feat/x', source: 'main' } },
+    tickets: { 'C-1': { state: 'triaged', lane: 'A' } } });
+  const bpScr = () => strip(repoScreen(loadRepos().find((r) => r.slug === 'acme__chi934')));
+  t('DS-934 a base-push item is a Needs you row, matching the count',
+    `${N.needsCount(loadRepos().find((r) => r.slug === 'acme__chi934')).shown} ${/Needs you · 1\b/.test(bpScr())} ${/base-push +◆ needs you +feat\/x is behind main/.test(bpScr())}`, '1 true true');
+  N.record({ word: 'chi934', ticket: 'base-push', action: 'not-now' });
+  t('DS-934 put off, the base-push item is a Put off row', `${/Put off · 1\b/.test(bpScr())} ${/base-push +◇ put off/.test(bpScr())} ${/Needs you ·/.test(bpScr())}`, 'true true false');
+}
+
+// DS-798: a follow step that only reads CI, desk's logs or desk's state is a follow-step checker's.
+{
+  const merged = (pr, mins, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(mins), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(mins) }, ...more });
+  const CI = { step: "on the merge commit's tests run on main, check the slowest shard takes about 300 s or less", row: null };
+  const LOG = { step: 'read audit.jsonl for the worker cost', row: null };
+  const failed = (pr, more = {}) => ({ ...CI, pr, result: 'fail', found: 'the slowest shard took 412 s', evidence: 'https://github.com/acme/x/actions/runs/9', at: minsAgo(1), ...more });
+  const run = (mins) => ({ id: 'K-x', pid: 1, started: minsAgo(mins), out: '/x', steps: [CI] });
+  put('follow798', { port: 4798, beat: 1, supervised: true, merge: 'yes', stepLabels: 'needs-ben', tickets: {
+    'K-1': merged(91, 5, { follow_on: [CI] }),
+    'K-2': merged(92, 5, { follow_on: [CI], follow_checks: [failed(92)] }),
+    'K-3': merged(93, 5, { follow_on: [{ step: 'needs-ben: read audit.jsonl for the worker cost', row: null }] }),
+    'K-4': merged(94, 5, { follow_on: [{ step: 'check the invoice totals look right', row: null }] }),
+    'K-5': merged(95, 5, { follow_on: [CI], follow_checks: [failed(95, { result: 'pass' })] }),
+    'K-6': merged(96, 300, { follow_on: [CI] }),
+    'K-7': merged(97, 300, { follow_on: [CI], follow_run: run(1) }),
+    'K-8': merged(98, 300, { follow_on: [CI], follow_run: run(60) }),
+    'K-9': merged(99, 5, { follow_on: [CI], follow_checks: [failed(90, { result: 'pass' })] }),
+    'K-10': merged(100, 5, { follow_on: [CI], follow_checks: [failed(100, { result: 'pending' })] }),
+    'K-11': merged(101, 300, { follow_on: [CI], follow_checks: [failed(101, { result: 'pending', found: 'run 9 in progress' })] }),
+    'K-12': merged(102, 5, { follow_on: [CI, { step: 'check the invoice totals look right', row: null }] }),
+    'K-13': merged(103, 5, { follow_on: [CI, LOG], follow_checks: [failed(103), { ...LOG, pr: 103, result: 'pending', found: 'run 9 in progress', at: minsAgo(1) }] }),
+    // A label added after the checker failed the step: it is the checker's still.
+    'K-14': merged(104, 5, { follow_on: [{ step: 'needs-ben: read audit.jsonl for the worker cost', row: null }, { step: 'check the invoice totals look right', row: null }],
+      follow_checks: [{ step: 'needs-ben: read audit.jsonl for the worker cost', row: null, pr: 104, result: 'fail', found: 'no cost line', evidence: '/x/audit.jsonl', at: minsAgo(1) }] }),
+  } });
+  const byKey = () => Object.fromEntries(N.collect({ word: 'follow798' }).items.filter((i) => i.kind === 'follow').map((i) => [i.t.key, i]));
+  // A checker's step is an item of its own, keyed by the ticket and the step.
+  const checked = (g, k) => Object.entries(g).filter(([key]) => key.startsWith(`follow:${k}:checked:`)).map(([, i]) => i);
+  const g = byKey();
+  t('DS-798 AC1 a step that only reads CI is not listed while a checker is still to run it, nor once one passed it, nor while one runs, nor while one found it pending',
+    ['K-1', 'K-5', 'K-7', 'K-9', 'K-10'].filter((k) => `follow:${k}` in g || checked(g, k).length).join(), '');
+  t('DS-798 once the wait is over, a run past its time or a step still pending is listed for the person',
+    ['K-8', 'K-11'].map((k) => /No follow-step checker has passed or failed it yet\. Check: on the merge commit/.test(checked(g, k)[0]?.need ?? '')).join(), 'true,true');
+  t('DS-798 AC2 a step a checker failed is one item naming the step, what it found and the run URL',
+    `${checked(g, 'K-2').length} ${/Check: on the merge commit's tests run on main, check the slowest shard takes about 300 s or less\. A follow-step checker ran it and it failed: the slowest shard took 412 s \(evidence: https:\/\/github\.com\/acme\/x\/actions\/runs\/9\)\./.test(checked(g, 'K-2')[0]?.need ?? '')}`, '1 true');
+  t('DS-798 AC2 a failed step is listed at once beside a step of the same ticket still pending',
+    `${checked(g, 'K-13').map((i) => i.steps.map((s) => s.step).join()).join('|')} ${'follow:K-13' in g}`, `${CI.step} false`);
+  t('DS-798 a step a checker failed stays its own item though a person-step label now names it',
+    `${checked(g, 'K-14').length} ${JSON.stringify(g['follow:K-14']?.steps.map((s) => s.step))}`, '1 ["check the invoice totals look right"]');
+  t('DS-798 AC3 a step carrying a person-step label is listed as today', /Check: needs-ben: read audit\.jsonl/.test(g['follow:K-3']?.need ?? ''), true);
+  t('DS-798 AC4 a step the classifier cannot tell is runnable is listed as today', /Check: check the invoice totals look right\. Then say done\.$/.test(g['follow:K-4']?.need ?? ''), true);
+  t('DS-798 a runnable step no checker ran once the wait is over is listed, saying so',
+    /No follow-step checker has passed or failed it yet\. Check: on the merge commit/.test(checked(g, 'K-6')[0]?.need ?? ''), true);
+  t('DS-798 a person\'s step is listed at once beside a checker\'s step still to run, which its item does not hold',
+    `${checked(g, 'K-12').length} ${/Check: check the invoice totals look right\. Then say done\.$/.test(g['follow:K-12']?.need ?? '')} ${JSON.stringify(g['follow:K-12']?.steps.map((s) => s.step))}`,
+    '0 true ["check the invoice totals look right"]');
+  // The checker fails the step once the person was shown the item: done on it settles only the step it showed.
+  const q798 = queueOf('follow798');
+  q798.tickets['K-12'].follow_checks = [failed(102)];
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__follow798', 'queue.json'), JSON.stringify(q798));
+  const g12 = byKey();
+  t('DS-798 a step a checker failed after the person\'s item was shown is an item of its own',
+    `${JSON.stringify(g12['follow:K-12']?.steps.map((s) => s.step))} ${/it failed: the slowest shard took 412 s/.test(checked(g12, 'K-12')[0]?.need ?? '')}`, '["check the invoice totals look right"] true');
+  const done12 = N.record({ word: 'follow798', ticket: 'follow:K-12', action: 'done' });
+  t('DS-798 so done on the person\'s item leaves the failed step listed',
+    `${done12.ok} ${JSON.stringify(queueOf('follow798').tickets['K-12'].follow_on.map((s) => s.step))} ${'follow:K-12' in byKey()} ${checked(byKey(), 'K-12').length}`,
+    `true ${JSON.stringify([CI.step])} false 1`);
+  const k2 = Object.keys(g).find((k) => k.startsWith('follow:K-2:checked:'));
+  const done = N.record({ word: 'follow798', ticket: k2, action: 'done' });
+  t('DS-798 AC2 done on the failed step settles it', `${done.ok} ${typeof queueOf('follow798').tickets['K-2'].follow_on_done} ${k2 in byKey()}`, 'true string false');
+}
+
+// A follow step's gate: `main` waits on the merge commit reaching origin/<default>, `production` on it
+// reaching config §4 Promotion ref. Each repo root holds a real origin/main and origin/production.
+{
+  const git = (root, ...a) => spawnSync('git', ['-C', root, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' }).stdout.trim();
+  // The repo root with a deployed commit and, on top, PR #95's merge commit: origin/main at the merge,
+  // origin/production at the deployed commit, and a merge commit no remote ref reaches.
+  const commits = (name) => {
+    const root = join(T, 'repos', name);
+    git(root, 'commit', '-q', '--allow-empty', '-m', 'deployed');
+    const deployed = git(root, 'rev-parse', 'HEAD');
+    git(root, 'commit', '-q', '--allow-empty', '-m', 'Merge pull request #95 from acme/x');
+    const merge = git(root, 'rev-parse', 'HEAD');
+    git(root, 'commit', '-q', '--allow-empty', '-m', 'Merge pull request #96 from acme/y');
+    const unpushed = git(root, 'rev-parse', 'HEAD');
+    git(root, 'update-ref', 'refs/remotes/origin/main', merge);
+    git(root, 'update-ref', 'refs/remotes/origin/production', deployed);
+    return { root, merge, unpushed };
+  };
+  const merged = (pr, sha, follow_on) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(5), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(5), merge_commit: sha }, follow_on });
+  const PROD = { step: 'open Osteopaths in the production portal', row: null, after: 'production' };
+  const STAGING = { step: 'place a test call on staging', row: null, after: 'main' };
+  const PLAIN = { step: 'start the staging crons', row: null };
+  const cfg = { port: 4785, beat: 1, supervised: true, merge: 'yes', promotionRef: 'origin/production' };
+  put('prod785', { ...cfg, tickets: {} });
+  const c = commits('prod785');
+  put('prod785', { ...cfg, tickets: {
+    'G-1': merged(95, c.merge, [PROD, STAGING, PLAIN]),
+    'G-2': merged(95, c.merge, [PROD]),
+    'G-3': merged(96, c.unpushed, [STAGING]),
+  } });
+  // The gates are read from those refs with real git, the one real read these collects are given.
+  const fi = (word) => N.collect({ word, reads: { ...STUB, git: N.READS.git } }).items.filter((i) => i.kind === 'follow');
+  const byKey = (word) => Object.fromEntries(fi(word).map((i) => [i.t.key, i]));
+  let g = byKey('prod785');
+  t('DS-785 AC3 a production step whose merge is on main but not on the production ref is not listed; the merge and main steps are, one item per gate',
+    Object.keys(g).join(), 'follow:G-1,follow:G-1:main');
+  t('DS-785 AC3 the merge item names its merge step, and the main item its main step, neither the production one',
+    / Check: start the staging crons\./.test(g['follow:G-1']?.need ?? '') && /^G-1 is on main since \d{4}-\d\d-\d\d\. Check: place a test call on staging\. Then say done\.$/.test(g['follow:G-1:main']?.need ?? '') && !/Osteopaths/.test(`${g['follow:G-1']?.need}${g['follow:G-1:main']?.need}`), true);
+  t('DS-785 AC3 it says the production step waits until production runs the merge',
+    (g['follow:G-1']?.need ?? '').endsWith('Check: start the staging crons. Another step waits until production runs its merge, and is listed then. Then say done.'), true);
+  t('#808 the done action names the merged PR, whose checks a session reads before asking (references/follow.md)',
+    g['follow:G-1']?.actions.find(([a]) => a === 'done')?.[1].includes("PR #95's own checks"), true);
+  t('DS-788 AC3 a step with no §3 row says nothing about a §3 row', /§3/.test(`${g['follow:G-1']?.need}${g['follow:G-1:main']?.need}`), false);
+  t('DS-785 negative: a main step whose merge commit origin/main does not reach is not listed', 'follow:G-3:main' in g, false);
+  const gateDirs = new Set();
+  N.collect({ word: 'prod785', reads: { ...STUB, git: (dir) => { gateDirs.add(dir); return null; } } });
+  t('DS-929 AC1 a collect reads the gates through the git read it is given, in the repo root', [...gateDirs].join(), c.root);
+  t('DS-785 desk-q counts only the listed items', N.needsCount(loadRepos().find((r) => r.slug === 'acme__prod785')).shown, 2);
+  const done785 = N.record({ word: 'prod785', ticket: 'follow:G-1', action: 'done' });
+  const g1 = queueOf('prod785').tickets['G-1'];
+  t('DS-785 done on the merge item records its step run and keeps the main and production ones',
+    `${done785.ok} ${g1.follow_on_done ?? 'unset'} ${JSON.stringify(g1.follow_on)} ${Object.keys(byKey('prod785')).join()}`, `true unset ${JSON.stringify([PROD, STAGING])} follow:G-1:main`);
+  // Production moves after the main item was listed: done on that item records only the step it showed.
+  git(c.root, 'update-ref', 'refs/remotes/origin/production', c.merge);
+  const doneMain = N.record({ word: 'prod785', ticket: 'follow:G-1:main', action: 'done' });
+  t('DS-785 done on the main item, once production has moved, keeps the production step it never showed',
+    `${doneMain.ok} ${queueOf('prod785').tickets['G-1'].follow_on_done ?? 'unset'} ${JSON.stringify(queueOf('prod785').tickets['G-1'].follow_on)}`, `true unset ${JSON.stringify([PROD])}`);
+  g = byKey('prod785');
+  t('DS-785 AC4 once the production ref reaches the merge commit, the production steps are listed', Object.keys(g).sort().join(), 'follow:G-1:production,follow:G-2:production');
+  t('DS-785 AC4 DS-788 the listed production step says nothing about an unchecked gate, nor a date production fast-forwarded on, which git does not keep',
+    /^G-2 is on production\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(g['follow:G-2:production']?.need ?? ''), true);
+  const doneProd = N.record({ word: 'prod785', ticket: 'follow:G-1:production', action: 'done' });
+  t('DS-785 done on the last step records the ticket\'s follow-on run', `${doneProd.ok} ${typeof queueOf('prod785').tickets['G-1'].follow_on_done}`, 'true string');
+
+  // AC5: no Promotion ref, so production is judged by the default branch and says it was not checked.
+  const unset = { port: 4786, beat: 1, supervised: true, merge: 'yes' };
+  put('noprod785', { ...unset, tickets: {} });
+  const u = commits('noprod785');
+  put('noprod785', { ...unset, tickets: { 'H-1': merged(95, u.merge, [PROD]), 'H-2': merged(96, u.unpushed, [PROD]) } });
+  const h = byKey('noprod785');
+  t('DS-785 AC5 with the Promotion ref row unset, a production step on the default branch is listed, and one not on it is not', Object.keys(h).join(), 'follow:H-1:production');
+  t('DS-785 AC5 the item says production could not be checked because the row is unset, and claims only the default branch',
+    /^H-1 is on main since \d{4}-\d\d-\d\d\. Production could not be checked: config §4 "Promotion ref" is unset\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(h['follow:H-1:production']?.need ?? ''), true);
+
+  // A merge commit not read yet waits, never listed early: none recorded (the pass reads the PR again for
+  // it), or one the repo root has not fetched (the pass fetches origin while a gated step waits).
+  put('nosha785', { ...cfg, port: 4787, tickets: {} });
+  commits('nosha785');
+  put('nosha785', { ...cfg, port: 4787, tickets: { 'J-1': merged(97, null, [PROD, STAGING]), 'J-2': merged(98, 'f'.repeat(40), [PROD, STAGING]) } });
+  t('DS-785 a gated step whose merge commit is not recorded, or not fetched, waits', Object.keys(byKey('nosha785')).join(), '');
+
+  // A feature batch child promoted by a squash: its own merge commit is on no remote ref, so its main
+  // gate is the promotion and production is judged by the default branch's commit from the promotion.
+  const feat = { ...cfg, port: 4788 };
+  put('feat785', { ...feat, tickets: {} });
+  const f = commits('feat785');
+  const promoted = { batch: { base: 'feat/VPL-842', feature: true, epic: 'VPL-842', promotion: { pr: 1002, merged_at: new Date().toISOString() } } };
+  // origin/production already has origin/main's head, but not the promotion, which origin/main lacks too.
+  git(f.root, 'update-ref', 'refs/remotes/origin/production', f.merge);
+  put('feat785', { ...feat, tickets: { 'K-1': merged(97, f.unpushed, [PROD, STAGING]) }, ...promoted });
+  t('DS-785 a squash-promoted child lists its main step and holds its production step while the promotion is not on the default branch it read',
+    Object.keys(byKey('feat785')).join(), 'follow:K-1:main');
+  // The promotion squashed: its commit sits on origin/main's head, without the child's own merge commit.
+  const promo = git(f.root, 'commit-tree', `${f.merge}^{tree}`, '-p', f.merge, '-m', 'Merge pull request #1002 from acme/feat/VPL-842');
+  git(f.root, 'update-ref', 'refs/remotes/origin/main', promo);
+  t('DS-785 and while production does not have the promotion', Object.keys(byKey('feat785')).join(), 'follow:K-1:main');
+  git(f.root, 'update-ref', 'refs/remotes/origin/production', promo);
+  t('DS-785 and lists its production step once production has the promotion PR\'s commit, saying nothing unchecked',
+    `${Object.keys(byKey('feat785')).join()} ${/^K-1 is on production\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(byKey('feat785')['follow:K-1:production']?.need ?? '')}`, 'follow:K-1:main,follow:K-1:production true');
+
+  // A promotion rebase-merged: its commit names no PR, and the child's own merge commit is rewritten, so
+  // production is judged by the promotion's merge commit as recorded, which list's refresh reads.
+  const reb = { ...cfg, port: 4792 };
+  put('reb785', { ...reb, tickets: {} });
+  const rb = commits('reb785');
+  const rebased = git(rb.root, 'commit-tree', `${rb.merge}^{tree}`, '-p', rb.merge, '-m', 'VPL-842: add the portal page');
+  git(rb.root, 'update-ref', 'refs/remotes/origin/main', rebased);
+  git(rb.root, 'update-ref', 'refs/remotes/origin/production', rebased);
+  const rebBatch = (merge_commit) => ({ batch: { base: 'feat/VPL-842', feature: true, epic: 'VPL-842', promotion: { pr: 1003, merged_at: new Date(Date.now() + 1000).toISOString(), ...(merge_commit ? { merge_commit } : {}) } } });
+  put('reb785', { ...reb, tickets: { 'R-1': merged(97, rb.unpushed, [PROD]) }, ...rebBatch(null) });
+  t('DS-785 fix try: a rebase-promoted child with no promotion merge commit recorded waits', Object.keys(byKey('reb785')).join(), '');
+  const promoReads = [];
+  N.refresh({ word: 'reb785', reads: { ...STUB, fetch: () => true, pr: (r, pr, more) => { promoReads.push(`${pr}${more}`); return { v: pr === 1003 && more === ',mergeCommit' ? { mergeCommit: { oid: rebased } } : null, err: '' }; } } });
+  t('DS-785 fix try: list\'s refresh reads the promotion PR\'s merge commit and records it, and the production step is listed unqualified',
+    `${promoReads.includes('1003,mergeCommit')} ${queueOf('reb785').promotion_commits?.['1003'] === rebased} ${Object.keys(byKey('reb785')).join()} ${/^R-1 is on production\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(byKey('reb785')['follow:R-1:production']?.need ?? '')}`,
+    'true true follow:R-1:production true');
+  git(rb.root, 'update-ref', 'refs/remotes/origin/production', rb.merge);
+  put('reb785', { ...reb, tickets: { 'R-1': merged(97, rb.unpushed, [PROD]) }, ...rebBatch(rebased) });
+  t('DS-785 fix try negative: with the recorded promotion commit not on production, the step waits', Object.keys(byKey('reb785')).join(), '');
+
+  // The same words under two gates are two steps: done on one keeps the other.
+  put('dup785', { ...cfg, port: 4789, tickets: {} });
+  const d = commits('dup785');
+  const twice = [{ step: 'check the portal', row: null, after: 'main' }, { step: 'check the portal', row: null, after: 'production' }];
+  put('dup785', { ...cfg, port: 4789, tickets: { 'L-1': merged(95, d.merge, twice) } });
+  const doneDup = N.record({ word: 'dup785', ticket: 'follow:L-1:main', action: 'done' });
+  t('DS-785 done on a main step keeps a production step worded the same', `${doneDup.ok} ${JSON.stringify(queueOf('dup785').tickets['L-1'].follow_on)}`, `true ${JSON.stringify([twice[1]])}`);
+
+  // Criteria its review left for after the merge that the pass has not made steps yet hold the item
+  // off the list, so they never join it after the person saw it.
+  const owed = (read) => ({ ...merged(95, d.merge, [PLAIN]), pr_status: { pr: 95, state: 'MERGED', merged_at: minsAgo(5), merge_commit: d.merge, post_merge: [{ step: 'x', needs: 'device' }] }, ...(read ? { post_merge_read: 95 } : {}) });
+  put('owe785', { ...cfg, port: 4790, tickets: { 'M-1': owed(false), 'M-2': owed(true) } });
+  t('DS-785 a merged PR still owed its review\'s post-merge steps is not listed until the pass adds them', Object.keys(byKey('owe785')).join(), 'follow:M-2');
+
+  // list's refresh fetches origin once in the repo root and reads a merge commit no record has, so an
+  // idle batch, which runs no pass, still moves its gated steps on.
+  put('idle785', { ...cfg, port: 4791, tickets: {} });
+  const i7 = commits('idle785');
+  put('idle785', { ...cfg, port: 4791, tickets: { 'N-1': merged(97, null, [STAGING]), 'N-2': merged(98, i7.merge, [PROD]) } });
+  const fetches = [];
+  N.refresh({ word: 'idle785', reads: { ...STUB, fetch: (dir) => { fetches.push(dir); return true; }, pr: (r, pr, more) => ({ v: pr === 97 && more === ',mergeCommit' ? { mergeCommit: { oid: i7.merge } } : null, err: '' }) } });
+  t('DS-785 list\'s refresh fetches the repo root once and records the merge commit no record had',
+    `${fetches.length} ${queueOf('idle785').tickets['N-1'].pr_status?.merge_commit === i7.merge} ${Object.keys(byKey('idle785')).join()}`, '1 true follow:N-1:main');
+
+  // The date a follow item gives is when production first had the merge: the production line's merge of
+  // it, dated 2026-11-03, not the PR's merge on main two days before.
+  put('dated788', { ...cfg, port: 4793, tickets: {} });
+  const root788 = join(T, 'repos', 'dated788');
+  const dated = (when, ...a) => spawnSync('git', ['-C', root788, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a],
+    { encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when } }).stdout.trim();
+  dated('2026-10-30T12:00:00Z', 'commit', '-q', '--allow-empty', '-m', 'deployed');
+  const base788 = git(root788, 'rev-parse', 'HEAD');
+  dated('2026-11-01T12:00:00Z', 'commit', '-q', '--allow-empty', '-m', 'Merge pull request #95 from acme/x');
+  const merge788 = git(root788, 'rev-parse', 'HEAD');
+  const prod788 = dated('2026-11-03T12:00:00Z', 'commit-tree', `${merge788}^{tree}`, '-p', base788, '-p', merge788, '-m', 'release');
+  git(root788, 'update-ref', 'refs/remotes/origin/main', merge788);
+  git(root788, 'update-ref', 'refs/remotes/origin/production', prod788);
+  const LEGACY = { step: 'Check after the merge: Verification: manual production run (needs production): open the relay log', row: null, after: 'production' };
+  put('dated788', { ...cfg, port: 4793, tickets: { 'Q-1': merged(95, merge788, [PROD, LEGACY]) } });
+  t('DS-788 AC1 a production item opens with the day production first had the merge, one Check per step, an older review prefix dropped',
+    byKey('dated788')['follow:Q-1:production']?.need,
+    'Q-1 is on production since 2026-11-03. Check: open Osteopaths in the production portal. Check: open the relay log. Then say done.');
+  // A step's own closing period gives way to the line's, but a command's last `.` is kept.
+  const DOTS = [{ step: 'open the relay log.', row: null }, { step: 'run git add .', row: null }];
+  put('dated788', { ...cfg, port: 4793, tickets: { 'Q-2': merged(95, merge788, DOTS) } });
+  t('DS-788 a step ending a sentence gets one period, and one ending in a command keeps its dot',
+    byKey('dated788')['follow:Q-2']?.need?.replace(/^.*?\. Check/, 'Check'), 'Check: open the relay log. Check: run git add . Then say done.');
+}
+
+// A feature batch's promotion PR still red once its check tries are spent (pass.mjs
+// promotion.red) is one pr item naming the children whose follow items wait on it. DS-784 holds those
+// follow items off the list until the promotion merges, so nothing waiting on it is listed above it.
+{
+  const merged = (pr, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(900), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(900) }, ...more });
+  const STEP786 = { step: 'build the Flows image', row: 'staging-write' };
+  const red = { pr: 1001, head: 'e'.repeat(40), checks: ['flows-image', 'portal (1/3)'], tried: 2, since: minsAgo(30),
+    why: `still failing flows-image, portal (1/3) at ${'e'.repeat(12)} after 2 check tries; the last try parked: the Flows image is missing` };
+  const batch = (promotion) => ({ batch: { base: 'feat/VPL-842', feature: true, epic: 'VPL-842', promotion } });
+  const kids = { 'P-1': merged(91, { follow_on: [STEP786] }), 'P-2': merged(92, { follow_on: [STEP786] }) };
+  put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001, red }) });
+  const items = () => N.collect({ word: 'chi786' }).items;
+  const ci = items();
+  const pi = ci.find((i) => i.t.key === 'promotion:1001');
+  t('DS-786 AC2 a promotion PR red once its tries are spent is listed as a pr item', pi?.kind, 'pr');
+  t('DS-786 AC2 it names the failing checks and what desk tried',
+    /^promotion PR #1001 \(feat\/VPL-842 into the default branch\) is red, failing flows-image and portal \(1\/3\); it is still failing flows-image, portal \(1\/3\) after 2 check tries; the last try parked: the Flows image is missing, so no more workers go to it\. /.test(pi?.need ?? ''), true);
+  t('DS-786 AC3 it names the follow items waiting on it', (pi?.need ?? '').endsWith('The follow steps of P-1 and P-2 wait on it reaching the default branch'), true);
+  t('DS-786 AC3 the follow items waiting on it stay held, so nothing waiting on it is listed above it', ci.map((i) => i.t.key).join(), 'promotion:1001');
+  t('DS-786 AC2 desk-q counts it', N.needsCount(loadRepos().find((r) => r.slug === 'acme__chi786')).shown, 1);
+  const done786 = N.record({ word: 'chi786', ticket: 'promotion:1001', action: 'done' });
+  t('DS-786 done records nothing: the next pass reads its checks again', `${done786.ok} ${queueOf('chi786').promotion.red.pr} ${items().length}`, 'true 1001 1');
+  const off786 = N.record({ word: 'chi786', ticket: 'promotion:1001', action: 'not-now' });
+  t('DS-786 not-now puts it off', `${off786.ok} ${items().some((i) => i.t.key === 'promotion:1001')}`, 'true false');
+  put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001, red: { ...red, head: 'f'.repeat(40) } }) });
+  t('DS-786 a new head brings it back', items().some((i) => i.t.key === 'promotion:1001'), true);
+  // AC4 and AC5: the pass records no red while the PR is draft waiting on children, or green; nor once it merged.
+  put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001 }) });
+  t('DS-786 AC4 AC5 negative: no red recorded, no item', items().map((i) => i.t.key).join(), '');
+  // A child promoted by an earlier slice is out: its follow item is listed, and it does not wait on this PR.
+  // Its own repo, so the not-now above does not reach it.
+  put('omega786', { port: 4797, beat: 1, supervised: true, ...batch({ pr: 1001, red, since: minsAgo(600) }),
+    tickets: { 'P-1': kids['P-1'], 'P-2': merged(92, { follow_on: [STEP786], merged_at: minsAgo(60) }) } });
+  const split = N.collect({ word: 'omega786' }).items;
+  t('DS-786 AC3 only the child merged since the last promotion is named as waiting, and it ranks above a listed follow item',
+    `${split.map((i) => i.t.key).join()} ${split[0]?.need.endsWith('The follow steps of P-2 wait on it reaching the default branch')}`, 'promotion:1001,follow:P-1 true');
+  // A head the not-now above never saw, so only each guard can keep the item off the list.
+  const redD = { ...red, head: 'd'.repeat(40) };
+  put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001, red: redD }) });
+  t('DS-786 control: that red record on the open promotion PR is listed', items().some((i) => i.t.key === 'promotion:1001'), true);
+  put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001, red: redD, merged_at: minsAgo(1) }) });
+  t('DS-786 negative: a merged promotion PR is not listed', items().some((i) => i.t.key === 'promotion:1001'), false);
+  put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1002, red: redD }) });
+  t('DS-786 negative: a red record for an earlier promotion PR is not listed', items().some((i) => i.t.key.startsWith('promotion:')), false);
+}
+
+// DS-784: a child of a feature batch merged into the batch base is out only once a promotion PR that
+// merged after it has taken it to the default branch, and its follow item is held until then.
+{
+  const STEP = { step: 'check delete-and-Undo on staging', row: 'staging-write' };
+  const child = (pr, m) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(m), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(m) }, follow_on: [STEP] });
+  const feature = (word, port, promotion, tickets) => put(word, { port, beat: 1, supervised: true,
+    batch: { base: 'feat/P-1-portal', feature: true, epic: 'P-1', promotion }, tickets });
+  const follows = (word) => N.collect({ word }).items.filter((i) => i.kind === 'follow');
+  const count = (word) => N.needsCount(loadRepos().find((r) => r.slug === `acme__${word}`)).shown;
+
+  feature('psi784', 4784, { pr: 101, slice: 1, at: minsAgo(1300) }, { 'P-2': child(97, 1200), 'P-3': child(100, 1000) });
+  t('DS-784 AC1 no follow item while the promotion PR is open', follows('psi784').length, 0);
+  t('DS-784 AC5 a held follow item counts towards nothing', count('psi784'), 0);
+
+  feature('psi784b', 4785, { pr: 101, slice: 1, at: minsAgo(1300), merged: [{ pr: 101, slice: 1, merged_at: minsAgo(60) }] },
+    { 'P-2': child(97, 1200), 'P-3': child(100, 1000) });
+  const out = follows('psi784b');
+  t('DS-784 AC2 each child is listed once the promotion PR holding its merge has merged', out.map((i) => i.t.key).sort().join(), 'follow:P-2,follow:P-3');
+  t('DS-784 AC2 aged from the promotion merge, not the child\'s', out.map((i) => i.since).join(), `${Date.parse(minsAgo(60))},${Date.parse(minsAgo(60))}`);
+  t('DS-784 AC5 once listed, it counts', count('psi784b'), 2);
+
+  feature('psi784c', 4786, { pr: 102, slice: 2, since: minsAgo(500), at: minsAgo(500), merged: [{ pr: 101, slice: 1, merged_at: minsAgo(500) }] },
+    { 'P-2': child(97, 1200), 'P-4': child(103, 300) });
+  t('DS-784 AC3 a child merged after the first promotion stays held until a later one merges',
+    follows('psi784c').map((i) => i.t.key).join(), 'follow:P-2');
+
+  // A base desk opens no promotion PR for (set-batch base= with neither feature mode nor an epic) holds
+  // nothing: the person lands that branch, and nothing would ever release the hold.
+  put('psi784e', { port: 4788, beat: 1, supervised: true, batch: { base: 'feat/plain' }, tickets: { 'P-6': child(106, 40) } });
+  const plain = follows('psi784e');
+  t('DS-784 a plain base batch lists the item, aged from its own merge', `${plain.map((i) => i.t.key).join()} ${plain[0]?.since === Date.parse(minsAgo(40))}`, 'follow:P-6 true');
+  // An epic batch: the epic PR's merge releases it, and a reopen that failed keeps it released.
+  const epic = (word, port, promotion) => put(word, { port, beat: 1, supervised: true,
+    batch: { base: 'feat/E-1', epic: 'E-1', promotion }, tickets: { 'P-7': child(107, 1200) } });
+  epic('psi784f', 4789, { pr: 108, merged_at: minsAgo(90) });
+  t('DS-784 an epic batch lists it once the epic PR merged, aged from that merge', follows('psi784f').map((i) => `${i.t.key} ${i.since === Date.parse(minsAgo(90))}`).join(), 'follow:P-7 true');
+  epic('psi784g', 4790, { pr: null, why: 'refused', since: minsAgo(90), merged: [{ pr: 108, merged_at: minsAgo(90) }] });
+  t('DS-784 and still after a reopen of the next epic PR failed', follows('psi784g').map((i) => i.t.key).join(), 'follow:P-7');
+  epic('psi784h', 4791, { pr: 108, at: minsAgo(1300) });
+  t('DS-784 an epic batch holds it while the epic PR is open', follows('psi784h').length, 0);
+  // The archive check stamps a child promoted before it archives the batch (batch.mjs), and the stamp wins.
+  feature('psi784i', 4792, { pr: 101, slice: 1, at: minsAgo(1300) }, { 'P-8': { ...child(109, 1200), promoted_at: minsAgo(20) } });
+  t('DS-784 a child stamped promoted is listed, aged from the stamp', follows('psi784i').map((i) => `${i.t.key} ${i.since === Date.parse(minsAgo(20))}`).join(), 'follow:P-8 true');
+
+  put('psi784d', { port: 4787, beat: 1, supervised: true, tickets: { 'P-5': child(105, 30) } });
+  const own = follows('psi784d');
+  t('DS-784 AC4 a ticket merged into the default branch is listed, aged from its own merge',
+    `${own.map((i) => i.t.key).join()} ${own[0]?.since === Date.parse(minsAgo(30))}`, 'follow:P-5 true');
+}
+
+// A link to a blocker in no batch closed as Won't Do (pass.mjs wont_do_link) is one triage
+// item naming both tickets, beside the ticket's own hold or park, until the pass clears the marker.
+{
+  const held = { state: 'parked', lane: 'A', held_by: 'X-1', held_outside: 'X-1', wont_do_link: 'X-1', park: { question: 'held by orchestrator: blocked by X-1 — starts once X-1 is Done and on the base', since: minsAgo(30) } };
+  put('phi717', { port: 4717, beat: 1, supervised: true, pattern: 'W-[0-9]+', tickets: {
+    'W-1': held,
+    'W-2': { ...parked('C', 20, 'lane C: the plan needs agreeing'), wont_do_link: 'X-2' },
+  }, triage: {
+    'W-1': { blockers: [{ key: 'X-1', category: 'done', status: "Won't Do", resolution: "Won't Do", summary: 'Ship the old flag' }] },
+    'W-2': { blockers: [{ key: 'X-2', category: 'done', status: 'Closed', resolution: 'Duplicate' }] },
+  } });
+  const li = () => N.collect({ word: 'phi717' }).items.filter((i) => i.blocker);
+  const l1 = li();
+  t('DS-717 AC1/AC5 each link is one triage item, the held ticket and the lane C park alike', l1.map((i) => `${i.t.key} ${i.kind}`).join(), 'link:W-1:X-1 triage,link:W-2:X-2 triage');
+  t('DS-717 AC1 the item names both tickets, the resolution, and asks whether the link is still right',
+    /^W-1 is blocked by X-1 \("Ship the old flag"\), which is in no batch and was closed as Won't Do without landing, so W-1 is held behind it.*Is the link still right\?/.test(l1[0]?.need ?? ''), true);
+  t('DS-717 AC5 the lane C park is still listed as its own item', N.collect({ word: 'phi717' }).items.some((i) => i.t.key === 'W-2' && i.kind === 'session'), true);
+  const rec717 = N.record({ word: 'phi717', ticket: 'link:W-1:X-1', action: 'done' });
+  t('DS-717 done records nothing: the pass clears it once the link goes', `${rec717.ok} ${li().length}`, 'true 2');
+  const q717 = queueOf('phi717'); delete q717.tickets['W-1'].wont_do_link;
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__phi717', 'queue.json'), JSON.stringify(q717));
+  t('DS-717 AC3 once the pass clears the marker the item leaves the list', li().map((i) => i.t.key).join(), 'link:W-2:X-2');
+  // The pass reads a done ticket waiting on no step no more, so it would never clear the marker.
+  const q2 = queueOf('phi717'); q2.tickets['W-2'] = { ...q2.tickets['W-2'], state: 'done', park: null, result: {} };
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__phi717', 'queue.json'), JSON.stringify(q2));
+  t('DS-717 a ticket finished with no PR lists no link item, since nothing waits on the link', li().length, 0);
+  q2.tickets['W-2'].merge_after = 'X-2'; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__phi717', 'queue.json'), JSON.stringify(q2));
+  t('DS-717 a done ticket whose merge waits on the link still lists it', li().map((i) => i.t.key).join(), 'link:W-2:X-2');
+}
+
+// DS-811: a DS-705-shaped hold. The blocker is Done, and its PR merged into a feature base with no
+// promotion PR, recorded by the pass (unpromoted). Once it has been Done a day it is one held item,
+// offering promote or start.
+{
+  const BASE = 'feat/DS-631-levers-auto-trial-adopt';
+  const heldOn = (b, hours, more = {}) => ({ state: 'parked', lane: 'A', held_by: b, held_outside: b, park: { question: `held by orchestrator: blocked by ${b} — starts once ${b} is Done and on the base`, since: minsAgo(3000) },
+    unpromoted: { [b]: { branch: BASE, pr: null, state: 'none', since: minsAgo(hours * 60), ...more } } });
+  put('ds811', { port: 4811, beat: 1, supervised: true, pattern: 'DS-[0-9]+', tickets: {
+    'DS-705': heldOn('DS-692', 48), 'DS-706': heldOn('DS-693', 23), 'DS-707': heldOn('DS-694', 48), 'DS-708': heldOn('DS-695', 48),
+  }, triage: { 'DS-705': { blockers: [{ key: 'DS-692', category: 'done', resolution: 'Done', summary: 'Adopt the lever' }] } } });
+  const items = () => N.collect({ word: 'ds811' }).items;
+  const keys = () => items().map((i) => i.t.key).sort().join();
+  const i705 = items().find((i) => i.t.key === 'unpromoted:DS-705:DS-692');
+  t('DS-811 AC1 one held item for the hold, naming the base and its promotion PR, offering promote first then start',
+    `${i705?.kind} ${/^DS-705 is held behind DS-692 \("Adopt the lever"\), Done since \d{4}-\d\d-\d\d, whose code merged into feat\/DS-631-levers-auto-trial-adopt, not main\. No PR promotes feat\/DS-631-levers-auto-trial-adopt into main, so nothing lands it\. Promote feat\/DS-631-levers-auto-trial-adopt, or start DS-705 without DS-692/.test(i705?.need ?? '')} ${i705?.actions.map(([a]) => a).join()}`,
+    'held true promote,start,not-now');
+  t('DS-811 AC2 a blocker Done under a day lists nothing, and no held ticket is listed on its own', keys(), 'unpromoted:DS-705:DS-692,unpromoted:DS-707:DS-694,unpromoted:DS-708:DS-695');
+  t('DS-811 AC5 listed again with nothing answered, it is still one item', items().filter((i) => i.t.key === 'unpromoted:DS-705:DS-692').length, 1);
+  const before = readFileSync(GH_LOG, 'utf8');
+  const p = N.record({ word: 'ds811', ticket: 'unpromoted:DS-705:DS-692', action: 'promote' });
+  const made = readFileSync(GH_LOG, 'utf8').slice(before.length);
+  const q705 = queueOf('ds811').tickets['DS-705'];
+  t('DS-811 AC3 promote with none open opens one from the base into main, ready for review',
+    `${p.ok} ${made.includes(`pr create --repo acme/ds811 --base main --head ${BASE} --title DS-631: promote ${BASE} to main`)} ${made.includes('--draft')}`, 'true true false');
+  t('DS-811 AC3 the dependant stays held, with the PR recorded as asked for', `${q705.state} ${q705.held_by} ${q705.unpromoted['DS-692'].pr} ${q705.unpromoted['DS-692'].promote}`, 'parked DS-692 931 931');
+  t('DS-811 AC3 and its item leaves the list while that PR is open', keys(), 'unpromoted:DS-707:DS-694,unpromoted:DS-708:DS-695');
+  const q2 = queueOf('ds811'); q2.tickets['DS-705'].unpromoted['DS-692'].state = 'red';
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__ds811', 'queue.json'), JSON.stringify(q2));
+  t('DS-811 it comes back once that PR goes red', /Promotion PR #931, feat\/DS-631-levers-auto-trial-adopt into main, is red, and DS-705 waits until it merges\./.test(items().find((i) => i.t.key === 'unpromoted:DS-705:DS-692')?.need ?? ''), true);
+  writeFileSync(join(GH_PRS, 'list-open.json'), JSON.stringify([{ number: 640, isDraft: true }]));
+  const mark = readFileSync(GH_LOG, 'utf8').length;
+  const named = N.record({ word: 'ds811', ticket: 'unpromoted:DS-707:DS-694', action: 'promote' });
+  rmSync(join(GH_PRS, 'list-open.json'));
+  t('DS-811 AC3 promote with one open names it and opens none',
+    `${named.ok} ${/promotion PR #640 \(.*\) is already open, as a draft; DS-707 stays held/.test(named.line)} ${readFileSync(GH_LOG, 'utf8').slice(mark).includes('pr create')}`, 'true true false');
+  const s = N.record({ word: 'ds811', ticket: 'unpromoted:DS-708:DS-695', action: 'start' });
+  const q708 = queueOf('ds811').tickets['DS-708'];
+  t('DS-811 AC4 start lifts that hold and queues it', `${s.ok} ${q708.state} ${q708.held_by ?? null} ${q708.held_outside ?? null} ${q708.unpromoted ?? null} ${q708.freed_from}`, 'true triaged null null null DS-695');
+  t('DS-811 AC4 and its item leaves the list', items().some((i) => i.t.key === 'unpromoted:DS-708:DS-695'), false);
+}
+
+// A hold on a ticket dropped from the batch (dropped_link), a blocker in this batch closed as
+// Won't Do with its PR unmerged (wont_do_link) and two tickets linked as blocking each other (cycle_link)
+// are each one triage item, and the ticket held behind the dropped one is not listed again.
+{
+  const heldOn = (k) => ({ state: 'parked', lane: 'A', held_by: k, park: { question: `held by orchestrator: blocked by ${k} — starts once their PRs merge`, since: minsAgo(30) } });
+  put('psi718', { port: 4718, beat: 1, supervised: true, pattern: 'V-[0-9]+', tickets: {
+    'V-1': { ...heldOn('V-9'), dropped_link: 'V-9' },
+    'V-2': { ...heldOn('V-3'), wont_do_link: 'V-3' },
+    'V-3': { state: 'triaged', lane: 'A' },
+    'V-4': { state: 'triaged', lane: 'A', cycle_link: 'V-5' },
+    'V-5': heldOn('V-4'),
+  }, triage: {
+    'V-2': { blockers: [{ key: 'V-3', category: 'done', resolution: "Won't Do" }] },
+    'V-4': { blockers: [{ key: 'V-5', category: 'new' }] },
+  } });
+  const items = N.collect({ word: 'psi718' }).items;
+  const link = (k) => items.find((i) => i.t.key === k);
+  t('DS-718 AC3/AC5/AC6 each link is one triage item', items.filter((i) => i.blocker).map((i) => `${i.t.key} ${i.kind}`).sort().join(), 'link:V-1:V-9 triage,link:V-2:V-3 triage,link:V-4:V-5 triage');
+  t('DS-718 AC3 the dropped one asks whether the link is still right',
+    /^V-1 is held behind V-9, which is no longer in this batch, so nothing releases it\. Is the link still right\?/.test(link('link:V-1:V-9')?.need ?? ''), true);
+  t('DS-718 AC5 the one in this batch says so',
+    /^V-2 is blocked by V-3, which is in this batch with its PR unmerged and was closed as Won't Do without landing, so V-2 is held behind it/.test(link('link:V-2:V-3')?.need ?? ''), true);
+  t('DS-718 AC5 the one in this batch says its hold outlives the link, so the ticket is released by hand',
+    /nothing releases it\. Is the link still right\? If not, remove it in Jira, then release V-2 from it \(queue\.mjs set V-2 state=triaged park=null held_by=null, then queue\.mjs front V-2\), as its hold outlives the link;/.test(link('link:V-2:V-3')?.need ?? ''), true);
+  t('DS-718 AC6 the cycle names both tickets', /^V-4 and V-5 are linked in Jira as blocking each other/.test(link('link:V-4:V-5')?.need ?? ''), true);
+  t('DS-718 AC6 the cycle says how to settle it either way, the held one by release and hold, as its hold outlives its link',
+    /If V-4, remove its "is blocked by V-5" link in Jira; .* If V-5, removing V-5's link leaves its hold, so release V-5 \(queue\.mjs set V-5 state=triaged park=null held_by=null, then queue\.mjs front V-5\), then hold V-4 behind it \(queue\.mjs hold V-4 V-5\), and this clears \(1 ticket waits behind this\)$/.test(link('link:V-4:V-5')?.need ?? ''), true);
+  t('DS-718 AC3 the ticket held behind the dropped one is not listed a second time', items.some((i) => i.t.key === 'V-1'), false);
+}
+
+// DS-657 AC1/AC2: a link item counts the ticket on the link and every ticket held behind that one, and
+// ranks by it, as the link is the only item the held chain is listed under.
+{
+  const heldOn = (k) => ({ state: 'parked', lane: 'A', held_by: k, park: { question: `held by orchestrator: blocked by ${k} — starts once their PRs merge`, since: minsAgo(30) } });
+  put('link657', { port: 4757, beat: 1, supervised: true, pattern: 'V-[0-9]+', tickets: {
+    'V-1': { ...heldOn('V-9'), dropped_link: 'V-9' }, 'V-2': heldOn('V-1'), 'V-3': heldOn('V-2'),
+    'V-4': parked('A', 300, 'Which endpoint?'),
+    // Held behind V-4, so it waits on V-4, not on its Won't Do link to X-9.
+    'V-5': { ...heldOn('V-4'), wont_do_link: 'X-9' },
+  }, triage: { 'V-5': { blockers: [{ key: 'X-9', category: 'done', resolution: "Won't Do" }] } } });
+  const items = N.collect({ word: 'link657' }).items;
+  t('DS-657 AC1 a dropped link counts the ticket on it and those held behind that one',
+    /\(3 tickets wait behind this\)$/.test(items.find((i) => i.t.key === 'link:V-1:V-9')?.need ?? ''), true);
+  t('DS-657 AC1 a link on a ticket held on another blocker counts nothing: nothing waits on that link',
+    /wait(s)? behind this/.test(items.find((i) => i.t.key === 'link:V-5:X-9')?.need ?? 'missing wait behind this'), false);
+  t('DS-657 AC2 and ranks ahead of one that has waited longer', items.map((i) => i.t.key).join(), 'link:V-1:V-9,V-4,link:V-5:X-9');
+}
+
+// A lane C park held behind a dropped ticket is freed from that hold alone: a release would drop its park
+// and send it to a worker.
+{
+  put('psi718c', { port: 4719, beat: 1, supervised: true, pattern: 'V-[0-9]+', tickets: {
+    'V-6': { state: 'parked', lane: 'C', held_by: 'V-8', dropped_link: 'V-8', park: { question: 'lane C — needs the person', since: minsAgo(30) } },
+  } });
+  const need = N.collect({ word: 'psi718c' }).items.find((i) => i.t.key === 'link:V-6:V-8')?.need ?? '';
+  t('DS-718 AC3 a lane C park held behind a dropped ticket is freed from that hold and keeps its park',
+    need.includes('release V-6 from it (queue.mjs set V-6 held_by=null freed_from=V-8)') && !need.includes('park=null'), true);
+}
+
+// A ticket held behind several blockers, freed from a dropped one: the rest of held_by is quoted, as a
+// shell reads `|` as a pipe, and freed_from names the dropped one so the merge driver's --deps skip it.
+{
+  put('psi718m', { port: 4720, beat: 1, supervised: true, pattern: 'V-[0-9]+', tickets: {
+    'V-10': { state: 'parked', lane: 'A', held_by: 'V-9|V-11|V-12', dropped_link: 'V-9', park: { question: 'held by orchestrator: blocked by V-9, V-11, V-12 — starts once their PRs merge', since: minsAgo(30) } },
+    'V-11': { state: 'triaged', lane: 'A' }, 'V-12': { state: 'triaged', lane: 'A' },
+  } });
+  const need = N.collect({ word: 'psi718m' }).items.find((i) => i.t.key === 'link:V-10:V-9')?.need ?? '';
+  t('DS-718 AC3 freeing one of several holds quotes the rest and records the freed one',
+    need.includes("release V-10 from it (queue.mjs set V-10 'held_by=V-11|V-12' freed_from=V-9)"), true);
+}
+
+// DS-800: one ticket queued in two repos on the same Jira site. The copy held behind a ticket the other
+// repo's batch has is the extra one, listed as a duplicate with drop recommended in place of its dropped
+// link; the other copy lists nothing, and dropping the extra one leaves it as it is.
+{
+  const heldOn = (k) => ({ state: 'parked', lane: 'A', held_by: k, park: { question: `held by orchestrator: blocked by ${k} — starts once their PRs merge`, since: minsAgo(30) } });
+  const site = 'acme.atlassian.net';
+  put('zen800', { port: 4800, beat: 1, supervised: true, site, tickets: { 'SV-84': { state: 'running', lane: 'A' }, 'SV-91': heldOn('SV-84') } });
+  put('web800', { port: 4810, beat: 1, supervised: true, site, tickets: { 'SV-91': { ...heldOn('SV-84'), dropped_link: 'SV-84' }, 'SV-70': { state: 'triaged', lane: 'A' } } });
+  const web = N.collect({ word: 'web800' }).items;
+  const dup = web.find((i) => i.t.key === 'SV-91');
+  t('DS-800 AC2 the copy whose blocker is in the other repo is listed as a duplicate', dup?.kind, 'duplicate');
+  t('DS-800 AC2 drop is recommended for it', `${dup?.actions.map(([a]) => a).join()} ${!!dup?.actions[0][1]}`, 'drop,not-now true');
+  t('DS-800 AC2 its need names the other repo\'s copy and the blocker there',
+    /^SV-91 is queued here and in acme\/zen800's standing batch \(parked\), .* held behind SV-84, which is in that batch and not this one/.test(dup?.need ?? ''), true);
+  t('DS-800 AC2 the dropped link item is not listed beside it', web.some((i) => i.t.key === 'link:SV-91:SV-84'), false);
+  t('DS-800 AC2 the other copy is not listed as a duplicate', N.collect({ word: 'zen800' }).items.some((i) => i.kind === 'duplicate'), false);
+  const zenBefore = JSON.stringify(queueOf('zen800'));
+  const rec = N.record({ word: 'web800', ticket: 'SV-91', action: 'drop' });
+  t('DS-800 AC3 drop on the duplicate is recorded', rec.ok, true);
+  t('DS-800 AC3 the copy in repo B is removed, and the rest of its batch stays', `${'SV-91' in queueOf('web800').tickets} ${'SV-70' in queueOf('web800').tickets}`, 'false true');
+  t('DS-800 AC3 the copy in repo A is unchanged', JSON.stringify(queueOf('zen800')), zenBefore);
+  t('DS-800 AC3 and nothing is listed for it any more', N.collect({ word: 'zen800' }).items.concat(N.collect({ word: 'web800' }).items).some((i) => i.ticket === 'SV-91'), false);
+
+  // Neither copy waits on the other's batch: each lists the other, with drop offered but not recommended.
+  put('zen800b', { port: 4820, beat: 1, supervised: true, site, tickets: { 'SV-95': { state: 'triaged', lane: 'A' } } });
+  put('web800b', { port: 4830, beat: 1, supervised: true, site, tickets: { 'SV-95': { state: 'triaged', lane: 'A' } } });
+  for (const w of ['zen800b', 'web800b']) {
+    const it = N.collect({ word: w }).items.find((i) => i.t.key === 'SV-95');
+    t(`DS-800 neither copy held on the other: ${w} lists it, drop not recommended`, `${it?.kind} ${it?.actions.map(([a]) => a).join()} ${it?.actions[0][1]}`, 'duplicate drop,not-now null');
+  }
+  // A copy parked on its own question lists that park beside its duplicate item; not-now puts off both.
+  put('zen800n', { port: 4870, beat: 1, supervised: true, site, tickets: { 'SV-97': { state: 'triaged', lane: 'A' } } });
+  put('web800n', { port: 4880, beat: 1, supervised: true, site, tickets: { 'SV-97': { state: 'parked', lane: 'A', park: { question: 'Which colour is the button?', since: minsAgo(30) } } } });
+  const kinds = () => N.collect({ word: 'web800n' }).items.filter((i) => i.t.key === 'SV-97').map((i) => i.kind).sort().join();
+  t('a parked copy lists its park and its duplicate item', kinds(), 'duplicate,parked');
+  const nn = N.record({ word: 'web800n', ticket: 'SV-97', action: 'not-now' });
+  t('not-now on it puts off its park and its duplicate item', `${nn.ok} ${kinds()}`, 'true ');
+  // The same key on another Jira site, or a repo with no tracker, is another ticket.
+
+  put('other800', { port: 4840, beat: 1, supervised: true, site: 'other.atlassian.net', tickets: { 'SV-96': { state: 'triaged', lane: 'A' } } });
+  put('none800', { port: 4850, beat: 1, supervised: true, tickets: { 'SV-96': { state: 'triaged', lane: 'A' } } });
+  put('zen800c', { port: 4860, beat: 1, supervised: true, site, tickets: { 'SV-96': { state: 'triaged', lane: 'A' } } });
+  t('DS-800 a key on another Jira site or in a repo with no tracker is no duplicate',
+    ['other800', 'none800', 'zen800c'].some((w) => N.collect({ word: w }).items.some((i) => i.kind === 'duplicate')), false);
+  // Their items are these checks' alone: later ones list every repo.
+  for (const w of ['zen800', 'web800', 'zen800b', 'web800b', 'zen800n', 'web800n', 'other800', 'none800', 'zen800c']) {
+    for (const d of [join(env.DESK_CONFIG_ROOT, 'repos', `acme__${w}`), join(env.DESK_HOME, 'repos', `acme__${w}`)]) rmSync(d, { recursive: true, force: true });
+  }
+}
+
+// A lane C park whose hold the pass lifted once its sibling merged is listed as its own session item.
+{
+  put('chi715', { port: 4715, beat: 1, supervised: true, tickets: {
+    'L-1': { ...parked('C', 20, 'lane C — spans layers'), held_by: null, held_outside: null },
+    'L-0': { state: 'done', lane: 'A', result: { pr: 70 }, merged_at: minsAgo(30), pr_status: { pr: 70, state: 'MERGED' } },
+  } });
+  const it = N.collect({ word: 'chi715' }).items.find((i) => i.t.key === 'L-1');
+  t('DS-715 AC2 a lane C park whose hold lifted is a session item recommending open', `${it?.kind} ${it?.actions[0][0]}`, 'session open');
 }
 
 // ---- DS-546: list settles what finished outside desk, reading GitHub, Jira and git again (stubbed here),
@@ -1724,6 +2820,71 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-546 AC2 done on a session item whose PR cannot be read refuses, naming why', `${db1.ok} ${db1.line} ${queueOf('mu546b').tickets['MB-1'].state}`,
     "false mu546b MB-1: could not read PR #931's state from GitHub (HTTP 502), so it is not recorded done and stays on your list. parked");
 
+  // Done on a session item reads its PR from pr_status, then from GitHub by its key, before recording it
+  // done with no PR.
+  put('mu817', { port: 5817, beat: 1, supervised: true, pattern: 'AA-[0-9]+', tickets: {
+    // AA-88's shape: its open PR is known only from the last pass's pr_status.
+    'AA-88': { ...parked('B', 60, CURL), pr_status: { pr: 192, state: 'OPEN', isDraft: true } },
+    'AA-89': parked('B', 50, CURL),
+    'AA-90': parked('B', 40, CURL),
+    'AA-91': parked('B', 30, CURL),
+    // Its PR merged, then it was requeued and parked again: that merged PR is not its PR now.
+    'AA-92': { ...parked('B', 20, CURL), merged_at: '2026-11-01T10:00:00Z', result: { pr: 180 }, pr_status: { pr: 180, state: 'MERGED' } },
+    // An earlier round's PR closed unmerged, and a respawn cleared result and draft_pr but not pr_status.
+    'AA-93': { ...parked('B', 15, CURL), pr_status: { pr: 181, state: 'CLOSED' } },
+    'AA-94': { ...parked('B', 10, CURL), pr_status: { pr: 182, state: 'CLOSED' } },
+  } });
+  const gh817 = { 192: 'OPEN', 193: 'OPEN', 194: 'OPEN', 180: 'MERGED', 181: 'CLOSED', 182: 'CLOSED' };
+  const searched = [];
+  const reads817 = { ...reads, ticket: () => 'indeterminate',
+    pr: (_r, n) => ({ v: gh817[n] ? { state: gh817[n], mergedAt: gh817[n] === 'MERGED' ? '2026-11-01T10:00:00Z' : null, isDraft: gh817[n] === 'OPEN' } : null, err: gh817[n] ? '' : 'no such PR' }),
+    open: (_r, key) => { searched.push(key); return key === 'AA-91' ? { pr: null, err: 'HTTP 502' } : { pr: key === 'AA-89' ? 193 : key === 'AA-94' ? 194 : null, err: '' }; } };
+  const q817 = () => queueOf('mu817').tickets;
+  const a1 = N.record({ word: 'mu817', ticket: 'AA-88', action: 'done', reads: reads817 });
+  t('DS-817 AC1 done on a ticket whose open PR is only in pr_status refuses, naming it, and it stays on the list',
+    `${a1.ok} ${a1.line} ${q817()['AA-88'].state} ${q817()['AA-88'].result?.pr ?? null}`,
+    'false mu817 AA-88: GitHub shows PR #192 unmerged, still a draft, so it is not recorded done and stays on your list. Say done once it has merged. parked null');
+  t('DS-817 AC1 a PR in pr_status is read, not searched for', searched.includes('AA-88'), false);
+  const a2 = N.record({ word: 'mu817', ticket: 'AA-89', action: 'done', reads: reads817 });
+  t('DS-817 AC2 done on a ticket with no PR recorded and an open PR naming its key refuses, naming that PR',
+    `${a2.ok} ${a2.line} ${q817()['AA-89'].state}`,
+    'false mu817 AA-89: GitHub shows PR #193 unmerged, still a draft, so it is not recorded done and stays on your list. Say done once it has merged. parked');
+  const a3 = N.record({ word: 'mu817', ticket: 'AA-90', action: 'done', reads: reads817 });
+  t('DS-817 AC3 done on a ticket with no PR anywhere and none naming its key records it done with no PR',
+    `${a3.ok} ${a3.line} ${q817()['AA-90'].state} ${q817()['AA-90'].result?.pr ?? null}`,
+    'true mu817 AA-90: recorded done (you said done; it has no PR; AA-90 is not done in Jira yet), so it is off your list. done null');
+  const a4 = N.record({ word: 'mu817', ticket: 'AA-91', action: 'done', reads: reads817 });
+  t('DS-817 done when GitHub cannot be searched for its key refuses, naming why',
+    `${a4.ok} ${a4.line} ${q817()['AA-91'].state}`,
+    'false mu817 AA-91: could not look on GitHub for an open PR naming AA-91 (HTTP 502), so it is not recorded done and stays on your list. parked');
+  const a5 = N.record({ word: 'mu817', ticket: 'AA-92', action: 'done', reads: reads817 });
+  t('DS-817 a PR merged before a requeue is not taken from pr_status: it searches, and records no PR',
+    `${a5.ok} ${searched.includes('AA-92')} ${q817()['AA-92'].state} ${/it has no PR/.test(q817()['AA-92'].result?.summary)}`, 'true true done true');
+  const a6 = N.record({ word: 'mu817', ticket: 'AA-93', action: 'done', reads: reads817 });
+  t('DS-817 a PR in pr_status that GitHub shows closed unmerged is passed over: it searches, and records no PR',
+    `${a6.ok} ${searched.includes('AA-93')} ${q817()['AA-93'].state} ${/it has no PR/.test(q817()['AA-93'].result?.summary)}`, 'true true done true');
+  const a7 = N.record({ word: 'mu817', ticket: 'AA-94', action: 'done', reads: reads817 });
+  t('DS-817 AC2 a closed PR in pr_status does not hide the open one naming its key',
+    `${a7.ok} ${a7.line} ${q817()['AA-94'].state}`,
+    'false mu817 AA-94: GitHub shows PR #194 unmerged, still a draft, so it is not recorded done and stays on your list. Say done once it has merged. parked');
+  // Every open PR is read, not a text search, which never reads a branch; only a PR whose title or
+  // branch names the key itself counts.
+  const ghLogAt = existsSync(GH_LOG) ? readFileSync(GH_LOG, 'utf8').length : 0;
+  writeFileSync(join(GH_PRS, 'list-open.json'), JSON.stringify([
+    { number: 201, title: 'AA-890 something else', headRefName: 'fix/AA-890-other' },
+    { number: 202, title: 'Fix the widget (AA-89)', headRefName: 'fix/widget' },
+    { number: 200, title: 'Unrelated', headRefName: 'fix/AA-89-widget' },
+  ]));
+  t('DS-817 AC2 the open PR found by key is the newest whose title or branch names the key', JSON.stringify(N.READS.open({ slug: 'acme__mu817' }, 'AA-89')), '{"pr":202,"err":""}');
+  t('DS-817 AC2 the open PRs are listed whole, not searched by text', /pr list .*--state open/.test(readFileSync(GH_LOG, 'utf8').slice(ghLogAt)) && !/--search/.test(readFileSync(GH_LOG, 'utf8').slice(ghLogAt)), true);
+  t('DS-817 AC2 a PR whose title and branch name another key is not taken', N.READS.open({ slug: 'acme__mu817' }, 'AA-88').pr, null);
+  writeFileSync(join(GH_PRS, 'list-open.json'), JSON.stringify(Array.from({ length: 500 }, (_, i) => ({ number: i + 1, title: 'x', headRefName: `b${i}` }))));
+  t('DS-817 an open-PR list that may be cut short is a failure, not no PR', /cut short/.test(N.READS.open({ slug: 'acme__mu817' }, 'AA-89').err), true);
+  writeFileSync(join(GH_PRS, 'list-open.json'), JSON.stringify([{ number: 200, title: 'Unrelated', headRefName: 'fix/AA-89-widget' }]));
+  t('DS-817 AC2 a PR whose branch alone names the key is found', N.READS.open({ slug: 'acme__mu817' }, 'AA-89').pr, 200);
+  rmSync(join(GH_PRS, 'list-open.json'));
+  t('DS-817 AC3 none open on GitHub reads as no PR, not a failure', JSON.stringify(N.READS.open({ slug: 'acme__mu817' }, 'AA-89')), '{"pr":null,"err":""}');
+
   // A park waiting on issue links only the person makes keeps them in clears_when alone: its PR merging
   // and its ticket going done close neither it nor its links, which the pass reads on Jira.
   const linked = (lane, m, question, pr) => { const p = parked(lane, m, question);
@@ -1744,10 +2905,48 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   put('nu546', { port: 5547, beat: 1, supervised: true, tickets: { 'NU-1': { ...parked('B', 60, CURL), draft_pr: 921 }, 'NU-2': { ...parked('B', 50, CURL), draft_pr: 922 } } });
   onGitHub(921, { state: 'MERGED', mergedAt: '2026-11-09T19:40:54Z', isDraft: false });
   onGitHub(922, { state: 'OPEN', mergedAt: null, isDraft: true });
+  // DS-701 AC2: list --json --no-settle writes nothing, though a settling list would close NU-1.
+  const stamps = () => {
+    const dirs = [join(env.DESK_HOME, 'repos', 'acme__nu546'), join(env.HOME, '.desk-autopilot', 'acme__nu546')];
+    const walk = (d) => (existsSync(d) ? readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : [`${join(d, e.name)} ${statSync(join(d, e.name)).mtimeMs}`])) : []);
+    return [...dirs.flatMap(walk), existsSync(ANSWERS) ? `answers ${statSync(ANSWERS).mtimeMs}` : 'answers none'].sort().join('\n');
+  };
+  const before701 = stamps();
+  const ns701 = cli('list', '--json', '--no-settle', 'nu546');
+  const nj701 = JSON.parse(ns701.out || '{}');
+  t('DS-701 AC2 list --json --no-settle changes no queue, state or answer file (by mtime)', `${ns701.code} ${stamps() === before701} ${before701.includes('queue.json')}`, '0 true true');
+  t('DS-701 AC2 and lists the item a settle would have closed', `${nj701.settled} ${nj701.items?.map((i) => i.key).join()} ${queueOf('nu546').tickets['NU-1'].state}`, 'false NU-1,NU-2 parked');
+  t('DS-701 list --no-settle without --json prints the list unsettled', cli('list', '--no-settle', 'nu546').out.split('\n').filter((l) => / \| /.test(l)).map((l) => l.split(' ')[1]).join(), 'NU-1,NU-2');
+  t('DS-701 an unknown flag still refuses', cli('list', '--nope').code, 11);
   const nuList = cli('list', 'nu546');
   t('DS-546 AC1 the CLI list closes it with no tracker, says so first, and lists only what is left',
     `${nuList.code} ${nuList.out.split('\n')[0]} ${nuList.out.split('\n').filter((l) => / \| /.test(l)).map((l) => l.split(' ')[1]).join()} ${queueOf('nu546').tickets['NU-1'].state}`,
     '0 nu546 NU-1: PR #921 merged at 2026-11-09 19:40 UTC, so it is recorded done and off your list. NU-2 done');
+  // DS-701: list --json settles first, as list does, and carries the lines that say what it settled.
+  put('nu701', { port: 5701, beat: 1, supervised: true, tickets: { 'NV-1': { ...parked('B', 60, CURL), draft_pr: 925 }, 'NV-2': { ...parked('B', 50, CURL), draft_pr: 926 } } });
+  onGitHub(925, { state: 'MERGED', mergedAt: '2026-11-09T19:40:54Z', isDraft: false });
+  onGitHub(926, { state: 'OPEN', mergedAt: null, isDraft: true });
+  const sj701 = JSON.parse(cli('list', '--json', 'nu701').out || '{}');
+  t('DS-701 list --json settles first and says what it settled', `${sj701.settled} ${sj701.settled_lines?.join(' | ')} | ${sj701.items?.map((i) => i.key).join()} ${queueOf('nu701').tickets['NV-1'].state}`,
+    'true nu701 NV-1: PR #925 merged at 2026-11-09 19:40 UTC, so it is recorded done and off your list. | NV-2 done');
+
+  // DS-573: a parked item whose PR merged with its ticket not done in Jira goes back to a worker for its
+  // after-merge steps, and leaves the list; one whose PR is open stays as it was.
+  put('mt573', { port: 5573, beat: 1, supervised: true, pattern: 'MT-[0-9]+', tickets: {
+    'MT-1': { ...parked('A', 60, 'Which fixture should win?'), draft_pr: 961, handoff_stage: 7 },
+    'MT-2': { ...parked('A', 50, 'Which copy?'), draft_pr: 962 },
+  } });
+  const mtPrs = { 961: 'MERGED', 962: 'OPEN' };
+  const mtReads = { pr: (_r, n) => ({ v: { state: mtPrs[n], mergedAt: mtPrs[n] === 'MERGED' ? '2026-11-12T09:01:00Z' : null, isDraft: false }, err: '' }), ticket: () => 'indeterminate', git: () => null };
+  const mtList = () => N.collect({ word: 'mt573' }).items.map((i) => i.t.key).sort().join();
+  t('DS-573 both are listed before list reads GitHub', mtList(), 'MT-1,MT-2');
+  t('DS-573 AC1 list requeues the merged one for its after-merge steps and says so',
+    N.refresh({ word: 'mt573', reads: mtReads }).join(' | '), 'mt573 MT-1: PR #961 merged at 2026-11-12 09:01 UTC, and MT-1 is not done in Jira yet, so it is back with a worker for its after-merge steps only, and off your list.');
+  const mt1 = queueOf('mt573').tickets['MT-1'];
+  t('DS-573 AC1 it is requeued with its briefing told the PR merged, from Stage 0, and is not listed',
+    `${mt1.state} ${mt1.park} ${mt1.merged_tail} ${mt1.cleared?.tail?.pr} ${mt1.handoff_stage ?? null} ${mtList()}`, 'triaged null 961 961 null MT-2');
+  t('DS-573 AC3 the one whose PR is open stays parked, its question unchanged', `${queueOf('mt573').tickets['MT-2'].state} ${queueOf('mt573').tickets['MT-2'].park?.question}`, 'parked Which copy?');
+  t('DS-573 a second list requeues nothing more', N.refresh({ word: 'mt573', reads: mtReads }).length, 0);
 
   // AC3: a worktree held for uncommitted changes is read again, and released once committed and pushed.
   const origin = join(T, 'xi546-origin.git'), wt = join(T, 'xi546-wt');
@@ -1798,11 +2997,13 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     // A claimed park keeps its clears-when, but no pass settles it: it stays the session's, clean or dirty.
     'W-4': claimed(waits('Should W-4 wait for PR #992?', { kind: 'pr-merged', pr: 992 }), { session: 'sess-562', at: minsAgo(30) }),
     'W-5': claimed(waits('its worktree has uncommitted changes (a.txt)', { kind: 'pr-merged', pr: 993 }), { session: 'sess-562', at: minsAgo(60), dirty_at: minsAgo(30) }),
+    'W-7': waits('Wait for the Actions run', { kind: 'run-completed', run: 44719886024 }),
   } });
   const keys = N.collect({ word: 'ds562' }).items.map((i) => i.t.key).sort().join();
   t('DS-562 AC1, AC3, AC4 a park waiting on a PR merging is not listed; one on none, on links only the person makes, or claimed by a session is', keys, 'W-2,W-3,W-4,W-5');
   const r562 = () => loadRepos().find((r) => r.name === 'ds562');
   t('DS-562 AC2 desk-q shows it waiting, not needing you', r562().rows.find((x) => x.t.key === 'W-1').k, 'waiting');
+  t('DS-852 AC1 desk-q shows a park on an Actions run waiting, not needing you', r562().rows.find((x) => x.t.key === 'W-7').k, 'waiting');
   t('DS-562 AC2 its row says it waits on PR #991', repoScreen(r562(), { width: 200 }).includes('waiting on PR #991 merged'), true);
   t('DS-562 AC2 its page says it moves without you, on PR #991', ticketScreen(r562(), 'W-1', { width: 200 }).includes('Moves without you: Waiting on PR #991 merged: a pass requeues it then.'), true);
   t('DS-562 AC2 desk-q counts only the ones the person settles', N.needsCount(r562()).shown, 4);
@@ -1814,10 +3015,22 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-562 passes stopped: its page says it will not move until they resume, waiting on PR #994', off.includes('Will not move until passes resume: waiting on PR #994 merged: a pass requeues it then.'), true);
 }
 
+// #925: a park waiting on an outside reviewer's review of the PR names no step of the person's, so it
+// waits and needs-you does not count it.
+{
+  const rv = { ...parked('A', 30, 'Wait for agent-pullbot to review PR #3468 at the head'), park: { question: 'Wait for agent-pullbot to review PR #3468 at the head', since: minsAgo(30), clears_when: { kind: 'pr-reviewed', pr: 3468, login: 'agent-pullbot' } } };
+  put('i925', { port: 4652, beat: 1, supervised: true, tickets: { 'R-1': rv, 'R-2': { ...parked('A', 30, 'Which price?'), park: { question: 'Which price?', since: minsAgo(30), clears_when: { kind: 'none' } } } } });
+  const r925 = loadRepos().find((r) => r.name === 'i925');
+  t('#925 a park cleared by a PR review is not listed by needs-you', N.collect({ word: 'i925' }).items.map((i) => i.t.key).join(), 'R-2');
+  t('#925 desk-q shows it waiting, and counts only the one the person settles', `${r925.rows.find((x) => x.t.key === 'R-1').k} ${N.needsCount(r925).shown}`, 'waiting 1');
+}
+
+// A ticket held behind `by`, and the keys needs-you lists for batch `name`, for the blocks below.
+const behind = (k, by) => ({ state: 'parked', lane: 'A', held_by: by, park: { question: `held by orchestrator: blocked by ${by} — starts once their PRs merge (${k})` } });
+const keysIn = (name) => N.collect({ word: name }).items.map((i) => i.t.key);
+
 // ---- A put-off item with 3 or more held tickets behind it, directly or through another, is listed first.
 {
-  const behind = (k, by) => ({ state: 'parked', lane: 'A', held_by: by, park: { question: `held by orchestrator: blocked by ${by} — starts once their PRs merge (${k})` } });
-  const keysIn = (name) => N.collect({ word: name }).items.map((i) => i.t.key);
   put('ds600a', { port: 4650, beat: 1, supervised: true, tickets: { 'O-1': parked('A', 300, 'Older question?'), 'P-1': parked('A', 60, 'Which price?'),
     'H-1': behind('H-1', 'P-1'), 'H-2': behind('H-2', 'P-1'), 'H-3': behind('H-3', 'P-1') } });
   const off1 = N.record({ word: 'ds600a', ticket: 'P-1', action: 'not-now' });
@@ -1844,6 +3057,81 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     tickets: { 'V-1': gateStuck(121, protectedLine), 'H-1': behind('H-1', 'V-1'), 'H-2': behind('H-2', 'V-1'), 'H-3': behind('H-3', 'V-1') } });
   const wait = N.record({ word: 'ds600d', ticket: 'V-1', action: 'waiting' });
   t('DS-600 AC4 waiting on a PR with 3 held behind it says it stays listed, and it is', `${wait.ok} ${wait.line.includes('It is still listed while 3 or more tickets wait behind it (3 do now).')} ${keysIn('ds600d')[0]}`, 'true true V-1');
+}
+
+// ---- A park whose own blockers are open is not listed, put off or not; the put-off override
+// moves to the ticket first in its chain, and a count behind a ticket counts each ticket once.
+{
+  const nine = (by) => Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`H-${i + 1}`, behind(`H-${i + 1}`, by)]));
+  const laneC = (by) => ({ ...parked('C', 90, 'lane C — spans layers'), held_by: by });
+  const qPath = (name) => join(env.DESK_HOME, 'repos', `acme__${name}`, 'queue.json');
+  const edit = (name, f) => { const q = queueOf(name); f(q.tickets); writeFileSync(qPath(name), JSON.stringify(q)); };
+
+  // AC6 first: with no open blockers, put off with nine behind it, it is listed with the count, as today.
+  put('ds716a', { port: 4716, beat: 1, supervised: true, tickets: { 'S-1': { state: 'running', lane: 'A' }, 'C-1': laneC(null), ...nine('C-1') } });
+  const off = N.record({ word: 'ds716a', ticket: 'C-1', action: 'not-now' });
+  const c1 = N.collect({ word: 'ds716a' }).items.find((i) => i.t.key === 'C-1');
+  t('DS-716 AC6 a lane C park with no open blockers, put off with 9 behind it, is listed with the count',
+    `${off.ok} ${c1?.kind} ${c1?.behind} ${/9 tickets wait behind it/.test(c1?.need ?? '')}`, 'true session 9 true');
+  // AC1 and AC2: held behind its unmerged sibling, it is not listed, and desk-q shows it waiting behind it.
+  edit('ds716a', (ts) => { ts['C-1'].held_by = 'S-1'; });
+  const a = N.collect({ word: 'ds716a' });
+  t('DS-716 AC1/AC2 put off with 9 behind it and held behind an unmerged sibling, it is not listed', a.items.some((i) => i.t.key === 'C-1'), false);
+  const ra = loadRepos().find((r) => r.name === 'ds716a');
+  t('DS-716 AC1 desk-q shows it waiting, not needing you', ra.rows.find((x) => x.t.key === 'C-1')?.k, 'waiting');
+  t('DS-716 AC1 its page says it moves without you, behind the sibling', ticketScreen(ra, 'C-1', { width: 200 }).includes('Moves without you: behind S-1 (running, stage'), true);
+  t('DS-716 AC1 desk-q counts nothing for it', N.needsCount(ra).shown, 0);
+  // Never put off, it is not listed either.
+  put('ds716b', { port: 4726, beat: 1, supervised: true, tickets: { 'S-1': { state: 'triaged', lane: 'A' }, 'C-1': laneC('S-1') } });
+  t('DS-716 AC1 a lane C park behind a sibling waiting to spawn is not listed', keysIn('ds716b').join(), '');
+
+  // AC3: the ticket first in its chain parks on a question only the person answers: it is listed, and put off it is
+  // still listed, with every ticket waiting behind it counted (the put-off park and its nine).
+  put('ds716c', { port: 4718, beat: 1, supervised: true, tickets: { 'S-1': parked('A', 60, 'Which price?'), 'C-1': laneC('S-1'), ...nine('C-1') } });
+  N.record({ word: 'ds716c', ticket: 'C-1', action: 'not-now' });
+  t('DS-716 AC3 the chain head is listed in place of the put-off park', keysIn('ds716c').join(), 'S-1');
+  N.record({ word: 'ds716c', ticket: 'S-1', action: 'not-now' });
+  const s1 = N.collect({ word: 'ds716c' }).items;
+  t('DS-716 AC3 put off too, the head is still listed with the count of tickets waiting behind it',
+    `${s1.map((i) => i.t.key).join()} ${s1[0]?.behind} ${/10 tickets wait behind it/.test(s1[0]?.need ?? '')}`, 'S-1 10 true');
+
+  // AC4: the head is a PR running its checks, which merges without the person: nothing is listed for the chain.
+  put('ds716d', { port: 4719, beat: 1, supervised: true, merge: 'yes', tickets: {
+    'S-1': { state: 'done', lane: 'A', result: { pr: 716 }, pr_status: { pr: 716, state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', checks: [{ name: 'build', status: 'in_progress', conclusion: null, startedAt: minsAgo(5) }] } },
+    'C-1': laneC('S-1'), ...nine('C-1') } });
+  N.record({ word: 'ds716d', ticket: 'C-1', action: 'not-now' });
+  t('DS-716 AC4 a chain whose head is a PR running CI lists nothing', keysIn('ds716d').join(), '');
+
+  // AC5: a fork to two heads that both need the person, both put off: both are listed, in build order
+  // (S-2 is queued first, so not key order), the same every run.
+  put('ds716e', { port: 4720, beat: 1, supervised: true, tickets: { 'S-2': parked('A', 60, 'Which copy?'), 'S-1': parked('A', 60, 'Which price?'), 'C-1': laneC('S-2|S-1'), ...nine('C-1') } });
+  for (const k of ['C-1', 'S-1', 'S-2']) N.record({ word: 'ds716e', ticket: k, action: 'not-now' });
+  const runs = [keysIn('ds716e').join(), keysIn('ds716e').join()];
+  t('DS-716 AC5 both heads are listed in build order, and the put-off park is not', runs[0], 'S-2,S-1');
+  t('DS-716 AC5 in the same order every run', runs[1], runs[0]);
+
+  // A lane C park held only behind a step only the person takes, in no batch: the step is listed, with
+  // the park waiting on it, and the park is not listed as well, put off or not.
+  const input = { key: 'OPS-7', category: 'new', type: 'Task', summary: 'Record the webhook payload', labels: ['ben-input'] };
+  put('ds716g', { port: 4722, beat: 1, supervised: true, inputLabels: 'ben-input', tickets: { 'C-1': { ...laneC('OPS-7'), held_outside: 'OPS-7' }, ...nine('C-1') },
+    triage: { 'C-1': { blockers: [input] } } });
+  N.record({ word: 'ds716g', ticket: 'C-1', action: 'not-now' });
+  const g = N.collect({ word: 'ds716g' }).items;
+  t('DS-716 a lane C park behind a person\'s step is listed once, as the step, which names it waiting',
+    `${g.map((i) => i.t.key).join()} ${g[0]?.waiting.join()}`, 'step:OPS-7 C-1');
+  t('DS-716 desk-q counts the step once and not the park behind it', N.needsCount(loadRepos().find((r) => r.name === 'ds716g')).shown, 1);
+
+  // Two lane C parks held behind each other: a cycle nothing releases, so both are listed for their questions.
+  put('ds716h', { port: 4723, beat: 1, supervised: true, tickets: { 'C-1': laneC('C-2'), 'C-2': laneC('C-1') } });
+  t('DS-716 two lane C parks held behind each other are both listed, not both waiting', keysIn('ds716h').join(), 'C-1,C-2');
+
+  // AC7: lane C parks held in a chain, and a held ticket behind two of them: each is counted once.
+  put('ds716f', { port: 4721, beat: 1, supervised: true, tickets: { 'S-1': parked('A', 60, 'Which price?'), 'C-1': laneC('S-1'), 'C-2': laneC('S-1|C-1'),
+    'H-1': behind('H-1', 'C-1|C-2'), 'H-2': behind('H-2', 'C-2') } });
+  N.record({ word: 'ds716f', ticket: 'S-1', action: 'not-now' });
+  const f = N.collect({ word: 'ds716f' }).items;
+  t('DS-716 AC7 the count behind the head counts each ticket once, and neither lane C park is listed',
+    `${f.map((i) => i.t.key).join()} ${f[0]?.behind} ${/4 tickets wait behind it/.test(f[0]?.need ?? '')}`, 'S-1 4 true');
 }
 
 // ---- DS-580: a park on a step only a person or another account takes recommends nothing, and its resume
@@ -1903,33 +3191,29 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
       'It touches only the bot config, which could break CI. Proceed?', 'The only user-facing option I could find is a toggle. Toggle or modal?', 'Only you can decide whether I can push this change. Should I proceed?'].map(personOnlyStep).join(), ',,,,,');
 }
 
-// A held ticket's own triage question is its need, word for word, not a count of them; and its put-off
-// comes back when a blocker is added, removed or done, not when one moves between in-flight stages.
+// A held ticket's triage item put off comes back when a blocker is added, removed or done, not when one
+// moves between in-flight stages.
 {
   put('iota', { port: 3900, beat: 1, supervised: true, tickets: {
     'I-1': { state: 'running', lane: 'A' },
     'I-2': { state: 'parked', lane: 'A', held_by: 'I-1', open_questions: 1, park: { question: 'held by orchestrator: blocked by I-1 — starts once their PRs merge' } },
-    'I-3': { state: 'parked', lane: 'A', held_by: 'I-1', open_questions: 3, park: { question: 'held by orchestrator: blocked by I-1 — starts once their PRs merge' } },
     'I-4': { state: 'parked', lane: 'A', held_by: 'I-1', open_questions: 1, park: { question: 'held by orchestrator: blocked by I-1 — starts once their PRs merge' } },
     'I-5': { state: 'queued', lane: 'A' },
   }, triage: {
     'I-2': { summary: 'levers', unknowns: ['What is the cost of one blind audit run? Its Verification says to keep it out of batches until recorded.'] },
-    'I-3': { summary: 'two asked', unknowns: ['Which cap?', { question: 'Which page?' }] },
     'I-4': { summary: 'old entry', unknowns: ['Which colour?'] },
   } });
   const iq = join(env.DESK_HOME, 'repos', 'acme__iota', 'queue.json');
   const iotaState = join(env.HOME, '.desk-autopilot', 'acme__iota');
   const iota = () => Object.fromEntries(N.collect({ word: 'iota' }).items.map((i) => [i.t.key, i]));
   const setQ = (f) => { const q = JSON.parse(readFileSync(iq, 'utf8')); f(q.tickets); writeFileSync(iq, JSON.stringify(q)); };
-  // An entry written before blockers were settled and held triage needs named their questions.
+  // An entry written before blockers were settled: each blocker recorded by its batch stage.
   NN.addPutOff(NN.putOffEntry({ question: 'I-4 triage', ticket: 'I-4', at: new Date(NOW).toISOString(), actions: ['answer', 'not-now'],
-    inputs: { ticket: 'I-4', need: '1 triage question(s) open', blockers: 'I-1:parked' } }), iotaState);
+    inputs: { ticket: 'I-4', need: 'Which colour?', blockers: 'I-1:parked' } }), iotaState);
   const i0 = iota();
   t('needs-you a held ticket\'s triage item names its question, not a count', `${i0['I-2']?.kind} | ${i0['I-2']?.need}`,
     'triage | What is the cost of one blind audit run? Its Verification says to keep it out of batches until recorded.');
-  t('needs-you several triage questions are numbered on one line, with those its record lacks counted', i0['I-3']?.need,
-    '(1) Which cap? (2) Which page? (and 1 more not in its triage record)');
-  t('needs-you an entry put off the old way (count need, blocker stage) stays put off while its blockers are the same', i0['I-4'], undefined);
+  t('needs-you an entry put off the old way (blocker stage) stays put off while its blockers are the same', i0['I-4'], undefined);
   const listed = cli('list', 'iota').out.split('\n').find((l) => l.startsWith('iota I-2 triage'));
   t('needs-you the list line carries the question itself', listed?.includes('| What is the cost of one blind audit run?'), true);
   N.record({ word: 'iota', ticket: 'I-2', action: 'not-now' });
@@ -1950,13 +3234,490 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('needs-you the old-style entry comes back too once its blocker is done, in the settled form', /blockers I-1:open → I-1:done\.\)$/.test(iota()['I-4']?.need ?? ''), true);
   setQ((ts) => { ts['I-1'].state = 'running'; });
   NN.addPutOff(NN.putOffEntry({ question: 'I-4 triage', ticket: 'I-4', at: new Date(NOW).toISOString(), actions: ['answer', 'not-now'],
-    inputs: { ticket: 'I-4', need: '1 triage question(s) open', blockers: 'I-1:running,I-9:parked' } }), iotaState);
+    inputs: { ticket: 'I-4', need: 'Which colour?', blockers: 'I-1:running,I-9:parked' } }), iotaState);
   t('needs-you an old-style entry whose blocker set differs is asked again', iota()['I-4'] != null, true);
 }
 
+// DS-601: an answer for a ticket a pass moved on since it was listed is kept for its next worker.
+{
+  // A running worker with a session, and a queued ticket requeued with a one-off grant: answer.mjs
+  // would write the mailbox and take the grant back.
+  const grant = { branch: 'fix/m-2', lease: 'abc123', at: minsAgo(10) };
+  put('moved', { port: 3601, beat: 1, supervised: true, tickets: {
+    'M-1': { state: 'running', lane: 'A', stage: '3/9', session_id: 'sess-m1' },
+    'M-2': { state: 'queued', lane: 'A', grant },
+    'M-3': { state: 'done', lane: 'A', merged_at: minsAgo(5), result: { pr: 70 }, pr_status: { pr: 70, state: 'MERGED' } },
+  } });
+  const dir = join(env.HOME, '.desk-autopilot', 'acme__moved');
+  const brief = (k) => { const f = join(dir, 'briefings', `${k}.md`); return existsSync(f) ? readFileSync(f, 'utf8') : ''; };
+  const queueText = () => JSON.stringify(queueOf('moved'));
+  const q0 = queueText(), before = answers().length;
+  const m1 = N.record({ word: 'moved', ticket: 'M-1', action: 'answer', text: 'keep the gap as it is' });
+  t('DS-601 AC1 an answer for a ticket no longer listed is saved in its briefing, and the reply says so',
+    `${m1.ok} ${m1.line} ${brief('M-1').includes('## Answer from the user') && brief('M-1').includes('keep the gap as it is')}`,
+    'true moved M-1: no longer waiting on you; your answer is saved in its briefing for its next worker. true');
+  t('DS-601 AC1 a running worker gets no mailbox answer for a park it has not made', existsSync(join(dir, 'answers', 'M-1.txt')), false);
+  const m2 = N.record({ word: 'moved', ticket: 'M-2', action: 'resume', text: 'use the short copy' });
+  t('DS-601 AC2 a resume with text is saved the same way, and its queue entry is unchanged, grant included',
+    `${m2.ok} ${brief('M-2').includes('## Answer from the user') && brief('M-2').includes('use the short copy')} ${queueText() === q0} ${answers().length - before}`, 'true true true 0');
+  const b1 = brief('M-1');
+  const m3 = N.record({ word: 'moved', ticket: 'M-1', action: 'requeue', text: 'try again' });
+  t('DS-601 AC3 requeue is refused as today and writes nothing',
+    `${m3.ok} ${m3.line} ${brief('M-1') === b1} ${queueText() === q0}`, 'false moved M-1: desk-q does not count it as needing you, so nothing was recorded. true true');
+  const m4 = N.record({ word: 'moved', ticket: 'M-9', action: 'answer', text: 'x' });
+  t('DS-601 AC4 a ticket in no queue of the repo is refused as today and writes nothing', `${m4.ok} ${brief('M-9')} ${queueText() === q0}`, 'false  true');
+  const m5 = N.record({ word: 'moved', ticket: 'M-3', action: 'answer', text: 'x' });
+  t('DS-601 a ticket whose PR merged can spawn no worker, so it is refused and writes nothing', `${m5.ok} ${brief('M-3')} ${queueText() === q0}`, 'false  true');
+  t('DS-601 an answer with no text is refused', `${N.record({ word: 'moved', ticket: 'M-1', action: 'answer', text: ' ' }).ok} ${brief('M-1') === b1}`, 'false true');
+}
+
+// DS-609: a file an answer names is copied into the ticket's fixtures before the requeue.
+{
+  const { openSync, ftruncateSync, closeSync } = await import('node:fs');
+  put('ds609', { port: 3609, beat: 1, supervised: true, tickets: Object.fromEntries(['F-1', 'F-2', 'F-3', 'F-4', 'F-5'].map((k) => [k, parked('A', 30, 'I need a real capture from a test Meet')])) });
+  const fx = (k) => join(env.HOME, '.desk-autopilot', 'acme__ds609', 'fixtures', k);
+  const ls = (d) => (existsSync(d) ? readdirSync(d).sort().join() : '-');
+  const cap = join(T, 'AA-48-recall-capture');
+  mkdirSync(join(cap, 'sub'), { recursive: true });
+  writeFileSync(join(cap, 'capture.json'), '{"a":1}');
+  writeFileSync(join(cap, 'notes.txt'), 'meet');
+  writeFileSync(join(cap, '.DS_Store'), 'x');
+  const f1 = N.record({ word: 'ds609', ticket: 'F-1', action: 'resume', text: `Saved the capture in ${cap}/.` });
+  t('DS-609 AC1 the named folder\'s files are in fixtures/<TICKET>/ and the ticket is requeued', `${f1.ok} ${ls(fx('F-1'))} ${queueOf('ds609').tickets['F-1'].state}`, 'true capture.json,notes.txt triaged');
+  t('DS-609 AC1 the reply names what was copied', f1.line.includes(`Copied ${cap} into ${fx('F-1')}/ for its next worker: capture.json, notes.txt.`), true);
+  t('DS-609 the answer is recorded as written', answers().at(-1).args.join('|'), `F-1|--all|Saved the capture in ${cap}/.`);
+
+  const gone = join(T, 'no-such-capture');
+  const f2 = N.record({ word: 'ds609', ticket: 'F-2', action: 'resume', text: `It is in ${gone}` });
+  t('DS-609 AC2 a path not found copies nothing, records the answer, and says so', `${f2.ok} ${ls(fx('F-2'))} ${answers().at(-1).args[0]} ${f2.line.includes(`${gone} was not found, so nothing was copied from it.`)}`, 'true - F-2 true');
+
+  mkdirSync(fx('F-3'), { recursive: true });
+  writeFileSync(join(fx('F-3'), 'capture.json'), '{}');
+  const f3 = N.record({ word: 'ds609', ticket: 'F-3', action: 'resume', text: `Saved it at ${join(fx('F-3'), 'capture.json')}` });
+  t('DS-609 AC3 a path already under fixtures/<TICKET>/ copies nothing', `${f3.ok} ${ls(fx('F-3'))} ${/Copied|not copied|not found/.test(f3.line)}`, 'true capture.json false');
+
+  const big = join(T, 'big-capture');
+  mkdirSync(big);
+  const fd = openSync(join(big, 'recording.bin'), 'w');
+  ftruncateSync(fd, 51 * 1024 * 1024);
+  closeSync(fd);
+  const f4 = N.record({ word: 'ds609', ticket: 'F-4', action: 'resume', text: `see ${big}` });
+  t('DS-609 AC4 a folder over 50 MB copies nothing, records the answer, and says it is too large', `${f4.ok} ${ls(fx('F-4'))} ${answers().at(-1).args[0]} ${f4.line.includes(`${big} is too large to copy (51 MB, over 50 MB), so nothing was copied from it.`)}`, 'true - F-4 true');
+
+  const hidden = join(T, '.ssh');
+  mkdirSync(hidden);
+  writeFileSync(join(hidden, 'id_rsa'), 'secret');
+  const f5 = N.record({ word: 'ds609', ticket: 'F-5', action: 'resume', text: `the key is ${join(hidden, 'id_rsa')}, and ~/ is home` });
+  const { pathsIn } = await import('../desk/bin/live-read.mjs');
+  t('DS-609 a slash command or URL in an answer is not a path', pathsIn('ran /pullbot and /desk-ticket A-1, see https://x.io/a/b or (/tmp/cap/a.json).', '/h').join(), '/tmp/cap/a.json');
+  t('DS-609 a file in a hidden folder, or home itself, is never copied', `${f5.ok} ${ls(fx('F-5'))} ${f5.line.includes('was not copied: it is in a hidden folder.')} ${f5.line.includes('was not copied: it is your home folder or above it.')}`, 'true - true true');
+  t('DS-609 a quoted or escaped path keeps its spaces', JSON.stringify(pathsIn('In "/tmp/Meet capture" and `/tmp/b c/d.json`, /tmp/Screen\\ Recording.mov, and it\'s at \'/tmp/x y\'.', '/h')), JSON.stringify(['/tmp/Meet capture', '/tmp/b c/d.json', '/tmp/Screen Recording.mov', '/tmp/x y']));
+
+  const spaced = join(T, 'Meet capture');
+  mkdirSync(spaced);
+  writeFileSync(join(spaced, 'meet.json'), '{}');
+  const lib = join(env.HOME, 'Library', 'Cookies');
+  mkdirSync(lib, { recursive: true });
+  writeFileSync(join(lib, 'Cookies.binarycookies'), 'secret');
+  put('ds609b', { port: 3610, beat: 1, supervised: true, tickets: Object.fromEntries(['F-6', 'F-7', 'F-9'].map((k) => [k, parked('A', 30, 'I need a real capture from a test Meet')])) });
+  const fxb = (k) => join(env.HOME, '.desk-autopilot', 'acme__ds609b', 'fixtures', k);
+  const f7 = N.record({ word: 'ds609b', ticket: 'F-7', action: 'resume', text: `It is in "${spaced}", not ~/Library/Cookies` });
+  t('DS-609 a quoted folder with a space is copied, and ~/Library never is', `${f7.ok} ${ls(fxb('F-7'))} ${f7.line.includes('/Library/Cookies was not copied: it is in ~/Library')}`, 'true meet.json true');
+  if (['darwin', 'win32'].includes(process.platform)) {
+    const { saveNamedFixtures } = await import('../desk/bin/live-read.mjs');
+    const odd = saveNamedFixtures({ state: join(T, 'ds609-case-state'), key: 'F-8', text: `~/library/cookies and ${join(env.HOME, 'Library', 'Cookies').toUpperCase()}`, home: env.HOME });
+    t('DS-609 ~/Library spelled in another case is never copied either', `${odd.copied.length} ${odd.refused.filter((x) => x.why.startsWith('it is in ~/Library')).length}`, '0 2');
+  }
+
+  const [ca, cb] = [join(T, 'cap-a'), join(T, 'cap-b')];
+  for (const d of [ca, cb]) { mkdirSync(d); writeFileSync(join(d, 'data.csv'), d); }
+  writeFileSync(join(ca, 'notes.txt'), 'new');
+  mkdirSync(fxb('F-6'), { recursive: true });
+  writeFileSync(join(fxb('F-6'), 'notes.txt'), 'old');
+  const f6 = N.record({ word: 'ds609b', ticket: 'F-6', action: 'resume', text: `old is ${ca} and new is ${cb}` });
+  t('DS-609 a second file of the same name is not copied over the first, and says so', `${readFileSync(join(fxb('F-6'), 'data.csv'), 'utf8') === ca} ${f6.line.includes(`${join(cb, 'data.csv')} was not copied: a file named data.csv was already copied from ${ca}`)} ${f6.line.includes(`Copied ${cb}`)}`, 'true true false');
+  t('DS-609 a file already in the fixtures folder that a copy replaces is named', `${readFileSync(join(fxb('F-6'), 'notes.txt'), 'utf8')} ${f6.line.includes('That replaced the copies already there of notes.txt.')}`, 'new true');
+
+  const cc = join(T, 'cap-c');
+  mkdirSync(cc); writeFileSync(join(cc, 'kept'), 'incoming');
+  mkdirSync(join(fxb('F-9'), 'kept'), { recursive: true });
+  writeFileSync(join(fxb('F-9'), 'kept', 'mine.txt'), 'person');
+  const f9 = N.record({ word: 'ds609b', ticket: 'F-9', action: 'resume', text: `see ${cc}` });
+  t('DS-609 a folder in the fixtures folder is never removed for a same-named file', `${f9.ok} ${readFileSync(join(fxb('F-9'), 'kept', 'mine.txt'), 'utf8')} ${f9.line.includes(`${join(cc, 'kept')} was not copied: ${join(fxb('F-9'), 'kept')} is a folder, which is never replaced.`)}`, 'true person true');
+}
+
+// With the row reading failure-class, the park of a ticket pinned without it is listed as
+// with the lever off: the same line, word for word, as the same park under a row of none.
+{
+  const pinOff = { ...parked('A', 45, 'Which reviewer handle goes in the PR body?'), levers: { set: [], at: minsAgo(60) } };
+  put('pinoff', { port: 3910, beat: 1, tickets: { 'P-1': pinOff } });
+  put('pinon', { port: 3911, beat: 1, tickets: { 'P-1': pinOff } });
+  const cfg = join(env.DESK_CONFIG_ROOT, 'repos', 'acme__pinon', 'config.md');
+  writeFileSync(cfg, readFileSync(cfg, 'utf8').replace('| Batches run by |', '| Phase 0 levers | `none` | `failure-class` |\n| Batches run by |'));
+  // One clock for both reads, so a slow run cannot put a minute between the two ages.
+  const now = Date.now();
+  const lineOf = (word) => N.listText(N.collect({ word, now }), now).split('\n').find((l) => l.startsWith(`${word} P-1 `))?.split(word).join('<repo>');
+  t('DS-639 AC6 the park is listed', !!lineOf('pinon'), true);
+  t('DS-639 AC6 a row reading failure-class lists a ticket pinned without it as with the lever off', lineOf('pinon'), lineOf('pinoff'));
+}
+
+// ---- DS-742: a ticket queue.mjs stop held is listed held, and start lets the next pass start it.
+put('ds742', { port: 5742, beat: 1, tickets: {
+  'P-1': { state: 'parked', lane: 'A', held_by: null, branch: 'fix/P-1', last_round: { stage: '5/9', question: 'stopped', at: minsAgo(5) },
+    park: { question: 'held by orchestrator: stopped by queue.mjs stop at 2026-11-17T10:00:00.000Z; its work so far is committed as 0123456789ab on fix/P-1. Starts again only once you let it', since: minsAgo(5) } },
+  // Stopped as queue.mjs stop now records it, its park's kind named, and its question since reworded.
+  'P-2': { state: 'parked', lane: 'A', held_by: null, branch: 'fix/P-2', last_round: { stage: '5/9', question: 'stopped', at: minsAgo(5) },
+    park: { question: 'its worker was stopped; it starts again once you let it', kind: 'stopped', since: minsAgo(5) } },
+} });
+{
+  const it = N.collect({ word: 'ds742' }).items.find((i) => i.t.key === 'P-1');
+  t('DS-742 AC2 a stopped ticket is listed held, with start recommended', `${it?.kind} ${it?.need} ${it?.actions.map((a) => a[0]).join()}`, 'held its worker was stopped: let it start start,not-now');
+  const it2 = N.collect({ word: 'ds742' }).items.find((i) => i.t.key === 'P-2');
+  t('DS-895 AC2 a park of kind stopped is listed stopped, offering start, whatever its question says', `${it2?.kind} ${it2?.need} ${it2?.actions.map((a) => a[0]).join()}`, 'held its worker was stopped: let it start start,not-now');
+  const st = N.record({ word: 'ds742', ticket: 'P-1', action: 'start' });
+  const p1 = queueOf('ds742').tickets['P-1'];
+  t('DS-742 AC3 start makes it triaged with its branch and stage kept, so the next pass starts it there', `${st.ok} ${p1.state} ${p1.park} ${p1.branch} ${p1.last_round?.stage}`, 'true triaged null fix/P-1 5/9');
+}
+
+// A batch held as a chain of 30, each ticket behind every one before it as plan-batch holds tickets
+// sharing a file, lists in under a second more than the same 30 tickets unheld. What `needs-you list` runs, in
+// this process, timed against the unheld batch so the many fixture repos above are not counted.
+{
+  const listMs = (tickets) => {
+    put('ds793', { port: 4793, beat: 1, supervised: true, tickets });
+    const start = Date.now();
+    const repos = loadRepos();
+    N.refresh({ word: 'ds793', repos });
+    N.listText(N.collect({ word: 'ds793', repos }));
+    return Date.now() - start;
+  };
+  const flat = { 'H-0': { state: 'running', lane: 'A' } };
+  const chain = { ...flat };
+  for (let i = 1; i <= 30; i++) {
+    flat[`H-${i}`] = { state: 'triaged', lane: 'A' };
+    chain[`H-${i}`] = behind(`H-${i}`, Array.from({ length: i }, (_, j) => `H-${j}`).join('|'));
+  }
+  const unheld = listMs(flat);
+  const held = listMs(chain);
+  t('DS-793 AC3 needs-you list on a batch held as a chain of 30 takes under a second more than unheld', held - unheld < 1000, true);
+}
+
 // Refusals.
-t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'answer', text: 'x' }).ok, false);
-t('an unknown repo exits 11', cli('record', 'zeta', 'Z-1', 'done').code, 11);
+t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'requeue', text: 'try again' }).ok, false);
+t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 11);
+
+// ---- DS-795 AC1: one needs-you listing reads each triage record from disk once, however many step items
+// scan the held tickets and however many triage questions ask for their text.
+{
+  const { createRequire, syncBuiltinESMExports } = await import('node:module');
+  const fsCjs = createRequire(import.meta.url)('node:fs');
+  const realReadFileSync = fsCjs.readFileSync;
+  const reads = new Map();
+  const dir = join('acme__omicron795', 'triage');
+  const tickets = {}, triage = {};
+  for (let i = 1; i <= 4; i++) {
+    tickets[`H-${i}`] = { state: 'parked', lane: 'A', held_by: `OPS-${i}`, held_outside: `OPS-${i}`, park: { question: `held by orchestrator: blocked by OPS-${i}` } };
+    triage[`H-${i}`] = { blockers: [{ key: `OPS-${i}`, category: 'new', type: 'Task', summary: `Step ${i}`, labels: ['ben-input'] }] };
+    tickets[`Q-${i}`] = { state: 'triaged', lane: 'A', open_questions: 1, added_at: minsAgo(60) };
+    triage[`Q-${i}`] = { unknowns: [`Which way for Q-${i}?`] };
+  }
+  put('omicron795', { port: 5795, beat: 1, supervised: true, inputLabels: 'ben-input', tickets, triage });
+  fsCjs.readFileSync = function (p, ...rest) {
+    const s = String(p);
+    if (s.includes(dir)) reads.set(s, (reads.get(s) ?? 0) + 1);
+    return realReadFileSync.call(this, p, ...rest);
+  };
+  syncBuiltinESMExports();
+  let items;
+  try { items = N.collect({ word: 'omicron795' }).items; } finally { fsCjs.readFileSync = realReadFileSync; syncBuiltinESMExports(); }
+  t('DS-795 AC1 the listing has the four step items and the four triage questions',
+    items.map((i) => `${i.t.key} ${i.kind}`).sort().join(), 'Q-1 triage,Q-2 triage,Q-3 triage,Q-4 triage,step:OPS-1 step,step:OPS-2 step,step:OPS-3 step,step:OPS-4 step');
+  t('DS-795 AC1 a triage question still reads its text from the record', items.find((i) => i.t.key === 'Q-2')?.need, 'Which way for Q-2?');
+  t('DS-795 AC1 one needs-you listing reads every triage record', reads.size, 8);
+  t('DS-795 AC1 and reads each from disk once', Math.max(...reads.values()), 1);
+}
+
+// ---- DS-799: a ticket stopped or held outside its batch in repo A whose own PR merged in repo B is done.
+{
+  const { prStatusOf } = await import('../desk/bin/batch-state.mjs');
+  const held = (by) => ({ state: 'parked', lane: 'A', held_by: by, park: { question: `held by orchestrator: blocked by ${by} — starts once their PRs merge` } });
+  put('web799', { port: 5801, beat: 1, supervised: true, pattern: 'S-[0-9]+', tickets: {
+    'S-1': { state: 'done', lane: 'A', result: { pr: 3324 }, merged_at: minsAgo(90) },
+    'S-2': { state: 'done', lane: 'A', result: { pr: 12 }, pr_status: { pr: 12, state: 'OPEN' } },
+    'S-3': { state: 'done', lane: 'A', result: { pr: 3117 }, pr_status: { pr: 3117, state: 'MERGED', merged_at: minsAgo(80) } },
+    'S-6': { state: 'done', lane: 'A', result: { pr: 3330 }, merged_at: minsAgo(90) },
+  } });
+  // issue-<n> keys name a different ticket in each repo, so neither repo's issue-3 is the other's.
+  put('own799', { port: 5802, beat: 1, supervised: true, tickets: { 'issue-3': { state: 'done', lane: 'A', result: { pr: 20 }, merged_at: minsAgo(60) } } });
+  put('mine799', { port: 5803, beat: 1, supervised: true, tickets: { 'issue-3': { state: 'failed', lane: 'A' } } });
+  put('zen799', { port: 5800, beat: 1, supervised: true, project: 'S', pattern: 'S-[0-9]+', tickets: {
+    'S-1': { state: 'failed', lane: 'A' },
+    'S-2': { state: 'failed', lane: 'A' },
+    'S-3': { ...held('S-9'), held_outside: 'S-9', open_questions: 1, outside_blockers: [{ key: 'S-9', category: 'new', assignee: null }] },
+    'S-4': { state: 'failed', lane: 'A' },
+    'S-5': held('S-1'),
+    // Requeued for more work after it merged here, then stopped: repo B's earlier merge is not this round's.
+    'S-6': { state: 'failed', lane: 'A', merged_at: minsAgo(20) },
+  } });
+  // GitHub knows S-4's merged PR in web799 only; no repo's queue records it.
+  const reads = { ...STUB, merged: (slug, key) => (slug === 'acme__web799' && key === 'S-4' ? { pr: 77, mergedAt: minsAgo(30) } : null) };
+  const zen = () => Object.fromEntries(N.collect({ word: 'zen799', reads }).items.map((i) => [i.t.key, i]));
+  const items = zen();
+  const first = (i) => `${i?.kind} | ${i?.actions[0][0]} | ${i?.actions[0][1]}`;
+  t('DS-799 AC1 a stopped ticket whose PR merged in another repo recommends done, naming that PR', first(items['S-1']),
+    'stopped | done | its PR #3324 merged in acme/web799: done records it done here from that PR, and the tickets held behind it can start');
+  t('DS-799 AC1 its other actions stay on offer, none of them recommended', items['S-1']?.actions.slice(1).map((a) => `${a[0]}:${a[1] ?? ''}`).join(), 'requeue:,not-now:');
+  t('DS-799 AC1 a PR found only on GitHub is named the same way', first(items['S-4']),
+    'stopped | done | its PR #77 merged in acme/web799: done records it done here from that PR, and the tickets held behind it can start');
+  t('DS-799 AC3 a ticket held outside its batch whose PR merged in another repo recommends done', `${first(items['S-3'])} | ${items['S-3']?.actions.map((a) => a[0]).join()}`,
+    'held | done | its PR #3117 merged in acme/web799: done records it done here from that PR, and the tickets held behind it can start | done,admit,answer,not-now');
+  t('DS-799 AC4 a stopped ticket whose PR in another repo is unmerged offers no done', items['S-2']?.actions.map((a) => a[0]).includes('done'), false);
+  t('DS-799 AC4 a merge in another repo before this ticket\'s own merge here offers no done', items['S-6']?.actions.map((a) => a[0]).includes('done'), false);
+  const issueReads ={ ...STUB, merged: () => ({ pr: 21, mergedAt: minsAgo(30) }) };
+  const mine = N.collect({ word: 'mine799', reads: issueReads }).items.find((i) => i.t.key === 'issue-3');
+  t('DS-799 AC4 an issue key merged in another repo is that repo\'s own issue, so offers no done', `${mine?.kind} ${mine?.actions.map((a) => a[0]).includes('done')}`, 'stopped false');
+
+  const zq = () => queueOf('zen799').tickets;
+  const d1 = N.record({ word: 'zen799', ticket: 'S-1', action: 'done', reads });
+  const s1 = zq()['S-1'];
+  t('DS-799 AC2 done records it done in repo A with repo B\'s PR', `${d1.ok} ${s1.state} ${s1.result.pr} ${/PR #3324 merged in acme\/web799/.test(s1.result.summary)}`, 'true done 3324 true');
+  t('DS-799 AC2 its PR reads merged, as the pass reads it, so no pass reads #3324 as one of repo A\'s PRs',
+    `${prStatusOf(s1)?.state} ${s1.pr_status.pr === s1.result.pr} ${Date.parse(s1.merged_at) === Date.parse(queueOf('web799').tickets['S-1'].merged_at)}`, 'MERGED true true');
+  t('DS-799 AC2 it is off the list', zen()['S-1'], undefined);
+  const d3 = N.record({ word: 'zen799', ticket: 'S-3', action: 'done', reads });
+  t('DS-799 AC3 done on the held item records it as in AC2', `${d3.ok} ${zq()['S-3'].state} ${zq()['S-3'].result.pr} ${prStatusOf(zq()['S-3'])?.state} ${!!zq()['S-3'].merged_at}`, 'true done 3117 MERGED true');
+  const d4 = N.record({ word: 'zen799', ticket: 'S-4', action: 'done', reads });
+  t('DS-799 AC2 a PR found on GitHub is recorded the same way', `${d4.ok} ${zq()['S-4'].result.pr} ${prStatusOf(zq()['S-4'])?.state}`, 'true 77 MERGED');
+  const d2 = N.record({ word: 'zen799', ticket: 'S-2', action: 'done', reads });
+  t('DS-799 AC4 done on a stopped ticket with no merged PR anywhere is refused, naming its actions', `${d2.ok} ${/done is not an action for a stopped item \(requeue, not-now/.test(d2.line)} ${zq()['S-2'].state}`, 'false true failed');
+}
+
+// ---- an action a session hands the person is recorded with `ask`, and listed until done
+{
+  put('ask811', { port: 4811 });
+  const asks = () => N.collect({ word: 'ask811' }).items.filter((i) => i.kind === 'ask');
+  const a1 = cli('ask', 'ask811', 'File the follow-up issue drafted in the handoff');
+  t('#811 ask records it and says so', `${a1.code} ${a1.out.trim()}`, '0 ask811 ask:1: recorded; /desk-needs-you and desk-q list it until you say done.');
+  here('ask', 'ask811', 'File the follow-up issue drafted in the handoff');
+  here('ask', 'ask811', 'Merge PR #12 once its checks are green');
+  const items = asks();
+  t('#811 a repo with no batch lists each ask once, as its own item', items.map((i) => `${i.t.key}|${i.need}|${i.actions.map((a) => a[0]).join()}`).join(' ; '),
+    'ask:1|File the follow-up issue drafted in the handoff|done,not-now ; ask:2|Merge PR #12 once its checks are green|done,not-now');
+  t('#811 the list shows it', here('list', 'ask811').out.split('\n').filter((l) => l.startsWith('ask811 ask:')).length, 2);
+  const standing = loadRepos(Date.now(), 'ask811').find((r) => r.slug === 'acme__ask811' && r.batch == null);
+  t('#811 desk-q counts both', N.needsCount(standing).shown, 2);
+  const askScreen = strip(repoScreen(standing));
+  t('DS-934 with no batch, the repo Queue has a row for each ask, not "Nothing to show"',
+    `${/Needs you · 2\b/.test(askScreen)} ${/ask:1 +◆ needs you +File the follow-up issue/.test(askScreen)} ${/ask:2 +◆ needs you +Merge PR #12/.test(askScreen)} ${askScreen.includes('Nothing to show')}`, 'true true true false');
+  const { shownRepos } = await import('../desk/bin/desk-q.mjs');
+  t('#811 desk-q shows a repo whose only items are asks', shownRepos(loadRepos(Date.now()), false).some((r) => r.slug === 'acme__ask811'), true);
+  t('#811 left counts them', here('left', 'ask811').out.split('\n')[0], 'desk-q counts 2 items needing you in ask811.');
+  const off = N.record({ word: 'ask811', ticket: 'ask:2', action: 'not-now' });
+  t('#811 not-now puts one off', `${off.ok} ${asks().map((i) => i.t.key).join()}`, 'true ask:1');
+  const done = N.record({ word: 'ask811', ticket: 'ask:1', action: 'done' });
+  t('#811 done takes it off the list', `${done.ok} ${done.line} ${asks().length}`, 'true ask811 ask:1: done, so it is off your list. 0');
+  t('#811 an empty ask is refused', cli('ask', 'ask811', '  ').code, 11);
+}
+
+// ---- #911: a session-run batch whose passes stopped, with work autopilot could move, is one item
+{
+  put('stall911', { port: 4911, beat: 90, tickets: { 'S-1': { state: 'triaged', lane: 'A' }, 'S-2': { state: 'running', lane: 'A', stage: '3/9' } } });
+  put('stallsup911', { port: 4912, beat: 90, supervised: true, tickets: { 'U-1': { state: 'triaged', lane: 'A' } } });
+  put('stallpark911', { port: 4913, beat: 90, tickets: { 'P-1': parked('A', 60, 'Which one?') } });
+  put('stalllive911', { port: 4914, beat: 1, tickets: { 'L-1': { state: 'triaged', lane: 'A' } } });
+  const beatAt = (name, m) => writeFileSync(join(env.HOME, '.desk-autopilot', `acme__${name}`, 'orchestrators', 'q.json'),
+    JSON.stringify({ queue: join(env.DESK_HOME, 'repos', `acme__${name}`, 'queue.json'), batch: `${name}-batch`, pid: 1, at: minsAgo(m) }));
+  const stalled = (w) => N.collect({ word: w }).items.filter((i) => i.kind === 'stalled');
+  const s = stalled('stall911');
+  t('#911 one item for the batch, naming its last pass and how to resume it', s.length === 1 && s[0].t.key === 'stalled'
+    && /^passes stopped in stall911, a batch a session runs, so nothing new starts or merges there: its last pass ran at \d{4}-\d\d-\d\d \d\d:\d\d UTC\. The session running it looks stalled: resume it, or run \/desk-autopilot in stall911$/.test(s[0].need), true);
+  t('#911 its note says how long, and that its running worker carries on', s[0]?.note, 'Passes stopped 1h ago. Running workers carry on.');
+  t('#911 it offers done and not-now', s[0]?.actions.map((a) => a[0]).join(), 'done,not-now');
+  const standing = () => loadRepos(Date.now(), 'stall911').find((r) => r.slug === 'acme__stall911' && r.batch == null);
+  t('#911 desk-q counts it', N.needsCount(standing()).shown, N.collect({ word: 'stall911' }).items.length);
+  t('#911 a supervised batch is not one: its supervisor starts passes', stalled('stallsup911').length, 0);
+  t('#911 nor a batch whose tickets all wait on the person', stalled('stallpark911').length, 0);
+  t('#911 nor a live one', stalled('stalllive911').length, 0);
+  const done = N.record({ word: 'stall911', ticket: 'stalled', action: 'done' });
+  t('#911 done records nothing and says what clears it', `${done.ok} ${done.line} ${stalled('stall911').length}`, 'true stall911 stalled: noted: this item goes once a pass runs again; done records nothing. 1');
+  const off = N.record({ word: 'stall911', ticket: 'stalled', action: 'not-now' });
+  t('#911 not-now puts it off', `${off.ok} ${stalled('stall911').length}`, 'true 0');
+  t('#911 put off where it is listed, it is put off in every scope: the whole list and desk-q\'s count', `${N.collect().items.some((i) => i.kind === 'stalled' && i.r.slug === 'acme__stall911')} ${N.needsCount(standing()).putOff}`, 'false 1');
+  beatAt('stall911', 30);
+  t('#911 a later stall, after a pass that ran, brings it back', stalled('stall911').length, 1);
+  beatAt('stall911', 0);
+  t('#911 the next pass drops it', stalled('stall911').length, 0);
+}
+
+// ---- DS-839: a park on a write awaiting approval shows its exact text under the question.
+{
+  const body = 'Fixed in PR #12: the park file carries the text.\n\n* AC1 met\n(AP-1/desk-ticket)';
+  const question = 'JIRA COMMENT on AP-1 awaiting approval. Not reached: the Jira comment';
+  put('approve839', { port: 4839, beat: 1, supervised: true, tickets: {
+    'AP-1': { state: 'parked', lane: 'A', park: { question, since: minsAgo(5), approve: { kind: 'jira-comment', target: 'AP-1', body } } },
+    'AP-2': { state: 'parked', lane: 'A', park: { question: 'which colour?', since: minsAgo(5) } },
+  } });
+  const list = N.listText(N.collect({ word: 'approve839' })).split('\n');
+  const at = list.findIndex((l) => l.startsWith('approve839 AP-1 '));
+  t('DS-839 AC2 the question comes first, then the kind and target', list[at + 1], '--- AP-1 awaiting approval: jira-comment on AP-1, the exact text ---');
+  t('DS-839 AC2 then the body, verbatim', list.slice(at + 2, at + 2 + body.split('\n').length).join('\n'), body);
+  t('DS-839 AC2 and an end line', list[at + 2 + body.split('\n').length], '--- end of AP-1\'s text awaiting approval ---');
+  const other = list.findIndex((l) => l.startsWith('approve839 AP-2 '));
+  t('DS-839 a park with nothing to approve has no block under it', /awaiting approval/.test(list[other + 1] ?? ''), false);
+}
+
+// ---- DS-925: an open ci-main-red issue assigned to the person is one item, read through gh on listing
+{
+  put('red925', { port: 4925, beat: 1, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+  const issue = { number: 12, title: 'main is red: a CI lane on main is failing, cancelled or stale', url: 'https://github.com/acme/red925/issues/12', createdAt: minsAgo(30) };
+  const reads = { ...STUB, ciRed: (r) => (r.slug === 'acme__red925' ? [issue] : []) };
+  const reds = () => N.collect({ word: 'red925', reads }).items.filter((i) => i.kind === 'ci-red');
+  const s = reds();
+  t('DS-925 one item an issue, on the standing batch', s.map((i) => `${i.t.key} ${i.r.batch ?? 'standing'}`).join(), 'ci-red:12 standing');
+  t('DS-925 its need names the issue and what to do', s[0]?.need, 'main is red in acme/red925: issue #12 (main is red: a CI lane on main is failing, cancelled or stale, https://github.com/acme/red925/issues/12) says which CI lane on main failed, was cancelled or went stale. Fix it on main, or rerun a lane that only flaked');
+  t('DS-925 it offers done and not-now', s[0]?.actions.map((a) => a[0]).join(), 'done,not-now');
+  writeFileSync(GH_LOG, '');
+  N.needsCount(loadRepos(Date.now(), 'red925').find((r) => r.slug === 'acme__red925' && r.batch == null));
+  t('DS-925 desk-q\'s count reads no gh', readFileSync(GH_LOG, 'utf8').includes('issue list'), false);
+  writeFileSync(GH_LOG, '');
+  N.collect({ word: 'red925', reads: { ...STUB, ciRed: N.READS.ciRed } });
+  t('DS-925 listing asks gh for the open issues assigned to the person', readFileSync(GH_LOG, 'utf8').includes('issue list --repo acme/red925 --label ci-main-red --state open --assignee @me'), true);
+  put('quiet925', { port: 4926 });
+  const quiet = { ...STUB, ciRed: (r) => (r.slug === 'acme__quiet925' ? [{ ...issue, url: 'https://github.com/acme/quiet925/issues/12' }] : []) };
+  t('DS-925 the whole list reads a quiet repo the home screen does not show', N.collect({ reads: quiet }).items.filter((i) => i.kind === 'ci-red').map((i) => `${i.r.slug} ${i.t.key}`).join(), 'acme__quiet925 ci-red:12');
+  t('DS-925 no read, no item', N.collect({ word: 'red925', reads: null }).items.filter((i) => i.kind === 'ci-red').length, 0);
+  const done = N.record({ word: 'red925', ticket: 'ci-red:12', action: 'done', reads });
+  t('DS-925 done records nothing and says what clears it', `${done.ok} ${done.line} ${reds().length}`, 'true red925 ci-red:12: noted: this item goes once the alarm closes the issue, when every CI lane on main is green and fresh; done records nothing. 1');
+  const off = N.record({ word: 'red925', ticket: 'ci-red:12', action: 'not-now', reads });
+  t('DS-925 not-now puts it off', `${off.ok} ${reds().length}`, 'true 0');
+}
+
+// ---- #756: a base red under the batch's PRs is one item, naming the checks, the PRs held and the last merges
+{
+  const hold = (checks, since, held = true) => ({ class: 'base red', head: 'h', merge_base: 'm', checks, cleared: [], since, held });
+  const st = (pr, red, o = {}) => ({ pr, state: 'OPEN', head: 'h', checks: red.map((name) => ({ name, status: 'completed', conclusion: 'failure' })), ...o });
+  const ticket = (pr, base_red, o = {}) => ({ state: 'done', result: { pr }, base_red, pr_status: st(pr, base_red?.checks ?? []), ...o });
+  put('red756', { port: 4756, beat: 1, tickets: {
+    'B-1': ticket(31, hold(['tests'], minsAgo(40))),
+    'B-2': ticket(32, hold(['lint', 'tests'], minsAgo(20))),
+    // Held on two checks, one of them green since: only the red one is named.
+    'B-3': ticket(37, hold(['tests', 'typecheck'], minsAgo(10)), { pr_status: st(37, ['tests']) }),
+    // Two workflows' checks of one name, the later run green: the other is still red, so it is still held.
+    'B-4': ticket(38, hold(['e2e'], minsAgo(10)), { pr_status: st(38, [], { checks: [{ name: 'e2e', status: 'completed', conclusion: 'failure', runId: '5' }, { name: 'e2e', status: 'completed', conclusion: 'success', runId: '9' }] }) }),
+    'M-1': { state: 'done', result: { pr: 29 }, merged_at: '2026-11-20T17:58:00.000Z' },
+    'M-2': { state: 'done', result: { pr: 30 }, merged_at: '2026-11-20T18:10:00.000Z', base_red: hold(['tests'], minsAgo(90)) },
+    // Records that are not holds now: a PR closed unmerged, one green at the head the hold read, one at
+    // a new head, and one taking a fix try beside its base red check.
+    'X-1': ticket(33, hold(['tests'], minsAgo(120)), { pr_status: st(33, ['tests'], { state: 'CLOSED' }) }),
+    'X-2': ticket(34, hold(['tests'], minsAgo(120)), { pr_status: st(34, []) }),
+    'X-3': ticket(35, hold(['tests'], minsAgo(120)), { pr_status: st(35, ['tests'], { head: 'h2' }) }),
+    'X-4': ticket(36, hold(['tests'], minsAgo(120), false)),
+  } });
+  const reds = () => N.collect({ word: 'red756' }).items.filter((i) => i.kind === 'base-red');
+  const s = reds();
+  t('#756 one item for the base, on the standing batch', s.map((i) => `${i.t.key} ${i.r.batch ?? 'standing'}`).join(), 'base-red:default standing');
+  t('#756 its need names the checks, the open PRs held and the last merges desk made, newest first', s[0]?.need,
+    `the default branch is red on "e2e", "lint" and "tests", so #31 (B-1), #32 (B-2), #37 (B-3) and #38 (B-4) hold with no fix try and no worker repairs the default branch. The last merges desk made: #30 (M-2) on ${dayAndTime('2026-11-20T18:10:00.000Z')} and #29 (M-1) on ${dayAndTime('2026-11-20T17:58:00.000Z')}. Fix it on the default branch, or revert the merge that turned it red, then say done`);
+  t('#756 it is aged from the earliest open hold', s[0]?.since, Date.parse(minsAgo(40)));
+  t('#756 desk-q\'s count lists it', N.needsCount(loadRepos(Date.now(), 'red756').find((r) => r.slug === 'acme__red756' && r.batch == null)).items.some((i) => i.item.kind === 'base-red'), true);
+  const done = N.record({ word: 'red756', ticket: 'base-red:default', action: 'done' });
+  t('#756 done records nothing and says what clears it', `${done.ok} ${reds().length}`, 'true 1');
+  const off = N.record({ word: 'red756', ticket: 'base-red:default', action: 'not-now' });
+  t('#756 not-now puts it off', `${off.ok} ${reds().length}`, 'true 0');
+  put('green756', { port: 4757, beat: 1, tickets: { 'G-1': { state: 'done', result: { pr: 40 } }, 'G-2': { state: 'done', result: { pr: 41 }, merged_at: '2026-11-20T18:00:00.000Z', base_red: hold(['tests'], minsAgo(5)) },
+    'G-3': ticket(42, hold(['tests'], minsAgo(5)), { pr_status: st(42, []) }) } });
+  t('#756 no PR held now, no item: a merged one, or one green at the head its hold read', N.collect({ word: 'green756' }).items.filter((i) => i.kind === 'base-red').length, 0);
+}
+
+// ---- DS-959 AC9: the end of the lease trial is one machine item, whose answer sets lease-kinds
+{
+  const DAY = 86_400_000;
+  const dir = join(T, 'leases-trial');
+  mkdirSync(dir, { recursive: true });
+  const machine = join(T, 'machine-trial.md');
+  writeFileSync(machine, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
+  const was = { dir: process.env.DESK_LEASE_DIR, machine: process.env.DESK_MACHINE };
+  Object.assign(process.env, { DESK_LEASE_DIR: dir, DESK_MACHINE: machine });
+  // The trial's clock is the latest local noon, so each clash an hour or two after its day's start
+  // stays on that day whatever time the suite runs; never ahead of the real clock, which list reads.
+  const noon = new Date(); noon.setHours(12, 0, 0, 0);
+  if (noon.getTime() > Date.now()) noon.setDate(noon.getDate() - 1);
+  const now = noon.getTime(), start = now - 8 * DAY;
+  const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const day = (t) => { const d = new Date(t); return { dow: DOW[d.getDay()], d: d.getDate(), m: MON[d.getMonth()] }; };
+  const [s0, s7] = [day(start), day(start + 7 * DAY)];
+  const span = s0.m === s7.m ? `${s0.d} to ${s7.d} ${s7.m}` : `${s0.d} ${s0.m} to ${s7.d} ${s7.m}`;
+  const on = (n) => `${day(start + n * DAY + 3600_000).dow} ${day(start + n * DAY + 3600_000).d}`;
+  const refuse = (kind, t) => JSON.stringify({ at: new Date(t).toISOString(), event: 'would-refuse', kind, key: 'suite', units: 2, label: 'a', holders: [{ kind, label: 'b' }] });
+  const log = (...extra) => writeFileSync(join(dir, 'leases.log.jsonl'), `${[JSON.stringify({ at: new Date(start).toISOString(), event: 'grant', kind: 'port' }),
+    refuse('mem', start + 3 * DAY + 3600_000), refuse('mem', start + 5 * DAY + 3600_000), refuse('mem', start + 5 * DAY + 7200_000), ...extra].join('\n')}\n`);
+  log();
+  const trialItems = (at = now) => NY.collect({ now: at, reads: null }).items.filter((i) => i.kind === 'lease-trial');
+  t('DS-959 AC9 before 7 days have passed there is no item', trialItems(start + 6 * DAY).length, 0);
+  const items = trialItems();
+  const i = items[0];
+  t('DS-959 AC9 7 days in with every kind on trial: one machine item, listed under the first batch the home screen shows',
+    `${items.length} ${i?.repoLevel} ${i?.r.slug === NY.leaseTrialHome(NY.collect({ now, reads: null }).scope)}`, '1 true true');
+  t('DS-959 AC9 it asks whether to turn the kinds on, for the trial\'s dates', i?.need,
+    `Leases finished their 7-day trial (${span}). Turn them on, so a second session is turned away from a port, test slot, build or merge someone else holds, instead of let through?`);
+  t('DS-959 AC9 it counts each kind\'s clashes over the trial, and says how a kind goes back on trial', i?.note,
+    `Clashes caught: port 0, slot 0, preview-build 0, merge 0, mem 3 (${on(3)} and ${on(5)}; desk-env lease list --clashes --days 8 shows them). Any kind goes back to trial with one command: desk-env machine set lease-kinds=port=shadow,slot=on,preview-build=on,merge=on,mem=shadow`);
+  t('DS-959 AC9 the recommended answer turns on the kinds with no clashes; the others turn all on or keep the trial',
+    i?.actions.map(([a, why, note]) => `${a}:${why ? 'recommended' : 'other'}`).join(' '), 'on-clean:recommended on-all:other keep:other');
+  t('DS-959 AC9 the recommendation names what stays on trial', i?.actions[0][1],
+    'turn on the 4 with no clashes: nothing they would refuse happened all week, so turning them on blocks nothing that works today. mem stays on trial while its 3 clashes are looked at');
+  const r = N.record({ word: i.r.word, ticket: 'lease-trial', action: 'on-clean', now });
+  const row = readFileSync(machine, 'utf8').split('\n').find((l) => l.includes('lease-kinds')) ?? '';
+  t('DS-959 AC9 answering sets lease-kinds in the machine profile', `${r.ok} ${row.includes('`port=on,slot=on,preview-build=on,merge=on,mem=shadow`')}`, 'true true');
+  t('DS-959 AC9 and says what stays on trial', r.line.replace(/^\S+ lease-trial: /, ''),
+    'lease-kinds is now port=on,slot=on,preview-build=on,merge=on,mem=shadow; mem stays on trial for 7 more days. To put one back on trial: desk-env machine set lease-kinds=port=shadow,slot=on,preview-build=on,merge=on,mem=shadow');
+  const restarted = readFileSync(join(dir, 'leases.log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).at(-1);
+  t('DS-959 AC9 the answer restarts the trial for the kind left on it, so no item until 7 more days pass',
+    `${restarted.event} ${trialItems(Date.parse(restarted.at) + DAY).length} ${trialItems(Date.parse(restarted.at) + 7 * DAY + 1).length}`, 'trial 0 1');
+  // Every kind clashed: keep is recommended, and the command reads as one for after a turn-on.
+  log(...['port', 'slot', 'preview-build', 'merge'].map((k) => refuse(k, start + DAY)));
+  const all = trialItems()[0];
+  t('DS-959 AC9 with every kind clashed, keep is recommended and the command is for after turning them on',
+    `${all?.actions.map(([a, why]) => `${a}:${why ? 'recommended' : 'other'}`).join(' ')} | ${/If you turn them on, any kind goes back to trial with one command: desk-env machine set lease-kinds=port=shadow,slot=on,preview-build=on,merge=on,mem=on$/.test(all?.note ?? '')}`,
+    'keep:recommended on-all:other | true');
+  log();
+  const listed = () => /\blease-trial\b/.test(cli('list', '--no-settle').out);
+  t('DS-959 AC9 the list command shows it while mem is on trial', listed(), true);
+  writeFileSync(machine, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `port=on slot=on preview-build=on merge=on mem=on` | x |\n');
+  // The profile is read once a process, so a fresh one reads the row just written.
+  t('DS-959 AC9 with no kind in shadow there is no item', listed(), false);
+  Object.assign(process.env, { DESK_LEASE_DIR: was.dir ?? '', DESK_MACHINE: was.machine });
+  if (was.dir == null) delete process.env.DESK_LEASE_DIR;
+}
+
+// ---- DS-836: a PR a desk session opened that no ticket owns is one item, listed once for its repo
+{
+  const rec = { pr: 77, title: 'fix(tests): steady the flaky upload spec', branch: 'fix/flaky-upload', since: minsAgo(90) };
+  put('stray836', { port: 4836, beat: 1, batch: { ticketless_prs: [rec] }, tickets: { 'S-1': { state: 'triaged', lane: 'A' } } });
+  // A named batch of the same repo that records the same PR: still one item, on the standing batch.
+  const nq = join(env.DESK_HOME, 'repos', 'acme__stray836', 'batches', 'N-1', 'queue.json');
+  mkdirSync(dirname(nq), { recursive: true });
+  mkdirSync(join(env.HOME, '.desk-autopilot', 'acme__stray836', 'batches', 'N-1'), { recursive: true });
+  writeFileSync(nq, JSON.stringify({ version: 1, batch: 'n1-batch', concurrency: 1, ticketless_prs: [rec], tickets: {} }));
+  const strays = () => N.collect({ word: 'stray836' }).items.filter((i) => i.kind === 'ticketless');
+  const s = strays();
+  t('DS-836 AC1/AC5 one item a PR, on the standing batch, however many batches record it', s.map((i) => `${i.t.key} ${i.r.batch ?? 'standing'}`).join(), 'ticketless:77 standing');
+  t('DS-836 AC1 its need names the PR and that no ticket owns it, so nothing will merge it', s[0]?.need,
+    'PR #77 ("fix(tests): steady the flaky upload spec") from fix/flaky-upload into main was opened by a desk session, and no ticket owns it, so nothing will merge it: review it, then merge or close it yourself');
+  t('DS-836 AC1 it is aged from when the PR was opened, and offers done and not-now', `${s[0]?.since === Date.parse(rec.since)} ${s[0]?.actions.map((a) => a[0]).join()}`, 'true done,not-now');
+  t('DS-836 AC1 desk-q\'s count lists it once', N.needsCount(loadRepos(Date.now(), 'stray836').find((r) => r.slug === 'acme__stray836' && r.batch == null)).items.filter((i) => i.item.kind === 'ticketless').length, 1);
+  const done = N.record({ word: 'stray836', ticket: 'ticketless:77', action: 'done' });
+  t('DS-836 done records nothing and says what clears it', `${done.ok} ${done.line} ${strays().length}`, 'true stray836 ticketless:77: noted: the next pass that finds PR #77 merged or closed drops this item; done records nothing. 1');
+  const off = N.record({ word: 'stray836', ticket: 'ticketless:77', action: 'not-now' });
+  t('DS-836 not-now puts it off', `${off.ok} ${strays().length}`, 'true 0');
+  put('gone836', { port: 4837, beat: 1, batch: { ticketless_prs: null }, tickets: { 'G-1': { state: 'triaged', lane: 'A' } } });
+  t('DS-836 AC2 once the pass drops the record, no item', N.collect({ word: 'gone836' }).items.filter((i) => i.kind === 'ticketless').length, 0);
+}
+
+// ---- DS-929 AC1: every in-process collect and refresh above ran on injected repos and reads, and started
+// no gh, git, desk-jira or launchctl process.
+t('DS-929 AC1 no collect or refresh on the stubs started a gh, git, desk-jira or launchctl process', startedOnStubs.join(' | '), '');
+t('DS-929 AC2 every CLI command still has a run end to end', [...cliRan].sort().join(), 'ask,left,list,record');
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');
 process.exit(fails ? 1 : 0);

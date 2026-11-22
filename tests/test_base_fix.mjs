@@ -1,6 +1,6 @@
 // suite: base conflict fix (a batch base in conflict with the default branch goes to a worker, twice)
-import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from '../desk/bin/base-fix.mjs';
-import { epicDue } from '../desk/bin/batch-state.mjs';
+import { baseFixCall, baseFixOutcome, lockWaitPark, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from '../desk/bin/base-fix.mjs';
+import { epicDue, epicCarry } from '../desk/bin/batch-state.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -8,6 +8,7 @@ const H1 = '1'.repeat(40);
 const H2 = '2'.repeat(40);
 const M = 'm'.repeat(40);
 const c = (o = {}) => ({ head: H1, source: M, files: ['a.txt'], perm: 'yes', alive: false, ...o });
+const ctxOf = (fix) => ({ key: 'base-feat-x', base: 'feat/x', source: 'main', fix });
 
 // AC1: a first conflict starts try 1.
 const first = baseFixCall(null, c());
@@ -40,6 +41,21 @@ t('outcome: a done', baseFixOutcome([['AUTOPILOT_DONE', 'pr=none jira=none']]), 
 t('outcome: neither', baseFixOutcome([]), 'ended with no marker');
 t('outcome: a park answered, then a done, is finished', baseFixOutcome([['AUTOPILOT_PARK', 'which side?'], ['AUTOPILOT_DONE', 'pr=none jira=none']]), 'finished: pr=none jira=none');
 t('outcome: a done, then a park, is parked', baseFixOutcome([['AUTOPILOT_DONE', 'pr=none'], ['AUTOPILOT_PARK', 'push refused']]), 'parked: push refused');
+
+// A park made only on the busy test lock is said with its own marker, and spends no try.
+t('DS-663 lock wait: the marker before the last park', lockWaitPark([['AUTOPILOT_PARK_WAIT', 'test-lock'], ['AUTOPILOT_PARK', 'lock busy']]), true);
+t('DS-663 lock wait negative: a park with no marker', lockWaitPark([['AUTOPILOT_PARK', 'which side?']]), false);
+t('DS-663 lock wait negative: the marker before an earlier park only', lockWaitPark([['AUTOPILOT_PARK_WAIT', 'test-lock'], ['AUTOPILOT_PARK', 'lock busy'], ['AUTOPILOT_PARK', 'which side?']]), false);
+t('DS-663 lock wait negative: a done after it', lockWaitPark([['AUTOPILOT_PARK_WAIT', 'test-lock'], ['AUTOPILOT_PARK', 'lock busy'], ['AUTOPILOT_DONE', 'pr=none']]), false);
+t('DS-663 lock wait negative: another wait', lockWaitPark([['AUTOPILOT_PARK_WAIT', 'a person'], ['AUTOPILOT_PARK', 'x']]), false);
+const waited = { tries: [{ try: 1, head: H1, lock_wait: true, outcome: 'parked: lock busy' }], running: null };
+const again = baseFixCall(waited, c());
+t('DS-663 AC4 a try that waited only on the test lock spends none: try 1 again at the same head', `${again.call} ${again.fix?.try}`, 'spawn 1');
+t('DS-663 AC4 negative: the try after it, at the same head, is spent as before', baseFixCall({ tries: [...waited.tries, { try: 1, head: H1, outcome: 'parked: x' }], running: null }, c()).call, 'stuck');
+const fromCtx = { key: 'base-feat-x', base: 'feat/x', source: 'main', fix: { ...first.fix, from: { try: 1, ref: 'refs/desk/base-fix/base-feat-x/1', sha: H2 } } };
+t('DS-663 AC2 a try from a kept merge is briefed on it', baseFixBrief(fromCtx).includes(`HEAD is already ${H2.slice(0, 12)}, the merge of origin/main into feat/x that try 1 committed and did not push, kept on refs/desk/base-fix/base-feat-x/1`), true);
+t('DS-663 AC2 and its task does not merge again', baseFixTask(fromCtx).includes('carry on from your HEAD') && !baseFixTask(fromCtx).includes('then merge origin/main'), true);
+t('DS-663 both tasks name the lock-wait marker', [baseFixTask(ctxOf(first.fix)), baseFixTask(ctxOf({ ...first.fix, check: { command: 'x', output: 'y' } }))].every((s) => s.includes('AUTOPILOT_PARK_WAIT: test-lock on the line before your AUTOPILOT_PARK')), true);
 
 // A worker that may not push the base could only park: without §3 batch-base-push no try starts.
 const noPush = baseFixCall(null, c({ push: { perm: 'ask', key: 'batch-base-push', ok: false } }));
@@ -109,6 +125,42 @@ t('DS-508 AC1 feature mode is the base gate\'s, not this',epicDue(eq({ feature: 
 t('DS-508 AC1 no epic: not an epic batch', epicDue(eq({ epic: null })), false);
 t('DS-508 AC6 merged epic PR: not due', epicDue(eq({ promotion: { pr: 9, merged_at: '2026-11-07T00:00:00Z' } })), false);
 t('DS-508 AC6 a child merged after it: due again', epicDue(eq({ promotion: { pr: 9, merged_at: '2026-11-05T00:00:00Z' } })), true);
+// DS-784: the next epic PR keeps every earlier merge, through a retry that failed to open it too.
+t('DS-784 no epic PR merged yet: nothing carried', JSON.stringify(epicCarry({ pr: null, why: 'x' })), '{}');
+const carried = epicCarry({ pr: 9, merged_at: '2026-11-07T00:00:00Z' });
+t('DS-784 a merged epic PR is carried as since and in merged', JSON.stringify(carried), '{"since":"2026-11-07T00:00:00Z","merged":[{"pr":9,"merged_at":"2026-11-07T00:00:00Z"}]}');
+t('DS-784 a failed reopen\'s record keeps both for the retry', JSON.stringify(epicCarry({ ...carried, pr: null, why: 'refused' })), JSON.stringify(carried));
+t('DS-784 a second merge adds to the first', epicCarry({ ...carried, pr: 12, merged_at: '2026-11-09T00:00:00Z' }).merged.map((m) => m.pr).join(), '9,12');
 t('DS-508 the review task posts the review and never undrafts or merges', etask.includes('Post the final review on PR #300 at its head') && etask.includes('Never mark the PR ready, merge it'), true);
+
+const pv = { pr: 400, head: H1, failing: ['flows-image', 'portal (1/3)'] };
+const p1 = promotionChecksCall(null, pv, { alive: false });
+t('DS-786 AC1 a red promotion PR starts check try 1, naming its checks', `${p1.call} ${p1.fix.kind} ${p1.fix.try} of ${p1.fix.of} #${p1.fix.pr} ${p1.fix.failing.join('|')}`, `spawn checks 1 of ${FIX_TRIES_MAX} #400 flows-image|portal (1/3)`);
+const checking = { tries: [{ kind: 'checks', try: 1, head: H1, pr: 400 }], running: 'sid-c' };
+t('DS-786 AC1 a live check try is waited on', promotionChecksCall(checking, pv, { alive: true }).call, 'wait');
+const checked = { tries: [{ kind: 'checks', try: 1, head: H1, pr: 400, outcome: 'parked: the Flows image is missing' }], running: null };
+const ps1 = promotionChecksCall(checked, pv, { alive: false });
+t('DS-786 AC2 a try already made at this head goes to the person, naming the checks and the last try', `${ps1.call} ${ps1.tried}: ${ps1.why}`, `stuck 1: still failing flows-image, portal (1/3) at ${H1.slice(0, 12)} after 1 check try; the last try parked: the Flows image is missing`);
+t('DS-786 AC1 a head the try moved gets the next try', promotionChecksCall(checked, { ...pv, head: H2 }, { alive: false }).fix?.try, 2);
+const checkedTwice = { tries: [{ kind: 'checks', try: 1, head: H1, pr: 400 }, { kind: 'checks', try: 2, head: H2, pr: 400 }], running: null };
+t('DS-786 AC2 after the last try, the person', promotionChecksCall(checkedTwice, { ...pv, head: '3'.repeat(40) }, { alive: false }).call, 'stuck');
+t('DS-786 AC1 the next promotion PR starts its own tries', promotionChecksCall(checkedTwice, { ...pv, pr: 401 }, { alive: false }).fix?.try, 1);
+t('DS-786 negative: conflict tries do not count check tries', baseFixCall(checkedTwice, c()).fix?.try, 1);
+t('DS-786 negative: review tries do not count check tries', epicReviewCall(checkedTwice, { pr: 400, head: H1 }, { alive: false }).fix?.try, 1);
+t('DS-786 negative: check tries do not count review tries', promotionChecksCall(twice, { ...pv, pr: 300 }, { alive: false }).fix?.try, 1);
+t('DS-786 mergeTry: only a try with no kind merges the default branch in', [{}, { kind: 'review' }, { kind: 'checks' }].map(mergeTry).join(), 'true,false,false');
+t('DS-786 cleanedTry: a merge try and a check try leave nothing in the base worktree, a review try is left', [{}, { kind: 'review' }, { kind: 'checks' }].map(cleanedTry).join(), 'true,false,true');
+const otherLive = (rec) => ({ tries: [...rec.tries, { try: 1, head: H2, source: H1 }], running: 'sid-m' });
+t('DS-786 AC2 a spent PR stays the person\'s while a conflict fix worker holds the worktree', promotionChecksCall(otherLive(checked), pv, { alive: true }).call, 'stuck');
+t('DS-786 AC1 negative: a PR with tries left waits on a conflict fix worker', promotionChecksCall(otherLive({ tries: [] }), pv, { alive: true }).call, 'wait');
+const promoNoPush = promotionChecksCall(null, pv, { alive: false, push: { ok: false, perm: 'no', key: 'batch-base-push' } });
+t('DS-786 AC2 without the base push grant no try starts: the person, told why', `${promoNoPush.call} ${promoNoPush.tried}: ${promoNoPush.why}`, 'person 0: flows-image, portal (1/3) fail, and config §3 batch-base-push is "no", so no worker may push a fix to the base');
+t('DS-786 AC1 with the grant a try starts', promotionChecksCall(null, pv, { alive: false, push: { ok: true, perm: 'yes', key: 'batch-base-push' } }).call, 'spawn');
+const pctx = { key: 'base-feat-x', base: 'feat/x', source: 'main', fix: p1.fix };
+t('DS-786 the check ticket names the PR and its failing checks', promotionChecksTicket(pctx).includes(`At its head ${H1.slice(0, 12)} these checks fail: flows-image, portal (1/3).`), true);
+t('DS-786 the check briefing has its section', promotionChecksBrief(pctx).startsWith('## Promotion PR check try 1 of 2: #400'), true);
+const ptask = promotionChecksTask(pctx);
+t('DS-786 the check task pushes HEAD to the base from its detached worktree', ptask.includes('push with git push origin HEAD:refs/heads/feat/x.') && ptask.includes('on a detached HEAD at origin/feat/x'), true);
+t('DS-786 the check task parks on a check no change on the base clears, and never undrafts or merges', ptask.includes('push nothing for it and park naming the check') && ptask.includes('Never mark the PR ready, merge it'), true);
 
 process.exit(fails ? 1 : 0);

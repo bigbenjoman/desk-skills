@@ -3,19 +3,19 @@
 // records, the start parsed from `claude --cloud`, a real start through `script` with no terminal of
 // its own (a fake claude that prints the recording, and one that refuses the way --print does), the
 // PR a session opened, and the batch report's cloud row.
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from '../desk/bin/cloud-worker.mjs';
-import { costTable, ticketCost } from '../desk/bin/worker-cost.mjs';
+import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'cloud');
 const fixture = (f) => readFileSync(join(FIX, f), 'utf8');
-const S = mkdtempSync(join(tmpdir(), 'desk-cloud-'));
+const S = scratch('desk-cloud-');
 
 // ---- placement (AC3) --------------------------------------------------------
 const rec = (o) => ({ ticket: 'K-1', lane: 'A', renders: false, needs_db: false, needs_local: null, ...o });
@@ -38,12 +38,17 @@ t('DS-450 AC5 at local the lever gives no reason to state', leverOnAt('local'), 
 // ---- the maintenance window counts only workers on this computer --------------
 t('a cloud session is not running here', runningHere({ state: 'running', location: 'cloud' }), false);
 t('a local worker is', runningHere({ state: 'running', location: null }), true);
+t('a review try on a cloud ticket\'s PR is', runningHere({ state: 'running', location: 'cloud', result: { pr: 9 }, fix: { kind: 'rereview' } }), true);
+t('a fix try on a cloud ticket\'s PR is', runningHere({ state: 'running', location: 'cloud', result: { pr: 9 }, fix: { kind: 'review', try: 1, of: 2 } }), true);
+t('and so is that worker as its spawn leaves it, its result cleared', runningHere({ state: 'running', location: 'cloud', cloud: { started: 'a', pr_at: 'b' }, result: null, fix: { kind: 'rereview', finished: 'x' } }), true);
 
 // ---- the prompt carries the ticket (AC2) ------------------------------------
 const prompt = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'feat/K-1-x', text: 'Fix the widget.\n\nAC1: it works', tests: ['bash tests/run.sh'] });
 t('AC2 the prompt carries the ticket text', prompt.includes('AC1: it works'), true);
 t('AC2 and the branch to push and the PR to open', prompt.includes('branch named exactly `feat/K-1-x`, cut from `main`') && prompt.includes('with K-1 in its title'), true);
 t('AC2 and the repo\'s test command', prompt.includes('Run `bash tests/run.sh` before you push'), true);
+t('before it pushes, it reads where each server-set value its change branches on is set, and names a source it cannot read as a premise',
+  ['read where that value is set', 'every value it can set', 'as a premise'].every((x) => prompt.includes(x)) && prompt.indexOf('read where that value is set') < prompt.indexOf('and push it to origin'), true);
 
 // ---- the start (AC2, AC4) ---------------------------------------------------
 const started = parseCloudStart(fixture('created.txt'));
@@ -103,6 +108,24 @@ t('AC2 its session URL is under its row', table.some((l) => l.trim() === `cloud 
 t('DS-450 AC3 its session line shows start, model and effort, with no cost invented', table.some((l) => l.trim() === 'session: start 0, model default, effort default: cost not reported for cloud'), true);
 t('AC2 one with no PR yet has no wall time', (table.find((l) => l.startsWith('  K-2 ')) ?? '').includes('no PR yet'), true);
 t('AC2 the total leaves cloud workers out and says so', table.at(-2).includes('2 cloud worker(s) not counted') || table.at(-1).includes('2 cloud worker(s) not counted'), true);
+
+// A review try on a cloud ticket's PR runs here and logs here: its run is added under the cloud row.
+mkdirSync(join(S, 'logs'), { recursive: true });
+writeFileSync(join(S, 'logs', 'K-3.log'), `${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, duration_ms: 60000, num_turns: 1, total_cost_usd: 2.5,
+  usage: { input_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 }, modelUsage: { m: { inputTokens: 100, outputTokens: 10, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 2.5 } } })}\n`);
+const both = ticketCost(S, { key: 'K-3', location: 'cloud', cloud: { started: since, url: 'u3', pr_at: '2026-10-28T10:40:00Z' } });
+t('a cloud ticket with a local review run counts both runs, its usage the local one\'s', `${both?.runs} ${both?.usage?.cost} ${both?.cloud?.url}`, '2 2.5 u3');
+const bothTable = costTable([both]).split('\n');
+t('its row shows the local cost and its cloud session stays under it, with no cost', (bothTable.find((l) => l.startsWith('  K-3 ')) ?? '').includes('$2.50')
+  && bothTable.some((l) => l.trim() === 'cloud session: u3') && bothTable.some((l) => l.trim() === 'session: start 0, model default, effort default: cost not reported for cloud'), true);
+t('the total counts its local run and says the cloud session is left out', bothTable.at(-1).includes('1 cloud worker(s) counted for their local review runs only'), true);
+writeFileSync(join(S, 'logs', 'K-4.log'), `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'killed' }] } })}\n`);
+const cut = costTable([ticketCost(S, { key: 'K-4', location: 'cloud', cloud: { started: since, url: 'u4' } })]).split('\n');
+const k4 = cut.find((l) => l.startsWith('  K-4 ')) ?? '';
+t('a cloud row whose local review run has no result event reads unknown, counted as unknown', `${k4.includes('unknown')} ${k4.includes('not reported for cloud')} ${cut.at(-1).includes('1 unknown worker(s) not counted')}`, 'true false true');
+writeFileSync(join(S, 'logs', 'K-5.log'), preflightLine({ usd: 0.4, turns: 2 }));
+const pre = costTable([ticketCost(S, { key: 'K-5', location: 'cloud', cloud: { started: since, url: 'u5' } })]).split('\n');
+t('a cloud row with only a local preflight shows that cost, and the notes count it once', `${(pre.find((l) => l.startsWith('  K-5 ')) ?? '').includes('$0.40')} ${/-\d/.test(pre.at(-1))} ${pre.at(-1).includes('1 cloud worker(s) counted for their local review runs only')}`, 'true false true');
 
 rmSync(S, { recursive: true, force: true });
 console.log(fails ? `cloud worker: ${fails} failed` : 'cloud worker: all checks passed');

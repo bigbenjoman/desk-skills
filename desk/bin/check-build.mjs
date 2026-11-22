@@ -18,6 +18,8 @@
 import { readFileSync, writeFileSync, mkdirSync, openSync, closeSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+import { READ_REPO_REFRESH_MS } from './read-repos.mjs';
+import { remoteSub, remoteHung, markRemoteHung } from './remote-git.mjs';
 
 // The last lines of a build's output that its record quotes.
 export const TAIL_LINES = 5;
@@ -32,7 +34,19 @@ const alive = (pid) => {
 // The pass's own checkouts (prepareTree here, live-read.mjs prepareCheckout) run git through these:
 // a runner under which no hook runs, whatever the checkout's own config says; the last line a failed
 // run printed; and the paths `git status --porcelain` listed, the first five named.
-export const hooklessGit = (timeout) => (...a) => spawnSync('git', ['-c', 'core.hooksPath=/dev/null', ...a], { encoding: 'utf8', timeout });
+// A call that reaches a remote is held to the shared bound (remote-git.mjs) as well as its own.
+export const hooklessGit = (timeout) => (...a) => {
+  const args = ['-c', 'core.hooksPath=/dev/null', ...a];
+  const sub = remoteSub('git', args);
+  if (sub && remoteHung()) return { status: null, stdout: '', stderr: `not tried: ${remoteHung()}` };
+  const ms = sub ? Math.min(timeout, READ_REPO_REFRESH_MS) : timeout;
+  const r = spawnSync('git', args, { encoding: 'utf8', timeout: ms });
+  if (sub && r.error?.code === 'ETIMEDOUT') {
+    markRemoteHung(`git ${sub} ran past its ${ms / 1000} seconds earlier in this run`);
+    return { ...r, stderr: `git ${sub} ran past its ${ms / 1000} seconds` };
+  }
+  return r;
+};
 export const gitError = (r) => String(r.stderr || r.stdout || r.error?.message || '').trim().split('\n').pop() || `exit ${r.status}`;
 export const dirtyPaths = (out) => {
   const lines = String(out).split('\n').filter(Boolean);

@@ -40,8 +40,9 @@ cat > "$T/cfg/repos/acme__widgets/config.md" <<EOF
 EOF
 echo "RECOVERY RULES: a lane C or D park is never requeued" > "$T/skills/desk-autopilot/references/orchestrator-recovery.md"
 
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"
 cp "$B/supervisor.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs epic-plan.mjs closeout.mjs installed.mjs run-by.mjs usage-limit.mjs borrow.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 cat > "$T/bin/pass.mjs" <<EOF
 import { readFileSync } from 'node:fs';
 const v = JSON.parse(readFileSync('$T/verdict.json', 'utf8'));
@@ -50,6 +51,7 @@ process.exitCode = v.code;
 EOF
 echo "console.log(JSON.stringify({ status: 'not_due', push: null }));" > "$T/bin/digest.mjs"
 echo "console.log(JSON.stringify({ hold: false, lines: [] }));" > "$T/bin/maintenance.mjs"
+link_bin "$B" "$T/bin"
 # The fake claude: its arguments one per line in claude.args.<n>, then whatever $T/claude.mode says:
 # requeue <KEY> (un-park it and say so), hand (hand every item on), hang, or none (no result line).
 cat > "$T/fakes/claude" <<EOF
@@ -74,13 +76,18 @@ case "\$mode" in
     node -e 'const [key, ids] = process.argv.slice(1); console.log(JSON.stringify({type:"result", total_cost_usd:0.1234, result:"Done.\nDECIDER_RESULT: "+JSON.stringify({settled: ids.split(/\s+/).filter(Boolean).map((id) => ({id, did:"requeued "+key+" for more agent work"})), handed:[]})}))' "\$key" "\$ids" ;;
   hand)
     node -e 'console.log(JSON.stringify({type:"result", total_cost_usd:0.05, result:"DECIDER_RESULT: "+JSON.stringify({settled:[], handed: process.argv[1].split(/\s+/).filter(Boolean).map((id) => ({id, why:"a product call"}))})}))' "\$ids" ;;
+  # restate <KEY>: record its clears-when as a form (the real queue.mjs), then hand every item on
+  restate) node "$B/queue.mjs" clears-when "\$key" "pr 5 merged" >> "$T/restate.out" 2>&1
+    node -e 'console.log(JSON.stringify({type:"result", total_cost_usd:0.05, result:"DECIDER_RESULT: "+JSON.stringify({settled:[], handed: process.argv[1].split(/\s+/).filter(Boolean).map((id) => ({id, why:"a product call"}))})}))' "\$ids" ;;
   limit) cat "$S/fixtures/decider-usage-limit.json" ;;
   *) echo '{"type":"result","total_cost_usd":0.01,"result":"I could not decide."}' ;;
 esac
 EOF
 printf '#!/bin/sh\nexit 0\n' > "$T/fakes/osascript"
 printf '#!/bin/sh\necho OPEN\n' > "$T/fakes/gh"
-chmod +x "$T/fakes/claude" "$T/fakes/osascript" "$T/fakes/gh"
+# No real notifier: on Linux notify.mjs tries notify-send, then WSL's powershell.exe, and neither may reach the desktop.
+printf '#!/bin/sh\nexit 1\n' | tee "$T/fakes/notify-send" > "$T/fakes/powershell.exe"
+chmod +x "$T/fakes/claude" "$T/fakes/osascript" "$T/fakes/gh" "$T/fakes/notify-send" "$T/fakes/powershell.exe"
 export PATH="$T/fakes:$PATH"
 
 tick(){ (cd "$T/repo" && node "$T/bin/supervisor.mjs" tick --foreground 2>&1); }
@@ -188,6 +195,20 @@ echo "hand" > "$T/claude.mode"
 out=$(tick); settle
 P=$(grep -l "use the blue one" "$T"/claude.args.* 2>/dev/null | head -1)
 check "DS-269 AC5 the session reaped after the answer hands H on from its start, so the next one gets the answer" '[ "$(calls)" = 2 ] && [ -n "$P" ] && grep -A1 "· H · parked · lane A: h?$" "$P" | grep -q "answered .*: use the blue one"'
+
+# ---- DS-872: a tick the config check holds back still stops a session past its time ----------------
+mark; rm -f "$T/state/handed.json"
+queue '{"J":{"key":"J","state":"parked","lane":"A","park":{"question":"j?"}}}'
+verdict "$(parked J "j?")"; echo "hang" > "$T/claude.mode"
+out=$(tick)
+PID=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).decider.pid)' "$T/state/supervisor.json")
+CFG="$T/cfg/repos/acme__widgets/config.md"; cp "$CFG" "$T/config.good"
+printf '\n## 4. Tools\n| Field | Value |\n|---|---|\n| Evidence workflow | `none` `pr-evidence.yml` |\n' >> "$CFG"
+node -e 'const f=process.argv[1]; const s=JSON.parse(require("fs").readFileSync(f,"utf8")); s.decider.started=new Date(Date.now()-16*60000).toISOString(); require("fs").writeFileSync(f, JSON.stringify(s))' "$T/state/supervisor.json"
+out=$(tick)
+i=0; while kill -0 "$PID" 2>/dev/null && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+check "DS-872: the tick runs no pass, and still stops the session past its time and hands its items on" 'grep -q "config check: no pass run, no worker spawned" "$LOG" && ! kill -0 "$PID" 2>/dev/null && handed | grep -qx "J|decider timed out"'
+cp "$T/config.good" "$CFG"
 
 # ---- a batch-level line has no ticket to answer, and goes once no pass lists it ---------------------
 mark; queue '{}'; echo "hand" > "$T/claude.mode"
@@ -462,6 +483,9 @@ check "DS-557: the digest asks a park waiting on links-made, and still not one w
 # the object literals in a check's eval.
 sorted(){ node --input-type=module -e "import { presort } from '$B/decider.mjs'; const c = (k) => JSON.stringify({ kind: k }); const r = presort([{ kind: 'parked', lane: 'A', ticket: 'L', text: 'x', clears: c('links-made') }, { kind: 'parked', lane: 'A', ticket: 'U', text: 'y', clears: c('pr-merged') }]); console.log(r.hand.map((h) => h.item.ticket).join(), r.waits.map((w) => w.ticket).join());"; }
 check "DS-557: the decider hands a links-made park on to the person rather than letting it wait" '[ "$(sorted)" = "L U" ]'
+filesort(){ node --input-type=module -e "import { presort } from '$B/decider.mjs'; const f = (person) => JSON.stringify({ kind: 'file-exists', path: 'fixtures/F/out.txt', root: 'state', ...(person ? { person } : {}) }); const r = presort([{ kind: 'parked', lane: 'A', ticket: 'F', text: 'x', clears: f(true) }, { kind: 'parked', lane: 'A', ticket: 'G', text: 'y', clears: f(false) }]); console.log(r.hand.map((h) => h.item.ticket).join(), r.waits.map((w) => w.ticket).join(), '|', r.hand[0]?.why);"; }
+check "DS-807: the decider hands a park on a file the person makes on to them, naming the file, and one a script makes waits" \
+  '[ "$(filesort)" = "F G | waits on a file only the person makes (file \$DESK_STATE/fixtures/F/out.txt exists): a pass requeues it once the file is there" ]'
 
 # ---- DS-580: a park on a step only a person or another account takes is handed on unless answered since -
 PO="There is no review from agent-pullbot at all. No worker can run it: only a person with Mac mini or org access can do this."
@@ -476,6 +500,103 @@ console.log(r.hand.map((h) => h.item.ticket).join(), r.ask.map((i) => i.ticket).
 out=$(posort)
 check "DS-580 AC1: a person-only park with no answer since it parked is handed on, naming its step, and not given to the model" '[ "$(cut -d" " -f1 <<< "$out")" = P1 ] && grep -q "only a person or another account takes, with no answer since it parked: a requeue would park again (\"No worker can run it: only a person with Mac mini or org access can do this.\")" <<< "$out"'
 check "DS-580 AC2: the same park answered since it parked goes to the model, as an ordinary park does" '[ "$(cut -d" " -f2 <<< "$out")" = P2,P3 ]'
+
+# ---- DS-597: the decider is shown a triaged ticket's open questions, and may search the state folder --
+# SV-1 has one unknown in its triage record and one question plan-batch added on its queue entry;
+# SV-2 has a plan question but is not waiting; SV-3 has neither.
+mkdir -p "$T/q597/triage"
+echo '{"unknowns":["Which retry rule applies: the first or the second?"]}' > "$T/q597/triage/SV-1.json"
+cat > "$T/ds597.mjs" <<EOF
+import { deciderItems, deciderPrompt, deciderSettings } from '$B/decider.mjs';
+const triaged = (key, n, more = {}) => ({ key, state: 'triaged', lane: 'A', open_questions: n, ...more });
+const q = { tickets: {
+  'SV-1': triaged('SV-1', 2, { plan_questions: ['SV-1 is blocked by SV-9, which is not in this batch: hold it or drop the link?'] }),
+  'SV-2': triaged('SV-2', 1, { plan_questions: ['which copy goes on the button?'] }),
+  'SV-3': triaged('SV-3', 1) } };
+const v = { waiting: ['SV-1: 2 question(s) open — answer with answer.mjs SV-1 "<answer>"', 'SV-3: 1 question(s) open — answer with answer.mjs SV-3 "<answer>"'] };
+const items = deciderItems(v, q, '$T/q597');
+const bare = deciderItems(v, q);
+const line = (p, key) => p.split('\n').filter((l) => l.includes(' · ' + key + ' · ')).join('');
+const prompt = deciderPrompt({ slug: 's', report: '', items, rules: '', bin: '/b', state: '$T/q597' });
+const plain = deciderPrompt({ slug: 's', report: '', items: bare, rules: '', bin: '/b' });
+const allow = deciderSettings({ bin: '/b', state: '/s' }).permissions.allow;
+console.log(prompt);
+const after = (p, key) => p.split('\n')[p.split('\n').findIndex((l) => l.includes(' · ' + key + ' · ')) + 1];
+console.log('SV3_SAME=' + (JSON.stringify(items[1]) === JSON.stringify(bare[1]) && !('questions' in items[1]) && line(prompt, 'SV-3') === line(plain, 'SV-3') && !after(prompt, 'SV-3').startsWith('  - open question')));
+console.log('FILE_RULES=' + allow.filter((a) => /^(Read|Grep|Glob)\(/.test(a)).join(' '));
+EOF
+out=$(node "$T/ds597.mjs" 2>&1)
+check "DS-597 AC1: a triaged item lists its triage unknown and the question plan-batch added, word for word, under its line" \
+  '[ "$(grep -c "^  - open question: " <<< "$out")" = 2 ] && grep -A2 -F " · SV-1 · waiting" <<< "$out" | grep -qxF "  - open question: Which retry rule applies: the first or the second?" && grep -A2 -F " · SV-1 · waiting" <<< "$out" | grep -qxF "  - open question: SV-1 is blocked by SV-9, which is not in this batch: hold it or drop the link?"'
+check "DS-597 AC1: another ticket's plan question is not listed" '! grep -qF "which copy goes on the button" <<< "$out"'
+check "DS-597 AC2: a triaged item with no triage record and no plan question reads as it did" 'grep -qx "SV3_SAME=true" <<< "$out"'
+check "DS-597 AC3: the decider may Read, Grep and Glob the state folder and nothing outside it" 'grep -qx "FILE_RULES=Read(//s/\*\*) Grep(//s/\*\*) Glob(//s/\*\*)" <<< "$out"'
+check "DS-597 AC4: the read line names Read, Grep and Glob on the state folder and says each command runs alone" \
+  'grep -qF "files in the batch state directory ($T/q597) with the Read, Grep and Glob tools only. Run each allowed command on its own: no \`cd\`, pipe or \`;\`, which are refused" <<< "$out"'
+
+# DS-649 AC2: the decider's session asks for the 5-minute prompt cache, and the caller's env is left as it was.
+printf '#!/bin/sh\nprintf "%%s" "${FORCE_PROMPT_CACHING_5M-unset}" > "%s/cache.seen"\n' "$T" > "$T/fakes/cache-claude"
+chmod +x "$T/fakes/cache-claude"
+out=$(cd "$T/repo" && node --input-type=module -e "
+import { existsSync, readFileSync } from 'node:fs';
+const { startDecider } = await import('$B/decider.mjs');
+const env = { PATH: process.env.PATH, HOME: process.env.HOME };
+const before = JSON.stringify(env);
+const rec = startDecider({ state: '$T/state', slug: 'acme__widgets', bin: '$B', report: '', items: [], rules: '', cwd: process.cwd(), env, claude: '$T/fakes/cache-claude' });
+for (let i = 0; rec && !existsSync('$T/cache.seen') && i < 100; i++) await new Promise((r) => setTimeout(r, 50));
+console.log(readFileSync('$T/cache.seen', 'utf8'), JSON.stringify(env) === before);
+" 2>&1)
+check "DS-649 AC2: the decider runs with FORCE_PROMPT_CACHING_5M=1, the caller's env unchanged" '[ "$out" = "1 true" ]'
+
+# ---- DS-563 AC3: a clears-when no form read goes to the decider to restate, and to the person only as none ----
+cw(){ node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]?.park?.clears_when?.kind)' "$DESK_QUEUE" "$1"; }
+unpark(){ queue "{\"$1\":{\"key\":\"$1\",\"state\":\"parked\",\"lane\":\"A\",\"park\":{\"question\":\"$2\",\"since\":\"2026-11-01T09:00:00Z\",\"clears_when\":{\"kind\":\"unreadable\",\"text\":\"KAN-1086s fix PR is merged to main\",\"why\":\"x\"}}}}"; verdict "$(parked "$1" "$2")"; }
+mark; rm -f "$T/state/handed.json"; echo "hand" > "$T/claude.mode"
+unpark R "r: waiting on KAN-1086"
+out=$(tick); settle
+check "DS-563 AC3: a park whose clears-when no form read goes to a decider session, asked to restate it" \
+  '[ "$(calls)" = 1 ] && [ "$(cw R)" = unreadable ] && P=$(ls -t "$T"/claude.args.* | head -1) && grep -qx "  - clears-when to restate: KAN-1086s fix PR is merged to main" "$P"'
+out=$(tick)
+check "DS-563 AC3: the session handed it on without a form: recorded none, and handed to the person" \
+  '[ "$(cw R)" = none ] && grep -q "^decider: unreadable clears-when recorded as none, for the person: R$" "$LOG" && handed | grep -q "^R|" && [ "$(calls)" = 1 ]'
+mark; rm -f "$T/state/handed.json"; echo "restate R2" > "$T/claude.mode"
+unpark R2 "r2: waiting on KAN-1086"
+out=$(tick); settle; out=$(tick)
+check "DS-563 AC3: restated as a form, it waits on it: not handed to the person, never none" \
+  '[ "$(cw R2)" = pr-merged ] && [ -z "$(handed)" ] && ! grep -q "recorded as none, for the person: R2" "$LOG"'
+# No decider starts on a usage hold, so the hour a pass waits for a restate starts again: it cannot
+# lapse to none before a decider has seen it.
+mark; rm -f "$T/state/handed.json"; n=$(calls)
+RQ='"R3":{"key":"R3","state":"parked","lane":"A","park":{"question":"r3: waiting on KAN-1086","since":"2026-11-01T09:00:00Z","clears_when":{"kind":"unreadable","text":"KAN-1086s fix PR is merged to main","why":"x","at":"2026-01-01T00:00:00Z"}}}'
+printf '{"version":1,"batch":"b1","supervised":true,"approved":{},"usage_hold":{"since":"2026-10-29T17:30:00Z","type":"seven_day","resets_at":1793545200,"preflight":"Z","paused":[]},"tickets":{%s}}\n' "$RQ" > "$DESK_QUEUE"
+verdict "$(parked R3 "r3: waiting on KAN-1086")"
+out=$(tick)
+at=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets.R3.park.clears_when.at)' "$DESK_QUEUE")
+check "DS-563 AC3: on a usage hold no decider starts, and the restate's hour starts again" \
+  '[ "$(calls)" = "$n" ] && [ "$(cw R3)" = unreadable ] && [ "$at" != 2026-01-01T00:00:00Z ] && node -e "process.exit(Date.now() - Date.parse(process.argv[1]) < 600000 ? 0 : 1)" "$at" && grep -q "^decider: the hour to restate an unreadable clears-when starts again once one runs: R3$" "$LOG"'
+verdict '{"status":"nothing_yet","code":10,"message":"x","waiting":[],"parked":[],"notify":false,"push":[]}'
+
+# ---- the base sync line is one item whatever its wording; a new base head is one new session --
+ids=$(node --input-type=module -e "
+import { deciderItems } from '$B/decider.mjs';
+import { createHash } from 'node:crypto';
+const id = (l, o) => deciderItems({ waiting: [l] }, {}, null, o)[0];
+const a = id('base sync: merging main into feat conflicts — feat is 21 commit(s) behind main', { baseSha: 'b1' });
+const b = id('base sync: feat is 3 commit(s) behind main and config §3 batch-base-push is \"ask\" — spawning carries on', { baseSha: 'b2' });
+const t = id('W: DRAFT — PR #9 stays draft: x');
+const today = 'wait-' + createHash('sha256').update(['W', 'DRAFT', '9'].join(String.fromCharCode(0))).digest('hex').slice(0, 12);
+console.log([a.id === b.id, a.base, b.base, t.id === today, t.base === undefined].join(' '));")
+check "DS-809 AC1/AC3: base sync lines share one id and carry the base head; a ticket line's id is as before" '[ "$ids" = "true b1 b2 true true" ]'
+mark; rm -f "$T/state/handed.json"; echo "hand" > "$T/claude.mode"
+git -C "$T/repo" init -q && git -C "$T/repo" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m one && git -C "$T/repo" update-ref refs/remotes/origin/feat HEAD
+printf '{"version":1,"batch":"b1","base":"feat","supervised":true,"approved":{},"tickets":{}}\n' > "$DESK_QUEUE"
+sync(){ verdict "$(waits "[\"base sync: merging main into feat conflicts, nothing pushed. Conflicting files: a.mjs — feat is $1 commit(s) behind main, more than the 20 it may lag and still spawn, so nothing spawns this pass\"]")"; }
+for n in 21 22 23; do sync "$n"; out=$(tick); settle; done
+check "DS-809 AC1: three passes whose base sync line differs only in its commit count start one session" '[ "$(calls)" = 1 ] && [ "$(handed | grep -c "^base sync|")" = 1 ]'
+git -C "$T/repo" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m two && git -C "$T/repo" update-ref refs/remotes/origin/feat HEAD
+for n in 24 25; do sync "$n"; out=$(tick); settle; done
+check "DS-809 AC2: handed on and unanswered, a new base head starts one new session, and later passes none" '[ "$(calls)" = 2 ] && [ "$(handed | grep -c "^base sync|")" = 1 ]'
+verdict '{"status":"nothing_yet","code":10,"message":"x","waiting":[],"parked":[],"notify":false,"push":[]}'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

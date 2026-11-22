@@ -10,8 +10,8 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loginFile, subscriptionsPath } from './desk-env.mjs';
-import { CHECK_TIMEOUT_MS, defaultLogin, isDir, login, loginEnv, readSubscriptions, toolLogins } from './logins.mjs';
+import { loginFile, repoSubscriptions, subscriptionsPath } from './desk-env.mjs';
+import { CHECK_TIMEOUT_MS, defaultLogin, isDir, login, loginEnv, readSubscriptions, repoSubscription, toolLogins } from './logins.mjs';
 
 // A login for a folder no subscriptions row names.
 const envLogin = (dir) => login({ tool: 'claude', name: basename(dir), folder: dir, rule: null, source: 'env' });
@@ -23,14 +23,17 @@ const envLogin = (dir) => login({ tool: 'claude', name: basename(dir), folder: d
 //   -> [login]
 export function claudeLogins(env = process.env) {
   const extra = env.CLAUDE_CONFIG_DIR ? [envLogin(resolve(env.CLAUDE_CONFIG_DIR))] : [];
-  return toolLogins('claude', readSubscriptions(subscriptionsPath()), extra).filter((l, i) => i === 0 || isDir(l.dir));
+  return toolLogins('claude', readSubscriptions(subscriptionsPath()), extra).filter((l) => !l.configDir || isDir(l.dir));
 }
 
 // The logins work may be running on: every login above, then each removed one whose folder exists, as
-// a worker started on a login before it was removed is still running.
+// a worker started on a login before it was removed is still running. ~/.claude is always among them:
+// with accounts pinned desk starts nothing there, but a worker started there before is still running.
 //   -> [login]
 function runningLogins(env = process.env) {
   const out = claudeLogins(env);
+  const own = defaultLogin('claude');
+  if (!out.some((l) => l.dir === own.dir) && isDir(own.dir)) out.unshift(own);
   for (const r of readSubscriptions(subscriptionsPath()).removed) {
     if (r.tool === 'claude' && isDir(r.dir) && !out.some((l) => l.dir === r.dir)) out.push(login({ tool: 'claude', name: r.name, folder: r.dir, rule: null, source: 'removed' }));
   }
@@ -41,6 +44,14 @@ function runningLogins(env = process.env) {
 export const inUse = (l) => l.rule === 'in rotation' || l.rule === 'standby';
 // The logins a usage probe runs on, the default first.
 export const probeLogins = () => claudeLogins().filter(inUse);
+
+// The folders of the logins work runs on: the Claude default, and the login each subscription `of`
+// picks from the subscriptions file resolves to (repoSubscription's results), by default every
+// configured repo's from its own row. A subscription no repo runs on is not among them.   -> Set of dirs
+export function workLoginDirs(of = (subs) => repoSubscriptions({ repoSubscription }, subs)) {
+  const subs = readSubscriptions(subscriptionsPath());
+  return new Set([repoSubscription(subs, { value: 'default' }), ...of(subs)].map((r) => r.login?.dir).filter(Boolean));
+}
 
 // The login a config folder is, or a login for that folder when no reader knows it. Null or empty is
 // the default login.

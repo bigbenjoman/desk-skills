@@ -12,7 +12,13 @@ Spend follows config §3b. Where "Autopilot batch budget (USD)" is `none`, leave
 `pass.mjs` stops spawning at it and says so. The per-worker budget is a runaway guard, not a cap on
 asked-for work. Precedence: batch: the queue's `budget_usd`, `AUTOPILOT_BATCH_BUDGET_USD`, config,
 `none`; per worker: `AUTOPILOT_BUDGET_USD`, config, `25`. A malformed value holds spawns (batch,
-under `STALLED`) or fails the preflight (per worker); fix the value, never strip it.
+under `STALLED`) or fails the preflight (per worker); fix the value, never strip it. A worker whose
+session stops at the per-worker budget, often with its work done but not committed, is not failed: the
+next pass queues it (`resume=budget`) and resumes it once in its own session with $5 more (that run's
+`AUTOPILOT_BUDGET_USD` is 5: the cap counts only a resumed run's own spend), told to commit, push and
+finish its stage. It waits like any spawn while the
+batch budget is spent, and the report says so. A second stop in that session parks it, naming the
+budget and whether its worktree holds uncommitted work.
 
 **Which model each worker runs on is config §3b "Worker models".** At `default` (also when the row
 is absent) no `--model` is passed and every worker runs on the session default. At
@@ -47,11 +53,15 @@ nothing was passed.
 **With the `preflight` lever on (config §3b "Phase 0 levers"), a ticket does not pay for the same
 preflight twice.** A pass is recorded in `$DESK_STATE/workers/<TICKET>.preflight.json` as a fingerprint
 of the worker settings, the ticket's agents file, the tool list, the models, every start's effort,
-the installed claude CLI version, the desk commit, the worktree and the account. A spawn or resume
-with the same fingerprint runs no preflight, makes no line in the ticket's log, and its spawn line
-says it was skipped. Any change runs one, at low effort, and so does a spawn after a failure or a
-usage limit, which leave no record, or with an input that cannot be read. Delete the record to force
-one. Off, every preflight runs as it did, with no `--effort`.
+the installed claude CLI version, the desk commit and the account. The ticket's worktree, key, branch
+and per-ticket database are placeholders in it, and the rules denying the other worktrees are left
+out, so two tickets in a repo with the same settings share a fingerprint. A spawn or resume with the fingerprint
+of its ticket's last pass runs no preflight, makes no line in the ticket's log, and its spawn line
+says it was skipped. So does a spawn with the fingerprint of another ticket's pass in the repo within
+the last 24 hours, recorded in `$DESK_STATE/workers/preflight-passes.json`: its spawn line and run record <!-- prose-ok: written by preflight-fingerprint.mjs beside the per-ticket workers records, not a batch-state path -->
+name it a cross-ticket skip and the ticket whose pass it took. Any change runs one, at low effort, and
+so does a spawn after a failure or a usage limit, which leave the ticket no record of its own (another
+ticket's pass can still stand for it), or with an input that cannot be read. Delete both records to force one. Off, every preflight runs as it did, with no `--effort`.
 
 **With the `effort` lever on, no ticket runs in a cloud session**, because nothing gives one an
 effort. At config §3b Worker location `cloud`, the plan keeps every ticket local and its `runs:` line
@@ -74,8 +84,16 @@ prompt carrying the ticket's text, and the session pushes a branch and opens a d
 records the ticket done once that PR shows (on its branch, or with the key in its title, opened since
 the session started), on that PR's branch; the session cannot reach the tracker, so its Jira steps are
 left for you. A start that fails parks with the CLI's error and is never run locally without asking.
+Once its PR is read the session is over: any later work on that PR (a review try, a fix try of any
+kind, a rework) goes to a local worker on the PR's branch at origin's tip, which pushes there.
 The report's cost table shows a cloud worker's session URL and its wall time from session start to
 PR, and its tokens and cost as "not reported for cloud".
+
+**A ticket admitted mid-batch is placed the same way.** `queue.mjs admit`, which every mid-batch
+route admits through (intake, `/desk-admit`, an approved epic plan's children, a ticket handed over
+from another repo), applies the same rules to its triage record and the batch's feature
+roles, so at `cloud` one that needs nothing here gets `location: cloud`, and its admit line ends with
+the same `runs:` words as the plan's.
 
 A worker whose log has not grown for 6 passes is **stopped and parked**, freeing its slot, unless
 its last marker is `AUTOPILOT_DONE`: a worker that finished and then hung is stopped and recorded
@@ -83,11 +101,12 @@ done with its PR, on the first pass that reads the marker. Nor is one whose work
 suite under the test lock, or waiting for it (a `with-lock.sh test|tsc` working there): the pass lists
 it as quiet, "running its suite" or "waiting on the test lock", until it has been held that way for
 30 minutes, and then stops and parks it as wedged, naming the ceiling. A worker at a usage limit (5-hour, weekly
-or any other) is not stalled: the pass reports it as paused, holds every spawn and resume (with
-more than one login, it benches only that login, new work goes to the others, and the worker
-carries on on another login as a fresh session), and otherwise resumes it in its own session once
-the limit lifts, at its reset or sooner when a probe call succeeds (orchestrator-recovery.md). Log growth
-alone can lie (a hung `codex exec` heartbeats into the log for hours), so on a batch that has gone
+or any other) is not stalled: the pass reports it as paused, holds the repo's spawns and resumes
+until its subscription's reset (no work moves to another subscription; other subscriptions' work
+carries on), and resumes it in its own session on the login it started on once the limit lifts, at
+its reset or sooner when a probe call succeeds (orchestrator-recovery.md). Log growth
+alone can lie (a hung `codex exec` heartbeats into the log until the harness moves it to the
+background at 600s), so on a batch that has gone
 quiet, check the log tail's newest `tool_progress` `elapsed_time_seconds` too. Recovery for both is
 in `references/orchestrator-recovery.md`.
 
@@ -96,8 +115,10 @@ Stage 6 with `AUTOPILOT_HANDOFF: 4b` (or `7`) and a handoff briefing in
 `$DESK_STATE/handoffs/<TICKET>.json` (the Stage 4 contract file's "Handing off"). The next pass spawns a new
 session for the same ticket, worktree and branch, ahead of new tickets, starting at that stage with
 the handoff briefing in its first message in place of the sibling notes (`spawned: … fresh session
-from Stage 4b (handed off)`). A worktree or branch that has gone, or a briefing that cannot be read,
-parks the ticket naming it and spawns nothing. Each session's log is a round of its own, so the
+from Stage 4b (handed off)`). A worktree or branch that has gone, or a briefing that is missing or
+lists no criteria, parks the ticket naming it and spawns nothing. A briefing that is not JSON, even
+with its raw control characters escaped, is kept as `<file>.unreadable` and replaced by one that has
+the session read its criteria from the ticket; the report names it. Each session's log is a round of its own, so the
 batch report's row adds every session's tokens and cost. A requeue of a ticket whose handoff session
 parked or failed starts again at the stage that handoff named (`queue.mjs set <TICKET>
 handoff_stage=null` first starts it from Stage 0); one that finished, and is sent back for rework,

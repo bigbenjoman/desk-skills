@@ -2,12 +2,24 @@
 // A worker's push, retried while GitHub answers with a 5xx. A worker's Bash call stops at ten
 // minutes, so one run stays inside that and a second run, `--more`, carries on with the long waits:
 //   node push-retry.mjs [--more] [-u | --set-upstream | --force-with-lease[=<branch>:<sha>]] origin <branch>
-// Exit 0 pushed; 75 GitHub still answers 5xx; anything else is git's own refusal, never retried.
+// Exit 0 pushed; 75 GitHub still answers 5xx; 76 the preview-build slot is taken; anything else is
+// git's own refusal, never retried.
+// Each run takes the preview-build slot first (desk-env preview-slot: a push starts a preview build
+// where §4 Vercel names a team, and builds on a shared builder kill each other), waiting for none: a
+// wait here would come out of the one ten-minute call a slow push needs. The slot is labelled with the
+// branch's open PR, `<owner/repo>#<n>`, or `<owner/repo>@<branch>` before one exists, so a unit a wait
+// or an earlier push of this PR already holds is renewed rather than waited behind. Taken by another
+// build, it exits 76 naming that wait, to run in a call of its own, before this same push again. A
+// push that fails gives back a unit it placed, since it started no build, and keeps one it only
+// renewed, which may cover a build still running, or one another taker renewed meanwhile; one that
+// succeeds renews it from then, so it covers the build however long the push took.
 import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { setTimeout as wait } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { describeCond } from './clears-when.mjs';
+import { previewLabel } from './desk-env.mjs';
 
 export const TRANSIENT_EXIT = 75;
 const FIRST_WAITS = [30, 60, 120, 240];
@@ -15,6 +27,9 @@ const MORE_WAITS = [240, 240];
 // No wait starts that, with a try as long as the last one after it, would end past this: a slow
 // pre-push hook stays inside the Bash call's ten minutes.
 const RUN_LIMIT_S = 570;
+export const SLOT_BUSY_EXIT = 76;
+// The wait run in its own call before a push the slot refused: inside the ten minutes with room to spare.
+const SLOT_WAIT_S = 540;
 
 const REASON = '(?:Internal Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out)';
 // Only the lines git and the remote write: a failing pre-push check can print anything.
@@ -23,12 +38,63 @@ const GIT_5XX = [
   /^(?:fatal|error): .*(?:RPC failed; HTTP 5\d\d\b|The requested URL returned error: 5\d\d\b)/i,
   new RegExp(`^remote: .*\\b${REASON}`, 'i'),
 ];
-const HOOK_FAILED = /^pre-push: FAIL\b/m;
+const HOOK_FAILED = /^pre-push: FAIL\b.*$/m;
 
 // Did this refused push fail on a server error, rather than on a check, a rule or the branch's history?
 export function transientPush(out) {
   const s = String(out ?? '');
   return !HOOK_FAILED.test(s) && s.split('\n').some((l) => GIT_5XX.some((re) => re.test(l)));
+}
+
+// A pre-push hook that could not run its checks, rather than one a check failed: what it lacked, as
+// `turbo` (command not found), `DATABASE_URL` (environment variable not set) or `node_modules`
+// (packages not installed), or null. A shell names a
+// missing command in one of three forms: bash `turbo: command not found`, dash `sh: 1: turbo: not
+// found`, zsh `zsh: command not found: turbo`.
+const NOT_FOUND = [
+  /^\s*(?:\S+: )*(?:line \d+: )?([^\s:]+): command not found\s*$/m,
+  /^\s*\S+: \d+: ([^\s:]+): not found\s*$/m,
+  /^\s*\S+: command not found: (\S+)\s*$/m,
+];
+// pnpm's warning before it runs a script whose packages were never installed. It comes before every
+// script there, a check that ran and failed on the code included, so on its own it proves nothing:
+// it is an environment failure only beside node's own error for a package it could not load. A path
+// node could not load ('./x', '/abs/x.js', 'file:…') is the code's own missing file: a failing check.
+const NO_PACKAGES = /\bnode_modules missing\b/;
+const NOT_LOADED = /\bCannot find (?:module|package) '([^']+)'/g;
+const isPackage = (spec) => !/^(?:\.{1,2}(?:[/\\]|$)|[/\\]|[A-Za-z]:[/\\]|file:)/.test(spec);
+const packageNotLoaded = (s) => [...s.matchAll(NOT_LOADED)].some((m) => isPackage(m[1]));
+// An environment variable the hook's check needs and the worktree's env files do not set: Prisma's
+// forms for one unset and one blank (a base worktree's §4 Database URL variables are blanked), and a
+// shell's `set -u`.
+const NO_ENV_VAR = [
+  /\bCannot resolve environment variable: ([A-Za-z_][A-Za-z0-9_]*)/,
+  /\bEnvironment variable not found: ([A-Za-z_][A-Za-z0-9_]*)/,
+  /\benvironment variable `([A-Za-z_][A-Za-z0-9_]*)` resolved to an empty string/i,
+  /^\s*(?:\S+: )*(?:line \d+: )?([A-Za-z_][A-Za-z0-9_]*): (?:unbound variable|parameter not set)\s*$/m,
+];
+export function hookEnvFailure(out) {
+  const s = String(out ?? '');
+  if (!HOOK_FAILED.test(s)) return null;
+  for (const re of NOT_FOUND) {
+    const m = re.exec(s);
+    if (m) return `\`${m[1]}\` (command not found)`;
+  }
+  for (const re of NO_ENV_VAR) {
+    const m = re.exec(s);
+    if (m) return `\`${m[1]}\` (environment variable not set)`;
+  }
+  return NO_PACKAGES.test(s) && packageNotLoaded(s) ? '`node_modules` (packages not installed)' : null;
+}
+
+// The line a refused push is quoted by: a hook's FAIL line where its check failed, which names the
+// check, and otherwise git's or the remote's first line.
+export function refusalLine(out) {
+  const s = String(out ?? '').replace(/^To .*$/m, '');
+  const failed = HOOK_FAILED.exec(s)?.[0];
+  const env = hookEnvFailure(s);
+  if (env) return `the pre-push hook could not run its checks here: ${env}, an environment failure, not a failing check (${failed.trim()})`;
+  return (failed ?? s.split('\n').map((l) => l.trim()).find(Boolean) ?? '').trim();
 }
 
 // A push that never got an answer: no network, or a remote that could not be reached. A 4xx is an
@@ -66,14 +132,39 @@ function parkCond(push, git) {
 }
 
 // git(args) → {status, out}; sleep(ms), now() and say(line) as the CLI gives them. → the exit code.
-export async function pushWithRetry({ more, push }, { git, sleep, now, say }) {
+// slot.take() → { id, renewed, expires } of the preview-build lease taken, or renewed where its label
+// already held it (none where there is nothing to take), { busy } naming who holds it, or { why } it
+// could not be read; slot.give(id, expires) releases one unless another taker renewed it since, and
+// slot.keep(id) renews it for the build.
+// The label this push's slot takes (desk-env previewLabel), naming the repo: the lease store is the
+// machine's, so two repos' branches of one name never hand each other a slot.
+export const slotLabel = (branch, repo = '', pr = null) => previewLabel(repo, { pr, branch });
+// The exit-76 wait holds the slot under the push's label with this after it, so the push that follows
+// swaps it for a unit of its own, which it gives back if it fails, rather than renewing it as a build's.
+export const WAIT_SUFFIX = ' (wait)';
+export async function pushWithRetry({ more, push }, { git, sleep, now, say, slot = null }) {
   const waits = more ? MORE_WAITS : FIRST_WAITS;
   const began = now();
+  const held = slot ? slot.take() : {};
+  if (held.busy) {
+    say(`push-retry: the preview-build slot is taken (${held.busy}), so nothing was pushed. Run this in a call of its own, with the same ten-minute timeout: desk-env preview-slot --wait ${SLOT_WAIT_S} '${held.label ?? slotLabel(push.at(-1))}${WAIT_SUFFIX}'. It waits for that build and holds the slot for this push; then run this same push again: node ${process.argv[1]} ${push.slice(1).join(' ')}. If the wait exits 75 (still taken), run it again.`);
+    return SLOT_BUSY_EXIT;
+  }
+  if (held.why) say(`push-retry: ${held.why}: pushing anyway`);
+  const code = await tryPush({ more, push, waits, began }, { git, sleep, now, say });
+  if (held.id && code === 0) slot.keep(held.id);
+  else if (held.id && !held.renewed) slot.give(held.id, held.expires);
+  return code;
+}
+async function tryPush({ more, push, waits, began }, { git, sleep, now, say }) {
   for (let tries = 1; ; tries += 1) {
     const tried = now();
     const r = git(push);
     if (r.status === 0) return 0;
-    if (!transientPush(r.out)) return r.status || 1;
+    if (!transientPush(r.out)) {
+      if (hookEnvFailure(r.out)) say(`push-retry: ${refusalLine(r.out)}`);
+      return r.status || 1;
+    }
     const secs = waits[tries - 1];
     const spent = Math.round((now() - began) / 1000);
     const last = Math.round((now() - tried) / 1000);
@@ -103,7 +194,7 @@ function isMain() {
 if (isMain()) {
   const args = parseArgs(process.argv.slice(2));
   if (!args) {
-    console.error('usage: push-retry.mjs [--more] [-u | --set-upstream | --force-with-lease[=<branch>:<sha>]] origin <branch>');
+    console.error('usage: push-retry.mjs [--slot <lease id>|none] [--more] [-u | --set-upstream | --force-with-lease[=<branch>:<sha>]] origin <branch>');
     process.exit(2);
   }
   const git = (a) => {
@@ -112,5 +203,31 @@ if (isMain()) {
     process.stderr.write(r.stderr ?? '');
     return { status: r.status ?? 1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
   };
-  process.exitCode = await pushWithRetry(args, { git, sleep: (ms) => wait(ms), now: Date.now, say: (l) => console.error(l) });
+  const deskEnv = (a) => spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'desk-env.mjs'), ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const branch = args.push.at(-1);
+  const repo = /^GH_REPO='([^']*)'/m.exec(deskEnv(['where']).stdout ?? '')?.[1] ?? '';
+  // The branch's open PR, whose number its unit carries once the PR exists; none read, the branch's label.
+  const pr = repo ? spawnSync('gh', ['pr', 'list', '--repo', repo, '--head', branch, '--state', 'open', '--json', 'number', '-q', '.[0].number'], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'ignore'] }) : null;
+  const label = slotLabel(branch, repo, /^\d+$/.test(pr?.stdout?.trim() ?? '') ? pr.stdout.trim() : null);
+  const leases = () => (deskEnv(['lease', 'list', '--json']).stdout ?? '').split('\n').flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
+  const slot = {
+    take: () => {
+      // The slot an exit-76 wait held for this push is swapped for the push's own unit.
+      const waited = leases().find((l) => l.kind === 'preview-build' && l.label === `${label}${WAIT_SUFFIX}`);
+      if (waited) deskEnv(['lease', 'release', waited.id]);
+      const r = deskEnv(['preview-slot', '--wait', '0', label]);
+      if (r.status === 0) {
+        const id = (r.stdout ?? '').split('\n').find((l) => /^L-\w+$/.test(l.trim()))?.trim() ?? null;
+        return { id, renewed: /^renewed /m.test(r.stderr ?? ''), expires: id && leases().find((l) => l.id === id)?.expires };
+      }
+      const said = `${r.stderr ?? ''}${r.stdout ?? ''}`.trim().split('\n').pop() || `exit ${r.status}`;
+      return r.status === 3 ? { busy: said, label } : { why: `the preview-build slot was not taken (${said})` };
+    },
+    give: (id, expires) => { deskEnv(['lease', 'release', id, ...(expires ? ['--if-expires', expires] : [])]); },
+    keep: (id) => {
+      const l = leases().find((x) => x.id === id);
+      if (l) deskEnv(['lease', 'renew', id, 'preview-build', l.key, '--ttl', String(l.ttl), '--no-owner']);
+    },
+  };
+  process.exitCode = await pushWithRetry(args, { git, sleep: (ms) => wait(ms), now: Date.now, say: (l) => console.error(l), slot });
 }

@@ -4,9 +4,9 @@
 // merged fix for a production breakage is asked at once (urgentPromotion). Skills never deploy
 // production: a "go" is recorded in the batch notes, and the repo's own promotion steps are the person's.
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
+import { execGit } from './remote-git.mjs';
 
 // A PR title or body line that starts this way is a fix for a live production breakage.
 export const PRODUCTION_BROKEN = /^\s*production broken\b/i;
@@ -96,7 +96,7 @@ export function renderStagingPage({ slug, ref, range, prs, loose = [], staging }
   return lines.join('\n');
 }
 
-const run = (cmd, args) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+const run = (cmd, args) => execGit(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
 // One repo's promotion: {why} when it has no Promotion ref or the range cannot be read, {empty: true}
 // when nothing landed since it, else {range, prs, loose, fetched, page}. `exec` runs git and gh.
@@ -130,7 +130,7 @@ export function promotionFor({ slug, root, ghRepo, def, ref: raw, staging, exec 
 // A repo's promotion inputs from its own config, for the digest, which reads every repo's.
 export function promotionInputs(slug) {
   const v = (id) => E.repoConfigValue(slug, id);
-  return { slug, root: E.expandHome(v('repo-root')), ghRepo: v('gh-repo'), def: v('default-branch') ?? 'main', ref: v('promotion-ref'), staging: E.repoConfigValues(slug, 'staging') };
+  return { slug, root: E.repoDirs(slug).root, ghRepo: v('gh-repo'), def: v('default-branch') ?? 'main', ref: v('promotion-ref'), staging: E.repoConfigValues(slug, 'staging') };
 }
 
 const stateFile = (state) => join(state, 'promotion.json');

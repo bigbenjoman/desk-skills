@@ -17,6 +17,7 @@ You run in many different repositories. Before the first question, find out whic
    - **§5 Ticket format** — `default` means desk-jira's `references/ticket-template.md` (step 6); a repo's own sections replace its headings, never its rules.
    - **§4 People, by role** — the Product owner decides scope; the Designer (or, with `none`, the product owner) answers design questions.
    - **§3 `jira-create`** / **`jira-edit`** — whether you may write at all. `no` or `TODO` means you draft only and hand the text to the user.
+   - **§3 `gh-issue-create`** — the same for a GitHub issue, where §4 Tracker is `none`.
 2. If it prints `EXISTS=no` (or `desk-env` is not installed), carry on without it: treat the tracker as a GitHub issue on this repo (`gh repo view --json nameWithOwner`) unless the user names a Jira project, and ask rather than guess a project key.
 3. Always read the repo's own instruction files where they exist — `CLAUDE.md`, `AGENTS.md`, `DESIGN.md` — and skim the README. They tell you the product's users, its sensitive areas and its conventions.
 4. Detect the stack from the repo (`package.json` and lockfiles, framework config, `pyproject.toml`, infra directories) so your Technical Context questions are about the system that actually exists.
@@ -88,6 +89,7 @@ This applies equally to edits to existing tickets, comments, and transitions. Re
    - **Priority**: in the field and values §4 Priority names; propose one, never leave it blank. Priority, status and size go in their fields, never as a line in the description (`desk-jira create` refuses one); the only exception is the `Size: M` first line below
    - **Size**: XS, S, M, L or XL on desk-jira's scale (its *Epics* section), in the project's `Size` field where there is one (`desk-jira fields size`), otherwise as the description's first line `Size: M`. Anything L or bigger is split: see *Epic Mode*
    - **Other fields**: every field §4 Other fields lists, filled in the same create — a blank one is never flagged later
+   - **Required fields**: every field §4 Required fields names for the issue type (`desk-env required-fields <type>`), with its value. A ticket handed to the user to file carries them in the draft too, since nothing checks a pasted ticket
    - **Labels / Links**: from §4 Labels; each dependency is a Blocks link you plan and file with `desk-jira link`, never a sentence in the body (with Tracker `none`, the template's `Blocked by #<n>` line)
 
    **An open decision blocks the create.** Anything you would be tempted to write as "open question", "TBD" or "to confirm" is a question for the user (or the owner §4 People names) now. Ask it, record the answer as a dated decision, and only then draft. Never file a ticket that carries an open question.
@@ -95,7 +97,7 @@ This applies equally to edits to existing tickets, comments, and transitions. Re
 7. **Present, Then Wait**: show the full ticket and ask for approval. Only after an explicit yes do you create it:
    - **Tracker `jira`** with `desk-jira` set up: write the description to a file and create it with `desk-jira create` (see the `desk-jira` skill for its arguments and its markup: write the description in markdown in a `.md` file, which `desk-jira` converts to Jira wiki markup, and preview it with `desk-jira md2wiki <file>`; `desk-jira fields <filter>` resolves a field id), setting every §4 Priority / Other fields value in that one call. Then `desk-jira get` it and confirm the fields read back.
    - **Tracker `none`** (or no desk config): draft it as a GitHub issue and, on approval, run `gh issue create --title "<summary>" --body-file <file>` with any labels the repo already has (`gh label list`).
-   - If §3 `jira-create` is not `yes`/`ask`, or no tool is available, hand the user the finished text to paste instead.
+   - If §3 `jira-create` (with Tracker `none`, `gh-issue-create`) is not `yes`/`ask`, or no tool is available, hand the user the finished text to paste instead.
 
    Report the created issue key or number and its URL back to the user.
 

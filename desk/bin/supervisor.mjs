@@ -1,13 +1,16 @@
 #!/usr/bin/env node
-// The autopilot supervisor: launchd runs a pass in this repo every few minutes while a batch is live,
-// keeps the batch's merge driver running, and starts both again at login. No model is in the loop.
+// The autopilot supervisor: launchd on macOS, or a systemd user timer on Linux, runs a pass in this
+// repo every few minutes while a batch is live, and within seconds of a worker exiting (its exit file in
+// <repo state>/exits wakes a tick), keeps the batch's merge driver running, and starts both again at
+// login. No model is in the loop.
 // Run it from inside the repo (or with DESK_REPO_DIR set): the repo decides which config applies.
 //   node supervisor.mjs install [--interval <s>] [--reload]
-//                                                  install or update this repo's launchd agent (default
-//                                                  180s); --reload reloads it even when unchanged
+//                                                  install or update this repo's launchd agent, or its
+//                                                  systemd service, timer and path unit (default 180s); --reload
+//                                                  reloads it even when unchanged
 //   node supervisor.mjs uninstall                  remove it: no further passes run for this repo
 //   node supervisor.mjs status                     the agent, then each batch: whether it is handed over, its log's tail
-//   node supervisor.mjs tick [--foreground]        one interval; launchd runs this at login and every interval.
+//   node supervisor.mjs tick [--foreground]        one interval; launchd or systemd runs this at login and every interval.
 //                                                  It starts the work detached and returns; --foreground does it here
 //
 // A tick acts only on a batch the orchestrator handed over at Stage 4 (`queue.mjs set-batch
@@ -15,11 +18,15 @@
 // the log says so once per batch. For a handed-over batch, each tick:
 //   - skips, saying so in the log, while a pass holds <state>/orchestrator.lock or the previous tick's
 //     run still holds <state>/supervisor.lock;
+//   - first reads every declared config row through `desk-env get --json`: a fatal error (a value the
+//     row's reader refuses today) runs no pass that tick and pushes one item naming the row, once until
+//     the row changes. An error that is not fatal never blocks; DESK_CONFIG_PREFLIGHT=off, in the tick's
+//     environment or when `install` runs, turns the check off;
 //   - runs `pass.mjs --json` with only the Stage 3 approvals recorded with the batch: `approved.workers`
 //     becomes AUTOPILOT_USER_APPROVED=1, `approved.base_push` AUTOPILOT_BASE_PUSH_APPROVED=1, and either
 //     one inherited from the environment is dropped, so the supervisor never grants what it was not given;
 //   - appends the report to <state>/supervisor.log;
-//   - sends one macOS notification for the pass's `push` entries the last notification did not carry
+//   - sends one desktop notification (notify.mjs) for the pass's `push` entries the last notification did not carry
 //     (the check-in digest, a production-broken park, a failing health check), or for a pass that
 //     refused or failed;
 //   - starts the merge driver (where §3 autopilot-merge and pr-merge-green are both `yes`, or the batch's
@@ -34,20 +41,35 @@
 //     and handed on, in the log and the batch notes;
 //   - first, where config §3b "Intake query" names a query, runs standing intake (intake.mjs) at most
 //     every 15 minutes: it admits the new tickets a worker can take, starting a batch handed over at
-//     once if none is live, and its lines go into the tick's report;
+//     once if none is live, and its lines go into the tick's report, after those of any ticket a
+//     producer pushed since the last tick (intake.mjs push, which starts a tick at once);
 //   - once a pass reports the batch idle, runs no pass and starts no driver until the queue changes
 //     (a new batch, or a ticket admitted or requeued into this one), a park is answered (answer.mjs),
-//     or, with anything parked or failed, DESK_IDLE_RECHECK_MS (30 minutes) has passed since the batch
-//     went idle, so a pass sees what cleared a park outside the queue. Each idle tick refreshes the
+//     or, with anything parked, failed or held behind a blocker in no batch (held_outside), or a PR
+//     no ticket owns recorded (ticketless_prs, which only a pass drops once the PR is merged or closed),
+//     DESK_IDLE_RECHECK_MS (30 minutes) has passed since the batch went idle, so a pass sees what
+//     cleared a park, or landed a blocker, outside the queue; DESK_RUN_RECHECK_MS (2 minutes) while a
+//     park a pass settles waits on an Actions run or a PR's checks. Each idle tick refreshes the
 //     batch's heartbeat (so desk-q and needs-you read it as run, not stopped), and still runs the
 //     check-in (killed past 5 minutes, DESK_CHECKIN_TIMEOUT_MS) and moves the weekly maintenance
 //     window and the auto-release on (maintenance.mjs step), pushing what the step pushes.
 // Each tick also keeps `code` in supervisor.json: the installed version (installed.mjs), and whether
 // this agent and the running merge driver started at an older one (`old_code`). It records what that
 // tick saw; desk-q judges old code for itself, from the loaded agent's plist and the driver's lock.
+// For a handed-over batch, a driver on old code that waits between loops is restarted on the installed
+// code with the same tickets and deps (installed.mjs restartDriver); one mid-loop is left, logged once,
+// and none is moved while a pass runs (it holds supervisor.lock for the restart).
+//
+// A worker's exit wakes a tick too: spawn-worker.sh renames <KEY>.<ts>.json into <repo state>/exits,
+// which launchd watches (WatchPaths, at most one tick per 20s) or a systemd path unit does. A tick
+// deletes the exit files its passes have seen, runs another round when exits landed while one ran, and
+// runs nothing when it finds none within a minute of deleting some, since that deletion woke it. One
+// tick at a time runs woken rounds (supervisor.tick.lock), each at least 20s after the last, and a
+// round's passes count a quiet pass only once an interval has passed since the last that did.
 //
 // After intake, each tick runs repo-templates.mjs check, which at most hourly records in the standing
 // batch's templates.json which of the repo's committed copies of desk's templates are behind them.
+// After every batch, each tick refreshes the machine-wide Levers page (levers-refresh.mjs).
 // A tick runs intake once, then every batch the repo holds (batches.mjs listBatches), one after another:
 // the standing batch, then each named batch. Each runs as above in its own state folder, with its own
 // merge driver and notifications titled with the repo and the batch, and with DESK_BATCH naming it and
@@ -59,34 +81,51 @@
 // batches/.done/, logged in the standing batch's log, and not run. A merge driver still running for such
 // a batch is stopped first, and the batch is not run until a later tick archives it. An explicit DESK_BATCH, DESK_QUEUE or
 // DESK_AUTOPILOT_STATE names one batch, and a tick runs only that one, with no archive check.
-import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, statSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync, appendFileSync, mkdirSync, rmSync, renameSync, statSync, openSync, closeSync, fstatSync, readSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { readQueue, describeCrash, isHeld, spinePark } from './batch-state.mjs';
-import { listBatches, batchPinned, alive, orchestratorHolder, supervisorHolder } from './batches.mjs';
+import { readQueue, describeCrash, isHeld, spinePark, IDLE_RECHECK_MS, RUN_RECHECK_MS, waitingOnRun } from './batch-state.mjs';
+import { listBatches, batchPinned, alive, orchestratorHolder } from './batches.mjs';
+import { tryLockFile, unlockFile, writeTextAtomic } from './dir-lock.mjs';
 import { archiveCheck } from './batch.mjs';
-import { intakeQuery, prOpen, handedByIntake } from './intake.mjs';
+import { intakeQuery, prOpen, handedByIntake, takePushed, pushWaiting } from './intake.mjs';
 import { actOnPlan } from './epic-plan.mjs';
 import { readCloseouts } from './closeout.mjs';
-import { readInstalled, oldCode, lockVersion, AGENTS, plistPath } from './installed.mjs';
-import { supervisorLabel, launchdDomain, supervisorLoaded } from './run-by.mjs';
+import { postMergeDue } from './post-merge.mjs';
+import { auditEnded } from './levers-audit.mjs';
+import { readInstalled, oldCode, lockVersion, AGENTS, plistPath, unitDir, unitPath, readUnit, restartDriver } from './installed.mjs';
+import { supervisorLabel, launchdDomain, supervisorLoaded, backend, systemctl } from './run-by.mjs';
+import { notify as show } from './notify.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
 import { lastBeat, writeBeat } from './borrow.mjs';
-import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, dropHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome, runningBatches } from './decider.mjs';
+import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, dropHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome, runningBatches, restateKeys, baseSyncLine } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_INTERVAL = 180;
 const MIN_INTERVAL = 60;
-// A pass takes seconds; one still going after this is hung, and launchd starts no tick while one runs.
+// A pass takes seconds; one still going after this is hung, and launchd or systemd starts no tick while one runs.
 const PASS_TIMEOUT_MS = 10 * 60 * 1000;
-// How long an idle batch with anything parked or failed goes without a pass: each pass checks what
-// clears its parks, and is script-only.
-const IDLE_RECHECK_MS = Number(process.env.DESK_IDLE_RECHECK_MS) || 30 * 60 * 1000;
-// Location roots an install passes on to the agent, so the tick reads the same config and scripts.
-const PASS_ON = ['DESK_HOME', 'DESK_CONFIG_ROOT'];
+// What an install passes on to the agent: the location roots, so the tick reads the same config and
+// scripts, and the config check's switch.
+const PASS_ON = ['DESK_HOME', 'DESK_CONFIG_ROOT', 'DESK_CONFIG_PREFLIGHT'];
+// A worker's exit wakes a tick: spawn-worker.sh renames <KEY>.<ts>.json into the repo's exits folder,
+// whichever batch the worker is in, and launchd starts a tick at most once per WAKE_THROTTLE_S.
+const WAKE_THROTTLE_S = 20;
+// The tick's own deletion of the exit files it consumed wakes it again: a tick that finds none this soon
+// after one deleted some runs nothing.
+const WAKE_QUIET_MS = 60 * 1000;
+// Exits that land while a tick's passes run get another round of passes, up to this many in all.
+const WAKE_ROUNDS = 3;
+// A round starts at least this long after the one before it, on either backend, so the exits of one
+// burst fold into one more round however short a pass is (the tests shorten it).
+const WAKE_GAP_MS = Number(process.env.DESK_WAKE_GAP_MS) >= 0 && process.env.DESK_WAKE_GAP_MS ? Number(process.env.DESK_WAKE_GAP_MS) : WAKE_THROTTLE_S * 1000;
+const exitsDir = E.exitsDir;
+const repoFile = (name) => join(E.repoStateOf(E.stateDir()), name);
+const wakeFile = () => repoFile('supervisor.wake');
+const sleep = (ms) => { if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
 
 const die = (msg, code = 1) => { console.error(`supervisor: ${msg}`); process.exit(code); };
 const label = supervisorLabel;
@@ -95,9 +134,15 @@ const domain = launchdDomain;
 // ---- launchd ---------------------------------------------------------------------------------
 const launchctl = (...args) => spawnSync('launchctl', args, { encoding: 'utf8' });
 const loaded = supervisorLoaded;
-// The installed agent's interval in seconds: '?' for a plist without one, null when not installed.
-const installedInterval = (slug) => (existsSync(plistPath(slug))
-  ? (/<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(readFileSync(plistPath(slug), 'utf8'))?.[1] ?? '?') : null);
+// The installed agent's interval in seconds: '?' for a plist or timer without one, null when not installed.
+function installedInterval(slug) {
+  if (backend() === 'systemd') {
+    if (!existsSync(unitPath(slug, 'service')) || !existsSync(unitPath(slug, 'timer'))) return null;
+    return String(readUnit('', readFileSync(unitPath(slug, 'timer'), 'utf8')).every ?? '?');
+  }
+  return existsSync(plistPath(slug))
+    ? (/<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(readFileSync(plistPath(slug), 'utf8'))?.[1] ?? '?') : null;
+}
 
 const xml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 function plistValue(v, pad) {
@@ -114,26 +159,97 @@ function plist(job) {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n${plistValue(job, '')}\n</plist>\n`;
 }
 
+// ---- systemd -----------------------------------------------------------------------------------
+// A value inside a unit's double quotes: systemd reads C escapes there and % as a specifier.
+const unitQuote = (v) => `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%')}"`;
+// The service runs one tick; the timer runs it at once when started (at install and at login) and an
+// interval after each run, the path unit whenever an entry in the exits folder changes, and systemd
+// starts no second run while one is still active. The tick returns at once, so a burst of exits (and the
+// deletions that consume them) starts the service many times a minute: with systemd's start limit (5 in
+// 10 s by default) that would fail the service, and with it the path unit and the timer, so it is lifted.
+function units(slug, job) {
+  const service = ['[Unit]', `Description=desk-skills supervisor for ${slug}`, 'StartLimitIntervalSec=0', '', '[Service]', 'Type=oneshot',
+    `ExecStart=${[process.execPath, job.script].map(unitQuote).join(' ')} tick`,
+    `WorkingDirectory=${job.cwd.replace(/%/g, '%%')}`,
+    ...Object.entries(job.env).map(([k, v]) => `Environment=${unitQuote(`${k}=${v}`)}`),
+    `StandardOutput=append:${job.log.replace(/%/g, '%%')}`, `StandardError=append:${job.log.replace(/%/g, '%%')}`,
+    // The tick leaves the merge driver behind it; systemd would otherwise kill it when the tick exits.
+    'KillMode=process', ''].join('\n');
+  const timer = ['[Unit]', `Description=desk-skills supervisor for ${slug}, every ${job.interval}s`, '', '[Timer]',
+    'OnActiveSec=0', `OnUnitActiveSec=${job.interval}s`, 'AccuracySec=1s', '', '[Install]', 'WantedBy=timers.target', ''].join('\n');
+  const path = ['[Unit]', `Description=desk-skills supervisor for ${slug}, on a worker's exit`, '', '[Path]',
+    `PathChanged=${job.exits.replace(/%/g, '%%')}`, `Unit=${label(slug)}.service`, '', '[Install]', 'WantedBy=paths.target', ''].join('\n');
+  return { service, timer, path };
+}
+const sysFail = (what, r) => die(`systemctl --user ${what} failed: ${(r.stderr || r.stdout || r.error?.message || '').trim()}`);
+// Without lingering, systemd stops a user's timers once their last session ends. On WSL that is not
+// enough: WSL stops the whole distro once the last process started from Windows exits, and no systemd
+// unit, lingering or not, keeps it up, so install says so there whatever lingering is.
+function lingerNote() {
+  const r = spawnSync('loginctl', ['show-user', String(process.env.USER || process.getuid()), '-p', 'Linger'], { encoding: 'utf8' });
+  const linger = /^Linger=no$/m.test(r.stdout ?? '') ? ' Lingering is off, so ticks stop once you log out; `loginctl enable-linger` keeps them running.' : '';
+  const wsl = E.isWSL() ? ' On WSL, ticks run only while WSL is up, and lingering does not keep it up: WSL stops once every terminal closes. Keep a terminal open, or add a Windows Task Scheduler entry at logon that runs `wsl.exe --exec sleep infinity` (with `-d <distro>` if this is not your default distro), with "Stop the task if it runs longer than 3 days" turned off.' : '';
+  return linger + wsl;
+}
+
+function installSystemd(slug, job, reload) {
+  const text = units(slug, job);
+  const names = [`${label(slug)}.timer`, `${label(slug)}.path`];
+  const same = ['service', 'timer', 'path'].every((k) => existsSync(unitPath(slug, k)) && readFileSync(unitPath(slug, k), 'utf8') === text[k]);
+  // A path unit that failed (an older service's start limit) wakes nothing, though the timer still runs.
+  const pathUp = () => systemctl('is-active', '--quiet', `${label(slug)}.path`).status === 0;
+  if (!reload && same && loaded(slug) && pathUp()) {
+    console.log(`supervisor: ${label(slug)} is already installed and loaded, unchanged (every ${job.interval}s, log ${join(job.state, 'supervisor.log')})`);
+    return;
+  }
+  mkdirSync(unitDir(), { recursive: true });
+  for (const k of ['service', 'timer', 'path']) writeFileSync(unitPath(slug, k), text[k]);
+  let r = systemctl('daemon-reload');
+  if (r.status !== 0) sysFail('daemon-reload', r);
+  const was = loaded(slug);
+  // A unit a start limit failed starts again only once its failed state is cleared; one not failed is unaffected.
+  systemctl('reset-failed', `${label(slug)}.service`, ...names);
+  r = was ? systemctl('restart', ...names) : systemctl('enable', '--now', ...names);
+  if (r.status !== 0) sysFail(`${was ? 'restart' : 'enable --now'} ${names.join(' ')}`, r);
+  // `enable` covers the next login; a unit restarted while loaded may still be disabled.
+  if (was) systemctl('enable', ...names);
+  console.log(`supervisor: installed ${label(slug)}: a pass every ${job.interval}s and at login for a batch handed over at Stage 4 (queue.mjs set-batch supervised=true); log ${join(job.state, 'supervisor.log')}.${lingerNote()}`);
+}
+
 function install(interval, reload = false) {
   const slug = E.repoSlug();
+  if (!backend()) die('the supervisor needs macOS launchd or Linux systemd, so it cannot run on this computer');
   let root;
   try { root = E.repoRoot(); } catch (e) { die(e.message); }
   if (!existsSync(root)) die(`§2 Primary repo root ${root} does not exist here`);
   const state = E.stateDir();
   mkdirSync(state, { recursive: true });
-  const env = { PATH: process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin', DESK_REPO_DIR: root };
+  const exits = exitsDir();
+  // launchd and systemd both watch a folder that is not there yet; it only means no worker exit wakes a tick.
+  try { mkdirSync(exits, { recursive: true }); } catch { /* the interval still runs every tick */ }
+  const env ={ PATH: process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin', DESK_REPO_DIR: root };
   for (const k of PASS_ON) if (process.env[k]) env[k] = process.env[k];
-  // The desk version the agent was loaded at, so a tick can tell its plist predates the install.
+  // The desk version the agent was loaded at, so a tick can tell its plist or service predates the install.
   const version = readInstalled()?.commit;
   if (version) env.DESK_AGENT_VERSION = version;
+  // Loaded from a release folder, the agent runs through ~/.claude/desk/bin, so each tick loads the
+  // release current then and never one an install has since pruned.
+  const dir = E.runBin() === HERE ? E.binDir() : HERE;
+  if (backend() === 'systemd') {
+    installSystemd(slug, { script: join(dir, 'supervisor.mjs'), cwd: root, env, interval, state, exits, log: join(state, 'supervisor.agent.log') }, reload);
+    return;
+  }
   const job = {
     Label: label(slug),
-    ProgramArguments: [process.execPath, join(HERE, 'supervisor.mjs'), 'tick'],
+    ProgramArguments: [process.execPath, join(dir, 'supervisor.mjs'), 'tick'],
     WorkingDirectory: root,
     EnvironmentVariables: env,
-    // At login, then every interval. launchd starts no second tick while one still runs.
+    // At login, then every interval, and whenever a worker's exit file lands in the exits folder, at
+    // most once per ThrottleInterval. launchd starts no second tick while one still runs.
     RunAtLoad: true,
     StartInterval: interval,
+    WatchPaths: [exits],
+    ThrottleInterval: WAKE_THROTTLE_S,
     StandardOutPath: join(state, 'supervisor.agent.log'),
     StandardErrorPath: join(state, 'supervisor.agent.log'),
     // The tick leaves the merge driver behind it; launchd would otherwise kill it when the tick exits.
@@ -155,6 +271,22 @@ function install(interval, reload = false) {
 
 function uninstall() {
   const slug = E.repoSlug();
+  if (backend() === 'systemd') {
+    const names = [`${label(slug)}.timer`, `${label(slug)}.path`];
+    const was = loaded(slug);
+    if (was) {
+      const r = systemctl('disable', '--now', ...names);
+      if (r.status !== 0) sysFail(`disable --now ${names.join(' ')}`, r);
+    }
+    const kinds = ['service', 'timer', 'path'];
+    const had = kinds.some((k) => existsSync(unitPath(slug, k)));
+    for (const k of kinds) rmSync(unitPath(slug, k), { force: true });
+    if (had) systemctl('daemon-reload');
+    console.log(was || had
+      ? `supervisor: removed ${label(slug)}: no further passes run for this repo. A merge driver it started keeps running until it is stopped`
+      : `supervisor: ${label(slug)} was not installed`);
+    return;
+  }
   const file = plistPath(slug);
   const was = loaded(slug);
   if (was) {
@@ -175,6 +307,9 @@ function readState(state) {
   try { return { idle: null, notified: [], ...JSON.parse(readFileSync(stateFile(state), 'utf8')) }; } catch { return { idle: null, notified: [] }; }
 }
 const writeState = (state, s) => writeFileSync(stateFile(state), `${JSON.stringify(s, null, 2)}\n`);
+
+// Whether the batch records a PR no ticket owns (pass/ticketless-prs.mjs), which keeps its idle rechecking.
+const ticketlessHeld = (q) => Array.isArray(q.ticketless_prs) && q.ticketless_prs.length > 0;
 
 // What makes a batch the same batch: its name and every ticket's state. A new batch, or a ticket
 // admitted or requeued into an idle one, changes it.
@@ -207,6 +342,38 @@ function noteCode(state) {
   if (JSON.stringify(s.code ?? null) !== JSON.stringify(code)) writeState(state, { ...s, code });
 }
 
+// A running merge driver on old code is restarted on the installed one once it waits between loops,
+// as install.sh's restart does (installed.mjs restartDriver); one mid-loop is left for a later tick.
+// -> the line to log, or null. A driver left for the same reason as last tick is not logged again.
+function moveDriver(state, s) {
+  const pid = driverHolder(state);
+  if (typeof pid !== 'number' || !oldCode(lockVersion(state))) {
+    if (s.driver_left) { delete s.driver_left; writeState(state, s); }
+    return null;
+  }
+  // A pass running now reads the driver, and its own copy of supervisor.json would undo this one's.
+  const busy = takeLock(state);
+  if (busy) return null;
+  const from = logSize(driverLog(state));
+  let line;
+  try { line = restartDriver({ slug: E.repoSlug(), batch: E.batchName(), dir: state, pid, queue: E.queueFile() }); }
+  finally { dropLock(state); }
+  const now = driverHolder(state);
+  if (now !== pid) {
+    // The driver this supervisor started carries on under its new pid, so its stop is still read, from
+    // where the new one's output starts.
+    if (s.driver?.pid === pid && typeof now === 'number') Object.assign(s.driver, { pid: now, started: new Date().toISOString(), from });
+    delete s.driver_left;
+    s.code = codeRecord(state);
+    writeState(state, s);
+    return line;
+  }
+  if (s.driver_left === line) return null;
+  s.driver_left = line;
+  writeState(state, s);
+  return line;
+}
+
 // Tickets whose PR is still to merge: one still to start or running, one held behind a merge or a
 // spine, or one done with a PR that is neither merged nor closed. A failed ticket merges nothing.
 function toMerge(q) {
@@ -228,16 +395,21 @@ function toPush(v) {
   return (Array.isArray(v.push) ? v.push : []).filter((p) => p?.key && p.text);
 }
 
+// One notification: -> { err, said }. `err` is why it failed, so the next tick tries again; `said` is
+// what the log says went out. A computer with no notifier that works shows none and the log is the
+// record, so that counts as told: retrying could never succeed, and a batch is recorded idle only once
+// it is told.
 function notify(title, body) {
-  const r = spawnSync('osascript', ['-e', 'on run argv', '-e', 'display notification (item 2 of argv) with title (item 1 of argv)', '-e', 'end run', title, body], { encoding: 'utf8' });
-  return r.status === 0 ? null : (r.error?.message ?? (r.stderr || `osascript exited ${r.status}`).trim());
+  const n = show(title, body);
+  if (!n.via) return { err: null, said: `none shown, no notifier here could show one (${n.error})` };
+  return { err: n.error, said: 'sent' };
 }
 // A notification's title names the repo, and the batch where it is a named one.
 const title = () => `desk: ${E.repoSlug()}${E.batchName() ? ` ${E.batchName()}` : ''}`;
 
 // ---- one interval ----------------------------------------------------------------------------
-// launchd runs `tick`, which starts the interval's work detached and returns at once: launchd starts
-// no tick while one runs, so a pass still going at the next interval could not otherwise be logged.
+// launchd or systemd runs `tick`, which starts the interval's work detached and returns at once: neither
+// starts a tick while one runs, so a pass still going at the next interval could not otherwise be logged.
 function tick() {
   const child = spawn(process.execPath, [join(HERE, 'supervisor.mjs'), 'tick', '--foreground'], { cwd: process.cwd(), env: process.env, detached: true, stdio: 'inherit' });
   child.unref();
@@ -247,7 +419,21 @@ function tick() {
 const supervisorLock = (state) => join(state, 'supervisor.lock');
 
 const stamp = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z');
-const logTo = (state) => (lines) => appendFileSync(join(state, 'supervisor.log'), `${lines.join('\n')}\n`);
+// A log past LOG_ROTATE_BYTES moves to <log>.1 before the next write, the older copies shift up one,
+// and only LOG_ROTATE_KEEP are kept. The merge driver rotates its own log the same way.
+const LOG_ROTATE_BYTES = Number(process.env.DESK_LOG_ROTATE_BYTES) || 10 * 1024 * 1024;
+const LOG_ROTATE_KEEP = 3;
+function rotateLog(file) {
+  if (logSize(file) <= LOG_ROTATE_BYTES) return;
+  rmSync(`${file}.${LOG_ROTATE_KEEP}`, { force: true });
+  for (let i = LOG_ROTATE_KEEP - 1; i >= 1; i--) if (existsSync(`${file}.${i}`)) renameSync(`${file}.${i}`, `${file}.${i + 1}`);
+  renameSync(file, `${file}.1`);
+}
+const logTo = (state) => (lines) => {
+  const file = join(state, 'supervisor.log');
+  try { rotateLog(file); } catch { /* the line is still written, to the unrotated log */ }
+  appendFileSync(file, `${lines.join('\n')}\n`);
+};
 
 // What this tick has run once already for all its batches.
 const ranOnce = new Set();
@@ -258,7 +444,8 @@ const sentThisTick = new Set();
 // Whether another batch has sent `key`: the repo's own pushes reach every batch, and go out once. Any
 // key sent this tick counts. From another batch's stored list only a key that names what it is about
 // counts, since it never comes back: the check-in digest (its slot) and main's failed release (its
-// commit). An idle batch's stored keys never change, and would silence a repeat of any other.
+// commit). An idle batch's stored keys never change, and would silence a repeat of any other. A refused
+// config row is recorded for the whole repo instead (configRefused).
 const ONCE_EVER = ['digest:', 'release-failed-'];
 const sentElsewhere = (state, key) => sentThisTick.has(key)
   || (ONCE_EVER.some((p) => key.startsWith(p)) && tickStates.some((d) => d !== state && readState(d).notified.includes(key)));
@@ -272,22 +459,105 @@ function enterBatch(name) {
 
 // -> [{ name, queue, state }]: the one batch named explicitly, else every batch the repo holds, the
 // standing first.
-const tickBatches = () => (batchPinned() ? [{ name: E.batchName(), queue: E.queueFile(), state: E.stateDir() }] : listBatches());
+const tickBatches = (named = batchPinned()) => (named ? [{ name: E.batchName(), queue: E.queueFile(), state: E.stateDir() }] : listBatches());
 
+// The exit files workers left in `dir`, as [{ file, at }] with `at` their mtime. A dot-named file is one
+// still being written, before its rename.
+function exitFiles(dir) {
+  let names;
+  try { names = readdirSync(dir); } catch { return []; }
+  return names.filter((n) => !n.startsWith('.') && n.endsWith('.json')).flatMap((n) => {
+    try { return [{ file: join(dir, n), at: statSync(join(dir, n)).mtimeMs }]; } catch { return []; }
+  });
+}
+// <repo state>/supervisor.wake, { consumed, round }: when a tick last deleted exit files and last started
+// a round. Unreadable reads as never.
+const readWake = () => { try { return JSON.parse(readFileSync(wakeFile(), 'utf8')) ?? {}; } catch { return {}; } };
+const wakeAt = (k) => Date.parse(readWake()[k] ?? '') || 0;
+const noteWake = (k, ms) => { try { writeFileSync(wakeFile(), `${JSON.stringify({ ...readWake(), [k]: new Date(ms).toISOString() })}\n`); } catch { /* the next tick runs as if never */ } };
+// <batch state>/supervisor.counted: when the batch's last pass that counted a quiet pass started. Its own
+// file, read and replaced only under the batch's supervisor.lock, so two ticks passing different batches
+// at once never write over each other's. Unreadable reads as never.
+const countedFile = (state) => join(state, 'supervisor.counted');
+const countedAt = (state) => { try { return Date.parse(readFileSync(countedFile(state), 'utf8').trim()) || 0; } catch { return 0; } };
+const noteCounted = (state, ms) => { try { writeTextAtomic(countedFile(state), `${new Date(ms).toISOString()}\n`); } catch { /* the next pass counts as if never */ } };
+// Deletes the exit files a round of passes has seen, and records when, so the wake that deletion causes
+// runs nothing. A file that cannot be deleted stays and wakes nothing again.
+function consumeExits(files) {
+  let gone = 0;
+  for (const f of files) { try { rmSync(f.file); gone += 1; } catch { /* left for the next tick */ } }
+  if (gone) noteWake('consumed', Date.now());
+}
+// A batch's pass counts a quiet pass once an interval has passed since that batch's last pass that did,
+// decided as the pass starts, whatever started the tick: so exits never bring a quiet worker's wedge
+// limit sooner (a slow batch before it, or a batch skipped for its lock, moves no other batch's count),
+// nor an exit file left behind stop it coming. The slack covers a tick starting a moment early.
+const COUNT_SLACK_MS = 5000;
+const countDueMs = () => (Number(installedInterval(E.repoSlug())) || DEFAULT_INTERVAL) * 1000 - COUNT_SLACK_MS;
+
+// The repo's tick lock: one tick at a time runs rounds for exits. -> whether this process holds it.
+const TICK_LOCK_WAIT_MS = 30 * 60 * 1000;
+const tickLock = () => repoFile('supervisor.tick.lock');
+function takeTickLock(wait) {
+  const until = Date.now() + TICK_LOCK_WAIT_MS;
+  for (;;) {
+    let got;
+    try { got = tryLockFile(tickLock()); } catch { return false; }
+    if (got === true) return true;
+    if (!wait || Date.now() > until) return false;
+    sleep(1000);
+  }
+}
+// One tick: a round of every batch, and another while workers exited after the last round started and
+// before it ended, so their exits are not left for the next interval. A round whose pass was skipped for
+// a lock consumes nothing: the run holding it sees the exits when its own round ends. A tick woken by an
+// exit while another tick runs rounds waits for it, then runs only for exits that one left. Every woken
+// round starts WAKE_GAP_MS after the last round any tick started, so a burst runs at most two.
 function interval() {
-  const named = batchPinned();
-  const batches = tickBatches();
+  const exits = exitsDir();
+  const woken = exitFiles(exits).length > 0;
+  // A push's lines waiting mean intake push started this tick, which runs whenever it lands.
+  if (!woken && !pushWaiting(E.stateDir()) && Date.now() - wakeAt('consumed') < WAKE_QUIET_MS) return;
+  // An interval's tick that finds the lock held runs as it always has; it takes the lock when free, so a
+  // woken tick waits for its round.
+  const held = takeTickLock(woken);
+  if (woken && !held) return;
+  try {
+    if (woken) sleep(wakeAt('round') + WAKE_GAP_MS - Date.now());
+    if (woken && !exitFiles(exits).length && !pushWaiting(E.stateDir())) return;
+    // Pinned once: a round enters each batch in turn, which would read as a pin to the next round.
+    const named = batchPinned();
+    for (let round = 1; ; round += 1) {
+      const start = Date.now();
+      noteWake('round', start);
+      if (!intervalRound(named)) return;
+      const left = exitFiles(exits);
+      consumeExits(left.filter((f) => f.at < start));
+      if (round >= WAKE_ROUNDS || !left.some((f) => f.at >= start)) return;
+      sleep(start + WAKE_GAP_MS - Date.now());
+    }
+  } finally {
+    if (held) unlockFile(tickLock());
+  }
+}
+
+// -> false when a batch's pass was skipped because another run held its lock.
+function intervalRound(named) {
+  let ran = true;
+  const batches = tickBatches(named);
   tickStates = batches.map((b) => b.state);
   // Standing intake first, in the standing batch's environment: it may start the batch this tick passes.
   if (!named) enterBatch(null);
-  const intake = runIntake();
+  // What pushes admitted since the last tick goes in this tick's report with intake's own lines. Push
+  // leaves them in the state folder it ran in, which a tick pinned to a batch shares with it.
+  const intake = [...takePushed(E.stateDir()), ...runIntake()];
   templateCheck(batches[0].state);
   batches.forEach((b, i) => {
     if (!named) enterBatch(b.name);
     try {
       if (!named && b.name && archived(b, batches[0].state)) return;
       if (b.name && planAnswered(b, batches[0].state)) return;
-      batchInterval(i === 0 ? intake : []);
+      if (batchInterval(i === 0 ? intake : []) === 'skipped') ran = false;
     } catch (e) {
       try {
         mkdirSync(b.state, { recursive: true });
@@ -295,6 +565,25 @@ function interval() {
       } catch { /* nowhere to say it */ }
     }
   });
+  leversRefresh(batches[0].state);
+  return ran;
+}
+
+// The Levers page, refreshed after the batches (levers-refresh.mjs): built only when an input changed
+// or the last attempt is 10 minutes old, under one machine-wide lock. Run apart, so a build that fails
+// or hangs never fails the tick; a build, or a failed one, is logged in the standing batch's log.
+const LEVERS_TIMEOUT_MS = 2 * 60 * 1000;
+function leversRefresh(standing) {
+  const script = join(HERE, 'levers-refresh.mjs');
+  if (!existsSync(script)) return;
+  const r = spawnSync(process.execPath, [script], { encoding: 'utf8', env: process.env, timeout: LEVERS_TIMEOUT_MS });
+  let res = null;
+  try { res = JSON.parse(String(r.stdout).trim().split('\n').at(-1)); } catch { /* said below */ }
+  const line = res?.ran === false ? null
+    : res?.ok ? `levers: built the page (line: ${res.line})`
+      : `levers: couldn't update the page: ${res?.where ?? String(r.stderr || r.error?.message || `exit ${r.status}`).trim().split('\n')[0]}`;
+  if (!line) return;
+  try { mkdirSync(standing, { recursive: true }); logTo(standing)([`== ${stamp()} ${line}`]); } catch { /* nowhere to say it */ }
 }
 
 // Whether this repo's committed copies of desk's templates are behind them (repo-templates.mjs check,
@@ -362,6 +651,8 @@ function batchInterval(intake) {
     }
     return;
   }
+  const moved = moveDriver(state, s);
+  if (moved) log([`== ${stamp()} ${moved}`]);
   // An answer leaves its ticket parked, so it does not change the fingerprint: an answer to an item
   // handed on, or to any park since the batch went idle, ends idle by itself, so a pass lists it and a
   // decider can act on the answer.
@@ -371,11 +662,27 @@ function batchInterval(intake) {
       && answered(state, { ticket: t.key, at: new Date(Math.max(idleAt, Date.parse(t.park?.since ?? '') || 0)).toISOString() }));
   // So does an interactive close-out's note: only a pass turns it into a done ticket.
   const closedOut = readCloseouts(state).some((c) => !c.queue || c.queue === E.queueFile());
-  // And, for a batch with anything parked or failed, the recheck interval passing: what clears a park
-  // outside the queue (a PR merged by hand, a variable set) is only seen by a pass.
-  const recheck = Object.values(q.tickets ?? {}).some((t) => (t.state === 'parked' && !isHeld(t)) || t.state === 'failed')
-    && Date.now() - idleAt >= IDLE_RECHECK_MS;
-  if (s.idle && s.idle === fingerprint(q) && !answeredNow && !closedOut && !recheck) {
+  // And, for a batch with anything parked, failed or held behind a blocker in no batch, the recheck
+  // interval passing: what clears a park or an outside hold (a PR merged by hand, a variable set, a
+  // blocker landing) is only seen by a pass, which asks GitHub once per distinct outside blocker. An
+  // outside key counts only while it is still in held_by and in no ticket here: a person's release
+  // clears held_by and leaves held_outside behind.
+  const heldOutside = (t) => {
+    const by = String(t.held_by ?? '').split('|');
+    return isHeld(t) && String(t.held_outside ?? '').split('|').some((k) => k && by.includes(k) && !q.tickets[k]);
+  };
+  // A park waiting on an Actions run or a PR's checks is rechecked sooner, so it is requeued within
+  // minutes of the run finishing. A PR no ticket owns (ticketless_prs) is rechecked on the same timer
+  // as a park: only a pass sees it merged or closed and drops the needs-you item.
+  const all = Object.values(q.tickets ?? {});
+  const since = Date.now() - idleAt;
+  const recheck = (all.some(waitingOnRun) && since >= RUN_RECHECK_MS)
+    || ((all.some((t) => (t.state === 'parked' && !isHeld(t)) || t.state === 'failed' || heldOutside(t)) || ticketlessHeld(q)) && since >= IDLE_RECHECK_MS);
+  // And a post-merge scan falling due while a merged PR is still watched: only a pass runs it.
+  const watchDue = postMergeDue({ state, queue: q });
+  // And a blind audit spawned into this batch's state that has ended: only a pass records it.
+  const auditDone = (() => { try { return auditEnded(E.repoSlug(), state); } catch { return false; } })();
+  if (s.idle && s.idle === fingerprint(q) && !answeredNow && !closedOut && !recheck && !watchDue && !auditDone) {
     intakeAlone();
     // A driver an earlier pass started can still be merging the batch's last PRs, or stop doing so.
     const reaped = reapDecider(state, s);
@@ -388,29 +695,90 @@ function batchInterval(intake) {
     return;
   }
   const holder = takeLock(state);
-  if (holder) { log([`== ${stamp()} skipped: a pass is still running (pid ${holder})`, ...intake]); return; }
-  try { runPass(state, q, s, log, stamp, intake); }
+  if (holder) { log([`== ${stamp()} skipped: a pass is still running (pid ${holder})`, ...intake]); return 'skipped'; }
+  try { if (!configRefused(state, s, log, intake)) runPass(state, q, s, log, stamp, intake); }
   finally { dropLock(state); }
 }
 
-// Takes <state>/supervisor.lock for this process: -> null, or the pid of the live run that holds it
-// (or the orchestrator's pass lock).
-function takeLock(state) {
-  const holder = orchestratorHolder(state) ?? supervisorHolder(state);
-  if (holder) return holder;
-  const mine = () => JSON.stringify({ pid: process.pid, since: new Date().toISOString() });
-  try { writeFileSync(supervisorLock(state), mine(), { flag: 'wx' }); }
-  catch {
-    // A dead holder's lock is taken over; a live one started in the moment since the check above.
-    const live = supervisorHolder(state);
-    if (live) return live;
-    writeFileSync(supervisorLock(state), mine());
+// The config check before a pass: every declared row read through `desk-env get --json`. A fatal error
+// is a value the row's reader refuses today, which would stop the pass after it spawned workers, tick
+// after tick; so the tick runs no pass and pushes one item per refused row, keyed by what the row
+// holds, so a row left as it is is not pushed again. An error that is not fatal never blocks: drift
+// reports it. A check that cannot run is logged and blocks nothing. -> whether the pass is held back.
+// A tick that runs no pass still reaps an ended or overdue decider and watches the merge driver, as an
+// idle tick does. The config is the repo's, so the rows pushed are recorded once for the repo, in
+// <repo state>/config-pushed.json, not in any batch's state: a batch idle when a row was pushed finds it
+// recorded when it wakes. Every check that runs reconciles it: only the rows refused now stay
+// recorded, so a row fixed while another still blocks is pushed again if it comes back, and a clean
+// check forgets them all.
+const CONFIG_CHECK_MS = 60 * 1000;
+const CONFIG_KEY = 'config-invalid:';
+const configPushedFile = (state) => join(E.repoStateOf(state), 'config-pushed.json');
+function readConfigPushed(state) {
+  try { const k = JSON.parse(readFileSync(configPushedFile(state), 'utf8')).keys; return Array.isArray(k) ? k : []; } catch { return []; }
+}
+function writeConfigPushed(state, keys) {
+  const had = readConfigPushed(state);
+  if (had.length === keys.length && keys.every((k) => had.includes(k))) return;
+  mkdirSync(E.repoStateOf(state), { recursive: true });
+  writeFileSync(configPushedFile(state), `${JSON.stringify({ keys }, null, 2)}\n`);
+}
+// Config keys an earlier version kept in a batch's own notified list: nothing reads them now.
+const forgetRows = (s) => { s.notified = s.notified.filter((k) => !k.startsWith(CONFIG_KEY)); };
+function configRefused(state, s, log, intake) {
+  if (String(process.env.DESK_CONFIG_PREFLIGHT ?? '').trim().toLowerCase() === 'off') {
+    log([`== ${stamp()} config check: off (DESK_CONFIG_PREFLIGHT=off), so the pass runs whatever the config holds`]);
+    return false;
   }
-  return null;
+  const r = spawnSync(process.execPath, [join(HERE, 'desk-env.mjs'), 'get', '--json', ...E.SECTIONS.flatMap((x) => ['--section', x])], {
+    cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: CONFIG_CHECK_MS, maxBuffer: 16 * 1024 * 1024,
+  });
+  // Exit 3 is no config: the pass says so itself.
+  if (r.status === 3) return false;
+  let rows;
+  try { rows = JSON.parse(String(r.stdout ?? '')).rows; } catch { /* said below */ }
+  if (!rows || ![0, 4].includes(r.status)) {
+    log([`== ${stamp()} config check: could not run, so the pass runs (${`${r.stderr ?? ''}${r.error?.message ?? ''}`.trim().split('\n')[0] || `exited ${r.status ?? r.signal}`})`]);
+    return false;
+  }
+  const refused = Object.values(rows).flatMap((row) => row.errors.filter((e) => e.fatal).map((e) => E.invalidLine({ ...row, ...e })));
+  forgetRows(s);
+  if (!refused.length) { writeConfigPushed(state, []); return false; }
+  const pushes = [...new Set(refused)].map((line) => ({ key: `${CONFIG_KEY}${line}`, text: `config check: no pass runs until this row is fixed: ${line}` }));
+  const keys = new Set(pushes.map((p) => p.key));
+  const recorded = readConfigPushed(state).filter((k) => keys.has(k));
+  const { sent, line } = pushFresh(state, { notified: recorded }, pushes, (ps) => (ps.length === 1 ? 'this row' : `these ${ps.length} rows`), 'tick');
+  writeConfigPushed(state, sent ? [...keys] : recorded);
+  const reaped = reapDecider(state, s);
+  const driver = watchDriver(state, s, driverHolder(state));
+  writeState(state, s);
+  log([`== ${stamp()} config check: no pass run, no worker spawned`, ...pushes.map((p) => p.text), line, ...reaped, ...driver, ...intake]);
+  return true;
 }
-function dropLock(state) {
-  try { if (JSON.parse(readFileSync(supervisorLock(state), 'utf8')).pid === process.pid) rmSync(supervisorLock(state)); } catch { /* gone */ }
+
+// One notification for the pushes whose keys have not gone out, from this batch or another this tick:
+// -> { sent, line }. sent is false only when the notification failed, so the caller records nothing
+// and the next run tries again; line is what the log says, null with nothing to push. named(pushes)
+// names them in the log, and `again` is what tries again.
+function pushFresh(state, s, pushes, named, again) {
+  const fresh = pushes.filter((p) => !s.notified.includes(p.key) && !sentElsewhere(state, p.key));
+  if (!fresh.length) return { sent: true, line: pushes.length ? `notification: not sent, the last one already named ${named(pushes)}` : null };
+  const { err, said } = notify(title(), fresh.map((p) => p.text).join(' · '));
+  if (err) return { sent: false, line: `notification: failed (${err}) for ${named(fresh)}; the next ${again} tries again` };
+  fresh.forEach((p) => sentThisTick.add(p.key));
+  return { sent: true, line: `notification: ${said} for ${named(fresh)}` };
 }
+
+// Takes <state>/supervisor.lock for this process: -> null, or the pid of the live run that holds it
+// (or the orchestrator's pass lock). Taken exclusively (dir-lock.mjs tryLockFile), so of two ticks
+// that both find a dead holder's lock only one takes it over.
+function takeLock(state) {
+  const pass = orchestratorHolder(state);
+  if (pass) return pass;
+  const got = tryLockFile(supervisorLock(state));
+  return got === true ? null : (got ?? '?');
+}
+const dropLock = (state) => unlockFile(supervisorLock(state));
 
 // Standing intake (intake.mjs), where config §3b "Intake query" names a query: the lines for the
 // report, empty when it was not due. Triage runs a model per ticket, so it gets the longest wait.
@@ -460,8 +828,8 @@ function idleCheckin(state, s, log, stamp, { maintenance = true } = {}) {
 function pushOnce(state, s, log, stamp, what, p) {
   if (!p?.key || !p.text || s.notified.includes(p.key)) return;
   if (sentElsewhere(state, p.key)) { s.notified.push(p.key); writeState(state, s); return; }
-  const err = notify(title(), p.text);
-  log([`== ${stamp()} ${what}: ${err ? `notification failed (${err}) for ${p.key}; the next tick tries again` : `notification sent for ${p.key}`}`]);
+  const { err, said } = notify(title(), p.text);
+  log([`== ${stamp()} ${what}: ${err ? `notification failed (${err}) for ${p.key}; the next tick tries again` : `notification ${said} for ${p.key}`}`]);
   if (!err) { s.notified.push(p.key); sentThisTick.add(p.key); writeState(state, s); }
 }
 
@@ -495,7 +863,14 @@ function runPass(state, q, s, log, stamp, intake = []) {
   const every = Number(installedInterval(slug));
   // An answer recorded while the pass runs is after it started, so it still ends the idle it reports.
   const startedAt = new Date().toISOString();
-  const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', '--by', 'supervisor', ...(every > 0 ? ['--next', `+${every}`] : [])], {
+  // The pass reads its time from it, so a read it records is at most the interval before the pass the
+  // idle recheck starts (pass/parks.mjs decideOutsideHolds), however long each pass took to reach it.
+  env.DESK_PASS_AT = startedAt;
+  // Before this batch's quiet pass is due (an exit woke the tick), pass.mjs --woken counts none.
+  const passStart = Date.parse(startedAt);
+  const woken = passStart - countedAt(state) < countDueMs();
+  if (!woken) noteCounted(state, passStart);
+  const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', '--by', 'supervisor', ...(every > 0 ? ['--next', `+${every}`] : []), ...(woken ? ['--woken'] : [])], {
     cwd: process.cwd(), env, encoding: 'utf8', timeout: PASS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,
   });
   let v;
@@ -539,14 +914,8 @@ function runPass(state, q, s, log, stamp, intake = []) {
   // A pass that crashed or hung gave no verdict, and needs the person as much as one that said so.
   const pushes = toPush(v);
   const items = pushes.map((p) => p.key);
-  const fresh = pushes.filter((p) => !s.notified.includes(p.key) && !sentElsewhere(state, p.key));
-  let sent = true;
-  if (fresh.length) {
-    const err = notify(title(), fresh.map((p) => p.text).join(' · '));
-    sent = !err;
-    if (sent) fresh.forEach((p) => sentThisTick.add(p.key));
-    out.push(err ? `notification: failed (${err}) for ${fresh.map((p) => p.key).join(', ')}; the next pass tries again` : `notification: sent for ${fresh.map((p) => p.key).join(', ')}`);
-  } else if (items.length) out.push(`notification: not sent, the last one already named ${items.join(', ')}`);
+  const { sent, line } = pushFresh(state, s, pushes, (ps) => ps.map((p) => p.key).join(', '), 'pass');
+  if (line) out.push(line);
   // A failed notification records nothing new, so the next pass sends it again. A pass that refused
   // or failed checked nothing, so it keeps the keys already sent rather than dropping them.
   if (v.status === 'error') s.notified = sent ? [...new Set([...s.notified, ...items])] : s.notified;
@@ -555,7 +924,7 @@ function runPass(state, q, s, log, stamp, intake = []) {
   if (v.status === 'idle' && sent) {
     s.idle = fingerprint(qAfter);
     s.idle_at = startedAt;
-    out.push(`supervisor: batch ${qAfter.batch ?? '?'} is idle: no merge driver, and no pass until a new batch starts, a ticket is added to this one, a park is answered, or ${IDLE_RECHECK_MS / 60000} minutes pass with anything parked or failed`);
+    out.push(`supervisor: batch ${qAfter.batch ?? '?'} is idle: no merge driver, and no pass until a new batch starts, a ticket is added to this one, a park is answered, or ${IDLE_RECHECK_MS / 60000} minutes pass with anything parked, failed or held behind a blocker in no batch${ticketlessHeld(qAfter) ? ', or a PR no ticket owns still recorded' : ''}${Object.values(qAfter.tickets ?? {}).some(waitingOnRun) ? ` (${RUN_RECHECK_MS / 60000} minutes while a park waits on an Actions run or a PR's checks)` : ''}`);
   }
   writeState(state, s);
   log(out);
@@ -610,9 +979,9 @@ function watchDriver(state, s, holder) {
   }
   // Retried each tick until it is out, so a notification that failed is not lost.
   if (d.failures >= DRIVER_NOTIFY_AFTER && !d.notified) {
-    const err = notify(title(), `The merge driver failed ${d.failures} starts in a row: ${d.reason}`);
+    const { err, said } = notify(title(), `The merge driver failed ${d.failures} starts in a row: ${d.reason}`);
     d.notified = !err;
-    lines.push(err ? `notification: failed (${err}) for the merge driver; the next tick tries again` : `notification: sent for the merge driver (${d.failures} failed starts in a row)`);
+    lines.push(err ? `notification: failed (${err}) for the merge driver; the next tick tries again` : `notification: ${said} for the merge driver (${d.failures} failed starts in a row)`);
   }
   return lines;
 }
@@ -620,6 +989,39 @@ function watchDriver(state, s, holder) {
 // ---- the decider -----------------------------------------------------------------------------
 // s.decider is the running session's record ({id, pid, started, out, items}), or null.
 const recoveryRules = () => join(E.skillsDir(), 'desk-autopilot', 'references', 'orchestrator-recovery.md');
+
+// Records none as the clears-when of each item's park still waiting on a restate (decider restateKeys):
+// a session saw it and left it, or none will, so the park is the person's. Returns the report line.
+function restatedNone(items) {
+  if (!restateKeys(items).length) return [];
+  let q;
+  try { q = readQueue(E.queueFile()); } catch { return []; /* left for the next tick */ }
+  const done = [];
+  const failed = [];
+  for (const key of restateKeys(items, q)) {
+    const r = spawnSync(process.execPath, [join(HERE, 'queue.mjs'), 'clears-when', key, 'none'], { cwd: process.cwd(), env: process.env, encoding: 'utf8' });
+    (r.status === 0 ? done : failed).push(r.status === 0 ? key : `${key} (${`${r.stderr ?? ''}`.trim().split('\n').pop()})`);
+  }
+  return [
+    ...(done.length ? [`decider: unreadable clears-when recorded as none, for the person: ${done.join(', ')}`] : []),
+    ...(failed.length ? [`decider: an unreadable clears-when could not be recorded as none: ${failed.join(', ')}`] : []),
+  ];
+}
+
+// Restarts the RESTATE_MS clock on each item's park still waiting on a restate, for a tick that starts
+// no decider (the batch on a usage hold, or the repo's subscription at its limit or signed in nowhere): the hour is the decider's to use, so a
+// line never lapses to none, and to the person, before one has seen it. Returns the report line.
+function restampRestate(items, now) {
+  if (!restateKeys(items).length) return [];
+  let q;
+  try { q = readQueue(E.queueFile()); } catch { return []; /* left for the next tick */ }
+  const done = [];
+  for (const key of restateKeys(items, q)) {
+    const r = spawnSync(process.execPath, [join(HERE, 'queue.mjs'), 'set', key, `park.clears_when.at=${now.toISOString()}`], { cwd: process.cwd(), env: process.env, encoding: 'utf8' });
+    if (r.status === 0) done.push(key);
+  }
+  return done.length ? [`decider: the hour to restate an unreadable clears-when starts again once one runs: ${done.join(', ')}`] : [];
+}
 
 // Stops a decider past its time and hands its items on; records an ended one's outcome. Returns the
 // lines for the batch report.
@@ -643,14 +1045,23 @@ function reapDecider(state, s, now = new Date()) {
   noteOutcome(state, o, now);
   s.decider = null;
   s.settled = o.settled.map((x) => x.item.id);
-  return [reportLine(rec, o)];
+  // A session the usage limit refused saw nothing: its items wait for the next one.
+  return [reportLine(rec, o), ...(o.kept ? [] : restatedNone(rec.items))];
+}
+
+// origin's head of the batch base, as the pass fetched it, when the pass lists a base sync line: or null.
+function baseHead(q, v) {
+  const base = typeof q?.base === 'string' ? q.base.trim() : '';
+  if (!base || !(Array.isArray(v?.waiting) && v.waiting.some(baseSyncLine))) return null;
+  const r = spawnSync('git', ['rev-parse', '--verify', '-q', `refs/remotes/origin/${base}^{commit}`], { cwd: process.cwd(), encoding: 'utf8' });
+  return r.status === 0 ? r.stdout.trim() || null : null;
 }
 
 // After a pass that needs the person: hands on what no session may settle, and starts a decider for
 // the rest that is neither handed on and unanswered nor waiting on a decider already running.
 function decide(state, s, v, q, now = new Date()) {
   if (v.status === 'error') return [];
-  const items = deciderItems(v, q);
+  const items = deciderItems(v, q, state, { baseSha: baseHead(q, v) });
   pruneHanded(state, items);
   // What the last session settled, checked against this pass only.
   const settled = s.settled ?? [];
@@ -671,19 +1082,24 @@ function decide(state, s, v, q, now = new Date()) {
   const added = handItems(state, [...hand, ...again.map((item) => ({ item, why: 'the decider settled it, but the next pass still lists it' }))], now);
   if (added.length) lines.push(`decider: handed to the digest without a session: ${added.map((x) => `${x.item.ticket} (${x.why})`).join(', ')}`);
   const fresh = freshItems(state, ask.filter((i) => !again.includes(i)));
+  // An unreadable clears-when no session will see now (handed on, or handed already and unanswered)
+  // is none from here.
+  const freshIds = new Set(fresh.map((i) => i.id));
+  lines.push(...restatedNone(items.filter((i) => !freshIds.has(i.id))));
   if (!fresh.length) return lines;
   if (s.decider) return [...lines, `decider: one is still running (pid ${s.decider.pid}, since ${s.decider.started}), so none starts for ${fresh.map((i) => i.ticket).join(', ')}`];
   // A session started at the limit fails at once; its items wait for the pass that finds it lifted.
   const hold = q.usage_hold;
-  if (hold) return [...lines, `decider: not started, the batch is held on ${limitName(hold.type)}${hold.resets_at != null ? ` until ${resetText(hold.resets_at)}` : ''} (usage_hold); ${fresh.map((i) => i.ticket).join(', ')} wait for the next decider once it lifts`];
+  if (hold) return [...lines, `decider: not started, the batch is held on ${limitName(hold.type)}${hold.resets_at != null ? ` until ${resetText(hold.resets_at)}` : ''} (usage_hold); ${fresh.map((i) => i.ticket).join(', ')} wait for the next decider once it lifts`, ...restampRestate(fresh, now)];
   const rules = recoveryRules();
   if (!existsSync(rules)) {
     handItems(state, fresh.map((item) => ({ item, why: `no decider: the recovery rules are missing at ${rules}` })), now);
-    return [...lines, `decider: not started, the recovery rules are missing at ${rules}; ${fresh.map((i) => i.ticket).join(', ')} handed to the digest`];
+    return [...lines, `decider: not started, the recovery rules are missing at ${rules}; ${fresh.map((i) => i.ticket).join(', ')} handed to the digest`, ...restatedNone(fresh)];
   }
-  s.decider = startDecider({ state, slug: E.repoSlug(), bin: HERE, report: v.message, items: fresh, rules: readFileSync(rules, 'utf8'),
+  const started = startDecider({ state, slug: E.repoSlug(), bin: HERE, report: v.message, items: fresh, rules: readFileSync(rules, 'utf8'),
     webRead: E.permission('worker-web-read') === 'yes', judgement: E.permission('autopilot-judgement'), targets: runningBatches(HERE, { cwd: process.cwd() }), cwd: process.cwd(), now });
-  if (!s.decider) return [...lines, `decider: not started, every Claude login is benched; ${fresh.map((i) => i.ticket).join(', ')} wait for the next decider once one is back`];
+  if (started.wait) return [...lines, `decider: not started, ${started.wait}; ${fresh.map((i) => i.ticket).join(', ')} wait for the next decider`, ...restampRestate(fresh, now)];
+  s.decider = started;
   return [...lines, `decider: started (pid ${s.decider.pid})${s.decider.login ? ` on login ${s.decider.login}` : ''} for ${fresh.map((i) => i.ticket).join(', ')}; its output is ${s.decider.out}`];
 }
 

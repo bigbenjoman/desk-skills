@@ -42,8 +42,12 @@
 //       Breakpoints (as render) and the board's own width, into <out> as canvas-<board>-<w>.png and
 //       built-<board>-<w>.png; a board with no story is listed as not compared. Exit 3 when there
 //       is no Storybook index there, 4 (nothing written) when a board or story fails, 6 as render
+//   node desk-design.mjs estimate <saved dir> [--key <K>]
+//       the uploads the ticket's PR needs once boards are stitched (its boards × config §5 Themes,
+//       one when unset) and the time at the upload pace; a `flag:` line when that is over an hour
 // `--boards` binds to the `--key` before it; a key with none uses every board. compare's
-// `--boards` names the boards to shoot, every board without it. Usage errors exit 2.
+// `--boards` names the boards to shoot, every board without it. A board is named by its title, which
+// may hold commas, or its file name; a name matching no board exits 2. Usage errors exit 2.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -52,6 +56,7 @@ import { basename, dirname, extname, isAbsolute, join, normalize, relative, reso
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
+import { parseCapture } from './stitch-boards.mjs';
 
 const safeId = (s) => E.SAFE_ID.test(String(s ?? '')) && !String(s).includes('..');
 const fail = (msg, code = 2) => { const e = new Error(msg); e.code = code; throw e; };
@@ -118,6 +123,24 @@ function assetExt(path) {
 const isRemote = (r) => /^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(r);
 const isInline = (r) => /^(?:data|blob|about|javascript|mailto|tel):/i.test(r) || r.startsWith('#');
 const TEXT = new Set(['.html', '.htm', '.css']);
+
+// Every URL a script names that is a script, stylesheet or font it loads. A script names other URLs
+// that load nothing (an XML namespace, an error page), so only those paths count.
+export function scriptLoads(text) {
+  const out = [];
+  for (const [u] of text.matchAll(/https?:\/\/[^\s"'`\\()<>]+/gi)) {
+    let path;
+    try { path = new URL(u).pathname; } catch { continue; }
+    if (/\.(?:m?js|css|woff2?|ttf|otf)$/i.test(path) && !out.includes(u)) out.push(u);
+  }
+  return out;
+}
+
+// The hosts a list of remote URLs loads from, in order, each once.
+export const remoteHosts = (urls) => [...new Set(urls.map((u) => {
+  try { return new URL(u.startsWith('//') ? `https:${u}` : u).host.toLowerCase(); } catch { return null; }
+}).filter(Boolean))];
+
 // The DC runtime a board loads as ./support.js: the artifact serves it at runtime rather than
 // publishing it, so a snapshot carries it under the type's own name.
 const RUNTIME = 'dc-runtime.js';
@@ -134,7 +157,8 @@ function walkFiles(dir, base = dir) {
 // each slide deck.json orders is slides/<id>.html beside it. A single-page artifact has neither
 // (`canvas` and `deck` null): its pages are the HTML files beside the shallowest one. `kind` says
 // which of the three it is. A reference that leaves <src> or names a file the
-// snapshot lacks is `missing`; one to another host is `remote` (it needs the network to render).
+// snapshot lacks is `missing`; one to another host, or a file a saved script loads from one, is
+// `remote` (it needs the network to render).
 // `blobs` maps each asset id the boards use to its saved path, and `copyFrom` maps a saved path to
 // the snapshot file it comes from where the two differ: an asset, or support.js from dc-runtime.js.
 export function collect(src) {
@@ -196,6 +220,11 @@ export function collect(src) {
       files.add(rel);
       if (TEXT.has(extname(rel).toLowerCase())) queue.push(rel);
     }
+  }
+  // A script loads files too: the runtime saved as support.js fetches React, ReactDOM and Babel from a CDN.
+  for (const f of files) {
+    if (extname(f).toLowerCase() !== '.js') continue;
+    for (const u of scriptLoads(readFileSync(join(src, copyFrom[f] ?? f), 'utf8'))) if (!remote.includes(u)) remote.push(u);
   }
   return { canvas: canvasRel, deck: deckRel, kind, slides, home, files: [...files].sort(), missing, remote, blobs, copyFrom };
 }
@@ -273,7 +302,8 @@ export function canonicalUrl(u) {
   } catch { return String(u ?? '').trim().replace(/[#?].*$/, '').replace(/\/+$/, ''); }
 }
 
-// [{key, boards}] from argv: each --boards applies to the --key before it.
+// [{key, boards, boardsArg}] from argv: each --boards applies to the --key before it. Its value
+// stays whole until withBoards reads it against the canvas, since a board's title may hold commas.
 function ticketsFromArgs(args) {
   const out = [];
   for (let i = 0; i < args.length; i++) {
@@ -284,11 +314,36 @@ function ticketsFromArgs(args) {
     } else if (args[i] === '--boards') {
       const t = out.at(-1);
       if (!t) fail('--boards must follow the --key it belongs to');
-      t.boards = (args[++i] ?? '').split(',').map((b) => b.trim()).filter(Boolean);
+      t.boardsArg = args[++i] ?? '';
     }
   }
   return out;
 }
+
+// The board titles one --boards value names. A board is named by its title or its file name
+// (`Main.dc.html`), and a title may hold commas, so the longest run of comma-separated pieces that
+// names a board is taken before a comma splits it. A name matching no board is refused (exit 2),
+// listing the boards; with no boards to match (a single page, a deck, an export) it splits on commas.
+export function resolveBoards(value, boards, where = 'canvas.json') {
+  const pieces = String(value ?? '').split(',');
+  if (!boards.length) return pieces.map((b) => b.trim()).filter(Boolean);
+  const find = (n) => boards.find((b) => b.name === n) ?? boards.find((b) => b.file && (b.file === n || basename(b.file) === n));
+  const out = []; const unknown = [];
+  for (let i = 0; i < pieces.length;) {
+    let j = pieces.length; let b = null;
+    for (; j > i && !(b = find(pieces.slice(i, j).join(',').trim())); j--);
+    if (b) { if (!out.includes(b.name)) out.push(b.name); i = j; continue; }
+    if (pieces[i].trim()) unknown.push(pieces[i].trim());
+    i++;
+  }
+  if (unknown.length) {
+    fail(`${where} has no board named ${unknown.map((n) => `"${n}"`).join(', ')}; its boards are:\n${boards.map((b) => `board: ${b.name}${b.file ? ` (${b.file})` : ''}`).join('\n')}`);
+  }
+  return out;
+}
+
+// Each ticket's --boards value read against the canvas's boards, so only titles are recorded.
+const withBoards = (tickets, boards, where) => tickets.map(({ boardsArg, ...t }) => (boardsArg === undefined ? t : { ...t, boards: resolveBoards(boardsArg, boards, where) }));
 
 function opt(args, name) {
   const i = args.indexOf(name);
@@ -319,13 +374,17 @@ export function mergeSource(prev, next) {
   // What the artifact is (canvas, deck or page), which check reads to decide whether a link blocks.
   const kind = next.kind ?? prev?.kind;
   const slides = next.slides ?? prev?.slides;
+  // The boards' folder beside the README, and what the saved files load from other hosts: the
+  // README's paths and its offline claim. A write that does not know `remote` keeps it at the same version only.
+  const home = next.home ?? prev?.home;
+  const remote = next.remote ?? (String(prev?.version) === String(next.version) ? prev?.remote : undefined);
   return {
     url: next.url, version: String(next.version), fetched_at: next.fetched_at,
     ...(from ? { from: from.from, file: from.file, sha256: from.sha256 } : {}),
     ...(kind ? { kind } : {}),
     dir: next.dir ?? prev?.dir ?? null, tickets,
     boards: next.boards ?? prev?.boards ?? [], ...(kind === 'deck' && slides ? { slides } : {}),
-    files: next.files ?? prev?.files ?? [], screens,
+    files: next.files ?? prev?.files ?? [], ...(home ? { home } : {}), ...(remote ? { remote } : {}), screens,
   };
 }
 
@@ -339,6 +398,14 @@ export function readme(source) {
     return t.boards.map((n) => { const b = boards.find((x) => x.name === n); return b ? label(b) : n; }).join(', ');
   };
   const deck = source.kind === 'deck';
+  // A board's file is relative to its canvas.json, which sits in `home` (project/) beside the README.
+  const home = source.home && source.home !== '.' ? source.home.replace(/\/+$/, '') : null;
+  const at = (f) => (home ? `${home}/${f}` : f);
+  // A record saved before `remote` was kept says nothing about the network rather than guess.
+  const hosts = Array.isArray(source.remote) ? remoteHosts(source.remote) : null;
+  const network = hosts === null ? '.'
+    : hosts.length ? `. The boards need the network: they load files from ${hosts.map((h) => `\`${h}\``).join(', ')}.`
+      : ': it renders offline with the files saved beside it.';
   return [
     `# ${deck ? 'Slides deck' : 'Design canvas'}${source.dir ? ` ${source.dir}` : ''}`,
     '',
@@ -348,7 +415,7 @@ export function readme(source) {
       : [`Saved by \`desk-design\` from <${source.url}>, version ${source.version}, fetched ${source.fetched_at}.`]),
     deck
       ? 'Open index.html from this folder: every slide in order at 1920×1080, offline, with its speaker notes hidden.'
-      : 'Open any board\'s HTML from this folder: it renders offline with the files saved beside it.',
+      : `Open any board's HTML from ${home ? `\`${home}/\`` : 'this folder'}${network}`,
     source.from === 'export'
       ? 'Do not edit these files by hand. For a newer export, run `desk-design import` on it, then'
       : 'Do not edit these files by hand. When the artifact has a newer version, re-save it with',
@@ -361,7 +428,7 @@ export function readme(source) {
     ...(deck
       ? ['## Slides', '', ...(source.slides?.length ? source.slides.map((id, i) => `${i + 1}. ${id}`) : ['deck.json orders no slides.'])]
       : ['## Boards', '', ...(boards.length
-        ? ['| Board | Width | File |', '|---|---|---|', ...boards.map((b) => `| ${cell(b.name)} | ${b.width}px | ${b.file ? cell(b.file) : '-'} |`)]
+        ? ['| Board | Width | File |', '|---|---|---|', ...boards.map((b) => `| ${cell(b.name)} | ${b.width}px | ${b.file ? cell(at(b.file)) : '-'} |`)]
         : ['canvas.json names no boards.'])]),
     '',
     ...screensSection(source.screens),
@@ -443,9 +510,6 @@ export function save(src, { root, dir, tickets, epic, url, version, fetchedAt, n
   if (!url || version === undefined || version === null || version === '') {
     fail('need the artifact URL and version: pass --url and --version, or save from a snapshot whose source.json has them');
   }
-  // A batch snapshot lists every ticket sharing the canvas, so parallel workers write identical files.
-  const all = [...(meta?.tickets ?? [])];
-  for (const t of tickets) { const i = all.findIndex((p) => p.key === t.key); if (i < 0) all.push(t); else if (t.boards.length) all[i] = t; }
   const existing = findSaved(root, dir, url);
   const name = existing ? basename(existing.path.replace(/\/$/, '')) : (epic ?? meta?.dir ?? tickets[0].key);
   if (!safeId(name)) fail(`not a folder name for a canvas: ${name}`);
@@ -457,6 +521,9 @@ export function save(src, { root, dir, tickets, epic, url, version, fetchedAt, n
   const { canvas, deck, kind, slides, home, files, missing, remote, blobs, copyFrom } = collect(src);
   if (missing.length) fail(`not saved: the snapshot lacks files the boards reference; read them from the artifact too:\n${missing.map((m) => `missing: ${m}`).join('\n')}`, 4);
   const boards = canvas ? parseBoards(readJson(join(src, canvas)) ?? {}) : [];
+  // A batch snapshot lists every ticket sharing the canvas, so parallel workers write identical files.
+  const all = [...(meta?.tickets ?? [])];
+  for (const t of withBoards(tickets, boards, canvas)) { const i = all.findIndex((p) => p.key === t.key); if (i < 0) all.push(t); else if (t.boards.length) all[i] = t; }
   // A deck is read through the viewer save writes beside its project folder.
   const viewer = deck ? 'index.html' : null;
   const saved = viewer ? [...new Set([...files, viewer])].sort() : files;
@@ -484,7 +551,7 @@ export function save(src, { root, dir, tickets, epic, url, version, fetchedAt, n
   const fromExport = meta?.from && String(meta.version) === String(version) ? { from: meta.from, file: meta.file, sha256: meta.sha256 } : {};
   const source = writeRecord(dest, {
     url, version, fetched_at: fetchedAt ?? meta?.fetched_at ?? now, dir: name, kind, tickets: all, boards, files: saved,
-    ...(deck ? { slides } : {}), ...fromExport,
+    home: home.split(sep).join('/'), remote, ...(deck ? { slides } : {}), ...fromExport,
   });
   return { path: destRel, source, files: saved, remote, reused: !!existing, previous: prev?.version ?? null };
 }
@@ -580,6 +647,7 @@ export function importExport(file, { state, url, tickets, epic, now = new Date()
   writeFileSync(join(dest, 'project', 'index.html'), bytes);
   const source = writeRecord(dest, {
     url, version, fetched_at: now, dir: prev?.dir ?? name, kind: 'page', tickets, from: 'export', file: basename(file), sha256, boards: [], files: ['project/index.html'],
+    home: 'project', remote: [],
   });
   return { path: dest, source, previous: prev?.version ?? null };
 }
@@ -669,6 +737,15 @@ export function callsHome(url, artifactUrl) {
   return /(^|\.)claude\.ai$/.test(h) || (!!own && h === own);
 }
 
+// A request for a template binding the runtime has not filled in yet (`<img src="{{logo}}">` outside
+// a <template>): the browser fetches the literal before the runtime sets the real file, so its 404
+// names no file, as `references` already treats it when saving.
+export function unbound(url) {
+  let u = String(url ?? '');
+  try { u = decodeURIComponent(u); } catch { /* keep it as written */ }
+  return u.includes('{{');
+}
+
 // One page at a width, loaded and settled with its fonts ready. A request to the design tool's host
 // is refused before it leaves the machine. `bad` lists every file that failed to load, named
 // relative to `origin` where it is served from there.
@@ -680,8 +757,8 @@ async function openAt(browser, url, width, { height, origin, artifact }) {
     bad.push(`${r.request().url()} (a request to the design tool's host, which a saved canvas must not make)`);
     return r.abort();
   });
-  page.on('requestfailed', (r) => { if (!callsHome(r.url(), artifact)) bad.push(`${name(r.url())} (${r.failure()?.errorText ?? 'failed'})`); });
-  page.on('response', (r) => { if (r.status() >= 400 && !/\/favicon\.ico$/.test(r.url())) bad.push(`${name(r.url())} (HTTP ${r.status()})`); });
+  page.on('requestfailed', (r) => { if (!callsHome(r.url(), artifact) && !unbound(r.url())) bad.push(`${name(r.url())} (${r.failure()?.errorText ?? 'failed'})`); });
+  page.on('response', (r) => { if (r.status() >= 400 && !/\/favicon\.ico$/.test(r.url()) && !unbound(r.url())) bad.push(`${name(r.url())} (HTTP ${r.status()})`); });
   await page.goto(url, { waitUntil: 'networkidle' });
   await page.evaluate(() => document.fonts.ready.then(() => true));
   return { page, bad };
@@ -704,7 +781,7 @@ const servedAt = (origin, rel) => origin + rel.split(sep).map(encodeURIComponent
 export async function render(dir, { chromium, bps = breakpoints(), now = new Date().toISOString(), height = 900 }) {
   const source = readJson(join(dir, 'source.json'));
   if (!source?.url) fail(`no saved canvas at ${dir}: render a folder desk-design save wrote`);
-  const { canvas, deck, home, files } = collect(dir);
+  const { canvas, deck, home, files, remote } = collect(dir);
   if (deck) fail(`${dir} is a Slides deck, drawn at a fixed 1920×1080: open its index.html rather than rendering it`);
   // A single-page artifact's pages render at every breakpoint, with no width of their own.
   const boards = canvas ? parseBoards(readJson(join(dir, canvas)) ?? {})
@@ -743,7 +820,8 @@ export async function render(dir, { chromium, bps = breakpoints(), now = new Dat
     version: String(source.version), rendered_at: now, breakpoints: bps, widths: plan.widths,
     images: images.map(({ png, ...s }) => s),
   };
-  return writeRecord(dir, { ...source, screens });
+  // Read off the saved files, so a canvas saved before source.json kept them gets a true README.
+  return writeRecord(dir, { ...source, home: home.split(sep).join('/'), remote, screens });
 }
 
 // ---- compare (each board beside its Storybook story) ---------------------------------------------
@@ -788,15 +866,15 @@ async function storybookAt(target) {
 // board no story matches is listed, not shot. A board that fails to load a file, or a story that
 // shows Storybook's error screen, fails the run and writes nothing. Requests a story makes that fail
 // are returned as notes: a story may load what its mocks do not serve.
-export async function compare(dir, { chromium, storybook, out, widths = breakpoints(), boards: only = [], height = 900 }) {
+export async function compare(dir, { chromium, storybook, out, widths = breakpoints(), boards = [], height = 900 }) {
   const source = readJson(join(dir, 'source.json'));
   if (!source?.url) fail(`no saved canvas at ${dir}: compare a folder desk-design save wrote`);
   const { canvas, home } = collect(dir);
   if (!canvas) fail(`${dir} is a single page with no boards: compare it with the build by hand`);
   const all = parseBoards(readJson(join(dir, canvas)) ?? {});
   const names = screenNames(all);
-  const unknown = only.filter((n) => !all.some((b) => b.name === n));
-  if (unknown.length) fail(`${canvas} has no board named ${unknown.join(', ')}`);
+  // `boards` is the --boards value, or a list of board names: each read as resolveBoards reads it.
+  const only = [...new Set([boards].flat().flatMap((n) => resolveBoards(n, all, canvas)))];
   const chosen = all.map((b, i) => ({ ...b, screen: names[i] })).filter((b) => !only.length || only.includes(b.name));
   if (!chosen.length) fail(`${canvas} names no boards: nothing to compare`);
   const sb = await storybookAt(storybook);
@@ -862,6 +940,9 @@ export function designSection(text) {
   const s = sections(text).find((x) => /^design\b/i.test(x.name));
   return s ? s.lines.map((l) => l.text).join('\n') : null;
 }
+
+// A Figma URL: what designFact reports as `figma`, and what ticket lint takes as a design link.
+export const FIGMA_URL = /https?:\/\/(?:[a-z0-9-]+\.)*figma\.com\//i;
 
 export function claudeDesignLinks(section) {
   const out = [];
@@ -945,20 +1026,37 @@ export function propose(src, { root, dir, ref, worktrees }) {
   return { state: 'committed', branch, worktree: wt, path: r.path, ref, pushed, sha: git(wt, 'rev-parse', 'HEAD'), remote: r.remote };
 }
 
+// Whether the Design section says ticket <key> uses no board from the artifact at <url>: "no board for
+// this ticket", "no board on this canvas for <key>", "this ticket uses no board". The phrase names the
+// whole ticket, so "no board for the empty state" or "for this ticket's empty state" beside a named
+// board is not one. With several links it must sit on a line whose only link is <url>: a note on a line
+// linking two artifacts could be about either, so it clears neither, and a note about one artifact
+// never clears another.
+export function usesNoBoard(section, url, key) {
+  const ticket = `(?:(?:this|the)\\s+ticket|${key ? key.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') : '(?!)'})`;
+  const qualifier = `(?:exists?|yet|(?:on|in|from)\\s+(?:this|the|that|its\\s+epic['’]s)\\s+(?:canvas|artifact|design))`;
+  const re = new RegExp(`\\bno\\s+boards?\\s+(?:${qualifier}\\s+)*(?:for|in|specific\\s+to)\\s+${ticket}(?![\\w-]|['’]s\\b)|\\b${ticket}\\s+(?:uses|has|needs)\\s+no\\s+boards?\\b`, 'i');
+  const text = String(section ?? '');
+  const only = (l) => { const k = claudeDesignLinks(l); return k.length === 1 && canonicalUrl(k[0]) === canonicalUrl(url); };
+  // Each kept line is tested alone: joined, a phrase could run across a line left out between them.
+  return claudeDesignLinks(text).length > 1 ? text.split('\n').filter(only).some((l) => re.test(l)) : re.test(text);
+}
+
 // What a lane D worker can build from: {ref, canvases: [{url, saved, snapshot}], figma}. A canvas is
 // readable when it is saved under <dir> on <ref> (the batch's base) or snapshotted under <state>;
-// with no <dir> (the repo saves none) only a snapshot is.
-export function designFact(text, { root, dir, ref, state }) {
+// with no <dir> (the repo saves none) only a snapshot is. An artifact ticket <key> uses no board from
+// (usesNoBoard) is left out: nothing in it needs reading.
+export function designFact(text, { root, dir, ref, state, key }) {
   const section = designSection(String(text ?? '').replace(/\\([-_*+^~?#{}[\]|!])/g, '$1'));
   const saved = dir ? savedAt(root, dir, ref) : [];
   return {
     ref,
-    canvases: claudeDesignLinks(section).map((url) => ({
+    canvases: claudeDesignLinks(section).filter((url) => !usesNoBoard(section, url, key)).map((url) => ({
       url,
       saved: saved.find((c) => canonicalUrl(c.url) === canonicalUrl(url))?.path ?? null,
       snapshot: snapshotOf(state, url),
     })),
-    figma: /https?:\/\/(?:[a-z0-9-]+\.)*figma\.com\//i.test(section ?? ''),
+    figma: FIGMA_URL.test(section ?? ''),
   };
 }
 
@@ -968,7 +1066,8 @@ export function designFact(text, { root, dir, ref, state }) {
 // when it has one, else under the ticket itself. One with a snapshot under <state> is advisory: the
 // worker saves it from there. A deck is saved and checked as a canvas is; a snapshot that is
 // neither (a single page) says so, and is advisory too. With neither a saved copy nor a snapshot
-// the link's kind is unknown, so it blocks.
+// the link's kind is unknown, so it blocks, unless the section says the ticket uses no board from it
+// (usesNoBoard): then nothing needs saving, and it is advisory.
 export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {
   const key = issue.key;
   // A Jira description is wiki markup, where desk-jira's markdown conversion escapes `-` and `_` in
@@ -988,7 +1087,8 @@ export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {
       const message = `design: ${key}'s Design section links the Claude Design artifact ${url}, but no copy is saved under ${dir}/ on ${ref}: save it to ${join(dir, epic ?? key)}/ (desk-design save)`;
       const snap = state ? snapshotOf(state, url) : null;
       const page = snap && kindAt(snap) === 'page';
-      findings.push(!snap ? { severity: 'blocking', message }
+      findings.push(!snap && usesNoBoard(section, url, key) ? { severity: 'advisory', message: `design: ${key}'s Design section links the Claude Design artifact ${url} but says the ticket uses no board from it, so nothing needs saving` }
+        : !snap ? { severity: 'blocking', message }
         : page ? { severity: 'advisory', message: `${message}; it is snapshotted at ${snap}, a single page rather than a canvas or deck, so it does not block: the worker may save it from there` }
           : { severity: 'advisory', message: `${message}; it is snapshotted at ${snap}, so the worker saves it from there` });
     } else if (!section.includes(saved.path.replace(/\/$/, ''))) {
@@ -1019,6 +1119,60 @@ function loadIssue(arg, keyOpt) {
   return JSON.parse(out);
 }
 
+// ---- estimate (uploads a saved canvas's PR needs, at grooming) ---------------------------------
+
+// The pace desk uploads PR images at, machine-wide.
+export const UPLOAD_PACE = Object.freeze({ perMinute: 6, perHour: 300 });
+
+// Config §5 Themes: the theme names every screen is captured in. Unset or `none` is one look.
+export function themes() {
+  let v;
+  try { v = E.configValues('themes'); } catch (e) { if (e instanceof E.DeskConfigError) throw e; v = null; }
+  return !v || E.isNone(v) ? [] : [...new Set(v.map((x) => String(x).trim()).filter(Boolean))];
+}
+
+// One stitched image per board and theme: the uploads a ticket's PR needs and the minutes they take
+// at UPLOAD_PACE (whichever of the minute and hour caps is slower). With `key`, the boards are that
+// ticket's (every board when it names none, or when source.json does not list it yet: `unlisted`).
+// Boards are counted as the stitch groups them: by the file name compare gives each (screenNames),
+// read with stitch-boards.mjs's parseCapture, so a board drawn as another's dark theme ("Order
+// summary dark") counts as that board, and its theme counts toward the themes.
+export function uploadEstimate(source, { key = null, themeCount = 1 } = {}) {
+  const all = source?.boards ?? [];
+  let files = screenNames(all);
+  const t = key ? (source?.tickets ?? []).find((x) => x.key === key) : null;
+  if (t?.boards?.length) {
+    // As compare keeps them: every board whose title the ticket names, so two boards sharing a title
+    // ("Checkout", captured as checkout and checkout-2) both count. A title no board has counts once.
+    const named = new Set(t.boards);
+    const missing = [...named].filter((n) => !all.some((b) => b.name === n));
+    files = [...files.filter((_, i) => named.has(all[i].name)), ...screenNames(missing.map((name) => ({ name })))];
+  }
+  const parsed = files.map((f) => parseCapture(`canvas-${f}-1.png`));
+  const bases = new Set(parsed.map((p) => p.screen));
+  const drawn = new Set(parsed.map((p) => p.theme));
+  const themesN = Math.max(1, themeCount, drawn.size);
+  const uploads = bases.size * themesN;
+  const minutes = Math.max(uploads / UPLOAD_PACE.perMinute, (uploads / UPLOAD_PACE.perHour) * 60);
+  return { boards: bases.size, themes: themesN, uploads, minutes, over: minutes > 60, boardsPerHour: Math.floor(UPLOAD_PACE.perHour / themesN), unlisted: !!key && !t };
+}
+
+const duration = (m) => {
+  const whole = Math.ceil(m);
+  if (whole < 60) return `${whole} minute${whole === 1 ? '' : 's'}`;
+  const h = Math.floor(whole / 60); const r = whole % 60;
+  return `${h} hour${h === 1 ? '' : 's'}${r ? ` ${r} minute${r === 1 ? '' : 's'}` : ''}`;
+};
+
+// The groom's lines for one estimate: the count and time, then a flag when it is over an hour.
+export function estimateLines(e, { key = null } = {}) {
+  if (!e.boards) return ['uploads: none: this canvas has no boards to stitch (a deck or a single page)'];
+  const out = [`uploads: ${e.uploads} (${e.boards} board${e.boards === 1 ? '' : 's'} × ${e.themes} theme${e.themes === 1 ? '' : 's'}), about ${duration(e.minutes)} at ${UPLOAD_PACE.perMinute} a minute and ${UPLOAD_PACE.perHour} an hour`];
+  if (e.unlisted) out.push(`note: ${key} is not among the tickets source.json lists yet, so every board is counted`);
+  if (e.over) out.push(`flag: over an hour to upload: split ${key ?? 'the ticket'} by board, at most ${e.boardsPerHour} board${e.boardsPerHour === 1 ? '' : 's'} per ticket`);
+  return out;
+}
+
 // ---- the command line ------------------------------------------------------------------------
 
 const isMain = (() => {
@@ -1039,16 +1193,18 @@ if (isMain) {
   try {
     if (cmd === 'write') {
       if (!target) fail('usage: desk-design write <dir> --url <u> --version <v> --key <K> [--boards <a,b>]');
-      const tickets = ticketsFromArgs(rest);
+      const args = ticketsFromArgs(rest);
       const url = opt(rest, '--url'); const version = opt(rest, '--version');
-      if (!url || !version || !tickets.length) fail('write needs --url, --version and at least one --key');
+      if (!url || !version || !args.length) fail('write needs --url, --version and at least one --key');
       const prev = readJson(join(target, 'source.json'));
       const shape = (() => { try { return collect(target); } catch { return null; } })();
+      const boards = shape ? (shape.canvas ? parseBoards(readJson(join(target, shape.canvas)) ?? {}) : []) : prev?.boards ?? [];
+      const tickets = withBoards(args, boards, shape?.canvas ?? join(target, 'source.json'));
       const s = writeRecord(target, {
         url, version, fetched_at: opt(rest, '--fetched-at') ?? new Date().toISOString(),
-        dir: opt(rest, '--epic') ?? prev?.dir ?? tickets[0].key, tickets, kind: shape?.kind,
-        boards: shape ? (shape.canvas ? parseBoards(readJson(join(target, shape.canvas)) ?? {}) : []) : prev?.boards ?? [],
+        dir: opt(rest, '--epic') ?? prev?.dir ?? tickets[0].key, tickets, kind: shape?.kind, boards,
         ...(shape?.deck ? { slides: shape.slides } : {}),
+        ...(shape ? { home: shape.home.split(sep).join('/'), remote: shape.remote } : {}),
       });
       console.log(`wrote: ${join(target, 'source.json')} (version ${s.version}; ${s.kind ?? 'unknown kind'}; tickets ${s.tickets.map((t) => t.key).join(' ')})`);
     } else if (cmd === 'save') {
@@ -1066,7 +1222,7 @@ if (isMain) {
       console.log(`design: ${r.source.url} · ${r.path}`);
     } else if (cmd === 'import') {
       if (!target) fail('usage: desk-design import <file> --url <u> --key <K> [--key ...] [--epic <E>]');
-      const r = importExport(resolve(target), { state: E.stateDir(), url: opt(rest, '--url'), tickets: ticketsFromArgs(rest), epic: opt(rest, '--epic') });
+      const r = importExport(resolve(target), { state: E.stateDir(), url: opt(rest, '--url'), tickets: withBoards(ticketsFromArgs(rest), [], ''), epic: opt(rest, '--epic') });
       const was = r.previous && String(r.previous) !== String(r.source.version) ? `, replacing version ${r.previous}` : '';
       console.log(`imported: ${r.path} (version ${r.source.version}${was}; sha256 ${r.source.sha256}; tickets ${r.source.tickets.map((t) => t.key).join(' ')})`);
     } else if (cmd === 'propose') {
@@ -1096,7 +1252,7 @@ if (isMain) {
     } else if (cmd === 'snapshots') {
       if (!target) fail('usage: desk-design snapshots <KEY | ticket file> [--key <K>]');
       const issue = loadIssue(target, opt(rest, '--key'));
-      for (const s of designFact(issue.text ?? issue.fields?.description, { state: E.stateDir() }).canvases) console.log(`${s.url}\t${s.snapshot ?? '-'}`);
+      for (const s of designFact(issue.text ?? issue.fields?.description, { state: E.stateDir(), key: issue.key }).canvases) console.log(`${s.url}\t${s.snapshot ?? '-'}`);
     } else if (cmd === 'render') {
       if (!target) fail('usage: desk-design render <saved dir>');
       const s = await render(resolve(target), { chromium: await playwrightChromium() });
@@ -1107,8 +1263,9 @@ if (isMain) {
     } else if (cmd === 'compare') {
       const storybook = opt(rest, '--storybook'); const out = opt(rest, '--out');
       if (!target || !storybook || !out) fail('usage: desk-design compare <saved dir> --storybook <built folder> --out <dir> [--boards <a,b>]');
-      const boards = (opt(rest, '--boards') ?? '').split(',').map((b) => b.trim()).filter(Boolean);
-      const r = await compare(resolve(target), { chromium: await playwrightChromium(), storybook: resolve(storybook), out: resolve(out), boards });
+      // Playwright loads at launch, so a --boards name matching no board exits 2 even with none installed.
+      const chromium = { launch: async (...a) => (await playwrightChromium()).launch(...a) };
+      const r = await compare(resolve(target), { chromium, storybook: resolve(storybook), out: resolve(out), boards: opt(rest, '--boards') ?? [] });
       for (const p of r.pairs) {
         console.log(`pair: ${p.board} = story ${p.story.id} (${p.by === 'story' ? 'its id or title and name' : 'its title'} matches the board)`);
         for (const s of p.shots) console.log(`  ${s.width}px${s.drawn ? ' (drawn)' : ''}: ${s.canvas} ${s.built}`);
@@ -1116,8 +1273,14 @@ if (isMain) {
       }
       for (const u of r.unmatched) console.log(`not compared: ${u}: no story's id or title matches the board's name`);
       console.log(`compared: ${r.pairs.length} of ${r.pairs.length + r.unmatched.length} boards, images in ${out}`);
+    } else if (cmd === 'estimate') {
+      if (!target) fail('usage: desk-design estimate <saved dir> [--key <K>]');
+      const source = readJson(join(target, 'source.json'));
+      if (!source) fail(`no source.json in ${target}: save the canvas first (desk-design save)`);
+      const key = opt(rest, '--key') ?? null;
+      for (const l of estimateLines(uploadEstimate(source, { key, themeCount: themes().length }), { key })) console.log(l);
     } else {
-      fail('usage: desk-design.mjs write|save|import|propose|status|check|snapshots|render|compare ... (see the top of the file)');
+      fail('usage: desk-design.mjs write|save|import|propose|status|check|snapshots|render|compare|estimate ... (see the top of the file)');
     }
   } catch (e) {
     console.error(`desk-design: ${e.message}`);

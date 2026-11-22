@@ -16,7 +16,9 @@ check makes one real request and the Jira checks make read-only API calls.
 gh repo view --json nameWithOwner,defaultBranchRef,description
 # §1 you
 gh api user --jq .login
-git log -n 50 --format='%an <%ae>' | sort | uniq -c | sort -rn | head -3   # the author this repo's commits use
+mine=(); for a in "$(gh api user --jq .login 2>/dev/null)" "$(git config user.email)"; do [ -n "$a" ] && mine+=(--author="$a"); done
+[ ${#mine[@]} -gt 0 ] && git log --all --since=1.year "${mine[@]}" --format='%an <%ae>%x09%ce' \
+  | grep -v $'\tnoreply@github.com$' | cut -f1 | sort | uniq -c | sort -rn | head -3   # your own commits' author, not GitHub's merges
 git config user.name; git config user.email
 # §2 paths
 git rev-parse --path-format=absolute --git-common-dir     # parent = primary repo root
@@ -136,8 +138,15 @@ How to turn what you find into rows:
   task ids (`P1-M14-FIX-1`), bug numbers (`BUG-119-5`). Propose a regex per family, one span each,
   with the count of branches or titles each matched and two examples; the user confirms or writes
   `none`. Such ids are then accepted as tickets whose text comes from a ticket file, never Jira.
+- **Other names.** Ask whether the code of another repo now lives in this one (a repo moved into a
+  monorepo, or a renamed repo whose old name tickets still carry), and offer each such name for §0
+  Other names, one span each, or `none`. A ticket whose Jira Repository, or files-in-scope prefix, is
+  one of them is then planned and built here rather than asked about as no repo on this computer.
 - **Workflow states.** From the project's statuses, propose In-progress, Review and Done states; the
   user confirms. `none` for Review is fine.
+- **Required fields.** Propose them from `desk-jira meta`, then ask which fields the team expects on
+  a new ticket that Jira does not require (a house rule, often enforced by a bot after creation), and
+  add those to the row too: desk reads the row, not Jira, for the tickets it creates and drafts.
 - **Branch protection and Required checks.** Merge what classic protection and the rulesets
   (`rules/branches/<default>`: `required_status_checks` rules, `pull_request` rules for approvals,
   `required_linear_history`) say; name which source each check came from. A repo that answers 404
@@ -149,6 +158,12 @@ How to turn what you find into rows:
   failed on most of them (it merged red, so it is not gating in practice), with the failure count,
   e.g. "`Run e2e tests` failed on 14 of 15". Never propose a required check. The user confirms each;
   `none` is the default. Everything not listed must pass for "green".
+- **Known flaky checks.** Propose nothing; ask. Each item is a whole check with the paths whose change
+  can break it for real (`` `<check>: <glob> [<glob>…]` ``), or one test inside a check that also runs
+  real tests (`` `<check>: <test file> > <test name>` ``, the name as its failure annotation's title
+  ends with it). Say that a check named only by its tests is waived only when each of its
+  failure annotations names a listed test, so it needs a reporter that annotates each failing test;
+  a failure in any other test still holds the PR. `none` is the default.
 - **State checks.** Search the workflows for checks that read the PR's state rather than its code:
   one that reads a desk-review (or other review) verdict from the PR's reviews, one that requires an
   approval, one that checks the title, and a gate job that only aggregates others (`needs:` on them).
@@ -156,6 +171,13 @@ How to turn what you find into rows:
   exactly as GitHub shows it; desk-gate.yml's `desk-review verdict: verdict` and `protected-path
   approval: approval` are the default when the user writes nothing. Say that the merge driver never
   reruns one: a red verdict check goes to a review worker, a red approval check to the user.
+- **Gate reviewers.** Where a verdict check counts only some accounts' reviews, read the logins from
+  its workflow: an env list on the verdict job, such as `PULLBOT_REVIEWERS: "agent-pullbot"`, or a
+  list the job's script compares the reviewer's login with. Propose them for §4 Gate reviewers, one
+  span each (`` `agent-pullbot` ``); a gate that filters on `author_association`, or one with no login
+  list, is `any`. Say that each pass compares that list with the login desk posts verdicts from (§4
+  Review account, else the default `gh` login) and, on a mismatch, reports one item for the repo and
+  sends no review or fix try to a PR red only on that check until it is fixed.
 - **Checks workers can't fix.** Search the repo instructions and the workflows for checks that fail
   until a person does something outside the code: an image built by hand, a credential, a service
   only they can reach ("run `ensure-flows-image.sh` if the Flows check says the image is missing").
@@ -191,6 +213,22 @@ How to turn what you find into rows:
   Pre-merge steps as `` `<check or step>: <the step>` ``, named exactly as the run shows it; the user
   confirms each, and `none` is the default. Say that autopilot never sends a PR red on one of these
   to a fix worker: it is put to the user as stuck, naming the step.
+- **Person-step labels.** Ask which labels the team puts on a ticket that is the user's own step (a
+  production deploy, an account set up), e.g. `ben-step`, and record each as one span in §4
+  Person-step labels; with none named, or with Tracker `none`, write `none`. Say that autopilot admits a ticket
+  carrying one parked as the user's step, so no worker spawns on it, and builds a ticket it blocks
+  now, merging it only once the step is Done.
+- **Person-input labels.** Ask which labels the team puts on a ticket that is the user's own step
+  whose output a build reads (a fixture, a recorded response, a key), suggesting `ben-input`, and
+  record each as one span in §4 Person-input labels; with none named, or with Tracker `none`, write
+  `none`. Say that autopilot parks a ticket carrying one as the user's step, as a Person-step label
+  does, but holds the build of a ticket it blocks until the step is Done; a ticket labelled both is
+  an input.
+- **Append-only paths.** Ask which files tickets only add to, such as a locale file each ticket adds
+  its strings to, suggesting `none`, and record each glob as one span in §4 Append-only paths (e.g.
+  `` `messages/*.json` ``); with none named, write `none`. Say that autopilot does not count two
+  tickets sharing only such files as a collision, so they run side by side, and that any other
+  shared file still collides.
 - **Evidence workflow.** Look in the workflows for one that takes a PR's screenshots and writes them
   into its body (a `workflow_dispatch` with a `pr` input that replaces `_drag <file>_` cells, e.g.
   `pr-evidence.yml`). Where there is one, propose it for §4 Evidence workflow as `` `<file>.yml` ``;
@@ -317,6 +355,15 @@ How to turn what you find into rows:
   runs that suite in full. A turbo or nx script that fans out over packages has no related form:
   propose each package's runner in its directory, or `none`. `none` keeps workers on the full
   suites, and changes nothing else.
+- **Suite weight.** `heavy` unless every item that runs under the test lock is light on memory:
+  each Unit tests, Related tests and Integration tests item (all three move to the light lock).
+  Light is shell tests, small node or Python scripts, a headless browser driven one page at a time.
+  A Jest or Vitest suite of any size, a database-backed integration suite, or anything that has
+  needed the Test worker cap, is `heavy`. Propose `light` only with a
+  reason the user confirms. `light` moves the repo's suites off the test lock the heavy suites and
+  typechecks share, onto a box-wide light lock of their own. Where the repo's committed
+  `.claude/settings.json` sets `env.DESK_SUITE_WEIGHT`, that value wins on every machine: propose
+  the row as it says, and `desk-env drift` names a row that disagrees.
 - **Codegen.** Always ask. The commands that regenerate code a fresh worktree or a schema change
   needs, one span each in the Build form: a `generate` script, `prisma generate` where there is a
   `schema.prisma`, an OpenAPI or GraphQL codegen step. Workers may run exactly these and nothing
@@ -365,6 +412,15 @@ How to turn what you find into rows:
 - **Env files.** The `.env*` files the primary checkout has that a fresh worktree lacks
   (`git -C <root> ls-files --others --ignored --exclude-standard | grep -E '(^|/)\.env'`). Names
   only; never read them.
+- **Test sign-in.** Always ask, once per app a §4 Dev server item names, the second app of a
+  monorepo included: propose one item per app in the Dev server form, `` `<dir>: <email>` `` (bare
+  for the root), e.g. `` `apps/portal/apps/web: <email>` ``, and say what the user must hold: an
+  existing user in that app's development auth instance (never production, never a new one) who
+  already holds the grant its signed-in pages need, so a worker can sign in as them for screenshots.
+  The email is a fact only the user has: never guess one, and never take a password. `none` is a
+  fine answer where no app has a page behind sign-in. `desk-env drift --app <dir>` names an app with
+  a Dev server item and no item here `NOSIGNIN`; propose its item on every run, a re-run's
+  included.
 - **Database URL variable.** **Every** variable name in those env files (and `.env.example`) that
   holds a database URL or name, e.g. `` `DATABASE_URL` `DATABASE_URL_UNPOOLED` `GYGG_DB_NAME` ``,
   one span each, from the name scan above; never read a value. Missing one matters: a worker's
@@ -405,11 +461,31 @@ How to turn what you find into rows:
   copy lives inline. Each is declinable like any other rule.
 - **People.** For a solo repo propose `you` in every role and say so. For a team repo, propose from
   collaborators and CODEOWNERS; the user names the roles.
+- **Git author (§1).** Propose the most common identity on the user's own commits across every
+  branch, from the detect block: it leaves out commits GitHub committed (squash and web merges, whose
+  author is the `id+login@users.noreply.github.com` address GitHub stamps), which fill a squash-merge
+  repo's default branch. When `git config user.email` differs from the proposal, show it beside it.
+  With neither a GitHub login nor a `git config user.email`, it prints nothing: ask for the identity.
 - **AI attribution.** Propose `allowed` if recent commits already carry a Claude trailer (the repo's
   own instructions then decide the wording), otherwise ask. If the user picks `forbidden`, offer to
   also write `{"attribution": {"commit": "", "pr": "", "sessionUrl": false}}` into the repo's
   `.claude/settings.local.json` (backed up first), so Claude Code does not add it in the first place;
   the hook is the backstop.
+- **Whose commits count for AI attribution.** The count in the detect block takes every author's
+  commit messages line by line, so on a squash-merge repo it counts teammates' trailers, often many
+  times over. "Recent commits" in the item above are the user's own: count those commits, by the
+  user's §1 Git author email(s) (one `--author` each) across every branch, and the same for everyone,
+  each as commits whose message carries a trailer, not lines:
+
+  ```bash
+  ai='co-authored-by: *claude|generated with \[?claude code'
+  git log --all -n 200 --author='<email>' --format='%B%x00' | tr -d '\n' | tr '\0' '\n' | grep -ciE "$ai"   # yours
+  git log --all -n 200 --format='%B%x00' | tr -d '\n' | tr '\0' '\n' | grep -ciE "$ai"                      # everyone's
+  ```
+
+  Propose `allowed` only when the user's own commits carry one. When only other authors' do, say so,
+  with both counts, and ask, recommending nothing from them: what teammates do is not what this repo
+  allows.
 - **Repo instructions.** List `CLAUDE.md` / `AGENTS.md` / similar that exist; they win over §5.
 - **Ticket format.** While the row is `TODO`, propose `default`: desk-jira's
   `references/ticket-template.md`, the layouts every desk path that files a ticket uses. Show its
@@ -440,6 +516,10 @@ How to turn what you find into rows:
   Tailwind `screens` or `--breakpoint-*`, a width that recurs in `@media` queries), deduplicated and
   ascending, one span each. Name the `file:line` each width not in the default came from. `none` for
   a repo with no UI.
+- **Themes.** Propose each theme the design scan found the UI switching between (a `dark:` variant
+  in use, a `prefers-color-scheme` query, a `data-theme` or `.dark` class the code toggles), one
+  span each, e.g. `light` `dark`, and name the `file:line` it came from. `none` for a repo with one
+  look or no UI.
 - **Design system.** Propose each file the design scan found that defines tokens (a `tokens.css`,
   theme files, the Tailwind config, a CSS file with an `@theme` block, a `DESIGN.md`), one span each,
   repo-relative. `none` for a repo with no UI. **A repo with UI but nothing to put in this row

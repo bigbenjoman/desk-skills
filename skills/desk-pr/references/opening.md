@@ -3,7 +3,7 @@
 Read before `gh pr create` or `gh pr edit`: for the PR-description checks, the title, opening the
 draft, undrafting and merging, and editing the body once the PR is open. The step table in
 `../SKILL.md` names this file for those steps. The config, the diff hygiene block (§1) and the start
-of §4, the pre-push checks, are in `../SKILL.md`, already loaded; the body itself is in
+of §4, the pre-push checks and the preview-build lease, are in `../SKILL.md`, already loaded; the body itself is in
 `the-body.md`, beside this file, and the screenshots in `screenshots.md`.
 
 The §4 rows this file names are read with `desk-env get repo-merge-settings`,
@@ -11,6 +11,18 @@ The §4 rows this file names are read with `desk-env get repo-merge-settings`,
 `desk-env list merge-holds`, `desk-env get ticket-pattern` and `desk-env get tracker`.
 
 ### Before `gh pr create` or `gh pr edit`: the PR-description checks
+
+**Every body first goes through desk's closing-keyword check**, whatever the repo configures:
+
+```bash
+node ~/.claude/desk/bin/closing-keywords.mjs <absolute path to the body file>
+```
+
+GitHub closes an issue at merge wherever close, fix or resolve (any form, any case) sits right before
+a reference to it, mid-sentence included. The check passes a line that holds only the keywords and
+references, `Closes #<n>`, which is how a PR meant to close an issue says so; it flags any other
+use and names the line. Reword a flagged line (the-body.md, "A step that closes an issue later")
+and re-run; never move a step's issue onto a `Closes` line to pass.
 
 Where `desk-env cmds pr-description-checks` prints items, CI checks the PR's description, and a
 body that fails is a red check on the first run. Write the body to its file first, then run each
@@ -35,6 +47,11 @@ The image upload script's own edit only swaps `_drag <file>_` cells for images i
 checked, so it is not run through the checks again.
 
 ### Open it
+
+Opening the PR starts its preview build: first take the preview-build lease as `../SKILL.md` §4
+*Before opening the PR, and before every push to it* says (off, or §4 Vercel `none` (`desk-env list vercel`): no lease;
+`shadow`: take it without waiting; `on`: wait for a unit), then open, then put the PR's number on
+the unit with the `desk-env lease renew` that section gives.
 
 ```bash
 gh pr create --repo <§0 GitHub repo> --draft --base <default> --head <your branch> \
@@ -70,6 +87,11 @@ including disarming auto-merge when review feedback lands under §3 `merge-feedb
 close-out once it merges: the move to Done, and `closeout.mjs` telling any batch that still holds
 the ticket. If `gh`
 fails, fall back to handing over the raw markdown to paste.
+
+Arming or merging, claim it first and record it after in the merge log, as `desk-ticket` Stage 7
+says (`merge-log.mjs claim`, then `record --event armed` or `merged`, and `disarmed` when you turn auto-merge off).
+A refused claim stops the arming or merge: report the line it printed, which names who and at which
+head when another desk path already has the PR.
 
 **The title follows §5 PR title exactly** — the format (e.g. conventional commits
 `type(scope): <TICKET> description`), where the key sits, and whether CI checks it. When §4 Merge

@@ -9,6 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { globToRegExp } from './gate.mjs';
 import { LOCKFILES } from './test-scope.mjs';
+import { isNone } from './desk-env.mjs';
 
 // Always incidental, whatever the row says.
 export const TEST_GLOBS = Object.freeze(['**/*.test.*', '**/*.spec.*', 'test/**', 'tests/**']);
@@ -19,6 +20,30 @@ export function incidentalGlobs(items) {
   if (items == null) return [...LOCKFILES];
   if (items.length === 1 && /^none$/i.test(String(items[0]).trim())) return [];
   return items.map(String);
+}
+
+// §4 Append-only paths: files tickets only add to (a locale file each ticket adds strings to), which
+// two tickets may share without colliding. The row's items -> { globs, bad }. Unset and `none` name no
+// globs. A row that is not a list of path globs (an item with a space, an absolute path, a `..`) reads
+// as none, with `bad` naming the row, so the collision check runs as it would with no row.
+export const APPEND_ONLY_ROW = 'config §4 "Append-only paths"';
+export function appendOnlyGlobs(items) {
+  if (items == null || isNone(items)) return { globs: [], bad: null };
+  const globs = items.map((s) => String(s).trim());
+  const wrong = globs.filter((g) => !g || /\s/.test(g) || g.startsWith('/') || g.split('/').includes('..'));
+  if (!globs.length || wrong.length) return { globs: [], bad: `${APPEND_ONLY_ROW} is not a list of path globs (${wrong.join(' | ') || 'no items'})` };
+  return { globs, bad: null };
+}
+// The row read by `read` (configValues, which throws on a row mixing `none` with other items) -> the
+// same { globs, bad }, a throw read as a bad row.
+export function appendOnlyFrom(read) {
+  try { return appendOnlyGlobs(read()); } catch (e) { return { globs: [], bad: `${APPEND_ONLY_ROW}: ${e.message}` }; }
+}
+// The files both lists name that no append-only glob covers: what two tickets collide on.
+export function sharedFiles(a, b, globs = []) {
+  const mine = new Set(a ?? []);
+  const res = globs.map(globToRegExp);
+  return [...new Set(b ?? [])].filter((f) => mine.has(f) && !res.some((re) => re.test(String(f).replace(/^\.\//, ''))));
 }
 
 // The changed files no scope entry, test glob or incidental glob covers, in diff order.

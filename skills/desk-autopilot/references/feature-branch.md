@@ -39,13 +39,21 @@ commit (never a rebase, so running workers' bases stay valid) and pushes it, and
 many commits came in. A park recorded as `base contains <§0 Default branch>` is checked after that
 sync, so the pass that syncs the base requeues it (and lifts any not-now on it); one whose sync could
 not run stays parked, its line under `clears-when:` saying why. A push refused as non-fast-forward (the merge
-driver just merged into the base) is fetched, merged again and retried once. Pushing is config §3
+driver just merged into the base) is fetched, merged again and retried once. A base missing on
+origin whose last known head is already in §0 Default branch (a promotion PR from it merged, and
+delete-branch-on-merge removed it) is pushed back at §0 Default branch's head, and the report says
+so; one whose last known head is not in §0 Default branch is never recreated, and holds every spawn
+with that head named. A missing base holds spawns in any mode until it is back. Pushing is config §3
 `batch-base-push`: unset or `ask` is one approval per batch, so ask it at Stage 3 and run passes with
 `AUTOPILOT_BASE_PUSH_APPROVED=1`. A sync that cannot run pushes nothing and goes under `WAITING ON
 YOU` with its reason: a conflict (its files listed; resolve it in the base worktree and push with
 `git push origin HEAD:refs/heads/<branch>`), a refused push, the row, or a base worktree that could
-not be made (its path holds something else). In feature mode that pass spawns nothing; otherwise
-spawning carries on from the base as it stands. Feature mode here is the decision `plan-batch`
+not be made (its path holds something else). In feature mode that pass spawns nothing. Otherwise
+spawning carries on from the base as it stands while it is at most 20 commits behind §0 Default branch
+(`AUTOPILOT_BASE_BEHIND_MAX` overrides the number), and past that the pass spawns nothing, saying how
+far behind the base is; tickets already running carry on, and spawns resume once a sync lands. A
+lag the pass cannot count (a base ref never fetched) holds nothing and is reported as not read. A
+sync left to a conflict fix try holds the same way. Feature mode here is the decision `plan-batch`
 recorded on the queue when it seeded (`feature`), not whatever `feature.json` names.
 
 **A conflict goes to a conflict fix worker before it comes to you** (`base-fix.mjs`), where §3
@@ -58,11 +66,8 @@ budget, and every batch counts it and its port as a running worker's. A session 
 worker parked or finished is stopped, as is one quiet for six passes (wedged); either ends the try.
 One that reaches a usage limit is never stopped or failed for it: it is paused, and resumed in its
 own session as the same try once the limit lifts (its reset passes or a probe call succeeds), as a
-ticket's worker is. With more than one login, a session that ended at one login's limit benches that
-login, and while another login can take new work the try (an epic PR review try too) carries on
-there as a fresh session in the base worktree: the same try, starting its task again, its briefing
-naming the uncommitted changes the worktree kept, and `base_fix` naming the login it moved to. With
-no other login open it waits and resumes on its own login, as above. A preflight the limit refuses spends no try and holds the batch. The maintenance
+ticket's worker is. It is never moved to another login or subscription, however much room another
+has (an epic PR review try too). A preflight the limit refuses spends no try and holds the batch. The maintenance
 window drains it, and stops it at its limit, as any worker, and it resumes as the same try once the
 window is done; either resume waits while anything holds spawns. While it runs the pass leaves the base worktree
 alone (no sync, no baseline, no base gate) and, in feature mode, still spawns nothing else. The next

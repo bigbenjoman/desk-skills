@@ -8,6 +8,7 @@
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin"
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state/tickets" "$T/skills/desk-ticket/references" "$T/stub"
+trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
 git config --global user.email t@example.com; git config --global user.name t
 unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_DEFAULT_BRANCH AUTOPILOT_SKIP_CHALLENGE \
@@ -54,6 +55,7 @@ if [ "$1" = auth ]; then printf '{"loggedIn":true,"email":"%s@example.com"}\n' "
 n=$(ls "$STUB_LOG".* 2>/dev/null | wc -l | tr -d ' ')
 printf '%s\0' "$@" > "$STUB_LOG.$n"
 [ -z "${STUB_LOGINS:-}" ] || printf '%s\n' "${CLAUDE_CONFIG_DIR-unset}" >> "$STUB_LOGINS"
+[ -z "${STUB_CACHE:-}" ] || printf '%s\n' "${FORCE_PROMPT_CACHING_5M-unset}" >> "$STUB_CACHE"
 # Call STUB_LIMIT is refused at the weekly limit (its reset left out with STUB_NO_RESET); call STUB_NOREC
 # writes nothing and talks, as any other failure would.
 if [ "${STUB_LIMIT:-}" = "$n" ]; then
@@ -62,8 +64,14 @@ if [ "${STUB_LIMIT:-}" = "$n" ]; then
   exit 1
 fi
 [ "${STUB_NOREC:-}" = "$n" ] && { echo "STUB-STDOUT"; exit 1; }
+# Call STUB_TIMEOUT writes nothing and ends as desk_timeout ends a call it cut off.
+[ "${STUB_TIMEOUT:-}" = "$n" ] && exit 124
+# Call STUB_REFUSED answers with the file it names, a recorded run the API refused.
+[ "${STUB_REFUSED_AT:-}" = "$n" ] && { cat "$STUB_REFUSED"; exit 1; }
 if [ "$n" = 0 ]; then
-  printf '{"ticket":"fix-thing","lane":"%s","branch":"%s","change_kind":"%s"%s}' "$STUB_LANE" "${STUB_BRANCH:-fix/fix-thing}" "${STUB_KIND-surface}" "${STUB_EXTRA:-}" > "$DESK_STATE/triage/fix-thing.json"
+  # STUB_ANSWER is an answer the person saves while the pass runs.
+  [ -z "${STUB_ANSWER:-}" ] || { mkdir -p "$DESK_STATE/briefings"; printf '%s' "$STUB_ANSWER" >> "$DESK_STATE/briefings/${STUB_TICKET:-fix-thing}.md"; }
+  printf '{"ticket":"%s","lane":"%s","branch":"%s","change_kind":"%s"%s}' "${STUB_TICKET:-fix-thing}" "$STUB_LANE" "${STUB_BRANCH:-fix/fix-thing}" "${STUB_KIND-surface}" "${STUB_EXTRA:-}" > "$DESK_STATE/triage/${STUB_TICKET:-fix-thing}.json"
 else
   [ -n "${STUB_CHAL:-}" ] || STUB_CHAL=$(printf '{"verdict":"CONFIRM","lane":"%s","reason":"stub"}' "$STUB_LANE")
   printf '%s' "$STUB_CHAL" > "$DESK_STATE/triage/fix-thing.challenge.json"
@@ -215,6 +223,16 @@ out=$(STUB_LANE=A STUB_NOREC=0 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-505 AC3: any other run that writes no record fails as before, though an earlier record was on disk" \
   '[ $rc -eq 1 ] && [ ! -f "$T/state/triage/fix-thing.json" ] && grep -qF "FAIL: fix-thing produced no triage record at $T/state/triage/fix-thing.json" <<< "$out" && [[ "$out" != *"USAGE LIMIT"* ]]'
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$TLOG"
+out=$(STUB_LANE=A STUB_TIMEOUT=0 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-814 AC2: a first pass cut off at its timeout says it timed out" \
+  '[ $rc -eq 1 ] && grep -qxF "FAIL: fix-thing produced no triage record: claude timed out after 600s (log: $TLOG)" <<< "$out"'
+# DS-812: a run the API refused with 403 (tests/fixtures/api-refused-403.jsonl, recorded from a real
+# triage behind a Cloudflare block) is named as that, not as the session limit.
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$TLOG"
+out=$(STUB_LANE=A STUB_REFUSED_AT=0 STUB_REFUSED="$S/fixtures/api-refused-403.jsonl" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-812 AC4: an empty run whose log holds a 403 names the 403, not the session limit" \
+  '[ $rc -eq 1 ] && grep -qF "FAIL: fix-thing produced no triage record: the Claude API refused the call with HTTP 403 (Failed to authenticate. API Error: 403 Attention Required! | Cloudflare). That is the login, not the session limit" <<< "$out" && [[ "$out" != *"can also be the account session limit"* ]] && [[ "$out" != *"USAGE LIMIT"* ]]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$TLOG"
 out=$(STUB_LANE=C STUB_NOREC=1 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-505 AC3: a challenge that writes nothing for another reason keeps the first-pass lane, as before" \
   '[ $rc -eq 0 ] && [ "$(lc .lane_challenge.verdict)" = UNAVAILABLE ] && [ "$(lc .lane)" = C ]'
@@ -248,15 +266,44 @@ for bad in '"ben_steps":"a cdk deploy"' '"ben_steps":[{"step":"a cdk deploy"}]' 
 done
 check "DS-598: the first pass asks for blocker_needs on each open blocker" \
   'P0 | grep -qF "\"blocker_needs\": {\"<KEY of an open blocker>\": {\"needs\"" && P0 | grep -qF "Judge each open \"is blocked by\" link in \`blocker_needs\`"'
-for bad in '"blocker_needs":[]' '"blocker_needs":{"X-1":true}' '"blocker_needs":{"X-1":{"needs":"yes","why":"w"}}' '"blocker_needs":{"X-1":{"why":"w"}}'; do
+check "DS-687: the first pass asks for one of three calls on every open blocker" \
+  'P0 | grep -qF "{\"needs\": \"build|merge|none\", \"why\"" && P0 | grep -qF "open blocker needs a call, and a record missing one is refused"'
+for bad in '"blocker_needs":[]' '"blocker_needs":{"X-1":true}' '"blocker_needs":{"X-1":{"needs":"yes","why":"w"}}' '"blocker_needs":{"X-1":{"why":"w"}}' \
+  '"blocker_needs":{"X-1":{"needs":true,"why":"w"}}' '"blocker_needs":{"X-1":{"needs":false,"why":"w"}}' '"blocker_needs":{"X-1":{"needs":"later","why":"w"}}'; do
   rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
   out=$(STUB_LANE=A STUB_EXTRA=",$bad" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
-  check "DS-598 AC6: blocker_needs $bad is refused as malformed" '[ $rc -ne 0 ] && [[ "$out" == *"triage record is malformed"* ]]'
+  check "DS-687 AC8: blocker_needs $bad, not one of the three calls, is refused as malformed" '[ $rc -ne 0 ] && [[ "$out" == *"triage record is malformed"* ]]'
 done
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
-out=$(STUB_LANE=A STUB_EXTRA=',"blocker_needs":{"X-1":{"needs":false,"why":"touches none of its files"},"X-2":{"needs":true,"why":"builds the runner it calls"}}' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
-check "DS-598 AC6: a blocker_needs of objects with a boolean needs is kept" \
-  '[ $rc -eq 0 ] && [ "$(lc -c "[.blocker_needs[].needs]")" = "[false,true]" ]'
+out=$(STUB_LANE=A STUB_EXTRA=',"blocker_needs":{"X-1":{"needs":"none","why":"touches none of its files"},"X-2":{"needs":"build","why":"builds the runner it calls"},"X-3":{"needs":"merge","why":"lands the flag it ships behind"}}' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-687 AC8: a blocker_needs of the three calls is kept" \
+  '[ $rc -eq 0 ] && [ "$(lc -c "[.blocker_needs[].needs]")" = "[\"none\",\"build\",\"merge\"]" ]'
+
+# AC1: on a tracker key, once ticket-facts.mjs has listed the open blockers, each needs a call. FIX-1 is
+# blocked by X-1 and X-2, both open, and by X-3, Done.
+sed -e 's/| Tracker | `none` |/| Tracker | `jira` |/' -e 's/| Ticket key pattern | `none` |/| Ticket key pattern | `FIX-[0-9]+` |/' "$T/config.md" > "$T/config-jira.md"
+mkdir -p "$T/jirastub"
+link(){ printf '{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"%s","fields":{"summary":"s","issuetype":{"name":"Story"},"status":{"statusCategory":{"key":"%s"}}}}}' "$1" "$2"; }
+printf '{"key":"FIX-1","fields":{"summary":"Fix it","labels":[],"issuelinks":[%s,%s,%s]}}\n' "$(link X-1 new)" "$(link X-2 indeterminate)" "$(link X-3 'done')" > "$T/fix-1.json"
+cat > "$T/jirastub/desk-jira" <<EOF
+#!/bin/sh
+case "\$1" in
+  get) [ "\$2" = FIX-1 ] && cat "$T/fix-1.json" || printf '{"key":"%s","fields":{"labels":[]}}\n' "\$2" ;;
+  lint) echo '[]' ;;
+  *) echo '[]' ;;
+esac
+EOF
+chmod +x "$T/jirastub/desk-jira"
+jtriage(){ rm -f "$STUB_LOG".* "$T/state/triage/FIX-1.json"; out=$(DESK_CONFIG="$T/config-jira.md" PATH="$T/jirastub:$PATH" STUB_TICKET=FIX-1 STUB_LANE=A STUB_BRANCH=fix/FIX-1-it STUB_EXTRA="$1" bash "$B/triage.sh" FIX-1 2>&1); rc=$?; }
+jtriage ',"blocker_needs":{"X-1":{"needs":"build","why":"builds what it calls"}}'
+check "DS-687 AC1: a record with a call for only one of two open blockers is refused, naming the one with none" \
+  '[ $rc -ne 0 ] && [[ "$out" == *"FIX-1 triage record is malformed: blocker_needs has no call for open blocker X-2."* ]] && [ ! -f "$T/state/triage/FIX-1.json" ]'
+jtriage ''
+check "DS-687 AC1: a record with no blocker_needs at all names every open blocker, never a Done one" \
+  '[ $rc -ne 0 ] && [[ "$out" == *"no call for open blockers X-1, X-2."* ]]'
+jtriage ',"blocker_needs":{"X-1":{"needs":"build","why":"builds what it calls"},"X-2":{"needs":"merge","why":"lands first"}}'
+check "DS-687 AC1: a call for every open blocker is kept, with its blockers listed" \
+  '[ $rc -eq 0 ] && [ "$(jq -c "[.blockers[].key]" "$T/state/triage/FIX-1.json")" = "[\"X-1\",\"X-2\",\"X-3\"]" ]'
 
 # The challenge (AC5) on a lane C fixture: its prompt carries AC1 to AC3, a DOWNGRADE moves the ticket
 # to A or B and keeps its ben_steps, and a CONFIRM on an L-sized ticket keeps C (AC3).
@@ -406,25 +453,110 @@ check "DS-394 AC5: a call the person overrode binds as overridden, and the overr
   '[ $rc -eq 0 ] && P0 | grep -qxF -- "- which retry backoff?: took \"fixed\", overriding \"exponential\" (ben) (engineering)" && ! P0 | grep -qF "took \"exponential\""'
 rm -rf "$T/state/briefings" "$T/state/decisions.jsonl"
 
-# DS-468: both passes run on a login that is not benched; with every login benched, or one login, as the
-# shell does. Login a is the default (~/.claude), benched in the queue; b has room.
+# DS-823: a re-triage carries the earlier record's open unknowns and person steps, unless the ticket now
+# settles them (named in dropped_earlier) or the person has answered since. The stub's pass returns none.
+EQ='Which legal wording ships on the consent page? (recommended: the current text)'
+ES='apply the migration to production'
+EARLY="$T/state/triage/fix-thing.earlier.json"
+earlier(){ printf '{"ticket":"fix-thing","lane":"A","branch":"fix/fix-thing","change_kind":"surface","unknowns":["%s"],"decided":[],"ben_steps":[{"step":"%s","blocker":"Ben applies it, unblocking fix-thing"}]%s}' "$EQ" "$ES" "${1:-}" >"$T/state/triage/fix-thing.json"; touch -t 202601010000 "$T/state/triage/fix-thing.json"; }
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC1: the prompt lists the earlier record's open unknown and person step" \
+  'P0 | grep -qF "**Still open from fix-thing'"'"'s earlier triage.**" && P0 | grep -qxF -- "- unknown: $EQ" && P0 | grep -qxF -- "- person step: $ES"'
+check "DS-823 AC1: a pass that returns neither keeps the same unknown and person step, and says so" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "$(jq -cn --arg q "$EQ" "[\$q]")" ] && [ "$(lc -r ".ben_steps[0].step")" = "$ES" ] && [ "$(lc ".ben_steps | length")" = 1 ] && [[ "$out" == *"carried 1 earlier unknown(s) and 1 earlier person step(s) this pass left out"* ]] && [ ! -f "$EARLY" ]'
+rm -f "$STUB_LOG".*
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC1: triaging again carries them again, never twice" \
+  '[ $rc -eq 0 ] && [ "$(lc ".unknowns | length")" = 1 ] && [ "$(lc ".ben_steps | length")" = 1 ]'
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A STUB_NOREC=0 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+rm -f "$STUB_LOG".*
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc2=$?
+check "DS-823 AC1: a triage that fails keeps the earlier record aside, and the next one still carries it" \
+  '[ $rc -ne 0 ] && [ $rc2 -eq 0 ] && [ "$(lc ".unknowns | length")" = 1 ] && [ "$(lc -r ".ben_steps[0].step")" = "$ES" ] && [ ! -f "$EARLY" ]'
+rm -f "$STUB_LOG".*; earlier
+DROP="\"dropped_earlier\":[{\"item\":\"$EQ\",\"why\":\"the ticket now says: ship the current consent text\"},{\"item\":\"$ES\",\"why\":\"the ticket no longer adds a migration\"}]"
+out=$(STUB_LANE=A STUB_EXTRA=",$DROP" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC2: an earlier unknown the ticket now answers is dropped, naming it and the text that answered it" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "[]" ] && [[ "$out" == *"dropped earlier unknown \"$EQ\": the ticket now says: ship the current consent text"* ]]'
+check "DS-823 AC3: an earlier person step the ticket now removes is dropped, naming it and why" \
+  '[ "$(lc -c .ben_steps)" = "[]" ] && [[ "$out" == *"dropped earlier person step \"$ES\": the ticket no longer adds a migration"* ]] && [ "$(lc ".dropped_earlier | length")" = 2 ]'
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A STUB_EXTRA=",\"dropped_earlier\":[{\"item\":\"$ES\",\"why\":\"\"}]" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC3: a drop that gives no reason does not drop the step" \
+  '[ $rc -eq 0 ] && [ "$(lc -r ".ben_steps[0].step")" = "$ES" ] && [ "$(lc .dropped_earlier)" = null ]'
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A STUB_KIND=bogus bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+rm -f "$STUB_LOG".*
+out=$(STUB_LANE=A STUB_KIND=bogus bash "$B/triage.sh" fix-thing 2>&1); rc2=$?
+check "DS-823 AC1: a pass whose record is rejected never replaces the earlier record kept aside" \
+  '[ $rc -ne 0 ] && [ $rc2 -ne 0 ] && P0 | grep -qxF -- "- unknown: $EQ" && [ "$(jq -r ".ben_steps[0].step" "$EARLY")" = "$ES" ]'
+rm -f "$STUB_LOG".*
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC1: the retry after it carries the earlier unknown and person step, and stamps when it triaged" \
+  '[ $rc -eq 0 ] && [ "$(lc ".unknowns | length")" = 1 ] && [ "$(lc -r ".ben_steps[0].step")" = "$ES" ] && [ ! -f "$EARLY" ] && [ "$(lc -r ".triaged_at | type")" = string ]'
+rm -f "$STUB_LOG".*; earlier
+TAKEN='"decided":[{"question":"Which legal wording ships on the consent page?","options":["the current text","new text"],"chose":"the current text","category":"wording"}]'
+out=$(STUB_LANE=A STUB_EXTRA=",$TAKEN" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC1: an earlier reserved unknown this pass takes as a call is asked again, never also taken" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "$(jq -cn --arg q "$EQ" "[\$q]")" ] && [ "$(lc -c .decided)" = "[]" ]'
+rm -f "$STUB_LOG".*; printf 'null\n' > "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823: an earlier record that is not an object is not carried and does not stop the triage" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "[]" ] && [ ! -f "$EARLY" ]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A STUB_KIND=bogus STUB_EXTRA=",\"unknowns\":[\"$EQ\"],\"ben_steps\":[{\"step\":\"$ES\",\"blocker\":\"Ben applies it\"}]" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+rm -f "$STUB_LOG".*
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc2=$?
+check "DS-823: a first triage's refused record is never carried into its retry as the earlier one" \
+  '[ $rc -ne 0 ] && [ $rc2 -eq 0 ] && ! P0 | grep -qF "Still open from fix-thing" && [ "$(lc -c .unknowns)" = "[]" ] && [ "$(lc -c .ben_steps)" = "[]" ] && [ ! -f "$EARLY" ]'
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A STUB_ANSWER=$'\n## Answer from the user (2099-01-01T00:00:00Z)\n\nShip the current consent text.\n' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC4: an answer saved while the pass runs settles the earlier unknown, and the record is stamped before it" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "[]" ] && [ "$(lc -r ".ben_steps[0].step")" = "$ES" ] && [[ "$out" == *"1 earlier unknown(s) not carried: answered since"* ]] && [[ "$(lc -r .triaged_at)" < "2099" ]]'
+rm -rf "$T/state/briefings"
+mkdir -p "$T/state/briefings"
+printf '# Briefing for fix-thing\n\n## Answer from the user (2026-11-01T06:28:00Z)\n\nShip the current consent text.\n' > "$T/state/briefings/fix-thing.md"
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC4: an earlier unknown the person has answered since is not carried, and the step still is" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "[]" ] && ! P0 | grep -qF -- "- unknown: $EQ" && [ "$(lc -r ".ben_steps[0].step")" = "$ES" ] && [[ "$out" == *"1 earlier unknown(s) not carried: answered since"* ]]'
+rm -f "$STUB_LOG".*; earlier; touch -t 202611100000 "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC4: an answer older than the earlier record does not settle its unknowns" \
+  '[ $rc -eq 0 ] && P0 | grep -qxF -- "- unknown: $EQ" && [ "$(lc ".unknowns | length")" = 1 ]'
+rm -f "$STUB_LOG".*; earlier ',"triaged_at":"2026-10-01T00:00:00Z"'; touch -t 202611100000 "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC4: an answer after the earlier triage settles its unknowns though the record was rewritten since" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "[]" ] && [[ "$out" == *"1 earlier unknown(s) not carried: answered since"* ]]'
+rm -rf "$T/state/briefings" "$EARLY"; rm -f "$T/state/triage/fix-thing.json"
+
+# DS-621: both passes run on the repo's subscription, at its limit too; with no subscriptions file, as the
+# shell does. Login a is the default (~/.claude); b, signed in to b@example.com, has room.
 mkdir -p "$T/home/.claude" "$T/home/.claude-logins/b"
-printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `a` | `~/.claude` | `in rotation` |\n| `claude` | `b` | `~/.claude-logins/b` | `in rotation` |\n' > "$T/subs.md"
-bench(){ printf '{"version":1,"tickets":{},"benched":{%s}}\n' "$1" > "$T/queue.json"; }
-A_BENCH='"default":{"login":"a","config_dir":null,"type":"five_hour","resets_at":null}'
-B_BENCH="\"b\":{\"login\":\"b\",\"config_dir\":\"$T/home/.claude-logins/b\",\"type\":\"five_hour\",\"resets_at\":null}"
+printf '{"oauthAccount":{"emailAddress":"b@example.com"}}\n' > "$T/home/.claude-logins/b/.claude.json"
+printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `a` | `~/.claude` | `default` |\n| `claude` | `b` | `~/.claude-logins/b` | `unused` |\n' > "$T/subs.md"
+hold(){ printf '{"version":1,"tickets":{},"usage_hold":{"type":"five_hour","resets_at":null,"preflight":"X-1","paused":[]}}\n' > "$T/queue.json"; }
 logins(){ tr '\n' ' ' < "$T/logins" | sed 's/ $//'; }
-bench "$A_BENCH"; rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins"
-out=$(DESK_SUBSCRIPTIONS="$T/subs.md" STUB_LOGINS="$T/logins" STUB_LANE=C bash "$B/triage.sh" fix-thing 2>&1); rc=$?
-check "DS-468 AC2 AC3: with login a benched, triage and its challenge both run on login b" \
+hold; rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins"
+out=$(DESK_SUBSCRIPTIONS="$T/subs.md" DESK_SUBSCRIPTION=b@example.com STUB_LOGINS="$T/logins" STUB_LANE=C bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-621 AC1 AC6: with the repo's subscription b, triage and its challenge both run on login b" \
   '[ $rc -eq 0 ] && [ "$(logins)" = "$T/home/.claude-logins/b $T/home/.claude-logins/b" ]'
-bench "$A_BENCH,$B_BENCH"; rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins"
+hold; rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins"
 out=$(DESK_SUBSCRIPTIONS="$T/subs.md" STUB_LOGINS="$T/logins" STUB_LANE=C bash "$B/triage.sh" fix-thing 2>&1); rc=$?
-check "DS-468 AC6 AC7: with every login benched, both run as the shell does" '[ $rc -eq 0 ] && [ "$(logins)" = "unset unset" ]'
-bench "$A_BENCH"; rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins"
+check "DS-621 AC5: following the default a at its limit, both run on a, the shell's own, not on b" '[ $rc -eq 0 ] && [ "$(logins)" = "unset unset" ]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/logins" "$T/queue.json"
 out=$(STUB_LOGINS="$T/logins" STUB_LANE=C bash "$B/triage.sh" fix-thing 2>&1); rc=$?
-check "DS-468 AC8: with no subscriptions file, both run as the shell does" '[ $rc -eq 0 ] && [ "$(logins)" = "unset unset" ]'
+check "DS-621 AC7: with no subscriptions file, both run as the shell does" '[ $rc -eq 0 ] && [ "$(logins)" = "unset unset" ]'
 rm -f "$T/queue.json" "$T/logins" "$T/subs.md"; rm -rf "$T/home/.claude-logins"
+
+# DS-649 AC1: both passes ask for the 5-minute prompt cache.
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$T/cache"
+out=$(FORCE_PROMPT_CACHING_5M='' STUB_CACHE="$T/cache" STUB_LANE=C bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-649 AC1: the first pass and the challenge each run with FORCE_PROMPT_CACHING_5M=1" \
+  '[ $rc -eq 0 ] && [ "$(tr "\n" " " < "$T/cache")" = "1 1 " ]'
+rm -f "$T/cache"
 
 check "shellcheck: no flag parsed as a command (SC2215) in desk/bin" \
   '! command -v shellcheck >/dev/null || ! shellcheck -S warning -f gcc "$B"/*.sh 2>/dev/null | grep -q SC2215'

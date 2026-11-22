@@ -24,19 +24,31 @@ import { dirname, join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { readQueue, crashShowsPerson, describeCrash, Refusal } from './batch-state.mjs';
 import { readCloseouts } from './closeout.mjs';
-import { slotFor } from './batches.mjs';
+import { slotFor, onlyKeptTriage } from './batches.mjs';
+import { lockPid, unlock, alive, tryLockFile } from './dir-lock.mjs';
+import { writeQueueFile, archivePath, readQueueAt, reportMissed } from './queue-store.mjs';
+import { auditsIn } from './levers-audit.mjs';
+import { ledgerOn, ledgerTarget, recordWrite } from './queue-ledger.mjs';
 
 crashShowsPerson((e) => console.error(`move-batch: ${describeCrash(e)}`));
 
 // What stays with the standing slot: its named batches, the locks this move holds, the supervisor
-// agent's own log (launchd writes it for the repo) and intake's register (intake admits into the slot).
-const STAYS = [E.BATCHES_DIR, 'ref', 'orchestrator.lock', 'supervisor.lock', 'supervisor.agent.log', 'intake.json'];
+// agent's own log (launchd writes it for the repo), intake's register (intake admits into the slot),
+// the repo's asks (asks.mjs), the refused config rows already pushed (supervisor.mjs), the exits folder
+// the supervisor watches with its tick lock and wake record (every batch's workers write there), and the
+// levers' repo-level records with their locks: the lever log (lever-log.mjs), the blind audits and their
+// queue (levers-audit.mjs) and the evaluations with their evidence (levers-evaluate.mjs). Each is kept
+// once per repo, not per batch, and read from this folder. The ticket ledger is not here: it sits beside
+// the queue under repos/<slug>, which a move leaves alone.
+const STAYS = [E.BATCHES_DIR, 'ref', 'orchestrator.lock', 'supervisor.lock', 'supervisor.agent.log', 'intake.json', 'asks.json',
+  'config-pushed.json', 'exits', 'supervisor.tick.lock', 'supervisor.wake'];
+const REPO_LEVEL = ['levers.jsonl', 'audit.jsonl', 'audit-queue.json', 'lever-evals.jsonl', 'levers-evidence'];
+const stays = (f) => STAYS.includes(f) || REPO_LEVEL.some((n) => f === n || f.startsWith(`${n}.lock`));
 // How long a stopped merge driver has to let go of its lock.
 const DRIVER_WAIT_MS = Number(process.env.DESK_MOVE_DRIVER_WAIT_MS) > 0 ? Number(process.env.DESK_MOVE_DRIVER_WAIT_MS) : 30_000;
 
 const refuse = (msg) => { throw new Refusal(msg); };
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 // The live process other than this one holding a `{pid}` lock file, or null.
 const holder = (file) => {
   try { const { pid } = JSON.parse(readFileSync(file, 'utf8')); return pid && pid !== process.pid && alive(pid) ? pid : null; } catch { return null; }
@@ -58,26 +70,28 @@ const slot = slotFor(q);
 if (slot.why) refuse(`the standing batch ${name} runs on base ${q.base}, but ${slot.why}, so it has no slot to move to: set its epic with queue.mjs set-batch epic=<KEY>, then run this again. Nothing was moved`);
 const epic = slot.name;
 const to = E.batchPaths(slug, epic);
-const taken = [to.queue, to.state].filter((p) => existsSync(p));
+// A slot holding only an earlier epic start's kept triage records is free: they go just before the move.
+const leftover = onlyKeptTriage(to);
+const taken = [to.queue, ...(leftover ? [] : [to.state])].filter((p) => existsSync(p));
 if (taken.length) refuse(`batch ${epic} already has ${taken.join(' and ')}: a repo holds one batch per ${slot.by}. Nothing was moved`);
 
 mkdirSync(from.state, { recursive: true });
 const passLock = join(from.state, 'orchestrator.lock');
 const queueLock = `${from.queue}.lock`;
-const busy = holder(passLock) ?? holder(join(from.state, 'supervisor.lock'));
+// The pass lock is taken exclusively, as pass.mjs claim() and queue.mjs stop take it (tryLockFile), so
+// this never writes over one they hold; it goes when this process exits. A supervisor tick is looked
+// for once it is held.
+const passHolder = tryLockFile(passLock, { by: 'move-batch.mjs' });
+const busy = passHolder === true ? holder(join(from.state, 'supervisor.lock')) : (passHolder ?? '?');
 if (busy) refuse(`a pass is running in the standing batch (pid ${busy}): run this again once it finishes. Nothing was moved`);
-writeFileSync(passLock, JSON.stringify({ pid: process.pid, since: new Date().toISOString() }));
-const lockPid = () => { try { return Number(readFileSync(join(queueLock, 'pid'), 'utf8').trim()) || null; } catch { return null; } };
-process.on('exit', () => {
-  if (lockPid() === process.pid) rmSync(queueLock, { recursive: true, force: true });
-  try { if (JSON.parse(readFileSync(passLock, 'utf8')).pid === process.pid) unlinkSync(passLock); } catch { /* gone */ }
-});
+process.on('exit', () => unlock(queueLock));
 
-// queue.mjs's lock, taken the way it takes it: one mkdir, never over a lock that is there. A lock a
-// dead writer left is cleared by queue.mjs's next write, under its own clearing lock.
+// queue.mjs's lock (dir-lock.mjs), taken with the same mkdir but refused at once rather than waited
+// for, and never over a lock that is there. A lock a dead writer left is cleared by queue.mjs's next
+// write, under dir-lock.mjs's clearing lock.
 try { mkdirSync(queueLock); } catch (e) {
   if (e.code !== 'EEXIST') throw e;
-  const pid = lockPid();
+  const pid = lockPid(queueLock);
   refuse(`${pid && !alive(pid) ? `a queue write that has exited (pid ${pid}) left ${queueLock}: the next queue.mjs write clears it` : `a queue write holds ${queueLock}${pid ? ` (pid ${pid})` : ''}`}: run this again in a moment. Nothing was moved`);
 }
 writeFileSync(join(queueLock, 'pid'), `${process.pid}\n`);
@@ -87,7 +101,10 @@ const cur = readQueue(from.queue);
 if (cur.supervised !== true) refuse(`the standing batch ${name} is run by a session, not the supervisor: that session's next pass would look for it in the standing slot. Hand it to the supervisor first (queue.mjs set-batch supervised=true, desk-autopilot Stage 4), then run this again. Nothing was moved`);
 const running = [...Object.values(cur.tickets ?? {}).filter((t) => t?.state === 'running').map((t) => t.key), ...(cur.base_fix?.running ? ['the base fix'] : [])];
 const DRAIN = ['concurrency', 'concurrency_by', 'concurrency_user'];
-const writeQueue = (file, obj) => { const tmp = `${file}.tmp.${process.pid}`; writeFileSync(tmp, `${JSON.stringify(obj, null, 2)}\n`); renameSync(tmp, file); };
+const BY = 'move-batch.mjs';
+const writeQueue = (file, q, opts = {}) => writeQueueFile(file, q, { by: BY, ...opts });
+// The queue as it stands in the standing slot, which the ledger compares the moved one with.
+const before = ledgerOn() ? readQueueAt(from.queue) : null;
 if (running.length) {
   // A worker count of 0 is a pause pass.mjs and borrowing both honour, resumes and the base fix
   // included. The count it replaces is kept, unless this batch is already draining: a count the
@@ -116,6 +133,15 @@ for (const t of images) t.images_dir = join(to.state, E.expandHome(t.images_dir)
 // A close-out note names the queue it was written for, and a pass applies only its own queue's.
 const notes = readCloseouts(from.state).filter((n) => n.queue === from.queue).map((n) => ({ file: n.file, was: readFileSync(n.file, 'utf8') }));
 
+// A blind audit spawned from this folder reads its log and exit record from it, and the repo's audit
+// queue stays here while its logs and workers move: one running or not yet recorded would be recorded
+// with no findings. Only this batch's pass spawns one into this folder, and its lock is held, so none
+// starts after the check.
+const inAudit = auditsIn(slug, from.state);
+if (!inAudit) refuse(`the repo's audit queue (${join(from.state, 'audit-queue.json')}) does not read, so a blind audit reading its log from the standing slot cannot be ruled out: run this again once a pass has rewritten it. Nothing was moved`);
+const audits = inAudit.map((i) => i.ticket);
+if (audits.length) refuse(`the blind audit of ${audits.join(', ')} is running or not yet recorded, and its log is read from the standing slot: run this again once a pass has recorded it. Nothing was moved`);
+
 const driver = E.mergeDriverHolder(from.state);
 if (driver === 'starting') refuse('the merge driver is starting: run this again in a minute. Nothing was moved');
 if (driver) {
@@ -126,6 +152,7 @@ if (driver) {
 }
 
 // Everything moves, or nothing does: a failed rename puts back what went before it.
+if (leftover) rmSync(to.state, { recursive: true, force: true });
 mkdirSync(to.state, { recursive: true });
 mkdirSync(dirname(to.queue), { recursive: true });
 const moved = [];
@@ -141,14 +168,15 @@ try {
   }
   for (const n of notes) writeFileSync(n.file, `${JSON.stringify({ ...JSON.parse(n.was), queue: to.queue })}\n`);
   for (const f of readdirSync(from.state)) {
-    if (STAYS.includes(f)) continue;
+    if (stays(f)) continue;
     renameSync(join(from.state, f), join(to.state, f));
     moved.push(f);
   }
   if (images.length || drained) {
-    writeQueue(to.queue, cur);
+    writeQueue(to.queue, cur, { record: false });
     unlinkSync(from.queue);
   } else renameSync(from.queue, to.queue);
+  if (existsSync(archivePath(from.queue))) renameSync(archivePath(from.queue), archivePath(to.queue));
 } catch (e) {
   if (existsSync(from.queue)) rmSync(to.queue, { force: true });
   const stuck = moved.reverse().filter((f) => { try { renameSync(join(to.state, f), join(from.state, f)); return false; } catch { return true; } });
@@ -156,6 +184,8 @@ try {
   try { rmdirSync(to.state); rmdirSync(dirname(to.queue)); } catch { /* not empty */ }
   refuse(`could not move the batch (${e.message})${stuck.length ? `; still in ${to.state}, to move back by hand: ${stuck.join(', ')}` : ': nothing was moved'}`);
 }
+// The ledger records the move once it has happened: a moved event per ticket naming both batches.
+if (before) reportMissed(to.queue)(recordWrite(to.queue, before, readQueueAt(to.queue), { by: BY, from: ledgerTarget(from.queue).batch }));
 
 const tickets = Object.keys(cur.tickets ?? {}).length;
 console.log(`move-batch: moved batch ${name} (base ${cur.base}, ${tickets} ticket${tickets === 1 ? '' : 's'}, run by the supervisor) from the standing slot to batch ${epic}`);

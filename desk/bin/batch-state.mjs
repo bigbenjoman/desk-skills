@@ -4,6 +4,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { personClears } from './clears-when.mjs';
+import { attachArchive } from './queue-store.mjs';
+import { PARK_KINDS } from './queue-states.mjs';
+import { postMergeUnmade } from './harvest.mjs';
 
 // pass.mjs, plan-batch.mjs, queue.mjs and answer.mjs exit only with these, so the orchestrator branches
 // on a number rather than on wording: go on; nothing to do yet, keep looping; show the person (an
@@ -31,10 +34,25 @@ export function readJsonOrRefuse(path, action) {
   try { text = readFileSync(path, 'utf8'); } catch (e) { throw new Refusal(`${path} could not be read (${e.code ?? e.message}): ${action}`); }
   try { return JSON.parse(text); } catch (e) { throw new Refusal(`${path} is not valid JSON (${e.message}): ${action}`); }
 }
-// The two every script reads: the batch queue and a ticket's triage record.
-export const readQueue = (path) => readJsonOrRefuse(path,
-  `restore it, or re-create ${path} (queue.mjs init <batch-name>, then re-seed it with plan-batch.mjs) — refusing to read it as an empty batch`);
-export const readTriage = (stateDir, t) => readJsonOrRefuse(join(stateDir, 'triage', `${t}.json`), `re-run triage.sh ${t}`);
+// The paths this module builds under a batch's state folder, `<KEY>` standing for the ticket. Every
+// one goes through statePath, which refuses a name not declared here.
+export const STATE_PATHS = Object.freeze({ triage: 'triage/<KEY>.json', parks: 'parks/<KEY>.json', answers: 'answers/<KEY>.txt' });
+export function statePath(stateDir, name, key) {
+  if (!Object.hasOwn(STATE_PATHS, name)) throw new Error(`not a declared state path: ${name}`);
+  return join(stateDir, STATE_PATHS[name].split('<KEY>').join(key));
+}
+// The two every script reads: the batch queue and a ticket's triage record. A queue's archived tickets
+// are found by key behind its live ones (queue-store.mjs attachArchive).
+export const readQueue = (path) => attachArchive(readJsonOrRefuse(path,
+  `restore it, or re-create ${path} (queue.mjs init <batch-name>, then re-seed it with plan-batch.mjs) — refusing to read it as an empty batch`), path);
+export const readTriage = (stateDir, t) => readJsonOrRefuse(statePath(stateDir, 'triage', t), `re-run triage.sh ${t}`);
+// A triage record's unknowns as text, each once, in its order.
+export const unknownsOf = (unknowns) => [...new Set((Array.isArray(unknowns) ? unknowns : []).map((u) => String(u?.question ?? u ?? '').trim()).filter(Boolean))];
+// Those of queue ticket `t` still open: less each one answer.mjs recorded answered (answered_questions).
+export const openUnknowns = (unknowns, t) => {
+  const done = new Set(Array.isArray(t?.answered_questions) ? t.answered_questions : []);
+  return unknownsOf(unknowns).filter((u) => !done.has(u));
+};
 
 // The PR state the last pass recorded for a done ticket's PR (pr_status), or null when none was read.
 // Nothing here calls GitHub.
@@ -46,6 +64,37 @@ export const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null &&
 export const shippedSet = (t, how, pr = null, mergedAt = null) => ['set', t.key, 'state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null',
   `result.summary=shipped outside its worker: ${how}`, ...(pr == null ? [] : [`result.pr=${pr}`]),
   ...(pr != null && Number(t.pr_status?.pr) === Number(pr) ? ['pr_status.state=MERGED', ...(mergedAt ? [`pr_status.merged_at=${mergedAt}`] : [])] : [])];
+
+// A parked ticket recorded done on PR #pr, its park cleared: the `queue.mjs set` fields the pass writes
+// when it opens a refused worker's draft itself, and queue.mjs finish when the orchestrator finished the
+// last step. draft_pr only while the PR is a draft.
+export const doneOnPr = (pr, { draft = false, summary }) => ['state=done', 'park=null', 'handoff_stage=null', `result.pr=${pr}`,
+  ...(draft ? [`draft_pr=${pr}`] : []), `result.summary=${summary}`];
+
+// The PR a parked ticket recorded: the one it opened, else its draft. A PR that merged before the
+// ticket was requeued for more work (merged_at) belongs to that earlier work, not to this park.
+export const ownPr = (t) => { const earlier = t.merged_at ? Number(t.result?.pr) : NaN; return [t.result?.pr, t.draft_pr].find((n) => n != null && Number(n) !== earlier) ?? null; };
+// A parked ticket's own PR, when one merging leaves only its after-merge steps: none once a worker was
+// sent back on it already (merged_tail), so a park of that worker's stays the person's.
+export function mergedTailPr(t) {
+  const pr = ownPr(t);
+  return pr == null || Number(t.merged_tail) === Number(pr) ? null : Number(pr);
+}
+// The `queue.mjs` arguments that send it back for those steps alone, which pass.mjs and needs-you.mjs
+// both run around their own `requeue`: `before` it (null when there is nothing to clear; a handoff
+// stage would start it at that stage's work rather than the tail), on a `refused` requeue (the stage put
+// back, and the PR marked so it is not tried again), and `after` it, which the briefing reads (pass.mjs
+// writeBrief).
+export function mergedTailSteps(t, pr, mergedAt = null) {
+  const stage = t.handoff_stage != null ? [`handoff_stage=${t.handoff_stage}`] : [];
+  const at = mergedAt ? ` at ${String(mergedAt).slice(0, 16).replace('T', ' ')} UTC` : '';
+  return {
+    before: stage.length ? ['set', t.key, 'handoff_stage=null'] : null,
+    refused: ['set', t.key, `merged_tail=${pr}`, ...stage],
+    after: ['set', t.key, `merged_tail=${pr}`,
+      `cleared=${JSON.stringify({ what: `PR #${pr} merged${at}, and ${t.key} is not done in Jira yet`, tail: { pr, merged_at: mergedAt } })}`],
+  };
+}
 
 // Why a worktree holds work origin lacks, read with `git` (its arguments -> stdout, or null when the read
 // fails): uncommitted tracked changes, or commits its branch has not pushed. -> the reason; null when it
@@ -77,13 +126,67 @@ export const moveTargetsOf = (out) => JSON.parse(out).map(moveTarget);
 export const targetsText = (ts) => (ts.length ? ts.map((b) => `${b.word} (on ${b.base})`).join(', ') : 'none');
 export const moveOffer = (ts) => `move <batch> takes it out of this batch and queues it in another, its next worker on that base: ${targetsText(ts)}`;
 
+// Ticket `key`'s park record, parsed, or null where it has none or it is half-written.
+function readPark(stateDir, key) {
+  try { return JSON.parse(readFileSync(statePath(stateDir, 'parks', key), 'utf8')); } catch { return null; }
+}
+// Ticket `key`'s park file as `file`, and as `rec` only where it is on `question`: a file on another
+// question than the one parked on is an earlier round's, read as no file.
+function currentPark(stateDir, key, question) {
+  const file = readPark(stateDir, key);
+  return { file, rec: file && String(file.question ?? '').trim() === String(question ?? '').trim() ? file : null };
+}
+
 // The question a worker parked on and nobody has answered yet, or null: its park file's `question`
 // while no answer file sits beside it. A half-written park file is not an error.
 export function openQuestion(stateDir, t) {
-  const park = join(stateDir, 'parks', `${t}.json`);
-  if (!existsSync(park) || existsSync(join(stateDir, 'answers', `${t}.txt`))) return null;
-  try { return JSON.parse(readFileSync(park, 'utf8')).question || null; } catch { return null; }
+  if (existsSync(statePath(stateDir, 'answers', t))) return null;
+  return readPark(stateDir, t)?.question || null;
 }
+
+// A park whose question says it holds a write awaiting approval (the worker contract's wording for a
+// write config §3 does not grant: a Jira comment, transition or edit, a PR body or review).
+export const asksApproval = (question) => /\bawaiting (?:your )?approval\b/i.test(String(question ?? ''));
+const APPROVE_FIELDS = ['kind', 'target', 'body'];
+// The write ticket `key`'s park waits for the person to approve, from its park file's `approve`
+// object: { approve: {kind, target, body}, missing: null }, the body kept verbatim. Where it has
+// none and its question asks for an approval (or the object lacks a field), `approve` is null and
+// `missing` names what the park file lacks, so the pass reports the park incomplete. Neither: both null.
+// A file on another question than the one parked on is an earlier round's, read as no file. A PR
+// number given as a number is its target as text.
+export function parkApproval(stateDir, key, question) {
+  const { file, rec } = currentPark(stateDir, key, question);
+  const fileQ = String(file?.question ?? '').trim();
+  const raw = rec?.approve && typeof rec.approve === 'object' ? rec.approve : null;
+  const a = raw && typeof raw.target === 'number' ? { ...raw, target: String(raw.target) } : raw;
+  const lacks = a ? APPROVE_FIELDS.filter((f) => typeof a[f] !== 'string' || !a[f].trim()) : APPROVE_FIELDS;
+  if (a && !lacks.length) return { approve: { kind: a.kind.trim(), target: a.target.trim(), body: a.body }, missing: null };
+  if (!a && !asksApproval(question)) return { approve: null, missing: null };
+  return { approve: null, missing: a
+    ? `its park file's approve object has no ${lacks.join(', ')}`
+    : file?.approve && !rec
+      ? `its park file is on another question ("${fileQ}") than the one parked on, so its approve is an earlier round's`
+      : 'its park file carries no approve object ({"kind", "target", "body"}) holding the exact text to approve' };
+}
+
+// The fields a worker's park file declares: its question, and the write it awaits approval of.
+const PARK_FILE_FIELDS = Object.freeze({ question: null, approve: Object.freeze([...APPROVE_FIELDS]) });
+// What a park file holds that it does not declare, as the pass logs it, or null where it holds nothing
+// else. It never refuses a park: a worker written before a field changed still parks.
+export function validatePark(rec) {
+  if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return null;
+  const extra = Object.keys(rec).filter((k) => !Object.hasOwn(PARK_FILE_FIELDS, k));
+  const a = rec.approve;
+  if (a && typeof a === 'object' && !Array.isArray(a)) extra.push(...Object.keys(a).filter((k) => !PARK_FILE_FIELDS.approve.includes(k)).map((k) => `approve.${k}`));
+  return extra.length ? `its park file holds ${extra.length === 1 ? 'a field' : 'fields'} the park file does not declare: ${extra.join(', ')}` : null;
+}
+// validatePark on ticket `key`'s park file; null where it has none, it is half-written, or it is on
+// another question than the one parked on.
+export const parkFileFault = (stateDir, key, question) => validatePark(currentPark(stateDir, key, question).rec);
+
+// The text a park awaits approval of, as both needs-you and the pass report relay it: its kind and
+// target, then the body as JSON so its line breaks survive on one line.
+export const approvalText = (ap) => `its exact text (${ap.kind}${ap.target ? ` on ${ap.target}` : ''}, as JSON): ${JSON.stringify(ap.body)}`;
 
 // Why a failed ticket's worker stopped, never empty: the reason the pass recorded (`failed.why`), else
 // a park the ticket kept, else that none was recorded.
@@ -97,11 +200,66 @@ export function crashShowsPerson(report = (e) => console.error(describeCrash(e))
   process.on('unhandledRejection', die);
 }
 
-export const HELD_PREFIX = 'held by orchestrator';
+// How long an idle batch with anything parked, failed or held outside goes without a pass
+// (supervisor.mjs), and how long a pass goes without asking GitHub again whether a ticket's outside
+// blockers landed (pass/parks.mjs decideOutsideHolds): a busy batch passes every tick.
+export const IDLE_RECHECK_MS = Number(process.env.DESK_IDLE_RECHECK_MS) || 30 * 60 * 1000;
 
-// Parked "held by orchestrator" (a dependency chain, released by merge-driver.sh release_chain or by
+export const HELD_PREFIX = 'held by orchestrator';
+// A held ticket whose worker queue.mjs stop ended: held behind no blocker, so only the person starts it.
+export const STOPPED_PREFIX = `${HELD_PREFIX}: stopped by queue.mjs stop`;
+// The park kinds the orchestrator holds a ticket on, rather than its own step: a blocker, a stop, a date.
+const HELD_KINDS = ['hold', 'stopped', 'date'];
+
+// The kind of park `question` opens as: what a park recorded before parks carried their kind is read
+// as, and what a new park whose writer names none is recorded as.
+export function parkKindOf(question) {
+  const q = String(question ?? '');
+  if (q.startsWith(STOPPED_PREFIX)) return 'stopped';
+  // A blocked-until label's hold (pass/parks.mjs), its date read or not (badLabelText).
+  if (q.startsWith(`${HELD_PREFIX}: blocked until `) || q.startsWith(`${HELD_PREFIX}: its label `)) return 'date';
+  if (q.startsWith(HELD_PREFIX)) return 'hold';
+  if (q.startsWith(PERSON_STEP_PREFIX)) return 'person-step';
+  return 'question';
+}
+// Ticket `t`'s park kind: the one its park records, else the one its question opens as.
+export const parkKind = (t) => (PARK_KINDS.includes(t?.park?.kind) ? t.park.kind : parkKindOf(t?.park?.question));
+
+export const stoppedHold = (t) => t?.state === 'parked' && !String(t.held_by ?? '').split('|').some(Boolean) && parkKind(t) === 'stopped';
+
+// Parked on a hold, a stop or a date (a dependency chain, released by merge-driver.sh release_chain or by
 // the one sanctioned manual release once every predecessor's PR has merged).
-export const isHeld = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(HELD_PREFIX);
+export const isHeld = (t) => t?.state === 'parked' && HELD_KINDS.includes(parkKind(t));
+
+// Waiting behind the blockers in its held_by: held by the orchestrator, or parked at triage for its own
+// reason (triagePark) with holds kept beside the park. Every reader that follows a chain of holds asks
+// this, so a lane C or D, size, design or step park held behind a sibling reads as held to all of them.
+export const holdsKept = (t) => isHeld(t) || (triagePark(t) && String(t.held_by ?? '').split('|').some(Boolean));
+
+// A blocker outside the batch Done this long with its code merged only into another branch is raised to
+// the person (pass/parks.mjs `unpromoted`, needs-you's unpromoted item).
+export const UNPROMOTED_AFTER_MS = 24 * 3600_000;
+// The blockers ticket `t` is still held behind outside its batch that the pass recorded as merged only
+// into another branch, Done UNPROMOTED_AFTER_MS or more by `now`: [[key, {branch, pr, state, since, promote?}]].
+export const unpromotedHolds = (t, now = Date.now()) => (holdsKept(t) ? Object.entries(t.unpromoted ?? {}) : [])
+  .filter(([b, u]) => u?.branch && String(t.held_by ?? '').split('|').includes(b) && String(t.held_outside ?? '').split('|').includes(b)
+    && now - Date.parse(u.since) >= UNPROMOTED_AFTER_MS);
+// An unpromoted record's promotion PR state as words: "a draft", "open" or "red".
+export const promotionState = (u) => (u.state === 'draft' ? 'a draft' : u.state);
+// An unpromoted record's promotion PR: "no promotion PR", or "promotion PR #N, a draft" / ", open" / ", red".
+export const promotionWords = (u) => (u.pr == null ? 'no promotion PR' : `promotion PR #${u.pr}, ${promotionState(u)}`);
+
+// The keys of `q`'s held tickets that wait behind `key`: held by it, or by a ticket held behind it.
+export function heldBehindOf(q, key) {
+  const held = Object.values(q?.tickets ?? {}).filter((o) => o.key !== key && holdsKept(o));
+  const behind = new Set();
+  for (let edge = new Set([key]); edge.size;) {
+    const next = held.filter((o) => !behind.has(o.key) && String(o.held_by ?? '').split('|').some((k) => edge.has(k))).map((o) => o.key);
+    next.forEach((k) => behind.add(k));
+    edge = new Set(next);
+  }
+  return behind;
+}
 
 // A label that holds a ticket until a calendar day, read on this machine's local date.
 const UNTIL_LABEL = /^blocked-until-(.*)$/i;
@@ -124,8 +282,9 @@ export function dateHoldOf(labels) {
 }
 // A ticket pass.mjs holds on its blocked-until label (held_label), as dateHoldOf reads it, or null. A
 // ticket held behind blockers too waits on them first (queue.mjs hold clears held_label), and the pass
-// reads its label again once they release it.
-export const dateHeld = (t) => (isHeld(t) && t.held_label && !String(t.held_by ?? '').split('|').some(Boolean) ? dateHoldOf([t.held_label]) : null);
+// reads its label again once they release it. A stopped ticket is held on no date: the held_label a
+// release left behind stays, so its start is not held again on that label, but never starts it.
+export const dateHeld = (t) => (isHeld(t) && !stoppedHold(t) && t.held_label &&!String(t.held_by ?? '').split('|').some(Boolean) ? dateHoldOf([t.held_label]) : null);
 // What the person is told about a blocked-until label whose date cannot be read.
 export const badLabelText = (label) => `its label ${label} names no date desk can read (blocked-until-YYYY-MM-DD): fix the label and re-run triage.sh, or let it start`;
 
@@ -178,10 +337,11 @@ export function unreadCanvases(r) {
 
 // The park for a ticket in any lane whose design no worker can read, or null: a session that can read
 // the artifact snapshots it, since a worker has no Artifact tool and would only park asking for it.
+const DESIGN_PARK_PREFIX = 'design not snapshotted: ';
 export function designPark(r) {
   const urls = unreadCanvases(r);
   return urls.length
-    ? `design not snapshotted: ${urls.join(', ')}: snapshot it from a session that can read it (/desk-admit does), or have it shared with that subscription, then resume`
+    ? `${DESIGN_PARK_PREFIX}${urls.join(', ')}: snapshot it from a session that can read it (/desk-admit does), or have it shared with that subscription, then resume`
     : null;
 }
 
@@ -199,7 +359,9 @@ export const needsPersonLane = (r) => r?.lane === 'C' || (r?.lane === 'D' && des
 const SHA = /^[0-9a-f]{40}$/;
 // Each needs a word saying the worker could not do it, so a park mentioning the tool in passing is not caught.
 // "needs" counts only right before the tool ("needs curl"): most questions say need somewhere.
-const NEVER = [['aws', /\baws\b/i], ['ssm', /\bssm\b/i], ['curl', /\bcurl\b/], ['wget', /\bwget\b/], ['gh api', /\bgh api\b/],
+// The CLI's name, a full path to it included, not a package scope or directory that holds it
+// ("@aws-sdk/client-s3" is a dependency; "/opt/homebrew/bin/aws" is the CLI).
+const NEVER = [['aws', /(?<![@\w-])aws\b(?![-/])/i], ['ssm', /(?<![@\w-])ssm\b(?![-/])/i], ['curl', /\bcurl\b/], ['wget', /\bwget\b/], ['gh api', /\bgh api\b/],
   ['.claude/ write', /(?:^|[^\w.])\.claude\//]];
 const REFUSED = /\b(?:refus\w*|denied|den(?:y|ies)|not (?:allowed|granted|permitted)|blocked|can(?:not|'t) (?:run|use|reach|write|call))\b|\bneed(?:s|ed)? (?:the |to (?:run|use) )?(?:aws|ssm|curl|wget|gh api)\b/i;
 const FORCE_PUSH = /\bforce[- ]?push\w*|\bforce-with-lease\b/i;
@@ -353,12 +515,20 @@ export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.par
 
 // A park a pass settles without the person: its recorded clears-when is one a script reads, no step of
 // the person's makes it hold, and a worker rather than a session takes the ticket on once it does. A
-// claimed park is its session's (pass.mjs clearable never settles one), so it is not one. The digest
-// and needs-you leave it out, and desk-q shows it as waiting.
+// claimed park is its session's (pass.mjs clearable never settles one), so it is not one. Nor is it the
+// person's while its clears-when is unreadable: that waits on the decider to restate it, and becomes
+// none (theirs) once the decider has seen it, or a pass finds no restate came in time (clears-when.mjs
+// RESTATE_MS). The digest and needs-you leave it out, and desk-q shows it as waiting.
 export const settlesByScript = (t) => {
   const c = t?.park?.clears_when;
   return t?.state === 'parked' && !isHeld(t) && !t.park?.claim?.session && !!c?.kind && c.kind !== 'none' && !personClears(c) && !needsSession(t);
 };
+
+// A park a pass settles that waits on an Actions run or a PR's checks: those finish within minutes, so
+// an idle batch holding one is rechecked every RUN_RECHECK_MS (supervisor.mjs), not IDLE_RECHECK_MS.
+const RUN_KINDS = new Set(['run-completed', 'checks-pass']);
+export const waitingOnRun = (t) => settlesByScript(t) && RUN_KINDS.has(t.park.clears_when.kind);
+export const RUN_RECHECK_MS = Number(process.env.DESK_RUN_RECHECK_MS) || 2 * 60 * 1000;
 
 // A parked lane C or D triage record whose lane challenge could not read the code (triage.sh's
 // INCONCLUSIVE): one unchecked opinion, which the user confirms or re-lanes rather than reading as settled.
@@ -366,27 +536,110 @@ export const laneUnchecked = (r) => needsPersonLane(r) && r.lane_challenge?.verd
 
 // The park question for a lane C or D triage record that needs a person, or null for any other.
 // plan-batch and queue.mjs admit both seed a ticket's park from it.
+const laneParkHead = (lane, unchecked) => (unchecked ? `lane ${lane} UNCHECKED (` : `lane ${lane} — `);
 export function lanePark(r) {
   if (!needsPersonLane(r)) return null;
   const reason = String(r.lane_reason ?? 'needs a person');
   const why = r.lane === 'D' ? `${designGap(r)}; ${reason}` : reason;
   return laneUnchecked(r)
-    ? `lane ${r.lane} UNCHECKED (challenge could not read the code): confirm lane ${r.lane} or re-lane — ${why.slice(0, 120)}`
-    : `lane ${r.lane} — ${why.slice(0, 160)}`;
+    ? `${laneParkHead(r.lane, true)}challenge could not read the code): confirm lane ${r.lane} or re-lane — ${why.slice(0, 120)}`
+    : `${laneParkHead(r.lane, false)}${why.slice(0, 160)}`;
 }
 
-// Whether blocker `b` (a triage record's `blockers` entry) is a step only the person takes, such as a
-// migration applied or a sign-off: a Task whose summary says apply, confirm or sign off, or one whose
-// summary names a step the blocked ticket's triage record `rec` lists in ben_steps. Open and in no
-// batch, it holds the blocked ticket's merge, not its build (merge_after).
-const STEP_WORDS = /\b(appl(?:y|ies|ied)|confirm(?:s|ed)?|sign(?:s|ed)?[- ]?off)\b/i;
-export function personStep(b, rec = null) {
-  const summary = String(b?.summary ?? '').trim().toLowerCase();
-  if (!summary) return false;
-  const named = (Array.isArray(rec?.ben_steps) ? rec.ben_steps : [])
-    .some((s) => [s?.step, s?.blocker].some((x) => String(x ?? '').trim() && summary.includes(String(x).trim().toLowerCase())));
-  return named || (/^task$/i.test(String(b?.type ?? '').trim()) && STEP_WORDS.test(summary));
+// The park for a ticket sized L or XL, which is split rather than run whole, or null for any other size.
+const OVERSIZED = ['L', 'XL'];
+export const sizePark = (size) => {
+  const s = String(size ?? '').toUpperCase();
+  return OVERSIZED.includes(s) ? `size ${s} — split it before batching` : null;
+};
+
+// The first of `labels` that a labels row names (`stepLabels`, lowercased), or null.
+export function stepLabel(labels, stepLabels = []) {
+  const want = new Set((stepLabels ?? []).map((s) => String(s).trim().toLowerCase()).filter(Boolean));
+  return want.size ? (Array.isArray(labels) ? labels : []).find((l) => want.has(String(l).trim().toLowerCase())) ?? null : null;
 }
+
+// The park for a ticket labelled as the person's own step, by §4 Person-step labels (`stepLabels`) or
+// Person-input labels (`inputLabels`) on its triage record's `labels`, or null. It is admitted parked on
+// it, beside lanePark and designPark, so no worker spawns and Needs you lists it.
+const PERSON_STEP_PREFIX ="the person's step: ";
+const INPUT_ROW = '(config §4 Person-input labels)';
+export function labelPark(r, stepLabels = [], inputLabels = []) {
+  const input = stepLabel(r?.labels, inputLabels);
+  const l = input ?? stepLabel(r?.labels, stepLabels);
+  return l ? `${PERSON_STEP_PREFIX}labelled ${l} ${input ? INPUT_ROW : '(config §4 Person-step labels)'}, so no worker can do it. Take the step, mark it Done in Jira, then drop it from the batch` : null;
+}
+export const personStepPark = (t) => t?.state === 'parked' && parkKind(t) === 'person-step';
+// A queue ticket parked at triage for its own reason (lanePark, designPark, sizePark, labelPark): a hold
+// waits beside that park rather than replacing it, so no release sends it to a worker.
+export const triagePark = (t) => {
+  const q = String(t?.park?.question ?? '');
+  return t?.state === 'parked' && (personStepPark(t) || q.startsWith(DESIGN_PARK_PREFIX)
+    || OVERSIZED.some((s) => q.startsWith(sizePark(s)))
+    || ['C', 'D'].some((l) => q.startsWith(laneParkHead(l, true)) || q.startsWith(laneParkHead(l, false))));
+};
+// A person's step parked on a Person-input label: what it makes, the build reads, so a ticket it blocks
+// is held behind it, never merged after it.
+export const personInputPark = (t) => personStepPark(t) && String(t.park.question).includes(INPUT_ROW);
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const squash = (s) => String(s ?? '').trim().replace(/\s+/g, ' ');
+// Whether `text` holds `phrase` whole, not as part of a longer word or key.
+const holdsWhole = (text, phrase) => !!phrase && new RegExp(`(?<![\\p{L}\\p{N}_-])${escapeRe(phrase)}(?![\\p{L}\\p{N}_]|-\\p{N})`, 'iu').test(text);
+
+// How blocker `b` (a triage record's `blockers` entry) holds the ticket whose triage record is `rec`,
+// when it is a step only the person takes: 'build' when it carries one of §4 Person-input labels
+// (`inputLabels`), as its step produces something the build reads, which wins over everything below;
+// 'merge' when it carries one of §4 Person-step labels (`stepLabels`), when one of `rec`'s ben_steps
+// names its key or holds its whole summary, or when it is a Task whose summary says apply, confirm or
+// sign off; otherwise null, an ordinary blocker. Labels come from ticket-facts.mjs.
+const STEP_WORDS = /\b(appl(?:y|ies|ied)|confirm(?:s|ed)?|sign(?:s|ed)?[- ]?off)\b/i;
+export function personStep(b, rec = null, stepLabels = [], inputLabels = []) {
+  if (stepLabel(b?.labels, inputLabels)) return 'build';
+  if (stepLabel(b?.labels, stepLabels)) return 'merge';
+  const key = squash(b?.key);
+  const summary = squash(b?.summary);
+  const named = (Array.isArray(rec?.ben_steps) ? rec.ben_steps : [])
+    .some((s) => [s?.step, s?.blocker].some((x) => holdsWhole(squash(x), key) || holdsWhole(squash(x), summary)));
+  return named || (/^task$/i.test(squash(b?.type)) && STEP_WORDS.test(summary)) ? 'merge' : null;
+}
+
+// Triage's call on each open blocker (`blocker_needs`): the ticket needs it to build, needs it only to
+// merge, or does not need it.
+export const BLOCKER_CALLS = ['build', 'merge', 'none'];
+// Triage's call on blocker `key` in triage record `rec`: {needs, why}, or null when none is recorded. A
+// record written before the three calls holds a boolean: true is 'build', false is 'none'.
+export function blockerCall(rec, key) {
+  const n = rec?.blocker_needs?.[key];
+  if (!n || typeof n !== 'object') return null;
+  const needs = BLOCKER_CALLS.includes(n.needs) ? n.needs : n.needs === true ? 'build' : n.needs === false ? 'none' : null;
+  return needs ? { needs, why: String(n.why ?? '').trim() || 'no reason given' } : null;
+}
+// The open blockers in triage record `rec`'s `blockers` (ticket-facts.mjs) that `blocker_needs` gives no
+// call: triage.sh refuses a record with any.
+export const uncalledBlockers = (rec) => (Array.isArray(rec?.blockers) ? rec.blockers : [])
+  .filter((b) => b?.key && b.category !== 'done' && !blockerCall(rec, b.key)).map((b) => b.key);
+// How open blocker `b`, in no batch, holds the ticket whose triage record is `rec`: {needs, by, why}, or
+// null with neither a person's step (personStep) nor a triage call (blockerCall) to go on, which is
+// asked. Where the step and the call point different ways, the one that holds more wins: 'build' (a full
+// hold) over 'merge' (a merge-only gate) over 'none'. `by` is 'step' or 'triage', whichever decided it.
+export function blockerHold(b, rec, stepLabels = [], inputLabels = []) {
+  const step = personStep(b, rec, stepLabels, inputLabels);
+  const call = blockerCall(rec, b?.key);
+  if (call && BLOCKER_CALLS.indexOf(call.needs) < BLOCKER_CALLS.indexOf(step ?? 'none')) return { needs: call.needs, by: 'triage', why: call.why };
+  if (step) return { needs: step, by: 'step', why: step === 'build' ? 'your input step: the build reads what it makes' : 'your step' };
+  return call ? { needs: call.needs, by: 'triage', why: call.why } : null;
+}
+// Whether blocker `b` holds rec's ticket's merge on triage's call alone (blockerHold 'merge' by
+// 'triage'): another ticket's code, no step of the person's, so it is lifted once Done and landed.
+export const triageGate = (b, rec, stepLabels = [], inputLabels = []) => {
+  const hold = b ? blockerHold(b, rec, stepLabels, inputLabels) : null;
+  return hold?.needs === 'merge' && hold.by === 'triage';
+};
+// The call taken where triage found ticket `t` does not need blocker `k` (`status` in Jira, in no batch),
+// logged as plan-batch and intake both log it.
+export const startWithout = (t, k, status, why) => ({ question: `${t} is blocked by ${k} (${status}), which is not in this batch: start without it? Triage: ${why}`,
+  options: [`start without ${k}`, `wait for ${k}`], chose: `start without ${k}`, category: 'engineering' });
 
 // Where a held ticket's hold leads: the parked or failed tickets it waits on, an empty list when every
 // predecessor is progressing (running, waiting to spawn, done with a PR that is open, itself held
@@ -397,13 +650,17 @@ export function personStep(b, rec = null) {
 // A predecessor failed or parked for a reason of its own is already a question for the person, so the
 // tickets behind it wait on that answer. `prState(n)` gives a PR's state when the caller looked it up
 // ('OPEN' | 'MERGED' | 'CLOSED'); unknown counts as open.
-function holdLeadsTo(q, t, prState, seen) {
+function holdLeadsTo(q, t, prState, seen, memo = new Map()) {
   // `seen` is the current path only: a ticket on it again is a hold cycle (a hand-edited queue), which
   // can never release. Two paths meeting at one held ticket (a diamond) is normal and is followed.
-  if (!isHeld(t) || seen.has(t)) return null;
+  if (!holdsKept(t) || seen.has(t)) return null;
   // Held on its label, it starts on its day by itself, and a fixed label is only read by a pass, so
   // the batch is not settled while either waits.
   if (dateHeld(t)) return [];
+  // A ticket's answer is the same by whichever path the walk reaches it (one cut short by the path is
+  // on a cycle, which answers null from anywhere), so it is read once per walk: a dense held_by graph
+  // (each ticket naming every one before it) has exponentially many paths.
+  if (memo.has(t)) return memo.get(t);
   seen.add(t);
   const preds = String(t.held_by ?? '').split('|').filter(Boolean);
   const outside = String(t.held_outside ?? '').split('|');
@@ -414,11 +671,13 @@ function holdLeadsTo(q, t, prState, seen) {
     else if (['running', 'triaged'].includes(pt.state) || spinePark(pt)) continue;
     else if (pt.state === 'done') { if (pt.result?.pr == null || prState(pt.result.pr) === 'CLOSED') parks = null; }
     else if (pt.state === 'failed' || (pt.state === 'parked' && !isHeld(pt))) parks.push(p);
-    else { const up = holdLeadsTo(q, pt, prState, seen); parks = up && [...parks, ...up]; }
+    else { const up = holdLeadsTo(q, pt, prState, seen, memo); parks = up && [...parks, ...up]; }
     if (!parks) break;
   }
   seen.delete(t);
-  return parks && [...new Set(parks)];
+  const out = parks && [...new Set(parks)];
+  memo.set(t, out);
+  return out;
 }
 
 // A held ticket is still going somewhere on its own: every predecessor progressing or merged.
@@ -431,17 +690,51 @@ export function waitingOnPark(q, t, prState = () => null) {
   return parks?.length ? parks : null;
 }
 
+// The held tickets from `from` to `to` along held_by, both ends included, or null when `from` is not
+// held behind `to`, directly or through other held tickets. Depth first, the first path found.
+function holdPath(q, from, to, seen = new Set()) {
+  if (!holdsKept(from) || seen.has(from.key)) return null;
+  seen.add(from.key);
+  const preds = String(from.held_by ?? '').split('|').filter(Boolean);
+  if (preds.includes(to)) return [from.key, to];
+  for (const p of preds) {
+    const up = holdPath(q, q.tickets?.[p], to, seen);
+    if (up) return [from.key, ...up];
+  }
+  return null;
+}
+
+// Each parked ticket waiting on "pr <n> merged" (this repo's PR) for its own reason, a hold being no
+// such reason: the PR, the queue ticket whose PR it is (`owner`, another ticket, or null), and `path`
+// when that owner is held behind the park, directly or through other holds: [owner, …, park]. Such a
+// pair waits on each other and neither moves. `parked` says which parks to read.
+export function prParkWaits(q, parked = () => true) {
+  const out = [];
+  for (const a of Object.values(q.tickets ?? {})) {
+    const c = a.park?.clears_when;
+    if (a.state !== 'parked' || isHeld(a) || c?.kind !== 'pr-merged' || c.repo || !Number.isInteger(Number(c.pr)) || !parked(a)) continue;
+    const pr = Number(c.pr);
+    const owner = Object.values(q.tickets).find((t) => t.key !== a.key && t.result?.pr != null && Number(t.result.pr) === pr) ?? null;
+    out.push({ park: a.key, pr, owner: owner?.key ?? null, path: owner ? holdPath(q, owner, a.key) : null });
+  }
+  return out;
+}
+
 // The batch's worker count and whose it is. `concurrency_by: 'user'` marks a count the user set,
 // and `concurrency_user` keeps their number while the ladder lowers `concurrency` on memory, so the
-// orchestrator can return to it. Never above the §3b cap.
-export function batchConcurrency(q, { def, cap }) {
+// orchestrator can return to it. Never above the §3b cap. `mem` ({ avail, start } in GiB: available
+// memory and the ladder's line) says whether memory is what lowered it: with available memory at or
+// above the line, the ladder lowers nothing, whatever the footprint ceiling reads.
+export function batchConcurrency(q, { def, cap }, mem = null) {
   const raw = Number(q.concurrency ?? def);
   const n = Math.min(raw, cap);
   const user = q.concurrency_by === 'user' ? Number(q.concurrency_user ?? raw) : null;
   const capped = raw > cap ? `, capped at the §3b cap of ${cap}` : '';
   const why = user == null ? (raw === def ? `the §3b default${capped}` : `set by the ladder (§3b default ${def})${capped}`)
     : raw === user ? `set by the user${capped}`
-      : raw < user ? `lowered on memory from the user's ${user}${capped}: raise back to ${user} once memory allows`
+      : raw < user ? (mem && mem.start > 0 && mem.avail >= mem.start
+        ? `below the user's ${user}${capped}, though available memory is ${mem.avail.toFixed(1)}G, at or above the ladder's ${mem.start}G line, so memory did not lower it, and the footprint ceiling is no reason to: set it back to ${user}`
+        : `lowered on memory from the user's ${user}${capped}${mem && mem.start > 0 ? ` (available memory ${mem.avail.toFixed(1)}G, under the ladder's ${mem.start}G line)` : ''}: raise back to ${user} once memory allows`)
         : `above the user's ${user}${capped}: the ladder keeps the user's number, so set it back to ${user}`;
   return { n, user, line: `workers: concurrency ${raw === n ? n : `${raw} → ${n}`}, ${why}` };
 }
@@ -453,10 +746,12 @@ export function batchSettled(q, prState) {
 }
 
 // Idle: settled, and every done ticket's PR merged or closed, so the merge driver has nothing left.
-// A done ticket with no PR is finished; a PR whose state is unknown counts as open.
+// A done ticket with no PR is finished; a PR whose state is unknown counts as open. A merged ticket
+// whose review's post-merge criteria the pass has not made follow-on steps yet is not: only a pass adds
+// them, so the batch keeps getting passes until one has.
 export function batchIdle(q, prState = () => null) {
   return batchSettled(q, prState) && Object.values(q.tickets ?? {})
-    .every((t) => t.state !== 'done' || t.result?.pr == null || ['MERGED', 'CLOSED'].includes(prState(t.result.pr)));
+    .every((t) => (t.state !== 'done' || t.result?.pr == null || ['MERGED', 'CLOSED'].includes(prState(t.result.pr))) && !postMergeUnmade(t));
 }
 
 // An epic batch not in feature mode lands its base on the default branch through one epic PR (the
@@ -466,6 +761,18 @@ export const epicBatch = (q) => q?.feature !== true && !!q?.epic && !!q?.base;
 export const epicChildren = (q) => Object.values(q.tickets ?? {}).filter((t) => !String(t.held_by ?? '').split('|').includes(q.epic));
 // A child is through once done and merged into the base, or done with no PR (nothing to merge).
 export const childDone = (t) => t.state === 'done' && (!!t.merged_at || t.result?.pr == null);
+// The blockers among `keys` to hold ticket `key` behind, less `key` itself and those in `tickets`
+// already merged or through (childDone), which nothing would release. -> { holds, cycles: those in
+// `behind` (heldBehindOf), already waiting behind `key`, so not held, outside: the holds in no batch }.
+export function holdsAmong(key, keys, tickets, behind) {
+  const holds = []; const cycles = [];
+  for (const k of new Set(keys)) {
+    const o = tickets[k];
+    if (k === key || (o && (o.merged_at || childDone(o)))) continue;
+    (behind.has(k) ? cycles : holds).push(k);
+  }
+  return { holds, cycles, outside: holds.filter((k) => !tickets[k]) };
+}
 // Due, so the base still has to land: every child through, at least one merged into the base since the
 // last epic PR merged (`merged_at`, or `since` on the one opened after it).
 export function epicDue(q) {
@@ -475,4 +782,33 @@ export function epicDue(q) {
   const merged = kids.filter((t) => t.merged_at);
   return kids.length > 0 && kids.every(childDone)
     && merged.some((t) => last == null || Date.parse(t.merged_at) > Date.parse(last));
+}
+// When the first promotion PR recorded on `q.promotion` (since, merged_at, each merged[].merged_at) to
+// merge after ticket `t` merged into the base took it to the default branch; null while none has.
+export function promotedAt(q, t) {
+  const own = Date.parse(t?.merged_at);
+  const p = q?.promotion ?? {};
+  const after = [p.since, p.merged_at, ...(p.merged ?? []).map((m) => m?.merged_at)]
+    .filter(Boolean).map((x) => Date.parse(x)).filter((x) => x > own);
+  return after.length ? new Date(Math.min(...after)).toISOString() : null;
+}
+// The promotion PR that took batch child `t` to the default branch: the first merged after it
+// (promotedAt), as { pr, merged_at, merge_commit }, or null where the batch keeps no record of one. Its
+// merge commit is the pass's or the merge driver's record of it, else list's refresh's
+// (promotion_commits, by PR number, which no promotion PR opened since can take for its own).
+export function promotionPr(q, t) {
+  const own = Date.parse(t?.merged_at);
+  const p = q?.promotion ?? {};
+  const all = [...(p.merged ?? []), ...(p.merged_at ? [{ pr: p.pr, merged_at: p.merged_at, merge_commit: p.merge_commit }] : [])]
+    .filter((m) => m?.pr != null && Date.parse(m.merged_at) > own).sort((a, b) => Date.parse(a.merged_at) - Date.parse(b.merged_at));
+  const m = all[0];
+  return m ? { pr: m.pr, merged_at: m.merged_at, merge_commit: m.merge_commit ?? q?.promotion_commits?.[String(m.pr)] ?? null } : null;
+}
+// What the next epic PR's record carries from promotion `p`: the last merge as `since` and every merge
+// so far in `merged`, kept through a retry whose record has neither `pr` nor `merged_at`.
+export function epicCarry(p) {
+  // Its merge commit kept beside it: it gates the children's production steps (needs-you.mjs gateHeld).
+  const merged = [...(p?.merged ?? []), ...(p?.merged_at ? [{ pr: p.pr ?? null, merged_at: p.merged_at, ...(p.merge_commit ? { merge_commit: p.merge_commit } : {}) }] : [])];
+  const since = p?.merged_at ?? p?.since ?? null;
+  return { ...(since ? { since } : {}), ...(merged.length ? { merged } : {}) };
 }

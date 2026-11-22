@@ -16,23 +16,16 @@
 //
 // A read that exits 0 having printed at most MAX_BYTES has its stdout saved, mode 0644, to
 // <fixtures>/<KEY>/<name>.json, where the requeued worker reads it as an untrusted API response.
-import { readFileSync, readdirSync, existsSync, mkdirSync, copyFileSync, chmodSync, statSync, lstatSync, appendFileSync, rmSync, openSync, writeSync, fchmodSync, closeSync, constants } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { readFileSync, readdirSync, existsSync, mkdirSync, realpathSync, copyFileSync, chmodSync, statSync, lstatSync, appendFileSync, rmSync, unlinkSync, openSync, writeSync, fchmodSync, closeSync, constants } from 'node:fs';
+import { join, dirname, resolve, relative, isAbsolute, basename, sep } from 'node:path';
+import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { repoStateOf } from './desk-env.mjs';
 import { startDetached, detachedRecord, anyRunning, hooklessGit, gitError, dirtyPaths } from './check-build.mjs';
-import { parseOperatorChecks } from './fix-tries.mjs';
 import { parkOnlyNames } from './undraft.mjs';
 
-// An entry's name is a file name too, so it holds no path.
-const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-
-// The row's items as { reads: [{ name, command }], errors: [item] }.
-export function parseLiveReads(items) {
-  const { checks, errors } = parseOperatorChecks(items);
-  const bad = checks.filter((c) => !NAME.test(c.name));
-  return { reads: checks.filter((c) => NAME.test(c.name)), errors: [...errors, ...bad.map((c) => `\`${c.name}: ${c.command}\` (a name holds only letters, digits, . _ and -)`)] };
-}
+// The row's grammar is the config schema's: the items as { reads: [{ name, command }], errors: [item] }.
+export { parseLiveReads } from './config-schema.mjs';
 
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // A name stands alone: a dot ends it only where no name character follows, so `gateway` is not named
@@ -131,7 +124,7 @@ export const WORKTREE_FIXTURES = '.desk-fixtures';
 function realDir(path) {
   let st = null;
   try { st = lstatSync(path); } catch { st = null; }
-  if (st && !st.isDirectory()) rmSync(path, { force: true });
+  if (st && !st.isDirectory()) unlinkSync(path);
   if (!st || !st.isDirectory()) mkdirSync(path);
 }
 
@@ -168,6 +161,89 @@ export function copyFixtures({ state, key, worktree, max = MAX_BYTES }) {
   }
   if (copied.length) excludeFromGit(worktree, `/${WORKTREE_FIXTURES}/`);
   return { dir, copied, refused };
+}
+
+// The most an answer's named files may total to be copied into a ticket's fixtures.
+export const NAMED_MAX_BYTES = 50 * 1024 * 1024;
+
+// The absolute paths an answer names (`~/` expanded against `home`), each once, in order. A path in
+// quotes or backticks runs to the closing one, spaces and all; otherwise it starts a word or follows a
+// bracket, runs to the first unescaped space (`Screen\ Recording`, as a dragged-in path is written),
+// and loses a sentence's trailing punctuation. One slash and a word (`/pullbot`) is a slash command.
+const PATH = /(?<=^|[\s(<[{])(["'`])((?:~\/|\/)[^\n]*?)\1(?=$|[\s.,;:!?)>\]}])|(?<=^|[\s"'`(<[{])((?:~\/|\/)(?:\\ |[^\s"'`)<>\]}])*)/g;
+export function pathsIn(text, home = homedir()) {
+  const out = [];
+  for (const m of String(text ?? '').matchAll(PATH)) {
+    const p = m[2]?.trimEnd() ?? m[3].replace(/[.,;:!?]+$/, '').replace(/\\ /g, ' ');
+    if (!/^(~\/|\/[^/]+\/)/.test(p)) continue;
+    const abs = resolve(p.startsWith('~/') ? join(home, p.slice(2)) : p);
+    if (!out.includes(abs)) out.push(abs);
+  }
+  return out;
+}
+
+const inside = (p, dir) => { const rel = relative(resolve(dir), p); return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel)); };
+// Where the disk ignores case (macOS and Windows by default), `~/library` and `/users/me` are the same
+// folders as `~/Library` and `/Users/me`, so a path is judged in one case.
+const fold = (p) => (['darwin', 'win32'].includes(process.platform) ? p.toLowerCase() : p);
+const realOf = (p) => fold(realpathSync.native(p));
+
+// Copies each existing file or folder an answer names into <state>/fixtures/<key>/, where the pass
+// copies a ticket's fixtures into its worktree. A folder gives its own visible regular files, not its
+// subfolders. Nothing is copied from the state folders, from home or above it, from a hidden folder or
+// ~/Library (credentials, keychains and cookies live there), or from a git checkout's root, and a path
+// whose files total over `max` bytes copies nothing. A file whose name an earlier path in the answer
+// already gave is not copied, so one never silently replaces another. { dir, copied: [{ path, names }],
+// notFound: [path], tooLarge: [{ path, bytes }], refused: [{ path, why }], over: [name], replaced:
+// [name] }, where `over` names copied files a worker's copy refuses and `replaced` the files that were
+// already in the fixtures folder before this answer.
+export function saveNamedFixtures({ state, key, text, home = homedir(), max = NAMED_MAX_BYTES }) {
+  const dir = join(state, 'fixtures', key);
+  const res = { dir, copied: [], notFound: [], tooLarge: [], refused: [], over: [], replaced: [] };
+  const states = [...new Set([state, repoStateOf(state)])];
+  const given = new Map();
+  for (const path of pathsIn(text, home)) {
+    if (states.some((s) => inside(path, s))) continue;
+    if (!existsSync(path)) { res.notFound.push(path); continue; }
+    // Judged where a symlink leads, so a link cannot carry a hidden folder's files out.
+    const real = realOf(path), realHome = existsSync(home) ? realOf(home) : fold(resolve(home));
+    if (states.some((s) => existsSync(s) && inside(real, realOf(s)))) continue;
+    if (inside(realHome, real)) { res.refused.push({ path, why: 'it is your home folder or above it' }); continue; }
+    const segs = relative(inside(real, realHome) ? realHome : '/', real).split(sep);
+    if (segs.some((s) => s.startsWith('.'))) { res.refused.push({ path, why: 'it is in a hidden folder' }); continue; }
+    if (inside(real, realHome) && segs[0] === fold('Library')) { res.refused.push({ path, why: 'it is in ~/Library, where apps keep keychains, cookies and mail' }); continue; }
+    const st = statSync(path);
+    let files;
+    if (st.isFile()) files = [{ from: path, name: basename(path), size: st.size }];
+    else if (st.isDirectory()) {
+      if (existsSync(join(path, '.git'))) { res.refused.push({ path, why: 'it is a git checkout: name the folder or file inside it' }); continue; }
+      files = [];
+      for (const name of readdirSync(path).sort()) {
+        if (name.startsWith('.')) continue;
+        const f = lstatSync(join(path, name));
+        if (f.isFile()) files.push({ from: join(path, name), name, size: f.size });
+        else res.refused.push({ path: join(path, name), why: `it is ${f.isSymbolicLink() ? 'a symlink' : 'a folder'}, and only the files directly in a named folder are copied` });
+      }
+    } else { res.refused.push({ path, why: 'it is not a file or folder' }); continue; }
+    const bytes = files.reduce((n, f) => n + f.size, 0);
+    if (bytes > max) { res.tooLarge.push({ path, bytes }); continue; }
+    if (!files.length) continue;
+    mkdirSync(dir, { recursive: true });
+    const names = [];
+    for (const f of files) {
+      if (given.has(fold(f.name))) { res.refused.push({ path: f.from, why: `a file named ${f.name} was already copied from ${given.get(fold(f.name))}: rename one and record it again` }); continue; }
+      let there = null;
+      try { there = lstatSync(join(dir, f.name)); } catch { there = null; }
+      if (there && !there.isFile()) { res.refused.push({ path: f.from, why: `${join(dir, f.name)} is ${there.isSymbolicLink() ? 'a symlink' : 'a folder'}, which is never replaced` }); continue; }
+      if (there) res.replaced.push(f.name);
+      writeNew(join(dir, f.name), readFileSync(f.from));
+      given.set(fold(f.name), path);
+      names.push(f.name);
+      if (f.size > MAX_BYTES) res.over.push(f.name);
+    }
+    if (names.length) res.copied.push({ path, names });
+  }
+  return res;
 }
 
 // Adds `pattern` to the worktree's info/exclude, once, so it stays out of git status without touching

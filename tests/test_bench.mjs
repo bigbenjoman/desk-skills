@@ -1,19 +1,19 @@
 // suite: bench (frozen tasks in throwaway checkouts, scored by hidden tests)
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, readdirSync, realpathSync, utimesSync } from 'node:fs';
+// budget: 45 DS-943 (whole bench runs: a checkout, a stub session and the hidden tests per task and arm; 32-34 s on CI)
+import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, readdirSync, realpathSync, utimesSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, loadBenchTasks, armOrder, armSettings, reachAttempts, runKey, testRuns } from '../desk/bin/bench.mjs';
 import { logTokens } from '../desk/bin/worker-cost.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const throws = (fn) => { try { fn(); return ''; } catch (e) { return e.message; } };
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'bench.mjs');
-const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bench-test-')));
-process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
+const dir = realpathSync(scratch('bench-test-'));
 const home = join(dir, 'home');
 mkdirSync(home);
 const gitEnv = { ...process.env, HOME: home, GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
@@ -163,7 +163,8 @@ const results = (out) => Object.fromEntries(readdirSync(join(out, 'runs')).filte
   .map((d) => { const r = JSON.parse(readFileSync(join(out, 'runs', d, 'result.json'), 'utf8')); return [`${r.task}.${r.arm}`, { ...r, dir: join(out, 'runs', d) }]; }));
 
 // AC8: no task set or no arm refuses, names the flag and starts nothing.
-const set = taskSet('main', [task('fixed', 'FIX it'), task('wrong', 'do nothing')]);
+const ONE_CHECK = { checks: [{ file: 'tests/hidden.sh', suite: 'hidden.sh', name: 'new', pattern: 'new' }] };
+const set = taskSet('main', [task('fixed', 'FIX it'), { ...task('wrong', 'do nothing'), added_checks: ONE_CHECK }]);
 let r = run(['--arm', 'a', '--max-budget-usd', '1']);
 t('AC8 no task set exits 2', r.status, 2);
 t('AC8 names --tasks', /--tasks is required/.test(r.stderr), true);
@@ -204,6 +205,9 @@ t('AC2 both arms scored', res['fixed.b'].status, 'accepted');
 t('AC2 a failing hidden test is rejected', res['wrong.a'].status, 'rejected');
 t('AC2 the rejection names the test command', /sh run-tests\.sh/.test(res['wrong.a'].why), true);
 t('AC2 the test output is kept', readFileSync(join(res['wrong.a'].dir, 'test-output.log'), 'utf8').includes('exit 1'), true);
+t('DS-547 AC2 the result records the added checks, not measured where the output names none',
+  JSON.stringify(res['wrong.a'].added_checks), '{"passed":null,"of":1,"why":"the test output has no tests/run.sh suite headings to read checks from"}');
+t('DS-547 a task naming no added checks records none', 'added_checks' in res['fixed.a'], false);
 t('AC6 nothing disables caching', c.every((x) => !x.caching.length && !x.args.some((a) => /cach/i.test(a))), true);
 t('AC6 tokens recorded by kind', JSON.stringify(res['fixed.a'].tokens), '{"uncached":10,"cacheWrite":30,"cacheRead":40,"output":20}');
 t('AC9 the checkout is removed', c.every((x) => !existsSync(x.cwd)), true);

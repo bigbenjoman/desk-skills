@@ -42,7 +42,7 @@ use the branch's slug wherever a path needs one, and titles carry no key.
 ## Reference files — read at their step
 
 This file holds what every PR needs: the config, the diff hygiene block (§1), the pre-push checks
-(the start of §4), stacked PRs (§5) and the common mistakes. The rest is in `references/`, beside
+and the preview-build lease (the start of §4), stacked PRs (§5) and the common mistakes. The rest is in `references/`, beside
 it: all of §2 and §3, and the rest of §4. **At each step below, read the file the table names for
 it**, and only that one; a step not listed needs nothing beyond this file.
 
@@ -174,6 +174,43 @@ time on the push that follows. A new commit runs them again.
 
 Fill the `pre-push` slot of the §1 block from the run.
 
+### Before opening the PR, and before every push to it: the preview-build lease
+
+Where PRs deploy previews, opening the PR and every push to it start a preview build, and a Vercel
+team's builds share one builder that kills builds started together (exit 137). So each of those
+steps first takes a unit of the team's preview-build lease, which every repo, batch and session on
+this computer draws on. `<team>` is the first item `desk-env list vercel` prints. `<label>` is
+`<§0 GitHub repo>#<PR number>` for a push to an open PR, and `<§0 GitHub repo>@<your branch>` before
+the PR exists:
+
+```bash
+desk-env preview-slot --wait 100 "<label>"
+```
+
+- **§4 Vercel `none` or unset** (it prints `no preview slot to take`), or the kind **`off`** (`desk-env
+  lease mode preview-build`; it says nothing was taken): no lease. Open and push as before.
+- **`on`**: it prints the lease id. While every unit is held it waits, printing `waiting for the
+  preview-build slot for <team>` and who holds it: say you are waiting on the preview build, naming
+  them. Exit 75 means the 100 seconds ran out (inside a tool call's default timeout): run the same
+  command again, as a new command, saying you are still waiting on the preview build. Push or open
+  only once it exits 0.
+- **`shadow`**: it never waits; where `on` would have, it says so on stderr and the lease log records
+  a would-refuse naming every holder. Open or push as before.
+- Exit 4 (the lease store is unreadable): say so, and open or push without the lease.
+
+The unit has no owner: the build outlives the command that started it, so the lease stays until it
+is released or its 1200 seconds pass. Never release it yourself. Taking it again with the same label
+renews that unit rather than taking a second, so all of one PR's builds hold one unit. Right after
+`gh pr create`, put the PR's number on the unit taken before it:
+
+```bash
+desk-env lease renew <lease id> preview-build <team> --ttl 1200 --no-owner --label "<§0 GitHub repo>#<PR number>"
+```
+
+An autopilot worker's pushes go through `push-retry.mjs`, which takes the unit itself under the same
+label without waiting, and when every unit is held exits 76 naming the `desk-env preview-slot` wait
+to run first.
+
 ## 5. Stacked PRs
 
 If the branch depends on another PR that hasn't merged, say so in the body — which PR, and that
@@ -197,15 +234,16 @@ about immediately, not at the bottom of a finished PR description.
 | Stripping a trailer the repo requires where §5 says `allowed` | Follow the repo's instructions exactly |
 | "Verified it works" in Testing | Give the number, the path, or the name that proves it |
 | Pushing because "the hook will catch it" | The hook runs only where `core.hooksPath` is set; run `scripts/desk/pre-push.sh --head` yourself |
-| Opening the PR and letting CI judge the body | Run §4 PR-description checks (`desk-env cmds pr-description-checks`) on the body file first |
+| Opening the PR and letting CI judge the body | Run desk's closing-keyword check, then §4 PR-description checks (`desk-env cmds pr-description-checks`), on the body file first |
+| "Close #N after …" in a step for later | GitHub closes #N at merge. Name the issue first: "#N can be closed after …" |
 | A one-off script in the diff | Run it from the branch, delete it, don't merge it |
 | An infra PR with no ping drafted | Draft the note to the §4 infra owner; never send it |
 | `gh pr edit --body-file` from your local draft | It wipes what CI and bots added. Fetch the live body and change only what sits between desk's markers |
 | Placeholder rows left in the merged body | Script: check its exit code. By hand: say "delete these rows" |
 | Uploading when §3 says `ask`, because it was fine last time | `ask` means every run. Standing permission is a §3 `yes`, never an inference |
-| Re-running the upload after exit 3 or 4 | The assets exist; fix the body from the printed tags |
+| Filling cells by hand after exit 4 or 7 | Run the script again (after a 7, not before the time it printed): `<dir>.tags.json` keeps every link, so nothing is uploaded twice |
 | Running the upload while another browser holds the profile | One `SingletonLock`. Never kill the holder; ask the user to free it |
-| A 12-row before/after table | Two or three widths that carry the change; the rest as numbers in Testing. A ticket with a saved canvas is the exception: every breakpoint, collapsed |
+| A 12-row before/after table | Two or three widths that carry the change; the rest as numbers in Testing. A ticket with a saved canvas is the exception: every breakpoint, in one stitched image per board and theme |
 | Screenshots with a consent banner over the content | Seed its cookie before the first `goto` |
 | A before/after table on a change that renders identically | Omit the section and say why in one line |
 | Opening a non-draft PR | Draft first (unless §5 PR lifecycle says otherwise); images and self-review land before it goes ready |

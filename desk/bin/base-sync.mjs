@@ -2,8 +2,8 @@
 //
 // A batch base (queue.mjs set-batch base=<branch>) drifts from the default branch for as long as the
 // batch runs. pass.mjs keeps one worktree for it under the worktrees directory, a plain
-// `git worktree add` (setup-worktree.sh also makes a database and copies env files, which the base
-// needs neither of), and, before any pass that spawns and on any pass that finds the base behind,
+// `git worktree add` with §4 Env files copied in, so the repo's pre-push hook finds them (no database:
+// setup-worktree.sh makes one only for a ticket), and, before any pass that spawns and on any pass that finds the base behind,
 // merges the default branch into the base there and pushes it, so new workers start on a current tree
 // and a park waiting on the base containing the default branch clears.
 //
@@ -14,25 +14,62 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { baseFixKey, binDir, commandPrefix, configValues, isNone, parseCommandItem } from './desk-env.mjs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { baseFixKey, runBin, commandPrefix, configValues, isNone, parseCommandItem } from './desk-env.mjs';
+import { rewriteEnvFiles } from './env-rewrite.mjs';
 import { runItem } from './baseline.mjs';
+import { execGit } from './remote-git.mjs';
+import { hookEnvFailure, refusalLine } from './push-retry.mjs';
 
 const git = (cwd, args) => {
-  try { return { ok: true, out: execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }; }
+  try { return { ok: true, out: execGit('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }; }
   catch (e) { return { ok: false, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message }; }
 };
 const firstLine = (s) => String(s).split('\n').map((l) => l.trim()).find(Boolean) ?? '';
 
 export const baseWorktreePath = (worktreesDir, base) => join(worktreesDir, baseFixKey(base));
 
+const rowItems = (id) => {
+  let v = null;
+  try { v = configValues(id); } catch { /* no config: the row reads as unset */ }
+  return v && !isNone(v[0]) ? v : [];
+};
+// §4 Env files the base worktree lacks, copied from the primary checkout by copy-env.sh --base, so a
+// pre-push hook that reads one finds it. The base has no database of its own, so every §4 Database URL
+// variable in them is blanked by the worker database rule (env-rewrite.mjs); a copy whose blanking
+// does not read back is removed. -> { copied: [rel], missing: [rel] }
+export function seedEnvFiles({ main, path }) {
+  // A path outside the worktree is never read, removed or rewritten here; copy-env.sh refuses it too.
+  const files = rowItems('env-files');
+  const outside = files.filter((rel) => isAbsolute(rel) || rel.split(/[/\\]/).includes('..'));
+  const lacking = files.filter((rel) => !outside.includes(rel) && !existsSync(join(path, rel)));
+  if (!lacking.length) return { copied: [], missing: outside };
+  try {
+    execFileSync('bash', [join(dirname(fileURLToPath(import.meta.url)), 'copy-env.sh'), '--base'],
+      { cwd: path, env: { ...process.env, DESK_ENV_FROM: main }, stdio: 'ignore' });
+  } catch { /* a file it could not copy is missing below */ }
+  const vars = rowItems('db-url-var');
+  const copied = [], missing = [...outside];
+  for (const rel of lacking) {
+    const there = existsSync(join(path, rel)) && rewriteEnvFiles({ mode: 'blank', wt: path, vars, files: [rel], log: () => {}, error: () => {} }).bad === 0;
+    if (!there) rmSync(join(path, rel), { force: true });
+    (there ? copied : missing).push(rel);
+  }
+  return { copied, missing };
+}
+
 // The base worktree is made on a detached HEAD at origin's base, never on the branch: every sync and
 // push goes through origin/<base> and HEAD:refs/heads/<base>, and a branch can be checked out in one
 // worktree only, so the primary checkout or another worktree holding <base> would otherwise leave
 // nowhere to sync it. Neither of those is ever touched. One made on the branch by an earlier pass is
-// still reused: it is known by its path.
-// -> { ok: true, path, made } | { ok: false, path, why }
+// still reused: it is known by its path. Either way it gets the env files it lacks (seedEnvFiles).
+// -> { ok: true, path, made, env: { copied, missing } } | { ok: false, path, why }
 export function ensureBaseWorktree({ main, worktrees, base }) {
+  const r = baseWorktree({ main, worktrees, base });
+  return r.ok ? { ...r, env: seedEnvFiles({ main, path: r.path }) } : r;
+}
+function baseWorktree({ main, worktrees, base }) {
   const path = baseWorktreePath(worktrees, base);
   const list = git(main, ['worktree', 'list', '--porcelain']);
   if (!list.ok) return { ok: false, path, why: `could not list worktrees: ${firstLine(list.out)}` };
@@ -63,16 +100,40 @@ const nonFastForward = (out) => /non-fast-forward|fetch first|\[rejected\]/i.tes
 //    | { ok: false, reason: 'conflict', files, merged } | { ok: false, reason: 'push', why }
 //    | { ok: false, reason: 'permission', merged } | { ok: false, reason: 'error', why }
 // Bring the base worktree to origin's base, with origin's <branch> fetched beside it: a reason it could
-// not, or null. Anything of its own the worktree holds is not this script's to push.
-function catchUp(path, base, branch) {
-  const f = git(path, ['fetch', '-q', 'origin', `refs/heads/${base}:refs/remotes/origin/${base}`, `refs/heads/${branch}:refs/remotes/origin/${branch}`]);
-  if (!f.ok) return `could not fetch ${base} and ${branch} from origin: ${firstLine(f.out)}`;
+// not, or null. Anything of its own the worktree holds is not this script's to push. `fetched`: the
+// caller has just fetched both.
+const fetchBoth = (path, base, branch) => git(path, ['fetch', '-q', 'origin', `refs/heads/${base}:refs/remotes/origin/${base}`, `refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+const fetchFailed = (base, branch, f) => `could not fetch ${base} and ${branch} from origin: ${firstLine(f.out)}`;
+function catchUp(path, base, branch, { fetched = false } = {}) {
+  const f = fetched ? { ok: true } : fetchBoth(path, base, branch);
+  if (!f.ok) return fetchFailed(base, branch, f);
   const dirty = git(path, ['status', '--porcelain']);
   if (!dirty.ok || dirty.out) return `the base worktree ${path} has uncommitted changes: commit or discard them there`;
   const ahead = git(path, ['rev-list', '--count', `origin/${base}..HEAD`]);
   if (ahead.out !== '0') return `the base worktree ${path} holds ${ahead.out} commit(s) origin's ${base} does not: push or drop them there`;
   const ff = git(path, ['merge', '-q', '--ff-only', `origin/${base}`]);
   return ff.ok ? null : `could not fast-forward ${path} to origin/${base}: ${firstLine(ff.out)}`;
+}
+
+// A base origin no longer has: GitHub's delete-branch-on-merge removes it once a promotion PR from it
+// merges into <branch>. Asked only once fetching it has failed. -> null while origin has it (or
+// cannot be asked: the fetch's failure stands), else
+// { last, at, merged } with origin's <branch> fetched: <last> the base's last known head (origin's base
+// as last fetched, else the worktree's HEAD), <at> origin's <branch> head, and <merged> whether
+// everything the base worktree knows of is in <branch>, so recreating the base at <at> loses nothing.
+// | { error } when <branch> could not be fetched.
+function goneFromOrigin(path, base, branch) {
+  const ls = git(path, ['ls-remote', '--heads', 'origin', `refs/heads/${base}`]);
+  if (!ls.ok || ls.out) return null;
+  const f = git(path, ['fetch', '-q', 'origin', `refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+  if (!f.ok) return { error: `${base} is missing on origin, and ${branch} could not be fetched to see whether it was merged: ${firstLine(f.out)}` };
+  const known = git(path, ['rev-parse', '--verify', '-q', `refs/remotes/origin/${base}^{commit}`]);
+  const head = git(path, ['rev-parse', 'HEAD']).out;
+  const last = known.ok && known.out ? known.out : head;
+  const at = git(path, ['rev-parse', `origin/${branch}`]).out;
+  // Both must be in <branch>: a worktree HEAD beyond origin's base holds work no one pushed.
+  const unmerged = [last, head].find((sha) => !git(path, ['merge-base', '--is-ancestor', sha, `origin/${branch}`]).ok) ?? null;
+  return { last: unmerged ?? last, at, merged: !unmerged };
 }
 
 const CHECK_TIMEOUT_MS = 300_000;
@@ -89,7 +150,7 @@ export function mergedTreeCheck() {
   // `stopped`: it timed out or never started, so the failure says nothing about the tree.
   const check = (root) => {
     for (const { dir, cmd } of items) {
-      const r = runItem({ bin: binDir(), root, dir, cmd, lock: 'nolock', prefix, timeout: CHECK_TIMEOUT_MS });
+      const r = runItem({ bin: runBin(), root, dir, cmd, lock: 'nolock', prefix, timeout: CHECK_TIMEOUT_MS });
       if (r.code !== 0 || r.stopped) {
         return { command: dir === '.' ? cmd : `${dir}: ${cmd}`, output: r.stopped ? `it did not finish in ${CHECK_TIMEOUT_MS / 1000}s` : checkQuote(r.out) || `it exited ${r.code} and printed nothing`, ...(r.stopped ? { stopped: true } : {}) };
       }
@@ -134,19 +195,71 @@ export function prTreeCheck({ repo, cache, dir, base, pr, head, check = mergedTr
   return r;
 }
 
-// Puts the base worktree back at origin's base, for a fix try that ended without pushing what it merged.
+// Puts the base worktree back at origin's base, for a fix try that ended without pushing what it merged
+// (keepUnpushed first keeps what it committed).
 export function dropUnpushed({ path, base }) {
   git(path, ['reset', '-q', '--hard', `origin/${base}`]);
   git(path, ['clean', '-fdq']);
 }
 
+// What a fix try committed in the base worktree and did not push, kept on <ref> before dropUnpushed
+// puts the worktree back: { ref, sha }, { sha, error } when the ref could not be written, or null
+// when HEAD holds nothing beyond origin's base.
+export function keepUnpushed({ path, base, ref }) {
+  const ahead = git(path, ['rev-list', '--count', `origin/${base}..HEAD`]);
+  if (!ahead.ok || ahead.out === '0') return null;
+  const sha = git(path, ['rev-parse', 'HEAD']).out;
+  const u = git(path, ['update-ref', ref, sha]);
+  return u.ok ? { ref, sha } : { sha, error: firstLine(u.out) };
+}
+
+// Brings the base worktree, at origin's base, to a merge an earlier try kept: null once it is there,
+// else why it is stale. It is current only while it holds origin's <base> and <branch> as they are now.
+export function startFromKept({ path, base, branch, kept }) {
+  const sha = kept?.sha;
+  if (!sha || !git(path, ['cat-file', '-e', `${sha}^{commit}`]).ok) return 'its commit is gone';
+  for (const b of [base, branch]) {
+    if (!git(path, ['merge-base', '--is-ancestor', `origin/${b}`, sha]).ok) return `origin/${b} has moved since it was kept`;
+  }
+  const ff = git(path, ['merge', '-q', '--ff-only', sha]);
+  return ff.ok ? null : `the base worktree could not move to it: ${firstLine(ff.out)}`;
+}
+
 // `check` is a mergedTreeCheck function, run on each clean merge before its push; one it fails is
 // undone and comes back as { ok: false, reason: 'check', files: [], check: { command, output }, merged }.
+//
+// A base missing on origin whose last known head is already in <branch> (merged, then deleted) is
+// pushed back at origin's <branch> head before the sync, and every result after says so in
+// `recreated: { last, at }`. Without the push grant, or on a dry run, it is not recreated:
+// { ok: false, reason: 'permission', merged: 0, recreate: { last, at } } or
+// { ok: true, merged: 0, pushed: false, dry: true, recreate: { last, at } }. One whose last known
+// head is not in <branch> is never recreated: { ok: false, reason: 'missing', why, last }. A refused
+// recreation is { ok: false, reason: 'push', why, recreate: { last, at } }.
 export function syncBase({ path, base, branch, push = true, dry = false, check = null }) {
+  const fail = (why) => ({ ok: false, reason: 'error', why });
+  const f = fetchBoth(path, base, branch);
+  if (f.ok) return syncPresent({ path, base, branch, push, dry, check, fetched: true });
+  const gone = goneFromOrigin(path, base, branch);
+  if (!gone) return fail(fetchFailed(base, branch, f));
+  if (gone.error) return fail(gone.error);
+  const { last, at } = gone;
+  if (!gone.merged) {
+    return { ok: false, reason: 'missing', last, why: `${base} is missing on origin, and its last known head ${last.slice(0, 12)} is not in ${branch}, so it was not recreated: push that commit back to ${base} on origin, or end the batch` };
+  }
+  if (dry) return { ok: true, merged: 0, pushed: false, retried: false, dry: true, recreate: { last, at } };
+  if (!push) return { ok: false, reason: 'permission', merged: 0, recreate: { last, at } };
+  // <at> is origin's <branch> as it stands, which its own CI checked: no pre-push hook to run (see below).
+  const p = git(path, ['push', '-q', '--no-verify', 'origin', `${at}:refs/heads/${base}`]);
+  if (!p.ok) return { ok: false, reason: 'push', recreate: { last, at }, why: `${base} is missing on origin, and recreating it at ${branch}'s head ${at.slice(0, 12)} was refused: ${refusalLine(p.out)}` };
+  const r = syncPresent({ path, base, branch, push, dry, check });
+  return { ...r, recreated: { last, at } };
+}
+
+function syncPresent({ path, base, branch, push, dry, check, fetched = false }) {
   const fail = (why) => ({ ok: false, reason: 'error', why });
   const behind = () => Number(git(path, ['rev-list', '--count', `HEAD..origin/${branch}`]).out) || 0;
 
-  const stuck = catchUp(path, base, branch);
+  const stuck = catchUp(path, base, branch, { fetched });
   if (stuck) return fail(stuck);
   let merged = behind();
   if (!merged) return { ok: true, merged: 0, pushed: false, retried: false };
@@ -178,8 +291,17 @@ export function syncBase({ path, base, branch, push = true, dry = false, check =
       git(path, ['clean', '-fdq']);
       if (failed) return { ok: false, reason: 'check', files: [], check: failed, merged };
     }
-    const p = git(path, ['push', '-q', 'origin', `HEAD:refs/heads/${base}`]);
-    if (p.ok) return { ok: true, merged, pushed: true, retried: attempt > 0 };
+    // A merged tree that is origin/<branch>'s own adds nothing the default branch's CI has not
+    // checked, so it pushes with --no-verify: the base worktree has no installed dependencies, and a
+    // hook that runs the repo's checks could only fail there, on the worktree, not the code. Where
+    // the base holds content of its own the hook runs, and a failing check refuses the push; a hook
+    // that could not run its checks at all is skipped, and the result says so in `hookSkipped`.
+    const own = git(path, ['rev-parse', 'HEAD^{tree}']).out !== git(path, ['rev-parse', `origin/${branch}^{tree}`]).out;
+    const pushTo = (verify) => git(path, ['push', '-q', ...(verify ? [] : ['--no-verify']), 'origin', `HEAD:refs/heads/${base}`]);
+    let p = pushTo(own);
+    const hookSkipped = own && !p.ok ? hookEnvFailure(p.out) : null;
+    if (hookSkipped) p = pushTo(false);
+    if (p.ok) return { ok: true, merged, pushed: true, retried: attempt > 0, ...(hookSkipped ? { hookSkipped } : {}) };
     // Never leave a merge origin does not have: the next sync starts from origin's base again.
     git(path, ['reset', '-q', '--hard', before]);
     // The merge driver can merge a PR into the base between our fetch and our push. Once only.
@@ -190,7 +312,7 @@ export function syncBase({ path, base, branch, push = true, dry = false, check =
       if (!merged) return { ok: true, merged: 0, pushed: false, retried: true };
       continue;
     }
-    return { ok: false, reason: 'push', why: `the push to ${base} was refused${attempt ? ' (after one fetch and retry)' : ''}: ${firstLine(p.out.replace(/^To .*$/m, ''))}` };
+    return { ok: false, reason: 'push', why: `the push to ${base} was refused${attempt ? ' (after one fetch and retry)' : ''}: ${refusalLine(p.out)}` };
   }
 }
 
@@ -208,8 +330,9 @@ export function openingCommit({ path, base, branch, push = true, message }) {
   const before = git(path, ['rev-parse', 'HEAD']).out;
   const c = git(path, ['commit', '-q', '--allow-empty', '-m', message]);
   if (!c.ok) return { ok: false, reason: 'error', why: `could not make the empty commit in ${path}: ${firstLine(c.out)}` };
-  const p = git(path, ['push', '-q', 'origin', `HEAD:refs/heads/${base}`]);
+  // An empty commit: no pre-push hook has anything to check (see syncBase).
+  const p = git(path, ['push', '-q', '--no-verify', 'origin', `HEAD:refs/heads/${base}`]);
   if (p.ok) return { ok: true, ahead: 1, pushed: true };
   git(path, ['reset', '-q', '--hard', before]);
-  return { ok: false, reason: 'push', why: `the push of an empty commit to ${base} was refused: ${firstLine(p.out.replace(/^To .*$/m, ''))}` };
+  return { ok: false, reason: 'push', why: `the push of an empty commit to ${base} was refused: ${refusalLine(p.out)}` };
 }

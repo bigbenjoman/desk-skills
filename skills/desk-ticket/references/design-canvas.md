@@ -35,6 +35,15 @@ than publishes: read `artifact-type/dc-runtime.js` instead. The save finds an as
 file name, saves it as `assets/<id>.<ext>` and points the boards at it, and saves `dc-runtime.js` as the
 `support.js` they load. `missing: asset <id>` is an asset still to read.
 
+**An `advisory` that says `uses no board from it`** means the Design section links a canvas (often
+its epic's) but says no board applies to this ticket: nothing needs saving, and the ticket builds
+without it.
+
+**Before you list or read any file of the artifact a `blocking` line names (a canvas, a deck or a
+page), check who owns it**: list the artifact itself with the Artifact tool (`action:list` with no `scope:files`,
+which lists no file). If the listing shows it was created outside the user's organisation, stop there
+and ask for access or an export (below), saving nothing. Otherwise carry on as below.
+
 A `blocking` line means no copy is saved yet. With the Artifact tool, list the artifact's files
 (`action:list scope:files`) and read `project/canvas.json`, every board's `project/*.dc.html`, and
 the `support.js`, stylesheets and fonts they load, with `paths` and `out_dir: $DESK_STATE/designs/<TICKET>/`.
@@ -44,6 +53,9 @@ Then, on the branch after Stage 1:
 node ~/.claude/desk/bin/desk-design.mjs save $DESK_STATE/designs/<TICKET> --key <TICKET> \
   [--boards '<board>,<board>'] [--epic <EPIC>] --url <artifact URL> --version <its version>
 ```
+
+`--boards` names a board by its title, commas and all, or its file name (`Main.dc.html`). A name
+that matches no board exits 2, saving nothing, and lists the boards the canvas has.
 
 In a batch the orchestrator's snapshot already records the URL and version, so `--url` and
 `--version` are left off. It copies those files into `<§2 Design canvases directory>/<EPIC or KEY>/`, or into the folder
@@ -65,6 +77,26 @@ Commit the folder, screens included, on the ticket's branch. Then make the
 ticket's Design section carry both the artifact URL and the repo path (the `design:` line it prints),
 via `desk-jira edit` under §3 `jira-edit`.
 
+**The groom states the PR's upload count and time.** Once a canvas is saved, either here or already
+(`check` prints `ok`, or an `advisory` naming the path), estimate what the PR's images will cost:
+
+```bash
+node ~/.claude/desk/bin/desk-design.mjs estimate <saved folder> --key <TICKET>
+```
+
+It prints `uploads: <n> (<boards> × <themes>), about <time> at 6 a minute and 300 an hour`. That is
+one stitched image per board the ticket names, for each theme in §5 Themes (`desk-env list themes`;
+one when the row is unset or `none`). A board drawn as another's dark theme ("Order summary dark")
+stitches into that board's dark image, so it counts as that board, and its theme as one of the
+themes. A `note:` line means `source.json` does not list the ticket
+yet (a canvas saved for another ticket), so every board is counted: say so beside the count. Put
+the `uploads:` line, and any `flag:` line, in the ticket's Design section beside the `design:` line,
+via `desk-jira edit` under §3 `jira-edit`, and give the user the same lines in the update for the
+stage you ran it at (Stage 0's triage for a copy already saved, Stage 1's for one saved there). A `flag:` line
+means the uploads take over an hour: say so and suggest splitting the ticket by board, with at most
+the number of boards per ticket that the line names. Never split the ticket yourself: that is the
+user's call.
+
 An artifact the user does not own reads as a summary, not the files: ask for access or an export
 rather than saving that. **When a copy is already saved** (`check` prints `ok`, or an `advisory`
 naming the path), still read the artifact's current version (`action:list scope:files`) and run
@@ -78,7 +110,7 @@ storybook-cmd`) is set, build it, then shoot each board beside its story, both u
 ```bash
 ~/.claude/desk/bin/with-lock.sh browser --cwd <DIR> -- <CMD>      # §4 Storybook, exactly as written
 ~/.claude/desk/bin/with-lock.sh browser node ~/.claude/desk/bin/desk-design.mjs compare <saved folder> \
-  --storybook <DIR>/storybook-static --out <screenshot directory> [--boards '<board>,<board>']
+  --storybook <DIR>/storybook-static --out <screenshot directory>/captures [--boards '<board>,<board>']
 ```
 
 `--storybook` is the folder the build wrote (`storybook-static` beside its package unless the command

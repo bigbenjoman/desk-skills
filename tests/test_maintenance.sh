@@ -49,7 +49,8 @@ config(){ cat > "$T/config.md" <<EOF
 EOF
 }
 
-for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"; link_bin "$B" "$T/desk/bin"
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
 mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
 EOF
@@ -129,7 +130,7 @@ check "AC2 its session is kept and it is queued to resume"  '[ "$(field M-0 sess
 check "AC2 the report names it"                             'grep -q "^maintenance: drained for 30 min, the 30 min limit: stopped M-0 (pid [0-9]*), each with its session kept" <<< "$out"'
 check "AC3 desk-skills is pulled fast-forward"              '[ "$(srchead)" = "$new" ]'
 check "AC3 and installed"                                   '[ "$(calls install)" = 1 ]'
-check "AC3 the log records the old and new commit"          'mlog | grep -q "update: desk-skills ${old:0:12} -> ${new:0:12} (1 commit(s)), pulled fast-forward and installed"'
+check "AC3 the log records the old and new commit"          'mlog | grep -q "update: desk-skills ${old:0:12} -> ${new:0:12} (1 merge(s) to main), pulled fast-forward and installed"'
 check "AC5 the log records the reboot check summary"        'mlog | grep -q "reboot check: summary: dirty=0 unpushed=0 heavy=0 filevault=off; no blocker"'
 check "AC7 ask: no restart"                                 '[ "$(calls restart)" = 0 ]'
 check "AC7 ask: spawning resumes in the same pass"          '[ "$(field M-1 state)" = running ] && grep -q "M-0 resumed after the maintenance window" <<< "$out"'
@@ -185,6 +186,12 @@ pj 2026-10-05T06:31:00Z; pj 2026-10-05T06:32:00Z
 check "a blocker stops the restart, and spawning resumes"    '[ "$(calls restart)" = 1 ] && [ "$(field M-6 state)" = running ]'
 check "the blocker is named in the check-in digest"         'grep -q "not restarted: config §3 machine-reboot is \"yes\", but the reboot check found 2 heavy process(es) running" <<< "$(digest 3)"'
 q set M-6 state=done
+
+# A heavy count the check could not read (ps failed) blocks, never reads as nothing running.
+checkout_says unknown
+out=$(node --input-type=module -e "import { rebootCheck } from '$B/maintenance.mjs'; console.log(rebootCheck().blockers.join(' | '))" 2>&1)
+check "heavy=unknown is a blocker, saying ps could not be read" 'grep -q "could not tell whether anything heavy is running (heavy=unknown: ps could not be read)" <<< "$out"'
+checkout_says 0
 
 # ---- AC8: machine-reboot no --------------------------------------------------------------------
 config "Mon 06:30 UTC" no

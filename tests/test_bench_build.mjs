@@ -1,20 +1,19 @@
 // suite: bench-build (a task set frozen from merged PRs, kept only where the hidden tests fail at base and pass at merge)
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, realpathSync, statSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, realpathSync, statSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, parsePr, testFiles, fieldsAt, counts, sizeOf, taskId } from '../desk/bin/bench-build.mjs';
 import { keyRegex } from '../desk/bin/ticket-lint.mjs';
 import { loadBenchTasks } from '../desk/bin/bench.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const throws = (fn) => { try { fn(); return ''; } catch (e) { return e.message; } };
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'bench-build.mjs');
-const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bench-build-test-')));
-process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
+const dir = realpathSync(scratch('bench-build-test-'));
 const home = join(dir, 'home');
 mkdirSync(home);
 const gitEnv = { ...process.env, HOME: home, GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
@@ -171,6 +170,9 @@ t('AC2 copied at the merge commit', readFileSync(join(hiddenDir, 'tests', 'test_
 t('AC2 beside the set, outside the repo', task.hidden_tests.dir === 'acme__widgets-1/hidden' && !hiddenDir.startsWith(repo), true);
 t('AC2 a fixture is copied but not run', JSON.stringify(task.hidden_tests.run), '["tests/test_fix.sh"]');
 t('the set loads as a bench task set', loadBenchTasks(setFile)[0].hidden_tests.dir, hiddenDir);
+t('DS-547 a PR whose test calls no check helper records no added checks, and why',
+  task.added_checks.checks.length === 0 && /no check helper/.test(task.added_checks.why), true);
+t('DS-547 the task records each suite\'s check count from the merge run, none where it is no tests/run.sh output', JSON.stringify(task.added_checks.suites), '{}');
 t('AC3 the base run failed', readFileSync(join(dir, 'set', 'acme__widgets-1', 'validate', 'base', 'test-output.log'), 'utf8').includes('exit 1'), true);
 t('AC3 the merge run passed', readFileSync(join(dir, 'set', 'acme__widgets-1', 'validate', 'merge', 'test-output.log'), 'utf8').includes('exit 0'), true);
 const why = Object.fromEntries(set.dropped.map((d) => [d.pr, d.why]));

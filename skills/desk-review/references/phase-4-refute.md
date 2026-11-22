@@ -14,19 +14,24 @@ and the mechanism stated flat. Codex reads the file itself; never paste a diff o
 Independent calls may run in parallel.
 
 ```bash
-codex exec --sandbox read-only --skip-git-repo-check 'Refute this code-review finding by reading the code. Reply CONFIRMED with a one-line proof, REJECTED with the reason, or DUPLICATE-OF <n>. If uncertain, REJECTED. <P1> <path:line>: <mechanism in one or two sentences>'
+node ~/.claude/desk/bin/codex-exec.mjs review 'Refute this code-review finding by reading the code. Reply CONFIRMED with a one-line proof, REJECTED with the reason, or DUPLICATE-OF <n>. If uncertain, REJECTED. <P1> <path:line>: <mechanism in one or two sentences>'
 ```
 
-- **On a PR, add `--cd <the PR's worktree>`** after `--sandbox read-only`, so codex reads the PR's
-  files. The long form, never `-C`, which sits next to the denied `-c`.
+- **It is `codex exec --sandbox read-only --skip-git-repo-check`, ended at a timeout.** Stdin is
+  closed, stdout is codex's final message alone, and a call still running at config §3b Codex
+  review's timeout (`desk-env get codex-models`) is ended with its process group, exit 124: that
+  finding is `UNREFUTED` and not retried. Never call `codex exec` bare for a refutation, which
+  nothing ends.
+- **On a PR, add `--cd <the PR's worktree>`** after `review`, so codex reads the PR's files. The
+  long form, never `-C`, which sits next to the denied `-c`.
 - **Single quotes, and plain words inside them.** In double quotes a backtick or `$` in the
   mechanism is command substitution, which makes the call compound and a worker refuses it. The
   worker's deny rules also match the prompt text, so ` -c `, ` -s `, `danger` or `--config` written
   literally (a finding about `bash -c`, or `dangerouslySetInnerHTML`) gets the call denied. Describe
   flags and API names in words: "runs its input through a shell", "sets raw HTML". An apostrophe is
   written as a typographic ’, never `'`.
-- **No `-c`, `--config`, `-m` or `-p`.** Desk's harness asks on every one of them and a worker
-  denies them. Reasoning effort is set in the user's `~/.codex/config.toml`, not per call.
+- **No codex flag but `--cd`.** The review form takes none, and a worker is denied `-c`, `--config`,
+  `-m` and `-p` on a direct call. Model and effort are the user's `~/.codex/config.toml`, not per call.
 - **With the `codex` lever on** (Phase 0): `desk-codex refuter [--cd <the PR's worktree>] '<the same
   prompt>'`, which runs at the refuter's model and effort from config §3b Codex review (`desk-env get codex-models`) and prints
   codex's final message alone. Exit 124 is a call ended at its timeout, and exit 75 one no Codex

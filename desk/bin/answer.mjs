@@ -8,19 +8,20 @@
 // unattended at all, and un-parking here once sent exactly such a ticket to a headless worker.
 // Exits 0 once the answer is recorded, or 11 (show the person) on any refusal or error: EXIT in
 // batch-state.mjs.
-import { writeFileSync, appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { writeFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { stateDir, binDir, queueFile, configValue, SAFE_ID } from './desk-env.mjs';
-import { isHeld, HELD_PREFIX, EXIT, crashShowsPerson, readQueue, refusedStep, neverStep, grantFor, workerRefusedStep, approvesStep } from './batch-state.mjs';
+import { stateDir, runBin, queueFile, configValue, SAFE_ID } from './desk-env.mjs';
+import { isHeld, EXIT, crashShowsPerson, readQueue, readTriage, unknownsOf, openUnknowns, refusedStep, neverStep, grantFor, workerRefusedStep, approvesStep } from './batch-state.mjs';
 import { NOT_NOW, putOffEntry, addPutOff, clearPutOff, notNowPath } from './not-now.mjs';
 import { useTicketBatch } from './batches.mjs';
 import { readRegistry } from './claude-logins.mjs';
 import { parseDecision } from './decisions.mjs';
 import { recommendedAnswer } from './recoveries.mjs';
+import { saveAnswer } from './briefing.mjs';
 
 crashShowsPerson();
-const QUEUE = join(binDir(), 'queue.mjs');
+const QUEUE = join(runBin(), 'queue.mjs');
 
 const argv = process.argv.slice(2);
 // --taken, before the ticket, is the decider taking the option a worker's park recommended
@@ -30,12 +31,28 @@ const argv = process.argv.slice(2);
 // approves no step, so it never records a grant, and a park on a refused step is refused outright.
 const taken = argv[0] === '--taken';
 const [ticket, ...args] = taken ? argv.slice(1) : argv;
-// --approve says outright that the answer approves the step its park asks for (batch-state.mjs grantFor).
-const approveFlag = args[0] === '--approve';
-const rest = approveFlag ? args.slice(1) : args;
+// Leading flags, in any order. --approve says outright that the answer approves the step its park asks
+// for (batch-state.mjs grantFor). --all says the answer settles every open question, as the one item
+// that joins them all does (digest.mjs answer); without it an answer settles one: the triage question
+// --question <n> numbers (its place in the triage record's unknowns, from 1), else the first still open.
+const rest = [...args];
+let approveFlag = false;
+let settleAll = false;
+let questionNo = null;
+while (['--approve', '--all', '--question'].includes(rest[0])) {
+  const flag = rest.shift();
+  if (flag === '--approve') approveFlag = true;
+  else if (flag === '--all') settleAll = true;
+  else questionNo = rest.shift() ?? '';
+}
 const given = rest.join(' ').trim();
+const USAGE = 'usage: answer.mjs <TICKET> [--approve] [--all | --question <n>] "<the answer>"\n       answer.mjs --taken <TICKET> \'{"question","options":[…],"chose","category"}\'';
 if (!ticket || !given) {
-  console.error('usage: answer.mjs <TICKET> [--approve] "<the answer>"\n       answer.mjs --taken <TICKET> \'{"question","options":[…],"chose","category"}\'');
+  console.error(USAGE);
+  process.exit(EXIT.SHOW_PERSON);
+}
+if (questionNo !== null && (!/^[1-9]\d*$/.test(questionNo) || settleAll || taken)) {
+  console.error(`--question takes the number of one triage question (1 for the first), and never goes with --all or --taken\n${USAGE}`);
   process.exit(EXIT.SHOW_PERSON);
 }
 const call = taken ? parseDecision(given) : null;
@@ -76,6 +93,23 @@ if (taken) {
   takenQuestion = String(t.park?.question ?? '');
 }
 
+// The ticket's triage questions, numbered as --question numbers them; none without a triage record.
+let unknowns = [];
+try { unknowns = unknownsOf(readTriage(STATE, ticket).unknowns); } catch { /* no triage record: no question to name */ }
+if (questionNo !== null) {
+  let t = null;
+  try { t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null; } catch { /* no queue */ }
+  const n = Number(questionNo);
+  const named = unknowns[n - 1];
+  const why = !named ? `${ticket} has ${unknowns.length} triage question(s), so there is no question ${n}`
+    : !(Number(t?.open_questions) > 0) ? `${ticket} has no triage question open`
+      : !openUnknowns(unknowns, t).includes(named) ? `${ticket}'s question ${n} is already answered ("${named}")` : null;
+  if (why) {
+    console.error(`${why}: nothing recorded`);
+    process.exit(EXIT.SHOW_PERSON);
+  }
+}
+
 mkdirSync(join(STATE, 'answers'), { recursive: true });
 mkdirSync(join(STATE, 'briefings'), { recursive: true });
 
@@ -85,12 +119,14 @@ const putOffAnswer = NOT_NOW.test(text);
 let waiting = false;
 let sessionId = null;
 let parkedReason = null;
+let heldNow = false;
 try {
   const Q0 = JSON.parse(readFileSync(queueFile(), 'utf8'));
   const sid = Q0.tickets?.[ticket]?.session_id;
   sessionId = sid ?? null;
   const park = Q0.tickets?.[ticket]?.park;
   if (park) parkedReason = (park.question ?? JSON.stringify(park)).slice(0, 300);
+  heldNow = isHeld(Q0.tickets?.[ticket]);
   if (sid) {
     waiting = !!readRegistry().live?.some((a) => a.sessionId === sid);
   }
@@ -116,7 +152,7 @@ if (waiting) {
       : `(no worker running for ${ticket} — recorded in the briefing, not the mailbox)`,
   );
   // A held ticket releases by itself, and a put-off one waits for its inputs to change.
-  if (parkedReason && !parkedReason.startsWith(HELD_PREFIX) && !putOffAnswer) {
+  if (parkedReason && !heldNow && !putOffAnswer) {
     console.log(
       `\n!! ${ticket} is parked and no worker will act on this answer.\n` +
         '   THE ORCHESTRATOR MUST COMPLETE THE PARKED STEP ITSELF, or requeue the ticket\n' +
@@ -128,10 +164,7 @@ if (waiting) {
 
 // The briefing is what a future or resumed worker actually reads, so the answer has to
 // survive there too — the answers file is consumed and deleted by the worker.
-const brief = join(STATE, 'briefings', `${ticket}.md`);
-const entry = `\n## Answer from the user (${stamp})\n\n${text}\n`;
-if (existsSync(brief)) appendFileSync(brief, entry);
-else writeFileSync(brief, `# Briefing for ${ticket}\n${entry}`);
+saveAnswer(STATE, ticket, text, stamp);
 
 // A taken call is taken once, as the pass's own take records it (pass.mjs takeRecommended): the same
 // park asked again goes to the person, not to another take.
@@ -147,7 +180,7 @@ if (taken) {
 // A "not now" answer to a park puts its question off: it goes in the register with the inputs it
 // depends on, and is not asked again until they change (not-now.mjs). Any other answer to it ends an
 // earlier deferral, so the same question parked again is asked. Only a park is put off: a running
-// worker's question is not in the queue yet, and triage unknowns are cleared by any answer.
+// worker's question is not in the queue yet, and triage unknowns are counted down by any answer.
 try {
   const t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null;
   const question = t?.state === 'parked' && t.park?.question && !isHeld(t) ? t.park.question : null;
@@ -214,25 +247,44 @@ try {
   console.error(`${ticket}: answer recorded in the briefing, but whether it approved a step no worker can run was not: ${e.message}`);
 }
 
-// A triaged ticket's questions are its triage unknowns: clearing the count is what makes it eligible
-// to spawn, and answering them is exactly what the user was asked to do. A parked ticket's count
-// clears too, but it is left parked, with its park intact, for the orchestrator to decide.
+// A triaged ticket's questions are its triage unknowns: a count reaching zero is what makes it eligible
+// to spawn. An answer settles one of them, or every one with --all, so a ticket answered one question
+// at a time does not start half answered. A parked ticket's count goes down too, but it is left parked,
+// with its park intact, for the orchestrator to decide.
 try {
   const Q = existsSync(queueFile()) ? readQueue(queueFile()) : { tickets: {} };
   if (Q.tickets?.[ticket]) {
     const st = Q.tickets[ticket].state;
+    const open = Math.max(0, Number(Q.tickets[ticket].open_questions) || 0);
+    const left = settleAll ? 0 : Math.max(0, open - 1);
+    // The triage questions this answer closes, each recorded answered once: every open one with --all,
+    // the one --question numbers, else only the one question open, when it is a triage question. An
+    // answer naming neither, with several open, lowers the count and records no question answered:
+    // nothing says which it answered, and recording the wrong one would hide a question nobody answered.
+    const openNow = open ? openUnknowns(unknowns, Q.tickets[ticket]) : [];
+    const closes = settleAll ? openNow : questionNo !== null ? [unknowns[Number(questionNo) - 1]]
+      : open === 1 && openNow.length === 1 ? openNow : [];
+    const had = Array.isArray(Q.tickets[ticket].answered_questions) ? Q.tickets[ticket].answered_questions : [];
+    const settle = () => {
+      execFileSync('node', [QUEUE, 'set', ticket, `open_questions=${left}`,
+        ...(closes.length ? [`answered_questions=${JSON.stringify([...had, ...closes])}`] : [])], { stdio: 'ignore' });
+      for (const c of closes) console.log(`${ticket}: closed triage question ${unknowns.indexOf(c) + 1}: ${c}`);
+    };
+    const stillNos = openNow.filter((u) => !closes.includes(u)).map((u) => unknowns.indexOf(u) + 1);
+    const stillOpen = left ? `; ${left} question(s) still open (answer each with answer.mjs ${ticket} --question <n> "<answer>"${stillNos.length ? `, <n> one of ${stillNos.join(', ')}` : ''}, or all at once with --all)` : '';
     if (isHeld(Q.tickets[ticket])) {
       // Held behind a Jira blocker: the answer settles its questions, and the hold stays, so it
       // still starts only once the blocker's PR has merged (release_chain, or the sanctioned release).
-      execFileSync('node', [QUEUE, 'set', ticket, 'open_questions=0'], { stdio: 'ignore' });
-      console.log(`${ticket}: answered. It is held — it releases when ${String(Q.tickets[ticket].held_by ?? '?').split('|').join(', ')} merge${String(Q.tickets[ticket].held_by ?? '').includes('|') ? '' : 's'}.`);
+      settle();
+      console.log(`${ticket}: answered${stillOpen}. It is held — it releases when ${String(Q.tickets[ticket].held_by ?? '?').split('|').join(', ')} merge${String(Q.tickets[ticket].held_by ?? '').includes('|') ? '' : 's'}.`);
     } else if (st === 'triaged' || st === 'queued') {
-      execFileSync('node', [QUEUE, 'set', ticket, 'open_questions=0'], { stdio: 'ignore' });
-      console.log(`${ticket}: answered.`);
+      settle();
+      console.log(left ? `${ticket}: answered${stillOpen}. It does not start until they are answered.` : `${ticket}: answered.`);
     } else if (st === 'parked') {
       // The count is not the park: a parked ticket stays parked, but its questions are answered, so
-      // a re-laned ticket can be requeued (queue.mjs requeue refuses open questions).
-      execFileSync('node', [QUEUE, 'set', ticket, 'open_questions=0'], { stdio: 'ignore' });
+      // a re-laned ticket can be requeued once none is open (queue.mjs requeue refuses open questions).
+      settle();
+      if (left) console.log(`${ticket}: answered${stillOpen}.`);
       if (putOffAnswer) {
         console.log(`${ticket}: put off. It stays parked and is not asked again until its inputs change ` +
           '(or `digest.mjs ask-again` clears it): do not requeue it or do the parked step.');

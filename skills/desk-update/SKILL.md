@@ -67,7 +67,8 @@ agents, scripts and the skill index are copies made by `install.sh`. After any p
 "$D/install.sh" </dev/null       # files only: with stdin not a terminal every settings prompt is skipped
 ```
 
-and report its warning count. Its output ends with a `Skipped (no terminal): <n> prompt(s)` block
+and report its warning count. It installs nothing (exit 3) from a checkout off `main` or behind
+`origin/main`, or when it cannot fetch to check: report its `Nothing installed:` line verbatim and never re-run it with `--any-branch` for the user. Its output ends with a `Skipped (no terminal): <n> prompt(s)` block
 listing every prompt it skipped, each as a `SKIP  <question>` line followed by an
 `apply: <command>` line (the exact command that does it, or `run in a terminal: cd … && ./install.sh`
 where there is none). Each one becomes a SETTING row in §2 and an option in §3, never applied
@@ -89,7 +90,7 @@ skills-upstream plugins                   # each installed plugin vs its refresh
 skills-upstream index --quiet --name-only --check   # exit 1: skills still listed in full every turn
 jq -e '[.hooks.SessionStart[]?.hooks[]?.command] | any(test("desk-update-check"))' ~/.claude/settings.json
                                                     # false: no once-a-day update notice at session start
-jq -e '[.hooks.UserPromptSubmit, .hooks.PostToolUse, .hooks.Stop, .hooks.SessionStart]
+jq -e '[.hooks.UserPromptSubmit, .hooks.PostToolUse, .hooks.Stop, .hooks.SessionStart, .hooks.PreCompact]
   | all([.[]?.hooks[]?.command] | any(test("desk-handoff")))' ~/.claude/settings.json
                                                     # false: no context handoff on one or more events
 eval "$(desk-env where)"                            # EXISTS=yes: the cwd is a configured repo
@@ -251,7 +252,7 @@ For the update notice: re-run `./install.sh` in a terminal, or register it the w
 `SessionStart` entry running `bash ~/.claude/hooks/desk-update-check.sh`, timeout 15, settings backed up
 first). For the context handoff: the same, or register it the way install.sh does (an entry running
 `python3 ~/.claude/hooks/desk-handoff.py`, timeout 15, on each of `UserPromptSubmit`, `PostToolUse`,
-`Stop` and `SessionStart` that lacks one, settings backed up first). For the name-only SETTING: `skills-upstream index --quiet --name-only` (it backs nothing up itself, so
+`Stop`, `SessionStart` and `PreCompact` that lacks one, settings backed up first). For the name-only SETTING: `skills-upstream index --quiet --name-only` (it backs nothing up itself, so
 copy `~/.claude/settings.json` to `~/.claude/settings.json.bak-desk-<date>` first). For a chosen
 PLUGINS line: run `/desk-setup` §4b for this repo (`desk-setup plugins`), which asks which ones.
 For the 1M handoff SETTING, chosen: set the Value cell of §2 "Handoff at context % on a 1M window"

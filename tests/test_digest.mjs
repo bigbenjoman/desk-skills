@@ -1,12 +1,13 @@
 // suite: check-in digest (slots, one digest per slot across repos, answers and overrides)
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, appendFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, appendFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkinTimes, latestSlot, checkin, answer, override, urgentParks, readDecisions, openQuestions, askAgain, doneParks, jiraTarget, jiraSearch, jiraLine, repos, DEFAULT_TIMES } from '../desk/bin/digest.mjs';
+import { checkinTimes, latestSlot, checkin, answer, override, urgentParks, readDecisions, openQuestions, askAgain, doneParks, jiraTarget, jiraLine, repos, DEFAULT_TIMES } from '../desk/bin/digest.mjs';
+import { jiraSearch } from '../desk/bin/jira-search.mjs';
 import { addPutOff, putOffEntry } from '../desk/bin/not-now.mjs';
 import { takeBorrowLock } from '../desk/bin/borrow.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
@@ -21,7 +22,7 @@ t('before the first slot of the day, the latest is yesterday\'s last', latestSlo
 t('just past a slot, it is that slot', latestSlot(DEFAULT_TIMES, at('2026-10-22', '17:00')).id, '2026-10-22T17:00');
 
 // Three repos: parks in two, decisions in a third.
-const root = mkdtempSync(join(tmpdir(), 'desk-digest-'));
+const root = scratch('desk-digest-');
 // Each repo's Jira check reads its desk config from here: none, unless a test writes one.
 process.env.DESK_CONFIG_ROOT = join(root, 'cfg');
 const repo = (slug, tickets, decisions = []) => {
@@ -40,6 +41,15 @@ const A = repo('acme__a', {
 });
 const B = repo('acme__b', { 'B-1': { key: 'B-1', state: 'triaged', open_questions: 1 } });
 writeFileSync(join(B.state, 'triage', 'B-1.json'), JSON.stringify({ unknowns: ['Which plan tier gets the export?'] }));
+// A ticket held inside its batch with a triage question of its own: the question is asked by its text.
+const HELD = repo('acme__h', {
+  'H-1': { key: 'H-1', state: 'running' },
+  'H-2': { key: 'H-2', state: 'parked', held_by: 'H-1', open_questions: 1, park: { question: 'held by orchestrator: blocked by H-1' } },
+  'H-3': { key: 'H-3', state: 'parked', held_by: 'H-1', open_questions: 1, park: { question: 'held by orchestrator: blocked by H-1' } },
+});
+writeFileSync(join(HELD.state, 'triage', 'H-2.json'), JSON.stringify({ unknowns: ['What is the cost of one blind audit run?'] }));
+t('DS-669 a held, parked ticket\'s triage unknown is listed by its text', openQuestions(HELD).map((q) => `${q.ticket} ${q.kind}: ${q.text}`).join(' | '),
+  'H-2 triage: What is the cost of one blind audit run? | H-3 triage: 1 triage question(s) open');
 const C = repo('acme__c', {}, [dec('d1', 'C-1', at('2026-10-22', '09:00').toISOString()), dec('d2', 'C-2', at('2026-10-22', '10:00').toISOString())]);
 const list = [A, B, C];
 const dir = join(root, 'digest');

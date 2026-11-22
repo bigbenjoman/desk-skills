@@ -2,11 +2,11 @@
 // Config §3b "Worker models" and the per-ticket tier pass.mjs takes from a triage record. The spawn
 // arguments, the preflight and the requeue bump run end to end in test_batch_e2e.sh.
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { modelTier, parseWorkerEffort, parseWorkerModels } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -65,7 +65,7 @@ t('AC5 an unknown key is refused, naming the key and the row', /Worker models.*u
 t('AC5 an unknown key after the tiers is named too', /unknown key `finders`/.test(why('standard=sonnet high=opus finders=haiku')), true);
 
 // `desk-env model finder|text` prints the model, or `none` with exit 0 when the row names none.
-const T = mkdtempSync(join(tmpdir(), 'worker-models-'));
+const T = scratch('worker-models-');
 const cli = (row, which) => {
   const cfg = join(T, 'config.md');
   writeFileSync(cfg, `## 3b. Caps\n| Field | Value |\n|---|---|\n| Worker models | \`${row}\` |\n`);

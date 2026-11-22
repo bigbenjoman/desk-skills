@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readLogFile } from './harvest.mjs';
+import { seededRandom as rng } from './seeded-random.mjs';
 
 export const HISTORY_FILE = 'eta-history.jsonl';
 export const WINDOW_DAYS = 30;
@@ -76,10 +77,12 @@ export function firstSpawnFromLogs(state, key) {
 
 // The size triage recorded, or `unknown`: never guessed from anything else.
 export function sizeOf(state, key) {
-  try {
-    const s = String(JSON.parse(readFileSync(join(state, 'triage', `${key}.json`), 'utf8')).size ?? '').trim().toUpperCase();
-    return SIZES.includes(s) ? s : 'unknown';
-  } catch { return 'unknown'; }
+  try { return sizeIn(JSON.parse(readFileSync(join(state, 'triage', `${key}.json`), 'utf8'))); } catch { return 'unknown'; }
+}
+// The size triage record `rec` holds, as sizeOf reads it.
+export function sizeIn(rec) {
+  const s = String(rec?.size ?? '').trim().toUpperCase();
+  return SIZES.includes(s) ? s : 'unknown';
 }
 
 export function historyLine({ key, size, spawned_at, merged_at }) {
@@ -274,16 +277,6 @@ export function nextCheckin(t) {
   return null;
 }
 
-// mulberry32: a small seeded generator, so every run of the forecast draws the same numbers.
-function rng(seed) {
-  return () => {
-    seed = (seed + 0x6D2B79F5) | 0;
-    let x = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
-    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 // The share of a running ticket's work done, from its stage ("6/9", "4b/9").
 const stageDone = (st) => { const m = /^(\d+)(b?)\/9\b/.exec(String(st ?? '')); return m ? Math.min(1, (Number(m[1]) + (m[2] ? 0.5 : 0)) / 9) : 0; };
 
@@ -313,6 +306,12 @@ export const blockersFact = (issue) => (issue?.fields?.issuelinks ?? [])
   .filter((l) => l.inwardIssue && /blocked by/i.test(l.type?.inward ?? ''))
   .map((l) => ({ key: l.inwardIssue.key, category: l.inwardIssue.fields?.status?.statusCategory?.key ?? 'new',
     summary: l.inwardIssue.fields?.summary ?? null, type: l.inwardIssue.fields?.issuetype?.name ?? null }));
+
+// Whether a blocker record is Done in Jira under a resolution that ships nothing (Won't Do, Duplicate,
+// Cannot Reproduce): its code never lands, so a hold waiting for it to land waits for ever. A Done one
+// with no resolution read, or none set, is an ordinary Done blocker.
+const LANDS = /^(done|fixed)$/i;
+export const closedUnlanded = (b) => b?.category === 'done' && typeof b.resolution === 'string' && !!b.resolution.trim() && !LANDS.test(b.resolution.trim());
 
 // A ticket's blockers split from those that are its own epic: its Jira parent epic (`epicKey`) or the
 // epic its batch runs (`batchEpic`). An epic is Done only once its children are, so a link to it would

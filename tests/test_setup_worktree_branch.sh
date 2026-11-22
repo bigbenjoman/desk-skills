@@ -7,6 +7,7 @@
 # shellcheck disable=SC2034
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; B="$S/../desk/bin"; T="$(cd "$(mktemp -d)" && pwd -P)"
+trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; mkdir -p "$HOME"
 : > "$GIT_CONFIG_GLOBAL"; git config --global user.email t@example.com; git config --global user.name t
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
@@ -58,12 +59,17 @@ on_branch() { [ "$(git -C "$1" branch --show-current)" = "$2" ]; }
 
 # AC1: clean, level with origin, no process in it: detached at the same commit, the ticket's worktree made.
 held 1; H="$T/other-1"; sha=$(git -C "$H" rev-parse HEAD)
+printf '/scratch-no-newline' >> "$T/repo/.git/info/exclude" # DS-833: a last rule with no newline
 out=$(bash "$B/setup-worktree.sh" --for-worker T-1 fix/T-1 2>&1); rc=$?
 check "AC1 setup succeeds"                                      '[ $rc -eq 0 ] && [[ "$out" == *"worktree=$T/wt/T-1"* ]]'
 check "AC1 the other worktree is detached at the same commit"   '! git -C "$H" symbolic-ref -q HEAD >/dev/null && [ "$(git -C "$H" rev-parse HEAD)" = "$sha" ]'
 check "AC1 the other worktree and its files stay"               '[ -f "$H/a.txt" ] && git -C "$T/repo" worktree list | grep -qF "$H "'
 check "AC1 the ticket worktree is on the branch"                'on_branch "$T/wt/T-1" fix/T-1'
 check "AC1 the output names the folder it detached"             '[[ "$out" == *"checked out in $H"*"detached that worktree"* ]]'
+echo '{}' > "$T/wt/T-1/desk-review-results-abc1234-k3q9xz.json"
+excl="$(git -C "$T/wt/T-1" rev-parse --git-common-dir)/info/exclude"
+check "DS-833 the exclude file ends each pattern on a line of its own" '[ -z "$(tail -c 1 "$excl")" ] && grep -qxF "/desk-review-results-*.json" "$excl" && grep -qxF /scratch-no-newline "$excl"'
+check "DS-833 a desk-review results file left at the worktree root keeps git status clean" '[ -z "$(git -C "$T/wt/T-1" status --porcelain)" ]'
 
 # AC2: uncommitted changes there.
 held 2; H="$T/other-2"; printf 'two\n' > "$H/a.txt"
@@ -102,5 +108,43 @@ check "AC5 the other worktree keeps the branch"                 'on_branch "$H" 
 held 6; H="$T/other-6"; printf 'six\n' > "$H/a.txt"; git -C "$H" stash -q
 out=$(bash "$B/setup-worktree.sh" --for-worker T-6 fix/T-6 2>&1); rc=$?
 check "a stash on the branch fails setup and names it"          '[ $rc -ne 0 ] && [[ "$out" == *"$H"*"stashed work"* ]] && on_branch "$H" fix/T-6'
+
+# #1003: a branch only origin has (a cloud worker's) is checked out from origin with DESK_BRANCH_FROM_ORIGIN,
+# and cut afresh from the base without it.
+remote_only() { # remote_only <branch>: a commit on <branch> pushed to origin, with no local branch left.
+  git -C "$T/repo" checkout -q -b "$1" main; printf 'cloud\n' > "$T/repo/c.txt"; git -C "$T/repo" add c.txt
+  git -C "$T/repo" commit -q -m cloud; git -C "$T/repo" push -q origin "$1"; git -C "$T/repo" checkout -q main; git -C "$T/repo" branch -q -D "$1"
+}
+remote_only claude/t-31; tip=$(git -C "$T/repo" rev-parse origin/claude/t-31)
+out=$(DESK_BRANCH_FROM_ORIGIN=1 bash "$B/setup-worktree.sh" --for-worker T-31 claude/t-31 2>&1); rc=$?
+check "#1003 with DESK_BRANCH_FROM_ORIGIN, a branch only origin has is checked out as origin has it" '[ $rc -eq 0 ] && on_branch "$T/wt/T-31" claude/t-31 && [ "$(git -C "$T/wt/T-31" rev-parse HEAD)" = "$tip" ] && [[ "$out" == *"on origin only"* ]]'
+remote_only claude/t-32
+out=$(bash "$B/setup-worktree.sh" --for-worker T-32 claude/t-32 2>&1); rc=$?
+check "#1003 without it, such a branch is cut from the base as before" '[ $rc -eq 0 ] && [ "$(git -C "$T/wt/T-32" rev-parse HEAD)" = "$(git -C "$T/repo" rev-parse main)" ]'
+
+# A second review try at a later head: the kept worktree, or a local branch left behind, is brought to
+# origin's tip with DESK_BRANCH_FROM_ORIGIN, and work there that origin does not have fails setup.
+git clone -q "$T/origin.git" "$T/cloud"
+advance() { # advance <branch>: the cloud session pushes one more commit to <branch>.
+  git -C "$T/cloud" fetch -q origin; git -C "$T/cloud" checkout -q -B "$1" "origin/$1"
+  printf '%s\n' "$RANDOM" >> "$T/cloud/c.txt"; git -C "$T/cloud" commit -q -am more; git -C "$T/cloud" push -q origin "$1"
+  git -C "$T/cloud" rev-parse HEAD
+}
+tip=$(advance claude/t-31)
+out=$(DESK_BRANCH_FROM_ORIGIN=1 bash "$B/setup-worktree.sh" --for-worker T-31 claude/t-31 2>&1); rc=$?
+check "#1003 a kept worktree is brought to origin's tip for the next review try" '[ $rc -eq 0 ] && [ "$(git -C "$T/wt/T-31" rev-parse HEAD)" = "$tip" ]'
+printf 'mine\n' > "$T/wt/T-31/m.txt"; git -C "$T/wt/T-31" add m.txt; git -C "$T/wt/T-31" commit -q -m mine; mine=$(git -C "$T/wt/T-31" rev-parse HEAD)
+advance claude/t-31 >/dev/null
+out=$(DESK_BRANCH_FROM_ORIGIN=1 bash "$B/setup-worktree.sh" --for-worker T-31 claude/t-31 2>&1); rc=$?
+check "#1003 one with commits origin does not have fails setup, left as it was" '[ $rc -ne 0 ] && [[ "$out" == *"cannot fast-forward"* ]] && [ "$(git -C "$T/wt/T-31" rev-parse HEAD)" = "$mine" ]'
+# A setup killed before it finished is completed at origin's tip too.
+: > "$T/wt/T-31/.desk-setup-incomplete"; git -C "$T/wt/T-31" reset -q --hard "$tip"
+tip=$(advance claude/t-31)
+out=$(DESK_BRANCH_FROM_ORIGIN=1 bash "$B/setup-worktree.sh" --for-worker T-31 claude/t-31 2>&1); rc=$?
+check "#1003 a setup left unfinished is completed at origin's tip" '[ $rc -eq 0 ] && [ "$(git -C "$T/wt/T-31" rev-parse HEAD)" = "$tip" ]'
+remote_only claude/t-33; git -C "$T/repo" fetch -q origin; git -C "$T/repo" branch -q claude/t-33 origin/claude/t-33
+tip=$(advance claude/t-33)
+out=$(DESK_BRANCH_FROM_ORIGIN=1 bash "$B/setup-worktree.sh" --for-worker T-33 claude/t-33 2>&1); rc=$?
+check "#1003 a local branch behind origin is checked out at origin's tip" '[ $rc -eq 0 ] && on_branch "$T/wt/T-33" claude/t-33 && [ "$(git -C "$T/wt/T-33" rev-parse HEAD)" = "$tip" ]'
 
 echo "setup-worktree branch: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

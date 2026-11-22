@@ -61,7 +61,7 @@ merge_order(){ printf '%s\n' "$out" | sed -n '/^MERGE ORDER/,/^$/p' | grep -oE '
 rec KAN-1 surface src/a; rec KAN-2 shared src/b; rec KAN-3 schema src/c; rec KAN-4 relocate src/d
 plan KAN-1 KAN-2 KAN-3 KAN-4
 check "AC2: the plan orders relocate, schema, shared, surface" '[ $rc -eq 0 ] && [ "$(merge_order)" = "KAN-4 KAN-3 KAN-2 KAN-1" ]'
-check "the queue keeps the order named: spawn priority is the user's, a gate named first starts first" '[ "$(seeded)" = "KAN-1 KAN-2 KAN-3 KAN-4" ]'
+check "with nothing gated and one planned file each, the queue keeps the order named" '[ "$(seeded)" = "KAN-1 KAN-2 KAN-3 KAN-4" ]'
 check "AC2: each position says why: its kind, what that means, and triage's reason" \
   'printf "%s\n" "$out" | grep -q "^  1\. KAN-4  relocate: moves, renames or deletes files.* (why KAN-4)$" \
    && printf "%s\n" "$out" | grep -q "^  2\. KAN-3  schema: changes a schema" \
@@ -87,6 +87,19 @@ plan KAN-21 KAN-22 KAN-23
 check "two of a kind: the smaller merges first, a tie goes to the order named" \
   '[ "$(qg KAN-22 .held_by)" = null ] && [ "$(qg KAN-23 .held_by)" = KAN-22 ] && [ "$(qg KAN-21 .held_by)" = "KAN-22|KAN-23" ] && printf "%s" "$out" | grep -q "both shared, KAN-22 is smaller" && printf "%s" "$out" | grep -q "both shared, KAN-22 named first"'
 
+# ---- a collision chain holds each ticket behind every earlier one it shares a file with -----------
+# The one just before it is not enough: dropping or freeing that one by hand would let it start early.
+rec KAN-61 shared src/k; rec KAN-62 shared src/k; rec KAN-63 shared src/k
+plan KAN-61 KAN-62 KAN-63
+check "DS-793 AC2: the third of three tickets sharing a file is held behind both before it, in the queue and in --deps" \
+  '[ "$(qg KAN-61 .held_by)" = null ] && [ "$(qg KAN-62 .held_by)" = KAN-61 ] && [ "$(qg KAN-63 .held_by)" = "KAN-61|KAN-62" ] && printf "%s\n" "$out" | grep -qx -- "--deps \"KAN-62:KAN-61 KAN-63:KAN-61,KAN-62\""'
+# Named out of merge order (XS, then S, then M merge), the last pair is already ordered through the
+# middle ticket, and is held directly all the same. No L: an L ticket is size-parked before chaining.
+rec KAN-71 shared src/z '[]' S; rec KAN-72 shared src/z '[]' M; rec KAN-73 shared src/z '[]' XS
+plan KAN-71 KAN-72 KAN-73
+check "DS-793 AC2: a ticket named out of merge order is held behind every ticket it shares a file with that merges before it" \
+  '[ "$(qg KAN-73 .held_by)" = null ] && [ "$(qg KAN-71 .held_by)" = KAN-73 ] && [ "$(qg KAN-72 .held_by)" = "KAN-71|KAN-73" ]'
+
 # ---- AC5: Jira Blocks links win, and the plan names the contradiction -----------------------------
 rec KAN-31 relocate src/m "$(nb KAN-32)"; rec KAN-32 surface src/m; rec KAN-33 schema src/n "$(nb KAN-34)"; rec KAN-34 surface src/o
 plan KAN-31 KAN-32 KAN-33 KAN-34
@@ -96,6 +109,12 @@ check "AC5: the plan names each contradiction, sharing files or not" \
   'printf "%s\n" "$out" | grep -q "^CONTRADICTIONS — 2" && printf "%s\n" "$out" | grep -q "^  KAN-31 (relocate) merges after KAN-32 (surface): KAN-31 is blocked by KAN-32 through a Jira link, and the link wins" && printf "%s\n" "$out" | grep -q "^  KAN-33 (schema) merges after KAN-34 (surface)"'
 check "AC5: no merge-chain hold is added the other way, so there is no cycle" \
   '! printf "%s" "$out" | grep -q "dependency cycle" && [ "$(qg KAN-32 .state)" = triaged ]'
+
+# ---- the questions plan-batch adds are seeded on the ticket, where the decider reads them ---------
+rec KAN-41 surface src/q "$(nb KAN-99)"; rec KAN-42 surface src/r
+plan KAN-41 KAN-42
+check "a question plan-batch adds is on its ticket's queue entry word for word; a ticket with none has none" \
+  '[ "$(qg KAN-41 ".plan_questions | join(\"|\")")" = "KAN-41 is blocked by KAN-99 (not started), which is not in this batch: add KAN-99 to the batch, or confirm KAN-41 can start without it" ] && [ "$(qg KAN-41 .open_questions)" = 1 ] && [ "$(qg KAN-42 .plan_questions)" = null ]'
 
 # A link that agrees with the kinds is no contradiction.
 rec KAN-41 surface src/p "$(nb KAN-42)"; rec KAN-42 relocate src/p
@@ -107,5 +126,16 @@ rec KAN-51 - src/q; rec KAN-52 shared src/r
 plan KAN-51 KAN-52
 check "no kind recorded: ordered as surface work, and named" \
   '[ "$(merge_order)" = "KAN-52 KAN-51" ] && printf "%s\n" "$out" | grep -q "^  2\. KAN-51  surface (no kind recorded)" && printf "%s\n" "$out" | grep -q "no change kind on 1 ticket(s): KAN-51"'
+
+# ---- spawn order: the ticket that gates the most starts first, then the fewest planned files -------------
+# KAN-63 gates KAN-62 and KAN-64 but is named last; KAN-65 plans three files, KAN-66 one.
+rec KAN-62 surface src/s62 "$(nb KAN-63)"; rec KAN-64 surface src/s64 "$(nb KAN-63)"; rec KAN-63 surface src/s63
+rec KAN-65 surface src/s65a,src/s65b,src/s65c; rec KAN-66 surface src/s66
+plan KAN-65 KAN-66 KAN-62 KAN-64 KAN-63
+check "a ticket that gates others is spawned first, however late it is named; then the fewest planned files" '[ "$(seeded)" = "KAN-63 KAN-66 KAN-62 KAN-64 KAN-65" ]'
+check "the plan shows the spawn order with what each gates" \
+  'printf "%s\n" "$out" | grep -q "^SPAWN ORDER — Blockers start first, then the tickets that gate the most others" && printf "%s\n" "$out" | grep -q "^  1\. KAN-63  gates 2, 1 planned file(s)$" && printf "%s\n" "$out" | grep -q "^  5\. KAN-65  gates 0, 3 planned file(s)$"'
+plan --keep-order KAN-65 KAN-66 KAN-62 KAN-64 KAN-63
+check "--keep-order keeps the order named, blockers still first" '[ "$(seeded)" = "KAN-65 KAN-66 KAN-63 KAN-62 KAN-64" ] && printf "%s\n" "$out" | grep -q "^SPAWN ORDER — With --keep-order, tickets start in the order named"'
 
 echo "blast radius: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

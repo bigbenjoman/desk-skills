@@ -46,13 +46,25 @@ Playwright reads `PLAYWRIGHT_BROWSERS_PATH` once, on first import.
 2. **Upload into the new-comment box, never submit it.** Assets persist either way, so the
    description is never left half-edited. Open the PR with `waitUntil: 'domcontentloaded'` —
    **never `networkidle`**, GitHub long-polls and the goto times out.
-3. **Focus the form first.** `textarea#new_comment_field` → `scrollIntoViewIfNeeded()` → `click()`.
-   Without it the `<file-attachment>` element never fires, and there is no POST to
-   `/upload/policies/assets` at all.
-4. **The file input is hidden.** `form:has(textarea#new_comment_field) input[type=file]`, waited with
-   `{ state: 'attached' }` — the default `visible` times out with the element right there.
-   It is `multiple`; setting all files in one `setInputFiles` works **provided the wait in
-   step 5 is per file**. `input.files.length` reads 0 afterwards because GitHub consumes it.
+3. **Find the new-comment composer by role or placeholder, and focus it first.** GitHub's React PR
+   page has no stable id: take the **last** `getByRole('textbox', { name: 'Markdown value' })`, else
+   the last `textarea[placeholder="Leave a comment"]` (review-thread reply boxes are the same kind of
+   textbox, above the composer), and only then `textarea#new_comment_field`, the classic page's id.
+   Never select by the React id (`_r_24_`): it changes on every load. Then `scrollIntoViewIfNeeded()`
+   → `click()`. Without the focus there is no file input on the React page and no POST to
+   `/upload/policies/assets` on either. Signed in with none of the three found means GitHub changed
+   its page: stop and say so (`upload-images.mjs` exits 7 with "GitHub's PR page changed"), never
+   retry.
+4. **The file input is hidden.** It is the `input[type=file]` in the composer's nearest ancestor that
+   holds one and no other textarea (the classic page's form), so a reply box's input is never taken
+   for it, and on the React page appears only after step 3's focus.
+   Wait for it with `{ state: 'attached' }` — the default `visible` times out with the element right there.
+   **GitHub's current PR page has no file input at all**: its "Paste, drop, or click to add files"
+   button, in the same ancestor as the composer's textarea, makes one off the page and clicks it.
+   There, click that button inside `page.waitForEvent('filechooser')` and `setFiles` on the
+   chooser, one click per batch (`pr-composer.mjs`'s `setFiles` does this). Either way it is `multiple`; setting up to 15 files in one `setInputFiles` works **provided the wait in
+   step 5 is per file**. Set only the files the cells name, 15 at a time, and record each batch's
+   links before the next. `input.files.length` reads 0 afterwards because GitHub consumes it.
 5. **Wait per file, on that file's own finished tag.** GitHub inserts an HTML `<img>` into the
    textarea's value, not `![alt](url)` markdown, and the **alt drops the extension**
    (`before-mobile.png` → `alt="before-mobile"`). It also inserts `Uploading <file>…` the instant a
@@ -62,11 +74,12 @@ Playwright reads `PLAYWRIGHT_BROWSERS_PATH` once, on first import.
 
    ```js
    const base = file.replace(/\.[^.]+$/, '');
-   await page.waitForFunction(({ base, file }) => {
-     const t = document.querySelector('textarea#new_comment_field')?.value ?? '';
+   const ta = await composer.elementHandle();   // step 3's textarea
+   await page.waitForFunction(([ta, base, file]) => {
+     const t = ta.value;
      return new RegExp(`<img[^>]*alt="${base}"[^>]*src="https://github.com/user-attachments/assets/`).test(t)
        && !t.includes(`Uploading ${file}`);
-   }, { base, file }, { timeout: 180000 });
+   }, [ta, base, file], { timeout: 180000 });
    ```
 
 6. **Capture the tags before clearing the textarea**, then clear it. There is no API to list
@@ -94,4 +107,5 @@ Log requests to `/upload/` and dump the textarea value before suspecting permiss
 |---|---|
 | No POST to `/upload/policies/assets` | The form was never focused (step 3) |
 | 201 from the upload, wait still times out | The wait condition is wrong: markdown regex, or alt with the extension (step 5) |
+| A batch that worked earlier in the day fills nothing for minutes | GitHub's rate limit (about 80 uploads a minute, 500 an hour). Stop; never retry sooner than 15 minutes |
 | "We don't support that file type" / "Attaching documents requires write permission" in the DOM | Pre-rendered error templates, always present. Not a real failure |

@@ -80,7 +80,7 @@ mkdir -p "$STATE/triage" "$STATE/workers"
 DESIGN_READ="A Claude Design artifact's boards are saved under $STATE/designs/$TICKET/project/ when the orchestrator could read
   it, or in the repo under the Design canvases directory once a ticket has committed them
   (\`canvas.json\` lists the boards and their widths); read them there, never guess a design."
-if [ "$KIND" != issue ] && SNAPS="$(node "$DESK_BIN/desk-design.mjs" snapshots "$TICKET" 2>/dev/null)" && [ -n "$SNAPS" ]; then
+if [ "$KIND" != issue ] && SNAPS="$(node "$DESK_RUN_BIN/desk-design.mjs" snapshots "$TICKET" 2>/dev/null)" && [ -n "$SNAPS" ]; then
   DESIGN_READ="This ticket's Design section links these Claude Design artifacts; read each where it says, never guess a design
   (\`canvas.json\` lists the boards and their widths):"
   while IFS=$'\t' read -r url snap; do
@@ -94,7 +94,7 @@ if [ "$KIND" != issue ] && SNAPS="$(node "$DESK_BIN/desk-design.mjs" snapshots "
   done <<< "$SNAPS"
 fi
 
-node "$DESK_BIN/worker-settings.mjs" triage --ticket "$TICKET" --out "$SETTINGS" >/dev/null \
+node "$DESK_RUN_BIN/worker-settings.mjs" triage --ticket "$TICKET" --out "$SETTINGS" >/dev/null \
   || { echo "FAIL: could not generate triage settings" >&2; exit 1; }
 # Both passes are offered only the tools they use (worker-tools.mjs).
 desk_tool_args triage || { echo "FAIL: could not read the tool list (worker-tools.mjs)" >&2; exit 1; }
@@ -120,7 +120,57 @@ const calls = [
 const out = [answers, calls.length ? `Calls already taken or checked for ${ticket}:\n${[...new Set(calls)].join('\n')}` : ''].filter(Boolean).join('\n\n');
 if (out) process.stdout.write(capBriefing(out, 12000));
 RECORDED_END
-RECORDED="$(node --input-type=module -e "$RECORDED_JS" "$STATE" "$TICKET" "$DESK_BIN" 2>/dev/null || true)"
+# Taken before this triage reads any answer: the record's `triaged_at`, so an answer saved while the
+# pass runs counts as after it.
+TRIAGE_START="$(node -e 'process.stdout.write(new Date().toISOString())')"
+RECORDED="$(node --input-type=module -e "$RECORDED_JS" "$STATE" "$TICKET" "$DESK_RUN_BIN" 2>/dev/null || true)"
+
+# What the earlier triage left open (its unknowns and person steps), so a re-triage carries them unless
+# the ticket now settles them. The earlier record is kept aside (EARLIER) from the moment this pass
+# replaces it until this triage succeeds, so a failed run does not lose them; while it is aside it is the
+# last record a triage finished, never a failed pass's record left at $OUT. An answer saved since that
+# triage (its `triaged_at`; a record from before the stamp, its file time) settles its unknowns, as
+# answer.mjs does.
+EARLIER="$STATE/triage/$TICKET.earlier.json"
+EARLIER_SRC="$OUT"
+[ ! -f "$EARLIER" ] || EARLIER_SRC="$EARLIER"
+read -r -d '' EARLIER_JS <<'EARLIER_END' || true
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [earlier, brief, bin] = process.argv.slice(-3);
+const { triageCalls } = await import(pathToFileURL(join(bin, 'decisions.mjs')).href);
+const { answerEntriesSince } = await import(pathToFileURL(join(bin, 'handoff.mjs')).href);
+let d;
+try { d = JSON.parse(readFileSync(earlier, 'utf8')); } catch { process.exit(0); }
+if (!d || typeof d !== 'object' || Array.isArray(d)) process.exit(0);
+const since = Number.isNaN(Date.parse(d.triaged_at ?? '')) ? statSync(earlier).mtime.toISOString() : d.triaged_at;
+const answered = existsSync(brief) && answerEntriesSince(readFileSync(brief, 'utf8'), since).length > 0;
+const asked = triageCalls(d).ask.map((u) => u.trim()).filter(Boolean);
+const unknowns = answered ? [] : [...new Set(asked)];
+const steps = (Array.isArray(d.ben_steps) ? d.ben_steps : [])
+  .filter((s) => s && typeof s.step === 'string' && s.step.trim() && typeof s.blocker === 'string' && s.blocker.trim())
+  .map((s) => ({ step: s.step.trim(), blocker: s.blocker.trim() }));
+process.stdout.write(JSON.stringify({ unknowns, ben_steps: steps, answered: answered ? asked.length : 0 }));
+EARLIER_END
+OPEN='{"unknowns":[],"ben_steps":[],"answered":0}'
+if [ -f "$EARLIER_SRC" ]; then
+  OPEN="$(node --input-type=module -e "$EARLIER_JS" "$EARLIER_SRC" "$STATE/briefings/$TICKET.md" "$DESK_RUN_BIN")" \
+    || { echo "FAIL: could not read $TICKET's earlier triage record at $EARLIER_SRC" >&2; exit 1; }
+  [ -n "$OPEN" ] || OPEN='{"unknowns":[],"ben_steps":[],"answered":0}'
+fi
+OPEN_LIST="$(node -e 'const o=JSON.parse(process.argv[1]); console.log([...o.unknowns.map((u)=>`- unknown: ${u}`), ...o.ben_steps.map((s)=>`- person step: ${s.step}`)].join("\n"))' "$OPEN")"
+OPEN_SECTION=''
+if [ -n "$OPEN_LIST" ]; then
+  read -r -d '' OPEN_RULE <<'OPEN_RULE_END' || true
+Nothing recorded has settled these since. Keep each one in `unknowns` or `ben_steps`, worded as it is
+here, unless the ticket's text now answers the question or removes the step. For each one you leave
+out, add `{"item": "<it, worded as it is here>", "why": "<the ticket text that answers or removes it, quoted>"}`
+to a `dropped_earlier` list in the record. One left out with no entry there is carried into your
+record as it was.
+OPEN_RULE_END
+  OPEN_SECTION=$'\n'"**Still open from $TICKET's earlier triage.** $OPEN_RULE"$'\n\n'"$OPEN_LIST"$'\n'
+fi
 
 read -r -d '' PROMPT <<PROMPT_END || true
 Triage ticket $TICKET in $DESK_GH_REPO${REPO_DESC:+ ($REPO_DESC)}. Read-only: change nothing, create
@@ -153,12 +203,15 @@ Things that are not in that file and matter here:
     A or B, and name the packages in \`lane_reason\`.
   - **Unmerged blockers do not make a ticket L or XL.** They hold the ticket until they merge and
     never change its lane: name them in \`prior_art\`, not in \`unknowns\` or \`lane_reason\`.
-  - **Judge each open "is blocked by" link in \`blocker_needs\`**, keyed by the blocker's key:
-    \`needs\` is true when this ticket cannot be built or verified until that blocker is done (it
-    builds what this ticket uses, or changes the same files), false when it touches none of this
+  - **Judge each open "is blocked by" link in \`blocker_needs\`**, keyed by the blocker's key; every
+    open blocker needs a call, and a record missing one is refused. \`needs\` is one of three values:
+    \`"build"\` when this ticket cannot be built or verified until that blocker is done (it builds
+    what this ticket uses, or changes the same files); \`"merge"\` when this ticket can be built and
+    verified now but must not merge before it (it lands an order, a rollout or a contract this ticket
+    relies on in production, touching none of its files); \`"none"\` when it touches none of this
     ticket's files and nothing here waits on it. \`why\` says which, in one line. A blocker outside
-    the batch that is needed holds the ticket until it is done; one that is not needed lets it
-    start. Leave out a link you cannot judge from the code: it is asked about instead.
+    the batch needed to build holds the ticket until it is done; one needed only to merge holds its
+    merge; one not needed lets it start.
   - **A step from the routing file's "Steps only the user can take" list** goes in \`ben_steps\`, one
     entry per step, each with a proposed blocker ticket for the user. It does not set the lane: the
     rest of the ticket keeps the lane it would otherwise get.
@@ -220,7 +273,7 @@ ${RECORDED:+
 criterion or any other, and judge the lane and scope with them applied.
 
 $RECORDED
-}
+}$OPEN_SECTION
 Write ONLY this JSON to $OUT — no prose, no code fence:
 
 {
@@ -239,7 +292,7 @@ Write ONLY this JSON to $OUT — no prose, no code fence:
   "already_met": ["<an acceptance criterion the code already satisfies>: <file:line>"],
   "verify_only": <true only when every acceptance criterion is in already_met>,
   "prior_art": ["<branch or PR that already touches these files, and in one clause what it does — opposite intent, same intent, or partial. Empty if none found.>"],
-  "blocker_needs": {"<KEY of an open blocker>": {"needs": <true|false>, "why": "<one line>"}},
+  "blocker_needs": {"<KEY of an open blocker>": {"needs": "build|merge|none", "why": "<one line>"}},
   "ben_steps": [{"step": "<a step only the user can take, from the routing file's list>", "blocker": "<the proposed blocker ticket's summary: what the user does, and what it unblocks>"}],
   "renders": <true if the change alters what a user sees, so Stage 5 evidence is required>,
   "needs_db": <true if verifying it needs a database, seed, or integration test>,
@@ -249,23 +302,32 @@ Write ONLY this JSON to $OUT — no prose, no code fence:
 files_in_scope drives collision detection across the batch, so be concrete and do not pad it.
 unknowns and already_met are [] when there are none.
 ben_steps is [] when the ticket needs no step only the user can take.
-blocker_needs is {} when the ticket has no open blocker.
+blocker_needs has one entry per open "is blocked by" link, and is {} when the ticket has none.
 PROMPT_END
 
-# Both passes run on a Claude login that is not benched (call-login.mjs), as a new worker would. With one
-# login, or every login benched, they run on this shell's own, as they always have.
-CALL_LOGIN="$(node "$DESK_BIN/call-login.mjs" dir 2>/dev/null)" || CALL_LOGIN=keep
+# Both passes run on the repo's subscription (call-login.mjs), as a new worker would, at its limit too.
+# With one login and no subscriptions file they run on this shell's own, as they always have. A
+# subscription no login here is signed in to runs neither: triage never falls back to another login.
+CALL_LOGIN="$(node "$DESK_RUN_BIN/call-login.mjs" dir 2>/dev/null)" || CALL_LOGIN=keep
 case "$CALL_LOGIN" in
-  keep|all|'') ;;
+  keep|'') ;;
+  none:*) echo "FAIL: $TICKET not triaged: ${CALL_LOGIN#none: }, and triage never runs on another login" >&2; exit 1 ;;
   default) unset CLAUDE_CONFIG_DIR ANTHROPIC_API_KEY OPENAI_API_KEY CODEX_HOME ;;
   *) export CLAUDE_CONFIG_DIR="$CALL_LOGIN"; unset ANTHROPIC_API_KEY OPENAI_API_KEY CODEX_HOME ;;
 esac
+# Both passes end within minutes, so they write the 5-minute prompt cache, cheaper than the 1-hour one.
+export FORCE_PROMPT_CACHING_5M=1
 
 cd "$MAIN"
-# An earlier triage's record would read as this pass's, and hide a pass that wrote nothing.
-rm -f "$OUT"
+# An earlier triage's record would read as this pass's, and hide a pass that wrote nothing. The last
+# finished one goes aside until this pass succeeds; one already aside means $OUT is a failed pass's.
+# With none to set aside, a `null` goes there, so a record this pass leaves refused at $OUT is never
+# read as a finished one by the retry: `null` carries nothing.
+if [ -f "$EARLIER" ]; then rm -f "$OUT"; elif [ -f "$OUT" ]; then mv -f "$OUT" "$EARLIER"; else printf 'null\n' > "$EARLIER"; fi
 # No --allowedTools: it would grant every Bash command and Write outright, overriding the
 # read-only triage settings. The settings file alone decides what triage may run.
+# Its status is kept so a pass cut off at the timeout (desk_timeout's 124, or 137) is said as one.
+FIRST_RC=0
 desk_timeout 600 claude -p "$PROMPT" \
   --setting-sources "" --strict-mcp-config \
   ${DESK_TOOL_ARGS[@]+"${DESK_TOOL_ARGS[@]}"} \
@@ -273,12 +335,12 @@ desk_timeout 600 claude -p "$PROMPT" \
   --permission-mode dontAsk \
   --add-dir "$STATE" --add-dir "$DESK_SKILLS_DIR" \
   --max-budget-usd "${AUTOPILOT_TRIAGE_BUDGET_USD:-3}" \
-  --output-format stream-json --verbose > "$LOG" 2>&1 < /dev/null || true
+  --output-format stream-json --verbose > "$LOG" 2>&1 < /dev/null || FIRST_RC=$?
 
 # A pass Claude refused at a usage limit is not a failed triage: usage-limit.mjs reads the log, and a
 # limit the run never resumed from is said with its reset time, for exit 3.
 at_limit() {
-  node --input-type=module - "$LOG" "$DESK_BIN" "$TICKET" <<'LIMIT_END'
+  node --input-type=module - "$LOG" "$DESK_RUN_BIN" "$TICKET" <<'LIMIT_END'
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -291,18 +353,51 @@ if (l?.kind !== 'limit' || l.resumed) process.exit(1);
 console.error(`USAGE LIMIT: ${ticket} triage stopped at ${limitName(l.type)}${l.resetsAt != null ? `, which resets at ${resetText(l.resetsAt)}` : ''} (log: ${log})`);
 LIMIT_END
 }
+# A pass the API refused outright (HTTP 401 or 403, a Cloudflare page) is the login, not a limit:
+# usage-limit.mjs apiRefusal reads the log and says which status.
+refused() {
+  node --input-type=module - "$LOG" "$DESK_RUN_BIN" <<'REFUSED_END'
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [log, bin] = process.argv.slice(2);
+const { apiRefusal } = await import(pathToFileURL(join(bin, 'usage-limit.mjs')).href);
+let text = '';
+try { text = readFileSync(log, 'utf8'); } catch { /* no log: not a refusal */ }
+const r = apiRefusal(text);
+if (!r) process.exit(1);
+console.log(r.why);
+REFUSED_END
+}
 
 if [ ! -f "$OUT" ]; then
   at_limit && exit 3
+  if REFUSED_WHY="$(refused)"; then
+    echo "FAIL: $TICKET produced no triage record: $REFUSED_WHY. That is the login, not the session limit: sign it in again, and if the call is still refused the API is turning away this machine's connection (log: $LOG)" >&2
+    exit 1
+  fi
+  case "$FIRST_RC" in 124|137) echo "FAIL: $TICKET produced no triage record: claude timed out after 600s (log: $LOG)" >&2; exit 1 ;; esac
   echo "FAIL: $TICKET produced no triage record at $OUT (an empty run can also be the account session limit)" >&2
   exit 1
 fi
-node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!"ABCDE".includes(d.lane)||d.lane.length!==1) throw new Error("bad lane"); if(!d.branch) throw new Error("no branch"); if(!["relocate","schema","shared","surface"].includes(d.change_kind)) throw new Error("bad change_kind"); const s=d.ben_steps; if(s!==undefined&&!(Array.isArray(s)&&s.every((x)=>x&&typeof x.step==="string"&&x.step.trim()&&typeof x.blocker==="string"&&x.blocker.trim()))) throw new Error("bad ben_steps"); const n=d.blocker_needs; if(n!==undefined&&!(n&&typeof n==="object"&&!Array.isArray(n)&&Object.values(n).every((x)=>x&&typeof x==="object"&&typeof x.needs==="boolean"))) throw new Error("bad blocker_needs");' "$OUT" \
+node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(!"ABCDE".includes(d.lane)||d.lane.length!==1) throw new Error("bad lane"); if(!d.branch) throw new Error("no branch"); if(!["relocate","schema","shared","surface"].includes(d.change_kind)) throw new Error("bad change_kind"); const s=d.ben_steps; if(s!==undefined&&!(Array.isArray(s)&&s.every((x)=>x&&typeof x.step==="string"&&x.step.trim()&&typeof x.blocker==="string"&&x.blocker.trim()))) throw new Error("bad ben_steps");' "$OUT" \
   || { echo "FAIL: $TICKET triage record is malformed" >&2; exit 1; }
+# Each call in blocker_needs is one of batch-state.mjs's BLOCKER_CALLS. Its readers still take a record
+# written before the three calls, with a boolean, but a fresh one must give a call.
+node --input-type=module - "$OUT" "$DESK_RUN_BIN" <<'CALLS_END' \
+  || { echo "FAIL: $TICKET triage record is malformed" >&2; exit 1; }
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [out, bin] = process.argv.slice(2);
+const { BLOCKER_CALLS } = await import(pathToFileURL(join(bin, 'batch-state.mjs')).href);
+const n = JSON.parse(readFileSync(out, 'utf8')).blocker_needs;
+if (n !== undefined && !(n && typeof n === 'object' && !Array.isArray(n) && Object.values(n).every((x) => x && typeof x === 'object' && BLOCKER_CALLS.includes(x.needs)))) throw new Error('bad blocker_needs');
+CALLS_END
 # Only the questions the user must answer stay in `unknowns`, as strings every reader of the record
 # takes them as; each call taken on its recommendation goes to `decided`, logged when the ticket is
 # admitted. `verify_only` holds only with criteria named in `already_met`.
-node --input-type=module - "$OUT" "$DESK_BIN" <<'CALLS_END' || { echo "FAIL: $TICKET triage record's questions could not be split" >&2; exit 1; }
+node --input-type=module - "$OUT" "$DESK_RUN_BIN" <<'CALLS_END' || { echo "FAIL: $TICKET triage record's questions could not be split" >&2; exit 1; }
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -317,6 +412,55 @@ d.verify_only = d.verify_only === true && d.already_met.length > 0;
 writeFileSync(out, `${JSON.stringify(d, null, 2)}\n`);
 if (taken.length) console.log(`[triage] ${d.ticket}  took ${taken.length} call(s) on their recommendation`);
 CALLS_END
+# The earlier triage's open items this pass left out come back, unless it named each in
+# `dropped_earlier` with the ticket text that settles it; every one dropped is said.
+# An answer saved while this pass ran settles them too.
+node --input-type=module - "$OUT" "$OPEN" "$STATE/briefings/$TICKET.md" "$TRIAGE_START" "$DESK_RUN_BIN" <<'CARRY_END' || { echo "FAIL: $TICKET triage record's earlier questions could not be carried" >&2; exit 1; }
+import fs from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [out, open, brief, start, bin] = process.argv.slice(2);
+const { answerEntriesSince } = await import(pathToFileURL(join(bin, 'handoff.mjs')).href);
+const d = JSON.parse(fs.readFileSync(out, 'utf8'));
+const o = JSON.parse(open);
+if (o.unknowns.length && fs.existsSync(brief) && answerEntriesSince(fs.readFileSync(brief, 'utf8'), start).length) {
+  o.answered = o.unknowns.length;
+  o.unknowns = [];
+}
+const t = (s) => String(s ?? '').trim();
+const why = new Map((Array.isArray(d.dropped_earlier) ? d.dropped_earlier : [])
+  .filter((x) => x && t(x.item) && t(x.why)).map((x) => [t(x.item), t(x.why)]));
+d.ben_steps = Array.isArray(d.ben_steps) ? d.ben_steps : [];
+const said = [];
+const dropped = [];
+let unknowns = 0;
+let steps = 0;
+for (const u of o.unknowns) {
+  if (d.unknowns.some((x) => t(x) === u)) continue;
+  if (why.has(u)) { dropped.push({ item: u, kind: 'unknown', why: why.get(u) }); continue; }
+  d.unknowns.push(u);
+  // A reserved unknown is asked as "<question> (recommended: <option>)" (decisions.mjs triageCalls),
+  // while this pass's taken call on it holds the bare question.
+  d.decided = d.decided.filter((c) => c.question !== u && !u.startsWith(`${c.question} (recommended: `));
+  unknowns += 1;
+}
+for (const s of o.ben_steps) {
+  if (d.ben_steps.some((x) => t(x.step) === s.step)) continue;
+  if (why.has(s.step)) { dropped.push({ item: s.step, kind: 'person step', why: why.get(s.step) }); continue; }
+  d.ben_steps.push(s);
+  steps += 1;
+}
+if (dropped.length) d.dropped_earlier = dropped;
+else delete d.dropped_earlier;
+// When this triage started reading answers: one after it settles its unknowns at the next re-triage,
+// whatever rewrites the file in between (ticket-facts.mjs refreshes its blockers and epic).
+d.triaged_at = start;
+if (unknowns || steps) said.push(`carried ${unknowns} earlier unknown(s) and ${steps} earlier person step(s) this pass left out`);
+for (const x of dropped) said.push(`dropped earlier ${x.kind} "${x.item}": ${x.why}`);
+if (o.answered) said.push(`${o.answered} earlier unknown(s) not carried: answered since`);
+fs.writeFileSync(out, `${JSON.stringify(d, null, 2)}\n`);
+for (const l of said) console.log(`[triage] ${d.ticket}  ${l}`);
+CARRY_END
 # A branch the worker could never push is refused, and the record goes with it, so the ticket is
 # triaged again rather than queued on that branch.
 BRANCH=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).branch)' "$OUT")
@@ -511,8 +655,25 @@ CLAUDE_DIR_END
 # Jira facts plan-batch needs (Blocks links, size, the lint findings), read deterministically rather
 # than taken from the model: a read failure is recorded as facts_error, which plan-batch turns into a
 # question.
-node "$DESK_BIN/ticket-facts.mjs" "$TICKET" \
+node "$DESK_RUN_BIN/ticket-facts.mjs" "$TICKET" \
   || { echo "FAIL: could not record $TICKET's Jira facts in $OUT" >&2; exit 1; }
+
+# Every open blocker those facts list needs a call in blocker_needs (the values were checked above). A
+# record missing one is refused, and goes, so the ticket is triaged again rather than admitted on a guess.
+if ! WHY=$(node --input-type=module - "$OUT" "$DESK_RUN_BIN" 2>&1 <<'NEEDS_END'
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [out, bin] = process.argv.slice(2);
+const { uncalledBlockers } = await import(pathToFileURL(join(bin, 'batch-state.mjs')).href);
+const missing = uncalledBlockers(JSON.parse(readFileSync(out, 'utf8')));
+if (missing.length) { console.log(`blocker_needs has no call for open blocker${missing.length === 1 ? '' : 's'} ${missing.join(', ')}`); process.exit(1); }
+NEEDS_END
+); then
+  rm -f "$OUT"
+  echo "FAIL: $TICKET triage record is malformed: ${WHY}. Triage it again." >&2
+  exit 1
+fi
 
 # With every canvas snapshotted or saved on the base, an unknown or a lane (park) reason asking for
 # boards to be snapshotted or exported is false, and would only park the ticket for the user. The lane
@@ -548,3 +709,4 @@ if (canvases.length && canvases.every((c) => c.snapshot || c.saved)) {
 SNAPPED_END
 
 node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(`[triage] ${d.ticket}  lane ${d.lane}  ${(d.files_in_scope??[]).length} files  ${(d.unknowns??[]).length} unknowns`)' "$OUT"
+rm -f "$EARLIER"
