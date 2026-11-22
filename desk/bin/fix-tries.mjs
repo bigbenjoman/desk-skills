@@ -899,7 +899,9 @@ const OUTSIDE = 'its failed log names no file this PR changes';
 // name less the extension as a whole word, as a log names a model, test, module or class (dbt's
 // `orders::orders_totals`, `model.shop.orders`). A name a log prints for many files (GENERIC), or one
 // under four letters, is no evidence the failure is this PR's.
-const GENERIC = new Set(['index', 'main', 'init', '__init__', 'setup', 'config', 'schema', 'utils', 'test', 'tests', 'spec', 'types', 'readme', 'package', 'models', 'sources', 'conftest', 'settings']);
+// dbt's node types (model, seed, snapshot, ...) open every node id it prints: `model.shop.fct_orders`.
+const GENERIC = new Set(['index', 'main', 'init', '__init__', 'setup', 'config', 'schema', 'utils', 'test', 'tests', 'spec', 'types', 'readme', 'package', 'models', 'sources', 'conftest', 'settings',
+  'model', 'seed', 'snapshot', 'source', 'macro', 'analysis', 'exposure', 'metric', 'unit_test']);
 const stem = (p) => String(p).split('/').pop().replace(/\.[^.]*$/, '');
 const wordIn = (name) => new RegExp(`(?:^|[^A-Za-z0-9_])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_])`);
 function namesChanged(c, changed) {

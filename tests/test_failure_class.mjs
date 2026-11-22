@@ -240,6 +240,7 @@ t('a dbt failure naming a changed model by name, with no .sql path, is the PR\'s
 t('so is one naming it as dbt\'s node id', draftOf([red('dbt build', '9')], [flaky('dbt build', '9', ['Database Error in model.shop.fct_orders'])], off805({ changed: DBT }))?.call, 'requeue');
 t('a name only inside a longer word is not that file', draftOf([red('dbt build', '9')], [flaky('dbt build', '9', ['Failure in test fct_orders_daily_unique_id'])], off805({ changed: DBT }))?.call, 'rerun');
 t('nor is a generic name every log prints (schema, index)', draftOf([red('dbt build', '9')], [flaky('dbt build', '9', ['Compilation Error in schema test: index out of range'])], off805({ changed: DBT }))?.call, 'rerun');
+t('a changed file named after a dbt node type is no evidence: model.sql against model.shop.dim_customers is rerun', draftOf([red('dbt build', '9')], [flaky('dbt build', '9', ['Database Error in model.shop.dim_customers'])], off805({ changed: ['models/model.sql'] }))?.call, 'rerun');
 t('a dbt failure naming nothing the PR changed is still rerun as environmental', draftOf([red('dbt build', '9')], [flaky('dbt build', '9', ['Failure in unit_test dim_customers::dim_customers_dedupes'])], off805({ changed: DBT }))?.call, 'rerun');
 const after = draftOf([red('Integration', '9')], [away], off805({ reruns: () => 1, rerunsOk: () => 1 }));
 t('#805 red again after its rerun: the fix try goes ahead and says so', after?.fix?.what, 'red: Integration; its failed log names no file this PR changes; one rerun was already tried at this head and it failed again');
