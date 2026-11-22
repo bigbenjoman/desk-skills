@@ -44,7 +44,8 @@ EOF_P
   while IFS="$TAB" read -r _ d _; do [ -n "$d" ] && rm -rf "$d/merge-driver/said.$$"; done <<EOF_C
 $COVER
 EOF_C
-  [ -n "$R_HELD" ] && rm -rf "$R_LOCK"
+  # Only while the lock is still this driver's: one moved or taken over is another driver's now.
+  [ -n "$R_HELD" ] && [ "$(cat "$R_LOCK/pid" 2>/dev/null)" = "$$" ] && rm -rf "$R_LOCK"
   log "merge driver exited $rc"
 }
 trap r_exit EXIT
