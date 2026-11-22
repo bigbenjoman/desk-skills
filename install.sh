@@ -1330,9 +1330,9 @@ for c in "$CONFIG_ROOT"/repos/*/config.md; do
   [ -f "$c" ] || continue
   configured=$((configured + 1))
   slug="$(basename "$(dirname "$c")")"
-  # Rows whose value is still `TODO`, read as every desk read reads a value (desk-env unanswered): a
-  # TODO in a note is not one, nor a row the template leaves `TODO` to follow the machine profile.
-  todos="$(node "$DESKDIR/bin/desk-env.mjs" unanswered "$c" 2>/dev/null || echo 0)"
+  # The rows that still need an answer, as desk-env reads them (desk-env unset): no value of their own,
+  # none from the machine profile and no schema default. A TODO in a note is not one.
+  todos="$(DESK_CONFIG="$c" node "$DESKDIR/bin/desk-env.mjs" unset 2>/dev/null | grep -c . || true)"
   if [ "${todos:-0}" -gt 0 ]; then warn "$slug: $todos unanswered fields (run /desk-setup in that repo)"
   else ok "$slug"; fi
   # A user-level skill (a vendored one this install links, say) with the name of a skill the repo

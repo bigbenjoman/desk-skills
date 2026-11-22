@@ -232,6 +232,21 @@ check "#733 the file is kept, and the install says so" \
 check "#733 a kept hook script is not registered or described as desk's" \
   '[[ "$summary" != *"Register the attribution hook"* ]] && [[ "$out" == *"registration left as it is: the hook script there is yours"* ]] && [[ "$out" != *"Aimed at a repo whose desk config"* ]]'
 
+# DS-874: three repo configs for the Repo configs section's count, read by the next run (no machine
+# profile) and the last (one that sets the three machine rows).
+mkdir -p "$HOME/.config/desk/repos/acme__machine" "$HOME/.config/desk/repos/acme__handle" "$HOME/.config/desk/repos/acme__noted"
+cat > "$HOME/.config/desk/repos/acme__machine/config.md" <<'UEOF'
+## 3b. Cost and autonomy
+| Field | Recommended | Your setting |
+|---|---|---|
+| Autopilot worker concurrency | `2 / 3` (default / cap) | `TODO` |
+| Memory ceiling for parallel work (GB) | WSL: `16` | `TODO` |
+| Test worker cap under the test lock | `4` | `TODO` |
+| Triage concurrency | `1` | `3` |
+UEOF
+printf '## 1. Who you are\n\n| Field | Value |\n|---|---|\n| Name | `Pat` |\n| GitHub handle | `TODO` |\n' > "$HOME/.config/desk/repos/acme__handle/config.md"
+printf '## 2. Paths\n\n| Field | Value |\n|---|---|\n| Worktrees directory | `~/wt` (still `TODO` in the template) |\n' > "$HOME/.config/desk/repos/acme__noted/config.md"
+
 # --accept and --decline answer the prompts they name with no terminal; an unknown id is a warning.
 rm -f "$HOME/.claude/hooks/deny-ai-attribution.py"
 acc_out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch --accept=hook-attribution --decline=plugins --accept=no-such-prompt </dev/null 2>&1)"
@@ -243,9 +258,19 @@ check "#736 a declined prompt is answered no and not listed as skipped" \
   '[[ "$acc_out" == *"(--decline=plugins)"* ]] && [[ "$acc_summary" != *"Install the missing plugins now"* ]]'
 check "#736 an unknown id is a warning naming it" '[[ "$acc_out" == *"no prompt has the id \"no-such-prompt\""* ]]'
 
-# #828: the repo-config count of unanswered fields (desk-env unanswered, which install.sh runs) reads
-# each row's value column as every desk read does, not a note or another column, and leaves out the
-# rows the template keeps `TODO` to follow the machine profile.
+check "DS-874 AC5 with no machine profile, the machine rows left TODO are counted" '[[ "$acc_out" == *"WARN  acme__machine: 3 unanswered fields"* ]]'
+check "DS-874 AC2 a GitHub handle left TODO is one unanswered field" '[[ "$acc_out" == *"WARN  acme__handle: 1 unanswered fields"* ]]'
+check "DS-874 AC3 an answered row whose note mentions TODO is not counted" '[[ "$acc_out" == *"ok    acme__noted"* ]]'
+mkdir -p "$HOME/.config/desk"
+printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `autopilot-concurrency` | `4 / 8` | x |\n| `memory-ceiling-gb` | `24` | x |\n| `test-cap` | `3` | x |\n' > "$HOME/.config/desk/machine.md"
+prof_out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
+check "DS-874 AC1 a machine profile setting the three machine rows answers them: ok, with no warning" \
+  '[[ "$prof_out" == *"ok    acme__machine"* ]] && [[ "$prof_out" != *"acme__machine: "*"unanswered"* ]]'
+rm -f "$HOME/.config/desk/machine.md"
+
+# #828, DS-874: the repo-config count of unanswered fields (desk-env unset, which install.sh runs)
+# reads each row's value column as every desk read does, not a note or another column; a row with a
+# schema default is answered by it, and a machine row only by a profile that sets it.
 cat > "$T/uc.md" <<'UEOF'
 ## 2. Paths
 | Field | Value | Notes |
@@ -269,7 +294,8 @@ cat > "$T/uc.md" <<'UEOF'
 | `pr-open` | Open a PR | `yes` | `TODO` |
 Left `TODO` or absent, each falls back to the machine profile.
 UEOF
-check "#828 only a value of TODO counts: not a note's, not another column's, not the rows that follow the machine profile" '[ "$(node "$S/../desk/bin/desk-env.mjs" unanswered "$T/uc.md")" = 4 ]'
-check "#828 install.sh counts with it" 'grep -q "desk-env.mjs\" unanswered \"\$c\"" "$S/../install.sh"'
+check "#828 only a value of TODO counts: not a note's, not another column's, not a row with a default" \
+  '[ "$(DESK_CONFIG="$T/uc.md" node "$S/../desk/bin/desk-env.mjs" unset | tr "\t" " " | tr "\n" ",")" = "§2 Primary repo root,§3 pr-open,§3b Autopilot worker concurrency,§3b Memory ceiling for parallel work (GB),§3b Test worker cap under the test lock," ]'
+check "#828 install.sh counts with it" 'grep -q "DESK_CONFIG=\"\$c\" node \"\$DESKDIR/bin/desk-env.mjs\" unset" "$S/../install.sh"'
 
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]

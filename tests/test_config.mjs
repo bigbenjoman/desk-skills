@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { cellItems, configRows, declaredRows, CONFIG_ROWS, PATH_VARS, MACHINE_FALLBACK_ROWS } from '../desk/bin/desk-env.mjs';
+import { cellItems, configRows, declaredRows, CONFIG_ROWS, PATH_VARS } from '../desk/bin/desk-env.mjs';
 import { ROWS, coverage, TYPES, parseRow, norm, MACHINE_FALLBACK, requiredFieldsIn, requiredFieldsByType } from '../desk/bin/config-schema.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
@@ -722,7 +722,6 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
 
   // The machine profile fallback desk-env reads.
   t('DS-868 MACHINE_FALLBACK is the three machine rows', JSON.stringify(MACHINE_FALLBACK), '{"concurrency":"autopilot-concurrency","memory-ceiling":"memory-ceiling-gb","test-cap":"test-cap"}');
-  t('DS-868 MACHINE_FALLBACK_ROWS is their labels', MACHINE_FALLBACK_ROWS.join(' / '), 'autopilot worker concurrency / memory ceiling for parallel work (gb) / test worker cap under the test lock');
 }
 
 // `desk-env get --json`: typed rows with where each value came from, its default and its type errors.
@@ -788,6 +787,37 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   const fields = (x) => JSON.stringify([x?.set, x?.source, x?.value, x?.items, x?.default]);
   t('DS-870 AC11 an unset row is not set, source unset, with a null value', fields(r.json?.rows?.['local-services']), '[false,"unset",null,null,null]');
   t('DS-870 AC11 the schema default is reported in its own field, never as the value', fields(r.json?.rows?.['append-only-paths']), '[false,"unset",null,null,["none"]]');
+
+  // `desk-env unset`: the rows that still need an answer, which install.sh counts.
+  {
+    const u = join(T, 'unset-874.md');
+    writeFileSync(u, '## 1. Who you are\n\n| Field | Value |\n|---|---|\n| GitHub handle | `TODO` |\n| Name | `Pat` |\n| Pronouns (optional) | `TODO` (a note) |\n\n'
+      + '## 2. Paths\n\n| Field | Value | Notes |\n|---|---|---|\n| Worktrees directory | `~/wt` | not `TODO` |\n| Primary repo root | `~/r` (not `TODO`) | x |\n| Handoff at context % | `TODO` | |\n\n'
+      + `${B3}| Autopilot worker concurrency | \`2 / 3\` | \`TODO\` |\n| Memory ceiling for parallel work (GB) | \`16\` | \`TODO\` |\n`
+      + '| Test worker cap under the test lock | `4` | `TODO` |\n| Triage concurrency | `1` | `3` (left `TODO` it is 1) |\n| Intake query | `none` | `TODO` |\n| Not a schema row | `x` | `TODO` |\n\n'
+      + '## 3. Permissions\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n| `pr-open` | Open a PR | `yes` | `TODO` |\n| `git-push` | Push | `yes` | `yes` |\n');
+    const unsetJson = (extra) => {
+      const x = node(jenv(u, extra), ['unset', '--json']);
+      let j = null; try { j = JSON.parse(x.stdout); } catch { /* not JSON */ }
+      return { code: x.status, j };
+    };
+    const listed = (x) => (x.j?.rows ?? []).map((e) => `${e.section}|${e.label}`).join(' / ');
+    let u1 = unsetJson();
+    t('DS-874 AC4 unset --json lists the rows with no value of their own, none from the machine profile and no default, each with section and label',
+      `${u1.code} ${listed(u1)}`, '0 1|GitHub handle / 1|Pronouns (optional) / 3|pr-open / 3b|Autopilot worker concurrency / 3b|Memory ceiling for parallel work (GB) / 3b|Test worker cap under the test lock');
+    t('DS-874 AC4 it names the config it read', u1.j?.config, u);
+    writeFileSync(join(T, 'machine-874.md'), '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `4 / 8` | x |\n| memory-ceiling-gb | `24` | x |\n| test-cap | `3` | x |\n');
+    u1 = unsetJson({ DESK_MACHINE: join(T, 'machine-874.md') });
+    t('DS-874 AC4 a machine profile that sets the three machine rows answers them', listed(u1), '1|GitHub handle / 1|Pronouns (optional) / 3|pr-open');
+    t('DS-874 AC4 each row carries its id', (u1.j?.rows ?? []).map((e) => e.id).join(' '), 'github-handle pronouns pr-open');
+    writeFileSync(join(T, 'machine-874b.md'), '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| test-cap | `3` | x |\n');
+    u1 = unsetJson({ DESK_MACHINE: join(T, 'machine-874b.md') });
+    t('DS-874 AC4 a machine row the profile does not set still counts, its schema default aside', listed(u1).includes('3b|Autopilot worker concurrency') && !listed(u1).includes('Test worker cap'), true);
+    const plain = node(jenv(u), ['unset']);
+    t('DS-874 plain unset prints one §<section> TAB <label> line per row', plain.stdout.split('\n')[0], '§1\tGitHub handle');
+    const none = node(jenv(join(T, 'absent-874.md')), ['unset', '--json']);
+    t('DS-874 with no config it exits 3, printing nothing', `${none.status} ${none.stdout === ''}`, '3 true');
+  }
 
   // Where something other than the row gives the value, its type is checked on that value, not the row.
   const label = (id) => ROWS.find((e) => e.id === id).label;
