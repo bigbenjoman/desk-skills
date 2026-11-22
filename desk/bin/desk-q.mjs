@@ -834,7 +834,7 @@ function whoRuns(r) {
 //   driver      { at, reason }: the merge driver the supervisor started stopped with a failure, or
 //               could not start, and none runs now. a stopped one's `reason` is only a FAIL line, or null; with
 //               `code` 143 it was stopped (a release install, a supervisor stop). None while
-//               supervisor.json records the batch idle, which runs no driver by design
+//               supervisor.json records the batch idle, unless the driver started after it went idle
 //   oldCode     which of the loaded supervisor agent and its running merge driver run other desk code than
 //               is installed, read now: a pass's own record can predate the install, or outlive the reload
 const NO_PROGRESS_MS = HOUR;
@@ -855,7 +855,10 @@ function stallOf(r, now) {
   const cannotStart = loaded && r.run.exit ? { ...r.run.exit, why: tailLines(join(r.stateDir, 'supervisor.agent.log')).at(-1) ?? r.run.exit.why } : null;
   const holder = mergeDriverHolder(r.stateDir);
   let driver = null;
-  if (sup && !sup.idle && holder == null && unfinished(r)) {
+  // An idle batch runs no driver, but the repo's one driver keeps its record here in the standing batch,
+  // so one started for another batch since this one went idle still counts.
+  const idle = sup?.idle && !(timeOf(sup.driver?.started) > (timeOf(sup.idle_at) ?? Infinity));
+  if (sup && !idle && holder == null && unfinished(r)) {
     const d = sup.driver;
     let at = null;
     try { at = statSync(join(r.stateDir, 'merge-driver.log')).mtimeMs; } catch { /* no log */ }
