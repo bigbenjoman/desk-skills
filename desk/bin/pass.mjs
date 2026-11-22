@@ -48,7 +48,7 @@ import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from '
 import { firstSpawnFromLogs, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health, markFailed as markHealthFailed, refusedIn, MISMATCH_WORDS } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
-import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond } from './clears-when.mjs';
+import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond, commitOnBranch } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { strayClosings } from './closing-keywords.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
@@ -1230,12 +1230,10 @@ const clearsRead = {
   // From origin as fetched now. A commit not here after the fetch is on no branch this clone has.
   commitOn: (sha, branch) => {
     cached(`fetch:${branch}`, () => readOrThrow(`git fetch ${branch}`, 'git', ['-C', MAIN, 'fetch', '-q', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]));
-    const not = { holds: false, note: `${sha} is not on origin/${branch} yet` };
-    if (!shOut('git', ['-C', MAIN, 'cat-file', '-e', `${sha}^{commit}`]).ok) return not;
-    const r = shOut('git', ['-C', MAIN, 'merge-base', '--is-ancestor', sha, `origin/${branch}`]);
-    if (r.ok) return { holds: true };
-    if (r.code === 1) return not;
-    throw new Error(`git merge-base ${sha} origin/${branch}: ${r.out.split('\n').pop()}`);
+    // READ_BRANCH is the default branch with the schema's `main` when the row is unset; DEFAULT_BRANCH
+    // also honours DESK_DEFAULT_BRANCH and a batch's base.
+    const merges = [READ_BRANCH, DEFAULT_BRANCH, E.batchBase()].includes(branch);
+    return commitOnBranch((args) => shOut('git', ['-C', MAIN, ...args]), sha, branch, { merges });
   },
   ticket: (key) => cached(`ticket:${key}`, () => {
     const c = JSON.parse(readOrThrow(`desk-jira get ${key}`, 'desk-jira', ['get', key, '--json']))?.fields?.status?.statusCategory?.key;
@@ -2238,10 +2236,11 @@ const otherRepos = MACHINE_CAP != null || borrowLock || SIBLINGS ? otherQueues({
 if (MACHINE_CAP != null || borrowLock || SIBLINGS) countElsewhere(otherRepos);
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
 // The memory every worker and peer session has reserved from the machine profile's ceiling
-// (mem-lease.mjs); a worker's share is the ceiling over this repo's worker cap. This read only sizes
-// the pass's slots: each spawn reserves its share under the store's lock first (memHeld), and with
-// the kind on one that no longer fits does not start.
-const MEM_POOL = memPool({ env: LEASE_ENV, cap: E.concurrencyLimits().cap, take: !DRY });
+// (mem-lease.mjs); a worker's share is the ceiling over the machine's worker cap, or this repo's
+// where the machine profile sets none, so every repo's workers take the same share. This read only
+// sizes the pass's slots: each spawn reserves its share under the store's lock first (memHeld), and
+// with the kind on one that no longer fits does not start.
+const MEM_POOL = memPool({ env: LEASE_ENV, cap: MACHINE_CAP ?? E.concurrencyLimits().cap, take: !DRY });
 const SLOTS_SNAP = {
   borrowOn: BORROW.on, concurrency, cap: E.concurrencyLimits().cap, running: running.length, spawnable: spawnable.length,
   others, machineCap: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, spawnHeld, lockWhy,

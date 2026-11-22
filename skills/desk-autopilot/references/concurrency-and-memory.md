@@ -160,8 +160,9 @@ kind `off` the pass reads no harm signal and judges memory by the ladder alone. 
 the count when you lower it. On macOS only `WORKER-OOM` is read.
 
 **Memory is reserved from the machine's ceiling as leases**, where the machine profile sets
-`memory-ceiling-gb`. Each worker a pass starts reserves its share (that ceiling over the cap of §3b
-"Autopilot worker concurrency", at least 1 GiB), held by the worker's process and returned when it
+`memory-ceiling-gb`. Each worker a pass starts reserves its share (that ceiling over the profile's
+`autopilot-concurrency` cap, or over the cap of §3b "Autopilot worker concurrency" where the profile
+sets none, at least 1 GiB), held by the worker's process and returned when it
 exits. Before a heavy run of your own (a full suite, a build), reserve for it so every pass counts
 it: `desk-env lease acquire mem <what for> --units <GiB> --owner claude --ttl <seconds>`, which
 your session holds until it exits or twice the TTL passes unrenewed, and `desk-env lease release <id> --pid <the owner pid desk-env
