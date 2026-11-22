@@ -322,7 +322,7 @@ out=$(tick)
 check "DS-872: a value row a worker reads as a list (Package manager) holding \`none\` beside an item blocks and is pushed" '[ "$(count "$T/pass.calls")" = $((calls + 4)) ] && [ "$(count "$T/notify.calls")" = $((notified + 5)) ] && tail -1 "$T/notify.calls" | grep -qF "§4 Package manager"'
 SECTION4=$'| Done state | `Done` |\n\n## 3b. Tuning\n| Field | Value |\n|---|---|\n| Per-file collision budget | `none` `2` |'; config yes yes
 out=$(tick)
-check "DS-872: a collision budget mixing \`none\`, which the pass reads past, never blocks" '[ "$(count "$T/pass.calls")" = $((calls + 5)) ] && [ "$(count "$T/notify.calls")" = $((notified + 4)) ]'
+check "DS-872: a collision budget mixing \`none\`, which the pass reads past, never blocks" '[ "$(count "$T/pass.calls")" = $((calls + 5)) ] && [ "$(count "$T/notify.calls")" = $((notified + 5)) ]'
 SECTION4=""; config yes yes
 out=$(tick)
 
