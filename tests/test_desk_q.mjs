@@ -20,6 +20,9 @@ const minsAgo = (m) => new Date(NOW - m * 60000).toISOString();
 const QUICK_TIMES = 5;
 const QUICK_FLOOR_MS = 1000;
 const quick = (ms, baseline) => ms < Math.max(QUICK_FLOOR_MS, QUICK_TIMES * baseline) || `${ms} ms (same work on a small world: ${baseline} ms)`;
+// Every desk-q this suite starts shares one V8 compile cache, so only the first compiles desk-q's
+// megabyte of modules: the rest load them from the cache, and the suite's CPU is mostly what desk-q does.
+const COMPILE_CACHE = scratch('desk-q-compile-');
 
 // One fixture world: seven repos by default, or `repos` to override, each { port, conc, queue, beat, triage }.
 function world(overrides = {}) {
@@ -40,7 +43,7 @@ function world(overrides = {}) {
     '',
   ].join('\n'), { mode: 0o755 });
   const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'),
-    DESK_PLATFORM: 'darwin', DESK_SKILLS_DIR: join(T, 'skills'), PATH: `${join(T, 'bin')}:${process.env.PATH}` };
+    DESK_PLATFORM: 'darwin', DESK_SKILLS_DIR: join(T, 'skills'), NODE_COMPILE_CACHE: COMPILE_CACHE, PATH: `${join(T, 'bin')}:${process.env.PATH}` };
   writeFileSync(env.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
   const held = (by) => ({ state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by.split('|').join(', ')} — starts once their PRs merge` } });
   const repos = {
