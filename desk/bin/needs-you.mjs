@@ -1488,7 +1488,8 @@ const proposalItems = (batches) => batches.filter((b) => !b.error && b.q).flatMa
 
 // The answer to proposal item `i`, written to its ticket through desk-jira in the repo's own checkout
 // (`reads.jira`): §4 Priority set to the value (promote only, with --approved when it is one of §4
-// Priorities only you set, as the person's answer is that approval), the label taken off, and a comment;
+// Priorities only you set, as the person's answer is that approval), the label taken off (desk-jira
+// labels remove), and a comment;
 // then kept on the queue ticket. A write that fails stops there, saying what was written before it.
 function proposalAnswer(i, verb, text, reads, now, say) {
   const to = verb === 'promote' ? (one(text).replace(/^["']|["']$/g, '') || i.to || '').toUpperCase() : null;
@@ -1505,12 +1506,9 @@ function proposalAnswer(i, verb, text, reads, now, say) {
     ...(top.includes(to.toLowerCase()) ? ['--approved', `promoted to ${to} through desk-needs-you, answering the pending priority proposal`] : [])]) : null;
   if (no) return no;
   if (i.label) {
-    let labels;
-    try { labels = JSON.parse(reads.jira(i.r, ['get', i.ticket, '--json']))?.fields?.labels; } catch (e) { return say(false, `${i.ticket}'s labels could not be read (${one(e.stderr || e.message)})${done.length ? `, after ${andList(done)}` : ''}; it stays on your list.`); }
-    if (Array.isArray(labels) && labels.includes(i.label)) {
-      no = run(`taking ${i.label} off`, ['edit', i.ticket, `labels=${JSON.stringify(labels.filter((l) => l !== i.label))}`]);
-      if (no) return no;
-    }
+    // Jira's own remove, which touches that label alone: a label added meanwhile is kept.
+    no = run(`taking ${i.label} off`, ['labels', i.ticket, 'remove', i.label]);
+    if (no) return no;
   }
   const body = `Priority proposal ${verb === 'promote' ? `promoted: ${field} set to ${to}` : 'rejected: the priority stays as it was'}${i.label ? `, and the label ${i.label} taken off` : ''}. Answered by the person through desk-needs-you.`;
   no = run('the comment', ['comment', i.ticket, body]);

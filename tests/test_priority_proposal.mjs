@@ -78,18 +78,18 @@ t('it names the value, the label and the line asking for it', [/P-1 carries a pe
 t('promote is the recommended answer, reject and not-now beside it', p1.actions.map(([a, why]) => [a, !!why]), [['promote', true], ['reject', false], ['not-now', false]]);
 t('it holds no work: the ticket is still running', JSON.parse(readFileSync(qf, 'utf8')).tickets['P-1'].state, 'running');
 
-// A desk-jira read that records each call and answers `get` with the ticket's labels.
+// A desk-jira read that records each call.
 const calls = [];
 const jira = (fail = null) => ({ jira: (r, args) => {
   calls.push(args);
   if (fail && args[0] === fail) throw Object.assign(new Error('desk-jira failed'), { stderr: 'desk-jira: HTTP 400' });
-  return args[0] === 'get' ? JSON.stringify({ key: args[1], fields: { labels: ['backend', 'lp-proposed-p1'] } }) : 'ok';
+  return 'ok';
 } });
 const ans = NY.record({ word: 'prop', ticket: 'proposal:P-1', action: 'promote', reads: jira() });
 t('promote is recorded', ans.ok, true);
 t('it sets the priority field, with --approved for a value only the person sets', calls[0], ['edit', 'P-1', 'customfield_10300=P1', '--approved', 'promoted to P1 through desk-needs-you, answering the pending priority proposal']);
-t('it takes the label off and keeps the others', calls.slice(1, 3), [['get', 'P-1', '--json'], ['edit', 'P-1', 'labels=["backend"]']]);
-t('it comments on the ticket', [calls[3]?.[0], calls[3]?.[1], /promoted: customfield_10300 set to P1, and the label lp-proposed-p1 taken off/.test(calls[3]?.[2] ?? '')], ['comment', 'P-1', true]);
+t('it takes the label off with Jira\'s own remove, which leaves every other label as it is', calls[1], ['labels', 'P-1', 'remove', 'lp-proposed-p1']);
+t('it comments on the ticket', [calls[2]?.[0], calls[2]?.[1], /promoted: customfield_10300 set to P1, and the label lp-proposed-p1 taken off/.test(calls[2]?.[2] ?? '')], ['comment', 'P-1', true]);
 t('the answer is kept on the queue ticket', JSON.parse(readFileSync(qf, 'utf8')).tickets['P-1'].priority_proposal_answer?.answer, 'promote');
 t('so it is off the list', proposals().map((i) => i.t.key), ['proposal:P-3']);
 
