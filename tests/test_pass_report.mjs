@@ -274,6 +274,7 @@ const vsnap = (tickets, fields = {}) => {
     heldWhyOf({ ...free, repoUnlocked: true }), heldWhyOf({ ...free, repo: { room: 0, line: 'R 3/3' } }), heldWhyOf({ ...free, concurrency: 0 }), heldWhyOf(free),
   ]), j(['usage', 'the batch base sync holds every spawn: 30 behind', 'memory: 3.2G available, under the 6G spawn gate', 'the lock queue',
     'the machine budget: m 9/9', 'the repo\'s shared cap: r', 'the repo\'s shared cap: R 3/3', 'the batch\'s worker count is 0', null]));
+  t('a harm signal is named rather than avail', heldWhyOf({ ...free, lowMemory: true, harmWhy: 'memory harm: OOM-KILL within the last 10m (…)' }), 'memory harm: OOM-KILL within the last 10m (…)');
 }
 
 // AC4: each decision returns its actions without starting a process, calling git, gh or Jira, or
