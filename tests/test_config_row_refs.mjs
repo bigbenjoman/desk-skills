@@ -142,7 +142,7 @@ for (const s of ['desk-ticket', 'desk-autopilot']) {
 // reads, or the paragraph naming it reads the row with desk-env (AC2); and an agent that reads the
 // config still carries on when `desk-env where` prints EXISTS=no or desk-env is missing (AC3). A
 // `§<n> above` or `below` is the agent's own heading, not the config's.
-const AGENT_WHOLE = [...WHOLE, /\bconfig path\b[^]{0,40}\bRead it\b/i, /\bread\b[^.\n§]{0,80}\bthe desk config\b(?!'s)/i];
+const AGENT_WHOLE = [...WHOLE, /\bconfig path\b[^]{0,40}\bRead it\b/i, /\bread\b(?:[^.\n§]|\.(?=\w)){0,80}\bthe desk config\b(?!'s)/i];
 const agentWhole = (text) => wholeReads(text, AGENT_WHOLE);
 const ROW_READ = /\bdesk-env\s+(?:get|list|cmds|perm|required-fields)\b/;
 function unreadSections(text) {
