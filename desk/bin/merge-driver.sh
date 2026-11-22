@@ -150,7 +150,7 @@
 #                                sleeping: 0, or 1 when the PR list could not be read
 #   MERGE_DRIVER_GREEN_SECS=<n>  how long a head must stay green before it merges (default 60)
 #   MERGE_DRIVER_IDLE_SECS=<n>, MERGE_DRIVER_IDLE_MAX_SECS=<n>, MERGE_DRIVER_WAKE_SECS=<n>
-#                                the pause after a loop with nothing it may merge: the first, doubled on
+#                                the pause after a loop with no ready PR: the first, doubled on
 #                                each such loop in a row up to the most (defaults 60 and 600), and how
 #                                often within it the driver looks for a worker's exit or an undraft by the
 #                                pass, either of which ends it (default 60); each a whole number of
@@ -1280,7 +1280,7 @@ pause(){
   wait "$SLEEP_PID"; kill "$SLEEP_PID" 2>/dev/null; SLEEP_PID=""
   stop_if_asked
 }
-# idle_pause: the wait after a loop with nothing it may merge. Each such loop in a row doubles it, from
+# idle_pause: the wait after a loop with no ready PR. Each such loop in a row doubles it, from
 # IDLE_SECS up to IDLE_MAX_SECS; a loop with a ready PR starts the run again. It sleeps in slices of
 # WAKE_SECS and ends early once the repo's exits folder (a worker exited) or $SD/wake (the pass took a
 # PR out of draft) has changed since this loop began, so a long pause never holds back a new PR.
@@ -1351,12 +1351,12 @@ while true; do
     else log "no ready batch PRs"; fi
     idle_pause; continue
   fi
+  IDLE_RUN=0
 
   if [ -n "$fixkey" ]; then
     ready=$(printf '%s\n' "$ready" | awk -F'\t' -v k="$fixkey" '$2 == k')
-    if [ -z "$ready" ]; then idle_pause; continue; fi
+    if [ -z "$ready" ]; then pause 120; continue; fi
   fi
-  IDLE_RUN=0
 
   REPAIRS=$(repaired_prs "$(printf '%s\n' "$list" | cut -f1 | paste -sd ' ' -)" </dev/null)
   merged=""
