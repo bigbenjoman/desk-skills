@@ -35,6 +35,7 @@ import { PREVIEW_DB_STEPS, previewDbStepOf, isNone } from './config-schema.mjs';
 import { MIGRATION_DIR } from './migration-renames.mjs';
 import { SCREENSHOT_FILE } from './desk-env.mjs';
 import { isPrNumber, ownOpenPrRefusal, readPrView } from './own-pr.mjs';
+import { fileSha, REJECTED_DIR } from './upload-batches.mjs';
 
 const UP_STEPS = Object.freeze(['create', 'migrate', 'seed', 'override', 'rebuild']);
 const NEEDED = Object.freeze(['create', 'migrate', 'override', 'rebuild', 'delete']);
@@ -144,14 +145,20 @@ export function checkedRecord(rec, results, head, at, files = {}) {
   const passed = !!head && results.length > 0 && results.every((r) => r.call === 'ok');
   return passed ? { ...rest, checked: { head, at, shots: results.length, files } } : rest;
 }
-export const shotSha = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
+// The sha256s of the files PR `pr`'s last passing check read, which are all the uploader may post for
+// it (upload-batches.mjs runUpload `passed`): an empty Set before any check passed, null for a PR with
+// no preview database.
+export function checkedShas(state, pr) {
+  const rec = readRecords(state).find((r) => String(r.pr) === String(pr));
+  return rec ? new Set(Object.values(rec.checked?.files ?? {})) : null;
+}
 // Why the screenshots `shots` (file names in `dir`) may not be uploaded to PR `pr`, or null when they may:
 // for a PR with a preview database, each must be a file the last passing check read, unchanged since.
 export function uploadHold(state, pr, dir, shots) {
   const rec = readRecords(state).find((r) => String(r.pr) === String(pr));
   if (!rec) return null;
   const passed = rec.checked?.files ?? {};
-  const unchecked = shots.filter((f) => { try { return passed[f] !== shotSha(join(dir, f)); } catch { return true; } });
+  const unchecked = shots.filter((f) => { try { return passed[f] !== fileSha(join(dir, f)); } catch { return true; } });
   return unchecked.length ? `#${pr} has a preview database, and ${unchecked.join(', ')} did not pass preview-db.mjs check as ${unchecked.length === 1 ? 'it is' : 'they are'}` : null;
 }
 export function writeRecord(state, rec) {
@@ -257,7 +264,7 @@ export function errorPageLine(text) {
   return null;
 }
 
-export const REJECTED_DIR = 'error-pages';
+export { REJECTED_DIR };
 // Each shot in `dir` read against its page text: -> [{ shot, call: 'ok' | 'error' | 'no-text', line? }].
 export function checkShots(dir) {
   let names = [];
@@ -297,23 +304,26 @@ if (isMain) {
     if (!results.length) console.log(`no screenshots in ${argv[0]}`);
     else if (!bad.length && !bare.length) console.log(`${results.length} screenshot(s), none an error page`);
     // This worktree's PR, where it has a preview database: the result is kept on its record at the PR's
-    // head, with the files it passed, which the uploads read (uploadHold).
+    // head, with the files it passed, which the uploads read (uploadHold, checkedShas).
     const E = await import('./desk-env.mjs');
     const safe = (f) => { try { return f(); } catch { return null; } };
     const branch = safe(() => execFileSync('git', ['branch', '--show-current'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
     const state = safe(() => E.stateDir());
     const rec = branch && state ? readRecords(state).find((r) => r.branch === branch) : null;
+    let unrecorded = false;
     if (rec) {
       const view = readPrView(rec.repo ?? safe(E.ghRepo), rec.pr);
       const head = ownOpenPrRefusal(branch, rec.pr, view) ? null : view.headRefOid ?? null;
-      const files = Object.fromEntries(results.filter((r) => r.call === 'ok').map((r) => [r.shot, shotSha(join(argv[0], r.shot))]));
+      const files = Object.fromEntries(results.filter((r) => r.call === 'ok').map((r) => [r.shot, fileSha(join(argv[0], r.shot))]));
       const next = checkedRecord(rec, results, head, new Date().toISOString(), files);
       writeRecord(state, next);
       console.log(next.checked
         ? `preview-db: PR #${rec.pr} passed at ${head.slice(0, 9)}, so these ${results.length} screenshot(s) may be uploaded as they are`
-        : `preview-db: PR #${rec.pr} did not pass${head ? '' : ' (its head could not be read)'}, so none of its screenshots is uploaded until a check passes`);
+        : `preview-db: PR #${rec.pr} did not pass${head ? '' : ' (its head could not be read: check again)'}, so none of its screenshots is uploaded until a check passes`);
+      // A check that recorded no pass fails, even with every shot clean: none of them would be uploaded.
+      unrecorded = !next.checked;
     }
-    process.exit(bad.length || bare.length ? 1 : 0);
+    process.exit(bad.length || bare.length || unrecorded ? 1 : 0);
   }
   if (cmd !== 'up') { console.error(usage); process.exit(2); }
   const E = await import('./desk-env.mjs');

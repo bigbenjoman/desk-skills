@@ -183,7 +183,7 @@ you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease 
   `node ~/.claude/desk/bin/preview-db.mjs check <your screenshot directory>`. It moves any shot whose
   text is an error page (a crash page, a server error, a not-found page, a database error naming a
   missing table or column) into `error-pages/` beside it, where no upload reads it, and exits 1 on
-  one, or on a shot with no text. Only the files a passing check read, unchanged since, are uploaded;
+  one, on a shot with no text, or when it could not record the pass. Only the files a passing check read, unchanged since, are uploaded;
   a failed check uploads none. An error page is never evidence: find why (the preview not yet
   rebuilt, a migration that did not apply), fix it and capture again, or park quoting the line it
   printed. Look at every shot as well; the check reads text, not pixels.

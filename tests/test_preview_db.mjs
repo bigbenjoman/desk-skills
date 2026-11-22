@@ -1,9 +1,9 @@
 // suite: preview database (a PR adding a migration gets a database branch and preview of its own)
 // covers: desk/bin/preview-db.mjs skills/desk-autopilot/references/worker-contract-stage-5.md
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { shotIndex } from '../desk/bin/upload-batches.mjs';
+import { shotIndex, fileSha } from '../desk/bin/upload-batches.mjs';
 import { join } from 'node:path';
-import { parseRecipe, dbName, fill, shellWord, addsMigration, upCall, runUp, stepError, readRecords, writeRecord, evidenceHold, checkedRecord, uploadHold, shotSha, teardownCalls, teardown,
+import { parseRecipe, dbName, fill, shellWord, addsMigration, upCall, runUp, stepError, readRecords, writeRecord, evidenceHold, checkedRecord, uploadHold, checkedShas, teardownCalls, teardown,
   errorPageLine, checkShots, setAside, runCommand, TEARDOWN_TRIES, DB_NAME_MAX, REJECTED_DIR } from '../desk/bin/preview-db.mjs';
 import { previewDbStepOf, TYPES } from '../desk/bin/config-schema.mjs';
 import { scratch } from './scratch.mjs';
@@ -122,7 +122,10 @@ t('AC2 a failed check keeps no passed files', readRecords(state).find((r) => r.p
 // AC2: a preview-database PR uploads only the files a passing check read, unchanged since.
 const upDir = scratch('preview-upload-');
 writeFileSync(join(upDir, 'after-home.png'), 'home'); writeFileSync(join(upDir, 'after-plans.png'), 'plans');
-writeRecord(state, checkedRecord(readRecords(state).find((r) => r.pr === '43'), ok2, H1, 'T', { 'after-home.png': shotSha(join(upDir, 'after-home.png')) }));
+t('AC2 the uploader gets no passed bytes before a check passed', [...(checkedShas(state, '43') ?? ['null'])].length, 0);
+writeRecord(state, checkedRecord(readRecords(state).find((r) => r.pr === '43'), ok2, H1, 'T', { 'after-home.png': fileSha(join(upDir, 'after-home.png')) }));
+t('AC2 the uploader gets the bytes the passing check read', [...checkedShas(state, '43')].join(), fileSha(join(upDir, 'after-home.png')));
+t('AC5 a PR with no preview database gets no gate (negative control)', checkedShas(state, '45'), null);
 t('AC2 a file the passing check read, unchanged, may be uploaded', uploadHold(state, '43', upDir, ['after-home.png']), null);
 t('AC2 a file the check never read is held, named', /after-plans\.png did not pass/.test(uploadHold(state, '43', upDir, ['after-home.png', 'after-plans.png']) ?? ''), true);
 writeFileSync(join(upDir, 'after-home.png'), 'home, taken again');

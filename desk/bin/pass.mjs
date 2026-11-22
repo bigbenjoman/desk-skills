@@ -987,7 +987,6 @@ const ADVANCE_HANDLERS = {
   shots: (a) => { try { return readdirSync(a.dir); } catch { return []; } },
   'same-pairs': (a) => samePairs(a.dir, a.shots),
   cells: (a) => cellsFor(a.pr, a.shots),
-  'upload-hold': (a) => uploadHold(STATE, a.pr, a.dir, a.shots),
   upload: (a, s) => uploadShots(s.t, a.pr, a.dir),
   'open-question': (a) => openQuestion(STATE, a.key),
   'worker-head': (a, s) => recordWorkerHead(s.t),

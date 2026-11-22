@@ -17,7 +17,9 @@ import { readFileSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
 import { join, basename, relative, sep } from 'node:path';
 import { SCREENSHOT_FILE } from './desk-env.mjs';
 import { dragFiles, dragCells, swapCells } from './evidence.mjs';
-import { REJECTED_DIR } from './preview-db.mjs';
+
+// The folder preview-db.mjs check moves a screenshot of an error page into, beside the good ones.
+export const REJECTED_DIR = 'error-pages';
 
 export const BATCH_SIZE = 15;
 export const STALL_MS = 180_000;
@@ -156,7 +158,9 @@ export const throttleMs = (stalls) => Math.min(THROTTLE_MS * 2 ** Math.max(0, st
 // clock: upload-images.mjs writes them to the upload log.
 // With `max`, at most that many images are uploaded; any left over end the run with EXIT_PACED, their
 // cells left for the next run.
-export async function runUpload({ dir, readBody, writeBody, openPage, record = () => {}, log = () => {}, now = Date.now, sleep, stallMs, pollMs, max = null }) {
+// With `passed` (a Set of sha256s: a PR with a preview database, preview-db.mjs checkedShas), a cell
+// whose file is not byte for byte one its last passing error-page check read is left, never uploaded.
+export async function runUpload({ dir, readBody, writeBody, openPage, record = () => {}, log = () => {}, now = Date.now, sleep, stallMs, pollMs, max = null, passed = null }) {
   const start = readBody();
   const cells = dragFiles(start);
   if (!cells.length) return { code: 0, lines: [doneLine(start)] };   // nothing left to fill: pass.mjs reads the done line
@@ -167,7 +171,10 @@ export async function runUpload({ dir, readBody, writeBody, openPage, record = (
     return { code: EXIT_THROTTLED, lines: [`throttled: GitHub's rate limit stalled an upload at ${tags.throttle.at} (${tags.throttle.stalls} in a row), so nothing is uploaded before ${tags.throttle.retry_after}`] };
   }
 
-  const plan = planUpload(cells, shotIndex(dir), tags);
+  const index = shotIndex(dir);
+  const unchecked = passed ? cells.filter((n) => { const p = findShot(index, n); try { return !!p && !passed.has(fileSha(p)); } catch { return true; } }) : [];
+  const plan = planUpload(cells.filter((n) => !unchecked.includes(n)), index, tags);
+  if (unchecked.length) plan.missing.push(...unchecked.map((n) => `${n} (there, but not as its last passing preview-db.mjs check read it)`));
   const fill = (fills) => {
     if (!Object.keys(fills).length) return;
     const body = readBody();

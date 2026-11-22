@@ -51,7 +51,8 @@ import { execFileSync } from 'node:child_process';
 import { runUpload, shotIndex, UploadStop } from './upload-batches.mjs';
 import { logUpload, uploadLogFile } from './upload-log.mjs';
 import { findComposer, EXIT_PAGE_CHANGED, NO_COMPOSER, NO_FILE_INPUT } from './pr-composer.mjs';
-import { permission, permissionKey, browserProfile, ghRepo, DeskConfigError, psRows } from './desk-env.mjs';
+import { permission, permissionKey, browserProfile, ghRepo, stateDir, DeskConfigError, psRows } from './desk-env.mjs';
+import { checkedShas } from './preview-db.mjs';
 import { findPlaywright, importPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies, loginState } from './find-playwright.mjs';
 
 const args = process.argv.slice(2);
@@ -99,6 +100,16 @@ if (!playwright.entry) {
 const { chromium } = await importPlaywright(playwright);
 
 if (!shotIndex(dir).size) { console.error(`no images in ${dir} or a folder under it`); process.exit(1); }
+
+// A PR with a preview database posts only the files its last passing error-page check read, whichever
+// route queued this upload: the advance step, the undraft step, a crashed upload tried again, a paced job.
+let passed;
+try {
+  passed = checkedShas(stateDir(), pr);
+} catch (e) {
+  console.error(`[upload] whether PR #${pr} has a preview database could not be read (${e.message}), so nothing is uploaded`);
+  process.exit(6);
+}
 
 // Refuse to run two at once: the profile has a single lock and a collision either kills
 // the browser or closes the page mid-upload. `ps` rather than `pgrep -a` (procps-only).
@@ -152,7 +163,7 @@ const writeBody = (body) => execFileSync('gh', ['pr', 'edit', pr, '--repo', REPO
 let result;
 try {
   result = await runUpload({
-    dir, readBody, writeBody, openPage, record, max,
+    dir, readBody, writeBody, openPage, record, max, passed,
     log: (l) => console.log(`[upload] #${pr} ${l}`),
     sleep: (ms) => new Promise((r) => { setTimeout(r, ms); }),
   });

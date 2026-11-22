@@ -235,7 +235,6 @@ export function* decideAdvance(s) {
     const same = shots.length ? yield { type: 'same-pairs', key: t.key, dir: imgDir, shots } : [];
     const changed = shots.filter((f) => !same.includes(f));
     const finished = done || built || mergeOnly;
-    let hold = null;
     if (!changed.length) {
       if (finished) yield set(t.key, 'images_uploaded=none');
     } else if (!namedImgDir && (crashOf(t, prNo) || !(finished && (yield { type: 'cells', key: t.key, pr: prNo, shots })))) {
@@ -245,11 +244,9 @@ export function* decideAdvance(s) {
       // sends the whole directory, so a later round's PR whose cells were filled would get each asset
       // again. A body that could not be read waits for the undraft step, which reads it again. An
       // upload of it that crashed is the crashed-uploads step's, which keeps to UPLOAD_TRIES.
-    } else if ((hold = yield { type: 'upload-hold', key: t.key, pr: prNo, dir: imgDir, shots: changed })) {
-      // A preview-database PR's screenshots go up only as its error-page check passed them (preview-db.mjs
-      // uploadHold); the undraft step sends the rest to a capture worker, which checks them.
-      if (!t.images_reported) yield* setAndSay(t.key, ['images_reported=true'], 'waiting', `${t.key}: screenshots for PR #${prNo} in ${imgDir} are not uploaded: ${hold}`);
     } else if (s.upload.allowed) {
+      // A preview-database PR's uploader posts only the files its error-page check passed (upload-batches.mjs
+      // runUpload `passed`); the cells it leaves go to the undraft step, which sends them to a capture worker.
       yield { type: 'upload', key: t.key, pr: prNo, dir: imgDir };
     } else if (!t.images_reported) {
       yield* setAndSay(t.key, ['images_reported=true'], 'waiting', `${t.key}: screenshots for PR #${prNo} are in ${imgDir} — config §3 ${s.upload.key} is "${s.upload.perm}". ` +

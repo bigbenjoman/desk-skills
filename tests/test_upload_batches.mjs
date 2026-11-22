@@ -240,6 +240,28 @@ const uploaded = (page) => page.batches.flat().map((p) => basename(p));
   t('max: with nothing left over it ends as before', `${r2.code} ${r2.lines[0]}`, '0 done: 10 image(s) in the body, 0 placeholder(s) left');
 }
 
+// ---- DS-550 AC2: a preview-database PR's run posts only the bytes its error-page check passed --------
+{
+  const dir = folder(['ok.png', 'changed.png', 'nested/deep.png', 'error-pages/bad.png']);
+  const passed = new Set([fileSha(join(dir, 'ok.png')), fileSha(join(dir, 'changed.png'))]);
+  writeFileSync(join(dir, 'changed.png'), 'png changed.png, taken again after its check');
+  const pr = { body: body(['ok.png', 'changed.png', 'deep.png', 'bad.png']), edits: 0 };
+  const page = fakePage();
+  const r = await runUpload({ dir, readBody: () => pr.body, writeBody: (b) => { pr.body = b; }, openPage: page.open, now, sleep, pollMs: 1000, stallMs: 180000, passed });
+  t('DS-550 AC2 only the file its check read, unchanged, is uploaded', uploaded(page).join(','), 'ok.png');
+  t('DS-550 AC2 a changed file, an unchecked nested one and a set-aside error page keep their cells', dragFiles(pr.body).sort().join(','), 'bad.png,changed.png,deep.png');
+  t('DS-550 AC2 the run ends with cells left (exit 4), naming the unchecked ones', [r.code, /changed\.png \(there, but not as its last passing/.test(r.lines.join('\n'))].join(), '4,true');
+  const free = folder(['a.png']);
+  const pr2 = { body: body(['a.png']), edits: 0 };
+  const p2 = fakePage();
+  await runUpload({ dir: free, readBody: () => pr2.body, writeBody: (b) => { pr2.body = b; }, openPage: p2.open, now, sleep, pollMs: 1000, stallMs: 180000, passed: null });
+  t('DS-550 AC5 a PR with no preview database uploads as before (negative control)', uploaded(p2).join(','), 'a.png');
+  const p3 = fakePage();
+  const pr3 = { body: body(['a.png']), edits: 0 };
+  await runUpload({ dir: free, readBody: () => pr3.body, writeBody: (b) => { pr3.body = b; }, openPage: p3.open, now, sleep, pollMs: 1000, stallMs: 180000, passed: new Set() });
+  t('DS-550 AC2 before any check passed, nothing is uploaded, nor a link already uploaded reused', [uploaded(p3).length, dragFiles(pr3.body).join(',')].join(), '0,a.png');
+}
+
 rmSync(ROOT, { recursive: true, force: true });
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);
