@@ -3833,6 +3833,8 @@ runPhase({
 const qNow = queue();
 const heldNow = Object.values(qNow.tickets).filter(isHeld);
 const prStates = {};
+// The PRs whose read failed this pass: the outage hold keeps what it holds of them (fix-tries.mjs outagePlan).
+const prUnread = new Set();
 // Each done ticket's PR is read once a pass (pass/pr-status.mjs decidePrStatus), and kept on the ticket
 // as pr_status. `head_at` is when the head commit was committed, as GitHub holds it: desk-q's STARTS
 // counts a Merging row's age from it, so a restart or a migration does not reset it and a new head does.
@@ -3993,6 +3995,7 @@ runSteps({
     lists: (a) => {
       drafts.push(...a.drafts); undrafted.push(...a.undrafted); reopens.push(...a.reopens);
       Object.assign(prStates, a.prStates); merges.push(...a.merges);
+      for (const n of a.unread ?? []) prUnread.add(n);
     },
   },
   report,
@@ -4303,7 +4306,7 @@ function outageRerunRun(a) {
 }
 runSteps({
   name: 'outage',
-  snapshot: () => ({ prs: [...drafts, ...undrafted], gate: gateLists(), was: readOutageHold(), now: Date.now(), read: new Set(Object.keys(prStates).map(Number)), dry: DRY, rowErrors: fixRowErrors }),
+  snapshot: () => ({ prs: [...drafts, ...undrafted], gate: gateLists(), was: readOutageHold(), now: Date.now(), unread: prUnread, dry: DRY, rowErrors: fixRowErrors }),
   decide: decideOutage,
   handlers: {
     ...OUT_HANDLERS,

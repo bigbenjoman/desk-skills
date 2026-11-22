@@ -66,8 +66,8 @@ export function* decideFixTries(s) {
 // hold clears and the other PRs' runs are re-run. Runs before the undraft step, so drafts are held too.
 //
 // The snapshot: { prs (the pass's drafts and ready PRs, [{ t, s }]), gate, was (the hold kept from the
-// last pass, or {}), now (ms), read (a Set of the PRs whose state the pass read: one owed a re-run and
-// not read keeps it), dry, rowErrors }.
+// last pass, or {}), now (ms), unread (a Set of the PRs whose read failed this pass: what the hold
+// keeps of one stays; a PR it holds that the pass neither read nor tried to is gone), dry, rowErrors }.
 // Actions, beside `report` and `out`:
 //   outage-rerun {key, branch, pr, head, run, name}   -> { ok, why, wait } (gh run rerun --failed, under
 //                                             §3 ci-rerun, once it has the PR's preview-build lease; `wait` where another build holds it)
@@ -79,7 +79,7 @@ const clock = (ms) => new Date(ms).toISOString().slice(11, 16);
 const prList = (prs) => `#${prs.join(', #')}`;
 export function* decideOutage(s) {
   if (s.rowErrors?.length) return;
-  const plan = outagePlan({ prs: s.prs, lists: s.gate, was: s.was ?? {}, now: s.now, read: s.read ?? null });
+  const plan = outagePlan({ prs: s.prs, lists: s.gate, was: s.was ?? {}, now: s.now, unread: s.unread ?? null });
   const keep = { ...plan.keep };
   // A PR a cleared hold still owes a re-run waits for it, with no fix try, until it is made.
   const reran = [...plan.owing];

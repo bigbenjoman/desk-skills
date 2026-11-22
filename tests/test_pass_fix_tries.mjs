@@ -292,9 +292,9 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   const pushed = outage([entry(703, [ok('tests'), deploy(703)], { head: 'f'.repeat(40) })], { was: clearing.hold, now: T0 + 25 * 60 * 1000 });
   t('one on a PR pushed to since is dropped: its new head\'s runs are its own', j([pushed.reruns.length, pushed.hold]), j([0, {}]));
   // A PR whose status could not be read this pass keeps its debt; one the pass read as gone drops it.
-  const unread = outage([merged[0]], { was: clearing.hold, now: T0 + 25 * 60 * 1000, read: new Set([701]) });
+  const unread = outage([merged[0]], { was: clearing.hold, now: T0 + 25 * 60 * 1000, unread: new Set([703]) });
   t('an owed re-run on a PR not read this pass is kept', j([unread.reruns.length, unread.hold]), j([0, undefined]));
-  const closed = outage([merged[0]], { was: clearing.hold, now: T0 + 25 * 60 * 1000, read: new Set([701, 703]) });
+  const closed = outage([merged[0]], { was: clearing.hold, now: T0 + 25 * 60 * 1000, unread: new Set() });
   t('one on a PR read as merged or closed is dropped', j([closed.reruns.length, closed.hold]), j([0, {}]));
   // A newer run of the check at the same head (a reopen's) is its own: the debt is dropped, not re-run.
   const replaced = outage([entry(703, [ok('tests'), deploy(703, { check: { runId: '2603' }, line: 'src/app.ts:12 Type error' })])], { was: clearing.hold, now: T0 + 25 * 60 * 1000 });
@@ -303,7 +303,7 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   const sameName = outage([entry(703, [ok('tests'), { name: 'Deploy preview', status: 'completed', conclusion: 'success', runId: null, workflow: null }, deploy(703, { check: { workflow: 'Deploy' } })])], { was: clearing.hold, now: T0 + 25 * 60 * 1000 });
   t('an owed re-run is matched on its run, not a same-name status that passed', j(sameName.reruns.map((a) => [a.pr, a.run])), j([[703, '1603']]));
   // A held PR the pass could not read as the hold clears is owed its re-run of the run last seen red.
-  const clearUnread = outage([green[0], green[1]], { was: later.hold, now: T0 + 20 * 60 * 1000, read: new Set([701, 702]) });
+  const clearUnread = outage([green[0], green[1]], { was: later.hold, now: T0 + 20 * 60 * 1000, unread: new Set([703]) });
   t('a held PR not read as the hold clears is owed its last red run', j(clearUnread.hold?.['Deploy preview']?.owed), j([{ pr: 703, head: HEAD, run: '1603' }]));
   const readAgain = outage([entry(703, [ok('tests'), deploy(703)])], { was: clearUnread.hold, now: T0 + 25 * 60 * 1000 });
   t('and is re-run once it is read again, red on that run', j(readAgain.reruns.map((a) => [a.pr, a.run])), j([[703, '1603']]));
@@ -333,7 +333,7 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   // Its seen entry kept, the hold is unchanged, so it is not rewritten.
   t('a held PR re-running its red run keeps its seen entry', j([reGoing.hold, first.hold['Deploy preview'].seen.find((x) => x.pr === 703)]), j([undefined, { pr: 703, head: HEAD, run: '1603' }]));
   const reHold = reGoing.hold ?? first.hold;
-  const clearsUnread = outage([green[0], green[1]], { was: reHold, now: T0 + 20 * 60 * 1000, read: new Set([701, 702]) });
+  const clearsUnread = outage([green[0], green[1]], { was: reHold, now: T0 + 20 * 60 * 1000, unread: new Set([703]) });
   t('so the hold clearing while it is unread owes it that run', j(clearsUnread.hold?.['Deploy preview']?.owed), j([{ pr: 703, head: HEAD, run: '1603' }]));
   t('and once read red on that run it is re-run', j(outage([entry(703, [ok('tests'), deploy(703)])], { was: clearsUnread.hold, now: T0 + 25 * 60 * 1000 }).reruns.map((a) => [a.pr, a.run])), j([[703, '1603']]));
   const clearsGoing = outage([green[0], green[1], rerunning], { was: reHold, now: T0 + 20 * 60 * 1000 });
@@ -341,10 +341,15 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   // A two-PR hold with one PR not read this pass is not lifted: it stays until that PR is read, so the
   // other PR is still re-run once the unread one reads green.
   const pair = outage([three[0], three[1]]);
-  const halfRead = outage([three[0]], { was: pair.hold, now: T0 + 5 * 60 * 1000, read: new Set([701]) });
+  const halfRead = outage([three[0]], { was: pair.hold, now: T0 + 5 * 60 * 1000, unread: new Set([702]) });
   t('a hold with a held PR not read this pass is not lifted, and its other PR stays held', j([lines(halfRead.as).some((l) => l.includes('its hold is lifted')), halfRead.held.held.get('Deploy preview')?.prs, (halfRead.hold ?? pair.hold)['Deploy preview']?.seen?.map((x) => x.pr)]), j([false, [701], [701, 702]]));
   const pairBack = outage([three[0], entry(702, [ok('tests'), ok('Deploy preview')])], { was: halfRead.hold ?? pair.hold, now: T0 + 10 * 60 * 1000 });
   t('so once that PR reads green, the hold clears and the other PR is re-run', j(pairBack.reruns.map((a) => [a.pr, a.run])), j([[701, '1601']]));
+  // A held PR the pass did not try to read (its ticket left the queue) is gone, not unread: the hold
+  // lifts, and the PR left red on it goes to its fix tries.
+  const dropped1 = outage([three[0]], { was: pair.hold, now: T0 + 5 * 60 * 1000, unread: new Set() });
+  t('a hold whose other PR left the queue is lifted', j([lines(dropped1.as).some((l) => l.includes('its hold is lifted')), dropped1.hold, dropped1.held.held.size]), j([true, {}, 0]));
+  t('and the PR left red on it gets its fix try', applied(fixes([three[0]], dropped1)).map((a) => a.call.call).join(), 'requeue');
   t('a seen entry at an old head is not kept', outage([three[0], three[1], entry(703, [ok('tests'), { name: 'Deploy preview', status: 'in_progress', conclusion: null, runId: '1603' }], { head: 'f'.repeat(40) })], { was: first.hold, now: T0 + 5 * 60 * 1000 }).hold?.['Deploy preview']?.seen?.some((x) => x.pr === 703), false);
   // A stuck record naming a held check drops it, whatever the PR's route this pass.
   const stuckT = tk({ key: 'O-701', branch: 'task/O-701', stuck: { why: 'x', pr: 701, head: HEAD, lead: 'still red after 2 tries', checks: [{ name: 'Lint' }, { name: 'Deploy preview' }] } });

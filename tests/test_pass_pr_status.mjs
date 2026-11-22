@@ -148,6 +148,7 @@ const lists = (acts) => acts.at(-1);
   t('one PR two tickets share is read once', ofType(acts, 'read-pr').length, 1);
   t('an open PR whose base now runs its untriggered checks is in the reopens', j(lists(acts).reopens.map(({ t: x, owed }) => [x.key, owed])), j([['I', false]]));
   t('a read that fails keeps nothing for that PR', j(run(snap([done('L', 20)]), {}).filter((a) => a.type !== 'read-pr').map((a) => a.type)), j(['prune-builds', 'lists']));
+  t('and lists it as unread, for the outage hold', j(lists(run(snap([done('L', 20)]), {})).unread), j([20]));
 }
 {
   const owed = done('M', 21, { reopening: 21 });

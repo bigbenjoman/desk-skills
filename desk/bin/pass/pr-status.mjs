@@ -29,9 +29,9 @@
 //   fetch-origin {}                    git fetch origin in the repo root
 //   prune-builds {open}                remove the check-build checkouts of every PR not in `open`
 //   park {key, question}               park the ticket: its PR is not its own (shared.mjs notOwnPr)
-//   lists {drafts, undrafted, reopens, prStates, merges}   what the steps after this one work from:
+//   lists {drafts, undrafted, reopens, prStates, merges, unread}   what the steps after this one work from:
 //                                      each list of { t, s } (reopens with `owed`), each PR's state by
-//                                      number, and the merge lines
+//                                      number, the merge lines, and the PRs whose read failed (`unread`)
 import { FOLLOW_ON_MAX, followOnPending, postMergeOwed } from '../harvest.mjs';
 import { fromReview, reviewStep } from '../undraft.mjs';
 import { LINK_STEP, notOwnPr, foreignQuestion } from './shared.mjs';
@@ -59,6 +59,7 @@ function* parkForeign(t, n, why, state, s, prStates) {
 export function* decidePrStatus(s) {
   const prStates = {};
   const merges = [];
+  const unread = [];
   const drafts = [];
   const undrafted = [];
   const reopens = [];
@@ -86,7 +87,7 @@ export function* decidePrStatus(s) {
     } else if (n in prStates) continue;
     if (!st) {
       st = yield { type: 'read-pr', key: t.key, pr: n, was: t.pr_status };
-      if (!st) continue;
+      if (!st) { unread.push(n); continue; }
       // A PR on a branch its worker did not make, or another person's, is never this ticket's: the
       // ticket parks before any list the reopen, undraft, fix-try or merge steps work from holds it.
       const foreign = notOwnPr(t, st, s.logins);
@@ -138,5 +139,5 @@ export function* decidePrStatus(s) {
     const open = [...new Set(Object.values(s.tickets).map((t) => t.result?.pr).filter((n) => n != null && !PR_FINAL.includes(prStates[n])).map(String))];
     yield { type: 'prune-builds', open };
   }
-  yield { type: 'lists', drafts, undrafted, reopens, prStates, merges };
+  yield { type: 'lists', drafts, undrafted, reopens, prStates, merges, unread };
 }

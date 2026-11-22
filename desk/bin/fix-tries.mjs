@@ -464,18 +464,22 @@ function owedState(s, name, run) {
 //    with no rerun of it still running, so each PR goes its own way again; owe: [{ name, key, branch,
 //    pr, head, run }], owed re-runs due now; owing: the PRs still owed one, which get no fix try.
 // An owed re-run is kept while its PR is open at that head and its run red or still going, whether or
-// not the PR that passed it is still open, and while its PR could not be read this pass (`read`: the PRs
-// whose state the pass read; absent, a PR it lists not is taken as gone). It is dropped once made, once
+// not the PR that passed it is still open, and while its PR could not be read this pass (`unread`: the
+// PRs whose read failed this pass). A PR in neither `prs` nor `unread` is gone (merged, closed, or its
+// ticket left the queue), so nothing is kept for it. It is dropped once made, once
 // the check passes, at a new head, or once a newer run replaces its run. A PR owed one is not counted
 // toward an outage: its red run is the cleared outage's, already queued for its re-run.
-export function outagePlan({ prs, lists, was, now, read = null }) {
+export function outagePlan({ prs, lists, was, now, unread: failed = null }) {
   const byPr = new Map((prs ?? []).map((e) => [e.s.pr, e]));
+  // A PR the pass tried to read and could not: its last red run (the hold's `seen`) stays on the hold,
+  // and is owed its re-run if the hold clears meanwhile.
+  const unread = (pr) => !byPr.has(pr) && !!failed?.has(pr);
   const owedOf = new Map(), owe = [], owing = [];
   for (const [name, kept] of Object.entries(was ?? {})) {
     const owed = [];
     for (const o of kept?.owed ?? []) {
       const p = byPr.get(o.pr);
-      if (!p) { if (read && !read.has(o.pr)) owed.push(o); continue; }
+      if (!p) { if (unread(o.pr)) owed.push(o); continue; }
       if (p.s.head !== o.head) continue;
       const st = owedState(p.s, name, o.run);
       if (st === 'running') { owed.push(o); owing.push(o.pr); } else if (st && st !== 'pass') owe.push({ name, key: p.t?.key ?? null, branch: p.t?.branch ?? null, pr: o.pr, head: o.head, run: String(st.run) });
@@ -485,9 +489,6 @@ export function outagePlan({ prs, lists, was, now, read = null }) {
   const debtor = (r) => (owedOf.get(r.name) ?? []).some((o) => o.pr === r.pr) || owe.some((o) => o.name === r.name && o.pr === r.pr);
   const reds = platformReds(prs, lists).filter((r) => !debtor(r));
   const groups = outageChecks(prs, lists, debtor);
-  // A PR the pass could not read this pass: its last red run (the hold's `seen`) stays on the hold, and
-  // is owed its re-run if the hold clears meanwhile.
-  const unread = (pr) => !byPr.has(pr) && !!read && !read.has(pr);
   // A held PR read at the head it was seen red at, that run going again (a re-run of it): not red this
   // pass, but its `seen` stays, so a clearing meanwhile still owes it its re-run.
   const going = (x) => { const p = byPr.get(x.pr); return !!p && p.s.head === x.head && (p.s.checks ?? []).some((c) => String(c.runId) === String(x.run) && c.status !== 'completed'); };
