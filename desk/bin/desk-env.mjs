@@ -481,6 +481,11 @@ export function machineProfile() {
 // A long-lived process (desk-ui's server) drops what it read so the next read sees edits since.
 // Config files are re-read by their stat stamp already; this drops the machine profile and any pin.
 export function forgetReads() { machineCache = undefined; snapshot = null; }
+// A name in desk's state that workers write all the time and that changes no count: the log and
+// read-only clone folders (logs/, ref/) and any log file, a round rotateRound moved aside included
+// (`.log.round<n>`, `.gz` once compressed). Not any name with `.log.` in it: a repo slug keeps its dots.
+// desk-q's state stamp and desk-ui's watcher both skip it.
+export const quietStateName = (n) => n === 'logs' || n === 'ref' || /\.log(\.round\d+(\.gz)?)?$/.test(n);
 // A profile value by key (hardware or sizing), or null.
 export function machineValue(key) {
   const p = machineProfile();

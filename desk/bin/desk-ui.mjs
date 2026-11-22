@@ -14,6 +14,10 @@
 // CORS header. POST /api/auth/exchange {token} trades the token file's token for an HttpOnly,
 // SameSite=Strict session cookie and a per-load token; every other /api route needs both, the
 // per-load token in the X-Desk-Load header. Sessions live in memory, so a restart signs everyone out.
+// GET /api/events is the change stream (desk-ui-events.mjs), under the same guard, and refused as a
+// POST is unless it carries the app's Origin (Desk.app adds it to its window's stream request);
+// /api/snapshot reads the same model and revision. A WebSocket upgrade is refused: 403 from any Origin but the app's, 404
+// from it, since no route takes one yet.
 // DESK_UI_TEST_PORT moves the port, read only when HOME is not this user's own home (a test HOME).
 //
 // Writes: every POST below runs one of desk's own commands, from WRITES, through execFile with no
@@ -33,6 +37,7 @@ import { userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
+import { makeFeed } from './desk-ui-events.mjs';
 import { AGENTS, runningVersion } from './installed.mjs';
 import { launchctl, launchdDomain as domain, platform, plist } from './run-by.mjs';
 
@@ -110,7 +115,8 @@ function audit(route, argv, exit) {
   } catch (e) { console.error(`desk-ui: audit: ${e.message}`); }
 }
 
-function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
+// `events` passes options to the change stream's feed (makeFeed): the tests' clock and intervals.
+export function makeServer({ p = port(), log = (line) => console.log(line), events = {} } = {}) {
   const origin = `http://${HOST}:${p}`;
   const hosts = new Set([`${HOST}:${p}`, `localhost:${p}`]);
   const sessions = new Map(); // session id -> { load, expires }
@@ -118,7 +124,7 @@ function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
   // Names this run of the server on every response, so Desk.app can tell a restart (which signed
   // everyone out) from the same server refusing it again. It grants nothing.
   const boot = randomBytes(8).toString('hex');
-  let rev = 0, lastBody = null;
+  const feed = makeFeed(events);
 
   const send = (res, status, body, type = 'application/json; charset=utf-8', extra = {}) => {
     const text = type.startsWith('application/json') ? JSON.stringify(body) : String(body);
@@ -143,16 +149,12 @@ function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
     return { id, load };
   }
 
+  // Read afresh, as the machine profile is not watched. The revision moves with desk's state, not with
+  // the clock or free memory, and is the change stream's.
   async function snapshot() {
-    const Q = await import('./desk-q-model.mjs');
-    const now = Date.now();
-    E.forgetReads(); // this process outlives edits to the machine profile and configs
-    const { lines, generated_at, inputs, ...body } = Q.homeJson(Q.loadRepos(now), { all: true, now });
-    // The revision moves with desk's state, not with the clock or free memory.
-    const key = JSON.stringify({ needs: body.needs_you, running: body.machine?.running, cap: body.machine?.cap,
-      repos: (body.repos ?? []).map(({ last_pass, all_done_by, ...r }) => r) });
-    if (key !== lastBody) { rev += 1; lastBody = key; }
-    return { at: new Date(now).toISOString(), rev, ...body, inputs };
+    const m = await feed.current({ fresh: true });
+    if (!m) throw new Error('no read model');
+    return feed.snapshot(m);
   }
 
   function readBody(req, max = MAX_BODY) {
@@ -250,7 +252,7 @@ function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
   }
 
   async function handle(req, res) {
-    const path = String(req.url ?? '/').split('?')[0];
+    const [path, query = ''] = String(req.url ?? '/').split('?');
     const method = req.method ?? 'GET';
     if (!hosts.has(String(req.headers.host ?? ''))) return refuse(res, 403, 'host', 'This server answers only 127.0.0.1 and localhost on its own port.');
     const from = req.headers.origin;
@@ -279,6 +281,14 @@ function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
       if (path === '/api/snapshot') {
         try { return send(res, 200, await snapshot()); } catch (e) { console.error(`desk-ui: snapshot: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
       }
+      if (path === '/api/events') {
+        if (method !== 'GET') return refuse(res, 405, 'method', 'GET only.');
+        // As strictly as a POST (the ticket's ruling): the app's Origin, never none or null. A
+        // same-origin GET carries none, so Desk.app adds it to its own window's stream request.
+        if (from !== origin) return refuse(res, 403, 'origin', `Requests must come from ${origin}.`);
+        const opened = await feed.subscribe(req, res, { headers: { ...BASE_HEADERS, 'X-Desk-Boot': boot }, query: new URLSearchParams(query) });
+        return opened || refuse(res, 500, 'read', "Could not read desk's state; see the server log.");
+      }
       if (path === '/api/meta') return send(res, 200, { version: version(), nodeVersion: process.version, shell: 'electron', port: p });
       return refuse(res, 404, 'not_found', 'No such route.');
     }
@@ -295,8 +305,17 @@ function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
     res.on('finish', () => log(`${new Date().toISOString()} ${req.method} ${String(req.url ?? '').split('?')[0].slice(0, 200)} ${res.statusCode}`));
     handle(req, res).catch(() => { if (!res.headersSent) refuse(res, 500, 'internal', 'Something went wrong.'); else res.destroy(); });
   });
+  // A browser always sends Origin on an upgrade, so one without the app's is refused like a POST.
+  server.on('upgrade', (req, socket) => {
+    const ok = hosts.has(String(req.headers.host ?? '')) && req.headers.origin === origin;
+    const status = ok ? '404 Not Found' : '403 Forbidden';
+    log(`${new Date().toISOString()} UPGRADE ${String(req.url ?? '').split('?')[0].slice(0, 200)} ${status.slice(0, 3)}`);
+    socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\nX-Desk-Boot: ${boot}\r\n\r\n`);
+  });
+  server.on('close', () => feed.stop());
   server.headersTimeout = 10_000;
   server.requestTimeout = 10_000;
+  server.feed = feed;
   return server;
 }
 
@@ -321,7 +340,9 @@ async function serve() {
   const server = makeServer({ p });
   server.on('error', (e) => { console.error(e.code === 'EADDRINUSE' ? `desk-ui: port ${p} on ${HOST} is in use by another process; not serving.` : `desk-ui: ${e.message}`); process.exit(3); });
   server.listen(p, HOST, () => console.log(`${new Date().toISOString()} desk-ui ${version()} listening on http://${HOST}:${p}`));
-  const stop = () => server.close(() => process.exit(0));
+  // Open change streams never end by themselves, so they are ended (each closes its connection), while
+  // a write in flight is let finish, so its command's result is answered and audited.
+  const stop = () => { server.feed.stop(); server.close(() => process.exit(0)); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
 }

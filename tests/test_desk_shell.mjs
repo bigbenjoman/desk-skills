@@ -7,10 +7,10 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { request } from 'node:http';
-import { createServer } from 'node:net';
 import { runInNewContext } from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
+import { call as callPort, freePort } from './local-http.mjs';
 import { homedir } from 'node:os';
 import { createShell, deskPaths, exchange, externalUrl, jiraSites, parseCookie, run, tokenFile, PARTITION } from '../desk/shell/app.mjs';
 
@@ -21,7 +21,6 @@ const BIN = join(ROOT, 'desk', 'bin', 'desk-ui.mjs');
 const SHELL = join(ROOT, 'desk', 'shell');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const freePort = () => new Promise((resolve) => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
 const T = scratch('desk-shell-');
 const PORT = await freePort();
 const ORIGIN = `http://127.0.0.1:${PORT}`;
@@ -51,15 +50,8 @@ async function stopServer() {
 }
 process.on('exit', () => srv?.kill());
 
-function call(path, headers = {}) {
-  return new Promise((resolve) => {
-    const req = request({ host: '127.0.0.1', port: PORT, method: 'GET', path, headers: { Host: `127.0.0.1:${PORT}`, ...headers } }, (res) => {
-      let text = ''; res.on('data', (d) => { text += d; }); res.on('end', () => resolve({ status: res.statusCode, text, headers: res.headers }));
-    });
-    req.on('error', () => resolve({ status: 0 }));
-    req.end();
-  });
-}
+// A GET to the server; status 0 when nothing answers.
+const call = (path, headers = {}) => callPort(PORT, 'GET', path, { headers }).catch(() => ({ status: 0 }));
 
 // ---- a stubbed Electron ------------------------------------------------------------------------
 function fakeElectron({ lock = true } = {}) {
@@ -172,6 +164,18 @@ t('the load token is not added for another frame, another window, or a request t
   [sentHeaders(f, win, { frame: 'https://example.com/' })['X-Desk-Load'], sentHeaders(f, win, { frame: 'file:///x/status.html' })['X-Desk-Load'],
     sentHeaders(f, { webContents: { id: 999 } })['X-Desk-Load']], [undefined, undefined, undefined]);
 t('the load token is only for the server', f.sending().filter.urls, [`${ORIGIN}/*`]);
+// The change stream wants the app's Origin, which a same-origin GET does not carry: the window's own
+// stream request gets it, over any the page set, and no other request or frame does.
+const streamSent = sentHeaders(f, win, { url: `${ORIGIN}/api/events`, headers: { origin: 'null' } });
+const opened = await new Promise((resolve) => {
+  const req = request({ host: '127.0.0.1', port: PORT, path: '/api/events', headers: { Host: `127.0.0.1:${PORT}`, Cookie: `desk_ui=${f.cookies[0].value}`, ...streamSent } },
+    (res) => { resolve(res.statusCode); req.destroy(); });
+  req.on('error', () => resolve(null));
+  req.end(); // a request is only sent once ended: without this the server drops the idle socket
+});
+t('the window\'s stream request carries the app\'s Origin and opens', [streamSent.Origin, 'origin' in streamSent, opened], [ORIGIN, false, 200]);
+t('no other request, nor another frame\'s stream, gets an Origin added',
+  [sentHeaders(f, win).Origin, sentHeaders(f, win, { url: `${ORIGIN}/api/events`, frame: 'https://example.com/' }).Origin], [undefined, undefined]);
 t('the token never reaches a window load', win.loads.some((u) => u.includes(TOKEN)), false);
 
 // ---- AC2: the sign-in is Desk's alone -----------------------------------------------------------

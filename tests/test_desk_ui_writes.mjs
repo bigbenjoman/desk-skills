@@ -251,10 +251,28 @@ t('AC10 the exit codes are logged as the commands gave them', lines.slice(1, 5).
 const auditText = readFileSync(AUDIT, 'utf8');
 t('AC10 no free text reaches the audit log', ['use the blue one', 'whoami', 'approved as written', 'slow', 'quick'].some((s) => auditText.includes(s)), false);
 
-// ---- AC1: the server never opened a queue file for writing
-const closed = new Promise((r) => srv.once('close', r));
+// ---- a shutdown lets a write in flight finish: its command's result is answered and audited
+// and an open change stream, which never ends by itself, does not hold the stop open.
+ctl({ 'SV-3844': { sleep: 1500 } });
+const streamEnded = new Promise((resolve) => {
+  const req = request({ host: '127.0.0.1', port: PORT, path: '/api/events', headers: { Host: `127.0.0.1:${PORT}`, ...auth } }, (res) => {
+    res.resume(); res.on('end', () => resolve(res.statusCode)); res.on('error', () => resolve(res.statusCode));
+  });
+  req.on('error', () => resolve(null));
+  req.end();
+});
+const inFlight = answer('studia-web', 'SV-3844', { text: 'answered at shutdown' }).catch(() => ({ status: null }));
+await new Promise((r) => setTimeout(r, 700));
+const closed = new Promise((r) => srv.once('close', () => r(true)));
 srv.kill();
-await closed;
+const atStop = await inFlight;
+const exited = await Promise.race([closed, new Promise((r) => setTimeout(() => r(false), 10_000))]);
+const auditAfter = readFileSync(AUDIT, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+t('a write in flight when the server is stopped is answered, and audited', [atStop.status, auditAfter.length - lines.length, auditAfter.at(-1)?.argv],
+  [200, 1, ['answer.mjs', 'SV-3844', '<redacted>']]);
+t('an open change stream is ended at the stop, and the server exits', [await streamEnded, exited], [200, true]);
+
+// ---- AC1: the server never opened a queue file for writing
 t('AC1 the server never opened a queue.json for writing', logged.split('\n').filter((l) => l.startsWith('QUEUE-WRITE')), []);
 
 console.log(fails ? `\n${fails} failed` : '\nall passed');
