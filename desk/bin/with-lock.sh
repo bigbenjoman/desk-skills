@@ -49,6 +49,11 @@
 # class, the worktree, the seconds waited, how many other runs wait for the lock, and the load and
 # memory then. A reading that fails is left empty rather than holding the command up. The command is
 # told its lock and wait in DESK_LOCK_CLASS and DESK_LOCK_WAITED (tests/run.sh records them).
+#
+# A test, tsc or light run that waits is also judged by headroom admission (admission.mjs), under the
+# machine profile's lock-admission row: shadow logs a would-admit or would-deny in the lease log for it
+# as it starts to wait and whenever that changes; off, unset or a row that does not read logs nothing.
+# Neither changes what is granted.
 set -uo pipefail
 # This script's own directory, taken before --cwd moves us: desk-env.mjs is installed beside it.
 here="$(cd "$(dirname "$0")" && pwd -P)"
@@ -120,13 +125,43 @@ waited_s() { if [ -n "$w" ]; then echo "$w"; elif [ -n "$queued" ]; then echo $(
 note() { node "$here/slot-lease.mjs" note "$1" "$name" --pid "$$" --waited "$(waited_s)" </dev/null >/dev/null 2>&1 || true; }
 queue() { queued=1; mkdir -p "$wdir" 2>/dev/null && : > "$wdir/$$" 2>/dev/null; note queued; }
 unqueue() { [ -z "$queued" ] || rm -f "$wdir/$$" 2>/dev/null; }
-gave_up() { unqueue; note gave-up; echo "with-lock.sh: gave up waiting for the $name lock after ${timeout}s" >&2; exit 75; }
+gave_up() { unwatch; unqueue; note gave-up; echo "with-lock.sh: gave up waiting for the $name lock after ${timeout}s" >&2; exit 75; }
+# Headroom admission's look at this run while it waits (admission.mjs): in the background, so the wait
+# itself is unchanged. Once this run's marker is in the waiting directory, which it is from the moment
+# it waits on the lock files or on a lease, it is judged, then again every DESK_ADMIT_RECHECK_S seconds
+# (30), and judge logs a line only when the outcome or reason changes. It ends when the marker goes,
+# when this wrapper does, or at once with admission off (judge prints nothing). It closes the lock's
+# descriptor, so it never holds the lock, and it is stopped before the command runs.
+admit_pid=""
+watch_admission() {
+  case "$name" in test|tsc|light) ;; *) return 0 ;; esac
+  local every="${DESK_ADMIT_RECHECK_S:-30}"
+  case "$every" in ''|*[!0-9]*|0) every=30 ;; esac
+  (
+    exec 9>&-
+    key=""; seen=""; n=0
+    while kill -0 "$$" 2>/dev/null; do
+      if [ -e "$wdir/$$" ]; then
+        if [ -z "$seen" ] || [ "$n" -ge "$every" ]; then
+          k="$(node "$here/admission.mjs" judge "$name" --pid "$$" ${key:+--last "$key"} 2>/dev/null)"
+          [ -n "$k" ] || exit 0
+          key="$k"; seen=1; n=0
+        fi
+      elif [ -n "$seen" ]; then exit 0
+      fi
+      sleep 1; n=$((n + 1))
+    done
+  ) </dev/null >/dev/null 2>&1 &
+  admit_pid=$!
+}
+unwatch() { [ -z "$admit_pid" ] || kill "$admit_pid" 2>/dev/null; admit_pid=""; }
 # The run holds its lock: it waits no longer, and its command is told which lock and how long it waited.
-held() { unqueue; w="$(waited_s)"; export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$w"; }
+held() { unwatch; unqueue; w="$(waited_s)"; export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$w"; }
 # Says once that this run waits, with the lock's state ($1) and, for the test and light locks, who holds
 # it as suite-wait.mjs names them (slot-lease.mjs holders): where each holder runs, what, and for how long.
 waiting() {
   queue
+  watch_admission
   local by=""
   case "$name" in
     test|tsc) by="$(node "$here/slot-lease.mjs" holders 2>/dev/null)" ;;
@@ -139,10 +174,14 @@ waiting() {
 lease_mode="$(node "$here/slot-lease.mjs" mode 2>/dev/null)" || lease_mode=off
 t0=$SECONDS
 if [ "$lease_mode" = on ]; then
-  # The lease's own queued, grant and gave-up lines carry this run's wait.
+  # The lease's own queued, grant and gave-up lines carry this run's wait. A wait for the lease holds
+  # the same marker as one on the lock files, so admission looks at it the same way.
+  watch_admission
   if [ -n "$timeout" ]; then node "$here/slot-lease.mjs" take "$name" --pid "$$" --timeout "$timeout" -- "$@" </dev/null
   else node "$here/slot-lease.mjs" take "$name" --pid "$$" -- "$@" </dev/null; fi
-  case $? in
+  rc=$?
+  unwatch
+  case $rc in
     0) export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$((SECONDS - t0))"; exec "$@" ;;
     75) exit 75 ;;
     *) lease_mode=off; t0=$SECONDS ;;   # it said why: the lock files below, as with the kind off

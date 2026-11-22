@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList, rewrittenSizing, sizesProposed, sizingOverrides, isOverride } from '../desk/bin/machine.mjs';
+import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList, rewrittenSizing, sizesProposed, sizingOverrides, isOverride, sizingSettingError, sizingWarnings, profileProblems } from '../desk/bin/machine.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -291,6 +291,37 @@ writeFileSync(handEdited, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| 
 t('DS-908 AC17: the profile check names each entry a hand-edited row holds that it does not know',
   env(['machine', 'detect'], absent, handEdited).includes('`lease-kinds` names entries it does not know: "port=maybe", "sockets=on"'), true);
 t('a good row is no problem to detect', env(['machine', 'detect'], absent, kinds).includes('cannot read'), false);
+
+// ---- DS-977: headroom admission's rows
+// AC14: 18 CPU cores in all (10 performance, 8 efficiency), which size test-cap 4 and test-lock-slots 3.
+const eighteen = { 'memory-gb': 64, 'cpu-cores': 18, 'performance-cores': 10, 'efficiency-cores': 8, wsl: 'no' };
+const e18 = sized(eighteen);
+t('DS-977 AC14 the machine sizes test-cap 4 and test-lock-slots 3', `${e18['test-cap'].value} ${e18['test-lock-slots'].value}`, '4 3');
+t('DS-977 AC14 the admission rows proposed', ['lock-admission', 'light-lock-slots', 'light-lock-max', 'test-lock-max', 'admit-max-load', 'admit-run-load', 'admit-reserve-gb', 'heavy-run-gb', 'light-run-gb', 'admit-max-pressure', 'admit-ramp-s'].map((k) => `${k}=${e18[k]?.value}`).join(' '),
+  'lock-admission=off light-lock-slots=1 light-lock-max=1 test-lock-max=3 admit-max-load=30 admit-run-load=4 admit-reserve-gb=8 heavy-run-gb=16 light-run-gb=16 admit-max-pressure=2 admit-ramp-s=90');
+t('DS-977 AC14 each proposed row passes its own check, as an override must', propose(eighteen).filter((s) => sizingSettingError(s.key, s.value)).map((s) => s.key).join(), '');
+t('DS-977 AC14 the proposal itself warns of nothing', sizingWarnings(propose(eighteen), eighteen).length, 0);
+// AC15: ceilings whose test workers pass twice the counted cores (10 + 8 / 2 = 14) are warned of, by name.
+const over = propose(eighteen).map((s) => (s.key === 'test-lock-max' ? { ...s, value: '7' } : s));
+t('DS-977 AC15 (test-lock-max 7 + light-lock-max 1) x test-cap 4 = 32 over twice 14 counted cores warns, naming the rows', sizingWarnings(over, eighteen).join(),
+  '(`test-lock-max` 7 + `light-lock-max` 1) x `test-cap` 4 is 32 test workers at the ceilings, more than twice the 14 counted cores (efficiency cores at 0.5)');
+t('DS-977 AC15 at exactly twice, no warning', sizingWarnings(propose(eighteen).map((s) => (s.key === 'test-lock-max' ? { ...s, value: '6' } : s)), eighteen).length, 0);
+// AC13: each broken admission row is named by the profile check, with what it wants.
+const admitBad = join(T, 'admission-bad.md');
+writeFileSync(admitBad, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `test-lock-slots` | `3` | t |\n| `test-cap` | `4` | t |\n| `lock-admission` | `on` | t |\n| `light-lock-slots` | `0` | t |\n| `test-lock-max` | `2` | t |\n| `admit-ramp-s` | `soon` | t |\n');
+const badDetect = env(['machine', 'detect'], absent, admitBad);
+t('DS-977 AC13 the check names each admission row and what it wants, and that the locks grant as with it off', [
+  '`lock-admission` is "on": want off or shadow; the locks grant as with `lock-admission` off',
+  '`light-lock-slots` is "0": want a whole number of slots, 1 or more',
+  '`admit-ramp-s` is "soon": want a whole number of seconds',
+  '`test-lock-max` is "2": want a whole number of slots, at least `test-lock-slots` (3)',
+].filter((l) => !badDetect.includes(l)).join(' | '), '');
+const lightMax = join(T, 'admission-light-max.md');
+writeFileSync(lightMax, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `light-lock-slots` | `2` | t |\n| `light-lock-max` | `1` | t |\n');
+t('DS-977 AC13 a light-lock-max below light-lock-slots is named', env(['machine', 'detect'], absent, lightMax).includes('`light-lock-max` is "1": want a whole number of slots, at least `light-lock-slots` (2)'), true);
+t('DS-977 AC13 a profile with no admission rows has no admission problem', profileProblems(parseProfile(renderProfile(small, propose(small).filter((s) => !s.key.startsWith('admit') && !s.key.includes('lock-max') && s.key !== 'lock-admission' && s.key !== 'light-lock-slots'), '2026-11-22'))), []);
+t('DS-977 machine set takes lock-admission shadow, and refuses on', `${setErr(['lock-admission=shadow'], join(T, 'admission-set.md'))} | ${setErr(['lock-admission=on'], join(T, 'admission-set.md'))}`,
+  'exit 0 | exit 1: nothing written: `lock-admission` is "on": want off or shadow');
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'machine: all checks passed');
