@@ -10,12 +10,12 @@
 // a configured repo's worktrees folder is a worker; anything else is `other`. Sidechain requests are
 // `subagent`, whoever called them.
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { localDay } from './batch-state.mjs';
 import { projectsDirs } from './claude-logins.mjs';
 import { DECIDER_OPENING } from './decider.mjs';
-import { configuredRepos, expandHome, isNone, repoConfigValue } from './desk-env.mjs';
+import { configuredRepos, repoDirs } from './desk-env.mjs';
 import { PROBE_ARGS } from './usage-probe.mjs';
 import { MODEL_PRICES, modelFamily } from './worker-cost.mjs';
 
@@ -27,13 +27,7 @@ const TRIAGE_OPENINGS = ['Triage ticket ', 'A first triage pass put ticket '];
 // The worktrees folder of every configured repo, where spawn-worker.sh runs its sessions: §2
 // Worktrees directory, else `<repo root>-worktrees` beside the repo root, as desk-env's worktreesDir.
 export function worktreeDirs(root) {
-  const trim = (p) => expandHome(p).replace(/\/+$/, '');
-  return configuredRepos(root).flatMap(({ slug }) => {
-    const set = repoConfigValue(slug, 'worktrees-dir', root);
-    if (set && !isNone(set)) return [trim(set)];
-    const repo = trim(repoConfigValue(slug, 'repo-root', root) ?? '');
-    return repo ? [join(dirname(repo), `${basename(repo)}-worktrees`)] : [];
-  });
+  return configuredRepos(root).flatMap(({ slug }) => repoDirs(slug, root).worktrees ?? []);
 }
 
 // The caller of a session from its first prompt, working folder and entrypoint, `worktrees` the folders

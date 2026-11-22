@@ -103,7 +103,7 @@ import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots 
 import { cellPlan, parseVerdict, reviewStep, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
-import { deskHome, expandHome, machineValue, psRows, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, PERMISSION_KEYS } from './desk-env.mjs';
+import { deskHome, expandHome, machineValue, psRows, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, repoDirs, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { liveBaseRed, MERGES_SHOWN } from './base-red.mjs';
 import { describeCond } from './clears-when.mjs';
@@ -907,7 +907,7 @@ export function outAt(q, t) {
 // merge commit recorded, or one not fetched) waits, as list's refresh and the pass fetch and record it;
 // only what no fetch brings (a ref the repo root does not have, a promotion desk has no record of) lists
 // the step saying it was not checked.
-const gitRootOf = (r) => { const x = expandHome(repoConfigValue(r.slug, 'repo-root') ?? ''); return x && !isNone(x) ? x : null; };
+const gitRootOf = (r) => repoDirs(r.slug).root;
 const SHA40 = /^[0-9a-f]{40}$/;
 // `reads` is collect's (READS); its git reads the refs, READS.git where it has none.
 function gateHeld(r, t, s, reads = null) {

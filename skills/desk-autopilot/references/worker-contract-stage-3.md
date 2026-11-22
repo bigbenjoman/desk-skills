@@ -173,7 +173,7 @@ an allow rule, a grant or a settings change as an option: the user takes it, you
 you park again. A refusal a §3 row does control still parks naming that row (core section 2).
 
 Your tools are an allow-list too, fixed at launch to the ones this contract and the skills you load
-name. A tool shown to you as deferred, such as `SendMessage`, is loaded with `ToolSearch` before its
+name. A tool shown to you as deferred, such as `TaskStop`, is loaded with `ToolSearch` before its
 first call.
 
 ## Stage 4b's review tools: agents, finders and codex

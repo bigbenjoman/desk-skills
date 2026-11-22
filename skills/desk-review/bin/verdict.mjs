@@ -302,6 +302,13 @@ export function tally(r) {
     codexRead: [...seats.values()].some((s) => s.vendor === 'codex' && s.status === 'ran') }
 }
 
+// Why the verdict refuses a results file, as it prints it, or null when it reads it: the one check the
+// verdict runs before every output, and the prose check's contract for the results file.
+export function validateResults(r) {
+  try { tally(r) } catch (e) { if (e instanceof VerdictError) return e.message; throw e }
+  return null
+}
+
 export const isClean = (n) => Object.values(n).every((v) => v === 0)
 
 const plural = (c, one, many = `${one}s`) => `${c} ${c === 1 ? one : many}`
@@ -488,6 +495,8 @@ if (isMain && process.argv[2] === '--check') {
     if (!file || rest.length) no('usage: verdict.mjs [--carried | --method | --accepted | --post-merge | --findings … --reviewer <self|pr>] <results.json>')
     let r
     try { r = JSON.parse(readFileSync(file, 'utf8')) } catch (e) { no(`cannot read ${file}: ${e.message}`) }
+    const refused = validateResults(r)
+    if (refused) no(refused)
     const out = mode ? modes[mode](r) : render(r)
     if (out) process.stdout.write(`${out}\n`)
   } catch (e) {

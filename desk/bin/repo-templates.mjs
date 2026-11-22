@@ -164,14 +164,13 @@ export function check({ slug = E.repoSlug(), force = false, now = Date.now() } =
   const installed = readInstalled()?.commit ?? null;
   const prev = readRecord(slug);
   if (!force && prev && prev.installed === installed && now - Date.parse(prev.at) < CHECK_EVERY_MS) return { skipped: true, record: prev };
-  const rootRow = E.repoConfigValue(slug, 'repo-root');
+  const root = E.repoDirs(slug).root;
   const ref = `origin/${E.repoConfigValue(slug, 'default-branch') ?? 'main'}`;
   const at = new Date(now).toISOString();
   const was = (f) => prev?.files?.find((p) => p.path === f.path && p.status === 'BEHIND' && p.base === f.base);
   // With no template installed there is nothing to be behind, and no checkout to read.
   const installedAny = templateFiles().length > 0;
-  if (installedAny && !rootRow) throw new Error(`no §2 Primary repo root in ${slug}'s config`);
-  const root = rootRow ? E.expandHome(rootRow) : null;
+  if (installedAny && !root) throw new Error(`no §2 Primary repo root in ${slug}'s config`);
   const files = (installedAny ? repoStatus({ root, ref }) : []).map(({ path, status, base, base_date }) => ({ path, status, ...(base ? { base, base_date } : {}) }))
     .map((f) => (f.status === 'BEHIND' ? { ...f, since: was(f)?.since ?? at } : f));
   const record = { at, installed, ref, root, files };
