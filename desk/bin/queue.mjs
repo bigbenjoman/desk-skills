@@ -24,7 +24,7 @@ import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME
 import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
-import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
+import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf, mergedPrs } from './queue-store.mjs';
 import { LEDGER_BY_ENV } from './queue-ledger.mjs';
 import { newPark, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { followOnPending, postMergeUnmade, workerMarkers, lastStage, settleSteps } from './harvest.mjs';
@@ -274,6 +274,18 @@ function repointRequeued(t, key) {
   return `; its branch ${was} re-pointed to its open PR #${pre.pr.number}'s ${moved.branch}${moved.backup ? `, the old one kept as ${moved.backup}` : ''}`;
 }
 
+// A ticket requeued after its PR merged keeps that PR as merged_pr from the requeue on, as its spawn does
+// (pass.mjs keepMergedPr, which folds it in again by repo), so the merge driver holds what waits on it
+// until its next PR merges whatever happens before a worker spawns: a park, a failed spawn.
+const keepRequeuedPr = (t) => {
+  if (!t.merged_at || t.result?.pr == null) return {};
+  const n = Number(t.result.pr);
+  const url = Number(t.pr_status?.pr) === n ? t.pr_status.url ?? null : null;
+  const kept = mergedPrs(t);
+  if (kept.some((x) => x.pr === n && x.url === url)) return {};
+  return { merged_pr: [...kept, { pr: n, url }].map((x) => (x.url ? x : x.pr)) };
+};
+
 function requeue(q, key, { handedBack = false } = {}) {
   const t = ticket(q, key);
   // Recorded parked as a pass's harvest records it, with the round a fresh spawn may resume and the
@@ -346,7 +358,7 @@ function requeue(q, key, { handedBack = false } = {}) {
   const outside = String(t.held_outside ?? '').split('|').filter((p) => p && !q.tickets[p]);
   const pending = String(t.held_by ?? '').split('|').filter((p) => p && (q.tickets[p] ? !q.tickets[p].merged_at : outside.includes(p)));
   // A fresh session, so a killed worker waiting to resume no longer does.
-  Object.assign(t, { prev_park: prevPark, state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null, failed: null,
+  Object.assign(t, keepRequeuedPr(t), { prev_park: prevPark, state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null, failed: null,
     handoff: fromStage ? 'pending' : null,
     spine_check: null, spec_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
   const placed = toFront(q, key);

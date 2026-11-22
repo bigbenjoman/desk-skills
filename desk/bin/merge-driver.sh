@@ -526,8 +526,12 @@ const openLater = (t) => prStatusOf(t)?.state === 'OPEN' && Date.parse(t.pr_stat
 // Done on a PR other than the one its status names: that status is from an earlier round.
 const otherRound = (t) => t.state === 'done' && t.result?.pr != null && t.pr_status?.pr != null && Number(t.pr_status.pr) !== Number(t.result.pr);
 const requeued = (t) => !through(t) && (awaiting(t) || mergedPrs(t).length > 0 || openLater(t) || otherRound(t));
-// Its current PR: none yet while it waits for a worker, else the one it records, or its draft.
-const current = (t) => (awaiting(t) ? '?' : t.result?.pr ?? t.draft_pr ?? '?');
+// Its current PR: none yet while it waits for a worker, else the one it records, or its draft, unless
+// that is a PR it kept as merged (a requeue keeps it, and only a spawn clears the result).
+const current = (t) => {
+  const n = awaiting(t) ? null : t.result?.pr ?? t.draft_pr ?? null;
+  return n == null || mergedPrs(t).some((x) => x.pr === Number(n)) ? '?' : n;
+};
 // Done tickets whose PR merged move to the archive beside the queue (queue-store.mjs), live ones first.
 for (const [k, t] of Object.entries(everyTicket(attachArchive(q, process.argv[2])))) {
   if (t && Object.hasOwn(live, k) && t.merged_at && requeued(t)) console.log(`HOLD\t${current(t)}\t${k}`);

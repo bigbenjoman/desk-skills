@@ -379,5 +379,16 @@ check "DS-796 a stopped blocker never requeued releases on the merge it records"
 node --input-type=module -e "import { readFileSync, writeFileSync } from 'node:fs'; const f = process.argv[1]; const p = JSON.parse(readFileSync(f, 'utf8')); p['157'] = { ...p['156'], state: 'merged' }; p['167'] = { ...p['166'], state: 'merged' }; writeFileSync(f, JSON.stringify(p))" "$T/prs.json"
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-51" 2>&1)
 check "DS-796 and its current PR merging releases what waits on it" '[ "$(qg T-58 .state)" = triaged ] && echo "$out" | grep -q "merged: T-57#157 -> RELEASED T-58" && [ "$(qg T-68 .state)" = triaged ] && echo "$out" | grep -q "merged: T-67#167 -> RELEASED T-68"'
+# T-71's #171 merged, it was requeued, and the pass parked it before any worker spawned (its worktree
+# setup failed): the requeue itself keeps #171 as merged_pr, so what waits on it waits for its next PR.
+cat > "$T/prs.json" <<EOF
+{ "171": { "head": "fix/T-71", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] } }
+EOF
+q add T-71 Task A; q set T-71 state=done lane=B branch=fix/T-71 result.pr=171 'pr_status={"pr":171,"state":"MERGED"}'; q merged T-71 2026-11-15T00:00:00.000Z
+q requeue T-71; q park T-71 "worktree setup failed, not spawned — no space left"
+q add T-72 Task A; q set T-72 state=triaged branch=fix/T-72; q hold T-72 T-71
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-71" 2>&1)
+check "DS-796 a requeue keeps the merged PR, so a blocker parked before its next worker spawned does not release on it" \
+  '[ "$(qg T-71 .merged_pr | tr -d " \n")" = "[171]" ] && [ "$(qg T-71 .state)" = parked ] && [ "$(qg T-72 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-72"'
 
 finish loop
