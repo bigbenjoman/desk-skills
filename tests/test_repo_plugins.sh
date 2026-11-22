@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: repo-plugins (suggest, offer, apply)
+# layer: L2
 # Tests desk-setup's repo-plugins.py against a throwaway HOME holding a stub plugin list, a temporary
 # git repo and a stub desk-env: the per-plugin rules, the unjudged listing, the /desk-update offer
 # check, and the refusal to write a tracked settings.local.json.

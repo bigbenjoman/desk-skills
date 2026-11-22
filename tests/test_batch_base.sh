@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: batch base (one batch targets a feature branch)
+# layer: L2
 # A batch base (queue.mjs set-batch base=<branch>) must redirect the autopilot's processes, and only
 # them: set-batch validates it, desk-env get/batch-base report it, desk_apply_batch_base exports it
 # (and refuses a contradiction), and a process that never applies it still sees §0 Default branch.

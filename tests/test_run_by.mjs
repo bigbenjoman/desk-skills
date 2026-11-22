@@ -1,4 +1,5 @@
 // suite: run-by: who runs a batch (§3b Batches run by), at setup and at Stage 4
+// layer: L2
 // run-by.mjs against a fixture config (DESK_CONFIG), a fake supervisor.mjs (DESK_SUPERVISOR_MJS) that
 // keeps the agent's state in a file and fails a command on request, and a fake platform
 // (DESK_PLATFORM), and a fake systemctl on PATH that answers only while $T/systemd exists. Nothing

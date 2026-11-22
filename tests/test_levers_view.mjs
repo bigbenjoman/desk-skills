@@ -1,4 +1,5 @@
 // suite: levers view (one view model of every repo's levers, with input ages and the honesty rules)
+// layer: L2
 import { mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { scratch } from './scratch.mjs';

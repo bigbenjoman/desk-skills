@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: worktree database (the container's port, a failed migrate made visible)
+# layer: L2
 # setup-worktree.sh takes a ticket URL's port from the container, not from the primary checkout's env
 # files, which may name another server on the same machine. A failed migrate keeps its output, masks
 # URL passwords, prints the tail and `migrate=failed`. A kept worktree with an empty database is

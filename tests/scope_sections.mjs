@@ -41,7 +41,8 @@
 //   node tests/scope_sections.mjs --full                         every suite (a push to main)
 //   add --json for the decision as JSON, or --github-output to append scope=, suites= and shells= to
 //   $GITHUB_OUTPUT. --claims <path> lists the suites claiming a path; --unclaimed lists tracked files no
-//   suite claims.
+//   suite claims; --layers [<file>...] names each suite (every one, or these files) whose layer line is
+//   missing, doubled or unknown, and exits 1 when there is one.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, appendFileSync, existsSync } from 'node:fs';
 import { join, dirname, posix } from 'node:path';
@@ -199,12 +200,30 @@ export function mentions(text) {
   return out;
 }
 
-// A suite's header, its first 30 lines: the `suite:` label ('' when none), the `covers:` globs and
-// whether it `claims: imports` only.
+// Every suite declares its test layer in one `# layer: <layer>` line (`//` in .mjs) in its first ten
+// lines, as it does its `# budget:`:
+//   L1  in process: its cases import modules and start no process
+//   L2  one process boundary: its cases start a desk script or command each and read what it did
+//   L3  end to end: it runs a pass, a batch, the merge driver or the installer through
+export const LAYERS = ['L1', 'L2', 'L3'];
+const LAYER_LINE = /^(#|\/\/) layer:/;
+// A suite's declared layer, or what is wrong with its declaration: { layer, problem }, layer null and
+// problem set unless it declares exactly one known layer.
+function readLayer(text) {
+  const lines = String(text).split('\n').slice(0, 10).filter((l) => LAYER_LINE.test(l));
+  if (!lines.length) return { layer: null, problem: `declares no layer: add a \`# layer: <${LAYERS.join('|')}>\` line (\`//\` in .mjs) in its first ten lines` };
+  if (lines.length > 1) return { layer: null, problem: `declares ${lines.length} layers: ${lines.join(' / ')}` };
+  const v = lines[0].replace(LAYER_LINE, '').trim();
+  return LAYERS.includes(v) ? { layer: v, problem: '' } : { layer: null, problem: `declares an unknown layer: ${lines[0]} (one of ${LAYERS.join(', ')})` };
+}
+
+// A suite's header, its first 30 lines: the `suite:` label ('' when none), its layer (null unless it
+// declares exactly one known layer), the `covers:` globs and whether it `claims: imports` only.
 export function suiteHeader(text) {
   const head = String(text).split('\n').slice(0, 30);
   return {
     label: (head.slice(0, 10).find((l) => /^(#|\/\/) suite: /.test(l)) ?? '').replace(/^(#|\/\/) suite: /, ''),
+    layer: readLayer(text).layer,
     covers: head.filter((l) => /^(#|\/\/) covers: /.test(l)).flatMap((l) => l.replace(/^(#|\/\/) covers: /, '').trim().split(/\s+/)),
     importsOnly: head.some((l) => /^(#|\/\/) claims: imports\b/.test(l)),
   };
@@ -257,8 +276,8 @@ export function buildMap(files, read) {
   const out = [];
   for (const s of suites) {
     const t = textOf(s);
-    const { label, covers, importsOnly } = suiteHeader(t);
-    out.push({ file: s.slice(6), label: label || s.slice(6), covers, importsOnly });
+    const { label, layer, covers, importsOnly } = suiteHeader(t);
+    out.push({ file: s.slice(6), label: label || s.slice(6), layer, covers, importsOnly });
     if (ALWAYS.includes(s.slice(6))) continue;
     const seen = new Set();
     const todo = importsOnly ? [...mentions(loads(s, t, { importsOnly }))].flatMap((k) => [...(names.get(k) ?? [])]) : [...namedBy(s)];
@@ -400,6 +419,17 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const args = process.argv.slice(2);
   const opt = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : undefined; };
   const root = git(dirname(fileURLToPath(import.meta.url)), ['rev-parse', '--show-toplevel']).trim();
+  if (args.includes('--layers')) {
+    const given = args.slice(args.indexOf('--layers') + 1).filter((a) => !a.startsWith('--'));
+    const paths = given.length ? given : git(root, ['ls-files']).split('\n').filter(isSuite);
+    let bad = 0;
+    for (const p of paths) {
+      let problem;
+      try { problem = readLayer(readFileSync(given.length ? p : join(root, p), 'utf8')).problem; } catch (e) { problem = `is unreadable: ${e.message}`; }
+      if (problem) { bad++; console.log(`${p}: ${problem}`); }
+    }
+    process.exit(bad ? 1 : 0);
+  }
   const map = repoMap(root);
   if (args.includes('--claims')) {
     const p = opt('--claims');

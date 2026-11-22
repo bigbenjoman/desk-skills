@@ -1,4 +1,5 @@
 // suite: levers cli (levers decide and levers undo: Ben's own call on a lever, and the undo of a lever change)
+// layer: L2
 // covers: desk/bin/levers.mjs desk/bin/levers-auto.mjs desk/bin/lever-changes.mjs desk/bin/lever-log.mjs desk/bin/levers-trips.mjs
 // `levers.mjs` runs as a subprocess on a scratch HOME and desk config root holding two repos; admission
 // (assignPin), each lever's state (leverStatesIn) and the needs-you items (the levers view) read the

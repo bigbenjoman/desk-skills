@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: run.sh starts every suite without the caller's DESK_* environment, and with a symlinked TMPDIR
+# layer: L2
 # A desk worker runs tests/run.sh with its own DESK_* variables exported, which some suites read.
 # run.sh clears every DESK_* variable but DESK_REQUIRE_SHELLCHECK and DESK_REQUIRE_PLAYWRIGHT (CI's)
 # and DESK_COMPOSER_SMOKE (an opt-in), and DATABASE_URL and

@@ -1,4 +1,5 @@
 // suite: desk-q supervisor on, off and status (command and s key)
+// layer: L2
 // desk-q's supervisor command against fixture repos under a temporary HOME, DESK_HOME and
 // DESK_CONFIG_ROOT, with a fake supervisor.mjs (DESK_SUPERVISOR_MJS) that keeps each repo's agent
 // state in a file and a fake platform (DESK_PLATFORM). Nothing touches launchd, systemd or your real state.

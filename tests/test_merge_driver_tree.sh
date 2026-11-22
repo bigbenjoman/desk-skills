@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: merge driver: repaired PRs first and the merged-tree check (offline, fake gh)
+# layer: L3
 # The real merge-driver.sh and gate.mjs, one loop at a time, set up by merge_driver_setup.sh: a
 # repaired PR merges before a ready PR changing the same file, and §4 Merged-tree check holds a PR (or
 # an epic PR) whose merge would break the tree (base-sync.mjs's prTreeCheck, and pass.mjs's fix try).

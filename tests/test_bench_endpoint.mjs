@@ -1,4 +1,5 @@
 // suite: bench endpoint arm (Claude Code on another provider's Anthropic-compatible endpoint)
+// layer: L2
 // covers: desk/bin/bench-endpoint.mjs desk/bin/endpoint-proxy.mjs desk/bin/bench.mjs
 // A stub claude records the environment it was started with and, behind the Go proxy, sends Messages
 // requests to its base URL; a stub upstream records what reached it and answers with the hand-written

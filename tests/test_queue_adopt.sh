@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: queue adopt (a PR opened in the batch with no ticket)
+# layer: L2
 # queue.mjs adopt takes an open PR into the batch's base in as a done ticket on that PR, by its branch,
 # so the merge driver merges it and the pass and desk-q list it; it refuses a key the driver would not
 # take, a PR that is not open, one on another base, and a branch another ticket already has.

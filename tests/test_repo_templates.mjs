@@ -1,4 +1,5 @@
 // suite: repo templates (a repo's committed copies of desk's templates against the installed ones)
+// layer: L2
 // covers: desk/bin/repo-templates.mjs desk/templates/** skills/desk-update/**
 // A throwaway desk-skills checkout whose template history has two versions, the installed templates
 // (the newer), and a repo whose committed copies are: the hook exactly, the gate with its own edit

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: health (the watchdog holds spawns while a sign-in or free disk fails)
+# layer: L3
 # pass.mjs runs health.mjs's checks before it spawns: fake gh, desk-jira, claude and codex on PATH, a
 # fake saved GitHub login for the browser profile and a fake free-disk figure. All passing spawns as
 # usual; a failing required check holds new spawns, leaves running workers alone, names the check and

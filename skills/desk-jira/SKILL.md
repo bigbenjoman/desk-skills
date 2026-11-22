@@ -17,15 +17,19 @@ description: >-
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 ```
 
-Read the `CONFIG` file. `EXISTS=no` means stop: say which slug was looked up and offer `/desk-setup`.
+Read `desk-env show rules 0 1 3 5` (never the `CONFIG` file whole). `EXISTS=no` means stop: say
+which slug was looked up and offer `/desk-setup`.
 A `TODO` in any row this skill needs is not a gap to guess: stop, ask, and offer `/desk-setup`.
 
-An autopilot worker cannot read that file, so each row below is a `desk-env` read: §4 Tracker
+§4 is read a row at a time, an autopilot worker included, so each row below is a `desk-env` read: §4 Tracker
 `desk-env get tracker`, Jira site `desk-env get jira-site`, Jira cloudId `desk-env get jira-cloudid`,
 Jira project `desk-env list jira-project`, Ticket key pattern `desk-env get ticket-pattern`, Priority
 `desk-env list jira-priority`, Other fields `desk-env list jira-other-fields`, Labels
 `desk-env list labels`, In-progress state `desk-env get in-progress-state`, Review state
-`desk-env get review-state` and Done state `desk-env get done-state`.
+`desk-env get review-state` and Done state `desk-env get done-state`. The rows no plain `get` prints
+read with `desk-env get --json <id>`: §4 Workflow `jira-workflow`, desk-jira set up? `desk-jira-setup`,
+Production `production`, and §4 People's Designer `designer`, QA filers `qa-filers` and Deletes
+tickets `ticket-deleters`; Product owner is `desk-env get product-owner`.
 
 - **§4 Tracker `none`: there is no tracker for this repo.** Say so and stop. Nothing below applies;
   a ticket in this repo is a plain description or a GitHub issue, which `desk-ticket` handles.

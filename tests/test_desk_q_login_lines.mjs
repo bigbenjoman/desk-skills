@@ -1,4 +1,5 @@
 // suite: desk-q login lines (Home's usage lines name each tool's default, and its repo table what each repo runs on)
+// layer: L2
 // desk-q against a subscriptions file, each Claude login's .claude.json and probe log, each Codex login's
 // session logs, each repo's Subscription row and queue, on a fixed clock, under a throwaway HOME,
 // DESK_HOME, DESK_CONFIG_ROOT, DESK_LOCK_DIR and DESK_USAGE_DIR. Each line is checked in plain output,

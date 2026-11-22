@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: intake (standing intake admits a query's tickets into the running batch)
+# layer: L2
 # intake.mjs with a fake desk-jira search, a fake triage.sh that writes set lanes, lint, questions,
 # sizes and blockers, the real queue.mjs on a scratch queue, and the supervisor with a fake pass and
 # merge driver: what is admitted, held, handed to the digest, and what the report says. Scratch HOME only.

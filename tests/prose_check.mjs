@@ -16,16 +16,25 @@
 //
 // A generated region (tests/prose_facts.mjs) that is unknown, unclosed or not what the code says is a
 // finding too, and one no opt-out or baseline holds: `node tests/prose_facts.mjs --write` fixes it.
+//
+// A JSON example tagged `<!-- contract: <name> -->` on the line before its fence is checked by that
+// contract's validator (desk/bin/prose-facts.mjs contracts): one it refuses, one that is not JSON, and a
+// name no contract has are findings no baseline holds.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scan, DEFAULT_PATHS } from './prose_scan.mjs';
 import { regionProblems } from './prose_facts.mjs';
 import { split, shellCommands, markdownFiles, PLACEHOLDER, FENCE, closesFence } from './command_shapes.mjs';
-import { commands, autopilot, states, statePaths, locks } from '../desk/bin/prose-facts.mjs';
+import { commands, autopilot, states, statePaths, locks, contracts } from '../desk/bin/prose-facts.mjs';
 import { CONFIG_ROWS, PERMISSION_KEYS } from '../desk/bin/desk-env.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+// The validator for each contract a JSON example may be tagged with (`<!-- contract: <name> -->`), read
+// once from this checkout: the code's own, so an example it would refuse fails here.
+const CONTRACTS = await contracts(ROOT);
+// Findings no baseline holds: a generated region, and a tagged example its validator refuses.
+const UNHELD = new Set(['region', 'contract']);
 export const BASELINE = join(ROOT, 'tests', 'fixtures', 'prose_baseline.json');
 export const OPT_OUT = 'prose-ok:';
 const PROSE_OPT_OUT = /<!--\s*prose-ok:(.*?)-->/;
@@ -54,7 +63,20 @@ export function facts(root = ROOT) {
     holes,
     rowIds: new Set([...Object.keys(CONFIG_ROWS), ...Object.keys(PERMISSION_KEYS)]),
     rowNames: new Set(Object.values(CONFIG_ROWS).map((r) => `§${r.section} ${r.row}`.toLowerCase())),
+    contracts: CONTRACTS,
   };
+}
+
+// What the contract's validator says of a tagged example's body, or null when it takes it.
+function contractProblem(name, body, validators) {
+  if (!Object.hasOwn(validators, name)) {
+    return `no contract is named ${name}: tag the example with one of ${Object.keys(validators).join(', ')} (desk/bin/prose-facts.mjs contracts)`;
+  }
+  let example;
+  try { example = JSON.parse(body ?? ''); } catch (e) { return `the ${name} example is not JSON: ${e.message}`; }
+  let why;
+  try { why = validators[name](example); } catch (e) { why = `its validator threw ${e.message}`; }
+  return why ? `the ${name} example fails its validator: ${why}` : null;
 }
 
 // Where a script is installed, read back to its place in the repo: ~/.claude/desk/bin and $DESK_BIN are
@@ -115,6 +137,8 @@ export function problem(r, f) {
       if (/^<>\/?$/.test(p)) return null;
       return f.statePaths.has(p) ? null : `${v} is not a declared state path`;
     }
+    case 'contract':
+      return contractProblem(v, r.body, f.contracts);
     default:
       return null;
   }
@@ -166,7 +190,7 @@ export const keyOf = (x) => JSON.stringify([x.file, x.kind, x.value, x.context])
 export const readBaseline = (path = BASELINE) => JSON.parse(readFileSync(path, 'utf8'));
 export const baselineEntries = (findings) => {
   const seen = new Map();
-  for (const { file, kind, value, context } of findings.filter((x) => x.kind !== 'region')) seen.set(keyOf({ file, kind, value, context }), { file, kind, value, context });
+  for (const { file, kind, value, context } of findings.filter((x) => !UNHELD.has(x.kind))) seen.set(keyOf({ file, kind, value, context }), { file, kind, value, context });
   return [...seen.values()];
 };
 
@@ -175,7 +199,7 @@ export const baselineEntries = (findings) => {
 // repo paths checked), only entries for those files can be stale.
 export function gate(findings, baseline, files) {
   const held = new Set(baseline.map(keyOf));
-  const fresh = findings.filter((x) => x.kind === 'region' || !held.has(keyOf(x)));
+  const fresh = findings.filter((x) => UNHELD.has(x.kind) || !held.has(keyOf(x)));
   const live = new Set(findings.map(keyOf));
   const checked = files && new Set(files);
   const stale = baseline.filter((e) => !live.has(keyOf(e)) && (!checked || checked.has(e.file)));

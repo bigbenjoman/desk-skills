@@ -1,11 +1,12 @@
 // suite: CI scope (the suites a pull request's change reaches; anything unplaced runs every suite)
+// layer: L2
 // claims: imports (repo file names below are test data, not what this suite runs)
 // tests/scope_sections.mjs on a made-up tree, then on this repo, then tests/run.sh's suite filter.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildMap, decide, mentions, globRe, loads, parseNameStatus, repoMap, addedExports, ALWAYS } from './scope_sections.mjs';
+import { buildMap, decide, mentions, globRe, loads, parseNameStatus, repoMap, addedExports, ALWAYS, LAYERS, suiteHeader, importClosure } from './scope_sections.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const g = JSON.stringify(got); const w = JSON.stringify(want); const ok = g === w; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${g}${ok ? '' : ` (want ${w})`}`); };
@@ -230,6 +231,24 @@ t('a suite with claims: imports claims nothing it only names, only what it impor
 const walks = /\b(readdirSync|readdir|walk|markdownFiles)\s*\(\s*(\[?\s*join\(\s*(root|R|ROOT|SRC)\b|refs\b|skill\b)|git ls-files/;
 const uncovered = real.suites.filter((s) => !ALWAYS.includes(s.file) && !s.importsOnly && !s.covers.length && walks.test(readFileSync(join(R, 'tests', s.file), 'utf8'))).map((s) => s.file);
 t('every suite that walks the repo tree has a covers: line', uncovered, []);
+// Each suite's test layer: L1 in process, L2 one process boundary, L3 end to end.
+t('DS-985 AC1 every suite in the repo declares exactly one layer, L1, L2 or L3', real.suites.filter((s) => !LAYERS.includes(s.layer)).map((s) => s.file), []);
+t('DS-985 AC1 a second layer line, an unknown layer or none is no layer', ['// suite: x\n// layer: L1\n// layer: L2\n', '# suite: x\n# layer: L4\n', '# suite: x\n', '# suite: x\n# layer: L2\n'].map((h) => suiteHeader(h).layer), [null, null, null, 'L2']);
+const textOf = (p) => { try { return readFileSync(join(R, p), 'utf8'); } catch { return ''; } };
+const layerOf = (f) => real.suites.find((s) => s.file === f)?.layer;
+// End to end: the suites built on the pass, batch and merge driver setups, and those running the real
+// pass.mjs or merge-driver.sh themselves. A claims: imports suite's text is test data, so it is not read
+// for this.
+const endToEnd = real.suites.filter((s) => !s.importsOnly).map((s) => s.file).filter((f) => /^\s*(source|\.) .*(pass_setup|batch_e2e_setup|merge_driver_setup|base_sync_setup)\.sh/m.test(textOf(`tests/${f}`)) || /node "\$B\/pass\.mjs"|join\(BIN, 'pass\.mjs'\)|bash "\$B\/merge-driver\.sh" --tickets/.test(textOf(`tests/${f}`)));
+t('DS-985 AC3 a suite that runs a pass, batch or merge driver end to end is L3', endToEnd.filter((f) => layerOf(f) !== 'L3'), []);
+t('DS-985 AC3 those include the pass, batch, merge driver and installer suites', ['test_pass_spawns.sh', 'test_batch_e2e.sh', 'test_merge_driver_loop.sh', 'test_epic.sh', 'test_install_skips.sh'].map(layerOf), ['L3', 'L3', 'L3', 'L3', 'L3']);
+// In process: a .mjs suite that, with the tests/ helpers it imports, never loads child_process (the
+// pass-phase trap loads it only to refuse every call) and writes no executable stub, which is there only
+// for the module under test to start.
+const startsNothing = (p) => !/child_process|(chmodSync\(.*|mode: )0o7[57][57]\b/.test(textOf(p));
+const inProcess = (f) => f.endsWith('.mjs') && importClosure(`tests/${f}`, textOf).filter((p) => p.startsWith('tests/') && p !== 'tests/pass_phase_trap.mjs').every(startsNothing);
+t('DS-985 AC4 a suite whose cases import modules and start no process is L1', real.suites.map((s) => s.file).filter((f) => inProcess(f) && layerOf(f) !== 'L1'), []);
+t('DS-985 AC4 and an L1 suite starts no process', real.suites.filter((s) => s.layer === 'L1' && !inProcess(s.file)).map((s) => s.file), []);
 const cw = decide(M('desk/bin/clears-when.mjs'), real);
 t('clears-when.mjs, reached through queue.mjs, runs the suites that claim it', [cw.scope, cw.suites], ['some', real.suites.map((s) => s.file).filter((s) => ALWAYS.includes(s) || real.claims.get('desk/bin/clears-when.mjs')?.has(s))]);
 // A script no suite names is unclaimed, and changing it runs everything: each of these has a claim.

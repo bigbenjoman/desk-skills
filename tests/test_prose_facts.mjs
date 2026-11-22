@@ -1,4 +1,5 @@
 // suite: prose facts registry (commands, flags, bin scripts, lock classes, states and state paths)
+// layer: L2
 // covers: desk/bin/prose-facts.mjs desk/bin/queue-commands.mjs desk/bin/desk-env.mjs desk/bin/queue-writer.mjs desk/bin/batch-state.mjs skills/desk-review/bin/verdict.mjs
 // Reads this checkout only.
 import { readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
