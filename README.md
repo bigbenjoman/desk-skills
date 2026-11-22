@@ -930,7 +930,9 @@ every shell script when shellcheck is installed (it says when it is not). On mac
 those suites, and `bash tests/related.sh` only the ones your branch's change reaches, chosen as CI
 chooses them, uncommitted and untracked files included (every suite when that cannot be decided;
 it runs as many at once as `run.sh` does without `-j`, or `DESK_TEST_JOBS` of them where that is
-set). `related.sh` takes a test slot first (`with-lock.sh test`), so it never runs beside the slots'
+set). One difference from CI: an end-to-end (`L3`) suite the change reaches only through imports,
+claiming no changed file directly, does not run locally; `related.sh` names it as left for CI, which
+still runs it before merge. `related.sh` takes a test slot first (`with-lock.sh test`), so it never runs beside the slots'
 holders: while it waits the wrapper says who holds them, and after `DESK_RELATED_WAIT` seconds (an
 hour by default) it exits 75 having run nothing. A run already inside a slot takes no second one.
 `bash tests/run.sh -j 3` runs up to three suites at once, the longest
@@ -939,8 +941,8 @@ Without `-j` it runs as many as `desk-env get test-cap` allows, or a quarter of 
 is unset; `-j 1` runs them one after another in name order. Each report gives the suite's CPU
 seconds, and every finished run appends a line to `~/.desk-autopilot/test-runs.jsonl` with its
 date, suites, job count, wall and CPU seconds, the load average at its start, its scope (`full` or
-`changed`) and why, the worktree it ran in, and the lock it ran under with the seconds it waited for
-it. Every lock wait is in the lease log (`~/.desk-autopilot/machine/leases.log.jsonl`) too: a
+`changed`) and why, the worktree it ran in, the lock it ran under with the seconds it waited for
+it, and how many suites `related.sh` left for CI (`left_for_ci`). Every lock wait is in the lease log (`~/.desk-autopilot/machine/leases.log.jsonl`) too: a
 `queued` line as a run starts to wait, then its `grant` or `gave-up` line, each with the class, the
 worktree, the seconds waited, how many other runs wait, the one-minute load average, the free memory
 percentage and the compressed memory in GB (a reading that fails is left `null`). A suite that fails
