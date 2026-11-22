@@ -3,7 +3,7 @@
 // PERMISSION_KEYS below are derived from it (desk-env re-exports both), and the config suite holds it
 // equal to the template both ways (coverage), so neither can drift unnoticed.
 //
-// An entry is { id, section, label, kind, type, example, default?, machine?, unread? }:
+// An entry is { id, section, label, kind, type, example, default?, machine?, unread?, forced? }:
 //   id       the logical id scripts name (`desk-env get <id>`, `perm <id>`); a §3 row's id is its Key
 //   section  '0', '1', '2', '3', '3b', '4' or '5'
 //   label    the row's first cell as the template writes it, backticks aside (a §3 row's Key)
@@ -16,6 +16,7 @@
 //   machine  the machine profile key the row falls back to when the repo leaves it unset
 //   unread   true for a row no script reads through desk-env yet: it stays out of CONFIG_ROWS, so
 //            `desk-env ids`, `get` and `config` print only the rows scripts read
+//   forced   [{ row, when, value, reason }] where another row settles this one (settledBy, forcedRows)
 // The §3c rule ledger and the rows inside a 'table' entry's table are the person's own, so they have
 // no entries.
 
@@ -90,6 +91,14 @@ const permWords = (key) => [...permValues(key), 'never', 'stop'];
 const permMatch = (key, v) => new RegExp(`^(${permWords(key).join('|')})\\b`, 'i').exec(String(v).trim())?.[1].toLowerCase() ?? null;
 // A §3 value: one of permValues, or never or stop; anything else is a no.
 export const permValue = (key, v) => permMatch(key, v) ?? 'no';
+
+// One §4 Field defaults item, `<field> = <value>` or `<field> = from parent`: { field, value } or
+// { field, parent: true }, or null for an item that is neither.
+export function fieldDefaultOf(item) {
+  const m = /^\s*([^=\s]+)\s*=\s*(.*\S)\s*$/.exec(String(item ?? ''));
+  if (!m) return null;
+  return /^from parent$/i.test(m[2]) ? { field: m[1], parent: true } : { field: m[1], value: m[2] };
+}
 
 // §4 Required fields rules (the row's items, `none` dropped) for an issue type, or for every type with
 // none named: {need: [field id, in rule order], malformed: [item that is not `<Type>[, <Type>…]: <field>[, <field>…]`]}.
@@ -466,6 +475,7 @@ export const TYPES = Object.freeze({
   command: matching('a command', () => true, parseCommandItem),
   'test-signin': matching('`[<app dir>: ]<email>`', (s) => testSigninOf(s) != null, testSigninOf),
   'service-port': matching(SERVICE_PORT_FORM, (s) => servicePort(s) != null, servicePort),
+  'field-defaults': matching('`<field> = <value>` or `<field> = from parent`', (s) => fieldDefaultOf(s) != null, fieldDefaultOf),
   'required-fields': matching('`<Type>[, <Type>…]: <field>[, <field>…]`', (s) => !requiredFieldsIn([s], null).malformed.length,
     (s) => ({ types: requiredRule(s)?.types ?? [], fields: requiredFieldsIn([s], null).need })),
   // The whole cell is checked, as `desk-env levers` reads it; the value stays one entry per span.
@@ -527,6 +537,21 @@ const listRead = { listRead: true };
 const dflt = (value, extra) => ({ default: value, ...extra });
 const never = { example: 'never' };
 const stop = { example: 'stop' };
+// A row another row settles: each rule of `forced` names the settling row's id, when it settles (`none`,
+// or { clause: <regex> } that one clause of its items matches whole, case-blind), the value it forces
+// and why. drift names a set row that contradicts it, and `desk-env forced` lists the values setup
+// writes unasked. forcedRows reads them; the first rule that settles a row is the one it names.
+const settledBy = (row, when, value, reason) => Object.freeze({ row, when, value, reason });
+const forces = (...rules) => ({ forced: Object.freeze(rules) });
+// One clause of §4 Repo merge settings saying auto-merge is off: `auto-merge off`, `auto-merge allowed:
+// no`, `allow_auto_merge: false`, `no auto-merge`. Anchored, so another setting's `off` never counts.
+const AUTO_MERGE = '(?:allow[-_ ]?)?auto[-_ ]?merge(?:[-_ ](?:allowed|enabled))?';
+const AUTO_MERGE_OFF = `^(?:${AUTO_MERGE}\\s*(?:[:=]|is)?\\s*(?:off|no|false|disabled|not allowed)|no ${AUTO_MERGE})$`;
+const STAGING_NONE = (reason) => settledBy('staging', 'none', 'no', reason);
+const LOCAL_DB_NONE = settledBy('local-db', 'none', 'no', 'there is no local database to act on');
+const noTracker = forces(settledBy('tracker', 'none', 'no', 'there is no Jira to act on'));
+const noLocalDb = forces(LOCAL_DB_NONE);
+const noServices = forces(settledBy('local-services', 'none', 'no', 'there are no local services to act on'));
 
 export const ROWS = Object.freeze([
   // §0 This repo
@@ -559,21 +584,25 @@ export const ROWS = Object.freeze([
   p('read-own-work'), p('read-local-git'), p('read-others'), p('read-slack-public'), p('read-figma'),
   p('read-vercel'), p('read-confluence'), p('read-transcripts'), p('read-calendar'), p('read-slack-own'),
   // §3 Jira
-  p('jira-assign-self'), p('jira-comment'), p('jira-create'), p('jira-edit'), p('jira-transition'),
-  p('jira-close-own-merged'), p('jira-close'), p('jira-route'), p('jira-others'),
+  p('jira-assign-self', noTracker), p('jira-comment', noTracker), p('jira-create', noTracker), p('jira-edit', noTracker),
+  p('jira-transition', noTracker), p('jira-close-own-merged', noTracker), p('jira-close', noTracker), p('jira-route', noTracker),
+  p('jira-others', noTracker),
   // §3 Git and pull requests
   p('git-commit'), p('git-push'), p('git-force-with-lease'), p('pr-open'), p('pr-edit'), p('pr-images'),
   p('pr-self-review-comment'), p('pr-review-others'), p('pr-reply'), p('pr-request-review'), p('pr-ready'),
-  p('pr-auto-merge'), p('pr-merge-green'), p('merge-feedback-first'), p('pr-update-branch'),
+  p('pr-auto-merge', forces(settledBy('repo-merge-settings', { clause: AUTO_MERGE_OFF }, 'no', 'gh pr merge --auto cannot arm where the repo has auto-merge off'))),
+  p('pr-merge-green'), p('merge-feedback-first'), p('pr-update-branch'),
   p('pr-conflict-unreviewed'), p('pr-conflict-reviewed'), p('ci-rerun'), p('codex-review'), p('ci-protection'),
   p('gh-close-linked-issue'), p('gh-issue-create'), p('gh-issue-comment'),
   // §3 Autopilot
   p('autopilot-workers'), p('autopilot-worker-mode', { type: 'text', example: 'dontAsk' }), p('autopilot-merge'), p('merge-hold-routine'),
   p('batch-base-push'), p('autopilot-judgement'), p('autopilot-reclaim'), p('machine-reboot'),
-  p('worker-dependency-install'), p('worker-screenshots'), p('worker-local-services'), p('worker-web-read'),
+  p('worker-dependency-install'), p('worker-screenshots'), p('worker-local-services', noServices), p('worker-web-read'),
   p('worker-workflow-dispatch'),
   // §3 Local and shared state
-  p('db-per-ticket'), p('db-clone-staging'), p('staging-write'), p('local-reindex'), p('tests-shared-db'),
+  p('db-per-ticket', noLocalDb), p('db-clone-staging', forces(LOCAL_DB_NONE, STAGING_NONE('there is no staging to clone'))),
+  p('staging-write', forces(STAGING_NONE('there is no staging to write to'))),
+  p('local-reindex', noServices), p('tests-shared-db', noLocalDb),
   p('worktree-remove'), p('branch-delete', { type: 'perm-merged', example: 'merged' }), p('server-stop'), p('skills-edit'), p('vercel-env'), p('slack-draft'),
   // §3 Not configurable
   p('slack-send', never), p('merge-bypass', never), p('others-prs', never), p('product-calls', stop), p('legal-content', stop),
@@ -626,6 +655,7 @@ export const ROWS = Object.freeze([
   l('jira-priority', '4', 'Priority', 'text', ['customfield_10300', 'P0', 'P1', 'P2']),
   l('jira-other-fields', '4', 'Other fields', 'text', ['customfield_10210']),
   l('jira-required-fields', '4', 'Required fields', 'required-fields', ['Epic, Story, Task, Bug: customfield_10208, customfield_10207']),
+  l('jira-field-defaults', '4', 'Field defaults', 'field-defaults', ['customfield_10209 = Tech Debt', 'customfield_10211 = from parent']),
   v('jira-size-field', '4', 'Size field', 'text', 'customfield_10208'),
   l('jira-priority-user-only', '4', 'Priorities only you set', 'text', ['P0', 'P1']),
   l('labels', '4', 'Labels', 'text', ['any']),
@@ -733,6 +763,27 @@ export const CONFIG_ROWS = Object.freeze(Object.fromEntries(ROWS.filter((e) => e
 // Every non-permission row the schema declares, unread ones included, in the same shape: `get --json`
 // reads them all, where plain `get` reads CONFIG_ROWS alone.
 export const DECLARED_ROWS = Object.freeze(Object.fromEntries(ROWS.filter((e) => e.kind !== 'perm').map(idRow)));
+// The rows another row settles, given read(id): the settling row's items, or null where it is unset.
+// -> [{ id, section, label, value, reason, by: { id, section, label, value } }] in schema order, by.value
+// the settling row's items joined by spaces. A rule whose settling row is unset settles nothing, and a
+// row two rules settle is listed once, by the first.
+const CLAUSE_BREAK = /[;,.·]|\band\b/i;
+const settles = (when, items) => (when === 'none' ? isNone(items)
+  : items.flatMap((item) => item.split(CLAUSE_BREAK)).some((c) => new RegExp(when.clause, 'i').test(c.trim())));
+export function forcedRows(read) {
+  const out = [];
+  for (const e of ROWS) {
+    for (const { row, when, value, reason } of e.forced ?? []) {
+      const items = read(row);
+      if (!items?.length || !settles(when, items)) continue;
+      const by = ROWS.find((x) => x.id === row);
+      out.push({ id: e.id, section: e.section, label: e.label, value, reason, by: { id: row, section: by.section, label: by.label, value: items.join(' ') } });
+      break;
+    }
+  }
+  return out;
+}
+
 // The rows that fall back to the machine profile, as id -> profile key.
 export const MACHINE_FALLBACK = Object.freeze(Object.fromEntries(ROWS.filter((e) => e.machine).map((e) => [e.id, e.machine])));
 

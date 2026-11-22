@@ -206,6 +206,9 @@ location: a path only, never the token.
 - An `INVALID` line from `desk-env drift` names a row whose value does not fit the form desk reads it
   in, with the item and the form expected. Offer a value in that form, whether or not the user asked
   to change the row.
+- A `CONFLICT` line from `desk-env drift` names a row set against the value another row settles it
+  to (a Jira permission at `yes` with §4 Tracker `none`, say); `desk-env forced` lists every such
+  rule this config triggers. Offer the settled value, whether or not the user asked to change the row.
 - A `JOBKEY` line from `desk-env drift` names a §4 Pre-merge steps item keyed to a CI job that runs
   several steps. Offer the item it proposes, keyed to the step instead, whether or not the user asked
   to change the row.

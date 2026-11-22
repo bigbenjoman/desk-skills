@@ -29,6 +29,7 @@
 //   note {line}                    a batch-notes line
 //   hold {key, limit, was}         the worker is paused at `limit`, its usage_paused `was`
 //   suite-wait {key, worktree}     -> the suite the worktree runs or waits for, or null
+//   progress {key}                 -> {head (the worktree's HEAD), pushed (origin's branch, or null)}, or null unread
 //   kill {key, pid}                stop the worker's process
 //   park {key, question}           park the ticket
 //   build-park {key, question}     -> the park waits only on a §4 Check builds check: {pr, head, checks, command}, or null
@@ -151,8 +152,10 @@ export function* decideAdvance(s) {
   }
   const pausedOnLimit = pausedOn(limit, s.now);
   // Kept by the usage-limit step only while the ticket is still running once every ticket has had its turn.
+  // Waiting for a reset is not a stall either: the progress clock starts again once the hold lifts.
+  const unpaused = !pausedOnLimit && !!t.usage_paused;
   if (pausedOnLimit) yield { type: 'hold', key: t.key, limit, was: t.usage_paused };
-  else if (t.usage_paused) yield set(t.key, 'usage_paused=null');
+  else if (unpaused) yield set(t.key, 'usage_paused=null', `progress_at=${new Date(s.now).toISOString()}`);
 
   // Log growth is the honest liveness signal: it comes from the harness, not from self-reporting.
   // It is not sufficient on its own: a hung call (a `codex exec`) keeps the harness writing a
@@ -163,6 +166,8 @@ export function* decideAdvance(s) {
   // quiet passes is the margin for it. A suite under the test lock, or a wait for it, is read from the
   // worktree's processes instead, up to SUITE_WAIT_CEILING_MS.
   let wedged = false;
+  // A suite wait that ended this pass under its ceiling, in ms: the progress clock was paused for it.
+  let suitePaused = 0;
   const hung = heartbeatOnly(log.raw, t.log_bytes ?? 0);
   // Only a live session: one that has exited is the exit handling's below, as it is with no ceiling.
   if (hung && hung.secs * 1000 > TOOL_CALL_CEILING_MS && !done && !handoff && !reboot && live) {
@@ -171,6 +176,7 @@ export function* decideAdvance(s) {
     wedged = true;
     yield* wedgedPark(t, `one ${hung.tool} call${hung.id ? ` (${hung.id})` : ''} running for ${Math.floor(hung.secs / 60)} minutes, past the ${TOOL_CALL_CEILING_MS / 60000}-minute ceiling, with only its tool_progress heartbeat in the log`);
   } else if (wroteSince(log.raw, t.log_bytes ?? 0)) {
+    if (t.suite_wait_since != null) suitePaused = Math.min(Math.max(0, s.now - t.suite_wait_since), SUITE_WAIT_CEILING_MS);
     yield set(t.key, `log_bytes=${log.size}`, 'idle_passes=0', ...(t.suite_wait_since != null ? ['suite_wait_since=null'] : []));
   } else if (pausedOnLimit) {
     // Waiting for the reset is not a stall.
@@ -252,6 +258,9 @@ export function* decideAdvance(s) {
         `Ask, then: DESK_UPLOAD_APPROVED=1 node ${s.upload.command} ${prNo} ${imgDir}`);
     }
   }
+
+  // A worker still at work (or one the unread registry cannot tell apart from it): its progress time.
+  if ((live || !registry.read) && !wedged && !done && !handoff && !reboot && !park) yield* progressOf(t, s.now, stage, suitePaused, unpaused);
 
   let stopped = '';
   if (live && (done || handoff || reboot)) {
@@ -450,6 +459,26 @@ export function* decideAdvance(s) {
       }
     }
   }
+}
+
+// A running worker's progress time (progress_at, ISO) and what it was read from (progress_sha: its
+// worktree's HEAD and its branch's pushed head). Progress is a stage change, a new commit or a push, never
+// log growth alone, so a hung call that heartbeats into the log still ages. `paused` is a suite wait that
+// ended this pass under its ceiling, which the clock does not count; `restarted`, a usage hold that
+// lifted this pass, has already started it again at `now`. The deadline sweep reads both
+// (pass/deadlines.mjs, the progress wait). A read that fails changes nothing but a stage change.
+function* progressOf(t, now, stage, paused, restarted) {
+  const read = yield { type: 'progress', key: t.key };
+  const was = t.progress_sha && typeof t.progress_sha === 'object' ? t.progress_sha : null;
+  const sha = read?.head ? { head: read.head, pushed: read.pushed ?? null } : was;
+  const moved = (stage != null && stage !== t.stage) || !Number.isFinite(Date.parse(t.progress_at))
+    || (!!read?.head && (!was || was.head !== sha.head || was.pushed !== sha.pushed));
+  const at = restarted ? null : moved ? now : paused ? Math.min(now, Date.parse(t.progress_at) + paused) : null;
+  const fields = [
+    ...(at != null && new Date(at).toISOString() !== t.progress_at ? [`progress_at=${new Date(at).toISOString()}`] : []),
+    ...(sha && JSON.stringify(sha) !== JSON.stringify(was) ? [`progress_sha=${JSON.stringify(sha)}`] : []),
+  ];
+  if (fields.length) yield set(t.key, ...fields);
 }
 
 // The issue links a ticket recorded done asked for: made, and any not made park it (park-links).
