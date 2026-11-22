@@ -263,6 +263,7 @@ check "DS-874 AC2 a GitHub handle left TODO is one unanswered field" '[[ "$acc_o
 check "DS-874 AC3 an answered row whose note mentions TODO is not counted" '[[ "$acc_out" == *"ok    acme__noted"* ]]'
 mkdir -p "$HOME/.config/desk"
 printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `autopilot-concurrency` | `4 / 8` | x |\n| `memory-ceiling-gb` | `24` | x |\n| `test-cap` | `3` | x |\n' > "$HOME/.config/desk/machine.md"
+# shellcheck disable=SC2034  # prof_out is read inside check's eval string
 prof_out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
 check "DS-874 AC1 a machine profile setting the three machine rows answers them: ok, with no warning" \
   '[[ "$prof_out" == *"ok    acme__machine"* ]] && [[ "$prof_out" != *"acme__machine: "*"unanswered"* ]]'
