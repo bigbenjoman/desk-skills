@@ -516,6 +516,13 @@ if need gh 1 "brew install gh" "see https://github.com/cli/cli/blob/trunk/docs/i
         esac
       done
     fi
+  elif printf '%s\n' "$status" | grep -qi 'rate limit' && ! printf '%s\n' "$status" | grep -qiE 'HTTP 401|bad credentials'; then
+    # A spent API budget fails auth status on a valid token; the rate_limit endpoint is not counted against it.
+    reset="$(gh api rate_limit --jq .resources.core.reset 2>/dev/null)"
+    at=""
+    case "$reset" in ''|*[!0-9]*) ;; *) at="$(date -r "$reset" '+%H:%M' 2>/dev/null || date -d "@$reset" '+%H:%M' 2>/dev/null)" ;; esac
+    warn "gh is signed in, but the GitHub API is rate-limited until ${at:-its hourly reset}. The install goes on; gh calls fail until then."
+    warn "gh token scopes are unreadable while the API is rate-limited. The skills need repo + workflow."
   else
     bad "gh is not signed in. Run: gh auth login -h github.com -s repo,workflow"
   fi
