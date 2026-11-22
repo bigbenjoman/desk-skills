@@ -4346,7 +4346,7 @@ runSteps({
       },
       baseMoves, driver: driverReruns, built: (n, head) => buildRecord(BUILD_DIR, n, head), waived: waivedAt,
       outside: scopeOutside, title: triageTitle,
-      evidenceRun: (n, head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun), evidenceHold: (n, head) => evidenceHold(STATE, n, head),
+      evidenceRun: (n, head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun), evidenceHold: (n) => evidenceHold(STATE, n),
       uploadHold: (n, t, shots) => uploadHold(STATE, n, ticketShotDir(t, STATE), shots),
       missingShots: (body, t) => missingShots(body, ticketShots(t, STATE)), shotDir: (t) => ticketShotDir(t, STATE),
       baseReads, reviewComments,

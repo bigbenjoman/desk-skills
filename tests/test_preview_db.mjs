@@ -104,23 +104,21 @@ t('AC3 the delete steps are filled for that PR', acts[0].cmds, ['./env.sh unset 
 t('a PR whose state cannot be read is left (negative control)', teardownCalls({ records, recipe, states: {} }), []);
 t('a closed PR the pass still owes a reopen keeps its database and override', teardownCalls({ records, recipe, states: { 42: 'MERGED', 43: 'CLOSED' }, owed: ['43'] }).map((a) => a.pr), ['42']);
 t('a merged PR is torn down even with a reopen marker left (negative control)', teardownCalls({ records, recipe, states: { 42: 'MERGED' }, owed: [42] }).map((a) => a.pr), ['42']);
-// AC2: §4 Evidence workflow posts its shots unchecked, so a preview-database PR's run waits on a check.
+// AC2: §4 Evidence workflow posts its shots unchecked, so a preview-database PR never takes a run.
 const H1 = 'a'.repeat(40);
-const H2 = 'b'.repeat(40);
-t('AC2 a PR with no preview database is never held (negative control)', evidenceHold(state, '45', H1), null);
-t('AC2 a PR with a preview database and no check is held, naming the check', /preview database[^]*preview-db\.mjs check/.test(evidenceHold(state, '43', H1) ?? ''), true);
+t('AC5 a PR with no preview database is never held (negative control)', evidenceHold(state, '45'), null);
+t('AC2 a PR with a preview database is held, naming the check', /preview database[^]*preview-db\.mjs check/.test(evidenceHold(state, '43') ?? ''), true);
 const ok2 = [{ shot: 'a.png', call: 'ok' }, { shot: 'b.png', call: 'ok' }];
 const rec43 = readRecords(state).find((r) => r.pr === '43');
 writeRecord(state, checkedRecord(rec43, ok2, H1, 'T'));
-t('AC2 a passed check records its head and shot count', readRecords(state).find((r) => r.pr === '43').checked, { head: H1, at: 'T', shots: 2 });
-t('AC2 a passed check at this head lets the workflow run', evidenceHold(state, '43', H1), null);
-t('AC2 a passed check at an older head does not', evidenceHold(state, '43', H2) != null, true);
+t('AC2 a passed check records its head and shot count', readRecords(state).find((r) => r.pr === '43').checked, { head: H1, at: 'T', shots: 2, files: {} });
+t('AC2 even a passed check at this head starts no workflow run', evidenceHold(state, '43') != null, true);
 t('AC2 a check with an error page clears the pass', checkedRecord({ ...rec43, checked: { head: H1 } }, [...ok2, { shot: 'c.png', call: 'error' }], H1, 'T').checked, undefined);
 t('AC2 a check with a shot missing its text does not pass', checkedRecord(rec43, [{ shot: 'a.png', call: 'no-text' }], H1, 'T').checked, undefined);
 t('AC2 a check of no shots does not pass', checkedRecord(rec43, [], H1, 'T').checked, undefined);
 t('AC2 a check whose PR head could not be read does not pass', checkedRecord(rec43, ok2, null, 'T').checked, undefined);
 writeRecord(state, checkedRecord(readRecords(state).find((r) => r.pr === '43'), [{ shot: 'c.png', call: 'error' }], H1, 'T'));
-t('AC2 so after a failed check the workflow is held again', evidenceHold(state, '43', H1) != null, true);
+t('AC2 a failed check keeps no passed files', readRecords(state).find((r) => r.pr === '43').checked, undefined);
 // AC2: a preview-database PR uploads only the files a passing check read, unchanged since.
 const upDir = scratch('preview-upload-');
 writeFileSync(join(upDir, 'after-home.png'), 'home'); writeFileSync(join(upDir, 'after-plans.png'), 'plans');
@@ -135,7 +133,7 @@ writeFileSync(join(idxDir, 'a.png'), 'a'); mkdirSync(join(idxDir, REJECTED_DIR))
 mkdirSync(join(idxDir, 'mobile')); writeFileSync(join(idxDir, 'mobile', 'c.png'), 'c');
 t('AC2 the uploader never reads a shot set aside as an error page', [...shotIndex(idxDir).keys()].sort(), ['a.png', 'mobile/c.png']);
 const s5 = readFileSync(new URL('../skills/desk-autopilot/references/worker-contract-stage-5.md', import.meta.url), 'utf8');
-t('AC2 the contract dispatches the evidence workflow only after the check passed', /dispatch it[^]*only once your capture[^]*passed the check below/.test(s5), true);
+t('AC2 the contract never dispatches the evidence workflow for a preview-database PR', /never\s+through §4 Evidence workflow[^]*`evidence\.mjs dispatch` refuses it/.test(s5), true);
 t('a recipe gone from the config is the person\'s', teardownCalls({ records: records.slice(0, 1), recipe: null, states: { 42: 'MERGED' } }).map((a) => [a.type, a.list]), [['report', 'failed']]);
 const ran = [];
 const r42 = teardown(acts[0], { state, run: (c) => { ran.push(c); return { ok: true, code: 0, out: '' }; }, now: () => 'T' });

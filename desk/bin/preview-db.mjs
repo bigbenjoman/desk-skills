@@ -19,7 +19,8 @@
 //   node preview-db.mjs up <branch> <pr>     create, migrate, seed, override and rebuild, in order
 //   node preview-db.mjs check <shot dir>     move every shot whose page text is an error page aside;
 //                                            a pass is kept on this branch's record at its PR's head,
-//                                            and §4 Evidence workflow runs only after one (evidenceHold)
+//                                            and only the files it read are uploaded (uploadHold); §4
+//                                            Evidence workflow never runs for such a PR (evidenceHold)
 //
 // From just before create runs, <state>/preview-db/<pr>.json records { pr, branch, db, repo, at, steps },
 // so the pass deletes what was made even where a step failed part-way (teardownCalls, teardown). The
@@ -126,20 +127,17 @@ export function readRecords(state) {
     try { return [{ ...JSON.parse(readFileSync(join(recordsDir(state), f), 'utf8')), file: join(recordsDir(state), f) }]; } catch { return []; }
   });
 }
-// Why §4 Evidence workflow may not run yet for PR `pr` at `head`, or null when it may. The workflow
-// writes its shots straight into the PR body, where no error-page check reads them, so for a PR with a
-// preview database it runs only once a worker's own capture of its screens passed `check` at this head
-// (the record's `checked`): the same preview and database, read for an error page before anything is
-// posted. A PR with no preview database is never held.
-export function evidenceHold(state, pr, head) {
+// Why §4 Evidence workflow may not run for PR `pr`, or null when it may. The workflow writes its shots
+// straight into the PR body, where no error-page check reads them, so a PR with a preview database
+// never takes a run: its evidence is a worker's own capture, which `check` reads before any of it is
+// uploaded (uploadHold). A PR with no preview database is never held.
+export function evidenceHold(state, pr) {
   const rec = readRecords(state).find((r) => String(r.pr) === String(pr));
   if (!rec) return null;
-  if (head && rec.checked?.head === head) return null;
-  const at = head ? String(head).slice(0, 9) : 'its head';
-  return `#${pr} has a preview database, and no capture of its screens has passed preview-db.mjs check at ${at}: capture them, run \`preview-db.mjs check <shot dir>\` from its worktree, then start the evidence workflow`;
+  return `#${pr} has a preview database, so its evidence is a worker's own capture, never the evidence workflow: capture its screens, run \`preview-db.mjs check <shot dir>\` from its worktree, and only the shots it passed are uploaded`;
 }
 // The record after a `check` of its PR's shots at `head`: `checked` set when there were shots, every one
-// with its page text and none an error page; cleared otherwise, so a failed check holds the workflow again.
+// with its page text and none an error page; cleared otherwise, so a failed check uploads nothing.
 // `files` ({ [shot]: sha256 }) is what passed, so an upload sends only those files as they were checked.
 export function checkedRecord(rec, results, head, at, files = {}) {
   const { checked: _c, ...rest } = rec;
@@ -299,7 +297,7 @@ if (isMain) {
     if (!results.length) console.log(`no screenshots in ${argv[0]}`);
     else if (!bad.length && !bare.length) console.log(`${results.length} screenshot(s), none an error page`);
     // This worktree's PR, where it has a preview database: the result is kept on its record at the PR's
-    // head, which §4 Evidence workflow waits on (evidenceHold).
+    // head, with the files it passed, which the uploads read (uploadHold).
     const E = await import('./desk-env.mjs');
     const safe = (f) => { try { return f(); } catch { return null; } };
     const branch = safe(() => execFileSync('git', ['branch', '--show-current'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
@@ -312,8 +310,8 @@ if (isMain) {
       const next = checkedRecord(rec, results, head, new Date().toISOString(), files);
       writeRecord(state, next);
       console.log(next.checked
-        ? `preview-db: PR #${rec.pr} passed at ${head.slice(0, 9)}, so its evidence workflow may run there`
-        : `preview-db: PR #${rec.pr} did not pass${head ? '' : ' (its head could not be read)'}, so its evidence workflow is held until a check passes`);
+        ? `preview-db: PR #${rec.pr} passed at ${head.slice(0, 9)}, so these ${results.length} screenshot(s) may be uploaded as they are`
+        : `preview-db: PR #${rec.pr} did not pass${head ? '' : ' (its head could not be read)'}, so none of its screenshots is uploaded until a check passes`);
     }
     process.exit(bad.length || bare.length ? 1 : 0);
   }

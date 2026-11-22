@@ -255,7 +255,7 @@ export const evidenceRunArgs = (workflow, repo, ref, n) => ['workflow', 'run', w
 //   node evidence.mjs dispatch <branch> <pr>
 //
 // `view` is gh pr view's { headRefName, state, isCrossRepository } for the PR, or null when it could
-// not be read; `hold` why a PR with a preview database may not have its shots posted yet
+// not be read; `hold` why the PR, having a preview database, takes no run of this workflow
 // (preview-db.mjs evidenceHold), or null. -> { args } for `gh`, or { refused } saying why.
 export function dispatchCall({ argv, view, workflow, repo, ref, allowed, hold = null }) {
   if (argv.length !== 2) return { refused: 'usage: evidence.mjs dispatch <branch> <pr>' };
@@ -284,7 +284,7 @@ if (isMain) {
     argv, view, workflow: row?.workflow ?? null, repo,
     ref: String(safe(() => configValue('default-branch')) ?? '').trim() || 'main',
     allowed: safe(() => permission('worker-workflow-dispatch')) === 'yes',
-    hold: safe(() => evidenceHold(stateDir(), argv[1], view?.headRefOid ?? null)),
+    hold: safe(() => evidenceHold(stateDir(), argv[1])),
   });
   if (call.refused) { console.error(`evidence.mjs: refused: ${call.refused}`); process.exit(1); }
   const r = spawnSync('gh', call.args, { stdio: 'inherit' });

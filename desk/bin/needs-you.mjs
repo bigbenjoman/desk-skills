@@ -446,9 +446,8 @@ function cellWords(r, t, pr, v, repo) {
   const row = repoConfigValue(r.slug, 'evidence-workflow');
   const view = (id) => { try { return JSON.parse(execFileSync('gh', ['run', 'view', String(id), '--repo', repo, '--json', 'status,conclusion'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return null; } };
   const plan = cellPlan(t, { number: pr, head: v.headRefOid ?? null, body: v.body }, {
-    // A PR with a preview database takes no evidence run until its error-page check passed at this head
-    // (pass/undraft.mjs, preview-db.mjs evidenceHold).
-    evidence: row && !evidenceHold(r.stateDir, pr, v.headRefOid ?? null) ? parseEvidenceRow([row]) : null,
+    // A PR with a preview database never takes an evidence run (pass/undraft.mjs, preview-db.mjs evidenceHold).
+    evidence: row && !evidenceHold(r.stateDir, pr) ? parseEvidenceRow([row]) : null,
     evidenceRun: (head) => evidenceRecord(join(r.stateDir, 'evidence-runs'), pr, head, view),
     missingShots: (body) => missingShots(body, ticketShots(t, r.stateDir)),
   });
