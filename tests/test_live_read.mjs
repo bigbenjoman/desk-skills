@@ -1,4 +1,5 @@
 // suite: live-read (§4 Live reads: which parks the pass runs a read for, and how it records one)
+// layer: L2
 import { readFileSync, writeFileSync, existsSync, rmSync, statSync, mkdirSync, symlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';

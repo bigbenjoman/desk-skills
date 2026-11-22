@@ -1,4 +1,5 @@
 // suite: with-lock (the lock classes its usage line lists are exactly the ones it accepts; each run takes its slot as a lease)
+// layer: L2
 // covers: desk/bin/with-lock.sh desk/bin/prose-facts.mjs desk/bin/slot-lease.mjs
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';

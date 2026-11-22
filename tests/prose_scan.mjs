@@ -23,7 +23,8 @@
 //               placeholders kept as written
 //   row         a § row: the id desk-env get, list, cmds or perm reads, a <§N Row name> placeholder,
 //               or a §N kebab-key
-//   contract    a tagged JSON block's contract name     facts  a generated region's name
+//   contract    a tagged JSON block's contract name, with `body`, the block's text, and `line`, its fence's
+//   facts       a generated region's name
 import { readFileSync } from 'node:fs';
 import { join, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -158,7 +159,10 @@ export function scan(text) {
     const raw = lines[n];
     if (fence) {
       if (closesFence(raw, fence)) { fence = null; json = null; continue; }
-      if (json) add(n + 1, 'json', refs(raw).filter((r) => r.kind === 'autopilot' || r.kind === 'state' || r.kind === 'state-path'));
+      if (json) {
+        json.body += `${raw}\n`;
+        add(n + 1, 'json', refs(raw).filter((r) => r.kind === 'autopilot' || r.kind === 'state' || r.kind === 'state-path'));
+      }
       continue;
     }
     const open = raw.match(FENCE);
@@ -167,8 +171,8 @@ export function scan(text) {
       fence = open[1];
       const tag = n > 0 && CONTRACT.exec(lines[n - 1]);
       if (tag && open[2].toLowerCase() === 'json') {
-        json = tag[1];
-        out.push({ kind: 'contract', value: tag[1], context: lines[n - 1].trim(), line: n + 1, in: 'json' });
+        json = { kind: 'contract', value: tag[1], context: lines[n - 1].trim(), line: n + 1, in: 'json', body: '' };
+        out.push(json);
       }
       continue;
     }

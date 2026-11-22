@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: merge driver: red checks, reruns and waivers (offline, fake gh)
+# layer: L3
 # The real merge-driver.sh and gate.mjs, one loop at a time, set up by merge_driver_setup.sh: §4 Known
 # flaky checks waived, a signed-out gh, why a red PR is not merged, §4 State checks never rerun, an
 # approval check rerun once for an approval its run never saw, and a preview check's rerun and a

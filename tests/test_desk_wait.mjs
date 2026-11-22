@@ -1,4 +1,5 @@
 // suite: desk-wait (a worker waits on its own suite or the test lock in one blocking call)
+// layer: L2
 // covers: desk/bin/desk-wait.mjs desk/bin/log-tool-calls.mjs
 // Real with-lock.sh runs against a scratch lock dir with one slot and the slot lease off, their output
 // written to a file the way the Bash tool writes a background task's. Scratch directories only.

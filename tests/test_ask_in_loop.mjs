@@ -1,4 +1,5 @@
 // suite: asking in the pass loop (a question that comes up while passes run goes to needs-you, never a prompt that waits)
+// layer: L1
 // covers: skills/desk-autopilot/SKILL.md skills/desk-autopilot/references/ask-or-take.md
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';

@@ -1,4 +1,5 @@
 // suite: upload-log (every screenshot upload and stall is a line in the machine's upload log)
+// layer: L2
 // upload-log.mjs on its own: a fake upload's line, and a fake stall's counting the uploads in the
 // minute and the hour before it. Then upload-images.mjs against a fake Playwright and a stub gh: each
 // file uploaded is logged, and a stall is logged as throttled for the file it was waiting on.

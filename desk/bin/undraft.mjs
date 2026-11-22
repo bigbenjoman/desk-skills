@@ -733,6 +733,15 @@ export function repairSaid(r) {
   return r.ok ? `desk already updated its branch from its base once (gh pr update-branch ${at}), and GitHub still has no answer`
     : `desk's one repair, updating its branch from its base (gh pr update-branch ${at}), was refused: ${r.out ?? 'no reason given'}`;
 }
+// The spell with no mergeability answer that undraft record `was` keeps for PR #n at `head`: the record,
+// or null where it is not this spell (another PR, a call not waiting on that answer, or another head with
+// no repair tried, as the repair is itself a new head).
+export function unknownSpell(was, n, head) {
+  const ours = ['wait', 'person'].includes(was?.call) && was.pr === n && was.unknown_since;
+  return ours && (was.sha === head || was.unknown_repair) ? was : null;
+}
+// What the person does for PR #n once a fresh merge ref is all that is left to try.
+export const freshMergeRef = (n) => `push a new commit to #${n} (an empty one will do) for a fresh merge ref; if it still has no answer, open a new PR from its branch`;
 export function personHold(t, n, redrafts = []) {
   const was = t.undraft?.pr == null || t.undraft.pr === n ? t.undraft ?? {} : {};
   if (was.call === 'held') return { why: was.why, action: was.action };
@@ -794,17 +803,16 @@ export function undraftCall(t, pr, cfg) {
     // head first had no answer (kept on the undraft record), past UNKNOWN_LIMIT_MS its branch is
     // updated from its base once where §3 pr-update-branch is yes (`repair`), and past the limit again
     // after that it is the person's. The repair is a new head, so once tried the age carries across heads.
-    const was = t.undraft;
-    const ours = ['wait', 'person'].includes(was?.call) && was.pr === n && was.unknown_since;
-    const repair = ours && was.unknown_repair ? was.unknown_repair : null;
-    const since = ours && (was.sha === pr.head || repair) ? was.unknown_since : cfg.passAt ?? null;
+    const spell = unknownSpell(t.undraft, n, pr.head);
+    const repair = spell?.unknown_repair ?? null;
+    const since = spell ? spell.unknown_since : cfg.passAt ?? null;
     const minsFrom = (at) => (at && cfg.passAt ? Math.floor((Date.parse(cfg.passAt) - Date.parse(at)) / 60000) : 0);
     const mins = minsFrom(since);
     const keep = { unknown_since: since, ...(repair ? { unknown_repair: repair } : {}) };
     const wait = { call: 'wait', why: `GitHub has not yet worked out whether it conflicts with its base (${pr.mergeable ?? 'no answer'})`, ...keep };
     if (mins * 60000 < UNKNOWN_LIMIT_MS) return wait;
     const stuck = `GitHub has not worked out whether it conflicts with its base (${pr.mergeable ?? 'no answer'}) at ${String(pr.head).slice(0, 12)} for ${mins} minutes: its merge ref looks wedged, and GitHub starts no run for that head`;
-    const fresh = `push a new commit to #${n} (an empty one will do) for a fresh merge ref; if it still has no answer, open a new PR from its branch`;
+    const fresh = freshMergeRef(n);
     if (!repair) {
       if (cfg.updateBranch !== 'yes') return { ...person(`${stuck}; no repair was permitted, as config §3 pr-update-branch is "${cfg.updateBranch ?? 'no'}"`, fresh), ...keep };
       return { call: 'repair', why: `${stuck}, so its branch is updated from its base once (gh pr update-branch) for a fresh merge ref`, stuck, action: fresh, ...keep };

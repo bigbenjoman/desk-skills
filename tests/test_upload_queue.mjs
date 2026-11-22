@@ -1,4 +1,5 @@
 // suite: upload queue (one machine-wide queue: order, the minute and hour pace, repo rotation, shared back-off)
+// layer: L1
 // upload-queue.mjs with a fake uploader and a fake clock: nothing here opens a browser or calls GitHub.
 import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

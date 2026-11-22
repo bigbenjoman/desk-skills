@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: desk-disk scan (free space, a row per catalogue offender, nothing written outside scratch)
+# layer: L2
 # covers: skills/desk-disk/**
 # disk-scan.sh against a fixture home and system root, with fake docker, tmutil and getconf that log
 # every call. The whole fixture tree is listed before and after the scan, and must match everywhere

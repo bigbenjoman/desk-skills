@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: ps reads (a process list over Node's 1 MB default output cap, and ps failing)
+# layer: L2
 # A stub ps prints over 2 MB of rows ahead of the real list, as a dozen workers' prompts in their
 # command lines do, or fails outright. heavyProcesses, suite-wait's processList and upload-images'
 # profile check must each read the whole list, and say ps could not be read rather than act on a

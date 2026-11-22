@@ -1,4 +1,5 @@
 // suite: bash 3.2 feature scan (every bash 4+ case fires, 3.2-safe lines and this repo's scripts pass)
+// layer: L2
 // tests/bash32_check.sh --scan-only, one fixture line per file: each line of
 // tests/fixtures/bash32-newer.txt must fail the scan, each of tests/fixtures/bash32-ok.txt must pass,
 // and so must every shell script in the repo. The Docker half (`bash -n` under 3.2) runs in CI.

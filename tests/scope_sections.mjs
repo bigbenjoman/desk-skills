@@ -23,11 +23,12 @@
 //
 // The decision, which fails closed: anything it cannot place runs every suite.
 //   full  - a foundational file (tests/run.sh and the environment it gives suites, this script, the
-//           bash 3.2 check, .github/, desk-env.sh, and desk-env.mjs unless the change only adds
-//           exports), a root file that is not a document or a script (.gitignore, a lockfile), a
+//           bash 3.2 check, .github/, desk-env.sh, and desk-env.mjs and config-schema.mjs unless the
+//           change only adds exports), a root file that is not a document or a script (.gitignore, a lockfile), a
 //           deleted or renamed file, or a changed file no suite claims
 //   some  - the suites that claim a changed file, plus every changed suite and the suites claiming it;
-//           for a change that only adds exports to desk-env.mjs, the suites that name a new export
+//           for a change that only adds exports to desk-env.mjs or config-schema.mjs, the suites that
+//           name a new export
 //   none  - nothing changed
 // The suites in ALWAYS (the syntax and shellcheck pass) run on every pull request whatever the scope,
 // and claim nothing: a file only they cover has no behavioural suite, so changing it runs everything.
@@ -41,7 +42,8 @@
 //   node tests/scope_sections.mjs --full                         every suite (a push to main)
 //   add --json for the decision as JSON, or --github-output to append scope=, suites= and shells= to
 //   $GITHUB_OUTPUT. --claims <path> lists the suites claiming a path; --unclaimed lists tracked files no
-//   suite claims.
+//   suite claims; --layers [<file>...] names each suite (every one, or these files) whose layer line is
+//   missing, doubled or unknown, and exits 1 when there is one.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, appendFileSync, existsSync } from 'node:fs';
 import { join, dirname, posix } from 'node:path';
@@ -51,8 +53,8 @@ import { Script } from 'node:vm';
 export const ALWAYS = ['test_lint.sh'];
 // Shared by everything: a change here can move any suite.
 const FOUNDATION = [/^tests\/(run\.sh|suite_env\.sh|scope_sections\.mjs|bash32_check\.sh|bash32_features\.txt)$/, /^\.github\//, /^desk\/bin\/desk-env\.(mjs|sh)$/, /^desk\/bin\/config-schema\.mjs$/];
-// A foundational module whose change, when it only adds exports, reaches only the suites using them.
-const EXPORTS_ONLY = new Set(['desk/bin/desk-env.mjs']);
+// Foundational modules whose change, when it only adds exports, reaches only the suites using them.
+const EXPORTS_ONLY = new Set(['desk/bin/desk-env.mjs', 'desk/bin/config-schema.mjs']);
 const CODE_EXT = /\.(sh|bash|mjs|cjs|js|py)$/;
 const DIR_ROOTS = /^(skills|vendor|docs)\//;
 
@@ -199,12 +201,30 @@ export function mentions(text) {
   return out;
 }
 
-// A suite's header, its first 30 lines: the `suite:` label ('' when none), the `covers:` globs and
-// whether it `claims: imports` only.
+// Every suite declares its test layer in one `# layer: <layer>` line (`//` in .mjs) in its first ten
+// lines, as it does its `# budget:`:
+//   L1  in process: its cases import modules and start no process
+//   L2  one process boundary: its cases start a desk script or command each and read what it did
+//   L3  end to end: it runs a pass, a batch, the merge driver or the installer through
+export const LAYERS = ['L1', 'L2', 'L3'];
+const LAYER_LINE = /^(#|\/\/) layer:/;
+// A suite's declared layer, or what is wrong with its declaration: { layer, problem }, layer null and
+// problem set unless it declares exactly one known layer.
+function readLayer(text) {
+  const lines = String(text).split('\n').slice(0, 10).filter((l) => LAYER_LINE.test(l));
+  if (!lines.length) return { layer: null, problem: `declares no layer: add a \`# layer: <${LAYERS.join('|')}>\` line (\`//\` in .mjs) in its first ten lines` };
+  if (lines.length > 1) return { layer: null, problem: `declares ${lines.length} layers: ${lines.join(' / ')}` };
+  const v = lines[0].replace(LAYER_LINE, '').trim();
+  return LAYERS.includes(v) ? { layer: v, problem: '' } : { layer: null, problem: `declares an unknown layer: ${lines[0]} (one of ${LAYERS.join(', ')})` };
+}
+
+// A suite's header, its first 30 lines: the `suite:` label ('' when none), its layer (null unless it
+// declares exactly one known layer), the `covers:` globs and whether it `claims: imports` only.
 export function suiteHeader(text) {
   const head = String(text).split('\n').slice(0, 30);
   return {
     label: (head.slice(0, 10).find((l) => /^(#|\/\/) suite: /.test(l)) ?? '').replace(/^(#|\/\/) suite: /, ''),
+    layer: readLayer(text).layer,
     covers: head.filter((l) => /^(#|\/\/) covers: /.test(l)).flatMap((l) => l.replace(/^(#|\/\/) covers: /, '').trim().split(/\s+/)),
     importsOnly: head.some((l) => /^(#|\/\/) claims: imports\b/.test(l)),
   };
@@ -257,8 +277,8 @@ export function buildMap(files, read) {
   const out = [];
   for (const s of suites) {
     const t = textOf(s);
-    const { label, covers, importsOnly } = suiteHeader(t);
-    out.push({ file: s.slice(6), label: label || s.slice(6), covers, importsOnly });
+    const { label, layer, covers, importsOnly } = suiteHeader(t);
+    out.push({ file: s.slice(6), label: label || s.slice(6), layer, covers, importsOnly });
     if (ALWAYS.includes(s.slice(6))) continue;
     const seen = new Set();
     const todo = importsOnly ? [...mentions(loads(s, t, { importsOnly }))].flatMap((k) => [...(names.get(k) ?? [])]) : [...namedBy(s)];
@@ -400,6 +420,17 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const args = process.argv.slice(2);
   const opt = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : undefined; };
   const root = git(dirname(fileURLToPath(import.meta.url)), ['rev-parse', '--show-toplevel']).trim();
+  if (args.includes('--layers')) {
+    const given = args.slice(args.indexOf('--layers') + 1).filter((a) => !a.startsWith('--'));
+    const paths = given.length ? given : git(root, ['ls-files']).split('\n').filter(isSuite);
+    let bad = 0;
+    for (const p of paths) {
+      let problem;
+      try { problem = readLayer(readFileSync(given.length ? p : join(root, p), 'utf8')).problem; } catch (e) { problem = `is unreadable: ${e.message}`; }
+      if (problem) { bad++; console.log(`${p}: ${problem}`); }
+    }
+    process.exit(bad ? 1 : 0);
+  }
   const map = repoMap(root);
   if (args.includes('--claims')) {
     const p = opt('--claims');

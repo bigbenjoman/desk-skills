@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: compare_pass (a fixture comparison lists what a head's pass.mjs does differently from its base's)
+# layer: L3
 # tests/compare_pass.sh over scratch trees whose stand-in pass.mjs writes one queue field and prints one
 # line: a head that matches lists nothing; one that writes a field or prints a line differently lists
 # it; one whose pass crashes is not compared; one that moved a shell case into a unit suite still runs

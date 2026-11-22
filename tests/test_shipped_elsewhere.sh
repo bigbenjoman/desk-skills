@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: pass (a ticket shipped outside its worker is recorded done, not spawned)
+# layer: L3
 # Before a spawn, resume or handoff the pass looks for a PR merged since the ticket joined the queue
 # whose branch names its key, and for the ticket done in Jira with no PR of its own. Either is
 # recorded done and spawns nothing; a ticket with neither, or whose reads fail, spawns as before. Runs

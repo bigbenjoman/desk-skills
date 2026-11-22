@@ -1,4 +1,5 @@
 // suite: levers trips (a hard trip reverts its lever in that repo within one pass)
+// layer: L2
 // covers: desk/bin/levers-trips.mjs desk/bin/log-tool-calls.mjs desk/bin/levers-auto.mjs desk/bin/lever-log.mjs desk/bin/levers-evaluate.mjs desk/bin/lever-registry.mjs desk/bin/pass.mjs desk/bin/spawn-worker.sh
 // runTrips() runs on synthetic queues, run records, worker logs and post-merge files in a scratch HOME,
 // one repo per trip so each starts from an empty lever log.

@@ -1,4 +1,5 @@
 // suite: bench (frozen tasks in throwaway checkouts, scored by hidden tests)
+// layer: L2
 // budget: 45 DS-943 (whole bench runs: a checkout, a stub session and the hidden tests per task and arm; 32-34 s on CI)
 import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, readdirSync, realpathSync, utimesSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';

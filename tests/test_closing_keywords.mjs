@@ -1,4 +1,5 @@
 // suite: closing keywords (desk-pr's check that a PR body closes only the issues it says it closes)
+// layer: L2
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';

@@ -1,4 +1,5 @@
 // suite: queue ledger (with the ledger lever on, every queue write appends what it changed to the ticket ledger)
+// layer: L2
 // The pass's writer in process, queue.mjs commands and move-batch.mjs as processes, each against a
 // fixture queue whose ledger sits beside it, with the lever on; and the same writes with it off.
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
@@ -391,6 +392,51 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   const d = queueDifference(f);
   t('DS-895 AC7 after parks, a stop and answers, nothing differs and the pass prints no difference line',
     `${d.diffs.map((x) => x.path).join(', ')}|${ledgerLine({ check: d, missed: 0, queueBin: '/bin/queue.mjs' })}`, '|null');
+}
+
+// DS-901: the deadline sweep's waits (pass/deadlines.mjs), as the pass writes them: one waiting event as a
+// wait starts and again as it is escalated, one waited event as it ends, and the rebuild still matches.
+{
+  const j = JSON.stringify;
+  const f = fixture({ version: 1, batch: 'b', tickets: { D: tk('D', { state: 'done', result: { pr: 801 } }), H: tk('H', { handoff: 'pending', handoff_stage: '4b' }) } });
+  queueDifference(f, { seed: true, by: 'pass' });
+  const at = log(f).length;
+  const merge = { since: '2026-11-20T10:00:00.000Z', deadline: '2026-11-20T10:30:00.000Z', escalate_to: 'person', pr: 801 };
+  const hand = { since: '2026-11-20T10:00:00.000Z', deadline: '2026-11-20T10:15:00.000Z', escalate_to: 'requeue', stage: '4b' };
+  const w = queueWriter(f);
+  w.apply(['set', 'D', `waits=${j({ mergeability: merge })}`]);
+  w.apply(['set', 'H', `waits=${j({ handoff: hand })}`]);
+  w.flush();
+  const started = since(f, at);
+  // Beside each, the write's stamp, which every write records with its other fields.
+  const stampOnly = (evs) => evs.filter((e) => e.type === 'legacy_set').every((e) => j(Object.keys(e.data.fields)) === '["updated_at"]');
+  t('AC6 a wait starting is a waiting event', shape(started), 'waiting D, legacy_set D, waiting H, legacy_set H');
+  t('AC6 with its start, deadline and escalation', j(started[0].data), j({ ...merge, on: 'mergeability' }));
+  t('AC6 and no legacy event holds the waits, only the write\'s stamp', `${log(f).some((e) => e.type === 'legacy_set' && 'waits' in e.data.fields)} ${stampOnly(started)}`, 'false true');
+  const at2 = log(f).length;
+  w.apply(['set', 'H', `waits=${j({ handoff: { ...hand, escalated: '2026-11-20T10:16:00.000Z' } })}`]);
+  w.flush();
+  t('the escalation recorded on a wait is a waiting event carrying it', `${shape(since(f, at2))} ${since(f, at2)[0]?.data.escalated}`, 'waiting H, legacy_set H 2026-11-20T10:16:00.000Z');
+  const at3 = log(f).length;
+  w.apply(['set', 'D', 'waits=null']);
+  w.apply(['set', 'H', 'waits=null', 'handoff=null', 'state=running', 'session_id=s-H']);
+  w.flush();
+  const ended = since(f, at3);
+  t('AC7 a wait ending is a waited event naming what it waited on', j(ended.filter((e) => e.type === 'waited').map((e) => [e.key, e.data.on])), j([['D', 'mergeability'], ['H', 'handoff']]));
+  t('AC7 with the spawn that ended the handoff', shape(ended), 'waited D, legacy_set D, spawned H, waited H, legacy_set H');
+  t('AC7 and no legacy event holds the waits', ended.some((e) => e.type === 'legacy_set' && 'waits' in e.data.fields), false);
+  t('the log reads no illegal transition, a done ticket\'s wait included', readLog(dirname(f)).illegal.length, 0);
+  const d = queueDifference(f);
+  t('AC8 with waits started, escalated and ended, nothing differs and the pass prints no difference line',
+    `${d.diffs.map((x) => x.path).join(', ')}|${ledgerLine({ check: d, missed: 0, queueBin: '/bin/queue.mjs' })}`, '|null');
+  w.apply(['set', 'D', `waits=${j({ mergeability: { ...merge, since: '2026-11-20T11:00:00.000Z' } })}`]);
+  w.flush();
+  t('AC8 a wait open at the check matches too', queueDifference(f).diffs.length, 0);
+  const at4 = log(f).length;
+  w.apply(['set', 'D', 'waits=soon']);
+  w.flush();
+  t('a waits field that is no map of waits is recorded as the field', `${shape(since(f, at4))} ${since(f, at4)[0]?.data.fields.waits}`, 'legacy_set D soon');
+  t('and still matches', queueDifference(f).diffs.length, 0);
 }
 
 rmSync(T, { recursive: true, force: true });

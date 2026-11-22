@@ -1,4 +1,5 @@
 // suite: desk-ci (classify placement, ci-lint secret safety)
+// layer: L2
 // desk-ci.mjs on fixture workflows: each hosted trigger places its job hosted and cites its line,
 // a job with none is placed self-hosted, and ci-lint fails a self-hostable job that receives a
 // secret, an environment or id-token, or whose runs-on has no Dependabot branch.

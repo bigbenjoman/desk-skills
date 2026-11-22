@@ -1,4 +1,5 @@
 // suite: recoveries (what a pass settles for a parked ticket by script)
+// layer: L1
 import { parkRecommends, takeable, pushPark, prTitleIn, mergedNaming } from '../desk/bin/recoveries.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };

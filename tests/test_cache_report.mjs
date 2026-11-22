@@ -1,4 +1,5 @@
 // suite: cache report (prompt-cache tokens and dollars per caller, from session transcripts)
+// layer: L2
 // covers: desk/bin/cache-report.mjs
 // cache-report.mjs on fixture transcripts in a scratch HOME with two Claude logins: one session per
 // caller, a sidechain request, a request logged on two lines, a line that is not JSON, a session no

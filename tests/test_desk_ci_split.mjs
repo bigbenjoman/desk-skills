@@ -1,4 +1,5 @@
 // suite: desk-ci split (a core of 20 KB or less, and the rest in reference files read at their step)
+// layer: L1
 // covers: skills/** agents/** docs/** README.md
 // tests/fixtures/desk-ci-before-split.md is desk-ci's SKILL.md as one file. Every heading, table row
 // and paragraph of it must still be in the core or one reference file, the core must name the file

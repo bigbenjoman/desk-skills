@@ -1,4 +1,5 @@
 // suite: batches (named batch slots per repo, and the batch that holds a ticket)
+// layer: L2
 // desk-env's queue, state and default-branch resolution under DESK_BATCH, and batches.mjs listing and
 // lookup, against fixture queues in a throwaway HOME and DESK_HOME. Each resolution runs in a child,
 // because desk-env reads HOME once at load.
