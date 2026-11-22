@@ -56,6 +56,19 @@ const BASE_CONTAINS = 'base-contains';
   t('a condition not yet holding is reported as waited on, and settles nothing', j([settles(as), lines(as)]), j([[], ['A: waiting on "PR #41 merged" (still open): left parked']]));
   t('one with no note says nothing', j(clears(clearsSnap(byKey(parked('A', PR_MERGED)))).filter((a) => a.type === 'report')), '[]');
 }
+// DS-864 AC1: a condition that can never hold is recorded none, with why, for the person: needs-you lists it
+// and desk-q shows it as needs you, no longer waiting.
+{
+  const ON = { kind: 'commit-on', sha: '68c709f5a', branch: 'fix/A' };
+  const never = 'the branch origin/fix/A has moved to 41736d45a, which 68c709f5a does not build on, so 68c709f5a can no longer land there: the push it waits on is stale';
+  const as = clears(clearsSnap(byKey(parked('A', ON))), { check: { holds: false, never } });
+  t('DS-864 AC1 a stale commit-on is recorded none, its why kept on the park, and nothing requeued',
+    j([types(settles(as)), sets(as)]), j([['set'], ['park.clears_when={"kind":"none"}', `park.stale=${never}`]]));
+  t('DS-864 AC1 and the pass says so', j(lines(as)), j([`A: "commit 68c709f5a on origin/fix/A" can never hold (${never}): recorded as none, for the person`]));
+  const after = { ...parked('A', { kind: 'none' }), lane: 'A', park: { question: 'push 68c709f5a onto fix/A', clears_when: { kind: 'none' }, stale: never } };
+  const before = { ...parked('A', ON), lane: 'A', park: { question: 'push 68c709f5a onto fix/A', clears_when: ON } };
+  t('DS-864 AC4 desk-q shows it as needs you, where it showed waiting before', `${shownState({ tickets: byKey(before) }, before)} → ${shownState({ tickets: byKey(after) }, after)}`, 'waiting → needs');
+}
 {
   const s = clearsSnap(byKey(parked('A', PR_MERGED, { park: { question: 'which colour?', clears_when: PR_MERGED, inputs: {} } })), { putOff: new Set(['A']) });
   const as = clears(s, { check: { holds: true } });

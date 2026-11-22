@@ -48,7 +48,7 @@ import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from '
 import { firstSpawnFromLogs, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health, markFailed as markHealthFailed, refusedIn, MISMATCH_WORDS } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
-import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond } from './clears-when.mjs';
+import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond, commitOnBranch } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { strayClosings } from './closing-keywords.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
@@ -1224,12 +1224,8 @@ const clearsRead = {
   // From origin as fetched now. A commit not here after the fetch is on no branch this clone has.
   commitOn: (sha, branch) => {
     cached(`fetch:${branch}`, () => readOrThrow(`git fetch ${branch}`, 'git', ['-C', MAIN, 'fetch', '-q', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]));
-    const not = { holds: false, note: `${sha} is not on origin/${branch} yet` };
-    if (!shOut('git', ['-C', MAIN, 'cat-file', '-e', `${sha}^{commit}`]).ok) return not;
-    const r = shOut('git', ['-C', MAIN, 'merge-base', '--is-ancestor', sha, `origin/${branch}`]);
-    if (r.ok) return { holds: true };
-    if (r.code === 1) return not;
-    throw new Error(`git merge-base ${sha} origin/${branch}: ${r.out.split('\n').pop()}`);
+    const merges = branch === E.configValue('default-branch') || branch === E.batchBase();
+    return commitOnBranch((args) => shOut('git', ['-C', MAIN, ...args]), sha, branch, { merges });
   },
   ticket: (key) => cached(`ticket:${key}`, () => {
     const c = JSON.parse(readOrThrow(`desk-jira get ${key}`, 'desk-jira', ['get', key, '--json']))?.fields?.status?.statusCategory?.key;

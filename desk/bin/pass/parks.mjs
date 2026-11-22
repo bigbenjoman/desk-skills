@@ -94,6 +94,13 @@ function* settleClear(t, s) {
   }
   const r = yield { type: 'check', key: t.key, cond: c };
   if (r.error) { yield say(t.key, 'clears', `${t.key}: could not check "${cond}" (${r.error}): left parked`); return; }
+  // A condition that can never hold no longer moves by itself: recorded none, so needs-you puts the park
+  // to the person with why (park.stale).
+  if (r.never) {
+    yield set(t.key, `park.clears_when=${JSON.stringify({ kind: 'none' })}`, `park.stale=${r.never}`);
+    yield say(t.key, 'clears', `${t.key}: "${cond}" can never hold (${r.never}): recorded as none, for the person`);
+    return;
+  }
   // A condition that says how far it has got (an Actions run in progress) is reported as waited on.
   if (!r.holds) { if (r.note) yield say(t.key, 'clears', `${t.key}: waiting on "${cond}" (${r.note}): left parked`); return; }
   const what = r.note ? `${cond}, ${r.note}` : cond;

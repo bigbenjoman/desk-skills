@@ -1144,6 +1144,19 @@ t('DS-497 AC1 a ticket requeued off its park and held by its worktree is one ite
 t('DS-497 AC1 a parked ticket with unpushed commits keeps its park\'s item, with them as its note',
   `${yList.filter((l) => l.startsWith('ypsilon Y-2 ')).length} ${yItems()['Y-2'].kind} ${yLine('Y-2').includes(`${refused} Its worktree /w/Y-2 has 1 commit(s) not on origin.`)} ${yItems()['Y-2'].actions[0][0]}`, '1 parked true resume');
 t('a park with nothing unpushed has no note', yItems()['Y-4'].note, undefined);
+
+// ---- DS-864: a park waiting on a commit its branch has moved past is the person's, saying why.
+{
+  const stale = 'the branch origin/fix/S-1 has moved to 41736d45a, which 68c709f5a does not build on, so 68c709f5a can no longer land there: the push it waits on is stale';
+  put('ds864', { port: 4951, beat: 1, supervised: true, tickets: {
+    'S-1': { state: 'parked', lane: 'A', branch: 'fix/S-1', park: { question: 'push 68c709f5a onto fix/S-1', since: minsAgo(40), clears_when: { kind: 'none' }, stale } },
+    'S-2': { state: 'parked', lane: 'A', branch: 'fix/S-2', park: { question: 'push 1234abcd onto fix/S-2', since: minsAgo(40), clears_when: { kind: 'commit-on', sha: '1234abcd', branch: 'fix/S-2' } } },
+  } });
+  const items = N.collect({ word: 'ds864' }).items;
+  const line = N.listText(N.collect({ word: 'ds864' })).split('\n').find((l) => l.startsWith('ds864 S-1 ')) ?? '';
+  t('DS-864 AC1 the stale park is listed in needs-you, its line naming the new head and that the commit can no longer land, and one still waiting on its commit is not',
+    `${items.map((i) => i.t.key).join()} ${line.includes('The branch origin/fix/S-1 has moved to 41736d45a, which 68c709f5a does not build on, so 68c709f5a can no longer land there')}`, 'S-1 true');
+}
 t('#775 a park awaiting approval of a write carries its exact text, whole, under its line',
   yList.slice(yList.indexOf(yLine('Y-5')) + 2, yList.indexOf(yLine('Y-5')) + 4).join('\n'), 'Line one.\n"Quoted" line two.');
 t('#775 and its one line, which the session asks from, points to that text',

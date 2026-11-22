@@ -1696,7 +1696,7 @@ function itemOf(r, x, reads = null, finds = reads) {
     // A gated write's exact text (park.approve) is printed whole under the question by listText; the
     // note points the session there, since it asks from this one line.
     const approval = t.park?.approve?.body ? 'Its exact text awaiting approval follows this line: show it verbatim before you ask.' : '';
-    const note = [t.park?.unpushed ? `${capital(t.park.unpushed)}.` : '', approval].filter(Boolean).join(' ') || undefined;
+    const note = [t.park?.stale ? `${capital(t.park.stale)}.` : '', t.park?.unpushed ? `${capital(t.park.unpushed)}.` : '', approval].filter(Boolean).join(' ') || undefined;
     if (planPark(t)) return { kind: 'plan', need, note, actions: [['answer', 'say start, discard, or the edit to make; the supervisor acts on it at its next tick: an edit is applied and the batch starts, and one it cannot apply comes back here naming why'], ['not-now']] };
     const sp = spinePark(t);
     if (sp === 'approval') return { kind: 'spine', need, note, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };

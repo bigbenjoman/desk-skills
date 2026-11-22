@@ -607,6 +607,48 @@ check "so is a \$DESK_STATE path" '[ $rc -eq 0 ] && [ "$out" = "reads as: file \
 out=$(node "$B/clears-when.mjs" --check 'fix/X-3 exists' 2>&1); rc=$?
 check "a path that could be a branch is refused, saying to write the file form, and listing the forms" \
   '[ $rc -eq 1 ] && grep -q "\"fix/X-3 exists\" is not a form a pass reads (for a file, write \"file fix/X-3 exists\"). The forms:" <<< "$out" && grep -qx "  file <path> exists" <<< "$out"'
+# DS-864: commit <sha> on <branch>, read in a fixture clone of a fixture origin, as pass.mjs reads it.
+F="$T/ds864"; mkdir -p "$F"; git init -q --bare -b main "$F/origin.git"; git clone -q "$F/origin.git" "$F/c" 2>/dev/null
+g(){ git -C "$F/c" "$@"; }
+g commit -q --allow-empty -m init; g push -q origin main
+g checkout -q -b fix/Y; g commit -q --allow-empty -m y1; g push -q origin fix/Y
+landed=$(g rev-parse HEAD)
+g commit -q --allow-empty -m fix; ahead=$(g rev-parse HEAD)   # the fix, one past origin/fix/Y
+g checkout -q main; g commit -q --allow-empty -m main2; g push -q origin main
+g checkout -q -b moved "$landed"; g merge -q --no-edit main; g push -q origin moved:fix/Y   # fix/Y moved by a merge that leaves the fix out
+moved=$(g rev-parse --short=9 HEAD); g fetch -q origin
+r=$(node --input-type=module -e "
+import { execFileSync } from 'node:child_process';
+import { checkCond, commitOnBranch } from '$B/clears-when.mjs';
+const git = (args) => { try { return { ok: true, out: execFileSync('git', ['-C', '$F/c', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }; } catch (e) { return { ok: false, code: e.status, out: String(e.stderr) }; } };
+const read = { commitOn: (sha, branch) => commitOnBranch(git, sha, branch) };
+const at = (sha, branch) => JSON.stringify(checkCond({ kind: 'commit-on', sha, branch }, read));
+console.log([at('${ahead:0:9}', 'fix/Y'), at('${landed:0:9}', 'fix/Y'), at('0123456789', 'fix/Y'),
+  JSON.stringify(commitOnBranch(git, '${ahead:0:9}', 'main', { merges: true }))].join('|'));
+")
+check "DS-864 AC1 a commit its branch has moved past, by a merge that leaves it out, can never hold, naming the branch's new head" \
+  '[ "$(cut -d"|" -f1 <<< "$r")" = "{\"holds\":false,\"never\":\"the branch origin/fix/Y has moved to $moved, which ${ahead:0:9} does not build on, so ${ahead:0:9} can no longer land there: the push it waits on is stale\"}" ]'
+g push -q origin "$ahead:refs/heads/fix/Y" --force; g fetch -q origin
+r2=$(node --input-type=module -e "
+import { execFileSync } from 'node:child_process';
+import { commitOnBranch } from '$B/clears-when.mjs';
+const git = (args) => { try { return { ok: true, out: execFileSync('git', ['-C', '$F/c', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }; } catch (e) { return { ok: false, code: e.status, out: String(e.stderr) }; } };
+console.log(JSON.stringify(commitOnBranch(git, '${ahead:0:9}', 'fix/Y')));
+")
+g push -q origin "$landed:refs/heads/fix/Y" --force; g fetch -q origin
+r3=$(node --input-type=module -e "
+import { execFileSync } from 'node:child_process';
+import { commitOnBranch } from '$B/clears-when.mjs';
+const git = (args) => { try { return { ok: true, out: execFileSync('git', ['-C', '$F/c', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }; } catch (e) { return { ok: false, code: e.status, out: String(e.stderr) }; } };
+console.log(JSON.stringify(commitOnBranch(git, '${ahead:0:9}', 'fix/Y')));
+")
+check "DS-864 AC2 a commit its branch head is still an ancestor of waits as before" \
+  '[ "$r3" = "{\"holds\":false,\"note\":\"${ahead:0:9} is not on origin/fix/Y yet\"}" ]'
+check "DS-864 AC3 a commit on its branch holds as before" '[ "$r2" = "{\"holds\":true}" ] && [ "$(cut -d"|" -f2 <<< "$r")" = "{\"holds\":true}" ]'
+check "DS-864 a commit this clone lacks waits as before" '[ "$(cut -d"|" -f3 <<< "$r")" = "{\"holds\":false,\"note\":\"0123456789 is not on origin/fix/Y yet\"}" ]'
+check "DS-864 the default branch or a batch base moving on is how a PR's commit arrives, so it waits as before" \
+  '[ "$(cut -d"|" -f4 <<< "$r")" = "{\"holds\":false,\"note\":\"${ahead:0:9} is not on origin/main yet\"}" ]'
+
 # Ask or take, where the worker contract sends a parking worker, gives every form with a line written in it, and each reads as its form.
 contract="$S/../skills/desk-autopilot/references/ask-or-take.md"
 rows=$(CW="$B/clears-when.mjs" node -e '
