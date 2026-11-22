@@ -87,7 +87,9 @@ export function* decidePrStatus(s) {
     } else if (n in prStates) continue;
     if (!st) {
       st = yield { type: 'read-pr', key: t.key, pr: n, was: t.pr_status };
-      if (!st) { unread.push(n); continue; }
+      // A PR already known merged or closed (read again only for its merge commit or post-merge
+      // criteria) is gone, not unread: an outage hold waits on no PR it already knows has left.
+      if (!st) { if (!(n in prStates)) unread.push(n); continue; }
       // A PR on a branch its worker did not make, or another person's, is never this ticket's: the
       // ticket parks before any list the reopen, undraft, fix-try or merge steps work from holds it.
       const foreign = notOwnPr(t, st, s.logins);
