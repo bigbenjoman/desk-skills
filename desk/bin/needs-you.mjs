@@ -100,7 +100,7 @@ import { runOnce, outOrNull } from './build-memo.mjs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
-import { hasPreviewDb } from './preview-db.mjs';
+import { evidenceHold } from './preview-db.mjs';
 import { cellPlan, parseVerdict, reviewStep, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
@@ -446,8 +446,9 @@ function cellWords(r, t, pr, v, repo) {
   const row = repoConfigValue(r.slug, 'evidence-workflow');
   const view = (id) => { try { return JSON.parse(execFileSync('gh', ['run', 'view', String(id), '--repo', repo, '--json', 'status,conclusion'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return null; } };
   const plan = cellPlan(t, { number: pr, head: v.headRefOid ?? null, body: v.body }, {
-    // A PR with a preview database takes no evidence run (pass/undraft.mjs, preview-db.mjs hasPreviewDb).
-    evidence: row && !hasPreviewDb(r.stateDir, pr) ? parseEvidenceRow([row]) : null,
+    // A PR with a preview database takes no evidence run until its error-page check passed at this head
+    // (pass/undraft.mjs, preview-db.mjs evidenceHold).
+    evidence: row && !evidenceHold(r.stateDir, pr, v.headRefOid ?? null) ? parseEvidenceRow([row]) : null,
     evidenceRun: (head) => evidenceRecord(join(r.stateDir, 'evidence-runs'), pr, head, view),
     missingShots: (body) => missingShots(body, ticketShots(t, r.stateDir)),
   });

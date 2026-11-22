@@ -599,7 +599,8 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('DS-549 AC1 an unreadable PR is refused', dc(['fix/a', '935'], { view: null }).refused, 'PR #935 could not be read');
   t('DS-549 AC2 dispatch not yes is refused', /worker-workflow-dispatch/.test(dc(['fix/a', '935'], { allowed: false }).refused ?? ''), true);
   t('DS-549 AC3 no evidence workflow is refused', /names no usable workflow/.test(dc(['fix/a', '935'], { workflow: null }).refused ?? ''), true);
-  t('DS-550 AC2 a PR with a preview database is refused: its shots are the worker\'s, checked for error pages', /preview database[^]*preview-db\.mjs check/.test(dc(['fix/a', '935'], { previewDb: true }).refused ?? ''), true);
+  t('DS-550 AC2 a preview-database PR held for its error-page check is refused, saying why', dc(['fix/a', '935'], { hold: 'held: run the check' }).refused, 'held: run the check');
+  t('DS-550 AC1 and once its check passed it is dispatched (negative control)', dc(['fix/a', '935'], { hold: null }).args?.join(' '), 'workflow run pr-evidence.yml --repo o/r --ref main -f pr=935');
   t('EV run id from gh workflow run', runIdFrom('https://github.com/o/r/actions/runs/41191877067\n'), '41191877067');
   const evDir = scratch('desk-evidence-');
   t('EV nothing recorded at a head reads as none', evidenceRecord(evDir, 740, HEAD, () => null), null);

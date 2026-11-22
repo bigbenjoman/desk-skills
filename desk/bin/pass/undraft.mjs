@@ -153,7 +153,8 @@ export function* decideRenames(snap) {
 //                 name that t's screenshot directory does not hold), shotDir(t), baseReads(head),
 //                 reviewComments(id) -> { comments } or { comments: null, error },
 //                 waived(n, head, checks, names) (the merge driver waives these red checks: pass.mjs waivedAt),
-//                 previewDb(n) (whether PR n has a preview database: preview-db.mjs hasPreviewDb)
+//                 evidenceHold(n, head) (why PR n's evidence run waits on its error-page check, or null:
+//                 preview-db.mjs evidenceHold)
 export function* decideUndraft(snap) {
   const { cfg, reads } = snap;
   if (!snap.drafts.length) return;
@@ -172,8 +173,9 @@ export function* decideUndraft(snap) {
     const { carry, scope, baseMerge, behind } = reads.baseMoves(t, head);
     const c = undraftCall(t, { number: n, head, base: v.baseRefName ?? null, baseHead: s.base_head ?? null, branch: v.headRefName ?? null, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry, scope },
       { ...passCfg, passAt: snap.at, spine, ...reads.driver(n, head), built: (h) => reads.built(n, h), behind, evidenceRun: (h) => reads.evidenceRun(n, h), missingShots: (body) => reads.missingShots(body, t), shotDir: reads.shotDir(t),
-        // A PR with a preview database takes no evidence run: its shots are a worker's, checked for error pages.
-        ...(reads.previewDb?.(n) ? { evidence: null } : {}),
+        // A PR with a preview database takes no evidence run until a worker's capture passed the error-page
+        // check at this head; until then its cells go to a capture worker, which runs that check.
+        ...(reads.evidenceHold?.(n, head) ? { evidence: null } : {}),
         waived: (names) => s.head === head && !!reads.waived?.(n, head, s.checks, names) });
     if (!c) continue;
     // A verdict carried to this head is recorded there (findings.mjs recordCarry), with no round run.

@@ -5,12 +5,12 @@ import { execFileSync } from 'node:child_process';
 
 export const isPrNumber = (pr) => /^[1-9]\d*$/.test(String(pr ?? ''));
 
-// gh pr view's { headRefName, state, isCrossRepository } for PR `pr` in `repo`, or null when it could
-// not be read.
+// gh pr view's { headRefName, headRefOid, state, isCrossRepository } for PR `pr` in `repo`, or null
+// when it could not be read.
 export function readPrView(repo, pr) {
   if (!repo || !isPrNumber(pr)) return null;
   try {
-    return JSON.parse(execFileSync('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', 'headRefName,state,isCrossRepository'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+    return JSON.parse(execFileSync('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', 'headRefName,headRefOid,state,isCrossRepository'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
   } catch { return null; }
 }
 

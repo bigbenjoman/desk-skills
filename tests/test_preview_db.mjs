@@ -2,7 +2,7 @@
 // covers: desk/bin/preview-db.mjs skills/desk-autopilot/references/worker-contract-stage-5.md
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseRecipe, dbName, fill, shellWord, addsMigration, upCall, runUp, stepError, readRecords, writeRecord, hasPreviewDb, teardownCalls, teardown,
+import { parseRecipe, dbName, fill, shellWord, addsMigration, upCall, runUp, stepError, readRecords, writeRecord, evidenceHold, checkedRecord, teardownCalls, teardown,
   errorPageLine, checkShots, setAside, runCommand, TEARDOWN_TRIES, DB_NAME_MAX, REJECTED_DIR } from '../desk/bin/preview-db.mjs';
 import { previewDbStepOf, TYPES } from '../desk/bin/config-schema.mjs';
 import { scratch } from './scratch.mjs';
@@ -103,9 +103,25 @@ t('AC3 the delete steps are filled for that PR', acts[0].cmds, ['./env.sh unset 
 t('a PR whose state cannot be read is left (negative control)', teardownCalls({ records, recipe, states: {} }), []);
 t('a closed PR the pass still owes a reopen keeps its database and override', teardownCalls({ records, recipe, states: { 42: 'MERGED', 43: 'CLOSED' }, owed: ['43'] }).map((a) => a.pr), ['42']);
 t('a merged PR is torn down even with a reopen marker left (negative control)', teardownCalls({ records, recipe, states: { 42: 'MERGED' }, owed: [42] }).map((a) => a.pr), ['42']);
-t('AC2 hasPreviewDb reads the record by PR number', [hasPreviewDb(state, 43), hasPreviewDb(state, '45')], [true, false]);
+// AC2: §4 Evidence workflow posts its shots unchecked, so a preview-database PR's run waits on a check.
+const H1 = 'a'.repeat(40);
+const H2 = 'b'.repeat(40);
+t('AC2 a PR with no preview database is never held (negative control)', evidenceHold(state, '45', H1), null);
+t('AC2 a PR with a preview database and no check is held, naming the check', /preview database[^]*preview-db\.mjs check/.test(evidenceHold(state, '43', H1) ?? ''), true);
+const ok2 = [{ shot: 'a.png', call: 'ok' }, { shot: 'b.png', call: 'ok' }];
+const rec43 = readRecords(state).find((r) => r.pr === '43');
+writeRecord(state, checkedRecord(rec43, ok2, H1, 'T'));
+t('AC2 a passed check records its head and shot count', readRecords(state).find((r) => r.pr === '43').checked, { head: H1, at: 'T', shots: 2 });
+t('AC2 a passed check at this head lets the workflow run', evidenceHold(state, '43', H1), null);
+t('AC2 a passed check at an older head does not', evidenceHold(state, '43', H2) != null, true);
+t('AC2 a check with an error page clears the pass', checkedRecord({ ...rec43, checked: { head: H1 } }, [...ok2, { shot: 'c.png', call: 'error' }], H1, 'T').checked, undefined);
+t('AC2 a check with a shot missing its text does not pass', checkedRecord(rec43, [{ shot: 'a.png', call: 'no-text' }], H1, 'T').checked, undefined);
+t('AC2 a check of no shots does not pass', checkedRecord(rec43, [], H1, 'T').checked, undefined);
+t('AC2 a check whose PR head could not be read does not pass', checkedRecord(rec43, ok2, null, 'T').checked, undefined);
+writeRecord(state, checkedRecord(readRecords(state).find((r) => r.pr === '43'), [{ shot: 'c.png', call: 'error' }], H1, 'T'));
+t('AC2 so after a failed check the workflow is held again', evidenceHold(state, '43', H1) != null, true);
 const s5 = readFileSync(new URL('../skills/desk-autopilot/references/worker-contract-stage-5.md', import.meta.url), 'utf8');
-t('AC2 the contract keeps a preview-database PR off the evidence workflow', /never through §4 Evidence workflow/.test(s5), true);
+t('AC2 the contract dispatches the evidence workflow only after the check passed', /dispatch it[^]*only once your capture[^]*passed the check below/.test(s5), true);
 t('a recipe gone from the config is the person\'s', teardownCalls({ records: records.slice(0, 1), recipe: null, states: { 42: 'MERGED' } }).map((a) => [a.type, a.list]), [['report', 'failed']]);
 const ran = [];
 const r42 = teardown(acts[0], { state, run: (c) => { ran.push(c); return { ok: true, code: 0, out: '' }; }, now: () => 'T' });

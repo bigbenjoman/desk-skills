@@ -17,7 +17,7 @@ import { readFileSync, readdirSync, writeFileSync, mkdirSync, realpathSync } fro
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SCREENSHOT_FILE, expandHome, configValue, configValues, ghRepo, permission, stateDir, CODE_SPAN as SPAN } from './desk-env.mjs';
-import { hasPreviewDb } from './preview-db.mjs';
+import { evidenceHold } from './preview-db.mjs';
 import { failureLines } from './gate.mjs';
 import { isPrNumber, ownOpenPrRefusal, readPrView } from './own-pr.mjs';
 
@@ -255,9 +255,9 @@ export const evidenceRunArgs = (workflow, repo, ref, n) => ['workflow', 'run', w
 //   node evidence.mjs dispatch <branch> <pr>
 //
 // `view` is gh pr view's { headRefName, state, isCrossRepository } for the PR, or null when it could
-// not be read; `previewDb` whether the PR has a preview database (preview-db.mjs hasPreviewDb), whose
-// shots the workflow would post unchecked for error pages. -> { args } for `gh`, or { refused } saying why.
-export function dispatchCall({ argv, view, workflow, repo, ref, allowed, previewDb = false }) {
+// not be read; `hold` why a PR with a preview database may not have its shots posted yet
+// (preview-db.mjs evidenceHold), or null. -> { args } for `gh`, or { refused } saying why.
+export function dispatchCall({ argv, view, workflow, repo, ref, allowed, hold = null }) {
   if (argv.length !== 2) return { refused: 'usage: evidence.mjs dispatch <branch> <pr>' };
   const [branch, pr] = argv;
   if (!isPrNumber(pr)) return { refused: `"${pr}" is not a PR number` };
@@ -266,7 +266,7 @@ export function dispatchCall({ argv, view, workflow, repo, ref, allowed, preview
   if (!repo) return { refused: 'no §0 GitHub repo' };
   const notOwn = ownOpenPrRefusal(branch, pr, view);
   if (notOwn) return { refused: notOwn };
-  if (previewDb) return { refused: `#${pr} has a preview database, so its evidence is your own capture: the workflow posts its shots unchecked for error pages. Capture them and run preview-db.mjs check on them` };
+  if (hold) return { refused: hold };
   return { args: evidenceRunArgs(workflow, repo, ref, pr) };
 }
 
@@ -284,7 +284,7 @@ if (isMain) {
     argv, view, workflow: row?.workflow ?? null, repo,
     ref: String(safe(() => configValue('default-branch')) ?? '').trim() || 'main',
     allowed: safe(() => permission('worker-workflow-dispatch')) === 'yes',
-    previewDb: !!safe(() => hasPreviewDb(stateDir(), argv[1])),
+    hold: safe(() => evidenceHold(stateDir(), argv[1], view?.headRefOid ?? null)),
   });
   if (call.refused) { console.error(`evidence.mjs: refused: ${call.refused}`); process.exit(1); }
   const r = spawnSync('gh', call.args, { stdio: 'inherit' });

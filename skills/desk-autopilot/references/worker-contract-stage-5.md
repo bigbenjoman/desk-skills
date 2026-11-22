@@ -166,10 +166,11 @@ you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease 
   `node ~/.claude/desk/bin/preview-db.mjs up <your branch> <your PR>` before capturing or dispatching
   anything. It makes the database branch named after your branch, applies your migrations and the
   seed, sets the override for your preview branch only and rebuilds the preview; the pass deletes
-  both once the PR merges or closes, so never delete them yourself. Then capture as above, yourself:
-  never through §4 Evidence workflow, which posts its shots straight into the body where no
-  error-page check reads them (`evidence.mjs dispatch` refuses such a PR, and the pass starts no
-  evidence run for it). Where §3 `worker-preview-db` is not `yes`, park
+  both once the PR merges or closes, so never delete them yourself. Then capture as above, and
+  where §4 Evidence workflow is set (`desk-env list evidence-workflow`), dispatch it (Stage 3 file,
+  §6) only once your capture of the screens its `evidence` block names has passed the check below at
+  your PR's head: that workflow posts its shots straight into the body, where no error-page check
+  reads them, so `evidence.mjs dispatch` refuses until then, and the pass starts no run of it. Where §3 `worker-preview-db` is not `yes`, park
   naming the row, with the command. **A step that fails is a park quoting it**: `up` prints a
   `PARK:` line naming the step, its command and its error; copy it into your `AUTOPILOT_PARK`
   verbatim, with the rest of the tail. Never take the evidence against staging instead. A refusal
@@ -182,7 +183,8 @@ you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease 
   `node ~/.claude/desk/bin/preview-db.mjs check <your screenshot directory>`. It moves any shot whose
   text is an error page (a crash page, a server error, a not-found page, a database error naming a
   missing table or column) into `error-pages/` beside it, where no upload reads it, and exits 1 on
-  one, or on a shot with no text. An error page is never evidence: find why (the preview not yet
+  one, or on a shot with no text. A pass is kept for your PR at its head, which the evidence workflow
+  waits on; a failed check holds it again. An error page is never evidence: find why (the preview not yet
   rebuilt, a migration that did not apply), fix it and capture again, or park quoting the line it
   printed. Look at every shot as well; the check reads text, not pixels.
 - **Opening the PR as a DRAFT.** `gh pr create --repo <repo> --draft --base <default> --head

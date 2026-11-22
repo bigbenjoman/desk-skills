@@ -235,19 +235,22 @@ t('fixTryQuote keeps a protected try\'s files', j(fixTryQuote({ kind: 'protected
   t('AC7 with no process started and nothing written', j(r.calls), '[]');
 }
 
-// DS-550 AC2: a PR with a preview database takes no evidence run, since the workflow posts its shots
-// unchecked for error pages; its cells go to a capture worker, whose shots preview-db.mjs check reads.
+// DS-550 AC2: a preview-database PR's evidence run waits until a capture passed the error-page check at
+// its head, since the workflow posts its shots unchecked; until then its cells go to a capture worker,
+// whose shots preview-db.mjs check reads.
 {
   const BODY = '| after |\n|---|\n| _drag after-plans.png_ |\n\n```evidence\n/plans\n```\n';
-  const snapWith = (previewDb) => undraftSnap([{ t: ticket('A'), s: status() }], {
+  const asked = [];
+  const snapWith = (hold) => undraftSnap([{ t: ticket('A'), s: status() }], {
     cfg: { ...undraftSnap([]).cfg, evidence: { workflow: 'pr-evidence.yml' } },
-    reads: { ...undraftSnap([]).reads, missingShots: () => ['after-plans.png'], previewDb: () => previewDb },
+    reads: { ...undraftSnap([]).reads, missingShots: () => ['after-plans.png'], evidenceHold: (n, head) => { asked.push([n, head]); return hold; } },
   });
-  const run = (previewDb) => drive(decideUndraft, snapWith(previewDb), { 'pr-view': view([review(marker(ALL_ZERO))], { body: BODY }) }).actions;
-  t('DS-550 AC2 a PR with no preview database starts its evidence run (negative control)', acts(run(false)).includes('evidence'), true);
-  const withDb = run(true);
-  t('DS-550 AC2 a PR with a preview database starts no evidence run', acts(withDb).includes('evidence'), false);
-  t('DS-550 AC2 its cells go to a capture worker instead', withDb.some((a) => a.type === 'apply-fix' && /capture/.test(j(a))), true);
+  const run = (hold) => drive(decideUndraft, snapWith(hold), { 'pr-view': view([review(marker(ALL_ZERO))], { body: BODY }) }).actions;
+  t('DS-550 AC1 a PR not held (no preview database, or its check passed) starts its evidence run (negative control)', acts(run(null)).includes('evidence'), true);
+  t('DS-550 AC2 the hold is asked for that PR at the head read', j(asked[0]), j([701, HEAD]));
+  const held = run('held');
+  t('DS-550 AC2 a held PR starts no evidence run', acts(held).includes('evidence'), false);
+  t('DS-550 AC2 its cells go to a capture worker instead', held.some((a) => a.type === 'apply-fix' && /capture/.test(j(a))), true);
 }
 
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
