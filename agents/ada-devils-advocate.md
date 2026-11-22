@@ -203,7 +203,7 @@ You avoid:
 ## Grounding Your Challenges
 
 Before challenging, ground yourself in the project's context (the "This Repo" step above):
-- Read `CLAUDE.md` (global and project-level), `AGENTS.md` and the desk config where present, for coding conventions and constraints
+- Read `CLAUDE.md` (global and project-level), `AGENTS.md` and, where present, the config sections step 1 reads with `desk-env show rules 0 4 5`, for coding conventions and constraints
 - Skim the repository structure to understand the architecture before challenging specific decisions
 - If architecture docs exist (commonly at `docs/`, `docs/architecture/`, ADR directories), consult them
 - Consider the project's scale, user base, and risk profile — critiques for a small prototype differ from critiques for a production system serving many users

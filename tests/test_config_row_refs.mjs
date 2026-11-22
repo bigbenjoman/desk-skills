@@ -104,8 +104,8 @@ const WHOLE = [
   /\bdesk-env show(?![ \t]+(?:§?\d[ab]?|rules)\b)/,
 ];
 const SECTION_READ = /\bdesk-env show(?:[ \t]+(?:§?\d[ab]?|rules)\b)+|\bdesk-env get --json(?: --where)? --section\b/;
-const wholeReads = (text) => text.replace(/^---\n[\s\S]*?\n---\n/, '').split(/\n\s*\n/)
-  .filter((p) => WHOLE.some((re) => re.test(p))).map((p) => p.trim().split('\n')[0].slice(0, 80));
+const wholeReads = (text, res = WHOLE) => text.replace(/^---\n[\s\S]*?\n---\n/, '').split(/\n\s*\n/)
+  .filter((p) => res.some((re) => re.test(p))).map((p) => p.trim().split('\n')[0].slice(0, 80));
 t('DS-875 can fail: Read the CONFIG file', wholeReads('Read the `CONFIG` file. `EXISTS=no` means stop.').length, 1);
 t('DS-875 can fail: Read the config, in a parenthesis', wholeReads('(resolve it with `desk-env where`, then Read the config)').length, 1);
 t('DS-875 can fail: desk-env show with no section', wholeReads('Read `desk-env show` (rules and rows, no §3c).').length, 1);
@@ -142,9 +142,8 @@ for (const s of ['desk-ticket', 'desk-autopilot']) {
 // reads, or the paragraph naming it reads the row with desk-env (AC2); and an agent that reads the
 // config still carries on when `desk-env where` prints EXISTS=no or desk-env is missing (AC3). A
 // `§<n> above` or `below` is the agent's own heading, not the config's.
-const AGENT_WHOLE = [...WHOLE, /\bconfig path\b[^]{0,40}\bRead it\b/i];
-const agentWhole = (text) => text.replace(/^---\n[\s\S]*?\n---\n/, '').split(/\n\s*\n/)
-  .filter((p) => AGENT_WHOLE.some((re) => re.test(p))).map((p) => p.trim().split('\n')[0].slice(0, 80));
+const AGENT_WHOLE = [...WHOLE, /\bconfig path\b[^]{0,40}\bRead it\b/i, /\bread\b[^.\n§]{0,80}\bthe desk config\b(?!'s)/i];
+const agentWhole = (text) => wholeReads(text, AGENT_WHOLE);
 const ROW_READ = /\bdesk-env\s+(?:get|list|cmds|perm|required-fields)\b/;
 function unreadSections(text) {
   const body = text.replace(/^---\n[\s\S]*?\n---\n/, '');
@@ -160,6 +159,8 @@ function unreadSections(text) {
 }
 const carriesOn = (text) => /`EXISTS=no`[^]{0,120}\b(?:missing|not installed)\b[^]{0,60}\bcarry on\b/.test(text);
 t('DS-876 can fail: an agent handed the config path to Read', agentWhole('If it names a config path, Read it (§0 One-line description).').length, 1);
+t('DS-876 can fail: an agent told to read the desk config', agentWhole('- Read `CLAUDE.md`, `AGENTS.md` and the desk config where present').length, 1);
+t('DS-876 AC1 passes: a row of the desk config', agentWhole('Read the files the desk config\'s §5 Design system row names.').length, 0);
 t('DS-876 AC1 passes: config that is globally read', agentWhole('Edge Config for small globally-read config.').length, 0);
 t('DS-876 AC2 can fail: a section no read covers', unreadSections('Read `desk-env show rules 0 5`: §0 One-line description, §4 Toolchain.').join(','), '§4');
 t('DS-876 AC2 passes: a row read beside the section', unreadSections('Use config §2 Design canvases directory (`desk-env get design-dir`).').join(','), '');
