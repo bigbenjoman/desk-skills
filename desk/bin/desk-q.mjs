@@ -2789,6 +2789,7 @@ function cutCells(cells, width) {
   if (out.length) out.at(-1)[0] = out.at(-1)[0].trimEnd();
   return [...out, [' …', null]];
 }
+const cutLine = (cells, width) => cutCells(cells.map((s) => [s, null]), width).map(([s]) => s).join('');
 
 function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false, width = null, badge = '', pinUsage = false, costs, cache } = {}) {
   // One row per repo, adding up its batches on screen.
@@ -2809,8 +2810,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   const head = [
     ...overviewHead(repos, shown, { now, solid: interactive && !process.env.NO_COLOR, avail, cap, gate, perWorker, pinUsage, levers: leversLine(pageState({ now }), now), count: needOf }),
     '',
-    bold(cutCells([`  ${pad('REPO', w)}`, lay.runsW ? pad('RUNS ON', lay.runsW) : '', pad('LAST PASS', lay.lastW), ...lay.cols.map(([h, , cw]) => rpad(h, cw)), `  ${pad('ALL DONE BY', lay.qdW)}`, '  WORKERS']
-      .map((s) => [s, null]), width).map(([s]) => s).join('')),
+    bold(cutLine([`  ${pad('REPO', w)}`, lay.runsW ? pad('RUNS ON', lay.runsW) : '', pad('LAST PASS', lay.lastW), ...lay.cols.map(([h, , cw]) => rpad(h, cw)), `  ${pad('ALL DONE BY', lay.qdW)}`, '  WORKERS'], width)),
   ];
   const rows = [], foot = [];
   const row = (r, line) => rows.push({ id: r.id, line, open: { kind: 'repo', slug: r.id } });
@@ -2826,7 +2826,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     rows.push(segRow(r.id, cutCells([[`  ${pad(r.name, w)}`, null], runs(r), [pad(last, lay.lastW), lastSgr], ...lay.cols.map(n),
       ['  ', null], [pad(qd, lay.qdW), ['passes stopped', 'no history'].includes(qd) ? DIM : null], [lay.workers(r), null]], width), { kind: 'repo', slug: r.id }));
   }
-  if (all) for (const r of none) row(r, `  ${pad(r.name, w)}${runs(r)[0]}${pad('no batch', lay.lastW + lay.cols.reduce((a, c) => a + c[2], 0) + 2 + lay.qdW)}  cap ${r.cap}`);
+  if (all) for (const r of none) row(r, cutLine([`  ${pad(r.name, w)}`, runs(r)[0], pad('no batch', lay.lastW + lay.cols.reduce((a, c) => a + c[2], 0) + 2 + lay.qdW), `  cap ${r.cap}`], width));
   if (!list.length && !(all && none.length)) foot.push('  No batch is live, and no quiet batch needs you.');
   if (!all && none.length) {
     const more = `${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`;
