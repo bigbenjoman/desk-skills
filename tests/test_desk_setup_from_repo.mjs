@@ -23,7 +23,7 @@ t('#827 every other row is one table, one value each it will write, with what ea
 t('DS-822 AC4 the Recommended value is shown wherever it differs from the start-point answer', has(part, 'Where the start-point answer and the Recommended value differ, show both beside it'), true);
 t('#827 one question: write it as shown, edit some rows, or ask every row', ['One `AskUserQuestion`: write the table as shown, edit some rows', 'every other row writes its table value', 'or ask every row'].map((s) => has(part, s)), [true, true, true]);
 const step5 = flat(readFileSync(join(skill, 'references/step-5-write.md'), 'utf8'));
-t('DS-822 AC6 the step 5 summary names every yes copied from the start-point repo', [has(part, "step 5's summary names each"), has(step5, '`copied yes: <key> · <key> … (from <owner/name>)`')], [true, true]);
+t('DS-822 AC6 the step 5 summary names every yes copied from the start-point repo', [has(part, "step 5's summary names each"), has(step5, '`copied yes: <key> · <key> … (from <owner/name>)`'), has(step5, 'naming every §3 and §3b row written `yes`')], [true, true, true]);
 t('#827 the consistency checks run on the confirmed rows, and an edit turning a row on asks its dependents', ['Then the consistency checks below, on the rows as confirmed', 'ask those dependents'].map((s) => has(part, s)), [true, true]);
 t('#827 Phase 0 levers and Codex review stay out of the table, never copied', has(part, 'and the Phase 0 levers and Codex review rows (set as the core'), true);
 t('#827 the autopilot statement comes before a table that turns workers on', [has(part, 'the autopilot statement below comes first'), has(step2, 'Before the autopilot round, or a start-point table that writes `autopilot-workers` `yes`, say this plainly')], [true, true]);
