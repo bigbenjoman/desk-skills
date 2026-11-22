@@ -330,6 +330,16 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   t('AC6 the rebuilt queue holds the log\'s values', `${rebuilt.tickets.A.lane} ${rebuilt.tickets.A.state} ${rebuilt.tickets.B.park.question}`, 'A running which colour?');
   t('AC6 queue.json is unchanged', readFileSync(f, 'utf8') === before, true);
   t('AC6 an unknown batch is refused', `${q(f, ON, 'rebuild', 'no-such').status}`, '11');
+  // A named batch rebuilds from its own queue, whatever state the current one is in.
+  const { batchPaths, repoSlug } = await import('../desk/bin/desk-env.mjs');
+  const named = batchPaths(repoSlug(), 'R-1').queue;
+  mkdirSync(dirname(named), { recursive: true });
+  write(named, { version: 1, batch: 'R-1', tickets: { R: tk('R') } });
+  const corrupt = join(T, 'corrupt', 'queue.json');
+  mkdirSync(dirname(corrupt));
+  writeFileSync(corrupt, '{ not json');
+  const rn = q(corrupt, ON, 'rebuild', 'R-1');
+  t('AC6 a corrupt current queue does not stop a named batch rebuilding', `${rn.status} ${rn.stdout.includes(`wrote ${join(dirname(named), 'queue.rebuilt.json')}`)}`, '0 true');
 
   // AC3: a pass archiving a done ticket leaves the difference at zero: it is on neither side.
   const g = fixture({ version: 1, batch: 'b', tickets: { M: tk('M', { state: 'done', result: { pr: 4 } }), A: tk('A') } });

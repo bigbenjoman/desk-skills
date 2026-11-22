@@ -796,7 +796,9 @@ if (cmd === 'finish') {
   finishPr.n = n;
 }
 if (WRITES.includes(cmd) || (cmd === 'backfill-holds' && !args.includes('--dry-run'))) lock();
-const q = cmd === 'init' ? empty() : load(); // init must be able to repair a corrupt queue
+// init must be able to repair a corrupt queue, and rebuild reads its own batch's queue (under its lock),
+// so a corrupt current one must not stop it rebuilding another batch.
+const q = cmd === 'init' ? empty() : cmd === 'rebuild' ? null : load();
 
 switch (cmd) {
   case 'init': {
