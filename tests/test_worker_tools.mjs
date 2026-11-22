@@ -10,7 +10,7 @@ import { readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync, statSy
 import { join, dirname, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { WORKER_TOOLS, TRIAGE_TOOLS } from '../desk/bin/worker-tools.mjs';
+import { WORKER_TOOLS, TRIAGE_TOOLS, UNREACHABLE } from '../desk/bin/worker-tools.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -61,12 +61,32 @@ for (const f of SOURCES) {
   for (const tool of BUILTIN) if (new RegExp(`\\b${tool}\\b`).test(s)) named.set(tool, [...(named.get(tool) || []), relative(root, f)]);
 }
 t(`the scan read the worker's files (${SOURCES.length})`, SOURCES.length > 40, true);
-const missing = [...named].filter(([tool]) => !WORKER_TOOLS.includes(tool) && !NOT_OFFERED[tool]).map(([tool, fs]) => `${tool} (named in ${fs.join(', ')})`);
+const missing = [...named].filter(([tool]) => !WORKER_TOOLS.includes(tool) && !NOT_OFFERED[tool] && !UNREACHABLE[tool]).map(([tool, fs]) => `${tool} (named in ${fs.join(', ')})`);
 t('AC7 every tool the contract and skills name is in the worker list', missing, []);
 t('AC2 every tool in the worker list is named by the contract or a skill', WORKER_TOOLS.filter((x) => !named.has(x) && !NAMED_OUTSIDE[x]), []);
 t('a tool named outside this repo is offered and not also named here (else drop it from NAMED_OUTSIDE)',
   Object.keys(NAMED_OUTSIDE).filter((x) => !WORKER_TOOLS.includes(x) || named.has(x)), []);
 t('a tool named but not offered is still named (else drop it from NOT_OFFERED)', Object.keys(NOT_OFFERED).filter((x) => !named.has(x)), []);
+
+// DS-887: a tool a worker cannot reach anything with is never offered, and no file a worker reads
+// names it, whatever the wording around it: a worker that is told to use one spends its park on a dead path.
+const unreachableIn = (files, text = (f) => readFileSync(f, 'utf8')) => files.flatMap((f) => Object.keys(UNREACHABLE)
+  .filter((tool) => new RegExp(`\\b${tool}\\b`).test(text(f)))
+  .map((tool) => `${relative(root, f)} names ${tool}, which a worker cannot reach: ${UNREACHABLE[tool]}`));
+t('DS-887 every unreachable tool is a Claude Code built-in with a reason', Object.entries(UNREACHABLE).filter(([x, why]) => !BUILTIN.includes(x) || !why), []);
+t('DS-887 AC5 the worker list offers no unreachable tool', WORKER_TOOLS.filter((x) => UNREACHABLE[x]), []);
+t('DS-887 AC3 no file a worker reads names a tool it cannot reach', unreachableIn(SOURCES), []);
+{
+  const contract = join(refs, 'autopilot-worker-contract.md');
+  const added = `${readFileSync(contract, 'utf8')}\n2. \`SendMessage\` the orchestrator with the question.\n`;
+  const [got] = unreachableIn([contract], () => added);
+  t('DS-887 AC3 a line telling a worker to SendMessage the orchestrator fails, naming the file, the tool and why',
+    !!got && got.startsWith('skills/desk-autopilot/references/autopilot-worker-contract.md names SendMessage,') && got.includes('agent registry'), true);
+  // The orchestrator's own references message live workers, and are not what a worker reads.
+  const orch = ['sharing-the-machine.md', 'orchestrator-recovery.md', 'concurrency-and-memory.md'].map((f) => join(refs, f));
+  t('DS-887 AC4 the orchestrator references name SendMessage (else this check proves nothing)', orch.every((f) => /\bSendMessage\b/.test(readFileSync(f, 'utf8'))), true);
+  t('DS-887 AC4 they are not read as a worker\'s, so raise no reachability finding', [orch.filter((f) => SOURCES.includes(f)), unreachableIn(SOURCES.filter((f) => orch.includes(f)))], [[], []]);
+}
 
 // AC5: every tool an agent definition names is in the worker's list.
 for (const f of readdirSync(join(root, 'agents')).filter((x) => x.endsWith('.md'))) {
@@ -162,6 +182,8 @@ let a = argv('run', 0);
 t('AC1 dry-run spawn launches the worker', r.status === 0 && !!a && a.includes('-p') && a.includes('--append-system-prompt'), true);
 t('AC1 the worker is launched with --tools <worker list>', toolsOf(a), LIST);
 t('AC1 its --tools excludes Workflow', (toolsOf(a) || '').split(',').includes('Workflow'), false);
+t('DS-887 AC5 the spawned worker is offered neither SendMessage nor ListAgents',
+  (toolsOf(a) || 'unset').split(',').filter((x) => ['SendMessage', 'ListAgents'].includes(x)), []);
 
 // AC3: the preflight offers the same list; the finder model check offers none.
 r = spawnWorker('preflight', 'pre', { AUTOPILOT_PREFLIGHT: '1', AUTOPILOT_FINDER_MODEL: 'opus' });
