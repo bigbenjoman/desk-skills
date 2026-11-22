@@ -2313,6 +2313,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     'K-4': merged(94, 14 * DAY + 300, { follow_on: [LATER], follow_checks: [{ ...LATER, pr: 94, result: 'fail', found: 'no wait_calls column', evidence: '/x', at: minsAgo(1) }] }),
     'K-5': merged(95, 5, { follow_on: [STAGING] }),
     'K-6': merged(96, 14 * DAY + 5, { follow_on: [LATER] }),
+    'K-7': merged(97, 14 * DAY + 5, { follow_on: [{ step: 'check the invoice totals look right', row: null }, LATER_PERSON] }),
   } });
   const items = N.collect({ word: 'follow966' }).items.filter((i) => i.kind === 'follow');
   const listed = (k) => items.filter((i) => i.t.key === `follow:${k}` || i.t.key.startsWith(`follow:${k}:`));
@@ -2322,6 +2323,11 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-966 AC3 a delayed step the checker failed is listed with its evidence', /it failed: no wait_calls column \(evidence: \/x\)/.test(listed('K-4')[0]?.need ?? ''), true);
   t('DS-966 AC3 a delayed step just due is held for the checker', listed('K-6').length, 0);
   t('DS-966 AC4 a report step naming staging is still the person\'s', /Check: phase0-report --per-ticket on staging/.test(listed('K-5')[0]?.need ?? ''), true);
+  // A delayed step falls due after the person may have been shown the ticket's other steps: done on that
+  // item must not settle it unseen, so it is an item of its own.
+  const k7 = Object.fromEntries(listed('K-7').map((i) => [i.t.key.replace(/:later:[0-9a-f]+$/, ':later'), i.steps.map((s) => s.step)]));
+  t('DS-966 a person\'s delayed step, once due, is an item of its own beside the ticket\'s other steps',
+    JSON.stringify(k7), JSON.stringify({ 'follow:K-7': ['check the invoice totals look right'], 'follow:K-7:later': [LATER_PERSON.step] }));
 }
 
 // A follow step's gate: `main` waits on the merge commit reaching origin/<default>, `production` on it

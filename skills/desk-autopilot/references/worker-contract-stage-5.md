@@ -201,7 +201,8 @@ you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease 
   the merge commit). Leave it out
   for the merge itself; any other value keeps no steps at all. Add `"wait_days": <n>` to a step that
   can only be checked a set time after the merge ("two weeks after the merge, compare …" is
-  `"wait_days": 14`): it is neither run nor listed until then. Put the same steps in your Stage 8
+  `"wait_days": 14`): it is neither run nor listed until then. No two steps with the same gate may
+  share their text: desk knows a step by both, and refuses the list. Put the same steps in your Stage 8
   ticket comment, one line each, under "Once this merges:". Once the PR merges and each step's gate
   holds, needs-you lists the step for the person with its row's value. A step that only reads GitHub CI
   results (a run, a check, a shard's time), desk's logs (`audit.jsonl` and the like), desk's state

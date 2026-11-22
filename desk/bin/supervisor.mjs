@@ -96,6 +96,7 @@ import { actOnPlan } from './epic-plan.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { postMergeDue } from './post-merge.mjs';
 import { followDueSince } from './follow-steps.mjs';
+import { outAt } from './needs-you.mjs';
 import { auditEnded } from './levers-audit.mjs';
 import { readInstalled, oldCode, lockVersion, AGENTS, plistPath, unitDir, unitPath, readUnit, restartDriver } from './installed.mjs';
 import { supervisorLabel, launchdDomain, supervisorLoaded, backend, systemctl } from './run-by.mjs';
@@ -681,7 +682,7 @@ function batchInterval(intake) {
     || ((all.some((t) => (t.state === 'parked' && !isHeld(t)) || t.state === 'failed' || heldOutside(t)) || ticketlessHeld(q)) && since >= IDLE_RECHECK_MS);
   // And a post-merge scan falling due while a merged PR is still watched, or a follow step that waits a
   // set time after its merge falling due: only a pass runs either.
-  const watchDue = postMergeDue({ state, queue: q }) || followDueSince(q.tickets, idleAt);
+  const watchDue = postMergeDue({ state, queue: q }) || followDueSince(q.tickets, idleAt, (t) => Date.parse(outAt(q, t) ?? ''));
   // And a blind audit spawned into this batch's state that has ended: only a pass records it.
   const auditDone = (() => { try { return auditEnded(E.repoSlug(), state); } catch { return false; } })();
   if (s.idle && s.idle === fingerprint(q) && !answeredNow && !closedOut && !recheck && !watchDue && !auditDone) {

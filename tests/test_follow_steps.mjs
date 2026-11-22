@@ -61,16 +61,26 @@ t('AC3 a label is carried whole only', kind('needs-bento read audit.jsonl for th
   t('DS-966 wait_days wins over the text', d('two weeks after the merge, read audit.jsonl', { wait_days: 5 }), 5 * DAY);
   t('DS-966 a step with no delay is due at once', d('the CI run on main is green'), 0);
   t('DS-966 "two weeks before and after" names no delay after the merge', d('compare the two weeks before and after in audit.jsonl'), 0);
+  t('DS-966 "twenty-one days after the merge" waits 21 days, not 1', d('twenty-one days after the merge, read audit.jsonl'), 21 * DAY);
+  t('DS-966 "thirty two days after the merge" waits 32 days', d('thirty two days after the merge, read audit.jsonl'), 32 * DAY);
+  t('DS-966 a deadline ("within two days after the merge") is a window, not a wait', d('within two days after the merge, read the nightly runs in audit.jsonl'), 0);
+  t('DS-966 and so is "for 3 days after the merge"', d('for 3 days after the merge, watch the CI run on main'), 0);
   const OUT = Date.parse('2026-11-21T00:00:00.000Z');
   const S = { step: 'two weeks after the merge, compare wait_calls in audit.jsonl', row: null };
   t('DS-966 a delayed step falls due its delay after the code went out', new Date(followDueAt(S, OUT)).toISOString(), '2026-12-05T00:00:00.000Z');
   t('DS-966 AC2 it is owed no run before then', j(owedSteps({ follow_on: [S] }, [], { now: OUT + 13 * DAY, out: OUT })), '[]');
   t('DS-966 AC3 and is owed one once due', j(owedSteps({ follow_on: [S] }, [], { now: OUT + 14 * DAY, out: OUT })), j([S]));
   const tk = (more = {}) => ({ K: { key: 'K', merged_at: '2026-11-21T00:00:00.000Z', follow_on: [S], ...more } });
-  t('DS-966 AC3 an idle batch is woken once a delayed step falls due since it went idle', followDueSince(tk(), OUT + DAY, OUT + 14 * DAY), true);
-  t('DS-966 but not before it is due', followDueSince(tk(), OUT + DAY, OUT + 13 * DAY), false);
-  t('DS-966 nor again once a pass ran after it fell due', followDueSince(tk(), OUT + 14 * DAY + 1, OUT + 15 * DAY), false);
-  t('DS-966 nor for a step already checked', followDueSince(tk({ follow_checks: [{ ...S, result: 'fail', at: 'x' }] }), OUT + DAY, OUT + 14 * DAY), false);
+  const merge = (x) => Date.parse(x.merged_at);
+  t('DS-966 AC3 an idle batch is woken once a delayed step falls due since it went idle', followDueSince(tk(), OUT + DAY, merge, OUT + 14 * DAY), true);
+  t('DS-966 but not before it is due', followDueSince(tk(), OUT + DAY, merge, OUT + 13 * DAY), false);
+  t('DS-966 nor again once a pass ran after it fell due', followDueSince(tk(), OUT + 14 * DAY + 1, merge, OUT + 15 * DAY), false);
+  t('DS-966 nor for a step already checked', followDueSince(tk({ follow_checks: [{ ...S, result: 'fail', at: 'x' }] }), OUT + DAY, merge, OUT + 14 * DAY), false);
+  // A batch child's code goes out at its promotion, after its own merge: the wake counts from that, as the pass does.
+  const promoted = () => OUT + 20 * DAY;
+  t('DS-966 a batch child promoted after its merge is not woken for at its merge plus the delay', followDueSince(tk(), OUT + DAY, promoted, OUT + 14 * DAY), false);
+  t('DS-966 but is at its promotion plus the delay, after an idle pass in between', followDueSince(tk(), OUT + 15 * DAY, promoted, OUT + 34 * DAY), true);
+  t('DS-966 nor while its code is not out', followDueSince(tk(), OUT + DAY, () => NaN, OUT + 40 * DAY), false);
 }
 
 // ---- what is owed, and what was recorded ---------------------------------
@@ -79,15 +89,16 @@ t('AC3 a label is carried whole only', kind('needs-bento read audit.jsonl for th
   const B = { step: 'check the page loads', row: null };
   const C = { step: 'the CI run on main is green', row: null, after: 'main' };
   const tk = { follow_on: [A, B, C], follow_checks: [{ ...A, result: 'fail', found: 'x', evidence: 'y' }] };
-  t('owed steps are the runnable ones with no record, by text and gate', j(owedSteps(tk)), j([C]));
-  t('a record is found by text and gate', j([checkOf(tk, A)?.result ?? null, checkOf(tk, C)]), j(['fail', null]));
   const now = Date.parse('2026-11-20T12:00:00.000Z');
+  const out = now - FOLLOW_RETRY_MS;
+  t('owed steps are the runnable ones with no record, by text and gate', j(owedSteps(tk, [], { now, out })), j([C]));
+  t('a record is found by text and gate', j([checkOf(tk, A)?.result ?? null, checkOf(tk, C)]), j(['fail', null]));
   const pending = (at) => ({ follow_on: [A], follow_checks: [{ ...A, result: 'pending', found: 'run 9 in progress', evidence: 'u', at }] });
-  t('a step found pending is owed again once FOLLOW_RETRY_MS has passed', j(owedSteps(pending(new Date(now - FOLLOW_RETRY_MS).toISOString()), [], { now })), j([A]));
-  t('but not before', j(owedSteps(pending(new Date(now - FOLLOW_RETRY_MS + 1000).toISOString()), [], { now })), '[]');
-  t('nor once retries are over', j(owedSteps(pending('2026-11-20T10:00:00.000Z'), [], { now, retry: false })), '[]');
+  t('a step found pending is owed again once FOLLOW_RETRY_MS has passed', j(owedSteps(pending(new Date(now - FOLLOW_RETRY_MS).toISOString()), [], { now, out })), j([A]));
+  t('but not before', j(owedSteps(pending(new Date(now - FOLLOW_RETRY_MS + 1000).toISOString()), [], { now, out })), '[]');
+  t('nor once retries are over, FOLLOW_WAIT_MS after it fell due', j(owedSteps(pending('2026-11-20T10:00:00.000Z'), [], { now, out: now - FOLLOW_WAIT_MS })), '[]');
   const requeued = { result: { pr: 9 }, follow_on: [A], follow_checks: [{ ...A, pr: 8, result: 'pass', found: 'x', evidence: 'y' }] };
-  t('a record an earlier PR\'s checker made is not this PR\'s', j([checkOf(requeued, A), owedSteps(requeued)]), j([null, [A]]));
+  t('a record an earlier PR\'s checker made is not this PR\'s', j([checkOf(requeued, A), owedSteps(requeued, [], { now, out })]), j([null, [A]]));
 }
 
 // ---- the pass phase --------------------------------------------------------

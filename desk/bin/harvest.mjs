@@ -213,8 +213,12 @@ export function followOnIn(done) {
   if (badGate !== undefined) return { steps: [], error: `an entry's "after" is not one of ${FOLLOW_GATES.join(', ')}: ${JSON.stringify(badGate)}` };
   const badWait = list.find((x) => x.wait_days != null && !(typeof x.wait_days === 'number' && x.wait_days > 0 && Number.isFinite(x.wait_days)));
   if (badWait !== undefined) return { steps: [], error: `an entry's "wait_days" is not a positive number: ${JSON.stringify(badWait)}` };
-  return { steps: list.map((x) => ({ step: x.step.trim().slice(0, FOLLOW_ON_MAX), row: x.row?.trim() || null, ...gateOf(x.after),
-    ...(x.wait_days != null ? { wait_days: x.wait_days } : {}) })), error: null };
+  const steps = list.map((x) => ({ step: x.step.trim().slice(0, FOLLOW_ON_MAX), row: x.row?.trim() || null, ...gateOf(x.after),
+    ...(x.wait_days != null ? { wait_days: x.wait_days } : {}) }));
+  // A step is known by its text and gate (sameStep), so two alike would be settled and checked as one.
+  const twin = steps.find((x, i) => steps.findIndex((y) => sameStep(x, y)) !== i);
+  if (twin !== undefined) return { steps: [], error: `two entries have the same "step" and "after": ${JSON.stringify(twin.step)}` };
+  return { steps, error: null };
 }
 // A queue entry whose follow-on steps wait on the person: its PR merged, steps kept, none said run yet.
 // Two follow-on steps are the same step by their text and gate (`after`, none for the merge).

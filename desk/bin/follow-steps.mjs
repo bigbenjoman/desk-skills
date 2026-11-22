@@ -40,16 +40,19 @@ const namesReport = (text) => new RegExp(REPORT, 'i').test(text);
 const withoutReports = (text) => text.replace(new RegExp(REPORT, 'gi'), ' ').replace(FLAG, ' ');
 
 // How long after its code went out a step waits before it is due: its `wait_days`, else "<n> days" or
-// "<n> weeks after the merge" in its text, else 0.
+// "<n> weeks after the merge" in its text, else 0. A number is whole ("twenty-one", never its "one"), and
+// one after a word setting a deadline ("within two days after the merge") is a window, not a wait.
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NUMBER = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, fourteen: 14, twenty: 20, thirty: 30 };
-const DELAY = new RegExp(`\\b(\\d+|${Object.keys(NUMBER).join('|')})[\\s-]+(days?|weeks?)\\s+(?:after|past|since)\\s+(?:the\\s+|this\\s+|its\\s+|it\\s+|pr\\s+)?merg`, 'i');
+const COMPOUND = '(?:twenty|thirty)[\\s-](?:one|two|three|four|five|six|seven|eight|nine)';
+const DEADLINE = '(?<!\\b(?:within|for|over|during|by|in\\s+the\\s+first)\\s+)';
+const DELAY = new RegExp(`(?<![\\w-])${DEADLINE}(\\d+|${COMPOUND}|${Object.keys(NUMBER).join('|')})[\\s-]+(days?|weeks?)\\s+(?:after|past|since)\\s+(?:the\\s+|this\\s+|its\\s+|it\\s+|pr\\s+)?merg`, 'i');
 export function followDelayMs(s) {
   const days = Number(s?.wait_days);
   if (Number.isFinite(days) && days > 0) return days * DAY_MS;
   const m = DELAY.exec(String(s?.step ?? ''));
   if (!m) return 0;
-  const n = /^\d+$/.test(m[1]) ? Number(m[1]) : NUMBER[m[1].toLowerCase()];
+  const n = /^\d+$/.test(m[1]) ? Number(m[1]) : m[1].toLowerCase().split(/[\s-]+/).reduce((a, w) => a + NUMBER[w], 0);
   return n * (/^w/i.test(m[2]) ? 7 : 1) * DAY_MS;
 }
 // When step `s` falls due, given when its code went out (`out`, ms).
@@ -72,14 +75,16 @@ export function followKind(s, labels = []) {
   return report || CI.test(rest) || DESK.test(rest) ? 'runnable' : 'unknown';
 }
 
-// Whether step `s` is due at `now`, its code having gone out at `out` (ms; unknown, it is not).
-export const followDue = (s, out, now = Date.now()) => Number.isFinite(out) && now >= followDueAt(s, out);
+// Whether step `s` is due at `now`, its code having gone out at `out` (ms): a step that waits no set time
+// always is, its gate deciding as before; one that waits is once its delay has passed (out unknown, never).
+export const followDue = (s, out, now = Date.now()) => !followDelayMs(s) || (Number.isFinite(out) && now >= followDueAt(s, out));
 // Whether a merged ticket among `tickets` has a delayed step that fell due after `since` and by `now`
-// (ms), none checked yet: an idle batch runs no pass, so this wakes it for one. Its code is taken as out
-// at its promotion or else its merge, the earliest needs-you.mjs outAt can be.
-export const followDueSince = (tickets, since, now = Date.now()) => Object.values(tickets ?? {}).some((t) => {
+// (ms), none checked yet: an idle batch runs no pass, so this wakes it for one. `outOf(t)` is when its
+// code went out (ms), as the pass and needs-you take it (needs-you.mjs outAt); unknown, it is not due.
+export const followDueSince = (tickets, since, outOf, now = Date.now()) => Object.values(tickets ?? {}).some((t) => {
   if (!followOnPending(t)) return false;
-  const out = Date.parse(t.promoted_at ?? t.merged_at);
+  const out = outOf(t);
+  if (!Number.isFinite(out)) return false;
   return t.follow_on.some((s) => {
     if (!followDelayMs(s) || checkOf(t, s)) return false;
     const due = followDueAt(s, out);
@@ -96,16 +101,14 @@ export const settled = (c) => c?.result === 'pass' || c?.result === 'fail';
 // Whether a step found pending is still checked again at `now`: FOLLOW_WAIT_MS has not passed since it
 // fell due, its code having gone out at `out` (ms).
 export const followRetrying = (s, out, now = Date.now()) => now - followDueAt(s, out) < FOLLOW_WAIT_MS;
-// The steps of `t` a checker owes a run: runnable, due, and none recorded yet, or found pending at least
-// FOLLOW_RETRY_MS before `now` while still retrying. With `out` (when its code went out, ms) a step is
-// due once followDueAt, and retried while followRetrying; without it, every step is due and `retry` says.
-export const owedSteps = (t, labels = [], { now = Date.now(), retry = true, out } = {}) => (Array.isArray(t?.follow_on) ? t.follow_on : [])
+// The steps of `t` a checker owes a run, its code having gone out at `out` (ms): runnable, due
+// (followDueAt), and none recorded yet, or found pending at least FOLLOW_RETRY_MS before `now` while
+// followRetrying.
+export const owedSteps = (t, labels, { now = Date.now(), out }) => (Array.isArray(t?.follow_on) ? t.follow_on : [])
   .filter((s) => {
-    if (followKind(s, labels) !== 'runnable') return false;
-    if (out != null && !followDue(s, out, now)) return false;
+    if (followKind(s, labels) !== 'runnable' || !followDue(s, out, now)) return false;
     const c = checkOf(t, s);
-    const again = out != null ? followRetrying(s, out, now) : retry;
-    return !c || (again && !settled(c) && now - Date.parse(c.at) >= FOLLOW_RETRY_MS);
+    return !c || (followRetrying(s, out, now) && !settled(c) && now - Date.parse(c.at) >= FOLLOW_RETRY_MS);
   });
 
 // ---- the session ---------------------------------------------------------------------------------

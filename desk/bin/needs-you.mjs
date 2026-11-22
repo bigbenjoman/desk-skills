@@ -120,7 +120,7 @@ import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } fro
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
 import { followOnPending, postMergeOwed } from './harvest.mjs';
-import { followKind, checkOf, settled, followDue, followDueAt, FOLLOW_WAIT_MS, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
+import { followKind, checkOf, settled, followDue, followDueAt, followDelayMs, FOLLOW_WAIT_MS, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 import { promotionRef } from './promotion.mjs';
 import { kindMode, readLog, restartTrial, trialOf, TRIAL_DAYS } from './leases.mjs';
 import { LEASE_KINDS } from './machine.mjs';
@@ -998,17 +998,19 @@ const gatedFollow = (t) => t.follow_on.some((s) => gateOf(s) !== 'merge');
 // the others. Steps sharing a gate open together, so done records only the steps its item showed, and a
 // gate that opens after the list was read is a new item rather than one taken as run unseen. A checker's
 // step is an item of its own, `…:checked:<id>` (stepId), listed as soon as it failed or went unrun: its
-// result comes in on its own time, and would otherwise join an item the person was already shown.
+// result comes in on its own time, and would otherwise join an item the person was already shown. So, for
+// the same reason, is a person's step that waits a set time after the merge (followDelayMs), `…:later:<id>`.
 const stepId = (s) => createHash('sha1').update(String(s.step)).digest('hex').slice(0, 6);
+const ownItem = (x) => (x.checked ? 'checked' : followDelayMs(x.s) > 0 ? 'later' : null);
 function followItems(r, reads = null) {
   return followsOf(r).flatMap((t) => {
     const { ready, waiting } = followSplit(r, t, Date.now(), reads);
     const groups = GATES.flatMap((g) => {
       const here = ready.filter((x) => gateOf(x.s) === g);
-      return [{ g, ready: here.filter((x) => !x.checked) }, ...here.filter((x) => x.checked).map((x) => ({ g, id: stepId(x.s), ready: [x] }))];
+      return [{ g, ready: here.filter((x) => !ownItem(x)) }, ...here.filter(ownItem).map((x) => ({ g, id: `${ownItem(x)}:${stepId(x.s)}`, ready: [x] }))];
     }).filter((x) => x.ready.length);
     return groups.map(({ g, id, ready: shown }, i) => ({
-      r, t: { key: `${FOLLOW}${t.key}${g === 'merge' ? '' : `:${g}`}${id ? `:checked:${id}` : ''}` },
+      r, t: { key: `${FOLLOW}${t.key}${g === 'merge' ? '' : `:${g}`}${id ? `:${id}` : ''}` },
       item: followItem(r, t, { gate: g, ready: shown, waiting: i === 0 ? waiting : [] }),
     }));
   });
