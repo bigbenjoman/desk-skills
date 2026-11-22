@@ -1831,6 +1831,21 @@ state219('drv2', 'supervisor.log', '== tick\nmerge driver: could not start: spaw
 // A crash loop: the retry the supervisor started after the first failure died too, its pid still recorded.
 put219('drv3', 5420, { tickets: { 'DL-1': run215 } });
 state219('drv3', 'supervisor.json', JSON.stringify({ driver: { pid: 2147483646, started: minsAgo(2), from: 0, failures: 1, notified: false, code: 1, reason: 'FAIL: no PR for DL-1' } }));
+// DS-991: a driver whose last line was only informational, stopped by a release install (exit 143) or
+// gone with no FAIL line, beside a batch the supervisor left idle and one with a ready PR.
+const info991 = 'base state unknown on feat/IB-1 (checks unreadable): merging as before';
+const pr991 = (n) => ({ state: 'done', result: { pr: n }, pr_status: { pr: n, state: 'OPEN', checks: [] } });
+const drv991 = (name, port, tickets, sup, log) => {
+  put219(name, port, { tickets });
+  state219(name, 'supervisor.json', JSON.stringify(sup));
+  state219(name, 'merge-driver.log', log);
+};
+const stop991 = (code, reason) => ({ pid: null, started: minsAgo(20), from: 0, failures: 1, notified: false, code, reason });
+drv991('idlb', 5470, { 'IB-1': { state: 'parked', park: { question: 'which copy?', since: minsAgo(30) } }, 'IB-2': { state: 'done', result: { pr: 60 }, pr_status: { pr: 60, state: 'MERGED' } } },
+  { idle: 'fp', idle_at: minsAgo(5), driver: stop991(143, info991) }, `${info991}\nmerge driver exited 143\n`);
+drv991('rdyf', 5480, { 'RF-1': pr991(61) }, { idle: null, driver: stop991(1, 'FAIL: gh is signed out') }, 'FAIL: gh is signed out\nmerge driver exited 1\n');
+drv991('rdys', 5490, { 'RS-1': pr991(62) }, { idle: null, driver: stop991(143, info991) }, `${info991}\nmerge driver exited 143\n`);
+drv991('rdyi', 5500, { 'RI-1': pr991(63) }, { idle: null, driver: stop991(null, info991) }, `${info991}\n`);
 put219('old', 5380, { tickets: { 'OL-1': run215 } });
 state219('old', 'supervisor.json', JSON.stringify({ code: { installed: 'new1', supervisor: { version: 'old1', old_code: true }, driver: null } }));
 // Each of these has a last code record that disagrees with what runs now.
@@ -1856,7 +1871,7 @@ writeFileSync(join(I.T, 'bin', 'print-com.desk-skills.supervisor.acme__cant'), '
 put219('land', 5400, { pass: { at: minsAgo(1), by: 'supervisor', held: null, errors: 0, progress_at: minsAgo(300) }, tickets: {
   'LD-1': { state: 'done', result: { pr: 50 }, pr_status: { pr: 50, state: 'OPEN', checks: [] } }, 'LD-2': { state: 'done', result: { pr: 51 }, pr_status: { pr: 51, state: 'MERGED' } } } });
 put219('wait', 5410, { supervised: false, tickets: { 'WA-1': { state: 'parked', park: { question: 'which copy?', since: minsAgo(130) } }, 'WA-2': { state: 'parked', park: { question: 'which price?', since: minsAgo(20) } } } });
-const loaded219 = ['sup', 'halt', 'both', 'alone', 'drv', 'drv2', 'drv3', 'old', 'cant', 'land', 'reloaded', 'unreloaded', 'drvold', 'drvnew'];
+const loaded219 = ['sup', 'halt', 'both', 'alone', 'drv', 'drv2', 'drv3', 'old', 'cant', 'land', 'reloaded', 'unreloaded', 'drvold', 'drvnew', 'idlb', 'rdyf', 'rdys', 'rdyi'];
 I.loaded(...loaded219);
 // What install.sh leaves: the installed commit, and each agent it reloaded loaded at that commit.
 writeFileSync(join(I.env.DESK_HOME, 'installed.json'), JSON.stringify({ commit: 'new1' }));
@@ -1881,6 +1896,17 @@ t('DS-219 AC3 a session running passes beside the loaded supervisor: ▲ supervi
 t('DS-219 AC4 a merge driver that died, never started, or whose retry died too: one note with the reason from its log',
   `${notesOf('drv').join(' / ').replace(/\d\d:\d\d/, 'HH:MM')} | ${notesOf('drv2').join(' / ')} | ${notesOf('drv3').join(' / ')}`,
   'the merge driver stopped at HH:MM: gh is signed out. Run gh auth login. | the merge driver could not start: spawn EACCES. | the merge driver stopped: no PR for DL-1.');
+// An overview of its own, so their parked tickets and open PRs stay out of AC7's needs-you count.
+const ov991 = Q.overview(Q.loadRepos(NOW).filter((r) => ['idlb', 'rdyf', 'rdys', 'rdyi'].includes(r.name)), { now: NOW, avail: 30 });
+const driverNotes991 = (name) => notesIn(lines(ov991), name).filter((n) => n.includes('merge driver')).map((n) => n.replace(/\d\d:\d\d/, 'HH:MM')).join(' / ');
+t('DS-991 AC1 a batch the supervisor recorded idle, its driver stopped 143 on an informational line: no merge driver note',
+  `[${driverNotes991('idlb')}] ${ov991.includes('base state unknown')}`, '[] false');
+t('DS-991 AC2 a ready PR and a driver that exited on a FAIL line: the note says it stopped and gives the FAIL reason',
+  driverNotes991('rdyf'), 'the merge driver stopped at HH:MM: gh is signed out. Run gh auth login.');
+t('DS-991 AC3 a ready PR and a driver stopped with exit 143 and not restarted: the note says it was stopped and is not running, quoting no log line',
+  driverNotes991('rdys'), 'the merge driver was stopped at HH:MM (exit 143) and is not running.');
+t('DS-991 a driver gone with no FAIL line and no exit code: the note says so, quoting no log line',
+  driverNotes991('rdyi'), 'the merge driver stopped at HH:MM (no exit code logged) and logged no failure.');
 // old and unreloaded both run old code, so their notes fold into one.
 t('DS-219 AC5 a supervisor on old desk code: one note to run ./install.sh in desk-skills',
   `${notesOf('old').length} ${notesOf('desk code').join(' / ')}`, '0 the supervisors of old and unreloaded run old desk code. Run ./install.sh in desk-skills.');

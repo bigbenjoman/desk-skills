@@ -832,7 +832,9 @@ function whoRuns(r) {
 //   sessionToo  a session ran a pass within LIVE_MS of a batch the loaded supervisor runs
 //   cannotStart the loaded agent's failed last run, { code, why }, `why` its own log's last line
 //   driver      { at, reason }: the merge driver the supervisor started stopped with a failure, or
-//               could not start, and none runs now
+//               could not start, and none runs now. a stopped one's `reason` is only a FAIL line, or null; with
+//               `code` 143 it was stopped (a release install, a supervisor stop). None while
+//               supervisor.json records the batch idle, which runs no driver by design
 //   oldCode     which of the loaded supervisor agent and its running merge driver run other desk code than
 //               is installed, read now: a pass's own record can predate the install, or outlive the reload
 const NO_PROGRESS_MS = HOUR;
@@ -853,13 +855,18 @@ function stallOf(r, now) {
   const cannotStart = loaded && r.run.exit ? { ...r.run.exit, why: tailLines(join(r.stateDir, 'supervisor.agent.log')).at(-1) ?? r.run.exit.why } : null;
   const holder = mergeDriverHolder(r.stateDir);
   let driver = null;
-  if (sup && holder == null && unfinished(r)) {
+  if (sup && !sup.idle && holder == null && unfinished(r)) {
     const d = sup.driver;
     let at = null;
     try { at = statSync(join(r.stateDir, 'merge-driver.log')).mtimeMs; } catch { /* no log */ }
     // A retry the supervisor started after a failure keeps its pid recorded once it dies too, so with
-    // no driver running, failures alone say it stopped.
-    if (d && (d.failures ?? 0) > 0) driver = { at, reason: String(d.reason ?? 'it wrote nothing to its log') };
+    // no driver running, failures alone say it stopped. The supervisor keeps the driver's last line as
+    // its reason when it logged no FAIL line, which is then only what it was doing, so none is shown.
+    if (d && (d.failures ?? 0) > 0) {
+      const said = String(d.reason ?? '');
+      const code = Number.isInteger(d.code) ? d.code : null;
+      driver = { at, code, reason: /^FAIL/.test(said) ? said : null };
+    }
     else {
       const last = tailLines(join(r.stateDir, 'supervisor.log')).filter((l) => l.includes('merge driver: ')).at(-1) ?? '';
       const m = /merge driver: could not start: (.*)/.exec(last);
@@ -2671,10 +2678,15 @@ function stallNotes(r, quiet, old, allOut = false) {
   if (quiet.has(r)) out.push(note(quiet.get(r)));
   if (s.sessionToo) out.push(note('a session is also running this supervised batch. Close the session, or run: ', `desk-q ${r.repo} supervisor off`));
   if (s.driver) {
-    const what = s.driver.start ? 'the merge driver could not start' : `the merge driver stopped${s.driver.at == null ? '' : ` at ${clock(s.driver.at)}`}`;
-    const reason = s.driver.reason.replace(/^FAIL:\s*/, '').replace(/\.$/, '');
-    const fix = /signed out/i.test(reason) ? 'Run gh auth login.' : null;
-    out.push(note(`${what}: ${reason}.${fix ? ' ' : ''}`, fix));
+    const d = s.driver, at = d.at == null ? '' : ` at ${clock(d.at)}`;
+    if (d.code === 143) out.push(note(`the merge driver was stopped${at} (exit 143) and is not running.`));
+    else if (d.reason == null) out.push(note(`the merge driver stopped${at} (${d.code == null ? 'no exit code logged' : `exit ${d.code}`}) and logged no failure.`));
+    else {
+      const what = d.start ? 'the merge driver could not start' : `the merge driver stopped${at}`;
+      const reason = d.reason.replace(/^FAIL:\s*/, '').replace(/\.$/, '');
+      const fix = /signed out/i.test(reason) ? 'Run gh auth login.' : null;
+      out.push(note(`${what}: ${reason}.${fix ? ' ' : ''}`, fix));
+    }
   }
   out.push(...(old.get(r) ?? []));
   return out;
