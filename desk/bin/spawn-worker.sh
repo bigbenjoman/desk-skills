@@ -205,7 +205,8 @@ AGENTS=OK or AGENTS=BLOCKED — AGENTS=OK only if every one of these is a subage
   NCHECKS=$((i + 8))
   # With the preflight lever on (config §3b Phase 0 levers), a pass on these same inputs stands: the
   # ticket's own pass, or for a day another ticket's in this repo, since the ticket's worktree, key,
-  # branch and database, and the other worktrees its settings deny, are placeholders in the hash. A
+  # branch and database, and the other worktrees its settings deny, are placeholders in the hash (the
+  # rules naming those other worktrees are then left out of it, preflight-fingerprint.mjs). A
   # preflight that does run is at low effort. Off, the preflight runs as it always has.
   PRE_EFFORT_ARGS=()
   PASSED=""

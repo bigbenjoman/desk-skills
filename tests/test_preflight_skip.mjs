@@ -249,13 +249,14 @@ rmSync(join(T, 'write-w-in'));
 // DS-699: a pass on one ticket stands for another ticket in the repo with the same settings, for a day.
 t('DS-699 a value is masked whole, never inside a longer word', maskText('a/DS-69/x DS-699 DS-69-b xDS-69', [['TICKET', 'DS-69']]), 'a/<TICKET>/x DS-699 <TICKET>-b xDS-69');
 t('DS-699 the longest value is masked first', maskText('fix/DS-6-x DS-6', [['TICKET', 'DS-6'], ['BRANCH', 'fix/DS-6-x']]), '<BRANCH> <TICKET>');
+// The first ticket is alone in the repo when it passes, so the second's settings deny a worktree its did not.
 git('worktree', 'add', '-q', '-b', 'fix/one', join(T, 'wt-one'));
-git('worktree', 'add', '-q', '-b', 'fix/two', join(T, 'wt-two'));
 const passes = join(T, 'state', 'workers', 'preflight-passes.json');
 const one = (extra = {}) => preflight({ AUTOPILOT_BRANCH: 'fix/one', ...extra }, join(T, 'wt-one'), 'ticket-one');
 const two = (extra = {}) => preflight({ AUTOPILOT_BRANCH: 'fix/two', ...extra }, join(T, 'wt-two'), 'ticket-two');
 r = one();
 t('DS-699 the first ticket runs its preflight, and the repo records its pass', [ran(r), Object.values(JSON.parse(readFileSync(passes, 'utf8'))).map((p) => p.ticket).includes('ticket-one')], [RAN, true]);
+git('worktree', 'add', '-q', '-b', 'fix/two', join(T, 'wt-two'));
 r = two();
 t('DS-699 AC1 a second ticket, different only in worktree, key and branch, makes no call', ran(r), SKIPPED);
 t('DS-699 AC1 its spawn line names a cross-ticket skip and whose pass it took', /^\[preflight\] skipped: cross-ticket: ticket-one's pass at \S+ had this fingerprint$/m.test(r.out), true);

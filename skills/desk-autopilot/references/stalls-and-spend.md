@@ -54,8 +54,8 @@ nothing was passed.
 preflight twice.** A pass is recorded in `$DESK_STATE/workers/<TICKET>.preflight.json` as a fingerprint
 of the worker settings, the ticket's agents file, the tool list, the models, every start's effort,
 the installed claude CLI version, the desk commit and the account. The ticket's worktree, key, branch
-and per-ticket database, and the other worktrees its settings deny, are placeholders in it, so two
-tickets in a repo with the same settings share a fingerprint. A spawn or resume with the fingerprint
+and per-ticket database are placeholders in it, and the rules denying the other worktrees are left
+out, so two tickets in a repo with the same settings share a fingerprint. A spawn or resume with the fingerprint
 of its ticket's last pass runs no preflight, makes no line in the ticket's log, and its spawn line
 says it was skipped. So does a spawn with the fingerprint of another ticket's pass in the repo within
 the last 24 hours, recorded in `$DESK_STATE/workers/preflight-passes.json`: its spawn line and run record <!-- prose-ok: written by preflight-fingerprint.mjs beside the per-ticket workers records, not a batch-state path -->

@@ -13,43 +13,40 @@
 // account, the installed desk commit and every start's effort. Each --mask value (and its real path,
 // where it is one) is replaced by <NAME> in every input before hashing, longest value first and only as
 // a whole word, so two tickets whose inputs differ only in their worktree, key, branch or database hash
-// the same. A file that is a settings file then has each permission rule list read as the set it is. An
+// the same. A settings file then has its rules naming another worktree left out. An
 // input it cannot read prints no hash and exits 1, naming it: with no hash nothing is matched or
 // recorded, so the preflight runs.
 //
 // `passed` records a pass in the repo's record, `forget` removes one, and `cross` prints the ticket and
 // the pass time of another ticket's pass on that fingerprint within the last day, or nothing.
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, renameSync, realpathSync, mkdirSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
+import { writeJsonAtomic } from './dir-lock.mjs';
 import { readInstalled } from './installed.mjs';
 
 const CLAUDE_TIMEOUT_MS = 20 * 1000;
 // How long a pass on one ticket stands for another ticket in the repo.
-export const CROSS_TICKET_MS = 24 * 60 * 60 * 1000;
+const CROSS_TICKET_MS = 24 * 60 * 60 * 1000;
 
 const USAGE = 'usage: preflight-fingerprint.mjs [--file <name>=<path>]... [--part <name>=<value>]... [--mask <NAME>=<value>]...\n'
   + '       preflight-fingerprint.mjs passed <state dir> <fingerprint> <ticket> | forget <state dir> <fingerprint> | cross <state dir> <fingerprint> <ticket>';
 
 // The repo's record of passed preflights: { <fingerprint>: { ticket, at } }.
-export const passesFile = (state) => join(state, 'workers', 'preflight-passes.json');
+const passesFile =(state) => join(state, 'workers', 'preflight-passes.json');
 const readPasses = (state) => {
   try { const d = JSON.parse(readFileSync(passesFile(state), 'utf8')); return d && typeof d === 'object' && !Array.isArray(d) ? d : {}; } catch { return {}; }
 };
 // Written whole through a rename, so a reader never sees half a file; entries past the day are dropped.
 const writePasses = (state, passes, now) => {
-  const kept = Object.fromEntries(Object.entries(passes).filter(([, v]) => now - Date.parse(v?.at) < CROSS_TICKET_MS));
-  mkdirSync(join(state, 'workers'), { recursive: true });
-  const tmp = `${passesFile(state)}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(kept, null, 2)}\n`);
-  renameSync(tmp, passesFile(state));
+  writeJsonAtomic(passesFile(state), Object.fromEntries(Object.entries(passes).filter(([, v]) => now - Date.parse(v?.at) < CROSS_TICKET_MS)));
 };
 // Another ticket's pass on `fp` within the last day, or null. A ticket's own pass is its own record's,
 // which a failure clears, so it never stands for the ticket here.
-export function crossPass(state, fp, ticket, now = Date.now()) {
+function crossPass(state, fp, ticket, now = Date.now()) {
   const p = readPasses(state)[fp];
   const age = now - Date.parse(p?.at);
   return p && typeof p.ticket === 'string' && p.ticket !== ticket && age >= 0 && age < CROSS_TICKET_MS ? p : null;
@@ -65,14 +62,15 @@ export function maskText(text, masks) {
   }
   return out;
 }
-// A settings file's allow, deny and ask lists, each without repeats once masked: one rule per other
-// worktree becomes the same rule however many other worktrees there are.
-export function ruleSets(text) {
+// A settings file's allow, deny and ask lists without the rules naming another worktree, so a ticket
+// spawned alone in the repo hashes as one spawned beside others. Which rules those are follows from
+// the worktrees that exist and the desk commit (worker-settings.mjs), and the commit is hashed.
+function withoutOtherWorktrees(text) {
   let d;
   try { d = JSON.parse(text); } catch { return text; }
   const perms = d?.permissions;
   if (!perms || typeof perms !== 'object') return text;
-  for (const k of ['allow', 'deny', 'ask']) if (Array.isArray(perms[k])) perms[k] = [...new Set(perms[k])];
+  for (const k of ['allow', 'deny', 'ask']) if (Array.isArray(perms[k])) perms[k] = perms[k].filter((r) => !String(r).includes('<OTHER_WORKTREE>'));
   return JSON.stringify(d);
 }
 
@@ -120,7 +118,7 @@ function main(args) {
   }
   for (const name of Object.keys(parts)) {
     parts[name] = maskText(parts[name], masks);
-    if (files.has(name)) parts[name] = ruleSets(parts[name]);
+    if (files.has(name)) parts[name] = withoutOtherWorktrees(parts[name]);
   }
 
   const claude = (name, pick, ...cmdArgs) => {
