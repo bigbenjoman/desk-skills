@@ -258,16 +258,20 @@ try {
     const open = Math.max(0, Number(Q.tickets[ticket].open_questions) || 0);
     const left = settleAll ? 0 : Math.max(0, open - 1);
     // The triage questions this answer closes, each recorded answered once: every open one with --all,
-    // the one --question numbers, else the first still open.
+    // the one --question numbers, else only the one question open, when it is a triage question. An
+    // answer naming neither, with several open, lowers the count and records no question answered:
+    // nothing says which it answered, and recording the wrong one would hide a question nobody answered.
     const openNow = open ? openUnknowns(unknowns, Q.tickets[ticket]) : [];
-    const closes = settleAll ? openNow : questionNo !== null ? [unknowns[Number(questionNo) - 1]] : openNow.slice(0, 1);
+    const closes = settleAll ? openNow : questionNo !== null ? [unknowns[Number(questionNo) - 1]]
+      : open === 1 && openNow.length === 1 ? openNow : [];
     const had = Array.isArray(Q.tickets[ticket].answered_questions) ? Q.tickets[ticket].answered_questions : [];
     const settle = () => {
       execFileSync('node', [QUEUE, 'set', ticket, `open_questions=${left}`,
         ...(closes.length ? [`answered_questions=${JSON.stringify([...had, ...closes])}`] : [])], { stdio: 'ignore' });
       for (const c of closes) console.log(`${ticket}: closed triage question ${unknowns.indexOf(c) + 1}: ${c}`);
     };
-    const stillOpen = left ? `; ${left} question(s) still open (answer each with answer.mjs ${ticket} "<answer>", or all at once with --all)` : '';
+    const stillNos = openNow.filter((u) => !closes.includes(u)).map((u) => unknowns.indexOf(u) + 1);
+    const stillOpen = left ? `; ${left} question(s) still open (answer each with answer.mjs ${ticket} --question <n> "<answer>"${stillNos.length ? `, <n> one of ${stillNos.join(', ')}` : ''}, or all at once with --all)` : '';
     if (isHeld(Q.tickets[ticket])) {
       // Held behind a Jira blocker: the answer settles its questions, and the hold stays, so it
       // still starts only once the blocker's PR has merged (release_chain, or the sanctioned release).

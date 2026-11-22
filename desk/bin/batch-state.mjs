@@ -189,7 +189,7 @@ export const HELD_PREFIX = 'held by orchestrator';
 // A held ticket whose worker queue.mjs stop ended: held behind no blocker, so only the person starts it.
 export const STOPPED_PREFIX = `${HELD_PREFIX}: stopped by queue.mjs stop`;
 // The park kinds the orchestrator holds a ticket on, rather than its own step: a blocker, a stop, a date.
-export const HELD_KINDS = ['hold', 'stopped', 'date'];
+const HELD_KINDS = ['hold', 'stopped', 'date'];
 
 // The kind of park `question` opens as: what a park recorded before parks carried their kind is read
 // as, and what a new park whose writer names none is recorded as.
@@ -549,7 +549,7 @@ export function labelPark(r, stepLabels = [], inputLabels = []) {
   const l = input ?? stepLabel(r?.labels, stepLabels);
   return l ? `${PERSON_STEP_PREFIX}labelled ${l} ${input ? INPUT_ROW : '(config §4 Person-step labels)'}, so no worker can do it. Take the step, mark it Done in Jira, then drop it from the batch` : null;
 }
-export const personStepPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(PERSON_STEP_PREFIX);
+export const personStepPark = (t) => t?.state === 'parked' && parkKind(t) === 'person-step';
 // A queue ticket parked at triage for its own reason (lanePark, designPark, sizePark, labelPark): a hold
 // waits beside that park rather than replacing it, so no release sends it to a worker.
 export const triagePark = (t) => {

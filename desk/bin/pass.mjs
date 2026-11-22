@@ -3398,7 +3398,9 @@ const SPAWN_HANDLERS = {
     if (report.failed.length === before) report.done.push(a.line);
   },
   park: (a) => {
-    q('park', a.key, a.line);
+    // The spawn loop parks only when a ticket could not be spawned (an unreachable host, a failed
+    // worktree setup): a failure, not a question.
+    q('park', a.key, '--kind', 'failure', a.line);
     report.parked.push(`${a.key}: ${a.line}`);
   },
   'hand-away': (a, s) => handAway(s.t, a.placement),

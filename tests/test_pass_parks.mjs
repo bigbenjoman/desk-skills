@@ -2,7 +2,7 @@
 import { runPhase, runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds,
   decideMergeHolds } from '../desk/bin/pass/parks.mjs';
-import { HELD_PREFIX, STOPPED_PREFIX, badLabelText, IDLE_RECHECK_MS, isHeld, parkKind } from '../desk/bin/batch-state.mjs';
+import { HELD_PREFIX, STOPPED_PREFIX, badLabelText, IDLE_RECHECK_MS, isHeld, parkKind, personStepPark } from '../desk/bin/batch-state.mjs';
 import { newPark } from '../desk/bin/queue-writer.mjs';
 import { shownState } from '../desk/bin/desk-q.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
@@ -328,6 +328,9 @@ const dates = (s) => drive(decideDateHolds, s, {}, false);
   t('DS-895 AC3 a writer that names the kind records that kind', newPark(`${HELD_PREFIX}: blocked by X-1`, 'x', 'stopped').kind, 'stopped');
   t('DS-895 AC3 a park recorded with no kind is read by its question', j(['which colour?', `${HELD_PREFIX}: blocked by X-1`, `${STOPPED_PREFIX} at x`].map((x) => parkKind({ park: { question: x } }))), '["question","hold","stopped"]');
   t('DS-895 AC3 an unknown kind on a park is read by its question', parkKind({ park: { question: 'which colour?', kind: 'held' } }), 'question');
+  t('DS-895 a person step is read by its kind, its question reworded or not',
+    j([{ question: 'apply the migration on staging', kind: 'person-step' }, { question: "the person's step: apply the migration" }, { question: "the person's step: apply it", kind: 'question' }]
+      .map((park) => personStepPark({ state: 'parked', park }))), '[true,true,false]');
 }
 
 // AC5: the decisions start no process, call no git, gh or Jira, and write nothing, the queue included.

@@ -145,8 +145,14 @@ check "DS-895 AC6: and the other two stay open" '[ "$(oq T-33 open_questions)" =
 DESK_CONFIG="$T/config-ledger.md" ans T-33 --question 2 "small"
 check "DS-895 AC6: a question already answered is refused, nothing recorded" '[ $rc -eq 11 ] && echo "$out" | grep -q "already answered" && [ "$(oq T-33 open_questions)" = 2 ] && [ "$(answered)" = "which size?" ]'
 DESK_CONFIG="$T/config-ledger.md" ans T-33 "red"
-check "DS-895 AC6: an answer naming no question closes the first still open" '[ "$(answered)" = "which size?|which colour?" ] && [ "$(oq T-33 open_questions)" = 1 ]'
+check "DS-895 AC6: an answer naming no question, with two open, lowers the count and records none answered" '[ "$(answered)" = "which size?" ] && [ "$(oq T-33 open_questions)" = 1 ] && [ "$(node "$B/queue.mjs" get T-33 | jq -c .answered_questions)" = "[\"which size?\"]" ] && echo "$out" | grep -q -- "--question <n> \"<answer>\", <n> one of 1, 3"'
 q drop T-33
+# With one question open, an answer naming none closes that one.
+printf '{"ticket": "T-34", "type": "Bug", "lane": "A", "size": "S", "branch": "fix/T-34", "files_in_scope": [], "unknowns": ["which colour?", "which size?"], "links": "n/a"}\n' > "$T/state/triage/T-34.json"
+q add T-34; q set T-34 state=triaged lane=A branch=fix/T-34 open_questions=1 'answered_questions=["which colour?"]'
+DESK_CONFIG="$T/config-ledger.md" ans T-34 "large"
+check "DS-895 AC6: with one question open, an answer naming none closes it" '[ "$(oq T-34 open_questions)" = 0 ] && [ "$(node "$B/queue.mjs" get T-34 | jq -c .answered_questions)" = "[\"which colour?\",\"which size?\"]" ]'
+q drop T-34
 q set T-1 "idle_passes=$t1_idle"
 
 # A worker that exits with no marker and no PR fails in this pass, while T-1 still runs.
