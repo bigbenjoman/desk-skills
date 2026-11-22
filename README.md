@@ -226,13 +226,20 @@ and saves the report to the main checkout's `.handoffs/`. `protection` saves a r
 protection and rulesets before any CI change and restores them, binds each required check to the
 GitHub Actions app so a same-named status from a personal token no longer satisfies it, and makes
 the default workflow token read-only once every workflow declares its permissions. Each write is
-printed as a plan first and applies only by that plan's id, under §3 `ci-protection`:
+printed as a plan first and applies only by that plan's id, under §3 `ci-protection`.
+`aws-fallback` is the other half of the AWS fallback watchdog (`.github/workflows/aws-fallback-watch.yml`,
+every 10 minutes): when a repo listed in this repo's `DESK_AWS_WATCHED_REPOS` variable has had a job
+queued on one of its declared AWS runner labels for over 15 minutes, the watchdog sets that repo's
+`DESK_AWS_FALLBACK` variable to `on`, opens an issue here saying so, and cancels its queued runs and
+re-runs their cancelled jobs. It never turns the fallback off; `aws-fallback off` does, and `aws-fallback status`
+says whether each repo's fallback is on, since when, and when the watchdog last ran:
 
 ```
 node ~/.claude/desk/bin/desk-ci.mjs classify     placement per job, with file:line
 node ~/.claude/desk/bin/desk-ci.mjs ci-lint      exit 1 on any finding
 node ~/.claude/desk/bin/desk-ci.mjs measure      CI cost and red rate over 90 days, sampled to a call budget
 node ~/.claude/desk/bin/desk-ci.mjs protection   snapshot --ticket <KEY|none> | restore <file> | pin | token  [--apply <plan id>]
+node ~/.claude/desk/bin/desk-ci.mjs aws-fallback status [--repo owner/name] | off --repo owner/name
 ```
 
 **`supervisor.mjs`** runs autopilot passes from launchd on macOS, or from a systemd user timer on
@@ -945,7 +952,9 @@ left out, text the pass cut short compared up to the cut, and queue stamps (`upd
 when nothing differs, 1 when something does, and 2 when a run was not compared. With
 `PASS_CMP_KEEP=1` set, a run that exits 1 or 2 leaves its recordings and both trees in its scratch
 directory and prints that directory and the `compare_pass.mjs diff` command that lists them again,
-in seconds and without replaying a suite.
+in seconds and without replaying a suite. Both trees and every suite run side by side, as each pass
+suite gives its stand-in workers session ids of its own (`SID_SUFFIX` in `tests/pass_setup.sh`);
+`PASS_CMP_SERIAL=1`, or a base whose suites predate those ids, runs them one after the other.
 
 `pass.mjs` moves into phase modules under `desk/bin/pass/`, one section at a time. A phase's decision
 is a pure function there: it takes a snapshot (the queue's tickets and whatever else it reads, the

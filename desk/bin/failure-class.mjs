@@ -66,7 +66,7 @@ export function fixClass(f, t) {
 
 // A job's check runs at one commit (the REST check-runs list, [{ status, conclusion }]) as that job's
 // state there: 'fail', 'pass', or null when it has no completed run.
-const FAILED = new Set(['failure', 'timed_out', 'startup_failure']);
+export const FAILED = new Set(['failure', 'timed_out', 'startup_failure']);
 const PASSED = new Set(['success']);
 export function runsState(runs) {
   const done = (Array.isArray(runs) ? runs : []).filter((r) => String(r?.status ?? '').toLowerCase() === 'completed');

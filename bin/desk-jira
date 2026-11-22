@@ -409,7 +409,8 @@ split_approved() {
 #   key=@path       the file's contents, as a string (a missing file is an error, never the literal)
 #   key=<json>      kept as JSON, so '{"value":"P1"}', 266 and null pass straight through
 #   key=<bare>      wrapped to the shape the field needs: assignee/reporter -> {"accountId"}
-#                   ("me" resolves to your own account), priority/issuetype -> {"name"},
+#                   ("me" resolves to your own account, "none" is null: no one; anything that
+#                   cannot be an accountId is refused before a call), priority/issuetype -> {"name"},
 #                   a select custom field -> {"value"}, a user custom field -> {"accountId"}
 fields_from_args() {
   local obj='{}' pair k v t w
@@ -449,7 +450,13 @@ fields_from_args() {
     fi
     case "$k" in
       assignee|reporter)
+        if [[ "$v" == none ]]; then
+          obj=$(printf '%s' "$obj" | jq --arg k "$k" '.[$k]=null'); continue
+        fi
         [[ "$v" == me ]] && v=$(my_account_id)
+        # Jira names a user only by accountId (letters, digits, ":" and "-"): an email or a display
+        # name is a 400 after the call, so it is refused before one.
+        [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9:-]*$ ]] || die "desk-jira: $k=$v is not a form desk-jira sends: $k=me for you, $k=none (or null) for no one, or $k=<accountId>"
         obj=$(printf '%s' "$obj" | jq --arg k "$k" --arg v "$v" '.[$k]={accountId:$v}') ;;
       priority|issuetype)
         obj=$(printf '%s' "$obj" | jq --arg k "$k" --arg v "$v" '.[$k]={name:$v}') ;;
@@ -1082,6 +1089,7 @@ Bodies:        a .md file (create's description, comment, edit description=@file
                "Size: <X>" passes, where config names no §4 Size field)
 Field values:  field=@file reads a file · JSON passes through · a bare value is wrapped
                (customfield_12345=P1 -> {"value":"P1"}, assignee=me -> your accountId,
+               assignee=none or null -> no one, assignee=<accountId> -> that account,
                labels=a,b -> ["a","b"], the array Jira takes)
                parent=ABC-12 files the new issue under that epic or story; on edit, an empty
                parent= takes the issue out of its epic or story (read back, so it fails if it stays)

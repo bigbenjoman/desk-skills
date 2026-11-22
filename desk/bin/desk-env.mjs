@@ -48,7 +48,7 @@
 //   node desk-env.mjs required-fields <type>  print §4 Required fields for an issue type as JSON (requiredFields)
 //   node desk-env.mjs branch-check <name>     exit 1, saying why, if the name is no usable ticket branch
 //   node desk-env.mjs perm-or-unset <id>      as perm, but exit 3 (no output) when the row is unset
-//   node desk-env.mjs ticket-kind <id>        print tracker|work-id|base|audit|issue|slug, exit 2 if the id is not accepted
+//   node desk-env.mjs ticket-kind <id>        print tracker|work-id|base|base-red|audit|issue|slug, exit 2 if the id is not accepted
 //   node desk-env.mjs perm <permission id>    print yes|ask|no|never|stop, or merged for branch-delete (PERMISSION_KEYS; unset -> no),
 //                                             exit 3 if no repo config is found
 //   node desk-env.mjs key <permission id>     print the §3 key it maps to
@@ -107,7 +107,8 @@
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
 //   node desk-env.mjs drift --app <dir>       every §4 row that app needs to run for screenshots and lacks,
 //                                             with the value to add: Dev server (NODEV) and the .env* files
-//                                             its primary-checkout directory holds (NOENV); exit 1 if any
+//                                             its primary-checkout directory holds (NOENV), and a Test sign-in
+//                                             user for an app it runs (NOSIGNIN); exit 1 if any
 //   node desk-env.mjs add-row <section> <§3 key | "row name"> <value> [--note "<text>"]
 //                                             add one row drift names MISSING, from the template, with that
 //                                             value; prints ADDED, and a §3 row's perm read back
@@ -175,13 +176,14 @@ import { homedir, platform, totalmem, freemem, release } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import net from 'node:net';
 import * as M from './machine.mjs';
+import { remember, runOnce, outOrNull } from './build-memo.mjs';
 import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
 import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, localServiceName,
   permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, leverRow, leverWords, parseLevers,
   EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS, CODEX_DEFAULTS, parseCodexReview, spawnGateOf,
-  fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, checkRow, DECLARED_ROWS,
+  fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, checkRow, DECLARED_ROWS, readsAsList,
 } from './config-schema.mjs';
 
 export const HOME = process.env.HOME || homedir();
@@ -192,10 +194,7 @@ export const SCREENSHOT_FILE = /\.(png|jpe?g)$/i;
 // ---- which repo, which config --------------------------------------------------------------
 export const deskConfigRoot = () => expandHome(process.env.DESK_CONFIG_ROOT ?? join(HOME, '.config', 'desk'));
 
-const git = (dir, ...args) => {
-  try { return execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
-  catch { return ''; }
-};
+const git = (dir, ...args) => outOrNull(runOnce('git', ['-C', dir, ...args])) ?? '';
 
 // `owner/name` from any git remote URL: https://host/owner/name(.git)(/), git@host:owner/name.git,
 // ssh://git@host:443/owner/name.git, and ssh host aliases such as git@github-work:owner/name.git.
@@ -512,10 +511,12 @@ export function configuredRepos(root = deskConfigRoot()) {
 }
 
 // Where a ticket's Jira Repository field (ticket-facts.mjs `repository`) sends it, matched against each
-// configured repo's GitHub repo by its name, or whole where the field is `owner/name`, case aside:
-// null when the field is empty or names this repo; {repository, slug, ghRepo, root} for one other
-// configured repo (root its §2 Primary repo root, or null); {repository, unknown: true, slugs} where
-// no configured repo has that name, or several do.
+// configured repo's GitHub repo by its name, or whole where the field is `owner/name`, case aside, and
+// failing that against each repo's §0 Other names: null when the field is empty or names this repo;
+// {repository, slug, ghRepo, root, otherName} for one other configured repo (root its §2 Primary repo
+// root, or null; otherName true where one of its Other names matched); {repository, unknown: true,
+// slugs} where no configured repo has that name, or several do. A GitHub repo's own name wins over
+// another repo's Other names.
 export function repoPlacement(repository, root = deskConfigRoot()) {
   const want = String(repository ?? '').trim().toLowerCase();
   if (!want) return null;
@@ -528,10 +529,18 @@ export function repoPlacement(repository, root = deskConfigRoot()) {
   try { own = configValue('gh-repo'); } catch { /* no config here: the remote decides */ }
   const repos = configuredRepos(root);
   if (names(self.ownerRepo) || names(own) || repos.some((r) => r.slug === self.slug && names(r.ghRepo))) return null;
-  const hits = repos.filter((r) => r.slug !== self.slug && names(r.ghRepo));
+  let hits = repos.filter((r) => r.slug !== self.slug && names(r.ghRepo));
+  let otherName = false;
+  if (!hits.length) {
+    const selfHit = [...labelsRow('other-names'), ...(self.slug ? labelsRow('other-names', self.slug, root) : [])].some(names);
+    hits = repos.filter((r) => r.slug !== self.slug && labelsRow('other-names', r.slug, root).some(names));
+    if (selfHit && !hits.length) return null;
+    if (selfHit) hits = [{ slug: self.slug ?? own ?? 'this repo' }, ...hits];
+    otherName = true;
+  }
   if (hits.length !== 1) return { repository, unknown: true, slugs: hits.map((r) => r.slug) };
   const dir = String(repoConfigValue(hits[0].slug, 'repo-root', root) ?? '').trim();
-  return { repository, slug: hits[0].slug, ghRepo: hits[0].ghRepo, root: dir && !isNone(dir) ? expandHome(dir) : null };
+  return { repository, slug: hits[0].slug, ghRepo: hits[0].ghRepo, root: dir && !isNone(dir) ? expandHome(dir) : null, otherName };
 }
 
 // Where a triage record puts a ticket's code when that is wholly another repo, or null to build it
@@ -707,10 +716,10 @@ export function configValues(id) {
   return configValuesIn(parseConfig(), id);
 }
 
-// A labels row's items, lowercased: [] when the row is unset or `none`, and with no config. Read from
-// this repo's config, or from repo `slug`'s where one is given.
-function labelsRow(id, slug = null) {
-  try { return [].concat((slug == null ? configValues(id) : repoConfigValues(slug, id)) ?? []).filter((v) => v && !isNone(v)).map((v) => String(v).trim().toLowerCase()); }
+// A list row's items, lowercased: [] when the row is unset or `none`, and with no config. Read from
+// this repo's config, or from repo `slug`'s (under `root`) where one is given.
+function labelsRow(id, slug = null, root = deskConfigRoot()) {
+  try { return [].concat((slug == null ? configValues(id) : repoConfigValues(slug, id, root)) ?? []).filter((v) => v && !isNone(v)).map((v) => String(v).trim().toLowerCase()); }
   catch { return []; }
 }
 // §4 Person-step labels: the labels marking a ticket as a step only the person takes, which holds the
@@ -744,12 +753,17 @@ function tableItemsIn(parsed, id) {
   return items.length ? items : null;
 }
 
-function configValuesIn(parsed, id, rows = CONFIG_ROWS) {
+// A row's set items as the file has them, before configValuesIn refuses any: -> [item] or null.
+function rowSpansIn(parsed, id, rows = CONFIG_ROWS) {
   const { section, row, table } = rowFor(id, rows);
   if (table) return tableItemsIn(parsed, id);
   const e = parsed.sections[section]?.byName[norm(row)];
-  if (!e || unset(e.value)) return null;
-  const items = e.items.filter((x) => !unset(x)).map(expandSlug);
+  return !e || unset(e.value) ? null : e.items.filter((x) => !unset(x)).map(expandSlug);
+}
+function configValuesIn(parsed, id, rows = CONFIG_ROWS) {
+  const { section, row, table } = rowFor(id, rows);
+  const items = rowSpansIn(parsed, id, rows);
+  if (table || !items) return items;
   // `none` beside other items is a note written in backticks: every span is an item, so the note
   // would be read as a command or check. Refuse rather than guess which one was meant.
   if (mixesNone(items)) {
@@ -1005,7 +1019,8 @@ export const NO_EFFORT = 'default';
 // The effort a session starting at `start` is launched at: NO_EFFORT (no --effort) with the lever off.
 export const workerEffort = (start) => (leverOn('effort') ? parseWorkerEffort(configValues('worker-effort'))[start] ?? DEFAULT_EFFORT : NO_EFFORT);
 
-// §3b Codex review, read by parseCodexReview (config-schema.mjs) with the codex lever on.
+// §3b Codex review, read by parseCodexReview (config-schema.mjs): every role with the codex lever on,
+// and only its timeout with it off (codex-exec.mjs review).
 export function codexReview() {
   try { return parseCodexReview(configValues('codex-models')); } catch (e) { if (e instanceof NoRepoConfigError) return parseCodexReview(null); throw e; }
 }
@@ -1164,6 +1179,9 @@ export function batchPaths(slug, batch = null) {
 }
 export const stateDir = () => expandHome(process.env.DESK_AUTOPILOT_STATE ?? batchPaths(repoSlug(), batchName()).state);
 export const queueFile = () => expandHome(process.env.DESK_QUEUE ?? batchPaths(repoSlug(), batchName()).queue);
+// The repo's exits folder, whichever batch this is: a worker's exit file renamed in here wakes the
+// supervisor's next tick (spawn-worker.sh writes it, supervisor.mjs watches and empties it).
+export const exitsDir = () => join(repoStateOf(stateDir()), 'exits');
 // The clones of §4 Worker read-only repos belong to the repo, not to a batch: they sit under the
 // standing batch's folder whichever batch this is, and DESK_AUTOPILOT_STATE, which names one batch, never moves them.
 export const readRepoDir = () => join(batchPaths(repoSlug()).state, 'ref');
@@ -1260,6 +1278,27 @@ export function applyBatchBase() {
 // The id a batch base's conflict fix worker runs under: its base worktree's directory name
 // (base-sync.mjs baseWorktreePath), so its log, settings and ticket file sit beside the tickets'.
 export const baseFixKey = (base) => `base-${String(base).replace(/[^A-Za-z0-9._-]/g, '-')}`;
+// The id of the ticket that repairs a red base (base-red.mjs): the branch the batch merges into, and,
+// given `since`, the red spell it repairs (when that spell was first read, to the second, UTC), so each
+// spell's repair is a ticket of its own and an earlier one's row, steps and worktree are left as they are.
+// A branch name too long to fit beside the spell within a ticket id's 100 characters (SAFE_ID) is cut,
+// with a hash of the whole name kept so two long branches sharing a start still get two keys.
+export const baseRedKey = (branch, since = null) => {
+  const slug = String(branch).replace(/[^A-Za-z0-9._-]/g, '-');
+  const t = Date.parse(since ?? '');
+  if (!Number.isFinite(t)) return `base-red-${slug}`;
+  const spell = new Date(t).toISOString().replace(/\D/g, '').slice(0, 14);
+  const k = `base-red-${slug}-${spell}`;
+  if (k.length <= 100) return k;
+  const h = createHash('sha1').update(String(branch)).digest('hex').slice(0, 8);
+  return `base-red-${slug.slice(0, 100 - 'base-red-'.length - h.length - spell.length - 2)}-${h}-${spell}`;
+};
+// Whether `k` is a repair key baseRedKey gives for `branch`, any spell's.
+const isBaseRedKey = (k, branch) => {
+  if (k === baseRedKey(branch)) return true;
+  const m = /-(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(k);
+  return !!m && k === baseRedKey(branch, `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`);
+};
 // Whether a sync of the batch base may push it: §3 batch-base-push, unset meaning `ask`, which is one
 // approval per batch passed to every pass (and every base conflict fix worker) as
 // AUTOPILOT_BASE_PUSH_APPROVED=1. The pass, the base gate and the worker's settings all read it here.
@@ -1394,11 +1433,16 @@ export function ticketKind(key) {
     let b = null;
     try { b = batchBase(); } catch { /* no usable base */ }
     if (b && k === baseFixKey(b)) return { ok: true, kind: 'base' };
+    // The repair of a red base the batch merges into: its batch base, or the default branch as the merge
+    // driver reads it (defaultBranch, so an exported DESK_DEFAULT_BRANCH counts).
+    let d = null;
+    try { d = defaultBranch(); } catch { /* no usable base */ }
+    if ([b, d].some((x) => x && isBaseRedKey(k, x))) return { ok: true, kind: 'base-red' };
   }
   // A merged ticket's blind audit (levers-audit.mjs), worked under `audit.<its key>`.
   if (k.startsWith('audit.')) {
     const inner = ticketKind(k.slice('audit.'.length));
-    if (inner.ok && !['audit', 'base'].includes(inner.kind)) return { ok: true, kind: 'audit' };
+    if (inner.ok && !['audit', 'base', 'base-red'].includes(inner.kind)) return { ok: true, kind: 'audit' };
   }
   if (/^none\b/.test(tracker)) {
     if (/^issue-[0-9]+$/.test(k)) return { ok: true, kind: 'issue' };
@@ -1452,7 +1496,8 @@ function linuxMeminfo() {
 }
 function macVmStat() {
   try {
-    const out = execFileSync('vm_stat', { encoding: 'utf8' });
+    const out = outOrNull(runOnce('vm_stat'));
+    if (out == null) return null;
     const pageSize = Number(/page size of (\d+) bytes/.exec(out)?.[1] ?? 4096);
     const pages = (label) => Number(new RegExp(`${label}:\\s+(\\d+)`).exec(out)?.[1] ?? 0) * pageSize;
     return {
@@ -1501,7 +1546,7 @@ export function parsePs(text, columns) {
 // Every process, read whole from one `ps`. Throws when ps cannot be read, rather than giving a
 // partial or empty list. `env` adds to ps's environment (e.g. TZ and LC_ALL for lstart).
 export function psRows(columns, env = {}) {
-  const r = spawnSync('ps', ['-ww', '-axo', columns], { encoding: 'utf8', maxBuffer: PS_MAX_BUFFER, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const r = remember(['ps', columns, env], () => spawnSync('ps', ['-ww', '-axo', columns], { encoding: 'utf8', maxBuffer: PS_MAX_BUFFER, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] }));
   if (r.error || r.status !== 0) {
     const why = r.error?.code ?? r.error?.message ?? (`${r.stderr ?? ''}`.trim().split('\n').pop() || `exit ${r.status ?? r.signal}`);
     throw new Error(`ps could not be read (${why})`);
@@ -1875,7 +1920,7 @@ export function invalidRows(parsed) {
 }
 
 // An INVALID line: the row, then the reader's own words where they already name the row, else the item.
-const invalidLine = ({ section, label, item, error }) => {
+export const invalidLine = ({ section, label, item, error }) => {
   const own = error.replace(/^desk(-env)?: /, '');
   const head = `config §${section} "${label}" `;
   if (own.startsWith(head)) return `INVALID  §${section} ${label} ${own.slice(head.length)}`;
@@ -1925,7 +1970,8 @@ const readPackage = (root, dir) => { try { return JSON.parse(readFileSync(join(r
 // Every §4 row one app needs before a worker can run it for screenshots, that the config lacks for
 // it, each with the value to add: a Dev server item where its package.json has a dev script, and the
 // `.env*` files its directory holds in the primary checkout (`root`) where Env files names none under
-// it. A row unset is drift's MISSING, and `none` is a decision: neither is a gap here.
+// it, and a Test sign-in item. A row unset is drift's MISSING, and `none` is a decision: neither is a
+// gap here, except the Test sign-in row unset.
 // -> [{ row, dir, value: [item], have?: [file] }]
 export function appSetupGaps(parsed, root, dir) {
   const app = String(dir).replace(/^(\.\/)+/, '').replace(/\/+$/, '') || '.';
@@ -1942,14 +1988,24 @@ export function appSetupGaps(parsed, root, dir) {
     try { have = readdirSync(join(root, app), { withFileTypes: true }).filter((e) => e.isFile() && /^\.env/.test(e.name) && !/\.(example|sample|template|dist)$/.test(e.name)).map((e) => e.name).sort(); } catch { /* no such directory */ }
     if (have.length) gaps.push({ row: 'Env files', dir: app, value: have.map((f) => (app === '.' ? f : `${app}/${f}`)), have });
   }
+  // An app with a Dev server item, or one just proposed, needs a user to sign in as. Unlike the rows
+  // above, an unset Test sign-in row is a gap here: only the person can name the user.
+  const runs = gaps.some((g) => g.row === 'Dev server') || (dev && !isNone(dev) && (devServed(dev).has(app) || (p?.name && devServed(dev).has(p.name))));
+  const signin = configValuesIn(parsed, 'test-signin');
+  if (runs && !(signin && isNone(signin)) && !(signin ?? []).some((x) => parseCommandItem(x).dir === app)) {
+    gaps.push({ row: 'Test sign-in', dir: app, value: [`${app === '.' ? '' : `${app}: `}${SIGNIN_PLACEHOLDER}`] });
+  }
   return gaps;
 }
+const SIGNIN_PLACEHOLDER = '<email of an existing development user who holds the app\'s grant>';
 
 export function appGapLines(gaps, dir) {
   const spans = (xs) => xs.map((x) => `\`${x}\``).join(' ');
   const lines = gaps.map((g) => (g.row === 'Dev server'
     ? `NODEV    §4 Dev server has no item for ${g.dir}, whose package.json has a dev script: add ${spans(g.value)}`
-    : `NOENV    §4 Env files has no item under ${g.dir}, whose primary checkout holds ${g.have.join(', ')}: add ${spans(g.value)}`));
+    : g.row === 'Env files'
+      ? `NOENV    §4 Env files has no item under ${g.dir}, whose primary checkout holds ${g.have.join(', ')}: add ${spans(g.value)}`
+      : `NOSIGNIN §4 Test sign-in has no item for ${g.dir}, which a worker runs for screenshots: add ${spans(g.value)}, never a password (\`none\` where no app needs signing in to)`));
   return lines.length ? lines : [`no setup gaps for ${dir}`];
 }
 
@@ -2088,7 +2144,7 @@ export async function setRepoSubscription(slug, value, root = deskConfigRoot()) 
 // for another repo must not inherit that part, so PER_REPO_ENV names it (with DESK_BATCH, an input).
 const PATHS = {
   DESK_REPO_ROOT: repoRoot, DESK_WORKTREES_DIR: worktreesDir, DESK_HOME: deskHome, DESK_SLUG: repoSlug, DESK_REPO_CONFIG_DIR: repoConfigDir, DESK_DEFAULT_BRANCH: defaultBranch,
-  DESK_BIN: binDir, DESK_RUN_BIN: runBin, DESK_STATE: stateDir, DESK_QUEUE: queueFile, DESK_SKILLS_DIR: skillsDir,
+  DESK_BIN: binDir, DESK_RUN_BIN: runBin, DESK_STATE: stateDir, DESK_QUEUE: queueFile, DESK_EXITS_DIR: exitsDir, DESK_SKILLS_DIR: skillsDir,
   DESK_LOCK_DIR: lockDir, DESK_MEMORY_DIR: memoryDir, DESK_GH_REPO: ghRepo,
   DESK_PG_CONTAINER: pgContainer, DESK_DEV_PORT: devPort, DESK_WORKER_PORT_FLOOR: workerPortFloor, DESK_IS_WSL: () => (isWSL() ? 'yes' : 'no'),
 };
@@ -2196,9 +2252,15 @@ function valueRow(id) {
   const e = ROW_ENTRY.get(id);
   const { value, source, fromRow } = rowValue(id, DECLARED_ROWS);
   const { items, refused } = rowItems(id, DECLARED_ROWS);
-  const read = fromRow ? items : value == null ? null : [value];
+  // `list` refuses `none` beside other items on every row, but only some rows are read that way
+  // (readsAsList): most value rows' readers take the first item. So the row's spans are checked as its
+  // own reader reads them, and the refusal is fatal only where checkRow says that reader refuses it (a
+  // cell type whose reader catches it, such as the collision budget, does not).
+  const read = fromRow ? (refused ? rowSpansIn(parseConfig(), id, DECLARED_ROWS)?.map(expandHome) : items) : value == null ? null : [value];
   const checked = read ? checkRow(e, read) : { value: null, errors: [] };
-  const errors = [...(refused ? [{ item: null, error: refused.message, fatal: true }] : []), ...checked.errors];
+  const errors = !refused ? checked.errors
+    : readsAsList(e) ? checked.errors.map((x) => ({ ...x, error: refused.message }))
+      : [{ item: null, error: refused.message, fatal: false }, ...checked.errors];
   return { ...rowHead(e), set: source !== 'default' && source !== 'unset', source, value, items,
     parsed: errors.length ? null : checked.value, default: e.default ?? null, errors };
 }
@@ -2210,7 +2272,7 @@ function valueRow(id) {
 // caller learns the repo and its rows in one run. Asked for jira-required-fields as well, it adds
 // `required_fields`, what `required-fields` prints for every type the rules name (requiredFieldsByType).
 class GetJsonUsage extends Error {}
-const SECTIONS = Object.freeze([...new Set(ROWS.map((e) => e.section))]);
+export const SECTIONS = Object.freeze([...new Set(ROWS.map((e) => e.section))]);
 function whereJson() {
   const r = currentRepo(); const p = configPathOrNull();
   return { slug: r.slug ?? '', gh_repo: r.ownerRepo ?? '', config: p ?? '', creds: repoConfigDir() ?? '', exists: !!(p && existsSync(p)) };

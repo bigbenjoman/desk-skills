@@ -39,6 +39,13 @@ export function parseCommandItem(item) {
   return { dir: '.', cmd: String(item).trim() };
 }
 
+// A §4 Test sign-in item, `<app dir>: <email>` or a bare email for the root: an existing development
+// user's address, never a password. -> { dir, email }, or null where the rest is not one address.
+export function testSigninOf(item) {
+  const { dir, cmd } = parseCommandItem(item);
+  return /^[^\s@:]+@[^\s@:]+\.[^\s@:]+$/.test(cmd) ? { dir, email: cmd } : null;
+}
+
 // The compose service a §4 Local services item starts with, ending at whitespace or a colon (`search
 // :8108`, `search: 8108`, `search`), or null. worker-settings allow-lists a worker starting it by this
 // name, and drift names an item it cannot read.
@@ -452,6 +459,7 @@ export const TYPES = Object.freeze({
   'ai-attribution': oneOf('forbidden', 'allowed'),
   regex: matching('a regular expression', (s) => { try { new RegExp(s); return true; } catch { return false; } }),
   command: matching('a command', () => true, parseCommandItem),
+  'test-signin': matching('`[<app dir>: ]<email>`', (s) => testSigninOf(s) != null, testSigninOf),
   'service-port': matching('`<service> [:<port>]`', (s) => servicePort(s) != null, servicePort),
   'required-fields': matching('`<Type>[, <Type>…]: <field>[, <field>…]`', (s) => !requiredFieldsIn([s], null).malformed.length,
     (s) => ({ types: requiredRule(s)?.types ?? [], fields: requiredFieldsIn([s], null).need })),
@@ -474,17 +482,21 @@ export const TYPES = Object.freeze({
   'gate-reviewers': cell({ parse(items) { const r = gateReviewersOf(items); return r.bad.length ? fail(`"${items.join(' | ')}" is not one GitHub login per span, \`any\` or \`none\``, true) : ok(r.logins); } }),
 });
 
+// Whether a row's reader is configValues, the list reader, which refuses `none` beside other items: a
+// list row, a cell type's, and a value row marked listRead.
+export const readsAsList = (entry) => entry.kind === 'list' || !!entry.listRead || !!TYPES[entry.type]?.cell;
+
 // A row's items checked by its entry's type: -> { value, errors: [{ item, error, fatal }] }, value null
 // unless errors is empty; never throws. A cell type parses every item together, as its reader reads
 // them, and its error names no item (null). Otherwise a value row parses its first item, as configValue
-// reads it, and a list row parses each item, every one that does not fit named. `none` stands alone in
-// a list or a cell (a lone `none` is the row's value), so `none` beside another item is fatal, as
-// configValues refuses it.
+// reads it, and a list row parses each item, every one that does not fit named. `none` stands alone
+// where the reader is the list reader (a lone `none` is the row's value), so `none` beside another item
+// is fatal there, as configValues refuses it.
 export function checkRow(entry, items) {
   const all = [].concat(items ?? []).map((x) => String(x).trim());
   const type = TYPES[entry.type];
   const one = (r, item) => (r.error ? { value: null, errors: [{ item, error: r.error, fatal: r.fatal }] } : { value: r.value, errors: [] });
-  if ((entry.kind === 'list' || type.cell) && mixesNone(all)) return one(fail(`\`none\` must stand alone, not beside other items (${all.join(' | ')})`, type.noneFatal !== false), null);
+  if (readsAsList(entry) && mixesNone(all)) return one(fail(`\`none\` must stand alone, not beside other items (${all.join(' | ')})`, type.noneFatal !== false), null);
   if (type.cell) return one(type.parse(all), null);
   if (entry.kind !== 'list' && entry.kind !== 'table') return one(type.parse(all[0] ?? ''), all[0] ?? '');
   if (isNone(all)) return { value: ['none'], errors: [] };
@@ -504,6 +516,9 @@ const v = (id, section, label, type, example, extra) => ({ id, section, label, k
 const l = (id, section, label, type, example, extra) => ({ id, section, label, kind: 'list', type, example, ...extra });
 const p = (key, extra) => ({ id: key, section: '3', label: key, kind: 'perm', type: 'perm', example: 'yes', ...extra });
 const unread = { unread: true };
+// A value row a reader takes through configValues, the list reader, as well as its first item: that
+// reader refuses `none` beside other items, so checkRow does too (readsAsList).
+const listRead = { listRead: true };
 const dflt = (value, extra) => ({ default: value, ...extra });
 const never = { example: 'never' };
 const stop = { example: 'stop' };
@@ -514,6 +529,7 @@ export const ROWS = Object.freeze([
   v('slug', '0', 'Slug', 'text', 'acme__widgets', unread),
   v('default-branch', '0', 'Default branch', 'text', 'main', dflt('main')),
   v('repo-description', '0', 'One-line description', 'text', 'A voice assistant for clinics'),
+  l('other-names', '0', 'Other names', 'text', ['widgets-portal']),
   // §1 Who you are in this repo
   v('name', '1', 'Name', 'text', 'Pat Example'),
   v('short-name', '1', 'Short form colleagues use', 'text', 'Pat', unread),
@@ -632,7 +648,7 @@ export const ROWS = Object.freeze([
   v('repo-merge-settings', '4', 'Repo merge settings', 'text', 'auto-merge allowed; delete_branch_on_merge on'),
   v('gh-token-scopes', '4', 'gh token scopes', 'text', 'repo, workflow', unread),
   v('codex-answers', '4', 'Codex answers a real call?', 'text', 'yes', unread),
-  v('local-review', '4', 'Local review command', 'text', '/desk-review'),
+  v('local-review', '4', 'Local review command', 'text', '/desk-review', listRead),
   v('clean-verdict', '4', 'Clean review verdict', 'text', 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'),
   v('review-account', '4', 'Review account', 'review-account', 'agent-pullbot: ~/.config/gh-agent-pullbot', dflt('none')),
   l('gate-reviewers', '4', 'Gate reviewers', 'gate-reviewers', ['agent-pullbot'], dflt(['any'])),
@@ -640,7 +656,7 @@ export const ROWS = Object.freeze([
   l('review-experts', '4', 'Review domain experts', 'text', ['apps/api/pricing/**: energy-trader']),
   l('agents-sync', '4', 'Project subagents sync', 'command', ['pnpm agents:sync']),
   // §4 Toolchain
-  v('package-manager', '4', 'Package manager', 'text', 'pnpm'),
+  v('package-manager', '4', 'Package manager', 'text', 'pnpm', listRead),
   v('command-prefix', '4', 'Command prefix', 'text', 'mise exec --'),
   l('install-cmd', '4', 'Install', 'command', ['pnpm install --frozen-lockfile']),
   l('dev-cmd', '4', 'Dev server', 'command', ['pnpm --filter frontend dev', 'portal: pnpm dev']),
@@ -660,6 +676,7 @@ export const ROWS = Object.freeze([
   l('merged-tree-check-cmd', '4', 'Merged-tree check', 'command', ['apps/api: uv run python scripts/check_alembic_heads.py']),
   l('pr-description-checks', '4', 'PR-description checks', 'command', ['node scripts/check-pr-body.mjs']),
   l('env-files', '4', 'Env files', 'text', ['frontend/.env.local', 'portal/.env.local']),
+  l('test-signin', '4', 'Test sign-in', 'test-signin', ['dev-user@example.test', 'apps/portal: portal-dev@example.test']),
   // §4 Environments and services
   v('local-db', '4', 'Local database', 'text', 'postgres container voicepa-postgres-1'),
   l('db-url-var', '4', 'Database URL variable', 'text', ['DATABASE_URL', 'DATABASE_URL_UNPOOLED']),

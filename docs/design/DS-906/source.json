@@ -1,0 +1,131 @@
+{
+  "url": "https://claude.ai/artifact/8vmwmNZ4WzmPG9QjtFdf9g",
+  "version": "1795278357-9e27",
+  "fetched_at": "2026-11-21T16:37:10.287Z",
+  "kind": "canvas",
+  "dir": "DS-906",
+  "tickets": [
+    {
+      "key": "DS-959",
+      "boards": [
+        "2 · Proposed: nothing wrong, nothing shown",
+        "3 · Proposed: a lease is stuck",
+        "4 · Proposed: a clash during the trial",
+        "5 · Proposed: a ticket's port on its screen",
+        "6 · Proposed: the day-7 decision in /desk-needs-you"
+      ]
+    }
+  ],
+  "boards": [
+    {
+      "name": "1 · Today: the Leases section",
+      "width": 920,
+      "file": "Main.dc.html"
+    },
+    {
+      "name": "2 · Proposed: nothing wrong, nothing shown",
+      "width": 920,
+      "file": "Healthy.dc.html"
+    },
+    {
+      "name": "3 · Proposed: a lease is stuck",
+      "width": 920,
+      "file": "Stuck.dc.html"
+    },
+    {
+      "name": "4 · Proposed: a clash during the trial",
+      "width": 920,
+      "file": "Clash.dc.html"
+    },
+    {
+      "name": "5 · Proposed: a ticket's port on its screen",
+      "width": 920,
+      "file": "Ticket.dc.html"
+    },
+    {
+      "name": "6 · Proposed: the day-7 decision in /desk-needs-you",
+      "width": 920,
+      "file": "Verdict.dc.html"
+    }
+  ],
+  "files": [
+    "project/Clash.dc.html",
+    "project/Healthy.dc.html",
+    "project/Main.dc.html",
+    "project/Stuck.dc.html",
+    "project/Ticket.dc.html",
+    "project/Verdict.dc.html",
+    "project/canvas.json",
+    "project/support.js"
+  ],
+  "home": "project",
+  "remote": [
+    "https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js",
+    "https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js",
+    "https://cdn.jsdelivr.net/npm/@babel/standalone@7.29.0/babel.min.js"
+  ],
+  "screens": {
+    "version": "1795278357-9e27",
+    "rendered_at": "2026-11-21T16:37:15.098Z",
+    "breakpoints": [],
+    "widths": [
+      {
+        "width": 920,
+        "label": "drawn",
+        "breakpoint": false,
+        "boards": [
+          "1 · Today: the Leases section",
+          "2 · Proposed: nothing wrong, nothing shown",
+          "3 · Proposed: a lease is stuck",
+          "4 · Proposed: a clash during the trial",
+          "5 · Proposed: a ticket's port on its screen",
+          "6 · Proposed: the day-7 decision in /desk-needs-you"
+        ]
+      }
+    ],
+    "images": [
+      {
+        "board": "1 · Today: the Leases section",
+        "screen": "1-today-the-leases-section",
+        "width": 920,
+        "file": "screens/1-today-the-leases-section@920.png",
+        "drawn": true
+      },
+      {
+        "board": "2 · Proposed: nothing wrong, nothing shown",
+        "screen": "2-proposed-nothing-wrong-nothing-shown",
+        "width": 920,
+        "file": "screens/2-proposed-nothing-wrong-nothing-shown@920.png",
+        "drawn": true
+      },
+      {
+        "board": "3 · Proposed: a lease is stuck",
+        "screen": "3-proposed-a-lease-is-stuck",
+        "width": 920,
+        "file": "screens/3-proposed-a-lease-is-stuck@920.png",
+        "drawn": true
+      },
+      {
+        "board": "4 · Proposed: a clash during the trial",
+        "screen": "4-proposed-a-clash-during-the-trial",
+        "width": 920,
+        "file": "screens/4-proposed-a-clash-during-the-trial@920.png",
+        "drawn": true
+      },
+      {
+        "board": "5 · Proposed: a ticket's port on its screen",
+        "screen": "5-proposed-a-ticket-s-port-on-its-screen",
+        "width": 920,
+        "file": "screens/5-proposed-a-ticket-s-port-on-its-screen@920.png",
+        "drawn": true
+      },
+      {
+        "board": "6 · Proposed: the day-7 decision in /desk-needs-you",
+        "screen": "6-proposed-the-day-7-decision-in-desk-needs-you",
+        "width": 920,
+        "file": "screens/6-proposed-the-day-7-decision-in-desk-needs-you@920.png",
+        "drawn": true
+      }
+    ]
+  }
+}
