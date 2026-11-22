@@ -43,7 +43,8 @@ cat > "$T/fixture.json" <<EOF
   "KAN-20": {"summary": "a story", "issuetype": {"name": "Story"}, "customfield_10208": {"value": "M"}},
   "KAN-30": {}, "KAN-31": {}, "KAN-32": {}, "KAN-33": {}, "KAN-34": {},
   "KAN-40": {"summary": "a parent", "customfield_10211": {"self": "https://x/option/5", "value": "alpha", "id": "5"}},
-  "KAN-41": {"summary": "a parent with no repository"}},
+  "KAN-41": {"summary": "a parent with no repository"},
+  "KAN-42": {"summary": "a parent with an empty repository", "customfield_10211": {"value": ""}}},
  "fields": [{"id": "customfield_10207", "name": "Launch Priority", "custom": true, "schema": {"type": "option"}},
             {"id": "customfield_10208", "name": "Size", "custom": true, "schema": {"type": "option"}},
             {"id": "customfield_10209", "name": "Source", "custom": true, "schema": {"type": "option"}},
@@ -330,6 +331,8 @@ check "a field taken from the parent, on a create with none, is refused before a
 n0=$(creates)
 err=$(cd "$FD" && "$J" create Task s body.md parent=KAN-41 --no-lint 2>&1); rc=$?
 check "a parent with the field empty is refused, and nothing is created" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "KAN-41 has no customfield_10211 to give the new ticket" && [ "$(creates)" -eq "$n0" ]'
+err=$(cd "$FD" && "$J" create Task s body.md parent=KAN-42 --no-lint 2>&1); rc=$?
+check "and so is one whose field is an option with an empty value" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "KAN-42 has no customfield_10211 to give the new ticket" && [ "$(creates)" -eq "$n0" ]'
 out=$(cd "$C" && "$J" create Story dropped-labels body.md customfield_10208=M customfield_10207=P2 'labels=["a"]' --no-lint 2>&1); rc=$?
 check "create names a list field that came back as []" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "^  labels: (empty - the write did not stick)$"'
 sent_labels() { jq -sc '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue")] | last | .body | fromjson | .fields.labels' "$LOG"; }

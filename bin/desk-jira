@@ -159,11 +159,14 @@ JQ_VAL='def val: if . == null then "-"
   elif type == "object" then (.value // .name // .displayName // .accountId // tojson)
   else tostring end;'
 
-# jq helper (needs JQ_VAL): one line per field in $sent but not in $skip, read back from an issue's
-# .fields. A field sent with a value that reads back blank did not stick.
-JQ_READBACK='def blank: . == null or . == "" or . == [] or . == {}
-    or (type == "object" and (keys == ["value"] or keys == ["name"]) and ((.value // .name // "") == ""));
-  def readback($sent; $skip): .fields as $got | $sent | keys[] | select(. as $x | $skip | any(. == $x) | not) as $k
+# jq helper: a field value read as empty, by the field rules, the read-back and a batch row's carried
+# fields alike: null, "", [], {}, or an option named by an empty value or name.
+JQ_BLANK='def byname: type == "object" and (keys == ["value"] or keys == ["name"]);
+    def blank: . == null or . == "" or . == [] or . == {} or (byname and ((.value // .name // "") == ""));'
+
+# jq helper (needs JQ_VAL and JQ_BLANK): one line per field in $sent but not in $skip, read back from an
+# issue's .fields. A field sent with a value that reads back blank did not stick.
+JQ_READBACK='def readback($sent; $skip): .fields as $got | $sent | keys[] | select(. as $x | $skip | any(. == $x) | not) as $k
     | if ($got[$k] | blank) and ($sent[$k] | blank | not) then "  \($k): (empty - the write did not stick)"
       else "  \($k): " + ($got[$k] | val | gsub("\n"; " ") | if length > 120 then .[0:120] + "..." else . end) end;'
 
@@ -350,9 +353,6 @@ PRIORITY_KEY="${PRIORITY_FIELD:-priority}"
 # when the write may go. An option is read by name only: a bare name, or an object whose one key is
 # "value" or "name". Any other object (an id, both keys, anything extra) is refused, because Jira
 # may write a key the rules did not read: an id over a name, or a name over a value.
-# A field value the rules read as empty: null, "", [], {}, or an option named by an empty value or name.
-JQ_BLANK='def byname: type == "object" and (keys == ["value"] or keys == ["name"]);
-    def blank: . == null or . == "" or . == [] or . == {} or (byname and ((.value // .name // "") == ""));'
 rule_errors() {
   load_rules
   jq -rn --arg mode "$1" --arg type "$2" --argjson f "$3" --arg approved "$4" \
@@ -421,7 +421,7 @@ inherit_fields() {  # parent-key extra-json
   local back missing
   back=$(api GET "api/2/issue/$1?fields=$(IFS=,; printf '%s' "${FROM_PARENT[*]}")") || die "desk-jira: could not read $1 for the fields §4 Field defaults takes from it"
   missing=$(jq -r --argjson ks "$(printf '%s\n' "${FROM_PARENT[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" \
-    '.fields as $f | $ks[] | select($f[.] == null or $f[.] == "" or $f[.] == [])' <<<"$back")
+    "$JQ_BLANK"' .fields as $f | $ks[] | select($f[.] | blank)' <<<"$back")
   [[ -z "$missing" ]] || die "$(printf '%s\n' "$missing" | sed "s|.*|desk-jira: $1 has no & to give the new ticket (config §4 Field defaults takes it from the parent): add &=<value>|")"
   jq -c --argjson e "$2" --argjson ks "$(printf '%s\n' "${FROM_PARENT[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" '
     def norm: if type == "array" then map(norm)
@@ -1504,7 +1504,7 @@ case "$cmd" in
     # every field given but the description.
     names=$(printf '%s' "$extra" | jq -r '[keys[] | select(. != "description" and . != "assignee")] + ["assignee"] | join(",")')
     if back=$(api GET "api/2/issue/$key?fields=$names"); then
-      printf '%s' "$back" | jq -r --argjson sent "$extra" "$JQ_VAL$JQ_READBACK"'
+      printf '%s' "$back" | jq -r --argjson sent "$extra" "$JQ_VAL$JQ_BLANK$JQ_READBACK"'
         (if .fields.assignee == null and ($sent.assignee // null) != null then "  assignee: (empty - the assignment did not stick)"
          else "  assignee: \(.fields.assignee | val)" end),
         readback($sent; ["description", "assignee"])'
@@ -1661,7 +1661,7 @@ case "$cmd" in
     names=$(printf '%s' "$f" | jq -r 'keys | join(",")')
     back=$(api GET "api/2/issue/$key?fields=$names")
     echo "updated $key - read back:"
-    printf '%s' "$back" | jq -r --argjson sent "$f" "$JQ_VAL$JQ_READBACK"'readback($sent; [])'
+    printf '%s' "$back" | jq -r --argjson sent "$f" "$JQ_VAL$JQ_BLANK$JQ_READBACK"'readback($sent; [])'
     # A parent that does not stick files the issue under the wrong epic or none, so it fails; so does
     # a cleared parent that is still there.
     if printf '%s' "$f" | jq -e 'has("parent")' >/dev/null; then
