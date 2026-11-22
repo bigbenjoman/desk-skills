@@ -16,10 +16,11 @@ const USE = new RegExp(String.raw`(?<![\w/#-])${KEYWORD}${JOIN}${REF}(?![\w-])`,
 // A line that says only which issues the PR closes, after any list or quote marker and bold. A task
 // item ("- [ ] Close #12") is a step for later, never that line, so its box is not stripped.
 const MARKER = /^\s*(?:>\s*)*(?:(?:[-*+]|\d+[.)])\s+)?/;
-// The gap between references is a separator with any spaces round it, or spaces alone: never two
-// optional runs of spaces side by side, which V8 backtracks through exponentially on a long line of
-// references that ends in prose.
-const GAP = String.raw`(?:\s*(?:,|&|\band\b)\s*|\s+)`;
+// The gap between references can be read only one way: a comma or ampersand with any spaces round
+// it, "and" with spaces on both sides, or spaces alone. Never two optional runs of spaces side by
+// side, and never an "and" a reference could also start with ("and-co/web#2"): either lets V8 try
+// every reading of a long line of references that ends in prose, which doubles with each one.
+const GAP = String.raw`(?:\s*[,&]\s*|\s+and\s+|\s+)`;
 const ONLY = new RegExp(String.raw`^${KEYWORD}${JOIN}${REF}(?:${GAP}(?:${KEYWORD}${JOIN})?${REF})*\s*\.?$`, 'i');
 
 // Whether `line` says only that the PR closes the issues it names.

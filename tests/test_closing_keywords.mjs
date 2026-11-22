@@ -34,12 +34,16 @@ t('AC3 a closing line beside a flagged one flags only the other', lines('Closes 
 
 // A long run of references before prose is read in linear time: two optional runs of spaces side by
 // side once backtracked exponentially (26 references took 21.6 s), and the pass checks worker bodies.
-const refs = (n, sep) => Array.from({ length: n }, (_, i) => `#${i + 1}`).join(sep);
-for (const sep of [' ', '  ', ', ', ' and ', ' & ']) {
-  const started = Date.now();
-  const got = [lines(`Closes ${refs(200, sep)} once the fleet is quiet.`), lines(`Closes ${refs(200, sep)}.`)];
-  t(`a closing line of 200 references joined by ${JSON.stringify(sep)} is read at once`, [got, Date.now() - started < 1000], [[[1], []], true]);
+const refs = (n, sep, ref = (i) => `#${i}`) => Array.from({ length: n }, (_, i) => ref(i + 1)).join(sep);
+const owners = { '#N': undefined, 'and-co/web#N': (i) => `and-co/web#${i}`, 'and.a/b#N': (i) => `and.a/b#${i}` };
+for (const [name, ref] of Object.entries(owners)) {
+  for (const sep of [' ', '  ', ', ', ' and ', ' & ']) {
+    const started = Date.now();
+    const got = [lines(`Closes ${refs(200, sep, ref)} once the fleet is quiet.`), lines(`Closes ${refs(200, sep, ref)}.`)];
+    t(`a closing line of 200 ${name} references joined by ${JSON.stringify(sep)} is read at once`, [got, Date.now() - started < 1000], [[[1], []], true]);
+  }
 }
+t('"and" with no space after it is not a separator', closesOnly('Closes #1 and#2'), false);
 
 // The command: exit 0 clean, 1 flagged with the line, 2 usage.
 const bin = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'closing-keywords.mjs');
