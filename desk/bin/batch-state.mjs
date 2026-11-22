@@ -719,8 +719,21 @@ export const childDone = (t) => t.state === 'done' && (!!t.merged_at || t.result
 // or its PR merged. `prState(n)` is the PR's state where the caller read it from GitHub, and null counts
 // as not merged; without it, the last pass's pr_status is read and a PR it has not read counts as
 // merged. Done with no PR and no merge is not through: whether its dependants start is the person's.
-export const blockerThrough = (t, prState = null) => t?.state === 'done' && (!!t.merged_at
-  || (t.result?.pr != null && (prState ? prState(t.result.pr) === 'MERGED' : !['OPEN', 'CLOSED'].includes(prStatusOf(t)?.state))));
+// merged_at keeps only a ticket's first merge, so a requeued blocker whose new PR is open (or, where the
+// caller reads GitHub, unread) is not through on it: its dependants wait on the change that PR lands. A
+// status naming its current PR merged is final, and is how a ticket done on another repo's PR is read
+// (needs-you's elsewhereDone), never as this repo's PR of the same number.
+export const blockerThrough = (t, prState = null) => {
+  if (t?.state !== 'done') return false;
+  const n = t.result?.pr;
+  if (n == null) return !!t.merged_at;
+  const kept = prStatusOf(t)?.state;
+  if (kept === 'MERGED') return true;
+  const s = prState ? prState(n) : kept;
+  if (s === 'MERGED') return true;
+  if (t.merged_at) return s !== 'OPEN' && !(prState && s == null);
+  return !prState && !['OPEN', 'CLOSED'].includes(s);
+};
 // The blockers among `keys` to hold ticket `key` behind, less `key` itself and those in `tickets`
 // already merged or through (childDone), which nothing would release. -> { holds, cycles: those in
 // `behind` (heldBehindOf), already waiting behind `key`, so not held, outside: the holds in no batch }.
