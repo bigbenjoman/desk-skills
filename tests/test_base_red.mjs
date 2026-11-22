@@ -101,9 +101,10 @@ test('DS-989 AC1 a second loop on an unmoved tip reads only its ref, no commit a
   assert.deepEqual(calls, { head: 2, commit: 1, runs: 1 });
 });
 
-test('DS-989 AC1 a check still pending on the tip, or a required one not yet there, has the tip\'s runs read again', () => {
-  // Pending on the tip: the walk stops there, read on both loops. Not there yet: the tip on both, its parent once.
-  for (const [runs, want] of [[[run('tests', 'success'), { name: 'lint', status: 'in_progress', conclusion: null }], 2], [[run('lint', 'success')], 3]]) {
+test('DS-989 AC1 a required check still pending on the tip, or not yet there, has the tip\'s runs read again; a pending check not required does not', () => {
+  // Pending or not there yet: the tip on both loops, its parent once. Only a check not required pending: the tip once.
+  for (const [runs, want] of [[[{ name: 'tests', status: 'in_progress', conclusion: null }], 3], [[run('lint', 'success')], 3],
+    [[run('tests', 'success'), { name: 'lint', status: 'in_progress', conclusion: null }], 1]]) {
     const { calls, read } = counting({ [sha('a')]: { parent: sha('b'), runs }, [sha('b')]: { parent: null, runs: [run('tests', 'success')] } });
     const walk = emptyWalk();
     loops(read, walk, 2);
@@ -111,17 +112,33 @@ test('DS-989 AC1 a check still pending on the tip, or a required one not yet the
   }
 });
 
-test('DS-989 AC2 a walked commit whose runs all completed is kept: later loops read none of the walk again', () => {
+const pending = (name) => ({ name, status: 'in_progress', conclusion: null });
+
+test('DS-989 AC2 a walked commit whose required runs all completed is kept: later loops read only the pending tip', () => {
   const commits = {
-    [sha('a')]: { parent: sha('b'), runs: [run('lint', 'success')] },
-    [sha('b')]: { parent: sha('c'), runs: [run('lint', 'success')] },
-    [sha('c')]: { parent: null, runs: [run('tests', 'success'), run('lint', 'success')] },
+    [sha('a')]: { parent: sha('b'), runs: [pending('tests'), run('lint', 'success')] },
+    [sha('b')]: { parent: null, runs: [run('tests', 'success'), run('lint', 'success')] },
   };
   const { calls, read } = counting(commits);
   const walk = emptyWalk();
-  // The tip lacks `tests`, so its runs are read each loop; b and c are kept.
-  loops(read, walk, 3);
-  assert.deepEqual(calls, { head: 3, commit: 3, runs: 5 });
+  assert.equal(loops(read, walk, 3).state, 'green');
+  assert.deepEqual(calls, { head: 3, commit: 2, runs: 4 });
+});
+
+test('DS-989 a walked commit with no run yet of a required check is read again, so a failure that lands there later turns the base red', () => {
+  const commits = {
+    [sha('a')]: { parent: sha('b'), runs: [pending('tests')] },
+    [sha('b')]: { parent: sha('c'), runs: [run('lint', 'success')] },
+    [sha('c')]: { parent: null, runs: [run('tests', 'success')] },
+  };
+  const { calls, read } = counting(commits);
+  const walk = emptyWalk();
+  assert.equal(loops(read, walk, 1).state, 'green');
+  assert.deepEqual(calls.runs, 3);
+  commits[sha('b')].runs = [run('lint', 'success'), run('tests', 'failure', 'u/b')];
+  const s = loops(read, walk, 1);
+  assert.deepEqual([s.state, s.checks?.map((c) => c.sha)], ['red', [sha('b')]]);
+  assert.deepEqual(calls.runs, 5);
 });
 
 test('DS-989 a required check that failed is read again, so a rerun that passes clears the base', () => {
@@ -131,6 +148,15 @@ test('DS-989 a required check that failed is read again, so a rerun that passes 
   assert.equal(loops(read, walk, 1).state, 'red');
   commits[sha('a')].runs = [run('tests', 'success')];
   assert.equal(loops(read, walk, 1).state, 'green');
+});
+
+test('DS-989 a kept entry is held to the required checks of today: one the config added since is read', () => {
+  const commits = { [sha('a')]: { parent: null, runs: [run('tests', 'success'), pending('e2e')] } };
+  const { calls, read } = counting(commits);
+  const walk = emptyWalk();
+  loops(read, walk, 1, { required: ['tests'] });
+  loops(read, walk, 1, { required: ['tests', 'e2e'] });
+  assert.equal(calls.runs, 2);
 });
 
 test('DS-989 AC4 a moved tip is read fresh, and a kept read older than STALE_MS is read again', () => {

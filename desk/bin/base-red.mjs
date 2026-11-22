@@ -15,13 +15,14 @@
 // `merges` are the last MERGES_SHOWN merges the merge log holds for the repo by `--by`, newest first, and `since`
 // when this red spell was first read. `repair_key` is this spell's own repair ticket (desk-env baseRedKey),
 // so no two spells share one.
-import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync, realpathSync, renameSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import * as E from './desk-env.mjs';
 import { runsState, FAILED } from './failure-class.mjs';
 import { readLog } from './merge-log.mjs';
+import { writeTextAtomic } from './dir-lock.mjs';
 
 export const FILE = 'base-red.json';
 // How many of the base's newest first-parent commits are read for a check's latest completed run.
@@ -80,9 +81,8 @@ export function baseState({ required, branch, read }) {
 
 // The walk's reads the driver keeps between loops, <state>/base-walk.json:
 //   { repo, commits: { <sha>: { parent, at } }, runs: { <sha>: { runs, at } } }
-// so a loop on an unmoved tip reads only its ref. A commit's runs are kept once every one has completed
-// and no required check failed (a failed one may be rerun green on the same commit); every entry is
-// read again once older than STALE_MS.
+// so a loop on an unmoved tip reads only its ref. A commit's runs are kept once every required check has
+// a completed run on it and none failed (cachedRead); every entry is read again once older than STALE_MS.
 export const WALK_FILE = 'base-walk.json';
 const walkPath = (state) => join(state, WALK_FILE);
 export function readWalk(state, repo) {
@@ -94,10 +94,7 @@ export function readWalk(state, repo) {
 }
 export function writeWalk(state, walk, now = Date.now()) {
   for (const k of ['commits', 'runs']) for (const [sha, e] of Object.entries(walk[k])) if (!(now - e?.at <= STALE_MS)) delete walk[k][sha];
-  mkdirSync(state, { recursive: true });
-  const tmp = `${walkPath(state)}.${process.pid}`;
-  writeFileSync(tmp, `${JSON.stringify(walk)}\n`);
-  renameSync(tmp, walkPath(state));
+  writeTextAtomic(walkPath(state), `${JSON.stringify(walk)}\n`);
 }
 // `read` (ghRead's shape, with head(branch) -> sha | null) through `walk`, for baseState.
 export function cachedRead(read, walk, { required = [], now = Date.now() } = {}) {
@@ -109,20 +106,23 @@ export function cachedRead(read, walk, { required = [], now = Date.now() } = {})
     if (c) walk.commits[c.sha] = { parent: c.parent ?? null, at: now };
     return c;
   };
-  let tip = null;
-  const mine = (runs, name) => runs.filter((r) => r?.name === name);
-  const settled = (runs, sha) => runs.length > 0 && runs.every((r) => String(r?.status ?? '').toLowerCase() === 'completed')
-    && !required.some((name) => runsState(mine(runs, name)) === 'fail')
-    && (sha !== tip || required.every((name) => mine(runs, name).length));
+  const done = (r) => String(r?.status ?? '').toLowerCase() === 'completed';
+  // Every required check has a run on the commit, each completed, and none failed: a failed one may be rerun
+  // green on the same commit, which clears a red base (DS-850). A required check with no run there yet is
+  // one still to start, on any commit of the walk, so those runs are read again. A kept entry is held to
+  // today's required checks, so a check the config added since is read.
+  const settled = (runs) => Array.isArray(runs) && required.length > 0 && required.every((name) => {
+    const mine = runs.filter((r) => r?.name === name);
+    return mine.length > 0 && mine.every(done) && runsState(mine) !== 'fail';
+  });
   return {
-    // A required check not yet on the tip is one still to start there, so the tip's runs are kept only with every one on it.
-    tip: (branch) => { tip = read.head(branch); return tip ? commit(tip) : null; },
+    tip: (branch) => { const sha = read.head(branch); return sha ? commit(sha) : null; },
     commit,
     runs: (sha) => {
       const hit = walk.runs[sha];
-      if (fresh(hit)) return hit.runs;
+      if (fresh(hit) && settled(hit.runs)) return hit.runs;
       const runs = read.runs(sha);
-      if (runs && settled(runs, sha)) walk.runs[sha] = { runs, at: now };
+      if (settled(runs)) walk.runs[sha] = { runs, at: now };
       else delete walk.runs[sha];
       return runs;
     },

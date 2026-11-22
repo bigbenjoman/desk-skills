@@ -81,8 +81,9 @@
 //   node gate.mjs state                            print each §4 State check as `<check>\t<kind>`;
 //     exit 1 naming the row when it does not parse
 import { execFileSync } from 'node:child_process';
-import { readFileSync, realpathSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
+import { writeTextAtomic } from './dir-lock.mjs';
 import { fileURLToPath } from 'node:url';
 import { parseWorkflow, branchEvents, checkNameOf, checkIsJob } from './desk-ci.mjs';
 import { ASK_TERMS } from './decisions.mjs';
@@ -405,12 +406,7 @@ export function cachedPrFiles({ dir, n, base, head, read, now = Date.now() }) {
   const files = read();
   for (const [k, e] of Object.entries(kept)) if (!fresh(e)) delete kept[k];
   kept[key] = { files, at: now };
-  try {
-    mkdirSync(dir, { recursive: true });
-    const tmp = `${path}.${process.pid}`;
-    writeFileSync(tmp, `${JSON.stringify(kept)}\n`);
-    renameSync(tmp, path);
-  } catch { /* read again next time */ }
+  try { writeTextAtomic(path, `${JSON.stringify(kept)}\n`); } catch { /* read again next time */ }
   return files;
 }
 
