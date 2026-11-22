@@ -105,7 +105,8 @@
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
 //   node desk-env.mjs drift --app <dir>       every §4 row that app needs to run for screenshots and lacks,
 //                                             with the value to add: Dev server (NODEV) and the .env* files
-//                                             its primary-checkout directory holds (NOENV); exit 1 if any
+//                                             its primary-checkout directory holds (NOENV), and a Test sign-in
+//                                             user for an app it runs (NOSIGNIN); exit 1 if any
 //   node desk-env.mjs add-row <section> <§3 key | "row name"> <value> [--note "<text>"]
 //                                             add one row drift names MISSING, from the template, with that
 //                                             value; prints ADDED, and a §3 row's perm read back
@@ -1008,7 +1009,8 @@ export const NO_EFFORT = 'default';
 // The effort a session starting at `start` is launched at: NO_EFFORT (no --effort) with the lever off.
 export const workerEffort = (start) => (leverOn('effort') ? parseWorkerEffort(configValues('worker-effort'))[start] ?? DEFAULT_EFFORT : NO_EFFORT);
 
-// §3b Codex review, read by parseCodexReview (config-schema.mjs) with the codex lever on.
+// §3b Codex review, read by parseCodexReview (config-schema.mjs): every role with the codex lever on,
+// and only its timeout with it off (codex-exec.mjs review).
 export function codexReview() {
   try { return parseCodexReview(configValues('codex-models')); } catch (e) { if (e instanceof NoRepoConfigError) return parseCodexReview(null); throw e; }
 }
@@ -1167,6 +1169,9 @@ export function batchPaths(slug, batch = null) {
 }
 export const stateDir = () => expandHome(process.env.DESK_AUTOPILOT_STATE ?? batchPaths(repoSlug(), batchName()).state);
 export const queueFile = () => expandHome(process.env.DESK_QUEUE ?? batchPaths(repoSlug(), batchName()).queue);
+// The repo's exits folder, whichever batch this is: a worker's exit file renamed in here wakes the
+// supervisor's next tick (spawn-worker.sh writes it, supervisor.mjs watches and empties it).
+export const exitsDir = () => join(repoStateOf(stateDir()), 'exits');
 // The clones of §4 Worker read-only repos belong to the repo, not to a batch: they sit under the
 // standing batch's folder whichever batch this is, and DESK_AUTOPILOT_STATE, which names one batch, never moves them.
 export const readRepoDir = () => join(batchPaths(repoSlug()).state, 'ref');
@@ -1819,7 +1824,8 @@ const readPackage = (root, dir) => { try { return JSON.parse(readFileSync(join(r
 // Every §4 row one app needs before a worker can run it for screenshots, that the config lacks for
 // it, each with the value to add: a Dev server item where its package.json has a dev script, and the
 // `.env*` files its directory holds in the primary checkout (`root`) where Env files names none under
-// it. A row unset is drift's MISSING, and `none` is a decision: neither is a gap here.
+// it, and a Test sign-in item. A row unset is drift's MISSING, and `none` is a decision: neither is a
+// gap here, except the Test sign-in row unset.
 // -> [{ row, dir, value: [item], have?: [file] }]
 export function appSetupGaps(parsed, root, dir) {
   const app = String(dir).replace(/^(\.\/)+/, '').replace(/\/+$/, '') || '.';
@@ -1836,14 +1842,24 @@ export function appSetupGaps(parsed, root, dir) {
     try { have = readdirSync(join(root, app), { withFileTypes: true }).filter((e) => e.isFile() && /^\.env/.test(e.name) && !/\.(example|sample|template|dist)$/.test(e.name)).map((e) => e.name).sort(); } catch { /* no such directory */ }
     if (have.length) gaps.push({ row: 'Env files', dir: app, value: have.map((f) => (app === '.' ? f : `${app}/${f}`)), have });
   }
+  // An app with a Dev server item, or one just proposed, needs a user to sign in as. Unlike the rows
+  // above, an unset Test sign-in row is a gap here: only the person can name the user.
+  const runs = gaps.some((g) => g.row === 'Dev server') || (dev && !isNone(dev) && (devServed(dev).has(app) || (p?.name && devServed(dev).has(p.name))));
+  const signin = configValuesIn(parsed, 'test-signin');
+  if (runs && !(signin && isNone(signin)) && !(signin ?? []).some((x) => parseCommandItem(x).dir === app)) {
+    gaps.push({ row: 'Test sign-in', dir: app, value: [`${app === '.' ? '' : `${app}: `}${SIGNIN_PLACEHOLDER}`] });
+  }
   return gaps;
 }
+const SIGNIN_PLACEHOLDER = '<email of an existing development user who holds the app\'s grant>';
 
 export function appGapLines(gaps, dir) {
   const spans = (xs) => xs.map((x) => `\`${x}\``).join(' ');
   const lines = gaps.map((g) => (g.row === 'Dev server'
     ? `NODEV    §4 Dev server has no item for ${g.dir}, whose package.json has a dev script: add ${spans(g.value)}`
-    : `NOENV    §4 Env files has no item under ${g.dir}, whose primary checkout holds ${g.have.join(', ')}: add ${spans(g.value)}`));
+    : g.row === 'Env files'
+      ? `NOENV    §4 Env files has no item under ${g.dir}, whose primary checkout holds ${g.have.join(', ')}: add ${spans(g.value)}`
+      : `NOSIGNIN §4 Test sign-in has no item for ${g.dir}, which a worker runs for screenshots: add ${spans(g.value)}, never a password (\`none\` where no app needs signing in to)`));
   return lines.length ? lines : [`no setup gaps for ${dir}`];
 }
 
@@ -1982,7 +1998,7 @@ export async function setRepoSubscription(slug, value, root = deskConfigRoot()) 
 // for another repo must not inherit that part, so PER_REPO_ENV names it (with DESK_BATCH, an input).
 const PATHS = {
   DESK_REPO_ROOT: repoRoot, DESK_WORKTREES_DIR: worktreesDir, DESK_HOME: deskHome, DESK_SLUG: repoSlug, DESK_REPO_CONFIG_DIR: repoConfigDir, DESK_DEFAULT_BRANCH: defaultBranch,
-  DESK_BIN: binDir, DESK_RUN_BIN: runBin, DESK_STATE: stateDir, DESK_QUEUE: queueFile, DESK_SKILLS_DIR: skillsDir,
+  DESK_BIN: binDir, DESK_RUN_BIN: runBin, DESK_STATE: stateDir, DESK_QUEUE: queueFile, DESK_EXITS_DIR: exitsDir, DESK_SKILLS_DIR: skillsDir,
   DESK_LOCK_DIR: lockDir, DESK_MEMORY_DIR: memoryDir, DESK_GH_REPO: ghRepo,
   DESK_PG_CONTAINER: pgContainer, DESK_DEV_PORT: devPort, DESK_WORKER_PORT_FLOOR: workerPortFloor, DESK_IS_WSL: () => (isWSL() ? 'yes' : 'no'),
 };

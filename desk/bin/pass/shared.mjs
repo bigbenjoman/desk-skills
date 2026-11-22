@@ -42,6 +42,9 @@ export const WEDGE_PASSES = 6;
 // A worker past WEDGE_PASSES that is running its own suite under the test lock, or queued for it, is
 // quiet, not wedged, until it has been held that way for this long.
 export const SUITE_WAIT_CEILING_MS = 30 * 60 * 1000;
+// A worker whose log grew only by the harness's tool_progress heartbeat, for one tool call running
+// longer than this, is hung in that call and stopped as wedged.
+export const TOOL_CALL_CEILING_MS = 30 * 60 * 1000;
 
 // Whether `login` is the repo's own login `repoLogin`: only a limit there holds the batch.
 export const sameLogin = (repoLogin, login) => !!repoLogin && !!login && login.dir === repoLogin.dir;

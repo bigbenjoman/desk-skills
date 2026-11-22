@@ -60,15 +60,19 @@ After it, the brief carries the *Tracing a server-set value* paragraph (below), 
 Then one plain command, alongside the Claude finders:
 
 ```bash
-codex exec --sandbox read-only --skip-git-repo-check 'Read the review brief in <brief> and do exactly what it says. Answer only with FINDING blocks or NO FINDINGS, then its FILES READ line.'
+node ~/.claude/desk/bin/codex-exec.mjs review 'Read the review brief in <brief> and do exactly what it says. Answer only with FINDING blocks or NO FINDINGS, then its FILES READ line.'
 ```
 
-`<brief>` is the brief's full scratchpad path, or `desk-review-codex-brief-<run>.txt` in a worker, where
-codex runs at the worktree root beside it. Give the call your longest foreground tool timeout
-(600000 ms), not the probe's ~120s: a cold read takes minutes, and a call cut off by a short timeout
-is a dead seat. On a PR also add `--cd <the PR's worktree>` after
-`--sandbox read-only`. The prompt stays single-quoted with no flags in its text (Phase 4's rules): the git
-commands live in the brief, never on the command line. Codex's findings are refuted by Claude
+It runs `codex exec --sandbox read-only --skip-git-repo-check` with stdin closed and ends the call,
+with its process group, at the timeout in config §3b Codex review (`desk-env get codex-models`):
+never call `codex exec` bare for a finder, which nothing ends. `<brief>` is the brief's full
+scratchpad path, or `desk-review-codex-brief-<run>.txt` in a worker, where codex runs at the worktree
+root beside it. Give the call your longest foreground tool timeout (600000 ms), not the probe's
+~120s: a cold read takes minutes, and a call cut off by a short timeout is a dead seat. On a PR add
+`--cd <the PR's worktree>` after `review`. The prompt stays single-quoted with no flags in its text
+(Phase 4's rules): the git commands live in the brief, never on the command line. Its stdout is
+codex's final message alone. Exit 124 means it ran past the timeout and was ended: do not re-run
+it; the seat is `"status": "died", "reason": "timed out"`. Codex's findings are refuted by Claude
 (Phase 4). If it dies (above), the run is `same-vendor` as well as partial: codex did not read the
 head.
 

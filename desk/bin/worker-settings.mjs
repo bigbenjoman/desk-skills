@@ -664,6 +664,10 @@ if (mode === 'triage') {
       allow.push('Bash(desk-codex:*)', `Bash(${E.HOME}/.local/bin/desk-codex:*)`, 'Bash(~/.local/bin/desk-codex:*)',
         ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-codex.mjs:*)`, `Bash(node ${b}/desk-codex.mjs:*)`]));
       deny.push(...bash('codex', ' * -m*', ' *--model*', ' * -p*', ' *--profile*', ' * -o*', ' *--output-last-message*', ' * -c*'));
+    } else {
+      // With it off, a review's finder and refuter run through codex-exec's review form, which sets
+      // every codex argument itself and ends the call at its timeout.
+      allow.push(...BIN_FORMS.flatMap((b) => [`Bash(${b}/codex-exec.mjs review:*)`, `Bash(node ${b}/codex-exec.mjs review:*)`]));
     }
   } else { deny.push(...bash('codex')); denied.push(`${E.permissionKey('codex-review')} (${setting('codex-review')})`); }
 

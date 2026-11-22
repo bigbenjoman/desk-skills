@@ -302,20 +302,34 @@ rmSync(join(repoDir, 'apps'), { recursive: true, force: true });
 mkdirSync(join(repoDir, 'apps/portal'), { recursive: true });
 writeFileSync(join(repoDir, 'apps/portal/package.json'), JSON.stringify({ name: 'portal', scripts: { dev: 'next dev' } }));
 for (const f of ['.env.local', '.env', '.env.example']) writeFileSync(join(repoDir, 'apps/portal', f), '');
-const appRows = (dev, env) => `${conf()}| Package manager | \`pnpm\` |\n| Dev server | ${dev} |\n| Env files | ${env} |\n`;
-d = drift(appRows('`apps/web: pnpm dev`', '`apps/web/.env.local`'), '--app', 'apps/portal');
-t('DS-571 AC1 an app missing from Dev server and Env files gets both rows, each with its value', d.out, [
+const appRows = (dev, env, signin = '`apps/portal: portal-dev@example.test`') => `${conf()}| Package manager | \`pnpm\` |\n| Dev server | ${dev} |\n| Env files | ${env} |\n${signin == null ? '' : `| Test sign-in | ${signin} |\n`}`;
+const NOSIGNIN = (dir, value) => `NOSIGNIN §4 Test sign-in has no item for ${dir}, which a worker runs for screenshots: add \`${value}<email of an existing development user who holds the app's grant>\`, never a password (\`none\` where no app needs signing in to)`;
+d = drift(appRows('`apps/web: pnpm dev`', '`apps/web/.env.local`', null), '--app', 'apps/portal');
+t('DS-571 AC1 an app missing from Dev server, Env files and Test sign-in gets every row, each with its value', d.out, [
   'NODEV    §4 Dev server has no item for apps/portal, whose package.json has a dev script: add `apps/portal: pnpm run dev`',
   'NOENV    §4 Env files has no item under apps/portal, whose primary checkout holds .env, .env.local: add `apps/portal/.env` `apps/portal/.env.local`',
+  NOSIGNIN('apps/portal', 'apps/portal: '),
 ].join('\n'));
 t('DS-571 AC1 and exits 1', d.code, 1);
 d = drift(appRows('`apps/web: pnpm dev` `apps/portal: pnpm dev`', '`apps/web/.env.local`'), '--app', 'apps/portal');
 t('DS-571 AC2 an app missing only from Env files gets that row only', d.out,
   'NOENV    §4 Env files has no item under apps/portal, whose primary checkout holds .env, .env.local: add `apps/portal/.env` `apps/portal/.env.local`');
-t('DS-571 an app with both rows has no gaps', drift(appRows('`pnpm --filter portal dev`', '`apps/portal/.env.local`'), '--app', './apps/portal/').out, 'no setup gaps for ./apps/portal/');
+t('DS-571 an app with every row has no gaps', drift(appRows('`pnpm --filter portal dev`', '`apps/portal/.env.local`'), '--app', './apps/portal/').out, 'no setup gaps for ./apps/portal/');
 t('a row of none is a decision, not a gap', drift(appRows('`none`', '`none`'), '--app', 'apps/portal').out, 'no setup gaps for apps/portal');
+// DS-804: an app with a Dev server item needs a Test sign-in item for it.
+const both = ['`apps/web: pnpm dev` `apps/portal: pnpm dev`', '`apps/web/.env.local` `apps/portal/.env.local`'];
+d = drift(appRows(...both, null), '--app', 'apps/portal');
+t('DS-804 AC3 an app with a Dev server item and the Test sign-in row unset is named NOSIGNIN, and nothing else', d.out, NOSIGNIN('apps/portal', 'apps/portal: '));
+t('DS-804 AC3 and exits 1', d.code, 1);
+t('DS-804 AC3 an item for another app only still names this one', drift(appRows(...both, '`apps/web: web-dev@example.test`'), '--app', 'apps/portal').out, NOSIGNIN('apps/portal', 'apps/portal: '));
+t('DS-804 AC3 a Test sign-in row of none is a decision, not a gap', drift(appRows(...both, '`none`'), '--app', 'apps/portal').out, 'no setup gaps for apps/portal');
+t('DS-804 AC2 an app whose items sit second in each row is not named missing from them', drift(appRows(...both, '`apps/web: web-dev@example.test` `apps/portal: portal-dev@example.test`'), '--app', 'apps/portal').out, 'no setup gaps for apps/portal');
+t('DS-804 AC3 the root app\'s item is a bare email', drift(appRows('`pnpm dev`', '`.env.local`', '`apps/web: web-dev@example.test`'), '--app', '.').out, NOSIGNIN('.', ''));
+t('DS-804 AC3 an app with no Dev server item is no sign-in gap', drift(appRows('`apps/web: pnpm dev`', '`apps/portal/.env.local`', null), '--app', 'apps/api').out, 'no setup gaps for apps/api');
 rmSync(join(repoDir, 'apps'), { recursive: true, force: true });
 t('no env files in the checkout proposes none', drift(appRows('`none`', '`apps/web/.env.local`'), '--app', 'apps/portal').out, 'no setup gaps for apps/portal');
+t('DS-804 a Test sign-in item that is not an email is INVALID', drift(`${conf()}| Test sign-in | \`apps/portal: hunter2\` |\n`).out,
+  'INVALID  §4 Test sign-in: "apps/portal: hunter2" is not `[<app dir>: ]<email>`');
 
 // A §4 Pre-merge steps item keyed to a job of several steps is named JOBKEY, with the step it is for.
 mkdirSync(join(repoDir, '.github/workflows'), { recursive: true });
@@ -607,9 +621,14 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     + 'worker-dependency-install worker-screenshots worker-local-services worker-web-read worker-workflow-dispatch db-per-ticket '
     + 'db-clone-staging staging-write local-reindex tests-shared-db worktree-remove branch-delete server-stop skills-edit vercel-env '
     + 'slack-draft slack-send merge-bypass others-prs product-calls legal-content').split(' ');
+  // Rows the schema gained after it replaced those literals, each named with its ticket, so a row
+  // lost or renamed still fails while a deliberate addition is recorded here.
+  const ADDED_ROWS = [
+    'test-signin|4|Test sign-in', // DS-804
+  ];
   const sorted = (a) => [...a].sort().join('\n');
   const rowsNow = Object.entries(CONFIG_ROWS).map(([id, r]) => [id, r.section, r.row, ...(r.table ? ['table'] : [])].join('|'));
-  t('DS-867 AC4 CONFIG_ROWS holds exactly the ids, sections and rows it held', sorted(rowsNow), sorted(BEFORE_ROWS));
+  t('DS-867 AC4 CONFIG_ROWS holds exactly the ids, sections and rows it held, and the ones added since', sorted(rowsNow), sorted([...BEFORE_ROWS, ...ADDED_ROWS]));
   t('DS-867 AC4 and nothing else on any entry', Object.values(CONFIG_ROWS).filter((r) => Object.keys(r).some((k) => !['section', 'row', 'table'].includes(k))).length, 0);
   t('DS-867 AC4 PERMISSION_KEYS holds exactly the ids and keys it held', sorted(Object.entries(PERMISSION_KEYS).map(([id, k]) => `${id}=${k}`)), sorted(BEFORE_PERMS.map((k) => `${k}=${k}`)));
   t('DS-867 AC4 both stay frozen', Object.isFrozen(CONFIG_ROWS) && Object.isFrozen(PERMISSION_KEYS), true);
@@ -649,7 +668,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     ['yes-no', 'no', 'maybe', false], ['on-off', 'on', 'yes', false], ['tracker', 'none', 'linear', false],
     ['merge-method', 'rebase', 'squash-merge', false], ['suite-weight', 'heavy', 'medium', false], ['status-table', 'quiet', 'loud', false],
     ['batches-run-by', 'session', 'cron', false], ['ai-attribution', 'allowed', 'sometimes', false], ['regex', 'KAN-[0-9]+', 'KAN-[0-9', false],
-    ['command', 'apps/api: uv run pytest', null], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
+    ['command', 'apps/api: uv run pytest', null], ['test-signin', 'apps/portal: dev@example.test', 'apps/portal: hunter2', false], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
     ['required-fields', 'Bug: customfield_1', 'customfield_1', false], ['lever', 'codex, effort', 'turbo', false],
     ['budget', '25', '25 USD', true], ['worker-models', 'default', 'fast', true], ['worker-effort', 'task=low', '4b=extreme', true],
     ['worker-location', 'cloud', 'remote', true], ['codex-review', 'timeout=60', 'timeout=soon', true],

@@ -9,7 +9,8 @@ are in `../SKILL.md`, already loaded. §4 Priority below is `desk-env list jira-
 
 - **Field values.** `field=@path` reads a file. JSON passes through untouched. A bare value is
   wrapped to the shape the field needs: `customfield_12345=P1` becomes `{"value":"P1"}`,
-  `assignee=me` becomes your accountId.
+  `assignee=me` becomes your accountId, and `assignee=none` (or `null`) leaves it unassigned. An
+  assignee that cannot be an accountId (an email, a display name) is refused before any call.
 - **Every `edit` prints the fields read back from Jira.** Check that output. A line saying
   `the write did not stick` is a failed write, even though the PUT returned 2xx.
 - **`create` prints every field it was given, read back the same way.** A line saying `the write

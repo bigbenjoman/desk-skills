@@ -82,9 +82,9 @@
 // `ask:<n>` is the repo's too: an action a session handed the person (done takes it off the list).
 // `base-red:<branch>` is a batch's: its base red on checks that hold its PRs' fix tries, naming the
 // PRs held and the last merges desk made (done records nothing; each hold clears once its check passes there).
-// `base-sync` is a batch's: its base sync could not push while the base lags too far to spawn, so every
-// ticket ready to spawn is frozen; listed first, naming the command that pushes it (done records nothing;
-// the next pass clears it once the base is current).
+// `base-sync` is a batch's: its base sync failed (could not push, fetch or recreate the base) while that
+// holds every spawn, so every ticket ready to spawn is frozen; listed first, naming the failure and, for a
+// refused push, the command that pushes it (done records nothing; the next pass clears it once the base is current).
 // `stalled` (`stalled:<batch>` for a named batch) is a batch's: a session runs it and its passes stopped
 // with work left (done records nothing; the next pass clears it).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
@@ -756,8 +756,8 @@ const basePushRow = (r) => (r.q?.base_push_ask && r.q.approved?.base_push !== tr
 // by this: no new work of the repo starts until the person moves the pin or sets the subscription unused.
 const SUB_OFF_ITEM = 'subscription-off';
 const subOffRow = (r) => (r.q?.subscription_off?.email ? { t: { key: SUB_OFF_ITEM }, subOff: true } : null);
-// A batch whose base sync merged but could not push while the base lags too far to spawn (pass.mjs
-// base_sync_stuck) is one item, named by this: every ticket ready to spawn waits on it, so it is listed first.
+// A batch whose base sync failed while that holds every spawn (pass/batch-base.mjs base_sync_stuck) is
+// one item, named by this: every ticket ready to spawn waits on it, so it is listed first.
 const BASE_SYNC_ITEM = 'base-sync';
 const baseSyncRow = (r) => (r.q?.base_sync_stuck?.base ? { t: { key: BASE_SYNC_ITEM }, baseSync: true } : null);
 const batchRows = (r) => [baseSyncRow(r), usageRow(r), basePushRow(r), subOffRow(r)].filter(Boolean);
@@ -1499,9 +1499,11 @@ function itemOf(r, x, reads = null, finds = reads) {
   if (x.baseSync) {
     const b = r.q.base_sync_stuck;
     const n = b.frozen ?? 0;
+    const frozen = `${n === 1 ? '1 ticket ready to spawn is' : `${n} tickets ready to spawn are`} frozen until ${b.base} takes ${b.source ?? 'the default branch'}: ${b.why}`;
     return { kind: 'base-sync', holdsAll: true,
-      need: `the base sync of ${b.base} could not push, so ${n === 1 ? '1 ticket ready to spawn is' : `${n} tickets ready to spawn are`} frozen until ${b.base} takes ${b.source ?? 'the default branch'}: ${b.why}. Run it by hand to see the hook's full output and push it: ${b.cmd}`,
-      actions: [['done', 'once the base is pushed, the next pass finds it current, spawns again and drops this item'], ['not-now']] };
+      need: b.cmd ? `the base sync of ${b.base} could not push, so ${frozen}. Run it by hand to see the hook's full output and push it: ${b.cmd}`
+        : `the base sync of ${b.base} failed, so ${frozen}. It clears once a pass syncs ${b.base}: fix what stopped it (a base missing on origin is restored or recreated there)`,
+      actions: [['done', `once the base is ${b.cmd ? 'pushed' : 'fixed'}, the next pass finds it current, spawns again and drops this item`], ['not-now']] };
   }
   if (x.basePush) {
     const a = r.q.base_push_ask;
