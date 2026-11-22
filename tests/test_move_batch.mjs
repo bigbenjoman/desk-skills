@@ -204,6 +204,9 @@ for (const [f, text] of Object.entries({ ...moving, ...staying })) put(join(stan
 // A merge driver holding its lock: a process that outlives this check, reparented so it is reaped.
 const sleeper = Number(spawnSync('bash', ['-c', 'sleep 60 >/dev/null 2>&1 & echo $!'], { encoding: 'utf8' }).stdout.trim());
 put(join(standingS, 'merge-driver.lock.d', 'pid'), `${sleeper}\n`);
+// The repo's one driver, whose lock lives in this folder while it merges the repo's other batches.
+const repoSleeper = Number(spawnSync('bash', ['-c', 'sleep 60 >/dev/null 2>&1 & echo $!'], { encoding: 'utf8' }).stdout.trim());
+put(join(standingS, 'merge-driver', 'repo.lock.d', 'pid'), `${repoSleeper}\n`);
 // The supervisor had read the batch as idle, with that driver running.
 put(join(standingS, 'supervisor.json'), JSON.stringify({ idle: 'abc123', notified: ['x'], driver: { pid: sleeper, started: 'then', failures: 1 },
   decider: { pid: dead, out: join(standingS, 'decider', 'd.json') } }));
@@ -232,6 +235,9 @@ let driverAlive = true;
 try { process.kill(sleeper, 0); } catch { driverAlive = false; }
 t('AC1 the merge driver was stopped, for the supervisor to start again in E-1', driverAlive, false);
 t('AC1 and the output says so', r.out.includes(`its merge driver (pid ${sleeper}) was stopped`), true);
+let repoAlive = true;
+try { process.kill(repoSleeper, 0); } catch { repoAlive = false; }
+t('DS-972: the repo\'s one driver, whose lock is in the moving folder, was stopped too', repoAlive, false);
 const sup = JSON.parse(read(join(namedS('E-1'), 'supervisor.json')));
 t('AC2 the supervisor no longer reads the moved batch as idle, so its next tick runs a pass', sup.idle, null);
 t('AC2 the stopped driver counts no failed start', `${sup.driver.pid}/${sup.driver.failures}`, 'null/1');
