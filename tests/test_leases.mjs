@@ -650,9 +650,11 @@ try {
 
     // End to end: a PR's check rollup as gh exports it, through the pass's PR status decision, into the
     // lease store. Vercel's own deploy status is a status context, its time its last state's.
+    // Two PRs on one team hold a unit each only where the team has two preview-build slots.
     const d7 = fresh();
-    unit(d7, previewLabel('acme/web', { pr: 21 }));
-    unit(d7, previewLabel('acme/web', { pr: 22 }));
+    const twoSlots = machineWith({ 'lease-kinds': ALL_ON, 'preview-build-slots': '2' });
+    const held = [21, 22].map((pr) => pb(d7, 'acme', previewLabel('acme/web', { pr }), [], { DESK_MACHINE: twoSlots }).code);
+    t('DS-913 AC1 end to end: both PRs hold a unit before the pass reads their checks', [held, json(d7).map((l) => l.label).join()], [[0, 0], 'acme/web#21,acme/web#22']);
     const after = (s) => new Date(Date.now() + s * 1000).toISOString().replace(/\.\d+Z$/, 'Z');
     const rollup = {
       21: [{ __typename: 'StatusContext', context: 'Vercel', state: 'SUCCESS', startedAt: after(30), targetUrl: 'https://vercel.com/acme/web/1' },
