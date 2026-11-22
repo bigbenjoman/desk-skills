@@ -383,14 +383,15 @@ try {
       const w = spawn('bash', [script, 'test', '--timeout', '8', '--', 'true'], { env, stdio: 'ignore' });
       const done = new Promise((r) => w.on('exit', r));
       const children = (re) => spawnSync('ps', ['-axo', 'pid=,ppid=,args='], { encoding: 'utf8' }).stdout.split('\n')
-        .map((l) => l.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter((m) => m && Number(m[2]) === w.pid && re.test(m[3])).length;
-      const watchers = () => children(/admission\.mjs\s+watch\s/);
+        .map((l) => l.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter((m) => m && Number(m[2]) === w.pid && re.test(m[3])).map((m) => Number(m[1]));
       // A second in: the wrapper's own brief subshells (the holders it names as it starts to wait) are done.
       await until(() => admitLines(env).length > 0); await sleep(1000);
+      const watchers = children(/admission\.mjs\s+watch\s/);
       t('DS-977 while a run waits under shadow, its admission watcher is not a second with-lock.sh test on ps',
-        [admitLines(env).length > 0, children(/with-lock\.sh\s+test(\s|$)/), watchers()], [true, 0, 1]);
+        [admitLines(env).length > 0, children(/with-lock\.sh\s+test(\s|$)/).length, watchers.length], [true, 0, 1]);
       writeFileSync(profile, readFileSync(machine({ ...rows, 'lock-admission': 'off' }), 'utf8'));
-      t('DS-977 admission turned off while a run waits stops its watcher', await until(() => watchers() === 0, 4000), true);
+      t('DS-977 admission turned off while a run waits stops its watcher, the run still waiting',
+        [await until(() => watchers.every((p) => !alive(p)), 4000), alive(w.pid)], [true, true]);
       await done; a.release(); await a.done;
     }
     // AC1: no lock-admission row: the heavy pool grants its test-lock-slots, the light pool 1, and no line is logged.
