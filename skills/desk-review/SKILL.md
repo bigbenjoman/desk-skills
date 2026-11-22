@@ -210,13 +210,14 @@ review reads clean when it is not. Once every finder and refuter has answered, W
 results to `<scratchpad>/desk-review-results-<run>.json` (`<run>`: Phase 3; a
 worker: at its worktree root, left in place, `phase-7-post.md`):
 
+<!-- contract: results -->
 ```json
-{ "sha": "<full reviewed SHA>", "round": 1, "gaps": 0, "skipped_files": 0,
-  "seats": [ { "role": "correctness", "agent": "lena-code-reviewer", "vendor": "claude", "status": "ran" },
-             { "role": "codex", "vendor": "codex", "status": "ran" } ],
-  "findings": [ { "id": "F1", "seat": "correctness", "severity": "P1", "where": "src/a.ts:12",
-                  "result": "CONFIRMED", "refuted_by": "codex" },
-                { "id": "C1", "seat": "codex", "severity": "P2", "result": "REJECTED", "refuted_by": "claude" } ] }
+{"sha": "3f9c2a1e8b7d6c5f4a3b2c1d0e9f8a7b6c5d4e3f", "round": 1, "gaps": 0, "skipped_files": 0,
+ "seats": [{"role": "correctness", "agent": "lena-code-reviewer", "vendor": "claude", "status": "ran"},
+  {"role": "codex", "vendor": "codex", "status": "ran"}],
+ "findings": [{"id": "F1", "seat": "correctness", "severity": "P1", "where": "src/a.ts:12",
+   "result": "CONFIRMED", "refuted_by": "codex"},
+  {"id": "C1", "seat": "codex", "severity": "P2", "result": "REJECTED", "refuted_by": "claude"}]}
 ```
 
 - `codex`: with the codex lever on, `{"finder": "<model>:<effort>", "refuter": "<model>:<effort>"}`
