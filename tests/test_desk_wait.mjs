@@ -45,6 +45,11 @@ t('DS-975 the wait\'s log line, with its holder read and load reading, is a wait
 t('anything the lease client runs, however it is named, is a wait too',
   standing([wrapper, { pid: 12, ppid: 11, etime: '00:01', args: '/opt/node/bin/node /x/slot-lease.mjs holders' },
     { pid: 13, ppid: 12, etime: '00:00', args: '/usr/bin/xcrun git rev-parse --show-toplevel' }, { pid: 15, ppid: 13, etime: '00:00', args: '/Library/Developer/CommandLineTools/usr/bin/git-x' }]).state, 'waiting');
+t('what the wrapper\'s config reads run (a git shim under desk-env get or machine get) is a wait too',
+  standing([wrapper, { pid: 12, ppid: 11, etime: '00:01', args: 'node /x/desk-env.mjs get suite-weight' },
+    { pid: 13, ppid: 12, etime: '00:00', args: '/usr/bin/xcrun git rev-parse --show-toplevel' },
+    { pid: 16, ppid: 11, etime: '00:01', args: 'node /x/desk-env.mjs machine get test-lock-slots' },
+    { pid: 17, ppid: 16, etime: '00:00', args: '/usr/bin/xcrun git remote get-url origin' }]).state, 'waiting');
 t('a suite desk-env workspace-test runs under the mkdir path\'s wrapper has started',
   standing([wrapper, { pid: 12, ppid: 11, etime: '00:01', args: 'node /x/desk-env.mjs workspace-test apps/web' },
     { pid: 13, ppid: 12, etime: '00:01', args: 'pnpm vitest run' }]), { state: 'started', pid: 13 });
