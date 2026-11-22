@@ -15,6 +15,9 @@ const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; cons
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-q.mjs');
 const NOW = Date.now();
 const minsAgo = (m) => new Date(NOW - m * 60000).toISOString();
+// The same, from the clock now: for a fixture read by something that takes no `now` (a desk-q run, or a
+// call reading Date.now()), so a slow runner minutes past NOW does not age it by those minutes.
+const clockAgo = (m) => new Date(Date.now() - m * 60000).toISOString();
 // A time check a slow runner does not fail: the work timed takes at most QUICK_TIMES what the same work
 // takes on a small world, timed just before it on the same runner, and need never beat QUICK_FLOOR_MS.
 // Walking a dense batch it should skip is tens of times slower than that, so it still fails.
@@ -1985,7 +1988,10 @@ const s310 = named310(join(W310.env.HOME, '.desk-autopilot'));
 mkdirSync(dirname(q310), { recursive: true });
 mkdirSync(join(s310, 'orchestrators'), { recursive: true });
 writeFileSync(q310, JSON.stringify({ version: 1, batch: 'x1', base: 'feat/x', concurrency: 2, tickets: { 'X-2': { key: 'X-2', state: 'running', stage: '3/9' }, 'X-3': { key: 'X-3', state: 'parked', park: { question: 'which copy?' } } } }));
-writeFileSync(join(s310, 'orchestrators', 'q.json'), JSON.stringify({ queue: q310, batch: 'x1', pid: 1, at: minsAgo(3) }));
+writeFileSync(join(s310, 'orchestrators', 'q.json'), JSON.stringify({ queue: q310, batch: 'x1', pid: 1, at: clockAgo(3) }));
+// The standing batch's pass a minute before this run, not before the suite began.
+const slug310 = join(W310.env.HOME, '.desk-autopilot', 'acme__desk-skills');
+writeFileSync(join(slug310, 'orchestrators', 'q.json'), JSON.stringify({ queue: join(W310.env.DESK_HOME, 'repos', 'acme__desk-skills', 'queue.json'), batch: 'ds', pid: 1, at: clockAgo(1) }));
 const ov310 = W310.run('--plain').out;
 t('DS-310 AC4 with only a standing batch, its row shows its cap as its own', /\s\d+ of 2 · cap 3$/.test(rowOf(ov310a, 'desk-skills') ?? ''), true);
 t('DS-357 AC1 AC2 one desk-skills row, named with the repo only, its counts added up, the latest pass and the workers within the cap',
@@ -2222,7 +2228,9 @@ t('DS-435 AC1 a PR in conflict whose tries all went on a check still has its own
   '#924 · merge conflict with main · the next pass sends it to a worker, try 1 of 2');
 t('DS-420 AC4 a PR the driver stopped rerunning says it is red after that many reruns',
   need420(red420(924, {}, { reruns: { Lint: 2, 'Backend tests': 2, 'CI gate': 2 } })), '#924 · red after 2 reruns: Lint +2 · a worker repairs it next');
-t('DS-420 AC5 a PR being merged with no decline reads as merging', `${Q.prWhy(r280, ds280['M-4'])} | ${need420(ds280['M-4'])}`, 'null | #904 · check 1 running, 30m · 2 of 3 done');
+// needText reads the clock, so its running check started 30 minutes before this call.
+const m420 = { ...ds280['M-4'], pr_status: { ...ds280['M-4'].pr_status, checks: ds280['M-4'].pr_status.checks.map((c, i) => (i ? c : { ...c, started: clockAgo(30) })) } };
+t('DS-420 AC5 a PR being merged with no decline reads as merging', `${Q.prWhy(r280, m420)} | ${need420(m420)}`, 'null | #904 · check 1 running, 30m · 2 of 3 done');
 const q420 = { tickets: { B: { key: 'B', ...red420(921, { merge_blocked: thread420 }) }, W: { key: 'W', ...heldBy('B') } } };
 t('DS-420 AC6 a ticket waiting behind a declined PR gives the PR\'s reason, not its failed-check count',
   Q.holdOf(q420, q420.tickets.W, r280.ctx).text, 'behind #921: 1 unresolved thread on a red PR, first src/a.ts:3 "P0 drops the row"');
