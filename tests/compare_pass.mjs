@@ -47,8 +47,9 @@ function nextRun(dir) {
 // tree without usage-probe.mjs has no probe to hold.
 async function holdProbeStamps() {
   const live = process.env.PASS_CMP_LIVE_USAGE;
-  const m = live ? await import('../desk/bin/usage-probe.mjs').catch(() => null) : null;
-  if (!m) return;
+  const probeMod = new URL('../desk/bin/usage-probe.mjs', import.meta.url);
+  if (!live || !existsSync(probeMod)) return;
+  const m = await import(probeMod.href);
   const { PROBE_EVERY_MS, PROBE_GAP_MS, usageDir } = m, dir = usageDir();
   if (resolve(dir) === resolve(live)) return;
   const held = Date.now() - (PROBE_EVERY_MS - PROBE_GAP_MS);
