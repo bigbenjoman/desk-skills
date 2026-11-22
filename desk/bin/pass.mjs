@@ -101,7 +101,7 @@ import { decideBaseGate } from './pass/base-gate.mjs';
 import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
 import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
-import { kindMode, leaseCli } from './leases.mjs';
+import { kindMode, leaseCli, releasePreviews } from './leases.mjs';
 import { handToWorker as handMemToWorker, memPool, reserveForWorker } from './mem-lease.mjs';
 import { isArchived, prClosed, owesReopen } from './queue-store.mjs';
 
@@ -4075,9 +4075,11 @@ const merges = [];
 const drafts = [];
 const undrafted = [];
 const reopens = [];
+// The preview-build team whose units a finished preview frees: null with no §4 Vercel team or the kind off.
+const PREVIEW_TEAM = (() => { try { const team = E.previewTeam(); return team && kindMode('preview-build', LEASE_ENV).mode !== 'off' ? team : null; } catch { return null; } })();
 runSteps({
   name: 'PR status',
-  snapshot: () => ({ ...phaseSnapshot({ tickets: qNow.tickets, registry: REGISTRY, now: Date.now() }), dry: DRY, passAt: PASS_AT, logins: conflictHandle }),
+  snapshot: () => ({ ...phaseSnapshot({ tickets: qNow.tickets, registry: REGISTRY, now: Date.now() }), dry: DRY, passAt: PASS_AT, logins: conflictHandle, previews: !!PREVIEW_TEAM }),
   decide: decidePrStatus,
   handlers: {
     ...OUT_HANDLERS,
@@ -4093,6 +4095,7 @@ runSteps({
       return s && withErrors(withUntriggered(withHistory(s, a.was)), a.was);
     },
     'pr-status': (a) => q('set', a.key, `pr_status=${JSON.stringify(a.status)}`),
+    'free-previews': (a) => releasePreviews(PREVIEW_TEAM, a.done.map((d) => ({ ...d, label: E.previewLabel(GH_REPO, { pr: d.pr }) })), { env: LEASE_ENV }),
     merged: (a) => q('merged', a.key, ...(a.at ? [a.at] : [])),
     'follow-on': (a) => {
       const args = ['set', a.key, ...a.fields];
