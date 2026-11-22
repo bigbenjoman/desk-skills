@@ -1,7 +1,8 @@
 // suite: pass phase: deadlines (each wait a ticket is in, with its deadline, escalated once past it)
 // layer: L1
 import { runPhase } from '../desk/bin/pass/run-phase.mjs';
-import { decideDeadlines, nextWaits, waitsOf, WAITS } from '../desk/bin/pass/deadlines.mjs';
+import { decideDeadlines, nextWaits, waitsOf, WAITS, EVIDENCE_PROGRESS_MS } from '../desk/bin/pass/deadlines.mjs';
+import { SUITE_WAIT_CEILING_MS } from '../desk/bin/pass/shared.mjs';
 import { deciderItems } from '../desk/bin/decider.mjs';
 import { UNKNOWN_LIMIT_MS } from '../desk/bin/undraft.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
@@ -40,8 +41,9 @@ function pass(tickets, mins, { dry = false } = {}) {
   return { actions, lines: report.waiting, failed: report.failed };
 }
 
-t('the deadlines: a mergeability answer has the undraft limit before its repair and again after, to the person; a handoff 15 minutes, to a requeue', j(WAITS),
-  j({ mergeability: { ms: 2 * UNKNOWN_LIMIT_MS, escalate_to: 'person' }, handoff: { ms: 900000, escalate_to: 'requeue' } }));
+t('the deadlines: a mergeability answer has the undraft limit before its repair and again after, to the person; a handoff 15 minutes, to a requeue; progress 45 minutes, to the person', j(WAITS),
+  j({ mergeability: { ms: 2 * UNKNOWN_LIMIT_MS, escalate_to: 'person' }, handoff: { ms: 900000, escalate_to: 'requeue' }, progress: { ms: 2700000, escalate_to: 'person' } }));
+t('and progress at Stage 5 90 minutes', EVIDENCE_PROGRESS_MS, 5400000);
 
 // AC3: UNKNOWN for less than its deadline: the wait starts, and nothing is escalated.
 {
@@ -155,6 +157,51 @@ t('the deadlines: a mergeability answer has the undraft limit before its repair 
   Object.assign(h, { state: 'running', handoff: null });
   const started = pass([h], 31);
   t('AC5 once its session starts, the wait ends and its line goes', j([h.waits, started.lines.length]), j([null, 0]));
+}
+
+// DS-902: a running worker's progress (a stage change, commit or push, kept as progress_at by the advance
+// step) has a deadline of 45 minutes, 90 at Stage 5, escalated once to the person.
+{
+  const running = (key, fields = {}) => ({ key, state: 'running', stage: '3/9', progress_at: at(0), ...fields });
+  const NOT = (key, stage, mins, limit) => `${key}: NOT PROGRESSING — its worker at Stage ${stage} has made no stage change, commit or push for ${mins} minutes, since ${at(0)}, past its ${limit}-minute deadline, though its log may still grow (a hung call heartbeats into it). Desk leaves it running: read its log to see what it is doing`;
+  const w = running('W');
+  const made = pass([w], 0);
+  t('progress made this pass opens no wait', j([w.waits ?? null, made.lines.length]), j([null, 0]));
+  pass([w], 5);
+  t('the next pass with none opens one from the progress time', j(w.waits), j({ progress: { since: at(0), deadline: at(45), escalate_to: 'person', stage: '3/9' } }));
+  t('AC1 short of its deadline, nothing is escalated, however much its log grew', pass([w], 44).lines.length, 0);
+  const due = pass([w], 46);
+  t('AC1 past it, the worker is reported not progressing, to the person', j(due.lines), j([NOT('W', '3/9', 46, 45)]));
+  t('AC1 and its escalation is recorded on the wait', w.waits.progress.escalated, at(46));
+  const again = pass([w], 60);
+  t('AC2 still not progressing, it is not escalated again and nothing is written', j([w.waits.progress.escalated, writes(again)]), j([at(46), 0]));
+  t('AC2 its line, still listed while it waits, is the same decider item', j(ids(again.lines)), j(ids(due.lines)));
+
+  const e = running('E', { stage: '5/9' });
+  pass([e], 1);
+  const long = pass([e], 60);
+  t('AC3 at Stage 5, 60 minutes with no progress escalates nothing', long.lines.length, 0);
+  t('AC3 its deadline is 90 minutes', e.waits.progress.deadline, at(90));
+  t('and past 90 it is escalated', j(pass([e], 91).lines), j([NOT('E', '5/9', 91, 90)]));
+
+  const s = running('S', { suite_wait_since: T0 + 30 * 60000 });
+  pass([s], 1);
+  t('AC4 a suite wait under its ceiling pauses the clock: past the progress deadline, nothing is escalated', pass([s], 50).lines.length, 0);
+  const c = running('C', { suite_wait_since: T0 + 5 * 60000 });
+  pass([c], 1);
+  t('AC5 a suite wait past its ceiling is the advance step\'s ceiling report: no second escalation for progress', pass([c], 5 + SUITE_WAIT_CEILING_MS / 60000 + 15).lines.length, 0);
+  Object.assign(c, { state: 'parked' });
+  t('AC5 and once the ceiling parks it, its progress wait ends', (pass([c], 60), c.waits), null);
+
+  const p = running('P');
+  pass([p], 1);
+  pass([p], 46);
+  Object.assign(p, { progress_at: at(50.5) });
+  const pushed = pass([p], 50);
+  t('AC6 a push this pass closes the open progress wait, escalated or not', j([p.waits ?? null, pushed.lines.length]), j([null, 0]));
+  pass([p], 55);
+  t('AC6 and the next pass\'s wait runs from the push, not escalated', j([p.waits.progress.since, p.waits.progress.deadline, p.waits.progress.escalated ?? null]), j([at(50.5), at(95.5), null]));
+  t('a running ticket with no progress time has no progress wait', j(waitsOf({ key: 'N', state: 'running' }, at(5))), '{}');
 }
 
 // Two waits on two tickets in one pass, a dry run, and the decision starts no process and writes nothing.

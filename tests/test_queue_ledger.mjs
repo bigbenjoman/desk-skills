@@ -439,6 +439,48 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   t('and still matches', queueDifference(f).diffs.length, 0);
 }
 
+// DS-902 AC7: workers that made progress and stalled, as the advance step and the deadline sweep write
+// them pass after pass: progress_at and progress_sha are never appended, the progress wait is, and the
+// rebuild still matches with no difference line.
+{
+  const j = JSON.stringify;
+  const { nextWaits } = await import('../desk/bin/pass/deadlines.mjs');
+  // Seeded as a live queue's tickets are, each with the stamp every write sets.
+  const running = (key) => tk(key, { state: 'running', stage: '3/9', updated_at: '2026-11-20T09:00:00.000Z' });
+  const f = fixture({ version: 1, batch: 'b', tickets: { M: running('M'), S: running('S') } });
+  queueDifference(f, { seed: true, by: 'pass' });
+  const from = log(f).length;
+  const w = queueWriter(f);
+  const at = (mins) => new Date(Date.parse('2026-11-20T10:00:00.000Z') + mins * 60000).toISOString();
+  // One pass at `mins`: the advance step's progress for each worker that moved, then the sweep's waits.
+  const pass = (mins, moved) => {
+    for (const k of moved) w.apply(['set', k, `progress_at=${at(mins + 0.5)}`, `progress_sha=${j({ head: 'a'.repeat(40), pushed: `${mins}`.padStart(40, '0') })}`]);
+    w.flush();
+    for (const k of ['M', 'S']) {
+      const tq = read(f).tickets[k];
+      const { waits } = nextWaits(tq, at(mins));
+      const open = Object.keys(waits).length ? waits : null;
+      if (j(open) !== j(tq.waits ?? null)) w.apply(['set', k, `waits=${j(open)}`]);
+    }
+    w.flush();
+  };
+  pass(0, ['M', 'S']);
+  pass(10, ['M']);
+  pass(20, ['M']);
+  pass(50, []);
+  pass(60, ['S']);
+  pass(70, ['M']);
+  const evs = since(f, from);
+  t('AC7 progress_at and progress_sha are never appended', evs.some((e) => e.type === 'legacy_set' && ('progress_at' in e.data.fields || 'progress_sha' in e.data.fields)), false);
+  t('AC7 the progress waits are, the stalled one\'s escalation and the end of its wait with them',
+    j(evs.filter((e) => /^wait/.test(e.type)).map((e) => `${e.type} ${e.key}${e.data.escalated ? ' escalated' : ''}`)),
+    j(['waiting S', 'waiting M', 'waiting S escalated', 'waited S', 'waited M']));
+  t('AC7 the log reads no illegal transition', readLog(dirname(f)).illegal.length, 0);
+  const d = queueDifference(f);
+  t('AC7 the rebuild matches and the pass prints no difference line',
+    `${d.diffs.map((x) => x.path).join(', ')}|${ledgerLine({ check: d, missed: 0, queueBin: '/bin/queue.mjs' })}`, '|null');
+}
+
 rmSync(T, { recursive: true, force: true });
 console.log(fails ? `${fails} failed` : 'all checks passed');
 process.exit(fails ? 1 : 0);

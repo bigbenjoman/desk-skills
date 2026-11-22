@@ -973,6 +973,15 @@ const ADVANCE_HANDLERS = {
   note: (a) => { notes.push(a.line); },
   hold: (a, s) => { usageHolds.push({ key: a.key, limit: a.limit, was: a.was, login: loginOf(loginDirOf(s.t)) }); },
   'suite-wait': (a) => suiteWait(a.worktree ?? join(WORKTREES, a.key), { procs: processList(), cwds: processCwds(), holders: lockHolders(E.lockDir(), { locks: 'both' }) }),
+  // Two git reads: the worktree's HEAD, and its branch as last pushed (the remote-tracking ref a push updates).
+  progress: (a, s) => {
+    const wt = s.t.worktree;
+    if (!wt || !existsSync(wt)) return null;
+    const head = sh('git', ['-C', wt, 'rev-parse', 'HEAD'], { tolerant: true });
+    if (!/^[0-9a-f]{40}$/.test(head)) return null;
+    const pushed = s.t.branch ? sh('git', ['-C', wt, 'rev-parse', '--verify', '-q', `refs/remotes/origin/${s.t.branch}`], { tolerant: true }) : '';
+    return { head, pushed: /^[0-9a-f]{40}$/.test(pushed) ? pushed : null };
+  },
   // With a session id, every process of that session and its groups, so a hung child goes too; else the pid.
   kill: (a) => {
     let target = null;
