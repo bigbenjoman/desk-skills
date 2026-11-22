@@ -181,7 +181,7 @@ import { remember, runOnce, outOrNull } from './build-memo.mjs';
 import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
 import {
-  PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, localServiceName,
+  PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, parseServicePort, SERVICE_PORT_FORM,
   permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, leverRow, leverWords, parseLevers,
   EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS, CODEX_DEFAULTS, parseCodexReview, spawnGateOf,
   fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, checkRow, DECLARED_ROWS, readsAsList,
@@ -291,7 +291,7 @@ const configPathHint = () =>
 export { PERMISSION_KEYS, CONFIG_ROWS };
 // The row grammars live in the schema as its types; each is re-exported here under its own name.
 export {
-  DeskConfigError, isNone, parseCommandItem, localServiceName, permValues, parseBudget, EXTRA_MODELS, parseWorkerModels,
+  DeskConfigError, isNone, parseCommandItem, parseServicePort, permValues, parseBudget, EXTRA_MODELS, parseWorkerModels,
   parseWorkerLocation, LEVERS, LEVERS_AUTO, leverRow, parseLevers, EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS,
   CODEX_DEFAULTS, parseCodexReview,
 };
@@ -1900,11 +1900,12 @@ export function configDrift({ config, template = templatePath(), root = null, ho
       if (why) unlisted.push({ row: CONFIG_ROWS[id].row, item, why });
     }
   }
-  // With §3 worker-local-services yes, a §4 Local services item a worker starts by its leading name.
+  // With §3 worker-local-services yes, a §4 Local services item the service-port type cannot read, which
+  // worker-settings therefore does not allow-list.
   const services = driftValues(parsed, 'local-services');
   if (/^yes\b/.test(perm('worker-local-services')) && services && !isNone(services)) {
     for (const item of services) {
-      if (!localServiceName(item)) unlisted.push({ row: CONFIG_ROWS['local-services'].row, item, why: 'does not start with a compose service name (lowercase, then `:port` or a space)' });
+      if (parseServicePort(item).error) unlisted.push({ row: CONFIG_ROWS['local-services'].row, item, why: `is not ${SERVICE_PORT_FORM}` });
     }
   }
   // §4 Suite weight set in both places and disagreeing: the committed value wins, so the row is stale.

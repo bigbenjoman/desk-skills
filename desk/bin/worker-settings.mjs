@@ -709,8 +709,8 @@ if (mode === 'triage') {
   // Reading the public web: searching, and fetching any URL on any host by GET (no domain limit).
   grant('worker-web-read', ['WebSearch', 'WebFetch']);
 
-  // Starting a §4 Local services entry, detached, by its compose service name (each item's first
-  // word). Compose names a project after its directory, so from a worktree a bare `up` would start a
+  // Starting a §4 Local services entry, detached, by its compose service name (each item read by the
+  // schema's service-port type, `<service> [:<port>]`). Compose names a project after its directory, so from a worktree a bare `up` would start a
   // second stack: the one form allowed reads the main checkout's compose file, the shared project,
   // and never recreates a running container or starts its dependencies. Stopping or removing one
   // stays denied above: another session may be using it.
@@ -728,9 +728,9 @@ if (mode === 'triage') {
   const composeFile = !stackByEnv && base ? [base, override].filter(Boolean).join(' -f ') : null;
   const services = [];
   for (const raw of cfgList('local-services')) {
-    const name = E.localServiceName(raw);
-    if (name) services.push(name);
-    else if (E.permission('worker-local-services') === 'yes') warns.push(`§4 Local services item "${raw}" does not start with a compose service name — not allow-listed`);
+    const item = E.parseServicePort(raw);
+    if (!item.error) services.push(item.value.service);
+    else if (E.permission('worker-local-services') === 'yes') warns.push(`§4 Local services item ${item.error} — not allow-listed`);
   }
   const ups = !composeFile ? [] : services.flatMap((s) => [...exact('docker', ` compose -f ${composeFile} up -d --no-recreate --no-deps ${s}`),
     ...exact('docker-compose', ` -f ${composeFile} up -d --no-recreate --no-deps ${s}`)]);

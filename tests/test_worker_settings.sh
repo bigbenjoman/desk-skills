@@ -340,7 +340,8 @@ check "AC3 Storybook and Python capture under the browser lock" \
 check "AC3 never outside the worktree or without the lock"  'no "$L browser node ../x.mjs" "$L browser node ./../x.mjs" "$L browser python3 /etc/x.py" "$L browser python3 ./a/../../x.py" \
       "$L browser node $T/other/shot.mjs" "$L browser python3 -c print" "node ./shot.mjs" "python3 ./shot.py" "./node_modules/.bin/playwright test"'
 check "AC5 local-services yes: compose up for a §4 entry, in the main checkout's project" 'ok "$UP typesense" "$UP mailpit"'
-check "an item written name: port is that service" '[[ "$out" != *"does not start with a compose service name"* ]] && ok "$UP search"'
+check "DS-873 AC1 an item written name: port is that service, with no warning" '[[ "$out" != *"§4 Local services item"* ]] && ok "$UP search"'
+check "DS-873 AC2 an item written name :port is allow-listed as before" 'ok "$UP typesense" "docker-compose -f $T/repo/compose.yaml up -d --no-recreate --no-deps typesense"'
 check "AC5 not the worktree's own project, another service or a recreate" 'no "docker compose up -d typesense" "docker compose up typesense" "$UP postgres" "$UP typesense postgres" \
       "$UP typesense --force-recreate" "docker compose -f compose.yaml up -d --no-recreate --no-deps typesense" "docker compose -f $W/../x.yaml up -d typesense"'
 check "AC5 down, rm and run stay refused"                  'no "docker compose down" "docker compose down -v" "docker rm -f typesense" "docker run --rm alpine" "docker compose rm typesense" "docker compose run typesense sh"'
@@ -391,7 +392,7 @@ check "web-read yes: the only allow rules added are the two tools" '[ "$(jq -c "
 triage
 check "web-read yes: a triage pass gets neither"           '[ $rc -eq 0 ] && ! allows WebSearch && ! allows WebFetch'
 PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Local services | `Typesense on port 8108` |' "$(rows3 worker-local-services=yes)"
-check "local services: an item with no service name warns" '[ $rc -eq 0 ] && [[ "$out" == *"does not start with a compose service name"* ]] && no "$UP Typesense"'
+check "DS-873 AC3 an item with no service name warns, naming the form" '[ $rc -eq 0 ] && [[ "$out" == *"§4 Local services item \"Typesense on port 8108\" is not \`<service> [:<port>]\`"* ]] && no "$UP Typesense" "$UP typesense"'
 : > "$T/repo/compose.override.yaml"
 PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-local-services=yes)"
 check "local services: the main checkout's override file is merged in" 'ok "docker compose -f $T/repo/compose.yaml -f $T/repo/compose.override.yaml up -d --no-recreate --no-deps typesense" && no "$UP typesense"'
