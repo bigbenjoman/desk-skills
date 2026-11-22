@@ -178,6 +178,11 @@ mktree shabase running running 1 ' at origin/main 332065893'
 mktree shahead running running 1 ' at origin/main 4a1f0c2e9'
 cmp "$T/shabase" "$T/shahead"
 check "DS-763 AC4 an abbreviated SHA that is all digits matches the other tree's" '[ $rc = 0 ] && [ "$out" = "compare_pass: 2 pass run(s) compared, 0 differ, 0 not compared" ]'
+# Each tree's random lease id as the pass prints it: one of them all digits, as one in about 110 is.
+mktree leasebase running running 1 ' (lease L-5496517265, 34 units)'
+mktree leasehead running running 1 ' (lease L-3a9f0c2e17, 34 units)'
+cmp "$T/leasebase" "$T/leasehead"
+check "DS-763 AC4 a lease id that is all digits matches the other tree's" '[ $rc = 0 ] && [ "$out" = "compare_pass: 2 pass run(s) compared, 0 differ, 0 not compared" ]'
 
 # A tree whose suite leaves the usage probe start stamp in its own usage dir ($CMP_PROBE_USAGE when
 # set) ten minutes old before its first pass and 90 seconds old before its second, and whose pass
