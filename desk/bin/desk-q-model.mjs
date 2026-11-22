@@ -10,7 +10,7 @@ import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, s
 import { dirname, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
+import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf, quietStateName } from './desk-env.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, unpromotedHolds, promotionWords }from './batch-state.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { describeCond, restating } from './clears-when.mjs';
@@ -703,8 +703,7 @@ export function loadRepos(now = Date.now(), word = null) {
 // What loadRepos reads, as one string of modification times and sizes, so an open screen rereads only
 // once it changes: the repos' configs, and each batch's queue folder and state folder with every entry
 // in it. A folder's own time moves as an entry in it is added, removed or replaced. Logs (logs/, any
-// *.log) and the read-only clones (ref/) are left out: workers write them all the time.
-const UNSTAMPED = new Set(['logs', 'ref']);
+// *.log) and the read-only clones (ref/) are left out (quietStateName): workers write them all the time.
 function stampOf(path, depth, out) {
   let st;
   try { st = statSync(path); } catch { out.push(`${path} -`); return; }
@@ -712,7 +711,7 @@ function stampOf(path, depth, out) {
   if (!depth || !st.isDirectory()) return;
   let names = [];
   try { names = readdirSync(path).sort(); } catch { /* stamped by its own time */ }
-  for (const n of names) if (!UNSTAMPED.has(n) && !n.endsWith('.log')) stampOf(join(path, n), depth - 1, out);
+  for (const n of names) if (!quietStateName(n)) stampOf(join(path, n), depth - 1, out);
 }
 function stateStamp() {
   const out = [];

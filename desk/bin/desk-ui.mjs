@@ -14,8 +14,8 @@
 // CORS header. POST /api/auth/exchange {token} trades the token file's token for an HttpOnly,
 // SameSite=Strict session cookie and a per-load token; every other /api route needs both, the
 // per-load token in the X-Desk-Load header. Sessions live in memory, so a restart signs everyone out.
-// GET /api/events is the change stream (desk-ui-events.mjs), under the same guard; /api/snapshot reads
-// the same model and revision. A WebSocket upgrade is refused: 403 from any Origin but the app's, 404
+// GET /api/events is the change stream (desk-ui-events.mjs), under the same guard and refused without
+// the app's Origin, as a POST is; /api/snapshot reads the same model and revision. A WebSocket upgrade is refused: 403 from any Origin but the app's, 404
 // from it, since no route takes one yet.
 // DESK_UI_TEST_PORT moves the port, read only when HOME is not this user's own home (a test HOME).
 import { createServer } from 'node:http';
@@ -149,6 +149,8 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       }
       if (path === '/api/events') {
         if (method !== 'GET') return refuse(res, 405, 'method', 'GET only.');
+        // Checked as strictly as a POST: the app's Origin, never none. The window sends it explicitly.
+        if (from !== origin) return refuse(res, 403, 'origin', `Requests must come from ${origin}.`);
         const opened = await feed.subscribe(req, res, { headers: { ...BASE_HEADERS, 'X-Desk-Boot': boot }, query: new URLSearchParams(query) });
         return opened || refuse(res, 500, 'read', "Could not read desk's state; see the server log.");
       }

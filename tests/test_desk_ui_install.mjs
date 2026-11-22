@@ -10,13 +10,13 @@ import { connect, createServer } from 'node:net';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
+import { freePort } from './local-http.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = join(ROOT, 'desk', 'bin', 'desk-ui.mjs');
 
-const freePort = () => new Promise((resolve) => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
 const answers = (port) => new Promise((resolve) => { const c = connect({ host: '127.0.0.1', port }); c.once('connect', () => { c.destroy(); resolve(true); }); c.once('error', () => resolve(false)); });
 
 const T = scratch('desk-ui-install-');

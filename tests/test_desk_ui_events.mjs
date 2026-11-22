@@ -4,19 +4,20 @@
 // test-only port, with fixture queue files it rewrites while a window's stream is open. Its clock,
 // ping interval and event ring are the test's, so nothing waits fifteen minutes or fifteen seconds.
 import { appendFileSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
 import { request } from 'node:http';
-import { connect, createServer } from 'node:net';
+import { connect } from 'node:net';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
+import { call as callPort, freePort } from './local-http.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const BINDIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const waitFor = async (pred, ms = 3000) => { const end = Date.now() + ms; while (Date.now() < end) { if (pred()) return true; await sleep(20); } return !!pred(); };
-const freePort = () => new Promise((resolve) => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
 
 const T = scratch('desk-ui-events-');
 const PORT = await freePort();
@@ -57,30 +58,21 @@ let skew = 0;
 const RING_TEST = 8, PING_TEST = 400;
 const { makeServer } = await import(join(BINDIR, 'desk-ui.mjs'));
 const { LIVE_MS, beatFile } = await import(join(BINDIR, 'borrow.mjs'));
-const server = makeServer({ p: PORT, log: () => {}, events: { now: () => Date.now() + skew, tickMs: 60_000, pingMs: PING_TEST, ring: RING_TEST } });
+const builds = []; // when each rebuild started
+const server = makeServer({ p: PORT, log: () => {}, events: { now: () => Date.now() + skew, tickMs: 60_000, pingMs: PING_TEST, ring: RING_TEST, onBuild: (at) => builds.push(at) } });
 await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
 const feed = server.feed;
 
 const ORIGIN = `http://127.0.0.1:${PORT}`;
-function call(method, path, { headers = {}, body } = {}) {
-  return new Promise((resolve, reject) => {
-    const req = request({ host: '127.0.0.1', port: PORT, method, path, headers: { Host: `127.0.0.1:${PORT}`, ...headers } }, (res) => {
-      let text = '';
-      res.on('data', (d) => { text += d; });
-      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, text }));
-    });
-    req.on('error', reject);
-    if (body !== undefined) req.write(body);
-    req.end();
-  });
-}
+const call = (method, path, opts) => callPort(PORT, method, path, opts);
 const ok = await call('POST', '/api/auth/exchange', { headers: { Origin: ORIGIN, 'Content-Type': 'application/json' }, body: JSON.stringify({ token: TOKEN }) });
 const cookie = String(ok.headers['set-cookie'] ?? '').split(';')[0];
 const load = JSON.parse(ok.text).loadToken;
 const signedIn = { Cookie: cookie, 'X-Desk-Load': load };
+const app = { ...signedIn, Origin: ORIGIN }; // what the window sends to open its stream
 
 // A window's stream: every event as { id, event, data, at }, in order.
-function stream({ since = null, headers = signedIn, path = '/api/events' } = {}) {
+function stream({ since = null, headers = app, path = '/api/events' } = {}) {
   const s = { events: [], status: null, type: null };
   let buf = '';
   s.req = request({ host: '127.0.0.1', port: PORT, method: 'GET', path, headers: { Host: `127.0.0.1:${PORT}`, ...headers, ...(since == null ? {} : { 'Last-Event-ID': String(since) }) } }, (res) => {
@@ -138,6 +130,8 @@ t('its first event is a snapshot of every repo', [first?.event, first?.data?.rep
 t('the snapshot carries each repo\'s ticket rows by key', Object.fromEntries(Object.entries(first?.data?.tickets ?? {}).map(([s, rows]) => [s, rows.map((x) => x.key).sort()])),
   { acme__widgets: ['WID-1', 'WID-2', 'WID-4'], acme__gadgets: ['GAD-1', 'GAD-2'] });
 t('the snapshot names its revision as its event id', first?.id, first?.data?.rev);
+t('the snapshot carries the usage and Levers figures the home event keeps current, and not the inputs\' ages', ['usage', 'levers', 'inputs'].map((k) => k in (first?.data ?? {})), [true, true, false]);
+t('a ticket row carries its stage', first?.data?.tickets?.acme__gadgets?.find((x) => x.key === 'GAD-2')?.stage, '4/9');
 t('the snapshot\'s counts are desk-q\'s', counts(view(w.events)), deskQ());
 await sleep(300); // anything desk-q's own read wrote has settled
 
@@ -149,24 +143,26 @@ t('AC9 a stream with no change is sent a ping once the interval passes', quiet.l
 t('AC9 a ping carries the time and no revision', [quiet[0]?.id ?? null, !Number.isNaN(Date.parse(quiet[0]?.data?.at))], [null, true]);
 
 // ---- AC3: logs growing change nothing
-const builtBefore = feed.builds.length, seenBefore = w.real().length;
+const builtBefore = builds.length, seenBefore = w.real().length;
 for (let i = 0; i < 10; i++) {
   appendFileSync(join(stateOf('acme__widgets'), 'logs', 'WID-1.log'), `{"type":"assistant","n":${i}}\n`);
   appendFileSync(join(stateOf('acme__gadgets'), 'logs', 'GAD-2.log'), `{"type":"assistant","n":${i}}\n`);
   await sleep(50);
 }
 await sleep(700);
-t('AC3 growing worker logs rebuild nothing', feed.builds.length - builtBefore, 0);
+t('AC3 growing worker logs rebuild nothing', builds.length - builtBefore, 0);
 t('AC3 and send no repo or ticket event', w.real().slice(seenBefore).map((e) => e.event), []);
 
 // ---- AC1 and AC5: a pass's write reaches the stream within a second, for its repo alone
 const from = w.events.length;
 const wrote = Date.now();
 writeQueue('acme__widgets', [WID[1], { key: 'WID-2', state: 'running', stage: '2/9' }, { key: 'WID-3', state: 'queued' }]);
-await waitFor(() => w.events.slice(from).some((e) => e.event === 'tickets'), 2000);
+await waitFor(() => w.events.slice(from).some((e) => e.event === 'tickets'), 5000);
 await sleep(400);
 const change = w.events.slice(from).filter((e) => e.event !== 'ping');
 const firstAt = change[0]?.at ?? Infinity;
+// Where a late file event comes from, when this fails: when each rebuild and event followed the write.
+if (firstAt - wrote >= 1000) console.log(`AC1 timing: rebuilds at +${builds.filter((b) => b >= wrote).map((b) => b - wrote).join(',') || 'none'} ms, events ${change.map((e) => `${e.event}@+${e.at - wrote}`).join(',') || 'none'}`);
 t('AC1 the change reaches the stream within 1 s of the write', firstAt - wrote < 1000, true);
 t('AC1 the window\'s counts then equal desk-q --json home\'s for the same state', counts(view(w.events)), deskQ());
 t('AC5 only desk-skills\' repo is named', [...new Set(change.map((e) => e.data.slug).filter(Boolean))], ['acme__widgets']);
@@ -177,30 +173,34 @@ t('each event has its own revision, in order', change.every((e, i) => Number.isI
 await sleep(300);
 
 // ---- AC4: a burst of writes is one rebuild per 250 ms at most
-const burstFrom = feed.builds.length;
+const burstFrom = builds.length;
 for (let i = 0; i < 20; i++) {
   writeQueue('acme__widgets', [WID[1], { key: 'WID-2', state: 'running', stage: `${(i % 8) + 1}/9` }, { key: 'WID-3', state: 'queued', n: i }]);
   await sleep(10);
 }
 await sleep(1200);
-const burst = feed.builds.slice(burstFrom);
+const burst = builds.slice(burstFrom);
 const gaps = burst.slice(1).map((x, i) => x - burst[i]);
 t('AC4 20 writes in 200 ms are rebuilt at least once', burst.length >= 1, true);
 t('AC4 and never twice within 250 ms', gaps.every((g) => g >= 250), true);
-t('AC4 the last write is in the model', feed.snapshot().tickets.acme__widgets.find((x) => x.key === 'WID-3') != null, true);
+t('AC4 the last write is in the model', feed.snapshot().tickets.acme__widgets.find((x) => x.key === 'WID-2')?.stage, '4/9');
+t('a running ticket\'s new stage reaches the window as its row', view(w.events).tickets.acme__widgets['WID-2']?.stage, '4/9');
 
 // ---- AC8: a heartbeat ageing past LIVE_MS is sent on the next clock tick, with no write
 const beat = beatFile(stateOf('acme__widgets'), queueOf('acme__widgets'));
 mkdirSync(dirname(beat), { recursive: true });
 const beatAt = new Date(Date.now() - LIVE_MS + 3000).toISOString();
 writeFileSync(beat, JSON.stringify({ queue: queueOf('acme__widgets'), batch: null, pid: 1, at: beatAt, pass: beatAt }));
-await waitFor(() => w.real().some((e) => e.event === 'repo' && e.data.slug === 'acme__widgets' && e.data.summary?.live === true));
+const beatWrote = Date.now();
+if (!await waitFor(() => w.real().some((e) => e.event === 'repo' && e.data.slug === 'acme__widgets' && e.data.summary?.live === true), 5000)) {
+  console.log(`AC8 timing: rebuilds at +${builds.filter((b) => b >= beatWrote).map((b) => b - beatWrote).join(',') || 'none'} ms`);
+}
 t('AC8 a fresh heartbeat is sent as the repo going live', view(w.events).repos.acme__widgets?.live, true);
 await sleep(700); // a live batch's forecast saves its first estimates, a write of its own
-const tickFrom = w.events.length, tickBuilds = feed.builds.length;
+const tickFrom = w.events.length, tickBuilds = builds.length;
 skew = 5000;
 await sleep(300);
-t('AC8 the clock passing the threshold sends nothing before the tick', [feed.builds.length - tickBuilds, w.events.slice(tickFrom).filter((e) => e.event !== 'ping').length], [0, 0]);
+t('AC8 the clock passing the threshold sends nothing before the tick', [builds.length - tickBuilds, w.events.slice(tickFrom).filter((e) => e.event !== 'ping').length], [0, 0]);
 feed.tick();
 await waitFor(() => w.events.slice(tickFrom).some((e) => e.event === 'repo'));
 const aged = w.events.slice(tickFrom).filter((e) => e.event === 'repo').map((e) => [e.data.slug, e.data.summary?.live]);
@@ -243,11 +243,16 @@ for (const o of ['http://evil.example', 'null', `http://localhost:${PORT}`, `htt
   t(`AC2 a stream with Origin ${o} is refused`, [bad.status, bad.events.length], [403, 0]);
   bad.close();
 }
-const right = stream({ headers: { ...signedIn, Origin: ORIGIN } });
+const none = stream({ headers: signedIn });
+await waitFor(() => none.status != null);
+await sleep(100);
+t('AC2 a stream with no Origin is refused, as a POST is', [none.status, none.events.length], [403, 0]);
+none.close();
+const right = stream({ headers: app });
 await waitFor(() => right.status != null);
 t('AC2 a stream with the app\'s Origin opens', right.status, 200);
 right.close();
-const outsider = stream({ headers: { Cookie: cookie } });
+const outsider = stream({ headers: { Cookie: cookie, Origin: ORIGIN } });
 await waitFor(() => outsider.status != null);
 t('a stream without the per-load token is refused', outsider.status, 401);
 const upgrade = (origin) => new Promise((resolve) => {
@@ -271,5 +276,23 @@ await sleep(100);
 t('a closed window is dropped', feed.clients, 0);
 feed.stop();
 server.close();
+
+// ---- a feed on its own: a failed read on the tick, and a window that leaves while the model is read
+const { makeFeed } = await import(join(BINDIR, 'desk-ui-events.mjs'));
+const empty = { at: 0, body: { repos: [] }, tickets: {}, batches: [] };
+const errs = [];
+const failing = makeFeed({ build: async () => empty, stale: () => { throw new Error('ENOENT: the batch was archived'); }, roots: () => [], tickMs: 60_000, onError: (e) => errs.push(e.message) });
+await failing.current();
+let threw = false;
+try { failing.tick(); } catch { threw = true; }
+t('a read that fails on the clock tick is logged and the server carries on', [threw, errs], [false, ['ENOENT: the batch was archived']]);
+failing.stop();
+const slow = makeFeed({ build: () => sleep(150).then(() => empty), roots: () => [], tickMs: 60_000 });
+const res = Object.assign(new EventEmitter(), { writableLength: 0, writeHead() { this.opened = true; }, flushHeaders() {}, write() {} });
+const opening = slow.subscribe({ headers: {} }, res);
+res.emit('close');
+await opening;
+t('a window that leaves while the model is read is never added', [slow.clients, !!res.opened], [0, false]);
+slow.stop();
 console.log(fails ? `\n${fails} failed` : '\nall passed');
 process.exit(fails ? 1 : 0);

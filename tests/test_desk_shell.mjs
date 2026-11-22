@@ -7,10 +7,10 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { request } from 'node:http';
-import { createServer } from 'node:net';
 import { runInNewContext } from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
+import { freePort } from './local-http.mjs';
 import { homedir } from 'node:os';
 import { createShell, deskPaths, exchange, externalUrl, jiraSites, parseCookie, run, tokenFile, PARTITION } from '../desk/shell/app.mjs';
 
@@ -21,7 +21,6 @@ const BIN = join(ROOT, 'desk', 'bin', 'desk-ui.mjs');
 const SHELL = join(ROOT, 'desk', 'shell');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const freePort = () => new Promise((resolve) => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
 const T = scratch('desk-shell-');
 const PORT = await freePort();
 const ORIGIN = `http://127.0.0.1:${PORT}`;

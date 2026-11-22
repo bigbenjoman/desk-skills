@@ -5,17 +5,16 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { request } from 'node:http';
 import { createServer } from 'node:net';
 import { userInfo } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
+import { call as callPort, freePort } from './local-http.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-ui.mjs');
 
-const freePort = () => new Promise((resolve) => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
 const T = scratch('desk-ui-');
 const PORT = await freePort();
 const TOKEN = `tok${'a1'.repeat(30)}`;
@@ -45,18 +44,7 @@ for (let i = 0; i < 300 && !logged.includes('listening'); i++) await new Promise
 t('the server starts on the test port', logged.includes(`listening on http://127.0.0.1:${PORT}`), true);
 
 const responses = [];
-function call(method, path, { headers = {}, body } = {}) {
-  return new Promise((resolve, reject) => {
-    const req = request({ host: '127.0.0.1', port: PORT, method, path, headers: { Host: `127.0.0.1:${PORT}`, ...headers } }, (res) => {
-      let text = '';
-      res.on('data', (d) => { text += d; });
-      res.on('end', () => { const r = { status: res.statusCode, headers: res.headers, text }; responses.push(r); resolve(r); });
-    });
-    req.on('error', reject);
-    if (body !== undefined) req.write(body);
-    req.end();
-  });
-}
+const call = async (method, path, opts) => { const r = await callPort(PORT, method, path, opts); responses.push(r); return r; };
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 // origin null sends no Origin header; undefined would fall back to the default, the right Origin.
 const exchange = (token, origin = ORIGIN) => call('POST', '/api/auth/exchange',
