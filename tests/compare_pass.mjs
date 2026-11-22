@@ -8,13 +8,13 @@
 //     status, stdout and stderr as they arrived, the queue at $DESK_QUEUE and the archive beside it,
 //     and how many lines the suite had printed to $PASS_CMP_SUITE_LOG when the run started.
 //
-//   node compare_pass.mjs diff [--base-cached] <base records> <head records> <tree>...
+//   node compare_pass.mjs diff [--base-cached[=<suite>,...]] <base records> <head records> <tree>...
 //     Lists, per suite and run, every queue field and output line that differs once ids and paths
 //     that change between runs (each <tree> the runs saw included) are normalized and times are
 //     matched across the trees; and every run that only one tree recorded, or that crashed on only
 //     one, as not compared. Exit 0 when nothing differs, 1 on a difference, 2 when anything was not
 //     compared. --base-cached: the base was recorded by an earlier comparison, so hours or days
-//     before the head.
+//     before the head; =<suite>,... names the only suites whose base records were.
 //
 //   node compare_pass.mjs clean <records> [<suite>...]
 //     Exit 0 when no pass in one tree's records (of those suites only) crashed, 1 naming one that did.
@@ -359,14 +359,17 @@ function lineDiff(a, b, eq = (x, y) => x === y) {
 }
 
 function diff(args) {
-  baseCached = args[0] === '--base-cached';
-  const [baseDir, headDir, ...roots] = baseCached ? args.slice(1) : args;
+  // Which suites' base records an earlier comparison made: all of them, or those named.
+  const flag = /^--base-cached(?:=(.*))?$/.exec(args[0] || '');
+  const cachedSuites = flag && flag[1] !== undefined ? new Set(flag[1].split(',').filter(Boolean)) : null;
+  const [baseDir, headDir, ...roots] = flag ? args.slice(1) : args;
   const norm = normalizer(roots);
   const suites = [...new Set([...readdirSync(baseDir), ...readdirSync(headDir)])]
     .filter((s) => !s.endsWith('.log')).sort();
   let differ = 0, notCompared = 0, compared = 0;
   const say = (s) => console.log(s);
   for (const suite of suites) {
+    baseCached = !!flag && (!cachedSuites || cachedSuites.has(suite));
     const b = runs(join(baseDir, suite)), h = runs(join(headDir, suite));
     const cb = clock(b), ch = clock(h);
     const label = labeller(join(baseDir, `${suite}.log`));
@@ -433,4 +436,4 @@ function clean([dir, ...only]) {
 if (mode === 'record') record(args);
 else if (mode === 'diff') diff(args);
 else if (mode === 'clean') clean(args);
-else { console.error('usage: compare_pass.mjs record <node args...> | diff [--base-cached] <base records> <head records> <tree>... | clean <records> [<suite>...]'); process.exitCode = 2; }
+else { console.error('usage: compare_pass.mjs record <node args...> | diff [--base-cached[=<suite>,...]] <base records> <head records> <tree>... | clean <records> [<suite>...]'); process.exitCode = 2; }

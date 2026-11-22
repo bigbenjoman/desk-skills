@@ -260,7 +260,7 @@ CD="$T/cache/desk-skills/compare-pass"; rm -rf "$CD"
 git init -q -b main "$T/crepo"; cp -R "$T/base/." "$T/crepo/"; cp "$T/crepo/tests/test_pass.sh" "$T/crepo/tests/test_pass_b.sh"
 commit(){ git -C "$T/crepo" add -A; git -C "$T/crepo" -c user.name=t -c user.email=t@example.com commit -qm "$1"; }
 commit base; cp "$T/line/desk/bin/pass.mjs" "$T/crepo/desk/bin/pass.mjs"; commit head
-cp "$S/compare_pass.sh" "$S/compare_pass.mjs" "$S/suite_env.sh" "$T/crepo/tests/"; cp "$SRC/desk/bin/dir-lock.mjs" "$T/crepo/desk/bin/"
+cp "$S/compare_pass.sh" "$S/compare_pass.mjs" "$S/suite_env.sh" "$T/crepo/tests/"; cp "$SRC/desk/bin/dir-lock.mjs" "$SRC/desk/bin/queue-fields.mjs" "$T/crepo/desk/bin/"
 ccmp(){ out=$(bash "$T/crepo/tests/compare_pass.sh" "$@" 2>"$T/err"); rc=$?; }
 replayed(){ grep -q " on the base$" "$T/err"; }
 entries(){ find "$CD" -name '*.tar' 2>/dev/null | wc -l | tr -d ' '; }
@@ -299,6 +299,7 @@ cp "$T/field/desk/bin/pass.mjs" "$T/crepo/desk/bin/pass.mjs"; echo 'kill -TERM $
 ccmp HEAD HEAD~2; ccmp HEAD HEAD~2
 check "DS-963 AC5 a base replay that was stopped is not cached, and says so" 'replayed && grep -q "^compare_pass: the base.s recording is not cached: .*test_pass\.sh" "$T/err"'
 # A base suite that fails a check, as one does on a machine that lacks a tool it uses.
+cp "$T/base/desk/bin/pass.mjs" "$T/crepo/desk/bin/pass.mjs"
 cp "$T/base/tests/test_pass.sh" "$T/crepo/tests/test_pass.sh"; echo 'echo "FAIL a tool this machine lacks"' >> "$T/crepo/tests/test_pass.sh"; commit failing
 ccmp HEAD HEAD~3
 check "DS-963 a base suite that failed a check is left out of the entry, which names the check" 'grep -qE "^compare_pass: cached the base.s recording as $CD/[0-9a-f]+\.tar, but for test_pass\.sh: FAIL a tool this machine lacks$" "$T/err"'
@@ -321,6 +322,13 @@ require("fs").writeFileSync(f, JSON.stringify({ run: 1, started: s, at_line: 0, 
 farrec base 1780000000000 2 '0m 05s'; farrec head 1780003605000 1 '0m 09s'
 out=$(node "$S/compare_pass.mjs" diff --base-cached "$T/far/base" "$T/far/head" "$T/far"); rc=$?
 check "DS-963 AC1 against a cached base a deadline worked out differently is listed though it reads seconds apart" '[ $rc = 1 ] && echo "$out" | grep -qE "^  queue A-1 due: base \"[0-9TZ:.-]+\", head \"[0-9TZ:.-]+\"$" && [ "$(echo "$out" | grep -c "^  ")" = 1 ]'
+# When only some base suites came from the cache, the rest were replayed beside the head and are
+# matched as in a run without the cache.
+fresh=$(node "$S/compare_pass.mjs" diff "$T/far/base" "$T/far/head" "$T/far"); frc=$?
+out=$(node "$S/compare_pass.mjs" diff --base-cached=test_other.sh "$T/far/base" "$T/far/head" "$T/far"); rc=$?
+check "DS-963 AC1 a base suite replayed in this run is matched as without the cache, though another came from it" '[ $rc = "$frc" ] && [ "$out" = "$fresh" ]'
+out=$(node "$S/compare_pass.mjs" diff --base-cached=test_other.sh,test_pass.sh "$T/far/base" "$T/far/head" "$T/far"); rc=$?
+check "DS-963 AC1 a base suite named as cached is matched by run only" '[ $rc = 1 ] && echo "$out" | grep -q "^  queue A-1 due: "'
 # Records as the recorder saves them, of one suite whose two runs park P-1: run 1 ran from $2 to $3 ms
 # after an epoch of its tree's own ($7), parking at $4 ms with question $5; run 2 started at $6 ms and
 # holds the park, as run 1 does once it was written. What a loaded machine makes of one park: written further into its run on one tree.
