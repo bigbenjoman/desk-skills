@@ -28,6 +28,7 @@ case "\$GH_MODE" in
   out) printf 'You are not logged into any GitHub hosts. To log in, run: gh auth login\n' >&2; exit 1 ;;
   revoked) printf 'github.com\n  X Failed to log in to github.com account someone (keyring)\n  - Active account: true\n  - The token in keyring is invalid.\n  - To re-authenticate, run: gh auth login -h github.com\n' >&2; exit 1 ;;
   bad401) printf 'github.com\n  X Failed to log in to github.com account someone (keyring)\n  - HTTP 401: Bad credentials (https://api.github.com/)\n' >&2; exit 1 ;;
+  limited401) printf 'github.com\n  X Failed to log in to github.com account someone (keyring)\n  - HTTP 403: API rate limit exceeded for user ID 1. (https://api.github.com/)\n  - HTTP 401: Bad credentials (https://api.github.com/)\n' >&2; exit 1 ;;
 esac
 exit 1
 EOF
@@ -56,7 +57,8 @@ out="$(GH_MODE=limited GH_RATE=fail "$SH" "$S/../install.sh" --check </dev/null 
 check "AC1 with the reset unreadable, the warning says the hourly reset" \
   '[[ "$out" == *"rate-limited until its hourly reset. The install goes on"* ]]'
 
-for m in out revoked bad401; do
+# limited401: a rate-limit line beside bad credentials is still signed out
+for m in out revoked bad401 limited401; do
   run "$m"
   check "AC2 $m: gh is not signed in, and counted as missing" \
     '[ "$missing" = "$((base + 1))" ] && [[ "$out" == *"MISS  gh is not signed in. Run: gh auth login"* ]] && [[ "$out" != *"rate-limited"* ]]'
