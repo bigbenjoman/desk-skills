@@ -865,6 +865,7 @@ const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
 // machineBudget): a batch whose queue cannot be read counts at its repo's cap, the most it could run.
 // A scoped load's other batches (loadRepos `others`) count too.
 const withOthers = (repos) => [...repos, ...(repos.find((r) => r.machine)?.machine.others ?? [])];
+/** @type {(repos: any[]) => number} */
 export const machineRunning = (repos) => withOthers(repos).reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
 // A batch's merge driver while it holds its lock: how long it has held it (the lock's mtime, set as it
 // writes its pid) and the last line of its log. Null once it has stopped, which stallOf's note covers.
@@ -1082,6 +1083,7 @@ function undatedWhy(r, F, x) {
 // When the repo's last dated ticket ships.
 // A repo's batches together (DS-357 AC2): the latest of their dates, or "no date yet" if any batch
 // with work left has none. A repo with one batch left says what that batch says ("no history" too).
+/** @returns {string} */
 function queueDone(r, now, checkin) {
   if (r.batches) {
     const left = r.batches.filter((b) => { const F = forecastOf(b, { now, checkin }); return F && !F.idle; });
@@ -1943,6 +1945,7 @@ const gateGiB = (repos) => (repos.length ? Math.max(...repos.map((r) => spawnGat
 const LAST_W = 26;
 // ALL DONE BY fits "passes stopped".
 const QD_W = 14;
+/** @returns {[text: string, sgr: string]} */
 function lastPass(r, now) {
   const age = r.last == null ? null : now - r.last;
   if (supervisorOff(r)) return [`✕ supervisor off${age == null ? '' : ` · ${since(age)}`}`, FAIL];
@@ -2041,6 +2044,7 @@ function leversLine(p, now) {
   return { ...segLine(segs), link: 'levers' };
 }
 // The Levers line as plain text, less its arrow.
+/** @type {(p: any, now: number) => string} */
 const leversText = (p, now) => leversLine(p, now).line.replace(new RegExp(`${LEVERS_ARROW}$`), '');
 
 // What opening the page says, once any rebuild has ended: `p` as it is now, `before` the page's build
@@ -2067,6 +2071,7 @@ const leversDue = (p) => !p.page || p.old || !!leversFault(p);
 // shown when the pass runs on desk-q's login. Weekly pacing per login is not built yet. `logins` is
 // loginsNow's.
 const NO_READING = { five_hour: null, seven_day: null, at: null, none: [] };
+/** @param {Batch[]} repos @param {number} now @param {Batch[]} [shown] */
 export function usageOf(repos, now, shown = repos) {
   const logins = loginsNow(repos, now);
   const own = readUsage({ dirs: stateDirs({ self: usageDir() }), login: lineLogin(), now });
@@ -3853,9 +3858,15 @@ function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () =
 /** @typedef {{ reading: UsageReading, running: number, held: boolean, held_by: string[] }} UsageFigures */
 /** @typedef {{ id: string, slug: string, name: string }} RepoIdentity */
 /**
+ * A loaded batch or repo row (loadBatch, lightBatch, repoRow), as the views read it: the fields their
+ * JSON copies are typed, so a field computed from the wrong one fails the check; the rest stay open.
+ * @typedef {RepoIdentity & { error: string | null, live: boolean, last: number | null, done: number,
+ *   workers: number | null, cap: number, [k: string]: any }} Batch
+ */
+/**
  * @typedef {RepoIdentity & { error: null, live: boolean, last_pass_at: string | null, last_pass: string,
  *   running: number, ready: number, merging: number, waiting: number, needs_you: number, put_off: number, done: number,
- *   workers: { running: number, allowed: number, cap: number, ready_no_slot: number },
+ *   workers: { running: number, allowed: number | null, cap: number, ready_no_slot: number },
  *   all_done_by: string, wait_cause: string | null }} RepoFigures
  */
 /** @typedef {RepoIdentity & { error: string }} RepoFault */
@@ -3895,12 +3906,16 @@ function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () =
  *   reads: { supplier: string, at: string | number | null, failedAt: string | number | null }[] }} CostName
  */
 /**
- * @typedef {{ period: string, total: number, suppliers: { supplier: string, total: number }[], names: CostName[],
+ * The month the charges are for (cost-cache.mjs fullMonth): `from` and `to` are YYYY-MM-DD.
+ * @typedef {{ year: number, month: number, from: string, to: string }} CostPeriod
+ */
+/**
+ * @typedef {{ period: CostPeriod, total: number, suppliers: { supplier: string, total: number }[], names: CostName[],
  *   shared: number | null, credits: number }} CostCharges
  */
 /**
  * @typedef {JsonEnvelope<'costs', { costs: (InputAge & { supplier: string })[] }> & {
- *   name: string | null, charges: CostCharges | { period: string, name: CostName | null } | null }} CostsView
+ *   name: string | null, charges: CostCharges | { period: CostPeriod, name: CostName | null } | null }} CostsView
  */
 
 export const JSON_VERSION = 1;
@@ -3930,7 +3945,7 @@ const envelope = (view, now, inputs, body, parts) => ({ v: JSON_VERSION, view, g
 const queueAges = (list, now) => list.flatMap((r) => r.batches ?? [r]).filter((b) => b.queuePath).map((b) => ({ batch: b.word ?? b.name, ...inputAge(mtimeOf(b.queuePath), now) }));
 
 // A repo row's figures, each the home table's column of the same name.
-/** @returns {RepoFigures | RepoFault} */
+/** @param {Batch} r @param {ReturnType<typeof needsCount>} needs @param {number} now @param {boolean} checkin @returns {RepoFigures | RepoFault} */
 function repoFigures(r, needs, now, checkin) {
   const id = { id: r.id, slug: r.slug, name: r.name };
   if (r.error) return { ...id, error: r.error };
@@ -3954,11 +3969,16 @@ export function leversJson(p, now) {
 /** @type {(u: ReturnType<typeof usageOf>) => UsageFigures} */
 const usageJson = (u) => ({ reading: u.reading, running: u.running, held: u.held, held_by: u.heldBy });
 
-/** @returns {HomeView} */
+/**
+ * @param {Batch[]} repos
+ * @param {{ all?: boolean, now?: number, avail?: number, cap?: number | null, gate?: number, perWorker?: number, checkin?: boolean }} [opts]
+ * @returns {HomeView}
+ */
 export function homeJson(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), checkin = false } = {}) {
-  const shown = shownRepos(repos, all), list = byRepo(shown);
+  const shown = shownRepos(repos, all), list = /** @type {Batch[]} */ (byRepo(shown));
   const ok = list.filter((r) => !r.error);
-  const needs = new Map(ok.map((r) => [r, needsCount(r)]));
+  /** @type {Map<Batch, ReturnType<typeof needsCount>>} */
+  const needs = new Map(ok.map((r) => /** @type {[Batch, ReturnType<typeof needsCount>]} */ ([r, needsCount(r)])));
   const running = machineRunning(repos);
   const levers = pageState({ now });
   const usage = usageOf(repos, now, list);
