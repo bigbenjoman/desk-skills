@@ -46,8 +46,9 @@ const WRAPPER = wrapperOf('test|tsc|light');
 const BROWSER = wrapperOf('browser');
 const LIGHT = wrapperOf('light');
 // What with-lock.sh runs while it waits for a slot, besides itself: the lock, the pause between rounds,
-// the lease broker and config reads, and the file and git steps it takes on the way.
-const HELPER = /^(?:\S*\/)?(?:flock|sleep|cat|mkdir|find|mv|rm|git|dirname|pwd|lsof)(?:\s|$)/;
+// the lease broker and config reads, the file and git steps it takes on the way, the process reads that
+// name the lock's holders, and the load and memory reading its wait's log lines carry.
+const HELPER = /^(?:\S*\/)?(?:flock|sleep|cat|mkdir|find|mv|rm|git|dirname|pwd|lsof|ps|sysctl)(?:\s|$)/;
 const NODE_HELPER = /^(?:\S*\/)?node\s+\S*(?:slot-lease|desk-env)\.mjs(?:\s|$)/;
 // A Bash tool background task's output file.
 const TASK_OUTPUT = /\/tasks\/[^/]+\.output$/;

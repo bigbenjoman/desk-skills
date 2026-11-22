@@ -39,6 +39,9 @@ t('a wrapper re-run under the light lock is read as waiting on it',
   standing([{ ...wrapper, args: 'bash /x/with-lock.sh light --cwd . -- bash tests/run.sh' }]).light, true);
 t('a flock and the lease broker are a wait too',
   standing([wrapper, { pid: 12, ppid: 11, etime: '00:01', args: 'flock 9' }, { pid: 13, ppid: 11, etime: '00:01', args: 'node /x/slot-lease.mjs take test --pid 11 -- bash tests/run.sh' }]).state, 'waiting');
+t('DS-975 the wait\'s log line, with its holder read and load reading, is a wait too',
+  standing([wrapper, { pid: 12, ppid: 11, etime: '00:01', args: 'node /x/slot-lease.mjs note queued test --pid 11 --waited 0' },
+    { pid: 13, ppid: 12, etime: '00:00', args: 'sysctl vm.loadavg kern.memorystatus_level' }, { pid: 14, ppid: 12, etime: '00:00', args: 'ps -axo pid=,ppid=,args=' }]).state, 'waiting');
 t('the command, exec\'d into the wrapper\'s pid, has started', standing([shell, { ...wrapper, args: 'bash tests/run.sh' }, { pid: 14, ppid: 11, etime: '00:01', args: 'node tests/test_x.mjs' }]), { state: 'started', pid: 11 });
 t('a run that takes no lock has started from its shell', standing([{ pid: 20, ppid: 1, etime: '00:03', args: '/bin/zsh -c bash tests/run.sh' }]), { state: 'started', pid: 20 });
 t('AC2 the record line is the one the contract records',

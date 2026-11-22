@@ -283,6 +283,8 @@ try {
       ['shadow', SHADOW1, { PATH: noFlock }], ['on', ON1, {}]]) {
       const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile, extra });
       const a = await hold(env, ['light'], { cwd: root });
+      // The mkdir path starts its command before it logs the grant: the queue it counts is the one then.
+      await until(() => of(env, 'grant').length === 1);
       const b = run(env, ['light', '--', 'true']);
       await until(() => of(env, 'queued').length === 1);
       const c = run(env, ['light', '--', 'true']);
