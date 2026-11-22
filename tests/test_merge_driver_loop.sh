@@ -337,5 +337,32 @@ q add T-48 Task A; q set T-48 state=triaged branch=fix/T-48; q hold T-48 T-47
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-45" 2>&1)
 check "DS-796 a blocker requeued before its new worker starts does not release on its first merge" '[ "$(qg T-46 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-46"'
 check "DS-796 a blocker the driver just merged releases on that merge before a pass reads its status" '[ "$(qg T-48 .state)" = triaged ] && echo "$out" | grep -q "merged: T-47#147 -> RELEASED T-48"'
+# T-51 was respawned (merged_pr) after its first PR #151 merged, and its new worker parked; T-61's new
+# worker failed. T-53 was requeued behind its own unmerged blocker T-55, so it is parked, held. T-57 was
+# respawned before merged_pr was kept: done again on #157, read open after its first merge. None of them
+# releases what waits on it on that first merge, recorded or listed.
+cat > "$T/prs.json" <<EOF
+{ "151": { "head": "fix/T-51", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] },
+  "153": { "head": "fix/T-53", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] },
+  "156": { "head": "fix/T-57", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] },
+  "161": { "head": "fix/T-61", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] } }
+EOF
+q add T-51 Task A; q set T-51 state=parked branch=fix/T-51 merged_pr=151 'park={"question":"Stage 8: comment"}'; q merged T-51 2026-11-13T00:00:00.000Z
+q add T-61 Task A; q set T-61 state=failed branch=fix/T-61 merged_pr=161; q merged T-61 2026-11-13T00:00:00.000Z
+q add T-55 Task A; q set T-55 state=triaged branch=fix/T-55
+q add T-53 Task A; q set T-53 state=done branch=fix/T-53 result.pr=153; q merged T-53 2026-11-13T00:00:00.000Z
+q set T-53 state=parked result=null held_by=T-55 'park={"question":"held by orchestrator: blocked by T-55"}'
+q add T-57 Task A; q set T-57 state=done branch=fix/T-57 result.pr=157 'pr_status={"pr":157,"state":"OPEN","at":"2026-11-14T00:00:00.000Z"}'; q merged T-57 2026-11-13T00:00:00.000Z
+for s in 52:51 62:61 54:53 58:57; do q add "T-${s%%:*}" Task A; q set "T-${s%%:*}" state=triaged branch="fix/T-${s%%:*}"; q hold "T-${s%%:*}" "T-${s##*:}"; done
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-51" 2>&1)
+check "DS-796 a respawned blocker whose new worker parked or failed does not release on its first merge" \
+  '[ "$(qg T-52 .state)" = parked ] && [ "$(qg T-62 .state)" = parked ] && ! echo "$out" | grep -qE "RELEASED T-(52|62)"'
+check "DS-796 a blocker held behind its own blockers at its requeue does not release on its first merge" \
+  '[ "$(qg T-54 .state)" = parked ] && [ "$(qg T-53 .state)" = parked ] && ! echo "$out" | grep -qE "RELEASED T-5[34]"'
+check "DS-796 a blocker respawned before merged_pr, its new PR read open after its merge, does not release on that merge" \
+  '[ "$(qg T-58 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-58"'
+node --input-type=module -e "import { readFileSync, writeFileSync } from 'node:fs'; const f = process.argv[1]; const p = JSON.parse(readFileSync(f, 'utf8')); p['157'] = { ...p['156'], state: 'merged' }; writeFileSync(f, JSON.stringify(p))" "$T/prs.json"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-51" 2>&1)
+check "DS-796 and its current PR merging releases what waits on it" '[ "$(qg T-58 .state)" = triaged ] && echo "$out" | grep -q "merged: T-57#157 -> RELEASED T-58"'
 
 finish loop
