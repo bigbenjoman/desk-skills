@@ -15,8 +15,8 @@
 // SameSite=Strict session cookie and a per-load token; every other /api route needs both, the
 // per-load token in the X-Desk-Load header. Sessions live in memory, so a restart signs everyone out.
 // GET /api/events is the change stream (desk-ui-events.mjs), under the same guard, and refused as a
-// POST is unless it carries the app's Origin or comes from the app's own page (Sec-Fetch-Site:
-// same-origin, with no Origin); /api/snapshot reads the same model and revision. A WebSocket upgrade is refused: 403 from any Origin but the app's, 404
+// POST is unless it carries the app's Origin (Desk.app adds it to its window's stream request);
+// /api/snapshot reads the same model and revision. A WebSocket upgrade is refused: 403 from any Origin but the app's, 404
 // from it, since no route takes one yet.
 // DESK_UI_TEST_PORT moves the port, read only when HOME is not this user's own home (a test HOME).
 import { createServer } from 'node:http';
@@ -150,11 +150,9 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
       }
       if (path === '/api/events') {
         if (method !== 'GET') return refuse(res, 405, 'method', 'GET only.');
-        // As strictly as a POST: the app's Origin, or none only where the browser vouches the request
-        // comes from the app's own page. A same-origin GET carries no Origin and page code cannot add
-        // one, but the browser sends Sec-Fetch-Site itself and no page can set it.
-        const ownPage = from === undefined && req.headers['sec-fetch-site'] === 'same-origin';
-        if (from !== origin && !ownPage) return refuse(res, 403, 'origin', `Requests must come from ${origin}.`);
+        // As strictly as a POST (the ticket's ruling): the app's Origin, never none or null. A
+        // same-origin GET carries none, so Desk.app adds it to its own window's stream request.
+        if (from !== origin) return refuse(res, 403, 'origin', `Requests must come from ${origin}.`);
         const opened = await feed.subscribe(req, res, { headers: { ...BASE_HEADERS, 'X-Desk-Boot': boot }, query: new URLSearchParams(query) });
         return opened || refuse(res, 500, 'read', "Could not read desk's state; see the server log.");
       }

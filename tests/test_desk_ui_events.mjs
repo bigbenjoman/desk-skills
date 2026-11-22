@@ -7,7 +7,7 @@ import { appendFileSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { request } from 'node:http';
 import { connect } from 'node:net';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
@@ -69,9 +69,8 @@ const ok = await call('POST', '/api/auth/exchange', { headers: { Origin: ORIGIN,
 const cookie = String(ok.headers['set-cookie'] ?? '').split(';')[0];
 const load = JSON.parse(ok.text).loadToken;
 const signedIn = { Cookie: cookie, 'X-Desk-Load': load };
-// What the window's page sends to open its stream: a same-origin GET carries no Origin, and the
-// browser adds Sec-Fetch-Site itself.
-const app = { ...signedIn, 'Sec-Fetch-Site': 'same-origin' };
+// What the window sends to open its stream: Desk.app adds the app's Origin to it (desk/shell/app.mjs).
+const app = { ...signedIn, Origin: ORIGIN };
 
 // A window's stream: every event as { id, event, data, at }, in order.
 function stream({ since = null, headers = app, path = '/api/events' } = {}) {
@@ -245,20 +244,18 @@ for (const o of ['http://evil.example', 'null', `http://localhost:${PORT}`, `htt
   t(`AC2 a stream with Origin ${o} is refused`, [bad.status, bad.events.length], [403, 0]);
   bad.close();
 }
-for (const [what, headers] of [['no Origin and no word from the browser', signedIn], ['no Origin from another site', { ...signedIn, 'Sec-Fetch-Site': 'cross-site' }],
-  ['Origin null from the app\'s own page', { ...app, Origin: 'null' }]]) {
+for (const [what, headers] of [['no Origin', signedIn], ['no Origin from another site', { ...signedIn, 'Sec-Fetch-Site': 'cross-site' }],
+  ['no Origin, even from the app\'s own page', { ...signedIn, 'Sec-Fetch-Site': 'same-origin' }]]) {
   const bad = stream({ headers });
   await waitFor(() => bad.status != null);
   await sleep(100);
   t(`AC2 a stream with ${what} is refused, as a POST is`, [bad.status, bad.events.length], [403, 0]);
   bad.close();
 }
-for (const [what, headers] of [['the app\'s Origin', { ...signedIn, Origin: ORIGIN }], ['no Origin from the app\'s own page', app]]) {
-  const right = stream({ headers });
-  await waitFor(() => right.status != null);
-  t(`AC2 a stream with ${what} opens`, right.status, 200);
-  right.close();
-}
+const right = stream({ headers: app });
+await waitFor(() => right.status != null);
+t('AC2 a stream with the app\'s Origin opens', right.status, 200);
+right.close();
 const outsider = stream({ headers: { Cookie: cookie, Origin: ORIGIN } });
 await waitFor(() => outsider.status != null);
 t('a stream without the per-load token is refused', outsider.status, 401);
@@ -289,8 +286,18 @@ const { quietStateName } = await import(join(BINDIR, 'desk-env.mjs'));
 t('logs, clones and log files are quiet, a rotated round included', ['logs', 'ref', 'WID-1.log', 'WID-1.log.round2', 'WID-1.log.round2.gz'].map(quietStateName), [true, true, true, true, true]);
 t('a repo slug with .log. in it is not', ['acme__build.log.tools', 'queue.json', 'catalog'].map(quietStateName), [false, false, false]);
 
+// ---- which writes the watcher rebuilds for, by path under its root
+const { makeFeed, counts: writeCounts } = await import(join(BINDIR, 'desk-ui-events.mjs'));
+const under = (...p) => p.join(sep);
+t('a queue write counts, in a repo whose slug ends in .log or holds .log.', [
+  under('acme__build.log', 'batches', 'B-1', 'queue.json'), under('acme__build.log.tools', 'batches', 'B-1', 'queue.json'), under('acme__widgets', 'batches', 'B-1', 'queue.json'),
+].map(writeCounts), [true, true, true]);
+t('a log, a rotated log, anything under logs/ or ref/, and the server\'s ui/ do not', [
+  under('acme__build.log', 'batches', 'B-1', 'WID-1.log'), under('acme__widgets', 'batches', 'B-1', 'WID-1.log.round2.gz'),
+  under('acme__widgets', 'batches', 'B-1', 'logs', 'x.json'), under('acme__widgets', 'ref', 'repo', 'README.md'), under('ui', 'state.json'),
+].map(writeCounts), [false, false, false, false, false]);
+
 // ---- a feed on its own: a failed read on the tick, and a window that leaves while the model is read
-const { makeFeed } = await import(join(BINDIR, 'desk-ui-events.mjs'));
 const empty = { at: 0, body: { repos: [] }, tickets: {}, batches: [] };
 const errs = [];
 const failing = makeFeed({ build: async () => empty, stale: () => { throw new Error('ENOENT: the batch was archived'); }, roots: () => [], tickMs: 60_000, onError: (e) => errs.push(e.message) });

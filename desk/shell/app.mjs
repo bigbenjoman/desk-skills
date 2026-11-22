@@ -173,11 +173,19 @@ export function createShell(electron, {
   });
 
   // The per-load token goes on the window's own requests to the server while it shows the server's page.
-  // A frame already gone throws on .url, and counts as not the server's.
+  // A frame already gone throws on .url, and counts as not the server's. The change stream also gets
+  // the app's Origin, which the server requires there and a same-origin GET does not carry.
   const frameOk = (d) => { try { return !d.frame || fromServer(d.frame.url); } catch { return false; } };
+  const isStream = (url) => { try { return new URL(url).pathname === '/api/events'; } catch { return false; } };
   ses.webRequest.onBeforeSendHeaders({ urls: [`${origin}/*`] }, (d, done) => {
     const requestHeaders = Object.fromEntries(Object.entries(d.requestHeaders ?? {}).filter(([k]) => k.toLowerCase() !== LOAD_HEADER.toLowerCase()));
-    if (load && view === 'app' && win && d.webContentsId === win.webContents.id && frameOk(d)) requestHeaders[LOAD_HEADER] = load;
+    if (load && view === 'app' && win && d.webContentsId === win.webContents.id && frameOk(d)) {
+      requestHeaders[LOAD_HEADER] = load;
+      if (isStream(d.url)) {
+        for (const k of Object.keys(requestHeaders)) if (k.toLowerCase() === 'origin') delete requestHeaders[k];
+        requestHeaders.Origin = origin;
+      }
+    }
     done({ requestHeaders });
   });
   // No camera, microphone, location or web notifications: only the cards' Copy buttons' clipboard write.

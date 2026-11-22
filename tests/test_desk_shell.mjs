@@ -6,6 +6,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
+import { request } from 'node:http';
 import { runInNewContext } from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
@@ -163,6 +164,17 @@ t('the load token is not added for another frame, another window, or a request t
   [sentHeaders(f, win, { frame: 'https://example.com/' })['X-Desk-Load'], sentHeaders(f, win, { frame: 'file:///x/status.html' })['X-Desk-Load'],
     sentHeaders(f, { webContents: { id: 999 } })['X-Desk-Load']], [undefined, undefined, undefined]);
 t('the load token is only for the server', f.sending().filter.urls, [`${ORIGIN}/*`]);
+// The change stream wants the app's Origin, which a same-origin GET does not carry: the window's own
+// stream request gets it, over any the page set, and no other request or frame does.
+const streamSent = sentHeaders(f, win, { url: `${ORIGIN}/api/events`, headers: { origin: 'null' } });
+const opened = await new Promise((resolve) => {
+  const req = request({ host: '127.0.0.1', port: PORT, path: '/api/events', headers: { Host: `127.0.0.1:${PORT}`, Cookie: `desk_ui=${f.cookies[0].value}`, ...streamSent } },
+    (res) => { resolve(res.statusCode); req.destroy(); });
+  req.on('error', () => resolve(null));
+});
+t('the window\'s stream request carries the app\'s Origin and opens', [streamSent.Origin, 'origin' in streamSent, opened], [ORIGIN, false, 200]);
+t('no other request, nor another frame\'s stream, gets an Origin added',
+  [sentHeaders(f, win).Origin, sentHeaders(f, win, { url: `${ORIGIN}/api/events`, frame: 'https://example.com/' }).Origin], [undefined, undefined]);
 t('the token never reaches a window load', win.loads.some((u) => u.includes(TOKEN)), false);
 
 // ---- AC2: the sign-in is Desk's alone -----------------------------------------------------------
