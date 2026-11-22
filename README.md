@@ -938,7 +938,12 @@ in `tests/suite_durations.json` first, each reported in one piece in name order 
 Without `-j` it runs as many as `desk-env get test-cap` allows, or a quarter of the cores where that
 is unset; `-j 1` runs them one after another in name order. Each report gives the suite's CPU
 seconds, and every finished run appends a line to `~/.desk-autopilot/test-runs.jsonl` with its
-date, suites, job count, wall and CPU seconds and the load average at its start. A suite that fails
+date, suites, job count, wall and CPU seconds, the load average at its start, its scope (`full` or
+`changed`) and why, the worktree it ran in, and the lock it ran under with the seconds it waited for
+it. Every lock wait is in the lease log (`~/.desk-autopilot/machine/leases.log.jsonl`) too: a
+`queued` line as a run starts to wait, then its `grant` or `gave-up` line, each with the class, the
+worktree, the seconds waited, how many other runs wait, the one-minute load average, the free memory
+percentage and the compressed memory in GB (a reading that fails is left `null`). A suite that fails
 runs once more: passing then, the run passes, the suite's report shows its first run's failure, and
 the summary names it under `flaked:` (CI's `tests` job prints each shard's); failing again, the run
 fails with both runs printed. `test_compare_pass.sh` is never retried. `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite

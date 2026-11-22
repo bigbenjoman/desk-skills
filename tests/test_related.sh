@@ -37,9 +37,16 @@ git -C "$R" checkout -q -b fix/x
 printf 'echo a2\n' > "$R/lib/a.sh"; git -C "$R" commit -q -am 'change a'
 related(){ out=$(cd "$R" && bash tests/related.sh 2>&1); rc=$?; }
 ran(){ [[ "$out" == *"== test_$1.sh"* ]]; }
+# Field $1 of the last run's record in test-runs.jsonl, null printed as null. A run.sh this suite runs
+# under exports TEST_RUNS_LOG empty, which would keep run.sh here from recording.
+unset TEST_RUNS_LOG
+RUNS="$HOME/.desk-autopilot/test-runs.jsonl"
+rec(){ node -e 'const l = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").at(-1); const v = JSON.parse(l)[process.argv[2]]; console.log(v === null ? "null" : v)' "$RUNS" "$1" 2>/dev/null; }
 
 related
 check "AC2 a change to one suite's file runs that suite"     '[ $rc -eq 0 ] && ran a'
+check "DS-975 AC5 the run's record carries scope changed, why, the worktree, and no lock or wait with no wrapper" \
+  '[ "$(rec scope)" = changed ] && [ "$(rec reason)" = "1 changed file(s) reach 2 of 4 suites" ] && [ "$(rec worktree)" = "$R" ] && [ "$(rec lock)" = null ] && [ "$(rec wait_s)" = null ]'
 check "AC2 and the always-run suite"                         'ran lint'
 check "AC2 and no other"                                     '! ran b'
 check "AC2 it says which scope it ran"                       '[[ "$out" == *"related: scope some against origin/main: test_a.sh test_lint.sh"* ]]'
@@ -52,6 +59,7 @@ git -C "$R" reset -q --hard HEAD~1
 printf 'x\n' > "$R/.gitignore"; git -C "$R" add .gitignore; git -C "$R" commit -q -m 'root file'
 related
 check "a full scope runs every suite"                        '[ $rc -eq 0 ] && ran a && ran b && ran lint && [[ "$out" == *"scope full against origin/main (.gitignore is a root file), so every suite runs"* ]]'
+check "DS-975 AC5 a full scope's record says full, and why" '[ "$(rec scope)" = full ] && [ "$(rec reason)" = ".gitignore is a root file" ]'
 git -C "$R" reset -q --hard HEAD~1
 
 printf 'echo b2\n' > "$R/lib/b.sh"
@@ -175,6 +183,8 @@ check "DS-924 AC1 (real wrapper) a held slot makes it wait, saying on whom, befo
 for _ in $(seq 1 300); do [ -s "$T/rel.rc" ] && break; sleep 0.1; done
 out=$(cat "$T/rel.out")
 check "DS-924 AC1 (real wrapper) it runs once the slot frees" '[ "$(cat "$T/rel.rc")" = 0 ] && ran a'
+check "DS-975 AC5 (real wrapper) its record names the test lock and the seconds it waited for the slot" \
+  '[ "$(rec lock)" = test ] && [[ "$(rec wait_s)" =~ ^[0-9]+$ ]] && [ "$(rec scope)" = changed ] && [ "$(rec worktree)" = "$R" ]'
 out=$(cd "$R" && bash "$WL" test -- env DESK_RELATED_WAIT=5 bash tests/related.sh 2>&1); rc=$?
 check "DS-924 AC3 (real wrapper) called through with-lock.sh it runs in that slot and takes no second" '[ $rc -eq 0 ] && ran a && [[ "$out" != *"taking a test slot"* ]]'
 # A with-lock.sh installed before DS-924 exports no DESK_LOCK_HELD: the holder file naming the run is enough.

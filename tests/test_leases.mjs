@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, 
 import { join, dirname } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { claudeAncestor, kindMode, leaseCli, listRow, releasePreviews } from '../desk/bin/leases.mjs';
+import { claudeAncestor, kindMode, leaseCli, listRow, releasePreviews, sampleLoad, waitFields } from '../desk/bin/leases.mjs';
 import { decidePrStatus } from '../desk/bin/pass/pr-status.mjs';
 import { latestPerCheck, normaliseRollup } from '../desk/bin/gate.mjs';
 import { previewLabel } from '../desk/bin/desk-env.mjs';
@@ -678,6 +678,37 @@ try {
     t('DS-913 AC1 end to end: the finished preview\'s unit is released and the pending one\'s held', json(d7).map((l) => l.label).join(), 'acme/web#22');
     t('DS-913 AC1 end to end: the lease log names the PR and "preview finished"', log(d7).filter((e) => e.event === 'release').map((e) => `${e.label} ${e.reason}`).join(), 'acme/web#21 preview finished');
     t('DS-913 AC1 end to end: the pass report says so', out.join('\n'), "preview builds: PR #21's preview finished, so its preview-build unit is free for the next build");
+  }
+  // DS-975: the load and memory sampler a lock wait's lines carry, with fake readings.
+  {
+    const mac = ['vm.loadavg: { 2.47 1.98 1.75 }', 'kern.memorystatus_level: 37', 'kern.memorystatus_vm_pressure_level: 2',
+      `vm.compressor_bytes_used: ${3 * 2 ** 30 + 2 ** 29}`, 'hw.memsize: 25769803776', 'vm.swapusage: total = 3072.00M  used = 1536.00M  free = 1536.00M  (encrypted)'].join('\n');
+    const calls = [];
+    const got = sampleLoad({ platform: 'darwin', run: (cmd, args) => { calls.push([cmd, ...args].join(' ')); return mac; } });
+    t('DS-975 AC1 on macOS one sysctl read gives the load, free memory %, pressure, compressed, swap and total memory', [calls, got],
+      [['sysctl vm.loadavg kern.memorystatus_level kern.memorystatus_vm_pressure_level vm.compressor_bytes_used hw.memsize vm.swapusage'],
+        { load_1m: 2.47, mem_free_pct: 37, mem_pressure: 2, compressed_gb: 3.5, swap_used_gb: 1.5, mem_total_gb: 24 }]);
+    const partial = Object.assign(new Error('exit 1'), { stdout: mac.split('\n').filter((l) => !l.startsWith('vm.compressor')).join('\n') });
+    t('DS-975 AC6 a reading sysctl does not know is left empty, and the rest are kept',
+      sampleLoad({ platform: 'darwin', run: () => { throw partial; } }), { load_1m: 2.47, mem_free_pct: 37, mem_pressure: 2, compressed_gb: null, swap_used_gb: 1.5, mem_total_gb: 24 });
+    const none = { load_1m: null, mem_free_pct: null, mem_pressure: null, compressed_gb: null, swap_used_gb: null, mem_total_gb: null };
+    t('DS-975 AC6 a sysctl that fails or times out leaves every reading empty', sampleLoad({ platform: 'darwin', run: () => { throw Object.assign(new Error('ETIMEDOUT'), { stdout: '' }); } }), none);
+    const files = {
+      '/p/loadavg': '0.82 0.61 0.40 2/1234 5678\n',
+      '/p/meminfo': 'MemTotal:       16777216 kB\nMemFree:         1048576 kB\nMemAvailable:    4194304 kB\nSwapTotal:       2097152 kB\nSwapFree:        1048576 kB\nZswap:            524288 kB\n',
+      '/p/pressure/memory': 'some avg10=1.25 avg60=0.50 avg300=0.10 total=12345\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n',
+    };
+    const read = (p) => { if (!(p in files)) throw new Error(`ENOENT ${p}`); return files[p]; };
+    t('DS-975 AC1 on Linux /proc gives the load, MemAvailable of MemTotal, PSI, zswap, swap and total memory', sampleLoad({ platform: 'linux', proc: '/p', read }),
+      { load_1m: 0.82, mem_free_pct: 25, mem_pressure: 1.25, compressed_gb: 0.5, swap_used_gb: 1, mem_total_gb: 16 });
+    delete files['/p/pressure/memory']; delete files['/p/loadavg'];
+    t('DS-975 AC6 on Linux an unreadable file leaves its readings empty', sampleLoad({ platform: 'linux', proc: '/p', read }),
+      { load_1m: null, mem_free_pct: 25, mem_pressure: null, compressed_gb: 0.5, swap_used_gb: 1, mem_total_gb: 16 });
+    t('DS-975 a wait line carries the class, worktree, seconds waited, queue and the three readings',
+      waitFields({ cls: 'light', worktree: '/w/DS-1', waited: 40, queue: 2, sample: got }),
+      { class: 'light', worktree: '/w/DS-1', wait_s: 40, queue: 2, load_1m: 2.47, mem_free_pct: 37, compressed_gb: 3.5 });
+    t('DS-975 AC6 with no sample the readings are empty', waitFields({ cls: 'test', worktree: '/w', waited: 0, queue: 0, sample: null }),
+      { class: 'test', worktree: '/w', wait_s: 0, queue: 0, load_1m: null, mem_free_pct: null, compressed_gb: null });
   }
 } finally {
   for (const c of owners) c.kill();
