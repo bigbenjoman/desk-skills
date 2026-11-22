@@ -16,7 +16,7 @@ node ~/.claude/desk/bin/batch.mjs discard ABC-900 --batch ABC-900    # its plan 
 node ~/.claude/desk/bin/expand-parent.mjs ABC-900 --batch ABC-900     # an epic -> its batch keys (stdout), drops on stderr
 ~/.claude/desk/bin/triage.sh ABC-123                                  # read-only, no worktree
 AUTOPILOT_WRITE_QUEUE=1 node ~/.claude/desk/bin/plan-batch.mjs --json ABC-GATE ABC-123 ABC-124   # prints SPAWN ORDER under its rule (order-and-holds.md)
-node ~/.claude/desk/bin/answer.mjs ABC-123 "<answer>"                # settles one open question; --all before the answer settles every one
+node ~/.claude/desk/bin/answer.mjs ABC-123 "<answer>"                # settles one open question (the first, or triage question n with --question <n>); --all before the answer settles every one
 node ~/.claude/desk/bin/pass.mjs --json                               # one pass; drive with /loop unless the supervisor runs passes; exit 0 go on, 10 nothing yet, 11 show the person
 node ~/.claude/desk/bin/queue.mjs next-pass +1500                     # after scheduling the next pass: when it runs (here 25 minutes), so desk-q counts the batch live until then
 node ~/.claude/desk/bin/supervisor.mjs install                        # passes and the merge driver from launchd or systemd, at login and every 3 minutes

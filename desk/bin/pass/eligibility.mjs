@@ -148,12 +148,16 @@ const planOf =(s, workers, on = s.borrowOn) => borrowPlan({
 //   running       this batch's running tickets, and ownBaseFix 1 while its base conflict fix runs
 //   auditWorkers  the repo's blind audits running (levers-audit.mjs), which belong to no batch's queue
 //   baseWanted    whether a base worker with no ticket to spawn wants its one slot
+//   auditWanted   whether a blind audit due in the repo wants its one slot, within the batch's own number
 //   machineProfiled  whether there is a machine profile; repoCaps each repo's §3b cap, by slug
 //   otherRepos    every other queue (borrow.mjs otherQueues), and repoBatches this repo's other batches
 //   batch, lastStart, maintHold
 export function decideSlots(s) {
   const plan = planOf(s, s.running);
-  const wanted = Math.min(plan.slots, s.spawnable) || (s.baseWanted ? 1 : 0);
+  const tickets = Math.min(plan.slots, s.spawnable);
+  // A due audit adds its one slot where the batch's own number has one the tickets leave free.
+  const audit = s.auditWanted && tickets < s.concurrency - s.running - s.ownBaseFix ? 1 : 0;
+  const wanted = (tickets + audit) || (s.baseWanted ? 1 : 0);
   // The batch's own workers, its base conflict fix and the repo's blind audits, as other batches count them.
   const busy = s.running + s.ownBaseFix + (s.auditWorkers ?? 0);
   const machine = machineBudget({

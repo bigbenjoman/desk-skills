@@ -62,7 +62,7 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   w.apply(['park', 'A', 'which colour?']);
   w.flush();
   const p = since(f, at);
-  t('a batch the log has seen is not seeded again', shape(p), 'parked A, legacy_set A');
+  t('a batch the log has seen is not seeded again; the park is its parked event alone', shape(p), 'parked A');
   t('a park is a typed parked event with its question', `${p[0].data.kind} ${p[0].data.question}`, 'question which colour?');
 
   // AC9: a worker's log size or quiet-pass count is written, and appends nothing.
@@ -170,7 +170,7 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   e = run('set-batch', 'concurrency=3');
   t('AC3 set-batch changes no ticket and records none', e.length, 0);
   e = run('park', 'T-1', 'which colour?');
-  t('AC3 park: parked, then the park', `${shape(e)} / ${by(e)}`, 'parked T-1, legacy_set T-1 / queue.mjs park');
+  t('AC3 park: parked, the event carrying the park', `${shape(e)} / ${by(e)}`, 'parked T-1 / queue.mjs park');
   e = run('requeue', 'T-1');
   t('AC3 requeue: from its park to triage, requeued then triaged', `${read(f).tickets['T-1'].state} ${shape(e.filter((x) => x.type !== 'legacy_set'))} / ${by(e)}`, 'triaged requeued T-1, triaged T-1 / queue.mjs requeue');
   e = run('move', 'T-2', '1');
@@ -357,6 +357,40 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   const missed = diff(g);
   t('AC5 the fields the missed append held differ, its first stamp among them', `${!!rm.ledgerMissed} ${paths(missed)}`, 'true A stage, A updated_at');
   t('AC5 and the line counts the missed append', line(missed, 1).startsWith('ledger: 2 field(s) differ between queue.json and the queue rebuilt from the log, 1 missed append(s) this pass: A stage, A updated_at'), true);
+}
+
+// DS-895 AC4: a worker's park taken in with the write it awaits approval of, as the pass takes it in (the
+// park, then its round and its park's other fields, in one write): one parked event carrying its kind and
+// that payload verbatim, and no legacy event holding the park.
+{
+  const j = JSON.stringify;
+  const f = fixture({ version: 1, batch: 'b', tickets: { W: tk('W', { state: 'running', session_id: 's-W' }), S: tk('S', { state: 'running', session_id: 's-S' }), Q: tk('Q', { open_questions: 3 }) } });
+  queueDifference(f, { seed: true, by: 'pass' });
+  const at = log(f).length;
+  const approve = { kind: 'jira-comment', target: 'W', body: 'Root cause: x.\nThe fix: y.\n\n(W/desk-ticket)' };
+  const w = queueWriter(f);
+  w.apply(['park', 'W', 'awaiting approval: the Jira comment. Not reached: the transition']);
+  w.apply(['set', 'W', 'last_round={"stage":"8/9"}']);
+  w.apply(['set', 'W', 'park.inputs={}', 'park.clears_when={"kind":"none"}', `park.approve=${j(approve)}`]);
+  w.flush();
+  const evs = since(f, at);
+  const p = evs.find((e) => e.type === 'parked');
+  t('DS-895 AC4 the park is one parked event, then the other fields', shape(evs), 'parked W, legacy_set W');
+  t('DS-895 AC4 with its kind and the payload awaiting approval, verbatim', `${p?.data.kind} ${j(p?.data.approve)}`, `question ${j(approve)}`);
+  t('DS-895 AC4 and no legacy event holds the park', evs.some((e) => e.type === 'legacy_set' && 'park' in e.data.fields), false);
+  t('DS-895 AC4 the log\'s park is queue.json\'s', j(fold(dirname(f)).tickets.W.park) === j(read(f).tickets.W.park), true);
+
+  // AC7: a stop's park, and triage questions answered one at a time: the rebuild still matches.
+  w.apply(['park', 'S', '--kind', 'stopped', 'its worker was stopped; it starts once you let it']);
+  w.flush();
+  q(f, ON, 'set', 'Q', 'open_questions=2', 'answered_questions=["which size?"]');
+  q(f, ON, 'set', 'Q', 'open_questions=1', 'answered_questions=["which size?","which colour?"]');
+  t('DS-895 AC7 a stop is a parked event of kind stopped', log(f).find((e) => e.type === 'parked' && e.key === 'S')?.data.kind, 'stopped');
+  t('DS-895 AC7 each answer is an answered event naming its question', j(log(f).filter((e) => e.type === 'answered').map((e) => e.data.qid)), j(['which size?', 'which colour?']));
+  t('DS-895 AC7 and no legacy event holds the answered list', log(f).some((e) => e.type === 'legacy_set' && 'answered_questions' in e.data.fields), false);
+  const d = queueDifference(f);
+  t('DS-895 AC7 after parks, a stop and answers, nothing differs and the pass prints no difference line',
+    `${d.diffs.map((x) => x.path).join(', ')}|${ledgerLine({ check: d, missed: 0, queueBin: '/bin/queue.mjs' })}`, '|null');
 }
 
 rmSync(T, { recursive: true, force: true });

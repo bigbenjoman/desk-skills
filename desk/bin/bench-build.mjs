@@ -25,6 +25,7 @@ import { deskEnv, makeCheckout, readRepo, score, testRuns } from './bench.mjs';
 import { keyRegex, SIZE_LINE } from './ticket-lint.mjs';
 import { SIZES } from './desk-q-eta.mjs';
 import { findChecks, suiteCounts } from './bench-checks.mjs';
+import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
 
 const USAGE = 'usage: bench-build.mjs --set <file.json> --pr <owner/name>#<n> [--pr …] [--rewrite] [--timeout <seconds>]';
 const SHA = /^[0-9a-f]{40}$/;
@@ -171,15 +172,12 @@ export function addedChecks(root, base, merge, runs, hidden) {
 }
 
 // How many first-parent commits the PR put on the base branch. A merge commit or a squash is one. A
-// rebase merge lands each of the PR's commits with the author dates they had, so the merge commit is
-// the last of them: read from its first parent, the base would already hold the rest of the PR.
+// rebase merge lands each of the PR's commits (merge-landed.mjs), so the merge commit is the last of
+// them: read from its first parent, the base would already hold the rest of the PR.
 function commitsLanded(root, merge, commits) {
   if (commits.length < 2) return 1;
-  const r = git(root, ['log', '--first-parent', '--format=%P %at', '-n', String(commits.length), merge]);
-  const landed = (r.stdout ?? '').trim().split('\n').reverse().map((line) => line.split(' '));
-  const rebased = landed.length === commits.length && landed.every((f, i) =>
-    f.length === 2 && Number(f[1]) === Date.parse(commits[i].authoredDate) / 1000);
-  return rebased ? commits.length : 1;
+  const r = git(root, ['log', '--first-parent', `--format=${LANDED_FORMAT}`, '-n', String(commits.length), merge]);
+  return mergeMethodOf({ landed: landedOf(r.stdout), commits }) === 'rebase' ? commits.length : 1;
 }
 
 // One PR to a validated task, or a thrown reason it was dropped.

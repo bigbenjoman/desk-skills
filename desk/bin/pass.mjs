@@ -30,7 +30,7 @@ import { checkinTimes, checkinRow, checkin, readDecisions, repos as digestRepos,
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, appendOnlyFrom } from './scope-report.mjs';
 import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy, recentCount } from './conflict-record.mjs';
-import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath } from './pass-metrics.mjs';
+import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath, parseSetupSteps } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
@@ -75,7 +75,8 @@ import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { runAudits, endedFromExit, auditsRunning } from './levers-audit.mjs';
+import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-audit.mjs';
+import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference } from './queue-ledger.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
@@ -314,6 +315,8 @@ const qWrite = (args, refused = 'not recorded') => {
   return '';
 };
 const q = (...args) => qWrite(args);
+// A park action's kind (batch-state.mjs PARK_KINDS) as queue.mjs park takes it, where the action names one.
+const kindArgs = (a) => (a.kind ? ['--kind', a.kind] : []);
 // Writes every change applied since the last write, in one locked write. A change another writer
 // made to the same field since is kept, and the report names the ticket and field; when the lock is
 // not taken in time, nothing is written and the report names each change.
@@ -1604,7 +1607,7 @@ const holdsSnapshot = (more = {}) => {
 const HOLD_HANDLERS = {
   ...PHASE_HANDLERS,
   front: (a) => { q('front', a.key); },
-  park: (a) => { q('park', a.key, a.question); },
+  park: (a) => { q('park', a.key, ...kindArgs(a), a.question); },
   'date-line': (a) => { dateLines.push(a.line); },
 };
 const personLabels = () => ({ stepLabels: E.personStepLabels(), inputLabels: E.personInputLabels() });
@@ -1713,9 +1716,9 @@ const linkLines = [];
         return;
       }
       const question = `${HELD_PREFIX}: blocked by ${all.join(', ')} — starts once their PRs merge`;
-      q('park', key, question);
+      q('park', key, '--kind', 'hold', question);
       q('set', key, `held_by=${all.join('|')}`, ...outsideSet, ...(dateHeld(t) ? ['held_label=null'] : []));
-      Object.assign(t, { state: 'parked', park: { question }, held_by: all.join('|') });
+      Object.assign(t, { state: 'parked', park: { question, kind: 'hold' }, held_by: all.join('|') });
       linkLines.push(`blocker link: ${key}: newly linked as blocked by ${holds.join(', ')}${inNoBatch}: HELD behind ${all.join(', ')}`);
     };
     for (const { key } of due) {
@@ -2157,7 +2160,12 @@ const epicReviewDue = baseWorkerMay && epicPr?.state === 'OPEN' && epicPr.isDraf
 // A red promotion PR's check try claims its one slot the same way, while no base gate holds the worktree.
 const promotionChecksDue = baseWorkerMay && promoRed != null && !fresh.base_fix?.running && fresh.gate?.state !== 'running'
   && promotionChecksCall(fresh.base_fix, { pr: promoPr.pr, head: promoPr.head, failing: promoRed }, { alive: false, push: BASE_PUSH }).call === 'spawn';
-const lockWanted = (spawnable.length && !spawnHeld) || (gateFixDue && !baseWorkerHeld) || epicReviewDue || promotionChecksDue;
+// A blind audit due in the repo (levers-audit.mjs) claims its one slot too, within the batch's own
+// number, where this pass could start it; runAudits defers it under pacing rather than starting it.
+const auditDue = !DRY && REPO_SLUG != null && !lowMemory && !MAINT.hold && !PACE.hold && !usageStop
+  && running.length + (fresh.base_fix?.running ? 1 : 0) < concurrency
+  && (() => { try { return Object.values(E.leverStates({}).states).includes('auto') && auditWanted(REPO_SLUG); } catch { return false; } })();
+const lockWanted = (spawnable.length && !spawnHeld) || (gateFixDue && !baseWorkerHeld) || epicReviewDue || promotionChecksDue || auditDue;
 if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && lockWanted && !lowMemory) {
   const l = await takeBorrowLock();
   if (l.ok) {
@@ -2180,6 +2188,7 @@ const SLOTS_SNAP = {
   auditWorkers: (() => { try { return auditsRunning(REPO_SLUG); } catch { return 0; } })(),
   // A base conflict fix, epic review or promotion check try due with no ticket to spawn still wants its one slot.
   baseWanted: !!(gateFixDue || epicReviewDue || promotionChecksDue),
+  auditWanted: auditDue,
   machineProfiled: MACHINE_CAP != null || E.machineProfile() != null,
   repoCaps: MACHINE_CAP == null ? {} : Object.fromEntries(otherRepos.filter((o) => o.error).map((o) => [o.slug, repoCap(o.slug)])),
   otherRepos, repoBatches: otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) }),
@@ -3319,6 +3328,8 @@ for (const { name, why } of pruneReadRepos()) report.failed.push(`read-only clon
 let readRepoFailures = null;
 // health.mjs markFailed's line, stall and push once a worktree setup in this pass has not reached the local database.
 let dbDown = null;
+// Each worktree set up this pass, with the seconds each step took: the metrics line carries them.
+const setupTimes = [];
 const SETUP_FETCH_S = String(Math.max(1, Math.ceil(REMOTE_GIT_MS / 1000)));
 // A local spawn's worktree, set up by setup-worktree.sh for decideSpawn's `setup` action: { wt, kept,
 // renamed, hung } where origin was found hung before it ran, else { wt, kept, renamed, ok, exitOk, out,
@@ -3329,6 +3340,9 @@ function setUpWorktree(t) {
   // Read before setup-worktree.sh, which makes a worktree that is not there: a round left in one the
   // requeue removed for a fresh branch is not resumed.
   const kept = existsSync(wt);
+  // A kept dir still holding setup-worktree.sh's incomplete marker gets the full setup, install
+  // included, so its step times count as a new worktree's (DS-698).
+  const reused = kept && !existsSync(join(wt, '.desk-setup-incomplete'));
   // A queued branch no worker could push (a convention placeholder left in at triage) is replaced
   // from the key and summary before setup-worktree.sh cuts it.
   let renamed = '';
@@ -3358,7 +3372,10 @@ function setUpWorktree(t) {
     retried = `first try: ${first}; re-fetched ${staleRef[2]}${refetch.ok ? '' : ` (that fetch failed: ${lastLine(refetch.out)})`} and retried once: `;
     if (setUp(setupRun)) report.recovered.push(`${t.key}: worktree setup could not lock the stale ref ${staleRef[1]}; re-fetched ${staleRef[2]} and the retry set it up`);
   }
-  return { wt, kept, renamed, ok: setUp(setupRun), exitOk: setupRun.ok, out: setupRun.out, retried };
+  const ok = setUp(setupRun);
+  const steps = ok ? parseSetupSteps(setupRun.out) : null;
+  if (steps) setupTimes.push({ key: t.key, kept: reused, steps });
+  return { wt, kept, renamed, ok, exitOk: setupRun.ok, out: setupRun.out, retried };
 }
 // The decision is pass/spawn-loop.mjs decideSpawn, run for each candidate in turn: its snapshot is the
 // loop's state as the candidate's turn comes, its reads and locked writes are the handlers below, made
@@ -3396,7 +3413,9 @@ const SPAWN_HANDLERS = {
     if (report.failed.length === before) report.done.push(a.line);
   },
   park: (a) => {
-    q('park', a.key, a.line);
+    // The spawn loop parks only when a ticket could not be spawned (an unreachable host, a failed
+    // worktree setup): a failure, not a question.
+    q('park', a.key, '--kind', 'failure', a.line);
     report.parked.push(`${a.key}: ${a.line}`);
   },
   'hand-away': (a, s) => handAway(s.t, a.placement),
@@ -3535,7 +3554,9 @@ if (!DRY) {
 if (!DRY && report.spawned.length > spawnedBefore) q('set-batch', `last_start=${new Date().toISOString()}`);
 // An epic review or promotion check try starts in decideEpicPr or promotionChecksStep, after which the lock
 // is released once the slot it counted is taken.
-if (!((epicReviewDue || promotionChecksDue) && baseFixRoom && !baseFix)) borrowLock?.release();
+// So does a due blind audit, which starts after the levers trips, until runAudits has started it.
+const baseKeepsLock = (epicReviewDue || promotionChecksDue) && baseFixRoom && !baseFix;
+if (!baseKeepsLock && !auditDue) borrowLock?.release();
 // The batch's hold on the usage limit, for desk-q, needs-you and the next pass: one record, kept from
 // the first pass that held until the one that finds it lifted. Saved again after the epic PR's review
 // try, which spawns after this point and may meet the limit.
@@ -3880,6 +3901,8 @@ function withUntriggered(s) {
   return keep.length ? { ...s, ...Object.fromEntries(keep) } : s;
 }
 const DRIVER_DIR = join(STATE, 'merge-driver');
+// Takes a PR out of draft, and wakes the merge driver from its idle pause once it has.
+const readyPr = (a) => { const r = shOut('gh', ['pr', 'ready', String(a.pr), '--repo', GH_REPO]); if (r.ok) E.wakeMergeDriver(STATE); return r; };
 const EVIDENCE_DIR = join(STATE, 'evidence-runs');
 // A run's status for evidence.mjs evidenceRecord, or null when gh cannot read it.
 const viewRun = (id) => { try { return clearsRead.run(id); } catch { return null; } };
@@ -4256,7 +4279,7 @@ const UNDRAFT_HANDLERS = {
   build: (a) => startCheckBuild(a.t, a.pr, a.head, a.c, a.rec),
   rebuilt: (a) => rerunBuilt(a.t, a.pr, a.head, a.c, a.rec),
   evidence: (a) => startEvidence(a.t, a.pr, a.head, a.c, a.rec),
-  ready: (a) => shOut('gh', ['pr', 'ready', String(a.pr), '--repo', GH_REPO]),
+  ready: readyPr,
   // The update is a new head, so a new preview build: it takes the branch's preview-build unit first.
   'update-branch': (a) => {
     const slot = a.branch ? previewSlot(a.t, a.branch) : {};
@@ -4773,12 +4796,19 @@ async function spawnAudit({ key, item, sha, model, task, brief }) {
   report.spawned.push(`${key} port=${port} model=${model}${pick.line} (blind audit of PR #${item.pr} at ${sha.slice(0, 12)}); ${preflightNote(pre.cost)}`);
   return { session: sid, worktree: wt, state: STATE, preflight_usd };
 }
-// The PR's merge commit, and how many commits it had, so a rebase merge is audited whole.
+// The PR's merge commit, how many commits it had, and how it merged (merge-landed.mjs), so a rebase
+// merge is audited whole and a squash in a rebase repo is not.
 function auditMergeCommit(item) {
-  const out = sh('gh', ['pr', 'view', String(item.pr), '--repo', GH_REPO, '--json', 'mergeCommit,commits', '--jq', '[.mergeCommit.oid, (.commits | length)] | @tsv'],
-    { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
-  const [sha, n] = String(out ?? '').trim().split('\t');
-  return sha ? { sha, commits: Number(n) } : null;
+  const quiet = { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] };
+  const raw = sh('gh', ['pr', 'view', String(item.pr), '--repo', GH_REPO, '--json', 'mergeCommit,commits'], quiet);
+  let pr = null;
+  try { pr = JSON.parse(raw); } catch { return null; }
+  const sha = pr?.mergeCommit?.oid;
+  if (!sha) return null;
+  const commits = pr.commits ?? [];
+  if (!shOut('git', ['-C', MAIN, 'cat-file', '-e', `${sha}^{commit}`]).ok) sh('git', ['-C', MAIN, 'fetch', '-q', 'origin'], quiet);
+  const landed = landedOf(sh('git', ['-C', MAIN, 'log', '--first-parent', `-n${Math.max(1, commits.length)}`, `--format=${LANDED_FORMAT}`, sha], quiet));
+  return { sha, commits: commits.length, method: mergeMethodOf({ landed, commits }) };
 }
 if (!DRY) {
   try {
@@ -4791,12 +4821,17 @@ if (!DRY) {
       ended: (item) => endedFromExit(item) ?? (registryOk && !REGISTRY.liveSids.has(item.session) && Date.now() - Date.parse(item.started_at) > 120_000 ? { at: new Date().toISOString() } : null),
       cleanup: (item) => { if (item.worktree) shOut('git', ['-C', MAIN, 'worktree', 'remove', '--force', item.worktree]); },
       pace: () => PACE,
-      // The room the pass counted, less what it has spawned since.
-      room: () => (lowMemory || usageStop || MAINT.hold || repoUnlocked || MACHINE.room - report.spawned.length <= 0 || REPO.room - report.spawned.length <= 0 ? 'no room' : null),
+      // The room the pass counted, less what it has spawned since, within the batch's own number less
+      // its base conflict fix, running or started this pass.
+      room: () => (lowMemory || usageStop || MAINT.hold || repoUnlocked || MACHINE.room - report.spawned.length <= 0 || REPO.room - report.spawned.length <= 0
+        || attempts >= Math.min(concurrency - running.length - (baseFixLive || baseFix ? 1 : 0), MACHINE.room, REPO.room) ? 'no room' : null),
     });
     if (au.line) out.push(au.line);
   } catch (e) { out.push(`levers audits: not run (${String(e?.message ?? e).split('\n')[0]})`); }
+  // An audit's preflight the usage limit refused held the batch after the save.
+  saveUsage();
 }
+if (auditDue && !baseKeepsLock) borrowLock?.release();
 // The levers are evaluated once a day across every repo, by the first pass to take its lock.
 if (!DRY) {
   try { const ev = evaluateDue(); if (ev.line) out.push(ev.line); } catch (e) { out.push(`levers evaluate: not run (${String(e?.message ?? e).split('\n')[0]})`); }
@@ -5109,7 +5144,7 @@ runSteps({
       const carry = (sha, body) => git(['fetch', '-q', 'origin', SOURCE, BASE]).ok && reviewCarries({ reuse: ROW_LEVERS.on.includes('review-reuse'), from: sha, head: fb.head, base: `origin/${SOURCE}`, body, git });
       return readVerdict(fb.payload, { handle: conflictHandle, clean: E.configValue('clean-verdict'), carry });
     },
-    ready: (a) => shOut('gh', ['pr', 'ready', String(a.pr), '--repo', GH_REPO]),
+    ready: readyPr,
     'start-try': (a) => { epicTry = startBaseTry(a.fix); },
     merger: () => spineMerger(queue()),
     'driver-running': () => E.mergeDriverHolder(STATE) != null,
@@ -5366,6 +5401,7 @@ if (!DRY) {
     queue_write_failures: report.failed.filter((x) => x.includes('queue write refused')).length,
     collisions,
     ...ledgerRec,
+    setup: setupTimes,
   };
   const step = collisionStep({ streak: prevPass.collision_streak, warned: prevPass.collision_warned }, line);
   // The warning carries the time it is written, not the pass's start: a check-in sent since the pass

@@ -98,6 +98,9 @@
 //                                             --cap sizes this repo's block instead of its concurrency row
 //   node desk-env.mjs default-mode            print DEFAULT_MODE= and SOURCE= for the cwd's repo; exit 1 (with
 //                                             the warning on stderr) when it is dontAsk
+//   node desk-env.mjs unset [--json]          the config's rows that still need an answer (unsetRows), one
+//                                             `§<section><TAB><label>` line each; --json: {config, rows:
+//                                             [{id, section, label}]}. Exit 3 with no config
 //   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), set rows
 //                                             whose value does not fit the schema's type (INVALID), `ask` rows
 //                                             an unattended batch parks on (STALLS), §4 command items no worker
@@ -357,8 +360,11 @@ export function declaredRows(text) {
 const settingCol = (header) => ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? 1;
 
 // A config file's parse, by path, kept while its inode, size and modification time are unchanged:
-// desk-q reads many rows of every repo's config on each refresh. A missing file is not kept.
+// desk-q reads many rows of every repo's config on each refresh. A missing file is not kept. Past
+// PARSED_MAX files the oldest goes, one at a time: clearing the lot each time it filled made a scan of
+// more repos than that reread and reparsed every config, every time.
 const parsedFiles = new Map();
+const PARSED_MAX = 1024;
 const fileStamp = (st) => `${st.ino}:${st.size}:${st.mtimeNs}`;
 
 // Any config file, not only this repo's: `ports` reads every repo's to keep dev ports apart.
@@ -371,7 +377,8 @@ function parseConfigFile(path) {
   const hit = parsedFiles.get(path);
   if (hit?.stamp === stamp) return hit.parsed;
   const parsed = parseConfigText(path, readFileSync(path, 'utf8'));
-  if (parsedFiles.size > 64) parsedFiles.clear();
+  parsedFiles.delete(path);
+  if (parsedFiles.size >= PARSED_MAX) parsedFiles.delete(parsedFiles.keys().next().value);
   parsedFiles.set(path, { stamp, parsed });
   return parsed;
 }
@@ -395,17 +402,6 @@ function parseConfigText(path, text) {
     else { const n = norm(cells[0] ?? ''); if (n) s.byName[n] = entry; }
   }
   return parsed;
-}
-
-// How many rows of a config file are unanswered: the value (first span of the value column, as every
-// read takes it) is `TODO`. A TODO in a note, or in another column, is not one. The rows the template
-// keeps `TODO` on purpose to follow the machine profile are not counted (MACHINE_FALLBACK_ROWS).
-export const MACHINE_FALLBACK_ROWS = ROWS.filter((e) => e.machine).map((e) => norm(e.label));
-export function unansweredRows(path) {
-  if (!path || !existsSync(path)) return 0;
-  return tableLines(readFileSync(path, 'utf8')).rows
-    .filter(({ cells, label, header }) => !MACHINE_FALLBACK_ROWS.includes(norm(label)) && cellItems(cells[settingCol(header)] ?? '')[0] === 'TODO')
-    .length;
 }
 
 // A value cell's items: every backtick span, except those in a trailing parenthesised note
@@ -696,6 +692,20 @@ function repoValueIn(parsed, id, rows = CONFIG_ROWS) {
   return NO_SLUG_EXPANSION.has(id) ? e.value : expandSlug(e.value);
 }
 
+// The rows the config file holds that still need an answer: declared by the schema, and with no value
+// of their own (blank or `TODO`), none from the machine profile and no schema default. A row that
+// falls back to the machine profile is answered only by a profile that sets it, whatever its default.
+//   -> [{ id, section, label }]
+export function unsetRows(parsed = parseConfig()) {
+  return ROWS.filter((e) => {
+    if (e.kind === 'table') return false;
+    const s = parsed.sections[e.section];
+    const entry = e.kind === 'perm' ? s?.byKey[norm(e.label)] : s?.byName[norm(e.label)];
+    if (!entry || !unset(entry.value)) return false;
+    return e.machine ? machineValue(e.machine) == null : !('default' in e);
+  }).map(({ id, section, label }) => ({ id, section, label }));
+}
+
 // A repo memory ceiling above the machine profile's reads as the machine's.
 //   -> { value, repo: GB | null, machine: GB | null, limited }
 const gbOf = (v) => { const n = Number(/\d+(\.\d+)?/.exec(String(v ?? ''))?.[0]); return n > 0 ? n : null; };
@@ -936,6 +946,11 @@ export const permissionKey = (id) => PERMISSION_KEYS[id];
 
 // The merge driver holding <state>/merge-driver.lock.d: its pid while that process lives (one another
 // user owns counts), 'starting' for a lock made under a minute ago that has no pid yet, else null.
+// A PR out of draft ends the batch's merge driver's idle pause: it reads <state>/merge-driver/wake's
+// time between sleeps. A write that fails costs at most the driver's longest pause.
+export function wakeMergeDriver(state = stateDir()) {
+  try { mkdirSync(join(state, 'merge-driver'), { recursive: true }); writeFileSync(join(state, 'merge-driver', 'wake'), `${Date.now()}\n`); } catch { /* see above */ }
+}
 export function mergeDriverHolder(state) {
   const d = join(state, 'merge-driver.lock.d');
   if (!existsSync(d)) return null;
@@ -2266,6 +2281,8 @@ function rowValue(id, rows = CONFIG_ROWS) {
   const r = id === 'default-branch' ? defaultBranchFrom() : id === 'suite-weight' ? suiteWeightFrom(parseConfig()) : configValueFrom(parseConfig(), id, rows);
   return { ...r, value: expandHome(r.value) ?? null };
 }
+// What `get` prints for a config id, with where it came from: -> { value, source } (rowValue's).
+export const configValueSource = (id) => { const { value, source } = rowValue(id); return { value, source }; };
 // What `list` prints for a config id: -> { items, refused }, refused the DeskConfigError list throws.
 function rowItems(id, rows = CONFIG_ROWS) {
   try { return { items: configValuesIn(parseConfig(), id, rows)?.map(expandHome) ?? null, refused: null }; }
@@ -2389,7 +2406,7 @@ export function treeStatus(porcelain, { run } = {}) {
 export const DESK_ENV_COMMANDS = Object.freeze(['where', 'list', 'cmds', 'required-fields', 'get', 'review-cmd', 'verdict-logins',
   'levers', 'lines', 'batch-base', 'ticket-kind', 'branch-check', 'perm-or-unset', 'perm', 'config', 'merge-grant', 'key', 'model',
   'effort', 'budget', 'ids', 'paths', 'take-batch', 'identity', 'git-author', 'mem', 'heavy', 'test-scope', 'workspace-test',
-  'baseline', 'uuid', 'default-mode', 'unanswered', 'show', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription', 'lease', 'preview-slot', 'tree-status']);
+  'baseline', 'uuid', 'default-mode', 'unset', 'show', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription', 'lease', 'preview-slot', 'tree-status']);
 const deskEnvUsage = () => `usage: desk-env.mjs ${DESK_ENV_COMMANDS.join('|')}`;
 
 const isMain = (() => {
@@ -2792,10 +2809,14 @@ if (isMain) {
         if (mode === 'dontAsk') { console.error(`WARNING: ${DONTASK_WARNING} (${file})`); process.exit(1); }
         break;
       }
-      // unanswered <config.md>: how many of its rows are still `TODO` (install.sh's per-repo line).
-      case 'unanswered':
-        console.log(unansweredRows(args[0]));
+      case 'unset': {
+        const parsed = parseConfig();
+        if (!parsed.exists) { console.error(`desk: no repo config found at ${configPathHint()}. Run inside the repo, or /desk-setup.`); process.exit(3); }
+        const rows = unsetRows(parsed);
+        if (args.includes('--json')) console.log(JSON.stringify({ config: parsed.path, rows }));
+        else for (const r of rows) console.log(`§${r.section}\t${r.label}`);
         break;
+      }
       case 'drift': {
         const ai = args.indexOf('--app');
         if (ai >= 0) {

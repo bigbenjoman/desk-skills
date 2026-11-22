@@ -150,8 +150,9 @@ check "a spine PR merged without approval releases nothing"          '[ "$(qf T-
 jq '."107".state = "open"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
 loop
 check "the spine's draft PR is not merged before approval"           '! grep -q "^107 " "$T/merges.log" && echo "$out" | grep -q "draft (still reviewing): #107"'
-out=$(node "$B/queue.mjs" approve T-7 2>&1); rc=$?
+rm -f "$SD/wake"; out=$(node "$B/queue.mjs" approve T-7 2>&1); rc=$?
 check "approve undrafts the spine PR and hands it to the merge driver, exit 0" '[ $rc -eq 0 ] && [ "$(qf T-7 .state)" = done ] && [ "$(jq -r ".\"107\".draft" "$T/prs.json")" = false ] && echo "$out" | grep -q "the merge driver merges PR #107 once it is green; T-8 is released once it merges"'
+check "DS-971 AC2: approving the spine wakes the merge driver from an idle pause" '[ -f "$SD/wake" ]'
 loop; loop
 check "the approved spine merges, pinned, and its child is released" 'grep -qx "107 main $SHA7" "$T/merges.log" && [ "$(qf T-8 .state)" = triaged ] && echo "$out" | grep -q "RELEASED T-8"'
 
@@ -247,6 +248,35 @@ printf '#!/bin/sh\nmv "%s/state/merge-driver.log" "%s/state/moved.log"\n' "$T" "
 loops 2 --log
 check "DS-759: a driver whose log was moved re-opens merge-driver.log on its next loop" '[ $rc -eq 143 ] && grep -q "merge driver up" "$T/state/moved.log" && grep -q "merge driver exited 143$" "$T/state/merge-driver.log" && ! grep -q "merge driver exited" "$T/state/moved.log"'
 rm -f "$T/between.1" "$T/state/moved.log" "$T/state/merge-driver.log" "$T/sleeps"
+
+# ---- DS-971: an idle driver backs off from 1 minute to 10, and a worker's exit or an undraft wakes it --
+echo '{}' > "$T/prs.json"
+# 60s, then 120, 240, 480 and 600 twice: 1+2+4+8+10+1 one-minute slices, stopped in the sixth pause.
+loops 26
+check "DS-971 AC1: each idle pause in a row is twice the last, up to 10 minutes, slept a minute at a time" \
+  '[ $rc -eq 143 ] && [ "$(grep -o "next look in [0-9]*s" <<< "$out" | grep -o "[0-9]*" | paste -sd" " -)" = "120 240 480 600 600" ] && [ "$(sort -u "$T/sleeps")" = 60 ]'
+# Woken in its second pause: the third loop's pause is the next step up, not the rest of the second.
+mkdir -p "$T/state/exits"
+printf '#!/bin/sh\ntouch "%s/state/exits/T-9.1.json"\n' "$T" > "$T/between.2"; chmod +x "$T/between.2"
+loops 3
+check "DS-971 AC2: a worker's exit during a long pause ends it within a minute" \
+  '[ $rc -eq 143 ] && echo "$out" | grep -q "woken: a worker exited" && echo "$out" | grep -q "next look in 240s" && [ "$(wc -l < "$T/sleeps" | tr -d " ")" = 3 ]'
+printf '#!/bin/sh\ntouch "%s/state/merge-driver/wake"\n' "$T" > "$T/between.2"
+loops 3
+check "DS-971 AC2: an undraft by the pass ends it too" \
+  '[ $rc -eq 143 ] && echo "$out" | grep -q "woken: a PR left draft" && echo "$out" | grep -q "next look in 240s"'
+rm -f "$T/between.2"
+# Idle, then a ready PR that merges on its second green loop, then idle again: the merge pauses 30s
+# as before, and the idle run after it starts again at a minute.
+SHA971=9719719719719719719719719719719719719719
+q add T-971 Task A; q set T-971 branch=fix/T-971 state=done result.pr=971
+printf '#!/bin/sh\necho %s > "%s/prs.json"\n' "'{ \"971\": { \"head\": \"fix/T-971\", \"base\": \"main\", \"sha\": \"$SHA971\", \"state\": \"open\", \"draft\": false, \"checks\": [[\"test\", \"SUCCESS\"]] } }'" "$T" > "$T/between.1"; chmod +x "$T/between.1"
+loops 4
+check "DS-971 AC3: a loop that merged pauses 30s as before, and the next idle run starts at a minute" \
+  '[ $rc -eq 143 ] && grep -q "^971 main $SHA971" "$T/merges.log" && [ "$(paste -sd" " - < "$T/sleeps")" = "60 120 30 60" ] && ! echo "$out" | grep -q "next look in"'
+rm -f "$T/between.1"; q drop T-971
+out=$(MERGE_DRIVER_WAKE_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1" 2>&1); rc=$?
+check "DS-971: a pause setting that is not a whole number above 0 stops the driver at start" '[ $rc -eq 2 ] && echo "$out" | grep -q "MERGE_DRIVER_WAKE_SECS is .0."'
 
 # ---- DS-835: a merge GitHub refuses leaves no merged entry in the merge log -----------------------
 SHA835=8358358358358358358358358358358358358358

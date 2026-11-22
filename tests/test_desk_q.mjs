@@ -26,9 +26,20 @@ const quick = (ms, baseline) => ms < Math.max(QUICK_FLOOR_MS, QUICK_TIMES * base
 function world(overrides = {}) {
   const T = scratch('desk-q-');
   // macOS, with a fake launchctl: `print gui/<uid>/<label>` exits 0 for each label in bin/loaded,
-  // printing bin/print-<label> where there is one.
+  // printing bin/print-<label> where there is one. Shell builtins only: desk-q runs it for every
+  // supervised batch on every load, and a grep, dirname and cat per call were much of this suite's CPU.
   mkdirSync(join(T, 'bin'));
-  writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\ngrep -qxF "${2##*/}" "$(dirname "$0")/loaded" 2>/dev/null || exit 1\ncat "$(dirname "$0")/print-${2##*/}" 2>/dev/null\nexit 0\n', { mode: 0o755 });
+  writeFileSync(join(T, 'bin', 'launchctl'), [
+    '#!/bin/sh',
+    'd=${0%/*}; l=${2##*/}',
+    'while IFS= read -r x || [ -n "$x" ]; do',
+    '  [ "$x" = "$l" ] || continue',
+    '  [ -f "$d/print-$l" ] && while IFS= read -r y || [ -n "$y" ]; do printf \'%s\\n\' "$y"; done < "$d/print-$l"',
+    '  exit 0',
+    'done 2>/dev/null < "$d/loaded"',
+    'exit 1',
+    '',
+  ].join('\n'), { mode: 0o755 });
   const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'),
     DESK_PLATFORM: 'darwin', DESK_SKILLS_DIR: join(T, 'skills'), PATH: `${join(T, 'bin')}:${process.env.PATH}` };
   writeFileSync(env.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');

@@ -24,7 +24,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { answerEntriesSince } from './handoff.mjs';
 import { CLEARS_WHEN_FORMS, describeCond, personClears, recorded, restating } from './clears-when.mjs';
-import { needsSession, planPark, leftPark, personOnlyStep, LEFT_PREFIX, moveTargetsOf, targetsText, moveOffer } from './batch-state.mjs';
+import { needsSession, planPark, leftPark, personOnlyStep, LEFT_PREFIX, moveTargetsOf, targetsText, moveOffer, openUnknowns } from './batch-state.mjs';
 import { questionKey, readRegister, lookup } from './not-now.mjs';
 import { usageLimit } from './usage-limit.mjs';
 import { callLogin } from './call-login.mjs';
@@ -107,10 +107,10 @@ export function deciderItems(v, q = {}, state = null, { baseSha = null } = {}) {
   return [...parked, ...waiting];
 }
 
-// A triaged ticket's open questions, each once: its triage record's unknowns (read from `state`, so
-// none without it), then the ones plan-batch added when it seeded the queue entry `t` (`plan_questions`).
+// A triaged ticket's open questions, each once: its triage record's unknowns not yet answered (read from
+// `state`, so none without it), then the ones plan-batch added when it seeded the queue entry `t` (`plan_questions`).
 export function openQuestionsOf(state, key, t = {}) {
-  const unknowns = state ? readJson(join(state, 'triage', `${key}.json`), {})?.unknowns : null;
+  const unknowns = state ? openUnknowns(readJson(join(state, 'triage', `${key}.json`), {})?.unknowns, t) : null;
   const list = (a) => (Array.isArray(a) ? a : []);
   const all = [...list(unknowns), ...list(t?.plan_questions)].map((s) => String(s).replace(/\s*\n\s*/g, ' ').trim()).filter(Boolean);
   return [...new Set(all)];

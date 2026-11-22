@@ -19,14 +19,14 @@ import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck, ownDraftWhy
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory, sizeOf } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
-import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
+import { queueFile, stateDir, wakeMergeDriver, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, githubHandle, ticketKind, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation } from './desk-env.mjs';
 import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
 import { LEDGER_BY_ENV, queueDifference } from './queue-ledger.mjs';
-import { newPark, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
+import { newPark, parkArgs, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { followOnPending, postMergeUnmade, workerMarkers, lastStage, settleSteps } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
@@ -69,7 +69,7 @@ const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback'
 }
 const QUEUE = queueFile();
 // The park a hold writes (queue.mjs hold, admit --hold): released once every blocker's PR merges.
-const heldPark = (blockers) => newPark(`held by orchestrator: blocked by ${blockers.join(', ')} — starts once their PRs merge`);
+const heldPark = (blockers) => newPark(`held by orchestrator: blocked by ${blockers.join(', ')} — starts once their PRs merge`, undefined, 'hold');
 // A ticket's levers pin as it enters the queue (levers-auto.mjs), saying why when its repo could not
 // be assigned trial arms.
 const admissionPin = (key, size) => {
@@ -490,7 +490,7 @@ function stop(key) {
     unlock();
     throw new Error(`${key}'s worker (pid ${ended.ended.join(', ')}) ended and its work so far is ${kept}, but the queue changed meanwhile (${key} is now ${now?.state ?? 'not in the queue'}), so its record was left as it is`);
   }
-  Object.assign(now, { state: 'parked', park: newPark(`${STOPPED_PREFIX} at ${at}; its work so far is ${kept}. Starts again only once you let it`, at),
+  Object.assign(now, { state: 'parked', park: newPark(`${STOPPED_PREFIX} at ${at}; its work so far is ${kept}. Starts again only once you let it`, at, 'stopped'),
     // held_outside a release left behind would let pass.mjs's outside-hold lift release the stop.
     held_by: null, held_outside: null, last_round: stage ? { stage, question: `stopped by queue.mjs stop; its work so far is ${kept}`, at } : now.last_round ?? null,
     session_id: null, pid: null, resume: null, resume_why: null, usage_paused: null, idle_passes: 0, updated_at: at });
@@ -1066,8 +1066,10 @@ switch (cmd) {
   case 'park': {
     const at = args.indexOf('--claimed-by');
     const session = at < 0 ? null : args[at + 1];
-    const [key, ...rest] = at < 0 ? args : args.filter((_, i) => i !== at && i !== at + 1);
+    const [key, ...more] = at < 0 ? args : args.filter((_, i) => i !== at && i !== at + 1);
     if (at >= 0 && !SESSION_ID.test(session ?? '')) throw new Error('usage: queue.mjs park <TICKET> --claimed-by <session id> [<question>]');
+    const { question, kind } = parkArgs(more);
+    const rest = question ? [question] : [];
     // A session name, or a session from another computer, has no transcript to read idleness from.
     if (session && !transcriptOf(session)) throw new Error(`no transcript for session ${session} under ${projectsDirs().join(' or ')}: --claimed-by wants the session id of a session on this computer`);
     const t = ticket(q, key);
@@ -1079,7 +1081,7 @@ switch (cmd) {
     const kept = session && t.state === 'parked' && t.park ? t.park : null;
     t.state = 'parked';
     t.park = kept ? { ...kept, claim: { session, at: now } }
-      : { ...newPark(rest.join(' ') || (session ? claimQuestion(session) : ''), now), ...(session ? { claim: { session, at: now } } : {}) };
+      : { ...newPark(question || (session ? claimQuestion(session) : ''), now, kind), ...(session ? { claim: { session, at: now } } : {}) };
     save(q);
     console.log(session ? `${key} parked, claimed by session ${session}` : `${key} parked`);
     break;
@@ -1177,6 +1179,7 @@ switch (cmd) {
     if (permission('pr-ready') === 'yes') {
       try {
         execFileSync('gh', ['pr', 'ready', String(pr), '--repo', repo], { stdio: ['ignore', 'pipe', 'pipe'] });
+        wakeMergeDriver(stateDir());
         lines.push(`PR #${pr} is ready for review`);
       } catch (e) {
         needsPerson = true;

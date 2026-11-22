@@ -537,6 +537,21 @@ out=$(DESK_IDLE_RECHECK_MS=300000 tick)
 check "DS-836 the same settled batch with no PR recorded runs no pass on the interval" '[ "$(count "$T/pass.calls")" = 1 ]'
 queue true '{}' "$DONE" b836b
 
+# ---- DS-783 AC2: an idle batch whose blind audit has exited runs a pass, which records it -----------
+verdict '{"status":"idle","code":11,"message":"IDLE","waiting":[],"parked":[],"notify":true,"push":[]}'
+AQ=$(node -e 'import(process.argv[1]).then((m) => console.log(m.auditQueueFile("acme__widgets")))' "$B/levers-audit.mjs")
+mkdir -p "$(dirname "$AQ")" "$T/state/workers"
+printf '{"v":1,"trials":{},"items":{"A-1":{"ticket":"A-1","key":"audit.A-1","state":"running","session":"s-783","state_dir":"%s","started_at":"2026-10-23T09:00:00.000Z"}}}\n' "$T/state" > "$AQ"
+tl_queue b783 ''
+: > "$T/pass.calls"
+out=$(tick); out=$(tick)
+check "DS-783 AC2 an idle batch whose audit is still running runs no pass" '[ "$(count "$T/pass.calls")" = 1 ]'
+printf '{"session":"s-783","at":"2026-10-23T09:30:00.000Z"}\n' > "$T/state/workers/audit.A-1.exit.json"
+out=$(tick)
+check "DS-783 AC2 once the audit's worker exits, the idle batch runs a pass" '[ "$(count "$T/pass.calls")" = 2 ]'
+rm -f "$AQ" "$T/state/workers/audit.A-1.exit.json"
+queue true '{}' "$DONE" b783b
+
 # ---- DS-852: an idle batch whose park waits on an Actions run rechecks on the shorter interval -----
 verdict '{"status":"idle","code":11,"message":"IDLE","waiting":[],"parked":[],"notify":true,"push":[]}'
 queue true '{}' '{"R":{"key":"R","state":"parked","lane":"A","park":{"question":"wait for the run","clears_when":{"kind":"run-completed","run":44719886024}}}}' b9
