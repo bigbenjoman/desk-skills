@@ -304,7 +304,7 @@ UEOF
 check "#828 only a value of TODO counts: not a note's, not another column's, not a row with a default" \
   '[ "$(DESK_CONFIG="$T/uc.md" node "$S/../desk/bin/desk-env.mjs" unset | tr "\t" " " | tr "\n" ",")" = "§2 Primary repo root,§3 pr-open,§3b Autopilot worker concurrency,§3b Memory ceiling for parallel work (GB),§3b Test worker cap under the test lock," ]'
 
-# DS-973 AC1: none of the installs above built a Desk.app with the real npm or opened one. On macOS
+# None of the installs above built a Desk.app with the real npm or opened one. On macOS
 # the Desk.app step ran, against the stub npm.
 check "DS-973 AC1 no install built Desk.app or called open" \
   '[ ! -e "$T/open.calls" ] && [ ! -e "$HOME/Applications/Desk.app" ] && { [ "$(uname)" != Darwin ] || [ -s "$T/npm.calls" ]; }'
