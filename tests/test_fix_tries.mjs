@@ -1205,6 +1205,15 @@ t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as 
   t('stuckLessHeld: a check a person clears (its own command) stays, though red with the outage line', stuckLessHeld({ ...rec, checks: [{ name: 'Vercel Preview', command: 'redeploy it: deploy.sh' }] }, 703, heldMap), undefined);
   t('stuckLessHeld: so does a §4 Check builds check, which the pass builds', stuckLessHeld({ ...rec, checks: [{ name: 'Vercel Preview' }] }, 703, heldMap, { builds: ['Vercel Preview'] }), undefined);
   t('stuckLessHeld: held on the outage alone, an entry from another route (red on the base before) goes too', stuckLessHeld({ ...rec, checks: [{ name: 'Vercel Preview', command: 'red on main too' }] }, 703, heldMap, { whole: true }), null);
+  // DS-853 fix try 3: held as an outage with one of its checks still red on the base, that check's
+  // stuck entry stands; the others' go.
+  const twoHeld = new Map([['Vercel Preview', { line: '', text: '', prs: [701, 702], runnable: false }], ['Deploy preview', { line: 'x', text: 'retry later', prs: [701, 702], runnable: true }]]);
+  const someOnBase = { atMergeBase: (n) => (n === 'Deploy preview' ? 'fail' : 'pass'), mergeBase: () => 'm'.repeat(40), latestOnBase: () => 'pass' };
+  const partBase = fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Deploy preview', '9')], { pr: 701 }), ctx({ required: [...lists.required, 'Deploy preview'], outage: twoHeld, baseRead: someOnBase }));
+  t('outage: some held checks red on the base too: still held OUTAGE, naming those', JSON.stringify([partBase?.call, partBase?.label, partBase?.base_red_checks]), '["held","OUTAGE",["Deploy preview"]]');
+  const both = { ...rec, pr: 701, checks: [{ name: 'Vercel Preview', command: 'red on main too' }, { name: 'Deploy preview', command: 'red on main too' }] };
+  t('stuckLessHeld: whole, an entry for a check still red on the base stays', JSON.stringify(stuckLessHeld(both, 701, twoHeld, { whole: true, onBase: partBase?.base_red_checks ?? [] })?.checks), JSON.stringify([{ name: 'Deploy preview', command: 'red on main too' }]));
+  t('stuckLessHeld: whole, with every one still red on the base, the record is unchanged', stuckLessHeld(both, 701, twoHeld, { whole: true, onBase: ['Vercel Preview', 'Deploy preview'] }), undefined);
 }
 
 process.exit(fails ? 1 : 0);

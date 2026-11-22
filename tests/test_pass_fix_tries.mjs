@@ -320,6 +320,25 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   t('while that run goes on, it stays owed, with no fix try', j([still.reruns.length, still.hold, still.held.rerun]), j([0, undefined, [703]]));
   const done = outage([entry(703, [ok('tests'), deploy(703)])], { was: unfinished.hold, now: T0 + 25 * 60 * 1000 });
   t('once that run completes red, the next pass re-runs it', j([done.reruns.map((a) => [a.pr, a.run]), done.hold]), j([[[703, '1603']], {}]));
+  // DS-853 fix try 3: an owed run is found among the checks as stored (no `workflow`), though another
+  // workflow's check of the same name is newer, passed or red.
+  const otherWf = (conclusion) => outage([entry(703, [ok('tests'), deploy(703), { name: 'Deploy preview', status: 'completed', conclusion, runId: '2703' }])], { was: unfinished.hold, now: T0 + 25 * 60 * 1000 });
+  t('an owed run is re-run though another workflow\'s same-name check passed since', j(otherWf('success').reruns.map((a) => [a.pr, a.run])), j([[703, '1603']]));
+  t('and though another workflow\'s same-name check is red and newer', j(otherWf('failure').reruns.map((a) => [a.pr, a.run])), j([[703, '1603']]));
+  t('the owed run passing on its own drops the debt, whatever the other workflow reads', j(outage([entry(703, [ok('tests'), { ...ok('Deploy preview'), runId: '1603' }, { ...red('Deploy preview', '2703'), errors: ['src/a.ts:1 x'] }])], { was: unfinished.hold, now: T0 + 25 * 60 * 1000 }).reruns.length), j(0));
+  // A held PR whose run is going again (re-run) keeps its `seen` entry, so a clearing on a pass that
+  // cannot read it still owes it that run.
+  const rerunning = entry(703, [ok('tests'), { name: 'Deploy preview', status: 'in_progress', conclusion: null, runId: '1603' }]);
+  const reGoing = outage([three[0], three[1], rerunning], { was: first.hold, now: T0 + 5 * 60 * 1000 });
+  // Its seen entry kept, the hold is unchanged, so it is not rewritten.
+  t('a held PR re-running its red run keeps its seen entry', j([reGoing.hold, first.hold['Deploy preview'].seen.find((x) => x.pr === 703)]), j([undefined, { pr: 703, head: HEAD, run: '1603' }]));
+  const reHold = reGoing.hold ?? first.hold;
+  const clearsUnread = outage([green[0], green[1]], { was: reHold, now: T0 + 20 * 60 * 1000, read: new Set([701, 702]) });
+  t('so the hold clearing while it is unread owes it that run', j(clearsUnread.hold?.['Deploy preview']?.owed), j([{ pr: 703, head: HEAD, run: '1603' }]));
+  t('and once read red on that run it is re-run', j(outage([entry(703, [ok('tests'), deploy(703)])], { was: clearsUnread.hold, now: T0 + 25 * 60 * 1000 }).reruns.map((a) => [a.pr, a.run])), j([[703, '1603']]));
+  const clearsGoing = outage([green[0], green[1], rerunning], { was: reHold, now: T0 + 20 * 60 * 1000 });
+  t('a hold clearing while that run is still going owes it too, with no fix try', j([clearsGoing.hold?.['Deploy preview']?.owed, clearsGoing.held.rerun.includes(703)]), j([[{ pr: 703, head: HEAD, run: '1603' }], true]));
+  t('a seen entry at an old head is not kept', outage([three[0], three[1], entry(703, [ok('tests'), { name: 'Deploy preview', status: 'in_progress', conclusion: null, runId: '1603' }], { head: 'f'.repeat(40) })], { was: first.hold, now: T0 + 5 * 60 * 1000 }).hold?.['Deploy preview']?.seen?.some((x) => x.pr === 703), false);
   // A stuck record naming a held check drops it, whatever the PR's route this pass.
   const stuckT = tk({ key: 'O-701', branch: 'task/O-701', stuck: { why: 'x', pr: 701, head: HEAD, lead: 'still red after 2 tries', checks: [{ name: 'Lint' }, { name: 'Deploy preview' }] } });
   const dropped = drive(snap([[stuckT, three[0].s]], { gate: G, outage: first.held.held, outageRerun: [] }), { reads: () => reads({ ctx: { required: G.required } }) });
