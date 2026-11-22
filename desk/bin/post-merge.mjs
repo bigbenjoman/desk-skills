@@ -16,6 +16,8 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { everyTicket } from './queue-store.mjs';
 import { promotionPr } from './batch-state.mjs';
+// gh with a buffer a page of runs fits in: one can pass spawnSync's 1 MiB default.
+import { gh as ghRead } from './gate.mjs';
 
 export const FILE = 'post-merge.jsonl';
 export const WATCH_DAYS = 14;
@@ -24,9 +26,6 @@ export const SCAN_EVERY_MS = 86_400_000;
 const DAY_MS = 86_400_000;
 const RUN_PAGE = 100;
 const FAILED = new Set(['failure', 'timed_out', 'startup_failure']);
-// gh's output for a page of runs can pass spawnSync's 1 MiB default.
-const GH_BUFFER = 64 * 1024 * 1024;
-const ghRead = (args) => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: GH_BUFFER });
 
 export const postMergePath = (state) => join(state, FILE);
 
