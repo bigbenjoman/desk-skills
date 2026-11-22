@@ -531,6 +531,8 @@ case "\$1 \$2" in
     [ "\$(cat "$T/mode.ghuser" 2>/dev/null || echo ok)" = out ] && { echo "To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4; }
     [ "\$(cat "$T/mode.ghuser" 2>/dev/null || echo ok)" = limit ] && { echo "gh: API rate limit exceeded for user ID 111733264. (HTTP 403)" >&2; exit 1; }
     cat "$T/ghuser"; exit 0 ;;
+  # Each account's own core reset: the Review account's differs from gh as it stands.
+  "api rate_limit") [ "\${GH_CONFIG_DIR:-}" = "$T/gh-pullbot" ] && echo 1795000000 || echo 1700000000; exit 0 ;;
   "pr view") [ -f "$T/fx/\$3.json" ] || exit 1; cat "$T/fx/\$3.json"; exit 0 ;;
   "pr list") echo '[]'; exit 0 ;;
 esac
@@ -579,7 +581,7 @@ check "DS-577 AC6 a sign-in failure is a sign-in item, not a mismatch"   '[[ "$(
 check "DS-577 AC6 it names the sign-in error and its sign-in command"    'grep -qF "To get started with GitHub CLI" <<< "$out" && grep -qF "GH_CONFIG_DIR=$T/gh-pullbot gh auth login" <<< "$out"'
 mode ghuser limit
 hl
-check "DS-969 AC3 the reviewer's API limit used up is noted, not told as a sign-in" '[ "$rv" = null ] && [ -z "$(pushes)" ] && ! grep -q "gh auth login" <<< "$out" && grep -qF "reviewer: the GitHub API limit is used up, not a sign-in; not holding review or fix tries" <<< "$out"'
+check "DS-969 AC3 the reviewer's API limit used up is noted with its own reset, not told as a sign-in" '[ "$rv" = null ] && [ -z "$(pushes)" ] && ! grep -q "gh auth login" <<< "$out" && grep -qF "reviewer: the GitHub API limit is used up, not a sign-in; it resets at 2026-11-18T11:06:40.000Z; not holding review or fix tries" <<< "$out"'
 mode ghuser ok
 EXTRA='| Gate reviewers | `agent pullbot` |' config yes yes
 hl

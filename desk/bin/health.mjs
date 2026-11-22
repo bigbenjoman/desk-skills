@@ -99,9 +99,9 @@ const failureKind = (out) => (NETWORK.test(out ?? '') ? 'network' : 'auth');
 // rate limit exceeded for user ID …"). That is no sign-out: it is told with its reset time and holds no spawn.
 const GH_LIMIT = /rate limit exceeded/i;
 // When the token's core API limit resets, as an ISO time, or null. The rate_limit endpoint answers
-// while the limit is used up.
-async function ghLimitReset(timeoutMs) {
-  const r = await runCommand(['gh', 'api', 'rate_limit', '--jq', '.resources.core.reset'], timeoutMs, undefined, true);
+// while the limit is used up. `cmdEnv`: the account's environment, where it is not gh as it stands.
+async function ghLimitReset(timeoutMs, cmdEnv) {
+  const r = await runCommand(['gh', 'api', 'rate_limit', '--jq', '.resources.core.reset'], timeoutMs, cmdEnv, true);
   const at = Number(r.ok ? r.out : NaN);
   return Number.isFinite(at) && at > 0 ? new Date(at * 1000).toISOString() : null;
 }
@@ -296,11 +296,12 @@ async function reviewerCheck(env, timeoutMs, retryMs) {
   try { acct = E.reviewAccount(); } catch (e) { return { ok: false, kind: 'config', gate, why: e.message, fix: 'correct §4 Review account with /desk-update' }; }
   const who = acct ? `${acct.login} (GH_CONFIG_DIR=${acct.dir})` : 'your default gh login';
   // As review-post.mjs posts: the account's config directory with no token, else gh as it stands.
-  const run = () => runCommand(REVIEWER_CMD, timeoutMs, acct ? accountEnv(acct, env) : undefined, true);
+  const cmdEnv = acct ? accountEnv(acct, env) : undefined;
+  const run = () => runCommand(REVIEWER_CMD, timeoutMs, cmdEnv, true);
   let r = await run();
   if (!r.ok && r.kind === 'network') { await new Promise((res) => setTimeout(res, retryMs)); r = { ...(await run()), retried: true }; }
   // The account's API limit used up is no sign-in: noted, never told, and it clears at its reset.
-  if (!r.ok && r.limited) return { ok: false, kind: 'limit', gate, who, why: `gh api user as ${who}: the GitHub API limit is used up`, reset: await ghLimitReset(timeoutMs) };
+  if (!r.ok && r.limited) return { ok: false, kind: 'limit', gate, who, why: `gh api user as ${who}: the GitHub API limit is used up`, reset: await ghLimitReset(timeoutMs, cmdEnv) };
   if (!r.ok) {
     const fix = r.kind === 'network' ? "check this machine's connection to GitHub; it is not reaching it, which is not a sign-in"
       : acct ? `sign it in, in another terminal: GH_CONFIG_DIR=${acct.dir} gh auth login` : 'gh auth login';
