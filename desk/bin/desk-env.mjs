@@ -180,7 +180,7 @@ import { remember, runOnce, outOrNull } from './build-memo.mjs';
 import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
 import {
-  PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, localServiceName,
+  PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, localServiceName, parseServicePort,
   permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, leverRow, leverWords, parseLevers,
   EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS, CODEX_DEFAULTS, parseCodexReview, spawnGateOf,
   fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, checkRow, DECLARED_ROWS, readsAsList,
@@ -290,7 +290,7 @@ const configPathHint = () =>
 export { PERMISSION_KEYS, CONFIG_ROWS };
 // The row grammars live in the schema as its types; each is re-exported here under its own name.
 export {
-  DeskConfigError, isNone, parseCommandItem, localServiceName, permValues, parseBudget, EXTRA_MODELS, parseWorkerModels,
+  DeskConfigError, isNone, parseCommandItem, localServiceName, parseServicePort, permValues, parseBudget, EXTRA_MODELS, parseWorkerModels,
   parseWorkerLocation, LEVERS, LEVERS_AUTO, leverRow, parseLevers, EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS,
   CODEX_DEFAULTS, parseCodexReview,
 };
