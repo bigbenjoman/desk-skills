@@ -244,7 +244,7 @@ function* feedbackCall(t, p, s, waived, reads) {
   // A red check reading an outside reviewer's review goes ahead of desk's own review and feedback
   // routes: it waits for that reviewer at the head, then sends their findings (externalTry).
   const external = (login) => externalReview(fb.payload, login);
-  const ext = externalTry(t, p, { ...s.gate, stateChecks: s.stateChecks, external });
+  const ext = externalTry(t, p, { ...s.gate, stateChecks: s.stateChecks, external, clean: s.clean ?? null });
   if (ext !== undefined) return ext;
   if (fb.review) {
     const rf = findingsFix(t, p, s, fb, reads);
@@ -260,5 +260,5 @@ function* feedbackCall(t, p, s, waived, reads) {
   // does a green PR the driver would hold for want of a clean verdict, where a driver may merge.
   const { carry, scope, baseMerge } = reads.moves();
   const atHead = () => reads.atHead(fb.payload, carry, scope);
-  return verdictTry(t, p, { ...s.gate, stateChecks: s.stateChecks, settled: !!fb.review, atHead, external, waived, base: s.base, baseMerge });
+  return verdictTry(t, p, { ...s.gate, stateChecks: s.stateChecks, settled: !!fb.review, atHead, external, clean: s.clean ?? null, waived, base: s.base, baseMerge });
 }

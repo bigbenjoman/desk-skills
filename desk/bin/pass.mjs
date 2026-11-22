@@ -4774,6 +4774,7 @@ function fixReads(t, s, dirty, dirtyFiles) {
     name: 'fix tries',
     snapshot: () => ({
       undrafted, rowErrors: fixRowErrors, dry: DRY, base: DEFAULT_BRANCH, reviewer: HEALTH.reviewer ?? null, gate: gateLists(), stateChecks: stateRow.checks,
+      clean: E.configValue('clean-verdict'),
       conflictRows: Object.fromEntries(['pr-conflict-reviewed', 'pr-conflict-unreviewed'].map((r) => [r, { perm: E.permission(r), key: E.permissionKey(r) }])),
       feedbackFirst: E.permissionOrUnset('merge-feedback-first') !== 'no',
       judgement: E.permission('autopilot-judgement'),
