@@ -156,6 +156,18 @@ const lists = (acts) => acts.at(-1);
   t('a dry run reads and keeps pr_status, and writes nothing else', j(acts.map((a) => a.type)), j(['read-pr', 'pr-status', 'read-pr', 'pr-status', 'lists']));
 }
 
+// ---- DS-796: a ticket done on another repo's PR never fills this repo's PR of the same number
+{
+  const foreignDone = done('X', 31, { merged_at: '2026-11-18T09:00:00Z', pr_status: status(31, 'MERGED', { merged_at: '2026-11-18T09:00:00Z', url: 'https://github.com/other/repo/pull/31' }) });
+  const requeued = done('B', 31, { merged_at: '2026-11-10T09:00:00Z', pr_status: status(31, 'OPEN') });
+  for (const order of [[requeued, foreignDone], [foreignDone, requeued]]) {
+    const acts = run(snap(order, { repo: 'me/here' }), { 31: status(31, 'OPEN', { url: 'https://github.com/me/here/pull/31' }) });
+    t(`DS-796 this repo's open #31 stays open beside another repo's merged #31 (${order.map((x) => x.key).join(' then ')})`, lists(acts).prStates[31], 'OPEN');
+  }
+  const own = run(snap([done('Y', 32, { pr_status: status(32, 'MERGED', { merged_at: 'm', url: 'https://github.com/Me/Here/pull/32' }) })], { repo: 'me/here' }));
+  t('DS-796 a kept status naming this repo\'s PR (any case) is its PR state', lists(own).prStates[32], 'MERGED');
+}
+
 // ---- AC5: the decision does no I/O
 {
   const list = [done('S', 24), done('T', 25, { pr_status: status(25, 'MERGED', { merged_at: 'z' }) }), { key: 'U', state: 'done', fix: { kind: 'conflict', at: 'a' }, fix_tries: [] }];

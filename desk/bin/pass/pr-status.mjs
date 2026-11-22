@@ -107,7 +107,9 @@ export function* decidePrStatus(s) {
     // A PR this pass's reopen closed and could not reopen is read again until it reopens.
     const owed = owesReopen(t);
     if (t.pr_status?.pr === n && PR_FINAL.includes(t.pr_status.state) && !(owed && t.pr_status.state === 'CLOSED')) {
-      prStates[n] = t.pr_status.state;
+      // prStates is this repo's PRs by number: a status naming another repo's PR (needs-you's
+      // elsewhereDone) never fills the slot of this repo's PR of the same number.
+      if (!t.pr_status.url || !s.repo || repoOfPr(t.pr_status.url) === repoOfPr(`https://github.com/${s.repo}/pull/${n}`)) prStates[n] = t.pr_status.state;
       if (t.pr_status.state !== 'MERGED' || (t.merged_at && !postMergeOwed(t, n) && !commitOwed(t))) continue;
       if (t.pr_status.merged_at && !commitOwed(t)) st = t.pr_status;
     }

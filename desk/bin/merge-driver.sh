@@ -500,28 +500,42 @@ NODE
   # by this driver) has merged, whatever GitHub lists: `prs` sees only the newest 100 merged PRs, so a
   # blocker whose PR is older than that (a long-lived draft, rebased and merged today) was never found
   # and held its successors forever. Lines in the shape `prs` prints; the PR is "?" when none is recorded.
-  local merged known
-  known=$(node --input-type=module - "$DESK_QUEUE" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/queue-store.mjs" <<'NODE'
+  # merged_at keeps only a ticket's first merge, so a live ticket requeued after it (merged_pr, which a
+  # spawn keeps) or done again on a PR the queue reads open is not merged on it, nor on a listed older PR
+  # naming its key: only its current PR merging releases what waits on it (HOLD lines, the PR or "?").
+  local merged known listed holds h
+  known=$(node --input-type=module - "$DESK_QUEUE" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" <<'NODE'
 import { readFileSync } from 'node:fs';
-const { attachArchive, everyTicket } = await import(process.argv[3]);
+const { attachArchive, everyTicket, mergedPrs } = await import(`${process.argv[3]}/queue-store.mjs`);
+const { prStatusOf } = await import(`${process.argv[3]}/batch-state.mjs`);
 const q = { tickets: {} };
 try { q.tickets = JSON.parse(readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
+const live = q.tickets;
+const through = (t) => t.state === 'done' && (t.result?.pr == null || prStatusOf(t)?.state === 'MERGED');
+const requeued = (t) => !through(t) && (mergedPrs(t).length > 0 || (t.state === 'done' && prStatusOf(t)?.state === 'OPEN'));
 // Done tickets whose PR merged move to the archive beside the queue (queue-store.mjs), live ones first.
-for (const [k, t] of Object.entries(everyTicket(attachArchive(q, process.argv[2])))) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
+for (const [k, t] of Object.entries(everyTicket(attachArchive(q, process.argv[2])))) {
+  if (t && Object.hasOwn(live, k) && t.merged_at && requeued(t)) console.log(`HOLD\t${t.result?.pr ?? '?'}\t${k}`);
+  else if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
+}
 NODE
 ) || known=""
+  holds=$(printf '%s\n' "$known" | awk -F'\t' '$1 == "HOLD"')
+  known=$(printf '%s\n' "$known" | awk -F'\t' '$1 != "HOLD" && NF')
   # One merged-PR listing for every predecessor at once, not one per predecessor per loop. A listing gh
   # could not give still releases what the queue already knows merged.
   # Each predecessor key is its own argument: ticket keys hold no spaces or glob characters.
   # shellcheck disable=SC2046
-  merged=$(prs merged $(printf '%s\n' "$plan" | awk '{ print $2 }' | tr ',' '\n' | sort -u) </dev/null) || merged=""
-  merged="$known${known:+$'\n'}$merged"
+  listed=$(prs merged $(printf '%s\n' "$plan" | awk '{ print $2 }' | tr ',' '\n' | sort -u) </dev/null) || listed=""
+  merged="$known${known:+$'\n'}$listed"
   [ -n "$merged" ] || return 0
   while read -r succ preds; do
     [ -n "$succ" ] || continue
     all=1; got=""
     for pred in ${preds//,/ }; do
-      n=$(printf '%s\n' "$merged" | awk -F'\t' -v k="$pred" '$3 == k { print $1; exit }')
+      h=$(printf '%s\n' "$holds" | awk -F'\t' -v k="$pred" '$3 == k { print $2; exit }')
+      if [ -n "$h" ]; then n=$(printf '%s\n' "$listed" | awk -F'\t' -v k="$pred" -v c="$h" '$3 == k && $1 == c { print $1; exit }')
+      else n=$(printf '%s\n' "$merged" | awk -F'\t' -v k="$pred" '$3 == k { print $1; exit }'); fi
       [ -z "$n" ] && { all=0; break; }; got="$got $pred#$n"
     done
     if [ "$all" = 1 ]; then

@@ -306,4 +306,23 @@ for i in 1 2; do out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$
 check "DS-796: a ticket that records its own PR keeps its state, and gh's unset time falls back to the driver's clock" \
   'grep -q "^132 main " "$T/merges.log" && [ "$(qg T-32 .state)" = parked ] && [ "$(qg T-32 .result.pr)" = null ] && [ "$(qg T-32 .merged_at | cut -c1-4)" = "$(date -u +%Y)" ]'
 
+# ---- DS-796: a blocker requeued after its first PR merged holds its dependants until its new PR merges ----
+# T-41's first PR #140 merged (merged_at, merged_pr) and GitHub still lists it on its branch; its new PR
+# #141 is open. T-43, never requeued, merged on #142, which GitHub does not list: its merge still counts.
+cat > "$T/prs.json" <<EOF
+{ "140": { "head": "fix/T-41", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] },
+  "141": { "head": "fix/T-41", "base": "main", "sha": "$SHA31", "state": "open", "draft": true, "checks": [] } }
+EOF
+q add T-41 Task A; q set T-41 state=done branch=fix/T-41 result.pr=141 merged_pr=140 'pr_status={"pr":141,"state":"OPEN"}'; q merged T-41 2026-11-10T00:00:00.000Z
+q add T-43 Task A; q set T-43 state=done branch=fix/T-43 result.pr=142 'pr_status={"pr":142,"state":"MERGED"}'; q merged T-43 2026-11-11T00:00:00.000Z
+q add T-42 Task A; q set T-42 state=triaged branch=fix/T-42; q hold T-42 T-41
+q add T-44 Task A; q set T-44 state=triaged branch=fix/T-44; q hold T-44 T-43
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-41" 2>&1)
+check "DS-796 a requeued blocker's first merge, recorded or listed, does not release what waits on its open PR" \
+  '[ "$(qg T-42 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-42"'
+check "DS-796 a blocker never requeued still releases on its recorded merge" '[ "$(qg T-44 .state)" = triaged ] && echo "$out" | grep -q "merged: T-43#142 -> RELEASED T-44"'
+node --input-type=module -e "import { readFileSync, writeFileSync } from 'node:fs'; const f = process.argv[1]; const p = JSON.parse(readFileSync(f, 'utf8')); p['141'].state = 'merged'; writeFileSync(f, JSON.stringify(p))" "$T/prs.json"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-41" 2>&1)
+check "DS-796 and its new PR merging releases them" '[ "$(qg T-42 .state)" = triaged ] && echo "$out" | grep -q "merged: T-41#141 -> RELEASED T-42"'
+
 finish loop
