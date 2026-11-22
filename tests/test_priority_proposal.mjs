@@ -1,6 +1,6 @@
 // suite: priority proposal (a pending proposal on a ticket's priority found at triage, listed once, answered on the ticket)
 // layer: L2
-// budget: 20 issue-1222
+// budget: 20 GH-1222
 // covers: desk/bin/priority-proposal.mjs desk/bin/needs-you.mjs desk/bin/ticket-facts.mjs
 // priorityProposal on labels and descriptions; then one fixture repo under a throwaway HOME, DESK_HOME
 // and DESK_CONFIG_ROOT whose admitted ticket's triage record carries a proposal: needs-you lists it as
