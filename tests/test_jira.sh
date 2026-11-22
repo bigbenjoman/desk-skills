@@ -323,6 +323,8 @@ check "a field the create gives is not replaced by its default" '[ $rc -eq 0 ] &
 n0=$(calls)
 err=$(cd "$FD" && "$J" create Bug s body.md --no-lint 2>&1); rc=$?
 check "a required field with no default is refused before any call, naming it" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "a Bug needs customfield_10212 (config §4 Required fields)" && printf "%s" "$err" | grep -q "customfield_10212: §4 Field defaults gives it none" && [ "$(calls)" -eq "$n0" ]'
+err=$(cd "$FD" && "$J" create Bug s body.md customfield_10209=Operations assignee=me --no-lint 2>&1); rc=$?
+check "and so is one that names a user and an option, which would otherwise be looked up first" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "a Bug needs customfield_10212" && [ "$(calls)" -eq "$n0" ]'
 err=$(cd "$FD" && "$J" create Task s body.md --no-lint 2>&1); rc=$?
 check "a field taken from the parent, on a create with none, is refused before any call" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "a Task needs customfield_10211" && printf "%s" "$err" | grep -q "customfield_10211: §4 Field defaults takes it from the parent, and this create names none" && [ "$(calls)" -eq "$n0" ]'
 n0=$(creates)
@@ -908,6 +910,11 @@ n0=$(bcreates)
 out=$(cd "$FD" && JIRA_SITE="http://127.0.0.1:$BTPORT" "$J" create-batch defaults.tsv 2>&1); rc=$?
 check "a create-batch row takes a field from its parent row's ticket" '[ $rc -eq 0 ] && [ "$(bcreates)" -eq $((n0 + 2)) ] &&
   [ "$(jq -sc "[.[] | select(.method == \"POST\" and .path == \"/rest/api/2/issue\")] | last | .body | fromjson | .fields | [.parent.key, .customfield_10211, .customfield_10209]" "$BL")" = "[\"$(printf "%s\n" "$out" | grep -o "^created KAN-[0-9]*" | head -1 | cut -d" " -f2)\",\"alpha\",\"Tech Debt\"]" ]'
+printf 'Epic\tthe epic\tclean.md\tcustomfield_10208=M\nTask\ta follow-up\tclean.md\tcustomfield_10208=S\tparent=@1\n' > "$FD/short.tsv"
+n0=$(bcreates)
+out=$(cd "$FD" && JIRA_SITE="http://127.0.0.1:$BTPORT" "$J" create-batch short.tsv 2>&1); rc=$?
+check "a create-batch row taking a field its parent row will not carry is refused before any row is sent" '[ $rc -ne 0 ] && [ "$(bcreates)" -eq "$n0" ] &&
+  printf "%s\n" "$out" | grep -q "its parent row 1 will have no customfield_10211 to give it"'
 
 
 # AC7: the skill tells Claude to file an epic's children with create-batch, and shows no helper.

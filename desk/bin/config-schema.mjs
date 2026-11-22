@@ -91,6 +91,14 @@ const permMatch = (key, v) => new RegExp(`^(${permWords(key).join('|')})\\b`, 'i
 // A §3 value: one of permValues, or never or stop; anything else is a no.
 export const permValue = (key, v) => permMatch(key, v) ?? 'no';
 
+// One §4 Field defaults item, `<field> = <value>` or `<field> = from parent`: { field, value } or
+// { field, parent: true }, or null for an item that is neither.
+export function fieldDefaultOf(item) {
+  const m = /^\s*([^=\s]+)\s*=\s*(.*\S)\s*$/.exec(String(item ?? ''));
+  if (!m) return null;
+  return /^from parent$/i.test(m[2]) ? { field: m[1], parent: true } : { field: m[1], value: m[2] };
+}
+
 // §4 Required fields rules (the row's items, `none` dropped) for an issue type, or for every type with
 // none named: {need: [field id, in rule order], malformed: [item that is not `<Type>[, <Type>…]: <field>[, <field>…]`]}.
 export function requiredFieldsIn(rules, type) {
@@ -466,7 +474,7 @@ export const TYPES = Object.freeze({
   command: matching('a command', () => true, parseCommandItem),
   'test-signin': matching('`[<app dir>: ]<email>`', (s) => testSigninOf(s) != null, testSigninOf),
   'service-port': matching(SERVICE_PORT_FORM, (s) => servicePort(s) != null, servicePort),
-  'field-defaults': matching('`<field> = <value>` or `<field> = from parent`', (s) => /^\s*[^=\s]+\s*=\s*\S/.test(s)),
+  'field-defaults': matching('`<field> = <value>` or `<field> = from parent`', (s) => fieldDefaultOf(s) != null, fieldDefaultOf),
   'required-fields': matching('`<Type>[, <Type>…]: <field>[, <field>…]`', (s) => !requiredFieldsIn([s], null).malformed.length,
     (s) => ({ types: requiredRule(s)?.types ?? [], fields: requiredFieldsIn([s], null).need })),
   // The whole cell is checked, as `desk-env levers` reads it; the value stays one entry per span.
