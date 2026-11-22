@@ -9,9 +9,15 @@
 //
 // queue.json is written first and the log second, and a failed append never fails the queue write: it
 // comes back as one missed append for the writer to report.
+//
+// queueDifference rebuilds a batch's queue from the log and names each ticket field where queue.json
+// differs from it: the pass reports that after its writes, and `queue.mjs rebuild` writes the rebuild out.
 import { basename, dirname } from 'node:path';
 import { BATCHES_DIR, leverOn } from './desk-env.mjs';
-import { append, fold, invalid, diffQueues, withoutProjectionOnly, PARK_KINDS, TRANSITIONS } from './ticket-ledger.mjs';
+import { append, fold, invalid, diffQueues, project, withoutProjectionOnly, PARK_KINDS, TRANSITIONS } from './ticket-ledger.mjs';
+import { fieldDiffs, flattenQueue } from './queue-fields.mjs';
+import { readQueueAt } from './queue-store.mjs';
+import { lock, unlock } from './dir-lock.mjs';
 
 // What the log calls the standing batch, as `queue.mjs transfer <TICKET> standing` does.
 export const STANDING = 'standing';
@@ -156,6 +162,46 @@ export function recordWrite(file, before, after, { by, archived = {}, from = nul
   } catch (e) {
     return { appended: 0, missed: 1, why: String(e?.message ?? e).split('\n')[0] };
   }
+}
+
+// A rebuilt ticket's `holds` is its held_by as a list, which queue.json does not keep.
+const REBUILT_ONLY = ['holds'];
+// Queue `q`'s tickets alone, as the difference compares them: the queue's own fields are carried into
+// a rebuild from queue.json (ticket-ledger.mjs project), and its archive is on neither side.
+const comparable = (q) => ({
+  queue: { tickets: Object.fromEntries(Object.entries(q?.tickets ?? {}).map(([k, t]) => [k,
+    t && typeof t === 'object' ? Object.fromEntries(Object.entries(withoutProjectionOnly(t)).filter(([f]) => !REBUILT_ONLY.includes(f))) : t])) },
+});
+
+// The stamp every write sets is compared as set or not: a write of projection-only fields moves it in
+// queue.json and appends nothing (STAMPS). Every other field is compared by its value.
+const STAMP_PATH = new RegExp(`^\\S+ (?:${STAMPS.join('|')})$`);
+const leaf = (v, path) => (v != null && STAMP_PATH.test(path) ? `<set:${typeof v}>` : JSON.stringify(v));
+
+// Queue `file`'s batch rebuilt from the log, and every ticket field where queue.json differs from it:
+// { rebuilt, seeded, diffs: [{ path, rebuilt, queue }] }, each path "<ticket> <field>" (queue-fields.mjs).
+// It holds the queue lock, as every writer does (waiting up to `waitMs`), so no write lands between
+// reading queue.json and reading the log. With `seed`, a batch the log has never named is first seeded
+// from queue.json, appended as `by`, and `seeded` counts its events. Throws when the queue or the log
+// cannot be read, or the lock cannot be taken.
+export function queueDifference(file, { seed = false, by, waitMs = 10_000 } = {}) {
+  const { repoDir, batch } = ledgerTarget(file);
+  const dir = `${file}.lock`;
+  lock(dir, { waitMs, timeout: (pid) => new Error(`the queue is locked by pid ${pid ?? '?'} past the ${waitMs / 1000}s wait`) });
+  try {
+    const current = readQueueAt(file);
+    if (!current) throw new Error(`no queue to compare at ${file}`);
+    let state = fold(repoDir);
+    let seeded = 0;
+    if (seed && !own(state.batches, batch)) {
+      const events = seedEvents(current, batch);
+      if (events.length) { append(repoDir, events, { by }); state = fold(repoDir); seeded = events.length; }
+    }
+    const rebuilt = project(state, batch, current);
+    const diffs = fieldDiffs(flattenQueue(comparable(rebuilt), { leaf }), flattenQueue(comparable(current), { leaf }))
+      .map((d) => ({ path: d.path, rebuilt: d.a, queue: d.b }));
+    return { rebuilt, seeded, diffs };
+  } finally { unlock(dir); }
 }
 
 // The line a writer prints for a missed append, or null when there was none. It starts MISSED_PREFIX.

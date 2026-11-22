@@ -1,4 +1,5 @@
-// What a pass says, as decisions: base drift, the report's lines, the ticket groups and the verdict.
+// What a pass says, as decisions: base drift, the report's lines, the ticket groups, the verdict and
+// the ledger difference.
 // Pure: each reads only the snapshot it is given. pass.mjs reads what each needs (a worktree's git
 // count, a seen-file, the groups desk-q finds, the check-in) into the snapshot, and carries out the
 // actions; each decision runs at the point in the pass whose state it reads.
@@ -139,6 +140,7 @@ export function* decidePutOffRefresh(s) {
 //   askedAgain              [{ key, question, now }] the put-off parks decidePutOffRefresh asked again,
 //                           whose refreshed inputs `now` were written and not taken back
 //   register                the "not now" register
+//   baseRed                 the red base's one line for the batch (base-red.mjs batchLine), or null
 export function decideReportLines(s) {
   const acts = [];
   const waiting = [...s.report.waiting];
@@ -156,6 +158,8 @@ export function decideReportLines(s) {
   if (s.reviewClash && s.reviewSeen !== s.reviewClash) {
     acts.push(out(`review rows: ${s.reviewClash}`), { type: 'seen', file: 'review-rows-reported.txt', text: s.reviewClash });
   }
+  // A red base is the batch's, not one of the person's own steps, so it is listed apart from them.
+  if (s.baseRed) acts.push(out(`RED BASE:\n  ${s.baseRed}`));
   if (waiting.length) acts.push(out(`WAITING ON YOU:\n  ${waiting.join('\n  ')}`));
 
   if (s.blocked.length) acts.push(out(`BLOCKED ON ANSWERS: ${s.blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${s.answerBin} <TICKET> "<answer>"`));
@@ -290,6 +294,22 @@ export function decideVerdictLines(s) {
     if (s.costTable) acts.push(line(s.costTable));
   }
   return acts;
+}
+
+// ---- ledger difference ---------------------------------------------------------
+// The ledger lever's line, or null when the queue rebuilt from the log matches queue.json and no write
+// of this pass missed its append. `check` is queue-ledger.mjs queueDifference's result, or { error }
+// when it did not run; `missed` counts this pass's missed appends; `queueBin` is queue.mjs as the
+// person runs it. It names the first LEDGER_SHOWN differing fields.
+const LEDGER_SHOWN = 10;
+export function ledgerLine({ check, missed, queueBin }) {
+  if (check.error) return `ledger: the difference check did not run (${check.error})`;
+  const n = check.diffs.length;
+  const seeded = check.seeded ? `ledger: seeded the log from queue.json (${check.seeded} ticket(s)); ` : '';
+  if (!n && !missed && !seeded) return null;
+  const named = check.diffs.slice(0, LEDGER_SHOWN).map((d) => d.path).join(', ');
+  const more = n > LEDGER_SHOWN ? `, and ${n - LEDGER_SHOWN} more` : '';
+  return `${seeded || 'ledger: '}${n} field(s) differ between queue.json and the queue rebuilt from the log, ${missed} missed append(s) this pass${n ? `: ${named}${more}. See each with node ${queueBin} rebuild` : ''}`;
 }
 
 // Why nothing spawned while something could have: the first hold that applied this pass, or null.

@@ -49,6 +49,7 @@ import { health, markFailed as markHealthFailed, refusedIn, MISMATCH_WORDS } fro
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
+import { strayClosings } from './closing-keywords.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
@@ -62,6 +63,7 @@ import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
+import { liveBaseRed, batchLine, repairTicket, repairTriage } from './base-red.mjs';
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q-model.mjs';
@@ -72,9 +74,9 @@ import { listBatches, prState as batchPrState } from './batches.mjs';
 import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
-import { queueWriter } from './queue-writer.mjs';
+import { queueWriter, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { runAudits, endedFromExit, auditsRunning } from './levers-audit.mjs';
-import { MISSED_PREFIX, LEDGER_BY_ENV } from './queue-ledger.mjs';
+import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference } from './queue-ledger.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
@@ -82,7 +84,7 @@ import { decidePrStatus, followState } from './pass/pr-status.mjs';
 import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict } from './pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict, ledgerLine } from './pass/report.mjs';
 import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
@@ -98,6 +100,7 @@ import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
 import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 import { leaseCli } from './leases.mjs';
+import { isArchived, prClosed, owesReopen } from './queue-store.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -1419,6 +1422,8 @@ function finishPush(t) {
   };
   const rows = ['git-push', 'pr-open'].filter((k) => E.permission(k) !== 'yes');
   if (rows.length) return left(`config §3 ${rows.map((k) => `${k} is "${E.permission(k)}"`).join(' and ')}`);
+  const stray = strayClosings(body);
+  if (stray.length) return left(`its PR body has a closing keyword outside a line of its own, which GitHub would act on at merge (line ${stray.map((s) => `${s.line}: ${s.uses.join(', ')}`).join('; line ')})`);
   const wt = t.worktree;
   if (sh('git', ['-C', wt, 'status', '--porcelain'], { tolerant: true })) return left(`its worktree ${wt} has uncommitted changes`);
   const own = sh('git', ['-C', wt, 'rev-list', '--count', `origin/${DEFAULT_BRANCH}..${t.branch}`], { tolerant: true });
@@ -1746,6 +1751,50 @@ const linkLines = [];
     if (left.length !== cycles.length && !DRY) q('set', t.key, `cycle_link=${left.join('|') || 'null'}`);
   }
 }
+
+// ---- red base --------------------------------------------------------------
+// The base the merge driver holds on (base-red.mjs): reported once for the batch, below, and repaired by
+// one ticket of its own, admitted here so this pass can spawn it, where the base worker's push grant
+// allows. Its key is the spell's own (desk-env baseRedKey), so an earlier spell's repair is another
+// ticket, left as it is with any steps it still owes. A row under this key, live or archived, is this
+// spell's repair: none is admitted beside it while it is unfinished, nor a second once it merged with
+// the base still red. One done with its PR closed unmerged is done with, and the key admitted again: an
+// archived row needs nothing first, and a live one (a batch that archives nothing) is dropped, which an
+// unmerged PR's row allows, since it owes no step after a merge. A drop that refuses (its worktree holds
+// commits no origin ref has) leaves it to the person, as needs-you offers for any closed PR.
+const BASE_RED = liveBaseRed(STATE, { branch: DEFAULT_BRANCH });
+let baseRedRepair = null;
+if (BASE_RED) {
+  const key = BASE_RED.repair_key;
+  const qB = queue();
+  const was = qB.tickets[key] ?? null;
+  // A PR the pass closed to reopen for its CI (reopening, naming that PR) is not closed for good; a marker
+  // left from an earlier PR owes the current one nothing.
+  const closed = was?.state === 'done' && !was.merged_at && !owesReopen(was) && prClosed(was);
+  const had = was && !closed ? was : null;
+  if (had && !had.merged_at) baseRedRepair = { key, state: had.state };
+  else if (had) baseRedRepair = { key, state: `merged at ${had.merged_at} with ${BASE_RED.branch} still red, so no second repair starts until it has gone green` };
+  else if (!BASE_PUSH.ok) baseRedRepair = { off: `config §3 ${BASE_PUSH.key} is "${BASE_PUSH.perm}", so no worker is started to repair it` };
+  else if (DRY) baseRedRepair = { key, state: 'to be admitted (dry run)' };
+  else {
+    // Dropped first, so one that refuses leaves its round's files as they were.
+    const dropped = closed && !isArchived(qB, key) ? qTry(['drop', key]) : { ok: true };
+    if (!dropped.ok) baseRedRepair = { key, state: `done with its PR #${was.result.pr} closed unmerged, and could not be dropped to start again (${dropped.out.split('\n').pop()}): drop or requeue it, which needs-you offers` };
+    else {
+      mkdirSync(join(STATE, 'tickets'), { recursive: true });
+      mkdirSync(join(STATE, 'triage'), { recursive: true });
+      writeFileSync(join(STATE, 'tickets', `${key}.md`), repairTicket(BASE_RED));
+      writeFileSync(join(STATE, 'triage', `${key}.json`), `${JSON.stringify(repairTriage(BASE_RED), null, 2)}\n`);
+      // A repair closed unmerged left its log under the same key, whose AUTOPILOT_DONE would keep this one
+      // from spawning: moved aside, as a requeue does.
+      E.rotateRound(key);
+      const r = qTry(['admit', key, '--by', 'base-red']);
+      baseRedRepair = r.ok ? { key, state: 'admitted to start as a slot frees' } : { off: `its repair ticket ${key} could not be admitted (${r.out.split('\n').pop()})` };
+    }
+  }
+}
+// The PRs held on it, which its one line names in place of a BASE RED line each.
+const baseRedHeld = [];
 
 // ---- spawn ---------------------------------------------------------------
 const fresh = queue();
@@ -4624,6 +4673,13 @@ function applyFix(t, n, head, c) {
     if (!DRY) q('set', t.key, `base_red=${JSON.stringify(rec)}`);
     t.base_red = rec;
   }
+  // Held only on checks the red base names, it is one of the PRs the batch's red base line names; held on
+  // another too, it keeps its own line, as needs-you keeps its item.
+  const heldOn = c.base_red?.checks ?? [];
+  if (c.call === 'held' && !c.label && BASE_RED && heldOn.length && heldOn.every((x) => BASE_RED.checks.some((b) => b.name === x))) {
+    baseRedHeld.push(`#${n} (${t.key})`);
+    return;
+  }
   if (c.call === 'held') { report.waiting.push(`${t.key}: ${c.label ?? 'BASE RED'} — PR #${n}: ${c.why}`); return; }
   if (c.call === 'wait') { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`); return; }
   if (c.call === 'rerun') {
@@ -5170,6 +5226,7 @@ runPhase({
       })),
       register: REGISTER,
       askedAgain: askedAgain.filter((p) => !takenBack.includes(p.key)),
+      baseRed: BASE_RED ? batchLine(BASE_RED, { held: baseRedHeld, repair: baseRedRepair }) : null,
     };
   },
   decide: decideReportLines,
@@ -5258,6 +5315,25 @@ const heldWhy = heldWhyOf({
 const heldEnd = Object.values(qEnd.tickets).filter(isHeld).map((t) => t.key);
 const mergedEnd = Object.values(qEnd.tickets).filter((t) => t.merged_at).map((t) => t.key);
 
+// ---- ledger difference ---------------------------------------------------------
+// With the ledger lever on, the pass's changes so far are written and its done tickets archived, then
+// queue.json is compared with the queue rebuilt from the log (queue-ledger.mjs queueDifference, seeding
+// a batch the log has never named), and the count goes in the report (pass/report.mjs ledgerLine) and
+// the metrics line. The pass record's write after it changes the batch's own fields, which a rebuild
+// carries over, and archives only a ticket another writer finished since.
+const ledgerLate = [];
+let ledgerRec = {};
+if (!DRY && ledgerOn()) {
+  ledgerLate.push(...writeLines(QW.flush({ archive: true })));
+  const missed = [...report.failed, ...ledgerLate].filter((l) => l.startsWith(MISSED_PREFIX)).length;
+  let check;
+  try { check = queueDifference(QUEUE_FILE, { seed: true, by: 'pass', waitMs: LOCK_WAIT_MS }); }
+  catch (e) { check = { error: String(e?.message ?? e).split('\n')[0] }; }
+  const l = ledgerLine({ check, missed, queueBin: join(SHOWN_BIN, 'queue.mjs') });
+  if (l) lines.push(l);
+  ledgerRec = { ledger_diffs: check.error ? null : check.diffs.length, ledger_missed: missed };
+}
+
 // ---- pass metrics ------------------------------------------------------------
 // One line per pass (pass-metrics.mjs). An eligible ticket left unspawned counts under the hold that
 // kept it: the usage limit or pacing, then the memory gate, then the repo's shared cap with no lock.
@@ -5282,6 +5358,7 @@ if (!DRY) {
     spawned: report.spawned.length, duration_ms: Date.now() - Date.parse(PASS_AT),
     queue_write_failures: report.failed.filter((x) => x.includes('queue write refused')).length,
     collisions,
+    ...ledgerRec,
   };
   const step = collisionStep({ streak: prevPass.collision_streak, warned: prevPass.collision_warned }, line);
   // The warning carries the time it is written, not the pass's start: a check-in sent since the pass
@@ -5293,14 +5370,14 @@ if (!DRY) {
   // A warning whose line was not written was not given: the next pass gives it.
   collisionRec = { collision_streak: step.streak, collision_warned: step.warn && !wrote.ok ? false : step.warned };
 }
-const late = recordPass((prev) => {
+const late = [...ledgerLate, ...recordPass((prev) => {
   const released = (prev.held_tickets ?? []).some((k) => qEnd.tickets[k] && !heldEnd.includes(k));
   // A merge is progress once, in the pass that first finds it merged, whoever recorded it: a merge
   // time later than the previous pass's start would count again a merge that pass already recorded.
   const merged = merges.length > 0 || (Array.isArray(prev.merged_tickets) && mergedEnd.some((k) => !prev.merged_tickets.includes(k)));
   const moved = report.spawned.length > 0 || merged || released;
   return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, undraft_errors: undraftErrors, pace_blind: PACE_BLIND, ...collisionRec };
-});
+})];
 lines[tableAt] = sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true });
 // The last write's refusals, and fields another writer had changed, are the person's too.
 if (late.length) {
