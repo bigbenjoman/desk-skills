@@ -100,7 +100,8 @@ import { decideBaseGate } from './pass/base-gate.mjs';
 import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
 import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
-import { leaseCli } from './leases.mjs';
+import { kindMode, leaseCli } from './leases.mjs';
+import { handToWorker as handMemToWorker, memPool, reserveForWorker } from './mem-lease.mjs';
 import { isArchived, prClosed, owesReopen } from './queue-store.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -1906,8 +1907,10 @@ const MIN_AVAIL_GB = GATE.start;
 const availGB = E.availableGiB();
 // A harm signal `desk-env mem watch` said or still sees within its window (swap growth, an OOM kill,
 // a worker's heap OOM or exit 137, a full tmpfs, the WSL VM near its grant) holds spawns as low
-// memory does, whatever avail reads. AUTOPILOT_MIN_AVAIL_GB=0 turns this off with the rest of the gate.
-const HARM = MIN_AVAIL_GB > 0 ? E.harmHold(STATE) : [];
+// memory does, whatever avail reads. AUTOPILOT_MIN_AVAIL_GB=0 turns this off with the rest of the gate,
+// and so does the mem lease kind set off (desk-env lease mode mem), which restores the avail ladder alone.
+const MEM_MODE = (() => { try { return kindMode('mem', LEASE_ENV).mode; } catch { return null; } })();
+const HARM = MIN_AVAIL_GB > 0 && MEM_MODE !== 'off' ? E.harmHold(STATE) : [];
 const harmWhy = HARM.length ? `memory harm: ${HARM.map((h) => h.signal).join(', ')} within the last ${E.HARM_WINDOW_MS / 60000}m (${HARM[0].line})` : null;
 const lowMemory = MIN_AVAIL_GB > 0 && (availGB < MIN_AVAIL_GB || HARM.length > 0);
 // Concurrency: the queue's field (the orchestrator's per-pass ladder decision, or a count the user
@@ -2214,6 +2217,11 @@ const otherRepos = MACHINE_CAP != null || borrowLock || SIBLINGS ? otherQueues({
 // batch started while this pass waited for the lock holds its files here.
 if (MACHINE_CAP != null || borrowLock || SIBLINGS) countElsewhere(otherRepos);
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
+// The memory every worker and peer session has reserved from the machine profile's ceiling
+// (mem-lease.mjs); a worker's share is the ceiling over this repo's worker cap. This read only sizes
+// the pass's slots: each spawn reserves its share under the store's lock first (memHeld), and with
+// the kind on one that no longer fits does not start.
+const MEM_POOL = memPool({ env: LEASE_ENV, cap: E.concurrencyLimits().cap, take: !DRY });
 const SLOTS_SNAP = {
   borrowOn: BORROW.on, concurrency, cap: E.concurrencyLimits().cap, running: running.length, spawnable: spawnable.length,
   others, machineCap: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, spawnHeld, lockWhy,
@@ -2228,10 +2236,11 @@ const SLOTS_SNAP = {
   repoCaps: MACHINE_CAP == null ? {} : Object.fromEntries(otherRepos.filter((o) => o.error).map((o) => [o.slug, repoCap(o.slug)])),
   otherRepos, repoBatches: otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) }),
   batch: E.batchName(), lastStart: fresh.last_start ?? null, maintHold: MAINT.hold,
+  memPool: MEM_POOL,
 };
 let SLOTS = null;
 runPhase({ name: 'slots', snapshot: () => SLOTS_SNAP, decide: decideSlots, handlers: { slots: (a) => { SLOTS = a; } }, report });
-const { machine: MACHINE, repo: REPO, repoUnlocked, slots, machineLine, repoLine } = SLOTS;
+const { machine: MACHINE, repo: REPO, repoUnlocked, slots, machineLine, repoLine, memLine } = SLOTS;
 const CEILING = E.memoryCeiling();
 
 // ---- batch base ------------------------------------------------------------
@@ -2617,6 +2626,7 @@ function otherQueuePorts() {
 // kind is off, the port is leased to this pass, and leaseToWorker hands it to the worker it spawns.
 const portLeaseLines = new Set();
 const portLeases = new Map();
+const memLeases = new Map();
 let leaseBatch;
 try { leaseBatch = E.batchName(); } catch { leaseBatch = null; }
 async function freePort(own = null, key = own?.key ?? BASE_FIX_KEY) {
@@ -2630,11 +2640,30 @@ async function freePort(own = null, key = own?.key ?? BASE_FIX_KEY) {
   portLeases.set(key, p.lease ? { port: p.port, id: p.lease } : null);
   return p.port;
 }
-// Once spawn-worker.sh has started `key`'s worker, its port lease moves from this pass to the worker's pid.
+// Reserves `key`'s memory share under this pass's pid, before its port is picked and its worker
+// spawned (mem-lease.mjs). -> null, or why the mem kind on refuses it: the share no longer fits beside
+// what a session or another pass reserved since this pass counted, so the worker is not started and
+// waits for a later pass. A broker that failed reserves nothing and holds nothing, and says so.
+function memHeld(key) {
+  if (DRY) return null;
+  const mem = reserveForWorker({ env: LEASE_ENV, pool: MEM_POOL, key, label: workerLabel(GH_REPO, leaseBatch, key) });
+  memLeases.set(key, mem.id ?? null);
+  if (mem.why) portLeaseLines.add(`memory: ${key} starts with no memory reservation: ${mem.why}`);
+  if (!mem.refused) return null;
+  const why = `memory: ${key} not started, its ${MEM_POOL.share}G share no longer fits under the ${MEM_POOL.ceiling}G ceiling: ${mem.refused}`;
+  portLeaseLines.add(why);
+  return why;
+}
+// Once spawn-worker.sh has started `key`'s worker, its port lease and memory reservation move from this
+// pass to the worker's pid.
 function leaseToWorker(key, port, spawnOut) {
+  const label = workerLabel(GH_REPO, leaseBatch, key);
+  const mem = memLeases.get(key);
+  const memWhy = handMemToWorker({ env: LEASE_ENV, id: mem, key, share: MEM_POOL.share, workerPid: spawnedPid(spawnOut), label });
+  if (memWhy) portLeaseLines.add(`memory: ${key}'s reservation stays with this pass, which returns it on exit: ${memWhy}`);
   const l = portLeases.get(key);
   if (!l || l.port !== port) return;
-  const why = handToWorker({ env: E, id: l.id, port, workerPid: spawnedPid(spawnOut), label: workerLabel(GH_REPO, leaseBatch, key) });
+  const why = handToWorker({ env: E, id: l.id, port, workerPid: spawnedPid(spawnOut), label });
   if (why) portLeaseLines.add(`ports: ${key}'s lease on port ${port} stays with this pass, which frees it on exit: ${why}`);
 }
 
@@ -2788,6 +2817,8 @@ async function resumeKilled(t) {
   const pre = preflight(t.key, t.worktree, workerEnv);
   if (pre.limit) return preflightHitLimit(t, pre.cost, login);
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
+  const memWhy = memHeld(t.key);
+  if (memWhy) { logPreflight(t.key, pre.cost); report.waiting.push(`${t.key}: ${memWhy}; it waits to resume on the next pass`); return undefined; }
   const port = await freePort(t);
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
   const fixtures = fixturesBrief(t.key, t.worktree, { heading: false });
@@ -2993,6 +3024,8 @@ async function spawnHandoff(t, pick) {
   const pre = preflight(t.key, t.worktree, workerEnv);
   if (pre.limit) return preflightHitLimit(t, pre.cost, pick.login);
   if (pre.failure) { logPreflight(t.key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
+  const memWhy = memHeld(t.key);
+  if (memWhy) { logPreflight(t.key, pre.cost); report.waiting.push(`${t.key}: ${memWhy}; the handoff waits for the next pass`); return undefined; }
   const sid = E.uuid();
   const port = await freePort(t);
   E.rotateRound(t.key);
@@ -3071,6 +3104,9 @@ async function spawnBaseFix({ wt, fix: asked }) {
   // Refused at the usage limit: no try is spent, and the batch holds until the limit lifts.
   if (pre.limit) { unstart(); preflightHitLimit({ key }, pre.cost, pick.login); return; }
   if (pre.failure) { logPreflight(key, pre.cost); failed('failed its preflight', `preflight failed, not spawned —\n${pre.failure}`); return; }
+  // No room under the memory ceiling: no try is spent, as at the usage limit, and the next pass looks again.
+  const memWhy = memHeld(key);
+  if (memWhy) { unstart(); logPreflight(key, pre.cost); report.waiting.push(`${key}: ${memWhy}; the ${tryWhat(fix)} try waits for the next pass`); return; }
   const sid = E.uuid();
   const port = await freePort();
   E.rotateRound(key);
@@ -3132,6 +3168,8 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   // Refused at the usage limit: the try stays running, paused, and the batch holds, as a ticket's does.
   if (pre.limit) return preflightHitLimit({ key }, pre.cost, login);
   if (pre.failure) { logPreflight(key, pre.cost); return fail(`preflight failed —\n${pre.failure}`); }
+  const memWhy = memHeld(key);
+  if (memWhy) { logPreflight(key, pre.cost); report.waiting.push(`${key}: ${memWhy}; it waits to resume on the next pass`); return undefined; }
   const port = await freePort();
   const briefPath = join(STATE, 'briefings', `${key}.md`);
   const prompt = `Your previous run of this session ended (${ended}). Carry on with your base ${tryWhat(bf.tries[bf.tries.length - 1])} on ${BASE} from where you stopped, in your worktree ${wt}. ` +
@@ -3516,6 +3554,15 @@ for (const t of spawnable) {
     // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
     markFailed(t.key, `preflight failed, not spawned —\n${pre.failure}`, { sets: ['spawn_failed=true'] });
     continue;
+  }
+
+  // The mem kind on refused its share since the slots were counted: it stays queued, and so does every
+  // ticket after it, since the same share fits no better for them this pass.
+  const memWhy = memHeld(t.key);
+  if (memWhy) {
+    logPreflight(t.key, pre.cost);
+    report.waiting.push(`${t.key}: ${memWhy}; it and the tickets after it wait for the next pass`);
+    break;
   }
 
   const sid = E.uuid();
@@ -4820,8 +4867,10 @@ async function spawnAudit({ key, item, sha, model, task, brief }) {
   // Refused at the usage limit, it holds the batch as a ticket's would, and the audit waits untried.
   if (pre.limit) { preflightHitLimit({ key }, pre.cost, pick.login); return { wait: 'window_tight', why: 'its preflight was refused at the usage limit', preflight_usd }; }
   if (pre.failure) { logPreflight(key, pre.cost); return { error: `preflight failed — ${pre.failure.split('\n')[0]}`, preflight_usd }; }
+  const memWhy = memHeld(key);
+  if (memWhy) { logPreflight(key, pre.cost); return { wait: 'memory', why: memWhy, preflight_usd }; }
   const sid = E.uuid();
-  const port = await freePort();
+  const port = await freePort(null, key);
   E.rotateRound(key);
   logPreflight(key, pre.cost);
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, sid, briefPath], {
@@ -4830,6 +4879,7 @@ async function spawnAudit({ key, item, sha, model, task, brief }) {
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return { error: refused, preflight_usd };
+  leaseToWorker(key, port, spawned.out);
   // It takes a slot, as a ticket worker does, so a promotion check try later this pass counts it.
   attempts += 1;
   report.spawned.push(`${key} port=${port} model=${model}${pick.line} (blind audit of PR #${item.pr} at ${sha.slice(0, 12)}); ${preflightNote(pre.cost)}`);
@@ -5378,6 +5428,7 @@ runPhase({
   name: 'verdict lines',
   snapshot: () => {
     const footer = [HEALTH.line, ...(paceBlindLine ? [paceBlindLine] : []), PACE.line, `memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G`, CEILING.line, CONC.line, machineLine];
+    if (memLine) footer.push(memLine);
     if (repoLine) footer.push(repoLine);
     if (BORROW.bad) footer.push(`borrowing: ${BORROW.bad}`);
     if (borrowLine) footer.push(borrowLine);

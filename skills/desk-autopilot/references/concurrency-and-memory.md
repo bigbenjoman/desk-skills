@@ -153,10 +153,22 @@ harm-tmpfs`, `desk-env get harm-vmmem`); unset, they are the figures below:
   unwatched. Say so in the batch notes; the watch keeps reading the rest.
 
 Each harm line is also written, with its time, to `mem-harm.json` in the batch's state folder, and
-every pass holds new spawns while a signal there was said, or still stood, within the last 10
-minutes, naming it in its report; running workers carry on. So the hold does not wait on you, but it
-needs the watch running. Say which line moved the count when you lower it. On macOS only
-`WORKER-OOM` is read.
+with the mem lease kind `shadow` or `on` (`desk-env lease mode mem`) every pass holds new spawns
+while a signal there was said, or still stood, within the last 10 minutes, naming it in its report;
+running workers carry on. So the hold does not wait on you, but it needs the watch running. With the
+kind `off` the pass reads no harm signal and judges memory by the ladder alone. Say which line moved
+the count when you lower it. On macOS only `WORKER-OOM` is read.
+
+**Memory is reserved from the machine's ceiling as leases**, where the machine profile sets
+`memory-ceiling-gb`. Each worker a pass starts reserves its share (that ceiling over the cap of §3b
+"Autopilot worker concurrency", at least 1 GiB), held by the worker's process and returned when it
+exits. Before a heavy run of your own (a full suite, a build), reserve for it so every pass counts
+it: `desk-env lease acquire mem <what for> --units <GiB> --owner claude --ttl <seconds>`, which
+your session holds until it exits or twice the TTL passes unrenewed, and `desk-env lease release <id> --pid <the owner pid desk-env
+lease list shows>` once the run ends. With the kind `on`, a pass starts no worker whose share does not
+fit beside what is reserved, naming the ceiling, the reserved total and the largest holders; in
+`shadow` it starts by the rules above and the lease log records each would-refuse; `off` reserves
+nothing. The avail ladder still applies beside it, and the stricter decides.
 
 **Waiting on one PR is a watch command too.** Under `Monitor`, run
 `node ~/.claude/desk/bin/pr-watch.mjs checks <n>` (one line once every check on the head has
