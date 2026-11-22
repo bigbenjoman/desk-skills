@@ -85,7 +85,7 @@ DESK_BATCH=X-1 node "$B/queue.mjs" add T-4 Task A >/dev/null 2>&1; DESK_BATCH=X-
 echo 1 > "$T/sleep.pass"
 sweep
 check "two sweeps in one run read the PRs once each" '[ "$(lists)" = 2 ] && [ "$(wc -l < "$T/sleeps" | tr -d " ")" = 2 ]'
-check "a PR's unchanged state is logged once across sweeps" '[ "$(echo "$out" | grep -c "#204 not green yet")" = 1 ]'
+check "a PR's unchanged state is logged once across sweeps" '[ "$(echo "$out" | grep -c "#204 red at 444444444: required check")" = 1 ]'
 check "each batch's loop says it is up only on the first sweep" '[ "$(echo "$out" | grep -c "merge driver up: .*base=feat/x")" = 1 ]'
 
 # ---- TERM between sweeps lets every lock go -----------------------------------------------------

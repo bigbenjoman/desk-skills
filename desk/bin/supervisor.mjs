@@ -936,6 +936,7 @@ function driverRound(state) {
   const s = readState(state);
   const moved = moveDriver(state, s);
   const lines = moved ? [moved] : [];
+  const was = JSON.stringify(s.driver ?? null);
   const holder = driverHolder(state);
   lines.push(...watchDriver(state, s, holder));
   if (driverWanted && !holder) {
@@ -955,9 +956,9 @@ function driverRound(state) {
     } catch (e) { lines.push(`merge driver: could not start: ${e.message}`); }
     finally { if (fd !== undefined) closeSync(fd); }
   }
-  if (!lines.length) return;
-  writeState(state, s);
-  logTo(state)([`== ${stamp()} merge driver`, ...lines]);
+  // A running driver ends a run of failed starts, which is kept though nothing is logged.
+  if (lines.length || JSON.stringify(s.driver ?? null) !== was) writeState(state, s);
+  if (lines.length) logTo(state)([`== ${stamp()} merge driver`, ...lines]);
 }
 const logSize = (f) => { try { return statSync(f).size; } catch { return 0; } };
 const STAMP = /^\d\d:\d\d:\d\dZ /;
