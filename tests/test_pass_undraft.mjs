@@ -235,4 +235,12 @@ t('fixTryQuote keeps a protected try\'s files', j(fixTryQuote({ kind: 'protected
   t('AC7 with no process started and nothing written', j(r.calls), '[]');
 }
 
+// A draft the outage step re-ran as its hold cleared waits for that run, as a ready PR does: no fix try.
+{
+  const redRollup = [{ __typename: 'CheckRun', name: 'tests', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/o/r/actions/runs/9/job/90' }];
+  const run = (fields) => acts(drive(decideUndraft, undraftSnap([{ t: ticket('A'), s: status({ checks: normaliseRollup(redRollup) }) }], fields), { 'pr-view': view([review(marker(ALL_ZERO))], { statusCheckRollup: redRollup }) }).actions);
+  t('a draft red on a check goes to a fix worker', run({}).includes('apply-fix'), true);
+  t('one the outage step re-ran as its hold cleared waits for that run', run({ outageRerun: [701] }).includes('apply-fix'), false);
+}
+
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }

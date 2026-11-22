@@ -147,7 +147,8 @@ export function* decideRenames(snap) {
 //   gatedByReviewer(s)   whether a failing reviewer check holds the PR red only on its review gate
 //   reviewerMismatch     whether the reviewer check fails only because its gate counts another account
 //   outage        the outage step's held checks (pass/fix-tries.mjs decideOutage), or null
-//   reads        the readers undraftCall and the fix tries call as they need them (pass.mjs's):
+//   outageRerun   the PRs that step re-ran as a hold cleared: each waits for that run, with no fix try
+//   reads         the readers undraftCall and the fix tries call as they need them (pass.mjs's):
 //                 untriggered, runOf, fault, stale (undraftCall's), baseMoves(t, head) -> { carry,
 //                 scope, baseMerge, behind }, driver(n, head) (the merge driver's rerun record),
 //                 built(n, head), evidenceRun(n, head), missingShots(body, t) (the files body's cells
@@ -213,6 +214,8 @@ export function* decideUndraft(snap) {
     if (hold || gated) rf = null;
     else if (gateFix) rf = gateFix;
     else if (c.call === 'findings') rf = reviewFix(t, { pr: n, head, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement, outside: () => reads.outside?.(n, head, t.key) ?? null, title: () => reads.title?.(t.key) ?? null });
+    // A draft the outage step re-ran this pass, its hold cleared, waits for that run, as a ready PR does.
+    else if (c.call === 'checks' && snap.outageRerun?.includes(n)) rf = null;
     else if (c.call === 'checks' && !snap.fixRowErrors.length) {
       // A check the outage step holds (pass/fix-tries.mjs decideOutage) is held here too, with no fix try.
       const ctx = { repo: snap.repo, base: snap.base, ...snap.clearsRows, stateChecks: cfg.stateChecks, builds: [], ...reads.baseReads(head), ...(snap.outage?.size ? { outage: snap.outage } : {}) };

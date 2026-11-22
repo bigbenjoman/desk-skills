@@ -1150,7 +1150,9 @@ t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as 
   t('outage: so is one whose annotation points at a file', outageChecks([job(701, 'Cannot find module x', { error_paths: ['src/app.ts'] }), job(702, 'Cannot find module x', { error_paths: ['src/app.ts'] })], lists).size, 0);
   t('outage: a job with no error line to compare is not one', outageChecks([701, 702, 703].map((n) => ({ s: { pr: n, checks: [ok('tests'), red('Lint', String(n))] } })), lists).size, 0);
   t('outage: a PR red with another line is left out of it', JSON.stringify(outageChecks([job(701, blocked(1)), job(702, blocked(2)), job(703, 'tests failed: 3 of 40')], lists).get('Deploy preview')?.prs), '[701,702]');
-  t('outage: the line drops ids, numbers and URLs', outageLine('Build 4812 failed: see https://x.dev/r/9 (id 0a1b2c3d4e)'), 'build # failed: see <url> (id <id>)');
+  t('outage: so is a compiler\'s file(line,col), though only its numbers differ', outageChecks([job(701, 'src/app.ts(10,5): error TS2554: Expected 2 arguments, but got 1.'), job(702, 'src/app.ts(40,3): error TS2554: Expected 3 arguments, but got 2.')], lists).size, 0);
+  t('outage: an annotation filed under .github names no file, so it can be one', JSON.stringify(outageChecks([job(701, blocked(1), { error_paths: ['.github'] }), job(702, blocked(2), { error_paths: ['.github'] })], lists).get('Deploy preview')?.prs), '[701,702]');
+  t('outage: the line drops ids, numbers and URLs', outageLine('Build 4812 failed: see https://x.dev/r/9 (id 0a1b2c3d4e) in 3s'), 'build <n> failed: see <url> (id <sha>) in #s');
   t('outage: a description is a platform status\'s line', outageText({ name: 'Vercel', conclusion: 'failure', runId: null, description: 'Deployment has failed' }), 'Deployment has failed');
   const octx = (o = {}) => ctx({ required: lists.required, outage: new Map([...many].map(([k, v]) => [k, { ...v, runnable: false }])), ...o });
   const held = fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx());
@@ -1167,7 +1169,10 @@ t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as 
   t('outage: held with tries left before any rerun, which the driver never makes for it', fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx({ reruns: () => 0, cooledDown: false }))?.label, 'OUTAGE');
   t('outage: beside a check a person clears, that check keeps its route, not held', fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Flows image missing')], { pr: 701 }), octx({ required: [...lists.required, 'Flows image missing'] }))?.call !== 'held', true);
   t('outage: with no try left it is held too, not the person\'s', fixCall(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'checks' }, { try: 2, head: 'c'.repeat(40), kind: 'checks' }] }), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx())?.call, 'held');
-  t('outage: a PR red on another check too still gets its fix try', fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Lint', '1')], { pr: 703 }), octx())?.call, 'requeue');
+  const beside = fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Lint', '1')], { pr: 703 }), octx());
+  t('outage: a PR red on another check too still gets its fix try, for that check alone', JSON.stringify([beside?.call, beside?.fix?.checks?.map((c) => c.name), beside?.fix?.not_mine?.map((c) => c.name)]), '["requeue",["Lint"],["Vercel Preview"]]');
+  const draftBeside = draftChecksFix(tk(), { pr: 703, head: 'a'.repeat(40), failing: [{ name: 'Vercel Preview', runId: null }, { name: 'Lint', runId: '1' }], checks: [ok('tests'), red('Vercel Preview'), red('Lint', '1')] }, octx());
+  t('outage: so does a draft', JSON.stringify([draftBeside?.call, draftBeside?.fix?.checks?.map((c) => c.name), draftBeside?.fix?.not_mine?.map((c) => c.name)]), '["requeue",["Lint"],["Vercel Preview"]]');
   t('outage: with none, the same PR gets its fix try as before', fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), ctx({ required: lists.required }))?.call, 'requeue');
 }
 

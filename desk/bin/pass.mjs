@@ -4272,8 +4272,9 @@ const UNDRAFT_HANDLERS = {
 };
 // A deploy or preview platform failing for every PR at once is one outage for the batch
 // (pass/fix-tries.mjs decideOutage): its hold is kept in OUTAGE_FILE from pass to pass, and the undraft
-// and fix tries steps hold each PR it covers. Its reruns are `gh run rerun --failed`, under §3 ci-rerun,
-// and not rerun.sh, whose two reruns per head the driver has spent by the time a hold reruns anything.
+// and fix tries steps hold each PR it covers. Its reruns are `gh run rerun --failed`, under §3 ci-rerun
+// and behind the preview-build lease, and not rerun.sh, whose two reruns per head the driver has spent
+// by the time a hold reruns anything.
 const OUTAGE_FILE = join(STATE, 'outage-hold.json');
 let outageHeld = null, outageRerun = [];
 function readOutageHold() {
@@ -4283,7 +4284,11 @@ function outageRerunRun(a) {
   if (DRY) { out.push(`outage (dry run): would re-run run ${a.run} on PR #${a.pr} (${a.key}) for "${a.name}"`); return { ok: false, why: 'a dry run' }; }
   const perm = E.permission('ci-rerun');
   if (perm !== 'yes') return { ok: false, why: `config §3 ${E.permissionKey('ci-rerun')} is "${perm}"` };
+  // A deploy or preview rerun is a preview build, so it takes the PR's preview-build unit first, as rerun.sh does.
+  const slot = a.branch ? previewSlot(null, a.branch) : {};
+  if (slot.wait) return { ok: false, wait: true, why: slot.wait };
   const r = shOut('gh', ['run', 'rerun', String(a.run), '--repo', GH_REPO, '--failed']);
+  if (r.ok) keepSlot(slot, a.pr); else freeSlot(slot);
   return r.ok ? { ok: true } : { ok: false, why: r.out.split('\n').pop() };
 }
 runSteps({
@@ -4323,7 +4328,7 @@ runSteps({
       upload: uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED ? 'yes' : uploadPerm,
     },
     gates: gateLists(), evidenceErrors: evidenceRow?.errors ?? null, buildErrors: buildRow.errors, fixRowErrors, clearsRows, failureClass: (t) => leverFor('failure-class', t),
-    gatedByReviewer, reviewerMismatch: HEALTH.reviewer?.kind === 'mismatch', outage: outageHeld,
+    gatedByReviewer, reviewerMismatch: HEALTH.reviewer?.kind === 'mismatch', outage: outageHeld, outageRerun,
     reads: {
       untriggered: untriggeredOf, runOf, fault: faultOf,
       // A reopen already made at this base head is not waited on again: the check is the person's then.

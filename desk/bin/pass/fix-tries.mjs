@@ -68,7 +68,8 @@ export function* decideFixTries(s) {
 // The snapshot: { prs (the pass's drafts and ready PRs, [{ t, s }]), gate, was (the hold kept from the
 // last pass, or {}), now (ms), dry, rowErrors }.
 // Actions, beside `report` and `out`:
-//   outage-rerun {key, pr, head, run, name}   -> { ok, why } (gh run rerun --failed, under §3 ci-rerun)
+//   outage-rerun {key, branch, pr, head, run, name}   -> { ok, why, wait } (gh run rerun --failed, under
+//                                             §3 ci-rerun, once it has the PR's preview-build lease; `wait` where another build holds it)
 //   outage-hold {hold}                        keep the hold for the next pass
 //   outage-held {held, rerun}                 the checks held this pass (Map), and the PRs re-run as it cleared
 const clock = (ms) => new Date(ms).toISOString().slice(11, 16);
@@ -81,22 +82,24 @@ export function* decideOutage(s) {
   for (const c of plan.cleared) {
     const done = [], refused = [];
     for (const r of c.rerun) {
-      const x = yield { type: 'outage-rerun', key: r.key, pr: r.pr, head: r.head, run: r.run, name: c.name };
+      const x = yield { type: 'outage-rerun', key: r.key, branch: r.branch, pr: r.pr, head: r.head, run: r.run, name: c.name };
       if (x?.ok) { done.push(r.pr); reran.push(r.pr); } else refused.push(`#${r.pr} (${x?.why ?? 'refused'})`);
     }
     yield out(`outage: "${c.name}" passes on PR #${c.by} again, so its platform is back and the hold is cleared: ${done.length ? `re-ran it on ${prList(done)}` : 'no other PR had a run to re-run'}${refused.length ? `; not re-run on ${refused.join(', ')}, which go on as before` : ''}${c.push.length ? `; ${prList(c.push)} ${c.push.length === 1 ? 'has' : 'have'} no Actions run for it: redeploy there or push to ${c.push.length === 1 ? 'it' : 'them'}` : ''}`);
   }
   for (const l of plan.lifted) yield out(`outage: "${l.name}" is no longer red with one error line on ${OUTAGE_PRS} or more open PRs, so its hold is lifted and each PR goes on as before`);
-  const probed = new Map();
+  const probed = new Map(), tried = new Set();
   for (const r of plan.rerun) {
-    const x = yield { type: 'outage-rerun', key: r.key, pr: r.pr, head: r.head, run: r.run, name: r.name };
-    const tried = { pr: r.pr, head: r.head, run: String(r.run), at: new Date(s.now).toISOString(), ok: !!x?.ok };
-    keep[r.name] = { ...keep[r.name], reruns: [...keep[r.name].reruns, tried] };
+    const x = yield { type: 'outage-rerun', key: r.key, branch: r.branch, pr: r.pr, head: r.head, run: r.run, name: r.name };
+    // Waiting on the preview build another PR holds is no re-run tried, so the back-off does not grow.
+    if (x?.wait) { probed.set(r.name, `waits on the preview build before its re-run on PR #${r.pr} (${x.why})`); continue; }
+    keep[r.name] = { ...keep[r.name], reruns: [...keep[r.name].reruns, { pr: r.pr, head: r.head, run: String(r.run), at: new Date(s.now).toISOString(), ok: !!x?.ok }] };
+    tried.add(r.name);
     probed.set(r.name, x?.ok ? `was re-run on PR #${r.pr} now` : `could not be re-run on PR #${r.pr} (${x?.why ?? 'refused'})`);
   }
   for (const [name, h] of plan.held) {
     const n = keep[name].reruns.length;
-    const next = probed.has(name) ? s.now + outageGap(n) * 1000 : Math.max(h.due, s.now);
+    const next = tried.has(name) ? s.now + outageGap(n) * 1000 : Math.max(h.due, s.now);
     const how = !h.runnable
       ? 'No Actions run reports it, so nothing desk re-runs turns it green: once the platform is back, redeploy there or push to the PRs'
       : `${probed.has(name) ? `It ${probed.get(name)}; the` : 'The'} next re-run on one PR whose run has completed is due at ${clock(next)} UTC (${Math.round(outageGap(n) / 60)} minutes after the last, doubling to ${Math.round(OUTAGE_GAP_MAX_S / 60)}); once one passes, the hold clears and the other PRs' runs are re-run`;

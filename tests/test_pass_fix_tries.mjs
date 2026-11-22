@@ -240,6 +240,11 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   const probing = [entry(701, [ok('tests'), deploy(701)]), entry(702, [ok('tests'), { name: 'Deploy preview', status: 'in_progress', conclusion: null, runId: '1602' }]), entry(703, [ok('tests'), deploy(703)])];
   const mid = outage(probing.filter((e) => e.s.pr !== 703), { was: later.hold, now: T0 + 14 * 60 * 1000 });
   t('a hold whose re-run is still running stays, with one PR left red', j(mid.held.held.get('Deploy preview')?.prs), j([701]));
+  // So does one where another held PR's run of it is running, the merge driver's rerun and not the hold's.
+  const driven = [entry(701, [ok('tests'), deploy(701)]), entry(703, [ok('tests'), { name: 'Deploy preview', status: 'in_progress', conclusion: null, runId: '1603' }])];
+  const byDriver = outage(driven, { was: first.hold, now: T0 + 5 * 60 * 1000 });
+  t('a hold with a held PR re-running it under the driver stays, its start kept', j([byDriver.held.held.get('Deploy preview')?.prs, byDriver.hold?.['Deploy preview']?.since ?? first.hold['Deploy preview'].since, lines(byDriver.as).some((l) => l.includes('its hold is lifted'))]), j([[701], '2026-11-22T10:00:00.000Z', false]));
+  t('and the PR still red on it gets no fix try', applied(fixes(driven, byDriver)).map((a) => `${a.key} ${a.call.call}`).join(), 'O-701 held');
   // AC4: that re-run goes green: the hold clears, and the other PRs' checks are re-run.
   const green = [entry(701, [ok('tests'), deploy(701)]), entry(702, [ok('tests'), ok('Deploy preview')]), entry(703, [ok('tests'), deploy(703)])];
   const cleared = outage(green, { was: later.hold, now: T0 + 20 * 60 * 1000 });
@@ -260,6 +265,15 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   const gone = outage([three[0]], { was: first.hold, now: T0 + 60 * 1000 });
   t('a hold red on one PR alone, with nothing re-running, is lifted', j([gone.held.held.size, gone.hold, lines(gone.as).some((l) => l.includes('its hold is lifted'))]), j([0, {}, true]));
   t('a dry run keeps no hold', outage(three, { dry: true }).hold, undefined);
+  // The hold keeps its own line while a PR is red with it, so those PRs are re-run as it clears.
+  const other = 'Error: Build queue timed out';
+  const shifted = [entry(701, [ok('tests'), deploy(701)]), entry(702, [ok('tests'), ok('Deploy preview')]), ...[703, 704, 705].map((n) => entry(n, [ok('tests'), deploy(n, { line: other })]))];
+  const kept = outage(shifted, { was: { 'Deploy preview': { ...first.hold['Deploy preview'], prs: [701, 702] } }, now: T0 + 20 * 60 * 1000 });
+  t('a hold cleared while more PRs are red with another line re-runs its own', j(kept.reruns.map((a) => a.pr)), j([701]));
+  // A re-run waiting on the preview build another PR holds is no re-run tried: the back-off does not grow.
+  const leased = outage(three, { was: first.hold, now: T0 + 13 * 60 * 1000 }, { 'outage-rerun': { ok: false, wait: true, why: 'waits on the preview build for o/r#9' } });
+  t('a re-run waiting on the preview build is not counted', j([leased.reruns.length, leased.hold]), j([1, undefined]));
+  t('and the pass says it waits', lines(leased.as, 'report')[0]?.includes('It waits on the preview build before its re-run on PR #701'), true);
 }
 
 if (fails) { console.log(`${fails} failure(s)`); process.exit(1); }
