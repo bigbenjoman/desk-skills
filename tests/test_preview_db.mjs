@@ -2,7 +2,7 @@
 // covers: desk/bin/preview-db.mjs skills/desk-autopilot/references/worker-contract-stage-5.md
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseRecipe, dbName, fill, shellWord, addsMigration, upCall, runUp, stepError, readRecords, writeRecord, teardownCalls, teardown,
+import { parseRecipe, dbName, fill, shellWord, addsMigration, upCall, runUp, stepError, readRecords, writeRecord, hasPreviewDb, teardownCalls, teardown,
   errorPageLine, checkShots, setAside, runCommand, TEARDOWN_TRIES, DB_NAME_MAX, REJECTED_DIR } from '../desk/bin/preview-db.mjs';
 import { previewDbStepOf, TYPES } from '../desk/bin/config-schema.mjs';
 import { scratch } from './scratch.mjs';
@@ -101,6 +101,11 @@ const acts = teardownCalls({ records, recipe, states: { 42: 'MERGED', 43: 'CLOSE
 t('AC3 a merged and a closed PR are torn down, an open one is not', acts.map((a) => [a.type, a.pr, a.why]), [['teardown', '42', '#42 merged'], ['teardown', '43', '#43 closed']]);
 t('AC3 the delete steps are filled for that PR', acts[0].cmds, ['./env.sh unset feat/a', 'neonctl branches delete feat-a']);
 t('a PR whose state cannot be read is left (negative control)', teardownCalls({ records, recipe, states: {} }), []);
+t('a closed PR the pass still owes a reopen keeps its database and override', teardownCalls({ records, recipe, states: { 42: 'MERGED', 43: 'CLOSED' }, owed: ['43'] }).map((a) => a.pr), ['42']);
+t('a merged PR is torn down even with a reopen marker left (negative control)', teardownCalls({ records, recipe, states: { 42: 'MERGED' }, owed: [42] }).map((a) => a.pr), ['42']);
+t('AC2 hasPreviewDb reads the record by PR number', [hasPreviewDb(state, 43), hasPreviewDb(state, '45')], [true, false]);
+const s5 = readFileSync(new URL('../skills/desk-autopilot/references/worker-contract-stage-5.md', import.meta.url), 'utf8');
+t('AC2 the contract keeps a preview-database PR off the evidence workflow', /never through §4 Evidence workflow/.test(s5), true);
 t('a recipe gone from the config is the person\'s', teardownCalls({ records: records.slice(0, 1), recipe: null, states: { 42: 'MERGED' } }).map((a) => [a.type, a.list]), [['report', 'failed']]);
 const ran = [];
 const r42 = teardown(acts[0], { state, run: (c) => { ran.push(c); return { ok: true, code: 0, out: '' }; }, now: () => 'T' });

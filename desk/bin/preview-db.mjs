@@ -124,6 +124,10 @@ export function readRecords(state) {
     try { return [{ ...JSON.parse(readFileSync(join(recordsDir(state), f), 'utf8')), file: join(recordsDir(state), f) }]; } catch { return []; }
   });
 }
+// Whether PR `pr` has a preview database. Its evidence is then never §4 Evidence workflow's: that
+// workflow writes its shots straight into the PR body, where no error-page check (checkShots) can read
+// them, so its cells go to a worker's own capture, which checks every shot before it is posted.
+export const hasPreviewDb = (state, pr) => readRecords(state).some((r) => String(r.pr) === String(pr));
 export function writeRecord(state, rec) {
   mkdirSync(recordsDir(state), { recursive: true });
   const { file: _f, ...body } = rec;
@@ -151,14 +155,18 @@ export function runUp({ call, run, record, repo, now = () => new Date().toISOStr
 }
 
 // ---- the pass: delete each once its PR merges or closes --------------------------------------
-// snap: { records, states: { [pr]: 'OPEN' | 'MERGED' | 'CLOSED' | null }, recipe }. A PR whose state
-// cannot be read is left until it can be.
+// snap: { records, states: { [pr]: 'OPEN' | 'MERGED' | 'CLOSED' | null }, recipe, owed }. A PR whose
+// state cannot be read is left until it can be. `owed` holds the PRs the pass closed to start their CI
+// and still owes a reopen (queue-store.mjs owesReopen): closed for now, not for good, so their database
+// and override stay for the preview the reopen rebuilds.
 // -> [{ type: 'teardown', pr, rec, cmds, why }] and [{ type: 'report', list, line }].
-export function teardownCalls({ records, states, recipe }) {
+export function teardownCalls({ records, states, recipe, owed = [] }) {
   const actions = [];
+  const reopens = new Set([...owed].map(String));
   for (const rec of records) {
     const st = states[rec.pr];
     if (st !== 'MERGED' && st !== 'CLOSED') continue;
+    if (st === 'CLOSED' && reopens.has(String(rec.pr))) continue;
     const why = `#${rec.pr} ${st.toLowerCase()}`;
     if (!recipe || recipe.errors || !recipe.steps.delete) {
       actions.push({ type: 'report', list: 'failed', line: `preview database ${rec.db} for ${rec.branch} (${why}) is not deleted: §4 Preview database ${recipe?.errors ? `does not parse (${recipe.errors.join('; ')})` : 'has no delete step'}. Delete it and ${rec.branch}'s preview override yourself, then remove ${rec.file}` });

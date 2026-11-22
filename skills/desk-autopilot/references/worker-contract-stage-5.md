@@ -166,8 +166,10 @@ you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease 
   `node ~/.claude/desk/bin/preview-db.mjs up <your branch> <your PR>` before capturing or dispatching
   anything. It makes the database branch named after your branch, applies your migrations and the
   seed, sets the override for your preview branch only and rebuilds the preview; the pass deletes
-  both once the PR merges or closes, so never delete them yourself. Then capture as above, or
-  dispatch §4 Evidence workflow (`desk-env list evidence-workflow`; Stage 3 file, §6). Where §3 `worker-preview-db` is not `yes`, park
+  both once the PR merges or closes, so never delete them yourself. Then capture as above, yourself:
+  never through §4 Evidence workflow, which posts its shots straight into the body where no
+  error-page check reads them (`evidence.mjs dispatch` refuses such a PR, and the pass starts no
+  evidence run for it). Where §3 `worker-preview-db` is not `yes`, park
   naming the row, with the command. **A step that fails is a park quoting it**: `up` prints a
   `PARK:` line naming the step, its command and its error; copy it into your `AUTOPILOT_PARK`
   verbatim, with the rest of the tail. Never take the evidence against staging instead. A refusal
