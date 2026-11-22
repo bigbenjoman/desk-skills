@@ -18,14 +18,6 @@ export const WORKER_TOOLS = [
   'TaskStop', 'ToolSearch', 'WebFetch', 'WebSearch', 'Write',
 ];
 
-// Tools a worker cannot use to any effect, with why: never offered, and the worker tools suite fails
-// any file a worker reads that names one, so prose cannot keep a dead tool offered or a dead step alive.
-// A park's channel is the park file and the next pass (worker contract section 1).
-export const UNREACHABLE = {
-  SendMessage: 'a worker starts with --setting-sources "", often on another Claude login, so it can never reach the orchestrator\'s agent registry',
-  ListAgents: 'it lists only the agent registry of the worker\'s own login, which never holds the orchestrator',
-};
-
 // Triage and its lane challenge read code through git, read the routing file, and write one record.
 export const TRIAGE_TOOLS = ['Bash', 'Read', 'Write'];
 
