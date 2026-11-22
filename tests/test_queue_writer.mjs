@@ -1,4 +1,5 @@
 // suite: queue writer (a pass's changes in one locked, versioned write; done tickets archived)
+// layer: L2
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';

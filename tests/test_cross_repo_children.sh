@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: cross-repo children (plan-batch sends a ticket to the repo its Jira Repository names)
+# layer: L2
 # plan-batch on fixture triage records with two repos configured: a ticket whose Repository names the
 # other repo reads ELSEWHERE, stays out of this queue and is admitted there by intake.mjs admit (a stub
 # here), run in that repo's checkout; a ticket here blocked by it is held until it is Done in Jira; a

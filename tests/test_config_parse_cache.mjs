@@ -1,4 +1,5 @@
 // suite: desk-env config parse cache (each config.md read once until it changes)
+// layer: L2
 // covers: desk/bin/desk-env.mjs
 // Fixture repo configs and queues under a throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT; reads of
 // config.md are counted by wrapping fs.readFileSync before desk-env loads.

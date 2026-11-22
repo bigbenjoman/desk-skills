@@ -1,4 +1,5 @@
 // suite: epic batch commands (every desk/bin command on desk-autopilot's epic path names the epic's batch)
+// layer: L1
 // covers: skills/desk-autopilot/** desk/bin/**
 // An epic runs as its own batch beside the standing one, so a desk/bin command run on its path without
 // `--batch <EPIC>` acts on the standing batch. The epic path is desk-autopilot's epic-batch.md (the

@@ -1,4 +1,5 @@
 // suite: check-build (§4 Check builds: where a build runs, what it is given, and the head's checkout)
+// layer: L2
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';

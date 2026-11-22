@@ -1,4 +1,5 @@
 // suite: post-merge watch (reverts and a red default branch within the watch, recorded once)
+// layer: L2
 import { rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';

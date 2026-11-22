@@ -1,4 +1,5 @@
 // suite: desk-env.mjs subcommand list (its switch equals DESK_ENV_COMMANDS; usage from it)
+// layer: L2
 // covers: desk/bin/desk-env.mjs
 // Scratch directories only.
 import { readFileSync, rmSync } from 'node:fs';

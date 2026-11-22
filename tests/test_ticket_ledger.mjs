@@ -1,4 +1,5 @@
 // suite: ticket ledger (typed events in one append-only log per repo, the reducer, the projection and the diff)
+// layer: L1
 import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';

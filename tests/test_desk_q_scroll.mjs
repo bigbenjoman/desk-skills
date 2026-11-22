@@ -1,4 +1,5 @@
 // suite: desk-q scrolling (what one wheel notch, one input read and one refresh start and read)
+// layer: L2
 // covers: desk/bin/desk-q.mjs desk/bin/needs-you.mjs desk/bin/batches.mjs desk/bin/queue.mjs desk/bin/batch-state.mjs
 // The real interactive() on injected input and output, against fixture repos under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. It counts subprocess starts and file reads, never milliseconds, so it

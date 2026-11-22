@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: merge driver: merge holds and the person's steps (offline, fake gh)
+# layer: L3
 # The real merge-driver.sh and gate.mjs, one loop at a time, set up by merge_driver_setup.sh: §4 Merge
 # holds (code owners and hold routines too), a green PR held on the person's step or instruction, and
 # a green feature merged with no GitHub approval.

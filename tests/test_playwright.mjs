@@ -1,4 +1,5 @@
 // suite: playwright lookup and saved GitHub login
+// layer: L2
 // findPlaywright: desk's own pinned Playwright, never the repo's; DESK_PLAYWRIGHT overrides it.
 // The saved login: a storage state, and whether it is missing or expired before a browser opens.
 import { mkdirSync, writeFileSync, readFileSync, rmSync, statSync, existsSync } from 'node:fs';

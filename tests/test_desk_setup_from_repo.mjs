@@ -1,4 +1,5 @@
 // suite: desk-setup from another repo (one table to confirm, the forced rows settled unasked)
+// layer: L1
 // covers: skills/desk-setup/SKILL.md skills/desk-setup/references/step-2-interview.md
 // What /desk-setup says when it starts from another repo's answers: the rows this repo forces are set
 // without a question, the rest are shown as one table to use, edit or ask row by row, and the red

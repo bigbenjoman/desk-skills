@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: supervisor (launchd and systemd passes, the merge driver, notifications)
+# layer: L2
 # supervisor.mjs with a fake pass.mjs, a fake merge driver, a fake launchctl and a fake osascript, as
 # on macOS (DESK_PLATFORM=darwin), then a fake systemctl and a fake notify-send, as on Linux:
 # install writes a RunAtLoad agent with the interval, a tick runs one pass for a handed-over batch and

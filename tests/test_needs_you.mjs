@@ -1,4 +1,5 @@
 // suite: needs-you (every item desk-q counts as needing the person, and recording each answer)
+// layer: L2
 // budget: 115 DS-943 (831 checks over a dozen fixture worlds, each with git repos; 49-88 s on CI)
 // covers: desk/bin/needs-you.mjs desk/bin/asks.mjs desk/bin/decider.mjs skills/desk-needs-you/**
 // Fixture repos, queues, heartbeats, triage records and decision logs under a throwaway HOME,

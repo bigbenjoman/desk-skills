@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: merge driver: loops, releases and its log (offline, fake gh)
+# layer: L3
 # The real merge-driver.sh and gate.mjs, one loop at a time, set up by merge_driver_setup.sh: which PR
 # merges in a loop, the held tickets a merge releases (the driver's and pass.mjs's), a feature spine, a
 # stop in the pause, and --log with its rotation.

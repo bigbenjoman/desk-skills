@@ -1,4 +1,5 @@
 // suite: config row references (review-asks reads §4's house bar; worker skills name §3b/§4 rows with their desk-env call)
+// layer: L2
 // covers: desk/bin/desk-env.mjs desk-config.md skills/desk-setup/SKILL.md skills/desk-ticket/** skills/desk-review/** skills/desk-pr/** skills/desk-review-response/** skills/desk-dev/** skills/desk-jira/** skills/desk-kiss/** skills/desk-autopilot/references/**
 // `desk-env get review-asks` prints §4 "What review here consistently asks for", one ask per line,
 // and exits 3 while it is TODO or still says "Not mined". Every file a worker reads names each §3b

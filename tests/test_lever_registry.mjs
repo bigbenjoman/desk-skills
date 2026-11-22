@@ -1,4 +1,5 @@
 // suite: lever registry (each lever's layer, metrics, trips, code and preconditions in one place)
+// layer: L1
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';

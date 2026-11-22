@@ -1,4 +1,5 @@
 // suite: base conflict fix (a batch base in conflict with the default branch goes to a worker, twice)
+// layer: L1
 import { baseFixCall, baseFixOutcome, lockWaitPark, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from '../desk/bin/base-fix.mjs';
 import { epicDue, epicCarry } from '../desk/bin/batch-state.mjs';
 let fails = 0;

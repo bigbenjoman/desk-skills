@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: blast radius (plan-batch merges relocate, schema, shared, then surface work)
+# layer: L2
 # plan-batch on fixture triage records, offline: the order it prints and why, the merge chain it
 # makes between tickets that share files, and Jira Blocks links winning where they contradict the
 # kinds. Scratch HOME, state and queue only.

@@ -1,4 +1,5 @@
 // suite: desk-q rereads on change (an idle open screen rereads no queue and starts no process)
+// layer: L2
 // covers: desk/bin/desk-q.mjs
 // The real interactive() on injected input and output and a fake clock, against a fixture repo under a
 // throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT. Its batch is handed to the supervisor, so every

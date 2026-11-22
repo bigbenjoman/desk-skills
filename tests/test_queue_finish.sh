@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: queue finish (a parked ticket whose last step the orchestrator finished)
+# layer: L2
 # queue.mjs finish records a parked ticket done on its PR, as the pass records one whose draft PR it
 # opened, and refuses a ticket that is not parked and a PR that is not open or merged, from a fork, on
 # another branch or into another base. A running, held or claimed ticket, a spine or plan park, and a

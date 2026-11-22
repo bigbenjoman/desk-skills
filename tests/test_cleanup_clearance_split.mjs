@@ -1,4 +1,5 @@
 // suite: desk-cleanup and desk-clearance split (a core of 20 KB or less, each step's rules in its own file)
+// layer: L1
 // covers: skills/desk-cleanup/** skills/desk-clearance/**
 // tests/fixtures/desk-<skill>-before-split.md is each SKILL.md as one file. Every heading, table row
 // and paragraph of it must still be in the core or exactly one reference file, the core must name

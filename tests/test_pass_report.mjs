@@ -1,4 +1,5 @@
 // suite: pass phase: report (base drift, the report's lines, the groups and the verdict)
+// layer: L1
 import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict } from '../desk/bin/pass/report.mjs';
 import { inputsHash, questionKey, lookup } from '../desk/bin/not-now.mjs';
 import { HELD_PREFIX } from '../desk/bin/batch-state.mjs';

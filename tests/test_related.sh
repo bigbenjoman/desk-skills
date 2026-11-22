@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: related tests (tests/related.sh runs the suites scope_sections.mjs picks, else every suite)
+# layer: L2
 # tests/related.sh in a scratch repo holding copies of it, tests/run.sh and tests/scope_sections.mjs,
 # a toy desk/bin/desk-env.mjs, and four toy suites: test_a.sh, test_b.sh and test_c.sh name lib/a.sh,
 # lib/b.sh and lib/c.sh (test_c.sh also an export desk-env.mjs gains), test_lint.sh always runs.
