@@ -96,15 +96,17 @@ log that one. Where every option breaks one, park before the PR, quoting it.
 where a script can read what clears it: write it as `desk-autopilot` *Ask or take*'s table of forms
 shows, and run `clears-when.mjs --check` on it first.
 
-
 When the call parks, or `desk-ticket` says stop and wait for anything else:
 
-1. **Write the park file**, `$DESK_STATE/parks/<TICKET>.json`: `{"question": "<one line>"}`, the
-   same text as your `AUTOPILOT_PARK` line. A
-   park on a write config §3 does not grant says "awaiting approval" and adds the write, verbatim:
-   `"approve": {"kind": "jira-comment", "target": "<ticket, or PR number>", "body": "<the exact text>"}`
-   (or `jira-transition`, `jira-edit`, `jira-ticket`, `pr-body`, `pr-review`). needs-you prints
-   that body under the question; with no `approve` the pass reports the park incomplete.
+1. **Write the park file**, `$DESK_STATE/parks/<TICKET>.json`: `question` is your `AUTOPILOT_PARK`
+   text. A park on a write §3 does not grant says "awaiting approval" and adds it verbatim as
+   `approve` (`kind` also `jira-transition`, `jira-edit`, `jira-ticket`, `pr-body`, `pr-review`),
+   which needs-you prints; a park without it is incomplete. Else no `approve`:
+
+   <!-- contract: park -->
+   ```json
+   {"question": "<one line>", "approve": {"kind": "jira-comment", "target": "<ticket or PR>", "body": "<exact text>"}}
+   ```
 2. **Print the question**, at the start of a line and never inside a code fence:
    `AUTOPILOT_PARK: <one-line question>`, with the full payload (the exact Jira text, the PR body,
    the diff) in your output above it. The file and that line are the whole channel, read by the next
