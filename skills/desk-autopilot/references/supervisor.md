@@ -49,8 +49,8 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
 - sends one desktop notification, titled with the repo, for the pass's `push` entries the last
   notification did not carry (the check-in digest, a production-broken park), or for a pass that
   refused or failed. This replaces Stage 6b while the supervisor runs;
-- starts the merge driver while tickets are still to merge and no driver holds the repo's lock (the
-  standing batch's `<state>/merge-driver/repo.lock.d`), where §3 `autopilot-merge` and `pr-merge-green` are both `yes` or the
+- starts the merge driver while tickets are still to merge and no driver holds the repo's lock (`repo.lock.d`
+  in the standing batch's `merge-driver` state folder), where §3 `autopilot-merge` and `pr-merge-green` are both `yes` or the
   batch's `approved.merge` is `true`. Declined, it starts none, and each green PR the pass lists as
   `READY TO MERGE` goes to the next check-in digest. One driver runs for all of the repo's batches
   (`merge-driver.sh --all-batches`, its log the standing batch's `merge-driver.log`): each sweep it
