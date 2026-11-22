@@ -103,6 +103,19 @@ r = upload('', { DESK_AUTOPILOT_STATE: pumping }, ['--state', own]);
 t('DS-550 AC2: a record it cannot read uploads nothing (exit 6)', `${r.status} ${/could not be read/.test(r.stderr)} ${readFileSync(body, 'utf8').includes('_drag after-desktop.png_')}`, '6 true true');
 r = upload('', { DESK_AUTOPILOT_STATE: pumping });
 t('DS-550 AC5: a state dir with no record uploads every file (negative control)', `${r.status}`, '0');
+// By hand, in a shell that pins no batch, a record a named batch holds still gates the upload.
+const unpinned = { DESK_AUTOPILOT_STATE: '', DESK_BATCH: '', DESK_QUEUE: '' };
+const named = join(T, 'home', '.desk-autopilot', 'acme__widgets', 'batches', 'EPIC-1');
+mkdirSync(join(named, 'preview-db'), { recursive: true });
+mkdirSync(join(deskHome, 'repos', 'acme__widgets', 'batches', 'EPIC-1'), { recursive: true });
+writeFileSync(join(deskHome, 'repos', 'acme__widgets', 'batches', 'EPIC-1', 'queue.json'), '{"tickets":{}}\n');
+writeFileSync(join(named, 'preview-db', '7.json'), `${JSON.stringify({ pr: '7', branch: 'feat/x', db: 'feat-x', steps: ['create'],
+  checked: { head: 'a'.repeat(40), at: 'T', shots: 1, files: { 'after-desktop.png': fileSha(join(sandbox.images, 'after-desktop.png')) } } })}\n`);
+r = upload('', unpinned);
+t('DS-550 AC2: run by hand with no batch named, a named batch\'s record still gates the upload', `${r.status} ${readFileSync(body, 'utf8').includes('_drag after-mobile.png_')} ${readFileSync(body, 'utf8').includes('_drag after-desktop.png_')}`, '4 true false');
+rmSync(join(named, 'preview-db', '7.json'));
+r = upload('', unpinned);
+t('DS-550 AC5: by hand, with no batch holding a record, every file is uploaded (negative control)', `${r.status}`, '0');
 
 rmSync(T, { recursive: true, force: true });
 console.log(`${fails ? 'FAIL ' : ''}${fails} failed`);

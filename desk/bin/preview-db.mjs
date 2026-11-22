@@ -27,7 +27,7 @@
 // batch is not idle while a record is left, and is not archived (batch.mjs archiveCheck), so its pass
 // keeps running until each is deleted or handed to the person.
 import { spawnSync, execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { basename, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +36,7 @@ import { MIGRATION_DIR } from './migration-renames.mjs';
 import { SCREENSHOT_FILE } from './desk-env.mjs';
 import { isPrNumber, ownOpenPrRefusal, readPrView } from './own-pr.mjs';
 import { fileSha, REJECTED_DIR } from './upload-batches.mjs';
+import { writeTextAtomic } from './dir-lock.mjs';
 
 const UP_STEPS = Object.freeze(['create', 'migrate', 'seed', 'override', 'rebuild']);
 const NEEDED = Object.freeze(['create', 'migrate', 'override', 'rebuild', 'delete']);
@@ -177,13 +178,10 @@ export function uploadHold(state, pr, dir, shots) {
   const unchecked = shots.filter((f) => { try { return passed[f] !== fileSha(join(dir, f)); } catch { return true; } });
   return unchecked.length ? `#${pr} has a preview database, and ${unchecked.join(', ')} did not pass preview-db.mjs check as ${unchecked.length === 1 ? 'it is' : 'they are'}` : null;
 }
+// Written atomically, so no reader (checkedShas, the gate) ever sees a half-written record.
 export function writeRecord(state, rec) {
-  mkdirSync(recordsDir(state), { recursive: true });
   const { file: _f, ...body } = rec;
-  // Written aside and renamed in, so no reader (checkedShas, the gate) ever sees a half-written record.
-  const file = recordFile(state, rec.pr);
-  writeFileSync(`${file}.${process.pid}.tmp`, `${JSON.stringify(body)}\n`);
-  renameSync(`${file}.${process.pid}.tmp`, file);
+  writeTextAtomic(recordFile(state, rec.pr), `${JSON.stringify(body)}\n`);
 }
 
 // `up`'s steps in order, stopping at the first failure. run(cmd) -> { ok, code, out }; record(rec) is

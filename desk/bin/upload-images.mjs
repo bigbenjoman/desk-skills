@@ -51,13 +51,14 @@ import { execFileSync } from 'node:child_process';
 import { runUpload, shotIndex, UploadStop } from './upload-batches.mjs';
 import { logUpload, uploadLogFile } from './upload-log.mjs';
 import { findComposer, EXIT_PAGE_CHANGED, NO_COMPOSER, NO_FILE_INPUT } from './pr-composer.mjs';
-import { permission, permissionKey, browserProfile, ghRepo, stateDir, DeskConfigError, psRows } from './desk-env.mjs';
+import { permission, permissionKey, browserProfile, ghRepo, DeskConfigError, psRows } from './desk-env.mjs';
+import { runBatches } from './batches.mjs';
 import { checkedShas } from './preview-db.mjs';
 import { findPlaywright, importPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies, loginState } from './find-playwright.mjs';
 
 // --state <dir>: the state dir of the batch whose job this is, where its PR's preview-database record
 // is (pass.mjs passes it on every job, as a job another batch's pass runs has that pass's environment).
-// By hand, without it, this batch's own (desk-env stateDir).
+// By hand, without it, every batch of the repo is read (below).
 const args = process.argv.slice(2);
 const flags = {};
 const rest = [];
@@ -113,9 +114,15 @@ if (!shotIndex(dir).size) { console.error(`no images in ${dir} or a folder under
 
 // A PR with a preview database posts only the files its last passing error-page check read, whichever
 // route queued this upload: the advance step, the undraft step, a crashed upload tried again, a paced job.
+// The record is read from --state; else, run by hand, from every batch of this repo (the one pinned by
+// DESK_BATCH or DESK_AUTOPILOT_STATE, or with none pinned each one listed), as the person's shell names
+// no batch while the PR's record may sit in a named one. Two batches holding a record for it is refused.
 let passed;
 try {
-  passed = checkedShas(flags.state ?? stateDir(), pr);
+  const states = flags.state ? [flags.state] : runBatches().map((b) => b.state);
+  const found = states.map((s) => ({ s, shas: checkedShas(s, pr) })).filter((x) => x.shas);
+  if (found.length > 1) throw new Error(`more than one batch holds a preview-database record for it (${found.map((x) => x.s).join(', ')}); name one with --state`);
+  passed = found[0]?.shas ?? null;
 } catch (e) {
   console.error(`[upload] whether PR #${pr} has a preview database could not be read (${e.message}), so nothing is uploaded`);
   process.exit(6);

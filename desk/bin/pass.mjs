@@ -38,7 +38,6 @@ import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
-import { EXIT_PACED } from './upload-batches.mjs';
 import { renderLedger, syncLedger } from './ledger.mjs';
 import { limitName } from './usage-limit.mjs';
 import { probeShared, probeDue, noReadingProbeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
@@ -737,17 +736,16 @@ function runUploadJob(job, max) {
   else delete env.DESK_UPLOAD_APPROVED;
   // The job's own batch's state dir, where its PR's preview-database record is: another batch's job run
   // here keeps this pass's DESK_BATCH and DESK_AUTOPILOT_STATE (otherRepoEnv), which name this batch. A
-  // job queued before jobs carried it is not run here: it is left queued, as a paced job is, for its own
-  // pass, which reads its own state.
+  // job queued before jobs carried it is never run here (uploadable): it stays queued for its own pass.
   const state = own ? STATE : job.state;
-  if (!state) return { code: EXIT_PACED, out: `[upload] job ${job.key} for #${job.pr} names no state dir, so whether its PR has a preview database cannot be read here; left queued for its own pass` };
   const run = shOut('node', [join(BIN, 'upload-images.mjs'), String(job.pr), job.dir, '--max', String(max), '--state', state], { env, ...(own ? {} : { cwd: job.root }) });
   return { code: run.ok ? 0 : run.code, out: run.out };
 }
+const uploadable = (job) => job.queue === QUEUE_FILE || !!job.state;
 function pumpUploads() {
   if (DRY) return;
   try {
-    uploadStop = UQ.pump({ run: runUploadJob, tried: pumpedThisPass }).stop;
+    uploadStop = UQ.pump({ run: runUploadJob, tried: pumpedThisPass, eligible: uploadable }).stop;
   } catch (e) { report.failed.push(`the machine's upload queue did not run: ${e.message}; the next pass tries again`); }
   let results = [];
   try { results = UQ.takeResults(QUEUE_FILE); } catch (e) { report.failed.push(`the upload queue's results were not read: ${e.message}; the next pass reads them`); }

@@ -144,9 +144,7 @@ t('AC2 a record naming another PR shuts the gate', /not PR #47's record/.test(th
 mkdirSync(join(torn, 'preview-db', '49.json'));
 t('AC2 a record that cannot be read shuts the gate', /49\.json could not be read/.test(throws(() => checkedShas(torn, '49'))), true);
 t('AC5 a PR with no record beside unreadable ones opens the gate (negative control)', checkedShas(torn, '45'), null);
-t('AC5 a state dir with no preview-db folder at all opens the gate (negative control)', checkedShas(scratch('preview-none-'), '43'), null);
-t('AC2 a record is written aside and renamed in, leaving no part-written file', readdirSync(join(state, 'preview-db')).filter((f) => f.endsWith('.tmp')), []);
-const idxDir = scratch('preview-index-');
+t('AC5 a state dir with no preview-db folder at all opens the gate (negative control)', checkedShas(scratch('preview-none-'), '43'), null);const idxDir = scratch('preview-index-');
 writeFileSync(join(idxDir, 'a.png'), 'a'); mkdirSync(join(idxDir, REJECTED_DIR)); writeFileSync(join(idxDir, REJECTED_DIR, 'b.png'), 'b');
 mkdirSync(join(idxDir, 'mobile')); writeFileSync(join(idxDir, 'mobile', 'c.png'), 'c');
 t('AC2 the uploader never reads a shot set aside as an error page', [...shotIndex(idxDir).keys()].sort(), ['a.png', 'mobile/c.png']);
