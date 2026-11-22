@@ -1156,6 +1156,13 @@ t('a park with nothing unpushed has no note', yItems()['Y-4'].note, undefined);
   const line = N.listText(N.collect({ word: 'ds864' })).split('\n').find((l) => l.startsWith('ds864 S-1 ')) ?? '';
   t('DS-864 AC1 the stale park is listed in needs-you, its line naming the new head and that the commit can no longer land, and one still waiting on its commit is not',
     `${items.map((i) => i.t.key).join()} ${line.includes('The branch origin/fix/S-1 has moved to 41736d45a, which 68c709f5a does not build on, so 68c709f5a can no longer land there')}`, 'S-1 true');
+  // Restated with a new condition, a park needs-you still lists (lane C needs a session) drops the old why.
+  put('ds864b', { port: 4952, beat: 1, supervised: true, tickets: {
+    'S-3': { state: 'parked', lane: 'C', branch: 'fix/S-3', park: { question: 'push 68c709f5a onto fix/S-3', since: minsAgo(40), clears_when: { kind: 'pr-merged', pr: 41 }, stale } },
+  } });
+  const restated = N.collect({ word: 'ds864b' }).items;
+  t('DS-864 a stale park given a new condition no longer carries the old why',
+    `${restated.map((i) => i.t.key).join()} ${String(restated[0]?.note ?? '').includes('moved to')}`, 'S-3 false');
 }
 t('#775 a park awaiting approval of a write carries its exact text, whole, under its line',
   yList.slice(yList.indexOf(yLine('Y-5')) + 2, yList.indexOf(yLine('Y-5')) + 4).join('\n'), 'Line one.\n"Quoted" line two.');

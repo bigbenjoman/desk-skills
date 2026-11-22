@@ -318,22 +318,24 @@ export function describeCond(c) {
 // and returns {ok, code, out}. A commit the branch lacks can still land while the branch head is an
 // ancestor of it (a push fast-forwards); once the branch has moved to a head that is not, it never can,
 // and `never` says so, naming that head. Not on a branch that takes commits by merging PRs (`merges`:
-// the default branch, a batch base), whose head moving on is how the commit arrives.
+// the default branch, a batch base), whose head moving on is how the commit arrives. The head is read
+// once, so a fetch moving the ref between the two checks cannot read as neither.
 export function commitOnBranch(git, sha, branch, { merges = false } = {}) {
   const not = { holds: false, note: `${sha} is not on origin/${branch} yet` };
   if (!git(['cat-file', '-e', `${sha}^{commit}`]).ok) return not;
   const ref = `origin/${branch}`;
+  const tip = git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+  if (!tip.ok) throw new Error(`git rev-parse ${ref}: ${String(tip.out).split('\n').pop() || 'no such ref'}`);
+  const head = String(tip.out).trim();
   const isAncestor = (a, b) => {
     const r = git(['merge-base', '--is-ancestor', a, b]);
     if (r.ok) return true;
     if (r.code === 1) return false;
     throw new Error(`git merge-base ${a} ${b}: ${String(r.out).split('\n').pop()}`);
   };
-  if (isAncestor(sha, ref)) return { holds: true };
-  if (merges || isAncestor(ref, sha)) return not;
-  const head = git(['rev-parse', '--short=9', ref]);
-  if (!head.ok) throw new Error(`git rev-parse ${ref}: ${String(head.out).split('\n').pop()}`);
-  return { holds: false, never: `the branch ${ref} has moved to ${head.out.trim()}, which ${sha} does not build on, so ${sha} can no longer land there: the push it waits on is stale` };
+  if (isAncestor(sha, head)) return { holds: true };
+  if (merges || isAncestor(head, sha)) return not;
+  return { holds: false, never: `the branch ${ref} has moved to ${head.slice(0, 9)}, which ${sha} does not build on, so ${sha} can no longer land there: the push it waits on is stale` };
 }
 
 // Does it hold now? {holds: bool, note?} or {error}. `note` is what the next worker or the report

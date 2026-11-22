@@ -1224,7 +1224,9 @@ const clearsRead = {
   // From origin as fetched now. A commit not here after the fetch is on no branch this clone has.
   commitOn: (sha, branch) => {
     cached(`fetch:${branch}`, () => readOrThrow(`git fetch ${branch}`, 'git', ['-C', MAIN, 'fetch', '-q', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]));
-    const merges = branch === E.configValue('default-branch') || branch === E.batchBase();
+    // READ_BRANCH is the default branch with the schema's `main` when the row is unset; DEFAULT_BRANCH
+    // also honours DESK_DEFAULT_BRANCH and a batch's base.
+    const merges = [READ_BRANCH, DEFAULT_BRANCH, E.batchBase()].includes(branch);
     return commitOnBranch((args) => shOut('git', ['-C', MAIN, ...args]), sha, branch, { merges });
   },
   ticket: (key) => cached(`ticket:${key}`, () => {

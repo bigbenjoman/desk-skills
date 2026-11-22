@@ -617,34 +617,29 @@ g commit -q --allow-empty -m fix; ahead=$(g rev-parse HEAD)   # the fix, one pas
 g checkout -q main; g commit -q --allow-empty -m main2; g push -q origin main
 g checkout -q -b moved "$landed"; g merge -q --no-edit main; g push -q origin moved:fix/Y   # fix/Y moved by a merge that leaves the fix out
 moved=$(g rev-parse --short=9 HEAD); g fetch -q origin
-r=$(node --input-type=module -e "
+# cob <js expression>: prints it, with `git` (the fixture clone), `at(sha, branch)` (checkCond's answer) and
+# commitOnBranch in scope.
+cob(){ node --input-type=module -e "
 import { execFileSync } from 'node:child_process';
 import { checkCond, commitOnBranch } from '$B/clears-when.mjs';
 const git = (args) => { try { return { ok: true, out: execFileSync('git', ['-C', '$F/c', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }; } catch (e) { return { ok: false, code: e.status, out: String(e.stderr) }; } };
 const read = { commitOn: (sha, branch) => commitOnBranch(git, sha, branch) };
 const at = (sha, branch) => JSON.stringify(checkCond({ kind: 'commit-on', sha, branch }, read));
-console.log([at('${ahead:0:9}', 'fix/Y'), at('${landed:0:9}', 'fix/Y'), at('0123456789', 'fix/Y'),
-  JSON.stringify(commitOnBranch(git, '${ahead:0:9}', 'main', { merges: true }))].join('|'));
-")
+console.log($1);
+"; }
+r=$(cob "[at('${ahead:0:9}', 'fix/Y'), at('${landed:0:9}', 'fix/Y'), at('0123456789', 'fix/Y'),
+  JSON.stringify(commitOnBranch(git, '${ahead:0:9}', 'main', { merges: true }))].join('|')")
 check "DS-864 AC1 a commit its branch has moved past, by a merge that leaves it out, can never hold, naming the branch's new head" \
   '[ "$(cut -d"|" -f1 <<< "$r")" = "{\"holds\":false,\"never\":\"the branch origin/fix/Y has moved to $moved, which ${ahead:0:9} does not build on, so ${ahead:0:9} can no longer land there: the push it waits on is stale\"}" ]'
 g push -q origin "$ahead:refs/heads/fix/Y" --force; g fetch -q origin
-r2=$(node --input-type=module -e "
-import { execFileSync } from 'node:child_process';
-import { commitOnBranch } from '$B/clears-when.mjs';
-const git = (args) => { try { return { ok: true, out: execFileSync('git', ['-C', '$F/c', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }; } catch (e) { return { ok: false, code: e.status, out: String(e.stderr) }; } };
-console.log(JSON.stringify(commitOnBranch(git, '${ahead:0:9}', 'fix/Y')));
-")
+r2=$(cob "JSON.stringify(commitOnBranch(git, '${ahead:0:9}', 'fix/Y'))")
 g push -q origin "$landed:refs/heads/fix/Y" --force; g fetch -q origin
-r3=$(node --input-type=module -e "
-import { execFileSync } from 'node:child_process';
-import { commitOnBranch } from '$B/clears-when.mjs';
-const git = (args) => { try { return { ok: true, out: execFileSync('git', ['-C', '$F/c', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }; } catch (e) { return { ok: false, code: e.status, out: String(e.stderr) }; } };
-console.log(JSON.stringify(commitOnBranch(git, '${ahead:0:9}', 'fix/Y')));
-")
+r3=$(cob "JSON.stringify(commitOnBranch(git, '${ahead:0:9}', 'fix/Y'))")
+r4=$(cob "at('${ahead:0:9}', 'gone/Z')")
 check "DS-864 AC2 a commit its branch head is still an ancestor of waits as before" \
   '[ "$r3" = "{\"holds\":false,\"note\":\"${ahead:0:9} is not on origin/fix/Y yet\"}" ]'
 check "DS-864 AC3 a commit on its branch holds as before" '[ "$r2" = "{\"holds\":true}" ] && [ "$(cut -d"|" -f2 <<< "$r")" = "{\"holds\":true}" ]'
+check "DS-864 a branch origin does not have could not be checked, so the park is left as it is" '[[ "$r4" == "{\"error\":\"git rev-parse origin/gone/Z: "* ]]'
 check "DS-864 a commit this clone lacks waits as before" '[ "$(cut -d"|" -f3 <<< "$r")" = "{\"holds\":false,\"note\":\"0123456789 is not on origin/fix/Y yet\"}" ]'
 check "DS-864 the default branch or a batch base moving on is how a PR's commit arrives, so it waits as before" \
   '[ "$(cut -d"|" -f4 <<< "$r")" = "{\"holds\":false,\"note\":\"${ahead:0:9} is not on origin/main yet\"}" ]'

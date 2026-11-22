@@ -4,7 +4,7 @@ import { runPhase, runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds,
   decideMergeHolds } from '../desk/bin/pass/parks.mjs';
 import { HELD_PREFIX, STOPPED_PREFIX, badLabelText, IDLE_RECHECK_MS, isHeld, parkKind, personStepPark } from '../desk/bin/batch-state.mjs';
-import { newPark } from '../desk/bin/queue-writer.mjs';
+import { newPark, applySet } from '../desk/bin/queue-writer.mjs';
 import { shownState } from '../desk/bin/desk-q.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
@@ -65,8 +65,10 @@ const BASE_CONTAINS = 'base-contains';
   t('DS-864 AC1 a stale commit-on is recorded none, its why kept on the park, and nothing requeued',
     j([types(settles(as)), sets(as)]), j([['set'], ['park.clears_when={"kind":"none"}', `park.stale=${never}`]]));
   t('DS-864 AC1 and the pass says so', j(lines(as)), j([`A: "commit 68c709f5a on origin/fix/A" can never hold (${never}): recorded as none, for the person`]));
-  const after = { ...parked('A', { kind: 'none' }), lane: 'A', park: { question: 'push 68c709f5a onto fix/A', clears_when: { kind: 'none' }, stale: never } };
   const before = { ...parked('A', ON), lane: 'A', park: { question: 'push 68c709f5a onto fix/A', clears_when: ON } };
+  // The state desk-q reads is the one the pass's own writes leave.
+  const after = structuredClone(before);
+  applySet(after, sets(as));
   t('DS-864 AC4 desk-q shows it as needs you, where it showed waiting before', `${shownState({ tickets: byKey(before) }, before)} → ${shownState({ tickets: byKey(after) }, after)}`, 'waiting → needs');
 }
 {
