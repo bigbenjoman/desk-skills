@@ -20,6 +20,68 @@ export const HARDWARE_KEYS = Object.freeze([
 ]);
 // The sizes the proposal makes, in its order, each with the check a hand-set override must pass.
 const wholeAtLeast = (min) => (v) => /^\d+$/.test(v) && Number(v) >= min;
+const numberAtLeast = (min) => (v) => /^\d+(\.\d+)?$/.test(v) && Number(v) >= min;
+
+// ---- headroom admission ----------------------------------------------------------------------
+// Each lock pool, heavy (test-lock-slots) and light (light-lock-slots), has a floor of slots always
+// granted and a ceiling (test-lock-max, light-lock-max) it never passes. Between them a run is let in
+// only while the machine's load, free memory and memory pressure leave room for it (admission.mjs).
+// lock-admission says whether that runs: off, or shadow, which logs what it would do and grants
+// nothing. A row here that does not read makes admission off, so a typo never takes a slot away.
+const ADMISSION_MODES = Object.freeze(['off', 'shadow']);
+const ADMISSION_RULES = Object.freeze({
+  'lock-admission': { ok: (v) => ADMISSION_MODES.includes(v), want: ADMISSION_MODES.join(' or ') },
+  'light-lock-slots': { ok: wholeAtLeast(1), want: 'a whole number of slots, 1 or more' },
+  'light-lock-max': { ok: wholeAtLeast(1), want: 'a whole number of slots, 1 or more' },
+  'test-lock-max': { ok: wholeAtLeast(1), want: 'a whole number of slots, 1 or more' },
+  'admit-max-load': { ok: numberAtLeast(0), want: 'a number, the 1-minute load average to stay at or under' },
+  'admit-run-load': { ok: numberAtLeast(0), want: 'a number, the load one run adds' },
+  'admit-reserve-gb': { ok: numberAtLeast(0), want: 'a number of GB to keep free' },
+  'heavy-run-gb': { ok: numberAtLeast(0), want: 'a number of GB one heavy run takes' },
+  'light-run-gb': { ok: numberAtLeast(0), want: 'a number of GB one light run takes' },
+  'admit-max-pressure': { ok: numberAtLeast(1), want: 'a pressure level, 1 normal, 2 warn, 4 critical' },
+  'admit-ramp-s': { ok: wholeAtLeast(0), want: 'a whole number of seconds' },
+});
+const ADMISSION_KEYS = Object.freeze(Object.keys(ADMISSION_RULES));
+// Proposed rows whose value is another row's: each follows that row's override when a write keeps one.
+const FOLLOWS = Object.freeze({ 'test-lock-max': 'test-lock-slots', 'light-lock-max': 'light-lock-slots', 'admit-run-load': 'test-cap' });
+const ADMISSION_FIXED = Object.freeze({ 'lock-admission': 'off', 'admit-reserve-gb': '8', 'heavy-run-gb': '16', 'light-run-gb': '16', 'admit-max-pressure': '2', 'admit-ramp-s': '90' });
+// admit-max-load's default: this many times every CPU core, efficiency cores at full weight.
+const ADMIT_LOAD_PER_CORE = 1.67;
+const admitMaxLoad = (cores) => String(Math.round(ADMIT_LOAD_PER_CORE * (known(num(cores)) ? num(cores) : 4)));
+
+// The admission rows, read through `get(key)` (a profile value or null), each with its default where
+// unset: -> { rows: { key: number | string }, problems: [line] }. A row set but unreadable, or a ceiling
+// under its floor, is a problem naming the row and what it wants; any problem means mode off.
+// `testSlots` is the heavy floor as the test lock reads it (desk-env testLockSlots).
+export function admissionRows(get, { testSlots = null } = {}) {
+  const problems = [];
+  const raw = (k) => { const v = get(k); return v == null ? null : String(v).trim(); };
+  const rows = {};
+  for (const k of ADMISSION_KEYS) {
+    const v = raw(k);
+    if (v == null) continue;
+    if (!ADMISSION_RULES[k].ok(v)) { problems.push(`\`${k}\` is "${v}": want ${ADMISSION_RULES[k].want}`); continue; }
+    rows[k] = k === 'lock-admission' ? v : Number(v);
+  }
+  for (const [k, v] of Object.entries(ADMISSION_FIXED)) rows[k] ??= k === 'lock-admission' ? v : Number(v);
+  const slots = raw('test-lock-slots');
+  rows['test-lock-slots'] = testSlots ?? (wholeAtLeast(1)(slots ?? '') ? Number(slots) : 1);
+  rows['light-lock-slots'] ??= 1;
+  for (const [max, floor] of [['test-lock-max', 'test-lock-slots'], ['light-lock-max', 'light-lock-slots']]) {
+    if (rows[max] == null) { if (raw(max) == null) rows[max] = rows[floor]; continue; }
+    if (rows[max] < rows[floor]) problems.push(`\`${max}\` is "${rows[max]}": want a whole number of slots, at least \`${floor}\` (${rows[floor]})`);
+  }
+  if (rows['admit-max-load'] == null && raw('admit-max-load') == null) rows['admit-max-load'] = Number(admitMaxLoad(get('cpu-cores')));
+  if (rows['admit-run-load'] == null && raw('admit-run-load') == null) {
+    const cap = raw('test-cap');
+    if (wholeAtLeast(1)(cap ?? '')) rows['admit-run-load'] = Number(cap);
+    // Only a problem where admission would run: a profile with neither row and admission off is fine.
+    else if (rows['lock-admission'] !== 'off') problems.push('`admit-run-load` is unset and so is `test-cap`, its default: want a number, the load one run adds');
+  }
+  return { rows, problems, mode: problems.length ? 'off' : rows['lock-admission'] };
+}
+
 const SIZING_RULES = Object.freeze({
   'autopilot-concurrency': { ok: (v) => /^\d+ \/ \d+$/.test(v) && Number(v.split(' / ')[0]) >= 1 && Number(v.split(' / ')[0]) <= Number(v.split(' / ')[1]),
     want: '"<default> / <cap>", whole numbers with the default from 1 to the cap' },
@@ -29,6 +91,7 @@ const SIZING_RULES = Object.freeze({
   'test-lock-queue-factor': { ok: wholeAtLeast(1), want: 'a whole number, 1 or more' },
   'typecheck-lock-timeout-min': { ok: wholeAtLeast(0), want: 'a whole number of minutes' },
   'pre-push-lock-timeout-s': { ok: wholeAtLeast(0), want: 'a whole number of seconds' },
+  ...ADMISSION_RULES,
 });
 export const SIZING_KEYS = Object.freeze(Object.keys(SIZING_RULES));
 
@@ -78,11 +141,15 @@ export function leaseKindsProblem(raw) {
   if (unknown.length) return `\`lease-kinds\` names ${unknown.length === 1 ? 'an entry' : 'entries'} it does not know: ${unknown.map((e) => `"${e}"`).join(', ')}: want ${want}`;
   return Object.keys(modes).length ? null : `\`lease-kinds\` is empty: want ${want}`;
 }
-// The checks on Sizing rows a person may have edited by hand, one line each: today lease-kinds.
+// The checks on Sizing rows a person may have edited by hand, one line each: lease-kinds and the
+// admission rows, whose problems end with the locks granting as with lock-admission off.
+// A profile row's value as written (Sizing, else Hardware), TODO and all, or null.
+export const profileValue = (profile, k) => profile?.sizing?.[k]?.value ?? profile?.hardware?.[k]?.value ?? null;
 export function profileProblems(profile) {
   const v = profile?.sizing?.['lease-kinds']?.value;
   const bad = v == null ? null : leaseKindsProblem(v);
-  return bad ? [bad] : [];
+  const admit = admissionRows((k) => profileValue(profile, k)).problems.map((p) => `${p}; the locks grant as with \`lock-admission\` off`);
+  return [...(bad ? [bad] : []), ...admit];
 }
 // `bench-run-limit-<provider>`: the most runs the bench may start in a rolling week on a provider it
 // has no meter or allowance ledger for, which it otherwise refuses.
@@ -277,6 +344,15 @@ export function gather(plat = osPlatform()) {
 }
 
 // ---- the proposal ----------------------------------------------------------------------------
+// The cores test runs are sized on: the performance cores, plus each efficiency core at
+// efficiencyCoreWeight (an unknown count as none); 4 where the core count is unknown.
+function countedCores(hw, r = RULES) {
+  const cores = num(hw['cpu-cores']);
+  const perf = known(num(hw['performance-cores'])) ? num(hw['performance-cores']) : cores;
+  const eff = known(perf) && known(num(hw['efficiency-cores'])) ? Math.max(0, num(hw['efficiency-cores'])) : 0;
+  return { eff, counted: known(perf) ? Math.max(1, perf + Math.floor(eff * r.efficiencyCoreWeight)) : 4 };
+}
+
 // -> [{ key, value, why }] in SIZING_KEYS order; `why` is the arithmetic, shown before anything is
 // written and kept in the profile's Why column.
 export function propose(hw, r = RULES) {
@@ -305,9 +381,7 @@ export function propose(hw, r = RULES) {
   // test-cap test workers, so the slots share the counted cores between them: slots x test-cap stays
   // within them. An efficiency core counts as efficiencyCoreWeight of a performance core, and an
   // unknown count as none. Each slot also needs room beside the workers in their own heavy stage.
-  const eff = known(perf) && known(num(hw['efficiency-cores'])) ? Math.max(0, num(hw['efficiency-cores'])) : 0;
-  const effCounted = Math.floor(eff * r.efficiencyCoreWeight);
-  const testCores = known(perf) ? Math.max(1, perf + effCounted) : 4;
+  const { eff, counted: testCores } = countedCores(hw, r);
   const coresWhy = !known(perf) ? 'core count unknown: 4'
     : eff ? `the ${perf} performance cores and ${eff} efficiency cores at ${r.efficiencyCoreWeight} each, ${testCores} counted`
       : `the ${perf} performance cores`;
@@ -322,7 +396,30 @@ export function propose(hw, r = RULES) {
     `how long a typecheck waits on the lock before the wait is reported; with-lock.sh itself never times out`);
   add('pre-push-lock-timeout-s', r.prePushLockTimeoutS,
     'how long the pre-push hook waits for the test lock before skipping a typecheck or suite; CI runs it anyway');
+  const testCap = rows.find((s) => s.key === 'test-cap').value;
+  add('lock-admission', ADMISSION_FIXED['lock-admission'], 'off: the locks grant their floors only; shadow logs what headroom admission would grant above them');
+  add('light-lock-slots', 1, 'the light lock\'s floor: slots always granted');
+  add('light-lock-max', 1, 'the light lock\'s ceiling, never passed: its floor');
+  add('test-lock-max', slots, 'the test lock\'s ceiling, never passed: test-lock-slots');
+  add('admit-max-load', admitMaxLoad(hw['cpu-cores']), `round(${ADMIT_LOAD_PER_CORE} x ${known(num(hw['cpu-cores'])) ? `${num(hw['cpu-cores'])} CPU cores, efficiency cores at full weight` : '4 cores, the count unknown'}): a run above the floor is let in while the load it projects stays at or under this`);
+  add('admit-run-load', testCap, 'test-cap: the load one run adds');
+  add('admit-reserve-gb', ADMISSION_FIXED['admit-reserve-gb'], 'GB that must stay free once the runs let in are counted');
+  add('heavy-run-gb', ADMISSION_FIXED['heavy-run-gb'], 'GB one suite or typecheck in the heavy pool is counted as taking');
+  add('light-run-gb', ADMISSION_FIXED['light-run-gb'], 'GB one light suite is counted as taking');
+  add('admit-max-pressure', ADMISSION_FIXED['admit-max-pressure'], 'no run is let in above a floor at this memory pressure level or over (1 normal, 2 warn, 4 critical)');
+  add('admit-ramp-s', ADMISSION_FIXED['admit-ramp-s'], 'seconds a run let in counts against the next, while its load and memory are not yet in the readings');
   return rows;
+}
+
+// Warnings on a set of Sizing rows ([{ key, value }], the proposal or what a write would keep): the
+// lock ceilings' test workers, (test-lock-max + light-lock-max) x test-cap, against twice the counted
+// cores. -> [line].
+export function sizingWarnings(rows, hw, r = RULES) {
+  const v = Object.fromEntries(rows.map((s) => [s.key, Number(s.value)]));
+  const workers = (v['test-lock-max'] + v['light-lock-max']) * v['test-cap'];
+  const { counted } = countedCores(hw, r);
+  if (!Number.isFinite(workers) || workers <= 2 * counted) return [];
+  return [`(\`test-lock-max\` ${v['test-lock-max']} + \`light-lock-max\` ${v['light-lock-max']}) x \`test-cap\` ${v['test-cap']} is ${workers} test workers at the ceilings, more than twice the ${counted} counted cores (efficiency cores at ${r.efficiencyCoreWeight})`];
 }
 
 // ---- the file --------------------------------------------------------------------------------
@@ -443,7 +540,12 @@ export const sizesProposed = (profile) => Object.keys(profile?.hardware ?? {}).l
 export function rewrittenSizing(profile, proposal, drop = []) {
   const proposed = new Set(proposal.map((s) => s.key));
   const sizing = profile?.sizing ?? {};
-  const placed = proposal.map((s) => (isOverride(sizing[s.key]) && !drop.includes(s.key) ? { key: s.key, value: sizing[s.key].value, why: sizing[s.key].why } : s));
+  const keeps = (k) => isOverride(sizing[k]) && !drop.includes(k);
+  const overridden = proposal.map((s) => (keeps(s.key) ? { key: s.key, value: sizing[s.key].value, why: sizing[s.key].why } : s));
+  // A proposed row that is another's value takes the override kept for that one, so the write never
+  // leaves a ceiling under the floor it was proposed as.
+  const valueOf = (k) => overridden.find((s) => s.key === k)?.value;
+  const placed = overridden.map((s) => (FOLLOWS[s.key] && !keeps(s.key) && keeps(FOLLOWS[s.key]) ? { ...s, value: valueOf(FOLLOWS[s.key]) } : s));
   const kept = Object.entries(sizing).filter(([k]) => !proposed.has(k)).map(([key, s]) => ({ key, value: s.value, why: s.why }));
   return [...placed, ...kept];
 }

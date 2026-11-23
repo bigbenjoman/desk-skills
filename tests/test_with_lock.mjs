@@ -1,6 +1,6 @@
 // suite: with-lock (the lock classes its usage line lists are exactly the ones it accepts; each run takes its slot as a lease)
 // layer: L2
-// covers: desk/bin/with-lock.sh desk/bin/prose-facts.mjs desk/bin/slot-lease.mjs
+// covers: desk/bin/with-lock.sh desk/bin/prose-facts.mjs desk/bin/slot-lease.mjs desk/bin/admission.mjs
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -355,6 +355,55 @@ try {
         t('DS-975 AC6 off, mkdir path: the command starts before the grant line is read', startedAt(stamp) < Date.parse(g?.at), true);
       }
     } else console.log('skip DS-975 AC6 with a failing sysctl: this is not macOS (test_leases.mjs covers a failing /proc read)');
+  }
+  // DS-977: headroom admission in shadow judges a run that waits, and changes nothing it is granted.
+  {
+    const admitLines = (env) => leaseLog(env.DESK_LEASE_DIR).filter((e) => e.event === 'would-admit' || e.event === 'would-deny');
+    const sample = JSON.stringify({ load_1m: 10, mem_free_pct: 50, mem_total_gb: 80, mem_pressure: 1, compressed_gb: 1 });
+    const SHADOW_ADMIT = machine({ 'lease-kinds': 'slot=off', 'lock-admission': 'shadow', 'test-lock-slots': '1', 'light-lock-max': '3', 'test-cap': '4', 'admit-max-load': '30' });
+    const UNSET = machine({ 'lease-kinds': 'slot=off', 'test-lock-slots': '2', 'test-cap': '4' });
+    for (const [path, extra] of [['mkdir', { PATH: noFlock }], ...(hasFlock ? [['flock', {}]] : [])]) {
+      const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: SHADOW_ADMIT, extra: { ...extra, DESK_ADMIT_SAMPLE: sample, DESK_ADMIT_RECHECK_S: '1' } });
+      const a = await hold(env, ['light']);
+      t(`DS-977 AC11 ${path} path: a run that takes a free floor slot at once logs no admission line`, admitLines(env), []);
+      const r = wl(env, ['light', '--timeout', '4', '--', 'true']);
+      const ls = admitLines(env);
+      t(`DS-977 AC2 ${path} path: a second light run logs a would-admit and still waits for the floor slot`, [r.status, ls.map((l) => [l.event, l.key, l.pool, l.reason])], [75, [['would-admit', 'light', 'light', 'headroom']]]);
+      t(`DS-977 AC12 ${path} path: judged again each second for 4 s, the same outcome logs one line`, ls.length, 1);
+      a.release(); await a.done;
+    }
+    // The watcher judging a waiting run is not a second with-lock.sh on ps, which suite-wait.mjs would
+    // count as another run waiting on the lock; and it reads the profile afresh, so admission turned off
+    // while the run waits stops it.
+    {
+      const rows = { 'lease-kinds': 'slot=off', 'lock-admission': 'shadow', 'test-lock-slots': '1', 'test-cap': '4', 'admit-max-load': '30' };
+      const profile = machine(rows);
+      const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile, extra: { DESK_ADMIT_SAMPLE: sample, DESK_ADMIT_RECHECK_S: '1' } });
+      const a = await hold(env, ['test']);
+      const w = spawn('bash', [script, 'test', '--timeout', '8', '--', 'true'], { env, stdio: 'ignore' });
+      const done = new Promise((r) => w.on('exit', r));
+      const children = (re) => spawnSync('ps', ['-axo', 'pid=,ppid=,args='], { encoding: 'utf8' }).stdout.split('\n')
+        .map((l) => l.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter((m) => m && Number(m[2]) === w.pid && re.test(m[3])).map((m) => Number(m[1]));
+      // A second in: the wrapper's own brief subshells (the holders it names as it starts to wait) are done.
+      await until(() => admitLines(env).length > 0); await sleep(1000);
+      const watchers = children(/admission\.mjs\s+watch\s/);
+      t('DS-977 while a run waits under shadow, its admission watcher is not a second with-lock.sh test on ps',
+        [admitLines(env).length > 0, children(/with-lock\.sh\s+test(\s|$)/).length, watchers.length], [true, 0, 1]);
+      writeFileSync(profile, readFileSync(machine({ ...rows, 'lock-admission': 'off' }), 'utf8'));
+      t('DS-977 admission turned off while a run waits stops its watcher, the run still waiting',
+        [await until(() => watchers.every((p) => !alive(p)), 4000), alive(w.pid)], [true, true]);
+      await done; a.release(); await a.done;
+    }
+    // AC1: no lock-admission row: the heavy pool grants its test-lock-slots, the light pool 1, and no line is logged.
+    {
+      const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: UNSET, extra: { DESK_ADMIT_SAMPLE: sample, DESK_ADMIT_RECHECK_S: '1' } });
+      const a = await hold(env, ['test']); const b = await hold(env, ['test']);
+      t('DS-977 AC1 with no lock-admission row the heavy pool grants both its slots', [existsSync(a.mark), existsSync(b.mark)], [true, true]);
+      const h = await hold(env, ['light']);
+      const r = wl(env, ['light', '--timeout', '3', '--', 'true']);
+      t('DS-977 AC1 the light pool grants 1, and no admission line is logged', [r.status, admitLines(env)], [75, []]);
+      a.release(); b.release(); h.release(); await a.done; await b.done; await h.done;
+    }
   }
 } finally {
   for (const h of held) { h.release(); if (h.c.exitCode === null) h.c.kill(); }

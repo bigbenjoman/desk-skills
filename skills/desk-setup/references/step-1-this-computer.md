@@ -12,7 +12,9 @@ The machine profile, `~/.config/desk/machine.md`, records both and is shared by 
 - **No profile yet**: show the `desk-env machine detect` table, then `desk-env machine propose`,
   whose third column is the arithmetic behind each size. Say in one line what the rules are (memory
   less 8 GB for the OS is the ceiling; autopilot workers at ~3 GB each from it; test workers capped
-  at the performance cores plus half the efficiency cores, shared by the test lock slots). **Write
+  at the performance cores plus half the efficiency cores, shared by the test lock slots; headroom
+  admission for the locks proposed `off`). A `warning:` line after the sizes names rows whose lock
+  ceilings would run more test workers than twice the counted cores: show it as it prints. **Write
   nothing until the user confirms**; then `desk-env machine write`. Any size they want different is
   an override, set afterwards with `desk-env machine set <key>=<value> --reason "<why>"`, which
   writes it with an `override: <why>` reason and reads it back. A re-write keeps every override and
