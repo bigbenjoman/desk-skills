@@ -182,7 +182,8 @@ const start = (task) => {
   reset();
   rmSync(runs, { force: true });
   const x = spawn(SID, { DESK_CONFIG: BOTH, AUTOPILOT_TASK: task, AUTOPILOT_BRANCH: `feat/${KEY}` });
-  for (let i = 0; i < 100 && !seen().length; i++) sleep(100);
+  // The stub writes levers-env before calls: wait for both, or a slow runner reads an empty call.
+  for (let i = 0; i < 100 && !(seen().length && calls().length); i++) sleep(100);
   const line = existsSync(runs) ? JSON.parse(readFileSync(runs, 'utf8').trim().split('\n').pop()) : null;
   return { status: x.status, out: x.stdout + x.stderr, levers: line?.levers, env: seen()[0], call: calls()[0] ?? '' };
 };
