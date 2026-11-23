@@ -90,13 +90,18 @@ git -C "$R" reset -q --hard HEAD~1
 printf '\n// The second thing.\nexport function newThing() {\n  return 3;\n}\n' >> "$R/desk/bin/desk-env.mjs"; git -C "$R" commit -q -am 'add newThing'
 related
 check "DS-818 AC2 a new desk-env.mjs export runs the suites using it, with the branch's other suites" '[ $rc -eq 0 ] && [[ "$out" == *"scope some against origin/main: test_a.sh test_c.sh test_lint.sh"* ]] && ! ran b'
-# AC3: changing or removing an existing export runs every suite.
+# DS-999: changing an existing export runs the suites reaching it, and the scope line names it; CI,
+# without --by-name, still runs every suite. Removing one runs every suite.
 printf 'export const one = 9;\n\nexport function two() {\n  return 2;\n}\n' > "$R/desk/bin/desk-env.mjs"
 related
-check "DS-818 AC3 a changed desk-env.mjs export runs every suite" '[ $rc -eq 0 ] && ran b && [[ "$out" == *"(desk/bin/desk-env.mjs is shared by every suite), so every suite runs"* ]]'
+check "DS-999 AC1 a changed desk-env.mjs export runs the suites reaching it, not every suite" '[ $rc -eq 0 ] && ran a && ! ran b'
+check "DS-999 AC6 the scope line names the changed names it narrowed on" '[[ "$out" == *"related: scope some against origin/main: test_a.sh test_lint.sh (narrowed on the changed names in desk/bin/desk-env.mjs: one)"* ]]'
+: > "$T/gh_ci"
+(cd "$R" && GITHUB_OUTPUT="$T/gh_ci" node tests/scope_sections.mjs --base origin/main --worktree --l3-direct --github-output >/dev/null)
+check "DS-999 AC4 without --by-name, as CI runs it, the same change runs every suite" 'grep -qx "scope=full" "$T/gh_ci"'
 printf 'export function two() {\n  return 2;\n}\n' > "$R/desk/bin/desk-env.mjs"
 related
-check "DS-818 AC3 a removed desk-env.mjs export runs every suite" '[ $rc -eq 0 ] && ran b && [[ "$out" == *"(desk/bin/desk-env.mjs is shared by every suite), so every suite runs"* ]]'
+check "DS-818 AC3 a removed desk-env.mjs export runs every suite" '[ $rc -eq 0 ] && ran b && [[ "$out" == *"(desk/bin/desk-env.mjs is shared by every suite, and the change is not narrowed by name: one was removed or renamed), so every suite runs"* ]]'
 git -C "$R" reset -q --hard HEAD~1
 
 # DS-818 AC8: related.sh and CI's pull request plan choose the same suites for one branch. main moves

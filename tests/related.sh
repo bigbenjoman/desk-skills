@@ -13,7 +13,9 @@
 # its command) takes no second one. With no with-lock.sh to find, as in CI, it runs with no slot.
 # An end-to-end (L3) suite the change reaches only through imports, not claiming a changed file
 # directly, is not run here but named as left for CI, which runs it before merge (scope_sections.mjs
-# --l3-direct). run.sh's record of the run carries the scope it chose (full or changed), why, and how
+# --l3-direct). A change to desk-env.mjs or config-schema.mjs that only edits or adds named functions and
+# constants runs the suites reaching those names, and the scope line names them (--by-name); CI runs
+# every suite for it. run.sh's record of the run carries the scope it chose (full or changed), why, and how
 # many suites it left for CI.
 set -u
 T="$(cd "$(dirname "$0")" && pwd)"
@@ -49,20 +51,21 @@ every(){ echo "related: $1, so every suite runs" >&2; DESK_RUN_REASON=$1; "$SH" 
 git merge-base "$base" HEAD >/dev/null 2>&1 || every "no merge base with $base"
 OUT="$(mktemp "${TMPDIR:-/tmp}/desk-related.XXXXXX")" || exit 1
 trap 'rm -f "$OUT"' EXIT
-if ! GITHUB_OUTPUT="$OUT" node "$T/scope_sections.mjs" --base "$base" --worktree --l3-direct --github-output >/dev/null; then
+if ! GITHUB_OUTPUT="$OUT" node "$T/scope_sections.mjs" --base "$base" --worktree --l3-direct --by-name --github-output >/dev/null; then
   every "scope_sections.mjs failed against $base"
 fi
 scope=$(grep -m 1 '^scope=' "$OUT"); scope=${scope#scope=}
 reason=$(grep -m 1 '^reason=' "$OUT"); reason=${reason#reason=}
 suites=$(grep -m 1 '^suites=' "$OUT"); suites=${suites#suites=}
 ci=$(grep -m 1 '^ci=' "$OUT"); ci=${ci#ci=}
+narrowed=$(grep -m 1 '^narrowed=' "$OUT"); narrowed=${narrowed#narrowed=}
 DESK_RUN_REASON=${reason:-no reason given}
 if [ "$scope" = full ] || [ -z "$suites" ]; then
   echo "related: scope ${scope:-unknown} against $base (${reason:-no reason given}), so every suite runs"
   "$SH" "$T/run.sh" ${jobs[@]+"${jobs[@]}"}; exit $?
 fi
 DESK_RUN_SCOPE=changed
-echo "related: scope $scope against $base: $suites"
+echo "related: scope $scope against $base: $suites${narrowed:+ (narrowed on the changed names in $narrowed)}"
 # End-to-end (L3) suites the change reaches only through imports: CI runs them before merge, not this.
 if [ -n "$ci" ]; then
   # shellcheck disable=SC2086
