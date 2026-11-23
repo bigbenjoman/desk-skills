@@ -6,8 +6,10 @@
 //
 //   base-red.mjs check --branch <name> [--repo <owner/name>] [--state <dir>] [--by <merger>] [--cache <file>]
 //       one JSON line, { state: red | green | unknown | unread | none, checks?, why?, line? }, exit 0. It
-//       keeps <state>/base-red.json while the base is red, removes it once it is green or nothing is
-//       required, and leaves it as it was when the base could not be read or stays unknown. With
+//       keeps <state>/base-red.json while the base is red, removes it once it is green, unknown (no
+//       check read red, so the driver merges as before) or nothing is required, and leaves it as it
+//       was only when the base could not be read. So a red spell ends with the driver's hold, and the
+//       next red is a spell of its own with its own since. With
 //       --cache, the commits and the completed check runs it read are kept in <file> for the next loop
 //       (cachedRead, read-cache.mjs).
 //
@@ -304,7 +306,9 @@ if (isMain) {
     writeFileSync(path, `${JSON.stringify(rec, null, 2)}\n`);
     console.log(JSON.stringify({ ...s, repair_key: rec.repair_key, line: holdLine(rec) }));
   } else {
-    if (s.state !== 'unknown' && s.state !== 'unread' && existsSync(path)) rmSync(path, { force: true });
+    // Unknown is no red: the driver merges as before, so the spell is over (a required check that never
+    // runs on the base, such as a PR-only gate, leaves every read unknown, never green).
+    if (s.state !== 'unread' && existsSync(path)) rmSync(path, { force: true });
     // Only a green read of the tip itself moves the mark: one from below it would pass over the merges
     // whose checks are still going, which are the ones a red read next would blame.
     if (s.state === 'green' && !s.tip_pending) { mkdirSync(state, { recursive: true }); writeFileSync(join(state, GREEN_FILE), `${JSON.stringify({ branch, at: new Date().toISOString() })}\n`); }
