@@ -94,7 +94,10 @@ with `status` `idle`: keep the loop going. Two states come to you as an exit 11,
   finished with no PR, or its PR was closed unmerged). The user decides: re-run or finish the
   blocker, release the ticket anyway, or drop it. Of those blockers, a failed or parked one is
   already that question, so what is held behind it is not STUCK (below): only a blocker that
-  finished with no PR, closed its PR unmerged or is not in the batch comes to you as STUCK. A
+  finished with no PR, closed its PR unmerged or is not in the batch comes to you as STUCK. Needs
+  you asks about a blocker that finished with no PR once, as `nopr:<KEY>`, naming every ticket held
+  behind it, and its start lifts that blocker alone: a ticket also held behind another stays held
+  behind that one. Starting one ticket lifts only the blocker its hold names, too. A
   blocker in no batch that the ticket was admitted behind (`held_outside`) is not STUCK: the pass
   lifts it once it is Done in Jira and its PR has merged to the batch's base. One Done in Jira for a
   day or more (its resolution date) whose PR merged into another branch no PR has promoted is raised

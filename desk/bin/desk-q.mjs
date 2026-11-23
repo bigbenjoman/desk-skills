@@ -226,10 +226,11 @@ function holdContext(r) {
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
-// when nothing moves until they act, which `text` names; `act` is the command to run, where one is.
+// when nothing moves until they act, which `text` names; `act` is the command to run, where one is,
+// and `lift` the one blocker it names, where it names one, so letting the ticket start lifts that alone.
 // Behind several blockers, the first that needs the user speaks for the ticket, and one that is their
-// own step (`step`) only when no other needs them: needs-you lists the step apart, so it must not hide
-// another ask.
+// own step (`step`) or a blocker that finished with no PR (`finished`) only when no other needs them:
+// needs-you lists each of those apart, once for every ticket behind it, so it must not hide another ask.
 export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
   const day = dateHeld(t);
   if (day?.bad) return { k: 'needs', text: `held: ${badLabelText(day.label)}`, act: releaseCmd(t.key) };
@@ -240,13 +241,13 @@ export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
   const open = unmergedBlockers(q, t);
   if (!open.length) {
     // Through on what the last pass read: a PR it has not read yet waits for it.
-    if (!blockersOf(t).every((p) => blockerThrough(q.tickets?.[p], () => prStatusOf(q.tickets?.[p])?.state ?? null))) return { k: 'waiting', text: 'behind PRs the next pass reads' };
+    if (!blockersOf(t).every((p) => throughOnRecord(q, p))) return { k: 'waiting', text: 'behind PRs the next pass reads' };
     return ctx.releases ? { k: 'waiting', text: 'starts at the next pass' } : { k: 'needs', text: 'every blocker merged: let it start', act: releaseCmd(t.key) };
   }
   seen.add(t.key);
   const each = open.map((b) => blockerHold(q, t.key, b, ctx, seen));
   seen.delete(t.key);
-  return each.find((e) => e.k === 'needs' && !e.step) ?? each.find((e) => e.k === 'needs') ?? (each.length === 1 ? each[0] : { k: 'waiting', text: `behind ${each.map((e) => e.name).join(', ')}` });
+  return each.find((e) => e.k === 'needs' && !e.step && !e.finished) ?? each.find((e) => e.k === 'needs' && !e.step) ?? each.find((e) => e.k === 'needs') ?? (each.length === 1 ? each[0] : { k: 'waiting', text: `behind ${each.map((e) => e.name).join(', ')}` });
 }
 
 // What a ticket parked at triage for its own reason (triagePark) waits on while its held_by still names
@@ -276,12 +277,12 @@ function blockerHold(q, key, b, ctx, seen) {
   }
   // One the pass raised as dropped (dropped_link) is asked as that triage item, never twice.
   if (!bt && keysOf(q.tickets?.[key]?.dropped_link).includes(b)) return { k: 'waiting', name: b, text: `behind ${b}, no longer in this batch: asked whether the link is still right` };
-  if (!bt) return { k: 'needs', name: b, text: `${b} is not in this queue: let it start`, act: releaseCmd(key) };
+  if (!bt) return { k: 'needs', name: b, lift: b, text: `${b} is not in this queue: let it start`, act: releaseCmd(key) };
   const n = bt.result?.pr;
   if (bt.state === 'done') {
-    if (n == null) return { k: 'needs', name: b, text: `${b} finished with no PR: let it start`, act: releaseCmd(key) };
+    if (n == null) return { k: 'needs', name: b, lift: b, finished: b, text: `${b} finished with no PR: let it start`, act: releaseCmd(key) };
     const ps = prStatusOf(bt), pr = `#${n}`;
-    if (ps.state === 'CLOSED' && !owesReopen(bt)) return { k: 'needs', name: pr, text: `${pr} was closed unmerged: let it start`, act: releaseCmd(key) };
+    if (ps.state === 'CLOSED' && !owesReopen(bt)) return { k: 'needs', name: pr, lift: b, text: `${pr} was closed unmerged: let it start`, act: releaseCmd(key) };
     // Its first reason is enough: its page lists the checks. A PR that needs the user is their one
     // thing to do, on its own row, so the ticket behind it waits on it rather than counting twice.
     // `you` marks that wait: it ends only once the user has acted on the PR, so it has no date.
@@ -289,7 +290,7 @@ function blockerHold(q, key, b, ctx, seen) {
     return m.k === 'needs' ? { k: 'waiting', name: pr, you: true, text: `behind ${pr}, which needs you` } : { k: 'waiting', name: pr, text: `behind ${pr}: ${m.segs[0][0]}` };
   }
   if (bt.state === 'running') return { k: 'waiting', name: b, text: `behind ${b} (running, stage ${ctx.stage(b) ?? '?'})` };
-  if (seen.has(b) || holdsReach(q, b, key)) return { k: 'needs', name: b, text: `${b} is held behind this one: let one of them start`, act: releaseCmd(key) };
+  if (seen.has(b) || holdsReach(q, b, key)) return { k: 'needs', name: b, lift: b, text: `${b} is held behind this one: let one of them start`, act: releaseCmd(key) };
   // A blocker's group is the same by whichever path the walk reaches it (a cycle through it is caught
   // above, before this line), so it is read once per walk: a dense held_by graph (each ticket naming
   // every one before it) has exponentially many paths.
@@ -633,6 +634,8 @@ const fixOn = (t) => (t.fix && !t.fix.finished && t.state !== 'done' ? t.fix : n
 // open (landing) or closed still holds.
 export const unmergedBlockers = (q, t) => blockersOf(t)
   .filter((p) => !blockerThrough(q.tickets?.[p]));
+// Blocker `p` of `q` through on what the last pass read: a PR it has not read yet is not.
+export const throughOnRecord = (q, p) => blockerThrough(q.tickets?.[p], () => prStatusOf(q.tickets?.[p])?.state ?? null);
 
 // The tickets whose triage is running for a batch, or just finished with the admit to follow: triage.sh
 // writes <state>/triage/<KEY>.log as it runs, and a ticket in no live queue row is not admitted yet. A log
