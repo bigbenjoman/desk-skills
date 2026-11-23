@@ -29,7 +29,7 @@ import { repoOfPr } from './pass/pr-status.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { LEDGER_BY_ENV, queueDifference } from './queue-ledger.mjs';
 import { newPark, parkArgs, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { followOnPending, postMergeUnmade, workerMarkers, lastStage, settleSteps } from './harvest.mjs';
+import { followOnPending, postMergeUnmade, workerMarkers, lastStage, logStage, settleSteps } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
@@ -130,6 +130,19 @@ function found(q, key) {
   const t = q.tickets[key];
   if (!t) throw new Error(`no such ticket in the queue: ${key}`);
   return t;
+}
+
+// A running worker as it is now, read from its log rather than the queue, which a pass updates only
+// when it runs: its last stage marker since this spawn (harvest.mjs logStage, as desk-q's table reads
+// it) and when the log last grew (its heartbeat). A worker spawned and silent since has the log and no
+// stage; one with no log has not started.
+//   -> { log, stage, said_at, heartbeat_at } (each null where there is none)
+function liveOf(t) {
+  const log = join(stateDir(), 'logs', `${t.key}.log`);
+  let st;
+  try { st = statSync(log); } catch { return { log: null, stage: null, said_at: null, heartbeat_at: null }; }
+  const s = logStage(log);
+  return { log, stage: s?.stage ?? null, said_at: s?.at ? new Date(s.at).toISOString() : null, heartbeat_at: new Date(st.mtimeMs).toISOString() };
 }
 
 // Is another orchestrator (a second batch) live right now? Its per-batch notes must survive our init.
@@ -1375,9 +1388,11 @@ switch (cmd) {
     break;
   }
 
-  case 'get':
-    console.log(JSON.stringify(found(q, args[0]), null, 2));
+  case 'get': {
+    const t = found(q, args[0]);
+    console.log(JSON.stringify(t.state === 'running' && t.location !== 'cloud' ? { ...t, live: liveOf(t) } : t, null, 2));
     break;
+  }
 
   case 'list':
     console.log(JSON.stringify(q, null, 2));

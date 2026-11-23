@@ -51,7 +51,9 @@ import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
-import { lastStage } from './harvest.mjs';
+import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
+// The stage reader desk-q's table shares with queue.mjs get, kept on desk-q's exports for its callers.
+export { logStage, STAGE_TAIL };
 import { listBatches } from './batches.mjs';
 import { backend, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson } from './gate.mjs';
@@ -673,36 +675,6 @@ export function triageOf(at, key) {
 }
 // A ticket's lane: the queue's, else its triage record's `tr`.
 const laneOf = (t, tr) => (t.lane && t.lane !== '?' ? t.lane : tr?.lane ?? '?');
-
-// How much of a worker log's end is read for its stage: a log runs to several MB, and a marker
-// further back than this is one the last pass has already put on the queue.
-export const STAGE_TAIL = 256 * 1024;
-const logStages = new Map();
-
-// A file's last `bytes` as text, read at `size` (its length now unless given). Throws with no file.
-function tailText(path, bytes, size = statSync(path).size) {
-  const n = Math.min(bytes, size), buf = Buffer.alloc(n);
-  let fd;
-  try { fd = openSync(path, 'r'); readSync(fd, buf, 0, n, size - n); } finally { if (fd != null) closeSync(fd); }
-  return buf.toString('utf8');
-}
-
-// A worker log's last stage marker (harvest.mjs lastStage), from its last STAGE_TAIL bytes only,
-// or null with no log or no marker there. Kept until the log grows, so a refresh rereads nothing.
-export function logStage(path) {
-  let st;
-  try { st = statSync(path); } catch { return null; }
-  const hit = logStages.get(path);
-  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.s;
-  let text;
-  try { text = tailText(path, STAGE_TAIL, st.size); } catch { return null; }
-  // A read that starts mid-file starts mid-line: that line is not whole, so it is dropped.
-  if (st.size > STAGE_TAIL) text = text.slice(text.indexOf('\n') + 1);
-  const s = lastStage(text);
-  if (logStages.size > 256) logStages.clear();
-  logStages.set(path, { size: st.size, mtimeMs: st.mtimeMs, s });
-  return s;
-}
 
 // A running ticket's stage: its worker's last marker, so it is never behind the worker, else the last
 // pass's reading of the queue. `log` says which; `at` is when the worker said it, or the last pass.
