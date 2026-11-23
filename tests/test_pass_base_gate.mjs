@@ -218,6 +218,12 @@ t('sliceLabel says no slice as null', sliceLabel(undefined), null);
   const later = decide({ recorded: esc, at: minsOn(80) });
   t('AC3 a later pass escalates it no second time: its line stays, the record is not written', j([batchWrites(later), lines(later, 'report').length, /red for 80 minutes/.test(lines(later, 'report')[0])]), j([[], 1, true]));
 
+  const moved = recordOf(decide({ recorded: esc, red: { ...red, checks: [{ name: 'lint', sha: HEAD, url: null }] }, at: minsOn(85) }));
+  t('within a spell the record names the checks failing now, and keeps its start, deadline and escalation', j([moved?.check, moved?.since, moved?.deadline, moved?.escalated]), j(['lint', SINCE, minsOn(60), minsOn(75)]));
+  const repairWait = 'main: RED BASE REPAIR — repair ticket main-red is merged with main still red';
+  t('a repair that needs the person is said on each pass after the notice', j(lines(decide({ recorded: rec, at: minsOn(20), repairWait }), 'report')), j([repairWait]));
+  t('and not beside the notice, which names it', `${notices(decide({ repairWait })).length} ${lines(decide({ repairWait }), 'report').length}`, '1 0');
+
   t('AC4 once the driver reads it green, the record is cleared', j(batchWrites(decide({ recorded: esc, red: null, line: null }))), j(['base_red=null']));
   t('AC4 with nothing said', j(decide({ recorded: esc, red: null, line: null }).filter((a) => a.type !== 'set-batch')), '[]');
   t('AC4 a stale driver record keeps the batch\'s as it is', j(decide({ recorded: esc, red: null, known: false, line: null })), '[]');

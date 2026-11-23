@@ -13,7 +13,8 @@
 //
 // The record, <state>/base-red.json:
 //   { branch, sha, checks: [{ name, sha, url }], merges: [{ pr, ticket, sha, at }], repair_key, since, at }
-// `merges` are the last MERGES_SHOWN merges the merge log holds for the repo by `--by`, newest first, and `since`
+// `merges` are the last MERGES_SHOWN merges the merge log holds for the repo by `--by` since the driver last
+// read the base green (<state>/base-green.json, written on each green read), newest first, and `since`
 // when this red spell was first read. `repair_key` is this spell's own repair ticket (desk-env baseRedKey),
 // so no two spells share one.
 import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync, realpathSync } from 'node:fs';
@@ -31,6 +32,12 @@ export const FILE = 'base-red.json';
 export const WALK = 5;
 export const MERGES_SHOWN = 3;
 export const baseRedPath = (state) => join(state, FILE);
+// When the driver last read its base green, { branch, at }, kept beside the record so a red spell names
+// only the merges made since (lastMerges `after`).
+export const GREEN_FILE = 'base-green.json';
+export function readGreen(state, branch) {
+  try { const g = JSON.parse(readFileSync(join(state, GREEN_FILE), 'utf8')); return g?.branch === branch && typeof g.at === 'string' ? g.at : null; } catch { return null; }
+}
 const short = (sha) => String(sha ?? '?').slice(0, 12);
 
 export function readBaseRed(state) {
@@ -83,15 +90,18 @@ export function baseState({ required, branch, read }) {
 
 // The last merges the merge log holds for `repo` by merger `by`, newest first. The log names no target
 // branch, so `by` (the driver merging into this base, merge-driver.sh MERGER) is what keeps out merges
-// other batches made into other branches; with no `by`, every merger's.
-export function lastMerges(events, repo, by = null, n = MERGES_SHOWN) {
+// other batches made into other branches; with no `by`, every merger's. With `after` (when the driver last
+// read the base green, readGreen), only the merges made since, the ones that can have turned it red.
+export function lastMerges(events, repo, by = null, n = MERGES_SHOWN, after = null) {
   const lc = String(repo).toLowerCase();
-  return events.filter((e) => e.event === 'merged' && String(e.repo).toLowerCase() === lc && (by == null || e.by === by)).slice(-n).reverse()
+  const from = after == null ? NaN : Date.parse(after);
+  return events.filter((e) => e.event === 'merged' && String(e.repo).toLowerCase() === lc && (by == null || e.by === by)
+    && (!Number.isFinite(from) || Date.parse(e.at) > from)).slice(-n).reverse()
     .map((e) => ({ pr: Number(e.pr), ticket: e.ticket ?? null, sha: e.sha ?? null, at: e.at ?? null }));
 }
 
 const checkWords = (r) => r.checks.map((c) => `"${c.name}"${c.url ? ` (run ${c.url})` : ` at ${short(c.sha)}`}`).join(', ');
-const mergeWords = (r) => (r.merges?.length
+export const mergeWords = (r) => (r.merges?.length
   ? r.merges.map((m) => `#${m.pr}${m.ticket ? ` (${m.ticket})` : ''}`).join(', ')
   : 'none in the merge log');
 // The driver's log line for a red base.
@@ -230,12 +240,14 @@ if (isMain) {
   cache.save();
   const path = baseRedPath(state);
   if (s.state === 'red') {
-    const rec = nextRecord(readBaseRed(state), s, { branch, merges: lastMerges(readLog(), repo, flag('--by')), at: new Date().toISOString() });
+    const merges = lastMerges(readLog(), repo, flag('--by'), MERGES_SHOWN, readGreen(state, branch));
+    const rec = nextRecord(readBaseRed(state), s, { branch, merges, at: new Date().toISOString() });
     mkdirSync(state, { recursive: true });
     writeFileSync(path, `${JSON.stringify(rec, null, 2)}\n`);
     console.log(JSON.stringify({ ...s, repair_key: rec.repair_key, line: holdLine(rec) }));
   } else {
     if (s.state !== 'unknown' && s.state !== 'unread' && existsSync(path)) rmSync(path, { force: true });
+    if (s.state === 'green') { mkdirSync(state, { recursive: true }); writeFileSync(join(state, GREEN_FILE), `${JSON.stringify({ branch, at: new Date().toISOString() })}\n`); }
     console.log(JSON.stringify(s));
   }
 }

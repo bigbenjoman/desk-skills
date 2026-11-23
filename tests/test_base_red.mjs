@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { scratch } from './scratch.mjs';
 
 process.env.DESK_AUTOPILOT_STATE ??= scratch('base-red-');
-const { baseState, lastMerges, liveBaseRed, nextRecord, holdLine, batchLine, repairTicket, repairTriage, WALK, STALE_MS } = await import('../desk/bin/base-red.mjs');
+const { baseState, lastMerges, liveBaseRed, nextRecord, holdLine, batchLine, repairTicket, repairTriage, WALK, STALE_MS, GREEN_FILE, readGreen } = await import('../desk/bin/base-red.mjs');
 const E = await import('../desk/bin/desk-env.mjs');
 
 let pass = 0;
@@ -92,6 +92,18 @@ test('the last merges are this driver\'s own: another batch\'s merges into anoth
     { repo: 'acme/w', pr: '3', event: 'merged', by: 'merge-driver acme__w/batches/E-1' },
   ];
   assert.deepEqual(lastMerges(ev, 'acme/w', 'merge-driver acme__w').map((m) => m.pr), [1]);
+});
+
+test('a red spell names only the merges made since the base was last read green', () => {
+  const ev = [5, 6, 7, 8, 9].map((pr, i) => ({ repo: 'acme/w', pr: String(pr), event: 'merged', at: `2026-11-18T1${i}:00:00.000Z` }));
+  assert.deepEqual(lastMerges(ev, 'acme/w', null, 3, '2026-11-18T12:30:00.000Z').map((m) => m.pr), [9, 8]);
+  assert.deepEqual(lastMerges(ev, 'acme/w', null, 3, null).map((m) => m.pr), [9, 8, 7]);
+});
+
+test('the green read is kept for its own branch only', () => {
+  const dir = scratch('base-red-green-');
+  writeFileSync(join(dir, GREEN_FILE), JSON.stringify({ branch: 'main', at: '2026-11-18T12:30:00.000Z' }));
+  assert.deepEqual([readGreen(dir, 'main'), readGreen(dir, 'develop'), readGreen(join(dir, 'none'), 'main')], ['2026-11-18T12:30:00.000Z', null, null]);
 });
 
 test('AC6 a record no driver has rewritten for STALE_MS, or kept for another branch, is not current', () => {

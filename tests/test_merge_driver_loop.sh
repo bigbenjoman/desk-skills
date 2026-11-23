@@ -299,6 +299,9 @@ cat > "$T/prs.json" <<EOF
 EOF
 # The red spell began at 09:00 UTC, so its repair ticket is base-red-main-20261121090000.
 printf '{"branch":"main","checks":[],"since":"2026-11-21T09:00:00.000Z","at":"2026-11-21T09:00:00.000Z"}\n' > "$T/state/base-red.json"
+# The loops above read main green after their merges; this spell's driver has no green read before it,
+# so the hold names the last merges the log holds.
+rm -f "$T/state/base-green.json"
 printf '{"tip":"%s","commits":{"%s":{"parent":"%s","runs":[["test","in_progress",null]]},"%s":{"parent":null,"runs":[["test","completed","failure","https://github.com/acme/widgets/actions/runs/850"]]}}}\n' "$R1" "$R1" "$R0" "$R0" > "$T/base.json"
 : > "$T/merges.log"
 rloop(){ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-851 base-red-main-20261121090000" 2>&1); rc=$?; }

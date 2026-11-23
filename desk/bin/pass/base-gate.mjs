@@ -190,7 +190,8 @@ function* gate(s) {
 // ---- the red base ----------------------------------------------------------
 // A red base (base-red.mjs: the merge driver's record of its base failing a §4 Required check) is a
 // condition of the batch, kept as the queue's `base_red` { branch, check, since, deadline, merges,
-// escalated? } for as long as the spell lasts, and never copied onto the PRs it holds. Its one line is
+// escalated? } for as long as the spell lasts, and not copied onto the PRs it holds: its line names them,
+// and each keeps only its own hold, the checks red at its merge base (fix-tries.mjs againstBase). Its one line is
 // said on the pass that first records the spell, and not again; past its deadline it is escalated once
 // (pass/deadlines.mjs baseRedWait). It is cleared once the driver reads the base green, and left as it
 // is while the base cannot be read: the driver's record gone stale says nothing about the base now.
@@ -200,20 +201,25 @@ function* gate(s) {
 //   red        the driver's live record (base-red.mjs liveBaseRed), or null
 //   known      whether the base's state is known: false when the driver's record is there but stale
 //   line       the red base's one line for the batch (base-red.mjs batchLine), with `red`
+//   repairWait the WAITING ON YOU line for a repair that needs the person (it could not be admitted or
+//              dropped, or it merged with the base still red), or null
 //   at, dry    the pass's time (ISO), and a dry run
 // Actions: set-batch {fields}, notice {line} (the line for the report's RED BASE), and the shared report.
 export function decideBaseRed(s) {
   const was = s.recorded ?? null;
   if (!s.red) return was && s.known && !s.dry ? [setBatch('base_red=null')] : [];
   const acts = [];
-  let rec = was?.branch === s.red.branch && was.since === s.red.since ? was : null;
-  if (!rec) {
-    rec = { branch: s.red.branch, check: s.red.checks.map((c) => c.name).join(', '), since: s.red.since,
-      deadline: new Date(Date.parse(s.red.since) + BASE_RED_MS).toISOString(), merges: (s.red.merges ?? []).map((m) => ({ pr: m.pr, ticket: m.ticket ?? null })) };
-    acts.push({ type: 'notice', line: s.line });
-  }
+  const same = was?.branch === s.red.branch && was.since === s.red.since;
+  // The checks failing and the merges named are the driver's as it reads them now; the spell's start,
+  // deadline and escalation are the batch's own.
+  const live = { check: s.red.checks.map((c) => c.name).join(', '), merges: (s.red.merges ?? []).map((m) => ({ pr: m.pr, ticket: m.ticket ?? null })) };
+  const rec = same ? { ...was, ...live }
+    : { branch: s.red.branch, check: live.check, since: s.red.since, deadline: new Date(Date.parse(s.red.since) + BASE_RED_MS).toISOString(), merges: live.merges };
+  if (!same) acts.push({ type: 'notice', line: s.line });
   const { rec: next, line } = baseRedWait(rec, s.at);
   if (line) acts.push(waiting(line));
+  // A repair that needs the person is said on every pass after the notice, which already names it.
+  if (same && s.repairWait) acts.push(waiting(s.repairWait));
   if (!s.dry && JSON.stringify(next) !== JSON.stringify(was)) acts.unshift(setBatch(`base_red=${JSON.stringify(next)}`));
   return acts;
 }
