@@ -7,6 +7,14 @@ reference table names.
 
 ## Sharing the machine
 
+**Name this session for its role**, so the user's terminals and a peer's `SendMessage` tell it
+apart. `<repo>` is the name part of §0 GitHub repo: a batch session is `<repo>-batch` (an epic run
+beside the standing batch, `<repo>-batch-<EPIC>`), a single-ticket session `<repo>-ticket-<KEY>`, and
+a session that hands work to other sessions and merges theirs `<repo>-orchestrator`. The name stays
+when the batch gains tickets. Only the user can run `/rename`, so at Stage 0 print the line
+(`/rename <repo>-batch`, with this repo's name in place of `<repo>`) once and carry on. Workers are named at spawn, and a handoff records
+the name so `/desk-resume` gives it back after `/clear`.
+
 Assume you are never alone: the user runs interactive sessions alongside you and often a second
 batch, possibly in another repo, so coordinate, and do not run out of memory on spikes such as test
 runs or the PR image upload. Batch state is per repo; these four resources are machine-wide, and
