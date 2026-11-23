@@ -6,7 +6,8 @@
 # window (200k, [1m], a chosen model's [1m], past 200k, DESK_CONTEXT_WINDOW), the separate 1M-window row (unset, the 200k row's), a
 # single Stop block, the .handoffs/ exclude, /desk-update's one-time offer-1m of a 20% 1M row
 # and the -n name, and the SessionStart injection for clear and compact (fresh, unconsumed only),
-# and two sessions in one repo: a reserved name each, and each resuming its own handoff.
+# two sessions in one repo: a reserved name each, and each resuming its own handoff; and the
+# session's /rename name, recorded in the handoff and given back as a /rename line after /clear.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -394,6 +395,25 @@ check "DS-282 AC4: no handoff recorded: the newest fresh one" '[[ "$(ctx)" == *"
 age "$R/.handoffs/$DAY-9.md" 30; echo "# A again" > "$R/.handoffs/$DAY-10.md"
 PID=a1 hook SessionStart a4 "$T/low.jsonl" ',"source":"clear"'
 check "DS-282 AC4: A's second /clear, nothing new recorded: the newest" '[[ "$(ctx)" == *"read .handoffs/$DAY-10.md"* ]]'
+
+# ---- the session's name survives /clear ----
+rm -rf "$R/.handoffs"
+cp "$T/high.jsonl" "$T/named.jsonl"
+printf '{"type":"custom-title","customTitle":"demo-old","sessionId":"w1"}\n{"type":"custom-title","customTitle":"demo-batch","sessionId":"w1"}\n' >> "$T/named.jsonl"
+hook PostToolUse w1 "$T/named.jsonl"
+c="$(ctx)"
+check "a /renamed session is told to record its last name in the handoff" '[[ "$c" == *"Session name: demo-batch"* ]] && [[ "$c" != *"demo-old"* ]]'
+hook PostToolUse w2 "$T/high.jsonl"
+c="$(ctx)"
+check "an unnamed one is given the role names for this repo" '[[ "$c" == *"no name"* ]] && [[ "$c" == *"demo-batch"* ]] && [[ "$c" == *"demo-ticket-<KEY>"* ]] && [[ "$c" == *"demo-orchestrator"* ]]'
+printf '# Handoff\n\n- **Session name:** `demo-batch`\n' > "$R/.handoffs/$DAY.md"
+age "$R/.handoffs/$DAY.md" 60
+printf '# Handoff\n\nSession name: <repo>-ticket-<KEY>\n' > "$R/.handoffs/$DAY-2.md"
+PID=w1 hook SessionStart w3 "$T/low.jsonl" ',"source":"clear"'
+check "after /clear, the injection gives the /rename line from the handoff" '[[ "$(ctx)" == *"print the line \`/rename demo-batch\`"* ]]'
+PID=w2 hook SessionStart w4 "$T/low.jsonl" ',"source":"clear"'
+c="$(ctx)"
+check "a handoff whose name is still a placeholder gives no /rename line" '[[ "$c" == *"read .handoffs/$DAY-2.md"* ]] && [[ "$c" != *"/rename"* ]]'
 
 # ---- never breaks a session ----
 out=$(printf 'not json' | python3 "$HOOK" 2>&1); rc=$?

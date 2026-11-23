@@ -469,6 +469,9 @@ $MARK${SYSTEM#*"$MARK"}"
 $(cat "$CONTRACT_DIR/$f")"
   done
 fi
+# The worker's display name, <repo>-ticket-<KEY>: one name per ticket however often it respawns.
+WORKER_NAME="$(node "$DESK_ENV_MJS" get gh-repo 2>/dev/null </dev/null; true)"
+WORKER_NAME="${WORKER_NAME##*/}-ticket-$TICKET"
 # A batch base (queue.mjs set-batch base=…) arrives as DESK_DEFAULT_BRANCH. The skills read
 # <default> from config §0, which still names the repo default, so the worker is told outright.
 CFG_DEFAULT="$(node "$DESK_ENV_MJS" get default-branch 2>/dev/null </dev/null; true)"
@@ -562,6 +565,7 @@ tmp="$DESK_EXITS_DIR/.$DESK_EXIT_KEY.$$.tmp"
 exit "$rc"' desk-worker \
   claude -p "$PROMPT" \
   "${RESUME_ARGS[@]}" \
+  --name "$WORKER_NAME" \
   --output-format stream-json --verbose \
   --setting-sources "" --strict-mcp-config \
   ${TOOL_ARGS[@]+"${TOOL_ARGS[@]}"} \

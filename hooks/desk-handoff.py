@@ -7,7 +7,9 @@ One script, registered by install.sh on five events; it reads `hook_event_name` 
                                  context %" (default 45, `0` disables), or on a 1M window §2
                                  "Handoff at context % on a 1M window" (unset, the first row's value;
                                  `0` disables), inject once: finish the current
-                                 step, write the handoff, start no new work.
+                                 step, write the handoff, start no new work. It also asks for a
+                                 `Session name:` line: the name /rename gave (the transcript's last
+                                 `custom-title`), else the session's role name to give it.
   Stop                           After that has fired, and while the handoff it named is unwritten
                                  (or, kept from before a compaction, not rewritten since), block the
                                  end of the turn once ("write the handoff first").
@@ -18,7 +20,9 @@ One script, registered by install.sh on five events; it reads `hook_event_name` 
                                  written, under 24 hours old and not yet consumed. A `clear` then
                                  marks it consumed; a `compact` holds it instead (.held), so
                                  the session's own later /clear still finds it and no other
-                                 session's /clear takes it. Any source also records the session's
+                                 session's /clear takes it. On `clear`, a `Session name:` line in
+                                 the handoff becomes a `/rename <name>` line to print first, since
+                                 /clear drops the name. Any source also records the session's
                                  model, which says whether the window is 1M.
   PreCompact                     In compaction mode, where this session's handoff is written (and
                                  rewritten since it last fired): print
@@ -385,6 +389,78 @@ def session_threshold(state, root):
     return state["pct"], state["pct_1m"]
 
 
+def session_name(transcript):
+    """The name the person gave this session with /rename (its last `custom-title` entry), or None.
+
+    Claude Code re-appends the entry as the session goes on, so the tail usually holds it; the
+    whole file is read only when the tail does not."""
+    try:
+        with open(transcript, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            end = f.tell()
+            for start in (max(0, end - TAIL_LIMIT), 0):
+                f.seek(start)
+                lines = f.read().split(b"\n")
+                if start > 0:
+                    lines = lines[1:]  # the first line may be cut
+                for raw in reversed(lines):
+                    if b'"custom-title"' not in raw:
+                        continue
+                    try:
+                        e = json.loads(raw)
+                    except Exception:
+                        continue
+                    name = e.get("customTitle") if e.get("type") == "custom-title" else None
+                    if isinstance(name, str) and name.strip():
+                        return name.strip()
+                if start == 0:
+                    break
+    except Exception:
+        pass
+    return None
+
+
+def repo_name(root):
+    """The repo's name for role names: §0 GitHub repo's name part, else the root's directory."""
+    rc, out = desk_env(root, "where")
+    for line in out.splitlines() if rc == 0 else []:
+        if line.startswith("GH_REPO="):
+            name = line.split("=", 1)[1].strip().strip("'\"").rsplit("/", 1)[-1]
+            if name:
+                return name
+    return os.path.basename(root)
+
+
+def name_line(transcript, root):
+    """What the handoff says about the session's name, so the resumed session can be given it back."""
+    name = session_name(transcript)
+    if name:
+        return (f"Put a line `Session name: {name}` at the top of the handoff: /clear drops the name, "
+                "and /desk-resume prints the /rename line that gives it back. ")
+    repo = repo_name(root)
+    return ("This session has no name. Put a line `Session name: <name>` at the top of the handoff, "
+            f"with its role's name: `{repo}-batch` for a batch, `{repo}-ticket-<KEY>` for one "
+            f"ticket, `{repo}-orchestrator` for an orchestrator. ")
+
+
+NAME_PREFIX = "session name:"
+
+
+def handoff_name(path):
+    """The name a handoff's `Session name:` line records, or None."""
+    try:
+        with open(path) as f:
+            for _, line in zip(range(40), f):
+                text = line.strip().lstrip("-*# ").replace("*", "")
+                if text.lower().startswith(NAME_PREFIX):
+                    name = text[len(NAME_PREFIX):].strip().strip("`'\"").strip()
+                    if name and " " not in name and "<" not in name:
+                        return name
+    except Exception:
+        pass
+    return None
+
+
 def on_context(event, data, session, root):
     state = load_state(session)
     if state.get("fired_at"):
@@ -437,6 +513,7 @@ def on_context(event, data, session, root):
         "exists, with these sections: where things stand; the task in progress and its next step; "
         "decisions made; open questions; and last, the paste-in line "
         f"(`Read {rel} and continue from its next step.`). "
+        f"{name_line(data.get('transcript_path') or '', root)}"
         "Record each action it leaves for the person (file this, merge that, run this) with "
         "`node ~/.claude/desk/bin/needs-you.mjs ask <SLUG from desk-env where> \"<what to do>\"`, "
         f"so desk-q lists it. {tail}"))
@@ -575,10 +652,14 @@ def on_session_start(data, session, root):
     else:
         hold(root, latest)
     rel = os.path.relpath(latest, root)
+    name = handoff_name(latest) if source == "clear" else None
+    rename = (f" It names this session {name}: before anything else, print the line `/rename {name}` "
+              "for the user to run, since /clear dropped the name and only the user can set it."
+              if name else "")
     inject("SessionStart", (
         f"desk handoff: read {rel} (in {root}) and continue from its next step. "
         "It is the previous session's carry-over; treat its decisions as made and its open "
-        "questions as still open."))
+        f"questions as still open.{rename}"))
 
 
 OFFER_1M = (
