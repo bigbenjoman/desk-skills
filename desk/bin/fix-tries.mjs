@@ -945,7 +945,7 @@ export function feedbackFix(t, { pr, head, decision, threads, external = null })
     const named = left.map((x) => x.text).join('; ');
     return { call: 'stuck', why: `review feedback still open after ${tries(triesMade(done))}: ${what}${named ? ` — ${named}` : ''}` };
   }
-  return nextTry(done, pr, head, { kind: 'feedback', what: `review feedback: ${what}`, decision: decision ?? null, threads: left.map(({ id, text }) => ({ id, text })), ...(external ? { external } : {}) });
+  return nextTry(done, pr, head, { kind: 'feedback', what: `review feedback: ${what}`, decision: decision ?? null, threads: left.map(({ id, text, last }) => ({ id, text, ...(last?.at ? { last_at: last.at } : {}) })), ...(external ? { external } : {}) });
 }
 // The threads a finished feedback try quoted that the pass replies on and resolves: its worker
 // finished, did not park, and pushed past the try's head. [] otherwise.
@@ -955,13 +955,16 @@ export function resolvable(t, head) {
   return (f.threads ?? []).filter((x) => x.id && !(f.resolved ?? []).includes(x.id));
 }
 // Of the open threads `left` (review-threads.mjs threadOf), those a finished feedback try worked that the
-// pass replies on and resolves now (resolvable): not one with a later reply, a comment on it since the
-// try was made (fix.at) other than the pass's own (feedbackReply), which is left open for whoever answers it.
+// pass replies on and resolves now (resolvable): not one with a later reply, a comment on it newer than
+// the newest the try read (its `last_at`, as GitHub dated it) other than the pass's own (feedbackReply),
+// which is left open for whoever answers it. A try that recorded none is read as before.
 export function settleable(t, head, left) {
   const open = new Map((left ?? []).map((x) => [x.id, x]));
-  const since = Date.parse(t.fix?.at ?? '');
-  const later = (x) => Number.isFinite(since) && Date.parse(x?.last?.at ?? '') > since && !String(x.last.first ?? '').startsWith(REPLY_LEAD);
-  return resolvable(t, head).filter((x) => open.has(x.id) && !later(open.get(x.id)));
+  const later = (q, x) => {
+    const since = Date.parse(q.last_at ?? '');
+    return Number.isFinite(since) && Date.parse(x?.last?.at ?? '') > since && !String(x.last.first ?? '').startsWith(REPLY_LEAD);
+  };
+  return resolvable(t, head).filter((q) => open.has(q.id) && !later(q, open.get(q.id)));
 }
 const REPLY_LEAD = "Worked by desk's fix try";
 // The reply the pass posts on a thread a feedback try worked, before resolving it.

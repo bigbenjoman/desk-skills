@@ -748,14 +748,18 @@ t('DS-419 not one already resolved', resolvable(tk({ state: 'done', fix: { ...wo
 t('DS-605 not one the pass ended before any worker ran it, its head moved', resolvable(tk({ state: 'done', fix: { ...worked, no_worker: true } }), 'd'.repeat(40)).length, 0);
 // A worked thread with a later reply on it, other than the pass's own, is left open for whoever answers it.
 {
-  const f = { ...worked, at: '2026-11-23T10:00:00Z' };
+  // The try read the thread's newest comment at 09:00 (last_at); the pass that made it began at 08:59.
+  const f = { ...worked, at: '2026-11-23T08:59:00Z', threads: worked.threads.map((x) => ({ ...x, last_at: '2026-11-23T09:00:00Z' })) };
   const done = tk({ state: 'done', fix: f });
   const left = (last) => [{ id: 'PRRT_1', text: 'x', ...(last ? { last } : {}) }];
   const D = 'd'.repeat(40);
-  t('a worked thread with no reply since the try is settled', settleable(done, D, left({ login: 'agent-pullbot', at: '2026-11-23T09:00:00Z', first: 'P1 x' })).map((x) => x.id).join(), 'PRRT_1');
-  t('one the reviewer replied on since the try is left open', settleable(done, D, left({ login: 'agent-pullbot', at: '2026-11-23T11:00:00Z', first: 'Still broken at line 4' })).length, 0);
-  t('the pass\'s own reply since the try does not keep it open', settleable(done, D, left({ login: 'me', at: '2026-11-23T11:00:00Z', first: feedbackReply(f, D) })).length, 1);
+  t('a worked thread with no reply since the try read it is settled, though posted after the pass began', settleable(done, D, left({ login: 'agent-pullbot', at: '2026-11-23T09:00:00Z', first: 'P1 x' })).map((x) => x.id).join(), 'PRRT_1');
+  t('one the reviewer replied on since is left open', settleable(done, D, left({ login: 'agent-pullbot', at: '2026-11-23T11:00:00Z', first: 'Still broken at line 4' })).length, 0);
+  t('the pass\'s own reply since does not keep it open', settleable(done, D, left({ login: 'me', at: '2026-11-23T11:00:00Z', first: feedbackReply(f, D) })).length, 1);
+  t('a try that recorded no newest comment is read as before', settleable(tk({ state: 'done', fix: worked }), D, left({ login: 'agent-pullbot', at: '2026-11-23T11:00:00Z', first: 'y' })).length, 1);
   t('a thread no longer open is not settled', settleable(done, D, []).length, 0);
+  const fbLast = feedbackFix(tk(), { pr: 2402, head: HEAD, threads: [{ id: 'PRRT_1', text: 'x', last: { login: 'agent-pullbot', at: '2026-11-23T09:00:00Z', first: 'P1 x' } }] });
+  t('a feedback try records the newest comment it read on each thread', JSON.stringify(fbLast?.fix.threads), JSON.stringify([{ id: 'PRRT_1', text: 'x', last_at: '2026-11-23T09:00:00Z' }]));
 }
 // A try no worker ran said nothing: an earlier worker's summary is not quoted as its own.
 const unrunSync = tk({ fix: { kind: 'sync', try: 1, of: 2, base: 'main', finished: 'x', no_worker: true }, result: { summary: 'an earlier worker' } });

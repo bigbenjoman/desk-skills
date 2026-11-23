@@ -185,7 +185,7 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
   // After the try, a clean verdict at its head: the thread it quoted is replied on and resolved, and
   // nothing is stuck. One with a later reply is left open.
   const at = '2026-11-23T10:00:00Z';
-  const triedAt = tk({ state: 'done', stuck: { why: 'review feedback still open' }, fix: { ...tried.fix, at } });
+  const triedAt = tk({ state: 'done', stuck: { why: 'review feedback still open' }, fix: { ...tried.fix, at, threads: [{ id: 'TH1', text: 'a thread', last_at: '2026-11-23T10:00:30Z' }] } });
   const done = drive(snap([[triedAt, green]]), { feedback: worked, 'settle-worked': (a) => a.worked.map((x) => x.id) });
   t('a clean verdict after a try that quoted one thread resolves it, and the PR is not stuck', j([done.find((a) => a.type === 'settle-worked')?.worked.map((x) => x.id), applied(done).length, done.some((a) => a.type === 'set' && a.fields.includes('stuck=null'))]), j([['TH1'], 0, true]));
   const replied = { ...worked, left: [{ id: 'TH1', text: 'a thread', last: { login: 'agent-pullbot', at: '2026-11-23T11:00:00Z', first: 'Not fixed: line 4 still drops it' } }] };
