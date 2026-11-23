@@ -4,12 +4,16 @@
 // module of its own so the broker reads it without importing admission.mjs, which imports the broker.
 //
 // Reasons: `admit`, a run granted a slot above its pool's floor with admission on, held while its pid
-// runs; `headroom` and `floor`, shadow's would-admits above and on the floor.
+// runs; `headroom` and `floor`, shadow's would-admits above and on the floor; `express`, a small run
+// granted the light lock's express lane, which holds no pool slot but counts as a recent admit.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { alive } from './dir-lock.mjs';
 
-export const LEDGER_REASONS = Object.freeze(['admit', 'headroom', 'floor']);
+export const LEDGER_REASONS = Object.freeze(['admit', 'headroom', 'floor', 'express']);
+// The reasons a judge counts as recent admits within admit-ramp-s: runs let in, or that shadow would
+// have let in, above a floor, and express-lane grants, whose load and memory are not yet in the readings.
+export const RECENT_REASONS = Object.freeze(['admit', 'headroom', 'express']);
 export const ledgerFile = (dir) => join(dir, 'desk-admit.ledger');
 // The waiting-marker directory of lock class `cls`'s lock in lock directory `dir` (slot-lease.mjs
 // waitingDir, which defaults the directory): here so admission.mjs need not import slot-lease.mjs,

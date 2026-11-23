@@ -4,7 +4,7 @@
 //
 //   node slot-lease.mjs mode                                  # off, shadow or on: the slot kind's mode
 //   node slot-lease.mjs take <class> --pid <owner> [--timeout <s>] [--waited <s>] -- <command...>
-//   node slot-lease.mjs note <queued|grant|gave-up> <class> --pid <wrapper pid> --waited <s>
+//   node slot-lease.mjs note <queued|grant|gave-up> <class> --pid <wrapper pid> --waited <s> [--lane express]
 //   node slot-lease.mjs holders [--light]                     # who holds the test (or light) lock, one line
 //   node slot-lease.mjs in-slot <pid>                         # exit 0 when <pid> runs inside a test or light slot
 //
@@ -14,7 +14,8 @@
 // who holds it, and gives up after --timeout seconds (exit 75). In `shadow` it makes one try, which
 // shadow always grants, logging a would-refuse when the pool was full; the wrapper has already taken
 // its legacy lock and ignores how this ends; --waited is how long it waited for that lock, which the
-// grant line records. `note` logs a run's wait on the lock files where no lease line carries it.
+// grant line records. `note` logs a run's wait on the lock files where no lease line carries it;
+// `--lane express` names the light lock's express lane on a grant line.
 //
 // Exit codes: 0 granted (or nothing to take), 75 gave up waiting, 4 the lease store is unreadable,
 // 1 the broker failed otherwise. The wrapper falls back to its legacy lock on 4 and 1.
@@ -80,11 +81,12 @@ const waitNow = (cls, pid, waited) => waitFields({ cls, worktree: worktree(), wa
 function note(rest) {
   const [event, cls, ...more] = rest;
   const opt = (n) => { const i = more.indexOf(`--${n}`); return i < 0 ? null : more[i + 1]; };
-  const pid = Number(opt('pid')), waited = opt('waited');
-  if (!['queued', 'grant', 'gave-up'].includes(event) || !LOCK_OF[cls] || !Number.isInteger(pid) || pid <= 0 || !/^\d+$/.test(waited ?? '')) {
-    console.error('usage: slot-lease.mjs note <queued|grant|gave-up> <class> --pid <wrapper pid> --waited <s>'); return 2;
+  const pid = Number(opt('pid')), waited = opt('waited'), lane = opt('lane');
+  if (!['queued', 'grant', 'gave-up'].includes(event) || !LOCK_OF[cls] || !Number.isInteger(pid) || pid <= 0 || !/^\d+$/.test(waited ?? '')
+    || (lane != null && !(lane === 'express' && cls === 'light' && event === 'grant'))) {
+    console.error('usage: slot-lease.mjs note <queued|grant|gave-up> <class> --pid <wrapper pid> --waited <s> [--lane express]'); return 2;
   }
-  logEvent({ event, kind: 'slot', key: cls, ...waitNow(cls, pid, Number(waited)) });
+  logEvent({ event, kind: 'slot', key: cls, ...(lane ? { lane } : {}), ...waitNow(cls, pid, Number(waited)) });
   return 0;
 }
 
@@ -174,7 +176,7 @@ async function cli(argv) {
   if (sub === 'holders') return holders(rest);
   if (sub === 'in-slot') return inSlot(rest);
   if (sub === 'note') return note(rest);
-  if (sub !== 'take') { console.error('usage: slot-lease.mjs mode | holders [--light] | in-slot <pid> | note <queued|grant|gave-up> <class> --pid <pid> --waited <s> | take <class> --pid <pid> [--timeout <s>] [--waited <s>] -- <command...>'); return 2; }
+  if (sub !== 'take') { console.error('usage: slot-lease.mjs mode | holders [--light] | in-slot <pid> | note <queued|grant|gave-up> <class> --pid <pid> --waited <s> [--lane express] | take <class> --pid <pid> [--timeout <s>] [--waited <s>] -- <command...>'); return 2; }
   const at = rest.indexOf('--');
   const head = at < 0 ? rest : rest.slice(0, at);
   const words = at < 0 ? [] : rest.slice(at + 1);
