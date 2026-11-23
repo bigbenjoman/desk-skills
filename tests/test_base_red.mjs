@@ -413,4 +413,51 @@ test('the batch line says no repair is admitted yet while a rerun comes first', 
   assert.match(l, /No repair ticket is admitted yet: its failed run 78 failed at a setup step\. Repair ticket base-red-main is admitted if it fails again/);
 });
 
+// A red spell ends when the driver stops reading red, green or unknown: a required check that never runs
+// on the base (a PR-only gate) leaves every read unknown, never green, and the next red is a spell of its own.
+test('red, then a read with no red (one required check never runs on main), then red: two spells, and no record between', () => {
+  const dir = scratch('base-red-spells-'), bin = join(dir, 'bin'), state = join(dir, 'state'), runsFile = join(dir, 'runs.json'), tipFile = join(dir, 'tip');
+  mkdirSync(bin); mkdirSync(state);
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
+const fs = require('fs'), a = process.argv.slice(2), tip = fs.readFileSync('${tipFile}', 'utf8');
+if (a[0] === 'api' && a[1] === 'repos/acme/widgets/commits/main') console.log(JSON.stringify({ sha: tip, parent: null }));
+else if (a[0] === 'api' && a[1].startsWith('repos/acme/widgets/commits/' + tip + '/check-runs')) process.stdout.write(fs.readFileSync('${runsFile}', 'utf8'));
+else process.exit(1);
+`, { mode: 0o755 });
+  const cfg = join(dir, 'config.md');
+  writeFileSync(cfg, '## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | `acme/widgets` |\n| Default branch | `main` |\n\n## 4. Checks\n| Field | Value |\n|---|---|\n| Required checks | `CI gate` `Review gate` |\n');
+  const check = (tip, runs) => {
+    writeFileSync(tipFile, tip); writeFileSync(runsFile, JSON.stringify(runs));
+    const r = spawnSync('node', [join(import.meta.dirname, '..', 'desk', 'bin', 'base-red.mjs'), 'check', '--branch', 'main', '--repo', 'acme/widgets', '--state', state],
+      { cwd: dir, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, DESK_CONFIG: cfg, DESK_REPO_OVERRIDE: 'acme/widgets' }, encoding: 'utf8' });
+    return JSON.parse(r.stdout.trim()).state;
+  };
+  const ci = (conclusion) => [{ name: 'CI gate', status: 'completed', conclusion, url: 'https://github.com/acme/widgets/actions/runs/7/job/1' }];
+  assert.equal(check(sha('a'), ci('failure')), 'red');
+  const first = JSON.parse(readFileSync(join(state, 'base-red.json'), 'utf8'));
+  // The next push is green on CI gate; Review gate runs only on PRs, so the read is unknown.
+  assert.equal(check(sha('b'), ci('success')), 'unknown');
+  assert.equal(existsSync(join(state, 'base-red.json')), false);
+  assert.equal(liveBaseRed(state, { branch: 'main' }), null);
+  // A later flake is a new spell, its since its own.
+  spawnSync('sleep', ['1.1']);
+  assert.equal(check(sha('c'), ci('failure')), 'red');
+  const second = JSON.parse(readFileSync(join(state, 'base-red.json'), 'utf8'));
+  assert.notEqual(second.since, first.since);
+  assert.notEqual(second.repair_key, first.repair_key);
+});
+test('a base that could not be read keeps the record as it was', () => {
+  const dir = scratch('base-red-unread-'), bin = join(dir, 'bin'), state = join(dir, 'state');
+  mkdirSync(bin); mkdirSync(state);
+  writeFileSync(join(bin, 'gh'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const cfg = join(dir, 'config.md');
+  writeFileSync(cfg, '## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | `acme/widgets` |\n| Default branch | `main` |\n\n## 4. Checks\n| Field | Value |\n|---|---|\n| Required checks | `CI gate` |\n');
+  const rec = { branch: 'main', sha: sha('a'), checks: [{ name: 'CI gate', sha: sha('a'), url: null }], merges: [], repair_key: 'base-red-main', since: 'T0', at: new Date().toISOString() };
+  writeFileSync(join(state, 'base-red.json'), JSON.stringify(rec));
+  const r = spawnSync('node', [join(import.meta.dirname, '..', 'desk', 'bin', 'base-red.mjs'), 'check', '--branch', 'main', '--repo', 'acme/widgets', '--state', state],
+    { cwd: dir, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, DESK_CONFIG: cfg, DESK_REPO_OVERRIDE: 'acme/widgets' }, encoding: 'utf8' });
+  assert.equal(JSON.parse(r.stdout.trim()).state, 'unread');
+  assert.equal(JSON.parse(readFileSync(join(state, 'base-red.json'), 'utf8')).since, 'T0');
+});
+
 console.log(`base-red: ${pass} passed, 0 failed`);
