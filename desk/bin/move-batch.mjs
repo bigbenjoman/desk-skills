@@ -43,7 +43,8 @@ crashShowsPerson((e) => console.error(`move-batch: ${describeCrash(e)}`));
 const STAYS = [E.BATCHES_DIR, 'ref', 'orchestrator.lock', 'supervisor.lock', 'supervisor.agent.log', 'intake.json', 'asks.json',
   'config-pushed.json', 'exits', 'supervisor.tick.lock', 'supervisor.wake'];
 const REPO_LEVEL = ['cloud-archived.json', 'levers.jsonl', 'audit.jsonl', 'audit-queue.json', 'lever-evals.jsonl', 'levers-evidence'];
-const stays = (f) => STAYS.includes(f) || REPO_LEVEL.some((n) => f === n || f.startsWith(`${n}.lock`));
+// A repo-level file's lock and its write in progress (dir-lock.mjs writeTextAtomic's .tmp.<pid>) stay too.
+const stays = (f) => STAYS.includes(f) || REPO_LEVEL.some((n) => f === n || f.startsWith(`${n}.lock`) || f.startsWith(`${n}.tmp.`));
 // How long a stopped merge driver has to let go of its lock.
 const DRIVER_WAIT_MS = Number(process.env.DESK_MOVE_DRIVER_WAIT_MS) > 0 ? Number(process.env.DESK_MOVE_DRIVER_WAIT_MS) : 30_000;
 
