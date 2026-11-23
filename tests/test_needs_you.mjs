@@ -3608,10 +3608,13 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-796 blockerThrough: a requeued blocker whose new PR is open or unread is not through on its old merge', [
     blockerThrough(requeued), blockerThrough(requeued, gh('OPEN')), blockerThrough({ ...requeued, pr_status: { pr: 10, state: 'MERGED' } }, gh(null)),
   ].join(), 'false,false,false');
-  t('DS-796 blockerThrough: a requeued blocker is through once its new PR merges, closes, or was done on another repo\'s PR', [
-    blockerThrough(requeued, gh('MERGED')), blockerThrough(requeued, gh('CLOSED')),
+  t('DS-796 blockerThrough: a requeued blocker is through once its new PR merges, or was done on another repo\'s PR', [
+    blockerThrough(requeued, gh('MERGED')),
     blockerThrough({ state: 'done', merged_at: minsAgo(60), result: { pr: 7 }, pr_status: { pr: 7, state: 'MERGED', url: 'https://github.com/other/repo/pull/7' } }, gh('OPEN')),
-  ].join(), 'true,true,true');
+  ].join(), 'true,true');
+  t('DS-796 blockerThrough: a requeued blocker whose new PR closed unmerged is not through on its old merge', [
+    blockerThrough(requeued, gh('CLOSED')), blockerThrough({ ...requeued, pr_status: { pr: 11, state: 'CLOSED' } }),
+  ].join(), 'false,false');
   // The pass's release: a ticket held behind the requeued blocker stays held while its new PR is open.
   put('rq796', { port: 5797, beat: 1, supervised: true, tickets: { 'R-1': requeued, 'H-3': held('R-1') } });
   const qrq = queueOf('rq796');

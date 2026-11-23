@@ -669,7 +669,7 @@ function holdLeadsTo(q, t, prState, seen, memo = new Map()) {
     const pt = q.tickets?.[p];
     if (!pt) { if (!outside.includes(p)) parks = null; }
     else if (['running', 'triaged'].includes(pt.state) || spinePark(pt)) continue;
-    else if (pt.state === 'done') { if (!pt.merged_at && (pt.result?.pr == null || prState(pt.result.pr) === 'CLOSED')) parks = null; }
+    else if (pt.state === 'done') { if (!blockerThrough(pt, prState) && (pt.result?.pr == null || prState(pt.result.pr) === 'CLOSED')) parks = null; }
     else if (pt.state === 'failed' || (pt.state === 'parked' && !isHeld(pt))) parks.push(p);
     else { const up = holdLeadsTo(q, pt, prState, seen, memo); parks = up && [...parks, ...up]; }
     if (!parks) break;
@@ -767,10 +767,11 @@ export const childDone = (t) => t.state === 'done' && (!!t.merged_at || t.result
 // as not merged; without it, the last pass's pr_status is read and a PR it has not read counts as
 // merged. Done with no PR and no merge is not through: whether its dependants start is the person's.
 // One done by another's PR (done_by) has no result.pr of its own, and that PR's merge is its merged_at.
-// merged_at keeps only a ticket's first merge, so a requeued blocker whose new PR is open (or, where the
-// caller reads GitHub, unread) is not through on it: its dependants wait on the change that PR lands. A
-// status naming its current PR merged is final, and is how a ticket done on another repo's PR is read
-// (needs-you's elsewhereDone), never as this repo's PR of the same number.
+// With a PR of its own, merged_at is not read: it keeps only a ticket's first merge, so a requeued
+// blocker whose new PR is open, closed unmerged or (where the caller reads GitHub) unread is not through
+// on it: its dependants wait on the change that PR lands. A status naming its current PR merged is
+// final, and is how a ticket done on another repo's PR is read (needs-you's elsewhereDone), never as
+// this repo's PR of the same number.
 export const blockerThrough = (t, prState = null) => {
   if (t?.state !== 'done') return false;
   const n = t.result?.pr;
@@ -779,7 +780,6 @@ export const blockerThrough = (t, prState = null) => {
   if (kept === 'MERGED') return true;
   const s = prState ? prState(n) : kept;
   if (s === 'MERGED') return true;
-  if (t.merged_at) return s !== 'OPEN' && !(prState && s == null);
   return !prState && !['OPEN', 'CLOSED'].includes(s);
 };
 // The blockers among `keys` to hold ticket `key` behind, less `key` itself and those in `tickets`
