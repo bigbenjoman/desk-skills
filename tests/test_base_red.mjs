@@ -47,6 +47,14 @@ test('AC6 a newest completed run that passed is green, whatever ran before it', 
   assert.deepEqual(s, { state: 'green' });
 });
 
+test('green read below a tip whose check is still going says so, so the green mark stays before its merge', () => {
+  const s = baseState({ required: ['tests'], branch: 'main', read: reader({
+    [sha('b')]: { parent: sha('a'), runs: [{ name: 'tests', status: 'in_progress', conclusion: null }] },
+    [sha('a')]: { parent: null, runs: [run('tests', 'success')] },
+  }) });
+  assert.deepEqual(s, { state: 'green', tip_pending: true });
+});
+
 test('DS-969 AC1 a read that fails is unread, never green nor unknown', () => {
   assert.equal(baseState({ required: ['tests'], branch: 'main', read: reader({}, { tip: null }) }).state, 'unread');
   assert.equal(baseState({ required: ['tests'], branch: 'main', read: reader({ [sha('a')]: { runs: [] } }, { failRuns: sha('a') }) }).state, 'unread');

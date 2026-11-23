@@ -313,6 +313,7 @@ printf '{"tip":"%s","commits":{"%s":{"parent":null,"runs":[["test","completed","
 rloop; rloop
 check "DS-850 AC6: once the check passes on main again, merging resumes and the record goes" \
   '[ "$(merged)" = "852 851" ] && ! echo "$out" | grep -q "HOLDING on red" && [ ! -e "$T/state/base-red.json" ]'
+check "a green read of main's tip is kept as when the base was last green" '[ "$(jq -r .branch "$T/state/base-green.json")" = main ]'
 jq --arg s "$SHA4" '."853" = { head: "fix/T-853", base: "main", sha: $s, state: "open", draft: false, checks: [["test", "SUCCESS"]] }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
 touch "$T/base.broken"
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-853" 2>&1); first="$out"

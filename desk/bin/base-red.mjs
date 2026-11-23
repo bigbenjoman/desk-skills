@@ -14,7 +14,7 @@
 // The record, <state>/base-red.json:
 //   { branch, sha, checks: [{ name, sha, url }], merges: [{ pr, ticket, sha, at }], repair_key, since, at }
 // `merges` are the last MERGES_SHOWN merges the merge log holds for the repo by `--by` since the driver last
-// read the base green (<state>/base-green.json, written on each green read), newest first, and `since`
+// read the base's tip green (<state>/base-green.json, written on each such read), newest first, and `since`
 // when this red spell was first read. `repair_key` is this spell's own repair ticket (desk-env baseRedKey),
 // so no two spells share one.
 import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync, realpathSync } from 'node:fs';
@@ -61,13 +61,15 @@ export function liveBaseRed(state, { branch = null, now = Date.now() } = {}) {
 // null meaning the read failed. -> { state: 'none' } with nothing required, { state: 'red', sha, checks }
 // when any check's newest completed run failed (whatever a later read gives), { state: 'unread', why } when
 // a read failed (an API error or limit: the driver holds its merges), { state: 'unknown', why } when every
-// read answered but a check has no completed run in the walk, else { state: 'green' }.
+// read answered but a check has no completed run in the walk, else { state: 'green' }, with `tip_pending`
+// when a check's newest completed run is below the tip.
 export function baseState({ required, branch, read }) {
   if (!required.length) return { state: 'none' };
   const unread = (why) => ({ state: 'unread', why });
   let c = read.tip(branch);
   if (!c) return unread(`the tip of ${branch} could not be read`);
   const tip = c.sha, left = new Set(required), red = [];
+  let onTip = false;
   for (let i = 0; i < WALK && c && left.size; i++) {
     const runs = read.runs(c.sha);
     // A read that fails after a check was found red leaves the base red: that failure stands.
@@ -79,13 +81,15 @@ export function baseState({ required, branch, read }) {
       left.delete(name);
       if (st === 'fail') red.push({ name, sha: c.sha, url: mine.find((r) => FAILED.has(String(r.conclusion ?? '').toLowerCase()))?.url ?? null });
     }
+    if (i === 0) onTip = !left.size;
     if (!left.size || !c.parent || i === WALK - 1) break;
     c = read.commit(c.parent);
     if (!c) { if (red.length) break; return unread(`a commit on ${branch} could not be read`); }
   }
   if (red.length) return { state: 'red', sha: tip, checks: red };
   if (left.size) return { state: 'unknown', why: `no completed run of ${[...left].join(', ')} on the newest ${WALK} commits of ${branch}` };
-  return { state: 'green' };
+  // Green from a commit below the tip, a check still going on it, says nothing yet of the newest merges.
+  return onTip ? { state: 'green' } : { state: 'green', tip_pending: true };
 }
 
 // The last merges the merge log holds for `repo` by merger `by`, newest first. The log names no target
@@ -247,7 +251,9 @@ if (isMain) {
     console.log(JSON.stringify({ ...s, repair_key: rec.repair_key, line: holdLine(rec) }));
   } else {
     if (s.state !== 'unknown' && s.state !== 'unread' && existsSync(path)) rmSync(path, { force: true });
-    if (s.state === 'green') { mkdirSync(state, { recursive: true }); writeFileSync(join(state, GREEN_FILE), `${JSON.stringify({ branch, at: new Date().toISOString() })}\n`); }
+    // Only a green read of the tip itself moves the mark: one from below it would pass over the merges
+    // whose checks are still going, which are the ones a red read next would blame.
+    if (s.state === 'green' && !s.tip_pending) { mkdirSync(state, { recursive: true }); writeFileSync(join(state, GREEN_FILE), `${JSON.stringify({ branch, at: new Date().toISOString() })}\n`); }
     console.log(JSON.stringify(s));
   }
 }
