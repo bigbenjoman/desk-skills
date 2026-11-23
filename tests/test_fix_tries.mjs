@@ -855,6 +855,10 @@ for (const h of ['## Not refuted findings', '## Never refuted findings', '### P1
 // A refuted finding is taken out with the lines that continue it, so neither of its locations reaches the try.
 const cont1249 = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, '## P1 (2)\n- src/a.ts:3 obsolete (refuted)\n  the same drop also at src/c.ts:9\n— and src/d.ts:7 too\n- src/b.ts:4 standing')])));
 t('#1249 a refuted finding\'s continuation lines are left out of the try', `${cont1249?.fix?.what} ${/src\/(a|c|d)\.ts/.test(JSON.stringify(cont1249?.fix?.threads))}`, "review feedback: agent-pullbot's review body (findings at src/b.ts:4) false");
+// The label on a finding's continuation line refutes the finding; a deeper finding with its own severity is no continuation.
+t('#1249 a finding refuted on its em-dash line is none', bodyFeedback('p0=0 p1=0 p2=0\n- P1 src/a.ts:3 drops the row\n— refuted by codex'), false);
+t('#1249 a finding refuted on an indented bullet under it is none', bodyFeedback('p0=0 p1=0 p2=0\n- P1 src/a.ts:3 drops the row\n  - Refuted by codex.'), false);
+t('#1249 a deeper finding with its own severity after a refuted one still stands', bodyFeedback('- P1 src/a.ts:3 drops the row (refuted)\n  - P0 src/b.ts:4 leaks the token'), true);
 t('#737 externalTry is undefined with no external check red', externalTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE }), undefined);
 t('#737 and waits while a check is pending', externalTry(tk(), pr([{ name: 'tests', status: 'in_progress' }, red('🔐 Review gate', '88')]), extCtx(extPl([bot(HEAD, 'P0')]))), null);
 t('DS-422 a red verdict check beside an unclean review at the head is reviewFix\'s, as before', verdictTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE, settled: true }), null);

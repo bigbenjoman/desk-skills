@@ -1029,20 +1029,24 @@ function standingPart(body) {
     return cut == null;
   }).join('\n');
 }
-// standingPart less each finding line marked refuted on its own: the body as feedback quotes it.
-// A refuted finding is taken out whether its line carries its severity or sits under a severity heading
-// (any line labelled refuted that names a file:line, as reviewFindings reads a finding), and with it every
-// line that continues it: one opening with an em dash, or indented deeper than it.
+// standingPart less each refuted finding: the body as feedback quotes it. A finding is a line naming a
+// file:line, whether it carries its severity or sits under a severity heading, with the lines that continue
+// it: one opening with an em dash, or one indented deeper than it that opens with no severity of its own
+// (reviewFindings joins the deeper bullets; a deeper line of prose is the same finding's too). The whole
+// finding goes when any of its lines is labelled refuted.
 function standingText(body) {
   const out = [];
-  let drop = null;
+  let block = null;
+  const flush = () => { if (block && !block.lines.some((x) => REFUTED.test(x))) out.push(...block.lines); block = null; };
   for (const l of standingPart(body).split('\n')) {
     const indent = /^\s*/.exec(l)[0].length, text = l.trim();
-    if (drop != null && text && (text.startsWith('—') || indent > drop)) continue;
-    drop = null;
-    if (REFUTED.test(l) && /[\w./-]+:\d+/.test(l)) { drop = indent; continue; }
-    out.push(l);
+    const own = /^[#>*_\s-]*(?:F\d+\s*·\s*)?P[0-3]\b/.test(l);
+    if (block && (!text || text.startsWith('—') || (indent > block.indent && !own))) { block.lines.push(l); continue; }
+    flush();
+    if (/[\w./-]+:\d+/.test(text)) block = { indent, lines: [l] };
+    else out.push(l);
   }
+  flush();
   return out.join('\n');
 }
 // A review body's counts written as text (`p0=0 p1=0 p2=0`, `P1: 0`): { p0, p1, … } as numbers.
