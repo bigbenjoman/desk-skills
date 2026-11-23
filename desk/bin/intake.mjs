@@ -74,11 +74,12 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic, blockersFact } from './desk-q-eta.mjs';
 import { machineCap } from './borrow.mjs';
+import { addAsk } from './asks.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { readUsage } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
-import { EXIT, designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, labelPark, personStepPark, blockerHold, startWithout, sizePark } from './batch-state.mjs';
-import { backend, supervisorLoaded, supervisorLabel, launchdDomain, systemctl, supervisorMjs } from './run-by.mjs';
+import { EXIT, designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, labelPark, personStepPark, blockerHold, startWithout, sizePark, holdThrough, mergedCurrent } from './batch-state.mjs';
+import { backend, supervisorLoaded, supervisorLabel, launchdDomain, systemctl, supervisorMjs, runBySetting } from './run-by.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { FAILED, normaliseRollup, latestPerCheck, loginIn } from './gate.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, promotedEpicBatch, batchEnv } from './batches.mjs';
@@ -130,6 +131,15 @@ const lintBlocking = (r) => {
   const unread = unreadCanvases(r);
   return (r.lint ?? []).filter((f) => f.severity === 'blocking' && !(f.rule === 'design' && unread.some((u) => f.message.includes(u))));
 };
+// A missing design on a ticket triage found renders nothing (its `renders` false): the line says so,
+// with the files it changes, so desk-admit writes "No UI." with that reason into its Design section
+// and admits it again, rather than asking anyone for a design no change of it shows.
+const rendersNothing = (r) => {
+  if (r.renders !== false) return '';
+  const files = (Array.isArray(r.files_in_scope) ? r.files_in_scope : []).filter((f) => typeof f === 'string');
+  const which = files.length ? `: it changes ${files.slice(0, 3).join(', ')}${files.length > 3 ? ` and ${files.length - 3} more` : ''}` : '';
+  return ` — triage found nothing renders${which}; write "No UI." with that reason in its Design section, then admit it again`;
+};
 // A ticket labelled as the person's step (labelPark) has none: it is admitted parked on it, whatever its
 // lane, lint or questions, since no worker takes it.
 export function intakeReasons(r) {
@@ -137,7 +147,7 @@ export function intakeReasons(r) {
   if (labelPark(r, E.personStepLabels(), E.personInputLabels())) return out;
   if (needsPersonLane(r)) out.push(`lane ${r.lane}: ${r.lane === 'D' ? `${designGap(r)}; ` : ''}${String(r.lane_reason ?? 'needs a person').slice(0, 160)}`);
   if (r.lint_error) out.push(`lint did not run (${r.lint_error})`);
-  for (const f of lintBlocking(r)) out.push(`lint (blocking): ${f.message}`);
+  for (const f of lintBlocking(r)) out.push(`lint (blocking): ${f.message}${f.rule === 'design' ? rendersNothing(r) : ''}`);
   if (r.facts_error) out.push(`its Jira facts could not be read (${r.facts_error})`);
   const { ask } = triageCalls(r);
   if (ask.length) out.push(`open question(s): ${ask.join(' · ')}`);
@@ -273,7 +283,8 @@ export function holdsFor(rec, tickets, base) {
     if (t && personStepPark(t)) { if (b.category !== 'done') out[blockerHold(b, rec, stepLabels, inputLabels)?.needs === 'build' ? 'held' : 'merge'].push(b.key); }
     else if (t) {
       if (b.category !== 'done') out[t.state === 'failed' ? 'failed' : 'held'].push(b.key);
-      else if (t.state !== 'failed' && !t.merged_at && !(t.state === 'done' && t.result?.pr == null)) out.held.push(b.key);
+      // Done in Jira, it is held while it has not merged its current work (batch-state.mjs holdThrough).
+      else if (t.state !== 'failed' && !holdThrough(tickets, b.key)) out.held.push(b.key);
     } else if (b.category === 'done') { if (landedOn(b.key, base) !== true) out.outside.push(b.key); }
     else {
       const hold = blockerHold(b, rec, stepLabels, inputLabels);
@@ -535,7 +546,8 @@ function blockerRoute(key, rec) {
   const hits = liveFeatureBatches().filter((b) => resolvePath(b.queue) !== own).flatMap((b) => {
     let bq;
     try { bq = readQueueAt(b.queue); } catch { return []; }
-    const on = keys.filter((k) => bq.tickets?.[k] && !bq.tickets[k].merged_at && bq.tickets[k].state !== 'failed');
+    // One merged once and gone round again there has not merged its current work (mergedCurrent).
+    const on = keys.filter((k) => bq.tickets?.[k] && !mergedCurrent(bq.tickets, k) && bq.tickets[k].state !== 'failed');
     return on.length ? [{ name: b.name, on, supervised: bq.supervised === true }] : [];
   });
   if (hits.length > 1) return { reasons: [`it is blocked by ${hits.map((h) => `${h.on.join(', ')} in batch ${h.name}`).join(' and by ')}: say which batch it joins`] };
@@ -561,7 +573,10 @@ function placedThere(key, held, own) {
 // {unreadable}, {closed, cur}, {elsewhere}, {reasons}, {startFailed}, {admitFailed}, or {batch, base, held, outside, started}.
 // Without mayStart, a free batch is closed as 'free' rather than replaced.
 // With `session`, the caller is the session that runs the batch, so a batch not handed over is open to it.
-function placeOne(key, rec, { started, by, now, mayStart = true, session = false }) {
+// With `bySession` (a repo whose §3b Batches run by is `session`), no standing batch is started, since no
+// supervisor would run it: the session that runs the batch (`session`) joins a finished one, and any
+// other caller is refused ('unrun'). A ticket routed to another live batch goes there as before.
+function placeOne(key, rec, { started, by, now, mayStart = true, session = false, bySession = false }) {
   let cur;
   try { cur = readQueue(); } catch (e) { return { unreadable: `the queue at ${E.queueFile()} cannot be read (${e.message})` }; }
   if (closed(cur, session)) return { closed: closed(cur, session), cur };
@@ -572,7 +587,9 @@ function placeOne(key, rec, { started, by, now, mayStart = true, session = false
   if (route?.reasons) return { reasons: route.reasons };
   if (route) return { elsewhere: route };
   // A new batch keeps none of a finished one's tickets, so every open blocker is then outside it.
-  const startNew = !started && free(cur);
+  const joinFinished = bySession && session && !!cur;
+  const startNew = !started && free(cur) && !joinFinished;
+  if (startNew && bySession) return { closed: 'unrun', cur };
   if (startNew && !mayStart) return { closed: 'free', cur };
   const holds = holdsFor(rec, startNew ? {} : cur?.tickets ?? {}, base);
   const reasons = reasonsAgainst(rec, holds);
@@ -584,7 +601,7 @@ function placeOne(key, rec, { started, by, now, mayStart = true, session = false
     batch = started = st.name;
   }
   const a = admitHeld(key, holds, by);
-  return a.held ? { batch, base, held: a.held, outside: a.outside, merge: a.merge, gates: a.gates, free: a.free, runs: a.runs, started: startNew ? started : null, note: epicFinishedNote(rec), sessionRun: !startNew && sessionRun(cur) } : { admitFailed: a.why, started: startNew ? started : null };
+  return a.held ? { batch, base, held: a.held, outside: a.outside, merge: a.merge, gates: a.gates, free: a.free, runs: a.runs, started: startNew ? started : null, note: epicFinishedNote(rec), sessionRun: !startNew && (sessionRun(cur) || joinFinished) } : { admitFailed: a.why, started: startNew ? started : null };
 }
 
 async function intake({ state, query, reg, now }) {
@@ -851,6 +868,10 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
   const done = (extra = {}) => ({ ran: true, lines, admitted, refused, limited: [...limited], plan, epics, ...extra });
   // Starting a standing batch has no plan approval, so it needs what standing intake needs.
   const mayStart = E.permission('autopilot-workers') === 'yes';
+  // Where §3b Batches run by is `session`, no supervisor runs a standing batch (placeOne `bySession`).
+  const bySession = runBySetting().value === 'session';
+  // The tickets refused as unrun, put on needs-you once at the end.
+  const unrunKeys = [];
   // Why the tickets have nowhere to go, or null: nothing is triaged for a batch they cannot join.
   const said = (code, b) => ({
     base: () => (moveTo(b)
@@ -858,8 +879,9 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
       : `batch ${b.batch ?? '?'} runs on base ${b.base}: run /desk-autopilot for these in a session`),
     session: () => `batch ${b.batch ?? '?'} is run by a session, not the supervisor: send these tickets to that session (ListAgents names it) and let it admit them with node ${join(HERE, 'intake.mjs')} admit ${keys.join(' ')} --session, or, if this session is the one that runs it, run that yourself`,
     free: () => `no batch is live, and starting one without a plan approval needs config §3 ${E.permissionKey('autopilot-workers')} to be "yes" (it is "${E.permission('autopilot-workers')}"): run /desk-autopilot ${keys.join(' ')}`,
+    unrun: () => `no supervisor runs this repo's batches (config §3b "${E.CONFIG_ROWS['batches-run-by'].row}" is session)${b?.batch ? ` and batch ${b.batch} is finished` : ' and no batch is set up'}, so no batch is started for it: if a session runs this repo's batches, admit it from that session with --session; else start /desk-autopilot in a session`,
   }[code]?.() ?? null);
-  const nowhere = (b) => said(closed(b, session) ?? (free(b) && !mayStart ? 'free' : null), b);
+  const nowhere = (b) => said(closed(b, session) ?? (free(b) && !mayStart && !bySession ? 'free' : null), b);
   let q;
   try { q = readQueue(); } catch (e) { say(`admits nothing: the queue at ${E.queueFile()} cannot be read (${e.message})`); return done({ refused: keys }); }
   const why = into ? null : nowhere(q);
@@ -950,7 +972,7 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
   const next = new Set();
   const place = async (key) => {
     let rec = recs[key];
-    let r = into ? { elsewhere: { route: into, why: `${key} was named for batch ${into}` } } : placeOne(key, rec, { started, by, now, mayStart, session });
+    let r = into ? { elsewhere: { route: into, why: `${key} was named for batch ${into}` } } : placeOne(key, rec, { started, by, now, mayStart, session, bySession });
     if (r.started) { started = r.started; say(`started standing batch ${started}, handed to the supervisor`); }
     // An epic started while this ticket was in triage took it into its feature batch.
     const there = inBatch(key, r.elsewhere?.held, r.elsewhere?.batch);
@@ -973,6 +995,7 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
     }
     const fail = r.unreadable ?? (r.closed && said(r.closed, r.cur)) ?? r.elsewhere?.why ?? r.reasons?.join('; ')
       ?? (r.startFailed && `a standing batch could not be started (${r.startFailed})`) ?? r.admitFailed;
+    if (r.closed === 'unrun') unrunKeys.push(key);
     if (fail) return refuse(key, fail);
     took ??= logTaken(key, rec, state, r.free);
     const reg = readIntake(state);
@@ -1055,7 +1078,14 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
   }
   const theirs = admitted.length + epics.length - ours.length;
   if (ours.length) say(`this session's next pass picks up ${ours.join(' ')}`);
-  if (theirs) say(`the supervisor's next tick picks ${ours.length ? `up the other${theirs === 1 ? '' : 's'}` : `${theirs === 1 ? 'it' : 'them'} up`}`);
+  // No supervisor runs a session-run repo's batches, so nothing is promised of one there.
+  if (theirs && bySession) say(`no supervisor runs this repo's batches (config §3b "${E.CONFIG_ROWS['batches-run-by'].row}" is session): ${ours.length ? `the other${theirs === 1 ? '' : 's'}` : theirs === 1 ? 'it' : 'they'} ${theirs === 1 ? 'waits' : 'wait'} for a session to run ${theirs === 1 ? 'its' : 'their'} batch (/desk-autopilot)`);
+  else if (theirs) say(`the supervisor's next tick picks ${ours.length ? `up the other${theirs === 1 ? '' : 's'}` : `${theirs === 1 ? 'it' : 'them'} up`}`);
+  // Nothing else shows a ticket refused as unrun: it is in no queue, so desk-q has no row for it.
+  if (unrunKeys.length) {
+    const { added } = addAsk(state, `start /desk-autopilot ${unrunKeys.join(' ')} in a session: no supervisor runs this repo's batches, so /desk-admit admitted nothing`, now.getTime());
+    say(`needs-you: ${added ? 'recorded' : 'already records'} starting /desk-autopilot for ${unrunKeys.join(' ')}`);
+  }
   // Open blockers in no batch are admitted next, by the same command, with no question: the person
   // naming what they block is the approval.
   if (next.size) say(`admit next: ${[...next].join(' ')} (open blockers in no batch)`);

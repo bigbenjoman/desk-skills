@@ -15,8 +15,8 @@ execFileSync('git', ['init', '-q', join(T, 'repo')]);
 Object.assign(process.env, { HOME: join(T, 'home'), DESK_CONFIG: join(T, 'config.md'), DESK_HOME: join(T, 'desk'), DESK_REPO_DIR: join(T, 'repo') });
 
 const { queueWriter } = await import('../desk/bin/queue-writer.mjs');
-const { versionOf, archivePath, mergeQueue, archivedOf } = await import('../desk/bin/queue-store.mjs');
-const { readQueue, waitingOnMerge, batchIdle } = await import('../desk/bin/batch-state.mjs');
+const { versionOf, archivePath, mergeQueue, archivedOf, archivable } = await import('../desk/bin/queue-store.mjs');
+const { readQueue, waitingOnMerge, batchIdle, holdsAmong } = await import('../desk/bin/batch-state.mjs');
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -118,6 +118,23 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('a state change alone takes back the conditional set', read(f).tickets.A.park.inputs['pr-head'], 'h2');
 }
 
+// DS-796: a condition sees the queue too, so a set that depends on another ticket's set is taken back
+// with it: an owner dropped before its write lands leaves the other ticket unstamped.
+{
+  const f = fixture({ version: 1, batch: 'b', tickets: { O: tk('O', { state: 'done' }), S: tk('S', { state: 'done' }) } });
+  const w = queueWriter(f);
+  const live = (x) => x.state === 'done';
+  const ownerTook = (x, cur) => live(x) && cur?.tickets?.O?.post_merge_read === 7;
+  w.apply(['set', 'O', 'post_merge_read=7'], { when: live });
+  t('a condition on another ticket holds once that ticket\'s set is applied', w.apply(['set', 'S', 'post_merge_read=7', 'post_merge_by=O'], { when: ownerTook }).skipped, undefined);
+  other(f, (q) => { delete q.tickets.O; });
+  const r = w.flush();
+  const q = read(f);
+  t('the owner dropped before the write takes its set back, and the set that named it with it', `${'O' in q.tickets} ${q.tickets.S.post_merge_read ?? null} ${q.tickets.S.post_merge_by ?? null} ${r.skipped.join(',')}`, 'false null null S');
+  const w2 = queueWriter(f);
+  t('nor is it applied while the ticket it names is gone', w2.apply(['set', 'S', 'post_merge_read=7'], { when: ownerTook }).skipped, true);
+}
+
 // AC5: the lock not taken within its wait: nothing written, every change named.
 {
   const f = fixture({ version: 3, batch: 'b', tickets: { A: tk('A'), B: tk('B') } });
@@ -145,9 +162,21 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
     // Criteria its review left for after the merge: P's the pass has not made steps yet, Q's it has.
     P: tk('P', { state: 'done', result: { pr: 6 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 6, state: 'MERGED', post_merge: [{ step: 'x' }] } }),
     Q: tk('Q', { state: 'done', result: { pr: 7 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 7, state: 'MERGED', post_merge: [{ step: 'x' }] }, post_merge_read: 7 }),
-    // DS-850: R's PR the pass closed to restart its CI and still owes the reopen; S's marker names an earlier PR.
+    // Closed, and the pass still owes it a reopen whose retry was refused (DS-850: closed to restart its CI).
     R: tk('R', { state: 'done', result: { pr: 8 }, pr_status: { pr: 8, state: 'CLOSED' }, reopening: 8 }),
-    S: tk('S', { state: 'done', result: { pr: 9 }, pr_status: { pr: 9, state: 'CLOSED' }, reopening: 3 }),
+    // A requeued ticket with an earlier round's merge whose new PR's reopen failed: its status still reads OPEN.
+    S: tk('S', { state: 'done', result: { pr: 9 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 9, state: 'OPEN' }, reopening: 9 }),
+    // Its reopen failed, then needs-you recorded the PR merged before a pass read it: nothing to reopen.
+    T: tk('T', { state: 'done', result: { pr: 10 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 10, state: 'MERGED' }, reopening: 10 }),
+    // Requeued after an earlier PR merged (merged_at stays): U's new PR is read open; V's and Z's new PRs are
+    // unread, their status still naming the earlier PR, with (V) and without (Z) a PR its spawn kept.
+    U: tk('U', { state: 'done', result: { pr: 11 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 11, state: 'OPEN' } }),
+    V: tk('V', { state: 'done', result: { pr: 13 }, merged_at: '2026-11-16T10:00:00.000Z', merged_pr: [12], pr_status: { pr: 12, state: 'MERGED' } }),
+    Z: tk('Z', { state: 'done', result: { pr: 15 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 14, state: 'MERGED' } }),
+    // The driver recorded Y's earlier merge with no status read; its spawn kept that PR, and its new one is unread.
+    Y: tk('Y', { state: 'done', result: { pr: 17 }, merged_at: '2026-11-16T10:00:00.000Z', merged_pr: [{ pr: 16, url: null }] }),
+    // DS-850: E's reopen marker names an earlier PR, so its closed PR owes nothing.
+    E: tk('E', { state: 'done', result: { pr: 19 }, pr_status: { pr: 19, state: 'CLOSED' }, reopening: 3 }),
     A: tk('A'),
   } });
   const w = queueWriter(f);
@@ -161,10 +190,14 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('AC6 the archive sits beside the queue', archivePath(f), join(dirname(f), 'queue.archive.json'));
   t('AC6 merged and closed tickets leave the live queue', `${'M' in q.tickets} ${'X' in q.tickets}`, 'false false');
   t('AC6 and are in the archive, with when', `${a.tickets.M.state} ${a.tickets.X.state} ${!!a.tickets.M.archived_at}`, 'done done true');
-  t('AC6 the write says which moved', r.archived.join(','), 'M,X,Q,S');
-  t('DS-850 a ticket whose closed PR is still owed its CI reopen stays live; a marker naming an earlier PR keeps nothing', `${'R' in q.tickets} ${'S' in q.tickets}`, 'true false');
+  t('AC6 the write says which moved', r.archived.join(','), 'M,X,Q,T,E');
+  t('DS-850 a ticket whose closed PR is still owed its CI reopen stays live; a marker naming an earlier PR keeps nothing', `${'R' in q.tickets} ${'E' in q.tickets}`, 'true false');
   t('DS-785 a merged ticket whose post-merge criteria the pass has not made steps yet stays live; one it has is archived', `${'P' in q.tickets} ${'Q' in q.tickets}`, 'true false');
   t('AC7 a done ticket whose PR is open stays live', 'O' in q.tickets, true);
+  t('DS-796 a closed PR still owed its reopen stays live, so the next pass retries it', 'R' in q.tickets, true);
+  t('DS-796 an owed reopen keeps the ticket live whatever its stored state, an earlier merge included', 'S' in q.tickets, true);
+  t('DS-796 but a PR recorded merged owes no reopen, so its ticket is archived', 'T' in q.tickets, false);
+  t('DS-796 an earlier round\'s merge does not archive a requeued ticket whose PR is open or not yet read', `${'U' in q.tickets} ${'V' in q.tickets} ${'Z' in q.tickets} ${'Y' in q.tickets}`, 'true true true true');
   t('a merged ticket with follow-on steps waiting stays live', 'F' in q.tickets, true);
   t('a merged ticket another ticket is held behind stays live', 'H' in q.tickets, true);
 
@@ -174,16 +207,33 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('AC8 and `in` finds it', 'X' in rq.tickets, true);
   t('AC8 but listing the tickets does not', Object.keys(rq.tickets).includes('M'), false);
   t('AC8 nor does writing the queue', JSON.stringify(rq).includes('"M"'), false);
-  t('AC8 its archive reads beside it', Object.keys(archivedOf(rq)).sort().join(','), 'M,Q,S,X');
+  t('AC8 its archive reads beside it', Object.keys(archivedOf(rq)).sort().join(','), 'E,M,Q,T,X');
   rq.tickets.Y = tk('Y', { state: 'parked', held_by: 'M', park: { question: 'held by orchestrator: blocked by M' } });
   t('AC8 a hold on an archived merged ticket is waiting on a merge, not stuck', waitingOnMerge(rq, rq.tickets.Y), true);
   // #1294: done by another's PR, it has no result.pr of its own but records the merge.
   const byOther = { tickets: { D: tk('D', { state: 'done', merged_at: '2026-11-23T10:00:00Z', done_by: { pr: 880 } }), Z: tk('Z', { state: 'parked', held_by: 'D', park: { question: 'held by orchestrator: blocked by D' } }) } };
   t('#1294 a hold on a ticket done by another\'s PR is waiting on a merge, not stuck', waitingOnMerge(byOther, byOther.tickets.Z), true);
-  // A merged_at with no done_by may be an earlier round's: with no PR of its own, it is stuck as before.
+  // Done with its merge recorded and no PR, done_by or not, is merged (DS-796 AC3: the merge driver's own
+  // record of a merge it made), so what is held behind it is not stuck.
   delete byOther.tickets.D.done_by;
-  t('#1294 an earlier round\'s merged_at alone does not count as merged', waitingOnMerge(byOther, byOther.tickets.Z), false);
+  t('DS-796 AC3 a recorded merge with no PR counts as merged', waitingOnMerge(byOther, byOther.tickets.Z), true);
 
+  // #1298: merged once, sent back and done again on a PR still open, it stays live until that PR merges.
+  const rw = (more) => ({ tickets: { R: tk('R', { state: 'done', result: { pr: 442 }, merged_at: '2026-11-02T02:20:59Z', ...more }) } });
+  t('#1298 a ticket done again on an open PR is not archived on its earlier merge', archivable(rw({ pr_status: { pr: 442, state: 'OPEN' } }), 'R'), false);
+  t('#1298 once that PR is read merged, it is', archivable(rw({ pr_status: { pr: 442, state: 'MERGED' } }), 'R'), true);
+  t('#1298 one whose merge is its only PR\'s is archived as before', archivable(rw({}), 'R'), true);
+  // #1312: a blocker merged once and gone round again (requeued: waiting for its worker, or done again on a
+  // PR its status reads open after that merge) is still to merge, so a new hold is laid behind it.
+  const merged = { merged_at: '2026-11-02T02:20:59Z' };
+  const holdsOn = (b, own = true) => {
+    const tickets = own ? { B: b } : Object.create({ B: b });
+    return holdsAmong('A', ['B'], tickets, new Set()).holds;
+  };
+  t('#1312 a new hold is laid behind a blocker requeued after its merge', JSON.stringify(holdsOn(tk('B', { ...merged, state: 'triaged' }))), JSON.stringify(['B']));
+  t('#1312 and behind one done again on a PR read open since', JSON.stringify(holdsOn(tk('B', { ...merged, state: 'done', result: { pr: 442 }, pr_status: { pr: 442, state: 'OPEN', at: '2026-11-10T00:00:00Z' } }))), JSON.stringify(['B']));
+  t('#1312 a blocker merged and not gone round again is not held behind, as before', JSON.stringify(holdsOn(tk('B', { ...merged, state: 'done', result: { pr: 441 }, pr_status: { pr: 441, state: 'MERGED' } }))), JSON.stringify([]));
+  t('#1312 nor an archived one, whatever it reads', JSON.stringify(holdsOn(tk('B', { ...merged, state: 'triaged' }), false)), JSON.stringify([]));
   const env = { ...process.env, DESK_QUEUE: f, DESK_AUTOPILOT_STATE: join(dirname(f), 'state') };
   const qm = (...args) => spawnSync(process.execPath, [join(B, 'queue.mjs'), ...args], { encoding: 'utf8', env });
   t('AC8 queue.mjs get finds it, as done', JSON.parse(qm('get', 'M').stdout).state, 'done');
@@ -202,6 +252,12 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   const idle = (t) => batchIdle({ tickets: { P: t } }, () => 'MERGED');
   t('DS-785 a batch whose merged ticket is owed its post-merge steps is not idle; once read, never merged, or requeued and parked (no pass reads it), it is',
     `${idle(owedTk({}))} ${idle(owedTk({ post_merge_read: 6 }))} ${idle(owedTk({ merged_at: null }))} ${idle(owedTk({ state: 'parked' }))}`, 'false true true true');
+  // DS-796: done on another repo's PR (needs-you's elsewhereDone): the pass keeps no state for this
+  // repo's PR of that number, so the ticket's own merged status settles it; an open one of its own does not.
+  const elsewhere = tk('P', { state: 'done', result: { pr: 7 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 7, state: 'MERGED', url: 'https://github.com/other/repo/pull/7' } });
+  const unread = (t) => batchIdle({ tickets: { P: t } }, () => null);
+  t('DS-796 a batch whose ticket was done on another repo\'s merged PR is idle with no state read for that number; one with its own PR open is not',
+    `${unread(elsewhere)} ${unread({ ...elsewhere, pr_status: { pr: 7, state: 'OPEN' } })}`, 'true false');
 }
 
 // A batch on a base, or an epic's, counts its finished children: it archives nothing.

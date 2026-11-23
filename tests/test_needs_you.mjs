@@ -1,7 +1,7 @@
 // suite: needs-you (every item desk-q counts as needing the person, and recording each answer)
 // layer: L2
 // budget: 115 DS-943 (831 checks over a dozen fixture worlds, each with git repos; 49-88 s on CI)
-// covers: desk/bin/needs-you.mjs desk/bin/asks.mjs desk/bin/decider.mjs skills/desk-needs-you/**
+// covers: desk/bin/needs-you.mjs desk/bin/asks.mjs desk/bin/decider.mjs desk/bin/cloud-worker.mjs skills/desk-needs-you/**
 // Fixture repos, queues, heartbeats, triage records and decision logs under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. DESK_HOME/bin links the real scripts, except answer.mjs: a fake
 // that logs each call and then runs the real one. Nothing touches your real ~/.claude or state.
@@ -331,14 +331,16 @@ t('DS-376 AC2 left attributes to desk-q the count its table shows', `${left[0].m
 
 // ---- DS-324 AC2: a put-off item comes back once its blocker or its inputs change
 const aq = queueOf('alpha');
-aq.tickets['A-9'] = { key: 'A-9', state: 'done', lane: 'A', added_at: minsAgo(600) };
+// Done with its PR closed unmerged: a blocker that finished with no PR is its own item (DS-897), not the hold's.
+aq.tickets['A-9'] = { key: 'A-9', state: 'done', lane: 'A', added_at: minsAgo(600), result: { pr: 9 }, pr_status: { pr: 9, state: 'CLOSED' } };
 aq.tickets['A-6'].park.inputs = { 'pr-head': 'bbb' };
 writeFileSync(join(env.DESK_HOME, 'repos', 'acme__alpha', 'queue.json'), JSON.stringify(aq));
 const back = N.collect({ word: 'alpha' }).items;
-t('DS-324 AC2 a hold whose blocker went done is listed again, saying what changed', /^A-9 finished with no PR: let it start \(Changed since it was put off on \d{4}-\d\d-\d\d: blockers A-9:none → A-9:done; need .*\.\)$/.test(back.find((i) => i.t.key === 'A-4')?.need ?? ''), true);
+t('DS-324 AC2 a hold whose blocker went done is listed again, saying what changed', /^#9 was closed unmerged: let it start \(Changed since it was put off on \d{4}-\d\d-\d\d: blockers A-9:none → A-9:done; need .*\.\)$/.test(back.find((i) => i.t.key === 'A-4')?.need ?? ''), true);
 t('DS-324 AC2 a park whose inputs changed is listed again, saying what changed', /^PRODUCTION BROKEN: checkout returns 500 \(Changed since it was put off on \d{4}-\d\d-\d\d: pr-head \(new\) → bbb\.\)$/.test(back.find((i) => i.t.key === 'A-6')?.need ?? ''), true);
+// A-9's own closed PR is one more item beside them.
 t('DS-376 AC3, AC4 both count the changed ones as needing you, and the cell is the count alone with none put off',
-  `${needsCell()} ${N.needsCount(loadRepos().find((r) => r.name === 'alpha')).shown} ${back.length} ${here('left', 'alpha').out.split('\n')[0]}`, '4 4 4 desk-q counts 4 items needing you in alpha.');
+  `${needsCell()} ${N.needsCount(loadRepos().find((r) => r.name === 'alpha')).shown} ${back.length} ${here('left', 'alpha').out.split('\n')[0]}`, '5 5 5 desk-q counts 5 items needing you in alpha.');
 // DS-324 AC1, AC3: two holds with the same words are put off each on its own; the second does not bring the first back.
 const held = (k) => ({ key: k, state: 'parked', lane: 'A', held_by: 'A-9', added_at: minsAgo(25), park: { question: `held by orchestrator: blocked by A-9 — starts once their PRs merge (${k})` } });
 const tq = queueOf('alpha');
@@ -346,7 +348,7 @@ tq.tickets['A-10'] = held('A-10');
 tq.tickets['A-11'] = held('A-11');
 writeFileSync(join(env.DESK_HOME, 'repos', 'acme__alpha', 'queue.json'), JSON.stringify(tq));
 const twins = () => N.collect({ word: 'alpha' }).items.filter((i) => ['A-10', 'A-11'].includes(i.t.key));
-t('DS-324 two holds share a need', twins().map((i) => i.need).join(' | '), 'A-9 finished with no PR: let it start | A-9 finished with no PR: let it start');
+t('DS-324 two holds share a need', twins().map((i) => i.need).join(' | '), '#9 was closed unmerged: let it start | #9 was closed unmerged: let it start');
 N.record({ word: 'alpha', ticket: 'A-10', action: 'not-now' });
 N.record({ word: 'alpha', ticket: 'A-11', action: 'not-now' });
 t('DS-324 AC1 both are left out once both are put off', twins().length, 0);
@@ -2198,12 +2200,12 @@ t('DS-407 AC2 and every count reads it put off: the repo, the feature batch alon
   // for that blocker; released from the step by hand (held_outside left behind) and held again, the
   // step no longer holds it.
   put('mu685', { port: 5687, beat: 1, supervised: true, inputLabels: 'ben-input', tickets: {
-    'B-9': { state: 'done', lane: 'A', result: {} },
+    'B-9': { state: 'done', lane: 'A', result: { pr: 99 }, pr_status: { pr: 99, state: 'CLOSED' } },
     'H-4': { ...held('OPS-7'), held_by: 'OPS-7|B-9' },
     'H-5': { ...held('OPS-7'), held_by: 'B-9', park: { question: 'held by orchestrator: blocked by B-9' } } },
     triage: { 'H-4': { blockers: [input] }, 'H-5': { blockers: [input] } } });
   const mu = N.collect({ word: 'mu685' }).items;
-  t('DS-685 a step never hides another blocker that needs you: the ticket keeps its own item for it', mu.some((i) => i.t.key === 'H-4' && /B-9 finished with no PR: let it start/.test(i.need)), true);
+  t('DS-685 a step never hides another blocker that needs you: the ticket keeps its own item for it', mu.some((i) => i.t.key === 'H-4' && /#99 was closed unmerged: let it start/.test(i.need)), true);
   t('DS-685 the step item names only the ticket its held_by still holds behind it', mu.find((i) => i.kind === 'step')?.waiting.join(), 'H-4');
   // The ticket the step holds is drawn with the step: under Needs you while the step needs the
   // person, and under Put off once the step is put off with not-now.
@@ -2289,6 +2291,9 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     // A label added after the checker failed the step: it is the checker's still.
     'K-14': merged(104, 5, { follow_on: [{ step: 'needs-ben: read audit.jsonl for the worker cost', row: null }, { step: 'check the invoice totals look right', row: null }],
       follow_checks: [{ step: 'needs-ben: read audit.jsonl for the worker cost', row: null, pr: 104, result: 'fail', found: 'no cost line', evidence: '/x/audit.jsonl', at: minsAgo(1) }] }),
+    // #1318: the run passed, but the step that makes the evidence crashed and scanned nothing.
+    'K-15': merged(105, 5, { follow_on: [CI], follow_checks: [failed(105, { result: 'broken', found: 'ERR_REQUIRE_ESM while loading, 0 pages scanned', source: 'E2E (advisory) › a11y scan', issue: 812 })] }),
+    'K-16': merged(106, 5, { follow_on: [CI], follow_checks: [failed(106, { result: 'broken', found: 'collected 0 tests', source: 'E2E (advisory) › a11y scan', issue: null })] }),
   } });
   const byKey = () => Object.fromEntries(N.collect({ word: 'follow798' }).items.filter((i) => i.kind === 'follow').map((i) => [i.t.key, i]));
   // A checker's step is an item of its own, keyed by the ticket and the step.
@@ -2304,6 +2309,11 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     `${checked(g, 'K-13').map((i) => i.steps.map((s) => s.step).join()).join('|')} ${'follow:K-13' in g}`, `${CI.step} false`);
   t('DS-798 a step a checker failed stays its own item though a person-step label now names it',
     `${checked(g, 'K-14').length} ${JSON.stringify(g['follow:K-14']?.steps.map((s) => s.step))}`, '1 ["check the invoice totals look right"]');
+  t('#1318 a step whose evidence source ran and produced nothing says so, names the broken step and the issue it waits on',
+    (checked(g, 'K-15')[0]?.need ?? '').replace(/^.*? or less\. /, ''),
+    "A follow-step checker found its evidence source broken, so it could not be checked: E2E (advisory) › a11y scan ran and produced nothing to judge (ERR_REQUIRE_ESM while loading, 0 pages scanned; evidence: https://github.com/acme/x/actions/runs/9). It waits on #812, which tracks that; a follow-step checker runs it again every 6 hours, and it leaves this list once the source works. Then say done.");
+  t('#1318 with no issue tracking it, the item drafts one to file and wait on',
+    /No open issue tracks that: file one, "E2E \(advisory\) › a11y scan produces nothing to judge on main", quoting "collected 0 tests" and the run \(https:\/\/github\.com\/acme\/x\/actions\/runs\/9\), and it waits on that;/.test(checked(g, 'K-16')[0]?.need ?? ''), true);
   t('DS-798 AC3 a step carrying a person-step label is listed as today', /Check: needs-ben: read audit\.jsonl/.test(g['follow:K-3']?.need ?? ''), true);
   t('DS-798 AC4 a step the classifier cannot tell is runnable is listed as today', /Check: check the invoice totals look right\. Then say done\.$/.test(g['follow:K-4']?.need ?? ''), true);
   t('DS-798 a runnable step no checker ran once the wait is over is listed, saying so',
@@ -3573,6 +3583,129 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('#811 an empty ask is refused', cli('ask', 'ask811', '  ').code, 11);
 }
 
+// DS-796: a done blocker whose merge is recorded, with no PR, is through, so a ticket held behind it and
+// an open one waits on the open one; a done blocker with neither a merge nor a PR still needs the person.
+{
+  const { holdOf } = await import('../desk/bin/desk-q.mjs');
+  const held = (by) => ({ state: 'parked', lane: 'A', held_by: by, park: { question: `held by orchestrator: blocked by ${by} — starts once their PRs merge` } });
+  put('th796', { port: 5796, beat: 1, supervised: true, tickets: {
+    'M-1': { state: 'done', lane: 'A', merged_at: minsAgo(60), result: { summary: 'shipped outside its worker: done in Jira with no PR' } },
+    'M-2': { state: 'done', lane: 'A', result: { pr: 72 }, pr_status: { pr: 72, state: 'OPEN', isDraft: false, checks: [] } },
+    'M-3': { state: 'done', lane: 'A', result: {} },
+    'H-1': held('M-1|M-2'),
+    'H-2': held('M-3'),
+  } });
+  const items = N.collect({ word: 'th796' }).items;
+  const q796 = queueOf('th796');
+  t('DS-796 AC3 desk-q: held behind a merged blocker with no PR and an open one, it waits on the open one', `${holdOf(q796, q796.tickets['H-1']).k} ${holdOf(q796, q796.tickets['H-1']).text.startsWith('behind #72')}`, 'waiting true');
+  t('DS-796 AC3 needs-you list: no "finished with no PR" item for the merged blocker', items.some((i) => i.t.key === 'nopr:M-1' || (/M-1 finished with no PR/.test(i.need ?? ''))), false);
+  t('DS-796 AC3 needs-you list (the CLI) says no blocker finished with no PR for it', /M-1 finished with no PR/.test(cli('list', 'th796').out), false);
+  t('DS-796 AC4 a done blocker with neither a merge nor a PR still needs you', items.find((i) => i.t.key === 'nopr:M-3')?.waiting.join(), 'H-2');
+  // The shared predicate, as desk-q reads it (the last pass's pr_status) and as the pass does (GitHub read now).
+  const { blockerThrough } = await import('../desk/bin/batch-state.mjs');
+  const gh = (s) => () => s;
+  t('DS-796 blockerThrough: merged, recorded or read', [
+    blockerThrough(q796.tickets['M-1']), blockerThrough(q796.tickets['M-1'], gh(null)),
+    blockerThrough({ state: 'done', result: { pr: 5 } }), blockerThrough({ state: 'done', result: { pr: 5 } }, gh('MERGED')),
+  ].join(), 'true,true,true,true');
+  t('DS-796 blockerThrough: not done, no PR and no merge, open, closed, or unread by the pass', [
+    blockerThrough({ state: 'triaged', merged_at: minsAgo(5) }), blockerThrough(q796.tickets['M-3']), blockerThrough(q796.tickets['M-2']),
+    blockerThrough({ state: 'done', result: { pr: 5 }, pr_status: { pr: 5, state: 'CLOSED' } }), blockerThrough({ state: 'done', result: { pr: 5 } }, gh(null)), blockerThrough(undefined),
+  ].join(), 'false,false,false,false,false,false');
+  // Requeued after its first PR merged: merged_at stays, and its new PR is still open, so what is held
+  // behind it waits on that PR, as the pass reads it (GitHub) and as desk-q does (the kept status).
+  const requeued = { state: 'done', merged_at: minsAgo(600), result: { pr: 11 }, pr_status: { pr: 11, state: 'OPEN' } };
+  t('DS-796 blockerThrough: a requeued blocker whose new PR is open or unread is not through on its old merge', [
+    blockerThrough(requeued), blockerThrough(requeued, gh('OPEN')), blockerThrough({ ...requeued, pr_status: { pr: 10, state: 'MERGED' } }, gh(null)),
+  ].join(), 'false,false,false');
+  t('DS-796 blockerThrough: a requeued blocker is through once its new PR merges, or was done on another repo\'s PR', [
+    blockerThrough(requeued, gh('MERGED')),
+    blockerThrough({ state: 'done', merged_at: minsAgo(60), result: { pr: 7 }, pr_status: { pr: 7, state: 'MERGED', url: 'https://github.com/other/repo/pull/7' } }, gh('OPEN')),
+  ].join(), 'true,true');
+  t('DS-796 blockerThrough: a requeued blocker whose new PR closed unmerged is not through on its old merge', [
+    blockerThrough(requeued, gh('CLOSED')), blockerThrough({ ...requeued, pr_status: { pr: 11, state: 'CLOSED' } }),
+  ].join(), 'false,false');
+  // The pass's release: a ticket held behind the requeued blocker stays held while its new PR is open.
+  put('rq796', { port: 5797, beat: 1, supervised: true, tickets: { 'R-1': requeued, 'H-3': held('R-1') } });
+  const qrq = queueOf('rq796');
+  t('DS-796 desk-q: held behind a requeued blocker whose new PR is open, it waits on that PR', `${holdOf(qrq, qrq.tickets['H-3']).k} ${holdOf(qrq, qrq.tickets['H-3']).text.startsWith('behind #11')}`, 'waiting true');
+}
+
+// DS-897: a blocker that finished with no PR is one item naming every ticket held behind it, and start
+// lifts that blocker alone: a ticket also held behind another stays held behind it, one held behind it
+// alone is released. A ticket's own start lifts only the blocker its hold names.
+{
+  const { holdOf } = await import('../desk/bin/desk-q.mjs');
+  const held = (by) => ({ state: 'parked', lane: 'A', held_by: by, added_at: minsAgo(30), park: { question: `held by orchestrator: blocked by ${by} — starts once their PRs merge` } });
+  put('ds897', { port: 5897, beat: 1, supervised: true, tickets: {
+    'A-1': { state: 'done', lane: 'A', result: {} },
+    'B-1': { state: 'triaged', lane: 'A' },
+    'H-1': held('A-1'), 'H-2': held('A-1|B-1'), 'H-3': held('A-1'),
+  } });
+  const items = () => N.collect({ word: 'ds897' }).items;
+  const nopr = () => items().filter((i) => i.t.key.startsWith('nopr:'));
+  t('DS-897 AC1 one item for the blocker that finished with no PR', nopr().map((i) => `${i.t.key} ${i.kind} ${i.actions.map((a) => a[0]).join()}`).join(' | '), 'nopr:A-1 held start,not-now');
+  t('DS-897 AC1 it names its three dependants', nopr()[0]?.need,
+    'A-1 finished with no PR, so nothing of it lands, and 3 tickets are held behind it: H-1, H-2 and H-3. Start lifts the hold on A-1 alone, and H-1 and H-3 can start, and H-2 stays held behind B-1');
+  t('DS-897 AC1 no dependant is an item of its own', items().filter((i) => /^H-/.test(i.t.key)).length, 0);
+  const count = () => N.needsCount(loadRepos().find((r) => r.name === 'ds897'));
+  t('DS-897 AC1 desk-q counts the blocker once, and draws its dependants as needing you', `${count().shown} ${count().rows.length} ${count().stepRows.map((x) => x.t.key).sort().join()}`, '1 0 H-1,H-2,H-3');
+  const st = N.record({ word: 'ds897', ticket: 'nopr:A-1', action: 'start' });
+  const q = queueOf('ds897');
+  t('DS-897 start on it says what it lifted', `${st.ok} ${st.line}`, 'true ds897 nopr:A-1: hold on A-1 lifted from H-1, H-2 and H-3: H-1 is queued at the front, so the next pass can start it; H-2 stays held behind B-1; H-3 is queued at the front, so the next pass can start it.');
+  t('DS-897 AC2 held behind A-1 and B-1, start against A-1 leaves it held behind B-1 alone', `${q.tickets['H-2'].state} ${q.tickets['H-2'].held_by} ${holdOf(q, q.tickets['H-2']).text}`, 'parked B-1 behind B-1');
+  t('DS-897 AC3 held behind A-1 alone, start against A-1 releases it as before', ['H-1', 'H-3'].map((k) => `${q.tickets[k].state} ${q.tickets[k].held_by} ${q.tickets[k].park}`).join(' | '), 'triaged null null | triaged null null');
+  t('DS-897 once lifted, the blocker is no longer an item', nopr().length, 0);
+  // A ticket's own start, where its hold names one blocker, lifts that one.
+  put('ds897b', { port: 5898, beat: 1, supervised: true, tickets: {
+    'C-1': { state: 'done', lane: 'A', result: { pr: 41 }, pr_status: { pr: 41, state: 'CLOSED' } },
+    'B-1': { state: 'triaged', lane: 'A' },
+    'H-4': held('C-1|B-1'), 'H-5': held('C-1'),
+  } });
+  const own = N.collect({ word: 'ds897b' }).items.find((i) => i.t.key === 'H-4');
+  t('DS-897 a ticket\'s own start names the one blocker it lifts', `${own?.need} · ${own?.actions[0].join(': ')}`, '#41 was closed unmerged: let it start · start: lifts its hold on C-1 alone; it stays held behind B-1');
+  const s4 = N.record({ word: 'ds897b', ticket: 'H-4', action: 'start' });
+  const s5 = N.record({ word: 'ds897b', ticket: 'H-5', action: 'start' });
+  const qb = queueOf('ds897b');
+  t('DS-897 a ticket\'s own start lifts only the blocker its hold names', `${s4.line} ${qb.tickets['H-4'].state} ${qb.tickets['H-4'].held_by}`, 'ds897b H-4: hold on C-1 lifted; H-4 stays held behind B-1. parked B-1');
+  t('DS-897 one held behind that blocker alone is released as before', `${s5.ok} ${qb.tickets['H-5'].state} ${qb.tickets['H-5'].held_by}`, 'true triaged null');
+  // A blocker already through (done with its merge recorded) is not a hold: start against the one that
+  // finished with no PR releases the ticket, from the blocker's item and from the ticket's own.
+  put('ds897c', { port: 5899, beat: 1, supervised: true, tickets: {
+    'A-1': { state: 'done', lane: 'A', result: {} },
+    'C-1': { state: 'done', lane: 'A', result: { pr: 42 }, pr_status: { pr: 42, state: 'CLOSED' } },
+    'M-1': { state: 'done', lane: 'A', merged_at: minsAgo(60), result: {} },
+    'H-6': held('A-1|M-1'), 'H-7': held('C-1|M-1'),
+  } });
+  const ci = N.collect({ word: 'ds897c' }).items;
+  t('DS-897 behind a merged blocker too, the blocker item says it can start', ci.find((i) => i.t.key === 'nopr:A-1')?.need, 'A-1 finished with no PR, so nothing of it lands, and one ticket is held behind it: H-6. Start lifts the hold on A-1 alone, and H-6 can start');
+  t('DS-897 behind a merged blocker too, the ticket\'s own start says nothing else holds it', ci.find((i) => i.t.key === 'H-7')?.actions[0][1], 'nothing else lets it start, and once you do the next pass can start it');
+  const s6 = N.record({ word: 'ds897c', ticket: 'nopr:A-1', action: 'start' });
+  const s7 = N.record({ word: 'ds897c', ticket: 'H-7', action: 'start' });
+  const qc = queueOf('ds897c');
+  t('DS-897 behind a merged blocker too, start releases it as before', ['H-6', 'H-7'].map((k) => `${qc.tickets[k].state} ${qc.tickets[k].held_by}`).join(' | '), 'triaged null | triaged null');
+  t('DS-897 and says so', `${s6.ok} ${s7.ok} ${/H-6 is queued at the front/.test(s6.line)} ${/H-7 is queued at the front/.test(s7.line)}`, 'true true true true');
+  // A co-blocker done on a PR the pass has not read yet still holds: start keeps the ticket held behind it.
+  put('ds897e', { port: 5902, beat: 1, supervised: true, tickets: {
+    'A-1': { state: 'done', lane: 'A', result: {} },
+    'U-1': { state: 'done', lane: 'A', result: { pr: 43 } },
+    'H-9': held('A-1|U-1'),
+  } });
+  const s9 = N.record({ word: 'ds897e', ticket: 'nopr:A-1', action: 'start' });
+  const qe = queueOf('ds897e');
+  t('DS-897 behind a PR the pass has not read, start keeps it held behind that one', `${s9.ok} ${qe.tickets['H-9'].state} ${qe.tickets['H-9'].held_by} ${/H-9 stays held behind U-1/.test(s9.line)}`, 'true parked U-1 true');
+  // Behind two blockers that finished with no PR, the ticket is drawn as needing you while either
+  // blocker's item is listed, so putting off one leaves it there.
+  put('ds897d', { port: 5901, beat: 1, supervised: true, tickets: {
+    'A-1': { state: 'done', lane: 'A', result: {} }, 'A-2': { state: 'done', lane: 'A', result: {} },
+    'H-8': held('A-1|A-2'),
+  } });
+  const dRepo = () => loadRepos().find((r) => r.name === 'ds897d');
+  t('DS-897 behind two such blockers, each is an item naming the ticket', N.collect({ word: 'ds897d' }).items.filter((i) => i.t.key.startsWith('nopr:')).map((i) => `${i.t.key} ${i.waiting.join()}`).join(' | '), 'nopr:A-1 H-8 | nopr:A-2 H-8');
+  N.record({ word: 'ds897d', ticket: 'nopr:A-1', action: 'not-now' });
+  t('DS-897 one put off, the ticket is still drawn as needing you', `${N.needsCount(dRepo()).stepRows.map((x) => x.t.key).join()} ${N.needsCount(dRepo()).items.map((s) => s.t.key).join()}`, 'H-8 nopr:A-2');
+}
+
 // ---- #911: a session-run batch whose passes stopped, with work autopilot could move, is one item
 {
   put('stall911', { port: 4911, beat: 90, tickets: { 'S-1': { state: 'triaged', lane: 'A' }, 'S-2': { state: 'running', lane: 'A', stage: '3/9' } } });
@@ -3766,6 +3899,45 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-836 not-now puts it off', `${off.ok} ${strays().length}`, 'true 0');
   put('gone836', { port: 4837, beat: 1, batch: { ticketless_prs: null }, tickets: { 'G-1': { state: 'triaged', lane: 'A' } } });
   t('DS-836 AC2 once the pass drops the record, no item', N.collect({ word: 'gone836' }).items.filter((i) => i.kind === 'ticketless').length, 0);
+}
+
+// ---- #1311: a batch's finished cloud sessions are one item, naming each with its URL, until done
+{
+  const cloud = (id, extra = {}) => ({ session: `session_${id}`, url: `https://claude.ai/code/session_${id}?from=cli`, started: minsAgo(300), ...extra });
+  put('cloud1311', { port: 4911, beat: 1, tickets: {
+    'C-1': { state: 'done', location: 'cloud', merged_at: minsAgo(30), result: { pr: 5 }, cloud: cloud('a', { name: 'cloud1311-ticket-C-1' }) },
+    'C-2': { state: 'running', location: 'cloud', cloud: cloud('b', { name: 'cloud1311-ticket-C-2' }) },
+    'C-4': { state: 'done', location: 'cloud', result: { pr: 7 }, cloud: cloud('d', { name: 'cloud1311-ticket-C-4' }) },
+    'L-1': { state: 'done', merged_at: minsAgo(20), result: { pr: 6 } },
+  } });
+  const q = join(env.DESK_HOME, 'repos', 'acme__cloud1311', 'queue.json');
+  // The queue archives a done ticket once its PR has merged or closed; this one predates session names.
+  writeFileSync(join(dirname(q), 'queue.archive.json'), JSON.stringify({ tickets: { 'C-3': { key: 'C-3', state: 'done', location: 'cloud', merged_at: minsAgo(600), result: { pr: 3 }, cloud: cloud('c') } } }));
+  const items = () => N.collect({ word: 'cloud1311' }).items.filter((i) => i.kind === 'cloud-archive');
+  let c = items();
+  t('one item for the batch, naming each finished session with its URL, the archived one by its key',
+    `${c.length} ${/^cloud-archive:[0-9a-f]{8}$/.test(c[0]?.t.key)} ${c[0]?.need}`,
+    '1 true 2 cloud sessions have finished in cloud1311 and are still open: archive these in claude.ai/code: C-3 https://claude.ai/code/session_c?from=cli; cloud1311-ticket-C-1 https://claude.ai/code/session_a?from=cli');
+  t('a running session, one whose PR has not merged, and a local ticket are not listed', ['session_b', 'session_d'].some((x) => c[0]?.need.includes(x)), false);
+  t('desk-q counts it once', N.needsCount(loadRepos(Date.now(), 'cloud1311').find((r) => r.slug === 'acme__cloud1311' && r.batch == null)).items.filter((i) => i.item.kind === 'cloud-archive').length, 1);
+  const shown = c[0].t.key;
+  // C-4's PR merges after the list was shown: the shown item's done no longer answers it.
+  const qq = JSON.parse(readFileSync(q, 'utf8'));
+  qq.tickets['C-4'].merged_at = minsAgo(1);
+  writeFileSync(q, JSON.stringify(qq));
+  const stale = N.record({ word: 'cloud1311', ticket: shown, action: 'done' });
+  t('a done on a list another session has since joined is refused, and records nothing', `${stale.ok} ${items()[0]?.sessions.length}`, 'false 3');
+  c = items();
+  const done = N.record({ word: 'cloud1311', ticket: c[0].t.key, action: 'done' });
+  t('done on the list as it stands records every session it named, and the item goes', `${done.ok} ${done.line.endsWith('recorded all 3 sessions archived, so it is off your list.')} ${items().length}`, 'true true 0');
+  // A named batch archived with a session not recorded hands it to the standing batch's list.
+  const state = join(env.HOME, '.desk-autopilot', 'acme__cloud1311');
+  writeFileSync(join(state, 'cloud-archived.json'), JSON.stringify({ ...JSON.parse(readFileSync(join(state, 'cloud-archived.json'), 'utf8')),
+    pending: [{ key: 'E-1', session: 'session_e', name: 'cloud1311-ticket-E-1', url: 'https://claude.ai/code/session_e', at: minsAgo(5) }] }));
+  c = items();
+  t('the standing batch lists a session an archived batch handed it', c[0]?.need, '1 cloud session has finished in cloud1311 and is still open: archive it in claude.ai/code: cloud1311-ticket-E-1 https://claude.ai/code/session_e');
+  N.record({ word: 'cloud1311', ticket: c[0].t.key, action: 'done' });
+  t('and its done takes it off the handed list', `${items().length} ${JSON.parse(readFileSync(join(state, 'cloud-archived.json'), 'utf8')).pending.length}`, '0 0');
 }
 
 // ---- DS-896: a ticket's blockers, read by desk-q, needs-you and queue.mjs watch from one helper, in the

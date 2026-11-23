@@ -3,11 +3,12 @@
 // cloud-worker.mjs against the outputs recorded in tests/fixtures/cloud/: placement from triage
 // records, the start parsed from `claude --cloud`, a real start through `script` with no terminal of
 // its own (a fake claude that prints the recording, and one that refuses the way --print does), the
-// PR a session opened, and the batch report's cloud row.
+// PR a session opened, the batch report's cloud row, the session's name, and the finished sessions
+// needs-you asks the person to archive.
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from '../desk/bin/cloud-worker.mjs';
+import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, cloudName, finishedCloud, readArchived, recordArchived, CLOUD_NO_EFFORT } from '../desk/bin/cloud-worker.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
 import { scratch } from './scratch.mjs';
@@ -79,6 +80,12 @@ t('AC2 and the whole prompt reached claude --cloud as one argument', sent.includ
 const okNoTty = fake('claude-ok-no-tty', `[ "$1" = --cloud ] || exit 9\ncat "${join(FIX, 'created-no-tty.txt')}"`);
 const realNoTty = startCloud(prompt, { claude: okNoTty, timeout: 30_000 });
 t('AC4 the no-TTY recording read back through script gives its session', realNoTty.session ?? JSON.stringify(realNoTty), 'session_01Vy49H8UHjQ9wbruRKguWDD');
+const named = fake('claude-named', `[ "$1" = --cloud ] || exit 9\nprintf '%s|%s' "$3" "$4" > "${join(S, 'name.txt')}"\ncat "${join(FIX, 'created.txt')}"`);
+startCloud(prompt, { claude: named, name: 'widgets-ticket-K-1', timeout: 30_000 });
+let gave = '';
+try { gave = readFileSync(join(S, 'name.txt'), 'utf8'); } catch { /* not run */ }
+t('a session started with a name gets --name <name> after its prompt', gave, '--name|widgets-ticket-K-1');
+t('the name is <repo>-ticket-<KEY>, from the repo part of owner/name', cloudName('acme/widgets', 'K-1'), 'widgets-ticket-K-1');
 const refuses = fake('claude-no', `cat "${join(FIX, 'print-refused.txt')}" >&2\nexit 1`);
 t('AC4 a start the CLI refuses returns its error', startCloud(prompt, { claude: refuses, timeout: 30_000 }).error?.startsWith('Error: --cloud cannot be combined with --print.'), true);
 t('AC4 a claude that is not there is an error, not a session', !!startCloud(prompt, { claude: join(S, 'missing'), timeout: 30_000 }).error, true);
@@ -129,5 +136,23 @@ const pre = costTable([ticketCost(S, { key: 'K-5', location: 'cloud', cloud: { s
 t('a cloud row with only a local preflight shows that cost, and the notes count it once', `${(pre.find((l) => l.startsWith('  K-5 ')) ?? '').includes('$0.40')} ${/-\d/.test(pre.at(-1))} ${pre.at(-1).includes('1 cloud worker(s) counted for their local review runs only')}`, 'true false true');
 
 rmSync(S, { recursive: true, force: true });
+
+// ---- finished sessions to archive -------------------------------------------
+const cs = (id, more = {}) => ({ session: `session_${id}`, url: `https://claude.ai/code/session_${id}`, ...more });
+const live = {
+  A: { key: 'A', state: 'done', location: 'cloud', merged_at: '2026-11-02T10:00:00Z', cloud: cs('a', { name: 'w-ticket-A' }) },
+  B: { key: 'B', state: 'done', location: 'cloud', cloud: cs('b') },
+  C: { key: 'C', state: 'running', location: 'cloud', merged_at: '2026-11-01T10:00:00Z', cloud: cs('c') },
+  D: { key: 'D', state: 'done', merged_at: '2026-11-01T10:00:00Z' },
+};
+const archived = { E: { key: 'E', state: 'done', location: 'cloud', merged_at: '2026-11-01T10:00:00Z', cloud: cs('e') }, F: { key: 'F', state: 'done', location: 'cloud', cloud: { started: 'x' } } };
+t('finished: merged live cloud tickets and archived ones with a session, oldest first',
+  finishedCloud(live, archived).map((d) => `${d.key}:${d.name ?? '-'}`).join(), 'E:-,A:w-ticket-A');
+t('finished: a session recorded archived is left out', finishedCloud(live, archived, new Set(['session_e'])).map((d) => d.key).join(), 'A');
+const dir = join(S, 'state-1311');
+mkdirSync(dir, { recursive: true });
+t('archived: none recorded reads as none', readArchived(dir).size, 0);
+recordArchived(dir, ['session_a']); recordArchived(dir, ['session_a', 'session_e']);
+t('archived: records add up, once each', [...readArchived(dir)].sort().join(), 'session_a,session_e');
 console.log(fails ? `cloud worker: ${fails} failed` : 'cloud worker: all checks passed');
 process.exit(fails ? 1 : 0);

@@ -3,8 +3,8 @@
 // runs under `tsc`, is told apart and holds a `lint` slot.
 //
 //   node slot-lease.mjs mode                                  # off, shadow or on: the slot kind's mode
-//   node slot-lease.mjs take <class> --pid <owner> [--timeout <s>] [--waited <s>] -- <command...>
-//   node slot-lease.mjs note <queued|grant|gave-up> <class> --pid <wrapper pid> --waited <s>
+//   node slot-lease.mjs take <class> --pid <owner> [--timeout <s>] [--waited <s>] [--express <dir>] -- <command...>
+//   node slot-lease.mjs note <queued|grant|gave-up> <class> --pid <wrapper pid> --waited <s> [--lane express]
 //   node slot-lease.mjs holders [--light]                     # who holds the test (or light) lock, one line
 //   node slot-lease.mjs in-slot <pid>                         # exit 0 when <pid> runs inside a test or light slot
 //
@@ -14,23 +14,27 @@
 // who holds it, and gives up after --timeout seconds (exit 75). In `shadow` it makes one try, which
 // shadow always grants, logging a would-refuse when the pool was full; the wrapper has already taken
 // its legacy lock and ignores how this ends; --waited is how long it waited for that lock, which the
-// grant line records. `note` logs a run's wait on the lock files where no lease line carries it.
+// grant line records. With `--express` (light only), a run waiting in `on` takes the light lock's
+// express lane, that lock directory, where it is free (exit 10). `note` logs a run's wait on the lock
+// files where no lease line carries it; `--lane express` names the express lane on a grant line.
 //
-// Exit codes: 0 granted (or nothing to take), 75 gave up waiting, 4 the lease store is unreadable,
-// 1 the broker failed otherwise. The wrapper falls back to its legacy lock on 4 and 1.
+// Exit codes: 0 granted (or nothing to take), 10 took the express lane, 75 gave up waiting, 4 the lease
+// store is unreadable, 1 the broker failed otherwise. The wrapper falls back to its legacy lock on 4 and 1.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import * as A from './admission.mjs';
 import { LOCK_OF, lockWaitingDir } from './admit-ledger.mjs';
-import { alive } from './dir-lock.mjs';
+import { alive, tryLock } from './dir-lock.mjs';
 import { tilde } from './logins.mjs';
 import { EXIT_GAVE_UP, EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, LeaseStoreError, SAMPLE_TIMEOUT_MS, acquire, capacities, kindMode, logEvent, poolOf, sampleLoad, waitFields } from './leases.mjs';
 
 // How often a run waiting in `on` tries again: each try reads the process table.
 const POLL_MS = 2000;
+// `take --express`'s exit when the run took the light lock's express lane rather than a lease.
+const EXIT_LANE = 10;
 // A slot lease's TTL. Its owner's exit, not its TTL, ends it (leases.mjs exempts a slot lease with a
 // live owner from lapsing), so this only dates it. DESK_SLOT_LEASE_TTL sets it for a test fixture.
 const ttl = () => (/^\d+$/.test(process.env.DESK_SLOT_LEASE_TTL ?? '') && Number(process.env.DESK_SLOT_LEASE_TTL) > 0 ? Number(process.env.DESK_SLOT_LEASE_TTL) : 600);
@@ -80,11 +84,12 @@ const waitNow = (cls, pid, waited) => waitFields({ cls, worktree: worktree(), wa
 function note(rest) {
   const [event, cls, ...more] = rest;
   const opt = (n) => { const i = more.indexOf(`--${n}`); return i < 0 ? null : more[i + 1]; };
-  const pid = Number(opt('pid')), waited = opt('waited');
-  if (!['queued', 'grant', 'gave-up'].includes(event) || !LOCK_OF[cls] || !Number.isInteger(pid) || pid <= 0 || !/^\d+$/.test(waited ?? '')) {
-    console.error('usage: slot-lease.mjs note <queued|grant|gave-up> <class> --pid <wrapper pid> --waited <s>'); return 2;
+  const pid = Number(opt('pid')), waited = opt('waited'), lane = opt('lane');
+  if (!['queued', 'grant', 'gave-up'].includes(event) || !LOCK_OF[cls] || !Number.isInteger(pid) || pid <= 0 || !/^\d+$/.test(waited ?? '')
+    || (lane != null && !(lane === 'express' && cls === 'light' && event === 'grant'))) {
+    console.error('usage: slot-lease.mjs note <queued|grant|gave-up> <class> --pid <wrapper pid> --waited <s> [--lane express]'); return 2;
   }
-  logEvent({ event, kind: 'slot', key: cls, ...waitNow(cls, pid, Number(waited)) });
+  logEvent({ event, kind: 'slot', key: cls, ...(lane ? { lane } : {}), ...waitNow(cls, pid, Number(waited)) });
   return 0;
 }
 
@@ -109,10 +114,25 @@ function headroom(cls, pid, say) {
   };
 }
 
+// The light lock's express lane, for a small run with the slot kind on (with-lock.sh): its lock
+// directory `d`, taken for the owner `pid` as with-lock.sh's mkdir path holds it, its pid file naming
+// the owner, so it is held while the owner runs. A pid file naming a live pid (with-lock.sh writes two)
+// is held. -> true once taken.
+function takeLane(d, pid) {
+  let pids = [];
+  try { pids = readFileSync(join(d, 'pid'), 'utf8').split(/\s+/).filter(Boolean).map(Number); } catch { /* none written */ }
+  if (pids.some(alive) || tryLock(d) !== true) return false;
+  writeFileSync(join(d, 'pid'), `${pid}\n`);
+  return true;
+}
+class TookLane extends Error {}
+
 // Takes the slot for `words` run by lock class `cls`, owned by `pid`, whose wrapper has already
 // waited `waited` seconds on the lock files. Its grant, refuse or gave-up line carries its wait; a
-// wait here is queued and logged as it starts. -> the exit code.
-function take({ cls, pid, timeout, words, waited = 0 }) {
+// wait here is queued and logged as it starts. With `express` (the lane's lock directory), a run the
+// pool refuses takes the lane where it is free, at that refusal and before each later try, and the
+// wrapper logs its grant. -> the exit code, EXIT_LANE for the lane.
+function take({ cls, pid, timeout, words, waited = 0, express = null }) {
   const say = (s) => console.error(s);
   const key = cls === 'tsc' && isLint(words) ? 'lint' : cls;
   const s = `${key} ${tilde(process.cwd())}: ${words.join(' ')}`;
@@ -120,6 +140,7 @@ function take({ cls, pid, timeout, words, waited = 0 }) {
   const t0 = Date.now();
   const sofar = () => waited + Math.round((Date.now() - t0) / 1000);
   const look = headroom(cls, pid, say);
+  const lane = () => { if (express && takeLane(express, pid)) throw new TookLane(); };
   let waiting = false;
   try {
     const caps = capacities(E);
@@ -128,11 +149,12 @@ function take({ cls, pid, timeout, words, waited = 0 }) {
     // Shadow grants every try, so it never waits, whatever `wait` says. While a run waits, each try
     // reads the pools afresh, after its look at headroom.
     const r = acquire({ kind: 'slot', key, units: 1, ttl: ttl(), label, pid, wait: timeout ?? Infinity }, {
-      env: E, caps: () => { if (waiting) look(); return capacities(E); }, poll: POLL_MS,
+      env: E, caps: () => { if (waiting) { look(); lane(); } return capacities(E); }, poll: POLL_MS,
       onWait: (why) => {
         waiting = true;
         enqueue(key, pid);
         logEvent({ event: 'queued', kind: 'slot', key, label, ...waitNow(key, pid, sofar()) });
+        lane();
         if (look() == null) say(`with-lock.sh: waiting for ${what}: ${why}`);
       },
       note: () => { dequeue(key, pid); return waitNow(key, pid, sofar()); },
@@ -140,6 +162,7 @@ function take({ cls, pid, timeout, words, waited = 0 }) {
     if (r.code === EXIT_GAVE_UP || r.code === EXIT_REFUSED) { say(`with-lock.sh: gave up waiting for ${what} after ${timeout}s: ${r.why}`); return EXIT_GAVE_UP; }
     return r.code;
   } catch (e) {
+    if (e instanceof TookLane) return EXIT_LANE;
     if (e instanceof LeaseStoreError) { say(`with-lock.sh: leases were unreadable (${e.message}), so this run takes the ${cls} lock instead`); return EXIT_UNREADABLE; }
     say(`with-lock.sh: the lease broker failed (${e.message}), so this run takes the ${cls} lock instead`);
     return 1;
@@ -174,18 +197,19 @@ async function cli(argv) {
   if (sub === 'holders') return holders(rest);
   if (sub === 'in-slot') return inSlot(rest);
   if (sub === 'note') return note(rest);
-  if (sub !== 'take') { console.error('usage: slot-lease.mjs mode | holders [--light] | in-slot <pid> | note <queued|grant|gave-up> <class> --pid <pid> --waited <s> | take <class> --pid <pid> [--timeout <s>] [--waited <s>] -- <command...>'); return 2; }
+  if (sub !== 'take') { console.error('usage: slot-lease.mjs mode | holders [--light] | in-slot <pid> | note <queued|grant|gave-up> <class> --pid <pid> --waited <s> [--lane express] | take <class> --pid <pid> [--timeout <s>] [--waited <s>] [--express <dir>] -- <command...>'); return 2; }
   const at = rest.indexOf('--');
   const head = at < 0 ? rest : rest.slice(0, at);
   const words = at < 0 ? [] : rest.slice(at + 1);
   const [cls] = head;
   const opt = (n) => { const i = head.indexOf(`--${n}`); return i < 0 ? null : head[i + 1]; };
   const pid = Number(opt('pid'));
-  const timeout = opt('timeout'), waited = opt('waited');
-  if (!cls || !Number.isInteger(pid) || pid <= 0 || !words.length || (timeout != null && !/^\d+$/.test(timeout)) || (waited != null && !/^\d+$/.test(waited))) {
-    console.error('usage: slot-lease.mjs take <class> --pid <pid> [--timeout <s>] [--waited <s>] -- <command...>'); return 2;
+  const timeout = opt('timeout'), waited = opt('waited'), express = opt('express');
+  if (!cls || !Number.isInteger(pid) || pid <= 0 || !words.length || (timeout != null && !/^\d+$/.test(timeout)) || (waited != null && !/^\d+$/.test(waited))
+    || (express != null && (cls !== 'light' || !express))) {
+    console.error('usage: slot-lease.mjs take <class> --pid <pid> [--timeout <s>] [--waited <s>] [--express <dir>] -- <command...>'); return 2;
   }
-  return take({ cls, pid, timeout: timeout == null ? null : Number(timeout), words, waited: waited == null ? 0 : Number(waited) });
+  return take({ cls, pid, timeout: timeout == null ? null : Number(timeout), words, waited: waited == null ? 0 : Number(waited), express });
 }
 
 const isMain = (() => {

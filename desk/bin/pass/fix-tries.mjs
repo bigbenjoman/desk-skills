@@ -40,11 +40,12 @@
 //   feedback {key, pr}                  -> the PR's review threads (review-threads.mjs readThreads, with its payload), or null
 //   settle-worked {key, pr, head, worked}   -> the ids of the threads a finished feedback try worked, replied on and resolved
 //   check-build {key, pr, head, call}   -> the build's record: `call` 'person' where it could not start or re-run
-//   apply {key, pr, head, call}         carry out the call: stuck, requeue, held, wait or rerun
-import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, settleable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck, stuckLessHeld, outagePlan, outageGap, reviewGates, OUTAGE_PRS, OUTAGE_GAP_MAX_S } from '../fix-tries.mjs';
+//   apply {key, pr, head, call}         carry out the call: stuck, requeue, held, wait, rerun or refresh
+import { baseHeldAt, fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, settleable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck, stuckLessHeld, outagePlan, outageGap, reviewGates, OUTAGE_PRS, OUTAGE_GAP_MAX_S } from '../fix-tries.mjs';
 import { reviewerGated, set, say } from './shared.mjs';
 import { OUTAGE_MS, outageWait } from './deadlines.mjs';
 import { externalReview } from '../review-threads.mjs';
+import { FAILED } from '../gate.mjs';
 
 const out = (line) => ({ type: 'out', line });
 const waiting = (key, line) => say(key, 'waiting', line);
@@ -69,7 +70,8 @@ export function* decideFixTries(s) {
 // The snapshot: { prs (the pass's drafts and ready PRs, [{ t, s }]), gate, was (the hold kept from the
 // last pass, or {}), now (ms), unread (a Set of the PRs whose read failed this pass: what the hold
 // keeps of one stays; a PR it holds that the pass neither read nor tried to is gone), dry, rowErrors,
-// recorded (the queue's `platform_outage`, or null), base (the default branch) }.
+// recorded (the queue's `platform_outage`, or null), base (the default branch), staleOf (t, s, names)
+// -> the names red only as its base was, green on the base since (fix-tries.mjs staleChecks), or absent }.
 // Actions, beside `report` and `out`:
 //   set-batch {fields}                        the batch's outage record (outageRecord)
 //   outage-rerun {key, branch, pr, head, run, name}   -> { ok, why, wait } (gh run rerun --failed, under
@@ -78,12 +80,22 @@ export function* decideFixTries(s) {
 //   outage-held {held, rerun}                 the checks held this pass (Map), and the PRs re-run as it
 //                                             cleared, or still owed a re-run (their run still going,
 //                                             or waiting on the preview build)
+// A PR's checks its base red hold names at its head (held or cleared), and, where s.staleOf reads them
+// (§3 pr-update-branch yes), those red on its base where it branched and green on the base since
+// (fix-tries.mjs staleChecks), are red because its base was, not because a platform fails: the outage
+// reads the PR without them, so they neither start, join nor re-run a hold, and its fix tries update
+// its branch from the base (staleBase).
+const baseOut = (staleOf) => (e) => {
+  const red = [...new Set((e.s?.checks ?? []).filter((c) => FAILED.has(String(c.conclusion ?? '').toLowerCase())).map((c) => c.name))];
+  const off = new Set([...baseHeldAt(e.t, e.s?.head), ...(red.length && staleOf ? staleOf(e.t, e.s, red) : [])]);
+  return off.size ? { ...e, s: { ...e.s, checks: (e.s.checks ?? []).filter((c) => !off.has(c.name)) } } : e;
+};
 const clock = (ms) => new Date(ms).toISOString().slice(11, 16);
 const prList = (prs) => `#${prs.join(', #')}`;
 export function* decideOutage(s) {
   if (s.rowErrors?.length) return;
   // A review or approval gate red on many PRs waits on its reviewer, so it is left out (reviewGates).
-  const plan = outagePlan({ prs: s.prs, lists: { ...s.gate, gates: reviewGates(s.stateChecks) }, was: s.was ?? {}, now: s.now, unread: s.unread ?? null });
+  const plan = outagePlan({ prs: (s.prs ?? []).map(baseOut(s.staleOf)), lists: { ...s.gate, gates: reviewGates(s.stateChecks) }, was: s.was ?? {}, now: s.now, unread: s.unread ?? null });
   const keep = { ...plan.keep };
   // A PR a cleared hold still owes a re-run waits for it, with no fix try, until it is made.
   const reran = [...plan.owing];

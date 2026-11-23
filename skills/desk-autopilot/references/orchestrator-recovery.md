@@ -210,6 +210,11 @@ re-running a ticket from scratch.
   `tool_progress` `elapsed_time_seconds` in the log tail; a single
   tool call past a few minutes is a hang. Kill **that worker's** codex by the PID you resolved
   (`ps -o etimes= -p <pid>`), never `pkill -f codex`: other sessions run codex concurrently.
+- **A running ticket's queue fields are as of the last pass.** Its `stage` moves only when a pass
+  reads the worker's log, so a live worker can show `0/9` for its whole run. Before calling a spawn
+  dead, read `live` in `queue.mjs get <TICKET>`: the stage the worker last said since this spawn
+  (`stage`, `said_at`) and when its log last grew (`heartbeat_at`). A recent heartbeat is a live
+  worker; `log: null` is one that never started.
 - **A worker at a usage limit is paused, not dead.** Any limit counts: the 5-hour one, the weekly
   one, or one Claude Code names some other way. A headless worker ends its session at the limit.
   `pass.mjs` reads the limit from the worker's log (`usage-limit.mjs`), keeps the ticket running,

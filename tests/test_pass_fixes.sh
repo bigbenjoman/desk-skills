@@ -165,6 +165,7 @@ else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
 else if (a[0] === 'api' && a[1] in api) console.log(api[a[1]]);
 else if (a[0] === 'run' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fx/run-' + a[2] + '-' + a[a.indexOf('--json') + 1] + '.json', 'utf8')); } catch { process.exit(1); } }
 else if (a[0] === 'run' && a[1] === 'rerun') process.exit(0);
+else if (a[0] === 'pr' && a[1] === 'update-branch') process.exit(0);
 else process.exit(1);
 EOF
 { cat "$T/config-f.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `failure-class` |\n'; } > "$T/config-fl.md"
@@ -295,9 +296,28 @@ check "#1281: with the push grant not given, a later red is still noted on the o
   '[ "$(field base-red-main-20261123060000 state)" = null ] && [ "$(field base-red-main-20261123000000 red_again | jq -r .key)" = base-red-main-20261123060000 ] && [ "$(grep -c "went red again" "$T/state-fb/tickets/base-red-main-20261123000000.md")" = 2 ]'
 q set base-red-main-20261123000000 state=done session_id=null; q drop base-red-main-20261123000000
 rm -f "$T/state-fb/base-red.json"; q set base-red-main state=done; q drop base-red-main
+# #1326: a repair parked while someone else fixed main. Main read green since it was admitted, the red
+# record gone: before any spawn its row is closed out as done by the PR that fixed main, no worker runs.
+q add base-red-main-20261123070000 Bug A; q set base-red-main-20261123070000 state=parked added_at="$(isoago 7200)" 'park={"question":"the base still fails Lint"}'
+printf '{"branch":"main","at":"%s"}\n' "$(isoago 60)" > "$T/state-fb/base-green.json"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "#1326 a repair whose base went green since it was admitted is recorded done before any spawn, and no worker starts" \
+  '[ "$(field base-red-main-20261123070000 state)" = "\"done\"" ] && [ "$(field base-red-main-20261123070000 park)" = null ] && ! echo "$out" | grep -q "base-red-main-20261123070000 port=" && echo "$out" | grep -qF "base-red-main-20261123070000: main has gone green since it began"'
+q drop base-red-main-20261123070000; rm -f "$T/state-fb/base-green.json"
 out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-850 AC6 once the driver reads main green, the pass drops the line" '! echo "$out" | grep -q "^RED BASE:" && echo "$out" | grep -q "FB-4: BASE RED"'
 runs "$MB5" Lint '[{"status":"completed","conclusion":"success"}]'
+# #1327: where §3 pr-update-branch is yes, a PR red only where its base was red, the base green since,
+# has its branch updated from the base instead: no re-run, no fix try. Once per head: the next pass,
+# at the same head, goes on as before.
+awk '{ print } /^\| `pr-conflict-unreviewed`/ { print "| `pr-update-branch` | Update branch | `yes` | `yes` |" }' "$T/config-f.md" > "$T/config-fu.md"
+: > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fu.md" node "$B/pass.mjs" 2>&1)
+check "#1327 once its held check passes on the base, the PR's branch is updated from it, with no re-run and no fix try" \
+  '[ "$(grep -c "^pr update-branch 813 --repo acme/widgets$" "$T/gh-calls")" = 1 ] && ! grep -q "^run rerun" "$T/gh-calls" && [ "$(field FB-4 state)" = "\"done\"" ] && [ "$(field FB-4 fix)" = null ] && [ "$(field FB-4 fix_tries)" = null ] && [ "$(field FB-4 base_refresh | jq -c "[.head, .ok, .checks]")" = "[\"$H4\",true,[\"Lint\"]]" ]'
+check "#1327 and the pass says why" 'echo "$out" | grep -qF "fix tries: PR #813 (FB-4) had its branch updated from main (gh pr update-branch): Lint was red on main too and has passed on main since"'
+: > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fu.md" node "$B/pass.mjs" 2>&1)
+check "#1330 a pass at the same head, its update made, waits for the new head: no second update and no fix try" \
+  '! grep -q "^pr update-branch" "$T/gh-calls" && [ "$(field FB-4 fix)" = null ] && [ "$(field FB-4 fix_tries)" = null ] && echo "$out" | grep -qF "fix tries: PR #813 (FB-4) is out of draft: its branch was updated from main at" && echo "$out" | grep -qF "it waits for the run at its new head, with no re-run and no fix try"'
 out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-614 AC2 once the job passes on the base, the hold clears and a fix try proceeds as today" \
   '[ "$(field FB-4 state)" = "\"triaged\"" ] && [ "$(field FB-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-4 fix.class)" = "\"application defect\"" ] && [ "$(field FB-4 base_red | jq -c "[.checks, .cleared]")" = "[[],[\"Lint\"]]" ]'

@@ -226,5 +226,44 @@ t('a scan is due for an archived merge', postMergeDue({ state: join(tmp, 'state9
 postMergeScan({ state: join(tmp, 'state9'), queue: archivedQueue, log, runs: () => [], now: NOW });
 t('an archived ticket\'s revert inside the watch is recorded', readPostMerge(join(tmp, 'state9')).filter((r) => r.kind === 'revert').map((r) => r.ticket).join(), 'T-A');
 
+// A PR recorded on two tickets (a shipped-elsewhere PR and the merge driver's record): its revert is each one's.
+const shared = { tickets: { 'T-A': { merged_at: iso(mergedA), result: { pr: 1 } }, 'T-F': { merged_at: iso(mergedA), pr_status: { pr: 1 } } } };
+// Each scan below has its own state directory (`own-*`): a scan runs once a day per directory.
+const revertsOf = (s) => readPostMerge(join(tmp, s)).filter((r) => r.kind === 'revert').map((r) => r.ticket).sort().join();
+const scanOf = (s) => readPostMerge(join(tmp, s)).find((r) => r.kind === 'scan');
+postMergeScan({ state: join(tmp, 'own-shared'), queue: shared, log, runs: () => [], now: NOW });
+t('a revert of a PR on two tickets is recorded on both', revertsOf('own-shared'), 'T-A,T-F');
+
+// A ticket done on another repo's PR #1 (needs-you's elsewhereDone keeps that PR's url) is not this repo's #1.
+const foreign = { tickets: { ...shared.tickets, 'T-G': { merged_at: iso(mergedA), result: { pr: 1 }, pr_status: { pr: 1, state: 'MERGED', url: 'https://github.com/o/other/pull/1' } } } };
+postMergeScan({ state: join(tmp, 'own-foreign'), queue: foreign, repo: 'O/Here', log, runs: () => [], now: NOW });
+t('another repo\'s PR of the same number gets no revert record', revertsOf('own-foreign'), 'T-A,T-F');
+const local = { tickets: { 'T-H': { merged_at: iso(mergedA), pr_status: { pr: 1, url: 'https://github.com/o/here/pull/1' } } } };
+postMergeScan({ state: join(tmp, 'own-local'), queue: local, repo: 'O/Here', log, runs: () => [], now: NOW });
+t('this repo\'s PR, its url spelt in another case, still gets its revert record', revertsOf('own-local'), 'T-H');
+
+// Renamed from O/Old to O/Here: T-I's #1 merged before the rename (its url names O/Old), T-H's after it
+// (O/Here), and T-G's #1 is another repo's. GitHub resolves either name of this repo to O/Here.
+const renamed = { tickets: { ...local.tickets, 'T-G': foreign.tickets['T-G'],
+  'T-I': { merged_at: iso(mergedA), pr_status: { pr: 1, url: 'https://github.com/O/Old/pull/1' } } } };
+const github = { 'o/old': 'https://github.com/O/Here\n', 'o/here': 'https://github.com/O/Here\n', 'o/other': 'https://github.com/o/other\n' };
+const lookedUp = [];
+const resolveRepo = (name) => { lookedUp.push(name); return github[name.toLowerCase()]; };
+const rOld = postMergeScan({ state: join(tmp, 'own-renamed-old'), queue: renamed, repo: 'O/Old', resolveRepo, log, runs: () => [], now: NOW });
+t('after a rename with origin on the old name, both names\' tickets get their revert record, another repo\'s #1 none', revertsOf('own-renamed-old'), 'T-H,T-I');
+t('after a rename, the scan is complete', scanOf('own-renamed-old')?.complete, true);
+t('after a rename, the pass line names the revert', /T-H reverted by/.test(rOld.line), true);
+t('each name is looked up on GitHub once a scan', lookedUp.map((n) => n.toLowerCase()).sort().join(), 'o/here,o/old,o/other');
+postMergeScan({ state: join(tmp, 'own-renamed-new'), queue: renamed, repo: 'O/Here', resolveRepo, log, runs: () => [], now: NOW });
+t('after a rename with origin moved to the new name, a ticket merged under the old name keeps its revert record', revertsOf('own-renamed-new'), 'T-H,T-I');
+const rUnread = postMergeScan({ state: join(tmp, 'own-unread'), queue: renamed, repo: 'O/Old', resolveRepo: () => { throw new Error('gh: HTTP 502'); }, log, runs: () => [], now: NOW });
+t('with GitHub unread, a ticket is judged by its url\'s spelling', revertsOf('own-unread'), 'T-I');
+t('with GitHub unread, the scan is incomplete', scanOf('own-unread')?.complete, false);
+t('saying which name was judged by its spelling', /not looked up on GitHub, so judged by that name: gh: HTTP 502/.test(scanOf('own-unread')?.why), true);
+t('and the pass line says so', /scan incomplete/.test(rUnread.line), true);
+const notAsked = [];
+postMergeScan({ state: join(tmp, 'own-spelt'), queue: local, repo: 'O/Here', resolveRepo: (n) => { notAsked.push(n); return github[n.toLowerCase()]; }, log, runs: () => [], now: NOW });
+t('with every url on origin\'s spelling, GitHub is not asked', notAsked.join(), '');
+
 rmSync(tmp, { recursive: true, force: true });
 if (fails) { console.log(`${fails} failed`); process.exit(1); }

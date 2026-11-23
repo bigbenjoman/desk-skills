@@ -568,28 +568,46 @@ NODE
   # by this driver) has merged, whatever GitHub lists: `prs` sees only the newest 100 merged PRs, so a
   # blocker whose PR is older than that (a long-lived draft, rebased and merged today) was never found
   # and held its successors forever. Lines in the shape `prs` prints; the PR is "?" when none is recorded.
-  local merged known
-  known=$(node --input-type=module - "$DESK_QUEUE" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/queue-store.mjs" <<'NODE'
+  # merged_at keeps only a ticket's first merge, so a live ticket requeued after it (batch-state.mjs
+  # reworked) is not merged on it, nor on a listed older PR naming its key: only its current PR merging
+  # releases what waits on it (HOLD lines, the PR or "?").
+  local merged known listed holds h
+  known=$(node --input-type=module - "$DESK_QUEUE" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" <<'NODE'
 import { readFileSync } from 'node:fs';
-const { attachArchive, everyTicket } = await import(process.argv[3]);
+const { attachArchive, everyTicket, mergedPrs } = await import(`${process.argv[3]}/queue-store.mjs`);
+const { reworked, awaitingWorker } = await import(`${process.argv[3]}/batch-state.mjs`);
 const q = { tickets: {} };
 try { q.tickets = JSON.parse(readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
+const live = q.tickets;
+// Its current PR: none yet while it waits for a worker, else the one it records, or its draft, unless
+// that is a PR it kept as merged (a requeue keeps it, and only a spawn clears the result).
+const current = (t) => {
+  const n = awaitingWorker(t) ? null : t.result?.pr ?? t.draft_pr ?? null;
+  return n == null || mergedPrs(t).some((x) => x.pr === Number(n)) ? '?' : n;
+};
 // Done tickets whose PR merged move to the archive beside the queue (queue-store.mjs), live ones first.
-for (const [k, t] of Object.entries(everyTicket(attachArchive(q, process.argv[2])))) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
+for (const [k, t] of Object.entries(everyTicket(attachArchive(q, process.argv[2])))) {
+  if (t && Object.hasOwn(live, k) && reworked(t)) console.log(`HOLD\t${current(t)}\t${k}`);
+  else if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
+}
 NODE
 ) || known=""
+  holds=$(printf '%s\n' "$known" | awk -F'\t' '$1 == "HOLD"')
+  known=$(printf '%s\n' "$known" | awk -F'\t' '$1 != "HOLD" && NF')
   # One merged-PR listing for every predecessor at once, not one per predecessor per loop. A listing gh
   # could not give still releases what the queue already knows merged.
   # Each predecessor key is its own argument: ticket keys hold no spaces or glob characters.
   # shellcheck disable=SC2046
-  merged=$(prs merged $(printf '%s\n' "$plan" | awk '{ print $2 }' | tr ',' '\n' | sort -u) </dev/null) || merged=""
-  merged="$known${known:+$'\n'}$merged"
+  listed=$(prs merged $(printf '%s\n' "$plan" | awk '{ print $2 }' | tr ',' '\n' | sort -u) </dev/null) || listed=""
+  merged="$known${known:+$'\n'}$listed"
   [ -n "$merged" ] || return 0
   while read -r succ preds; do
     [ -n "$succ" ] || continue
     all=1; got=""
     for pred in ${preds//,/ }; do
-      n=$(printf '%s\n' "$merged" | awk -F'\t' -v k="$pred" '$3 == k { print $1; exit }')
+      h=$(printf '%s\n' "$holds" | awk -F'\t' -v k="$pred" '$3 == k { print $2; exit }')
+      if [ -n "$h" ]; then n=$(printf '%s\n' "$listed" | awk -F'\t' -v k="$pred" -v c="$h" '$3 == k && $1 == c { print $1; exit }')
+      else n=$(printf '%s\n' "$merged" | awk -F'\t' -v k="$pred" '$3 == k { print $1; exit }'); fi
       [ -z "$n" ] && { all=0; break; }; got="$got $pred#$n"
     done
     if [ "$all" = 1 ]; then
@@ -1085,14 +1103,44 @@ unknown_age(){ # unknown_age <n> <sha> <key> <merge state>
 # are (rerun.sh: RERUNS_MAX per check per head, apart, under §3 ci-rerun, never a state check), so one
 # an intermittent failure turned red reaches the person green, and a red in its own code spends the
 # reruns the pass's fix tries wait on (fix-tries.mjs fixCall) and gets its fix try.
-held_rerun(){ # held_rerun <n> <sha> <gate json> <gate state>
+held_rerun(){ # held_rerun <n> <sha> <gate json> <gate state> <key>
   [ "$4" = fail ] || return 0
   log "#$1 red at ${2:0:9} under its merge hold: $(printf '%s' "$3" | jq -r '.gate.reasons[:3] | join("; ")')"
-  rerun "$1" "$2" "$3"
+  stale_base "$1" "$2" "$3" "$5" || rerun "$1" "$2" "$3"
+}
+
+# A red PR whose red checks include one red on the base where it branched and green on the base since
+# is red on the base it was built on: a rerun replays its old merge commit and fails the same way.
+# Where §3 pr-update-branch is yes, its branch is updated from the base instead, decided as the pass's
+# fix tries decide it (stale-base.mjs: fix-tries.mjs staleCall), and recorded on its ticket as
+# `base_refresh` ({ head, at, ok, checks }), which both read: once per head, an update that went
+# through holds the PR at that head while its new head comes, and a refused one goes the usual way,
+# reruns included. -> 0 when the PR waits on an update (made now or earlier at this head, or waiting
+# on the preview build), so no rerun; 1 to go on.
+stale_base(){ # stale_base <n> <sha> <gate json> <key>
+  [ "$UPDATE_PERM" = yes ] && [ -n "$4" ] && [ -z "$EPIC_KEY" ] || return 1
+  [ "$(printf '%s' "$3" | jq -r '.gate.pending | length')" = 0 ] || return 1
+  local said rc=0 list at
+  said=$(printf '%s' "$3" | jq -r '[.gate.stateFailing[]?.name] as $s | .gate.failing[] | select(.name as $n | $s | index($n) | not) | .name' \
+    | node "$DESK_RUN_BIN/stale-base.mjs" "$REPO" "$BASE_BRANCH" "$4" "$2" 2>/dev/null) || rc=$?
+  if [ "$rc" = 3 ]; then log "#$1 at ${2:0:9}: $said"; return 0; fi
+  [ "$rc" = 0 ] && [ -n "$said" ] || return 1
+  list=$(printf '%s\n' "$said" | paste -sd ',' - | sed 's/,/, /g')
+  update_branch "$1" "red only where $BASE_BRANCH was" || rc=$?
+  [ "$rc" = 2 ] && return 0
+  at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  node "$Q" set "$4" "base_refresh=$(jq -nc --arg h "$2" --arg at "$at" --argjson ok "$([ "$rc" = 0 ] && echo true || echo false)" --arg n "$said" --arg out "$(printf '%s' "${UPDATE_OUT:-}" | tail -1)" \
+    '{head: $h, at: $at, ok: $ok, checks: ($n | split("\n") | map(select(length > 0)))} + (if $ok then {} else {out: $out} end)')" >/dev/null 2>&1 || true
+  if [ "$rc" = 0 ]; then
+    log "#$1 red at ${2:0:9} on $list, red on $BASE_BRANCH too and green there since -> gh pr update-branch (a run on the green base follows), no rerun"
+    return 0
+  fi
+  log "#$1 red at ${2:0:9} on $list, red only where $BASE_BRANCH was, but update-branch was refused: $(printf '%s' "${UPDATE_OUT:-}" | tail -1) — rerun as usual"
+  return 1
 }
 
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds met carried="" bare nbare bare_more routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH"
+  local n="$1" key="$2" g sha ms state holds met carried="" bare nbare bare_more routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH" mat="" head=""
   EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" --files-cache "$SD/pr-files.json" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
@@ -1130,19 +1178,19 @@ try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
         if [ "$nbare" -gt 1 ]; then bare_more=" (and $((nbare - 1)) more merge hold(s))"; fi
         queue_note "$key" "merge hold: $(printf '%s' "$bare" | head -1)$bare_more"
       fi
-      held_rerun "$n" "$sha" "$g" "$state"
+      held_rerun "$n" "$sha" "$g" "$state" "$key"
       return 1
     fi
     if [ "$ROUTINE_PERM" != yes ]; then
       log "#$n HELD by §4 Merge holds — its routine is not run, §3 merge-hold-routine is $ROUTINE_PERM: $(printf '%s' "$holds" | paste -sd ';' -)"
       routine_off_note "$key" "$routines" "§3 merge-hold-routine is $ROUTINE_PERM"
-      held_rerun "$n" "$sha" "$g" "$state"
+      held_rerun "$n" "$sha" "$g" "$state" "$key"
       return 1
     fi
     if [ -f "$SD/routine-$n-$sha.failed" ]; then
       log "#$n HELD by §4 Merge holds — its routine already failed at ${sha:0:9}; a person settles it (a new head runs it again)"
       routine_failed_note "$key" "$SD/routine-$n-$sha.failed" "$sha"
-      held_rerun "$n" "$sha" "$g" "$state"
+      held_rerun "$n" "$sha" "$g" "$state" "$key"
       return 1
     fi
     blocked_clear "$key" "merge hold:"
@@ -1215,7 +1263,7 @@ EOF_RESOLVE
       fi
       # A waiver only lets a head merge, which one awaiting an approval may not, and its note would replace the approval's.
       if [ -z "$review_required" ] && [ -z "$awaiting" ] && waivable "$n" "$sha" "$g" "$key"; then waived="$WAIVED"
-      else [ -n "$review_required" ] || [ -n "$awaiting" ] || approval_clear "$key"; rerun "$n" "$sha" "$g"; return 1; fi ;;
+      else [ -n "$review_required" ] || [ -n "$awaiting" ] || approval_clear "$key"; stale_base "$n" "$sha" "$g" "$key" || rerun "$n" "$sha" "$g"; return 1; fi ;;
     *) [ -n "$review_required" ] || approval_clear "$key"; log "#$n not green yet ($state): $(printf '%s' "$g" | jq -r '.gate.reasons[:2] | join("; ")')"; return 1 ;;
   esac
   [ -n "$review_required" ] && return 1
@@ -1323,8 +1371,15 @@ EOF_RESOLVE
       [ "${#moid}" -eq 40 ] || moid=
       if node "$Q" set-batch "promotion.merged_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" ${moid:+"promotion.merge_commit=$moid"} >/dev/null 2>&1; then log "#$n epic PR merged: recorded on the queue"
       else log "#$n epic PR merge not recorded on the queue — the next pass reads it from GitHub"; fi
-    elif rec=$(node "$Q" merged "$key" 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
-    else log "#$n merge time not recorded: $(printf '%s' "$rec" | tail -1)"; fi
+    else
+      # GitHub's merge time rather than this clock's, and the PR with its branch: a ticket built outside
+      # its worker records no PR of its own, and this merge is its PR where the branch names its key
+      # (queue.mjs merged). gh writes an unset time as 0001-01-01.
+      IFS="$TAB" read -r mat head < <(gh pr view "$n" --repo "$REPO" --json mergedAt,headRefName -q '"\(.mergedAt)\t\(.headRefName)"' 2>/dev/null)
+      case "$mat" in 0001-*) mat= ;; [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*) ;; *) mat= ;; esac
+      if rec=$(node "$Q" merged "$key" ${mat:+"$mat"} --pr "$n" ${head:+--head "$head"} 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
+      else log "#$n merge time not recorded: $(printf '%s' "$rec" | tail -1)"; fi
+    fi
     # The epic is never transitioned: its close-out is the orchestrator's.
     [ -n "$EPIC_KEY" ] || close_merged "$n" "$key"
     return 0

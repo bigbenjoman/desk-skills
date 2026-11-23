@@ -142,6 +142,29 @@ canvas), write the values into the ticket's Design section (`desk-jira`, under �
 no tracker, the ticket file), and run step 1 again for it. It goes to the user only when no connector
 here can read the frame, saying which you tried.
 
+**Then fold in what a comment already settles.** A `lint (blocking): …` refusal whose findings are
+only no acceptance criteria, a decision left open (a "Decide whether…" line, a question in scope) or
+no design link is not the user's where the ticket's comments answer it: read them
+(`desk-jira comments <TICKET>`; with no tracker, the issue's comments). A finding is settled by:
+
+- **a decision left open**: a comment from the person §4 People routes it to (`desk-env get --json
+  product-owner designer`: the designer for a design call, the product owner for any other, and the
+  product owner where Designer is `none`) that states the choice;
+- **no design link**: a Figma or Claude Design URL in a comment from the designer (the product owner
+  where Designer is `none`);
+- **no acceptance criteria**: criteria that follow from the ticket's text and those comments alone.
+  A criterion neither states is a question, never a guess (gate 1 of `desk-ticket`).
+- **no design link** where the line adds `triage found nothing renders` (its change is confined to
+  tests, CI, tooling or config): no comment is needed. Write `No UI.` and the reason the line gives
+  (`No UI. Triage found nothing renders: it changes …`) as the Design section.
+
+Write each settled finding into the description through `desk-jira` (§3 `jira-edit`; with no
+tracker, the ticket file), before asking about any other: the `Acceptance criteria` section, a
+`Design` section holding the link, and the decision line reworded as decided, with a dated entry
+under `Decisions` naming the comment's author and date. Print the `JIRA EDIT` block as it goes and
+read it back. With none left, run step 1 again for it. Only a finding no comment settles goes to the
+user, as below, saying which were folded in; once its answer is recorded the same way, run step 1 again.
+
 Each other `not admitted <TICKET>: <why>` line, and an `admits nothing: <why>` line, goes to the user in
 one `AskUserQuestion` round (at most four questions; header the ticket key). Put the first option
 below as `(Recommended)`, with its reason as the description:
@@ -150,7 +173,7 @@ below as `(Recommended)`, with its reason as the description:
 |---|---|---|
 | `lane C` or `lane D` | Work it in its own session: `/desk-ticket <TICKET>` (a worker would only park on it) | Leave it out of the batch |
 | `open question(s): …` | Answer each one now; record the answers on the ticket (`desk-jira`). One a linked design frame answers was read above | Run step 1 again for it |
-| `lint (blocking): …` | Fix the ticket as the finding says (`desk-jira`) | Run step 1 again for it |
+| `lint (blocking): …` | Fix what no comment settled (above) as the finding says (`desk-jira`) | Run step 1 again for it |
 | `design not snapshotted: <URL>…` | Snapshot it as step 0 says, or, where it will not read, import its HTML export (step 0) | Run step 1 again for it |
 | `size L` or `XL` | Split it into tickets of size M or less (`desk-jira`) | Admit the new tickets |
 | `blocked by <B>, which failed in the batch` | Requeue `<B>` (`queue.mjs requeue <B>`), or drop it if it will not be done | Run step 1 again for it |
@@ -163,6 +186,7 @@ below as `(Recommended)`, with its reason as the description:
 | `runs on base <B> in the standing slot: move it to epic <E>'s own slot` (or `to its own slot <S>, named after its branch`, for a batch spanning several epics) | Move it: run the `node …/move-batch.mjs` the line names, which frees the standing slot on the default branch. With workers running it drains first (exit 12, new spawns paused): run it again once none is running | Run step 1 again |
 | `is run by a session, not the supervisor` | If this session runs that batch, run the command the line names (`… --session`), never `queue.mjs admit` and never a message to yourself. Otherwise send the tickets to that session: `ListAgents`, then `SendMessage` with each ticket and why it is wanted. That session admits them | Admit nothing here unless this session runs it |
 | `no batch is live, and starting one … needs …` | Plan a batch: `/desk-autopilot <TICKET>...` | |
+| `no supervisor runs this repo's batches` (config §3b Batches run by is `session`) | If this session runs the repo's batches, run step 1 again with `--session`, which joins the finished batch. Otherwise start one: `/desk-autopilot <TICKET>...` in a session. The line is on `/desk-needs-you` too | |
 | `triage failed` or anything else | Show the line; offer to run step 1 again | |
 
 A `not triaged (usage limit, resets <time>): <TICKET>...` line is not a question: a triage hit the

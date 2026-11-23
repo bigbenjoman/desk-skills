@@ -63,6 +63,11 @@
 # what it waits for and why, and again only when the reason changes, at most once a minute. Anything
 # that cannot be read, the rows included, grants the floor alone. With the slot lease kind on, the
 # broker's pool grows the same way (slot-lease.mjs).
+#
+# The light lock has an express lane where the machine profile's light-express-lane row is on: one
+# slot of its own (desk-light.lock.express), outside light-lock-max, that only a run called with
+# DESK_LIGHT_SMALL=1 may take, once it finds every pool slot it may take held. Its grant line names the
+# lane, and headroom admission counts it as a recent admit at light-run-gb.
 set -uo pipefail
 # This script's own directory, taken before --cwd moves us: desk-env.mjs is installed beside it.
 here="$(cd "$(dirname "$0")" && pwd -P)"
@@ -124,6 +129,10 @@ esac
 # The command knows it already runs inside a slot of this lock, so a script that takes a slot itself
 # (tests/related.sh) does not wait for a second one behind its own.
 export DESK_LOCK_HELD="$name"
+# Whether the caller says this run is small (the express lane, below). The command is not told: a run
+# it starts is sized by whoever starts it.
+small="${DESK_LIGHT_SMALL:-}"
+unset DESK_LIGHT_SMALL
 # The run's wait on the lock files: queued once it starts to wait, when its marker (named by this pid)
 # sits in the lock's waiting directory, which slot-lease.mjs counts as the queue. A run granted at its
 # first try waited 0 seconds.
@@ -131,7 +140,7 @@ case "$name" in test|tsc) wdir="$dir/desk-test.waiting" ;; *) wdir="$dir/desk-$n
 queued=""; w=""
 waited_s() { if [ -n "$w" ]; then echo "$w"; elif [ -n "$queued" ]; then echo $((SECONDS - t0)); else echo 0; fi; }
 # Logs this run's queued, grant or gave-up line ($1), saying nothing whatever happens.
-note() { node "$here/slot-lease.mjs" note "$1" "$name" --pid "$$" --waited "$(waited_s)" </dev/null >/dev/null 2>&1 || true; }
+note() { node "$here/slot-lease.mjs" note "$1" "$name" --pid "$$" --waited "$(waited_s)" ${lane:+--lane "$lane"} </dev/null >/dev/null 2>&1 || true; }
 queue() { queued=1; mkdir -p "$wdir" 2>/dev/null && : > "$wdir/$$" 2>/dev/null; note queued; }
 unqueue() { [ -z "$queued" ] || rm -f "$wdir/$$" 2>/dev/null; }
 gave_up() { unwatch; unqueue; note gave-up; echo "with-lock.sh: gave up waiting for the $name lock after ${timeout}s" >&2; exit 75; }
@@ -168,29 +177,49 @@ say_waiting() {
 
 # The slot lease. Anything but shadow or on, a failing node included, is off.
 lease_mode="$(node "$here/slot-lease.mjs" mode 2>/dev/null)" || lease_mode=off
-t0=$SECONDS
-if [ "$lease_mode" = on ]; then
-  # The lease's own queued, grant and gave-up lines carry this run's wait. A wait for the lease holds
-  # the same marker as one on the lock files, so admission looks at it the same way.
-  watch_admission
-  if [ -n "$timeout" ]; then node "$here/slot-lease.mjs" take "$name" --pid "$$" --timeout "$timeout" -- "$@" </dev/null
-  else node "$here/slot-lease.mjs" take "$name" --pid "$$" -- "$@" </dev/null; fi
-  rc=$?
-  unwatch
-  case $rc in
-    0) export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$((SECONDS - t0))"; exec "$@" ;;
-    75) exit 75 ;;
-    *) lease_mode=off; t0=$SECONDS ;;   # it said why: the lock files below, as with the kind off
-  esac
+# The light lock's express lane: one slot of its own, a lock file outside light-lock-max and never
+# gated on headroom, for a run its caller says is small (DESK_LIGHT_SMALL=1, as tests/related.sh does)
+# where the machine profile's light-express-lane row is on. Such a run takes a pool slot it may have
+# first, and the lane only when there is none; a run not called small never takes it. Its lock is named
+# as a light slot, so the lock's holder readers (suite-wait.mjs) count its holder. With the slot lease
+# kind on, the broker takes the lane's lock directory once the pool refuses the run (exit 10).
+express=""; lane=""; elock="$dir/desk-light.lock.express"
+if [ "$name" = light ] && [ "$small" = 1 ] \
+  && [ "$(node "$here/desk-env.mjs" machine get light-express-lane 2>/dev/null)" = on ]; then
+  express=1
 fi
+# Says, once, that a small run found the pool's slots held and takes the express lane instead.
+took_express() { lane=express; echo "with-lock.sh: all $name slots it may take are held, so this small run takes the express lane" >&2; }
 # granted <owner pid> <command...>: logs the grant of the lock just taken. In shadow that is the lease
 # taken beside it, whose grant line carries the wait; one that fails is logged as with the kind off. How
 # the lease ends changes nothing here: the lock files are what this run waited on.
 granted() {
   local owner="$1"; shift
+  # An express-lane grant takes no lease, which would draw on the light pool it sits outside: its grant
+  # line names the lane, and admission's ledger counts it as a recent admit.
+  if [ -n "$lane" ]; then
+    node "$here/admission.mjs" express "$name" --pid "$owner" </dev/null >/dev/null 2>&1 || true
+    note grant; return 0
+  fi
   if [ "$lease_mode" = shadow ] && node "$here/slot-lease.mjs" take "$name" --pid "$owner" --waited "$w" -- "$@" </dev/null >/dev/null 2>&1; then return 0; fi
   note grant
 }
+t0=$SECONDS
+if [ "$lease_mode" = on ]; then
+  # The lease's own queued, grant and gave-up lines carry this run's wait. A wait for the lease holds
+  # the same marker as one on the lock files, so admission looks at it the same way.
+  watch_admission
+  if [ -n "$timeout" ]; then node "$here/slot-lease.mjs" take "$name" --pid "$$" --timeout "$timeout" ${express:+--express "$elock.d"} -- "$@" </dev/null
+  else node "$here/slot-lease.mjs" take "$name" --pid "$$" ${express:+--express "$elock.d"} -- "$@" </dev/null; fi
+  rc=$?
+  unwatch
+  case $rc in
+    0) export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$((SECONDS - t0))"; exec "$@" ;;
+    10) w=$((SECONDS - t0)); took_express; granted "$$" "$@"; export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$w"; exec "$@" ;;
+    75) exit 75 ;;
+    *) lease_mode=off; t0=$SECONDS ;;   # it said why: the lock files below, as with the kind off
+  esac
+fi
 
 # How many commands may hold this lock at once.
 slots=1
@@ -259,9 +288,10 @@ slot_order() {
 # it) beside slot $1, so a reader can tell the holder: the autopilot pass, telling a worker running its
 # suite from a wedged one. The file outlives the holder; a reader checks the pid is still there.
 holder() { echo "$$" > "$(slot_path "$1").pid" 2>/dev/null || true; }
+held_text() { if [ -n "$express" ]; then echo "all $slots slots and the express lane held"; else echo "all $slots slots held"; fi; }
 
 if command -v flock >/dev/null 2>&1; then
-  if [ "$slots" -eq 1 ] && [ -z "$admit_on" ]; then
+  if [ "$slots" -eq 1 ] && [ -z "$admit_on" ] && [ -z "$express" ]; then
     # The descriptor form, so a wait is said before it blocks, a timeout is told apart from the
     # command's own exit status, and a shadow lease is taken once the lock is held. The command
     # inherits fd 9, so the lock is held until it exits.
@@ -286,8 +316,13 @@ if command -v flock >/dev/null 2>&1; then
       exec 9>&-
     done
     admit_round && continue
+    if [ -n "$express" ]; then
+      exec 9>>"$elock" || exit 2
+      flock -n 9 && { echo "$$" > "$elock.pid" 2>/dev/null; took_express; held; granted "$$" "$@"; exec "$@"; }
+      exec 9>&-
+    fi
     [ -n "$timeout" ] && [ "$waited" -ge "$timeout" ] && gave_up
-    [ "$waited" -eq 0 ] && [ -z "$admit_on" ] && waiting "all $slots slots held"
+    [ "$waited" -eq 0 ] && [ -z "$admit_on" ] && waiting "$(held_text)"
     waited=$((waited + 2))
     sleep 2
   done
@@ -335,10 +370,11 @@ while [ -z "$ldir" ]; do
   done
   [ -n "$ldir" ] && break
   admit_round && continue
+  if [ -n "$express" ] && take "$elock.d"; then ldir="$elock.d"; took_express; break; fi
   [ -n "$timeout" ] && [ "$waited" -ge "$timeout" ] && gave_up
   if [ "$waited" -eq 0 ] && [ -z "$admit_on" ]; then
-    if [ "$slots" -eq 1 ]; then waiting "held by pid ${last_holders:-?}"
-    else waiting "all $slots slots held"; fi
+    if [ "$slots" -eq 1 ] && [ -z "$express" ]; then waiting "held by pid ${last_holders:-?}"
+    else waiting "$(held_text)"; fi
   fi
   waited=$((waited + 2))
   sleep 2

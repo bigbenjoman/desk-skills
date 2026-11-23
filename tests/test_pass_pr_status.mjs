@@ -46,6 +46,17 @@ const lists = (acts) => acts.at(-1);
   t('and so does a closed one, so the ticket is not left done on it', j([ofType(cachedClosed, 'park').length, lists(cachedClosed).prStates[70]]), j([1, 'CLOSED']));
   const noHandle = run(snap([mine('F')], { logins: null }), read({ author: 'alice' }));
   t('with no account configured only the branch is checked', lists(noHandle).undrafted.length, 1);
+  // DS-796: recorded shipped outside its worker on a merged PR from a branch that names its key (pass.mjs
+  // shippedElsewhere, or the merge driver's queue.mjs merged): that PR is its result, never parked.
+  const shippedRead = { branch: 'fix/F-session', author: 'alice', state: 'MERGED', merged_at: '2026-11-19T09:00:00Z' };
+  const shipped = run(snap([mine('F', { shipped_pr: 70, merged_at: '2026-11-19T09:00:01Z' })], { logins: 'me' }), read(shippedRead));
+  t('DS-796 a merged PR its ticket was recorded shipped on is not parked as not its own, and its status is kept', j([ofType(shipped, 'park').length, ofType(shipped, 'pr-status').length, lists(shipped).prStates[70]]), j([0, 1, 'MERGED']));
+  const shippedKept = run(snap([mine('F', { shipped_pr: 70, merged_at: '2026-11-19T09:00:01Z', pr_status: status(70, 'MERGED', { branch: 'fix/F-session', merged_at: '2026-11-19T09:00:00Z' }) })], { logins: 'me' }), {});
+  t('DS-796 nor is one kept from an earlier pass', ofType(shippedKept, 'park').length, 0);
+  const shippedOpen = run(snap([mine('F', { shipped_pr: 70 })], { logins: 'me' }), read({ ...shippedRead, state: 'OPEN', merged_at: null }));
+  t('DS-796 but shipped_pr does not let an open PR on another branch through', ofType(shippedOpen, 'park').length, 1);
+  const otherShipped = run(snap([mine('F', { shipped_pr: 69 })], { logins: 'me' }), read(shippedRead));
+  t('DS-796 nor a merged PR other than the one it was recorded shipped on', ofType(otherShipped, 'park').length, 1);
 }
 
 // ---- AC1: a merged PR with no merged time recorded
@@ -151,7 +162,13 @@ const lists = (acts) => acts.at(-1);
 {
   const tickets = [done('I', 19), { key: 'J', state: 'running' }, done('K', 19)];
   const acts = run(snap(tickets), { 19: status(19, 'OPEN', { reopen: { tests: 'main' } }) });
-  t('one PR two tickets share is read once', ofType(acts, 'read-pr').length, 1);
+  // GitHub is asked once (pass.mjs's read-pr handler keeps the read); each ticket keeps the status.
+  t('DS-796 one PR two tickets share is read for each, and each keeps its status', j(ofType(acts, 'pr-status').map((a) => a.key)), j(['I', 'K']));
+  t('DS-796 only the first acts on it', j(lists(acts).undrafted.map(({ t: x }) => x.key)), j(['I']));
+  // The second ticket on the PR owes a reopen that failed: the PR's one reopen is that ticket's.
+  const owing = run(snap([done('I2', 22), done('K2', 22, { reopening: 22 })]), { 22: status(22, 'CLOSED') });
+  t('DS-796 a shared PR\'s owed reopen goes to the ticket that owes it, not the first reached', j(lists(owing).reopens.map(({ t: x, owed }) => [x.key, owed])), j([['K2', true]]));
+  t('DS-796 and the PR counts as open while it is owed', lists(owing).prStates[22], 'OPEN');
   t('an open PR whose base now runs its untriggered checks is in the reopens', j(lists(acts).reopens.map(({ t: x, owed }) => [x.key, owed])), j([['I', false]]));
   t('a read that fails keeps nothing for that PR', j(run(snap([done('L', 20)]), {}).filter((a) => a.type !== 'read-pr').map((a) => a.type)), j(['prune-builds', 'lists']));
   t('and lists it as unread, for the outage hold', j(lists(run(snap([done('L', 20)]), {})).unread), j([20]));
@@ -178,6 +195,18 @@ const lists = (acts) => acts.at(-1);
   const list = [done('Q', 22, { fix: { kind: 'review' } }), done('R', 23, { reopening: 23 })];
   const acts = run(snap(list, { dry: true }), { 22: status(22, 'MERGED', { merged_at: 'y', post_merge: [{ step: 's' }] }), 23: status(23, 'OPEN') });
   t('a dry run reads and keeps pr_status, and writes nothing else', j(acts.map((a) => a.type)), j(['read-pr', 'pr-status', 'read-pr', 'pr-status', 'lists']));
+}
+
+// ---- DS-796: a ticket done on another repo's PR never fills this repo's PR of the same number
+{
+  const foreignDone = done('X', 31, { merged_at: '2026-11-18T09:00:00Z', pr_status: status(31, 'MERGED', { merged_at: '2026-11-18T09:00:00Z', url: 'https://github.com/other/repo/pull/31' }) });
+  const requeued = done('B', 31, { merged_at: '2026-11-10T09:00:00Z', pr_status: status(31, 'OPEN') });
+  for (const order of [[requeued, foreignDone], [foreignDone, requeued]]) {
+    const acts = run(snap(order, { repo: 'me/here' }), { 31: status(31, 'OPEN', { url: 'https://github.com/me/here/pull/31' }) });
+    t(`DS-796 this repo's open #31 stays open beside another repo's merged #31 (${order.map((x) => x.key).join(' then ')})`, lists(acts).prStates[31], 'OPEN');
+  }
+  const own = run(snap([done('Y', 32, { pr_status: status(32, 'MERGED', { merged_at: 'm', url: 'https://github.com/Me/Here/pull/32' }) })], { repo: 'me/here' }));
+  t('DS-796 a kept status naming this repo\'s PR (any case) is its PR state', lists(own).prStates[32], 'MERGED');
 }
 
 // ---- AC5: the decision does no I/O

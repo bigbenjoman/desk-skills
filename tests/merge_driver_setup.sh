@@ -82,15 +82,24 @@ const out = (x) => console.log(typeof x === 'string' ? x : JSON.stringify(x));
 if (a[0] === 'pr' && a[1] === 'list') {
   out(Object.entries(prs).filter(([, p]) => p.state === at('--state') && (!a.includes('--base') || p.base === at('--base'))
       && (!a.includes('--author') || (p.author ?? 'tester') === at('--author')))
-    .map(([n, p]) => ({ number: Number(n), title: 't', headRefName: p.head, baseRefName: p.base, isDraft: p.draft, headRefOid: p.sha, mergeStateStatus: p.mergeState ?? 'CLEAN' })));
+    .map(([n, p]) => ({ number: Number(n), title: p.title ?? 't', headRefName: p.head, baseRefName: p.base, isDraft: p.draft, headRefOid: p.sha, mergeStateStatus: p.mergeState ?? 'CLEAN' })));
 } else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'state') {
   out(String(prs[a[2]]?.state ?? '').toUpperCase());
+} else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'mergedAt,headRefName') {
+  // GitHub's merge time, a PR's "mergedAt" or gh's unset time, and its branch, tab-separated.
+  out((prs[a[2]]?.mergedAt ?? '0001-01-01T00:00:00Z') + '\t' + (prs[a[2]]?.head ?? ''));
 } else if (a[0] === 'pr' && a[1] === 'view') {
   const p = prs[a[2]];
   out({ number: Number(a[2]), title: p.title ?? 't', headRefOid: p.sha, headRefName: p.head, baseRefName: p.base, isDraft: p.draft,
     state: p.state.toUpperCase(), mergeable: p.mergeState === 'DIRTY' ? 'CONFLICTING' : 'MERGEABLE', mergeStateStatus: p.mergeState ?? 'CLEAN', reviewDecision: (p.feedback ?? '').split(' ')[0], autoMergeRequest: null,
     statusCheckRollup: p.checks.map(([name, conclusion, run, job, startedAt]) => ({ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion, workflowName: 'ci', startedAt,
       detailsUrl: run ? 'https://github.com/acme/widgets/actions/runs/' + run + '/job/' + (job ?? run) : undefined })) });
+} else if (a[0] === 'api' && fs.existsSync('$T/api-out.json') && JSON.parse(fs.readFileSync('$T/api-out.json', 'utf8'))[a[1]] !== undefined) {
+  // api-out.json: an endpoint's output as gh prints it with its --jq already applied (the base reads
+  // stale-base.mjs makes, base-reads.mjs); a null one is a read GitHub refuses.
+  const v = JSON.parse(fs.readFileSync('$T/api-out.json', 'utf8'))[a[1]];
+  if (v === null) { console.error('gh: Server Error (HTTP 502)'); process.exit(1); }
+  out(v);
 } else if (a[0] === 'api' && /check-runs\/\d+\/annotations/.test(a[1] ?? '')) {
   // A job's annotations: annotations.json maps a job id to the error its run gave, or to its annotations.
   const id = /check-runs\/(\d+)/.exec(a[1])[1];

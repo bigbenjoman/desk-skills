@@ -96,6 +96,10 @@ const SIZING_RULES = Object.freeze({
 });
 export const SIZING_KEYS = Object.freeze(Object.keys(SIZING_RULES));
 
+// The light lock's express lane: one fixed slot of its own, never gated on headroom, that only a run
+// with-lock.sh is told is small may take. Off unless the row is exactly `on`.
+const EXPRESS_LANE_KEY = 'light-express-lane';
+const EXPRESS_LANE_VALUES = Object.freeze(['on', 'off']);
 // The bench's quota settings: Sizing rows no proposal makes, set by `desk-env machine set` from the
 // user's answers and read by bench-quota.mjs.
 export const BENCH_CAP_KEY = 'bench-cap-points';
@@ -112,6 +116,8 @@ const BENCH_RULES = Object.freeze({
   // The lease broker's per-kind lever, read as text rather than a number.
   'lease-kinds': { text: true, problem: (v) => leaseKindsProblem(v),
     why: 'off, shadow or on for each lease kind desk-env lease decides; a kind not named is shadow' },
+  [EXPRESS_LANE_KEY]: { text: true, problem: (v) => (EXPRESS_LANE_VALUES.includes(v) ? null : `\`${EXPRESS_LANE_KEY}\` is "${v}": want on or off`),
+    why: 'on gives a small light run (tests/related.sh) one light slot of its own, outside light-lock-max; off when unset' },
 });
 
 // ---- lease kinds ------------------------------------------------------------------------------
@@ -142,15 +148,18 @@ export function leaseKindsProblem(raw) {
   if (unknown.length) return `\`lease-kinds\` names ${unknown.length === 1 ? 'an entry' : 'entries'} it does not know: ${unknown.map((e) => `"${e}"`).join(', ')}: want ${want}`;
   return Object.keys(modes).length ? null : `\`lease-kinds\` is empty: want ${want}`;
 }
-// The checks on Sizing rows a person may have edited by hand, one line each: lease-kinds and the
-// admission rows, whose problems end with the locks granting as with lock-admission off.
+// The checks on Sizing rows a person may have edited by hand, one line each: lease-kinds, the
+// admission rows, whose problems end with the locks granting as with lock-admission off, and the
+// express lane's row.
 // A profile row's value as written (Sizing, else Hardware), TODO and all, or null.
 export const profileValue = (profile, k) => profile?.sizing?.[k]?.value ?? profile?.hardware?.[k]?.value ?? null;
 export function profileProblems(profile) {
   const v = profile?.sizing?.['lease-kinds']?.value;
   const bad = v == null ? null : leaseKindsProblem(v);
   const admit = admissionRows((k) => profileValue(profile, k)).problems.map((p) => `${p}; the locks grant as with \`lock-admission\` off`);
-  return [...(bad ? [bad] : []), ...admit];
+  const lane = profile?.sizing?.[EXPRESS_LANE_KEY]?.value;
+  const laneBad = lane == null ? null : BENCH_RULES[EXPRESS_LANE_KEY].problem(String(lane).trim());
+  return [...(bad ? [bad] : []), ...admit, ...(laneBad ? [`${laneBad}; the express lane stays off`] : [])];
 }
 // `bench-run-limit-<provider>`: the most runs the bench may start in a rolling week on a provider it
 // has no meter or allowance ledger for, which it otherwise refuses.

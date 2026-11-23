@@ -47,6 +47,7 @@ ${JUDGEMENT:+| \`autopilot-judgement\` | Take calls outside the ask categories |
 |---|---|---|
 | Intake query | \`none\` | ${2-\`project = ACME AND labels = autopilot\`} |
 | Triage concurrency | \`1\` | \`${TRIAGE_K:-TODO}\` |
+| Batches run by | \`supervisor\` | \`${RUN_BY:-supervisor}\` |
 ${WORKER_LOC:+| Worker location | \`local\` | \`$WORKER_LOC\` |}
 EOF
 }
@@ -602,8 +603,19 @@ printf '{"version":1,"batch":"s1","supervised":false,"tickets":{"P":{"key":"P","
 rec H-23 A
 out=$(admit H-23 --session)
 check "#1000 with workers local, no runs: line, as before" 'grep -q "^admitted H-23 by hand into batch s1" <<< "$out" && ! grep -q "runs:" <<< "$out"'
+# #1332: a missing design on a ticket triage found renders nothing says so, naming its files, so
+# desk-admit writes "No UI." with that reason and admits it again; one that may render keeps it as is.
+rec H-41 A '"renders":false,"files_in_scope":["e2e/login.spec.ts","playwright.config.ts"],"lint":[{"severity":"blocking","rule":"design","message":"no design link and no \"No UI.\" line: put the Figma or Claude Design URL in a Design section, or write \"No UI.\" there"}]'
+out=$(admit H-41 --session); rc=$?
+check "#1332 a tests-only ticket's missing design says triage found nothing renders, naming its files and what to write" '[ $rc -eq 11 ] && grep -qF "lint (blocking): no design link and no \"No UI.\" line: put the Figma or Claude Design URL in a Design section, or write \"No UI.\" there — triage found nothing renders: it changes e2e/login.spec.ts, playwright.config.ts; write \"No UI.\" with that reason in its Design section, then admit it again" <<< "$out"'
+rec H-42 A '"renders":true,"lint":[{"severity":"blocking","rule":"design","message":"no design link and no \"No UI.\" line: put the Figma or Claude Design URL in a Design section, or write \"No UI.\" there"}]'
+out=$(admit H-42 --session)
+check "#1332 one that may render keeps the finding as it was" 'grep -qF "no design link and no \"No UI.\" line" <<< "$out" && ! grep -q "triage found nothing renders" <<< "$out"'
+check "#1332 desk-admit writes No UI. with the line's reason and admits it again, asking no one" 'grep -q "^- \*\*no design link\*\* where the line adds \`triage found nothing renders\`" "$SK" && grep -qF "(\`No UI. Triage found nothing renders: it changes …\`) as the Design section." "$SK"'
 AO="$S/../skills/desk-autopilot/references/ask-or-take.md"
 check "#877 desk-autopilot admits tickets the person already chose without asking again" 'grep -q "^\*\*Tickets the person already chose are not asked again.\*\*" "$AO" && grep -q "intake.mjs admit <TICKET>... --session" "$AO"'
+check "#1317 desk-admit folds in a lint refusal a routed comment settles, then admits it again, asking only for the rest" \
+  'grep -q "^\*\*Then fold in what a comment already settles.\*\*" "$SK" && grep -q "desk-jira comments <TICKET>" "$SK" && grep -q "product-owner designer" "$SK" && grep -q "^read it back. With none left, run step 1 again for it. Only a finding no comment settles goes to the$" "$SK" && grep -q "the designer (the product owner$" "$SK" && grep -q "Fix what no comment settled (above)" "$SK"'
 check "#877 desk-admit runs the --session command when this session runs the batch" 'grep -q "If this session runs that batch, run the command the line names" "$S/../skills/desk-admit/SKILL.md"'
 rm -f "$DESK_QUEUE"; config ask '`none`'
 out=$(admit H-7); rc=$?
@@ -611,6 +623,25 @@ check "admit: with no batch and autopilot-workers not yes, it points at /desk-au
 config yes '`none`'
 out=$(admit H-7)
 check "admit: with no batch and autopilot-workers yes, it starts a standing batch handed to the supervisor" 'grep -q "^standing-" <<< "$(qget batch)" && [ "$(qget supervised)" = true ] && [ "$(qget tickets.H-7.state)" = triaged ]'
+# #1331: where §3b Batches run by is session, no supervisor runs a standing batch. The session that runs
+# the batch (--session) joins a finished one; any other admit admits nothing, says so, and puts starting
+# a session on needs-you. A pass heartbeat is no sign a session still loops: the last pass of a
+# finished batch writes one as it tells its session to stop.
+RUN_BY=session config yes '`none`'
+done_q(){ printf '{"version":1,"batch":"s9","supervised":false,"tickets":{"Z":{"key":"Z","state":"done","result":{"pr":null}}}}\n' > "$DESK_QUEUE"; }
+beat(){ mkdir -p "$T/state/orchestrators"; printf '{"queue":"%s","batch":"s9","pid":1,"at":"%s","pass":"%s"}\n' "$DESK_QUEUE" "$1" "$1" > "$T/state/orchestrators/$(printf '%s' "$DESK_QUEUE" | tr -c 'A-Za-z0-9' '-').json"; }
+done_q; rm -rf "$T/state/asks.json"; beat "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; rec H-31 A
+out=$(admit H-31); rc=$?
+check "#1331 session-run, batch finished, a fresh heartbeat but no --session: nothing admitted, and no standing batch started" '[ $rc -eq 11 ] && [ "$(qget batch)" = s9 ] && [ "$(qget tickets.H-31)" = undefined ]'
+check "#1331 it says so plainly, never that a supervisor picks it up" 'grep -qF "not admitted H-31: no supervisor runs this repo'"'"'s batches (config §3b \"Batches run by\" is session) and batch s9 is finished, so no batch is started for it: if a session runs this repo'"'"'s batches, admit it from that session with --session; else start /desk-autopilot in a session" <<< "$out" && ! grep -q "supervisor.s next tick" <<< "$out"'
+check "#1331 and puts it on needs-you" 'jq -e ".asks[] | select(.text | startswith(\"start /desk-autopilot H-31 in a session\"))" "$T/state/asks.json" >/dev/null && grep -q "^needs-you: recorded starting /desk-autopilot for H-31$" <<< "$out"'
+out=$(admit H-31 --session); rc=$?
+check "#1331 the session that runs the batch (--session) joins the finished one, not a standing one" '[ $rc -eq 0 ] && [ "$(qget batch)" = s9 ] && [ "$(qget supervised)" = false ] && [ "$(qget tickets.H-31.state)" = triaged ] && grep -q "^this session.s next pass picks up H-31$" <<< "$out" && ! grep -q "supervisor" <<< "$out"'
+rm -f "$DESK_QUEUE"; rm -rf "$T/state/orchestrators"; rec H-33 A
+out=$(admit H-33 --session); rc=$?
+check "#1331 session-run with no batch at all: nothing admitted, even with --session, and it names /desk-autopilot" '[ $rc -eq 11 ] && [ ! -f "$DESK_QUEUE" ] && grep -qF "not admitted H-33: no supervisor runs this repo'"'"'s batches (config §3b \"Batches run by\" is session) and no batch is set up, so no batch is started for it" <<< "$out"'
+check "#1331 desk-admit says what to do with that line" 'grep -q "^| \`no supervisor runs this repo.s batches\` (config §3b Batches run by is \`session\`) | If this session runs the repo.s batches, run step 1 again with \`--session\`" "$SK"'
+rm -f "$DESK_QUEUE"; config yes '`none`'
 
 # ---- two batches: a ticket is in one batch at most ----------------------------------------------
 NB="$DESK_HOME/repos/acme__widgets/batches/X-1"; mkdir -p "$NB"
@@ -735,6 +766,13 @@ touch "$T/promos.fails"
 check "DS-816 a promotion list GitHub cannot read is unread, not false" '[ "$(landed L-1)" = null ] && [ "$(landed L-5)" = true ]'
 rm -f "$T/promos.fails"
 check "DS-816 AC4: admit holds a blocker outside only while it is unpromoted" '[ "$(outside L-1 L-2 L-3 L-4 L-5)" = "L-3,L-4" ]'
+# #1312: a blocker in the batch Done in Jira (its first merge moved it there) that went round again since
+# is held while it has not merged its current work; one merged and not gone round again is not.
+heldDone(){ (cd "$T/repo" && node -e 'import(process.argv[2]).then((m) => console.log(m.holdsFor({ blockers: [{ key: "B-1", category: "done" }] }, JSON.parse(process.argv[1]), "main").held.join()))' "$1" "$T/bin/intake.mjs"); }
+reworkedB=$(heldDone '{"B-1":{"key":"B-1","state":"triaged","merged_at":"2026-11-02T00:00:00Z"}}')
+mergedB=$(heldDone '{"B-1":{"key":"B-1","state":"done","merged_at":"2026-11-02T00:00:00Z","result":{"pr":5},"pr_status":{"pr":5,"state":"MERGED"}}}')
+check "#1312 admit holds a Jira-Done blocker in the batch that went round again since its merge" '[ "$reworkedB" = B-1 ]'
+check "#1312 and not one merged and not gone round again, as before" '[ -z "$mergedB" ]'
 # DS-811: where an unlanded blocker's code waits: the branch its PR merged into, and that branch's open
 # promotion PR into main, by state.
 unpromoted(){ (cd "$T/repo" && node -e 'import(process.argv[2]).then((m) => console.log(JSON.stringify(m.unpromotedBase(process.argv[1], "main"))))' "$1" "$T/bin/intake.mjs"); }

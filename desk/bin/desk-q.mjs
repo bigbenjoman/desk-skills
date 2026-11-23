@@ -44,14 +44,16 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
-import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, unpromotedHolds, promotionWords, openUnknowns } from './batch-state.mjs';
+import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns } from './batch-state.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
-import { lastStage } from './harvest.mjs';
+import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
+// The stage reader desk-q's table shares with queue.mjs get, kept on desk-q's exports for its callers.
+export { logStage, STAGE_TAIL };
 import { listBatches } from './batches.mjs';
 import { backend, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson } from './gate.mjs';
@@ -226,10 +228,11 @@ function holdContext(r) {
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
-// when nothing moves until they act, which `text` names; `act` is the command to run, where one is.
+// when nothing moves until they act, which `text` names; `act` is the command to run, where one is,
+// and `lift` the one blocker it names, where it names one, so letting the ticket start lifts that alone.
 // Behind several blockers, the first that needs the user speaks for the ticket, and one that is their
-// own step (`step`) only when no other needs them: needs-you lists the step apart, so it must not hide
-// another ask.
+// own step (`step`) or a blocker that finished with no PR (`finished`) only when no other needs them:
+// needs-you lists each of those apart, once for every ticket behind it, so it must not hide another ask.
 export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
   const day = dateHeld(t);
   if (day?.bad) return { k: 'needs', text: `held: ${badLabelText(day.label)}`, act: releaseCmd(t.key) };
@@ -239,13 +242,14 @@ export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
   if (!blockersOf(t).length) return { k: 'needs', text: 'held behind no recorded blocker: let it start', act: releaseCmd(t.key) };
   const open = unmergedBlockers(q, t);
   if (!open.length) {
-    if (!blockersOf(t).every((p) => prStatusOf(q.tickets?.[p])?.state === 'MERGED')) return { k: 'waiting', text: 'behind PRs the next pass reads' };
+    // Through on what the last pass read: a PR it has not read yet waits for it.
+    if (!blockersOf(t).every((p) => throughOnRecord(q, p))) return { k: 'waiting', text: 'behind PRs the next pass reads' };
     return ctx.releases ? { k: 'waiting', text: 'starts at the next pass' } : { k: 'needs', text: 'every blocker merged: let it start', act: releaseCmd(t.key) };
   }
   seen.add(t.key);
   const each = open.map((b) => blockerHold(q, t.key, b, ctx, seen));
   seen.delete(t.key);
-  return each.find((e) => e.k === 'needs' && !e.step) ?? each.find((e) => e.k === 'needs') ?? (each.length === 1 ? each[0] : { k: 'waiting', text: `behind ${each.map((e) => e.name).join(', ')}` });
+  return each.find((e) => e.k === 'needs' && !e.step && !e.finished) ?? each.find((e) => e.k === 'needs' && !e.step) ?? each.find((e) => e.k === 'needs') ?? (each.length === 1 ? each[0] : { k: 'waiting', text: `behind ${each.map((e) => e.name).join(', ')}` });
 }
 
 // What a ticket parked at triage for its own reason (triagePark) waits on while its held_by still names
@@ -275,12 +279,12 @@ function blockerHold(q, key, b, ctx, seen) {
   }
   // One the pass raised as dropped (dropped_link) is asked as that triage item, never twice.
   if (!bt && keysOf(q.tickets?.[key]?.dropped_link).includes(b)) return { k: 'waiting', name: b, text: `behind ${b}, no longer in this batch: asked whether the link is still right` };
-  if (!bt) return { k: 'needs', name: b, text: `${b} is not in this queue: let it start`, act: releaseCmd(key) };
+  if (!bt) return { k: 'needs', name: b, lift: b, text: `${b} is not in this queue: let it start`, act: releaseCmd(key) };
   const n = bt.result?.pr;
   if (bt.state === 'done') {
-    if (n == null) return { k: 'needs', name: b, text: `${b} finished with no PR: let it start`, act: releaseCmd(key) };
+    if (n == null) return { k: 'needs', name: b, lift: b, finished: b, text: `${b} finished with no PR: let it start`, act: releaseCmd(key) };
     const ps = prStatusOf(bt), pr = `#${n}`;
-    if (ps.state === 'CLOSED' && !owesReopen(bt)) return { k: 'needs', name: pr, text: `${pr} was closed unmerged: let it start`, act: releaseCmd(key) };
+    if (ps.state === 'CLOSED' && !owesReopen(bt)) return { k: 'needs', name: pr, lift: b, text: `${pr} was closed unmerged: let it start`, act: releaseCmd(key) };
     // Its first reason is enough: its page lists the checks. A PR that needs the user is their one
     // thing to do, on its own row, so the ticket behind it waits on it rather than counting twice.
     // `you` marks that wait: it ends only once the user has acted on the PR, so it has no date.
@@ -288,7 +292,7 @@ function blockerHold(q, key, b, ctx, seen) {
     return m.k === 'needs' ? { k: 'waiting', name: pr, you: true, text: `behind ${pr}, which needs you` } : { k: 'waiting', name: pr, text: `behind ${pr}: ${m.segs[0][0]}` };
   }
   if (bt.state === 'running') return { k: 'waiting', name: b, text: `behind ${b} (running, stage ${ctx.stage(b) ?? '?'})` };
-  if (seen.has(b) || holdsReach(q, b, key)) return { k: 'needs', name: b, text: `${b} is held behind this one: let one of them start`, act: releaseCmd(key) };
+  if (seen.has(b) || holdsReach(q, b, key)) return { k: 'needs', name: b, lift: b, text: `${b} is held behind this one: let one of them start`, act: releaseCmd(key) };
   // A blocker's group is the same by whichever path the walk reaches it (a cycle through it is caught
   // above, before this line), so it is read once per walk: a dense held_by graph (each ticket naming
   // every one before it) has exponentially many paths.
@@ -627,10 +631,13 @@ export const heldDraft = (t) => {
 // The fix try a requeued ticket is on, until its worker finishes.
 const fixOn = (t) => (t.fix && !t.fix.finished && t.state !== 'done' ? t.fix : null);
 
-// A hold's blockers less those done with a PR that is merged. A PR the pass has not read yet is taken
-// as merged or about to be; one it recorded open (landing) or closed still holds.
+// A hold's blockers less those through (blockerThrough): done with a merge recorded, or with a PR
+// that is merged. A PR the pass has not read yet is taken as merged or about to be; one it recorded
+// open (landing) or closed still holds.
 export const unmergedBlockers = (q, t) => blockersOf(t)
-  .filter((p) => { const pt = q.tickets?.[p]; return !(pt?.state === 'done' && pt.result?.pr != null && !['OPEN', 'CLOSED'].includes(prStatusOf(pt)?.state)); });
+  .filter((p) => !blockerThrough(q.tickets?.[p]));
+// Blocker `p` of `q` through on what the last pass read: a PR it has not read yet is not.
+export const throughOnRecord = (q, p) => blockerThrough(q.tickets?.[p], () => prStatusOf(q.tickets?.[p])?.state ?? null);
 
 // The tickets whose triage is running for a batch, or just finished with the admit to follow: triage.sh
 // writes <state>/triage/<KEY>.log as it runs, and a ticket in no live queue row is not admitted yet. A log
@@ -668,36 +675,6 @@ export function triageOf(at, key) {
 }
 // A ticket's lane: the queue's, else its triage record's `tr`.
 const laneOf = (t, tr) => (t.lane && t.lane !== '?' ? t.lane : tr?.lane ?? '?');
-
-// How much of a worker log's end is read for its stage: a log runs to several MB, and a marker
-// further back than this is one the last pass has already put on the queue.
-export const STAGE_TAIL = 256 * 1024;
-const logStages = new Map();
-
-// A file's last `bytes` as text, read at `size` (its length now unless given). Throws with no file.
-function tailText(path, bytes, size = statSync(path).size) {
-  const n = Math.min(bytes, size), buf = Buffer.alloc(n);
-  let fd;
-  try { fd = openSync(path, 'r'); readSync(fd, buf, 0, n, size - n); } finally { if (fd != null) closeSync(fd); }
-  return buf.toString('utf8');
-}
-
-// A worker log's last stage marker (harvest.mjs lastStage), from its last STAGE_TAIL bytes only,
-// or null with no log or no marker there. Kept until the log grows, so a refresh rereads nothing.
-export function logStage(path) {
-  let st;
-  try { st = statSync(path); } catch { return null; }
-  const hit = logStages.get(path);
-  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.s;
-  let text;
-  try { text = tailText(path, STAGE_TAIL, st.size); } catch { return null; }
-  // A read that starts mid-file starts mid-line: that line is not whole, so it is dropped.
-  if (st.size > STAGE_TAIL) text = text.slice(text.indexOf('\n') + 1);
-  const s = lastStage(text);
-  if (logStages.size > 256) logStages.clear();
-  logStages.set(path, { size: st.size, mtimeMs: st.mtimeMs, s });
-  return s;
-}
 
 // A running ticket's stage: its worker's last marker, so it is never behind the worker, else the last
 // pass's reading of the queue. `log` says which; `at` is when the worker said it, or the last pass.
@@ -4284,8 +4261,9 @@ export function interactive({
   let view = null, tab = 'queue', sel = 0, selId = null, scroll = null, msg = '', cmd = null, ask = null, screen = null, crumbs = [], done = false, timer = null, probeTimer = null, checkin = false, zoom = 'auto', layout = null;
   let unfold = new Set(), reading = false, held = null;
   // Usage's account check: `checked` the last one's logins by checkKey, at `checkedAt`; `checking` while
-  // one runs. `saving` while a rule change or removal runs; `undo`, what u puts back.
-  let checked = null, checkedAt = null, checking = false, saving = false, undo = null;
+  // one runs. `saving` while a rule change or removal runs, `saveGen` counting the saves begun, and
+  // `recheck` once a check that overlapped a save was dropped; `undo`, what u puts back.
+  let checked = null, checkedAt = null, checking = false, saving = false, saveGen = 0, recheck = false, undo = null;
   // Adding a login: `typed`, a Codex login's label as it is typed, then `adding` (as isAdding describes)
   // until the check finds it signed in or esc stops it, the check rerun by `addTimer`.
   let typed = null, adding = null, addTimer = null;
@@ -4530,10 +4508,19 @@ export function interactive({
 
   // ---- Usage's keys ----
   const usageTab = () => hasTabs() && tab === 'usage';
+  // A check that overlapped a save read the subscriptions file from before it, so its result is dropped
+  // and a fresh check runs once the save is done: now, or when it ends (saveEnded).
   function checkLogins() {
     checking = true;
+    const stale = saving, gen = saveGen;
+    if (!stale) recheck = false;
     loginsWith(['check', '--json'], (r) => {
       checking = false;
+      if (stale || gen !== saveGen) {
+        if (saving) recheck = true;
+        else if (!done) checkLogins();
+        return;
+      }
       checkedAt = clock();
       try { checked = new Map(JSON.parse(r.out).logins.map((l) => [checkKey(l.tool, l.configDir), l])); } catch { checked = null; }
       if (!done && adding) addChecked();
@@ -4555,12 +4542,17 @@ export function interactive({
     const args = needsPinMigration(subs) ? (tried.has('migrate') ? null : ['migrate']) : pin ? ['pin', 'claude', pin.name] : null;
     if (!args) return;
     tried.add(args[0] === 'migrate' ? 'migrate' : `pin ${pin.name}`);
-    saving = true;
+    saveStarted();
     loginsWith(args, () => {
-      saving = false;
       lastLogins = null;
-      if (!done && !checking) checkLogins();
+      saveEnded(true);
     });
+  }
+  const saveStarted = () => { saving = true; saveGen++; };
+  // A save is done: a check dropped for overlapping it runs now, as does one the caller wants (`again`).
+  function saveEnded(again = false) {
+    saving = false;
+    if ((again || recheck) && !done && !checking) checkLogins();
   }
 
   // ---- adding a login ----
@@ -4582,7 +4574,7 @@ export function interactive({
     selId = 'adding';
     msg = `esc cancels adding ${addingName(adding)}.`;
     clearInterval(addTimer);
-    addTimer = setInterval(() => { if (!done && adding && !checking) checkLogins(); }, addCheckMs);
+    addTimer = setInterval(() => { if (!done && adding && !checking && !saving) checkLogins(); }, addCheckMs);
     if (!checking) checkLogins();
   }
   const stopAdding = () => { clearInterval(addTimer); addTimer = null; adding = null; };
@@ -4613,16 +4605,15 @@ export function interactive({
   // the Removed table, and the folder takes over as the default where ~/.claude was it (logins.mjs
   // pinLogin). Then the add waits for the new account.
   function pinFirst(a, email) {
-    saving = true;
+    saveStarted();
     msg = 'Saving…';
-    const fail = (r) => { saving = false; stopAdding(); msg = notSaved(r); if (!done) draw(); };
+    const fail = (r) => { stopAdding(); msg = notSaved(r); saveEnded(); if (!done) draw(); };
     const next = () => {
-      saving = false;
       lastLogins = null;
       adding = { tool: a.tool, login: a.first.next, label: null };
       selId = 'adding';
       msg = `${email} signs in for desk through ${a.login.folder}. esc stops adding the new account.`;
-      if (!done && !checking) checkLogins();
+      saveEnded(true);
       if (!done) draw();
     };
     loginsWith(['pin', 'claude', a.login.name], (r) => (r.code !== 0 ? fail(r) : next()));
@@ -4665,12 +4656,12 @@ export function interactive({
   // undoes it and what the footer says once it has.
   // `run` is the desk-env command it goes through, logins unless named; an undo names its own.
   function saveLogin(args, said, then, run = loginsWith) {
-    saving = true;
+    saveStarted();
     msg = 'Saving…';
     run(args, (r) => {
-      saving = false;
       if (r.code === 0) { undo = then; msg = said; }
       else msg = notSaved(r);
+      saveEnded();
       if (!done) draw();
     });
   }

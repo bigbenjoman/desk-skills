@@ -96,13 +96,17 @@ function* settleForeign(t, n, s) {
   const other = yield { type: 'other-merged', key: t.key, pr: n };
   if (other?.why) yield* doneByOther(t, n, other, `PR #${n} merged`, s);
 }
+// The write that records ticket t done by PR #n, not its own: `other` is { why, at } (#n's merge, kept as
+// the ticket's own, so what is held behind it is released), `said` ends its summary. Every other step
+// that records a ticket done by another's PR writes these same fields (pass/repair-superseded.mjs).
+export const doneByFields = (t, n, other, said) => ['state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null',
+  ...(t.result?.pr != null ? ['result.pr=null'] : []), ...(t.draft_pr != null ? ['draft_pr=null'] : []), ...(other.at ? [`merged_at=${other.at}`] : []),
+  `done_by=${JSON.stringify({ pr: Number(n), why: other.why })}`, `result.summary=done by PR #${n}, not its own ${said}`];
 // Ticket t recorded done by PR #n, not its own (`other`, the other-merged read), with no worker. #n stays
 // out of result.pr (a not-its-own park's, cleared), which the PR status step would read as not its own,
 // and #n's merge is recorded as the ticket's, so what is held behind it is released.
 function* doneByOther(t, n, other, what, s) {
-  if (yield { type: 'write', key: t.key, fields: ['state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null',
-    ...(t.result?.pr != null ? ['result.pr=null'] : []), ...(t.draft_pr != null ? ['draft_pr=null'] : []), ...(other.at ? [`merged_at=${other.at}`] : []),
-    `done_by=${JSON.stringify({ pr: Number(n), why: other.why })}`, `result.summary=done by PR #${n}, not its own (${other.why}): "${what}" holds`] }) {
+  if (yield { type: 'write', key: t.key, fields: doneByFields(t, n, other, `(${other.why}): "${what}" holds`) }) {
     const wt = s.dry ? null : yield { type: 'drop-worktree', key: t.key };
     const beside = other.covered ? `, and ${other.covered}` : ' with no work of its own beside it';
     yield say(t.key, 'done', `${t.key}: "${what}" holds, and #${n} is not its own (${other.why})${beside}: recorded done by #${n}, no worker spawned${wt ? `; ${wt}` : ''}`);

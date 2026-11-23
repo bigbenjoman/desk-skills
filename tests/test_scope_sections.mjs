@@ -373,6 +373,33 @@ t('DS-999 a new helper that runs code on load, or an edit that does not stand al
   changedNames('export const a = 1;\n', 'export const a = 1;\nlet b = 2;\n').full,
 ], ['a top-level statement that runs code when the module loads changed: const b = read();', 'a top-level statement that runs code when the module loads changed: export function f() {} main();', 'f does not stand alone', 'g moved',
   'the new b is a let, or a name already in use']);
+// DS-1003: a constant set by Object.freeze of a literal only holds data, so an edit to it narrows by name.
+const leversOld = schema.replace("'review-reuse', 'wrappers']);", "'review-reuse']);");
+const levers = byName(N('desk/bin/config-schema.mjs', leversOld, schema));
+// AC1: adding a lever reads as an edit to LEVERS by name, not as load-time code,
+// but TYPES, built on load, reaches LEVERS (through leverRow), so the real edit stays full and the reason says why.
+t('DS-1003 AC1 adding a lever to LEVERS is an edit to LEVERS by name', [leversOld !== schema, changedNames(leversOld, schema)], [true, { names: ['LEVERS'] }]);
+t('DS-1003 AC1 and is full because TYPES, built on load, reaches LEVERS', shown(levers),
+  ['full', 'desk/bin/config-schema.mjs is shared by every suite, and the change is not narrowed by name: desk/bin/config-schema.mjs runs one at load: export const TYPES = Object.freeze({ (leverRow)']);
+t('DS-1003 AC2 a frozen array or object of literals narrows as AC1 does', [
+  changedNames("export const A = Object.freeze(['a', 1, true, null]);\n", "export const A = Object.freeze(['a', 2, false, null, 'b']);\n"),
+  changedNames("export const O = Object.freeze({ a: 'x', b: [1, { c: null }] });\n", "export const O = Object.freeze({ a: 'y', b: [1, { c: -2 }], d: true });\n"),
+  changedNames("export const A = Object.freeze(['a']);\nexport const b = 1;\n", "export const A = Object.freeze([\n  'a',\n  'b',\n]);\nexport const b = 1;\n"),
+], [{ names: ['A'] }, { names: ['O'] }, { names: ['A'] }]);
+const code = (s) => `a top-level statement that runs code when the module loads changed: ${s}`;
+t('DS-1003 AC3 Object.freeze of a spread, a call or a reference is full, as today', [
+  changedNames("export const A = Object.freeze(['a']);\n", "export const A = Object.freeze(['a', ...B]);\n").full,
+  changedNames("export const A = Object.freeze(['a']);\n", "export const A = Object.freeze(['a', f()]);\n").full,
+  changedNames("export const A = Object.freeze({ a: 1 });\n", "export const A = Object.freeze({ a: B });\n").full,
+  changedNames("export const A = Object.freeze(['a']);\n", "export const A = Object.freeze(['a']).map(f);\n").full,
+  changedNames("export const A = Object.freeze(['a']);\n", "export const A = Object.freeze(['a']), b = f();\n").full,
+], [code("export const A = Object.freeze(['a', ...B]);"), code("export const A = Object.freeze(['a', f()]);"), code('export const A = Object.freeze({ a: B });'),
+  code("export const A = Object.freeze(['a']).map(f);"), code("export const A = Object.freeze(['a']), b = f();")]);
+t('DS-1003 AC4 any other call setting a constant is full, as today', [
+  changedNames("export const A = Object.seal(['a']);\n", "export const A = Object.seal(['a', 'b']);\n").full,
+  changedNames("export const A = freeze(['a']);\n", "export const A = freeze(['a', 'b']);\n").full,
+], [code("export const A = Object.seal(['a', 'b']);"), code("export const A = freeze(['a', 'b']);")]);
+t('DS-1003 AC5 without byName (CI) the LEVERS edit runs every suite', [decide(N('desk/bin/config-schema.mjs', leversOld, schema), real).scope, decide(N('desk/bin/config-schema.mjs', leversOld, schema), real, { l3Direct: true }).scope], ['full', 'full']);
 // A made-up desk-env.mjs: helper() is reached through used(), forCmd() only through two commands of its
 // command line, forAll() before its switch, and alone() by a suite naming it.
 const cliEnv = `import { readFileSync } from 'node:fs';
@@ -566,6 +593,11 @@ const realQ = (opts) => decide([{ status: 'M', path: 'desk/bin/desk-q.mjs', name
 const [qCi, qLocal] = [realQ({}), realQ({ byName: true })];
 t('DS-1002 AC1 on the real desk-q.mjs: an edit to checkFlags narrows on it, runs the suite driving desk-q\'s command line, and no suite CI would not',
   [flagsEdit !== deskQ, qLocal.narrowed, qLocal.suites.includes('test_desk_q.mjs'), qLocal.suites.filter((s) => !qCi.suites.includes(s))], [true, ['desk/bin/desk-q.mjs: checkFlags'], true, []]);
+// DS-1003 AC1: a frozen literal constant no load-time code reaches narrows to the suites naming it.
+const frozenEnv = cliEnv.replace('export function alone() {', "export const KINDS = Object.freeze(['a', 'b']);\nexport function alone() {");
+const frozenNamed = { ...named, 'desk/bin/desk-env.mjs': frozenEnv, 'tests/test_kinds.mjs': "// suite: kinds\nimport { KINDS } from '../desk/bin/desk-env.mjs';" };
+const frozen = decide(N('desk/bin/desk-env.mjs', frozenEnv, frozenEnv.replace("['a', 'b']", "['a', 'b', 'c']")), buildMap(Object.keys(frozenNamed), (p) => frozenNamed[p]), { byName: true });
+t('DS-1003 AC1 a frozen list no load-time code reaches narrows to the suites naming it', [frozen.scope, frozen.suites, frozen.reason.endsWith(', narrowed on the changed names in desk/bin/desk-env.mjs: KINDS')], ['some', ['test_kinds.mjs', 'test_lint.sh'], true]);
 const T = scratch('desk-scope-');
 try {
   const out = join(T, 'out');

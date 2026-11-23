@@ -8,6 +8,7 @@
 //   node admission.mjs watch <test|tsc|light> --pid <wrapper pid> --marker <its waiting marker>
 //   node admission.mjs pool <test|tsc|light>
 //   node admission.mjs grant <test|tsc|light> --pid <wrapper pid> [--last <key>] [--said <key> --said-at <epoch s>]
+//   node admission.mjs express light --pid <its owner pid>
 //
 // `judge` judges the run once, with what the last judge printed: a line is logged only when the
 // outcome or reason changes. It prints `<outcome>:<reason>`, nothing with admission off, and always
@@ -17,6 +18,7 @@
 // `pool` prints the admission mode and the pool's floor and ceiling, `<mode> <floor> <ceiling>`, which
 // is `off <floor> <floor>` unless the rows read. `grant` is on's (grant, below): it prints
 // `<key>\t<say>\t<epoch s>\t<waiting line>`, nothing unless admission is on, and always exits 0.
+// `express` records a light express-lane grant in the ledger (express, below), printing nothing.
 //
 // One rule for both pools on one reading (judge): a run above its floor is admitted only when
 // load + admit-run-load x (recent admits + 1) <= admit-max-load, free memory less the run-GB of the
@@ -38,7 +40,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ledgerFile, ledgerText, liveEntries, lockWaitingDir as waitingDir, parseLedger, poolRows } from './admit-ledger.mjs';
+import { RECENT_REASONS, ledgerFile, ledgerText, liveEntries, lockWaitingDir as waitingDir, parseLedger, poolRows } from './admit-ledger.mjs';
 import { alive, lock, unlock, writeTextAtomic } from './dir-lock.mjs';
 import { SLOTS, ledgerStarts, leaseDir, logEvent, sampleLoad } from './leases.mjs';
 import { admissionRows, profileValue } from './machine.mjs';
@@ -132,7 +134,7 @@ export function admit({ cls, pid, last = null, env, dir, held, logDir, sample = 
       if (mine) d = { outcome: 'would-admit', reason: mine.reason, fields: { pool, held } };
       else {
         const holding = waiting.filter((e) => e.pool === pool).length;
-        const recent = others.filter((e) => (e.reason === 'headroom' || e.reason === 'admit') && at - e.at < ramp);
+        const recent = others.filter((e) => RECENT_REASONS.includes(e.reason) && at - e.at < ramp);
         d = judge({ pool, held: held + holding, sample, level, recent, rows });
         d.fields.shadow_held = holding;
       }
@@ -208,7 +210,7 @@ export function grant({ cls, pid, last = null, said = null, saidAt = null, env, 
       const mine = live.find((e) => e.pid === pid && admitted(e));
       const others = live.filter((e) => e.pid !== pid);
       const held = Math.min(ceiling, floor + others.filter(admitted).length);
-      const recent = others.filter((e) => (e.reason === 'admit' || e.reason === 'headroom') && at - e.at < ramp);
+      const recent = others.filter((e) => RECENT_REASONS.includes(e.reason) && at - e.at < ramp);
       d = judge({ pool, held, sample, level, recent, rows });
       if (mine) d = { ...d, outcome: 'would-admit', reason: 'headroom' };
       // Shadow's would-admits are kept as shadow keeps them, so a row set back to shadow finds them.
@@ -226,6 +228,26 @@ export function grant({ cls, pid, last = null, said = null, saidAt = null, env, 
   const key = `${outcome}:${d.reason}`;
   if (key !== last) logEvent({ event: outcome, kind: 'slot', key: cls, mode, reason: d.reason, pid, ...d.fields }, { dir: logDir });
   return { key, at, say: outcome === 'deny' && sayNow({ key, said, saidAt, at }), text: waitText(cls, d.reason, d.fields) };
+}
+
+// A small run granted the light lock's express lane, with lock-admission shadow or on: added to the
+// ledger in `dir` as `express` at light-run-gb, under the admission lock, so a judge within
+// admit-ramp-s counts it among the recent admits. It holds no slot of the light pool, whose floor and
+// ceiling it sits outside. `env` and `startsOf` are grant()'s. -> true when it was recorded.
+export function express({ pid, env, dir, sample = null, now = Date.now, startsOf = null }) {
+  const { rows, mode } = admissionRows((k) => env.machineValue(k), { testSlots: env.testLockSlots() });
+  if (mode === 'off') return false;
+  sample ??= sampleLoad();
+  try { lock(lockPath(dir), { waitMs: LOCK_WAIT_MS, maxAgeMs: LOCK_MAX_AGE_MS }); } catch { return false; }
+  try {
+    let text = '';
+    try { text = readFileSync(ledgerFile(dir), 'utf8'); } catch { /* no ledger yet */ }
+    const entries = parseLedger(text);
+    const starts = startsOf ? startsOf([pid]) : null;
+    const added = { at: Math.floor(now() / 1000), pool: 'light', pid, gb: rows['light-run-gb'], load: sample?.load_1m ?? null, reason: 'express', start: starts?.get(pid) ?? null };
+    writeTextAtomic(ledgerFile(dir), ledgerText([...entries.filter((e) => e.pid !== pid), added]));
+    return true;
+  } finally { unlock(lockPath(dir)); }
 }
 
 // A fixture's readings, for a test: DESK_ADMIT_SAMPLE holds sampleLoad's fields as JSON, or `@<file>`
@@ -257,6 +279,10 @@ async function poolCli(cls) {
 export const grantRun = (E, { cls, pid, last = null, said = null, saidAt = null }) => grant({ cls, pid, last, said, saidAt,
   env: profileEnv(E), dir: E.lockDir(), logDir: leaseDir(), startsOf: (pids) => ledgerStarts(pids, E.psRows),
   ...(fixtureSample() ? { sample: fixtureSample() } : {}) });
+async function expressCli(pid) {
+  const E = await import('./desk-env.mjs');
+  express({ pid, env: profileEnv(E), dir: E.lockDir(), startsOf: (pids) => ledgerStarts(pids, E.psRows), ...(fixtureSample() ? { sample: fixtureSample() } : {}) });
+}
 async function grantCli(cls, pid, { last, said, saidAt }) {
   const E = await import('./desk-env.mjs');
   const r = grantRun(E, { cls, pid, last, said, saidAt: saidAt == null || saidAt === '' ? null : Number(saidAt) });
@@ -293,9 +319,11 @@ async function cli(argv) {
   const [sub, cls, ...rest] = argv;
   const opt = (n) => { const i = rest.indexOf(`--${n}`); return i < 0 ? null : rest[i + 1]; };
   const pid = Number(opt('pid'));
-  if (!['judge', 'watch', 'pool', 'grant'].includes(sub) || !poolOf(cls) || (sub !== 'pool' && (!Number.isInteger(pid) || pid <= 0)) || (sub === 'watch' && !opt('marker'))) {
+  if (!['judge', 'watch', 'pool', 'grant', 'express'].includes(sub) || !poolOf(cls) || (sub === 'express' && cls !== 'light')
+    || (sub !== 'pool' && (!Number.isInteger(pid) || pid <= 0)) || (sub === 'watch' && !opt('marker'))) {
     console.error('usage: admission.mjs judge <test|tsc|light> --pid <wrapper pid> [--last <outcome:reason>]\n       admission.mjs watch <test|tsc|light> --pid <wrapper pid> --marker <its waiting marker>'
-      + '\n       admission.mjs pool <test|tsc|light>\n       admission.mjs grant <test|tsc|light> --pid <wrapper pid> [--last <key>] [--said <key> --said-at <epoch s>]');
+      + '\n       admission.mjs pool <test|tsc|light>\n       admission.mjs grant <test|tsc|light> --pid <wrapper pid> [--last <key>] [--said <key> --said-at <epoch s>]'
+      + '\n       admission.mjs express light --pid <its owner pid>');
     return 2;
   }
   // Nothing here holds a run up: a failure prints nothing, which the wrapper reads as admission off
@@ -304,6 +332,7 @@ async function cli(argv) {
     if (sub === 'watch') await watch(cls, pid, opt('marker'));
     else if (sub === 'pool') await poolCli(cls);
     else if (sub === 'grant') await grantCli(cls, pid, { last: opt('last'), said: opt('said'), saidAt: opt('said-at') });
+    else if (sub === 'express') await expressCli(pid);
     else await judgeCli(cls, pid, opt('last'));
   } catch { /* as above */ }
   return 0;

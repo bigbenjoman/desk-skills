@@ -83,14 +83,15 @@ function slotLeases(locks = 'test') {
 }
 // The locks' holders, as [{pids, at}]: their slot leases (above), read first, then their holder files:
 // each mkdir slot's `pid` (the wrapper and its command) and each flock slot's `.pid` (the command
-// with-lock.sh exec'd into), with when each was written (ms). With the slot lease kind off, only the
-// files name anyone; in shadow both name the same run.
+// with-lock.sh exec'd into), with when each was written (ms), the light lock's express lane
+// (`desk-light.lock.express`) among them. With the slot lease kind off, only the files name anyone; in
+// shadow both name the same run.
 function holderFiles(dir, locks = 'test') {
   const leases = slotLeases(locks);
   let names = [];
   try { names = readdirSync(dir); } catch { return leases; }
   const lock = LOCK_FILES[locks];
-  const slotDir = new RegExp(`^${lock}\\.lock(\\.\\d+)?\\.d$`), slotPid = new RegExp(`^${lock}\\.lock(\\.\\d+)?\\.pid$`);
+  const slotDir = new RegExp(`^${lock}\\.lock(\\.\\d+|\\.express)?\\.d$`), slotPid = new RegExp(`^${lock}\\.lock(\\.\\d+|\\.express)?\\.pid$`);
   return [...leases, ...names.flatMap((n) => {
     const file = slotDir.test(n) ? join(dir, n, 'pid') : slotPid.test(n) ? join(dir, n) : null;
     if (!file) return [];
@@ -177,23 +178,24 @@ export function suiteWait(worktree, { procs, cwds, holders }) {
   return waiting ? 'lock' : null;
 }
 
-// How many runs wait on the test lock machine-wide, any worktree or session. Null when ps cannot be read.
-export function lockWaiters({ procs, holders }) {
+// How many runs wait on the test lock (or with `locks`, the light lock) machine-wide, any worktree or
+// session. `holders` from lockHolders with the same `locks`. Null when ps cannot be read.
+export function lockWaiters({ procs, holders, locks = 'test' }) {
   if (!procs) return null;
-  return procs.filter((p) => lockRole(p, { procs, holders }) === 'wait').length;
+  return procs.filter((p) => lockRole(p, { procs, holders, locks }) === 'wait').length;
 }
 
-// The runs holding or waiting on the test lock, counted by the repo each works in, as a Map of name to
-// count: `repos` is [{name, dirs}] (each repo's main checkout and worktrees directory), and a run in
-// none of them counts under `other`. `held` from lockHolderRuns. Null when ps or the processes' working
-// directories cannot be read, so whose runs they are is unknown.
-export function lockRunsByRepo(repos, { procs, holders, cwds, held = [] }) {
+// The runs holding or waiting on the test lock (or `locks`), counted by the repo each works in, as a Map
+// of name to count: `repos` is [{name, dirs}] (each repo's main checkout and worktrees directory), and a
+// run in none of them counts under `other`. `held` from lockHolderRuns. Null when ps or the processes'
+// working directories cannot be read, so whose runs they are is unknown.
+export function lockRunsByRepo(repos, { procs, holders, cwds, held = [], locks = 'test' }) {
   if (!procs || !cwds) return null;
   const ins = repos.map((r) => ({ name: r.name, in: r.dirs.filter(Boolean).map(insideOf) }));
   const repoOf = (cwd) => (cwd && ins.find((r) => r.in.some((f) => f(cwd)))?.name) || 'other';
   const counts = new Map();
   const add = (cwd) => { const n = repoOf(cwd); counts.set(n, (counts.get(n) ?? 0) + 1); };
-  for (const p of procs) if (lockRole(p, { procs, holders }) === 'wait') add(cwds.find((c) => c.pid === p.pid)?.cwd ?? null);
+  for (const p of procs) if (lockRole(p, { procs, holders, locks }) === 'wait') add(cwds.find((c) => c.pid === p.pid)?.cwd ?? null);
   for (const r of held) add(r.cwd);
   return counts;
 }
@@ -248,10 +250,10 @@ export function holdersText(runs) {
 // runs in `counts` (lockRunsByRepo). Below the hold, at - waiting may start, so a pass cannot overshoot
 // it. `counts` null (unread) gives no room while deep. `waiting` null is a queue not read, which holds
 // nothing. `held` (lockHolderRuns) names who holds the lock, so a batch held behind it shows what it
-// waits on.
-export function lockQueue({ waiting, slots, factor, held = [], counts, self }) {
+// waits on. `lock` is the lock the reading is of, `test` or `light`, as its line names it.
+export function lockQueue({ waiting, slots, factor, held = [], counts, self, lock = 'test' }) {
   const at = slots * factor;
-  if (waiting == null) return { deep: false, holds: false, room: Infinity, unread: true, waiting: null, at, line: 'test lock queue: not read (ps could not be read), so workers start as they would without it' };
+  if (waiting == null) return { deep: false, holds: false, room: Infinity, unread: true, waiting: null, at, line: `${lock} lock queue: not read (ps could not be read), so workers start as they would without it` };
   const deep = waiting >= at;
   let room = Math.max(0, at - waiting), share = null, own = null, byRepo = '';
   if (counts == null) {
@@ -267,7 +269,18 @@ export function lockQueue({ waiting, slots, factor, held = [], counts, self }) {
     if (deep) byRepo += `; this repo's share ceil(${at} / ${active}) = ${share}, ${own} its own`;
   }
   const by = held.length ? `; held by ${holdersText(held)}` : '';
-  return { deep, holds: room <= 0, room, share, own, unread: false, waiting, at, line: `test lock queue: ${waiting} run(s) waiting on its ${slots} slot(s), ${deep ? 'at or over' : 'under'} the hold at ${slots} x ${factor} = ${at}${byRepo}${by}` };
+  return { deep, holds: room <= 0, room, share, own, unread: false, waiting, at, line: `${lock} lock queue: ${waiting} run(s) waiting on its ${slots} slot(s), ${deep ? 'at or over' : 'under'} the hold at ${slots} x ${factor} = ${at}${byRepo}${by}` };
+}
+
+// The gate over the lock queues a repo's suite-bound workers would join (lockQueue readings; a null is
+// left out), or null with none: its room is the least any leaves, it holds when any holds, and its line
+// is each holding queue's, else the tightest's. `queues` keeps every reading, so one not read is said.
+export function lockGate(queues) {
+  const read = queues.filter(Boolean);
+  if (!read.length) return null;
+  const tight = read.reduce((a, b) => (b.room < a.room ? b : a));
+  const holding = read.filter((q) => q.holds);
+  return { ...tight, holds: holding.length > 0, line: holding.length ? holding.map((q) => q.line).join('; and ') : tight.line, queues: read };
 }
 
 // What the pass says of each, in its quiet list and in a wedged park's reason.

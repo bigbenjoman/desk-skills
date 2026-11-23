@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, doneOnPr } from './batch-state.mjs';
+import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, shippedSet, keyPattern, doneOnPr, mergedCurrent } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
 import { prNames } from './recoveries.mjs';
@@ -24,11 +24,12 @@ import { queueFile, stateDir, wakeMergeDriver, skillsDir, concurrencyLimits, SAF
 import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
-import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
+import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf, keepPrs, recordedPr } from './queue-store.mjs';
+import { repoOfPr } from './pass/pr-status.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { LEDGER_BY_ENV, queueDifference } from './queue-ledger.mjs';
 import { newPark, parkArgs, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { followOnPending, postMergeUnmade, workerMarkers, lastStage, settleSteps } from './harvest.mjs';
+import { followOnPending, postMergeUnmade, workerMarkers, lastStage, logStage, settleSteps } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
@@ -129,6 +130,19 @@ function found(q, key) {
   const t = q.tickets[key];
   if (!t) throw new Error(`no such ticket in the queue: ${key}`);
   return t;
+}
+
+// A running worker as it is now, read from its log rather than the queue, which a pass updates only
+// when it runs: its last stage marker since this spawn (harvest.mjs logStage, as desk-q's table reads
+// it) and when the log last grew (its heartbeat). A worker spawned and silent since has the log and no
+// stage; one with no log has not started.
+//   -> { log, stage, said_at, heartbeat_at } (each null where there is none)
+function liveOf(t) {
+  const log = join(stateDir(), 'logs', `${t.key}.log`);
+  let st;
+  try { st = statSync(log); } catch { return { log: null, stage: null, said_at: null, heartbeat_at: null }; }
+  const s = logStage(log);
+  return { log, stage: s?.stage ?? null, said_at: s?.at ? new Date(s.at).toISOString() : null, heartbeat_at: new Date(st.mtimeMs).toISOString() };
 }
 
 // Is another orchestrator (a second batch) live right now? Its per-batch notes must survive our init.
@@ -275,6 +289,14 @@ function repointRequeued(t, key) {
   return `; its branch ${was} re-pointed to its open PR #${pre.pr.number}'s ${moved.branch}${moved.backup ? `, the old one kept as ${moved.backup}` : ''}`;
 }
 
+// A ticket requeued after its PR merged keeps that PR as merged_pr from the requeue on, as its spawn does
+// (keepPrs, queue-store.mjs; pass.mjs keepMergedPr folds it in again by repo), so the merge driver holds
+// what waits on it until its next PR merges whatever happens before a worker spawns: a park, a failed spawn.
+const keepRequeuedPr = (t) => {
+  const kept = keepPrs(t);
+  return kept ? { merged_pr: kept } : {};
+};
+
 function requeue(q, key, { handedBack = false } = {}) {
   const t = ticket(q, key);
   // Recorded parked as a pass's harvest records it, with the round a fresh spawn may resume and the
@@ -345,12 +367,14 @@ function requeue(q, key, { handedBack = false } = {}) {
   // leaves one on a ticket that is not held.
   // Blockers in no batch (held_outside) stay until pass.mjs lifts them.
   const outside = String(t.held_outside ?? '').split('|').filter((p) => p && !q.tickets[p]);
-  const pending = blockersOf(t).filter((p) => (q.tickets[p] ? !q.tickets[p].merged_at : outside.includes(p)));
+  // A blocker merged once and gone round again since has not merged its current work, as the merge driver
+  // reads it (batch-state.mjs mergedCurrent): it holds this ticket still.
+  const pending = blockersOf(t).filter((p) => (q.tickets[p] ? !mergedCurrent(q.tickets, p) : outside.includes(p)));
   // Done by another's PR, its merged_at was that PR's merge: sent back for work of its own, it has none
   // yet, or the merge driver and the holds above would read the work as merged.
   const byOther = t.done_by?.pr != null;
   // A fresh session, so a killed worker waiting to resume no longer does.
-  Object.assign(t, { prev_park: prevPark, ...(byOther ? { merged_at: null } : {}), state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null, failed: null,
+  Object.assign(t, keepRequeuedPr(t), { prev_park: prevPark, ...(byOther ? { merged_at: null } : {}), state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null, failed: null,
     handoff: fromStage ? 'pending' : null,
     // Done by another's PR no longer, once sent back for work of its own.
     spine_check: null, spec_check: null, approved: null, approved_at: null, done_by: null, updated_at: new Date().toISOString() });
@@ -1281,13 +1305,34 @@ switch (cmd) {
 
   // The merge driver, once a ticket's PR has merged: the first merge time is kept on the ticket, the
   // repo's eta history gains its line, and its saved first estimate gains the merge time beside it
-  // (desk-q-eta.mjs), after the queue lock is released.
+  // (desk-q-eta.mjs), after the queue lock is released. With --pr and --head, the PR that merged and its
+  // branch: a ticket that records no PR of its own (one built outside its worker) and has no worker
+  // running is recorded done on it, as a pass records one shipped outside its worker, where the branch is
+  // the ticket's or names its key. A title is not enough: another ticket's PR often names this key in it.
   case 'merged': {
-    const [key, at] = args;
-    if (!key) throw new Error('usage: queue.mjs merged <TICKET> [<ISO time>]');
+    const flag = (name) => { const i = args.indexOf(name); return i === -1 ? null : { i, v: args[i + 1] ?? '' }; };
+    const prArg = flag('--pr');
+    const headArg = flag('--head');
+    const pr = prArg?.v ?? null;
+    const head = headArg?.v ?? null;
+    const [key, time] = args.filter((_, i) => ![prArg?.i, headArg?.i].some((f) => f != null && (i === f || i === f + 1)));
+    if (!key || (prArg && !/^\d+$/.test(pr)) || (headArg && !head)) throw new Error('usage: queue.mjs merged <TICKET> [<ISO time>] [--pr <n> [--head <branch>]]');
     const t = ticket(q, key);
-    const when = at ?? new Date().toISOString();
+    const when = time ?? new Date().toISOString();
     if (Number.isNaN(Date.parse(when))) throw new Error(`merged: "${when}" is not a time`);
+    const itsBranch = head != null && (head === t.branch || new RegExp(keyPattern(key)).test(head));
+    if (pr != null && itsBranch && t.result?.pr == null && t.draft_pr == null && t.state !== 'running') {
+      // shipped_pr keeps it live until a pass reads that PR's review (harvest.mjs postMergeUnmade). A kept
+      // status naming another repo's PR of this number (needs-you's elsewhereDone, kept through a requeue
+      // and a spawn) is not this PR's: it is dropped, as the pass's shippedElsewhere drops one, so it is
+      // never marked merged in this PR's place and the pass reads this PR and its review afresh. With no
+      // repo to judge by, any status with a url is dropped: a read costs less than a foreign one kept. The
+      // repo is judged as the pass judges it (pass/pr-status.mjs repoOfPr).
+      const here = hereRepo(), { url } = recordedPr(t, pr);
+      const foreign = !!url && (!here || repoOfPr(url) !== repoOfPr(`https://github.com/${here}/pull/`));
+      applySet(t, [...shippedSet(foreign ? { ...t, pr_status: null } : t, `PR #${pr} merged by the merge driver`, Number(pr), new Date(when).toISOString()).slice(2),
+        ...(foreign ? ['pr_status=null'] : []), `shipped_pr=${pr}`]);
+    }
     t.merged_at ??= new Date(when).toISOString();
     t.updated_at = new Date().toISOString();
     save(q);
@@ -1343,9 +1388,11 @@ switch (cmd) {
     break;
   }
 
-  case 'get':
-    console.log(JSON.stringify(found(q, args[0]), null, 2));
+  case 'get': {
+    const t = found(q, args[0]);
+    console.log(JSON.stringify(t.state === 'running' && t.location !== 'cloud' ? { ...t, live: liveOf(t) } : t, null, 2));
     break;
+  }
 
   case 'list':
     console.log(JSON.stringify(q, null, 2));
