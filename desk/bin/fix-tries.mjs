@@ -945,7 +945,7 @@ export function feedbackFix(t, { pr, head, decision, threads, external = null })
     const named = left.map((x) => x.text).join('; ');
     return { call: 'stuck', why: `review feedback still open after ${tries(triesMade(done))}: ${what}${named ? ` — ${named}` : ''}` };
   }
-  return nextTry(done, pr, head, { kind: 'feedback', what: `review feedback: ${what}`, decision: decision ?? null, threads: left.map(({ id, text, last, body }) => ({ id, text, ...(body ? { body: true } : {}), ...(last?.at ? { last_at: last.at } : {}) })), ...(external ? { external } : {}) });
+  return nextTry(done, pr, head, { kind: 'feedback', what: `review feedback: ${what}`, decision: decision ?? null, threads: left.map(({ id, text, last, body, whole }) => ({ id, text, ...(body ? { body: true } : {}), ...(whole ? { whole: true } : {}), ...(last?.at ? { last_at: last.at } : {}) })), ...(external ? { external } : {}) });
 }
 // The threads a finished feedback try quoted that the pass replies on and resolves: its worker
 // finished, did not park, and pushed past the try's head. [] otherwise.
@@ -1043,14 +1043,18 @@ export function bodyFeedback(body, clean = null) {
     && statesPhrase(text, phrase) != null && !leftOver(text).length);
 }
 
-// An outside reviewer's review body as feedback items: one per P0 to P2 finding it lists ({ id: null,
-// body: true, text }), or the body's text where it lists none the parser reads.
+// An outside reviewer's review body as feedback items ({ id: null, body: true, text }): one per P0 to P2
+// finding it lists with a file:line, then the body's own text (`whole`), so a finding it states with no
+// file:line, a gaps section, or what it says of a finding (refuted, say) still reaches the worker. No
+// refutation is read here (see bodyFeedback): the brief has the worker weigh each against the body.
 const BODY_SEVS = ['P0', 'P1', 'P2'];
+const BODY_TEXT_MAX = 2000;
 function bodyItems(text, login) {
   const found = reviewFindings(text, BODY_SEVS);
-  const item = (said) => ({ id: null, body: true, text: `${login}'s review body: ${said}` });
-  if (!found.length) return [item(text.replace(/\s+/g, ' ').trim().slice(0, 500))];
-  return found.map((x) => { const line = x.text.replace(/^[-*]\s+/, ''); return item(line.startsWith(x.sev) ? line : `${x.sev}: ${line}`); });
+  const item = (said, o = {}) => ({ id: null, body: true, ...o, text: `${login}'s review body: ${said}` });
+  const flat = text.replace(/\s+/g, ' ').trim();
+  const whole = item(flat.length > BODY_TEXT_MAX ? `${flat.slice(0, BODY_TEXT_MAX)} …` : flat, { whole: true });
+  return [...found.map((x) => { const line = x.text.replace(/^[-*]\s+/, ''); return item(line.startsWith(x.sev) ? line : `${x.sev}: ${line}`); }), whole];
 }
 
 // A ready PR red on a §4 State check of kind external, which reads an outside reviewer's review: that
@@ -1430,9 +1434,15 @@ export function fixBrief(t, review = null) {
       lines.push('');
     }
     if (inBody.length) {
-      lines.push(`The findings ${f.external ? `${f.external.login}'s` : 'the'} review body lists, each with no thread of its own (one on a line outside the diff has none):`, '');
-      for (const x of inBody) lines.push(`- ${x.text}`);
-      lines.push('', 'Fix each of these as you would a thread. Having no thread, a body finding is answered in your gh pr comment, naming its file:line and quoting it, not on a thread.', '');
+      const who = f.external ? `${f.external.login}'s` : 'the';
+      const listed = inBody.filter((x) => !x.whole), whole = inBody.filter((x) => x.whole);
+      if (listed.length) {
+        lines.push(`The findings ${who} review body lists with a file:line, none with a thread of its own (one on a line outside the diff has none):`, '');
+        for (const x of listed) lines.push(`- ${x.text}`);
+        lines.push('');
+      }
+      if (whole.length) lines.push(`${who[0].toUpperCase()}${who.slice(1)} review body itself, for any finding it states with no file:line and what it says of each:`, '', ...whole.map((x) => `> ${x.text}`), '');
+      lines.push('Fix each finding the review body still holds open, as you would a thread. One the body itself marks refuted, or not a finding, needs no fix: say so in your comment. Having no thread, a body finding is answered in your gh pr comment, naming its file:line (or quoting it, where it names none), not on a thread.', '');
     }
     lines.push('Read each thread in full (gh pr view --json reviews,comments, or desk-gh read for the thread), and validate it with desk-review-response before changing any code: fix what is right, and for what is not, say why.',
       'Answer every thread with gh pr comment, naming it by its file:line and quoting its first line, saying what you changed in which commit or why the code stands. Do not resolve threads yourself: once you have pushed past this head and finished, the pass replies on each thread quoted here and resolves it.',
