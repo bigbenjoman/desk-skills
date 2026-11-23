@@ -520,6 +520,24 @@ t('DS-1002 AC5 without byName (CI) the AC1 edit runs every suite reaching the mo
 t('DS-1002 AC6 a shell script under desk/bin/ scopes as before', [hscope(M('desk/bin/with-lock.sh')), hscope(M('desk/bin/with-lock.sh'), hmap, {})], ['some: test_lint.sh test_lock.sh', 'some: test_lint.sh test_lock.sh']);
 t('DS-1002 a suite naming the module other than in an import (reading its text) still runs', hscope(Q(keysEdit), hubWith({ 'tests/test_q_text.mjs': "// suite: q text\nconst src = readFileSync(join(R, 'desk/bin/desk-q.mjs'), 'utf8');" })), 'some: test_lint.sh test_pass.mjs test_q_text.mjs');
 t('DS-1002 a comment-only change runs nothing but the always set', hscope(Q(hubQ.replace('function fmt', '// formats\nfunction fmt'))), 'some: test_lint.sh');
+// The made-up desk-q.mjs with rows() (or the command line) written another way, and an edit to fmt()
+// (or draw()) on it.
+const rowsAs = (body) => hubQ.replace('export function rows(a) {\n  return fmt(a);\n}', `export function rows(a) {\n  ${body}\n}`);
+const onQ = (q, from, to) => hscope([{ status: 'M', path: 'desk/bin/desk-q.mjs', names: changedNames(q, q.replace(from, to)) }], hubWith({ 'desk/bin/desk-q.mjs': q }));
+const fmtEdit = (q) => onQ(q, 'return String(a);', 'return `${a}`;');
+const drawEdit = (q) => onQ(q, "return 'q';", "return 'r';");
+t('DS-1002 a function reaching the edited one through a spread, a nested template or after a regex holding // still reaches it', [
+  rowsAs('return [...fmt(a)];'),
+  rowsAs('return `${a ? `y` : fmt(a)}`;'),
+  rowsAs('return /^https?:\\/\\//.test(a) && fmt(a);'),
+].map(fmtEdit), Array(3).fill('some: test_lint.sh test_needs.mjs test_q.mjs'));
+const isMainQ = (guard, cond) => hubQ.replace(/const isMain = \(\(\) => \{[\s\S]*?\}\)\(\);\nif \(isMain\)/, `const isMain = ${guard};\nif (${cond})`);
+t('DS-1002 a guard function called as `if (isMain())` keeps the command line command-only; one tested uncalled, or a launch test with an ||, does not', [
+  drawEdit(isMainQ('() => process.argv[1] === fileURLToPath(import.meta.url)', 'isMain()')),
+  drawEdit(isMainQ('() => process.argv[1] === fileURLToPath(import.meta.url)', 'isMain')) === everyClaimer,
+  drawEdit(isMainQ('process.argv[1] === fileURLToPath(import.meta.url) || !!process.env.Q', 'isMain')) === everyClaimer,
+], ['some: test_cli.sh test_lint.sh', true, true]);
+t('DS-1002 a foundational desk/bin/ module (untracked.mjs) is not narrowed by name', decide([{ status: 'M', path: 'desk/bin/untracked.mjs', names: { names: ['deskUntracked'] } }], real, { byName: true }).scope, 'full');
 // On this repo: an edit to desk-q.mjs's checkFlags, which its command line and the screen run. Its
 // command line reaches most of the module, and bin/desk-q, which launches it, is claimed through
 // install.sh by most suites, so this narrows to few fewer suites than CI's.
@@ -527,8 +545,8 @@ const deskQ = readFileSync(join(R, 'desk/bin/desk-q.mjs'), 'utf8');
 const flagsEdit = deskQ.replace("const unknown = argv.filter((a) => a.startsWith('--') && ", "const unknown = argv.filter((a) => a.slice(0, 2) === '--' && ");
 const realQ = (opts) => decide([{ status: 'M', path: 'desk/bin/desk-q.mjs', names: changedNames(deskQ, flagsEdit) }], real, opts);
 const [qCi, qLocal] = [realQ({}), realQ({ byName: true })];
-t('DS-1002 AC1 on the real desk-q.mjs: an edit to checkFlags narrows on it, and runs no suite CI would not',
-  [flagsEdit !== deskQ, qLocal.narrowed, qLocal.suites.filter((s) => !qCi.suites.includes(s))], [true, ['desk/bin/desk-q.mjs: checkFlags'], []]);
+t('DS-1002 AC1 on the real desk-q.mjs: an edit to checkFlags narrows on it, runs the suite driving desk-q\'s command line, and no suite CI would not',
+  [flagsEdit !== deskQ, qLocal.narrowed, qLocal.suites.includes('test_desk_q.mjs'), qLocal.suites.filter((s) => !qCi.suites.includes(s))], [true, ['desk/bin/desk-q.mjs: checkFlags'], true, []]);
 const T = scratch('desk-scope-');
 try {
   const out = join(T, 'out');

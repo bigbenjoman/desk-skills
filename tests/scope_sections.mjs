@@ -40,8 +40,9 @@
 // reaches one, those claiming a script naming desk-env and that command. Module-level code reaching one,
 // or a removed, renamed or unexported name, is still full. CI never sets it, so it backs up a caller
 // these miss (a command run through a wrapper that names neither).
-// The same --by-name edit to any other .mjs module under desk/bin/ runs those of the suites claiming it
-// that reach the changed names, plus each suite naming the module other than in an import (narrow()).
+// The same --by-name edit to any other .mjs module under desk/bin/ (bar a foundational one) runs those
+// of the suites claiming it that reach the changed names, plus each suite naming the module other than
+// in an import (narrow()).
 // Where the names cannot be followed (module-level code, a removed or renamed name, a script taking the
 // module whole by a namespace, default or bare import() and using one, or passing it on), it runs every
 // suite claiming the module, as without --by-name; a suite doing that runs itself.
@@ -279,17 +280,89 @@ function cliCases(c) {
   return { cases: cases.map((x) => ({ cmds: x.cmds, body: x.body.join('\n') })), shared: shared.join('\n') };
 }
 
+// A lookbehind for a name that is not a property: no word character before it, and no single `.` (one
+// after the `...` of a spread is still the name).
+const NOT_A_PROPERTY = '(?<![\\w$])(?<!(?<!\\.)\\.)';
+
+// `t` without its comments, the text of its strings, or a template's text, keeping each template's
+// `${...}` code (nested templates too) and every regex literal whole. A `/` that opens a regex nothing
+// closes on its line leaves the rest as it is, so a misread only keeps text.
+function scrubCode(t) {
+  let out = '';
+  let i = 0;
+  let depth = 0;
+  const open = []; // the brace depth each `${` we are inside opened
+  let last = ''; // the last token of code, to tell a regex from a division
+  const regexNext = () => !last || /^[(,=:[!&|?{};+\-*%<>~^]$/.test(last) || /^(?:return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await)$/.test(last);
+  // A template's text from i: -> true where it stops at a `${`, false at its closing backtick.
+  const text = () => {
+    for (; i < t.length; i++) {
+      if (t[i] === '\\') { i++; continue; }
+      if (t[i] === '`') { i++; return false; }
+      if (t[i] === '$' && t[i + 1] === '{') { i += 2; open.push(++depth); return true; }
+    }
+    return false;
+  };
+  const word = /[\w$]+/y;
+  while (i < t.length) {
+    const c = t[i];
+    word.lastIndex = i;
+    const w = word.exec(t);
+    if (w) { out += w[0]; last = w[0]; i += w[0].length; continue; }
+    if (c === '`' || (c === '}' && open.at(-1) === depth)) {
+      if (c === '}') { open.pop(); depth--; }
+      i++;
+      out += ' ';
+      last = text() ? '(' : ')';
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      let j = i + 1;
+      while (j < t.length && t[j] !== c && t[j] !== '\n') j += t[j] === '\\' ? 2 : 1;
+      out += "''";
+      i = j + 1;
+      last = ')';
+      continue;
+    }
+    if (c === '/' && t[i + 1] === '/') { const e = t.indexOf('\n', i); i = e < 0 ? t.length : e; continue; }
+    if (c === '/' && t[i + 1] === '*') { const e = t.indexOf('*/', i + 2); i = e < 0 ? t.length : e + 2; out += ' '; continue; }
+    if (c === '/' && regexNext()) {
+      let j = i + 1;
+      let cls = false;
+      for (; j < t.length && t[j] !== '\n'; j++) {
+        if (t[j] === '\\') { j++; continue; }
+        if (t[j] === '[') cls = true;
+        else if (t[j] === ']') cls = false;
+        else if (t[j] === '/' && !cls) break;
+      }
+      if (t[j] !== '/') return out + t.slice(i);
+      for (j++; /[a-z]/.test(t[j] ?? ''); j++);
+      out += t.slice(i, j);
+      i = j;
+      last = ')';
+      continue;
+    }
+    if (c === '{') depth++;
+    else if (c === '}') depth--;
+    out += c;
+    if (!/\s/.test(c)) last = c;
+    i++;
+  }
+  return out;
+}
+
 // Whether a condition tests that the module was run as a command (`process.argv[1]` against
-// `import.meta.url`), and not its negation.
-const launchTest = (t) => /process\.argv\[1\]/.test(t) && /import\.meta\.url/.test(t) && !/!=|!\s*\(/.test(t);
+// `import.meta.url`), and not its negation nor one an `||` lets pass otherwise.
+const launchTest = (t) => /process\.argv\[1\]/.test(t) && /import\.meta\.url/.test(t) && !/!=|!\s*\(|\|\|/.test(t);
 // Whether a top-level statement runs only when the module is run as a command: an `if` with no `else`
-// whose condition is a const in `guards` set to a launchTest(), or one on a line that opens its block.
-// A block ends where it first compiles; anything after it is an `else` or more code.
+// whose condition is a const in `guards` set to a launchTest() (`g`, or `g()` where it is an arrow
+// function), or one on a line that opens its block. A block ends where it first compiles; anything
+// after it is an `else` or more code.
 function mainOnly(c, guards) {
-  const id = c.match(/^if\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*/);
+  const id = c.match(/^if\s*\(\s*([A-Za-z_$][\w$]*)\s*(\(\s*\))?\s*\)\s*/);
   const line = c.split('\n')[0].match(/^if\s*\((.*)\)\s*(?=\{\s*$)/);
   let rest;
-  if (id && guards.has(id[1])) rest = c.slice(id[0].length);
+  if (id && guards.get(id[1]) === (id[2] ? 'call' : 'value')) rest = c.slice(id[0].length);
   else if (line && launchTest(line[1])) rest = c.slice(line[0].length);
   else return false;
   if (!rest.startsWith('{')) return !/\belse\b/.test(rest);
@@ -306,18 +379,18 @@ function mainOnly(c, guards) {
 // or a template's text, or as a property, counted nowhere.
 function reach(text, seeds, { mainGuard = false } = {}) {
   const stmts = statements(text);
-  const guards = new Set();
-  if (mainGuard) for (const { c } of stmts) { const g = c.match(/^const\s+([A-Za-z_$][\w$]*)\s*=([\s\S]*)$/); if (g && launchTest(g[2])) guards.add(g[1]); }
+  // A guard const's name -> 'call' where it is an arrow function (`if (g())`), else 'value' (`if (g)`).
+  const guards = new Map();
+  if (mainGuard) for (const { c } of stmts) {
+    const g = c.match(/^const\s+([A-Za-z_$][\w$]*)\s*=([\s\S]*)$/);
+    if (g && launchTest(g[2])) guards.set(g[1], /^\s*\(\s*\)\s*=>/.test(g[2]) ? 'call' : 'value');
+  }
   let main = false;
-  // With mainGuard, a statement's code without its comments, strings or template text. A template keeps
-  // its `${...}` parts, and keeps all of itself where one holds a brace or a template.
-  const scrub = (t) => (mainGuard ? t.replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g, (m) => {
-    if (m[0] !== '`') return "''";
-    return /\$\{[^}]*[{`]/.test(m) ? m : (m.match(/\$\{[^}]*\}/g) ?? []).join(' ');
-  }).replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '') : t);
+  // With mainGuard, a statement's code without its comments, strings or template text (scrubCode()).
+  const scrub = (t) => (mainGuard ? scrubCode(t) : t);
   for (const s of stmts) s.code = scrub(s.c);
-  // With mainGuard, a property (`x.name`) is not the module's own name.
-  const refs = (ids) => (mainGuard ? new RegExp(wordsRe(ids).source.replace('(?<![\\w$])', '(?<![\\w$.])')) : wordsRe(ids));
+  // With mainGuard, a property (`x.name`, `x?.name`) is not the module's own name; a spread (`...name`) is.
+  const refs = (ids) => (mainGuard ? new RegExp(wordsRe(ids).source.replace('(?<![\\w$])', NOT_A_PROPERTY)) : wordsRe(ids));
   const names = new Set(seeds);
   for (let grew = names.size > 0; grew;) {
     grew = false;
@@ -576,7 +649,7 @@ export function buildMap(files, read) {
       else return `${f} takes ${mod} by an import() no name can be followed through`;
     }
     for (const b of binds) {
-      for (const m of code.matchAll(new RegExp(`(?<![\\w$.])${b.replace(/\$/g, '\\$')}(?![\\w$])`, 'g'))) {
+      for (const m of code.matchAll(new RegExp(`${NOT_A_PROPERTY}${b.replace(/\$/g, '\\$')}(?![\\w$])`, 'g'))) {
         if (/(?:\bas|\bimport|\bconst|\blet|\bvar)\s+$/.test(code.slice(0, m.index)) || /^\s*\??\.\s*[A-Za-z_$]/.test(code.slice(m.index + b.length))) continue;
         return `${f} passes ${mod} on whole as ${b}`;
       }
@@ -584,7 +657,7 @@ export function buildMap(files, read) {
     const hit = (binds.length || inline) && ids.length ? code.match(wordsRe(ids)) : null;
     return hit ? `${f} uses ${hit[0]} through the whole of ${mod}` : null;
   };
-  // The suites a change to these top-level names of a BY_NAME module (not an EXPORTS_ONLY one) reaches:
+  // The suites a change to these top-level names of a BY_NAME module (not a foundational one) reaches:
   // users(), kept to the suites claiming the module, every suite naming the module other than in an
   // import (one reading its text, launching it, or listing it on a covers: line), and every suite that
   // takes it in whole where the names cannot be followed (untraced(); nothing loads a suite, so that
@@ -602,9 +675,8 @@ export function buildMap(files, read) {
       for (const c of importCalls(rest).reverse()) if (isMod(c.arg, mod)) rest = rest.slice(0, c.start) + rest.slice(c.end);
       return rest;
     };
-    const namesMod = (text) => [...mentions(text)].some((k) => names.get(k)?.has(mod));
     const isDirect = (s) => direct.get(mod)?.has(s.slice(6));
-    const takers = [...suites.filter(isDirect), ...nodes.filter((f) => f !== mod && isCode(f) && [...mentions(loads(f, textOf(f)))].some((k) => names.get(k)?.has(mod)))];
+    const takers = [...suites.filter(isDirect), ...nodes.filter((f) => f !== mod && isCode(f) && isMod(loads(f, textOf(f)), mod))];
     const whole = [];
     if (r.exported.length) for (const f of takers) {
       const why = untraced(f, uncommented(f, textOf(f)), mod, r.exported);
@@ -616,11 +688,11 @@ export function buildMap(files, read) {
     if (u.full) return u;
     const got = new Set([...u.suites, ...whole]);
     if (r.main) for (const f of nodes) {
-      if (f === mod || !isCode(f) || !namesMod(loads(f, unimported(textOf(f))))) continue;
+      if (f === mod || !isCode(f) || !isMod(loads(f, unimported(textOf(f))), mod)) continue;
       if (FOUNDATION.some((x) => x.test(f))) return { full: `${f}, shared by every suite, runs ${mod}` };
       for (const s of claims.get(f) ?? []) got.add(s);
     }
-    for (const s of suites.filter(isDirect)) if (!out.find((x) => x.file === s.slice(6))?.importsOnly && namesMod(unimported(textOf(s)))) got.add(s.slice(6));
+    for (const s of suites.filter(isDirect)) if (!out.find((x) => x.file === s.slice(6))?.importsOnly && isMod(unimported(textOf(s)), mod)) got.add(s.slice(6));
     return { suites: new Set([...got].filter((s) => reaches.has(s))) };
   };
   return { suites: out, claims, direct, shells, uses, users, narrow };
@@ -689,8 +761,9 @@ export function decide(changes, map, { l3Direct = false, byName = false } = {}) 
       narrowed.push(`${path}: ${names.names.join(', ')}`);
       continue;
     }
-    // Any other module: narrowed where narrow() can follow the names, else every suite claiming it.
-    if (byName && BY_NAME.test(path) && !EXPORTS_ONLY.has(path) && names) {
+    // Any other module bar a foundational one: narrowed where narrow() can follow the names, else every
+    // suite claiming it.
+    if (byName && BY_NAME.test(path) && !FOUNDATION.some((r) => r.test(path)) && names) {
       const u = names.full ? names : map.narrow(path, names.names);
       if (!u.full) {
         for (const s of u.suites) (l3.has(s) && !map.direct?.get(path)?.has(s) ? left : pick).add(s);
