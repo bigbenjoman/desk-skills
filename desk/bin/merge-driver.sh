@@ -251,7 +251,9 @@ LOG_ROTATE_KEEP=3
 # rotate_log succeeds only when it moved the log aside.
 rotate_log(){
   local f="$LOG_STATE/merge-driver.log" size i
-  size=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+  # No log yet is nothing to rotate (and `< "$f"` would print a shell error before its 2>/dev/null applies).
+  [ -f "$f" ] || return 1
+  size=$(wc -c < "$f" | tr -d ' ')
   [ "${size:-0}" -gt "$LOG_ROTATE_BYTES" ] || return 1
   rm -f "$f.$LOG_ROTATE_KEEP"
   for (( i = LOG_ROTATE_KEEP - 1; i >= 1; i-- )); do if [ -f "$f.$i" ]; then mv -f "$f.$i" "$f.$((i + 1))"; fi; done
@@ -1041,7 +1043,9 @@ unknown_age(){ # unknown_age <n> <sha> <key> <merge state>
     if [ -f "$f" ] || [ -f "$r" ]; then rm -f "$f" "$r"; blocked_clear "$3" "merge ref:"; fi
     return 0
   fi
-  read -r was at < "$f" 2>/dev/null || true
+  # A stamp no loop has written yet (or one cleared since) is no age: read only one that is there, since the
+  # shell reports a missing file for `< "$f"` before any 2>/dev/null on the command takes effect.
+  if [ -f "$f" ]; then read -r was at < "$f" || true; fi
   if [ -f "$r" ]; then read -r first tried < "$r" || true; fi
   now=$(date +%s)
   if [ "$was" != "$2" ] || [ -z "$at" ]; then
