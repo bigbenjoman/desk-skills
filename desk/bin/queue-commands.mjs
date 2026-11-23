@@ -16,6 +16,7 @@ export const QUEUE_COMMANDS = Object.freeze({
   stop: [],
   handback: [],
   finish: ['--pr'],
+  withdraw: [],
   'step-done': [],
   'follow-ran': [],
   approve: [],

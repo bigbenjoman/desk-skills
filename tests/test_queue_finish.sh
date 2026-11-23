@@ -115,5 +115,22 @@ check "DS-826 a feature spine is refused, pointing to requeue" '[ $rc -ne 0 ] &&
 # DS-826 AC6: the recovery row for a park on a single remaining step names the command.
 check "DS-826 AC6: the recovery reference names queue.mjs finish on that row" 'grep -E "^\| a worker.s .AUTOPILOT_PARK. on a single remaining step" "$S/../skills/desk-autopilot/references/orchestrator-recovery.md" | grep -q "queue.mjs finish <TICKET> --pr <n>"'
 
+# #1339: a fix try the pass queued and no worker started is withdrawn once what it was for is settled
+# outside a worker: the ticket goes back to done on its PR, and the try counts against none.
+q add fix-w; q set fix-w branch=fix/fix-w state=done result.pr=71
+FIX='{"try":1,"of":2,"pr":71,"head":"h1","kind":"review","what":"review not clean: 1 gap","at":"2026-11-23T10:00:00Z"}'
+q set fix-w state=triaged "fix=$FIX" 'fix_tries=[{"try":1,"head":"h0","kind":"checks","what":"red: Lint","at":"2026-11-22T10:00:00Z"},{"try":1,"head":"h1","kind":"review","what":"review not clean: 1 gap","at":"2026-11-23T10:00:00Z"}]'
+q withdraw fix-w "the E2E workflow was dispatched on the branch and passed: run 123"
+check "#1339 a queued fix try is withdrawn, saying so" '[ $rc -eq 0 ] && [ "$out" = "fix-w: its queued fix try 1 on PR #71 (review not clean: 1 gap) withdrawn, so no worker is spawned for it and it counts against none of the PR'"'"'s tries: the E2E workflow was dispatched on the branch and passed: run 123" ]'
+check "#1339 the ticket is back done on its PR, the try cleared and gone from its tries, the earlier one kept" '[ "$(f fix-w state)" = "\"done\"" ] && [ "$(f fix-w fix)" = null ] && [ "$(f fix-w result.pr)" = 71 ] && [ "$(f fix-w fix_tries | jq -c "[.[].head]")" = "[\"h0\"]" ]'
+check "#1339 and what was withdrawn, and why, is kept" '[ "$(f fix-w fix_withdrawn.fix.what)" = "\"review not clean: 1 gap\"" ] && [ "$(f fix-w fix_withdrawn.why)" = "\"the E2E workflow was dispatched on the branch and passed: run 123\"" ]'
+before=$(sum); q withdraw fix-w "again"
+check "#1339 with no queued fix try, nothing is withdrawn" '[ $rc -ne 0 ] && grep -q "no queued fix try is there to withdraw: nothing withdrawn" <<< "$out" && [ "$(sum)" = "$before" ]'
+q set fix-w state=running "fix=$FIX"; before=$(sum); q withdraw fix-w "too late"
+check "#1339 a running fix try is not withdrawn: it names stop" '[ $rc -ne 0 ] && grep -qF "its fix try has started. Stop it (queue.mjs stop fix-w)" <<< "$out" && [ "$(sum)" = "$before" ]'
+q withdraw fix-w
+check "#1339 withdraw wants why" '[ $rc -ne 0 ] && grep -q "usage: queue.mjs withdraw <TICKET>" <<< "$out"'
+check "#1339 the recovery reference names queue.mjs withdraw for a queued try settled outside a worker" 'grep -q "queue.mjs withdraw <TICKET> \"<why>\"" "$S/../skills/desk-autopilot/references/orchestrator-recovery.md"'
+
 rm -rf "$T"
 echo "queue finish: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

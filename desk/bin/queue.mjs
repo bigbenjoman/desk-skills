@@ -63,7 +63,7 @@ const hereRepo = () => { try { return ghRepo(); } catch { return null; } };
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'drop-worktree', 'get', 'transfer', 'stop', 'finish'];
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'drop-worktree', 'get', 'transfer', 'stop', 'finish', 'withdraw'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -269,6 +269,26 @@ function finish(q, key, n, pr) {
     ...(t.branch ? [] : [`branch=${pr.headRefName}`])]);
   save(q);
   return `${key} recorded done on PR #${n} (${pr.isDraft ? 'a draft' : pr.state.toLowerCase()}, ${pr.headRefName} into ${base}): no longer parked`;
+}
+
+// withdraw <TICKET> "<why>": a fix try the pass queued (its `fix`, the ticket triaged for it) that no
+// worker has started, taken back, because what it was for is settled outside a worker (a gap the
+// orchestrating session closed, say). The ticket goes back to done on its PR, `fix` cleared, and the
+// try leaves `fix_tries`, so it counts against none of the PR's tries; `fix_withdrawn` keeps the try
+// and why. Refused for a running worker (stop it first), and for a ticket with no queued fix try.
+function withdraw(q, key, why) {
+  const t = ticket(q, key);
+  if (t.state === 'running') throw new Error(`${key} is running: its fix try has started. Stop it (queue.mjs stop ${key}) if it is no longer wanted: nothing withdrawn`);
+  if (t.state !== 'triaged' || !t.fix || t.fix.finished) throw new Error(`${key} is ${t.state ?? 'in no state'}${t.fix ? '' : ' with no fix try'}, so no queued fix try is there to withdraw: nothing withdrawn`);
+  const pr = t.fix.pr ?? t.result?.pr ?? null;
+  if (pr == null) throw new Error(`${key}'s fix try names no PR to go back to: nothing withdrawn`);
+  const f = t.fix;
+  const same = (x) => x && x.head === (f.head ?? null) && x.kind === f.kind && (x.try ?? null) === (f.try ?? null) && (x.at ?? null) === (f.at ?? null);
+  const tries = (t.fix_tries ?? []).filter((x) => !same(x));
+  const at = new Date().toISOString();
+  Object.assign(t, { state: 'done', fix: null, fix_tries: tries.length ? tries : null, fix_withdrawn: { at, why, fix: f }, updated_at: at });
+  save(q);
+  return `${key}: its queued fix try${f.try ? ` ${f.try}` : ''} on PR #${pr} (${f.what ?? f.kind ?? 'fix'}) withdrawn, so no worker is spawned for it and it counts against none of the PR's tries: ${why}`;
 }
 
 // A requeued ticket whose recorded PR is open on another branch goes back on that branch, so its worker
@@ -795,7 +815,7 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'adopt', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'order', 'drop', 'merged', 'transfer', 'finish'];
+const WRITES = ['init', 'add', 'adopt', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'order', 'drop', 'merged', 'transfer', 'finish', 'withdraw'];
 
 try {
 if (!Object.hasOwn(QUEUE_COMMANDS, cmd ?? '')) throw new Error(unknownQueueCommand(cmd));
@@ -1160,6 +1180,14 @@ switch (cmd) {
 
   case 'finish': {
     console.log(finish(q, args[0], finishPr.n, finishPr));
+    break;
+  }
+
+  case 'withdraw': {
+    const [key, ...rest] = args;
+    const why = rest.join(' ').trim();
+    if (!key || !why) throw new Error('usage: queue.mjs withdraw <TICKET> "<why: what settled it, and where>"');
+    console.log(withdraw(q, key, why));
     break;
   }
 

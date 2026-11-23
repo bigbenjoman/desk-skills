@@ -811,6 +811,9 @@ function takenGaps(person, judgement, alone, workerMay) {
   const taken = person.map((gap) => ({ gap, answer: recommendedOf(gap) }));
   return taken.every((x) => x.answer && !askCategoryIn(x.gap) && !deniedRoute(x.gap, workerMay)) ? taken : [];
 }
+// A gap the review did not tag whose recommendation needs a denied route is the person's all the same:
+// tagged as their call wherever it is quoted, so a stuck reason gives it up to needs-you (personGapsIn).
+const personLabel = (workerMay) => (g) => (!personsCall(g) && deniedRoute(g, workerMay) ? `PERSON'S CALL · ${g}` : g);
 // A tagged gap as the person's item names: with a recommendation no worker may carry out, the action
 // and the row, so the person, or a session §3 grants it, does it without asking anyone else.
 const personGapText = (gap, workerMay) => {
@@ -854,7 +857,8 @@ export function reviewFix(t, review, opts = {}) {
   const allGaps = gapsOpen ? reviewGaps(review.body) : [];
   // The person's: a gap tagged their call, or one whose recommendation needs a route §3 denies workers.
   const persons = (g) => personsCall(g) || deniedRoute(g, opts.workerMay) != null;
-  const tagged = allGaps.filter(persons);
+  const label = personLabel(opts.workerMay);
+  const tagged = allGaps.filter(persons).map(label);
   // As personGapsCall reads a review with nothing open but the person's gaps.
   const taken = takenGaps(tagged, opts.judgement, !counts && !(Number(v?.deferred) > 0) && gapsOpen <= tagged.length, opts.workerMay);
   const personGaps = taken.length ? [] : tagged;
@@ -869,7 +873,7 @@ export function reviewFix(t, review, opts = {}) {
   if (room <= 0 || fixedAt(done, review.head)) {
     // The review at this head is the last try's own, so its findings and gaps say what is still open.
     // Only the body's: its inline comments are not read once no try is left.
-    const left = [...(counts ? reviewFindings(review.body, sevs).map((x) => `${x.sev}: ${x.text}`) : []), ...allGaps];
+    const left = [...(counts ? reviewFindings(review.body, sevs).map((x) => `${x.sev}: ${x.text}`) : []), ...allGaps.filter((g) => !persons(g)), ...tagged];
     const lead = made >= REVIEW_TRIES_CEILING && !fixedAt(done, review.head)
       ? after.replace(/: /, ', the most review fix tries a PR may make: ') : after;
     return { call: 'stuck', why: `${lead}${left.length ? ` — ${left.join('; ')}` : ''}` };
@@ -935,7 +939,7 @@ export function personGapsCall(review, opts = {}) {
   const v = review.verdict, open = Number(v?.gaps) || 0;
   // A deferred P2 earns no try either (reviewFix), so it does not keep the gaps from the person.
   if (opts.judgement !== 'yes' || !open || reviewCounts(v) || (Number(v?.p2) > 0 && !(Number(v?.deferred) > 0))) return null;
-  const person = reviewGaps(review.body).filter((g) => personsCall(g) || deniedRoute(g, opts.workerMay) != null);
+  const person = reviewGaps(review.body).filter((g) => personsCall(g) || deniedRoute(g, opts.workerMay) != null).map(personLabel(opts.workerMay));
   return person.length && open <= person.length ? { call: 'stuck', why: `${PERSON_GAPS}${person.map((g) => personGapText(g, opts.workerMay)).join('; ')}` } : null;
 }
 
