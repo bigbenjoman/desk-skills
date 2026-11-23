@@ -174,16 +174,31 @@ export function staleChecks(t, head, names, read) {
 // red at this head, failure-class.mjs baseSplit) and has passed on the base since is red on the base it
 // was built on, not on its own change: a re-run replays the same merge commit and fails the same way, and
 // a fix try has nothing of its own to fix. It gets its branch updated from the base instead (`refresh`),
-// so its checks run on the green base, ahead of any outage hold, re-run or fix try: once per head
-// (`t.base_refresh`, the pass's record of the update), and only where §3 pr-update-branch lets the pass
-// update a branch (ctx.refreshBase). -> { call: 'refresh', checks, why } or null.
+// so its checks run on the green base, ahead of any outage hold, re-run or fix try. Once per head: the
+// update, made by the pass (pass.mjs refreshBranch) or the merge driver (merge-driver.sh stale_base), is
+// recorded on the ticket as `base_refresh` { head, at, ok }. One that went through holds the PR at that
+// head (`wait`), with no re-run and no fix try, for REFRESH_WAIT_MS while GitHub makes its new head; one
+// refused, or past that, leaves it its usual way. The pass's fix tries (staleBase) and the merge
+// driver (stale-base.mjs), before it re-runs a red PR, both decide by this.
+// -> { call: 'refresh', checks, why } | { call: 'wait', why } | null.
+const REFRESH_WAIT_MS = 30 * 60 * 1000;
+export function staleCall(t, head, names, read, { base = 'the base', now = Date.now() } = {}) {
+  const r = t?.base_refresh?.head === head ? t.base_refresh : null;
+  if (r?.ok === true && now - Date.parse(r.at ?? '') < REFRESH_WAIT_MS) {
+    return { call: 'wait', why: `its branch was updated from ${base} at ${String(r.at).slice(11, 16)} UTC, as it was red only where ${base} was; it waits for the run at its new head, with no re-run and no fix try` };
+  }
+  if (r || !names.length) return null;
+  const stale = staleChecks(t, head, names, read);
+  if (!stale.length) return null;
+  const one = stale.length === 1;
+  return { call: 'refresh', checks: stale,
+    why: `${stale.join(', ')} ${one ? 'was' : 'were'} red on ${base} too and ${one ? 'has' : 'have'} passed on ${base} since, so its branch is updated from ${base} for a run on the green base, with no re-run and no fix try` };
+}
+// Where §3 pr-update-branch lets the pass update a branch (ctx.refreshBase), staleCall for the checks a
+// worker would fix.
 function staleBase(t, head, mine, ctx) {
-  if (!ctx.baseRead || !ctx.refreshBase || !mine.length || t.base_refresh?.head === head) return null;
-  const names = staleChecks(t, head, [...new Set(mine.map((f) => f.name))], ctx.baseRead);
-  if (!names.length) return null;
-  const branch = ctx.base ?? 'the base', one = names.length === 1;
-  return { call: 'refresh', checks: names,
-    why: `${names.join(', ')} ${one ? 'was' : 'were'} red on ${branch} too and ${one ? 'has' : 'have'} passed on ${branch} since, so its branch is updated from ${branch} for a run on the green base, with no re-run and no fix try` };
+  if (!ctx.baseRead || !ctx.refreshBase || !mine.length) return null;
+  return staleCall(t, head, [...new Set(mine.map((f) => f.name))], ctx.baseRead, { base: ctx.base ?? 'the base', now: ctx.now ?? Date.now() });
 }
 const stillRed = (done, mine, notMine, ctx) => checksStuck(`still red after ${tries(done.length)}`, mine, notMine, ctx);
 // A red check's error lines, as pr_status keeps them: its job's annotations, else what its failed log

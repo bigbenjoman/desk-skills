@@ -1103,10 +1103,40 @@ unknown_age(){ # unknown_age <n> <sha> <key> <merge state>
 # are (rerun.sh: RERUNS_MAX per check per head, apart, under §3 ci-rerun, never a state check), so one
 # an intermittent failure turned red reaches the person green, and a red in its own code spends the
 # reruns the pass's fix tries wait on (fix-tries.mjs fixCall) and gets its fix try.
-held_rerun(){ # held_rerun <n> <sha> <gate json> <gate state>
+held_rerun(){ # held_rerun <n> <sha> <gate json> <gate state> <key>
   [ "$4" = fail ] || return 0
   log "#$1 red at ${2:0:9} under its merge hold: $(printf '%s' "$3" | jq -r '.gate.reasons[:3] | join("; ")')"
-  rerun "$1" "$2" "$3"
+  stale_base "$1" "$2" "$3" "$5" || rerun "$1" "$2" "$3"
+}
+
+# A red PR whose red checks include one red on the base where it branched and green on the base since
+# is red on the base it was built on: a rerun replays its old merge commit and fails the same way.
+# Where §3 pr-update-branch is yes, its branch is updated from the base instead, decided as the pass's
+# fix tries decide it (stale-base.mjs: fix-tries.mjs staleCall), and recorded on its ticket as
+# `base_refresh` ({ head, at, ok, checks }), which both read: once per head, an update that went
+# through holds the PR at that head while its new head comes, and a refused one goes the usual way,
+# reruns included. -> 0 when the PR waits on an update (made now or earlier at this head, or waiting
+# on the preview build), so no rerun; 1 to go on.
+stale_base(){ # stale_base <n> <sha> <gate json> <key>
+  [ "$UPDATE_PERM" = yes ] && [ -n "$4" ] && [ -z "$EPIC_KEY" ] || return 1
+  [ "$(printf '%s' "$3" | jq -r '.gate.pending | length')" = 0 ] || return 1
+  local said rc=0 list at
+  said=$(printf '%s' "$3" | jq -r '[.gate.stateFailing[]?.name] as $s | .gate.failing[] | select(.name as $n | $s | index($n) | not) | .name' \
+    | node "$DESK_RUN_BIN/stale-base.mjs" "$REPO" "$BASE_BRANCH" "$4" "$2" 2>/dev/null) || rc=$?
+  if [ "$rc" = 3 ]; then log "#$1 at ${2:0:9}: $said"; return 0; fi
+  [ "$rc" = 0 ] && [ -n "$said" ] || return 1
+  list=$(printf '%s\n' "$said" | paste -sd ',' - | sed 's/,/, /g')
+  update_branch "$1" "red only where $BASE_BRANCH was" || rc=$?
+  [ "$rc" = 2 ] && return 0
+  at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  node "$Q" set "$4" "base_refresh=$(jq -nc --arg h "$2" --arg at "$at" --argjson ok "$([ "$rc" = 0 ] && echo true || echo false)" --arg n "$said" --arg out "$(printf '%s' "${UPDATE_OUT:-}" | tail -1)" \
+    '{head: $h, at: $at, ok: $ok, checks: ($n | split("\n") | map(select(length > 0)))} + (if $ok then {} else {out: $out} end)')" >/dev/null 2>&1 || true
+  if [ "$rc" = 0 ]; then
+    log "#$1 red at ${2:0:9} on $list, red on $BASE_BRANCH too and green there since -> gh pr update-branch (a run on the green base follows), no rerun"
+    return 0
+  fi
+  log "#$1 red at ${2:0:9} on $list, red only where $BASE_BRANCH was, but update-branch was refused: $(printf '%s' "${UPDATE_OUT:-}" | tail -1) — rerun as usual"
+  return 1
 }
 
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
@@ -1148,19 +1178,19 @@ try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
         if [ "$nbare" -gt 1 ]; then bare_more=" (and $((nbare - 1)) more merge hold(s))"; fi
         queue_note "$key" "merge hold: $(printf '%s' "$bare" | head -1)$bare_more"
       fi
-      held_rerun "$n" "$sha" "$g" "$state"
+      held_rerun "$n" "$sha" "$g" "$state" "$key"
       return 1
     fi
     if [ "$ROUTINE_PERM" != yes ]; then
       log "#$n HELD by §4 Merge holds — its routine is not run, §3 merge-hold-routine is $ROUTINE_PERM: $(printf '%s' "$holds" | paste -sd ';' -)"
       routine_off_note "$key" "$routines" "§3 merge-hold-routine is $ROUTINE_PERM"
-      held_rerun "$n" "$sha" "$g" "$state"
+      held_rerun "$n" "$sha" "$g" "$state" "$key"
       return 1
     fi
     if [ -f "$SD/routine-$n-$sha.failed" ]; then
       log "#$n HELD by §4 Merge holds — its routine already failed at ${sha:0:9}; a person settles it (a new head runs it again)"
       routine_failed_note "$key" "$SD/routine-$n-$sha.failed" "$sha"
-      held_rerun "$n" "$sha" "$g" "$state"
+      held_rerun "$n" "$sha" "$g" "$state" "$key"
       return 1
     fi
     blocked_clear "$key" "merge hold:"
@@ -1233,7 +1263,7 @@ EOF_RESOLVE
       fi
       # A waiver only lets a head merge, which one awaiting an approval may not, and its note would replace the approval's.
       if [ -z "$review_required" ] && [ -z "$awaiting" ] && waivable "$n" "$sha" "$g" "$key"; then waived="$WAIVED"
-      else [ -n "$review_required" ] || [ -n "$awaiting" ] || approval_clear "$key"; rerun "$n" "$sha" "$g"; return 1; fi ;;
+      else [ -n "$review_required" ] || [ -n "$awaiting" ] || approval_clear "$key"; stale_base "$n" "$sha" "$g" "$key" || rerun "$n" "$sha" "$g"; return 1; fi ;;
     *) [ -n "$review_required" ] || approval_clear "$key"; log "#$n not green yet ($state): $(printf '%s' "$g" | jq -r '.gate.reasons[:2] | join("; ")')"; return 1 ;;
   esac
   [ -n "$review_required" ] && return 1
