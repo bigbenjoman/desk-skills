@@ -76,6 +76,7 @@ export const MECHANISMS = Object.freeze({
   codex: { num: (r) => r.codex_dead, den: (r) => r.review_rounds },
   'review-reuse': { num: (r) => r.review_rounds, den: () => 1 },
   effort: { num: (r) => r.cost, den: (r) => r.starts },
+  'finder-model': { num: (r) => r.cost, den: (r) => r.starts },
 });
 
 // ---- the blind audit ---------------------------------------------------------------------------------

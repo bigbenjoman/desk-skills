@@ -12,12 +12,14 @@ directory.
 Send every finder, Bea (Phase 5) and the codex cold finder (below) in one message so they run in
 parallel; cap ~12 in flight on a sweep.
 
-**In an autopilot worker, the finders' model is config §3b Worker models' finder model.** Run
-`desk-env model finder` before dispatching. It prints a model: launch every Claude finder (the
-routed finders and the simplicity finder) with that model as the Agent tool's model override, and
-the report header's first line ends `· finders on <model>`. It prints `none`: there is none, so pass
-no override and each finder runs on the model it always has (its agent file's `model:`, else yours).
-Bea, the refuters and codex keep their own models either way. Outside a worker the row does not apply.
+**In an autopilot worker, the finders' model is config §3b Worker models' finder model**, or, on a
+ticket whose arms have the `finder-model` lever on, that lever's alias. Run
+`desk-env model finder` before dispatching. It prints a model: launch every routed Claude finder
+with that model as the Agent tool's model override, and the report header's first line ends
+`· finders on <model>`. It prints `none`: there is none, so pass no override and each finder runs on
+the model it always has (its agent file's `model:`, else yours). The simplicity finder takes
+`desk-env model finder --row` the same way: the row's model, which the lever never moves. Bea, the
+refuters and codex keep their own models either way. Outside a worker the row does not apply.
 
 Each Claude prompt carries what the core's *Every seat's prompt* lists, in that order, and answers
 in its `FINDING` format. Every seat, codex included, ends its answer, after its blocks or

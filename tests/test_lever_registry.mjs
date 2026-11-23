@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ENTRIES, REGISTRY, GUARDRAILS, DECISION_RULE, LeverRegistryError, loadRegistry, lever, trialable, preconditions, REASON_CODES } from '../desk/bin/lever-registry.mjs';
-import { LEVERS, parseLevers } from '../desk/bin/desk-env.mjs';
+import { LEVERS, FINDER_MODEL_LEVER, parseLevers, parseWorkerModels } from '../desk/bin/desk-env.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -14,7 +14,7 @@ const without = (name, drop) => ({ ...ENTRIES, [name]: drop({ ...ENTRIES[name], 
 // AC1: all seven, in their layers, and the same names desk-env levers parses.
 const byLayer = (layer) => Object.values(REGISTRY).filter((l) => l.layer === layer).map((l) => l.name).sort().join(' ');
 t('AC1 low-risk layer', byLayer('low-risk'), 'failure-class ledger memory preflight wrappers');
-t('AC1 quality-risk layer', byLayer('quality-risk'), 'codex effort review-reuse');
+t('AC1 quality-risk layer', byLayer('quality-risk'), 'codex effort finder-model review-reuse');
 const dropCodex = Object.fromEntries(Object.entries(ENTRIES).filter(([n]) => n !== 'codex'));
 t('AC1 a lever desk-env knows with no entry fails loading, by name', loadError(dropCodex), 'lever-registry: no entry for "codex", which desk-env knows as a lever');
 t('AC1 an entry desk-env does not know fails loading, by name', loadError({ ...ENTRIES, turbo: ENTRIES.memory }), 'lever-registry: entry "turbo" is not a lever desk-env knows (add it to LEVERS in desk-env.mjs)');
@@ -52,6 +52,20 @@ t('AC4 and the reason names the row', /worker-location" is cloud, want local/.te
 t('AC4 effort with a local worker location is eligible', preconditions('effort', { 'worker-location': 'local' }).eligible, true);
 t('AC4 a lever with no precondition is eligible with a cloud worker location', preconditions('memory', { 'worker-location': 'cloud' }).eligible, true);
 t('AC4 an undeclared lever is never eligible', preconditions('turbo', { 'worker-location': 'local' }).eligible, false);
+
+// DS-1000: the finder-model lever, its on-arm alias, and its precondition on §3b Worker models' finder=.
+t('DS-1000 AC1 the entry records its on-arm alias, the one config-schema names', `${lever('finder-model').model} ${lever('finder-model').model === FINDER_MODEL_LEVER}`, 'sonnet true');
+t('DS-1000 AC1 the alias is one the finder= check takes', parseWorkerModels(`default finder=${lever('finder-model').model}`).finder, 'sonnet');
+t('DS-1000 a lever with no model carries none', 'model' in lever('effort'), false);
+t('DS-1000 a model that is no alias fails loading', loadError(without('finder-model', (e) => { e.model = 'claude-sonnet-5-5'; return e; })), 'lever-registry: lever "finder-model" has model "claude-sonnet-5-5"; want an Agent tool alias');
+t('DS-1000 quality-risk, dollars per start, minimum unset', `${lever('finder-model').layer} ${lever('finder-model').mechanism.metric} ${lever('finder-model').mechanism.minimum}`, 'quality-risk dollars per start null');
+t('DS-1000 trips: post-merge revert, its own step, a blind-audit P0', lever('finder-model').trips.map((x) => `${x.id}${x.step ? `:${x.step}` : ''}`).join(' '), 'post-merge-revert own-step-error:desk-env model finder audit-p0');
+t('DS-1000 its code is desk-env model finder', JSON.stringify(lever('finder-model').code), '[{"path":"desk/bin/desk-env.mjs","part":"model finder"}]');
+t('DS-1000 AC4 a repo whose finder= is already the alias is ineligible', preconditions('finder-model', { 'worker-finder-model': 'sonnet' }).eligible, false);
+t('DS-1000 AC4 and the reason says both arms would be the same', /worker-finder-model" is already sonnet .*both arms would be the same/.test(preconditions('finder-model', { 'worker-finder-model': 'sonnet' }).reasons[0]), true);
+t('DS-1000 AC4 finder= unset is eligible', preconditions('finder-model', { 'worker-finder-model': 'none' }).eligible, true);
+t('DS-1000 AC4 finder= on another alias is eligible', preconditions('finder-model', { 'worker-finder-model': 'haiku' }).eligible, true);
+t('DS-1000 AC4 an unreadable row does not make it ineligible', preconditions('finder-model', { 'worker-finder-model': null }).eligible, true);
 
 // AC5: the mechanism metric with its minimum, and the epic's guardrail margins.
 const min = (name) => `${lever(name).mechanism.metric} ${lever(name).mechanism.direction} ${lever(name).mechanism.minimum}`;

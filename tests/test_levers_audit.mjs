@@ -195,6 +195,21 @@ t('AC7 a reverted lever samples no more audits, and its queued ones are dropped'
 t('AC8 no audit wrote to the tracker', existsSync(join(T, 'jira-calls')), false);
 t('AC8 the task forbids every tracker write', /no Jira ticket, comment or transition/.test(h5.spawns[0].task) && /jira=none/.test(h5.spawns[0].task), true);
 
+// ---- DS-1000 AC6, AC8: the finder-model lever is audited and tripped as the other quality-risk levers are ----
+{
+  const SM = 'acme__finder';
+  const tidM = trialId(SM, 'finder-model', leverStatesIn([])['finder-model']);
+  const fm = tickets(tidM, 5, 5, 'F').map((x) => ({ ...x, levers: { ...x.levers, set: x.levers.set.length ? ['finder-model'] : [], arms: { 'finder-model': x.levers.arms.codex }, trial_ids: { 'finder-model': tidM } } }));
+  const hm = harness(SM, fm);
+  await hm.pass(NOW);
+  const fmDefect = 'desk/bin/y.mjs:3: the guard reads the wrong field';
+  await hm.finish('F-on5', NOW + 10 * MIN, workerLog({ head: sha(105), p0: 1, p1: 1, usd: 2, defects: [fmDefect] }));
+  const r = auditRows(SM)[0];
+  t('DS-1000 AC6 the audit row carries lever finder-model, its arm and the usual fields', [r.lever, r.arm, r.usd, r.duration_s, r.p0, r.p1, r.p2, r.fixed, r.carried], ['finder-model', 'on', 2, 600, 1, 1, 0, 0, false]);
+  const tr = read(SM).events.filter((e) => e.kind === 'trip');
+  t('DS-1000 AC8 a P0 on an on-arm PR reverts finder-model, reason audit_p0', [leverStatesIn(read(SM).events)['finder-model'].state, tr.map((e) => [e.lever, e.to, e.trip, e.reason_code])], ['reverted', [['finder-model', 'reverted', 'audit-p0', 'audit_p0']]]);
+}
+
 // A P0 from an audit drawn under one trial trips nothing on a fresh trial levers decide started since.
 {
   const SF = 'acme__fresh';

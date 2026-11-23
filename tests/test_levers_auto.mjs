@@ -343,6 +343,28 @@ t('a trial recorded for a lever the registry does not trial (the ledger) reads a
   const local = admitQ('q5', 150, { prefix: 'L' });
   t('AC5 Worker location local: effort is drawn', local.some((p) => p.set.includes('effort')) && local.every((p) => ['on', 'off'].includes(p.arms.effort)), true);
 
+  // DS-1000: finder-model is drawn beside the other quality-risk trials, and never where §3b Worker
+  // models' finder= is already its on-arm alias.
+  const fm = admitQ('ds1000', 200, { prefix: 'FM' });
+  const fmEvents = read('ds1000', { kinds: ['assign'] }).events;
+  // Exclusive: a ticket drawn on for one quality-risk trial has no arm in the others (AC1 above).
+  const QR = ['codex', 'review-reuse', 'effort', 'finder-model'];
+  const onOther = (e) => QR.some((l) => l !== 'finder-model' && e.arms[l] === 'on');
+  const onNone = (e) => QR.every((l) => e.arms[l] !== 'on');
+  const onFm = fmEvents.filter((e) => e.arms['finder-model'] === 'on');
+  t('DS-1000 AC5 an assign event drawn on for none carries a finder-model arm beside codex, review-reuse and effort, each off', fmEvents.filter(onNone).every((e) => QR.every((l) => e.arms[l] === 'off')), true);
+  t('DS-1000 AC5 and a trial id for it', fmEvents.filter((e) => !onOther(e)).every((e) => e.trial_ids['finder-model'] === 'ds1000/finder-model/initial'), true);
+  t('DS-1000 AC5 one drawn on for finder-model has no arm in the others', onFm.every((e) => QR.filter((l) => l !== 'finder-model').every((l) => e.arms[l] == null)), true);
+  t('DS-1000 AC5 one drawn on for another trial carries no finder-model arm', fmEvents.filter(onOther).every((e) => e.arms['finder-model'] == null), true);
+  t('DS-1000 AC5 all three kinds were drawn', [fmEvents.some(onNone), onFm.length > 0, fmEvents.some(onOther)], [true, true, true]);
+  t('DS-1000 AC5 some tickets draw it on, and carry no other quality-risk lever', fm.some((p) => p.set.includes('finder-model')) && fm.filter((p) => p.set.includes('finder-model')).every((p) => quality(p).join() === 'finder-model'), true);
+  only('ds1000-same', 'finder-model');
+  const same = admitQ('ds1000-same', 150, { values: { ...LOCAL, 'worker-finder-model': 'sonnet' }, prefix: 'FS' });
+  t('DS-1000 AC4 finder= already sonnet: no ticket on a finder-model trial', same.every((p) => !p.set.includes('finder-model') && p.arms['finder-model'] == null), true);
+  only('ds1000-haiku', 'finder-model');
+  const haiku = admitQ('ds1000-haiku', 150, { values: { ...LOCAL, 'worker-finder-model': 'haiku' }, prefix: 'FH' });
+  t('DS-1000 AC4 finder=haiku: finder-model is drawn', haiku.some((p) => p.set.includes('finder-model')) && haiku.every((p) => ['on', 'off'].includes(p.arms['finder-model'])), true);
+
   // AC9: two kept alone: the next tickets are drawn into a trial of the pair.
   only('q9', 'codex', 'review-reuse');
   byHand('q9', 'codex', 'adopted', daysAgo(60));
