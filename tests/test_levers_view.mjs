@@ -151,6 +151,19 @@ const autoRepos = REPOS.map((r) => (r.slug === DS ? { ...r, levers: '`auto`' } :
   w(join(m.configRoot, 'repos', DS, 'config.md'), `${config('bigbenjoman/desk-skills', '`auto`')}| Worker models | \`default\` | \`default finder=haiku\` |\n`);
   t('DS-1000 AC4 finder=haiku: finder-model reads off, as any lever with no evaluation yet', cell(view(m), 'finder-model').state, 'off');
 }
+// DS-1000 AC4: the daily evaluation still writes the ineligible lever a trial row; the view keeps
+// saying why rather than reading it as testing, and a kept lever keeps its result.
+{
+  const m = machine({ repos: autoRepos, files: { [`${DS}/lever-evals.jsonl`]: jsonl([evalRow('finder-model'), evalRow('wrappers')]) } });
+  w(join(m.configRoot, 'repos', DS, 'config.md'), `${config('bigbenjoman/desk-skills', '`auto`')}| Worker models | \`default\` | \`default finder=sonnet\` |\n`);
+  const c = cell(view(m), 'finder-model');
+  t('DS-1000 AC4 an evaluated trial row: the cell still reads ineligible', c.state, 'ineligible');
+  t('DS-1000 AC4 an evaluated trial row: its reason is kept apart for the page', c.why, '§3b Worker models already runs its finders on sonnet, so both arms would be the same');
+  t('DS-1000 AC4 an evaluated trial row: an eligible lever keeps its evaluation', cell(view(m), 'wrappers').state, 'trial');
+  const k = machine({ repos: autoRepos, files: { [`${DS}/lever-evals.jsonl`]: jsonl([evalRow('finder-model', { state: 'adopted' })]) } });
+  w(join(k.configRoot, 'repos', DS, 'config.md'), `${config('bigbenjoman/desk-skills', '`auto`')}| Worker models | \`default\` | \`default finder=sonnet\` |\n`);
+  t('DS-1000 AC4 a kept lever keeps its result', cell(view(k), 'finder-model').state, 'adopted');
+}
 
 // AC7: a repo with no levers row is not enrolled, and waiting on you says how to enrol it.
 {

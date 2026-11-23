@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { workerLocation, workerModels, parseWorkerModels, parseWorkerLocation, repoConfigValue, LEVERS, FINDER_MODEL_LEVER, parseLevers, HOME, deskHome } from './desk-env.mjs';
+import { ALIAS, ROWS } from './config-schema.mjs';
 
 export const LAYERS = Object.freeze(['low-risk', 'quality-risk']);
 // The evaluation states in which a lever has been kept.
@@ -206,7 +207,7 @@ export function loadRegistry(entries = ENTRIES, names = LEVERS) {
     if (!Array.isArray(e.code) || !e.code.length || e.code.some((c) => !c?.path)) throw missing('code');
     for (const key of ['trips', 'preconditions']) if (!Array.isArray(e[key])) throw missing(key);
     if (typeof e.trialled !== 'boolean') throw missing('trialled');
-    if ('model' in e && !/^[a-z]+$/.test(e.model ?? '')) throw new LeverRegistryError(`lever-registry: lever "${name}" has model "${e.model}"; want an Agent tool alias`);
+    if ('model' in e && !ALIAS.test(e.model ?? '')) throw new LeverRegistryError(`lever-registry: lever "${name}" has model "${e.model}"; want an Agent tool alias`);
     out[name] = Object.freeze({
       name, layer: e.layer, trialled: e.trialled, ...('model' in e ? { model: e.model } : {}), mechanism: Object.freeze({ ...e.mechanism }),
       guardrails: GUARDRAILS, trips: Object.freeze([...e.trips]), code: Object.freeze([...e.code]),
@@ -238,10 +239,10 @@ export function trialable(items, registry = REGISTRY) {
 const finderOf = (read) => { try { return read().finder ?? 'none'; } catch { return null; } };
 export const repoValues = () => ({ 'worker-location': workerLocation(), 'worker-finder-model': finderOf(workerModels) });
 export function repoValuesOf(slug, root) {
-  const raw = (id) => repoConfigValue(slug, id, root);
+  const raw = (id) => repoConfigValue(slug, id, root) ?? ROWS.find((e) => e.id === id).default;
   let location = null;
-  try { location = parseWorkerLocation(raw('worker-location') ?? 'local'); } catch { /* unreadable: left null */ }
-  return { 'worker-location': location, 'worker-finder-model': finderOf(() => parseWorkerModels(raw('worker-models') ?? 'default')) };
+  try { location = parseWorkerLocation(raw('worker-location')); } catch { /* unreadable: left null */ }
+  return { 'worker-location': location, 'worker-finder-model': finderOf(() => parseWorkerModels(raw('worker-models'))) };
 }
 
 // Where install.sh puts a registry code path: `desk/<rest>` under DESK_HOME, anything else (`hooks/…`)

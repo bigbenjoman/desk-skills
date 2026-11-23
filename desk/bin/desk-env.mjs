@@ -55,9 +55,10 @@
 //   node desk-env.mjs key <permission id>     print the §3 key it maps to
 //   node desk-env.mjs merge-grant             print config|batch|none, a tab, and why (mergeGrant); exit 1
 //                                             when nothing may merge this batch's green PRs
-//   node desk-env.mjs model finder|text       print §3b Worker models' finder or text model, `none` if
+//   node desk-env.mjs model finder|text [--row] print §3b Worker models' finder or text model, `none` if
 //                                             unset (no override), exit 4 if the row is malformed; with
-//                                             the finder-model lever on, finder prints its on-arm alias
+//                                             the finder-model lever on, finder prints its on-arm alias;
+//                                             `--row` prints the row's value whatever the lever
 //   node desk-env.mjs effort <start>          print the effort a worker session starting there runs at
 //                                             (`default` with the lever off), exit 4 if §3b Worker
 //                                             effort is malformed
@@ -1004,8 +1005,12 @@ export function levers(env = process.env) {
 }
 export const leverOn = (name, l = levers()) => l.on.includes(name);
 // The model desk-review's Claude finder seats run on (`desk-env model finder`): the finder-model
-// lever's on-arm alias with the lever on, else §3b Worker models' `finder=`, null when unset.
-export const finderModel = (l = levers()) => (leverOn('finder-model', l) ? FINDER_MODEL_LEVER : workerModels().finder ?? null);
+// lever's on-arm alias with the lever on, else §3b Worker models' `finder=`, null when unset. The row
+// is parsed either way, so a malformed one is refused on both arms.
+export function finderModel(l = levers()) {
+  const { finder = null } = workerModels();
+  return leverOn('finder-model', l) ? FINDER_MODEL_LEVER : finder;
+}
 
 // Where each lever's state comes from: `pinned` (named in the row, or in this ticket's pin), `auto`
 // (the row reads `auto` and does not name it) or `off`. `from` is `pin` inside a pinned worker, else
@@ -2601,9 +2606,11 @@ if (isMain) {
       case 'model': {
         // §3b Worker models' finder or text model; `none` when it is unset (no override). Exits 0
         // either way, so a worker reads the answer without a compound `; echo $?`. The finder model
-        // is the finder-model lever's on-arm alias while the lever is on (finderModel).
-        if (!EXTRA_MODELS.includes(args[0])) throw new Error(`usage: desk-env.mjs model ${EXTRA_MODELS.join('|')}`);
-        console.log((args[0] === 'finder' ? finderModel() : workerModels()[args[0]]) || 'none');
+        // is the finder-model lever's on-arm alias while the lever is on (finderModel); `--row` reads
+        // the row alone, for desk-review's simplicity seat, which the lever does not move.
+        const row = args[1] === '--row';
+        if (!EXTRA_MODELS.includes(args[0]) || (args[1] != null && !row)) throw new Error(`usage: desk-env.mjs model ${EXTRA_MODELS.join('|')} [--row]`);
+        console.log((args[0] === 'finder' && !row ? finderModel() : workerModels()[args[0]]) || 'none');
         break;
       }
       case 'effort':

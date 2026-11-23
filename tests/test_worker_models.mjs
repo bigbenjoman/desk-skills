@@ -73,7 +73,7 @@ const cli = (row, which, extra = {}) => {
   const env = { ...process.env, DESK_CONFIG: cfg, DESK_MACHINE: join(T, 'none.md'), HOME: T, ...extra };
   delete env.DESK_LEVERS;
   if (extra.DESK_LEVERS != null) env.DESK_LEVERS = extra.DESK_LEVERS;
-  const r = spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-env.mjs'), 'model', which],
+  const r = spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-env.mjs'), 'model', ...which.split(' ')],
     { encoding: 'utf8', env });
   return `${r.status} ${r.stdout.trim()}`;
 };
@@ -87,6 +87,10 @@ t('DS-1000 AC2 lever on beside others, finder=haiku: the on-arm alias wins', cli
 t('DS-1000 AC3 lever off, finder unset: none', cli('default', 'finder', { DESK_LEVERS: 'memory' }), '0 none');
 t('DS-1000 AC3 lever off, finder=haiku: haiku', cli('default finder=haiku', 'finder', { DESK_LEVERS: 'none' }), '0 haiku');
 t('DS-1000 the lever does not move the text model', cli('default text=haiku', 'text', { DESK_LEVERS: 'finder-model' }), '0 haiku');
+t('DS-1000 --row: the row\'s finder whatever the lever (the simplicity seat)', cli('default finder=haiku', 'finder --row', { DESK_LEVERS: 'finder-model' }), '0 haiku');
+t('DS-1000 --row with finder unset: none', cli('default', 'finder --row', { DESK_LEVERS: 'finder-model' }), '0 none');
+t('DS-1000 lever on, a malformed row still exits 4', cli('opus', 'finder', { DESK_LEVERS: 'finder-model' }).split(' ')[0], '4');
+t('DS-1000 an unknown flag is refused', cli('default', 'finder --raw').split(' ')[0] === '0', false);
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} failed` : 'worker models: all checks passed');

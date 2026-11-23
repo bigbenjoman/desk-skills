@@ -153,7 +153,7 @@ export function parseBudget(raw, label) {
 // as default, so a typo never silently runs every worker on one model.
 //   -> { off: true } | { standard, high }, plus finder and text where set, or throws DeskConfigError
 const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]*$/;
-const ALIAS = /^[a-z]+$/;
+export const ALIAS = /^[a-z]+$/;
 export const EXTRA_MODELS = ['finder', 'text'];
 export function parseWorkerModels(raw) {
   const words = String(raw ?? '').trim().split(/\s+/);

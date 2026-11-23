@@ -328,5 +328,13 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('render: no view.json says to build first', /no view\.json at .*run `levers-view\.mjs build` first/.test(msg), true);
 }
 
+// DS-1000 AC4: once results show, a repo the lever is not tested in still says why in its cell.
+{
+  const v = structuredClone(six);
+  v.panels.board.levers.find((l) => l.lever === 'finder-model').cells = [{ repo: 'desk-skills', state: 'ineligible', why: 'both arms would be the same', note: 'not tested in desk-skills: both arms would be the same' }];
+  const h = P.renderPage(v);
+  t('DS-1000 AC4 the results layout names the reason', h.includes('desk-skills: not tested here, as both arms would be the same'), true);
+}
+
 console.log(fails ? `${fails} check(s) failed` : 'all checks passed');
 process.exit(fails ? 1 : 0);

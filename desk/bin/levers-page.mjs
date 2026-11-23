@@ -367,7 +367,7 @@ const repoWord = (c) => {
   if (c.state === 'trial') return { t: `${c.repo}: testing`, c: C.blue };
   if (c.state === 'pinned') return { t: `${c.repo}: on by hand`, c: C.green };
   if (c.state === 'not_enrolled') return { t: `${c.repo}: not enrolled`, c: C.grey };
-  if (c.state === 'ineligible') return { t: `${c.repo}: not tested here`, c: C.grey };
+  if (c.state === 'ineligible') return { t: `${c.repo}: not tested here, as ${c.why}`, c: C.grey };
   return { t: `${c.repo}: ${String(c.state ?? 'off').replace(/_/g, ' ')}`, c: C.grey };
 };
 

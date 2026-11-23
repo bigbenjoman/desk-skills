@@ -41,8 +41,10 @@ preflight also asks each one set for one word on its own, so a value the CLI rej
 preflight with a `FINDER` or `TEXT` line naming the row and the value, and no worker spawns. Neither
 is set until the eval harness shows finding quality holds on the cheaper model. The `finder-model`
 lever trials exactly that: on a ticket whose arms have it on, `desk-env model finder` prints the
-lever's alias (its registry entry's `model`, `sonnet`) whatever `finder=` says, and the blind audit
-compares the two arms. A repo whose `finder=` already names that alias never draws it.
+lever's alias (`sonnet`, config-schema's `FINDER_MODEL_LEVER`, which its registry entry records as
+`model`) whatever `finder=` says, and the blind audit compares the two arms. Only the routed finders
+move: the simplicity finder reads `desk-env model finder --row`. A repo whose `finder=` already
+names that alias never draws it.
 
 **The effort each worker session runs at is config §3b "Worker effort"** (`desk-env effort <start>`
 prints it), read only with the `effort` lever on (config §3b "Phase 0 levers"). Off, no `--effort` is

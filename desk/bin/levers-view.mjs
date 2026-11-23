@@ -379,11 +379,15 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
         const e = latest.get(`${r.slug}|${lever}`);
         // Only a lever with no evaluation reads its state from the levers row.
         if (!e && r.configRead.error) return { repo: r.name, state: 'error', error: r.configRead.error };
+        // An auto repo whose config fails the lever's preconditions never draws it, though the daily
+        // evaluation still writes it a row until it is kept: one line says why.
+        const pre = !r.configRead.error && r.enrol.auto && !r.enrol.pinned.includes(lever) && !KEPT.includes(e?.state) ? preconditions(lever, r.values) : null;
+        if (pre && !pre.eligible) {
+          const why = pre.failed.map((p) => p.why).join('; ');
+          return { repo: r.name, state: 'ineligible', why, note: `not tested in ${r.name}: ${why}`, stale: col.column === 'stale' };
+        }
         if (!e) {
           if (r.enrol.pinned.includes(lever)) return { repo: r.name, state: 'pinned', note: 'pinned by hand: before/after only, not a trial', stale: col.column === 'stale' };
-          // An auto repo whose config fails the lever's preconditions never draws it: one line says why.
-          const pre = r.enrol.auto ? preconditions(lever, r.values) : null;
-          if (pre && !pre.eligible) return { repo: r.name, state: 'ineligible', note: `not tested in ${r.name}: ${pre.failed.map((p) => p.why).join('; ')}`, stale: col.column === 'stale' };
           return { repo: r.name, state: r.enrol.auto ? 'off' : 'not_enrolled', stale: col.column === 'stale' };
         }
         const minN = e.min_n ?? min;
