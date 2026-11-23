@@ -1012,8 +1012,8 @@ const REFUTED = new RegExp(`\\(\\s*${WORDS}(?:\\s+by\\s+[^)]*)?\\s*\\)|(?:[:—�
 // the whole heading. One that only mentions them ("Findings (1 of 2 refuted)", "False positives in the
 // fraud filter", "Rejected payments") is none.
 const REFUTED_HEADING = new RegExp('^[#>*_\\s-]*(?:P[0-3]\\b[^A-Za-z]*)?(?:'
-  + '(?:[\\w-]+\\s+){0,2}?(?:refuted|dismissed|withdrawn|rejected)(?:\\s+[\\w-]+){0,2}?\\s+findings?'
-  + '|(?:[\\w-]+\\s+){0,2}?findings?\\s*(?:[—–:-]\\s*)?(?:refuted|not a finding|not findings)'
+  + '(?:(?:cross-vendor|codex|claude|external|vendor|all|the)\\s+){0,2}(?:refuted|dismissed|withdrawn|rejected)(?:\\s+(?:cross-vendor|codex|claude|external|vendor))?\\s+findings?'
+  + '|(?:(?:cross-vendor|codex|claude|external|vendor|all|the)\\s+){0,2}findings?\\s*(?:[—–:-]\\s*)?(?:refuted|not a finding|not findings)'
   + '|refuted|not a finding|false positives?)\\s*(?:\\(\\d+\\))?[*_:\\s]*$', 'i');
 // A review body with the sections a heading marks as refuted findings taken out: a `#` heading's section
 // runs to the next heading as deep or shallower, another heading's to the next heading.
@@ -1030,9 +1030,21 @@ function standingPart(body) {
   }).join('\n');
 }
 // standingPart less each finding line marked refuted on its own: the body as feedback quotes it.
-// A refuted finding is taken out whether its line carries its severity or sits under a severity heading:
-// any line labelled refuted that names a file:line, as reviewFindings reads a finding.
-const standingText = (body) => standingPart(body).split('\n').filter((l) => !(REFUTED.test(l) && /[\w./-]+:\d+/.test(l))).join('\n');
+// A refuted finding is taken out whether its line carries its severity or sits under a severity heading
+// (any line labelled refuted that names a file:line, as reviewFindings reads a finding), and with it every
+// line that continues it: one opening with an em dash, or indented deeper than it.
+function standingText(body) {
+  const out = [];
+  let drop = null;
+  for (const l of standingPart(body).split('\n')) {
+    const indent = /^\s*/.exec(l)[0].length, text = l.trim();
+    if (drop != null && text && (text.startsWith('—') || indent > drop)) continue;
+    drop = null;
+    if (REFUTED.test(l) && /[\w./-]+:\d+/.test(l)) { drop = indent; continue; }
+    out.push(l);
+  }
+  return out.join('\n');
+}
 // A review body's counts written as text (`p0=0 p1=0 p2=0`, `P1: 0`): { p0, p1, … } as numbers.
 const textCounts = (body) => Object.fromEntries([...String(body ?? '').matchAll(/\b(p[0-3])\s*[=:]\s*(\d+)\b/gi)].map(([, k, n]) => [k.toLowerCase(), Number(n)]));
 
@@ -1048,7 +1060,8 @@ export function bodyFeedback(body, clean = null) {
   const m = markerOf(text.trim());
   if (m) return COUNTS.some((k) => k in m && m[k] !== 0);
   const sevs = ['P0', 'P1', 'P2'];
-  const listed = reviewFindings(text, sevs), standing = reviewFindings(standingPart(text), sevs).filter((f) => !REFUTED.test(f.text));
+  // The findings left once refuted ones are taken out whole (standingText), the same text a try quotes.
+  const listed = reviewFindings(text, sevs), standing = reviewFindings(standingText(text), sevs);
   if (standing.length) return true;
   const c = textCounts(text);
   const zero = ['p0', 'p1', 'p2'].every((k) => c[k] === 0) && Object.values(c).every((n) => n === 0);

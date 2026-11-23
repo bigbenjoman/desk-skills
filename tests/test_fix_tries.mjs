@@ -849,6 +849,12 @@ t('#1249 a refuted bullet under a severity heading is left out of the try', `${m
 t('#1249 a severity heading saying refuted cuts its findings', bodyFeedback('p0=0 p1=0 p2=0\n### P2 — Refuted\n- P2 src/a.ts:3 x'), false);
 t('#1249 the clean phrase with an item left after it is no clean statement', bodyFeedback('No findings blocking merge except:\n- something vague', 'no findings'), true);
 t('#1249 nor is the phrase with more after it on its line', bodyFeedback('No findings yet, still reading', 'no findings'), true);
+// A heading that negates the label sets nothing apart.
+for (const h of ['## Not refuted findings', '## Never refuted findings', '### P1 — Not dismissed findings', '## Not rejected findings (2)'])
+  t(`#1249 a finding under "${h}" still stands`, bodyFeedback(`${h}\n- P1 src/a.ts:3 missing auth gate`), true);
+// A refuted finding is taken out with the lines that continue it, so neither of its locations reaches the try.
+const cont1249 = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, '## P1 (2)\n- src/a.ts:3 obsolete (refuted)\n  the same drop also at src/c.ts:9\n— and src/d.ts:7 too\n- src/b.ts:4 standing')])));
+t('#1249 a refuted finding\'s continuation lines are left out of the try', `${cont1249?.fix?.what} ${/src\/(a|c|d)\.ts/.test(JSON.stringify(cont1249?.fix?.threads))}`, "review feedback: agent-pullbot's review body (findings at src/b.ts:4) false");
 t('#737 externalTry is undefined with no external check red', externalTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE }), undefined);
 t('#737 and waits while a check is pending', externalTry(tk(), pr([{ name: 'tests', status: 'in_progress' }, red('🔐 Review gate', '88')]), extCtx(extPl([bot(HEAD, 'P0')]))), null);
 t('DS-422 a red verdict check beside an unclean review at the head is reviewFix\'s, as before', verdictTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE, settled: true }), null);
