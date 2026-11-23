@@ -3581,6 +3581,11 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   const done = N.record({ word: 'ask811', ticket: 'ask:1', action: 'done' });
   t('#811 done takes it off the list', `${done.ok} ${done.line} ${asks().length}`, 'true ask811 ask:1: done, so it is off your list. 0');
   t('#811 an empty ask is refused', cli('ask', 'ask811', '  ').code, 11);
+  const a3 = cli('ask', 'ask811', 'Say whether to admit F-8', '--until', 'F-8, G-9');
+  t('#1341 ask --until records the tickets it waits on, and says a pass drops it once they finish',
+    `${a3.code} ${a3.out.includes('or a pass finds F-8, G-9 merged or done')} ${JSON.stringify(JSON.parse(readFileSync(join(standing.stateDir, 'asks.json'), 'utf8')).asks.find((a) => a.text === 'Say whether to admit F-8')?.until)}`,
+    '0 true ["F-8","G-9"]');
+  t('#1341 ask --until refuses a value that is not ticket keys', cli('ask', 'ask811', 'Merge it', '--until', 'F-8;rm').code, 11);
 }
 
 // DS-796: a done blocker whose merge is recorded, with no PR, is through, so a ticket held behind it and
