@@ -13,6 +13,7 @@ import { basename, dirname, join } from 'node:path';
 import { writeJsonAtomic } from './dir-lock.mjs';
 import { followOnPending, postMergeUnmade } from './harvest.mjs';
 import { ledgerOn, missedLine, recordWrite } from './queue-ledger.mjs';
+import { blockersOf, holdsLaid } from './queue-states.mjs';
 
 export const versionOf = (q) => {
   const n = Number(q?.version);
@@ -20,13 +21,15 @@ export const versionOf = (q) => {
 };
 
 // Writes queue `q` to `file` as the version after the one it was read as. -> the version written.
-// With the ledger lever on, it then appends to the ticket ledger what the write changed from the file
-// it replaced (queue-ledger.mjs recordWrite), naming `by` as the writer; `archived` holds the tickets
+// With the ledger lever on, each ticket's blockers are laid beside its held_by as the list `holds`
+// (queue-states.mjs holdsLaid), and the write then appends to the ticket ledger what it changed from
+// the file it replaced (queue-ledger.mjs recordWrite), naming `by` as the writer; `archived` holds the tickets
 // the write moved to the archive. `onLedger(result)` hears the append's outcome; by default a missed
 // append is printed to stderr. `record: false` is a writer that records its write itself (move-batch).
 export function writeQueueFile(file, q, { by, archived, record = true, onLedger = reportMissed(file) } = {}) {
   const on = record && ledgerOn();
   const before = on ? readQueueAt(file) : null;
+  if (on) holdsLaid(q);
   q.version = versionOf(q) + 1;
   writeJsonAtomic(file, q);
   if (on) onLedger(recordWrite(file, before, q, { by, archived }));
@@ -114,7 +117,7 @@ export function keepPrs(t, keyOf = (x) => `${x.url ?? ''}#${x.pr}`) {
   return [...kept.values()].map((x) => (x.url ? x : x.pr));
 }
 
-const HOLD_FIELDS = ['held_by', 'held_outside', 'merge_after'];
+const HOLD_FIELDS = ['held_outside', 'merge_after'];
 export const keys = (v) => String(v ?? '').split('|').filter(Boolean);
 
 // Whether ticket `key` of queue `q` moves to the archive: done, with its PR merged (recorded by
@@ -142,7 +145,7 @@ export function archivable(q, key) {
   // steps yet: an append it skipped is owed to the next pass, so the ticket stays.
   if (!closed && postMergeUnmade(t)) return false;
   if ([q.batch, q.spine, q.epic].includes(key)) return false;
-  return !Object.values(q.tickets).some((o) => o?.key !== key && HOLD_FIELDS.some((f) => keys(o?.[f]).includes(key)));
+  return !Object.values(q.tickets).some((o) => o?.key !== key && (blockersOf(o).includes(key) || HOLD_FIELDS.some((f) => keys(o?.[f]).includes(key))));
 }
 
 // Moves every archivable ticket of `q` (read from `file`, its lock held) into the archive, which is

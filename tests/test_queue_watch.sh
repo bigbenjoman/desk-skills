@@ -171,5 +171,23 @@ stop_watch
 out=$(cat "$T/watch.out")
 check "DS-201 AC2 quiet: a PR opened and a merge each get a change line"     'grep -q "^T-5 .*port 3502 → RUNNING port 3502  PR #50$" "$T/watch.out" && grep -q "^T-6 .*PR OPEN PR #51 → DONE PR #51 merged$" "$T/watch.out"'
 
+# DS-896 AC1 AC3 AC4: a ticket held behind two blockers, added Z-2 then Z-1 (so not sorted), is named
+# behind them in that order on its watch row; H-2, the same hold kept only as the holds list, as a queue
+# written by the ledger keeps it, and H-1's pipe-joined held_by, as a queue written before it, read the same.
+setting full
+export DESK_QUEUE="$T/held.json"
+q init h; q add Z-2; q add Z-1; q add H-1; q set H-1 state=triaged; q hold H-1 Z-2 Z-1
+node -e 'const fs = require("fs"); const f = process.argv[1]; const q = JSON.parse(fs.readFileSync(f, "utf8"));
+  const { held_by, ...rest } = q.tickets["H-1"]; q.tickets["H-2"] = { ...rest, key: "H-2", holds: held_by.split("|") };
+  fs.writeFileSync(f, JSON.stringify(q, null, 2) + "\n");' "$DESK_QUEUE"
+watch_bg --interval 0.3
+until_tables 1
+stop_watch
+out=$(cat "$T/watch.out")
+# Neither blocker has a PR, so the row reads STUCK, naming them.
+blockers_on(){ grep -E "^ *(HELD|STUCK) +$1 " "$T/watch.out" | grep -oE 'held behind Z-[0-9](, Z-[0-9])*'; }
+check "DS-896 AC1 AC3 queue.mjs watch names the two blockers in the order they were added" '[ "$(blockers_on H-1)" = "held behind Z-2, Z-1" ]'
+check "DS-896 AC4 blockers kept as the pipe-joined held_by read the same as the list"      '[ "$(blockers_on H-2)" = "$(blockers_on H-1)" ]'
+
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

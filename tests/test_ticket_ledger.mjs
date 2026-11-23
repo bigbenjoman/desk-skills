@@ -222,6 +222,26 @@ const env = (seq, e, atTime = `2026-11-20T10:00:${String(seq).padStart(2, '0')}Z
   t('AC8 a moved ticket leaves its old batch', Object.keys(L.project(L.reduce([env(8, ev('moved', { from: 'B1', to: 'B2' }))], s), 'B1').tickets).join(), 'DS-2');
 }
 
+// Held and released replay: blockers add in order, a release takes out only the one it names, and
+// held_by projects as them joined (null once none is left). A ticket that leaves every batch leaves its
+// blockers behind, so one added again is held only by what holds it then.
+{
+  const s = L.reduce([
+    seed('DS-1', { key: 'DS-1', state: 'triaged' }, 1),
+    env(2, ev('held', { by: ['DS-3', 'DS-2'] })),
+    env(3, ev('held', { by: ['DS-4'] })),
+    env(4, ev('released', { by: 'DS-2' })),
+  ]);
+  const p = (st) => L.project(st, 'B1').tickets['DS-1'];
+  t('held events add blockers in the order they came', j([p(s).holds, p(s).held_by]), j([['DS-3', 'DS-4'], 'DS-3|DS-4']));
+  const none = L.reduce([env(5, ev('released', { by: 'DS-3' })), env(6, ev('released', { by: 'DS-4' }))], s);
+  t('the last release leaves held_by null', j([p(none).holds, p(none).held_by]), j([[], null]));
+  t('a seeded pipe-joined held_by reads as the same list', j(p(L.reduce([seed('DS-1', { key: 'DS-1', state: 'queued', held_by: 'DS-3|DS-4' }, 1)])).holds), j(['DS-3', 'DS-4']));
+  t('a seeded holds list with no held_by reads the same', j(p(L.reduce([seed('DS-1', { key: 'DS-1', state: 'queued', holds: ['DS-3', 'DS-4'] }, 1)])).holds), j(['DS-3', 'DS-4']));
+  const back = L.reduce([env(7, ev('moved', { from: 'B1', to: null })), env(8, ev('admitted')), env(9, ev('held', { by: ['DS-5'] }))], s);
+  t('dropped and added again, it is held only by its new blocker', j([p(back).holds, p(back).held_by]), j([['DS-5'], 'DS-5']));
+}
+
 // AC9: an archived ticket is left out of the projected queue.
 {
   const s = L.reduce([seed('DS-1', { key: 'DS-1', state: 'done' }, 1), seed('DS-2', { key: 'DS-2', state: 'queued' }, 2), env(3, ev('archived'))]);

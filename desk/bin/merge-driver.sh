@@ -534,11 +534,12 @@ NODE
 # parked on a hold (batch-state.mjs isHeld) is ever released.
 release_chain(){
   local plan succ preds got n pred all
-  plan=$(node --input-type=module - "$DESK_RUN_BIN/batch-state.mjs" "$DESK_QUEUE" ${DEP_LIST[@]+"${DEP_LIST[@]}"} <<'NODE'
+  plan=$(node --input-type=module - "$DESK_RUN_BIN/batch-state.mjs" "$DESK_RUN_BIN/queue-states.mjs" "$DESK_QUEUE" ${DEP_LIST[@]+"${DEP_LIST[@]}"} <<'NODE'
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-const [mod, qf, ...pairs] = process.argv.slice(2);
+const [mod, states, qf, ...pairs] = process.argv.slice(2);
 const { stoppedHold, isHeld } = await import(pathToFileURL(mod).href);
+const { blockersOf } = await import(pathToFileURL(states).href);
 let q = {}; let spine = null;
 try { const all = JSON.parse(readFileSync(qf, 'utf8')); q = all.tickets || {}; spine = all.feature === true ? all.spine : null; } catch { /* no queue: nothing is held */ }
 const held = (t) => !!t && isHeld(t);
@@ -548,13 +549,13 @@ const add = (s, ps) => { m[s] ??= new Set(); for (const p of ps) if (p) m[s].add
 // it: --deps outlive a restart, so without this a ticket freed from a dropped blocker would never release.
 const freed = (s) => new Set(String(q[s]?.freed_from ?? '').split('|').filter(Boolean));
 for (const pair of pairs) { const i = pair.indexOf(':'); const s = pair.slice(0, i); const f = freed(s); add(s, pair.slice(i + 1).split(',').filter((p) => !f.has(p))); }
-for (const [k, t] of Object.entries(q)) if (held(t) && t.held_by) add(k, String(t.held_by).split('|'));
+for (const [k, t] of Object.entries(q)) if (held(t)) add(k, blockersOf(t));
 // Only an approval from the person releases what a feature spine holds: a spine PR merged without it does not.
 // No apostrophes in this heredoc: bash 3.2 matches quotes inside a heredoc within a command substitution.
 const unapproved = (p) => p === spine && q[p]?.approved !== true;
 // A blocker in no batch (held_outside) waits on Jira as well as a merge: pass.mjs lifts it, not this.
 // So does a ticket held on its blocked-until label (held_label with no held_by, batch-state.mjs dateHeld).
-const onDate = (t) => !!t.held_label && !String(t.held_by ?? '').split('|').some(Boolean);
+const onDate = (t) => !!t.held_label && !blockersOf(t).length;
 // A ticket queue.mjs stop held starts only when the person lets it, even where --deps still names it
 // as a successor whose predecessors have merged.
 for (const [s, ps] of Object.entries(m)) if (held(q[s]) && !stoppedHold(q[s]) && !q[s].held_outside && !onDate(q[s]) && ps.size && ![...ps].some(unapproved)) console.log(`${s} ${[...ps].join(',')}`);
@@ -578,6 +579,7 @@ NODE
 import { readFileSync } from 'node:fs';
 const { attachArchive, everyTicket, mergedPrs } = await import(`${process.argv[3]}/queue-store.mjs`);
 const { prStatusOf } = await import(`${process.argv[3]}/batch-state.mjs`);
+const { blockersOf } = await import(`${process.argv[3]}/queue-states.mjs`);
 const q = { tickets: {} };
 try { q.tickets = JSON.parse(readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
 const live = q.tickets;
@@ -585,7 +587,7 @@ const through = (t) => t.state === 'done' && (t.result?.pr == null || prStatusOf
 // Waiting for its next worker: queued or running, held behind its blockers (held_by: a stop holds behind
 // none), or failed before a worker spawned (a requeue clears session_id, and only a spawn sets it).
 const awaiting = (t) => ['triaged', 'running'].includes(t.state)
-  || (t.state === 'parked' && String(t.park?.question ?? '').startsWith('held by orchestrator') && String(t.held_by ?? '').split('|').some(Boolean))
+  || (t.state === 'parked' && String(t.park?.question ?? '').startsWith('held by orchestrator') && blockersOf(t).length > 0)
   || (t.state === 'failed' && t.spawn_failed === true && !t.session_id);
 const openLater = (t) => prStatusOf(t)?.state === 'OPEN' && Date.parse(t.pr_status.at) > Date.parse(t.merged_at);
 // Done on a PR other than the one its status names: that status is from an earlier round.

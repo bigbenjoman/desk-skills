@@ -33,6 +33,7 @@ import { isHeld, spinePark, leftPark, needsSession, mergedTailPr, holdsKept, sto
 import { describeCond, recorded, restateLapsed, RESTATE_MS } from '../clears-when.mjs';
 import { splitOwnEpic, closedUnlanded } from '../desk-q-eta.mjs';
 import { keysOf } from '../desk-q.mjs';
+import { blockersOf } from '../queue-states.mjs';
 import { INTAKE_EVERY_MS } from '../intake.mjs';
 import { LINKS_MADE, ownWords, linkSteps, parkFollowOn, set, say } from './shared.mjs';
 import { redraftable, unrunFields } from '../fix-tries.mjs';
@@ -176,7 +177,7 @@ export function decidePersonSteps(s) {
     const rec = s.triage[t.key] ?? null;
     // Only keys still in held_by: a person's release (held_by=null) leaves held_outside behind, and a
     // stale key there is no hold to lift (a date hold set since would be released on it).
-    const holding = keysOf(t.held_by);
+    const holding = blockersOf(t);
     const steps = keysOf(t.held_outside).filter((p) => holding.includes(p) && stepOf(s, rec, p) === 'merge');
     if (!steps.length) continue;
     const what = steps.map((p) => `RECLASSIFIED ${t.key}: ${p} is a person step: build now, merge after`);
@@ -200,7 +201,7 @@ export function decidePersonInputs(s) {
     if (!inputs.length) continue;
     const line = `person-step hold: ${t.key}: ${inputs.join(', ')} now labelled as your input (config §4 Person-input labels), so the build waits for ${inputs.length === 1 ? 'it' : 'them'}: HELD again`;
     if (s.dry) { out.push(dateLine(`${line} (dry run)`)); continue; }
-    const by = [...new Set([...keysOf(t.held_by), ...inputs])];
+    const by = [...new Set([...blockersOf(t), ...inputs])];
     const outside = [...new Set([...keysOf(t.held_outside), ...inputs])];
     const mergeAfter = keysOf(t.merge_after).filter((p) => !inputs.includes(p));
     const others = by.filter((p) => !inputs.includes(p));
@@ -406,7 +407,7 @@ export function* decideOutsideHolds(s) {
     const left = outside.filter((p) => !tickets[p] && !lifted.includes(p));
     const stamp = read && !s.dry ? [`outside_read=${new Date(s.now).toISOString()}`] : [];
     if (left.length === outside.length) { if (stamp.length) yield set(t.key, ...stamp); continue; }
-    const by = keysOf(t.held_by).filter((p) => !lifted.includes(p));
+    const by = blockersOf(t).filter((p) => !lifted.includes(p));
     const joined = outside.filter((p) => tickets[p]);
     const what = [ownEpic.length && `${ownEpic.join(', ')} its own epic, so its link is ignored`, epicLanded.length && `${epicLanded.join(', ')} landed on ${s.repoDefault} through its epic PR`,
       awayDone.length && `${awayDone.join(', ')} Done in Jira, in another repo`,

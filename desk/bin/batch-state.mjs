@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { personClears } from './clears-when.mjs';
 import { attachArchive } from './queue-store.mjs';
-import { PARK_KINDS } from './queue-states.mjs';
+import { PARK_KINDS, blockersOf } from './queue-states.mjs';
 import { postMergeUnmade } from './harvest.mjs';
 
 // pass.mjs, plan-batch.mjs, queue.mjs and answer.mjs exit only with these, so the orchestrator branches
@@ -225,7 +225,7 @@ export function parkKindOf(question) {
 // Ticket `t`'s park kind: the one its park records, else the one its question opens as.
 export const parkKind = (t) => (PARK_KINDS.includes(t?.park?.kind) ? t.park.kind : parkKindOf(t?.park?.question));
 
-export const stoppedHold = (t) => t?.state === 'parked' && !String(t.held_by ?? '').split('|').some(Boolean) && parkKind(t) === 'stopped';
+export const stoppedHold = (t) => t?.state === 'parked' && !blockersOf(t).length && parkKind(t) === 'stopped';
 
 // Parked on a hold, a stop or a date (a dependency chain, released by merge-driver.sh release_chain or by
 // the one sanctioned manual release once every predecessor's PR has merged).
@@ -234,7 +234,7 @@ export const isHeld = (t) => t?.state === 'parked' && HELD_KINDS.includes(parkKi
 // Waiting behind the blockers in its held_by: held by the orchestrator, or parked at triage for its own
 // reason (triagePark) with holds kept beside the park. Every reader that follows a chain of holds asks
 // this, so a lane C or D, size, design or step park held behind a sibling reads as held to all of them.
-export const holdsKept = (t) => isHeld(t) || (triagePark(t) && String(t.held_by ?? '').split('|').some(Boolean));
+export const holdsKept = (t) => isHeld(t) || (triagePark(t) && blockersOf(t).length > 0);
 
 // A blocker outside the batch Done this long with its code merged only into another branch is raised to
 // the person (pass/parks.mjs `unpromoted`, needs-you's unpromoted item).
@@ -242,7 +242,7 @@ export const UNPROMOTED_AFTER_MS = 24 * 3600_000;
 // The blockers ticket `t` is still held behind outside its batch that the pass recorded as merged only
 // into another branch, Done UNPROMOTED_AFTER_MS or more by `now`: [[key, {branch, pr, state, since, promote?}]].
 export const unpromotedHolds = (t, now = Date.now()) => (holdsKept(t) ? Object.entries(t.unpromoted ?? {}) : [])
-  .filter(([b, u]) => u?.branch && String(t.held_by ?? '').split('|').includes(b) && String(t.held_outside ?? '').split('|').includes(b)
+  .filter(([b, u]) => u?.branch && blockersOf(t).includes(b) && String(t.held_outside ?? '').split('|').includes(b)
     && now - Date.parse(u.since) >= UNPROMOTED_AFTER_MS);
 // An unpromoted record's promotion PR state as words: "a draft", "open" or "red".
 export const promotionState = (u) => (u.state === 'draft' ? 'a draft' : u.state);
@@ -254,7 +254,7 @@ export function heldBehindOf(q, key) {
   const held = Object.values(q?.tickets ?? {}).filter((o) => o.key !== key && holdsKept(o));
   const behind = new Set();
   for (let edge = new Set([key]); edge.size;) {
-    const next = held.filter((o) => !behind.has(o.key) && String(o.held_by ?? '').split('|').some((k) => edge.has(k))).map((o) => o.key);
+    const next = held.filter((o) => !behind.has(o.key) && blockersOf(o).some((k) => edge.has(k))).map((o) => o.key);
     next.forEach((k) => behind.add(k));
     edge = new Set(next);
   }
@@ -284,7 +284,7 @@ export function dateHoldOf(labels) {
 // ticket held behind blockers too waits on them first (queue.mjs hold clears held_label), and the pass
 // reads its label again once they release it. A stopped ticket is held on no date: the held_label a
 // release left behind stays, so its start is not held again on that label, but never starts it.
-export const dateHeld = (t) => (isHeld(t) && !stoppedHold(t) && t.held_label &&!String(t.held_by ?? '').split('|').some(Boolean) ? dateHoldOf([t.held_label]) : null);
+export const dateHeld = (t) => (isHeld(t) && !stoppedHold(t) && t.held_label && !blockersOf(t).length ? dateHoldOf([t.held_label]) : null);
 // What the person is told about a blocked-until label whose date cannot be read.
 export const badLabelText = (label) => `its label ${label} names no date desk can read (blocked-until-YYYY-MM-DD): fix the label and re-run triage.sh, or let it start`;
 
@@ -662,7 +662,7 @@ function holdLeadsTo(q, t, prState, seen, memo = new Map()) {
   // (each ticket naming every one before it) has exponentially many paths.
   if (memo.has(t)) return memo.get(t);
   seen.add(t);
-  const preds = String(t.held_by ?? '').split('|').filter(Boolean);
+  const preds = blockersOf(t);
   const outside = String(t.held_outside ?? '').split('|');
   let parks = preds.length > 0 ? [] : null;
   for (const p of preds) {
@@ -695,7 +695,7 @@ export function waitingOnPark(q, t, prState = () => null) {
 function holdPath(q, from, to, seen = new Set()) {
   if (!holdsKept(from) || seen.has(from.key)) return null;
   seen.add(from.key);
-  const preds = String(from.held_by ?? '').split('|').filter(Boolean);
+  const preds = blockersOf(from);
   if (preds.includes(to)) return [from.key, to];
   for (const p of preds) {
     const up = holdPath(q, q.tickets?.[p], to, seen);
@@ -759,7 +759,7 @@ export function batchIdle(q, prState = () => null) {
 // queue's `promotion`), opened once every child has merged into the base. A ticket held behind the
 // epic key itself waits on that PR, so it is not a child the PR waits for.
 export const epicBatch = (q) => q?.feature !== true && !!q?.epic && !!q?.base;
-export const epicChildren = (q) => Object.values(q.tickets ?? {}).filter((t) => !String(t.held_by ?? '').split('|').includes(q.epic));
+export const epicChildren = (q) => Object.values(q.tickets ?? {}).filter((t) => !blockersOf(t).includes(q.epic));
 // A child is through once done and merged into the base, or done with no PR (nothing to merge).
 export const childDone = (t) => t.state === 'done' && (!!t.merged_at || t.result?.pr == null);
 // A blocker is through, so nothing held behind it waits on it: done, with its merge recorded (merged_at)
