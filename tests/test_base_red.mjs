@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { scratch } from './scratch.mjs';
 
 process.env.DESK_AUTOPILOT_STATE ??= scratch('base-red-');
-const { baseState, lastMerges, liveBaseRed, nextRecord, holdLine, batchLine, repairTicket, repairTriage, WALK, STALE_MS, GREEN_FILE, readGreen } = await import('../desk/bin/base-red.mjs');
+const { baseState, lastMerges, liveBaseRed, nextRecord, holdLine, batchLine, repairTicket, repairTriage, baseRerun, setupFailed, SETUP_STEP, WALK, STALE_MS, GREEN_FILE, readGreen } = await import('../desk/bin/base-red.mjs');
 const E = await import('../desk/bin/desk-env.mjs');
 
 let pass = 0;
@@ -297,6 +297,71 @@ test('DS-989 originIs matches an https, ssh or host-alias remote of the repo, an
   const urls = ['https://github.com/Acme/Widgets.git\n', 'git@github.com:acme/widgets.git', 'https://github.com/acme/widgets/', 'ssh://git@github.com/acme/widgets', 'git@github-work:acme/widgets.git'];
   assert.deepEqual(urls.map((u) => originIs('acme/widgets', u)), [true, true, true, true, true]);
   assert.deepEqual(['/tmp/origin.git', 'git@github.com:acme/other.git', '', null].map((u) => originIs('acme/widgets', u)), [false, false, false, false]);
+});
+
+// A red base the runner failed is re-run once before its repair is admitted.
+const rr = (url) => ({ branch: 'main', checks: [{ name: 'Lint', sha: sha('a'), url }] });
+const jobs = (...steps) => ({ jobs: [{ name: 'Install', steps: steps.map(([name, conclusion]) => ({ name, conclusion })) }] });
+const installFailed = jobs(['Set up job', 'success'], ['Install browsers', 'failure']);
+const URL78 = 'https://github.com/acme/widgets/actions/runs/78/job/5';
+const never = () => { throw new Error('not read'); };
+
+test('the setup steps are installs, cache restores, checkouts and the runner set-up, and not a build or test', () => {
+  for (const n of ['Install dependencies', 'Install browsers', 'npm ci', 'Set up job', 'Run actions/setup-node@v4', 'Run actions/checkout@v4', 'Restore cache', 'Run actions/cache@v4', 'pnpm install']) assert.ok(SETUP_STEP.test(n), n);
+  for (const n of ['Run tests', 'Build', 'Lint', 'Typecheck', 'Run playwright tests']) assert.ok(!SETUP_STEP.test(n), n);
+});
+
+test('a run\'s failed setup steps are read across its jobs, so a downstream check finding nothing is explained', () => {
+  const view = { jobs: [installFailed.jobs[0], { name: 'Lint', steps: [{ name: 'Run tests', conclusion: 'failure' }] }] };
+  assert.deepEqual(setupFailed(view), ['Install browsers']);
+  assert.deepEqual(setupFailed(jobs(['Run tests', 'failure'])), []);
+  assert.deepEqual(setupFailed(null), []);
+});
+
+test('a red base failed only at an install step is re-run once, and no repair is admitted', () => {
+  const d = baseRerun(rr(URL78), { reran: [], view: () => installFailed, status: never, perm: 'yes' });
+  assert.deepEqual(d.rerun, ['78']);
+  assert.match(d.why, /failed at a setup step \("Install browsers"\)/);
+});
+
+test('a red base failed in a test or build step admits the repair as before', () => {
+  assert.deepEqual(baseRerun(rr(URL78), { reran: [], view: () => jobs(['Install dependencies', 'success'], ['Run tests', 'failure']), status: never, perm: 'yes' }), { admit: true });
+  // as does one whose run cannot be read, or whose check names no run
+  assert.deepEqual(baseRerun(rr(URL78), { reran: [], view: () => null, status: never, perm: 'yes' }), { admit: true });
+  assert.deepEqual(baseRerun(rr('https://ci.example.com/build/9'), { reran: [], view: never, status: never, perm: 'yes' }), { admit: true });
+});
+
+test('without the ci-rerun grant, an install failure admits the repair, saying why it was not re-run', () => {
+  const d = baseRerun(rr(URL78), { reran: [], view: () => installFailed, status: never, perm: 'ask' });
+  assert.equal(d.admit, true);
+  assert.match(d.why, /config §3 ci-rerun is "ask"/);
+});
+
+test('once re-run, it waits while the rerun goes and while a passed rerun is read again, and admits once it fails again', () => {
+  const at = (s, c) => () => ({ status: s, conclusion: c });
+  assert.match(baseRerun(rr(URL78), { reran: ['78'], view: never, status: at('in_progress', ''), perm: 'yes' }).wait, /re-run once and is still going/);
+  assert.match(baseRerun(rr(URL78), { reran: ['78'], view: never, status: at('completed', 'success'), perm: 'yes' }).wait, /re-run of run 78 passed/);
+  const again = baseRerun(rr(URL78), { reran: ['78'], view: never, status: at('completed', 'failure'), perm: 'yes' });
+  assert.equal(again.admit, true);
+  assert.match(again.why, /failed again/);
+  // a rerun whose run cannot be read is not waited on for ever
+  assert.equal(baseRerun(rr(URL78), { reran: ['78'], view: never, status: () => null, perm: 'yes' }).admit, true);
+});
+
+test('a red base over two runs, one re-run already, re-runs only the other', () => {
+  const two = { branch: 'main', checks: [{ name: 'Lint', sha: sha('a'), url: URL78 }, { name: 'e2e', sha: sha('a'), url: 'https://github.com/acme/widgets/actions/runs/79/job/6' }] };
+  const done = (s, c) => () => ({ status: s, conclusion: c });
+  const d = baseRerun(two, { reran: ['78'], view: () => installFailed, status: done('completed', 'success'), perm: 'yes' });
+  assert.deepEqual(d.rerun, ['79']);
+  // one already re-run that failed again admits the repair, and re-runs nothing
+  assert.equal(baseRerun(two, { reran: ['78'], view: () => installFailed, status: done('completed', 'failure'), perm: 'yes' }).admit, true);
+  // one already re-run still going waits, and re-runs nothing
+  assert.ok(baseRerun(two, { reran: ['78'], view: () => installFailed, status: done('in_progress', ''), perm: 'yes' }).wait);
+});
+
+test('the batch line says no repair is admitted yet while a rerun comes first', () => {
+  const l = batchLine({ branch: 'main', since: 't', checks: [{ name: 'Lint', sha: sha('a'), url: URL78 }], merges: [] }, { repair: { key: 'base-red-main', first: 'its failed run 78 failed at a setup step' } });
+  assert.match(l, /No repair ticket is admitted yet: its failed run 78 failed at a setup step\. Repair ticket base-red-main is admitted if it fails again/);
 });
 
 console.log(`base-red: ${pass} passed, 0 failed`);

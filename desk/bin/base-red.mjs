@@ -26,6 +26,8 @@ import { runsState, FAILED } from './failure-class.mjs';
 import { readLog } from './merge-log.mjs';
 import { execGit } from './remote-git.mjs';
 import { openCache } from './read-cache.mjs';
+import { stepFailed } from './gate.mjs';
+import { runIdFrom } from './evidence.mjs';
 
 export const FILE = 'base-red.json';
 // How many of the base's newest first-parent commits are read for a check's latest completed run.
@@ -112,11 +114,14 @@ export const mergeWords = (r) => (r.merges?.length
 export const holdLine = (r) => `HOLDING on red ${r.branch}: required check ${checkWords(r)} failed on its latest run there, so no PR merges into it but its repair ${r.repair_key}'s; the last merges desk made: ${mergeWords(r)}`;
 
 // The pass's one line for the batch. `held` the PRs it holds on it ("#12 (ABC-1)"), `repair` what became
-// of the repair: { key, state } of its ticket, or { off: why no worker starts }.
+// of the repair: { key, state } of its ticket, { key, first: why } where a rerun comes first (baseRerun),
+// or { off: why no worker starts }.
 export function batchLine(r, { held = [], repair }) {
   const fix = repair?.off
     ? `The repair is a change on ${r.branch} that no ticket in the batch owns, so it is not one of your own steps: ${repair.off}`
-    : `Repair ticket ${repair.key} is ${repair.state}: its PR is the one merge the driver lets into ${r.branch} until the check passes`;
+    : repair?.first
+      ? `No repair ticket is admitted yet: ${repair.first}. Repair ticket ${repair.key} is admitted if it fails again`
+      : `Repair ticket ${repair.key} is ${repair.state}: its PR is the one merge the driver lets into ${r.branch} until the check passes`;
   return `${r.branch} is red: ${checkWords(r)} failed on its latest run there, since ${r.since}. The merge driver merges nothing into it until that passes. ` +
     `The last merges desk made: ${mergeWords(r)}.${held.length ? ` It holds ${held.join(', ')}.` : ''} ${fix}`;
 }
@@ -144,6 +149,47 @@ export const repairTriage = (r) => ({
   lane: 'A', lane_reason: `a red ${r.branch} the merge driver holds on; the failing run and the last merges are in the ticket file`,
   size: 'S', branch: `fix/${r.repair_key}`, files_in_scope: [], unknowns: [], already_met: [], links: 'n/a',
 });
+
+// A step that sets the runner up rather than building or testing the code: a dependency, browser or
+// tool install, a cache restore, a checkout, GitHub's own `Set up job`, or an action named for one of them
+// (`Run actions/checkout@v4`, `Run actions/setup-node@v4`, `Run actions/cache@v4`).
+export const SETUP_STEP = /\b(?:install(?:s|ing)?|set ?up|setup-[\w-]+|checkout|restore|cache|npm ci)\b/i;
+// The steps a run failed at that set its runner up, from `gh run view <id> --json jobs`: any of its
+// jobs, so an install that failed one job explains the check downstream of it that found nothing to test.
+export const setupFailed = (view) => (Array.isArray(view?.jobs) ? view.jobs : [])
+  .flatMap((j) => (Array.isArray(j?.steps) ? j.steps : []).filter((x) => stepFailed(x) && SETUP_STEP.test(String(x?.name ?? ''))).map((x) => x.name));
+// The runs a red base's checks failed in, re-run once before its repair is admitted where the runner
+// failed them and not the code, as a PR's red check classed runner or resource is (fix-tries.mjs).
+// reran: the run ids already re-run for a red base (a rerun keeps its run's id, and a rerun still going
+// can read the base green and start a new spell, so the ids and not the spell say a rerun was had).
+// view(id): the run's jobs, null unread; status(id): { status, conclusion }, null unread; perm: §3 ci-rerun.
+// -> { rerun: [id], why } (re-run these, admit nothing), { wait: why } (a rerun is still going, or passed
+//    and the driver has yet to read it), or { admit: true, why? } (admit the repair as before).
+export function baseRerun(r, { reran = [], view, status, perm }) {
+  // A check's run is named by its details URL (`…/actions/runs/<id>/job/<job>`).
+  const ids = (r?.checks ?? []).map((c) => runIdFrom(c.url));
+  if (!ids.length || ids.some((x) => !x)) return { admit: true };
+  const runs = [...new Set(ids)];
+  const plural = (xs) => (xs.length === 1 ? '' : 's');
+  // The runs already re-run are read for how their rerun went; only the others can be re-run now.
+  const had = runs.filter((x) => reran.includes(x)), fresh = runs.filter((x) => !reran.includes(x));
+  if (had.length) {
+    const st = had.map((x) => ({ id: x, s: status(x) }));
+    // A rerun whose run cannot be read is not waited on, or a run gone for good would hold the repair for ever.
+    const unread = st.filter((x) => !x.s).map((x) => x.id);
+    if (unread.length) return { admit: true, why: `re-run once already, and run${plural(unread)} ${unread.join(', ')} could not be read since` };
+    const going = st.filter((x) => String(x.s.status ?? '').toLowerCase() !== 'completed').map((x) => x.id);
+    if (going.length) return { wait: `its failed run${plural(going)} ${going.join(', ')} ${going.length === 1 ? 'was' : 'were'} re-run once and ${going.length === 1 ? 'is' : 'are'} still going, so no repair is admitted until ${going.length === 1 ? 'it ends' : 'they end'}` };
+    const again = st.filter((x) => String(x.s.conclusion ?? '').toLowerCase() !== 'success').map((x) => x.id);
+    if (again.length) return { admit: true, why: `re-run once already, run${plural(again)} ${again.join(', ')} failed again` };
+    if (!fresh.length) return { wait: `its re-run of run${plural(had)} ${had.join(', ')} passed, so no repair is admitted while the merge driver reads ${r.branch} again` };
+  }
+  const steps = fresh.map((x) => ({ id: x, steps: setupFailed(view(x)) }));
+  if (!steps.every((x) => x.steps.length)) return { admit: true };
+  const named = [...new Set(steps.flatMap((x) => x.steps))].map((n) => `"${n}"`).join(', ');
+  if (perm !== 'yes') return { admit: true, why: `it failed at a setup step (${named}), but config §3 ci-rerun is "${perm ?? 'no'}", so it is not re-run first` };
+  return { rerun: fresh, why: `its failed run${plural(fresh)} ${fresh.join(', ')} failed at a setup step (${named}), the runner's and not the code's, so ${fresh.length === 1 ? 'it is' : 'they are'} re-run once before any repair is admitted` };
+}
 
 // The record to keep for state `s` read now, carrying `since` from the one before while it is red.
 export function nextRecord(was, s, { branch, merges, at }) {

@@ -64,7 +64,7 @@ import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
-import { liveBaseRed, readBaseRed, baseRedPath, batchLine, repairTicket, repairTriage } from './base-red.mjs';
+import { liveBaseRed, readBaseRed, baseRedPath, batchLine, repairTicket, repairTriage, baseRerun } from './base-red.mjs';
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
@@ -1779,7 +1779,13 @@ const linkLines = [];
 // archived row needs nothing first, and a live one (a batch that archives nothing) is dropped, which an
 // unmerged PR's row allows, since it owes no step after a merge. A drop that refuses (its worktree holds
 // commits no origin ref has) leaves it to the person, as needs-you offers for any closed PR.
+// Before a repair is admitted, a base red only where the runner failed it (an install or other setup
+// step, base-red.mjs baseRerun) has its failed runs re-run once, under §3 ci-rerun; the ids re-run are
+// kept in BASE_RERAN_FILE, so a rerun that fails again admits the repair on a later pass.
 const BASE_RED = liveBaseRed(STATE, { branch: DEFAULT_BRANCH });
+const BASE_RERAN_FILE = join(STATE, 'base-red-reran.json');
+const baseReran = () => { try { const v = JSON.parse(readFileSync(BASE_RERAN_FILE, 'utf8')); return Array.isArray(v?.runs) ? v.runs.map(String) : []; } catch { return []; } };
+const ghRun = (id, fields) => { const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', fields]); try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; } };
 let baseRedRepair = null;
 if (BASE_RED) {
   const key = BASE_RED.repair_key;
@@ -1794,20 +1800,34 @@ if (BASE_RED) {
   else if (!BASE_PUSH.ok) baseRedRepair = { off: `config §3 ${BASE_PUSH.key} is "${BASE_PUSH.perm}", so no worker is started to repair it` };
   else if (DRY) baseRedRepair = { key, state: 'to be admitted (dry run)' };
   else {
-    // Dropped first, so one that refuses leaves its round's files as they were.
-    const dropped = closed && !isArchived(qB, key) ? qTry(['drop', key]) : { ok: true };
-    if (!dropped.ok) baseRedRepair = { key, state: `done with its PR #${was.result.pr} closed unmerged, and could not be dropped to start again (${dropped.out.split('\n').pop()}): drop or requeue it, which needs-you offers`, needs: true };
-    else {
-      mkdirSync(join(STATE, 'tickets'), { recursive: true });
-      mkdirSync(join(STATE, 'triage'), { recursive: true });
-      writeFileSync(join(STATE, 'tickets', `${key}.md`), repairTicket(BASE_RED));
-      writeFileSync(join(STATE, 'triage', `${key}.json`), `${JSON.stringify(repairTriage(BASE_RED), null, 2)}\n`);
-      // A repair closed unmerged left its log under the same key, whose AUTOPILOT_DONE would keep this one
-      // from spawning: moved aside, as a requeue does.
-      E.rotateRound(key);
-      const r = qTry(['admit', key, '--by', 'base-red']);
-      baseRedRepair = r.ok ? { key, state: 'admitted to start as a slot frees' } : { off: `its repair ticket ${key} could not be admitted (${r.out.split('\n').pop()})`, needs: true };
+    const reran = baseReran();
+    const first = baseRerun(BASE_RED, { reran, view: (id) => ghRun(id, 'jobs'), status: (id) => ghRun(id, 'status,conclusion'), perm: E.permission('ci-rerun') });
+    const refused = [];
+    if (first.rerun) {
+      for (const id of first.rerun) { const r = shOut('gh', ['run', 'rerun', id, '--repo', GH_REPO, '--failed']); if (!r.ok) refused.push(`run ${id}: ${r.out.split('\n').pop()}`); }
+      // Kept whether GitHub took it or not, so a refusal is one try and the next pass admits the repair.
+      try { writeFileSync(BASE_RERAN_FILE, `${JSON.stringify({ runs: [...new Set([...reran, ...first.rerun])].slice(-500) }, null, 2)}\n`); } catch {}
     }
+    if (first.rerun && !refused.length) baseRedRepair = { key, first: first.why };
+    else if (first.wait) baseRedRepair = { key, first: first.wait };
+    else admitBaseRepair(key, was, closed, qB, refused.length ? `its re-run was refused (${refused.join('; ')})` : first.why ?? null);
+  }
+}
+// The repair admitted, as before any rerun; `note` says why no rerun held it, where one was weighed.
+function admitBaseRepair(key, was, closed, qB, note) {
+  // Dropped first, so one that refuses leaves its round's files as they were.
+  const dropped = closed && !isArchived(qB, key) ? qTry(['drop', key]) : { ok: true };
+  if (!dropped.ok) baseRedRepair = { key, state: `done with its PR #${was.result.pr} closed unmerged, and could not be dropped to start again (${dropped.out.split('\n').pop()}): drop or requeue it, which needs-you offers`, needs: true };
+  else {
+    mkdirSync(join(STATE, 'tickets'), { recursive: true });
+    mkdirSync(join(STATE, 'triage'), { recursive: true });
+    writeFileSync(join(STATE, 'tickets', `${key}.md`), repairTicket(BASE_RED));
+    writeFileSync(join(STATE, 'triage', `${key}.json`), `${JSON.stringify(repairTriage(BASE_RED), null, 2)}\n`);
+    // A repair closed unmerged left its log under the same key, whose AUTOPILOT_DONE would keep this one
+    // from spawning: moved aside, as a requeue does.
+    E.rotateRound(key);
+    const r = qTry(['admit', key, '--by', 'base-red']);
+    baseRedRepair = r.ok ? { key, state: `admitted to start as a slot frees${note ? `, ${note}` : ''}` } : { off: `its repair ticket ${key} could not be admitted (${r.out.split('\n').pop()})`, needs: true };
   }
 }
 // The PRs held on it, which its one line names in place of a BASE RED line each.
