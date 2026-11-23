@@ -55,9 +55,11 @@ case "\$1 \$2" in
   "pr view") if [ "\$7" = headRefOid,statusCheckRollup ]; then [ -f "$T/gh/checks-\$3.json" ] && { cat "$T/gh/checks-\$3.json"; exit 0; }; echo "gh: HTTP 502 reading checks of PR \$3" >&2; exit 1; fi
     if [ "\$7" = headRefOid,reviews ]; then [ -f "$T/gh/reviews-\$3.json" ] && { cat "$T/gh/reviews-\$3.json"; exit 0; }; echo "gh: HTTP 502 reading reviews of PR \$3" >&2; exit 1; fi
     [ -f "$T/gh/pr-\$3.json" ] && { cat "$T/gh/pr-\$3.json"; exit 0; }; echo "gh: HTTP 502 for PR \$3" >&2; exit 1 ;;
-  "pr list") h=""; while [ \$# -gt 0 ]; do [ "\$1" = --head ] && h="\$2"; shift; done
+  "pr list") h=""; jq=""; while [ \$# -gt 0 ]; do [ "\$1" = --head ] && h="\$2"; [ "\$1" = -q ] && jq="\$2"; shift; done
     [ -n "\$h" ] || { echo "[]"; exit 0; }
-    f="$T/gh/merged-\$(echo "\$h" | tr / _)"; [ -f "\$f" ] && cat "\$f"; exit 0 ;;
+    # A file holding a PR as JSON is the list's one entry, read through the caller's -q as gh would.
+    f="$T/gh/merged-\$(echo "\$h" | tr / _)"; [ -f "\$f" ] || exit 0
+    case "\$(head -c1 "\$f")" in "{") jq -c "[.] | \$jq" "\$f" ;; *) cat "\$f" ;; esac; exit 0 ;;
   "variable list") [ -f "$T/gh/vars.fail" ] && { echo "gh: HTTP 401: Bad credentials" >&2; exit 1; }
     cat "$T/gh/vars.json" 2>/dev/null || echo "[]"; exit 0 ;;
   "run view") [ -f "$T/gh/run-\$3.json" ] && { cat "$T/gh/run-\$3.json"; exit 0; }; echo "gh: HTTP 404: run \$3 not found" >&2; exit 1 ;;
@@ -121,7 +123,7 @@ pr 699 MERGED false; echo '[{"name":"DESK_DEPLOY_ON"}]' > "$T/gh/vars.json"
 parked R-1 A "waiting on e2e run 41048026730" "run 41048026730 completed"; run 41048026730 completed failure
 parked R-2 A "waiting on e2e run 41048026731" "run 41048026731 completed"; run 41048026731 in_progress ""
 parked R-3 A "waiting on e2e run 41048026732" "run 41048026732 completed"
-parked W-1 B "waiting on review of #706" "pr 706 ready"; pr 706 OPEN false; echo 707 > "$T/gh/merged-feat_W-1"; pr 707 MERGED false
+parked W-1 B "waiting on review of #706" "pr 706 ready"; pr 706 OPEN false; echo '{"number":707,"author":{"login":"me"}}' > "$T/gh/merged-feat_W-1"; pr 707 MERGED false
 # DS-496: a park on a refused push. A real origin, whose pre-receive hook prints $T/gh/refuse-<branch
 # with / as _> and refuses, so git reports it as a worker's push would see it.
 git init -q --bare "$T/origin.git"; git -C "$T/repo" remote add origin "$T/origin.git"
@@ -514,6 +516,15 @@ mkdir -p "$T/state/fixtures/FP-1"; : > "$T/state/fixtures/FP-1/compare-pass.txt"
 q set C-8 'park.clears_when={"kind":"unreadable","text":"KAN-1086s fix PR is merged to main","why":"x","at":"2026-01-01T00:00:00Z"}'
 out=$(node "$B/pass.mjs" 2>&1)
 check "#1290 the next pass leaves it done: no re-park" '[ "$(field O-1 state)" = "\"done\"" ] && [ "$(field O-1 park)" = null ]'
+# #1290: with the §1 handle set, a merged PR a collaborator opened from the ticket's own branch is not its
+# own: done by it, not recorded as its result (which the PR status step would park as not its own).
+cp "$T/config.md" "$T/config-h.md"; printf '\n## 1. Who you are\n| Field | Value |\n|---|---|\n| GitHub handle | `me` |\n' >> "$T/config-h.md"
+parked O-3 A "a collaborator is finishing this on my branch" "pr 882 merged"
+printf '{"state":"MERGED","isDraft":false,"headRefName":"feat/O-3","author":{"login":"someone-else"}}\n' > "$T/gh/pr-882.json"
+echo '{"number":882,"author":{"login":"someone-else"}}' > "$T/gh/merged-feat_O-3"
+out3=$(DESK_CONFIG="$T/config-h.md" node "$B/pass.mjs" 2>&1)
+check "#1290 a collaborator's merged PR on its own branch is done by it, with no result PR" \
+  '[ "$(field O-3 state)" = "\"done\"" ] && [ "$(field O-3 done_by.pr)" = 882 ] && [ "$(field O-3 result.pr)" = null ] && grep -qF "O-3: \"PR #882 merged\" holds, and #882 is not its own (PR #882 was opened by someone-else, not by me)" <<< "$out3"'
 check "DS-563 a park no restate reached within the window is recorded none, so the digest lists it" \
   '[ "$(field C-8 park.clears_when)" = "{\"kind\":\"none\"}" ] && [ "$(field C-8 state)" = "\"parked\"" ] && grep -q "C-8: unreadable clears-when \"KAN-1086s fix PR is merged to main\" not restated within 60 minutes: recorded as none, for the person" <<< "$out"'
 check "DS-807 AC5 the file saved where the question says: the next pass clears the park and requeues it" \

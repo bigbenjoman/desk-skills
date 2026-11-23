@@ -1017,7 +1017,7 @@ const ADVANCE_HANDLERS = {
   'worker-head': (a, s) => recordWorkerHead(s.t),
   // The branch and author of the PR a worker's DONE marker names, or null when GitHub cannot be read.
   'pr-owner': (a) => {
-    try { const v = JSON.parse(sh('gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'headRefName,author'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); return { pr: a.pr, branch: v?.headRefName ?? null, author: v?.author?.login ?? null }; } catch { return null; }
+    try { return prOwner(a.pr); } catch { return null; }
   },
   done: (a, s) => recordDone(s.t, { log: s.log.path, h: s.log.h, pr: a.pr, summary: a.summary, line: a.line, sets: a.sets }),
   'settle-links': (a, s) => settleLinks(s.t, s.log.path),
@@ -1302,8 +1302,16 @@ function ownMergedPr(t) {
   const known = [...new Set([t.result?.pr, t.draft_pr].filter((n) => n != null).map(Number))];
   for (const n of known) if (clearsRead.pr(n).state === 'MERGED') return n;
   if (known.length || !t.branch) return null;
-  const n = readOrThrow(`gh pr list --head ${t.branch}`, 'gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch, '--state', 'merged', '--json', 'number', '-q', '.[0].number']);
-  return /^\d+$/.test(n) ? Number(n) : null;
+  // One found on its branch is its own only when desk's account opened it (shared.mjs notOwnPr): a
+  // collaborator's on the same branch is another's PR, which the clears step settles as done by it.
+  const found = JSON.parse(readOrThrow(`gh pr list --head ${t.branch}`, 'gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch, '--state', 'merged', '--json', 'number,author', '-q', '.[0]']) || 'null');
+  if (!/^\d+$/.test(String(found?.number ?? ''))) return null;
+  return notOwnPr(t, { pr: found.number, branch: t.branch, author: found.author?.login ?? null }, conflictHandle) ? null : Number(found.number);
+}
+// The branch and author of PR n, as notOwnPr reads them. Throws where GitHub cannot be read.
+function prOwner(n) {
+  const v = JSON.parse(readOrThrow(`gh pr view ${n}`, 'gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'headRefName,author']));
+  return { pr: n, branch: v?.headRefName ?? null, author: v?.author?.login ?? null };
 }
 // A queued ticket shipped outside its worker: a session may merge a PR for the same key from a branch
 // of its own, or move the ticket to Done. Before a spawn, resume or handoff: { pr, branch } for the
@@ -1388,8 +1396,7 @@ const CLEARS_HANDLERS = {
   'other-merged': (a, s) => {
     const t = s.tickets[a.key];
     try {
-      const p = JSON.parse(readOrThrow(`gh pr view ${a.pr}`, 'gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'headRefName,author']));
-      const why = notOwnPr(t, { pr: a.pr, branch: p.headRefName ?? null, author: p.author?.login ?? null }, conflictHandle);
+      const why = notOwnPr(t, prOwner(a.pr), conflictHandle);
       if (!why || t.result?.pr != null || t.draft_pr != null) return null;
       // Commits past the base in its worktree are its own work, which #pr only unblocks.
       if (t.worktree && existsSync(t.worktree)) {

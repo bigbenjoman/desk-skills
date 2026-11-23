@@ -146,7 +146,7 @@ function* settleClear(t, s) {
   }
   // "PR #X merged" on another branch's or author's PR, with no work of the ticket's own (no PR, no commit
   // past the base): #X did it. Requeued, its worker could only report #X, which is not its own, and park
-  // again (#1290), so it is done by #X instead, with no worker. #X stays out of result.pr, which the PR
+  // again, so it is done by #X instead, with no worker. #X stays out of result.pr, which the PR
   // status step would read as not its own. A ticket with work of its own waits on #X as a prerequisite,
   // and is requeued as before.
   if (c.kind === 'pr-merged' && !c.repo) {
