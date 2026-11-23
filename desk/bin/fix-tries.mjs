@@ -231,7 +231,8 @@ function spentOnRed(done, { pr, head, draft }, mine, notMine, ctx, checks, base 
 // The tries that count against FIX_TRIES_MAX: all but the extra tries, the review tries (reviewTry),
 // which have REVIEW_TRIES_PER_HEAD at each head, the capture try (captureTry), which is the PR's own one,
 // and the protected-files tries (gateTry), which have their own.
-const ownCount = (x) => x.extra || x.kind === 'rereview' || x.kind === 'capture' || x.kind === 'protected';
+// A try withdrawn before its worker started (queue.mjs withdraw) counts against none either.
+const ownCount = (x) => x.extra || x.withdrawn || x.kind === 'rereview' || x.kind === 'capture' || x.kind === 'protected';
 export const triesMade = (done) => (done ?? []).filter((x) => !ownCount(x)).length;
 // No try is left: FIX_TRIES_MAX made, or one already made at this head (triedHere).
 const spent = (done, triedHere) => triesMade(done) >= FIX_TRIES_MAX || triedHere;
@@ -248,7 +249,7 @@ export const triesSpent = (done, head) => spent(done, fixedAt(done, head));
 // REVIEW_TRIES_CEILING bounds those, so a loop where every fix makes a new finding still ends.
 const FIX_TRIES_TOTAL = FIX_TRIES_MAX + 1;
 export const REVIEW_TRIES_CEILING = 4;
-const isReviewTry = (x) => !x.extra && x.kind === 'review';
+const isReviewTry = (x) => !x.extra && !x.withdrawn && x.kind === 'review';
 const quoted = (x) => Boolean(x.findings?.length || x.gaps?.length || x.taken?.length);
 const reviewTriesMade = (done) => (done ?? []).filter(isReviewTry).length;
 // The review fix tries left: below the ceiling, and, over the tries not known to have cleared what
@@ -293,7 +294,7 @@ function triesByKind(done) {
 // try with either read missing counts. CONFLICT_REPAIRS_MAX bounds every try, worked or not.
 const CONFLICT_REPAIRS_MAX = 5;
 const conflictTry = (base, files, draft, at) => ({ kind: 'conflict', ...(draft ? { draft: true } : {}), what: `${draft ? 'draft ' : ''}conflicts with ${base}`, base, files: files ?? null, ...(at ?? {}) });
-const conflictTries = (done) => (done ?? []).filter((x) => !x.extra && x.kind === 'conflict');
+const conflictTries = (done) => (done ?? []).filter((x) => !x.extra && !x.withdrawn && x.kind === 'conflict');
 const repairWorked = (x, next) => !!(x.base_sha && x.merge_base && next?.base_sha && next.merge_base
   && next.head !== x.head && next.merge_base !== x.merge_base && next.base_sha !== x.base_sha);
 export const conflictTriesMade = (done, now) => {
@@ -874,8 +875,12 @@ export function reviewFix(t, review, opts = {}) {
     // The review at this head is the last try's own, so its findings and gaps say what is still open.
     // Only the body's: its inline comments are not read once no try is left.
     const left = [...(counts ? reviewFindings(review.body, sevs).map((x) => `${x.sev}: ${x.text}`) : []), ...allGaps.filter((g) => !persons(g)), ...tagged];
-    const lead = made >= REVIEW_TRIES_CEILING && !fixedAt(done, review.head)
-      ? after.replace(/: /, ', the most review fix tries a PR may make: ') : after;
+    // A try withdrawn at this head (queue.mjs withdraw) was settled outside a worker: its review is
+    // still the one it was drafted from, so it waits for a fresh review, with no try drafted again.
+    const pulled = done.find((x) => x.head === review.head && x.withdrawn);
+    const lead = pulled ? `review not clean at this head, whose fix try was withdrawn (${pulled.withdrawn_why ?? 'settled outside a worker'}): post a fresh review of the head: ${what}`
+      : made >= REVIEW_TRIES_CEILING && !fixedAt(done, review.head)
+        ? after.replace(/: /, ', the most review fix tries a PR may make: ') : after;
     return { call: 'stuck', why: `${lead}${left.length ? ` — ${left.join('; ')}` : ''}` };
   }
   const listed = counts ? reviewFindings(review.body, sevs) : [];

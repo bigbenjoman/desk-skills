@@ -273,22 +273,30 @@ function finish(q, key, n, pr) {
 
 // withdraw <TICKET> "<why>": a fix try the pass queued (its `fix`, the ticket triaged for it) that no
 // worker has started, taken back, because what it was for is settled outside a worker (a gap the
-// orchestrating session closed, say). The ticket goes back to done on its PR, `fix` cleared, and the
-// try leaves `fix_tries`, so it counts against none of the PR's tries; `fix_withdrawn` keeps the try
-// and why. Refused for a running worker (stop it first), and for a ticket with no queued fix try.
+// orchestrating session closed, say). The ticket goes back to done on its PR and `fix` is cleared. The
+// try stays in `fix_tries`, marked `withdrawn` with why, so it counts against none of the PR's tries
+// (fix-tries.mjs ownCount) while its head still reads as tried: the next pass drafts no try there
+// again, and the review at it waits for a fresh one. Refused for a running worker (stop it first), for
+// a ticket with no queued fix try, and while a pass runs, which may be spawning it.
 function withdraw(q, key, why) {
   const t = ticket(q, key);
   if (t.state === 'running') throw new Error(`${key} is running: its fix try has started. Stop it (queue.mjs stop ${key}) if it is no longer wanted: nothing withdrawn`);
   if (t.state !== 'triaged' || !t.fix || t.fix.finished) throw new Error(`${key} is ${t.state ?? 'in no state'}${t.fix ? '' : ' with no fix try'}, so no queued fix try is there to withdraw: nothing withdrawn`);
   const pr = t.fix.pr ?? t.result?.pr ?? null;
   if (pr == null) throw new Error(`${key}'s fix try names no PR to go back to: nothing withdrawn`);
+  // A pass under way may already have picked the try to spawn, and would mark it running after this.
+  if (passRunning()) throw new Error(`a pass is running, and may be spawning ${key}'s fix try: run queue.mjs withdraw ${key} again once it ends (a try it spawns meanwhile is stopped with queue.mjs stop ${key}): nothing withdrawn`);
   const f = t.fix;
-  const same = (x) => x && x.head === (f.head ?? null) && x.kind === f.kind && (x.try ?? null) === (f.try ?? null) && (x.at ?? null) === (f.at ?? null);
-  const tries = (t.fix_tries ?? []).filter((x) => !same(x));
   const at = new Date().toISOString();
-  Object.assign(t, { state: 'done', fix: null, fix_tries: tries.length ? tries : null, fix_withdrawn: { at, why, fix: f }, updated_at: at });
+  const mark = { withdrawn: at, withdrawn_why: why };
+  // The entry the pass wrote for this try, as unrunFields (fix-tries.mjs) finds it.
+  const own = (x) => x.at === f.at && x.kind === f.kind && !x.finished;
+  const tries = t.fix_tries ?? [];
+  const kept = tries.some(own) ? tries.map((x) => (own(x) ? { ...x, ...mark } : x))
+    : [...tries, { try: f.try ?? null, head: f.head ?? null, kind: f.kind, what: f.what, at: f.at ?? at, ...mark }];
+  Object.assign(t, { state: 'done', fix: null, fix_tries: kept, updated_at: at });
   save(q);
-  return `${key}: its queued fix try${f.try ? ` ${f.try}` : ''} on PR #${pr} (${f.what ?? f.kind ?? 'fix'}) withdrawn, so no worker is spawned for it and it counts against none of the PR's tries: ${why}`;
+  return `${key}: its queued fix try${f.try ? ` ${f.try}` : ''} on PR #${pr} (${f.what ?? f.kind ?? 'fix'}) withdrawn: no worker is spawned for it, it counts against none of the PR's tries, and no try is drafted again at its head ${String(f.head ?? '?').slice(0, 12)}, whose review waits for a fresh one: ${why}`;
 }
 
 // A requeued ticket whose recorded PR is open on another branch goes back on that branch, so its worker

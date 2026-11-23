@@ -1,7 +1,7 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 // layer: L1
 import { readFileSync } from 'node:fs';
-import { deniedRoute, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { deniedRoute, triesMade, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
@@ -382,6 +382,13 @@ const outlasted = reviewFix(tk({ fix_tries: [{ ...besideCode.fix, head: 'b'.repe
 t('#1339 when the code gap outlasts its try, the stuck reason still gives the denied gap up to needs-you', `${outlasted?.call} ${JSON.stringify(personGapsIn(outlasted?.why))}`, `stuck ${JSON.stringify([`PERSON'S CALL · ${UNTAGGED_RUN.slice(2)}`])}`);
 const spentAll = reviewFix(tk({ fix_tries: [{ ...besideCode.fix }] }), { pr: 702, head: HEAD, verdict: { gaps: '2' }, body: personBody(2, UNTAGGED_RUN, CODE_GAP) }, { judgement: 'yes', workerMay: denied });
 t('#1339 and so does one once no try is left at the head', JSON.stringify(personGapsIn(spentAll?.why)), JSON.stringify([`PERSON'S CALL · ${UNTAGGED_RUN.slice(2)}`]));
+// A try withdrawn at a head (queue.mjs withdraw) counts against none, and none is drafted there again.
+const pulledTry = { try: 1, head: HEAD, kind: 'review', what: 'review not clean: 1 gap', at: 'x', withdrawn: 'y', withdrawn_why: 'the workflow was dispatched: run 123' };
+const pulled = reviewFix(tk({ fix_tries: [pulledTry] }), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: personBody(1, CODE_GAP) }, { judgement: 'yes' });
+t('#1339 a withdrawn try at this head drafts no try again: the review waits for a fresh one, saying why', `${pulled?.call} | ${pulled?.why}`, `stuck | review not clean at this head, whose fix try was withdrawn (the workflow was dispatched: run 123): post a fresh review of the head: 1 gap — ${CODE_GAP.slice(2)}`);
+const fresh = reviewFix(tk({ fix_tries: [{ ...pulledTry, head: 'b'.repeat(40) }] }), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: personBody(1, CODE_GAP) }, { judgement: 'yes' });
+t('#1339 at a new head a try goes ahead, the withdrawn one counting against none', `${fresh?.call} ${fresh?.fix.try}/${fresh?.fix.of}`, `requeue 1/${FIX_TRIES_MAX}`);
+t('#1339 triesMade leaves a withdrawn try out', triesMade([pulledTry, { try: 1, head: 'h', kind: 'checks' }]), 1);
 t('#1339 the route reads run, start and trigger of a workflow, and gh workflow run', JSON.stringify(['Recommended: run the e2e-manual workflow on it', 'Recommended: trigger the nightly workflow', 'Recommended: gh workflow run e2e.yml --ref fix/x', 'Recommended: run the tests locally', 'Recommended: split it to the follow-up'].map((g) => deniedRoute(g, denied)?.row ?? null)), JSON.stringify(['worker-workflow-dispatch', 'worker-workflow-dispatch', 'worker-workflow-dispatch', null, null]));
 t('DS-585 AC4 without autopilot-judgement yes nothing changes', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: personBody(1, REC_GAP) }), null);
 t('DS-585 AC4 nor on a ready PR', gapsCall(personBody(1, REC_GAP), { gaps: '1' }, {}), null);
