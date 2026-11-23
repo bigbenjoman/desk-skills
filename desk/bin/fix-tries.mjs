@@ -1030,24 +1030,26 @@ function standingPart(body) {
   }).join('\n');
 }
 // standingPart less each refuted finding: the body as feedback quotes it. A finding is a line naming a
-// file:line, whether it carries its severity or sits under a severity heading, with the lines that continue
-// it: one opening with an em dash, or one indented deeper than it that opens with no severity of its own
-// (reviewFindings joins the deeper bullets; a deeper line of prose is the same finding's too). The whole
-// finding goes when any of its lines is labelled refuted.
+// file:line, whether it carries its severity or sits under a severity heading. The lines that continue it
+// are one opening with an em dash, or one indented deeper than it that opens with no severity of its own;
+// a continuing line naming a file:line of its own is a finding nested in it. A finding goes, with what
+// continues it, when its own line is labelled refuted or a continuing line naming no file:line is; a
+// refuted nested finding goes alone, leaving the one it sits in.
 function standingText(body) {
-  const out = [];
-  let block = null;
-  const flush = () => { if (block && !block.lines.some((x) => REFUTED.test(x))) out.push(...block.lines); block = null; };
-  for (const l of standingPart(body).split('\n')) {
+  const lines = standingPart(body).split('\n'), drop = new Set();
+  const open = []; // { indent, start, refuted }, innermost last
+  const close = (end) => { const f = open.pop(); if (f.refuted) for (let k = f.start; k < end; k++) drop.add(k); };
+  lines.forEach((l, i) => {
     const indent = /^\s*/.exec(l)[0].length, text = l.trim();
+    if (!text) return;
     const own = /^[#>*_\s-]*(?:F\d+\s*·\s*)?P[0-3]\b/.test(l);
-    if (block && (!text || text.startsWith('—') || (indent > block.indent && !own))) { block.lines.push(l); continue; }
-    flush();
-    if (/[\w./-]+:\d+/.test(text)) block = { indent, lines: [l] };
-    else out.push(l);
-  }
-  flush();
-  return out.join('\n');
+    const continues = (f) => text.startsWith('—') || (indent > f.indent && !own);
+    while (open.length && !continues(open[open.length - 1])) close(i);
+    if (/[\w./-]+:\d+/.test(text)) open.push({ indent, start: i, refuted: REFUTED.test(l) });
+    else if (open.length && REFUTED.test(l)) open[open.length - 1].refuted = true;
+  });
+  while (open.length) close(lines.length);
+  return lines.filter((_, i) => !drop.has(i)).join('\n');
 }
 // A review body's counts written as text (`p0=0 p1=0 p2=0`, `P1: 0`): { p0, p1, … } as numbers.
 const textCounts = (body) => Object.fromEntries([...String(body ?? '').matchAll(/\b(p[0-3])\s*[=:]\s*(\d+)\b/gi)].map(([, k, n]) => [k.toLowerCase(), Number(n)]));

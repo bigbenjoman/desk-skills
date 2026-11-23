@@ -859,6 +859,11 @@ t('#1249 a refuted finding\'s continuation lines are left out of the try', `${co
 t('#1249 a finding refuted on its em-dash line is none', bodyFeedback('p0=0 p1=0 p2=0\n- P1 src/a.ts:3 drops the row\n— refuted by codex'), false);
 t('#1249 a finding refuted on an indented bullet under it is none', bodyFeedback('p0=0 p1=0 p2=0\n- P1 src/a.ts:3 drops the row\n  - Refuted by codex.'), false);
 t('#1249 a deeper finding with its own severity after a refuted one still stands', bodyFeedback('- P1 src/a.ts:3 drops the row (refuted)\n  - P0 src/b.ts:4 leaks the token'), true);
+// A refuted claim nested in a standing finding goes alone.
+t('#1249 a standing finding with a refuted nested bullet still stands', bodyFeedback('Changes requested.\n### P1\n- src/a.ts:10 null deref in handler when the session is empty\n  - codex also flagged src/c.ts:4 in the same pass — false positive'), true);
+t('#1249 a standing finding with a refuted nested line still stands', bodyFeedback('- P1 src/a.ts:3 standing\n  src/b.ts:4 obsolete (refuted)'), true);
+const nest1249 = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, '## P1 (1)\n- src/a.ts:10 null deref\n  - also src/c.ts:4 — false positive')])));
+t('#1249 the try quotes the standing finding and not its refuted nested claim', `${nest1249?.fix?.what} ${/src\/c\.ts/.test(JSON.stringify(nest1249?.fix?.threads))}`, "review feedback: agent-pullbot's review body (findings at src/a.ts:10) false");
 t('#737 externalTry is undefined with no external check red', externalTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE }), undefined);
 t('#737 and waits while a check is pending', externalTry(tk(), pr([{ name: 'tests', status: 'in_progress' }, red('🔐 Review gate', '88')]), extCtx(extPl([bot(HEAD, 'P0')]))), null);
 t('DS-422 a red verdict check beside an unclean review at the head is reviewFix\'s, as before', verdictTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE, settled: true }), null);
