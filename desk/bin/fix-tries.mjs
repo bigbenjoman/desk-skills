@@ -157,6 +157,19 @@ function againstBase(t, head, mine, notMine, ctx) {
   return { held: { call: 'held', class: 'base red', base_red: b.record,
     why: `base red: ${where}, so no fix try is spent on it; it goes to a fix try once that job passes on ${b.branch}` } };
 }
+// The checks a ticket's base red hold names at this head, held or cleared (failure-class.mjs baseSplit).
+export const baseHeldAt = (t, head) => {
+  const at = head && t?.base_red?.head === head ? t.base_red : null;
+  return new Set([...(at?.checks ?? []), ...(at?.cleared ?? [])]);
+};
+// Of the named red checks, those red on the base where the PR branched that have passed on the base
+// since: held at this head and passed on the base's latest run, or red at the merge base and passed
+// since. read: failure-class.mjs baseSplit's reads.
+export function staleChecks(t, head, names, read) {
+  const held = baseHeldAt(t, head);
+  return names.filter((n) => (held.has(n) ? read.latestOnBase(n, { held: true }) === 'pass'
+    : read.atMergeBase(n) === 'fail' && read.latestOnBase(n) === 'pass'));
+}
 // A PR red on a check that was red on the base where it branched (at its merge base, or held as base
 // red at this head, failure-class.mjs baseSplit) and has passed on the base since is red on the base it
 // was built on, not on its own change: a re-run replays the same merge commit and fails the same way, and
@@ -166,14 +179,9 @@ function againstBase(t, head, mine, notMine, ctx) {
 // update a branch (ctx.refreshBase). -> { call: 'refresh', checks, why } or null.
 function staleBase(t, head, mine, ctx) {
   if (!ctx.baseRead || !ctx.refreshBase || !mine.length || t.base_refresh?.head === head) return null;
-  const at = t.base_red?.head === head ? t.base_red : null;
-  const heldOn = new Set([...(at?.checks ?? []), ...(at?.cleared ?? [])]);
-  const read = ctx.baseRead;
-  const stale = mine.filter((f) => (heldOn.has(f.name) ? read.latestOnBase(f.name, { held: true }) === 'pass'
-    : read.atMergeBase(f.name) === 'fail' && read.latestOnBase(f.name) === 'pass'));
-  if (!stale.length) return null;
-  const branch = ctx.base ?? 'the base', names = [...new Set(stale.map((f) => f.name))];
-  const one = names.length === 1;
+  const names = staleChecks(t, head, [...new Set(mine.map((f) => f.name))], ctx.baseRead);
+  if (!names.length) return null;
+  const branch = ctx.base ?? 'the base', one = names.length === 1;
   return { call: 'refresh', checks: names,
     why: `${names.join(', ')} ${one ? 'was' : 'were'} red on ${branch} too and ${one ? 'has' : 'have'} passed on ${branch} since, so its branch is updated from ${branch} for a run on the green base, with no re-run and no fix try` };
 }

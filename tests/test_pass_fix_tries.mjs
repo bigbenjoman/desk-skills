@@ -253,6 +253,13 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   const stale = outage([baseHeld(three[0]), baseHeld(three[1]), three[2]]);
   t('#1327 two of three PRs red on it only as their base was: no outage hold, no OUTAGE line', `${stale.held?.held?.size ?? 0} ${lines(stale.as, 'report').filter((l) => /OUTAGE/.test(l)).length}`, '0 0');
   t('#1327 the same PRs on another head are read as before', outage([{ ...baseHeld(three[0]), s: { ...three[0].s, head: 'f'.repeat(40) } }, baseHeld(three[1]), three[2]]).held?.held?.size ?? 0, 1);
+  // Red on it at their merge base, with no hold naming it, and green on the base since (staleOf): the same.
+  const staleOf = (tk, p, names) => ([701, 702].includes(p.pr) ? names.filter((n) => n === 'Deploy preview') : []);
+  t('#1327 two PRs red on it where their base was red, green since, start no hold', outage(three, { staleOf }).held?.held?.size ?? 0, 0);
+  const passed = [three[0], three[1], entry(703, [ok('tests'), ok('Deploy preview')])];
+  const staleClear = outage(passed, { staleOf, was: first.hold, now: T0 + 13 * 60 * 1000 });
+  t('#1327 as a hold they were in clears, their stale runs are not re-run', j(staleClear.reruns.map((a) => a.pr)), '[]');
+  t('#1327 nor are they owed a re-run, so their fix tries update them', j(staleClear.held?.rerun ?? []), '[]');
   // AC2: one line, naming the check and the error line, and no STUCK line.
   const said = lines(first.as, 'report');
   t('AC2 the pass says it once, naming the check and the error line', said.length === 1 && said[0].startsWith(`OUTAGE — the deploy platform is failing for every PR: "Deploy preview" is red on 3 open PRs (#701, #702, #703) with the same error, "${LINE}", so no fix try is spent on it and none of them is stuck.`), true);

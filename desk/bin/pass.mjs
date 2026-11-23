@@ -60,7 +60,7 @@ import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prep
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
 import { parseRecipe, readRecords as readPreviewRecords, evidenceHold, uploadHold, teardownCalls, teardown as previewTeardown, runCommand, DELETE_STEP_MS } from './preview-db.mjs';
-import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, staleChecks, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.mjs';
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
@@ -4699,6 +4699,15 @@ const draftHold = (t, n) => {
   return { hold: personHold(t, n, ev.out.split('\n').filter(Boolean).map((l) => { const [at, by] = l.split('\t'); return { at, by }; })) };
 };
 const git = (args) => shOut('git', ['-C', MAIN, ...args]);
+// A PR's branch updated from its base (gh pr update-branch): a new head, so a new preview build, so it
+// takes the branch's preview-build unit first. -> { wait } while another build holds it, else shOut's answer.
+function updateBranch(t, pr, branch) {
+  const slot = branch ? previewSlot(t, branch) : {};
+  if (slot.wait) return { wait: slot.wait };
+  const r = shOut('gh', ['pr', 'update-branch', String(pr), '--repo', GH_REPO]);
+  if (r.ok) keepSlot(slot, pr); else freeSlot(slot);
+  return r;
+}
 const UNDRAFT_HANDLERS = {
   ...OUT_HANDLERS,
   fetch: (a) => git(['fetch', '-q', 'origin', DEFAULT_BRANCH, a.branch]).ok,
@@ -4722,13 +4731,7 @@ const UNDRAFT_HANDLERS = {
   evidence: (a) => startEvidence(a.t, a.pr, a.head, a.c, a.rec),
   ready: readyPr,
   // The update is a new head, so a new preview build: it takes the branch's preview-build unit first.
-  'update-branch': (a) => {
-    const slot = a.branch ? previewSlot(a.t, a.branch) : {};
-    if (slot.wait) return { wait: slot.wait };
-    const r = shOut('gh', ['pr', 'update-branch', String(a.pr), '--repo', GH_REPO]);
-    if (r.ok) keepSlot(slot, a.pr); else freeSlot(slot);
-    return r;
-  },
+  'update-branch': (a) => updateBranch(a.t, a.pr, a.branch),
   comment: (a) => shOut('gh', ['pr', 'comment', String(a.pr), '--repo', GH_REPO, '--body', a.body]),
   'record-carry': (a) => recordCarry(STATE, a.t.key, { head: a.head, from: a.from, reviews: a.reviews, handle: conflictHandle }),
   carried: (a) => { try { mkdirSync(DRIVER_DIR, { recursive: true }); writeFileSync(join(DRIVER_DIR, `carried-${a.pr}-${a.head}`), ''); } catch { /* the driver says it once more */ } },
@@ -4763,7 +4766,8 @@ function outageRerunRun(a) {
 }
 runSteps({
   name: 'outage',
-  snapshot: () => ({ prs: [...drafts, ...undrafted], gate: gateLists(), stateChecks: stateRow.checks, was: readOutageHold(), now: Date.now(), unread: prUnread, dry: DRY, rowErrors: fixRowErrors, recorded: queue().platform_outage ?? null, base: DEFAULT_BRANCH }),
+  snapshot: () => ({ prs: [...drafts, ...undrafted], gate: gateLists(), stateChecks: stateRow.checks, was: readOutageHold(), now: Date.now(), unread: prUnread, dry: DRY, rowErrors: fixRowErrors, recorded: queue().platform_outage ?? null, base: DEFAULT_BRANCH,
+    staleOf: (t, p, names) => { const r = baseReads(p?.head); return r.refreshBase ? staleChecks(t, p.head, names, r.baseRead) : []; } }),
   decide: decideOutage,
   handlers: {
     ...OUT_HANDLERS,
@@ -5177,10 +5181,8 @@ function settleWorked(t, n, head, worked) {
 // one waiting on the preview build, or that got no answer, records nothing and is tried again.
 function refreshBranch(t, n, head, c) {
   if (DRY) { out.push(`fix tries (dry run): would update PR #${n} (${t.key})'s branch from ${DEFAULT_BRANCH}: ${c.why}`); return; }
-  const slot = t.branch ? previewSlot(t, t.branch) : {};
-  if (slot.wait) { out.push(`fix tries: PR #${n} (${t.key}) waits for its branch update from ${DEFAULT_BRANCH}: it ${slot.wait}`); return; }
-  const r = shOut('gh', ['pr', 'update-branch', String(n), '--repo', GH_REPO]);
-  if (r.ok) keepSlot(slot, n); else freeSlot(slot);
+  const r = updateBranch(t, n, t.branch);
+  if (r.wait) { out.push(`fix tries: PR #${n} (${t.key}) waits for its branch update from ${DEFAULT_BRANCH}: it ${r.wait}`); return; }
   if (r.unreached) { out.push(`fix tries: PR #${n} (${t.key})'s branch update from ${DEFAULT_BRANCH} got no answer (${lastLine(r.out)}); the next pass tries again`); return; }
   const rec = { head, at: PASS_AT, ok: r.ok, checks: c.checks, ...(r.ok ? {} : { out: lastLine(r.out) }) };
   q('set', t.key, `base_refresh=${JSON.stringify(rec)}`);
