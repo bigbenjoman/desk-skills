@@ -72,7 +72,7 @@ import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter } from './queue-writer.mjs';
-import { archivedOf, mergedPrs } from './queue-store.mjs';
+import { archivedOf, keepPrs, mergedPrs } from './queue-store.mjs';
 import { runAudits, endedFromExit, auditsRunning } from './levers-audit.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV } from './queue-ledger.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
@@ -1247,11 +1247,9 @@ const foreignPr = (t, n, here) => n != null && foreign(recordedPr(t, n), here);
 // Kept by repo and number, so another repo's PR of the same number (needs-you's elsewhereDone) never
 // replaces this repo's own: a PR with no url, or this repo's, is this repo's.
 const keepMergedPr = (t) => {
-  if (!t.merged_at || t.result?.pr == null) return [];
   const here = hereRepo();
-  const keyOf = (x) => `${foreign(x, here) ? repoOfPr(x.url) : ''}#${x.pr}`;
-  const kept = new Map([...mergedPrs(t), recordedPr(t, t.result.pr)].map((x) => [keyOf(x), x]));
-  return [`merged_pr=${JSON.stringify([...kept.values()].map((x) => (x.url ? x : x.pr)))}`];
+  const kept = keepPrs(t, (x) => `${foreign(x, here) ? repoOfPr(x.url) : ''}#${x.pr}`);
+  return kept ? [`merged_pr=${JSON.stringify(kept)}`] : [];
 };
 const statusPr = (t, here) => {
   const s = t.merged_at ? t.pr_status : null;

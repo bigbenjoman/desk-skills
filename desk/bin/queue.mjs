@@ -24,7 +24,7 @@ import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME
 import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
-import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf, mergedPrs } from './queue-store.mjs';
+import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf, keepPrs } from './queue-store.mjs';
 import { LEDGER_BY_ENV } from './queue-ledger.mjs';
 import { newPark, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { followOnPending, postMergeUnmade, workerMarkers, lastStage, settleSteps } from './harvest.mjs';
@@ -275,15 +275,11 @@ function repointRequeued(t, key) {
 }
 
 // A ticket requeued after its PR merged keeps that PR as merged_pr from the requeue on, as its spawn does
-// (pass.mjs keepMergedPr, which folds it in again by repo), so the merge driver holds what waits on it
-// until its next PR merges whatever happens before a worker spawns: a park, a failed spawn.
+// (keepPrs, queue-store.mjs; pass.mjs keepMergedPr folds it in again by repo), so the merge driver holds
+// what waits on it until its next PR merges whatever happens before a worker spawns: a park, a failed spawn.
 const keepRequeuedPr = (t) => {
-  if (!t.merged_at || t.result?.pr == null) return {};
-  const n = Number(t.result.pr);
-  const url = Number(t.pr_status?.pr) === n ? t.pr_status.url ?? null : null;
-  const kept = mergedPrs(t);
-  if (kept.some((x) => x.pr === n && x.url === url)) return {};
-  return { merged_pr: [...kept, { pr: n, url }].map((x) => (x.url ? x : x.pr)) };
+  const kept = keepPrs(t);
+  return kept ? { merged_pr: kept } : {};
 };
 
 function requeue(q, key, { handedBack = false } = {}) {

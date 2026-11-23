@@ -95,6 +95,19 @@ export const owesReopen = (t) => t?.reopening != null && String(t.reopening) ===
 export const mergedPrs = (t) => [].concat(t?.merged_pr ?? []).filter((x) => x != null)
   .map((x) => (typeof x === 'object' ? { pr: Number(x.pr), url: x.url ?? null } : { pr: Number(x), url: null }));
 
+// The merged_pr a ticket keeps once its PR has merged (merged_at) and it goes round again: every PR it kept
+// (mergedPrs) with its current one (result.pr) folded in, as { pr, url } where its PR status names that PR
+// and as the bare number where nothing gave it a url. Two entries are one PR when keyOf gives them one key:
+// by default the same number and url; pass.mjs keepMergedPr passes its repo-aware key. null where there is
+// no merge or no PR to keep. Both a spawn (pass.mjs keepMergedPr) and a requeue (queue.mjs) keep it this way.
+export function keepPrs(t, keyOf = (x) => `${x.url ?? ''}#${x.pr}`) {
+  if (!t?.merged_at || t.result?.pr == null) return null;
+  const n = Number(t.result.pr);
+  const current = { pr: n, url: t.pr_status?.pr != null && Number(t.pr_status.pr) === n ? t.pr_status.url ?? null : null };
+  const kept = new Map([...mergedPrs(t), current].map((x) => [keyOf(x), x]));
+  return [...kept.values()].map((x) => (x.url ? x : x.pr));
+}
+
 const HOLD_FIELDS = ['held_by', 'held_outside', 'merge_after'];
 export const keys = (v) => String(v ?? '').split('|').filter(Boolean);
 
