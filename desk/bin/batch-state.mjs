@@ -802,13 +802,15 @@ export const blockerThrough = (t, prState = null) => {
   return !prState && !['OPEN', 'CLOSED'].includes(s);
 };
 // The blockers among `keys` to hold ticket `key` behind, less `key` itself and those in `tickets`
-// already merged or through (childDone), which nothing would release. -> { holds, cycles: those in
+// already merged or through (childDone), which nothing would release. A live one merged once and gone
+// round again since (reworked) has not merged its current work, so it is held behind; an archived one
+// (found through `tickets`' archive, not its own) never is. -> { holds, cycles: those in
 // `behind` (heldBehindOf), already waiting behind `key`, so not held, outside: the holds in no batch }.
 export function holdsAmong(key, keys, tickets, behind) {
   const holds = []; const cycles = [];
   for (const k of new Set(keys)) {
     const o = tickets[k];
-    if (k === key || (o && (o.merged_at || childDone(o)))) continue;
+    if (k === key || (o && (o.merged_at || childDone(o)) && !(Object.hasOwn(tickets, k) && reworked(o)))) continue;
     (behind.has(k) ? cycles : holds).push(k);
   }
   return { holds, cycles, outside: holds.filter((k) => !tickets[k]) };
