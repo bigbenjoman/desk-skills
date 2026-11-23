@@ -2,7 +2,9 @@
 //
 // With the ledger lever on, every queue write (queue-store.mjs writeQueueFile) appends the difference
 // between the queue on disk before it and the queue it wrote: per ticket, a typed event for a change
-// of state and one legacy_set for every other field changed with it. It records what queue.json kept,
+// of state and one legacy_set for every other field changed with it, and for the batch, its red base
+// starting or clearing (base_red, base_green) and its platform outage starting or clearing
+// (platform_outage, platform_clear). It records what queue.json kept,
 // never the changes a writer asked for. A ticket leaving the queue is archived, or moved out of the
 // batch; one arriving with a moved_from record is moved in. The first write the lever sees for a batch
 // the log has never named first seeds one event per ticket from the queue as it stood.
@@ -170,7 +172,30 @@ export function queueEvents(before, after, { batch, archived = {}, elsewhere = (
     }
     if (own(archived, key)) ev(key, 'archived', {});
   }
+  for (const c of BATCH_SPELLS) for (const e of spellEvents(before, after, c)) ev(null, e.type, e.data);
   return out;
+}
+
+// The batch's conditions kept as one queue field each, a spell at a time, as each writer records it:
+// its red base (`base_red`, pass/base-gate.mjs decideBaseRed) and its platform outage
+// (`platform_outage`, pass/fix-tries.mjs decideOutage). `same`: the spell `before` held is the one now.
+const BATCH_SPELLS = [
+  { field: 'base_red', start: 'base_red', clear: 'base_green', same: (a, b) => a.branch === b.branch && a.since === b.since,
+    data: (r) => ({ check: r.check, since: r.since, deadline: r.deadline, merges: r.merges }) },
+  { field: 'platform_outage', start: 'platform_outage', clear: 'platform_clear', same: (a, b) => a.since === b.since,
+    data: (r) => ({ check: r.check, since: r.since, deadline: r.deadline }) },
+];
+
+// A batch condition starting or clearing in this write: one start event as a spell is first recorded,
+// one clear as it is cleared. A change to the same spell's record (its escalation, the checks it
+// names) appends nothing.
+function spellEvents(before, after, { field, start, clear, same, data }) {
+  const was = before?.[field] ?? null;
+  const now = after?.[field] ?? null;
+  if (was && !now) return [{ type: clear, data: {} }];
+  if (!now || typeof now !== 'object' || (was && same(was, now))) return [];
+  const e = { type: start, data: data(now) };
+  return invalid({ ...e, batch: STANDING, key: null }) ? [] : [e];
 }
 
 // One seeded event per ticket of queue `q` (the file as it stood) in `batch`, but for any in `skip`.

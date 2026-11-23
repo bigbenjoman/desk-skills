@@ -1,7 +1,7 @@
 // suite: pass phase: deadlines (each wait a ticket is in, with its deadline, escalated once past it)
 // layer: L1
 import { runPhase } from '../desk/bin/pass/run-phase.mjs';
-import { decideDeadlines, nextWaits, waitsOf, WAITS, EVIDENCE_PROGRESS_MS } from '../desk/bin/pass/deadlines.mjs';
+import { decideDeadlines, nextWaits, waitsOf, WAITS, EVIDENCE_PROGRESS_MS, BASE_RED_MS, baseRedWait, OUTAGE_MS, outageWait } from '../desk/bin/pass/deadlines.mjs';
 import { SUITE_WAIT_CEILING_MS } from '../desk/bin/pass/shared.mjs';
 import { deciderItems } from '../desk/bin/decider.mjs';
 import { UNKNOWN_LIMIT_MS } from '../desk/bin/undraft.mjs';
@@ -242,6 +242,36 @@ t('and progress at Stage 5 90 minutes', EVIDENCE_PROGRESS_MS, 5400000);
   t('the decision starts no process and writes nothing', j([r.threw, r.calls]), j([null, []]));
   t('it sets each ticket\'s waits and says each escalation', j(r.out.map((x) => `${x.type} ${x.key}`)), j(['report A', 'set A', 'report H', 'set H']));
   t('a wait kept on another stage is a new one', nextWaits(handedOff('H', { handoff_stage: 7, waits: h.waits }), at(31)).waits.handoff.since, at(31));
+}
+
+// DS-903 AC3: the batch's red base escalates once past its 60-minute deadline, saying how long it lasted.
+{
+  const rec = { branch: 'main', check: 'tests', since: at(0), deadline: at(60), merges: [{ pr: 802, ticket: 'T-2' }] };
+  t('AC3 the red base\'s deadline is 60 minutes', BASE_RED_MS, 60 * 60000);
+  const before = baseRedWait(rec, at(59));
+  t('AC3 before its deadline it is not escalated', j([before.rec.escalated ?? null, before.line]), j([null, null]));
+  const due = baseRedWait(rec, at(61));
+  t('AC3 past it, it is escalated, the line saying how long', j([due.rec.escalated, /^main: RED BASE — it has been red for 61 minutes, since .*, past its 60-minute deadline: tests still fails there.*#802 \(T-2\)$/.test(due.line)]), j([at(61), true]));
+  const next = baseRedWait(due.rec, at(70));
+  t('AC3 once only: a later pass keeps when it was escalated', next.rec.escalated, at(61));
+  t('AC3 and the decider reads both passes\' lines as one item', new Set([...ids([due.line]), ...ids([next.line])]).size, 1);
+}
+
+// DS-904 AC3: the batch's platform outage escalates once past its 2-hour deadline, saying how long it lasted.
+{
+  const rec = { check: '"Deploy preview"', since: at(0), deadline: at(120) };
+  t('AC3 the outage\'s deadline is 2 hours', OUTAGE_MS, 120 * 60000);
+  const before = outageWait(rec, at(119), 'main');
+  t('AC3 before its deadline it is not escalated', j([before.rec.escalated ?? null, before.line]), j([null, null]));
+  const due = outageWait(rec, at(121), 'main');
+  t('AC3 past it, it is escalated, the line saying how long', j([due.rec.escalated, /^main: PLATFORM OUTAGE — "Deploy preview" has been red on every open PR with a run of it for 121 minutes, since .*, past its 120-minute deadline: /.test(due.line)]), j([at(121), true]));
+  const next = outageWait(due.rec, at(150), 'main');
+  t('AC3 once only: a later pass keeps when it was escalated', next.rec.escalated, at(121));
+  t('AC3 and the decider reads both passes\' lines as one item', new Set([...ids([due.line]), ...ids([next.line])]).size, 1);
+  t('AC3 a held check with an Actions run: the pass keeps re-running it', due.line.includes('the pass keeps re-running it'), true);
+  const status = outageWait(rec, at(121), 'main', { runnable: false }).line;
+  t('AC3 a platform status with no Actions run is never said to be re-run: redeploy or push instead',
+    j([status.includes('re-running'), status.includes('no Actions run reports it, so nothing desk re-runs turns it green'), status.includes('redeploy there or push to the PRs')]), j([false, true, true]));
 }
 
 console.log(fails ? `${fails} failed` : 'all checks passed');

@@ -1,7 +1,7 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 // layer: L1
 import { readFileSync } from 'node:fs';
-import { fixCall, outageChecks, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
@@ -746,6 +746,21 @@ t('DS-419 not while the head is still the try\'s', resolvable(tk({ state: 'done'
 t('DS-419 not while its worker runs or parked', [resolvable(tk({ state: 'done', fix: fb1.fix }), 'd'.repeat(40)).length, resolvable(tk({ state: 'parked', fix: worked }), 'd'.repeat(40)).length].join(), '0,0');
 t('DS-419 not one already resolved', resolvable(tk({ state: 'done', fix: { ...worked, resolved: ['PRRT_1'] } }), 'd'.repeat(40)).length, 0);
 t('DS-605 not one the pass ended before any worker ran it, its head moved', resolvable(tk({ state: 'done', fix: { ...worked, no_worker: true } }), 'd'.repeat(40)).length, 0);
+// A worked thread with a later reply on it, other than the pass's own, is left open for whoever answers it.
+{
+  // The try read the thread's newest comment at 09:00 (last_at); the pass that made it began at 08:59.
+  const f = { ...worked, at: '2026-11-23T08:59:00Z', threads: worked.threads.map((x) => ({ ...x, last_at: '2026-11-23T09:00:00Z' })) };
+  const done = tk({ state: 'done', fix: f });
+  const left = (last) => [{ id: 'PRRT_1', text: 'x', ...(last ? { last } : {}) }];
+  const D = 'd'.repeat(40);
+  t('a worked thread with no reply since the try read it is settled, though posted after the pass began', settleable(done, D, left({ login: 'agent-pullbot', at: '2026-11-23T09:00:00Z', first: 'P1 x' })).map((x) => x.id).join(), 'PRRT_1');
+  t('one the reviewer replied on since is left open', settleable(done, D, left({ login: 'agent-pullbot', at: '2026-11-23T11:00:00Z', first: 'Still broken at line 4' })).length, 0);
+  t('the pass\'s own reply since does not keep it open', settleable(done, D, left({ login: 'me', at: '2026-11-23T11:00:00Z', first: feedbackReply(f, D) })).length, 1);
+  t('a try that recorded no newest comment is read as before', settleable(tk({ state: 'done', fix: worked }), D, left({ login: 'agent-pullbot', at: '2026-11-23T11:00:00Z', first: 'y' })).length, 1);
+  t('a thread no longer open is not settled', settleable(done, D, []).length, 0);
+  const fbLast = feedbackFix(tk(), { pr: 2402, head: HEAD, threads: [{ id: 'PRRT_1', text: 'x', last: { login: 'agent-pullbot', at: '2026-11-23T09:00:00Z', first: 'P1 x' } }] });
+  t('a feedback try records the newest comment it read on each thread', JSON.stringify(fbLast?.fix.threads), JSON.stringify([{ id: 'PRRT_1', text: 'x', last_at: '2026-11-23T09:00:00Z' }]));
+}
 // A try no worker ran said nothing: an earlier worker's summary is not quoted as its own.
 const unrunSync = tk({ fix: { kind: 'sync', try: 1, of: 2, base: 'main', finished: 'x', no_worker: true }, result: { summary: 'an earlier worker' } });
 t('DS-605 a sync try no worker ran is not quoted as having said anything', syncSaid(unrunSync), '');
@@ -787,7 +802,15 @@ const extCtx = (payload) => ({ required: ['tests'], stateChecks: EXT, external: 
 t('#737 no review of the bot\'s at the head: it waits, with no desk review posted', verdictTry(tk(), extRed, extCtx(extPl([bot(OLD_737, 'P0: old')])))?.call, 'wait');
 const ex737 = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, 'P0 (1): src/a.ts drops the row', 'CHANGES_REQUESTED')], [thread('T1', 'R1', 'P0 drops the row'), thread('T2', 'R1', 'fixed already', true)])));
 t('#737 its review at the head goes to a feedback fix try, not a review try', `${ex737?.call} ${ex737?.fix.kind}`, 'requeue feedback');
-t('#737 the try quotes its open threads and its review text', `${ex737?.fix.threads.map((x) => x.id ?? "body").join()} ${ex737?.fix.threads.at(-1).text.startsWith("agent-pullbot's review at the head: P0 (1)")}`, 'T1,body true');
+// A thread the pass resolved this pass is still open in the payload it read first: no new try quotes it.
+{
+  const cleanPl = extPl([bot(HEAD, 'p0=0 p1=0 p2=0 Clean')], [thread('T1', 'R1', 'P1 drops the row')]);
+  t('a clean outside review with its one open thread resolved this pass starts no try', verdictTry(tk(), extRed, { ...extCtx(cleanPl), resolvedNow: ['T1'] })?.call === 'requeue', false);
+  t('unresolved, the thread still goes to a try', verdictTry(tk(), extRed, extCtx(cleanPl))?.call, 'requeue');
+  const withLast = { ...thread('T1', 'R1', 'P1 drops the row'), latest: { nodes: [{ author: { login: 'agent-pullbot' }, body: 'Still broken\nmore', createdAt: '2026-11-23T11:00:00Z' }] } };
+  t('an open thread is read with its newest comment', JSON.stringify(externalReview(extPl([bot(HEAD, 'x')], [withLast]), 'agent-pullbot').threads[0].last), JSON.stringify({ login: 'agent-pullbot', at: '2026-11-23T11:00:00Z', first: 'Still broken' }));
+}
+t('#737 the try quotes its open threads and its review text', `${ex737?.fix.threads.map((x) => x.id ?? "body").join()} ${ex737?.fix.threads.at(-1).text.startsWith("agent-pullbot's review body: P0 (1)")}`, 'T1,body true');
 const extStuck = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, '', 'APPROVED')])));
 t('#737 reviewed at the head with nothing to work, still red: the person\'s', extStuck?.call, 'stuck');
 t('#737 an external check\'s error line saying no verdict is at the head sends no review try', gateTry(tk(), pr([ok('tests'), { ...red('🔐 Review gate', '88'), errors: ['no review verdict is at the head'] }]), { ...ctx({ stateChecks: EXT }), base: 'main' }), null);
@@ -800,6 +823,31 @@ t('#925 nor does a draft', draftGateTry(tk(), { ...protRed, isDraft: true }, { r
 t('#925 a non-external check asking the same still gets one', gateTry(tk(), protRed, { ...ctx({ stateChecks: [] }), base: 'main' })?.fix?.kind, 'protected');
 const w925 = verdictTry(tk(), protRed, extCtx(extPl([])));
 t('#925 with no review of the bot\'s at the head it waits, naming the bot', `${w925?.call} ${w925?.why}`, 'wait its "🔐 Review gate" check reads agent-pullbot\'s review, so it waits for agent-pullbot to review the head');
+// A finding only the review body lists (on a line outside the diff, so with no thread) goes to the try
+// as an item of its own, with its file:line, marked as the body's; a clean body adds nothing.
+{
+  const p0Body = '**Changes needed** · p0=1 p1=0 p2=0\n\n### P0 (1)\n- `src/ledger.ts:88` the refund is applied twice, outside the diff';
+  const two = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, p0Body, 'CHANGES_REQUESTED')], [thread('T1', 'R1', 'P1 drops the row')])));
+  t('a P0 only the verdict body lists goes in the try beside the thread, then the body itself', JSON.stringify(two?.fix.threads.map(({ id, body, whole, text }) => [id, !!body, !!whole, text.slice(0, 50)])), JSON.stringify([['T1', false, false, 'src/a.ts:3 "P1 drops the row"'], [null, true, false, "agent-pullbot's review body: P0: `src/ledger.ts:88"], [null, true, true, "agent-pullbot's review body: **Changes needed** · "]]));
+  const brief = fixBrief(tk({ fix: two.fix }));
+  t('its brief lists it apart from the threads, to answer in the PR comment', brief.includes("The findings agent-pullbot's review body lists with a file:line, none with a thread of its own") && brief.includes("- agent-pullbot's review body: P0: `src/ledger.ts:88`") && brief.includes('a body finding is answered in your gh pr comment'), true);
+  t('and quotes the body itself, saying a finding it marks refuted needs no fix', brief.includes("agent-pullbot's review body itself, for any finding it states with no file:line") && brief.includes('One the body itself marks refuted, or not a finding, needs no fix'), true);
+  t('and not as a thread', brief.split('Its unresolved review threads:')[1]?.split('The findings')[0].includes('ledger'), false);
+  const clean = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, '**Approvable** · p0=0 p1=0 p2=0')], [thread('T1', 'R1', 'P1 drops the row')])));
+  t('a clean verdict body adds nothing', clean?.fix.threads.map((x) => x.id ?? 'body').join(), 'T1');
+  const several = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, 'p0=1 p1=1 p2=1\n- P0 src/a.ts:1 one\n- P1 src/b.ts:2 two\n- P2 src/c.ts:3 three\n- P3 src/d.ts:4 nit')])));
+  t('each P0 to P2 finding is its own item, a P3 none', several?.fix.threads.filter((x) => !x.whole).map((x) => x.text.replace("agent-pullbot's review body: ", '')).join(' | '), 'P0 src/a.ts:1 one | P1 src/b.ts:2 two | P2 src/c.ts:3 three');
+  // A P0 stated with no file:line beside a cited P1 still reaches the worker, in the body's own text.
+  const uncited = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, 'p0=1 p1=1 p2=0\n### P0 (1)\n- The refund is applied twice in the ledger module\n\n### P1 (1)\n- `src/b.ts:2` drops the row')])));
+  t('a P0 with no file:line beside a cited one is in the brief', fixBrief(tk({ fix: uncited.fix })).includes('The refund is applied twice in the ledger module'), true);
+  // A finding with no file:line far down a long body still reaches the brief.
+  const long = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, `p0=1 p1=0 p2=0\n${'Context line about the change.\n'.repeat(150)}\n### P0 (1)\n- The token is logged in plain text by the export job`)])));
+  t('a P0 with no file:line past 2000 characters of body is in the brief', fixBrief(tk({ fix: long.fix })).includes('The token is logged in plain text by the export job'), true);
+  const huge = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, `p0=1 ${'x'.repeat(25000)}`)])));
+  t('a body past any review\'s length is cut, and the brief says where to read it', [huge?.fix.threads.at(-1).text.endsWith(' …'), fixBrief(tk({ fix: huge.fix })).includes('read it in full with gh pr view 697 --json reviews')].join(), 'true,true');
+  const spentLong = verdictTry(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'feedback' }] }), extRed, extCtx(extPl([bot(HEAD, 'p0=1\n- P0 src/a.ts:1 one')])));
+  t('out of tries, the stuck reason names the body, not its text', /agent-pullbot's review body: P0 src\/a\.ts:1 one; agent-pullbot's review body$/.test(spentLong?.why ?? ''), true);
+}
 t('#737 the try is marked for the outside reviewer', JSON.stringify(ex737?.fix.external), JSON.stringify({ login: 'agent-pullbot', check: '🔐 Review gate' }));
 t('#737 its brief names that reviewer and asks for no desk review', fixBrief(tk({ fix: ex737.fix })).includes("Post no desk review on this PR: agent-pullbot's next review of the head you push is what the check reads."), true);
 t('#737 its task posts no desk review on the new head', /review the new head with desk-review|post that review/.test(fixTask(tk({ fix: ex737.fix }))), false);
@@ -813,6 +861,27 @@ t('#989 beside a thread, each is named for what it is', verdictTry(tk(), extRed,
 t('#989 a feedback try that pushed nothing has spent its try at that head: the person\'s, not requeued at the same number',
   verdictTry(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'feedback', what: ex989.fix.what, at: 'T0' }] }), extRed, body989)?.call, 'stuck');
 t('#989 the brief says a carried finding keeps the outside reviewer\'s check red', fixBrief(tk({ fix: ex989.fix })).includes('carrying a finding, or leaving one for later, does not clear it: fix each finding quoted below, whatever its severity, or park (AUTOPILOT_PARK)'), true);
+// #1249: a clean outside review that lists findings it refuted is no feedback, so no fix try goes.
+const LOCAL_MARKER_1249 = '<!-- desk-review:local -->';
+const refutedBody = ['**Verdict: Approvable** · p0=0 p1=0 p2=0', '', '### Cross-vendor findings refuted (2)',
+  '- P1 src/a.ts:3 drops the row: refuted by codex, the row is kept by the caller', '- P2 src/b.ts:9 unused import: not a finding, it is a type import'].join('\n');
+const ex1249 = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, refutedBody, 'APPROVED')])));
+t('#1249 a clean verdict body listing refuted findings starts no fix try', ex1249?.call === 'requeue', false);
+t('#1249 it is the person\'s, as a red check with nothing to work', /reviewed the head with nothing to work/.test(ex1249?.why ?? ''), true);
+const p2Body = refutedBody.replace('p2=0', 'p2=1') + '\n\n### Findings\n- P2 src/c.ts:4 the retry has no cap';
+t('#1249 the same body counting one P2 still does', verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, p2Body)])))?.call, 'requeue');
+t('#1249 counts all 0 beside a refuted finding are clean', bodyFeedback('p0=0 p1=0 p2=0\n- P1 src/a.ts:3 drops the row (refuted)'), false);
+t('#1249 a verdict marker with every count 0 is clean', bodyFeedback(`${LOCAL_MARKER_1249}\n<!-- desk-review:verdict v=1 sha=${HEAD} p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->\nClean`), false);
+t('#1249 a verdict marker with a count is feedback', bodyFeedback(`${LOCAL_MARKER_1249}\n<!-- desk-review:verdict v=1 sha=${HEAD} p0=0 p1=0 p2=1 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->\n1 P2`), true);
+t('#1249 the §4 clean phrase opening a line, with no counts, is clean', bodyFeedback('No findings. Nothing deferred.', 'no findings'), false);
+t('#1249 counts written out that are not all 0 are feedback', bodyFeedback('p0=0 p1=1 p2=0'), true);
+t('#1249 review text with no finding read and nothing saying clean is feedback, as before', bodyFeedback('Please rename the helper.'), true);
+t('#1249 the clean phrase with an item left after it is no clean statement', bodyFeedback('No findings blocking merge except:\n- something vague', 'no findings'), true);
+t('#1249 nor is the phrase with more after it on its line', bodyFeedback('No findings yet, still reading', 'no findings'), true);
+// With no counts, labels are not read: a body listing findings, refuted or not, is feedback as before.
+t('#1249 findings with no counts are feedback, however labelled', bodyFeedback('- P1 src/a.ts:3 drops the row (refuted)'), true);
+t('#1249 counts that leave a severity unnamed are feedback', bodyFeedback('p1=0 p2=0\n- P0 src/a.ts:3 x'), true);
+t('#1249 counts all 0 decide, whatever the body lists', bodyFeedback('p0=0 p1=0 p2=0\n- P1 src/a.ts:10 race\n  — refuted. The lock at src/a.ts:20 serialises it.'), false);
 t('#737 externalTry is undefined with no external check red', externalTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE }), undefined);
 t('#737 and waits while a check is pending', externalTry(tk(), pr([{ name: 'tests', status: 'in_progress' }, red('🔐 Review gate', '88')]), extCtx(extPl([bot(HEAD, 'P0')]))), null);
 t('DS-422 a red verdict check beside an unclean review at the head is reviewFix\'s, as before', verdictTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE, settled: true }), null);
@@ -1128,6 +1197,17 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-548 AC5 a pre-merge step beside it is the person\'s alone, and the build starts with it', `${a5?.call} | ${a5?.why} | ${a5?.build?.call}`, 'stuck | Check portal schema mirror · apply the PR\'s migrations to staging first | build');
   t('DS-548 AC5 while the build runs, that step alone is stuck', fixCall(tk(), both, bctx({ state: 'running', command: built.command }, steps))?.why, 'Check portal schema mirror · apply the PR\'s migrations to staging first');
   t('DS-548 AC5 negative control: a pre-merge step alone is the person\'s, as today', fixCall(tk(), pr([ok('tests'), red('Check portal schema mirror', '905')]), bctx(null, steps))?.why, 'Check portal schema mirror · apply the PR\'s migrations to staging first');
+  // DS-853: a check an outage holds beside a check build is the pass's, so the build goes its way and
+  // the held check is named as no person's.
+  const outage = new Map([['Deploy preview', { line: 'x', text: 'retry later', prs: [697, 698], runnable: true }]]);
+  const withHeld = pr([ok('tests'), red('Flows image', '903'), red('Deploy preview', '906')]);
+  t('DS-853 beside a held check, a check build not run at its head runs', fixCall(tk(), withHeld, bctx(null, { outage }))?.call, 'build');
+  t('DS-853 beside a held check, a check build running waits', fixCall(tk(), withHeld, bctx({ state: 'running', command: built.command }, { outage }))?.call, 'wait');
+  t('DS-853 beside a held check, a check build that succeeded is re-run', fixCall(tk(), withHeld, bctx(built, { outage }))?.call, 'rebuilt');
+  const heldFailed = fixCall(tk(), withHeld, bctx(failed, { outage }));
+  t('DS-853 beside a held check, a failed build is stuck on itself alone', `${heldFailed?.call} | ${heldFailed?.checks?.map((c) => c.name)}`, 'stuck | Flows image');
+  const heldStep = fixCall(tk(), pr([ok('tests'), red('Flows image', '903'), red('Check portal schema mirror', '905'), red('Deploy preview', '906')]), bctx(null, { ...steps, outage }));
+  t('DS-853 beside a held check and a pre-merge step, only the step is the person\'s, and the build starts', `${heldStep?.call} | ${heldStep?.why} | ${heldStep?.build?.call}`, 'stuck | Check portal schema mirror · apply the PR\'s migrations to staging first | build');
 }
 
 // A requeued fix try's row reads where its worker is: it starts at the stage the try begins at, and
@@ -1139,20 +1219,77 @@ t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as 
   const preview = (n, more = []) => ({ s: { pr: n, checks: [ok('tests'), red('Vercel Preview'), ...more] } });
   const lists = { required: ['tests', 'Vercel Preview', 'Lint'], advisory: [] };
   const many = outageChecks([preview(701), preview(702), preview(703, [red('Lint', '1')]), { s: { pr: 704, checks: [ok('tests'), ok('Vercel Preview')] } }], lists);
-  t('outage: a check red on 3 ready PRs is named with them, one red on fewer is not', JSON.stringify([...many]), '[["Vercel Preview",[701,702,703]]]');
-  t('outage: below the threshold there is none', outageChecks([preview(701), preview(702)], lists).size, 0);
-  t('outage: a workflow job red on as many PRs is not one: their code or the base may be its cause', outageChecks([701, 702, 703].map((n) => ({ s: { pr: n, checks: [ok('tests'), red('Lint', String(n))] } })), lists).size, 0);
-  t('outage: the threshold is 3 PRs', OUTAGE_PRS, 3);
-  const octx = (o = {}) => ctx({ required: lists.required, outage: many, ...o });
+  t('outage: a platform status red on 3 open PRs is named with them, one green is not', JSON.stringify([...many]), '[["Vercel Preview",{"line":"","text":"","prs":[701,702,703]}]]');
+  t('outage: on one PR there is none', outageChecks([preview(701)], lists).size, 0);
+  t('outage: the threshold is 2 PRs', OUTAGE_PRS, 2);
+  // #1250: a review or approval gate is never an outage, however many PRs it holds red.
+  const gates = reviewGates([{ name: '🔐 Review gate', kind: 'external', login: 'agent-pullbot' }, { name: 'Protected', kind: 'approval' }, { name: 'PR title', kind: null }]);
+  t('#1250 the review gates are every state check and desk\'s verdict job', [...gates].join('|'), 'desk-review verdict|🔐 Review gate|Protected|PR title');
+  const waiting = (n) => ({ s: { pr: n, checks: [ok('tests'), { ...red('🔐 Review gate', String(n)), errors: ['No PullBot review from agent-pullbot at abc yet'] }] } });
+  t('#1250 a review gate red on many PRs is no outage', outageChecks([701, 702, 703].map(waiting), { required: ['tests', '🔐 Review gate'], advisory: [], gates }).size, 0);
+  t('#1250 without the gates named it would read as one', outageChecks([701, 702, 703].map(waiting), { required: ['tests', '🔐 Review gate'], advisory: [] }).size, 1);
+  // A workflow job counts by its error line: the same platform line on each PR is one, build output is not.
+  const job = (n, line, o = {}) => ({ s: { pr: n, checks: [ok('tests'), { ...red('Deploy preview', String(900 + n)), errors: [line], ...o }] } });
+  const blocked = (n) => `Error: The project is blocked by the platform (request ${n}a7f3c9e1d2), please retry later`;
+  t('outage: a job red on 2 PRs with one platform line (its request id aside) is one', JSON.stringify(outageChecks([job(701, blocked(1)), job(702, blocked(2))], lists).get('Deploy preview')?.prs), '[701,702]');
+  t('outage: a job red with lines that differ is not one', outageChecks([job(701, 'src/a.ts: Type error: x is not a string'), job(702, 'Lint failed in b')], lists).size, 0);
+  t('outage: a line naming a file is build output, even the same on each PR', outageChecks([job(701, 'src/app.ts:12 Cannot find module x'), job(702, 'src/app.ts:12 Cannot find module x')], lists).size, 0);
+  t('outage: so is one whose annotation points at a file', outageChecks([job(701, 'Cannot find module x', { error_paths: ['src/app.ts'] }), job(702, 'Cannot find module x', { error_paths: ['src/app.ts'] })], lists).size, 0);
+  t('outage: a job with no error line to compare is not one', outageChecks([701, 702, 703].map((n) => ({ s: { pr: n, checks: [ok('tests'), red('Lint', String(n))] } })), lists).size, 0);
+  t('outage: a PR red with another line is left out of it', JSON.stringify(outageChecks([job(701, blocked(1)), job(702, blocked(2)), job(703, 'tests failed: 3 of 40')], lists).get('Deploy preview')?.prs), '[701,702]');
+  t('outage: so is a compiler\'s file(line,col), though only its numbers differ', outageChecks([job(701, 'src/app.ts(10,5): error TS2554: Expected 2 arguments, but got 1.'), job(702, 'src/app.ts(40,3): error TS2554: Expected 3 arguments, but got 2.')], lists).size, 0);
+  t('outage: an annotation filed under .github names no file, so it can be one', JSON.stringify(outageChecks([job(701, blocked(1), { error_paths: ['.github'] }), job(702, blocked(2), { error_paths: ['.github'] })], lists).get('Deploy preview')?.prs), '[701,702]');
+  t('outage: a UUID request id does not split one line', outageLine('Blocked (request 3f2a1b4c-b222-4e5f-9a0b-0123456789ab)'), outageLine('Blocked (request 7e8d9c0b-c222-4f1e-8d2c-ba9876543210)'));
+  t('outage: the line drops ids, numbers and URLs', outageLine('Build 4812 failed: see https://x.dev/r/9 (id 0a1b2c3d4e) in 3s'), 'build <n> failed: see <url> (id <sha>) in #s');
+  t('outage: a description is a platform status\'s line', outageText({ name: 'Vercel', conclusion: 'failure', runId: null, description: 'Deployment has failed' }), 'Deployment has failed');
+  const octx = (o = {}) => ctx({ required: lists.required, outage: new Map([...many].map(([k, v]) => [k, { ...v, runnable: false }])), ...o });
   const held = fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx());
   t('outage: a PR red only on it is held, with no fix try', `${held?.call} ${held?.label}`, 'held OUTAGE');
   t('outage: its reason names the other PRs and the step that clears it', held?.why,
-    '"Vercel Preview" is red on 3 ready PRs at once (this one and #702, #703), which reads as its platform failing, not this PR\'s code, so no fix try is spent on it. Nothing desk reruns turns it green: once the platform is back, redeploy there or push to the PR, and it goes on as before once it passes or fewer PRs are red on it');
+    '"Vercel Preview" ("") is red with the same error on 3 open PRs at once (this one and #702, #703), which reads as its platform failing, not this PR\'s code, so no fix try is spent on it. No Actions run reports it, so nothing desk re-runs turns it green: once the platform is back, redeploy there or push to the PR, and it goes on as before once it passes or fewer PRs are red on it');
+  const runCtx = ctx({ required: lists.required, outage: new Map([['Deploy preview', { line: 'x', text: 'retry later', prs: [701, 702], runnable: true }]]) });
+  t('outage: a job it holds says the pass re-runs it', /re-runs it on one PR at a time, further apart each time/.test(fixCall(tk(), pr([ok('tests'), red('Deploy preview', '9')], { pr: 701 }), runCtx)?.why ?? ''), true);
+  t('outage: a PR the hold does not cover gets its fix try', fixCall(tk(), pr([ok('tests'), red('Deploy preview', '9')], { pr: 705 }), runCtx)?.call, 'requeue');
+  const baseRed = { atMergeBase: () => 'fail', mergeBase: () => 'm'.repeat(40), latestOnBase: () => 'fail' };
+  t('outage: a check red on the base too stays base red', fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx({ baseRead: baseRed }))?.class, 'base red');
+  const draftHeld = draftChecksFix(tk(), { pr: 701, head: 'a'.repeat(40), failing: [{ name: 'Vercel Preview', runId: null }], checks: [ok('tests'), red('Vercel Preview')] }, octx());
+  t('outage: a draft red only on it is held too, with no fix try', `${draftHeld?.call} ${draftHeld?.label}`, 'held OUTAGE');
   t('outage: held with tries left before any rerun, which the driver never makes for it', fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx({ reruns: () => 0, cooledDown: false }))?.label, 'OUTAGE');
-  t('outage: beside a check a person clears, that check keeps its route, not held', fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Flows image missing')], { pr: 701 }), octx({ required: [...lists.required, 'Flows image missing'] }))?.call !== 'held', true);
+  const personBeside = fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Flows image missing')], { pr: 701 }), octx({ required: [...lists.required, 'Flows image missing'] }));
+  t('outage: beside a check a person clears, the PR goes that check\'s way, with no try on the held one', JSON.stringify([personBeside?.call, personBeside?.fix ?? null, /Flows image missing/.test(personBeside?.why ?? '')]), '["stuck",null,true]');
+  const draftPerson = draftChecksFix(tk(), { pr: 701, head: 'a'.repeat(40), failing: [{ name: 'Vercel Preview', runId: null }, { name: 'Flows image missing', runId: null }], checks: [ok('tests'), red('Vercel Preview'), red('Flows image missing')] }, octx({ required: [...lists.required, 'Flows image missing'] }));
+  t('outage: so does a draft', JSON.stringify([draftPerson?.call, draftPerson?.fix ?? null]), '["stuck",null]');
   t('outage: with no try left it is held too, not the person\'s', fixCall(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'checks' }, { try: 2, head: 'c'.repeat(40), kind: 'checks' }] }), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx())?.call, 'held');
-  t('outage: a PR red on another check too still gets its fix try', fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Lint', '1')], { pr: 703 }), octx())?.call, 'requeue');
+  const beside = fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Lint', '1')], { pr: 703 }), octx());
+  t('outage: a PR red on another check too still gets its fix try, for that check alone', JSON.stringify([beside?.call, beside?.fix?.checks?.map((c) => c.name), beside?.fix?.not_mine?.map((c) => c.name)]), '["requeue",["Lint"],["Vercel Preview"]]');
+  const draftBeside = draftChecksFix(tk(), { pr: 703, head: 'a'.repeat(40), failing: [{ name: 'Vercel Preview', runId: null }, { name: 'Lint', runId: '1' }], checks: [ok('tests'), red('Vercel Preview'), red('Lint', '1')] }, octx());
+  t('outage: so does a draft', JSON.stringify([draftBeside?.call, draftBeside?.fix?.checks?.map((c) => c.name), draftBeside?.fix?.not_mine?.map((c) => c.name)]), '["requeue",["Lint"],["Vercel Preview"]]');
   t('outage: with none, the same PR gets its fix try as before', fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), ctx({ required: lists.required }))?.call, 'requeue');
+  // DS-853 fix try 2: a held check is the pass's, so a stuck record never keeps it.
+  const spentTk = tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'checks' }, { try: 2, head: 'c'.repeat(40), kind: 'checks' }] });
+  const stuckBeside = fixCall(spentTk, pr([ok('tests'), red('Vercel Preview'), red('Lint', '1')], { pr: 703 }), octx());
+  t('outage: with no try left beside a real red check, the stuck record names the real one alone', JSON.stringify([stuckBeside?.call, stuckBeside?.checks?.map((c) => c.name), /Vercel Preview/.test(stuckBeside?.why ?? '')]), '["stuck",["Lint"],false]');
+  const draftStuck = draftChecksFix(spentTk, { pr: 703, head: 'a'.repeat(40), failing: [{ name: 'Vercel Preview', runId: null }, { name: 'Lint', runId: '1' }], checks: [ok('tests'), red('Vercel Preview'), red('Lint', '1')] }, octx());
+  t('outage: so does a draft\'s', JSON.stringify([draftStuck?.call, draftStuck?.checks?.map((c) => c.name)]), '["stuck",["Lint"]]');
+  const heldMap = new Map([['Vercel Preview', { prs: [701, 703] }]]);
+  const rec = { why: 'x', pr: 703, head: 'a', lead: 'still red after 2 tries', checks: [{ name: 'Lint' }, { name: 'Vercel Preview' }] };
+  t('stuckLessHeld: a record naming a held check drops it', JSON.stringify(stuckLessHeld(rec, 703, heldMap)), JSON.stringify({ ...rec, checks: [{ name: 'Lint' }], why: 'still red after 2 tries: Lint' }));
+  t('stuckLessHeld: none left is null', stuckLessHeld({ ...rec, checks: [rec.checks[1]] }, 703, heldMap), null);
+  t('stuckLessHeld: one the hold does not cover on this PR is unchanged', stuckLessHeld(rec, 705, heldMap), undefined);
+  t('stuckLessHeld: a record with no checks (a conflict, a review) is unchanged', stuckLessHeld({ why: 'still in conflict' }, 703, heldMap), undefined);
+  t('stuckLessHeld: with no outage it is unchanged', stuckLessHeld(rec, 703, null), undefined);
+  t('stuckLessHeld: a check a person clears (its own command) stays, though red with the outage line', stuckLessHeld({ ...rec, checks: [{ name: 'Vercel Preview', command: 'redeploy it: deploy.sh' }] }, 703, heldMap), undefined);
+  t('stuckLessHeld: so does a §4 Check builds check, which the pass builds', stuckLessHeld({ ...rec, checks: [{ name: 'Vercel Preview' }] }, 703, heldMap, { builds: ['Vercel Preview'] }), undefined);
+  t('stuckLessHeld: held on the outage alone, an entry from another route (red on the base before) goes too', stuckLessHeld({ ...rec, checks: [{ name: 'Vercel Preview', command: 'red on main too' }] }, 703, heldMap, { whole: true }), null);
+  // DS-853 fix try 3: held as an outage with one of its checks still red on the base, that check's
+  // stuck entry stands; the others' go.
+  const twoHeld = new Map([['Vercel Preview', { line: '', text: '', prs: [701, 702], runnable: false }], ['Deploy preview', { line: 'x', text: 'retry later', prs: [701, 702], runnable: true }]]);
+  const someOnBase = { atMergeBase: (n) => (n === 'Deploy preview' ? 'fail' : 'pass'), mergeBase: () => 'm'.repeat(40), latestOnBase: () => 'pass' };
+  const partBase = fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Deploy preview', '9')], { pr: 701 }), ctx({ required: [...lists.required, 'Deploy preview'], outage: twoHeld, baseRead: someOnBase }));
+  t('outage: some held checks red on the base too: still held OUTAGE, naming those', JSON.stringify([partBase?.call, partBase?.label, partBase?.base_red_checks]), '["held","OUTAGE",["Deploy preview"]]');
+  const both = { ...rec, pr: 701, checks: [{ name: 'Vercel Preview', command: 'red on main too' }, { name: 'Deploy preview', command: 'red on main too' }] };
+  t('stuckLessHeld: whole, an entry for a check still red on the base stays', JSON.stringify(stuckLessHeld(both, 701, twoHeld, { whole: true, onBase: partBase?.base_red_checks ?? [] })?.checks), JSON.stringify([{ name: 'Deploy preview', command: 'red on main too' }]));
+  t('stuckLessHeld: whole, with every one still red on the base, the record is unchanged', stuckLessHeld(both, 701, twoHeld, { whole: true, onBase: ['Vercel Preview', 'Deploy preview'] }), undefined);
 }
 
 process.exit(fails ? 1 : 0);

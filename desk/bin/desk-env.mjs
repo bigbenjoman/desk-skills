@@ -477,8 +477,7 @@ export function machineProfile() {
 }
 // A profile value by key (hardware or sizing), or null.
 export function machineValue(key) {
-  const p = machineProfile();
-  const v = p?.sizing[key]?.value ?? p?.hardware[key]?.value;
+  const v = M.profileValue(machineProfile(), key);
   return unset(v) ? null : v;
 }
 export const machineWhy = (key) => machineProfile()?.sizing[key]?.why || null;
@@ -1331,7 +1330,7 @@ export const baseRedKey = (branch, since = null) => {
   return `base-red-${slug.slice(0, 100 - 'base-red-'.length - h.length - spell.length - 2)}-${h}-${spell}`;
 };
 // Whether `k` is a repair key baseRedKey gives for `branch`, any spell's.
-const isBaseRedKey = (k, branch) => {
+export const isBaseRedKey = (k, branch) => {
   if (k === baseRedKey(branch)) return true;
   const m = /-(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(k);
   return !!m && k === baseRedKey(branch, `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`);
@@ -2981,6 +2980,8 @@ if (isMain) {
             const ovr = M.isOverride(profile?.sizing[s.key]) ? ', an override that write keeps' : '';
             console.log(`${s.key.padEnd(27)} ${s.value.padEnd(8)} ${s.why}${was != null && (was !== s.value || ovr) ? `  (profile: ${was}${ovr})` : ''}`);
           }
+          // Warned on what a write would keep: the proposal with the profile's overrides in it.
+          for (const w of M.sizingWarnings(M.rewrittenSizing(profile, proposal), hw)) console.log(`\nwarning: ${w}`);
           break;
         }
         // write: overwrites; /desk-setup runs it only after the user confirms the proposal. Overrides

@@ -15,6 +15,9 @@ const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; cons
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-q.mjs');
 const NOW = Date.now();
 const minsAgo = (m) => new Date(NOW - m * 60000).toISOString();
+// The same, from the clock now: for a fixture read by something that takes no `now` (a desk-q run, or a
+// call reading Date.now()), so a slow runner minutes past NOW does not age it by those minutes.
+const clockAgo = (m) => new Date(Date.now() - m * 60000).toISOString();
 // A time check a slow runner does not fail: the work timed takes at most QUICK_TIMES what the same work
 // takes on a small world, timed just before it on the same runner, and need never beat QUICK_FLOOR_MS.
 // Walking a dense batch it should skip is tens of times slower than that, so it still fails.
@@ -1869,6 +1872,9 @@ drv991('rdys', 5490, { 'RS-1': pr991(62) }, { idle: null, driver: stop991(143, i
 drv991('rdyi', 5500, { 'RI-1': pr991(63) }, { idle: null, driver: stop991(null, info991) }, `${info991}\n`);
 // The repo's one driver, started for another batch after this one went idle, keeps its record here.
 drv991('idlr', 5510, { 'IR-1': pr991(64) }, { idle: 'fp', idle_at: minsAgo(30), driver: stop991(1, 'FAIL: gh is signed out') }, 'FAIL: gh is signed out\nmerge driver exited 1\n');
+// A 28-character repo name, its driver stopped 143: its note's tag nearly fills a narrow terminal.
+const long996 = 'narrow-terminal-repo-name-28';
+drv991(long996, 5520, { 'NT-1': pr991(65) }, { idle: null, driver: stop991(143, info991) }, `${info991}\nmerge driver exited 143\n`);
 put219('old', 5380, { tickets: { 'OL-1': run215 } });
 state219('old', 'supervisor.json', JSON.stringify({ code: { installed: 'new1', supervisor: { version: 'old1', old_code: true }, driver: null } }));
 // Each of these has a last code record that disagrees with what runs now.
@@ -1894,7 +1900,7 @@ writeFileSync(join(I.T, 'bin', 'print-com.desk-skills.supervisor.acme__cant'), '
 put219('land', 5400, { pass: { at: minsAgo(1), by: 'supervisor', held: null, errors: 0, progress_at: minsAgo(300) }, tickets: {
   'LD-1': { state: 'done', result: { pr: 50 }, pr_status: { pr: 50, state: 'OPEN', checks: [] } }, 'LD-2': { state: 'done', result: { pr: 51 }, pr_status: { pr: 51, state: 'MERGED' } } } });
 put219('wait', 5410, { supervised: false, tickets: { 'WA-1': { state: 'parked', park: { question: 'which copy?', since: minsAgo(130) } }, 'WA-2': { state: 'parked', park: { question: 'which price?', since: minsAgo(20) } } } });
-const loaded219 = ['sup', 'halt', 'both', 'alone', 'drv', 'drv2', 'drv3', 'old', 'cant', 'land', 'reloaded', 'unreloaded', 'drvold', 'drvnew', 'idlb', 'rdyf', 'rdys', 'rdyi', 'idlr'];
+const loaded219 = ['sup', 'halt', 'both', 'alone', 'drv', 'drv2', 'drv3', 'old', 'cant', 'land', 'reloaded', 'unreloaded', 'drvold', 'drvnew', 'idlb', 'rdyf', 'rdys', 'rdyi', 'idlr', long996];
 I.loaded(...loaded219);
 // What install.sh leaves: the installed commit, and each agent it reloaded loaded at that commit.
 writeFileSync(join(I.env.DESK_HOME, 'installed.json'), JSON.stringify({ commit: 'new1' }));
@@ -1932,6 +1938,18 @@ t('DS-991 a driver gone with no failure line and no exit code: the note says so,
   driverNotes991('rdyi'), 'the merge driver stopped at HH:MM (no exit code logged) and logged no failure.');
 t('DS-991 an idle batch whose record holds the repo driver started since it went idle: its failure is still shown',
   driverNotes991('idlr'), 'the merge driver stopped at HH:MM: gh is signed out. Run gh auth login.');
+// Home's notes at each width: the block from the first "note" line to the blank line after it.
+const notes996 = (width) => {
+  const ls = lines(Q.overview(Q.loadRepos(NOW).filter((r) => r.name === long996), { now: NOW, avail: 30, width }));
+  const at = ls.findIndex((l) => l.startsWith('note '));
+  const end = ls.indexOf('', at);
+  return at < 0 ? [] : ls.slice(at, end < 0 ? ls.length : end);
+};
+const widths996 = Array.from({ length: 161 }, (_, i) => 200 - i);
+t('DS-996 AC1 a note under a 28-character repo name at 40 columns: every note line ends within 40 columns, and it names the driver',
+  `${notes996(40).filter((l) => l.length > 40).length} ${notes996(40).join(' ').includes('merge driver')}`, '0 true');
+t('DS-996 AC2 the same note from 200 columns down to 40: no line runs past the width, and "exit 143" shows whole',
+  widths996.filter((w) => { const ns = notes996(w); return ns.some((l) => l.length > w) || !/\(exit 143\)/.test(ns.join(' ').replace(/ +/g, ' ')); }).join(' '), '');
 // old and unreloaded both run old code, so their notes fold into one.
 t('DS-219 AC5 a supervisor on old desk code: one note to run ./install.sh in desk-skills',
   `${notesOf('old').length} ${notesOf('desk code').join(' / ')}`, '0 the supervisors of old and unreloaded run old desk code. Run ./install.sh in desk-skills.');
@@ -1970,7 +1988,10 @@ const s310 = named310(join(W310.env.HOME, '.desk-autopilot'));
 mkdirSync(dirname(q310), { recursive: true });
 mkdirSync(join(s310, 'orchestrators'), { recursive: true });
 writeFileSync(q310, JSON.stringify({ version: 1, batch: 'x1', base: 'feat/x', concurrency: 2, tickets: { 'X-2': { key: 'X-2', state: 'running', stage: '3/9' }, 'X-3': { key: 'X-3', state: 'parked', park: { question: 'which copy?' } } } }));
-writeFileSync(join(s310, 'orchestrators', 'q.json'), JSON.stringify({ queue: q310, batch: 'x1', pid: 1, at: minsAgo(3) }));
+writeFileSync(join(s310, 'orchestrators', 'q.json'), JSON.stringify({ queue: q310, batch: 'x1', pid: 1, at: clockAgo(3) }));
+// The standing batch's pass a minute before this run, not before the suite began.
+const slug310 = join(W310.env.HOME, '.desk-autopilot', 'acme__desk-skills');
+writeFileSync(join(slug310, 'orchestrators', 'q.json'), JSON.stringify({ queue: join(W310.env.DESK_HOME, 'repos', 'acme__desk-skills', 'queue.json'), batch: 'ds', pid: 1, at: clockAgo(1) }));
 const ov310 = W310.run('--plain').out;
 t('DS-310 AC4 with only a standing batch, its row shows its cap as its own', /\s\d+ of 2 · cap 3$/.test(rowOf(ov310a, 'desk-skills') ?? ''), true);
 t('DS-357 AC1 AC2 one desk-skills row, named with the repo only, its counts added up, the latest pass and the workers within the cap',
@@ -2207,7 +2228,9 @@ t('DS-435 AC1 a PR in conflict whose tries all went on a check still has its own
   '#924 · merge conflict with main · the next pass sends it to a worker, try 1 of 2');
 t('DS-420 AC4 a PR the driver stopped rerunning says it is red after that many reruns',
   need420(red420(924, {}, { reruns: { Lint: 2, 'Backend tests': 2, 'CI gate': 2 } })), '#924 · red after 2 reruns: Lint +2 · a worker repairs it next');
-t('DS-420 AC5 a PR being merged with no decline reads as merging', `${Q.prWhy(r280, ds280['M-4'])} | ${need420(ds280['M-4'])}`, 'null | #904 · check 1 running, 30m · 2 of 3 done');
+// needText reads the clock, so its running check started 30 minutes before this call.
+const m420 = { ...ds280['M-4'], pr_status: { ...ds280['M-4'].pr_status, checks: ds280['M-4'].pr_status.checks.map((c, i) => (i ? c : { ...c, started: clockAgo(30) })) } };
+t('DS-420 AC5 a PR being merged with no decline reads as merging', `${Q.prWhy(r280, m420)} | ${need420(m420)}`, 'null | #904 · check 1 running, 30m · 2 of 3 done');
 const q420 = { tickets: { B: { key: 'B', ...red420(921, { merge_blocked: thread420 }) }, W: { key: 'W', ...heldBy('B') } } };
 t('DS-420 AC6 a ticket waiting behind a declined PR gives the PR\'s reason, not its failed-check count',
   Q.holdOf(q420, q420.tickets.W, r280.ctx).text, 'behind #921: 1 unresolved thread on a red PR, first src/a.ts:3 "P0 drops the row"');

@@ -426,13 +426,36 @@ export function parseOperatorChecks(items) {
 }
 
 // §4 Live reads items: `<name>: <command>`, as parseOperatorChecks reads them, where the name is a file
-// name too, so it holds no path. -> { reads: [{ name, command }], errors: [item] }. live-read.mjs
+// name too, so it holds no path. A paid call carries both its £ caps after the name, as
+// `<name> [£0.10/call, £2/day]: <command>`; a bracket without both, or a name given twice in any case,
+// is refused. -> { reads: [{ name,
+// command, caps: { call, day } in pounds, or null for a free read }], errors: [item] }. live-read.mjs
 // re-exports it.
 const LIVE_READ_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const POUNDS = String.raw`£(\d+(?:\.\d+)?)`;
+const LIVE_READ_CAPS = new RegExp(String.raw`^${POUNDS}\s*/\s*call\s*,\s*${POUNDS}\s*/\s*day$`, 'i');
+export const LIVE_READ_FORMS = '`<name>: <command>`, or for a paid call `<name> [£0.10/call, £2/day]: <command>`';
 export function parseLiveReads(items) {
   const { checks, errors } = parseOperatorChecks(items);
-  const bad = checks.filter((c) => !LIVE_READ_NAME.test(c.name));
-  return { reads: checks.filter((c) => LIVE_READ_NAME.test(c.name)), errors: [...errors, ...bad.map((c) => `\`${c.name}: ${c.command}\` (a name holds only letters, digits, . _ and -)`)] };
+  const reads = [];
+  for (const c of checks) {
+    const item = `\`${c.name}: ${c.command}\``;
+    const m = /^([^\s[]+)\s*\[(.*)\]$/.exec(c.name);
+    const name = m ? m[1] : c.name;
+    if (!LIVE_READ_NAME.test(name)) { errors.push(`${item} (a name holds only letters, digits, . _ and -)`); continue; }
+    // A park names an entry whatever its case, so two entries of one name would both run on it.
+    if (reads.some((r) => r.name.toLowerCase() === name.toLowerCase())) { errors.push(`${item} (another entry is already named ${name})`); continue; }
+    if (!m) {
+      if (c.name.includes('[')) errors.push(`${item} (a paid call's caps are written \`<name> [£0.10/call, £2/day]\`)`);
+      else reads.push({ name, command: c.command, caps: null });
+      continue;
+    }
+    const caps = LIVE_READ_CAPS.exec(m[2].trim());
+    const call = caps ? Number(caps[1]) : 0, day = caps ? Number(caps[2]) : 0;
+    if (!caps || !(call > 0) || !(day > 0)) { errors.push(`${item} (a paid call takes both caps, each over £0, as \`${name} [£0.10/call, £2/day]\`)`); continue; }
+    reads.push({ name, command: c.command, caps: { call, day } });
+  }
+  return { reads, errors };
 }
 
 // §4 Merge holds items: `<glob>: <why>`, split on the first `: `. A bare glob holds with no reason given.
@@ -507,7 +530,7 @@ export const TYPES = Object.freeze({
   'flaky-check': itemsOf(parseFlaky, 'flaky', '`<check>: <glob> [<glob>…]` or `<check>: <file> > <test>`'),
   'state-check': itemsOf(parseStateChecks, 'checks', `\`<check>\`, \`<check>: ${STATE_KINDS.join('|')}\` or \`<check>: external <login>\``),
   'operator-check': itemsOf(parseOperatorChecks, 'checks', '`<check>: <what fixes it>`'),
-  'live-read': itemsOf(parseLiveReads, 'reads', '`<name>: <command>`, a name of letters, digits, . _ and -'),
+  'live-read': itemsOf(parseLiveReads, 'reads', `${LIVE_READ_FORMS}, a name of letters, digits, . _ and -`),
   'merge-hold': matching('`<glob>[#<key>]: <why>[; desk runs: <command>]`', (s) => parseHolds([s]).length > 0, (s) => parseHolds([s])[0]),
   'gate-reviewers': cell({ parse(items) { const r = gateReviewersOf(items); return r.bad.length ? fail(`"${items.join(' | ')}" is not one GitHub login per span, \`any\` or \`none\``, true) : ok(r.logins); } }),
 });

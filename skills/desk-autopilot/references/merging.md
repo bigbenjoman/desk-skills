@@ -135,11 +135,23 @@ with those lines in its brief, once per PR and outside the two tries (`extra` in
 the stuck reason quotes the line. A check
 §4 Checks workers can't fix names is never a worker's. A PR red only on such a check is stuck with
 `<check> · <what fixes it>`. A PR red on one beside a fixable check is requeued for the fixable one,
-and its briefing says the other is not the worker's to fix. A required check that no GitHub Actions
-run of the repo reports (a deploy or preview service's status), red on three or more ready PRs at
-once, reads as that platform failing: the pass says so once, and a PR red only on it is held
-(`OUTAGE`) with no fix try or stuck answer, naming the step: once the platform is back, redeploy
-there or push to the PR. A PR also red on another kind of check keeps that check's route. desk-q shows each ticket's try and
+and its briefing says the other is not the worker's to fix. A check red on two or more open PRs
+(draft or ready) whose runs have completed, all with the same error line once ids and numbers are
+taken out, and a line that names no file, reads as its deploy or preview platform failing, not their
+code (a platform's own status with no Actions run counts by its description), unless another open PR
+passes it. The pass holds it
+batch-wide, kept in the batch's state folder from pass to pass and recorded once on the batch's
+queue as `platform_outage`: one `OUTAGE` line under `WAITING ON YOU` names the check and
+the error line, and each PR red only on it is held with no fix try or stuck answer. The pass re-runs
+it on one PR whose run has completed, the driver's 12-minute rerun gap after the hold begins, doubling
+after each re-run that stays red up to 30 minutes. Still held 2 hours after it began, it is
+escalated to you once, with a `PLATFORM OUTAGE` line saying how long it has lasted. Once any open PR
+passes it, the hold and the record clear and the other PRs' runs are re-run. A re-run it cannot make yet (the PR's run still going, or the
+preview build taken) is kept as owed, made by a later pass even after the PR that passed has merged,
+and the PR gets no fix try until it is made. A check an outage holds never goes into a PR's stuck
+answer. A check with no Actions run is never re-run: once the platform is
+back, redeploy there or push to the PRs. A check red on the base too stays base red. A PR also red on
+another kind of check keeps that check's route. desk-q shows each ticket's try and
 what it is fixing. Usage pacing never holds a fix try: while 7-day usage is ahead of pace, new
 tickets wait and fix tries still start, within the batch's worker count.
 

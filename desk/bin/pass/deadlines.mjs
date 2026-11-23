@@ -34,6 +34,7 @@ import { set, say } from './shared.mjs';
 import { toHandoff } from './eligibility.mjs';
 import { prStatusOf } from '../batch-state.mjs';
 import { UNKNOWN_LIMIT_MS, unknownSpell, freshMergeRef } from '../undraft.mjs';
+import { mergeWords } from '../base-red.mjs';
 
 const MIN = 60 * 1000;
 // How long each wait may last before it escalates, and where to: the person, or a requeue. A PR with no
@@ -119,6 +120,35 @@ export function nextWaits(t, at) {
   }
   return { waits: next, lines };
 }
+
+// The red base under a batch (pass/base-gate.mjs decideBaseRed) is a wait of the batch's, kept as the
+// queue's `base_red`, with its deadline BASE_RED_MS after it began. -> { rec, line }: past its deadline
+// it is escalated to the person once (`escalated`, kept on the record), and its WAITING ON YOU line is
+// said while it stays red, as a ticket's escalated wait's is, led by the branch and its class so the
+// decider keys it as one item while its minutes grow (decider.mjs waitKey). Before it, line is null.
+export const BASE_RED_MS = 60 * MIN;
+// A batch wait's record past its deadline, escalated once: { rec, line }, `line` from lineOf(rec, mins
+// it has lasted, its deadline's minutes), or null before the deadline.
+function batchWait(rec, at, lineOf) {
+  if (!rec.escalated && Date.parse(at) < Date.parse(rec.deadline)) return { rec, line: null };
+  const w = rec.escalated ? rec : { ...rec, escalated: at };
+  return { rec: w, line: lineOf(w, minsSince(w.since, at), minsSince(w.since, w.deadline)) };
+}
+export const baseRedWait = (rec, at) => batchWait(rec, at, (w, mins, limit) =>
+  `${w.branch}: RED BASE — it has been red for ${mins} minutes, since ${w.since}, past its ${limit}-minute deadline: ` +
+  `${w.check} still fails there, so the merge driver merges nothing into it. The last merges desk made: ${mergeWords(w)}`);
+
+// A platform outage (pass/fix-tries.mjs decideOutage) is a wait of the batch's too, kept as the queue's
+// `platform_outage`, with its deadline OUTAGE_MS after it began, and the outage hold's re-run back-off
+// in between. -> { rec, line }, as baseRedWait: escalated to the person once past its deadline, its line
+// said while it lasts, led by the base and its class so the decider keys it as one item. `runnable`:
+// an Actions run reports a held check, so the pass re-runs it; otherwise nothing desk re-runs turns it green.
+export const OUTAGE_MS = 120 * MIN;
+export const outageWait = (rec, at, base, { runnable = true } = {}) => batchWait(rec, at, (w, mins, limit) =>
+  `${base}: PLATFORM OUTAGE — ${w.check} has been red on every open PR with a run of it for ${mins} minutes, since ${w.since}, ` +
+  `past its ${limit}-minute deadline: no fix try is spent on it${runnable
+    ? ' and the pass keeps re-running it, so check the deploy platform\'s status, and once it is back redeploy or re-run it on one PR'
+    : ', and no Actions run reports it, so nothing desk re-runs turns it green: check the deploy platform\'s status, and once it is back redeploy there or push to the PRs'}`);
 
 export function decideDeadlines(snap) {
   const actions = [];

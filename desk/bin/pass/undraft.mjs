@@ -146,6 +146,8 @@ export function* decideRenames(snap) {
 //   failureClass  whether the failure-class lever is on, or (t) -> that for ticket t (its lever pin)
 //   gatedByReviewer(s)   whether a failing reviewer check holds the PR red only on its review gate
 //   reviewerMismatch     whether the reviewer check fails only because its gate counts another account
+//   outage        the outage step's held checks (pass/fix-tries.mjs decideOutage), or null
+//   outageRerun   the PRs that step re-ran as a hold cleared: each waits for that run, with no fix try
 //   reads         the readers undraftCall and the fix tries call as they need them (pass.mjs's):
 //                 untriggered, runOf, fault, stale (undraftCall's), baseMoves(t, head) -> { carry,
 //                 scope, baseMerge, behind }, driver(n, head) (the merge driver's rerun record),
@@ -225,8 +227,11 @@ export function* decideUndraft(snap) {
     if (hold || gated) rf = null;
     else if (gateFix) rf = gateFix;
     else if (c.call === 'findings') rf = reviewFix(t, { pr: n, head, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement, outside: () => reads.outside?.(n, head, t.key) ?? null, title: () => reads.title?.(t.key) ?? null });
+    // A draft the outage step re-ran this pass, its hold cleared, waits for that run, as a ready PR does.
+    else if (c.call === 'checks' && snap.outageRerun?.includes(n)) rf = null;
     else if (c.call === 'checks' && !snap.fixRowErrors.length) {
-      const ctx = { repo: snap.repo, base: snap.base, ...snap.clearsRows, stateChecks: cfg.stateChecks, builds: [], ...reads.baseReads(head) };
+      // A check the outage step holds (pass/fix-tries.mjs decideOutage) is held here too, with no fix try.
+      const ctx = { repo: snap.repo, base: snap.base, ...snap.clearsRows, stateChecks: cfg.stateChecks, builds: [], ...reads.baseReads(head), ...(snap.outage?.size ? { outage: snap.outage } : {}) };
       const driver = reads.driver(n, head);
       const changed = yield { type: 'pr-files', key: t.key, pr: n, head };
       rf = draftChecksFix(t, { pr: n, head, failing: [...c.failing, ...(c.state ?? [])], checks: s.checks }, { ...ctx, classRerun: { perm: cfg.rerun, ...driver, classes: typeof snap.failureClass === 'function' ? snap.failureClass(t) : snap.failureClass, changed } });

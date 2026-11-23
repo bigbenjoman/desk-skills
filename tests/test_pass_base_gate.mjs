@@ -1,7 +1,8 @@
 // suite: pass phase: the base gate (the decision, run through the generator runner)
 // layer: L1
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
-import { decideBaseGate, sliceLabel } from '../desk/bin/pass/base-gate.mjs';
+import { decideBaseGate, decideBaseRed, sliceLabel } from '../desk/bin/pass/base-gate.mjs';
+import { batchLine } from '../desk/bin/base-red.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -182,6 +183,54 @@ t('sliceLabel says no slice as null', sliceLabel(undefined), null);
   ].map(types));
   t('AC4 the decision returns its actions', j(out?.map((x) => x.includes('pending') && x.length > 1)), '[true,true,true]');
   t('AC4 and starts no process and writes no file on the way', j([threw, calls]), '[null,[]]');
+}
+
+// DS-903: the red base as the batch's record (decideBaseRed), from the merge driver's record of fixture
+// check runs: its one line said once, escalated once past its deadline, and cleared once it is green.
+{
+  const SINCE = '2026-11-18T11:30:00.000Z';
+  const minsOn = (m) => new Date(Date.parse(SINCE) + m * 60000).toISOString();
+  const red = { branch: 'main', sha: HEAD, checks: [{ name: 'tests', sha: HEAD, url: 'https://github.com/o/r/actions/runs/77' }],
+    merges: [{ pr: 802, ticket: 'T-2', sha: MOVED, at: SINCE }, { pr: 801, ticket: 'T-1', sha: HEAD, at: SINCE }], repair_key: 'main-red', since: SINCE, at: SINCE };
+  const held = ['#811 (T-11)', '#812 (T-12)', '#813 (T-13)', '#814 (T-14)'];
+  const line = batchLine(red, { held, repair: { key: 'main-red', state: 'admitted to start as a slot frees' } });
+  const decide = (fields) => decideBaseRed({ recorded: null, red, known: true, line, at: minsOn(5), dry: false, ...fields });
+  const recordOf = (as) => JSON.parse(batchWrites(as).find((f) => f.startsWith('base_red='))?.slice('base_red='.length) ?? 'null');
+  const notices = (as) => as.filter((a) => a.type === 'notice').map((a) => a.line);
+
+  const first = decide();
+  t('AC1 a red base first read is one notice for the batch', notices(first).length, 1);
+  t('AC1 naming the check and the two merges desk made', /"tests" \(run https:\/\/github\.com\/o\/r\/actions\/runs\/77\) failed/.test(notices(first)[0]) && notices(first)[0].includes('#802 (T-2), #801 (T-1)'), true);
+  t('AC1 and the four PRs it holds on that one line, with no line of their own', `${held.every((h) => notices(first)[0].includes(h))} ${lines(first, 'report').length}`, 'true 0');
+  const rec = recordOf(first);
+  t('AC1 the batch records it once, with its start and a 60-minute deadline', j(rec), j({ branch: 'main', check: 'tests', since: SINCE, deadline: minsOn(60), merges: [{ pr: 802, ticket: 'T-2' }, { pr: 801, ticket: 'T-1' }] }));
+
+  const again = decide({ recorded: rec, at: minsOn(20) });
+  t('AC2 the next pass with the base still red sends no second notice, and writes nothing', j(again), '[]');
+  const newSpell = decide({ recorded: rec, red: { ...red, since: minsOn(90) }, at: minsOn(95) });
+  t('AC2 a new red spell is a new record and notice', `${notices(newSpell).length} ${recordOf(newSpell)?.since}`, `1 ${minsOn(90)}`);
+
+  const late = decide({ recorded: rec, at: minsOn(75) });
+  const esc = recordOf(late);
+  t('AC3 past its deadline it is escalated to the person once, with how long it has lasted',
+    j([notices(late).length, lines(late, 'report')]), j([0, ['main: RED BASE — it has been red for 75 minutes, since 2026-11-18T11:30:00.000Z, past its 60-minute deadline: tests still fails there, so the merge driver merges nothing into it. The last merges desk made: #802 (T-2), #801 (T-1)']]));
+  t('AC3 and the escalation is recorded', esc?.escalated, minsOn(75));
+  const later = decide({ recorded: esc, at: minsOn(80) });
+  t('AC3 a later pass escalates it no second time: its line stays, the record is not written', j([batchWrites(later), lines(later, 'report').length, /red for 80 minutes/.test(lines(later, 'report')[0])]), j([[], 1, true]));
+
+  const moved = recordOf(decide({ recorded: esc, red: { ...red, checks: [{ name: 'lint', sha: HEAD, url: null }] }, at: minsOn(85) }));
+  t('within a spell the record names the checks failing now, and keeps its start, deadline and escalation', j([moved?.check, moved?.since, moved?.deadline, moved?.escalated]), j(['lint', SINCE, minsOn(60), minsOn(75)]));
+  const repairWait = 'main: RED BASE REPAIR — repair ticket main-red is merged with main still red';
+  t('a repair that needs the person is said on each pass after the notice', j(lines(decide({ recorded: rec, at: minsOn(20), repairWait }), 'report')), j([repairWait]));
+  t('and not beside the notice, which names it', `${notices(decide({ repairWait })).length} ${lines(decide({ repairWait }), 'report').length}`, '1 0');
+
+  t('AC4 once the driver reads it green, the record is cleared', j(batchWrites(decide({ recorded: esc, red: null, line: null }))), j(['base_red=null']));
+  t('AC4 with nothing said', j(decide({ recorded: esc, red: null, line: null }).filter((a) => a.type !== 'set-batch')), '[]');
+  t('AC4 a stale driver record keeps the batch\'s as it is', j(decide({ recorded: esc, red: null, known: false, line: null })), '[]');
+  t('no red base and none recorded: nothing', j(decide({ red: null, line: null })), '[]');
+  t('a dry run says the notice and records nothing', j([notices(decide({ dry: true })).length, batchWrites(decide({ dry: true }))]), j([1, []]));
+  const r = withNoIo(() => decide());
+  t('the decision starts no process and writes no file', j([r.threw, r.calls]), '[null,[]]');
 }
 
 if (fails) { console.log(`${fails} failed`); process.exit(1); }

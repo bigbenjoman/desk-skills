@@ -299,6 +299,9 @@ cat > "$T/prs.json" <<EOF
 EOF
 # The red spell began at 09:00 UTC, so its repair ticket is base-red-main-20261121090000.
 printf '{"branch":"main","checks":[],"since":"2026-11-21T09:00:00.000Z","at":"2026-11-21T09:00:00.000Z"}\n' > "$T/state/base-red.json"
+# The loops above read main green after their merges; this spell's driver has no green read before it,
+# so the hold names the last merges the log holds.
+rm -f "$T/state/base-green.json"
 printf '{"tip":"%s","commits":{"%s":{"parent":"%s","runs":[["test","in_progress",null]]},"%s":{"parent":null,"runs":[["test","completed","failure","https://github.com/acme/widgets/actions/runs/850"]]}}}\n' "$R1" "$R1" "$R0" "$R0" > "$T/base.json"
 : > "$T/merges.log"
 rloop(){ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-851 base-red-main-20261121090000" 2>&1); rc=$?; }
@@ -310,6 +313,7 @@ printf '{"tip":"%s","commits":{"%s":{"parent":null,"runs":[["test","completed","
 rloop; rloop
 check "DS-850 AC6: once the check passes on main again, merging resumes and the record goes" \
   '[ "$(merged)" = "852 851" ] && ! echo "$out" | grep -q "HOLDING on red" && [ ! -e "$T/state/base-red.json" ]'
+check "a green read of main's tip is kept as when the base was last green" '[ "$(jq -r .branch "$T/state/base-green.json")" = main ]'
 jq --arg s "$SHA4" '."853" = { head: "fix/T-853", base: "main", sha: $s, state: "open", draft: false, checks: [["test", "SUCCESS"]] }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
 touch "$T/base.broken"
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-853" 2>&1); first="$out"
@@ -349,6 +353,25 @@ printf '{"tip":"%s","commits":{"%s":{"parent":"%s","runs":[["test","completed","
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-854" 2>&1)
 check "DS-850 AC6: with only drafts open, a main green again drops the record" '[ ! -e "$T/state/base-red.json" ]'
 rm -f "$T/base.json"
+
+# ---- #1281: a later red spell lets in the repair an earlier spell left open -----------------------
+# The pass admits no second repair while one is open, so on a red that began at 11:00 the earlier
+# spell's repair (base-red-main-20261121090000) is the PR that may merge, and no other one is.
+R5=a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5; SHA857=8578578578578578578578578578578578578578; SHA858=8588588588588588588588588588588588588588
+cat > "$T/prs.json" <<EOF
+{
+  "857": { "head": "fix/base-red-main-20261121090000", "base": "main", "sha": "$SHA857", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] },
+  "858": { "head": "fix/T-858", "base": "main", "sha": "$SHA858", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] }
+}
+EOF
+printf '{"branch":"main","checks":[],"since":"2026-11-21T11:00:00.000Z","at":"2026-11-21T11:00:00.000Z"}\n' > "$T/state/base-red.json"
+printf '{"tip":"%s","commits":{"%s":{"parent":null,"runs":[["test","completed","failure","https://github.com/acme/widgets/actions/runs/857"]]}}}\n' "$R5" "$R5" > "$T/base.json"
+: > "$T/merges.log"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-858 base-red-main-20261121090000" 2>&1); first="$out"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-858 base-red-main-20261121090000" 2>&1)
+check "#1281: on a later red spell, the earlier spell's open repair PR still merges, and no other PR does" \
+  '[ "$(merged)" = 857 ] && echo "$first" | grep -qF "HOLDING on red main" && ! echo "$first$out" | grep -q "#858 "'
+rm -f "$T/base.json" "$T/state/base-red.json"
 
 # ---- DS-810: the driver's lock names the release it runs from, not the installed one --------------
 # A desk home with one release, old0, holding a copy of these scripts, while installed.json names new1.

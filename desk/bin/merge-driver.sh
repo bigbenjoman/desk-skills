@@ -108,7 +108,8 @@
 #   - refused by `gh pr merge`               backed off for 10 minutes, then retried
 #   - its base is red                        the newest completed run of a §4 Required check on the base
 #                                            failed (base-red.mjs, read once per loop down its newest
-#                                            commits, each commit's completed runs kept for 30 minutes
+#                                            commits, each commit's completed runs kept for 30 minutes,
+#                                            5 while one failed, so a rerun that passed shows,
 #                                            in <state>/merge-driver/base-runs.json, as each PR's file
 #                                            list at its head is in pr-files.json): no PR merges into it but its repair ticket's
 #                                            (base-red-<base>-<spell start>), and the loop logs the hold naming the
@@ -118,7 +119,10 @@
 #                                            error or limit, or base-red.mjs failing) takes no merge,
 #                                            logged as "base unreadable on <base>", until a later loop
 #                                            reads it. One whose reads all answered with no completed
-#                                            run merges as before, logging that its state is unknown
+#                                            run merges as before, logging that its state is unknown.
+#                                            A §4 Required check with no run at all on those commits
+#                                            (one that runs only on PRs, such as a review gate) is
+#                                            left out, so the base reads by the checks that run there
 # The one red that merges is a written waiver: every failing check is named in §4 Known flaky checks,
 # none is a §4 Required check (merging past one is a bypass, and §3 merge-bypass is never), the PR's
 # files touch none of the paths the row gives for it, each is still red after two reruns the driver
@@ -250,7 +254,9 @@ LOG_ROTATE_KEEP=3
 # rotate_log succeeds only when it moved the log aside.
 rotate_log(){
   local f="$LOG_STATE/merge-driver.log" size i
-  size=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+  # No log yet is nothing to rotate (and `< "$f"` would print a shell error before its 2>/dev/null applies).
+  [ -f "$f" ] || return 1
+  size=$(wc -c < "$f" | tr -d ' ')
   [ "${size:-0}" -gt "$LOG_ROTATE_BYTES" ] || return 1
   rm -f "$f.$LOG_ROTATE_KEEP"
   for (( i = LOG_ROTATE_KEEP - 1; i >= 1; i-- )); do if [ -f "$f.$i" ]; then mv -f "$f.$i" "$f.$((i + 1))"; fi; done
@@ -1040,7 +1046,9 @@ unknown_age(){ # unknown_age <n> <sha> <key> <merge state>
     if [ -f "$f" ] || [ -f "$r" ]; then rm -f "$f" "$r"; blocked_clear "$3" "merge ref:"; fi
     return 0
   fi
-  read -r was at < "$f" 2>/dev/null || true
+  # A stamp no loop has written yet (or one cleared since) is no age: read only one that is there, since the
+  # shell reports a missing file for `< "$f"` before any 2>/dev/null on the command takes effect.
+  if [ -f "$f" ]; then read -r was at < "$f" || true; fi
   if [ -f "$r" ]; then read -r first tried < "$r" || true; fi
   now=$(date +%s)
   if [ "$was" != "$2" ] || [ -z "$at" ]; then
@@ -1068,6 +1076,16 @@ unknown_age(){ # unknown_age <n> <sha> <key> <merge state>
   esac
   log "#$1 at ${2:0:9} has had no mergeability answer from GitHub for $(( total / 60 )) minutes — its merge ref looks wedged$how; the person pushes a new commit"
   queue_note "$3" "merge ref: GitHub has not worked out whether #$1 conflicts with its base at ${2:0:9} for $(( total / 60 )) minutes, and starts no run for that head$how: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch"
+}
+
+# A §4 Merge hold stops only the merge. A held PR that is red still has its checks rerun as a ready one's
+# are (rerun.sh: RERUNS_MAX per check per head, apart, under §3 ci-rerun, never a state check), so one
+# an intermittent failure turned red reaches the person green, and a red in its own code spends the
+# reruns the pass's fix tries wait on (fix-tries.mjs fixCall) and gets its fix try.
+held_rerun(){ # held_rerun <n> <sha> <gate json> <gate state>
+  [ "$4" = fail ] || return 0
+  log "#$1 red at ${2:0:9} under its merge hold: $(printf '%s' "$3" | jq -r '.gate.reasons[:3] | join("; ")')"
+  rerun "$1" "$2" "$3"
 }
 
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
@@ -1109,16 +1127,19 @@ try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
         if [ "$nbare" -gt 1 ]; then bare_more=" (and $((nbare - 1)) more merge hold(s))"; fi
         queue_note "$key" "merge hold: $(printf '%s' "$bare" | head -1)$bare_more"
       fi
+      held_rerun "$n" "$sha" "$g" "$state"
       return 1
     fi
     if [ "$ROUTINE_PERM" != yes ]; then
       log "#$n HELD by §4 Merge holds — its routine is not run, §3 merge-hold-routine is $ROUTINE_PERM: $(printf '%s' "$holds" | paste -sd ';' -)"
       routine_off_note "$key" "$routines" "§3 merge-hold-routine is $ROUTINE_PERM"
+      held_rerun "$n" "$sha" "$g" "$state"
       return 1
     fi
     if [ -f "$SD/routine-$n-$sha.failed" ]; then
       log "#$n HELD by §4 Merge holds — its routine already failed at ${sha:0:9}; a person settles it (a new head runs it again)"
       routine_failed_note "$key" "$SD/routine-$n-$sha.failed" "$sha"
+      held_rerun "$n" "$sha" "$g" "$state"
       return 1
     fi
     blocked_clear "$key" "merge hold:"
@@ -1350,11 +1371,14 @@ while true; do
   # not be asked about (an API error or limit) takes no merge until a later loop reads it; one whose
   # reads all answered but with no completed run of a required check merges as before.
   fixkey=""; unread=""
-  if base_state=$(node "$DESK_RUN_BIN/base-red.mjs" check --branch "$BASE_BRANCH" --repo "$REPO" --state "$DESK_STATE" --by "$MERGER" --cache "$SD/base-runs.json" 2>/dev/null </dev/null); then
+  # Each ready PR's ticket key, so a red base also lets in an earlier spell's repair still open (the pass
+  # admits no second one while it is).
+  rkeys=$(printf '%s\n' "$ready" | cut -f2 | paste -sd, -)
+  if base_state=$(node "$DESK_RUN_BIN/base-red.mjs" check --branch "$BASE_BRANCH" --repo "$REPO" --state "$DESK_STATE" --by "$MERGER" --cache "$SD/base-runs.json" --keys "$rkeys" 2>/dev/null </dev/null); then
     case "$(printf '%s' "$base_state" | jq -r '.state // empty' 2>/dev/null)" in
       red)
         log "$(printf '%s' "$base_state" | jq -r .line)"
-        fixkey=$(printf '%s' "$base_state" | jq -r .repair_key) ;;
+        fixkey=$(printf '%s' "$base_state" | jq -r '(.repairs // [.repair_key]) | join(" ")') ;;
       green|none) ;;
       unknown) log "base state unknown on $BASE_BRANCH ($(printf '%s' "$base_state" | jq -r '.why // "unread"' 2>/dev/null)) — merging as before" ;;
       *)
@@ -1380,7 +1404,7 @@ while true; do
 
   if [ -n "$unread" ]; then pause 120; continue; fi
   if [ -n "$fixkey" ]; then
-    ready=$(printf '%s\n' "$ready" | awk -F'\t' -v k="$fixkey" '$2 == k')
+    ready=$(printf '%s\n' "$ready" | awk -F'\t' -v ks="$fixkey" 'BEGIN { n = split(ks, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1 } $2 in ok')
     if [ -z "$ready" ]; then pause 120; continue; fi
   fi
 
