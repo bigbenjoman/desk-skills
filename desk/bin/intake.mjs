@@ -77,7 +77,7 @@ import { machineCap } from './borrow.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { readUsage } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
-import { EXIT, designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, labelPark, personStepPark, blockerHold, startWithout, sizePark, holdThrough, reworked } from './batch-state.mjs';
+import { EXIT, designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, labelPark, personStepPark, blockerHold, startWithout, sizePark, holdThrough, mergedCurrent } from './batch-state.mjs';
 import { backend, supervisorLoaded, supervisorLabel, launchdDomain, systemctl, supervisorMjs } from './run-by.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { FAILED, normaliseRollup, latestPerCheck, loginIn } from './gate.mjs';
@@ -536,8 +536,8 @@ function blockerRoute(key, rec) {
   const hits = liveFeatureBatches().filter((b) => resolvePath(b.queue) !== own).flatMap((b) => {
     let bq;
     try { bq = readQueueAt(b.queue); } catch { return []; }
-    // One merged once and gone round again there (reworked) has not merged its current work.
-    const on = keys.filter((k) => bq.tickets?.[k] && (!bq.tickets[k].merged_at || (Object.hasOwn(bq.tickets, k) && reworked(bq.tickets[k]))) && bq.tickets[k].state !== 'failed');
+    // One merged once and gone round again there has not merged its current work (mergedCurrent).
+    const on = keys.filter((k) => bq.tickets?.[k] && !mergedCurrent(bq.tickets, k) && bq.tickets[k].state !== 'failed');
     return on.length ? [{ name: b.name, on, supervised: bq.supervised === true }] : [];
   });
   if (hits.length > 1) return { reasons: [`it is blocked by ${hits.map((h) => `${h.on.join(', ')} in batch ${h.name}`).join(' and by ')}: say which batch it joins`] };

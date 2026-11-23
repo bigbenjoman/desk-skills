@@ -801,14 +801,21 @@ export const blockerThrough = (t, prState = null) => {
   if (s === 'MERGED') return true;
   return !prState && !['OPEN', 'CLOSED'].includes(s);
 };
-// Whether blocker k of `tickets` is finished for laying holds: merged or through (childDone), which nothing
-// would release. A live one merged once and gone round again since (reworked) has not merged its current
-// work, so it is not; an archived one (found through `tickets`' archive, not its own) never is reworked.
-// A merge moves its ticket to Done in Jira and a requeue moves it back from nothing, so a reworked blocker
-// is usually Done there: every reader laying holds asks this, whatever the tracker says.
+// Whether ticket k of `tickets` has merged its current work: a merge recorded (merged_at), unless it is a
+// live one gone round again since (reworked). An archived one (found through `tickets`' archive, not its
+// own) never is reworked. A merge moves its ticket to Done in Jira and a requeue moves it back from
+// nothing, so a reworked ticket is usually Done there: every reader asks this, whatever the tracker says.
+export function mergedCurrent(tickets, k) {
+  const o = tickets?.[k];
+  return !!o?.merged_at && !(Object.hasOwn(tickets, k) && reworked(o));
+}
+// Whether blocker k of `tickets` is finished for laying holds, which nothing would release: its current
+// work merged, or done with no PR and no merge (childDone's other half). A reader asking only whether it
+// merged (a requeue's own holds, a route to another batch) keeps a ticket behind one done with no PR: whether
+// its dependants start is the person's.
 export function holdThrough(tickets, k) {
   const o = tickets?.[k];
-  return !!o && (!!o.merged_at || childDone(o)) && !(Object.hasOwn(tickets, k) && reworked(o));
+  return !!o && (mergedCurrent(tickets, k) || (!o.merged_at && childDone(o)));
 }
 // The blockers among `keys` to hold ticket `key` behind, less `key` itself and those in `tickets` through
 // for holds (holdThrough). -> { holds, cycles: those in
