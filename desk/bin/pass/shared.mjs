@@ -75,8 +75,14 @@ export function notOwnPr(t, p, logins) {
   if (p?.author && String(logins ?? '').trim() && !loginIn(p.author, logins)) return `PR #${p.pr} was opened by ${p.author}, not by ${String(logins).split(',').map((x) => x.trim()).join(' or ')}`;
   return null;
 }
+// How a not-its-own park's question starts: foreignQuestion writes it, foreignParkPr reads it back.
+const foreignLead = (n) => `its PR #${n} is not its own: `;
+// The lead holds no character a pattern reads specially but the group put in for the number.
+const FOREIGN_LEAD = new RegExp(`^${foreignLead('(\\d+)')}`);
+// The PR a not-its-own park (foreignQuestion) names, or null for any other question.
+export const foreignParkPr = (question) => Number(FOREIGN_LEAD.exec(String(question ?? ''))?.[1]) || null;
 // The park a ticket gets when PR #n, not its own (notOwnPr's `why`), was taken or reported as its result.
-export const foreignQuestion = (n, why) => `its PR #${n} is not its own: ${why}. desk takes as a ticket's result only a PR on the branch its worker made, opened by desk's account, so nothing is done to #${n}: no fix or review try, undraft, reopen or merge. If #${n} already holds this ticket's work, take the ticket out of the batch; otherwise requeue it so a worker makes it on its own branch`;
+export const foreignQuestion = (n, why) => `${foreignLead(n)}${why}. desk takes as a ticket's result only a PR on the branch its worker made, opened by desk's account, so nothing is done to #${n}: no fix or review try, undraft, reopen or merge. If #${n} already holds this ticket's work, take the ticket out of the batch; otherwise requeue it so a worker makes it on its own branch`;
 // A merged PR's merge commit as gh reads it (`mergeCommit`), or null where GitHub names none.
 export const mergeOid = (v) => (/^[0-9a-f]{40}$/.test(String(v?.mergeCommit?.oid ?? '')) ? v.mergeCommit.oid : null);
 

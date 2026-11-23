@@ -355,10 +355,14 @@ function requeue(q, key, { handedBack = false } = {}) {
   // Blockers in no batch (held_outside) stay until pass.mjs lifts them.
   const outside = String(t.held_outside ?? '').split('|').filter((p) => p && !q.tickets[p]);
   const pending = blockersOf(t).filter((p) => (q.tickets[p] ? !q.tickets[p].merged_at : outside.includes(p)));
+  // Done by another's PR, its merged_at was that PR's merge: sent back for work of its own, it has none
+  // yet, or the merge driver and the holds above would read the work as merged.
+  const byOther = t.done_by?.pr != null;
   // A fresh session, so a killed worker waiting to resume no longer does.
-  Object.assign(t, keepRequeuedPr(t), { prev_park: prevPark, state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null, failed: null,
+  Object.assign(t, keepRequeuedPr(t), { prev_park: prevPark, ...(byOther ? { merged_at: null } : {}), state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null, failed: null,
     handoff: fromStage ? 'pending' : null,
-    spine_check: null, spec_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
+    // Done by another's PR no longer, once sent back for work of its own.
+    spine_check: null, spec_check: null, approved: null, approved_at: null, done_by: null, updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
   if (calls?.entries.length) appendDecisions(calls.entries, stateDir());
   if (p?.notes.length) appendNotes(p.notes, stateDir());

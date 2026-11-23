@@ -766,6 +766,7 @@ export const childDone = (t) => t.state === 'done' && (!!t.merged_at || t.result
 // or its PR merged. `prState(n)` is the PR's state where the caller read it from GitHub, and null counts
 // as not merged; without it, the last pass's pr_status is read and a PR it has not read counts as
 // merged. Done with no PR and no merge is not through: whether its dependants start is the person's.
+// One done by another's PR (done_by) has no result.pr of its own, and that PR's merge is its merged_at.
 // merged_at keeps only a ticket's first merge, so a requeued blocker whose new PR is open (or, where the
 // caller reads GitHub, unread) is not through on it: its dependants wait on the change that PR lands. A
 // status naming its current PR merged is final, and is how a ticket done on another repo's PR is read

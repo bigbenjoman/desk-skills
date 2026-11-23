@@ -1455,14 +1455,15 @@ const CLEARS_HANDLERS = {
     const t = s.tickets[a.key];
     try {
       const why = notOwnPr(t, prOwner(a.pr), conflictHandle);
-      if (!why || t.result?.pr != null || t.draft_pr != null) return null;
+      // #pr itself recorded on it (a not-its-own park's result.pr) is not work of its own.
+      if (!why || [t.result?.pr, t.draft_pr].some((x) => x != null && Number(x) !== Number(a.pr))) return null;
       // Commits past the base in its worktree are its own work, which #pr only unblocks.
       if (t.worktree && existsSync(t.worktree)) {
         const n = shOut('git', ['-C', t.worktree, 'rev-list', '--count', `origin/${DEFAULT_BRANCH}..HEAD`]);
         if (!n.ok) return { error: `its worktree could not be read (${n.out.split('\n').pop()})` };
         if (Number(n.out) > 0) return null;
       }
-      return { why };
+      return { why, at: clearsRead.pr(a.pr).mergedAt ?? null };
     } catch (e) { return { error: e.message }; }
   },
   'drop-worktree': (a) => {
