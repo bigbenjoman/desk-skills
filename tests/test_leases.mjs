@@ -8,10 +8,10 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, 
 import { join, dirname } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { capacities, claudeAncestor, kindMode, leaseCli, listRow, poolOf, releasePreviews, sampleLoad, slotPools, waitFields } from '../desk/bin/leases.mjs';
+import { capacities, claudeAncestor, kindMode, leaseCli, listRow, poolOf, release, releasePreviews, sampleLoad, slotPools, tryAcquire, waitFields } from '../desk/bin/leases.mjs';
 import { decidePrStatus } from '../desk/bin/pass/pr-status.mjs';
 import { latestPerCheck, normaliseRollup } from '../desk/bin/gate.mjs';
-import { previewLabel } from '../desk/bin/desk-env.mjs';
+import { previewLabel, psRows } from '../desk/bin/desk-env.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -732,6 +732,102 @@ try {
     t('DS-987 ps that cannot be read counts each admit by its pid alone, and the pool read does not fail',
       capacities({ ...capEnv(rows), psRows: () => { throw new Error('ps could not be read'); } }).light, 3);
     t('DS-987 a row that does not read is the floor alone',capacities(capEnv({ ...rows, 'light-lock-max': '0' })).light, 1);
+  }
+  // DS-981: with the slot kind on, a lock run that names its queue waits its turn for its pool, oldest
+  // first. In-process against a scratch lease directory, real sleeping processes as owners, the light
+  // pool one slot unless a case grows it.
+  {
+    const qenv = (kinds = 'slot=on') => ({ machineValue: (k) => (k === 'lease-kinds' ? kinds : null), testLockSlots: () => 1, psRows });
+    const caps1 = { heavy: 1, light: 1, previewBuild: 1, mem: null };
+    const ask = (d, o, { wt = '/w/a', cmd = 'c1', express = false, final = false, now = Date.now, caps = caps1, kinds, lane = null } = {}) =>
+      tryAcquire({ kind: 'slot', key: 'light', units: 1, ttl: 600, label: `run ${o.pid}`, pid: o.pid, final, waited: final ? 60 : 0, queue: { worktree: wt, cmd, express } },
+        { env: qenv(kinds), dir: d, caps, now, lane });
+    const wants = (d) => (store(d).wants ?? []).map((w) => [w.owner.pid, w.left != null]);
+    const holdOne = (d) => { const h = owner(); return { h, lease: ask(d, h, { wt: '/w/h', cmd: 'hold' }).lease }; };
+    const free = (d, x) => release(x.lease.id, x.h.pid, { env: qenv(), dir: d });
+
+    // AC1, AC2: A then B wait; a slot frees, and B asking first is refused while A gets it.
+    {
+      const d = fresh(); const x = holdOne(d); const a = owner(); const b = owner();
+      const ra = ask(d, a); const rb = ask(d, b, { wt: '/w/b' });
+      t('DS-981 AC2 each waiter is told its place in the queue and how many hold the pool', [ra.at, rb.at],
+        [{ position: 1, waiting: 1, held: 1, capacity: 1 }, { position: 2, waiting: 2, held: 1, capacity: 1 }]);
+      t('DS-981 a granted run holds no place: the holder left none', wants(d), [[a.pid, false], [b.pid, false]]);
+      free(d, x);
+      const late = ask(d, b, { wt: '/w/b' });
+      t('DS-981 AC1 a slot frees and B, asking first, is refused: A waited longer', [late.lease, /served first/.test(late.refused), late.at?.position], [undefined, true, 2]);
+      t('DS-981 AC1 A gets it, and leaves the queue', [!!ask(d, a).lease, wants(d)], [true, [[b.pid, false]]]);
+    }
+    // AC3, AC6: a run gives up at its deadline, and the same worktree and command back within 120 s keeps its place.
+    {
+      const d = fresh(); const x = holdOne(d); const a = owner(); const b = owner(); const a2 = owner();
+      ask(d, a);
+      ask(d, b, { wt: '/w/b' });
+      const gave = ask(d, a, { final: true });
+      t('DS-981 AC6 a run that gives up is told its place then', gave.at, { position: 1, waiting: 2, held: 1, capacity: 1 });
+      t('DS-981 AC6 and its gave-up line names it', log(d).filter((e) => e.event === 'gave-up').map((e) => [e.position, e.waiting]), [[1, 2]]);
+      t('DS-981 AC3 its place is kept, served to nobody', wants(d), [[a.pid, true], [b.pid, false]]);
+      a.kill(); await exited(a);
+      t('DS-981 AC3 the queue skips it while it is gone: B is first', ask(d, b, { wt: '/w/b' }).at.position, 1);
+      const back = ask(d, a2, { now: () => Date.now() + 100_000 });
+      t('DS-981 AC3 the same worktree and command asking again within 120 s takes its place back', [back.at, wants(d)], [{ position: 1, waiting: 2, held: 1, capacity: 1 }, [[a2.pid, false], [b.pid, false]]]);
+      t('DS-981 AC3 the log says who took the place back from whom', log(d).filter((e) => e.event === 'rejoin').map((e) => [e.was.pid, e.owner.pid]), [[a.pid, a2.pid]]);
+      free(d, x);
+      t('DS-981 AC3 and it is served before B', [ask(d, b, { wt: '/w/b' }).lease, !!ask(d, a2).lease], [undefined, true]);
+    }
+    // AC3, AC4: a place past 120 s, or another command from the same worktree, joins at the back.
+    {
+      const d = fresh(); holdOne(d); const a = owner(); const b = owner(); const c = owner(); const a2 = owner();
+      ask(d, a, { final: true }); ask(d, b, { wt: '/w/b' });
+      t('DS-981 AC4 a different command from the same worktree joins at the back', ask(d, c, { cmd: 'c2' }).at, { position: 2, waiting: 2, held: 1, capacity: 1 });
+      const late = ask(d, a2, { now: () => Date.now() + 121_000 });
+      t('DS-981 AC3 past 120 s the place is gone, and the same command joins at the back', late.at?.position, 3);
+      t('DS-981 AC3 the dropped place is logged', log(d).filter((e) => e.event === 'drop').map((e) => e.owner.pid), [a.pid]);
+    }
+    // AC5: a waiter whose owner exits is skipped when the slot frees, and its place dropped.
+    {
+      const d = fresh(); const x = holdOne(d); const a = owner(); const b = owner();
+      ask(d, a); ask(d, b, { wt: '/w/b' });
+      a.kill(); await exited(a);
+      free(d, x);
+      t('DS-981 AC5 the slot goes to B, past the waiter whose owner exited', !!ask(d, b, { wt: '/w/b' }).lease, true);
+      t('DS-981 AC5 whose place is dropped, with why', [wants(d), log(d).filter((e) => e.event === 'drop').map((e) => [e.owner.pid, e.why])], [[], [[a.pid, 'owner exited']]]);
+    }
+    // AC7: small runs take the express lane oldest first among them; a free pool slot goes to the oldest waiter.
+    {
+      const d = fresh(); const x = holdOne(d); const big = owner(); const s1 = owner(); const s2 = owner();
+      let taken = 0; const lane = () => { taken++; return true; };
+      ask(d, big, { wt: '/w/big' });
+      ask(d, s1, { wt: '/w/s1', express: true });
+      const younger = ask(d, s2, { wt: '/w/s2', express: true, lane });
+      t('DS-981 AC7 the younger small run is refused the lane while an older one waits for it', [younger.lane, taken], [undefined, 0]);
+      t('DS-981 AC7 the oldest small run takes the lane, and leaves the queue', [ask(d, s1, { wt: '/w/s1', express: true, lane }).lane, taken, wants(d).map(([p]) => p)], [true, 1, [big.pid, s2.pid]]);
+      free(d, x);
+      const s2Again = ask(d, s2, { wt: '/w/s2', express: true, lane: () => false });
+      t('DS-981 AC7 the freed pool slot goes to the oldest pool waiter, not the small run asking first', [s2Again.lease, !!ask(d, big, { wt: '/w/big' }).lease], [undefined, true]);
+    }
+    // AC8: in shadow the queue is not used: every try is granted as today, and no place is kept.
+    {
+      const d = fresh(); const a = owner(); const b = owner();
+      const both = [ask(d, a, { kinds: 'slot=shadow' }), ask(d, b, { wt: '/w/b', kinds: 'slot=shadow' })];
+      t('DS-981 AC8 shadow grants each run with no queue', [both.map((r) => !!r.lease), both[1].shadow != null, store(d).wants], [[true, true], true, undefined]);
+    }
+    // AC9: admission lets one more run in above a full floor: A gets it, and B keeps waiting.
+    {
+      const d = fresh(); holdOne(d); const a = owner(); const b = owner();
+      ask(d, a); ask(d, b, { wt: '/w/b' });
+      let room = 1; const grown = () => ({ ...caps1, light: room });
+      room = 2;
+      t('DS-981 AC9 B, asking first once the pool grows by one, is refused: A waited longer', ask(d, b, { wt: '/w/b', caps: grown }).at, { position: 2, waiting: 2, held: 1, capacity: 2 });
+      t('DS-981 AC9 A gets the slot above the floor, read under the store lock', !!ask(d, a, { caps: grown }).lease, true);
+      t('DS-981 AC9 and B keeps waiting', [ask(d, b, { wt: '/w/b', caps: grown }).at, wants(d).map(([p]) => p)], [{ position: 1, waiting: 1, held: 2, capacity: 2 }, [b.pid]]);
+    }
+    // A store whose wants do not read is unreadable, so a lock run falls back to its lock files.
+    {
+      const d = fresh(); mkdirSync(d, { recursive: true });
+      writeFileSync(join(d, 'leases.json'), JSON.stringify({ leases: [], wants: [{ pool: 'slot:light' }] }));
+      t('DS-981 wants that do not read make the store unreadable', cli(d, ['list']).code, 4);
+    }
   }
 } finally {
   for (const c of owners) c.kill();

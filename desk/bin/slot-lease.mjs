@@ -10,8 +10,10 @@
 //
 // `take` names the lease's owner (the wrapper's own pid, which then execs into the command, or the
 // command's pid where the wrapper runs it as a child), so the lease is held for as long as the command
-// runs and lapses the moment it exits. In `on` it waits for the slot, saying once what it waits on and
-// who holds it, and gives up after --timeout seconds (exit 75). In `shadow` it makes one try, which
+// runs and lapses the moment it exits. In `on` it waits for the slot in the broker's queue for its
+// pool, oldest first, saying once what it waits on, who holds it and its place in the queue, and gives
+// up after --timeout seconds (exit 75), naming its place then; the same worktree asking again with the
+// same command within leases.mjs REJOIN_S seconds takes that place back. In `shadow` it makes one try, which
 // shadow always grants, logging a would-refuse when the pool was full; the wrapper has already taken
 // its legacy lock and ignores how this ends; --waited is how long it waited for that lock, which the
 // grant line records. With `--express` (light only), a run waiting in `on` takes the light lock's
@@ -21,6 +23,7 @@
 // Exit codes: 0 granted (or nothing to take), 10 took the express lane, 75 gave up waiting, 4 the lease
 // store is unreadable, 1 the broker failed otherwise. The wrapper falls back to its legacy lock on 4 and 1.
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -125,13 +128,18 @@ function takeLane(d, pid) {
   writeFileSync(join(d, 'pid'), `${pid}\n`);
   return true;
 }
-class TookLane extends Error {}
+
+// A run's place in its pool's queue (leases.mjs tryAcquire's `at`), as the waiting and gave-up lines say it.
+export const placeText = (at) => (at ? `position ${at.position} of ${at.waiting} in its queue, ${at.held} of ${at.capacity} slot${at.capacity === 1 ? '' : 's'} held` : null);
+// What makes a run the same run when it asks again: its directory and its command.
+export const commandHash = (words, cwd = process.cwd()) => createHash('sha256').update([cwd, ...words].join('\0')).digest('hex').slice(0, 16);
 
 // Takes the slot for `words` run by lock class `cls`, owned by `pid`, whose wrapper has already
 // waited `waited` seconds on the lock files. Its grant, refuse or gave-up line carries its wait; a
-// wait here is queued and logged as it starts. With `express` (the lane's lock directory), a run the
-// pool refuses takes the lane where it is free, at that refusal and before each later try, and the
-// wrapper logs its grant. -> the exit code, EXIT_LANE for the lane.
+// wait here is queued and logged as it starts. In `on` the run waits its turn in the broker's queue
+// for its pool, oldest first, and says its place in it as it starts to wait and as it gives up. With
+// `express` (the lane's lock directory), a run the pool refuses takes the lane where it is free and it
+// is the oldest small run waiting, and the wrapper logs its grant. -> the exit code, EXIT_LANE for the lane.
 function take({ cls, pid, timeout, words, waited = 0, express = null }) {
   const say = (s) => console.error(s);
   const key = cls === 'tsc' && isLint(words) ? 'lint' : cls;
@@ -140,29 +148,34 @@ function take({ cls, pid, timeout, words, waited = 0, express = null }) {
   const t0 = Date.now();
   const sofar = () => waited + Math.round((Date.now() - t0) / 1000);
   const look = headroom(cls, pid, say);
-  const lane = () => { if (express && takeLane(express, pid)) throw new TookLane(); };
-  let waiting = false;
+  const queue = { worktree: worktree(), cmd: commandHash(words), express: !!express };
+  const placeFields = (at) => (at ? { position: at.position, waiting: at.waiting } : {});
   try {
     const caps = capacities(E);
     const p = poolOf('slot', key, caps);
     const what = p.pool === 'slot:heavy' ? `the heavy pool (${p.capacity} slot${p.capacity === 1 ? '' : 's'})` : p.one;
     // Shadow grants every try, so it never waits, whatever `wait` says. While a run waits, each try
-    // reads the pools afresh, after its look at headroom.
-    const r = acquire({ kind: 'slot', key, units: 1, ttl: ttl(), label, pid, wait: timeout ?? Infinity }, {
-      env: E, caps: () => { if (waiting) { look(); lane(); } return capacities(E); }, poll: POLL_MS,
-      onWait: (why) => {
-        waiting = true;
+    // reads the pools afresh under the store lock, after its look at headroom.
+    const r = acquire({ kind: 'slot', key, units: 1, ttl: ttl(), label, pid, wait: timeout ?? Infinity, queue }, {
+      env: E, caps: () => capacities(E), poll: POLL_MS, beforeTry: look,
+      lane: express ? () => takeLane(express, pid) : null,
+      onWait: (why, at) => {
         enqueue(key, pid);
-        logEvent({ event: 'queued', kind: 'slot', key, label, ...waitNow(key, pid, sofar()) });
-        lane();
-        if (look() == null) say(`with-lock.sh: waiting for ${what}: ${why}`);
+        logEvent({ event: 'queued', kind: 'slot', key, label, ...placeFields(at), ...waitNow(key, pid, sofar()) });
+        const where = placeText(at);
+        if (look() == null) say(`with-lock.sh: waiting for ${what}${where ? `, ${where}` : ''}: ${why}`);
+        else if (where) say(`with-lock.sh: waiting for ${what}, ${where}`);
       },
       note: () => { dequeue(key, pid); return waitNow(key, pid, sofar()); },
     });
-    if (r.code === EXIT_GAVE_UP || r.code === EXIT_REFUSED) { say(`with-lock.sh: gave up waiting for ${what} after ${timeout}s: ${r.why}`); return EXIT_GAVE_UP; }
+    if (r.lane) return EXIT_LANE;
+    if (r.code === EXIT_GAVE_UP || r.code === EXIT_REFUSED) {
+      const where = placeText(r.at);
+      say(`with-lock.sh: gave up waiting for ${what} after ${timeout}s${where ? ` at ${where}` : ''}: ${r.why}`);
+      return EXIT_GAVE_UP;
+    }
     return r.code;
   } catch (e) {
-    if (e instanceof TookLane) return EXIT_LANE;
     if (e instanceof LeaseStoreError) { say(`with-lock.sh: leases were unreadable (${e.message}), so this run takes the ${cls} lock instead`); return EXIT_UNREADABLE; }
     say(`with-lock.sh: the lease broker failed (${e.message}), so this run takes the ${cls} lock instead`);
     return 1;
