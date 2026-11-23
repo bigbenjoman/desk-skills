@@ -280,8 +280,9 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
   if (dbs.length) return { ...none, lines: [...lines, `archive: batch ${b.name} ${movedText}waits on its pass to delete preview database${dbs.length > 1 ? 's' : ''} ${dbs.map((d) => `${d.db} (PR #${d.pr})`).join(', ')}`] };
   // An archived batch is no longer listed, so its finished cloud sessions the person has not recorded
   // archived move to the standing batch's list (cloud-worker.mjs handOver), where needs-you still asks.
+  // The record is the repo's, outside this batch's state folder, so the move below leaves it.
   try {
-    handOver(E.repoStateOf(b.state), finishedCloud(q.tickets, readArchive(b.queue).tickets, readArchived(b.state), readPending(b.state)));
+    handOver(b.state, finishedCloud(q.tickets, readArchive(b.queue).tickets, readArchived(b.state), readPending(b.state)));
   } catch (e) { return { ...none, lines: [...lines, `archive: batch ${b.name} ${movedText}waits: its finished cloud sessions could not be handed to the standing batch (${e.message})`] }; }
   const told = readStopped(b.state);
   const q2 = moveDone(dirname(b.queue), now);

@@ -314,13 +314,15 @@ t('AC5 it is no longer listed', listed(), '-');
     'X-32': { key: 'X-32', state: 'done', location: 'cloud', result: { pr: 10 }, merged_at: '2026-10-30T11:00:00Z', cloud: cs('g') },
     'X-33': { key: 'X-33', state: 'done', location: 'cloud', result: { pr: 11 }, merged_at: '2026-10-30T11:00:00Z', cloud: cs('h') } } });
   mkdirSync(namedS('X-31'), { recursive: true });
-  writeFileSync(join(namedS('X-31'), 'cloud-archived.json'), JSON.stringify({ sessions: ['session_h'] }));
+  // The record is the repo's, in the standing batch's state folder, whichever batch answered it.
   const standing = join(HOME, '.desk-autopilot', SLUG, 'cloud-archived.json');
+  writeFileSync(standing, JSON.stringify({ sessions: ['session_h'] }));
   a = res(archive('X-31', { 9: 'CLOSED', 10: 'MERGED', 11: 'MERGED' }));
   let pend = [];
   try { pend = JSON.parse(readFileSync(standing, 'utf8')).pending ?? []; } catch { /* none handed */ }
   t('an archived batch hands its unrecorded finished cloud session to the standing batch, and not one recorded archived',
     `${a.archived} ${pend.map((d) => `${d.key}:${d.name}`).join()}`, 'true X-32:w-ticket-g');
+  t('and the record stays with the standing batch, out of the archived folder', existsSync(standing) && !existsSync(join(doneS('X-31'), 'cloud-archived.json')), true);
   rmSync(standing, { force: true });
 }
 // A second batch of the same name archives beside the first, once its last promotion merges: every

@@ -14,8 +14,9 @@
 // session an effort config names, no ticket runs in the cloud (CLOUD_NO_EFFORT).
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { lock, unlock, writeJsonAtomic } from './dir-lock.mjs';
+import { repoStateOf } from './desk-env.mjs';
 
 export const CLOUD_NO_EFFORT = 'the effort lever is on, and a cloud session cannot be given an effort';
 
@@ -140,11 +141,12 @@ export const cloudWall = (cloud) => {
 // ---- finished cloud sessions, to archive ---------------------------------------------------------
 // Nothing on this computer can end or archive a cloud session (`claude stop` and `rm` act on local
 // background sessions only), so a finished one stays in the person's claude.ai/code list until they
-// archive it there. needs-you lists the batch's finished sessions as one item, and its done records
-// them here, in the batch's state folder (`sessions`), so each is asked about once. A named batch
-// archived before that hands its unrecorded ones to the standing batch's file (`pending`), since an
-// archived batch is no longer listed.
-const archivedPath = (stateDir) => join(stateDir, 'cloud-archived.json');
+// archive it there. needs-you lists each batch's finished sessions as one item, and its done records
+// them (`sessions`) in one file for the repo, in the standing batch's state folder, which archiving a
+// named batch never moves; each is then asked about once. A named batch archived before that hands its
+// unrecorded ones to the same file (`pending`), under the same lock, since an archived batch is no
+// longer listed: the standing batch's item lists them. `stateDir` is any batch's state folder.
+const archivedPath = (stateDir) => join(repoStateOf(stateDir), 'cloud-archived.json');
 const readFile = (stateDir) => {
   try { const f = JSON.parse(readFileSync(archivedPath(stateDir), 'utf8')); return f && typeof f === 'object' ? f : {}; } catch { return {}; }
 };
@@ -157,7 +159,7 @@ export const readPending = (stateDir) => { const f = readFile(stateDir); return 
 // Changes the file under its lock: `change(f)` mutates { sessions, pending }.
 function update(stateDir, change) {
   const file = archivedPath(stateDir), held = `${file}.lock`;
-  mkdirSync(stateDir, { recursive: true });
+  mkdirSync(dirname(file), { recursive: true });
   lock(held);
   try {
     let f = {};
