@@ -852,7 +852,9 @@ export function reviewFix(t, review, opts = {}) {
   const sevs = p2s ? ['P2'] : undefined;
   const gapsOpen = opts.judgement === 'yes' ? Number(review.verdict?.gaps) || 0 : 0;
   const allGaps = gapsOpen ? reviewGaps(review.body) : [];
-  const tagged = allGaps.filter(personsCall);
+  // The person's: a gap tagged their call, or one whose recommendation needs a route §3 denies workers.
+  const persons = (g) => personsCall(g) || deniedRoute(g, opts.workerMay) != null;
+  const tagged = allGaps.filter(persons);
   // As personGapsCall reads a review with nothing open but the person's gaps.
   const taken = takenGaps(tagged, opts.judgement, !counts && !(Number(v?.deferred) > 0) && gapsOpen <= tagged.length, opts.workerMay);
   const personGaps = taken.length ? [] : tagged;
@@ -877,7 +879,7 @@ export function reviewFix(t, review, opts = {}) {
   const comments = !counts || p2s ? null : typeof review.comments === 'function' ? review.comments() : review.comments;
   const inline = inlineFindings(comments).filter((x) => !listed.some((b) => owns(b.text, x.at)));
   const findings = [...listed, ...inline.map(({ sev, text }) => ({ sev, text }))];
-  const gaps = codeGaps ? allGaps.filter((g) => !personsCall(g)) : [];
+  const gaps = codeGaps ? allGaps.filter((g) => !persons(g)) : [];
   if (counts ? !findings.length : !gaps.length && !taken.length) return null;
   // Before survivors: a gap repeating an earlier one's words at new sites reads to survivors as the same gap.
   const wide = !findings.length && !taken.length ? widening(done, gaps, opts) : null;
@@ -933,7 +935,7 @@ export function personGapsCall(review, opts = {}) {
   const v = review.verdict, open = Number(v?.gaps) || 0;
   // A deferred P2 earns no try either (reviewFix), so it does not keep the gaps from the person.
   if (opts.judgement !== 'yes' || !open || reviewCounts(v) || (Number(v?.p2) > 0 && !(Number(v?.deferred) > 0))) return null;
-  const person = reviewGaps(review.body).filter(personsCall);
+  const person = reviewGaps(review.body).filter((g) => personsCall(g) || deniedRoute(g, opts.workerMay) != null);
   return person.length && open <= person.length ? { call: 'stuck', why: `${PERSON_GAPS}${person.map((g) => personGapText(g, opts.workerMay)).join('; ')}` } : null;
 }
 

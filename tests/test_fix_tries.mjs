@@ -372,6 +372,11 @@ t('#1339 it goes to the person once, naming the recommendation, the §3 row and 
 t('#1339 its reason still gives the gap up to needs-you', personGapsIn(runStuck?.why).length, 1);
 t('#1339 with worker-workflow-dispatch yes, the worker carries it out as before', runFix(() => true)?.call, 'requeue');
 t('#1339 a recommendation needing no such route is taken as before', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: personBody(1, REC_GAP) }, { judgement: 'yes', workerMay: denied })?.call, 'requeue');
+const UNTAGGED_RUN = `- AC2: "the E2E workflow on main runs its tests" — only a workflow run can show it. Recommended: dispatch the E2E workflow on the branch`;
+t('#1339 an untagged gap needing that route starts no fix try either', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: personBody(1, UNTAGGED_RUN) }, { judgement: 'yes', workerMay: denied }), null);
+t('#1339 and goes to the person, naming the action', /\[no fix try: .*worker-workflow-dispatch/.test(gapsCall(personBody(1, UNTAGGED_RUN), { gaps: '1' }, { judgement: 'yes', workerMay: denied })?.why ?? ''), true);
+const besideCode = reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '2' }, body: personBody(2, UNTAGGED_RUN, CODE_GAP) }, { judgement: 'yes', workerMay: denied });
+t('#1339 beside a code gap, the try takes the code gap and names the other as the person\'s', `${JSON.stringify(besideCode?.fix.gaps)} ${JSON.stringify(besideCode?.fix.person_gaps)}`, `${JSON.stringify([CODE_GAP.slice(2)])} ${JSON.stringify([UNTAGGED_RUN.slice(2)])}`);
 t('#1339 the route reads run, start and trigger of a workflow, and gh workflow run', JSON.stringify(['Recommended: run the e2e-manual workflow on it', 'Recommended: trigger the nightly workflow', 'Recommended: gh workflow run e2e.yml --ref fix/x', 'Recommended: run the tests locally', 'Recommended: split it to the follow-up'].map((g) => deniedRoute(g, denied)?.row ?? null)), JSON.stringify(['worker-workflow-dispatch', 'worker-workflow-dispatch', 'worker-workflow-dispatch', null, null]));
 t('DS-585 AC4 without autopilot-judgement yes nothing changes', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: personBody(1, REC_GAP) }), null);
 t('DS-585 AC4 nor on a ready PR', gapsCall(personBody(1, REC_GAP), { gaps: '1' }, {}), null);
