@@ -144,7 +144,8 @@ function* outageRecord(s, held, keep) {
   const check = [...held.keys()].map((n) => `"${n}"`).join(', ');
   const since = was?.since ?? [...held.keys()].map((n) => keep[n]?.since).filter(Boolean).sort()[0] ?? new Date(s.now).toISOString();
   const rec = was ? { ...was, check } : { check, since, deadline: new Date(Date.parse(since) + OUTAGE_MS).toISOString() };
-  const { rec: next, line } = outageWait(rec, new Date(s.now).toISOString(), s.base ?? 'the base');
+  const runnable = [...held.values()].some((h) => h.runnable);
+  const { rec: next, line } = outageWait(rec, new Date(s.now).toISOString(), s.base ?? 'the base', { runnable });
   if (line) yield say(null, 'waiting', line);
   if (!s.dry && JSON.stringify(next) !== JSON.stringify(was)) yield { type: 'set-batch', fields: [`platform_outage=${JSON.stringify(next)}`] };
 }

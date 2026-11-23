@@ -428,10 +428,8 @@ function platformReds(prs, lists) {
 // The checks red as one outage now: Map name -> { line, text, prs }, the largest group by line where
 // one check has more than one. prs: [{ t, s }] (the pass's drafts and ready PRs), lists: { required, advisory,
 // gates } (gates: the review and approval gates, reviewGates, which are never an outage).
-// skip(r): a red to leave out (outagePlan's PRs still owed a re-run). A check an open PR passes is no
-// outage: its platform works for that PR, so each PR red on it is that PR's own failure. `anyGreen`
-// keeps such a group, for outagePlan to read which line a clearing hold's PRs are red with.
-export function outageChecks(prs, lists, skip = () => false, { anyGreen = false } = {}) {
+// skip(r): a red to leave out (outagePlan's PRs still owed a re-run).
+export function outageChecks(prs, lists, skip = () => false) {
   const groups = new Map();
   for (const r of platformReds(prs, lists).filter((x) => !skip(x))) {
     const k = `${r.name}\u0000${r.line}`;
@@ -440,7 +438,6 @@ export function outageChecks(prs, lists, skip = () => false, { anyGreen = false 
   const out = new Map();
   for (const g of groups.values()) {
     if (g.prs.length < OUTAGE_PRS || (out.get(g.name)?.prs.length ?? 0) >= g.prs.length) continue;
-    if (!anyGreen && (prs ?? []).some(({ s }) => passes(s, g.name))) continue;
     out.set(g.name, { line: g.line, text: g.text, prs: [...g.prs].sort((a, b) => a - b) });
   }
   return out;
@@ -503,7 +500,7 @@ export function outagePlan({ prs, lists, was, now, unread: failed = null }) {
   }
   const debtor = (r) => (owedOf.get(r.name) ?? []).some((o) => o.pr === r.pr) || owe.some((o) => o.name === r.name && o.pr === r.pr);
   const reds = platformReds(prs, lists).filter((r) => !debtor(r));
-  const groups = outageChecks(prs, lists, debtor, { anyGreen: true });
+  const groups = outageChecks(prs, lists, debtor);
   // A held PR read at the head it was seen red at, that run going again (a re-run of it): not red this
   // pass, but its `seen` stays, so a clearing meanwhile still owes it its re-run.
   const going = (x) => { const p = byPr.get(x.pr); return !!p && p.s.head === x.head && (p.s.checks ?? []).some((c) => String(c.runId) === String(x.run) && c.status !== 'completed'); };
@@ -514,7 +511,8 @@ export function outagePlan({ prs, lists, was, now, unread: failed = null }) {
     const owed = [...(owedOf.get(name) ?? [])];
     const owedKept = (text) => (owed.length ? { cleared: true, text, owed } : null);
     const w = kept?.cleared ? null : kept;
-    // A new hold starts only where no open PR passes the check (outageChecks).
+    // A new hold starts only where no open PR passes the check: its platform works for that PR, so
+    // each PR red on it is that PR's own failure.
     const green = !w && !!g && (prs ?? []).some(({ s }) => passes(s, name));
     if (!w && (!g || green)) { if (kept && owedKept(kept.text)) keep[name] = owedKept(kept.text); continue; }
     // The hold's own line while a PR is still red with it, and the line red on most PRs now too: a PR

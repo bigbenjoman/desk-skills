@@ -1218,11 +1218,8 @@ t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as 
 {
   const preview = (n, more = []) => ({ s: { pr: n, checks: [ok('tests'), red('Vercel Preview'), ...more] } });
   const lists = { required: ['tests', 'Vercel Preview', 'Lint'], advisory: [] };
-  const many = outageChecks([preview(701), preview(702), preview(703, [red('Lint', '1')]), { s: { pr: 704, checks: [ok('tests'), red('Lint', '2')] } }], lists);
-  t('outage: a platform status red on 3 open PRs is named with them, one with no run of it is not', JSON.stringify([...many]), '[["Vercel Preview",{"line":"","text":"","prs":[701,702,703]}]]');
-  const oneGreen = [preview(701), preview(702), preview(703), { s: { pr: 704, checks: [ok('tests'), ok('Vercel Preview')] } }];
-  t('outage: one open PR passing it means it is not one', outageChecks(oneGreen, lists).size, 0);
-  t('outage: unless anyGreen keeps the group, as a clearing hold reads it', JSON.stringify(outageChecks(oneGreen, lists, undefined, { anyGreen: true }).get('Vercel Preview')?.prs), '[701,702,703]');
+  const many = outageChecks([preview(701), preview(702), preview(703, [red('Lint', '1')]), { s: { pr: 704, checks: [ok('tests'), ok('Vercel Preview')] } }], lists);
+  t('outage: a platform status red on 3 open PRs is named with them, one green is not', JSON.stringify([...many]), '[["Vercel Preview",{"line":"","text":"","prs":[701,702,703]}]]');
   t('outage: on one PR there is none', outageChecks([preview(701)], lists).size, 0);
   t('outage: the threshold is 2 PRs', OUTAGE_PRS, 2);
   // #1250: a review or approval gate is never an outage, however many PRs it holds red.

@@ -172,31 +172,29 @@ export function queueEvents(before, after, { batch, archived = {}, elsewhere = (
     }
     if (own(archived, key)) ev(key, 'archived', {});
   }
-  for (const e of [...redBaseEvents(before, after), ...outageEvents(before, after)]) ev(null, e.type, e.data);
+  for (const c of BATCH_SPELLS) for (const e of spellEvents(before, after, c)) ev(null, e.type, e.data);
   return out;
 }
 
-// The batch's platform outage (the queue's `platform_outage`, pass/fix-tries.mjs decideOutage) starting
-// or clearing in this write: one platform_outage event as it is first recorded, one platform_clear as
-// it is cleared. A change to the same outage's record (its escalation, the checks it names) appends nothing.
-function outageEvents(before, after) {
-  const was = before?.platform_outage ?? null;
-  const now = after?.platform_outage ?? null;
-  if (was && !now) return [{ type: 'platform_clear', data: {} }];
-  if (!now || typeof now !== 'object' || (was && was.since === now.since)) return [];
-  const e = { type: 'platform_outage', data: { check: now.check, since: now.since, deadline: now.deadline } };
-  return invalid({ ...e, batch: STANDING, key: null }) ? [] : [e];
-}
+// The batch's conditions kept as one queue field each, a spell at a time, as each writer records it:
+// its red base (`base_red`, pass/base-gate.mjs decideBaseRed) and its platform outage
+// (`platform_outage`, pass/fix-tries.mjs decideOutage). `same`: the spell `before` held is the one now.
+const BATCH_SPELLS = [
+  { field: 'base_red', start: 'base_red', clear: 'base_green', same: (a, b) => a.branch === b.branch && a.since === b.since,
+    data: (r) => ({ check: r.check, since: r.since, deadline: r.deadline, merges: r.merges }) },
+  { field: 'platform_outage', start: 'platform_outage', clear: 'platform_clear', same: (a, b) => a.since === b.since,
+    data: (r) => ({ check: r.check, since: r.since, deadline: r.deadline }) },
+];
 
-// The batch's red base (the queue's `base_red`, pass/base-gate.mjs decideBaseRed) starting or clearing
-// in this write: one base_red event as a spell is first recorded, one base_green as it is cleared. Its
-// escalation, a change to the same spell's record, appends nothing.
-function redBaseEvents(before, after) {
-  const was = before?.base_red ?? null;
-  const now = after?.base_red ?? null;
-  if (was && !now) return [{ type: 'base_green', data: {} }];
-  if (!now || typeof now !== 'object' || (was && was.branch === now.branch && was.since === now.since)) return [];
-  const e = { type: 'base_red', data: { check: now.check, since: now.since, deadline: now.deadline, merges: now.merges } };
+// A batch condition starting or clearing in this write: one start event as a spell is first recorded,
+// one clear as it is cleared. A change to the same spell's record (its escalation, the checks it
+// names) appends nothing.
+function spellEvents(before, after, { field, start, clear, same, data }) {
+  const was = before?.[field] ?? null;
+  const now = after?.[field] ?? null;
+  if (was && !now) return [{ type: clear, data: {} }];
+  if (!now || typeof now !== 'object' || (was && same(was, now))) return [];
+  const e = { type: start, data: data(now) };
   return invalid({ ...e, batch: STANDING, key: null }) ? [] : [e];
 }
 

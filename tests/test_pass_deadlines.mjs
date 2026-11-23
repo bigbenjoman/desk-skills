@@ -268,6 +268,10 @@ t('and progress at Stage 5 90 minutes', EVIDENCE_PROGRESS_MS, 5400000);
   const next = outageWait(due.rec, at(150), 'main');
   t('AC3 once only: a later pass keeps when it was escalated', next.rec.escalated, at(121));
   t('AC3 and the decider reads both passes\' lines as one item', new Set([...ids([due.line]), ...ids([next.line])]).size, 1);
+  t('AC3 a held check with an Actions run: the pass keeps re-running it', due.line.includes('the pass keeps re-running it'), true);
+  const status = outageWait(rec, at(121), 'main', { runnable: false }).line;
+  t('AC3 a platform status with no Actions run is never said to be re-run: redeploy or push instead',
+    j([status.includes('re-running'), status.includes('no Actions run reports it, so nothing desk re-runs turns it green'), status.includes('redeploy there or push to the PRs')]), j([false, true, true]));
 }
 
 console.log(fails ? `${fails} failed` : 'all checks passed');
