@@ -82,7 +82,7 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
   const at = { ...payload, data: { repository: { pullRequest: { ...payload.data.repository.pullRequest, reviews: { nodes: [{ id: 'R2', author: { login: 'agent-pullbot' }, body: 'P1: still drops it', state: 'CHANGES_REQUESTED', commit: { oid: HEAD } }] } } } } };
   const as2 = drive(snap([[tried, pr([ok('tests'), red('🔐 Review gate', '88')])]], { stateChecks: EXT }), { feedback: { ...fb, payload: at }, reads: () => reads({ ctx: { stateChecks: EXT } }) });
   const c = applied(as2)[0]?.call;
-  t('#737 its review of the new head goes to a feedback try marked for it, with its text', `${c?.call} ${c?.fix?.kind} ${c?.fix?.external?.login} ${c?.fix?.threads?.[0]?.text.startsWith("agent-pullbot's review at the head: P1")}`, 'requeue feedback agent-pullbot true');
+  t('#737 its review of the new head goes to a feedback try marked for it, with its text', `${c?.call} ${c?.fix?.kind} ${c?.fix?.external?.login} ${c?.fix?.threads?.[0]?.text.startsWith("agent-pullbot's review body: P1")}`, 'requeue feedback agent-pullbot true');
 }
 
 // AC2: failed after two fix tries not spent on red checks naming a cause: stuck, and no third try.

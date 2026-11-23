@@ -945,7 +945,7 @@ export function feedbackFix(t, { pr, head, decision, threads, external = null })
     const named = left.map((x) => x.text).join('; ');
     return { call: 'stuck', why: `review feedback still open after ${tries(triesMade(done))}: ${what}${named ? ` — ${named}` : ''}` };
   }
-  return nextTry(done, pr, head, { kind: 'feedback', what: `review feedback: ${what}`, decision: decision ?? null, threads: left.map(({ id, text, last }) => ({ id, text, ...(last?.at ? { last_at: last.at } : {}) })), ...(external ? { external } : {}) });
+  return nextTry(done, pr, head, { kind: 'feedback', what: `review feedback: ${what}`, decision: decision ?? null, threads: left.map(({ id, text, last, body }) => ({ id, text, ...(body ? { body: true } : {}), ...(last?.at ? { last_at: last.at } : {}) })), ...(external ? { external } : {}) });
 }
 // The threads a finished feedback try quoted that the pass replies on and resolves: its worker
 // finished, did not park, and pushed past the try's head. [] otherwise.
@@ -1043,6 +1043,16 @@ export function bodyFeedback(body, clean = null) {
     && statesPhrase(text, phrase) != null && !leftOver(text).length);
 }
 
+// An outside reviewer's review body as feedback items: one per P0 to P2 finding it lists ({ id: null,
+// body: true, text }), or the body's text where it lists none the parser reads.
+const BODY_SEVS = ['P0', 'P1', 'P2'];
+function bodyItems(text, login) {
+  const found = reviewFindings(text, BODY_SEVS);
+  const item = (said) => ({ id: null, body: true, text: `${login}'s review body: ${said}` });
+  if (!found.length) return [item(text.replace(/\s+/g, ' ').trim().slice(0, 500))];
+  return found.map((x) => { const line = x.text.replace(/^[-*]\s+/, ''); return item(line.startsWith(x.sev) ? line : `${x.sev}: ${line}`); });
+}
+
 // A ready PR red on a §4 State check of kind external, which reads an outside reviewer's review: that
 // reviewer's to clear, so desk posts no review for it, and its review feedback goes ahead of desk's own
 // feedback route (feedbackFix's merge-feedback-first, whose reviewDecision stays changes-requested
@@ -1061,8 +1071,10 @@ export function externalTry(t, s, ctx, gate = evaluateGate(s.checks ?? [], { req
   // No review of theirs at the head: the PR waits for one, whatever the check's text names, and says so.
   if (!r?.reviewed || r.head !== s.head) return { call: 'wait', external: true, why: `its "${f.name}" check reads ${f.login}'s review, so it waits for ${f.login} to review the head` };
   // A clean review body, its counts all 0 whatever findings it lists as refuted, is no feedback (bodyFeedback).
-  // Any other body goes to the worker whole, as review feedback.
-  const body = r.body && bodyFeedback(r.body, ctx.clean) ? [{ id: null, text: `${f.login}'s review at the head: ${r.body.replace(/\s+/g, ' ').trim().slice(0, 500)}` }] : [];
+  // Any other body goes to the worker as review feedback: each P0 to P2 finding it lists, with its
+  // file:line, as an item of its own marked as the body's (`body`: no thread to answer it on), since one on
+  // a line outside the diff has no thread; a body listing none the parser reads goes as its text.
+  const body = r.body && bodyFeedback(r.body, ctx.clean) ? bodyItems(r.body, f.login) : [];
   // A thread the pass resolved this pass (ctx.resolvedNow) is read open still in the payload it read first.
   const threads = r.threads.filter((x) => !(ctx.resolvedNow ?? []).includes(x.id));
   const c = feedbackFix(t, { pr: s.pr, head: s.head, decision: r.state, threads: [...threads, ...body], external: { login: f.login, check: f.name } });
@@ -1411,10 +1423,16 @@ export function fixBrief(t, review = null) {
       ? `Your PR #${f.pr} is open and out of draft on this branch, and its "${f.external.check}" check, which reads ${f.external.login}'s review, is red: ${f.external.login} reviewed its head ${String(f.head).slice(0, 12)}${f.decision === 'CHANGES_REQUESTED' ? ' and requested changes' : ''}. Post no desk review on this PR: ${f.external.login}'s next review of the head you push is what the check reads. ` +
         `That check stays red while that review still lists a finding it blocks on, so carrying a finding, or leaving one for later, does not clear it: fix each finding quoted below, whatever its severity, or park (AUTOPILOT_PARK) naming the one you cannot fix and why. Ending with nothing pushed leaves the check red and spends this try.`
       : `Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not merge it while its review feedback is open (§3 merge-feedback-first)${f.decision === 'CHANGES_REQUESTED' ? ': a reviewer has requested changes' : ''}.`);
-    if (f.threads?.length) {
+    const threads = (f.threads ?? []).filter((x) => x.id || !x.body), inBody = (f.threads ?? []).filter((x) => !x.id && x.body);
+    if (threads.length) {
       lines.push('Its unresolved review threads:', '');
-      for (const x of f.threads) lines.push(`- ${x.text}`);
+      for (const x of threads) lines.push(`- ${x.text}`);
       lines.push('');
+    }
+    if (inBody.length) {
+      lines.push(`The findings ${f.external ? `${f.external.login}'s` : 'the'} review body lists, each with no thread of its own (one on a line outside the diff has none):`, '');
+      for (const x of inBody) lines.push(`- ${x.text}`);
+      lines.push('', 'Fix each of these as you would a thread. Having no thread, a body finding is answered in your gh pr comment, naming its file:line and quoting it, not on a thread.', '');
     }
     lines.push('Read each thread in full (gh pr view --json reviews,comments, or desk-gh read for the thread), and validate it with desk-review-response before changing any code: fix what is right, and for what is not, say why.',
       'Answer every thread with gh pr comment, naming it by its file:line and quoting its first line, saying what you changed in which commit or why the code stands. Do not resolve threads yourself: once you have pushed past this head and finished, the pass replies on each thread quoted here and resolves it.',
