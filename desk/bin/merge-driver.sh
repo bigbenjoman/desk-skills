@@ -568,42 +568,26 @@ NODE
   # by this driver) has merged, whatever GitHub lists: `prs` sees only the newest 100 merged PRs, so a
   # blocker whose PR is older than that (a long-lived draft, rebased and merged today) was never found
   # and held its successors forever. Lines in the shape `prs` prints; the PR is "?" when none is recorded.
-  # merged_at keeps only a ticket's first merge, so a live ticket requeued after it is not merged on it,
-  # nor on a listed older PR naming its key: only its current PR merging releases what waits on it (HOLD
-  # lines, the PR or "?"). Requeued is: waiting for its next worker (triaged or running, held behind its
-  # own blockers at the requeue, or failed before a worker spawned); respawned, in any state (merged_pr,
-  # which its spawn keeps); or, respawned before merged_pr was kept, done on a PR its status reads OPEN
-  # after merged_at, or done on a PR other than the one its status names. A status read before merged_at
-  # is from before the driver merged it, so it releases at once. A parked ticket never requeued (one a
-  # stop holds included), or a done one never respawned, keeps the merge it records.
+  # merged_at keeps only a ticket's first merge, so a live ticket requeued after it (batch-state.mjs
+  # reworked) is not merged on it, nor on a listed older PR naming its key: only its current PR merging
+  # releases what waits on it (HOLD lines, the PR or "?").
   local merged known listed holds h
   known=$(node --input-type=module - "$DESK_QUEUE" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" <<'NODE'
 import { readFileSync } from 'node:fs';
 const { attachArchive, everyTicket, mergedPrs } = await import(`${process.argv[3]}/queue-store.mjs`);
-const { prStatusOf } = await import(`${process.argv[3]}/batch-state.mjs`);
-const { blockersOf } = await import(`${process.argv[3]}/queue-states.mjs`);
+const { reworked, awaitingWorker } = await import(`${process.argv[3]}/batch-state.mjs`);
 const q = { tickets: {} };
 try { q.tickets = JSON.parse(readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
 const live = q.tickets;
-const through = (t) => t.state === 'done' && (t.result?.pr == null || prStatusOf(t)?.state === 'MERGED');
-// Waiting for its next worker: queued or running, held behind its blockers (held_by: a stop holds behind
-// none), or failed before a worker spawned (a requeue clears session_id, and only a spawn sets it).
-const awaiting = (t) => ['triaged', 'running'].includes(t.state)
-  || (t.state === 'parked' && String(t.park?.question ?? '').startsWith('held by orchestrator') && blockersOf(t).length > 0)
-  || (t.state === 'failed' && t.spawn_failed === true && !t.session_id);
-const openLater = (t) => prStatusOf(t)?.state === 'OPEN' && Date.parse(t.pr_status.at) > Date.parse(t.merged_at);
-// Done on a PR other than the one its status names: that status is from an earlier round.
-const otherRound = (t) => t.state === 'done' && t.result?.pr != null && t.pr_status?.pr != null && Number(t.pr_status.pr) !== Number(t.result.pr);
-const requeued = (t) => !through(t) && (awaiting(t) || mergedPrs(t).length > 0 || openLater(t) || otherRound(t));
 // Its current PR: none yet while it waits for a worker, else the one it records, or its draft, unless
 // that is a PR it kept as merged (a requeue keeps it, and only a spawn clears the result).
 const current = (t) => {
-  const n = awaiting(t) ? null : t.result?.pr ?? t.draft_pr ?? null;
+  const n = awaitingWorker(t) ? null : t.result?.pr ?? t.draft_pr ?? null;
   return n == null || mergedPrs(t).some((x) => x.pr === Number(n)) ? '?' : n;
 };
 // Done tickets whose PR merged move to the archive beside the queue (queue-store.mjs), live ones first.
 for (const [k, t] of Object.entries(everyTicket(attachArchive(q, process.argv[2])))) {
-  if (t && Object.hasOwn(live, k) && t.merged_at && requeued(t)) console.log(`HOLD\t${current(t)}\t${k}`);
+  if (t && Object.hasOwn(live, k) && reworked(t)) console.log(`HOLD\t${current(t)}\t${k}`);
   else if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
 }
 NODE
