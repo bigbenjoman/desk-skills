@@ -92,6 +92,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, describeCrash, isHeld, spinePark, IDLE_RECHECK_MS, RUN_RECHECK_MS, waitingOnRun } from './batch-state.mjs';
 import { batchPinned, runBatches, alive, orchestratorHolder } from './batches.mjs';
+import { blockersOf } from './queue-states.mjs';
 import { tryLockFile, unlockFile, writeTextAtomic } from './dir-lock.mjs';
 import { archiveCheck } from './batch.mjs';
 import { intakeQuery, prOpen, handedByIntake, takePushed, pushWaiting } from './intake.mjs';
@@ -679,7 +680,7 @@ function batchInterval(intake) {
   // outside key counts only while it is still in held_by and in no ticket here: a person's release
   // clears held_by and leaves held_outside behind.
   const heldOutside = (t) => {
-    const by = String(t.held_by ?? '').split('|');
+    const by = blockersOf(t);
     return isHeld(t) && String(t.held_outside ?? '').split('|').some((k) => k && by.includes(k) && !q.tickets[k]);
   };
   // A park waiting on an Actions run or a PR's checks is rechecked sooner, so it is requeued within
