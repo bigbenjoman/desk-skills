@@ -191,9 +191,9 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
   const replied = { ...worked, left: [{ id: 'TH1', text: 'a thread', last: { login: 'agent-pullbot', at: '2026-11-23T11:00:00Z', first: 'Not fixed: line 4 still drops it' } }] };
   const open = drive(snap([[triedAt, green]]), { feedback: replied });
   t('a thread with a later comment stays open', types(open).includes('settle-worked'), false);
-  const held = snap([[triedAt, green]], { reviewer: { key: 'reviewer', kind: 'mismatch', why: 'the gate counts another account' } });
+  const held = snap([[triedAt, pr([ok('tests'), red('desk-review', '9')])]], { gate: { required: ['tests', 'desk-review'], advisory: [] }, stateChecks: [{ name: 'desk-review', kind: 'verdict' }], reviewer: { key: 'reviewer', kind: 'mismatch', why: 'the gate counts another account' } });
   const heldDone = drive(held, { feedback: worked, 'settle-worked': (a) => a.worked.map((x) => x.id) });
-  t('a PR the reviewer check holds has the thread resolved too', heldDone.find((a) => a.type === 'settle-worked')?.worked.map((x) => x.id)?.join(), 'TH1');
+  t('a PR the reviewer check holds has the thread resolved too', j([heldDone.find((a) => a.type === 'settle-worked')?.worked.map((x) => x.id)?.join(), heldDone.some((a) => a.type === 'gate-hold')]), j(['TH1', true]));
 }
 
 // A §4 Check builds check, built on its own: nothing is applied once the build starts.
