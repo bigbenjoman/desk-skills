@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, shippedSet, keyPattern, doneOnPr } from './batch-state.mjs';
+import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, shippedSet, keyPattern, doneOnPr, reworked } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
 import { prNames } from './recoveries.mjs';
@@ -354,7 +354,10 @@ function requeue(q, key, { handedBack = false } = {}) {
   // leaves one on a ticket that is not held.
   // Blockers in no batch (held_outside) stay until pass.mjs lifts them.
   const outside = String(t.held_outside ?? '').split('|').filter((p) => p && !q.tickets[p]);
-  const pending = blockersOf(t).filter((p) => (q.tickets[p] ? !q.tickets[p].merged_at : outside.includes(p)));
+  // A blocker merged once and gone round again since (batch-state.mjs reworked) has not merged its current
+  // work, as the merge driver reads it: it holds this ticket still. An archived one is never reworked.
+  const live = new Set(Object.keys(q.tickets));
+  const pending = blockersOf(t).filter((p) => (q.tickets[p] ? !q.tickets[p].merged_at || (live.has(p) && reworked(q.tickets[p])) : outside.includes(p)));
   // Done by another's PR, its merged_at was that PR's merge: sent back for work of its own, it has none
   // yet, or the merge driver and the holds above would read the work as merged.
   const byOther = t.done_by?.pr != null;

@@ -4,7 +4,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { personClears } from './clears-when.mjs';
-import { attachArchive } from './queue-store.mjs';
+import { attachArchive, mergedPrs } from './queue-store.mjs';
 import { PARK_KINDS, blockersOf } from './queue-states.mjs';
 import { postMergeUnmade } from './harvest.mjs';
 
@@ -57,6 +57,25 @@ export const openUnknowns = (unknowns, t) => {
 // The PR state the last pass recorded for a done ticket's PR (pr_status), or null when none was read.
 // Nothing here calls GitHub.
 export const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null && t.pr_status?.pr === t.result.pr ? t.pr_status : null);
+
+// merged_at keeps only a ticket's first merge, so a live ticket requeued after it is not merged on it: only
+// its current PR merging counts (merge-driver.sh release_chain, queue.mjs requeue's own holds). Whether t,
+// merged once, has gone round again since: waiting for its next worker (triaged or running, held behind its
+// own blockers at the requeue, or failed before a worker spawned); respawned, in any state (merged_pr, which
+// its spawn keeps); or, respawned before merged_pr was kept, done on a PR its status reads OPEN after
+// merged_at, or done on a PR other than the one its status names. A status read before merged_at is from
+// before the driver merged it, so it counts at once. A parked ticket never requeued (one a stop holds
+// included), or a done one never respawned, keeps the merge it records. Never for an archived ticket.
+const through = (t) => t.state === 'done' && (t.result?.pr == null || prStatusOf(t)?.state === 'MERGED');
+// Waiting for its next worker: queued or running, held behind its blockers (held_by: a stop holds behind
+// none), or failed before a worker spawned (a requeue clears session_id, and only a spawn sets it).
+export const awaitingWorker = (t) => ['triaged', 'running'].includes(t.state)
+  || (t.state === 'parked' && String(t.park?.question ?? '').startsWith('held by orchestrator') && blockersOf(t).length > 0)
+  || (t.state === 'failed' && t.spawn_failed === true && !t.session_id);
+const openLater = (t) => prStatusOf(t)?.state === 'OPEN' && Date.parse(t.pr_status.at) > Date.parse(t.merged_at);
+// Done on a PR other than the one its status names: that status is from an earlier round.
+const otherRound = (t) => t.state === 'done' && t.result?.pr != null && t.pr_status?.pr != null && Number(t.pr_status.pr) !== Number(t.result.pr);
+export const reworked = (t) => !!t?.merged_at && !through(t) && (awaitingWorker(t) || mergedPrs(t).length > 0 || openLater(t) || otherRound(t));
 
 // A ticket shipped outside its worker, recorded done: the `queue.mjs` arguments pass.mjs and
 // needs-you.mjs both write. Where the queue's PR status is that PR's, it is marked merged as well, or the

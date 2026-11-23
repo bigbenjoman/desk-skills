@@ -123,6 +123,17 @@ check "DS-714 AC5: a lane C park held behind a merged blocker is not released to
   '[ "$(qf T-16 .state)" = parked ] && [[ "$(qf T-16 .park.question)" == "lane C"* ]] && [ "$(qf T-16 .held_by)" = T-11 ] && ! echo "$out" | grep -q "RELEASED T-16"'
 q drop T-16
 q drop T-11; q drop T-12; q drop T-13; q drop T-14
+
+# ---- #1306: requeue holds a ticket behind a blocker merged once and done again on a PR still open ------
+# T-52 is parked for its own reason (lane C) with its hold on T-51 beside it, as DS-714's; T-51 merged on
+# 451, was requeued, and is done again on 452. A requeue of T-52 keeps it behind T-51, not to a worker.
+q add T-51 Task A; q set T-51 state=done branch=fix/T-51 result.pr=451 pr_status.pr=451 pr_status.state=MERGED; q merged T-51 2026-11-02T02:20:59.000Z
+q requeue T-51; q set T-51 state=done result.pr=452
+q add T-52 Task B; q set T-52 state=triaged branch=fix/T-52; q hold T-52 T-51; q park T-52 "lane C — needs a plan"; q set T-52 lane=B
+rq=$(node "$B/queue.mjs" requeue T-52 2>&1); rc=$?
+check "#1306 a requeue keeps a ticket behind a blocker done again on a PR still open after its first merge" \
+  '[ $rc -eq 0 ] && [ "$(qf T-52 .state)" = parked ] && [ "$(qf T-52 .held_by)" = T-51 ] && echo "$rq" | grep -q "held behind T-51 until they merge"'
+q drop T-52; q drop T-51
 check "AC3: the red PR is never merged"                              '! grep -q "^104 " "$T/merges.log" && echo "$out" | grep -q "#104 red"'
 check "AC5: every merge went into the default branch"                '[ "$(cut -d" " -f2 "$T/merges.log" | sort -u)" = main ]'
 check "AC5: a PR on another base is never the batch'\''s"            '! grep -q "^105 " "$T/merges.log" && ! echo "$out" | grep -q "#105"'
