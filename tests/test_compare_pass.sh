@@ -126,7 +126,7 @@ fieldtree lease8 'port: null' "$(stale 47704 FB-1)\n$(stale 47705 FB-2)\nspawned
 cmp "$T/lease1" "$T/lease8"
 check "DS-946 AC2 a ticket given a port on the base and none on the head is still listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 port: base port <PORT1>, head null"'
 
-for form in '15d 12h|15d 13h' '2h 05m|2h 06m' '2h 5m|2h 6m' '0m 05s|0m 09s' '0m|1m'; do
+for form in '15d 12h|15d 13h' '2h 05m|2h 06m' '2h 5m|2h 6m' '0m 05s|0m 09s' '0m|1m' '487 minutes|488 minutes' '1 minute|2 minutes'; do
   fieldtree span1 '' "A-1 in_progress for ${form%|*}"; fieldtree span2 '' "A-1 in_progress for ${form#*|}"
   cmp "$T/span1" "$T/span2"
   check "DS-819 AC2 an elapsed time ${form%|*} against ${form#*|} is not reported" "$same0"
@@ -137,6 +137,9 @@ check "DS-819 AC2 an elapsed time in days two days apart is listed" '[ $rc = 1 ]
 fieldtree span1 '' 'A-1 in_progress for 3m'; fieldtree span2 '' 'A-1 in_progress for 9m'
 cmp "$T/span1" "$T/span2"
 check "an elapsed time in bare minutes six minutes apart is listed" '[ $rc = 1 ] && echo "$out" | grep -qF "for 3m" && echo "$out" | grep -qF "for 9m"'
+fieldtree span1 '' 'A-1 in_progress for 60 minutes'; fieldtree span2 '' 'A-1 in_progress for 120 minutes'
+cmp "$T/span1" "$T/span2"
+check "an elapsed time in worded minutes an hour apart is listed" '[ $rc = 1 ] && echo "$out" | grep -qF "for 60 minutes" && echo "$out" | grep -qF "for 120 minutes"'
 
 # An error the pass cuts at a length, at a different place on each tree as a port before the cut is
 # longer on one, carrying each tree's own path and SHA: cut on both trees in the queue, and on one only

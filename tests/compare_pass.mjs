@@ -96,11 +96,12 @@ async function record(argv) {
 
 // An ISO time, a time to the minute in UTC as the pass prints one, or epoch seconds or milliseconds;
 // or an elapsed time as worker-cost.mjs wallTime ("0m 01s", "2h 05m") or gate.mjs prints one
-// ("2h 5m", "15d 12h", or under an hour a bare "4m"), which two runs a second apart print differently.
-const TIME = /\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?|\b\d{4}-\d\d-\d\d \d\d:\d\d UTC\b|\b1\d{9}(?:\d{3})?\b|\b\d+d \d\d?h\b|\b\d+h \d\d?m\b|\b\d+m \d\ds\b|\b\d+m\b(?! \d)/g;
+// ("2h 5m", "15d 12h", or under an hour a bare "4m"), or the pass's word form ("red for 487 minutes"),
+// which two runs a second apart print differently.
+const TIME = /\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?|\b\d{4}-\d\d-\d\d \d\d:\d\d UTC\b|\b1\d{9}(?:\d{3})?\b|\b\d+d \d\d?h\b|\b\d+h \d\d?m\b|\b\d+m \d\ds\b|\b\d+m\b(?! \d)|\b\d+ minutes?\b/g;
 const SPAN = /^(\d+)([dhm]) (\d\d?)([hms])$/;
-// gate.mjs since's span under an hour: whole minutes alone ("0m", "59m").
-const MINUTES = /^(\d+)m$/;
+// gate.mjs since's span under an hour, or the pass's word form: whole minutes alone ("0m", "59m", "487 minutes").
+const MINUTES = /^(\d+)(?:m| minutes?)$/;
 const isSpan = (t) => SPAN.test(t) || MINUTES.test(t);
 const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const TMP = /(?:\/private)?(?:\/var\/folders\/[^/\s"']+\/[^/\s"']+\/T|\/tmp)\/(?:tmp\.)?[A-Za-z0-9._-]*[A-Za-z0-9]{6,}/g;
