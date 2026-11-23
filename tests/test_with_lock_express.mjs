@@ -1,6 +1,6 @@
 // suite: with-lock express lane (light-express-lane on: a small light run finding every pool slot held takes the lane; a large run never does; its grant line; admission counts it)
 // layer: L2
-// covers: desk/bin/with-lock.sh desk/bin/admission.mjs desk/bin/admit-ledger.mjs desk/bin/slot-lease.mjs desk/bin/machine.mjs
+// covers: desk/bin/with-lock.sh desk/bin/admission.mjs desk/bin/admit-ledger.mjs desk/bin/slot-lease.mjs desk/bin/machine.mjs desk/bin/suite-wait.mjs
 // Real wrapper runs against a scratch lock directory, lease directory and machine profile per case,
 // on the mkdir path and, where flock(1) exists, the flock path. A small run is one called with
 // DESK_LIGHT_SMALL=1, as tests/related.sh calls it.
@@ -58,13 +58,24 @@ const hold = async (env, args, { ms = 10_000 } = {}) => {
 };
 // The light lock's holders by where they hold it: pool slot numbers, and `express` for the lane.
 const holding = (c) => readdirSync(c.locks).flatMap((f) => {
-  const m = /^desk-light(-express)?\.lock(?:\.(\d+))?(\.d|\.pid)$/.exec(f);
+  const m = /^desk-light\.lock(?:\.(\d+|express))?(\.d|\.pid)$/.exec(f);
   if (!m) return [];
-  const file = m[3] === '.d' ? join(c.locks, f, 'pid') : join(c.locks, f);
+  const file = m[2] === '.d' ? join(c.locks, f, 'pid') : join(c.locks, f);
   const pids = existsSync(file) ? readFileSync(file, 'utf8').split(/\s+/).filter(Boolean).map(Number) : [];
-  return pids.some(alive) ? [m[1] ? 'express' : Number(m[2] ?? 1)] : [];
+  return pids.some(alive) ? [m[1] === 'express' ? 'express' : Number(m[1] ?? 1)] : [];
 }).sort();
 const ledger = (c) => (existsSync(join(c.locks, 'desk-admit.ledger')) ? readFileSync(join(c.locks, 'desk-admit.ledger'), 'utf8').trim().split('\n').map((l) => l.split(' ')[5]) : []);
+// The ledger once it holds `want`, or as it stands after 5 s: the wrapper on the mkdir path writes its
+// express line after it starts the command.
+const ledgerHolds = async (c, want) => {
+  for (let i = 0; i < 100 && JSON.stringify(ledger(c)) !== JSON.stringify(want); i++) await sleep(50);
+  return ledger(c);
+};
+// Who holds the light lock as the pass and a waiting run see it (suite-wait.mjs), with this case's lock
+// and lease directories.
+const seenHolders = (c) => spawnSync('node', ['--input-type=module', '-e',
+  `import { lockHolders } from ${JSON.stringify(join(root, 'desk', 'bin', 'suite-wait.mjs'))}; console.log(JSON.stringify([...lockHolders(process.argv[1], { locks: 'light' })]));`, c.locks],
+{ env: c.env, encoding: 'utf8' }).stdout.trim();
 
 try {
   for (const [path, extra] of PATHS) {
@@ -82,6 +93,7 @@ try {
     // AC4: a small run holds the lane; a second small run waits for either, and takes the pool slot when it frees.
     const lane = await hold(c.small, ['light']);
     t(`DS-980 AC4 ${path} path: a small run holds the lane beside the full pool`, holding(c), [1, 'express']);
+    t(`DS-980 ${path} path: the pass and a waiting run see the lane's holder as holding the light lock`, JSON.parse(seenHolders(c) || '[]').includes(lane.c.pid), true);
     const second = await hold(c.small, ['light'], { ms: 3000 });
     t(`DS-980 AC4 ${path} path: a second small run waits while the pool and the lane are held`, [second.started(), /all 1 slots and the express lane held/.test(second.err())], [false, true]);
     full.release(); await full.done;
@@ -120,6 +132,25 @@ try {
     t('DS-980 slot lease shadow: the express grant takes no lease and logs no would-refuse', [r.status, grants(c).at(-1), refused.length], [0, 'express', 0]);
     a.release(); await a.done;
   }
+  // The slot lease kind on: the broker's pool full, a large run waits for it, and a small run takes the
+  // lane (AC2, AC3, AC7) and holds it while it runs, so a second small run waits (AC4).
+  {
+    const c = caseOf({ rows: { ...ROWS, 'lease-kinds': 'slot=on' } });
+    const a = await hold(c.env, ['light']);
+    const big = wl(c.env, ['light', '--timeout', '3', '--', 'true']);
+    t('DS-980 AC3 slot lease on: the pool full, a large run waits for it (75)', big.status, 75);
+    const t0 = Date.now();
+    const lane = await hold(c.small, ['light', '--timeout', '30'], { ms: 8000 });
+    t('DS-980 AC2 slot lease on: the pool full and the lane free, a small run starts at once in the lane',
+      [lane.started(), Date.now() - t0 < 8000, /takes the express lane$/m.test(lane.err()), holding(c)], [true, true, true, ['express']]);
+    t('DS-980 AC7 slot lease on: its grant line names the express lane', grants(c), ['pool', 'express']);
+    const second = wl(c.small, ['light', '--timeout', '3', '--', 'true']);
+    t('DS-980 AC4 slot lease on: a second small run waits while the pool and the lane are held (75)', second.status, 75);
+    lane.release(); await lane.done;
+    const after = wl(c.small, ['light', '--timeout', '10', '--', 'true']);
+    t('DS-980 slot lease on: the lane frees when its run ends', [after.status, grants(c).at(-1)], [0, 'express']);
+    a.release(); await a.done;
+  }
   // AC9: admission on, the floor held and no headroom, so a small run takes the lane; once the readings
   // show room for one run, the next light run is judged with the express grant among the recent admits
   // at light-run-gb, and that leaves no room.
@@ -128,7 +159,7 @@ try {
     const c = caseOf({ rows, sample: reading({ load: 50 }) });
     const a = await hold(c.env, ['light']);
     const lane = await hold(c.small, ['light'], { ms: 5000 });
-    t('DS-980 AC9 with no headroom a small run takes the lane', [lane.started(), holding(c), ledger(c)], [true, [1, 'express'], ['express']]);
+    t('DS-980 AC9 with no headroom a small run takes the lane', [lane.started(), holding(c), await ledgerHolds(c, ['express'])], [true, [1, 'express'], ['express']]);
     // 30 GB free: one run of 12 GB leaves 18, over the 8 reserve; the express grant's 12 too leaves 6.
     c.readings(reading({ freeGb: 30 }));
     const r = wl(c.env, ['light', '--timeout', '3', '--', 'true']);

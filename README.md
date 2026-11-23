@@ -939,7 +939,8 @@ A run whose suites' seconds in `tests/suite_durations.json` total 300 or less as
 suite with no record, or every suite, makes it large. Where the machine profile's `light-express-lane`
 row is `on` (`desk-env machine set light-express-lane=on`; off when unset), a small run that finds
 every light slot it may take held starts at once in the light lock's express lane, one slot of its own
-outside `light-lock-max`; its lease log grant line says `"lane": "express"`.
+outside `light-lock-max` (`desk-light.lock.express`), whatever the slot lease kind; its lease log grant
+line says `"lane": "express"`.
 `bash tests/run.sh -j 3` runs up to three suites at once, the longest
 in `tests/suite_durations.json` first, each reported in one piece in name order (CI's shards do).
 Without `-j` it runs as many as `desk-env get test-cap` allows, or a quarter of the cores where that

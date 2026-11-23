@@ -96,12 +96,12 @@ const SIZING_RULES = Object.freeze({
 });
 export const SIZING_KEYS = Object.freeze(Object.keys(SIZING_RULES));
 
-// The bench's quota settings: Sizing rows no proposal makes, set by `desk-env machine set` from the
-// user's answers and read by bench-quota.mjs.
 // The light lock's express lane: one fixed slot of its own, never gated on headroom, that only a run
 // with-lock.sh is told is small may take. Off unless the row is exactly `on`.
-export const EXPRESS_LANE_KEY = 'light-express-lane';
+const EXPRESS_LANE_KEY = 'light-express-lane';
 const EXPRESS_LANE_VALUES = Object.freeze(['on', 'off']);
+// The bench's quota settings: Sizing rows no proposal makes, set by `desk-env machine set` from the
+// user's answers and read by bench-quota.mjs.
 export const BENCH_CAP_KEY = 'bench-cap-points';
 export const BENCH_RESERVE_KEY = 'bench-reserve-percent';
 const BENCH_RULES = Object.freeze({
