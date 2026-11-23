@@ -14,9 +14,10 @@
 //   check {key, cond}             -> the clears-when check (clears-when.mjs checkCond): {holds, note} or {error}
 //   own-merged {key}              -> {pr: the ticket's own merged PR, or null}, or {error} where unread
 //   tail-after-merge {key}        -> false where its after-merge steps were not requeued (tailAfterMerge)
-//   other-merged {key, pr}        -> {why, at} where PR pr is not the ticket's own (shared.mjs notOwnPr) and
-//                                    the ticket holds no work of its own (pr itself, recorded on it, is not),
-//                                    `at` when pr merged; else null, or {error} where unread
+//   other-merged {key, pr}        -> {why, at, covered?} where PR pr is not the ticket's own (shared.mjs
+//                                    notOwnPr) and the ticket holds no work of its own (pr itself, recorded on
+//                                    it, is not; nor commits changing only files pr changed, which `covered`
+//                                    names), `at` when pr merged; else null, or {error} where unread
 //   drop-worktree {key}           -> what became of its worktree, a line for the report, or null with none
 //   write {key, fields}           -> whether the queue write was recorded
 //   requeue {key}                 -> queue.mjs requeue's {ok, out}
@@ -103,7 +104,8 @@ function* doneByOther(t, n, other, what, s) {
     ...(t.result?.pr != null ? ['result.pr=null'] : []), ...(t.draft_pr != null ? ['draft_pr=null'] : []), ...(other.at ? [`merged_at=${other.at}`] : []),
     `done_by=${JSON.stringify({ pr: Number(n), why: other.why })}`, `result.summary=done by PR #${n}, not its own (${other.why}): "${what}" holds`] }) {
     const wt = s.dry ? null : yield { type: 'drop-worktree', key: t.key };
-    yield say(t.key, 'done', `${t.key}: "${what}" holds, and #${n} is not its own (${other.why}) with no work of its own beside it: recorded done by #${n}, no worker spawned${wt ? `; ${wt}` : ''}`);
+    const beside = other.covered ? `, and ${other.covered}` : ' with no work of its own beside it';
+    yield say(t.key, 'done', `${t.key}: "${what}" holds, and #${n} is not its own (${other.why})${beside}: recorded done by #${n}, no worker spawned${wt ? `; ${wt}` : ''}`);
   }
 }
 function* settleClear(t, s) {
