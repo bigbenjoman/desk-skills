@@ -294,7 +294,7 @@ function scrubCode(t) {
   const open = []; // the brace depth each `${` we are inside opened
   const parens = []; // for each open `(`, whether it is an if, while, for or with condition's
   let last = ''; // the last token of code, to tell a regex from a division
-  let member = false; // whether that token, a word, follows a `.` (`x.with`, a property and not a keyword)
+  let member = false; // whether that token, a word, follows a `.` or `#` (`x.with`, `this.#with`: a property, not a keyword)
   const regexNext = () => !last || /^[(,=:[!&|?{};+\-*%<>~^]$/.test(last) || /^(?:return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await)$/.test(last);
   // A template's text from i: -> true where it stops at a `${`, false at its closing backtick.
   const text = () => {
@@ -305,12 +305,13 @@ function scrubCode(t) {
     }
     return false;
   };
-  const word = /[\w$]+/y;
+  // A word, or a number with its decimal point (`1.`, `1.5e3`), so the point is no property access.
+  const word = /\d[\w$]*(?:\.\d*(?:[eE][+-]?\d+)?)?|[\w$]+/y;
   while (i < t.length) {
     const c = t[i];
     word.lastIndex = i;
     const w = word.exec(t);
-    if (w) { out += w[0]; member = last === '.'; last = w[0]; i += w[0].length; continue; }
+    if (w) { out += w[0]; member = last === '.' || last === '#'; last = w[0]; i += w[0].length; continue; }
     if (c === '`' || (c === '}' && open.at(-1) === depth)) {
       if (c === '}') { open.pop(); depth--; }
       i++;

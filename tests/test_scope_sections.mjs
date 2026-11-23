@@ -534,7 +534,10 @@ t('DS-1002 a function reaching the edited one through a spread, a nested templat
   rowsAs('if (a) /"/.test(a) && fmt("y");\n  return a;'),
   // A member call named like a condition's keyword (`.with(`): the `/` after its `)` divides.
   rowsAs("return [a.with(a) / 2 + '/', fmt(a) + ''];"),
-].map(fmtEdit), Array(6).fill('some: test_lint.sh test_needs.mjs test_q.mjs'));
+  rowsAs("return [new (class { #with(x) { return x; } m(x) { return this.#with(x) / 2 + '/'; } })().m(a), fmt(a) + ''];"),
+  // A number's trailing point (`1.`) is no member access: the `if` after it is a condition.
+  rowsAs('const n = a + 1.\n  if (a) /"/.test(a) && fmt("y");\n  return n;'),
+].map(fmtEdit), Array(8).fill('some: test_lint.sh test_needs.mjs test_q.mjs'));
 const isMainQ = (guard, cond) => hubQ.replace(/const isMain = \(\(\) => \{[\s\S]*?\}\)\(\);\nif \(isMain\)/, `const isMain = ${guard};\nif (${cond})`);
 t('DS-1002 a guard function called as `if (isMain())` keeps the command line command-only; one tested uncalled, or a launch test an || or a ternary can turn, does not', [
   drawEdit(isMainQ('() => process.argv[1] === fileURLToPath(import.meta.url)', 'isMain()')),
