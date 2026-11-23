@@ -202,13 +202,19 @@ if [ "$name" = test ] || [ "$name" = tsc ]; then
   case "$want" in ''|*[!0-9]*|0) ;; *) slots="$want" ;; esac
 fi
 # Headroom admission on (admission.mjs pool prints `on <floor> <ceiling>`): `slots` is the floor, and
-# the slots from there to `ceiling` are taken only on an admit. Anything else leaves it off.
+# the slots from there to `ceiling` are taken only on an admit. A ceiling at the floor has no slot to
+# admit to, so the lock is today's. Anything else leaves it off.
 admit_on=""; ceiling="$slots"
 case "$name" in
   test|tsc|light)
     read -r amode afloor aceil <<<"$(node "$here/admission.mjs" pool "$name" 2>/dev/null)"
     if [ "${amode:-}" = on ]; then
-      case "${afloor:-}${aceil:-}" in ''|*[!0-9]*) ;; *) [ "$afloor" -ge 1 ] && [ "$aceil" -ge "$afloor" ] && { admit_on=1; slots="$afloor"; ceiling="$aceil"; } ;; esac
+      case "${afloor:-}${aceil:-}" in ''|*[!0-9]*) ;; *)
+        if [ "$afloor" -ge 1 ] && [ "$aceil" -ge "$afloor" ]; then
+          slots="$afloor"; ceiling="$aceil"
+          [ "$aceil" -gt "$afloor" ] && admit_on=1
+        fi ;;
+      esac
     fi ;;
 esac
 recheck="${DESK_ADMIT_RECHECK_S:-10}"
@@ -241,6 +247,13 @@ admit_round() {
 next_check=0
 # Slot i's lock path: slot 1 is the original path.
 slot_path() { if [ "$1" -eq 1 ]; then echo "$lock"; else echo "$lock.$1"; fi; }
+# The slots a round tries, in order: the floor's; a run let in above the floor tries the slots above it
+# first, so it holds the one its admit counts, and the floor's after.
+slot_order() {
+  local i
+  if [ -n "$admitted" ]; then i=$((slots + 1)); while [ "$i" -le "$ceiling" ]; do echo "$i"; i=$((i + 1)); done; fi
+  i=1; while [ "$i" -le "$slots" ]; do echo "$i"; i=$((i + 1)); done
+}
 # Where flock's lock is taken and then exec'd into the command, record the command's pid (exec keeps
 # it) beside slot $1, so a reader can tell the holder: the autopilot pass, telling a worker running its
 # suite from a wedged one. The file outlives the holder; a reader checks the pid is still there.
@@ -263,16 +276,13 @@ if command -v flock >/dev/null 2>&1; then
     exec "$@"
   fi
   # Several slots, or admission on: try each without blocking, and wait 2 s between rounds. A run let
-  # in above the floor tries every slot up to the ceiling, at once and then each round.
+  # in above the floor tries every slot up to the ceiling (slot_order), at once and then each round.
   waited=0
   while :; do
-    upto="$slots"; [ -n "$admitted" ] && upto="$ceiling"
-    i=1
-    while [ "$i" -le "$upto" ]; do
+    for i in $(slot_order); do
       exec 9>>"$(slot_path "$i")" || exit 2
       flock -n 9 && { holder "$i"; held; granted "$$" "$@"; exec "$@"; }
       exec 9>&-
-      i=$((i + 1))
     done
     admit_round && continue
     [ -n "$timeout" ] && [ "$waited" -ge "$timeout" ] && gave_up
@@ -318,12 +328,9 @@ waited=0
 last_holders=""
 ldir=""
 while [ -z "$ldir" ]; do
-  upto="$slots"; [ -n "$admitted" ] && upto="$ceiling"
-  i=1
-  while [ "$i" -le "$upto" ]; do
+  for i in $(slot_order); do
     d="$(slot_path "$i").d"   # distinct from flock's file so the two can never be confused
     if take "$d"; then ldir="$d"; break; fi
-    i=$((i + 1))
   done
   [ -n "$ldir" ] && break
   admit_round && continue

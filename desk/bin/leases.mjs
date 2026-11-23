@@ -38,7 +38,7 @@ import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lock, sleepSync, unlock, writeJsonAtomic } from './dir-lock.mjs';
 import { DEFAULT_LEASE_MODE, LEASE_KINDS, admissionRows, leaseKindsProblem, parseLeaseKinds, parseMeminfo, profileValue } from './machine.mjs';
-import { liveAdmits, readLedger } from './admit-ledger.mjs';
+import { liveAdmits, poolRows, readLedger, startStamp } from './admit-ledger.mjs';
 
 const HOME = process.env.HOME || homedir();
 const expandHome = (p) => p.replace(/^~(?=\/|$)/, HOME);
@@ -66,31 +66,30 @@ export const storeFile = (dir = leaseDir()) => join(dir, 'leases.json');
 export const logFile = (dir = leaseDir()) => join(dir, 'leases.log.jsonl');
 
 const whole = (v) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) > 0 ? Number(v) : null);
-// The heavy and light slot pools, each { floor, ceiling, current }: the heavy floor as the test lock
-// has it (testLockSlots), the light floor 1. With headroom admission on (the machine profile's
-// lock-admission row), the floors and ceilings are its rows, and the current size is the floor plus
-// the runs admission let in above it that still run (admit-ledger.mjs), never past the ceiling.
-// Otherwise each pool is its floor alone.
+// The heavy and light slot pools, each { floor, ceiling, current }, as admit-ledger.mjs poolRows gives
+// their floors and ceilings. With headroom admission on (the machine profile's lock-admission row),
+// the current size is the floor plus the runs admission let in above it that still run (the ledger,
+// a run's process start time checked where `env` has psRows), never past the ceiling; otherwise each
+// pool is its floor alone. `env` is desk-env's exports, or machineValue and testLockSlots.
 export function slotPools(env) {
-  const heavy = env.testLockSlots();
-  const flat = { heavy: { floor: heavy, ceiling: heavy, current: heavy }, light: { floor: 1, ceiling: 1, current: 1 } };
   // The rows as the profile holds them, as admission.mjs reads them: a TODO is a row that does not read.
   const get = env.machineProfile ? (k) => profileValue(env.machineProfile(), k) : (k) => env.machineValue(k);
-  const { rows, mode } = admissionRows(get, { testSlots: heavy });
-  if (mode !== 'on') return flat;
-  const admits = liveAdmits(readLedger(env.lockDir?.() ?? process.env.DESK_LOCK_DIR ?? '/tmp'));
-  const pool = (floor, ceiling, n) => ({ floor, ceiling, current: Math.min(ceiling, floor + n) });
-  return { heavy: pool(heavy, rows['test-lock-max'], admits.heavy), light: pool(rows['light-lock-slots'], rows['light-lock-max'], admits.light) };
+  const admission = admissionRows(get, { testSlots: env.testLockSlots() });
+  const entries = admission.mode === 'on' ? readLedger(env.lockDir?.() ?? process.env.DESK_LOCK_DIR ?? '/tmp') : [];
+  const starts = env.psRows && entries.length ? ledgerStarts(entries.map((e) => e.pid), env.psRows) : null;
+  const admits = liveAdmits(entries, { starts });
+  const pool = (p) => { const { floor, ceiling } = poolRows(p, admission); return { floor, ceiling, current: Math.min(ceiling, floor + admits[p]) }; };
+  return { heavy: pool('heavy'), light: pool('light') };
 }
-// The pools' sizes: the heavy and light slots' current sizes (slotPools, beside them in `pools`),
-// preview builds per Vercel team from preview-build-slots, memory from memory-ceiling-gb. `env` is
-// desk-env's exports.
+// Each pid's process start time as the ledger records it (admit-ledger.mjs startStamp): Map pid -> stamp.
+export const ledgerStarts = (pids, psRows) => new Map([...startTimes(pids, psRows)].map(([p, s]) => [p, startStamp(s)]));
+// The pools' sizes: the heavy and light slots' current sizes (slotPools), preview builds per Vercel
+// team from preview-build-slots, memory from memory-ceiling-gb. `env` is desk-env's exports.
 export const capacities = (env) => {
   const pools = slotPools(env);
   return {
     heavy: pools.heavy.current,
     light: pools.light.current,
-    pools,
     previewBuild: whole(env.machineValue('preview-build-slots')) ?? 1,
     mem: whole(env.machineValue('memory-ceiling-gb')),
   };

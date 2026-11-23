@@ -143,6 +143,16 @@ try {
     t('DS-987 AC10 the run above the floor finishes undisturbed', [await b.done, alive(a.c.pid)], [0, true]);
     a.release(); await a.done;
   }
+  // With lock-admission on and a ceiling at the floor there is no slot to admit to: the lock is today's,
+  // with today's waiting line and no admission line.
+  {
+    const c = caseOf({ rows: { ...ROWS, 'light-lock-max': '1' } });
+    const a = await hold(c.env, ['light']);
+    const r = wl(c.env, ['light', '--timeout', '3', '--', 'true']);
+    t('DS-987 on with the light ceiling at its floor of 1: the run waits as today, with today\'s line',
+      [r.status, /^with-lock\.sh: waiting for light lock \(held by pid /m.test(r.stderr), admitLines(c)], [75, true, []]);
+    a.release(); await a.done;
+  }
   // AC13: lock-admission shadow grants only floor slots, as DS-977 leaves it.
   {
     const c = caseOf({ rows: { ...ROWS, 'lock-admission': 'shadow' } });

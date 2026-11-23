@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, 
 import { join, dirname } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { capacities, claudeAncestor, kindMode, leaseCli, listRow, poolOf, releasePreviews, sampleLoad, waitFields } from '../desk/bin/leases.mjs';
+import { capacities, claudeAncestor, kindMode, leaseCli, listRow, poolOf, releasePreviews, sampleLoad, slotPools, waitFields } from '../desk/bin/leases.mjs';
 import { decidePrStatus } from '../desk/bin/pass/pr-status.mjs';
 import { latestPerCheck, normaliseRollup } from '../desk/bin/gate.mjs';
 import { previewLabel } from '../desk/bin/desk-env.mjs';
@@ -722,12 +722,13 @@ try {
     // One live light admit, a heavy one whose run has exited, and shadow's would-admit, which grants nothing.
     ledger([`1800000000 light ${sleepers[0].pid} 16 10 admit`, '1800000000 heavy 999999 16 10 admit', `1800000000 light ${sleepers[1].pid} 16 10 headroom`]);
     const c = capacities(capEnv(rows));
-    t('DS-987 AC12 one run let in above the light floor: the broker reports floor 1, ceiling 3, current 2', c.pools.light, { floor: 1, ceiling: 3, current: 2 });
-    t('DS-987 AC12 a heavy admit whose run has exited is not counted', c.pools.heavy, { floor: 2, ceiling: 3, current: 2 });
+    const p = slotPools(capEnv(rows));
+    t('DS-987 AC12 one run let in above the light floor: the broker reports floor 1, ceiling 3, current 2', p.light, { floor: 1, ceiling: 3, current: 2 });
+    t('DS-987 AC12 a heavy admit whose run has exited is not counted', p.heavy, { floor: 2, ceiling: 3, current: 2 });
     t('DS-987 AC12 the light slot lease draws on the current capacity', [c.light, poolOf('slot', 'light', c).capacity, poolOf('slot', 'browser', c).capacity], [2, 2, 1]);
     ledger([sleepers[0].pid, sleepers[1].pid, process.pid].map((p) => `1800000000 light ${p} 16 10 admit`));
-    t('DS-987 AC12 three runs let in over a floor of 1: never past the ceiling of 3', capacities(capEnv(rows)).pools.light.current, 3);
-    t('DS-987 AC13 with lock-admission shadow, each pool is its floor alone', capacities(capEnv({ ...rows, 'lock-admission': 'shadow' })).pools, { heavy: { floor: 2, ceiling: 2, current: 2 }, light: { floor: 1, ceiling: 1, current: 1 } });
+    t('DS-987 AC12 three runs let in over a floor of 1: never past the ceiling of 3', capacities(capEnv(rows)).light, 3);
+    t('DS-987 AC13 with lock-admission shadow, each pool is its floor alone', slotPools(capEnv({ ...rows, 'lock-admission': 'shadow' })), { heavy: { floor: 2, ceiling: 2, current: 2 }, light: { floor: 1, ceiling: 1, current: 1 } });
     t('DS-987 a row that does not read is the floor alone', capacities(capEnv({ ...rows, 'light-lock-max': '0' })).light, 1);
   }
 } finally {

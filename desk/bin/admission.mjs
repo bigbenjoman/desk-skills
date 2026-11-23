@@ -38,12 +38,14 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ledgerFile, ledgerText, lockWaitingDir as waitingDir, parseLedger } from './admit-ledger.mjs';
+import { ledgerFile, ledgerText, liveEntries, lockWaitingDir as waitingDir, parseLedger, poolRows } from './admit-ledger.mjs';
 import { alive, lock, unlock, writeTextAtomic } from './dir-lock.mjs';
-import { SLOTS, leaseDir, logEvent, sampleLoad } from './leases.mjs';
+import { SLOTS, ledgerStarts, leaseDir, logEvent, sampleLoad } from './leases.mjs';
 import { admissionRows, profileValue } from './machine.mjs';
 
-export { ledgerFile, parseLedger };
+export { ledgerFile, parseLedger, poolRows };
+// Whether a ledger entry's run waits for its pool's lock now: its marker is in the waiting directory.
+const isWaitingIn = (dir) => (e) => existsSync(join(waitingDir(e.pool === 'heavy' ? 'test' : 'light', dir), String(e.pid)));
 // A lock class's pool (the broker's SLOTS), where admission judges it: heavy or light, else null.
 const poolOf = (cls) => (SLOTS[cls] === 'heavy' || SLOTS[cls] === 'light' ? SLOTS[cls] : null);
 const LOCK_WAIT_MS = 2000;
@@ -102,7 +104,7 @@ export function judge({ pool, held, sample, level, recent, rows }) {
 // older than admit-ramp-s once its run no longer waits. -> the `<outcome>:<reason>` key, or null with
 // admission off.
 export function admit({ cls, pid, last = null, env, dir, held, logDir, sample = null, platform = process.platform, now = Date.now, isAlive = alive,
-  isWaiting = (e) => existsSync(join(waitingDir(e.pool === 'heavy' ? 'test' : 'light', dir), String(e.pid))) }) {
+  isWaiting = isWaitingIn(dir) }) {
   const pool = poolOf(cls);
   if (!pool) return null;
   const { rows, mode } = admissionRows((k) => env.machineValue(k), { testSlots: env.testLockSlots() });
@@ -144,17 +146,6 @@ export function admit({ cls, pid, last = null, env, dir, held, logDir, sample = 
   return key;
 }
 
-// A pool's admission mode, floor and ceiling from the rows (admissionRows): the floors as the locks
-// grant them, and with the rows not reading, mode off. -> { mode, floor, ceiling }.
-export function poolRows(pool, { rows, mode }) {
-  if (mode !== 'on') {
-    const floor = pool === 'heavy' ? rows['test-lock-slots'] : 1;
-    return { mode, floor, ceiling: floor };
-  }
-  return pool === 'heavy' ? { mode, floor: rows['test-lock-slots'], ceiling: rows['test-lock-max'] }
-    : { mode, floor: rows['light-lock-slots'], ceiling: rows['light-lock-max'] };
-}
-
 const LEVELS = { 1: 'normal', 2: 'warn', 4: 'critical' };
 const levelName = (l) => (l == null ? 'unread' : LEVELS[l] ?? String(l));
 const one = (n) => Math.round(n * 10) / 10;
@@ -185,9 +176,11 @@ export const sayNow = ({ key, said, saidAt, at, every = SAY_EVERY_S }) => said =
 // already let in above it that still run; one let in is added to the ledger as `admit` in the same
 // hold, so two runs cannot both take the last room, and holds that place for as long as its pid runs.
 // A run already let in is not judged again. A line is logged in the lease log, `admit` or `deny`, when
-// the key changes from `last`. `env` is admit()'s. -> null unless admission is on, else { key
-// ('admit:headroom' or 'deny:<reason>'), at, say (sayNow, for a deny), text (waitText) }.
-export function grant({ cls, pid, last = null, said = null, saidAt = null, env, dir, logDir, sample = null, platform = process.platform, now = Date.now, isAlive = alive }) {
+// the key changes from `last`. `env` is admit()'s. `startsOf` gives pids' process start times (a Map
+// pid -> admit-ledger.mjs startStamp, leases.mjs ledgerStarts): an admit records its run's, and one
+// whose pid now has another start time is a run that has exited. -> null unless admission is on, else
+// { key ('admit:headroom' or 'deny:<reason>'), at, say (sayNow, for a deny), text (waitText) }.
+export function grant({ cls, pid, last = null, said = null, saidAt = null, env, dir, logDir, sample = null, platform = process.platform, now = Date.now, isAlive = alive, startsOf = null }) {
   const pool = poolOf(cls);
   if (!pool) return null;
   const admission = admissionRows((k) => env.machineValue(k), { testSlots: env.testLockSlots() });
@@ -208,7 +201,9 @@ export function grant({ cls, pid, last = null, said = null, saidAt = null, env, 
     try {
       let text = '';
       try { text = readFileSync(ledgerFile(dir), 'utf8'); } catch { /* no ledger yet */ }
-      const live = parseLedger(text).filter((e) => isAlive(e.pid));
+      const entries = parseLedger(text);
+      const starts = startsOf ? startsOf([...entries.map((e) => e.pid), pid]) : null;
+      const live = liveEntries(entries, { isAlive, starts });
       const admitted = (e) => e.reason === 'admit' && e.pool === pool;
       const mine = live.find((e) => e.pid === pid && admitted(e));
       const others = live.filter((e) => e.pid !== pid);
@@ -217,9 +212,11 @@ export function grant({ cls, pid, last = null, said = null, saidAt = null, env, 
       d = judge({ pool, held, sample, level, recent, rows });
       if (mine) d = { ...d, outcome: 'would-admit', reason: 'headroom' };
       // Shadow's would-admits are kept as shadow keeps them, so a row set back to shadow finds them.
+      const isWaiting = isWaitingIn(dir);
       const kept = live.filter((e) => e.pid !== pid || e.reason !== 'admit')
-        .filter((e) => e.reason === 'admit' || at - e.at < ramp || existsSync(join(waitingDir(e.pool === 'heavy' ? 'test' : 'light', dir), String(e.pid))));
-      const added = mine ? [mine] : d.outcome === 'would-admit' ? [{ at, pool, pid, gb: d.fields.run_gb, load: d.fields.load_1m, reason: 'admit' }] : [];
+        .filter((e) => e.reason === 'admit' || at - e.at < ramp || isWaiting(e));
+      const added = mine ? [mine] : d.outcome === 'would-admit'
+        ? [{ at, pool, pid, gb: d.fields.run_gb, load: d.fields.load_1m, reason: 'admit', start: starts?.get(pid) ?? null }] : [];
       const keep = [...kept, ...added];
       if (ledgerText(keep) !== text) writeTextAtomic(ledgerFile(dir), ledgerText(keep));
     } finally { unlock(lockPath(dir)); }
@@ -238,35 +235,30 @@ const fixtureSample = () => {
   try { return v ? JSON.parse(v.startsWith('@') ? readFileSync(v.slice(1), 'utf8') : v) : null; } catch { return null; }
 };
 
+// The rows as the profile holds them, as machine detect's check reads them: a TODO is a row that does
+// not read, not one left unset. `E` is desk-env's exports.
+const profileEnv = (E) => ({ machineValue: (k) => profileValue(E.machineProfile(), k), testLockSlots: E.testLockSlots });
+
 async function judgeCli(cls, pid, last) {
   const E = await import('./desk-env.mjs');
-  const { leaseDir } = await import('./leases.mjs');
   // Every run that waits found its pool's real slots full: today's grants, heavy test-lock-slots, light 1.
   const held = poolOf(cls) === 'heavy' ? E.testLockSlots() : 1;
-  // The rows as the profile holds them, as machine detect's check reads them: a TODO is a row that
-  // does not read, not one left unset.
-  const env = { machineValue: (k) => profileValue(E.machineProfile(), k), testLockSlots: E.testLockSlots };
-  const key = admit({ cls, pid, last, env, dir: E.lockDir(), held, logDir: leaseDir(), ...(fixtureSample() ? { sample: fixtureSample() } : {}) });
+  const key = admit({ cls, pid, last, env: profileEnv(E), dir: E.lockDir(), held, logDir: leaseDir(), ...(fixtureSample() ? { sample: fixtureSample() } : {}) });
   if (key) console.log(key);
 }
 
-// The rows as the profile holds them, as judgeCli reads them, for pool and grant.
-async function profileEnv() {
-  const E = await import('./desk-env.mjs');
-  return { E, env: { machineValue: (k) => profileValue(E.machineProfile(), k), testLockSlots: E.testLockSlots } };
-}
 async function poolCli(cls) {
-  const { env } = await profileEnv();
+  const env = profileEnv(await import('./desk-env.mjs'));
   const p = poolRows(poolOf(cls), admissionRows(env.machineValue, { testSlots: env.testLockSlots() }));
   console.log(`${p.mode} ${p.floor} ${p.ceiling}`);
 }
 // grant() for a real run, with desk-env's exports `E`: the profile's rows, the lock directory, the lease
-// log, and the fixture readings where a test sets them.
+// log, the runs' process start times, and the fixture readings where a test sets them.
 export const grantRun = (E, { cls, pid, last = null, said = null, saidAt = null }) => grant({ cls, pid, last, said, saidAt,
-  env: { machineValue: (k) => profileValue(E.machineProfile(), k), testLockSlots: E.testLockSlots },
-  dir: E.lockDir(), logDir: leaseDir(), ...(fixtureSample() ? { sample: fixtureSample() } : {}) });
+  env: profileEnv(E), dir: E.lockDir(), logDir: leaseDir(), startsOf: (pids) => ledgerStarts(pids, E.psRows),
+  ...(fixtureSample() ? { sample: fixtureSample() } : {}) });
 async function grantCli(cls, pid, { last, said, saidAt }) {
-  const { E } = await profileEnv();
+  const E = await import('./desk-env.mjs');
   const r = grantRun(E, { cls, pid, last, said, saidAt: saidAt == null || saidAt === '' ? null : Number(saidAt) });
   if (r) console.log([r.key, r.say ? 1 : 0, r.at, r.text].join('\t'));
 }

@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { admit, grant, judge, ledgerFile, parseLedger, poolRows, pressureLevel, sayNow, waitText } from '../desk/bin/admission.mjs';
+import { liveAdmits } from '../desk/bin/admit-ledger.mjs';
 import { admissionRows } from '../desk/bin/machine.mjs';
 import { scratch } from './scratch.mjs';
 
@@ -28,7 +29,7 @@ const lines = (dir) => (existsSync(join(dir, 'leases.log.jsonl')) ? readFileSync
 // One run starting to wait: its pool's floor `held` full, judged against case directory `dir`.
 const wait = (dir, { cls = 'light', pid = process.pid, rows = BASE, held = 1, sample = reading(), now = T0, last = null, isAlive = () => true, isWaiting = () => false } = {}) =>
   admit({ cls, pid, last, env: envOf(rows), dir, logDir: dir, held, sample, platform: 'darwin', now: () => now, isAlive, isWaiting });
-const ledger = (dir, entries) => writeFileSync(ledgerFile(dir), entries.map((e) => `${e.at} ${e.pool} ${e.pid} ${e.gb} ${e.load} ${e.reason ?? 'headroom'}\n`).join(''));
+const ledger = (dir, entries) => writeFileSync(ledgerFile(dir), entries.map((e) => `${e.at} ${e.pool} ${e.pid} ${e.gb} ${e.load} ${e.reason ?? 'headroom'}${e.start ? ` ${e.start}` : ''}\n`).join(''));
 
 // AC2: a second light run, one holding the floor slot, has headroom: the would-admit names everything.
 {
@@ -156,8 +157,8 @@ t('DS-977 judge is pure: the same input, the same answer', JSON.stringify(judge(
 
 // ---- DS-987: admission on grants a slot above the floor ----------------------------------------
 const ON = { ...BASE, 'lock-admission': 'on', 'test-lock-slots': '1', 'test-lock-max': '3' };
-const ask = (dir, { cls = 'light', pid = process.pid, rows = ON, sample = reading(), now = T0, last = null, said = null, saidAt = null, isAlive = () => true } = {}) =>
-  grant({ cls, pid, last, said, saidAt, env: envOf(rows), dir, logDir: dir, sample, platform: 'darwin', now: () => now, isAlive });
+const ask = (dir, { cls = 'light', pid = process.pid, rows = ON, sample = reading(), now = T0, last = null, said = null, saidAt = null, isAlive = () => true, startsOf = null } = {}) =>
+  grant({ cls, pid, last, said, saidAt, env: envOf(rows), dir, logDir: dir, sample, platform: 'darwin', now: () => now, isAlive, startsOf });
 // AC1: light floor 1 full, readings with room: admitted, logged with the readings and the reason, and in the ledger.
 {
   const d = fresh();
@@ -180,6 +181,21 @@ const ask = (dir, { cls = 'light', pid = process.pid, rows = ON, sample = readin
   const d2 = fresh();
   ledger(d2, [{ at: T0 / 1000 - 500, pool: 'light', pid: 11, gb: 16, load: 1, reason: 'admit' }]);
   t('DS-987 an admit whose run has exited holds nothing and is dropped', [ask(d2, { isAlive: (p) => p !== 11 }).key, parseLedger(readFileSync(ledgerFile(d2), 'utf8')).map((e) => e.pid)], ['admit:headroom', [process.pid]]);
+}
+// An admit records its run's process start time, and one whose pid a later process has taken holds nothing.
+{
+  const startsOf = (now) => (pids) => new Map(pids.map((p) => [p, now[p] ?? `s${p}`]));
+  const d = fresh();
+  ledger(d, [{ at: T0 / 1000 - 500, pool: 'light', pid: 11, gb: 16, load: 1, reason: 'admit', start: 'old' }, { at: T0 / 1000 - 500, pool: 'light', pid: 12, gb: 16, load: 1, reason: 'admit', start: 's12' }]);
+  const r = ask(d, { startsOf: startsOf({}) });
+  t('DS-987 an admit whose pid now has another start time is a run that has exited: dropped, and its room is free',
+    [r.key, lines(d)[0]?.held, parseLedger(readFileSync(ledgerFile(d), 'utf8')).map((e) => [e.pid, e.start])], ['admit:headroom', 2, [[12, 's12'], [process.pid, `s${process.pid}`]]]);
+  const d2 = fresh();
+  ledger(d2, [{ at: T0 / 1000 - 500, pool: 'light', pid: process.pid, gb: 16, load: 1, reason: 'admit', start: 'old' }, { at: T0 / 1000 - 500, pool: 'light', pid: 12, gb: 16, load: 1, reason: 'admit', start: 's12' }]);
+  t('DS-987 a run whose pid an exited admit had is judged afresh, not let in on that admit', ask(d2, { startsOf: startsOf({}), sample: reading({ load: 99 }) }).key, 'deny:load');
+  const entries = parseLedger(`1 light 11 16 1 admit old\n1 light 12 16 1 admit s12\n1 heavy 13 16 1 admit\n`);
+  t('DS-987 liveAdmits counts an admit only while its start time matches, and one with none by its pid',
+    [liveAdmits(entries, { isAlive: () => true, starts: startsOf({})([11, 12, 13]) }), liveAdmits(entries, { isAlive: () => true })], [{ heavy: 1, light: 1 }, { heavy: 1, light: 2 }]);
 }
 // AC4: a reading that cannot be taken is a deny naming it.
 {
