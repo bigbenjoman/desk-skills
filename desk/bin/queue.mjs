@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, parkKind, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, shippedSet, keyPattern, doneOnPr, mergedCurrent } from './batch-state.mjs';
+import { isHeld, parkKind, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, shippedSet, keyPattern, doneOnPr, mergedCurrent, heldOn, freeFrom } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
 import { prNames } from './recoveries.mjs';
@@ -62,8 +62,8 @@ if (process.argv[2] === 'clears-when' && process.argv[3] === '--check') await ru
 const hereRepo = () => { try { return ghRepo(); } catch { return null; } };
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
-// admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'drop-worktree', 'get', 'transfer', 'stop', 'finish'];
+// admit put a ticket in this batch, so they are not looked up. lift names a blocker in the batch it lifts.
+const TICKET_CMDS = ['hold', 'lift', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'drop-worktree', 'get', 'transfer', 'stop', 'finish'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -982,20 +982,20 @@ switch (cmd) {
 
   // Lift one blocker off every unfinished ticket held behind it (one that finished with nothing to
   // merge): each keeps its other blockers, and freed_from names it so the merge driver's --deps skip it.
-  // A held ticket nothing else holds is released and queued at the front, as a release is; a triage
-  // park keeps its own park.
+  // One nothing else holds is released and queued at the front, as a release is (freeFrom); a triage
+  // park or a question keeps its own park.
   case 'lift': {
     const [b] = args;
     if (!b || args.length !== 1) throw new Error('usage: queue.mjs lift <BLOCKER>');
-    const behind = Object.values(q.tickets).filter((t) => t.key !== b && !FINISHED.includes(t.state) && blockersOf(t).includes(b));
+    const behind = heldOn(q, b);
     if (!behind.length) throw new Error(`nothing in this queue is held behind ${b}, so nothing was changed`);
     const released = [], still = [];
     const now = new Date().toISOString();
     for (const t of behind) {
-      const rest = blockersOf(t).filter((k) => k !== b);
-      t.freed_from = [...new Set([...String(t.freed_from ?? '').split('|').filter(Boolean), b])].join('|');
-      if (t.held_outside) t.held_outside = String(t.held_outside).split('|').filter((k) => k && k !== b).join('|') || null;
-      if (!rest.length && isHeld(t)) {
+      const { rest, release, freed, outside } = freeFrom(t, b);
+      t.freed_from = freed;
+      if (t.held_outside) t.held_outside = outside;
+      if (release) {
         Object.assign(t, { state: 'triaged', park: null, held_by: null });
         released.push(t.key);
       } else {

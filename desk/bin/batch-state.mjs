@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { personClears } from './clears-when.mjs';
 import { attachArchive, mergedPrs } from './queue-store.mjs';
-import { PARK_KINDS, blockersOf } from './queue-states.mjs';
+import { PARK_KINDS, FINISHED, blockersOf } from './queue-states.mjs';
 import { postMergeUnmade } from './harvest.mjs';
 
 // pass.mjs, plan-batch.mjs, queue.mjs and answer.mjs exit only with these, so the orchestrator branches
@@ -596,6 +596,18 @@ export const triagePark = (t) => {
   return t?.state === 'parked' && (personStepPark(t) || q.startsWith(DESIGN_PARK_PREFIX)
     || OVERSIZED.some((s) => q.startsWith(sizePark(s)))
     || ['C', 'D'].some((l) => q.startsWith(laneParkHead(l, true)) || q.startsWith(laneParkHead(l, false))));
+};
+// The unfinished tickets of queue `q` whose holds name `b` itself (not through another ticket).
+export const heldOn = (q, b) => Object.values(q?.tickets ?? {}).filter((t) => t.key !== b && !FINISHED.includes(t.state) && blockersOf(t).includes(b));
+// Ticket `t` freed from its hold on `b` alone: the holds left (`rest`), whether nothing then holds it
+// (`release`), its freed_from with `b` added (`freed`: the merge driver skips those in its --deps) and its
+// held_outside without `b` (`outside`). A park at triage (lane, size, design, the person's step) or a
+// question stays, as a release would send it to a worker.
+export const freeFrom = (t, b) => {
+  const split = (s) => String(s ?? '').split('|').filter(Boolean);
+  const rest = blockersOf(t).filter((k) => k !== b);
+  return { rest, release: !rest.length && !triagePark(t) && (t.state !== 'parked' || isHeld(t)),
+    freed: [...new Set([...split(t.freed_from), b])].join('|'), outside: split(t.held_outside).filter((k) => k !== b).join('|') || null };
 };
 // A person's step parked on a Person-input label: what it makes, the build reads, so a ticket it blocks
 // is held behind it, never merged after it.

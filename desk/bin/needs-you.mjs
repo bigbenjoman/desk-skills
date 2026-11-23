@@ -112,7 +112,7 @@ import { liveBaseRed, MERGES_SHOWN } from './base-red.mjs';
 import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { landedPr } from './post-merge.mjs';
-import { promotionPr, readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, EXIT } from './batch-state.mjs';
+import { promotionPr, readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, holdsKept, heldOn, freeFrom, epicBatch, promotedAt, unpromotedHolds, promotionState, EXIT } from './batch-state.mjs';
 import { promotionTitle } from './pass/promotion-pr.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { dayAndTime } from './desk-q-eta.mjs';
@@ -917,7 +917,7 @@ function liftItems(b) {
   const shown = new Map();
   for (const x of needsRows(b)) { const k = liftOf(b, x); if (k) shown.set(k, [...(shown.get(k) ?? []), x.t]); }
   return [...shown].map(([key, rows]) => {
-    const waiting = Object.values(b.q.tickets).filter((t) => t.key !== key && !['done', 'failed'].includes(t.state) && blockersOf(t).includes(key));
+    const waiting = heldOn(b.q, key);
     const pairs = waiting.map((t) => [b, t.key]);
     return { r: b, t: { key: `${LIFT}${key}` }, item: liftItem(b, key, waiting, rows), behind: heldBehindAll(pairs, true), said: heldBehindAll(pairs) > 0 };
   });
@@ -1231,12 +1231,6 @@ function linkBehind(r, t, b, kind) {
 // merge driver also waits on its --deps, which outlive a restart, so freed_from names `b` for it to skip.
 // A value holding `|` is quoted, or a shell would read it as a pipe.
 const shellArg = (s) => (/^[\w.,:=@+-]+$/.test(s) ? s : `'${s}'`);
-// Ticket `x` freed from `b` alone: the holds left (`rest`), whether nothing then holds it (`release`), and
-// its freed_from with `b` added (`freed`).
-const freeFrom = (x, b) => {
-  const rest = blockersOf(x).filter((k) => k !== b);
-  return { rest, release: !rest.length && !parkedAtTriage(x), freed: [...new Set([...keysOf(x.freed_from), b])].join('|') };
-};
 const freeCommand = (x, b) => {
   const { rest, release, freed } = freeFrom(x, b);
   if (release) return releaseCommand(x.key);
@@ -1325,11 +1319,11 @@ function startWithout(i, say) {
   const x = i.r.q?.tickets?.[i.ticket];
   if (!x) return say(false, `${i.ticket} is no longer in the batch, so nothing was changed.`);
   const b = i.waitsOn;
-  const { rest, release, freed } = freeFrom(x, b);
+  const { rest, release, freed, outside } = freeFrom(x, b);
   const rec = { ...(x.unpromoted ?? {}) };
   delete rec[b];
   // Its outside hold and its record of `b` go too, or the pass would read it held outside again.
-  const also = [`held_outside=${keysOf(x.held_outside).filter((k) => k !== b).join('|') || 'null'}`, `freed_from=${freed}`,
+  const also = [`held_outside=${outside ?? 'null'}`, `freed_from=${freed}`,
     `unpromoted=${Object.keys(rec).length ? JSON.stringify(rec) : 'null'}`];
   const [set, front] = releaseSteps(i.ticket);
   const steps = release ? [[...set, ...also], front] : [['set', i.ticket, `held_by=${rest.join('|') || 'null'}`, ...also]];

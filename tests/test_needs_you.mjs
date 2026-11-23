@@ -331,14 +331,16 @@ t('DS-376 AC2 left attributes to desk-q the count its table shows', `${left[0].m
 
 // ---- DS-324 AC2: a put-off item comes back once its blocker or its inputs change
 const aq = queueOf('alpha');
-aq.tickets['A-9'] = { key: 'A-9', state: 'done', lane: 'A', added_at: minsAgo(600) };
+// A-9 closed its PR unmerged, so A-4 keeps its own item (one that finished with no PR is A-9's lift item).
+aq.tickets['A-9'] = { key: 'A-9', state: 'done', lane: 'A', added_at: minsAgo(600), result: { pr: 77 }, pr_status: { pr: 77, state: 'CLOSED' } };
 aq.tickets['A-6'].park.inputs = { 'pr-head': 'bbb' };
 writeFileSync(join(env.DESK_HOME, 'repos', 'acme__alpha', 'queue.json'), JSON.stringify(aq));
 const back = N.collect({ word: 'alpha' }).items;
-t('DS-324 AC2 a hold whose blocker went done is listed again, as that blocker\'s item', /^A-9 finished with no PR, and one ticket waits to start on it: A-4\./.test(back.find((i) => i.t.key === 'lift:A-9')?.need ?? ''), true);
+t('DS-324 AC2 a hold whose blocker went done is listed again, saying what changed', /^#77 was closed unmerged: let it start \(Changed since it was put off on \d{4}-\d\d-\d\d: blockers A-9:none → A-9:done; need .*\.\)$/.test(back.find((i) => i.t.key === 'A-4')?.need ?? ''), true);
 t('DS-324 AC2 a park whose inputs changed is listed again, saying what changed', /^PRODUCTION BROKEN: checkout returns 500 \(Changed since it was put off on \d{4}-\d\d-\d\d: pr-head \(new\) → bbb\.\)$/.test(back.find((i) => i.t.key === 'A-6')?.need ?? ''), true);
+// A-9's closed PR is an item of its own, beside the two that came back.
 t('DS-376 AC3, AC4 both count the changed ones as needing you, and the cell is the count alone with none put off',
-  `${needsCell()} ${N.needsCount(loadRepos().find((r) => r.name === 'alpha')).shown} ${back.length} ${here('left', 'alpha').out.split('\n')[0]}`, '4 4 4 desk-q counts 4 items needing you in alpha.');
+  `${back.filter((i) => ['A-4', 'A-6'].includes(i.t.key)).length} ${needsCell()} ${N.needsCount(loadRepos().find((r) => r.name === 'alpha')).shown} ${back.length} ${here('left', 'alpha').out.split('\n')[0]}`, '2 5 5 5 desk-q counts 5 items needing you in alpha.');
 // DS-324 AC1, AC3: two holds with the same words are put off each on its own; the second does not bring the first back.
 const held = (k) => ({ key: k, state: 'parked', lane: 'A', held_by: 'Z-9', added_at: minsAgo(25), park: { question: `held by orchestrator: blocked by Z-9 — starts once their PRs merge (${k})` } });
 const tq = queueOf('alpha');
@@ -2198,12 +2200,13 @@ t('DS-407 AC2 and every count reads it put off: the repo, the feature batch alon
   // for that blocker; released from the step by hand (held_outside left behind) and held again, the
   // step no longer holds it.
   put('mu685', { port: 5687, beat: 1, supervised: true, inputLabels: 'ben-input', tickets: {
-    'B-9': { state: 'done', lane: 'A', result: {} },
+    'B-8': { state: 'done', lane: 'A', result: {} }, 'B-9': { state: 'done', lane: 'A', result: {} },
     'H-4': { ...held('OPS-7'), held_by: 'OPS-7|B-9' },
-    'H-5': { ...held('OPS-7'), held_by: 'B-9', park: { question: 'held by orchestrator: blocked by B-9' } } },
+    'H-5': { ...held('OPS-7'), held_by: 'B-8', park: { question: 'held by orchestrator: blocked by B-8' } } },
     triage: { 'H-4': { blockers: [input] }, 'H-5': { blockers: [input] } } });
   const mu = N.collect({ word: 'mu685' }).items;
-  t('DS-685 a step never hides another blocker that needs you: that blocker\'s item lists the ticket', mu.some((i) => i.t.key === 'lift:B-9' && i.waiting.includes('H-4')), true);
+  // H-4 alone is behind B-9, so B-9's item is there only if H-4's hold reads as B-9, not the step.
+  t('DS-685 a step never hides another blocker that needs you: that blocker\'s item is listed for the ticket', mu.find((i) => i.t.key === 'lift:B-9')?.waiting.join(), 'H-4');
   t('DS-685 the step item names only the ticket its held_by still holds behind it', mu.find((i) => i.kind === 'step')?.waiting.join(), 'H-4');
   // The ticket the step holds is drawn with the step: under Needs you while the step needs the
   // person, and under Put off once the step is put off with not-now.
