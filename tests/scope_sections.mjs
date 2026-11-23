@@ -158,7 +158,8 @@ function fnValue(v) {
   return end > 0 && /^[ \t]*=>/.test(head.slice(end));
 }
 // A top-level statement that declares one name and runs nothing when the module loads: a function
-// declaration, or a const or let with one declarator whose value is a function or a literal.
+// declaration, or a const or let with one declarator whose value is a function, a literal or a
+// frozenLiteral().
 // -> { name, exported, kind: 'function' | 'const' | 'let' }, or null for anything else: a class (its
 // static members and extends run on load), a destructuring, a call or any other value, a name written
 // with an escape. HTML-like comments (`<!--`, `-->`) are refused: a script reads them as comments, a
@@ -173,7 +174,13 @@ function declOf(chunk) {
     return end > 0 && /^\s*;?\s*$/.test(fn[1].slice(end)) ? { name: fn[2], exported, kind: 'function' } : null;
   }
   const v = c.match(/^(const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*([\s\S]*?)\s*;?\s*$/);
-  return v && (literal(v[3]) || fnValue(v[3])) ? { name: v[2], exported, kind: v[1] } : null;
+  return v && (literal(v[3]) || frozenLiteral(v[3]) || fnValue(v[3])) ? { name: v[2], exported, kind: v[1] } : null;
+}
+// `Object.freeze` of an array or object literal(), and nothing after it: it only holds data. Any other
+// call, or a spread, call or reference inside it, may run code on load.
+function frozenLiteral(v) {
+  const m = v.match(/^Object\.freeze\(\s*([[{][\s\S]*)\)$/);
+  return Boolean(m) && compiles(asExpression(v)) && literal(m[1]);
 }
 // A new top-level statement that declares an export, a function or a const, by declOf(). -> its name, or
 // null. Refused too: a name the old module already uses or a global's (declaring it would change what
