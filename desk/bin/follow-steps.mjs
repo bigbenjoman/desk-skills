@@ -211,9 +211,11 @@ export function readFollow(out, steps) {
 export const failedRun = (run, why) => run.steps.map((s) => ({ ...s, result: 'fail', found: `the follow-step checker ${why}`, evidence: run.out }));
 
 // The comment the pass posts on the merged PR: one line per step the checker passed or failed.
-// `left` is whether any step the run found is still failed or broken, those posted or not (a break
-// already told is not posted again); by default, whether any posted one is.
+// `left` is whether the ticket has any follow step still open once this run is recorded (one this run
+// or an earlier one failed or found broken, one still pending, or a person's); by default, whether any
+// posted one failed or broke.
 export function followComment(key, results, { left = results.some((c) => c.result === 'fail' || c.result === 'broken') } = {}) {
+  const listed = results.some((c) => c.result === 'fail' || c.result === 'broken');
   return [
     `A desk follow-step checker ran ${results.length === 1 ? 'the step' : `the ${results.length} steps`} ${key} left for after this merge:`,
     '',
@@ -221,7 +223,7 @@ export function followComment(key, results, { left = results.some((c) => c.resul
       ? `- **evidence broken**: ${line(c.step)}. ${c.source} ran and produced nothing to judge: ${c.found}. Evidence: ${c.evidence}. ${c.issue ? `Tracked in #${c.issue}; ` : 'No open issue tracks it; '}checked again later`
       : `- ${c.result === 'pass' ? 'passed' : '**failed**'}: ${line(c.step)}. Found: ${c.found}. Evidence: ${c.evidence}`)),
     '',
-    left ? `Each ${results.some((c) => c.result === 'fail') && !results.some((c) => c.result === 'broken') ? 'failed step' : 'failed or broken step'} is listed in needs-you.` : 'Nothing is left for a person.',
+    listed ? `Each ${results.some((c) => c.result === 'broken') ? 'failed or broken step' : 'failed step'} is listed in needs-you.` : left ? 'Its other follow steps are still open: needs-you lists each one a person has to take.' : 'Nothing is left for a person.',
     `(${key}/desk-autopilot follow-steps)`,
   ].join('\n');
 }

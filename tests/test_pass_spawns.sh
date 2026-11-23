@@ -1854,6 +1854,8 @@ check "DS-798 AC1 the next pass records the step it passed and settles it, leavi
   '[ "$(field FS-1 follow_run)" = null ] && [ "$(field FS-1 follow_checks | jq -c "[.[] | [.result, .evidence, .pr]]")" = "[[\"pass\",\"https://github.com/acme/widgets/actions/runs/9\",801]]" ] && [ "$(field FS-1 follow_on)" = "[$PAGE_STEP]" ]'
 check "DS-798 AC1 and says what it found on the ticket's PR" \
   'grep -q "^pr comment 801 --repo acme/widgets --body A desk follow-step checker ran the step FS-1 left" "$T/gh-calls" && echo "$out" | grep -qF "FS-1 follow steps: its follow-step checker passed 1 and failed 0; said on PR #801"'
+check "#1318 a comment whose ticket keeps a step open (FS-1's page check) does not say nothing is left" \
+  'grep -qF "Its other follow steps are still open: needs-you lists each one a person has to take." "$T/gh-calls" && ! grep -qF "Nothing is left for a person." "$T/gh-calls"'
 check "DS-798 AC2 a step it failed is recorded with what it found and the run URL, and stays a follow step" \
   '[ "$(field FS-2 follow_checks | jq -c "[.[] | [.result, .found]]")" = "[[\"fail\",\"run 9 failed lint\"]]" ] && [ "$(field FS-2 follow_on | jq length)" = 1 ] && [ "$(field FS-2 follow_on_done)" = null ] && echo "$out" | grep -qF "FS-2 follow steps: its follow-step checker passed 0 and failed 1, each listed in needs-you"'
 check "#1318 a step whose evidence source ran and produced nothing is recorded broken, with the step that broke and its issue, and stays a follow step" \
