@@ -34,6 +34,27 @@ q add T-52 Bug A; q set T-52 branch=fix/T-52 state=done result.pr=152
 hloop T-52; hloop T-52
 check "DS-377 AC2: a held path into the default branch is still held for a person" '[ "$(merged)" = 151 ] && echo "$out" | grep -q "#152 HELD by §4 Merge holds — a person merges it"'
 check "DS-377 AC2: the record leads with the hold'\''s reason from the row" '[ "$(qf T-52 .merge_blocked)" = "merge hold: deploys the infrastructure on merge — infra/**, 1 file(s), e.g. infra/main.tf" ]'
+# A merge hold stops only the merge: a held PR that is red still has its red check rerun, under §3
+# ci-rerun and rerun.sh's cap, so an intermittent failure reaches the person green, and a red in its own
+# code spends the reruns the pass's fix tries wait on.
+sed -e 's/^| `ci-rerun` .*$/| `ci-rerun` | Rerun CI | `yes` | `yes` |/' "$T/config-holds.md" > "$T/config-holds-rr.md"
+SHA53=e333333333333333333333333333333333333333
+jq --arg s "$SHA53" '. + { "153": { "head": "fix/T-53", "base": "main", "sha": $s, "state": "open", "draft": false, "files": ["infra/main.tf"], "checks": [["test", "FAILURE", 9531]] } }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+q init merge-holds-rerun
+q add T-53 Bug A; q set T-53 branch=fix/T-53 state=done result.pr=153
+: > "$T/gh.log"
+out=$(DESK_CONFIG="$T/config-holds-rr.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets T-53 2>&1)
+check "a held PR whose required check failed is still rerun once, with --failed, and stays held" '[ "$(grep -c "run rerun 9531 --repo acme/widgets --failed" "$T/gh.log")" = 1 ] && echo "$out" | grep -q "#153 HELD by §4 Merge holds — a person merges it" && echo "$out" | grep -q "#153 red at e33333333 under its merge hold" && [ "$(grep -cx test "$SD/reruns-153-$SHA53")" = 1 ]'
+out=$(DESK_CONFIG="$T/config-holds-rr.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets T-53 2>&1)
+check "the next loop, inside the rerun cooldown, does not rerun it again" '[ "$(grep -c "run rerun 9531" "$T/gh.log")" = 1 ]'
+printf 'test\ntest\n' > "$SD/reruns-153-$SHA53"
+out=$(DESK_CONFIG="$T/config-holds-rr.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets T-53 2>&1)
+check "with its reruns spent at the head, it is not rerun, and its fix try is the pass'\''s" '[ "$(grep -c "run rerun 9531" "$T/gh.log")" = 1 ]'
+jq '.["153"].checks = [["test", "SUCCESS", 9532]]' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+: > "$T/gh.log"
+out=$(DESK_CONFIG="$T/config-holds-rr.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets T-53 2>&1)
+check "a held PR that is green is not rerun, and stays held" '! grep -q "run rerun" "$T/gh.log" && echo "$out" | grep -q "#153 HELD by §4 Merge holds — a person merges it"'
+
 # DS-657: a PR under two holds with no routine: the record quotes the first and counts the other, so
 # needs-you never reads the first one's step as the last.
 sed -e 's/| Merge holds | `none` |/| Merge holds | `infra\/**: deploys the infrastructure on merge` `src\/**: Ben signs off in docs\/signoff.md` |/' "$T/config.md" > "$T/config-holds2.md"
