@@ -4743,7 +4743,7 @@ runSteps({
     cfg: {
       perm: E.permission('pr-ready'), permKey: E.permissionKey('pr-ready'), approved: qNow.approved?.undraft === true, rerun: E.permission('ci-rerun'),
       updateBranch: E.permission('pr-update-branch'),
-      localReview: E.configValue('local-review'), clean: E.configValue('clean-verdict'), judgement: E.permission('autopilot-judgement'),
+      localReview: E.configValue('local-review'), clean: E.configValue('clean-verdict'), judgement: E.permission('autopilot-judgement'), workerMay: (row) => E.permission(row) === 'yes',
       conflictUnreviewed: E.permission('pr-conflict-unreviewed'), conflictReviewed: E.permission('pr-conflict-reviewed'),
       handle: conflictHandle,
       ...gateLists(), stateChecks: stateRow.checks, builds: buildRow.checks, evidence: evidenceRow?.workflow ? evidenceRow : null,
@@ -5061,7 +5061,7 @@ function fixReads(t, s, dirty, dirtyFiles) {
       clean: E.configValue('clean-verdict'),
       conflictRows: Object.fromEntries(['pr-conflict-reviewed', 'pr-conflict-unreviewed'].map((r) => [r, { perm: E.permission(r), key: E.permissionKey(r) }])),
       feedbackFirst: E.permissionOrUnset('merge-feedback-first') !== 'no',
-      judgement: E.permission('autopilot-judgement'),
+      judgement: E.permission('autopilot-judgement'), workerMay: (row) => E.permission(row) === 'yes',
       outage: outageHeld, outageRerun,
     }),
     decide: decideFixTries,

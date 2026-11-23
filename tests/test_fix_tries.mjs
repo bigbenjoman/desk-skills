@@ -1,7 +1,7 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 // layer: L1
 import { readFileSync } from 'node:fs';
-import { fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { deniedRoute, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
@@ -361,6 +361,18 @@ t('DS-585 AC3 a recommended gap in an ask category (money): no try', gapFix(pers
 t('DS-585 AC3 and it goes to the person', gapsCall(personBody(1, askGap), { gaps: '1' })?.call, 'stuck');
 t('DS-585 AC3 nor beside a takeable one: both go to the person', gapFix(personBody(2, REC_GAP, askGap), 2), null);
 t('DS-585 AC3 a gap naming production credentials is an ask too', gapFix(personBody(1, `- PERSON'S CALL · AC1: "rotate it" — the production API key. Recommended: rotate it now`), 1), null);
+// #1339: a recommended gap whose recommendation needs a route §3 denies workers (a workflow dispatch
+// under worker-workflow-dispatch not yes) is not taken: no try, and the person's item names the action.
+const RUN_GAP = `- PERSON'S CALL · AC2: "the E2E workflow on main runs its tests rather than stopping at collection" — only a workflow run can show it. Recommended: dispatch the E2E workflow on the branch and read its run`;
+const denied = (row) => row !== 'worker-workflow-dispatch';
+const runFix = (workerMay) => reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: personBody(1, RUN_GAP) }, { judgement: 'yes', workerMay });
+t('#1339 a recommended gap needing a workflow dispatch workers are not granted starts no fix try', runFix(denied), null);
+const runStuck = gapsCall(personBody(1, RUN_GAP), { gaps: '1' }, { judgement: 'yes', workerMay: denied });
+t('#1339 it goes to the person once, naming the recommendation, the §3 row and the action', `${runStuck?.call} ${/\[no fix try: its recommendation, "dispatch the E2E workflow on the branch and read its run", needs config §3 worker-workflow-dispatch, which workers are not granted: dispatch the workflow on the PR's branch yourself, or from a session allowed to, or take the other option\]$/.test(runStuck?.why ?? '')}`, 'stuck true');
+t('#1339 its reason still gives the gap up to needs-you', personGapsIn(runStuck?.why).length, 1);
+t('#1339 with worker-workflow-dispatch yes, the worker carries it out as before', runFix(() => true)?.call, 'requeue');
+t('#1339 a recommendation needing no such route is taken as before', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: personBody(1, REC_GAP) }, { judgement: 'yes', workerMay: denied })?.call, 'requeue');
+t('#1339 the route reads run, start and trigger of a workflow, and gh workflow run', JSON.stringify(['Recommended: run the e2e-manual workflow on it', 'Recommended: trigger the nightly workflow', 'Recommended: gh workflow run e2e.yml --ref fix/x', 'Recommended: run the tests locally', 'Recommended: split it to the follow-up'].map((g) => deniedRoute(g, denied)?.row ?? null)), JSON.stringify(['worker-workflow-dispatch', 'worker-workflow-dispatch', 'worker-workflow-dispatch', null, null]));
 t('DS-585 AC4 without autopilot-judgement yes nothing changes', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: personBody(1, REC_GAP) }), null);
 t('DS-585 AC4 nor on a ready PR', gapsCall(personBody(1, REC_GAP), { gaps: '1' }, {}), null);
 const recTried = [{ ...recOnly.fix }];

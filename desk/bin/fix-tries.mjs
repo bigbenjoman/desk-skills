@@ -790,15 +790,33 @@ export function recommendedOf(gap) {
     .replace(/\s*\.$/, '').replace(/^(\*\*|__|[*_`])(.+)\1$/, '$2').trim();
   return option && !/^(none|no recommendation|n\/a)\b/i.test(option) ? option : null;
 }
+// What a recommendation may need that §3 can deny workers: the row, what it reads like, and the action.
+// A worker under a row that is not yes cannot carry it out, so no try is spent on it.
+const WORKER_ROUTES = [
+  { row: 'worker-workflow-dispatch', test: /\bdispatch(?:es|ed|ing)?\b|\bworkflow_dispatch\b|\bgh workflow run\b|\b(?:run|start|trigger)\w*\s+(?:the\s+)?[\w.-]+(?:\s+[\w.-]+)?\s+workflow\b/i, action: 'dispatch the workflow' },
+];
+// The route a tagged gap's recommendation needs that `workerMay` (row -> whether §3 grants workers it)
+// denies, or null; null too where no grants are given.
+export function deniedRoute(gap, workerMay) {
+  const answer = recommendedOf(gap);
+  if (!answer || typeof workerMay !== 'function') return null;
+  return WORKER_ROUTES.find((r) => r.test.test(answer) && !workerMay(r.row)) ?? null;
+}
 // The tagged gaps a try may settle on their recommendations, as { gap, answer }: only under §3
 // autopilot-judgement yes, only when they are all the review leaves open (`alone`), and only when every
-// one names a recommendation and none reads as an ask category (decisions.mjs askCategoryIn);
-// otherwise [] and all of them stay the person's.
-function takenGaps(person, judgement, alone) {
+// one names a recommendation, none reads as an ask category (decisions.mjs askCategoryIn) and none needs
+// a route §3 denies workers (deniedRoute); otherwise [] and all of them stay the person's.
+function takenGaps(person, judgement, alone, workerMay) {
   if (judgement !== 'yes' || !alone || !person.length) return [];
   const taken = person.map((gap) => ({ gap, answer: recommendedOf(gap) }));
-  return taken.every((x) => x.answer && !askCategoryIn(x.gap)) ? taken : [];
+  return taken.every((x) => x.answer && !askCategoryIn(x.gap) && !deniedRoute(x.gap, workerMay)) ? taken : [];
 }
+// A tagged gap as the person's item names: with a recommendation no worker may carry out, the action
+// and the row, so the person, or a session §3 grants it, does it without asking anyone else.
+const personGapText = (gap, workerMay) => {
+  const r = deniedRoute(gap, workerMay);
+  return r ? `${gap} [no fix try: its recommendation, "${recommendedOf(gap)}", needs config §3 ${r.row}, which workers are not granted: ${r.action} on the PR's branch yourself, or from a session allowed to, or take the other option]` : gap;
+};
 
 const gapCount = (n) => `${n} ${n === 1 ? 'gap' : 'gaps'}`;
 // What a review stuck reason puts before the findings and gaps that outlasted the try that quoted them.
@@ -836,7 +854,7 @@ export function reviewFix(t, review, opts = {}) {
   const allGaps = gapsOpen ? reviewGaps(review.body) : [];
   const tagged = allGaps.filter(personsCall);
   // As personGapsCall reads a review with nothing open but the person's gaps.
-  const taken = takenGaps(tagged, opts.judgement, !counts && !(Number(v?.deferred) > 0) && gapsOpen <= tagged.length);
+  const taken = takenGaps(tagged, opts.judgement, !counts && !(Number(v?.deferred) > 0) && gapsOpen <= tagged.length, opts.workerMay);
   const personGaps = taken.length ? [] : tagged;
   const codeGaps = Math.max(0, gapsOpen - personGaps.length);
   const what = [counts, codeGaps ? gapCount(codeGaps) : ''].filter(Boolean).join(', ');
@@ -916,7 +934,7 @@ export function personGapsCall(review, opts = {}) {
   // A deferred P2 earns no try either (reviewFix), so it does not keep the gaps from the person.
   if (opts.judgement !== 'yes' || !open || reviewCounts(v) || (Number(v?.p2) > 0 && !(Number(v?.deferred) > 0))) return null;
   const person = reviewGaps(review.body).filter(personsCall);
-  return person.length && open <= person.length ? { call: 'stuck', why: `${PERSON_GAPS}${person.join('; ')}` } : null;
+  return person.length && open <= person.length ? { call: 'stuck', why: `${PERSON_GAPS}${person.map((g) => personGapText(g, opts.workerMay)).join('; ')}` } : null;
 }
 
 // The person's call on a PR's review gaps (desk-needs-you), as the fix it sends back: not one of the
