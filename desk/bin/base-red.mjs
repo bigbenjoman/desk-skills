@@ -206,8 +206,14 @@ export function nextRecord(was, s, { branch, merges, at }) {
 // app that posts its check afterwards) is pending as far as the base is concerned, and a kept list
 // without it would read the tip's parent in its place. The tip is always read; a tip read that gives no
 // parent (git ls-remote) takes it from commit(), kept too.
+// A list holding a failure is kept only RED_KEEP_MS, not the cache's whole lifetime: a rerun of a red
+// run on the same commit (by hand, or the pass's) changes it (the check-runs read, filter=latest, gives
+// the rerun's newest attempt), and the driver holds every merge until it reads that, while a green list
+// stays as it is.
 const completed = (runs) => Array.isArray(runs) && runs.length > 0 && runs.every((r) => String(r?.status ?? '').toLowerCase() === 'completed');
-export function cachedRead(read, cache, required = []) {
+export const RED_KEEP_MS = 5 * 60 * 1000;
+const anyFailed = (runs) => runs.some((r) => FAILED.has(String(r?.conclusion ?? '').toLowerCase()));
+export function cachedRead(read, cache, required = [], { now = Date.now() } = {}) {
   let tipSha = null;
   const keep = (c) => { if (c && cache.get(`commit:${c.sha}`) === undefined) cache.set(`commit:${c.sha}`, c.parent ?? null); return c; };
   const commit = (sha) => {
@@ -224,9 +230,11 @@ export function cachedRead(read, cache, required = []) {
     commit,
     runs: (sha) => {
       const kept = cache.get(`runs:${sha}`);
-      if (kept !== undefined) return kept;
+      // A bare list is a green one; one holding a failure was kept before red lists were dated, and is read again.
+      if (Array.isArray(kept) && !anyFailed(kept)) return kept;
+      if (kept?.red != null && now - kept.red <= RED_KEEP_MS && Array.isArray(kept.runs)) return kept.runs;
       const runs = read.runs(sha);
-      if (completed(runs) && (sha !== tipSha || required.every((name) => runs.some((r) => r?.name === name)))) cache.set(`runs:${sha}`, runs);
+      if (completed(runs) && (sha !== tipSha || required.every((name) => runs.some((r) => r?.name === name)))) cache.set(`runs:${sha}`, anyFailed(runs) ? { red: now, runs } : runs);
       return runs;
     },
   };
