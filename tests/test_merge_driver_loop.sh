@@ -124,6 +124,21 @@ check "DS-714 AC5: a lane C park held behind a merged blocker is not released to
 q drop T-16
 q drop T-11; q drop T-12; q drop T-13; q drop T-14
 
+# ---- #1298: a ticket merged, then sent back for more and done again on a new PR, still open, ----------
+# is not merged: neither its kept merged_at nor its old merged PR, which still names it, releases T-42.
+jq --arg s "$SHA4" '."441" = { head: "fix/T-41", base: "main", sha: $s, state: "merged", draft: false, checks: [["test", "SUCCESS"]] }
+  | ."442" = { head: "fix/T-41", base: "main", sha: $s, state: "open", draft: true, checks: [["test", "SUCCESS"]] }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+q add T-41 Task A; q set T-41 state=done branch=fix/T-41 result.pr=441 pr_status.pr=441 pr_status.state=MERGED; q merged T-41 2026-11-02T02:20:59.000Z
+q requeue T-41; q set T-41 state=done result.pr=442
+q add T-42 Task A; q set T-42 state=triaged branch=fix/T-42; q hold T-42 T-41
+loop
+check "#1298 a ticket done again on a new open PR after its earlier merge does not release what is held behind it" \
+  '[ "$(qf T-42 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-42"'
+jq '."442".state = "merged" | ."442".draft = false' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+loop
+check "#1298 once that new PR merges, it does" '[ "$(qf T-42 .state)" = triaged ] && echo "$out" | grep -q "merged: T-41#442 -> RELEASED T-42"'
+q drop T-41; q drop T-42
+
 # ---- #1306: requeue holds a ticket behind a blocker merged once and done again on a PR still open ------
 # T-52 is parked for its own reason (lane C) with its hold on T-51 beside it, as DS-714's; T-51 merged on
 # 451, was requeued, and is done again on 452. A requeue of T-52 keeps it behind T-51, not to a worker.

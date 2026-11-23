@@ -15,7 +15,7 @@ execFileSync('git', ['init', '-q', join(T, 'repo')]);
 Object.assign(process.env, { HOME: join(T, 'home'), DESK_CONFIG: join(T, 'config.md'), DESK_HOME: join(T, 'desk'), DESK_REPO_DIR: join(T, 'repo') });
 
 const { queueWriter } = await import('../desk/bin/queue-writer.mjs');
-const { versionOf, archivePath, mergeQueue, archivedOf } = await import('../desk/bin/queue-store.mjs');
+const { versionOf, archivePath, mergeQueue, archivedOf, archivable } = await import('../desk/bin/queue-store.mjs');
 const { readQueue, waitingOnMerge, batchIdle } = await import('../desk/bin/batch-state.mjs');
 
 let fails = 0;
@@ -218,6 +218,11 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   delete byOther.tickets.D.done_by;
   t('DS-796 AC3 a recorded merge with no PR counts as merged', waitingOnMerge(byOther, byOther.tickets.Z), true);
 
+  // #1298: merged once, sent back and done again on a PR still open, it stays live until that PR merges.
+  const rw = (more) => ({ tickets: { R: tk('R', { state: 'done', result: { pr: 442 }, merged_at: '2026-11-02T02:20:59Z', ...more }) } });
+  t('#1298 a ticket done again on an open PR is not archived on its earlier merge', archivable(rw({ pr_status: { pr: 442, state: 'OPEN' } }), 'R'), false);
+  t('#1298 once that PR is read merged, it is', archivable(rw({ pr_status: { pr: 442, state: 'MERGED' } }), 'R'), true);
+  t('#1298 one whose merge is its only PR\'s is archived as before', archivable(rw({}), 'R'), true);
   const env = { ...process.env, DESK_QUEUE: f, DESK_AUTOPILOT_STATE: join(dirname(f), 'state') };
   const qm = (...args) => spawnSync(process.execPath, [join(B, 'queue.mjs'), ...args], { encoding: 'utf8', env });
   t('AC8 queue.mjs get finds it, as done', JSON.parse(qm('get', 'M').stdout).state, 'done');
