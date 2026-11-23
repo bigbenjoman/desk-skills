@@ -76,7 +76,9 @@ export function slotPools(env) {
   const get = env.machineProfile ? (k) => profileValue(env.machineProfile(), k) : (k) => env.machineValue(k);
   const admission = admissionRows(get, { testSlots: env.testLockSlots() });
   const entries = admission.mode === 'on' ? readLedger(env.lockDir?.() ?? process.env.DESK_LOCK_DIR ?? '/tmp') : [];
-  const starts = env.psRows && entries.length ? ledgerStarts(entries.map((e) => e.pid), env.psRows) : null;
+  let starts = null;
+  // ps unreadable: each admit counts by its pid alone, so a pool read never fails on it.
+  if (env.psRows && entries.length) try { starts = ledgerStarts(entries.map((e) => e.pid), env.psRows); } catch { /* as above */ }
   const admits = liveAdmits(entries, { starts });
   const pool = (p) => { const { floor, ceiling } = poolRows(p, admission); return { floor, ceiling, current: Math.min(ceiling, floor + admits[p]) }; };
   return { heavy: pool('heavy'), light: pool('light') };

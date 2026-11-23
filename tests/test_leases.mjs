@@ -729,7 +729,9 @@ try {
     ledger([sleepers[0].pid, sleepers[1].pid, process.pid].map((p) => `1800000000 light ${p} 16 10 admit`));
     t('DS-987 AC12 three runs let in over a floor of 1: never past the ceiling of 3', capacities(capEnv(rows)).light, 3);
     t('DS-987 AC13 with lock-admission shadow, each pool is its floor alone', slotPools(capEnv({ ...rows, 'lock-admission': 'shadow' })), { heavy: { floor: 2, ceiling: 2, current: 2 }, light: { floor: 1, ceiling: 1, current: 1 } });
-    t('DS-987 a row that does not read is the floor alone', capacities(capEnv({ ...rows, 'light-lock-max': '0' })).light, 1);
+    t('DS-987 ps that cannot be read counts each admit by its pid alone, and the pool read does not fail',
+      capacities({ ...capEnv(rows), psRows: () => { throw new Error('ps could not be read'); } }).light, 3);
+    t('DS-987 a row that does not read is the floor alone',capacities(capEnv({ ...rows, 'light-lock-max': '0' })).light, 1);
   }
 } finally {
   for (const c of owners) c.kill();
