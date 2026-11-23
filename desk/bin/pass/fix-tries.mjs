@@ -43,6 +43,7 @@
 //   apply {key, pr, head, call}         carry out the call: stuck, requeue, held, wait or rerun
 import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, settleable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck, stuckLessHeld, outagePlan, outageGap, reviewGates, OUTAGE_PRS, OUTAGE_GAP_MAX_S } from '../fix-tries.mjs';
 import { reviewerGated, set, say } from './shared.mjs';
+import { OUTAGE_MS, outageWait } from './deadlines.mjs';
 import { externalReview } from '../review-threads.mjs';
 
 const out = (line) => ({ type: 'out', line });
@@ -67,8 +68,10 @@ export function* decideFixTries(s) {
 //
 // The snapshot: { prs (the pass's drafts and ready PRs, [{ t, s }]), gate, was (the hold kept from the
 // last pass, or {}), now (ms), unread (a Set of the PRs whose read failed this pass: what the hold
-// keeps of one stays; a PR it holds that the pass neither read nor tried to is gone), dry, rowErrors }.
+// keeps of one stays; a PR it holds that the pass neither read nor tried to is gone), dry, rowErrors,
+// recorded (the queue's `platform_outage`, or null), base (the default branch) }.
 // Actions, beside `report` and `out`:
+//   set-batch {fields}                        the batch's outage record (outageRecord)
 //   outage-rerun {key, branch, pr, head, run, name}   -> { ok, why, wait } (gh run rerun --failed, under
 //                                             §3 ci-rerun, once it has the PR's preview-build lease; `wait` where another build holds it)
 //   outage-hold {hold}                        keep the hold for the next pass
@@ -125,7 +128,26 @@ export function* decideOutage(s) {
     yield say(null, 'waiting', `OUTAGE — the deploy platform is failing for every PR: "${name}" is red on ${h.prs.length} open PRs (${prList(h.prs)}) with the same error, "${h.text}", so no fix try is spent on it and none of them is stuck. ${how}`);
   }
   if (!s.dry && JSON.stringify(keep) !== JSON.stringify(s.was ?? {})) yield { type: 'outage-hold', hold: keep };
+  yield* outageRecord(s, plan.held, keep);
   yield { type: 'outage-held', held: plan.held, rerun: reran };
+}
+
+// The outage as the batch's record: the queue's `platform_outage` { check, since, deadline, escalated? },
+// kept while any check is held, from when the first of them was, and cleared once none is (a PR passes
+// it, or it is no longer red as one). Past its deadline it is escalated once (pass/deadlines.mjs outageWait).
+function* outageRecord(s, held, keep) {
+  const was = s.recorded ?? null;
+  if (!held.size) {
+    if (was && !s.dry) yield { type: 'set-batch', fields: ['platform_outage=null'] };
+    return;
+  }
+  const check = [...held.keys()].map((n) => `"${n}"`).join(', ');
+  const since = was?.since ?? [...held.keys()].map((n) => keep[n]?.since).filter(Boolean).sort()[0] ?? new Date(s.now).toISOString();
+  const rec = was ? { ...was, check } : { check, since, deadline: new Date(Date.parse(since) + OUTAGE_MS).toISOString() };
+  const runnable = [...held.values()].some((h) => h.runnable);
+  const { rec: next, line } = outageWait(rec, new Date(s.now).toISOString(), s.base ?? 'the base', { runnable });
+  if (line) yield say(null, 'waiting', line);
+  if (!s.dry && JSON.stringify(next) !== JSON.stringify(was)) yield { type: 'set-batch', fields: [`platform_outage=${JSON.stringify(next)}`] };
 }
 
 // How the report names a try: "capture try", "extra review try", "protected files try 1 of 2".

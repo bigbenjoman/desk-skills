@@ -221,7 +221,7 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   const deploy = (n, o = {}) => ({ ...red('Deploy preview', String(900 + n)), errors: [o.line ?? LINE], ...o.check });
   const entry = (n, checks, o = {}) => ({ t: tk({ key: `O-${n}`, branch: `task/O-${n}` }), s: pr(checks, { pr: n, ...o }) });
   const three = [701, 702, 703].map((n) => entry(n, [ok('tests'), deploy(n)]));
-  const handlersFor = (answers) => Object.fromEntries(['out', 'report', 'outage-rerun', 'outage-hold', 'outage-held'].map((type) => [type, (a) => (typeof answers[type] === 'function' ? answers[type](a) : answers[type])]));
+  const handlersFor = (answers) => Object.fromEntries(['out', 'report', 'outage-rerun', 'outage-hold', 'outage-held', 'set-batch'].map((type) => [type, (a) => (typeof answers[type] === 'function' ? answers[type](a) : answers[type])]));
   const outage = (prs, o = {}, answers = {}) => {
     const report = { failed: [] };
     const as = runSteps({ name: 'outage', snapshot: () => ({ prs, gate: G, was: {}, now: T0, dry: false, rowErrors: [], ...o }), decide: decideOutage, handlers: handlersFor({ 'outage-rerun': { ok: true }, ...answers }), report });
@@ -385,6 +385,37 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   const leased = outage(three, { was: first.hold, now: T0 + 13 * 60 * 1000 }, { 'outage-rerun': { ok: false, wait: true, why: 'waits on the preview build for o/r#9' } });
   t('a re-run waiting on the preview build is not counted', j([leased.reruns.length, leased.hold]), j([1, undefined]));
   t('and the pass says it waits', lines(leased.as, 'report')[0]?.includes('It waits on the preview build before its re-run on PR #701'), true);
+
+  // DS-904: the outage as the batch's one record (the queue's platform_outage), from fixture check runs.
+  const recordOf = (o) => {
+    const f = o.as.filter((a) => a.type === 'set-batch').flatMap((a) => a.fields).find((x) => x.startsWith('platform_outage='));
+    return f === undefined ? undefined : JSON.parse(f.slice('platform_outage='.length));
+  };
+  const rec = recordOf(first);
+  t('DS-904 AC1 the same check red on every open PR with a run of it records one outage for the batch', j(rec), j({ check: '"Deploy preview"', since: '2026-11-22T10:00:00.000Z', deadline: '2026-11-22T12:00:00.000Z' }));
+  t('DS-904 AC1 written once, as one batch field, on no ticket', j([first.as.filter((a) => a.type === 'set-batch').length, first.as.filter((a) => a.type === 'set').length]), '[1,0]');
+  const passing = [...three.slice(0, 2), entry(703, [ok('tests'), ok('Deploy preview')])];
+  const notAll = outage(passing);
+  t('DS-904 AC1 a check another open PR passes is no outage: nothing held or recorded', j([notAll.held.held.size, recordOf(notAll) ?? null]), '[0,null]');
+  t('DS-904 AC1 and each PR red on it gets its own fix try', applied(fixes(passing, notAll)).map((a) => `${a.key} ${a.call.call}`).join(), 'O-701 requeue,O-702 requeue');
+  t('DS-904 AC1 a pair is enough, where no other open PR has a run of it', j(recordOf(outage([...three.slice(0, 2), entry(703, [ok('tests')])]))?.check), j('"Deploy preview"'));
+  const lasting = outage(three, { was: first.hold, recorded: rec, now: T0 + 30 * 60 * 1000 });
+  t('DS-904 AC2 with the outage recorded, a later pass writes nothing more to the batch', recordOf(lasting), undefined);
+  t('DS-904 AC2 and no fix try is spent on that check for any PR', applied(fixes(three, lasting)).map((a) => `${a.key} ${a.call.call} ${a.call.label}`).join(), 'O-701 held OUTAGE,O-702 held OUTAGE,O-703 held OUTAGE');
+  const late = outage(three, { was: first.hold, recorded: rec, now: T0 + 125 * 60 * 1000, base: 'main' });
+  const esc = recordOf(late);
+  t('DS-904 AC3 past its deadline it is escalated once to the person, saying how long it has lasted',
+    lines(late.as, 'report').filter((l) => l.startsWith('main: PLATFORM OUTAGE — ')).map((l) => /^main: PLATFORM OUTAGE — "Deploy preview" has been red on every open PR with a run of it for 125 minutes, since 2026-11-22T10:00:00.000Z, past its 120-minute deadline/.test(l)).join(), 'true');
+  t('DS-904 AC3 and the escalation is recorded', esc?.escalated, '2026-11-22T12:05:00.000Z');
+  t('DS-904 AC3 a later pass does not escalate it again', recordOf(outage(three, { was: first.hold, recorded: esc, now: T0 + 130 * 60 * 1000, base: 'main' })), undefined);
+  const back = outage(green, { was: later.hold, recorded: esc, now: T0 + 135 * 60 * 1000 });
+  t('DS-904 AC4 a PR\'s run of it going green clears the outage', j(back.as.filter((a) => a.type === 'set-batch').map((a) => a.fields)), j([['platform_outage=null']]));
+  t('DS-904 AC4 and fix tries resume for that check', back.held.held.size, 0);
+  const elsewhere = outage([...three.slice(0, 2), entry(704, [ok('tests'), ok('Deploy preview')])], { was: first.hold, recorded: rec, now: T0 + 20 * 60 * 1000 });
+  t('DS-904 AC4 so does a run of it passing on an open PR it never held, re-running the others', j([recordOf(elsewhere), elsewhere.held.held.size, elsewhere.reruns.map((a) => a.pr)]), j([null, 0, [701, 702]]));
+  const lone = outage([three[0]], { recorded: null });
+  t('DS-904 AC5 a check red on one PR only records nothing, and is that PR\'s', j([recordOf(lone) ?? null, applied(fixes([three[0]], lone)).map((a) => a.call.call).join()]), '[null,"requeue"]');
+  t('DS-904 a dry run records nothing', recordOf(outage(three, { dry: true })), undefined);
 }
 
 if (fails) { console.log(`${fails} failure(s)`); process.exit(1); }
