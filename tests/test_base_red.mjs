@@ -526,7 +526,7 @@ test('a base that could not be read keeps the record as it was', () => {
 
 // DS-970: the REST reads go conditionally, against a counting gh stub that answers 304 to the ETag it
 // last gave for a path, as GitHub does, and whose 304s the rate limit does not count.
-const { ghRead, condGet, parseHttp } = await import('../desk/bin/base-red.mjs');
+const { ghRead, condGet, parseHttp, COMMIT_JQ, RUNS_JQ, ETAG_MS } = await import('../desk/bin/base-red.mjs');
 const api = (store) => {
   const calls = [];
   const run = (args) => {
@@ -623,7 +623,7 @@ test('DS-970 a changed answer on the same tip (a rerun) is a full read, not the 
   assert.deepEqual(gh.calls.slice(n).filter((c) => c.path.includes('/check-runs')).map((c) => [c.path, c.status]), [[runsPath(sha('d')), 200], [runsPath(sha('a')), 304]]);
 });
 
-test('DS-970 condGet: a failed read is null and keeps nothing; a 304 with nothing kept is null; a SHA-keyed commit read sends no ETag', () => {
+test('DS-970 condGet: a failed read is null and keeps nothing; a 304 with nothing kept is null; a commit read by SHA goes conditionally too', () => {
   const c = openCache(null);
   assert.equal(condGet('repos/x/y/nope', (j) => j, c, api({}).run), null);
   assert.equal(c.get('etag:repos/x/y/nope'), undefined);
@@ -632,9 +632,75 @@ test('DS-970 condGet: a failed read is null and keeps nothing; a 304 with nothin
   const store = base(), gh = api(store), kept = openCache(null);
   const r = ghRead(R, { cache: kept, run: gh.run, viaGit: false });
   r.commit(sha('b')); r.commit(sha('b'));
-  assert.deepEqual(gh.calls.map((x) => x.conditional), [false, false]);
+  assert.deepEqual(gh.calls.map((x) => [x.conditional, x.status]), [[false, 200], [true, 304]]);
   assert.deepEqual(r.commit(sha('b')), { sha: sha('b'), parent: sha('a') });
   assert.equal(r.runs(sha('d'))[0].url, null);
+});
+
+test('DS-970 a spawn that errored (stdout cut at the buffer: ENOBUFS) is null and keeps nothing, never a parse of what it printed', () => {
+  const c = openCache(null);
+  const cut = () => ({ status: null, error: Object.assign(new Error('spawnSync gh ENOBUFS'), { code: 'ENOBUFS' }), stdout: 'HTTP/2.0 200 OK\r\nEtag: W/"x"\r\n\r\n{"sha":"' });
+  assert.equal(condGet('p', (j) => j, c, cut), null);
+  assert.equal(c.get('etag:p'), undefined);
+  // Even a complete-looking body is not trusted once the spawn reports an error.
+  const whole = () => ({ status: null, error: new Error('ENOBUFS'), stdout: 'HTTP/2.0 200 OK\r\nEtag: W/"x"\r\n\r\n{"a":1}' });
+  assert.equal(condGet('p', (j) => j, c, whole), null);
+});
+
+// jq stands in for gh's own (gojq): the projections use nothing the two differ on.
+const hasJq = spawnSync('jq', ['--version']).status === 0;
+if (!hasJq) console.log('skip DS-970 projection check: jq not installed');
+if (hasJq) test('DS-970 each read sends its gh-side projection, and what it gives is picked as the whole body is', () => {
+  const sent = [], gh = api(base());
+  const r = ghRead(R, { cache: openCache(null), run: (a) => (sent.push(a), gh.run(a)), viaGit: false });
+  r.commit(sha('b')); r.runs(sha('d'));
+  assert.deepEqual(sent.map((a) => a[a.indexOf('--jq') + 1]), [COMMIT_JQ, RUNS_JQ]);
+  const project = (expr, body) => {
+    const out = spawnSync('jq', ['-c', expr], { input: JSON.stringify(body), encoding: 'utf8' });
+    assert.equal(out.status, 0, out.stderr);
+    return out.stdout;
+  };
+  // Bodies as GitHub sends them, with what no pick reads (a commit's file patches, a run's output) beside what one does.
+  const patch = { files: [{ filename: 'x', patch: '+'.repeat(5000) }] };
+  const bodies = [
+    [COMMIT_JQ, { sha: sha('b'), parents: [{ sha: sha('a'), url: 'u' }, { sha: sha('c') }], ...patch }],
+    [COMMIT_JQ, { sha: sha('a'), parents: [], ...patch }],
+    [COMMIT_JQ, { sha: sha('a'), ...patch }],
+    [RUNS_JQ, { total_count: 2, check_runs: [{ name: 'tests', status: 'completed', conclusion: 'failure', details_url: 'u/1', html_url: 'h/1', output: { text: 'x'.repeat(5000) } }, { name: 'lint', status: 'queued', conclusion: null, html_url: 'h/2' }] }],
+    [RUNS_JQ, { message: 'odd' }],
+  ];
+  for (const [expr, body] of bodies) {
+    const answer = (txt) => () => ({ status: 0, stdout: `HTTP/2.0 200 OK\r\nEtag: W/"e"\r\n\r\n${txt}` });
+    const call = (txt) => { const g = ghRead(R, { cache: null, run: answer(txt), viaGit: false }); return expr === COMMIT_JQ ? g.commit(sha('a')) : g.runs(sha('a')); };
+    const projected = project(expr, body);
+    assert.deepEqual(call(projected), call(JSON.stringify(body)));
+    assert.ok(projected.length < 1000, `projected to ${projected.length} bytes`);
+  }
+});
+
+test('DS-970 AC2 past CACHE_MS, when cachedRead\'s own entries expire, the whole walk is read again as 304s only, and again past the next', () => {
+  const path = join(scratch('base-red-etag-'), 'base-runs.json');
+  const gh = api(base());
+  const first = ghLoop(path, gh.run, t0);
+  const last = t0 + 2 * CACHE_MS + 120_000;
+  for (const at of [t0 + CACHE_MS + 60_000, last]) {
+    const n = gh.calls.length;
+    assert.deepEqual(ghLoop(path, gh.run, at), first);
+    const after = gh.calls.slice(n);
+    assert.ok(after.some((c) => c.path === runsPath(sha('a'))), 'the walk below the tip is read again');
+    assert.deepEqual(after.filter((c) => c.status !== 304), [], 'nothing but 304s');
+  }
+  // An ETag nothing has used for ETAG_MS is dropped.
+  assert.equal(openCache(path, { now: last + ETAG_MS + 1 }).get(`etag:${runsPath(sha('a'))}`), undefined);
+});
+
+test('read-cache: an entry set with its own ttl outlives the cache\'s, and one without it does not', () => {
+  const path = join(scratch('read-cache-ttl-'), 'c.json');
+  const c = openCache(path, { now: t0 });
+  c.set('short', 1); c.set('long', 2, { ttl: 2 * CACHE_MS });
+  c.save();
+  assert.deepEqual([openCache(path, { now: t0 + CACHE_MS + 1 }).get('short'), openCache(path, { now: t0 + CACHE_MS + 1 }).get('long')], [undefined, 2]);
+  assert.equal(openCache(path, { now: t0 + 2 * CACHE_MS + 1 }).get('long'), undefined);
 });
 
 console.log(`base-red: ${pass} passed, 0 failed`);
