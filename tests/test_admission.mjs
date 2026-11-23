@@ -1,4 +1,4 @@
-// suite: admission (headroom admission in shadow: would-admit and would-deny on fixture readings, the ledger of recent admits, the admission lock)
+// suite: admission (headroom admission in shadow: would-admit and would-deny on fixture readings, the ledger of recent admits, the admission lock; on: admit and deny, the waiting line and how often it prints)
 // layer: L2
 // covers: desk/bin/admission.mjs desk/bin/machine.mjs
 // admit() against a scratch lock directory and lease log, with fixture readings and a fixed clock; the
@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { admit, judge, ledgerFile, parseLedger, pressureLevel } from '../desk/bin/admission.mjs';
+import { admit, grant, judge, ledgerFile, parseLedger, poolRows, pressureLevel, sayNow, waitText } from '../desk/bin/admission.mjs';
 import { admissionRows } from '../desk/bin/machine.mjs';
 import { scratch } from './scratch.mjs';
 
@@ -140,9 +140,9 @@ const ledger = (dir, entries) => writeFileSync(ledgerFile(dir), entries.map((e) 
   const { rows, problems, mode } = admissionRows((k) => ({ 'lock-admission': 'shadow', 'cpu-cores': '18', 'test-cap': '4', 'test-lock-slots': '3' })[k] ?? null);
   t('DS-977 the admission rows\' defaults', [mode, problems, rows['light-lock-slots'], rows['light-lock-max'], rows['test-lock-max'], rows['admit-max-load'], rows['admit-run-load'], rows['admit-reserve-gb'], rows['heavy-run-gb'], rows['light-run-gb'], rows['admit-max-pressure'], rows['admit-ramp-s']],
     ['shadow', [], 1, 1, 3, 30, 4, 8, 16, 16, 2, 90]);
-  const bad = admissionRows((k) => ({ 'lock-admission': 'on', 'light-lock-slots': '0', 'test-lock-slots': '3', 'test-lock-max': '2', 'admit-reserve-gb': 'lots', 'test-cap': '4' })[k] ?? null);
+  const bad = admissionRows((k) => ({ 'lock-admission': 'yes', 'light-lock-slots': '0', 'test-lock-slots': '3', 'test-lock-max': '2', 'admit-reserve-gb': 'lots', 'test-cap': '4' })[k] ?? null);
   t('DS-977 AC13 each broken row is named with what it wants, and admission is off', [bad.mode, bad.problems], ['off', [
-    '`lock-admission` is "on": want off or shadow',
+    '`lock-admission` is "yes": want off, shadow or on',
     '`light-lock-slots` is "0": want a whole number of slots, 1 or more',
     '`admit-reserve-gb` is "lots": want a number of GB to keep free',
     '`test-lock-max` is "2": want a whole number of slots, at least `test-lock-slots` (3)',
@@ -153,6 +153,87 @@ t('DS-977 Linux PSI some avg10 read as levels', [0, 9.9, 10, 39, 40, null].map((
 t('DS-977 macOS\'s level is read as it is', pressureLevel({ mem_pressure: 4 }, 'darwin'), 4);
 t('DS-977 judge is pure: the same input, the same answer', JSON.stringify(judge({ pool: 'light', held: 1, sample: reading(), level: 1, recent: [], rows: admissionRows((k) => BASE[k] ?? null).rows })),
   JSON.stringify(judge({ pool: 'light', held: 1, sample: reading(), level: 1, recent: [], rows: admissionRows((k) => BASE[k] ?? null).rows })));
+
+// ---- DS-987: admission on grants a slot above the floor ----------------------------------------
+const ON = { ...BASE, 'lock-admission': 'on', 'test-lock-slots': '1', 'test-lock-max': '3' };
+const ask = (dir, { cls = 'light', pid = process.pid, rows = ON, sample = reading(), now = T0, last = null, said = null, saidAt = null, isAlive = () => true } = {}) =>
+  grant({ cls, pid, last, said, saidAt, env: envOf(rows), dir, logDir: dir, sample, platform: 'darwin', now: () => now, isAlive });
+// AC1: light floor 1 full, readings with room: admitted, logged with the readings and the reason, and in the ledger.
+{
+  const d = fresh();
+  const r = ask(d);
+  const [l] = lines(d);
+  t('DS-987 AC1 a run finding the light floor full, with room, is admitted', r.key, 'admit:headroom');
+  t('DS-987 AC1 the lease log records an admit line with the readings and the reason',
+    [l?.event, l?.mode, l?.key, l?.reason, l?.load_1m, l?.mem_free_gb, l?.mem_pressure, l?.held, l?.floor, l?.ceiling], ['admit', 'on', 'light', 'headroom', 10, 40, 1, 1, 1, 3]);
+  t('DS-987 AC1 the admit holds its place in the ledger', parseLedger(readFileSync(ledgerFile(d), 'utf8')).map((e) => [e.pool, e.pid, e.reason]), [['light', process.pid, 'admit']]);
+  const again = ask(d, { last: r.key, sample: reading({ load: 99 }) });
+  t('DS-987 a run already let in is not judged again, logs nothing more, and keeps one entry', [again.key, lines(d).length, parseLedger(readFileSync(ledgerFile(d), 'utf8')).length], ['admit:headroom', 1, 1]);
+}
+// AC3, AC12: two admits live over a light floor of 1 make 3 held, the ceiling: denied whatever the readings.
+{
+  const d = fresh();
+  ledger(d, [{ at: T0 / 1000 - 500, pool: 'light', pid: 11, gb: 16, load: 1, reason: 'admit' }, { at: T0 / 1000 - 500, pool: 'light', pid: 12, gb: 16, load: 1, reason: 'admit' }]);
+  const r = ask(d, { sample: reading({ load: 0, freeGb: 80 }) });
+  t('DS-987 AC3 the light pool at its ceiling of 3 denies a fourth with room', [r.key, lines(d)[0]?.held], ['deny:ceiling', 3]);
+  t('DS-987 AC3 an admit older than admit-ramp-s still holds its place while its run runs', parseLedger(readFileSync(ledgerFile(d), 'utf8')).map((e) => e.pid), [11, 12]);
+  const d2 = fresh();
+  ledger(d2, [{ at: T0 / 1000 - 500, pool: 'light', pid: 11, gb: 16, load: 1, reason: 'admit' }]);
+  t('DS-987 an admit whose run has exited holds nothing and is dropped', [ask(d2, { isAlive: (p) => p !== 11 }).key, parseLedger(readFileSync(ledgerFile(d2), 'utf8')).map((e) => e.pid)], ['admit:headroom', [process.pid]]);
+}
+// AC4: a reading that cannot be taken is a deny naming it.
+{
+  const got = [{ load: null }, { freeGb: null }, { pressure: null }].map((r) => { const d = fresh(); ask(d, { sample: reading(r) }); return lines(d).map((l) => [l.event, l.reason])[0]; });
+  t('DS-987 AC4 a full floor and a reading that cannot be taken: a deny line naming it', got, [['deny', 'load-unreadable'], ['deny', 'memory-unreadable'], ['deny', 'pressure-unreadable']]);
+}
+// AC5: the waiting line, with the live numbers.
+{
+  const d = fresh();
+  ledger(d, [{ at: T0 / 1000 - 500, pool: 'light', pid: 11, gb: 16, load: 1, reason: 'admit' }]);
+  const r = ask(d, { sample: reading({ load: 29.6, freeGb: 33, pressure: 2 }) });
+  t('DS-987 AC5 two light runs held, the load leaving no room: the line names the pool, slots, floor and ceiling, and the reason with its numbers',
+    [r.key, r.say, r.text], ['deny:load', true, 'waiting for light lock: 2 of 1..3 held; no headroom: load 29.6 + 4 > 30 (pressure warn, 33 GB free, 16 GB/run)']);
+  t('DS-987 the memory and pressure reasons give their numbers too', [
+    waitText('test', 'memory', { held: 1, floor: 1, ceiling: 3, mem_free_gb: 20, recent_gb: 0, run_gb: 16, reserve_gb: 8, mem_pressure: 1 }),
+    waitText('light', 'pressure', { held: 1, floor: 1, ceiling: 3, mem_free_gb: 40, run_gb: 16, mem_pressure: 4, max_pressure: 2 }),
+    waitText('light', 'ceiling', { held: 3, floor: 1, ceiling: 3, mem_free_gb: null, run_gb: 16, mem_pressure: null })], [
+    'waiting for test lock: 1 of 1..3 held; no headroom: 20 GB free - 16 < 8 GB reserve (pressure normal, 20 GB free, 16 GB/run)',
+    'waiting for light lock: 1 of 1..3 held; no headroom: pressure critical, at or over warn (pressure critical, 40 GB free, 16 GB/run)',
+    'waiting for light lock: 3 of 1..3 held; at its ceiling (pressure unread, unread GB free, 16 GB/run)']);
+}
+// AC6, AC7: the line is printed once while its reason holds, and a reason that changes prints at most once a minute.
+{
+  const run = (keys) => { let said = null, saidAt = null, printed = 0; for (const [at, key] of keys) if (sayNow({ key, said, saidAt, at })) { printed++; said = key; saidAt = at; } return printed; };
+  t('DS-987 AC6 five minutes waited, rechecked every 10 s, the reason unchanged: one line', run(Array.from({ length: 31 }, (_, i) => [i * 10, 'deny:load'])), 1);
+  const changes = [[0, 'deny:load'], [70, 'deny:memory'], [80, 'deny:pressure'], [90, 'deny:load'], [100, 'deny:memory'], [129, 'deny:memory']];
+  t('DS-987 AC7 the reason changing three times within a minute prints at most one line for those changes', run(changes) - 1, 1);
+  t('DS-987 AC7 and a reason still new a minute after the last line is printed then', run([[0, 'deny:load'], [10, 'deny:memory'], [20, 'deny:pressure'], [30, 'deny:memory'], [60, 'deny:memory']]), 2);
+}
+// AC13, AC10: shadow or off grants nothing here; the shadow judge ignores on, as before.
+{
+  const got = ['shadow', 'off'].map((m) => { const d = fresh(); return [ask(d, { rows: { ...ON, 'lock-admission': m } }), lines(d).length, existsSync(ledgerFile(d))]; });
+  t('DS-987 AC10 AC13 with lock-admission shadow or off, grant lets nothing in and logs nothing', got, [[null, 0, false], [null, 0, false]]);
+  t('DS-987 poolRows: on gives the rows\' floor and ceiling, else the floor the locks grant', [
+    poolRows('light', admissionRows((k) => ON[k] ?? null, { testSlots: 1 })), poolRows('heavy', admissionRows((k) => ON[k] ?? null, { testSlots: 1 })),
+    poolRows('light', admissionRows((k) => BASE[k] ?? null, { testSlots: 2 })), poolRows('heavy', admissionRows((k) => ({ ...ON, 'light-lock-max': '0' })[k] ?? null, { testSlots: 2 }))],
+  [{ mode: 'on', floor: 1, ceiling: 3 }, { mode: 'on', floor: 1, ceiling: 3 }, { mode: 'shadow', floor: 1, ceiling: 1 }, { mode: 'off', floor: 2, ceiling: 2 }]);
+}
+// Eight light runs at once, admission on: the admission lock lets exactly one take the last room.
+{
+  const d = fresh();
+  const profile = join(S, 'machine-on.md');
+  writeFileSync(profile, `## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n${Object.entries({ ...ON, 'light-lock-max': '2' }).map(([k, v]) => `| \`${k}\` | \`${v}\` | test |`).join('\n')}\n`);
+  const sleepers = Array.from({ length: 8 }, () => spawn('sleep', ['30'], { stdio: 'ignore' }));
+  const env = { ...process.env, HOME: S, DESK_LOCK_DIR: d, DESK_LEASE_DIR: d, DESK_MACHINE: profile, DESK_CONFIG: join(S, 'no-config.md'), DESK_ADMIT_SAMPLE: JSON.stringify(reading()) };
+  delete env.DESK_TEST_LOCK_SLOTS;
+  const keys = await Promise.all(sleepers.map((s) => new Promise((r) => {
+    const c = spawn(process.execPath, [join(root, 'desk', 'bin', 'admission.mjs'), 'grant', 'light', '--pid', String(s.pid)], { env, stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = ''; c.stdout.on('data', (b) => { out += b; });
+    c.on('close', () => r(out.split('\t')[0]));
+  })));
+  for (const s of sleepers) s.kill();
+  t('DS-987 eight light runs at once with one slot of room above the floor: exactly one is admitted', [keys.filter((k) => k === 'admit:headroom').length, keys.filter((k) => k === 'deny:ceiling').length], [1, 7]);
+}
 
 // AC9: eight light runs starting to wait in the same second, as eight processes: one would-admit.
 {

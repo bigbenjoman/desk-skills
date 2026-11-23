@@ -314,10 +314,10 @@ t('DS-977 AC15 (test-lock-max 7 + light-lock-max 1) x test-cap 4 = 32 over twice
 t('DS-977 AC15 at exactly twice, no warning', sizingWarnings(propose(eighteen).map((s) => (s.key === 'test-lock-max' ? { ...s, value: '6' } : s)), eighteen).length, 0);
 // AC13: each broken admission row is named by the profile check, with what it wants.
 const admitBad = join(T, 'admission-bad.md');
-writeFileSync(admitBad, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `test-lock-slots` | `3` | t |\n| `test-cap` | `4` | t |\n| `lock-admission` | `on` | t |\n| `light-lock-slots` | `0` | t |\n| `test-lock-max` | `2` | t |\n| `admit-ramp-s` | `soon` | t |\n');
+writeFileSync(admitBad, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `test-lock-slots` | `3` | t |\n| `test-cap` | `4` | t |\n| `lock-admission` | `maybe` | t |\n| `light-lock-slots` | `0` | t |\n| `test-lock-max` | `2` | t |\n| `admit-ramp-s` | `soon` | t |\n');
 const badDetect = env(['machine', 'detect'], absent, admitBad);
 t('DS-977 AC13 the check names each admission row and what it wants, and that the locks grant as with it off', [
-  '`lock-admission` is "on": want off or shadow; the locks grant as with `lock-admission` off',
+  '`lock-admission` is "maybe": want off, shadow or on; the locks grant as with `lock-admission` off',
   '`light-lock-slots` is "0": want a whole number of slots, 1 or more',
   '`admit-ramp-s` is "soon": want a whole number of seconds',
   '`test-lock-max` is "2": want a whole number of slots, at least `test-lock-slots` (3)',
@@ -326,8 +326,13 @@ const lightMax = join(T, 'admission-light-max.md');
 writeFileSync(lightMax, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `light-lock-slots` | `2` | t |\n| `light-lock-max` | `1` | t |\n');
 t('DS-977 AC13 a light-lock-max below light-lock-slots is named', env(['machine', 'detect'], absent, lightMax).includes('`light-lock-max` is "1": want a whole number of slots, at least `light-lock-slots` (2)'), true);
 t('DS-977 AC13 a profile with no admission rows has no admission problem', profileProblems(parseProfile(renderProfile(small, propose(small).filter((s) => !s.key.startsWith('admit') && !s.key.includes('lock-max') && s.key !== 'lock-admission' && s.key !== 'light-lock-slots'), '2026-11-22'))).join(' | '), '');
-t('DS-977 machine set takes lock-admission shadow, and refuses on', `${setErr(['lock-admission=shadow'], join(T, 'admission-set.md'))} | ${setErr(['lock-admission=on'], join(T, 'admission-set.md'))}`,
-  'exit 0 | exit 1: nothing written: `lock-admission` is "on": want off or shadow');
+t('DS-987 machine set takes lock-admission shadow and on, and refuses another word', ['shadow', 'on', 'maybe'].map((v) => setErr([`lock-admission=${v}`], join(T, 'admission-set.md'))).join(' | '),
+  'exit 0 | exit 0 | exit 1: nothing written: `lock-admission` is "maybe": want off, shadow or on');
+// DS-987 AC14: a profile with lock-admission on, its rows as proposed, passes the profile check.
+const onProfile = join(T, 'admission-on.md');
+writeFileSync(onProfile, renderProfile(eighteen, propose(eighteen).map((s) => (s.key === 'lock-admission' ? { ...s, value: 'on' } : s.key === 'light-lock-max' ? { ...s, value: '3' } : s)), '2026-11-23'));
+t('DS-987 AC14 a machine profile with lock-admission on passes the profile check', `${parseProfile(readFileSync(onProfile, 'utf8')).sizing['lock-admission']?.value} [${profileProblems(parseProfile(readFileSync(onProfile, 'utf8'))).join(' | ')}]`, 'on []');
+t('DS-987 AC14 and machine detect names no admission row', /lock-admission|light-lock|admit-/.test(env(['machine', 'detect'], absent, onProfile).split('\n').filter((l) => /want /.test(l)).join('\n')), false);
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'machine: all checks passed');

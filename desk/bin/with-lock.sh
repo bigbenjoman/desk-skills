@@ -54,6 +54,15 @@
 # machine profile's lock-admission row: shadow logs a would-admit or would-deny in the lease log for it
 # as it starts to wait and whenever that changes; off, unset or a row that does not read logs nothing.
 # Neither changes what is granted.
+#
+# With the row on, the pool's floor (test-lock-slots, light-lock-slots) is granted as above with no
+# look at headroom, and a run that finds it full is let into a slot above it, up to the pool's ceiling
+# (test-lock-max, light-lock-max), when admission.mjs grant admits it: the floor is tried every 2 s,
+# headroom every DESK_ADMIT_RECHECK_S seconds (10). Slots above the floor are more of the same slot
+# files, which an older copy of this script, counting only the floor, never takes. The run says once
+# what it waits for and why, and again only when the reason changes, at most once a minute. Anything
+# that cannot be read, the rows included, grants the floor alone. With the slot lease kind on, the
+# broker's pool grows the same way (slot-lease.mjs).
 set -uo pipefail
 # This script's own directory, taken before --cwd moves us: desk-env.mjs is installed beside it.
 here="$(cd "$(dirname "$0")" && pwd -P)"
@@ -146,6 +155,9 @@ held() { unwatch; unqueue; w="$(waited_s)"; export DESK_LOCK_CLASS="$name" DESK_
 waiting() {
   queue
   watch_admission
+  say_waiting "$1"
+}
+say_waiting() {
   local by=""
   case "$name" in
     test|tsc) by="$(node "$here/slot-lease.mjs" holders 2>/dev/null)" ;;
@@ -189,6 +201,44 @@ if [ "$name" = test ] || [ "$name" = tsc ]; then
   [ -n "$want" ] || want="$(node "$here/desk-env.mjs" machine get test-lock-slots 2>/dev/null)"
   case "$want" in ''|*[!0-9]*|0) ;; *) slots="$want" ;; esac
 fi
+# Headroom admission on (admission.mjs pool prints `on <floor> <ceiling>`): `slots` is the floor, and
+# the slots from there to `ceiling` are taken only on an admit. Anything else leaves it off.
+admit_on=""; ceiling="$slots"
+case "$name" in
+  test|tsc|light)
+    read -r amode afloor aceil <<<"$(node "$here/admission.mjs" pool "$name" 2>/dev/null)"
+    if [ "${amode:-}" = on ]; then
+      case "${afloor:-}${aceil:-}" in ''|*[!0-9]*) ;; *) [ "$afloor" -ge 1 ] && [ "$aceil" -ge "$afloor" ] && { admit_on=1; slots="$afloor"; ceiling="$aceil"; } ;; esac
+    fi ;;
+esac
+recheck="${DESK_ADMIT_RECHECK_S:-10}"
+case "$recheck" in ''|*[!0-9]*|0) recheck=10 ;; esac
+# One look at headroom (admission.mjs grant), as the run starts to wait and every `recheck` seconds
+# after: 0 when it is let in above the floor (admitted). It prints the waiting line grant gives it as
+# grant says (the first, then a new reason at most once a minute), or the plain one where grant says
+# nothing.
+admitted=""; akey=""; said=""; said_at=""
+admit_check() {
+  local line k say at text
+  line="$(node "$here/admission.mjs" grant "$name" --pid "$$" ${akey:+--last "$akey"} ${said:+--said "$said" --said-at "$said_at"} </dev/null 2>/dev/null)"
+  IFS=$'\t' read -r k say at text <<<"$line"
+  if [ -z "$k" ]; then
+    [ -n "$said" ] || { said=plain; say_waiting "all $slots slots held"; }
+    return 1
+  fi
+  akey="$k"
+  case "$k" in admit:*) admitted=1; return 0 ;; esac
+  [ "$say" = 1 ] && { echo "with-lock.sh: $text" >&2; said="$k"; said_at="$at"; }
+  return 1
+}
+# Where the run waits on the lock files with admission on: its first look marks it queued.
+admit_round() {
+  [ -n "$admit_on" ] && [ -z "$admitted" ] && [ "$waited" -ge "$next_check" ] || return 1
+  [ "$waited" -eq 0 ] && queue
+  next_check=$((waited + recheck))
+  admit_check
+}
+next_check=0
 # Slot i's lock path: slot 1 is the original path.
 slot_path() { if [ "$1" -eq 1 ]; then echo "$lock"; else echo "$lock.$1"; fi; }
 # Where flock's lock is taken and then exec'd into the command, record the command's pid (exec keeps
@@ -197,7 +247,7 @@ slot_path() { if [ "$1" -eq 1 ]; then echo "$lock"; else echo "$lock.$1"; fi; }
 holder() { echo "$$" > "$(slot_path "$1").pid" 2>/dev/null || true; }
 
 if command -v flock >/dev/null 2>&1; then
-  if [ "$slots" -eq 1 ]; then
+  if [ "$slots" -eq 1 ] && [ -z "$admit_on" ]; then
     # The descriptor form, so a wait is said before it blocks, a timeout is told apart from the
     # command's own exit status, and a shadow lease is taken once the lock is held. The command
     # inherits fd 9, so the lock is held until it exits.
@@ -212,18 +262,21 @@ if command -v flock >/dev/null 2>&1; then
     held; granted "$$" "$@"
     exec "$@"
   fi
-  # Several slots: try each without blocking, and wait 2 s between rounds.
+  # Several slots, or admission on: try each without blocking, and wait 2 s between rounds. A run let
+  # in above the floor tries every slot up to the ceiling, at once and then each round.
   waited=0
   while :; do
+    upto="$slots"; [ -n "$admitted" ] && upto="$ceiling"
     i=1
-    while [ "$i" -le "$slots" ]; do
+    while [ "$i" -le "$upto" ]; do
       exec 9>>"$(slot_path "$i")" || exit 2
       flock -n 9 && { holder "$i"; held; granted "$$" "$@"; exec "$@"; }
       exec 9>&-
       i=$((i + 1))
     done
+    admit_round && continue
     [ -n "$timeout" ] && [ "$waited" -ge "$timeout" ] && gave_up
-    [ "$waited" -eq 0 ] && waiting "all $slots slots held"
+    [ "$waited" -eq 0 ] && [ -z "$admit_on" ] && waiting "all $slots slots held"
     waited=$((waited + 2))
     sleep 2
   done
@@ -265,15 +318,17 @@ waited=0
 last_holders=""
 ldir=""
 while [ -z "$ldir" ]; do
+  upto="$slots"; [ -n "$admitted" ] && upto="$ceiling"
   i=1
-  while [ "$i" -le "$slots" ]; do
+  while [ "$i" -le "$upto" ]; do
     d="$(slot_path "$i").d"   # distinct from flock's file so the two can never be confused
     if take "$d"; then ldir="$d"; break; fi
     i=$((i + 1))
   done
   [ -n "$ldir" ] && break
+  admit_round && continue
   [ -n "$timeout" ] && [ "$waited" -ge "$timeout" ] && gave_up
-  if [ "$waited" -eq 0 ]; then
+  if [ "$waited" -eq 0 ] && [ -z "$admit_on" ]; then
     if [ "$slots" -eq 1 ]; then waiting "held by pid ${last_holders:-?}"
     else waiting "all $slots slots held"; fi
   fi
