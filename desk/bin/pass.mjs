@@ -2042,6 +2042,10 @@ const REPAIR_HANDLERS = {
     let files = [], onBase = false;
     const ref = `refs/desk-repair/${a.key}`;
     let dir = null, head = null;
+    // The base as it is on origin now: a stale tracking ref would miss a fix that has landed. Unread,
+    // only the driver's own green read (which reads the remote tip) can settle it, naming no PR.
+    const based = mainGit(['fetch', '-q', 'origin', `+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}`]).ok;
+    if (!based) return green ? { why: 'green', by: null } : null;
     if (t.worktree && existsSync(t.worktree)) { dir = t.worktree; head = 'HEAD'; }
     else if (t.branch && mainGit(['fetch', '-q', 'origin', `+refs/heads/${t.branch}:${ref}`]).ok) { dir = MAIN; head = ref; }
     try {
@@ -2049,11 +2053,11 @@ const REPAIR_HANDLERS = {
         const names = shOut('git', ['-C', dir, 'diff', '--name-only', `origin/${DEFAULT_BRANCH}...${head}`]);
         if (!names.ok) return { error: `its changes could not be read (${names.out.split('\n').pop()})` };
         files = names.out.split('\n').filter(Boolean);
-        // A repair with a PR whose branch now differs from the base in nothing is done too; one with no
-        // PR may simply not have started.
+        // A repair with a PR whose branch changes nothing past its merge base (the base merged in, its
+        // own fix already there) is done too, however far the base has moved since; one with no PR may
+        // simply not have started.
         const pr = t.result?.pr ?? t.draft_pr;
-        onBase = files.length > 0 ? shOut('git', ['-C', dir, 'diff', '--quiet', `origin/${DEFAULT_BRANCH}`, head, '--', ...files]).ok
-          : pr != null && shOut('git', ['-C', dir, 'diff', '--quiet', `origin/${DEFAULT_BRANCH}`, head]).ok;
+        onBase = files.length > 0 ? shOut('git', ['-C', dir, 'diff', '--quiet', `origin/${DEFAULT_BRANCH}`, head, '--', ...files]).ok : pr != null;
       }
     } finally { if (head === ref) mainGit(['update-ref', '-d', ref]); }
     if (!green && !onBase) return null;
