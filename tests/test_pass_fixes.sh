@@ -163,6 +163,8 @@ try { api = JSON.parse(fs.readFileSync('$T/fx/api.json', 'utf8')); } catch {}
 if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fx/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
 else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
 else if (a[0] === 'api' && a[1] in api) console.log(api[a[1]]);
+else if (a[0] === 'run' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fx/run-' + a[2] + '-' + a[a.indexOf('--json') + 1] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'run' && a[1] === 'rerun') process.exit(0);
 else process.exit(1);
 EOF
 { cat "$T/config-f.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `failure-class` |\n'; } > "$T/config-fl.md"
@@ -241,6 +243,24 @@ out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-f.md" node "$B/pass.
 check "DS-850 AC3 a repair merged in an earlier red spell does not stop the next spell's repair, and keeps its own row and steps" \
   '[ "$(field base-red-main-20261121090000 state)" = "\"running\"" ] && echo "$out" | grep -q "base-red-main-20261121090000 port=" && [ "$(field base-red-main state)" = "\"done\"" ] && [ "$(field base-red-main merged_at)" != null ] && [ "$(field base-red-main follow_on | jq -r ".[0].step")" = "check main is green" ]'
 q set base-red-main-20261121090000 state=done session_id=null; q drop base-red-main-20261121090000
+# A red main whose run failed only at an install step is the runner's: its failed run is re-run once
+# and no repair admitted, nothing more while the rerun goes, and the repair once it fails again.
+sed -e 's/^| `autopilot-workers` .*$/&\n| `ci-rerun` | Re-run CI | `yes` | `yes` |/' "$T/config-f.md" > "$T/config-frr.md"
+printf '%s\n' '{"jobs":[{"name":"Install","steps":[{"name":"Set up job","conclusion":"success"},{"name":"Install browsers","conclusion":"failure"}]},{"name":"Lint","steps":[{"name":"Run tests","conclusion":"failure"}]}]}' > "$T/fx/run-78-jobs.json"
+redrec "$(isoago 60)"; jq '.repair_key = "base-red-main-rr" | .checks[0].url = "https://github.com/acme/widgets/actions/runs/78/job/5"' "$T/state-fb/base-red.json" > "$T/state-fb/base-red.tmp" && mv "$T/state-fb/base-red.tmp" "$T/state-fb/base-red.json"
+: > "$T/gh-calls"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1); red=$(printf '%s\n' "$out" | grep -A1 '^RED BASE:' | tail -1)
+check "a red main failing only at an install step has its failed run re-run once, and no repair is admitted" \
+  '[ "$(grep -c "^run rerun 78 --repo acme/widgets --failed$" "$T/gh-calls")" = 1 ] && [ "$(field base-red-main-rr state)" = null ] && echo "$red" | grep -qF "No repair ticket is admitted yet: its failed run 78 failed at a setup step (\"Install browsers\")" && echo "$red" | grep -qF "Repair ticket base-red-main-rr is admitted if it fails again"'
+printf '%s\n' '{"status":"in_progress","conclusion":""}' > "$T/fx/run-78-status,conclusion.json"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "while the rerun goes, it is not re-run again and no repair is admitted" \
+  '[ "$(grep -c "^run rerun 78" "$T/gh-calls")" = 1 ] && [ "$(field base-red-main-rr state)" = null ]'
+printf '%s\n' '{"status":"completed","conclusion":"failure"}' > "$T/fx/run-78-status,conclusion.json"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "red again after the rerun, the repair is admitted and started, with no second rerun" \
+  '[ "$(grep -c "^run rerun 78" "$T/gh-calls")" = 1 ] && [ "$(field base-red-main-rr state)" = "\"running\"" ] && echo "$out" | grep -q "base-red-main-rr port="'
+q set base-red-main-rr state=done session_id=null; q drop base-red-main-rr
 rm -f "$T/state-fb/base-red.json"; q set base-red-main state=done; q drop base-red-main
 out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-850 AC6 once the driver reads main green, the pass drops the line" '! echo "$out" | grep -q "^RED BASE:" && echo "$out" | grep -q "FB-4: BASE RED"'
