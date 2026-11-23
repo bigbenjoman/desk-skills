@@ -307,6 +307,15 @@ test('a green read is kept for the cache\'s whole lifetime, a red one only five 
   loop(path, read, t0); loop(path, read, t0 + RED_KEEP_MS + 60_000);
   assert.equal(calls.runs, 1);
 });
+test('a red list kept bare, as before red lists were dated, is read again', () => {
+  const path = join(scratch('base-red-cache-'), 'base-runs.json');
+  const commits = { [sha('k')]: { parent: null, runs: [run('tests', 'failure')] } };
+  writeFileSync(path, JSON.stringify({ [`runs:${sha('k')}`]: { value: commits[sha('k')].runs, at: new Date(t0).toISOString() } }));
+  commits[sha('k')].runs = [run('tests', 'success')];
+  const { read } = counted(commits, { tip: sha('k') });
+  assert.equal(loop(path, read, t0 + 60_000).state, 'green');
+});
+
 test('the driver\'s check reads a rerun that passed past five minutes as green, and lifts its record', () => {
   const dir = scratch('base-red-cli-'), bin = join(dir, 'bin'), state = join(dir, 'state'), cachePath = join(dir, 'base-runs.json'), runsFile = join(dir, 'runs.json');
   mkdirSync(bin); mkdirSync(state);

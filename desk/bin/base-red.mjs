@@ -184,7 +184,8 @@ export function cachedRead(read, cache, required = [], { now = Date.now() } = {}
     commit,
     runs: (sha) => {
       const kept = cache.get(`runs:${sha}`);
-      if (Array.isArray(kept)) return kept;
+      // A bare list is a green one; one holding a failure was kept before red lists were dated, and is read again.
+      if (Array.isArray(kept) && !anyFailed(kept)) return kept;
       if (kept?.red != null && now - kept.red <= RED_KEEP_MS && Array.isArray(kept.runs)) return kept.runs;
       const runs = read.runs(sha);
       if (completed(runs) && (sha !== tipSha || required.every((name) => runs.some((r) => r?.name === name)))) cache.set(`runs:${sha}`, anyFailed(runs) ? { red: now, runs } : runs);
