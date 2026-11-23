@@ -342,8 +342,9 @@ test('the driver\'s check reads a rerun that passed past five minutes as green, 
   // What GitHub's check-runs read gives (filter=latest): the newest attempt of each job only.
   writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
 const fs = require('fs'), a = process.argv.slice(2);
-if (a[0] === 'api' && a[1] === 'repos/acme/widgets/commits/main') console.log(JSON.stringify({ sha: '${tip}', parent: null }));
-else if (a[0] === 'api' && a[1].startsWith('repos/acme/widgets/commits/${tip}/check-runs')) process.stdout.write(fs.readFileSync('${runsFile}', 'utf8'));
+const ok = (body) => process.stdout.write('HTTP/2.0 200 OK\\r\\n\\r\\n' + JSON.stringify(body));
+if (a[0] === 'api' && a[1] === 'repos/acme/widgets/commits/main') ok({ sha: '${tip}', parents: [] });
+else if (a[0] === 'api' && a[1].startsWith('repos/acme/widgets/commits/${tip}/check-runs')) ok({ check_runs: JSON.parse(fs.readFileSync('${runsFile}', 'utf8')).map((r) => ({ ...r, details_url: r.url })) });
 else process.exit(1);
 `, { mode: 0o755 });
   const cfg = join(dir, 'config.md');
@@ -482,8 +483,9 @@ test('red, then green (one required check never runs on main), then red: two spe
   mkdirSync(bin); mkdirSync(state);
   writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
 const fs = require('fs'), a = process.argv.slice(2), tip = fs.readFileSync('${tipFile}', 'utf8');
-if (a[0] === 'api' && a[1] === 'repos/acme/widgets/commits/main') console.log(JSON.stringify({ sha: tip, parent: null }));
-else if (a[0] === 'api' && a[1].startsWith('repos/acme/widgets/commits/' + tip + '/check-runs')) process.stdout.write(fs.readFileSync('${runsFile}', 'utf8'));
+const ok = (body) => process.stdout.write('HTTP/2.0 200 OK\\r\\n\\r\\n' + JSON.stringify(body));
+if (a[0] === 'api' && a[1] === 'repos/acme/widgets/commits/main') ok({ sha: tip, parents: [] });
+else if (a[0] === 'api' && a[1].startsWith('repos/acme/widgets/commits/' + tip + '/check-runs')) ok({ check_runs: JSON.parse(fs.readFileSync('${runsFile}', 'utf8')).map((r) => ({ ...r, details_url: r.url })) });
 else process.exit(1);
 `, { mode: 0o755 });
   const cfg = join(dir, 'config.md');
@@ -520,6 +522,119 @@ test('a base that could not be read keeps the record as it was', () => {
     { cwd: dir, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, DESK_CONFIG: cfg, DESK_REPO_OVERRIDE: 'acme/widgets' }, encoding: 'utf8' });
   assert.equal(JSON.parse(r.stdout.trim()).state, 'unread');
   assert.equal(JSON.parse(readFileSync(join(state, 'base-red.json'), 'utf8')).since, 'T0');
+});
+
+// DS-970: the REST reads go conditionally, against a counting gh stub that answers 304 to the ETag it
+// last gave for a path, as GitHub does, and whose 304s the rate limit does not count.
+const { ghRead, condGet, parseHttp } = await import('../desk/bin/base-red.mjs');
+const api = (store) => {
+  const calls = [];
+  const run = (args) => {
+    const path = args[1], inm = args[3] === '-H' ? args[4].replace(/^If-None-Match: /, '') : null;
+    const e = store[path];
+    const r = !e ? 404 : inm === e.etag ? 304 : 200;
+    calls.push({ path, conditional: inm != null, status: r });
+    if (r === 404) return { status: 1, stdout: 'HTTP/2.0 404 Not Found\r\n\r\n{"message":"Not Found"}' };
+    if (r === 304) return { status: 1, stdout: `HTTP/2.0 304 Not Modified\nEtag: ${e.etag}\r\n\r\n` };
+    return { status: 0, stdout: `HTTP/2.0 200 OK\nContent-Type: application/json\r\nEtag: ${e.etag}\r\n\r\n${JSON.stringify(e.body)}` };
+  };
+  return { calls, run, counted: () => calls.filter((c) => c.status !== 304).length };
+};
+const R = 'acme/widgets';
+const commitAt = (s, parent) => ({ etag: `W/"c${s.slice(0, 4)}"`, body: { sha: s, parents: parent ? [{ sha: parent }] : [] } });
+const runsAt = (tag, runs) => ({ etag: `W/"r${tag}"`, body: { total_count: runs.length, check_runs: runs.map((r) => ({ ...r, details_url: r.url, url: undefined })) } });
+const tipPath = `repos/${R}/commits/main`, runsPath = (s) => `repos/${R}/commits/${s}/check-runs?filter=latest&per_page=100`;
+// A base whose required `review` check runs only on PRs, so it is never on the tip: the ticket's repro.
+const base = () => ({
+  [tipPath]: commitAt(sha('d'), sha('b')),
+  [`repos/${R}/commits/${sha('d')}`]: commitAt(sha('d'), sha('b')),
+  [`repos/${R}/commits/${sha('b')}`]: commitAt(sha('b'), sha('a')),
+  [`repos/${R}/commits/${sha('a')}`]: commitAt(sha('a'), null),
+  [runsPath(sha('d'))]: runsAt('t', [run('tests', 'success')]),
+  [runsPath(sha('b'))]: runsAt('b', [run('tests', 'success')]),
+  [runsPath(sha('a'))]: runsAt('a', [run('tests', 'failure')]),
+});
+const ghLoop = (path, run, now, { viaGit = false, tip = null } = {}) => {
+  const c = openCache(path, { now });
+  const gr = ghRead(R, { cache: c, run, viaGit: false });
+  const read = viaGit ? { ...gr, tip: () => tip } : gr;
+  const s = baseState({ required: ['tests', 'review'], branch: 'main', read: cachedRead(read, c, ['tests', 'review'], { now }) });
+  c.save();
+  return s;
+};
+
+test('DS-970 parseHttp reads the status, the ETag and the body, whatever the line endings; null status for no response', () => {
+  assert.deepEqual(parseHttp('HTTP/2.0 200 OK\nEtag: W/"ab"\r\nX: 1\r\n\r\n{"a":1}'), { status: 200, etag: 'W/"ab"', body: '{"a":1}' });
+  assert.deepEqual(parseHttp('HTTP/2.0 304 Not Modified\r\netag: "x"\r\n\r\n'), { status: 304, etag: '"x"', body: '' });
+  assert.deepEqual(parseHttp(''), { status: null, etag: null, body: '' });
+  assert.equal(parseHttp(null).status, null);
+});
+
+test('DS-970 AC1 AC4 an unmoved tip with a check that never runs on a push costs only 304s on the next loop, read via git one call', () => {
+  const path = join(scratch('base-red-etag-'), 'base-runs.json');
+  const gh = api(base());
+  const first = ghLoop(path, gh.run, t0);
+  assert.deepEqual(first, { state: 'green', absent: ['review'] });
+  const n = gh.calls.length;
+  const second = ghLoop(path, gh.run, t0 + 60_000);
+  assert.deepEqual(second, first);
+  const after = gh.calls.slice(n);
+  // The tip by name and its runs (review never on it, so not kept for good): both conditional, both 304.
+  assert.deepEqual(after.map((c) => [c.path, c.conditional, c.status]), [[tipPath, true, 304], [runsPath(sha('d')), true, 304]]);
+  // With the tip read from origin by git, as the driver does where origin is the repo: one call, a 304.
+  const viaGit = api(base()), p2 = join(scratch('base-red-etag-'), 'base-runs.json');
+  ghLoop(p2, viaGit.run, t0, { viaGit: true, tip: { sha: sha('d') } });
+  const m = viaGit.calls.length;
+  assert.deepEqual(ghLoop(p2, viaGit.run, t0 + 60_000, { viaGit: true, tip: { sha: sha('d') } }), first);
+  assert.deepEqual(viaGit.calls.slice(m).map((c) => [c.path, c.status]), [[runsPath(sha('d')), 304]]);
+});
+
+test('DS-970 AC2 AC3 a new commit is the only one read in full, and the result is the uncached read\'s', () => {
+  const path = join(scratch('base-red-etag-'), 'base-runs.json');
+  const store = base(), gh = api(store);
+  ghLoop(path, gh.run, t0);
+  store[tipPath] = commitAt(sha('e'), sha('d'));
+  store[`repos/${R}/commits/${sha('e')}`] = commitAt(sha('e'), sha('d'));
+  store[runsPath(sha('e'))] = runsAt('n', [run('tests', 'failure', 'u/7')]);
+  const n = gh.calls.length;
+  const s = ghLoop(path, gh.run, t0 + 60_000);
+  const fresh = ghLoop(join(scratch('base-red-etag-'), 'base-runs.json'), api(store).run, t0 + 60_000);
+  assert.deepEqual(s, fresh);
+  assert.equal(s.state, 'red');
+  // The tip moved (a full read) and its runs are read; the old tip's runs, never kept while it was the
+  // tip, are a 304 the limit does not count, and kept from now on; b and a are not read at all.
+  assert.deepEqual(gh.calls.slice(n).map((c) => [c.path, c.status]), [[tipPath, 200], [runsPath(sha('e')), 200], [runsPath(sha('d')), 304]]);
+  const m = gh.calls.length;
+  ghLoop(path, gh.run, t0 + 120_000);
+  assert.deepEqual(gh.calls.slice(m).map((c) => [c.path, c.status]), [[tipPath, 304], [runsPath(sha('e')), 304]]);
+});
+
+test('DS-970 a changed answer on the same tip (a rerun) is a full read, not the kept one', () => {
+  const path = join(scratch('base-red-etag-'), 'base-runs.json');
+  const store = base(), gh = api(store);
+  store[runsPath(sha('d'))] = runsAt('t1', [run('tests', 'failure', 'u/8')]);
+  assert.equal(ghLoop(path, gh.run, t0).state, 'red');
+  store[runsPath(sha('d'))] = runsAt('t2', [run('tests', 'success')]);
+  // Past RED_KEEP_MS, so cachedRead asks again; the ETag no longer matches, so the new list comes back.
+  const n = gh.calls.length;
+  // The tip's new list comes back in full and reads green; a's red list, read again past RED_KEEP_MS
+  // only because review is still left to find, is unchanged, so it is a 304.
+  assert.equal(ghLoop(path, gh.run, t0 + RED_KEEP_MS + 1).state, 'green');
+  assert.deepEqual(gh.calls.slice(n).filter((c) => c.path.includes('/check-runs')).map((c) => [c.path, c.status]), [[runsPath(sha('d')), 200], [runsPath(sha('a')), 304]]);
+});
+
+test('DS-970 condGet: a failed read is null and keeps nothing; a 304 with nothing kept is null; a SHA-keyed commit read sends no ETag', () => {
+  const c = openCache(null);
+  assert.equal(condGet('repos/x/y/nope', (j) => j, c, api({}).run), null);
+  assert.equal(c.get('etag:repos/x/y/nope'), undefined);
+  const odd = () => ({ status: 1, stdout: 'HTTP/2.0 304 Not Modified\r\n\r\n' });
+  assert.equal(condGet('p', (j) => j, c, odd), null);
+  const store = base(), gh = api(store), kept = openCache(null);
+  const r = ghRead(R, { cache: kept, run: gh.run, viaGit: false });
+  r.commit(sha('b')); r.commit(sha('b'));
+  assert.deepEqual(gh.calls.map((x) => x.conditional), [false, false]);
+  assert.deepEqual(r.commit(sha('b')), { sha: sha('b'), parent: sha('a') });
+  assert.equal(r.runs(sha('d'))[0].url, null);
 });
 
 console.log(`base-red: ${pass} passed, 0 failed`);

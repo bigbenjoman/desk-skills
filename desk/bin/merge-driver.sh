@@ -110,7 +110,9 @@
 #                                            failed (base-red.mjs, read once per loop down its newest
 #                                            commits, each commit's completed runs kept for 30 minutes,
 #                                            5 while one failed, so a rerun that passed shows,
-#                                            in <state>/merge-driver/base-runs.json, as each PR's file
+#                                            and every other read sent with the ETag of its last
+#                                            answer, so an unchanged one is a 304 the limit does
+#                                            not count; both in <state>/merge-driver/base-runs.json, as each PR's file
 #                                            list at its head is in pr-files.json): no PR merges into it but its repair ticket's
 #                                            (base-red-<base>-<spell start>), and the loop logs the hold naming the
 #                                            check. The record it keeps in <state>/base-red.json is the

@@ -11,7 +11,8 @@
 //       was only when the base could not be read. So a red spell ends with the driver's hold, and the
 //       next red is a spell of its own with its own since. With
 //       --cache, the commits and the completed check runs it read are kept in <file> for the next loop
-//       (cachedRead, read-cache.mjs). With --keys (the ticket keys of the PRs the driver may merge), a red
+//       (cachedRead, read-cache.mjs), and the reads that cannot be kept go with the ETag of their last
+//       answer, so one that has not changed is a 304 the rate limit does not count (condGet). With --keys (the ticket keys of the PRs the driver may merge), a red
 //       answer names in `repairs` those of them that are a repair of this base, any spell's: the pass admits
 //       no second repair while one is open, so an earlier spell's repair is the one merge a later red lets in.
 //
@@ -287,11 +288,31 @@ export function cachedRead(read, cache, required = [], { now = Date.now() } = {}
   };
 }
 
-function gh(args) {
-  const r = spawnSync('gh', args, { encoding: 'utf8' });
-  return r.status === 0 ? r.stdout : null;
-}
 const json = (s) => { try { return s == null ? null : JSON.parse(s); } catch { return null; } };
+// What `gh api -i` printed: the status line, the headers, a blank line, the body. gh exits non-zero on
+// a 304, so the status is read from here rather than from its exit code.
+export function parseHttp(out) {
+  const s = String(out ?? ''), cut = /\r?\n\r?\n/.exec(s);
+  const head = cut ? s.slice(0, cut.index) : s, body = cut ? s.slice(cut.index + cut[0].length) : '';
+  const status = Number(/^HTTP\/[\d.]+ (\d{3})/.exec(head)?.[1]) || null;
+  const etag = /^etag:[ \t]*(.+?)[ \t]*$/im.exec(head)?.[1] ?? null;
+  return { status, etag, body };
+}
+const ghRun = (args) => spawnSync('gh', args, { encoding: 'utf8' });
+// One GET of the REST API `path`, sent with the ETag kept in `cache` from its last read: a 304, which
+// GitHub does not count against the rate limit, is answered with the value kept beside that ETag. `pick`
+// turns the body into the value returned and kept; null when the read failed. The kept pair lasts the
+// cache's lifetime (read-cache.mjs), so a read that never changes is still made in full once per CACHE_MS.
+export function condGet(path, pick, cache = null, run = ghRun) {
+  const key = `etag:${path}`, had = cache?.get(key);
+  const r = run(['api', path, '-i', ...(had?.etag ? ['-H', `If-None-Match: ${had.etag}`] : [])]);
+  const { status, etag, body } = parseHttp(r?.stdout);
+  if (status === 304 && had) return had.value;
+  if (status !== 200) return null;
+  const v = pick(json(body));
+  if (v != null && etag && cache) cache.set(key, { etag, value: v });
+  return v;
+}
 // Whether this checkout's origin is `repo`, so its branches are the ones base-red reads. The URL is
 // read as desk-env reads it (ownerRepoFromUrl), an ssh host alias included.
 const originUrl = () => { const r = spawnSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf8' }); return r.status === 0 ? r.stdout : null; };
@@ -307,20 +328,22 @@ export function lsRemoteTip(branch, run = (args) => execGit('git', args, { encod
   }
   return null;
 }
-export function ghRead(repo) {
-  const commit = (ref) => {
-    const c = json(gh(['api', `repos/${repo}/commits/${encodeURIComponent(ref)}`, '--jq', '{sha: .sha, parent: .parents[0].sha}']));
-    return /^[0-9a-f]{40}$/.test(c?.sha ?? '') ? { sha: c.sha, parent: c.parent ?? null } : null;
-  };
-  const viaGit = originIs(repo);
+const SHA = /^[0-9a-f]{40}$/;
+// The REST reads for baseState. With `cache` (the one cachedRead keeps), the reads cachedRead cannot keep
+// for good go conditionally (condGet): a tip read by branch name, and the check runs of a commit that not
+// every required check has run on, which a check that never runs on a push leaves the tip in on every
+// loop. A commit read by SHA never changes, and cachedRead keeps its parent.
+export function ghRead(repo, { cache = null, run = ghRun, viaGit = originIs(repo) } = {}) {
+  const commit = (ref) => condGet(`repos/${repo}/commits/${encodeURIComponent(ref)}`,
+    (c) => (SHA.test(c?.sha ?? '') ? { sha: c.sha, parent: c.parents?.[0]?.sha ?? null } : null),
+    SHA.test(ref) ? null : cache, run);
   return {
     // From origin where this checkout's origin is the repo, else (or when that read fails) the REST API.
     tip: (branch) => (viaGit ? lsRemoteTip(branch) : null) ?? commit(branch),
     commit,
-    runs: (sha) => {
-      const r = json(gh(['api', `repos/${repo}/commits/${sha}/check-runs?filter=latest&per_page=100`, '--jq', '[.check_runs[] | {name, status, conclusion, url: (.details_url // .html_url)}]']));
-      return Array.isArray(r) ? r : null;
-    },
+    runs: (sha) => condGet(`repos/${repo}/commits/${sha}/check-runs?filter=latest&per_page=100`,
+      (j) => (Array.isArray(j?.check_runs) ? j.check_runs.map((r) => ({ name: r?.name, status: r?.status, conclusion: r?.conclusion, url: r?.details_url ?? r?.html_url ?? null })) : null),
+      cache, run),
   };
 }
 
@@ -341,7 +364,7 @@ if (isMain) {
   // A cache shared across repos would answer one repo's SHA from another's, so its keys are repo-scoped
   // by living in the repo's own state directory, which the driver passes.
   const cache = openCache(flag('--cache') || null);
-  const s = required.length ? baseState({ required, branch, read: cachedRead(ghRead(repo), cache, required) }) : { state: 'none' };
+  const s = required.length ? baseState({ required, branch, read: cachedRead(ghRead(repo, { cache }), cache, required) }) : { state: 'none' };
   cache.save();
   const path = baseRedPath(state);
   if (s.state === 'red') {
