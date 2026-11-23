@@ -537,7 +537,7 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "#1290 the next pass leaves it done: no re-park" '[ "$(field O-1 state)" = "\"done\"" ] && [ "$(field O-1 park)" = null ]'
 check "#1294 the next pass leaves O-4 done: no re-park as not its own" '[ "$(field O-4 state)" = "\"done\"" ] && [ "$(field O-4 park)" = null ]'
 node "$B/queue.mjs" requeue O-4 >/dev/null 2>&1
-check "#1294 a requeue sends it back for work of its own: no longer done by its PR" '[ "$(field O-4 done_by)" = null ] && [ "$(field O-4 state)" = "\"triaged\"" ]'
+check "#1294 a requeue sends it back for work of its own: no longer done by its PR, nor merged by it" '[ "$(field O-4 done_by)" = null ] && [ "$(field O-4 merged_at)" = null ] && [ "$(field O-4 state)" = "\"triaged\"" ]'
 # #1290: with the §1 handle set, a merged PR a collaborator opened from the ticket's own branch is not its
 # own: done by it, not recorded as its result (which the PR status step would park as not its own).
 cp "$T/config.md" "$T/config-h.md"; printf '\n## 1. Who you are\n| Field | Value |\n|---|---|\n| GitHub handle | `me` |\n' >> "$T/config-h.md"
