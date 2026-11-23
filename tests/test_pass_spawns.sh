@@ -1819,7 +1819,7 @@ cat > "$T/stub/claude" <<EOF
 case "\$1 \$2" in
   "-p You are the autopilot follow-step checker for "*)
     echo started >> "$T/follow-prompts"
-    case "\$2" in *"FS-2's PR"*) r=fail ;; *"FS-4's PR"*) r=broken ;; *) r=pass ;; esac
+    case "\$2" in *"FS-2's PR"*) r=fail ;; *"FS-4's PR"*) r=broken; [ -e "$T/fs4-pending" ] && r=pending ;; *) r=pass ;; esac
     $NODE -e 'const r = process.argv[1]; console.log(JSON.stringify({ type: "result", total_cost_usd: 0.03, result: "FOLLOW_RESULT: " + JSON.stringify({ steps: [{ n: 0, result: r, found: r === "pass" ? "run 9 is green" : r === "broken" ? "the a11y scan crashed loading, 0 pages scanned" : "run 9 failed lint", evidence: "https://github.com/acme/widgets/actions/runs/9", ...(r === "broken" ? { source: "E2E (advisory) › a11y scan", issue: 812 } : {}) }] }) }))' "\$r"
     exit 0 ;;
 esac
@@ -1860,6 +1860,21 @@ check "#1318 a step whose evidence source ran and produced nothing is recorded b
   '[ "$(field FS-4 follow_checks | jq -c "[.[] | [.result, .source, .issue]]")" = "[[\"broken\",\"E2E (advisory) › a11y scan\",812]]" ] && [ "$(field FS-4 follow_on | jq length)" = 1 ] && echo "$out" | grep -qF "FS-4 follow steps: its follow-step checker passed 0 and failed 0, and found the evidence source of 1 broken, ran but produced nothing to judge: E2E (advisory) › a11y scan (#812); listed in needs-you and checked again later"'
 check "DS-798 a step a checker ran is not run again" \
   ': > "$T/follow-prompts"; DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" >/dev/null 2>&1; [ ! -s "$T/follow-prompts" ] && [ "$(field FS-2 follow_run)" = null ]'
+# #1318: six hours on, the broken step is checked again. Still broken as it was, it is not said on the
+# PR again; a re-check that finds the run still going keeps it broken, on the same cadence.
+fs4_recheck(){
+  q set FS-4 "follow_checks=$(field FS-4 follow_checks | jq -c '.[0].at = "2026-11-20T00:00:00.000Z"')"
+  n=$(ls "$DESK_AUTOPILOT_STATE"/follow/FS-4-*.json 2>/dev/null | grep -vc settings)
+  DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" >/dev/null 2>&1
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do [ "$(grep -l FOLLOW_RESULT "$DESK_AUTOPILOT_STATE"/follow/FS-4-*.json 2>/dev/null | grep -vc settings)" -gt "$n" ] && break; sleep 0.2; done
+  : > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" 2>&1)
+}
+fs4_recheck
+check "#1318 a step still broken as it was is checked again and not said on the PR again" \
+  '[ "$(field FS-4 follow_checks | jq -c "[.[] | .result]")" = "[\"broken\"]" ] && [ "$(field FS-4 follow_checks | jq -r ".[0].at")" != 2026-11-20T00:00:00.000Z ] && ! grep -q "^pr comment 804" "$T/gh-calls" && echo "$out" | grep -qF "FS-4 follow steps: its follow-step checker passed 0 and failed 0, and found the evidence source of 1 broken"'
+: > "$T/fs4-pending"; fs4_recheck; rm -f "$T/fs4-pending"
+check "#1318 a re-check that finds the run still going keeps the step broken, with its source and issue" \
+  '[ "$(field FS-4 follow_checks | jq -c "[.[] | [.result, .source, .issue]]")" = "[[\"broken\",\"E2E (advisory) › a11y scan\",812]]" ] && [ "$(field FS-4 follow_checks | jq -r ".[0].at")" != 2026-11-20T00:00:00.000Z ]'
 cp "$T/claude-before-fs" "$T/stub/claude"
 
 # ---- DS-843 AC4: a config row the pass cannot read stops it before it starts any worker.

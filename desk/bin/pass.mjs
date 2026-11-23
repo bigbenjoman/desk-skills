@@ -4417,7 +4417,13 @@ const FOLLOW_HANDLERS = {
     }
     const at = new Date().toISOString();
     const n = t.result?.pr;
-    const found = (r.error ? failedRun(a.run, r.error) : r.results).map((c) => ({ ...c, at, pr: n ?? null, ...(r.cost != null ? { cost: r.cost } : {}) }));
+    const before = (c) => (t.follow_checks ?? []).filter((x) => sameStep(x, c) && String(x.pr ?? '') === String(n ?? '')).pop();
+    // A step found broken stays broken through a re-check that finds the run still going: pending
+    // would put it back on the short retries, long over, and it would read as never checked.
+    const found = (r.error ? failedRun(a.run, r.error) : r.results).map((c) => {
+      const was = before(c);
+      return c.result === 'pending' && was?.result === 'broken' ? { ...was, at } : { ...c, at, pr: n ?? null, ...(r.cost != null ? { cost: r.cost } : {}) };
+    });
     const kept = (t.follow_checks ?? []).filter((c) => !found.some((x) => sameStep(x, c) && String(c.pr ?? '') === String(n ?? '')));
     // The record and the settling of what passed are one write (queue-writer.mjs, as harvest.mjs
     // settleSteps settles them for needs-you's done), made only while the run and the steps are as read,
@@ -4436,7 +4442,9 @@ const FOLLOW_HANDLERS = {
       return;
     }
     const count = (k) => found.filter((c) => c.result === k).length;
-    const done = found.filter((c) => c.result !== 'pending');
+    // A step still broken as it was is not said on the PR again: it was told when it first broke.
+    const sameBreak = (c) => { const was = before(c); return c.result === 'broken' && was?.result === 'broken' && was.source === c.source && was.issue === c.issue; };
+    const done = found.filter((c) => c.result !== 'pending' && !sameBreak(c));
     let told = '';
     if (!done.length) { /* nothing settled to say */ } else if (n == null) told = '; it has no PR to comment on';
     else if (E.permission('pr-self-review-comment') !== 'yes') told = `; not said on PR #${n}, as config §3 ${E.permissionKey('pr-self-review-comment')} is not "yes"`;

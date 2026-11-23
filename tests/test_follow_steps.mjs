@@ -197,7 +197,7 @@ t('an error fails every step of the run, naming why and where', j(failedRun({ ou
   const c = followComment('DS-1', [{ ...CI, result: 'pass', found: 'run 9 passed', evidence: 'https://x/9' }, { ...PAGE, result: 'fail', found: 'no', evidence: '/e' }]);
   t('AC1 the PR comment names each step and how it went, and its marker', /- passed: the CI run on main is green\. Found: run 9 passed\. Evidence: https:\/\/x\/9\n- \*\*failed\*\*: check the page loads\. Found: no\. Evidence: \/e\n\nEach failed step is listed in needs-you\.\n\(DS-1\/desk-autopilot follow-steps\)$/.test(c), true);
   t('#1318 a broken step is said as broken, naming the step that broke and its issue',
-    /- \*\*evidence broken\*\*: the CI run on main is green\. E2E › a11y ran and produced nothing to judge: 0 pages\. Evidence: u\. Tracked in #812; checked again later\n\nEach step not passed is listed in needs-you\./.test(followComment('DS-1', [{ ...CI, result: 'broken', found: '0 pages', evidence: 'u', source: 'E2E › a11y', issue: 812 }])), true);
+    /- \*\*evidence broken\*\*: the CI run on main is green\. E2E › a11y ran and produced nothing to judge: 0 pages\. Evidence: u\. Tracked in #812; checked again later\n\nEach failed or broken step is listed in needs-you\./.test(followComment('DS-1', [{ ...CI, result: 'broken', found: '0 pages', evidence: 'u', source: 'E2E › a11y', issue: 812 }])), true);
   t('a comment with every step passed says nothing is left', /Nothing is left for a person\./.test(followComment('DS-1', [{ ...CI, result: 'pass', found: 'ok', evidence: 'u' }])), true);
 }
 {

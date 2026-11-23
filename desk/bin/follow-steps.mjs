@@ -219,7 +219,7 @@ export function followComment(key, results) {
       ? `- **evidence broken**: ${line(c.step)}. ${c.source} ran and produced nothing to judge: ${c.found}. Evidence: ${c.evidence}. ${c.issue ? `Tracked in #${c.issue}; ` : 'No open issue tracks it; '}checked again later`
       : `- ${c.result === 'pass' ? 'passed' : '**failed**'}: ${line(c.step)}. Found: ${c.found}. Evidence: ${c.evidence}`)),
     '',
-    results.some((c) => c.result !== 'pass') ? `Each ${results.some((c) => c.result === 'broken') ? 'step not passed' : 'failed step'} is listed in needs-you.` : 'Nothing is left for a person.',
+    results.some((c) => c.result === 'fail' || c.result === 'broken') ? `Each ${results.some((c) => c.result === 'broken') ? 'failed or broken step' : 'failed step'} is listed in needs-you.` : 'Nothing is left for a person.',
     `(${key}/desk-autopilot follow-steps)`,
   ].join('\n');
 }
