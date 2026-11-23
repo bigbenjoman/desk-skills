@@ -174,6 +174,9 @@ export const setupFailed = (view) => (Array.isArray(view?.jobs) ? view.jobs : []
 // notes(jobId): the job's annotations ([{ message }]), null or undefined unread.
 const TIMEOUT_LINE = /\bhas timed out after \d+ minutes?\b|\bexceeded the maximum execution time\b/i;
 const ENDED = new Set(['failure', 'timed_out', 'cancelled']);
+// A job re-run for a timeout that times out on the base again this soon is too slow for its limit, not
+// unlucky: the repair is admitted, or the red noted on the open one, rather than a second rerun.
+export const TIMEOUT_AGAIN_MS = 24 * 3600e3;
 export function timedOut(view, notes = () => null) {
   return (Array.isArray(view?.jobs) ? view.jobs : []).filter((j) => {
     const c = String(j?.conclusion ?? '').toLowerCase();
@@ -193,7 +196,8 @@ export function timedOut(view, notes = () => null) {
 // conclusion }, null unread; perm: §3 ci-rerun.
 // -> { rerun: [id], why } (re-run these, admit nothing), { wait: why } (a rerun is still going, or passed
 //    and the driver has yet to read it), or { admit: true, why? } (admit the repair as before).
-export function baseRerun(r, { reran = [], view, status, perm, notes = () => null, flaky = [] }) {
+// `timeouts` is the jobs re-run for a timeout before ({ job, at }); a rerun returns the ones it adds.
+export function baseRerun(r, { reran = [], view, status, perm, notes = () => null, flaky = [], timeouts = [], now = Date.now() }) {
   // A check's run is named by its details URL (`…/actions/runs/<id>/job/<job>`).
   const ids = (r?.checks ?? []).map((c) => runIdFrom(c.url));
   if (!ids.length || ids.some((x) => !x)) return { admit: true };
@@ -214,16 +218,22 @@ export function baseRerun(r, { reran = [], view, status, perm, notes = () => nul
   }
   // Why each run reads as the runner's, not the code's: a setup step, a timeout, or only known flaky checks.
   const allFlaky = (r.checks ?? []).length > 0 && r.checks.every((c) => flaky.includes(c.name));
+  const outs = [];
   const why = fresh.map((x) => {
     if (allFlaky) return 'a §4 Known flaky check';
     const v = view(x);
     const setup = setupFailed(v), out = timedOut(v, notes);
+    outs.push(...out);
     return [...(setup.length ? [`a setup step (${[...new Set(setup)].map((n) => `"${n}"`).join(', ')})`] : []), ...(out.length ? [`a timeout (${[...new Set(out)].map((n) => `"${n}"`).join(', ')})`] : [])].join(' and ');
   });
   if (!why.every(Boolean)) return { admit: true };
+  const recent = new Set(timeouts.filter((t) => t?.job && now - Date.parse(t.at) < TIMEOUT_AGAIN_MS).map((t) => t.job));
+  const again = [...new Set(outs)].filter((j) => recent.has(j));
+  if (again.length) return { admit: true, why: `${again.map((n) => `"${n}"`).join(', ')} timed out on ${r.branch} again within ${TIMEOUT_AGAIN_MS / 3600e3} hours of a rerun for a timeout, so it is not re-run again` };
   const named = [...new Set(why)].join('; ');
   if (perm !== 'yes') return { admit: true, why: `it failed at ${named}, but config §3 ci-rerun is "${perm ?? 'no'}", so it is not re-run first` };
-  return { rerun: fresh, why: `its failed run${plural(fresh)} ${fresh.join(', ')} failed at ${named}, the runner's and not the code's, so ${fresh.length === 1 ? 'it is' : 'they are'} re-run once before any repair is admitted` };
+  const at = new Date(now).toISOString();
+  return { rerun: fresh, timeouts: [...new Set(outs)].map((job) => ({ job, at })), why: `its failed run${plural(fresh)} ${fresh.join(', ')} failed at ${named}, the runner's and not the code's, so ${fresh.length === 1 ? 'it is' : 'they are'} re-run once before any repair is admitted` };
 }
 
 // The record to keep for state `s` read now, carrying `since` from the one before while it is red.
