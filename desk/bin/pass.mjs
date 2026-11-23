@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { tryLockFile, filePid, writeJsonAtomic, withDirLock } from './dir-lock.mjs';
-import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, doneOnPr, readTriage } from './batch-state.mjs';
+import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
@@ -84,7 +84,7 @@ import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference } from './queue
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
-import { decidePrStatus, followState } from './pass/pr-status.mjs';
+import { decidePrStatus, followState, onThisPr, tookPostMerge, repoOfPr } from './pass/pr-status.mjs';
 import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
@@ -106,7 +106,7 @@ import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 import { kindMode, leaseCli, releasePreviews } from './leases.mjs';
 import { handToWorker as handMemToWorker, memPool, reserveForWorker } from './mem-lease.mjs';
-import { isArchived, prClosed, owesReopen } from './queue-store.mjs';
+import { archivedOf, isArchived, keepPrs, mergedPrs, prClosed, owesReopen, recordedPr } from './queue-store.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -1319,25 +1319,83 @@ function prOwner(n) {
 // its tracker status category is done and it records no PR of its own, else null. A title is not
 // enough: another ticket's PR often names this key in its title. A ticket whose own PR merged and was
 // requeued for more work counts only PRs merged after that merge, and one requeued for its after-merge
-// steps (merged_tail) never counts that PR, whose merge is why it runs. A read that fails is null, and the
-// ticket spawns as it would have.
+// steps (merged_tail) never counts that PR, whose merge is why it runs. Its own PR is the one it records,
+// else the one a spawn kept (merged_pr) when it cleared the result. A spawn before merged_pr was kept
+// cleared the result but left pr_status, written only for the ticket's own PR, so a status naming a PR
+// in this repo stands in: its PR is the merge merged_at records once GitHub lists it merged by then
+// (whatever state the status last read; merged_at is GitHub's time or the driver's, never earlier), and a status read after merged_at is a later round of its
+// own, so merged_at is its own merge even when that round's PR never merged. A status read as MERGED
+// names its own PR whatever its merge time, merged_at keeping only a first merge. A status read before
+// merged_at whose PR never merged by then explains nothing. A merge time with no PR of the ticket's own
+// behind it is the merge of a PR built outside its worker, which is the one to find, so it excludes
+// nothing. A read that fails is null, and the ticket spawns as it would have.
+// Its own PRs are every one it records (result.pr and every merged_pr: an open result.pr does not hide
+// a merged one), and none of them is news. A recorded PR that its PR status names with another repo's
+// url (needs-you's elsewhereDone) is that repo's, not this repo's PR of the same number. This repo is
+// judged by the url GitHub gives its PRs (pass/pr-status.mjs repoOfPr), not the remote's spelling,
+// which a rename leaves behind: the search's own urls, else that spelling where it found nothing.
+const hereRepo = () => repoOfPr(`https://github.com/${GH_REPO}/pull/`);
+const foreign = (x, here) => !!x.url && repoOfPr(x.url) !== here;
+const foreignPr = (t, n, here) => n != null && foreign(recordedPr(t, n), here);
+// The pairs a spawn writes beside result=null: every PR of its own it has recorded since its first merge,
+// kept as merged_pr with the url its status gave it, so a spawn never forgets one, nor whose repo it is in
+// once a later PR's status replaces that one. Whose repo each is in is judged when it is read (mergedPrs,
+// queue-store.mjs).
+// Kept by repo and number, so another repo's PR of the same number (needs-you's elsewhereDone) never
+// replaces this repo's own: a PR with no url, or this repo's, is this repo's.
+const keepMergedPr = (t) => {
+  const here = hereRepo();
+  const kept = keepPrs(t, (x) => `${foreign(x, here) ? repoOfPr(x.url) : ''}#${x.pr}`);
+  return kept ? [`merged_pr=${JSON.stringify(kept)}`] : [];
+};
+const statusPr = (t, here) => {
+  const s = t.merged_at ? t.pr_status : null;
+  if (s?.pr == null || foreign({ url: s.url }, here)) return null;
+  return { pr: Number(s.pr), later: Date.parse(s.at) > Date.parse(t.merged_at), merged: s.state === 'MERGED', mergedAt: Date.parse(s.merged_at) };
+};
 function shippedElsewhere(t) {
+  const recorded = [...(t.result?.pr != null ? [recordedPr(t, t.result.pr)] : []), ...mergedPrs(t)];
+  let here, status, mine;
+  const judge = (repo) => {
+    here = repo;
+    status = statusPr(t, here);
+    mine = new Set(recorded.filter((x) => !foreign(x, here)).map((x) => x.pr));
+  };
+  judge(hereRepo());
   try {
-    const own = Date.parse(t.merged_at);
-    const since = Math.max(...[Date.parse(t.added_at), own].filter((n) => !Number.isNaN(n)), -Infinity);
+    const since = Math.max(...[Date.parse(t.added_at), mine.size ? Date.parse(t.merged_at) : NaN].filter((n) => !Number.isNaN(n)), -Infinity);
     const search = since === -Infinity ? t.key : `merged:>=${new Date(since).toISOString().slice(0, 10)}`;
     // 1000 is the most a GitHub search returns.
     const prs = cached(`merged:${search}`, () => JSON.parse(readOrThrow(`gh pr list --search ${search}`, 'gh',
-      ['pr', 'list', '--repo', GH_REPO, '--state', 'merged', '--search', search, '--limit', '1000', '--json', 'number,headRefName,mergedAt'])));
+      ['pr', 'list', '--repo', GH_REPO, '--state', 'merged', '--search', search, '--limit', '1000', '--json', 'number,headRefName,mergedAt,url'])));
+    const list = Array.isArray(prs) ? prs : [];
+    const seen = list.find((p) => p?.url)?.url;
+    if (seen) judge(repoOfPr(seen));
+    const at = Date.parse(t.merged_at);
+    if (!mine.size && status && list.some((p) => Number(p?.number) === status.pr && Date.parse(p.mergedAt) <= at)) mine.add(status.pr);
+    // A status read as MERGED was written for the ticket's own result.pr, its merge known before the spawn
+    // cleared it. Its own PRs, however recorded, may have merged after merged_at (which keeps only the first
+    // merge): they are not news, and neither is anything merged by the last of them. Each one's merge time
+    // is the status's for that PR, else the search's (a capped search may leave that PR out).
+    if (status?.merged) mine.add(status.pr);
+    let own = mine.size || status?.later ? at : NaN;
+    for (const n of mine) {
+      const fromStatus = status?.merged && status.pr === n ? status.mergedAt : NaN;
+      const m = Number.isNaN(fromStatus) ? Date.parse(list.find((p) => Number(p?.number) === n)?.mergedAt) : fromStatus;
+      if (!Number.isNaN(m)) own = Math.max(own, m);
+    }
     const re = new RegExp(keyPattern(t.key));
-    const hit = (Array.isArray(prs) ? prs : [])
+    const hit = list
       .filter((p) => Number.isFinite(Number(p?.number)) && re.test(String(p.headRefName ?? '')) && Number(p.number) !== Number(t.merged_tail)
-        && (since === -Infinity || Date.parse(p.mergedAt) >= since)
-        && (Number.isNaN(own) || (Date.parse(p.mergedAt) > own && Number(p.number) !== Number(t.result?.pr))))
+        && (since === -Infinity || Date.parse(p.mergedAt) >= since) && !mine.has(Number(p.number))
+        && (Number.isNaN(own) || Date.parse(p.mergedAt) > own))
       .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))[0];
-    if (hit) return { pr: Number(hit.number), branch: hit.headRefName, mergedAt: hit.mergedAt ?? null };
+    // A PR status naming another repo's PR of the hit's number is not this PR's: it is dropped, or the
+    // done write would mark it merged and the PR status step would never read this repo's PR.
+    if (hit) return { pr: Number(hit.number), branch: hit.headRefName, mergedAt: hit.mergedAt ?? null, dropStatus: foreignPr(t, hit.number, here) };
   } catch { /* unread: spawn as before */ }
-  if (t.result?.pr != null || t.draft_pr != null) return null;
+  // A PR status unconfirmed because the read failed still means a PR of its own: never "done with no PR".
+  if (recorded.length || status != null || t.draft_pr != null) return null;
   const k = E.ticketKind(t.key);
   if (!k.ok || k.kind !== 'tracker') return null;
   try {
@@ -3132,7 +3190,7 @@ function spawnCloud(t) {
   // Recorded running before the session starts, which cannot be taken back. A start that fails parks,
   // which moves it off running. `cloud` holds `started` from here, so a refused write of the session
   // below still leaves a running ticket the pass watches for its PR (advanceCloud) rather than skips.
-  if (!recordRunning(t.key, ['stage=cloud', `cloud=${JSON.stringify({ started })}`, 'session_id=null', 'port=null', 'result=null', 'draft_pr=null', 'spawn_failed=null'],
+  if (!recordRunning(t.key, ['stage=cloud', `cloud=${JSON.stringify({ started })}`, 'session_id=null', 'port=null', 'result=null', ...keepMergedPr(t), 'draft_pr=null', 'spawn_failed=null'],
     'no cloud session was started')) return;
   const s = startCloud(cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests }));
   if (s.error) {
@@ -3632,7 +3690,10 @@ const SPAWN_HANDLERS = {
   skip: () => {},
   'record-done': (a, s) => {
     const before = report.failed.length;
-    if (!DRY) q(...shippedSet(s.t, a.how, a.pr, a.mergedAt));
+    // shipped_pr keeps it live until a pass reads that PR's review (harvest.mjs postMergeUnmade), as the
+    // merge driver's record does: a kept status names an earlier PR, or none once dropped.
+    if (!DRY) q(...(a.dropStatus ? [...shippedSet({ ...s.t, pr_status: null }, a.how, a.pr, a.mergedAt), 'pr_status=null'] : shippedSet(s.t, a.how, a.pr, a.mergedAt)),
+      ...(a.pr != null ? [`shipped_pr=${a.pr}`] : []));
     if (report.failed.length === before) report.done.push(a.line);
   },
   park: (a) => {
@@ -3726,7 +3787,7 @@ for (const t of spawnable) {
   const logBytes = logPreflight(t.key, pre.cost);
   const recorded = recordRunning(t.key, [`session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? (t.fix && !t.fix.finished ? fixStartStage(t.fix) : '0/9')}`, 'last_round=null', 'cleared=null',
     `port=${port}`, `database=${database}`, `log_bytes=${logBytes}`, 'idle_passes=0',
-    'result=null', 'draft_pr=null', 'images_uploaded=null', 'images_reported=null',
+    'result=null', ...keepMergedPr(t), 'draft_pr=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
@@ -4246,11 +4307,13 @@ const merges = [];
 const drafts = [];
 const undrafted = [];
 const reopens = [];
+// GitHub is asked once a pass per PR: a PR recorded on two tickets is read for each from this.
+const prStatusReads = {};
 // The preview-build team whose units a finished preview frees: null with no §4 Vercel team or the kind off.
 const PREVIEW_TEAM = (() => { try { const team = E.previewTeam(); return team && kindMode('preview-build', LEASE_ENV).mode !== 'off' ? team : null; } catch { return null; } })();
 runSteps({
   name: 'PR status',
-  snapshot: () => ({ ...phaseSnapshot({ tickets: qNow.tickets, registry: REGISTRY, now: Date.now() }), dry: DRY, passAt: PASS_AT, logins: conflictHandle, previews: !!PREVIEW_TEAM }),
+  snapshot: () => ({ ...phaseSnapshot({ tickets: qNow.tickets, registry: REGISTRY, now: Date.now() }), dry: DRY, passAt: PASS_AT, archived: archivedOf(qNow), repo: GH_REPO, logins: conflictHandle, previews: !!PREVIEW_TEAM }),
   decide: decidePrStatus,
   handlers: {
     ...OUT_HANDLERS,
@@ -4262,7 +4325,8 @@ runSteps({
     // A ticket whose PR is not its own parks, and the steps after this one in the pass see it parked.
     park: (a) => { q('park', a.key, a.question); const t = qNow.tickets[a.key]; if (t) Object.assign(t, { state: 'parked', park: { question: a.question } }); },
     'read-pr': (a) => {
-      const s = readPrStatus(a.pr);
+      const s = prStatusReads[a.pr] ?? readPrStatus(a.pr);
+      if (s) prStatusReads[a.pr] = s;
       return s && withErrors(withUntriggered(withHistory(s, a.was)), a.was);
     },
     'pr-status': (a) => q('set', a.key, `pr_status=${JSON.stringify(a.status)}`),
@@ -4270,7 +4334,13 @@ runSteps({
     merged: (a) => q('merged', a.key, ...(a.at ? [a.at] : [])),
     'follow-on': (a) => {
       const args = ['set', a.key, ...a.fields];
-      const w = QW.apply(args, { when: (x) => a.expect.includes(followState(x)) });
+      // An archived owner that took them stays so; a live one must still have them under the lock.
+      const holds = (cur) => {
+        if (!a.by || a.by.archived) return true;
+        const o = Object.hasOwn(cur?.tickets ?? {}, a.by.key) ? cur.tickets[a.by.key] : null;
+        return onThisPr(o, a.pr, a.by.url) && tookPostMerge(o, a.pr);
+      };
+      const w = QW.apply(args, { when: (x, cur) => (a.pr == null || onThisPr(x, a.pr, a.url)) && a.expect.includes(followState(x)) && holds(cur) });
       if (!w.ok) report.failed.push(refusedLine(args, 'not recorded', w.why));
       return w;
     },
@@ -5177,9 +5247,7 @@ for (const t of [...heldNow, ...parkHeld]) {
 }
 const prState = (n) => prStates[n] ?? null;
 const predsOf = (t) => blockersOf(t);
-// One done by another's PR (done_by) has no result.pr of its own: that PR's merge is recorded as its
-// merged_at. Any other merged_at may be an earlier round's, so its own PR is read.
-const mergedHere = (p) => { const x = qNow.tickets[p]; return x?.state === 'done' && ((x.done_by?.pr != null && x.result?.pr == null && !!x.merged_at) || prState(x.result?.pr) === 'MERGED'); };
+const mergedHere = (p) => blockerThrough(qNow.tickets[p], prState);
 const releaseDue = heldNow.filter((t) => predsOf(t).length && predsOf(t).every(mergedHere));
 // Held behind a spine the person has still to approve (or send back) waits on that, not on a merge.
 const spinesOf = (t) => predsOf(t).filter((p) => spinePark(qNow.tickets[p]));

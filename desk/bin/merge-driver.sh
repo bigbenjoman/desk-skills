@@ -568,28 +568,62 @@ NODE
   # by this driver) has merged, whatever GitHub lists: `prs` sees only the newest 100 merged PRs, so a
   # blocker whose PR is older than that (a long-lived draft, rebased and merged today) was never found
   # and held its successors forever. Lines in the shape `prs` prints; the PR is "?" when none is recorded.
-  local merged known
-  known=$(node --input-type=module - "$DESK_QUEUE" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/queue-store.mjs" <<'NODE'
+  # merged_at keeps only a ticket's first merge, so a live ticket requeued after it is not merged on it,
+  # nor on a listed older PR naming its key: only its current PR merging releases what waits on it (HOLD
+  # lines, the PR or "?"). Requeued is: waiting for its next worker (triaged or running, held behind its
+  # own blockers at the requeue, or failed before a worker spawned); respawned, in any state (merged_pr,
+  # which its spawn keeps); or, respawned before merged_pr was kept, done on a PR its status reads OPEN
+  # after merged_at, or done on a PR other than the one its status names. A status read before merged_at
+  # is from before the driver merged it, so it releases at once. A parked ticket never requeued (one a
+  # stop holds included), or a done one never respawned, keeps the merge it records.
+  local merged known listed holds h
+  known=$(node --input-type=module - "$DESK_QUEUE" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" <<'NODE'
 import { readFileSync } from 'node:fs';
-const { attachArchive, everyTicket } = await import(process.argv[3]);
+const { attachArchive, everyTicket, mergedPrs } = await import(`${process.argv[3]}/queue-store.mjs`);
+const { prStatusOf } = await import(`${process.argv[3]}/batch-state.mjs`);
+const { blockersOf } = await import(`${process.argv[3]}/queue-states.mjs`);
 const q = { tickets: {} };
 try { q.tickets = JSON.parse(readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
+const live = q.tickets;
+const through = (t) => t.state === 'done' && (t.result?.pr == null || prStatusOf(t)?.state === 'MERGED');
+// Waiting for its next worker: queued or running, held behind its blockers (held_by: a stop holds behind
+// none), or failed before a worker spawned (a requeue clears session_id, and only a spawn sets it).
+const awaiting = (t) => ['triaged', 'running'].includes(t.state)
+  || (t.state === 'parked' && String(t.park?.question ?? '').startsWith('held by orchestrator') && blockersOf(t).length > 0)
+  || (t.state === 'failed' && t.spawn_failed === true && !t.session_id);
+const openLater = (t) => prStatusOf(t)?.state === 'OPEN' && Date.parse(t.pr_status.at) > Date.parse(t.merged_at);
+// Done on a PR other than the one its status names: that status is from an earlier round.
+const otherRound = (t) => t.state === 'done' && t.result?.pr != null && t.pr_status?.pr != null && Number(t.pr_status.pr) !== Number(t.result.pr);
+const requeued = (t) => !through(t) && (awaiting(t) || mergedPrs(t).length > 0 || openLater(t) || otherRound(t));
+// Its current PR: none yet while it waits for a worker, else the one it records, or its draft, unless
+// that is a PR it kept as merged (a requeue keeps it, and only a spawn clears the result).
+const current = (t) => {
+  const n = awaiting(t) ? null : t.result?.pr ?? t.draft_pr ?? null;
+  return n == null || mergedPrs(t).some((x) => x.pr === Number(n)) ? '?' : n;
+};
 // Done tickets whose PR merged move to the archive beside the queue (queue-store.mjs), live ones first.
-for (const [k, t] of Object.entries(everyTicket(attachArchive(q, process.argv[2])))) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
+for (const [k, t] of Object.entries(everyTicket(attachArchive(q, process.argv[2])))) {
+  if (t && Object.hasOwn(live, k) && t.merged_at && requeued(t)) console.log(`HOLD\t${current(t)}\t${k}`);
+  else if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
+}
 NODE
 ) || known=""
+  holds=$(printf '%s\n' "$known" | awk -F'\t' '$1 == "HOLD"')
+  known=$(printf '%s\n' "$known" | awk -F'\t' '$1 != "HOLD" && NF')
   # One merged-PR listing for every predecessor at once, not one per predecessor per loop. A listing gh
   # could not give still releases what the queue already knows merged.
   # Each predecessor key is its own argument: ticket keys hold no spaces or glob characters.
   # shellcheck disable=SC2046
-  merged=$(prs merged $(printf '%s\n' "$plan" | awk '{ print $2 }' | tr ',' '\n' | sort -u) </dev/null) || merged=""
-  merged="$known${known:+$'\n'}$merged"
+  listed=$(prs merged $(printf '%s\n' "$plan" | awk '{ print $2 }' | tr ',' '\n' | sort -u) </dev/null) || listed=""
+  merged="$known${known:+$'\n'}$listed"
   [ -n "$merged" ] || return 0
   while read -r succ preds; do
     [ -n "$succ" ] || continue
     all=1; got=""
     for pred in ${preds//,/ }; do
-      n=$(printf '%s\n' "$merged" | awk -F'\t' -v k="$pred" '$3 == k { print $1; exit }')
+      h=$(printf '%s\n' "$holds" | awk -F'\t' -v k="$pred" '$3 == k { print $2; exit }')
+      if [ -n "$h" ]; then n=$(printf '%s\n' "$listed" | awk -F'\t' -v k="$pred" -v c="$h" '$3 == k && $1 == c { print $1; exit }')
+      else n=$(printf '%s\n' "$merged" | awk -F'\t' -v k="$pred" '$3 == k { print $1; exit }'); fi
       [ -z "$n" ] && { all=0; break; }; got="$got $pred#$n"
     done
     if [ "$all" = 1 ]; then
@@ -1092,7 +1126,7 @@ held_rerun(){ # held_rerun <n> <sha> <gate json> <gate state>
 }
 
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds met carried="" bare nbare bare_more routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH"
+  local n="$1" key="$2" g sha ms state holds met carried="" bare nbare bare_more routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH" mat="" head=""
   EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" --files-cache "$SD/pr-files.json" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
@@ -1323,8 +1357,15 @@ EOF_RESOLVE
       [ "${#moid}" -eq 40 ] || moid=
       if node "$Q" set-batch "promotion.merged_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" ${moid:+"promotion.merge_commit=$moid"} >/dev/null 2>&1; then log "#$n epic PR merged: recorded on the queue"
       else log "#$n epic PR merge not recorded on the queue — the next pass reads it from GitHub"; fi
-    elif rec=$(node "$Q" merged "$key" 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
-    else log "#$n merge time not recorded: $(printf '%s' "$rec" | tail -1)"; fi
+    else
+      # GitHub's merge time rather than this clock's, and the PR with its branch: a ticket built outside
+      # its worker records no PR of its own, and this merge is its PR where the branch names its key
+      # (queue.mjs merged). gh writes an unset time as 0001-01-01.
+      IFS="$TAB" read -r mat head < <(gh pr view "$n" --repo "$REPO" --json mergedAt,headRefName -q '"\(.mergedAt)\t\(.headRefName)"' 2>/dev/null)
+      case "$mat" in 0001-*) mat= ;; [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*) ;; *) mat= ;; esac
+      if rec=$(node "$Q" merged "$key" ${mat:+"$mat"} --pr "$n" ${head:+--head "$head"} 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
+      else log "#$n merge time not recorded: $(printf '%s' "$rec" | tail -1)"; fi
+    fi
     # The epic is never transitioned: its close-out is the orchestrator's.
     [ -n "$EPIC_KEY" ] || close_merged "$n" "$key"
     return 0

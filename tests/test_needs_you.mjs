@@ -3573,6 +3573,54 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('#811 an empty ask is refused', cli('ask', 'ask811', '  ').code, 11);
 }
 
+// DS-796: a done blocker whose merge is recorded, with no PR, is through, so a ticket held behind it and
+// an open one waits on the open one; a done blocker with neither a merge nor a PR still needs the person.
+{
+  const { holdOf } = await import('../desk/bin/desk-q.mjs');
+  const held = (by) => ({ state: 'parked', lane: 'A', held_by: by, park: { question: `held by orchestrator: blocked by ${by} — starts once their PRs merge` } });
+  put('th796', { port: 5796, beat: 1, supervised: true, tickets: {
+    'M-1': { state: 'done', lane: 'A', merged_at: minsAgo(60), result: { summary: 'shipped outside its worker: done in Jira with no PR' } },
+    'M-2': { state: 'done', lane: 'A', result: { pr: 72 }, pr_status: { pr: 72, state: 'OPEN', isDraft: false, checks: [] } },
+    'M-3': { state: 'done', lane: 'A', result: {} },
+    'H-1': held('M-1|M-2'),
+    'H-2': held('M-3'),
+  } });
+  const items = N.collect({ word: 'th796' }).items;
+  const q796 = queueOf('th796');
+  t('DS-796 AC3 desk-q: held behind a merged blocker with no PR and an open one, it waits on the open one', `${holdOf(q796, q796.tickets['H-1']).k} ${holdOf(q796, q796.tickets['H-1']).text.startsWith('behind #72')}`, 'waiting true');
+  t('DS-796 AC3 needs-you list: no "finished with no PR" item for the merged blocker', items.some((i) => /finished with no PR/.test(i.need ?? '') && i.t.key === 'H-1'), false);
+  t('DS-796 AC3 needs-you list (the CLI) says no blocker finished with no PR for it', /M-1 finished with no PR/.test(cli('list', 'th796').out), false);
+  t('DS-796 AC4 a done blocker with neither a merge nor a PR still needs you', items.some((i) => i.t.key === 'H-2' && /M-3 finished with no PR: let it start/.test(i.need ?? '')), true);
+  // The shared predicate, as desk-q reads it (the last pass's pr_status) and as the pass does (GitHub read now).
+  const { blockerThrough } = await import('../desk/bin/batch-state.mjs');
+  const gh = (s) => () => s;
+  t('DS-796 blockerThrough: merged, recorded or read', [
+    blockerThrough(q796.tickets['M-1']), blockerThrough(q796.tickets['M-1'], gh(null)),
+    blockerThrough({ state: 'done', result: { pr: 5 } }), blockerThrough({ state: 'done', result: { pr: 5 } }, gh('MERGED')),
+  ].join(), 'true,true,true,true');
+  t('DS-796 blockerThrough: not done, no PR and no merge, open, closed, or unread by the pass', [
+    blockerThrough({ state: 'triaged', merged_at: minsAgo(5) }), blockerThrough(q796.tickets['M-3']), blockerThrough(q796.tickets['M-2']),
+    blockerThrough({ state: 'done', result: { pr: 5 }, pr_status: { pr: 5, state: 'CLOSED' } }), blockerThrough({ state: 'done', result: { pr: 5 } }, gh(null)), blockerThrough(undefined),
+  ].join(), 'false,false,false,false,false,false');
+  // Requeued after its first PR merged: merged_at stays, and its new PR is still open, so what is held
+  // behind it waits on that PR, as the pass reads it (GitHub) and as desk-q does (the kept status).
+  const requeued = { state: 'done', merged_at: minsAgo(600), result: { pr: 11 }, pr_status: { pr: 11, state: 'OPEN' } };
+  t('DS-796 blockerThrough: a requeued blocker whose new PR is open or unread is not through on its old merge', [
+    blockerThrough(requeued), blockerThrough(requeued, gh('OPEN')), blockerThrough({ ...requeued, pr_status: { pr: 10, state: 'MERGED' } }, gh(null)),
+  ].join(), 'false,false,false');
+  t('DS-796 blockerThrough: a requeued blocker is through once its new PR merges, or was done on another repo\'s PR', [
+    blockerThrough(requeued, gh('MERGED')),
+    blockerThrough({ state: 'done', merged_at: minsAgo(60), result: { pr: 7 }, pr_status: { pr: 7, state: 'MERGED', url: 'https://github.com/other/repo/pull/7' } }, gh('OPEN')),
+  ].join(), 'true,true');
+  t('DS-796 blockerThrough: a requeued blocker whose new PR closed unmerged is not through on its old merge', [
+    blockerThrough(requeued, gh('CLOSED')), blockerThrough({ ...requeued, pr_status: { pr: 11, state: 'CLOSED' } }),
+  ].join(), 'false,false');
+  // The pass's release: a ticket held behind the requeued blocker stays held while its new PR is open.
+  put('rq796', { port: 5797, beat: 1, supervised: true, tickets: { 'R-1': requeued, 'H-3': held('R-1') } });
+  const qrq = queueOf('rq796');
+  t('DS-796 desk-q: held behind a requeued blocker whose new PR is open, it waits on that PR', `${holdOf(qrq, qrq.tickets['H-3']).k} ${holdOf(qrq, qrq.tickets['H-3']).text.startsWith('behind #11')}`, 'waiting true');
+}
+
 // ---- #911: a session-run batch whose passes stopped, with work autopilot could move, is one item
 {
   put('stall911', { port: 4911, beat: 90, tickets: { 'S-1': { state: 'triaged', lane: 'A' }, 'S-2': { state: 'running', lane: 'A', stage: '3/9' } } });
