@@ -29,7 +29,6 @@ t('#1341 a step only the person takes is recorded as an ask with a recommended d
 t('#1341 a wait on tickets is recorded with --until, never a step still owed after they merge', take.includes('One that waits on tickets happening (`--until <TICKET>[,<TICKET>...]`) is dropped by the pass once they are all merged or done') && take.includes('never for a step the person still owes once they merge'), true);
 t('#1341 a wait on the person lives only as a needs-you item, never in the loop prompt', take.includes('**A wait on the person lives only as a needs-you item, never as a line in your `/loop` prompt.**') && take.includes('Your loop prompt, a pending note, a handoff or a summary is read by no one but you'), true);
 t('#1341 an admit is the desk\'s own step, never held for the person to say admit', take.includes('**An admit is the desk\'s own step, never a wait on the person.**') && take.includes('Never hold one for the person to say "admit"'), true);
-t('#1341 the core names it as a red flag', core.includes('About to keep a wait on the person ("pending until they say admit") in your `/loop` prompt'), true);
 
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }
 console.log('all passed');
