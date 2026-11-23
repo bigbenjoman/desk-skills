@@ -305,8 +305,9 @@ function scrubCode(t) {
     }
     return false;
   };
-  // A word, or a number with its decimal point (`1.`, `1.5e3`), so the point is no property access.
-  const word = /\d[\w$]*(?:\.\d*(?:[eE][+-]?\d+)?)?|[\w$]+/y;
+  // A word, or a decimal number with its point (`1.`, `1.5e3`), so the point is no property access. Only
+  // a plain integer part takes it: after `1e3`, `0x1F` or `1n` a `.` is one (`1e3.with(`).
+  const word = /\d[\d_]*\.(?:\d[\d_]*)?(?:[eE][+-]?\d+)?|[\w$]+/y;
   while (i < t.length) {
     const c = t[i];
     word.lastIndex = i;
