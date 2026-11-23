@@ -3768,6 +3768,33 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-836 AC2 once the pass drops the record, no item', N.collect({ word: 'gone836' }).items.filter((i) => i.kind === 'ticketless').length, 0);
 }
 
+// ---- DS-896: a ticket's blockers, read by desk-q, needs-you and queue.mjs watch from one helper, in the
+// order they were added, whether the queue keeps them as the pipe-joined held_by or as the list holds.
+{
+  // H-1 was held behind Z-3, then Z-2, then Z-1 (added in that order, so not sorted); Z-3 has since left
+  // the batch, so needs-you's item offers to free H-1 from it, naming the two blockers left.
+  const running = { state: 'running', lane: 'A', stage: '3/9' };
+  const park = { question: 'held by orchestrator: blocked by Z-3, Z-2, Z-1 — starts once their PRs merge', since: minsAgo(30) };
+  const held = { state: 'parked', lane: 'A', dropped_link: 'Z-3', park };
+  const zKeys = (s) => [...new Set(String(s ?? '').match(/Z-[12]/g) ?? [])].join();
+  const readers = (name, ticket) => {
+    put(name, { port: 5896, beat: 1, supervised: true, tickets: { 'Z-2': running, 'Z-1': running, 'H-1': { ...held, ...ticket } } });
+    const r = loadRepos().find((x) => x.name === name);
+    const deskQ = strip(ticketScreen(r, 'H-1'));
+    const ny = N.collect({ word: name }).items.filter((i) => i.t.key === 'link:H-1:Z-3').map((i) => i.need).join(' ');
+    const watch = spawnSync(process.execPath, [join(REAL_BIN, 'queue.mjs'), 'render'], { encoding: 'utf8',
+      env: { ...process.env, ...env, DESK_QUEUE: join(env.DESK_HOME, 'repos', `acme__${name}`, 'queue.json'), DESK_CONFIG: join(env.DESK_CONFIG_ROOT, 'repos', `acme__${name}`, 'config.md') } });
+    const row = watch.stdout.split('\n').filter((l) => l.includes('H-1')).join(' ');
+    return { deskQ: zKeys(deskQ), ny: zKeys(ny), watch: zKeys(row) };
+  };
+  const str = readers('str896', { held_by: 'Z-3|Z-2|Z-1' });
+  const list = readers('list896', { holds: ['Z-3', 'Z-2', 'Z-1'] });
+  t('DS-896 AC1 desk-q names the two blockers in the order they were added', str.deskQ, 'Z-2,Z-1');
+  t('DS-896 AC2 needs-you names the same two, in the same order as desk-q', str.ny, str.deskQ);
+  t('DS-896 AC3 queue.mjs watch names the same two, in the same order as desk-q', str.watch, str.deskQ);
+  t('DS-896 AC4 blockers kept as the pipe-joined held_by read the same as the list', JSON.stringify(str), JSON.stringify(list));
+}
+
 // ---- DS-929 AC1: every in-process collect and refresh above ran on injected repos and reads, and started
 // no gh, git, desk-jira or launchctl process.
 t('DS-929 AC1 no collect or refresh on the stubs started a gh, git, desk-jira or launchctl process', startedOnStubs.join(' | '), '');

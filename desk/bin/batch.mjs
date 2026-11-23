@@ -27,6 +27,7 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, EXIT, crashShowsPerson, describeCrash, LEFT_PREFIX, promotedAt } from './batch-state.mjs';
+import { blockersOf } from './queue-states.mjs';
 import { listBatches, onlyKeptTriage, finished, prState, prMergedAt, lastPromotion, lastPromotionRecorded, orchestratorHolder, supervisorHolder, batchEnv } from './batches.mjs';
 import { readHanded, handItems, dropHanded } from './decider.mjs';
 import { admissionRefusal } from './gate.mjs';
@@ -239,9 +240,10 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
   const moved = [];
   const stay = [];
   for (const t of left) {
-    const ready = ['triaged', 'queued'].includes(t.state) && !t.held_by && !t.held_outside;
+    const by = blockersOf(t);
+    const ready = ['triaged', 'queued'].includes(t.state) && !by.length && !t.held_outside;
     const why = ps === 'CLOSED' ? `batch ${b.name}'s promotion PR #${p} was closed, so its epic may be abandoned`
-      : !ready ? `it is ${t.state}${t.held_outside ? `, held behind ${String(t.held_outside).split('|').join(', ')} outside every batch, so whether it moves with its hold is the person's call` : t.held_by ? `, held behind ${String(t.held_by).split('|').join(', ')}, so whether it moves with its hold is the person's call` : ', which a move would not carry over'}`
+      : !ready ? `it is ${t.state}${t.held_outside ? `, held behind ${String(t.held_outside).split('|').join(', ')} outside every batch, so whether it moves with its hold is the person's call` : by.length ? `, held behind ${by.join(', ')}, so whether it moves with its hold is the person's call` : ', which a move would not carry over'}`
         : move(b, t.key);
     if (why) stay.push({ t, why }); else moved.push(t.key);
   }

@@ -2,9 +2,10 @@
 //
 // With the ledger lever on, every queue write (queue-store.mjs writeQueueFile) appends the difference
 // between the queue on disk before it and the queue it wrote: per ticket, a typed event for a change
-// of state and one legacy_set for every other field changed with it, and for the batch, its red base
-// starting or clearing (base_red, base_green). It records what queue.json kept,
-// never the changes a writer asked for. A ticket leaving the queue is archived, or moved out of the
+// of state, a held or released event for each blocker added or lifted, and one legacy_set for every
+// other field changed with it, and for the batch, its red base starting or clearing (base_red,
+// base_green). It records what queue.json kept, never the changes a writer asked for. A ticket
+// leaving the queue is archived, or moved out of the
 // batch; one arriving with a moved_from record is moved in. The first write the lever sees for a batch
 // the log has never named first seeds one event per ticket from the queue as it stood.
 //
@@ -18,7 +19,7 @@ import { BATCHES_DIR, leverOn } from './desk-env.mjs';
 import { append, fold, invalid, diffQueues, project, withoutProjectionOnly, parkOf, waitsOfField, ANSWERED, WAITS, PARK_KINDS, TRANSITIONS } from './ticket-ledger.mjs';
 import { fieldDiffs, flattenQueue } from './queue-fields.mjs';
 import { readQueueAt, same } from './queue-store.mjs';
-import { FINISHED } from './queue-states.mjs';
+import { FINISHED, blockersOf } from './queue-states.mjs';
 import { parkKindOf } from './batch-state.mjs';
 import { lock, unlock } from './dir-lock.mjs';
 
@@ -126,6 +127,27 @@ function waitEvents(was, now, fields) {
   return out;
 }
 
+// The blockers ticket `was` gained and lost in becoming `now`, each a held or released event, taken out
+// of the fields `fields` records with it, when the ticket's state `from` (after its state events) allows
+// them. A change their replay would not leave as queue.json keeps it (blockers reordered or repeated, a
+// held_by not written as its blockers joined, or null once none is left) is recorded as the field.
+function holdEvents(was, now, fields, from) {
+  if (!own(fields, 'held_by') || !TRANSITIONS.held.from.includes(from)) return [];
+  const before = blockersOf(was);
+  const after = blockersOf(now);
+  const added = after.filter((k) => !before.includes(k));
+  const removed = before.filter((k) => !after.includes(k));
+  const kept = before.filter((k) => after.includes(k));
+  if (!added.length && !removed.length) return [];
+  if ([before, after].some((l) => new Set(l).size !== l.length) || !same([...kept, ...added], after)) return [];
+  if (now.held_by !== (after.length ? after.join('|') : null)) return [];
+  delete fields.held_by;
+  return [...(added.length ? [{ type: 'held', data: { by: added } }] : []), ...removed.map((by) => ({ type: 'released', data: { by } }))];
+}
+
+// The state ticket `was` is left in by typed events `typed`, applied in order (null for none).
+const stateAfter = (was, typed) => typed.reduce((s, e) => (typeof TRANSITIONS[e.type].to === 'string' ? TRANSITIONS[e.type].to : s), was?.state ?? null);
+
 // The events queue `before` (the file as it stood, or null) becoming queue `after` records in `batch`.
 // `archived` holds each ticket this write moved to the archive, as it was archived. `elsewhere(key)`
 // says the log already has that ticket in another batch, so its leaving this one records nothing.
@@ -148,15 +170,20 @@ export function queueEvents(before, after, { batch, archived = {}, elsewhere = (
       if (!elsewhere(key)) ev(key, 'moved', { from: batch, to: null });
       continue;
     }
-    const diffs = changed.get(key) ?? [];
+    // holds is held_by as a list, which the log keeps as the ticket's holds: never a field of its own.
+    const diffs = (changed.get(key) ?? []).filter((d) => d.field !== 'holds');
     if (diffs.some((d) => !STAMPS.includes(d.field))) {
       const fields = Object.fromEntries(diffs.map((d) => [d.field, d.after === undefined ? null : d.after]));
+      // The state the ticket's hold events apply from, undefined for a ticket moved in from another batch.
+      let from = was?.state ?? null;
       if (was === undefined && now.moved_from && typeof now.moved_from === 'object') {
         ev(key, 'moved', { from: text(now.moved_from.batch) ?? STANDING, to: batch });
+        from = undefined;
       } else if (own(fields, 'state')) {
         const { events: typed, reached } = stateEvents(was, now, at);
         if (typed.length && typed.every((e) => !invalid({ ...e, batch, key }))) {
           for (const e of typed) ev(key, e.type, e.data);
+          from = stateAfter(was, typed);
           if (reached) delete fields.state;
           // A park the queue keeps is laid back over one an event's replay cleared, and one a parked
           // event's replay leaves as it is needs no field of its own.
@@ -165,6 +192,7 @@ export function queueEvents(before, after, { batch, archived = {}, elsewhere = (
           else if (now.park != null && typed.some((e) => CLEARS_PARK.includes(e.type))) fields.park = now.park;
         }
       }
+      for (const e of holdEvents(was, now, fields, from)) ev(key, e.type, e.data);
       for (const qid of newlyAnswered(was, now, fields)) ev(key, 'answered', { qid });
       for (const e of waitEvents(was, now, fields)) ev(key, e.type, e.data);
       if (Object.keys(fields).length) ev(key, 'legacy_set', { fields });
@@ -219,7 +247,8 @@ export function recordWrite(file, before, after, { by, archived = {}, from = nul
   }
 }
 
-// A rebuilt ticket's `holds` is its held_by as a list, which queue.json does not keep.
+// A ticket's `holds` is its held_by as a list, which a queue written before the lever was on lacks:
+// held_by is compared instead.
 const REBUILT_ONLY = ['holds'];
 // Queue `q`'s tickets alone, as the difference compares them: the queue's own fields are carried into
 // a rebuild from queue.json (ticket-ledger.mjs project), and its archive is on neither side.

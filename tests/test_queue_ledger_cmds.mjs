@@ -89,7 +89,7 @@ const run = (q0, args, { file, env = {} } = {}) => {
   triage('BF-1', { size: 'L', blockers: [{ key: 'BF-2', category: 'new' }] });
   triage('BF-2', {});
   const { r, evs, said } = run({ tickets: { 'BF-1': tk('BF-1', { state: 'parked', park: { question: 'size L — split it before batching', since: 'x' } }), 'BF-2': tk('BF-2') } }, ['backfill-holds']);
-  t('AC3 backfill-holds: the held_by it adds', `${r.status} ${said} ${evs[0]?.data.fields?.held_by}`, '0 legacy_set BF-1 / queue.mjs backfill-holds BF-2');
+  t('AC3 backfill-holds: the hold it adds, as a held event', `${r.status} ${said} ${evs[0]?.data.by} ${'held_by' in (evs[1]?.data.fields ?? {})}`, '0 held BF-1, legacy_set BF-1 / queue.mjs backfill-holds BF-2 false');
 }
 
 // clears-when: a park gains the condition that clears it.

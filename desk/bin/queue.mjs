@@ -25,6 +25,7 @@ import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
+import { blockersOf } from './queue-states.mjs';
 import { LEDGER_BY_ENV, queueDifference } from './queue-ledger.mjs';
 import { newPark, parkArgs, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { followOnPending, postMergeUnmade, workerMarkers, lastStage, settleSteps } from './harvest.mjs';
@@ -292,7 +293,7 @@ function requeue(q, key, { handedBack = false } = {}) {
     harvested = `; its worker had exited on a park no pass had recorded yet, kept as prev_park: ${p.question}`
       + `${calls.unreadable.map((u) => `; unreadable ${u.what} (${u.why}), nothing logged: ${u.raw}`).join('')}`;
   }
-  if (isHeld(t)) throw new Error(`${key} is held behind ${String(t.held_by ?? '?').split('|').join(', ')}: release it rather than requeue it`);
+  if (isHeld(t)) throw new Error(`${key} is held behind ${blockersOf(t).join(', ') || '?'}: release it rather than requeue it`);
   refuseLeft(t, key, 'requeued');
   // pass.mjs spawns any triaged ticket with no open questions and never reads the lane, so this is
   // the one place an untriaged ticket, unanswered triage questions, a triage park (size, a
@@ -344,7 +345,7 @@ function requeue(q, key, { handedBack = false } = {}) {
   // leaves one on a ticket that is not held.
   // Blockers in no batch (held_outside) stay until pass.mjs lifts them.
   const outside = String(t.held_outside ?? '').split('|').filter((p) => p && !q.tickets[p]);
-  const pending = String(t.held_by ?? '').split('|').filter((p) => p && (q.tickets[p] ? !q.tickets[p].merged_at : outside.includes(p)));
+  const pending = blockersOf(t).filter((p) => (q.tickets[p] ? !q.tickets[p].merged_at : outside.includes(p)));
   // A fresh session, so a killed worker waiting to resume no longer does.
   Object.assign(t, { prev_park: prevPark, state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null, failed: null,
     handoff: fromStage ? 'pending' : null,
@@ -592,7 +593,7 @@ function missingHolds(q, holdsFor) {
   const view = structuredClone(q);
   const found = [];
   for (const t of Object.values(q.tickets)) {
-    if (!triagePark(t) || personStepPark(t) || t.held_by) continue;
+    if (!triagePark(t) || personStepPark(t) || blockersOf(t).length) continue;
     if (!existsSync(join(stateDir(), 'triage', `${t.key}.json`))) continue;
     const h = holdsFor(readTriage(stateDir(), t.key), q.tickets, baseOf(q));
     const { holds, cycles, outside } = holdsAmong(t.key, [...h.held, ...h.outside], q.tickets, heldBehindOf(view, t.key));
@@ -686,7 +687,7 @@ function transfer(q, key, to) {
   const t = ticket(q, key);
   if (t.state === 'running') throw new Error(`${key} is running: stop its worker first. Nothing was moved`);
   if (t.result?.pr != null && t.pr_status?.state !== 'CLOSED') throw new Error(`${key} has PR #${t.result.pr} against this batch's base: close it first. Nothing was moved`);
-  const behind = Object.values(q.tickets).filter((o) => o.key !== key && String(o.held_by ?? '').split('|').includes(key)).map((o) => o.key);
+  const behind = Object.values(q.tickets).filter((o) => o.key !== key && blockersOf(o).includes(key)).map((o) => o.key);
   if (behind.length) throw new Error(`${behind.join(', ')} ${behind.length === 1 ? 'is' : 'are'} held behind ${key} in this batch: release ${behind.length === 1 ? 'it' : 'them'} first. Nothing was moved`);
   const name = /^standing$/i.test(to) ? null : to;
   if (name != null && (!SAFE_ID.test(name) || name.includes('..'))) throw new Error(`"${to}" is not a batch name. Nothing was moved`);
@@ -736,7 +737,7 @@ function transfer(q, key, to) {
   const outside = [];
   const stays = [];
   const theirs = [];
-  for (const p of String(t.held_by ?? '').split('|')) {
+  for (const p of blockersOf(t)) {
     if (!p || p === key || [holds, outside, stays, theirs, mergeAfter].some((l) => l.includes(p))) continue;
     if (tq.tickets[p]) { if (!(stepThere(p) && blocking.has(p)) && !childDone(tq.tickets[p])) holds.push(p); }
     else if (wasOutside.includes(p) || blocking.has(p)) outside.push(p);
@@ -954,7 +955,7 @@ switch (cmd) {
     if (t.state === 'queued') throw new Error(`${key} has not been triaged: triage it and \`queue.mjs admit\` it before holding it`);
     // A date hold waits behind its blockers: once they release it, the pass reads its label again.
     if (dateHeld(t)) t.held_label = null;
-    const all = [...new Set([...String(t.held_by ?? '').split('|').filter(Boolean), ...preds])];
+    const all = [...new Set([...blockersOf(t), ...preds])];
     t.held_by = all.join('|');
     t.state = 'parked';
     if (!keeps) t.park = heldPark(all);
@@ -1171,7 +1172,7 @@ switch (cmd) {
     if (pr == null) throw new Error(`${key} records no PR to approve`);
     Object.assign(t, { state: 'done', park: null, approved: true, approved_at: new Date().toISOString(), updated_at: new Date().toISOString() });
     save(q);
-    const held = Object.values(q.tickets).filter((x) => isHeld(x) && String(x.held_by ?? '').split('|').includes(key)).map((x) => x.key);
+    const held = Object.values(q.tickets).filter((x) => isHeld(x) && blockersOf(x).includes(key)).map((x) => x.key);
     const after = held.length ? `${held.join(', ')} ${held.length > 1 ? 'are' : 'is'} released once it merges` : 'nothing is held behind it';
     const repo = ghRepo();
     const lines = [`${key} approved: the spine is done`];
@@ -1317,7 +1318,7 @@ switch (cmd) {
     // outside instead, which pass.mjs lifts once Jira has it Done (a step has no code to land).
     const outside = [];
     if (personStepPark(t)) for (const o of Object.values(q.tickets)) {
-      if (!String(o.held_by ?? '').split('|').includes(key)) continue;
+      if (!blockersOf(o).includes(key)) continue;
       const was = String(o.held_outside ?? '').split('|').filter(Boolean);
       if (!was.includes(key)) o.held_outside = [...was, key].join('|');
       outside.push(o.key);
@@ -1474,14 +1475,16 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
     const day = dateHeld(t);
     const stuck = !day && isHeld(t) && !parks && !waitingOnMerge(q, t);
     const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state === 'done' ? doneLabel(t) : handingOff(t) ? 'HANDOFF' : t.state.toUpperCase();
-    const spines = String(t.held_by ?? '').split('|').filter((p) => spinePark(q.tickets[p]));
+    const by = blockersOf(t);
+    const byText = by.join(', ') || '?';
+    const spines = by.filter((p) => spinePark(q.tickets[p]));
     const tail = day?.bad ? badLabelText(day.label)
       : day ? `until ${day.until} (label ${day.label})`
       : stuck && stoppedHold(t) ? 'its worker was stopped (queue.mjs stop): it starts once you let it (needs-you: start)'
-      : stuck ? `held behind ${String(t.held_by ?? '?').split('|').join(', ')}, which will not merge on its own (no PR, a closed PR, or not in the batch): decide what happens to it`
-      : parks ? `waiting on the answer to ${parks.join(', ')} (failed or parked), then until ${String(t.held_by).split('|').join(', ')} merge`
-      : isHeld(t) && spines.length ? `waiting on approval of spine ${spines.join(', ')}, then until ${String(t.held_by).split('|').join(', ')} merge`
-      : isHeld(t) ? `until ${String(t.held_by ?? '?').split('|').join(', ')} merge${(t.open_questions ?? 0) > 0 ? ` · ${t.open_questions} question(s) open` : ''}`
+      : stuck ? `held behind ${byText}, which will not merge on its own (no PR, a closed PR, or not in the batch): decide what happens to it`
+      : parks ? `waiting on the answer to ${parks.join(', ')} (failed or parked), then until ${byText} merge`
+      : isHeld(t) && spines.length ? `waiting on approval of spine ${spines.join(', ')}, then until ${byText} merge`
+      : isHeld(t) ? `until ${byText} merge${(t.open_questions ?? 0) > 0 ? ` · ${t.open_questions} question(s) open` : ''}`
       : t.state === 'parked' ? t.park?.question ?? ''
       : t.state === 'failed' ? failedWhy(t)
       : t.state === 'running' ? `${stages ? `stage ${t.stage ?? '?'}  ` : ''}port ${t.port ?? '-'}${t.model ? `  model ${t.model}` : ''}${t.draft_pr ? `  PR #${t.draft_pr}` : ''}${asks[t.key] ? `  asks: ${asks[t.key]}` : ''}`

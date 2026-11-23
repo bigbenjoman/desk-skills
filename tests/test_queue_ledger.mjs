@@ -178,7 +178,7 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   e = run('move', 'T-2', '1');
   t('AC3 move: placed', `${shape(e)} / ${by(e)} / ${e[0]?.data.fields.placed}`, 'legacy_set T-2 / queue.mjs move / true');
   e = run('hold', 'T-1', 'T-2');
-  t('AC3 hold: parked, with held_by', `${shape(e)} / ${by(e)} / ${e[1]?.data.fields.held_by}`, 'parked T-1, legacy_set T-1 / queue.mjs hold / T-2');
+  t('AC3 hold: parked, then held behind its blocker', `${shape(e)} / ${by(e)} / ${e[1]?.data.by} / ${'held_by' in (e[2]?.data.fields ?? {})}`, 'parked T-1, held T-1, legacy_set T-1 / queue.mjs hold / T-2 / false');
   e = run('drop', 'T-2');
   t('AC3 drop: moved out of the batch', `${shape(e)} / ${by(e)} / ${e[0]?.data.from}>${e[0]?.data.to}`, 'moved T-2 / queue.mjs drop / standing>null');
   // AC2: a command the pass runs as queue.mjs (its spawn's state=running write) names the pass.
@@ -230,6 +230,41 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
 
   const d = queueDifference(f, { by: 'test' });
   t('AC5 after the spawns, the failure and the requeue the difference stays at zero', d.diffs.map((x) => x.path).join(', '), '');
+}
+
+// DS-896: a hold added and its blockers released, each as queue.mjs writes it, are held and released
+// events, never a legacy event for held_by, and the queue rebuilt from them matches queue.json.
+{
+  const f = fixture({ version: 1, batch: 'b', tickets: { A: tk('A'), B: tk('B'), C: tk('C') } });
+  const at = () => log(f).length;
+  const holdsIn = (evs) => evs.filter((e) => ['held', 'released'].includes(e.type)).map((e) => `${e.type} ${e.key} ${[e.data.by].flat().join('|')}`).join(', ');
+  const legacyHeldBy = (evs) => evs.some((e) => e.type === 'legacy_set' && 'held_by' in e.data.fields);
+  // The first write seeds the batch, so the hold's own events are those after it.
+  q(f, ON, 'set', 'A', 'lane=B');
+  let from = at();
+  q(f, ON, 'hold', 'C', 'A', 'B');
+  let e = since(f, from);
+  t('AC5 a hold appends a held event naming its blockers in order', holdsIn(e), 'held C A|B');
+  t('AC5 and no legacy event for them', legacyHeldBy(e), false);
+  t('AC5 queue.json keeps held_by, and holds beside it as a list', `${read(f).tickets.C.held_by} ${JSON.stringify(read(f).tickets.C.holds)}`, 'A|B ["A","B"]');
+  from = at();
+  q(f, ON, 'set', 'C', 'held_by=B');
+  e = since(f, from);
+  t('AC6 a blocker released appends a released event naming it', holdsIn(e), 'released C A');
+  t('AC6 and no legacy event for it', legacyHeldBy(e), false);
+  from = at();
+  q(f, ON, 'set', 'C', 'state=triaged', 'park=null', 'held_by=null');
+  e = since(f, from);
+  t('AC6 the last blocker released with the ticket\'s start', holdsIn(e), 'released C B');
+  t('AC6 and no legacy event for it either', legacyHeldBy(e), false);
+  t('AC7 after the holds were added and released the difference stays at zero', queueDifference(f, { by: 'test' }).diffs.map((x) => x.path).join(', '), '');
+  // Blockers reordered is no add or release: it is recorded as the field, which a rebuild still matches.
+  q(f, ON, 'hold', 'C', 'A', 'B');
+  from = at();
+  q(f, ON, 'set', 'C', 'held_by=B|A');
+  e = since(f, from);
+  t('blockers reordered are recorded as held_by itself', `${holdsIn(e)}/${legacyHeldBy(e)}`, '/true');
+  t('and the difference still reads zero', queueDifference(f, { by: 'test' }).diffs.map((x) => x.path).join(', '), '');
 }
 
 // A pass taking a running ticket back to triage, which no typed event does: the state is recorded with
