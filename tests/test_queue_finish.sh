@@ -139,5 +139,31 @@ check "DS-899 AC5: one finished event names the PR and holds the done fields, wr
 check "DS-899 AC5: no legacy event holds a done field" '[[ "$led" == *" legacy=none "* ]]'
 check "DS-899 AC6: the queue rebuilt from the log is queue.json" '[[ "$led" == *" diffs=0" ]]'
 
+# #1339: a fix try the pass queued and no worker started is withdrawn once what it was for is settled
+# outside a worker: the ticket goes back to done on its PR, and the try counts against none.
+q add fix-w; q set fix-w branch=fix/fix-w state=done result.pr=71
+FIX='{"try":1,"of":2,"pr":71,"head":"h1","kind":"review","what":"review not clean: 1 gap","at":"2026-11-23T10:00:00Z"}'
+q set fix-w state=triaged "fix=$FIX" 'fix_tries=[{"try":1,"head":"h0","kind":"checks","what":"red: Lint","at":"2026-11-22T10:00:00Z"},{"try":1,"head":"h1","kind":"review","what":"review not clean: 1 gap","at":"2026-11-23T10:00:00Z"}]'
+q withdraw fix-w "the E2E workflow was dispatched on the branch and passed: run 123"
+check "#1339 a queued fix try is withdrawn, saying so" '[ $rc -eq 0 ] && [ "$out" = "fix-w: its queued fix try 1 on PR #71 (review not clean: 1 gap) withdrawn: no worker is spawned for it, it counts against none of the PR'"'"'s tries, and no review try is drafted again at its head h1: the E2E workflow was dispatched on the branch and passed: run 123" ]'
+check "#1339 the ticket is back done on its PR, the try cleared, and kept in its tries marked withdrawn with why" '[ "$(f fix-w state)" = "\"done\"" ] && [ "$(f fix-w fix)" = null ] && [ "$(f fix-w result.pr)" = 71 ] && [ "$(f fix-w fix_tries | jq -c "[.[] | [.head, (.withdrawn != null), .withdrawn_why]]")" = "[[\"h0\",false,null],[\"h1\",true,\"the E2E workflow was dispatched on the branch and passed: run 123\"]]" ]'
+before=$(sum); q withdraw fix-w "again"
+check "#1339 with no queued fix try, nothing is withdrawn" '[ $rc -ne 0 ] && grep -q "no queued fix try is there to withdraw: nothing withdrawn" <<< "$out" && [ "$(sum)" = "$before" ]'
+q set fix-w state=triaged "fix=$FIX"; sleep 60 & PASS_PID=$!
+mkdir -p "$HOME/.desk-autopilot"; STATE_DIR=$(node -e 'import("'"$B"'/desk-env.mjs").then((m) => console.log(m.stateDir()))')
+mkdir -p "$STATE_DIR"; printf '{"pid":%s}\n' "$PASS_PID" > "$STATE_DIR/orchestrator.lock"; before=$(sum); q withdraw fix-w "mid-pass"
+check "#1339 while a pass runs, which may be spawning the try, nothing is withdrawn" '[ $rc -ne 0 ] && grep -q "a pass is running, and may be spawning fix-w.s fix try: run queue.mjs withdraw fix-w again once it ends" <<< "$out" && [ "$(sum)" = "$before" ]'
+kill "$PASS_PID" 2>/dev/null; rm -f "$STATE_DIR/orchestrator.lock"
+q add fix-r; q set fix-r branch=fix/fix-r state=done result.pr=72; before=$(sum)
+q set fix-r --unless state=done state=running session_id=s1
+check "#1339 a pass's running write is refused for a ticket done since (a withdrawn try), so no worker starts" '[ $rc -ne 0 ] && grep -qF "fix-r'"'"'s state is done now, so it is not written (--unless state=done)" <<< "$out" && [ "$(sum)" = "$before" ]'
+q set fix-r state=triaged; q set fix-r --unless state=done state=running
+check "#1339 and goes ahead for one still waiting" '[ $rc -eq 0 ] && [ "$(f fix-r state)" = "\"running\"" ]'
+q set fix-w state=running "fix=$FIX"; before=$(sum); q withdraw fix-w "too late"
+check "#1339 a running fix try is not withdrawn: it names stop" '[ $rc -ne 0 ] && grep -qF "its fix try has started. Stop it (queue.mjs stop fix-w)" <<< "$out" && [ "$(sum)" = "$before" ]'
+q withdraw fix-w
+check "#1339 withdraw wants why" '[ $rc -ne 0 ] && grep -q "usage: queue.mjs withdraw <TICKET>" <<< "$out"'
+check "#1339 the recovery reference names queue.mjs withdraw for a queued try settled outside a worker" 'grep -q "queue.mjs withdraw <TICKET> \"<why>\"" "$S/../skills/desk-autopilot/references/orchestrator-recovery.md"'
+
 rm -rf "$T"
 echo "queue finish: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
