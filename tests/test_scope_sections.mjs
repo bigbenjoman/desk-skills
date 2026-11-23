@@ -532,14 +532,19 @@ t('DS-1002 a function reaching the edited one through a spread, a nested templat
   rowsAs('return /^https?:\\/\\//.test(a) && fmt(a);'),
   rowsAs('if (a) /\'/.test(a) && fmt(a);\n  return a;'),
   rowsAs('if (a) /"/.test(a) && fmt("y");\n  return a;'),
-].map(fmtEdit), Array(5).fill('some: test_lint.sh test_needs.mjs test_q.mjs'));
+  // A member call named like a condition's keyword (`.with(`): the `/` after its `)` divides.
+  rowsAs("return [a.with(a) / 2 + '/', fmt(a) + ''];"),
+].map(fmtEdit), Array(6).fill('some: test_lint.sh test_needs.mjs test_q.mjs'));
 const isMainQ = (guard, cond) => hubQ.replace(/const isMain = \(\(\) => \{[\s\S]*?\}\)\(\);\nif \(isMain\)/, `const isMain = ${guard};\nif (${cond})`);
 t('DS-1002 a guard function called as `if (isMain())` keeps the command line command-only; one tested uncalled, or a launch test an || or a ternary can turn, does not', [
   drawEdit(isMainQ('() => process.argv[1] === fileURLToPath(import.meta.url)', 'isMain()')),
   drawEdit(isMainQ('() => process.argv[1] === fileURLToPath(import.meta.url)', 'isMain')) === everyClaimer,
   drawEdit(isMainQ('process.argv[1] === fileURLToPath(import.meta.url) || !!process.env.Q', 'isMain')) === everyClaimer,
   drawEdit(isMainQ('() => process.argv[1] === fileURLToPath(import.meta.url) ? false : true', 'isMain()')) === everyClaimer,
-], ['some: test_cli.sh test_lint.sh', true, true, true]);
+  // `?.0` is a ternary before a decimal, not an optional chain; `?.process` is one.
+  drawEdit(isMainQ('() => process.argv[1] === fileURLToPath(import.meta.url)?.0:1', 'isMain()')) === everyClaimer,
+  drawEdit(isMainQ('() => globalThis?.process.argv[1] === fileURLToPath(import.meta.url)', 'isMain()')),
+], ['some: test_cli.sh test_lint.sh', true, true, true, true, 'some: test_cli.sh test_lint.sh']);
 t('DS-1002 a foundational desk/bin/ module (untracked.mjs) is not narrowed by name', decide([{ status: 'M', path: 'desk/bin/untracked.mjs', names: { names: ['deskUntracked'] } }], real, { byName: true }).scope, 'full');
 // On this repo: an edit to desk-q.mjs's checkFlags, which its command line and the screen run. Its
 // command line reaches most of the module, and bin/desk-q, which launches it, is claimed through

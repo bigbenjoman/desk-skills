@@ -294,6 +294,7 @@ function scrubCode(t) {
   const open = []; // the brace depth each `${` we are inside opened
   const parens = []; // for each open `(`, whether it is an if, while, for or with condition's
   let last = ''; // the last token of code, to tell a regex from a division
+  let member = false; // whether that token, a word, follows a `.` (`x.with`, a property and not a keyword)
   const regexNext = () => !last || /^[(,=:[!&|?{};+\-*%<>~^]$/.test(last) || /^(?:return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await)$/.test(last);
   // A template's text from i: -> true where it stops at a `${`, false at its closing backtick.
   const text = () => {
@@ -309,7 +310,7 @@ function scrubCode(t) {
     const c = t[i];
     word.lastIndex = i;
     const w = word.exec(t);
-    if (w) { out += w[0]; last = w[0]; i += w[0].length; continue; }
+    if (w) { out += w[0]; member = last === '.'; last = w[0]; i += w[0].length; continue; }
     if (c === '`' || (c === '}' && open.at(-1) === depth)) {
       if (c === '}') { open.pop(); depth--; }
       i++;
@@ -349,7 +350,7 @@ function scrubCode(t) {
     out += c;
     i++;
     // A `/` after the `)` closing a condition opens a regex, as after a `;`.
-    if (c === '(') { parens.push(/^(?:if|while|for|with)$/.test(last)); last = c; }
+    if (c === '(') { parens.push(!member && /^(?:if|while|for|with)$/.test(last)); last = c; }
     else if (c === ')') last = parens.pop() ? ';' : c;
     else if (!/\s/.test(c)) last = c;
   }
@@ -358,7 +359,7 @@ function scrubCode(t) {
 
 // Whether a condition tests that the module was run as a command (`process.argv[1]` against
 // `import.meta.url`), and not its negation, nor one an `||`, `??` or `? :` can turn otherwise.
-const launchTest = (t) => /process\.argv\[1\]/.test(t) && /import\.meta\.url/.test(t) && !/!=|!\s*\(|\|\||\?(?!\.)/.test(t);
+const launchTest = (t) => /process\.argv\[1\]/.test(t) && /import\.meta\.url/.test(t) && !/!=|!\s*\(|\|\||\?(?!\.(?!\d))/.test(t);
 // Whether a top-level statement runs only when the module is run as a command: an `if` with no `else`
 // whose condition is a const in `guards` set to a launchTest() (`g`, or `g()` where it is an arrow
 // function), or one on a line that opens its block. A block ends where it first compiles; anything
