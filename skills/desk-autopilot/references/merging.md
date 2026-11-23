@@ -202,8 +202,11 @@ or a ready PR, the needs-you item offers `answer`, and a worker on the PR carrie
 Under §3 `autopilot-judgement` `yes`, tagged gaps that are all the review leaves open and each end
 `Recommended: <option>`, none of them reading as an ask category (`decisions.mjs` `ASK_TERMS`), go to
 a review fix try instead: its worker carries out each recommendation
-and logs it as a decision. One gap with no recommendation, or in an ask category, sends them all to the
-person, and so does a recommended gap still open after its try.
+and logs it as a decision. One gap with no recommendation, in an ask category, or whose recommendation
+needs a route §3 denies workers (a workflow dispatch with `worker-workflow-dispatch` not `yes`), sends
+them all to the person, and so does a recommended gap still open after its try. A gap of that last kind
+goes to the person tagged or not, its item naming the action and the row, so the person, or a session
+allowed it, does it.
 
 An empty commit carries a verdict as a clean merge of the base does: one with a single parent and that
 parent's tree adds nothing to the PR's own diff, so a head reached from the reviewed commit by those

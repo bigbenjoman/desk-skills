@@ -65,7 +65,10 @@ export const tries = (n) => `${n} fix ${n === 1 ? 'try' : 'tries'}`;
 // (kind `rereview`), a capture try (`capture`) and a protected-files try (`protected`, which moves it only
 // when a change is not needed) move no head by design, so they do not count here.
 const OWN_HEAD = new Set(['rereview', 'capture', 'protected', 'renames']);
-const fixedAt = (done, head) => done.some((x) => x.head === head && !OWN_HEAD.has(x.kind));
+// A try withdrawn before its worker started (queue.mjs withdraw) made none: only a withdrawn review try
+// holds its head, in reviewFix (withdrawnAt).
+const fixedAt = (done, head) => done.some((x) => x.head === head && !x.withdrawn && !OWN_HEAD.has(x.kind));
+const withdrawnAt = (done, head) => (done ?? []).find((x) => x.head === head && x.withdrawn && x.kind === 'review') ?? null;
 
 // The steps the job for `check` failed at, by name and in order, read from `gh run view <run> --json
 // jobs`; null where the run names no such job or the payload holds no steps array to read.
@@ -200,7 +203,7 @@ function staleBase(t, head, mine, ctx) {
   if (!ctx.baseRead || !ctx.refreshBase || !mine.length) return null;
   return staleCall(t, head, [...new Set(mine.map((f) => f.name))], ctx.baseRead, { base: ctx.base ?? 'the base', now: ctx.now ?? Date.now() });
 }
-const stillRed = (done, mine, notMine, ctx) => checksStuck(`still red after ${tries(done.length)}`, mine, notMine, ctx);
+const stillRed = (done, mine, notMine, ctx) => checksStuck(`still red after ${tries(done.filter((x) => !x.withdrawn).length)}`, mine, notMine, ctx);
 // A red check's error lines, as pr_status keeps them: its job's annotations, else what its failed log
 // names. One asking a person's approval is no cause a worker can clear.
 const LINE_CHARS = 300, LINES_PER_CHECK = 5;
@@ -231,7 +234,8 @@ function spentOnRed(done, { pr, head, draft }, mine, notMine, ctx, checks, base 
 // The tries that count against FIX_TRIES_MAX: all but the extra tries, the review tries (reviewTry),
 // which have REVIEW_TRIES_PER_HEAD at each head, the capture try (captureTry), which is the PR's own one,
 // and the protected-files tries (gateTry), which have their own.
-const ownCount = (x) => x.extra || x.kind === 'rereview' || x.kind === 'capture' || x.kind === 'protected';
+// A try withdrawn before its worker started (queue.mjs withdraw) counts against none either.
+const ownCount = (x) => x.extra || x.withdrawn || x.kind === 'rereview' || x.kind === 'capture' || x.kind === 'protected';
 export const triesMade = (done) => (done ?? []).filter((x) => !ownCount(x)).length;
 // No try is left: FIX_TRIES_MAX made, or one already made at this head (triedHere).
 const spent = (done, triedHere) => triesMade(done) >= FIX_TRIES_MAX || triedHere;
@@ -248,7 +252,7 @@ export const triesSpent = (done, head) => spent(done, fixedAt(done, head));
 // REVIEW_TRIES_CEILING bounds those, so a loop where every fix makes a new finding still ends.
 const FIX_TRIES_TOTAL = FIX_TRIES_MAX + 1;
 export const REVIEW_TRIES_CEILING = 4;
-const isReviewTry = (x) => !x.extra && x.kind === 'review';
+const isReviewTry = (x) => !x.extra && !x.withdrawn && x.kind === 'review';
 const quoted = (x) => Boolean(x.findings?.length || x.gaps?.length || x.taken?.length);
 const reviewTriesMade = (done) => (done ?? []).filter(isReviewTry).length;
 // The review fix tries left: below the ceiling, and, over the tries not known to have cleared what
@@ -293,7 +297,7 @@ function triesByKind(done) {
 // try with either read missing counts. CONFLICT_REPAIRS_MAX bounds every try, worked or not.
 const CONFLICT_REPAIRS_MAX = 5;
 const conflictTry = (base, files, draft, at) => ({ kind: 'conflict', ...(draft ? { draft: true } : {}), what: `${draft ? 'draft ' : ''}conflicts with ${base}`, base, files: files ?? null, ...(at ?? {}) });
-const conflictTries = (done) => (done ?? []).filter((x) => !x.extra && x.kind === 'conflict');
+const conflictTries = (done) => (done ?? []).filter((x) => !x.extra && !x.withdrawn && x.kind === 'conflict');
 const repairWorked = (x, next) => !!(x.base_sha && x.merge_base && next?.base_sha && next.merge_base
   && next.head !== x.head && next.merge_base !== x.merge_base && next.base_sha !== x.base_sha);
 export const conflictTriesMade = (done, now) => {
@@ -790,15 +794,36 @@ export function recommendedOf(gap) {
     .replace(/\s*\.$/, '').replace(/^(\*\*|__|[*_`])(.+)\1$/, '$2').trim();
   return option && !/^(none|no recommendation|n\/a)\b/i.test(option) ? option : null;
 }
+// What a recommendation may need that §3 can deny workers: the row, what it reads like, and the action.
+// A worker under a row that is not yes cannot carry it out, so no try is spent on it.
+const WORKER_ROUTES = [
+  { row: 'worker-workflow-dispatch', test: /\bdispatch(?:es|ed|ing)?\b|\bworkflow_dispatch\b|\bgh workflow run\b|\b(?:run|start|trigger)\w*\s+(?:the\s+)?[\w.-]+(?:\s+[\w.-]+)?\s+workflow\b/i, action: 'dispatch the workflow' },
+];
+// The route a tagged gap's recommendation needs that `workerMay` (row -> whether §3 grants workers it)
+// denies, or null; null too where no grants are given.
+export function deniedRoute(gap, workerMay) {
+  const answer = recommendedOf(gap);
+  if (!answer || typeof workerMay !== 'function') return null;
+  return WORKER_ROUTES.find((r) => r.test.test(answer) && !workerMay(r.row)) ?? null;
+}
 // The tagged gaps a try may settle on their recommendations, as { gap, answer }: only under §3
 // autopilot-judgement yes, only when they are all the review leaves open (`alone`), and only when every
-// one names a recommendation and none reads as an ask category (decisions.mjs askCategoryIn);
-// otherwise [] and all of them stay the person's.
-function takenGaps(person, judgement, alone) {
+// one names a recommendation, none reads as an ask category (decisions.mjs askCategoryIn) and none needs
+// a route §3 denies workers (deniedRoute); otherwise [] and all of them stay the person's.
+function takenGaps(person, judgement, alone, workerMay) {
   if (judgement !== 'yes' || !alone || !person.length) return [];
   const taken = person.map((gap) => ({ gap, answer: recommendedOf(gap) }));
-  return taken.every((x) => x.answer && !askCategoryIn(x.gap)) ? taken : [];
+  return taken.every((x) => x.answer && !askCategoryIn(x.gap) && !deniedRoute(x.gap, workerMay)) ? taken : [];
 }
+// A gap the review did not tag whose recommendation needs a denied route is the person's all the same:
+// tagged as their call wherever it is quoted, so a stuck reason gives it up to needs-you (personGapsIn).
+const personLabel = (workerMay) => (g) => (!personsCall(g) && deniedRoute(g, workerMay) ? `PERSON'S CALL · ${g}` : g);
+// A tagged gap as the person's item names: with a recommendation no worker may carry out, the action
+// and the row, so the person, or a session §3 grants it, does it without asking anyone else.
+const personGapText = (gap, workerMay) => {
+  const r = deniedRoute(gap, workerMay);
+  return r ? `${gap} [no fix try: its recommendation, "${recommendedOf(gap)}", needs config §3 ${r.row}, which workers are not granted: ${r.action} on the PR's branch yourself, or from a session allowed to, or take the other option]` : gap;
+};
 
 const gapCount = (n) => `${n} ${n === 1 ? 'gap' : 'gaps'}`;
 // What a review stuck reason puts before the findings and gaps that outlasted the try that quoted them.
@@ -834,9 +859,12 @@ export function reviewFix(t, review, opts = {}) {
   const sevs = p2s ? ['P2'] : undefined;
   const gapsOpen = opts.judgement === 'yes' ? Number(review.verdict?.gaps) || 0 : 0;
   const allGaps = gapsOpen ? reviewGaps(review.body) : [];
-  const tagged = allGaps.filter(personsCall);
+  // The person's: a gap tagged their call, or one whose recommendation needs a route §3 denies workers.
+  const persons = (g) => personsCall(g) || deniedRoute(g, opts.workerMay) != null;
+  const label = personLabel(opts.workerMay);
+  const tagged = allGaps.filter(persons).map(label);
   // As personGapsCall reads a review with nothing open but the person's gaps.
-  const taken = takenGaps(tagged, opts.judgement, !counts && !(Number(v?.deferred) > 0) && gapsOpen <= tagged.length);
+  const taken = takenGaps(tagged, opts.judgement, !counts && !(Number(v?.deferred) > 0) && gapsOpen <= tagged.length, opts.workerMay);
   const personGaps = taken.length ? [] : tagged;
   const codeGaps = Math.max(0, gapsOpen - personGaps.length);
   const what = [counts, codeGaps ? gapCount(codeGaps) : ''].filter(Boolean).join(', ');
@@ -846,12 +874,16 @@ export function reviewFix(t, review, opts = {}) {
   const room = reviewTriesLeft(done);
   const byKind = triesByKind(done);
   const after = `review not clean after ${tries(triesMade(done))}${byKind ? ` (${byKind})` : ''}: ${what}`;
-  if (room <= 0 || fixedAt(done, review.head)) {
+  const pulled = withdrawnAt(done, review.head);
+  if (room <= 0 || fixedAt(done, review.head) || pulled) {
     // The review at this head is the last try's own, so its findings and gaps say what is still open.
     // Only the body's: its inline comments are not read once no try is left.
-    const left = [...(counts ? reviewFindings(review.body, sevs).map((x) => `${x.sev}: ${x.text}`) : []), ...allGaps];
-    const lead = made >= REVIEW_TRIES_CEILING && !fixedAt(done, review.head)
-      ? after.replace(/: /, ', the most review fix tries a PR may make: ') : after;
+    const left = [...(counts ? reviewFindings(review.body, sevs).map((x) => `${x.sev}: ${x.text}`) : []), ...allGaps.filter((g) => !persons(g)), ...tagged];
+    // A review try withdrawn at this head (queue.mjs withdraw) was settled outside a worker, so no try
+    // is drafted at it again: a push, a clean review of it, or the person's fix (desk-needs-you) moves it.
+    const lead = pulled ? `review not clean at this head, whose review fix try was withdrawn (${pulled.withdrawn_why ?? 'settled outside a worker'}), so no try is drafted at it again: push to the branch, post a clean review of the head once it is settled, or send it back with desk-needs-you fix: ${what}`
+      : made >= REVIEW_TRIES_CEILING && !fixedAt(done, review.head)
+        ? after.replace(/: /, ', the most review fix tries a PR may make: ') : after;
     return { call: 'stuck', why: `${lead}${left.length ? ` — ${left.join('; ')}` : ''}` };
   }
   const listed = counts ? reviewFindings(review.body, sevs) : [];
@@ -859,7 +891,7 @@ export function reviewFix(t, review, opts = {}) {
   const comments = !counts || p2s ? null : typeof review.comments === 'function' ? review.comments() : review.comments;
   const inline = inlineFindings(comments).filter((x) => !listed.some((b) => owns(b.text, x.at)));
   const findings = [...listed, ...inline.map(({ sev, text }) => ({ sev, text }))];
-  const gaps = codeGaps ? allGaps.filter((g) => !personsCall(g)) : [];
+  const gaps = codeGaps ? allGaps.filter((g) => !persons(g)) : [];
   if (counts ? !findings.length : !gaps.length && !taken.length) return null;
   // Before survivors: a gap repeating an earlier one's words at new sites reads to survivors as the same gap.
   const wide = !findings.length && !taken.length ? widening(done, gaps, opts) : null;
@@ -915,8 +947,8 @@ export function personGapsCall(review, opts = {}) {
   const v = review.verdict, open = Number(v?.gaps) || 0;
   // A deferred P2 earns no try either (reviewFix), so it does not keep the gaps from the person.
   if (opts.judgement !== 'yes' || !open || reviewCounts(v) || (Number(v?.p2) > 0 && !(Number(v?.deferred) > 0))) return null;
-  const person = reviewGaps(review.body).filter(personsCall);
-  return person.length && open <= person.length ? { call: 'stuck', why: `${PERSON_GAPS}${person.join('; ')}` } : null;
+  const person = reviewGaps(review.body).filter((g) => personsCall(g) || deniedRoute(g, opts.workerMay) != null).map(personLabel(opts.workerMay));
+  return person.length && open <= person.length ? { call: 'stuck', why: `${PERSON_GAPS}${person.map((g) => personGapText(g, opts.workerMay)).join('; ')}` } : null;
 }
 
 // The person's call on a PR's review gaps (desk-needs-you), as the fix it sends back: not one of the
