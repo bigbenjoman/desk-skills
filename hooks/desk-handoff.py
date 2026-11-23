@@ -59,6 +59,7 @@ offer to lower a 1M threshold of 45 to 20: see offer_1m.
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -441,6 +442,7 @@ def name_line(transcript, root):
 
 
 NAME_PREFIX = "session name:"
+PLACEHOLDER_SLOT = re.compile(r"<[A-Za-z][\w-]*>")
 
 
 def handoff_name(path):
@@ -453,9 +455,11 @@ def handoff_name(path):
                     name = text[len(NAME_PREFIX):].lstrip("* ").rstrip()
                     if name.startswith("`") and name.count("`") >= 2:
                         name = name[1:name.index("`", 1)]
+                    else:
+                        name = name.rstrip("*").strip().strip("'\"")  # **Session name: x**, "x"
                     name = name.strip()
-                    # A name still holding <...> is the role-name pattern, not filled in.
-                    if name and "<" not in name:
+                    # A name still holding a <repo> or <KEY> slot is the role-name pattern, unfilled.
+                    if name and not PLACEHOLDER_SLOT.search(name):
                         return name
     except Exception:
         pass

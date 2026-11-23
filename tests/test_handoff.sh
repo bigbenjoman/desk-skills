@@ -422,6 +422,12 @@ check "a name set before the last 8 MB of the transcript is still found" '[[ "$(
 printf '# Handoff\n\nSession name: `Release prep`\n' > "$R/.handoffs/$DAY-3.md"
 PID=w5 hook SessionStart w6 "$T/low.jsonl" ',"source":"clear"'
 check "a name with a space comes back whole as the /rename line" '[[ "$(ctx)" == *"print the line \`/rename Release prep\`"* ]]'
+for form in '**Session name: widgets-batch**' 'Session name: "widgets-batch"' '- Session name: bugs < 5'; do
+  rm -f "$R/.handoffs/.consumed"; printf '# Handoff\n\n%s\n' "$form" > "$R/.handoffs/$DAY-3.md"
+  want="${form#*name: }"; want="${want%\*\*}"; want="${want//\"/}"
+  PID=w5 hook SessionStart w7 "$T/low.jsonl" ',"source":"clear"'
+  check "the /rename line from \"$form\" is /rename $want" '[[ "$(ctx)" == *"print the line \`/rename $want\`"* ]]'
+done
 
 # ---- never breaks a session ----
 out=$(printf 'not json' | python3 "$HOOK" 2>&1); rc=$?
