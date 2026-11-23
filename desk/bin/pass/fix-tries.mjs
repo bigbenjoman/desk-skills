@@ -41,7 +41,7 @@
 //   settle-worked {key, pr, head, worked}   -> the ids of the threads a finished feedback try worked, replied on and resolved
 //   check-build {key, pr, head, call}   -> the build's record: `call` 'person' where it could not start or re-run
 //   apply {key, pr, head, call}         carry out the call: stuck, requeue, held, wait or rerun
-import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck, stuckLessHeld, outagePlan, outageGap, OUTAGE_PRS, OUTAGE_GAP_MAX_S } from '../fix-tries.mjs';
+import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck, stuckLessHeld, outagePlan, outageGap, reviewGates, OUTAGE_PRS, OUTAGE_GAP_MAX_S } from '../fix-tries.mjs';
 import { reviewerGated, set, say } from './shared.mjs';
 import { externalReview } from '../review-threads.mjs';
 
@@ -79,7 +79,8 @@ const clock = (ms) => new Date(ms).toISOString().slice(11, 16);
 const prList = (prs) => `#${prs.join(', #')}`;
 export function* decideOutage(s) {
   if (s.rowErrors?.length) return;
-  const plan = outagePlan({ prs: s.prs, lists: s.gate, was: s.was ?? {}, now: s.now, unread: s.unread ?? null });
+  // A review or approval gate red on many PRs waits on its reviewer, so it is left out (reviewGates).
+  const plan = outagePlan({ prs: s.prs, lists: { ...s.gate, gates: reviewGates(s.stateChecks) }, was: s.was ?? {}, now: s.now, unread: s.unread ?? null });
   const keep = { ...plan.keep };
   // A PR a cleared hold still owes a re-run waits for it, with no fix try, until it is made.
   const reran = [...plan.owing];

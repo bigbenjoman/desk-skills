@@ -58,7 +58,7 @@
 // commit that verdict was posted on when it was carried to the head (verdictCarries, or with the
 // review-reuse lever on restsOnCarries, whose base range checked is `range`).
 import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, loginIn, PENDING_LIMIT_MS, since } from './gate.mjs';
-import { RERUNS_MAX, runnerRerunsSpent, rerunGate, reviewFindings, syncSaid, captureTry } from './fix-tries.mjs';
+import { RERUNS_MAX, runnerRerunsSpent, rerunGate, reviewFindings, syncSaid, captureTry, VERDICT_CHECK, reviewGates } from './fix-tries.mjs';
 import { dragCells, dragFiles, hasEvidenceBlock, runFailed } from './evidence.mjs';
 import { isLockfile, isConfig } from './test-scope.mjs';
 import { pairs } from './desk-env.mjs';
@@ -67,7 +67,7 @@ import { parkClauses, tailSteps } from './park-words.mjs';
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
 import { parseVerdict as gateVerdict, LOCAL_MARKER, LOCAL_MARKERS } from '../templates/scripts/desk/review-gate.mjs';
 // The name of desk-gate.yml's verdict job, the check that runs review-gate.mjs verdict.
-export const VERDICT_CHECK = 'desk-review verdict';
+export { VERDICT_CHECK };
 
 // A posted desk-review's verdict as the review gate reads it, or null. Values are strings, in
 // marker order, as the §4 Clean review verdict row compares them; the heading and form are left out.
@@ -862,7 +862,7 @@ export function undraftCall(t, pr, cfg) {
   const unbuilt = red ? unbuiltCall(gate, cfg, n, pr.head) : null;
   if (unbuilt) return unbuilt;
   // §4 State checks read the PR's reviews or approvals, not its code, so no fix turns them green.
-  const stateNames = new Set([VERDICT_CHECK, ...(cfg.stateChecks ?? []).map((x) => x.name)]);
+  const stateNames = reviewGates(cfg.stateChecks);
   const codeRed = gate.failing.filter((f) => !stateNames.has(f.name));
   const stateRed = gate.failing.filter((f) => stateNames.has(f.name)).map((f) => f.name);
   // Red on state checks alone: the gate passes once they are set aside as advisory, with nothing else
