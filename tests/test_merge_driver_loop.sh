@@ -403,6 +403,18 @@ check "DS-796 AC1: and the ticket is done, shipped outside its worker, so no wor
   '[ "$(qg T-31 .state)" = done ] && [ "$(qg T-31 .result.summary)" = "shipped outside its worker: PR #131 merged by the merge driver" ]'
 check "DS-796: it owes a pass that PR's review until one reads it, and not after" \
   'owed T-31 && q set T-31 "pr_status={\"pr\":131,\"state\":\"MERGED\"}" && ! owed T-31'
+# T-34 was recorded done on another repo's PR #134 (needs-you's elsewhereDone), then requeued and
+# respawned, keeping that status. This repo's PR #134 from its branch merges: the other repo's status is
+# dropped, not marked merged in this PR's place, so the ticket owes a pass this PR's review. T-35's
+# kept status is this repo's own PR #135, so it is kept and marked merged.
+q add T-34 Task A; q set T-34 state=triaged branch=fix/T-34 'pr_status={"pr":134,"state":"MERGED","url":"https://github.com/other/thing/pull/134"}'
+q merged T-34 2026-11-18T11:45:00Z --pr 134 --head fix/T-34
+q add T-35 Task A; q set T-35 state=triaged branch=fix/T-35 'pr_status={"pr":135,"state":"OPEN","url":"https://github.com/Acme/Widgets/pull/135"}'
+q merged T-35 2026-11-18T11:46:00Z --pr 135 --head fix/T-35
+check "DS-796: a kept status naming another repo's PR of the merged number is dropped, and the ticket owes that PR's review" \
+  '[ "$(qg T-34 .result.pr)" = 134 ] && [ "$(qg T-34 .shipped_pr)" = 134 ] && [ "$(qg T-34 .pr_status)" = null ] && owed T-34'
+check "DS-796: one naming this repo's own PR is kept and marked merged" \
+  '[ "$(qg T-35 .pr_status.state)" = MERGED ] && [ "$(qg T-35 .pr_status.url)" = https://github.com/Acme/Widgets/pull/135 ] && [ "$(qg T-35 .result.pr)" = 135 ]'
 # T-33 records no branch, and PR #133 names it only in its title: another ticket's PR. Its merge time is
 # recorded as before, and the ticket is not taken as shipped on it.
 cat > "$T/prs.json" <<EOF

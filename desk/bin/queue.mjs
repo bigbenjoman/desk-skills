@@ -1301,8 +1301,16 @@ switch (cmd) {
     if (Number.isNaN(Date.parse(when))) throw new Error(`merged: "${when}" is not a time`);
     const itsBranch = head != null && (head === t.branch || new RegExp(keyPattern(key)).test(head));
     if (pr != null && itsBranch && t.result?.pr == null && t.draft_pr == null && t.state !== 'running') {
-      // shipped_pr keeps it live until a pass reads that PR's review (harvest.mjs postMergeUnmade).
-      applySet(t, [...shippedSet(t, `PR #${pr} merged by the merge driver`, Number(pr), new Date(when).toISOString()).slice(2), `shipped_pr=${pr}`]);
+      // shipped_pr keeps it live until a pass reads that PR's review (harvest.mjs postMergeUnmade). A kept
+      // status naming another repo's PR of this number (needs-you's elsewhereDone, kept through a requeue
+      // and a spawn) is not this PR's: it is dropped, as the pass's shippedElsewhere drops one, so it is
+      // never marked merged in this PR's place and the pass reads this PR and its review afresh. With no
+      // repo to judge by, any status with a url is dropped: a read costs less than a foreign one kept.
+      const was = t.pr_status, here = hereRepo();
+      const foreign = was?.pr != null && Number(was.pr) === Number(pr) && !!was.url
+        && (!here || String(was.url).toLowerCase().split('/pull/')[0] !== `https://github.com/${here}`.toLowerCase());
+      applySet(t, [...shippedSet(foreign ? { ...t, pr_status: null } : t, `PR #${pr} merged by the merge driver`, Number(pr), new Date(when).toISOString()).slice(2),
+        ...(foreign ? ['pr_status=null'] : []), `shipped_pr=${pr}`]);
     }
     t.merged_at ??= new Date(when).toISOString();
     t.updated_at = new Date().toISOString();
