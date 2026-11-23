@@ -61,6 +61,17 @@ export const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null &&
 // A ticket shipped outside its worker, recorded done: the `queue.mjs` arguments pass.mjs and
 // needs-you.mjs both write. Where the queue's PR status is that PR's, it is marked merged as well, or the
 // done ticket would read as an unmerged PR until the next pass reads GitHub.
+// A requeue keeps a ticket's merged_at (ownPr reads it as the earlier work's) and records when it sent the
+// ticket back (reworked_at), so the merge can outlive the work it recorded: a ticket sent back for more is
+// not merged while that runs, nor once done again on a PR of its own until that PR merges. Whether t's
+// recorded merge is its current work's: done, and either never sent back since the merge, no PR of its own
+// (done by another's PR, or with no PR), or its PR read merged.
+export const mergeRecorded = (t) => !!t?.merged_at && t.state === 'done'
+  && (!(Date.parse(t.reworked_at) >= Date.parse(t.merged_at)) || t.result?.pr == null
+    || (t.pr_status?.state === 'MERGED' && Number(t.pr_status.pr) === Number(t.result.pr)));
+// Whether merged PR n counts as ticket t's merge (no ticket: any PR naming it does): done, and n its PR
+// where it records one.
+export const mergeCounts = (t, n) => !t || (t.state === 'done' && (t.result?.pr == null || String(n) === String(t.result.pr)));
 export const shippedSet = (t, how, pr = null, mergedAt = null) => ['set', t.key, 'state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null',
   `result.summary=shipped outside its worker: ${how}`, ...(pr == null ? [] : [`result.pr=${pr}`]),
   ...(pr != null && Number(t.pr_status?.pr) === Number(pr) ? ['pr_status.state=MERGED', ...(mergedAt ? [`pr_status.merged_at=${mergedAt}`] : [])] : [])];

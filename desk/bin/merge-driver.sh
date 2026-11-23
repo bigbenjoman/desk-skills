@@ -567,23 +567,34 @@ NODE
   # A predecessor whose queue entry records a merge (merged_at, set by pass.mjs from that PR itself, or
   # by this driver) has merged, whatever GitHub lists: `prs` sees only the newest 100 merged PRs, so a
   # blocker whose PR is older than that (a long-lived draft, rebased and merged today) was never found
-  # and held its successors forever. Lines in the shape `prs` prints; the PR is "?" when none is recorded.
-  local merged known
-  known=$(node --input-type=module - "$DESK_QUEUE" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/queue-store.mjs" <<'NODE'
-import { readFileSync } from 'node:fs';
-const { attachArchive, everyTicket } = await import(process.argv[3]);
-const q = { tickets: {} };
-try { q.tickets = JSON.parse(readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
-// Done tickets whose PR merged move to the archive beside the queue (queue-store.mjs), live ones first.
-for (const [k, t] of Object.entries(everyTicket(attachArchive(q, process.argv[2])))) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
-NODE
-) || known=""
+  # and held its successors forever. But a requeue keeps merged_at, and a reworked ticket's old PR still
+  # names its key, so both sources count only for the ticket's current work (batch-state.mjs
+  # mergeRecorded, mergeCounts): a ticket sent back for more holds its successors until that merges.
   # One merged-PR listing for every predecessor at once, not one per predecessor per loop. A listing gh
   # could not give still releases what the queue already knows merged.
   # Each predecessor key is its own argument: ticket keys hold no spaces or glob characters.
+  local merged
   # shellcheck disable=SC2046
   merged=$(prs merged $(printf '%s\n' "$plan" | awk '{ print $2 }' | tr ',' '\n' | sort -u) </dev/null) || merged=""
-  merged="$known${known:+$'\n'}$merged"
+  # Lines in the shape `prs` prints; the PR is "?" when none is recorded.
+  # The listing goes in through the environment: the script itself is this node's stdin.
+  merged=$(LISTED="$merged" node --input-type=module - "$DESK_QUEUE" "$DESK_RUN_BIN/queue-store.mjs" "$DESK_RUN_BIN/batch-state.mjs" <<'NODE'
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [qf, store, state] = process.argv.slice(2);
+const { attachArchive, everyTicket } = await import(pathToFileURL(store).href);
+const { mergeRecorded, mergeCounts } = await import(pathToFileURL(state).href);
+const q = { tickets: {} };
+try { q.tickets = JSON.parse(readFileSync(qf, 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
+// Done tickets whose PR merged move to the archive beside the queue (queue-store.mjs), live ones first.
+const all = everyTicket(attachArchive(q, qf));
+for (const [k, t] of Object.entries(all)) if (t && mergeRecorded(t)) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
+for (const l of String(process.env.LISTED ?? '').split('\n')) {
+  const [n, , k] = l.split('\t');
+  if (l && mergeCounts(all[k], n)) console.log(l);
+}
+NODE
+) || merged=""
   [ -n "$merged" ] || return 0
   while read -r succ preds; do
     [ -n "$succ" ] || continue

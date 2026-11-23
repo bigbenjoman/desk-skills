@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, doneOnPr } from './batch-state.mjs';
+import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, doneOnPr, mergeRecorded } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
 import { prNames } from './recoveries.mjs';
@@ -345,12 +345,13 @@ function requeue(q, key, { handedBack = false } = {}) {
   // leaves one on a ticket that is not held.
   // Blockers in no batch (held_outside) stay until pass.mjs lifts them.
   const outside = String(t.held_outside ?? '').split('|').filter((p) => p && !q.tickets[p]);
-  const pending = blockersOf(t).filter((p) => (q.tickets[p] ? !q.tickets[p].merged_at : outside.includes(p)));
+  const pending = blockersOf(t).filter((p) => (q.tickets[p] ? !mergeRecorded(q.tickets[p]) : outside.includes(p)));
   // Done by another's PR, its merged_at was that PR's merge: sent back for work of its own, it has none
   // yet, or the merge driver and the holds above would read the work as merged.
   const byOther = t.done_by?.pr != null;
   // A fresh session, so a killed worker waiting to resume no longer does.
-  Object.assign(t, { prev_park: prevPark, ...(byOther ? { merged_at: null } : {}), state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null, failed: null,
+  // A merge it keeps is the earlier work's from here on (batch-state.mjs mergeRecorded).
+  Object.assign(t, { prev_park: prevPark, ...(byOther ? { merged_at: null } : t.merged_at ? { reworked_at: new Date().toISOString() } : {}), state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null, failed: null,
     handoff: fromStage ? 'pending' : null,
     // Done by another's PR no longer, once sent back for work of its own.
     spine_check: null, spec_check: null, approved: null, approved_at: null, done_by: null, updated_at: new Date().toISOString() });
