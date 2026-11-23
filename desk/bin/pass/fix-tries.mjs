@@ -41,7 +41,7 @@
 //   settle-worked {key, pr, head, worked}   -> the ids of the threads a finished feedback try worked, replied on and resolved
 //   check-build {key, pr, head, call}   -> the build's record: `call` 'person' where it could not start or re-run
 //   apply {key, pr, head, call}         carry out the call: stuck, requeue, held, wait or rerun
-import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck, stuckLessHeld, outagePlan, outageGap, reviewGates, OUTAGE_PRS, OUTAGE_GAP_MAX_S } from '../fix-tries.mjs';
+import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, settleable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck, stuckLessHeld, outagePlan, outageGap, reviewGates, OUTAGE_PRS, OUTAGE_GAP_MAX_S } from '../fix-tries.mjs';
 import { reviewerGated, set, say } from './shared.mjs';
 import { externalReview } from '../review-threads.mjs';
 
@@ -150,6 +150,17 @@ function* fixTry(t, p, s) {
   // Held by the reviewer check: no review, checks or feedback fix try, as on a draft. A fix's new head
   // would need a verdict the gate does not count either. A conflict or a merged-tree hold is not red
   // only on the gate, so it still goes to its own fix below.
+  // The threads a finished feedback try worked are replied on and resolved first, on every route a ready
+  // PR takes (held by the reviewer check, red, or green), once its worker has pushed past them, so no
+  // route reads a thread the try already answered as still open. One GitHub would not settle holds any
+  // new try until a later pass settles it: a new try would replace the record of what was worked.
+  let settled = [];
+  if (p.state === 'OPEN' && p.isDraft === false && p.head && resolvable(t, p.head).length) {
+    const fb = yield { type: 'feedback', key: t.key, pr: n };
+    const worked = fb && fb.head === p.head ? settleable(t, p.head, fb.left) : [];
+    settled = worked.length ? yield { type: 'settle-worked', key: t.key, pr: n, head: p.head, worked } : [];
+    if (settled.length < worked.length && !s.dry) return;
+  }
   const gated = !dirty && !tree && reviewerGated(p, s);
   if (gated) { yield* heldTry(t, p, s); return; }
   yield { type: 'gate-hold', key: t.key, on: false };
@@ -171,7 +182,7 @@ function* fixTry(t, p, s) {
   if (less !== undefined && !s.dry) { yield set(t.key, `stuck=${JSON.stringify(less)}`); t = { ...t, stuck: less }; }
   // A red check a change on the branch may clear (an unneeded protected file, a stale verdict) goes to a
   // worker before anything is put to the person.
-  let c = gateTry(t, p, { ...ctx, baseMerge }) ?? fixCall(t, p, ctx) ?? (yield* feedbackCall(t, p, s, ctx.waived, reads));
+  let c = gateTry(t, p, { ...ctx, baseMerge }) ?? fixCall(t, p, ctx) ?? (yield* feedbackCall(t, p, s, ctx.waived, reads, settled));
   if (!c) { if (t.stuck && !s.dry) yield set(t.key, 'stuck=null'); return; }
   // Waiting on an outside reviewer leaves the person nothing to do, so an earlier stuck record goes.
   if (c.call === 'wait') {
@@ -228,24 +239,18 @@ function findingsFix(t, p, s, fb, reads) {
 // A ready PR's review, read as the merge driver reads it (review-threads.mjs): a desk-review at its
 // head that is not clean goes to a review fix (reviewFix), and, where §3 merge-feedback-first holds
 // the merge for them, threads left unresolved or changes requested to a feedback fix (feedbackFix).
-// The threads a finished feedback try worked are replied on and resolved first, once its worker has
-// pushed past them, so the next try quotes only what is still open. One GitHub would not settle holds
-// any new try until a later pass settles it: a new try would replace the record of what was worked.
-function* feedbackCall(t, p, s, waived, reads) {
+// `settled`: the threads fixTry replied on and resolved this pass, which the next try does not quote.
+function* feedbackCall(t, p, s, waived, reads, settled = []) {
   if (p.state !== 'OPEN' || p.isDraft !== false || !p.head) return null;
   const n = p.pr;
   const fb = yield { type: 'feedback', key: t.key, pr: n };
   if (!fb) { yield out(`fix tries: PR #${n} (${t.key}): its review threads could not be read; the next pass tries again`); return null; }
   if (fb.head !== p.head) return null;
-  const open = new Set(fb.left.map((x) => x.id));
-  const worked = resolvable(t, p.head).filter((x) => open.has(x.id));
-  const settled = worked.length ? yield { type: 'settle-worked', key: t.key, pr: n, head: p.head, worked } : [];
-  if (settled.length < worked.length && !s.dry) return null;
   const { judgement } = s;
   // A red check reading an outside reviewer's review goes ahead of desk's own review and feedback
   // routes: it waits for that reviewer at the head, then sends their findings (externalTry).
   const external = (login) => externalReview(fb.payload, login);
-  const ext = externalTry(t, p, { ...s.gate, stateChecks: s.stateChecks, external, clean: s.clean ?? null });
+  const ext = externalTry(t, p, { ...s.gate, stateChecks: s.stateChecks, external, clean: s.clean ?? null, resolvedNow: settled });
   if (ext !== undefined) return ext;
   if (fb.review) {
     const rf = findingsFix(t, p, s, fb, reads);
@@ -261,5 +266,5 @@ function* feedbackCall(t, p, s, waived, reads) {
   // does a green PR the driver would hold for want of a clean verdict, where a driver may merge.
   const { carry, scope, baseMerge } = reads.moves();
   const atHead = () => reads.atHead(fb.payload, carry, scope);
-  return verdictTry(t, p, { ...s.gate, stateChecks: s.stateChecks, settled: !!fb.review, atHead, external, clean: s.clean ?? null, waived, base: s.base, baseMerge });
+  return verdictTry(t, p, { ...s.gate, stateChecks: s.stateChecks, settled: !!fb.review, resolvedNow: settled, atHead, external, clean: s.clean ?? null, waived, base: s.base, baseMerge });
 }
