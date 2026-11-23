@@ -945,7 +945,7 @@ export function feedbackFix(t, { pr, head, decision, threads, external = null })
     const named = left.map((x) => x.text).join('; ');
     return { call: 'stuck', why: `review feedback still open after ${tries(triesMade(done))}: ${what}${named ? ` — ${named}` : ''}` };
   }
-  return nextTry(done, pr, head, { kind: 'feedback', what: `review feedback: ${what}`, decision: decision ?? null, threads: left.map(({ id, text }) => ({ id, text })), ...(external ? { external } : {}) });
+  return nextTry(done, pr, head, { kind: 'feedback', what: `review feedback: ${what}`, decision: decision ?? null, threads: left.map(({ id, text, last }) => ({ id, text, ...(last?.at ? { last_at: last.at } : {}) })), ...(external ? { external } : {}) });
 }
 // The threads a finished feedback try quoted that the pass replies on and resolves: its worker
 // finished, did not park, and pushed past the try's head. [] otherwise.
@@ -954,8 +954,21 @@ export function resolvable(t, head) {
   if (f?.kind !== 'feedback' || !workerFinished(f) || t.state !== 'done' || !head || head === f.head) return [];
   return (f.threads ?? []).filter((x) => x.id && !(f.resolved ?? []).includes(x.id));
 }
+// Of the open threads `left` (review-threads.mjs threadOf), those a finished feedback try worked that the
+// pass replies on and resolves now (resolvable): not one with a later reply, a comment on it newer than
+// the newest the try read (its `last_at`, as GitHub dated it) other than the pass's own (feedbackReply),
+// which is left open for whoever answers it. A try that recorded none is read as before.
+export function settleable(t, head, left) {
+  const open = new Map((left ?? []).map((x) => [x.id, x]));
+  const later = (q, x) => {
+    const since = Date.parse(q.last_at ?? '');
+    return Number.isFinite(since) && Date.parse(x?.last?.at ?? '') > since && !String(x.last.first ?? '').startsWith(REPLY_LEAD);
+  };
+  return resolvable(t, head).filter((q) => open.has(q.id) && !later(q, open.get(q.id)));
+}
+const REPLY_LEAD = "Worked by desk's fix try";
 // The reply the pass posts on a thread a feedback try worked, before resolving it.
-export const feedbackReply = (f, head) => `Worked by desk's fix try ${f.try} of ${f.of} at ${String(head).slice(0, 12)}: the worker's reply, naming this thread, is on the PR's conversation, and ${f.external ? `${f.external.login} reviews that head next` : 'a fresh desk-review is posted on that head'}. Reopen this thread if it still stands.`;
+export const feedbackReply = (f, head) => `${REPLY_LEAD} ${f.try} of ${f.of} at ${String(head).slice(0, 12)}: the worker's reply, naming this thread, is on the PR's conversation, and ${f.external ? `${f.external.login} reviews that head next` : 'a fresh desk-review is posted on that head'}. Reopen this thread if it still stands.`;
 
 // A draft with no review verdict the pass can read at its head (undraft.mjs `review`: none posted, one
 // it cannot read, or one for an older head) goes to a review worker, which reviews the head and posts
@@ -1038,7 +1051,7 @@ export function bodyFeedback(body, clean = null) {
 // its open threads and its review's text go to a fix worker as review feedback (`external` on the try:
 // the worker posts no desk review, and the PR waits for that reviewer's next review). undefined where
 // no such check is red. ctx: { required, advisory, stateChecks, external(login) (review-threads.mjs
-// externalReview), clean (§4 Clean review verdict) }; gate: evaluateGate's read of s, where the caller has it.
+// externalReview), clean (§4 Clean review verdict), resolvedNow (thread ids the pass resolved this pass) }; gate: evaluateGate's read of s, where the caller has it.
 export function externalTry(t, s, ctx, gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] })) {
   const reds = stateFailing(gate.failing, ctx.stateChecks).filter((x) => x.kind === 'external');
   if (!reds.length) return undefined;
@@ -1050,7 +1063,9 @@ export function externalTry(t, s, ctx, gate = evaluateGate(s.checks ?? [], { req
   // A clean review body, its counts all 0 whatever findings it lists as refuted, is no feedback (bodyFeedback).
   // Any other body goes to the worker whole, as review feedback.
   const body = r.body && bodyFeedback(r.body, ctx.clean) ? [{ id: null, text: `${f.login}'s review at the head: ${r.body.replace(/\s+/g, ' ').trim().slice(0, 500)}` }] : [];
-  const c = feedbackFix(t, { pr: s.pr, head: s.head, decision: r.state, threads: [...r.threads, ...body], external: { login: f.login, check: f.name } });
+  // A thread the pass resolved this pass (ctx.resolvedNow) is read open still in the payload it read first.
+  const threads = r.threads.filter((x) => !(ctx.resolvedNow ?? []).includes(x.id));
+  const c = feedbackFix(t, { pr: s.pr, head: s.head, decision: r.state, threads: [...threads, ...body], external: { login: f.login, check: f.name } });
   return c ?? { call: 'stuck', why: `its "${f.name}" check, which reads ${f.login}'s review, is red though ${f.login} reviewed the head with nothing to work: re-run the check if its run started before that review` };
 }
 

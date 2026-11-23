@@ -1,7 +1,7 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 // layer: L1
 import { readFileSync } from 'node:fs';
-import { fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
@@ -746,6 +746,21 @@ t('DS-419 not while the head is still the try\'s', resolvable(tk({ state: 'done'
 t('DS-419 not while its worker runs or parked', [resolvable(tk({ state: 'done', fix: fb1.fix }), 'd'.repeat(40)).length, resolvable(tk({ state: 'parked', fix: worked }), 'd'.repeat(40)).length].join(), '0,0');
 t('DS-419 not one already resolved', resolvable(tk({ state: 'done', fix: { ...worked, resolved: ['PRRT_1'] } }), 'd'.repeat(40)).length, 0);
 t('DS-605 not one the pass ended before any worker ran it, its head moved', resolvable(tk({ state: 'done', fix: { ...worked, no_worker: true } }), 'd'.repeat(40)).length, 0);
+// A worked thread with a later reply on it, other than the pass's own, is left open for whoever answers it.
+{
+  // The try read the thread's newest comment at 09:00 (last_at); the pass that made it began at 08:59.
+  const f = { ...worked, at: '2026-11-23T08:59:00Z', threads: worked.threads.map((x) => ({ ...x, last_at: '2026-11-23T09:00:00Z' })) };
+  const done = tk({ state: 'done', fix: f });
+  const left = (last) => [{ id: 'PRRT_1', text: 'x', ...(last ? { last } : {}) }];
+  const D = 'd'.repeat(40);
+  t('a worked thread with no reply since the try read it is settled, though posted after the pass began', settleable(done, D, left({ login: 'agent-pullbot', at: '2026-11-23T09:00:00Z', first: 'P1 x' })).map((x) => x.id).join(), 'PRRT_1');
+  t('one the reviewer replied on since is left open', settleable(done, D, left({ login: 'agent-pullbot', at: '2026-11-23T11:00:00Z', first: 'Still broken at line 4' })).length, 0);
+  t('the pass\'s own reply since does not keep it open', settleable(done, D, left({ login: 'me', at: '2026-11-23T11:00:00Z', first: feedbackReply(f, D) })).length, 1);
+  t('a try that recorded no newest comment is read as before', settleable(tk({ state: 'done', fix: worked }), D, left({ login: 'agent-pullbot', at: '2026-11-23T11:00:00Z', first: 'y' })).length, 1);
+  t('a thread no longer open is not settled', settleable(done, D, []).length, 0);
+  const fbLast = feedbackFix(tk(), { pr: 2402, head: HEAD, threads: [{ id: 'PRRT_1', text: 'x', last: { login: 'agent-pullbot', at: '2026-11-23T09:00:00Z', first: 'P1 x' } }] });
+  t('a feedback try records the newest comment it read on each thread', JSON.stringify(fbLast?.fix.threads), JSON.stringify([{ id: 'PRRT_1', text: 'x', last_at: '2026-11-23T09:00:00Z' }]));
+}
 // A try no worker ran said nothing: an earlier worker's summary is not quoted as its own.
 const unrunSync = tk({ fix: { kind: 'sync', try: 1, of: 2, base: 'main', finished: 'x', no_worker: true }, result: { summary: 'an earlier worker' } });
 t('DS-605 a sync try no worker ran is not quoted as having said anything', syncSaid(unrunSync), '');
@@ -787,6 +802,14 @@ const extCtx = (payload) => ({ required: ['tests'], stateChecks: EXT, external: 
 t('#737 no review of the bot\'s at the head: it waits, with no desk review posted', verdictTry(tk(), extRed, extCtx(extPl([bot(OLD_737, 'P0: old')])))?.call, 'wait');
 const ex737 = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, 'P0 (1): src/a.ts drops the row', 'CHANGES_REQUESTED')], [thread('T1', 'R1', 'P0 drops the row'), thread('T2', 'R1', 'fixed already', true)])));
 t('#737 its review at the head goes to a feedback fix try, not a review try', `${ex737?.call} ${ex737?.fix.kind}`, 'requeue feedback');
+// A thread the pass resolved this pass is still open in the payload it read first: no new try quotes it.
+{
+  const cleanPl = extPl([bot(HEAD, 'p0=0 p1=0 p2=0 Clean')], [thread('T1', 'R1', 'P1 drops the row')]);
+  t('a clean outside review with its one open thread resolved this pass starts no try', verdictTry(tk(), extRed, { ...extCtx(cleanPl), resolvedNow: ['T1'] })?.call === 'requeue', false);
+  t('unresolved, the thread still goes to a try', verdictTry(tk(), extRed, extCtx(cleanPl))?.call, 'requeue');
+  const withLast = { ...thread('T1', 'R1', 'P1 drops the row'), latest: { nodes: [{ author: { login: 'agent-pullbot' }, body: 'Still broken\nmore', createdAt: '2026-11-23T11:00:00Z' }] } };
+  t('an open thread is read with its newest comment', JSON.stringify(externalReview(extPl([bot(HEAD, 'x')], [withLast]), 'agent-pullbot').threads[0].last), JSON.stringify({ login: 'agent-pullbot', at: '2026-11-23T11:00:00Z', first: 'Still broken' }));
+}
 t('#737 the try quotes its open threads and its review text', `${ex737?.fix.threads.map((x) => x.id ?? "body").join()} ${ex737?.fix.threads.at(-1).text.startsWith("agent-pullbot's review at the head: P0 (1)")}`, 'T1,body true');
 const extStuck = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, '', 'APPROVED')])));
 t('#737 reviewed at the head with nothing to work, still red: the person\'s', extStuck?.call, 'stuck');

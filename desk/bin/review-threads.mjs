@@ -38,12 +38,15 @@ export const THREADS_QUERY = `query($owner:String!,$name:String!,$n:Int!){reposi
   headRefOid reviewDecision
   reviews(last:100){nodes{id author{login} body state submittedAt commit{oid}}}
   reviewThreads(first:100){nodes{id isResolved isOutdated path line originalLine
-    comments(first:1){nodes{author{login} body pullRequestReview{id}}}}}}}}`;
+    comments(first:1){nodes{author{login} body pullRequestReview{id}}}
+    latest:comments(last:1){nodes{author{login} body createdAt}}}}}}}`;
 
-// An open review thread as the pass names it: { id, path, line, first (its first comment's first line), text }.
+// An open review thread as the pass names it: { id, path, line, first (its first comment's first line), text,
+// last }, `last` its newest comment ({ login, at, first }) where the read has it.
 const threadOf = (t) => {
   const th = { id: t.id, path: t.path ?? '', line: t.line ?? t.originalLine ?? null, first: firstLine(t.comments?.nodes?.[0]?.body) };
-  return { ...th, text: threadLine(th) };
+  const l = t.latest?.nodes?.[0];
+  return { ...th, text: threadLine(th), ...(l ? { last: { login: l.author?.login ?? null, at: l.createdAt ?? null, first: firstLine(l.body) } } : {}) };
 };
 // Whether a §4 row is set to something: not empty, a TODO or none.
 const rowSet = (row) => { const s = String(row ?? '').trim(); return !!s && !/^(todo|none)\b/i.test(s); };

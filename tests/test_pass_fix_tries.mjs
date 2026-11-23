@@ -182,6 +182,18 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
   const tried = tk({ state: 'done', fix: { kind: 'feedback', try: 1, of: 2, head: 'e'.repeat(40), finished: 'x', threads: [{ id: 'TH1', text: 'a thread' }] } });
   const unsettled = drive(snap([[tried, green]]), { feedback: worked, 'settle-worked': [] });
   t('a thread a finished try worked that GitHub would not settle holds any new try', j([types(unsettled).includes('settle-worked'), applied(unsettled).length]), j([true, 0]));
+  // After the try, a clean verdict at its head: the thread it quoted is replied on and resolved, and
+  // nothing is stuck. One with a later reply is left open.
+  const at = '2026-11-23T10:00:00Z';
+  const triedAt = tk({ state: 'done', stuck: { why: 'review feedback still open' }, fix: { ...tried.fix, at, threads: [{ id: 'TH1', text: 'a thread', last_at: '2026-11-23T10:00:30Z' }] } });
+  const done = drive(snap([[triedAt, green]]), { feedback: worked, 'settle-worked': (a) => a.worked.map((x) => x.id) });
+  t('a clean verdict after a try that quoted one thread resolves it, and the PR is not stuck', j([done.find((a) => a.type === 'settle-worked')?.worked.map((x) => x.id), applied(done).length, done.some((a) => a.type === 'set' && a.fields.includes('stuck=null'))]), j([['TH1'], 0, true]));
+  const replied = { ...worked, left: [{ id: 'TH1', text: 'a thread', last: { login: 'agent-pullbot', at: '2026-11-23T11:00:00Z', first: 'Not fixed: line 4 still drops it' } }] };
+  const open = drive(snap([[triedAt, green]]), { feedback: replied });
+  t('a thread with a later comment stays open', types(open).includes('settle-worked'), false);
+  const held = snap([[triedAt, pr([ok('tests'), red('desk-review', '9')])]], { gate: { required: ['tests', 'desk-review'], advisory: [] }, stateChecks: [{ name: 'desk-review', kind: 'verdict' }], reviewer: { key: 'reviewer', kind: 'mismatch', why: 'the gate counts another account' } });
+  const heldDone = drive(held, { feedback: worked, 'settle-worked': (a) => a.worked.map((x) => x.id) });
+  t('a PR the reviewer check holds has the thread resolved too', j([heldDone.find((a) => a.type === 'settle-worked')?.worked.map((x) => x.id)?.join(), heldDone.some((a) => a.type === 'gate-hold')]), j(['TH1', true]));
 }
 
 // A §4 Check builds check, built on its own: nothing is applied once the build starts.
