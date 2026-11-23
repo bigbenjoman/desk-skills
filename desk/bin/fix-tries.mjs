@@ -1039,7 +1039,7 @@ export function externalTry(t, s, ctx, gate = evaluateGate(s.checks ?? [], { req
   // No review of theirs at the head: the PR waits for one, whatever the check's text names, and says so.
   if (!r?.reviewed || r.head !== s.head) return { call: 'wait', external: true, why: `its "${f.name}" check reads ${f.login}'s review, so it waits for ${f.login} to review the head` };
   // A clean review body, its counts all 0 whatever findings it lists as refuted, is no feedback (bodyFeedback).
-  // quoted without the findings it refutes, so a worker is sent after none of those.
+  // Any other body goes to the worker whole, as review feedback.
   const body = r.body && bodyFeedback(r.body, ctx.clean) ? [{ id: null, text: `${f.login}'s review at the head: ${r.body.replace(/\s+/g, ' ').trim().slice(0, 500)}` }] : [];
   const c = feedbackFix(t, { pr: s.pr, head: s.head, decision: r.state, threads: [...r.threads, ...body], external: { login: f.login, check: f.name } });
   return c ?? { call: 'stuck', why: `its "${f.name}" check, which reads ${f.login}'s review, is red though ${f.login} reviewed the head with nothing to work: re-run the check if its run started before that review` };
