@@ -104,6 +104,16 @@ try {
     t('DS-987 AC4 a deny line names the reading that could not be taken', admitLines(c).map((e) => [e.event, e.reason]), [['deny', 'load-unreadable']]);
     a.release(); await a.done;
   }
+  // A zero-padded recheck interval is read as the default, never as octal: the run still waits for
+  // the floor and runs nothing until it is granted.
+  for (const [path, extra] of PATHS) {
+    const c = caseOf({ sample: reading({ load: null }), extra: { ...extra, DESK_ADMIT_RECHECK_S: '08' } });
+    const a = await hold(c.env, ['light']);
+    const ran = join(S, `ran-${n++}`);
+    const r = wl(c.env, ['light', '--timeout', '3', '--', 'sh', '-c', `: > '${ran}'`]);
+    t(`DS-987 ${path} path: a recheck of 08 still waits for the floor, exits 75 and runs nothing`, [r.status, existsSync(ran)], [75, false]);
+    a.release(); await a.done;
+  }
   // AC5, AC6: two light runs held, the load leaving no room: a third prints one line in the agreed form,
   // and no more while its reason holds.
   {

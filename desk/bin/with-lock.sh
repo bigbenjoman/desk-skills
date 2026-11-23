@@ -218,7 +218,8 @@ case "$name" in
     fi ;;
 esac
 recheck="${DESK_ADMIT_RECHECK_S:-10}"
-case "$recheck" in ''|*[!0-9]*|0) recheck=10 ;; esac
+# A leading zero is refused too: bash reads 08 as octal, and the arithmetic error would end the wait.
+case "$recheck" in ''|*[!0-9]*|0*) recheck=10 ;; esac
 # One look at headroom (admission.mjs grant), as the run starts to wait and every `recheck` seconds
 # after: 0 when it is let in above the floor (admitted). It prints the waiting line grant gives it as
 # grant says (the first, then a new reason at most once a minute), or the plain one where grant says
