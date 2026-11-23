@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { scratch } from './scratch.mjs';
 
 process.env.DESK_AUTOPILOT_STATE ??= scratch('base-red-');
-const { baseState, lastMerges, liveBaseRed, nextRecord, holdLine, batchLine, repairTicket, repairTriage, baseRerun, setupFailed, runIdOf, SETUP_STEP, WALK, STALE_MS } = await import('../desk/bin/base-red.mjs');
+const { baseState, lastMerges, liveBaseRed, nextRecord, holdLine, batchLine, repairTicket, repairTriage, baseRerun, setupFailed, SETUP_STEP, WALK, STALE_MS } = await import('../desk/bin/base-red.mjs');
 const E = await import('../desk/bin/desk-env.mjs');
 
 let pass = 0;
@@ -291,12 +291,6 @@ test('the setup steps are installs, cache restores, checkouts and the runner set
   for (const n of ['Run tests', 'Build', 'Lint', 'Typecheck', 'Run playwright tests']) assert.ok(!SETUP_STEP.test(n), n);
 });
 
-test('a run id is read from a check\'s details URL', () => {
-  assert.equal(runIdOf(URL78), '78');
-  assert.equal(runIdOf('https://github.com/acme/widgets/actions/runs/77'), '77');
-  assert.equal(runIdOf('https://ci.example.com/build/9'), null);
-});
-
 test('a run\'s failed setup steps are read across its jobs, so a downstream check finding nothing is explained', () => {
   const view = { jobs: [installFailed.jobs[0], { name: 'Lint', steps: [{ name: 'Run tests', conclusion: 'failure' }] }] };
   assert.deepEqual(setupFailed(view), ['Install browsers']);
@@ -332,6 +326,17 @@ test('once re-run, it waits while the rerun goes and while a passed rerun is rea
   assert.match(again.why, /failed again/);
   // a rerun whose run cannot be read is not waited on for ever
   assert.equal(baseRerun(rr(URL78), { reran: ['78'], view: never, status: () => null, perm: 'yes' }).admit, true);
+});
+
+test('a red base over two runs, one re-run already, re-runs only the other', () => {
+  const two = { branch: 'main', checks: [{ name: 'Lint', sha: sha('a'), url: URL78 }, { name: 'e2e', sha: sha('a'), url: 'https://github.com/acme/widgets/actions/runs/79/job/6' }] };
+  const done = (s, c) => () => ({ status: s, conclusion: c });
+  const d = baseRerun(two, { reran: ['78'], view: () => installFailed, status: done('completed', 'success'), perm: 'yes' });
+  assert.deepEqual(d.rerun, ['79']);
+  // one already re-run that failed again admits the repair, and re-runs nothing
+  assert.equal(baseRerun(two, { reran: ['78'], view: () => installFailed, status: done('completed', 'failure'), perm: 'yes' }).admit, true);
+  // one already re-run still going waits, and re-runs nothing
+  assert.ok(baseRerun(two, { reran: ['78'], view: () => installFailed, status: done('in_progress', ''), perm: 'yes' }).wait);
 });
 
 test('the batch line says no repair is admitted yet while a rerun comes first', () => {

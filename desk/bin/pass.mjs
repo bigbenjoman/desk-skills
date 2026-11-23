@@ -1806,7 +1806,7 @@ if (BASE_RED) {
     if (first.rerun) {
       for (const id of first.rerun) { const r = shOut('gh', ['run', 'rerun', id, '--repo', GH_REPO, '--failed']); if (!r.ok) refused.push(`run ${id}: ${r.out.split('\n').pop()}`); }
       // Kept whether GitHub took it or not, so a refusal is one try and the next pass admits the repair.
-      try { writeFileSync(BASE_RERAN_FILE, `${JSON.stringify({ runs: [...new Set([...reran, ...first.rerun])].slice(-50) }, null, 2)}\n`); } catch {}
+      try { writeFileSync(BASE_RERAN_FILE, `${JSON.stringify({ runs: [...new Set([...reran, ...first.rerun])].slice(-500) }, null, 2)}\n`); } catch {}
     }
     if (first.rerun && !refused.length) baseRedRepair = { key, first: first.why };
     else if (first.wait) baseRedRepair = { key, first: first.wait };

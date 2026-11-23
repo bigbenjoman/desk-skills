@@ -25,6 +25,8 @@ import { runsState, FAILED } from './failure-class.mjs';
 import { readLog } from './merge-log.mjs';
 import { execGit } from './remote-git.mjs';
 import { openCache } from './read-cache.mjs';
+import { stepFailed } from './gate.mjs';
+import { runIdFrom } from './evidence.mjs';
 
 export const FILE = 'base-red.json';
 // How many of the base's newest first-parent commits are read for a check's latest completed run.
@@ -138,13 +140,10 @@ export const repairTriage = (r) => ({
 // tool install, a cache restore, a checkout, GitHub's own `Set up job`, or an action named for one of them
 // (`Run actions/checkout@v4`, `Run actions/setup-node@v4`, `Run actions/cache@v4`).
 export const SETUP_STEP = /\b(?:install(?:s|ing)?|set ?up|setup-[\w-]+|checkout|restore|cache|npm ci)\b/i;
-const STEP_FAILED = new Set(['failure', 'timed_out']);
-// The run id a check's details URL names (`…/actions/runs/<id>/job/<job>`), or null.
-export const runIdOf = (url) => /\/actions\/runs\/(\d+)/.exec(String(url ?? ''))?.[1] ?? null;
 // The steps a run failed at that set its runner up, from `gh run view <id> --json jobs`: any of its
 // jobs, so an install that failed one job explains the check downstream of it that found nothing to test.
 export const setupFailed = (view) => (Array.isArray(view?.jobs) ? view.jobs : [])
-  .flatMap((j) => (Array.isArray(j?.steps) ? j.steps : []).filter((x) => STEP_FAILED.has(String(x?.conclusion ?? '').toLowerCase()) && SETUP_STEP.test(String(x?.name ?? ''))).map((x) => x.name));
+  .flatMap((j) => (Array.isArray(j?.steps) ? j.steps : []).filter((x) => stepFailed(x) && SETUP_STEP.test(String(x?.name ?? ''))).map((x) => x.name));
 // The runs a red base's checks failed in, re-run once before its repair is admitted where the runner
 // failed them and not the code, as a PR's red check classed runner or resource is (fix-tries.mjs).
 // reran: the run ids already re-run for a red base (a rerun keeps its run's id, and a rerun still going
@@ -153,23 +152,29 @@ export const setupFailed = (view) => (Array.isArray(view?.jobs) ? view.jobs : []
 // -> { rerun: [id], why } (re-run these, admit nothing), { wait: why } (a rerun is still going, or passed
 //    and the driver has yet to read it), or { admit: true, why? } (admit the repair as before).
 export function baseRerun(r, { reran = [], view, status, perm }) {
-  const ids = (r?.checks ?? []).map((c) => runIdOf(c.url));
+  // A check's run is named by its details URL (`…/actions/runs/<id>/job/<job>`).
+  const ids = (r?.checks ?? []).map((c) => runIdFrom(c.url));
   if (!ids.length || ids.some((x) => !x)) return { admit: true };
   const runs = [...new Set(ids)];
-  if (runs.every((x) => reran.includes(x))) {
-    const st = runs.map((x) => ({ id: x, s: status(x) }));
+  const plural = (xs) => (xs.length === 1 ? '' : 's');
+  // The runs already re-run are read for how their rerun went; only the others can be re-run now.
+  const had = runs.filter((x) => reran.includes(x)), fresh = runs.filter((x) => !reran.includes(x));
+  if (had.length) {
+    const st = had.map((x) => ({ id: x, s: status(x) }));
     // A rerun whose run cannot be read is not waited on, or a run gone for good would hold the repair for ever.
-    if (st.some((x) => !x.s)) return { admit: true, why: `re-run once already, and run${runs.length === 1 ? '' : 's'} ${st.filter((x) => !x.s).map((x) => x.id).join(', ')} could not be read since` };
-    const going = st.filter((x) => String(x.s?.status ?? '').toLowerCase() !== 'completed').map((x) => x.id);
-    if (going.length) return { wait: `its failed run${going.length === 1 ? '' : 's'} ${going.join(', ')} ${going.length === 1 ? 'was' : 'were'} re-run once and ${going.length === 1 ? 'is' : 'are'} still going, so no repair is admitted until ${going.length === 1 ? 'it ends' : 'they end'}` };
-    if (st.every((x) => String(x.s?.conclusion ?? '').toLowerCase() === 'success')) return { wait: `its re-run of run${runs.length === 1 ? '' : 's'} ${runs.join(', ')} passed, so no repair is admitted while the merge driver reads ${r.branch} again` };
-    return { admit: true, why: `re-run once already, run${runs.length === 1 ? '' : 's'} ${runs.join(', ')} failed again` };
+    const unread = st.filter((x) => !x.s).map((x) => x.id);
+    if (unread.length) return { admit: true, why: `re-run once already, and run${plural(unread)} ${unread.join(', ')} could not be read since` };
+    const going = st.filter((x) => String(x.s.status ?? '').toLowerCase() !== 'completed').map((x) => x.id);
+    if (going.length) return { wait: `its failed run${plural(going)} ${going.join(', ')} ${going.length === 1 ? 'was' : 'were'} re-run once and ${going.length === 1 ? 'is' : 'are'} still going, so no repair is admitted until ${going.length === 1 ? 'it ends' : 'they end'}` };
+    const again = st.filter((x) => String(x.s.conclusion ?? '').toLowerCase() !== 'success').map((x) => x.id);
+    if (again.length) return { admit: true, why: `re-run once already, run${plural(again)} ${again.join(', ')} failed again` };
+    if (!fresh.length) return { wait: `its re-run of run${plural(had)} ${had.join(', ')} passed, so no repair is admitted while the merge driver reads ${r.branch} again` };
   }
-  const steps = runs.map((x) => ({ id: x, steps: setupFailed(view(x)) }));
+  const steps = fresh.map((x) => ({ id: x, steps: setupFailed(view(x)) }));
   if (!steps.every((x) => x.steps.length)) return { admit: true };
   const named = [...new Set(steps.flatMap((x) => x.steps))].map((n) => `"${n}"`).join(', ');
   if (perm !== 'yes') return { admit: true, why: `it failed at a setup step (${named}), but config §3 ci-rerun is "${perm ?? 'no'}", so it is not re-run first` };
-  return { rerun: runs, why: `its failed run${runs.length === 1 ? '' : 's'} ${runs.join(', ')} failed at a setup step (${named}), the runner's and not the code's, so ${runs.length === 1 ? 'it is' : 'they are'} re-run once before any repair is admitted` };
+  return { rerun: fresh, why: `its failed run${plural(fresh)} ${fresh.join(', ')} failed at a setup step (${named}), the runner's and not the code's, so ${fresh.length === 1 ? 'it is' : 'they are'} re-run once before any repair is admitted` };
 }
 
 // The record to keep for state `s` read now, carrying `since` from the one before while it is red.
