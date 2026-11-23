@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { scratch } from './scratch.mjs';
 
 process.env.DESK_AUTOPILOT_STATE ??= scratch('base-red-');
-const { baseState, lastMerges, liveBaseRed, nextRecord, holdLine, batchLine, repairTicket, repairTriage, baseRerun, setupFailed, SETUP_STEP, WALK, STALE_MS, GREEN_FILE, readGreen } = await import('../desk/bin/base-red.mjs');
+const { baseState, lastMerges, liveBaseRed, nextRecord, holdLine, batchLine, repairTicket, repairTriage, baseRerun, setupFailed, timedOut, SETUP_STEP, WALK, STALE_MS, GREEN_FILE, readGreen } = await import('../desk/bin/base-red.mjs');
 const E = await import('../desk/bin/desk-env.mjs');
 
 let pass = 0;
@@ -426,6 +426,32 @@ test('a red base over two runs, one re-run already, re-runs only the other', () 
   // one already re-run still going waits, and re-runs nothing
   assert.ok(baseRerun(two, { reran: ['78'], view: () => installFailed, status: done('in_progress', ''), perm: 'yes' }).wait);
 });
+
+// A job or step that ran out of time, or only §4 Known flaky checks, is the runner's too.
+{
+  const job = (o) => ({ jobs: [{ name: 'Lint', databaseId: 41, conclusion: 'failure', steps: [{ name: 'Run tests', conclusion: 'failure' }], ...o }] });
+  const out = (msg) => (id) => (id === 41 ? [{ message: msg }] : null);
+  test('a job whose annotation says a step timed out reads as timed out', () => {
+    assert.deepEqual(timedOut(job(), out("The action 'Run tests' has timed out after 12 minutes.")), ['Lint']);
+    assert.deepEqual(timedOut(job(), out('The job running on runner GitHub Actions 3 has exceeded the maximum execution time of 30 minutes.')), ['Lint']);
+    assert.deepEqual(timedOut(job({ conclusion: 'timed_out' })), ['Lint']);
+    assert.deepEqual(timedOut(job(), out('expect(received).toBe(expected)')), []);
+    assert.deepEqual(timedOut(job(), () => undefined), []);
+  });
+  test('a red base whose only failure is a step timeout is re-run once, and nothing admitted', () => {
+    const d = baseRerun(rr(URL78), { reran: [], view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes' });
+    assert.deepEqual(d.rerun, ['78']);
+    assert.match(d.why, /failed at a timeout \("Lint"\)/);
+  });
+  test('an assertion failing in a test step admits the repair as before', () => {
+    assert.deepEqual(baseRerun(rr(URL78), { reran: [], view: () => job(), notes: out('expect(received).toBe(expected)'), status: never, perm: 'yes' }), { admit: true });
+  });
+  test('a red base on §4 Known flaky checks only is re-run once; beside a check that is not, it is not', () => {
+    assert.deepEqual(baseRerun(rr(URL78), { reran: [], view: () => job(), flaky: ['Lint'], status: never, perm: 'yes' }).rerun, ['78']);
+    const two = { branch: 'main', checks: [{ name: 'Lint', sha: sha('a'), url: URL78 }, { name: 'Build', sha: sha('a'), url: URL78 }] };
+    assert.deepEqual(baseRerun(two, { reran: [], view: () => job(), flaky: ['Lint'], status: never, perm: 'yes' }), { admit: true });
+  });
+}
 
 test('the batch line says no repair is admitted yet while a rerun comes first', () => {
   const l = batchLine({ branch: 'main', since: 't', checks: [{ name: 'Lint', sha: sha('a'), url: URL78 }], merges: [] }, { repair: { key: 'base-red-main', first: 'its failed run 78 failed at a setup step' } });
