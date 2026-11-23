@@ -285,13 +285,14 @@ function cliCases(c) {
 const NOT_A_PROPERTY = '(?<![\\w$])(?<!(?<!\\.)\\.)';
 
 // `t` without its comments, the text of its strings, or a template's text, keeping each template's
-// `${...}` code (nested templates too) and every regex literal whole. A `/` that opens a regex nothing
-// closes on its line leaves the rest as it is, so a misread only keeps text.
+// `${...}` code (nested templates too) and every regex literal whole. A quote or a `/` opening a string
+// or regex nothing closes on its line leaves the rest as it is, so a misread only keeps text.
 function scrubCode(t) {
   let out = '';
   let i = 0;
   let depth = 0;
   const open = []; // the brace depth each `${` we are inside opened
+  const parens = []; // for each open `(`, whether it is an if, while, for or with condition's
   let last = ''; // the last token of code, to tell a regex from a division
   const regexNext = () => !last || /^[(,=:[!&|?{};+\-*%<>~^]$/.test(last) || /^(?:return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await)$/.test(last);
   // A template's text from i: -> true where it stops at a `${`, false at its closing backtick.
@@ -319,6 +320,7 @@ function scrubCode(t) {
     if (c === "'" || c === '"') {
       let j = i + 1;
       while (j < t.length && t[j] !== c && t[j] !== '\n') j += t[j] === '\\' ? 2 : 1;
+      if (t[j] !== c) return out + t.slice(i);
       out += "''";
       i = j + 1;
       last = ')';
@@ -345,15 +347,18 @@ function scrubCode(t) {
     if (c === '{') depth++;
     else if (c === '}') depth--;
     out += c;
-    if (!/\s/.test(c)) last = c;
     i++;
+    // A `/` after the `)` closing a condition opens a regex, as after a `;`.
+    if (c === '(') { parens.push(/^(?:if|while|for|with)$/.test(last)); last = c; }
+    else if (c === ')') last = parens.pop() ? ';' : c;
+    else if (!/\s/.test(c)) last = c;
   }
   return out;
 }
 
 // Whether a condition tests that the module was run as a command (`process.argv[1]` against
-// `import.meta.url`), and not its negation nor one an `||` lets pass otherwise.
-const launchTest = (t) => /process\.argv\[1\]/.test(t) && /import\.meta\.url/.test(t) && !/!=|!\s*\(|\|\|/.test(t);
+// `import.meta.url`), and not its negation, nor one an `||`, `??` or `? :` can turn otherwise.
+const launchTest = (t) => /process\.argv\[1\]/.test(t) && /import\.meta\.url/.test(t) && !/!=|!\s*\(|\|\||\?(?!\.)/.test(t);
 // Whether a top-level statement runs only when the module is run as a command: an `if` with no `else`
 // whose condition is a const in `guards` set to a launchTest() (`g`, or `g()` where it is an arrow
 // function), or one on a line that opens its block. A block ends where it first compiles; anything
