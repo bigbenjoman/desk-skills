@@ -157,6 +157,16 @@ t('AC3 both deletes ran and the record is gone', [ran, existsSync(acts[0].rec.fi
 t('AC3 the pass logs what it removed', [r42.list, r42.line], ['done', 'removed preview database feat-a and the preview override for feat/a (#42 merged): `./env.sh unset feat/a`, `neonctl branches delete feat-a`']);
 t('AC3 and removed.log holds it', JSON.parse(readFileSync(join(state, 'preview-db', 'removed.log'), 'utf8').trim()),
   { at: 'T', pr: '42', branch: 'feat/a', db: 'feat-a', why: '#42 merged', ran: ['./env.sh unset feat/a', 'neonctl branches delete feat-a'] });
+// AC2: the record goes with the database, but a job still queued for the PR stays gated by what it kept.
+t('AC2 a torn-down PR whose check never passed still posts nothing', [...(checkedShas(state, '42') ?? ['null'])].length, 0);
+t('AC2 a torn-down PR still holds an unchecked shot', /did not pass/.test(uploadHold(state, '42', upDir, ['after-plans.png']) ?? ''), true);
+t('AC2 a torn-down PR still takes no evidence run', evidenceHold(state, '42') != null, true);
+const gated = scratch('preview-gate-');
+writeRecord(gated, { pr: '50', branch: 'feat/e', db: 'feat-e', steps: ['create'], checked: { head: H1, at: 'T', shots: 1, files: { 'a.png': 'f'.repeat(64) } } });
+teardown(teardownCalls({ records: readRecords(gated), recipe, states: { 50: 'CLOSED' } })[0], { state: gated, run: () => ({ ok: true, code: 0, out: '' }) });
+t('AC2 a torn-down PR keeps the bytes its last passing check read', [readRecords(gated).length, [...checkedShas(gated, '50')]], [0, ['f'.repeat(64)]]);
+writeFileSync(join(gated, 'preview-db', 'gates', '50.json'), '{"pr":"50","che');
+t('AC2 a half-written kept gate shuts the gate', /50\.json is not JSON/.test(throws(() => checkedShas(gated, '50'))), true);
 // A failing delete still runs the other, keeps the record, and is the person's after the last try.
 let a43 = acts[1];
 const ran43 = [];
@@ -169,6 +179,8 @@ for (let i = 2; i <= TEARDOWN_TRIES; i++) {
 }
 t('after the last try it is the person\'s, set aside', [r43.list, existsSync(a43.rec.file), existsSync(join(state, 'preview-db', '43.failed.json'))], ['failed', false, true]);
 t('a set-aside record is not read again', readRecords(state).map((r) => r.pr), ['44']);
+// (a43's record was read before its check passed, so what it kept is an empty gate: shut, never open.)
+t('AC2 a set-aside PR keeps its upload gate', [checkedShas(state, '43')?.size, uploadHold(state, '43', upDir, ['after-home.png']) != null], [0, true]);
 
 // ---- the error-page check (AC2) ----
 t('AC2 a Next.js crash page is an error page', errorPageLine('Application error: a server-side exception has occurred (see the server logs)'), 'Application error: a server-side exception has occurred (see the server logs)');

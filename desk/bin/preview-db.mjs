@@ -129,12 +129,26 @@ export function readRecords(state) {
     try { return [{ ...JSON.parse(readFileSync(join(recordsDir(state), f), 'utf8')), file: join(recordsDir(state), f) }]; } catch { return []; }
   });
 }
+// The upload gate a PR keeps once its database record is gone (teardown): { pr, branch, checked?, gone },
+// in <state>/preview-db/gates/, which readRecords does not list, so it never holds a batch open. A job
+// still queued for a torn-down PR is gated by it exactly as by the record, and a PR whose last check
+// never passed keeps an empty gate, so it posts nothing.
+const gateFile = (state, pr) => join(recordsDir(state), 'gates', `${pr}.json`);
+export function writeGate(state, rec, gone) {
+  writeTextAtomic(gateFile(state, rec.pr), `${JSON.stringify({ pr: rec.pr, branch: rec.branch, ...(rec.checked ? { checked: rec.checked } : {}), gone })}\n`);
+}
+// PR `pr`'s record, else its kept gate, read leniently (an unreadable one is left out): null for neither.
+function gateRecord(state, pr) {
+  const rec = readRecords(state).find((r) => String(r.pr) === String(pr));
+  if (rec) return rec;
+  try { const g = JSON.parse(readFileSync(gateFile(state, pr), 'utf8')); return g && String(g.pr) === String(pr) ? g : null; } catch { return null; }
+}
 // Why §4 Evidence workflow may not run for PR `pr`, or null when it may. The workflow writes its shots
 // straight into the PR body, where no error-page check reads them, so a PR with a preview database
 // never takes a run: its evidence is a worker's own capture, which `check` reads before any of it is
 // uploaded (uploadHold). A PR with no preview database is never held.
 export function evidenceHold(state, pr) {
-  const rec = readRecords(state).find((r) => String(r.pr) === String(pr));
+  const rec = gateRecord(state, pr);
   if (!rec) return null;
   return `#${pr} has a preview database, so its evidence is a worker's own capture, never the evidence workflow: capture its screens, run \`preview-db.mjs check <shot dir>\` from its worktree, and only the shots it passed are uploaded`;
 }
@@ -155,10 +169,13 @@ export function checkedShas(state, pr) {
   const rec = readRecordStrict(state, pr);
   return rec ? new Set(Object.values(rec.checked?.files ?? {})) : null;
 }
-// PR `pr`'s record, null only where its file does not exist; anything else unreadable throws.
+// PR `pr`'s record, else the gate its teardown kept (writeGate); null only where neither file exists.
+// Anything else unreadable throws.
 export function readRecordStrict(state, pr) {
   if (!isPrNumber(String(pr))) throw new Error(`"${pr}" is not a PR number`);
-  const file = recordFile(state, pr);
+  return readStrict(recordFile(state, pr), pr) ?? readStrict(gateFile(state, pr), pr);
+}
+function readStrict(file, pr) {
   let text;
   try { text = readFileSync(file, 'utf8'); } catch (e) {
     if (e.code === 'ENOENT') return null;
@@ -172,7 +189,7 @@ export function readRecordStrict(state, pr) {
 // Why the screenshots `shots` (file names in `dir`) may not be uploaded to PR `pr`, or null when they may:
 // for a PR with a preview database, each must be a file the last passing check read, unchanged since.
 export function uploadHold(state, pr, dir, shots) {
-  const rec = readRecords(state).find((r) => String(r.pr) === String(pr));
+  const rec = gateRecord(state, pr);
   if (!rec) return null;
   const passed = rec.checked?.files ?? {};
   const unchecked = shots.filter((f) => { try { return passed[f] !== fileSha(join(dir, f)); } catch { return true; } });
@@ -231,7 +248,8 @@ export function teardownCalls({ records, states, recipe, owed = [] }) {
 // Runs one teardown: every delete command, past a failure, so one that fails leaves the rest done.
 // All passing removes the record and logs what was removed to <state>/preview-db/removed.log; a
 // failure keeps the record for the next pass, and after TEARDOWN_TRIES moves it to <pr>.failed.json
-// for the person. -> { list, line } for the report.
+// for the person. Either way the record leaves, its upload gate is kept (writeGate).
+// -> { list, line } for the report.
 export function teardown(a, { state, run, now = () => new Date().toISOString() }) {
   const ran = a.cmds.map((cmd) => ({ cmd, ...run(cmd) }));
   const failed = ran.filter((r) => !r.ok);
@@ -239,12 +257,15 @@ export function teardown(a, { state, run, now = () => new Date().toISOString() }
   if (!failed.length) {
     mkdirSync(recordsDir(state), { recursive: true });
     appendFileSync(join(recordsDir(state), 'removed.log'), `${JSON.stringify({ at: now(), pr: a.pr, branch: a.rec.branch, db: a.rec.db, why: a.why, ran: a.cmds })}\n`);
+    // The gate is written before the record goes, so a job still queued for this PR stays gated.
+    writeGate(state, a.rec, a.why);
     try { unlinkSync(a.rec.file); } catch { /* gone */ }
     return { list: 'done', line: `removed ${what}: ${a.cmds.map((c) => `\`${c}\``).join(', ')}` };
   }
   const tries = (a.rec.tries ?? 0) + 1;
   const errs = failed.map((r) => `\`${r.cmd}\`: ${stepError(r.out)}`).join('; ');
   if (tries >= TEARDOWN_TRIES) {
+    writeGate(state, a.rec, a.why);
     try { renameSync(a.rec.file, a.rec.file.replace(/\.json$/, '.failed.json')); } catch { /* gone */ }
     return { list: 'failed', line: `could not remove ${what} after ${tries} tries: ${errs}. Run the failed commands yourself from the main checkout` };
   }
