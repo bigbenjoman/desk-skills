@@ -100,7 +100,7 @@ fieldtree port3 'port: 47704, cloud: { port: 47705 }' 'spawned: A-1 port=47704 m
 cmp "$T/port1" "$T/port3"
 check "DS-819 AC1 two ports where the base had one is still listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 port: base port <PORT1>, head port <PORT2>"'
 
-for form in '15d 12h|15d 13h' '2h 05m|2h 06m' '2h 5m|2h 6m' '0m 05s|0m 09s'; do
+for form in '15d 12h|15d 13h' '2h 05m|2h 06m' '2h 5m|2h 6m' '0m 05s|0m 09s' '0m|1m'; do
   fieldtree span1 '' "A-1 in_progress for ${form%|*}"; fieldtree span2 '' "A-1 in_progress for ${form#*|}"
   cmp "$T/span1" "$T/span2"
   check "DS-819 AC2 an elapsed time ${form%|*} against ${form#*|} is not reported" "$same0"
@@ -108,6 +108,9 @@ done
 fieldtree span1 '' 'A-1 in_progress for 15d 12h'; fieldtree span2 '' 'A-1 in_progress for 17d 12h'
 cmp "$T/span1" "$T/span2"
 check "DS-819 AC2 an elapsed time in days two days apart is listed" '[ $rc = 1 ] && echo "$out" | grep -qF "for 15d 12h" && echo "$out" | grep -qF "for 17d 12h"'
+fieldtree span1 '' 'A-1 in_progress for 3m'; fieldtree span2 '' 'A-1 in_progress for 9m'
+cmp "$T/span1" "$T/span2"
+check "an elapsed time in bare minutes six minutes apart is listed" '[ $rc = 1 ] && echo "$out" | grep -qF "for 3m" && echo "$out" | grep -qF "for 9m"'
 
 # An error the pass cuts at a length, at a different place on each tree as a port before the cut is
 # longer on one, carrying each tree's own path and SHA: cut on both trees in the queue, and on one only
