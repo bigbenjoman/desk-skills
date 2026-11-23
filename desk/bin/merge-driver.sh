@@ -1078,6 +1078,16 @@ unknown_age(){ # unknown_age <n> <sha> <key> <merge state>
   queue_note "$3" "merge ref: GitHub has not worked out whether #$1 conflicts with its base at ${2:0:9} for $(( total / 60 )) minutes, and starts no run for that head$how: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch"
 }
 
+# A §4 Merge hold stops only the merge. A held PR that is red still has its checks rerun as a ready one's
+# are (rerun.sh: RERUNS_MAX per check per head, apart, under §3 ci-rerun, never a state check), so one
+# an intermittent failure turned red reaches the person green, and a red in its own code spends the
+# reruns the pass's fix tries wait on (fix-tries.mjs fixCall) and gets its fix try.
+held_rerun(){ # held_rerun <n> <sha> <gate json> <gate state>
+  [ "$4" = fail ] || return 0
+  log "#$1 red at ${2:0:9} under its merge hold: $(printf '%s' "$3" | jq -r '.gate.reasons[:3] | join("; ")')"
+  rerun "$1" "$2" "$3"
+}
+
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
   local n="$1" key="$2" g sha ms state holds met carried="" bare nbare bare_more routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH"
   EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
@@ -1117,16 +1127,19 @@ try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
         if [ "$nbare" -gt 1 ]; then bare_more=" (and $((nbare - 1)) more merge hold(s))"; fi
         queue_note "$key" "merge hold: $(printf '%s' "$bare" | head -1)$bare_more"
       fi
+      held_rerun "$n" "$sha" "$g" "$state"
       return 1
     fi
     if [ "$ROUTINE_PERM" != yes ]; then
       log "#$n HELD by §4 Merge holds — its routine is not run, §3 merge-hold-routine is $ROUTINE_PERM: $(printf '%s' "$holds" | paste -sd ';' -)"
       routine_off_note "$key" "$routines" "§3 merge-hold-routine is $ROUTINE_PERM"
+      held_rerun "$n" "$sha" "$g" "$state"
       return 1
     fi
     if [ -f "$SD/routine-$n-$sha.failed" ]; then
       log "#$n HELD by §4 Merge holds — its routine already failed at ${sha:0:9}; a person settles it (a new head runs it again)"
       routine_failed_note "$key" "$SD/routine-$n-$sha.failed" "$sha"
+      held_rerun "$n" "$sha" "$g" "$state"
       return 1
     fi
     blocked_clear "$key" "merge hold:"
