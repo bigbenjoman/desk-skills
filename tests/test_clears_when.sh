@@ -167,7 +167,7 @@ git -C "$T/repo" push -q origin HEAD:refs/heads/main; git -C "$T/repo" fetch -q 
 draft(){ local w="$T/wt-$1"; git -C "$T/repo" worktree add -q -b "feat/$1" "$w" origin/main; shift
   for f in "$@"; do echo "$f draft" > "$w/$f"; done; git -C "$w" add -A; git -C "$w" -c user.email=t@t -c user.name=t commit -qm draft; }
 for k in 5 6; do
-  draft "O-$k" ci.yml $([ $k = 6 ] && echo notes.txt)
+  if [ "$k" = 6 ]; then draft "O-$k" ci.yml notes.txt; else draft "O-$k" ci.yml; fi
   parked "O-$k" A "its PR #88$((k + 1)) is not its own: PR #88$((k + 1)) is on branch fix/other-88$((k + 1)), not O-$k's branch feat/O-$k. desk takes as a ticket's result only a PR on the branch its worker made"
   q set "O-$k" "worktree=$T/wt-O-$k" "result.pr=88$((k + 1))"
   printf '{"state":"MERGED","isDraft":false,"mergedAt":"2026-11-23T12:00:00Z","headRefName":"fix/other-88%s","author":{"login":"someone-else"}}\n' "$((k + 1))" > "$T/gh/pr-88$((k + 1)).json"
