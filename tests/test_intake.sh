@@ -47,6 +47,7 @@ ${JUDGEMENT:+| \`autopilot-judgement\` | Take calls outside the ask categories |
 |---|---|---|
 | Intake query | \`none\` | ${2-\`project = ACME AND labels = autopilot\`} |
 | Triage concurrency | \`1\` | \`${TRIAGE_K:-TODO}\` |
+| Batches run by | \`supervisor\` | \`${RUN_BY:-supervisor}\` |
 ${WORKER_LOC:+| Worker location | \`local\` | \`$WORKER_LOC\` |}
 EOF
 }
@@ -613,6 +614,31 @@ check "admit: with no batch and autopilot-workers not yes, it points at /desk-au
 config yes '`none`'
 out=$(admit H-7)
 check "admit: with no batch and autopilot-workers yes, it starts a standing batch handed to the supervisor" 'grep -q "^standing-" <<< "$(qget batch)" && [ "$(qget supervised)" = true ] && [ "$(qget tickets.H-7.state)" = triaged ]'
+# #1331: where §3b Batches run by is session, no supervisor runs a standing batch. A finished batch is
+# joined for the session still running its passes; with none running, nothing is admitted, and the
+# person is told to start one, on needs-you too.
+RUN_BY=session config yes '`none`'
+done_q(){ printf '{"version":1,"batch":"s9","supervised":false,"tickets":{"Z":{"key":"Z","state":"done","result":{"pr":null}}}}\n' > "$DESK_QUEUE"; }
+beat(){ mkdir -p "$T/state/orchestrators"; printf '{"queue":"%s","batch":"s9","pid":1,"at":"%s","pass":"%s"}\n' "$DESK_QUEUE" "$1" "$1" > "$T/state/orchestrators/$(printf '%s' "$DESK_QUEUE" | tr -c 'A-Za-z0-9' '-').json"; }
+done_q; rm -rf "$T/state/orchestrators" "$T/state/asks.json"; rec H-31 A
+out=$(admit H-31); rc=$?
+check "#1331 session-run, batch finished, no session running passes: nothing admitted, and no standing batch started" '[ $rc -eq 11 ] && [ "$(qget batch)" = s9 ] && [ "$(qget tickets.H-31)" = undefined ]'
+check "#1331 it says so plainly and names the command" 'grep -qF "admits nothing: no session is running passes for this repo (config §3b \"Batches run by\" is session, so no supervisor runs a batch), and batch s9 is finished: start /desk-autopilot H-31 in a session" <<< "$out" && ! grep -q "supervisor.s next tick" <<< "$out"'
+check "#1331 and puts it on needs-you" 'jq -e ".asks[] | select(.text | startswith(\"start /desk-autopilot H-31 in a session\"))" "$T/state/asks.json" >/dev/null'
+beat "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+out=$(admit H-31); rc=$?
+check "#1331 with a session still running passes on the queue, the ticket joins its batch, not a standing one" '[ $rc -eq 0 ] && [ "$(qget batch)" = s9 ] && [ "$(qget supervised)" = false ] && [ "$(qget tickets.H-31.state)" = triaged ]'
+check "#1331 and the session that runs it is named as the one to pick it up, never the supervisor" 'grep -q "^the session running passes for batch s9 picks up H-31 on its next pass (its last at [0-9][0-9]:[0-9][0-9] UTC)$" <<< "$out" && ! grep -q "supervisor" <<< "$out"'
+done_q; beat "2020-01-01T00:00:00Z"; rec H-32 A
+out=$(admit H-32); rc=$?
+check "#1331 a heartbeat long stopped is no session running passes" '[ $rc -eq 11 ] && grep -q "no session is running passes for this repo" <<< "$out"'
+out=$(admit H-32 --session); rc=$?
+check "#1331 the session that runs the batch (--session) joins it" '[ $rc -eq 0 ] && [ "$(qget batch)" = s9 ] && [ "$(qget tickets.H-32.state)" = triaged ] && grep -q "^this session.s next pass picks up H-32$" <<< "$out"'
+rm -f "$DESK_QUEUE" "$T/state/orchestrators"/*; rec H-33 A
+out=$(admit H-33); rc=$?
+check "#1331 session-run with no batch at all: nothing admitted, and it names /desk-autopilot" '[ $rc -eq 11 ] && [ ! -f "$DESK_QUEUE" ] && grep -qF "no session is running passes for this repo (config §3b \"Batches run by\" is session, so no supervisor runs a batch): start /desk-autopilot H-33 in a session" <<< "$out"'
+check "#1331 desk-admit says what to do with that line" 'grep -q "^| \`no session is running passes for this repo\` (config §3b Batches run by is \`session\`) | If this session runs the repo.s batches, run step 1 again with \`--session\`" "$SK"'
+rm -f "$DESK_QUEUE"; config yes '`none`'
 
 # ---- two batches: a ticket is in one batch at most ----------------------------------------------
 NB="$DESK_HOME/repos/acme__widgets/batches/X-1"; mkdir -p "$NB"
