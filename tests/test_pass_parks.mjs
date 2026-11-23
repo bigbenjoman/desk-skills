@@ -96,6 +96,22 @@ const BASE_CONTAINS = 'base-contains';
     t(`${name} is requeued as before`, types(clears(clearsSnap(byKey(withTry(f)), { passAt: 'P' }), { check: { holds: true } })).includes('requeue'), true);
   }
 }
+// #1294: a not-its-own park records no clears-when. Once #X merged, with no work of its own, it is done by #X.
+{
+  const q = 'its PR #52 is not its own: PR #52 is on branch fix/other, not F\'s branch fix/F. desk takes as a ticket\'s result only …';
+  const f = (more = {}) => clearsSnap(byKey({ key: 'F', state: 'parked', branch: 'fix/F', result: { pr: 52 }, park: { question: q, clears_when: { kind: 'none' } }, ...more }));
+  const why = 'PR #52 is on branch fix/other, not F\'s branch fix/F';
+  const as = clears(f(), { check: (a) => ({ holds: a.cond.kind === 'pr-merged' && a.cond.pr === 52 }), 'other-merged': { why, at: '2026-11-23T10:00:00Z' } });
+  t('#1294 a not-its-own park whose PR merged is done by it, with no requeue', j(types(as)), j(['check', 'other-merged', 'write', 'drop-worktree', 'report']));
+  t('#1294 its foreign result.pr is cleared, and the merge recorded', j(as.find((a) => a.type === 'write').fields),
+    j(['state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null', 'result.pr=null', 'merged_at=2026-11-23T10:00:00Z',
+      `done_by=${j({ pr: 52, why })}`, `result.summary=done by PR #52, not its own (${why}): "PR #52 merged" holds`]));
+  t('#1294 not merged yet: left as it is, and nothing said', j(clears(f(), { check: { holds: false } })), j([{ type: 'check', key: 'F', cond: { kind: 'pr-merged', pr: 52 } }]));
+  t('#1294 with work of its own: left as the person\'s', j(settles(clears(f(), { check: { holds: true }, 'other-merged': null }))), '[]');
+  t('#1294 an unreadable check leaves it, and nothing said', j(lines(clears(f(), { check: { error: 'gh down' } }))), '[]');
+  t('#1294 one a session has claimed is not touched', j(types(clears(f({ park: { question: q, claim: { session: 's' } } })))), '[]');
+  t('#1294 any other park with no clears-when is not read', types(clears(clearsSnap(byKey(parked('A', { kind: 'none' }))))).length, 0);
+}
 // #1290: "PR #X merged" on a PR not its own, with no work of its own, is done by #X: no worker, no re-park.
 {
   const s = clearsSnap(byKey(parked('A', PR_MERGED)));
@@ -109,6 +125,8 @@ const BASE_CONTAINS = 'base-contains';
   const unread = clears(s, { check: { holds: true }, 'other-merged': { error: 'gh down' } });
   t('#1290 whether #41 is its own unread: left parked', j([settles(unread), lines(unread)]), j([[], ['A: "PR #41 merged" holds, but whether #41 is its own could not be read (gh down): left parked']]));
   t('#1290 its own PR, or one with work of its own beside it, is requeued as before', types(clears(s, { check: { holds: true }, 'other-merged': null })).includes('requeue'), true);
+  const at = clears(s, { check: { holds: true }, 'other-merged': { why, at: '2026-11-23T10:00:00Z' } });
+  t('#1294 #41\'s merge is recorded as the ticket\'s, so what is held behind it is released', as.length && at.find((a) => a.type === 'write').fields.includes('merged_at=2026-11-23T10:00:00Z'), true);
   t('#1290 another repo\'s PR is not read as one', types(clears(clearsSnap(byKey(parked('A', { ...PR_MERGED, repo: 'acme/other' }))), { check: { holds: true } })).includes('other-merged'), false);
 }
 {

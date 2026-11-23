@@ -14,8 +14,9 @@
 //   check {key, cond}             -> the clears-when check (clears-when.mjs checkCond): {holds, note} or {error}
 //   own-merged {key}              -> {pr: the ticket's own merged PR, or null}, or {error} where unread
 //   tail-after-merge {key}        -> false where its after-merge steps were not requeued (tailAfterMerge)
-//   other-merged {key, pr}        -> {why} where PR pr is not the ticket's own (shared.mjs notOwnPr) and the
-//                                    ticket holds no work of its own, else null, or {error} where unread
+//   other-merged {key, pr}        -> {why, at} where PR pr is not the ticket's own (shared.mjs notOwnPr) and
+//                                    the ticket holds no work of its own (pr itself, recorded on it, is not),
+//                                    `at` when pr merged; else null, or {error} where unread
 //   drop-worktree {key}           -> what became of its worktree, a line for the report, or null with none
 //   write {key, fields}           -> whether the queue write was recorded
 //   requeue {key}                 -> queue.mjs requeue's {ok, out}
@@ -38,7 +39,7 @@ import { splitOwnEpic, closedUnlanded } from '../desk-q-eta.mjs';
 import { keysOf } from '../desk-q.mjs';
 import { blockersOf } from '../queue-states.mjs';
 import { INTAKE_EVERY_MS } from '../intake.mjs';
-import { LINKS_MADE, ownWords, linkSteps, parkFollowOn, set, say } from './shared.mjs';
+import { LINKS_MADE, ownWords, linkSteps, parkFollowOn, set, say, foreignParkPr } from './shared.mjs';
 import { redraftable, unrunFields } from '../fix-tries.mjs';
 import { tryLabel } from './fix-tries.mjs';
 
@@ -79,6 +80,30 @@ export function decideLapsedRestates(s) {
 export function* decideClears(s) {
   for (const t of Object.values(s.tickets)) {
     if (clearable(t) && (t.park.clears_when.kind === BASE_CONTAINS) === s.onBase) yield* settleClear(t, s);
+    else if (!s.onBase && foreignOf(t)) yield* settleForeign(t, foreignOf(t), s);
+  }
+}
+// A park on "its PR #X is not its own" (shared.mjs foreignQuestion) records no clears-when: one parked
+// before a "PR #X merged" park was settled as done by #X never would. Once #X has merged, with no work
+// of the ticket's own beside it, #X did it: done by #X, as such a park is below. Otherwise, or where
+// either read fails, it stays the person's, as it was, and nothing is said.
+const foreignOf = (t) => (t.state !== 'parked' || isHeld(t) || spinePark(t) || leftPark(t) || t.park?.claim?.session || recorded(t.park?.clears_when)
+  ? null : foreignParkPr(t.park?.question));
+function* settleForeign(t, n, s) {
+  const r = yield { type: 'check', key: t.key, cond: { kind: 'pr-merged', pr: n } };
+  if (r.error || !r.holds) return;
+  const other = yield { type: 'other-merged', key: t.key, pr: n };
+  if (other?.why) yield* doneByOther(t, n, other, `PR #${n} merged`, s);
+}
+// Ticket t recorded done by PR #n, not its own (`other`, the other-merged read), with no worker. #n stays
+// out of result.pr (a not-its-own park's, cleared), which the PR status step would read as not its own,
+// and #n's merge is recorded as the ticket's, so what is held behind it is released.
+function* doneByOther(t, n, other, what, s) {
+  if (yield { type: 'write', key: t.key, fields: ['state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null',
+    ...(t.result?.pr != null ? ['result.pr=null'] : []), ...(t.draft_pr != null ? ['draft_pr=null'] : []), ...(other.at ? [`merged_at=${other.at}`] : []),
+    `done_by=${JSON.stringify({ pr: Number(n), why: other.why })}`, `result.summary=done by PR #${n}, not its own (${other.why}): "${what}" holds`] }) {
+    const wt = s.dry ? null : yield { type: 'drop-worktree', key: t.key };
+    yield say(t.key, 'done', `${t.key}: "${what}" holds, and #${n} is not its own (${other.why}) with no work of its own beside it: recorded done by #${n}, no worker spawned${wt ? `; ${wt}` : ''}`);
   }
 }
 function* settleClear(t, s) {
@@ -152,14 +177,7 @@ function* settleClear(t, s) {
   if (c.kind === 'pr-merged' && !c.repo) {
     const other = yield { type: 'other-merged', key: t.key, pr: c.pr };
     if (other?.error) { yield say(t.key, 'clears', `${t.key}: "${what}" holds, but whether #${c.pr} is its own could not be read (${other.error}): left parked`); return; }
-    if (other?.why) {
-      if (yield { type: 'write', key: t.key, fields: ['state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null',
-        `done_by=${JSON.stringify({ pr: Number(c.pr), why: other.why })}`, `result.summary=done by PR #${c.pr}, not its own (${other.why}): "${what}" holds`] }) {
-        const wt = s.dry ? null : yield { type: 'drop-worktree', key: t.key };
-        yield say(t.key, 'done', `${t.key}: "${what}" holds, and #${c.pr} is not its own (${other.why}) with no work of its own beside it: recorded done by #${c.pr}, no worker spawned${wt ? `; ${wt}` : ''}`);
-      }
-      return;
-    }
+    if (other?.why) { yield* doneByOther(t, c.pr, other, what, s); return; }
   }
   const wasPutOff = s.putOff.has(t.key);
   const rq = yield { type: 'requeue', key: t.key };
