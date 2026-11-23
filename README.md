@@ -932,9 +932,15 @@ chooses them, uncommitted and untracked files included (every suite when that ca
 it runs as many at once as `run.sh` does without `-j`, or `DESK_TEST_JOBS` of them where that is
 set). One difference from CI: an end-to-end (`L3`) suite the change reaches only through imports,
 claiming no changed file directly, does not run locally; `related.sh` names it as left for CI, which
-still runs it before merge. `related.sh` takes a test slot first (`with-lock.sh test`), so it never runs beside the slots'
+still runs it before merge. `related.sh` decides its suites, then takes a test slot (`with-lock.sh test`) before any runs, so it never runs beside the slots'
 holders: while it waits the wrapper says who holds them, and after `DESK_RELATED_WAIT` seconds (an
 hour by default) it exits 75 having run nothing. A run already inside a slot takes no second one.
+A run whose suites' seconds in `tests/suite_durations.json` total 300 or less asks as a small run; a
+suite with no record, or every suite, makes it large. Where the machine profile's `light-express-lane`
+row is `on` (`desk-env machine set light-express-lane=on`; off when unset), a small run that finds
+every light slot it may take held starts at once in the light lock's express lane, one slot of its own
+outside `light-lock-max` (`desk-light.lock.express`), whatever the slot lease kind; its lease log grant
+line says `"lane": "express"`.
 `bash tests/run.sh -j 3` runs up to three suites at once, the longest
 in `tests/suite_durations.json` first, each reported in one piece in name order (CI's shards do).
 Without `-j` it runs as many as `desk-env get test-cap` allows, or a quarter of the cores where that
