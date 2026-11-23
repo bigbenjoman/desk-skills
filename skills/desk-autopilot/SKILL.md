@@ -259,6 +259,7 @@ asked here.
 - About to read a worker's full log "just to check"
 - About to answer a parked question with your own judgement, or to *act* on your own recommendation before the user picks it
 - About to hand the user a list of questions as prose instead of an `AskUserQuestion` carousel
+- About to keep a wait on the person ("pending until they say admit") in your `/loop` prompt, a note or a summary rather than as a needs-you item, or to hold an admit desk may make itself (`ask-or-take.md` *In the pass loop*)
 - About to spawn anything outside `pass.mjs`
 - About to widen a config §3 row, or export `AUTOPILOT_USER_APPROVED` without having asked
 - About to raise concurrency because the machine looks idle

@@ -247,5 +247,21 @@ running passes for every other ticket, and put the question where an answer come
   are back in the conversation. Never `needs-you.mjs ask`: that records a step for the person to
   take, with no answer for the loop to read.
 
+- **A step only the person takes** (file, sign in, merge by hand): record it at once with
+  `needs-you.mjs ask <repo> "<the step, and your recommended default>"`, so desk-q and
+  desk-needs-you list it until the person says done. Each pass drops an ask whose tickets are all
+  merged or done (`needs-you: ask <n> dropped`).
+
+**A wait on the person lives only as a needs-you item, never as a line in your `/loop` prompt.**
+Your loop prompt, a pending note, a handoff or a summary is read by no one but you. A wait kept there
+reaches neither desk-q nor needs-you, and goes stale, and the person learns of it only when they read your summary, if at all.
+Every wait goes where the list above puts it: a park, an ask, or the report for a call nothing waits on.
+
+**An admit is the desk's own step, never a wait on the person.** Admit tickets the person named, an
+`admit next:` line names, or a pass's report hands you, yourself, at once (`intake.mjs admit
+<TICKET>... --session`, the batch's standing approval and §3 allowing). Never hold one for the person
+to say "admit". A refusal goes through `desk-admit`'s step 2: fold in what a comment or triage settles,
+then admit again. Ask only what nothing settles, as a park or an ask.
+
 A carousel stays right where nothing waits on it: Stage 3's round, before the loop, and a question
 the user asks you, or answers, while they are in the conversation with you.

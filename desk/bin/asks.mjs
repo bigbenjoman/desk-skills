@@ -48,3 +48,18 @@ export function removeAsk(stateDir, id) {
     return f.asks.length < n;
   });
 }
+
+// The ticket keys an ask names: words shaped like a key (letters, then a dash and digits).
+const KEY_WORD = /\b[A-Za-z][A-Za-z0-9_]*-\d+\b/g;
+// Drops each ask whose text names tickets, every one of them `known` to the queue and `finished`
+// (merged, or done with no PR): what it waited on has happened another way, so it waits on nothing.
+// An ask naming no ticket, or one the queue does not know, stays.
+//   -> the asks dropped, each { id, text, keys }
+export function pruneAsks(stateDir, { known, finished }) {
+  const stale = readAsks(stateDir).map((a) => ({ ...a, keys: [...new Set(String(a.text ?? '').match(KEY_WORD) ?? [])] }))
+    .filter((a) => a.keys.length && a.keys.every((k) => known(k) && finished(k)));
+  if (!stale.length) return [];
+  const ids = new Set(stale.map((a) => a.id));
+  update(stateDir, (f) => { f.asks = f.asks.filter((a) => !ids.has(a.id)); });
+  return stale.map(({ id, text, keys }) => ({ id, text, keys }));
+}
