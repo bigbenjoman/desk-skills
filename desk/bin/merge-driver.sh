@@ -1371,11 +1371,14 @@ while true; do
   # not be asked about (an API error or limit) takes no merge until a later loop reads it; one whose
   # reads all answered but with no completed run of a required check merges as before.
   fixkey=""; unread=""
-  if base_state=$(node "$DESK_RUN_BIN/base-red.mjs" check --branch "$BASE_BRANCH" --repo "$REPO" --state "$DESK_STATE" --by "$MERGER" --cache "$SD/base-runs.json" 2>/dev/null </dev/null); then
+  # Each ready PR's ticket key, so a red base also lets in an earlier spell's repair still open (the pass
+  # admits no second one while it is).
+  rkeys=$(printf '%s\n' "$ready" | cut -f2 | paste -sd, -)
+  if base_state=$(node "$DESK_RUN_BIN/base-red.mjs" check --branch "$BASE_BRANCH" --repo "$REPO" --state "$DESK_STATE" --by "$MERGER" --cache "$SD/base-runs.json" --keys "$rkeys" 2>/dev/null </dev/null); then
     case "$(printf '%s' "$base_state" | jq -r '.state // empty' 2>/dev/null)" in
       red)
         log "$(printf '%s' "$base_state" | jq -r .line)"
-        fixkey=$(printf '%s' "$base_state" | jq -r .repair_key) ;;
+        fixkey=$(printf '%s' "$base_state" | jq -r '(.repairs // [.repair_key]) | join(" ")') ;;
       green|none) ;;
       unknown) log "base state unknown on $BASE_BRANCH ($(printf '%s' "$base_state" | jq -r '.why // "unread"' 2>/dev/null)) — merging as before" ;;
       *)
@@ -1401,7 +1404,7 @@ while true; do
 
   if [ -n "$unread" ]; then pause 120; continue; fi
   if [ -n "$fixkey" ]; then
-    ready=$(printf '%s\n' "$ready" | awk -F'\t' -v k="$fixkey" '$2 == k')
+    ready=$(printf '%s\n' "$ready" | awk -F'\t' -v ks="$fixkey" 'BEGIN { n = split(ks, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1 } $2 in ok')
     if [ -z "$ready" ]; then pause 120; continue; fi
   fi
 

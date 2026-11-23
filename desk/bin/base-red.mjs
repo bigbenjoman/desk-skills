@@ -4,14 +4,16 @@
 // repair ticket's PR; the pass reads the record the driver keeps and reports it once for the batch, and
 // starts the repair ticket where config allows (pass.mjs).
 //
-//   base-red.mjs check --branch <name> [--repo <owner/name>] [--state <dir>] [--by <merger>] [--cache <file>]
+//   base-red.mjs check --branch <name> [--repo <owner/name>] [--state <dir>] [--by <merger>] [--cache <file>] [--keys <k1,k2,…>]
 //       one JSON line, { state: red | green | unknown | unread | none, checks?, why?, line? }, exit 0. It
 //       keeps <state>/base-red.json while the base is red, removes it once it is green, unknown (no
 //       check read red, so the driver merges as before) or nothing is required, and leaves it as it
 //       was only when the base could not be read. So a red spell ends with the driver's hold, and the
 //       next red is a spell of its own with its own since. With
 //       --cache, the commits and the completed check runs it read are kept in <file> for the next loop
-//       (cachedRead, read-cache.mjs).
+//       (cachedRead, read-cache.mjs). With --keys (the ticket keys of the PRs the driver may merge), a red
+//       answer names in `repairs` those of them that are a repair of this base, any spell's: the pass admits
+//       no second repair while one is open, so an earlier spell's repair is the one merge a later red lets in.
 //
 // The record, <state>/base-red.json:
 //   { branch, sha, checks: [{ name, sha, url }], merges: [{ pr, ticket, sha, at }], repair_key, since, at }
@@ -170,7 +172,7 @@ export const setupFailed = (view) => (Array.isArray(view?.jobs) ? view.jobs : []
 // conclusion is timed_out, or a failed job whose annotations say a step or the job ran out of time
 // (`The action '…' has timed out after 12 minutes`, `… has exceeded the maximum execution time of …`).
 // notes(jobId): the job's annotations ([{ message }]), null or undefined unread.
-export const TIMEOUT_LINE = /\bhas timed out after \d+ minutes?\b|\bexceeded the maximum execution time\b/i;
+const TIMEOUT_LINE = /\bhas timed out after \d+ minutes?\b|\bexceeded the maximum execution time\b/i;
 const ENDED = new Set(['failure', 'timed_out', 'cancelled']);
 export function timedOut(view, notes = () => null) {
   return (Array.isArray(view?.jobs) ? view.jobs : []).filter((j) => {
@@ -317,7 +319,7 @@ if (isMain) {
   const args = process.argv.slice(2);
   const flag = (name) => { const i = args.indexOf(name); return i < 0 ? null : args[i + 1] ?? ''; };
   if (args[0] !== 'check' || !flag('--branch')) {
-    console.error('usage: base-red.mjs check --branch <name> [--repo <owner/name>] [--state <dir>] [--by <merger>] [--cache <file>]');
+    console.error('usage: base-red.mjs check --branch <name> [--repo <owner/name>] [--state <dir>] [--by <merger>] [--cache <file>] [--keys <k1,k2,…>]');
     process.exit(2);
   }
   const branch = flag('--branch');
@@ -335,7 +337,8 @@ if (isMain) {
     const rec = nextRecord(readBaseRed(state), s, { branch, merges, at: new Date().toISOString() });
     mkdirSync(state, { recursive: true });
     writeFileSync(path, `${JSON.stringify(rec, null, 2)}\n`);
-    console.log(JSON.stringify({ ...s, repair_key: rec.repair_key, line: holdLine(rec) }));
+    const repairs = String(flag('--keys') ?? '').split(',').map((k) => k.trim()).filter((k) => k && E.isBaseRedKey(k, branch));
+    console.log(JSON.stringify({ ...s, repair_key: rec.repair_key, repairs: [...new Set([rec.repair_key, ...repairs])], line: holdLine(rec) }));
   } else {
     // Unknown is no red: the driver merges as before, so the spell is over, as on a green read.
     if (s.state !== 'unread' && existsSync(path)) rmSync(path, { force: true });

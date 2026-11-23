@@ -279,6 +279,11 @@ check "a second red while a repair ticket is open admits no second ticket, and i
   '[ "$(field base-red-main-20261123050000 state)" = null ] && [ "$(field base-red-main-20261123000000 red_again | jq -r .key)" = base-red-main-20261123050000 ] && grep -qF "went red again since this ticket was made: Lint" "$T/state-fb/tickets/base-red-main-20261123000000.md"'
 out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
 check "a pass after it notes it no second time" '[ "$(grep -c "went red again" "$T/state-fb/tickets/base-red-main-20261123000000.md")" = 1 ] && [ "$(field base-red-main-20261123050000 state)" = null ]'
+# A third spell with the base worker's push not approved: the grant stops a new worker, not the note.
+jq '.repair_key = "base-red-main-20261123060000" | .since = "2026-11-23T06:00:00Z"' "$T/state-fb/base-red.json" > "$T/state-fb/base-red.tmp" && mv "$T/state-fb/base-red.tmp" "$T/state-fb/base-red.json"
+out=$(DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "#1281: with the push grant not given, a later red is still noted on the open repair" \
+  '[ "$(field base-red-main-20261123060000 state)" = null ] && [ "$(field base-red-main-20261123000000 red_again | jq -r .key)" = base-red-main-20261123060000 ] && [ "$(grep -c "went red again" "$T/state-fb/tickets/base-red-main-20261123000000.md")" = 2 ]'
 q set base-red-main-20261123000000 state=done session_id=null; q drop base-red-main-20261123000000
 rm -f "$T/state-fb/base-red.json"; q set base-red-main state=done; q drop base-red-main
 out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
