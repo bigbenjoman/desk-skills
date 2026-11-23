@@ -4286,8 +4286,9 @@ export function interactive({
   let view = null, tab = 'queue', sel = 0, selId = null, scroll = null, msg = '', cmd = null, ask = null, screen = null, crumbs = [], done = false, timer = null, probeTimer = null, checkin = false, zoom = 'auto', layout = null;
   let unfold = new Set(), reading = false, held = null;
   // Usage's account check: `checked` the last one's logins by checkKey, at `checkedAt`; `checking` while
-  // one runs. `saving` while a rule change or removal runs; `undo`, what u puts back.
-  let checked = null, checkedAt = null, checking = false, saving = false, undo = null;
+  // one runs. `saving` while a rule change or removal runs, `saveGen` counting the saves begun, and
+  // `recheck` once a check that overlapped a save was dropped; `undo`, what u puts back.
+  let checked = null, checkedAt = null, checking = false, saving = false, saveGen = 0, recheck = false, undo = null;
   // Adding a login: `typed`, a Codex login's label as it is typed, then `adding` (as isAdding describes)
   // until the check finds it signed in or esc stops it, the check rerun by `addTimer`.
   let typed = null, adding = null, addTimer = null;
@@ -4532,10 +4533,19 @@ export function interactive({
 
   // ---- Usage's keys ----
   const usageTab = () => hasTabs() && tab === 'usage';
+  // A check that overlapped a save read the subscriptions file from before it, so its result is dropped
+  // and a fresh check runs once the save is done: now, or when it ends (saveEnded).
   function checkLogins() {
     checking = true;
+    const stale = saving, gen = saveGen;
+    if (!stale) recheck = false;
     loginsWith(['check', '--json'], (r) => {
       checking = false;
+      if (stale || gen !== saveGen) {
+        if (saving) recheck = true;
+        else if (!done) checkLogins();
+        return;
+      }
       checkedAt = clock();
       try { checked = new Map(JSON.parse(r.out).logins.map((l) => [checkKey(l.tool, l.configDir), l])); } catch { checked = null; }
       if (!done && adding) addChecked();
@@ -4557,12 +4567,17 @@ export function interactive({
     const args = needsPinMigration(subs) ? (tried.has('migrate') ? null : ['migrate']) : pin ? ['pin', 'claude', pin.name] : null;
     if (!args) return;
     tried.add(args[0] === 'migrate' ? 'migrate' : `pin ${pin.name}`);
-    saving = true;
+    saveStarted();
     loginsWith(args, () => {
-      saving = false;
       lastLogins = null;
-      if (!done && !checking) checkLogins();
+      saveEnded(true);
     });
+  }
+  const saveStarted = () => { saving = true; saveGen++; };
+  // A save is done: a check dropped for overlapping it runs now, as does one the caller wants (`again`).
+  function saveEnded(again = false) {
+    saving = false;
+    if ((again || recheck) && !done && !checking) checkLogins();
   }
 
   // ---- adding a login ----
@@ -4584,7 +4599,7 @@ export function interactive({
     selId = 'adding';
     msg = `esc cancels adding ${addingName(adding)}.`;
     clearInterval(addTimer);
-    addTimer = setInterval(() => { if (!done && adding && !checking) checkLogins(); }, addCheckMs);
+    addTimer = setInterval(() => { if (!done && adding && !checking && !saving) checkLogins(); }, addCheckMs);
     if (!checking) checkLogins();
   }
   const stopAdding = () => { clearInterval(addTimer); addTimer = null; adding = null; };
@@ -4615,16 +4630,15 @@ export function interactive({
   // the Removed table, and the folder takes over as the default where ~/.claude was it (logins.mjs
   // pinLogin). Then the add waits for the new account.
   function pinFirst(a, email) {
-    saving = true;
+    saveStarted();
     msg = 'Saving…';
-    const fail = (r) => { saving = false; stopAdding(); msg = notSaved(r); if (!done) draw(); };
+    const fail = (r) => { stopAdding(); msg = notSaved(r); saveEnded(); if (!done) draw(); };
     const next = () => {
-      saving = false;
       lastLogins = null;
       adding = { tool: a.tool, login: a.first.next, label: null };
       selId = 'adding';
       msg = `${email} signs in for desk through ${a.login.folder}. esc stops adding the new account.`;
-      if (!done && !checking) checkLogins();
+      saveEnded(true);
       if (!done) draw();
     };
     loginsWith(['pin', 'claude', a.login.name], (r) => (r.code !== 0 ? fail(r) : next()));
@@ -4667,12 +4681,12 @@ export function interactive({
   // undoes it and what the footer says once it has.
   // `run` is the desk-env command it goes through, logins unless named; an undo names its own.
   function saveLogin(args, said, then, run = loginsWith) {
-    saving = true;
+    saveStarted();
     msg = 'Saving…';
     run(args, (r) => {
-      saving = false;
       if (r.code === 0) { undo = then; msg = said; }
       else msg = notSaved(r);
+      saveEnded();
       if (!done) draw();
     });
   }
