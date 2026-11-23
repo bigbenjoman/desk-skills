@@ -296,6 +296,14 @@ check "#1281: with the push grant not given, a later red is still noted on the o
   '[ "$(field base-red-main-20261123060000 state)" = null ] && [ "$(field base-red-main-20261123000000 red_again | jq -r .key)" = base-red-main-20261123060000 ] && [ "$(grep -c "went red again" "$T/state-fb/tickets/base-red-main-20261123000000.md")" = 2 ]'
 q set base-red-main-20261123000000 state=done session_id=null; q drop base-red-main-20261123000000
 rm -f "$T/state-fb/base-red.json"; q set base-red-main state=done; q drop base-red-main
+# #1326: a repair parked while someone else fixed main. Main read green since it was admitted, the red
+# record gone: before any spawn its row is closed out as done by the PR that fixed main, no worker runs.
+q add base-red-main-20261123070000 Bug A; q set base-red-main-20261123070000 state=parked added_at="$(isoago 7200)" 'park={"question":"the base still fails Lint"}'
+printf '{"branch":"main","at":"%s"}\n' "$(isoago 60)" > "$T/state-fb/base-green.json"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "#1326 a repair whose base went green since it was admitted is recorded done before any spawn, and no worker starts" \
+  '[ "$(field base-red-main-20261123070000 state)" = "\"done\"" ] && [ "$(field base-red-main-20261123070000 park)" = null ] && ! echo "$out" | grep -q "base-red-main-20261123070000 port=" && echo "$out" | grep -qF "base-red-main-20261123070000: main has gone green since it began"'
+q drop base-red-main-20261123070000; rm -f "$T/state-fb/base-green.json"
 out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-850 AC6 once the driver reads main green, the pass drops the line" '! echo "$out" | grep -q "^RED BASE:" && echo "$out" | grep -q "FB-4: BASE RED"'
 runs "$MB5" Lint '[{"status":"completed","conclusion":"success"}]'
