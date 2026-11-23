@@ -153,10 +153,13 @@ done
 wait
 took=$(cat "$T"/taker.* | grep -c took)
 check "of six racing takers of a stale pass lock exactly one holds it"   '[ "$took" = 1 ] && [ ! -e "$T/state/orchestrator.lock" ]'
+# The stop's grace outlasts any pass's start (a slow runner loads pass.mjs's imports for over a second),
+# and the worker is ended only once the pass has refused, so the stop holds the lock throughout.
 running S-13; worker S-13 'trap "" TERM; '
-node "$B/queue.mjs" stop S-13 > /dev/null 2>&1 & stopper=$!
+DESK_STOP_GRACE_MS=120000 node "$B/queue.mjs" stop S-13 > /dev/null 2>&1 & stopper=$!
 for _ in $(seq 1 30); do grep -q 'queue.mjs stop S-13' "$T/state/orchestrator.lock" 2>/dev/null && break; sleep 0.05; done
 out=$(DESK_REPO_ROOT="$T/repo" node "$B/pass.mjs" 2>&1); prc=$?
+kill -9 -- "-$WPID" 2>/dev/null
 wait "$stopper"; wait "$WPID" 2>/dev/null
 check "a pass started while a stop holds the lock refuses, naming it"    '[ $prc -ne 0 ] && [[ "$out" == *"queue.mjs stop S-13"* ]] && [ "$(f S-13 state)" = "\"parked\"" ]'
 
