@@ -312,8 +312,7 @@ if (isMain) {
     writeFileSync(path, `${JSON.stringify(rec, null, 2)}\n`);
     console.log(JSON.stringify({ ...s, repair_key: rec.repair_key, line: holdLine(rec) }));
   } else {
-    // Unknown is no red: the driver merges as before, so the spell is over (a required check that never
-    // runs on the base, such as a PR-only gate, leaves every read unknown, never green).
+    // Unknown is no red: the driver merges as before, so the spell is over, as on a green read.
     if (s.state !== 'unread' && existsSync(path)) rmSync(path, { force: true });
     // Only a green read of the tip itself moves the mark: one from below it would pass over the merges
     // whose checks are still going, which are the ones a red read next would blame.

@@ -432,8 +432,8 @@ test('the batch line says no repair is admitted yet while a rerun comes first', 
   assert.match(l, /No repair ticket is admitted yet: its failed run 78 failed at a setup step\. Repair ticket base-red-main is admitted if it fails again/);
 });
 
-// A red spell ends when the driver stops reading red, green or unknown: a required check that never runs
-// on the base (a PR-only gate) leaves every read unknown, never green, and the next red is a spell of its own.
+// A red spell ends when the driver stops reading red: a required check that never runs on the base (a
+// PR-only gate) is left out, so the push checks passing read green, and the next red is a spell of its own.
 test('red, then green (one required check never runs on main), then red: two spells, and no record between', () => {
   const dir = scratch('base-red-spells-'), bin = join(dir, 'bin'), state = join(dir, 'state'), runsFile = join(dir, 'runs.json'), tipFile = join(dir, 'tip');
   mkdirSync(bin); mkdirSync(state);
