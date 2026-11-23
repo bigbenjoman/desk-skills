@@ -198,6 +198,9 @@ const staying = {
   'audit-queue.json.lock/pid': '1\n',
   'lever-evals.jsonl': '{"v":1}\n',
   'levers-evidence/e1.jsonl': '{"v":1}\n',
+  // The repo's record of finished cloud sessions archived, and a write of it in progress.
+  'cloud-archived.json': '{"sessions":["session_a"]}',
+  'cloud-archived.json.tmp.4242': '{"sessions":["session_a","session_b"]}',
   'ref/acme__web/f.txt': 'a read-only clone is the repo\'s, not a batch\'s\n',
   'batches/OTHER/parks/O-1.json': '{"question":"other batch"}',
 };
