@@ -399,11 +399,12 @@ export const outageLine = (text) => normaliseLine(String(text).replace(/https?:\
 const isFailed = (c) => FAILED.has(String(c?.conclusion ?? '').toLowerCase());
 // Each open PR's red checks that read as their platform's: [{ name, line, text, key, branch, pr, head, run, running }],
 // `running` where another job of its run has not completed, so no rerun is made of it yet.
-// The checks that are a review or approval gate, never a platform's: each §4 State check of kind
-// external, approval or verdict (`stateChecks`, as parseStateChecks reads the row), and desk-gate.yml's
-// verdict job. Red on many PRs at once they wait on their reviewer or approver, which is no outage.
-export const REVIEW_GATE_KINDS = ['external', 'approval', 'verdict'];
-export const reviewGates = (stateChecks) => new Set(['desk-review verdict', ...(stateChecks ?? []).filter((x) => REVIEW_GATE_KINDS.includes(x?.kind)).map((x) => x.name)]);
+// desk-gate.yml's verdict job.
+export const VERDICT_CHECK = 'desk-review verdict';
+// The checks that read the PR's reviews, approvals or title rather than its code, never a platform's: every
+// §4 State check (`stateChecks`, as parseStateChecks reads the row) and the verdict job, the set undraft
+// sets apart as no fix's. Red on many PRs at once they wait on a reviewer or approver, which is no outage.
+export const reviewGates = (stateChecks) => new Set([VERDICT_CHECK, ...(stateChecks ?? []).map((x) => x.name)]);
 // lists.gates: reviewGates' names, left out.
 function platformReds(prs, lists) {
   const out = [];

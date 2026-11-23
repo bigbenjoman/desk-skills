@@ -1154,8 +1154,8 @@ t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as 
   t('outage: on one PR there is none', outageChecks([preview(701)], lists).size, 0);
   t('outage: the threshold is 2 PRs', OUTAGE_PRS, 2);
   // #1250: a review or approval gate is never an outage, however many PRs it holds red.
-  const gates = reviewGates([{ name: '🔐 Review gate', kind: 'external', login: 'agent-pullbot' }, { name: 'Protected', kind: 'approval' }, { name: 'Lint', kind: null }]);
-  t('#1250 the review gates are the external, approval and verdict state checks and desk\'s verdict job', [...gates].join('|'), 'desk-review verdict|🔐 Review gate|Protected');
+  const gates = reviewGates([{ name: '🔐 Review gate', kind: 'external', login: 'agent-pullbot' }, { name: 'Protected', kind: 'approval' }, { name: 'PR title', kind: null }]);
+  t('#1250 the review gates are every state check and desk\'s verdict job', [...gates].join('|'), 'desk-review verdict|🔐 Review gate|Protected|PR title');
   const waiting = (n) => ({ s: { pr: n, checks: [ok('tests'), { ...red('🔐 Review gate', String(n)), errors: ['No PullBot review from agent-pullbot at abc yet'] }] } });
   t('#1250 a review gate red on many PRs is no outage', outageChecks([701, 702, 703].map(waiting), { required: ['tests', '🔐 Review gate'], advisory: [], gates }).size, 0);
   t('#1250 without the gates named it would read as one', outageChecks([701, 702, 703].map(waiting), { required: ['tests', '🔐 Review gate'], advisory: [] }).size, 1);
