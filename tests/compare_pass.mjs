@@ -96,9 +96,12 @@ async function record(argv) {
 
 // An ISO time, a time to the minute in UTC as the pass prints one, or epoch seconds or milliseconds;
 // or an elapsed time as worker-cost.mjs wallTime ("0m 01s", "2h 05m") or gate.mjs prints one
-// ("2h 5m", "15d 12h"), which two runs a second apart print differently.
-const TIME = /\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?|\b\d{4}-\d\d-\d\d \d\d:\d\d UTC\b|\b1\d{9}(?:\d{3})?\b|\b\d+d \d\d?h\b|\b\d+h \d\d?m\b|\b\d+m \d\ds\b/g;
+// ("2h 5m", "15d 12h", or under an hour a bare "4m"), which two runs a second apart print differently.
+const TIME = /\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?|\b\d{4}-\d\d-\d\d \d\d:\d\d UTC\b|\b1\d{9}(?:\d{3})?\b|\b\d+d \d\d?h\b|\b\d+h \d\d?m\b|\b\d+m \d\ds\b|\b\d+m\b(?! \d)/g;
 const SPAN = /^(\d+)([dhm]) (\d\d?)([hms])$/;
+// gate.mjs since's span under an hour: whole minutes alone ("0m", "59m").
+const MINUTES = /^(\d+)m$/;
+const isSpan = (t) => SPAN.test(t) || MINUTES.test(t);
 const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const TMP = /(?:\/private)?(?:\/var\/folders\/[^/\s"']+\/[^/\s"']+\/T|\/tmp)\/(?:tmp\.)?[A-Za-z0-9._-]*[A-Za-z0-9]{6,}/g;
 // The machine's memory as the pass read it, a process id, and a repo slug hashed from its scratch path.
@@ -227,10 +230,10 @@ const SLACK = 15_000;
 // An elapsed wall time reads as its length in ms, which is matched as a time is, within the slack.
 const UNIT = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1000 };
 const spanMs = (m) => Number(m[1]) * UNIT[m[2]] + Number(m[3]) * UNIT[m[4]];
-const ms = (t) => { const m = SPAN.exec(t); return m ? spanMs(m) : /^\d+$/.test(t) ? Number(t) * (t.length === 10 ? 1000 : 1) : Date.parse(t.replace(/ (\d\d:\d\d) UTC$/, 'T$1Z')); };
+const ms = (t) => { const m = SPAN.exec(t), mm = MINUTES.exec(t); return m ? spanMs(m) : mm ? Number(mm[1]) * UNIT.m : /^\d+$/.test(t) ? Number(t) * (t.length === 10 ? 1000 : 1) : Date.parse(t.replace(/ (\d\d:\d\d) UTC$/, 'T$1Z')); };
 // A time printed to the minute is up to a minute short of the time it stands for, as an elapsed time
 // is up to one of its smaller unit short: a minute for "2h 05m", an hour for "15d 12h".
-const slack = (t) => { const m = SPAN.exec(t); return SLACK + (/ UTC$/.test(t) ? 60_000 : m ? UNIT[m[4]] : 0); };
+const slack = (t) => { const m = SPAN.exec(t); return SLACK + (/ UTC$/.test(t) || MINUTES.test(t) ? 60_000 : m ? UNIT[m[4]] : 0); };
 function timed(text) {
   const times = [];
   return { text, times, shape: text.replace(TIME, (t) => { times.push(t); return '<TIME>'; }) };
@@ -282,7 +285,7 @@ function sameTime(a, b, run, cb, ch) {
   const ta = ms(a), tb = ms(b);
   if (!Number.isFinite(ta) || !Number.isFinite(tb)) return false;
   const within = Math.max(slack(a), slack(b));
-  if (Math.abs(ta - tb) <= within && (!baseCached || (SPAN.test(a) && SPAN.test(b)))) return true;
+  if (Math.abs(ta - tb) <= within && (!baseCached || (isSpan(a) && isSpan(b)))) return true;
   const slotsH = ch.slots(tb);
   for (const s of cb.slots(ta)) if (slotsH.has(s) && Number(s.split(' ')[1]) <= run) return true;
   for (const j of new Set([run, ...cb.around(ta), ...ch.around(tb)])) {

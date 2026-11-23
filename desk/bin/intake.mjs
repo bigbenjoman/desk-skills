@@ -79,6 +79,7 @@ import { readUsage } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
 import { EXIT, designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, labelPark, personStepPark, blockerHold, startWithout, sizePark } from './batch-state.mjs';
 import { backend, supervisorLoaded, supervisorLabel, launchdDomain, systemctl, supervisorMjs } from './run-by.mjs';
+import { blockersOf } from './queue-states.mjs';
 import { FAILED, normaliseRollup, latestPerCheck, loginIn } from './gate.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, promotedEpicBatch, batchEnv } from './batches.mjs';
 import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
@@ -819,7 +820,7 @@ async function joinFeature(key, epic, { by, say = () => {} }) {
   const a = queueCmdIn(batchEnv(b), ['admit', key, '--by', by, '--hold-spine', ...holdArgs(holds)]);
   if (a.status !== 0) return { why: lastLine(a) };
   let held = holds.held;
-  try { held = String(readQueueAt(b.queue).tickets?.[key]?.held_by ?? '').split('|').filter((k) => k && !holds.outside.includes(k)); } catch { /* admitted: say the holds asked for */ }
+  try { held = blockersOf(readQueueAt(b.queue).tickets?.[key]).filter((k) => !holds.outside.includes(k)); } catch { /* admitted: say the holds asked for */ }
   return { batch: b, base, held, outside: holds.outside, merge: holds.merge, gates: holds.gates, free: holds.free, runs: runsOf(a), rec: t.rec, took: logTaken(key, t.rec, b.state, holds.free) };
 }
 

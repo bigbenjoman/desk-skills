@@ -114,6 +114,7 @@ import { readRecord as templatesRecord, check as templatesCheck } from './repo-t
 import { landedPr } from './post-merge.mjs';
 import { promotionPr, readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, EXIT } from './batch-state.mjs';
 import { promotionTitle } from './pass/promotion-pr.mjs';
+import { blockersOf } from './queue-states.mjs';
 import { dayAndTime } from './desk-q-eta.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
@@ -761,7 +762,7 @@ function blockerStates(r, t) {
   const holds = outsideHolds(r, t), rules = holds.some((o) => !o.batch) ? admitRules(r) : null;
   const yours = (o) => (!o.batch && !notAdmittable(o, rules) ? '+yours' : '');
   const out = new Map(holds.map((o) => [o.key, `${o.category}${yours(o)}`]));
-  return blockerList([...new Set([...keysOf(t.held_by), ...out.keys()])].map((b) => [b, r.q.tickets?.[b]?.state ?? out.get(b) ?? 'none']));
+  return blockerList([...new Set([...blockersOf(t), ...out.keys()])].map((b) => [b, r.q.tickets?.[b]?.state ?? out.get(b) ?? 'none']));
 }
 // An outside hold put off as its need without the Jira status of each blocker, which moves in flight.
 const LEGACY_HOLD = /\((?:[^,()]+), (in batch [^()]*|in no batch)\)/g;
@@ -838,7 +839,7 @@ const STEP = 'step:';
 const standingDir = (b) => (b.batch == null ? b.stateDir : resolve(b.stateDir, '..', '..'));
 // The steps in no batch of `q` that hold held ticket `t`'s build, or a triage park's, by `stepOf`
 // (personStepOf). Only those still in its held_by: a person's release leaves held_outside behind (queue.mjs).
-const startSteps = (q, t, stepOf) => (holdsKept(t) ?keysOf(t.held_outside).filter((k) => keysOf(t.held_by).includes(k) && !q?.tickets?.[k] && stepOf?.(t.key, k)) : []);
+const startSteps = (q, t, stepOf) => (holdsKept(t) ? keysOf(t.held_outside).filter((k) => blockersOf(t).includes(k) && !q?.tickets?.[k] && stepOf?.(t.key, k)) : []);
 // A needs row whose hold needs nothing but such a step: the step's item lists it, so it is not one of its own.
 const stepHeld = (b, x) => !heldAsks(x.t) && holdShown(b.q, x.t, b.ctx)?.step != null;
 // Every ticket in any of the repo's batches waiting on the step, read from the queues on disk, so a
@@ -1134,7 +1135,7 @@ function baseRedItems(r) {
 // is one item on this copy, keyed by its ticket. The copy held behind blockers its own batch lacks and
 // the other copy's batch has is the extra one: its item recommends drop, and the other copy lists none.
 // Where neither copy is held so, or both are, each lists the other, drop offered but not recommended.
-const awayHolds = (q, t, there) => (holdsKept(t) ? keysOf(t.held_by).filter((k) => !q?.tickets?.[k] && there?.tickets?.[k]) : []);
+const awayHolds = (q, t, there) => (holdsKept(t) ? blockersOf(t).filter((k) => !q?.tickets?.[k] && there?.tickets?.[k]) : []);
 function duplicateOf(r, t, copies = queuedCopies()) {
   if (!r.q || t.state === 'done' || t.merged_at) return null;
   const o = copiesElsewhere(t.key, r.slug, copies)[0];
@@ -1192,7 +1193,7 @@ function linkItems(r) {
 // names `b`, with every ticket held behind it. A cycle's other side waits behind `t` whatever `t` waits on;
 // a ticket held on another blocker waits on that one, not on this link.
 function linkBehind(r, t, b, kind) {
-  const waits = (holdsKept(t) && keysOf(t.held_by).includes(b)) || keysOf(t.merge_after).includes(b);
+  const waits = (holdsKept(t) && blockersOf(t).includes(b)) || keysOf(t.merge_after).includes(b);
   return waits || kind === 'cycle' ? heldBehindAll([[r, t.key]], waits) : 0;
 }
 // The command that frees ticket `x` from its hold on `b` alone: its other holds, and a park at triage
@@ -1203,7 +1204,7 @@ const shellArg = (s) => (/^[\w.,:=@+-]+$/.test(s) ? s : `'${s}'`);
 // Ticket `x` freed from `b` alone: the holds left (`rest`), whether nothing then holds it (`release`), and
 // its freed_from with `b` added (`freed`).
 const freeFrom = (x, b) => {
-  const rest = keysOf(x.held_by).filter((k) => k !== b);
+  const rest = blockersOf(x).filter((k) => k !== b);
   return { rest, release: !rest.length && !parkedAtTriage(x), freed: [...new Set([...keysOf(x.freed_from), b])].join('|') };
 };
 const freeCommand = (x, b) => {
@@ -1226,7 +1227,7 @@ function linkItem(r, t, b, kind = 'wontDo') {
     const closed = rec?.resolution ? `closed as ${rec.resolution}` : 'closed';
     const inBatch = !!r.q?.tickets?.[b];
     const where = inBatch ? 'is in this batch with its PR unmerged' : 'is in no batch';
-    const held = keysOf(t.held_by).includes(b);
+    const held = blockersOf(t).includes(b);
     // A hold on a ticket in this batch outlives its link, so removing the link alone leaves it held.
     const waits = !held ? 'still links it as a blocker' : inBatch ? 'is held behind it, and nothing releases it' : 'is held behind it, and stays held until the link goes';
     const settle = held && inBatch ? `If not, remove it in Jira, then release ${t.key} from it (${freeCommand(t, b)}), as its hold outlives the link; the next pass that reads it clears this` : fixed;

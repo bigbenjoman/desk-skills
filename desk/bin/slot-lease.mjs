@@ -23,6 +23,8 @@ import { mkdirSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
+import * as A from './admission.mjs';
+import { LOCK_OF, lockWaitingDir } from './admit-ledger.mjs';
 import { alive } from './dir-lock.mjs';
 import { tilde } from './logins.mjs';
 import { EXIT_GAVE_UP, EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, LeaseStoreError, SAMPLE_TIMEOUT_MS, acquire, capacities, kindMode, logEvent, poolOf, sampleLoad, waitFields } from './leases.mjs';
@@ -56,8 +58,7 @@ function isLint(words) {
 // directory, in the lock directory beside the lock files, from when it starts to wait until it is
 // granted or gives up; with-lock.sh keeps it on the lock files, `take` while it waits for a lease. The
 // queue at any moment is the markers whose pid is alive: a waiter killed mid-wait counts no longer.
-const LOCK_OF = Object.freeze({ test: 'test', tsc: 'test', lint: 'test', light: 'light', browser: 'browser' });
-export const waitingDir = (cls, dir = E.lockDir()) => join(dir, `desk-${LOCK_OF[cls] ?? cls}.waiting`);
+export const waitingDir = (cls, dir = E.lockDir()) => lockWaitingDir(cls, dir);
 // How many runs other than `self` wait for `cls`'s lock now.
 function queueDepth(cls, self, dir = waitingDir(cls)) {
   let names = [];
@@ -87,6 +88,27 @@ function note(rest) {
   return 0;
 }
 
+// Headroom admission's look at a run waiting for a slot lease, with lock-admission on (admission.mjs
+// grantRun): every DESK_ADMIT_RECHECK_S seconds (10) at most, a test, tsc or light run asks to be let
+// in above its pool's floor, which grows the pool capacities() reports by one while it runs. It prints
+// the waiting line grant gives it as grant says. -> look(), which returns grant's key, or null with
+// admission off.
+function headroom(cls, pid, say) {
+  const every = /^[1-9]\d*$/.test(process.env.DESK_ADMIT_RECHECK_S ?? '') ? Number(process.env.DESK_ADMIT_RECHECK_S) : 10;
+  const judged = ['test', 'tsc', 'light'].includes(cls);
+  let last = null, said = null, saidAt = null, next = 0;
+  return () => {
+    if (!judged || Date.now() < next) return last;
+    next = Date.now() + every * 1000;
+    let r = null;
+    try { r = A.grantRun(E, { cls, pid, last, said, saidAt }); } catch { /* no room: the floor alone */ }
+    if (!r) return null;
+    last = r.key;
+    if (r.say) { say(`with-lock.sh: ${r.text}`); said = r.key; saidAt = r.at; }
+    return last;
+  };
+}
+
 // Takes the slot for `words` run by lock class `cls`, owned by `pid`, whose wrapper has already
 // waited `waited` seconds on the lock files. Its grant, refuse or gave-up line carries its wait; a
 // wait here is queued and logged as it starts. -> the exit code.
@@ -97,17 +119,21 @@ function take({ cls, pid, timeout, words, waited = 0 }) {
   const label = s.length > 160 ? `${s.slice(0, 159)}…` : s;
   const t0 = Date.now();
   const sofar = () => waited + Math.round((Date.now() - t0) / 1000);
+  const look = headroom(cls, pid, say);
+  let waiting = false;
   try {
     const caps = capacities(E);
     const p = poolOf('slot', key, caps);
     const what = p.pool === 'slot:heavy' ? `the heavy pool (${p.capacity} slot${p.capacity === 1 ? '' : 's'})` : p.one;
-    // Shadow grants every try, so it never waits, whatever `wait` says.
+    // Shadow grants every try, so it never waits, whatever `wait` says. While a run waits, each try
+    // reads the pools afresh, after its look at headroom.
     const r = acquire({ kind: 'slot', key, units: 1, ttl: ttl(), label, pid, wait: timeout ?? Infinity }, {
-      env: E, caps, poll: POLL_MS,
+      env: E, caps: () => { if (waiting) look(); return capacities(E); }, poll: POLL_MS,
       onWait: (why) => {
-        say(`with-lock.sh: waiting for ${what}: ${why}`);
+        waiting = true;
         enqueue(key, pid);
         logEvent({ event: 'queued', kind: 'slot', key, label, ...waitNow(key, pid, sofar()) });
+        if (look() == null) say(`with-lock.sh: waiting for ${what}: ${why}`);
       },
       note: () => { dequeue(key, pid); return waitNow(key, pid, sofar()); },
     });

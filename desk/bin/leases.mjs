@@ -37,7 +37,8 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lock, sleepSync, unlock, writeJsonAtomic } from './dir-lock.mjs';
-import { DEFAULT_LEASE_MODE, LEASE_KINDS, leaseKindsProblem, parseLeaseKinds, parseMeminfo } from './machine.mjs';
+import { DEFAULT_LEASE_MODE, LEASE_KINDS, admissionRows, leaseKindsProblem, parseLeaseKinds, parseMeminfo, profileValue } from './machine.mjs';
+import { liveAdmits, poolRows, readLedger, startStamp } from './admit-ledger.mjs';
 
 const HOME = process.env.HOME || homedir();
 const expandHome = (p) => p.replace(/^~(?=\/|$)/, HOME);
@@ -65,13 +66,36 @@ export const storeFile = (dir = leaseDir()) => join(dir, 'leases.json');
 export const logFile = (dir = leaseDir()) => join(dir, 'leases.log.jsonl');
 
 const whole = (v) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) > 0 ? Number(v) : null);
-// The pools' sizes: the heavy slots as the test lock has them (testLockSlots), preview builds per
-// Vercel team from preview-build-slots, memory from memory-ceiling-gb. `env` is desk-env's exports.
-export const capacities = (env) => ({
-  heavy: env.testLockSlots(),
-  previewBuild: whole(env.machineValue('preview-build-slots')) ?? 1,
-  mem: whole(env.machineValue('memory-ceiling-gb')),
-});
+// The heavy and light slot pools, each { floor, ceiling, current }, as admit-ledger.mjs poolRows gives
+// their floors and ceilings. With headroom admission on (the machine profile's lock-admission row),
+// the current size is the floor plus the runs admission let in above it that still run (the ledger,
+// a run's process start time checked where `env` has psRows), never past the ceiling; otherwise each
+// pool is its floor alone. `env` is desk-env's exports, or machineValue and testLockSlots.
+export function slotPools(env) {
+  // The rows as the profile holds them, as admission.mjs reads them: a TODO is a row that does not read.
+  const get = env.machineProfile ? (k) => profileValue(env.machineProfile(), k) : (k) => env.machineValue(k);
+  const admission = admissionRows(get, { testSlots: env.testLockSlots() });
+  const entries = admission.mode === 'on' ? readLedger(env.lockDir?.() ?? process.env.DESK_LOCK_DIR ?? '/tmp') : [];
+  let starts = null;
+  // ps unreadable: each admit counts by its pid alone, so a pool read never fails on it.
+  if (env.psRows && entries.length) try { starts = ledgerStarts(entries.map((e) => e.pid), env.psRows); } catch { /* as above */ }
+  const admits = liveAdmits(entries, { starts });
+  const pool = (p) => { const { floor, ceiling } = poolRows(p, admission); return { floor, ceiling, current: Math.min(ceiling, floor + admits[p]) }; };
+  return { heavy: pool('heavy'), light: pool('light') };
+}
+// Each pid's process start time as the ledger records it (admit-ledger.mjs startStamp): Map pid -> stamp.
+export const ledgerStarts = (pids, psRows) => new Map([...startTimes(pids, psRows)].map(([p, s]) => [p, startStamp(s)]));
+// The pools' sizes: the heavy and light slots' current sizes (slotPools), preview builds per Vercel
+// team from preview-build-slots, memory from memory-ceiling-gb. `env` is desk-env's exports.
+export const capacities = (env) => {
+  const pools = slotPools(env);
+  return {
+    heavy: pools.heavy.current,
+    light: pools.light.current,
+    previewBuild: whole(env.machineValue('preview-build-slots')) ?? 1,
+    mem: whole(env.machineValue('memory-ceiling-gb')),
+  };
+};
 // The same for a kind that is off, which takes nothing: only the key's form is checked, so a mem
 // lease is not refused for a memory ceiling it would never draw on.
 const offCaps = (caps) => ({ ...caps, mem: caps.mem ?? Infinity });
@@ -99,9 +123,8 @@ export function poolOf(kind, key, caps) {
     case 'slot': {
       const p = SLOTS[k];
       if (!p) throw usage(`a slot lease's key is one of ${Object.keys(SLOTS).join(', ')}, not "${k}"`);
-      return p === 'heavy'
-        ? { pool: 'slot:heavy', key: k, capacity: caps.heavy, one: 'the heavy slot', many: 'heavy slots' }
-        : { pool: `slot:${p}`, key: k, capacity: 1, one: `the ${p} slot`, many: `${p} slots` };
+      if (p === 'heavy') return { pool: 'slot:heavy', key: k, capacity: caps.heavy, one: 'the heavy slot', many: 'heavy slots' };
+      return { pool: `slot:${p}`, key: k, capacity: p === 'light' ? caps.light ?? 1 : 1, one: `the ${p} slot`, many: `${p} slots` };
     }
     case 'preview-build':
       return { pool: `preview-build:${k}`, key: k, capacity: caps.previewBuild, one: `the preview-build slot for ${k}`, many: `preview-build slots for ${k}` };
@@ -375,11 +398,14 @@ export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env),
 
 // Takes a lease, waiting up to `wait` seconds for it (Infinity: until it is granted), trying every
 // `poll` ms and calling `onWait(why)` at the first refusal it waits past. With the kind off, takes nothing.
-// `note` is place()'s. -> { code, lease?, why? }, `why` beside a lease saying what shadow let through.
+// `caps` is capacities(), or a function giving them afresh for each try (a pool headroom admission
+// grows while the run waits). `note` is place()'s. -> { code, lease?, why? }, `why` beside a lease
+// saying what shadow let through.
 export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now, poll = POLL_MS, onWait = null, note = null }) {
+  const capsNow = typeof caps === 'function' ? caps : () => caps;
   const { mode } = kindMode(req.kind, env);
   if (mode === 'off') {
-    poolOf(req.kind, req.key, offCaps(caps));
+    poolOf(req.kind, req.key, offCaps(capsNow()));
     return { code: EXIT_OK, why: `the ${req.kind} lease kind is off: nothing taken` };
   }
   const wait = req.wait ?? 0;
@@ -387,7 +413,7 @@ export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), no
   let waiting = false;
   for (;;) {
     const final = now() >= until;
-    const r = tryAcquire({ ...req, final, waited: wait }, { env, dir, caps, now, mode, note });
+    const r = tryAcquire({ ...req, final, waited: wait }, { env, dir, caps: capsNow(), now, mode, note });
     // A renewed unit says so (`renewed …` on stderr), so a caller whose push fails keeps a build's unit.
     if (r.lease) return { code: EXIT_OK, lease: r.lease, ...(r.shadow ? { why: `shadow: granted, but on would refuse: ${r.shadow}` } : r.renewed ? { why: `renewed ${r.lease.kind} ${r.lease.key} (lease ${r.lease.id}), which the label ${r.lease.label} already held` } : {}) };
     if (final) return wait ? { code: EXIT_GAVE_UP, why: `gave up after ${wait}s waiting: ${r.refused}` } : { code: EXIT_REFUSED, why: `refused: ${r.refused}` };

@@ -69,6 +69,7 @@ import { liveBaseRed, readBaseRed, baseRedPath, batchLine, repairTicket, repairT
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
+import { blockersOf } from './queue-states.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
 import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
 import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
@@ -92,7 +93,7 @@ import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
-  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD, failedField } from './pass/shared.mjs';
+  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideTicketless } from './pass/ticketless-prs.mjs';
 import { decideDeadlines } from './pass/deadlines.mjs';
@@ -1016,7 +1017,7 @@ const ADVANCE_HANDLERS = {
   'worker-head': (a, s) => recordWorkerHead(s.t),
   // The branch and author of the PR a worker's DONE marker names, or null when GitHub cannot be read.
   'pr-owner': (a) => {
-    try { const v = JSON.parse(sh('gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'headRefName,author'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); return { pr: a.pr, branch: v?.headRefName ?? null, author: v?.author?.login ?? null }; } catch { return null; }
+    try { return prOwner(a.pr); } catch { return null; }
   },
   done: (a, s) => recordDone(s.t, { log: s.log.path, h: s.log.h, pr: a.pr, summary: a.summary, line: a.line, sets: a.sets }),
   'settle-links': (a, s) => settleLinks(s.t, s.log.path),
@@ -1301,8 +1302,16 @@ function ownMergedPr(t) {
   const known = [...new Set([t.result?.pr, t.draft_pr].filter((n) => n != null).map(Number))];
   for (const n of known) if (clearsRead.pr(n).state === 'MERGED') return n;
   if (known.length || !t.branch) return null;
-  const n = readOrThrow(`gh pr list --head ${t.branch}`, 'gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch, '--state', 'merged', '--json', 'number', '-q', '.[0].number']);
-  return /^\d+$/.test(n) ? Number(n) : null;
+  // One found on its branch is its own only when desk's account opened it (shared.mjs notOwnPr): a
+  // collaborator's on the same branch is another's PR, which the clears step settles as done by it.
+  const found = JSON.parse(readOrThrow(`gh pr list --head ${t.branch}`, 'gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch, '--state', 'merged', '--json', 'number,author', '-q', '.[0]']) || 'null');
+  if (!/^\d+$/.test(String(found?.number ?? ''))) return null;
+  return notOwnPr(t, { pr: found.number, branch: t.branch, author: found.author?.login ?? null }, conflictHandle) ? null : Number(found.number);
+}
+// The branch and author of PR n, as notOwnPr reads them. Throws where GitHub cannot be read.
+function prOwner(n) {
+  const v = JSON.parse(readOrThrow(`gh pr view ${n}`, 'gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'headRefName,author']));
+  return { pr: n, branch: v?.headRefName ?? null, author: v?.author?.login ?? null };
 }
 // A queued ticket shipped outside its worker: a session may merge a PR for the same key from a branch
 // of its own, or move the ticket to Done. Before a spawn, resume or handoff: { pr, branch } for the
@@ -1384,6 +1393,24 @@ const CLEARS_HANDLERS = {
   },
   'own-merged': (a, s) => { try { return { pr: ownMergedPr(s.tickets[a.key]) }; } catch (e) { return { error: e.message }; } },
   'tail-after-merge': (a, s) => tailAfterMerge(s.tickets[a.key]),
+  'other-merged': (a, s) => {
+    const t = s.tickets[a.key];
+    try {
+      const why = notOwnPr(t, prOwner(a.pr), conflictHandle);
+      if (!why || t.result?.pr != null || t.draft_pr != null) return null;
+      // Commits past the base in its worktree are its own work, which #pr only unblocks.
+      if (t.worktree && existsSync(t.worktree)) {
+        const n = shOut('git', ['-C', t.worktree, 'rev-list', '--count', `origin/${DEFAULT_BRANCH}..HEAD`]);
+        if (!n.ok) return { error: `its worktree could not be read (${n.out.split('\n').pop()})` };
+        if (Number(n.out) > 0) return null;
+      }
+      return { why };
+    } catch (e) { return { error: e.message }; }
+  },
+  'drop-worktree': (a) => {
+    const r = qTry(['drop-worktree', a.key]);
+    return r.ok ? (r.out.trim() || null) : `its worktree was left (${r.out.split('\n').pop()})`;
+  },
   write: (a) => { const before = report.failed.length; q('set', a.key, ...a.fields); return report.failed.length === before; },
   requeue: (a) => qRun(['requeue', a.key]),
   'lift-put-off': (a) => clearPutOff(a.question, STATE),
@@ -1732,7 +1759,7 @@ const linkLines = [];
     const view = queue();
     // Acts on ticket `t`'s links `now`, read from its triage record `rec`.
     const act = (key, t, rec, now) => {
-      const by = keysOf(t.held_by);
+      const by = blockersOf(t);
       const was = seen(t) ?? record.get(key);
       const added = now.filter((k) => !was.includes(k));
       if (!notStarted(t)) {
@@ -1796,7 +1823,7 @@ const linkLines = [];
   const qR = queue();
   for (const t of Object.values(qR.tickets)) {
     const was = keysOf(t.dropped_link);
-    const gone = holdsKept(t) ? keysOf(t.held_by).filter((k) => !qR.tickets[k] && !keysOf(t.held_outside).includes(k)) : [];
+    const gone = holdsKept(t) ? blockersOf(t).filter((k) => !qR.tickets[k] && !keysOf(t.held_outside).includes(k)) : [];
     if (gone.join('|') !== was.join('|')) {
       const fresh = gone.filter((k) => !was.includes(k));
       if (fresh.length) linkLines.push(`triage: ${t.key} is held behind ${fresh.join(', ')}, no longer in this batch, so nothing releases it: is the link still right? Raised once, in needs-you`);
@@ -3492,7 +3519,7 @@ function handAway(t, p) {
   // This copy would refuse that admit until it is dropped, unless the admit names this repo as handing it over.
   const admit = `DESK_ADMIT_FROM=${E.currentRepo().slug ?? ''} node intake.mjs admit ${t.key}`;
   if (p.unknown) return park(`${p.why}, so no worker was spawned: which repo does it run in? Admit it in that repo's checkout with ${admit}, then queue.mjs drop ${t.key} here`);
-  const behind = Object.values(queue().tickets).filter((o) => o.key !== t.key && keysOf(o.held_by).includes(t.key)).map((o) => o.key);
+  const behind = Object.values(queue().tickets).filter((o) => o.key !== t.key && blockersOf(o).includes(t.key)).map((o) => o.key);
   if (behind.length) return park(`${p.why}, so no worker was spawned, but ${behind.join(', ')} ${behind.length === 1 ? 'is' : 'are'} held behind it here: release or drop ${behind.length === 1 ? 'it' : 'them'}, then admit ${t.key} in ${p.ghRepo}'s checkout with ${admit} and queue.mjs drop ${t.key} here`);
   if (DRY) {
     report.waiting.push(`${t.key}: ${p.why}: would be admitted into ${p.ghRepo} and taken out of this queue (dry run)`);
@@ -3915,7 +3942,7 @@ runSteps({
     const rec = triageRec(t.key);
     const before = keysOf(t.outside_admit_tried);
     const stepOf = (k) => personStep((Array.isArray(rec?.blockers) ? rec.blockers : []).find((b) => b?.key === k), rec, stepLabels, inputLabels);
-    const due = (t.outside_blockers ?? []).map((b) => b?.key).filter((k) => k && keysOf(t.held_outside).includes(k) && keysOf(t.held_by).includes(k)
+    const due = (t.outside_blockers ?? []).map((b) => b?.key).filter((k) => k && keysOf(t.held_outside).includes(k) && blockersOf(t).includes(k)
       && !qA.tickets[k] && !before.includes(k) && !tried.has(k) && !!project && String(k).replace(/-\d+$/, '') === project && !stepOf(k));
     if (!due.length || heldPutOff({ slug: REPO_SLUG, stateDir: STATE, q: qA }, t)) continue;
     const now = due.slice(0, budget);
@@ -5012,7 +5039,7 @@ function applyFix(t, n, head, c) {
   if (leverFor('failure-class', t) && WAITING_CLASSES.includes(fc.class)) {
     report.waiting.push(`${t.key}: WAITING — PR #${n}: no fix try for ${c.fix.what}, classed ${fc.class}: ${fc.waiting}`);
     // The wait goes in the run record, where the stale-wait trip reads it (levers-trips.mjs).
-    if (!DRY) recordWait(STATE, t.key, { class: fc.class, waiting: fc.waiting, blockers: [...new Set(String(t.held_by ?? '').split('|').filter(Boolean))], pr: n, head }, PASS_AT);
+    if (!DRY) recordWait(STATE, t.key, { class: fc.class, waiting: fc.waiting, blockers: [...new Set(blockersOf(t))], pr: n, head }, PASS_AT);
     return;
   }
   const f = { ...c.fix, class: fc.class, class_rule: fc.class_rule };
@@ -5129,15 +5156,15 @@ const readPr = (n) => {
   return prStates[n];
 };
 // A ticket parked at triage for its own reason that keeps holds in held_by beside its park.
-const parkHeld = Object.values(qNow.tickets).filter((t) => triagePark(t) && t.held_by);
+const parkHeld = Object.values(qNow.tickets).filter((t) => triagePark(t) && blockersOf(t).length);
 for (const t of [...heldNow, ...parkHeld]) {
-  for (const p of String(t.held_by ?? '').split('|').filter(Boolean)) {
+  for (const p of blockersOf(t)) {
     const n = qNow.tickets[p]?.state === 'done' ? qNow.tickets[p]?.result?.pr : null;
     if (n != null) readPr(n);
   }
 }
 const prState = (n) => prStates[n] ?? null;
-const predsOf = (t) => String(t.held_by ?? '').split('|').filter(Boolean);
+const predsOf = (t) => blockersOf(t);
 const mergedHere = (p) => qNow.tickets[p]?.state === 'done' && prState(qNow.tickets[p]?.result?.pr) === 'MERGED';
 const releaseDue = heldNow.filter((t) => predsOf(t).length && predsOf(t).every(mergedHere));
 // Held behind a spine the person has still to approve (or send back) waits on that, not on a merge.

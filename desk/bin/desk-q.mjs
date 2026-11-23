@@ -46,6 +46,7 @@ import { fileURLToPath } from 'node:url';
 import { repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, unpromotedHolds, promotionWords, openUnknowns } from './batch-state.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
+import { blockersOf } from './queue-states.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, SLOTS, forceReleaseCommand, kindMode, overdue, peek, readLog, trialOf } from './leases.mjs';
@@ -235,10 +236,10 @@ export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
   if (day) return { k: 'waiting', text: `held until ${day.until}, by its label ${day.label}` };
   // Neither the pass nor the merge driver lets a ticket start whose hold names no blocker.
   if (stoppedHold(t)) return { k: 'needs', text: 'its worker was stopped: let it start', act: releaseCmd(t.key) };
-  if (!keysOf(t.held_by).length) return { k: 'needs', text: 'held behind no recorded blocker: let it start', act: releaseCmd(t.key) };
+  if (!blockersOf(t).length) return { k: 'needs', text: 'held behind no recorded blocker: let it start', act: releaseCmd(t.key) };
   const open = unmergedBlockers(q, t);
   if (!open.length) {
-    if (!keysOf(t.held_by).every((p) => prStatusOf(q.tickets?.[p])?.state === 'MERGED')) return { k: 'waiting', text: 'behind PRs the next pass reads' };
+    if (!blockersOf(t).every((p) => prStatusOf(q.tickets?.[p])?.state === 'MERGED')) return { k: 'waiting', text: 'behind PRs the next pass reads' };
     return ctx.releases ? { k: 'waiting', text: 'starts at the next pass' } : { k: 'needs', text: 'every blocker merged: let it start', act: releaseCmd(t.key) };
   }
   seen.add(t.key);
@@ -628,7 +629,7 @@ const fixOn = (t) => (t.fix && !t.fix.finished && t.state !== 'done' ? t.fix : n
 
 // A hold's blockers less those done with a PR that is merged. A PR the pass has not read yet is taken
 // as merged or about to be; one it recorded open (landing) or closed still holds.
-export const unmergedBlockers = (q, t) => String(t.held_by ?? '').split('|').filter(Boolean)
+export const unmergedBlockers = (q, t) => blockersOf(t)
   .filter((p) => { const pt = q.tickets?.[p]; return !(pt?.state === 'done' && pt.result?.pr != null && !['OPEN', 'CLOSED'].includes(prStatusOf(pt)?.state)); });
 
 // The tickets whose triage is running for a batch, or just finished with the admit to follow: triage.sh
@@ -1043,7 +1044,7 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   // batch waits until a pass lifts it, so neither is run forward; nor is anything held behind them.
   const behindYou = (t) => isHeld(t) && unmergedBlockers(r.q, t).some((b) => blockerHold(r.q, t.key, b, r.ctx, new Set([t.key])).you);
   const heldOutside = (t) => isHeld(t) && keysOf(t.held_outside).some((b) => !r.q.tickets?.[b]);
-  const rows = r.rows.map(({ t, k, st }) => ({ key: t.key, k: k === 'waiting' && (heldOutside(t) || behindYou(t)) ? 'stuck' : k, size: sizeIn(triageOf(r, t.key)), stage: st.stage, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
+  const rows = r.rows.map(({ t, k, st }) => ({ key: t.key, k: k === 'waiting' && (heldOutside(t) || behindYou(t)) ? 'stuck' : k, size: sizeIn(triageOf(r, t.key)), stage: st.stage, held: blockersOf(t), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
   // An epic with nothing left to run has shipped, so it is not run forward.
   const open = Object.fromEntries(Object.values(ep.epics).filter((e) => e.queued || e.missing > 0).map((e) => [e.key, { missing: e.missing }]));
   const id = JSON.stringify([r.id, at, checkin, r.live, r.workers, rows, open, ep.unread, history.map((l) => [l.key, l.size, l.hours])]);
@@ -1110,7 +1111,7 @@ const typical = (F, key) => quantile(durationsFor(F.d, F.sizes[key]).v, 0.5).toF
 const listed = (keys) => keys.join(', ');
 
 // The blockers in this queue that the forecast could not date.
-const undatedBlockers = (r, F, t) => String(t.held_by ?? '').split('|').filter((b) => r.q.tickets[b] && r.rows.some((y) => y.t.key === b) && !etaOf(F, b));
+const undatedBlockers = (r, F, t) => blockersOf(t).filter((b) => r.q.tickets[b] && r.rows.some((y) => y.t.key === b) && !etaOf(F, b));
 
 // Why a ticket has no date, short enough for a row.
 function undatedWhy(r, F, x) {
@@ -3581,7 +3582,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   // A blocker it was admitted behind in no batch (held_outside) is in held_by too: it is listed once,
   // outside, with its Jira status, or as Done and not yet on the base.
   const away = keysOf(t.held_outside).filter((b) => !r.q.tickets[b]);
-  const held = keysOf(t.held_by).filter((b) => !away.includes(b));
+  const held = blockersOf(t).filter((b) => !away.includes(b));
   const jiraCat = (b) => r.ctx.blockerCategory(t.key, b);
   const outside = [...outsideOf(t), ...away.filter((b) => !outsideOf(t).some((o) => o.key === b))
     .map((b) => ({ key: b, category: jiraCat(b) === 'done' ? `Done, not yet on ${r.ctx.base}` : jiraCat(b) ?? 'outside this batch' }))];
@@ -3615,7 +3616,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
     out.push('');
   }
   // The tickets waiting on this one, each with its state, so acting here shows what it unblocks.
-  const holds = r.rows.filter((x) => x.t.key !== key && keysOf(x.t.held_by).includes(key));
+  const holds = r.rows.filter((x) => x.t.key !== key && blockersOf(x.t).includes(key));
   if (holds.length) {
     const each = holds.flatMap((x, i) => [...(i ? [[', ', null]] : []), [`${LABEL[x.k][0]} ${x.t.key}`, STATE_SGR[x.k] ?? null], [` (${LABEL[x.k].slice(2)})`, DIM]]);
     out.push(segLine([['Holding up', DIM], ['  ', null], ...each, [` ${holds.length === 1 ? 'waits' : 'wait'} on this ticket`, null]]), '');

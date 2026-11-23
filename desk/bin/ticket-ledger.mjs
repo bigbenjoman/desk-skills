@@ -17,8 +17,8 @@ import { basename, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { lock, unlock } from './dir-lock.mjs';
-import { STATES, FINISHED, PARK_KINDS } from './queue-states.mjs';
-import { batchFields, keys as keysOf, same } from './queue-store.mjs';
+import { STATES, FINISHED, PARK_KINDS, blockersOf } from './queue-states.mjs';
+import { batchFields, same } from './queue-store.mjs';
 
 export const SNAPSHOT_EVERY = 1000;
 export const LOCK_WAIT_MS = 2000;
@@ -148,7 +148,7 @@ function overlay(t, fields) {
   Object.assign(t.fields, f);
   if (STATES.includes(f.state)) t.state = f.state;
   if ('park' in f) t.park = f.park ?? null;
-  if ('held_by' in f) t.holds = keysOf(f.held_by);
+  if ('held_by' in f || 'holds' in f) t.holds = blockersOf(f);
   if ('result' in f) t.pr = f.result?.pr ?? null;
   if ('merge' in f) t.merge = f.merge ?? null;
   if (ANSWERED in f) t.answered = Array.isArray(f[ANSWERED]) ? [...f[ANSWERED]] : [];
@@ -193,8 +193,9 @@ function apply(state, ev) {
     case 'spawned': t.spawn = { ...d }; t.park = null; break;
     case 'parked': t.park = parkOf(d); break;
     case 'unparked': case 'requeued': t.park = null; break;
-    case 'held': t.holds = [...new Set([...t.holds, ...d.by])]; break;
-    case 'released': t.holds = t.holds.filter((k) => k !== d.by); break;
+    // queue.json keeps held_by once a hold is set, as null when every blocker is released.
+    case 'held': t.holds = [...new Set([...t.holds, ...d.by])]; t.fields.held_by = null; break;
+    case 'released': t.holds = t.holds.filter((k) => k !== d.by); t.fields.held_by = null; break;
     // queue.json keeps the field once a wait has started, as null when none is open.
     case 'waiting': t.waits[d.on] = { ...d }; t.fields[WAITS] = null; break;
     case 'waited': delete t.waits[d.on]; t.fields[WAITS] = null; break;
@@ -203,7 +204,8 @@ function apply(state, ev) {
     case 'automerge_disarmed': t.automerge = null; break;
     case 'merged': t.merge = { ...d, at: ev.at }; t.automerge = null; break;
     case 'finished': t.park = null; if (d.pr != null) t.pr = d.pr; break;
-    case 'moved': t.batch = d.to; break;
+    // A ticket that leaves every batch leaves its blockers there: added again, it is held by what then holds it.
+    case 'moved': t.batch = d.to; if (d.to == null) { t.holds = []; delete t.fields.held_by; } break;
     case 'archived': t.archived = true; break;
     default: break;
   }
