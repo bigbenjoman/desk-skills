@@ -72,7 +72,7 @@ import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter } from './queue-writer.mjs';
-import { archivedOf, keepPrs, mergedPrs } from './queue-store.mjs';
+import { archivedOf, keepPrs, mergedPrs, recordedPr } from './queue-store.mjs';
 import { runAudits, endedFromExit, auditsRunning } from './levers-audit.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV } from './queue-ledger.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
@@ -1236,8 +1236,6 @@ function ownMergedPr(t) {
 // judged by the url GitHub gives its PRs (pass/pr-status.mjs repoOfPr), not the remote's spelling,
 // which a rename leaves behind: the search's own urls, else that spelling where it found nothing.
 const hereRepo = () => repoOfPr(`https://github.com/${GH_REPO}/pull/`);
-// A recorded PR as { pr, url }: url is the one its PR status gave it, where the status names it, else null.
-const recordedPr = (t, n) => ({ pr: Number(n), url: t.pr_status?.pr != null && Number(t.pr_status.pr) === Number(n) ? t.pr_status.url ?? null : null });
 const foreign = (x, here) => !!x.url && repoOfPr(x.url) !== here;
 const foreignPr = (t, n, here) => n != null && foreign(recordedPr(t, n), here);
 // The pairs a spawn writes beside result=null: every PR of its own it has recorded since its first merge,
