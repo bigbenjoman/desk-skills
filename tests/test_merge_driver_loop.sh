@@ -123,6 +123,24 @@ check "DS-714 AC5: a lane C park held behind a merged blocker is not released to
   '[ "$(qf T-16 .state)" = parked ] && [[ "$(qf T-16 .park.question)" == "lane C"* ]] && [ "$(qf T-16 .held_by)" = T-11 ] && ! echo "$out" | grep -q "RELEASED T-16"'
 q drop T-16
 q drop T-11; q drop T-12; q drop T-13; q drop T-14
+
+# ---- #1298: a ticket merged, then sent back for more and done again on a new PR, still open, ----------
+# is not merged: neither its kept merged_at nor its old merged PR, which still names it, releases T-42.
+jq --arg s "$SHA4" '."441" = { head: "fix/T-41", base: "main", sha: $s, state: "merged", draft: false, checks: [["test", "SUCCESS"]] }
+  | ."442" = { head: "fix/T-41", base: "main", sha: $s, state: "open", draft: true, checks: [["test", "SUCCESS"]] }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+q add T-41 Task A; q set T-41 state=done branch=fix/T-41 result.pr=441 pr_status.pr=441 pr_status.state=MERGED; q merged T-41 2026-11-02T02:20:59.000Z
+q requeue T-41; q set T-41 state=done result.pr=442
+q add T-42 Task A; q set T-42 state=triaged branch=fix/T-42; q hold T-42 T-41
+loop
+check "#1298 a ticket done again on a new open PR after its earlier merge does not release what is held behind it" \
+  '[ "$(qf T-42 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-42"'
+q requeue T-42
+check "#1298 requeued itself meanwhile, it goes back behind that ticket, not to a worker" '[ "$(qf T-42 .state)" = parked ] && [ "$(qf T-42 .held_by)" = T-41 ]'
+jq '."442".state = "merged" | ."442".draft = false' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+loop
+check "#1298 once that new PR merges, it does" '[ "$(qf T-42 .state)" = triaged ] && echo "$out" | grep -q "merged: T-41#442 -> RELEASED T-42"'
+q drop T-41; q drop T-42
+
 check "AC3: the red PR is never merged"                              '! grep -q "^104 " "$T/merges.log" && echo "$out" | grep -q "#104 red"'
 check "AC5: every merge went into the default branch"                '[ "$(cut -d" " -f2 "$T/merges.log" | sort -u)" = main ]'
 check "AC5: a PR on another base is never the batch'\''s"            '! grep -q "^105 " "$T/merges.log" && ! echo "$out" | grep -q "#105"'
