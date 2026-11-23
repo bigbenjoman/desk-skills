@@ -5168,7 +5168,7 @@ const prState = (n) => prStates[n] ?? null;
 const predsOf = (t) => blockersOf(t);
 // One done by another's PR (done_by) has no result.pr of its own: that PR's merge is recorded as its
 // merged_at. Any other merged_at may be an earlier round's, so its own PR is read.
-const mergedHere = (p) => { const x = qNow.tickets[p]; return x?.state === 'done' && ((x.done_by?.pr != null && !!x.merged_at) || prState(x.result?.pr) === 'MERGED'); };
+const mergedHere = (p) => { const x = qNow.tickets[p]; return x?.state === 'done' && ((x.done_by?.pr != null && x.result?.pr == null && !!x.merged_at) || prState(x.result?.pr) === 'MERGED'); };
 const releaseDue = heldNow.filter((t) => predsOf(t).length && predsOf(t).every(mergedHere));
 // Held behind a spine the person has still to approve (or send back) waits on that, not on a merge.
 const spinesOf = (t) => predsOf(t).filter((p) => spinePark(qNow.tickets[p]));
