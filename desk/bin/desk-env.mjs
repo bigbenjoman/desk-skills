@@ -56,7 +56,8 @@
 //   node desk-env.mjs merge-grant             print config|batch|none, a tab, and why (mergeGrant); exit 1
 //                                             when nothing may merge this batch's green PRs
 //   node desk-env.mjs model finder|text       print §3b Worker models' finder or text model, `none` if
-//                                             unset (no override), exit 4 if the row is malformed
+//                                             unset (no override), exit 4 if the row is malformed; with
+//                                             the finder-model lever on, finder prints its on-arm alias
 //   node desk-env.mjs effort <start>          print the effort a worker session starting there runs at
 //                                             (`default` with the lever off), exit 4 if §3b Worker
 //                                             effort is malformed
@@ -186,7 +187,7 @@ import { jobKeyedPremerge } from './workflow-yaml.mjs';
 import { KNOWN_UNTRACKED, treeStatus } from './untracked.mjs';
 import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, parseServicePort, SERVICE_PORT_FORM,
-  permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, leverRow, leverWords, parseLevers,
+  permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, FINDER_MODEL_LEVER, leverRow, leverWords, parseLevers,
   EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS, CODEX_DEFAULTS, parseCodexReview, spawnGateOf,
   fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, checkRow, DECLARED_ROWS, readsAsList, forcedRows,
 } from './config-schema.mjs';
@@ -297,7 +298,7 @@ export { PERMISSION_KEYS, CONFIG_ROWS };
 // The row grammars live in the schema as its types; each is re-exported here under its own name.
 export {
   DeskConfigError, isNone, parseCommandItem, parseServicePort, permValues, parseBudget, EXTRA_MODELS, parseWorkerModels,
-  parseWorkerLocation, LEVERS, LEVERS_AUTO, leverRow, parseLevers, EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS,
+  parseWorkerLocation, LEVERS, LEVERS_AUTO, FINDER_MODEL_LEVER, leverRow, parseLevers, EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS,
   CODEX_DEFAULTS, parseCodexReview,
 };
 
@@ -1002,6 +1003,9 @@ export function levers(env = process.env) {
   return parseLevers(env.DESK_LEVERS != null ? [env.DESK_LEVERS] : leverItems());
 }
 export const leverOn = (name, l = levers()) => l.on.includes(name);
+// The model desk-review's Claude finder seats run on (`desk-env model finder`): the finder-model
+// lever's on-arm alias with the lever on, else §3b Worker models' `finder=`, null when unset.
+export const finderModel = (l = levers()) => (leverOn('finder-model', l) ? FINDER_MODEL_LEVER : workerModels().finder ?? null);
 
 // Where each lever's state comes from: `pinned` (named in the row, or in this ticket's pin), `auto`
 // (the row reads `auto` and does not name it) or `off`. `from` is `pin` inside a pinned worker, else
@@ -2596,9 +2600,10 @@ if (isMain) {
         break;
       case 'model': {
         // §3b Worker models' finder or text model; `none` when it is unset (no override). Exits 0
-        // either way, so a worker reads the answer without a compound `; echo $?`.
+        // either way, so a worker reads the answer without a compound `; echo $?`. The finder model
+        // is the finder-model lever's on-arm alias while the lever is on (finderModel).
         if (!EXTRA_MODELS.includes(args[0])) throw new Error(`usage: desk-env.mjs model ${EXTRA_MODELS.join('|')}`);
-        console.log(workerModels()[args[0]] || 'none');
+        console.log((args[0] === 'finder' ? finderModel() : workerModels()[args[0]]) || 'none');
         break;
       }
       case 'effort':

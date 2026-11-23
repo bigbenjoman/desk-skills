@@ -105,7 +105,7 @@ t('AC14 the evidence file holds every row the evaluation read, with the excluded
 t('AC14 the row holds the evidence file\'s sha256', a1.evidence_sha256, createHash('sha256').update(readFileSync(join(stateOf(A1), a1.evidence_file))).digest('hex'));
 t('AC14 the transition cites the same evaluation and file', [e.eval_id, e.evidence_file, e.evidence_sha256], [a1.eval_id, a1.evidence_file, a1.evidence_sha256]);
 const a1all = evalsOf(A1);
-t('AC13 every trialled lever gets one row, holds included', a1all.map((x) => x.lever).sort(), ['codex', 'effort', 'failure-class', 'memory', 'preflight', 'review-reuse', 'wrappers']);
+t('AC13 every trialled lever gets one row, holds included', a1all.map((x) => x.lever).sort(), ['codex', 'effort', 'failure-class', 'finder-model', 'memory', 'preflight', 'review-reuse', 'wrappers']);
 t('AC13 a quality-risk lever with no state recorded is on trial and weighed', a1all.filter((x) => x.layer === 'quality-risk').map((x) => [x.state, x.reason_code]), [['trial', 'below_min_sample'], ['trial', 'below_min_sample'], ['trial', 'below_min_sample']]);
 const pre = a1all.find((x) => x.lever === 'preflight');
 t('AC13 a hold carries its reason code and what would change it next', [pre.decision, pre.reason_code, pre.next.needs], ['hold', 'below_min_sample', '30 more tickets in the smaller arm']);

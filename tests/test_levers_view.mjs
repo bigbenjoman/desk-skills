@@ -139,6 +139,19 @@ const autoRepos = REPOS.map((r) => (r.slug === DS ? { ...r, levers: '`auto`' } :
   t('AC6 with its age in words', v.panels.board.age.words, '30 hours ago');
 }
 
+// DS-1000 AC4: an auto repo whose §3b Worker models already runs its finders on the finder-model
+// lever's alias never draws it, and the view says why in one line.
+{
+  const m = machine({ repos: autoRepos });
+  w(join(m.configRoot, 'repos', DS, 'config.md'), `${config('bigbenjoman/desk-skills', '`auto`')}| Worker models | \`default\` | \`default finder=sonnet\` |\n`);
+  const c = cell(view(m), 'finder-model');
+  t('DS-1000 AC4 the cell reads ineligible', c.state, 'ineligible');
+  t('DS-1000 AC4 one line says both arms would be the same', c.note, 'not tested in desk-skills: §3b Worker models already runs its finders on sonnet, so both arms would be the same');
+  t('DS-1000 AC4 the other levers are unaffected', cell(view(m), 'codex').state, 'off');
+  w(join(m.configRoot, 'repos', DS, 'config.md'), `${config('bigbenjoman/desk-skills', '`auto`')}| Worker models | \`default\` | \`default finder=haiku\` |\n`);
+  t('DS-1000 AC4 finder=haiku: finder-model reads off, as any lever with no evaluation yet', cell(view(m), 'finder-model').state, 'off');
+}
+
 // AC7: a repo with no levers row is not enrolled, and waiting on you says how to enrol it.
 {
   const m = machine();

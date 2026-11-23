@@ -191,7 +191,10 @@ export function parseWorkerLocation(raw) {
 // the caller to name, and is never on.
 //   leverRow -> { on: [lever], unknown: [name], auto, invalid: message | null }
 //   parseLevers -> { on, unknown }
-export const LEVERS = Object.freeze(['codex', 'effort', 'failure-class', 'ledger', 'memory', 'preflight', 'review-reuse', 'wrappers']);
+export const LEVERS = Object.freeze(['codex', 'effort', 'failure-class', 'finder-model', 'ledger', 'memory', 'preflight', 'review-reuse', 'wrappers']);
+// The finder-model lever's on arm: the Agent tool alias desk-review's Claude finder seats run on while
+// the lever is on (desk-env model finder). One of the aliases parseWorkerModels takes for `finder=`.
+export const FINDER_MODEL_LEVER = 'sonnet';
 export const LEVERS_AUTO = 'auto';
 export const leverWords = (items) => [...new Set((items ?? []).flatMap((x) => String(x).toLowerCase().split(/[\s,]+/)).filter(Boolean))];
 export function leverRow(items) {

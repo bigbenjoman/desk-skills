@@ -60,6 +60,7 @@ const WHAT = Object.freeze({
   'review-reuse': 'Keeps review notes after a rebase instead of reviewing it all again',
   codex: 'Has Codex review pull requests instead of Claude',
   effort: 'Uses less thinking on simple steps',
+  'finder-model': 'Runs the review’s Claude finders on a cheaper model',
   ledger: 'Records every queue change in a ticket log beside queue.json',
 });
 
@@ -353,6 +354,7 @@ function leverRows(v) {
     if (status === 'pinned') next = `Pinned by hand in ${l.cells.filter((c) => c.state === 'pinned').map((c) => c.repo).join(', ')}, so this is a before-and-after, not a test.`;
     else if (status === 'error') { const e = l.cells.find((c) => c.error)?.error; next = `Couldn’t read ${basename(e?.file)}${e?.line ? ` line ${e.line}` : ''}.`; }
     else if (reg && !reg.trialled) next = reg.layer === 'quality-risk' ? 'Tested one at a time with blind reviews, once desk starts trialling it.' : 'Not trialled: on only where a repo’s levers row names it.';
+    else if (status === 'off' && l.cells.some((c) => c.state === 'ineligible')) next = `${cap(l.cells.filter((c) => c.state === 'ineligible').map((c) => c.note).join('. '))}.`;
     else next = anyAuto ? 'Testing starts with the next tickets desk admits.' : 'Testing starts when a repo is set to auto.';
     const decided = status === 'kept' && main ? keptAt(v, l.lever, main.repo) : null;
     return { lever: l.lever, layer: l.layer, cells: l.cells, status, main, next, decided, i, rank: order[status] };
@@ -365,6 +367,7 @@ const repoWord = (c) => {
   if (c.state === 'trial') return { t: `${c.repo}: testing`, c: C.blue };
   if (c.state === 'pinned') return { t: `${c.repo}: on by hand`, c: C.green };
   if (c.state === 'not_enrolled') return { t: `${c.repo}: not enrolled`, c: C.grey };
+  if (c.state === 'ineligible') return { t: `${c.repo}: not tested here`, c: C.grey };
   return { t: `${c.repo}: ${String(c.state ?? 'off').replace(/_/g, ' ')}`, c: C.grey };
 };
 

@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSyn
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, leverRow, localDay, repoConfigValues, shownNames } from './desk-env.mjs';
-import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, reasonWording, unassignableText } from './lever-registry.mjs';
+import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, preconditions, reasonWording, repoValuesOf, unassignableText } from './lever-registry.mjs';
 import { parseBaseline } from './bench-report.mjs';
 import { ageWords, renderPage } from './levers-page.mjs';
 import { reworkSummary } from './rework.mjs';
@@ -194,7 +194,7 @@ function readRepo(r, root) {
     try { return { file, at: JSON.parse(readFileSync(file, 'utf8')).at ?? null, error: null }; } catch (e) { return { file, at: null, error: { file, line: null, message: e.message } }; }
   });
   return {
-    slug: r.slug, name, config: r.config, items, configRead: { error: configError },
+    slug: r.slug, name, config: r.config, items, configRead: { error: configError }, values: repoValuesOf(r.slug, r.root),
     enrol: configError ? { row: 'error', auto: false, pinned: [] } : enrolment(items),
     supervisor_at: f.supervisor.map(mtimeIso).filter(Boolean).sort().pop() ?? null, healths,
     log: readJsonl(f.log[0]), evals: readJsonl(f.evals[0]), audit: readJsonl(f.audit[0]),
@@ -381,6 +381,9 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
         if (!e && r.configRead.error) return { repo: r.name, state: 'error', error: r.configRead.error };
         if (!e) {
           if (r.enrol.pinned.includes(lever)) return { repo: r.name, state: 'pinned', note: 'pinned by hand: before/after only, not a trial', stale: col.column === 'stale' };
+          // An auto repo whose config fails the lever's preconditions never draws it: one line says why.
+          const pre = r.enrol.auto ? preconditions(lever, r.values) : null;
+          if (pre && !pre.eligible) return { repo: r.name, state: 'ineligible', note: `not tested in ${r.name}: ${pre.failed.map((p) => p.why).join('; ')}`, stale: col.column === 'stale' };
           return { repo: r.name, state: r.enrol.auto ? 'off' : 'not_enrolled', stale: col.column === 'stale' };
         }
         const minN = e.min_n ?? min;
