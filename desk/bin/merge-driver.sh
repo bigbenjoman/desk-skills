@@ -108,7 +108,8 @@
 #   - refused by `gh pr merge`               backed off for 10 minutes, then retried
 #   - its base is red                        the newest completed run of a §4 Required check on the base
 #                                            failed (base-red.mjs, read once per loop down its newest
-#                                            commits, each commit's completed runs kept for 30 minutes
+#                                            commits, each commit's completed runs kept for 30 minutes,
+#                                            5 while one failed, so a rerun that passed shows,
 #                                            in <state>/merge-driver/base-runs.json, as each PR's file
 #                                            list at its head is in pr-files.json): no PR merges into it but its repair ticket's
 #                                            (base-red-<base>-<spell start>), and the loop logs the hold naming the
