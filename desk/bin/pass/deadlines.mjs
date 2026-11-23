@@ -135,6 +135,18 @@ export function baseRedWait(rec, at) {
     `${w.check} still fails there, so the merge driver merges nothing into it. The last merges desk made: ${merges}` };
 }
 
+// A platform outage (pass/fix-tries.mjs decideOutage) is a wait of the batch's too, kept as the queue's
+// `platform_outage`, with its deadline OUTAGE_MS after it began, and the outage hold's re-run back-off
+// in between. -> { rec, line }, as baseRedWait: escalated to the person once past its deadline, its line
+// said while it lasts, led by the base and its class so the decider keys it as one item.
+export const OUTAGE_MS = 120 * MIN;
+export function outageWait(rec, at, base) {
+  if (!rec.escalated && Date.parse(at) < Date.parse(rec.deadline)) return { rec, line: null };
+  const w = rec.escalated ? rec : { ...rec, escalated: at };
+  return { rec: w, line: `${base}: PLATFORM OUTAGE — ${w.check} has been red on every open PR with a run of it for ${minsSince(w.since, at)} minutes, since ${w.since}, ` +
+    `past its ${minsSince(w.since, w.deadline)}-minute deadline: no fix try is spent on it and the pass keeps re-running it, so check the deploy platform's status, and once it is back redeploy or re-run it on one PR` };
+}
+
 export function decideDeadlines(snap) {
   const actions = [];
   for (const t of Object.values(snap.tickets)) {

@@ -3,7 +3,8 @@
 // With the ledger lever on, every queue write (queue-store.mjs writeQueueFile) appends the difference
 // between the queue on disk before it and the queue it wrote: per ticket, a typed event for a change
 // of state and one legacy_set for every other field changed with it, and for the batch, its red base
-// starting or clearing (base_red, base_green). It records what queue.json kept,
+// starting or clearing (base_red, base_green) and its platform outage starting or clearing
+// (platform_outage, platform_clear). It records what queue.json kept,
 // never the changes a writer asked for. A ticket leaving the queue is archived, or moved out of the
 // batch; one arriving with a moved_from record is moved in. The first write the lever sees for a batch
 // the log has never named first seeds one event per ticket from the queue as it stood.
@@ -171,8 +172,20 @@ export function queueEvents(before, after, { batch, archived = {}, elsewhere = (
     }
     if (own(archived, key)) ev(key, 'archived', {});
   }
-  for (const e of redBaseEvents(before, after)) ev(null, e.type, e.data);
+  for (const e of [...redBaseEvents(before, after), ...outageEvents(before, after)]) ev(null, e.type, e.data);
   return out;
+}
+
+// The batch's platform outage (the queue's `platform_outage`, pass/fix-tries.mjs decideOutage) starting
+// or clearing in this write: one platform_outage event as it is first recorded, one platform_clear as
+// it is cleared. A change to the same outage's record (its escalation, the checks it names) appends nothing.
+function outageEvents(before, after) {
+  const was = before?.platform_outage ?? null;
+  const now = after?.platform_outage ?? null;
+  if (was && !now) return [{ type: 'platform_clear', data: {} }];
+  if (!now || typeof now !== 'object' || (was && was.since === now.since)) return [];
+  const e = { type: 'platform_outage', data: { check: now.check, since: now.since, deadline: now.deadline } };
+  return invalid({ ...e, batch: STANDING, key: null }) ? [] : [e];
 }
 
 // The batch's red base (the queue's `base_red`, pass/base-gate.mjs decideBaseRed) starting or clearing

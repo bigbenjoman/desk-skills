@@ -4489,10 +4489,11 @@ function outageRerunRun(a) {
 }
 runSteps({
   name: 'outage',
-  snapshot: () => ({ prs: [...drafts, ...undrafted], gate: gateLists(), stateChecks: stateRow.checks, was: readOutageHold(), now: Date.now(), unread: prUnread, dry: DRY, rowErrors: fixRowErrors }),
+  snapshot: () => ({ prs: [...drafts, ...undrafted], gate: gateLists(), stateChecks: stateRow.checks, was: readOutageHold(), now: Date.now(), unread: prUnread, dry: DRY, rowErrors: fixRowErrors, recorded: queue().platform_outage ?? null, base: DEFAULT_BRANCH }),
   decide: decideOutage,
   handlers: {
     ...OUT_HANDLERS,
+    'set-batch': (a) => q('set-batch', ...a.fields),
     'outage-rerun': outageRerunRun,
     'outage-hold': (a) => {
       try { if (Object.keys(a.hold).length) writeFileSync(OUTAGE_FILE, `${JSON.stringify(a.hold, null, 2)}\n`); else if (existsSync(OUTAGE_FILE)) unlinkSync(OUTAGE_FILE); }
