@@ -1872,6 +1872,9 @@ drv991('rdys', 5490, { 'RS-1': pr991(62) }, { idle: null, driver: stop991(143, i
 drv991('rdyi', 5500, { 'RI-1': pr991(63) }, { idle: null, driver: stop991(null, info991) }, `${info991}\n`);
 // The repo's one driver, started for another batch after this one went idle, keeps its record here.
 drv991('idlr', 5510, { 'IR-1': pr991(64) }, { idle: 'fp', idle_at: minsAgo(30), driver: stop991(1, 'FAIL: gh is signed out') }, 'FAIL: gh is signed out\nmerge driver exited 1\n');
+// A 28-character repo name, its driver stopped 143: its note's tag nearly fills a narrow terminal.
+const long996 = 'narrow-terminal-repo-name-28';
+drv991(long996, 5520, { 'NT-1': pr991(65) }, { idle: null, driver: stop991(143, info991) }, `${info991}\nmerge driver exited 143\n`);
 put219('old', 5380, { tickets: { 'OL-1': run215 } });
 state219('old', 'supervisor.json', JSON.stringify({ code: { installed: 'new1', supervisor: { version: 'old1', old_code: true }, driver: null } }));
 // Each of these has a last code record that disagrees with what runs now.
@@ -1897,7 +1900,7 @@ writeFileSync(join(I.T, 'bin', 'print-com.desk-skills.supervisor.acme__cant'), '
 put219('land', 5400, { pass: { at: minsAgo(1), by: 'supervisor', held: null, errors: 0, progress_at: minsAgo(300) }, tickets: {
   'LD-1': { state: 'done', result: { pr: 50 }, pr_status: { pr: 50, state: 'OPEN', checks: [] } }, 'LD-2': { state: 'done', result: { pr: 51 }, pr_status: { pr: 51, state: 'MERGED' } } } });
 put219('wait', 5410, { supervised: false, tickets: { 'WA-1': { state: 'parked', park: { question: 'which copy?', since: minsAgo(130) } }, 'WA-2': { state: 'parked', park: { question: 'which price?', since: minsAgo(20) } } } });
-const loaded219 = ['sup', 'halt', 'both', 'alone', 'drv', 'drv2', 'drv3', 'old', 'cant', 'land', 'reloaded', 'unreloaded', 'drvold', 'drvnew', 'idlb', 'rdyf', 'rdys', 'rdyi', 'idlr'];
+const loaded219 = ['sup', 'halt', 'both', 'alone', 'drv', 'drv2', 'drv3', 'old', 'cant', 'land', 'reloaded', 'unreloaded', 'drvold', 'drvnew', 'idlb', 'rdyf', 'rdys', 'rdyi', 'idlr', long996];
 I.loaded(...loaded219);
 // What install.sh leaves: the installed commit, and each agent it reloaded loaded at that commit.
 writeFileSync(join(I.env.DESK_HOME, 'installed.json'), JSON.stringify({ commit: 'new1' }));
@@ -1935,6 +1938,18 @@ t('DS-991 a driver gone with no failure line and no exit code: the note says so,
   driverNotes991('rdyi'), 'the merge driver stopped at HH:MM (no exit code logged) and logged no failure.');
 t('DS-991 an idle batch whose record holds the repo driver started since it went idle: its failure is still shown',
   driverNotes991('idlr'), 'the merge driver stopped at HH:MM: gh is signed out. Run gh auth login.');
+// Home's notes at each width: the block from the first "note" line to the blank line after it.
+const notes996 = (width) => {
+  const ls = lines(Q.overview(Q.loadRepos(NOW).filter((r) => r.name === long996), { now: NOW, avail: 30, width }));
+  const at = ls.findIndex((l) => l.startsWith('note '));
+  const end = ls.indexOf('', at);
+  return at < 0 ? [] : ls.slice(at, end < 0 ? ls.length : end);
+};
+const widths996 = Array.from({ length: 161 }, (_, i) => 200 - i);
+t('DS-996 AC1 a note under a 28-character repo name at 40 columns: every note line ends within 40 columns, and it names the driver',
+  `${notes996(40).filter((l) => l.length > 40).length} ${notes996(40).join(' ').includes('merge driver')}`, '0 true');
+t('DS-996 AC2 the same note from 200 columns down to 40: no line runs past the width, and "exit 143" shows whole',
+  widths996.filter((w) => { const ns = notes996(w); return ns.some((l) => l.length > w) || !/\(exit 143\)/.test(ns.join(' ').replace(/ +/g, ' ')); }).join(' '), '');
 // old and unreloaded both run old code, so their notes fold into one.
 t('DS-219 AC5 a supervisor on old desk code: one note to run ./install.sh in desk-skills',
   `${notesOf('old').length} ${notesOf('desk code').join(' / ')}`, '0 the supervisors of old and unreloaded run old desk code. Run ./install.sh in desk-skills.');
