@@ -180,7 +180,7 @@ function declOf(chunk) {
 // call, or a spread, call or reference inside it, may run code on load.
 function frozenLiteral(v) {
   const m = v.match(/^Object\.freeze\(\s*([[{][\s\S]*)\)$/);
-  return Boolean(m) && compiles(`(${v}\n)`) && literal(m[1]);
+  return Boolean(m) && compiles(asExpression(v)) && literal(m[1]);
 }
 // A new top-level statement that declares an export, a function or a const, by declOf(). -> its name, or
 // null. Refused too: a name the old module already uses or a global's (declaring it would change what
