@@ -1866,7 +1866,7 @@ check "DS-798 a step a checker ran is not run again" \
 # PR again; a re-check that finds the run still going keeps it broken, on the same cadence.
 fs4_recheck(){
   q set FS-4 "follow_checks=$(field FS-4 follow_checks | jq -c '.[0].at = "2026-11-20T00:00:00.000Z"')"
-  n=$(ls "$DESK_AUTOPILOT_STATE"/follow/FS-4-*.json 2>/dev/null | grep -vc settings)
+  n=0; for f in "$DESK_AUTOPILOT_STATE"/follow/FS-4-*.json; do case "$f" in *settings*|*'*'*) ;; *) n=$((n+1)) ;; esac; done
   DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" >/dev/null 2>&1
   for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do [ "$(grep -l FOLLOW_RESULT "$DESK_AUTOPILOT_STATE"/follow/FS-4-*.json 2>/dev/null | grep -vc settings)" -gt "$n" ] && break; sleep 0.2; done
   : > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" 2>&1)
