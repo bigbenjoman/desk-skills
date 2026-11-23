@@ -2096,7 +2096,8 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
   });
   // The pools unread: each at its floor.
   let pools = null;
-  try { pools = slotPools({ ...LEASE_ENV, lockDir: E.lockDir }); } catch { /* as above */ }
+  // machineProfile: the rows as with-lock's admission reads them, so a TODO sizes the pool as it does there.
+  try { pools = slotPools({ ...LEASE_ENV, machineProfile: E.machineProfile, lockDir: E.lockDir }); } catch { /* as above */ }
   const factor = whole(E.machineValue('test-lock-queue-factor'), 2);
   const queueOf = (locks, slots) => {
     const holders = lockHolders(E.lockDir(), { locks });
