@@ -131,6 +131,15 @@ const lintBlocking = (r) => {
   const unread = unreadCanvases(r);
   return (r.lint ?? []).filter((f) => f.severity === 'blocking' && !(f.rule === 'design' && unread.some((u) => f.message.includes(u))));
 };
+// A missing design on a ticket triage found renders nothing (its `renders` false): the line says so,
+// with the files it changes, so desk-admit writes "No UI." with that reason into its Design section
+// and admits it again, rather than asking anyone for a design no change of it shows.
+const rendersNothing = (r) => {
+  if (r.renders !== false) return '';
+  const files = (Array.isArray(r.files_in_scope) ? r.files_in_scope : []).filter((f) => typeof f === 'string');
+  const which = files.length ? `: it changes ${files.slice(0, 3).join(', ')}${files.length > 3 ? ` and ${files.length - 3} more` : ''}` : '';
+  return ` — triage found nothing renders${which}; write "No UI." with that reason in its Design section, then admit it again`;
+};
 // A ticket labelled as the person's step (labelPark) has none: it is admitted parked on it, whatever its
 // lane, lint or questions, since no worker takes it.
 export function intakeReasons(r) {
@@ -138,7 +147,7 @@ export function intakeReasons(r) {
   if (labelPark(r, E.personStepLabels(), E.personInputLabels())) return out;
   if (needsPersonLane(r)) out.push(`lane ${r.lane}: ${r.lane === 'D' ? `${designGap(r)}; ` : ''}${String(r.lane_reason ?? 'needs a person').slice(0, 160)}`);
   if (r.lint_error) out.push(`lint did not run (${r.lint_error})`);
-  for (const f of lintBlocking(r)) out.push(`lint (blocking): ${f.message}`);
+  for (const f of lintBlocking(r)) out.push(`lint (blocking): ${f.message}${f.rule === 'design' ? rendersNothing(r) : ''}`);
   if (r.facts_error) out.push(`its Jira facts could not be read (${r.facts_error})`);
   const { ask } = triageCalls(r);
   if (ask.length) out.push(`open question(s): ${ask.join(' · ')}`);

@@ -603,6 +603,15 @@ printf '{"version":1,"batch":"s1","supervised":false,"tickets":{"P":{"key":"P","
 rec H-23 A
 out=$(admit H-23 --session)
 check "#1000 with workers local, no runs: line, as before" 'grep -q "^admitted H-23 by hand into batch s1" <<< "$out" && ! grep -q "runs:" <<< "$out"'
+# #1332: a missing design on a ticket triage found renders nothing says so, naming its files, so
+# desk-admit writes "No UI." with that reason and admits it again; one that may render keeps it as is.
+rec H-41 A '"renders":false,"files_in_scope":["e2e/login.spec.ts","playwright.config.ts"],"lint":[{"severity":"blocking","rule":"design","message":"no design link and no \"No UI.\" line: put the Figma or Claude Design URL in a Design section, or write \"No UI.\" there"}]'
+out=$(admit H-41 --session); rc=$?
+check "#1332 a tests-only ticket's missing design says triage found nothing renders, naming its files and what to write" '[ $rc -eq 11 ] && grep -qF "lint (blocking): no design link and no \"No UI.\" line: put the Figma or Claude Design URL in a Design section, or write \"No UI.\" there — triage found nothing renders: it changes e2e/login.spec.ts, playwright.config.ts; write \"No UI.\" with that reason in its Design section, then admit it again" <<< "$out"'
+rec H-42 A '"renders":true,"lint":[{"severity":"blocking","rule":"design","message":"no design link and no \"No UI.\" line: put the Figma or Claude Design URL in a Design section, or write \"No UI.\" there"}]'
+out=$(admit H-42 --session)
+check "#1332 one that may render keeps the finding as it was" 'grep -qF "no design link and no \"No UI.\" line" <<< "$out" && ! grep -q "triage found nothing renders" <<< "$out"'
+check "#1332 desk-admit writes No UI. with the line's reason and admits it again, asking no one" 'grep -q "^- \*\*no design link\*\* where the line adds \`triage found nothing renders\`" "$SK" && grep -qF "(\`No UI. Triage found nothing renders: it changes …\`) as the Design section." "$SK"'
 AO="$S/../skills/desk-autopilot/references/ask-or-take.md"
 check "#877 desk-autopilot admits tickets the person already chose without asking again" 'grep -q "^\*\*Tickets the person already chose are not asked again.\*\*" "$AO" && grep -q "intake.mjs admit <TICKET>... --session" "$AO"'
 check "#1317 desk-admit folds in a lint refusal a routed comment settles, then admits it again, asking only for the rest" \
