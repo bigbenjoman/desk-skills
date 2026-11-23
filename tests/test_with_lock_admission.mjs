@@ -119,7 +119,8 @@ try {
   {
     const c = caseOf();
     const a = await hold(c.env, ['light']); const b = await hold(c.env, ['light'], { ms: 5000 });
-    c.readings(reading({ load: 29.6, freeGb: 33, pressure: 2 }));
+    // Warn on either platform: macOS's level 2, or Linux's PSI % in the warn band (pressureLevel).
+    c.readings(reading({ load: 29.6, freeGb: 33, pressure: process.platform === 'linux' ? 20 : 2 }));
     const r = wl(c.env, ['light', '--timeout', '8', '--', 'true']);
     const said = r.stderr.split('\n').filter((l) => l.startsWith('with-lock.sh: waiting'));
     t('DS-987 AC5 the waiting line names the pool, the slots held, the floor and ceiling, and the reason with its numbers',
