@@ -1397,14 +1397,15 @@ const CLEARS_HANDLERS = {
     const t = s.tickets[a.key];
     try {
       const why = notOwnPr(t, prOwner(a.pr), conflictHandle);
-      if (!why || t.result?.pr != null || t.draft_pr != null) return null;
+      // #pr itself recorded on it (a not-its-own park's result.pr) is not work of its own.
+      if (!why || [t.result?.pr, t.draft_pr].some((x) => x != null && Number(x) !== Number(a.pr))) return null;
       // Commits past the base in its worktree are its own work, which #pr only unblocks.
       if (t.worktree && existsSync(t.worktree)) {
         const n = shOut('git', ['-C', t.worktree, 'rev-list', '--count', `origin/${DEFAULT_BRANCH}..HEAD`]);
         if (!n.ok) return { error: `its worktree could not be read (${n.out.split('\n').pop()})` };
         if (Number(n.out) > 0) return null;
       }
-      return { why };
+      return { why, at: clearsRead.pr(a.pr).mergedAt ?? null };
     } catch (e) { return { error: e.message }; }
   },
   'drop-worktree': (a) => {
@@ -5165,7 +5166,9 @@ for (const t of [...heldNow, ...parkHeld]) {
 }
 const prState = (n) => prStates[n] ?? null;
 const predsOf = (t) => blockersOf(t);
-const mergedHere = (p) => qNow.tickets[p]?.state === 'done' && prState(qNow.tickets[p]?.result?.pr) === 'MERGED';
+// One done by another's PR (done_by) has no result.pr of its own: that PR's merge is recorded as its
+// merged_at. Any other merged_at may be an earlier round's, so its own PR is read.
+const mergedHere = (p) => { const x = qNow.tickets[p]; return x?.state === 'done' && ((x.done_by?.pr != null && x.result?.pr == null && !!x.merged_at) || prState(x.result?.pr) === 'MERGED'); };
 const releaseDue = heldNow.filter((t) => predsOf(t).length && predsOf(t).every(mergedHere));
 // Held behind a spine the person has still to approve (or send back) waits on that, not on a merge.
 const spinesOf = (t) => predsOf(t).filter((p) => spinePark(qNow.tickets[p]));

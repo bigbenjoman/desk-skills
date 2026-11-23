@@ -177,6 +177,12 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('AC8 its archive reads beside it', Object.keys(archivedOf(rq)).sort().join(','), 'M,Q,S,X');
   rq.tickets.Y = tk('Y', { state: 'parked', held_by: 'M', park: { question: 'held by orchestrator: blocked by M' } });
   t('AC8 a hold on an archived merged ticket is waiting on a merge, not stuck', waitingOnMerge(rq, rq.tickets.Y), true);
+  // #1294: done by another's PR, it has no result.pr of its own but records the merge.
+  const byOther = { tickets: { D: tk('D', { state: 'done', merged_at: '2026-11-23T10:00:00Z', done_by: { pr: 880 } }), Z: tk('Z', { state: 'parked', held_by: 'D', park: { question: 'held by orchestrator: blocked by D' } }) } };
+  t('#1294 a hold on a ticket done by another\'s PR is waiting on a merge, not stuck', waitingOnMerge(byOther, byOther.tickets.Z), true);
+  // A merged_at with no done_by may be an earlier round's: with no PR of its own, it is stuck as before.
+  delete byOther.tickets.D.done_by;
+  t('#1294 an earlier round\'s merged_at alone does not count as merged', waitingOnMerge(byOther, byOther.tickets.Z), false);
 
   const env = { ...process.env, DESK_QUEUE: f, DESK_AUTOPILOT_STATE: join(dirname(f), 'state') };
   const qm = (...args) => spawnSync(process.execPath, [join(B, 'queue.mjs'), ...args], { encoding: 'utf8', env });
