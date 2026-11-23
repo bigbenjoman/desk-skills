@@ -735,6 +735,13 @@ touch "$T/promos.fails"
 check "DS-816 a promotion list GitHub cannot read is unread, not false" '[ "$(landed L-1)" = null ] && [ "$(landed L-5)" = true ]'
 rm -f "$T/promos.fails"
 check "DS-816 AC4: admit holds a blocker outside only while it is unpromoted" '[ "$(outside L-1 L-2 L-3 L-4 L-5)" = "L-3,L-4" ]'
+# #1312: a blocker in the batch Done in Jira (its first merge moved it there) that went round again since
+# is held while it has not merged its current work; one merged and not gone round again is not.
+heldDone(){ (cd "$T/repo" && node -e 'import(process.argv[2]).then((m) => console.log(m.holdsFor({ blockers: [{ key: "B-1", category: "done" }] }, JSON.parse(process.argv[1]), "main").held.join()))' "$1" "$T/bin/intake.mjs"); }
+reworkedB=$(heldDone '{"B-1":{"key":"B-1","state":"triaged","merged_at":"2026-11-02T00:00:00Z"}}')
+mergedB=$(heldDone '{"B-1":{"key":"B-1","state":"done","merged_at":"2026-11-02T00:00:00Z","result":{"pr":5},"pr_status":{"pr":5,"state":"MERGED"}}}')
+check "#1312 admit holds a Jira-Done blocker in the batch that went round again since its merge" '[ "$reworkedB" = B-1 ]'
+check "#1312 and not one merged and not gone round again, as before" '[ -z "$mergedB" ]'
 # DS-811: where an unlanded blocker's code waits: the branch its PR merged into, and that branch's open
 # promotion PR into main, by state.
 unpromoted(){ (cd "$T/repo" && node -e 'import(process.argv[2]).then((m) => console.log(JSON.stringify(m.unpromotedBase(process.argv[1], "main"))))' "$1" "$T/bin/intake.mjs"); }

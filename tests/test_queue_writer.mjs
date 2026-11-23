@@ -16,7 +16,7 @@ Object.assign(process.env, { HOME: join(T, 'home'), DESK_CONFIG: join(T, 'config
 
 const { queueWriter } = await import('../desk/bin/queue-writer.mjs');
 const { versionOf, archivePath, mergeQueue, archivedOf, archivable } = await import('../desk/bin/queue-store.mjs');
-const { readQueue, waitingOnMerge, batchIdle } = await import('../desk/bin/batch-state.mjs');
+const { readQueue, waitingOnMerge, batchIdle, holdsAmong } = await import('../desk/bin/batch-state.mjs');
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -223,6 +223,17 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('#1298 a ticket done again on an open PR is not archived on its earlier merge', archivable(rw({ pr_status: { pr: 442, state: 'OPEN' } }), 'R'), false);
   t('#1298 once that PR is read merged, it is', archivable(rw({ pr_status: { pr: 442, state: 'MERGED' } }), 'R'), true);
   t('#1298 one whose merge is its only PR\'s is archived as before', archivable(rw({}), 'R'), true);
+  // #1312: a blocker merged once and gone round again (requeued: waiting for its worker, or done again on a
+  // PR its status reads open after that merge) is still to merge, so a new hold is laid behind it.
+  const merged = { merged_at: '2026-11-02T02:20:59Z' };
+  const holdsOn = (b, own = true) => {
+    const tickets = own ? { B: b } : Object.create({ B: b });
+    return holdsAmong('A', ['B'], tickets, new Set()).holds;
+  };
+  t('#1312 a new hold is laid behind a blocker requeued after its merge', JSON.stringify(holdsOn(tk('B', { ...merged, state: 'triaged' }))), JSON.stringify(['B']));
+  t('#1312 and behind one done again on a PR read open since', JSON.stringify(holdsOn(tk('B', { ...merged, state: 'done', result: { pr: 442 }, pr_status: { pr: 442, state: 'OPEN', at: '2026-11-10T00:00:00Z' } }))), JSON.stringify(['B']));
+  t('#1312 a blocker merged and not gone round again is not held behind, as before', JSON.stringify(holdsOn(tk('B', { ...merged, state: 'done', result: { pr: 441 }, pr_status: { pr: 441, state: 'MERGED' } }))), JSON.stringify([]));
+  t('#1312 nor an archived one, whatever it reads', JSON.stringify(holdsOn(tk('B', { ...merged, state: 'triaged' }), false)), JSON.stringify([]));
   const env = { ...process.env, DESK_QUEUE: f, DESK_AUTOPILOT_STATE: join(dirname(f), 'state') };
   const qm = (...args) => spawnSync(process.execPath, [join(B, 'queue.mjs'), ...args], { encoding: 'utf8', env });
   t('AC8 queue.mjs get finds it, as done', JSON.parse(qm('get', 'M').stdout).state, 'done');
