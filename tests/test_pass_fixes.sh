@@ -1275,6 +1275,15 @@ q add P-4; q set P-4 state=running lane=A branch=fix/P-4 "worktree=$T/wt/P-4" se
 : > "$T/chat-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-574 AC3 once the day's logged spend has reached the daily cap, another call goes to the person naming the spend so far" \
   '[ "$(field P-4 state)" = "\"parked\"" ] && field P-4 park.question | grep -qF "live read gateway-chat has spent £2.00 today of its £2.00/day cap, so a call estimated at £0.03 would pass it" && [ ! -s "$T/chat-calls" ] && ! grep -q "P-4" "$SPEND"'
+# P-5's read was started and logged by a pass that stopped before its queue write landed: its park has
+# no base, but the read's record is there.
+git init -q -b fix/P-5 "$T/wt/P-5"; git -C "$T/wt/P-5" commit -q --allow-empty -m P-5; HP5=$(git -C "$T/wt/P-5" rev-parse HEAD)
+printf '{"name":"gateway-chat","command":"x","pid":0,"base":"%s"}\n' "$LBASE" > "$T/state-l/live-reads/P-5-$HP5-gateway-chat.json"
+echo 0 > "$T/state-l/live-reads/P-5-$HP5-gateway-chat.code"; echo '{"reply":"earlier"}' > "$T/state-l/live-reads/P-5-$HP5-gateway-chat.out"
+q add P-5; q set P-5 state=parked lane=A branch=fix/P-5 "worktree=$T/wt/P-5" "park={\"question\":\"need live read gateway-chat (est £0.03).\",\"clears_when\":{\"kind\":\"live-read\",\"reads\":[\"gateway-chat\"],\"head\":\"$HP5\",\"est\":{\"gateway-chat\":0.03}}}"
+: > "$T/chat-calls"; out1=$(node "$B/pass.mjs" 2>&1); out=$(node "$B/pass.mjs" 2>&1)
+check "DS-574 a read an earlier pass started but did not record in the queue is neither run nor logged again, and its output is saved" \
+  'echo "$out1" | grep -qF "P-5: live read gateway-chat was already started at this head by an earlier pass: left parked" && [ ! -s "$T/chat-calls" ] && ! grep -q "P-5" "$SPEND" && [ "$(cat "$T/state-l/fixtures/P-5/gateway-chat.json")" = "{\"reply\":\"earlier\"}" ]'
 
 # ---- DS-419: a ready PR held for review feedback, or with a review at its head that is not clean,
 # goes back to a fix worker; the threads a finished try worked are replied on and resolved.

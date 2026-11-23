@@ -414,7 +414,8 @@ export function parseOperatorChecks(items) {
 
 // §4 Live reads items: `<name>: <command>`, as parseOperatorChecks reads them, where the name is a file
 // name too, so it holds no path. A paid call carries both its £ caps after the name, as
-// `<name> [£0.10/call, £2/day]: <command>`; a bracket without both is refused. -> { reads: [{ name,
+// `<name> [£0.10/call, £2/day]: <command>`; a bracket without both, or a name given twice in any case,
+// is refused. -> { reads: [{ name,
 // command, caps: { call, day } in pounds, or null for a free read }], errors: [item] }. live-read.mjs
 // re-exports it.
 const LIVE_READ_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -429,6 +430,8 @@ export function parseLiveReads(items) {
     const m = /^([^\s[]+)\s*\[(.*)\]$/.exec(c.name);
     const name = m ? m[1] : c.name;
     if (!LIVE_READ_NAME.test(name)) { errors.push(`${item} (a name holds only letters, digits, . _ and -)`); continue; }
+    // A park names an entry whatever its case, so two entries of one name would both run on it.
+    if (reads.some((r) => r.name.toLowerCase() === name.toLowerCase())) { errors.push(`${item} (another entry is already named ${name})`); continue; }
     if (!m) {
       if (c.name.includes('[')) errors.push(`${item} (a paid call's caps are written \`<name> [£0.10/call, £2/day]\`)`);
       else reads.push({ name, command: c.command, caps: null });

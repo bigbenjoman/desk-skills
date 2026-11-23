@@ -57,9 +57,6 @@ export function estimateOf(question, name) {
   return m ? Number(m[1]) : null;
 }
 
-// The day a spend counts against: the local calendar date, YYYY-MM-DD.
-export const spendDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-
 // The repo's spend log, shared by every batch of the repo, as the caps are the repo's config.
 export const spendFile = (state) => join(repoStateOf(state), 'live-read-spend.jsonl');
 
@@ -82,12 +79,14 @@ export function logSpend(file, rec) {
 }
 
 // Why paid entry `read` ({ name, caps }) may not run at estimate `est` with `spent` already spent
-// today, or null when it may. A free read (no caps) always may.
+// today, or null when it may. A free read (no caps) always may. An estimate under a ten-thousandth
+// of a pound is no estimate: a paid call costs something, and a day at its cap must refuse the next.
 export function capRefusal(read, est, spent) {
   if (!read.caps) return null;
   const { name, caps } = read;
   const at = `${pounds(caps.call)}/call, ${pounds(caps.day)}/day`;
   if (est == null) return `live read ${name} is a paid call (${at}), and the park gave no estimate for it, as \`${name} (est £0.03)\``;
+  if (!(units(est) > 0)) return `live read ${name} is a paid call (${at}), and the park gave it an estimate of ${pounds(est)}, which is no cost: state what it costs, as \`${name} (est £0.03)\``;
   if (units(est) > units(caps.call)) return `live read ${name} is estimated at ${pounds(est)}, over its ${pounds(caps.call)}/call cap`;
   if (units(spent) + units(est) > units(caps.day)) return `live read ${name} has spent ${pounds(spent)} today of its ${pounds(caps.day)}/day cap, so a call estimated at ${pounds(est)} would pass it`;
   return null;
@@ -101,19 +100,19 @@ const lastLine = (p) => { try { return readFileSync(p, 'utf8').split('\n').map((
 export const MAX_BYTES = 1024 * 1024;
 
 // The read of entry `name` recorded for ticket `key` at `head`, or null when none was started there:
-// { state: 'running', command } or { state: 'done', command, code (a number, or null when it stopped
-// without writing one), error (its last line on stderr, else on stdout), out (its stdout's path),
-// bytes (its stdout's size) }.
+// { state: 'running', command, base } or { state: 'done', command, base, code (a number, or null when
+// it stopped without writing one), error (its last line on stderr, else on stdout), out (its stdout's
+// path), bytes (its stdout's size) }, where base is the commit of the checkout it ran in.
 export function readRecord(dir, key, head, name) {
   if (!head) return null;
   const r = detachedRecord(dir, stem(key, head, name));
   if (!r) return null;
-  if (r.state === 'running') return { state: 'running', command: r.rec.command };
+  if (r.state === 'running') return { state: 'running', command: r.rec.command, base: r.rec.base };
   const out = file(dir, key, head, name, 'out');
   const error = (lastLine(file(dir, key, head, name, 'err')) || lastLine(out)).slice(0, 300);
   let bytes = 0;
   try { bytes = statSync(out).size; } catch { bytes = 0; }
-  return { state: 'done', command: r.rec.command, code: r.code, error, out, bytes };
+  return { state: 'done', command: r.rec.command, base: r.rec.base, code: r.code, error, out, bytes };
 }
 
 // Whether any read recorded in dir is still running: the checkout it runs in is not to be moved.

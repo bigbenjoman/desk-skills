@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync, existsSync, rmSync, statSync, mkdirSync, symlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { parseLiveReads, liveReadPark, readRecord, startRead, saveFixture, prepareCheckout, copyFixtures, WORKTREE_FIXTURES, estimateOf, capRefusal, spentOn, logSpend, spendFile, spendDay } from '../desk/bin/live-read.mjs';
+import { parseLiveReads, liveReadPark, readRecord, startRead, saveFixture, prepareCheckout, copyFixtures, WORKTREE_FIXTURES, estimateOf, capRefusal, spentOn, logSpend, spendFile } from '../desk/bin/live-read.mjs';
 import { repoStateOf } from '../desk/bin/desk-env.mjs';
 import { waitingOnRead, batchSettled } from '../desk/bin/batch-state.mjs';
 import { shownState } from '../desk/bin/desk-q.mjs';
@@ -48,6 +48,10 @@ t('DS-574 AC3 one once the day\'s spend reached the daily cap is refused naming 
 t('DS-574 a call that just fits the daily cap may run', capRefusal(paid, 0.03, 1.97), null);
 t('DS-574 a paid call with no estimate is refused', capRefusal(paid, null, 0)?.includes('the park gave no estimate for it, as `gateway-chat (est £0.03)`'), true);
 t('DS-574 a free read is never capped', capRefusal(paidRow.reads[1], null, 99), null);
+t('DS-574 AC3 an estimate of nothing is refused, so a day at its cap cannot run one more', capRefusal(paid, 0, 2)?.includes('an estimate of £0.00, which is no cost'), true);
+t('DS-574 so is one under a ten-thousandth of a pound', capRefusal(paid, 0.00001, 0)?.includes('which is no cost'), true);
+const twice = parseLiveReads(['gateway-chat [£0.10/call, £2/day]: ./a', 'Gateway-Chat: ./b']);
+t('DS-574 a name given twice, in any case, is refused, so one park cannot run two calls', `${twice.reads.length} ${twice.errors[0]?.includes('another entry is already named Gateway-Chat')}`, '1 true');
 {
   const sd = scratch('desk-live-spend-');
   const f = spendFile(sd);
@@ -55,7 +59,6 @@ t('DS-574 a free read is never capped', capRefusal(paidRow.reads[1], null, 99), 
   t('DS-574 nothing logged is nothing spent', spentOn(f, 'gateway-chat', '2026-11-22'), 0);
   for (const [day, name, est] of [['2026-11-22', 'gateway-chat', 0.03], ['2026-11-22', 'gateway-chat', 0.07], ['2026-11-21', 'gateway-chat', 1], ['2026-11-22', 'other', 1]]) logSpend(f, { day, name, est });
   t('DS-574 a day\'s spend sums that entry\'s calls on that day only', spentOn(f, 'gateway-chat', '2026-11-22'), 0.1);
-  t('DS-574 the day is the local date', spendDay(new Date(2026, 10, 2, 23, 59)), '2026-11-02');
   rmSync(sd, { recursive: true, force: true });
 }
 
@@ -63,11 +66,12 @@ const dir = scratch('desk-live-read-');
 const head = 'c'.repeat(40);
 const wait = async (name) => { for (let i = 0; i < 100 && readRecord(dir, 'L-1', head, name)?.state !== 'done'; i++) await new Promise((r) => setTimeout(r, 50)); return readRecord(dir, 'L-1', head, name); };
 t('no read started at a head has no record', readRecord(dir, 'L-1', head, 'ok'), null);
-startRead(dir, { key: 'L-1', head, name: 'ok', command: 'echo "{\\"a\\":1}"; echo noise >&2', cwd: dir });
+startRead(dir, { key: 'L-1', head, name: 'ok', command: 'echo "{\\"a\\":1}"; echo noise >&2', cwd: dir, base: 'b'.repeat(40) });
 startRead(dir, { key: 'L-1', head, name: 'bad', command: 'echo partial; echo "AccessDenied: no key" >&2; echo "at line 3" >&2; exit 2', cwd: dir });
 const ok = await wait('ok');
 const bad = await wait('bad');
 t('a read that exits 0 records code 0', ok?.code, 0);
+t('DS-574 a read\'s record names the commit it ran at', ok?.base, 'b'.repeat(40));
 t('a failed read records its exit code', bad?.code, 2);
 t('and its last error line, from stderr', bad?.error, 'at line 3');
 const fx = join(dir, 'fixtures');
