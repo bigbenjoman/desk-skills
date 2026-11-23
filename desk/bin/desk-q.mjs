@@ -3505,6 +3505,15 @@ function timingFields(r, F, x, h, now) {
   return [['Starts', [[starts, null]]], ['Ships', [['no date', null], ...(why ? [[`  ${why}`, DIM]] : [])]]];
 }
 
+// The merge of the ticket's PR as the ticket records it itself (queue.mjs merged), which names the base
+// too: { text, warn }, or null where it records none for this PR, or not who, the head and the base.
+function recordedMerge(t) {
+  const pr = t.result?.pr;
+  const m = t.merge;
+  if (pr == null || !m?.by || !m.head_sha || !m.base || Number(m.pr) !== Number(pr)) return null;
+  return { text: `#${pr} merged by ${m.by} at ${String(m.head_sha).slice(0, 12)} onto ${m.base}`, warn: false };
+}
+
 // The ticket's PR as the merge log has it: merged, or auto-merge armed, by whom at which head. A merged
 // PR the log has no entry for was merged outside desk, unless it merged before the log's first entry.
 // An open PR with no entry has nothing to say. { text, warn }, or null.
@@ -3640,7 +3649,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   if (t.result?.pr != null) {
     // A log that cannot be read says so on this line, never takes the ticket page down with it.
     let merge;
-    try { merge = mergeOf(r, t, readMergeLog()); } catch (e) { merge = { text: `the merge log could not be read (${e.code ?? e.message})`, warn: true }; }
+    try { merge = recordedMerge(t) ?? mergeOf(r, t, readMergeLog()); } catch (e) { merge = { text: `the merge log could not be read (${e.code ?? e.message})`, warn: true }; }
     if (merge) field('Merge', [[merge.text, merge.warn ? WARN : null]]);
   }
   const branch = t.branch ?? tr.branch;

@@ -85,9 +85,9 @@ if (a[0] === 'pr' && a[1] === 'list') {
     .map(([n, p]) => ({ number: Number(n), title: p.title ?? 't', headRefName: p.head, baseRefName: p.base, isDraft: p.draft, headRefOid: p.sha, mergeStateStatus: p.mergeState ?? 'CLEAN' })));
 } else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'state') {
   out(String(prs[a[2]]?.state ?? '').toUpperCase());
-} else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'mergedAt,headRefName') {
-  // GitHub's merge time, a PR's "mergedAt" or gh's unset time, and its branch, tab-separated.
-  out((prs[a[2]]?.mergedAt ?? '0001-01-01T00:00:00Z') + '\t' + (prs[a[2]]?.head ?? ''));
+} else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'mergedAt,headRefName,baseRefName') {
+  // GitHub's merge time, a PR's "mergedAt" or gh's unset time, its branch and its base, tab-separated.
+  out((prs[a[2]]?.mergedAt ?? '0001-01-01T00:00:00Z') + '\t' + (prs[a[2]]?.head ?? '') + '\t' + (prs[a[2]]?.base ?? ''));
 } else if (a[0] === 'pr' && a[1] === 'view') {
   const p = prs[a[2]];
   out({ number: Number(a[2]), title: p.title ?? 't', headRefOid: p.sha, headRefName: p.head, baseRefName: p.base, isDraft: p.draft,

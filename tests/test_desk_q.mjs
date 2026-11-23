@@ -2904,6 +2904,9 @@ try {
     'MG-6': { state: 'done', result: { pr: 26 }, merged_at: at(2), pr_status: { pr: 26, state: 'OPEN', checks: [] } },
     'MG-7': { state: 'done', result: { pr: 27 }, pr_status: { pr: 27, state: 'OPEN', checks: [] } },
     'MG-8': { state: 'done', result: { pr: 28 }, merged_at: at(2), pr_status: { pr: 18, state: 'MERGED', checks: [] } },
+    // DS-899: merges the ticket records itself (queue.mjs merged), for its PR and for an earlier one.
+    'MG-9': { state: 'done', result: { pr: 29 }, merged_at: at(2), merge: { by: 'merge-driver acme__merges', pr: 29, head_sha: 'abcdef0123456789abcdef0123456789abcdef01', base: 'main', at: at(2) } },
+    'MG-10': { state: 'done', result: { pr: 21 }, merged_at: at(2), merge: { by: 'merge-driver acme__merges', pr: 20, head_sha: 'abcdef0123456789abcdef0123456789abcdef01', base: 'main', at: at(3) } },
   } } } });
   const sha = 'abcdef0123456789abcdef0123456789abcdef01';
   const ev = (pr, event, by, h, repo = 'Acme/Merges') => JSON.stringify({ at: at(h), repo, pr: String(pr), sha, by, event });
@@ -2929,6 +2932,10 @@ try {
   t('DS-937 auto-merge its armer records failed is no longer shown as armed', mergeLine('MG-7'), null);
   t('DS-937 a merge log that cannot be read says so, and the page still shows',
     mergeLine('MG-1', { ...W937.env, DESK_MERGE_LOG: W937.T }), 'Merge     the merge log could not be read (EISDIR)');
+  t('DS-899 AC1 a merge the ticket records names its PR, the head it merged at, the base and the merger',
+    mergeLine('MG-9'), 'Merge     #29 merged by merge-driver acme__merges at abcdef012345 onto main');
+  t('DS-899 AC1 and shows with the merge log unreadable', mergeLine('MG-9', { ...W937.env, DESK_MERGE_LOG: W937.T }), 'Merge     #29 merged by merge-driver acme__merges at abcdef012345 onto main');
+  t('DS-899 a recorded merge of an earlier PR is not this PR\'s: the merge log is read', mergeLine('MG-10'), 'Merge     #21 merged by merge-driver acme__merges at abcdef012345');
 }
 
 // ---- DS-959: leases reach the Queue view only as signals, read from a fixture lease directory

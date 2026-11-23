@@ -45,6 +45,7 @@ const ENV = { ...process.env, HOME, PATH: `${BIN}:${process.env.PATH}`, GH_DIR: 
   GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
 Object.assign(process.env, { HOME, DESK_CONFIG: ON, DESK_HOME: ENV.DESK_HOME, DESK_REPO_DIR: REPO, DESK_REPO_ROOT: REPO });
 const { read: readLog } = await import('../desk/bin/ticket-ledger.mjs');
+const { queueDifference } = await import('../desk/bin/queue-ledger.mjs');
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -173,8 +174,41 @@ const run = (q0, args, { file, env = {} } = {}) => {
 
 // merged: the merge driver records a ticket's merge time.
 {
-  const { r, evs, said } = run({ tickets: { 'MG-1': tk('MG-1', { state: 'done', result: { pr: 80 } }) } }, ['merged', 'MG-1', '2026-11-21T09:00:00.000Z']);
+  const { r, f, evs, said } = run({ tickets: { 'MG-1': tk('MG-1', { state: 'done', result: { pr: 80 } }) } }, ['merged', 'MG-1', '2026-11-21T09:00:00.000Z']);
   t('AC3 merged: its merge time', `${r.status} ${said} ${evs[0]?.data.fields?.merged_at}`, '0 legacy_set MG-1 / queue.mjs merged 2026-11-21T09:00:00.000Z');
+  // DS-899 AC4: an older caller's merge, given no PR, is accepted and kept with its PR missing.
+  t('DS-899 AC4 a merge given no PR is accepted, saying its PR is missing', `${r.status} ${r.stdout.includes("MG-1's merge is recorded with its PR missing")}`, '0 true');
+  t('DS-899 AC4 and its merge record names no PR', JSON.stringify(read(f).tickets['MG-1'].merge), '{"by":null,"pr":null,"head_sha":null,"base":null,"at":"2026-11-21T09:00:00.000Z"}');
+  t('DS-899 AC6 the queue rebuilt from the log is queue.json', queueDifference(f).diffs.length, 0);
+}
+
+// DS-899 AC2: the merge driver's record names who merged which PR at which head onto which base: one
+// merged event, dated the merge, and no legacy event for merge or merged_at.
+{
+  const SHA = 'abc123def4567890abc123def4567890abc123de';
+  const { r, f, evs } = run({ tickets: { 'MG-2': tk('MG-2', { state: 'done', result: { pr: 81 } }) } },
+    ['merged', 'MG-2', '2026-11-21T09:05:00Z', '--pr', '81', '--head', 'fix/MG-2', '--head-sha', SHA, '--base', 'main', '--by', 'merge-driver acme__widgets']);
+  const m = evs.find((e) => e.type === 'merged');
+  t('DS-899 AC2 merged: one merged event, then the write\'s stamp', `${r.status} ${typed(evs)} / ${by(evs)}`, '0 merged MG-2 / queue.mjs merged');
+  t('DS-899 AC2 naming who, the PR, the head and the base, at the merge time', JSON.stringify([m?.data, m?.at]), JSON.stringify([{ by: 'merge-driver acme__widgets', pr: 81, head_sha: SHA, base: 'main' }, '2026-11-21T09:05:00.000Z']));
+  t('DS-899 AC2 and no legacy event for the merge fields', evs.some((e) => e.type === 'legacy_set' && ['merge', 'merged_at'].some((k) => k in e.data.fields)), false);
+  t('DS-899 AC6 the queue rebuilt from the log is queue.json', queueDifference(f).diffs.length, 0);
+  // Merged again (a ticket requeued, done and merged a second time): merged_at keeps the first.
+  const again = run(null, ['merged', 'MG-2', '2026-11-22T10:00:00Z', '--pr', '82', '--head-sha', SHA, '--base', 'main', '--by', 'merge-driver acme__widgets'], { file: f });
+  t('DS-899 AC6 a second merge is a merged event and the rebuild still matches', `${typed(again.evs)} ${read(f).tickets['MG-2'].merged_at} ${queueDifference(f).diffs.length}`, 'merged MG-2 2026-11-21T09:05:00.000Z 0');
+  const bad = run(null, ['merged', 'MG-2', '--pr', '81', '--head-sha', 'not-a-sha'], { file: f });
+  t('a head that is no commit SHA is refused', `${bad.r.status} ${bad.r.stderr.includes('usage: queue.mjs merged')}`, '11 true');
+}
+
+// DS-899 AC6: a parked ticket finished on its PR, then merged: the rebuild matches queue.json throughout.
+{
+  pr(62, { state: 'OPEN', isDraft: false, headRefName: 'fix/FM-1', baseRefName: 'main' });
+  const { f, evs } = run({ tickets: { 'FM-1': tk('FM-1', { state: 'parked', park: { question: 'push the branch', since: 'x' }, branch: 'fix/FM-1', handoff_stage: '7' }) } }, ['finish', 'FM-1', '--pr', '62']);
+  t('DS-899 AC5 finish: the finished event holds the done fields, no legacy event does', `${typed(evs)} ${Object.keys(evs[0]?.data.fields ?? {}).sort().join(',')} ${evs.some((e) => e.type === 'legacy_set' && Object.keys(e.data.fields).some((k) => k !== 'updated_at'))}`,
+    'finished FM-1 handoff_stage,park,result false');
+  t('DS-899 AC6 after finish, the rebuild matches', queueDifference(f).diffs.length, 0);
+  run(null, ['merged', 'FM-1', '2026-11-21T11:00:00Z', '--pr', '62', '--head-sha', 'abc1234', '--base', 'main', '--by', 'merge-driver acme__widgets'], { file: f });
+  t('DS-899 AC6 after its merge, the rebuild matches', queueDifference(f).diffs.length, 0);
 }
 
 // transfer: a ticket moved from a named batch to the standing batch arrives there as moved, naming

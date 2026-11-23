@@ -313,6 +313,16 @@ export function ledgerLine({ check, missed, queueBin }) {
   return `${seeded || 'ledger: '}${n} field(s) differ between queue.json and the queue rebuilt from the log, ${missed} missed append(s) this pass${n ? `: ${named}${more}. See each with node ${queueBin} rebuild` : ''}`;
 }
 
+// ---- merges recorded with no PR ------------------------------------------------
+// The line naming each ticket whose merge was recorded with its PR missing (queue.mjs merged run with no
+// --pr, by an older caller), or null when there is none. `tickets` is the queue's tickets at the pass's
+// end: a merged ticket is archived at that write, so each such merge is reported by about one pass.
+export function mergeGapLine(tickets) {
+  const keys = tickets.filter((t) => t?.merge && typeof t.merge === 'object' && t.merge.pr == null).map((t) => t.key);
+  if (!keys.length) return null;
+  return `merges: ${keys.length} recorded with the PR missing (${keys.join(', ')}): queue.mjs merged was run with no --pr, so the merge names no PR`;
+}
+
 // Why nothing spawned while something could have: the first hold that applied this pass, or null.
 export function heldWhyOf(s) {
   if (s.spawned || !s.eligible) return null;

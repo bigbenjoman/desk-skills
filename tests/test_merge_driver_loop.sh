@@ -50,6 +50,15 @@ check "DS-835 AC1: the merged entry names the PR, its head, the ticket and the m
   '[ "$(jq -r "[.event, .pr, .sha, .ticket, .repo] | join(\" \")" <<< "$ml101")" = "merged 101 $SHA1 T-1 acme/widgets" ] && jq -e ".by | startswith(\"merge-driver \")" <<< "$ml101" >/dev/null'
 check "DS-835 AC3: the reader gives the latest entry back with its time" 'jq -e ".at | test(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}T\")" <<< "$ml101" >/dev/null && ! echo "$out" | grep -q "merge not written to the merge log"'
 
+check "DS-899 AC1: the ticket's merge record names the driver, the PR, the head it merged at and the base, which desk-q shows" \
+  '[ "$(qf T-1 ".merge | [.pr, .head_sha, .base] | map(tostring) | join(\" \")")" = "101 $SHA1 main" ] && [ "$(qf T-1 .merge.by)" = "$(jq -r .by <<< "$ml101")" ] && [ "$(qf T-1 .merge.at)" = "$(qf T-1 .merged_at)" ]'
+# With the ledger lever on, the driver's write of that record is one merged event and no legacy one.
+d899=$(node --input-type=module -e "import { readFileSync } from 'node:fs'; import { queueEvents } from '$B/queue-ledger.mjs';
+  const q = JSON.parse(readFileSync(process.argv[1], 'utf8')); const before = structuredClone(q); delete before.tickets['T-1'].merge; before.tickets['T-1'].merged_at = null;
+  const evs = queueEvents(before, q, { batch: 'b' }).filter((e) => e.key === 'T-1');
+  console.log(evs.map((e) => e.type === 'legacy_set' ? 'legacy_set:' + Object.keys(e.data.fields).join(',') : e.type + ':' + e.data.pr + ':' + e.data.head_sha + ':' + e.data.base).join(' '))" "$DESK_QUEUE" 2>&1)
+check "DS-899 AC2: the driver's merge record is one merged event with who, PR, head and base, and no legacy event for it" '[ "$d899" = "merged:101:$SHA1:main" ]'
+
 check "#809 the merge is claimed and recorded in the merge log, by this driver, at its head" 'node "$B/merge-log.mjs" show --repo acme/widgets --pr 101 | awk "{print \$3, \$5}" | tr "\n" " " | grep -Fqx "claim ${SHA1:0:12} merged ${SHA1:0:12} " && node "$B/merge-log.mjs" show --repo acme/widgets --pr 101 | grep -q "by merge-driver "'
 
 # ---- #809: a PR a session has claimed is not merged by the driver ------------------------------

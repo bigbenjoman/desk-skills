@@ -1,6 +1,6 @@
 // suite: pass phase: report (base drift, the report's lines, the groups and the verdict)
 // layer: L1
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict } from '../desk/bin/pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict, mergeGapLine } from '../desk/bin/pass/report.mjs';
 import { inputsHash, questionKey, lookup } from '../desk/bin/not-now.mjs';
 import { HELD_PREFIX } from '../desk/bin/batch-state.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
@@ -309,6 +309,15 @@ const vsnap = (tickets, fields = {}) => {
     j({ spawned: ['C-1 port=3201 model=default', 'C-2 port=3202 model=default'], parked_this_pass: ['C-3: needs a fixture'] }));
   t('DS-843 AC3 a crash before anything was done is the message alone, with no fields', j(crashVerdict(crash, emptyReport())), j({ message: crash, fields: {} }));
   t('DS-843 AC3 and so is one before the report exists', j(crashVerdict(crash, null)), j({ message: crash, fields: {} }));
+}
+
+// ---- DS-899 AC4: a merge an older caller recorded with no PR is reported, once per ticket
+{
+  const merge = (pr) => ({ by: null, pr, head_sha: null, base: null, at: '2026-11-21T09:00:00.000Z' });
+  t('DS-899 AC4 one merge with its PR missing is one line naming it',
+    mergeGapLine([{ key: 'A', merge: merge(null) }, { key: 'B', merge: merge(12) }, { key: 'C' }]),
+    'merges: 1 recorded with the PR missing (A): queue.mjs merged was run with no --pr, so the merge names no PR');
+  t('DS-899 AC4 no such merge, no line', mergeGapLine([{ key: 'B', merge: merge(12) }, { key: 'C', merged_at: '2026-11-21T09:00:00.000Z' }]), null);
 }
 
 if (fails) { console.log(`${fails} failed`); process.exit(1); }
