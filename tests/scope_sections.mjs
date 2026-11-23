@@ -702,6 +702,17 @@ export function buildMap(files, read) {
     const u = users(mod, ids, undefined, true);
     if (u.full) return u;
     const got = new Set([...u.suites, ...whole]);
+    // A shell script's embedded node code (a heredoc) importing the module: loads() reads a script's shell
+    // lines only, so it is followed here, by the names it imports, else as a whole-module take.
+    const file = mod.slice(mod.lastIndexOf('/') + 1);
+    if (r.exported.length) for (const f of shells) {
+      if (f === mod || isSuite(f)) continue;
+      const code = uncommented(f, textOf(f));
+      if (!code.split('\n').some((l) => /\bimport\b/.test(l) && l.includes(file))) continue;
+      const why = untraced(f, code, mod, r.exported);
+      if (why) return { full: why };
+      if (r.exported.some((n) => importedNames(code, mod).has(n))) for (const s of claims.get(f) ?? []) got.add(s);
+    }
     if (r.main) for (const f of nodes) {
       if (f === mod || !isCode(f) || !isMod(loads(f, unimported(textOf(f))), mod)) continue;
       if (FOUNDATION.some((x) => x.test(f))) return { full: `${f}, shared by every suite, runs ${mod}` };

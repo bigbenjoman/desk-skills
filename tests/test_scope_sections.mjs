@@ -583,6 +583,19 @@ t('DS-1002 a guard function called as `if (isMain())` keeps the command line com
   drawEdit(isMainQ('() => process.argv[1] === fileURLToPath(import.meta.url)?.0:1', 'isMain()')) === everyClaimer,
   drawEdit(isMainQ('() => globalThis?.process.argv[1] === fileURLToPath(import.meta.url)', 'isMain()')),
 ], ['some: test_cli.sh test_lint.sh', true, true, true, true, 'some: test_cli.sh test_lint.sh']);
+// A shell script whose embedded node code imports from desk-q.mjs (loads() reads only its shell lines),
+// and which runs pass.mjs, so test_tri.sh claims desk-q.mjs through that.
+const triWith = (imp) => hubWith({
+  'desk/bin/q-tri.sh': `#!/usr/bin/env bash\nnode "$B/pass.mjs"\nnode --input-type=module - "$B" <<'JS'\nimport { join } from 'node:path';\n${imp}\nJS`,
+  'tests/test_tri.sh': '# suite: tri\n"$SRC/desk/bin/q-tri.sh"',
+});
+const fmtOn = (map, opts) => hscope(Q(hubQ.replace('return String(a);', 'return `${a}`;')), map, opts);
+const triWhole = triWith("const Q = await import(join(process.argv[2], 'desk-q.mjs'));\nconsole.log(Q.rows(1));");
+t('DS-1002 a shell script\'s embedded code importing a reached name runs its suites; one importing another name does not; one taking the module whole runs every claimer', [
+  fmtOn(triWith("const { rows } = await import(join(process.argv[2], 'desk-q.mjs'));\nconsole.log(rows(1));")),
+  fmtOn(triWith("const { keys } = await import(join(process.argv[2], 'desk-q.mjs'));\nconsole.log(keys(1));")),
+  fmtOn(triWhole) === fmtOn(triWhole, { l3Direct: true }),
+], ['some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs', true]);
 t('DS-1002 a foundational desk/bin/ module (untracked.mjs) is not narrowed by name', decide([{ status: 'M', path: 'desk/bin/untracked.mjs', names: { names: ['deskUntracked'] } }], real, { byName: true }).scope, 'full');
 // On this repo: an edit to desk-q.mjs's checkFlags, which its command line and the screen run. Its
 // command line reaches most of the module, and bin/desk-q, which launches it, is claimed through
@@ -593,6 +606,13 @@ const realQ = (opts) => decide([{ status: 'M', path: 'desk/bin/desk-q.mjs', name
 const [qCi, qLocal] = [realQ({}), realQ({ byName: true })];
 t('DS-1002 AC1 on the real desk-q.mjs: an edit to checkFlags narrows on it, runs the suite driving desk-q\'s command line, and no suite CI would not',
   [flagsEdit !== deskQ, qLocal.narrowed, qLocal.suites.includes('test_desk_q.mjs'), qLocal.suites.filter((s) => !qCi.suites.includes(s))], [true, ['desk/bin/desk-q.mjs: checkFlags'], true, []]);
+// On this repo: triage.sh's embedded node code imports usageLimit from usage-limit.mjs, which loads()
+// does not read (a script's shell lines only), so the suite running triage.sh still runs on an edit to it.
+const limitSrc = readFileSync(join(R, 'desk/bin/usage-limit.mjs'), 'utf8');
+const limitEdit = limitSrc.replace('export function usageLimit(text) {\n  const limits = [];', 'export function usageLimit(text) {\n  const limits = [].slice();');
+const limitScope = (opts) => decide([{ status: 'M', path: 'desk/bin/usage-limit.mjs', names: changedNames(limitSrc, limitEdit) }], real, opts);
+t('DS-1002 on the real usage-limit.mjs: an edit to usageLimit, which triage.sh imports in embedded code, runs test_triage.sh',
+  [limitEdit !== limitSrc, limitScope({}).suites.includes('test_triage.sh'), limitScope({ byName: true }).suites.includes('test_triage.sh')], [true, true, true]);
 // DS-1003 AC1: a frozen literal constant no load-time code reaches narrows to the suites naming it.
 const frozenEnv = cliEnv.replace('export function alone() {', "export const KINDS = Object.freeze(['a', 'b']);\nexport function alone() {");
 const frozenNamed = { ...named, 'desk/bin/desk-env.mjs': frozenEnv, 'tests/test_kinds.mjs': "// suite: kinds\nimport { KINDS } from '../desk/bin/desk-env.mjs';" };
