@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # suite: related tests (tests/related.sh runs the suites scope_sections.mjs picks, else every suite)
 # layer: L2
-# tests/related.sh in a scratch repo holding copies of it, tests/run.sh and tests/scope_sections.mjs,
-# a toy desk/bin/desk-env.mjs, and four toy suites: test_a.sh, test_b.sh and test_c.sh name lib/a.sh,
+# tests/related.sh in a scratch repo holding copies of it, tests/run.sh and tests/scope_sections.mjs
+# (with the desk/bin/untracked.mjs it imports), a toy desk/bin/desk-env.mjs, and four toy suites: test_a.sh, test_b.sh and test_c.sh name lib/a.sh,
 # lib/b.sh and lib/c.sh (test_c.sh also an export desk-env.mjs gains), test_lint.sh always runs; later
 # main gains test_e2e.sh, an L3 suite reaching lib/a.sh only through lib/top.sh.
 # Scratch HOME and repo only.
@@ -23,6 +23,7 @@ check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+
 
 R="$T/repo"; mkdir -p "$R/tests" "$R/lib" "$R/hooks" "$R/desk/bin"
 cp "$S/related.sh" "$S/run.sh" "$S/suite_env.sh" "$S/scope_sections.mjs" "$R/tests/"
+cp "$S/../desk/bin/untracked.mjs" "$R/desk/bin/"
 printf 'print("ok attribution hook stub")\n' > "$R/hooks/deny-ai-attribution.py"
 for n in a b c; do
   printf 'echo %s\n' "$n" > "$R/lib/$n.sh"
