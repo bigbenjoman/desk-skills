@@ -30,6 +30,9 @@ export const ESCALATE_TO = ['person', 'repair', 'requeue'];
 // How many of the latest event ids a fold keeps, so a retry that straddles a snapshot is still skipped.
 const ID_WINDOW = 1000;
 
+// A commit SHA as a ledger event's head_sha holds it: lowercase hex, 7 to 40 characters.
+export const isSha = (v) => typeof v === 'string' && /^[0-9a-f]{7,40}$/.test(v);
+
 // A field's check: a name ending in ? also takes null, but the field must still be present.
 const CHECKS = {
   string: (v) => typeof v === 'string' && v !== '',
@@ -37,7 +40,7 @@ const CHECKS = {
   list: (v) => Array.isArray(v),
   strings: (v) => Array.isArray(v) && v.length > 0 && v.every(CHECKS.string),
   object: (v) => v != null && typeof v === 'object' && !Array.isArray(v),
-  sha: (v) => typeof v === 'string' && /^[0-9a-f]{7,40}$/.test(v),
+  sha: isSha,
   kind: (v) => PARK_KINDS.includes(v),
   escalate: (v) => ESCALATE_TO.includes(v),
 };

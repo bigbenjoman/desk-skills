@@ -196,6 +196,10 @@ const run = (q0, args, { file, env = {} } = {}) => {
   // Merged again (a ticket requeued, done and merged a second time): merged_at keeps the first.
   const again = run(null, ['merged', 'MG-2', '2026-11-22T10:00:00Z', '--pr', '82', '--head-sha', SHA, '--base', 'main', '--by', 'merge-driver acme__widgets'], { file: f });
   t('DS-899 AC6 a second merge is a merged event and the rebuild still matches', `${typed(again.evs)} ${read(f).tickets['MG-2'].merged_at} ${queueDifference(f).diffs.length}`, 'merged MG-2 2026-11-21T09:05:00.000Z 0');
+  // The pass, finding the PR merged, records it again naming no PR: the driver's record stands.
+  const pass = run(null, ['merged', 'MG-2', '2026-11-22T11:00:00Z'], { file: f });
+  t('a later merge naming no PR keeps the recorded merge, and says nothing is missing',
+    `${pass.r.status} ${read(f).tickets['MG-2'].merge.pr} ${read(f).tickets['MG-2'].merge.head_sha === SHA} ${pass.r.stdout.includes('PR missing')} ${queueDifference(f).diffs.length}`, '0 82 true false 0');
   const bad = run(null, ['merged', 'MG-2', '--pr', '81', '--head-sha', 'not-a-sha'], { file: f });
   t('a head that is no commit SHA is refused', `${bad.r.status} ${bad.r.stderr.includes('usage: queue.mjs merged')}`, '11 true');
 }

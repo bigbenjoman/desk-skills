@@ -3505,13 +3505,16 @@ function timingFields(r, F, x, h, now) {
   return [['Starts', [[starts, null]]], ['Ships', [['no date', null], ...(why ? [[`  ${why}`, DIM]] : [])]]];
 }
 
+// "#<pr> merged by <who> at <short head>", as the ticket's record and the merge log both word it.
+const mergedLine = (pr, by, head) => `#${pr} merged by ${by} at ${shortSha(head)}`;
+
 // The merge of the ticket's PR as the ticket records it itself (queue.mjs merged), which names the base
 // too: { text, warn }, or null where it records none for this PR, or not who, the head and the base.
 function recordedMerge(t) {
   const pr = t.result?.pr;
   const m = t.merge;
   if (pr == null || !m?.by || !m.head_sha || !m.base || Number(m.pr) !== Number(pr)) return null;
-  return { text: `#${pr} merged by ${m.by} at ${String(m.head_sha).slice(0, 12)} onto ${m.base}`, warn: false };
+  return { text: `${mergedLine(pr, m.by, { sha: m.head_sha })} onto ${m.base}`, warn: false };
 }
 
 // The ticket's PR as the merge log has it: merged, or auto-merge armed, by whom at which head. A merged
@@ -3524,7 +3527,7 @@ function mergeOf(r, t, events) {
   const ps = prStatusOf(t);
   const repo = String(ps?.url ?? '').match(/github\.com\/([^/]+\/[^/]+)\/pull\//)?.[1] ?? r.slug.replace('__', '/');
   const e = latestMerge(events, { repo, pr });
-  if (e?.event === 'merged') return { text: `#${pr} merged by ${e.by} at ${shortSha(e)}`, warn: false };
+  if (e?.event === 'merged') return { text: mergedLine(pr, e.by, e), warn: false };
   if (e) return { text: `#${pr} auto-merge armed by ${e.by} at ${shortSha(e)}`, warn: false };
   // The PR's own status decides whether it merged: merged_at stays from an earlier PR once a ticket is
   // requeued for more work, so it is read only where no status was recorded for any PR of the ticket.

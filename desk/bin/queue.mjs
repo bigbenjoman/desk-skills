@@ -28,6 +28,7 @@ import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf, keepPrs
 import { repoOfPr } from './pass/pr-status.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { LEDGER_BY_ENV, queueDifference } from './queue-ledger.mjs';
+import { isSha } from './ticket-ledger.mjs';
 import { newPark, parkArgs, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { followOnPending, postMergeUnmade, workerMarkers, lastStage, logStage, settleSteps } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
@@ -1321,7 +1322,7 @@ switch (cmd) {
     const sha = got['--head-sha']?.v ?? null;
     const [key, time] = args.filter((_, i) => !Object.values(got).some((f) => f != null && (i === f.i || i === f.i + 1)));
     if (!key || (pr != null && !/^\d+$/.test(pr)) || [head, got['--base']?.v, got['--by']?.v].some((v) => v === '' || v?.startsWith('--'))
-      || (sha != null && !/^[0-9a-f]{7,40}$/.test(sha))) {
+      || (sha != null && !isSha(sha))) {
       throw new Error('usage: queue.mjs merged <TICKET> [<ISO time>] [--pr <n> [--head <branch>] [--head-sha <sha>] [--base <branch>]] [--by <who>]');
     }
     const t = ticket(q, key);
@@ -1341,11 +1342,15 @@ switch (cmd) {
         ...(foreign ? ['pr_status=null'] : []), `shipped_pr=${pr}`]);
     }
     t.merged_at ??= new Date(when).toISOString();
-    t.merge = { by: got['--by']?.v ?? null, pr: pr == null ? null : Number(pr), head_sha: sha, base: got['--base']?.v ?? null, at: new Date(when).toISOString() };
+    // A call naming no PR (the pass's own, finding the PR merged) never replaces a merge already recorded:
+    // it would wipe who merged which PR at which head, as merged_at keeps the first merge time.
+    if (pr != null || t.merge == null) {
+      t.merge = { by: got['--by']?.v ?? null, pr: pr == null ? null : Number(pr), head_sha: sha, base: got['--base']?.v ?? null, at: new Date(when).toISOString() };
+    }
     t.updated_at = new Date().toISOString();
     save(q);
     console.log(`${key} merged at ${t.merged_at}`);
-    if (pr == null) console.log(`${key}'s merge is recorded with its PR missing: no --pr was given`);
+    if (pr == null && t.merge.pr == null) console.log(`${key}'s merge is recorded with its PR missing: no --pr was given`);
     console.log(describeHistory(recordMerge({ state: stateDir(), queue: q, key, mergedPrs: () => ghMergedPrs(ghRepo()) })));
     const est = recordEstimateMerge(stateDir(), key, t.merged_at);
     if (est) console.log(`first estimate kept with its merge: could run to ${est.could_run_to}, merged ${Date.parse(est.merged_at) < Date.parse(est.could_run_to) ? 'before' : 'after'} it`);

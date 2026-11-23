@@ -1,6 +1,6 @@
 // suite: pass phase: report (base drift, the report's lines, the groups and the verdict)
 // layer: L1
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict, mergeGapLine } from '../desk/bin/pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict, mergeGaps, mergeGapLine } from '../desk/bin/pass/report.mjs';
 import { inputsHash, questionKey, lookup } from '../desk/bin/not-now.mjs';
 import { HELD_PREFIX } from '../desk/bin/batch-state.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
@@ -318,6 +318,12 @@ const vsnap = (tickets, fields = {}) => {
     mergeGapLine([{ key: 'A', merge: merge(null) }, { key: 'B', merge: merge(12) }, { key: 'C' }]),
     'merges: 1 recorded with the PR missing (A): queue.mjs merged was run with no --pr, so the merge names no PR');
   t('DS-899 AC4 no such merge, no line', mergeGapLine([{ key: 'B', merge: merge(12) }, { key: 'C', merged_at: '2026-11-21T09:00:00.000Z' }]), null);
+  const kept = [{ key: 'A', merge: merge(null) }, { key: 'B', merge: merge(12) }];
+  t('DS-899 AC4 the pass records the merge it named', j(mergeGaps(kept)), j(['A@2026-11-21T09:00:00.000Z']));
+  t('DS-899 AC4 a later pass, the ticket still live, does not name it again', mergeGapLine(kept, mergeGaps(kept)), null);
+  t('DS-899 AC4 but names a later merge of it with its PR missing',
+    mergeGapLine([{ key: 'A', merge: { ...merge(null), at: '2026-11-22T09:00:00.000Z' } }], mergeGaps(kept)),
+    'merges: 1 recorded with the PR missing (A): queue.mjs merged was run with no --pr, so the merge names no PR');
 }
 
 if (fails) { console.log(`${fails} failed`); process.exit(1); }
