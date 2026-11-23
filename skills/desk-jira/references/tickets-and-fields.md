@@ -79,7 +79,10 @@ config). Mentioning a status mid-sentence ("the body said Status: Not Started") 
 it refuses:
 
 - §4 Required fields: a `create` missing a field its type needs is refused, and so is an `edit`
-  that clears one (`null`, empty, or an empty option).
+  that clears one (`null`, empty, or an empty option). §4 Field defaults (`desk-env list
+  jira-field-defaults`) fills one the `create` leaves out: its value, or the parent's own when it
+  says `from parent`. A field with no default, or taken from a parent the `create` names none of,
+  is refused before any call.
 - §4 Size field: an XL is refused on every type but Epic. Split the ticket into ones of L or smaller.
 - §4 Priorities only you set: these values need the user. Ask, then pass
   `--approved "<their decision, in a sentence>"`; the CLI writes the field and posts that decision

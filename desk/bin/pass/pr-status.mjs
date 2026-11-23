@@ -14,6 +14,7 @@
 //   dry      a dry run: nothing is written but pr_status
 //   passAt    the pass's start time, ISO
 //   logins    desk's accounts, as E.verdictLogins gives them (null when unset)
+//   previews  preview-build leases are in use: §4 Vercel names a team and the kind is not off
 //
 // Actions ("->" is what the handler returns):
 //   fix-finished {key, at, fixTries}   the ticket's fix try is over: fix.finished=at, and, for a
@@ -29,13 +30,30 @@
 //   fetch-origin {}                    git fetch origin in the repo root
 //   prune-builds {open}                remove the check-build checkouts of every PR not in `open`
 //   park {key, question}               park the ticket: its PR is not its own (shared.mjs notOwnPr)
-//   lists {drafts, undrafted, reopens, prStates, merges}   what the steps after this one work from:
+//   free-previews {done}               -> { freed: [pr] }, { unreadable: why } or { failed: why }:
+//                                      release the preview-build unit of each { pr, at, reason } in
+//                                      done, unless taken or renewed after `at`, when its preview finished
+//   lists {drafts, undrafted, reopens, prStates, merges, unread}   what the steps after this one work from:
 //                                      each list of { t, s } (reopens with `owed`), each PR's state by
-//                                      number, and the merge lines
+//                                      number, the merge lines, and the PRs whose read failed (`unread`)
 import { FOLLOW_ON_MAX, followOnPending, postMergeOwed } from '../harvest.mjs';
 import { fromReview, reviewStep } from '../undraft.mjs';
 import { LINK_STEP, notOwnPr, foreignQuestion } from './shared.mjs';
 import { owesReopen } from '../queue-store.mjs';
+import { FAILED, PREVIEW_CHECK } from '../gate.mjs';
+
+const IS_PREVIEW = new RegExp(PREVIEW_CHECK, 'i');
+// A PR's preview once every preview check on its head has finished: { failed: [names], at }, `at` the
+// earliest of their finish times (a check run's completion, a status context's last state). null while
+// one runs, none has reported, or one carries no time (its unit then lapses at its TTL). A unit taken
+// after `at` is for a build these checks predate, as a rerun's, so freeing waits for that build's own.
+function previewFinished(checks) {
+  const p = (checks ?? []).filter((c) => IS_PREVIEW.test(c?.name ?? ''));
+  if (!p.length || p.some((c) => c.status !== 'completed')) return null;
+  const times = p.map((c) => Date.parse(c.completed ?? c.started ?? ''));
+  if (times.some(Number.isNaN)) return null;
+  return { failed: p.filter((c) => FAILED.has(c.conclusion)).map((c) => c.name), at: new Date(Math.min(...times)).toISOString() };
+}
 
 // A PR recorded merged or closed is not read again, unless it merged and the ticket has no merged_at yet.
 // A merged PR whose kept status names post-merge criteria not yet made follow-on steps is read on
@@ -59,9 +77,11 @@ function* parkForeign(t, n, why, state, s, prStates) {
 export function* decidePrStatus(s) {
   const prStates = {};
   const merges = [];
+  const unread = [];
   const drafts = [];
   const undrafted = [];
   const reopens = [];
+  const previews = [];
   for (const t of Object.values(s.tickets)) {
     // A fix try is over once its worker has finished: later spawns are no longer that try's.
     if (t.state === 'done' && t.fix && !t.fix.finished && !s.dry) {
@@ -86,7 +106,9 @@ export function* decidePrStatus(s) {
     } else if (n in prStates) continue;
     if (!st) {
       st = yield { type: 'read-pr', key: t.key, pr: n, was: t.pr_status };
-      if (!st) continue;
+      // A PR already known merged or closed (read again only for its merge commit or post-merge
+      // criteria) is gone, not unread: an outage hold waits on no PR it already knows has left.
+      if (!st) { if (!(n in prStates)) unread.push(n); continue; }
       // A PR on a branch its worker did not make, or another person's, is never this ticket's: the
       // ticket parks before any list the reopen, undraft, fix-try or merge steps work from holds it.
       const foreign = notOwnPr(t, st, s.logins);
@@ -95,6 +117,9 @@ export function* decidePrStatus(s) {
       // behind it reads as stuck while the reopen is outstanding.
       prStates[n] = owed && st.state === 'CLOSED' ? 'OPEN' : st.state;
       yield { type: 'pr-status', key: t.key, status: st };
+      // A finished preview frees its PR's preview-build unit for the next build, not at its TTL.
+      const preview = s.previews && !s.dry ? previewFinished(st.checks) : null;
+      if (preview) previews.push({ pr: n, at: preview.at, failed: preview.failed, reason: preview.failed.length ? `preview finished: ${preview.failed.join(', ')} failed` : 'preview finished' });
       if (st.state === 'OPEN' && st.isDraft === true) drafts.push({ t, s: st });
       if (st.state === 'OPEN' && st.isDraft === false) undrafted.push({ t, s: st });
       if ((st.state === 'OPEN' && Object.keys(st.reopen ?? {}).length && st.base_head) || (owed && st.state === 'CLOSED')) reopens.push({ t, s: st, owed });
@@ -130,6 +155,14 @@ export function* decidePrStatus(s) {
     }
   }
   for (const m of merges) yield { type: 'out', line: `merge recorded: ${m}` };
+  if (previews.length) {
+    const r = yield { type: 'free-previews', done: previews };
+    if (r?.unreadable) yield { type: 'out', line: `preview builds: leases were unreadable, so no preview-build unit was freed this pass (${r.unreadable})` };
+    if (r?.failed) yield { type: 'out', line: `preview builds: freeing finished previews' preview-build units failed (${r.failed}); a unit still held lapses at its TTL` };
+    for (const p of previews.filter((x) => r?.freed?.includes(x.pr))) {
+      yield { type: 'out', line: `preview builds: PR #${p.pr}'s preview ${p.failed.length ? `failed (${p.failed.join(', ')})` : 'finished'}, so its preview-build unit is free for the next build` };
+    }
+  }
   // needs-you judges a gated follow step from the repo root's remote refs, so origin is fetched each pass
   // while one waits: nothing else moves origin/<default> or the Promotion ref there on a quiet repo.
   if (Object.values(s.tickets).some(gatedFollow)) yield { type: 'fetch-origin' };
@@ -138,5 +171,5 @@ export function* decidePrStatus(s) {
     const open = [...new Set(Object.values(s.tickets).map((t) => t.result?.pr).filter((n) => n != null && !PR_FINAL.includes(prStates[n])).map(String))];
     yield { type: 'prune-builds', open };
   }
-  yield { type: 'lists', drafts, undrafted, reopens, prStates, merges };
+  yield { type: 'lists', drafts, undrafted, reopens, prStates, merges, unread };
 }

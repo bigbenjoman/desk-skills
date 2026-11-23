@@ -22,13 +22,16 @@
 // (the scoping suites themselves): its text names nothing, and only its import statements are followed.
 //
 // The decision, which fails closed: anything it cannot place runs every suite.
-//   full  - a foundational file (tests/run.sh and the environment it gives suites, this script, the
-//           bash 3.2 check, .github/, desk-env.sh, and desk-env.mjs unless the change only adds
-//           exports), a root file that is not a document or a script (.gitignore, a lockfile), a
+//   full  - a foundational file (tests/run.sh and the environment it gives suites, this script and the
+//           untracked.mjs it reads, the bash 3.2 check, .github/, desk-env.sh, and desk-env.mjs and config-schema.mjs unless the
+//           change only adds exports), a root file that is not a document or a script (.gitignore, a lockfile), a
 //           deleted or renamed file, or a changed file no suite claims
 //   some  - the suites that claim a changed file, plus every changed suite and the suites claiming it;
-//           for a change that only adds exports to desk-env.mjs, the suites that name a new export
+//           for a change that only adds exports to desk-env.mjs or config-schema.mjs, the suites that
+//           name a new export
 //   none  - nothing changed
+// With --l3-direct, as tests/related.sh runs it, `some` leaves out an L3 suite (end to end) that claims
+// no changed file directly, only through what loads it, and names it as left for CI. CI never sets it.
 // The suites in ALWAYS (the syntax and shellcheck pass) run on every pull request whatever the scope,
 // and claim nothing: a file only they cover has no behavioural suite, so changing it runs everything.
 //
@@ -40,19 +43,23 @@
 //   node tests/scope_sections.mjs --files <path>...              decide for these paths, as modified
 //   node tests/scope_sections.mjs --full                         every suite (a push to main)
 //   add --json for the decision as JSON, or --github-output to append scope=, suites= and shells= to
-//   $GITHUB_OUTPUT. --claims <path> lists the suites claiming a path; --unclaimed lists tracked files no
-//   suite claims.
+//   $GITHUB_OUTPUT. --l3-direct (tests/related.sh) runs an L3 suite only for a change it claims
+//   directly, and leaves one it reaches only through imports for CI: `ci` in the JSON, a ci= line, and
+//   "left for CI" lines. --claims <path> lists the suites claiming a path; --unclaimed lists tracked files no
+//   suite claims; --layers [<file>...] names each suite (every one, or these files) whose layer line is
+//   missing, doubled or unknown, and exits 1 when there is one.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, appendFileSync, existsSync } from 'node:fs';
 import { join, dirname, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Script } from 'node:vm';
+import { deskUntracked } from '../desk/bin/untracked.mjs';
 
 export const ALWAYS = ['test_lint.sh'];
 // Shared by everything: a change here can move any suite.
-const FOUNDATION = [/^tests\/(run\.sh|suite_env\.sh|scope_sections\.mjs|bash32_check\.sh|bash32_features\.txt)$/, /^\.github\//, /^desk\/bin\/desk-env\.(mjs|sh)$/, /^desk\/bin\/config-schema\.mjs$/];
-// A foundational module whose change, when it only adds exports, reaches only the suites using them.
-const EXPORTS_ONLY = new Set(['desk/bin/desk-env.mjs']);
+const FOUNDATION = [/^tests\/(run\.sh|suite_env\.sh|scope_sections\.mjs|bash32_check\.sh|bash32_features\.txt)$/, /^\.github\//, /^desk\/bin\/desk-env\.(mjs|sh)$/, /^desk\/bin\/config-schema\.mjs$/, /^desk\/bin\/untracked\.mjs$/];
+// Foundational modules whose change, when it only adds exports, reaches only the suites using them.
+const EXPORTS_ONLY = new Set(['desk/bin/desk-env.mjs', 'desk/bin/config-schema.mjs']);
 const CODE_EXT = /\.(sh|bash|mjs|cjs|js|py)$/;
 const DIR_ROOTS = /^(skills|vendor|docs)\//;
 
@@ -199,18 +206,37 @@ export function mentions(text) {
   return out;
 }
 
-// A suite's header, its first 30 lines: the `suite:` label ('' when none), the `covers:` globs and
-// whether it `claims: imports` only.
+// Every suite declares its test layer in one `# layer: <layer>` line (`//` in .mjs) in its first ten
+// lines, as it does its `# budget:`:
+//   L1  in process: its cases import modules and start no process
+//   L2  one process boundary: its cases start a desk script or command each and read what it did
+//   L3  end to end: it runs a pass, a batch, the merge driver or the installer through
+export const LAYERS = ['L1', 'L2', 'L3'];
+const LAYER_LINE = /^(#|\/\/) layer:/;
+// A suite's declared layer, or what is wrong with its declaration: { layer, problem }, layer null and
+// problem set unless it declares exactly one known layer.
+function readLayer(text) {
+  const lines = String(text).split('\n').slice(0, 10).filter((l) => LAYER_LINE.test(l));
+  if (!lines.length) return { layer: null, problem: `declares no layer: add a \`# layer: <${LAYERS.join('|')}>\` line (\`//\` in .mjs) in its first ten lines` };
+  if (lines.length > 1) return { layer: null, problem: `declares ${lines.length} layers: ${lines.join(' / ')}` };
+  const v = lines[0].replace(LAYER_LINE, '').trim();
+  return LAYERS.includes(v) ? { layer: v, problem: '' } : { layer: null, problem: `declares an unknown layer: ${lines[0]} (one of ${LAYERS.join(', ')})` };
+}
+
+// A suite's header, its first 30 lines: the `suite:` label ('' when none), its layer (null unless it
+// declares exactly one known layer), the `covers:` globs and whether it `claims: imports` only.
 export function suiteHeader(text) {
   const head = String(text).split('\n').slice(0, 30);
   return {
     label: (head.slice(0, 10).find((l) => /^(#|\/\/) suite: /.test(l)) ?? '').replace(/^(#|\/\/) suite: /, ''),
+    layer: readLayer(text).layer,
     covers: head.filter((l) => /^(#|\/\/) covers: /.test(l)).flatMap((l) => l.replace(/^(#|\/\/) covers: /, '').trim().split(/\s+/)),
     importsOnly: head.some((l) => /^(#|\/\/) claims: imports\b/.test(l)),
   };
 }
 
-// -> { suites: [{ file, label, covers: [glob] }], claims: Map(path -> Set(suite file)) }
+// -> { suites: [{ file, label, layer, covers: [glob] }], claims: Map(path -> Set(suite file)),
+//      direct: Map(path -> Set(suite file)), the claims made before any load is followed }
 // `files` is every tracked path; `read(path)` returns its text (or '' when unreadable).
 export function buildMap(files, read) {
   const suites = files.filter(isSuite).sort();
@@ -254,16 +280,19 @@ export function buildMap(files, read) {
     return named.get(p);
   };
   const claims = new Map();
+  const direct = new Map(); // path -> the suites claiming it directly, not through what it is loaded by
   const out = [];
   for (const s of suites) {
     const t = textOf(s);
-    const { label, covers, importsOnly } = suiteHeader(t);
-    out.push({ file: s.slice(6), label: label || s.slice(6), covers, importsOnly });
+    const { label, layer, covers, importsOnly } = suiteHeader(t);
+    out.push({ file: s.slice(6), label: label || s.slice(6), layer, covers, importsOnly });
     if (ALWAYS.includes(s.slice(6))) continue;
     const seen = new Set();
     const todo = importsOnly ? [...mentions(loads(s, t, { importsOnly }))].flatMap((k) => [...(names.get(k) ?? [])]) : [...namedBy(s)];
     const res = covers.map(globRe);
     for (const f of nodes) if (!isCode(f) && res.some((r) => r.test(f))) todo.push(f);
+    // What the suite claims directly: what its text names or imports, and what its globs match.
+    const first = new Set(todo);
     while (todo.length) {
       const f = todo.pop();
       if (seen.has(f)) continue;
@@ -271,8 +300,9 @@ export function buildMap(files, read) {
       if (isCode(f) && !FOUNDATION.some((r) => r.test(f))) for (const q of namedBy(f)) if (!seen.has(q)) todo.push(q);
     }
     // Another suite a glob matches is claimed as it stands, and nothing it names is followed.
-    for (const f of suites) if (f !== s && res.some((r) => r.test(f))) seen.add(f);
+    for (const f of suites) if (f !== s && res.some((r) => r.test(f))) { seen.add(f); first.add(f); }
     for (const f of seen) { if (!claims.has(f)) claims.set(f, new Set()); claims.get(f).add(s.slice(6)); }
+    for (const f of first) { if (!direct.has(f)) direct.set(f, new Set()); direct.get(f).add(s.slice(6)); }
   }
   const shells = new Set(files.filter((f) => /\.(sh|bash)$/.test(f) || (!/\.[A-Za-z0-9]+$/.test(f.slice(f.lastIndexOf('/') + 1)) && /^#!.*[/ ](ba)?sh( |$)/.test(textOf(f).split('\n')[0]))));
   // The suites (bar ALWAYS) whose text names any of these identifiers as a whole word.
@@ -280,7 +310,7 @@ export function buildMap(files, read) {
     const res = ids.map((n) => new RegExp(`(?<![\\w$])${n.replace(/\$/g, '\\$')}(?![\\w$])`));
     return suites.filter((s) => !ALWAYS.includes(s.slice(6)) && res.some((r) => r.test(textOf(s)))).map((s) => s.slice(6));
   };
-  return { suites: out, claims, shells, uses };
+  return { suites: out, claims, direct, shells, uses };
 }
 
 // `git diff --name-status -M` lines -> [{ status, path, from }]
@@ -299,9 +329,14 @@ export function parseNameStatus(text) {
 // -> { scope: 'full' | 'some' | 'none', reason, suites: [file], shells: [path] }
 // `shells` is the shell scripts to syntax-check under bash 3.2: the changed ones and those the
 // chosen suites claim (every one when the scope is full).
+// With `l3Direct` (tests/related.sh's local runs; CI never sets it), an L3 suite that claims a changed
+// file only through what loads it, never directly, does not run: it is in `ci`, left for CI, which still
+// runs it before merge. One changed file the suite does claim directly runs it.
 export const fullScope = (map, reason) => ({ scope: 'full', reason, suites: map.suites.map((s) => s.file), shells: [...map.shells].sort() });
-export function decide(changes, map) {
+export function decide(changes, map, { l3Direct = false } = {}) {
   const all = map.suites.map((s) => s.file);
+  const l3 = new Set(l3Direct ? map.suites.filter((s) => s.layer === 'L3').map((s) => s.file) : []);
+  const left = new Set();
   const shellsOf = (paths) => [...new Set(paths.filter((p) => map.shells.has(p)))].sort();
   const full = (reason) => fullScope(map, reason);
   if (!changes.length) return { scope: 'none', reason: 'nothing changed', suites: [...ALWAYS], shells: [] };
@@ -323,11 +358,13 @@ export function decide(changes, map) {
     if (rootConfig(path)) return full(`${path} is a root file`);
     const by = map.claims.get(path);
     if (!by?.size) return full(`no suite claims ${path}`);
-    for (const s of by) pick.add(s);
+    for (const s of by) (l3.has(s) && !map.direct?.get(path)?.has(s) ? left : pick).add(s);
   }
   const suites = all.filter((s) => pick.has(s));
+  const ci = all.filter((s) => left.has(s) && !pick.has(s));
   const claimed = [...map.claims].filter(([, by]) => [...by].some((s) => pick.has(s))).map(([p]) => p);
-  return { scope: 'some', reason: `${changes.length} changed file(s) reach ${suites.length} of ${all.length} suites`, suites, shells: shellsOf([...changes.map((c) => c.path), ...suites.map((s) => `tests/${s}`), ...claimed]) };
+  const reason = `${changes.length} changed file(s) reach ${suites.length} of ${all.length} suites${ci.length ? `, and ${ci.length} L3 suite(s) only through imports, left for CI` : ''}`;
+  return { scope: 'some', reason, suites, shells: shellsOf([...changes.map((c) => c.path), ...suites.map((s) => `tests/${s}`), ...claimed]), ...(l3Direct ? { ci } : {}) };
 }
 
 // What a script loads into its own process (ES imports, static or `import()`, and shell `source` / `.`
@@ -382,12 +419,13 @@ export function repoMap(root) {
 }
 
 // The changes CI and tests/related.sh both decide on: everything since the merge base of `base` and
-// `head`, or, with no head, of `base` and HEAD up to the working tree, untracked files included.
+// `head`, or, with no head, of `base` and HEAD up to the working tree, untracked files included bar the
+// ones desk itself leaves there (deskUntracked: a resume file, a desk-review run's scratch files).
 // A modified EXPORTS_ONLY module carries `exports`: addedExports() between the merge base and the head.
 export function changesAgainst(root, base, head) {
   const mb = git(root, ['merge-base', base, head ?? 'HEAD']).trim();
   const changes = parseNameStatus(git(root, ['diff', '--name-status', '-M', mb, ...(head ? [head] : [])]));
-  if (!head) for (const path of git(root, ['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean)) changes.push({ status: 'A', path });
+  if (!head) for (const path of git(root, ['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean)) if (!deskUntracked(path)) changes.push({ status: 'A', path });
   for (const c of changes) {
     if (c.status !== 'M' || !EXPORTS_ONLY.has(c.path)) continue;
     const after = head ? git(root, ['show', `${head}:${c.path}`]) : readFileSync(join(root, c.path), 'utf8');
@@ -400,6 +438,17 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const args = process.argv.slice(2);
   const opt = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : undefined; };
   const root = git(dirname(fileURLToPath(import.meta.url)), ['rev-parse', '--show-toplevel']).trim();
+  if (args.includes('--layers')) {
+    const given = args.slice(args.indexOf('--layers') + 1).filter((a) => !a.startsWith('--'));
+    const paths = given.length ? given : git(root, ['ls-files']).split('\n').filter(isSuite);
+    let bad = 0;
+    for (const p of paths) {
+      let problem;
+      try { problem = readLayer(readFileSync(given.length ? p : join(root, p), 'utf8')).problem; } catch (e) { problem = `is unreadable: ${e.message}`; }
+      if (problem) { bad++; console.log(`${p}: ${problem}`); }
+    }
+    process.exit(bad ? 1 : 0);
+  }
   const map = repoMap(root);
   if (args.includes('--claims')) {
     const p = opt('--claims');
@@ -417,15 +466,17 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   else if (args.includes('--files')) changes = args.slice(args.indexOf('--files') + 1).filter((a) => !a.startsWith('--')).map((path) => ({ status: 'M', path }));
   else if (opt('--base')) changes = changesAgainst(root, opt('--base'), args.includes('--worktree') ? undefined : opt('--head') ?? 'HEAD');
   else { console.error('usage: scope_sections.mjs --base <ref> [--head <ref> | --worktree] | --files <path>... | --full [--json | --github-output]'); process.exit(2); }
-  d ??= decide(changes, map);
+  const l3Direct = args.includes('--l3-direct');
+  d ??= decide(changes, map, { l3Direct });
   if (args.includes('--json')) console.log(JSON.stringify(d, null, 2));
   else {
     console.log(`scope: ${d.scope} (${d.reason})`);
     for (const s of d.suites) console.log(`  ${s}  ${map.suites.find((x) => x.file === s)?.label ?? ''}`);
+    for (const s of d.ci ?? []) console.log(`  left for CI: ${s}  ${map.suites.find((x) => x.file === s)?.label ?? ''}`);
   }
   if (args.includes('--github-output')) {
     const out = process.env.GITHUB_OUTPUT;
     if (!out || !existsSync(dirname(out))) { console.error('GITHUB_OUTPUT is not set'); process.exit(2); }
-    appendFileSync(out, `scope=${d.scope}\nreason=${d.reason}\nsuites=${d.suites.join(' ')}\nshells=${d.shells.join(' ')}\n`);
+    appendFileSync(out, `scope=${d.scope}\nreason=${d.reason}\nsuites=${d.suites.join(' ')}\nshells=${d.shells.join(' ')}\n${l3Direct ? `ci=${(d.ci ?? []).join(' ')}\n` : ''}`);
   }
 }

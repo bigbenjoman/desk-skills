@@ -1,4 +1,5 @@
 // suite: usage pace (a pass holds new spawns while 7-day usage runs ahead of an even weekly pace)
+// layer: L3
 // usage-pace.mjs with a fixed clock against fake worker logs carrying rate_limit_event lines, then the
 // real pass.mjs, with stub claude, gh, setup-worktree and spawn-worker, once per acceptance criterion.
 // A throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT: nothing touches your real state.

@@ -13,6 +13,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { stateDir, runBin, queueFile, configValue, SAFE_ID } from './desk-env.mjs';
 import { isHeld, EXIT, crashShowsPerson, readQueue, readTriage, unknownsOf, openUnknowns, refusedStep, neverStep, grantFor, workerRefusedStep, approvesStep } from './batch-state.mjs';
+import { blockersOf } from './queue-states.mjs';
 import { NOT_NOW, putOffEntry, addPutOff, clearPutOff, notNowPath } from './not-now.mjs';
 import { useTicketBatch } from './batches.mjs';
 import { readRegistry } from './claude-logins.mjs';
@@ -276,7 +277,8 @@ try {
       // Held behind a Jira blocker: the answer settles its questions, and the hold stays, so it
       // still starts only once the blocker's PR has merged (release_chain, or the sanctioned release).
       settle();
-      console.log(`${ticket}: answered${stillOpen}. It is held — it releases when ${String(Q.tickets[ticket].held_by ?? '?').split('|').join(', ')} merge${String(Q.tickets[ticket].held_by ?? '').includes('|') ? '' : 's'}.`);
+      const by = blockersOf(Q.tickets[ticket]);
+      console.log(`${ticket}: answered${stillOpen}. It is held — it releases when ${by.join(', ') || '?'} merge${by.length > 1 ? '' : 's'}.`);
     } else if (st === 'triaged' || st === 'queued') {
       settle();
       console.log(left ? `${ticket}: answered${stillOpen}. It does not start until they are answered.` : `${ticket}: answered.`);

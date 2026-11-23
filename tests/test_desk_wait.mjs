@@ -1,4 +1,5 @@
 // suite: desk-wait (a worker waits on its own suite or the test lock in one blocking call)
+// layer: L2
 // covers: desk/bin/desk-wait.mjs desk/bin/log-tool-calls.mjs
 // Real with-lock.sh runs against a scratch lock dir with one slot and the slot lease off, their output
 // written to a file the way the Bash tool writes a background task's. Scratch directories only.
@@ -8,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { parseArgs, standing, recordLine, MAX_DEFAULT } from '../desk/bin/desk-wait.mjs';
 import { waitCalls } from '../desk/bin/log-tool-calls.mjs';
+import { psRows } from '../desk/bin/desk-env.mjs';
+import { waitingDir } from '../desk/bin/slot-lease.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -38,6 +41,27 @@ t('a wrapper re-run under the light lock is read as waiting on it',
   standing([{ ...wrapper, args: 'bash /x/with-lock.sh light --cwd . -- bash tests/run.sh' }]).light, true);
 t('a flock and the lease broker are a wait too',
   standing([wrapper, { pid: 12, ppid: 11, etime: '00:01', args: 'flock 9' }, { pid: 13, ppid: 11, etime: '00:01', args: 'node /x/slot-lease.mjs take test --pid 11 -- bash tests/run.sh' }]).state, 'waiting');
+t('DS-975 the wait\'s log line, with its holder read and load reading, is a wait too',
+  standing([wrapper, { pid: 12, ppid: 11, etime: '00:01', args: 'node /x/slot-lease.mjs note queued test --pid 11 --waited 0' },
+    { pid: 13, ppid: 12, etime: '00:00', args: 'sysctl vm.loadavg kern.memorystatus_level' }, { pid: 14, ppid: 12, etime: '00:00', args: 'ps -axo pid=,ppid=,args=' }]).state, 'waiting');
+t('anything the lease client runs, however it is named, is a wait too',
+  standing([wrapper, { pid: 12, ppid: 11, etime: '00:01', args: '/opt/node/bin/node /x/slot-lease.mjs holders' },
+    { pid: 13, ppid: 12, etime: '00:00', args: '/usr/bin/xcrun git rev-parse --show-toplevel' }, { pid: 15, ppid: 13, etime: '00:00', args: '/Library/Developer/CommandLineTools/usr/bin/git-x' }]).state, 'waiting');
+t('what the wrapper\'s config reads run (a git shim under desk-env get or machine get) is a wait too',
+  standing([wrapper, { pid: 12, ppid: 11, etime: '00:01', args: 'node /x/desk-env.mjs get suite-weight' },
+    { pid: 13, ppid: 12, etime: '00:00', args: '/usr/bin/xcrun git rev-parse --show-toplevel' },
+    { pid: 16, ppid: 11, etime: '00:01', args: 'node /x/desk-env.mjs machine get test-lock-slots' },
+    { pid: 17, ppid: 16, etime: '00:00', args: '/usr/bin/xcrun git remote get-url origin' }]).state, 'waiting');
+t('headroom admission\'s watcher and the judge it runs are a wait too',
+  standing([wrapper, { pid: 12, ppid: 11, etime: '00:01', args: 'node /x/admission.mjs watch test --pid 11 --marker /l/desk-test.waiting/11' },
+    { pid: 13, ppid: 12, etime: '00:00', args: '/opt/node/bin/node /x/admission.mjs judge test --pid 11' },
+    { pid: 14, ppid: 13, etime: '00:00', args: '/usr/bin/xcrun git rev-parse --show-toplevel' }]).state, 'waiting');
+t('a suite whose file name only ends in admission.mjs, run under the mkdir path\'s wrapper, has started',
+  standing([wrapper, { pid: 12, ppid: 11, etime: '00:01', args: 'node tests/test_admission.mjs' },
+    { pid: 13, ppid: 12, etime: '00:00', args: '/opt/node/bin/node /x/admission.mjs judge test --pid 99' }]), { state: 'started', pid: 12 });
+t('a suite desk-env workspace-test runs under the mkdir path\'s wrapper has started',
+  standing([wrapper, { pid: 12, ppid: 11, etime: '00:01', args: 'node /x/desk-env.mjs workspace-test apps/web' },
+    { pid: 13, ppid: 12, etime: '00:01', args: 'pnpm vitest run' }]), { state: 'started', pid: 13 });
 t('the command, exec\'d into the wrapper\'s pid, has started', standing([shell, { ...wrapper, args: 'bash tests/run.sh' }, { pid: 14, ppid: 11, etime: '00:01', args: 'node tests/test_x.mjs' }]), { state: 'started', pid: 11 });
 t('a run that takes no lock has started from its shell', standing([{ pid: 20, ppid: 1, etime: '00:03', args: '/bin/zsh -c bash tests/run.sh' }]), { state: 'started', pid: 20 });
 t('AC2 the record line is the one the contract records',
@@ -102,15 +126,20 @@ try {
   // AC1: a run still going when --max is up returns started, with the command's pid.
   {
     const r = background(lockRun(nodeSleep(60_000))); held.push(r);
-    // with-lock.sh execs into its command once it holds the lock: wait for that, not a fixed time.
-    const args = () => spawnSync('ps', ['-o', 'args=', '-p', String(r.c.pid)], { encoding: 'utf8' }).stdout;
-    for (let i = 0; i < 150 && !args().includes('setTimeout'); i++) await sleep(100);
+    // with-lock.sh runs its command once it holds the lock (exec'd into its pid where it has flock, a
+    // child of it where not): wait for that, not a fixed time. The wrapper's own command line names the
+    // command too, so it is the command only once that line is not with-lock.sh's.
+    const running = () => psRows('pid=,ppid=,args=').some((p) =>
+      [p.pid, p.ppid].includes(r.c.pid) && p.args.includes('setTimeout') && !p.args.includes('with-lock.sh'));
+    for (let i = 0; i < 150 && !running(); i++) await sleep(100);
     const w = wait(r.out, ['--max', '1']);
     t('AC1 a run under the lock that has started returns started at --max', [w.rc, /^started \d+$/.test(w.out.trim()), w.seconds < 10], [0, true, true]);
     t('AC3 a wait leaves the run running', alive(r.c.pid), true);
     // AC1: a run queued behind it returns waiting, with the holder and the minutes waited.
     const q = background(lockRun(['sh', '-c', `: > '${join(S, 'queued-ran')}'`])); held.push(q);
-    await sleep(500);
+    // It waits once its marker is in the lock's waiting directory: wait for that, not a fixed time.
+    const marker = join(waitingDir('test', locks), String(q.c.pid));
+    for (let i = 0; i < 150 && !existsSync(marker); i++) await sleep(100);
     const w2 = wait(q.out, ['--max', '1']);
     t('AC1 a run the lock has not started returns waiting, naming the holder', [w2.rc, /^waiting \(.+\) 0$/.test(w2.out.trim()), w2.out.includes('held'), w2.seconds < 10], [0, true, true, true]);
     // AC2: past the threshold it stops the queued run, prints the holder and the record line, and

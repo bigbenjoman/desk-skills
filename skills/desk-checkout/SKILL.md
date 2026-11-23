@@ -23,7 +23,8 @@ Slack message.** `§3 slack-send` is `never`, however the request is worded.
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 ```
 
-Read the `CONFIG` file. `EXISTS=no` means stop: say which slug was looked up and offer `/desk-setup`.
+Read `desk-env show rules 1 3 4 5` (never the `CONFIG` file whole). `EXISTS=no` means stop: say
+which slug was looked up and offer `/desk-setup`.
 §1 gives the user's name and the short form colleagues use, §3 says which sources you may read,
 §4 Tracker and Ticket key pattern say how tickets are named, §4 People names who's who, and
 **§4 Check-out destination** says where the draft goes:

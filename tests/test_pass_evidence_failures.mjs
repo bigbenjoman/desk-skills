@@ -1,4 +1,5 @@
 // suite: pass phase: evidence failures (filing one fix per shared failure, and what the drafts wait on)
+// layer: L1
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideEvidenceFailures } from '../desk/bin/pass/evidence-failures.mjs';
 import { failureKey } from '../desk/bin/evidence.mjs';

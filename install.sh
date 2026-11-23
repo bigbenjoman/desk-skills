@@ -503,7 +503,14 @@ if need node 1 "brew install node, or Node 24 from your version manager (nvm, fn
 fi
 
 if need gh 1 "brew install gh" "see https://github.com/cli/cli/blob/trunk/docs/install_linux.md"; then
-  if status="$(gh auth status -h github.com 2>&1)"; then
+  # Only the active account, the one desk uses: another account's error must not stand in for it.
+  # A gh older than --active (Ubuntu 24.04's 2.45) refuses the flag, which is no sign-out: read every
+  # account there, as before the flag. desk/bin/health.mjs falls back the same way.
+  gh_rc=0; status="$(gh auth status -h github.com --active 2>&1)" || gh_rc=$?
+  if [ "$gh_rc" != 0 ] && printf '%s\n' "$status" | grep -q -- 'unknown flag: --active'; then
+    gh_rc=0; status="$(gh auth status -h github.com 2>&1)" || gh_rc=$?
+  fi
+  if [ "$gh_rc" = 0 ]; then
     scopes="$(printf '%s\n' "$status" | sed -n 's/.*Token scopes: //p' | head -n 1)"
     if [ -z "$scopes" ]; then
       warn "gh is signed in but its token scopes are unreadable (fine-grained token or GH_TOKEN?). The skills need repo + workflow."
@@ -516,6 +523,15 @@ if need gh 1 "brew install gh" "see https://github.com/cli/cli/blob/trunk/docs/i
         esac
       done
     fi
+  # The same rule as desk/bin/health.mjs's ghLimited: change both together.
+  elif printf '%s\n' "$status" | grep -qi 'rate limit exceeded' && ! printf '%s\n' "$status" | grep -qiE 'HTTP 401|bad credentials'; then
+    # A spent API budget fails auth status on a valid token; the rate_limit endpoint is not counted against it.
+    # Both reads may fail (set -e is on): an unreadable reset falls back to "its hourly reset".
+    reset="$(gh api rate_limit --hostname github.com --jq .resources.core.reset 2>/dev/null || true)"
+    at=""
+    case "$reset" in ''|*[!0-9]*) ;; *) at="$(date -r "$reset" '+%H:%M' 2>/dev/null || date -d "@$reset" '+%H:%M' 2>/dev/null || true)" ;; esac
+    warn "gh is signed in, but the GitHub API is rate-limited until ${at:-its hourly reset}. The install goes on; gh calls fail until then."
+    warn "gh token scopes are unreadable while the API is rate-limited. The skills need repo + workflow."
   else
     bad "gh is not signed in. Run: gh auth login -h github.com -s repo,workflow"
   fi

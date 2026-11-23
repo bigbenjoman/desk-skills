@@ -1,4 +1,5 @@
 // suite: gate (one definition of green)
+// layer: L2
 import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseFlaky, flakyWaiver, failureNotes, notesIn, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold, holdKind, holdNeedsPerson, agentLast, NO_REASON, UNREAD_FILES } from '../desk/bin/gate.mjs';
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -525,5 +526,26 @@ rmSync(gtmp, { recursive: true, force: true });
   const f = { name: 'Integration', runId: '9' };
   t('#831 notesIn reads the error_notes the pass kept', JSON.stringify(notesIn(kept)(f)), JSON.stringify([listed]));
   t('#831 notesIn is undefined where a run kept none', notesIn(checks)(f), undefined);
+}
+{
+  // DS-989 AC3 AC4: a PR's file list is read once per head SHA, and again for a new head or once it is
+  // older than the cache's 30 minutes; a read that fails is not kept.
+  const { prFilesAt } = await import('../desk/bin/gate.mjs');
+  const { openCache, CACHE_MS } = await import('../desk/bin/read-cache.mjs');
+  const path = join(scratch('gate-files-'), 'pr-files.json');
+  let reads = 0, fail = false;
+  const read = () => { reads++; if (fail) throw new Error('HTTP 502'); return ['a.ts', `b${reads}.ts`]; };
+  const at = (now, head = 'h1') => prFilesAt({ cache: openCache(path, { now }), repo: 'Acme/Widgets', n: '7', head, read });
+  const t0 = Date.parse('2026-11-22T10:00:00Z');
+  const first = JSON.stringify(at(t0));
+  t('DS-989 AC3 a PR\'s file list at an unchanged head is read once across loops', JSON.stringify([at(t0 + 60_000), at(t0 + CACHE_MS), reads]), JSON.stringify([JSON.parse(first), JSON.parse(first), 1]));
+  t('DS-989 AC4 a new head reads afresh', JSON.stringify([at(t0 + 60_000, 'h2'), reads]), JSON.stringify([['a.ts', 'b2.ts'], 2]));
+  t('DS-989 AC4 a list older than 30 minutes reads afresh', JSON.stringify([at(t0 + CACHE_MS + 1), reads]), JSON.stringify([['a.ts', 'b3.ts'], 3]));
+  fail = true;
+  let threw = false;
+  try { at(t0 + 60_000, 'h3'); } catch { threw = true; }
+  fail = false;
+  t('DS-989 a failed read throws and keeps nothing, so the next loop reads again', JSON.stringify([threw, at(t0 + 60_000, 'h3').length, reads]), JSON.stringify([true, 2, 5]));
+  t('DS-989 with no cache file every call reads', JSON.stringify([prFilesAt({ cache: openCache(null), repo: 'a/b', n: '7', head: 'h1', read }).length, prFilesAt({ cache: openCache(null), repo: 'a/b', n: '7', head: 'h1', read }).length, reads]), JSON.stringify([2, 2, 7]));
 }
 process.exit(fails ? 1 : 0);

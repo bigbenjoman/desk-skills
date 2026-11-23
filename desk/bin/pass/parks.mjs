@@ -14,6 +14,9 @@
 //   check {key, cond}             -> the clears-when check (clears-when.mjs checkCond): {holds, note} or {error}
 //   own-merged {key}              -> {pr: the ticket's own merged PR, or null}, or {error} where unread
 //   tail-after-merge {key}        -> false where its after-merge steps were not requeued (tailAfterMerge)
+//   other-merged {key, pr}        -> {why} where PR pr is not the ticket's own (shared.mjs notOwnPr) and the
+//                                    ticket holds no work of its own, else null, or {error} where unread
+//   drop-worktree {key}           -> what became of its worktree, a line for the report, or null with none
 //   write {key, fields}           -> whether the queue write was recorded
 //   requeue {key}                 -> queue.mjs requeue's {ok, out}
 //   lift-put-off {key, question}  -> not-now.mjs clearPutOff's {ok, why}
@@ -33,6 +36,7 @@ import { isHeld, spinePark, leftPark, needsSession, mergedTailPr, holdsKept, sto
 import { describeCond, recorded, restateLapsed, RESTATE_MS } from '../clears-when.mjs';
 import { splitOwnEpic, closedUnlanded } from '../desk-q-eta.mjs';
 import { keysOf } from '../desk-q.mjs';
+import { blockersOf } from '../queue-states.mjs';
 import { INTAKE_EVERY_MS } from '../intake.mjs';
 import { LINKS_MADE, ownWords, linkSteps, parkFollowOn, set, say } from './shared.mjs';
 import { redraftable, unrunFields } from '../fix-tries.mjs';
@@ -94,6 +98,13 @@ function* settleClear(t, s) {
   }
   const r = yield { type: 'check', key: t.key, cond: c };
   if (r.error) { yield say(t.key, 'clears', `${t.key}: could not check "${cond}" (${r.error}): left parked`); return; }
+  // A condition that can never hold no longer moves by itself: recorded none, so needs-you puts the park
+  // to the person with why (park.stale).
+  if (r.never) {
+    yield set(t.key, `park.clears_when=${JSON.stringify({ kind: 'none' })}`, `park.stale=${r.never}`);
+    yield say(t.key, 'clears', `${t.key}: "${cond}" can never hold (${r.never}): recorded as none, for the person`);
+    return;
+  }
   // A condition that says how far it has got (an Actions run in progress) is reported as waited on.
   if (!r.holds) { if (r.note) yield say(t.key, 'clears', `${t.key}: waiting on "${cond}" (${r.note}): left parked`); return; }
   const what = r.note ? `${cond}, ${r.note}` : cond;
@@ -133,6 +144,23 @@ function* settleClear(t, s) {
     }
     return;
   }
+  // "PR #X merged" on another branch's or author's PR, with no work of the ticket's own (no PR, no commit
+  // past the base): #X did it. Requeued, its worker could only report #X, which is not its own, and park
+  // again, so it is done by #X instead, with no worker. #X stays out of result.pr, which the PR
+  // status step would read as not its own. A ticket with work of its own waits on #X as a prerequisite,
+  // and is requeued as before.
+  if (c.kind === 'pr-merged' && !c.repo) {
+    const other = yield { type: 'other-merged', key: t.key, pr: c.pr };
+    if (other?.error) { yield say(t.key, 'clears', `${t.key}: "${what}" holds, but whether #${c.pr} is its own could not be read (${other.error}): left parked`); return; }
+    if (other?.why) {
+      if (yield { type: 'write', key: t.key, fields: ['state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null',
+        `done_by=${JSON.stringify({ pr: Number(c.pr), why: other.why })}`, `result.summary=done by PR #${c.pr}, not its own (${other.why}): "${what}" holds`] }) {
+        const wt = s.dry ? null : yield { type: 'drop-worktree', key: t.key };
+        yield say(t.key, 'done', `${t.key}: "${what}" holds, and #${c.pr} is not its own (${other.why}) with no work of its own beside it: recorded done by #${c.pr}, no worker spawned${wt ? `; ${wt}` : ''}`);
+      }
+      return;
+    }
+  }
   const wasPutOff = s.putOff.has(t.key);
   const rq = yield { type: 'requeue', key: t.key };
   // The next worker's briefing says what cleared the park (writeBrief), so it acts on the result.
@@ -169,7 +197,7 @@ export function decidePersonSteps(s) {
     const rec = s.triage[t.key] ?? null;
     // Only keys still in held_by: a person's release (held_by=null) leaves held_outside behind, and a
     // stale key there is no hold to lift (a date hold set since would be released on it).
-    const holding = keysOf(t.held_by);
+    const holding = blockersOf(t);
     const steps = keysOf(t.held_outside).filter((p) => holding.includes(p) && stepOf(s, rec, p) === 'merge');
     if (!steps.length) continue;
     const what = steps.map((p) => `RECLASSIFIED ${t.key}: ${p} is a person step: build now, merge after`);
@@ -193,7 +221,7 @@ export function decidePersonInputs(s) {
     if (!inputs.length) continue;
     const line = `person-step hold: ${t.key}: ${inputs.join(', ')} now labelled as your input (config §4 Person-input labels), so the build waits for ${inputs.length === 1 ? 'it' : 'them'}: HELD again`;
     if (s.dry) { out.push(dateLine(`${line} (dry run)`)); continue; }
-    const by = [...new Set([...keysOf(t.held_by), ...inputs])];
+    const by = [...new Set([...blockersOf(t), ...inputs])];
     const outside = [...new Set([...keysOf(t.held_outside), ...inputs])];
     const mergeAfter = keysOf(t.merge_after).filter((p) => !inputs.includes(p));
     const others = by.filter((p) => !inputs.includes(p));
@@ -399,7 +427,7 @@ export function* decideOutsideHolds(s) {
     const left = outside.filter((p) => !tickets[p] && !lifted.includes(p));
     const stamp = read && !s.dry ? [`outside_read=${new Date(s.now).toISOString()}`] : [];
     if (left.length === outside.length) { if (stamp.length) yield set(t.key, ...stamp); continue; }
-    const by = keysOf(t.held_by).filter((p) => !lifted.includes(p));
+    const by = blockersOf(t).filter((p) => !lifted.includes(p));
     const joined = outside.filter((p) => tickets[p]);
     const what = [ownEpic.length && `${ownEpic.join(', ')} its own epic, so its link is ignored`, epicLanded.length && `${epicLanded.join(', ')} landed on ${s.repoDefault} through its epic PR`,
       awayDone.length && `${awayDone.join(', ')} Done in Jira, in another repo`,

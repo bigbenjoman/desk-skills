@@ -1,4 +1,5 @@
 // suite: desk-checkout collectors (window, repo scopes, Claude, GitHub and Jira activity)
+// layer: L2
 // Runs the check-out scripts under skills/desk-checkout/scripts/ (window.py, desk_repos.py,
 // claude_activity.py, github_activity.py, jira_activity.py) against a throwaway HOME, a scratch desk
 // config root and fake `gh` and `desk-jira` on PATH: no real GitHub, Jira or ~/.claude.

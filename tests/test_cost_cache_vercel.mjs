@@ -1,4 +1,5 @@
 // suite: cost cache, Vercel (each team's charges this month, by project with builds apart, and its plan and seats)
+// layer: L1
 // The Vercel reading of the cost cache against fixture JSONL from the charges endpoint
 // (GET /v1/billing/charges, one FOCUS charge per day per SKU: BilledCost, ChargePeriodStart,
 // ServiceName, Tags.ProjectName), for the three teams voice-pa, pr-ninja and ben-lavenders-projects,

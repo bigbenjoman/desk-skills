@@ -1,8 +1,9 @@
 // suite: live-read (§4 Live reads: which parks the pass runs a read for, and how it records one)
+// layer: L2
 import { readFileSync, writeFileSync, existsSync, rmSync, statSync, mkdirSync, symlinkSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { parseLiveReads, liveReadPark, readRecord, startRead, saveFixture, prepareCheckout, copyFixtures, WORKTREE_FIXTURES } from '../desk/bin/live-read.mjs';
+import { parseLiveReads, liveReadPark, readRecord, startRead, saveFixture, prepareCheckout, copyFixtures, WORKTREE_FIXTURES, estimateOf, capRefusal, spentOn, logSpend, spendFile } from '../desk/bin/live-read.mjs';
 import { repoStateOf } from '../desk/bin/desk-env.mjs';
 import { waitingOnRead, batchSettled } from '../desk/bin/batch-state.mjs';
 import { shownState } from '../desk/bin/desk-q.mjs';
@@ -31,15 +32,46 @@ t('a question beside the entry is left for the person', names('Need gateway-mode
 t('a tail clause holding an ask is not the tail', names('Need gateway-models. Not reached: the PR, so confirm the fee'), null);
 t('no entries in the row asks for nothing', liveReadPark('Need gateway-models.', []), null);
 
+// A paid entry carries both its caps after the name; the park gives its estimate beside the name.
+const paidRow = parseLiveReads(['gateway-chat [£0.10/call, £2/day]: ./scripts/chat.sh', 'half [£0.10/call]: ./h', 'zero [£0/call, £2/day]: ./z', 'odd [ten pence]: ./o', 'gateway-models: ./gm']);
+t('DS-574 a paid entry parses to its name, command and caps', JSON.stringify(paidRow.reads[0]), JSON.stringify({ name: 'gateway-chat', command: './scripts/chat.sh', caps: { call: 0.1, day: 2 } }));
+t('DS-574 a free entry has no caps', paidRow.reads[1].caps, null);
+t('DS-574 AC5 a bracket missing a cap, with a £0 cap, or not in the cap form is refused', paidRow.errors.length, 3);
+t('DS-574 AC5 the refusal says both caps are needed', paidRow.errors[0].includes('a paid call takes both caps'), true);
+const paid = paidRow.reads[0];
+t('DS-574 a park naming a paid entry with its estimate asks for it', liveReadPark('need live read gateway-chat (est £0.03). Not reached: the PR', paidRow.reads)?.map((r) => r.name).join(' '), 'gateway-chat');
+t('DS-574 the estimate is read from beside the name', estimateOf('need live read gateway-chat (est £0.03). Not reached: the PR', 'gateway-chat'), 0.03);
+t('DS-574 a park with no estimate in that form gives none', estimateOf('need live read gateway-chat, about 3p', 'gateway-chat'), null);
+t('DS-574 AC1 a call within both caps may run', capRefusal(paid, 0.03, 0), null);
+t('DS-574 AC2 one over the per-call cap is refused naming its estimate', capRefusal(paid, 0.12, 0), 'live read gateway-chat is estimated at £0.12, over its £0.10/call cap');
+t('DS-574 AC3 one once the day\'s spend reached the daily cap is refused naming the spend so far', capRefusal(paid, 0.03, 2), 'live read gateway-chat has spent £2.00 today of its £2.00/day cap, so a call estimated at £0.03 would pass it');
+t('DS-574 a call that just fits the daily cap may run', capRefusal(paid, 0.03, 1.97), null);
+t('DS-574 a paid call with no estimate is refused', capRefusal(paid, null, 0)?.includes('the park gave no estimate for it, as `gateway-chat (est £0.03)`'), true);
+t('DS-574 a free read is never capped', capRefusal(paidRow.reads[1], null, 99), null);
+t('DS-574 AC3 an estimate of nothing is refused, so a day at its cap cannot run one more', capRefusal(paid, 0, 2)?.includes('an estimate of £0.00, which is no cost'), true);
+t('DS-574 so is one under a ten-thousandth of a pound', capRefusal(paid, 0.00001, 0)?.includes('which is no cost'), true);
+const twice = parseLiveReads(['gateway-chat [£0.10/call, £2/day]: ./a', 'Gateway-Chat: ./b']);
+t('DS-574 a name given twice, in any case, is refused, so one park cannot run two calls', `${twice.reads.length} ${twice.errors[0]?.includes('another entry is already named Gateway-Chat')}`, '1 true');
+{
+  const sd = scratch('desk-live-spend-');
+  const f = spendFile(sd);
+  t('DS-574 the spend log is the repo state\'s, shared by its batches', spendFile(join(sd, 'batches', 'b1')), f);
+  t('DS-574 nothing logged is nothing spent', spentOn(f, 'gateway-chat', '2026-11-22'), 0);
+  for (const [day, name, est] of [['2026-11-22', 'gateway-chat', 0.03], ['2026-11-22', 'gateway-chat', 0.07], ['2026-11-21', 'gateway-chat', 1], ['2026-11-22', 'other', 1]]) logSpend(f, { day, name, est });
+  t('DS-574 a day\'s spend sums that entry\'s calls on that day only', spentOn(f, 'gateway-chat', '2026-11-22'), 0.1);
+  rmSync(sd, { recursive: true, force: true });
+}
+
 const dir = scratch('desk-live-read-');
 const head = 'c'.repeat(40);
 const wait = async (name) => { for (let i = 0; i < 100 && readRecord(dir, 'L-1', head, name)?.state !== 'done'; i++) await new Promise((r) => setTimeout(r, 50)); return readRecord(dir, 'L-1', head, name); };
 t('no read started at a head has no record', readRecord(dir, 'L-1', head, 'ok'), null);
-startRead(dir, { key: 'L-1', head, name: 'ok', command: 'echo "{\\"a\\":1}"; echo noise >&2', cwd: dir });
+startRead(dir, { key: 'L-1', head, name: 'ok', command: 'echo "{\\"a\\":1}"; echo noise >&2', cwd: dir, base: 'b'.repeat(40) });
 startRead(dir, { key: 'L-1', head, name: 'bad', command: 'echo partial; echo "AccessDenied: no key" >&2; echo "at line 3" >&2; exit 2', cwd: dir });
 const ok = await wait('ok');
 const bad = await wait('bad');
 t('a read that exits 0 records code 0', ok?.code, 0);
+t('DS-574 a read\'s record names the commit it ran at', ok?.base, 'b'.repeat(40));
 t('a failed read records its exit code', bad?.code, 2);
 t('and its last error line, from stderr', bad?.error, 'at line 3');
 const fx = join(dir, 'fixtures');

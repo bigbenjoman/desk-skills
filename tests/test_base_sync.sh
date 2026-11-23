@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: base sync (a batch base's worktree, synced from the default branch before a pass spawns)
+# layer: L3
 # pass.mjs with a batch base: every pass makes the base its own worktree, and a pass that will spawn,
 # or finds the base behind main, first merges main into the base and pushes it. A conflict pushes
 # nothing and is reported; in feature mode it also holds the spawns. Here: the base worktree, a clean

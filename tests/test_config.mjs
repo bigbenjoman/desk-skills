@@ -1,4 +1,5 @@
 // suite: config values (list items, trailing notes)
+// layer: L2
 // Config value cells: one item per backtick span, except spans inside a trailing parenthesised note.
 import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -256,6 +257,52 @@ t('DS-873 an item worker-settings refuses for its tail is UNLISTED, as worker-se
   'UNLISTED §4 Local services item "search 8108" is not `<service> [:<port>]`: every worker is refused it'), true);
 t('and `name: port` reads as its name', d.code, 1);
 t('DS-395 AC4 a script run as bash <path>.sh is not drift', drift(`${conf()}| Related tests | \`bash tests/related.sh\` |\n`).out, 'no drift');
+
+// DS-877: rows another row settles are schema data; drift names a set row that contradicts its rule,
+// and `desk-env forced` lists the values setup writes unasked.
+const JIRA_PERMS = ROWS.filter((e) => e.kind === 'perm' && e.id.startsWith('jira-')).map((e) => e.id);
+d = drift(`${conf({ perms: { 'jira-create': 'yes' } })}| Tracker | \`none\` |\n`);
+t('DS-877 AC1 a Jira permission set yes with Tracker none is one CONFLICT line naming the row, its value and the rule', d.out,
+  'CONFLICT §3 jira-create is yes, but §4 Tracker is none, which settles it no: there is no Jira to act on');
+t('DS-877 AC1 and exits 1', d.code, 1);
+d = drift(`${conf({ perms: Object.fromEntries(JIRA_PERMS.map((k) => [k, 'no'])) })}| Tracker | \`none\` |\n`);
+t(`DS-877 AC2 every Jira permission no with Tracker none is no conflict (${JIRA_PERMS.length} rows)`, d.out, 'no drift');
+t('DS-877 an ask contradicts a rule that settles the row no', /^CONFLICT §3 jira-comment is ask,/.test(drift(`${conf({ perms: { 'jira-comment': 'ask' } })}| Tracker | \`none\` |\n`).out), true);
+t('DS-877 Tracker jira settles nothing', drift(`${conf({ perms: { 'jira-create': 'yes' } })}| Tracker | \`jira\` |\n`).out, 'no drift');
+const forced = (rows) => {
+  const c = join(T, 'forced.md');
+  writeFileSync(c, `${conf()}${rows}`);
+  try { return { code: 0, out: execFileSync('node', [BIN, 'forced', '--json'], { encoding: 'utf8', env: driftEnv({ DESK_CONFIG: c }), stdio: 'pipe' }).trim() }; }
+  catch (e) { return { code: e.status, out: String(e.stdout).trim() }; }
+};
+const forcedOf = (rows) => JSON.parse(forced(rows).out).map((f) => `${f.id}=${f.value} (${f.reason})`).join(' | ');
+const noDb = '(there is no local database to act on)';
+t('DS-877 AC3 Local database none forces each database row no with the reason, and nothing else',
+  forcedOf('| Local database | `none` |\n'), `db-per-ticket=no ${noDb} | db-clone-staging=no ${noDb} | tests-shared-db=no ${noDb}`);
+t('DS-877 AC4 Repo merge settings with auto-merge off force pr-auto-merge no with the reason',
+  forcedOf('| Repo merge settings | `auto-merge off; delete_branch_on_merge on` |\n'), 'pr-auto-merge=no (gh pr merge --auto cannot arm where the repo has auto-merge off)');
+t('DS-877 auto-merge allowed forces nothing, whatever else is off', forcedOf('| Repo merge settings | `auto-merge allowed; delete_branch_on_merge off` |\n'), '');
+for (const text of ['auto-merge allowed and delete_branch_on_merge off', 'auto-merge on. delete_branch_on_merge off', 'auto-merge allowed']) {
+  t(`DS-877 "${text}" forces nothing: another setting's off is not auto-merge's`, forcedOf(`| Repo merge settings | \`${text}\` |\n`), '');
+}
+for (const text of ['auto-merge allowed: no', 'allow_auto_merge: false', 'no auto-merge', 'Auto-merge is disabled, delete_branch_on_merge on']) {
+  t(`DS-877 "${text}" forces pr-auto-merge no`, forcedOf(`| Repo merge settings | \`${text}\` |\n`), 'pr-auto-merge=no (gh pr merge --auto cannot arm where the repo has auto-merge off)');
+}
+t('DS-877 auto-merge off in its own item of several forces pr-auto-merge no',
+  forcedOf('| Repo merge settings | `auto-merge off` `delete_branch_on_merge on` |\n'), 'pr-auto-merge=no (gh pr merge --auto cannot arm where the repo has auto-merge off)');
+t('DS-877 Staging none with a local database forces the staging rows no, each with its own reason',
+  forcedOf('| Local database | `postgres container x-postgres-1` |\n| Staging | `none` |\n'),
+  'db-clone-staging=no (there is no staging to clone) | staging-write=no (there is no staging to write to)');
+t('DS-877 a row two rules settle is listed once, by the first',
+  forcedOf('| Local database | `none` |\n| Staging | `none` |\n').split(' | ').filter((f) => f.startsWith('db-clone-staging=')).join(' | '), `db-clone-staging=no ${noDb}`);
+d = drift(`${conf({ perms: { 'db-clone-staging': 'yes' } })}| Local database | \`postgres container x-postgres-1\` |\n| Staging | \`none\` |\n`);
+t('DS-877 db-clone-staging yes with Staging none is a CONFLICT', d.out,
+  'CONFLICT §3 db-clone-staging is yes, but §4 Staging is none, which settles it no: there is no staging to clone');
+const none = forced('| Local database | `postgres container x-postgres-1` |\n| Tracker | `jira` |\n');
+t('DS-877 AC5 no forcing row set prints an empty list', none.out, '[]');
+t('DS-877 AC5 and exits 0', none.code, 0);
+const badRule = ROWS.filter((e) => e.forced && (!e.forced.length || e.forced.some((f) => !(ROWS.some((x) => x.id === f.row && x.kind !== 'perm') && (e.kind !== 'perm' || ['yes', 'ask', 'no'].includes(f.value)) && f.reason))));
+t('DS-877 every forced rule names a declared §0-§5 row, a value its row takes and a reason', badRule.map((e) => e.id).join(' '), '');
 
 // A set row whose value does not fit the type the schema declares for it is named INVALID, report-only.
 d = drift(`${conf({ perms: { 'worker-local-services': 'no' } })}| Local services | \`Typesense on port 8108\` |\n`);
@@ -552,12 +599,17 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   t('#746 and the §3c ledger', /3c|Bash\(x\)/.test(all), false);
   t('#746 the rules for the agent reading it are printed whole, prose and all', all.includes("## Rules for the agent reading this file\n\n5. **The Recommended column is not this user's answer.**"), true);
   t('#746 but not when a section is named', configRows(text, ['1']).includes('Rules for the agent'), false);
-  t('#746 a named section is printed alone, §3c included when named', `${configRows(text, ['1'])} / ${/Bash\(x\)/.test(configRows(text, ['§3c']))}`, '## 1. You\n| Field | Value |\n|---|---|\n| GitHub handle | `me` | / true');
+  t('#746 a named section is printed alone', configRows(text, ['1']), '## 1. You\n| Field | Value |\n|---|---|\n| GitHub handle | `me` |');
+  t('DS-875 AC4 §3c is never printed, even when named', /3c|Bash\(x\)|Ledger/.test(configRows(text, ['§3c', '3', '1', 'rules'])), false);
+  t('DS-875 AC4 `rules` names the rules for the agent, prose and all', configRows(text, ['rules', '1']).startsWith("## Rules for the agent reading this file\n\n5. **The Recommended column is not this user's answer.**\n\n## 1. You"), true);
   const showEnv = { ...process.env, DESK_CONFIG: join(T, 'show.md'), DESK_MACHINE: join(T, 'none.md'), HOME: T };
   writeFileSync(join(T, 'show.md'), text);
-  t('#746 desk-env show prints the same', execFileSync('node', [BIN, 'show', '3'], { encoding: 'utf8', env: showEnv }).trim(), configRows(text, ['3']));
-  let code = 0; try { execFileSync('node', [BIN, 'show'], { stdio: 'ignore', env: { ...showEnv, DESK_CONFIG: join(T, 'missing.md') } }); } catch (e) { code = e.status; }
-  t('#746 with no config it exits 3', code, 3);
+  t('#746 desk-env show prints the same', execFileSync('node', [BIN, 'show', 'rules', '3'], { encoding: 'utf8', env: showEnv }).trim(), configRows(text, ['rules', '3']));
+  const showRun = (args, env = showEnv) => spawnSync('node', [BIN, 'show', ...args], { encoding: 'utf8', env });
+  t('#746 with no config it exits 3', showRun([], { ...showEnv, DESK_CONFIG: join(T, 'missing.md') }).status, 3);
+  t('DS-875 AC4 desk-env show 3c exits 2 and prints no ledger', (({ status, stdout }) => `${status} ${/Bash\(x\)/.test(stdout)}`)(showRun(['3', '§3c'])), '2 false');
+  t('DS-875 an unknown section exits 2, naming it', (({ status, stderr }) => `${status} ${/"9"/.test(stderr)}`)(showRun(['9'])), '2 true');
+  t('DS-875 AC4 every section show prints leaves the ledger out', /Bash\(x\)|3c/.test(showRun([]).stdout), false);
 }
 // The schema (config-schema.mjs) against the shipped template, both ways, and the id tables desk-env
 // derives from it against the literals they replaced.
@@ -633,12 +685,16 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'harm-swap-growth|3b|Swap growth that holds spawns (GB)', // DS-848
     'harm-tmpfs|3b|tmpfs /tmp size that holds spawns (GB)', // DS-848
     'harm-vmmem|3b|WSL VM share of its grant that holds spawns (%)', // DS-848
+    'jira-field-defaults|4|Field defaults',
+    'proposal-labels|4|Priority proposal labels',
+    'preview-db|4|Preview database', // DS-550
   ];
+  const ADDED_PERMS = ['worker-preview-db']; // DS-550
   const sorted = (a) => [...a].sort().join('\n');
   const rowsNow = Object.entries(CONFIG_ROWS).map(([id, r]) => [id, r.section, r.row, ...(r.table ? ['table'] : [])].join('|'));
   t('DS-867 AC4 CONFIG_ROWS holds exactly the ids, sections and rows it held, and the ones added since', sorted(rowsNow), sorted([...BEFORE_ROWS, ...ADDED_ROWS]));
   t('DS-867 AC4 and nothing else on any entry', Object.values(CONFIG_ROWS).filter((r) => Object.keys(r).some((k) => !['section', 'row', 'table'].includes(k))).length, 0);
-  t('DS-867 AC4 PERMISSION_KEYS holds exactly the ids and keys it held', sorted(Object.entries(PERMISSION_KEYS).map(([id, k]) => `${id}=${k}`)), sorted(BEFORE_PERMS.map((k) => `${k}=${k}`)));
+  t('DS-867 AC4 PERMISSION_KEYS holds exactly the ids and keys it held, and the ones added since', sorted(Object.entries(PERMISSION_KEYS).map(([id, k]) => `${id}=${k}`)), sorted([...BEFORE_PERMS, ...ADDED_PERMS].map((k) => `${k}=${k}`)));
   t('DS-867 AC4 both stay frozen', Object.isFrozen(CONFIG_ROWS) && Object.isFrozen(PERMISSION_KEYS), true);
 }
 
@@ -676,8 +732,8 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     ['yes-no', 'no', 'maybe', false], ['on-off', 'on', 'yes', false], ['tracker', 'none', 'linear', false],
     ['merge-method', 'rebase', 'squash-merge', false], ['suite-weight', 'heavy', 'medium', false], ['status-table', 'quiet', 'loud', false],
     ['batches-run-by', 'session', 'cron', false], ['ai-attribution', 'allowed', 'sometimes', false], ['regex', 'KAN-[0-9]+', 'KAN-[0-9', false],
-    ['command', 'apps/api: uv run pytest', null], ['test-signin', 'apps/portal: dev@example.test', 'apps/portal: hunter2', false], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
-    ['required-fields', 'Bug: customfield_1', 'customfield_1', false], ['lever', 'codex, effort', 'turbo', false],
+    ['command', 'apps/api: uv run pytest', null], ['test-signin', 'apps/portal: dev@example.test', 'apps/portal: hunter2', false], ['preview-db', 'delete: neonctl branches delete {db}', 'delete: x {name}', false], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
+    ['required-fields', 'Bug: customfield_1', 'customfield_1', false], ['field-defaults', 'customfield_1 = from parent', 'customfield_1', false], ['lever', 'codex, effort', 'turbo', false],
     ['budget', '25', '25 USD', true], ['worker-models', 'default', 'fast', true], ['worker-effort', 'task=low', '4b=extreme', true],
     ['worker-location', 'cloud', 'remote', true], ['codex-review', 'timeout=60', 'timeout=soon', true],
     ['spawn-gate', 'start work > 8 GiB', null], ['file-budget', '2', 'two', false],
@@ -700,6 +756,11 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     try { r = type.parse(badItem); } catch (e) { r = { error: `threw ${e.message}`, threw: true }; }
     t(`DS-868 ${name} refuses "${badItem}" without throwing, ${fatal ? '' : 'not '}fatal`, `${!!r.error && !r.threw} ${r.fatal}`, `true ${fatal}`);
   }
+  const paidRead = (item) => TYPES['live-read'].parse(item);
+  t('DS-574 AC5 a paid Live reads entry with both caps is written', JSON.stringify(paidRead('gateway-chat [£0.10/call, £2/day]: ./chat.sh').value?.caps), '{"call":0.1,"day":2}');
+  t('DS-574 AC5 one missing its daily cap is refused, saying both are needed', paidRead('gateway-chat [£0.10/call]: ./chat.sh').error?.includes('a paid call takes both caps'), true);
+  t('DS-574 AC5 one missing its per-call cap is refused', !!paidRead('gateway-chat [£2/day]: ./chat.sh').error, true);
+  t('DS-574 AC5 an empty bracket is refused', !!paidRead('gateway-chat []: ./chat.sh').error, true);
   const svc = TYPES['service-port'].parse('Typesense on port 8108');
   t('DS-868 AC3 the service-port error names the form <service> [:<port>]', svc.error?.includes('`<service> [:<port>]`'), true);
   t('DS-868 AC3 the decision: a service with no port parses', JSON.stringify(TYPES['service-port'].parse('mailpit').value), '{"service":"mailpit","port":null}');

@@ -1,4 +1,5 @@
 // suite: repo subscription (config §3b Subscription; desk-env subscription, list and set; logins remove)
+// layer: L2
 // covers: desk/bin/desk-env.mjs desk/bin/logins.mjs desk-config.md
 // A scratch HOME with three Claude logins, each folder's .claude.json naming its account, a
 // subscriptions file and three repo configs: resolution from DESK_SUBSCRIPTION, the row and the

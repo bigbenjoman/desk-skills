@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: batch end to end, feature mode (spine, children, batch base gate, promotion slices, logins)
+# layer: L3
 # The second half of the offline end-to-end batch (the first is tests/test_batch_e2e.sh), on its own
 # queue: feature batches driven through the real queue.mjs admit, approve and reject, pass.mjs,
 # setup-worktree.sh, spawn-worker.sh (preflight included), harvest.mjs and answer.mjs. Only `claude`

@@ -57,6 +57,7 @@ import { answerEntriesSince } from './handoff.mjs';
 import { recordLeverDecision } from './lever-changes.mjs';
 import { batchPaths } from './desk-env.mjs';
 import { everyTicket, owesReopen } from './queue-store.mjs';
+import { blockersOf } from './queue-states.mjs';
 
 export const ACTOR = 'trip';
 // The states a trip reverts from.
@@ -256,7 +257,7 @@ export const DETECTORS = Object.freeze({
     let what = null;
     if (w.class === 'dependency wait') {
       // Still waiting means still held behind one of them.
-      const held = String(t.held_by ?? '').split('|').filter(Boolean);
+      const held = blockersOf(t);
       const merged = (w.blockers ?? []).map((k) => queue?.tickets?.[k]?.merged_at ?? null);
       if (merged.length && merged.every(Boolean) && (w.blockers ?? []).some((k) => held.includes(k))) { settled = Math.max(...merged.map((m) => Date.parse(m))); what = `${w.blockers.join(', ')} merged`; }
     } else {

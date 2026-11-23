@@ -107,7 +107,11 @@ carries on), and resumes it in its own session on the login it started on once t
 its reset or sooner when a probe call succeeds (orchestrator-recovery.md). Log growth
 alone can lie (a hung `codex exec` heartbeats into the log until the harness moves it to the
 background at 600s), so on a batch that has gone
-quiet, check the log tail's newest `tool_progress` `elapsed_time_seconds` too. Recovery for both is
+quiet, check the log tail's newest `tool_progress` `elapsed_time_seconds` too. So the pass also keeps
+each running worker's last progress (a stage change, a commit on its worktree's HEAD or a push of its
+branch) and, with none for 45 minutes (90 at Stage 5), lists it once under WAITING ON YOU as `NOT
+PROGRESSING`, leaving it running; a suite wait under its ceiling pauses that clock, a usage hold
+stops it until the hold lifts, and every new session starts it again. Recovery for both is
 in `references/orchestrator-recovery.md`.
 
 **Stages 4b and 7 run in a fresh session.** A worker ends its session after Stage 4 and after

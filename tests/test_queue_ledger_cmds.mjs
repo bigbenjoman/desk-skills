@@ -1,4 +1,5 @@
 // suite: queue ledger commands (with the ledger lever on, every queue.mjs command that writes the queue appends what it changed, naming itself)
+// layer: L2
 // budget: 60 DS-893
 // The writing commands test_queue_ledger.mjs does not run: each run as a process
 // against its own fixture queue whose ledger sits beside it, with the lever on, a stub gh on PATH for
@@ -76,6 +77,17 @@ const run = (q0, args, { file, env = {} } = {}) => {
   t('AC3 admit: admitted, then triaged', `${r.status} ${typed(evs)} / ${by(evs)}`, '0 admitted AD-1, triaged AD-1 / queue.mjs admit');
 }
 
+// DS-896 AC5: admit --hold: a ticket new to the log admitted behind blockers is a held event naming
+// them, and no legacy event for held_by.
+{
+  triage('AH-1', {});
+  const { r, f, evs } = run({ tickets: { 'AH-2': tk('AH-2'), 'AH-3': tk('AH-3') } }, ['admit', 'AH-1', '--hold', 'AH-2,AH-3']);
+  const held = evs.find((e) => e.type === 'held');
+  t('DS-896 AC5 admit --hold: admitted, parked, then held behind its blockers', `${r.status} ${typed(evs)} / ${held?.data.by.join('|')}`, '0 admitted AH-1, parked AH-1, held AH-1 / AH-2|AH-3');
+  t('DS-896 AC5 and no legacy event for its blockers', evs.some((e) => e.type === 'legacy_set' && 'held_by' in e.data.fields), false);
+  t('DS-896 AC5 queue.json keeps held_by beside the list', `${read(f).tickets['AH-1'].held_by} ${JSON.stringify(read(f).tickets['AH-1'].holds)}`, 'AH-2|AH-3 ["AH-2","AH-3"]');
+}
+
 // adopt: an open PR with no ticket joins as a done ticket on it.
 {
   pr(51, { state: 'OPEN', headRefName: 'fix/flaky', baseRefName: 'main', title: 'Fix the flaky spec', author: { login: 'me' } });
@@ -88,7 +100,7 @@ const run = (q0, args, { file, env = {} } = {}) => {
   triage('BF-1', { size: 'L', blockers: [{ key: 'BF-2', category: 'new' }] });
   triage('BF-2', {});
   const { r, evs, said } = run({ tickets: { 'BF-1': tk('BF-1', { state: 'parked', park: { question: 'size L — split it before batching', since: 'x' } }), 'BF-2': tk('BF-2') } }, ['backfill-holds']);
-  t('AC3 backfill-holds: the held_by it adds', `${r.status} ${said} ${evs[0]?.data.fields?.held_by}`, '0 legacy_set BF-1 / queue.mjs backfill-holds BF-2');
+  t('AC3 backfill-holds: the hold it adds, as a held event', `${r.status} ${said} ${evs[0]?.data.by} ${'held_by' in (evs[1]?.data.fields ?? {})}`, '0 held BF-1, legacy_set BF-1 / queue.mjs backfill-holds BF-2 false');
 }
 
 // clears-when: a park gains the condition that clears it.

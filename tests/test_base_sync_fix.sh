@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: base sync: a base fix try kept, stopped, wedged or at the usage limit
+# layer: L3
 # The base sync's conflict fix worker past its first try, set up by base_sync_setup.sh: a try that
 # leaves the base where it was, a merge kept on a ref, the push row, the base gate's conflict, a worker
 # live after its park or quiet, the usage limit, the maintenance window and a fresh session per try.

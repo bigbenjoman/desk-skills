@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: park cycle (a park waiting on a PR whose ticket is held behind it, and that PR's conflict)
+# layer: L3
 # pass.mjs with a ticket parked until "pr <n> merged": when the ticket whose PR is n is held behind the
 # park, directly or through other holds, the verdict has one waiting line naming every ticket in the
 # cycle, and the PR's conflict with the base when it has one; with no cycle, a conflicting PR is said on

@@ -7,6 +7,7 @@ import { HANDOFF_STAGES } from '../handoff.mjs';
 import { FOLLOW_ON_MAX } from '../harvest.mjs';
 import { ownedIds } from '../spine-check.mjs';
 import { evaluateGate, stateFailing, loginIn } from '../gate.mjs';
+import { LIVE_READ_FORMS } from '../config-schema.mjs';
 
 // ---- the snapshot ---------------------------------------------------------
 // The session registry (claude-logins.mjs readRegistry) as a phase reads it. A failed read must never
@@ -198,7 +199,7 @@ export function rebootReady(t, { bootMs, drainMins, drainRow, now = Date.now() }
 // The report's waiting line for a config §4 Live reads row that does not parse (live-read.mjs
 // parseLiveReads), or null when it parses.
 export const liveReadsUnparsed = (readRow) => (readRow.errors.length
-  ? `live reads: none run this pass, since config §4 Live reads does not parse: ${readRow.errors.join(', ')} (want \`<name>: <command>\`). Run /desk-setup`
+  ? `live reads: none run this pass, since config §4 Live reads does not parse: ${readRow.errors.join(', ')} (want ${LIVE_READ_FORMS}). Run /desk-setup`
   : null);
 
 // A review try (kind rereview) reviews its PR's head and changes no file.
@@ -211,3 +212,7 @@ export const reviewOnlyTry = (t) => Boolean(t?.fix && !t.fix.finished && t.fix.k
 // start resets it.
 export const cloudPrHere = (t) => t?.location === 'cloud' && (t.result?.pr != null || t.cloud?.pr_at != null);
 export const runsInCloud = (t) => t?.location === 'cloud' && !cloudPrHere(t);
+// The `failed=` field pass.mjs markFailed sets on a failed ticket: why, when, and the error subtype its
+// session ended with where there is one, which the ticket ledger's failed event records.
+export const failedField = (why, { subtype = null, at = new Date().toISOString() } = {}) =>
+  `failed=${JSON.stringify({ why: String(why).replace(/\s+/g, ' ').trim().slice(0, 600), at, ...(subtype ? { subtype } : {}) })}`;

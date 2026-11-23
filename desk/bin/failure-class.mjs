@@ -6,6 +6,7 @@
 // the text it was read from kept as its evidence.
 import { HELD_PREFIX, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, FEATURE_PLAN_PREFIX } from './batch-state.mjs';
 import { CHILD_SPECS_PREFIX } from './spine-check.mjs';
+import { blockersOf } from './queue-states.mjs';
 
 export const CLASSES = Object.freeze(['base red', 'runner or resource', 'application defect', 'missing decision', 'agent mistake', 'dependency wait', 'quota', 'unclassified']);
 // A fix try of one of these classes waits rather than spawns: no worker can supply what it waits for.
@@ -48,7 +49,7 @@ const quotedItems = (f) => [...(f.gaps ?? []), ...(f.findings ?? []).map((x) => 
 
 // A ticket's blockers while it is held: `held_by`, which every release clears and which also lists the
 // blockers outside the batch. Never `held_outside` alone: a person's release leaves it behind.
-const blockers = (t) => [...new Set(String(t?.held_by ?? '').split('|').filter(Boolean))];
+const blockers = (t) => [...new Set(blockersOf(t))];
 // A fix try's rules, in the order they are tried, each reading the try (fix-tries.mjs) and its ticket.
 export const FIX_RULES = Object.freeze([
   { class: 'dependency wait', rule: 'its ticket is still held behind a blocker whose PR has not merged', test: (f, t) => blockers(t).length > 0, waiting: (f, t) => `waiting for ${blockers(t).join(', ')} to merge` },

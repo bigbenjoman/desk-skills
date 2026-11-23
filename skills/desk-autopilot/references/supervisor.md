@@ -49,10 +49,15 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
 - sends one desktop notification, titled with the repo, for the pass's `push` entries the last
   notification did not carry (the check-in digest, a production-broken park), or for a pass that
   refused or failed. This replaces Stage 6b while the supervisor runs;
-- starts the merge driver for the queue's tickets (it reads their holds from the queue) while tickets
-  are still to merge and no driver holds `<state>/merge-driver.lock.d`, where §3 `autopilot-merge` and
-  `pr-merge-green` are both `yes` or the batch's `approved.merge` is `true`. Declined, it starts none,
-  and each green PR the pass lists as `READY TO MERGE` goes to the next check-in digest;
+- starts the merge driver while tickets are still to merge and no driver holds the repo's lock (`repo.lock.d`
+  in the standing batch's `merge-driver` state folder), where §3 `autopilot-merge` and `pr-merge-green` are both `yes` or the
+  batch's `approved.merge` is `true`. Declined, it starts none, and each green PR the pass lists as
+  `READY TO MERGE` goes to the next check-in digest. One driver runs for all of the repo's batches
+  (`merge-driver.sh --all-batches`, its log the standing batch's `merge-driver.log`): each sweep it
+  lists the author's open PRs once, then runs one loop for each handed-over batch with a merge grant,
+  onto that batch's own base, logging to that batch's own `merge-driver.log`. A red base holds only
+  its own batch. It points the lock of each batch it merges for at itself, so the batch reads as having a driver, and
+  leaves a batch whose lock a driver of its own holds;
 - when a pass needs the person, starts the decider (`decider.mjs`): one fresh headless session per
   repo at a time, at low effort, given only that pass's report and `references/orchestrator-recovery.md`.
   It settles what those rules let you do without asking (a requeue of a lane A, B, D or E worker's park that

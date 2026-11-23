@@ -1,9 +1,10 @@
 // suite: pass phase: parks and holds (the clears-when, person-step, date, outside and merge hold decisions)
+// layer: L1
 import { runPhase, runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds,
   decideMergeHolds } from '../desk/bin/pass/parks.mjs';
 import { HELD_PREFIX, STOPPED_PREFIX, badLabelText, IDLE_RECHECK_MS, isHeld, parkKind, personStepPark } from '../desk/bin/batch-state.mjs';
-import { newPark } from '../desk/bin/queue-writer.mjs';
+import { newPark, applySet } from '../desk/bin/queue-writer.mjs';
 import { shownState } from '../desk/bin/desk-q.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
@@ -18,7 +19,7 @@ const held = (key, by, fields = {}) => ({ key, state: 'parked', park: { question
 // The runner with stub handlers: each read answers from `answers` (a value, or a function of the
 // action), else from READS. A plain decision runs through runPhase, a generator through runSteps.
 const READS = {
-  'merge-park': null, check: { holds: false }, 'own-merged': { pr: null }, 'tail-after-merge': false, write: true, requeue: { ok: true, out: '' },
+  'merge-park': null, check: { holds: false }, 'own-merged': { pr: null }, 'other-merged': null, 'drop-worktree': null, 'tail-after-merge': false, write: true, requeue: { ok: true, out: '' },
   'lift-put-off': { ok: true }, 'read-blockers': { unread: [], why: '' }, triage: {}, 'epic-merged': false, 'other-repo': false, landed: false, 'landed-here': false, unpromoted: null,
 };
 const WRITES = ['set', 'report', 'front', 'park', 'date-line', 'epic-line'];
@@ -55,13 +56,28 @@ const BASE_CONTAINS = 'base-contains';
   t('a condition not yet holding is reported as waited on, and settles nothing', j([settles(as), lines(as)]), j([[], ['A: waiting on "PR #41 merged" (still open): left parked']]));
   t('one with no note says nothing', j(clears(clearsSnap(byKey(parked('A', PR_MERGED)))).filter((a) => a.type === 'report')), '[]');
 }
+// DS-864 AC1: a condition that can never hold is recorded none, with why, for the person: needs-you lists it
+// and desk-q shows it as needs you, no longer waiting.
+{
+  const ON = { kind: 'commit-on', sha: '68c709f5a', branch: 'fix/A' };
+  const never = 'the branch origin/fix/A has moved to 41736d45a, which 68c709f5a does not build on, so 68c709f5a can no longer land there: the push it waits on is stale';
+  const as = clears(clearsSnap(byKey(parked('A', ON))), { check: { holds: false, never } });
+  t('DS-864 AC1 a stale commit-on is recorded none, its why kept on the park, and nothing requeued',
+    j([types(settles(as)), sets(as)]), j([['set'], ['park.clears_when={"kind":"none"}', `park.stale=${never}`]]));
+  t('DS-864 AC1 and the pass says so', j(lines(as)), j([`A: "commit 68c709f5a on origin/fix/A" can never hold (${never}): recorded as none, for the person`]));
+  const before = { ...parked('A', ON), lane: 'A', park: { question: 'push 68c709f5a onto fix/A', clears_when: ON } };
+  // The state desk-q reads is the one the pass's own writes leave.
+  const after = structuredClone(before);
+  applySet(after, sets(as));
+  t('DS-864 AC4 desk-q shows it as needs you, where it showed waiting before', `${shownState({ tickets: byKey(before) }, before)} → ${shownState({ tickets: byKey(after) }, after)}`, 'waiting → needs');
+}
 {
   const s = clearsSnap(byKey(parked('A', PR_MERGED, { park: { question: 'which colour?', clears_when: PR_MERGED, inputs: {} } })), { putOff: new Set(['A']) });
   const as = clears(s, { check: { holds: true } });
   t('a condition that holds requeues the ticket, records what cleared it and lifts its not-now entry',
-    j(types(as)), j(['merge-park', 'check', 'own-merged', 'requeue', 'set', 'lift-put-off', 'report']));
+    j(types(as)), j(['merge-park', 'check', 'own-merged', 'other-merged', 'requeue', 'set', 'lift-put-off', 'report']));
   t('and says so', j(lines(as)), j(['A: "PR #41 merged" holds: requeued, its not-now entry lifted']));
-  t('a dry run lifts no not-now entry', j(types(clears({ ...s, dry: true }, { check: { holds: true } }))), j(['merge-park', 'check', 'own-merged', 'requeue', 'set', 'report']));
+  t('a dry run lifts no not-now entry', j(types(clears({ ...s, dry: true }, { check: { holds: true } }))), j(['merge-park', 'check', 'own-merged', 'other-merged', 'requeue', 'set', 'report']));
   const refused = clears(s, { check: { holds: true }, requeue: { ok: false, out: 'locked\nqueue busy' } });
   t('a refused requeue leaves it parked', j([sets(refused), lines(refused)]), j([[], ['A: "PR #41 merged" holds, but the requeue was refused (queue busy): left parked']]));
 }
@@ -79,6 +95,21 @@ const BASE_CONTAINS = 'base-contains';
   for (const [name, f] of [['a started try', tryOf('feedback', { started: 'T1' })], ['a person\'s call', tryOf('gaps')], ['a review sent back', tryOf('review', { person: true })], ['a renames try', tryOf('renames')]]) {
     t(`${name} is requeued as before`, types(clears(clearsSnap(byKey(withTry(f)), { passAt: 'P' }), { check: { holds: true } })).includes('requeue'), true);
   }
+}
+// #1290: "PR #X merged" on a PR not its own, with no work of its own, is done by #X: no worker, no re-park.
+{
+  const s = clearsSnap(byKey(parked('A', PR_MERGED)));
+  const why = 'PR #41 is on branch fix/other, not A\'s branch fix/A';
+  const as = clears(s, { check: { holds: true }, 'other-merged': { why }, 'drop-worktree': 'its worktree /w/A, holding nothing origin lacks, was removed' });
+  t('#1290 a park on another branch\'s PR merging is done by it, with no requeue', j(types(as)), j(['merge-park', 'check', 'own-merged', 'other-merged', 'write', 'drop-worktree', 'report']));
+  t('#1290 it records done by #41, not as its result.pr', j(as.find((a) => a.type === 'write').fields),
+    j(['state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null', `done_by=${j({ pr: 41, why })}`, `result.summary=done by PR #41, not its own (${why}): "PR #41 merged" holds`]));
+  t('#1290 and says so, with its worktree', j(lines(as, 'report')), j([`A: "PR #41 merged" holds, and #41 is not its own (${why}) with no work of its own beside it: recorded done by #41, no worker spawned; its worktree /w/A, holding nothing origin lacks, was removed`]));
+  t('#1290 a dry run removes no worktree', types(clears({ ...s, dry: true }, { check: { holds: true }, 'other-merged': { why } })).includes('drop-worktree'), false);
+  const unread = clears(s, { check: { holds: true }, 'other-merged': { error: 'gh down' } });
+  t('#1290 whether #41 is its own unread: left parked', j([settles(unread), lines(unread)]), j([[], ['A: "PR #41 merged" holds, but whether #41 is its own could not be read (gh down): left parked']]));
+  t('#1290 its own PR, or one with work of its own beside it, is requeued as before', types(clears(s, { check: { holds: true }, 'other-merged': null })).includes('requeue'), true);
+  t('#1290 another repo\'s PR is not read as one', types(clears(clearsSnap(byKey(parked('A', { ...PR_MERGED, repo: 'acme/other' }))), { check: { holds: true } })).includes('other-merged'), false);
 }
 {
   const s = clearsSnap(byKey(parked('A', PR_MERGED, { result: { pr: 7 } })));

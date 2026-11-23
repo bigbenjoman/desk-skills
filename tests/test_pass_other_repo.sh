@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: pass (a ticket whose triage puts its code in another repo is handed there, not spawned)
+# layer: L3
 # The real pass.mjs, with two repos configured, on triage records whose files in scope are all in the
 # other repo, or whose scope call runs it there: admitted there by intake.mjs admit (a stub, run in that
 # repo's checkout) and dropped from this queue. Files in both repos spawn as before; a repo with no

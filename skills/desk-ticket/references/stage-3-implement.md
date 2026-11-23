@@ -13,7 +13,7 @@ a "below" here that this file does not hold points there.
 as review. When a change is not mechanical, ask the agent that owns its area for the approach before
 writing it, routed by path: use the area table the repo gives them (the local review command's role
 table where it has one, otherwise each agent's description), and the infra and security owner's
-paths from §4 People for infra and auth. Brief it with the ticket, the repro and what you have read,
+paths from §4 People for infra and auth (`desk-env get --json infra-owner`). Brief it with the ticket, the repro and what you have read,
 and ask for the design, not the code. Then write it in this session, which holds the ticket context
 and can ask the user; splitting one change across agents by file type loses both. Mechanical changes
 need no consult. A repo with no project subagents has no consult: put the design in the plan

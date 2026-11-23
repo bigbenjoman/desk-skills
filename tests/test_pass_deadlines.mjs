@@ -1,6 +1,8 @@
 // suite: pass phase: deadlines (each wait a ticket is in, with its deadline, escalated once past it)
+// layer: L1
 import { runPhase } from '../desk/bin/pass/run-phase.mjs';
-import { decideDeadlines, nextWaits, waitsOf, WAITS } from '../desk/bin/pass/deadlines.mjs';
+import { decideDeadlines, nextWaits, waitsOf, WAITS, EVIDENCE_PROGRESS_MS, BASE_RED_MS, baseRedWait, OUTAGE_MS, outageWait } from '../desk/bin/pass/deadlines.mjs';
+import { SUITE_WAIT_CEILING_MS } from '../desk/bin/pass/shared.mjs';
 import { deciderItems } from '../desk/bin/decider.mjs';
 import { UNKNOWN_LIMIT_MS } from '../desk/bin/undraft.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
@@ -39,8 +41,9 @@ function pass(tickets, mins, { dry = false } = {}) {
   return { actions, lines: report.waiting, failed: report.failed };
 }
 
-t('the deadlines: a mergeability answer has the undraft limit before its repair and again after, to the person; a handoff 15 minutes, to a requeue', j(WAITS),
-  j({ mergeability: { ms: 2 * UNKNOWN_LIMIT_MS, escalate_to: 'person' }, handoff: { ms: 900000, escalate_to: 'requeue' } }));
+t('the deadlines: a mergeability answer has the undraft limit before its repair and again after, to the person; a handoff 15 minutes, to a requeue; progress 45 minutes, to the person', j(WAITS),
+  j({ mergeability: { ms: 2 * UNKNOWN_LIMIT_MS, escalate_to: 'person' }, handoff: { ms: 900000, escalate_to: 'requeue' }, progress: { ms: 2700000, escalate_to: 'person' } }));
+t('and progress at Stage 5 90 minutes', EVIDENCE_PROGRESS_MS, 5400000);
 
 // AC3: UNKNOWN for less than its deadline: the wait starts, and nothing is escalated.
 {
@@ -156,6 +159,78 @@ t('the deadlines: a mergeability answer has the undraft limit before its repair 
   t('AC5 once its session starts, the wait ends and its line goes', j([h.waits, started.lines.length]), j([null, 0]));
 }
 
+// DS-902: a running worker's progress (a stage change, commit or push, kept as progress_at by the advance
+// step) has a deadline of 45 minutes, 90 at Stage 5, escalated once to the person.
+{
+  const running = (key, fields = {}) => ({ key, state: 'running', stage: '3/9', progress_at: at(0), ...fields });
+  const NOT = (key, stage, mins, limit) => `${key}: NOT PROGRESSING — its worker at Stage ${stage} has made no stage change, commit or push for ${mins} minutes, since ${at(0)}, past its ${limit}-minute deadline, though its log may still grow (a hung call heartbeats into it). Desk leaves it running: read its log to see what it is doing`;
+  const w = running('W');
+  const made = pass([w], 0);
+  t('progress made this pass opens no wait', j([w.waits ?? null, made.lines.length]), j([null, 0]));
+  pass([w], 5);
+  t('the next pass with none opens one from the progress time', j(w.waits), j({ progress: { since: at(0), deadline: at(45), escalate_to: 'person', stage: '3/9', head: null, pushed: null } }));
+  t('AC1 short of its deadline, nothing is escalated, however much its log grew', pass([w], 44).lines.length, 0);
+  const due = pass([w], 46);
+  t('AC1 past it, the worker is reported not progressing, to the person', j(due.lines), j([NOT('W', '3/9', 46, 45)]));
+  t('AC1 and its escalation is recorded on the wait', w.waits.progress.escalated, at(46));
+  const again = pass([w], 60);
+  t('AC2 still not progressing, it is not escalated again and nothing is written', j([w.waits.progress.escalated, writes(again)]), j([at(46), 0]));
+  t('AC2 its line, still listed while it waits, is the same decider item', j(ids(again.lines)), j(ids(due.lines)));
+
+  const e = running('E', { stage: '5/9' });
+  pass([e], 1);
+  const long = pass([e], 60);
+  t('AC3 at Stage 5, 60 minutes with no progress escalates nothing', long.lines.length, 0);
+  t('AC3 its deadline is 90 minutes', e.waits.progress.deadline, at(90));
+  t('and past 90 it is escalated', j(pass([e], 91).lines), j([NOT('E', '5/9', 91, 90)]));
+
+  const s = running('S', { suite_wait_since: T0 + 30 * 60000 });
+  pass([s], 1);
+  t('AC4 a suite wait under its ceiling pauses the clock: past the progress deadline, nothing is escalated', pass([s], 50).lines.length, 0);
+  const c = running('C', { suite_wait_since: T0 + 5 * 60000 });
+  pass([c], 1);
+  t('AC5 a suite wait past its ceiling is the advance step\'s ceiling report: no second escalation for progress', pass([c], 5 + SUITE_WAIT_CEILING_MS / 60000 + 15).lines.length, 0);
+  Object.assign(c, { state: 'parked' });
+  t('AC5 and once the ceiling parks it, its progress wait ends', (pass([c], 60), c.waits), null);
+
+  const p = running('P');
+  pass([p], 1);
+  pass([p], 46);
+  Object.assign(p, { progress_at: at(50.5) });
+  const pushed = pass([p], 50);
+  t('AC6 a push this pass closes the open progress wait, escalated or not', j([p.waits ?? null, pushed.lines.length]), j([null, 0]));
+  pass([p], 55);
+  t('AC6 and the next pass\'s wait runs from the push, not escalated', j([p.waits.progress.since, p.waits.progress.deadline, p.waits.progress.escalated ?? null]), j([at(50.5), at(95.5), null]));
+  t('a running ticket with no progress time has no progress wait', j(waitsOf({ key: 'N', state: 'running' }, at(5))), '{}');
+
+  // The advance step moves progress_at on by a suite wait that ended under its ceiling.
+  const m = running('M');
+  pass([m], 1);
+  Object.assign(m, { progress_at: at(20) });
+  pass([m], 50);
+  t('a wait not yet escalated follows progress_at moved on by a suite wait: its deadline moves too', j([m.waits.progress.since, m.waits.progress.deadline, m.waits.progress.escalated ?? null]), j([at(20), at(65), null]));
+  const q = running('Q');
+  pass([q], 1);
+  const first = pass([q], 46);
+  Object.assign(q, { progress_at: at(20) });
+  const later = pass([q], 80);
+  t('AC2 an escalated wait whose progress_at a suite wait moved on is not escalated again: it keeps its start and escalation', j([q.waits.progress.since, q.waits.progress.escalated, writes(later)]), j([at(0), at(46), 0]));
+  t('AC2 and its line stays the same decider item', j(ids(later.lines)), j(ids(first.lines)));
+  // A pass that recorded a push and ended before its sweep: the next pass's sweep reads the push.
+  const r = running('R', { progress_sha: { head: HEAD, pushed: null } });
+  pass([r], 1);
+  pass([r], 46);
+  Object.assign(r, { progress_at: at(50.5), progress_sha: { head: HEAD, pushed: HEAD } });
+  const after = pass([r], 55);
+  t('an escalated wait ends at a push a cut-off pass recorded: the next pass\'s wait runs from it, not escalated, and nothing is said', j([r.waits.progress.since, r.waits.progress.escalated ?? null, after.lines.length]), j([at(50.5), null, 0]));
+
+  const u = running('U');
+  pass([u], 1);
+  Object.assign(u, { usage_paused: { type: 'five_hour', resets_at: null } });
+  const held = pass([u], 120);
+  t('a worker held at a usage limit has no progress wait, so nothing is escalated however long the hold', j([u.waits, held.lines.length]), j([null, 0]));
+}
+
 // Two waits on two tickets in one pass, a dry run, and the decision starts no process and writes nothing.
 {
   const a = ready('A', 'UNKNOWN', { waits: { mergeability: { since: at(0), deadline: at(2 * LIMIT), escalate_to: 'person', pr: 801 } } });
@@ -167,6 +242,36 @@ t('the deadlines: a mergeability answer has the undraft limit before its repair 
   t('the decision starts no process and writes nothing', j([r.threw, r.calls]), j([null, []]));
   t('it sets each ticket\'s waits and says each escalation', j(r.out.map((x) => `${x.type} ${x.key}`)), j(['report A', 'set A', 'report H', 'set H']));
   t('a wait kept on another stage is a new one', nextWaits(handedOff('H', { handoff_stage: 7, waits: h.waits }), at(31)).waits.handoff.since, at(31));
+}
+
+// DS-903 AC3: the batch's red base escalates once past its 60-minute deadline, saying how long it lasted.
+{
+  const rec = { branch: 'main', check: 'tests', since: at(0), deadline: at(60), merges: [{ pr: 802, ticket: 'T-2' }] };
+  t('AC3 the red base\'s deadline is 60 minutes', BASE_RED_MS, 60 * 60000);
+  const before = baseRedWait(rec, at(59));
+  t('AC3 before its deadline it is not escalated', j([before.rec.escalated ?? null, before.line]), j([null, null]));
+  const due = baseRedWait(rec, at(61));
+  t('AC3 past it, it is escalated, the line saying how long', j([due.rec.escalated, /^main: RED BASE — it has been red for 61 minutes, since .*, past its 60-minute deadline: tests still fails there.*#802 \(T-2\)$/.test(due.line)]), j([at(61), true]));
+  const next = baseRedWait(due.rec, at(70));
+  t('AC3 once only: a later pass keeps when it was escalated', next.rec.escalated, at(61));
+  t('AC3 and the decider reads both passes\' lines as one item', new Set([...ids([due.line]), ...ids([next.line])]).size, 1);
+}
+
+// DS-904 AC3: the batch's platform outage escalates once past its 2-hour deadline, saying how long it lasted.
+{
+  const rec = { check: '"Deploy preview"', since: at(0), deadline: at(120) };
+  t('AC3 the outage\'s deadline is 2 hours', OUTAGE_MS, 120 * 60000);
+  const before = outageWait(rec, at(119), 'main');
+  t('AC3 before its deadline it is not escalated', j([before.rec.escalated ?? null, before.line]), j([null, null]));
+  const due = outageWait(rec, at(121), 'main');
+  t('AC3 past it, it is escalated, the line saying how long', j([due.rec.escalated, /^main: PLATFORM OUTAGE — "Deploy preview" has been red on every open PR with a run of it for 121 minutes, since .*, past its 120-minute deadline: /.test(due.line)]), j([at(121), true]));
+  const next = outageWait(due.rec, at(150), 'main');
+  t('AC3 once only: a later pass keeps when it was escalated', next.rec.escalated, at(121));
+  t('AC3 and the decider reads both passes\' lines as one item', new Set([...ids([due.line]), ...ids([next.line])]).size, 1);
+  t('AC3 a held check with an Actions run: the pass keeps re-running it', due.line.includes('the pass keeps re-running it'), true);
+  const status = outageWait(rec, at(121), 'main', { runnable: false }).line;
+  t('AC3 a platform status with no Actions run is never said to be re-run: redeploy or push instead',
+    j([status.includes('re-running'), status.includes('no Actions run reports it, so nothing desk re-runs turns it green'), status.includes('redeploy there or push to the PRs')]), j([false, true, true]));
 }
 
 console.log(fails ? `${fails} failed` : 'all checks passed');

@@ -1,4 +1,5 @@
 // suite: queue ledger (with the ledger lever on, every queue write appends what it changed to the ticket ledger)
+// layer: L2
 // The pass's writer in process, queue.mjs commands and move-batch.mjs as processes, each against a
 // fixture queue whose ledger sits beside it, with the lever on; and the same writes with it off.
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
@@ -22,8 +23,9 @@ Object.assign(process.env, { HOME: join(T, 'home'), DESK_CONFIG: ON, DESK_HOME: 
 const { queueWriter } = await import('../desk/bin/queue-writer.mjs');
 const { versionOf } = await import('../desk/bin/queue-store.mjs');
 const { read: readLog, ledgerPaths, reduce, fold } = await import('../desk/bin/ticket-ledger.mjs');
-const { recordWrite, ledgerTarget, STANDING, queueDifference } = await import('../desk/bin/queue-ledger.mjs');
+const { recordWrite, ledgerTarget, STANDING, queueDifference, queueEvents } = await import('../desk/bin/queue-ledger.mjs');
 const { ledgerLine } = await import('../desk/bin/pass/report.mjs');
+const { failedField } = await import('../desk/bin/pass/shared.mjs');
 const { lock, unlock } = await import('../desk/bin/dir-lock.mjs');
 
 let fails = 0;
@@ -176,7 +178,7 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   e = run('move', 'T-2', '1');
   t('AC3 move: placed', `${shape(e)} / ${by(e)} / ${e[0]?.data.fields.placed}`, 'legacy_set T-2 / queue.mjs move / true');
   e = run('hold', 'T-1', 'T-2');
-  t('AC3 hold: parked, with held_by', `${shape(e)} / ${by(e)} / ${e[1]?.data.fields.held_by}`, 'parked T-1, legacy_set T-1 / queue.mjs hold / T-2');
+  t('AC3 hold: parked, then held behind its blocker', `${shape(e)} / ${by(e)} / ${e[1]?.data.by} / ${'held_by' in (e[2]?.data.fields ?? {})}`, 'parked T-1, held T-1, legacy_set T-1 / queue.mjs hold / T-2 / false');
   e = run('drop', 'T-2');
   t('AC3 drop: moved out of the batch', `${shape(e)} / ${by(e)} / ${e[0]?.data.from}>${e[0]?.data.to}`, 'moved T-2 / queue.mjs drop / standing>null');
   // AC2: a command the pass runs as queue.mjs (its spawn's state=running write) names the pass.
@@ -188,6 +190,107 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   const illegal = [];
   reduce(log(f), null, { onIllegal: (ev, from) => illegal.push(`${ev.type} ${ev.key} from ${from}`) });
   t('AC3 the log they wrote reads back with no illegal transition', illegal.join(', '), '');
+}
+
+// DS-898: a worker spawned, failed and requeued, written as the pass writes each (queue.mjs for the
+// spawn's state=running, the pass's writer for the failure): each is its own typed event.
+{
+  const f = fixture({ version: 1, batch: 'b', tickets: { A: tk('A'), B: tk('B'), C: tk('C') } });
+  const w = queueWriter(f);
+  w.apply(['set', 'C', 'stage=1/9']);
+  w.flush();
+  const asPass = (...args) => spawnSync(process.execPath, [join(B, 'queue.mjs'), ...args], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: ON, DESK_QUEUE: f, DESK_LEDGER_BY: 'pass' } });
+  const running = (key, sid, port, more = []) => asPass('set', key, 'state=running', `session_id=${sid}`, `port=${port}`, `login=${JSON.stringify({ name: 'work', config_dir: '/x' })}`, 'resumes=null', ...more);
+  const at = log(f).length;
+  running('A', 's-A', 3231);
+  running('B', 's-B', 3232);
+  // The pass then crashes with a change applied and never flushed.
+  w.apply(['set', 'C', 'stage=2/9']);
+  const spawned = since(f, at).filter((e) => e.type === 'spawned');
+  t('AC1 a spawn appends a spawned event with its login, port, worker and round',
+    JSON.stringify(spawned[0]?.data), JSON.stringify({ worker: 's-A', round: 0, login: 'work', port: 3231 }));
+  t('AC3 a pass that spawned two workers and crashed leaves both spawned events in the log', shape(spawned), 'spawned A, spawned B');
+
+  // A resumed worker's round is how many times it was resumed.
+  asPass('set', 'B', 'state=triaged', 'resume=pending');
+  const atR = log(f).length;
+  asPass('set', 'B', 'state=running', 'resumes=2', 'port=3233', 'resume=null');
+  t('AC1 a resume\'s spawned event carries its round', since(f, atR).find((e) => e.type === 'spawned')?.data.round, 2);
+
+  // The failure as markFailed writes it, with the subtype its session ended in.
+  const w2 = queueWriter(f);
+  const atF = log(f).length;
+  w2.apply(['set', 'A', 'state=failed', failedField('exited with no marker', { subtype: 'error_max_budget_usd' })]);
+  w2.flush();
+  t('AC2 a failure appends a failed event with its session\'s subtype', JSON.stringify(since(f, atF).find((e) => e.type === 'failed')?.data), JSON.stringify({ subtype: 'error_max_budget_usd' }));
+
+  const atQ = log(f).length;
+  const rq = q(f, ON, 'requeue', 'A');
+  t('AC4 a failed ticket requeued appends a requeued event', `${rq.status} ${shape(since(f, atQ).filter((e) => e.type !== 'legacy_set'))}`, '0 requeued A, triaged A');
+
+  const d = queueDifference(f, { by: 'test' });
+  t('AC5 after the spawns, the failure and the requeue the difference stays at zero', d.diffs.map((x) => x.path).join(', '), '');
+}
+
+// DS-896: a hold added and its blockers released, each as queue.mjs writes it, are held and released
+// events, never a legacy event for held_by, and the queue rebuilt from them matches queue.json.
+{
+  const f = fixture({ version: 1, batch: 'b', tickets: { A: tk('A'), B: tk('B'), C: tk('C') } });
+  const at = () => log(f).length;
+  const holdsIn = (evs) => evs.filter((e) => ['held', 'released'].includes(e.type)).map((e) => `${e.type} ${e.key} ${[e.data.by].flat().join('|')}`).join(', ');
+  const legacyHeldBy = (evs) => evs.some((e) => e.type === 'legacy_set' && 'held_by' in e.data.fields);
+  // The first write seeds the batch, so the hold's own events are those after it.
+  q(f, ON, 'set', 'A', 'lane=B');
+  let from = at();
+  q(f, ON, 'hold', 'C', 'A', 'B');
+  let e = since(f, from);
+  t('AC5 a hold appends a held event naming its blockers in order', holdsIn(e), 'held C A|B');
+  t('AC5 and no legacy event for them', legacyHeldBy(e), false);
+  t('AC5 queue.json keeps held_by, and holds beside it as a list', `${read(f).tickets.C.held_by} ${JSON.stringify(read(f).tickets.C.holds)}`, 'A|B ["A","B"]');
+  from = at();
+  q(f, ON, 'set', 'C', 'held_by=B');
+  e = since(f, from);
+  t('AC6 a blocker released appends a released event naming it', holdsIn(e), 'released C A');
+  t('AC6 and no legacy event for it', legacyHeldBy(e), false);
+  from = at();
+  q(f, ON, 'set', 'C', 'state=triaged', 'park=null', 'held_by=null');
+  e = since(f, from);
+  t('AC6 the last blocker released with the ticket\'s start', holdsIn(e), 'released C B');
+  t('AC6 and no legacy event for it either', legacyHeldBy(e), false);
+  t('AC7 after the holds were added and released the difference stays at zero', queueDifference(f, { by: 'test' }).diffs.map((x) => x.path).join(', '), '');
+  // Blockers reordered is no add or release: it is recorded as the field, which a rebuild still matches.
+  q(f, ON, 'hold', 'C', 'A', 'B');
+  from = at();
+  q(f, ON, 'set', 'C', 'held_by=B|A');
+  e = since(f, from);
+  t('blockers reordered are recorded as held_by itself', `${holdsIn(e)}/${legacyHeldBy(e)}`, '/true');
+  t('and the difference still reads zero', queueDifference(f, { by: 'test' }).diffs.map((x) => x.path).join(', '), '');
+  // Dropped while held behind A and B, then added again and held behind B alone: the blockers it had
+  // before its drop are not kept, so the rebuild holds it behind B, as queue.json does.
+  q(f, ON, 'drop', 'C');
+  q(f, ON, 'add', 'C');
+  q(f, ON, 'set', 'C', 'state=triaged');
+  from = at();
+  q(f, ON, 'hold', 'C', 'B');
+  t('a ticket dropped and added again is held only by its new blocker', `${holdsIn(since(f, from))} ${read(f).tickets.C.held_by}`, 'held C B B');
+  t('and the difference reads zero', queueDifference(f, { by: 'test' }).diffs.map((x) => x.path).join(', '), '');
+}
+
+// DS-896 AC5: a ticket new to the queue arrives with its blockers set. Where the log holds none for it,
+// they are a held event; where it still holds some from a last stay, or was not read, they are held_by
+// itself, which replaces those, never a held event added to them.
+{
+  const before = { version: 1, batch: 'b', tickets: { B: tk('B') } };
+  const after = { ...before, tickets: { ...before.tickets, C: tk('C', { state: 'parked', held_by: 'B', park: { question: 'held by orchestrator: blocked by B — starts once their PRs merge', since: 'x' } }) } };
+  const arrive = (logged) => {
+    const evs = queueEvents(before, after, { batch: 'b', logged }).filter((e) => e.key === 'C');
+    return `${evs.filter((e) => e.type === 'held').map((e) => e.data.by.join('|')).join() || 'none'} ${evs.find((e) => e.type === 'legacy_set')?.data.fields.held_by ?? 'no-field'}`;
+  };
+  t('DS-896 AC5 blockers a ticket new to the log arrives with are a held event, not its held_by field', arrive(() => []), 'B no-field');
+  t('blockers the log still holds from a last stay: the arrival\'s are its held_by field', arrive(() => ['A']), 'none B');
+  t('the log unread: the arrival\'s blockers are its held_by field', arrive(undefined), 'none B');
+  const s = reduce(queueEvents(before, after, { batch: 'b', logged: () => [] }).filter((e) => e.key === 'C').map((e, i) => ({ ...e, seq: i + 1, id: `x${i + 1}` })));
+  t('DS-896 AC5 and the log rebuilds it held behind them', `${JSON.stringify(s.tickets.C.holds)} ${s.tickets.C.state}`, '["B"] parked');
 }
 
 // A pass taking a running ticket back to triage, which no typed event does: the state is recorded with
@@ -436,6 +539,104 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   w.flush();
   t('a waits field that is no map of waits is recorded as the field', `${shape(since(f, at4))} ${since(f, at4)[0]?.data.fields.waits}`, 'legacy_set D soon');
   t('and still matches', queueDifference(f).diffs.length, 0);
+}
+
+// DS-902 AC7: workers that made progress and stalled, as the advance step and the deadline sweep write
+// them pass after pass: progress_at and progress_sha are never appended, the progress wait is, and the
+// rebuild still matches with no difference line.
+{
+  const j = JSON.stringify;
+  const { nextWaits } = await import('../desk/bin/pass/deadlines.mjs');
+  // Seeded as a live queue's tickets are, each with the stamp every write sets.
+  const running = (key) => tk(key, { state: 'running', stage: '3/9', updated_at: '2026-11-20T09:00:00.000Z' });
+  const f = fixture({ version: 1, batch: 'b', tickets: { M: running('M'), S: running('S') } });
+  queueDifference(f, { seed: true, by: 'pass' });
+  const from = log(f).length;
+  const w = queueWriter(f);
+  const at = (mins) => new Date(Date.parse('2026-11-20T10:00:00.000Z') + mins * 60000).toISOString();
+  // One pass at `mins`: the advance step's progress for each worker that moved, then the sweep's waits.
+  const pass = (mins, moved) => {
+    for (const k of moved) w.apply(['set', k, `progress_at=${at(mins + 0.5)}`, `progress_sha=${j({ head: 'a'.repeat(40), pushed: `${mins}`.padStart(40, '0') })}`]);
+    w.flush();
+    for (const k of ['M', 'S']) {
+      const tq = read(f).tickets[k];
+      const { waits } = nextWaits(tq, at(mins));
+      const open = Object.keys(waits).length ? waits : null;
+      if (j(open) !== j(tq.waits ?? null)) w.apply(['set', k, `waits=${j(open)}`]);
+    }
+    w.flush();
+  };
+  pass(0, ['M', 'S']);
+  pass(10, ['M']);
+  pass(20, ['M']);
+  pass(50, []);
+  pass(60, ['S']);
+  pass(70, ['M']);
+  const evs = since(f, from);
+  t('AC7 progress_at and progress_sha are never appended', evs.some((e) => e.type === 'legacy_set' && ('progress_at' in e.data.fields || 'progress_sha' in e.data.fields)), false);
+  t('AC7 the progress waits are, the stalled one\'s escalation, the end of each wait at progress, and the wait after it',
+    j(evs.filter((e) => /^wait/.test(e.type)).map((e) => `${e.type} ${e.key}${e.data.escalated ? ' escalated' : ''}`)),
+    j(['waiting S', 'waiting M', 'waiting S escalated', 'waited S', 'waited M', 'waiting S']));
+  t('AC7 the log reads no illegal transition', readLog(dirname(f)).illegal.length, 0);
+  const d = queueDifference(f);
+  t('AC7 the rebuild matches and the pass prints no difference line',
+    `${d.diffs.map((x) => x.path).join(', ')}|${ledgerLine({ check: d, missed: 0, queueBin: '/bin/queue.mjs' })}`, '|null');
+}
+
+// DS-903: the batch's red base, as the pass records it (pass/base-gate.mjs decideBaseRed): one base_red
+// batch event as it starts, none as it is escalated, one base_green as it clears, and the rebuild matches.
+{
+  const j = JSON.stringify;
+  const f = fixture({ version: 1, batch: 'b', tickets: { D: tk('D', { state: 'done', result: { pr: 813 } }) } });
+  queueDifference(f, { seed: true, by: 'pass' });
+  const rec = { branch: 'main', check: 'tests', since: '2026-11-20T10:00:00.000Z', deadline: '2026-11-20T11:00:00.000Z', merges: [{ pr: 802, ticket: 'T-2' }, { pr: 801, ticket: null }] };
+  const w = queueWriter(f);
+  const at = log(f).length;
+  w.apply(['set-batch', `base_red=${j(rec)}`]);
+  w.flush();
+  const started = since(f, at);
+  t('AC5 a red base starting is one base_red batch event with no ticket', j(started.map((e) => [e.type, e.key])), j([['base_red', null]]));
+  t('AC5 carrying its check, start, deadline and merges', j(started[0]?.data), j({ check: rec.check, since: rec.since, deadline: rec.deadline, merges: rec.merges }));
+  const at2 = log(f).length;
+  w.apply(['set-batch', `base_red=${j({ ...rec, escalated: '2026-11-20T11:05:00.000Z' })}`]);
+  w.flush();
+  t('its escalation appends nothing', since(f, at2).length, 0);
+  const at3 = log(f).length;
+  w.apply(['set-batch', 'base_red=null']);
+  w.flush();
+  t('AC6 a red base clearing is one base_green batch event with no ticket', j(since(f, at3).map((e) => [e.type, e.key])), j([['base_green', null]]));
+  t('and the fold holds no red base for the batch', fold(dirname(f)).batches.b?.base_red, undefined);
+  const d = queueDifference(f);
+  t('AC7 with the base gone red and green, nothing differs and the pass prints no difference line',
+    `${d.diffs.map((x) => x.path).join(', ')}|${ledgerLine({ check: d, missed: 0, queueBin: '/bin/queue.mjs' })}`, '|null');
+}
+
+// DS-904: the batch's platform outage, as the pass records it (pass/fix-tries.mjs decideOutage): one
+// platform_outage batch event as it starts, none as it is escalated, one platform_clear as it clears.
+{
+  const j = JSON.stringify;
+  const f = fixture({ version: 1, batch: 'b', tickets: { D: tk('D', { state: 'done', result: { pr: 814 } }) } });
+  queueDifference(f, { seed: true, by: 'pass' });
+  const rec = { check: '"Deploy preview"', since: '2026-11-22T10:00:00.000Z', deadline: '2026-11-22T12:00:00.000Z' };
+  const w = queueWriter(f);
+  const at = log(f).length;
+  w.apply(['set-batch', `platform_outage=${j(rec)}`]);
+  w.flush();
+  const started = since(f, at);
+  t('AC6 an outage starting is one platform_outage batch event with no ticket', j(started.map((e) => [e.type, e.key])), j([['platform_outage', null]]));
+  t('AC6 carrying its check, start and deadline', j(started[0]?.data), j(rec));
+  const at2 = log(f).length;
+  w.apply(['set-batch', `platform_outage=${j({ ...rec, escalated: '2026-11-22T12:05:00.000Z' })}`]);
+  w.flush();
+  t('its escalation appends nothing', since(f, at2).length, 0);
+  const at3 = log(f).length;
+  w.apply(['set-batch', 'platform_outage=null']);
+  w.flush();
+  t('AC7 an outage clearing is one platform_clear batch event with no ticket', j(since(f, at3).map((e) => [e.type, e.key])), j([['platform_clear', null]]));
+  t('and the fold holds no outage for the batch', fold(dirname(f)).batches.b?.platform_outage, undefined);
+  const d = queueDifference(f);
+  t('AC8 with an outage started and cleared, nothing differs and the pass prints no difference line',
+    `${d.diffs.map((x) => x.path).join(', ')}|${ledgerLine({ check: d, missed: 0, queueBin: '/bin/queue.mjs' })}`, '|null');
 }
 
 rmSync(T, { recursive: true, force: true });

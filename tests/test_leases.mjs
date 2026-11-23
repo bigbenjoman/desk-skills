@@ -1,4 +1,5 @@
 // suite: leases (desk-env lease: acquire, refuse, wait, release, list, a lease lapsing when its owner exits or its time is up, shadow and off kinds, renew, Claude-session owners, force-release and reset)
+// layer: L2
 // covers: desk/bin/leases.mjs desk/bin/dir-lock.mjs skills/desk-pr/SKILL.md skills/desk-pr/references/opening.md skills/desk-autopilot/references/worker-contract-stage-5.md skills/desk-autopilot/references/merging.md
 // The real CLI against a scratch lease directory, with real child processes as owners. A reused pid is
 // a live owner whose recorded start time is a fixture, and a lease's age is set by rewriting its times.
@@ -7,7 +8,10 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, 
 import { join, dirname } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { claudeAncestor, kindMode, leaseCli, listRow } from '../desk/bin/leases.mjs';
+import { claudeAncestor, kindMode, leaseCli, listRow, releasePreviews, sampleLoad, waitFields } from '../desk/bin/leases.mjs';
+import { decidePrStatus } from '../desk/bin/pass/pr-status.mjs';
+import { latestPerCheck, normaliseRollup } from '../desk/bin/gate.mjs';
+import { previewLabel } from '../desk/bin/desk-env.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -608,6 +612,103 @@ try {
       'port|3204|true|acme/desk-skills standing DS-806|acme/desk-skills standing DS-796\nslot|test|true|test ~/w/DS-1: bash t.sh|test ~/w/DS-2: bash t.sh; test ~/w/DS-3: bash t.sh');
     t('DS-959 --days reaches further back for a trial question that has waited', deskEnv(d, ['list', '--clashes', '--days', '9']).out.split('\n').length - 1, 3);
     t('DS-959 AC10 with no clash in the last 7 days it says so', deskEnv(fresh(), ['list', '--clashes']).out, 'no clashes in the last 7 days');
+  }
+  // The pass frees a PR's preview-build unit once its preview finishes (releasePreviews).
+  {
+    const lenv = { machineValue: (k) => (k === 'lease-kinds' ? ALL_ON : null), testLockSlots: () => 1, psRows: () => [] };
+    const unit = (d, label) => pb(d, 'acme', label).out;
+    const later = new Date(Date.now() + 60_000).toISOString();
+    const d1 = fresh();
+    unit(d1, 'acme/web#12');
+    const freed = releasePreviews('acme', [{ pr: 12, label: 'acme/web#12', at: later, reason: 'preview finished' }], { env: lenv, dir: d1 });
+    t('DS-913 AC1: a PR whose preview finished has its unit released', [freed, json(d1)], [{ freed: [12] }, []]);
+    const rel = log(d1).find((e) => e.event === 'release');
+    t('DS-913 AC1: the lease log names the PR and "preview finished"', `${rel?.label} ${rel?.reason}`, 'acme/web#12 preview finished');
+    t('DS-913: the next PR\'s build then takes the unit', cli(d1, ['acquire', 'preview-build', 'acme', '--ttl', '1200', '--wait', '0', '--label', 'acme/web#13', '--no-owner']).code, 0);
+    const d2 = fresh();
+    unit(d2, 'acme/web#14');
+    releasePreviews('acme', [{ pr: 14, label: 'acme/web#14', at: later, reason: 'preview finished: Vercel failed' }], { env: lenv, dir: d2 });
+    t('DS-913 AC2: a failed preview releases its unit too, the log saying which check failed', [json(d2), log(d2).find((e) => e.event === 'release')?.reason], [[], 'preview finished: Vercel failed']);
+    const d3 = fresh();
+    unit(d3, 'acme/web#15');
+    const before = new Date(Date.now() - 60_000).toISOString();
+    t('DS-913: a unit taken again after the preview finished is kept for the build those checks are not', [releasePreviews('acme', [{ pr: 15, label: 'acme/web#15', at: before, reason: 'preview finished' }], { env: lenv, dir: d3 }), json(d3).map((l) => l.label)], [{ freed: [] }, ['acme/web#15']]);
+    t('DS-913 AC3: a unit no finished preview names stays held', [releasePreviews('acme', [{ pr: 16, label: 'acme/web#16', at: later, reason: 'preview finished' }], { env: lenv, dir: d3 }), json(d3).map((l) => l.label)], [{ freed: [] }, ['acme/web#15']]);
+    const d4 = fresh();
+    age(d4, unit(d4, 'acme/web#17'), 1201);
+    t('DS-913 AC4: a unit unreported for 1200 seconds has lapsed at the next lease command', json(d4), []);
+    const lapse = log(d4).find((e) => e.event === 'lapse');
+    t('DS-913 AC4: the lease log names the PR whose preview timed out', `${lapse?.kind} ${lapse?.label} ${lapse?.why}`, 'preview-build acme/web#17 TTL passed');
+    const d5 = fresh();
+    mkdirSync(d5, { recursive: true });
+    writeFileSync(join(d5, 'leases.json'), '{not json');
+    const bad = releasePreviews('acme', [{ pr: 18, label: 'acme/web#18', at: later, reason: 'preview finished' }], { env: lenv, dir: d5 });
+    t('DS-913 AC6: an unreadable store is answered as unreadable, never thrown, for the pass to report', Object.keys(bad).join(), 'unreadable');
+    // A lease directory under a plain file cannot be made: a failure that is not the store's, answered too.
+    const d6 = join(fresh(), 'leases');
+    writeFileSync(dirname(d6), 'a file');
+    t('DS-913 AC6: any other lease failure is answered as failed, never thrown', Object.keys(releasePreviews('acme', [], { env: lenv, dir: d6 })).join(), 'failed');
+
+    // End to end: a PR's check rollup as gh exports it, through the pass's PR status decision, into the
+    // lease store. Vercel's own deploy status is a status context, its time its last state's.
+    // Two PRs on one team hold a unit each only where the team has two preview-build slots.
+    const d7 = fresh();
+    const twoSlots = machineWith({ 'lease-kinds': ALL_ON, 'preview-build-slots': '2' });
+    const held = [21, 22].map((pr) => pb(d7, 'acme', previewLabel('acme/web', { pr }), [], { DESK_MACHINE: twoSlots }).code);
+    t('DS-913 AC1 end to end: both PRs hold a unit before the pass reads their checks', [held, json(d7).map((l) => l.label).join()], [[0, 0], 'acme/web#21,acme/web#22']);
+    const after = (s) => new Date(Date.now() + s * 1000).toISOString().replace(/\.\d+Z$/, 'Z');
+    const rollup = {
+      21: [{ __typename: 'StatusContext', context: 'Vercel', state: 'SUCCESS', startedAt: after(30), targetUrl: 'https://vercel.com/acme/web/1' },
+        { __typename: 'CheckRun', name: 'Vercel Preview Comments', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: after(5), completedAt: after(6) },
+        { __typename: 'CheckRun', name: 'tests', status: 'IN_PROGRESS', conclusion: '', startedAt: after(1), completedAt: '0001-01-01T00:00:00Z' }],
+      22: [{ __typename: 'StatusContext', context: 'Vercel', state: 'PENDING', startedAt: after(2), targetUrl: 'https://vercel.com/acme/web/2' }],
+    };
+    // The fields of each check the pass keeps (pass.mjs readPrStatus), gh's zero time as none.
+    const time = (s) => (s && !s.startsWith('0001-') ? s : null);
+    const read = (pr) => ({ pr, state: 'OPEN', isDraft: false, merged_at: null, base_head: 'b1', at: after(60),
+      checks: latestPerCheck(normaliseRollup(rollup[pr])).map((c) => ({ name: c.name, status: c.status, conclusion: c.conclusion, started: time(c.startedAt), completed: time(c.completedAt) })) });
+    const steps = decidePrStatus({ tickets: { A: { key: 'A', state: 'done', result: { pr: 21 } }, B: { key: 'B', state: 'done', result: { pr: 22 } } }, dry: false, passAt: after(60), previews: true });
+    const out = [];
+    for (let r = steps.next(); !r.done;) {
+      const a = r.value;
+      if (a.type === 'out') out.push(a.line);
+      r = steps.next(a.type === 'read-pr' ? read(a.pr) : a.type === 'free-previews'
+        ? releasePreviews('acme', a.done.map((d) => ({ ...d, label: previewLabel('acme/web', { pr: d.pr }) })), { env: lenv, dir: d7 }) : undefined);
+    }
+    t('DS-913 AC1 end to end: the finished preview\'s unit is released and the pending one\'s held', json(d7).map((l) => l.label).join(), 'acme/web#22');
+    t('DS-913 AC1 end to end: the lease log names the PR and "preview finished"', log(d7).filter((e) => e.event === 'release').map((e) => `${e.label} ${e.reason}`).join(), 'acme/web#21 preview finished');
+    t('DS-913 AC1 end to end: the pass report says so', out.join('\n'), "preview builds: PR #21's preview finished, so its preview-build unit is free for the next build");
+  }
+  // The load and memory sampler a lock wait's lines carry, with fake readings.
+  {
+    const mac = ['vm.loadavg: { 2.47 1.98 1.75 }', 'kern.memorystatus_level: 37', 'kern.memorystatus_vm_pressure_level: 2',
+      `vm.compressor_bytes_used: ${3 * 2 ** 30 + 2 ** 29}`, 'hw.memsize: 25769803776', 'vm.swapusage: total = 3072.00M  used = 1536.00M  free = 1536.00M  (encrypted)'].join('\n');
+    const calls = [];
+    const got = sampleLoad({ platform: 'darwin', run: (cmd, args) => { calls.push([cmd, ...args].join(' ')); return mac; } });
+    t('DS-975 AC1 on macOS one sysctl read gives the load, free memory %, pressure, compressed, swap and total memory', [calls, got],
+      [['sysctl vm.loadavg kern.memorystatus_level kern.memorystatus_vm_pressure_level vm.compressor_bytes_used hw.memsize vm.swapusage'],
+        { load_1m: 2.47, mem_free_pct: 37, mem_pressure: 2, compressed_gb: 3.5, swap_used_gb: 1.5, mem_total_gb: 24 }]);
+    const partial = Object.assign(new Error('exit 1'), { stdout: mac.split('\n').filter((l) => !l.startsWith('vm.compressor')).join('\n') });
+    t('DS-975 AC6 a reading sysctl does not know is left empty, and the rest are kept',
+      sampleLoad({ platform: 'darwin', run: () => { throw partial; } }), { load_1m: 2.47, mem_free_pct: 37, mem_pressure: 2, compressed_gb: null, swap_used_gb: 1.5, mem_total_gb: 24 });
+    const none = { load_1m: null, mem_free_pct: null, mem_pressure: null, compressed_gb: null, swap_used_gb: null, mem_total_gb: null };
+    t('DS-975 AC6 a sysctl that fails or times out leaves every reading empty', sampleLoad({ platform: 'darwin', run: () => { throw Object.assign(new Error('ETIMEDOUT'), { stdout: '' }); } }), none);
+    const files = {
+      '/p/loadavg': '0.82 0.61 0.40 2/1234 5678\n',
+      '/p/meminfo': 'MemTotal:       16777216 kB\nMemFree:         1048576 kB\nMemAvailable:    4194304 kB\nSwapTotal:       2097152 kB\nSwapFree:        1048576 kB\nZswap:            524288 kB\n',
+      '/p/pressure/memory': 'some avg10=1.25 avg60=0.50 avg300=0.10 total=12345\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n',
+    };
+    const read = (p) => { if (!(p in files)) throw new Error(`ENOENT ${p}`); return files[p]; };
+    t('DS-975 AC1 on Linux /proc gives the load, MemAvailable of MemTotal, PSI, zswap, swap and total memory', sampleLoad({ platform: 'linux', proc: '/p', read }),
+      { load_1m: 0.82, mem_free_pct: 25, mem_pressure: 1.25, compressed_gb: 0.5, swap_used_gb: 1, mem_total_gb: 16 });
+    delete files['/p/pressure/memory']; delete files['/p/loadavg'];
+    t('DS-975 AC6 on Linux an unreadable file leaves its readings empty', sampleLoad({ platform: 'linux', proc: '/p', read }),
+      { load_1m: null, mem_free_pct: 25, mem_pressure: null, compressed_gb: 0.5, swap_used_gb: 1, mem_total_gb: 16 });
+    t('DS-975 a wait line carries the class, worktree, seconds waited, queue and the three readings',
+      waitFields({ cls: 'light', worktree: '/w/DS-1', waited: 40, queue: 2, sample: got }),
+      { class: 'light', worktree: '/w/DS-1', wait_s: 40, queue: 2, load_1m: 2.47, mem_free_pct: 37, compressed_gb: 3.5 });
+    t('DS-975 AC6 with no sample the readings are empty', waitFields({ cls: 'test', worktree: '/w', waited: 0, queue: 0, sample: null }),
+      { class: 'test', worktree: '/w', wait_s: 0, queue: 0, load_1m: null, mem_free_pct: null, compressed_gb: null });
   }
 } finally {
   for (const c of owners) c.kill();

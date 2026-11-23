@@ -1,4 +1,5 @@
 // suite: pass phase: the spawn loop's per-ticket step (skip, record-done, park, hand-away or start)
+// layer: L1
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideSpawn, whyOf } from '../desk/bin/pass/spawn-loop.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';

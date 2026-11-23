@@ -1,4 +1,5 @@
 // suite: bench arm 1 (the ticket as filed against the ticket plus a task packet)
+// layer: L2
 import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, readdirSync, realpathSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';

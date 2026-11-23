@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: queue requeue of a running ticket whose worker exited on a park
+# layer: L2
 # queue.mjs requeue takes a ticket still recorded running once its worker is gone (no live pid, its
 # session not in the agent registry) and its log, after the last spawn, ends on a park: it records
 # that park as the pass would and requeues it. A live worker, no park, no way to tell, or a pass

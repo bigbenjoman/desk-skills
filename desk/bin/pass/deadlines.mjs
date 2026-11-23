@@ -21,6 +21,12 @@
 //                 is said here. It ends once GitHub answers or the PR closes.
 //   handoff       a ticket handed off between sessions whose next session has not started: it starts
 //                 at the pass that first sees the handoff pending, and ends once the session starts
+//   progress      a running worker's time since its last progress: a stage change, a new commit on its
+//                 worktree's HEAD or a push to its branch (progress_at, which the advance step keeps).
+//                 Log growth is not progress: a hung call's heartbeat grows the log. Progress closes the
+//                 wait, and the next pass with none opens a new one from it. While the advance step holds a suite wait (suite_wait_since) the wait
+//                 is that step's: under SUITE_WAIT_CEILING_MS its clock is paused (the advance step moves
+//                 progress_at on by the wait once it ends), and past it the ceiling's own report is made.
 //
 // The snapshot: { tickets (the queue's, as the pass read them for this step), at (the pass's time, ISO),
 // dry }. The actions are the shared `set` and `report` (pass/shared.mjs).
@@ -28,6 +34,7 @@ import { set, say } from './shared.mjs';
 import { toHandoff } from './eligibility.mjs';
 import { prStatusOf } from '../batch-state.mjs';
 import { UNKNOWN_LIMIT_MS, unknownSpell, freshMergeRef } from '../undraft.mjs';
+import { mergeWords } from '../base-red.mjs';
 
 const MIN = 60 * 1000;
 // How long each wait may last before it escalates, and where to: the person, or a requeue. A PR with no
@@ -35,14 +42,18 @@ const MIN = 60 * 1000;
 export const WAITS = Object.freeze({
   mergeability: { ms: 2 * UNKNOWN_LIMIT_MS, escalate_to: 'person' },
   handoff: { ms: 15 * MIN, escalate_to: 'requeue' },
+  progress: { ms: 45 * MIN, escalate_to: 'person' },
 });
+// Stage 5 alone has the longer progress deadline: one build turn there can run long with no commit.
+export const EVIDENCE_PROGRESS_MS = 90 * MIN;
+const progressMs = (stage) => (parseInt(stage, 10) === 5 ? EVIDENCE_PROGRESS_MS : WAITS.progress.ms);
 
 const MERGE_REF = /^merge ref: (.+)$/;
 
-// What ticket `t` waits on now: { <on>: { id (what identifies that wait), since (where another step
-// first saw it), owner (whether another step decides when it is the person's), said (that step's
+// What ticket `t` waits on at `at`: { <on>: { id (what identifies that wait), since (where another step
+// first saw it), ms (its deadline, where not WAITS'), owner (whether another step decides when it is the person's), said (that step's
 // words once it has: '' where that step says them itself) } }.
-export function waitsOf(t) {
+export function waitsOf(t, at) {
   const now = {};
   const s = prStatusOf(t);
   if (s?.state === 'OPEN' && s.mergeable === 'UNKNOWN') {
@@ -56,6 +67,16 @@ export function waitsOf(t) {
     };
   }
   if (t.state === 'triaged' && toHandoff(t)) now.handoff = { id: { stage: String(t.handoff_stage ?? '?') }, owner: false, said: null };
+  if (t.state === 'running' && !t.usage_paused && Date.parse(t.progress_at) < Date.parse(at)) {
+    // Progress made this pass (after the pass started) closes the wait, and the next pass with none opens
+    // one from it. Progress a pass recorded and then ended before this sweep is a new stage or head, so a
+    // new wait too. A suite wait the advance step holds owns it, and moves progress_at on once it ends, so
+    // the wait follows progress_at until it is escalated. A usage hold opens none: the clock starts again
+    // when it lifts.
+    const stage = String(t.stage ?? '?');
+    const read = t.progress_sha && typeof t.progress_sha === 'object' ? t.progress_sha : {};
+    now.progress = { id: { stage, head: read.head ?? null, pushed: read.pushed ?? null }, since: t.progress_at, follows: true, ms: progressMs(stage), owner: t.suite_wait_since != null, said: null };
+  }
   return now;
 }
 
@@ -65,11 +86,16 @@ const minsSince = (since, at) => Math.max(0, Math.floor((Date.parse(at) - Date.p
 // says it. `said` is the owner's words, or null.
 function escalation(t, on, w, said, at) {
   const mins = minsSince(w.since, at);
+  const limit = minsSince(w.since, w.deadline);
   if (on === 'mergeability') {
     if (said === '') return null;
-    return `${t.key}: NO MERGE ANSWER — PR #${w.pr}: ${said ?? `GitHub has not worked out whether it conflicts with its base for ${mins} minutes, since ${w.since}, past its ${WAITS[on].ms / MIN}-minute deadline; ${freshMergeRef(w.pr)}`}`;
+    return `${t.key}: NO MERGE ANSWER — PR #${w.pr}: ${said ?? `GitHub has not worked out whether it conflicts with its base for ${mins} minutes, since ${w.since}, past its ${limit}-minute deadline; ${freshMergeRef(w.pr)}`}`;
   }
-  return `${t.key}: HANDOFF NOT STARTED — its Stage ${w.stage} session has not started ${mins} minutes after its handoff, since ${w.since}, past its ${WAITS[on].ms / MIN}-minute deadline. ` +
+  if (on === 'progress') {
+    return `${t.key}: NOT PROGRESSING — its worker at Stage ${w.stage} has made no stage change, commit or push for ${mins} minutes, since ${w.since}, past its ${limit}-minute deadline, ` +
+      'though its log may still grow (a hung call heartbeats into it). Desk leaves it running: read its log to see what it is doing';
+  }
+  return `${t.key}: HANDOFF NOT STARTED — its Stage ${w.stage} session has not started ${mins} minutes after its handoff, since ${w.since}, past its ${limit}-minute deadline. ` +
     `If nothing in this report holds it back (a slot, memory, a usage limit), requeue it: queue.mjs requeue ${t.key}`;
 }
 
@@ -80,10 +106,12 @@ export function nextWaits(t, at) {
   const was = t.waits && typeof t.waits === 'object' ? t.waits : {};
   const next = {};
   const lines = [];
-  for (const [on, { id, since: first, owner, said }] of Object.entries(waitsOf(t))) {
-    const open = was[on] && Object.entries(id).every(([k, v]) => was[on][k] === v) ? was[on] : null;
+  for (const [on, { id, since: first, follows = false, ms = WAITS[on].ms, owner, said }] of Object.entries(waitsOf(t, at))) {
+    const matched = was[on] && Object.entries(id).every(([k, v]) => was[on][k] === v) ? was[on] : null;
+    // A wait that follows its start keeps it only once escalated: until then its start and deadline move with it.
+    const open = matched && !(follows && !matched.escalated) ? matched : null;
     const since = open?.since ?? (Number.isFinite(Date.parse(first)) ? first : at);
-    let w = open ?? { since, deadline: new Date(Date.parse(since) + WAITS[on].ms).toISOString(), escalate_to: WAITS[on].escalate_to, ...id };
+    let w = open ?? { since, deadline: new Date(Date.parse(since) + ms).toISOString(), escalate_to: WAITS[on].escalate_to, ...id };
     const due = said != null || (!owner && Date.parse(at) >= Date.parse(w.deadline));
     if (!w.escalated && due) w = { ...w, escalated: at };
     const line = w.escalated ? escalation(t, on, w, said, at) : null;
@@ -92,6 +120,35 @@ export function nextWaits(t, at) {
   }
   return { waits: next, lines };
 }
+
+// The red base under a batch (pass/base-gate.mjs decideBaseRed) is a wait of the batch's, kept as the
+// queue's `base_red`, with its deadline BASE_RED_MS after it began. -> { rec, line }: past its deadline
+// it is escalated to the person once (`escalated`, kept on the record), and its WAITING ON YOU line is
+// said while it stays red, as a ticket's escalated wait's is, led by the branch and its class so the
+// decider keys it as one item while its minutes grow (decider.mjs waitKey). Before it, line is null.
+export const BASE_RED_MS = 60 * MIN;
+// A batch wait's record past its deadline, escalated once: { rec, line }, `line` from lineOf(rec, mins
+// it has lasted, its deadline's minutes), or null before the deadline.
+function batchWait(rec, at, lineOf) {
+  if (!rec.escalated && Date.parse(at) < Date.parse(rec.deadline)) return { rec, line: null };
+  const w = rec.escalated ? rec : { ...rec, escalated: at };
+  return { rec: w, line: lineOf(w, minsSince(w.since, at), minsSince(w.since, w.deadline)) };
+}
+export const baseRedWait = (rec, at) => batchWait(rec, at, (w, mins, limit) =>
+  `${w.branch}: RED BASE — it has been red for ${mins} minutes, since ${w.since}, past its ${limit}-minute deadline: ` +
+  `${w.check} still fails there, so the merge driver merges nothing into it. The last merges desk made: ${mergeWords(w)}`);
+
+// A platform outage (pass/fix-tries.mjs decideOutage) is a wait of the batch's too, kept as the queue's
+// `platform_outage`, with its deadline OUTAGE_MS after it began, and the outage hold's re-run back-off
+// in between. -> { rec, line }, as baseRedWait: escalated to the person once past its deadline, its line
+// said while it lasts, led by the base and its class so the decider keys it as one item. `runnable`:
+// an Actions run reports a held check, so the pass re-runs it; otherwise nothing desk re-runs turns it green.
+export const OUTAGE_MS = 120 * MIN;
+export const outageWait = (rec, at, base, { runnable = true } = {}) => batchWait(rec, at, (w, mins, limit) =>
+  `${base}: PLATFORM OUTAGE — ${w.check} has been red on every open PR with a run of it for ${mins} minutes, since ${w.since}, ` +
+  `past its ${limit}-minute deadline: no fix try is spent on it${runnable
+    ? ' and the pass keeps re-running it, so check the deploy platform\'s status, and once it is back redeploy or re-run it on one PR'
+    : ', and no Actions run reports it, so nothing desk re-runs turns it green: check the deploy platform\'s status, and once it is back redeploy there or push to the PRs'}`);
 
 export function decideDeadlines(snap) {
   const actions = [];

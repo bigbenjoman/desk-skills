@@ -1,4 +1,5 @@
 // suite: cost sources (desk-env costs detect, propose, write, show)
+// layer: L2
 // Cost sources: the AWS config and Vercel parsers on fixture output, the proposal that matches
 // sources to names, the costs.md file, and the desk-env costs CLI against a fake gh, a local stand-in
 // for the Vercel API and a scratch AWS config. Scratch directories only; nothing reads this computer.

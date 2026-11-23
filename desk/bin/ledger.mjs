@@ -4,6 +4,7 @@
 // edit the person saved at the same moment, and GitHub has no conditional write.
 import { createHash } from 'node:crypto';
 import { isHeld } from './batch-state.mjs';
+import { blockersOf } from './queue-states.mjs';
 
 export const LEDGER_BEGIN = '<!-- desk-autopilot:ledger -->';
 export const LEDGER_END = '<!-- desk-autopilot:ledger-end -->';
@@ -13,7 +14,7 @@ const cell = (v) => String(v).replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ');
 // A child's state as the ledger shows it. `prState(n)` is GitHub's state for PR n (OPEN, MERGED,
 // CLOSED), or null when it could not be read, which reads as plain "done" rather than a guess.
 export function ledgerState(t, prState = () => null) {
-  if (isHeld(t)) return `held until ${String(t.held_by ?? '?').split('|').filter(Boolean).join(', ')} merge`;
+  if (isHeld(t)) return `held until ${blockersOf(t).join(', ') || '?'} merge`;
   if (t.state !== 'done') return t.state;
   const s = t.result?.pr != null ? prState(t.result.pr) : null;
   return s === 'MERGED' ? 'merged' : s === 'CLOSED' ? 'closed without merging' : s === 'OPEN' ? 'in review' : 'done';

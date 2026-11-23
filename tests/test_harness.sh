@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: harness-rules
+# layer: L2
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u

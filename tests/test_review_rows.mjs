@@ -1,4 +1,5 @@
 // suite: review rows (the review a worker runs and posts, under §4 Local review command and Clean review verdict)
+// layer: L2
 // covers: desk/bin/desk-env.mjs desk/bin/undraft.mjs desk/bin/fix-tries.mjs skills/desk-autopilot/references/worker-contract-stage-3.md skills/desk-autopilot/references/worker-contract-stage-4.md skills/desk-autopilot/references/worker-contract-task.md skills/desk-ticket/references/stage-4b-self-review.md skills/desk-review-response/SKILL.md skills/desk-setup/references/step-1-detect.md
 // reviewPlan on each pair of rows, and `desk-env review-cmd` reading them from a config; what the
 // worker contract, Stage 4b, a fix try's task and /desk-setup say about them, each against the text

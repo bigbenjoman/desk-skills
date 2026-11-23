@@ -159,6 +159,34 @@ you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease 
   input is only what clears the park, never how you judge which rows the app lacks). An app whose
   dev server runs but fails for want of its env files parks the same way, naming the Env files row
   alone.
+
+  **A PR that adds a migration, where §4 Preview database is set** (`desk-env cmds preview-db`), takes
+  its evidence against a database of its own, never the shared staging one its preview reads, which
+  does not have the migration yet. With the draft PR open, run
+  `node ~/.claude/desk/bin/preview-db.mjs up <your branch> <your PR>` before capturing or dispatching
+  anything. It makes the database branch named after your branch, applies your migrations and the
+  seed, sets the override for your preview branch only and rebuilds the preview; the pass deletes
+  both once the PR merges or closes, so never delete them yourself. Then capture as above, never
+  through §4 Evidence workflow (`desk-env list evidence-workflow`): it posts its shots straight into
+  the body, where no error-page check reads them, so for a PR with a preview database
+  `evidence.mjs dispatch` refuses it and the pass starts no run of it. Your own checked shots are its
+  evidence. Where §3 `worker-preview-db` is not `yes`, park
+  naming the row, with the command. **A step that fails is a park quoting it**: `up` prints a
+  `PARK:` line naming the step, its command and its error; copy it into your `AUTOPILOT_PARK`
+  verbatim, with the rest of the tail. Never take the evidence against staging instead. A refusal
+  saying the PR adds no migration means the usual route applies; with the row `none`, so does every
+  migration PR.
+
+  **Every shot of a PR with a preview database is checked for an error page before you print
+  `AUTOPILOT_IMAGES`.** Save the page's body text beside each shot as `<shot name>.txt` (Playwright
+  `page.innerText('body')`), then run
+  `node ~/.claude/desk/bin/preview-db.mjs check <your screenshot directory>`. It moves any shot whose
+  text is an error page (a crash page, a server error, a not-found page, a database error naming a
+  missing table or column) into `error-pages/` beside it, where no upload reads it, and exits 1 on
+  one, on a shot with no text, or when it could not record the pass. Only the files a passing check read, unchanged since, are uploaded;
+  a failed check uploads none. An error page is never evidence: find why (the preview not yet
+  rebuilt, a migration that did not apply), fix it and capture again, or park quoting the line it
+  printed. Look at every shot as well; the check reads text, not pixels.
 - **Opening the PR as a DRAFT.** `gh pr create --repo <repo> --draft --base <default> --head
   <your branch> --body-file <file> --title "<title>"`, in that order: the allow rule matches only a
   command beginning `gh pr create --draft` or `gh pr create --repo <repo> --draft`, and `--repo`

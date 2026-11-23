@@ -1,4 +1,5 @@
 // suite: batch state (every path batch-state.mjs builds under the state folder is a declared state path)
+// layer: L1
 // covers: desk/bin/batch-state.mjs
 import { readFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -56,6 +57,25 @@ try {
   writeFileSync(join(dir, 'answers', 'A-1.txt'), 'yes');
   t('an answer beside it closes the question', openQuestion(dir, 'A-1'), null);
 } finally { rmSync(dir, { recursive: true, force: true }); }
+
+// A ticket's blockers read the same from held_by as a pipe-joined string, as a queue written before
+// the holds list has it, and from the holds list alone, in the order they were added.
+{
+  const { blockersOf } = await import('../desk/bin/queue-states.mjs');
+  const { holdsKept, heldBehindOf, epicChildren, stoppedHold } = await import('../desk/bin/batch-state.mjs');
+  const park = { kind: 'hold', question: 'held behind its blockers' };
+  for (const [form, held] of [['a pipe-joined held_by', { held_by: 'B|A' }], ['a holds list', { holds: ['B', 'A'] }]]) {
+    const q = { epic: 'E', tickets: { A: { key: 'A', state: 'running' }, B: { key: 'B', state: 'running' },
+      C: { key: 'C', state: 'parked', park, ...held }, D: { key: 'D', state: 'parked', park, held_by: 'C|E' } } };
+    t(`${form}: the blockers in the order they were added`, blockersOf(q.tickets.C), ['B', 'A']);
+    t(`${form}: the ticket keeps its holds`, holdsKept(q.tickets.C), true);
+    t(`${form}: so it is not a stopped hold`, stoppedHold(q.tickets.C), false);
+    t(`${form}: tickets held behind A, through the chain`, [...heldBehindOf(q, 'A')], ['C', 'D']);
+    t(`${form}: the epic's children leave out the one held behind the epic`, epicChildren(q).map((x) => x.key), ['A', 'B', 'C']);
+  }
+  t('held_by wins over a holds list beside it', blockersOf({ held_by: null, holds: ['A'] }), []);
+  t('a ticket with neither has no blockers', blockersOf({ key: 'X' }), []);
+}
 
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }
 console.log('all passed');

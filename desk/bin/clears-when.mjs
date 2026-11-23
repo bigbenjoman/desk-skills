@@ -31,7 +31,10 @@
 //                          the latest run of that check on the PR's head commit succeeded; several names,
 //                          each quoted, joined by commas or "and" (`checks "a" and "b" on pr 9 pass`)
 //   commit <sha> on <branch>
-//                          origin's <branch> holds that commit ("is an ancestor of origin/<branch>" too)
+//                          origin's <branch> holds that commit ("is an ancestor of origin/<branch>" too).
+//                          Once a branch other than the default branch or a batch base has moved to a
+//                          head the commit does not build on, it can never land there by a plain push,
+//                          and the park is the person's (commitOnBranch)
 //   gh pr view <n> [--repo <owner/name>] … reports MERGED
 //                          the command a worker would run, read as pr <n> merged (in that repo)
 //   none                   nothing a script can read; the park waits for a person
@@ -311,6 +314,30 @@ export function describeCond(c) {
   }
 }
 
+// Whether `sha` is on origin/<branch>, from a clone that has just fetched it. `git(args)` runs git there
+// and returns {ok, code, out}. A commit the branch lacks can still land while the branch head is an
+// ancestor of it (a push fast-forwards); once the branch has moved to a head that is not, it never can,
+// and `never` says so, naming that head. Not on a branch that takes commits by merging PRs (`merges`:
+// the default branch, a batch base), whose head moving on is how the commit arrives. The head is read
+// once, so a fetch moving the ref between the two checks cannot read as neither.
+export function commitOnBranch(git, sha, branch, { merges = false } = {}) {
+  const not = { holds: false, note: `${sha} is not on origin/${branch} yet` };
+  if (!git(['cat-file', '-e', `${sha}^{commit}`]).ok) return not;
+  const ref = `origin/${branch}`;
+  const tip = git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+  if (!tip.ok) throw new Error(`git rev-parse ${ref}: ${String(tip.out).split('\n').pop() || 'no such ref'}`);
+  const head = String(tip.out).trim();
+  const isAncestor = (a, b) => {
+    const r = git(['merge-base', '--is-ancestor', a, b]);
+    if (r.ok) return true;
+    if (r.code === 1) return false;
+    throw new Error(`git merge-base ${a} ${b}: ${String(r.out).split('\n').pop()}`);
+  };
+  if (isAncestor(sha, head)) return { holds: true };
+  if (merges || isAncestor(head, sha)) return not;
+  return { holds: false, never: `the branch ${ref} has moved to ${head.slice(0, 9)}, which ${sha} does not build on, so ${sha} can no longer land there: the push it waits on is stale` };
+}
+
 // Does it hold now? {holds: bool, note?} or {error}. `note` is what the next worker or the report
 // needs beside the answer: a finished run's conclusion, or an unfinished one's status. The readers do
 // the reading and throw on any failure, so a check that could not run is never read as cleared:
@@ -323,7 +350,8 @@ export function describeCond(c) {
 //   queued(ticket, repo) → {holds, note?}, queuedIn over this computer's other queues
 //   checks(n) → {headRefOid, checks: [{name, workflow, status, conclusion}]}, the latest run of each
 //              check on the head (gate.mjs latestPerCheck over normaliseRollup)
-//   commitOn(sha, branch) → {holds, note?}, having fetched origin's branch
+//   commitOn(sha, branch) → {holds, note?, never?}, having fetched origin's branch (commitOnBranch)
+// A result with `never` can never hold: the pass gives the park to the person, saying why.
 export function checkCond(c, read) {
   try {
     switch (c?.kind) {

@@ -3,7 +3,7 @@
 // on every pass, so a rename a sibling merged into the base is caught as well as one a base sync brought.
 // git: (args) -> { ok, out }, run in a checkout holding `head` and `base`.
 
-const MIGRATION_DIR = /(^|\/)(?:migrations?|migrate|alembic)\//i;
+export const MIGRATION_DIR =/(^|\/)(?:migrations?|migrate|alembic)\//i;
 
 // A renumbering, from `git diff --name-status` lines: one path component changed in place, holding a
 // digit, under a migrations directory. { from, to, old, new }, old and new being what a reference names.

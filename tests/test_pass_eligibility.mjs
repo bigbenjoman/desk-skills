@@ -1,4 +1,5 @@
 // suite: pass phase: eligibility, the batch budget and slots (the candidates, what holds every spawn, the slot count)
+// layer: L1
 import { runPhase, runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { PACE_HELD, decideEligibility, decideSlots, ticketSlotsOf, toResume, toHandoff } from '../desk/bin/pass/eligibility.mjs';
 import { usageHeldText } from '../desk/bin/pass/shared.mjs';

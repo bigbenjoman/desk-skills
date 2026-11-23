@@ -1,4 +1,5 @@
 // suite: pass phase: advance running tickets and the usage limit (the decisions, and the generator runner)
+// layer: L1
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideAdvance, decideUsageLimit, logMarkers, REBOOT } from '../desk/bin/pass/advance.mjs';
 import { registryView, BUDGET_RESUME_USD } from '../desk/bin/pass/shared.mjs';
@@ -23,7 +24,10 @@ const logOf = (key, h, events, { mtimeMs = NOW - HOUR } = {}) => {
   const raw = Buffer.from(text);
   return { path: `/state/logs/${key}.log`, h, raw, text, size: raw.length, mtimeMs };
 };
-const ticket = (key, fields = {}) => ({ key, state: 'running', branch: `fix/${key}`, session_id: `sid-${key}`, ...fields });
+// Its progress as the last pass read it, which the stub read below answers unchanged.
+const HEAD = 'a'.repeat(40);
+const PROGRESS = { head: HEAD, pushed: HEAD };
+const ticket = (key, fields = {}) => ({ key, state: 'running', branch: `fix/${key}`, session_id: `sid-${key}`, progress_at: new Date(NOW - HOUR).toISOString(), progress_sha: PROGRESS, ...fields });
 // The registry: `sessions` live, or unread.
 const snap = (tk, log, { sessions = [], read = true, upload = true } = {}) => ({
   t: tk, log, registry: registryView(read ? { live: sessions } : { why: 'claude agents failed' }), now: NOW, stateDir: '/state',
@@ -38,7 +42,7 @@ const READS = {
   'open-pr': '', 'suite-wait': null, 'build-park': null, 'merge-park': null, shots: [], 'same-pairs': [], cells: null, 'open-question': null,
   'settle-links': [], 'live-read': null, 'clears-when': { kind: 'none' }, register: { inputs: {}, status: 'new' }, recommends: null,
   'refuse-lease': false, lifted: false, 'exit-code': null, uncommitted: null, approval: { approve: null, missing: null }, 'pr-owner': null,
-  'park-file': null,
+  'park-file': null, progress: PROGRESS,
 };
 const WRITES = ['set', 'report', 'cloud', 'note', 'hold', 'kill', 'park', 'upload', 'worker-head', 'done', 'park-links', 'keep-links', 'decisions', 'handoff', 'fail', 'keep-holds', 'usage-hold'];
 function drive(decide, s, answers = {}) {
@@ -93,7 +97,7 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   const sessions = [{ sessionId: 'sid-A', pid: 11 }, { sessionId: 'sid-B', pid: 12 }];
   const all = ['A', 'B'].flatMap((k) => advance(snap(ticket(k, { stage: '3/9', log_bytes: 0 }), logOf(k, 'AUTOPILOT_STAGE: 3/9 implement', [said('AUTOPILOT_STAGE: 3/9 implement'), said('editing')]), { sessions })));
   t('AC2 live workers whose logs grew get nothing but their liveness count', j(moves(all)), '[]');
-  t('AC2 and each is asked only whether it waits on a question', j(types(all)), '["set","open-question","set","open-question"]');
+  t('AC2 and each is asked only for its progress and whether it waits on a question', j(types(all)), '["set","progress","open-question","set","progress","open-question"]');
   const asked = advance(snap(ticket('A', { stage: '3/9', log_bytes: 0 }), logOf('A', '', [said('x')]), { sessions }), { 'open-question': 'which colour?' });
   t('a live worker sitting on a question is reported waiting, and nothing else', j(lines(asked)), '["A: which colour?"]');
 }
@@ -161,6 +165,34 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   const suite = advance(quiet('T-13', 'AUTOPILOT_STAGE: 4/9 verify'), { 'suite-wait': 'suite' });
   t('a quiet worker running its suite under the test lock is quiet, not wedged',
     j([types(suite).includes('park'), sets(suite), lines(suite, 'quiet')]), j([false, ['idle_passes=6', `suite_wait_since=${NOW}`], ['T-13: quiet for 6 passes, running its suite']]));
+}
+
+// DS-902: a running worker's progress time is its last stage change, commit or push, never log growth alone.
+{
+  const at3 = (fields) => { const log = logOf('G', 'AUTOPILOT_STAGE: 3/9 implement', [said('AUTOPILOT_STAGE: 3/9 implement'), said('still going')]); return snap(ticket('G', { stage: '3/9', log_bytes: 0, ...fields }), log, { sessions: [{ sessionId: 'sid-G', pid: 9 }] }); };
+  const progress = (as) => sets(as).filter((f) => /^progress_/.test(f));
+  t('AC1 a log that grew with no stage change, commit or push leaves its progress time', j(progress(advance(at3()))), '[]');
+  const NEW = 'b'.repeat(40);
+  // Written bare, as every time field is, so queue.mjs keeps it a plain string.
+  const P = (ms) => `progress_at=${new Date(ms).toISOString()}`;
+  t('a new commit on its HEAD is progress', j(progress(advance(at3(), { progress: { head: NEW, pushed: HEAD } }))),
+    j([P(NOW), `progress_sha=${j({ head: NEW, pushed: HEAD })}`]));
+  t('AC6 a push of its branch is progress, its time the pass that saw the push', j(progress(advance(at3({ progress_sha: { head: HEAD, pushed: null } })))),
+    j([P(NOW), `progress_sha=${j(PROGRESS)}`]));
+  t('a stage change is progress', j(progress(advance(at3({ stage: '2/9' })))), j([P(NOW)]));
+  t('a git read that fails changes nothing', j(progress(advance(at3(), { progress: null }))), '[]');
+  t('a worker first seen starts its clock then', j(progress(advance(at3({ progress_at: undefined, progress_sha: undefined }), { progress: null }))), j([P(NOW)]));
+  const waited = progress(advance(at3({ suite_wait_since: NOW - 20 * 60000 })));
+  t('AC4 a suite wait that ended under its ceiling is not counted: its progress time moves on by the wait', j(waited), j([P(NOW - HOUR + 20 * 60000)]));
+  const over = progress(advance(at3({ suite_wait_since: NOW - 50 * 60000 })));
+  t('and only up to the ceiling', j(over), j([P(NOW - HOUR + 30 * 60000)]));
+  const lifted = sets(advance(at3({ usage_paused: { type: 'five_hour', resets_at: null } })));
+  t('a usage hold that lifted starts the clock again, once, as it clears the hold', j(lifted.filter((f) => /^(progress_at|usage_paused)=/.test(f))), j(['usage_paused=null', P(NOW)]));
+  const liftedExited = sets(advance(snap(ticket('Y', { stage: '3/9', usage_paused: { type: 'five_hour', resets_at: null } }), logOf('Y', '', [said('x'), RESULT]))));
+  t('and so for a worker that exited at the limit, whose progress is not read', liftedExited.includes(P(NOW)), true);
+  const exited = advance(snap(ticket('X', { stage: '3/9' }), logOf('X', 'AUTOPILOT_DONE: pr=3 jira=none', [said('AUTOPILOT_DONE: pr=3 jira=none'), RESULT])));
+  t('an exited worker\'s progress is not read', types(exited).includes('progress'), false);
+  t('nor a wedged one\'s', types(advance(snap(ticket('Q', { stage: '3/9', session_id: 'live-q', idle_passes: 5, log_bytes: 0 }), logOf('Q', '', []), { sessions: [{ sessionId: 'live-q', pid: 5 }] }))).includes('progress'), false);
 }
 
 // DS-857: a log that grew only by the harness's tool_progress heartbeat, for one call.
@@ -293,6 +325,10 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   const off = advance(ended('B-4', 'error_max_budget_usd', {}, { off: true }), { 'exit-code': 1 });
   t('DS-849 AC4 with the per-worker budget none, a budget-stop subtype is failed as any error',
     j([types(off).includes('fail'), sets(off).some((f) => f.startsWith('resume='))]), '[true,false]');
+  t('DS-898 AC2 the fail carries the subtype its session ended in',
+    j([off.find((a) => a.type === 'fail')?.subtype, other.find((a) => a.type === 'fail')?.subtype]), j(['error_max_budget_usd', 'error_during_execution']));
+  t('DS-898 a session that ended with no error fails with no subtype',
+    advance(snap(ticket('N-9'), logOf('N-9', '', [said('working'), RESULT])), { 'exit-code': 0 }).find((a) => a.type === 'fail')?.subtype, null);
 }
 
 // The text a park's write waits on, from the worker's park file: only for the question it parked on.

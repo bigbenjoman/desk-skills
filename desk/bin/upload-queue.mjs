@@ -160,9 +160,10 @@ export const backoffWhy = (b) => `an upload for ${b.repo} #${b.pr} stalled at ${
 // Runs the queue's jobs until it is empty, the pace is spent, an upload stalls or the profile is in
 // use, each job at most once (`tried` holds the ids already run, across one pass's pumps), passing over
 // each job whose login is not signed in. run(job, max) runs the uploader and returns { code, out };
-// login(job) is signedIn for the job's profile; install() is deskInstall.
+// login(job) is signedIn for the job's profile; install() is deskInstall. A job eligible(job) refuses is
+// passed over untouched, left queued for a pass that can run it, as if it were not in the queue.
 // -> { ran: [{ job, code }], stop: why it stopped short (or left a job waiting on a sign-in), or null }.
-export function pump({ run, file = uploadQueueFile(), now = Date.now, uploadLog = () => readUploadLog(), tried = new Set(), login = (job) => signedIn({ profile: job.profile ?? undefined, file, now: now() }), install = deskInstall }) {
+export function pump({ run, file = uploadQueueFile(), now = Date.now, uploadLog = () => readUploadLog(), tried = new Set(), login = (job) => signedIn({ profile: job.profile ?? undefined, file, now: now() }), install = deskInstall, eligible = () => true }) {
   const runLock = `${file}.run`;
   const holder = tryLock(runLock);
   if (holder !== true) return { ran: [], stop: `another pass is uploading from the machine's upload queue (pid ${holder ?? '?'})` };
@@ -178,6 +179,7 @@ export function pump({ run, file = uploadQueueFile(), now = Date.now, uploadLog 
       if (q.page && q.page.install === install()) { stop = pageWhy(q.page); break; }
       const job = pickJob(q, passed);
       if (!job) break;
+      if (!eligible(job)) { passed.add(jobId(job)); continue; }
       let s;
       try { s = login(job); } catch (e) { s = { ok: false, why: `the browser profile's GitHub login could not be read (${e.message})` }; }
       if (!s.ok) { passed.add(jobId(job)); waits ??= signinWhy(s); continue; }

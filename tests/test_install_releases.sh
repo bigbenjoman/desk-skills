@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: install.sh release folders and rollback
+# layer: L2
 # install.sh's install_release, taken from install.sh with the helpers it calls, run over a throwaway
 # HOME from a scratch checkout holding this checkout's desk/bin and desk/templates, committed three
 # times over: each install is a release folder made current in one step, the newest three are kept, a

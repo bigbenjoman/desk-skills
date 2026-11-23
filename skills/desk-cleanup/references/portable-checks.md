@@ -2,7 +2,7 @@
 
 Every snippet here runs on macOS and Linux/WSL unless a heading says otherwise. `lsof` ships with
 macOS; on Linux install it if `command -v lsof` is empty rather than falling back to `/proc`
-scraping in a skill run. §-references are to this repo's config (`desk-env where`, then Read it).
+scraping in a skill run. §-references are to this repo's config, in the sections read at the skill's start.
 
 ## Processes inside a worktree (by prefix)
 

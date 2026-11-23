@@ -1,4 +1,5 @@
 // suite: batch (start, discard and archive a feature batch)
+// layer: L2
 // budget: 45 DS-943 (every check runs batch.mjs or plan-batch.mjs against a real repo and bare origin; 34-36 s on CI)
 // batch.mjs against a scratch repo with a bare origin, a throwaway HOME and DESK_HOME: start refuses a
 // second batch, a second live feature batch and a bad base; discard removes an unstarted batch and
@@ -287,6 +288,15 @@ t('AC7 a second check hands nothing new on', (a.lines ?? []).length, 0);
 t('AC7 a pass does not prune them', run(`const { pruneHanded } = await import('${join(BIN, 'decider.mjs')}'); pruneHanded('${namedS('X-3')}', []); console.log(Object.keys(JSON.parse((await import('node:fs')).readFileSync('${join(namedS('X-3'), 'handed.json')}', 'utf8'))).length)`).out, '2');
 a = res(archive('X-3', { 9: 'CLOSED', 10: 'MERGED', 11: 'CLOSED', 12: 'OPEN' }));
 t('AC7 a PR closed since is no longer listed', Object.values(handed('X-3')).map((e) => e.ticket).join(' '), 'X-8');
+
+// DS-550: a preview database its pass has still to delete holds the archive, so the record is not
+// moved where no pass reads it; with the record gone, the batch archives as below.
+mkdirSync(join(namedS('X-3'), 'preview-db'), { recursive: true });
+writeFileSync(join(namedS('X-3'), 'preview-db', '12.json'), JSON.stringify({ pr: '12', branch: 'feat/x-8', db: 'feat-x-8', steps: ['create'] }));
+a = res(archive('X-3', { 9: 'CLOSED', 10: 'MERGED', 11: 'CLOSED', 12: 'MERGED' }));
+t('DS-550 AC3 a preview database still to delete: not archived', a.archived === false && existsSync(namedS('X-3')), true);
+t('DS-550 AC3 the report names it', (a.lines ?? []).join(' ').includes('waits on its pass to delete preview database feat-x-8 (PR #12)'), true);
+rmSync(join(namedS('X-3'), 'preview-db'), { recursive: true, force: true });
 
 // AC5: promotion merged or closed, nothing running, no ticket PR open: moved under batches/.done/.
 qBefore = readFileSync(namedQ('X-3'), 'utf8');

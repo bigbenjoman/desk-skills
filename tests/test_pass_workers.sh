@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: pass: workers (screenshots go to the current round's PR; requeue; stalls, limits, kills, handoffs)
+# layer: L3
 # pass.mjs after a requeue: screenshots go to the PR the current log names, not the one an earlier
 # round stored, and a respawn clears the stored PR and image flags and starts a fresh log and park
 # record. queue.mjs requeue moves a finished round's files aside so it respawns. A worker whose log
@@ -43,7 +44,7 @@ check "DS-833 AC3 a worker with no results file keeps no reviews folder" '[ ! -e
 check "DS-193 AC1 a missing image directory runs no upload and reports nothing" '! grep -q "^11 " "$T/uploads" && ! echo "$out" | grep -q "I-1: image" && [ "$(field I-1 images_uploaded)" = "\"none\"" ] && [ "$(field I-1 state)" = "\"done\"" ]'
 check "DS-193 AC2 a directory with no image runs no upload and reports nothing" '! grep -q "^12 " "$T/uploads" && ! echo "$out" | grep -q "I-2: image" && [ "$(field I-2 images_uploaded)" = "\"none\"" ] && [ "$(field I-2 state)" = "\"done\"" ]'
 check "DS-193 AC3 a directory with screenshots still uploads and is reported" 'echo "$out" | grep -q "T-1 images → #2" && [ "$(field T-1 images_uploaded)" = true ]'
-check "DS-673 AC5 the pass uploads through the machine's upload queue, capped at the minute's pace" 'grep -qx "2 $T/state/images/T-1/ --max 6" "$T/upload-args"'
+check "DS-673 AC5 the pass uploads through the machine's upload queue, capped at the minute's pace" 'grep -qx "2 $T/state/images/T-1/ --max 6 --state $T/state" "$T/upload-args"'
 check "DS-673 AC5 each upload done, the queue holds no job and no result" 'node -e "const q = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")); process.exit(q.jobs.length + q.results.length)" "$T/desk/upload-queue.json"'
 
 # R-1 and R-2: finished tickets whose uploads ended in another repo's pump. R-1's was its last round's,
@@ -332,7 +333,9 @@ kill "$WPID" 2>/dev/null; mv "$T/spawn-worker.kept" "$T/desk/bin/spawn-worker.sh
 # 6 workers, 8 GB. The peer session and the worker are sleep processes, and spawn-worker.sh prints the
 # worker's pid.
 export DESK_LEASE_DIR="$T/leases-mem" DESK_MACHINE="$T/machine-mem.md"
-mem_kind(){ { printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `mem=%s` | test |\n| `autopilot-concurrency` | `3 / 6` | test |\n' "$1"
+# mem_kind <mode> [<ceiling GB>|none] [<machine cap>|none]: the machine profile, by default 48 GB and 3 / 6.
+mem_kind(){ { printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `mem=%s` | test |\n' "$1"
+  [ "${3:-3 / 6}" = none ] || printf '| `autopilot-concurrency` | `%s` | test |\n' "${3:-3 / 6}"
   [ "${2:-48}" = none ] || printf '| `memory-ceiling-gb` | `%s` | test |\n' "${2:-48}"; } > "$DESK_MACHINE"; }
 memlist(){ node "$B/leases.mjs" list --json 2>/dev/null | jq -c 'select(.kind == "mem")'; }
 new_worker(){ WPID=$( (sleep 300 >/dev/null 2>&1 & echo $!) )
@@ -390,7 +393,31 @@ check "DS-916 AC12 with the lease store unreadable the pass spawns by the legacy
 new_worker; printf 'x' > "$T/leases-file"; export DESK_LEASE_DIR="$T/leases-file"
 spawn_one M-13
 check "DS-916 AC12 a lease directory that cannot be locked still spawns by the legacy rules, saying leases were unreadable" '[ "$(field M-13 state)" = "\"running\"" ] && echo "$out" | grep -qF "memory reservations: leases were unreadable ("'
-kill "$WPID" 2>/dev/null; mv "$T/spawn-worker.kept" "$T/desk/bin/spawn-worker.sh"; unset DESK_LEASE_DIR DESK_MACHINE
+kill "$WPID" 2>/dev/null
+# DS-992: a worker's share is the ceiling over the machine profile's cap, whatever the repo's own cap:
+# 56 GB over a machine cap of 18 is 3 GB for a repo at 2 / 3 and for one at 8 / 12 alike.
+export DESK_LEASE_DIR="$T/leases-992"; WPIDS=""
+repo_cap(){ { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `%s` |\n' "$2"; } > "$T/config-cap-$1.md"; }
+repo_cap small '2 / 3'; repo_cap large '8 / 12'
+# spawn_at <small|large> <KEY>: a pass in a repo with that cap starts KEY's worker.
+spawn_at(){ new_worker; WPIDS="$WPIDS $WPID"; DESK_CONFIG="$T/config-cap-$1.md" spawn_one "$2"; }
+share_of(){ memlist | jq -r --arg k "worker $1" 'select(.key == $k) | .units'; }
+mem_kind on 56 '9 / 18'
+spawn_at small M-20
+check "DS-992 AC1 under a 56 GB ceiling and a machine cap of 18, a worker in a repo capped at 3 reserves 3 GB" '[ "$(field M-20 state)" = "\"running\"" ] && [ "$(share_of M-20)" = 3 ]'
+spawn_at large M-21
+check "DS-992 AC2 a worker in a repo capped at 12 reserves the same 3 GB" '[ "$(field M-21 state)" = "\"running\"" ] && [ "$(share_of M-21)" = 3 ]'
+mem_kind on 56 none
+spawn_at small M-22
+check "DS-992 AC3 with no machine cap in the profile, the share is the ceiling over the repo's own cap of 3" '[ "$(share_of M-22)" = 18 ]'
+# shellcheck disable=SC2086
+kill $WPIDS 2>/dev/null; rm -rf "$DESK_LEASE_DIR"; WPIDS=""
+mem_kind shadow 56 '9 / 18'
+for k in F-1 F-2; do spawn_at small "M-$k"; done
+for k in N-1 N-2 N-3 N-4 N-5 N-6; do spawn_at large "M-$k"; done
+check "DS-992 AC4 two workers from a repo capped at 3 and six from one capped at 12 reserve 24 GB, and the lease log holds no mem would-refuse" '[ "$(memlist | jq -s "map(.units) | add")" = 24 ] && ! grep "\"would-refuse\"" "$DESK_LEASE_DIR/leases.log.jsonl" | grep -q "\"kind\":\"mem\""'
+# shellcheck disable=SC2086
+kill $WPIDS 2>/dev/null; mv "$T/spawn-worker.kept" "$T/desk/bin/spawn-worker.sh"; unset DESK_LEASE_DIR DESK_MACHINE
 # What an orchestrator on WSL is told at Stage 0b, by the mem kind's mode.
 WSLREF="$SRC/skills/desk-autopilot/references/wsl-memory.md"
 check "DS-916 AC9 with the kind shadow or on, the WSL reference starts no Monitor on Windows free memory" 'grep -qF -- "- **\`shadow\` or \`on\`**: start no \`Monitor\` on Windows free memory." "$WSLREF"'
@@ -878,15 +905,17 @@ q set Y-6 state=done
 q set-batch concurrency=2 concurrency_by=user
 wreset=$(( $(date +%s) + 3 * 86400 ))
 probe_says limited "$wreset" seven_day; : > "$T/probes"
-killed W-1 sess-w1; q set W-1 model_tier=standard model=sonnet; usage_exit W-1 "$wreset" seven_day
+killed W-1 sess-w1; q set W-1 model_tier=standard model=sonnet progress_at=2026-01-01T00:00:00.000Z; usage_exit W-1 "$wreset" seven_day
 q add W-2; q set W-2 state=triaged lane=A branch=fix/W-2
 out=$(node "$B/pass.mjs" 2>&1)
+check "a worker paused at the limit is not reported not progressing, however old its last progress" '! echo "$out" | grep -q "W-1: NOT PROGRESSING" && [ "$(field W-1 waits)" = null ]'
 check "DS-344 AC1 a worker that exited at the weekly limit is not failed, and is paused with the reset time" '[ "$(field W-1 state)" = "\"running\"" ] && [ "$(field W-1 usage_paused.type)" = "\"seven_day\"" ] && [ "$(field W-1 usage_paused.resets_at)" = "$wreset" ] && echo "$out" | grep -q "^paused on the usage limit: W-1 on the weekly usage limit until .* UTC" && ! spawned_for W-1'
 check "DS-344 AC1 the batch holds every spawn on it, after one probe" '[ "$(field W-2 state)" = "\"triaged\"" ] && ! grep -qx W-2 "$T/preflights" && echo "$out" | grep -q "the weekly usage limit until .* holds every spawn and resume" && [ "$(wc -l < "$T/probes" | tr -d " ")" = 1 ] && [ "$(bfield usage_hold.type)" = "\"seven_day\"" ]'
 # AC3: a subscription switch, so a probe succeeds days before the reset.
 probe_says ok
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-344 AC3 once a probe succeeds before the reset, the paused worker resumes in its own session on its model" 'echo "$out" | grep -q "W-1 exited at the weekly usage limit, which lifted (a probe call succeeded): queued to resume in its own session" && spawned_for W-1 | grep -q "^W-1 sess-w1 .*resume=yes$" && [ "$(field W-1 model_tier)" = "\"standard\"" ] && [ "$(field W-1 model)" = "\"sonnet\"" ] && [ "$(field W-1 usage_paused)" = null ]'
+check "its resumed session starts its progress clock again: no earlier progress time, and nothing reported not progressing" '[ "$(field W-1 progress_at)" = null ] && ! echo "$out" | grep -q "W-1: NOT PROGRESSING"'
 check "DS-344 AC3 and the held ticket spawns as normal, with no requeue" '[ "$(field W-2 state)" = "\"running\"" ] && [ "$(bfield usage_hold)" = null ]'
 q set W-1 state=done; q set W-2 state=done
 

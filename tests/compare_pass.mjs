@@ -9,11 +9,16 @@
 //     and how many lines the suite had printed to $PASS_CMP_SUITE_LOG when the run started. Before the
 //     run, it holds each usage probe start stamp under the age a pass probes again at (holdProbeStamps).
 //
-//   node compare_pass.mjs diff <base records> <head records> <base tree> <head tree>
+//   node compare_pass.mjs diff [--base-cached[=<suite>,...]] <base records> <head records> <tree>...
 //     Lists, per suite and run, every queue field and output line that differs once ids and paths
-//     that change between runs are normalized and times are matched across the trees; and every run
-//     that only one tree recorded, or that crashed on only one, as not compared. Exit 0 when nothing
-//     differs, 1 on a difference, 2 when anything was not compared.
+//     that change between runs (each <tree> the runs saw included) are normalized and times are
+//     matched across the trees; and every run that only one tree recorded, or that crashed on only
+//     one, as not compared. Exit 0 when nothing differs, 1 on a difference, 2 when anything was not
+//     compared. --base-cached: the base was recorded by an earlier comparison, so hours or days
+//     before the head; =<suite>,... names the only suites whose base records were.
+//
+//   node compare_pass.mjs clean <records> [<suite>...]
+//     Exit 0 when no pass in one tree's records (of those suites only) crashed, 1 naming one that did.
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { constants } from 'node:os';
@@ -91,9 +96,12 @@ async function record(argv) {
 
 // An ISO time, a time to the minute in UTC as the pass prints one, or epoch seconds or milliseconds;
 // or an elapsed time as worker-cost.mjs wallTime ("0m 01s", "2h 05m") or gate.mjs prints one
-// ("2h 5m", "15d 12h"), which two runs a second apart print differently.
-const TIME = /\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?|\b\d{4}-\d\d-\d\d \d\d:\d\d UTC\b|\b1\d{9}(?:\d{3})?\b|\b\d+d \d\d?h\b|\b\d+h \d\d?m\b|\b\d+m \d\ds\b/g;
+// ("2h 5m", "15d 12h", or under an hour a bare "4m"), which two runs a second apart print differently.
+const TIME = /\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?|\b\d{4}-\d\d-\d\d \d\d:\d\d UTC\b|\b1\d{9}(?:\d{3})?\b|\b\d+d \d\d?h\b|\b\d+h \d\d?m\b|\b\d+m \d\ds\b|\b\d+m\b(?! \d)/g;
 const SPAN = /^(\d+)([dhm]) (\d\d?)([hms])$/;
+// gate.mjs since's span under an hour: whole minutes alone ("0m", "59m").
+const MINUTES = /^(\d+)m$/;
+const isSpan = (t) => SPAN.test(t) || MINUTES.test(t);
 const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const TMP = /(?:\/private)?(?:\/var\/folders\/[^/\s"']+\/[^/\s"']+\/T|\/tmp)\/(?:tmp\.)?[A-Za-z0-9._-]*[A-Za-z0-9]{6,}/g;
 // The machine's memory as the pass read it, a process id, and a repo slug hashed from its scratch path.
@@ -134,6 +142,7 @@ function normalizer(roots) {
 // digits, and no time the pass prints has 9, 12 or 40 digits.
 // The id the pass hashes from its own start time into an evidence fix's key (`evidence-fix-<id>`,
 // `fix-<id>.md`) is treated the same way, digits or not: each tree's pass started at a different time.
+// So is a lease id (`L-<id>`, ten random hex characters): about one in 110 is all digits.
 // Ports are treated the same way: two runs take different free ports, but two tickets given one port
 // on one tree and two on the other still differ.
 // Text the pass cut short ("…") is cut at a different place on each tree, so a SHA or port in it can be
@@ -142,7 +151,7 @@ function normalizer(roots) {
 // with nothing, so the values after it stay in step whichever tree cut.
 // What is shown of a difference names each tree's SHAs and ports by the order they first appear in
 // (renamer), and within text the pass cut short, by that text alone (<SHA?1>).
-const SHA = /\b(?:(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}|[0-9a-f]{40}|[0-9a-f]{12}|[0-9a-f]{9}|(?<=\bfix-)[0-9a-f]{8})\b(?!…)|\b[0-9a-f]{1,40}(?=…)/g;
+const SHA = /\b(?:(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}|[0-9a-f]{40}|[0-9a-f]{12}|[0-9a-f]{9}|(?<=\bfix-)[0-9a-f]{8}|(?<=\bL-)[0-9a-f]{10})\b(?!…)|\b[0-9a-f]{1,40}(?=…)/g;
 function namer(tag) {
   const seen = new Map();
   return {
@@ -210,10 +219,10 @@ const SLACK = 15_000;
 // An elapsed wall time reads as its length in ms, which is matched as a time is, within the slack.
 const UNIT = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1000 };
 const spanMs = (m) => Number(m[1]) * UNIT[m[2]] + Number(m[3]) * UNIT[m[4]];
-const ms = (t) => { const m = SPAN.exec(t); return m ? spanMs(m) : /^\d+$/.test(t) ? Number(t) * (t.length === 10 ? 1000 : 1) : Date.parse(t.replace(/ (\d\d:\d\d) UTC$/, 'T$1Z')); };
+const ms = (t) => { const m = SPAN.exec(t), mm = MINUTES.exec(t); return m ? spanMs(m) : mm ? Number(mm[1]) * UNIT.m : /^\d+$/.test(t) ? Number(t) * (t.length === 10 ? 1000 : 1) : Date.parse(t.replace(/ (\d\d:\d\d) UTC$/, 'T$1Z')); };
 // A time printed to the minute is up to a minute short of the time it stands for, as an elapsed time
 // is up to one of its smaller unit short: a minute for "2h 05m", an hour for "15d 12h".
-const slack = (t) => { const m = SPAN.exec(t); return SLACK + (/ UTC$/.test(t) ? 60_000 : m ? UNIT[m[4]] : 0); };
+const slack = (t) => { const m = SPAN.exec(t); return SLACK + (/ UTC$/.test(t) || MINUTES.test(t) ? 60_000 : m ? UNIT[m[4]] : 0); };
 function timed(text) {
   const times = [];
   return { text, times, shape: text.replace(TIME, (t) => { times.push(t); return '<TIME>'; }) };
@@ -257,13 +266,15 @@ function clock(recs) {
 // between two runs on each tree, or the same offset from the start of one run on each tree: a time a
 // run made, or one its suite worked out just before it, sits there however far apart the two trees ran
 // and however much longer one tree's run took to reach it. A time worked out differently (an hour on,
-// not two) does not.
+// not two) does not. Where the base was cached, any gap between the trees can make two such times a
+// few seconds apart, so there only an elapsed time matches by its length.
+let baseCached = false;
 function sameTime(a, b, run, cb, ch) {
   if (a === b) return true;
   const ta = ms(a), tb = ms(b);
   if (!Number.isFinite(ta) || !Number.isFinite(tb)) return false;
   const within = Math.max(slack(a), slack(b));
-  if (Math.abs(ta - tb) <= within) return true;
+  if (Math.abs(ta - tb) <= within && (!baseCached || (isSpan(a) && isSpan(b)))) return true;
   const slotsH = ch.slots(tb);
   for (const s of cb.slots(ta)) if (slotsH.has(s) && Number(s.split(' ')[1]) <= run) return true;
   for (const j of new Set([run, ...cb.around(ta), ...ch.around(tb)])) {
@@ -375,13 +386,18 @@ function lineDiff(a, b, eq = (x, y) => x === y) {
   return { base: base.concat(a.slice(i)), head: head.concat(b.slice(j)), matched };
 }
 
-function diff([baseDir, headDir, baseRoot, headRoot]) {
-  const norm = normalizer([baseRoot, headRoot]);
+function diff(args) {
+  // Which suites' base records an earlier comparison made: all of them, or those named.
+  const flag = /^--base-cached(?:=(.*))?$/.exec(args[0] || '');
+  const cachedSuites = flag && flag[1] !== undefined ? new Set(flag[1].split(',').filter(Boolean)) : null;
+  const [baseDir, headDir, ...roots] = flag ? args.slice(1) : args;
+  const norm = normalizer(roots);
   const suites = [...new Set([...readdirSync(baseDir), ...readdirSync(headDir)])]
     .filter((s) => !s.endsWith('.log')).sort();
   let differ = 0, notCompared = 0, compared = 0;
   const say = (s) => console.log(s);
   for (const suite of suites) {
+    baseCached = !!flag && (!cachedSuites || cachedSuites.has(suite));
     const b = runs(join(baseDir, suite)), h = runs(join(headDir, suite));
     const cb = clock(b), ch = clock(h);
     const label = labeller(join(baseDir, `${suite}.log`));
@@ -436,6 +452,16 @@ function diff([baseDir, headDir, baseRoot, headRoot]) {
   process.exitCode = notCompared ? 2 : differ ? 1 : 0;
 }
 
+// Exit 0 when no pass in a tree's records (of only the suites named, if any) crashed, 1 when one did,
+// naming the first that did.
+function clean([dir, ...only]) {
+  for (const s of readdirSync(dir).filter((f) => !f.endsWith('.log') && (!only.length || only.includes(f))).sort()) {
+    const r = [...runs(join(dir, s)).values()].find(crashed);
+    if (r) { console.log(`${s} run ${r.run}: the pass failed to run: ${firstError(r)}`); process.exitCode = 1; return; }
+  }
+}
+
 if (mode === 'record') record(args);
 else if (mode === 'diff') diff(args);
-else { console.error('usage: compare_pass.mjs record <node args...> | diff <base records> <head records> <base tree> <head tree>'); process.exitCode = 2; }
+else if (mode === 'clean') clean(args);
+else { console.error('usage: compare_pass.mjs record <node args...> | diff [--base-cached[=<suite>,...]] <base records> <head records> <tree>... | clean <records> [<suite>...]'); process.exitCode = 2; }
