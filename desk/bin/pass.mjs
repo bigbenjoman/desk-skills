@@ -4442,14 +4442,16 @@ const FOLLOW_HANDLERS = {
       return;
     }
     const count = (k) => found.filter((c) => c.result === k).length;
-    // A step still broken as it was is not said on the PR again: it was told when it first broke.
-    const sameBreak = (c) => { const was = before(c); return c.result === 'broken' && was?.result === 'broken' && was.source === c.source && was.issue === c.issue; };
+    // A step still broken, with the same issue tracking it, is not said on the PR again: it was told
+    // when it first broke. `source` is the checker's own words, which vary run to run, so only the
+    // issue tells a new break from the same one.
+    const sameBreak = (c) => { const was = before(c); return c.result === 'broken' && was?.result === 'broken' && was.issue === c.issue; };
     const done = found.filter((c) => c.result !== 'pending' && !sameBreak(c));
     let told = '';
     if (!done.length) { /* nothing settled to say */ } else if (n == null) told = '; it has no PR to comment on';
     else if (E.permission('pr-self-review-comment') !== 'yes') told = `; not said on PR #${n}, as config §3 ${E.permissionKey('pr-self-review-comment')} is not "yes"`;
     else {
-      const c = shOut('gh', ['pr', 'comment', String(n), '--repo', GH_REPO, '--body', followComment(a.key, done)]);
+      const c = shOut('gh', ['pr', 'comment', String(n), '--repo', GH_REPO, '--body', followComment(a.key, done, { left: found.some((c) => c.result === 'fail' || c.result === 'broken') })]);
       told = c.ok ? `; said on PR #${n}` : `; its comment on PR #${n} was not posted (${c.out.split('\n').pop()})`;
     }
     const brokenAt = found.filter((c) => c.result === 'broken').map((c) => `${c.source}${c.issue ? ` (#${c.issue})` : ', no issue tracks it'}`);

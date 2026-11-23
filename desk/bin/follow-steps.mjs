@@ -211,7 +211,9 @@ export function readFollow(out, steps) {
 export const failedRun = (run, why) => run.steps.map((s) => ({ ...s, result: 'fail', found: `the follow-step checker ${why}`, evidence: run.out }));
 
 // The comment the pass posts on the merged PR: one line per step the checker passed or failed.
-export function followComment(key, results) {
+// `left` is whether any step the run found is still failed or broken, those posted or not (a break
+// already told is not posted again); by default, whether any posted one is.
+export function followComment(key, results, { left = results.some((c) => c.result === 'fail' || c.result === 'broken') } = {}) {
   return [
     `A desk follow-step checker ran ${results.length === 1 ? 'the step' : `the ${results.length} steps`} ${key} left for after this merge:`,
     '',
@@ -219,7 +221,7 @@ export function followComment(key, results) {
       ? `- **evidence broken**: ${line(c.step)}. ${c.source} ran and produced nothing to judge: ${c.found}. Evidence: ${c.evidence}. ${c.issue ? `Tracked in #${c.issue}; ` : 'No open issue tracks it; '}checked again later`
       : `- ${c.result === 'pass' ? 'passed' : '**failed**'}: ${line(c.step)}. Found: ${c.found}. Evidence: ${c.evidence}`)),
     '',
-    results.some((c) => c.result === 'fail' || c.result === 'broken') ? `Each ${results.some((c) => c.result === 'broken') ? 'failed or broken step' : 'failed step'} is listed in needs-you.` : 'Nothing is left for a person.',
+    left ? `Each ${results.some((c) => c.result === 'fail') && !results.some((c) => c.result === 'broken') ? 'failed step' : 'failed or broken step'} is listed in needs-you.` : 'Nothing is left for a person.',
     `(${key}/desk-autopilot follow-steps)`,
   ].join('\n');
 }
