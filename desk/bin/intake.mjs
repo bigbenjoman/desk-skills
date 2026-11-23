@@ -73,7 +73,7 @@ import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic, blockersFact } from './desk-q-eta.mjs';
-import { machineCap, lastBeat, liveBeat } from './borrow.mjs';
+import { machineCap } from './borrow.mjs';
 import { addAsk } from './asks.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { readUsage } from './usage-probe.mjs';
@@ -564,9 +564,10 @@ function placedThere(key, held, own) {
 // {unreadable}, {closed, cur}, {elsewhere}, {reasons}, {startFailed}, {admitFailed}, or {batch, base, held, outside, started}.
 // Without mayStart, a free batch is closed as 'free' rather than replaced.
 // With `session`, the caller is the session that runs the batch, so a batch not handed over is open to it.
-// With `join` (a repo whose §3b Batches run by is `session`), a finished batch is joined, for the session
-// still running its passes, rather than replaced by a standing batch no supervisor would run.
-function placeOne(key, rec, { started, by, now, mayStart = true, session = false, join: joinFinished = false }) {
+// With `bySession` (a repo whose §3b Batches run by is `session`), no standing batch is started, since no
+// supervisor would run it: the session that runs the batch (`session`) joins a finished one, and any
+// other caller is refused ('unrun'). A ticket routed to another live batch goes there as before.
+function placeOne(key, rec, { started, by, now, mayStart = true, session = false, bySession = false }) {
   let cur;
   try { cur = readQueue(); } catch (e) { return { unreadable: `the queue at ${E.queueFile()} cannot be read (${e.message})` }; }
   if (closed(cur, session)) return { closed: closed(cur, session), cur };
@@ -577,7 +578,9 @@ function placeOne(key, rec, { started, by, now, mayStart = true, session = false
   if (route?.reasons) return { reasons: route.reasons };
   if (route) return { elsewhere: route };
   // A new batch keeps none of a finished one's tickets, so every open blocker is then outside it.
-  const startNew = !started && free(cur) && !(joinFinished && cur);
+  const joinFinished = bySession && session && !!cur;
+  const startNew = !started && free(cur) && !joinFinished;
+  if (startNew && bySession) return { closed: 'unrun', cur };
   if (startNew && !mayStart) return { closed: 'free', cur };
   const holds = holdsFor(rec, startNew ? {} : cur?.tickets ?? {}, base);
   const reasons = reasonsAgainst(rec, holds);
@@ -589,7 +592,7 @@ function placeOne(key, rec, { started, by, now, mayStart = true, session = false
     batch = started = st.name;
   }
   const a = admitHeld(key, holds, by);
-  return a.held ? { batch, base, held: a.held, outside: a.outside, merge: a.merge, gates: a.gates, free: a.free, runs: a.runs, started: startNew ? started : null, note: epicFinishedNote(rec), sessionRun: !startNew && (sessionRun(cur) || (joinFinished && free(cur))) } : { admitFailed: a.why, started: startNew ? started : null };
+  return a.held ? { batch, base, held: a.held, outside: a.outside, merge: a.merge, gates: a.gates, free: a.free, runs: a.runs, started: startNew ? started : null, note: epicFinishedNote(rec), sessionRun: !startNew && (sessionRun(cur) || joinFinished) } : { admitFailed: a.why, started: startNew ? started : null };
 }
 
 async function intake({ state, query, reg, now }) {
@@ -856,13 +859,10 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
   const done = (extra = {}) => ({ ran: true, lines, admitted, refused, limited: [...limited], plan, epics, ...extra });
   // Starting a standing batch has no plan approval, so it needs what standing intake needs.
   const mayStart = E.permission('autopilot-workers') === 'yes';
-  // Where §3b Batches run by is `session`, no supervisor runs a standing batch: a finished batch is
-  // joined for the session still running its passes (--session, or a live pass heartbeat on the queue),
-  // and with none live nothing is admitted to wait for a run that will not come (unrun).
+  // Where §3b Batches run by is `session`, no supervisor runs a standing batch (placeOne `bySession`).
   const bySession = runBySetting().value === 'session';
-  const beat = bySession ? lastBeat(state, E.queueFile()) : null;
-  const passing = bySession && liveBeat(beat, now.getTime());
-  const joinFinished = bySession && (session || passing);
+  // The tickets refused as unrun, put on needs-you once at the end.
+  const unrunKeys = [];
   // Why the tickets have nowhere to go, or null: nothing is triaged for a batch they cannot join.
   const said = (code, b) => ({
     base: () => (moveTo(b)
@@ -870,23 +870,13 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
       : `batch ${b.batch ?? '?'} runs on base ${b.base}: run /desk-autopilot for these in a session`),
     session: () => `batch ${b.batch ?? '?'} is run by a session, not the supervisor: send these tickets to that session (ListAgents names it) and let it admit them with node ${join(HERE, 'intake.mjs')} admit ${keys.join(' ')} --session, or, if this session is the one that runs it, run that yourself`,
     free: () => `no batch is live, and starting one without a plan approval needs config §3 ${E.permissionKey('autopilot-workers')} to be "yes" (it is "${E.permission('autopilot-workers')}"): run /desk-autopilot ${keys.join(' ')}`,
-    unrun: () => `no session is running passes for this repo (config §3b "${E.CONFIG_ROWS['batches-run-by'].row}" is session, so no supervisor runs a batch)${b?.batch ? `, and batch ${b.batch} is finished` : ''}: start /desk-autopilot ${keys.join(' ')} in a session`,
+    unrun: () => `no supervisor runs this repo's batches (config §3b "${E.CONFIG_ROWS['batches-run-by'].row}" is session)${b?.batch ? ` and batch ${b.batch} is finished` : ' and no batch is set up'}, so no batch is started for it: if a session runs this repo's batches, admit it from that session with --session; else start /desk-autopilot in a session`,
   }[code]?.() ?? null);
-  // A session-run repo whose batch is finished, or that has none, with no session running passes.
-  const unrun = (b) => bySession && !into && free(b) && !(b && joinFinished);
-  const nowhere = (b) => said(closed(b, session) ?? (unrun(b) ? 'unrun' : free(b) && !mayStart && !(b && joinFinished) ? 'free' : null), b);
+  const nowhere = (b) => said(closed(b, session) ?? (free(b) && !mayStart && !bySession ? 'free' : null), b);
   let q;
   try { q = readQueue(); } catch (e) { say(`admits nothing: the queue at ${E.queueFile()} cannot be read (${e.message})`); return done({ refused: keys }); }
   const why = into ? null : nowhere(q);
-  if (why) {
-    say(`admits nothing: ${why}`);
-    // Nothing else would show it: the tickets are not queued, so desk-q has no row to wait on.
-    if (unrun(q)) {
-      const { added } = addAsk(state, `start /desk-autopilot ${keys.join(' ')} in a session: no session is running passes for this repo, so /desk-admit admitted nothing`, now.getTime());
-      say(`needs-you: ${added ? 'recorded' : 'already records'} starting /desk-autopilot for ${keys.join(' ')}`);
-    }
-    return done({ refused: keys });
-  }
+  if (why) { say(`admits nothing: ${why}`); return done({ refused: keys }); }
   // A feature batch whose start was cut off would read as live, and hold its own epic.
   for (const a of clearAbandoned()) say(a.text);
 
@@ -973,7 +963,7 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
   const next = new Set();
   const place = async (key) => {
     let rec = recs[key];
-    let r = into ? { elsewhere: { route: into, why: `${key} was named for batch ${into}` } } : placeOne(key, rec, { started, by, now, mayStart, session, join: joinFinished });
+    let r = into ? { elsewhere: { route: into, why: `${key} was named for batch ${into}` } } : placeOne(key, rec, { started, by, now, mayStart, session, bySession });
     if (r.started) { started = r.started; say(`started standing batch ${started}, handed to the supervisor`); }
     // An epic started while this ticket was in triage took it into its feature batch.
     const there = inBatch(key, r.elsewhere?.held, r.elsewhere?.batch);
@@ -996,6 +986,7 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
     }
     const fail = r.unreadable ?? (r.closed && said(r.closed, r.cur)) ?? r.elsewhere?.why ?? r.reasons?.join('; ')
       ?? (r.startFailed && `a standing batch could not be started (${r.startFailed})`) ?? r.admitFailed;
+    if (r.closed === 'unrun') unrunKeys.push(key);
     if (fail) return refuse(key, fail);
     took ??= logTaken(key, rec, state, r.free);
     const reg = readIntake(state);
@@ -1077,9 +1068,15 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
     say(`not triaged (usage limit${limit.resets ? `, resets ${limit.resets}` : ''}): ${these}: run /desk-admit ${these} again once the limit lifts`);
   }
   const theirs = admitted.length + epics.length - ours.length;
-  if (ours.length) say(session ? `this session's next pass picks up ${ours.join(' ')}`
-    : `the session running passes for batch ${q?.batch ?? '?'} picks up ${ours.join(' ')} on its next pass (its last at ${new Date(beat?.pass ?? beat?.at ?? now.getTime()).toISOString().slice(11, 16)} UTC)`);
-  if (theirs) say(`the supervisor's next tick picks ${ours.length ? `up the other${theirs === 1 ? '' : 's'}` : `${theirs === 1 ? 'it' : 'them'} up`}`);
+  if (ours.length) say(`this session's next pass picks up ${ours.join(' ')}`);
+  // No supervisor runs a session-run repo's batches, so nothing is promised of one there.
+  if (theirs && bySession) say(`no supervisor runs this repo's batches (config §3b "${E.CONFIG_ROWS['batches-run-by'].row}" is session): ${ours.length ? `the other${theirs === 1 ? '' : 's'}` : theirs === 1 ? 'it' : 'they'} ${theirs === 1 ? 'waits' : 'wait'} for a session to run ${theirs === 1 ? 'its' : 'their'} batch (/desk-autopilot)`);
+  else if (theirs) say(`the supervisor's next tick picks ${ours.length ? `up the other${theirs === 1 ? '' : 's'}` : `${theirs === 1 ? 'it' : 'them'} up`}`);
+  // Nothing else shows a ticket refused as unrun: it is in no queue, so desk-q has no row for it.
+  if (unrunKeys.length) {
+    const { added } = addAsk(state, `start /desk-autopilot ${unrunKeys.join(' ')} in a session: no supervisor runs this repo's batches, so /desk-admit admitted nothing`, now.getTime());
+    say(`needs-you: ${added ? 'recorded' : 'already records'} starting /desk-autopilot for ${unrunKeys.join(' ')}`);
+  }
   // Open blockers in no batch are admitted next, by the same command, with no question: the person
   // naming what they block is the approval.
   if (next.size) say(`admit next: ${[...next].join(' ')} (open blockers in no batch)`);
