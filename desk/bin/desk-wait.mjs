@@ -50,10 +50,11 @@ const LIGHT = wrapperOf('light');
 // name the lock's holders, the load and memory reading its wait's log lines carry, and headroom
 // admission's watcher and the judges it runs.
 const HELPER = /^(?:\S*\/)?(?:flock|sleep|cat|mkdir|find|mv|rm|git|dirname|pwd|lsof|ps|sysctl)(?:\s|$)/;
-const NODE_HELPER = /^(?:\S*\/)?node\s+\S*(?:slot-lease|desk-env|admission)\.mjs(?:\s|$)/;
+// Matched by the script's whole file name, so a suite such as tests/test_admission.mjs is not one.
+const NODE_HELPER = /^(?:\S*\/)?node\s+(?:\S*\/)?(?:slot-lease|desk-env|admission)\.mjs(?:\s|$)/;
 // The node calls with-lock.sh makes on the way to its slot: the lease client, its config reads, and
 // the admission watcher.
-const WAIT_CLIENT = /^(?:\S*\/)?node\s+\S*(?:slot-lease\.mjs|admission\.mjs|desk-env\.mjs\s+(?:get|machine))(?:\s|$)/;
+const WAIT_CLIENT = /^(?:\S*\/)?node\s+(?:\S*\/)?(?:slot-lease\.mjs|admission\.mjs|desk-env\.mjs\s+(?:get|machine))(?:\s|$)/;
 // A Bash tool background task's output file.
 const TASK_OUTPUT = /\/tasks\/[^/]+\.output$/;
 
