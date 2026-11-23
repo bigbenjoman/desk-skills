@@ -64,7 +64,7 @@ import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
-import { liveBaseRed, readBaseRed, baseRedPath, batchLine, repairTicket, repairTriage, baseRerun } from './base-red.mjs';
+import { liveBaseRed, readBaseRed, baseRedPath, batchLine, repairTicket, repairTriage, baseRerun, TIMEOUT_AGAIN_MS } from './base-red.mjs';
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
@@ -1818,10 +1818,13 @@ const linkLines = [];
 // commits no origin ref has) leaves it to the person, as needs-you offers for any closed PR.
 // Before a repair is admitted, a base red only where the runner failed it (an install or other setup
 // step, or a timeout) or only on §4 Known flaky checks (base-red.mjs baseRerun) has its failed runs re-run once, under §3 ci-rerun; the ids re-run are
-// kept in BASE_RERAN_FILE, so a rerun that fails again admits the repair on a later pass.
+// kept in BASE_RERAN_FILE, so a rerun that fails again admits the repair on a later pass. So are the jobs
+// re-run for a timeout, with when: one that times out on the base again within a day is not re-run again.
 const BASE_RED = liveBaseRed(STATE, { branch: DEFAULT_BRANCH });
 const BASE_RERAN_FILE = join(STATE, 'base-red-reran.json');
-const baseReran = () => { try { const v = JSON.parse(readFileSync(BASE_RERAN_FILE, 'utf8')); return Array.isArray(v?.runs) ? v.runs.map(String) : []; } catch { return []; } };
+const baseReranFile = () => { try { return JSON.parse(readFileSync(BASE_RERAN_FILE, 'utf8')) ?? {}; } catch { return {}; } };
+const baseReran = () => { const v = baseReranFile(); return Array.isArray(v.runs) ? v.runs.map(String) : []; };
+const baseTimeouts = () => { const v = baseReranFile(); return Array.isArray(v.timeouts) ? v.timeouts : []; };
 const ghRun = (id, fields) => { const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--json', fields]); try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; } };
 let baseRedRepair = null;
 if (BASE_RED) {
@@ -1840,14 +1843,15 @@ if (BASE_RED) {
   else if (!BASE_PUSH.ok) baseRedRepair = { off: `config §3 ${BASE_PUSH.key} is "${BASE_PUSH.perm}", so no worker is started to repair it` };
   else if (DRY) baseRedRepair = { key, state: 'to be admitted (dry run)' };
   else {
-    const reran = baseReran();
-    const first = baseRerun(BASE_RED, { reran, view: (id) => ghRun(id, 'jobs'), status: (id) => ghRun(id, 'status,conclusion'), perm: E.permission('ci-rerun'),
+    const reran = baseReran(), timeouts = baseTimeouts();
+    const first = baseRerun(BASE_RED, { reran, timeouts, view: (id) => ghRun(id, 'jobs'), status: (id) => ghRun(id, 'status,conclusion'), perm: E.permission('ci-rerun'),
       notes: (jobId) => jobAnnotations(GH_REPO, jobId), flaky: parseFlaky(E.configValues('flaky-checks')).flaky.map((x) => x.name) });
     const refused = [];
     if (first.rerun) {
       for (const id of first.rerun) { const r = shOut('gh', ['run', 'rerun', id, '--repo', GH_REPO, '--failed']); if (!r.ok) refused.push(`run ${id}: ${r.out.split('\n').pop()}`); }
       // Kept whether GitHub took it or not, so a refusal is one try and the next pass admits the repair.
-      try { writeFileSync(BASE_RERAN_FILE, `${JSON.stringify({ runs: [...new Set([...reran, ...first.rerun])].slice(-500) }, null, 2)}\n`); } catch {}
+      const kept = timeouts.filter((t) => Date.now() - Date.parse(t?.at) < TIMEOUT_AGAIN_MS);
+      try { writeFileSync(BASE_RERAN_FILE, `${JSON.stringify({ runs: [...new Set([...reran, ...first.rerun])].slice(-500), timeouts: [...kept, ...(first.timeouts ?? [])].slice(-200) }, null, 2)}\n`); } catch {}
     }
     if (first.rerun && !refused.length) baseRedRepair = { key, first: first.why };
     else if (first.wait) baseRedRepair = { key, first: first.wait };

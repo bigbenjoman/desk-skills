@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { scratch } from './scratch.mjs';
 
 process.env.DESK_AUTOPILOT_STATE ??= scratch('base-red-');
-const { baseState, lastMerges, liveBaseRed, nextRecord, holdLine, batchLine, repairTicket, repairTriage, baseRerun, setupFailed, timedOut, SETUP_STEP, WALK, STALE_MS, GREEN_FILE, readGreen } = await import('../desk/bin/base-red.mjs');
+const { baseState, lastMerges, liveBaseRed, nextRecord, holdLine, batchLine, repairTicket, repairTriage, baseRerun, setupFailed, timedOut, TIMEOUT_AGAIN_MS, SETUP_STEP, WALK, STALE_MS, GREEN_FILE, readGreen } = await import('../desk/bin/base-red.mjs');
 const E = await import('../desk/bin/desk-env.mjs');
 
 let pass = 0;
@@ -442,6 +442,23 @@ test('a red base over two runs, one re-run already, re-runs only the other', () 
     const d = baseRerun(rr(URL78), { reran: [], view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes' });
     assert.deepEqual(d.rerun, ['78']);
     assert.match(d.why, /failed at a timeout \("Lint"\)/);
+  });
+  test('a rerun for a timeout names the jobs it re-ran for one, with when', () => {
+    const d = baseRerun(rr(URL78), { reran: [], view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes', now: Date.parse('2026-11-23T05:00:00Z') });
+    assert.deepEqual(d.timeouts, [{ job: 'Lint', at: '2026-11-23T05:00:00.000Z' }]);
+  });
+  test('#1281: the same job timing out again within a day of its rerun admits the repair; after a day it is re-run', () => {
+    const now = Date.parse('2026-11-23T20:00:00Z');
+    const timeouts = [{ job: 'Lint', at: '2026-11-23T05:00:00Z' }];
+    const d = baseRerun(rr(URL78), { reran: [], timeouts, now, view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes' });
+    assert.equal(d.admit, true);
+    assert.match(d.why, /"Lint" timed out on main again within 24 hours of a rerun for a timeout/);
+    assert.deepEqual(baseRerun(rr(URL78), { reran: [], timeouts, now: now + TIMEOUT_AGAIN_MS, view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes' }).rerun, ['78']);
+    // a §4 Known flaky check that times out again within the day is not re-run again either
+    assert.equal(baseRerun(rr(URL78), { reran: [], timeouts, now, flaky: ['Lint'], view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes' }).admit, true);
+    assert.deepEqual(baseRerun(rr(URL78), { reran: [], now, flaky: ['Lint'], view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes' }).timeouts, [{ job: 'Lint', at: new Date(now).toISOString() }]);
+    // another job's earlier timeout does not count
+    assert.deepEqual(baseRerun(rr(URL78), { reran: [], timeouts: [{ job: 'Build', at: '2026-11-23T05:00:00Z' }], now, view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes' }).rerun, ['78']);
   });
   test('an assertion failing in a test step admits the repair as before', () => {
     assert.deepEqual(baseRerun(rr(URL78), { reran: [], view: () => job(), notes: out('expect(received).toBe(expected)'), status: never, perm: 'yes' }), { admit: true });

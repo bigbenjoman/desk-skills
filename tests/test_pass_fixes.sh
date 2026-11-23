@@ -270,6 +270,15 @@ redrec "$(isoago 60)"; jq '.repair_key = "base-red-main-to" | .checks[0].url = "
 out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1); red=$(printf '%s\n' "$out" | grep -A1 '^RED BASE:' | tail -1)
 check "a red main failing only on a step timeout has its run re-run once, and nothing is admitted" \
   '[ "$(grep -c "^run rerun 79 --repo acme/widgets --failed$" "$T/gh-calls")" = 1 ] && [ "$(field base-red-main-to state)" = null ] && echo "$red" | grep -qF "failed at a timeout (\"Lint\")"'
+check "the job re-run for a timeout is kept with when" '[ "$(jq -r ".timeouts[-1].job" "$T/state-fb/base-red-reran.json")" = Lint ]'
+# #1281: the same job timing out on main again, on a new run within the day, is too slow for its limit,
+# not unlucky: the repair is admitted rather than a second rerun.
+cp "$T/fx/run-79-jobs.json" "$T/fx/run-80-jobs.json"
+redrec "$(isoago 30)"; jq '.repair_key = "base-red-main-to2" | .checks[0].url = "https://github.com/acme/widgets/actions/runs/80/job/7901"' "$T/state-fb/base-red.json" > "$T/state-fb/base-red.tmp" && mv "$T/state-fb/base-red.tmp" "$T/state-fb/base-red.json"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "#1281: the same job timing out on main again within a day admits the repair, with no second rerun" \
+  '! grep -q "^run rerun 80" "$T/gh-calls" && [ "$(field base-red-main-to2 state)" = "\"running\"" ]'
+q set base-red-main-to2 state=done session_id=null; q drop base-red-main-to2
 # While an earlier spell's repair is still open (parked), a new red admits no second repair: it is noted on
 # the open one, on its row and in its ticket file.
 q add base-red-main-20261123000000 Bug A; q set base-red-main-20261123000000 state=parked branch=fix/base-red-main-20261123000000
