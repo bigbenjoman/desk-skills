@@ -197,6 +197,26 @@ try {
     t('DS-987 slot lease on: at the ceiling a run waits as before', r.status, 75);
     a.release(); b.release(); await a.done; await b.done;
   }
+  // With the slot lease kind on, only the oldest run in the pool's queue asks admission for room, so the
+  // run admitted above the floor is the one the queue gives the slot to.
+  {
+    const c = caseOf({ rows: { ...ROWS, 'lease-kinds': 'slot=on', 'light-lock-max': '2' }, sample: reading({ load: 50 }) });
+    const a = await hold(c.env, ['light']);
+    const b = await hold(c.env, ['light'], { ms: 0 });
+    for (let i = 0; i < 200 && !b.err().includes('waiting'); i++) await sleep(50);
+    const o = await hold(c.env, ['light'], { ms: 0 });
+    for (let i = 0; i < 200 && !o.err().includes('waiting'); i++) await sleep(50);
+    await sleep(3000);
+    t('slot lease on: while the floor is full and there is no room, only the oldest waiter is judged', [...new Set(admitLines(c).map((e) => e.pid))], [b.c.pid]);
+    c.readings(reading());
+    for (let i = 0; i < 200 && !b.started(); i++) await sleep(50);
+    await sleep(2500);
+    t('slot lease on: once there is room, the oldest waiter is admitted and runs, and the younger one waits on',
+      [b.started(), o.started(), admitLines(c).filter((e) => e.event === 'admit').map((e) => e.pid)], [true, false, [b.c.pid]]);
+    a.release(); b.release(); await a.done; await b.done;
+    for (let i = 0; i < 200 && !o.started(); i++) await sleep(50);
+    o.release(); await o.done;
+  }
 } finally {
   for (const h of held) { h.release(); if (h.c.exitCode === null) h.c.kill(); }
   rmSync(S, { recursive: true, force: true });

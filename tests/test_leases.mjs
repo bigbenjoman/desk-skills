@@ -733,7 +733,7 @@ try {
       capacities({ ...capEnv(rows), psRows: () => { throw new Error('ps could not be read'); } }).light, 3);
     t('DS-987 a row that does not read is the floor alone',capacities(capEnv({ ...rows, 'light-lock-max': '0' })).light, 1);
   }
-  // DS-981: with the slot kind on, a lock run that names its queue waits its turn for its pool, oldest
+  // With the slot kind on, a lock run that names its queue waits its turn for its pool, oldest
   // first. In-process against a scratch lease directory, real sleeping processes as owners, the light
   // pool one slot unless a case grows it.
   {
@@ -811,6 +811,10 @@ try {
       const d = fresh(); const a = owner(); const b = owner();
       const both = [ask(d, a, { kinds: 'slot=shadow' }), ask(d, b, { wt: '/w/b', kinds: 'slot=shadow' })];
       t('DS-981 AC8 shadow grants each run with no queue', [both.map((r) => !!r.lease), both[1].shadow != null, store(d).wants], [[true, true], true, undefined]);
+      // A small run the full pool would refuse, the only express waiter: with the queue in use it would take the lane.
+      let taken = 0; const lane = () => { taken++; return true; };
+      const small = ask(d, owner(), { wt: '/w/s', express: true, kinds: 'slot=shadow', lane });
+      t('DS-981 AC8 shadow never offers the express lane: the run is granted from the pool as today', [!!small.lease, small.lane, small.shadow != null, taken], [true, undefined, true, 0]);
     }
     // AC9: admission lets one more run in above a full floor: A gets it, and B keeps waiting.
     {

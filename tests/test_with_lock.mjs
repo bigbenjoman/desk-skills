@@ -357,7 +357,7 @@ try {
       }
     } else console.log('skip DS-975 AC6 with a failing sysctl: this is not macOS (test_leases.mjs covers a failing /proc read)');
   }
-  // DS-981: with the slot kind on, runs waiting for a pool are served oldest first, told their place
+  // With the slot kind on, runs waiting for a pool are served oldest first, told their place
   // as they wait, and told it again as they give up.
   {
     const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: machine({ 'lease-kinds': 'slot=on', 'test-lock-slots': '1' }) });

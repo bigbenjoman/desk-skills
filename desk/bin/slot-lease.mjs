@@ -99,14 +99,15 @@ function note(rest) {
 // Headroom admission's look at a run waiting for a slot lease, with lock-admission on (admission.mjs
 // grantRun): every DESK_ADMIT_RECHECK_S seconds (10) at most, a test, tsc or light run asks to be let
 // in above its pool's floor, which grows the pool capacities() reports by one while it runs. It prints
-// the waiting line grant gives it as grant says. -> look(), which returns grant's key, or null with
-// admission off.
+// the waiting line grant gives it as grant says. In the broker's queue (`at`, the run's last place in
+// it) only its oldest waiter asks, so the run admission lets in is the run the slot goes to. -> look(at),
+// which returns grant's key, or null with admission off.
 function headroom(cls, pid, say) {
   const every = /^[1-9]\d*$/.test(process.env.DESK_ADMIT_RECHECK_S ?? '') ? Number(process.env.DESK_ADMIT_RECHECK_S) : 10;
   const judged = ['test', 'tsc', 'light'].includes(cls);
   let last = null, said = null, saidAt = null, next = 0;
-  return () => {
-    if (!judged || Date.now() < next) return last;
+  return (at = null) => {
+    if (!judged || (at && at.position > 1) || Date.now() < next) return last;
     next = Date.now() + every * 1000;
     let r = null;
     try { r = A.grantRun(E, { cls, pid, last, said, saidAt }); } catch { /* no room: the floor alone */ }
@@ -130,9 +131,9 @@ function takeLane(d, pid) {
 }
 
 // A run's place in its pool's queue (leases.mjs tryAcquire's `at`), as the waiting and gave-up lines say it.
-export const placeText = (at) => (at ? `position ${at.position} of ${at.waiting} in its queue, ${at.held} of ${at.capacity} slot${at.capacity === 1 ? '' : 's'} held` : null);
+const placeText = (at) => (at ? `position ${at.position} of ${at.waiting} in its queue, ${at.held} of ${at.capacity} slot${at.capacity === 1 ? '' : 's'} held` : null);
 // What makes a run the same run when it asks again: its directory and its command.
-export const commandHash = (words, cwd = process.cwd()) => createHash('sha256').update([cwd, ...words].join('\0')).digest('hex').slice(0, 16);
+const commandHash =(words, cwd = process.cwd()) => createHash('sha256').update([cwd, ...words].join('\0')).digest('hex').slice(0, 16);
 
 // Takes the slot for `words` run by lock class `cls`, owned by `pid`, whose wrapper has already
 // waited `waited` seconds on the lock files. Its grant, refuse or gave-up line carries its wait; a
@@ -163,7 +164,7 @@ function take({ cls, pid, timeout, words, waited = 0, express = null }) {
         enqueue(key, pid);
         logEvent({ event: 'queued', kind: 'slot', key, label, ...placeFields(at), ...waitNow(key, pid, sofar()) });
         const where = placeText(at);
-        if (look() == null) say(`with-lock.sh: waiting for ${what}${where ? `, ${where}` : ''}: ${why}`);
+        if (look(at) == null) say(`with-lock.sh: waiting for ${what}${where ? `, ${where}` : ''}: ${why}`);
         else if (where) say(`with-lock.sh: waiting for ${what}, ${where}`);
       },
       note: () => { dequeue(key, pid); return waitNow(key, pid, sofar()); },

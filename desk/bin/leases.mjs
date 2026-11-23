@@ -340,7 +340,7 @@ const ownerStarts = (store, env, more = []) => startTimes([...store.leases.flatM
 // at its deadline is marked `left` and keeps its place for REJOIN_S seconds, served to nobody, for the
 // next request from the same worktree with the same command to take back; a want whose owner exits
 // without giving up is dropped.
-export const REJOIN_S = 120;
+const REJOIN_S = 120;
 const byArrival = (a, b) => Date.parse(a.arrived) - Date.parse(b.arrived);
 const wantBrief = (w) => ({ want: w.want, kind: w.kind, key: w.key, pool: w.pool, owner: w.owner, label: w.label, worktree: w.worktree, arrived: w.arrived });
 // Drops each want whose owner has exited without giving up, and each given-up place past REJOIN_S.
@@ -388,6 +388,12 @@ export function refusal(p, units, holders, held) {
   return `${held} of ${p.capacity} ${p.many} are held, and this asks for ${units}: ${who}`;
 }
 
+// The leases pool `p` holds, and the units they hold.
+const heldIn = (store, p) => {
+  const holders = store.leases.filter((l) => l.pool === p.pool);
+  return { holders, held: holders.reduce((n, l) => n + l.units, 0) };
+};
+
 const newLease = (req, p, owner, t, id = `L-${randomBytes(5).toString('hex')}`) => ({ id, kind: req.kind, key: p.key, pool: p.pool, units: req.units,
   owner, label: req.label, ttl: req.ttl, acquired: new Date(t).toISOString(), expires: new Date(t + req.ttl * 1000).toISOString() });
 
@@ -396,10 +402,9 @@ const newLease = (req, p, owner, t, id = `L-${randomBytes(5).toString('hex')}`) 
 // every holder. `ahead` is the units older waiters ask for first (the queue), and `at` the fields a
 // refuse or gave-up line adds for the run's place in it. `note(event)`, where given, returns fields
 // added to the grant, refuse or gave-up line (a lock run's wait, waitFields). -> { lease, shadow? } or
-// { refused, held }.
+// { refused }.
 function place(store, log, req, p, owner, t, { mode, final, waited, id, event = 'grant', note = null, ahead = 0, at = null }) {
-  const holders = store.leases.filter((l) => l.pool === p.pool);
-  const held = holders.reduce((n, l) => n + l.units, 0);
+  const { holders, held } = heldIn(store, p);
   const fits = held + ahead + req.units <= p.capacity;
   const why = fits ? null : refusal(p, req.units, holders, held);
   if (!fits && mode !== 'shadow') {
@@ -407,7 +412,7 @@ function place(store, log, req, p, owner, t, { mode, final, waited, id, event = 
       const e = waited ? 'gave-up' : 'refuse';
       log({ event: e, kind: req.kind, key: p.key, units: req.units, owner, label: req.label, why, ...(waited ? { wait_s: waited } : {}), ...at, ...note?.(e) });
     }
-    return { refused: why, held };
+    return { refused: why };
   }
   const lease = newLease(req, p, owner, t, id);
   if (!fits) log({ event: 'would-refuse', kind: req.kind, key: p.key, units: req.units, owner, label: req.label, holders: holders.map(brief), why });
@@ -463,7 +468,7 @@ export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env),
     const live = store.wants.filter((x) => x.pool === p.pool && x.left == null).sort(byArrival);
     const i = live.indexOf(w);
     const ahead = live.slice(0, i).reduce((n, x) => n + x.units, 0);
-    const held = store.leases.filter((x) => x.pool === p.pool).reduce((n, x) => n + x.units, 0);
+    const { held } = heldIn(store, p);
     const at = { position: i + 1, waiting: live.length, held, capacity: p.capacity };
     if (held + ahead + req.units > p.capacity && lane && w.express && live.find((x) => x.express) === w && lane()) {
       leaveQueue(store, w);
@@ -478,7 +483,8 @@ export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env),
 
 // Takes a lease, waiting up to `wait` seconds for it (Infinity: until it is granted), trying every
 // `poll` ms and calling `onWait(why, at)` at the first refusal it waits past (`at` its place in the
-// queue, tryAcquire's), and `beforeTry()` before each try after that. With the kind off, takes nothing.
+// queue, tryAcquire's), and `beforeTry(at)` before each try after that, `at` the last refusal's place
+// (null where it had none). With the kind off, takes nothing.
 // `caps` is capacities(), or a function giving them afresh for each try, read under the store lock (a
 // pool headroom admission grows while the run waits). `note` and `lane` are tryAcquire's. -> { code,
 // lease?, lane?, why?, at? }, `why` beside a lease saying what shadow let through, `at` beside a give-up.
@@ -491,17 +497,18 @@ export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), no
   }
   const wait = req.wait ?? 0;
   const until = now() + wait * 1000;
-  let waiting = false;
+  let waiting = false, lastAt = null;
   for (;;) {
     const final = now() >= until;
-    if (waiting) beforeTry?.();
+    if (waiting) beforeTry?.(lastAt);
     const r = tryAcquire({ ...req, final, waited: wait }, { env, dir, caps: capsNow, now, mode, note, lane });
     if (r.lane) return { code: EXIT_OK, lane: true };
     // A renewed unit says so (`renewed …` on stderr), so a caller whose push fails keeps a build's unit.
     if (r.lease) return { code: EXIT_OK, lease: r.lease, ...(r.shadow ? { why: `shadow: granted, but on would refuse: ${r.shadow}` } : r.renewed ? { why: `renewed ${r.lease.kind} ${r.lease.key} (lease ${r.lease.id}), which the label ${r.lease.label} already held` } : {}) };
     const at = r.at ? { at: r.at } : {};
     if (final) return wait ? { code: EXIT_GAVE_UP, why: `gave up after ${wait}s waiting: ${r.refused}`, ...at } : { code: EXIT_REFUSED, why: `refused: ${r.refused}`, ...at };
-    if (!waiting) { waiting = true; onWait?.(r.refused, r.at ?? null); }
+    lastAt = r.at ?? null;
+    if (!waiting) { waiting = true; onWait?.(r.refused, lastAt); }
     sleepSync(Math.max(1, Math.min(poll, until - now())));
   }
 }
