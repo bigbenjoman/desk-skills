@@ -2012,19 +2012,21 @@ const baseRedHeld = [];
 // by the PR that fixed the base, so no worker is spawned to find that out and park on it.
 const mainGit = (args) => shOut('git', ['-C', MAIN, ...args]);
 const MERGE_PR = /^Merge pull request #(\d+)\b|\(#(\d+)\)\s*$/;
-// The PR that fixed the base: the newest first-parent commit on it since the repair began, touching
-// `files` where given, by its merge subject, else as GitHub links it. -> { pr, at } | null, null too
-// where the history cannot be read: the base is fixed either way, and the repair is closed naming none.
-function baseFixer(since, files) {
-  const log = mainGit(['log', '--first-parent', '--format=%H%x09%cI%x09%s', `--since=${since}`, `origin/${DEFAULT_BRANCH}`, ...(files.length ? ['--', ...files] : [])]);
+// The PR that fixed the base, from one commit only, so an unrelated merge is never named: with `files`,
+// the newest first-parent commit on the base since the repair began that touched them; without, the
+// only first-parent commit between then and the green read `until`, where there is exactly one. Its PR
+// is read from its merge subject, else as GitHub links it. -> { pr, at } | null, null too where the
+// history cannot be read or the commit has no PR: the base is fixed either way, and none is named.
+function baseFixer(since, files, until = null) {
+  const log = mainGit(['log', '--first-parent', '--format=%H%x09%cI%x09%s', `--since=${since}`, ...(until ? [`--until=${until}`] : []),
+    `origin/${DEFAULT_BRANCH}`, ...(files.length ? ['--', ...files] : [])]);
   if (!log.ok) return null;
-  for (const line of log.out.split('\n').filter(Boolean)) {
-    const [sha, at, subject] = line.split('\t');
-    const m = MERGE_PR.exec(subject ?? '');
-    const pr = m ? Number(m[1] ?? m[2]) : Number(shOut('gh', ['api', `repos/${GH_REPO}/commits/${sha}/pulls`, '--jq', '.[0].number // empty']).out.trim()) || null;
-    if (pr) return { pr, at };
-  }
-  return null;
+  const commits = log.out.split('\n').filter(Boolean);
+  if (!commits.length || (!files.length && commits.length !== 1)) return null;
+  const [sha, at, subject] = commits[0].split('\t');
+  const m = MERGE_PR.exec(subject ?? '');
+  const pr = m ? Number(m[1] ?? m[2]) : Number(shOut('gh', ['api', `repos/${GH_REPO}/commits/${sha}/pulls`, '--jq', '.[0].number // empty']).out.trim()) || null;
+  return pr ? { pr, at } : null;
 }
 const REPAIR_HANDLERS = {
   ...PHASE_HANDLERS,
@@ -2047,11 +2049,16 @@ const REPAIR_HANDLERS = {
         const names = shOut('git', ['-C', dir, 'diff', '--name-only', `origin/${DEFAULT_BRANCH}...${head}`]);
         if (!names.ok) return { error: `its changes could not be read (${names.out.split('\n').pop()})` };
         files = names.out.split('\n').filter(Boolean);
-        onBase = files.length > 0 && shOut('git', ['-C', dir, 'diff', '--quiet', `origin/${DEFAULT_BRANCH}`, head, '--', ...files]).ok;
+        // A repair with a PR whose branch now differs from the base in nothing is done too; one with no
+        // PR may simply not have started.
+        const pr = t.result?.pr ?? t.draft_pr;
+        onBase = files.length > 0 ? shOut('git', ['-C', dir, 'diff', '--quiet', `origin/${DEFAULT_BRANCH}`, head, '--', ...files]).ok
+          : pr != null && shOut('git', ['-C', dir, 'diff', '--quiet', `origin/${DEFAULT_BRANCH}`, head]).ok;
       }
     } finally { if (head === ref) mainGit(['update-ref', '-d', ref]); }
     if (!green && !onBase) return null;
-    return { why: onBase ? 'on-base' : 'green', by: baseFixer(since, onBase ? files : []) };
+    // Its own files, where it has any, name the commit that fixed it in either case.
+    return { why: onBase ? 'on-base' : 'green', by: baseFixer(since, files, onBase || files.length ? null : new Date(greenAt).toISOString()) };
   },
   'pr-close': (a) => shOut('gh', ['pr', 'close', a.pr, '--repo', GH_REPO, '--comment', a.comment]),
   write: CLEARS_HANDLERS.write,

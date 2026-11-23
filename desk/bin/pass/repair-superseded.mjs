@@ -21,6 +21,7 @@
 //   drop-worktree {key}         -> what was said of the worktree, or null
 //   report (say)
 import { say } from './shared.mjs';
+import { doneByFields } from './parks.mjs';
 
 // The repair's PR while it is open: its result or draft PR, unless the PR status reads it closed or merged.
 export const openRepairPr = (t) => {
@@ -53,10 +54,10 @@ export function* decideSupersededRepairs(s) {
         comment: `desk is closing this red-base repair unmerged: ${how}, and ${fixed}, so it has nothing left to do.${by ? ` Its fix landed in #${by.pr}.` : ''}\n(${t.key}/desk-autopilot repair-superseded)` };
       if (!c?.ok) { yield say(t.key, 'waiting', `${t.key}: ${how}, but its PR #${pr} could not be closed (${String(c?.out ?? '').split('\n').pop()}): left as it is; the next pass tries again`); continue; }
     }
-    const fields = ['state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null', 'fix=null',
-      ...(by ? [...(t.result?.pr != null ? ['result.pr=null'] : []), ...(t.draft_pr != null ? ['draft_pr=null'] : []), ...(by.at ? [`merged_at=${by.at}`] : []),
-        `done_by=${JSON.stringify({ pr: Number(by.pr), why: `it fixed the red ${s.base} this repair was for` })}`] : []),
-      `result.summary=${by ? `done by PR #${by.pr}, not its own` : 'closed unmerged'}: ${how}${pr != null ? `; its PR #${pr} closed unmerged` : ''}`];
+    const closedOwn = pr != null ? `; its PR #${pr} closed unmerged` : '';
+    // A pending fix try is cleared too, so no worker is spawned on it.
+    const fields = [...(by ? doneByFields(t, by.pr, { why: `it fixed the red ${s.base} this repair was for`, at: by.at }, `(it fixed the red ${s.base} this repair was for): ${how}${closedOwn}`)
+      : ['state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null', `result.summary=closed unmerged: ${how}${closedOwn}`]), 'fix=null'];
     if (!(yield { type: 'write', key: t.key, fields })) continue;
     const wt = yield { type: 'drop-worktree', key: t.key };
     yield say(t.key, 'done', `${t.key}: ${how} (${fixed}): ${pr != null ? `PR #${pr} closed unmerged, ` : ''}recorded ${by ? `done by #${by.pr}` : 'done'}, no worker spawned${wt ? `; ${wt}` : ''}`);
