@@ -83,14 +83,15 @@ function slotLeases(locks = 'test') {
 }
 // The locks' holders, as [{pids, at}]: their slot leases (above), read first, then their holder files:
 // each mkdir slot's `pid` (the wrapper and its command) and each flock slot's `.pid` (the command
-// with-lock.sh exec'd into), with when each was written (ms). With the slot lease kind off, only the
-// files name anyone; in shadow both name the same run.
+// with-lock.sh exec'd into), with when each was written (ms), the light lock's express lane
+// (`desk-light.lock.express`) among them. With the slot lease kind off, only the files name anyone; in
+// shadow both name the same run.
 function holderFiles(dir, locks = 'test') {
   const leases = slotLeases(locks);
   let names = [];
   try { names = readdirSync(dir); } catch { return leases; }
   const lock = LOCK_FILES[locks];
-  const slotDir = new RegExp(`^${lock}\\.lock(\\.\\d+)?\\.d$`), slotPid = new RegExp(`^${lock}\\.lock(\\.\\d+)?\\.pid$`);
+  const slotDir = new RegExp(`^${lock}\\.lock(\\.\\d+|\\.express)?\\.d$`), slotPid = new RegExp(`^${lock}\\.lock(\\.\\d+|\\.express)?\\.pid$`);
   return [...leases, ...names.flatMap((n) => {
     const file = slotDir.test(n) ? join(dir, n, 'pid') : slotPid.test(n) ? join(dir, n) : null;
     if (!file) return [];

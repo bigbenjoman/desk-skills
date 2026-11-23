@@ -61,7 +61,8 @@ import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, miss
 import { childRenames } from './migration-renames.mjs';
 import { parseRecipe, readRecords as readPreviewRecords, evidenceHold, uploadHold, teardownCalls, teardown as previewTeardown, runCommand, DELETE_STEP_MS } from './preview-db.mjs';
 import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, staleChecks, RERUN_COOLDOWN_S } from './fix-tries.mjs';
-import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.mjs';
+import { fixClass, WAITING_CLASSES, keptHold } from './failure-class.mjs';
+import { makeBaseReads, memo } from './base-reads.mjs';
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
@@ -1247,12 +1248,7 @@ for (const t of Object.values(queue().tickets)) {
 // A park that recorded what clears it (clears-when.mjs) is checked each pass and settled once that
 // holds (pass/parks.mjs decideClears). The reads its checks make, cached for the pass:
 const clearsCache = new Map();
-const cached = (key, read) => {
-  if (!clearsCache.has(key)) { try { clearsCache.set(key, { v: read() }); } catch (e) { clearsCache.set(key, { e }); } }
-  const c = clearsCache.get(key);
-  if (c.e) throw c.e;
-  return c.v;
-};
+const cached = memo(clearsCache);
 const readOrThrow = (what, cmd, args, opts) => {
   const r = shOut(cmd, args, opts);
   if (!r.ok) throw new Error(`${what}: ${r.out.split('\n').pop()}`);
@@ -4639,59 +4635,11 @@ const faultOf = (f) => {
 // What a person clears, as the fix tries split a red PR's checks (fix-tries.mjs splitFailing).
 const clearsRows = { operator: operatorRow.checks, builds: buildRow.checks, premerge: preMergeRow.checks, steps: checkSteps };
 // A red check is read against the default branch before a fix try is spent on it, with the
-// failure-class lever on or off (fix-tries.mjs againstBase): the job's check runs at the PR's exact
-// merge base, and its newest completed run among the newest commits the default branch has gained
-// since that merge base (latestOnBaseOf says how many). Each read once per pass; one gh cannot read is
-// unknown.
-const checkRunsAt = (sha, name) => cached(`check-runs:${sha}:${name}`, () => {
-  const r = shOut('gh', ['api', `repos/${GH_REPO}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=latest&per_page=100`, '--jq', '[.check_runs[] | {status, conclusion}]']);
-  try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; }
-});
-// Where a head stands: the default branch's tip and its merge base with it, or null unread.
-const baseAtOf = (head) => cached(`base-at:${head}`, () => {
-  const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${encodeURIComponent(DEFAULT_BRANCH)}...${head}`, '--jq', '[.base_commit.sha, .merge_base_commit.sha] | @tsv']);
-  const [base_sha, merge_base] = r.ok ? r.out.split('\t') : [];
-  return /^[0-9a-f]{40}$/.test(base_sha ?? '') && /^[0-9a-f]{40}$/.test(merge_base ?? '') ? { base_sha, merge_base } : null;
-});
-const mergeBaseOf = (head) => baseAtOf(head)?.merge_base ?? null;
-// The default branch's own commits since a merge base, newest first: its first-parent line from its
-// tip back to the merge base, so a merged PR's branch commits, whose runs are that branch's CI and not
-// the default branch's, are never read as the base. The tip is the one listed commit no other names as
-// a parent, since the compare lists by date, not by parent; with none or several, or a line that stops
-// short of the merge base, the list is unread. Every page is read. Null unread.
-const baseCommitsSince = (sha) => cached(`base-commits:${sha}`, () => {
-  const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${sha}...${encodeURIComponent(DEFAULT_BRANCH)}?per_page=100`, '--paginate', '--jq', '.commits[] | [.sha, ([.parents[].sha] | join(","))] | @tsv']);
-  if (!r.ok) return null;
-  const rows = r.out.split('\n').filter(Boolean).map((l) => { const [c, ps = ''] = l.split('\t'); return [c, ps.split(',').filter(Boolean)]; });
-  const parents = new Map(rows), named = new Set(rows.flatMap(([, ps]) => ps));
-  const tips = rows.filter(([c]) => !named.has(c));
-  if (tips.length !== 1) return rows.length ? null : [];
-  const line = [];
-  let s = tips[0][0];
-  for (; parents.has(s) && line.length < rows.length; s = parents.get(s)[0]) line.push(s);
-  return s === sha ? line : null;
-});
-// The job's latest state on the base: its newest completed run among the newest BASE_WALK commits since
-// the merge base (HELD_WALK for a check already held, so a job that runs only on some pushes can still
-// clear its hold), else at the merge base itself when fewer came since. Null when a read fails (never
-// an older run read past one), or when none of those commits ran it: a job that does not run on the
-// base's pushes is not read commit by commit back to the merge base on every pass.
-const BASE_WALK = 25, HELD_WALK = 100;
-const latestOnBaseOf = (head, name, held = false) => {
-  const since = mergeBaseOf(head), commits = since ? baseCommitsSince(since) : null, walk = held ? HELD_WALK : BASE_WALK;
-  if (!commits) return null;
-  for (const sha of commits.slice(0, walk)) {
-    const runs = checkRunsAt(sha, name);
-    if (runs == null) return null;
-    const state = runsState(runs); if (state) return state;
-  }
-  return commits.length > walk ? null : runsState(checkRunsAt(since, name));
-};
-const baseReads = (head) => (head ? { baseRead: {
-  mergeBase: () => mergeBaseOf(head),
-  atMergeBase: (name) => { const sha = mergeBaseOf(head); return sha ? runsState(checkRunsAt(sha, name)) : null; },
-  latestOnBase: (name, o) => latestOnBaseOf(head, name, o?.held === true),
-}, refreshBase: E.permission('pr-update-branch') === 'yes' } : {});
+// failure-class lever on or off (fix-tries.mjs againstBase), through base-reads.mjs, as the merge driver
+// reads it (stale-base.mjs): each read once per pass, cached with the pass's other reads.
+const BASE_READS = makeBaseReads({ gh: (args) => shOut('gh', args), repo: GH_REPO, branch: DEFAULT_BRANCH, cached });
+const { baseAtOf } = BASE_READS;
+const baseReads = (head) => (head ? { baseRead: BASE_READS.forHead(head), refreshBase: E.permission('pr-update-branch') === 'yes' } : {});
 // Whether a person put a draft back: { hold } as personHold gives it, or { unread } with why the PR's events could not say.
 const draftHold = (t, n) => {
   const ev = shOut('gh', ['api', '--paginate', `repos/${GH_REPO}/issues/${n}/events?per_page=100`, '--jq', REDRAFT_JQ]);

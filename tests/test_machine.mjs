@@ -297,6 +297,12 @@ writeFileSync(handEdited, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| 
 t('DS-908 AC17: the profile check names each entry a hand-edited row holds that it does not know',
   env(['machine', 'detect'], absent, handEdited).includes('`lease-kinds` names entries it does not know: "port=maybe", "sockets=on"'), true);
 t('a good row is no problem to detect', env(['machine', 'detect'], absent, kinds).includes('cannot read'), false);
+// light-express-lane, the light lock's express lane, is a Sizing row set by machine set: on or off.
+const lane = join(T, 'express-lane.md');
+t('DS-980 machine set stores light-express-lane on, and it reads back', `${setErr(['light-express-lane=on'], lane)} ${env(['machine', 'get', 'light-express-lane'], absent, lane)}`, 'exit 0 on');
+t('DS-980 and refuses a value that is not on or off', setErr(['light-express-lane=yes'], lane), 'exit 1: nothing written: `light-express-lane` is "yes": want on or off');
+t('DS-980 the profile check names a hand-edited express lane row that does not read',
+  profileProblems({ sizing: { 'light-express-lane': { value: 'maybe' } } }).join(' | '), '`light-express-lane` is "maybe": want on or off; the express lane stays off');
 
 // ---- DS-977: headroom admission's rows
 // AC14: 18 CPU cores in all (10 performance, 8 efficiency), which size test-cap 4 and test-lock-slots 3.

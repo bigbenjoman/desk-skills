@@ -6,11 +6,14 @@
 # DESK_TEST_JOBS at once where that is set. One plain command, so a desk worker's allow-list can name
 # it as §4 Related tests.
 #   bash tests/related.sh
-# It takes a test slot first (with-lock.sh test: the installed one, else this repo's), so it never runs
-# beside the slots' holders: it runs this worktree's suites once it holds one, and while it waits the
-# wrapper says on whom. It waits up to DESK_RELATED_WAIT seconds (an hour by default), then exits with
-# the wrapper's 75 having run nothing. A run already in a slot (with-lock.sh exports DESK_LOCK_HELD to
-# its command) takes no second one. With no with-lock.sh to find, as in CI, it runs with no slot.
+# It decides its scope, then takes a test slot before any suite runs (with-lock.sh test: the installed
+# one, else this repo's), so it never runs beside the slots' holders: it runs this worktree's suites
+# once it holds one, and while it waits the wrapper says on whom. A run whose suites' recorded seconds
+# (suite_durations.json) total 300 or less asks as a small run (DESK_LIGHT_SMALL=1), which with-lock.sh
+# light may put in its express lane. It waits up to DESK_RELATED_WAIT seconds (an hour by default), then
+# exits with the wrapper's 75 having run nothing. A run already in a slot (with-lock.sh exports
+# DESK_LOCK_HELD to its command) takes no second one. With no with-lock.sh to find, as in CI, it runs
+# with no slot.
 # An end-to-end (L3) suite the change reaches only through imports, not claiming a changed file
 # directly, is not run here but named as left for CI, which runs it before merge (scope_sections.mjs
 # --l3-direct). A change to desk-env.mjs or config-schema.mjs that only edits or adds named functions and
@@ -28,13 +31,72 @@ wl="${HOME:-}/.claude/desk/bin/with-lock.sh"
 # itself. This repo's slot-lease.mjs asks, else the one beside the wrapper.
 lease="$root/desk/bin/slot-lease.mjs"
 [ -f "$lease" ] || lease="$(dirname "$wl")/slot-lease.mjs"
-if [ -z "${DESK_LOCK_HELD:-}" ] && ! node "$lease" in-slot "$$" 2>/dev/null; then
+in_slot=""
+{ [ -n "${DESK_LOCK_HELD:-}" ] || node "$lease" in-slot "$$" 2>/dev/null; } && in_slot=1
+wait_s="${DESK_RELATED_WAIT:-3600}"
+if [ -z "$in_slot" ] && [ -f "$wl" ]; then
+  case "$wait_s" in ''|*[!0-9]*) echo "related: DESK_RELATED_WAIT wants a whole number of seconds, not '$wait_s'" >&2; exit 2 ;; esac
+fi
+jobs=()
+[ -z "${DESK_TEST_JOBS:-}" ] || jobs=(-j "$DESK_TEST_JOBS")
+base="origin/$(desk-env get default-branch 2>/dev/null || echo main)"
+# The scope run.sh records for the run (full or changed), why, and how many suites it left for CI.
+export DESK_RUN_SCOPE=full DESK_RUN_REASON='' DESK_RUN_LEFT_FOR_CI=0
+# The scope is decided before any slot is taken, so the slot is asked for knowing the run's size.
+# suites stays empty for a full scope: run.sh with no names runs every suite.
+suites=""
+every(){ echo "related: $1, so every suite runs" >&2; DESK_RUN_REASON=$1; }
+OUT="$(mktemp "${TMPDIR:-/tmp}/desk-related.XXXXXX")" || exit 1
+trap 'rm -f "$OUT"' EXIT
+if ! git merge-base "$base" HEAD >/dev/null 2>&1; then every "no merge base with $base"
+elif ! GITHUB_OUTPUT="$OUT" node "$T/scope_sections.mjs" --base "$base" --worktree --l3-direct --by-name --github-output >/dev/null; then
+  every "scope_sections.mjs failed against $base"
+else
+  scope=$(grep -m 1 '^scope=' "$OUT"); scope=${scope#scope=}
+  reason=$(grep -m 1 '^reason=' "$OUT"); reason=${reason#reason=}
+  picked=$(grep -m 1 '^suites=' "$OUT"); picked=${picked#suites=}
+  ci=$(grep -m 1 '^ci=' "$OUT"); ci=${ci#ci=}
+  narrowed=$(grep -m 1 '^narrowed=' "$OUT"); narrowed=${narrowed#narrowed=}
+  DESK_RUN_REASON=${reason:-no reason given}
+  if [ "$scope" = full ] || [ -z "$picked" ]; then
+    echo "related: scope ${scope:-unknown} against $base (${reason:-no reason given}), so every suite runs"
+  else
+    DESK_RUN_SCOPE=changed suites=$picked
+    echo "related: scope $scope against $base: $suites${narrowed:+ (narrowed on the changed names in $narrowed)}"
+    # End-to-end (L3) suites the change reaches only through imports: CI runs them before merge, not this.
+    if [ -n "$ci" ]; then
+      # shellcheck disable=SC2086
+      set -- $ci; DESK_RUN_LEFT_FOR_CI=$#
+      echo "related: left for CI, as the change reaches these L3 suites only through imports: $ci"
+    fi
+  fi
+fi
+# A run is small when its suites' seconds in suite_durations.json total SMALL_S or less. Every suite,
+# or a suite with no recorded seconds, is large. A small run tells with-lock.sh so (DESK_LIGHT_SMALL),
+# which lets it take the light lock's express lane where the machine profile turns that on.
+SMALL_S=300
+small=""
+if [ -n "$suites" ]; then
+  # shellcheck disable=SC2086
+  size=$(node -e '
+    let s = {};
+    try { s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).seconds || {}; } catch { /* none recorded */ }
+    const [max, ...names] = process.argv.slice(2), has = (n) => Number.isFinite(s[n]);
+    const missing = names.find((n) => !has(n)), total = names.reduce((t, n) => t + (has(n) ? s[n] : 0), 0);
+    console.log(missing ? `large ${missing} has no recorded duration` : `${total <= Number(max) ? "small" : "large"} ${total}s of recorded suite time`);
+  ' "$T/suite_durations.json" "$SMALL_S" $suites 2>/dev/null) || size="large its suites could not be sized"
+  [ -n "$size" ] || size="large its suites could not be sized"
+  [ "${size%% *}" = small ] && small=1
+  echo "related: a ${size%% *} run (${size#* }, small at ${SMALL_S}s or less)"
+fi
+# Suite names never hold spaces, so the word split is the list.
+# shellcheck disable=SC2206
+args=(${jobs[@]+"${jobs[@]}"} $suites)
+if [ -z "$in_slot" ]; then
   if [ -f "$wl" ]; then
-    wait_s="${DESK_RELATED_WAIT:-3600}"
-    case "$wait_s" in ''|*[!0-9]*) echo "related: DESK_RELATED_WAIT wants a whole number of seconds, not '$wait_s'" >&2; exit 2 ;; esac
     echo "related: taking a test slot first, waiting up to ${wait_s}s for one"
-    # DESK_LOCK_HELD set here too, so a wrapper that does not export it yet cannot make this recurse.
-    (cd "$root" && "$SH" "$wl" test --timeout "$wait_s" -- env DESK_LOCK_HELD=test "$SH" "$T/related.sh" "$@")
+    # DESK_LOCK_HELD set here too, so run.sh's own calls never wait behind this slot.
+    (cd "$root" && DESK_LIGHT_SMALL="$small" "$SH" "$wl" test --timeout "$wait_s" -- env DESK_LOCK_HELD=test "$SH" "$T/run.sh" ${args[@]+"${args[@]}"})
     rc=$?
     # The suites' own runs exit 0, 1 or 2 (run.sh), so 75 is the wrapper giving up before any ran.
     [ "$rc" -eq 75 ] && echo "related: timed out after ${wait_s}s waiting for a test slot, so no suite ran"
@@ -42,36 +104,4 @@ if [ -z "${DESK_LOCK_HELD:-}" ] && ! node "$lease" in-slot "$$" 2>/dev/null; the
   fi
   echo "related: no with-lock.sh found, so the suites run without a test slot"
 fi
-jobs=()
-[ -z "${DESK_TEST_JOBS:-}" ] || jobs=(-j "$DESK_TEST_JOBS")
-base="origin/$(desk-env get default-branch 2>/dev/null || echo main)"
-# The scope run.sh records for the run (full or changed), why, and how many suites it left for CI.
-export DESK_RUN_SCOPE=full DESK_RUN_REASON='' DESK_RUN_LEFT_FOR_CI=0
-every(){ echo "related: $1, so every suite runs" >&2; DESK_RUN_REASON=$1; "$SH" "$T/run.sh" ${jobs[@]+"${jobs[@]}"}; exit $?; }
-git merge-base "$base" HEAD >/dev/null 2>&1 || every "no merge base with $base"
-OUT="$(mktemp "${TMPDIR:-/tmp}/desk-related.XXXXXX")" || exit 1
-trap 'rm -f "$OUT"' EXIT
-if ! GITHUB_OUTPUT="$OUT" node "$T/scope_sections.mjs" --base "$base" --worktree --l3-direct --by-name --github-output >/dev/null; then
-  every "scope_sections.mjs failed against $base"
-fi
-scope=$(grep -m 1 '^scope=' "$OUT"); scope=${scope#scope=}
-reason=$(grep -m 1 '^reason=' "$OUT"); reason=${reason#reason=}
-suites=$(grep -m 1 '^suites=' "$OUT"); suites=${suites#suites=}
-ci=$(grep -m 1 '^ci=' "$OUT"); ci=${ci#ci=}
-narrowed=$(grep -m 1 '^narrowed=' "$OUT"); narrowed=${narrowed#narrowed=}
-DESK_RUN_REASON=${reason:-no reason given}
-if [ "$scope" = full ] || [ -z "$suites" ]; then
-  echo "related: scope ${scope:-unknown} against $base (${reason:-no reason given}), so every suite runs"
-  "$SH" "$T/run.sh" ${jobs[@]+"${jobs[@]}"}; exit $?
-fi
-DESK_RUN_SCOPE=changed
-echo "related: scope $scope against $base: $suites${narrowed:+ (narrowed on the changed names in $narrowed)}"
-# End-to-end (L3) suites the change reaches only through imports: CI runs them before merge, not this.
-if [ -n "$ci" ]; then
-  # shellcheck disable=SC2086
-  set -- $ci; DESK_RUN_LEFT_FOR_CI=$#
-  echo "related: left for CI, as the change reaches these L3 suites only through imports: $ci"
-fi
-# Suite names never hold spaces, so the word split is the list.
-# shellcheck disable=SC2086
-"$SH" "$T/run.sh" ${jobs[@]+"${jobs[@]}"} $suites
+"$SH" "$T/run.sh" ${args[@]+"${args[@]}"}
