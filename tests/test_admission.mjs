@@ -1,6 +1,6 @@
 // suite: admission (headroom admission in shadow: would-admit and would-deny on fixture readings, the ledger of recent admits, the admission lock; on: admit and deny, the waiting line and how often it prints)
 // layer: L2
-// covers: desk/bin/admission.mjs desk/bin/machine.mjs
+// covers: desk/bin/admission.mjs desk/bin/admit-ledger.mjs desk/bin/machine.mjs
 // admit() against a scratch lock directory and lease log, with fixture readings and a fixed clock; the
 // CLI as eight real processes for the admission lock.
 import { spawn } from 'node:child_process';
