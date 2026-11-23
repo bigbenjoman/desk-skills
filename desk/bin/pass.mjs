@@ -1399,13 +1399,23 @@ const CLEARS_HANDLERS = {
       const why = notOwnPr(t, prOwner(a.pr), conflictHandle);
       // #pr itself recorded on it (a not-its-own park's result.pr) is not work of its own.
       if (!why || [t.result?.pr, t.draft_pr].some((x) => x != null && Number(x) !== Number(a.pr))) return null;
-      // Commits past the base in its worktree are its own work, which #pr only unblocks.
+      // Commits past the base in its worktree are its own work, which #pr only unblocks, unless they
+      // change only files #pr changed: then they are its own draft of what #pr shipped (a worker that
+      // found #pr doing the same fix), and #pr covers them. Its worktree keeps them, unpushed.
+      let covered = null;
       if (t.worktree && existsSync(t.worktree)) {
         const n = shOut('git', ['-C', t.worktree, 'rev-list', '--count', `origin/${DEFAULT_BRANCH}..HEAD`]);
         if (!n.ok) return { error: `its worktree could not be read (${n.out.split('\n').pop()})` };
-        if (Number(n.out) > 0) return null;
+        if (Number(n.out) > 0) {
+          const mine = shOut('git', ['-C', t.worktree, 'diff', '--name-only', `origin/${DEFAULT_BRANCH}...HEAD`]);
+          if (!mine.ok) return { error: `its worktree could not be read (${mine.out.split('\n').pop()})` };
+          const theirs = new Set(readOrThrow(`gh pr view ${a.pr} files`, 'gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'files', '-q', '.files[].path']).split('\n').filter(Boolean));
+          const files = mine.out.split('\n').filter(Boolean);
+          if (!files.length || files.some((f) => !theirs.has(f))) return null;
+          covered = `its ${Number(n.out)} commit(s) past ${DEFAULT_BRANCH} change only files #${a.pr} changed (${files.join(', ')})`;
+        }
       }
-      return { why, at: clearsRead.pr(a.pr).mergedAt ?? null };
+      return { why, at: clearsRead.pr(a.pr).mergedAt ?? null, ...(covered ? { covered } : {}) };
     } catch (e) { return { error: e.message }; }
   },
   'drop-worktree': (a) => {

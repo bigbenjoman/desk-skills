@@ -54,7 +54,9 @@ cat > "$T/stub/gh" <<EOF
 case "\$1 \$2" in
   "pr view") if [ "\$7" = headRefOid,statusCheckRollup ]; then [ -f "$T/gh/checks-\$3.json" ] && { cat "$T/gh/checks-\$3.json"; exit 0; }; echo "gh: HTTP 502 reading checks of PR \$3" >&2; exit 1; fi
     if [ "\$7" = headRefOid,reviews ]; then [ -f "$T/gh/reviews-\$3.json" ] && { cat "$T/gh/reviews-\$3.json"; exit 0; }; echo "gh: HTTP 502 reading reviews of PR \$3" >&2; exit 1; fi
-    [ -f "$T/gh/pr-\$3.json" ] && { cat "$T/gh/pr-\$3.json"; exit 0; }; echo "gh: HTTP 502 for PR \$3" >&2; exit 1 ;;
+    n="\$3"; jq=""; while [ \$# -gt 0 ]; do [ "\$1" = -q ] && jq="\$2"; shift; done
+    [ -f "$T/gh/pr-\$n.json" ] || { echo "gh: HTTP 502 for PR \$n" >&2; exit 1; }
+    if [ -n "\$jq" ]; then jq -r "\$jq" "$T/gh/pr-\$n.json"; else cat "$T/gh/pr-\$n.json"; fi; exit 0 ;;
   "pr list") h=""; jq=""; while [ \$# -gt 0 ]; do [ "\$1" = --head ] && h="\$2"; [ "\$1" = -q ] && jq="\$2"; shift; done
     [ -n "\$h" ] || { echo "[]"; exit 0; }
     # A file holding a PR as JSON is the list's one entry, read through the caller's -q as gh would.
@@ -157,6 +159,17 @@ pushpark P-9 A "git push --force-with-lease=feat/P-9:$HELD origin feat/P-9 succe
 q set P-9 "grant={\"step\":\"force-push\",\"branch\":\"feat/P-9\",\"lease\":\"$HELD\",\"pinned\":true,\"at\":\"2026-11-01T00:00:00Z\"}"
 git -C "$T/repo" push -q origin "$HELD:refs/heads/feat/P-10"
 pushpark P-10 A "git push --force-with-lease=feat/P-10:$HELD origin feat/P-10 succeeds"; git -C "$T/repo" branch -f feat/P-10 "$REWRITTEN"
+# A not-its-own park whose worktree holds a commit of its own draft: O-5's changes only ci.yml, which
+# #886 changed too, so #886 covers it; O-6's also changes notes.txt, which #887 did not, so it is its own.
+git -C "$T/repo" push -q origin HEAD:refs/heads/main; git -C "$T/repo" fetch -q origin
+draft(){ local w="$T/wt-$1"; git -C "$T/repo" worktree add -q -b "feat/$1" "$w" origin/main; shift
+  for f in "$@"; do echo "$f draft" > "$w/$f"; done; git -C "$w" add -A; git -C "$w" -c user.email=t@t -c user.name=t commit -qm draft; }
+for k in 5 6; do
+  draft "O-$k" ci.yml $([ $k = 6 ] && echo notes.txt)
+  parked "O-$k" A "its PR #88$((k + 1)) is not its own: PR #88$((k + 1)) is on branch fix/other-88$((k + 1)), not O-$k's branch feat/O-$k. desk takes as a ticket's result only a PR on the branch its worker made"
+  q set "O-$k" "worktree=$T/wt-O-$k" "result.pr=88$((k + 1))"
+  printf '{"state":"MERGED","isDraft":false,"mergedAt":"2026-11-23T12:00:00Z","headRefName":"fix/other-88%s","author":{"login":"someone-else"},"files":[{"path":"ci.yml"}]}\n' "$((k + 1))" > "$T/gh/pr-88$((k + 1)).json"
+done
 q set P-10 "grant={\"step\":\"force-push\",\"branch\":\"feat/P-10\",\"lease\":\"$PIN\",\"pinned\":true,\"at\":\"2026-11-01T00:00:00Z\"}"
 q add C-4 Story A; q set C-4 state=running branch=feat/C-4 session_id=gone
 say "AUTOPILOT_PARK: GitHub refused the push of feat/C-4 with a 5xx" "AUTOPILOT_PARK_CLEARS_WHEN: git push -u origin feat/C-4 succeeds" > "$T/state/logs/C-4.log"
@@ -429,6 +442,9 @@ check "#1294 an earlier round's merged_at does not release what is held behind a
 check "#1294 an old done_by does not release what is held behind a ticket done again on its own PR, still open" '[ "$(field H-3 state)" = "\"parked\"" ] && ! grep -q "released: H-3" <<< "$out"'
 check "#1294 a not-its-own park whose PR merged is done by it, its foreign result PR cleared" \
   '[ "$(field O-4 state)" = "\"done\"" ] && [ "$(field O-4 done_by.pr)" = 883 ] && [ "$(field O-4 result.pr)" = null ] && [ "$(field O-4 merged_at)" = "\"2026-11-23T11:00:00Z\"" ] && grep -qF "O-4: \"PR #883 merged\" holds, and #883 is not its own" <<< "$out"'
+check "a not-its-own park whose commits change only files its merged PR changed is done by it, its worktree kept" \
+  '[ "$(field O-5 state)" = "\"done\"" ] && [ "$(field O-5 done_by.pr)" = 886 ] && [ -d "$T/wt-O-5" ] && grep -qF "O-5: \"PR #886 merged\" holds, and #886 is not its own (PR #886 is on branch fix/other-886, not O-5'"'"'s branch feat/O-5), and its 1 commit(s) past main change only files #886 changed (ci.yml): recorded done by #886, no worker spawned; its worktree was left" <<< "$out"'
+check "one whose commits change a file its merged PR did not is its own work: left parked" '[ "$(field O-6 state)" = "\"parked\"" ] && [ "$(field O-6 done_by)" = null ]'
 check "#1290 a park on its own branch's PR merging is requeued as before" '[ "$(field O-2 state)" = "\"triaged\"" ] && grep -qF "O-2: \"PR #881 merged\" holds: requeued" <<< "$out"'
 check "DS-269 AC2 a worker's park records its condition" '[ "$(field C-1 state)" = "\"parked\"" ] && [ "$(field C-1 park.clears_when)" = "{\"kind\":\"pr-merged\",\"pr\":41}" ]'
 check "DS-563 AC3 an unreadable condition is kept for the decider to restate, and reported" \
