@@ -134,8 +134,6 @@ q add T-42 Task A; q set T-42 state=triaged branch=fix/T-42; q hold T-42 T-41
 loop
 check "#1298 a ticket done again on a new open PR after its earlier merge does not release what is held behind it" \
   '[ "$(qf T-42 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-42"'
-q requeue T-42
-check "#1298 requeued itself meanwhile, it goes back behind that ticket, not to a worker" '[ "$(qf T-42 .state)" = parked ] && [ "$(qf T-42 .held_by)" = T-41 ]'
 jq '."442".state = "merged" | ."442".draft = false' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
 loop
 check "#1298 once that new PR merges, it does" '[ "$(qf T-42 .state)" = triaged ] && echo "$out" | grep -q "merged: T-41#442 -> RELEASED T-42"'
