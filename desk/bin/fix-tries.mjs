@@ -511,7 +511,10 @@ export function outagePlan({ prs, lists, was, now, unread: failed = null }) {
     const owed = [...(owedOf.get(name) ?? [])];
     const owedKept = (text) => (owed.length ? { cleared: true, text, owed } : null);
     const w = kept?.cleared ? null : kept;
-    if (!w && !g) { if (owedKept(kept.text)) keep[name] = owedKept(kept.text); continue; }
+    // A new hold starts only where no open PR passes the check: its platform works for that PR, so
+    // each PR red on it is that PR's own failure.
+    const green = !w && !!g && (prs ?? []).some(({ s }) => passes(s, name));
+    if (!w && (!g || green)) { if (kept && owedKept(kept.text)) keep[name] = owedKept(kept.text); continue; }
     // The hold's own line while a PR is still red with it, and the line red on most PRs now too: a PR
     // red with either is held, and re-run as it clears.
     const line = w && (!g || reds.some((r) => r.name === name && r.line === w.line)) ? w.line : g.line;
@@ -520,7 +523,8 @@ export function outagePlan({ prs, lists, was, now, unread: failed = null }) {
     const last = tried.at(-1);
     const running = !!last && (prs ?? []).some(({ s }) => s.pr === last.pr && s.head === last.head && runningOn(s, name));
     if (w) {
-      const back = (prs ?? []).find(({ s }) => w.prs.includes(s.pr) && passes(s, name));
+      // A PR it held passing it, else any open PR: either way its platform is back.
+      const back = (prs ?? []).find(({ s }) => w.prs.includes(s.pr) && passes(s, name)) ?? (prs ?? []).find(({ s }) => passes(s, name));
       if (back) {
         // A PR whose run of it is still going is owed its re-run once that run completes.
         const ows = new Set([...owed, ...owe.filter((o) => o.name === name)].map((o) => o.pr));

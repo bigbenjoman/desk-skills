@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { scratch } from './scratch.mjs';
 
 process.env.DESK_AUTOPILOT_STATE ??= scratch('base-red-');
-const { baseState, lastMerges, liveBaseRed, nextRecord, holdLine, batchLine, repairTicket, repairTriage, baseRerun, setupFailed, SETUP_STEP, WALK, STALE_MS, GREEN_FILE, readGreen } = await import('../desk/bin/base-red.mjs');
+const { baseState, lastMerges, liveBaseRed, nextRecord, holdLine, batchLine, repairTicket, repairTriage, baseRerun, setupFailed, timedOut, TIMEOUT_AGAIN_MS, SETUP_STEP, WALK, STALE_MS, GREEN_FILE, readGreen } = await import('../desk/bin/base-red.mjs');
 const E = await import('../desk/bin/desk-env.mjs');
 
 let pass = 0;
@@ -27,6 +27,25 @@ const run = (name, conclusion, url = null) => ({ name, status: 'completed', conc
 test('AC1 a required check whose newest completed run failed is red, naming its run', () => {
   const s = baseState({ required: ['tests'], branch: 'main', read: reader({ [sha('a')]: { parent: null, runs: [run('tests', 'failure', 'u/9')] } }) });
   assert.deepEqual(s, { state: 'red', sha: sha('a'), checks: [{ name: 'tests', sha: sha('a'), url: 'u/9' }] });
+});
+
+// A required check that never runs on a push to the base (a PR-only review gate) is left out of the read.
+test('a required PR-only gate with no run on main is left out: push checks green read green', () => {
+  const s = baseState({ required: ['CI gate', 'Review gate'], branch: 'main', read: reader({ [sha('b')]: { parent: sha('a'), runs: [run('CI gate', 'success')] }, [sha('a')]: { parent: null, runs: [run('CI gate', 'success')] } }) });
+  assert.deepEqual(s, { state: 'green', absent: ['Review gate'] });
+});
+test('a real push check failing beside the PR-only gate still reads red', () => {
+  const s = baseState({ required: ['CI gate', 'Review gate'], branch: 'main', read: reader({ [sha('a')]: { parent: null, runs: [run('CI gate', 'failure', 'u/3')] } }) });
+  assert.equal(s.state, 'red');
+  assert.deepEqual(s.checks.map((c) => c.name), ['CI gate']);
+});
+test('a required check with a run still going and none completed is still waited for', () => {
+  const s = baseState({ required: ['CI gate', 'e2e'], branch: 'main', read: reader({ [sha('a')]: { parent: null, runs: [run('CI gate', 'success'), { name: 'e2e', status: 'in_progress', conclusion: null }] } }) });
+  assert.equal(s.state, 'unknown');
+  assert.match(s.why, /no completed run of e2e/);
+});
+test('with no required check run on main at all, the read is unknown', () => {
+  assert.equal(baseState({ required: ['Review gate'], branch: 'main', read: reader({ [sha('a')]: { parent: null, runs: [run('lint', 'success')] } }) }).state, 'unknown');
 });
 
 test('AC1 a run still going at the tip is passed over for the newest completed one below it', () => {
@@ -408,14 +427,57 @@ test('a red base over two runs, one re-run already, re-runs only the other', () 
   assert.ok(baseRerun(two, { reran: ['78'], view: () => installFailed, status: done('in_progress', ''), perm: 'yes' }).wait);
 });
 
+// A job or step that ran out of time, or only §4 Known flaky checks, is the runner's too.
+{
+  const job = (o) => ({ jobs: [{ name: 'Lint', databaseId: 41, conclusion: 'failure', steps: [{ name: 'Run tests', conclusion: 'failure' }], ...o }] });
+  const out = (msg) => (id) => (id === 41 ? [{ message: msg }] : null);
+  test('a job whose annotation says a step timed out reads as timed out', () => {
+    assert.deepEqual(timedOut(job(), out("The action 'Run tests' has timed out after 12 minutes.")), ['Lint']);
+    assert.deepEqual(timedOut(job(), out('The job running on runner GitHub Actions 3 has exceeded the maximum execution time of 30 minutes.')), ['Lint']);
+    assert.deepEqual(timedOut(job({ conclusion: 'timed_out' })), ['Lint']);
+    assert.deepEqual(timedOut(job(), out('expect(received).toBe(expected)')), []);
+    assert.deepEqual(timedOut(job(), () => undefined), []);
+  });
+  test('a red base whose only failure is a step timeout is re-run once, and nothing admitted', () => {
+    const d = baseRerun(rr(URL78), { reran: [], view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes' });
+    assert.deepEqual(d.rerun, ['78']);
+    assert.match(d.why, /failed at a timeout \("Lint"\)/);
+  });
+  test('a rerun for a timeout names the jobs it re-ran for one, with when', () => {
+    const d = baseRerun(rr(URL78), { reran: [], view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes', now: Date.parse('2026-11-23T05:00:00Z') });
+    assert.deepEqual(d.timeouts, [{ job: 'Lint', at: '2026-11-23T05:00:00.000Z' }]);
+  });
+  test('#1281: the same job timing out again within a day of its rerun admits the repair; after a day it is re-run', () => {
+    const now = Date.parse('2026-11-23T20:00:00Z');
+    const timeouts = [{ job: 'Lint', at: '2026-11-23T05:00:00Z' }];
+    const d = baseRerun(rr(URL78), { reran: [], timeouts, now, view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes' });
+    assert.equal(d.admit, true);
+    assert.match(d.why, /"Lint" timed out on main again within 24 hours of a rerun for a timeout/);
+    assert.deepEqual(baseRerun(rr(URL78), { reran: [], timeouts, now: now + TIMEOUT_AGAIN_MS, view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes' }).rerun, ['78']);
+    // a §4 Known flaky check that times out again within the day is not re-run again either
+    assert.equal(baseRerun(rr(URL78), { reran: [], timeouts, now, flaky: ['Lint'], view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes' }).admit, true);
+    assert.deepEqual(baseRerun(rr(URL78), { reran: [], now, flaky: ['Lint'], view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes' }).timeouts, [{ job: 'Lint', at: new Date(now).toISOString() }]);
+    // another job's earlier timeout does not count
+    assert.deepEqual(baseRerun(rr(URL78), { reran: [], timeouts: [{ job: 'Build', at: '2026-11-23T05:00:00Z' }], now, view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes' }).rerun, ['78']);
+  });
+  test('an assertion failing in a test step admits the repair as before', () => {
+    assert.deepEqual(baseRerun(rr(URL78), { reran: [], view: () => job(), notes: out('expect(received).toBe(expected)'), status: never, perm: 'yes' }), { admit: true });
+  });
+  test('a red base on §4 Known flaky checks only is re-run once; beside a check that is not, it is not', () => {
+    assert.deepEqual(baseRerun(rr(URL78), { reran: [], view: () => job(), flaky: ['Lint'], status: never, perm: 'yes' }).rerun, ['78']);
+    const two = { branch: 'main', checks: [{ name: 'Lint', sha: sha('a'), url: URL78 }, { name: 'Build', sha: sha('a'), url: URL78 }] };
+    assert.deepEqual(baseRerun(two, { reran: [], view: () => job(), flaky: ['Lint'], status: never, perm: 'yes' }), { admit: true });
+  });
+}
+
 test('the batch line says no repair is admitted yet while a rerun comes first', () => {
   const l = batchLine({ branch: 'main', since: 't', checks: [{ name: 'Lint', sha: sha('a'), url: URL78 }], merges: [] }, { repair: { key: 'base-red-main', first: 'its failed run 78 failed at a setup step' } });
   assert.match(l, /No repair ticket is admitted yet: its failed run 78 failed at a setup step\. Repair ticket base-red-main is admitted if it fails again/);
 });
 
-// A red spell ends when the driver stops reading red, green or unknown: a required check that never runs
-// on the base (a PR-only gate) leaves every read unknown, never green, and the next red is a spell of its own.
-test('red, then a read with no red (one required check never runs on main), then red: two spells, and no record between', () => {
+// A red spell ends when the driver stops reading red: a required check that never runs on the base (a
+// PR-only gate) is left out, so the push checks passing read green, and the next red is a spell of its own.
+test('red, then green (one required check never runs on main), then red: two spells, and no record between', () => {
   const dir = scratch('base-red-spells-'), bin = join(dir, 'bin'), state = join(dir, 'state'), runsFile = join(dir, 'runs.json'), tipFile = join(dir, 'tip');
   mkdirSync(bin); mkdirSync(state);
   writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
@@ -435,8 +497,8 @@ else process.exit(1);
   const ci = (conclusion) => [{ name: 'CI gate', status: 'completed', conclusion, url: 'https://github.com/acme/widgets/actions/runs/7/job/1' }];
   assert.equal(check(sha('a'), ci('failure')), 'red');
   const first = JSON.parse(readFileSync(join(state, 'base-red.json'), 'utf8'));
-  // The next push is green on CI gate; Review gate runs only on PRs, so the read is unknown.
-  assert.equal(check(sha('b'), ci('success')), 'unknown');
+  // The next push is green on CI gate; Review gate runs only on PRs, so it is left out and the base reads green.
+  assert.equal(check(sha('b'), ci('success')), 'green');
   assert.equal(existsSync(join(state, 'base-red.json')), false);
   assert.equal(liveBaseRed(state, { branch: 'main' }), null);
   // A later flake is a new spell, its since its own.

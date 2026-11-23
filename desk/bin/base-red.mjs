@@ -4,14 +4,16 @@
 // repair ticket's PR; the pass reads the record the driver keeps and reports it once for the batch, and
 // starts the repair ticket where config allows (pass.mjs).
 //
-//   base-red.mjs check --branch <name> [--repo <owner/name>] [--state <dir>] [--by <merger>] [--cache <file>]
+//   base-red.mjs check --branch <name> [--repo <owner/name>] [--state <dir>] [--by <merger>] [--cache <file>] [--keys <k1,k2,…>]
 //       one JSON line, { state: red | green | unknown | unread | none, checks?, why?, line? }, exit 0. It
 //       keeps <state>/base-red.json while the base is red, removes it once it is green, unknown (no
 //       check read red, so the driver merges as before) or nothing is required, and leaves it as it
 //       was only when the base could not be read. So a red spell ends with the driver's hold, and the
 //       next red is a spell of its own with its own since. With
 //       --cache, the commits and the completed check runs it read are kept in <file> for the next loop
-//       (cachedRead, read-cache.mjs).
+//       (cachedRead, read-cache.mjs). With --keys (the ticket keys of the PRs the driver may merge), a red
+//       answer names in `repairs` those of them that are a repair of this base, any spell's: the pass admits
+//       no second repair while one is open, so an earlier spell's repair is the one merge a later red lets in.
 //
 // The record, <state>/base-red.json:
 //   { branch, sha, checks: [{ name, sha, url }], merges: [{ pr, ticket, sha, at }], repair_key, since, at }
@@ -65,35 +67,41 @@ export function liveBaseRed(state, { branch = null, now = Date.now() } = {}) {
 // null meaning the read failed. -> { state: 'none' } with nothing required, { state: 'red', sha, checks }
 // when any check's newest completed run failed (whatever a later read gives), { state: 'unread', why } when
 // a read failed (an API error or limit: the driver holds its merges), { state: 'unknown', why } when every
-// read answered but a check has no completed run in the walk, else { state: 'green' }, with `tip_pending`
-// when a check's newest completed run is below the tip.
+// read answered but a check has a run in the walk and no completed one, else { state: 'green' }, with
+// `tip_pending` when a check's newest completed run is below the tip. A required check with no run at all,
+// of any status, on any commit of the walk runs only on PRs (a review gate) or not on pushes, so it is
+// left out (`absent` on the answer), and the base reads by the checks that do run there; one with nothing
+// else required reads unknown.
 export function baseState({ required, branch, read }) {
   if (!required.length) return { state: 'none' };
   const unread = (why) => ({ state: 'unread', why });
   let c = read.tip(branch);
   if (!c) return unread(`the tip of ${branch} could not be read`);
-  const tip = c.sha, left = new Set(required), red = [];
-  let onTip = false;
+  const tip = c.sha, left = new Set(required), red = [], seen = new Set(), onTip = new Set();
   for (let i = 0; i < WALK && c && left.size; i++) {
     const runs = read.runs(c.sha);
     // A read that fails after a check was found red leaves the base red: that failure stands.
     if (runs == null) { if (red.length) break; return unread(`the check runs on ${branch} at ${short(c.sha)} could not be read`); }
     for (const name of [...left]) {
       const mine = runs.filter((r) => r?.name === name);
+      if (mine.length) seen.add(name);
       const st = runsState(mine);
       if (!st) continue;
       left.delete(name);
+      if (i === 0) onTip.add(name);
       if (st === 'fail') red.push({ name, sha: c.sha, url: mine.find((r) => FAILED.has(String(r.conclusion ?? '').toLowerCase()))?.url ?? null });
     }
-    if (i === 0) onTip = !left.size;
     if (!left.size || !c.parent || i === WALK - 1) break;
     c = read.commit(c.parent);
     if (!c) { if (red.length) break; return unread(`a commit on ${branch} could not be read`); }
   }
   if (red.length) return { state: 'red', sha: tip, checks: red };
-  if (left.size) return { state: 'unknown', why: `no completed run of ${[...left].join(', ')} on the newest ${WALK} commits of ${branch}` };
+  const absent = [...left].filter((n) => !seen.has(n)), pending = [...left].filter((n) => seen.has(n));
+  if (pending.length || absent.length === required.length) return { state: 'unknown', why: `no completed run of ${(pending.length ? pending : absent).join(', ')} on the newest ${WALK} commits of ${branch}` };
+  const more = absent.length ? { absent } : {};
   // Green from a commit below the tip, a check still going on it, says nothing yet of the newest merges.
-  return onTip ? { state: 'green' } : { state: 'green', tip_pending: true };
+  const ran = required.filter((n) => !absent.includes(n));
+  return ran.every((n) => onTip.has(n)) ? { state: 'green', ...more } : { state: 'green', tip_pending: true, ...more };
 }
 
 // The last merges the merge log holds for `repo` by merger `by`, newest first. The log names no target
@@ -160,14 +168,36 @@ export const SETUP_STEP = /\b(?:install(?:s|ing)?|set ?up|setup-[\w-]+|checkout|
 // jobs, so an install that failed one job explains the check downstream of it that found nothing to test.
 export const setupFailed = (view) => (Array.isArray(view?.jobs) ? view.jobs : [])
   .flatMap((j) => (Array.isArray(j?.steps) ? j.steps : []).filter((x) => stepFailed(x) && SETUP_STEP.test(String(x?.name ?? ''))).map((x) => x.name));
+// The jobs of a run that ended by timeout rather than by a failing assertion: a job or step whose
+// conclusion is timed_out, or a failed job whose annotations say a step or the job ran out of time
+// (`The action '…' has timed out after 12 minutes`, `… has exceeded the maximum execution time of …`).
+// notes(jobId): the job's annotations ([{ message }]), null or undefined unread.
+const TIMEOUT_LINE = /\bhas timed out after \d+ minutes?\b|\bexceeded the maximum execution time\b/i;
+const ENDED = new Set(['failure', 'timed_out', 'cancelled']);
+// A job re-run for a timeout that times out on the base again this soon is too slow for its limit, not
+// unlucky: the repair is admitted, or the red noted on the open one, rather than a second rerun.
+export const TIMEOUT_AGAIN_MS = 24 * 3600e3;
+export function timedOut(view, notes = () => null) {
+  return (Array.isArray(view?.jobs) ? view.jobs : []).filter((j) => {
+    const c = String(j?.conclusion ?? '').toLowerCase();
+    if (c === 'timed_out' || (Array.isArray(j?.steps) && j.steps.some((x) => String(x?.conclusion ?? '').toLowerCase() === 'timed_out'))) return true;
+    if (!ENDED.has(c)) return false;
+    const lines = notes(j?.databaseId);
+    return Array.isArray(lines) && lines.some((x) => TIMEOUT_LINE.test(String(x?.message ?? '')));
+  }).map((j) => j.name);
+}
 // The runs a red base's checks failed in, re-run once before its repair is admitted where the runner
-// failed them and not the code, as a PR's red check classed runner or resource is (fix-tries.mjs).
+// failed them and not the code, as a PR's red check classed runner or resource is (fix-tries.mjs): a
+// setup step failed in it, a job of it timed out, or every red check is a §4 Known flaky check (flaky:
+// their names).
 // reran: the run ids already re-run for a red base (a rerun keeps its run's id, and a rerun still going
 // can read the base green and start a new spell, so the ids and not the spell say a rerun was had).
-// view(id): the run's jobs, null unread; status(id): { status, conclusion }, null unread; perm: §3 ci-rerun.
+// view(id): the run's jobs, null unread; notes(jobId): a job's annotations; status(id): { status,
+// conclusion }, null unread; perm: §3 ci-rerun.
 // -> { rerun: [id], why } (re-run these, admit nothing), { wait: why } (a rerun is still going, or passed
 //    and the driver has yet to read it), or { admit: true, why? } (admit the repair as before).
-export function baseRerun(r, { reran = [], view, status, perm }) {
+// `timeouts` is the jobs re-run for a timeout before ({ job, at }); a rerun returns the ones it adds.
+export function baseRerun(r, { reran = [], view, status, perm, notes = () => null, flaky = [], timeouts = [], now = Date.now() }) {
   // A check's run is named by its details URL (`…/actions/runs/<id>/job/<job>`).
   const ids = (r?.checks ?? []).map((c) => runIdFrom(c.url));
   if (!ids.length || ids.some((x) => !x)) return { admit: true };
@@ -186,11 +216,26 @@ export function baseRerun(r, { reran = [], view, status, perm }) {
     if (again.length) return { admit: true, why: `re-run once already, run${plural(again)} ${again.join(', ')} failed again` };
     if (!fresh.length) return { wait: `its re-run of run${plural(had)} ${had.join(', ')} passed, so no repair is admitted while the merge driver reads ${r.branch} again` };
   }
-  const steps = fresh.map((x) => ({ id: x, steps: setupFailed(view(x)) }));
-  if (!steps.every((x) => x.steps.length)) return { admit: true };
-  const named = [...new Set(steps.flatMap((x) => x.steps))].map((n) => `"${n}"`).join(', ');
-  if (perm !== 'yes') return { admit: true, why: `it failed at a setup step (${named}), but config §3 ci-rerun is "${perm ?? 'no'}", so it is not re-run first` };
-  return { rerun: fresh, why: `its failed run${plural(fresh)} ${fresh.join(', ')} failed at a setup step (${named}), the runner's and not the code's, so ${fresh.length === 1 ? 'it is' : 'they are'} re-run once before any repair is admitted` };
+  // Why each run reads as the runner's, not the code's: a setup step, a timeout, or only known flaky checks.
+  const allFlaky = (r.checks ?? []).length > 0 && r.checks.every((c) => flaky.includes(c.name));
+  const outs = [];
+  const why = fresh.map((x) => {
+    // Read even for a flaky check, so a timeout on one is kept, and a second inside the window caught.
+    const v = view(x);
+    const out = timedOut(v, notes);
+    outs.push(...out);
+    if (allFlaky) return 'a §4 Known flaky check';
+    const setup = setupFailed(v);
+    return [...(setup.length ? [`a setup step (${[...new Set(setup)].map((n) => `"${n}"`).join(', ')})`] : []), ...(out.length ? [`a timeout (${[...new Set(out)].map((n) => `"${n}"`).join(', ')})`] : [])].join(' and ');
+  });
+  if (!why.every(Boolean)) return { admit: true };
+  const recent = new Set(timeouts.filter((t) => t?.job && now - Date.parse(t.at) < TIMEOUT_AGAIN_MS).map((t) => t.job));
+  const again = [...new Set(outs)].filter((j) => recent.has(j));
+  if (again.length) return { admit: true, why: `${again.map((n) => `"${n}"`).join(', ')} timed out on ${r.branch} again within ${TIMEOUT_AGAIN_MS / 3600e3} hours of a rerun for a timeout, so it is not re-run again` };
+  const named = [...new Set(why)].join('; ');
+  if (perm !== 'yes') return { admit: true, why: `it failed at ${named}, but config §3 ci-rerun is "${perm ?? 'no'}", so it is not re-run first` };
+  const at = new Date(now).toISOString();
+  return { rerun: fresh, timeouts: [...new Set(outs)].map((job) => ({ job, at })), why: `its failed run${plural(fresh)} ${fresh.join(', ')} failed at ${named}, the runner's and not the code's, so ${fresh.length === 1 ? 'it is' : 'they are'} re-run once before any repair is admitted` };
 }
 
 // The record to keep for state `s` read now, carrying `since` from the one before while it is red.
@@ -286,7 +331,7 @@ if (isMain) {
   const args = process.argv.slice(2);
   const flag = (name) => { const i = args.indexOf(name); return i < 0 ? null : args[i + 1] ?? ''; };
   if (args[0] !== 'check' || !flag('--branch')) {
-    console.error('usage: base-red.mjs check --branch <name> [--repo <owner/name>] [--state <dir>] [--by <merger>] [--cache <file>]');
+    console.error('usage: base-red.mjs check --branch <name> [--repo <owner/name>] [--state <dir>] [--by <merger>] [--cache <file>] [--keys <k1,k2,…>]');
     process.exit(2);
   }
   const branch = flag('--branch');
@@ -304,10 +349,10 @@ if (isMain) {
     const rec = nextRecord(readBaseRed(state), s, { branch, merges, at: new Date().toISOString() });
     mkdirSync(state, { recursive: true });
     writeFileSync(path, `${JSON.stringify(rec, null, 2)}\n`);
-    console.log(JSON.stringify({ ...s, repair_key: rec.repair_key, line: holdLine(rec) }));
+    const repairs = String(flag('--keys') ?? '').split(',').map((k) => k.trim()).filter((k) => k && E.isBaseRedKey(k, branch));
+    console.log(JSON.stringify({ ...s, repair_key: rec.repair_key, repairs: [...new Set([rec.repair_key, ...repairs])], line: holdLine(rec) }));
   } else {
-    // Unknown is no red: the driver merges as before, so the spell is over (a required check that never
-    // runs on the base, such as a PR-only gate, leaves every read unknown, never green).
+    // Unknown is no red: the driver merges as before, so the spell is over, as on a green read.
     if (s.state !== 'unread' && existsSync(path)) rmSync(path, { force: true });
     // Only a green read of the tip itself moves the mark: one from below it would pass over the merges
     // whose checks are still going, which are the ones a red read next would blame.

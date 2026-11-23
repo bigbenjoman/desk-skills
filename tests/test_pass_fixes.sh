@@ -261,6 +261,39 @@ out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pas
 check "red again after the rerun, the repair is admitted and started, with no second rerun" \
   '[ "$(grep -c "^run rerun 78" "$T/gh-calls")" = 1 ] && [ "$(field base-red-main-rr state)" = "\"running\"" ] && echo "$out" | grep -q "base-red-main-rr port="'
 q set base-red-main-rr state=done session_id=null; q drop base-red-main-rr
+# A red main whose only failure is a test step that ran out of time is the runner's as well: rerun
+# once, nothing admitted.
+printf '%s\n' '{"jobs":[{"name":"Lint","databaseId":7901,"conclusion":"failure","steps":[{"name":"Set up job","conclusion":"success"},{"name":"Run tests","conclusion":"failure"}]}]}' > "$T/fx/run-79-jobs.json"
+api "repos/acme/widgets/check-runs/7901/annotations?per_page=100" '[{"annotation_level":"failure","message":"The action '"'"'Run tests'"'"' has timed out after 12 minutes."}]'
+redrec "$(isoago 60)"; jq '.repair_key = "base-red-main-to" | .checks[0].url = "https://github.com/acme/widgets/actions/runs/79/job/7901"' "$T/state-fb/base-red.json" > "$T/state-fb/base-red.tmp" && mv "$T/state-fb/base-red.tmp" "$T/state-fb/base-red.json"
+: > "$T/gh-calls"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1); red=$(printf '%s\n' "$out" | grep -A1 '^RED BASE:' | tail -1)
+check "a red main failing only on a step timeout has its run re-run once, and nothing is admitted" \
+  '[ "$(grep -c "^run rerun 79 --repo acme/widgets --failed$" "$T/gh-calls")" = 1 ] && [ "$(field base-red-main-to state)" = null ] && echo "$red" | grep -qF "failed at a timeout (\"Lint\")"'
+check "the job re-run for a timeout is kept with when" '[ "$(jq -r ".timeouts[-1].job" "$T/state-fb/base-red-reran.json")" = Lint ]'
+# #1281: the same job timing out on main again, on a new run within the day, is too slow for its limit,
+# not unlucky: the repair is admitted rather than a second rerun.
+cp "$T/fx/run-79-jobs.json" "$T/fx/run-80-jobs.json"
+redrec "$(isoago 30)"; jq '.repair_key = "base-red-main-to2" | .checks[0].url = "https://github.com/acme/widgets/actions/runs/80/job/7901"' "$T/state-fb/base-red.json" > "$T/state-fb/base-red.tmp" && mv "$T/state-fb/base-red.tmp" "$T/state-fb/base-red.json"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "#1281: the same job timing out on main again within a day admits the repair, with no second rerun" \
+  '! grep -q "^run rerun 80" "$T/gh-calls" && [ "$(field base-red-main-to2 state)" = "\"running\"" ]'
+q set base-red-main-to2 state=done session_id=null; q drop base-red-main-to2
+# While an earlier spell's repair is still open (parked), a new red admits no second repair: it is noted on
+# the open one, on its row and in its ticket file.
+q add base-red-main-20261123000000 Bug A; q set base-red-main-20261123000000 state=parked branch=fix/base-red-main-20261123000000
+redrec "$(isoago 60)"; jq '.repair_key = "base-red-main-20261123050000" | .since = "2026-11-23T05:00:00Z" | .checks[0].url = null' "$T/state-fb/base-red.json" > "$T/state-fb/base-red.tmp" && mv "$T/state-fb/base-red.tmp" "$T/state-fb/base-red.json"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "a second red while a repair ticket is open admits no second ticket, and is noted on the open one" \
+  '[ "$(field base-red-main-20261123050000 state)" = null ] && [ "$(field base-red-main-20261123000000 red_again | jq -r .key)" = base-red-main-20261123050000 ] && grep -qF "went red again since this ticket was made: Lint" "$T/state-fb/tickets/base-red-main-20261123000000.md"'
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "a pass after it notes it no second time" '[ "$(grep -c "went red again" "$T/state-fb/tickets/base-red-main-20261123000000.md")" = 1 ] && [ "$(field base-red-main-20261123050000 state)" = null ]'
+# A third spell with the base worker's push not approved: the grant stops a new worker, not the note.
+jq '.repair_key = "base-red-main-20261123060000" | .since = "2026-11-23T06:00:00Z"' "$T/state-fb/base-red.json" > "$T/state-fb/base-red.tmp" && mv "$T/state-fb/base-red.tmp" "$T/state-fb/base-red.json"
+out=$(DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "#1281: with the push grant not given, a later red is still noted on the open repair" \
+  '[ "$(field base-red-main-20261123060000 state)" = null ] && [ "$(field base-red-main-20261123000000 red_again | jq -r .key)" = base-red-main-20261123060000 ] && [ "$(grep -c "went red again" "$T/state-fb/tickets/base-red-main-20261123000000.md")" = 2 ]'
+q set base-red-main-20261123000000 state=done session_id=null; q drop base-red-main-20261123000000
 rm -f "$T/state-fb/base-red.json"; q set base-red-main state=done; q drop base-red-main
 out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-850 AC6 once the driver reads main green, the pass drops the line" '! echo "$out" | grep -q "^RED BASE:" && echo "$out" | grep -q "FB-4: BASE RED"'

@@ -611,6 +611,34 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
     `${d.diffs.map((x) => x.path).join(', ')}|${ledgerLine({ check: d, missed: 0, queueBin: '/bin/queue.mjs' })}`, '|null');
 }
 
+// DS-904: the batch's platform outage, as the pass records it (pass/fix-tries.mjs decideOutage): one
+// platform_outage batch event as it starts, none as it is escalated, one platform_clear as it clears.
+{
+  const j = JSON.stringify;
+  const f = fixture({ version: 1, batch: 'b', tickets: { D: tk('D', { state: 'done', result: { pr: 814 } }) } });
+  queueDifference(f, { seed: true, by: 'pass' });
+  const rec = { check: '"Deploy preview"', since: '2026-11-22T10:00:00.000Z', deadline: '2026-11-22T12:00:00.000Z' };
+  const w = queueWriter(f);
+  const at = log(f).length;
+  w.apply(['set-batch', `platform_outage=${j(rec)}`]);
+  w.flush();
+  const started = since(f, at);
+  t('AC6 an outage starting is one platform_outage batch event with no ticket', j(started.map((e) => [e.type, e.key])), j([['platform_outage', null]]));
+  t('AC6 carrying its check, start and deadline', j(started[0]?.data), j(rec));
+  const at2 = log(f).length;
+  w.apply(['set-batch', `platform_outage=${j({ ...rec, escalated: '2026-11-22T12:05:00.000Z' })}`]);
+  w.flush();
+  t('its escalation appends nothing', since(f, at2).length, 0);
+  const at3 = log(f).length;
+  w.apply(['set-batch', 'platform_outage=null']);
+  w.flush();
+  t('AC7 an outage clearing is one platform_clear batch event with no ticket', j(since(f, at3).map((e) => [e.type, e.key])), j([['platform_clear', null]]));
+  t('and the fold holds no outage for the batch', fold(dirname(f)).batches.b?.platform_outage, undefined);
+  const d = queueDifference(f);
+  t('AC8 with an outage started and cleared, nothing differs and the pass prints no difference line',
+    `${d.diffs.map((x) => x.path).join(', ')}|${ledgerLine({ check: d, missed: 0, queueBin: '/bin/queue.mjs' })}`, '|null');
+}
+
 rmSync(T, { recursive: true, force: true });
 console.log(fails ? `${fails} failed` : 'all checks passed');
 process.exit(fails ? 1 : 0);
