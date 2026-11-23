@@ -810,7 +810,7 @@ t('#737 its review at the head goes to a feedback fix try, not a review try', `$
   const withLast = { ...thread('T1', 'R1', 'P1 drops the row'), latest: { nodes: [{ author: { login: 'agent-pullbot' }, body: 'Still broken\nmore', createdAt: '2026-11-23T11:00:00Z' }] } };
   t('an open thread is read with its newest comment', JSON.stringify(externalReview(extPl([bot(HEAD, 'x')], [withLast]), 'agent-pullbot').threads[0].last), JSON.stringify({ login: 'agent-pullbot', at: '2026-11-23T11:00:00Z', first: 'Still broken' }));
 }
-t('#737 the try quotes its open threads and its review text', `${ex737?.fix.threads.map((x) => x.id ?? "body").join()} ${ex737?.fix.threads.at(-1).text.startsWith("agent-pullbot's review at the head: P0 (1)")}`, 'T1,body true');
+t('#737 the try quotes its open threads and its review text', `${ex737?.fix.threads.map((x) => x.id ?? "body").join()} ${ex737?.fix.threads.at(-1).text.startsWith("agent-pullbot's review body: P0 (1)")}`, 'T1,body true');
 const extStuck = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, '', 'APPROVED')])));
 t('#737 reviewed at the head with nothing to work, still red: the person\'s', extStuck?.call, 'stuck');
 t('#737 an external check\'s error line saying no verdict is at the head sends no review try', gateTry(tk(), pr([ok('tests'), { ...red('🔐 Review gate', '88'), errors: ['no review verdict is at the head'] }]), { ...ctx({ stateChecks: EXT }), base: 'main' }), null);
@@ -823,6 +823,31 @@ t('#925 nor does a draft', draftGateTry(tk(), { ...protRed, isDraft: true }, { r
 t('#925 a non-external check asking the same still gets one', gateTry(tk(), protRed, { ...ctx({ stateChecks: [] }), base: 'main' })?.fix?.kind, 'protected');
 const w925 = verdictTry(tk(), protRed, extCtx(extPl([])));
 t('#925 with no review of the bot\'s at the head it waits, naming the bot', `${w925?.call} ${w925?.why}`, 'wait its "🔐 Review gate" check reads agent-pullbot\'s review, so it waits for agent-pullbot to review the head');
+// A finding only the review body lists (on a line outside the diff, so with no thread) goes to the try
+// as an item of its own, with its file:line, marked as the body's; a clean body adds nothing.
+{
+  const p0Body = '**Changes needed** · p0=1 p1=0 p2=0\n\n### P0 (1)\n- `src/ledger.ts:88` the refund is applied twice, outside the diff';
+  const two = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, p0Body, 'CHANGES_REQUESTED')], [thread('T1', 'R1', 'P1 drops the row')])));
+  t('a P0 only the verdict body lists goes in the try beside the thread, then the body itself', JSON.stringify(two?.fix.threads.map(({ id, body, whole, text }) => [id, !!body, !!whole, text.slice(0, 50)])), JSON.stringify([['T1', false, false, 'src/a.ts:3 "P1 drops the row"'], [null, true, false, "agent-pullbot's review body: P0: `src/ledger.ts:88"], [null, true, true, "agent-pullbot's review body: **Changes needed** · "]]));
+  const brief = fixBrief(tk({ fix: two.fix }));
+  t('its brief lists it apart from the threads, to answer in the PR comment', brief.includes("The findings agent-pullbot's review body lists with a file:line, none with a thread of its own") && brief.includes("- agent-pullbot's review body: P0: `src/ledger.ts:88`") && brief.includes('a body finding is answered in your gh pr comment'), true);
+  t('and quotes the body itself, saying a finding it marks refuted needs no fix', brief.includes("agent-pullbot's review body itself, for any finding it states with no file:line") && brief.includes('One the body itself marks refuted, or not a finding, needs no fix'), true);
+  t('and not as a thread', brief.split('Its unresolved review threads:')[1]?.split('The findings')[0].includes('ledger'), false);
+  const clean = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, '**Approvable** · p0=0 p1=0 p2=0')], [thread('T1', 'R1', 'P1 drops the row')])));
+  t('a clean verdict body adds nothing', clean?.fix.threads.map((x) => x.id ?? 'body').join(), 'T1');
+  const several = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, 'p0=1 p1=1 p2=1\n- P0 src/a.ts:1 one\n- P1 src/b.ts:2 two\n- P2 src/c.ts:3 three\n- P3 src/d.ts:4 nit')])));
+  t('each P0 to P2 finding is its own item, a P3 none', several?.fix.threads.filter((x) => !x.whole).map((x) => x.text.replace("agent-pullbot's review body: ", '')).join(' | '), 'P0 src/a.ts:1 one | P1 src/b.ts:2 two | P2 src/c.ts:3 three');
+  // A P0 stated with no file:line beside a cited P1 still reaches the worker, in the body's own text.
+  const uncited = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, 'p0=1 p1=1 p2=0\n### P0 (1)\n- The refund is applied twice in the ledger module\n\n### P1 (1)\n- `src/b.ts:2` drops the row')])));
+  t('a P0 with no file:line beside a cited one is in the brief', fixBrief(tk({ fix: uncited.fix })).includes('The refund is applied twice in the ledger module'), true);
+  // A finding with no file:line far down a long body still reaches the brief.
+  const long = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, `p0=1 p1=0 p2=0\n${'Context line about the change.\n'.repeat(150)}\n### P0 (1)\n- The token is logged in plain text by the export job`)])));
+  t('a P0 with no file:line past 2000 characters of body is in the brief', fixBrief(tk({ fix: long.fix })).includes('The token is logged in plain text by the export job'), true);
+  const huge = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, `p0=1 ${'x'.repeat(25000)}`)])));
+  t('a body past any review\'s length is cut, and the brief says where to read it', [huge?.fix.threads.at(-1).text.endsWith(' …'), fixBrief(tk({ fix: huge.fix })).includes('read it in full with gh pr view 697 --json reviews')].join(), 'true,true');
+  const spentLong = verdictTry(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'feedback' }] }), extRed, extCtx(extPl([bot(HEAD, 'p0=1\n- P0 src/a.ts:1 one')])));
+  t('out of tries, the stuck reason names the body, not its text', /agent-pullbot's review body: P0 src\/a\.ts:1 one; agent-pullbot's review body$/.test(spentLong?.why ?? ''), true);
+}
 t('#737 the try is marked for the outside reviewer', JSON.stringify(ex737?.fix.external), JSON.stringify({ login: 'agent-pullbot', check: '🔐 Review gate' }));
 t('#737 its brief names that reviewer and asks for no desk review', fixBrief(tk({ fix: ex737.fix })).includes("Post no desk review on this PR: agent-pullbot's next review of the head you push is what the check reads."), true);
 t('#737 its task posts no desk review on the new head', /review the new head with desk-review|post that review/.test(fixTask(tk({ fix: ex737.fix }))), false);
