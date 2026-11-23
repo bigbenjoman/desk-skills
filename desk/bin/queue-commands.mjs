@@ -8,7 +8,7 @@ export const QUEUE_COMMANDS = Object.freeze({
   admit: ['--by', '--hold', '--hold-outside', '--hold-merge', '--hold-spine'],
   hold: [],
   'backfill-holds': ['--dry-run'],
-  set: [],
+  set: ['--unless'],
   'set-batch': [],
   park: ['--claimed-by'],
   'clears-when': ['--check'],

@@ -275,8 +275,8 @@ function finish(q, key, n, pr) {
 // worker has started, taken back, because what it was for is settled outside a worker (a gap the
 // orchestrating session closed, say). The ticket goes back to done on its PR and `fix` is cleared. The
 // try stays in `fix_tries`, marked `withdrawn` with why, so it counts against none of the PR's tries
-// (fix-tries.mjs ownCount) while its head still reads as tried: the next pass drafts no try there
-// again, and the review at it waits for a fresh one. Refused for a running worker (stop it first), for
+// (fix-tries.mjs ownCount); a withdrawn review try also holds its head (withdrawnAt), so no review try
+// is drafted there again until a push, a clean review or the person's fix moves it. Refused for a running worker (stop it first), for
 // a ticket with no queued fix try, and while a pass runs, which may be spawning it.
 function withdraw(q, key, why) {
   const t = ticket(q, key);
@@ -284,7 +284,8 @@ function withdraw(q, key, why) {
   if (t.state !== 'triaged' || !t.fix || t.fix.finished) throw new Error(`${key} is ${t.state ?? 'in no state'}${t.fix ? '' : ' with no fix try'}, so no queued fix try is there to withdraw: nothing withdrawn`);
   const pr = t.fix.pr ?? t.result?.pr ?? null;
   if (pr == null) throw new Error(`${key}'s fix try names no PR to go back to: nothing withdrawn`);
-  // A pass under way may already have picked the try to spawn, and would mark it running after this.
+  // A pass under way may already have picked the try to spawn. Its state=running write refuses a
+  // ticket done since (set --unless state=done), so none starts; this says so before anything is changed.
   if (passRunning()) throw new Error(`a pass is running, and may be spawning ${key}'s fix try: run queue.mjs withdraw ${key} again once it ends (a try it spawns meanwhile is stopped with queue.mjs stop ${key}): nothing withdrawn`);
   const f = t.fix;
   const at = new Date().toISOString();
@@ -296,7 +297,7 @@ function withdraw(q, key, why) {
     : [...tries, { try: f.try ?? null, head: f.head ?? null, kind: f.kind, what: f.what, at: f.at ?? at, ...mark }];
   Object.assign(t, { state: 'done', fix: null, fix_tries: kept, updated_at: at });
   save(q);
-  return `${key}: its queued fix try${f.try ? ` ${f.try}` : ''} on PR #${pr} (${f.what ?? f.kind ?? 'fix'}) withdrawn: no worker is spawned for it, it counts against none of the PR's tries, and no try is drafted again at its head ${String(f.head ?? '?').slice(0, 12)}, whose review waits for a fresh one: ${why}`;
+  return `${key}: its queued fix try${f.try ? ` ${f.try}` : ''} on PR #${pr} (${f.what ?? f.kind ?? 'fix'}) withdrawn: no worker is spawned for it, it counts against none of the PR's tries${f.kind === 'review' ? `, and no review try is drafted again at its head ${String(f.head ?? '?').slice(0, 12)}` : ''}: ${why}`;
 }
 
 // A requeued ticket whose recorded PR is open on another branch goes back on that branch, so its worker
@@ -1110,9 +1111,24 @@ switch (cmd) {
     break;
   }
 
+  // --unless <field>=<value>: written only while the ticket's field, read under the lock, is not that
+  // value. The pass's state=running write passes --unless state=done, so a try withdrawn (withdraw) after
+  // the pass read it as waiting is never marked running, and no worker starts.
   case 'set': {
-    const [key, ...pairs] = args;
-    applySet(ticket(q, key), pairs);
+    const [key, ...rest] = args;
+    const unless = [], pairs = [];
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === '--unless') { unless.push(String(rest[++i] ?? '')); continue; }
+      pairs.push(rest[i]);
+    }
+    const t = ticket(q, key);
+    for (const u of unless) {
+      const eq = u.indexOf('=');
+      if (eq < 1) throw new Error(`set --unless wants <field>=<value>, not "${u}"`);
+      const field = u.slice(0, eq), value = u.slice(eq + 1);
+      if (String(t[field] ?? '') === value) throw new Error(`${key}'s ${field} is ${value} now, so it is not written (--unless ${u}): ${pairs.join(' ')}`);
+    }
+    applySet(t, pairs);
     save(q);
     console.log(`${key}: ${pairs.join(' ')}`);
     break;

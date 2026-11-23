@@ -65,7 +65,10 @@ export const tries = (n) => `${n} fix ${n === 1 ? 'try' : 'tries'}`;
 // (kind `rereview`), a capture try (`capture`) and a protected-files try (`protected`, which moves it only
 // when a change is not needed) move no head by design, so they do not count here.
 const OWN_HEAD = new Set(['rereview', 'capture', 'protected', 'renames']);
-const fixedAt = (done, head) => done.some((x) => x.head === head && !OWN_HEAD.has(x.kind));
+// A try withdrawn before its worker started (queue.mjs withdraw) made none: only a withdrawn review try
+// holds its head, in reviewFix (withdrawnAt).
+const fixedAt = (done, head) => done.some((x) => x.head === head && !x.withdrawn && !OWN_HEAD.has(x.kind));
+const withdrawnAt = (done, head) => (done ?? []).find((x) => x.head === head && x.withdrawn && x.kind === 'review') ?? null;
 
 // The steps the job for `check` failed at, by name and in order, read from `gh run view <run> --json
 // jobs`; null where the run names no such job or the payload holds no steps array to read.
@@ -200,7 +203,7 @@ function staleBase(t, head, mine, ctx) {
   if (!ctx.baseRead || !ctx.refreshBase || !mine.length) return null;
   return staleCall(t, head, [...new Set(mine.map((f) => f.name))], ctx.baseRead, { base: ctx.base ?? 'the base', now: ctx.now ?? Date.now() });
 }
-const stillRed = (done, mine, notMine, ctx) => checksStuck(`still red after ${tries(done.length)}`, mine, notMine, ctx);
+const stillRed = (done, mine, notMine, ctx) => checksStuck(`still red after ${tries(done.filter((x) => !x.withdrawn).length)}`, mine, notMine, ctx);
 // A red check's error lines, as pr_status keeps them: its job's annotations, else what its failed log
 // names. One asking a person's approval is no cause a worker can clear.
 const LINE_CHARS = 300, LINES_PER_CHECK = 5;
@@ -871,14 +874,14 @@ export function reviewFix(t, review, opts = {}) {
   const room = reviewTriesLeft(done);
   const byKind = triesByKind(done);
   const after = `review not clean after ${tries(triesMade(done))}${byKind ? ` (${byKind})` : ''}: ${what}`;
-  if (room <= 0 || fixedAt(done, review.head)) {
+  const pulled = withdrawnAt(done, review.head);
+  if (room <= 0 || fixedAt(done, review.head) || pulled) {
     // The review at this head is the last try's own, so its findings and gaps say what is still open.
     // Only the body's: its inline comments are not read once no try is left.
     const left = [...(counts ? reviewFindings(review.body, sevs).map((x) => `${x.sev}: ${x.text}`) : []), ...allGaps.filter((g) => !persons(g)), ...tagged];
-    // A try withdrawn at this head (queue.mjs withdraw) was settled outside a worker: its review is
-    // still the one it was drafted from, so it waits for a fresh review, with no try drafted again.
-    const pulled = done.find((x) => x.head === review.head && x.withdrawn);
-    const lead = pulled ? `review not clean at this head, whose fix try was withdrawn (${pulled.withdrawn_why ?? 'settled outside a worker'}): post a fresh review of the head: ${what}`
+    // A review try withdrawn at this head (queue.mjs withdraw) was settled outside a worker, so no try
+    // is drafted at it again: a push, a clean review of it, or the person's fix (desk-needs-you) moves it.
+    const lead = pulled ? `review not clean at this head, whose review fix try was withdrawn (${pulled.withdrawn_why ?? 'settled outside a worker'}), so no try is drafted at it again: push to the branch, post a clean review of the head once it is settled, or send it back with desk-needs-you fix: ${what}`
       : made >= REVIEW_TRIES_CEILING && !fixedAt(done, review.head)
         ? after.replace(/: /, ', the most review fix tries a PR may make: ') : after;
     return { call: 'stuck', why: `${lead}${left.length ? ` — ${left.join('; ')}` : ''}` };
