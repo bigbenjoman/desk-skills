@@ -64,6 +64,8 @@ case "\$1 \$2" in
     case "\$(head -c1 "\$f")" in "{") jq -c "[.] | \$jq" "\$f" ;; *) cat "\$f" ;; esac; exit 0 ;;
   "variable list") [ -f "$T/gh/vars.fail" ] && { echo "gh: HTTP 401: Bad credentials" >&2; exit 1; }
     cat "$T/gh/vars.json" 2>/dev/null || echo "[]"; exit 0 ;;
+  "api --paginate") n=\$(echo "\$3" | sed -n 's#.*/pulls/\([0-9]*\)/files.*#\1#p')
+    [ -n "\$n" ] && [ -f "$T/gh/files-\$n.txt" ] && cat "$T/gh/files-\$n.txt"; exit 0 ;;
   "run view") [ -f "$T/gh/run-\$3.json" ] && { cat "$T/gh/run-\$3.json"; exit 0; }; echo "gh: HTTP 404: run \$3 not found" >&2; exit 1 ;;
 esac
 exit 0
@@ -168,7 +170,9 @@ for k in 5 6; do
   draft "O-$k" ci.yml $([ $k = 6 ] && echo notes.txt)
   parked "O-$k" A "its PR #88$((k + 1)) is not its own: PR #88$((k + 1)) is on branch fix/other-88$((k + 1)), not O-$k's branch feat/O-$k. desk takes as a ticket's result only a PR on the branch its worker made"
   q set "O-$k" "worktree=$T/wt-O-$k" "result.pr=88$((k + 1))"
-  printf '{"state":"MERGED","isDraft":false,"mergedAt":"2026-11-23T12:00:00Z","headRefName":"fix/other-88%s","author":{"login":"someone-else"},"files":[{"path":"ci.yml"}]}\n' "$((k + 1))" > "$T/gh/pr-88$((k + 1)).json"
+  printf '{"state":"MERGED","isDraft":false,"mergedAt":"2026-11-23T12:00:00Z","headRefName":"fix/other-88%s","author":{"login":"someone-else"}}\n' "$((k + 1))" > "$T/gh/pr-88$((k + 1)).json"
+  # The PR's files as the paginated API lists them: ci.yml after the first 100, past what gh pr view returns.
+  { seq 1 120 | sed 's/^/src\/f/'; echo ci.yml; } > "$T/gh/files-88$((k + 1)).txt"
 done
 q set P-10 "grant={\"step\":\"force-push\",\"branch\":\"feat/P-10\",\"lease\":\"$PIN\",\"pinned\":true,\"at\":\"2026-11-01T00:00:00Z\"}"
 q add C-4 Story A; q set C-4 state=running branch=feat/C-4 session_id=gone

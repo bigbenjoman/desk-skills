@@ -1409,7 +1409,8 @@ const CLEARS_HANDLERS = {
         if (Number(n.out) > 0) {
           const mine = shOut('git', ['-C', t.worktree, 'diff', '--name-only', `origin/${DEFAULT_BRANCH}...HEAD`]);
           if (!mine.ok) return { error: `its worktree could not be read (${mine.out.split('\n').pop()})` };
-          const theirs = new Set(readOrThrow(`gh pr view ${a.pr} files`, 'gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'files', '-q', '.files[].path']).split('\n').filter(Boolean));
+          // Paginated, as prFiles reads them below: gh pr view --json files stops at 100.
+          const theirs = new Set(readOrThrow(`gh api pulls/${a.pr}/files`, 'gh', ['api', '--paginate', `repos/${GH_REPO}/pulls/${a.pr}/files?per_page=100`, '--jq', PR_FILES_JQ]).split('\n').filter(Boolean));
           const files = mine.out.split('\n').filter(Boolean);
           if (!files.length || files.some((f) => !theirs.has(f))) return null;
           covered = `its ${Number(n.out)} commit(s) past ${DEFAULT_BRANCH} change only files #${a.pr} changed (${files.join(', ')})`;
