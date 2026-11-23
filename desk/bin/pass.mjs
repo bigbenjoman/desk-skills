@@ -65,7 +65,8 @@ import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
-import { liveBaseRed, readBaseRed, baseRedPath, batchLine, repairTicket, repairTriage, baseRerun, TIMEOUT_AGAIN_MS } from './base-red.mjs';
+import { liveBaseRed, readBaseRed, readGreen, baseRedPath, batchLine, repairTicket, repairTriage, baseRerun, TIMEOUT_AGAIN_MS } from './base-red.mjs';
+import { decideSupersededRepairs } from './pass/repair-superseded.mjs';
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockGate, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
@@ -2003,6 +2004,77 @@ function admitBaseRepair(key, was, closed, qB, note) {
 }
 // The PRs held on it, which its one line names in place of a BASE RED line each.
 const baseRedHeld = [];
+
+// ---- red-base repairs another PR made needless (pass/repair-superseded.mjs) --------------------
+// Before any spawn: a repair whose base has gone green since it began (the driver's last green read of
+// the tip, base-red.mjs readGreen, later than its admission, with no red record now), or whose changes
+// are all on the base already (each file it changed reads the same there), is closed and recorded done
+// by the PR that fixed the base, so no worker is spawned to find that out and park on it.
+const mainGit = (args) => shOut('git', ['-C', MAIN, ...args]);
+const MERGE_PR = /^Merge pull request #(\d+)\b|\(#(\d+)\)\s*$/;
+// The PR that fixed the base, from one commit only, so an unrelated merge is never named: with `files`,
+// the newest first-parent commit on the base since the repair began that touched them; without, the
+// only first-parent commit between then and the green read `until`, where there is exactly one. Its PR
+// is read from its merge subject, else as GitHub links it. -> { pr, at } | null, null too where the
+// history cannot be read or the commit has no PR: the base is fixed either way, and none is named.
+function baseFixer(since, files, until = null) {
+  const log = mainGit(['log', '--first-parent', '--format=%H%x09%cI%x09%s', `--since=${since}`, ...(until ? [`--until=${until}`] : []),
+    `origin/${DEFAULT_BRANCH}`, ...(files.length ? ['--', ...files] : [])]);
+  if (!log.ok) return null;
+  const commits = log.out.split('\n').filter(Boolean);
+  if (!commits.length || (!files.length && commits.length !== 1)) return null;
+  const [sha, at, subject] = commits[0].split('\t');
+  const m = MERGE_PR.exec(subject ?? '');
+  const pr = m ? Number(m[1] ?? m[2]) : Number(shOut('gh', ['api', `repos/${GH_REPO}/commits/${sha}/pulls`, '--jq', '.[0].number // empty']).out.trim()) || null;
+  return pr ? { pr, at } : null;
+}
+const REPAIR_HANDLERS = {
+  ...PHASE_HANDLERS,
+  superseded: (a, s) => {
+    const t = s.tickets[a.key];
+    const since = t.added_at ?? t.spawned_at ?? null;
+    const began = Date.parse(since ?? '');
+    if (!Number.isFinite(began)) return null;
+    const red = readBaseRed(STATE);
+    const greenAt = Date.parse(readGreen(STATE, DEFAULT_BRANCH) ?? '');
+    const green = (!red || red.branch !== DEFAULT_BRANCH) && Number.isFinite(greenAt) && greenAt > began;
+    // Its own changes: its worktree's, else its branch's on origin, read into a ref of its own.
+    let files = [], onBase = false;
+    const ref = `refs/desk-repair/${a.key}`;
+    let dir = null, head = null;
+    // The base as it is on origin now: a stale tracking ref would miss a fix that has landed. Unread,
+    // only the driver's own green read (which reads the remote tip) can settle it, naming no PR.
+    const based = mainGit(['fetch', '-q', 'origin', `+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}`]).ok;
+    if (!based) return green ? { why: 'green', by: null } : null;
+    if (t.worktree && existsSync(t.worktree)) { dir = t.worktree; head = 'HEAD'; }
+    else if (t.branch && mainGit(['fetch', '-q', 'origin', `+refs/heads/${t.branch}:${ref}`]).ok) { dir = MAIN; head = ref; }
+    try {
+      if (dir) {
+        const names = shOut('git', ['-C', dir, 'diff', '--name-only', `origin/${DEFAULT_BRANCH}...${head}`]);
+        if (!names.ok) return { error: `its changes could not be read (${names.out.split('\n').pop()})` };
+        files = names.out.split('\n').filter(Boolean);
+        // A repair with a PR whose branch changes nothing past its merge base (the base merged in, its
+        // own fix already there) is done too, however far the base has moved since; one with no PR may
+        // simply not have started.
+        const pr = t.result?.pr ?? t.draft_pr;
+        onBase = files.length > 0 ? shOut('git', ['-C', dir, 'diff', '--quiet', `origin/${DEFAULT_BRANCH}`, head, '--', ...files]).ok : pr != null;
+      }
+    } finally { if (head === ref) mainGit(['update-ref', '-d', ref]); }
+    if (!green && !onBase) return null;
+    // Its own files, where it has any, name the commit that fixed it in either case.
+    return { why: onBase ? 'on-base' : 'green', by: baseFixer(since, files, onBase || files.length ? null : new Date(greenAt).toISOString()) };
+  },
+  'pr-close': (a) => shOut('gh', ['pr', 'close', a.pr, '--repo', GH_REPO, '--comment', a.comment]),
+  write: CLEARS_HANDLERS.write,
+  'drop-worktree': CLEARS_HANDLERS['drop-worktree'],
+};
+runSteps({
+  name: 'red-base repairs done elsewhere',
+  snapshot: () => ({ tickets: queue().tickets, isRepair: (k) => E.isBaseRedKey(k, DEFAULT_BRANCH), base: DEFAULT_BRANCH, dry: DRY }),
+  decide: decideSupersededRepairs,
+  handlers: REPAIR_HANDLERS,
+  report,
+});
 
 // ---- spawn ---------------------------------------------------------------
 const fresh = queue();
