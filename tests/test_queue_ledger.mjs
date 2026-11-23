@@ -276,14 +276,21 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   t('and the difference reads zero', queueDifference(f, { by: 'test' }).diffs.map((x) => x.path).join(', '), '');
 }
 
-// A ticket new to the queue arrives with its blockers set: they are recorded as held_by itself, which
-// replaces any the log kept from its last stay, never as a held event added to them.
+// DS-896 AC5: a ticket new to the queue arrives with its blockers set. Where the log holds none for it,
+// they are a held event; where it still holds some from a last stay, or was not read, they are held_by
+// itself, which replaces those, never a held event added to them.
 {
   const before = { version: 1, batch: 'b', tickets: { B: tk('B') } };
-  const after = { ...before, tickets: { ...before.tickets, C: tk('C', { held_by: 'B' }) } };
-  const evs = queueEvents(before, after, { batch: 'b' }).filter((e) => e.key === 'C');
-  t('blockers a new ticket arrives with are its held_by field, not a held event',
-    `${evs.some((e) => e.type === 'held')} ${evs.find((e) => e.type === 'legacy_set')?.data.fields.held_by}`, 'false B');
+  const after = { ...before, tickets: { ...before.tickets, C: tk('C', { state: 'parked', held_by: 'B', park: { question: 'held by orchestrator: blocked by B — starts once their PRs merge', since: 'x' } }) } };
+  const arrive = (logged) => {
+    const evs = queueEvents(before, after, { batch: 'b', logged }).filter((e) => e.key === 'C');
+    return `${evs.filter((e) => e.type === 'held').map((e) => e.data.by.join('|')).join() || 'none'} ${evs.find((e) => e.type === 'legacy_set')?.data.fields.held_by ?? 'no-field'}`;
+  };
+  t('DS-896 AC5 blockers a ticket new to the log arrives with are a held event, not its held_by field', arrive(() => []), 'B no-field');
+  t('blockers the log still holds from a last stay: the arrival\'s are its held_by field', arrive(() => ['A']), 'none B');
+  t('the log unread: the arrival\'s blockers are its held_by field', arrive(undefined), 'none B');
+  const s = reduce(queueEvents(before, after, { batch: 'b', logged: () => [] }).filter((e) => e.key === 'C').map((e, i) => ({ ...e, seq: i + 1, id: `x${i + 1}` })));
+  t('DS-896 AC5 and the log rebuilds it held behind them', `${JSON.stringify(s.tickets.C.holds)} ${s.tickets.C.state}`, '["B"] parked');
 }
 
 // A pass taking a running ticket back to triage, which no typed event does: the state is recorded with

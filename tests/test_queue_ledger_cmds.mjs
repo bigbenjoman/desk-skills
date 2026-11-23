@@ -77,6 +77,17 @@ const run = (q0, args, { file, env = {} } = {}) => {
   t('AC3 admit: admitted, then triaged', `${r.status} ${typed(evs)} / ${by(evs)}`, '0 admitted AD-1, triaged AD-1 / queue.mjs admit');
 }
 
+// DS-896 AC5: admit --hold: a ticket new to the log admitted behind blockers is a held event naming
+// them, and no legacy event for held_by.
+{
+  triage('AH-1', {});
+  const { r, f, evs } = run({ tickets: { 'AH-2': tk('AH-2'), 'AH-3': tk('AH-3') } }, ['admit', 'AH-1', '--hold', 'AH-2,AH-3']);
+  const held = evs.find((e) => e.type === 'held');
+  t('DS-896 AC5 admit --hold: admitted, parked, then held behind its blockers', `${r.status} ${typed(evs)} / ${held?.data.by.join('|')}`, '0 admitted AH-1, parked AH-1, held AH-1 / AH-2|AH-3');
+  t('DS-896 AC5 and no legacy event for its blockers', evs.some((e) => e.type === 'legacy_set' && 'held_by' in e.data.fields), false);
+  t('DS-896 AC5 queue.json keeps held_by beside the list', `${read(f).tickets['AH-1'].held_by} ${JSON.stringify(read(f).tickets['AH-1'].holds)}`, 'AH-2|AH-3 ["AH-2","AH-3"]');
+}
+
 // adopt: an open PR with no ticket joins as a done ticket on it.
 {
   pr(51, { state: 'OPEN', headRefName: 'fix/flaky', baseRefName: 'main', title: 'Fix the flaky spec', author: { login: 'me' } });

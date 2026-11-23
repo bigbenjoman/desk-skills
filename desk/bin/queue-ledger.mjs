@@ -130,12 +130,14 @@ function waitEvents(was, now, fields) {
 // The blockers ticket `was` gained and lost in becoming `now`, each a held or released event, taken out
 // of the fields `fields` records with it, when the ticket's state `from` (after its state events) allows
 // them. A change their replay would not leave as queue.json keeps it (blockers reordered or repeated, a
-// held_by not written as its blockers joined, or null once none is left) is recorded as the field, and so
-// are the blockers of a ticket new to this queue: the log may still hold the ones it had when it was last
-// archived here, and only the field replaces them.
-function holdEvents(was, now, fields, from) {
-  if (was === undefined || !own(fields, 'held_by') || !TRANSITIONS.held.from.includes(from)) return [];
-  const before = blockersOf(was);
+// held_by not written as its blockers joined, or null once none is left) is recorded as the field. A
+// ticket new to this queue arrives with no blockers but those `logged` names, the ones the log still
+// holds for it (null when unread): with none there, its blockers are a held event; with any, or unread,
+// they are the field, which alone replaces those the log kept from its last stay.
+function holdEvents(was, now, fields, from, logged) {
+  if (!own(fields, 'held_by') || !TRANSITIONS.held.from.includes(from)) return [];
+  if (was === undefined && (!Array.isArray(logged) || logged.length)) return [];
+  const before = was === undefined ? [] : blockersOf(was);
   const after = blockersOf(now);
   const added = after.filter((k) => !before.includes(k));
   const removed = before.filter((k) => !after.includes(k));
@@ -150,7 +152,8 @@ function holdEvents(was, now, fields, from) {
 // The events queue `before` (the file as it stood, or null) becoming queue `after` records in `batch`.
 // `archived` holds each ticket this write moved to the archive, as it was archived. `elsewhere(key)`
 // says the log already has that ticket in another batch, so its leaving this one records nothing.
-export function queueEvents(before, after, { batch, archived = {}, elsewhere = () => false, at = new Date().toISOString() } = {}) {
+// `logged(key)` is the blockers the log holds for that ticket, or null when the log was not read.
+export function queueEvents(before, after, { batch, archived = {}, elsewhere = () => false, logged = () => null, at = new Date().toISOString() } = {}) {
   const bt = before?.tickets ?? {};
   const atk = after?.tickets ?? {};
   const live = Object.fromEntries(Object.keys(atk).map((k) => [k, atk[k]]));
@@ -191,7 +194,7 @@ export function queueEvents(before, after, { batch, archived = {}, elsewhere = (
           else if (now.park != null && typed.some((e) => CLEARS_PARK.includes(e.type))) fields.park = now.park;
         }
       }
-      for (const e of holdEvents(was, now, fields, from)) ev(key, e.type, e.data);
+      for (const e of holdEvents(was, now, fields, from, was === undefined ? logged(key) : null)) ev(key, e.type, e.data);
       for (const qid of newlyAnswered(was, now, fields)) ev(key, 'answered', { qid });
       for (const e of waitEvents(was, now, fields)) ev(key, e.type, e.data);
       if (Object.keys(fields).length) ev(key, 'legacy_set', { fields });
@@ -237,7 +240,8 @@ export function recordWrite(file, before, after, { by, archived = {}, from = nul
     if (from) {
       for (const key of Object.keys(after?.tickets ?? {})) if (own(before?.tickets, key)) events.push({ type: 'moved', batch, key, data: { from, to: batch }, at });
     }
-    events.push(...queueEvents(before, after, { batch, archived, elsewhere, at }));
+    const logged = (k) => (own(state.tickets, k) ? state.tickets[k].holds ?? null : []);
+    events.push(...queueEvents(before, after, { batch, archived, elsewhere, logged, at }));
     if (!events.length) return { appended: 0 };
     append(repoDir, events, { by });
     return { appended: events.length };
