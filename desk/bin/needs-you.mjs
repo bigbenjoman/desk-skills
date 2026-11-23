@@ -122,7 +122,7 @@ import { dayAndTime } from './desk-q-eta.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
-import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, passesPaused, unmergedBlockers } from './desk-q.mjs';
+import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, passesPaused, unmergedBlockers, throughOnRecord } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
@@ -1257,11 +1257,11 @@ function linkBehind(r, t, b, kind) {
 // A value holding `|` is quoted, or a shell would read it as a pipe.
 const shellArg = (s) => (/^[\w.,:=@+-]+$/.test(s) ? s : `'${s}'`);
 // Ticket `x` freed from `b` alone: the holds left (`rest`), those of them still open (`open`: with its
-// queue `q`, less any through, unmergedBlockers), whether nothing then holds it (`release`), and its
-// freed_from with `b` added (`freed`).
+// queue `q`, less any through on what the last pass read, so a PR it has not read yet still holds),
+// whether nothing then holds it (`release`), and its freed_from with `b` added (`freed`).
 const freeFrom = (x, b, q = null) => {
   const rest = blockersOf(x).filter((k) => k !== b);
-  const open = q ? unmergedBlockers(q, x).filter((k) => k !== b) : rest;
+  const open = q ? rest.filter((k) => !throughOnRecord(q, k)) : rest;
   return { rest, open, release: !open.length && !parkedAtTriage(x), freed: [...new Set([...keysOf(x.freed_from), b])].join('|') };
 };
 const freeCommand = (x, b) => (freeFrom(x, b).release ? releaseCommand(x.key) : `queue.mjs ${freeSteps(x, b)[0].map(shellArg).join(' ')}`);

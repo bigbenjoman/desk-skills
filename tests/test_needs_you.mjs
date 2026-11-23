@@ -3677,6 +3677,15 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   const qc = queueOf('ds897c');
   t('DS-897 behind a merged blocker too, start releases it as before', ['H-6', 'H-7'].map((k) => `${qc.tickets[k].state} ${qc.tickets[k].held_by}`).join(' | '), 'triaged null | triaged null');
   t('DS-897 and says so', `${s6.ok} ${s7.ok} ${/H-6 is queued at the front/.test(s6.line)} ${/H-7 is queued at the front/.test(s7.line)}`, 'true true true true');
+  // A co-blocker done on a PR the pass has not read yet still holds: start keeps the ticket held behind it.
+  put('ds897e', { port: 5902, beat: 1, supervised: true, tickets: {
+    'A-1': { state: 'done', lane: 'A', result: {} },
+    'U-1': { state: 'done', lane: 'A', result: { pr: 43 } },
+    'H-9': held('A-1|U-1'),
+  } });
+  const s9 = N.record({ word: 'ds897e', ticket: 'nopr:A-1', action: 'start' });
+  const qe = queueOf('ds897e');
+  t('DS-897 behind a PR the pass has not read, start keeps it held behind that one', `${s9.ok} ${qe.tickets['H-9'].state} ${qe.tickets['H-9'].held_by} ${/H-9 stays held behind U-1/.test(s9.line)}`, 'true parked U-1 true');
   // Behind two blockers that finished with no PR, the ticket is drawn as needing you while either
   // blocker's item is listed, so putting off one leaves it there.
   put('ds897d', { port: 5901, beat: 1, supervised: true, tickets: {
