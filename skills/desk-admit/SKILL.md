@@ -154,6 +154,9 @@ no design link is not the user's where the ticket's comments answer it: read the
   where Designer is `none`);
 - **no acceptance criteria**: criteria that follow from the ticket's text and those comments alone.
   A criterion neither states is a question, never a guess (gate 1 of `desk-ticket`).
+- **no design link** where the line adds `triage found nothing renders` (its change is confined to
+  tests, CI, tooling or config): no comment is needed. Write `No UI.` and the reason the line gives
+  (`No UI. Triage found nothing renders: it changes …`) as the Design section.
 
 Write each settled finding into the description through `desk-jira` (§3 `jira-edit`; with no
 tracker, the ticket file), before asking about any other: the `Acceptance criteria` section, a
