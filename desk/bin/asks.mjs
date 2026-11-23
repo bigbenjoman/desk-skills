@@ -28,17 +28,23 @@ function update(stateDir, change) {
   } finally { unlock(held); }
 }
 
-// Adds `text`, or finds it already there: { id, added }. Ids never repeat, so a put-off one stays its own.
+// Adds `text`, or finds it already there: { id, added, until }. Ids never repeat, so a put-off one stays its own.
 // `until`: the tickets the ask waits on, when it is a wait on them (needs-you.mjs ask --until), which
-// pruneAsks drops once every one is finished; an ask with none stays until the person says done.
+// pruneAsks drops once every one is finished; an ask with none stays until the person says done. Asked
+// again with an `until`, that list replaces the one kept; asked again with none, the kept one stands.
+// `until` in the result is what is kept, so a caller says what a pass will act on.
 export function addAsk(stateDir, text, now = Date.now(), { until = [] } = {}) {
+  const keys = [...new Set(until)];
   return update(stateDir, (f) => {
     const same = f.asks.find((a) => a.text === text);
-    if (same) return { id: same.id, added: false };
+    if (same) {
+      if (keys.length) same.until = keys;
+      return { id: same.id, added: false, until: same.until ?? [] };
+    }
     const id = f.next ?? Math.max(0, ...f.asks.map((a) => a.id)) + 1;
-    f.asks.push({ id, text, at: new Date(now).toISOString(), ...(until.length ? { until: [...new Set(until)] } : {}) });
+    f.asks.push({ id, text, at: new Date(now).toISOString(), ...(keys.length ? { until: keys } : {}) });
     f.next = id + 1;
-    return { id, added: true };
+    return { id, added: true, until: keys };
   });
 }
 

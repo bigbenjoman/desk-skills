@@ -2603,8 +2603,8 @@ export function ask({ word, text, until = [], now = Date.now(), repos = loadRepo
   if (!what) return { ok: false, line: 'say what the person is to do: needs-you.mjs ask <repo> "<what to do>" [--until <TICKET>[,<TICKET>...]]' };
   if (until.some((k) => !SAFE_ID.test(k))) return { ok: false, line: `--until wants ticket keys, comma-separated, not "${until.join(',')}"` };
   const r = standingOf(repos, batchesNamed(repos, word).named);
-  const { id, added } = addAsk(r.stateDir, what, now, { until });
-  return { ok: true, line: `${r.repo} ${ASK}${id}: ${added ? 'recorded' : 'already recorded'}; /desk-needs-you and desk-q list it until you say done${until.length ? `, or a pass finds ${until.join(', ')} merged or done` : ''}.` };
+  const { id, added, until: kept } = addAsk(r.stateDir, what, now, { until });
+  return { ok: true, line: `${r.repo} ${ASK}${id}: ${added ? 'recorded' : 'already recorded'}; /desk-needs-you and desk-q list it until you say done${kept.length ? `, or a pass finds ${kept.join(', ')} merged or done` : ''}.` };
 }
 
 // One run of the command line, in this process: { code, out, err }, which the entry below prints and exits

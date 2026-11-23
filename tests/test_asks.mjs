@@ -21,6 +21,10 @@ try {
   t('#1341 a wait on a ticket still open, or one the queue does not know, stays', JSON.stringify(readAsks(dir).filter((a) => a.until).map((a) => a.id)), '[2,3]');
   t('#1341 a step the person owes that only names a finished ticket (no --until) is never dropped', readAsks(dir).some((a) => a.text === 'run the backfill once DS-1 merges'), true);
   t('#1341 with nothing stale, nothing is dropped', pruneAsks(dir, opts).length, 0);
+  const again = addAsk(dir, 'run the backfill once DS-1 merges', Date.now(), { until: ['DS-3'] });
+  t('#1341 asked again with --until, the ask keeps the new list and says so', `${again.added} ${again.until?.join()} ${readAsks(dir).find((a) => a.id === again.id)?.until?.join()}`, 'false DS-3 DS-3');
+  const bare = addAsk(dir, 'run the backfill once DS-1 merges');
+  t('#1341 asked again with no --until, the kept list stands', `${bare.until?.join()} ${readAsks(dir).find((a) => a.id === bare.id)?.until?.join()}`, 'DS-3 DS-3');
 } finally { rmSync(dir, { recursive: true, force: true }); }
 
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }
