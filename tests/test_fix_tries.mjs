@@ -831,7 +831,7 @@ t('#925 with no review of the bot\'s at the head it waits, naming the bot', `${w
   t('a P0 only the verdict body lists goes in the try beside the thread, then the body itself', JSON.stringify(two?.fix.threads.map(({ id, body, whole, text }) => [id, !!body, !!whole, text.slice(0, 50)])), JSON.stringify([['T1', false, false, 'src/a.ts:3 "P1 drops the row"'], [null, true, false, "agent-pullbot's review body: P0: `src/ledger.ts:88"], [null, true, true, "agent-pullbot's review body: **Changes needed** · "]]));
   const brief = fixBrief(tk({ fix: two.fix }));
   t('its brief lists it apart from the threads, to answer in the PR comment', brief.includes("The findings agent-pullbot's review body lists with a file:line, none with a thread of its own") && brief.includes("- agent-pullbot's review body: P0: `src/ledger.ts:88`") && brief.includes('a body finding is answered in your gh pr comment'), true);
-  t('and quotes the body itself, saying a finding it marks refuted needs no fix', brief.includes("Agent-pullbot's review body itself, for any finding it states with no file:line") && brief.includes('One the body itself marks refuted, or not a finding, needs no fix'), true);
+  t('and quotes the body itself, saying a finding it marks refuted needs no fix', brief.includes("agent-pullbot's review body itself, for any finding it states with no file:line") && brief.includes('One the body itself marks refuted, or not a finding, needs no fix'), true);
   t('and not as a thread', brief.split('Its unresolved review threads:')[1]?.split('The findings')[0].includes('ledger'), false);
   const clean = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, '**Approvable** · p0=0 p1=0 p2=0')], [thread('T1', 'R1', 'P1 drops the row')])));
   t('a clean verdict body adds nothing', clean?.fix.threads.map((x) => x.id ?? 'body').join(), 'T1');
@@ -840,7 +840,13 @@ t('#925 with no review of the bot\'s at the head it waits, naming the bot', `${w
   // A P0 stated with no file:line beside a cited P1 still reaches the worker, in the body's own text.
   const uncited = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, 'p0=1 p1=1 p2=0\n### P0 (1)\n- The refund is applied twice in the ledger module\n\n### P1 (1)\n- `src/b.ts:2` drops the row')])));
   t('a P0 with no file:line beside a cited one is in the brief', fixBrief(tk({ fix: uncited.fix })).includes('The refund is applied twice in the ledger module'), true);
-  t('a long body is quoted to 2000 characters', verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, `p0=1 ${'x'.repeat(3000)}`)])))?.fix.threads.at(-1).text.endsWith(' …'), true);
+  // A finding with no file:line far down a long body still reaches the brief.
+  const long = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, `p0=1 p1=0 p2=0\n${'Context line about the change.\n'.repeat(150)}\n### P0 (1)\n- The token is logged in plain text by the export job`)])));
+  t('a P0 with no file:line past 2000 characters of body is in the brief', fixBrief(tk({ fix: long.fix })).includes('The token is logged in plain text by the export job'), true);
+  const huge = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, `p0=1 ${'x'.repeat(25000)}`)])));
+  t('a body past any review\'s length is cut, and the brief says where to read it', [huge?.fix.threads.at(-1).text.endsWith(' …'), fixBrief(tk({ fix: huge.fix })).includes('read it in full with gh pr view 697 --json reviews')].join(), 'true,true');
+  const spentLong = verdictTry(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'feedback' }] }), extRed, extCtx(extPl([bot(HEAD, 'p0=1\n- P0 src/a.ts:1 one')])));
+  t('out of tries, the stuck reason names the body, not its text', /agent-pullbot's review body: P0 src\/a\.ts:1 one; agent-pullbot's review body$/.test(spentLong?.why ?? ''), true);
 }
 t('#737 the try is marked for the outside reviewer', JSON.stringify(ex737?.fix.external), JSON.stringify({ login: 'agent-pullbot', check: '🔐 Review gate' }));
 t('#737 its brief names that reviewer and asks for no desk review', fixBrief(tk({ fix: ex737.fix })).includes("Post no desk review on this PR: agent-pullbot's next review of the head you push is what the check reads."), true);

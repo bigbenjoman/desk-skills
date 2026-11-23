@@ -942,7 +942,8 @@ export function feedbackFix(t, { pr, head, decision, threads, external = null })
     return { call: 'stuck', why: `review feedback still open after ${tries(triesMade(done))}: changes requested, which only the reviewer clears, by reviewing it again` };
   }
   if (spent(done, fixedAt(done, head))) {
-    const named = left.map((x) => x.text).join('; ');
+    // The body's own text is named as the body, not quoted: its findings are the items beside it.
+    const named = left.map((x) => (x.whole ? `${external?.login ? `${external.login}'s` : 'the'} review body` : x.text)).join('; ');
     return { call: 'stuck', why: `review feedback still open after ${tries(triesMade(done))}: ${what}${named ? ` — ${named}` : ''}` };
   }
   return nextTry(done, pr, head, { kind: 'feedback', what: `review feedback: ${what}`, decision: decision ?? null, threads: left.map(({ id, text, last, body, whole }) => ({ id, text, ...(body ? { body: true } : {}), ...(whole ? { whole: true } : {}), ...(last?.at ? { last_at: last.at } : {}) })), ...(external ? { external } : {}) });
@@ -1044,11 +1045,13 @@ export function bodyFeedback(body, clean = null) {
 }
 
 // An outside reviewer's review body as feedback items ({ id: null, body: true, text }): one per P0 to P2
-// finding it lists with a file:line, then the body's own text (`whole`), so a finding it states with no
-// file:line, a gaps section, or what it says of a finding (refuted, say) still reaches the worker. No
-// refutation is read here (see bodyFeedback): the brief has the worker weigh each against the body.
+// finding it lists with a file:line, then the body's own text in full (`whole`), so a finding it states
+// with no file:line, a gaps section, or what it says of a finding (refuted, say) still reaches the worker,
+// however far down the body it is. BODY_TEXT_MAX only bounds a body no review would write, and the brief
+// says where to read one cut. No refutation is read here (see bodyFeedback): the brief has the worker
+// weigh each against the body.
 const BODY_SEVS = ['P0', 'P1', 'P2'];
-const BODY_TEXT_MAX = 2000;
+const BODY_TEXT_MAX = 20000;
 function bodyItems(text, login) {
   const found = reviewFindings(text, BODY_SEVS);
   const item = (said, o = {}) => ({ id: null, body: true, ...o, text: `${login}'s review body: ${said}` });
@@ -1441,7 +1444,10 @@ export function fixBrief(t, review = null) {
         for (const x of listed) lines.push(`- ${x.text}`);
         lines.push('');
       }
-      if (whole.length) lines.push(`${who[0].toUpperCase()}${who.slice(1)} review body itself, for any finding it states with no file:line and what it says of each:`, '', ...whole.map((x) => `> ${x.text}`), '');
+      if (whole.length) {
+        lines.push(`${f.external ? `${f.external.login}'s review body` : 'The review body'} itself, for any finding it states with no file:line and what it says of each:`, '', ...whole.map((x) => `> ${x.text}`), '');
+        if (whole.some((x) => x.text.endsWith(' …'))) lines.push(`That body is cut here: read it in full with gh pr view ${f.pr} --json reviews.`, '');
+      }
       lines.push('Fix each finding the review body still holds open, as you would a thread. One the body itself marks refuted, or not a finding, needs no fix: say so in your comment. Having no thread, a body finding is answered in your gh pr comment, naming its file:line (or quoting it, where it names none), not on a thread.', '');
     }
     lines.push('Read each thread in full (gh pr view --json reviews,comments, or desk-gh read for the thread), and validate it with desk-review-response before changing any code: fix what is right, and for what is not, say why.',
