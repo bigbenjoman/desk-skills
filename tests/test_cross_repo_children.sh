@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: cross-repo children (plan-batch sends a ticket to the repo its Jira Repository names)
+# layer: L2
 # plan-batch on fixture triage records with two repos configured: a ticket whose Repository names the
 # other repo reads ELSEWHERE, stays out of this queue and is admitted there by intake.mjs admit (a stub
 # here), run in that repo's checkout; a ticket here blocked by it is held until it is Done in Jira; a
@@ -18,17 +19,20 @@ PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     rc=${rc:-} out: ${out:-}"; fi; }
 trap 'rm -rf "$T"' EXIT
 
-# This repo (acme/zendesk) and another configured one (acme/studia-web), each with a checkout.
-for r in zendesk studia-web; do
+# This repo (acme/zendesk) and two other configured ones, each with a checkout: acme/studia-web, which
+# answers to studia-portal and shared-old too, and acme/ops, which also answers to shared-old.
+for r in zendesk studia-web ops; do
   git init -q -b main "$T/$r"; git -C "$T/$r" commit -q --allow-empty -m init
   git -C "$T/$r" remote add origin "git@github.com:acme/$r.git"
   mkdir -p "$DESK_CONFIG_ROOT/repos/acme__$r"
+  case $r in studia-web) other='`studia-portal` `shared-old`' ;; ops) other='`shared-old`' ;; *) other='`none`' ;; esac
   cat > "$DESK_CONFIG_ROOT/repos/acme__$r/config.md" <<EOF
 ## 0. Repo
 | Field | Value |
 |---|---|
 | GitHub repo | \`acme/$r\` |
 | Default branch | \`main\` |
+| Other names | $other |
 
 ## 1. Who you are
 | Field | Value |
@@ -160,6 +164,29 @@ rec SV-3999 acme/zendesk '[]'
 seed SV-3997 SV-3998 SV-3999
 check "AC5: no Repository, this repo's name, or its owner/name each plan as today" \
   '[ $rc -eq 0 ] && [ "$(qg SV-3997 .state)" = triaged ] && [ "$(qg SV-3998 .state)" = triaged ] && [ "$(qg SV-3999 .state)" = triaged ] && [ ! -f "$T/intake.log" ] && [ "$(printf "%s\n" "$out" | grep -c "  ADMIT$")" = 3 ]'
+
+# ---- DS-805: a repo's §0 Other names place a ticket whose Repository is one of them ---------------------
+echo ok > "$T/intake.mode"
+rec SV-4140 studia-portal '[]'
+rec SV-4141 Studia-Web '[]'
+cd "$T/studia-web" || exit 1
+seed SV-4140 SV-4141
+check "DS-805 AC1: planned in the repo that answers to it, a child whose Repository is that other name is admitted here like its sibling" \
+  '[ $rc -eq 0 ] && [ "$(qg SV-4140 .state)" = triaged ] && [ "$(qg SV-4141 .state)" = triaged ] && [ ! -f "$T/intake.log" ] && [ "$(printf "%s\n" "$out" | grep -c "  ADMIT$")" = 2 ]'
+cd "$T/zendesk" || exit 1
+seed SV-4140
+check "DS-805 AC2: planned in another repo, it reads ELSEWHERE (studia-web)" \
+  'printf "%s\n" "$out" | grep -qx "SV-4140  lane A  size S  ELSEWHERE (studia-web)"'
+check "DS-805 AC2: and is admitted into acme/studia-web, in its checkout" \
+  '[ $rc -eq 0 ] && [ "$(qg SV-4140 "")" = null ] && [[ "$(ilog .cwd)" == */studia-web ]] && printf "%s\n" "$out" | grep -qF "  SV-4140 → acme/studia-web: admitted SV-4140 by plan-batch into batch the standing batch (lane A, size S)"'
+rec SV-4142 shared-old '[]'
+seed SV-4142
+check "DS-805 AC4: a name two configured repos both answer to is not admitted, and the plan names both" \
+  '[ $rc -eq 11 ] && [ "$(qg SV-4142 "")" = null ] && [ ! -f "$T/intake.log" ] && printf "%s\n" "$out" | grep -qF "SV-4142  lane A  size S  NOT ADMITTED (its Jira Repository, shared-old, is the name of 2 repos configured on this computer (acme__ops, acme__studia-web) — where does it run?)"'
+rec SV-4143 studia-legacy '[]'
+seed SV-4143
+check "DS-805 AC5: a name no config lists is left out and asked about as before" \
+  '[ $rc -eq 11 ] && [ "$(qg SV-4143 "")" = null ] && printf "%s\n" "$out" | grep -qF "[SV-4143] SV-4143 is not admitted here: its Jira Repository, studia-legacy, is no repo configured on this computer. Which repo does it run in?"'
 
 # ---- AC6: the other repo refuses it --------------------------------------------------------------------
 echo refuse > "$T/intake.mode"

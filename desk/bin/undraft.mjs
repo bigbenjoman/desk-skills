@@ -11,6 +11,9 @@
 //           rerun.sh, within the merge driver's per-head cap and cooldown, once for one the runner ended
 //           (`gate` is what rerun.sh reads); or a check stuck pending whose run has
 //           completed, re-run as that one job (stuckCall)
+//   repair  GitHub has had no mergeability answer past UNKNOWN_LIMIT_MS and §3 pr-update-branch is yes:
+//           the pass updates its branch from its base once (gh pr update-branch) for a fresh merge ref,
+//           and records the try as the undraft record's `unknown_repair` (repairSaid says it)
 //   cancel  a check pending past PENDING_LIMIT_MS while its run is still in progress: the pass cancels
 //           the run, once per check per head, so the next pass re-runs it as a cancelled check
 //   build  every red check is one §4 Check builds names, and no build has run at this head: the pass
@@ -55,15 +58,17 @@
 // commit that verdict was posted on when it was carried to the head (verdictCarries, or with the
 // review-reuse lever on restsOnCarries, whose base range checked is `range`).
 import { evaluateGate, latestPerCheck, skippedOnly, SKIPPED_ON_DRAFT, isHuman, loginIn, PENDING_LIMIT_MS, since } from './gate.mjs';
-import { RERUNS_MAX, runnerRerunsSpent, rerunGate, reviewFindings, syncSaid, captureTry } from './fix-tries.mjs';
+import { RERUNS_MAX, runnerRerunsSpent, rerunGate, reviewFindings, syncSaid, captureTry, VERDICT_CHECK, reviewGates } from './fix-tries.mjs';
 import { dragCells, dragFiles, hasEvidenceBlock, runFailed } from './evidence.mjs';
 import { isLockfile, isConfig } from './test-scope.mjs';
 import { pairs } from './desk-env.mjs';
+import { parkClauses, tailSteps } from './park-words.mjs';
+import { leftOver, statesPhrase, saysNothingLeft } from './review-plain.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
 import { parseVerdict as gateVerdict, LOCAL_MARKER, LOCAL_MARKERS } from '../templates/scripts/desk/review-gate.mjs';
 // The name of desk-gate.yml's verdict job, the check that runs review-gate.mjs verdict.
-export const VERDICT_CHECK = 'desk-review verdict';
+export { VERDICT_CHECK };
 
 // A posted desk-review's verdict as the review gate reads it, or null. Values are strings, in
 // marker order, as the §4 Clean review verdict row compares them; the heading and form are left out.
@@ -106,20 +111,8 @@ export function verdictAt(v, head, clean) {
 export const DESK_REVIEW_CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0';
 // DESK_REVIEW_CLEAN cut to the counts a parsed marker writes: a PullBot verdict has no unrefuted or partial.
 export const markerClean = (v) => Object.keys(pairs(DESK_REVIEW_CLEAN)).filter((k) => k in (v ?? {})).map((k) => `${k}=0`).join(' ') || DESK_REVIEW_CLEAN;
-const LEFT = '(?:defer(?:s|red|ring|rals?)?|carr(?:y|ies|ied|ying))';
-const LEFT_OVER = new RegExp(`\\b${LEFT}\\b`, 'i');
-// "nothing deferred or carried", "no items carried", "nothing to defer", "deferred: none", "carried 0",
-// but not "deferred: no timeout on retries", which defers an item whose name starts with "no".
-const NOTHING_LEFT = new RegExp(`\\b(?:no|nothing|none|zero|0)\\s+(?:(?:items?|findings?|issues?|is|are|was|were|has|have|been|to)\\s+){0,2}${LEFT}(?:\\s+(?:or|and|nor)\\s+${LEFT})?\\b|\\b${LEFT}\\s*(?:items?|findings?)?\\s*[:=]?\\s*(?:none|nothing|no|0)(?=\\s*(?:[.;,)]|$))`, 'gi');
-// "1 finding", "2 P1s", "3 open issues": a count of items the review still holds open.
-const OPEN = /\b[1-9]\d*\s+(?:(?:blocking|open|new|unresolved)\s+)?(?:p[0-3]s?|findings?|issues?|blockers?|problems?)\b/i;
-const plainLines = (body) => String(body ?? '').split(/\r?\n/).map((l) => l.replace(/^[\s>*#_-]+/, '').replace(/[*_`]/g, '').trim());
-
-// The lines of a plain review that defer, carry or count an open item, cut to a readable length.
-export function leftOver(body) {
-  return plainLines(body).filter((l) => LEFT_OVER.test(l.replace(NOTHING_LEFT, '')) || OPEN.test(l))
-    .map((l) => (l.length > 80 ? `${l.slice(0, 79)}…` : l));
-}
+// A plain review's lines that leave an item open, deferred or carried, as the pass reads them (review-plain.mjs).
+export { leftOver };
 
 // What the latest of `handle`'s reviews says about this head, under a plain-text §4 row (`clean`):
 // { clean, why, settle, verdict, review }, `review` the review read when it is clean or carries a marker.
@@ -135,12 +128,11 @@ export function plainVerdictAt(reviews, handle, head, clean) {
   if (LOCAL_MARKERS.includes(opener)) return { clean: false, why: `its ${opener === LOCAL_MARKER ? 'desk-review' : 'PullBot'} verdict marker is not one the review gate reads` };
   const at = r.commit?.oid ?? '';
   if (!at || !head || !head.startsWith(at)) return { clean: false, why: `its latest review is for ${at ? at.slice(0, 9) : 'an unknown commit'}, not the head ${String(head ?? '?').slice(0, 9)}` };
-  const c = clean.toLowerCase();
-  const stated = plainLines(r.body).find((l) => l.toLowerCase().startsWith(c) && /^(?:[.!]|$)/.test(l.slice(c.length)));
+  const stated = statesPhrase(r.body, clean);
   if (!stated) return { clean: false, settle: true, why: `its latest review, at ${at.slice(0, 9)}, does not open a line with "${clean}" as its outcome` };
   const left = leftOver(r.body);
   if (left.length) return { clean: false, settle: true, why: `its review at ${at.slice(0, 9)} states "${clean}" but leaves items open, deferred or carried: ${left.map((l) => `"${l}"`).join('; ')}` };
-  if (!plainLines(r.body).some((l) => l.replace(NOTHING_LEFT, '') !== l)) return { clean: false, settle: true, why: `its review at ${at.slice(0, 9)} states "${clean}" but not that nothing is deferred or carried` };
+  if (!saysNothingLeft(r.body)) return { clean: false, settle: true, why: `its review at ${at.slice(0, 9)} states "${clean}" but not that nothing is deferred or carried` };
   return { clean: true, why: null, verdict: stated, review: r };
 }
 
@@ -545,16 +537,14 @@ const TAIL_WORDS = new Set(['the', 'a', 'its', 'and', 'or', 'then', 'to', 'on', 
 // other one lists the steps it did not reach (the tail the worker contract has every park name). A
 // park that asks anything else beside it stays a park.
 export function parkOnlyNames(question, names) {
-  // Clauses end at . ? ! ; followed by a space, or a line break, so a command's own dots stay whole.
-  // Each keeps its own end mark, so a tail clause can tell a question from a list.
-  const clauses = String(question ?? '').toLowerCase().split(/(?<=[.?!;])(?:\s+|$)|\n+/).map((s) => s.trim()).filter(Boolean);
-  // A tail clause starts with its marker, is no question, and holds nothing but the tail's own steps
-  // after it, so a question that only mentions the tail ("before the remaining steps, should we…",
-  // "not reached: the Jira comment, so confirm the fee") still parks.
+  const clauses = parkClauses(String(question ?? '').toLowerCase());
+  // A tail clause starts with its marker, is no question (park-words.mjs tailSteps, which needs-you
+  // reads too), and holds nothing but the tail's own steps after it, so a question that only mentions
+  // the tail ("before the remaining steps, should we…", "not reached: the Jira comment, so confirm the
+  // fee") still parks.
   const tail = (s) => {
-    if (s.includes('?')) return false;
-    const m = /^(?:steps? )?(?:not (?:yet )?reached|remaining steps?|steps? remaining)\b(.*?)[.!;]*$/.exec(s);
-    return !!m && m[1].split(/[\s,:()]+/).map((w) => w.replace(/^[-–—]+|[-–—]+$/g, '')).filter(Boolean).every((w) => TAIL_WORDS.has(w) || /^#?\d+$/.test(w));
+    const steps = tailSteps(s);
+    return steps !== null && steps.split(/[\s,:()]+/).map((w) => w.replace(/^[-–—]+|[-–—]+$/g, '')).filter(Boolean).every((w) => TAIL_WORDS.has(w) || /^#?\d+$/.test(w));
   };
   return clauses.some(names) && clauses.every((s) => names(s) || tail(s));
 }
@@ -722,8 +712,24 @@ export function humanReviewed(pr, handle) {
 // [{ at, by }] oldest first: nothing in a batch converts a ticket's PR back, so any one is a person's.
 // REDRAFT_JQ reads them from the PR's issue events, one `<at>\t<by>` line each.
 export const REDRAFT_JQ = '.[] | select(.event == "convert_to_draft") | [.created_at, (.actor.login // "")] | @tsv';
-// How long a draft's head may go with no mergeability answer from GitHub before it is the person's.
-export const UNKNOWN_LIMIT_MS = 60 * 60 * 1000;
+// How long a draft may go with no mergeability answer from GitHub before desk repairs it once, and
+// again after that repair before it is the person's. DESK_UNKNOWN_SECS overrides it.
+export const UNKNOWN_LIMIT_MS = (Number(process.env.DESK_UNKNOWN_SECS) > 0 ? Number(process.env.DESK_UNKNOWN_SECS) : 30 * 60) * 1000;
+// The one repair tried for a head with no mergeability answer, `{ at, head, ok, out }`, in words.
+export function repairSaid(r) {
+  const at = `at ${String(r.head ?? '?').slice(0, 12)}, ${r.at}`;
+  return r.ok ? `desk already updated its branch from its base once (gh pr update-branch ${at}), and GitHub still has no answer`
+    : `desk's one repair, updating its branch from its base (gh pr update-branch ${at}), was refused: ${r.out ?? 'no reason given'}`;
+}
+// The spell with no mergeability answer that undraft record `was` keeps for PR #n at `head`: the record,
+// or null where it is not this spell (another PR, a call not waiting on that answer, or another head with
+// no repair tried, as the repair is itself a new head).
+export function unknownSpell(was, n, head) {
+  const ours = ['wait', 'person'].includes(was?.call) && was.pr === n && was.unknown_since;
+  return ours && (was.sha === head || was.unknown_repair) ? was : null;
+}
+// What the person does for PR #n once a fresh merge ref is all that is left to try.
+export const freshMergeRef = (n) => `push a new commit to #${n} (an empty one will do) for a fresh merge ref; if it still has no answer, open a new PR from its branch`;
 export function personHold(t, n, redrafts = []) {
   const was = t.undraft?.pr == null || t.undraft.pr === n ? t.undraft ?? {} : {};
   if (was.call === 'held') return { why: was.why, action: was.action };
@@ -748,7 +754,8 @@ export function personHold(t, n, redrafts = []) {
 // { behind, reopen } for one the pass's base sync or reopen starts, runOf(runId), cancels(name) and now
 // for a check stuck pending (stuckCall), fault(check) -> gate.mjs runnerFault's why for a red check the
 // runner killed or lost, or null, rerunsOk(name), the reruns GitHub accepted at this head, and passAt,
-// the pass's ISO time, from which a head with no mergeability answer is aged }.
+// the pass's ISO time, from which a head with no mergeability answer is aged, and updateBranch (§3
+// pr-update-branch), whether that head may be repaired once }.
 export function undraftCall(t, pr, cfg) {
   const n = pr.number;
   if (cfg.spine) return null;
@@ -781,17 +788,25 @@ export function undraftCall(t, pr, cfg) {
   }
   if (pr.mergeable !== 'MERGEABLE') {
     // A merge ref can wedge: no answer for hours, and no run started for the head. Aged from when this
-    // head first had no answer (kept on the undraft record), it goes to the person after
-    // UNKNOWN_LIMIT_MS, naming what gives it a fresh merge ref.
-    const was = t.undraft;
-    const since = (was?.call === 'wait' || was?.call === 'person') && was.pr === n && was.sha === pr.head && was.unknown_since ? was.unknown_since : cfg.passAt ?? null;
-    const mins = since && cfg.passAt ? Math.floor((Date.parse(cfg.passAt) - Date.parse(since)) / 60000) : 0;
-    const said = `GitHub has not worked out whether it conflicts with its base (${pr.mergeable ?? 'no answer'})`;
-    if (mins * 60000 >= UNKNOWN_LIMIT_MS) {
-      return { ...person(`${said} at ${String(pr.head).slice(0, 12)} for ${mins} minutes: its merge ref looks wedged, and GitHub starts no run for that head`,
-        `push a new commit to #${n} (an empty one will do) for a fresh merge ref; if it still has no answer, open a new PR from its branch`), unknown_since: since };
+    // head first had no answer (kept on the undraft record), past UNKNOWN_LIMIT_MS its branch is
+    // updated from its base once where §3 pr-update-branch is yes (`repair`), and past the limit again
+    // after that it is the person's. The repair is a new head, so once tried the age carries across heads.
+    const spell = unknownSpell(t.undraft, n, pr.head);
+    const repair = spell?.unknown_repair ?? null;
+    const since = spell ? spell.unknown_since : cfg.passAt ?? null;
+    const minsFrom = (at) => (at && cfg.passAt ? Math.floor((Date.parse(cfg.passAt) - Date.parse(at)) / 60000) : 0);
+    const mins = minsFrom(since);
+    const keep = { unknown_since: since, ...(repair ? { unknown_repair: repair } : {}) };
+    const wait = { call: 'wait', why: `GitHub has not yet worked out whether it conflicts with its base (${pr.mergeable ?? 'no answer'})`, ...keep };
+    if (mins * 60000 < UNKNOWN_LIMIT_MS) return wait;
+    const stuck = `GitHub has not worked out whether it conflicts with its base (${pr.mergeable ?? 'no answer'}) at ${String(pr.head).slice(0, 12)} for ${mins} minutes: its merge ref looks wedged, and GitHub starts no run for that head`;
+    const fresh = freshMergeRef(n);
+    if (!repair) {
+      if (cfg.updateBranch !== 'yes') return { ...person(`${stuck}; no repair was permitted, as config §3 pr-update-branch is "${cfg.updateBranch ?? 'no'}"`, fresh), ...keep };
+      return { call: 'repair', why: `${stuck}, so its branch is updated from its base once (gh pr update-branch) for a fresh merge ref`, stuck, action: fresh, ...keep };
     }
-    return { call: 'wait', why: `GitHub has not yet worked out whether it conflicts with its base (${pr.mergeable ?? 'no answer'})`, unknown_since: since };
+    if (repair.ok && minsFrom(repair.at) * 60000 < UNKNOWN_LIMIT_MS) return { ...wait, why: `${wait.why}, after desk updated its branch from its base for a fresh merge ref` };
+    return { ...person(`${stuck}; ${repairSaid(repair)}`, fresh), ...keep };
   }
   let gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });
   // A required check that never reported may be one its workflow never runs on this PR's base.
@@ -835,7 +850,7 @@ export function undraftCall(t, pr, cfg) {
   const unbuilt = red ? unbuiltCall(gate, cfg, n, pr.head) : null;
   if (unbuilt) return unbuilt;
   // §4 State checks read the PR's reviews or approvals, not its code, so no fix turns them green.
-  const stateNames = new Set([VERDICT_CHECK, ...(cfg.stateChecks ?? []).map((x) => x.name)]);
+  const stateNames = reviewGates(cfg.stateChecks);
   const codeRed = gate.failing.filter((f) => !stateNames.has(f.name));
   const stateRed = gate.failing.filter((f) => stateNames.has(f.name)).map((f) => f.name);
   // Red on state checks alone: the gate passes once they are set aside as advisory, with nothing else

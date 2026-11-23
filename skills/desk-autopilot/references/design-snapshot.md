@@ -11,13 +11,13 @@ Workers have no Artifact tool, so a ticket whose design is a Claude Design artif
 snapshot **at Stage 1, before its triage**, taken by you. Find them with
 `node ~/.claude/desk/bin/desk-design.mjs check <KEY>` per ticket (a `blocking` line: no copy is saved
 in the repo yet). List the artifact's files (`Artifact action:list scope:files`), then read
-`project/canvas.json`, every `project/*.dc.html`, and the `support.js`, stylesheets and fonts they
+`project/canvas.json`, every `project/*.dc.html`, and the `support.js`, stylesheets and fonts they <!-- prose-ok: a design artifact's file, not desk's -->
 load, with `paths` and `out_dir: <state>/designs/<TICKET>/` (they land under
 `<state>/designs/<TICKET>/project/`; triage and workers can read `<state>`, and a named batch's
 workers the repo's own `designs/`, read only). Read too what the
 published files leave out: each `/_blob/<id>` asset a board names, in its attributes or script, one
 `read` with `path: "/_blob/<id>"` apiece (a `paths` read refuses asset ids), and
-`artifact-type/dc-runtime.js` when a board loads a `support.js` the artifact does not publish
+`artifact-type/dc-runtime.js` when a board loads a `support.js` the artifact does not publish <!-- prose-ok: a design artifact's files, not desk's -->
 (desk-ticket `design-canvas.md` has why). The saves need no
 approval: `/desk-setup` grants this session the state folder (`orchestrator-tools`), so a prompt per
 file means the repo was set up before that, and re-running `/desk-setup` fixes it. Then record where it

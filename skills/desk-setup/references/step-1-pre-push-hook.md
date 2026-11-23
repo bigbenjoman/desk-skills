@@ -23,7 +23,7 @@ mkdir -p .githooks scripts/desk
 cp "$T/.githooks/pre-push" .githooks/pre-push && cp "$T/scripts/desk/pre-push.sh" scripts/desk/pre-push.sh
 git add .githooks/pre-push scripts/desk/pre-push.sh
 git update-index --chmod=+x .githooks/pre-push      # git skips a hook that is not executable
-git commit -m "<§5 PR title format>: add the desk pre-push hook"
+git commit -m "<§5 PR title>: add the desk pre-push hook"
 ```
 
 An autopilot worker cannot read the checkout, and its settings refuse `cp` and `git update-index`.

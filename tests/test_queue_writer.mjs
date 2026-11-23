@@ -1,4 +1,5 @@
 // suite: queue writer (a pass's changes in one locked, versioned write; done tickets archived)
+// layer: L2
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -161,7 +162,7 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
     // Criteria its review left for after the merge: P's the pass has not made steps yet, Q's it has.
     P: tk('P', { state: 'done', result: { pr: 6 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 6, state: 'MERGED', post_merge: [{ step: 'x' }] } }),
     Q: tk('Q', { state: 'done', result: { pr: 7 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 7, state: 'MERGED', post_merge: [{ step: 'x' }] }, post_merge_read: 7 }),
-    // Closed, and the pass still owes it a reopen whose retry was refused.
+    // Closed, and the pass still owes it a reopen whose retry was refused (DS-850: closed to restart its CI).
     R: tk('R', { state: 'done', result: { pr: 8 }, pr_status: { pr: 8, state: 'CLOSED' }, reopening: 8 }),
     // A requeued ticket with an earlier round's merge whose new PR's reopen failed: its status still reads OPEN.
     S: tk('S', { state: 'done', result: { pr: 9 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 9, state: 'OPEN' }, reopening: 9 }),
@@ -174,6 +175,8 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
     Z: tk('Z', { state: 'done', result: { pr: 15 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 14, state: 'MERGED' } }),
     // The driver recorded Y's earlier merge with no status read; its spawn kept that PR, and its new one is unread.
     Y: tk('Y', { state: 'done', result: { pr: 17 }, merged_at: '2026-11-16T10:00:00.000Z', merged_pr: [{ pr: 16, url: null }] }),
+    // DS-850: E's reopen marker names an earlier PR, so its closed PR owes nothing.
+    E: tk('E', { state: 'done', result: { pr: 19 }, pr_status: { pr: 19, state: 'CLOSED' }, reopening: 3 }),
     A: tk('A'),
   } });
   const w = queueWriter(f);
@@ -187,7 +190,8 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('AC6 the archive sits beside the queue', archivePath(f), join(dirname(f), 'queue.archive.json'));
   t('AC6 merged and closed tickets leave the live queue', `${'M' in q.tickets} ${'X' in q.tickets}`, 'false false');
   t('AC6 and are in the archive, with when', `${a.tickets.M.state} ${a.tickets.X.state} ${!!a.tickets.M.archived_at}`, 'done done true');
-  t('AC6 the write says which moved', r.archived.join(','), 'M,X,Q,T');
+  t('AC6 the write says which moved', r.archived.join(','), 'M,X,Q,T,E');
+  t('DS-850 a ticket whose closed PR is still owed its CI reopen stays live; a marker naming an earlier PR keeps nothing', `${'R' in q.tickets} ${'E' in q.tickets}`, 'true false');
   t('DS-785 a merged ticket whose post-merge criteria the pass has not made steps yet stays live; one it has is archived', `${'P' in q.tickets} ${'Q' in q.tickets}`, 'true false');
   t('AC7 a done ticket whose PR is open stays live', 'O' in q.tickets, true);
   t('DS-796 a closed PR still owed its reopen stays live, so the next pass retries it', 'R' in q.tickets, true);
@@ -203,7 +207,7 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('AC8 and `in` finds it', 'X' in rq.tickets, true);
   t('AC8 but listing the tickets does not', Object.keys(rq.tickets).includes('M'), false);
   t('AC8 nor does writing the queue', JSON.stringify(rq).includes('"M"'), false);
-  t('AC8 its archive reads beside it', Object.keys(archivedOf(rq)).sort().join(','), 'M,Q,T,X');
+  t('AC8 its archive reads beside it', Object.keys(archivedOf(rq)).sort().join(','), 'E,M,Q,T,X');
   rq.tickets.Y = tk('Y', { state: 'parked', held_by: 'M', park: { question: 'held by orchestrator: blocked by M' } });
   t('AC8 a hold on an archived merged ticket is waiting on a merge, not stuck', waitingOnMerge(rq, rq.tickets.Y), true);
 

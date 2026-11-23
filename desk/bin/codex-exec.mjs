@@ -7,17 +7,28 @@
 // both call codexExec. A synchronous caller runs this file instead, with the call as JSON on stdin:
 //   node codex-exec.mjs   < {"args": [...], "last": "<file>", "cwd": "<dir>", "timeout": <seconds>}
 // and reads one JSON line back: {"code", "timedOut", "message", "tail", "error"}.
+//
+// A review's finder or refuter call with the codex lever off runs this file's review form, the one
+// form a worker may run, since its codex arguments are fixed here and never read from the caller:
+//   node codex-exec.mjs review [--cd <dir>] <prompt>
+// `codex exec --sandbox read-only --skip-git-repo-check`, at ~/.codex/config.toml's model and effort,
+// ended at config §3b Codex review's timeout. Stdout is codex's final message alone. Exit: codex's own,
+// 124 timed out (`codex-exec: timed out after <n>s` on stderr: the review records the seat as died,
+// "timed out"), 127 codex did not start, 1 no final message, 2 usage.
 import { spawn } from 'node:child_process';
-import { readFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const KILL_GRACE_MS = 5000;
 const EXIT_FOR = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 };
 
-// The exec arguments. `config` items are extra `-c key=value` overrides, after the effort.
-export function execArgs({ sandbox, cd = null, model, effort, last, prompt, config = [] }) {
+// The exec arguments. `config` items are extra `-c key=value` overrides, after the effort. With no
+// model, neither model nor effort is passed, so ~/.codex/config.toml's apply.
+export function execArgs({ sandbox, cd = null, model = null, effort, last, prompt, config = [] }) {
   return ['exec', '--sandbox', sandbox, '--skip-git-repo-check', ...(cd ? ['--cd', cd] : []),
-    '-m', model, '-c', `model_reasoning_effort="${effort}"`, ...config.flatMap((c) => ['-c', c]),
+    ...(model ? ['-m', model, '-c', `model_reasoning_effort="${effort}"`] : []), ...config.flatMap((c) => ['-c', c]),
     '--output-last-message', last, '--', prompt];
 }
 
@@ -59,7 +70,56 @@ const isMain = (() => {
   catch { return false; }
 })();
 
-if (isMain) {
+// A review call's `[--cd <dir>] <prompt>`, for this file's review form and desk-codex's roles: a --cd
+// that is not a directory exits 2, and anything but one non-empty prompt runs `usage`.
+export function cdAndPrompt(rest, say, usage) {
+  let cd = null;
+  if (rest[0] === '--cd') {
+    cd = rest[1];
+    try { if (!cd || !statSync(cd).isDirectory()) throw new Error(); } catch { say(`--cd ${cd ?? ''} is not a directory`); process.exit(2); }
+    rest = rest.slice(2);
+  }
+  if (rest.length !== 1 || !rest[0].trim()) usage();
+  return { cd, prompt: rest[0] };
+}
+
+// One read-only review call, its final message read from a scratch file removed afterwards. With no
+// model, ~/.codex/config.toml's model and effort apply. -> codexExec's result.
+export async function readOnlyCall({ prompt, cd = null, model = null, effort, env, timeout }) {
+  const dir = mkdtempSync(join(tmpdir(), 'codex-review-'));
+  const last = join(dir, 'last-message.txt');
+  try { return await codexExec({ args: execArgs({ sandbox: 'read-only', cd, model, effort, last, prompt }), last, env, timeout }); }
+  finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+// A review call's outcome, as a CLI reports it: the final message on stdout, why it failed on stderr
+// (`label` after each reason), and the exit code: 127 not started, 124 timed out, codex's own, 1 an
+// answer `refuse` turns down (by default an empty one). Sets process.exitCode, never process.exit: a
+// pipe write on macOS is asynchronous, and exiting at once would cut a long final message short.
+//   -> whether codex answered
+export function reportCall({ code, timedOut, message, tail, error }, { say, timeout, label = '', refuse = (m) => (m.trim() ? null : 'with no final message') }) {
+  const at = label ? ` (${label})` : '';
+  if (error) { say(`codex did not start: ${error}`); process.exitCode = 127; return false; }
+  if (timedOut) { say(`timed out after ${timeout}s${at}`); process.exitCode = 124; return false; }
+  if (message) process.stdout.write(message.endsWith('\n') ? message : `${message}\n`);
+  if (code !== 0) { say(`codex exited ${code}${at}: ${tail.trim().split('\n').slice(-5).join(' | ') || 'no error text'}`); process.exitCode = code; return false; }
+  const why = refuse(message);
+  if (why) { say(`codex answered ${why}${at}`); process.exitCode = 1; return false; }
+  process.exitCode = 0;
+  return true;
+}
+
+// The review form: a read-only call whose arguments only this file sets.
+async function review(rest) {
+  const say = (m) => process.stderr.write(`codex-exec: ${m}\n`);
+  const { cd, prompt } = cdAndPrompt(rest, say, () => { say('usage: codex-exec.mjs review [--cd <dir>] <prompt>'); process.exit(2); });
+  let timeout;
+  try { timeout = (await import('./desk-env.mjs')).codexReview().timeout; } catch (e) { say(e.message); process.exit(2); }
+  reportCall(await readOnlyCall({ prompt, cd, timeout }), { say, timeout });
+}
+
+if (isMain && process.argv[2] === 'review') review(process.argv.slice(3));
+else if (isMain) {
   let call;
   try {
     call = JSON.parse(readFileSync(0, 'utf8'));

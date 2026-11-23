@@ -1,4 +1,5 @@
 // suite: merge log (who merged what, at which head)
+// layer: L2
 // merge-log.mjs claim refuses a merge another merger has claimed recently, merged or armed, and lets the
 // same merger through; record and show keep and print every event; the CLI exits 11 on a refusal.
 import { readFileSync, appendFileSync, writeFileSync } from 'node:fs';

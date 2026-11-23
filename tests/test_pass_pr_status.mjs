@@ -1,4 +1,5 @@
 // suite: pass phase: PR status (each done ticket's PR read, merges recorded, the lists the steps after it use)
+// layer: L1
 import { decidePrStatus, followState } from '../desk/bin/pass/pr-status.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
@@ -23,6 +24,29 @@ const answers = (reads = {}) => (a) => {
 const run = (s, reads) => drive(decidePrStatus(s), answers(reads));
 const ofType = (acts, type) => acts.filter((a) => a.type === type);
 const lists = (acts) => acts.at(-1);
+
+// ---- a done ticket's PR that is not its own: parked where it is read, in no list a later step works from
+{
+  const mine = (key, fields = {}) => done(key, 70, { branch: `fix/${key}`, ...fields });
+  const read = (fields) => ({ 70: status(70, 'OPEN', { branch: 'fix/F', author: 'me', ...fields }) });
+  const epic = run(snap([mine('F')], { logins: 'me' }), read({ branch: 'epic/E', author: 'alice', reopen: { tests: 'x' } }));
+  t('a PR on another branch parks its ticket, naming why', ofType(epic, 'park')[0]?.question?.startsWith("its PR #70 is not its own: PR #70 is on branch epic/E, not F's branch fix/F."), true);
+  t('it is in no draft, ready, reopen list and records no status', j([lists(epic).drafts.length, lists(epic).undrafted.length, lists(epic).reopens.length, ofType(epic, 'pr-status').length]), j([0, 0, 0, 0]));
+  t('the report says nothing is done to it', ofType(epic, 'out').some((a) => a.line === "PR status: F's PR #70 is not its own (PR #70 is on branch epic/E, not F's branch fix/F): parked, and nothing is done to #70"), true);
+  const merged = run(snap([mine('F')], { logins: 'me' }), read({ author: 'alice', state: 'MERGED', merged_at: '2026-11-19T09:00:00Z' }));
+  t('one on its branch another account opened parks it too, and its merge is not recorded as the ticket\'s', j([ofType(merged, 'park').length, ofType(merged, 'merged').length, /opened by alice, not by me/.test(ofType(merged, 'park')[0]?.question ?? '')]), j([1, 0, true]));
+  const dry = run(snap([mine('F')], { logins: 'me', dry: true }), read({ branch: 'epic/E' }));
+  t('a dry run parks nothing, and says it would', j([ofType(dry, 'park').length, /would park it/.test(ofType(dry, 'out')[0]?.line ?? '')]), j([0, true]));
+  const own = run(snap([mine('F')], { logins: 'me,me-bot' }), read({ author: 'Me-Bot' }));
+  t('its own PR is listed as before', j([ofType(own, 'park').length, lists(own).undrafted.length]), j([0, 1]));
+  const kept = (state) => mine('F', { pr_status: status(70, state, { branch: 'epic/E', merged_at: state === 'MERGED' ? '2026-11-19T09:00:00Z' : null }) });
+  const cachedMerged = run(snap([kept('MERGED')], { logins: 'me' }), {});
+  t('a merged status kept from an earlier pass on another branch parks it too, its merge not recorded and nothing read', j([ofType(cachedMerged, 'park').length, ofType(cachedMerged, 'merged').length, ofType(cachedMerged, 'read-pr').length]), j([1, 0, 0]));
+  const cachedClosed = run(snap([kept('CLOSED')], { logins: 'me' }), {});
+  t('and so does a closed one, so the ticket is not left done on it', j([ofType(cachedClosed, 'park').length, lists(cachedClosed).prStates[70]]), j([1, 'CLOSED']));
+  const noHandle = run(snap([mine('F')], { logins: null }), read({ author: 'alice' }));
+  t('with no account configured only the branch is checked', lists(noHandle).undrafted.length, 1);
+}
 
 // ---- AC1: a merged PR with no merged time recorded
 {
@@ -96,6 +120,11 @@ const lists = (acts) => acts.at(-1);
   const kept = run(snap([withCommit]));
   t('one with its merge commit is not read again', ofType(kept, 'read-pr').length, 0);
   t('origin is still fetched for its gated step', ofType(kept, 'fetch-origin').length, 1);
+  const failed = run(snap([noCommit]), {});
+  t('DS-853 a merged PR whose merge-commit read fails is read, and is not unread', j([ofType(failed, 'read-pr').length, lists(failed).unread]), j([1, []]));
+  t('DS-853 it stays merged in the PR states', lists(failed).prStates[27], 'MERGED');
+  const owedPost = done('V2', 30, { merged_at: 'x', pr_status: status(30, 'MERGED', { post_merge: [{ step: 'p' }] }) });
+  t('DS-853 nor is one read for its post-merge criteria', j(lists(run(snap([owedPost]), {})).unread), j([]));
   const mergeOnly = done('X', 29, { merged_at: 'x', follow_on: [{ step: 's', row: null }], pr_status: status(29, 'MERGED', { merged_at: 'x' }) });
   t('a step gated on the merge alone needs neither', j(run(snap([mergeOnly])).map((a) => a.type)), j(['prune-builds', 'lists']));
 }
@@ -131,6 +160,7 @@ const lists = (acts) => acts.at(-1);
   t('DS-796 and the PR counts as open while it is owed', lists(owing).prStates[22], 'OPEN');
   t('an open PR whose base now runs its untriggered checks is in the reopens', j(lists(acts).reopens.map(({ t: x, owed }) => [x.key, owed])), j([['I', false]]));
   t('a read that fails keeps nothing for that PR', j(run(snap([done('L', 20)]), {}).filter((a) => a.type !== 'read-pr').map((a) => a.type)), j(['prune-builds', 'lists']));
+  t('and lists it as unread, for the outage hold', j(lists(run(snap([done('L', 20)]), {})).unread), j([20]));
 }
 {
   const owed = done('M', 21, { reopening: 21 });
@@ -174,6 +204,49 @@ const lists = (acts) => acts.at(-1);
   const { out, threw, calls } = withNoIo(() => run(snap(list), { 24: status(24, 'OPEN', { isDraft: true }) }));
   t('AC5 it returns its actions without starting a process or writing a file', j({ threw, calls }), j({ threw: null, calls: [] }));
   t('AC5 and the actions are there', j(out.map((a) => a.type)), j(['read-pr', 'pr-status', 'merged', 'fix-finished', 'out', 'prune-builds', 'lists']));
+}
+
+// ---- A PR's preview-build unit is freed once its preview checks finish
+{
+  // A check run carries its completion time; a status context (Vercel's own) only when its state was set.
+  const check = (name, st, conclusion = null, completed = st === 'completed' ? '2026-11-19T09:59:00.000Z' : null, started = null) => ({ name, status: st, conclusion, started, completed });
+  const read = (pr, checks) => status(pr, 'OPEN', { at: '2026-11-19T10:00:01.000Z', checks });
+  // free-previews answered as releasePreviews would with every unit held: each PR named is freed.
+  const freeing = (reads, answer = (a) => ({ freed: a.done.map((d) => d.pr) })) => (a) => (a.type === 'free-previews' ? answer(a) : answers(reads)(a));
+  const go = (s, reads, answer) => drive(decidePrStatus(s), freeing(reads, answer));
+  const reads = {
+    31: read(31, [check('tests', 'completed', 'success', '2026-11-19T09:50:00.000Z'), check('Vercel', 'completed', 'success', null, '2026-11-19T09:58:30.000Z'), check('Vercel Preview Comments', 'completed', 'success', '2026-11-19T09:58:10.000Z')]),
+    32: read(32, [check('Vercel', 'completed', 'failure'), check('tests', 'in_progress')]),
+    33: read(33, [check('Vercel', 'in_progress'), check('tests', 'completed', 'success')]),
+    34: read(34, [check('tests', 'completed', 'success')]),
+    36: read(36, [check('Vercel', 'completed', 'success', null)]),
+  };
+  const list = [done('V', 31), done('W', 32), done('X', 33), done('Y', 34), done('U', 36)];
+  const acts = go(snap(list, { previews: true }), reads);
+  const free = ofType(acts, 'free-previews');
+  t('DS-913 AC1 one release for the pass, naming each PR whose preview checks all passed or failed, with the earliest time its preview checks finished',
+    j(free.map((a) => a.done.map((d) => [d.pr, d.at, d.reason]))), j([[[31, '2026-11-19T09:58:10.000Z', 'preview finished'], [32, '2026-11-19T09:59:00.000Z', 'preview finished: Vercel failed']]]));
+  t('DS-913 AC3 a PR whose preview is still pending, or that has no preview check, is not released', free[0].done.some((d) => d.pr === 33 || d.pr === 34), false);
+  t('DS-913 a finished preview check carrying no time is not released, so a build taken since it cannot be freed by it', free[0].done.some((d) => d.pr === 36), false);
+  const lines = ofType(acts, 'out').map((a) => a.line);
+  t('DS-913 AC1 the report says the finished preview freed its unit', lines.includes("preview builds: PR #31's preview finished, so its preview-build unit is free for the next build"), true);
+  t('DS-913 AC2 the report names the failed preview', lines.includes("preview builds: PR #32's preview failed (Vercel), so its preview-build unit is free for the next build"), true);
+  const none = go(snap(list, { previews: true }), reads, () => ({ freed: [] }));
+  t('DS-913 a PR holding no unit gets no report line', ofType(none, 'out').some((a) => a.line.startsWith('preview builds:')), false);
+  const off = go(snap(list, { previews: false }), reads);
+  t('DS-913 AC5 with the kind off (or no §4 Vercel team) it reads and releases no lease and reports as before',
+    j([ofType(off, 'free-previews').length, ofType(off, 'out').length, ofType(off, 'pr-status').length]), j([0, 0, 5]));
+  const bad = go(snap(list, { previews: true }), reads, () => ({ unreadable: 'the lease store /x/leases.json is unreadable: bad JSON' }));
+  t('DS-913 AC6 an unreadable store is a report line', j(ofType(bad, 'out').map((a) => a.line)), j(['preview builds: leases were unreadable, so no preview-build unit was freed this pass (the lease store /x/leases.json is unreadable: bad JSON)']));
+  t('DS-913 AC6 and the rest of the pass runs as before', j([ofType(bad, 'pr-status').length, lists(bad).undrafted.length]), j([5, 5]));
+  const broke = go(snap(list, { previews: true }), reads, () => ({ failed: "EACCES: permission denied, mkdir '/x'" }));
+  t('DS-913 AC6 any other lease failure is a report line too, and the rest of the pass runs as before',
+    j([ofType(broke, 'out').map((a) => a.line), lists(broke).undrafted.length]),
+    j([["preview builds: freeing finished previews' preview-build units failed (EACCES: permission denied, mkdir '/x'); a unit still held lapses at its TTL"], 5]));
+  const dry = go(snap(list, { previews: true, dry: true }), reads);
+  t('DS-913 a dry run frees nothing', ofType(dry, 'free-previews').length, 0);
+  const kept = go(snap([done('Z', 35, { pr_status: status(35, 'MERGED', { merged_at: 'm', checks: [check('Vercel', 'completed', 'success')] }) })], { previews: true }), {});
+  t('DS-913 a status kept from an earlier pass, not read now, frees nothing', ofType(kept, 'free-previews').length, 0);
 }
 
 if (fails) { console.log(`${fails} failed`); process.exit(1); }

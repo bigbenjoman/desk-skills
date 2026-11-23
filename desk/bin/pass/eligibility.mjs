@@ -15,11 +15,13 @@
 //   finished {key}     -> whether the ticket's worker already printed AUTOPILOT_DONE
 //   reboot-wait {key}  -> why a worker stopped for a planned reboot still waits, or null once it may resume
 //   eligibility {eligible, spawnable, held, spawnHeld}   what decideEligibility decided
-//   slots {plan, machine, repo, repoUnlocked, slots, machineLine, repoLine}
-//                      what decideSlots decided
+//   slots {plan, machine, repo, repoUnlocked, slots, machineLine, repoLine, memLine}
+//                      what decideSlots decided; machine is the stricter of the worker count
+//                      (machineLine) and the memory reservations (memLine, null where none are read)
 import { parseBudget } from '../desk-env.mjs';
 import { keysOf } from '../desk-q.mjs';
 import { borrowPlan, machineBudget, repoBudget } from '../borrow.mjs';
+import { memBudget } from '../mem-lease.mjs';
 import { say, usageHeldText } from './shared.mjs';
 
 const stall = (line) => ({ type: 'stall', line });
@@ -55,7 +57,8 @@ function budgetOf(budget) {
 //   checkin       checkinTimes's {ok, why}
 //   health        health.mjs's {stalls, holding}
 //   pace          usage-pace.mjs's {bad, hold, line}, and paceProbe what a probe call for it read
-//   memory        {low, avail, hold, start, dropTo}: the spawn gate (config §3b "Spawn gate")
+//   memory        {low, avail, hold, start, dropTo, harm}: the spawn gate (config §3b "Spawn gate"), and
+//                 harm, the memory watch's recent harm signal that also holds it, or null
 //   lockQueue     suite-wait.mjs lockQueue's reading, or null where it is not read
 //   spawnGrant    {may, key, perm, queueBin}: config §3 autopilot-workers, and the queue.mjs path
 //   maintHold     whether the maintenance window holds
@@ -79,7 +82,8 @@ export function* decideEligibility(s) {
   else if (s.pace.hold) yield say(null, 'stalled', `${s.pace.line} (${running} running carry on; fix tries still start${s.paceProbe})`);
   // Low memory only delays a spawn by a pass; it never kills anything.
   const m = s.memory;
-  if (m.low) {
+  if (m.harm) yield say(null, 'stalled', `${m.harm} — holding spawns (${running} running carry on)`);
+  else if (m.low) {
     yield say(null, 'stalled', m.avail < m.hold
       ? `memory: ${m.avail.toFixed(1)}G available, under the ${m.hold}G floor — §3b says drop to ${m.dropTo} worker(s); ` +
         `holding spawns (${running} running; a worker mid-suite will drain)`
@@ -123,6 +127,7 @@ export function* decideEligibility(s) {
     : !s.checkin.ok ? 'config §3b "Check-in times" holds every spawn'
     : s.health.holding.length ? `a failing health check (${s.health.holding.join(', ')}) holds every spawn`
     : !g.may ? `config §3 ${g.key} is "${g.perm}"`
+    : s.memory.harm ? s.memory.harm
     : s.pace.bad ? `config §3b "${s.pacingRow}" holds every spawn`
     : s.pace.hold ? PACE_HELD : null;
   // Pacing holds new tickets, never a fix try: its PR is already out and stalls until the try runs, so
@@ -145,18 +150,26 @@ const planOf =(s, workers, on = s.borrowOn) => borrowPlan({
 //   running       this batch's running tickets, and ownBaseFix 1 while its base conflict fix runs
 //   auditWorkers  the repo's blind audits running (levers-audit.mjs), which belong to no batch's queue
 //   baseWanted    whether a base worker with no ticket to spawn wants its one slot
+//   auditWanted   whether a blind audit due in the repo wants its one slot, within the batch's own number
 //   machineProfiled  whether there is a machine profile; repoCaps each repo's §3b cap, by slug
 //   otherRepos    every other queue (borrow.mjs otherQueues), and repoBatches this repo's other batches
 //   batch, lastStart, maintHold
+//   memPool       the memory reservations (mem-lease.mjs memPool), or null where they are not read
 export function decideSlots(s) {
   const plan = planOf(s, s.running);
-  const wanted = Math.min(plan.slots, s.spawnable) || (s.baseWanted ? 1 : 0);
+  const tickets = Math.min(plan.slots, s.spawnable);
+  // A due audit adds its one slot where the batch's own number has one the tickets leave free.
+  const audit = s.auditWanted && tickets < s.concurrency - s.running - s.ownBaseFix ? 1 : 0;
+  const wanted = (tickets + audit) || (s.baseWanted ? 1 : 0);
   // The batch's own workers, its base conflict fix and the repo's blind audits, as other batches count them.
   const busy = s.running + s.ownBaseFix + (s.auditWorkers ?? 0);
-  const machine = machineBudget({
+  const workers = machineBudget({
     running: busy, wanted, machine: s.machineCap, queues: s.otherRepos,
     profiled: s.machineProfiled, capOf: (slug) => s.repoCaps[slug],
   });
+  // The memory reservations sit beside the worker count, and the stricter of the two decides.
+  const mem = memBudget(s.memPool, { wanted });
+  const machine = mem.room < workers.room ? mem : workers;
   const repo = repoBudget({
     batch: s.batch, running: busy, wanted, last: s.lastStart, cap: s.cap, batches: s.repoBatches,
   });
@@ -165,9 +178,9 @@ export function decideSlots(s) {
   // starts nothing this pass rather than counting unlocked. An idle sibling shares nothing, so it does not.
   const repoUnlocked = s.lockWhy != null && s.repoBatches.some((o) => o.error || o.live || o.running > 0);
   const slots = s.maintHold || repoUnlocked ? 0 : Math.min(plan.slots, machine.room, repo.room);
-  const machineLine = machine.line + (s.machineCap != null && s.lockWhy ? ` (counted without the lock: ${s.lockWhy})` : '');
+  const machineLine = workers.line + (s.machineCap != null && s.lockWhy ? ` (counted without the lock: ${s.lockWhy})` : '');
   const repoLine = repoUnlocked ? `repo workers: nothing starts this pass: the repo's batches share its §3b cap, and ${s.lockWhy}` : repo.line;
-  return [{ type: 'slots', plan, machine, repo, repoUnlocked, slots, machineLine, repoLine }];
+  return [{ type: 'slots', plan, machine, repo, repoUnlocked, slots, machineLine, repoLine, memLine: mem.line }];
 }
 
 // The slots a ticket worker may take: a base conflict fix worker still at it holds one of the batch's

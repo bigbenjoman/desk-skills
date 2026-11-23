@@ -6,6 +6,7 @@ import { readFileSync, realpathSync, readdirSync, mkdirSync, openSync, closeSync
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+import { toolResults } from './log-tool-calls.mjs';
 
 // A desk-review round's results file, as a worker leaves it at its worktree root (desk-review's core,
 // *The verdict*): kept past the worker's session under <state>/reviews/<KEY>/, by the pass once the
@@ -123,19 +124,8 @@ const TURN_EVENTS = new Set(['assistant', 'user', 'stream_event', 'system']);
 const HOST_RESULTS = 12;
 const HOST_FAULT = /\bENOSPC\b|No space left on device/;
 export function hostFault(logText) {
-  const results = [];
-  for (const line of String(logText ?? '').split('\n')) {
-    if (!line.includes('tool_result')) continue;
-    let e;
-    try { e = JSON.parse(line); } catch { continue; }
-    const content = e?.type === 'user' ? e.message?.content : null;
-    if (!Array.isArray(content)) continue;
-    for (const c of content) if (c?.type === 'tool_result') results.push(c);
-  }
-  for (const c of results.slice(-HOST_RESULTS).reverse()) {
-    if (!c.is_error) continue;
-    const text = typeof c.content === 'string' ? c.content
-      : Array.isArray(c.content) ? c.content.map((x) => (typeof x?.text === 'string' ? x.text : '')).join('\n') : '';
+  for (const { failed, text } of toolResults(logText).slice(-HOST_RESULTS).reverse()) {
+    if (!failed) continue;
     const m = HOST_FAULT.exec(text);
     if (!m) continue;
     const at = Math.max(0, m.index - 80);
@@ -162,6 +152,11 @@ const BUDGET_SUBTYPE = 'error_max_budget_usd';
 // Whether the log's last launch ended at its per-worker budget: its own result event says so. With the
 // budget (desk-env.mjs workerBudget) off, no ceiling was passed, so that subtype is any other error.
 export const budgetStop = (logText, budget) => !budget?.off && lastResult(logText, { launch: true })?.subtype === BUDGET_SUBTYPE;
+// The subtype of the error that ended the log's last launch, or null where it ended without one or was killed.
+export const errorSubtype = (logText) => {
+  const r = lastResult(logText, { launch: true });
+  return r?.is_error && typeof r.subtype === 'string' && r.subtype ? r.subtype : null;
+};
 
 export const endedNormally = (logText) => lastResult(logText) != null;
 
@@ -196,7 +191,8 @@ export function prBodyIn(texts) {
 }
 
 // The steps a DONE marker names as waiting on its PR's merge: `follow_on=` then a one-line JSON array of
-// {"step": "<one line>", "row": "<the §3 key it needs>", "after": "<gate>"} (row null where none says),
+// {"step": "<one line>", "row": "<the §3 key it needs>", "after": "<gate>", "wait_days": <n>} (row null
+// where none says; wait_days, the days after the merge it falls due, only where it waits),
 // before any said=, which runs to the line's end. -> { steps, error }: steps [] with no follow_on=, and
 // with an error naming why where one is there but does not read.
 export const FOLLOW_ON_MAX = 500;
@@ -220,7 +216,14 @@ export function followOnIn(done) {
   if (bad !== undefined) return { steps: [], error: `an entry is not {"step": "…", "row": "…"}: ${JSON.stringify(bad)}` };
   const badGate = list.find((x) => x.after != null && !FOLLOW_GATES.includes(x.after));
   if (badGate !== undefined) return { steps: [], error: `an entry's "after" is not one of ${FOLLOW_GATES.join(', ')}: ${JSON.stringify(badGate)}` };
-  return { steps: list.map((x) => ({ step: x.step.trim().slice(0, FOLLOW_ON_MAX), row: x.row?.trim() || null, ...gateOf(x.after) })), error: null };
+  const badWait = list.find((x) => x.wait_days != null && !(typeof x.wait_days === 'number' && x.wait_days > 0 && Number.isFinite(x.wait_days)));
+  if (badWait !== undefined) return { steps: [], error: `an entry's "wait_days" is not a positive number: ${JSON.stringify(badWait)}` };
+  const steps = list.map((x) => ({ step: x.step.trim().slice(0, FOLLOW_ON_MAX), row: x.row?.trim() || null, ...gateOf(x.after),
+    ...(x.wait_days != null ? { wait_days: x.wait_days } : {}) }));
+  // A step is known by its text and gate (sameStep), so two alike would be settled and checked as one.
+  const twin = steps.find((x, i) => steps.findIndex((y) => sameStep(x, y)) !== i);
+  if (twin !== undefined) return { steps: [], error: `two entries have the same "step" and "after": ${JSON.stringify(twin.step)}` };
+  return { steps, error: null };
 }
 // A queue entry whose follow-on steps wait on the person: its PR merged, steps kept, none said run yet.
 // Two follow-on steps are the same step by their text and gate (`after`, none for the merge).

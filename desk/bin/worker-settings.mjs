@@ -76,6 +76,7 @@ import { grantPush } from './batch-state.mjs';
 import { baseRefspec } from './base-fix.mjs';
 import { wrappersFile } from './desk-lines.mjs';
 import { parseEvidenceRow } from './evidence.mjs';
+import { parseRecipe } from './preview-db.mjs';
 
 const [mode, ...rest] = process.argv.slice(2);
 const opt = {};
@@ -416,6 +417,8 @@ if (mode === 'triage') {
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-wait.mjs:*)`, `Bash(node ${b}/desk-wait.mjs:*)`]),
     // Whether its AUTOPILOT_PARK_CLEARS_WHEN line reads as a form a pass checks: reads and writes nothing.
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/clears-when.mjs --check:*)`, `Bash(node ${b}/clears-when.mjs --check:*)`]),
+    // desk-pr's closing-keyword check on a PR body file: reads it and writes nothing.
+    ...BIN_FORMS.flatMap((b) => [`Bash(${b}/closing-keywords.mjs:*)`, `Bash(node ${b}/closing-keywords.mjs:*)`]),
     // `render` and `compare` open Chromium on the saved boards (and a built Storybook), so only
     // under the browser lock.
     ...BIN_FORMS.flatMap((b) => BIN_FORMS.flatMap((d) => [' render', ' compare'].map((s) => `Bash(${b}/with-lock.sh browser node ${d}/desk-design.mjs${s}:*)`))),
@@ -640,6 +643,16 @@ if (mode === 'triage') {
   if (DISPATCH !== 'yes') denied.push(`${E.permissionKey('worker-workflow-dispatch')} (${setting('worker-workflow-dispatch')})`);
   else if (!DISPATCH_RULES.length && !EVIDENCE_RULES.length) warns.push(`§3 worker-workflow-dispatch is yes, but ${dispatchRef ? '§4 Worker workflows names no usable workflow' : 'this ticket has no branch of its own to run one on'} — no workflow is allowed`);
   allow.push(...DISPATCH_RULES, ...EVIDENCE_RULES);
+  // §3 worker-preview-db: §4 Preview database's recipe for this ticket's own PR, through preview-db.mjs up
+  // with this ticket's branch fixed by the rule; it checks the PR is the branch's own open one and adds
+  // a migration. The error-page check reads and moves only this ticket's screenshots. A repo with no
+  // recipe has nothing to deny, so its workers are not told of the row.
+  const recipe = parseRecipe(cfgList('preview-db'));
+  if (recipe?.errors) warns.push(`§4 Preview database ${recipe.errors.join('; ')} — not allow-listed`);
+  else if (recipe && !baseFix && dispatchRef) {
+    grant('worker-preview-db', BIN_FORMS.map((b) => `Bash(node ${b}/preview-db.mjs up ${BRANCH} *)`), []);
+  }
+  allow.push(...BIN_FORMS.flatMap((b) => ['', '/'].map((s) => `Bash(node ${b}/preview-db.mjs check ${STATE}/images/${T}${s})`)));
   deny.push(...bash('gh', ' issue comment', ' issue edit', ' issue close', ' issue create'));
   grant('jira-comment', bash('desk-jira', ' comment'));
   grant('jira-transition', bash('desk-jira', ' transition'), JIRA_TRANSITION_DENY);
@@ -664,6 +677,10 @@ if (mode === 'triage') {
       allow.push('Bash(desk-codex:*)', `Bash(${E.HOME}/.local/bin/desk-codex:*)`, 'Bash(~/.local/bin/desk-codex:*)',
         ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-codex.mjs:*)`, `Bash(node ${b}/desk-codex.mjs:*)`]));
       deny.push(...bash('codex', ' * -m*', ' *--model*', ' * -p*', ' *--profile*', ' * -o*', ' *--output-last-message*', ' * -c*'));
+    } else {
+      // With it off, a review's finder and refuter run through codex-exec's review form, which sets
+      // every codex argument itself and ends the call at its timeout.
+      allow.push(...BIN_FORMS.flatMap((b) => [`Bash(${b}/codex-exec.mjs review:*)`, `Bash(node ${b}/codex-exec.mjs review:*)`]));
     }
   } else { deny.push(...bash('codex')); denied.push(`${E.permissionKey('codex-review')} (${setting('codex-review')})`); }
 
@@ -703,8 +720,8 @@ if (mode === 'triage') {
   // Reading the public web: searching, and fetching any URL on any host by GET (no domain limit).
   grant('worker-web-read', ['WebSearch', 'WebFetch']);
 
-  // Starting a §4 Local services entry, detached, by its compose service name (each item's first
-  // word). Compose names a project after its directory, so from a worktree a bare `up` would start a
+  // Starting a §4 Local services entry, detached, by its compose service name (each item read by the
+  // schema's service-port type, `<service> [:<port>]`). Compose names a project after its directory, so from a worktree a bare `up` would start a
   // second stack: the one form allowed reads the main checkout's compose file, the shared project,
   // and never recreates a running container or starts its dependencies. Stopping or removing one
   // stays denied above: another session may be using it.
@@ -722,9 +739,9 @@ if (mode === 'triage') {
   const composeFile = !stackByEnv && base ? [base, override].filter(Boolean).join(' -f ') : null;
   const services = [];
   for (const raw of cfgList('local-services')) {
-    const name = E.localServiceName(raw);
-    if (name) services.push(name);
-    else if (E.permission('worker-local-services') === 'yes') warns.push(`§4 Local services item "${raw}" does not start with a compose service name — not allow-listed`);
+    const item = E.parseServicePort(raw);
+    if (!item.error) services.push(item.value.service);
+    else if (E.permission('worker-local-services') === 'yes') warns.push(`§4 Local services item ${item.error} — not allow-listed`);
   }
   const ups = !composeFile ? [] : services.flatMap((s) => [...exact('docker', ` compose -f ${composeFile} up -d --no-recreate --no-deps ${s}`),
     ...exact('docker-compose', ` -f ${composeFile} up -d --no-recreate --no-deps ${s}`)]);
@@ -750,6 +767,7 @@ if (mode === 'triage') {
       ...bash('git', ' push'),
       ...bash('gh', ' pr create', ' pr edit', ' pr review', ' pr comment', ' issue comment', ' pr update-branch', ' run rerun', ' workflow'),
       ...BIN_FORMS.map((b) => `Bash(node ${b}/evidence.mjs dispatch:*)`),
+      ...BIN_FORMS.map((b) => `Bash(node ${b}/preview-db.mjs up:*)`),
       ...bash('desk-jira', ' edit', ' comment', ' create', ' create-batch', ' attach', ' labels', ...JIRA_NEVER), ...JIRA_TRANSITION_DENY,
     );
   }

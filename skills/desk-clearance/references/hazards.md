@@ -1,7 +1,7 @@
 # Hazards, conventions, and running as a loop
 
 Below, "the default branch" is config §0 Default branch, and §-references are to this repo's config
-(`desk-env where`, then Read it).
+(the sections read at the skill's start).
 
 ## What keeps biting
 

@@ -1,4 +1,5 @@
 // suite: bench-build (a task set frozen from merged PRs, kept only where the hidden tests fail at base and pass at merge)
+// layer: L2
 import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, realpathSync, statSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';

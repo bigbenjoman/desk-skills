@@ -2,16 +2,26 @@
 //
 // With the ledger lever on, every queue write (queue-store.mjs writeQueueFile) appends the difference
 // between the queue on disk before it and the queue it wrote: per ticket, a typed event for a change
-// of state and one legacy_set for every other field changed with it. It records what queue.json kept,
+// of state and one legacy_set for every other field changed with it, and for the batch, its red base
+// starting or clearing (base_red, base_green) and its platform outage starting or clearing
+// (platform_outage, platform_clear). It records what queue.json kept,
 // never the changes a writer asked for. A ticket leaving the queue is archived, or moved out of the
 // batch; one arriving with a moved_from record is moved in. The first write the lever sees for a batch
 // the log has never named first seeds one event per ticket from the queue as it stood.
 //
 // queue.json is written first and the log second, and a failed append never fails the queue write: it
 // comes back as one missed append for the writer to report.
+//
+// queueDifference rebuilds a batch's queue from the log and names each ticket field where queue.json
+// differs from it: the pass reports that after its writes, and `queue.mjs rebuild` writes the rebuild out.
 import { basename, dirname } from 'node:path';
 import { BATCHES_DIR, leverOn } from './desk-env.mjs';
-import { append, fold, invalid, diffQueues, withoutProjectionOnly, PARK_KINDS, TRANSITIONS } from './ticket-ledger.mjs';
+import { append, fold, invalid, diffQueues, project, withoutProjectionOnly, parkOf, waitsOfField, ANSWERED, WAITS, PARK_KINDS, TRANSITIONS } from './ticket-ledger.mjs';
+import { fieldDiffs, flattenQueue } from './queue-fields.mjs';
+import { readQueueAt, same } from './queue-store.mjs';
+import { FINISHED } from './queue-states.mjs';
+import { parkKindOf } from './batch-state.mjs';
+import { lock, unlock } from './dir-lock.mjs';
 
 // What the log calls the standing batch, as `queue.mjs transfer <TICKET> standing` does.
 export const STANDING = 'standing';
@@ -47,9 +57,12 @@ function stateEvent(from, now, at) {
     case 'queued': return from == null || from === 'done' ? { type: 'admitted', data: {} } : { type: 'requeued', data: {} };
     case 'triaged': return { type: 'triaged', data: { questions: Array.isArray(now.questions) ? now.questions : [] } };
     case 'running': return { type: 'spawned', data: { worker: text(now.session_id) ?? text(now.stage), round: count(now.resumes) ?? 0, login: text(now.login?.name), port: count(now.port) } };
+    // The whole park, so its replay is the park queue.json keeps: its kind (worked out from its question
+    // for a park recorded before parks carried one) and the write it awaits approval of, verbatim.
     case 'parked': {
-      const p = now.park ?? {};
-      return { type: 'parked', data: { kind: PARK_KINDS.includes(p.kind) ? p.kind : 'question', question: text(p.question), approve: p.approve && typeof p.approve === 'object' ? p.approve : null, since: text(p.since) ?? at, deadline: text(p.deadline) } };
+      const p = now.park && typeof now.park === 'object' ? now.park : {};
+      return { type: 'parked', data: { ...p, kind: PARK_KINDS.includes(p.kind) ? p.kind : parkKindOf(p.question),
+        question: text(p.question), approve: p.approve && typeof p.approve === 'object' ? p.approve : null, since: text(p.since) ?? at, deadline: text(p.deadline) } };
     }
     case 'done': return { type: 'finished', data: { pr: count(now.result?.pr) } };
     case 'failed': return { type: 'failed', data: { subtype: text(now.failed?.subtype) ?? 'unknown' } };
@@ -83,6 +96,37 @@ function stateEvents(was, now, at) {
 // The typed events whose replay clears a ticket's park (ticket-ledger.mjs apply).
 const CLEARS_PARK = ['admitted', 'requeued', 'spawned', 'finished', 'unparked'];
 
+// The triage questions ticket `was` gained as answered in becoming `now`, each an answered event, taken
+// out of the fields `fields` records with it. Only answers added to the list it had, on a ticket already
+// in the queue and not finished: any other change to that list is recorded as the field.
+function newlyAnswered(was, now, fields) {
+  if (was === undefined || !own(fields, ANSWERED) || FINISHED.includes(now.state)) return [];
+  const before = Array.isArray(was[ANSWERED]) ? was[ANSWERED] : [];
+  const after = now[ANSWERED];
+  if (!Array.isArray(after) || after.length <= before.length || !before.every((q, i) => same(q, after[i]))) return [];
+  const added = after.slice(before.length);
+  if (!added.every((q) => text(q))) return [];
+  delete fields[ANSWERED];
+  return added;
+}
+
+// The waits ticket `was` ended, started or escalated in becoming `now`, each a waited or waiting event,
+// taken out of the fields `fields` records with it. A waits field that is not a map of whole waits is
+// recorded as the field.
+function waitEvents(was, now, fields) {
+  if (!own(fields, WAITS)) return [];
+  const before = waitsOfField(was?.[WAITS]);
+  const after = waitsOfField(now[WAITS]);
+  if (!before || !after) return [];
+  const out = [
+    ...Object.keys(before).filter((on) => !own(after, on)).map((on) => ({ type: 'waited', data: { on } })),
+    ...Object.entries(after).filter(([on, w]) => !same(w, before[on])).map(([, w]) => ({ type: 'waiting', data: w })),
+  ];
+  if (out.some((e) => invalid({ ...e, batch: STANDING, key: now.key ?? 'ticket' }))) return [];
+  delete fields[WAITS];
+  return out;
+}
+
 // The events queue `before` (the file as it stood, or null) becoming queue `after` records in `batch`.
 // `archived` holds each ticket this write moved to the archive, as it was archived. `elsewhere(key)`
 // says the log already has that ticket in another batch, so its leaving this one records nothing.
@@ -115,15 +159,43 @@ export function queueEvents(before, after, { batch, archived = {}, elsewhere = (
         if (typed.length && typed.every((e) => !invalid({ ...e, batch, key }))) {
           for (const e of typed) ev(key, e.type, e.data);
           if (reached) delete fields.state;
-          // A park the queue keeps is laid back over one an event's replay cleared.
-          if (now.park != null && typed.some((e) => CLEARS_PARK.includes(e.type))) fields.park = now.park;
+          // A park the queue keeps is laid back over one an event's replay cleared, and one a parked
+          // event's replay leaves as it is needs no field of its own.
+          const parked = typed.findLast((e) => e.type === 'parked');
+          if (parked && same(parkOf(parked.data), now.park)) delete fields.park;
+          else if (now.park != null && typed.some((e) => CLEARS_PARK.includes(e.type))) fields.park = now.park;
         }
       }
+      for (const qid of newlyAnswered(was, now, fields)) ev(key, 'answered', { qid });
+      for (const e of waitEvents(was, now, fields)) ev(key, e.type, e.data);
       if (Object.keys(fields).length) ev(key, 'legacy_set', { fields });
     }
     if (own(archived, key)) ev(key, 'archived', {});
   }
+  for (const c of BATCH_SPELLS) for (const e of spellEvents(before, after, c)) ev(null, e.type, e.data);
   return out;
+}
+
+// The batch's conditions kept as one queue field each, a spell at a time, as each writer records it:
+// its red base (`base_red`, pass/base-gate.mjs decideBaseRed) and its platform outage
+// (`platform_outage`, pass/fix-tries.mjs decideOutage). `same`: the spell `before` held is the one now.
+const BATCH_SPELLS = [
+  { field: 'base_red', start: 'base_red', clear: 'base_green', same: (a, b) => a.branch === b.branch && a.since === b.since,
+    data: (r) => ({ check: r.check, since: r.since, deadline: r.deadline, merges: r.merges }) },
+  { field: 'platform_outage', start: 'platform_outage', clear: 'platform_clear', same: (a, b) => a.since === b.since,
+    data: (r) => ({ check: r.check, since: r.since, deadline: r.deadline }) },
+];
+
+// A batch condition starting or clearing in this write: one start event as a spell is first recorded,
+// one clear as it is cleared. A change to the same spell's record (its escalation, the checks it
+// names) appends nothing.
+function spellEvents(before, after, { field, start, clear, same, data }) {
+  const was = before?.[field] ?? null;
+  const now = after?.[field] ?? null;
+  if (was && !now) return [{ type: clear, data: {} }];
+  if (!now || typeof now !== 'object' || (was && same(was, now))) return [];
+  const e = { type: start, data: data(now) };
+  return invalid({ ...e, batch: STANDING, key: null }) ? [] : [e];
 }
 
 // One seeded event per ticket of queue `q` (the file as it stood) in `batch`, but for any in `skip`.
@@ -156,6 +228,46 @@ export function recordWrite(file, before, after, { by, archived = {}, from = nul
   } catch (e) {
     return { appended: 0, missed: 1, why: String(e?.message ?? e).split('\n')[0] };
   }
+}
+
+// A rebuilt ticket's `holds` is its held_by as a list, which queue.json does not keep.
+const REBUILT_ONLY = ['holds'];
+// Queue `q`'s tickets alone, as the difference compares them: the queue's own fields are carried into
+// a rebuild from queue.json (ticket-ledger.mjs project), and its archive is on neither side.
+const comparable = (q) => ({
+  queue: { tickets: Object.fromEntries(Object.entries(q?.tickets ?? {}).map(([k, t]) => [k,
+    t && typeof t === 'object' ? Object.fromEntries(Object.entries(withoutProjectionOnly(t)).filter(([f]) => !REBUILT_ONLY.includes(f))) : t])) },
+});
+
+// The stamp every write sets is compared as set or not: a write of projection-only fields moves it in
+// queue.json and appends nothing (STAMPS). Every other field is compared by its value.
+const STAMP_PATH = new RegExp(`^\\S+ (?:${STAMPS.join('|')})$`);
+const leaf = (v, path) => (v != null && STAMP_PATH.test(path) ? `<set:${typeof v}>` : JSON.stringify(v));
+
+// Queue `file`'s batch rebuilt from the log, and every ticket field where queue.json differs from it:
+// { rebuilt, seeded, diffs: [{ path, rebuilt, queue }] }, each path "<ticket> <field>" (queue-fields.mjs).
+// It holds the queue lock, as every writer does (waiting up to `waitMs`), so no write lands between
+// reading queue.json and reading the log. With `seed`, a batch the log has never named is first seeded
+// from queue.json, appended as `by`, and `seeded` counts its events. Throws when the queue or the log
+// cannot be read, or the lock cannot be taken.
+export function queueDifference(file, { seed = false, by, waitMs = 10_000 } = {}) {
+  const { repoDir, batch } = ledgerTarget(file);
+  const dir = `${file}.lock`;
+  lock(dir, { waitMs, timeout: (pid) => new Error(`the queue is locked by pid ${pid ?? '?'} past the ${waitMs / 1000}s wait`) });
+  try {
+    const current = readQueueAt(file);
+    if (!current) throw new Error(`no queue to compare at ${file}`);
+    let state = fold(repoDir);
+    let seeded = 0;
+    if (seed && !own(state.batches, batch)) {
+      const events = seedEvents(current, batch);
+      if (events.length) { append(repoDir, events, { by }); state = fold(repoDir); seeded = events.length; }
+    }
+    const rebuilt = project(state, batch, current);
+    const diffs = fieldDiffs(flattenQueue(comparable(rebuilt), { leaf }), flattenQueue(comparable(current), { leaf }))
+      .map((d) => ({ path: d.path, rebuilt: d.a, queue: d.b }));
+    return { rebuilt, seeded, diffs };
+  } finally { unlock(dir); }
 }
 
 // The line a writer prints for a missed append, or null when there was none. It starts MISSED_PREFIX.

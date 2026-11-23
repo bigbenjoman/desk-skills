@@ -10,8 +10,11 @@ hold, that is in the core or in the file the core's reference table names.
 `supervisor.mjs` runs passes from launchd on macOS, or a systemd user timer on Linux, with no model in
 the loop, so a batch keeps moving while no session is open and after a reboot. `install` (run inside the
 repo, once per repo) writes the agent `com.desk-skills.supervisor.<slug>` (on Linux, that name's
-`.service` and `.timer` in `~/.config/systemd/user`, enabled with `systemctl --user`): a tick at login
-and every 3 minutes (`--interval <s>` to change it). On Linux, ticks stop at logout unless lingering is
+`.service`, `.timer` and `.path` in `~/.config/systemd/user`, enabled with `systemctl --user`): a tick at login
+and every 3 minutes (`--interval <s>` to change it), and within seconds of a worker exiting: the exit
+file a worker leaves in the repo's state folder wakes a tick, which deletes the exit files its passes
+saw. Exits landing while it runs get one more round, at least 20 seconds after the last, so a burst of
+exits runs at most two passes, and a pass an exit woke counts no quiet pass toward stopping a worker. On Linux, ticks stop at logout unless lingering is
 on (`loginctl enable-linger`), and install says when it is off. On WSL, ticks run only while WSL is up,
 and lingering does not keep it up: WSL stops once every terminal closes. Keep a terminal open, or add a
 Windows Task Scheduler entry at logon that runs `wsl.exe --exec sleep infinity` (with `-d <distro>` if
@@ -21,6 +24,15 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
 
 - skips while a pass holds `<state>/orchestrator.lock`, or the previous tick's pass still runs, and
   logs the skip;
+- first reads every declared config row through `desk-env get --json`. A fatal error (a value the
+  row's reader refuses today, such as `none` beside another item) runs no pass and spawns no worker
+  that tick, logs the row, and pushes one notification naming the row, the item and the form
+  expected, not repeated while the row stays as it is (a row fixed and then broken again is pushed
+  again). Such a tick still stops a decider past its time and watches the merge driver, as an idle
+  tick does. An error that is not fatal never blocks
+  (`desk-env drift` reports it). `DESK_CONFIG_PREFLIGHT=off` turns the check off: in a tick's
+  environment, or set when `install` runs, which carries it into the installed agent; the log then
+  says the check is off;
 - runs `pass.mjs --json`, passing on only the approvals recorded with the batch (`approved.workers`
   as `AUTOPILOT_USER_APPROVED=1`, `approved.base_push` as `AUTOPILOT_BASE_PUSH_APPROVED=1`). It never
   grants one it was not given, so a batch whose `ask` was never answered spawns nothing and the pass
@@ -29,18 +41,23 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
   records `base_push_ask` on the queue rather than listing it as waiting, so no decider takes it:
   `/desk-needs-you` asks it once as the batch's `base-push` item, and its `approve` sets
   `approved.base_push`;
-- where a base sync merged but its push was refused while the base lags too far for anything to
-  spawn, the pass records `base_sync_stuck` on the queue: `/desk-needs-you` lists it first as the
-  batch's `base-sync` item, naming the frozen tickets and the command that pushes the base, and the
-  next pass that finds the base current clears it;
+- where a base sync fails (its push refused, the base not fetched or not recreated) while that holds
+  every spawn, the pass records `base_sync_stuck` on the queue: `/desk-needs-you` lists it first as
+  the batch's `base-sync` item, naming the frozen tickets, the failure and, for a refused push, the
+  command that pushes the base, and the next pass that finds the base current clears it;
 - appends the report to `<state>/supervisor.log`;
 - sends one desktop notification, titled with the repo, for the pass's `push` entries the last
   notification did not carry (the check-in digest, a production-broken park), or for a pass that
   refused or failed. This replaces Stage 6b while the supervisor runs;
-- starts the merge driver for the queue's tickets (it reads their holds from the queue) while tickets
-  are still to merge and no driver holds `<state>/merge-driver.lock.d`, where §3 `autopilot-merge` and
-  `pr-merge-green` are both `yes` or the batch's `approved.merge` is `true`. Declined, it starts none,
-  and each green PR the pass lists as `READY TO MERGE` goes to the next check-in digest;
+- starts the merge driver while tickets are still to merge and no driver holds the repo's lock (`repo.lock.d`
+  in the standing batch's `merge-driver` state folder), where §3 `autopilot-merge` and `pr-merge-green` are both `yes` or the
+  batch's `approved.merge` is `true`. Declined, it starts none, and each green PR the pass lists as
+  `READY TO MERGE` goes to the next check-in digest. One driver runs for all of the repo's batches
+  (`merge-driver.sh --all-batches`, its log the standing batch's `merge-driver.log`): each sweep it
+  lists the author's open PRs once, then runs one loop for each handed-over batch with a merge grant,
+  onto that batch's own base, logging to that batch's own `merge-driver.log`. A red base holds only
+  its own batch. It points the lock of each batch it merges for at itself, so the batch reads as having a driver, and
+  leaves a batch whose lock a driver of its own holds;
 - when a pass needs the person, starts the decider (`decider.mjs`): one fresh headless session per
   repo at a time, at low effort, given only that pass's report and `references/orchestrator-recovery.md`.
   It settles what those rules let you do without asking (a requeue of a lane A, B, D or E worker's park that
@@ -112,3 +129,20 @@ spine and owner-table approval.
 **By hand**, `/desk-admit <TICKET>...` makes the same checks now on the tickets the person names and
 admits each that passes into the supervisor's batch (`intake.mjs admit`), with no query needed;
 what fails a check comes back to the person with why, not to the digest.
+
+#### Raising a ticket from an event: push
+
+A producer that raises a ticket from an event (the Sentry investigator, or any other) admits it with
+`node ~/.claude/desk/bin/intake.mjs push <KEY> [--json]`, run from inside the repo. Push needs no
+intake query and does not wait out the 15 minutes. It takes intake's lock, waiting while a standing
+intake holds it, so the two never triage one ticket twice. Then it reads intake's register and runs
+the same batch gate, triage and checks. A ticket it admits is recorded as `by: push`, and a
+supervisor tick starts at once, whose report lists it. Before pushing, the producer must have
+created the ticket in §4 Jira project (its key matches §4 Ticket key pattern) and made it lint-clean
+(`desk-jira lint`). §3 `autopilot-workers` must be `yes`. The exit code says what happened:
+
+| Exit | Meaning |
+|---|---|
+| 0 | Admitted, its batch named. Or already in the queue, the register or another batch, or done in Jira: nothing changed |
+| 10 | Not admitted yet, and pushing again later may admit it: its triage failed, a standing batch could not be started, or another intake held the lock for 30 minutes |
+| 11 | Not admitted until the person acts, with the reason printed: a key that does not match the pattern (refused before any Jira call), §3 `autopilot-workers` not `yes`, a batch not handed over or on a base, an epic, a ticket routed to another batch, or one handed to the digest (lane C or D, a blocking lint finding, open questions, size L or XL, or a third failed triage in a row) |

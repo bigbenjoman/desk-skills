@@ -3,7 +3,7 @@
 // PERMISSION_KEYS below are derived from it (desk-env re-exports both), and the config suite holds it
 // equal to the template both ways (coverage), so neither can drift unnoticed.
 //
-// An entry is { id, section, label, kind, type, example, default?, machine?, unread? }:
+// An entry is { id, section, label, kind, type, example, default?, machine?, unread?, forced? }:
 //   id       the logical id scripts name (`desk-env get <id>`, `perm <id>`); a §3 row's id is its Key
 //   section  '0', '1', '2', '3', '3b', '4' or '5'
 //   label    the row's first cell as the template writes it, backticks aside (a §3 row's Key)
@@ -16,6 +16,7 @@
 //   machine  the machine profile key the row falls back to when the repo leaves it unset
 //   unread   true for a row no script reads through desk-env yet: it stays out of CONFIG_ROWS, so
 //            `desk-env ids`, `get` and `config` print only the rows scripts read
+//   forced   [{ row, when, value, reason }] where another row settles this one (settledBy, forcedRows)
 // The §3c rule ledger and the rows inside a 'table' entry's table are the person's own, so they have
 // no entries.
 
@@ -39,10 +40,29 @@ export function parseCommandItem(item) {
   return { dir: '.', cmd: String(item).trim() };
 }
 
+// A §4 Test sign-in item, `<app dir>: <email>` or a bare email for the root: an existing development
+// user's address, never a password. -> { dir, email }, or null where the rest is not one address.
+export function testSigninOf(item) {
+  const { dir, cmd } = parseCommandItem(item);
+  return /^[^\s@:]+@[^\s@:]+\.[^\s@:]+$/.test(cmd) ? { dir, email: cmd } : null;
+}
+
+// A §4 Preview database item, `<step>: <command>`: one step of the recipe that gives a PR adding a
+// migration a database branch and preview of its own (preview-db.mjs). A command names the PR's
+// branch, its database branch and its number only as {branch}, {db} and {pr}; a shell `${…}` is its own.
+// -> { step, cmd }, or null.
+export const PREVIEW_DB_STEPS = Object.freeze(['create', 'migrate', 'seed', 'override', 'rebuild', 'delete']);
+export const PREVIEW_DB_PLACEHOLDERS = Object.freeze(['branch', 'db', 'pr']);
+export function previewDbStepOf(item) {
+  const m = /^([a-z]+):\s+(\S.*)$/.exec(String(item ?? '').trim());
+  if (!m || !PREVIEW_DB_STEPS.includes(m[1])) return null;
+  const names = [...m[2].matchAll(/(?<!\$)\{([^{}\s]*)\}/g)].map((x) => x[1]);
+  return names.every((n) => PREVIEW_DB_PLACEHOLDERS.includes(n)) ? { step: m[1], cmd: m[2] } : null;
+}
+
 // The compose service a §4 Local services item starts with, ending at whitespace or a colon (`search
-// :8108`, `search: 8108`, `search`), or null. worker-settings allow-lists a worker starting it by this
-// name, and drift names an item it cannot read.
-export function localServiceName(item) {
+// :8108`, `search: 8108`, `search`), or null. The service-port type reads an item's service by it.
+function localServiceName(item) {
   return /^[a-z0-9][a-z0-9_.-]*(?=[\s:]|$)/.exec(String(item ?? '').trim())?.[0] ?? null;
 }
 
@@ -84,6 +104,14 @@ const permWords = (key) => [...permValues(key), 'never', 'stop'];
 const permMatch = (key, v) => new RegExp(`^(${permWords(key).join('|')})\\b`, 'i').exec(String(v).trim())?.[1].toLowerCase() ?? null;
 // A §3 value: one of permValues, or never or stop; anything else is a no.
 export const permValue = (key, v) => permMatch(key, v) ?? 'no';
+
+// One §4 Field defaults item, `<field> = <value>` or `<field> = from parent`: { field, value } or
+// { field, parent: true }, or null for an item that is neither.
+export function fieldDefaultOf(item) {
+  const m = /^\s*([^=\s]+)\s*=\s*(.*\S)\s*$/.exec(String(item ?? ''));
+  if (!m) return null;
+  return /^from parent$/i.test(m[2]) ? { field: m[1], parent: true } : { field: m[1], value: m[2] };
+}
 
 // §4 Required fields rules (the row's items, `none` dropped) for an issue type, or for every type with
 // none named: {need: [field id, in rule order], malformed: [item that is not `<Type>[, <Type>…]: <field>[, <field>…]`]}.
@@ -305,6 +333,12 @@ const servicePort = (s) => {
   const port = service == null ? null : PORT_TAIL.exec(s.slice(service.length));
   return port && (port[1] == null || Number(port[1]) <= 65535) ? { service, port: port[1] == null ? null : Number(port[1]) } : null;
 };
+// The form of a §4 Local services item, as the service-port type's error and drift's UNLISTED line name it.
+export const SERVICE_PORT_FORM = '`<service> [:<port>]`';
+// One §4 Local services item read by the row's service-port type: -> { value: { service, port } } or
+// { error } naming the form. worker-settings allow-lists a worker starting the service by this read,
+// and drift names an item it refuses. desk-env re-exports it.
+export const parseServicePort = (item) => TYPES['service-port'].parse(String(item ?? '').trim());
 // §3b Check-in times: every span joined, then local HH:MM times split on commas or spaces. The digest
 // reads the row through these (digest.mjs checkinTimes) and falls back to its default on a bad row, so
 // the type's error is not fatal.
@@ -392,13 +426,36 @@ export function parseOperatorChecks(items) {
 }
 
 // §4 Live reads items: `<name>: <command>`, as parseOperatorChecks reads them, where the name is a file
-// name too, so it holds no path. -> { reads: [{ name, command }], errors: [item] }. live-read.mjs
+// name too, so it holds no path. A paid call carries both its £ caps after the name, as
+// `<name> [£0.10/call, £2/day]: <command>`; a bracket without both, or a name given twice in any case,
+// is refused. -> { reads: [{ name,
+// command, caps: { call, day } in pounds, or null for a free read }], errors: [item] }. live-read.mjs
 // re-exports it.
 const LIVE_READ_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const POUNDS = String.raw`£(\d+(?:\.\d+)?)`;
+const LIVE_READ_CAPS = new RegExp(String.raw`^${POUNDS}\s*/\s*call\s*,\s*${POUNDS}\s*/\s*day$`, 'i');
+export const LIVE_READ_FORMS = '`<name>: <command>`, or for a paid call `<name> [£0.10/call, £2/day]: <command>`';
 export function parseLiveReads(items) {
   const { checks, errors } = parseOperatorChecks(items);
-  const bad = checks.filter((c) => !LIVE_READ_NAME.test(c.name));
-  return { reads: checks.filter((c) => LIVE_READ_NAME.test(c.name)), errors: [...errors, ...bad.map((c) => `\`${c.name}: ${c.command}\` (a name holds only letters, digits, . _ and -)`)] };
+  const reads = [];
+  for (const c of checks) {
+    const item = `\`${c.name}: ${c.command}\``;
+    const m = /^([^\s[]+)\s*\[(.*)\]$/.exec(c.name);
+    const name = m ? m[1] : c.name;
+    if (!LIVE_READ_NAME.test(name)) { errors.push(`${item} (a name holds only letters, digits, . _ and -)`); continue; }
+    // A park names an entry whatever its case, so two entries of one name would both run on it.
+    if (reads.some((r) => r.name.toLowerCase() === name.toLowerCase())) { errors.push(`${item} (another entry is already named ${name})`); continue; }
+    if (!m) {
+      if (c.name.includes('[')) errors.push(`${item} (a paid call's caps are written \`<name> [£0.10/call, £2/day]\`)`);
+      else reads.push({ name, command: c.command, caps: null });
+      continue;
+    }
+    const caps = LIVE_READ_CAPS.exec(m[2].trim());
+    const call = caps ? Number(caps[1]) : 0, day = caps ? Number(caps[2]) : 0;
+    if (!caps || !(call > 0) || !(day > 0)) { errors.push(`${item} (a paid call takes both caps, each over £0, as \`${name} [£0.10/call, £2/day]\`)`); continue; }
+    reads.push({ name, command: c.command, caps: { call, day } });
+  }
+  return { reads, errors };
 }
 
 // §4 Merge holds items: `<glob>: <why>`, split on the first `: `. A bare glob holds with no reason given.
@@ -452,7 +509,11 @@ export const TYPES = Object.freeze({
   'ai-attribution': oneOf('forbidden', 'allowed'),
   regex: matching('a regular expression', (s) => { try { new RegExp(s); return true; } catch { return false; } }),
   command: matching('a command', () => true, parseCommandItem),
-  'service-port': matching('`<service> [:<port>]`', (s) => servicePort(s) != null, servicePort),
+  'test-signin': matching('`[<app dir>: ]<email>`', (s) => testSigninOf(s) != null, testSigninOf),
+  'preview-db': matching(`\`<step>: <command>\`, the step one of ${PREVIEW_DB_STEPS.join(', ')} and its placeholders only ${PREVIEW_DB_PLACEHOLDERS.map((n) => `{${n}}`).join(', ')}`,
+    (s) => previewDbStepOf(s) != null, previewDbStepOf),
+  'service-port': matching(SERVICE_PORT_FORM, (s) => servicePort(s) != null, servicePort),
+  'field-defaults': matching('`<field> = <value>` or `<field> = from parent`', (s) => fieldDefaultOf(s) != null, fieldDefaultOf),
   'required-fields': matching('`<Type>[, <Type>…]: <field>[, <field>…]`', (s) => !requiredFieldsIn([s], null).malformed.length,
     (s) => ({ types: requiredRule(s)?.types ?? [], fields: requiredFieldsIn([s], null).need })),
   // The whole cell is checked, as `desk-env levers` reads it; the value stays one entry per span.
@@ -469,22 +530,26 @@ export const TYPES = Object.freeze({
   'flaky-check': itemsOf(parseFlaky, 'flaky', '`<check>: <glob> [<glob>…]` or `<check>: <file> > <test>`'),
   'state-check': itemsOf(parseStateChecks, 'checks', `\`<check>\`, \`<check>: ${STATE_KINDS.join('|')}\` or \`<check>: external <login>\``),
   'operator-check': itemsOf(parseOperatorChecks, 'checks', '`<check>: <what fixes it>`'),
-  'live-read': itemsOf(parseLiveReads, 'reads', '`<name>: <command>`, a name of letters, digits, . _ and -'),
+  'live-read': itemsOf(parseLiveReads, 'reads', `${LIVE_READ_FORMS}, a name of letters, digits, . _ and -`),
   'merge-hold': matching('`<glob>[#<key>]: <why>[; desk runs: <command>]`', (s) => parseHolds([s]).length > 0, (s) => parseHolds([s])[0]),
   'gate-reviewers': cell({ parse(items) { const r = gateReviewersOf(items); return r.bad.length ? fail(`"${items.join(' | ')}" is not one GitHub login per span, \`any\` or \`none\``, true) : ok(r.logins); } }),
 });
 
+// Whether a row's reader is configValues, the list reader, which refuses `none` beside other items: a
+// list row, a cell type's, and a value row marked listRead.
+export const readsAsList = (entry) => entry.kind === 'list' || !!entry.listRead || !!TYPES[entry.type]?.cell;
+
 // A row's items checked by its entry's type: -> { value, errors: [{ item, error, fatal }] }, value null
 // unless errors is empty; never throws. A cell type parses every item together, as its reader reads
 // them, and its error names no item (null). Otherwise a value row parses its first item, as configValue
-// reads it, and a list row parses each item, every one that does not fit named. `none` stands alone in
-// a list or a cell (a lone `none` is the row's value), so `none` beside another item is fatal, as
-// configValues refuses it.
+// reads it, and a list row parses each item, every one that does not fit named. `none` stands alone
+// where the reader is the list reader (a lone `none` is the row's value), so `none` beside another item
+// is fatal there, as configValues refuses it.
 export function checkRow(entry, items) {
   const all = [].concat(items ?? []).map((x) => String(x).trim());
   const type = TYPES[entry.type];
   const one = (r, item) => (r.error ? { value: null, errors: [{ item, error: r.error, fatal: r.fatal }] } : { value: r.value, errors: [] });
-  if ((entry.kind === 'list' || type.cell) && mixesNone(all)) return one(fail(`\`none\` must stand alone, not beside other items (${all.join(' | ')})`, type.noneFatal !== false), null);
+  if (readsAsList(entry) && mixesNone(all)) return one(fail(`\`none\` must stand alone, not beside other items (${all.join(' | ')})`, type.noneFatal !== false), null);
   if (type.cell) return one(type.parse(all), null);
   if (entry.kind !== 'list' && entry.kind !== 'table') return one(type.parse(all[0] ?? ''), all[0] ?? '');
   if (isNone(all)) return { value: ['none'], errors: [] };
@@ -504,9 +569,27 @@ const v = (id, section, label, type, example, extra) => ({ id, section, label, k
 const l = (id, section, label, type, example, extra) => ({ id, section, label, kind: 'list', type, example, ...extra });
 const p = (key, extra) => ({ id: key, section: '3', label: key, kind: 'perm', type: 'perm', example: 'yes', ...extra });
 const unread = { unread: true };
+// A value row a reader takes through configValues, the list reader, as well as its first item: that
+// reader refuses `none` beside other items, so checkRow does too (readsAsList).
+const listRead = { listRead: true };
 const dflt = (value, extra) => ({ default: value, ...extra });
 const never = { example: 'never' };
 const stop = { example: 'stop' };
+// A row another row settles: each rule of `forced` names the settling row's id, when it settles (`none`,
+// or { clause: <regex> } that one clause of its items matches whole, case-blind), the value it forces
+// and why. drift names a set row that contradicts it, and `desk-env forced` lists the values setup
+// writes unasked. forcedRows reads them; the first rule that settles a row is the one it names.
+const settledBy = (row, when, value, reason) => Object.freeze({ row, when, value, reason });
+const forces = (...rules) => ({ forced: Object.freeze(rules) });
+// One clause of §4 Repo merge settings saying auto-merge is off: `auto-merge off`, `auto-merge allowed:
+// no`, `allow_auto_merge: false`, `no auto-merge`. Anchored, so another setting's `off` never counts.
+const AUTO_MERGE = '(?:allow[-_ ]?)?auto[-_ ]?merge(?:[-_ ](?:allowed|enabled))?';
+const AUTO_MERGE_OFF = `^(?:${AUTO_MERGE}\\s*(?:[:=]|is)?\\s*(?:off|no|false|disabled|not allowed)|no ${AUTO_MERGE})$`;
+const STAGING_NONE = (reason) => settledBy('staging', 'none', 'no', reason);
+const LOCAL_DB_NONE = settledBy('local-db', 'none', 'no', 'there is no local database to act on');
+const noTracker = forces(settledBy('tracker', 'none', 'no', 'there is no Jira to act on'));
+const noLocalDb = forces(LOCAL_DB_NONE);
+const noServices = forces(settledBy('local-services', 'none', 'no', 'there are no local services to act on'));
 
 export const ROWS = Object.freeze([
   // §0 This repo
@@ -514,6 +597,7 @@ export const ROWS = Object.freeze([
   v('slug', '0', 'Slug', 'text', 'acme__widgets', unread),
   v('default-branch', '0', 'Default branch', 'text', 'main', dflt('main')),
   v('repo-description', '0', 'One-line description', 'text', 'A voice assistant for clinics'),
+  l('other-names', '0', 'Other names', 'text', ['widgets-portal']),
   // §1 Who you are in this repo
   v('name', '1', 'Name', 'text', 'Pat Example'),
   v('short-name', '1', 'Short form colleagues use', 'text', 'Pat', unread),
@@ -538,21 +622,25 @@ export const ROWS = Object.freeze([
   p('read-own-work'), p('read-local-git'), p('read-others'), p('read-slack-public'), p('read-figma'),
   p('read-vercel'), p('read-confluence'), p('read-transcripts'), p('read-calendar'), p('read-slack-own'),
   // §3 Jira
-  p('jira-assign-self'), p('jira-comment'), p('jira-create'), p('jira-edit'), p('jira-transition'),
-  p('jira-close-own-merged'), p('jira-close'), p('jira-route'), p('jira-others'),
+  p('jira-assign-self', noTracker), p('jira-comment', noTracker), p('jira-create', noTracker), p('jira-edit', noTracker),
+  p('jira-transition', noTracker), p('jira-close-own-merged', noTracker), p('jira-close', noTracker), p('jira-route', noTracker),
+  p('jira-others', noTracker),
   // §3 Git and pull requests
   p('git-commit'), p('git-push'), p('git-force-with-lease'), p('pr-open'), p('pr-edit'), p('pr-images'),
   p('pr-self-review-comment'), p('pr-review-others'), p('pr-reply'), p('pr-request-review'), p('pr-ready'),
-  p('pr-auto-merge'), p('pr-merge-green'), p('merge-feedback-first'), p('pr-update-branch'),
+  p('pr-auto-merge', forces(settledBy('repo-merge-settings', { clause: AUTO_MERGE_OFF }, 'no', 'gh pr merge --auto cannot arm where the repo has auto-merge off'))),
+  p('pr-merge-green'), p('merge-feedback-first'), p('pr-update-branch'),
   p('pr-conflict-unreviewed'), p('pr-conflict-reviewed'), p('ci-rerun'), p('codex-review'), p('ci-protection'),
   p('gh-close-linked-issue'), p('gh-issue-create'), p('gh-issue-comment'),
   // §3 Autopilot
   p('autopilot-workers'), p('autopilot-worker-mode', { type: 'text', example: 'dontAsk' }), p('autopilot-merge'), p('merge-hold-routine'),
   p('batch-base-push'), p('autopilot-judgement'), p('autopilot-reclaim'), p('machine-reboot'),
-  p('worker-dependency-install'), p('worker-screenshots'), p('worker-local-services'), p('worker-web-read'),
-  p('worker-workflow-dispatch'),
+  p('worker-dependency-install'), p('worker-screenshots'), p('worker-local-services', noServices), p('worker-web-read'),
+  p('worker-workflow-dispatch'), p('worker-preview-db'),
   // §3 Local and shared state
-  p('db-per-ticket'), p('db-clone-staging'), p('staging-write'), p('local-reindex'), p('tests-shared-db'),
+  p('db-per-ticket', noLocalDb), p('db-clone-staging', forces(LOCAL_DB_NONE, STAGING_NONE('there is no staging to clone'))),
+  p('staging-write', forces(STAGING_NONE('there is no staging to write to'))),
+  p('local-reindex', noServices), p('tests-shared-db', noLocalDb),
   p('worktree-remove'), p('branch-delete', { type: 'perm-merged', example: 'merged' }), p('server-stop'), p('skills-edit'), p('vercel-env'), p('slack-draft'),
   // §3 Not configurable
   p('slack-send', never), p('merge-bypass', never), p('others-prs', never), p('product-calls', stop), p('legal-content', stop),
@@ -562,6 +650,9 @@ export const ROWS = Object.freeze([
   v('concurrency', '3b', 'Autopilot worker concurrency', 'concurrency', '2 / 3', dflt('2 / 3', { machine: 'autopilot-concurrency' })),
   v('memory-ceiling', '3b', 'Memory ceiling for parallel work (GB)', 'gb', '16', { machine: 'memory-ceiling-gb' }),
   v('spawn-gate', '3b', 'Spawn gate (available memory)', 'spawn-gate', 'start work > 8 GiB · hold 4–8 · drop to 1 below 4', dflt('start work > 8 GiB · hold 4–8 · drop to 1 below 4')),
+  v('harm-swap-growth', '3b', 'Swap growth that holds spawns (GB)', 'gb', '2', dflt('2')),
+  v('harm-tmpfs', '3b', 'tmpfs /tmp size that holds spawns (GB)', 'gb', '2', dflt('2')),
+  v('harm-vmmem', '3b', 'WSL VM share of its grant that holds spawns (%)', 'whole', '90', dflt('90')),
   v('file-budget', '3b', 'Per-file collision budget', 'file-budget', '3 over 1000 lines, else 1; serial: none', dflt('3 over 1000 lines, else 1; serial: none')),
   v('test-cap', '3b', 'Test worker cap under the test lock', 'whole', '4', { machine: 'test-cap' }),
   v('worker-budget', '3b', 'Autopilot per-worker budget (USD)', 'budget', '25', dflt('25')),
@@ -602,10 +693,12 @@ export const ROWS = Object.freeze([
   l('jira-priority', '4', 'Priority', 'text', ['customfield_10300', 'P0', 'P1', 'P2']),
   l('jira-other-fields', '4', 'Other fields', 'text', ['customfield_10210']),
   l('jira-required-fields', '4', 'Required fields', 'required-fields', ['Epic, Story, Task, Bug: customfield_10208, customfield_10207']),
+  l('jira-field-defaults', '4', 'Field defaults', 'field-defaults', ['customfield_10209 = Tech Debt', 'customfield_10211 = from parent']),
   v('jira-size-field', '4', 'Size field', 'text', 'customfield_10208'),
   l('jira-priority-user-only', '4', 'Priorities only you set', 'text', ['P0', 'P1']),
   l('labels', '4', 'Labels', 'text', ['any']),
   l('person-step-labels', '4', 'Person-step labels', 'text', ['ben-step', 'operator-task'], dflt(['none'])),
+  l('proposal-labels', '4', 'Priority proposal labels', 'regex', ['lp-proposed-(p[0-9])'], dflt(['none'])),
   l('person-input-labels', '4', 'Person-input labels', 'text', ['ben-input'], dflt(['none'])),
   v('desk-jira-setup', '4', 'desk-jira set up?', 'yes-no', 'yes', unread),
   // §4 GitHub and CI
@@ -629,7 +722,7 @@ export const ROWS = Object.freeze([
   v('repo-merge-settings', '4', 'Repo merge settings', 'text', 'auto-merge allowed; delete_branch_on_merge on'),
   v('gh-token-scopes', '4', 'gh token scopes', 'text', 'repo, workflow', unread),
   v('codex-answers', '4', 'Codex answers a real call?', 'text', 'yes', unread),
-  v('local-review', '4', 'Local review command', 'text', '/desk-review'),
+  v('local-review', '4', 'Local review command', 'text', '/desk-review', listRead),
   v('clean-verdict', '4', 'Clean review verdict', 'text', 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'),
   v('review-account', '4', 'Review account', 'review-account', 'agent-pullbot: ~/.config/gh-agent-pullbot', dflt('none')),
   l('gate-reviewers', '4', 'Gate reviewers', 'gate-reviewers', ['agent-pullbot'], dflt(['any'])),
@@ -637,7 +730,7 @@ export const ROWS = Object.freeze([
   l('review-experts', '4', 'Review domain experts', 'text', ['apps/api/pricing/**: energy-trader']),
   l('agents-sync', '4', 'Project subagents sync', 'command', ['pnpm agents:sync']),
   // §4 Toolchain
-  v('package-manager', '4', 'Package manager', 'text', 'pnpm'),
+  v('package-manager', '4', 'Package manager', 'text', 'pnpm', listRead),
   v('command-prefix', '4', 'Command prefix', 'text', 'mise exec --'),
   l('install-cmd', '4', 'Install', 'command', ['pnpm install --frozen-lockfile']),
   l('dev-cmd', '4', 'Dev server', 'command', ['pnpm --filter frontend dev', 'portal: pnpm dev']),
@@ -657,11 +750,15 @@ export const ROWS = Object.freeze([
   l('merged-tree-check-cmd', '4', 'Merged-tree check', 'command', ['apps/api: uv run python scripts/check_alembic_heads.py']),
   l('pr-description-checks', '4', 'PR-description checks', 'command', ['node scripts/check-pr-body.mjs']),
   l('env-files', '4', 'Env files', 'text', ['frontend/.env.local', 'portal/.env.local']),
+  l('test-signin', '4', 'Test sign-in', 'test-signin', ['dev-user@example.test', 'apps/portal: portal-dev@example.test']),
   // §4 Environments and services
   v('local-db', '4', 'Local database', 'text', 'postgres container voicepa-postgres-1'),
   l('db-url-var', '4', 'Database URL variable', 'text', ['DATABASE_URL', 'DATABASE_URL_UNPOOLED']),
   l('db-migrate-cmd', '4', 'Database migrate', 'command', ['pnpm db:migrate']),
   l('seed-cmd', '4', 'Seed', 'command', ['pnpm db:seed']),
+  l('preview-db', '4', 'Preview database', 'preview-db', ['create: neonctl branches create --name {db} --parent staging',
+    'migrate: pnpm db:migrate:preview {db}', 'override: ./scripts/preview-env.sh set {branch} {db}', 'rebuild: ./scripts/preview-env.sh redeploy {branch}',
+    'delete: ./scripts/preview-env.sh unset {branch}', 'delete: neonctl branches delete {db}'], dflt(['none'])),
   l('local-services', '4', 'Local services', 'service-port', ['typesense :8108', 'mailpit :8025']),
   l('staging', '4', 'Staging', 'text', ['web: https://staging.example.com']),
   v('staging-bypass', '4', 'Staging bypass token location', 'text', '~/.config/desk/repos/<slug>/vercel-staging-bypass'),
@@ -707,6 +804,27 @@ export const CONFIG_ROWS = Object.freeze(Object.fromEntries(ROWS.filter((e) => e
 // Every non-permission row the schema declares, unread ones included, in the same shape: `get --json`
 // reads them all, where plain `get` reads CONFIG_ROWS alone.
 export const DECLARED_ROWS = Object.freeze(Object.fromEntries(ROWS.filter((e) => e.kind !== 'perm').map(idRow)));
+// The rows another row settles, given read(id): the settling row's items, or null where it is unset.
+// -> [{ id, section, label, value, reason, by: { id, section, label, value } }] in schema order, by.value
+// the settling row's items joined by spaces. A rule whose settling row is unset settles nothing, and a
+// row two rules settle is listed once, by the first.
+const CLAUSE_BREAK = /[;,.·]|\band\b/i;
+const settles = (when, items) => (when === 'none' ? isNone(items)
+  : items.flatMap((item) => item.split(CLAUSE_BREAK)).some((c) => new RegExp(when.clause, 'i').test(c.trim())));
+export function forcedRows(read) {
+  const out = [];
+  for (const e of ROWS) {
+    for (const { row, when, value, reason } of e.forced ?? []) {
+      const items = read(row);
+      if (!items?.length || !settles(when, items)) continue;
+      const by = ROWS.find((x) => x.id === row);
+      out.push({ id: e.id, section: e.section, label: e.label, value, reason, by: { id: row, section: by.section, label: by.label, value: items.join(' ') } });
+      break;
+    }
+  }
+  return out;
+}
+
 // The rows that fall back to the machine profile, as id -> profile key.
 export const MACHINE_FALLBACK = Object.freeze(Object.fromEntries(ROWS.filter((e) => e.machine).map((e) => [e.id, e.machine])));
 

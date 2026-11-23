@@ -16,7 +16,13 @@
 # failing again, the run fails and prints both runs. test_compare_pass.sh is never retried.
 # Each report gives the suite's user plus system CPU seconds, and a run that finishes appends one line
 # to ~/.desk-autopilot/test-runs.jsonl ($TEST_RUNS_LOG): its date, suites, job count, wall and CPU
-# seconds, and the one-minute load average at its start.
+# seconds, the one-minute load average at its start, its scope (full or changed) and why, the worktree
+# it ran in, the lock it ran under and the seconds it waited for it (null for each without one), and
+# how many L3 suites related.sh left for CI (null for a run it did not start).
+# related.sh gives the scope, its reason and that count (DESK_RUN_SCOPE, DESK_RUN_REASON,
+# DESK_RUN_LEFT_FOR_CI); a run it did not start is
+# full with no suite named and changed with some. with-lock.sh gives the lock (DESK_LOCK_CLASS,
+# DESK_LOCK_WAITED).
 # CI's CPU budgets: with DESK_SUITE_BUDGETS=warn, a suite whose last run took more CPU seconds than its
 # budget prints a ::warning:: naming it and the summary lists it under `over budget:`; with `enforce`
 # the same until BUDGETS_FAIL_FROM, and from that date (DESK_SUITE_BUDGETS_TODAY, YYYY-MM-DD, stands in
@@ -53,6 +59,15 @@ fi
 case "$jobs" in ''|*[!0-9]*) jobs=0 ;; *) jobs=$((10#$jobs)) ;; esac
 [ "$jobs" -ge 1 ] || { echo "-j wants how many suites run at once, a whole number from 1"; exit 2; }
 T="$(cd "$(dirname "$0")" && pwd)"
+# The run's scope and slot, for its record, read before suite_env.sh clears every DESK_* variable.
+rec_scope=${DESK_RUN_SCOPE:-}; rec_reason=${DESK_RUN_REASON:-}; rec_lock=${DESK_LOCK_CLASS:-}; rec_waited=${DESK_LOCK_WAITED:-}; rec_left=${DESK_RUN_LEFT_FOR_CI:-}
+if [ -z "$rec_scope" ]; then
+  if [ $# -gt 0 ]; then rec_scope=changed; rec_reason="suites named on the command line"
+  else rec_scope=full; rec_reason="no suite named"; fi
+fi
+case "$rec_waited" in ''|*[!0-9]*) rec_waited=null ;; esac
+case "$rec_left" in ''|*[!0-9]*) rec_left=null ;; esac
+rec_tree=$(cd "$T/.." && pwd -P)
 # shellcheck source=suite_env.sh
 . "$T/suite_env.sh"
 # Where the run's record goes ($TEST_RUNS_LOG, set empty for none). A run.sh a suite starts records
@@ -225,8 +240,11 @@ while [ $shown -lt $n ]; do
 done
 wait; pids=""
 wall=$((SECONDS - start))
-[ -z "$runs_log" ] || ( mkdir -p "$(dirname "$runs_log")" && printf '{"date":"%s","suites":[%s],"jobs":%d,"wall_s":%d,"cpu_s":%s,"load":%s}\n' \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ran" "$jobs" "$wall" "$(secs "$cpu_all")" "$load" >>"$runs_log" ) 2>/dev/null
+# $1 as a JSON string, or null when it is empty.
+jstr() { local s=$1; [ -n "$s" ] || { printf null; return; }; s=${s//\\/\\\\}; s=${s//\"/\\\"}; printf '"%s"' "$s"; }
+[ -z "$runs_log" ] || ( mkdir -p "$(dirname "$runs_log")" && printf '{"date":"%s","suites":[%s],"jobs":%d,"wall_s":%d,"cpu_s":%s,"load":%s,"scope":%s,"reason":%s,"worktree":%s,"lock":%s,"wait_s":%s,"left_for_ci":%s}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ran" "$jobs" "$wall" "$(secs "$cpu_all")" "$load" \
+  "$(jstr "$rec_scope")" "$(jstr "$rec_reason")" "$(jstr "$rec_tree")" "$(jstr "$rec_lock")" "$rec_waited" "$rec_left" >>"$runs_log" ) 2>/dev/null
 [ -z "$durations_out" ] || printf '{"seconds":{%s},"cpu":{%s}}\n' "$dsec" "$dcpu" >"$durations_out"
 # The last lines name each suite that flaked (failed, then passed its retry), each over its CPU budget
 # (as <suite>=<CPU seconds>/<budget>) and each that failed, by file, for the CI shard that ran them to

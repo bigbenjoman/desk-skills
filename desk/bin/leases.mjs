@@ -5,7 +5,10 @@
 //                               label, ttl, acquired, renewed?, expires }] }, rewritten whole under
 //                               <dir>/leases.json.lock
 //   <dir>/leases.log.jsonl    one line per change: grant, would-refuse, refuse, gave-up, renew,
-//                               re-create, release, force-release, lapse, reset
+//                               re-create, release, force-release, lapse, reset, trial (a restart of
+//                               the shadow kinds' trial, trialOf), and queued: a lock run that starts
+//                               to wait. A lock run's queued, grant, refuse and gave-up lines carry its
+//                               wait (waitFields), whatever the slot kind's mode
 //
 // <dir> is DESK_LEASE_DIR, else ~/.desk-autopilot/machine. A lease's owner is a pid and that process's
 // start time, read inside the store lock, so a lease whose owner has exited, or whose pid now belongs
@@ -27,13 +30,14 @@
 // through desk-env's top-level await never settles (node exits 13). What it needs from desk-env
 // (machineValue, testLockSlots, psRows) is passed in as `env`: desk-env passes its own, and this
 // file's CLI imports desk-env itself.
-import { appendFileSync, existsSync, readFileSync, realpathSync, renameSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lock, sleepSync, unlock, writeJsonAtomic } from './dir-lock.mjs';
-import { DEFAULT_LEASE_MODE, LEASE_KINDS, leaseKindsProblem, parseLeaseKinds } from './machine.mjs';
+import { DEFAULT_LEASE_MODE, LEASE_KINDS, leaseKindsProblem, parseLeaseKinds, parseMeminfo } from './machine.mjs';
 
 const HOME = process.env.HOME || homedir();
 const expandHome = (p) => p.replace(/^~(?=\/|$)/, HOME);
@@ -187,6 +191,80 @@ const appendLog = (dir, entries, hold) => {
   if (entries.length) appendFileSync(logFile(dir), entries.map((e) => `${JSON.stringify({ at: new Date().toISOString(), ...e, hold_ms: hold })}\n`).join(''));
 };
 
+// ---- the machine's load and memory, and a lock run's wait --------------------------------------
+// The longest one reading may take: a reading that does not answer in time is left empty, so the
+// measurement never adds to the wait it measures.
+export const SAMPLE_TIMEOUT_MS = 250;
+const SYSCTL_NAMES = ['vm.loadavg', 'kern.memorystatus_level', 'kern.memorystatus_vm_pressure_level', 'vm.compressor_bytes_used', 'hw.memsize', 'vm.swapusage'];
+const GIB = 2 ** 30;
+const num = (v) => { const n = Number(v); return v != null && String(v).trim() !== '' && Number.isFinite(n) ? n : null; };
+const round = (n, places) => (n == null ? null : Math.round(n * 10 ** places) / 10 ** places);
+const ratio = (a, b) => (a == null || !b ? null : a / b);
+// `1046.25M` (vm.swapusage's unit-suffixed size) in GiB, or null.
+const sizeGb = (s) => {
+  const m = /^([\d.]+)([KMGT])$/.exec(String(s ?? '').trim());
+  return m && num(m[1]) != null ? num(m[1]) * 1024 ** ('KMGT'.indexOf(m[2]) + 1) / GIB : null;
+};
+const runQuiet = (cmd, args) => execFileSync(cmd, args, { encoding: 'utf8', timeout: SAMPLE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'] });
+
+// The machine's load and memory now: { load_1m, mem_free_pct, mem_pressure, compressed_gb,
+// swap_used_gb, mem_total_gb }, each null where it cannot be read. macOS answers one sysctl read
+// (mem_free_pct is kern.memorystatus_level, memory_pressure's free %; mem_pressure the kernel's level,
+// 1 normal, 2 warn, 4 critical); Linux reads /proc (mem_free_pct is MemAvailable of MemTotal,
+// mem_pressure /proc/pressure/memory's `some avg10` %, compressed_gb zswap's pool). The one sampler:
+// anything else that reads the machine's load or memory for a lock calls this, not a copy.
+export function sampleLoad({ platform = process.platform, proc = '/proc', run = runQuiet, read = (p) => readFileSync(p, 'utf8') } = {}) {
+  const out = { load_1m: null, mem_free_pct: null, mem_pressure: null, compressed_gb: null, swap_used_gb: null, mem_total_gb: null };
+  const tryRead = (p) => { try { return read(p); } catch { return ''; } };
+  if (platform === 'linux') {
+    out.load_1m = num(tryRead(join(proc, 'loadavg')).split(/\s+/)[0]);
+    const b = parseMeminfo(tryRead(join(proc, 'meminfo')));
+    const total = b.MemTotal ?? null;
+    const avail = ratio(b.MemAvailable ?? null, total);
+    out.mem_free_pct = round(avail == null ? null : avail * 100, 1);
+    out.mem_total_gb = round(ratio(total, GIB), 2);
+    out.swap_used_gb = round(b.SwapTotal == null || b.SwapFree == null ? null : (b.SwapTotal - b.SwapFree) / GIB, 2);
+    out.compressed_gb = round(ratio(b.Zswap ?? null, GIB), 2);
+    out.mem_pressure = num(/^some\b.*?\bavg10=([\d.]+)/m.exec(tryRead(join(proc, 'pressure', 'memory')))?.[1]);
+    return out;
+  }
+  // `sysctl <names>` prints `name: value` for each name it knows, so one it does not leaves only
+  // that reading empty; a run that fails or times out keeps whatever it printed.
+  let text = '';
+  try { text = run('sysctl', SYSCTL_NAMES); } catch (e) { text = typeof e?.stdout === 'string' ? e.stdout : ''; }
+  const v = {};
+  for (const line of String(text ?? '').split('\n')) {
+    const at = line.indexOf(':');
+    if (at > 0) v[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+  }
+  out.load_1m = num(/^\{?\s*([\d.]+)/.exec(v['vm.loadavg'] ?? '')?.[1]);
+  out.mem_free_pct = num(v['kern.memorystatus_level']);
+  out.mem_pressure = num(v['kern.memorystatus_vm_pressure_level']);
+  out.compressed_gb = round(ratio(num(v['vm.compressor_bytes_used']), GIB), 2);
+  out.mem_total_gb = round(ratio(num(v['hw.memsize']), GIB), 2);
+  out.swap_used_gb = round(sizeGb(/\bused = (\S+)/.exec(v['vm.swapusage'] ?? '')?.[1]), 2);
+  return out;
+}
+
+// What a lock run's queued, grant, refuse or gave-up line says about its wait: its class, its
+// worktree, the seconds it has waited, how many other runs wait for the same lock, and the load
+// and memory (sampleLoad) at that moment.
+export const waitFields = ({ cls, worktree, waited, queue, sample }) => ({
+  class: cls, worktree, wait_s: waited, queue,
+  load_1m: sample?.load_1m ?? null, mem_free_pct: sample?.mem_free_pct ?? null, compressed_gb: sample?.compressed_gb ?? null,
+});
+
+// Appends one line to the log without the store lock: a lock run's queued, grant or gave-up line
+// where no lease carries it. One short append is atomic, and a lock run must never queue behind the
+// store to say it waited. Never throws: a log that cannot be written loses the line, not the run.
+export function logEvent(entry, { dir = leaseDir() } = {}) {
+  try {
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(logFile(dir), `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
+    return true;
+  } catch { return false; }
+}
+
 // fn(store, log) reads and changes the store under its lock; the store is written after if it changed,
 // and each entry fn logged is appended with how long the lock was held. -> fn's result.
 export function withStore(dir, fn) {
@@ -240,20 +318,24 @@ const newLease = (req, p, owner, t, id = `L-${randomBytes(5).toString('hex')}`) 
 
 // Places a lease in pool `p` under the store lock, as a grant (`event` 'grant') or a renew's
 // re-create. Over capacity it is refused, or in shadow granted with a would-refuse logged naming
-// every holder. -> { lease, shadow? } or { refused }.
-function place(store, log, req, p, owner, t, { mode, final, waited, id, event = 'grant' }) {
+// every holder. `note(event)`, where given, returns fields added to the grant, refuse or gave-up line
+// (a lock run's wait, waitFields). -> { lease, shadow? } or { refused }.
+function place(store, log, req, p, owner, t, { mode, final, waited, id, event = 'grant', note = null }) {
   const holders = store.leases.filter((l) => l.pool === p.pool);
   const held = holders.reduce((n, l) => n + l.units, 0);
   const fits = held + req.units <= p.capacity;
   const why = fits ? null : refusal(p, req.units, holders, held);
   if (!fits && mode !== 'shadow') {
-    if (final) log({ event: waited ? 'gave-up' : 'refuse', kind: req.kind, key: p.key, units: req.units, owner, label: req.label, why, ...(waited ? { wait_s: waited } : {}) });
+    if (final) {
+      const e = waited ? 'gave-up' : 'refuse';
+      log({ event: e, kind: req.kind, key: p.key, units: req.units, owner, label: req.label, why, ...(waited ? { wait_s: waited } : {}), ...note?.(e) });
+    }
     return { refused: why };
   }
   const lease = newLease(req, p, owner, t, id);
   if (!fits) log({ event: 'would-refuse', kind: req.kind, key: p.key, units: req.units, owner, label: req.label, holders: holders.map(brief), why });
   store.leases.push(lease);
-  log({ event, ...brief(lease), ttl: lease.ttl, expires: lease.expires });
+  log({ event, ...brief(lease), ttl: lease.ttl, expires: lease.expires, ...note?.(event) });
   return fits ? { lease } : { lease, shadow: why };
 }
 
@@ -273,8 +355,8 @@ const sameHolder = (store, req, p) => (req.pid == null && req.label && req.label
 // One try at a lease. req: { kind, key, units, ttl, label, pid (null: no owner), final, waited };
 // a refused try is logged only when `final` (a refuse with no wait, else gave-up). An ownerless
 // request whose label a live ownerless lease of the pool holds renews that lease instead. `env` is
-// desk-env's exports. -> { lease, shadow? } or { refused: why }.
-export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now, mode = kindMode(req.kind, env).mode }) {
+// desk-env's exports; `note` is place()'s. -> { lease, shadow? } or { refused: why }.
+export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now, mode = kindMode(req.kind, env).mode, note = null }) {
   const p = poolOf(req.kind, req.key, caps);
   if (req.units > p.capacity) throw usage(`this asks for ${req.units} of ${p.many}, more than the ${p.capacity} there are`);
   return withStore(dir, (store, log) => {
@@ -287,14 +369,14 @@ export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env),
       log({ event: 'renew', ...brief(l), ttl: l.ttl, expires: l.expires });
       return { lease: l, renewed: true };
     }
-    return place(store, log, req, p, ownerOf(req, starts), t, { mode, final: req.final, waited: req.waited });
+    return place(store, log, req, p, ownerOf(req, starts), t, { mode, final: req.final, waited: req.waited, note });
   });
 }
 
 // Takes a lease, waiting up to `wait` seconds for it (Infinity: until it is granted), trying every
 // `poll` ms and calling `onWait(why)` at the first refusal it waits past. With the kind off, takes nothing.
-// -> { code, lease?, why? }, `why` beside a lease saying what shadow let through.
-export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now, poll = POLL_MS, onWait = null }) {
+// `note` is place()'s. -> { code, lease?, why? }, `why` beside a lease saying what shadow let through.
+export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now, poll = POLL_MS, onWait = null, note = null }) {
   const { mode } = kindMode(req.kind, env);
   if (mode === 'off') {
     poolOf(req.kind, req.key, offCaps(caps));
@@ -305,7 +387,7 @@ export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), no
   let waiting = false;
   for (;;) {
     const final = now() >= until;
-    const r = tryAcquire({ ...req, final, waited: wait }, { env, dir, caps, now, mode });
+    const r = tryAcquire({ ...req, final, waited: wait }, { env, dir, caps, now, mode, note });
     // A renewed unit says so (`renewed …` on stderr), so a caller whose push fails keeps a build's unit.
     if (r.lease) return { code: EXIT_OK, lease: r.lease, ...(r.shadow ? { why: `shadow: granted, but on would refuse: ${r.shadow}` } : r.renewed ? { why: `renewed ${r.lease.kind} ${r.lease.key} (lease ${r.lease.id}), which the label ${r.lease.label} already held` } : {}) };
     if (final) return wait ? { code: EXIT_GAVE_UP, why: `gave up after ${wait}s waiting: ${r.refused}` } : { code: EXIT_REFUSED, why: `refused: ${r.refused}` };
@@ -367,6 +449,28 @@ export function release(id, pid, { env, dir = leaseDir(), now = Date.now, ifExpi
   });
 }
 
+// Frees the ownerless preview-build units of team `team` that `done` names by label, in one store
+// lock, logging each release with its `reason`. A unit taken or renewed after `at` (when the PR's
+// preview finished) is kept: a push or rerun since started a build those checks are not. done: [{ pr,
+// label, at, reason }] -> { freed: [pr] }, or, never throwing, { unreadable: why } when the store
+// cannot be read and { failed: why } for any other failure (an unwritable lease directory, a full disk).
+export function releasePreviews(team, done, { env, dir = leaseDir(), now = Date.now }) {
+  try {
+    return { freed: withStore(dir, (store, log) => {
+      sweep(store, log, ownerStarts(store, env), now());
+      return done.filter((d) => {
+        const l = store.leases.find((x) => x.kind === 'preview-build' && x.key === team && x.owner === null && x.label === d.label);
+        if (!l || (d.at && Date.parse(l.renewed ?? l.acquired) > Date.parse(d.at))) return false;
+        store.leases = store.leases.filter((x) => x !== l);
+        log({ event: 'release', ...brief(l), reason: d.reason });
+        return true;
+      });
+    }).map((d) => d.pr) };
+  } catch (e) {
+    return e instanceof LeaseStoreError ? { unreadable: e.message } : { failed: String(e?.message ?? e).split('\n')[0] };
+  }
+}
+
 // Frees lease `id` whoever holds it, for a person clearing a stuck lease; `reason` is required and
 // logged with the holder. -> { code, why }.
 export function forceRelease(id, reason, { env, dir = leaseDir(), now = Date.now }) {
@@ -418,43 +522,71 @@ export function peek({ env, dir = leaseDir(), now = Date.now }) {
   const t = now();
   return store.leases.filter((l) => !lapseOf(l, starts, t));
 }
-// A held lease past its expiry: its owner is alive and has not renewed it (a slot's, while it runs).
-export const overdue = (l, t) => t > Date.parse(l.expires);
+// A held lease past its expiry: its owner is alive and has not renewed it. A slot lease is never
+// overdue: nothing renews it, and like lapseOf's hard lapse it is held for as long as its owner runs.
+export const overdue = (l, t) => l.kind !== 'slot' && t > Date.parse(l.expires);
 export const forceReleaseCommand = (id) => `desk-env lease force-release ${id} --reason <why>`;
 export const RESET_COMMAND = 'desk-env lease reset --reason <why>';
 
-// Each kind's would-refuse entries in the log, counted per 24 hours back from now, newest first:
-// { <kind>: [n, …] } with `days` counts, holding only kinds that have one. A line that is not JSON is
-// skipped; a log that cannot be read throws LeaseStoreError.
-export function wouldRefuseByDay({ dir = leaseDir(), now = Date.now, days = 7 } = {}) {
+// The log as the screens read it: when it began (its first entry but a slot line with no lease, a
+// lock run's wait line, which with-lock.sh logs with every kind off, so it never starts the trial),
+// the latest trial restart, and each would-refuse entry, oldest first, as logged. A line that is not JSON is
+// skipped; a missing log is an empty one; a log that cannot be read throws LeaseStoreError.
+export function readLog({ dir = leaseDir() } = {}) {
   let raw;
   try { raw = readFileSync(logFile(dir), 'utf8'); } catch (e) {
-    if (e.code === 'ENOENT') return {};
+    if (e.code === 'ENOENT') return { first: null, restarted: null, clashes: [] };
     throw new LeaseStoreError(`the lease log ${logFile(dir)} is unreadable: ${e.message}`);
   }
-  const t = now();
-  const out = {};
+  let first = null, restarted = null;
+  const clashes = [];
   for (const line of raw.split('\n')) {
-    if (!line.includes('"would-refuse"')) continue;
+    if (!line.trim()) continue;
+    const at = first == null || line.includes('"would-refuse"') || line.includes(`"${TRIAL_EVENT}"`);
+    if (!at) continue;
     let e;
     try { e = JSON.parse(line); } catch { continue; }
-    if (e?.event !== 'would-refuse' || !KINDS.includes(e.kind)) continue;
-    const day = Math.floor((t - Date.parse(e.at)) / 86_400_000);
-    if (day >= 0 && day < days) (out[e.kind] ??= Array(days).fill(0))[day]++;
+    const t = Date.parse(e?.at);
+    if (!Number.isFinite(t)) continue;
+    if (!(e.kind === 'slot' && e.id === undefined)) first ??= t;
+    if (e.event === TRIAL_EVENT) restarted = Math.max(restarted ?? t, t);
+    else if (e.event === 'would-refuse' && KINDS.includes(e.kind)) clashes.push(e);
   }
-  return out;
+  return { first, restarted, clashes };
+}
+
+// The trial: kinds in shadow grant what on would refuse and log each as a would-refuse, for TRIAL_DAYS
+// from the log's first entry or its latest restart (an answer to the day-7 question restarts it for
+// the kinds still in shadow). `log` is readLog's. -> { start, ends } in ms, or null with no log.
+export const TRIAL_DAYS = 7;
+export const TRIAL_EVENT = 'trial';
+export function trialOf(log) {
+  const start = log.restarted ?? log.first;
+  return start == null ? null : { start, ends: start + TRIAL_DAYS * 86_400_000 };
+}
+// Restarts the trial for the kinds still in shadow, logging `reason`, under the store lock.
+export function restartTrial(reason, { dir = leaseDir() } = {}) {
+  const lockDir = lockStore(dir);
+  try { appendLog(dir, [{ event: TRIAL_EVENT, reason: String(reason ?? '').trim() || 'restarted' }], 0); } finally { unlock(lockDir); }
 }
 
 export const listRow = (l) => [l.id, l.kind, l.key, l.units, l.owner ? `pid ${l.owner.pid}` : 'no owner', l.label, `${l.ttl}s`, l.acquired, l.expires].join('\t');
 const LIST_HEAD = ['ID', 'KIND', 'KEY', 'UNITS', 'OWNER', 'LABEL', 'TTL', 'ACQUIRED', 'EXPIRES'].join('\t');
 const listJson = (l) => JSON.stringify({ id: l.id, kind: l.kind, key: l.key, units: l.units, owner: l.owner, label: l.label, ttl: l.ttl, acquired: l.acquired, ...(l.renewed ? { renewed: l.renewed } : {}), expires: l.expires });
 
+// `lease list --clashes`: each would-refuse of the last CLASH_DAYS days (or --days), oldest first,
+// with who asked and who held it.
+const CLASH_DAYS = 7;
+const CLASH_HEAD = ['KIND', 'KEY', 'AT', 'REQUESTER', 'HOLDER'].join('\t');
+const clashRow = (e) => ({ kind: e.kind, key: e.key, at: e.at, requester: e.label ?? 'unlabelled',
+  holder: (e.holders ?? []).map((h) => h.label ?? 'unlabelled').join('; ') || 'unknown' });
+
 export const LEASE_USAGE = `usage: desk-env lease acquire <kind> <key> --ttl <seconds> [--units <n>] [--wait <seconds>] [--label <text>] [<owner>]
        desk-env lease renew <lease id> <kind> <key> --ttl <seconds> [--units <n>] [--label <text>] [<owner>]
        desk-env lease release <lease id> [--pid <owner pid>] [--if-expires <its expires, unrenewed since>]
        ${forceReleaseCommand('<lease id>')}
        ${RESET_COMMAND}
-       desk-env lease list [--json]
+       desk-env lease list [--json] [--clashes [--days <n>]]
        desk-env lease mode [<kind>]
 kinds: port <number> | slot ${Object.keys(SLOTS).join('|')} | preview-build <vercel team> | merge <owner>/<repo>@<base> | mem <what for> (units in GiB)
 <owner>: --pid <pid>, --owner claude (the nearest Claude Code session above the caller), or --no-owner
@@ -558,8 +690,19 @@ export function leaseCli(args, { env, dir = leaseDir(), out = (s) => console.log
       return r.code;
     }
     if (sub === 'list') {
-      const { pos, opt } = parseArgs(rest, [], ['json']);
+      const { pos, opt } = parseArgs(rest, ['days'], ['json', 'clashes']);
       if (pos.length) throw usage(`list takes no arguments, not "${pos[0]}"`);
+      if (opt.days != null && !opt.clashes) throw usage('--days goes with --clashes');
+      if (opt.clashes) {
+        const days = opt.days == null ? CLASH_DAYS : whole(opt.days);
+        if (!days) throw usage(`--days is a whole number of days, 1 or more, not "${opt.days}"`);
+        const t = Date.now();
+        const rows = readLog({ dir }).clashes.filter((e) => t - Date.parse(e.at) < days * 86_400_000);
+        if (opt.json) for (const e of rows) out(JSON.stringify(clashRow(e)));
+        else if (!rows.length) out(`no clashes in the last ${days} days`);
+        else { out(CLASH_HEAD); for (const e of rows) out(Object.values(clashRow(e)).join('\t')); }
+        return EXIT_OK;
+      }
       const leases = list({ env, dir });
       if (opt.json) for (const l of leases) out(listJson(l));
       else if (!leases.length) out('no leases');

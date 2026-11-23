@@ -1,4 +1,5 @@
 // suite: self-review growth (a fix that grows is a scope call a worker takes under autopilot-judgement)
+// layer: L1
 // covers: skills/desk-autopilot/references/worker-contract-stage-4.md skills/desk-autopilot/references/ask-or-take.md skills/desk-ticket/references/stage-4b-self-review.md
 // What the worker contract tells a worker whose self-review fix needs a file outside its diff: widen
 // within the ticket's size, split past it, park where judgement is off or a §3 row is not granted.

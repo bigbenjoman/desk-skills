@@ -18,6 +18,9 @@ import { join, basename, relative, sep } from 'node:path';
 import { SCREENSHOT_FILE } from './desk-env.mjs';
 import { dragFiles, dragCells, swapCells } from './evidence.mjs';
 
+// The folder preview-db.mjs check moves a screenshot of an error page into, beside the good ones.
+export const REJECTED_DIR = 'error-pages';
+
 export const BATCH_SIZE = 15;
 export const STALL_MS = 180_000;
 export const POLL_MS = 1000;
@@ -49,12 +52,13 @@ export function writeTags(path, tags) {
 }
 
 // Every screenshot file in dir and the folders under it, by its path relative to dir ('/'-separated).
+// The folder preview-db.mjs check moves error pages into is never read: nothing in it is evidence.
 export function shotIndex(dir) {
   const found = new Map();
   const walk = (d) => {
     for (const e of readdirSync(d, { withFileTypes: true })) {
       const p = join(d, e.name);
-      if (e.isDirectory()) walk(p);
+      if (e.isDirectory()) { if (e.name !== REJECTED_DIR) walk(p); }
       else if (SCREENSHOT_FILE.test(e.name)) found.set(relative(dir, p).split(sep).join('/'), p);
     }
   };
@@ -73,7 +77,8 @@ export function findShot(index, name) {
 export const fileSha = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
 // GitHub's alt for an uploaded file: its name without the extension.
 export const altOf = (path) => basename(path).replace(/\.[^.]+$/, '');
-export const imageMd = (name, url) => `![${altOf(name)}](${url})`;
+export const mimeOf = (path) => (/\.png$/i.test(path) ? 'image/png' : 'image/jpeg');
+export const imageMd =(name, url) => `![${altOf(name)}](${url})`;
 
 // What a run does with the files `cells` name: { reuse: { [name]: url } for files whose sha256 already
 // has a link, uploads: [{ sha256, path, names }] one per distinct image, missing: [name] }.
@@ -123,8 +128,10 @@ export function linkIn(value, path) {
 
 // One batch through `page` ({ setFiles(paths), value(), clear() }): { got: { [sha256]: url }, stalled }.
 // It has stalled once no image has been filled for stallMs. onLink(u) is called as each link appears.
+// An upload carrying `file` (the bytes read once, as { name, mimeType, buffer }) sends those bytes, not
+// whatever is at its path by the time the browser reads it.
 export async function uploadBatch(page, batch, { stallMs = STALL_MS, pollMs = POLL_MS, now = Date.now, sleep, onLink = () => {} } = {}) {
-  await page.setFiles(batch.map((u) => u.path));
+  await page.setFiles(batch.map((u) => u.file ?? u.path));
   const got = {};
   let last = now();
   let stalled = false;
@@ -154,7 +161,11 @@ export const throttleMs = (stalls) => Math.min(THROTTLE_MS * 2 ** Math.max(0, st
 // clock: upload-images.mjs writes them to the upload log.
 // With `max`, at most that many images are uploaded; any left over end the run with EXIT_PACED, their
 // cells left for the next run.
-export async function runUpload({ dir, readBody, writeBody, openPage, record = () => {}, log = () => {}, now = Date.now, sleep, stallMs, pollMs, max = null }) {
+// With `passed` (a Set of sha256s: a PR with a preview database, preview-db.mjs checkedShas), a cell
+// whose file is not byte for byte one its last passing error-page check read is left, never uploaded.
+// Each file is read once, and the bytes checked are the bytes sent and the ones its link is kept under:
+// a file rewritten after the check is never what the browser posts.
+export async function runUpload({ dir, readBody, writeBody, openPage, record = () => {}, log = () => {}, now = Date.now, sleep, stallMs, pollMs, max = null, passed = null }) {
   const start = readBody();
   const cells = dragFiles(start);
   if (!cells.length) return { code: 0, lines: [doneLine(start)] };   // nothing left to fill: pass.mjs reads the done line
@@ -165,7 +176,16 @@ export async function runUpload({ dir, readBody, writeBody, openPage, record = (
     return { code: EXIT_THROTTLED, lines: [`throttled: GitHub's rate limit stalled an upload at ${tags.throttle.at} (${tags.throttle.stalls} in a row), so nothing is uploaded before ${tags.throttle.retry_after}`] };
   }
 
-  const plan = planUpload(cells, shotIndex(dir), tags);
+  const index = shotIndex(dir);
+  const snaps = new Map();
+  const snap = (p) => {
+    if (!snaps.has(p)) { const buffer = readFileSync(p); snaps.set(p, { buffer, sha: createHash('sha256').update(buffer).digest('hex') }); }
+    return snaps.get(p);
+  };
+  const unchecked = passed ? cells.filter((n) => { const p = findShot(index, n); try { return !!p && !passed.has(snap(p).sha); } catch { return true; } }) : [];
+  const plan = planUpload(cells.filter((n) => !unchecked.includes(n)), index, tags, passed ? (p) => snap(p).sha : fileSha);
+  if (passed) for (const u of plan.uploads) u.file = { name: basename(u.path), mimeType: mimeOf(u.path), buffer: snap(u.path).buffer };
+  if (unchecked.length) plan.missing.push(...unchecked.map((n) => `${n} (there, but not as its last passing preview-db.mjs check read it)`));
   const fill = (fills) => {
     if (!Object.keys(fills).length) return;
     const body = readBody();

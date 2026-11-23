@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: queue.mjs stop ends one running worker, commits its work and holds its ticket
+# layer: L3
 # A running ticket's worker processes (found by the session id on their command line) are ended, what
 # its worktree holds is committed on its branch, and the ticket is held behind no blocker, which only
 # the person's start releases. A ticket with no running worker exits 11, a key the queue does not hold
@@ -56,6 +57,7 @@ sha=$(git -C "$T/wt/S-1" rev-parse HEAD)
 check "AC1: its worker's processes end, its child too"                   '[ $rc -eq 0 ] && gone "$WPID" && gone "$WCHILD"'
 check "AC1: the changes are committed on its branch"                      '[ "$(git -C "$T/wt/S-1" rev-parse --abbrev-ref HEAD)" = fix/S-1 ] && [ -z "$(git -C "$T/wt/S-1" status --porcelain)" ] && git -C "$T/wt/S-1" show --stat HEAD | grep -q widget.txt'
 check "AC1: the ticket is held, behind no blocker, not failed"            '[ "$(f S-1 state)" = "\"parked\"" ] && [[ "$(f S-1 park.question)" == "\"held by orchestrator: stopped by queue.mjs stop"* ]] && [ "$(f S-1 held_by)" = null ]'
+check "DS-895 AC2: the hold records its park kind, stopped"                '[ "$(f S-1 park.kind)" = "\"stopped\"" ]'
 check "AC1: its session is cleared and its stage kept for the next worker" '[ "$(f S-1 session_id)" = null ] && [ "$(f S-1 last_round.stage)" = "\"6/9\"" ]'
 check "AC8: the output names the ticket, the commit and the hold"         '[[ "$out" == *"S-1 stopped"* ]] && [[ "$out" == *"committed as ${sha:0:12} on fix/S-1"* ]] && [[ "$out" == *"S-1 is held"* ]]'
 
@@ -151,10 +153,13 @@ done
 wait
 took=$(cat "$T"/taker.* | grep -c took)
 check "of six racing takers of a stale pass lock exactly one holds it"   '[ "$took" = 1 ] && [ ! -e "$T/state/orchestrator.lock" ]'
+# The stop's grace outlasts any pass's start (a slow runner loads pass.mjs's imports for over a second),
+# and the worker is ended only once the pass has refused, so the stop holds the lock throughout.
 running S-13; worker S-13 'trap "" TERM; '
-node "$B/queue.mjs" stop S-13 > /dev/null 2>&1 & stopper=$!
+DESK_STOP_GRACE_MS=120000 node "$B/queue.mjs" stop S-13 > /dev/null 2>&1 & stopper=$!
 for _ in $(seq 1 30); do grep -q 'queue.mjs stop S-13' "$T/state/orchestrator.lock" 2>/dev/null && break; sleep 0.05; done
 out=$(DESK_REPO_ROOT="$T/repo" node "$B/pass.mjs" 2>&1); prc=$?
+kill -9 -- "-$WPID" 2>/dev/null
 wait "$stopper"; wait "$WPID" 2>/dev/null
 check "a pass started while a stop holds the lock refuses, naming it"    '[ $prc -ne 0 ] && [[ "$out" == *"queue.mjs stop S-13"* ]] && [ "$(f S-13 state)" = "\"parked\"" ]'
 

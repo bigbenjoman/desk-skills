@@ -888,7 +888,7 @@ hook then refuses Claude trailers in that repo only, and autopilot workers there
 
 ```bash
 desk-env where                   # which repo and config apply here; EXISTS=yes once set up
-desk-env show [3 5]              # the config's rules for the agent, headings and tables (no §3c unless named)
+desk-env show [rules 3 5]        # the config's rules for the agent, headings and tables (never §3c)
 desk-env get required-checks     # read any row by its id (desk-env ids lists them all)
 desk-env list required-checks    # every item of a list row, one per line
 desk-jira where                  # the Jira site, project and login this repo resolves to
@@ -913,6 +913,10 @@ changed to the repo's ticket ledger, `~/.claude/desk/repos/<slug>/ledger/events.
 writer: a typed event for a ticket's change of state and a `legacy_set` for its other fields. A
 batch the ledger has not seen starts with one `seeded` event per ticket. queue.json is still written
 first and read by everything; a missed append is reported by the writer and never fails the write.
+Each pass then compares queue.json with the queue rebuilt from the log: its report names each ticket
+field that differs and counts the pass's missed appends, and its line in `passes.jsonl` records both
+counts (`ledger_diffs`, `ledger_missed`). `queue.mjs rebuild [<batch | standing>]` writes the rebuilt
+queue to `queue.rebuilt.json` beside queue.json and prints each field that differs.
 
 The desk-skills test suite runs against throwaway homes and repos, never yours:
 
@@ -926,7 +930,9 @@ every shell script when shellcheck is installed (it says when it is not). On mac
 those suites, and `bash tests/related.sh` only the ones your branch's change reaches, chosen as CI
 chooses them, uncommitted and untracked files included (every suite when that cannot be decided;
 it runs as many at once as `run.sh` does without `-j`, or `DESK_TEST_JOBS` of them where that is
-set). `related.sh` takes a test slot first (`with-lock.sh test`), so it never runs beside the slots'
+set). One difference from CI: an end-to-end (`L3`) suite the change reaches only through imports,
+claiming no changed file directly, does not run locally; `related.sh` names it as left for CI, which
+still runs it before merge. `related.sh` takes a test slot first (`with-lock.sh test`), so it never runs beside the slots'
 holders: while it waits the wrapper says who holds them, and after `DESK_RELATED_WAIT` seconds (an
 hour by default) it exits 75 having run nothing. A run already inside a slot takes no second one.
 `bash tests/run.sh -j 3` runs up to three suites at once, the longest
@@ -934,7 +940,12 @@ in `tests/suite_durations.json` first, each reported in one piece in name order 
 Without `-j` it runs as many as `desk-env get test-cap` allows, or a quarter of the cores where that
 is unset; `-j 1` runs them one after another in name order. Each report gives the suite's CPU
 seconds, and every finished run appends a line to `~/.desk-autopilot/test-runs.jsonl` with its
-date, suites, job count, wall and CPU seconds and the load average at its start. A suite that fails
+date, suites, job count, wall and CPU seconds, the load average at its start, its scope (`full` or
+`changed`) and why, the worktree it ran in, the lock it ran under with the seconds it waited for
+it, and how many suites `related.sh` left for CI (`left_for_ci`). Every lock wait is in the lease log (`~/.desk-autopilot/machine/leases.log.jsonl`) too: a
+`queued` line as a run starts to wait, then its `grant` or `gave-up` line, each with the class, the
+worktree, the seconds waited, how many other runs wait, the one-minute load average, the free memory
+percentage and the compressed memory in GB (a reading that fails is left `null`). A suite that fails
 runs once more: passing then, the run passes, the suite's report shows its first run's failure, and
 the summary names it under `flaked:` (CI's `tests` job prints each shard's); failing again, the run
 fails with both runs printed. `test_compare_pass.sh` is never retried. `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite
@@ -952,7 +963,20 @@ left out, text the pass cut short compared up to the cut, and queue stamps (`upd
 when nothing differs, 1 when something does, and 2 when a run was not compared. With
 `PASS_CMP_KEEP=1` set, a run that exits 1 or 2 leaves its recordings and both trees in its scratch
 directory and prints that directory and the `compare_pass.mjs diff` command that lists them again,
-in seconds and without replaying a suite.
+in seconds and without replaying a suite. Both trees and every suite run side by side, as each pass
+suite gives its stand-in workers session ids of its own (`SID_SUFFIX` in `tests/pass_setup.sh`);
+`PASS_CMP_SERIAL=1`, or a base whose suites predate those ids, runs them one after the other. A base given as a
+commit is replayed once: its recording is cached under `${XDG_CACHE_HOME:-~/.cache}/desk-skills/compare-pass`
+(the 5 most recently used), keyed by the commit, the node, git and bash versions, the suites and
+`compare_pass.sh`, `compare_pass.mjs`, `suite_env.sh` and the usage probe the recorder holds probe stamps
+by, and a later comparison against it replays
+only the head. A base suite that failed a check or exited non-zero (for want of a tool, or on a busy
+machine) is left out of the entry and replayed on the base next time, and the comparison names the
+check; a base replay that was interrupted, or in which a pass crashed, is not cached at all, and the
+comparison says which suite kept it out. A directory base never is cached, and
+`PASS_CMP_CACHE=0` replays both trees. `test_compare_pass.sh` replays every pass suite against itself
+only on a main push and the nightly run; a pull request and a local run replay
+`test_pass_other_repo.sh` alone, unless `PASS_CMP_FULL=1` opts the run in.
 
 `pass.mjs` moves into phase modules under `desk/bin/pass/`, one section at a time. A phase's decision
 is a pure function there: it takes a snapshot (the queue's tickets and whatever else it reads, the
@@ -1014,6 +1038,12 @@ fails the run from the date `BUDGETS_FAIL_FROM` in `tests/run.sh` gives. A push 
 a budget: its `record` job opens or comments one issue labelled `ci-slow` for the suites over budget,
 and one labelled `ci-flaky` for those that failed and passed their retry, each assigned to the repo's
 owner. Neither is `ci-main-red`.
+
+Every suite declares its test layer in one `# layer: <layer>` line (`//` in `.mjs`) in its first ten
+lines, which `test_lint.sh` requires (`node tests/scope_sections.mjs --layers` names any suite
+without exactly one). `L1` is in process: its cases import modules and start no process. `L2` is one
+process boundary: its cases start a desk script or command each. `L3` is end to end: it runs a pass,
+a batch, the merge driver or the installer through.
 
 ## Using autopilot
 

@@ -17,7 +17,7 @@ import { basename, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { lock, unlock } from './dir-lock.mjs';
-import { STATES, FINISHED } from './queue-states.mjs';
+import { STATES, FINISHED, PARK_KINDS } from './queue-states.mjs';
 import { batchFields, keys as keysOf, same } from './queue-store.mjs';
 
 export const SNAPSHOT_EVERY = 1000;
@@ -25,7 +25,7 @@ export const LOCK_WAIT_MS = 2000;
 export const MODES = ['shadow', 'record'];
 // Observations a pass recomputes on every run: written to queue.json, never appended, ignored by the diff.
 export const PROJECTION_ONLY = ['log_bytes', 'idle_passes', 'pr_status', 'suite_wait_since', 'progress_sha', 'progress_at'];
-export const PARK_KINDS = ['person-step', 'question', 'hold', 'stopped', 'date', 'failure'];
+export { PARK_KINDS };
 export const ESCALATE_TO = ['person', 'repair', 'requeue'];
 // How many of the latest event ids a fold keeps, so a retry that straddles a snapshot is still skipped.
 const ID_WINDOW = 1000;
@@ -90,8 +90,10 @@ export const TRANSITIONS = Object.freeze({
   moved: { from: ANY, to: KEEP },
   archived: { from: ANY, to: KEEP },
   legacy_set: { from: ANY, to: KEEP },
-  ...Object.fromEntries(['answered', 'waiting', 'waited', 'held', 'released', 'automerge_armed', 'automerge_disarmed', 'unparked']
+  ...Object.fromEntries(['answered', 'held', 'released', 'automerge_armed', 'automerge_disarmed', 'unparked']
     .map((t) => [t, { from: UNFINISHED, to: KEEP }])),
+  // A done ticket's PR can still wait, on GitHub's mergeability answer.
+  ...Object.fromEntries(['waiting', 'waited'].map((t) => [t, { from: STATES, to: KEEP }])),
 });
 
 export const ledgerPaths = (repoDir) => {
@@ -126,6 +128,17 @@ export function invalid(ev) {
 export const emptyState = () => ({ v: 1, seq: 0, tickets: {}, batches: {}, ids: [] });
 const newTicket = (key) => ({ key, batch: null, state: null, archived: false, fields: {}, park: null, holds: [], pr: null, merge: null,
   questions: [], answered: [], waits: {}, automerge: null, spawn: null });
+// The queue.json field holding the triage questions answered so far, each an answered event's qid.
+export const ANSWERED = 'answered_questions';
+// The queue.json field holding a ticket's open waits, { <on>: a waiting event's data less its `on` }, or
+// null once none is open (pass/deadlines.mjs).
+export const WAITS = 'waits';
+// Queue field `v` as the fold keeps it, each wait with its `on`, or null when it is not a map of waits.
+export const waitsOfField = (v) => {
+  if (v == null) return {};
+  if (typeof v !== 'object' || Array.isArray(v) || !Object.values(v).every((w) => w && typeof w === 'object' && !Array.isArray(w))) return null;
+  return Object.fromEntries(Object.entries(v).map(([on, w]) => [on, { ...w, on }]));
+};
 export const withoutProjectionOnly = (fields) => Object.fromEntries(Object.entries(fields ?? {}).filter(([f]) => !PROJECTION_ONLY.includes(f)));
 
 // Lays queue.json fields onto ticket `t`: the fields with a typed home (state, park, held_by, result.pr,
@@ -138,6 +151,8 @@ function overlay(t, fields) {
   if ('held_by' in f) t.holds = keysOf(f.held_by);
   if ('result' in f) t.pr = f.result?.pr ?? null;
   if ('merge' in f) t.merge = f.merge ?? null;
+  if (ANSWERED in f) t.answered = Array.isArray(f[ANSWERED]) ? [...f[ANSWERED]] : [];
+  if (WAITS in f) t.waits = waitsOfField(f[WAITS]) ?? {};
 }
 
 // Whether `ev` is legal from its ticket's state in `state`: { legal, from }. Batch events always are.
@@ -146,6 +161,11 @@ export function legality(state, ev) {
   const from = state.tickets[ev.key]?.state ?? null;
   return { legal: TRANSITIONS[ev.type].from.includes(from), from };
 }
+
+// The park a parked event leaves: its data, which is the whole park record, less a typed field it
+// carries as null because that park has none (an approval, a deadline).
+const PARK_NULLABLE = Object.entries(EVENTS.parked.data).filter(([, c]) => c.endsWith('?')).map(([f]) => f);
+export const parkOf = (d) => Object.fromEntries(Object.entries(d ?? {}).filter(([f, v]) => !(v == null && PARK_NULLABLE.includes(f))));
 
 // Applies one envelope to `state` in place. An illegal transition is applied all the same: in shadow
 // mode the queue write it records has already happened. Every batch an event names gets an entry in
@@ -171,12 +191,13 @@ function apply(state, ev) {
     case 'triaged': t.questions = [...d.questions]; break;
     case 'answered': t.answered.push(d.qid); break;
     case 'spawned': t.spawn = { ...d }; t.park = null; break;
-    case 'parked': t.park = Object.fromEntries(Object.entries(d).filter(([, v]) => v != null)); break;
+    case 'parked': t.park = parkOf(d); break;
     case 'unparked': case 'requeued': t.park = null; break;
     case 'held': t.holds = [...new Set([...t.holds, ...d.by])]; break;
     case 'released': t.holds = t.holds.filter((k) => k !== d.by); break;
-    case 'waiting': t.waits[d.on] = { ...d }; break;
-    case 'waited': delete t.waits[d.on]; break;
+    // queue.json keeps the field once a wait has started, as null when none is open.
+    case 'waiting': t.waits[d.on] = { ...d }; t.fields[WAITS] = null; break;
+    case 'waited': delete t.waits[d.on]; t.fields[WAITS] = null; break;
     case 'pr_opened': t.pr = d.pr; break;
     case 'automerge_armed': t.automerge = { ...d }; break;
     case 'automerge_disarmed': t.automerge = null; break;
@@ -224,6 +245,9 @@ export function project(state, batch, current = null) {
     if (t.holds.length || 'held_by' in t.fields) out.held_by = t.holds.length ? t.holds.join('|') : null;
     if (t.pr != null) out.result = { ...(t.fields.result ?? {}), pr: t.pr };
     if (t.merge) { out.merge = { ...t.merge }; out.merged_at = t.merge.at ?? t.fields.merged_at; }
+    if (t.answered.length) out[ANSWERED] = [...t.answered];
+    const waits = Object.entries(t.waits);
+    if (waits.length || WAITS in t.fields) out[WAITS] = waits.length ? Object.fromEntries(waits.map(([on, { on: _, ...w }]) => [on, w])) : t.fields[WAITS] ?? null;
     tickets[t.key] = out;
   }
   return { ...batchFields(current), batch, tickets };

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: decider (a headless session settles what a pass needs the person for)
+# layer: L2
 # supervisor.mjs with a fake pass that exits 11 with set reports, a fake claude that records its
 # arguments and prompt and answers as told, and the real digest's question list as the intake: a lane
 # A park is requeued and noted, a lane C or D park and an ungranted §3 row go to the digest, an item
@@ -195,6 +196,20 @@ echo "hand" > "$T/claude.mode"
 out=$(tick); settle
 P=$(grep -l "use the blue one" "$T"/claude.args.* 2>/dev/null | head -1)
 check "DS-269 AC5 the session reaped after the answer hands H on from its start, so the next one gets the answer" '[ "$(calls)" = 2 ] && [ -n "$P" ] && grep -A1 "· H · parked · lane A: h?$" "$P" | grep -q "answered .*: use the blue one"'
+
+# ---- DS-872: a tick the config check holds back still stops a session past its time ----------------
+mark; rm -f "$T/state/handed.json"
+queue '{"J":{"key":"J","state":"parked","lane":"A","park":{"question":"j?"}}}'
+verdict "$(parked J "j?")"; echo "hang" > "$T/claude.mode"
+out=$(tick)
+PID=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).decider.pid)' "$T/state/supervisor.json")
+CFG="$T/cfg/repos/acme__widgets/config.md"; cp "$CFG" "$T/config.good"
+printf '\n## 4. Tools\n| Field | Value |\n|---|---|\n| Evidence workflow | `none` `pr-evidence.yml` |\n' >> "$CFG"
+node -e 'const f=process.argv[1]; const s=JSON.parse(require("fs").readFileSync(f,"utf8")); s.decider.started=new Date(Date.now()-16*60000).toISOString(); require("fs").writeFileSync(f, JSON.stringify(s))' "$T/state/supervisor.json"
+out=$(tick)
+i=0; while kill -0 "$PID" 2>/dev/null && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+check "DS-872: the tick runs no pass, and still stops the session past its time and hands its items on" 'grep -q "config check: no pass run, no worker spawned" "$LOG" && ! kill -0 "$PID" 2>/dev/null && handed | grep -qx "J|decider timed out"'
+cp "$T/config.good" "$CFG"
 
 # ---- a batch-level line has no ticket to answer, and goes once no pass lists it ---------------------
 mark; queue '{}'; echo "hand" > "$T/claude.mode"

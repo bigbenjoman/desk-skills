@@ -1,8 +1,11 @@
 // suite: pass phase: parks and holds (the clears-when, person-step, date, outside and merge hold decisions)
+// layer: L1
 import { runPhase, runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds,
   decideMergeHolds } from '../desk/bin/pass/parks.mjs';
-import { HELD_PREFIX, badLabelText, IDLE_RECHECK_MS } from '../desk/bin/batch-state.mjs';
+import { HELD_PREFIX, STOPPED_PREFIX, badLabelText, IDLE_RECHECK_MS, isHeld, parkKind, personStepPark } from '../desk/bin/batch-state.mjs';
+import { newPark, applySet } from '../desk/bin/queue-writer.mjs';
+import { shownState } from '../desk/bin/desk-q.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -52,6 +55,21 @@ const BASE_CONTAINS = 'base-contains';
   const as = clears(clearsSnap(byKey(parked('A', PR_MERGED))), { check: { holds: false, note: 'still open' } });
   t('a condition not yet holding is reported as waited on, and settles nothing', j([settles(as), lines(as)]), j([[], ['A: waiting on "PR #41 merged" (still open): left parked']]));
   t('one with no note says nothing', j(clears(clearsSnap(byKey(parked('A', PR_MERGED)))).filter((a) => a.type === 'report')), '[]');
+}
+// DS-864 AC1: a condition that can never hold is recorded none, with why, for the person: needs-you lists it
+// and desk-q shows it as needs you, no longer waiting.
+{
+  const ON = { kind: 'commit-on', sha: '68c709f5a', branch: 'fix/A' };
+  const never = 'the branch origin/fix/A has moved to 41736d45a, which 68c709f5a does not build on, so 68c709f5a can no longer land there: the push it waits on is stale';
+  const as = clears(clearsSnap(byKey(parked('A', ON))), { check: { holds: false, never } });
+  t('DS-864 AC1 a stale commit-on is recorded none, its why kept on the park, and nothing requeued',
+    j([types(settles(as)), sets(as)]), j([['set'], ['park.clears_when={"kind":"none"}', `park.stale=${never}`]]));
+  t('DS-864 AC1 and the pass says so', j(lines(as)), j([`A: "commit 68c709f5a on origin/fix/A" can never hold (${never}): recorded as none, for the person`]));
+  const before = { ...parked('A', ON), lane: 'A', park: { question: 'push 68c709f5a onto fix/A', clears_when: ON } };
+  // The state desk-q reads is the one the pass's own writes leave.
+  const after = structuredClone(before);
+  applySet(after, sets(as));
+  t('DS-864 AC4 desk-q shows it as needs you, where it showed waiting before', `${shownState({ tickets: byKey(before) }, before)} → ${shownState({ tickets: byKey(after) }, after)}`, 'waiting → needs');
 }
 {
   const s = clearsSnap(byKey(parked('A', PR_MERGED, { park: { question: 'which colour?', clears_when: PR_MERGED, inputs: {} } })), { putOff: new Set(['A']) });
@@ -132,13 +150,13 @@ const dates = (s) => drive(decideDateHolds, s, {}, false);
 {
   const as = dates(dateSnap(byKey({ key: 'A', state: 'triaged' }), { A: { labels: ['blocked-until-2026-13-45'] } }));
   t('AC2 an unreadable blocked-until label holds the ticket for the person',
-    j(as.filter((a) => a.type !== 'date-line')), j([{ type: 'park', key: 'A', question: `${HELD_PREFIX}: ${badLabelText('blocked-until-2026-13-45')}` }, { type: 'set', key: 'A', fields: ['held_label=blocked-until-2026-13-45'] }]));
+    j(as.filter((a) => a.type !== 'date-line')), j([{ type: 'park', key: 'A', kind: 'date', question: `${HELD_PREFIX}: ${badLabelText('blocked-until-2026-13-45')}` }, { type: 'set', key: 'A', fields: ['held_label=blocked-until-2026-13-45'] }]));
 }
 // AC3: a triaged ticket whose blocked-until date is later than today is held until that date.
 {
   const as = dates(dateSnap(byKey({ key: 'A', state: 'triaged' }), { A: { labels: ['blocked-until-2026-12-01'] } }));
   t('AC3 a later blocked-until date holds the ticket until that date',
-    j(as), j([{ type: 'park', key: 'A', question: `${HELD_PREFIX}: blocked until 2026-12-01 (label blocked-until-2026-12-01) — starts on that date by itself` }, { type: 'set', key: 'A', fields: ['held_label=blocked-until-2026-12-01'] }]));
+    j(as), j([{ type: 'park', key: 'A', kind: 'date', question: `${HELD_PREFIX}: blocked until 2026-12-01 (label blocked-until-2026-12-01) — starts on that date by itself` }, { type: 'set', key: 'A', fields: ['held_label=blocked-until-2026-12-01'] }]));
   t('a date that has come holds nothing', j(dates(dateSnap(byKey({ key: 'A', state: 'triaged' }), { A: { labels: ['blocked-until-2026-11-18'] } }))), '[]');
   t('a label the person let start is not held on again', j(dates(dateSnap(byKey({ key: 'A', state: 'triaged', held_label: 'blocked-until-2026-12-01' }), { A: { labels: ['blocked-until-2026-12-01'] } }))), '[]');
 }
@@ -301,6 +319,34 @@ const dates = (s) => drive(decideDateHolds, s, {}, false);
   const free = drive(decideMergeHolds, s, { 'landed-here': true });
   t('both lifted frees the merge', lines(free, 'epic-line')[0], 'merge hold: A: P-1, G-2 Done; free to merge');
   t('a merged ticket waits on nothing', j(drive(decideMergeHolds, { ...s, tickets: byKey({ ...tk, merged_at: 'x' }) })), '[]');
+}
+
+// ---- DS-895: a park's kind ----
+// AC1: a ticket held behind a sibling, its park question since reworded, still reads as held.
+{
+  const sib = { key: 'S-1', state: 'running' };
+  const was = held('A', 'S-1', { park: { question: `${HELD_PREFIX}: blocked by S-1`, kind: 'hold' } });
+  const reworded = { ...was, park: { question: 'waits for S-1 to merge, then starts', kind: 'hold' } };
+  const qOf = (x) => ({ tickets: byKey(sib, x) });
+  t('DS-895 AC1 a hold whose question was reworded is still held', isHeld(reworded), true);
+  t('DS-895 AC1 and desk-q shows it as it showed the hold before the rewording', `${shownState(qOf(reworded), reworded)}`, `${shownState(qOf(was), was)}`);
+  t('DS-895 AC1 a cleared condition does not settle it as a park of its own',
+    j(settles(clears(clearsSnap(byKey(sib, { ...reworded, park: { ...reworded.park, clears_when: PR_MERGED } })), { check: { holds: true } }))), '[]');
+  t('DS-895 AC1 a park of its own whose question opens like a hold is not one', isHeld({ key: 'B', state: 'parked', park: { question: `${HELD_PREFIX}?`, kind: 'question' } }), false);
+}
+// AC3: a park recorded before parks carried their kind, or taken in from a park file holding only a
+// question, gets the kind its question opens as.
+{
+  const kinds = (qs) => qs.map((x) => newPark(x).kind).join(' ');
+  t('DS-895 AC3 a park taken in from its question alone gets the kind the question opens as',
+    kinds(['which colour?', "the person's step: apply the migration", `${HELD_PREFIX}: blocked by X-1`, `${STOPPED_PREFIX} at x`, `${HELD_PREFIX}: blocked until 2026-12-01 (label b)`, `${HELD_PREFIX}: ${badLabelText('b')}`]),
+    'question person-step hold stopped date date');
+  t('DS-895 AC3 a writer that names the kind records that kind', newPark(`${HELD_PREFIX}: blocked by X-1`, 'x', 'stopped').kind, 'stopped');
+  t('DS-895 AC3 a park recorded with no kind is read by its question', j(['which colour?', `${HELD_PREFIX}: blocked by X-1`, `${STOPPED_PREFIX} at x`].map((x) => parkKind({ park: { question: x } }))), '["question","hold","stopped"]');
+  t('DS-895 AC3 an unknown kind on a park is read by its question', parkKind({ park: { question: 'which colour?', kind: 'held' } }), 'question');
+  t('DS-895 a person step is read by its kind, its question reworded or not',
+    j([{ question: 'apply the migration on staging', kind: 'person-step' }, { question: "the person's step: apply the migration" }, { question: "the person's step: apply it", kind: 'question' }]
+      .map((park) => personStepPark({ state: 'parked', park }))), '[true,true,false]');
 }
 
 // AC5: the decisions start no process, call no git, gh or Jira, and write nothing, the queue included.

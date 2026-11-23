@@ -40,6 +40,11 @@ a worker cannot:
   `node <bin>/evidence.mjs dispatch <its branch> <n>`, its branch fixed by the rule: that refuses a
   `<n>` that is not digits or not its branch's own open PR, then runs `gh workflow run <file>.yml
   --repo <§0 GitHub repo> --ref <§0 Default branch> -f pr=<n>` as the pass does;
+- run §4 Preview database other than as `node <bin>/preview-db.mjs up <its branch> <n>`, where §3
+  `worker-preview-db` is `yes` and the row is set: its branch fixed by the rule, and the script
+  refuses a `<n>` that is not its branch's own open PR or a PR that adds no migration; none in a dry
+  run. The error-page check, `node <bin>/preview-db.mjs check <its screenshot directory>`, is always
+  its own;
 - run the package manager beyond `install` with no arguments and the configured rows (no `add`,
   no `exec`/`dlx`/`x`, no `npx`/`bunx`/`uvx`), or the §4 Command prefix on its own;
 - run `sed`, `awk`, `cp`, `mv`, `sort`, `uniq`, `xargs` or `tee`; `codex` other than
@@ -54,7 +59,7 @@ It may also write its resume file, `$DESK_STATE/resume/<TICKET>.json`: the harne
 worktree's `.claude/`, where `desk-ticket` keeps one interactively.
 
 **A second repo a ticket depends on is read from a clone the pass keeps.** Each `owner/name` in §4
-Worker read-only repos gets one shallow clone at `~/.desk-autopilot/<slug>/ref/<owner>__<name>`,
+Worker read-only repos gets one shallow clone at `~/.desk-autopilot/<slug>/ref/<owner>__<name>`, <!-- prose-ok: the repo's own folder (desk-env readRepoDir), not a batch's state folder -->
 shared by the repo's batches, and the pass brings it to the head of that repo's default branch before
 it starts a local worker. One that cannot be refreshed parks the ticket, naming the repo and the
 failure, so no worker reads a stale copy; requeue it once the repo is reachable. A clone delisted is

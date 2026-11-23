@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: auto-release (a pass installs desk-skills main once it passed its tests check)
+# layer: L2
 # maintenance.mjs step on a fixed clock (DESK_MAINT_NOW), against a fake desk-skills checkout cloned
 # from a scratch origin, a stubbed check-status command, an install.sh that records each run and
 # writes installed.json, and fake queues for this repo and another. Scratch HOME only.

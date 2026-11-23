@@ -96,6 +96,13 @@ plain bullets. The autopilot's daily staging-check page lists each merged PR's u
 puts a PR with none under "Nothing to look at". A fix for a live production breakage opens its intro
 with `PRODUCTION BROKEN: <what is broken>`, so its promotion question is asked as soon as it merges.
 
+**A step that closes an issue later names the issue first.** GitHub closes an issue at merge
+wherever close, fix or resolve (any form) sits right before its reference, so "Close #1090 after a
+week of clean main runs" closes it at merge and the step finds nothing to check. Write "#1090 can be
+closed after a week of clean main runs". Only an issue this PR closes, because its ticket says so,
+gets a closing keyword, on a line of its own: `Closes #<n>`. `opening.md`'s closing-keyword check
+holds every body to this, a task item (`- [ ] Close #<n>`) included: a box is a step for later.
+
 **Record the self-review the same way.** It is a check that ran, so it belongs in Testing:
 
 > `<§4 Local review command>` at `a1b2c3d`: <§4 Clean review verdict> across 7 files, findings

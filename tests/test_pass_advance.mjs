@@ -1,10 +1,12 @@
 // suite: pass phase: advance running tickets and the usage limit (the decisions, and the generator runner)
+// layer: L1
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideAdvance, decideUsageLimit, logMarkers, REBOOT } from '../desk/bin/pass/advance.mjs';
 import { registryView, BUDGET_RESUME_USD } from '../desk/bin/pass/shared.mjs';
 import { budgetStop } from '../desk/bin/harvest.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
-import { parkApproval } from '../desk/bin/batch-state.mjs';
+import { parkApproval, parkFileFault } from '../desk/bin/batch-state.mjs';
+import { workerProcs } from '../desk/bin/worker-stop.mjs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { scratch } from './scratch.mjs';
@@ -22,7 +24,10 @@ const logOf = (key, h, events, { mtimeMs = NOW - HOUR } = {}) => {
   const raw = Buffer.from(text);
   return { path: `/state/logs/${key}.log`, h, raw, text, size: raw.length, mtimeMs };
 };
-const ticket = (key, fields = {}) => ({ key, state: 'running', branch: `fix/${key}`, session_id: `sid-${key}`, ...fields });
+// Its progress as the last pass read it, which the stub read below answers unchanged.
+const HEAD = 'a'.repeat(40);
+const PROGRESS = { head: HEAD, pushed: HEAD };
+const ticket = (key, fields = {}) => ({ key, state: 'running', branch: `fix/${key}`, session_id: `sid-${key}`, progress_at: new Date(NOW - HOUR).toISOString(), progress_sha: PROGRESS, ...fields });
 // The registry: `sessions` live, or unread.
 const snap = (tk, log, { sessions = [], read = true, upload = true } = {}) => ({
   t: tk, log, registry: registryView(read ? { live: sessions } : { why: 'claude agents failed' }), now: NOW, stateDir: '/state',
@@ -34,9 +39,10 @@ const snap = (tk, log, { sessions = [], read = true, upload = true } = {}) => ({
 // The runner with stub handlers: each read answers from `answers` (a value, or a function of the
 // action), else from what the pass reads when nothing is there.
 const READS = {
-  'open-pr': '', 'suite-wait': null, 'build-park': null, 'merge-park': null, shots: [], cells: null, 'open-question': null,
+  'open-pr': '', 'suite-wait': null, 'build-park': null, 'merge-park': null, shots: [], 'same-pairs': [], cells: null, 'open-question': null,
   'settle-links': [], 'live-read': null, 'clears-when': { kind: 'none' }, register: { inputs: {}, status: 'new' }, recommends: null,
-  'refuse-lease': false, lifted: false, 'exit-code': null, uncommitted: null, approval: { approve: null, missing: null },
+  'refuse-lease': false, lifted: false, 'exit-code': null, uncommitted: null, approval: { approve: null, missing: null }, 'pr-owner': null,
+  'park-file': null, progress: PROGRESS,
 };
 const WRITES = ['set', 'report', 'cloud', 'note', 'hold', 'kill', 'park', 'upload', 'worker-head', 'done', 'park-links', 'keep-links', 'decisions', 'handoff', 'fail', 'keep-holds', 'usage-hold'];
 function drive(decide, s, answers = {}) {
@@ -78,12 +84,20 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   t('AC1 and a quiet worker it cannot stop is counted, not parked as wedged', j(sets(advance(tickets[2]))), '["idle_passes=6"]');
 }
 
+// DS-695: a pass another worker's exit woke counts no quiet pass, so it never stops a quiet worker sooner.
+{
+  const quiet = snap(ticket('W', { session_id: 'live-1', log_bytes: 0, idle_passes: 5 }), logOf('W', '', []), { sessions: [{ sessionId: 'live-1', pid: 7 }] });
+  const as = advance({ ...quiet, woken: true });
+  t('DS-695 a woken pass leaves a quiet worker\'s count and running', j([sets(as), types(as).includes('park'), types(as).includes('kill')]), j([[], false, false]));
+  t('DS-695 the interval\'s pass still counts it, and stops it at six', j([sets(advance(quiet)).includes('idle_passes=6'), types(advance(quiet)).includes('park')]), j([true, true]));
+}
+
 // AC2: workers the registry lists, whose logs show them still working, get no action that moves them on.
 {
   const sessions = [{ sessionId: 'sid-A', pid: 11 }, { sessionId: 'sid-B', pid: 12 }];
   const all = ['A', 'B'].flatMap((k) => advance(snap(ticket(k, { stage: '3/9', log_bytes: 0 }), logOf(k, 'AUTOPILOT_STAGE: 3/9 implement', [said('AUTOPILOT_STAGE: 3/9 implement'), said('editing')]), { sessions })));
   t('AC2 live workers whose logs grew get nothing but their liveness count', j(moves(all)), '[]');
-  t('AC2 and each is asked only whether it waits on a question', j(types(all)), '["set","open-question","set","open-question"]');
+  t('AC2 and each is asked only for its progress and whether it waits on a question', j(types(all)), '["set","progress","open-question","set","progress","open-question"]');
   const asked = advance(snap(ticket('A', { stage: '3/9', log_bytes: 0 }), logOf('A', '', [said('x')]), { sessions }), { 'open-question': 'which colour?' });
   t('a live worker sitting on a question is reported waiting, and nothing else', j(lines(asked)), '["A: which colour?"]');
 }
@@ -94,10 +108,39 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   const as = advance(snap(ticket('D'), logOf('D', DONE, [said(DONE), RESULT])));
   const done = as.find((a) => a.type === 'done');
   t('AC3 a DONE worker is recorded done on the PR it names', j(done), j({ type: 'done', key: 'D', pr: '12', summary: 'pr=12 jira=Done', line: 'pr=12 jira=Done', sets: [] }));
-  t('AC3 after recording its exited head, and then its issue links are settled', j(types(as).slice(types(as).indexOf('worker-head'))), '["worker-head","done","settle-links","park-links"]');
+  t('AC3 after recording its exited head and reading whose its PR is, and then its issue links are settled', j(types(as).slice(types(as).indexOf('worker-head'))), '["worker-head","pr-owner","done","settle-links","park-links"]');
   t('DS-193 AC1 a finished worker with no screenshot records none', j(sets(as)), j([`log_bytes=${logOf('D', DONE, [said(DONE), RESULT]).size}`, 'idle_passes=0', 'images_uploaded=none']));
   const parkedLinks = advance(snap(ticket('D'), logOf('D', DONE, [said(DONE), RESULT])), { 'settle-links': [{ why: 'no grant', link: null }] });
   t('links a DONE worker asked for that were not made go to park-links', j(parkedLinks.at(-1)), j({ type: 'park-links', key: 'D', needs: [{ why: 'no grant', link: null }], pr: '12' }));
+}
+
+// A DONE marker naming a PR that is not the worker's own: on another branch, or opened by another
+// person (their epic roll-up PR, say). It is never taken as the ticket's result: the ticket parks.
+{
+  const DONE = 'AUTOPILOT_DONE: pr=77 jira=Done';
+  const log = () => logOf('D', DONE, [said(DONE), RESULT]);
+  const ownerOf = (branch, author) => (a) => (a.pr === '77' ? { pr: a.pr, branch, author } : null);
+  const theirs = advance({ ...snap(ticket('D'), log()), logins: 'me' }, { 'pr-owner': ownerOf('epic/E', 'alice') });
+  t('a DONE naming a PR on another branch is not recorded done', j(types(theirs).filter((x) => ['done', 'park'].includes(x))), '["park"]');
+  t('it parks, naming the PR, its branch and the ticket\'s, and that nothing is done to it', /^its PR #77 is not its own: PR #77 is on branch epic\/E, not D's branch fix\/D\. .*nothing is done to #77: no fix or review try, undraft, reopen or merge/.test(theirs.find((a) => a.type === 'park')?.question ?? ''), true);
+  t('the report says so', lines(theirs, 'parked').some((l) => l.startsWith('D: its worker reported PR #77, which is not its own')), true);
+  t('nor is one on its own branch that another account opened', types(advance({ ...snap(ticket('D'), log()), logins: 'me' }, { 'pr-owner': ownerOf('fix/D', 'alice') })).includes('done'), false);
+  t('its own PR is recorded done as before', types(advance({ ...snap(ticket('D'), log()), logins: 'me,me-bot' }, { 'pr-owner': ownerOf('fix/D', 'Me-Bot') })).includes('done'), true);
+  t('a PR whose owner could not be read is recorded done, the fix tries checking it again', types(advance({ ...snap(ticket('D'), log()), logins: 'me' })).includes('done'), true);
+}
+
+// Before/after pairs whose two files are the same show no change: nothing to upload, and the ticket
+// records none, with no upload and nothing for the person.
+{
+  const DONE = 'AUTOPILOT_DONE: pr=12 jira=Done';
+  const h = `AUTOPILOT_IMAGES: /state/images/D/\n${DONE}`;
+  const log = () => logOf('D', h, [said('AUTOPILOT_IMAGES: /state/images/D/'), said(DONE), RESULT]);
+  const pairs = ['before-desktop.png', 'after-desktop.png', 'before-mobile.png', 'after-mobile.png'];
+  const same = advance(snap(ticket('D'), log()), { shots: pairs, 'same-pairs': pairs });
+  t('identical before/after pairs record images_uploaded=none', sets(same).includes('images_uploaded=none'), true);
+  t('and nothing is uploaded or put to the person', j([types(same).includes('upload'), lines(same, 'waiting').length]), j([false, 0]));
+  const one = advance(snap(ticket('D'), log()), { shots: pairs, 'same-pairs': pairs.slice(0, 2) });
+  t('a changed pair beside them is uploaded as before', j([types(one).includes('upload'), sets(one).includes('images_uploaded=none')]), j([true, false]));
 }
 
 // The cases tests/test_pass_workers.sh runs end to end, decided here.
@@ -122,6 +165,84 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   const suite = advance(quiet('T-13', 'AUTOPILOT_STAGE: 4/9 verify'), { 'suite-wait': 'suite' });
   t('a quiet worker running its suite under the test lock is quiet, not wedged',
     j([types(suite).includes('park'), sets(suite), lines(suite, 'quiet')]), j([false, ['idle_passes=6', `suite_wait_since=${NOW}`], ['T-13: quiet for 6 passes, running its suite']]));
+}
+
+// DS-902: a running worker's progress time is its last stage change, commit or push, never log growth alone.
+{
+  const at3 = (fields) => { const log = logOf('G', 'AUTOPILOT_STAGE: 3/9 implement', [said('AUTOPILOT_STAGE: 3/9 implement'), said('still going')]); return snap(ticket('G', { stage: '3/9', log_bytes: 0, ...fields }), log, { sessions: [{ sessionId: 'sid-G', pid: 9 }] }); };
+  const progress = (as) => sets(as).filter((f) => /^progress_/.test(f));
+  t('AC1 a log that grew with no stage change, commit or push leaves its progress time', j(progress(advance(at3()))), '[]');
+  const NEW = 'b'.repeat(40);
+  // Written bare, as every time field is, so queue.mjs keeps it a plain string.
+  const P = (ms) => `progress_at=${new Date(ms).toISOString()}`;
+  t('a new commit on its HEAD is progress', j(progress(advance(at3(), { progress: { head: NEW, pushed: HEAD } }))),
+    j([P(NOW), `progress_sha=${j({ head: NEW, pushed: HEAD })}`]));
+  t('AC6 a push of its branch is progress, its time the pass that saw the push', j(progress(advance(at3({ progress_sha: { head: HEAD, pushed: null } })))),
+    j([P(NOW), `progress_sha=${j(PROGRESS)}`]));
+  t('a stage change is progress', j(progress(advance(at3({ stage: '2/9' })))), j([P(NOW)]));
+  t('a git read that fails changes nothing', j(progress(advance(at3(), { progress: null }))), '[]');
+  t('a worker first seen starts its clock then', j(progress(advance(at3({ progress_at: undefined, progress_sha: undefined }), { progress: null }))), j([P(NOW)]));
+  const waited = progress(advance(at3({ suite_wait_since: NOW - 20 * 60000 })));
+  t('AC4 a suite wait that ended under its ceiling is not counted: its progress time moves on by the wait', j(waited), j([P(NOW - HOUR + 20 * 60000)]));
+  const over = progress(advance(at3({ suite_wait_since: NOW - 50 * 60000 })));
+  t('and only up to the ceiling', j(over), j([P(NOW - HOUR + 30 * 60000)]));
+  const lifted = sets(advance(at3({ usage_paused: { type: 'five_hour', resets_at: null } })));
+  t('a usage hold that lifted starts the clock again, once, as it clears the hold', j(lifted.filter((f) => /^(progress_at|usage_paused)=/.test(f))), j(['usage_paused=null', P(NOW)]));
+  const liftedExited = sets(advance(snap(ticket('Y', { stage: '3/9', usage_paused: { type: 'five_hour', resets_at: null } }), logOf('Y', '', [said('x'), RESULT]))));
+  t('and so for a worker that exited at the limit, whose progress is not read', liftedExited.includes(P(NOW)), true);
+  const exited = advance(snap(ticket('X', { stage: '3/9' }), logOf('X', 'AUTOPILOT_DONE: pr=3 jira=none', [said('AUTOPILOT_DONE: pr=3 jira=none'), RESULT])));
+  t('an exited worker\'s progress is not read', types(exited).includes('progress'), false);
+  t('nor a wedged one\'s', types(advance(snap(ticket('Q', { stage: '3/9', session_id: 'live-q', idle_passes: 5, log_bytes: 0 }), logOf('Q', '', []), { sessions: [{ sessionId: 'live-q', pid: 5 }] }))).includes('progress'), false);
+}
+
+// DS-857: a log that grew only by the harness's tool_progress heartbeat, for one call.
+{
+  const beat = (secs, id = 'toolu_hung') => ({ type: 'tool_progress', tool_use_id: `${id}-heartbeat-${secs / 30}`, tool_name: 'Bash', parent_tool_use_id: id, elapsed_time_seconds: secs, heartbeat: true });
+  // A worker at Stage 4b whose last pass saw its log up to the first event; `after` are the events since.
+  const beating = (key, after, fields = {}) => {
+    const before = [said('AUTOPILOT_STAGE: 4b/9 self-review')];
+    const log = logOf(key, 'AUTOPILOT_STAGE: 4b/9 self-review', [...before, ...after]);
+    const seen = Buffer.byteLength(`${before.map((e) => JSON.stringify(e)).join('\n')}\n`);
+    return snap(ticket(key, { session_id: `sid-${key}`, stage: '4b/9', log_bytes: seen, idle_passes: 0, ...fields }), log, { sessions: [{ sessionId: `sid-${key}`, pid: 91 }] });
+  };
+  const past = advance(beating('H-1', [beat(1770), beat(1800), beat(1830)]));
+  const park = past.find((a) => a.type === 'park')?.question ?? '';
+  t('DS-857 AC1 one call past the ceiling, with only its heartbeat since, is stopped and parked as wedged',
+    j([/^wedged — one Bash call \(toolu_hung\) running for 30 minutes, past the 30-minute ceiling/.test(park), lines(past, 'stalled').length, past.filter((a) => a.type === 'kill').length]), '[true,1,1]');
+  t('DS-857 AC4 the stop names only that worker\'s session', j(past.filter((a) => a.type === 'kill').map((a) => [a.sid, a.pid])), j([['sid-H-1', 91]]));
+  t('DS-857 AC1 its log is counted, so the next pass does not read it again', sets(past).some((f) => f.startsWith('log_bytes=')), true);
+
+  const under = advance(beating('H-2', [beat(600), beat(630)]));
+  t('DS-857 AC2 a call still under the ceiling is left running, as alive',
+    j([types(under).filter((a) => ['kill', 'park'].includes(a)), sets(under).includes('idle_passes=0')]), j([[], true]));
+
+  const more = advance(beating('H-3', [beat(1830), said('the refutation came back')]));
+  t('DS-857 AC3 a log that grew by anything else is alive as today',
+    j([types(more).filter((a) => ['kill', 'park'].includes(a)), sets(more).includes('idle_passes=0')]), j([[], true]));
+
+  const unread = advance({ ...beating('H-4', [beat(1830)]), registry: registryView({ why: 'claude agents failed' }) });
+  t('DS-857 with the registry unread, a hung call is not stopped', types(unread).filter((a) => ['kill', 'park'].includes(a)).length, 0);
+
+  // A session that exited mid-call is the exit handling's: never parked wedged and then recorded done or failed too.
+  const exited = advance({ ...beating('H-5', [beat(1830)]), registry: registryView({ live: [] }) });
+  t('DS-857 a hung call whose session has exited is not parked as wedged',
+    j([lines(exited, 'stalled').length, exited.filter((a) => a.type === 'park' && /^wedged/.test(a.question)).length]), '[0,0]');
+}
+
+// DS-857 AC4: ending a session's processes takes its own groups (its hung codex's too) and no other session's.
+{
+  const rows = [
+    { pid: 1, ppid: 0, pgid: 1, args: 'launchd' },
+    { pid: 10, ppid: 1, pgid: 10, args: 'bash spawn-worker.sh --session-id sid-A' },
+    { pid: 11, ppid: 10, pgid: 10, args: 'claude -p --session-id sid-A' },
+    { pid: 12, ppid: 11, pgid: 12, args: 'codex exec --sandbox read-only x' },
+    { pid: 20, ppid: 1, pgid: 20, args: 'bash spawn-worker.sh --session-id sid-B' },
+    { pid: 21, ppid: 20, pgid: 20, args: 'claude -p --session-id sid-B' },
+    { pid: 22, ppid: 21, pgid: 22, args: 'codex exec --sandbox read-only y' },
+    { pid: 30, ppid: 1, pgid: 30, args: 'node pass.mjs' },
+  ];
+  const target = workerProcs('sid-A', rows, 30);
+  t('DS-857 AC4 only the wedged worker\'s groups, its codex\'s included, are signalled', j([target.groups.sort((a, b) => a - b), target.pids]), j([[10, 12], []]));
 }
 
 // A worker its per-worker budget stopped resumes once in its own session to commit, push and finish.
@@ -204,6 +325,10 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   const off = advance(ended('B-4', 'error_max_budget_usd', {}, { off: true }), { 'exit-code': 1 });
   t('DS-849 AC4 with the per-worker budget none, a budget-stop subtype is failed as any error',
     j([types(off).includes('fail'), sets(off).some((f) => f.startsWith('resume='))]), '[true,false]');
+  t('DS-898 AC2 the fail carries the subtype its session ended in',
+    j([off.find((a) => a.type === 'fail')?.subtype, other.find((a) => a.type === 'fail')?.subtype]), j(['error_max_budget_usd', 'error_during_execution']));
+  t('DS-898 a session that ended with no error fails with no subtype',
+    advance(snap(ticket('N-9'), logOf('N-9', '', [said('working'), RESULT])), { 'exit-code': 0 }).find((a) => a.type === 'fail')?.subtype, null);
 }
 
 // The text a park's write waits on, from the worker's park file: only for the question it parked on.
@@ -237,7 +362,7 @@ t('a new reboot stop is one', j(logMarkers('AUTOPILOT_REBOOT: patch', {})), j({ 
   const as = advance(s, { 'settle-links': [{ why: 'no grant', link: null }] });
   t('a park\'s question carries the links not made', as.find((a) => a.type === 'park')?.question, 'which colour?. Issue links not made: no grant');
   t('its reads and writes run in the pass\'s order', j(types(as).slice(types(as).indexOf('worker-head'))),
-    '["worker-head","settle-links","park","set","live-read","clears-when","register","recommends","approval","set","keep-links","decisions","report"]');
+    '["worker-head","settle-links","park","set","live-read","clears-when","register","recommends","approval","park-file","set","keep-links","decisions","report"]');
   t('#775 the text a park awaits approval of is read for the question the worker parked on', j(as.find((a) => a.type === 'approval')), j({ type: 'approval', key: 'Q-1', question: 'which colour?' }));
   t('and it is reported parked', j(lines(as, 'parked')), j(['Q-1: which colour?. Issue links not made: no grant']));
   const off = advance(s, { register: { inputs: {}, status: 'put_off', entry: { at: '2026-11-01T00:00:00Z' } } });
@@ -276,6 +401,38 @@ t('a new reboot stop is one', j(logMarkers('AUTOPILOT_REBOOT: patch', {})), j({ 
     j(lines(bare, 'parked')), j([`A-1: ${Q} — incomplete: its park file carries no approve object`]));
   t('DS-839 AC4 and keeps no approve', sets(bare).some((f) => f.startsWith('park.approve=')), false);
   t('DS-839 a park with nothing to approve is reported as before', j(lines(advance(s, { approval: { approve: null, missing: null } }), 'parked')), j([`A-1: ${Q}`]));
+}
+
+// DS-882: a park file field the park file does not declare is logged once, and the park is taken in as before.
+{
+  const dir = scratch('ds882-');
+  mkdirSync(join(dir, 'parks'));
+  const Q = 'which colour?';
+  const P = `AUTOPILOT_PARK: ${Q}`;
+  const take = (key, file) => {
+    writeFileSync(join(dir, 'parks', `${key}.json`), JSON.stringify(file));
+    return advance(snap(ticket(key), logOf(key, P, [said(P), RESULT])), {
+      'park-file': (a) => parkFileFault(dir, a.key, a.question),
+      approval: (a) => parkApproval(dir, a.key, a.question),
+    });
+  };
+  const extra = take('U-1', { question: Q, colour: 'red' });
+  t('DS-882 AC3 a park file with an undeclared field parks on its question as today',
+    j([extra.filter((a) => a.type === 'park').map((a) => a.question), lines(extra, 'parked')]), j([[Q], [`U-1: ${Q}`]]));
+  t('DS-882 AC3 and the pass log names the undeclared field once',
+    j(lines(extra).filter((l) => l.includes('does not declare'))), j(['U-1: its park file holds a field the park file does not declare: colour, taken in as it is']));
+  const A = 'JIRA COMMENT on U-2 awaiting approval. Not reached: the Jira comment';
+  const PA = `AUTOPILOT_PARK: ${A}`;
+  writeFileSync(join(dir, 'parks', 'U-2.json'), JSON.stringify({ question: A, approve: { kind: 'jira-comment', target: 'U-2', body: 'Fixed.' } }));
+  const awaiting = advance(snap(ticket('U-2'), logOf('U-2', PA, [said(PA), RESULT])), {
+    'park-file': (a) => parkFileFault(dir, a.key, a.question),
+    approval: (a) => parkApproval(dir, a.key, a.question),
+  });
+  t('DS-882 AC4 a park file holding its question and its awaiting text logs no undeclared field',
+    j([lines(awaiting, 'inputs'), lines(awaiting, 'parked').length]), j([[], 1]));
+  t('DS-882 an undeclared field inside approve is named by its path',
+    lines(take('U-3', { question: Q, approve: { kind: 'pr-body', target: '7', body: 'x', note: 'y' } }), 'inputs')[0], 'U-3: its park file holds a field the park file does not declare: approve.note, taken in as it is');
+  t('DS-882 an earlier round\'s file, on another question, logs nothing', parkFileFault(dir, 'U-1', 'another question?'), null);
 }
 
 // The usage limit, in the advance step and after it.

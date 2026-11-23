@@ -1,4 +1,5 @@
 // suite: pass phase: report (base drift, the report's lines, the groups and the verdict)
+// layer: L1
 import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict } from '../desk/bin/pass/report.mjs';
 import { inputsHash, questionKey, lookup } from '../desk/bin/not-now.mjs';
 import { HELD_PREFIX } from '../desk/bin/batch-state.mjs';
@@ -244,6 +245,7 @@ const vsnap = (tickets, fields = {}) => {
   t('every done ticket merged is idle', j([verdictOf(done).idle, verdictOf(done).status]), '[true,"idle"]');
   t('...and says the batch is finished', j(lines(decideVerdict(done))), j(['NOTIFY: the batch is finished — nothing left to run']));
   t('a promotion still to come is not idle', verdictOf({ ...done, promotionPending: true }).idle, false);
+  t('DS-550 a preview database still to delete is not idle, so its pass keeps running', verdictOf({ ...done, previewDbPending: true }).idle, false);
   t('a done ticket whose PR is still open is not idle', verdictOf(vsnap([{ key: 'D-1', state: 'done', result: { pr: 5 } }], { prStates: { 5: 'OPEN' } })).idle, false);
   const quiet = vsnap([{ key: 'R-1', state: 'running' }]);
   t('nothing waiting and nothing spawned is nothing yet', verdictOf(quiet).status, 'nothing_yet');
@@ -274,6 +276,7 @@ const vsnap = (tickets, fields = {}) => {
     heldWhyOf({ ...free, repoUnlocked: true }), heldWhyOf({ ...free, repo: { room: 0, line: 'R 3/3' } }), heldWhyOf({ ...free, concurrency: 0 }), heldWhyOf(free),
   ]), j(['usage', 'the batch base sync holds every spawn: 30 behind', 'memory: 3.2G available, under the 6G spawn gate', 'the lock queue',
     'the machine budget: m 9/9', 'the repo\'s shared cap: r', 'the repo\'s shared cap: R 3/3', 'the batch\'s worker count is 0', null]));
+  t('a harm signal is named rather than avail', heldWhyOf({ ...free, lowMemory: true, harmWhy: 'memory harm: OOM-KILL within the last 10m (…)' }), 'memory harm: OOM-KILL within the last 10m (…)');
 }
 
 // AC4: each decision returns its actions without starting a process, calling git, gh or Jira, or

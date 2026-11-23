@@ -1,4 +1,5 @@
 // suite: pr-composer (finding a PR page's new-comment composer, React and classic)
+// layer: L2
 // findComposer against saved DOM fixtures (tests/fixtures/github-pr/) in desk's own headless
 // Chromium, skipped where that is not installed. Then upload-images.mjs end to end on a signed-in
 // page with no composer and on a signed-out one: against a fake Playwright, and, with desk's

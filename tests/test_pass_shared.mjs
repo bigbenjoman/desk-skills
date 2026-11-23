@@ -1,4 +1,5 @@
 // suite: pass phase: the shared snapshot and helpers (the registry read, logins, specs, link parks, resumes)
+// layer: L1
 import * as S from '../desk/bin/pass/shared.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
@@ -108,7 +109,7 @@ const { threw, calls } = withNoIo(() => {
   // Live reads config.
   t('a §4 Live reads row that parses says nothing', S.liveReadsUnparsed({ errors: [], reads: [] }), null);
   t('one that does not names what does not parse', S.liveReadsUnparsed({ errors: ['"x"'], reads: [] }),
-    'live reads: none run this pass, since config §4 Live reads does not parse: "x" (want `<name>: <command>`). Run /desk-setup');
+    'live reads: none run this pass, since config §4 Live reads does not parse: "x" (want `<name>: <command>`, or for a paid call `<name> [£0.10/call, £2/day]: <command>`). Run /desk-setup');
 });
 t('AC4 the helpers start no process and write no file, the queue included',j([threw, calls]), '[null,[]]');
 

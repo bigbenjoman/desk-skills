@@ -31,6 +31,7 @@ export const QUEUE_COMMANDS = Object.freeze({
   get: [],
   list: [],
   render: [],
+  rebuild: [],
   watch: ['--interval', '--stages'],
 });
 

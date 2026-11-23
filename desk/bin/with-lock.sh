@@ -43,6 +43,17 @@
 #           broker falls back to the lock files, saying so once.
 # The lease is owned by this script's pid, which execs into the command, or by the command's pid where
 # the mkdir fallback runs it as a child, so it is held exactly as long as the command runs.
+#
+# Every wait is logged in the lease log (leases.mjs), in every mode: a queued line as a run starts to
+# wait, then a grant line (the lease's own where a lease is taken) or a gave-up line, each with the
+# class, the worktree, the seconds waited, how many other runs wait for the lock, and the load and
+# memory then. A reading that fails is left empty rather than holding the command up. The command is
+# told its lock and wait in DESK_LOCK_CLASS and DESK_LOCK_WAITED (tests/run.sh records them).
+#
+# A test, tsc or light run that waits is also judged by headroom admission (admission.mjs), under the
+# machine profile's lock-admission row: shadow logs a would-admit or would-deny in the lease log for it
+# as it starts to wait and whenever that changes; off, unset or a row that does not read logs nothing.
+# Neither changes what is granted.
 set -uo pipefail
 # This script's own directory, taken before --cwd moves us: desk-env.mjs is installed beside it.
 here="$(cd "$(dirname "$0")" && pwd -P)"
@@ -104,10 +115,37 @@ esac
 # The command knows it already runs inside a slot of this lock, so a script that takes a slot itself
 # (tests/related.sh) does not wait for a second one behind its own.
 export DESK_LOCK_HELD="$name"
-gave_up() { echo "with-lock.sh: gave up waiting for the $name lock after ${timeout}s" >&2; exit 75; }
+# The run's wait on the lock files: queued once it starts to wait, when its marker (named by this pid)
+# sits in the lock's waiting directory, which slot-lease.mjs counts as the queue. A run granted at its
+# first try waited 0 seconds.
+case "$name" in test|tsc) wdir="$dir/desk-test.waiting" ;; *) wdir="$dir/desk-$name.waiting" ;; esac
+queued=""; w=""
+waited_s() { if [ -n "$w" ]; then echo "$w"; elif [ -n "$queued" ]; then echo $((SECONDS - t0)); else echo 0; fi; }
+# Logs this run's queued, grant or gave-up line ($1), saying nothing whatever happens.
+note() { node "$here/slot-lease.mjs" note "$1" "$name" --pid "$$" --waited "$(waited_s)" </dev/null >/dev/null 2>&1 || true; }
+queue() { queued=1; mkdir -p "$wdir" 2>/dev/null && : > "$wdir/$$" 2>/dev/null; note queued; }
+unqueue() { [ -z "$queued" ] || rm -f "$wdir/$$" 2>/dev/null; }
+gave_up() { unwatch; unqueue; note gave-up; echo "with-lock.sh: gave up waiting for the $name lock after ${timeout}s" >&2; exit 75; }
+# Headroom admission's look at this run while it waits (admission.mjs watch): in the background, so the
+# wait itself is unchanged. It judges the run once its marker is in the waiting directory, which it is
+# from the moment it waits on the lock files or on a lease, and again while it waits, logging a line
+# only when the outcome or reason changes. It is node, never a forked shell: a subshell keeps this
+# wrapper's command line, and suite-wait.mjs would count it as a second run waiting. It closes the lock's
+# descriptor, so it never holds the lock, and it is stopped before the command runs.
+admit_pid=""
+watch_admission() {
+  case "$name" in test|tsc|light) ;; *) return 0 ;; esac
+  node "$here/admission.mjs" watch "$name" --pid "$$" --marker "$wdir/$$" 9>&- </dev/null >/dev/null 2>&1 &
+  admit_pid=$!
+}
+unwatch() { [ -z "$admit_pid" ] || kill "$admit_pid" 2>/dev/null; admit_pid=""; }
+# The run holds its lock: it waits no longer, and its command is told which lock and how long it waited.
+held() { unwatch; unqueue; w="$(waited_s)"; export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$w"; }
 # Says once that this run waits, with the lock's state ($1) and, for the test and light locks, who holds
 # it as suite-wait.mjs names them (slot-lease.mjs holders): where each holder runs, what, and for how long.
 waiting() {
+  queue
+  watch_admission
   local by=""
   case "$name" in
     test|tsc) by="$(node "$here/slot-lease.mjs" holders 2>/dev/null)" ;;
@@ -118,21 +156,28 @@ waiting() {
 
 # The slot lease. Anything but shadow or on, a failing node included, is off.
 lease_mode="$(node "$here/slot-lease.mjs" mode 2>/dev/null)" || lease_mode=off
+t0=$SECONDS
 if [ "$lease_mode" = on ]; then
+  # The lease's own queued, grant and gave-up lines carry this run's wait. A wait for the lease holds
+  # the same marker as one on the lock files, so admission looks at it the same way.
+  watch_admission
   if [ -n "$timeout" ]; then node "$here/slot-lease.mjs" take "$name" --pid "$$" --timeout "$timeout" -- "$@" </dev/null
   else node "$here/slot-lease.mjs" take "$name" --pid "$$" -- "$@" </dev/null; fi
-  case $? in
-    0) exec "$@" ;;
+  rc=$?
+  unwatch
+  case $rc in
+    0) export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$((SECONDS - t0))"; exec "$@" ;;
     75) exit 75 ;;
-    *) lease_mode=off ;;   # it said why: the lock files below, as with the kind off
+    *) lease_mode=off; t0=$SECONDS ;;   # it said why: the lock files below, as with the kind off
   esac
 fi
-# shadow_lease <owner pid> <command...>: in shadow, the lease beside the lock just taken. How it ends
-# changes nothing here: the lock files are what this run waited on.
-shadow_lease() {
-  [ "$lease_mode" = shadow ] || return 0
+# granted <owner pid> <command...>: logs the grant of the lock just taken. In shadow that is the lease
+# taken beside it, whose grant line carries the wait; one that fails is logged as with the kind off. How
+# the lease ends changes nothing here: the lock files are what this run waited on.
+granted() {
   local owner="$1"; shift
-  node "$here/slot-lease.mjs" take "$name" --pid "$owner" -- "$@" </dev/null >/dev/null 2>&1 || true
+  if [ "$lease_mode" = shadow ] && node "$here/slot-lease.mjs" take "$name" --pid "$owner" --waited "$w" -- "$@" </dev/null >/dev/null 2>&1; then return 0; fi
+  note grant
 }
 
 # How many commands may hold this lock at once.
@@ -164,7 +209,7 @@ if command -v flock >/dev/null 2>&1; then
       if [ -z "$timeout" ]; then flock 9 || exit 2; else flock -w "$timeout" 9 || gave_up; fi
     fi
     holder 1
-    shadow_lease "$$" "$@"
+    held; granted "$$" "$@"
     exec "$@"
   fi
   # Several slots: try each without blocking, and wait 2 s between rounds.
@@ -173,7 +218,7 @@ if command -v flock >/dev/null 2>&1; then
     i=1
     while [ "$i" -le "$slots" ]; do
       exec 9>>"$(slot_path "$i")" || exit 2
-      flock -n 9 && { holder "$i"; shadow_lease "$$" "$@"; exec "$@"; }
+      flock -n 9 && { holder "$i"; held; granted "$$" "$@"; exec "$@"; }
       exec 9>&-
       i=$((i + 1))
     done
@@ -238,6 +283,7 @@ done
 
 echo "$$" > "$ldir/pid"
 release() { rm -rf "$ldir" 2>/dev/null || true; }
+held
 
 # Run the command as a child (explicit <&0: a background job would otherwise get /dev/null) and
 # record its pid beside ours, so the lock counts as held while either is alive — a SIGKILLed wrapper
@@ -251,7 +297,7 @@ on_signal() { kill -TERM "$child" 2>/dev/null; wait "$child" 2>/dev/null; releas
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 # The shadow lease is the command's own, not this wrapper's: a SIGKILLed wrapper leaves it held.
-shadow_lease "$child" "$@"
+granted "$child" "$@"
 wait "$child"; rc=$?
 release
 exit "$rc"

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: outside blockers (plan-batch acts on triage's blocker_needs for an open blocker in no batch)
+# layer: L2
 # plan-batch on fixture triage records, offline: a blocker triage found not needed starts the ticket
 # with a logged decision under §3 autopilot-judgement yes, a needed one holds it outside the batch
 # with no question, and one triage did not judge is asked as before. Scratch HOME, state and queue only.

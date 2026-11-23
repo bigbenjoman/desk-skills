@@ -21,7 +21,9 @@
 //                          that account has a review on the commit that is the PR's head now; one
 //                          only on an older commit does not count
 //   file <path> exists     the file is there: an absolute path, one relative to the ticket's worktree,
-//                          or one under the state directory written $DESK_STATE/<path>
+//                          or one under the state directory written $DESK_STATE/<path>. `<path> exists`
+//                          with no `file` reads the same where the path cannot be anything else: an
+//                          absolute or $DESK_STATE path, or one whose last part has an extension
 //   ticket <KEY> in <repo> batch
 //                          the ticket is in the queue of a batch of that repo on this computer (its
 //                          name or owner/name), other than this one, whose orchestrator has a live beat
@@ -29,7 +31,10 @@
 //                          the latest run of that check on the PR's head commit succeeded; several names,
 //                          each quoted, joined by commas or "and" (`checks "a" and "b" on pr 9 pass`)
 //   commit <sha> on <branch>
-//                          origin's <branch> holds that commit ("is an ancestor of origin/<branch>" too)
+//                          origin's <branch> holds that commit ("is an ancestor of origin/<branch>" too).
+//                          Once a branch other than the default branch or a batch base has moved to a
+//                          head the commit does not build on, it can never land there by a plain push,
+//                          and the park is the person's (commitOnBranch)
 //   gh pr view <n> [--repo <owner/name>] … reports MERGED
 //                          the command a worker would run, read as pr <n> merged (in that repo)
 //   none                   nothing a script can read; the park waits for a person
@@ -67,6 +72,8 @@ const FORMS = [
   [/^(?:the\s+)?(?:batch\s+)?base\s+contains\s+(?:origin\/)?([\w.-]+(?:\/[\w.-]+)*)$/i, (m) => ({ kind: 'base-contains', branch: m[1] })],
   [/^pr\s+#?(\d+)\s+reviewed\s+by\s+@?([A-Za-z0-9][\w-]*(?:\[bot\])?)\s+at\s+(?:its\s+|the\s+)?head$/i, (m) => ({ kind: 'pr-reviewed', pr: Number(m[1]), login: m[2] })],
   [/^file\s+(.+?)\s+exists$/i, (m) => fileCond(m[1])],
+  // A bare path: only one that reads as a file, so a branch or a ticket that "exists" is not taken as one.
+  [/^(\/\S+|\$(?:DESK_STATE|\{DESK_STATE\})\/\S+|\S*[^\s/]\.[A-Za-z0-9]+)\s+exists$/, (m) => fileCond(m[1])],
   [/^(?:ticket\s+)?([A-Za-z][A-Za-z0-9_]*-\d+)\s+(?:is\s+)?(?:queued\s+)?in\s+(?:an?\s+|the\s+)?([\w.-]+(?:\/[\w.-]+)?)\s+batch$/i,
     (m) => ({ kind: 'ticket-queued', ticket: m[1].toUpperCase(), repo: m[2] })],
   [new RegExp(`^checks?\\s+(${QUOTED}(?:\\s*(?:,\\s*and|,|and)\\s*${QUOTED})*)\\s+(?:on|of)\\s+pr\\s+#?(\\d+)\\s+(?:pass(?:es|ed)?|succeed(?:s|ed)?|(?:is|are)\\s+green)(?:\\s+at\\s+(?:its\\s+|the\\s+)?head)?$`, 'i'),
@@ -80,9 +87,18 @@ const FORMS = [
   }],
   [/^none$/i, () => ({ kind: 'none' })],
 ];
-const FORM_LIST = ['pr <n> merged', 'pr <n> ready', 'ticket <KEY> done', 'variable <NAME> set', 'run <id> completed', 'git push origin <branch> succeeds',
-  'base contains <branch>', 'pr <n> reviewed by <login> at head', 'file <path> exists', 'ticket <KEY> in <repo> batch',
-  'check "<name>" on pr <n> passes', 'commit <sha> on <branch>', 'gh pr view <n> [--repo <owner/name>] reports MERGED'];
+// Each form a pass reads, beside a line written in it: the one list of them. The table of forms in
+// desk-autopilot's ask-or-take.md gives them, which tests/test_clears_when.sh keeps in step.
+export const CLEARS_WHEN_EXAMPLES = [
+  ['pr <n> merged', 'pr 812 merged'], ['pr <n> ready', 'pr 812 ready'], ['ticket <KEY> done', 'ticket ABC-41 done'],
+  ['variable <NAME> set', 'variable DEPLOY_TOKEN set'], ['run <id> completed', 'run 18842117 completed'],
+  ['git push origin <branch> succeeds', 'git push origin fix/ABC-42-totals succeeds'], ['base contains <branch>', 'base contains main'],
+  ['pr <n> reviewed by <login> at head', 'pr 812 reviewed by octocat at head'], ['file <path> exists', 'file docs/exports/ABC-42.csv exists'],
+  ['ticket <KEY> in <repo> batch', 'ticket ABC-43 in acme/web batch'], ['check "<name>" on pr <n> passes', 'check "e2e" on pr 812 passes'],
+  ['commit <sha> on <branch>', 'commit 4f2a9c1 on main'], ['gh pr view <n> [--repo <owner/name>] reports MERGED', 'gh pr view 812 --repo acme/web reports MERGED'],
+  ['none', 'none'],
+];
+const FORM_LIST = CLEARS_WHEN_EXAMPLES.map(([f]) => f).filter((f) => f !== 'none');
 export const CLEARS_WHEN_FORMS = `${FORM_LIST.join(', ')}, or none`;
 // One form a line, for a worker checking its line before it ends (queue.mjs clears-when --check).
 export const CLEARS_WHEN_FORM_LINES = [...FORM_LIST, 'none'];
@@ -123,7 +139,9 @@ export function parseClearsWhen(raw, { here = null } = {}) {
     const cond = make(m, here);
     return cond.why ? { ok: false, why: cond.why } : { ok: true, cond };
   }
-  return { ok: false, why: `"${s}" is not one of: ${CLEARS_WHEN_FORMS}` };
+  const file = /^(.+?)\s+exists$/i.exec(s)?.[1];
+  const hint = file && !/^file\s/i.test(s) ? ` (for a file, write "file ${file} exists")` : '';
+  return { ok: false, why: `"${s}" is not one of: ${CLEARS_WHEN_FORMS}${hint}` };
 }
 
 // The check a worker runs on its line before it ends: {ok, text}, the text naming what it reads as, or
@@ -132,7 +150,8 @@ export function parseClearsWhen(raw, { here = null } = {}) {
 export function checkLine(raw, { here = null } = {}) {
   const p = parseClearsWhen(raw, { here });
   if (p.ok) return { ok: true, text: `reads as: ${describeCond(p.cond)}` };
-  return { ok: false, text: `${p.why.replace(/ is not one of: [\s\S]*$/, ' is not a form a pass reads')}. The forms:\n${CLEARS_WHEN_FORM_LINES.map((f) => `  ${f}`).join('\n')}` };
+  const hint = / \(for a file, write "[^"]*"\)$/.exec(p.why)?.[0] ?? '';
+  return { ok: false, text: `${p.why.replace(/ is not one of: [\s\S]*$/, ' is not a form a pass reads')}${hint}. The forms:\n${CLEARS_WHEN_FORM_LINES.map((f) => `  ${f}`).join('\n')}` };
 }
 
 // A file-exists condition's path as it is written.
@@ -295,6 +314,30 @@ export function describeCond(c) {
   }
 }
 
+// Whether `sha` is on origin/<branch>, from a clone that has just fetched it. `git(args)` runs git there
+// and returns {ok, code, out}. A commit the branch lacks can still land while the branch head is an
+// ancestor of it (a push fast-forwards); once the branch has moved to a head that is not, it never can,
+// and `never` says so, naming that head. Not on a branch that takes commits by merging PRs (`merges`:
+// the default branch, a batch base), whose head moving on is how the commit arrives. The head is read
+// once, so a fetch moving the ref between the two checks cannot read as neither.
+export function commitOnBranch(git, sha, branch, { merges = false } = {}) {
+  const not = { holds: false, note: `${sha} is not on origin/${branch} yet` };
+  if (!git(['cat-file', '-e', `${sha}^{commit}`]).ok) return not;
+  const ref = `origin/${branch}`;
+  const tip = git(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+  if (!tip.ok) throw new Error(`git rev-parse ${ref}: ${String(tip.out).split('\n').pop() || 'no such ref'}`);
+  const head = String(tip.out).trim();
+  const isAncestor = (a, b) => {
+    const r = git(['merge-base', '--is-ancestor', a, b]);
+    if (r.ok) return true;
+    if (r.code === 1) return false;
+    throw new Error(`git merge-base ${a} ${b}: ${String(r.out).split('\n').pop()}`);
+  };
+  if (isAncestor(sha, head)) return { holds: true };
+  if (merges || isAncestor(head, sha)) return not;
+  return { holds: false, never: `the branch ${ref} has moved to ${head.slice(0, 9)}, which ${sha} does not build on, so ${sha} can no longer land there: the push it waits on is stale` };
+}
+
 // Does it hold now? {holds: bool, note?} or {error}. `note` is what the next worker or the report
 // needs beside the answer: a finished run's conclusion, or an unfinished one's status. The readers do
 // the reading and throw on any failure, so a check that could not run is never read as cleared:
@@ -307,7 +350,8 @@ export function describeCond(c) {
 //   queued(ticket, repo) → {holds, note?}, queuedIn over this computer's other queues
 //   checks(n) → {headRefOid, checks: [{name, workflow, status, conclusion}]}, the latest run of each
 //              check on the head (gate.mjs latestPerCheck over normaliseRollup)
-//   commitOn(sha, branch) → {holds, note?}, having fetched origin's branch
+//   commitOn(sha, branch) → {holds, note?, never?}, having fetched origin's branch (commitOnBranch)
+// A result with `never` can never hold: the pass gives the park to the person, saying why.
 export function checkCond(c, read) {
   try {
     switch (c?.kind) {

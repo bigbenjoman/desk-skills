@@ -1,7 +1,7 @@
 # The repo facts desk-clearance depends on, and where to get them
 
-No repo's facts are written here. Each one lives in a config row (resolve the config with
-`desk-env where`, then Read it) **and** on the platform. The platform is the authority: a row is
+No repo's facts are written here. Each one lives in a config row (in the
+sections read at the skill's start, or by its row's `desk-env get` call) **and** on the platform. The platform is the authority: a row is
 what setup detected at the time, and it drifts. Re-verify rather than trust whenever behaviour
 disagrees, and when the two differ, act on the live answer and tell the user the row needs
 `/desk-setup`.
@@ -233,8 +233,8 @@ is the user's call — park it.
 ### Failures that are not the branch, and not fixed by rerunning
 
 - **`Your deployment failed. Please retry later.`** on every PR at once (only where §4 Vercel is not
-  `none`): check whether the Vercel project is `BLOCKED`. `vercel list --scope <§4 Vercel team> 2>&1`
-  (the table goes to **stderr**); status `UNKNOWN` with `Duration ?` means no build started; compare
+  `none`): check whether the Vercel project is `BLOCKED`. `vercel list --scope <team> 2>&1`, the
+  team being §4 Vercel's first item (the table goes to **stderr**); status `UNKNOWN` with `Duration ?` means no build started; compare
   another project in the same team; the deployment API's `state: BLOCKED` is the proof. If a required
   check depends on the preview, **a blocked project stops every merge in the repo.** Do not retry or
   reconfigure — report to §4 People "Infra and security owner" with that evidence.

@@ -1,4 +1,5 @@
 // suite: pass phase: reopen and undraft (the decisions)
+// layer: L1
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideReopen, decideRenames, decideUndraft, decideRelease, undraftWrite } from '../desk/bin/pass/undraft.mjs';
 import { conflictFilesIn, fixTryQuote } from '../desk/bin/pass/shared.mjs';
@@ -38,7 +39,7 @@ const undraftSnap = (drafts, fields = {}) => ({
 });
 
 // The runner with stub handlers: each read answers from `answers` (a value, or a function of the action).
-const READS = { 'pr-close': { ok: true, out: '' }, 'pr-reopen': { ok: true, out: '' }, fetch: true, 'child-renames': [], events: { hold: null }, 'pr-view': null, 'pr-files': [], 'conflict-files': null, 'base-at': null, ready: { ok: true, out: '' }, comment: { ok: true, out: '' } };
+const READS = { 'pr-close': { ok: true, out: '' }, 'pr-reopen': { ok: true, out: '' }, fetch: true, 'child-renames': [], events: { hold: null }, 'pr-view': null, 'pr-files': [], 'conflict-files': null, 'base-at': null, ready: { ok: true, out: '' }, comment: { ok: true, out: '' }, 'update-branch': { ok: true, out: '' } };
 const RECS = ['cancel', 'build', 'rebuilt', 'evidence'];
 const WRITES = ['set', 'report', 'out', 'set-batch', 'apply-fix', 'take', 'gate-hold', 'upload', 'rerun-draft', 'carried', 'record-carry', 'note', 'undraft-error', 'evidence-failures'];
 function drive(decide, s, answers = {}) {
@@ -55,7 +56,7 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
 const waits = (as) => as.filter((a) => a.type === 'report' && a.list === 'waiting').map((a) => a.line);
 const sets = (as) => as.filter((a) => a.type === 'set').flatMap((a) => a.fields);
 // What acts on a draft: undraft it, re-run, cancel or build its checks, start a run, or send a worker.
-const ACTS = new Set(['ready', 'comment', 'rerun-draft', 'cancel', 'build', 'rebuilt', 'evidence', 'apply-fix', 'upload']);
+const ACTS = new Set(['ready', 'comment', 'rerun-draft', 'cancel', 'build', 'rebuilt', 'evidence', 'apply-fix', 'upload', 'update-branch']);
 const acts = (as) => as.filter((a) => ACTS.has(a.type)).map((a) => a.type);
 
 // A clean, green draft leaves draft, with its comment, and its record reads ready.
@@ -171,6 +172,34 @@ const acts = (as) => as.filter((a) => ACTS.has(a.type)).map((a) => a.type);
   t('nor on a dry run', undraftWrite(ticket('A'), rec, { dry: true, at: AT }), null);
 }
 
+// DS-856: a draft with no mergeability answer past the limit has its branch updated once, where §3
+// pr-update-branch is yes, and the try is recorded; refused, it is the person's at once, naming why.
+{
+  const since = new Date(Date.parse(AT) - 45 * 60000).toISOString();
+  const t0 = ticket('A', { undraft: { call: 'wait', why: 'GitHub has not yet worked out whether it conflicts with its base (UNKNOWN)', action: null, sha: HEAD, carried_from: null, pr: 701, unknown_since: since } });
+  const snap = (updateBranch) => undraftSnap([{ t: t0, s: status() }], { cfg: { ...undraftSnap([]).cfg, updateBranch } });
+  const unknown = { 'pr-view': view([review(marker(ALL_ZERO))], { mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' }) };
+  const rec = (as) => JSON.parse(sets(as).find((f) => f.startsWith('undraft='))?.slice(8) ?? '{}');
+  const ok = drive(decideUndraft, snap('yes'), unknown).actions;
+  const upd = ok.find((a) => a.type === 'update-branch');
+  t('DS-856 AC1 past the limit the pass updates the branch of that PR once', `${upd?.pr} ${upd?.branch}`, '701 task/A');
+  t('DS-856 AC1 and logs which PR and why', lines(ok).at(-1), `undraft: PR #701 (A) stays draft for now: GitHub has not worked out whether it conflicts with its base (UNKNOWN) at ${HEAD.slice(0, 12)} for 45 minutes: its merge ref looks wedged, and GitHub starts no run for that head, so its branch is updated from its base once (gh pr update-branch) for a fresh merge ref: requested`);
+  t('DS-856 AC1 the try is recorded with the spell\'s start, so it is not made again', `${rec(ok).call} ${rec(ok).unknown_since} ${j(rec(ok).unknown_repair)}`, `wait ${since} ${j({ at: AT, head: HEAD, ok: true })}`);
+  const no = drive(decideUndraft, snap('ask'), unknown).actions;
+  t('DS-856 AC5 with §3 pr-update-branch not yes, nothing is updated', acts(no).includes('update-branch'), false);
+  t('DS-856 AC5 and it waits on the person, saying no repair was permitted', /no repair was permitted, as config §3 pr-update-branch is "ask"/.test(waits(no)[0] ?? ''), true);
+  const refused = drive(decideUndraft, snap('yes'), { ...unknown, 'update-branch': { ok: false, out: 'HTTP 422\nno new commits on the base branch' } }).actions;
+  t('DS-856 a refused update is the person\'s at once, naming the refusal', `${rec(refused).call} ${/was refused: no new commits on the base branch$/.test(rec(refused).why)} ${rec(refused).unknown_repair?.ok}`, 'person true false');
+  const slot = drive(decideUndraft, snap('yes'), { ...unknown, 'update-branch': { wait: 'waits on the preview build for o/r: held' } }).actions;
+  t('DS-856 one waiting on the preview build records no try, so the next pass makes it', `${rec(slot).call} ${rec(slot).unknown_repair}`, 'wait undefined');
+  const dry = drive(decideUndraft, { ...snap('yes'), dry: true }, unknown).actions;
+  t('DS-856 a dry run only says it would update the branch', `${acts(dry).length} ${/^undraft \(dry run\): would update PR #701 \(A\)'s branch/.test(lines(dry).at(-1))}`, '0 true');
+  // DS-901: the first pass to read UNKNOWN on a draft keeps that time on its undraft record, which the
+  // deadline sweep (pass/deadlines.mjs) takes as when the draft's wait on mergeability started.
+  const first = drive(decideUndraft, undraftSnap([{ t: ticket('A'), s: status() }]), unknown).actions;
+  t('DS-901 the first pass to read UNKNOWN records it as first seen then, and waits', `${rec(first).call} ${rec(first).unknown_since}`, `wait ${AT}`);
+}
+
 // The migration renames: a draft a person holds keeps its place; one renamed goes to its worker.
 {
   const renamed = [{ from: 'm/0002_x.sql', to: 'm/0003_x.sql' }];
@@ -209,6 +238,43 @@ t('fixTryQuote keeps a protected try\'s files', j(fixTryQuote({ kind: 'protected
   t('AC7 the decisions ran to the end under the trap', r.threw, null);
   t('AC7 and each returned its actions', r.out?.every((n) => n > 0), true);
   t('AC7 with no process started and nothing written', j(r.calls), '[]');
+}
+
+// DS-550 AC2: a preview-database PR never takes an evidence run, since the workflow posts its shots
+// unchecked; its cells go to a capture worker, whose shots preview-db.mjs check reads.
+{
+  const BODY = '| after |\n|---|\n| _drag after-plans.png_ |\n\n```evidence\n/plans\n```\n';
+  const asked = [];
+  const snapWith = (hold) => undraftSnap([{ t: ticket('A'), s: status() }], {
+    cfg: { ...undraftSnap([]).cfg, evidence: { workflow: 'pr-evidence.yml' } },
+    reads: { ...undraftSnap([]).reads, missingShots: () => ['after-plans.png'], evidenceHold: (n) => { asked.push(n); return hold; } },
+  });
+  const run = (hold) => drive(decideUndraft, snapWith(hold), { 'pr-view': view([review(marker(ALL_ZERO))], { body: BODY }) }).actions;
+  t('DS-550 AC5 a PR with no preview database starts its evidence run (negative control)', acts(run(null)).includes('evidence'), true);
+  t('DS-550 AC2 the hold is asked for that PR', j(asked[0]), j(701));
+  const held = run('held');
+  t('DS-550 AC2 a held PR starts no evidence run', acts(held).includes('evidence'), false);
+  t('DS-550 AC2 its cells go to a capture worker instead', held.some((a) => a.type === 'apply-fix' && /capture/.test(j(a))), true);
+  // Files that are taken but did not pass the check as they are go to a capture worker, never the upload.
+  const upAsked = [];
+  const upSnap = (hold) => undraftSnap([{ t: ticket('A'), s: status() }], {
+    cfg: { ...undraftSnap([]).cfg, upload: 'yes' },
+    reads: { ...undraftSnap([]).reads, missingShots: () => [], uploadHold: (n, tk, shots) => { upAsked.push([n, shots]); return hold; } },
+  });
+  const upRun = (hold) => drive(decideUndraft, upSnap(hold), { 'pr-view': view([review(marker(ALL_ZERO))], { body: BODY }) }).actions;
+  const free = upRun(null);
+  t('DS-550 AC2 checked files are uploaded (negative control)', [free.some((a) => a.type === 'upload'), free.some((a) => a.type === 'apply-fix' && /capture/.test(j(a)))].join(), 'true,false');
+  t('DS-550 AC2 the upload hold is asked for the files the cells name', j(upAsked[0]), j([701, ['after-plans.png']]));
+  const unchecked = upRun('after-plans.png did not pass');
+  t('DS-550 AC2 unchecked files are not uploaded but go to a capture worker', [unchecked.some((a) => a.type === 'upload'), unchecked.some((a) => a.type === 'apply-fix' && /capture/.test(j(a)))].join(), 'false,true');
+}
+
+// A draft the outage step re-ran as its hold cleared waits for that run, as a ready PR does: no fix try.
+{
+  const redRollup = [{ __typename: 'CheckRun', name: 'tests', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/o/r/actions/runs/9/job/90' }];
+  const run = (fields) => acts(drive(decideUndraft, undraftSnap([{ t: ticket('A'), s: status({ checks: normaliseRollup(redRollup) }) }], fields), { 'pr-view': view([review(marker(ALL_ZERO))], { statusCheckRollup: redRollup }) }).actions);
+  t('a draft red on a check goes to a fix worker', run({}).includes('apply-fix'), true);
+  t('one the outage step re-ran as its hold cleared waits for that run', run({ outageRerun: [701] }).includes('apply-fix'), false);
 }
 
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }

@@ -46,8 +46,26 @@ export const spawnEvent = ({ session, ...start }, at = new Date()) =>
 // preflight, the start, the memory digest) are not its output, so they never read as it being live.
 // Pass the log as read from disk: `from` is a file size, and text decoded from a log holding a byte
 // that is not UTF-8 is longer than the file, which would read as output on every pass.
-export const wroteSince = (log, from) => Buffer.from(log).subarray(from).toString().split('\n')
-  .some((l) => l.trim() && !l.startsWith('{"type":"desk_'));
+const writtenSince = (log, from) => Buffer.from(log).subarray(from).toString().split('\n')
+  .filter((l) => l.trim() && !l.startsWith('{"type":"desk_'));
+export const wroteSince = (log, from) => writtenSince(log, from).length > 0;
+
+// Where everything a worker wrote past byte `from` is the harness's tool_progress heartbeat, the call it
+// has run longest: { tool, id, secs }. Null where it wrote nothing, or anything else (a partial line
+// included), since then the worker is doing more than waiting on one call.
+export function heartbeatOnly(log, from) {
+  const lines = writtenSince(log, from);
+  let longest = null;
+  for (const l of lines) {
+    let e;
+    try { e = JSON.parse(l); } catch { return null; }
+    if (e?.type !== 'tool_progress' || !Number.isFinite(e.elapsed_time_seconds)) return null;
+    if (!longest || e.elapsed_time_seconds > longest.secs) {
+      longest = { tool: e.tool_name ?? 'tool', id: e.parent_tool_use_id ?? e.tool_use_id ?? null, secs: e.elapsed_time_seconds };
+    }
+  }
+  return longest;
+}
 
 // The starts in one log: a fresh session's, and each resume of it.
 function spawnStarts(logText) {

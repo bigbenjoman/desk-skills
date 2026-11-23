@@ -83,10 +83,13 @@ export const everyTicket = (q) => ({ ...archivedOf(q), ...(q?.tickets ?? {}) });
 // Whether `key` is archived and not live in queue `q`.
 export const isArchived = (q, key) => !!q?.tickets && !Object.hasOwn(q.tickets, key) && Object.hasOwn(archivedOf(q), key);
 
+// Whether ticket `t`'s own PR (result.pr) was last read closed unmerged.
+export const prClosed = (t) => t?.result?.pr != null && Number(t.pr_status?.pr) === Number(t.result.pr) && t.pr_status?.state === 'CLOSED';
 // Ticket t owes its PR a reopen: the pass closed it to start its CI and has still to reopen it
-// (`reopening` names the ticket's own PR). A PR recorded merged (needs-you's done can record it before
-// any pass reads it again) has nothing left to reopen, whatever `reopening` still says.
-export const owesReopen = (t) => t?.reopening != null && String(t.reopening) === String(t.result?.pr)
+// (`reopening` names the ticket's own PR; a marker naming an earlier PR owes nothing). A PR recorded
+// merged (needs-you's done can record it before any pass reads it again) has nothing left to reopen,
+// whatever `reopening` still says.
+export const owesReopen = (t) => t?.reopening != null && t?.result?.pr != null && String(t.reopening) === String(t.result.pr)
   && !(String(t.pr_status?.pr) === String(t.result.pr) && t.pr_status?.state === 'MERGED');
 
 // The PRs a ticket's spawns kept (merged_pr, pass.mjs keepMergedPr) as { pr, url }. A kept bare number was
@@ -123,7 +126,7 @@ export function archivable(q, key) {
   const t = q.tickets[key];
   if (t?.state !== 'done' || t.result?.pr == null || followOnPending(t)) return false;
   const own = Number(t.pr_status?.pr) === Number(t.result.pr) ? t.pr_status : null;
-  const closed = own?.state === 'CLOSED';
+  const closed = prClosed(t);
   // merged_at stays from an earlier PR once a ticket is requeued (batch-state.mjs ownPr), so it archives
   // the ticket only while its current PR is read and not open, or, with no PR status read at all, while no
   // spawn kept an earlier PR the current one is not among. A status naming another PR leaves the current

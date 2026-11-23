@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: pre-push hook (stdin, no row, lock timeout)
+# layer: L2
 # The committed pre-push hook (desk/templates): real `git push`es into a throwaway origin, with the
 # templates copied into a throwaway repo. Branch pushes run §4 Pre-push checks in order; tags,
 # deletes and refs already on a remote are not checked; a new commit that is not HEAD is refused; no

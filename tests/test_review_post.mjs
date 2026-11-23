@@ -1,4 +1,5 @@
 // suite: review-post (a worker's self-review post, from §4 Review account)
+// layer: L2
 // covers: desk/bin/review-post.mjs
 // review-post.mjs submits a review report as one COMMENTED review: from §4 Review account's gh config
 // directory where the row is set, from the §1 handle's plain gh where it is not. A verdict flag, a

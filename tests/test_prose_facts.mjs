@@ -1,15 +1,18 @@
 // suite: prose facts registry (commands, flags, bin scripts, lock classes, states and state paths)
-// covers: desk/bin/prose-facts.mjs desk/bin/queue-commands.mjs desk/bin/desk-env.mjs desk/bin/queue-writer.mjs desk/bin/batch-state.mjs
+// layer: L2
+// covers: desk/bin/prose-facts.mjs desk/bin/queue-commands.mjs desk/bin/desk-env.mjs desk/bin/queue-writer.mjs desk/bin/batch-state.mjs skills/desk-review/bin/verdict.mjs
 // Reads this checkout only.
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { commands, locks, states, statePaths } from '../desk/bin/prose-facts.mjs';
+import { commands, locks, states, statePaths, contracts } from '../desk/bin/prose-facts.mjs';
+import { validateResults } from '../skills/desk-review/bin/verdict.mjs';
+import { scratch } from './scratch.mjs';
 import { QUEUE_COMMANDS } from '../desk/bin/queue-commands.mjs';
 import { DESK_ENV_COMMANDS, LOCK_OF, WORKER_COMMAND_IDS, lockFor } from '../desk/bin/desk-env.mjs';
 import { STATES } from '../desk/bin/queue-writer.mjs';
-import { STATE_PATHS } from '../desk/bin/batch-state.mjs';
+import { STATE_PATHS, validatePark, parkFileFault } from '../desk/bin/batch-state.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -41,6 +44,44 @@ STATES.push('ds881-probe');
 t('#881 a state added to the queue writer is read with no edit to the registry', states().includes('ds881-probe'), true);
 STATES.pop();
 t('#881 state paths include batch-state\'s STATE_PATHS and DESK_STATE', [statePaths().state, statePaths().vars.includes('DESK_STATE')], [{ ...STATE_PATHS }, true]);
+
+// DS-890: the names the code builds under the state folder, and the files desk ships beside its bins.
+const code = statePaths().code;
+t('DS-890 a name a module joins onto the state folder, through STATE, stateDir(), r.stateDir or batchPaths(slug, batch).state, is read',
+  ['briefings', 'handoffs', 'not-now.jsonl', 'supervisor.log'].filter((n) => !code.includes(n)), []);
+t('DS-890 a name joined onto the repo\'s folder, repoStateOf(…) or batchPaths(slug).state, is not one under $DESK_STATE',
+  ['exits', 'conflicts.jsonl', 'ref'].filter((n) => code.includes(n)), []);
+t('DS-890 a name a shell script builds on $DESK_STATE or $STATE is read', ['merge-driver.lock.d', 'resume'].filter((n) => !code.includes(n)), []);
+t('DS-890 a joined path keeps only its first name, and a name that is only a ${…} is dropped', code.filter((n) => n.includes('/') || n.startsWith('<>')), []);
+{
+  const tmp = scratch('ds890-facts-');
+  mkdirSync(join(tmp, 'desk', 'bin'), { recursive: true });
+  writeFileSync(join(tmp, 'desk', 'bin', 'a.mjs'), "join(state, `spine-${key}.md`); join(root, 'tests'); join(STATE, 'logs', 'x.log'); join(state, `${k}.json`); join(repoStateOf(state), 'exits'); join(batchPaths(repoSlug()).state, 'ref'); join(batchPaths(slug, name).state, 'mine');");
+  writeFileSync(join(tmp, 'desk', 'bin', 'b.sh'), 'cat "$LOG_STATE/merge.log" "$ROOT/other"');
+  writeFileSync(join(tmp, 'desk', 'bin', 'c.mjs.md'), "join(state, 'not-code')");
+  t('DS-890 only joins onto a state value are read, ${…} written <>, from .mjs, .js and .sh files', statePaths(tmp).code, ['logs', 'merge.log', 'mine', 'spine-<>.md']);
+}
+const shipped = c.shipped;
+t('DS-890 shipped: install.sh, the hooks, each skill\'s scripts and the repo templates',
+  ['install.sh', 'hooks/desk-handoff.py', 'skills/desk-checkout/scripts/claude_activity.py', 'desk/templates/scripts/desk/pre-push.sh'].filter((f) => !shipped.includes(f)), []);
+t('DS-890 shipped holds no bin file', shipped.filter((f) => c.scripts.includes(f)), []);
+
+// DS-882 AC5: the contracts are the validators the running code calls, each giving its message.
+{
+  const k = await contracts();
+  const SHA = '0123456789abcdef0123456789abcdef01234567';
+  const results = { sha: SHA, round: 1, gaps: 0, skipped_files: 0, seats: [{ role: 'correctness', vendor: 'claude', status: 'ran' }, { role: 'codex', vendor: 'codex', status: 'ran' }],
+    findings: [{ id: 'F1', seat: 'correctness', severity: 'P1', where: 'src/a.ts:12', result: 'CONFIRMED', refuted_by: 'ada-devils-advocate' }] };
+  const dir = scratch('ds882-facts-');
+  writeFileSync(join(dir, 'results.json'), JSON.stringify(results));
+  const verdict = spawnSync(process.execPath, [join(root, 'skills', 'desk-review', 'bin', 'verdict.mjs'), join(dir, 'results.json')], { encoding: 'utf8' });
+  t('DS-882 AC5 the results validator is the one the verdict calls', [k.results === validateResults, k.results(results), verdict.status], [true, verdict.stderr.replace(/^verdict\.mjs: /, '').trimEnd(), 2]);
+  t('DS-882 AC5 the park file validator is the one the pass calls', [k.park === validatePark, k.park({ question: 'q?', colour: 'red' }), k.park({ question: 'q?', approve: { kind: 'jira-comment', target: 'A-1', body: 'x' } })],
+    [true, 'its park file holds a field the park file does not declare: colour', null]);
+  mkdirSync(join(dir, 'parks'));
+  writeFileSync(join(dir, 'parks', 'A-1.json'), JSON.stringify({ question: 'q?', colour: 'red' }));
+  t('DS-882 AC5 and gives the message the pass logs', parkFileFault(dir, 'A-1', 'q?'), k.park({ question: 'q?', colour: 'red' }));
+}
 
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }
 console.log('all passed');

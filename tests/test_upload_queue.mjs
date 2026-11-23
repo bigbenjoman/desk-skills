@@ -1,4 +1,5 @@
 // suite: upload queue (one machine-wide queue: order, the minute and hour pace, repo rotation, shared back-off)
+// layer: L1
 // upload-queue.mjs with a fake uploader and a fake clock: nothing here opens a browser or calls GitHub.
 import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -50,7 +51,7 @@ function machine({ step = 5000 } = {}) {
   t('AC1 both repos\' uploads run in one pass, one after the other', r.ran.map((x) => `${x.job.repo} ${x.code}`), ['acme/a 0', 'acme/b 0']);
   t('AC1 a pass that comes while one is uploading runs nothing', inner.ran.length, 0);
   t('AC1 and says another pass holds the queue, not that the profile is in use', /another pass is uploading from the machine's upload queue \(pid \d+\)/.test(inner.stop), true);
-  t('AC1 each finished job is a result for the queue that added it', takeResults('/q/acme/a.json', { file: m.file }).map((x) => `${x.key} ${x.code}`), ['A-1 0']);
+  t('AC1 each finished job is a result for the queue that added it', takeResults('/q/acme/a.json', { file: m.file, now: m.now }).map((x) => `${x.key} ${x.code}`), ['A-1 0']);
   t('AC1 a queue takes only its own results', readUploadQueue(m.file).results.map((x) => x.key), ['B-1']);
   t('AC1 a finished job leaves the queue', readUploadQueue(m.file).jobs.length, 0);
   t('AC1 the run lock is released', m.pump().stop, null);
@@ -126,7 +127,7 @@ function machine({ step = 5000 } = {}) {
   m.add('acme/a', 'a-1', 1); m.add('acme/b', 'b-1', 1);
   m.code['a-1'] = () => ({ code: 2, out: '[upload] the shared profile is in use — refusing:' });
   const r = m.pump();
-  t('a profile in use (exit 2) stops the pass and is that ticket\'s result', `${m.calls.length} ${r.stop} ${takeResults('/q/acme/a.json', { file: m.file }).map((x) => x.code)}`, '1 the shared browser profile is in use 2');
+  t('a profile in use (exit 2) stops the pass and is that ticket\'s result', `${m.calls.length} ${r.stop} ${takeResults('/q/acme/a.json', { file: m.file, now: m.now }).map((x) => x.code)}`, '1 the shared browser profile is in use 2');
   m.add('acme/b', 'b-1', 1);
   t('adding a queued ticket again keeps one job', readUploadQueue(m.file).jobs.filter((j) => j.key === 'b-1').length, 1);
   const at = readUploadQueue(m.file).jobs.find((j) => j.key === 'b-1').at;
@@ -148,9 +149,9 @@ function machine({ step = 5000 } = {}) {
   m2.add('acme/a', 'a-6', 1); m2.add('acme/b', 'b-6', 1);
   let dropped = false;
   m2.pump({ uploadLog: () => { if (!dropped) { dropped = true; claimForSpawn('/q/acme/a.json', 'a-6', { file: m2.file }); } return m2.log; } });
-  t('a pump never starts a job a spawn dropped after the pump picked it, and runs the next', `${m2.calls.map((c) => c.key).join(',')} ${takeResults('/q/acme/a.json', { file: m2.file }).length}`, 'b-6 0');
+  t('a pump never starts a job a spawn dropped after the pump picked it, and runs the next', `${m2.calls.map((c) => c.key).join(',')} ${takeResults('/q/acme/a.json', { file: m2.file, now: m2.now }).length}`, 'b-6 0');
   t('a running job whose pump has exited is not running', inFlight({ running: { id: '/q/acme/a.json#a-7', pr: 1, pid: 999999999 } }, '/q/acme/a.json', 'a-7'), null);
-  t('a job carries the round that added it to its result', (() => { m.add('acme/a', 'a-8', 1, { round: 'r2' }); m.clock += 120_000; m.pump(); return takeResults('/q/acme/a.json', { file: m.file }).find((x) => x.key === 'a-8')?.round; })(), 'r2');
+  t('a job carries the round that added it to its result', (() => { m.add('acme/a', 'a-8', 1, { round: 'r2' }); m.clock += 120_000; m.pump(); return takeResults('/q/acme/a.json', { file: m.file, now: m.now }).find((x) => x.key === 'a-8')?.round; })(), 'r2');
 }
 
 // ---- DS-675: the saved GitHub login not signed in pauses every repo's uploads ---------------------
@@ -245,6 +246,20 @@ function machine({ step = 5000 } = {}) {
   const r = m.pump({ login: () => ({ ok: true, file: '/p.github-session.json' }), install: () => '/x' });
   const q = readUploadQueue(m.file);
   t('DS-790 AC5 an exit 6 still records the sign-in refusal and keeps the job, with no page pause', `${Object.keys(q.signin)} ${isQueued(q, '/q/acme/a.json', 'a-1')} ${q.page} ${r.stop.startsWith('GitHub turned away the saved login')}`, '/p.github-session.json true null true');
+}
+// DS-550: a job `eligible` refuses (another batch's job naming no state dir) is passed over untouched:
+// not run, still queued, and an older install's page pause is not cleared as if it had uploaded.
+{
+  const m = machine();
+  m.add('acme/a', 'a-1', 1);
+  const q0 = readUploadQueue(m.file);
+  writeFileSync(m.file, `${JSON.stringify({ ...q0, page: { at: 'T', why: "GitHub's PR page changed", repo: 'acme/a', pr: 1, install: '/old' } })}\n`);
+  const r = m.pump({ install: () => '/new', eligible: (j) => !!j.state });
+  const q = readUploadQueue(m.file);
+  t('DS-550 a job eligible refuses is not run, stays queued, and leaves the page pause', `${m.calls.length} ${isQueued(q, '/q/acme/a.json', 'a-1')} ${q.page?.install} ${q.results.length} ${r.ran.length}`, '0 true /old 0 0');
+  m.add('acme/b', 'b-1', 1, { state: '/state/b' });
+  m.pump({ install: () => '/new', eligible: (j) => !!j.state });
+  t('DS-550 a job naming its state dir runs past the refused one (negative control)', m.calls.map((c) => c.key).join(), 'b-1');
 }
 
 // ---- the lock: a dead holder's lock is cleared, a live one's is not --------------------------------

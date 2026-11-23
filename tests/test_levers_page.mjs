@@ -1,4 +1,5 @@
 // suite: levers page (the offline Levers page rendered from view.json)
+// layer: L1
 import { mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';

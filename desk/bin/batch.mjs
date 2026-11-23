@@ -32,6 +32,7 @@ import { readHanded, handItems, dropHanded } from './decider.mjs';
 import { admissionRefusal } from './gate.mjs';
 import { followOnPending, postMergeUnmade } from './harvest.mjs';
 import { auditsIn } from './levers-audit.mjs';
+import { readRecords as readPreviewDbs } from './preview-db.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DONE_DIR = '.done';
@@ -267,6 +268,12 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
   // Every ticket left behind has moved or been parked by now, so a batch kept for follow-on steps runs
   // nothing more.
   if (follows.length || owedSteps.length) return { ...none, lines: [...lines, ...(moved.length ? [`archive: batch ${b.name} ${movedText}and waits on follow-on steps`] : [])] };
+  // A preview database a worker made (preview-db.mjs) is deleted only by this batch's pass, from the
+  // record in its state folder: archiving would move the record where no pass reads it, and the
+  // database branch and its preview override would be left. The batch is not idle while one is left,
+  // so its pass runs and deletes it, and the batch is archived on a later tick.
+  const dbs = readPreviewDbs(b.state);
+  if (dbs.length) return { ...none, lines: [...lines, `archive: batch ${b.name} ${movedText}waits on its pass to delete preview database${dbs.length > 1 ? 's' : ''} ${dbs.map((d) => `${d.db} (PR #${d.pr})`).join(', ')}`] };
   const told = readStopped(b.state);
   const q2 = moveDone(dirname(b.queue), now);
   const s2 = moveDone(b.state, now);

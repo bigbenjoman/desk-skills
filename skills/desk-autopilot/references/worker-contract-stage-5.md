@@ -120,11 +120,26 @@ you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease 
 
   **An app you cannot run for screenshots is checked whole, and parks once.** Before any park on it,
   run `desk-env drift --app <its directory>`: it prints every §4 row the app lacks, `NODEV` (Dev
-  server) and `NOENV` (Env files), each with the value to add, or `no setup gaps`. Never park on the
+  server), `NOENV` (Env files) and `NOSIGNIN` (Test sign-in), each with the value to add, or `no setup gaps`. Never park on the
   first row you meet and leave the next for a requeue: each round costs the person an answer.
 
-  **No §4 Dev server item for the app you changed?** (`desk-env cmds dev-cmd` has no line whose
-  directory holds the screen.) Its dev command is refused, so capture from the PR's preview instead:
+  **Read a row of several items whole.** `desk-env cmds dev-cmd`, `desk-env list env-files` and
+  `desk-env cmds test-signin` print every app's item; `desk-env get` prints only a row's first, so it
+  never tells you an app is missing from a row. An app `drift --app` does not name for a row has that
+  row: a park never says it is missing.
+
+  **A Dev server item and a Test sign-in item for the app?** Capture from your own dev server on your
+  port, signed in as that user, by `desk-pr`'s `screenshot-surfaces.md` "Signed in with a sign-in
+  token", whether or not the PR has a preview: never park for a preview you cannot sign in to. Its
+  script refuses an env file whose key is not a development instance's: that is a park naming the
+  env file and the reason (`AUTOPILOT_PARK: screenshots for <dir>: <env file> holds a CLERK_SECRET_KEY
+  that is not a development instance's (sk_test_), so I will not sign in with it`), never a reason to
+  find another key.
+
+  **No §4 Dev server item for the app you changed, or a page behind sign-in and no §4 Test sign-in
+  item for it?** (`desk-env cmds dev-cmd`, or `desk-env cmds test-signin`, has no line whose
+  directory holds the screen.) Its dev command is refused, or it has no user to sign in as, so
+  capture from the PR's preview instead:
   open the draft PR first, then read the preview's URL from the host's bot comment
   (`gh pr view <n> --json comments`) or the branch's deployment (`desk-gh read
   repos/<repo>/deployments -X GET -f ref=<branch>`, then its statuses' `environment_url`). Use it
@@ -135,12 +150,43 @@ you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease 
   no preview you can sign in to, park once naming every row `drift --app` printed, and only those,
   each with its value, with the rest of the tail (core section 1): `AUTOPILOT_PARK: screenshots for
   <dir>: the PR has no preview I can sign in to, and its setup lacks <each row, e.g. §4 Dev server
-  "apps/portal: pnpm run dev"; §4 Env files "apps/portal/.env.local">: add them (/desk-setup;
+  "apps/portal: pnpm run dev"; §4 Env files "apps/portal/.env.local"; §4 Test sign-in "apps/portal:
+  <email of an existing development user who holds the app's grant>">: add them (/desk-setup;
   desk-env drift --app <dir> checks it) and requeue me, or capture them yourself`, then
-  `AUTOPILOT_PARK_INPUTS: {"config:dev-cmd": "<what desk-env get dev-cmd prints>", "config:env-files":
-  "<what desk-env get env-files prints>"}` (`get`, never `list`: the pass re-reads each input
-  with `get`, so a `list` value reads as changed on every pass). An app whose dev server runs but fails for want of its env
-  files parks the same way, naming the Env files row alone.
+  `AUTOPILOT_PARK_INPUTS` with one `"config:<row id>": "<what desk-env get <row id> prints>"` for
+  each row it names (`dev-cmd`, `env-files`, `test-signin`), and no other row (`get`, never `list`:
+  the pass re-reads each input with `get`, so a `list` value reads as changed on every pass; an
+  input is only what clears the park, never how you judge which rows the app lacks). An app whose
+  dev server runs but fails for want of its env files parks the same way, naming the Env files row
+  alone.
+
+  **A PR that adds a migration, where §4 Preview database is set** (`desk-env cmds preview-db`), takes
+  its evidence against a database of its own, never the shared staging one its preview reads, which
+  does not have the migration yet. With the draft PR open, run
+  `node ~/.claude/desk/bin/preview-db.mjs up <your branch> <your PR>` before capturing or dispatching
+  anything. It makes the database branch named after your branch, applies your migrations and the
+  seed, sets the override for your preview branch only and rebuilds the preview; the pass deletes
+  both once the PR merges or closes, so never delete them yourself. Then capture as above, never
+  through §4 Evidence workflow (`desk-env list evidence-workflow`): it posts its shots straight into
+  the body, where no error-page check reads them, so for a PR with a preview database
+  `evidence.mjs dispatch` refuses it and the pass starts no run of it. Your own checked shots are its
+  evidence. Where §3 `worker-preview-db` is not `yes`, park
+  naming the row, with the command. **A step that fails is a park quoting it**: `up` prints a
+  `PARK:` line naming the step, its command and its error; copy it into your `AUTOPILOT_PARK`
+  verbatim, with the rest of the tail. Never take the evidence against staging instead. A refusal
+  saying the PR adds no migration means the usual route applies; with the row `none`, so does every
+  migration PR.
+
+  **Every shot of a PR with a preview database is checked for an error page before you print
+  `AUTOPILOT_IMAGES`.** Save the page's body text beside each shot as `<shot name>.txt` (Playwright
+  `page.innerText('body')`), then run
+  `node ~/.claude/desk/bin/preview-db.mjs check <your screenshot directory>`. It moves any shot whose
+  text is an error page (a crash page, a server error, a not-found page, a database error naming a
+  missing table or column) into `error-pages/` beside it, where no upload reads it, and exits 1 on
+  one, on a shot with no text, or when it could not record the pass. Only the files a passing check read, unchanged since, are uploaded;
+  a failed check uploads none. An error page is never evidence: find why (the preview not yet
+  rebuilt, a migration that did not apply), fix it and capture again, or park quoting the line it
+  printed. Look at every shot as well; the check reads text, not pixels.
 - **Opening the PR as a DRAFT.** `gh pr create --repo <repo> --draft --base <default> --head
   <your branch> --body-file <file> --title "<title>"`, in that order: the allow rule matches only a
   command beginning `gh pr create --draft` or `gh pr create --repo <repo> --draft`, and `--repo`
@@ -181,11 +227,14 @@ you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease 
   more than the merge: `"main"` once the merge is on the default branch (a staging or deployed check),
   `"production"` once production runs it (config §4 Promotion ref, `desk-env get promotion-ref`, has
   the merge commit). Leave it out
-  for the merge itself; any other value keeps no steps at all. Put the same steps in your Stage 8
+  for the merge itself; any other value keeps no steps at all. Add `"wait_days": <n>` to a step that
+  can only be checked a set time after the merge ("two weeks after the merge, compare …" is
+  `"wait_days": 14`): it is neither run nor listed until then. No two steps with the same gate may
+  share their text: desk knows a step by both, and refuses the list. Put the same steps in your Stage 8
   ticket comment, one line each, under "Once this merges:". Once the PR merges and each step's gate
   holds, needs-you lists the step for the person with its row's value. A step that only reads GitHub CI
-  results (a run, a check, a shard's time), desk's logs (`audit.jsonl` and the like) or desk's state
-  files, with no `row`, is run after the merge by a desk follow-step checker instead, which says what it
+  results (a run, a check, a shard's time), desk's logs (`audit.jsonl` and the like), desk's state
+  files or desk's read-only reports (`phase0-report`, `cache-report`, with any flags), with no `row`, is run after the merge by a desk follow-step checker instead, which says what it
   found on your PR; the person sees it only if it fails or no checker could finish it. So word such a
   step by the run or file it reads, and nothing else. A step you can run before the merge is not a
   follow-on: run it.

@@ -1,4 +1,5 @@
 // suite: codex usage (each Codex login's windows and plan, read from its own session logs)
+// layer: L2
 // Rollout logs under a scratch HOME, in the shape Codex writes them: a token_count event's rate_limits
 // with a primary and a secondary window, plan_type and rate_limit_reached_type. Two CODEX_HOME folders,
 // ~/.codex and ~/.codex-logins/b, plus one with no logs. Nothing reads this computer's Codex folders.
