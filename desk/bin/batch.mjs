@@ -34,6 +34,8 @@ import { admissionRefusal } from './gate.mjs';
 import { followOnPending, postMergeUnmade } from './harvest.mjs';
 import { auditsIn } from './levers-audit.mjs';
 import { readRecords as readPreviewDbs } from './preview-db.mjs';
+import { finishedCloud, handOver, readArchived, readPending } from './cloud-worker.mjs';
+import { readArchive } from './queue-store.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DONE_DIR = '.done';
@@ -276,6 +278,11 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
   // so its pass runs and deletes it, and the batch is archived on a later tick.
   const dbs = readPreviewDbs(b.state);
   if (dbs.length) return { ...none, lines: [...lines, `archive: batch ${b.name} ${movedText}waits on its pass to delete preview database${dbs.length > 1 ? 's' : ''} ${dbs.map((d) => `${d.db} (PR #${d.pr})`).join(', ')}`] };
+  // An archived batch is no longer listed, so its finished cloud sessions the person has not recorded
+  // archived move to the standing batch's list (cloud-worker.mjs handOver), where needs-you still asks.
+  try {
+    handOver(E.repoStateOf(b.state), finishedCloud(q.tickets, readArchive(b.queue).tickets, readArchived(b.state), readPending(b.state)));
+  } catch (e) { return { ...none, lines: [...lines, `archive: batch ${b.name} ${movedText}waits: its finished cloud sessions could not be handed to the standing batch (${e.message})`] }; }
   const told = readStopped(b.state);
   const q2 = moveDone(dirname(b.queue), now);
   const s2 = moveDone(b.state, now);

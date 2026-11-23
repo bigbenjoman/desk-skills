@@ -3831,17 +3831,28 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   const items = () => N.collect({ word: 'cloud1311' }).items.filter((i) => i.kind === 'cloud-archive');
   let c = items();
   t('one item for the batch, naming each finished session with its URL, the archived one by its key',
-    `${c.length} ${c[0]?.t.key} ${c[0]?.need}`,
-    '1 cloud-archive 2 cloud sessions have finished in cloud1311 and are still open: archive these in claude.ai/code: C-3 https://claude.ai/code/session_c?from=cli; cloud1311-ticket-C-1 https://claude.ai/code/session_a?from=cli');
+    `${c.length} ${/^cloud-archive:[0-9a-f]{8}$/.test(c[0]?.t.key)} ${c[0]?.need}`,
+    '1 true 2 cloud sessions have finished in cloud1311 and are still open: archive these in claude.ai/code: C-3 https://claude.ai/code/session_c?from=cli; cloud1311-ticket-C-1 https://claude.ai/code/session_a?from=cli');
   t('a running session, one whose PR has not merged, and a local ticket are not listed', ['session_b', 'session_d'].some((x) => c[0]?.need.includes(x)), false);
   t('desk-q counts it once', N.needsCount(loadRepos(Date.now(), 'cloud1311').find((r) => r.slug === 'acme__cloud1311' && r.batch == null)).items.filter((i) => i.item.kind === 'cloud-archive').length, 1);
-  const done = N.record({ word: 'cloud1311', ticket: 'cloud-archive', action: 'done' });
-  t('done records every session it named as archived, and the item goes', `${done.ok} ${done.line} ${items().length}`, 'true cloud1311 cloud-archive: recorded all 2 sessions archived, so it is off your list. 0');
+  const shown = c[0].t.key;
+  // C-4's PR merges after the list was shown: the shown item's done no longer answers it.
   const qq = JSON.parse(readFileSync(q, 'utf8'));
   qq.tickets['C-4'].merged_at = minsAgo(1);
   writeFileSync(q, JSON.stringify(qq));
+  const stale = N.record({ word: 'cloud1311', ticket: shown, action: 'done' });
+  t('a done on a list another session has since joined is refused, and records nothing', `${stale.ok} ${items()[0]?.sessions.length}`, 'false 3');
   c = items();
-  t('a session that finishes later is a new item naming only it', c[0]?.need, '1 cloud session has finished in cloud1311 and is still open: archive it in claude.ai/code: cloud1311-ticket-C-4 https://claude.ai/code/session_d?from=cli');
+  const done = N.record({ word: 'cloud1311', ticket: c[0].t.key, action: 'done' });
+  t('done on the list as it stands records every session it named, and the item goes', `${done.ok} ${done.line.endsWith('recorded all 3 sessions archived, so it is off your list.')} ${items().length}`, 'true true 0');
+  // A named batch archived with a session not recorded hands it to the standing batch's list.
+  const state = join(env.HOME, '.desk-autopilot', 'acme__cloud1311');
+  writeFileSync(join(state, 'cloud-archived.json'), JSON.stringify({ ...JSON.parse(readFileSync(join(state, 'cloud-archived.json'), 'utf8')),
+    pending: [{ key: 'E-1', session: 'session_e', name: 'cloud1311-ticket-E-1', url: 'https://claude.ai/code/session_e', at: minsAgo(5) }] }));
+  c = items();
+  t('the standing batch lists a session an archived batch handed it', c[0]?.need, '1 cloud session has finished in cloud1311 and is still open: archive it in claude.ai/code: cloud1311-ticket-E-1 https://claude.ai/code/session_e');
+  N.record({ word: 'cloud1311', ticket: c[0].t.key, action: 'done' });
+  t('and its done takes it off the handed list', `${items().length} ${JSON.parse(readFileSync(join(state, 'cloud-archived.json'), 'utf8')).pending.length}`, '0 0');
 }
 
 // ---- DS-896: a ticket's blockers, read by desk-q, needs-you and queue.mjs watch from one helper, in the

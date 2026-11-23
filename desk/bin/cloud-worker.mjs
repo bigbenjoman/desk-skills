@@ -13,7 +13,7 @@
 // on, and local settings do not reach the session. So with the effort lever on, which promises each
 // session an effort config names, no ticket runs in the cloud (CLOUD_NO_EFFORT).
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lock, unlock, writeJsonAtomic } from './dir-lock.mjs';
 
@@ -141,39 +141,65 @@ export const cloudWall = (cloud) => {
 // Nothing on this computer can end or archive a cloud session (`claude stop` and `rm` act on local
 // background sessions only), so a finished one stays in the person's claude.ai/code list until they
 // archive it there. needs-you lists the batch's finished sessions as one item, and its done records
-// them here, in the batch's state folder, so each is asked about once.
+// them here, in the batch's state folder (`sessions`), so each is asked about once. A named batch
+// archived before that hands its unrecorded ones to the standing batch's file (`pending`), since an
+// archived batch is no longer listed.
 const archivedPath = (stateDir) => join(stateDir, 'cloud-archived.json');
+const readFile = (stateDir) => {
+  try { const f = JSON.parse(readFileSync(archivedPath(stateDir), 'utf8')); return f && typeof f === 'object' ? f : {}; } catch { return {}; }
+};
 
 // The session ids the person has said are archived, as a Set; none when the file is missing or unreadable.
-export function readArchived(stateDir) {
-  try { return new Set(JSON.parse(readFileSync(archivedPath(stateDir), 'utf8')).sessions ?? []); } catch { return new Set(); }
-}
+export const readArchived = (stateDir) => { const f = readFile(stateDir); return new Set(Array.isArray(f.sessions) ? f.sessions : []); };
+// The finished sessions an archived named batch handed here, as finishedCloud rows.
+export const readPending = (stateDir) => { const f = readFile(stateDir); return Array.isArray(f.pending) ? f.pending.filter((d) => d?.session && d.url) : []; };
 
-// Records `sessions` as archived, under the file's lock.
-export function recordArchived(stateDir, sessions) {
+// Changes the file under its lock: `change(f)` mutates { sessions, pending }.
+function update(stateDir, change) {
   const file = archivedPath(stateDir), held = `${file}.lock`;
+  mkdirSync(stateDir, { recursive: true });
   lock(held);
   try {
-    let f = { sessions: [] };
+    let f = {};
     if (existsSync(file)) {
       try { f = JSON.parse(readFileSync(file, 'utf8')); } catch (e) { throw new Error(`${file} cannot be read (${e.message}); fix or remove it first`); }
     }
-    f.sessions = [...new Set([...(f.sessions ?? []), ...sessions])];
+    f.sessions = Array.isArray(f.sessions) ? f.sessions : [];
+    f.pending = Array.isArray(f.pending) ? f.pending : [];
+    change(f);
     writeJsonAtomic(file, f);
   } finally { unlock(held); }
 }
 
+// Records `sessions` as archived, and takes them off what was handed here.
+export function recordArchived(stateDir, sessions) {
+  update(stateDir, (f) => {
+    f.sessions = [...new Set([...f.sessions, ...sessions])];
+    f.pending = f.pending.filter((d) => !sessions.includes(d?.session));
+  });
+}
+
+// Hands finished sessions (finishedCloud rows) to `stateDir`, each once.
+export function handOver(stateDir, rows) {
+  if (!rows.length) return;
+  update(stateDir, (f) => {
+    const have = new Set([...f.sessions, ...f.pending.map((d) => d?.session)]);
+    f.pending.push(...rows.filter((d) => !have.has(d.session)));
+  });
+}
+
 // The batch's finished cloud sessions not yet archived, oldest first: each ticket worked in the cloud
 // whose PR has merged (a live ticket with `merged_at`), or that the queue archived, which it does once
-// a done ticket's PR has merged or closed. `tickets` are the live ones, `archived` the archive's.
+// a done ticket's PR has merged or closed, and any `pending` handed here. `tickets` are the live ones,
+// `archived` the archive's, `done` the sessions recorded archived.
 //   -> [{ key, session, name, url, at }]
-export function finishedCloud(tickets, archived, done = new Set()) {
+export function finishedCloud(tickets, archived, done = new Set(), pending = []) {
   const rows = [
     ...Object.values(tickets ?? {}).filter((t) => t?.state === 'done' && t.merged_at),
     ...Object.values(archived ?? {}),
-  ].filter((t) => t?.location === 'cloud' && t.cloud?.session && t.cloud.url && !done.has(t.cloud.session));
-  const seen = new Set();
-  return rows.filter((t) => !seen.has(t.cloud.session) && seen.add(t.cloud.session))
-    .map((t) => ({ key: t.key, session: t.cloud.session, name: t.cloud.name ?? null, url: t.cloud.url, at: t.merged_at ?? t.cloud.pr_at ?? t.cloud.started ?? null }))
+  ].filter((t) => t?.location === 'cloud' && t.cloud?.session && t.cloud.url)
+    .map((t) => ({ key: t.key, session: t.cloud.session, name: t.cloud.name ?? null, url: t.cloud.url, at: t.merged_at ?? t.cloud.pr_at ?? t.cloud.started ?? null }));
+  const seen = new Set(done);
+  return [...rows, ...pending].filter((d) => !seen.has(d.session) && seen.add(d.session))
     .sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));
 }

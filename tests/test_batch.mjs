@@ -306,6 +306,23 @@ t('AC5 its queue is under batches/.done/', existsSync(doneQ('X-3')) && readFileS
 t('AC5 so is its state', existsSync(doneS('X-3')) && !existsSync(namedS('X-3')), true);
 t('AC5 the log line says why and where', (a.log ?? []).join(' ').includes('batch X-3 archived: its promotion PR #9 is closed'), true);
 t('AC5 it is no longer listed', listed(), '-');
+// #1311: its finished cloud sessions not recorded archived go to the standing batch's list, since an
+// archived batch is not listed.
+{
+  const cs = (id) => ({ session: `session_${id}`, url: `https://claude.ai/code/session_${id}`, name: `w-ticket-${id}` });
+  writeQ('X-31', { epic: 'X-31', base: 'feat/x-31', promotion: { pr: 9 }, tickets: {
+    'X-32': { key: 'X-32', state: 'done', location: 'cloud', result: { pr: 10 }, merged_at: '2026-10-30T11:00:00Z', cloud: cs('g') },
+    'X-33': { key: 'X-33', state: 'done', location: 'cloud', result: { pr: 11 }, merged_at: '2026-10-30T11:00:00Z', cloud: cs('h') } } });
+  mkdirSync(namedS('X-31'), { recursive: true });
+  writeFileSync(join(namedS('X-31'), 'cloud-archived.json'), JSON.stringify({ sessions: ['session_h'] }));
+  const standing = join(HOME, '.desk-autopilot', SLUG, 'cloud-archived.json');
+  a = res(archive('X-31', { 9: 'CLOSED', 10: 'MERGED', 11: 'MERGED' }));
+  let pend = [];
+  try { pend = JSON.parse(readFileSync(standing, 'utf8')).pending ?? []; } catch { /* none handed */ }
+  t('an archived batch hands its unrecorded finished cloud session to the standing batch, and not one recorded archived',
+    `${a.archived} ${pend.map((d) => `${d.key}:${d.name}`).join()}`, 'true X-32:w-ticket-g');
+  rmSync(standing, { force: true });
+}
 // A second batch of the same name archives beside the first, once its last promotion merges: every
 // child merged before it, with no pass since to record it (the batch went idle first).
 writeQ('X-3', { epic: 'X-3', base: 'feat/x-3', promotion: { pr: 9 }, tickets: { 'X-6': { key: 'X-6', state: 'done', result: { pr: 10 }, merged_at: '2026-10-30T11:00:00Z' } } });

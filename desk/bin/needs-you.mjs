@@ -130,7 +130,7 @@ import { kindMode, readLog, restartTrial, trialOf, TRIAL_DAYS } from './leases.m
 import { LEASE_KINDS } from './machine.mjs';
 import { saveAnswer } from './briefing.mjs';
 import { addAsk, removeAsk } from './asks.mjs';
-import { finishedCloud, readArchived, recordArchived } from './cloud-worker.mjs';
+import { finishedCloud, readArchived, readPending, recordArchived } from './cloud-worker.mjs';
 import { readArchive } from './queue-store.mjs';
 import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
 import { prsNaming } from './recoveries.mjs';
@@ -1554,20 +1554,23 @@ function ticketlessItems(batches) {
 }
 
 // ---- finished cloud sessions (cloud-worker.mjs finishedCloud): one item a batch --------------------
-// Nothing here can archive a cloud session, so each batch's finished ones are one item, `cloud-archive`
-// for the standing batch and `cloud-archive:<batch>` for a named one, naming each session and its URL.
-// Done records every session it named as archived (cloud-worker.mjs recordArchived), so a session
-// that finishes later is a new item.
+// Nothing here can archive a cloud session, so each batch's finished ones are one item, naming each
+// session and its URL; the standing batch's also lists those an archived named batch handed it. Its
+// key, `cloud-archive:<id>` (`cloud-archive:<batch>:<id>` for a named batch), carries a hash of the
+// sessions it names, so a done answers only the list that was shown: once another session finishes,
+// the old key is no longer listed and its done is refused. Done records every session it named as
+// archived (cloud-worker.mjs recordArchived).
 const CLOUD_ARCHIVE = 'cloud-archive';
 function cloudItems(batches) {
   return batches.filter((b) => !b.error && b.q).flatMap((r) => {
     let archive = {};
     try { archive = readArchive(r.queuePath).tickets; } catch { /* an unreadable archive lists none of its tickets */ }
-    const done = finishedCloud(r.q.tickets, archive, readArchived(r.stateDir));
+    const done = finishedCloud(r.q.tickets, archive, readArchived(r.stateDir), r.batch == null ? readPending(r.stateDir) : []);
     if (!done.length) return [];
+    const sessions = done.map((d) => d.session);
+    const id = createHash('sha256').update(sessions.join('\n')).digest('hex').slice(0, 8);
     const list = done.map((d) => `${d.name ?? d.key} ${d.url}`).join('; ');
-    return [{ r, dir: r.stateDir, t: { key: r.batch == null ? CLOUD_ARCHIVE : `${CLOUD_ARCHIVE}:${r.batch}` }, item: { kind: CLOUD_ARCHIVE, repoLevel: true,
-      sessions: done.map((d) => d.session),
+    return [{ r, dir: r.stateDir, t: { key: `${CLOUD_ARCHIVE}:${r.batch == null ? '' : `${r.batch}:`}${id}` }, item: { kind: CLOUD_ARCHIVE, repoLevel: true, sessions,
       need: `${done.length === 1 ? '1 cloud session has' : `${done.length} cloud sessions have`} finished in ${r.name ?? r.slug} and ${done.length === 1 ? 'is' : 'are'} still open: archive ${done.length === 1 ? 'it' : 'these'} in claude.ai/code: ${list}`,
       actions: [['done', 'once you have archived them, done records them so they are not listed again'], ['not-now']],
       since: timeOf(done[done.length - 1].at) } }];
@@ -2112,7 +2115,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket === CLOUD_ARCHIVE || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
