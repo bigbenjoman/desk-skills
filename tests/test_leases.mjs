@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, 
 import { join, dirname } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { claudeAncestor, kindMode, leaseCli, listRow, releasePreviews, sampleLoad, waitFields } from '../desk/bin/leases.mjs';
+import { capacities, claudeAncestor, kindMode, leaseCli, listRow, poolOf, releasePreviews, sampleLoad, slotPools, waitFields } from '../desk/bin/leases.mjs';
 import { decidePrStatus } from '../desk/bin/pass/pr-status.mjs';
 import { latestPerCheck, normaliseRollup } from '../desk/bin/gate.mjs';
 import { previewLabel } from '../desk/bin/desk-env.mjs';
@@ -709,6 +709,29 @@ try {
       { class: 'light', worktree: '/w/DS-1', wait_s: 40, queue: 2, load_1m: 2.47, mem_free_pct: 37, compressed_gb: 3.5 });
     t('DS-975 AC6 with no sample the readings are empty', waitFields({ cls: 'test', worktree: '/w', waited: 0, queue: 0, sample: null }),
       { class: 'test', worktree: '/w', wait_s: 0, queue: 0, load_1m: null, mem_free_pct: null, compressed_gb: null });
+  }
+  // DS-987 AC12: with lock-admission on, a pool's capacity is its floor plus the runs admission let in
+  // above it that still run, never past its ceiling; shadow or off, the floor alone.
+  {
+    const d = join(S, 'admit-caps'); mkdirSync(d, { recursive: true });
+    const rows = { 'lock-admission': 'on', 'test-lock-slots': '2', 'test-lock-max': '3', 'light-lock-slots': '1', 'light-lock-max': '3', 'test-cap': '4' };
+    const capEnv = (r) => ({ machineValue: (k) => r[k] ?? null, testLockSlots: () => Number(r['test-lock-slots']), lockDir: () => d });
+    const sleepers = [spawn('sleep', ['30'], { stdio: 'ignore' }), spawn('sleep', ['30'], { stdio: 'ignore' })];
+    owners.push(...sleepers);
+    const ledger = (lines) => writeFileSync(join(d, 'desk-admit.ledger'), lines.map((l) => `${l}\n`).join(''));
+    // One live light admit, a heavy one whose run has exited, and shadow's would-admit, which grants nothing.
+    ledger([`1800000000 light ${sleepers[0].pid} 16 10 admit`, '1800000000 heavy 999999 16 10 admit', `1800000000 light ${sleepers[1].pid} 16 10 headroom`]);
+    const c = capacities(capEnv(rows));
+    const p = slotPools(capEnv(rows));
+    t('DS-987 AC12 one run let in above the light floor: the broker reports floor 1, ceiling 3, current 2', p.light, { floor: 1, ceiling: 3, current: 2 });
+    t('DS-987 AC12 a heavy admit whose run has exited is not counted', p.heavy, { floor: 2, ceiling: 3, current: 2 });
+    t('DS-987 AC12 the light slot lease draws on the current capacity', [c.light, poolOf('slot', 'light', c).capacity, poolOf('slot', 'browser', c).capacity], [2, 2, 1]);
+    ledger([sleepers[0].pid, sleepers[1].pid, process.pid].map((p) => `1800000000 light ${p} 16 10 admit`));
+    t('DS-987 AC12 three runs let in over a floor of 1: never past the ceiling of 3', capacities(capEnv(rows)).light, 3);
+    t('DS-987 AC13 with lock-admission shadow, each pool is its floor alone', slotPools(capEnv({ ...rows, 'lock-admission': 'shadow' })), { heavy: { floor: 2, ceiling: 2, current: 2 }, light: { floor: 1, ceiling: 1, current: 1 } });
+    t('DS-987 ps that cannot be read counts each admit by its pid alone, and the pool read does not fail',
+      capacities({ ...capEnv(rows), psRows: () => { throw new Error('ps could not be read'); } }).light, 3);
+    t('DS-987 a row that does not read is the floor alone',capacities(capEnv({ ...rows, 'light-lock-max': '0' })).light, 1);
   }
 } finally {
   for (const c of owners) c.kill();

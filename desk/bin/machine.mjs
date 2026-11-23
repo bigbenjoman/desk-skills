@@ -26,11 +26,12 @@ const numberAtLeast = (min) => (v) => /^\d+(\.\d+)?$/.test(v) && Number(v) >= mi
 // Each lock pool, heavy (test-lock-slots) and light (light-lock-slots), has a floor of slots always
 // granted and a ceiling (test-lock-max, light-lock-max) it never passes. Between them a run is let in
 // only while the machine's load, free memory and memory pressure leave room for it (admission.mjs).
-// lock-admission says whether that runs: off, or shadow, which logs what it would do and grants
-// nothing. A row here that does not read makes admission off, so a typo never takes a slot away.
-const ADMISSION_MODES = Object.freeze(['off', 'shadow']);
+// lock-admission says whether that runs: off; shadow, which logs what it would do and grants nothing;
+// or on, which grants it. A row here that does not read makes admission off, so a typo never takes a
+// slot away and never grants one.
+const ADMISSION_MODES = Object.freeze(['off', 'shadow', 'on']);
 const ADMISSION_RULES = Object.freeze({
-  'lock-admission': { ok: (v) => ADMISSION_MODES.includes(v), want: ADMISSION_MODES.join(' or ') },
+  'lock-admission': { ok: (v) => ADMISSION_MODES.includes(v), want: 'off, shadow or on' },
   'light-lock-slots': { ok: wholeAtLeast(1), want: 'a whole number of slots, 1 or more' },
   'light-lock-max': { ok: wholeAtLeast(1), want: 'a whole number of slots, 1 or more' },
   'test-lock-max': { ok: wholeAtLeast(1), want: 'a whole number of slots, 1 or more' },
@@ -397,7 +398,7 @@ export function propose(hw, r = RULES) {
   add('pre-push-lock-timeout-s', r.prePushLockTimeoutS,
     'how long the pre-push hook waits for the test lock before skipping a typecheck or suite; CI runs it anyway');
   const testCap = rows.find((s) => s.key === 'test-cap').value;
-  add('lock-admission', ADMISSION_FIXED['lock-admission'], 'off: the locks grant their floors only; shadow logs what headroom admission would grant above them');
+  add('lock-admission', ADMISSION_FIXED['lock-admission'], 'off: the locks grant their floors only; shadow logs what headroom admission would grant above them; on grants it');
   add('light-lock-slots', 1, 'the light lock\'s floor: slots always granted');
   add('light-lock-max', 1, 'the light lock\'s ceiling, never passed: its floor');
   add('test-lock-max', slots, 'the test lock\'s ceiling, never passed: test-lock-slots');
