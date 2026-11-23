@@ -305,9 +305,9 @@ function scrubCode(t) {
     }
     return false;
   };
-  // A word, or a decimal number with its point (`1.`, `1.5e3`), so the point is no property access. Only
-  // a plain integer part takes it: after `1e3`, `0x1F` or `1n` a `.` is one (`1e3.with(`).
-  const word = /\d[\d_]*\.(?:\d[\d_]*)?(?:[eE][+-]?\d+)?|[\w$]+/y;
+  // A whole number literal (`0x1F`, `1.`, `1.5e-3`, `1e+3`, `1n`), else a word. A number's own point is
+  // no property access, and one after the literal is (`1e+3.with(`: `with` is a property).
+  const word = /0[xXoObB][\da-fA-F_]*n?|\d[\d_]*(?:\.[\d_]*)?(?:[eE][+-]?[\d_]+)?n?|[\w$]+/y;
   while (i < t.length) {
     const c = t[i];
     word.lastIndex = i;

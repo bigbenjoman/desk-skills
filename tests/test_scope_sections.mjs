@@ -540,7 +540,10 @@ t('DS-1002 a function reaching the edited one through a spread, a nested templat
   // After an exponent or hex literal the point is a member access: `with` there is a property.
   rowsAs("return [1e3.with(a) / 2 + '/', fmt(a) + ''];"),
   rowsAs("return [0x1F.with(a) / 2 + '/', fmt(a) + ''];"),
-].map(fmtEdit), Array(10).fill('some: test_lint.sh test_needs.mjs test_q.mjs'));
+  rowsAs("return [1e+3.with(a) / 2 + '/', fmt(a) + ''];"),
+  rowsAs("return [1.5e-3.with(a) / 2 + '/', fmt(a) + ''];"),
+  rowsAs("return [1n.with(a) / 2 + '/', fmt(a) + ''];"),
+].map(fmtEdit), Array(13).fill('some: test_lint.sh test_needs.mjs test_q.mjs'));
 const isMainQ = (guard, cond) => hubQ.replace(/const isMain = \(\(\) => \{[\s\S]*?\}\)\(\);\nif \(isMain\)/, `const isMain = ${guard};\nif (${cond})`);
 t('DS-1002 a guard function called as `if (isMain())` keeps the command line command-only; one tested uncalled, or a launch test an || or a ternary can turn, does not', [
   drawEdit(isMainQ('() => process.argv[1] === fileURLToPath(import.meta.url)', 'isMain()')),
