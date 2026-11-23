@@ -937,8 +937,8 @@ function noPrItem(r, b, ts) {
   const waiting = ts.map((t) => t.key).sort();
   const summary = ts.map((t) => (triageOf(r, t.key)?.blockers ?? []).find((x) => x?.key === b)?.summary).find(Boolean);
   const single = ts.length === 1;
-  const free = ts.filter((t) => freeFrom(t, b).release).map((t) => t.key).sort(), kept = ts.filter((t) => !freeFrom(t, b).release);
-  const after = [free.length && `${andList(free)} can start`, ...kept.map((t) => freedWords(t, b))].filter(Boolean).join(', and ');
+  const free = ts.filter((t) => freeFrom(t, b, r.q).release).map((t) => t.key).sort(), kept = ts.filter((t) => !freeFrom(t, b, r.q).release);
+  const after = [free.length && `${andList(free)} can start`, ...kept.map((t) => freedWords(t, b, r.q))].filter(Boolean).join(', and ');
   return { kind: 'held', ticket: b, finished: b, waiting,
     need: `${b}${summary ? ` ("${one(summary)}")` : ''} finished with no PR, so nothing of it lands, and ${single ? 'one ticket is' : `${ts.length} tickets are`} held behind it: ${andList(waiting)}. Start lifts the hold on ${b} alone, and ${after}`,
     actions: [['start', `lifts the hold on ${b} from ${single ? waiting[0] : `all ${ts.length}`} and keeps every other hold`], ['not-now']],
@@ -949,15 +949,13 @@ function startNoPr(i, say) {
   const b = i.finished, q = i.r.q;
   const ts = i.waiting.map((k) => q?.tickets?.[k]).filter((x) => x && blockersOf(x).includes(b));
   if (!ts.length) return say(false, `no ticket is held behind ${b} any more, so nothing was changed.`);
-  const done = [];
+  const done = [], words = [];
   for (const x of ts) {
-    for (const s of freeSteps(x, b)) {
-      const m = queueCmd(i.r, s);
-      if (!m.ok) return say(false, `${done.length ? `hold on ${b} lifted from ${andList(done)}, but ` : ''}lifting it from ${x.key} was refused: ${m.out}`);
-    }
-    done.push(x.key);
+    const m = liftOne(i.r, x, b);
+    if (!m.ok) return say(false, `${done.length ? `hold on ${b} lifted from ${andList(done)}, but ` : ''}lifting it from ${x.key} was refused: ${m.out}`);
+    done.push(x.key); words.push(m.words);
   }
-  return say(true, `hold on ${b} lifted from ${andList(done)}: ${ts.map((x) => freedWords(x, b)).join('; ')}.`);
+  return say(true, `hold on ${b} lifted from ${andList(done)}: ${words.join('; ')}.`);
 }
 
 // ---- follow-on steps: what a ticket left for after its PR merges (pass.mjs follow_on) -------------
@@ -1258,25 +1256,34 @@ function linkBehind(r, t, b, kind) {
 // merge driver also waits on its --deps, which outlive a restart, so freed_from names `b` for it to skip.
 // A value holding `|` is quoted, or a shell would read it as a pipe.
 const shellArg = (s) => (/^[\w.,:=@+-]+$/.test(s) ? s : `'${s}'`);
-// Ticket `x` freed from `b` alone: the holds left (`rest`), whether nothing then holds it (`release`), and
-// its freed_from with `b` added (`freed`).
-const freeFrom = (x, b) => {
+// Ticket `x` freed from `b` alone: the holds left (`rest`), those of them still open (`open`: with its
+// queue `q`, less any through, unmergedBlockers), whether nothing then holds it (`release`), and its
+// freed_from with `b` added (`freed`).
+const freeFrom = (x, b, q = null) => {
   const rest = blockersOf(x).filter((k) => k !== b);
-  return { rest, release: !rest.length && !parkedAtTriage(x), freed: [...new Set([...keysOf(x.freed_from), b])].join('|') };
+  const open = q ? unmergedBlockers(q, x).filter((k) => k !== b) : rest;
+  return { rest, open, release: !open.length && !parkedAtTriage(x), freed: [...new Set([...keysOf(x.freed_from), b])].join('|') };
 };
 const freeCommand = (x, b) => (freeFrom(x, b).release ? releaseCommand(x.key) : `queue.mjs ${freeSteps(x, b)[0].map(shellArg).join(' ')}`);
 // releaseCommand as queue.mjs argument lists: [set args, front args].
 const releaseSteps = (key) => releaseCommand(key, '').split(/, then /).map((s) => s.trim().split(/\s+/));
-// freeCommand as queue.mjs argument lists, run in order.
-function freeSteps(x, b) {
-  const { rest, release, freed } = freeFrom(x, b);
-  return release ? releaseSteps(x.key) : [['set', x.key, `held_by=${rest.join('|') || 'null'}`, `freed_from=${freed}`]];
+// freeCommand as queue.mjs argument lists, run in order; `also` adds fields to the set.
+function freeSteps(x, b, q = null, also = []) {
+  const { rest, release, freed } = freeFrom(x, b, q);
+  if (!release) return [['set', x.key, `held_by=${rest.join('|') || 'null'}`, `freed_from=${freed}`, ...also]];
+  const [set, front] = releaseSteps(x.key);
+  return [[...set, ...(also.length ? [`freed_from=${freed}`] : []), ...also], front];
 }
 // What freeing ticket `x` from `b` alone leaves it waiting on, in words.
-const freedWords = (x, b) => {
-  const { rest, release } = freeFrom(x, b);
-  return release ? `${x.key} is queued at the front, so the next pass can start it` : rest.length ? `${x.key} stays held behind ${andList(rest)}` : `${x.key} keeps its own park`;
+const freedWords = (x, b, q = null) => {
+  const { open, release } = freeFrom(x, b, q);
+  return release ? `${x.key} is queued at the front, so the next pass can start it` : open.length ? `${x.key} stays held behind ${andList(open)}` : `${x.key} keeps its own park`;
 };
+// Ticket `x` of batch `r` freed from `b` alone: { ok, out } of the first refused step, else { ok, words }.
+function liftOne(r, x, b, also = []) {
+  for (const s of freeSteps(x, b, r.q, also)) { const m = queueCmd(r, s); if (!m.ok) return m; }
+  return { ok: true, words: freedWords(x, b, r.q) };
+}
 function linkItem(r, t, b, kind = 'wontDo') {
   const rec = (triageOf(r, t.key)?.blockers ?? []).find((x) => x?.key === b);
   const about = `${b}${rec?.summary ? ` ("${one(rec.summary)}")` : ''}`;
@@ -1358,17 +1365,12 @@ function startWithout(i, say) {
   const x = i.r.q?.tickets?.[i.ticket];
   if (!x) return say(false, `${i.ticket} is no longer in the batch, so nothing was changed.`);
   const b = i.waitsOn;
-  const { rest, release, freed } = freeFrom(x, b);
   const rec = { ...(x.unpromoted ?? {}) };
   delete rec[b];
   // Its outside hold and its record of `b` go too, or the pass would read it held outside again.
-  const also = [`held_outside=${keysOf(x.held_outside).filter((k) => k !== b).join('|') || 'null'}`, `freed_from=${freed}`,
-    `unpromoted=${Object.keys(rec).length ? JSON.stringify(rec) : 'null'}`];
-  const [set, front] = releaseSteps(i.ticket);
-  const steps = release ? [[...set, ...also], front] : [['set', i.ticket, `held_by=${rest.join('|') || 'null'}`, ...also]];
-  for (const s of steps) { const q = queueCmd(i.r, s); if (!q.ok) return say(false, `refused: ${q.out}`); }
-  return say(true, release ? `hold on ${b} lifted and ${i.ticket} queued at the front; the next pass can start it.`
-    : `hold on ${b} lifted; ${rest.length ? `${i.ticket} is still held behind ${andList(rest)}` : `${i.ticket} keeps its own park`}.`);
+  const m = liftOne(i.r, x, b, [`held_outside=${keysOf(x.held_outside).filter((k) => k !== b).join('|') || 'null'}`,
+    `unpromoted=${Object.keys(rec).length ? JSON.stringify(rec) : 'null'}`]);
+  return m.ok ? say(true, `hold on ${b} lifted; ${m.words}.`) : say(false, `refused: ${m.out}`);
 }
 
 // ---- the repo's reviewer check (health.mjs): one item, naming every PR it holds ------------------
@@ -1777,8 +1779,8 @@ function itemOf(r, x, reads = null, finds = reads) {
   if (isHeld(t) && !heldAsks(t)) {
     const h = holdOf(r.q, t, r.ctx);
     // Where its hold names one blocker, start lifts that one alone and the ticket waits on any other.
-    const rest = h.lift ? blockersOf(t).filter((k) => k !== h.lift) : [];
-    const why = rest.length ? `lifts its hold on ${h.lift} alone; it stays held behind ${andList(rest)}` : 'nothing else lets it start, and once you do the next pass can start it';
+    const f = h.lift ? freeFrom(t, h.lift, r.q) : null;
+    const why = f && !f.release ? `lifts its hold on ${h.lift} alone; ${f.open.length ? `it stays held behind ${andList(f.open)}` : 'it keeps its own park'}` : 'nothing else lets it start, and once you do the next pass can start it';
     return h.act
       ? { kind: 'held', need: h.text, ...(h.lift ? { lifts: h.lift } : {}), actions: [['start', why], ['not-now']] }
       : { kind: 'held', need: h.text, actions: [['done', 'only you can do this step; say done once you have'], ['not-now']] };
@@ -1962,7 +1964,7 @@ export function needsCount(r) {
   // A row held by a step or a blocker with no PR is drawn as needing the person while that item is listed.
   const stepRows = held.filter((x) => {
     const b = x.b ?? r;
-    return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)) || liveNoPr.has(`${b.stateDir}\t${holdShown(b.q, x.t, b.ctx)?.finished}`);
+    return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)) || unmergedBlockers(b.q, x.t).some((k) => liveNoPr.has(`${b.stateDir}\t${k}`));
   });
   for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...promotionItems(b), ...baseRedItems(b), ...duplicateItems(b)])) {
     if (lookupItem(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') { putOff++; offItems.push(f); } else items.push(f);
@@ -2393,8 +2395,8 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     }
     case 'start': {
       if (item.lifts) {
-        for (const s of freeSteps(x.t, item.lifts)) { const q = queueCmd(r, s); if (!q.ok) return say(false, `refused: ${q.out}`); }
-        return say(true, `hold on ${item.lifts} lifted; ${freedWords(x.t, item.lifts)}.`);
+        const m = liftOne(r, x.t, item.lifts);
+        return m.ok ? say(true, `hold on ${item.lifts} lifted; ${m.words}.`) : say(false, `refused: ${m.out}`);
       }
       for (const s of releaseSteps(ticket)) { const q = queueCmd(r, s); if (!q.ok) return say(false, `refused: ${q.out}`); }
       return say(true, 'hold lifted; the next pass can start it.');

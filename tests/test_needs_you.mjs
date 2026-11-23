@@ -2200,12 +2200,12 @@ t('DS-407 AC2 and every count reads it put off: the repo, the feature batch alon
   // for that blocker; released from the step by hand (held_outside left behind) and held again, the
   // step no longer holds it.
   put('mu685', { port: 5687, beat: 1, supervised: true, inputLabels: 'ben-input', tickets: {
-    'B-9': { state: 'done', lane: 'A', result: {} },
+    'B-9': { state: 'done', lane: 'A', result: { pr: 99 }, pr_status: { pr: 99, state: 'CLOSED' } },
     'H-4': { ...held('OPS-7'), held_by: 'OPS-7|B-9' },
     'H-5': { ...held('OPS-7'), held_by: 'B-9', park: { question: 'held by orchestrator: blocked by B-9' } } },
     triage: { 'H-4': { blockers: [input] }, 'H-5': { blockers: [input] } } });
   const mu = N.collect({ word: 'mu685' }).items;
-  t('DS-685 a step never hides another blocker that needs you: that blocker\'s item names the ticket', mu.find((i) => i.t.key === 'nopr:B-9')?.waiting.join(), 'H-4,H-5');
+  t('DS-685 a step never hides another blocker that needs you: the ticket keeps its own item for it', mu.some((i) => i.t.key === 'H-4' && /#99 was closed unmerged: let it start/.test(i.need)), true);
   t('DS-685 the step item names only the ticket its held_by still holds behind it', mu.find((i) => i.kind === 'step')?.waiting.join(), 'H-4');
   // The ticket the step holds is drawn with the step: under Needs you while the step needs the
   // person, and under Put off once the step is put off with not-now.
@@ -3590,7 +3590,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   const items = N.collect({ word: 'th796' }).items;
   const q796 = queueOf('th796');
   t('DS-796 AC3 desk-q: held behind a merged blocker with no PR and an open one, it waits on the open one', `${holdOf(q796, q796.tickets['H-1']).k} ${holdOf(q796, q796.tickets['H-1']).text.startsWith('behind #72')}`, 'waiting true');
-  t('DS-796 AC3 needs-you list: no "finished with no PR" item for the merged blocker', items.some((i) => /finished with no PR/.test(i.need ?? '') && i.t.key === 'H-1'), false);
+  t('DS-796 AC3 needs-you list: no "finished with no PR" item for the merged blocker', items.some((i) => i.t.key === 'nopr:M-1' || (/M-1 finished with no PR/.test(i.need ?? ''))), false);
   t('DS-796 AC3 needs-you list (the CLI) says no blocker finished with no PR for it', /M-1 finished with no PR/.test(cli('list', 'th796').out), false);
   t('DS-796 AC4 a done blocker with neither a merge nor a PR still needs you', items.find((i) => i.t.key === 'nopr:M-3')?.waiting.join(), 'H-2');
   // The shared predicate, as desk-q reads it (the last pass's pr_status) and as the pass does (GitHub read now).
@@ -3661,6 +3661,32 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   const qb = queueOf('ds897b');
   t('DS-897 a ticket\'s own start lifts only the blocker its hold names', `${s4.line} ${qb.tickets['H-4'].state} ${qb.tickets['H-4'].held_by}`, 'ds897b H-4: hold on C-1 lifted; H-4 stays held behind B-1. parked B-1');
   t('DS-897 one held behind that blocker alone is released as before', `${s5.ok} ${qb.tickets['H-5'].state} ${qb.tickets['H-5'].held_by}`, 'true triaged null');
+  // A blocker already through (done with its merge recorded) is not a hold: start against the one that
+  // finished with no PR releases the ticket, from the blocker's item and from the ticket's own.
+  put('ds897c', { port: 5899, beat: 1, supervised: true, tickets: {
+    'A-1': { state: 'done', lane: 'A', result: {} },
+    'C-1': { state: 'done', lane: 'A', result: { pr: 42 }, pr_status: { pr: 42, state: 'CLOSED' } },
+    'M-1': { state: 'done', lane: 'A', merged_at: minsAgo(60), result: {} },
+    'H-6': held('A-1|M-1'), 'H-7': held('C-1|M-1'),
+  } });
+  const ci = N.collect({ word: 'ds897c' }).items;
+  t('DS-897 behind a merged blocker too, the blocker item says it can start', ci.find((i) => i.t.key === 'nopr:A-1')?.need, 'A-1 finished with no PR, so nothing of it lands, and one ticket is held behind it: H-6. Start lifts the hold on A-1 alone, and H-6 can start');
+  t('DS-897 behind a merged blocker too, the ticket\'s own start says nothing else holds it', ci.find((i) => i.t.key === 'H-7')?.actions[0][1], 'nothing else lets it start, and once you do the next pass can start it');
+  const s6 = N.record({ word: 'ds897c', ticket: 'nopr:A-1', action: 'start' });
+  const s7 = N.record({ word: 'ds897c', ticket: 'H-7', action: 'start' });
+  const qc = queueOf('ds897c');
+  t('DS-897 behind a merged blocker too, start releases it as before', ['H-6', 'H-7'].map((k) => `${qc.tickets[k].state} ${qc.tickets[k].held_by}`).join(' | '), 'triaged null | triaged null');
+  t('DS-897 and says so', `${s6.ok} ${s7.ok} ${/H-6 is queued at the front/.test(s6.line)} ${/H-7 is queued at the front/.test(s7.line)}`, 'true true true true');
+  // Behind two blockers that finished with no PR, the ticket is drawn as needing you while either
+  // blocker's item is listed, so putting off one leaves it there.
+  put('ds897d', { port: 5901, beat: 1, supervised: true, tickets: {
+    'A-1': { state: 'done', lane: 'A', result: {} }, 'A-2': { state: 'done', lane: 'A', result: {} },
+    'H-8': held('A-1|A-2'),
+  } });
+  const dRepo = () => loadRepos().find((r) => r.name === 'ds897d');
+  t('DS-897 behind two such blockers, each is an item naming the ticket', N.collect({ word: 'ds897d' }).items.filter((i) => i.t.key.startsWith('nopr:')).map((i) => `${i.t.key} ${i.waiting.join()}`).join(' | '), 'nopr:A-1 H-8 | nopr:A-2 H-8');
+  N.record({ word: 'ds897d', ticket: 'nopr:A-1', action: 'not-now' });
+  t('DS-897 one put off, the ticket is still drawn as needing you', `${N.needsCount(dRepo()).stepRows.map((x) => x.t.key).join()} ${N.needsCount(dRepo()).items.map((s) => s.t.key).join()}`, 'H-8 nopr:A-2');
 }
 
 // ---- #911: a session-run batch whose passes stopped, with work autopilot could move, is one item
