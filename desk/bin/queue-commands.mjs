@@ -26,6 +26,7 @@ export const QUEUE_COMMANDS = Object.freeze({
   transfer: [],
   running: [],
   drop: [],
+  'drop-worktree': [],
   merged: [],
   'next-pass': [],
   get: [],
