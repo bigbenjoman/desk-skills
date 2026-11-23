@@ -1000,83 +1000,25 @@ export function verdictTry(t, s, ctx) {
   return driverReviewTry(t, s, ctx);
 }
 
-// A finding a review lists only to say it does not stand, labelled so apart from its prose: a parenthesis
-// holding only the label (`(refuted)`, `(refuted by codex)`, `(not a finding)`), the label just after a
-// colon or a dash (`: refuted by codex, …`, `— false positive`), or set in bold (`**Refuted**`). The
-// same words in a finding's own prose ("dismissed by the next render", "a false positive, blocking",
-// "(false positive rate near 40%)") are none.
-const WORDS = '(?:refuted|not a finding|not-a-finding|false positive)';
-const REFUTED = new RegExp(`\\(\\s*${WORDS}(?:\\s+by\\s+[^)]*)?\\s*\\)|(?:[:—–]|\\s-)\\s*${WORDS}(?:\\s+by\\s+[\\w.@-]+)?\\s*(?:[.,;)]|$)|\\*\\*${WORDS}\\*\\*`, 'i');
-// A heading that labels its whole section as findings that do not stand: `Refuted (2)`, `### P2 — Refuted`,
-// `Cross-vendor findings refuted (2)`, `Findings: not a finding`, `Rejected findings`, `False positives`,
-// the whole heading. One that only mentions them ("Findings (1 of 2 refuted)", "False positives in the
-// fraud filter", "Rejected payments") is none.
-const REFUTED_HEADING = new RegExp('^[#>*_\\s-]*(?:P[0-3]\\b[^A-Za-z]*)?(?:'
-  + '(?:(?:cross-vendor|codex|claude|external|vendor|all|the)\\s+){0,2}(?:refuted|dismissed|withdrawn|rejected)(?:\\s+(?:cross-vendor|codex|claude|external|vendor))?\\s+findings?'
-  + '|(?:(?:cross-vendor|codex|claude|external|vendor|all|the)\\s+){0,2}findings?\\s*(?:[—–:-]\\s*)?(?:refuted|not a finding|not findings)'
-  + '|refuted|not a finding|false positives?)\\s*(?:\\(\\d+\\))?[*_:\\s]*$', 'i');
-// A review body with the sections a heading marks as refuted findings taken out: a `#` heading's section
-// runs to the next heading as deep or shallower, another heading's to the next heading.
-function standingPart(body) {
-  let cut = null;
-  return String(body ?? '').split(/\r?\n/).filter((line) => {
-    const text = line.trim();
-    if (isHeading(text)) {
-      const depth = /^(#{1,6})\s/.exec(text)?.[1].length ?? 7;
-      if (cut != null && depth <= cut) cut = null;
-      if (cut == null && REFUTED_HEADING.test(text)) { cut = depth; return false; }
-    }
-    return cut == null;
-  }).join('\n');
-}
-// standingPart less each refuted finding: the body as feedback quotes it. A finding is a line naming a
-// file:line, whether it carries its severity or sits under a severity heading. The lines that continue it
-// are one opening with an em dash, or one indented deeper than it that opens with no severity of its own;
-// a continuing line naming a file:line of its own is a finding nested in it. A finding goes, with what
-// continues it, when its own line is labelled refuted or a continuing line naming no file:line is; a
-// refuted nested finding goes alone, leaving the one it sits in.
-function standingText(body) {
-  const lines = standingPart(body).split('\n'), drop = new Set();
-  const open = []; // { indent, start, refuted }, innermost last
-  const close = (end) => { const f = open.pop(); if (f.refuted) for (let k = f.start; k < end; k++) drop.add(k); };
-  lines.forEach((l, i) => {
-    const indent = /^\s*/.exec(l)[0].length, text = l.trim();
-    if (!text) return;
-    const own = /^[#>*_\s-]*(?:F\d+\s*·\s*)?P[0-3]\b/.test(l);
-    const continues = (f) => text.startsWith('—') || (indent > f.indent && !own);
-    while (open.length && !continues(open[open.length - 1])) close(i);
-    if (/[\w./-]+:\d+/.test(text)) open.push({ indent, start: i, refuted: REFUTED.test(l) });
-    else if (open.length && REFUTED.test(l)) open[open.length - 1].refuted = true;
-  });
-  while (open.length) close(lines.length);
-  return lines.filter((_, i) => !drop.has(i)).join('\n');
-}
 // A review body's counts written as text (`p0=0 p1=0 p2=0`, `P1: 0`): { p0, p1, … } as numbers.
 const textCounts = (body) => Object.fromEntries([...String(body ?? '').matchAll(/\b(p[0-3])\s*[=:]\s*(\d+)\b/gi)].map(([, k, n]) => [k.toLowerCase(), Number(n)]));
 
 // Whether an outside reviewer's review body is feedback a fix worker can act on: false for a clean
-// review, true for one that holds a finding. Clean is a verdict marker whose every count is 0, or a body
-// whose P0 to P2 findings are each refuted or not a finding (REFUTED, on the finding or on the heading
-// over it) while it reads clean: its counts written out are all 0 (p0, p1 and p2 each named), a line
-// opens with `clean` (the §4 Clean review verdict, when it is a phrase), or it lists findings and every
-// one is refuted. A body with no finding the parser reads and nothing saying it is clean is feedback, as
-// any review text was before.
+// review, true otherwise. Its counts decide: a verdict marker, or counts written out (`p0=0 p1=0 p2=0`,
+// `P1: 0`), is feedback when any count is above 0, so findings it lists only as refuted start no try.
+// With no counts, a body stating the §4 Clean review verdict (when it is a phrase) with nothing left
+// after it is clean; any other review text is feedback, as it was before.
 export function bodyFeedback(body, clean = null) {
   const text = String(body ?? '');
   const m = markerOf(text.trim());
   if (m) return COUNTS.some((k) => k in m && m[k] !== 0);
-  const sevs = ['P0', 'P1', 'P2'];
-  // The findings left once refuted ones are taken out whole (standingText), the same text a try quotes.
-  const listed = reviewFindings(text, sevs), standing = reviewFindings(standingText(text), sevs);
-  if (standing.length) return true;
   const c = textCounts(text);
-  const zero = ['p0', 'p1', 'p2'].every((k) => c[k] === 0) && Object.values(c).every((n) => n === 0);
+  if (Object.keys(c).length) return Object.values(c).some((n) => n !== 0) || !['p0', 'p1', 'p2'].every((k) => k in c);
   // A plain §4 Clean review verdict (no counts in it) stated as the body's outcome, leaving nothing open,
   // as undraft.mjs plainVerdictAt reads one (review-plain.mjs).
   const phrase = String(clean ?? '').trim();
-  const said = !!phrase && !Object.keys(pairs(phrase)).length && !/^(?:none|todo)\b/i.test(phrase)
-    && statesPhrase(text, phrase) != null && !leftOver(text).length;
-  return !(zero || said || listed.length > 0);
+  return !(phrase && !Object.keys(pairs(phrase)).length && !/^(?:none|todo)\b/i.test(phrase)
+    && statesPhrase(text, phrase) != null && !leftOver(text).length);
 }
 
 // A ready PR red on a §4 State check of kind external, which reads an outside reviewer's review: that
@@ -1096,9 +1038,9 @@ export function externalTry(t, s, ctx, gate = evaluateGate(s.checks ?? [], { req
   const r = ctx.external?.(f.login);
   // No review of theirs at the head: the PR waits for one, whatever the check's text names, and says so.
   if (!r?.reviewed || r.head !== s.head) return { call: 'wait', external: true, why: `its "${f.name}" check reads ${f.login}'s review, so it waits for ${f.login} to review the head` };
-  // A clean review body, one whose findings are all refuted for instance, is no feedback (bodyFeedback).
+  // A clean review body, its counts all 0 whatever findings it lists as refuted, is no feedback (bodyFeedback).
   // quoted without the findings it refutes, so a worker is sent after none of those.
-  const body = r.body && bodyFeedback(r.body, ctx.clean) ? [{ id: null, text: `${f.login}'s review at the head: ${standingText(r.body).replace(/\s+/g, ' ').trim().slice(0, 500)}` }] : [];
+  const body = r.body && bodyFeedback(r.body, ctx.clean) ? [{ id: null, text: `${f.login}'s review at the head: ${r.body.replace(/\s+/g, ' ').trim().slice(0, 500)}` }] : [];
   const c = feedbackFix(t, { pr: s.pr, head: s.head, decision: r.state, threads: [...r.threads, ...body], external: { login: f.login, check: f.name } });
   return c ?? { call: 'stuck', why: `its "${f.name}" check, which reads ${f.login}'s review, is red though ${f.login} reviewed the head with nothing to work: re-run the check if its run started before that review` };
 }

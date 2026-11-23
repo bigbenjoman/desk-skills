@@ -820,50 +820,20 @@ const refutedBody = ['**Verdict: Approvable** · p0=0 p1=0 p2=0', '', '### Cross
 const ex1249 = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, refutedBody, 'APPROVED')])));
 t('#1249 a clean verdict body listing refuted findings starts no fix try', ex1249?.call === 'requeue', false);
 t('#1249 it is the person\'s, as a red check with nothing to work', /reviewed the head with nothing to work/.test(ex1249?.why ?? ''), true);
-const p2Body = `${refutedBody}\n\n### Findings\n- P2 src/c.ts:4 the retry has no cap`;
-t('#1249 the same body with one unrefuted P2 still does', verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, p2Body)])))?.fix?.what, "review feedback: agent-pullbot's review body (findings at src/c.ts:4)");
-t('#1249 a finding refuted on its own line, under no refuted heading, is none', bodyFeedback('p0=0 p1=0 p2=0\n- P1 src/a.ts:3 drops the row (refuted)'), false);
+const p2Body = refutedBody.replace('p2=0', 'p2=1') + '\n\n### Findings\n- P2 src/c.ts:4 the retry has no cap';
+t('#1249 the same body counting one P2 still does', verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, p2Body)])))?.call, 'requeue');
+t('#1249 counts all 0 beside a refuted finding are clean', bodyFeedback('p0=0 p1=0 p2=0\n- P1 src/a.ts:3 drops the row (refuted)'), false);
 t('#1249 a verdict marker with every count 0 is clean', bodyFeedback(`${LOCAL_MARKER_1249}\n<!-- desk-review:verdict v=1 sha=${HEAD} p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->\nClean`), false);
 t('#1249 a verdict marker with a count is feedback', bodyFeedback(`${LOCAL_MARKER_1249}\n<!-- desk-review:verdict v=1 sha=${HEAD} p0=0 p1=0 p2=1 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->\n1 P2`), true);
-t('#1249 the §4 clean phrase opening a line, with no finding standing, is clean', bodyFeedback('No findings. Nothing deferred.', 'no findings'), false);
+t('#1249 the §4 clean phrase opening a line, with no counts, is clean', bodyFeedback('No findings. Nothing deferred.', 'no findings'), false);
 t('#1249 counts written out that are not all 0 are feedback', bodyFeedback('p0=0 p1=1 p2=0'), true);
 t('#1249 review text with no finding read and nothing saying clean is feedback, as before', bodyFeedback('Please rename the helper.'), true);
-// A refutation is a label, not a word in the finding's own prose, and a heading over refuted findings cuts its section.
-for (const [body, why] of [
-  ['- P1 src/a.ts:3 the rejected promise from save() is never caught', '"rejected" in its prose'],
-  ['### Findings\n- P2 src/m.tsx:12 a dismissed modal leaves focus trapped', '"dismissed" in its prose'],
-  ['## Rejected payments\n- P1 src/pay.ts:40 refund applied twice', 'a heading naming no findings'],
-  ['- P1 src/a.ts:3 this refutes the claim in the PR that rows are kept; rows are dropped', '"refutes" in its prose'],
-  ['p0=0 p1=0 p2=0\n### P2 — Refuted\n- P2 src/a.ts:3 x\n### Standing\n- P2 src/c.ts:4 y', 'a standing section after a refuted one'],
-  ['- P1 `src/toast.ts:12` the error toast is dismissed by the next render, so the user never sees the failure', '"dismissed by" in its prose'],
-  ['- P0 `src/ledger.ts:40` funds withdrawn by the user are counted twice in the balance', '"withdrawn by" in its prose'],
-  ['- P2 `src/spam.ts:5` the filter returns a false positive, blocking valid users', '"a false positive," in its prose'],
-  ['- P1 `src/fraud.ts:5` threshold too low (false positive rate near 40%) blocks payouts', 'a parenthesis that is not only the label'],
-  ['## Findings (1 of 2 refuted)\n- P1 `src/a.ts:1` the handler never checks ownership\n- P2 `src/b.ts:2` (refuted) unused import', 'a heading that only counts refutations'],
-  ['## False positives in the fraud filter\n- P1 `src/fraud.ts:9` rule flags every refund', 'a heading that only mentions false positives'],
-]) t(`#1249 a finding with ${why} still stands`, bodyFeedback(body), true);
-t('#1249 a heading that is only the label cuts its section', bodyFeedback('## Refuted (2)\n- P1 src/a.ts:3 x\n- P2 src/b.ts:4 y'), false);
-// A refuted bullet under a severity heading, beside a standing one: the try quotes only the standing one.
-const mixed1249 = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, '## P2 (2)\n- src/a.ts:3 obsolete (refuted)\n- src/b.ts:4 standing')])));
-t('#1249 a refuted bullet under a severity heading is left out of the try', `${mixed1249?.fix?.what} ${/src\/a\.ts:3|obsolete/.test(JSON.stringify(mixed1249?.fix?.threads))}`, "review feedback: agent-pullbot's review body (findings at src/b.ts:4) false");
-t('#1249 a severity heading saying refuted cuts its findings', bodyFeedback('p0=0 p1=0 p2=0\n### P2 — Refuted\n- P2 src/a.ts:3 x'), false);
 t('#1249 the clean phrase with an item left after it is no clean statement', bodyFeedback('No findings blocking merge except:\n- something vague', 'no findings'), true);
 t('#1249 nor is the phrase with more after it on its line', bodyFeedback('No findings yet, still reading', 'no findings'), true);
-// A heading that negates the label sets nothing apart.
-for (const h of ['## Not refuted findings', '## Never refuted findings', '### P1 — Not dismissed findings', '## Not rejected findings (2)'])
-  t(`#1249 a finding under "${h}" still stands`, bodyFeedback(`${h}\n- P1 src/a.ts:3 missing auth gate`), true);
-// A refuted finding is taken out with the lines that continue it, so neither of its locations reaches the try.
-const cont1249 = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, '## P1 (2)\n- src/a.ts:3 obsolete (refuted)\n  the same drop also at src/c.ts:9\n— and src/d.ts:7 too\n- src/b.ts:4 standing')])));
-t('#1249 a refuted finding\'s continuation lines are left out of the try', `${cont1249?.fix?.what} ${/src\/(a|c|d)\.ts/.test(JSON.stringify(cont1249?.fix?.threads))}`, "review feedback: agent-pullbot's review body (findings at src/b.ts:4) false");
-// The label on a finding's continuation line refutes the finding; a deeper finding with its own severity is no continuation.
-t('#1249 a finding refuted on its em-dash line is none', bodyFeedback('p0=0 p1=0 p2=0\n- P1 src/a.ts:3 drops the row\n— refuted by codex'), false);
-t('#1249 a finding refuted on an indented bullet under it is none', bodyFeedback('p0=0 p1=0 p2=0\n- P1 src/a.ts:3 drops the row\n  - Refuted by codex.'), false);
-t('#1249 a deeper finding with its own severity after a refuted one still stands', bodyFeedback('- P1 src/a.ts:3 drops the row (refuted)\n  - P0 src/b.ts:4 leaks the token'), true);
-// A refuted claim nested in a standing finding goes alone.
-t('#1249 a standing finding with a refuted nested bullet still stands', bodyFeedback('Changes requested.\n### P1\n- src/a.ts:10 null deref in handler when the session is empty\n  - codex also flagged src/c.ts:4 in the same pass — false positive'), true);
-t('#1249 a standing finding with a refuted nested line still stands', bodyFeedback('- P1 src/a.ts:3 standing\n  src/b.ts:4 obsolete (refuted)'), true);
-const nest1249 = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, '## P1 (1)\n- src/a.ts:10 null deref\n  - also src/c.ts:4 — false positive')])));
-t('#1249 the try quotes the standing finding and not its refuted nested claim', `${nest1249?.fix?.what} ${/src\/c\.ts/.test(JSON.stringify(nest1249?.fix?.threads))}`, "review feedback: agent-pullbot's review body (findings at src/a.ts:10) false");
+// With no counts, labels are not read: a body listing findings, refuted or not, is feedback as before.
+t('#1249 findings with no counts are feedback, however labelled', bodyFeedback('- P1 src/a.ts:3 drops the row (refuted)'), true);
+t('#1249 counts that leave a severity unnamed are feedback', bodyFeedback('p1=0 p2=0\n- P0 src/a.ts:3 x'), true);
+t('#1249 counts all 0 decide, whatever the body lists', bodyFeedback('p0=0 p1=0 p2=0\n- P1 src/a.ts:10 race\n  — refuted. The lock at src/a.ts:20 serialises it.'), false);
 t('#737 externalTry is undefined with no external check red', externalTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE }), undefined);
 t('#737 and waits while a check is pending', externalTry(tk(), pr([{ name: 'tests', status: 'in_progress' }, red('🔐 Review gate', '88')]), extCtx(extPl([bot(HEAD, 'P0')]))), null);
 t('DS-422 a red verdict check beside an unclean review at the head is reviewFix\'s, as before', verdictTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE, settled: true }), null);
