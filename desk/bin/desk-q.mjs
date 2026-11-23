@@ -2703,13 +2703,24 @@ function stallNotes(r, quiet, old, drivers, allOut = false) {
 // `cmd` a command to copy, last, bold, on a line of its own that is never wrapped.
 // With `width`, a note's text wraps between words, each further line indented under its first. A note
 // with no tag starts its text where the tag would.
+// Where the tags leave the text under 12 columns, or under its longest word, each tag takes a line of
+// its own, its text under it.
 function noteLines(notes, w, width = null) {
   const lead = 4 + 2 + w + 1;
-  return notes.flatMap((n, i) => [
-    ...[n.text, ...(n.more ?? [])].flatMap((segs) => (width == null ? [segs] : wrapSegs(segs, Math.max(12, width - lead)))).map((text, j) =>
-      segLine(j ? [[' '.repeat(lead), null], ...text] : [[i ? '    ' : 'note', GREY], ['  ', null], ...(n.tag == null ? [] : [[pad(n.tag, w + 1), n.sgr]]), ...text])),
-    ...(n.cmd ? [{ ...segLine([[' '.repeat(lead), null], [n.cmd, BOLD]]), whole: true }] : []),
-  ]);
+  const words = notes.flatMap((n) => [n.text, ...(n.more ?? [])]).flat().flatMap(([s]) => s.split(' '));
+  const under = width != null && width - lead < Math.max(12, ...words.map((x) => x.length));
+  const ind = under ? 6 : lead;
+  const wrap = (segs) => (width == null ? [segs] : wrapSegs(segs, Math.max(12, width - ind)));
+  return notes.flatMap((n, i) => {
+    const head = [[i ? '    ' : 'note', GREY], ['  ', null]];
+    const tag = n.tag == null ? head : [...head, [under ? n.tag : pad(n.tag, w + 1), n.sgr]];
+    const own = under && n.tag != null;
+    return [
+      ...(own ? [segLine(tag)] : []),
+      ...[n.text, ...(n.more ?? [])].flatMap(wrap).map((text, j) => segLine(j || own ? [[' '.repeat(ind), null], ...text] : [...tag, ...text])),
+      ...(n.cmd ? [{ ...segLine([[' '.repeat(ind), null], [n.cmd, BOLD]]), whole: true }] : []),
+    ];
+  });
 }
 
 // Coloured runs broken between words into lines of at most `w` columns, each word keeping its run's colour.

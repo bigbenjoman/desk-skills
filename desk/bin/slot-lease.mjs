@@ -57,7 +57,7 @@ function isLint(words) {
 // granted or gives up; with-lock.sh keeps it on the lock files, `take` while it waits for a lease. The
 // queue at any moment is the markers whose pid is alive: a waiter killed mid-wait counts no longer.
 const LOCK_OF = Object.freeze({ test: 'test', tsc: 'test', lint: 'test', light: 'light', browser: 'browser' });
-const waitingDir = (cls) => join(E.lockDir(), `desk-${LOCK_OF[cls] ?? cls}.waiting`);
+export const waitingDir = (cls, dir = E.lockDir()) => join(dir, `desk-${LOCK_OF[cls] ?? cls}.waiting`);
 // How many runs other than `self` wait for `cls`'s lock now.
 function queueDepth(cls, self, dir = waitingDir(cls)) {
   let names = [];

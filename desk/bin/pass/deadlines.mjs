@@ -34,6 +34,7 @@ import { set, say } from './shared.mjs';
 import { toHandoff } from './eligibility.mjs';
 import { prStatusOf } from '../batch-state.mjs';
 import { UNKNOWN_LIMIT_MS, unknownSpell, freshMergeRef } from '../undraft.mjs';
+import { mergeWords } from '../base-red.mjs';
 
 const MIN = 60 * 1000;
 // How long each wait may last before it escalates, and where to: the person, or a requeue. A PR with no
@@ -118,6 +119,20 @@ export function nextWaits(t, at) {
     next[on] = w;
   }
   return { waits: next, lines };
+}
+
+// The red base under a batch (pass/base-gate.mjs decideBaseRed) is a wait of the batch's, kept as the
+// queue's `base_red`, with its deadline BASE_RED_MS after it began. -> { rec, line }: past its deadline
+// it is escalated to the person once (`escalated`, kept on the record), and its WAITING ON YOU line is
+// said while it stays red, as a ticket's escalated wait's is, led by the branch and its class so the
+// decider keys it as one item while its minutes grow (decider.mjs waitKey). Before it, line is null.
+export const BASE_RED_MS = 60 * MIN;
+export function baseRedWait(rec, at) {
+  if (!rec.escalated && Date.parse(at) < Date.parse(rec.deadline)) return { rec, line: null };
+  const w = rec.escalated ? rec : { ...rec, escalated: at };
+  const merges = mergeWords(w);
+  return { rec: w, line: `${w.branch}: RED BASE — it has been red for ${minsSince(w.since, at)} minutes, since ${w.since}, past its ${minsSince(w.since, w.deadline)}-minute deadline: ` +
+    `${w.check} still fails there, so the merge driver merges nothing into it. The last merges desk made: ${merges}` };
 }
 
 export function decideDeadlines(snap) {

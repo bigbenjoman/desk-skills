@@ -64,7 +64,7 @@ import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
-import { liveBaseRed, batchLine, repairTicket, repairTriage, baseRerun } from './base-red.mjs';
+import { liveBaseRed, readBaseRed, baseRedPath, batchLine, repairTicket, repairTriage, baseRerun } from './base-red.mjs';
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
@@ -98,7 +98,7 @@ import { decideDeadlines } from './pass/deadlines.mjs';
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
 import { decideFixTries, decideOutage, tryLabel } from './pass/fix-tries.mjs';
 import { decideReopen, decideRenames, decideUndraft, decideRelease, undraftWrite } from './pass/undraft.mjs';
-import { decideBaseGate } from './pass/base-gate.mjs';
+import { decideBaseGate, decideBaseRed } from './pass/base-gate.mjs';
 import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
 import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
@@ -1796,7 +1796,7 @@ if (BASE_RED) {
   const closed = was?.state === 'done' && !was.merged_at && !owesReopen(was) && prClosed(was);
   const had = was && !closed ? was : null;
   if (had && !had.merged_at) baseRedRepair = { key, state: had.state };
-  else if (had) baseRedRepair = { key, state: `merged at ${had.merged_at} with ${BASE_RED.branch} still red, so no second repair starts until it has gone green` };
+  else if (had) baseRedRepair = { key, state: `merged at ${had.merged_at} with ${BASE_RED.branch} still red, so no second repair starts until it has gone green`, needs: true };
   else if (!BASE_PUSH.ok) baseRedRepair = { off: `config §3 ${BASE_PUSH.key} is "${BASE_PUSH.perm}", so no worker is started to repair it` };
   else if (DRY) baseRedRepair = { key, state: 'to be admitted (dry run)' };
   else {
@@ -1817,7 +1817,7 @@ if (BASE_RED) {
 function admitBaseRepair(key, was, closed, qB, note) {
   // Dropped first, so one that refuses leaves its round's files as they were.
   const dropped = closed && !isArchived(qB, key) ? qTry(['drop', key]) : { ok: true };
-  if (!dropped.ok) baseRedRepair = { key, state: `done with its PR #${was.result.pr} closed unmerged, and could not be dropped to start again (${dropped.out.split('\n').pop()}): drop or requeue it, which needs-you offers` };
+  if (!dropped.ok) baseRedRepair = { key, state: `done with its PR #${was.result.pr} closed unmerged, and could not be dropped to start again (${dropped.out.split('\n').pop()}): drop or requeue it, which needs-you offers`, needs: true };
   else {
     mkdirSync(join(STATE, 'tickets'), { recursive: true });
     mkdirSync(join(STATE, 'triage'), { recursive: true });
@@ -1827,7 +1827,7 @@ function admitBaseRepair(key, was, closed, qB, note) {
     // from spawning: moved aside, as a requeue does.
     E.rotateRound(key);
     const r = qTry(['admit', key, '--by', 'base-red']);
-    baseRedRepair = r.ok ? { key, state: `admitted to start as a slot frees${note ? `, ${note}` : ''}` } : { off: `its repair ticket ${key} could not be admitted (${r.out.split('\n').pop()})` };
+    baseRedRepair = r.ok ? { key, state: `admitted to start as a slot frees${note ? `, ${note}` : ''}` } : { off: `its repair ticket ${key} could not be admitted (${r.out.split('\n').pop()})`, needs: true };
   }
 }
 // The PRs held on it, which its one line names in place of a BASE RED line each.
@@ -5400,6 +5400,27 @@ runPhase({
 // deadline; one past it is escalated once (pass/deadlines.mjs).
 runPhase({ name: 'deadlines', snapshot: () => ({ tickets: queue().tickets, at: PASS_AT, dry: DRY }), decide: decideDeadlines, handlers: PHASE_HANDLERS, report });
 
+// The red base as the batch's record (pass/base-gate.mjs decideBaseRed): its one line, the report's RED
+// BASE, only on the pass that records the spell, and its escalation once past its deadline. It is cleared
+// only once the driver has removed its record (a green read): one left stale, or caught mid-write and
+// unreadable, says nothing about the base now, so the batch's is kept as it is.
+let baseRedNotice = null;
+{
+  const kept = readBaseRed(STATE);
+  runPhase({
+    name: 'red base',
+    snapshot: () => ({
+      recorded: queue().base_red ?? null, red: BASE_RED, known: !!BASE_RED || !existsSync(baseRedPath(STATE)) || (kept != null && kept.branch !== DEFAULT_BRANCH),
+      line: BASE_RED ? batchLine(BASE_RED, { held: baseRedHeld, repair: baseRedRepair }) : null,
+      repairWait: BASE_RED && baseRedRepair?.needs ? `${BASE_RED.branch}: RED BASE REPAIR — ${baseRedRepair.off ?? `repair ticket ${baseRedRepair.key} is ${baseRedRepair.state}`}` : null,
+      at: PASS_AT, dry: DRY,
+    }),
+    decide: decideBaseRed,
+    handlers: { ...PHASE_HANDLERS, 'set-batch': (a) => q('set-batch', ...a.fields), notice: (a) => { baseRedNotice = a.line; } },
+    report,
+  });
+}
+
 // The report's lines after the ledger (pass/report.mjs decideReportLines): a §4 Merge hold on the
 // promotion, overridden calls, the review rows, WAITING ON YOU, BLOCKED ON ANSWERS, the held-back,
 // resume and reboot waits, put-off parks asked again, PARKED and the rest, and the base drift.
@@ -5454,7 +5475,7 @@ runPhase({
       })),
       register: REGISTER,
       askedAgain: askedAgain.filter((p) => !takenBack.includes(p.key)),
-      baseRed: BASE_RED ? batchLine(BASE_RED, { held: baseRedHeld, repair: baseRedRepair }) : null,
+      baseRed: baseRedNotice,
     };
   },
   decide: decideReportLines,

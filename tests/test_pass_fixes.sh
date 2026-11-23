@@ -225,8 +225,8 @@ check "DS-850 AC3 with the grant, one repair ticket is started, its ticket namin
   '{ [ -e "$T/state-fb/logs/base-red-main.log.round1.gz" ] || [ -e "$T/state-fb/logs/base-red-main.log.round1" ]; } && [ "$(field base-red-main state)" = "\"running\"" ] && [ "$(echo "$out" | grep -o "base-red-main port=" | wc -l | tr -d " ")" = 1 ] && grep -qF "run https://github.com/acme/widgets/actions/runs/77" "$T/state-fb/tickets/base-red-main.md" && grep -qF "PR #802 (FB-0)" "$T/state-fb/tickets/base-red-main.md"'
 q set base-red-main session_id=live-1
 out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
-check "DS-850 AC4 with the repair running, no second one starts, and the line names it" \
-  '[ "$(field base-red-main state)" = "\"running\"" ] && ! echo "$out" | grep -q "base-red-main port=" && echo "$out" | grep -A1 "^RED BASE:" | grep -qF "Repair ticket base-red-main is running"'
+check "DS-850 AC4 with the repair running, no second one starts, and (DS-903 AC2) the same red spell sends no second notice" \
+  '[ "$(field base-red-main state)" = "\"running\"" ] && ! echo "$out" | grep -q "base-red-main port=" && ! echo "$out" | grep -q "^RED BASE:" && [ "$(jq -r .base_red.check "$DESK_QUEUE")" = Lint ]'
 # This spell's repair, its PR closed unmerged and archived: done with, so the key is admitted again. Its
 # reopening marker names an earlier PR (700), so owes #901 nothing.
 q set base-red-main state=done session_id=null result.pr=901 'pr_status={"pr":901,"state":"CLOSED"}' reopening=700
@@ -255,7 +255,7 @@ check "a red main failing only at an install step has its failed run re-run once
 printf '%s\n' '{"status":"in_progress","conclusion":""}' > "$T/fx/run-78-status,conclusion.json"
 out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
 check "while the rerun goes, it is not re-run again and no repair is admitted" \
-  '[ "$(grep -c "^run rerun 78" "$T/gh-calls")" = 1 ] && [ "$(field base-red-main-rr state)" = null ] && echo "$out" | grep -A1 "^RED BASE:" | grep -qF "was re-run once and is still going"'
+  '[ "$(grep -c "^run rerun 78" "$T/gh-calls")" = 1 ] && [ "$(field base-red-main-rr state)" = null ]'
 printf '%s\n' '{"status":"completed","conclusion":"failure"}' > "$T/fx/run-78-status,conclusion.json"
 out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
 check "red again after the rerun, the repair is admitted and started, with no second rerun" \

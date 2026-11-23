@@ -299,6 +299,9 @@ cat > "$T/prs.json" <<EOF
 EOF
 # The red spell began at 09:00 UTC, so its repair ticket is base-red-main-20261121090000.
 printf '{"branch":"main","checks":[],"since":"2026-11-21T09:00:00.000Z","at":"2026-11-21T09:00:00.000Z"}\n' > "$T/state/base-red.json"
+# The loops above read main green after their merges; this spell's driver has no green read before it,
+# so the hold names the last merges the log holds.
+rm -f "$T/state/base-green.json"
 printf '{"tip":"%s","commits":{"%s":{"parent":"%s","runs":[["test","in_progress",null]]},"%s":{"parent":null,"runs":[["test","completed","failure","https://github.com/acme/widgets/actions/runs/850"]]}}}\n' "$R1" "$R1" "$R0" "$R0" > "$T/base.json"
 : > "$T/merges.log"
 rloop(){ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-851 base-red-main-20261121090000" 2>&1); rc=$?; }
@@ -310,6 +313,7 @@ printf '{"tip":"%s","commits":{"%s":{"parent":null,"runs":[["test","completed","
 rloop; rloop
 check "DS-850 AC6: once the check passes on main again, merging resumes and the record goes" \
   '[ "$(merged)" = "852 851" ] && ! echo "$out" | grep -q "HOLDING on red" && [ ! -e "$T/state/base-red.json" ]'
+check "a green read of main's tip is kept as when the base was last green" '[ "$(jq -r .branch "$T/state/base-green.json")" = main ]'
 jq --arg s "$SHA4" '."853" = { head: "fix/T-853", base: "main", sha: $s, state: "open", draft: false, checks: [["test", "SUCCESS"]] }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
 touch "$T/base.broken"
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-853" 2>&1); first="$out"
