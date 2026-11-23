@@ -53,6 +53,7 @@ import { readFileSync, appendFileSync, existsSync } from 'node:fs';
 import { join, dirname, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Script } from 'node:vm';
+import { deskUntracked } from '../desk/bin/desk-env.mjs';
 
 export const ALWAYS = ['test_lint.sh'];
 // Shared by everything: a change here can move any suite.
@@ -418,12 +419,13 @@ export function repoMap(root) {
 }
 
 // The changes CI and tests/related.sh both decide on: everything since the merge base of `base` and
-// `head`, or, with no head, of `base` and HEAD up to the working tree, untracked files included.
+// `head`, or, with no head, of `base` and HEAD up to the working tree, untracked files included bar the
+// ones desk itself leaves there (deskUntracked: a resume file, a desk-review run's scratch files).
 // A modified EXPORTS_ONLY module carries `exports`: addedExports() between the merge base and the head.
 export function changesAgainst(root, base, head) {
   const mb = git(root, ['merge-base', base, head ?? 'HEAD']).trim();
   const changes = parseNameStatus(git(root, ['diff', '--name-status', '-M', mb, ...(head ? [head] : [])]));
-  if (!head) for (const path of git(root, ['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean)) changes.push({ status: 'A', path });
+  if (!head) for (const path of git(root, ['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean)) if (!deskUntracked(path)) changes.push({ status: 'A', path });
   for (const c of changes) {
     if (c.status !== 'M' || !EXPORTS_ONLY.has(c.path)) continue;
     const after = head ? git(root, ['show', `${head}:${c.path}`]) : readFileSync(join(root, c.path), 'utf8');

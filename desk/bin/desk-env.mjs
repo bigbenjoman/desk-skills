@@ -2404,6 +2404,12 @@ export function treeStatus(porcelain, { run } = {}) {
   return porcelain.split('\n').filter((l) => l && !(l.startsWith('?? ') && known.some((re) => re.test(l.slice(3)))));
 }
 
+// Whether a worktree-relative path is a file desk leaves untracked: a known untracked file, or a scratch
+// file of any desk-review run.
+export function deskUntracked(path) {
+  return [...KNOWN_UNTRACKED.map((k) => k.path), ...REVIEW_SCRATCH].some((t) => templateRe(t, () => '[^/]+').test(path));
+}
+
 // ---- CLI -----------------------------------------------------------------------------------
 // The subcommands the CLI handles: any other is refused with this usage. tests/test_desk_env_commands.mjs
 // holds the switch below equal to it.
