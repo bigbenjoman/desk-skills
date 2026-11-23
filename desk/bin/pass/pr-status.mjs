@@ -81,6 +81,12 @@ export const repoOfPr = (url) => String(url ?? '').toLowerCase().split('/pull/')
 export const onThisPr = (o, n, url) => !!o && o.state === 'done' && o.result?.pr != null && String(o.result.pr) === String(n)
   && (!o.pr_status?.url || repoOfPr(o.pr_status.url) === repoOfPr(url));
 
+// Why ticket `t`'s PR #n, as status `st`, is not its own (notOwnPr), or null. A merged PR the ticket was
+// recorded shipped on (shipped_pr: the pass's shippedElsewhere, or the merge driver through queue.mjs
+// merged) was built outside its worker by design, often on a branch of its own that names the key: it is
+// the ticket's result, and being merged, nothing is done to it.
+const foreignWhy = (t, n, st, logins) => (st?.state === 'MERGED' && t.shipped_pr != null && String(t.shipped_pr) === String(n) ? null : notOwnPr(t, st, logins));
+
 // Ticket `t` parks on PR #n, which is not its own (`why`, notOwnPr's), and is said to: nothing is done to #n.
 function* parkForeign(t, n, why, state, s, prStates) {
   prStates[n] = state;
@@ -134,7 +140,7 @@ export function* decidePrStatus(s) {
     if (n == null) continue;
     let st = null;
     // A status kept from an earlier pass is checked too, before a merged or closed one is taken as read.
-    const keptForeign = t.pr_status?.pr === n ? notOwnPr(t, t.pr_status, s.logins) : null;
+    const keptForeign = t.pr_status?.pr === n ? foreignWhy(t, n, t.pr_status, s.logins) : null;
     if (keptForeign) { yield* parkForeign(t, n, keptForeign, t.pr_status.state, s, prStates); continue; }
     // A PR this pass's reopen closed and could not reopen is read again until it reopens.
     const owed = owesReopen(t);
@@ -153,7 +159,7 @@ export function* decidePrStatus(s) {
       if (!st) { if (!(n in prStates) && !unread.includes(n)) unread.push(n); continue; }
       // A PR on a branch its worker did not make, or another person's, is never this ticket's: the
       // ticket parks before any list the reopen, undraft, fix-try or merge steps work from holds it.
-      const foreign = notOwnPr(t, st, s.logins);
+      const foreign = foreignWhy(t, n, st, s.logins);
       if (foreign) { yield* parkForeign(t, n, foreign, st.state, s, prStates); continue; }
       if (!again) reads[n] = st;
       // A closed PR still owed its reopen counts as open, so the batch is not idle and no ticket held

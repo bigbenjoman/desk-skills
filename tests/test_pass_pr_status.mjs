@@ -46,6 +46,17 @@ const lists = (acts) => acts.at(-1);
   t('and so does a closed one, so the ticket is not left done on it', j([ofType(cachedClosed, 'park').length, lists(cachedClosed).prStates[70]]), j([1, 'CLOSED']));
   const noHandle = run(snap([mine('F')], { logins: null }), read({ author: 'alice' }));
   t('with no account configured only the branch is checked', lists(noHandle).undrafted.length, 1);
+  // DS-796: recorded shipped outside its worker on a merged PR from a branch that names its key (pass.mjs
+  // shippedElsewhere, or the merge driver's queue.mjs merged): that PR is its result, never parked.
+  const shippedRead = { branch: 'fix/F-session', author: 'alice', state: 'MERGED', merged_at: '2026-11-19T09:00:00Z' };
+  const shipped = run(snap([mine('F', { shipped_pr: 70, merged_at: '2026-11-19T09:00:01Z' })], { logins: 'me' }), read(shippedRead));
+  t('DS-796 a merged PR its ticket was recorded shipped on is not parked as not its own, and its status is kept', j([ofType(shipped, 'park').length, ofType(shipped, 'pr-status').length, lists(shipped).prStates[70]]), j([0, 1, 'MERGED']));
+  const shippedKept = run(snap([mine('F', { shipped_pr: 70, merged_at: '2026-11-19T09:00:01Z', pr_status: status(70, 'MERGED', { branch: 'fix/F-session', merged_at: '2026-11-19T09:00:00Z' }) })], { logins: 'me' }), {});
+  t('DS-796 nor is one kept from an earlier pass', ofType(shippedKept, 'park').length, 0);
+  const shippedOpen = run(snap([mine('F', { shipped_pr: 70 })], { logins: 'me' }), read({ ...shippedRead, state: 'OPEN', merged_at: null }));
+  t('DS-796 but shipped_pr does not let an open PR on another branch through', ofType(shippedOpen, 'park').length, 1);
+  const otherShipped = run(snap([mine('F', { shipped_pr: 69 })], { logins: 'me' }), read(shippedRead));
+  t('DS-796 nor a merged PR other than the one it was recorded shipped on', ofType(otherShipped, 'park').length, 1);
 }
 
 // ---- AC1: a merged PR with no merged time recorded
