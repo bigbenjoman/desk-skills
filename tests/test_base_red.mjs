@@ -4,7 +4,7 @@
 // newest completed run, what stays unknown, the record's `since`, and the text the driver, the pass and
 // the repair worker read.
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { scratch } from './scratch.mjs';
@@ -193,7 +193,7 @@ test('AC3 the repair key is a ticket id for the branch the driver merges into, a
 
 // DS-989: the walk through cachedRead, with every read the inner reader makes counted, and the cache
 // saved and reopened between loops as the driver's processes do.
-const { cachedRead, lsRemoteTip, originIs } = await import('../desk/bin/base-red.mjs');
+const { cachedRead, lsRemoteTip, originIs, latestAttempts, RED_KEEP_MS } = await import('../desk/bin/base-red.mjs');
 const { openCache, CACHE_MS } = await import('../desk/bin/read-cache.mjs');
 const counted = (commits, opts) => {
   const r = reader(commits, opts), calls = { tip: 0, commit: 0, runs: 0 };
@@ -201,7 +201,7 @@ const counted = (commits, opts) => {
 };
 const loop = (path, read, now) => {
   const c = openCache(path, { now });
-  const s = baseState({ required: ['tests'], branch: 'main', read: cachedRead(read, c, ['tests']) });
+  const s = baseState({ required: ['tests'], branch: 'main', read: cachedRead(read, c, ['tests'], { now }) });
   c.save();
   return s;
 };
@@ -265,14 +265,14 @@ test('DS-989 AC4 a tip that moved is walked from the new tip, the commits below 
   assert.deepEqual(calls, { tip: 1, commit: 1, runs: 2 });
 });
 
-test('DS-989 AC4 a kept read older than 30 minutes is read afresh: a rerun that passed on the same tip shows', () => {
+test('DS-989 AC4 a kept red read older than five minutes is read afresh: a rerun that passed on the same tip shows', () => {
   const path = join(scratch('base-red-cache-'), 'base-runs.json');
   const commits = { [sha('f')]: { parent: null, runs: [run('tests', 'failure')] } };
   const { calls, read } = counted(commits, { tip: sha('f') });
   assert.equal(loop(path, read, t0).state, 'red');
   commits[sha('f')].runs = [run('tests', 'success')];
-  assert.equal(loop(path, read, t0 + CACHE_MS).state, 'red');
-  assert.equal(loop(path, read, t0 + CACHE_MS + 1).state, 'green');
+  assert.equal(loop(path, read, t0 + RED_KEEP_MS).state, 'red');
+  assert.equal(loop(path, read, t0 + RED_KEEP_MS + 1).state, 'green');
   assert.equal(calls.runs, 2);
 });
 
@@ -297,6 +297,47 @@ test('DS-989 originIs matches an https, ssh or host-alias remote of the repo, an
   const urls = ['https://github.com/Acme/Widgets.git\n', 'git@github.com:acme/widgets.git', 'https://github.com/acme/widgets/', 'ssh://git@github.com/acme/widgets', 'git@github-work:acme/widgets.git'];
   assert.deepEqual(urls.map((u) => originIs('acme/widgets', u)), [true, true, true, true, true]);
   assert.deepEqual(['/tmp/origin.git', 'git@github.com:acme/other.git', '', null].map((u) => originIs('acme/widgets', u)), [false, false, false, false]);
+});
+
+// A rerun's attempts: the newest of one workflow run's check runs under a name is the one read.
+const att = (id, conclusion, runId = 50) => ({ id, name: 'tests', status: 'completed', conclusion, url: `https://github.com/acme/widgets/actions/runs/${runId}/job/${id}` });
+test('a run whose attempt 1 failed and attempt 2 passed reads green', () => {
+  const s = baseState({ required: ['tests'], branch: 'main', read: reader({ [sha('a')]: { parent: null, runs: [att(901, 'failure'), att(902, 'success')] } }) });
+  assert.equal(s.state, 'green');
+});
+test('a run whose latest attempt failed still reads red, naming that attempt', () => {
+  const s = baseState({ required: ['tests'], branch: 'main', read: reader({ [sha('a')]: { parent: null, runs: [att(902, 'failure'), att(901, 'success')] } }) });
+  assert.deepEqual([s.state, s.checks[0].url], ['red', 'https://github.com/acme/widgets/actions/runs/50/job/902']);
+});
+test('only attempts of one workflow run supersede each other: another run of the check red still reads red', () => {
+  assert.equal(latestAttempts([att(901, 'failure', 50), att(902, 'success', 50), att(903, 'failure', 51)]).length, 2);
+  const s = baseState({ required: ['tests'], branch: 'main', read: reader({ [sha('a')]: { parent: null, runs: [att(903, 'failure', 51), att(904, 'success', 50)] } }) });
+  assert.equal(s.state, 'red');
+});
+test('a green read is kept for the cache\'s whole lifetime, a red one only five minutes', () => {
+  const path = join(scratch('base-red-cache-'), 'base-runs.json');
+  const commits = { [sha('h')]: { parent: null, runs: [run('tests', 'success')] } };
+  const { calls, read } = counted(commits, { tip: sha('h') });
+  loop(path, read, t0); loop(path, read, t0 + RED_KEEP_MS + 60_000);
+  assert.equal(calls.runs, 1);
+});
+test('the driver\'s check with attempt 1 red and attempt 2 green reads the base green and lifts its record', () => {
+  const dir = scratch('base-red-cli-'), bin = join(dir, 'bin'), state = join(dir, 'state');
+  mkdirSync(bin); mkdirSync(state);
+  const tip = sha('a');
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
+const a = process.argv.slice(2);
+if (a[0] === 'api' && a[1] === 'repos/acme/widgets/commits/main') console.log(JSON.stringify({ sha: '${tip}', parent: null }));
+else if (a[0] === 'api' && a[1].startsWith('repos/acme/widgets/commits/${tip}/check-runs')) console.log(JSON.stringify(${JSON.stringify([att(901, 'failure'), att(902, 'success')])}));
+else process.exit(1);
+`, { mode: 0o755 });
+  const cfg = join(dir, 'config.md');
+  writeFileSync(cfg, '## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | `acme/widgets` |\n| Default branch | `main` |\n\n## 4. Checks\n| Field | Value |\n|---|---|\n| Required checks | `tests` |\n');
+  writeFileSync(join(state, 'base-red.json'), JSON.stringify({ branch: 'main', sha: tip, checks: [{ name: 'tests', sha: tip, url: att(901).url }], merges: [], repair_key: 'base-red-main', since: 'T0', at: new Date().toISOString() }));
+  const r = spawnSync('node', [join(import.meta.dirname, '..', 'desk', 'bin', 'base-red.mjs'), 'check', '--branch', 'main', '--repo', 'acme/widgets', '--state', state],
+    { cwd: dir, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, DESK_CONFIG: cfg, DESK_REPO_OVERRIDE: 'acme/widgets' }, encoding: 'utf8' });
+  assert.equal(JSON.parse(r.stdout.trim()).state, 'green', r.stdout + r.stderr);
+  assert.equal(existsSync(join(state, 'base-red.json')), false);
 });
 
 console.log(`base-red: ${pass} passed, 0 failed`);

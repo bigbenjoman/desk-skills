@@ -26,6 +26,7 @@ import { runsState, FAILED } from './failure-class.mjs';
 import { readLog } from './merge-log.mjs';
 import { execGit } from './remote-git.mjs';
 import { openCache } from './read-cache.mjs';
+import { runIdFrom } from './evidence.mjs';
 
 export const FILE = 'base-red.json';
 // How many of the base's newest first-parent commits are read for a check's latest completed run.
@@ -63,6 +64,19 @@ export function liveBaseRed(state, { branch = null, now = Date.now() } = {}) {
 // a read failed (an API error or limit: the driver holds its merges), { state: 'unknown', why } when every
 // read answered but a check has no completed run in the walk, else { state: 'green' }, with `tip_pending`
 // when a check's newest completed run is below the tip.
+// A check's runs at one commit less the attempts a rerun has superseded: of the runs of one workflow
+// run (its details URL's run id) under one name, only the newest (the highest check-run id) is kept, so
+// attempt 1 red and attempt 2 green reads green. Runs with no id are kept as they are.
+export function latestAttempts(runs) {
+  const best = new Map(), rest = [];
+  for (const r of runs ?? []) {
+    if (r?.id == null) { rest.push(r); continue; }
+    const k = `${r.name}\t${runIdFrom(r.url) ?? ''}`;
+    if (!best.has(k) || Number(r.id) > Number(best.get(k).id)) best.set(k, r);
+  }
+  return [...rest, ...best.values()];
+}
+
 export function baseState({ required, branch, read }) {
   if (!required.length) return { state: 'none' };
   const unread = (why) => ({ state: 'unread', why });
@@ -75,7 +89,7 @@ export function baseState({ required, branch, read }) {
     // A read that fails after a check was found red leaves the base red: that failure stands.
     if (runs == null) { if (red.length) break; return unread(`the check runs on ${branch} at ${short(c.sha)} could not be read`); }
     for (const name of [...left]) {
-      const mine = runs.filter((r) => r?.name === name);
+      const mine = latestAttempts(runs.filter((r) => r?.name === name));
       const st = runsState(mine);
       if (!st) continue;
       left.delete(name);
@@ -160,8 +174,13 @@ export function nextRecord(was, s, { branch, merges, at }) {
 // app that posts its check afterwards) is pending as far as the base is concerned, and a kept list
 // without it would read the tip's parent in its place. The tip is always read; a tip read that gives no
 // parent (git ls-remote) takes it from commit(), kept too.
+// A list holding a failure is kept only RED_KEEP_MS, not the cache's whole lifetime: a rerun of a red
+// run on the same commit (by hand, or the pass's) changes it, and the driver holds every merge until it
+// reads that, while a green list stays as it is.
 const completed = (runs) => Array.isArray(runs) && runs.length > 0 && runs.every((r) => String(r?.status ?? '').toLowerCase() === 'completed');
-export function cachedRead(read, cache, required = []) {
+export const RED_KEEP_MS = 5 * 60 * 1000;
+const anyFailed = (runs) => runs.some((r) => FAILED.has(String(r?.conclusion ?? '').toLowerCase()));
+export function cachedRead(read, cache, required = [], { now = Date.now() } = {}) {
   let tipSha = null;
   const keep = (c) => { if (c && cache.get(`commit:${c.sha}`) === undefined) cache.set(`commit:${c.sha}`, c.parent ?? null); return c; };
   const commit = (sha) => {
@@ -178,9 +197,10 @@ export function cachedRead(read, cache, required = []) {
     commit,
     runs: (sha) => {
       const kept = cache.get(`runs:${sha}`);
-      if (kept !== undefined) return kept;
+      if (Array.isArray(kept)) return kept;
+      if (kept?.red != null && now - kept.red <= RED_KEEP_MS && Array.isArray(kept.runs)) return kept.runs;
       const runs = read.runs(sha);
-      if (completed(runs) && (sha !== tipSha || required.every((name) => runs.some((r) => r?.name === name)))) cache.set(`runs:${sha}`, runs);
+      if (completed(runs) && (sha !== tipSha || required.every((name) => runs.some((r) => r?.name === name)))) cache.set(`runs:${sha}`, anyFailed(runs) ? { red: now, runs } : runs);
       return runs;
     },
   };
@@ -217,7 +237,7 @@ export function ghRead(repo) {
     tip: (branch) => (viaGit ? lsRemoteTip(branch) : null) ?? commit(branch),
     commit,
     runs: (sha) => {
-      const r = json(gh(['api', `repos/${repo}/commits/${sha}/check-runs?filter=latest&per_page=100`, '--jq', '[.check_runs[] | {name, status, conclusion, url: (.details_url // .html_url)}]']));
+      const r = json(gh(['api', `repos/${repo}/commits/${sha}/check-runs?filter=latest&per_page=100`, '--jq', '[.check_runs[] | {id, name, status, conclusion, url: (.details_url // .html_url)}]']));
       return Array.isArray(r) ? r : null;
     },
   };
