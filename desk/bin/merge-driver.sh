@@ -119,7 +119,10 @@
 #                                            error or limit, or base-red.mjs failing) takes no merge,
 #                                            logged as "base unreadable on <base>", until a later loop
 #                                            reads it. One whose reads all answered with no completed
-#                                            run merges as before, logging that its state is unknown
+#                                            run merges as before, logging that its state is unknown.
+#                                            A §4 Required check with no run at all on those commits
+#                                            (one that runs only on PRs, such as a review gate) is
+#                                            left out, so the base reads by the checks that run there
 # The one red that merges is a written waiver: every failing check is named in §4 Known flaky checks,
 # none is a §4 Required check (merging past one is a bypass, and §3 merge-bypass is never), the PR's
 # files touch none of the paths the row gives for it, each is still red after two reruns the driver

@@ -29,6 +29,25 @@ test('AC1 a required check whose newest completed run failed is red, naming its 
   assert.deepEqual(s, { state: 'red', sha: sha('a'), checks: [{ name: 'tests', sha: sha('a'), url: 'u/9' }] });
 });
 
+// A required check that never runs on a push to the base (a PR-only review gate) is left out of the read.
+test('a required PR-only gate with no run on main is left out: push checks green read green', () => {
+  const s = baseState({ required: ['CI gate', 'Review gate'], branch: 'main', read: reader({ [sha('b')]: { parent: sha('a'), runs: [run('CI gate', 'success')] }, [sha('a')]: { parent: null, runs: [run('CI gate', 'success')] } }) });
+  assert.deepEqual(s, { state: 'green', absent: ['Review gate'] });
+});
+test('a real push check failing beside the PR-only gate still reads red', () => {
+  const s = baseState({ required: ['CI gate', 'Review gate'], branch: 'main', read: reader({ [sha('a')]: { parent: null, runs: [run('CI gate', 'failure', 'u/3')] } }) });
+  assert.equal(s.state, 'red');
+  assert.deepEqual(s.checks.map((c) => c.name), ['CI gate']);
+});
+test('a required check with a run still going and none completed is still waited for', () => {
+  const s = baseState({ required: ['CI gate', 'e2e'], branch: 'main', read: reader({ [sha('a')]: { parent: null, runs: [run('CI gate', 'success'), { name: 'e2e', status: 'in_progress', conclusion: null }] } }) });
+  assert.equal(s.state, 'unknown');
+  assert.match(s.why, /no completed run of e2e/);
+});
+test('with no required check run on main at all, the read is unknown', () => {
+  assert.equal(baseState({ required: ['Review gate'], branch: 'main', read: reader({ [sha('a')]: { parent: null, runs: [run('lint', 'success')] } }) }).state, 'unknown');
+});
+
 test('AC1 a run still going at the tip is passed over for the newest completed one below it', () => {
   const s = baseState({ required: ['tests'], branch: 'main', read: reader({
     [sha('b')]: { parent: sha('a'), runs: [{ name: 'tests', status: 'in_progress', conclusion: null }] },
@@ -413,9 +432,9 @@ test('the batch line says no repair is admitted yet while a rerun comes first', 
   assert.match(l, /No repair ticket is admitted yet: its failed run 78 failed at a setup step\. Repair ticket base-red-main is admitted if it fails again/);
 });
 
-// A red spell ends when the driver stops reading red, green or unknown: a required check that never runs
-// on the base (a PR-only gate) leaves every read unknown, never green, and the next red is a spell of its own.
-test('red, then a read with no red (one required check never runs on main), then red: two spells, and no record between', () => {
+// A red spell ends when the driver stops reading red: a required check that never runs on the base (a
+// PR-only gate) is left out, so the push checks passing read green, and the next red is a spell of its own.
+test('red, then green (one required check never runs on main), then red: two spells, and no record between', () => {
   const dir = scratch('base-red-spells-'), bin = join(dir, 'bin'), state = join(dir, 'state'), runsFile = join(dir, 'runs.json'), tipFile = join(dir, 'tip');
   mkdirSync(bin); mkdirSync(state);
   writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node
@@ -435,8 +454,8 @@ else process.exit(1);
   const ci = (conclusion) => [{ name: 'CI gate', status: 'completed', conclusion, url: 'https://github.com/acme/widgets/actions/runs/7/job/1' }];
   assert.equal(check(sha('a'), ci('failure')), 'red');
   const first = JSON.parse(readFileSync(join(state, 'base-red.json'), 'utf8'));
-  // The next push is green on CI gate; Review gate runs only on PRs, so the read is unknown.
-  assert.equal(check(sha('b'), ci('success')), 'unknown');
+  // The next push is green on CI gate; Review gate runs only on PRs, so it is left out and the base reads green.
+  assert.equal(check(sha('b'), ci('success')), 'green');
   assert.equal(existsSync(join(state, 'base-red.json')), false);
   assert.equal(liveBaseRed(state, { branch: 'main' }), null);
   // A later flake is a new spell, its since its own.

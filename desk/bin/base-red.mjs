@@ -65,35 +65,41 @@ export function liveBaseRed(state, { branch = null, now = Date.now() } = {}) {
 // null meaning the read failed. -> { state: 'none' } with nothing required, { state: 'red', sha, checks }
 // when any check's newest completed run failed (whatever a later read gives), { state: 'unread', why } when
 // a read failed (an API error or limit: the driver holds its merges), { state: 'unknown', why } when every
-// read answered but a check has no completed run in the walk, else { state: 'green' }, with `tip_pending`
-// when a check's newest completed run is below the tip.
+// read answered but a check has a run in the walk and no completed one, else { state: 'green' }, with
+// `tip_pending` when a check's newest completed run is below the tip. A required check with no run at all,
+// of any status, on any commit of the walk runs only on PRs (a review gate) or not on pushes, so it is
+// left out (`absent` on the answer), and the base reads by the checks that do run there; one with nothing
+// else required reads unknown.
 export function baseState({ required, branch, read }) {
   if (!required.length) return { state: 'none' };
   const unread = (why) => ({ state: 'unread', why });
   let c = read.tip(branch);
   if (!c) return unread(`the tip of ${branch} could not be read`);
-  const tip = c.sha, left = new Set(required), red = [];
-  let onTip = false;
+  const tip = c.sha, left = new Set(required), red = [], seen = new Set(), onTip = new Set();
   for (let i = 0; i < WALK && c && left.size; i++) {
     const runs = read.runs(c.sha);
     // A read that fails after a check was found red leaves the base red: that failure stands.
     if (runs == null) { if (red.length) break; return unread(`the check runs on ${branch} at ${short(c.sha)} could not be read`); }
     for (const name of [...left]) {
       const mine = runs.filter((r) => r?.name === name);
+      if (mine.length) seen.add(name);
       const st = runsState(mine);
       if (!st) continue;
       left.delete(name);
+      if (i === 0) onTip.add(name);
       if (st === 'fail') red.push({ name, sha: c.sha, url: mine.find((r) => FAILED.has(String(r.conclusion ?? '').toLowerCase()))?.url ?? null });
     }
-    if (i === 0) onTip = !left.size;
     if (!left.size || !c.parent || i === WALK - 1) break;
     c = read.commit(c.parent);
     if (!c) { if (red.length) break; return unread(`a commit on ${branch} could not be read`); }
   }
   if (red.length) return { state: 'red', sha: tip, checks: red };
-  if (left.size) return { state: 'unknown', why: `no completed run of ${[...left].join(', ')} on the newest ${WALK} commits of ${branch}` };
+  const absent = [...left].filter((n) => !seen.has(n)), pending = [...left].filter((n) => seen.has(n));
+  if (pending.length || absent.length === required.length) return { state: 'unknown', why: `no completed run of ${(pending.length ? pending : absent).join(', ')} on the newest ${WALK} commits of ${branch}` };
+  const more = absent.length ? { absent } : {};
   // Green from a commit below the tip, a check still going on it, says nothing yet of the newest merges.
-  return onTip ? { state: 'green' } : { state: 'green', tip_pending: true };
+  const ran = required.filter((n) => !absent.includes(n));
+  return ran.every((n) => onTip.has(n)) ? { state: 'green', ...more } : { state: 'green', tip_pending: true, ...more };
 }
 
 // The last merges the merge log holds for `repo` by merger `by`, newest first. The log names no target
@@ -306,8 +312,7 @@ if (isMain) {
     writeFileSync(path, `${JSON.stringify(rec, null, 2)}\n`);
     console.log(JSON.stringify({ ...s, repair_key: rec.repair_key, line: holdLine(rec) }));
   } else {
-    // Unknown is no red: the driver merges as before, so the spell is over (a required check that never
-    // runs on the base, such as a PR-only gate, leaves every read unknown, never green).
+    // Unknown is no red: the driver merges as before, so the spell is over, as on a green read.
     if (s.state !== 'unread' && existsSync(path)) rmSync(path, { force: true });
     // Only a green read of the tip itself moves the mark: one from below it would pass over the merges
     // whose checks are still going, which are the ones a red read next would blame.
