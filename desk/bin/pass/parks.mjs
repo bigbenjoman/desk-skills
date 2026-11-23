@@ -14,6 +14,9 @@
 //   check {key, cond}             -> the clears-when check (clears-when.mjs checkCond): {holds, note} or {error}
 //   own-merged {key}              -> {pr: the ticket's own merged PR, or null}, or {error} where unread
 //   tail-after-merge {key}        -> false where its after-merge steps were not requeued (tailAfterMerge)
+//   other-merged {key, pr}        -> {why} where PR pr is not the ticket's own (shared.mjs notOwnPr) and the
+//                                    ticket holds no work of its own, else null, or {error} where unread
+//   drop-worktree {key}           -> what became of its worktree, a line for the report, or null with none
 //   write {key, fields}           -> whether the queue write was recorded
 //   requeue {key}                 -> queue.mjs requeue's {ok, out}
 //   lift-put-off {key, question}  -> not-now.mjs clearPutOff's {ok, why}
@@ -140,6 +143,23 @@ function* settleClear(t, s) {
       yield say(t.key, 'clears', `${t.key}: "${what}" holds: its ${tryLabel(f)} on PR #${f.pr}, parked before its worker started, is dropped, and the PR is read again for what it needs now`);
     }
     return;
+  }
+  // "PR #X merged" on another branch's or author's PR, with no work of the ticket's own (no PR, no commit
+  // past the base): #X did it. Requeued, its worker could only report #X, which is not its own, and park
+  // again (#1290), so it is done by #X instead, with no worker. #X stays out of result.pr, which the PR
+  // status step would read as not its own. A ticket with work of its own waits on #X as a prerequisite,
+  // and is requeued as before.
+  if (c.kind === 'pr-merged' && !c.repo) {
+    const other = yield { type: 'other-merged', key: t.key, pr: c.pr };
+    if (other?.error) { yield say(t.key, 'clears', `${t.key}: "${what}" holds, but whether #${c.pr} is its own could not be read (${other.error}): left parked`); return; }
+    if (other?.why) {
+      if (yield { type: 'write', key: t.key, fields: ['state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null',
+        `done_by=${JSON.stringify({ pr: Number(c.pr), why: other.why })}`, `result.summary=done by PR #${c.pr}, not its own (${other.why}): "${what}" holds`] }) {
+        const wt = s.dry ? null : yield { type: 'drop-worktree', key: t.key };
+        yield say(t.key, 'done', `${t.key}: "${what}" holds, and #${c.pr} is not its own (${other.why}) with no work of its own beside it: recorded done by #${c.pr}, no worker spawned${wt ? `; ${wt}` : ''}`);
+      }
+      return;
+    }
   }
   const wasPutOff = s.putOff.has(t.key);
   const rq = yield { type: 'requeue', key: t.key };

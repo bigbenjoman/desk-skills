@@ -399,7 +399,16 @@ say "AUTOPILOT_PARK: Please save the export to $T/state/fixtures/C-11/export.csv
 q add C-12 Story A; q set C-12 state=running branch=feat/C-12 session_id=gone
 say "AUTOPILOT_PARK: Please save the export to out/export.csv" "AUTOPILOT_PARK_CLEARS_WHEN: file fixtures/export.csv exists" > "$T/state/logs/C-12.log"
 
+# #1290: a park on another author's PR on another branch merging, with no work of its own, is done by it;
+# one on its own branch's PR is requeued as before.
+parked O-1 A "PR #880 fixes the same thing" "pr 880 merged"
+printf '{"state":"MERGED","isDraft":false,"headRefName":"fix/other-880","author":{"login":"someone-else"}}\n' > "$T/gh/pr-880.json"
+parked O-2 A "waiting on my PR #881" "pr 881 merged"
+printf '{"state":"MERGED","isDraft":false,"headRefName":"feat/O-2","author":{"login":"someone-else"}}\n' > "$T/gh/pr-881.json"
 out=$(node "$B/pass.mjs" 2>&1)
+check "#1290 a park on another branch's PR merging is done by it, with no requeue and no result PR" \
+  '[ "$(field O-1 state)" = "\"done\"" ] && [ "$(field O-1 done_by.pr)" = 880 ] && [ "$(field O-1 result.pr)" = null ] && [ "$(field O-1 park)" = null ] && grep -qF "O-1: \"PR #880 merged\" holds, and #880 is not its own (PR #880 is on branch fix/other-880, not O-1'"'"'s branch feat/O-1) with no work of its own beside it: recorded done by #880, no worker spawned" <<< "$out" && ! grep -q "\[spawn\] ticket=O-1" <<< "$out"'
+check "#1290 a park on its own branch's PR merging is requeued as before" '[ "$(field O-2 state)" = "\"triaged\"" ] && grep -qF "O-2: \"PR #881 merged\" holds: requeued" <<< "$out"'
 check "DS-269 AC2 a worker's park records its condition" '[ "$(field C-1 state)" = "\"parked\"" ] && [ "$(field C-1 park.clears_when)" = "{\"kind\":\"pr-merged\",\"pr\":41}" ]'
 check "DS-563 AC3 an unreadable condition is kept for the decider to restate, and reported" \
   '[ "$(field C-2 park.clears_when.kind)" = "\"unreadable\"" ] && [ "$(field C-2 park.clears_when.text)" = "\"when it rains\"" ] && grep -q "C-2: unreadable clears-when (\"when it rains\" is not one of.*), kept for the decider to restate" <<< "$out"'
@@ -504,6 +513,7 @@ mkdir -p "$T/state/fixtures/FP-1"; : > "$T/state/fixtures/FP-1/compare-pass.txt"
 # just parked.
 q set C-8 'park.clears_when={"kind":"unreadable","text":"KAN-1086s fix PR is merged to main","why":"x","at":"2026-01-01T00:00:00Z"}'
 out=$(node "$B/pass.mjs" 2>&1)
+check "#1290 the next pass leaves it done: no re-park" '[ "$(field O-1 state)" = "\"done\"" ] && [ "$(field O-1 park)" = null ]'
 check "DS-563 a park no restate reached within the window is recorded none, so the digest lists it" \
   '[ "$(field C-8 park.clears_when)" = "{\"kind\":\"none\"}" ] && [ "$(field C-8 state)" = "\"parked\"" ] && grep -q "C-8: unreadable clears-when \"KAN-1086s fix PR is merged to main\" not restated within 60 minutes: recorded as none, for the person" <<< "$out"'
 check "DS-807 AC5 the file saved where the question says: the next pass clears the park and requeues it" \

@@ -93,7 +93,7 @@ import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
-  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD, failedField } from './pass/shared.mjs';
+  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD, failedField, notOwnPr } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideTicketless } from './pass/ticketless-prs.mjs';
 import { decideDeadlines } from './pass/deadlines.mjs';
@@ -1385,6 +1385,25 @@ const CLEARS_HANDLERS = {
   },
   'own-merged': (a, s) => { try { return { pr: ownMergedPr(s.tickets[a.key]) }; } catch (e) { return { error: e.message }; } },
   'tail-after-merge': (a, s) => tailAfterMerge(s.tickets[a.key]),
+  'other-merged': (a, s) => {
+    const t = s.tickets[a.key];
+    try {
+      const p = JSON.parse(readOrThrow(`gh pr view ${a.pr}`, 'gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'headRefName,author']));
+      const why = notOwnPr(t, { pr: a.pr, branch: p.headRefName ?? null, author: p.author?.login ?? null }, conflictHandle);
+      if (!why || t.result?.pr != null || t.draft_pr != null) return null;
+      // Commits past the base in its worktree are its own work, which #pr only unblocks.
+      if (t.worktree && existsSync(t.worktree)) {
+        const n = shOut('git', ['-C', t.worktree, 'rev-list', '--count', `origin/${DEFAULT_BRANCH}..HEAD`]);
+        if (!n.ok) return { error: `its worktree could not be read (${n.out.split('\n').pop()})` };
+        if (Number(n.out) > 0) return null;
+      }
+      return { why };
+    } catch (e) { return { error: e.message }; }
+  },
+  'drop-worktree': (a) => {
+    const r = qTry(['drop-worktree', a.key]);
+    return r.ok ? (r.out.trim() || null) : `its worktree was left (${r.out.split('\n').pop()})`;
+  },
   write: (a) => { const before = report.failed.length; q('set', a.key, ...a.fields); return report.failed.length === before; },
   requeue: (a) => qRun(['requeue', a.key]),
   'lift-put-off': (a) => clearPutOff(a.question, STATE),
