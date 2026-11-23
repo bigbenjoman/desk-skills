@@ -589,13 +589,14 @@ const triWith = (imp) => hubWith({
   'desk/bin/q-tri.sh': `#!/usr/bin/env bash\nnode "$B/pass.mjs"\nnode --input-type=module - "$B" <<'JS'\nimport { join } from 'node:path';\n${imp}\nJS`,
   'tests/test_tri.sh': '# suite: tri\n"$SRC/desk/bin/q-tri.sh"',
 });
-const fmtOn = (map, opts) => hscope(Q(hubQ.replace('return String(a);', 'return `${a}`;')), map, opts);
+const fmtOn = (map) => hscope(Q(hubQ.replace('return String(a);', 'return `${a}`;')), map);
 const triWhole = triWith("const Q = await import(join(process.argv[2], 'desk-q.mjs'));\nconsole.log(Q.rows(1));");
-t('DS-1002 a shell script\'s embedded code importing a reached name runs its suites; one importing another name does not; one taking the module whole runs every claimer', [
+t('DS-1002 a shell script\'s embedded code importing a reached name, or taking the module whole, runs its suites; one importing another name, beside an unrelated import() helper, does not', [
   fmtOn(triWith("const { rows } = await import(join(process.argv[2], 'desk-q.mjs'));\nconsole.log(rows(1));")),
-  fmtOn(triWith("const { keys } = await import(join(process.argv[2], 'desk-q.mjs'));\nconsole.log(keys(1));")),
-  fmtOn(triWhole) === fmtOn(triWhole, { l3Direct: true }),
-], ['some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs', true]);
+  fmtOn(triWith("const load = (f) => import(join(process.argv[2], f));\nconst { keys } = await import(join(process.argv[2], 'desk-q.mjs'));\nconsole.log(keys(1));")),
+  fmtOn(triWhole),
+  fmtOn(triWith("import(process.argv[2] + '/desk-q.mjs').then((m) => console.log(m.rows(1)));")),
+], ['some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs', 'some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh']);
 t('DS-1002 a foundational desk/bin/ module (untracked.mjs) is not narrowed by name', decide([{ status: 'M', path: 'desk/bin/untracked.mjs', names: { names: ['deskUntracked'] } }], real, { byName: true }).scope, 'full');
 // On this repo: an edit to desk-q.mjs's checkFlags, which its command line and the screen run. Its
 // command line reaches most of the module, and bin/desk-q, which launches it, is claimed through
@@ -612,7 +613,7 @@ const limitSrc = readFileSync(join(R, 'desk/bin/usage-limit.mjs'), 'utf8');
 const limitEdit = limitSrc.replace('export function usageLimit(text) {\n  const limits = [];', 'export function usageLimit(text) {\n  const limits = [].slice();');
 const limitScope = (opts) => decide([{ status: 'M', path: 'desk/bin/usage-limit.mjs', names: changedNames(limitSrc, limitEdit) }], real, opts);
 t('DS-1002 on the real usage-limit.mjs: an edit to usageLimit, which triage.sh imports in embedded code, runs test_triage.sh',
-  [limitEdit !== limitSrc, limitScope({}).suites.includes('test_triage.sh'), limitScope({ byName: true }).suites.includes('test_triage.sh')], [true, true, true]);
+  [limitEdit !== limitSrc, limitScope({}).suites.includes('test_triage.sh'), limitScope({ byName: true }).suites.includes('test_triage.sh'), limitScope({ byName: true }).narrowed], [true, true, true, ['desk/bin/usage-limit.mjs: usageLimit']]);
 // DS-1003 AC1: a frozen literal constant no load-time code reaches narrows to the suites naming it.
 const frozenEnv = cliEnv.replace('export function alone() {', "export const KINDS = Object.freeze(['a', 'b']);\nexport function alone() {");
 const frozenNamed = { ...named, 'desk/bin/desk-env.mjs': frozenEnv, 'tests/test_kinds.mjs': "// suite: kinds\nimport { KINDS } from '../desk/bin/desk-env.mjs';" };
