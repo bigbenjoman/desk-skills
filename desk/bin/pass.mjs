@@ -4619,7 +4619,7 @@ const baseReads = (head) => (head ? { baseRead: {
   mergeBase: () => mergeBaseOf(head),
   atMergeBase: (name) => { const sha = mergeBaseOf(head); return sha ? runsState(checkRunsAt(sha, name)) : null; },
   latestOnBase: (name, o) => latestOnBaseOf(head, name, o?.held === true),
-} } : {});
+}, refreshBase: E.permission('pr-update-branch') === 'yes' } : {});
 // Whether a person put a draft back: { hold } as personHold gives it, or { unread } with why the PR's events could not say.
 const draftHold = (t, n) => {
   const ev = shOut('gh', ['api', '--paginate', `repos/${GH_REPO}/issues/${n}/events?per_page=100`, '--jq', REDRAFT_JQ]);
@@ -5098,6 +5098,24 @@ function settleWorked(t, n, head, worked) {
   if (now.length) out.push(`fix tries: PR #${n} (${t.key}): replied on and resolved ${now.length} thread(s) fix try ${t.fix.try} worked, now at ${String(head).slice(0, 12)}`);
   return now.map((x) => x.id);
 }
+// A PR red only where its base was red when it branched, the base green since (fix-tries.mjs staleBase):
+// its branch is updated from the base, under its preview-build unit as a push is, so its checks run
+// afresh with no re-run and no fix try. Done or refused, the update is recorded at this head
+// (`base_refresh`), so it is tried once per head and a refusal goes the PR's usual way on the next pass;
+// one waiting on the preview build, or that got no answer, records nothing and is tried again.
+function refreshBranch(t, n, head, c) {
+  if (DRY) { out.push(`fix tries (dry run): would update PR #${n} (${t.key})'s branch from ${DEFAULT_BRANCH}: ${c.why}`); return; }
+  const slot = t.branch ? previewSlot(t, t.branch) : {};
+  if (slot.wait) { out.push(`fix tries: PR #${n} (${t.key}) waits for its branch update from ${DEFAULT_BRANCH}: it ${slot.wait}`); return; }
+  const r = shOut('gh', ['pr', 'update-branch', String(n), '--repo', GH_REPO]);
+  if (r.ok) keepSlot(slot, n); else freeSlot(slot);
+  if (r.unreached) { out.push(`fix tries: PR #${n} (${t.key})'s branch update from ${DEFAULT_BRANCH} got no answer (${lastLine(r.out)}); the next pass tries again`); return; }
+  const rec = { head, at: PASS_AT, ok: r.ok, checks: c.checks, ...(r.ok ? {} : { out: lastLine(r.out) }) };
+  q('set', t.key, `base_refresh=${JSON.stringify(rec)}`);
+  t.base_refresh = rec;
+  if (r.ok) out.push(`fix tries: PR #${n} (${t.key}) had its branch updated from ${DEFAULT_BRANCH} (gh pr update-branch): ${c.why}`);
+  else report.waiting.push(`${t.key}: PR #${n}: ${c.checks.join(', ')} ${c.checks.length === 1 ? 'was' : 'were'} red on ${DEFAULT_BRANCH} where it branched and ${DEFAULT_BRANCH} is green since, but updating its branch was refused (${lastLine(r.out)}), so it goes its usual way from the next pass`);
+}
 // A fixCall or reviewFix answer, carried out: `stuck` is recorded on the ticket and put to the person,
 // `requeue` sends the ticket back for its fix try and appends the try to `fix_tries`, with its class
 // (failure-class.mjs fixClass) recorded before the worker spawns, and `held` (base red) waits with no
@@ -5129,6 +5147,7 @@ function applyFix(t, n, head, c) {
     return;
   }
   if (c.call === 'held') { report.waiting.push(`${t.key}: ${c.label ?? 'BASE RED'} — PR #${n}: ${c.why}`); return; }
+  if (c.call === 'refresh') { refreshBranch(t, n, head, c); return; }
   if (c.call === 'wait') { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`); return; }
   if (c.call === 'rerun') {
     if (DRY) out.push(`undraft (dry run): would re-run run(s) ${c.gate.failedRuns.join(', ')} on PR #${n} (${t.key}): ${c.why}`);

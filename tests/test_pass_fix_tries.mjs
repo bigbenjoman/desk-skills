@@ -248,6 +248,11 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   t('AC1 the check is held for the batch, with its three PRs', j(first.held.held.get('Deploy preview')?.prs), j([701, 702, 703]));
   t('AC1 no fix try is spent on it for any of them', applied(fixes(three, first)).map((a) => `${a.key} ${a.call.call} ${a.call.label}`).join(), 'O-701 held OUTAGE,O-702 held OUTAGE,O-703 held OUTAGE');
   t('AC1 the hold is kept from the pass it began', j(first.hold), j({ 'Deploy preview': { line: 'error: the project is blocked by the platform, please retry later', text: LINE, prs: [701, 702, 703], since: '2026-11-22T10:00:00.000Z', reruns: [], seen: [701, 702, 703].map((n) => ({ pr: n, head: HEAD, run: String(900 + n) })) } }));
+  // #1327: a check a PR is held on as red on its base at its head is its base's, not a platform's: it neither starts nor joins a hold.
+  const baseHeld = (e) => ({ ...e, t: { ...e.t, base_red: { class: 'base red', head: HEAD, merge_base: 'm'.repeat(40), checks: [], cleared: ['Deploy preview'] } } });
+  const stale = outage([baseHeld(three[0]), baseHeld(three[1]), three[2]]);
+  t('#1327 two of three PRs red on it only as their base was: no outage hold, no OUTAGE line', `${stale.held?.held?.size ?? 0} ${lines(stale.as, 'report').filter((l) => /OUTAGE/.test(l)).length}`, '0 0');
+  t('#1327 the same PRs on another head are read as before', outage([{ ...baseHeld(three[0]), s: { ...three[0].s, head: 'f'.repeat(40) } }, baseHeld(three[1]), three[2]]).held?.held?.size ?? 0, 1);
   // AC2: one line, naming the check and the error line, and no STUCK line.
   const said = lines(first.as, 'report');
   t('AC2 the pass says it once, naming the check and the error line', said.length === 1 && said[0].startsWith(`OUTAGE — the deploy platform is failing for every PR: "Deploy preview" is red on 3 open PRs (#701, #702, #703) with the same error, "${LINE}", so no fix try is spent on it and none of them is stuck.`), true);

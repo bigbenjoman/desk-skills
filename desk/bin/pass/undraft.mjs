@@ -261,6 +261,8 @@ export function* decideUndraft(snap) {
     else if (rf) {
       yield { type: 'apply-fix', key: t.key, t, pr: n, head, fix: rf };
       if (rf.call === 'rerun' || rf.call === 'wait') rec = { ...rec, call: rf.call, why: rf.why, action: null };
+      // A branch updated from the base waits for the run at its new head.
+      else if (rf.call === 'refresh') rec = { ...rec, call: 'wait', why: rf.why, action: null };
     }
     else if (gated) { /* the gate-hold action reported it */ }
     else if (c.call === 'wait') yield out(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);

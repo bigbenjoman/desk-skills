@@ -165,6 +165,7 @@ else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
 else if (a[0] === 'api' && a[1] in api) console.log(api[a[1]]);
 else if (a[0] === 'run' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fx/run-' + a[2] + '-' + a[a.indexOf('--json') + 1] + '.json', 'utf8')); } catch { process.exit(1); } }
 else if (a[0] === 'run' && a[1] === 'rerun') process.exit(0);
+else if (a[0] === 'pr' && a[1] === 'update-branch') process.exit(0);
 else process.exit(1);
 EOF
 { cat "$T/config-f.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `failure-class` |\n'; } > "$T/config-fl.md"
@@ -298,6 +299,14 @@ rm -f "$T/state-fb/base-red.json"; q set base-red-main state=done; q drop base-r
 out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-850 AC6 once the driver reads main green, the pass drops the line" '! echo "$out" | grep -q "^RED BASE:" && echo "$out" | grep -q "FB-4: BASE RED"'
 runs "$MB5" Lint '[{"status":"completed","conclusion":"success"}]'
+# #1327: where §3 pr-update-branch is yes, a PR red only where its base was red, the base green since,
+# has its branch updated from the base instead: no re-run, no fix try. Once per head: the next pass,
+# at the same head, goes on as before.
+awk '{ print } /^\| `pr-conflict-unreviewed`/ { print "| `pr-update-branch` | Update branch | `yes` | `yes` |" }' "$T/config-f.md" > "$T/config-fu.md"
+: > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fu.md" node "$B/pass.mjs" 2>&1)
+check "#1327 once its held check passes on the base, the PR's branch is updated from it, with no re-run and no fix try" \
+  '[ "$(grep -c "^pr update-branch 813 --repo acme/widgets$" "$T/gh-calls")" = 1 ] && ! grep -q "^run rerun" "$T/gh-calls" && [ "$(field FB-4 state)" = "\"done\"" ] && [ "$(field FB-4 fix)" = null ] && [ "$(field FB-4 fix_tries)" = null ] && [ "$(field FB-4 base_refresh | jq -c "[.head, .ok, .checks]")" = "[\"$H4\",true,[\"Lint\"]]" ]'
+check "#1327 and the pass says why" 'echo "$out" | grep -qF "fix tries: PR #813 (FB-4) had its branch updated from main (gh pr update-branch): Lint was red on main too and has passed on main since"'
 out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-614 AC2 once the job passes on the base, the hold clears and a fix try proceeds as today" \
   '[ "$(field FB-4 state)" = "\"triaged\"" ] && [ "$(field FB-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-4 fix.class)" = "\"application defect\"" ] && [ "$(field FB-4 base_red | jq -c "[.checks, .cleared]")" = "[[],[\"Lint\"]]" ]'
