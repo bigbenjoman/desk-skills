@@ -144,21 +144,23 @@ here can read the frame, saying which you tried.
 
 **Then fold in what a comment already settles.** A `lint (blocking): …` refusal whose findings are
 only no acceptance criteria, a decision left open (a "Decide whether…" line, a question in scope) or
-no design link is not the user's when the ticket's comments answer each one: read them
+no design link is not the user's where the ticket's comments answer it: read them
 (`desk-jira comments <TICKET>`; with no tracker, the issue's comments). A finding is settled by:
 
 - **a decision left open**: a comment from the person §4 People routes it to (`desk-env get --json
   product-owner designer`: the designer for a design call, the product owner for any other, and the
   product owner where Designer is `none`) that states the choice;
-- **no design link**: a Figma or Claude Design URL in a comment from the designer or product owner;
+- **no design link**: a Figma or Claude Design URL in a comment from the designer (the product owner
+  where Designer is `none`);
 - **no acceptance criteria**: criteria that follow from the ticket's text and those comments alone.
   A criterion neither states is a question, never a guess (gate 1 of `desk-ticket`).
 
-When every blocking finding is settled, rewrite the description through `desk-jira` (§3 `jira-edit`;
-with no tracker, the ticket file): the `Acceptance criteria` section, a `Design` section holding the
-link, and the decision line reworded as decided, with a dated entry under `Decisions` naming the
-comment's author and date. Print the `JIRA EDIT` block as it goes, read it back, and run step 1
-again for it. A finding no comment settles goes to the user as below, saying which were folded in.
+Write each settled finding into the description through `desk-jira` (§3 `jira-edit`; with no
+tracker, the ticket file), before asking about any other: the `Acceptance criteria` section, a
+`Design` section holding the link, and the decision line reworded as decided, with a dated entry
+under `Decisions` naming the comment's author and date. Print the `JIRA EDIT` block as it goes and
+read it back. With none left, run step 1 again for it. Only a finding no comment settles goes to the
+user, as below, saying which were folded in; once its answer is recorded the same way, run step 1 again.
 
 Each other `not admitted <TICKET>: <why>` line, and an `admits nothing: <why>` line, goes to the user in
 one `AskUserQuestion` round (at most four questions; header the ticket key). Put the first option

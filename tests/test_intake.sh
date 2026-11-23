@@ -605,7 +605,7 @@ check "#1000 with workers local, no runs: line, as before" 'grep -q "^admitted H
 AO="$S/../skills/desk-autopilot/references/ask-or-take.md"
 check "#877 desk-autopilot admits tickets the person already chose without asking again" 'grep -q "^\*\*Tickets the person already chose are not asked again.\*\*" "$AO" && grep -q "intake.mjs admit <TICKET>... --session" "$AO"'
 check "#1317 desk-admit folds in a lint refusal a routed comment settles, then admits it again, asking only for the rest" \
-  'grep -q "^\*\*Then fold in what a comment already settles.\*\*" "$SK" && grep -q "desk-jira comments <TICKET>" "$SK" && grep -q "product-owner designer" "$SK" && grep -q "Print the \`JIRA EDIT\` block as it goes, read it back, and run step 1$" "$SK" && grep -q "Fix what no comment settled (above)" "$SK"'
+  'grep -q "^\*\*Then fold in what a comment already settles.\*\*" "$SK" && grep -q "desk-jira comments <TICKET>" "$SK" && grep -q "product-owner designer" "$SK" && grep -q "^read it back. With none left, run step 1 again for it. Only a finding no comment settles goes to the$" "$SK" && grep -q "the designer (the product owner$" "$SK" && grep -q "Fix what no comment settled (above)" "$SK"'
 check "#877 desk-admit runs the --session command when this session runs the batch" 'grep -q "If this session runs that batch, run the command the line names" "$S/../skills/desk-admit/SKILL.md"'
 rm -f "$DESK_QUEUE"; config ask '`none`'
 out=$(admit H-7); rc=$?
