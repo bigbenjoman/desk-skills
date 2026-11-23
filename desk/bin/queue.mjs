@@ -29,7 +29,7 @@ import { repoOfPr } from './pass/pr-status.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { LEDGER_BY_ENV, queueDifference } from './queue-ledger.mjs';
 import { newPark, parkArgs, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { followOnPending, postMergeUnmade, workerMarkers, lastStage, settleSteps } from './harvest.mjs';
+import { followOnPending, postMergeUnmade, workerMarkers, lastStage, logStage, settleSteps } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
@@ -133,23 +133,15 @@ function found(q, key) {
 }
 
 // A running worker as it is now, read from its log rather than the queue, which a pass updates only
-// when it runs: its last stage marker since this spawn, and when the log last grew (its heartbeat). A
-// worker spawned and silent since has the log and no stage; one with no log has not started.
+// when it runs: its last stage marker since this spawn (harvest.mjs logStage, as desk-q's table reads
+// it) and when the log last grew (its heartbeat). A worker spawned and silent since has the log and no
+// stage; one with no log has not started.
 //   -> { log, stage, said_at, heartbeat_at } (each null where there is none)
-const LIVE_TAIL = 256 * 1024;
 function liveOf(t) {
   const log = join(stateDir(), 'logs', `${t.key}.log`);
   let st;
   try { st = statSync(log); } catch { return { log: null, stage: null, said_at: null, heartbeat_at: null }; }
-  let text = '';
-  try {
-    const all = readFileSync(log);
-    text = all.subarray(Math.max(0, all.length - LIVE_TAIL)).toString('utf8');
-    if (all.length > LIVE_TAIL) text = text.slice(text.indexOf('\n') + 1); // a cut first line is not whole
-  } catch { /* unreadable now: no stage */ }
-  // Only this spawn's markers: an earlier round's stage is not where this worker is.
-  const spawned = text.lastIndexOf('{"type":"desk_spawn"');
-  const s = lastStage(spawned < 0 ? text : text.slice(spawned));
+  const s = logStage(log);
   return { log, stage: s?.stage ?? null, said_at: s?.at ? new Date(s.at).toISOString() : null, heartbeat_at: new Date(st.mtimeMs).toISOString() };
 }
 
