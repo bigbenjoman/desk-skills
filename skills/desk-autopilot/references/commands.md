@@ -31,6 +31,7 @@ node ~/.claude/desk/bin/queue.mjs rebuild ABC-120                     # ledger l
 node ~/.claude/desk/bin/queue.mjs front ABC-123                       # move a released ticket to the front of the spawn order (one the user placed stays put)
 node ~/.claude/desk/bin/queue.mjs move ABC-123 2                      # the user's order: position among unfinished tickets, or `last`; marks it placed
 node ~/.claude/desk/bin/queue.mjs hold ABC-124 ABC-123               # hold a ticket behind a blocker (recorded; released on its merge)
+node ~/.claude/desk/bin/queue.mjs lift ABC-123                       # a blocker that finished with no PR: taken off every ticket held behind it, each keeping its other blockers
 node ~/.claude/desk/bin/queue.mjs backfill-holds --dry-run           # once, by hand: lane, size and design parks with no held_by gain their blockers' holds (drop --dry-run to write)
 node ~/.claude/desk/bin/queue.mjs admit ABC-125                      # add one triaged ticket mid-batch (never re-run plan-batch to do it)
 node ~/.claude/desk/bin/queue.mjs adopt flaky-spec-fix 512           # a PR you opened in the batch with no ticket (a flaky-test fix), keyed by a §4 work id or slug: taken in as done on that PR, so the merge driver merges it and the pass and desk-q list it (--filed for the tracker ticket filed for it)

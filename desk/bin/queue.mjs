@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, shippedSet, keyPattern, doneOnPr, mergedCurrent } from './batch-state.mjs';
+import { isHeld, parkKind, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, shippedSet, keyPattern, doneOnPr, mergedCurrent } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
 import { prNames } from './recoveries.mjs';
@@ -782,7 +782,7 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'adopt', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'order', 'drop', 'merged', 'transfer', 'finish'];
+const WRITES = ['init', 'add', 'adopt', 'admit', 'hold', 'lift', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'order', 'drop', 'merged', 'transfer', 'finish'];
 
 try {
 if (!Object.hasOwn(QUEUE_COMMANDS, cmd ?? '')) throw new Error(unknownQueueCommand(cmd));
@@ -977,6 +977,41 @@ switch (cmd) {
     t.updated_at = new Date().toISOString();
     save(q);
     console.log(keeps ? `${key} held behind ${all.join(', ')}, beside its own park (${t.park.question})` : `${key} held behind ${all.join(', ')}`);
+    break;
+  }
+
+  // Lift one blocker off every unfinished ticket held behind it (one that finished with nothing to
+  // merge): each keeps its other blockers, and freed_from names it so the merge driver's --deps skip it.
+  // A held ticket nothing else holds is released and queued at the front, as a release is; a triage
+  // park keeps its own park.
+  case 'lift': {
+    const [b] = args;
+    if (!b || args.length !== 1) throw new Error('usage: queue.mjs lift <BLOCKER>');
+    const behind = Object.values(q.tickets).filter((t) => t.key !== b && !FINISHED.includes(t.state) && blockersOf(t).includes(b));
+    if (!behind.length) throw new Error(`nothing in this queue is held behind ${b}, so nothing was changed`);
+    const released = [], still = [];
+    const now = new Date().toISOString();
+    for (const t of behind) {
+      const rest = blockersOf(t).filter((k) => k !== b);
+      t.freed_from = [...new Set([...String(t.freed_from ?? '').split('|').filter(Boolean), b])].join('|');
+      if (t.held_outside) t.held_outside = String(t.held_outside).split('|').filter((k) => k && k !== b).join('|') || null;
+      if (!rest.length && isHeld(t)) {
+        Object.assign(t, { state: 'triaged', park: null, held_by: null });
+        released.push(t.key);
+      } else {
+        t.held_by = rest.join('|') || null;
+        if (rest.length && isHeld(t) && parkKind(t) === 'hold') t.park = heldPark(rest);
+        still.push(rest.length ? `${t.key} (still held behind ${rest.join(', ')})` : `${t.key} (keeps its own park)`);
+      }
+      t.updated_at = now;
+    }
+    // Fronted last first, so the released keep their order at the front.
+    const fronted = [...released].reverse().map((k) => toFront(q, k)).reverse();
+    save(q);
+    const kept = released.filter((_, i) => !fronted[i].startsWith('moved'));
+    console.log([`${b} lifted from ${behind.map((t) => t.key).join(', ')}`,
+      released.length && `released ${released.join(', ')} and queued ${released.length === 1 ? 'it' : 'them'} at the front${kept.length ? ` (${kept.join(', ')} ${kept.length === 1 ? 'stays' : 'stay'} where the user placed ${kept.length === 1 ? 'it' : 'them'})` : ''}`,
+      still.length && still.join(', ')].filter(Boolean).join('; '));
     break;
   }
 

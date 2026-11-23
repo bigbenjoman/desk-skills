@@ -905,6 +905,34 @@ function stepItem(key, ws) {
     since: finite(Math.min(...ws.map(({ t }) => timeOf(t.added_at) ?? Infinity))) };
 }
 
+// ---- a blocker that finished with no PR: one item for it, not one per ticket held behind it -------
+// A done blocker with no PR (desk-q's blockerHold `lift`) holds every ticket behind it until the person
+// lets them start. It is one item in its batch, `lift:<KEY>`, naming every unfinished ticket held behind
+// it. Lift takes it off each one's holds alone (queue.mjs lift), so one also held behind another blocker
+// keeps waiting on that one.
+const LIFT = 'lift:';
+// The blocker a needs row is held by that finished with no PR, else null: its item lists the row.
+const liftOf = (b, x) => (isHeld(x.t) && !heldAsks(x.t) ? holdShown(b.q, x.t, b.ctx)?.lift ?? null : null);
+function liftItems(b) {
+  const shown = new Map();
+  for (const x of needsRows(b)) { const k = liftOf(b, x); if (k) shown.set(k, [...(shown.get(k) ?? []), x.t]); }
+  return [...shown].map(([key, rows]) => {
+    const waiting = Object.values(b.q.tickets).filter((t) => t.key !== key && !['done', 'failed'].includes(t.state) && blockersOf(t).includes(key));
+    const pairs = waiting.map((t) => [b, t.key]);
+    return { r: b, t: { key: `${LIFT}${key}` }, item: liftItem(b, key, waiting, rows), behind: heldBehindAll(pairs, true), said: heldBehindAll(pairs) > 0 };
+  });
+}
+function liftItem(r, key, waiting, rows) {
+  const summary = waiting.map((t) => (triageOf(r, t.key)?.blockers ?? []).find((x) => x?.key === key)?.summary).find(Boolean);
+  const keys = waiting.map((t) => t.key), single = keys.length === 1, whose = single ? 'its' : "each one's";
+  const others = waiting.filter((t) => blockersOf(t).length > 1).map((t) => t.key);
+  const rest = others.length ? `; ${andList(others)} still wait${others.length === 1 ? 's' : ''} on ${others.length === 1 ? 'its' : 'their'} other blockers` : '';
+  return { kind: 'held', lift: key, waiting: keys,
+    need: `${key}${summary ? ` ("${one(summary)}")` : ''} finished with no PR, and ${single ? 'one ticket waits' : `${keys.length} tickets wait`} to start on it: ${andList(keys)}. Lift it to take ${key} off ${whose} holds${rest}`,
+    actions: [['lift', `takes ${key} alone off ${whose} holds, so the next pass can start any it frees`], ['not-now']],
+    since: finite(Math.min(...rows.map((t) => timeOf(t.park?.since ?? t.added_at) ?? Infinity))) };
+}
+
 // ---- follow-on steps: what a ticket left for after its PR merges (pass.mjs follow_on) -------------
 // Once the PR has merged, its steps are one item, `follow:<KEY>`, each with the §3 row it names and
 // that row's value. A step that only reads CI, desk's logs or desk's state is a follow-step checker's
@@ -1766,6 +1794,8 @@ function putOffKey(r, t, item) {
   // A step: what waits on it in every batch of the repo, not its need, which names only those passed.
   if (item.kind === 'step') return { question: `${t.key} step`, inputs: { ticket: t.key, waiting: item.waiting.join(', ') } };
   if (item.kind === 'follow') return { question: `${t.key} follow-on`, inputs: { ticket: item.ticket, steps: item.need } };
+  // A blocker with no PR: a ticket newly held behind it brings it back.
+  if (item.lift) return { question: `${t.key} lift`, inputs: { blocker: item.lift, waiting: item.waiting.join(', ') } };
   if (item.blocker) return { question: `${t.key} link`, inputs: { ticket: item.ticket, blocker: item.blocker } };
   // A promotion PR opened, or one that changes state, brings it back.
   if (item.unpromoted) return { question: `${t.key} unpromoted`, inputs: { ticket: item.ticket, blocker: item.waitsOn, branch: item.unpromoted.branch, pr: String(item.unpromoted.pr ?? 'none'), state: item.unpromoted.state } };
@@ -1864,10 +1894,11 @@ function stampItem(r, x, item) {
 
 // desk-q's NEEDS YOU count for a batch, or for a repo row of several (each row keyed in its own batch,
 // `b`): the rows that need the person (`rows`), plus its person's-step items (stepItems), as
-// `shown`, less `putOff`, those put off with unchanged inputs. A row held only by a person's step
-// is in `stepRows`, not `rows`, while a step holding it is not put off: it needs the person, but is
-// counted once, through its step item. A reader that draws "not in rows" as put off counts
-// `stepRows` as needing the person too, so a row whose every step is put off is drawn put off.
+// `shown`, less `putOff`, those put off with unchanged inputs. A row held only by a person's step,
+// or by a blocker that finished with no PR (liftItems), is in `stepRows`, not `rows`, while that item
+// is not put off: it needs the person, but is counted once, through the item. A reader that draws
+// "not in rows" as put off counts `stepRows` as needing the person too, so a row whose every step is
+// put off is drawn put off.
 // `items` are the counted items that are not ticket rows (steps, follow-ons, asks, sign-ins, …), each
 // { r, t, item }, so a reader can draw a row for every one it counts; `offItems` those put off.
 export function needsCount(r) {
@@ -1883,14 +1914,17 @@ export function needsCount(r) {
   }
   for (const x of needsRows(r)) {
     const b = x.b ?? r;
-    if (stepHeld(b, x)) { held.push(x); continue; }
+    if (stepHeld(b, x) || liftOf(b, x)) { held.push(x); continue; }
     if (judged(b, x, register(b)).l.status === 'put_off') putOff++; else rows.push(x);
   }
-  const live = new Set();
+  const live = new Set(), lifts = new Set();
   for (const s of stepItems((r.batches ?? [r]).filter((x) => x.q))) {
     if (lookupItem(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else { items.push(s); live.add(s.item.step); }
   }
-  const stepRows = held.filter((x) => { const b = x.b ?? r; return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)); });
+  for (const s of (r.batches ?? [r]).filter((x) => x.q).flatMap(liftItems)) {
+    if (lookupItem(register(s.r), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else { items.push(s); lifts.add(`${s.r.stateDir}\t${s.item.lift}`); }
+  }
+  const stepRows = held.filter((x) => { const b = x.b ?? r; return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)) || lifts.has(`${b.stateDir}\t${liftOf(b, x)}`); });
   for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...promotionItems(b), ...baseRedItems(b), ...duplicateItems(b)])) {
     if (lookupItem(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') { putOff++; offItems.push(f); } else items.push(f);
   }
@@ -1937,7 +1971,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   for (const r of scope.filter((x) => !x.error && x.q)) {
     const register = readRegister(r.stateDir);
     for (const x of [...batchRows(r), ...needsRows(r)]) {
-      if (stepHeld(r, x)) continue;
+      if (stepHeld(r, x) || liftOf(r, x)) continue;
       const { item, l } = judged(r, x, register, reads);
       if (l.status === 'put_off') { putOff++; continue; }
       const since = x.baseSync ? timeOf(r.q.base_sync_stuck.since) : x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : x.subOff ? timeOf(r.q.subscription_off.since) : timeOf(x.t.park?.since ?? (x.pr ? x.t.undraft?.at : null) ?? x.t.added_at);
@@ -1961,6 +1995,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
     }
   }
   for (const f of inScope.flatMap((b) => [...followItems(b, reads), ...linkItems(b), ...unpromotedItems(b), ...duplicateItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
+  for (const f of inScope.flatMap(liftItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, f.said);
   for (const f of inScope.flatMap(baseRedItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
   // Its need names the follow items waiting on it, so it ranks by them without saying the count.
   for (const f of inScope.flatMap(promotionItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
@@ -2115,7 +2150,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(LIFT) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -2412,7 +2447,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
 // checks the copies again now; done on a step records nothing, since the pass reads the step from Jira.
 function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = READS }) {
   const c = collect({ word, now, repos, reads: null, ciRed: ticket.startsWith(CI_RED) ? (reads ?? READS).ciRed : null });
-  let i = c.items.find((y) => (y.repoLevel || y.proposal || y.kind === 'step' || y.kind === 'follow' || y.blocker || y.unpromoted || y.promotion != null) && y.t.key === ticket);
+  let i = c.items.find((y) => (y.repoLevel || y.proposal || y.kind === 'step' || y.lift || y.kind === 'follow' || y.blocker || y.unpromoted || y.promotion != null) && y.t.key === ticket);
   // A row set since the list was shown no longer groups its parks there; done still finds them.
   if (!i && ticket.startsWith(UNSET) && c.named) {
     const key = ticket.slice(UNSET.length);
@@ -2440,6 +2475,10 @@ function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = R
   }
   if (i.proposal) return proposalAnswer(i, verb, text, reads ?? READS, now, say);
   if (i.unpromoted) return verb === 'promote' ? promoteBase(i, say) : startWithout(i, say);
+  if (i.lift) {
+    const q = queueCmd(i.r, ['lift', i.lift]);
+    return q.ok ? say(true, `${q.out}; the next pass can start any it freed.`) : say(false, `lift refused: ${q.out}`);
+  }
   if (i.promotion != null) return say(true, `noted: the next pass reads promotion PR #${i.promotion}'s checks again, and this item goes once they pass.`);
   if (i.blocker) return say(true, `noted: the next pass that reads ${i.ticket}'s blockers clears this once ${i.blocker} is no longer linked, and lifts any hold on it.`);
   if (i.kind === REVIEWER) return say(true, 'noted: the next pass checks the account again, and lifts the hold on every PR it names once the check passes.');

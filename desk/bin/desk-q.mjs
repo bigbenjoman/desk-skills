@@ -185,6 +185,8 @@ const outsideText = (t) => {
 // A ticket whose worker gave up: why, then what moves it.
 const stoppedText = (t) => `worker stopped: ${failedWhy(t)} · requeue it`;
 const releaseCmd = (key) => releaseCommand(key, 'node ~/.claude/desk/bin/queue.mjs');
+// Removes blocker `b` from every ticket held behind it, each keeping its other blockers.
+const liftCmd = (b) => `node ~/.claude/desk/bin/queue.mjs lift ${b}`;
 
 // How an open blocker `b` of ticket `key` holds it when the blocker is a step only the person takes,
 // as `key`'s triage record read through listing object `at` (triageOf) last read it and repo `slug`'s label rows judge it (personStep:
@@ -263,7 +265,8 @@ export const holdShown = (q, t, ctx = NOBODY) => (isHeld(t) ? holdOf(q, t, ctx) 
 
 // One unmerged blocker of the held ticket `key`, as holdOf reads it, plus `name`: its PR or its key.
 // One in no batch that is the person's own step (ctx.stepOf) needs them, and is `step`: needs-you lists
-// it once, as the step, with every ticket waiting on it.
+// it once, as the step, with every ticket waiting on it. One that finished with no PR is `lift`:
+// needs-you lists it once too, and lifting it frees every ticket held behind it from it alone.
 function blockerHold(q, key, b, ctx, seen) {
   const bt = q.tickets?.[b];
   if (!bt && keysOf(q.tickets?.[key]?.held_outside).includes(b)) {
@@ -279,7 +282,7 @@ function blockerHold(q, key, b, ctx, seen) {
   if (!bt) return { k: 'needs', name: b, text: `${b} is not in this queue: let it start`, act: releaseCmd(key) };
   const n = bt.result?.pr;
   if (bt.state === 'done') {
-    if (n == null) return { k: 'needs', name: b, text: `${b} finished with no PR: let it start`, act: releaseCmd(key) };
+    if (n == null) return { k: 'needs', name: b, lift: b, text: `${b} finished with no PR: let it start`, act: liftCmd(b) };
     const ps = prStatusOf(bt), pr = `#${n}`;
     if (ps.state === 'CLOSED' && !owesReopen(bt)) return { k: 'needs', name: pr, text: `${pr} was closed unmerged: let it start`, act: releaseCmd(key) };
     // Its first reason is enough: its page lists the checks. A PR that needs the user is their one
