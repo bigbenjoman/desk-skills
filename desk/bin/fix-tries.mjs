@@ -181,7 +181,7 @@ export function staleChecks(t, head, names, read) {
 // refused, or past that, leaves it its usual way. The pass's fix tries (staleBase) and the merge
 // driver (stale-base.mjs), before it re-runs a red PR, both decide by this.
 // -> { call: 'refresh', checks, why } | { call: 'wait', why } | null.
-export const REFRESH_WAIT_MS = 30 * 60 * 1000;
+const REFRESH_WAIT_MS = 30 * 60 * 1000;
 export function staleCall(t, head, names, read, { base = 'the base', now = Date.now() } = {}) {
   const r = t?.base_refresh?.head === head ? t.base_refresh : null;
   if (r?.ok === true && now - Date.parse(r.at ?? '') < REFRESH_WAIT_MS) {

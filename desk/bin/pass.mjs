@@ -62,7 +62,7 @@ import { childRenames } from './migration-renames.mjs';
 import { parseRecipe, readRecords as readPreviewRecords, evidenceHold, uploadHold, teardownCalls, teardown as previewTeardown, runCommand, DELETE_STEP_MS } from './preview-db.mjs';
 import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, staleChecks, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { fixClass, WAITING_CLASSES, keptHold } from './failure-class.mjs';
-import { makeBaseReads } from './base-reads.mjs';
+import { makeBaseReads, memo } from './base-reads.mjs';
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
@@ -1248,12 +1248,7 @@ for (const t of Object.values(queue().tickets)) {
 // A park that recorded what clears it (clears-when.mjs) is checked each pass and settled once that
 // holds (pass/parks.mjs decideClears). The reads its checks make, cached for the pass:
 const clearsCache = new Map();
-const cached = (key, read) => {
-  if (!clearsCache.has(key)) { try { clearsCache.set(key, { v: read() }); } catch (e) { clearsCache.set(key, { e }); } }
-  const c = clearsCache.get(key);
-  if (c.e) throw c.e;
-  return c.v;
-};
+const cached = memo(clearsCache);
 const readOrThrow = (what, cmd, args, opts) => {
   const r = shOut(cmd, args, opts);
   if (!r.ok) throw new Error(`${what}: ${r.out.split('\n').pop()}`);
@@ -4642,7 +4637,7 @@ const clearsRows = { operator: operatorRow.checks, builds: buildRow.checks, prem
 // A red check is read against the default branch before a fix try is spent on it, with the
 // failure-class lever on or off (fix-tries.mjs againstBase), through base-reads.mjs, as the merge driver
 // reads it (stale-base.mjs): each read once per pass, cached with the pass's other reads.
-const BASE_READS = makeBaseReads({ gh: (args) => shOut('gh', args), repo: GH_REPO, branch: DEFAULT_BRANCH, cache: clearsCache });
+const BASE_READS = makeBaseReads({ gh: (args) => shOut('gh', args), repo: GH_REPO, branch: DEFAULT_BRANCH, cached });
 const { baseAtOf } = BASE_READS;
 const baseReads = (head) => (head ? { baseRead: BASE_READS.forHead(head), refreshBase: E.permission('pr-update-branch') === 'yes' } : {});
 // Whether a person put a draft back: { hold } as personHold gives it, or { unread } with why the PR's events could not say.

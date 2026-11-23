@@ -4,18 +4,22 @@
 // and its newest completed run among the newest commits the default branch has gained since that merge
 // base (latestOnBase says how many). Each read once per reader (`cache`); one gh cannot read is unknown.
 //
-// makeBaseReads({ gh, repo, branch, cache }): gh(args) -> { ok, out } runs `gh` with args.
+// makeBaseReads({ gh, repo, branch, cached }): gh(args) -> { ok, out } runs `gh` with args; cached(key,
+// read) memoises a read for the reader's lifetime (the pass gives its own, which its other reads share;
+// unset, memo() over a new Map).
 import { runsState } from './failure-class.mjs';
 
-export const BASE_WALK = 25, HELD_WALK = 100;
+const BASE_WALK = 25, HELD_WALK = 100;
 
-export function makeBaseReads({ gh, repo, branch, cache = new Map() }) {
-  const cached = (key, read) => {
-    if (!cache.has(key)) { try { cache.set(key, { v: read() }); } catch (e) { cache.set(key, { e }); } }
-    const c = cache.get(key);
-    if (c.e) throw c.e;
-    return c.v;
-  };
+// A read memoised in `cache`, its value or the error it threw, each kept and given back as it was.
+export const memo = (cache = new Map()) => (key, read) => {
+  if (!cache.has(key)) { try { cache.set(key, { v: read() }); } catch (e) { cache.set(key, { e }); } }
+  const c = cache.get(key);
+  if (c.e) throw c.e;
+  return c.v;
+};
+
+export function makeBaseReads({ gh, repo, branch, cached = memo() }) {
   const checkRunsAt = (sha, name) => cached(`check-runs:${sha}:${name}`, () => {
     const r = gh(['api', `repos/${repo}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=latest&per_page=100`, '--jq', '[.check_runs[] | {status, conclusion}]']);
     try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; }
