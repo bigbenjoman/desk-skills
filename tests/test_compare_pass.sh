@@ -100,6 +100,32 @@ fieldtree port3 'port: 47704, cloud: { port: 47705 }' 'spawned: A-1 port=47704 m
 cmp "$T/port1" "$T/port3"
 check "DS-819 AC1 two ports where the base had one is still listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 port: base port <PORT1>, head port <PORT2>"'
 
+# A pass drops the stale leases an earlier pass left, on ports that pass picked from what was free then,
+# and picks this run's ports from what is free now, so which stale port a ticket
+# of this run shares differs between replays.
+stale(){ printf 'ports: dropped the stale lease on port %s held by o/r standing %s (pid 4242): its owner exited' "$1" "$2"; }
+fieldtree lease1 'port: 47704' "$(stale 47704 FB-1)\n$(stale 47705 FB-2)\nspawned: A-1 port=47704 model=default"
+fieldtree lease2 'port: 47705' "$(stale 47704 FB-1)\n$(stale 47705 FB-2)\nspawned: A-1 port=47705 model=default"
+cmp "$T/lease1" "$T/lease2"
+check "DS-946 AC1 stale leases on the ports this run's ticket did and did not get are not reported" "$same0"
+fieldtree lease9 'port: 47704' "$(stale 47705 FB-1)\n$(stale 47704 FB-2)\nspawned: A-1 port=47704 model=default"
+cmp "$T/lease1" "$T/lease9"
+check "DS-946 AC1 two stale-lease tickets with their ports swapped between the replays are not reported" "$same0"
+fieldtree lease3 'port: 47704, cloud: { port: 47705 }' "$(stale 47704 FB-16)"
+fieldtree lease4 'port: 47704, cloud: { port: 47705 }' "$(stale 47705 FB-16)"
+cmp "$T/lease3" "$T/lease4"
+check "DS-946 AC1 a stale lease on another of this run's ports than on the base is not reported" "$same0"
+fieldtree lease5 'port: 47705' "$(stale 47704 FB-1)\n$(stale 47704 FB-2)\nspawned: A-1 port=47705 model=default"
+cmp "$T/lease1" "$T/lease5"
+check "DS-946 AC2 two stale leases on one port where the base had two ports is still listed" '[ $rc = 1 ] && echo "$out" | grep -qF "  output base: ports: dropped the stale lease on port <LEASE2> held by o/r standing FB-2 " && echo "$out" | grep -qF "  output head: ports: dropped the stale lease on port <LEASE1> held by o/r standing FB-2 " && ! echo "$out" | grep "^  " | grep -qv "standing FB-2 "'
+fieldtree lease6 'port: 47705' "$(stale 47704 FB-1)\n$(stale 47705 FB-2)\nspawned: A-1 port=47705 model=default\nspawned: A-2 port=47705 model=default"
+fieldtree lease7 'port: 47704' "$(stale 47704 FB-1)\n$(stale 47705 FB-2)\nspawned: A-1 port=47704 model=default\nspawned: A-2 port=47706 model=default"
+cmp "$T/lease7" "$T/lease6"
+check "DS-946 AC2 two tickets this run gave one port where the base gave two is still listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  output head: spawned: A-2 port=<PORT1> model=default"'
+fieldtree lease8 'port: null' "$(stale 47704 FB-1)\n$(stale 47705 FB-2)\nspawned: A-1 model=default"
+cmp "$T/lease1" "$T/lease8"
+check "DS-946 AC2 a ticket given a port on the base and none on the head is still listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 port: base port <PORT1>, head null"'
+
 for form in '15d 12h|15d 13h' '2h 05m|2h 06m' '2h 5m|2h 6m' '0m 05s|0m 09s' '0m|1m'; do
   fieldtree span1 '' "A-1 in_progress for ${form%|*}"; fieldtree span2 '' "A-1 in_progress for ${form#*|}"
   cmp "$T/span1" "$T/span2"
