@@ -315,6 +315,9 @@ awk '{ print } /^\| `pr-conflict-unreviewed`/ { print "| `pr-update-branch` | Up
 check "#1327 once its held check passes on the base, the PR's branch is updated from it, with no re-run and no fix try" \
   '[ "$(grep -c "^pr update-branch 813 --repo acme/widgets$" "$T/gh-calls")" = 1 ] && ! grep -q "^run rerun" "$T/gh-calls" && [ "$(field FB-4 state)" = "\"done\"" ] && [ "$(field FB-4 fix)" = null ] && [ "$(field FB-4 fix_tries)" = null ] && [ "$(field FB-4 base_refresh | jq -c "[.head, .ok, .checks]")" = "[\"$H4\",true,[\"Lint\"]]" ]'
 check "#1327 and the pass says why" 'echo "$out" | grep -qF "fix tries: PR #813 (FB-4) had its branch updated from main (gh pr update-branch): Lint was red on main too and has passed on main since"'
+: > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fu.md" node "$B/pass.mjs" 2>&1)
+check "#1330 a pass at the same head, its update made, waits for the new head: no second update and no fix try" \
+  '! grep -q "^pr update-branch" "$T/gh-calls" && [ "$(field FB-4 fix)" = null ] && [ "$(field FB-4 fix_tries)" = null ] && echo "$out" | grep -qF "fix tries: PR #813 (FB-4) is out of draft: its branch was updated from main at" && echo "$out" | grep -qF "it waits for the run at its new head, with no re-run and no fix try"'
 out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-614 AC2 once the job passes on the base, the hold clears and a fix try proceeds as today" \
   '[ "$(field FB-4 state)" = "\"triaged\"" ] && [ "$(field FB-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-4 fix.class)" = "\"application defect\"" ] && [ "$(field FB-4 base_red | jq -c "[.checks, .cleared]")" = "[[],[\"Lint\"]]" ]'
