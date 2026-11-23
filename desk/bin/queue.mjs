@@ -132,6 +132,27 @@ function found(q, key) {
   return t;
 }
 
+// A running worker as it is now, read from its log rather than the queue, which a pass updates only
+// when it runs: its last stage marker since this spawn, and when the log last grew (its heartbeat). A
+// worker spawned and silent since has the log and no stage; one with no log has not started.
+//   -> { log, stage, said_at, heartbeat_at } (each null where there is none)
+const LIVE_TAIL = 256 * 1024;
+function liveOf(t) {
+  const log = join(stateDir(), 'logs', `${t.key}.log`);
+  let st;
+  try { st = statSync(log); } catch { return { log: null, stage: null, said_at: null, heartbeat_at: null }; }
+  let text = '';
+  try {
+    const all = readFileSync(log);
+    text = all.subarray(Math.max(0, all.length - LIVE_TAIL)).toString('utf8');
+    if (all.length > LIVE_TAIL) text = text.slice(text.indexOf('\n') + 1); // a cut first line is not whole
+  } catch { /* unreadable now: no stage */ }
+  // Only this spawn's markers: an earlier round's stage is not where this worker is.
+  const spawned = text.lastIndexOf('{"type":"desk_spawn"');
+  const s = lastStage(spawned < 0 ? text : text.slice(spawned));
+  return { log, stage: s?.stage ?? null, said_at: s?.at ? new Date(s.at).toISOString() : null, heartbeat_at: new Date(st.mtimeMs).toISOString() };
+}
+
 // Is another orchestrator (a second batch) live right now? Its per-batch notes must survive our init.
 // The pass lock only covers the seconds a pass runs, so also read the heartbeats pass.mjs writes per
 // queue file: one for a different queue, fresher than 15 minutes (LIVE_MS), is a live batch between passes.
@@ -1375,9 +1396,11 @@ switch (cmd) {
     break;
   }
 
-  case 'get':
-    console.log(JSON.stringify(found(q, args[0]), null, 2));
+  case 'get': {
+    const t = found(q, args[0]);
+    console.log(JSON.stringify(t.state === 'running' && t.location !== 'cloud' ? { ...t, live: liveOf(t) } : t, null, 2));
     break;
+  }
 
   case 'list':
     console.log(JSON.stringify(q, null, 2));
