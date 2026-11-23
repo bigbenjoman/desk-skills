@@ -347,8 +347,16 @@ t('a trial recorded for a lever the registry does not trial (the ledger) reads a
   // models' finder= is already its on-arm alias.
   const fm = admitQ('ds1000', 200, { prefix: 'FM' });
   const fmEvents = read('ds1000', { kinds: ['assign'] }).events;
-  t('DS-1000 AC5 every assign event carries a finder-model arm beside codex, review-reuse and effort', fmEvents.every((e) => ['codex', 'review-reuse', 'effort', 'finder-model'].every((l) => ['on', 'off'].includes(e.arms[l]))), true);
-  t('DS-1000 AC5 and a trial id for it', fmEvents.every((e) => e.trial_ids['finder-model'] === 'ds1000/finder-model/initial'), true);
+  // Exclusive: a ticket drawn on for one quality-risk trial has no arm in the others (AC1 above).
+  const QR = ['codex', 'review-reuse', 'effort', 'finder-model'];
+  const onOther = (e) => QR.some((l) => l !== 'finder-model' && e.arms[l] === 'on');
+  const onNone = (e) => QR.every((l) => e.arms[l] !== 'on');
+  const onFm = fmEvents.filter((e) => e.arms['finder-model'] === 'on');
+  t('DS-1000 AC5 an assign event drawn on for none carries a finder-model arm beside codex, review-reuse and effort, each off', fmEvents.filter(onNone).every((e) => QR.every((l) => e.arms[l] === 'off')), true);
+  t('DS-1000 AC5 and a trial id for it', fmEvents.filter((e) => !onOther(e)).every((e) => e.trial_ids['finder-model'] === 'ds1000/finder-model/initial'), true);
+  t('DS-1000 AC5 one drawn on for finder-model has no arm in the others', onFm.every((e) => QR.filter((l) => l !== 'finder-model').every((l) => e.arms[l] == null)), true);
+  t('DS-1000 AC5 one drawn on for another trial carries no finder-model arm', fmEvents.filter(onOther).every((e) => e.arms['finder-model'] == null), true);
+  t('DS-1000 AC5 all three kinds were drawn', [fmEvents.some(onNone), onFm.length > 0, fmEvents.some(onOther)], [true, true, true]);
   t('DS-1000 AC5 some tickets draw it on, and carry no other quality-risk lever', fm.some((p) => p.set.includes('finder-model')) && fm.filter((p) => p.set.includes('finder-model')).every((p) => quality(p).join() === 'finder-model'), true);
   only('ds1000-same', 'finder-model');
   const same = admitQ('ds1000-same', 150, { values: { ...LOCAL, 'worker-finder-model': 'sonnet' }, prefix: 'FS' });
