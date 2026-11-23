@@ -3,10 +3,10 @@
 // claims: imports (repo file names below are test data, not what this suite runs)
 // tests/scope_sections.mjs on a made-up tree, then on this repo, then tests/run.sh's suite filter.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { writeFileSync, readFileSync, rmSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildMap, decide, mentions, globRe, loads, parseNameStatus, repoMap, addedExports, ALWAYS, LAYERS, suiteHeader, importClosure } from './scope_sections.mjs';
+import { buildMap, decide, mentions, globRe, loads, parseNameStatus, repoMap, addedExports, ALWAYS, LAYERS, suiteHeader, importClosure, changesAgainst } from './scope_sections.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const g = JSON.stringify(got); const w = JSON.stringify(want); const ok = g === w; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${g}${ok ? '' : ` (want ${w})`}`); };
@@ -323,6 +323,39 @@ try {
   const gh = spawnSync(process.execPath, [join(R, 'tests/scope_sections.mjs'), '--files', '.github/workflows/tests.yml', '--github-output'], { encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: out } });
   const lines = execFileSync('cat', [out], { encoding: 'utf8' }).split('\n');
   t('cli --github-output writes scope, reason, suites, shells', [gh.status, lines[0], lines[2] === `suites=${listed.join(' ')}`, lines[3].startsWith('shells=')], [0, 'scope=full', true, true]);
+
+  // ---- a worktree's untracked files ---------------------------------------------------------------
+  // A desk resume file or a desk-review run's scratch files, left untracked, are not the change.
+  const W = join(T, 'wt');
+  const g = (...a) => execFileSync('git', ['-C', W, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' });
+  mkdirSync(join(W, 'desk/bin'), { recursive: true });
+  mkdirSync(join(W, 'tests'));
+  writeFileSync(join(W, '.gitignore'), 'node_modules\n');
+  writeFileSync(join(W, 'desk/bin/tool.mjs'), 'export const a = 1;\n');
+  writeFileSync(join(W, 'desk/bin/other.mjs'), 'export const b = 1;\n');
+  writeFileSync(join(W, 'tests/test_tool.mjs'), "// suite: tool\n// layer: L1\nimport { a } from '../desk/bin/tool.mjs';\n");
+  writeFileSync(join(W, 'tests/test_other.mjs'), "// suite: other\n// layer: L1\nimport { b } from '../desk/bin/other.mjs';\n");
+  g('init', '-q', '-b', 'main');
+  g('add', '-A');
+  g('commit', '-qm', 'base');
+  g('checkout', '-qb', 'work');
+  writeFileSync(join(W, 'desk/bin/tool.mjs'), 'export const a = 2;\n');
+  const wmap = repoMap(W);
+  const scopeWith = (...files) => {
+    for (const f of files) { mkdirSync(dirname(join(W, f)), { recursive: true }); writeFileSync(join(W, f), '{}'); }
+    const d = decide(changesAgainst(W, 'main'), wmap);
+    g('clean', '-qfdx');
+    return [d.scope, d.suites];
+  };
+  const toolOnly = ['some', ['test_tool.mjs']];
+  t('DS-997 AC1 an untracked desk-review codex brief at the root leaves the edited script\'s suites', scopeWith('desk-review-codex-brief-r1.txt'), toolOnly);
+  t('DS-997 AC2 an untracked desk-review results file or seat brief at the root does not make it full',
+    [scopeWith('desk-review-results-r1.json'), scopeWith('desk-review-finder-brief-r1.txt')], [toolOnly, toolOnly]);
+  t('DS-997 AC3 an untracked desk-ticket resume file does not change the scope', scopeWith('.claude/desk-ticket-DS-1.json'), toolOnly);
+  t('DS-997 AC4 any other untracked root file is still full', scopeWith('.npmrc')[0], 'full');
+  writeFileSync(join(W, '.gitignore'), 'node_modules\ndist\n');
+  g('commit', '-qam', 'ignore dist');
+  t('DS-997 AC5 a committed root config change is still full with --base and --head', decide(changesAgainst(W, 'main', 'HEAD'), wmap).scope, 'full');
 
   // ---- tests/run.sh's suite filter --------------------------------------------------------------
   const run = (...a) => spawnSync('bash', [join(R, 'tests/run.sh'), ...a], { encoding: 'utf8' });

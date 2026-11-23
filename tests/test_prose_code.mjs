@@ -9,7 +9,7 @@
 // covers: desk/bin/levers-evaluate.mjs desk/bin/levers-page.mjs desk/bin/levers-refresh.mjs desk/bin/levers-view.mjs desk/bin/live-read.mjs desk/bin/log-tool-calls.mjs desk/bin/maintenance.mjs desk/bin/merge-log.mjs desk/bin/needs-you.mjs desk/bin/not-now.mjs desk/bin/park-words.mjs desk/bin/pass-metrics.mjs desk/bin/pass/promotion-pr.mjs
 // covers: desk/bin/pass/shared.mjs desk/bin/phase0-report.mjs desk/bin/post-merge.mjs desk/bin/promotion.mjs desk/bin/read-repos.mjs desk/bin/recoveries.mjs desk/bin/remote-git.mjs desk/bin/repo-templates.mjs desk/bin/review-post.mjs desk/bin/rework.mjs desk/bin/run-by.mjs desk/bin/seeded-random.mjs
 // covers: desk/bin/stitch-boards.mjs desk/bin/undraft.mjs desk/bin/review-plain.mjs desk/bin/upload-batches.mjs desk/bin/upload-log.mjs desk/bin/upload-queue.mjs desk/bin/usage-limit.mjs desk/bin/usage-pace.mjs desk/bin/usage-probe.mjs desk/bin/worker-cost.mjs
-// covers: desk/bin/preview-db.mjs desk/bin/own-pr.mjs desk/bin/migration-renames.mjs desk/bin/pass/pr-status.mjs
+// covers: desk/bin/preview-db.mjs desk/bin/own-pr.mjs desk/bin/migration-renames.mjs desk/bin/untracked.mjs desk/bin/pass/pr-status.mjs
 // The covers lines name every module the check imports, directly or through another (checked below),
 // so a change to any of them runs this suite.
 // Each fixture under tests/fixtures/prose-code/ adds one kind of drift beside a reference the code has;

@@ -183,6 +183,7 @@ import * as M from './machine.mjs';
 import { remember, runOnce, outOrNull } from './build-memo.mjs';
 import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
+import { KNOWN_UNTRACKED, treeStatus } from './untracked.mjs';
 import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, parseServicePort, SERVICE_PORT_FORM,
   permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, leverRow, leverWords, parseLevers,
@@ -2384,25 +2385,11 @@ const printRead = (cmd, id) => {
   process.stdout.write(out);
 };
 
-// The files desk skills leave untracked in a worktree and never commit, each with the skill that writes
-// it. `<TICKET>` stands for any one path segment. tree-status leaves them out of git status.
-export const KNOWN_UNTRACKED = Object.freeze([
-  Object.freeze({ path: '.claude/desk-ticket-<TICKET>.json', by: 'desk-ticket', what: 'resume file' }),
-]);
-// The scratch files one desk-review run writes at the worktree root, `<run>` that run's id and `<seat>`
-// a role; `tree-status --run <run>` leaves out the ones carrying that id.
-const REVIEW_SCRATCH = Object.freeze(['desk-review-codex-brief-<run>.txt', 'desk-review-<seat>-brief-<run>.txt', 'desk-review-results-<run>.json', 'desk-review.md']);
+// The files desk skills leave untracked in a worktree, and the scratch a desk-review run leaves, live in
+// untracked.mjs; tree-status leaves them out of git status.
+export { KNOWN_UNTRACKED, treeStatus };
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const templateRe = (t, fill) => new RegExp(`^${t.split(/(<[A-Za-z]+>)/).map((p) => (/^<[A-Za-z]+>$/.test(p) ? fill(p) : escapeRe(p))).join('')}$`);
-
-// The lines of `git status --porcelain --untracked-files=all` output that are changes: every line but an
-// untracked known file, or with `run`, an untracked scratch file of that review run.
-export function treeStatus(porcelain, { run } = {}) {
-  const known = KNOWN_UNTRACKED.map((k) => templateRe(k.path, () => '[^/]+'));
-  if (run) known.push(...REVIEW_SCRATCH.map((s) => templateRe(s, (p) => (p === '<run>' ? escapeRe(run) : '[^/]+'))));
-  return porcelain.split('\n').filter((l) => l && !(l.startsWith('?? ') && known.some((re) => re.test(l.slice(3)))));
-}
 
 // ---- CLI -----------------------------------------------------------------------------------
 // The subcommands the CLI handles: any other is refused with this usage. tests/test_desk_env_commands.mjs
