@@ -127,7 +127,7 @@ import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } fro
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
 import { followOnPending, postMergeOwed } from './harvest.mjs';
-import { followKind, checkOf, settled, followDue, followDueAt, followDelayMs, FOLLOW_WAIT_MS, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
+import { followKind, checkOf, settled, broken, followDue, followDueAt, followDelayMs, FOLLOW_WAIT_MS, FOLLOW_TIMEOUT_MS, FOLLOW_BROKEN_RETRY_MS } from './follow-steps.mjs';
 import { promotionRef } from './promotion.mjs';
 import { kindMode, readLog, restartTrial, trialOf, TRIAL_DAYS } from './leases.mjs';
 import { LEASE_KINDS } from './machine.mjs';
@@ -1054,16 +1054,18 @@ function followSplit(r, t, now = Date.now(), reads = null) {
   for (const s of t.follow_on) {
     const c = checkOf(t, s);
     if (c?.result === 'pass') continue;
-    if (!settled(c) && !followDue(s, out, now)) continue;
+    // A source found broken is listed at once, waiting on its fix, whether or not a checker runs it again.
+    const found = settled(c) || broken(c);
+    if (!found && !followDue(s, out, now)) continue;
     const waited = now - followDueAt(s, out) >= FOLLOW_WAIT_MS;
     const g = gateHeld(r, t, s, reads);
     if (!g.held) { waiting.push(s); continue; }
     // A step a checker ran stays its own, whatever the labels read now.
-    const checked = settled(c) || followKind(s, labels) === 'runnable';
-    const runnable = checked && !settled(c);
+    const checked = found || followKind(s, labels) === 'runnable';
+    const runnable = checked && !found;
     if (runnable && (running || !waited)) continue;
     const note = runnable ? [g.note, 'no follow-step checker has passed or failed it yet'].filter(Boolean).join('; ') : g.note;
-    ready.push({ s, note, on: g.on, at: g.at, checked, ...(settled(c) ? { failed: c } : {}) });
+    ready.push({ s, note, on: g.on, at: g.at, checked, ...(found ? { failed: c } : {}) });
   }
   return { ready, waiting };
 }
@@ -1096,6 +1098,16 @@ function followItems(r, reads = null) {
   });
 }
 const GATE_WORDS = { main: 'the default branch has', production: 'production runs' };
+// A step whose evidence source a checker found broken (follow-steps.mjs broken): not unchecked, but
+// waiting on that source's fix, so the item names the broken step, what it printed, and the open issue
+// tracking it, or drafts one to file where none does. A checker runs it again every
+// FOLLOW_BROKEN_RETRY_MS, and it passes, leaving the list, once the source works.
+const brokenWords = (r, c) => {
+  const src = one(c.source), what = one(c.found).replace(/\.$/, '');
+  const fix = c.issue ? `It waits on #${c.issue}, which tracks that`
+    : `No open issue tracks that: file one, "${src} produces nothing to judge on ${defaultOf(r)}", quoting "${what}" and the run (${one(c.evidence)}), and it waits on that`;
+  return ` A follow-step checker found its evidence source broken, so it could not be checked: ${src} ran and produced nothing to judge (${what}; evidence: ${one(c.evidence)}). ${fix}; a follow-step checker runs it again every ${FOLLOW_BROKEN_RETRY_MS / 3600000} hours, and it leaves this list once the source works.`;
+};
 // "<KEY> is on <where> since <date>.", then any gate left unchecked, then one "Check: <step>." per step,
 // a step's §3 row and its value named only where it has one.
 function followItem(r, t, { gate, ready, waiting }) {
@@ -1109,7 +1121,8 @@ function followItem(r, t, { gate, ready, waiting }) {
   const stop = (x) => `${x}${x.endsWith('.') ? '' : '.'}`;
   const checks = ready.map(({ s, failed }) => {
     const said = `${reviewStep(one(s.step)).trim().replace(/([^\s.])\.$/, '$1')}${rowSaid(s.row)}`;
-    const ran = failed ? ` A follow-step checker ran it and it failed: ${one(failed.found).replace(/\.$/, '')} (evidence: ${one(failed.evidence)}).` : '';
+    const ran = !failed ? '' : broken(failed) ? brokenWords(r, failed)
+      : ` A follow-step checker ran it and it failed: ${one(failed.found).replace(/\.$/, '')} (evidence: ${one(failed.evidence)}).`;
     return ` Check: ${stop(said)}${ran}`;
   }).join('');
   const notes = [...new Set(ready.map((x) => x.note).filter(Boolean))].map((x) => ` ${capital(x)}.`).join('');
