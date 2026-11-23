@@ -1041,7 +1041,9 @@ unknown_age(){ # unknown_age <n> <sha> <key> <merge state>
     if [ -f "$f" ] || [ -f "$r" ]; then rm -f "$f" "$r"; blocked_clear "$3" "merge ref:"; fi
     return 0
   fi
-  read -r was at < "$f" 2>/dev/null || true
+  # A stamp no loop has written yet (or one cleared since) is no age: read only one that is there, since the
+  # shell reports a missing file for `< "$f"` before any 2>/dev/null on the command takes effect.
+  if [ -f "$f" ]; then read -r was at < "$f" || true; fi
   if [ -f "$r" ]; then read -r first tried < "$r" || true; fi
   now=$(date +%s)
   if [ "$was" != "$2" ] || [ -z "$at" ]; then
