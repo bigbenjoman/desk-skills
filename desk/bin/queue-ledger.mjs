@@ -91,7 +91,7 @@ function stateEvents(was, now, at) {
     events.push(s);
     from = TRANSITIONS[s.type].to;
   }
-  return { events, reached: !!last && events.length === steps.length };
+  return { events, reached: !!last && events.length === steps.length, to: from };
 }
 // The typed events whose replay clears a ticket's park (ticket-ledger.mjs apply).
 const CLEARS_PARK = ['admitted', 'requeued', 'spawned', 'finished', 'unparked'];
@@ -130,9 +130,11 @@ function waitEvents(was, now, fields) {
 // The blockers ticket `was` gained and lost in becoming `now`, each a held or released event, taken out
 // of the fields `fields` records with it, when the ticket's state `from` (after its state events) allows
 // them. A change their replay would not leave as queue.json keeps it (blockers reordered or repeated, a
-// held_by not written as its blockers joined, or null once none is left) is recorded as the field.
+// held_by not written as its blockers joined, or null once none is left) is recorded as the field, and so
+// are the blockers of a ticket new to this queue: the log may still hold the ones it had when it was last
+// archived here, and only the field replaces them.
 function holdEvents(was, now, fields, from) {
-  if (!own(fields, 'held_by') || !TRANSITIONS.held.from.includes(from)) return [];
+  if (was === undefined || !own(fields, 'held_by') || !TRANSITIONS.held.from.includes(from)) return [];
   const before = blockersOf(was);
   const after = blockersOf(now);
   const added = after.filter((k) => !before.includes(k));
@@ -144,9 +146,6 @@ function holdEvents(was, now, fields, from) {
   delete fields.held_by;
   return [...(added.length ? [{ type: 'held', data: { by: added } }] : []), ...removed.map((by) => ({ type: 'released', data: { by } }))];
 }
-
-// The state ticket `was` is left in by typed events `typed`, applied in order (null for none).
-const stateAfter = (was, typed) => typed.reduce((s, e) => (typeof TRANSITIONS[e.type].to === 'string' ? TRANSITIONS[e.type].to : s), was?.state ?? null);
 
 // The events queue `before` (the file as it stood, or null) becoming queue `after` records in `batch`.
 // `archived` holds each ticket this write moved to the archive, as it was archived. `elsewhere(key)`
@@ -180,10 +179,10 @@ export function queueEvents(before, after, { batch, archived = {}, elsewhere = (
         ev(key, 'moved', { from: text(now.moved_from.batch) ?? STANDING, to: batch });
         from = undefined;
       } else if (own(fields, 'state')) {
-        const { events: typed, reached } = stateEvents(was, now, at);
+        const { events: typed, reached, to } = stateEvents(was, now, at);
         if (typed.length && typed.every((e) => !invalid({ ...e, batch, key }))) {
           for (const e of typed) ev(key, e.type, e.data);
-          from = stateAfter(was, typed);
+          from = to;
           if (reached) delete fields.state;
           // A park the queue keeps is laid back over one an event's replay cleared, and one a parked
           // event's replay leaves as it is needs no field of its own.

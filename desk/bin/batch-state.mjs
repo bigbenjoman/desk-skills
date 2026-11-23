@@ -242,7 +242,7 @@ export const UNPROMOTED_AFTER_MS = 24 * 3600_000;
 // The blockers ticket `t` is still held behind outside its batch that the pass recorded as merged only
 // into another branch, Done UNPROMOTED_AFTER_MS or more by `now`: [[key, {branch, pr, state, since, promote?}]].
 export const unpromotedHolds = (t, now = Date.now()) => (holdsKept(t) ? Object.entries(t.unpromoted ?? {}) : [])
-  .filter(([b, u]) => u?.branch && blockersOf(t).includes(b) &&String(t.held_outside ?? '').split('|').includes(b)
+  .filter(([b, u]) => u?.branch && blockersOf(t).includes(b) && String(t.held_outside ?? '').split('|').includes(b)
     && now - Date.parse(u.since) >= UNPROMOTED_AFTER_MS);
 // An unpromoted record's promotion PR state as words: "a draft", "open" or "red".
 export const promotionState = (u) => (u.state === 'draft' ? 'a draft' : u.state);

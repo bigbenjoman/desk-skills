@@ -204,7 +204,8 @@ function apply(state, ev) {
     case 'automerge_disarmed': t.automerge = null; break;
     case 'merged': t.merge = { ...d, at: ev.at }; t.automerge = null; break;
     case 'finished': t.park = null; if (d.pr != null) t.pr = d.pr; break;
-    case 'moved': t.batch = d.to; break;
+    // A ticket that leaves every batch leaves its blockers there: added again, it is held by what then holds it.
+    case 'moved': t.batch = d.to; if (d.to == null) { t.holds = []; delete t.fields.held_by; } break;
     case 'archived': t.archived = true; break;
     default: break;
   }

@@ -23,7 +23,7 @@ Object.assign(process.env, { HOME: join(T, 'home'), DESK_CONFIG: ON, DESK_HOME: 
 const { queueWriter } = await import('../desk/bin/queue-writer.mjs');
 const { versionOf } = await import('../desk/bin/queue-store.mjs');
 const { read: readLog, ledgerPaths, reduce, fold } = await import('../desk/bin/ticket-ledger.mjs');
-const { recordWrite, ledgerTarget, STANDING, queueDifference } = await import('../desk/bin/queue-ledger.mjs');
+const { recordWrite, ledgerTarget, STANDING, queueDifference, queueEvents } = await import('../desk/bin/queue-ledger.mjs');
 const { ledgerLine } = await import('../desk/bin/pass/report.mjs');
 const { failedField } = await import('../desk/bin/pass/shared.mjs');
 const { lock, unlock } = await import('../desk/bin/dir-lock.mjs');
@@ -265,6 +265,25 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   e = since(f, from);
   t('blockers reordered are recorded as held_by itself', `${holdsIn(e)}/${legacyHeldBy(e)}`, '/true');
   t('and the difference still reads zero', queueDifference(f, { by: 'test' }).diffs.map((x) => x.path).join(', '), '');
+  // Dropped while held behind A and B, then added again and held behind B alone: the blockers it had
+  // before its drop are not kept, so the rebuild holds it behind B, as queue.json does.
+  q(f, ON, 'drop', 'C');
+  q(f, ON, 'add', 'C');
+  q(f, ON, 'set', 'C', 'state=triaged');
+  from = at();
+  q(f, ON, 'hold', 'C', 'B');
+  t('a ticket dropped and added again is held only by its new blocker', `${holdsIn(since(f, from))} ${read(f).tickets.C.held_by}`, 'held C B B');
+  t('and the difference reads zero', queueDifference(f, { by: 'test' }).diffs.map((x) => x.path).join(', '), '');
+}
+
+// A ticket new to the queue arrives with its blockers set: they are recorded as held_by itself, which
+// replaces any the log kept from its last stay, never as a held event added to them.
+{
+  const before = { version: 1, batch: 'b', tickets: { B: tk('B') } };
+  const after = { ...before, tickets: { ...before.tickets, C: tk('C', { held_by: 'B' }) } };
+  const evs = queueEvents(before, after, { batch: 'b' }).filter((e) => e.key === 'C');
+  t('blockers a new ticket arrives with are its held_by field, not a held event',
+    `${evs.some((e) => e.type === 'held')} ${evs.find((e) => e.type === 'legacy_set')?.data.fields.held_by}`, 'false B');
 }
 
 // A pass taking a running ticket back to triage, which no typed event does: the state is recorded with
