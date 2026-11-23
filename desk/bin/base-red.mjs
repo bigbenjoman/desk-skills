@@ -220,10 +220,12 @@ export function baseRerun(r, { reran = [], view, status, perm, notes = () => nul
   const allFlaky = (r.checks ?? []).length > 0 && r.checks.every((c) => flaky.includes(c.name));
   const outs = [];
   const why = fresh.map((x) => {
-    if (allFlaky) return 'a §4 Known flaky check';
+    // Read even for a flaky check, so a timeout on one is kept, and a second inside the window caught.
     const v = view(x);
-    const setup = setupFailed(v), out = timedOut(v, notes);
+    const out = timedOut(v, notes);
     outs.push(...out);
+    if (allFlaky) return 'a §4 Known flaky check';
+    const setup = setupFailed(v);
     return [...(setup.length ? [`a setup step (${[...new Set(setup)].map((n) => `"${n}"`).join(', ')})`] : []), ...(out.length ? [`a timeout (${[...new Set(out)].map((n) => `"${n}"`).join(', ')})`] : [])].join(' and ');
   });
   if (!why.every(Boolean)) return { admit: true };

@@ -454,6 +454,9 @@ test('a red base over two runs, one re-run already, re-runs only the other', () 
     assert.equal(d.admit, true);
     assert.match(d.why, /"Lint" timed out on main again within 24 hours of a rerun for a timeout/);
     assert.deepEqual(baseRerun(rr(URL78), { reran: [], timeouts, now: now + TIMEOUT_AGAIN_MS, view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes' }).rerun, ['78']);
+    // a §4 Known flaky check that times out again within the day is not re-run again either
+    assert.equal(baseRerun(rr(URL78), { reran: [], timeouts, now, flaky: ['Lint'], view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes' }).admit, true);
+    assert.deepEqual(baseRerun(rr(URL78), { reran: [], now, flaky: ['Lint'], view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes' }).timeouts, [{ job: 'Lint', at: new Date(now).toISOString() }]);
     // another job's earlier timeout does not count
     assert.deepEqual(baseRerun(rr(URL78), { reran: [], timeouts: [{ job: 'Build', at: '2026-11-23T05:00:00Z' }], now, view: () => job(), notes: out("The action 'Run tests' has timed out after 12 minutes."), status: never, perm: 'yes' }).rerun, ['78']);
   });
