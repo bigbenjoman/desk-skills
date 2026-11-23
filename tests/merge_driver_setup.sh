@@ -137,7 +137,7 @@ if (a[0] === 'pr' && a[1] === 'list') {
   const sha = /^[0-9a-f]{40}$/.test(m[1]) ? m[1] : (b.tips ?? {})[decodeURIComponent(m[1])] ?? b.tip;
   const c = b.commits[sha];
   if (!c) { console.error('gh: Not Found (HTTP 404)'); process.exit(1); }
-  // As `gh api <path> -i` prints it: the status line, a blank line, the REST body (base-red.mjs condGet).
+  // As gh api PATH -i prints it: the status line, a blank line, the REST body (base-red.mjs condGet).
   const http = (body) => process.stdout.write('HTTP/2.0 200 OK\r\n\r\n' + JSON.stringify(body));
   if (m[2]) http({ check_runs: (c.runs ?? []).map(([name, status, conclusion, url]) => ({ name, status, conclusion, details_url: url ?? null })) });
   else http({ sha, parents: c.parent ? [{ sha: c.parent }] : [] });
