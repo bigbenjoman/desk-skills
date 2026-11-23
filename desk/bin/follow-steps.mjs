@@ -23,6 +23,10 @@ export const FOLLOW_WAIT_MS = Number(process.env.DESK_FOLLOW_WAIT_MS) || 2 * 60 
 // A step a checker found still pending (a run not finished yet) is checked again this long after, until
 // FOLLOW_WAIT_MS after its code went out.
 export const FOLLOW_RETRY_MS = 10 * 60 * 1000;
+// A step whose evidence source a checker found broken (a step that ran and produced nothing to judge)
+// waits on that source being fixed: it is checked again this long after, with no end, and passes once
+// the source works.
+export const FOLLOW_BROKEN_RETRY_MS = 6 * 60 * 60 * 1000;
 const FOLLOW_OPENING = 'You are the autopilot follow-step checker for ';
 
 // What a checker may read: GitHub CI runs and checks, and desk's own logs and state files.
@@ -79,15 +83,16 @@ export function followKind(s, labels = []) {
 // always is, its gate deciding as before; one that waits is once its delay has passed (out unknown, never).
 export const followDue = (s, out, now = Date.now()) => !followDelayMs(s) || (Number.isFinite(out) && now >= followDueAt(s, out));
 // Whether a merged ticket among `tickets` has a delayed step that fell due after `since` and by `now`
-// (ms), none checked yet: an idle batch runs no pass, so this wakes it for one. `outOf(t)` is when its
-// code went out (ms), as the pass and needs-you take it (needs-you.mjs outAt); unknown, it is not due.
+// (ms), none checked yet, or a step found broken whose next check (FOLLOW_BROKEN_RETRY_MS) fell due
+// then: an idle batch runs no pass, so this wakes it for one. `outOf(t)` is when its code went out (ms),
+// as the pass and needs-you take it (needs-you.mjs outAt); unknown, it is not due.
 export const followDueSince = (tickets, since, outOf, now = Date.now()) => Object.values(tickets ?? {}).some((t) => {
   if (!followOnPending(t)) return false;
   const out = outOf(t);
   if (!Number.isFinite(out)) return false;
   return t.follow_on.some((s) => {
-    if (!followDelayMs(s) || checkOf(t, s)) return false;
-    const due = followDueAt(s, out);
+    const c = checkOf(t, s);
+    const due = broken(c) ? Date.parse(c.at) + FOLLOW_BROKEN_RETRY_MS : followDelayMs(s) && !c ? followDueAt(s, out) : NaN;
     return due > since && due <= now;
   });
 });
@@ -96,18 +101,21 @@ export const followDueSince = (tickets, since, outOf, now = Date.now()) => Objec
 // none ran it.
 export const checkOf = (t, s) => (Array.isArray(t?.follow_checks)
   ? t.follow_checks.filter((c) => sameStep(c, s) && String(c.pr ?? '') === String(t.result?.pr ?? '')).pop() ?? null : null);
-// Whether a record settles its step: passed or failed, not still pending.
+// Whether a record settles its step: passed or failed, not still pending, nor waiting on a broken source.
 export const settled = (c) => c?.result === 'pass' || c?.result === 'fail';
+// Whether a checker found the step's evidence source broken: it ran and produced nothing to judge.
+export const broken = (c) => c?.result === 'broken';
 // Whether a step found pending is still checked again at `now`: FOLLOW_WAIT_MS has not passed since it
 // fell due, its code having gone out at `out` (ms).
 export const followRetrying = (s, out, now = Date.now()) => now - followDueAt(s, out) < FOLLOW_WAIT_MS;
 // The steps of `t` a checker owes a run, its code having gone out at `out` (ms): runnable, due
 // (followDueAt), and none recorded yet, or found pending at least FOLLOW_RETRY_MS before `now` while
-// followRetrying.
+// followRetrying, or found broken at least FOLLOW_BROKEN_RETRY_MS before `now`.
 export const owedSteps = (t, labels, { now = Date.now(), out }) => (Array.isArray(t?.follow_on) ? t.follow_on : [])
   .filter((s) => {
     if (followKind(s, labels) !== 'runnable' || !followDue(s, out, now)) return false;
     const c = checkOf(t, s);
+    if (broken(c)) return now - Date.parse(c.at) >= FOLLOW_BROKEN_RETRY_MS;
     return !c || (followRetrying(s, out, now) && !settled(c) && now - Date.parse(c.at) >= FOLLOW_RETRY_MS);
   });
 
@@ -128,6 +136,8 @@ export function followSettings({ bin, dirs }) {
         'Bash(gh run view:*)',
         'Bash(gh pr view:*)',
         'Bash(gh pr checks:*)',
+        'Bash(gh issue list:*)',
+        'Bash(gh issue view:*)',
         `Bash(node ${join(bin, 'desk-gh.mjs')} read:*)`,
         ...reportRules(bin),
         ...dirs.flatMap((d) => [`Read(/${d}/**)`, `Grep(/${d}/**)`, `Glob(/${d}/**)`]),
@@ -145,7 +155,7 @@ export function followPrompt({ slug, repo, t, steps, bin, dirs }) {
     `${FOLLOW_OPENING}${slug}. ${t.key}'s PR #${pr ?? '?'} in ${repo} has merged${merged ? ` (${merged})` : ''}. Its worker left the steps below to check after the merge. Each reads only GitHub CI results, desk's logs, desk's state files or desk's reports. Check each one now, and change nothing.`,
     '',
     'What you may use:',
-    `- \`gh run list\`, \`gh run view\`, \`gh pr view\` and \`gh pr checks\`, with \`--repo ${repo}\``,
+    `- \`gh run list\`, \`gh run view\` (\`--log\` for a step's own output), \`gh pr view\`, \`gh pr checks\`, \`gh issue list\` and \`gh issue view\`, with \`--repo ${repo}\``,
     `- \`node ${join(bin, 'desk-gh.mjs')} read <endpoint>\` for a GitHub read those do not cover (GET only)`,
     `- desk's reports, as \`node ${join(bin, 'phase0-report.mjs')} [--flags]\` and \`node ${join(bin, 'cache-report.mjs')} [args]\`, with the flags a step names`,
     `- Read, Grep and Glob under ${dirs.join(', ')}`,
@@ -157,7 +167,9 @@ export function followPrompt({ slug, repo, t, steps, bin, dirs }) {
     '',
     'A step passes when what it says to check holds. It fails when it does not, or when you could not read what it needs: say what stopped you. It is pending when what it needs has not finished yet (a run or check still queued or in progress): it is checked again later. Give the evidence for each: the run URL, or the file path you read it from.',
     '',
-    `End your reply with one line, at the start of a line: \`${FOLLOW_RESULT_MARK} {"steps": [{"n": <step number>, "result": "pass", "fail" or "pending", "found": "<what you found, one line>", "evidence": "<run URL or file path>"}]}\`. A step you leave out counts as failed.`,
+    'A job that passes is not evidence that the step inside it ran: an advisory job can pass while its step crashed. Read the step\'s own output. A step is broken when what it needs ran and produced nothing to judge: the step that makes the evidence crashed, scanned no page, or collected no tests. Then give `source`, that step and its job (`"<job> › <step>"`), and say in `found` what it printed; and look for an open issue in this repo that tracks it (`gh issue list --state open --search "<words from the step or its error>"`): give its number as `issue`, or `null` when none does. A broken step is checked again later.',
+    '',
+    `End your reply with one line, at the start of a line: \`${FOLLOW_RESULT_MARK} {"steps": [{"n": <step number>, "result": "pass", "fail", "pending" or "broken", "found": "<what you found, one line>", "evidence": "<run URL or file path>", "source": "<job › step, for broken>", "issue": <number or null, for broken>}]}\`. A step you leave out counts as failed.`,
   ].join('\n');
 }
 
@@ -172,22 +184,25 @@ export function startFollow({ state, slug, repo, bin, t, steps, dirs, cwd, env =
 }
 
 const line = (s, n = 300) => { const x = String(s ?? '').replace(/\s+/g, ' ').trim(); return x.length > n ? `${x.slice(0, n - 1)}…` : x; };
-const RESULTS = ['pass', 'fail', 'pending'];
+const RESULTS = ['pass', 'fail', 'pending', 'broken'];
 
 // What a finished checker found, from its output file: { cost, results: [{ step, after?, result, found,
-// evidence }] } in the run's step order, `result` pass, fail or pending, a step it gave no result for
-// read as failed; or { cost, error } where it left no result line, with `limit: true` where the usage
+// evidence, source?, issue? }] } in the run's step order, `result` pass, fail, pending or broken (with
+// the broken step as `source` and the issue tracking it, or null), a step it gave no result for read as
+// failed; or { cost, error } where it left no result line, with `limit: true` where the usage
 // limit stopped it.
 export function readFollow(out, steps) {
   const { cost, error, limit, payload } = readMarked(out, FOLLOW_RESULT_MARK);
   if (limit) return { cost, error, limit };
   if (error) return { cost, error: `gave ${error}` };
   const got = new Map((Array.isArray(payload?.steps) ? payload.steps : []).filter((x) => Number.isInteger(x?.n)).map((x) => [x.n, x]));
-  const said = { pass: 'it holds', fail: 'it does not hold', pending: 'it has not finished yet' };
+  const said = { pass: 'it holds', fail: 'it does not hold', pending: 'it has not finished yet', broken: 'what it needs ran and produced nothing to judge' };
   const results = steps.map((s, i) => {
     const x = got.get(i);
     const result = RESULTS.includes(x?.result) ? x.result : 'fail';
-    return { ...s, result, found: line(x?.found) || (x ? said[result] : 'the checker gave no result for it'), evidence: line(x?.evidence) || out };
+    const issue = Number.isInteger(x?.issue) && x.issue > 0 ? x.issue : null;
+    return { ...s, result, found: line(x?.found) || (x ? said[result] : 'the checker gave no result for it'), evidence: line(x?.evidence) || out,
+      ...(result === 'broken' ? { source: line(x?.source, 120) || 'the step that makes its evidence', issue } : {}) };
   });
   return { cost, results };
 }
@@ -200,9 +215,11 @@ export function followComment(key, results) {
   return [
     `A desk follow-step checker ran ${results.length === 1 ? 'the step' : `the ${results.length} steps`} ${key} left for after this merge:`,
     '',
-    ...results.map((c) => `- ${c.result === 'pass' ? 'passed' : '**failed**'}: ${line(c.step)}. Found: ${c.found}. Evidence: ${c.evidence}`),
+    ...results.map((c) => (c.result === 'broken'
+      ? `- **evidence broken**: ${line(c.step)}. ${c.source} ran and produced nothing to judge: ${c.found}. Evidence: ${c.evidence}. ${c.issue ? `Tracked in #${c.issue}; ` : 'No open issue tracks it; '}checked again later`
+      : `- ${c.result === 'pass' ? 'passed' : '**failed**'}: ${line(c.step)}. Found: ${c.found}. Evidence: ${c.evidence}`)),
     '',
-    results.some((c) => c.result !== 'pass') ? 'Each failed step is listed in needs-you.' : 'Nothing is left for a person.',
+    results.some((c) => c.result !== 'pass') ? `Each ${results.some((c) => c.result === 'broken') ? 'step not passed' : 'failed step'} is listed in needs-you.` : 'Nothing is left for a person.',
     `(${key}/desk-autopilot follow-steps)`,
   ].join('\n');
 }

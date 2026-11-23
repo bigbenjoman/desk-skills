@@ -4,7 +4,7 @@
 // Pure functions, plus scratch output files under a throwaway directory.
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { followKind, followDelayMs, followDueAt, followDueSince, owedSteps, checkOf, readFollow, failedRun, followComment, followSettings, followPrompt, FOLLOW_RESULT_MARK, FOLLOW_TIMEOUT_MS, FOLLOW_RETRY_MS, FOLLOW_WAIT_MS } from '../desk/bin/follow-steps.mjs';
+import { followKind, followDelayMs, followDueAt, followDueSince, owedSteps, checkOf, readFollow, failedRun, followComment, followSettings, followPrompt, FOLLOW_RESULT_MARK, FOLLOW_TIMEOUT_MS, FOLLOW_RETRY_MS, FOLLOW_WAIT_MS, FOLLOW_BROKEN_RETRY_MS } from '../desk/bin/follow-steps.mjs';
 import { decideFollowSteps, followAwaits } from '../desk/bin/pass/follow-steps.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 import { scratch } from './scratch.mjs';
@@ -98,6 +98,14 @@ t('AC3 a label is carried whole only', kind('needs-bento read audit.jsonl for th
   t('a step found pending is owed again once FOLLOW_RETRY_MS has passed', j(owedSteps(pending(new Date(now - FOLLOW_RETRY_MS).toISOString()), [], { now, out })), j([A]));
   t('but not before', j(owedSteps(pending(new Date(now - FOLLOW_RETRY_MS + 1000).toISOString()), [], { now, out })), '[]');
   t('nor once retries are over, FOLLOW_WAIT_MS after it fell due', j(owedSteps(pending('2026-11-20T10:00:00.000Z'), [], { now, out: now - FOLLOW_WAIT_MS })), '[]');
+  const brk = (at) => ({ follow_on: [A], follow_checks: [{ ...A, result: 'broken', found: '0 pages scanned', evidence: 'u', source: 's', issue: null, at }] });
+  t('a step found broken is owed again once FOLLOW_BROKEN_RETRY_MS has passed, however long after it fell due',
+    j(owedSteps(brk(new Date(now - FOLLOW_BROKEN_RETRY_MS).toISOString()), [], { now, out: now - 10 * FOLLOW_WAIT_MS })), j([A]));
+  t('but not before', j(owedSteps(brk(new Date(now - FOLLOW_BROKEN_RETRY_MS + 1000).toISOString()), [], { now, out })), '[]');
+  const brokeAt = now - FOLLOW_BROKEN_RETRY_MS;
+  const idle = { K: { key: 'K', state: 'done', merged_at: 'x', follow_on: [A], follow_checks: [{ ...A, result: 'broken', at: new Date(brokeAt).toISOString() }] } };
+  t('an idle batch is woken for a broken step\'s next check', followDueSince(idle, brokeAt + 1, () => out, now), true);
+  t('but not again once that check is past', followDueSince(idle, now, () => out, now + 1), false);
   const requeued = { result: { pr: 9 }, follow_on: [A], follow_checks: [{ ...A, pr: 8, result: 'pass', found: 'x', evidence: 'y' }] };
   t('a record an earlier PR\'s checker made is not this PR\'s', j([checkOf(requeued, A), owedSteps(requeued, [], { now, out })]), j([null, [A]]));
 }
@@ -172,6 +180,13 @@ const STEPS = [CI, { step: 'read audit.jsonl for the cost', row: null }];
   const p = output('pending', `${FOLLOW_RESULT_MARK} ${j({ steps: [{ n: 0, result: 'pending', found: 'run 9 in progress', evidence: 'u' }, { n: 1, result: 'maybe' }] })}`);
   t('a step whose run has not finished is pending; a result it does not know is failed', j(readFollow(p, STEPS).results.map((x) => x.result)), '["pending","fail"]');
 }
+// #1318: a run that passed while the step making the evidence produced nothing is broken, not failed.
+{
+  const p = output('broken', `${FOLLOW_RESULT_MARK} ${j({ steps: [{ n: 0, result: 'broken', found: 'ERR_REQUIRE_ESM, 0 pages scanned', evidence: 'u', source: 'E2E (advisory) › a11y scan', issue: 812 }, { n: 1, result: 'broken', found: 'collected 0 tests', evidence: 'v', issue: 'soon' }] })}`);
+  t('a broken step keeps the step that broke and the issue tracking it, null when none is given',
+    j(readFollow(p, STEPS).results.map((x) => [x.result, x.source, x.issue])), j([['broken', 'E2E (advisory) › a11y scan', 812], ['broken', 'the step that makes its evidence', null]]));
+  t('only a broken step carries them', 'source' in readFollow(output('two-b', `${FOLLOW_RESULT_MARK} ${j({ steps: [{ n: 0, result: 'fail', source: 'x', issue: 3 }] })}`), STEPS).results[0], false);
+}
 t('a checker that left no result line is an error', readFollow(output('none', 'I could not finish.'), STEPS).error, `gave no ${FOLLOW_RESULT_MARK} line`);
 t('a checker with no output is an error', readFollow(join(T, 'missing.json'), STEPS).error, 'gave no output');
 t('an error fails every step of the run, naming why and where', j(failedRun({ out: '/o', steps: [CI] }, 'left no output')),
@@ -181,16 +196,20 @@ t('an error fails every step of the run, naming why and where', j(failedRun({ ou
 {
   const c = followComment('DS-1', [{ ...CI, result: 'pass', found: 'run 9 passed', evidence: 'https://x/9' }, { ...PAGE, result: 'fail', found: 'no', evidence: '/e' }]);
   t('AC1 the PR comment names each step and how it went, and its marker', /- passed: the CI run on main is green\. Found: run 9 passed\. Evidence: https:\/\/x\/9\n- \*\*failed\*\*: check the page loads\. Found: no\. Evidence: \/e\n\nEach failed step is listed in needs-you\.\n\(DS-1\/desk-autopilot follow-steps\)$/.test(c), true);
+  t('#1318 a broken step is said as broken, naming the step that broke and its issue',
+    /- \*\*evidence broken\*\*: the CI run on main is green\. E2E › a11y ran and produced nothing to judge: 0 pages\. Evidence: u\. Tracked in #812; checked again later\n\nEach step not passed is listed in needs-you\./.test(followComment('DS-1', [{ ...CI, result: 'broken', found: '0 pages', evidence: 'u', source: 'E2E › a11y', issue: 812 }])), true);
   t('a comment with every step passed says nothing is left', /Nothing is left for a person\./.test(followComment('DS-1', [{ ...CI, result: 'pass', found: 'ok', evidence: 'u' }])), true);
 }
 {
   const s = followSettings({ bin: '/b', dirs: ['/state', '/home'] });
-  t('the checker reads only: gh run, pr view and checks, desk-gh reads, and the files under its directories',
-    j(s.permissions.allow), j(['Bash(gh run list:*)', 'Bash(gh run view:*)', 'Bash(gh pr view:*)', 'Bash(gh pr checks:*)', 'Bash(node /b/desk-gh.mjs read:*)',
+  t('the checker reads only: gh run, pr view and checks, issue list and view, desk-gh reads, and the files under its directories',
+    j(s.permissions.allow), j(['Bash(gh run list:*)', 'Bash(gh run view:*)', 'Bash(gh pr view:*)', 'Bash(gh pr checks:*)', 'Bash(gh issue list:*)', 'Bash(gh issue view:*)', 'Bash(node /b/desk-gh.mjs read:*)',
       'Bash(node /b/phase0-report.mjs)', 'Bash(node /b/phase0-report.mjs --*)', 'Bash(node /b/cache-report.mjs:*)',
       'Read(//state/**)', 'Grep(//state/**)', 'Glob(//state/**)', 'Read(//home/**)', 'Grep(//home/**)', 'Glob(//home/**)']));
   t('and may not write', j(s.permissions.deny), j(['Edit', 'Write', 'WebFetch', 'WebSearch', 'Agent']));
   const p = followPrompt({ slug: 'acme__x', repo: 'acme/x', t: { key: 'DS-1', result: { pr: 7 }, merged_at: 'm' }, steps: [CI], bin: '/b', dirs: ['/state'] });
+  t('#1318 the prompt says a passing job is not evidence its step ran, and asks for the broken step and its issue',
+    /A job that passes is not evidence that the step inside it ran/.test(p) && /"result": "pass", "fail", "pending" or "broken"/.test(p) && /gh issue list --state open --search/.test(p), true);
   t('the prompt numbers each step and asks for the result line', /\n0\. the CI run on main is green\n[\s\S]*FOLLOW_RESULT: \{"steps"/.test(p), true);
 }
 

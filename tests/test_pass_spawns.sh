@@ -1819,8 +1819,8 @@ cat > "$T/stub/claude" <<EOF
 case "\$1 \$2" in
   "-p You are the autopilot follow-step checker for "*)
     echo started >> "$T/follow-prompts"
-    case "\$2" in *"FS-2's PR"*) r=fail ;; *) r=pass ;; esac
-    $NODE -e 'console.log(JSON.stringify({ type: "result", total_cost_usd: 0.03, result: "FOLLOW_RESULT: " + JSON.stringify({ steps: [{ n: 0, result: process.argv[1], found: process.argv[1] === "pass" ? "run 9 is green" : "run 9 failed lint", evidence: "https://github.com/acme/widgets/actions/runs/9" }] }) }))' "\$r"
+    case "\$2" in *"FS-2's PR"*) r=fail ;; *"FS-4's PR"*) r=broken ;; *) r=pass ;; esac
+    $NODE -e 'const r = process.argv[1]; console.log(JSON.stringify({ type: "result", total_cost_usd: 0.03, result: "FOLLOW_RESULT: " + JSON.stringify({ steps: [{ n: 0, result: r, found: r === "pass" ? "run 9 is green" : r === "broken" ? "the a11y scan crashed loading, 0 pages scanned" : "run 9 failed lint", evidence: "https://github.com/acme/widgets/actions/runs/9", ...(r === "broken" ? { source: "E2E (advisory) › a11y scan", issue: 812 } : {}) }] }) }))' "\$r"
     exit 0 ;;
 esac
 exec "$T/claude-before-fs" "\$@"
@@ -1843,11 +1843,12 @@ q init fs
 fs_merged FS-1 801 "follow_on=[$CI_STEP,$PAGE_STEP]"
 fs_merged FS-2 802 "follow_on=[$CI_STEP]"
 fs_merged FS-3 803 "follow_on=[$PAGE_STEP]"
+fs_merged FS-4 804 "follow_on=[$CI_STEP]"
 : > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" 2>&1)
 check "DS-798 AC1 once the merge is recorded, the pass starts a follow-step checker on each ticket's step that only reads CI" \
   'echo "$out" | grep -qF "FS-1 follow steps: a follow-step checker started" && [ "$(field FS-1 follow_run.steps | jq -c "[.[].step]")" = "[\"the CI run on main for the merge commit is green\"]" ] && [ "$(field FS-2 follow_run.steps | jq length)" = 1 ]'
 check "DS-798 AC4 a ticket with no step a checker can run gets none" '[ "$(field FS-3 follow_run)" = null ] && ! echo "$out" | grep -qF "FS-3 follow steps"'
-for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do [ "$(grep -l FOLLOW_RESULT "$DESK_AUTOPILOT_STATE"/follow/FS-*.json 2>/dev/null | grep -vc settings)" -ge 2 ] && break; sleep 0.2; done
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do [ "$(grep -l FOLLOW_RESULT "$DESK_AUTOPILOT_STATE"/follow/FS-*.json 2>/dev/null | grep -vc settings)" -ge 3 ] && break; sleep 0.2; done
 : > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" 2>&1)
 check "DS-798 AC1 the next pass records the step it passed and settles it, leaving the person's step" \
   '[ "$(field FS-1 follow_run)" = null ] && [ "$(field FS-1 follow_checks | jq -c "[.[] | [.result, .evidence, .pr]]")" = "[[\"pass\",\"https://github.com/acme/widgets/actions/runs/9\",801]]" ] && [ "$(field FS-1 follow_on)" = "[$PAGE_STEP]" ]'
@@ -1855,6 +1856,8 @@ check "DS-798 AC1 and says what it found on the ticket's PR" \
   'grep -q "^pr comment 801 --repo acme/widgets --body A desk follow-step checker ran the step FS-1 left" "$T/gh-calls" && echo "$out" | grep -qF "FS-1 follow steps: its follow-step checker passed 1 and failed 0; said on PR #801"'
 check "DS-798 AC2 a step it failed is recorded with what it found and the run URL, and stays a follow step" \
   '[ "$(field FS-2 follow_checks | jq -c "[.[] | [.result, .found]]")" = "[[\"fail\",\"run 9 failed lint\"]]" ] && [ "$(field FS-2 follow_on | jq length)" = 1 ] && [ "$(field FS-2 follow_on_done)" = null ] && echo "$out" | grep -qF "FS-2 follow steps: its follow-step checker passed 0 and failed 1, each listed in needs-you"'
+check "#1318 a step whose evidence source ran and produced nothing is recorded broken, with the step that broke and its issue, and stays a follow step" \
+  '[ "$(field FS-4 follow_checks | jq -c "[.[] | [.result, .source, .issue]]")" = "[[\"broken\",\"E2E (advisory) › a11y scan\",812]]" ] && [ "$(field FS-4 follow_on | jq length)" = 1 ] && echo "$out" | grep -qF "FS-4 follow steps: its follow-step checker passed 0 and failed 0, and found the evidence source of 1 broken, ran but produced nothing to judge: E2E (advisory) › a11y scan (#812); listed in needs-you and checked again later"'
 check "DS-798 a step a checker ran is not run again" \
   ': > "$T/follow-prompts"; DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" >/dev/null 2>&1; [ ! -s "$T/follow-prompts" ] && [ "$(field FS-2 follow_run)" = null ]'
 cp "$T/claude-before-fs" "$T/stub/claude"

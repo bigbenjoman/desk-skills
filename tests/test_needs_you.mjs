@@ -2289,6 +2289,9 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     // A label added after the checker failed the step: it is the checker's still.
     'K-14': merged(104, 5, { follow_on: [{ step: 'needs-ben: read audit.jsonl for the worker cost', row: null }, { step: 'check the invoice totals look right', row: null }],
       follow_checks: [{ step: 'needs-ben: read audit.jsonl for the worker cost', row: null, pr: 104, result: 'fail', found: 'no cost line', evidence: '/x/audit.jsonl', at: minsAgo(1) }] }),
+    // #1318: the run passed, but the step that makes the evidence crashed and scanned nothing.
+    'K-15': merged(105, 5, { follow_on: [CI], follow_checks: [failed(105, { result: 'broken', found: 'ERR_REQUIRE_ESM while loading, 0 pages scanned', source: 'E2E (advisory) › a11y scan', issue: 812 })] }),
+    'K-16': merged(106, 5, { follow_on: [CI], follow_checks: [failed(106, { result: 'broken', found: 'collected 0 tests', source: 'E2E (advisory) › a11y scan', issue: null })] }),
   } });
   const byKey = () => Object.fromEntries(N.collect({ word: 'follow798' }).items.filter((i) => i.kind === 'follow').map((i) => [i.t.key, i]));
   // A checker's step is an item of its own, keyed by the ticket and the step.
@@ -2304,6 +2307,11 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     `${checked(g, 'K-13').map((i) => i.steps.map((s) => s.step).join()).join('|')} ${'follow:K-13' in g}`, `${CI.step} false`);
   t('DS-798 a step a checker failed stays its own item though a person-step label now names it',
     `${checked(g, 'K-14').length} ${JSON.stringify(g['follow:K-14']?.steps.map((s) => s.step))}`, '1 ["check the invoice totals look right"]');
+  t('#1318 a step whose evidence source ran and produced nothing says so, names the broken step and the issue it waits on',
+    (checked(g, 'K-15')[0]?.need ?? '').replace(/^.*? or less\. /, ''),
+    "A follow-step checker found its evidence source broken, so it could not be checked: E2E (advisory) › a11y scan ran and produced nothing to judge (ERR_REQUIRE_ESM while loading, 0 pages scanned; evidence: https://github.com/acme/x/actions/runs/9). It waits on #812, which tracks that; a follow-step checker runs it again every 6 hours, and it leaves this list once the source works. Then say done.");
+  t('#1318 with no issue tracking it, the item drafts one to file and wait on',
+    /No open issue tracks that: file one, "E2E \(advisory\) › a11y scan produces nothing to judge on main", quoting "collected 0 tests" and the run \(https:\/\/github\.com\/acme\/x\/actions\/runs\/9\), and it waits on that;/.test(checked(g, 'K-16')[0]?.need ?? ''), true);
   t('DS-798 AC3 a step carrying a person-step label is listed as today', /Check: needs-ben: read audit\.jsonl/.test(g['follow:K-3']?.need ?? ''), true);
   t('DS-798 AC4 a step the classifier cannot tell is runnable is listed as today', /Check: check the invoice totals look right\. Then say done\.$/.test(g['follow:K-4']?.need ?? ''), true);
   t('DS-798 a runnable step no checker ran once the wait is over is listed, saying so',

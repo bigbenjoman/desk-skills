@@ -4444,7 +4444,8 @@ const FOLLOW_HANDLERS = {
       const c = shOut('gh', ['pr', 'comment', String(n), '--repo', GH_REPO, '--body', followComment(a.key, done)]);
       told = c.ok ? `; said on PR #${n}` : `; its comment on PR #${n} was not posted (${c.out.split('\n').pop()})`;
     }
-    out.push(`${a.key} follow steps: its follow-step checker passed ${count('pass')} and failed ${count('fail')}${count('fail') ? ', each listed in needs-you' : ''}${count('pending') ? `, and found ${count('pending')} still pending, checked again later` : ''}${told}`);
+    const brokenAt = found.filter((c) => c.result === 'broken').map((c) => `${c.source}${c.issue ? ` (#${c.issue})` : ', no issue tracks it'}`);
+    out.push(`${a.key} follow steps: its follow-step checker passed ${count('pass')} and failed ${count('fail')}${count('fail') ? ', each listed in needs-you' : ''}${count('pending') ? `, and found ${count('pending')} still pending, checked again later` : ''}${brokenAt.length ? `, and found the evidence source of ${brokenAt.length} broken, ran but produced nothing to judge: ${brokenAt.join('; ')}; listed in needs-you and checked again later` : ''}${told}`);
   },
 };
 const FOLLOW_MINUTES = FOLLOW_TIMEOUT_MS / 60000;
