@@ -1267,6 +1267,52 @@ check "DS-426 a batch based on a feature branch still reads from §0 Default bra
   '[ ! -e "$T/feat-ran" ] && [ "$(cat "$T/state-l/fixtures/L-9/gateway-models.json")" = "{\"models\":[\"gw-1\"]}" ] && [ "$(jq -r .base "$T/state-l/live-reads/L-9-$HL9-gateway-models.json")" = "$LBASE" ]'
 q set-batch base=
 
+# ---- DS-574: a paid §4 Live reads entry runs within its per-call and daily caps, else goes to the person
+# gateway-chat is a stubbed POST endpoint capped at £0.10 a call and £2 a day. P-1 asks for it at £0.03,
+# P-2 at £0.12, P-3 with no estimate; then the day's log is brought to £2 and P-4 asks at £0.03.
+printf 'echo "chat:$#" >> "%s/chat-calls"\necho %s\n' "$T" "'{\"reply\":\"ok\"}'" > "$T/chat.sh"
+sed -e '/^| Live reads /d' "$T/config-l.md" > "$T/config-p.md"
+printf '| Live reads | `gateway-models: ./scripts/fetch-gateway-models.sh` `gateway-chat [£0.10/call, £2/day]: sh %s/chat.sh` |\n' "$T" >> "$T/config-p.md"
+export DESK_CONFIG="$T/config-p.md"
+for k in 1 2 3 4; do git init -q -b "fix/P-$k" "$T/wt/P-$k"; git -C "$T/wt/P-$k" commit -q --allow-empty -m "P-$k"; done
+HP1=$(git -C "$T/wt/P-1" rev-parse HEAD); TODAY=$(date +%Y-%m-%d); SPEND="$T/state-l/live-read-spend.jsonl"
+say "AUTOPILOT_PARK: need live read gateway-chat (est £0.03). Not reached: the PR" > "$T/state-l/logs/P-1.log"
+say "AUTOPILOT_PARK: need live read gateway-chat (est £0.12). Not reached: the PR" > "$T/state-l/logs/P-2.log"
+say "AUTOPILOT_PARK: need live read gateway-chat. Not reached: the PR" > "$T/state-l/logs/P-3.log"
+for k in 1 2 3; do q add "P-$k"; q set "P-$k" state=running lane=A "branch=fix/P-$k" "worktree=$T/wt/P-$k" "session_id=run-P-$k"; done
+: > "$T/chat-calls"; out1=$(node "$B/pass.mjs" 2>&1); read_done P-1 "$HP1" gateway-chat; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-574 AC1 a paid call estimated within both caps runs once, its response saved as the ticket's fixture" \
+  '[ "$(grep -c "^chat:0" "$T/chat-calls")" = 1 ] && [ "$(cat "$T/state-l/fixtures/P-1/gateway-chat.json")" = "{\"reply\":\"ok\"}" ] && [ "$(field P-1 state)" != "\"parked\"" ]'
+check "DS-574 AC1 and its cost is logged against the day, and reported" \
+  '[ "$(jq -c "[.name, .key, .day, .est]" "$SPEND")" = "[\"gateway-chat\",\"P-1\",\"$TODAY\",0.03]" ] && echo "$out1" | grep -qF "P-1: live read gateway-chat started from the pass'"'"'s clean checkout of origin/main at ${LBASE:0:9} (gateway-chat estimated at £0.03, £0.03 of its £2.00/day cap spent today, logged in $SPEND)"'
+check "DS-574 AC2 a call estimated over the per-call cap goes to the person naming the estimate, and nothing runs or is logged" \
+  '[ "$(field P-2 state)" = "\"parked\"" ] && [ "$(field P-2 park.clears_when.kind)" = "\"none\"" ] && field P-2 park.question | grep -qF "live read gateway-chat is estimated at £0.12, over its £0.10/call cap" && ! ls "$T/state-l/live-reads" | grep -q "^P-2-" && ! grep -q "P-2" "$SPEND"'
+check "DS-574 a paid call the park gives no estimate for goes to the person" \
+  '[ "$(field P-3 state)" = "\"parked\"" ] && field P-3 park.question | grep -qF "live read gateway-chat is a paid call (£0.10/call, £2.00/day), and the park gave no estimate for it" && ! ls "$T/state-l/live-reads" | grep -q "^P-3-"'
+printf '{"day":"%s","name":"gateway-chat","key":"X-1","est":1.97}\n' "$TODAY" >> "$SPEND"
+say "AUTOPILOT_PARK: need live read gateway-chat (est £0.03). Not reached: the PR" > "$T/state-l/logs/P-4.log"
+q add P-4; q set P-4 state=running lane=A branch=fix/P-4 "worktree=$T/wt/P-4" session_id=run-P-4
+: > "$T/chat-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-574 AC3 once the day's logged spend has reached the daily cap, another call goes to the person naming the spend so far" \
+  '[ "$(field P-4 state)" = "\"parked\"" ] && field P-4 park.question | grep -qF "live read gateway-chat has spent £2.00 today of its £2.00/day cap, so a call estimated at £0.03 would pass it" && [ ! -s "$T/chat-calls" ] && ! grep -q "P-4" "$SPEND"'
+# P-5's read was started and logged by a pass that stopped before its queue write landed: its park has
+# no base, but the read's record is there.
+git init -q -b fix/P-5 "$T/wt/P-5"; git -C "$T/wt/P-5" commit -q --allow-empty -m P-5; HP5=$(git -C "$T/wt/P-5" rev-parse HEAD)
+printf '{"name":"gateway-chat","command":"x","pid":0,"base":"%s"}\n' "$LBASE" > "$T/state-l/live-reads/P-5-$HP5-gateway-chat.json"
+echo 0 > "$T/state-l/live-reads/P-5-$HP5-gateway-chat.code"; echo '{"reply":"earlier"}' > "$T/state-l/live-reads/P-5-$HP5-gateway-chat.out"
+q add P-5; q set P-5 state=parked lane=A branch=fix/P-5 "worktree=$T/wt/P-5" "park={\"question\":\"need live read gateway-chat (est £0.03).\",\"clears_when\":{\"kind\":\"live-read\",\"reads\":[\"gateway-chat\"],\"head\":\"$HP5\",\"est\":{\"gateway-chat\":0.03}}}"
+: > "$T/chat-calls"; out1=$(node "$B/pass.mjs" 2>&1); out=$(node "$B/pass.mjs" 2>&1)
+check "DS-574 a read an earlier pass started but did not record in the queue is neither run nor logged again, and its output is saved" \
+  'echo "$out1" | grep -qF "P-5: live read gateway-chat was already started at this head by an earlier pass: left parked" && [ ! -s "$T/chat-calls" ] && ! grep -q "P-5" "$SPEND" && [ "$(cat "$T/state-l/fixtures/P-5/gateway-chat.json")" = "{\"reply\":\"earlier\"}" ]'
+# P-6 waits to start gateway-chat when the row is edited to name it first without caps, then with them.
+sed -e '/^| Live reads /d' "$T/config-l.md" > "$T/config-dup.md"
+printf '| Live reads | `gateway-chat: sh %s/chat.sh` `gateway-chat [£0.10/call, £2/day]: sh %s/chat.sh` |\n' "$T" "$T" >> "$T/config-dup.md"
+git init -q -b fix/P-6 "$T/wt/P-6"; git -C "$T/wt/P-6" commit -q --allow-empty -m P-6; HP6=$(git -C "$T/wt/P-6" rev-parse HEAD)
+q add P-6; q set P-6 state=parked lane=A branch=fix/P-6 "worktree=$T/wt/P-6" "park={\"question\":\"need live read gateway-chat (est £0.03).\",\"clears_when\":{\"kind\":\"live-read\",\"reads\":[\"gateway-chat\"],\"head\":\"$HP6\",\"est\":{\"gateway-chat\":0.03}}}"
+: > "$T/chat-calls"; out=$(DESK_CONFIG="$T/config-dup.md" node "$B/pass.mjs" 2>&1)
+check "DS-574 a waiting paid read does not start while the row does not parse, so a repeated uncapped name cannot run it uncapped" \
+  'echo "$out" | grep -qF "P-6: live read gateway-chat waits for config §4 Live reads to parse: left parked" && [ ! -s "$T/chat-calls" ] && ! ls "$T/state-l/live-reads" | grep -q "^P-6-" && [ "$(field P-6 park.clears_when.kind)" = "\"live-read\"" ]'
+
 # ---- DS-419: a ready PR held for review feedback, or with a review at its head that is not clean,
 # goes back to a fix worker; the threads a finished try worked are replied on and resolved.
 # The fake gh answers pr view from $T/fb/<n>.json and the review-threads query from $T/fb/<n>.threads,

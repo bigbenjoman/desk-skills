@@ -207,8 +207,14 @@ How to turn what you find into rows:
   fetched before each run (never the ticket's worktree or the user's own checkout), exactly as
   written with nothing from the park added; that it saves up to 1 MiB of its output where the
   requeued worker reads it as an untrusted response; that the command must install and write
-  nothing in that checkout; and that nothing that writes to a live system or places a call belongs
-  here.
+  nothing in that checkout; and that nothing that writes to a live system belongs here. For each,
+  ask whether the call costs money (a POST to a model API, say). A paid one needs both caps, a £
+  per call and a £ per day, recorded as `` `<name> [£0.10/call, £2/day]: <command>` ``: ask for
+  both, and write no paid entry without them (the config check refuses a bracket missing either).
+  Say that a worker parks with its estimate beside the name (`gateway-chat (est £0.03)`), that the
+  pass runs the call only within both caps and logs each one to the repo's spend log, and that a
+  park with no estimate, or over either cap, comes to the user naming the estimate or the day's
+  spend.
 - **Pre-merge steps.** Search the repo instructions and the workflows for a step a person must take
   before a PR can go green, that a check or a step in one tests ("apply the migration to staging
   before merging": a schema check run against the real staging database). Propose each for §4

@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { tryLockFile, filePid, writeJsonAtomic } from './dir-lock.mjs';
+import { tryLockFile, filePid, writeJsonAtomic, withDirLock } from './dir-lock.mjs';
 import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, doneOnPr, readTriage } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
@@ -56,7 +56,7 @@ import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } fro
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, prFilesAt, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
 import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
-import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
+import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES, estimateOf, capRefusal, spentOn, logSpend, spendFile, pounds } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
 import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, RERUN_COOLDOWN_S } from './fix-tries.mjs';
@@ -953,17 +953,20 @@ const FIXTURES = join(STATE, 'fixtures');
   const unparsed = liveReadsUnparsed(readRow);
   if (unparsed) report.waiting.push(unparsed);
 }
-// The reads a park asks for: { reads: [name], head (the ticket's) }, or null, which leaves the park as
-// it is. An entry already read at this head is not run again: a worker that parks on it again after
-// its requeue is the person's.
+// The reads a park asks for: { reads: [name], head (the ticket's), est ({ name: pounds }, the estimate
+// the park gives each paid entry, where it gives one) }, or null, which leaves the park as it is. An
+// entry already read at this head is not run again: a worker that parks on it again after its requeue
+// is the person's.
 function liveReadOf(t, question) {
   if (readRow.errors.length || !readRow.reads.length || !t.worktree || !existsSync(t.worktree) || isSpine(t) || needsSession(t)) return null;
   const reads = liveReadPark(question, readRow.reads);
   if (!reads?.length) return null;
   const head = sh('git', ['-C', t.worktree, 'rev-parse', 'HEAD'], { tolerant: true });
   if (!/^[0-9a-f]{40}$/.test(head) || reads.some((r) => readRecord(READ_DIR, t.key, head, r.name))) return null;
-  return { reads: reads.map((r) => r.name), head };
+  const est = Object.fromEntries(reads.filter((r) => r.caps).map((r) => [r.name, estimateOf(question, r.name)]).filter(([, v]) => v != null));
+  return { reads: reads.map((r) => r.name), head, ...(Object.keys(est).length ? { est } : {}) };
 }
+const SPEND = spendFile(STATE);
 
 // ---- advance running tickets --------------------------------------------
 const onJira = /^jira\b/i.test(String(E.configValue('tracker') ?? '').trim());
@@ -1155,18 +1158,51 @@ for (const t of Object.values(queue().tickets)) {
   };
   const names = (c.reads ?? []).join(', ');
   if (!c.base) {
+    // A read already recorded at this head was started by an earlier pass that stopped before its
+    // queue write landed (liveReadOf starts none twice at a head), so it is not logged or started again.
+    const recorded = new Map((c.reads ?? []).map((name) => [name, readRecord(READ_DIR, t.key, c.head, name)]).filter(([, rec]) => rec));
+    const todo = (c.reads ?? []).filter((name) => !recorded.has(name));
+    if (recorded.size && !todo.length) {
+      q('set', t.key, `park.clears_when=${JSON.stringify({ ...c, base: [...recorded.values()][0].base })}`);
+      report.clears.push(`${t.key}: live read ${names} was already started at this head by an earlier pass: left parked`);
+      continue;
+    }
+    // A row that does not parse runs nothing (its waiting line says so), as an entry it kept may not be
+    // the one the person meant, with its caps.
+    if (readRow.errors.length) { report.clears.push(`${t.key}: live read ${names} waits for config §4 Live reads to parse: left parked`); continue; }
     if (!readCheckout && (readsRunning(READ_DIR) || anyRunning(BUILD_DIR))) {
       report.clears.push(`${t.key}: live read ${names} waits for the pass's checkout, where another read or a check build still runs: left parked`);
       continue;
     }
     readCheckout ??= prepareCheckout(READ_CHECKOUT, { origin: originUrl(), branch: READ_BRANCH });
     if (!readCheckout.ok) { toPerson(`live read ${names} did not run: the pass's checkout could not be brought to origin's ${READ_BRANCH}: ${readCheckout.why}`); continue; }
-    const entries = (c.reads ?? []).map((name) => readRow.reads.find((r) => r.name === name) ?? { name });
+    const entries = todo.map((name) => readRow.reads.find((r) => r.name === name) ?? { name });
     const gone = entries.filter((r) => !r.command);
     if (!entries.length || gone.length) { toPerson(gone.length ? `live read ${gone.map((r) => r.name).join(', ')} is no longer in config §4 Live reads` : 'its live reads name no entry'); continue; }
+    // A paid entry runs only within both its caps, checked against today's logged spend, and every one
+    // started is logged as spent at its estimate. Both happen under the spend log's lock, which every
+    // batch of the repo shares, so two passes cannot each take the day's last room under the cap.
+    const day = localDay();
+    const est = (r) => c.est?.[r.name] ?? null;
+    const paid = entries.filter((r) => r.caps);
+    let overCap = [];
+    try {
+      if (paid.length) {
+        overCap = withDirLock(`${SPEND}.lock`, () => {
+          const refused = paid.map((r) => capRefusal(r, est(r), spentOn(SPEND, r.name, day))).filter(Boolean);
+          if (!refused.length) for (const r of paid) logSpend(SPEND, { at: new Date().toISOString(), day, name: r.name, key: t.key, head: c.head, est: est(r) });
+          return refused;
+        });
+      }
+    } catch (e) {
+      report.clears.push(`${t.key}: live read ${names} did not start, since the spend log ${SPEND} could not be checked and written under its lock (${e.message}): left parked`);
+      continue;
+    }
+    if (overCap.length) { toPerson(overCap.join('; ')); continue; }
     for (const r of entries) startRead(READ_DIR, { key: t.key, head: c.head, name: r.name, command: r.command, cwd: READ_CHECKOUT, base: readCheckout.sha });
     q('set', t.key, `park.clears_when=${JSON.stringify({ ...c, base: readCheckout.sha })}`);
-    report.clears.push(`${t.key}: live read ${names} started from the pass's clean checkout of origin/${READ_BRANCH} at ${readCheckout.sha.slice(0, 9)}: left parked`);
+    const spent = paid.map((r) => `${r.name} estimated at ${pounds(est(r))}, ${pounds(spentOn(SPEND, r.name, day))} of its ${pounds(r.caps.day)}/day cap spent today, logged in ${SPEND}`);
+    report.clears.push(`${t.key}: live read ${names} started from the pass's clean checkout of origin/${READ_BRANCH} at ${readCheckout.sha.slice(0, 9)}${spent.length ? ` (${spent.join('; ')})` : ''}: left parked`);
     continue;
   }
   const at = `origin/${READ_BRANCH} ${String(c.base).slice(0, 9)}`;
