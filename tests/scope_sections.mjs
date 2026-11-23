@@ -302,29 +302,33 @@ function mainOnly(c, guards) {
 // commands whose case names one, code: the first line of a statement that is not a declaration, an
 // import, an export list or such a case but names one (module-level code, which runs on load), or null,
 // main: whether a mainOnly() statement names one }. Only with `mainGuard` is a mainOnly() statement
-// told apart from module-level code (without it, it is code), and a name inside a quoted string or a
-// template's text not counted there.
+// told apart from module-level code (without it, it is code), and a name in a comment, a quoted string
+// or a template's text, or as a property, counted nowhere.
 function reach(text, seeds, { mainGuard = false } = {}) {
   const stmts = statements(text);
   const guards = new Set();
   if (mainGuard) for (const { c } of stmts) { const g = c.match(/^const\s+([A-Za-z_$][\w$]*)\s*=([\s\S]*)$/); if (g && launchTest(g[2])) guards.add(g[1]); }
   let main = false;
+  // With mainGuard, a statement's code without its comments, strings or template text. A template keeps
+  // its `${...}` parts, and keeps all of itself where one holds a brace or a template.
+  const scrub = (t) => (mainGuard ? t.replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g, (m) => {
+    if (m[0] !== '`') return "''";
+    return /\$\{[^}]*[{`]/.test(m) ? m : (m.match(/\$\{[^}]*\}/g) ?? []).join(' ');
+  }).replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '') : t);
+  for (const s of stmts) s.code = scrub(s.c);
+  // With mainGuard, a property (`x.name`) is not the module's own name.
+  const refs = (ids) => (mainGuard ? new RegExp(wordsRe(ids).source.replace('(?<![\\w$])', '(?<![\\w$.])')) : wordsRe(ids));
   const names = new Set(seeds);
   for (let grew = names.size > 0; grew;) {
     grew = false;
-    const re = wordsRe([...names]);
-    for (const { c, decl } of stmts) if (decl && !names.has(decl.name) && re.test(c)) { names.add(decl.name); grew = true; }
+    const re = refs([...names]);
+    for (const { code: c, decl } of stmts) if (decl && !names.has(decl.name) && re.test(c)) { names.add(decl.name); grew = true; }
   }
   const exported = new Set();
   const commands = new Set();
   let code = null;
-  const re = names.size ? wordsRe([...names]) : null;
-  // A template keeps its `${...}` parts, and keeps all of itself where one holds a brace or a template.
-  const quotes = (t) => (mainGuard ? t.replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g, (m) => {
-    if (m[0] !== '`') return "''";
-    return /\$\{[^}]*[{`]/.test(m) ? m : (m.match(/\$\{[^}]*\}/g) ?? []).join(' ');
-  }) : t);
-  const named = (t) => re?.exec(quotes(t.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n')))?.[0];
+  const re = names.size ? refs([...names]) : null;
+  const named = (t) => re?.exec(scrub(t.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n')))?.[0];
   for (const { c, decl } of stmts) {
     if (decl) { if (decl.exported && names.has(decl.name)) exported.add(decl.name); continue; }
     if (isImport(c)) continue;

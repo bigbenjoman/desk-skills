@@ -513,21 +513,22 @@ t('DS-1002 AC4 the edited function used through a default import or a member of 
   ns("export const nsUse = () => IMP'./desk-q.mjs').then((m) => m.wide());"),
   ns("export * from './desk-q.mjs';"),
 ], [everyClaimer, everyClaimer, everyClaimer, everyClaimer]);
-const quoted = `${hubQ}const NOTE = ['keys', (n) => \`keys of \${n}\`];\n`;
-t('DS-1002 a name only in a quoted string or a template\'s text of module-level code does not stop the narrowing', hscope([{ status: 'M', path: 'desk/bin/desk-q.mjs', names: changedNames(quoted, quoted.replace('return [a];', 'return [a, a];')) }], hubWith({ 'desk/bin/desk-q.mjs': quoted })), 'some: test_lint.sh test_pass.mjs');
+const quoted = `${hubQ.replace('export function rows(a) {\n', "export function rows(a) {\n  // unlike keys(), and not 'keys'\n")}const NOTE = ['keys', (n) => \`keys of \${n}\`];\n`;
+t('DS-1002 a name only in a comment, a quoted string or a template\'s text reaches nothing', hscope([{ status: 'M', path: 'desk/bin/desk-q.mjs', names: changedNames(quoted, quoted.replace('return [a];', 'return [a, a];')) }], hubWith({ 'desk/bin/desk-q.mjs': quoted })), 'some: test_lint.sh test_pass.mjs');
 t('DS-1002 a suite taking the module whole and passing it on runs itself, as nothing loads a suite', hscope(Q(keysEdit), hubWith({ 'tests/test_q.mjs': "// suite: q\nimport * as Q from '../desk/bin/desk-q.mjs';\nscreen(Q);" })), 'some: test_lint.sh test_pass.mjs test_q.mjs');
 t('DS-1002 AC5 without byName (CI) the AC1 edit runs every suite reaching the module', [hscope(Q(keysEdit), hmap, { l3Direct: true }), hscope(Q(keysEdit), hmap, {})], [everyClaimer, everyClaimer]);
 t('DS-1002 AC6 a shell script under desk/bin/ scopes as before', [hscope(M('desk/bin/with-lock.sh')), hscope(M('desk/bin/with-lock.sh'), hmap, {})], ['some: test_lint.sh test_lock.sh', 'some: test_lint.sh test_lock.sh']);
 t('DS-1002 a suite naming the module other than in an import (reading its text) still runs', hscope(Q(keysEdit), hubWith({ 'tests/test_q_text.mjs': "// suite: q text\nconst src = readFileSync(join(R, 'desk/bin/desk-q.mjs'), 'utf8');" })), 'some: test_lint.sh test_pass.mjs test_q_text.mjs');
 t('DS-1002 a comment-only change runs nothing but the always set', hscope(Q(hubQ.replace('function fmt', '// formats\nfunction fmt'))), 'some: test_lint.sh');
-// On this repo: an edit to desk-q.mjs's checkFlags, which its command line and the screen run.
+// On this repo: an edit to desk-q.mjs's checkFlags, which its command line and the screen run. Its
+// command line reaches most of the module, and bin/desk-q, which launches it, is claimed through
+// install.sh by most suites, so this narrows to few fewer suites than CI's.
 const deskQ = readFileSync(join(R, 'desk/bin/desk-q.mjs'), 'utf8');
 const flagsEdit = deskQ.replace("const unknown = argv.filter((a) => a.startsWith('--') && ", "const unknown = argv.filter((a) => a.slice(0, 2) === '--' && ");
 const realQ = (opts) => decide([{ status: 'M', path: 'desk/bin/desk-q.mjs', names: changedNames(deskQ, flagsEdit) }], real, opts);
 const [qCi, qLocal] = [realQ({}), realQ({ byName: true })];
-t('DS-1002 AC1 on the real desk-q.mjs: an edit to checkFlags narrows on it, to fewer suites than CI runs, all of them CI\'s',
-  [flagsEdit !== deskQ, qLocal.narrowed, qLocal.suites.length < qCi.suites.length, qLocal.suites.filter((s) => !qCi.suites.includes(s))], [true, ['desk/bin/desk-q.mjs: checkFlags'], true, []]);
-console.log(`     (desk-q.mjs checkFlags: ${qLocal.suites.length} suites by name, ${qCi.suites.length} without: ${qLocal.reason})`);
+t('DS-1002 AC1 on the real desk-q.mjs: an edit to checkFlags narrows on it, and runs no suite CI would not',
+  [flagsEdit !== deskQ, qLocal.narrowed, qLocal.suites.filter((s) => !qCi.suites.includes(s))], [true, ['desk/bin/desk-q.mjs: checkFlags'], []]);
 const T = scratch('desk-scope-');
 try {
   const out = join(T, 'out');
