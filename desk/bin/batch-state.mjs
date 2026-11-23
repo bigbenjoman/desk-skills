@@ -669,8 +669,9 @@ function holdLeadsTo(q, t, prState, seen, memo = new Map()) {
     const pt = q.tickets?.[p];
     if (!pt) { if (!outside.includes(p)) parks = null; }
     else if (['running', 'triaged'].includes(pt.state) || spinePark(pt)) continue;
-    // Recorded merged (done by another's PR has no result.pr of its own) is merged.
-    else if (pt.state === 'done') { if (!pt.merged_at && (pt.result?.pr == null || prState(pt.result.pr) === 'CLOSED')) parks = null; }
+    // Done by another's PR (done_by), it has no result.pr of its own: that PR's merge, recorded as its
+    // merged_at, is its merge. Any other merged_at may be an earlier round's, so its own PR is read.
+    else if (pt.state === 'done') { if (!(pt.done_by?.pr != null && pt.merged_at) && (pt.result?.pr == null || prState(pt.result.pr) === 'CLOSED')) parks = null; }
     else if (pt.state === 'failed' || (pt.state === 'parked' && !isHeld(pt))) parks.push(p);
     else { const up = holdLeadsTo(q, pt, prState, seen, memo); parks = up && [...parks, ...up]; }
     if (!parks) break;

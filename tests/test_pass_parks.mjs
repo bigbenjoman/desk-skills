@@ -6,6 +6,7 @@ import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInpu
 import { HELD_PREFIX, STOPPED_PREFIX, badLabelText, IDLE_RECHECK_MS, isHeld, parkKind, personStepPark } from '../desk/bin/batch-state.mjs';
 import { newPark, applySet } from '../desk/bin/queue-writer.mjs';
 import { shownState } from '../desk/bin/desk-q.mjs';
+import { foreignQuestion } from '../desk/bin/pass/shared.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -98,7 +99,8 @@ const BASE_CONTAINS = 'base-contains';
 }
 // #1294: a not-its-own park records no clears-when. Once #X merged, with no work of its own, it is done by #X.
 {
-  const q = 'its PR #52 is not its own: PR #52 is on branch fix/other, not F\'s branch fix/F. desk takes as a ticket\'s result only …';
+  // Built as the pass parks it, so a rewording of the park is a rewording of what is read back.
+  const q = foreignQuestion(52, 'PR #52 is on branch fix/other, not F\'s branch fix/F');
   const f = (more = {}) => clearsSnap(byKey({ key: 'F', state: 'parked', branch: 'fix/F', result: { pr: 52 }, park: { question: q, clears_when: { kind: 'none' } }, ...more }));
   const why = 'PR #52 is on branch fix/other, not F\'s branch fix/F';
   const as = clears(f(), { check: (a) => ({ holds: a.cond.kind === 'pr-merged' && a.cond.pr === 52 }), 'other-merged': { why, at: '2026-11-23T10:00:00Z' } });

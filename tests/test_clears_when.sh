@@ -408,6 +408,10 @@ printf '{"state":"MERGED","isDraft":false,"mergedAt":"2026-11-23T10:00:00Z","hea
 # #1294: H-1 held behind O-1 is released once O-1 is done by #880; O-4, parked as not its own before
 # such a park was settled, is done by its PR once that merged.
 q add H-1 Story A; q set H-1 state=triaged; q hold H-1 O-1
+# H-2 is held behind R-9, requeued after an earlier round merged (its merged_at kept) and done again on a
+# PR still open: that earlier merge does not release H-2.
+q add R-9 Story A; q set R-9 state=done result.pr=884 merged_at=2026-01-01T00:00:00Z; pr 884 OPEN false
+q add H-2 Story A; q set H-2 state=triaged; q hold H-2 R-9
 parked O-4 A "its PR #883 is not its own: PR #883 is on branch fix/other-883, not O-4's branch feat/O-4. desk takes as a ticket's result only a PR on the branch its worker made"; q set O-4 result.pr=883
 printf '{"state":"MERGED","isDraft":false,"mergedAt":"2026-11-23T11:00:00Z","headRefName":"fix/other-883","author":{"login":"someone-else"}}\n' > "$T/gh/pr-883.json"
 parked O-2 A "waiting on my PR #881" "pr 881 merged"
@@ -417,6 +421,7 @@ check "#1290 a park on another branch's PR merging is done by it, with no requeu
   '[ "$(field O-1 state)" = "\"done\"" ] && [ "$(field O-1 done_by.pr)" = 880 ] && [ "$(field O-1 result.pr)" = null ] && [ "$(field O-1 park)" = null ] && grep -qF "O-1: \"PR #880 merged\" holds, and #880 is not its own (PR #880 is on branch fix/other-880, not O-1'"'"'s branch feat/O-1) with no work of its own beside it: recorded done by #880, no worker spawned" <<< "$out" && ! grep -q "\[spawn\] ticket=O-1" <<< "$out"'
 check "#1294 a ticket held behind one done by another's PR is released" \
   '[ "$(field O-1 merged_at)" = "\"2026-11-23T10:00:00Z\"" ] && [ "$(field H-1 state)" = "\"triaged\"" ] && [ "$(field H-1 held_by)" = null ] && grep -q "released: H-1, every blocker merged (O-1)" <<< "$out"'
+check "#1294 an earlier round's merged_at does not release what is held behind a ticket whose PR is still open" '[ "$(field H-2 state)" = "\"parked\"" ] && [ "$(field H-2 held_by)" = "\"R-9\"" ] && ! grep -q "released: H-2" <<< "$out"'
 check "#1294 a not-its-own park whose PR merged is done by it, its foreign result PR cleared" \
   '[ "$(field O-4 state)" = "\"done\"" ] && [ "$(field O-4 done_by.pr)" = 883 ] && [ "$(field O-4 result.pr)" = null ] && [ "$(field O-4 merged_at)" = "\"2026-11-23T11:00:00Z\"" ] && grep -qF "O-4: \"PR #883 merged\" holds, and #883 is not its own" <<< "$out"'
 check "#1290 a park on its own branch's PR merging is requeued as before" '[ "$(field O-2 state)" = "\"triaged\"" ] && grep -qF "O-2: \"PR #881 merged\" holds: requeued" <<< "$out"'
