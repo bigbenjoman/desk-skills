@@ -63,7 +63,9 @@
         "tailwind-design-system",
         "dataviz",
         "kpi-dashboard-design",
-        "artifact-*"
+        "artifact-*",
+        "animate",
+        "remotion"
       ]
     },
     {
@@ -126,6 +128,17 @@
       ]
     },
     {
+      "id": "aws",
+      "title": "AWS",
+      "summary": "AWS services, CDK/CloudFormation, IAM, Bedrock, SDKs, signing in, investigating and launching on AWS.",
+      "match": [
+        "aws-*",
+        "amazon-bedrock",
+        "launch-with-aws",
+        "signing-in-to-aws"
+      ]
+    },
+    {
       "id": "infra-deploy",
       "title": "Infrastructure and deployment",
       "summary": "Vercel deploys, env vars, caching, firewall; Docker, Cloud Run, CI/CD, monorepos.",
@@ -135,7 +148,8 @@
         "gcp-cloud-run",
         "deployment-pipeline-design",
         "github-actions-templates",
-        "monorepo-management"
+        "monorepo-management",
+        "sentry-cli"
       ]
     },
     {
