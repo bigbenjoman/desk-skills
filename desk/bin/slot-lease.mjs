@@ -13,7 +13,8 @@
 // runs and lapses the moment it exits. In `on` it waits for the slot in the broker's queue for its
 // pool, oldest first, saying once what it waits on, who holds it and its place in the queue, and gives
 // up after --timeout seconds (exit 75), naming its place then; the same worktree asking again with the
-// same command within leases.mjs REJOIN_S seconds takes that place back. In `shadow` it makes one try, which
+// same command within leases.mjs REJOIN_S seconds takes that place back; a slot whose lock file a live
+// run holds with no lease (a wrapper from before the broker) counts as held. In `shadow` it makes one try, which
 // shadow always grants, logging a would-refuse when the pool was full; the wrapper has already taken
 // its legacy lock and ignores how this ends; --waited is how long it waited for that lock, which the
 // grant line records. With `--express` (light only), a run waiting in `on` takes the light lock's
@@ -25,7 +26,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import * as A from './admission.mjs';
@@ -92,7 +93,7 @@ function note(rest) {
     || (lane != null && !(lane === 'express' && cls === 'light' && event === 'grant'))) {
     console.error('usage: slot-lease.mjs note <queued|grant|gave-up> <class> --pid <wrapper pid> --waited <s> [--lane express]'); return 2;
   }
-  logEvent({ event, kind: 'slot', key: cls, ...(lane ? { lane } : {}), ...waitNow(cls, pid, Number(waited)) });
+  logEvent({ event, kind: 'slot', key: cls, ...(lane ? { lane } : {}), ...waitNow(cls, pid, Number(waited)), ...(event === 'grant' ? { release: runningRelease() } : {}) });
   return 0;
 }
 
@@ -130,6 +131,25 @@ function takeLane(d, pid) {
   return true;
 }
 
+// The commit of the desk release this script runs from, which each grant line names: its release
+// folder's release.json, else outside a release folder the installed one (installed.json); `unknown`
+// where that record does not read.
+const HERE = dirname(fileURLToPath(import.meta.url));
+export function runningRelease(bin = HERE, home = E.deskHome()) {
+  const rel = E.releaseDirOf(bin, home);
+  try { return JSON.parse(readFileSync(rel ? join(rel, 'release.json') : join(home, 'installed.json'), 'utf8')).commit || 'unknown'; }
+  catch { return 'unknown'; }
+}
+
+// With the slot kind on, the runs holding pool `p`'s lock files that hold no lease (`leases`, the
+// store's), each as a holder of one slot: a wrapper from a release before the broker, or one that fell
+// back to the lock files. `pid` is the asking run's, never its own holder.
+const lockFileRuns = (lockFiles, pid) => (p, leases) => {
+  const owners = new Set(leases.flatMap((l) => (l.kind === 'slot' && l.owner ? [l.owner.pid] : [])));
+  return lockFiles(E.lockDir(), p.pool).filter((h) => !h.pids.some((x) => x === pid || owners.has(x)))
+    .map((h) => ({ label: `the lock file ${tilde(h.file)}`, owner: h.pid == null ? null : { pid: h.pid } }));
+};
+
 // A run's place in its pool's queue (leases.mjs tryAcquire's `at`), as the waiting and gave-up lines say it.
 const placeText = (at) => (at ? `position ${at.position} of ${at.waiting} in its queue, ${at.held} of ${at.capacity} slot${at.capacity === 1 ? '' : 's'} held` : null);
 // What makes a run the same run when it asks again: its directory and its command.
@@ -140,8 +160,10 @@ const commandHash =(words, cwd = process.cwd()) => createHash('sha256').update([
 // wait here is queued and logged as it starts. In `on` the run waits its turn in the broker's queue
 // for its pool, oldest first, and says its place in it as it starts to wait and as it gives up. With
 // `express` (the lane's lock directory), a run the pool refuses takes the lane where it is free and it
-// is the oldest small run waiting, and the wrapper logs its grant. -> the exit code, EXIT_LANE for the lane.
-function take({ cls, pid, timeout, words, waited = 0, express = null }) {
+// is the oldest small run waiting, and the wrapper logs its grant. In `on` a slot whose lock file a run
+// holds with no lease is held (`lockFiles`, suite-wait.mjs lockFileHolders). Its grant line names the
+// release it runs from. -> the exit code, EXIT_LANE for the lane.
+function take({ cls, pid, timeout, words, waited = 0, express = null, lockFiles }) {
   const say = (s) => console.error(s);
   const key = cls === 'tsc' && isLint(words) ? 'lint' : cls;
   const s = `${key} ${tilde(process.cwd())}: ${words.join(' ')}`;
@@ -159,7 +181,7 @@ function take({ cls, pid, timeout, words, waited = 0, express = null }) {
     // reads the pools afresh under the store lock, after its look at headroom.
     const r = acquire({ kind: 'slot', key, units: 1, ttl: ttl(), label, pid, wait: timeout ?? Infinity, queue }, {
       env: E, caps: () => capacities(E), poll: POLL_MS, beforeTry: look,
-      lane: express ? () => takeLane(express, pid) : null,
+      lane: express ? () => takeLane(express, pid) : null, outside: lockFileRuns(lockFiles, pid),
       onWait: (why, at) => {
         enqueue(key, pid);
         logEvent({ event: 'queued', kind: 'slot', key, label, ...placeFields(at), ...waitNow(key, pid, sofar()) });
@@ -167,7 +189,7 @@ function take({ cls, pid, timeout, words, waited = 0, express = null }) {
         if (look(at) == null) say(`with-lock.sh: waiting for ${what}${where ? `, ${where}` : ''}: ${why}`);
         else if (where) say(`with-lock.sh: waiting for ${what}, ${where}`);
       },
-      note: () => { dequeue(key, pid); return waitNow(key, pid, sofar()); },
+      note: (e) => { dequeue(key, pid); return { ...waitNow(key, pid, sofar()), ...(e === 'grant' ? { release: runningRelease() } : {}) }; },
     });
     if (r.lane) return EXIT_LANE;
     if (r.code === EXIT_GAVE_UP || r.code === EXIT_REFUSED) {
@@ -223,7 +245,8 @@ async function cli(argv) {
     || (express != null && (cls !== 'light' || !express))) {
     console.error('usage: slot-lease.mjs take <class> --pid <pid> [--timeout <s>] [--waited <s>] [--express <dir>] -- <command...>'); return 2;
   }
-  return take({ cls, pid, timeout: timeout == null ? null : Number(timeout), words, waited: waited == null ? 0 : Number(waited), express });
+  const { lockFileHolders } = await import('./suite-wait.mjs');
+  return take({ cls, pid, timeout: timeout == null ? null : Number(timeout), words, waited: waited == null ? 0 : Number(waited), express, lockFiles: lockFileHolders });
 }
 
 const isMain = (() => {

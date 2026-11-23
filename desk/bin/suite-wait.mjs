@@ -113,6 +113,40 @@ export function lockHolderStamps(dir, { locks = 'test' } = {}) {
   return out;
 }
 
+// Each slot pool's lock files, by the name with-lock.sh gives them: the test lock's for the heavy pool,
+// the light lock's (not its express lane, which sits outside the pool), the browser lock's.
+const POOL_LOCK_FILES = { 'slot:heavy': 'desk-test', 'slot:light': 'desk-light', 'slot:browser': 'desk-browser' };
+// The lock files of slot pool `pool` that a live run holds, as [{ file, pids, pid }]: each mkdir slot
+// (`<slot>.d`, whose `pid` names the wrapper and its command) and each flock slot's holder file
+// (`<slot>.pid`, the command with-lock.sh exec'd into). A file holds while a pid it names runs, is not a
+// zombie and started no later than the file was written (`pid` is that one), so a holder that has
+// exited, or whose pid was reused since, holds nothing; a mkdir slot with no pid written yet holds for
+// its first minute (`pid` null), as with-lock.sh's own take() reads it. `rows` gives psRows('pid=,stat=,etime='),
+// read afresh and only where a file names a pid. [] when the lock dir cannot be read.
+export function lockFileHolders(dir, pool, { rows = () => psRows('pid=,stat=,etime='), now = Date.now() } = {}) {
+  const base = POOL_LOCK_FILES[pool];
+  let names = [];
+  try { names = base ? readdirSync(dir) : []; } catch { return []; }
+  const slot = new RegExp(`^${base}\\.lock(\\.\\d+)?\\.(d|pid)$`);
+  const files = names.filter((n) => slot.test(n)).flatMap((n) => {
+    const file = join(dir, n), pidFile = n.endsWith('.d') ? join(file, 'pid') : file;
+    try {
+      const pids = readFileSync(pidFile, 'utf8').split(/\s+/).filter((p) => /^\d+$/.test(p)).map(Number);
+      return [{ file, pids, at: statSync(pidFile).mtimeMs }];
+    } catch {
+      try { return n.endsWith('.d') && now - statSync(file).mtimeMs < 60_000 ? [{ file, pids: [], at: null }] : []; } catch { return []; }
+    }
+  });
+  if (!files.some((f) => f.pids.length)) return files.map(({ file, pids }) => ({ file, pids, pid: null }));
+  // A live pid whose age ps does not give holds: a slot a run may hold is never granted on a guess.
+  const start = new Map(rows().filter((r) => !/^Z/.test(r.stat ?? '')).map((r) => { const s = etimeSeconds(r.etime); return [r.pid, s == null ? -Infinity : now - s * 1000]; }));
+  return files.flatMap(({ file, pids, at }) => {
+    if (!pids.length) return [{ file, pids, pid: null }];
+    const pid = pids.find((p) => start.has(p) && start.get(p) <= at + 2000);
+    return pid == null ? [] : [{ file, pids, pid }];
+  });
+}
+
 // The process itself, by its first words: a worker's own command line quotes these commands in its
 // prompt, and must not read as one.
 // `names` is the lock names an alternation matches, e.g. 'test|tsc'.

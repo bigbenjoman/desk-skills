@@ -42,7 +42,9 @@
 #   on      the lease alone, waited for in place of the lock files, in the broker's queue for its pool:
 #           oldest first, the run told its place as it starts to wait and as it gives up, and a run
 #           that gave up taking its place back when it asks again soon after with the same command.
+#           A slot whose lock file a live run holds with no lease (an older wrapper) counts as held.
 #           An unreadable store or a failing broker falls back to the lock files, saying so once.
+# In every mode the grant line names the commit of the release that took the slot (`release`).
 # The lease is owned by this script's pid, which execs into the command, or by the command's pid where
 # the mkdir fallback runs it as a child, so it is held exactly as long as the command runs.
 #
