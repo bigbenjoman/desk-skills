@@ -24,7 +24,8 @@ import { queueFile, stateDir, wakeMergeDriver, skillsDir, concurrencyLimits, SAF
 import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
-import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf, keepPrs } from './queue-store.mjs';
+import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf, keepPrs, recordedPr } from './queue-store.mjs';
+import { repoOfPr } from './pass/pr-status.mjs';
 import { LEDGER_BY_ENV, queueDifference } from './queue-ledger.mjs';
 import { newPark, parkArgs, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { followOnPending, postMergeUnmade, workerMarkers, lastStage, settleSteps } from './harvest.mjs';
@@ -1305,10 +1306,10 @@ switch (cmd) {
       // status naming another repo's PR of this number (needs-you's elsewhereDone, kept through a requeue
       // and a spawn) is not this PR's: it is dropped, as the pass's shippedElsewhere drops one, so it is
       // never marked merged in this PR's place and the pass reads this PR and its review afresh. With no
-      // repo to judge by, any status with a url is dropped: a read costs less than a foreign one kept.
-      const was = t.pr_status, here = hereRepo();
-      const foreign = was?.pr != null && Number(was.pr) === Number(pr) && !!was.url
-        && (!here || String(was.url).toLowerCase().split('/pull/')[0] !== `https://github.com/${here}`.toLowerCase());
+      // repo to judge by, any status with a url is dropped: a read costs less than a foreign one kept. The
+      // repo is judged as the pass judges it (pass/pr-status.mjs repoOfPr).
+      const here = hereRepo(), { url } = recordedPr(t, pr);
+      const foreign = !!url && (!here || repoOfPr(url) !== repoOfPr(`https://github.com/${here}/pull/`));
       applySet(t, [...shippedSet(foreign ? { ...t, pr_status: null } : t, `PR #${pr} merged by the merge driver`, Number(pr), new Date(when).toISOString()).slice(2),
         ...(foreign ? ['pr_status=null'] : []), `shipped_pr=${pr}`]);
     }
