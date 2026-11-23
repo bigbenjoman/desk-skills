@@ -63,6 +63,7 @@ import { dragCells, dragFiles, hasEvidenceBlock, runFailed } from './evidence.mj
 import { isLockfile, isConfig } from './test-scope.mjs';
 import { pairs } from './desk-env.mjs';
 import { parkClauses, tailSteps } from './park-words.mjs';
+import { leftOver, statesPhrase, saysNothingLeft } from './review-plain.mjs';
 // The review gate's own parser, so the pass and a repo's desk-gate read a verdict the same way.
 // install.sh installs it at this same relative path; /desk-setup copies it into each repo.
 import { parseVerdict as gateVerdict, LOCAL_MARKER, LOCAL_MARKERS } from '../templates/scripts/desk/review-gate.mjs';
@@ -110,20 +111,8 @@ export function verdictAt(v, head, clean) {
 export const DESK_REVIEW_CLEAN = 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0';
 // DESK_REVIEW_CLEAN cut to the counts a parsed marker writes: a PullBot verdict has no unrefuted or partial.
 export const markerClean = (v) => Object.keys(pairs(DESK_REVIEW_CLEAN)).filter((k) => k in (v ?? {})).map((k) => `${k}=0`).join(' ') || DESK_REVIEW_CLEAN;
-const LEFT = '(?:defer(?:s|red|ring|rals?)?|carr(?:y|ies|ied|ying))';
-const LEFT_OVER = new RegExp(`\\b${LEFT}\\b`, 'i');
-// "nothing deferred or carried", "no items carried", "nothing to defer", "deferred: none", "carried 0",
-// but not "deferred: no timeout on retries", which defers an item whose name starts with "no".
-const NOTHING_LEFT = new RegExp(`\\b(?:no|nothing|none|zero|0)\\s+(?:(?:items?|findings?|issues?|is|are|was|were|has|have|been|to)\\s+){0,2}${LEFT}(?:\\s+(?:or|and|nor)\\s+${LEFT})?\\b|\\b${LEFT}\\s*(?:items?|findings?)?\\s*[:=]?\\s*(?:none|nothing|no|0)(?=\\s*(?:[.;,)]|$))`, 'gi');
-// "1 finding", "2 P1s", "3 open issues": a count of items the review still holds open.
-const OPEN = /\b[1-9]\d*\s+(?:(?:blocking|open|new|unresolved)\s+)?(?:p[0-3]s?|findings?|issues?|blockers?|problems?)\b/i;
-const plainLines = (body) => String(body ?? '').split(/\r?\n/).map((l) => l.replace(/^[\s>*#_-]+/, '').replace(/[*_`]/g, '').trim());
-
-// The lines of a plain review that defer, carry or count an open item, cut to a readable length.
-export function leftOver(body) {
-  return plainLines(body).filter((l) => LEFT_OVER.test(l.replace(NOTHING_LEFT, '')) || OPEN.test(l))
-    .map((l) => (l.length > 80 ? `${l.slice(0, 79)}…` : l));
-}
+// A plain review's lines that leave an item open, deferred or carried, as the pass reads them (review-plain.mjs).
+export { leftOver };
 
 // What the latest of `handle`'s reviews says about this head, under a plain-text §4 row (`clean`):
 // { clean, why, settle, verdict, review }, `review` the review read when it is clean or carries a marker.
@@ -139,12 +128,11 @@ export function plainVerdictAt(reviews, handle, head, clean) {
   if (LOCAL_MARKERS.includes(opener)) return { clean: false, why: `its ${opener === LOCAL_MARKER ? 'desk-review' : 'PullBot'} verdict marker is not one the review gate reads` };
   const at = r.commit?.oid ?? '';
   if (!at || !head || !head.startsWith(at)) return { clean: false, why: `its latest review is for ${at ? at.slice(0, 9) : 'an unknown commit'}, not the head ${String(head ?? '?').slice(0, 9)}` };
-  const c = clean.toLowerCase();
-  const stated = plainLines(r.body).find((l) => l.toLowerCase().startsWith(c) && /^(?:[.!]|$)/.test(l.slice(c.length)));
+  const stated = statesPhrase(r.body, clean);
   if (!stated) return { clean: false, settle: true, why: `its latest review, at ${at.slice(0, 9)}, does not open a line with "${clean}" as its outcome` };
   const left = leftOver(r.body);
   if (left.length) return { clean: false, settle: true, why: `its review at ${at.slice(0, 9)} states "${clean}" but leaves items open, deferred or carried: ${left.map((l) => `"${l}"`).join('; ')}` };
-  if (!plainLines(r.body).some((l) => l.replace(NOTHING_LEFT, '') !== l)) return { clean: false, settle: true, why: `its review at ${at.slice(0, 9)} states "${clean}" but not that nothing is deferred or carried` };
+  if (!saysNothingLeft(r.body)) return { clean: false, settle: true, why: `its review at ${at.slice(0, 9)} states "${clean}" but not that nothing is deferred or carried` };
   return { clean: true, why: null, verdict: stated, review: r };
 }
 

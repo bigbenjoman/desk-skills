@@ -38,6 +38,9 @@ import { IDLE_RECHECK_MS } from './batch-state.mjs';
 import { normaliseLine } from './evidence.mjs';
 import { stepFits } from './workflow-yaml.mjs';
 import { askCategoryIn } from './decisions.mjs';
+import { parseVerdict as markerOf, COUNTS } from '../templates/scripts/desk/review-gate.mjs';
+import { statesPhrase, leftOver } from './review-plain.mjs';
+import { pairs } from './desk-env.mjs';
 
 export const FIX_TRIES_MAX = 2;
 // merge-driver.sh's own cap and gap: reruns per check per head, and the seconds between them.
@@ -1006,6 +1009,27 @@ export function verdictTry(t, s, ctx) {
   return driverReviewTry(t, s, ctx);
 }
 
+// A review body's counts written as text (`p0=0 p1=0 p2=0`, `P1: 0`): { p0, p1, … } as numbers.
+const textCounts = (body) => Object.fromEntries([...String(body ?? '').matchAll(/\b(p[0-3])\s*[=:]\s*(\d+)\b/gi)].map(([, k, n]) => [k.toLowerCase(), Number(n)]));
+
+// Whether an outside reviewer's review body is feedback a fix worker can act on: false for a clean
+// review, true otherwise. Its counts decide: a verdict marker, or counts written out (`p0=0 p1=0 p2=0`,
+// `P1: 0`), is feedback when any count is above 0, so findings it lists only as refuted start no try.
+// With no counts, a body stating the §4 Clean review verdict (when it is a phrase) with nothing left
+// after it is clean; any other review text is feedback, as it was before.
+export function bodyFeedback(body, clean = null) {
+  const text = String(body ?? '');
+  const m = markerOf(text.trim());
+  if (m) return COUNTS.some((k) => k in m && m[k] !== 0);
+  const c = textCounts(text);
+  if (Object.keys(c).length) return Object.values(c).some((n) => n !== 0) || !['p0', 'p1', 'p2'].every((k) => k in c);
+  // A plain §4 Clean review verdict (no counts in it) stated as the body's outcome, leaving nothing open,
+  // as undraft.mjs plainVerdictAt reads one (review-plain.mjs).
+  const phrase = String(clean ?? '').trim();
+  return !(phrase && !Object.keys(pairs(phrase)).length && !/^(?:none|todo)\b/i.test(phrase)
+    && statesPhrase(text, phrase) != null && !leftOver(text).length);
+}
+
 // A ready PR red on a §4 State check of kind external, which reads an outside reviewer's review: that
 // reviewer's to clear, so desk posts no review for it, and its review feedback goes ahead of desk's own
 // feedback route (feedbackFix's merge-feedback-first, whose reviewDecision stays changes-requested
@@ -1014,7 +1038,7 @@ export function verdictTry(t, s, ctx) {
 // its open threads and its review's text go to a fix worker as review feedback (`external` on the try:
 // the worker posts no desk review, and the PR waits for that reviewer's next review). undefined where
 // no such check is red. ctx: { required, advisory, stateChecks, external(login) (review-threads.mjs
-// externalReview) }; gate: evaluateGate's read of s, where the caller has it.
+// externalReview), clean (§4 Clean review verdict) }; gate: evaluateGate's read of s, where the caller has it.
 export function externalTry(t, s, ctx, gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] })) {
   const reds = stateFailing(gate.failing, ctx.stateChecks).filter((x) => x.kind === 'external');
   if (!reds.length) return undefined;
@@ -1023,7 +1047,9 @@ export function externalTry(t, s, ctx, gate = evaluateGate(s.checks ?? [], { req
   const r = ctx.external?.(f.login);
   // No review of theirs at the head: the PR waits for one, whatever the check's text names, and says so.
   if (!r?.reviewed || r.head !== s.head) return { call: 'wait', external: true, why: `its "${f.name}" check reads ${f.login}'s review, so it waits for ${f.login} to review the head` };
-  const body = r.body ? [{ id: null, text: `${f.login}'s review at the head: ${r.body.replace(/\s+/g, ' ').slice(0, 500)}` }] : [];
+  // A clean review body, its counts all 0 whatever findings it lists as refuted, is no feedback (bodyFeedback).
+  // Any other body goes to the worker whole, as review feedback.
+  const body = r.body && bodyFeedback(r.body, ctx.clean) ? [{ id: null, text: `${f.login}'s review at the head: ${r.body.replace(/\s+/g, ' ').trim().slice(0, 500)}` }] : [];
   const c = feedbackFix(t, { pr: s.pr, head: s.head, decision: r.state, threads: [...r.threads, ...body], external: { login: f.login, check: f.name } });
   return c ?? { call: 'stuck', why: `its "${f.name}" check, which reads ${f.login}'s review, is red though ${f.login} reviewed the head with nothing to work: re-run the check if its run started before that review` };
 }

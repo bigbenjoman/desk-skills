@@ -1,7 +1,7 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 // layer: L1
 import { readFileSync } from 'node:fs';
-import { fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
@@ -813,6 +813,27 @@ t('#989 beside a thread, each is named for what it is', verdictTry(tk(), extRed,
 t('#989 a feedback try that pushed nothing has spent its try at that head: the person\'s, not requeued at the same number',
   verdictTry(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'feedback', what: ex989.fix.what, at: 'T0' }] }), extRed, body989)?.call, 'stuck');
 t('#989 the brief says a carried finding keeps the outside reviewer\'s check red', fixBrief(tk({ fix: ex989.fix })).includes('carrying a finding, or leaving one for later, does not clear it: fix each finding quoted below, whatever its severity, or park (AUTOPILOT_PARK)'), true);
+// #1249: a clean outside review that lists findings it refuted is no feedback, so no fix try goes.
+const LOCAL_MARKER_1249 = '<!-- desk-review:local -->';
+const refutedBody = ['**Verdict: Approvable** · p0=0 p1=0 p2=0', '', '### Cross-vendor findings refuted (2)',
+  '- P1 src/a.ts:3 drops the row: refuted by codex, the row is kept by the caller', '- P2 src/b.ts:9 unused import: not a finding, it is a type import'].join('\n');
+const ex1249 = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, refutedBody, 'APPROVED')])));
+t('#1249 a clean verdict body listing refuted findings starts no fix try', ex1249?.call === 'requeue', false);
+t('#1249 it is the person\'s, as a red check with nothing to work', /reviewed the head with nothing to work/.test(ex1249?.why ?? ''), true);
+const p2Body = refutedBody.replace('p2=0', 'p2=1') + '\n\n### Findings\n- P2 src/c.ts:4 the retry has no cap';
+t('#1249 the same body counting one P2 still does', verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, p2Body)])))?.call, 'requeue');
+t('#1249 counts all 0 beside a refuted finding are clean', bodyFeedback('p0=0 p1=0 p2=0\n- P1 src/a.ts:3 drops the row (refuted)'), false);
+t('#1249 a verdict marker with every count 0 is clean', bodyFeedback(`${LOCAL_MARKER_1249}\n<!-- desk-review:verdict v=1 sha=${HEAD} p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->\nClean`), false);
+t('#1249 a verdict marker with a count is feedback', bodyFeedback(`${LOCAL_MARKER_1249}\n<!-- desk-review:verdict v=1 sha=${HEAD} p0=0 p1=0 p2=1 deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->\n1 P2`), true);
+t('#1249 the §4 clean phrase opening a line, with no counts, is clean', bodyFeedback('No findings. Nothing deferred.', 'no findings'), false);
+t('#1249 counts written out that are not all 0 are feedback', bodyFeedback('p0=0 p1=1 p2=0'), true);
+t('#1249 review text with no finding read and nothing saying clean is feedback, as before', bodyFeedback('Please rename the helper.'), true);
+t('#1249 the clean phrase with an item left after it is no clean statement', bodyFeedback('No findings blocking merge except:\n- something vague', 'no findings'), true);
+t('#1249 nor is the phrase with more after it on its line', bodyFeedback('No findings yet, still reading', 'no findings'), true);
+// With no counts, labels are not read: a body listing findings, refuted or not, is feedback as before.
+t('#1249 findings with no counts are feedback, however labelled', bodyFeedback('- P1 src/a.ts:3 drops the row (refuted)'), true);
+t('#1249 counts that leave a severity unnamed are feedback', bodyFeedback('p1=0 p2=0\n- P0 src/a.ts:3 x'), true);
+t('#1249 counts all 0 decide, whatever the body lists', bodyFeedback('p0=0 p1=0 p2=0\n- P1 src/a.ts:10 race\n  — refuted. The lock at src/a.ts:20 serialises it.'), false);
 t('#737 externalTry is undefined with no external check red', externalTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE }), undefined);
 t('#737 and waits while a check is pending', externalTry(tk(), pr([{ name: 'tests', status: 'in_progress' }, red('🔐 Review gate', '88')]), extCtx(extPl([bot(HEAD, 'P0')]))), null);
 t('DS-422 a red verdict check beside an unclean review at the head is reviewFix\'s, as before', verdictTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE, settled: true }), null);
