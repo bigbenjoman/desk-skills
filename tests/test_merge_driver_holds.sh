@@ -49,7 +49,7 @@ out=$(DESK_CONFIG="$T/config-holds-rr.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_G
 check "the next loop, inside the rerun cooldown, does not rerun it again" '[ "$(grep -c "run rerun 9531" "$T/gh.log")" = 1 ]'
 printf 'test\ntest\n' > "$SD/reruns-153-$SHA53"
 out=$(DESK_CONFIG="$T/config-holds-rr.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets T-53 2>&1)
-check "with its reruns spent at the head, it is not rerun, and its fix try is the pass's" '[ "$(grep -c "run rerun 9531" "$T/gh.log")" = 1 ]'
+check "with its reruns spent at the head, it is not rerun again" '[ "$(grep -c "run rerun 9531" "$T/gh.log")" = 1 ]'
 jq '.["153"].checks = [["test", "SUCCESS", 9532]]' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
 : > "$T/gh.log"
 out=$(DESK_CONFIG="$T/config-holds-rr.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets T-53 2>&1)
