@@ -1284,6 +1284,14 @@ q add P-5; q set P-5 state=parked lane=A branch=fix/P-5 "worktree=$T/wt/P-5" "pa
 : > "$T/chat-calls"; out1=$(node "$B/pass.mjs" 2>&1); out=$(node "$B/pass.mjs" 2>&1)
 check "DS-574 a read an earlier pass started but did not record in the queue is neither run nor logged again, and its output is saved" \
   'echo "$out1" | grep -qF "P-5: live read gateway-chat was already started at this head by an earlier pass: left parked" && [ ! -s "$T/chat-calls" ] && ! grep -q "P-5" "$SPEND" && [ "$(cat "$T/state-l/fixtures/P-5/gateway-chat.json")" = "{\"reply\":\"earlier\"}" ]'
+# P-6 waits to start gateway-chat when the row is edited to name it first without caps, then with them.
+sed -e '/^| Live reads /d' "$T/config-l.md" > "$T/config-dup.md"
+printf '| Live reads | `gateway-chat: sh %s/chat.sh` `gateway-chat [£0.10/call, £2/day]: sh %s/chat.sh` |\n' "$T" "$T" >> "$T/config-dup.md"
+git init -q -b fix/P-6 "$T/wt/P-6"; git -C "$T/wt/P-6" commit -q --allow-empty -m P-6; HP6=$(git -C "$T/wt/P-6" rev-parse HEAD)
+q add P-6; q set P-6 state=parked lane=A branch=fix/P-6 "worktree=$T/wt/P-6" "park={\"question\":\"need live read gateway-chat (est £0.03).\",\"clears_when\":{\"kind\":\"live-read\",\"reads\":[\"gateway-chat\"],\"head\":\"$HP6\",\"est\":{\"gateway-chat\":0.03}}}"
+: > "$T/chat-calls"; out=$(DESK_CONFIG="$T/config-dup.md" node "$B/pass.mjs" 2>&1)
+check "DS-574 a waiting paid read does not start while the row does not parse, so a repeated uncapped name cannot run it uncapped" \
+  'echo "$out" | grep -qF "P-6: live read gateway-chat waits for config §4 Live reads to parse: left parked" && [ ! -s "$T/chat-calls" ] && ! ls "$T/state-l/live-reads" | grep -q "^P-6-" && [ "$(field P-6 park.clears_when.kind)" = "\"live-read\"" ]'
 
 # ---- DS-419: a ready PR held for review feedback, or with a review at its head that is not clean,
 # goes back to a fix worker; the threads a finished try worked are replied on and resolved.

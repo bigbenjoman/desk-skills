@@ -1167,6 +1167,9 @@ for (const t of Object.values(queue().tickets)) {
       report.clears.push(`${t.key}: live read ${names} was already started at this head by an earlier pass: left parked`);
       continue;
     }
+    // A row that does not parse runs nothing (its waiting line says so), as an entry it kept may not be
+    // the one the person meant, with its caps.
+    if (readRow.errors.length) { report.clears.push(`${t.key}: live read ${names} waits for config §4 Live reads to parse: left parked`); continue; }
     if (!readCheckout && (readsRunning(READ_DIR) || anyRunning(BUILD_DIR))) {
       report.clears.push(`${t.key}: live read ${names} waits for the pass's checkout, where another read or a check build still runs: left parked`);
       continue;
