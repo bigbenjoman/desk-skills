@@ -402,12 +402,20 @@ export const outageLine = (text) => normaliseLine(String(text).replace(/https?:\
 const isFailed = (c) => FAILED.has(String(c?.conclusion ?? '').toLowerCase());
 // Each open PR's red checks that read as their platform's: [{ name, line, text, key, branch, pr, head, run, running }],
 // `running` where another job of its run has not completed, so no rerun is made of it yet.
+// desk-gate.yml's verdict job.
+export const VERDICT_CHECK = 'desk-review verdict';
+// The checks that read the PR's reviews, approvals or title rather than its code, never a platform's: every
+// §4 State check (`stateChecks`, as parseStateChecks reads the row) and the verdict job, the set undraft
+// sets apart as no fix's. Red on many PRs at once they wait on a reviewer or approver, which is no outage.
+export const reviewGates = (stateChecks) => new Set([VERDICT_CHECK, ...(stateChecks ?? []).map((x) => x.name)]);
+// lists.gates: reviewGates' names, left out.
 function platformReds(prs, lists) {
   const out = [];
+  const gates = lists?.gates ?? new Set();
   for (const { t, s } of prs ?? []) {
     const checks = s?.checks ?? [];
     const gate = evaluateGate(checks, { required: lists?.required ?? [], advisory: lists?.advisory ?? [] });
-    for (const name of new Set(gate.failing.map((f) => f.name))) {
+    for (const name of new Set(gate.failing.map((f) => f.name).filter((n) => !gates.has(n)))) {
       const c = latestPerCheck(checks).find((x) => x.name === name && isFailed(x));
       const text = outageText(c);
       if (text == null) continue;
@@ -418,7 +426,8 @@ function platformReds(prs, lists) {
   return out;
 }
 // The checks red as one outage now: Map name -> { line, text, prs }, the largest group by line where
-// one check has more than one. prs: [{ t, s }] (the pass's drafts and ready PRs), lists: { required, advisory }.
+// one check has more than one. prs: [{ t, s }] (the pass's drafts and ready PRs), lists: { required, advisory,
+// gates } (gates: the review and approval gates, reviewGates, which are never an outage).
 // skip(r): a red to leave out (outagePlan's PRs still owed a re-run).
 export function outageChecks(prs, lists, skip = () => false) {
   const groups = new Map();
