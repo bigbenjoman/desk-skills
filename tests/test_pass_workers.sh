@@ -44,7 +44,7 @@ check "DS-833 AC3 a worker with no results file keeps no reviews folder" '[ ! -e
 check "DS-193 AC1 a missing image directory runs no upload and reports nothing" '! grep -q "^11 " "$T/uploads" && ! echo "$out" | grep -q "I-1: image" && [ "$(field I-1 images_uploaded)" = "\"none\"" ] && [ "$(field I-1 state)" = "\"done\"" ]'
 check "DS-193 AC2 a directory with no image runs no upload and reports nothing" '! grep -q "^12 " "$T/uploads" && ! echo "$out" | grep -q "I-2: image" && [ "$(field I-2 images_uploaded)" = "\"none\"" ] && [ "$(field I-2 state)" = "\"done\"" ]'
 check "DS-193 AC3 a directory with screenshots still uploads and is reported" 'echo "$out" | grep -q "T-1 images → #2" && [ "$(field T-1 images_uploaded)" = true ]'
-check "DS-673 AC5 the pass uploads through the machine's upload queue, capped at the minute's pace" 'grep -qx "2 $T/state/images/T-1/ --max 6" "$T/upload-args"'
+check "DS-673 AC5 the pass uploads through the machine's upload queue, capped at the minute's pace" 'grep -qx "2 $T/state/images/T-1/ --max 6 --state $T/state" "$T/upload-args"'
 check "DS-673 AC5 each upload done, the queue holds no job and no result" 'node -e "const q = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")); process.exit(q.jobs.length + q.results.length)" "$T/desk/upload-queue.json"'
 
 # R-1 and R-2: finished tickets whose uploads ended in another repo's pump. R-1's was its last round's,

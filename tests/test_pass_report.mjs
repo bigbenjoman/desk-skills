@@ -245,6 +245,7 @@ const vsnap = (tickets, fields = {}) => {
   t('every done ticket merged is idle', j([verdictOf(done).idle, verdictOf(done).status]), '[true,"idle"]');
   t('...and says the batch is finished', j(lines(decideVerdict(done))), j(['NOTIFY: the batch is finished — nothing left to run']));
   t('a promotion still to come is not idle', verdictOf({ ...done, promotionPending: true }).idle, false);
+  t('DS-550 a preview database still to delete is not idle, so its pass keeps running', verdictOf({ ...done, previewDbPending: true }).idle, false);
   t('a done ticket whose PR is still open is not idle', verdictOf(vsnap([{ key: 'D-1', state: 'done', result: { pr: 5 } }], { prStates: { 5: 'OPEN' } })).idle, false);
   const quiet = vsnap([{ key: 'R-1', state: 'running' }]);
   t('nothing waiting and nothing spawned is nothing yet', verdictOf(quiet).status, 'nothing_yet');

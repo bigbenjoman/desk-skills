@@ -59,6 +59,7 @@ import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES, estimateOf, capRefusal, spentOn, logSpend, spendFile, pounds } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
+import { parseRecipe, readRecords as readPreviewRecords, evidenceHold, uploadHold, teardownCalls, teardown as previewTeardown, runCommand, DELETE_STEP_MS } from './preview-db.mjs';
 import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.mjs';
 import { leverOnFor } from './lever-pin.mjs';
@@ -733,13 +734,18 @@ function runUploadJob(job, max) {
   const env = { ...(own ? process.env : E.otherRepoEnv()) };
   if (job.approved) env.DESK_UPLOAD_APPROVED = '1';
   else delete env.DESK_UPLOAD_APPROVED;
-  const run = shOut('node', [join(BIN, 'upload-images.mjs'), String(job.pr), job.dir, '--max', String(max)], { env, ...(own ? {} : { cwd: job.root }) });
+  // The job's own batch's state dir, where its PR's preview-database record is: another batch's job run
+  // here keeps this pass's DESK_BATCH and DESK_AUTOPILOT_STATE (otherRepoEnv), which name this batch. A
+  // job queued before jobs carried it is never run here (uploadable): it stays queued for its own pass.
+  const state = own ? STATE : job.state;
+  const run = shOut('node', [join(BIN, 'upload-images.mjs'), String(job.pr), job.dir, '--max', String(max), '--state', state], { env, ...(own ? {} : { cwd: job.root }) });
   return { code: run.ok ? 0 : run.code, out: run.out };
 }
+const uploadable = (job) => job.queue === QUEUE_FILE || !!job.state;
 function pumpUploads() {
   if (DRY) return;
   try {
-    uploadStop = UQ.pump({ run: runUploadJob, tried: pumpedThisPass }).stop;
+    uploadStop = UQ.pump({ run: runUploadJob, tried: pumpedThisPass, eligible: uploadable }).stop;
   } catch (e) { report.failed.push(`the machine's upload queue did not run: ${e.message}; the next pass tries again`); }
   let results = [];
   try { results = UQ.takeResults(QUEUE_FILE); } catch (e) { report.failed.push(`the upload queue's results were not read: ${e.message}; the next pass reads them`); }
@@ -779,7 +785,7 @@ function uploadShots(t, prNo, imgDir) {
     const round = t.upload_round ?? null;
     const queued = UQ.readUploadQueue().jobs.find((j) => j.queue === QUEUE_FILE && j.key === t.key && String(j.pr) === String(prNo) && (j.round ?? null) === round);
     const before = queued && 'cells_before' in queued ? queued.cells_before : cellsIn(prNo);
-    UQ.enqueue({ queue: QUEUE_FILE, repo: GH_REPO, root: MAIN, key: t.key, round, pr: Number(prNo), dir: imgDir, approved: uploadPerm !== 'yes' && !!process.env.DESK_UPLOAD_APPROVED, cells_before: before, profile: E.browserProfile() });
+    UQ.enqueue({ queue: QUEUE_FILE, repo: GH_REPO, root: MAIN, key: t.key, round, pr: Number(prNo), dir: imgDir, state: STATE, approved: uploadPerm !== 'yes' && !!process.env.DESK_UPLOAD_APPROVED, cells_before: before, profile: E.browserProfile() });
   } catch (e) {
     report.failed.push(`${t.key}: image upload to PR #${prNo} did not join the machine's upload queue: ${e.message}; a later pass tries again`);
     return;
@@ -4015,6 +4021,36 @@ runPhase({
   report,
 });
 
+// ---- preview databases ---------------------------------------------------
+// The decision is preview-db.mjs teardownCalls: each database branch a worker made for its PR (§4
+// Preview database) is deleted, with that branch's preview override, by the recipe's delete steps
+// once the PR merges or closes, run from the main checkout. What it removed goes to the report and to
+// <state>/preview-db/removed.log; a failure is tried again next pass, and after a few is the person's.
+runPhase({
+  name: 'preview databases',
+  snapshot: () => {
+    const records = readPreviewRecords(STATE);
+    let recipe = null;
+    if (records.length) { try { recipe = parseRecipe(E.configValues('preview-db')); } catch (e) { recipe = { errors: [e.message] }; } }
+    // A PR the CI recovery closed and still owes a reopen reads CLOSED on GitHub, but is not closed for good.
+    const owed = records.length ? Object.values(queue().tickets ?? {}).filter(owesReopen).map((t) => String(t.result.pr)) : [];
+    return { records, recipe, owed, states: Object.fromEntries(records.map((r) => [r.pr, batchPrState(r.pr)])) };
+  },
+  decide: teardownCalls,
+  handlers: {
+    ...PHASE_HANDLERS,
+    teardown: (a) => {
+      if (DRY) { report.advanced.push(`preview database ${a.rec.db} for ${a.rec.branch} (${a.why}, dry run): would run ${a.cmds.map((c) => `\`${c}\``).join(', ')}`); return; }
+      const r = previewTeardown(a, { state: STATE, run: (cmd) => runCommand(cmd, { cwd: MAIN, timeout: DELETE_STEP_MS }) });
+      report[r.list].push(r.line);
+    },
+  },
+  report,
+});
+// A record left (its PR still open, or a delete to try again) keeps the batch from going idle, so the
+// supervisor keeps running its passes until each is deleted or handed to the person.
+const previewDbPending = readPreviewRecords(STATE).length > 0;
+
 // ---- report --------------------------------------------------------------
 // The decisions are pass/report.mjs: the report's opening here, its lines after the promotion ledger
 // below, then the groups and the verdict.
@@ -4569,7 +4605,8 @@ runSteps({
       },
       baseMoves, driver: driverReruns, built: (n, head) => buildRecord(BUILD_DIR, n, head), waived: waivedAt,
       outside: scopeOutside, title: triageTitle,
-      evidenceRun: (n, head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun),
+      evidenceRun: (n, head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun), evidenceHold: (n) => evidenceHold(STATE, n),
+      uploadHold: (n, t, shots) => uploadHold(STATE, n, ticketShotDir(t, STATE), shots),
       missingShots: (body, t) => missingShots(body, ticketShots(t, STATE)), shotDir: (t) => ticketShotDir(t, STATE),
       baseReads, reviewComments,
     },
@@ -5575,7 +5612,7 @@ if (!DRY) {
 const qEnd = queue();
 const verdictSnap = {
   ...baseSnapshot(), tickets: qEnd.tickets, queue: qEnd, report, blocked, putOff: new Set(Object.values(qEnd.tickets).filter(putOff).map((t) => t.key)),
-  parkNotes, prStates, gatePending, epicPending, promotionPending, followPending, spawned: report.spawned.length,
+  parkNotes, prStates, gatePending, epicPending, promotionPending, followPending, previewDbPending, spawned: report.spawned.length,
 };
 const { waiting, parked, idle, status } = verdictOf(verdictSnap);
 const lines = [];

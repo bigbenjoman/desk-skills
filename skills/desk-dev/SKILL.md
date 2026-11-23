@@ -40,6 +40,7 @@ owner" `desk-env get --json infra-owner` and Product owner `desk-env get product
 | §2 Primary repo root | the main checkout; env files are copied from it |
 | §2 Backups directory | pre-change dumps before any staging write |
 | §3 `db-per-ticket` | a throwaway per-ticket local database |
+| §4 Preview database (`desk-env cmds preview-db`), §3 `worker-preview-db` | a migration PR's own database branch and preview override, made by `preview-db.mjs up` and deleted by the pass once the PR merges or closes; never a shared, staging or production value |
 | §3 `db-clone-staging` | cloning reads live staging and loads a local instance |
 | §3 `local-reindex` | a local index or cache every session shares (§4 Local services) |
 | §3 `tests-shared-db` | database-backed tests that may wipe tables another session is using |

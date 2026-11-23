@@ -47,6 +47,19 @@ export function testSigninOf(item) {
   return /^[^\s@:]+@[^\s@:]+\.[^\s@:]+$/.test(cmd) ? { dir, email: cmd } : null;
 }
 
+// A §4 Preview database item, `<step>: <command>`: one step of the recipe that gives a PR adding a
+// migration a database branch and preview of its own (preview-db.mjs). A command names the PR's
+// branch, its database branch and its number only as {branch}, {db} and {pr}; a shell `${…}` is its own.
+// -> { step, cmd }, or null.
+export const PREVIEW_DB_STEPS = Object.freeze(['create', 'migrate', 'seed', 'override', 'rebuild', 'delete']);
+export const PREVIEW_DB_PLACEHOLDERS = Object.freeze(['branch', 'db', 'pr']);
+export function previewDbStepOf(item) {
+  const m = /^([a-z]+):\s+(\S.*)$/.exec(String(item ?? '').trim());
+  if (!m || !PREVIEW_DB_STEPS.includes(m[1])) return null;
+  const names = [...m[2].matchAll(/(?<!\$)\{([^{}\s]*)\}/g)].map((x) => x[1]);
+  return names.every((n) => PREVIEW_DB_PLACEHOLDERS.includes(n)) ? { step: m[1], cmd: m[2] } : null;
+}
+
 // The compose service a §4 Local services item starts with, ending at whitespace or a colon (`search
 // :8108`, `search: 8108`, `search`), or null. The service-port type reads an item's service by it.
 function localServiceName(item) {
@@ -497,6 +510,8 @@ export const TYPES = Object.freeze({
   regex: matching('a regular expression', (s) => { try { new RegExp(s); return true; } catch { return false; } }),
   command: matching('a command', () => true, parseCommandItem),
   'test-signin': matching('`[<app dir>: ]<email>`', (s) => testSigninOf(s) != null, testSigninOf),
+  'preview-db': matching(`\`<step>: <command>\`, the step one of ${PREVIEW_DB_STEPS.join(', ')} and its placeholders only ${PREVIEW_DB_PLACEHOLDERS.map((n) => `{${n}}`).join(', ')}`,
+    (s) => previewDbStepOf(s) != null, previewDbStepOf),
   'service-port': matching(SERVICE_PORT_FORM, (s) => servicePort(s) != null, servicePort),
   'field-defaults': matching('`<field> = <value>` or `<field> = from parent`', (s) => fieldDefaultOf(s) != null, fieldDefaultOf),
   'required-fields': matching('`<Type>[, <Type>…]: <field>[, <field>…]`', (s) => !requiredFieldsIn([s], null).malformed.length,
@@ -621,7 +636,7 @@ export const ROWS = Object.freeze([
   p('autopilot-workers'), p('autopilot-worker-mode', { type: 'text', example: 'dontAsk' }), p('autopilot-merge'), p('merge-hold-routine'),
   p('batch-base-push'), p('autopilot-judgement'), p('autopilot-reclaim'), p('machine-reboot'),
   p('worker-dependency-install'), p('worker-screenshots'), p('worker-local-services', noServices), p('worker-web-read'),
-  p('worker-workflow-dispatch'),
+  p('worker-workflow-dispatch'), p('worker-preview-db'),
   // §3 Local and shared state
   p('db-per-ticket', noLocalDb), p('db-clone-staging', forces(LOCAL_DB_NONE, STAGING_NONE('there is no staging to clone'))),
   p('staging-write', forces(STAGING_NONE('there is no staging to write to'))),
@@ -741,6 +756,9 @@ export const ROWS = Object.freeze([
   l('db-url-var', '4', 'Database URL variable', 'text', ['DATABASE_URL', 'DATABASE_URL_UNPOOLED']),
   l('db-migrate-cmd', '4', 'Database migrate', 'command', ['pnpm db:migrate']),
   l('seed-cmd', '4', 'Seed', 'command', ['pnpm db:seed']),
+  l('preview-db', '4', 'Preview database', 'preview-db', ['create: neonctl branches create --name {db} --parent staging',
+    'migrate: pnpm db:migrate:preview {db}', 'override: ./scripts/preview-env.sh set {branch} {db}', 'rebuild: ./scripts/preview-env.sh redeploy {branch}',
+    'delete: ./scripts/preview-env.sh unset {branch}', 'delete: neonctl branches delete {db}'], dflt(['none'])),
   l('local-services', '4', 'Local services', 'service-port', ['typesense :8108', 'mailpit :8025']),
   l('staging', '4', 'Staging', 'text', ['web: https://staging.example.com']),
   v('staging-bypass', '4', 'Staging bypass token location', 'text', '~/.config/desk/repos/<slug>/vercel-staging-bypass'),

@@ -247,6 +247,20 @@ function machine({ step = 5000 } = {}) {
   const q = readUploadQueue(m.file);
   t('DS-790 AC5 an exit 6 still records the sign-in refusal and keeps the job, with no page pause', `${Object.keys(q.signin)} ${isQueued(q, '/q/acme/a.json', 'a-1')} ${q.page} ${r.stop.startsWith('GitHub turned away the saved login')}`, '/p.github-session.json true null true');
 }
+// DS-550: a job `eligible` refuses (another batch's job naming no state dir) is passed over untouched:
+// not run, still queued, and an older install's page pause is not cleared as if it had uploaded.
+{
+  const m = machine();
+  m.add('acme/a', 'a-1', 1);
+  const q0 = readUploadQueue(m.file);
+  writeFileSync(m.file, `${JSON.stringify({ ...q0, page: { at: 'T', why: "GitHub's PR page changed", repo: 'acme/a', pr: 1, install: '/old' } })}\n`);
+  const r = m.pump({ install: () => '/new', eligible: (j) => !!j.state });
+  const q = readUploadQueue(m.file);
+  t('DS-550 a job eligible refuses is not run, stays queued, and leaves the page pause', `${m.calls.length} ${isQueued(q, '/q/acme/a.json', 'a-1')} ${q.page?.install} ${q.results.length} ${r.ran.length}`, '0 true /old 0 0');
+  m.add('acme/b', 'b-1', 1, { state: '/state/b' });
+  m.pump({ install: () => '/new', eligible: (j) => !!j.state });
+  t('DS-550 a job naming its state dir runs past the refused one (negative control)', m.calls.map((c) => c.key).join(), 'b-1');
+}
 
 // ---- the lock: a dead holder's lock is cleared, a live one's is not --------------------------------
 {

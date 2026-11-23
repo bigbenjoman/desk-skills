@@ -221,7 +221,8 @@ export function decideGroups(s) {
 //   prStates                 { [pr]: state } for each PR the pass read
 //   gatePending, epicPending, promotionPending   a base gate, epic PR or promotion still to come
 //   followPending            a follow-step checker running or still to start (pass/follow-steps.mjs)
-//   spawned                  how many tickets this pass spawned
+//   previewDbPending         a preview database still to delete (preview-db.mjs records)
+//   spawned                 how many tickets this pass spawned
 // -> { waiting, parked, idle, status, needsYou }
 // A park a pass settles by checking its recorded clears-when. One still to be restated is not: it stays
 // in `parked`, the only way the decider (decider.mjs deciderItems) is asked to restate it.
@@ -240,7 +241,7 @@ export function verdictOf(s) {
   // A park with a note is still the person's: the PR it waits on conflicts with its base or was closed
   // unmerged, so it cannot merge on its own and the condition a pass checks would never hold.
   const parked = ownParks(s).filter(({ t, p }) => p.note || !passChecks(t)).map(({ p }) => p);
-  const idle = batchIdle(s.queue, (n) => s.prStates[n] ?? null) && !s.gatePending && !s.epicPending && !s.promotionPending && !s.followPending;
+  const idle = batchIdle(s.queue, (n) => s.prStates[n] ?? null) && !s.gatePending && !s.epicPending && !s.promotionPending && !s.followPending && !s.previewDbPending;
   const status = idle ? 'idle' : (waiting.length || parked.length) ? 'show_person' : s.spawned ? 'go_on' : 'nothing_yet';
   const needsYou = [...parked.map((p) => p.key), ...waiting.map((x) => x.split(':')[0])];
   return { waiting, parked, idle, status, needsYou };

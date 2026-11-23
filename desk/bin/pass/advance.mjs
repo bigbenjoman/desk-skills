@@ -252,6 +252,8 @@ export function* decideAdvance(s) {
       // again. A body that could not be read waits for the undraft step, which reads it again. An
       // upload of it that crashed is the crashed-uploads step's, which keeps to UPLOAD_TRIES.
     } else if (s.upload.allowed) {
+      // A preview-database PR's uploader posts only the files its error-page check passed (upload-batches.mjs
+      // runUpload `passed`); the cells it leaves go to the undraft step, which sends them to a capture worker.
       yield { type: 'upload', key: t.key, pr: prNo, dir: imgDir };
     } else if (!t.images_reported) {
       yield* setAndSay(t.key, ['images_reported=true'], 'waiting', `${t.key}: screenshots for PR #${prNo} are in ${imgDir} — config §3 ${s.upload.key} is "${s.upload.perm}". ` +

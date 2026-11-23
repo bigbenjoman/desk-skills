@@ -687,12 +687,14 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'harm-vmmem|3b|WSL VM share of its grant that holds spawns (%)', // DS-848
     'jira-field-defaults|4|Field defaults',
     'proposal-labels|4|Priority proposal labels',
+    'preview-db|4|Preview database', // DS-550
   ];
+  const ADDED_PERMS = ['worker-preview-db']; // DS-550
   const sorted = (a) => [...a].sort().join('\n');
   const rowsNow = Object.entries(CONFIG_ROWS).map(([id, r]) => [id, r.section, r.row, ...(r.table ? ['table'] : [])].join('|'));
   t('DS-867 AC4 CONFIG_ROWS holds exactly the ids, sections and rows it held, and the ones added since', sorted(rowsNow), sorted([...BEFORE_ROWS, ...ADDED_ROWS]));
   t('DS-867 AC4 and nothing else on any entry', Object.values(CONFIG_ROWS).filter((r) => Object.keys(r).some((k) => !['section', 'row', 'table'].includes(k))).length, 0);
-  t('DS-867 AC4 PERMISSION_KEYS holds exactly the ids and keys it held', sorted(Object.entries(PERMISSION_KEYS).map(([id, k]) => `${id}=${k}`)), sorted(BEFORE_PERMS.map((k) => `${k}=${k}`)));
+  t('DS-867 AC4 PERMISSION_KEYS holds exactly the ids and keys it held, and the ones added since', sorted(Object.entries(PERMISSION_KEYS).map(([id, k]) => `${id}=${k}`)), sorted([...BEFORE_PERMS, ...ADDED_PERMS].map((k) => `${k}=${k}`)));
   t('DS-867 AC4 both stay frozen', Object.isFrozen(CONFIG_ROWS) && Object.isFrozen(PERMISSION_KEYS), true);
 }
 
@@ -730,7 +732,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     ['yes-no', 'no', 'maybe', false], ['on-off', 'on', 'yes', false], ['tracker', 'none', 'linear', false],
     ['merge-method', 'rebase', 'squash-merge', false], ['suite-weight', 'heavy', 'medium', false], ['status-table', 'quiet', 'loud', false],
     ['batches-run-by', 'session', 'cron', false], ['ai-attribution', 'allowed', 'sometimes', false], ['regex', 'KAN-[0-9]+', 'KAN-[0-9', false],
-    ['command', 'apps/api: uv run pytest', null], ['test-signin', 'apps/portal: dev@example.test', 'apps/portal: hunter2', false], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
+    ['command', 'apps/api: uv run pytest', null], ['test-signin', 'apps/portal: dev@example.test', 'apps/portal: hunter2', false], ['preview-db', 'delete: neonctl branches delete {db}', 'delete: x {name}', false], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
     ['required-fields', 'Bug: customfield_1', 'customfield_1', false], ['field-defaults', 'customfield_1 = from parent', 'customfield_1', false], ['lever', 'codex, effort', 'turbo', false],
     ['budget', '25', '25 USD', true], ['worker-models', 'default', 'fast', true], ['worker-effort', 'task=low', '4b=extreme', true],
     ['worker-location', 'cloud', 'remote', true], ['codex-review', 'timeout=60', 'timeout=soon', true],

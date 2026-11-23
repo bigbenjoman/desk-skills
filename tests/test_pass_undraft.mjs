@@ -240,6 +240,35 @@ t('fixTryQuote keeps a protected try\'s files', j(fixTryQuote({ kind: 'protected
   t('AC7 with no process started and nothing written', j(r.calls), '[]');
 }
 
+// DS-550 AC2: a preview-database PR never takes an evidence run, since the workflow posts its shots
+// unchecked; its cells go to a capture worker, whose shots preview-db.mjs check reads.
+{
+  const BODY = '| after |\n|---|\n| _drag after-plans.png_ |\n\n```evidence\n/plans\n```\n';
+  const asked = [];
+  const snapWith = (hold) => undraftSnap([{ t: ticket('A'), s: status() }], {
+    cfg: { ...undraftSnap([]).cfg, evidence: { workflow: 'pr-evidence.yml' } },
+    reads: { ...undraftSnap([]).reads, missingShots: () => ['after-plans.png'], evidenceHold: (n) => { asked.push(n); return hold; } },
+  });
+  const run = (hold) => drive(decideUndraft, snapWith(hold), { 'pr-view': view([review(marker(ALL_ZERO))], { body: BODY }) }).actions;
+  t('DS-550 AC5 a PR with no preview database starts its evidence run (negative control)', acts(run(null)).includes('evidence'), true);
+  t('DS-550 AC2 the hold is asked for that PR', j(asked[0]), j(701));
+  const held = run('held');
+  t('DS-550 AC2 a held PR starts no evidence run', acts(held).includes('evidence'), false);
+  t('DS-550 AC2 its cells go to a capture worker instead', held.some((a) => a.type === 'apply-fix' && /capture/.test(j(a))), true);
+  // Files that are taken but did not pass the check as they are go to a capture worker, never the upload.
+  const upAsked = [];
+  const upSnap = (hold) => undraftSnap([{ t: ticket('A'), s: status() }], {
+    cfg: { ...undraftSnap([]).cfg, upload: 'yes' },
+    reads: { ...undraftSnap([]).reads, missingShots: () => [], uploadHold: (n, tk, shots) => { upAsked.push([n, shots]); return hold; } },
+  });
+  const upRun = (hold) => drive(decideUndraft, upSnap(hold), { 'pr-view': view([review(marker(ALL_ZERO))], { body: BODY }) }).actions;
+  const free = upRun(null);
+  t('DS-550 AC2 checked files are uploaded (negative control)', [free.some((a) => a.type === 'upload'), free.some((a) => a.type === 'apply-fix' && /capture/.test(j(a)))].join(), 'true,false');
+  t('DS-550 AC2 the upload hold is asked for the files the cells name', j(upAsked[0]), j([701, ['after-plans.png']]));
+  const unchecked = upRun('after-plans.png did not pass');
+  t('DS-550 AC2 unchecked files are not uploaded but go to a capture worker', [unchecked.some((a) => a.type === 'upload'), unchecked.some((a) => a.type === 'apply-fix' && /capture/.test(j(a)))].join(), 'false,true');
+}
+
 // A draft the outage step re-ran as its hold cleared waits for that run, as a ready PR does: no fix try.
 {
   const redRollup = [{ __typename: 'CheckRun', name: 'tests', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/o/r/actions/runs/9/job/90' }];

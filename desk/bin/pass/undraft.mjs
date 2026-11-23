@@ -40,7 +40,7 @@
 import { undraftCall, undraftComment, personHold, repairSaid } from '../undraft.mjs';
 import { reviewFix, conflictFix, syncFix, renamesFix, reviewTry, draftChecksFix, draftGateTry, captureTry } from '../fix-tries.mjs';
 import { latestPerCheck, normaliseRollup } from '../gate.mjs';
-import { dragCells } from '../evidence.mjs';
+import { dragCells, dragFiles } from '../evidence.mjs';
 import { set, say } from './shared.mjs';
 
 const out = (line) => ({ type: 'out', line });
@@ -154,7 +154,10 @@ export function* decideRenames(snap) {
 //                 built(n, head), evidenceRun(n, head), missingShots(body, t) (the files body's cells
 //                 name that t's screenshot directory does not hold), shotDir(t), baseReads(head),
 //                 reviewComments(id) -> { comments } or { comments: null, error },
-//                 waived(n, head, checks, names) (the merge driver waives these red checks: pass.mjs waivedAt)
+//                 waived(n, head, checks, names) (the merge driver waives these red checks: pass.mjs waivedAt),
+//                 evidenceHold(n) (why PR n, having a preview database, takes no evidence run, or null:
+//                 preview-db.mjs evidenceHold), uploadHold(n, t, shots) (why those files in t's
+//                 screenshot directory may not be uploaded to PR n, or null: preview-db.mjs uploadHold)
 export function* decideUndraft(snap) {
   const { cfg, reads } = snap;
   if (!snap.drafts.length) return;
@@ -172,7 +175,17 @@ export function* decideUndraft(snap) {
     // A verdict for an older head holds at this one when only clean merges of the base and empty commits came since.
     const { carry, scope, baseMerge, behind } = reads.baseMoves(t, head);
     const c = undraftCall(t, { number: n, head, base: v.baseRefName ?? null, baseHead: s.base_head ?? null, branch: v.headRefName ?? null, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry, scope },
-      { ...passCfg, passAt: snap.at, spine, ...reads.driver(n, head), built: (h) => reads.built(n, h), behind, evidenceRun: (h) => reads.evidenceRun(n, h), missingShots: (body) => reads.missingShots(body, t), shotDir: reads.shotDir(t),
+      { ...passCfg, passAt: snap.at, spine, ...reads.driver(n, head), built: (h) => reads.built(n, h), behind, evidenceRun: (h) => reads.evidenceRun(n, h), shotDir: reads.shotDir(t),
+        // Files a preview-database PR's cells name that did not pass its error-page check as they are count
+        // as not taken, so a capture worker takes and checks them rather than their being uploaded.
+        missingShots: (body) => {
+          const missing = reads.missingShots(body, t);
+          const held = dragFiles(body).filter((f) => !missing.includes(f));
+          return held.length && reads.uploadHold?.(n, t, held) ? dragFiles(body) : missing;
+        },
+        // A PR with a preview database never takes an evidence run: its cells are filled from a worker's own
+        // shots that passed the error-page check, or go to a capture worker, which runs that check.
+        ...(reads.evidenceHold?.(n) ? { evidence: null } : {}),
         waived: (names) => s.head === head && !!reads.waived?.(n, head, s.checks, names) });
     if (!c) continue;
     // A verdict carried to this head is recorded there (findings.mjs recordCarry), with no round run.

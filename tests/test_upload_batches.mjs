@@ -2,6 +2,7 @@
 // layer: L1
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { join, basename } from 'node:path';
+import { createHash } from 'node:crypto';
 import { runUpload, tagsPath, fileSha, altOf, batchesOf, linkIn, BATCH_SIZE, EXIT_THROTTLED, EXIT_PACED, THROTTLE_MS } from '../desk/bin/upload-batches.mjs';
 import { swapCells, dragFiles } from '../desk/bin/evidence.mjs';
 import { scratch } from './scratch.mjs';
@@ -21,6 +22,10 @@ function folder(files, same = {}) {
 }
 const body = (cells) => `## Evidence\n| shot |\n|---|\n${cells.map((c) => `| _drag ${c}_ |`).join('\n')}\n`;
 const url = (path) => `https://github.com/user-attachments/assets/${fileSha(path).slice(0, 12)}`;
+// A file handed over as its bytes ({ name, mimeType, buffer }) rather than a path: the link is of those bytes.
+const nameOf = (p) => (typeof p === 'string' ? p : p.name);
+const shaOf = (buf) => createHash('sha256').update(buf).digest('hex');
+const bufUrl = (buf) => `https://github.com/user-attachments/assets/${shaOf(buf).slice(0, 12)}`;
 
 // A fake comment box: each file it is given shows its <img> tag after `delay` polls, unless the batch
 // is one `stallAt` names (1-based), when only `partial` of its files ever do. `crashAt` throws on that
@@ -37,8 +42,8 @@ function fakePage({ delay = 1, stallAt = 0, partial = 0, crashAt = 0 } = {}) {
       page.polls += 1;
       const stall = page.batches.length === stallAt;
       return page.cur.map((p, i) => (stall && i >= partial) || page.polls <= delay
-        ? `![Uploading ${basename(p)}…]()`
-        : `<img width="800" alt="${altOf(p)}" src="${url(p)}" />`).join('\n');
+        ? `![Uploading ${basename(nameOf(p))}…]()`
+        : `<img width="800" alt="${altOf(nameOf(p))}" src="${typeof p === 'string' ? url(p) : bufUrl(p.buffer)}" />`).join('\n');
     },
     clear: async () => { page.cur = []; },
   };
@@ -51,7 +56,7 @@ const sleep = async (ms) => { clock.t += ms; };
 function run(dir, pr, page) {
   return runUpload({ dir, readBody: () => pr.body, writeBody: (b) => { pr.body = b; pr.edits += 1; }, openPage: page.open, now, sleep, pollMs: 1000, stallMs: 180000 });
 }
-const uploaded = (page) => page.batches.flat().map((p) => basename(p));
+const uploaded = (page) => page.batches.flat().map((p) => basename(nameOf(p)));
 
 // ---- AC1: only the files the cells name, in batches of at most 15 --------------------------------
 {
@@ -239,6 +244,49 @@ const uploaded = (page) => page.batches.flat().map((p) => basename(p));
   const r2 = await capped(p2, 6);
   t('max: the next run uploads only the rest', uploaded(p2).sort().join(','), named.slice(6).join(','));
   t('max: with nothing left over it ends as before', `${r2.code} ${r2.lines[0]}`, '0 done: 10 image(s) in the body, 0 placeholder(s) left');
+}
+
+// ---- DS-550 AC2: a preview-database PR's run posts only the bytes its error-page check passed --------
+{
+  const dir = folder(['ok.png', 'changed.png', 'nested/deep.png', 'error-pages/bad.png']);
+  const passed = new Set([fileSha(join(dir, 'ok.png')), fileSha(join(dir, 'changed.png'))]);
+  writeFileSync(join(dir, 'changed.png'), 'png changed.png, taken again after its check');
+  const pr = { body: body(['ok.png', 'changed.png', 'deep.png', 'bad.png']), edits: 0 };
+  const page = fakePage();
+  const r = await runUpload({ dir, readBody: () => pr.body, writeBody: (b) => { pr.body = b; }, openPage: page.open, now, sleep, pollMs: 1000, stallMs: 180000, passed });
+  t('DS-550 AC2 only the file its check read, unchanged, is uploaded', uploaded(page).join(','), 'ok.png');
+  t('DS-550 AC2 a changed file, an unchecked nested one and a set-aside error page keep their cells', dragFiles(pr.body).sort().join(','), 'bad.png,changed.png,deep.png');
+  t('DS-550 AC2 the run ends with cells left (exit 4), naming the unchecked ones', [r.code, /changed\.png \(there, but not as its last passing/.test(r.lines.join('\n'))].join(), '4,true');
+  const free = folder(['a.png']);
+  const pr2 = { body: body(['a.png']), edits: 0 };
+  const p2 = fakePage();
+  await runUpload({ dir: free, readBody: () => pr2.body, writeBody: (b) => { pr2.body = b; }, openPage: p2.open, now, sleep, pollMs: 1000, stallMs: 180000, passed: null });
+  t('DS-550 AC5 a PR with no preview database uploads as before (negative control)', uploaded(p2).join(','), 'a.png');
+  const p3 = fakePage();
+  const pr3 = { body: body(['a.png']), edits: 0 };
+  await runUpload({ dir: free, readBody: () => pr3.body, writeBody: (b) => { pr3.body = b; }, openPage: p3.open, now, sleep, pollMs: 1000, stallMs: 180000, passed: new Set() });
+  t('DS-550 AC2 before any check passed, nothing is uploaded, nor a link already uploaded reused', [uploaded(p3).length, dragFiles(pr3.body).join(',')].join(), '0,a.png');
+}
+// ---- DS-550 AC2: the bytes checked are the bytes sent, even if the file is rewritten before the browser reads it --
+{
+  const dir = folder(['race.png']);
+  const checked = readFileSync(join(dir, 'race.png'));
+  const passed = new Set([shaOf(checked)]);
+  const pr = { body: body(['race.png']), edits: 0 };
+  const page = fakePage();
+  const open = page.open;
+  // The file changes between the gate's read and the browser's: after planning, before setFiles.
+  page.open = async () => { writeFileSync(join(dir, 'race.png'), 'png race.png, rewritten after its check'); return open(); };
+  const r = await runUpload({ dir, readBody: () => pr.body, writeBody: (b) => { pr.body = b; }, openPage: page.open, now, sleep, pollMs: 1000, stallMs: 180000, passed });
+  const sent = page.batches.flat()[0];
+  t('DS-550 AC2 the browser is handed the checked bytes, not the file as it is now', typeof sent === 'object' && shaOf(sent.buffer) === shaOf(checked), true);
+  t('DS-550 AC2 the bytes go under the file\'s own name and type', typeof sent === 'object' ? `${sent.name} ${sent.mimeType}` : sent, 'race.png image/png');
+  const tags = JSON.parse(readFileSync(tagsPath(dir), 'utf8'));
+  t('DS-550 AC2 the link is kept under the hash of the bytes sent', [r.code, tags.files['race.png'].sha256 === shaOf(checked), tags.files['race.png'].url === bufUrl(checked)].join(), '0,true,true');
+  const free = folder(['b.png']);
+  const p2 = fakePage();
+  await runUpload({ dir: free, readBody: () => body(['b.png']), writeBody: () => {}, openPage: p2.open, now, sleep, pollMs: 1000, stallMs: 180000, passed: null });
+  t('DS-550 AC5 with no gate the browser reads the file by its path, as before (negative control)', typeof p2.batches.flat()[0], 'string');
 }
 
 rmSync(ROOT, { recursive: true, force: true });
