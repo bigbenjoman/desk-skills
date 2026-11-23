@@ -130,6 +130,8 @@ import { kindMode, readLog, restartTrial, trialOf, TRIAL_DAYS } from './leases.m
 import { LEASE_KINDS } from './machine.mjs';
 import { saveAnswer } from './briefing.mjs';
 import { addAsk, removeAsk } from './asks.mjs';
+import { finishedCloud, readArchived, recordArchived } from './cloud-worker.mjs';
+import { readArchive } from './queue-store.mjs';
 import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
 import { prsNaming } from './recoveries.mjs';
 import { parkWords, plainTerms, GRANT_WORDS } from './park-words.mjs';
@@ -1551,6 +1553,27 @@ function ticketlessItems(batches) {
         since: timeOf(p.since) } })));
 }
 
+// ---- finished cloud sessions (cloud-worker.mjs finishedCloud): one item a batch --------------------
+// Nothing here can archive a cloud session, so each batch's finished ones are one item, `cloud-archive`
+// for the standing batch and `cloud-archive:<batch>` for a named one, naming each session and its URL.
+// Done records every session it named as archived (cloud-worker.mjs recordArchived), so a session
+// that finishes later is a new item.
+const CLOUD_ARCHIVE = 'cloud-archive';
+function cloudItems(batches) {
+  return batches.filter((b) => !b.error && b.q).flatMap((r) => {
+    let archive = {};
+    try { archive = readArchive(r.queuePath).tickets; } catch { /* an unreadable archive lists none of its tickets */ }
+    const done = finishedCloud(r.q.tickets, archive, readArchived(r.stateDir));
+    if (!done.length) return [];
+    const list = done.map((d) => `${d.name ?? d.key} ${d.url}`).join('; ');
+    return [{ r, dir: r.stateDir, t: { key: r.batch == null ? CLOUD_ARCHIVE : `${CLOUD_ARCHIVE}:${r.batch}` }, item: { kind: CLOUD_ARCHIVE, repoLevel: true,
+      sessions: done.map((d) => d.session),
+      need: `${done.length === 1 ? '1 cloud session has' : `${done.length} cloud sessions have`} finished in ${r.name ?? r.slug} and ${done.length === 1 ? 'is' : 'are'} still open: archive ${done.length === 1 ? 'it' : 'these'} in claude.ai/code: ${list}`,
+      actions: [['done', 'once you have archived them, done records them so they are not listed again'], ['not-now']],
+      since: timeOf(done[done.length - 1].at) } }];
+  });
+}
+
 // ---- a session-run batch whose passes stopped (desk-q passesPaused): one item a batch ---------------
 // A batch an interactive session runs (§3b Batches run by `session`) has no supervisor to start its
 // passes again, so when that session stalls (a turn that ended short of its next step, a request that
@@ -1875,7 +1898,7 @@ export function needsCount(r) {
   for (const s of [...signinItems(own, own), ...pageItems(own, { home: true })]) {
     if (lookupItem(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
   }
-  for (const s of [...askItems(r.batches ?? [r]), ...stalledItems(own), ...ticketlessItems(own), ...proposalItems(own)]) {
+  for (const s of [...askItems(r.batches ?? [r]), ...stalledItems(own), ...ticketlessItems(own), ...cloudItems(own), ...proposalItems(own)]) {
     if (lookupItem(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
   }
   return { shown: rows.length + items.length, putOff, rows, stepRows, items, offItems };
@@ -1948,6 +1971,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   for (const s of askItems(scope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of proposalItems(inScope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of ticketlessItems(inScope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
+  for (const s of cloudItems(inScope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   // Unscoped, every configured repo: a quiet repo, which the home screen does not show, is where a lane goes stale.
   if (ciRed) for (const s of ciRedItems(repos, word ? scope : repos, ciRed)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))), g.r.stateDir, heldBehindAll(g.parked.map((p) => [p.r, p.t.key])));
@@ -2088,7 +2112,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(PROPOSAL)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket === CLOUD_ARCHIVE || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -2423,6 +2447,10 @@ function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = R
   if (i.kind === STALLED) return say(true, 'noted: this item goes once a pass runs again; done records nothing.');
   if (i.kind === 'base-red') return say(true, 'noted: the next pass reads the base again; each hold clears once its check passes there, and this item goes with the last; done records nothing.');
   if (i.kind === 'ci-red') return say(true, 'noted: this item goes once the alarm closes the issue, when every CI lane on main is green and fresh; done records nothing.');
+  if (i.kind === CLOUD_ARCHIVE) {
+    try { recordArchived(i.r.stateDir, i.sessions); } catch (e) { return say(false, `recording it was refused (${one(e.message)}), so it stays on your list.`); }
+    return say(true, `recorded ${i.sessions.length === 1 ? 'the session' : `all ${i.sessions.length} sessions`} archived, so it is off your list.`);
+  }
   if (i.kind === 'ticketless') return say(true, `noted: the next pass that finds PR #${i.pr} merged or closed drops this item; done records nothing.`);
   if (i.kind === SIGNIN) return say(true, 'noted: the next pass checks the login again; once it passes this item goes and the upload queue resumes.');
   if (i.kind === LEASE_TRIAL) return leaseTrialAnswer(verb, now, say);

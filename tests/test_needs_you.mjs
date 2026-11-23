@@ -1,7 +1,7 @@
 // suite: needs-you (every item desk-q counts as needing the person, and recording each answer)
 // layer: L2
 // budget: 115 DS-943 (831 checks over a dozen fixture worlds, each with git repos; 49-88 s on CI)
-// covers: desk/bin/needs-you.mjs desk/bin/asks.mjs desk/bin/decider.mjs skills/desk-needs-you/**
+// covers: desk/bin/needs-you.mjs desk/bin/asks.mjs desk/bin/decider.mjs desk/bin/cloud-worker.mjs skills/desk-needs-you/**
 // Fixture repos, queues, heartbeats, triage records and decision logs under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. DESK_HOME/bin links the real scripts, except answer.mjs: a fake
 // that logs each call and then runs the real one. Nothing touches your real ~/.claude or state.
@@ -3814,6 +3814,34 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-836 not-now puts it off', `${off.ok} ${strays().length}`, 'true 0');
   put('gone836', { port: 4837, beat: 1, batch: { ticketless_prs: null }, tickets: { 'G-1': { state: 'triaged', lane: 'A' } } });
   t('DS-836 AC2 once the pass drops the record, no item', N.collect({ word: 'gone836' }).items.filter((i) => i.kind === 'ticketless').length, 0);
+}
+
+// ---- #1311: a batch's finished cloud sessions are one item, naming each with its URL, until done
+{
+  const cloud = (id, extra = {}) => ({ session: `session_${id}`, url: `https://claude.ai/code/session_${id}?from=cli`, started: minsAgo(300), ...extra });
+  put('cloud1311', { port: 4911, beat: 1, tickets: {
+    'C-1': { state: 'done', location: 'cloud', merged_at: minsAgo(30), result: { pr: 5 }, cloud: cloud('a', { name: 'cloud1311-ticket-C-1' }) },
+    'C-2': { state: 'running', location: 'cloud', cloud: cloud('b', { name: 'cloud1311-ticket-C-2' }) },
+    'C-4': { state: 'done', location: 'cloud', result: { pr: 7 }, cloud: cloud('d', { name: 'cloud1311-ticket-C-4' }) },
+    'L-1': { state: 'done', merged_at: minsAgo(20), result: { pr: 6 } },
+  } });
+  const q = join(env.DESK_HOME, 'repos', 'acme__cloud1311', 'queue.json');
+  // The queue archives a done ticket once its PR has merged or closed; this one predates session names.
+  writeFileSync(join(dirname(q), 'queue.archive.json'), JSON.stringify({ tickets: { 'C-3': { key: 'C-3', state: 'done', location: 'cloud', merged_at: minsAgo(600), result: { pr: 3 }, cloud: cloud('c') } } }));
+  const items = () => N.collect({ word: 'cloud1311' }).items.filter((i) => i.kind === 'cloud-archive');
+  let c = items();
+  t('one item for the batch, naming each finished session with its URL, the archived one by its key',
+    `${c.length} ${c[0]?.t.key} ${c[0]?.need}`,
+    '1 cloud-archive 2 cloud sessions have finished in cloud1311 and are still open: archive these in claude.ai/code: C-3 https://claude.ai/code/session_c?from=cli; cloud1311-ticket-C-1 https://claude.ai/code/session_a?from=cli');
+  t('a running session, one whose PR has not merged, and a local ticket are not listed', ['session_b', 'session_d'].some((x) => c[0]?.need.includes(x)), false);
+  t('desk-q counts it once', N.needsCount(loadRepos(Date.now(), 'cloud1311').find((r) => r.slug === 'acme__cloud1311' && r.batch == null)).items.filter((i) => i.item.kind === 'cloud-archive').length, 1);
+  const done = N.record({ word: 'cloud1311', ticket: 'cloud-archive', action: 'done' });
+  t('done records every session it named as archived, and the item goes', `${done.ok} ${done.line} ${items().length}`, 'true cloud1311 cloud-archive: recorded all 2 sessions archived, so it is off your list. 0');
+  const qq = JSON.parse(readFileSync(q, 'utf8'));
+  qq.tickets['C-4'].merged_at = minsAgo(1);
+  writeFileSync(q, JSON.stringify(qq));
+  c = items();
+  t('a session that finishes later is a new item naming only it', c[0]?.need, '1 cloud session has finished in cloud1311 and is still open: archive it in claude.ai/code: cloud1311-ticket-C-4 https://claude.ai/code/session_d?from=cli');
 }
 
 // ---- DS-896: a ticket's blockers, read by desk-q, needs-you and queue.mjs watch from one helper, in the

@@ -13,6 +13,9 @@
 // on, and local settings do not reach the session. So with the effort lever on, which promises each
 // session an effort config names, no ticket runs in the cloud (CLOUD_NO_EFFORT).
 import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { lock, unlock, writeJsonAtomic } from './dir-lock.mjs';
 
 export const CLOUD_NO_EFFORT = 'the effort lever is on, and a cloud session cannot be given an effort';
 
@@ -96,15 +99,16 @@ export function parseCloudStart(out) {
 
 // Starts one cloud session. `claude --cloud` will not run in print mode, so `script` gives it a
 // terminal: BSD script takes the command as arguments, util-linux script a shell string, which
-// reads the prompt from the environment rather than quoting it in.
+// reads the prompt from the environment rather than quoting it in. `name` is the session's display
+// name (`--name` also names a new cloud session), so the person can tell which ones are finished.
 //   -> parseCloudStart's result
-export function startCloud(prompt, { claude = 'claude', platform = process.platform, timeout = 120_000, env = process.env } = {}) {
+export function startCloud(prompt, { claude = 'claude', name = null, platform = process.platform, timeout = 120_000, env = process.env } = {}) {
   const args = platform === 'darwin' || platform.endsWith('bsd')
-    ? ['-q', '/dev/null', claude, '--cloud', prompt]
-    : ['-q', '-e', '-c', `"$DESK_CLOUD_CLAUDE" --cloud "$DESK_CLOUD_PROMPT"`, '/dev/null'];
+    ? ['-q', '/dev/null', claude, '--cloud', prompt, ...(name ? ['--name', name] : [])]
+    : ['-q', '-e', '-c', `"$DESK_CLOUD_CLAUDE" --cloud "$DESK_CLOUD_PROMPT"${name ? ' --name "$DESK_CLOUD_NAME"' : ''}`, '/dev/null'];
   const r = spawnSync('script', args, {
     encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...env, DESK_CLOUD_CLAUDE: claude, DESK_CLOUD_PROMPT: prompt },
+    env: { ...env, DESK_CLOUD_CLAUDE: claude, DESK_CLOUD_PROMPT: prompt, DESK_CLOUD_NAME: name ?? '' },
   });
   if (r.error) return { error: r.error.code === 'ETIMEDOUT' ? `no answer in ${timeout / 1000}s` : r.error.message };
   const got = parseCloudStart(`${r.stdout ?? ''}\n${r.stderr ?? ''}`);
@@ -124,8 +128,52 @@ export function findCloudPr(prs, { key, branch, since }) {
   return pick.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))[0] ?? null;
 }
 
+// A cloud session's display name: one per ticket, as a local worker's (spawn-worker.sh).
+export const cloudName = (ghRepo, key) => `${String(ghRepo ?? '').split('/').pop()}-ticket-${key}`;
+
 // Session start to PR, in ms, or null while there is no PR.
 export const cloudWall = (cloud) => {
   const ms = Date.parse(cloud?.pr_at ?? '') - Date.parse(cloud?.started ?? '');
   return Number.isFinite(ms) && ms >= 0 ? ms : null;
 };
+
+// ---- finished cloud sessions, to archive ---------------------------------------------------------
+// Nothing on this computer can end or archive a cloud session (`claude stop` and `rm` act on local
+// background sessions only), so a finished one stays in the person's claude.ai/code list until they
+// archive it there. needs-you lists the batch's finished sessions as one item, and its done records
+// them here, in the batch's state folder, so each is asked about once.
+const archivedPath = (stateDir) => join(stateDir, 'cloud-archived.json');
+
+// The session ids the person has said are archived, as a Set; none when the file is missing or unreadable.
+export function readArchived(stateDir) {
+  try { return new Set(JSON.parse(readFileSync(archivedPath(stateDir), 'utf8')).sessions ?? []); } catch { return new Set(); }
+}
+
+// Records `sessions` as archived, under the file's lock.
+export function recordArchived(stateDir, sessions) {
+  const file = archivedPath(stateDir), held = `${file}.lock`;
+  lock(held);
+  try {
+    let f = { sessions: [] };
+    if (existsSync(file)) {
+      try { f = JSON.parse(readFileSync(file, 'utf8')); } catch (e) { throw new Error(`${file} cannot be read (${e.message}); fix or remove it first`); }
+    }
+    f.sessions = [...new Set([...(f.sessions ?? []), ...sessions])];
+    writeJsonAtomic(file, f);
+  } finally { unlock(held); }
+}
+
+// The batch's finished cloud sessions not yet archived, oldest first: each ticket worked in the cloud
+// whose PR has merged (a live ticket with `merged_at`), or that the queue archived, which it does once
+// a done ticket's PR has merged or closed. `tickets` are the live ones, `archived` the archive's.
+//   -> [{ key, session, name, url, at }]
+export function finishedCloud(tickets, archived, done = new Set()) {
+  const rows = [
+    ...Object.values(tickets ?? {}).filter((t) => t?.state === 'done' && t.merged_at),
+    ...Object.values(archived ?? {}),
+  ].filter((t) => t?.location === 'cloud' && t.cloud?.session && t.cloud.url && !done.has(t.cloud.session));
+  const seen = new Set();
+  return rows.filter((t) => !seen.has(t.cloud.session) && seen.add(t.cloud.session))
+    .map((t) => ({ key: t.key, session: t.cloud.session, name: t.cloud.name ?? null, url: t.cloud.url, at: t.merged_at ?? t.cloud.pr_at ?? t.cloud.started ?? null }))
+    .sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));
+}

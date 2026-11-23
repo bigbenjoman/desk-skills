@@ -93,6 +93,10 @@ Once its PR is read the session is over: any later work on that PR (a review try
 kind, a rework) goes to a local worker on the PR's branch at origin's tip, which pushes there.
 The report's cost table shows a cloud worker's session URL and its wall time from session start to
 PR, and its tokens and cost as "not reported for cloud".
+The session is named `<repo>-ticket-<KEY>` (`--name`) and stays open in claude.ai/code once its PR
+merges: nothing here can archive it. So the batch's finished cloud sessions are one desk-needs-you
+item, naming each with its URL, which the person archives by hand; its done records them so none is
+asked about twice.
 
 **A ticket admitted mid-batch is placed the same way.** `queue.mjs admit`, which every mid-batch
 route admits through (intake, `/desk-admit`, an approved epic plan's children, a ticket handed over
