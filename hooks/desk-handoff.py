@@ -136,23 +136,26 @@ def save_state(session, state):
     os.replace(tmp, state_path(session))
 
 
+def transcript_lines(transcript, limit=TAIL_LIMIT):
+    """The transcript's last `limit` bytes as lines (the whole file when limit is None), dropping a
+    first line the cut may have split. Raises when the file cannot be read."""
+    with open(transcript, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        start = 0 if limit is None else max(0, f.tell() - limit)
+        f.seek(start)
+        lines = f.read().split(b"\n")
+    return lines[1:] if start > 0 else lines
+
+
 def context_used(transcript):
     """Input-side tokens of the last main-chain assistant entry since the last compaction, or None.
 
     A compaction keeps the transcript file and writes a `compact_boundary` entry; usage from before
     it describes the context that was just summarised away, so the scan stops there."""
     try:
-        with open(transcript, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            end = f.tell()
-            start = max(0, end - TAIL_LIMIT)
-            f.seek(start)
-            data = f.read()
+        lines = transcript_lines(transcript)
     except Exception:
         return None
-    lines = data.split(b"\n")
-    if start > 0:
-        lines = lines[1:]  # the first line may be cut
     for raw in reversed(lines):
         if b'"usage"' not in raw and b"compact_boundary" not in raw:
             continue
@@ -394,29 +397,23 @@ def session_name(transcript):
 
     Claude Code re-appends the entry as the session goes on, so the tail usually holds it; the
     whole file is read only when the tail does not."""
-    try:
-        with open(transcript, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            end = f.tell()
-            for start in (max(0, end - TAIL_LIMIT), 0):
-                f.seek(start)
-                lines = f.read().split(b"\n")
-                if start > 0:
-                    lines = lines[1:]  # the first line may be cut
-                for raw in reversed(lines):
-                    if b'"custom-title"' not in raw:
-                        continue
-                    try:
-                        e = json.loads(raw)
-                    except Exception:
-                        continue
-                    name = e.get("customTitle") if e.get("type") == "custom-title" else None
-                    if isinstance(name, str) and name.strip():
-                        return name.strip()
-                if start == 0:
-                    break
-    except Exception:
-        pass
+    for limit in (TAIL_LIMIT, None):
+        try:
+            lines = transcript_lines(transcript, limit)
+        except Exception:
+            return None
+        for raw in reversed(lines):
+            if b'"custom-title"' not in raw:
+                continue
+            try:
+                e = json.loads(raw)
+            except Exception:
+                continue
+            name = e.get("customTitle") if e.get("type") == "custom-title" else None
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+        if os.path.getsize(transcript) <= TAIL_LIMIT:
+            break  # the tail was the whole file
     return None
 
 
@@ -451,10 +448,14 @@ def handoff_name(path):
     try:
         with open(path) as f:
             for _, line in zip(range(40), f):
-                text = line.strip().lstrip("-*# ").replace("*", "")
+                text = line.strip().lstrip("-*# ")  # a list item, heading or **bold** label
                 if text.lower().startswith(NAME_PREFIX):
-                    name = text[len(NAME_PREFIX):].strip().strip("`'\"").strip()
-                    if name and " " not in name and "<" not in name:
+                    name = text[len(NAME_PREFIX):].lstrip("* ").rstrip()
+                    if name.startswith("`") and name.count("`") >= 2:
+                        name = name[1:name.index("`", 1)]
+                    name = name.strip()
+                    # A name still holding <...> is the role-name pattern, not filled in.
+                    if name and "<" not in name:
                         return name
     except Exception:
         pass

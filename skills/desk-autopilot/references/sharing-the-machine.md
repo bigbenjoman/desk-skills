@@ -12,7 +12,7 @@ apart. `<repo>` is the name part of §0 GitHub repo: a batch session is `<repo>-
 beside the standing batch, `<repo>-batch-<EPIC>`), a single-ticket session `<repo>-ticket-<KEY>`, and
 a session that hands work to other sessions and merges theirs `<repo>-orchestrator`. The name stays
 when the batch gains tickets. Only the user can run `/rename`, so at Stage 0 print the line
-(`/rename desk-skills-batch`) once and carry on. Workers are named at spawn, and a handoff records
+(`/rename <repo>-batch`, with this repo's name in place of `<repo>`) once and carry on. Workers are named at spawn, and a handoff records
 the name so `/desk-resume` gives it back after `/clear`.
 
 Assume you are never alone: the user runs interactive sessions alongside you and often a second

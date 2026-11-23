@@ -414,6 +414,14 @@ check "after /clear, the injection gives the /rename line from the handoff" '[[ 
 PID=w2 hook SessionStart w4 "$T/low.jsonl" ',"source":"clear"'
 c="$(ctx)"
 check "a handoff whose name is still a placeholder gives no /rename line" '[[ "$c" == *"read .handoffs/$DAY-2.md"* ]] && [[ "$c" != *"/rename"* ]]'
+{ printf '{"type":"custom-title","customTitle":"Release prep","sessionId":"w5"}\n'
+  python3 -c 'import sys; sys.stdout.write(("{\"type\":\"user\",\"message\":{\"content\":\"%s\"}}\n" % ("x" * 1000)) * 9000)'
+  cat "$T/high.jsonl"; } > "$T/big.jsonl"
+hook PostToolUse w5 "$T/big.jsonl"
+check "a name set before the last 8 MB of the transcript is still found" '[[ "$(ctx)" == *"Session name: Release prep"* ]]'
+printf '# Handoff\n\nSession name: `Release prep`\n' > "$R/.handoffs/$DAY-3.md"
+PID=w5 hook SessionStart w6 "$T/low.jsonl" ',"source":"clear"'
+check "a name with a space comes back whole as the /rename line" '[[ "$(ctx)" == *"print the line \`/rename Release prep\`"* ]]'
 
 # ---- never breaks a session ----
 out=$(printf 'not json' | python3 "$HOOK" 2>&1); rc=$?

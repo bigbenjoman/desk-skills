@@ -67,10 +67,10 @@ are **not** using, with the reason. A plan that buries the routing reads as impr
 
 Sessions are named for their role, so parallel ones are tellable apart and a peer session can
 reach them by name: a ticket session is `<repo>-ticket-<TICKET>`, `<repo>` being the name part of
-§0 GitHub repo.
+§0 GitHub repo (`widgets` for `acme/widgets` below): substitute this repo's before printing it.
 
 ```
-studia-web-ticket-ABC-448   desk-skills-ticket-issue-81   studia-web-ticket-fix-login-redirect
+widgets-ticket-ABC-448   widgets-ticket-issue-81   widgets-ticket-fix-login-redirect
 ```
 
 The name stays the ticket's for its whole life: a handoff records it, and `/desk-resume` gives it
@@ -83,7 +83,7 @@ it looks like nothing happened.
 
 So at Stage 0, ask for it in one line and move on. Don't wait for it, and don't edit the file:
 
-> Worth renaming this session: `/rename studia-web-ticket-ABC-612`
+> Worth renaming this session: `/rename widgets-ticket-ABC-612`
 
 ## Red flags at this stage — stop
 
