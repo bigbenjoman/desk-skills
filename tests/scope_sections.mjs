@@ -704,9 +704,9 @@ export function buildMap(files, read) {
     const got = new Set([...u.suites, ...whole]);
     // A shell script's embedded node code (a heredoc, a `node -e`) taking the module: loads() reads a
     // script's shell lines only, so its lines naming the module in an import, or as a quoted file name (an
-    // import helper's `load('x.mjs')`), are read here. Where one takes a reached name, or takes the module
-    // other than by name (whole, or so no name can be followed), the suites claiming the script run: the
-    // embedded code runs only inside it.
+    // import helper's `load('x.mjs')`), are read here. Where one takes a reached name, the suites claiming
+    // the script run (the embedded code runs only inside it); where one takes the module other than by
+    // name (whole, or so no name can be followed), every suite claiming the module does, as for a script.
     const file = mod.slice(mod.lastIndexOf('/') + 1);
     const quotedFile = new RegExp(`['"\`]${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"\`]`);
     // `const { a, b: c } = await <helper>('<file>')`: the names an import helper's result is read by.
@@ -717,12 +717,15 @@ export function buildMap(files, read) {
     if (r.exported.length) for (const f of shells) {
       if (f === mod || isSuite(f)) continue;
       const lines = uncommented(f, textOf(f)).split('\n').filter((l) => (/\bimport\b/.test(l) && l.includes(file)) || quotedFile.test(l));
-      const takes = (l) => {
+      let hit = false;
+      for (const l of lines) {
         const imported = importedNames(l, mod);
         const took = imported.size ? imported : helperNames(l);
-        return !took.size || untraced(f, l, mod, r.exported) || r.exported.some((n) => took.has(n));
-      };
-      if (lines.some(takes)) for (const s of claims.get(f) ?? []) got.add(s);
+        const why = took.size ? untraced(f, l, mod, r.exported) : `${f} takes ${mod} in embedded code no name can be followed through`;
+        if (why) return { full: why };
+        hit ||= r.exported.some((n) => took.has(n));
+      }
+      if (hit) for (const s of claims.get(f) ?? []) got.add(s);
     }
     if (r.main) for (const f of nodes) {
       if (f === mod || !isCode(f) || !isMod(loads(f, unimported(textOf(f))), mod)) continue;

@@ -589,19 +589,21 @@ const triWith = (imp) => hubWith({
   'desk/bin/q-tri.sh': `#!/usr/bin/env bash\nnode "$B/pass.mjs"\nnode --input-type=module - "$B" <<'JS'\nimport { join } from 'node:path';\n${imp}\nJS`,
   'tests/test_tri.sh': '# suite: tri\n"$SRC/desk/bin/q-tri.sh"',
 });
-const fmtOn = (map) => hscope(Q(hubQ.replace('return String(a);', 'return `${a}`;')), map);
+const fmtOn = (map, opts) => hscope(Q(hubQ.replace('return String(a);', 'return `${a}`;')), map, opts);
+// Every suite claiming desk-q.mjs on this map: the scope without by-name narrowing.
+const everyOn = (map) => fmtOn(map, { l3Direct: true });
 const triWhole = triWith("const Q = await import(join(process.argv[2], 'desk-q.mjs'));\nconsole.log(Q.rows(1));");
-t('DS-1002 a shell script\'s embedded code importing a reached name, or taking the module whole, runs its suites; one importing another name, beside an unrelated import() helper, does not', [
+const thenRead = triWith("import(process.argv[2] + '/desk-q.mjs').then((m) => console.log(m.rows(1)));");
+const helperWhole = triWith("const load = (f) => import(join(process.argv[2], f));\nconst Q = await load('desk-q.mjs');\nconsole.log(Q.rows(1));");
+t('DS-1002 a shell script\'s embedded code importing a reached name runs its suites; one importing another name, beside an unrelated import() helper, does not; one taking the module whole runs every suite claiming it (AC4)', [
   fmtOn(triWith("const { rows } = await import(join(process.argv[2], 'desk-q.mjs'));\nconsole.log(rows(1));")),
   fmtOn(triWith("const load = (f) => import(join(process.argv[2], f));\nconst { keys } = await import(join(process.argv[2], 'desk-q.mjs'));\nconsole.log(keys(1));")),
-  fmtOn(triWhole),
-  fmtOn(triWith("import(process.argv[2] + '/desk-q.mjs').then((m) => console.log(m.rows(1)));")),
+  fmtOn(triWhole) === everyOn(triWhole), fmtOn(thenRead) === everyOn(thenRead), fmtOn(helperWhole) === everyOn(helperWhole),
   // Through an import helper: the names its result is destructured into count, as an import's do.
   fmtOn(triWith("const load = (f) => import(join(process.argv[2], f));\nconst { rows } = await load('desk-q.mjs');\nconsole.log(rows(1));")),
   fmtOn(triWith("const load = (f) => import(join(process.argv[2], f));\nconst { keys } = await load('desk-q.mjs');\nconsole.log(keys(1));")),
-  fmtOn(triWith("const load = (f) => import(join(process.argv[2], f));\nconst Q = await load('desk-q.mjs');\nconsole.log(Q.rows(1));")),
-], ['some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs', 'some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh',
-  'some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs', 'some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh']);
+], ['some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs', true, true, true,
+  'some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs']);
 t('DS-1002 a foundational desk/bin/ module (untracked.mjs) is not narrowed by name', decide([{ status: 'M', path: 'desk/bin/untracked.mjs', names: { names: ['deskUntracked'] } }], real, { byName: true }).scope, 'full');
 // On this repo: an edit to desk-q.mjs's checkFlags, which its command line and the screen run. Its
 // command line reaches most of the module, and bin/desk-q, which launches it, is claimed through
