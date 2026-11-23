@@ -1,4 +1,5 @@
 // suite: memory digest (memory-digest.mjs: the worker's brief digest of the memory index)
+// layer: L2
 // covers: desk/bin/memory-digest.mjs
 // A fixture memory folder: an index over the 6 KB cap is cut at a whole entry and says how many were
 // cut; one within it is whole and says nothing was cut; no folder, no index or an empty index is no

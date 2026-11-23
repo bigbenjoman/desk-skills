@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: merge driver: clean review verdicts and epic PRs (offline, fake gh)
+# layer: L3
 # The real merge-driver.sh and gate.mjs, one loop at a time, set up by merge_driver_setup.sh: a PR
 # merges on a clean desk-review verdict at its head (carried across a clean base merge, by the review
 # account, under the review-reuse lever), and an epic batch's PR into main (and pass.mjs on its hold).
@@ -150,7 +151,8 @@ check "DS-448: lever on, a review that records no files is held for a review" '[
 SHA301=e301111111111111111111111111111111111111
 git -C "$T/repo" push -q origin main:feat/E
 ep_q(){
-  : > "$T/merges.log"; : > "$T/gh.log"; rm -f "$SD"/green-*; q init "merge-epic-$1"
+  # pr-files.json too: a scenario may give #301 other files at the same head SHA (DS-989 keeps them by head).
+  : > "$T/merges.log"; : > "$T/gh.log"; rm -f "$SD"/green-* "$SD/pr-files.json"; q init "merge-epic-$1"
   q set-batch base=feat/E epic=T-300 feature=false 'promotion={"pr":301}'
   q add T-31 Story A; q set T-31 branch=fix/T-31 state=done result.pr=310 merged_at=2026-11-06T10:00:00Z
   jq -n --arg s "$SHA301" --arg pl "$T/vp-301.json" --argjson d "$2" \
@@ -202,8 +204,11 @@ rv_prs unk "221|fix/T-221|$SHA221|fix: T-221 wedged|"
 jq '.["221"].mergeState = "UNKNOWN"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
 rvloop
 check "#752 the first loop with no answer records when it was first seen, and asks nobody yet" '[ "$(cut -d" " -f1 "$SD/unknown-221")" = "$SHA221" ] && [ "$(qf T-221 .merge_blocked)" = null ]'
+check "the first loop with no answer and no stamp yet prints no shell error, and stamps it now" '! echo "$out" | grep -q "No such file" && [ $(( $(date +%s) - $(cut -d" " -f2 "$SD/unknown-221") )) -lt 60 ]'
+# The age grows from that first stamp: one first seen two minutes ago reads as two minutes.
+printf '%s %s\n' "$SHA221" "$(( $(date +%s) - 125 ))" > "$SD/unknown-221"
 out=$(DESK_CONFIG="$T/config-rv.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 MERGE_DRIVER_UNKNOWN_SECS=0 bash "$B/merge-driver.sh" --tickets "$RV_TICKETS" 2>&1)
-check "DS-856 AC5: past the limit with §3 pr-update-branch not yes, no repair is tried and the queue asks the person, saying none was permitted" '! grep -q "pr update-branch 221" "$T/gh.log" && [ "$(qf T-221 .merge_blocked)" = "merge ref: GitHub has not worked out whether #221 conflicts with its base at d22111111 for 0 minutes, and starts no run for that head; no repair was permitted, as §3 pr-update-branch is no: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch" ] && echo "$out" | grep -q "#221 at d22111111 has had no mergeability answer from GitHub for 0 minutes"'
+check "DS-856 AC5: past the limit with §3 pr-update-branch not yes, no repair is tried and the queue asks the person, saying none was permitted" '! grep -q "pr update-branch 221" "$T/gh.log" && [ "$(qf T-221 .merge_blocked)" = "merge ref: GitHub has not worked out whether #221 conflicts with its base at d22111111 for 2 minutes, and starts no run for that head; no repair was permitted, as §3 pr-update-branch is no: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch" ] && echo "$out" | grep -q "#221 at d22111111 has had no mergeability answer from GitHub for 2 minutes"'
 jq '.["221"].mergeState = "CLEAN"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
 rvloop
 check "#752 once GitHub answers, the note and the record are cleared" '[ "$(qf T-221 .merge_blocked)" = null ] && [ ! -e "$SD/unknown-221" ]'

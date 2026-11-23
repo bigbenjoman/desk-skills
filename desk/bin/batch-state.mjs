@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { personClears } from './clears-when.mjs';
 import { attachArchive } from './queue-store.mjs';
+import { PARK_KINDS } from './queue-states.mjs';
 import { postMergeUnmade } from './harvest.mjs';
 
 // pass.mjs, plan-batch.mjs, queue.mjs and answer.mjs exit only with these, so the orchestrator branches
@@ -45,6 +46,13 @@ export function statePath(stateDir, name, key) {
 export const readQueue = (path) => attachArchive(readJsonOrRefuse(path,
   `restore it, or re-create ${path} (queue.mjs init <batch-name>, then re-seed it with plan-batch.mjs) — refusing to read it as an empty batch`), path);
 export const readTriage = (stateDir, t) => readJsonOrRefuse(statePath(stateDir, 'triage', t), `re-run triage.sh ${t}`);
+// A triage record's unknowns as text, each once, in its order.
+export const unknownsOf = (unknowns) => [...new Set((Array.isArray(unknowns) ? unknowns : []).map((u) => String(u?.question ?? u ?? '').trim()).filter(Boolean))];
+// Those of queue ticket `t` still open: less each one answer.mjs recorded answered (answered_questions).
+export const openUnknowns = (unknowns, t) => {
+  const done = new Set(Array.isArray(t?.answered_questions) ? t.answered_questions : []);
+  return unknownsOf(unknowns).filter((u) => !done.has(u));
+};
 
 // The PR state the last pass recorded for a done ticket's PR (pr_status), or null when none was read.
 // Nothing here calls GitHub.
@@ -122,6 +130,12 @@ export const moveOffer = (ts) => `move <batch> takes it out of this batch and qu
 function readPark(stateDir, key) {
   try { return JSON.parse(readFileSync(statePath(stateDir, 'parks', key), 'utf8')); } catch { return null; }
 }
+// Ticket `key`'s park file as `file`, and as `rec` only where it is on `question`: a file on another
+// question than the one parked on is an earlier round's, read as no file.
+function currentPark(stateDir, key, question) {
+  const file = readPark(stateDir, key);
+  return { file, rec: file && String(file.question ?? '').trim() === String(question ?? '').trim() ? file : null };
+}
 
 // The question a worker parked on and nobody has answered yet, or null: its park file's `question`
 // while no answer file sits beside it. A half-written park file is not an error.
@@ -141,9 +155,8 @@ const APPROVE_FIELDS = ['kind', 'target', 'body'];
 // A file on another question than the one parked on is an earlier round's, read as no file. A PR
 // number given as a number is its target as text.
 export function parkApproval(stateDir, key, question) {
-  const file = readPark(stateDir, key);
+  const { file, rec } = currentPark(stateDir, key, question);
   const fileQ = String(file?.question ?? '').trim();
-  const rec = file && fileQ === String(question ?? '').trim() ? file : null;
   const raw = rec?.approve && typeof rec.approve === 'object' ? rec.approve : null;
   const a = raw && typeof raw.target === 'number' ? { ...raw, target: String(raw.target) } : raw;
   const lacks = a ? APPROVE_FIELDS.filter((f) => typeof a[f] !== 'string' || !a[f].trim()) : APPROVE_FIELDS;
@@ -155,6 +168,21 @@ export function parkApproval(stateDir, key, question) {
       ? `its park file is on another question ("${fileQ}") than the one parked on, so its approve is an earlier round's`
       : 'its park file carries no approve object ({"kind", "target", "body"}) holding the exact text to approve' };
 }
+
+// The fields a worker's park file declares: its question, and the write it awaits approval of.
+const PARK_FILE_FIELDS = Object.freeze({ question: null, approve: Object.freeze([...APPROVE_FIELDS]) });
+// What a park file holds that it does not declare, as the pass logs it, or null where it holds nothing
+// else. It never refuses a park: a worker written before a field changed still parks.
+export function validatePark(rec) {
+  if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return null;
+  const extra = Object.keys(rec).filter((k) => !Object.hasOwn(PARK_FILE_FIELDS, k));
+  const a = rec.approve;
+  if (a && typeof a === 'object' && !Array.isArray(a)) extra.push(...Object.keys(a).filter((k) => !PARK_FILE_FIELDS.approve.includes(k)).map((k) => `approve.${k}`));
+  return extra.length ? `its park file holds ${extra.length === 1 ? 'a field' : 'fields'} the park file does not declare: ${extra.join(', ')}` : null;
+}
+// validatePark on ticket `key`'s park file; null where it has none, it is half-written, or it is on
+// another question than the one parked on.
+export const parkFileFault = (stateDir, key, question) => validatePark(currentPark(stateDir, key, question).rec);
 
 // The text a park awaits approval of, as both needs-you and the pass report relay it: its kind and
 // target, then the body as JSON so its line breaks survive on one line.
@@ -180,12 +208,28 @@ export const IDLE_RECHECK_MS = Number(process.env.DESK_IDLE_RECHECK_MS) || 30 * 
 export const HELD_PREFIX = 'held by orchestrator';
 // A held ticket whose worker queue.mjs stop ended: held behind no blocker, so only the person starts it.
 export const STOPPED_PREFIX = `${HELD_PREFIX}: stopped by queue.mjs stop`;
-export const stoppedHold = (t) => t?.state === 'parked' && !String(t.held_by ?? '').split('|').some(Boolean)
-  && String(t.park?.question ?? '').startsWith(STOPPED_PREFIX);
+// The park kinds the orchestrator holds a ticket on, rather than its own step: a blocker, a stop, a date.
+const HELD_KINDS = ['hold', 'stopped', 'date'];
 
-// Parked "held by orchestrator" (a dependency chain, released by merge-driver.sh release_chain or by
+// The kind of park `question` opens as: what a park recorded before parks carried their kind is read
+// as, and what a new park whose writer names none is recorded as.
+export function parkKindOf(question) {
+  const q = String(question ?? '');
+  if (q.startsWith(STOPPED_PREFIX)) return 'stopped';
+  // A blocked-until label's hold (pass/parks.mjs), its date read or not (badLabelText).
+  if (q.startsWith(`${HELD_PREFIX}: blocked until `) || q.startsWith(`${HELD_PREFIX}: its label `)) return 'date';
+  if (q.startsWith(HELD_PREFIX)) return 'hold';
+  if (q.startsWith(PERSON_STEP_PREFIX)) return 'person-step';
+  return 'question';
+}
+// Ticket `t`'s park kind: the one its park records, else the one its question opens as.
+export const parkKind = (t) => (PARK_KINDS.includes(t?.park?.kind) ? t.park.kind : parkKindOf(t?.park?.question));
+
+export const stoppedHold = (t) => t?.state === 'parked' && !String(t.held_by ?? '').split('|').some(Boolean) && parkKind(t) === 'stopped';
+
+// Parked on a hold, a stop or a date (a dependency chain, released by merge-driver.sh release_chain or by
 // the one sanctioned manual release once every predecessor's PR has merged).
-export const isHeld = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(HELD_PREFIX);
+export const isHeld = (t) => t?.state === 'parked' && HELD_KINDS.includes(parkKind(t));
 
 // Waiting behind the blockers in its held_by: held by the orchestrator, or parked at triage for its own
 // reason (triagePark) with holds kept beside the park. Every reader that follows a chain of holds asks
@@ -525,7 +569,7 @@ export function labelPark(r, stepLabels = [], inputLabels = []) {
   const l = input ?? stepLabel(r?.labels, stepLabels);
   return l ? `${PERSON_STEP_PREFIX}labelled ${l} ${input ? INPUT_ROW : '(config §4 Person-step labels)'}, so no worker can do it. Take the step, mark it Done in Jira, then drop it from the batch` : null;
 }
-export const personStepPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(PERSON_STEP_PREFIX);
+export const personStepPark = (t) => t?.state === 'parked' && parkKind(t) === 'person-step';
 // A queue ticket parked at triage for its own reason (lanePark, designPark, sizePark, labelPark): a hold
 // waits beside that park rather than replacing it, so no release sends it to a worker.
 export const triagePark = (t) => {

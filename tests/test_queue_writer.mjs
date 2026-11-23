@@ -1,4 +1,5 @@
 // suite: queue writer (a pass's changes in one locked, versioned write; done tickets archived)
+// layer: L2
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -144,6 +145,9 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
     // Criteria its review left for after the merge: P's the pass has not made steps yet, Q's it has.
     P: tk('P', { state: 'done', result: { pr: 6 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 6, state: 'MERGED', post_merge: [{ step: 'x' }] } }),
     Q: tk('Q', { state: 'done', result: { pr: 7 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 7, state: 'MERGED', post_merge: [{ step: 'x' }] }, post_merge_read: 7 }),
+    // DS-850: R's PR the pass closed to restart its CI and still owes the reopen; S's marker names an earlier PR.
+    R: tk('R', { state: 'done', result: { pr: 8 }, pr_status: { pr: 8, state: 'CLOSED' }, reopening: 8 }),
+    S: tk('S', { state: 'done', result: { pr: 9 }, pr_status: { pr: 9, state: 'CLOSED' }, reopening: 3 }),
     A: tk('A'),
   } });
   const w = queueWriter(f);
@@ -157,7 +161,8 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('AC6 the archive sits beside the queue', archivePath(f), join(dirname(f), 'queue.archive.json'));
   t('AC6 merged and closed tickets leave the live queue', `${'M' in q.tickets} ${'X' in q.tickets}`, 'false false');
   t('AC6 and are in the archive, with when', `${a.tickets.M.state} ${a.tickets.X.state} ${!!a.tickets.M.archived_at}`, 'done done true');
-  t('AC6 the write says which moved', r.archived.join(','), 'M,X,Q');
+  t('AC6 the write says which moved', r.archived.join(','), 'M,X,Q,S');
+  t('DS-850 a ticket whose closed PR is still owed its CI reopen stays live; a marker naming an earlier PR keeps nothing', `${'R' in q.tickets} ${'S' in q.tickets}`, 'true false');
   t('DS-785 a merged ticket whose post-merge criteria the pass has not made steps yet stays live; one it has is archived', `${'P' in q.tickets} ${'Q' in q.tickets}`, 'true false');
   t('AC7 a done ticket whose PR is open stays live', 'O' in q.tickets, true);
   t('a merged ticket with follow-on steps waiting stays live', 'F' in q.tickets, true);
@@ -169,7 +174,7 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('AC8 and `in` finds it', 'X' in rq.tickets, true);
   t('AC8 but listing the tickets does not', Object.keys(rq.tickets).includes('M'), false);
   t('AC8 nor does writing the queue', JSON.stringify(rq).includes('"M"'), false);
-  t('AC8 its archive reads beside it', Object.keys(archivedOf(rq)).sort().join(','), 'M,Q,X');
+  t('AC8 its archive reads beside it', Object.keys(archivedOf(rq)).sort().join(','), 'M,Q,S,X');
   rq.tickets.Y = tk('Y', { state: 'parked', held_by: 'M', park: { question: 'held by orchestrator: blocked by M' } });
   t('AC8 a hold on an archived merged ticket is waiting on a merge, not stuck', waitingOnMerge(rq, rq.tickets.Y), true);
 

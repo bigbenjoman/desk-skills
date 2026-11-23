@@ -1,4 +1,5 @@
 // suite: levers auto (each admitted ticket's trial arms, by blocked randomisation, recorded on its pin)
+// layer: L2
 // covers: desk/bin/levers-auto.mjs desk/bin/lever-log.mjs desk/bin/lever-registry.mjs desk/bin/lever-pin.mjs desk/bin/queue.mjs desk/bin/seeded-random.mjs
 // assignPin draws against a repo's lever log in a scratch HOME with a seeded random source; queue.mjs
 // admit and add and `levers-auto.mjs assign` run as subprocesses on a scratch queue and repo.

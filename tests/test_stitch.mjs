@@ -1,4 +1,5 @@
 // suite: stitch-boards (one labelled image per board and theme, under the upload limit)
+// layer: L2
 // stitch-boards.mjs on fixture captures: names read as role, screen, width and theme; one image per
 // board and theme with a row per width; a missing capture drawn as "no capture"; an image over the
 // limit split by width; the same captures giving the same bytes. The browser checks use desk's own

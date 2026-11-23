@@ -70,7 +70,7 @@ Otherwise read every file the design needs, with the Artifact tool, into `$DESK_
 (`desk-env paths` prints `DESK_STATE`). **Read `desk-ticket/references/design-canvas.md` first**: it
 lists the files (`project/canvas.json`, every `project/*.dc.html`, what they load), and the two kinds
 a board needs that are not among the published files (each `/_blob/<id>` asset, one `read` apiece;
-`artifact-type/dc-runtime.js` for `support.js`). A deck is `project/deck.json` and
+`artifact-type/dc-runtime.js` for `support.js`). A deck is `project/deck.json` and <!-- prose-ok: a design artifact's files, not desk's -->
 `project/slides/<id>.html`. Note the artifact's version from the files listing.
 
 **An artifact that returns a summary or an error, not its files,** is not one this account can read.

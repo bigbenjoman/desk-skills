@@ -1,4 +1,5 @@
 // suite: failure class (every park and fix try records one class; a red check is read against the base)
+// layer: L1
 import { CLASSES, WAITING_CLASSES, PARK_RULES, parkClass, FIX_RULES, fixClass, runsState, baseSplit, keptHold } from '../desk/bin/failure-class.mjs';
 import { fixCall, fixBrief, draftChecksFix, parseOperatorChecks } from '../desk/bin/fix-tries.mjs';
 let fails = 0;
@@ -232,6 +233,17 @@ t('#805 a failure naming a changed file, as the package runner prints it, goes t
 t('#805 so does one whose annotation points at a changed file', draftOf([red('Unit', '9')], [{ ...flaky('Unit', '9', ['expected 3 to be 4']), error_paths: ['apps/web/src/cart.ts'] }], off805())?.call, 'requeue');
 t('#805 one check naming a changed file beside one that does not: a fix try', draftOf([red('Unit', '9'), red('Integration', '8')], [flaky('Unit', '9', ['FAIL src/cart.test.ts']), { ...away, runId: '8' }], off805())?.call, 'requeue');
 t('#805 the PR\'s files unread: as before', draftOf([red('Integration', '9')], [away], off805({ changed: null }))?.call, 'requeue');
+// A log naming a changed file by its name less the extension (a dbt model or unit test), not its path.
+const DBT = ['models/marts/fct_orders.sql', 'models/marts/schema.yml', 'models/marts/index.sql'];
+const dbtFail = flaky('dbt build', '9', ['Failure in unit_test fct_orders::fct_orders_counts_refunds (models/marts/_unit_tests.yml)', '  actual differs from expected']);
+const dbt = draftOf([red('dbt build', '9')], [dbtFail], off805({ changed: DBT }));
+t('a dbt failure naming a changed model by name, with no .sql path, is the PR\'s own: a fix try, no rerun', `${dbt?.call} ${dbt?.fix?.what}`, 'requeue red: dbt build');
+t('so is one naming it as dbt\'s node id', draftOf([red('dbt build', '9')], [flaky('dbt build', '9', ['Database Error in model.shop.fct_orders'])], off805({ changed: DBT }))?.call, 'requeue');
+t('a name only inside a longer word is not that file', draftOf([red('dbt build', '9')], [flaky('dbt build', '9', ['Failure in test fct_orders_daily_unique_id'])], off805({ changed: DBT }))?.call, 'rerun');
+t('nor is a generic name every log prints (schema, index)', draftOf([red('dbt build', '9')], [flaky('dbt build', '9', ['Compilation Error in schema test: index out of range'])], off805({ changed: DBT }))?.call, 'rerun');
+t('a changed file named after a dbt node type is no evidence: model.sql against model.shop.dim_customers is rerun', draftOf([red('dbt build', '9')], [flaky('dbt build', '9', ['Database Error in model.shop.dim_customers'])], off805({ changed: ['models/model.sql'] }))?.call, 'rerun');
+t('so is one named after any other dbt resource type: semantic_model.yml against semantic_model.shop.revenue', draftOf([red('dbt build', '9')], [flaky('dbt build', '9', ['Parsing Error in semantic_model.shop.revenue'])], off805({ changed: ['models/semantic_model.yml'] }))?.call, 'rerun');
+t('a dbt failure naming nothing the PR changed is still rerun as environmental', draftOf([red('dbt build', '9')], [flaky('dbt build', '9', ['Failure in unit_test dim_customers::dim_customers_dedupes'])], off805({ changed: DBT }))?.call, 'rerun');
 const after = draftOf([red('Integration', '9')], [away], off805({ reruns: () => 1, rerunsOk: () => 1 }));
 t('#805 red again after its rerun: the fix try goes ahead and says so', after?.fix?.what, 'red: Integration; its failed log names no file this PR changes; one rerun was already tried at this head and it failed again');
 t('#805 its brief says so too', fixBrief({ fix: after.fix }).includes('Their failed logs name no file this PR changes: its failed log names no file this PR changes; one rerun was already tried at this head and it failed again.'), true);

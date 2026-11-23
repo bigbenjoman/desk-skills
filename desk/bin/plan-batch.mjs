@@ -497,7 +497,7 @@ if (notOurs.length) {
 }
 
 const ticketVerdict = (r) => (elsewhere(r)?.unknown ? `NOT ADMITTED (${awayWhy(r)} — where does it run?)`
-  : elsewhere(r) ? `ELSEWHERE (${elsewhere(r).repository})`
+  : elsewhere(r) ? `ELSEWHERE (${elsewhere(r).otherName ? elsewhere(r).ghRepo.split('/').pop() : elsewhere(r).repository})`
   : stepParked(r) ? `PARK (${stepPark(r)})`
   : ownPark(r) && held(r.ticket) ? `HELD (blocked by ${holdsOf(r.ticket).join(', ')} — until ${heldUntil(r.ticket)}, and parked: ${ownPark(r)})`
   : ownPark(r) ? `PARK (${ownPark(r)})`

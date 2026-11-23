@@ -10,7 +10,8 @@ import { readFileSync } from 'node:fs';
 import { lock, unlock } from './dir-lock.mjs';
 import { parkClass } from './failure-class.mjs';
 import { versionOf, writeQueueFile, mergeQueue, archiveDone, attachArchive, same } from './queue-store.mjs';
-import { STATES, FINISHED } from './queue-states.mjs';
+import { STATES, FINISHED, PARK_KINDS } from './queue-states.mjs';
+import { parkKindOf } from './batch-state.mjs';
 
 export { STATES, FINISHED };
 
@@ -38,8 +39,20 @@ export function coerce(v) {
   return v === 'null' ? null : v === 'true' ? true : v === 'false' ? false : /^-?\d+$/.test(v) ? Number(v) : v;
 }
 
-// A new park, with its failure class (failure-class.mjs parkClass) whether or not the lever is on.
-export const newPark = (question, since = new Date().toISOString()) => ({ question, since, ...parkClass(question) });
+// A new park, with its kind (`kind` where the writer names one, else the one its question opens as) and
+// its failure class (failure-class.mjs parkClass) whether or not the lever is on.
+export const newPark = (question, since = new Date().toISOString(), kind = null) => ({ question, since,
+  kind: PARK_KINDS.includes(kind) ? kind : parkKindOf(question), ...parkClass(question) });
+
+// `park <KEY> [--kind <kind>] <question…>`'s arguments after the key: { question, kind }. A kind that is
+// not one of PARK_KINDS is refused.
+export function parkArgs(args) {
+  const at = args.indexOf('--kind');
+  if (at < 0) return { question: args.join(' '), kind: null };
+  const kind = args[at + 1];
+  if (!PARK_KINDS.includes(kind)) throw new Error(`bad park kind "${kind ?? ''}" (want: ${PARK_KINDS.join('|')})`);
+  return { question: args.filter((_, i) => i !== at && i !== at + 1).join(' '), kind };
+}
 
 // pass.mjs spawns eligible tickets in `.tickets` key order. A ticket's place in that order is its
 // position among the unfinished tickets; done and failed ones keep their slots and are never counted.
@@ -152,7 +165,7 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
     let out;
     try {
       if (cmd === 'set') { applySet(t, more); out = `${key}: ${more.join(' ')}`; }
-      else if (cmd === 'park') { t.state = 'parked'; t.park = newPark(more.join(' ')); out = `${key} parked`; }
+      else if (cmd === 'park') { const p = parkArgs(more); t.state = 'parked'; t.park = newPark(p.question, undefined, p.kind); out = `${key} parked`; }
       else out = `${key} ${toFront(mine, key)}`;
     } catch (e) { return { ok: false, why: e.message }; }
     ops.push(args);
@@ -187,8 +200,11 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
     return undone;
   }
 
+  // With `archive`, done tickets move to the archive even when nothing else is pending; with neither,
+  // nothing is written.
   function flush({ archive = false } = {}) {
-    if (!ops.length) return { ok: true, wrote: false, version: versionOf(base), conflicts: [], skipped: [], archived: [], archiveError: null, ops: [], ledgerMissed: null };
+    const none = () => ({ ok: true, wrote: false, version: versionOf(base), conflicts: [], skipped: [], archived: [], archiveError: null, ops: [], ledgerMissed: null });
+    if (!ops.length && !archive) return none();
     const dir = `${file}.lock`;
     try {
       lock(dir, { waitMs, timeout: (pid) => new Error(`the queue is locked by pid ${pid ?? '? (no pid written yet)'}, which has held it past the ${waitMs / 1000}s wait`) });
@@ -206,6 +222,7 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
       let archived = []; let archiveError = null;
       const live = { ...out.tickets };
       if (archive) { try { archived = archiveDone(file, out); } catch (e) { archiveError = e.message; } }
+      if (!ops.length && !archived.length) return { ...none(), archiveError };
       out.version = versionOf(base);
       let ledger = null;
       const version = writeQueueFile(file, out, { by: 'pass', archived: Object.fromEntries(archived.map((k) => [k, live[k]])), onLedger: (l) => { ledger = l; } });

@@ -1,4 +1,5 @@
 // suite: needs-you (every item desk-q counts as needing the person, and recording each answer)
+// layer: L2
 // budget: 115 DS-943 (831 checks over a dozen fixture worlds, each with git repos; 49-88 s on CI)
 // covers: desk/bin/needs-you.mjs desk/bin/asks.mjs desk/bin/decider.mjs skills/desk-needs-you/**
 // Fixture repos, queues, heartbeats, triage records and decision logs under a throwaway HOME,
@@ -416,8 +417,14 @@ N.record({ word: 'theta', ticket: 'H-2', action: 'not-now' });
 t('DS-401 AC4 put off as a held row, with nothing changed, it stays put off', theta()['H-2'], undefined);
 const moveBlocker = (category) => { const q = queueOf('theta'); q.tickets['H-2'].outside_blockers = [{ key: 'X-9', category }]; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__theta', 'queue.json'), JSON.stringify(q)); };
 moveBlocker('indeterminate');
-t('DS-401 AC2 once its outside blocker\'s state changes it is listed again, saying what changed',
-  /\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers H-1:running,X-9:new@none\+yours → H-1:running,X-9:indeterminate@none; need .*\)$/.test(theta()['H-2']?.need ?? ''), true);
+t('DS-401 AC2 (DS-599) a blocker moving to In Progress is no longer yours to queue, so it is listed again, saying what changed',
+  /\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers H-1:open,X-9:open\+yours → H-1:open,X-9:open\.\)$/.test(theta()['H-2']?.need ?? ''), true);
+N.record({ word: 'theta', ticket: 'H-2', action: 'not-now' });
+moveBlocker('new');
+t('DS-401 AC2 an outside blocker moving in flight (In Progress to To Do), still not yours, leaves it put off', theta()['H-2'], undefined);
+moveBlocker('done');
+t('DS-401 AC2 once its outside blocker is Done it is listed again, saying what changed',
+  /\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers H-1:open,X-9:open → H-1:open,X-9:done\.\)$/.test(theta()['H-2']?.need ?? ''), true);
 // Admit is recommended only for a blocker in no batch that is the person's to queue: in To Do, in this
 // repo's Jira project, and unassigned or theirs. Otherwise not-now is, naming why, and admit is offered.
 const outsideOne = (b) => ({ state: 'triaged', lane: 'A', open_questions: 1, outside_blockers: [b] });
@@ -448,7 +455,7 @@ reassign599('Alex Else');
 t('DS-599 a blocker passed to another person who is not you does not bring it back', a599now()['A-1'], undefined);
 reassign599(null);
 t('DS-599 once that blocker is unassigned it is listed again, recommending admit and saying what changed',
-  `${a599now()['A-1']?.actions[0][0]} | ${/\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers P-1:new@none → P-1:new@none\+yours\.\)$/.test(a599now()['A-1']?.need ?? '')}`, 'admit | true');
+  `${a599now()['A-1']?.actions[0][0]} | ${/\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers P-1:open → P-1:open\+yours\.\)$/.test(a599now()['A-1']?.need ?? '')}`, 'admit | true');
 // DS-669: a ticket held inside its batch with a triage question of its own is asked that question.
 put('zeta', { port: 3850, beat: 1, supervised: true, tickets: {
   'Z-1': { state: 'running', lane: 'A' },
@@ -463,11 +470,14 @@ t('DS-669 put off, it stays put off while nothing changes', zeta()['Z-2'], undef
 const zq = queueOf('zeta');
 zq.tickets['Z-1'].state = 'parked';
 writeFileSync(join(env.DESK_HOME, 'repos', 'acme__zeta', 'queue.json'), JSON.stringify(zq));
+t('DS-669 a blocker moving between in-flight stages leaves it put off', zeta()['Z-2'], undefined);
+zq.tickets['Z-1'].state = 'done';
+writeFileSync(join(env.DESK_HOME, 'repos', 'acme__zeta', 'queue.json'), JSON.stringify(zq));
 const { openQuestions: digestQuestions } = await import('../desk/bin/digest.mjs');
 const zetaRepo = { slug: 'acme__zeta', state: join(env.HOME, '.desk-autopilot', 'acme__zeta'), queue: join(env.DESK_HOME, 'repos', 'acme__zeta', 'queue.json') };
 const zDigest = digestQuestions(zetaRepo).find((q) => q.ticket === 'Z-2');
 const zEntry = [...NN.readRegister(zetaRepo.state).entries.values()].find((x) => x.ticket === 'Z-2');
-t('DS-669 AC4 once a blocker\'s status changes it comes back quoting the question', /^What is the cost of one blind audit run\? \(Changed since it was put off/.test(zeta()['Z-2']?.need ?? ''), true);
+t('DS-669 AC4 once a blocker is done it comes back quoting the question', /^What is the cost of one blind audit run\? \(Changed since it was put off/.test(zeta()['Z-2']?.need ?? ''), true);
 t('DS-669 AC4 its not-now entry is keyed to the digest\'s text for the same question', `${zDigest?.kind} | ${zEntry?.inputs?.need === zDigest?.text}`, 'triage | true');
 
 const e = N.collect({ word: 'eta' });
@@ -1134,6 +1144,26 @@ t('DS-497 AC1 a ticket requeued off its park and held by its worktree is one ite
 t('DS-497 AC1 a parked ticket with unpushed commits keeps its park\'s item, with them as its note',
   `${yList.filter((l) => l.startsWith('ypsilon Y-2 ')).length} ${yItems()['Y-2'].kind} ${yLine('Y-2').includes(`${refused} Its worktree /w/Y-2 has 1 commit(s) not on origin.`)} ${yItems()['Y-2'].actions[0][0]}`, '1 parked true resume');
 t('a park with nothing unpushed has no note', yItems()['Y-4'].note, undefined);
+
+// ---- DS-864: a park waiting on a commit its branch has moved past is the person's, saying why.
+{
+  const stale = 'the branch origin/fix/S-1 has moved to 41736d45a, which 68c709f5a does not build on, so 68c709f5a can no longer land there: the push it waits on is stale';
+  put('ds864', { port: 4951, beat: 1, supervised: true, tickets: {
+    'S-1': { state: 'parked', lane: 'A', branch: 'fix/S-1', park: { question: 'push 68c709f5a onto fix/S-1', since: minsAgo(40), clears_when: { kind: 'none' }, stale } },
+    'S-2': { state: 'parked', lane: 'A', branch: 'fix/S-2', park: { question: 'push 1234abcd onto fix/S-2', since: minsAgo(40), clears_when: { kind: 'commit-on', sha: '1234abcd', branch: 'fix/S-2' } } },
+  } });
+  const items = N.collect({ word: 'ds864' }).items;
+  const line = N.listText(N.collect({ word: 'ds864' })).split('\n').find((l) => l.startsWith('ds864 S-1 ')) ?? '';
+  t('DS-864 AC1 the stale park is listed in needs-you, its line naming the new head and that the commit can no longer land, and one still waiting on its commit is not',
+    `${items.map((i) => i.t.key).join()} ${line.includes('The branch origin/fix/S-1 has moved to 41736d45a, which 68c709f5a does not build on, so 68c709f5a can no longer land there')}`, 'S-1 true');
+  // Restated with a new condition, a park needs-you still lists (lane C needs a session) drops the old why.
+  put('ds864b', { port: 4952, beat: 1, supervised: true, tickets: {
+    'S-3': { state: 'parked', lane: 'C', branch: 'fix/S-3', park: { question: 'push 68c709f5a onto fix/S-3', since: minsAgo(40), clears_when: { kind: 'pr-merged', pr: 41 }, stale } },
+  } });
+  const restated = N.collect({ word: 'ds864b' }).items;
+  t('DS-864 a stale park given a new condition no longer carries the old why',
+    `${restated.map((i) => i.t.key).join()} ${String(restated[0]?.note ?? '').includes('moved to')}`, 'S-3 false');
+}
 t('#775 a park awaiting approval of a write carries its exact text, whole, under its line',
   yList.slice(yList.indexOf(yLine('Y-5')) + 2, yList.indexOf(yLine('Y-5')) + 4).join('\n'), 'Line one.\n"Quoted" line two.');
 t('#775 and its one line, which the session asks from, points to that text',
@@ -2297,6 +2327,39 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-798 AC2 done on the failed step settles it', `${done.ok} ${typeof queueOf('follow798').tickets['K-2'].follow_on_done} ${k2 in byKey()}`, 'true string false');
 }
 
+// DS-966: a step reading desk's reports is the checker's, and a step that waits a set time after the
+// merge is not listed until then.
+{
+  const DAY = 24 * 60;
+  const merged = (pr, mins, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(mins), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(mins) }, ...more });
+  const REPORT = { step: "compare wait calls per session (phase0-report --per-ticket's wait_calls) in DS-692's report", row: null };
+  const LATER = { step: 'two weeks after the merge, compare wait calls per session (phase0-report --per-ticket\'s wait_calls)', row: null };
+  const LATER_PERSON = { step: 'two weeks after the merge, check the invoice totals look right', row: null };
+  const STAGING = { step: 'phase0-report --per-ticket on staging shows the wait calls down', row: null };
+  put('follow966', { port: 4966, beat: 1, supervised: true, merge: 'yes', tickets: {
+    'K-1': merged(91, 5, { follow_on: [REPORT] }),
+    'K-2': merged(92, 5, { follow_on: [LATER, LATER_PERSON] }),
+    'K-3': merged(93, 14 * DAY + 5, { follow_on: [LATER_PERSON] }),
+    'K-4': merged(94, 14 * DAY + 300, { follow_on: [LATER], follow_checks: [{ ...LATER, pr: 94, result: 'fail', found: 'no wait_calls column', evidence: '/x', at: minsAgo(1) }] }),
+    'K-5': merged(95, 5, { follow_on: [STAGING] }),
+    'K-6': merged(96, 14 * DAY + 5, { follow_on: [LATER] }),
+    'K-7': merged(97, 14 * DAY + 5, { follow_on: [{ step: 'check the invoice totals look right', row: null }, LATER_PERSON] }),
+  } });
+  const items = N.collect({ word: 'follow966' }).items.filter((i) => i.kind === 'follow');
+  const listed = (k) => items.filter((i) => i.t.key === `follow:${k}` || i.t.key.startsWith(`follow:${k}:`));
+  t('DS-966 AC1 a step reading a desk report with a --flag is the checker\'s, not listed while one is still to run', listed('K-1').length, 0);
+  t('DS-966 AC2 steps two weeks after the merge are not listed before then, the checker\'s nor the person\'s', listed('K-2').length, 0);
+  t('DS-966 a person\'s delayed step is listed once due', /Check: two weeks after the merge, check the invoice totals look right\./.test(listed('K-3')[0]?.need ?? ''), true);
+  t('DS-966 AC3 a delayed step the checker failed is listed with its evidence', /it failed: no wait_calls column \(evidence: \/x\)/.test(listed('K-4')[0]?.need ?? ''), true);
+  t('DS-966 AC3 a delayed step just due is held for the checker', listed('K-6').length, 0);
+  t('DS-966 AC4 a report step naming staging is still the person\'s', /Check: phase0-report --per-ticket on staging/.test(listed('K-5')[0]?.need ?? ''), true);
+  // A delayed step falls due after the person may have been shown the ticket's other steps: done on that
+  // item must not settle it unseen, so it is an item of its own.
+  const k7 = Object.fromEntries(listed('K-7').map((i) => [i.t.key.replace(/:later:[0-9a-f]+$/, ':later'), i.steps.map((s) => s.step)]));
+  t('DS-966 a person\'s delayed step, once due, is an item of its own beside the ticket\'s other steps',
+    JSON.stringify(k7), JSON.stringify({ 'follow:K-7': ['check the invoice totals look right'], 'follow:K-7:later': [LATER_PERSON.step] }));
+}
+
 // A follow step's gate: `main` waits on the merge commit reaching origin/<default>, `production` on it
 // reaching config §4 Promotion ref. Each repo root holds a real origin/main and origin/production.
 {
@@ -3182,6 +3245,53 @@ const keysIn = (name) => N.collect({ word: name }).items.map((i) => i.t.key);
       'It touches only the bot config, which could break CI. Proceed?', 'The only user-facing option I could find is a toggle. Toggle or modal?', 'Only you can decide whether I can push this change. Should I proceed?'].map(personOnlyStep).join(), ',,,,,');
 }
 
+// A held ticket's triage item put off comes back when a blocker is added, removed or done, not when one
+// moves between in-flight stages.
+{
+  put('iota', { port: 3900, beat: 1, supervised: true, tickets: {
+    'I-1': { state: 'running', lane: 'A' },
+    'I-2': { state: 'parked', lane: 'A', held_by: 'I-1', open_questions: 1, park: { question: 'held by orchestrator: blocked by I-1 — starts once their PRs merge' } },
+    'I-4': { state: 'parked', lane: 'A', held_by: 'I-1', open_questions: 1, park: { question: 'held by orchestrator: blocked by I-1 — starts once their PRs merge' } },
+    'I-5': { state: 'queued', lane: 'A' },
+  }, triage: {
+    'I-2': { summary: 'levers', unknowns: ['What is the cost of one blind audit run? Its Verification says to keep it out of batches until recorded.'] },
+    'I-4': { summary: 'old entry', unknowns: ['Which colour?'] },
+  } });
+  const iq = join(env.DESK_HOME, 'repos', 'acme__iota', 'queue.json');
+  const iotaState = join(env.HOME, '.desk-autopilot', 'acme__iota');
+  const iota = () => Object.fromEntries(N.collect({ word: 'iota' }).items.map((i) => [i.t.key, i]));
+  const setQ = (f) => { const q = JSON.parse(readFileSync(iq, 'utf8')); f(q.tickets); writeFileSync(iq, JSON.stringify(q)); };
+  // An entry written before blockers were settled: each blocker recorded by its batch stage.
+  NN.addPutOff(NN.putOffEntry({ question: 'I-4 triage', ticket: 'I-4', at: new Date(NOW).toISOString(), actions: ['answer', 'not-now'],
+    inputs: { ticket: 'I-4', need: 'Which colour?', blockers: 'I-1:parked' } }), iotaState);
+  const i0 = iota();
+  t('needs-you a held ticket\'s triage item names its question, not a count', `${i0['I-2']?.kind} | ${i0['I-2']?.need}`,
+    'triage | What is the cost of one blind audit run? Its Verification says to keep it out of batches until recorded.');
+  t('needs-you an entry put off the old way (blocker stage) stays put off while its blockers are the same', i0['I-4'], undefined);
+  const listed = cli('list', 'iota').out.split('\n').find((l) => l.startsWith('iota I-2 triage'));
+  t('needs-you the list line carries the question itself', listed?.includes('| What is the cost of one blind audit run?'), true);
+  N.record({ word: 'iota', ticket: 'I-2', action: 'not-now' });
+  t('needs-you not-now hides the triage item', iota()['I-2'], undefined);
+  for (const st of ['parked', 'triaged', 'running', 'failed', 'queued']) setQ((ts) => { ts['I-1'].state = st; });
+  t('needs-you a blocker moving between in-flight stages leaves it put off', `${iota()['I-2']} ${iota()['I-4']}`, 'undefined undefined');
+  setQ((ts) => { ts['I-2'].held_by = 'I-1|I-5'; });
+  t('needs-you a blocker added brings it back, saying what changed',
+    /\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers I-1:open → I-1:open,I-5:open\.\)$/.test(iota()['I-2']?.need ?? ''), true);
+  N.record({ word: 'iota', ticket: 'I-2', action: 'not-now' });
+  setQ((ts) => { ts['I-5'].state = 'running'; });
+  t('needs-you put off again, the new blocker starting leaves it put off', iota()['I-2'], undefined);
+  setQ((ts) => { ts['I-2'].held_by = 'I-1'; });
+  t('needs-you a blocker removed brings it back', /blockers I-1:open,I-5:open → I-1:open\.\)$/.test(iota()['I-2']?.need ?? ''), true);
+  N.record({ word: 'iota', ticket: 'I-2', action: 'not-now' });
+  setQ((ts) => { ts['I-1'].state = 'done'; });
+  t('needs-you a blocker done brings it back', /blockers I-1:open → I-1:done\.\)$/.test(iota()['I-2']?.need ?? ''), true);
+  t('needs-you the old-style entry comes back too once its blocker is done, in the settled form', /blockers I-1:open → I-1:done\.\)$/.test(iota()['I-4']?.need ?? ''), true);
+  setQ((ts) => { ts['I-1'].state = 'running'; });
+  NN.addPutOff(NN.putOffEntry({ question: 'I-4 triage', ticket: 'I-4', at: new Date(NOW).toISOString(), actions: ['answer', 'not-now'],
+    inputs: { ticket: 'I-4', need: 'Which colour?', blockers: 'I-1:running,I-9:parked' } }), iotaState);
+  t('needs-you an old-style entry whose blocker set differs is asked again', iota()['I-4'] != null, true);
+}
+
 // DS-601: an answer for a ticket a pass moved on since it was listed is kept for its next worker.
 {
   // A running worker with a session, and a queued ticket requeued with a one-off grant: answer.mjs
@@ -3309,10 +3419,15 @@ const keysIn = (name) => N.collect({ word: name }).items.map((i) => i.t.key);
 put('ds742', { port: 5742, beat: 1, tickets: {
   'P-1': { state: 'parked', lane: 'A', held_by: null, branch: 'fix/P-1', last_round: { stage: '5/9', question: 'stopped', at: minsAgo(5) },
     park: { question: 'held by orchestrator: stopped by queue.mjs stop at 2026-11-17T10:00:00.000Z; its work so far is committed as 0123456789ab on fix/P-1. Starts again only once you let it', since: minsAgo(5) } },
+  // Stopped as queue.mjs stop now records it, its park's kind named, and its question since reworded.
+  'P-2': { state: 'parked', lane: 'A', held_by: null, branch: 'fix/P-2', last_round: { stage: '5/9', question: 'stopped', at: minsAgo(5) },
+    park: { question: 'its worker was stopped; it starts again once you let it', kind: 'stopped', since: minsAgo(5) } },
 } });
 {
   const it = N.collect({ word: 'ds742' }).items.find((i) => i.t.key === 'P-1');
   t('DS-742 AC2 a stopped ticket is listed held, with start recommended', `${it?.kind} ${it?.need} ${it?.actions.map((a) => a[0]).join()}`, 'held its worker was stopped: let it start start,not-now');
+  const it2 = N.collect({ word: 'ds742' }).items.find((i) => i.t.key === 'P-2');
+  t('DS-895 AC2 a park of kind stopped is listed stopped, offering start, whatever its question says', `${it2?.kind} ${it2?.need} ${it2?.actions.map((a) => a[0]).join()}`, 'held its worker was stopped: let it start start,not-now');
   const st = N.record({ word: 'ds742', ticket: 'P-1', action: 'start' });
   const p1 = queueOf('ds742').tickets['P-1'];
   t('DS-742 AC3 start makes it triaged with its branch and stage kept, so the next pass starts it there', `${st.ok} ${p1.state} ${p1.park} ${p1.branch} ${p1.last_round?.stage}`, 'true triaged null fix/P-1 5/9');

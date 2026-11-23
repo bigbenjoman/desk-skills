@@ -18,9 +18,9 @@ export function uploadSandbox(T, { user }) {
   const images = join(T, 'images');
   const deskHome = join(T, 'desk');
   // -> spawnSync's result, plus how long the run took and its stdout and stderr together.
-  const upload = (env = {}) => {
+  const upload = (env = {}, args = []) => {
     const start = Date.now();
-    const r = spawnSync('node', [join(BIN, 'upload-images.mjs'), '7', images], { cwd: T, encoding: 'utf8', timeout: 90000, env: {
+    const r = spawnSync('node', [join(BIN, 'upload-images.mjs'), '7', images, ...args], { cwd: T, encoding: 'utf8', timeout: 90000, env: {
       ...process.env, HOME: join(T, 'home'), PATH: `${join(T, 'fakes')}:${process.env.PATH}`, DESK_HOME: deskHome,
       DESK_UPLOAD_APPROVED: '1', DESK_BROWSER_PROFILE: join(T, 'profile'), DESK_GH_REPO: 'acme/widgets',
       DESK_REPO_OVERRIDE: 'acme/widgets', DESK_CONFIG_ROOT: join(T, 'cfg'), ...env,

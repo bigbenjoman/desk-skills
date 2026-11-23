@@ -1,9 +1,10 @@
 // suite: follow steps (which follow steps a checker runs, the pass phase that starts and reads it, and what it found)
+// layer: L1
 // covers: desk/bin/follow-steps.mjs desk/bin/pass/follow-steps.mjs
 // Pure functions, plus scratch output files under a throwaway directory.
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { followKind, owedSteps, checkOf, readFollow, failedRun, followComment, followSettings, followPrompt, FOLLOW_RESULT_MARK, FOLLOW_TIMEOUT_MS, FOLLOW_RETRY_MS, FOLLOW_WAIT_MS } from '../desk/bin/follow-steps.mjs';
+import { followKind, followDelayMs, followDueAt, followDueSince, owedSteps, checkOf, readFollow, failedRun, followComment, followSettings, followPrompt, FOLLOW_RESULT_MARK, FOLLOW_TIMEOUT_MS, FOLLOW_RETRY_MS, FOLLOW_WAIT_MS } from '../desk/bin/follow-steps.mjs';
 import { decideFollowSteps, followAwaits } from '../desk/bin/pass/follow-steps.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 import { scratch } from './scratch.mjs';
@@ -41,6 +42,47 @@ t('AC4 a step gated on production is not runnable (DS-785 owns those)', kind('th
 t('a step gated on the default branch can be', kind('the CI run on main is green', { after: 'main' }), 'runnable');
 t('AC3 a step carrying a person-step label is the person\'s', kind('needs-ben: read audit.jsonl for the cost', {}, ['needs-ben']), 'person');
 t('AC3 a label is carried whole only', kind('needs-bento read audit.jsonl for the cost', {}, ['needs-ben']), 'runnable');
+{
+  const STEP = "two weeks after the merge, compare ps + tail + TaskStop calls per session (phase0-report --per-ticket's wait_calls) and CI-red fix tries per ticket across the two weeks before and after, in DS-692's report.";
+  t('DS-966 AC1 a step reading a desk report with a --flag is runnable', kind(STEP), 'runnable');
+  t('DS-966 AC1 and so is the same step without the flag', kind(STEP.replace(' --per-ticket', '')), 'runnable');
+  t('DS-966 AC1 a report named as a node command, with flags and values, is a desk read', kind('node ~/.claude/desk/bin/phase0-report.mjs --per-ticket --days 14 shows wait_calls down'), 'runnable');
+  t('DS-966 AC1 cache-report counts as a desk read', kind('cache-report --since 2026-12-01 shows a cache hit rate above 80%'), 'runnable');
+  t('DS-966 AC4 a report step that also writes is not runnable', kind('run phase0-report --per-ticket and post the table as a Jira comment'), 'unknown');
+  t('DS-966 AC4 a report step that names staging is not', kind('phase0-report --per-ticket on staging'), 'unknown');
+  t('DS-966 AC4 a --flag with no desk report named is still elsewhere', kind('the CI run with --verbose is green'), 'unknown');
+  t('DS-966 a report with no read-only CLI is not a desk report', kind('bench-report --tasks t.json shows arm 2 ahead'), 'unknown');
+}
+{
+  const DAY = 24 * 60 * 60 * 1000;
+  const d = (step, more = {}) => followDelayMs({ step, row: null, ...more });
+  t('DS-966 AC2 a step saying "two weeks after the merge" waits 14 days', d('two weeks after the merge, compare the wait calls in audit.jsonl'), 14 * DAY);
+  t('DS-966 "3 days after merging" waits 3 days', d('3 days after merging, read audit.jsonl'), 3 * DAY);
+  t('DS-966 "a week after the merge" waits 7 days', d('a week after the merge, read audit.jsonl'), 7 * DAY);
+  t('DS-966 wait_days wins over the text', d('two weeks after the merge, read audit.jsonl', { wait_days: 5 }), 5 * DAY);
+  t('DS-966 a step with no delay is due at once', d('the CI run on main is green'), 0);
+  t('DS-966 "two weeks before and after" names no delay after the merge', d('compare the two weeks before and after in audit.jsonl'), 0);
+  t('DS-966 "twenty-one days after the merge" waits 21 days, not 1', d('twenty-one days after the merge, read audit.jsonl'), 21 * DAY);
+  t('DS-966 "thirty two days after the merge" waits 32 days', d('thirty two days after the merge, read audit.jsonl'), 32 * DAY);
+  t('DS-966 a deadline ("within two days after the merge") is a window, not a wait', d('within two days after the merge, read the nightly runs in audit.jsonl'), 0);
+  t('DS-966 and so is "for 3 days after the merge"', d('for 3 days after the merge, watch the CI run on main'), 0);
+  const OUT = Date.parse('2026-11-21T00:00:00.000Z');
+  const S = { step: 'two weeks after the merge, compare wait_calls in audit.jsonl', row: null };
+  t('DS-966 a delayed step falls due its delay after the code went out', new Date(followDueAt(S, OUT)).toISOString(), '2026-12-05T00:00:00.000Z');
+  t('DS-966 AC2 it is owed no run before then', j(owedSteps({ follow_on: [S] }, [], { now: OUT + 13 * DAY, out: OUT })), '[]');
+  t('DS-966 AC3 and is owed one once due', j(owedSteps({ follow_on: [S] }, [], { now: OUT + 14 * DAY, out: OUT })), j([S]));
+  const tk = (more = {}) => ({ K: { key: 'K', merged_at: '2026-11-21T00:00:00.000Z', follow_on: [S], ...more } });
+  const merge = (x) => Date.parse(x.merged_at);
+  t('DS-966 AC3 an idle batch is woken once a delayed step falls due since it went idle', followDueSince(tk(), OUT + DAY, merge, OUT + 14 * DAY), true);
+  t('DS-966 but not before it is due', followDueSince(tk(), OUT + DAY, merge, OUT + 13 * DAY), false);
+  t('DS-966 nor again once a pass ran after it fell due', followDueSince(tk(), OUT + 14 * DAY + 1, merge, OUT + 15 * DAY), false);
+  t('DS-966 nor for a step already checked', followDueSince(tk({ follow_checks: [{ ...S, result: 'fail', at: 'x' }] }), OUT + DAY, merge, OUT + 14 * DAY), false);
+  // A batch child's code goes out at its promotion, after its own merge: the wake counts from that, as the pass does.
+  const promoted = () => OUT + 20 * DAY;
+  t('DS-966 a batch child promoted after its merge is not woken for at its merge plus the delay', followDueSince(tk(), OUT + DAY, promoted, OUT + 14 * DAY), false);
+  t('DS-966 but is at its promotion plus the delay, after an idle pass in between', followDueSince(tk(), OUT + 15 * DAY, promoted, OUT + 34 * DAY), true);
+  t('DS-966 nor while its code is not out', followDueSince(tk(), OUT + DAY, () => NaN, OUT + 40 * DAY), false);
+}
 
 // ---- what is owed, and what was recorded ---------------------------------
 {
@@ -48,15 +90,16 @@ t('AC3 a label is carried whole only', kind('needs-bento read audit.jsonl for th
   const B = { step: 'check the page loads', row: null };
   const C = { step: 'the CI run on main is green', row: null, after: 'main' };
   const tk = { follow_on: [A, B, C], follow_checks: [{ ...A, result: 'fail', found: 'x', evidence: 'y' }] };
-  t('owed steps are the runnable ones with no record, by text and gate', j(owedSteps(tk)), j([C]));
-  t('a record is found by text and gate', j([checkOf(tk, A)?.result ?? null, checkOf(tk, C)]), j(['fail', null]));
   const now = Date.parse('2026-11-20T12:00:00.000Z');
+  const out = now - FOLLOW_RETRY_MS;
+  t('owed steps are the runnable ones with no record, by text and gate', j(owedSteps(tk, [], { now, out })), j([C]));
+  t('a record is found by text and gate', j([checkOf(tk, A)?.result ?? null, checkOf(tk, C)]), j(['fail', null]));
   const pending = (at) => ({ follow_on: [A], follow_checks: [{ ...A, result: 'pending', found: 'run 9 in progress', evidence: 'u', at }] });
-  t('a step found pending is owed again once FOLLOW_RETRY_MS has passed', j(owedSteps(pending(new Date(now - FOLLOW_RETRY_MS).toISOString()), [], { now })), j([A]));
-  t('but not before', j(owedSteps(pending(new Date(now - FOLLOW_RETRY_MS + 1000).toISOString()), [], { now })), '[]');
-  t('nor once retries are over', j(owedSteps(pending('2026-11-20T10:00:00.000Z'), [], { now, retry: false })), '[]');
+  t('a step found pending is owed again once FOLLOW_RETRY_MS has passed', j(owedSteps(pending(new Date(now - FOLLOW_RETRY_MS).toISOString()), [], { now, out })), j([A]));
+  t('but not before', j(owedSteps(pending(new Date(now - FOLLOW_RETRY_MS + 1000).toISOString()), [], { now, out })), '[]');
+  t('nor once retries are over, FOLLOW_WAIT_MS after it fell due', j(owedSteps(pending('2026-11-20T10:00:00.000Z'), [], { now, out: now - FOLLOW_WAIT_MS })), '[]');
   const requeued = { result: { pr: 9 }, follow_on: [A], follow_checks: [{ ...A, pr: 8, result: 'pass', found: 'x', evidence: 'y' }] };
-  t('a record an earlier PR\'s checker made is not this PR\'s', j([checkOf(requeued, A), owedSteps(requeued)]), j([null, [A]]));
+  t('a record an earlier PR\'s checker made is not this PR\'s', j([checkOf(requeued, A), owedSteps(requeued, [], { now, out })]), j([null, [A]]));
 }
 
 // ---- the pass phase --------------------------------------------------------
@@ -86,6 +129,16 @@ t('one whose gate holds is', j(decideFollowSteps(snap([merged('A', { follow_on: 
   t('and not after', followAwaits(snap([found('2026-11-20T11:55:00.000Z')], { outAt: NOW - FOLLOW_WAIT_MS })), false);
   t('a running checker keeps the batch waiting too', followAwaits(snap([merged('A', { follow_run: run() })])), true);
   t('a settled record does not', followAwaits(snap([merged('A', { follow_checks: [{ ...CI, pr: 7, result: 'fail', found: 'x', evidence: 'y', at: 'x' }] })])), false);
+}
+{
+  const LATER = { step: 'a week after the merge, the CI run on main is green', row: null };
+  none('DS-966 AC2 a step not due yet gets no checker', merged('A', { follow_on: [LATER] }));
+  t('DS-966 AC2 and does not keep the batch from idling', followAwaits(snap([merged('A', { follow_on: [LATER] })])), false);
+  t('DS-966 AC3 once due it gets one', j(decideFollowSteps(snap([merged('A', { follow_on: [LATER] })], { outAt: NOW - 7 * 24 * 60 * 60 * 1000 }))),
+    j([{ type: 'start', key: 'A', steps: [LATER] }]));
+  const found = merged('A', { follow_on: [LATER], follow_checks: [{ ...LATER, pr: 7, result: 'pending', found: 'x', evidence: 'u', at: '2026-11-20T11:30:00.000Z' }] });
+  t('DS-966 a delayed step found pending is retried for FOLLOW_WAIT_MS after it fell due, not after its merge',
+    j(decideFollowSteps(snap([found], { outAt: NOW - 7 * 24 * 60 * 60 * 1000 })).map((a) => a.type)), '["start"]');
 }
 none('AC4 a ticket with no runnable step gets none', merged('A', { follow_on: [PAGE] }));
 none('a run still going is left to finish', merged('A', { follow_run: run() }), { alive: ['A'] });
@@ -134,6 +187,7 @@ t('an error fails every step of the run, naming why and where', j(failedRun({ ou
   const s = followSettings({ bin: '/b', dirs: ['/state', '/home'] });
   t('the checker reads only: gh run, pr view and checks, desk-gh reads, and the files under its directories',
     j(s.permissions.allow), j(['Bash(gh run list:*)', 'Bash(gh run view:*)', 'Bash(gh pr view:*)', 'Bash(gh pr checks:*)', 'Bash(node /b/desk-gh.mjs read:*)',
+      'Bash(node /b/phase0-report.mjs)', 'Bash(node /b/phase0-report.mjs --*)', 'Bash(node /b/cache-report.mjs:*)',
       'Read(//state/**)', 'Grep(//state/**)', 'Glob(//state/**)', 'Read(//home/**)', 'Grep(//home/**)', 'Glob(//home/**)']));
   t('and may not write', j(s.permissions.deny), j(['Edit', 'Write', 'WebFetch', 'WebSearch', 'Agent']));
   const p = followPrompt({ slug: 'acme__x', repo: 'acme/x', t: { key: 'DS-1', result: { pr: 7 }, merged_at: 'm' }, steps: [CI], bin: '/b', dirs: ['/state'] });

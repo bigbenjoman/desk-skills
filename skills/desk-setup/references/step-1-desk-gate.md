@@ -37,7 +37,7 @@ mkdir -p .github/workflows scripts/desk
 cp "$T/.github/workflows/desk-gate.yml" .github/workflows/desk-gate.yml && cp "$T/scripts/desk/review-gate.mjs" scripts/desk/review-gate.mjs
 # then set PROTECTED in .github/workflows/desk-gate.yml to the confirmed regex, with Edit
 git add .github/workflows/desk-gate.yml scripts/desk/review-gate.mjs
-git commit -m "<§5 PR title format>: add the desk gate workflow"
+git commit -m "<§5 PR title>: add the desk gate workflow"
 ```
 
 Push it and open the PR through `desk-pr`, under §3 `git-push` and `pr-open`; pushing a workflow

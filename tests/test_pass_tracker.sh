@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: pass: tracker (preflight cost, the test lock, PR status and merges, outside blockers, undraft, evidence)
+# layer: L3
 # pass.mjs with Jira as the tracker: each spawn's preflight cost, a worker quiet under the test lock,
 # a done ticket's PR status and merge, blockers outside the batch, a draft leaving draft, a supervised
 # batch admitting a held ticket's blocker, and evidence runs that fail the same way. Runs the real
@@ -89,7 +90,7 @@ q set W-5 state=running lane=A branch=feat/W-5 session_id=live-1 "worktree=$T/wt
 touch "$T/ps.fail"
 out=$(node "$B/pass.mjs" 2>&1)
 check "a quiet worker is not stopped while ps cannot be read, and the pass says ps could not be read" '[ "$(field W-5 state)" = "\"running\"" ] && echo "$out" | grep -q "W-5: quiet for 6 passes, ps could not be read, so whether it is running its suite is unknown"'
-rm -f "$T/ps.fail" "$T/ps.out" "$T/lsof.out"; unset DESK_LOCK_DIR
+rm -f "$T/ps.fail" "$T/ps.out" "$T/lsof.out"; export DESK_LOCK_DIR="$T/lockdir"
 
 # ---- DS-194: each done ticket's PR state and checks are recorded as pr_status, until it merges or closes
 export DESK_QUEUE="$T/queue-g.json" DESK_AUTOPILOT_STATE="$T/state-g"
@@ -869,12 +870,13 @@ held_on J-66 J-67 'done'
 held_on J-68 X-69 indeterminate
 held_on J-70 J-71 new
 held_on J-72 J-73 new; touch "$T/refuse-J-73"
-# J-70's held item is put off on the inputs needs-you keys it to now; J-80's was put off while its
-# blocker was in progress, so the blocker moving to To Do has brought it back.
+# J-70's held item is put off on the inputs needs-you keys it to now, in the form entries took before
+# blockers were settled: its blocker's Jira status since moving in flight leaves it put off. J-80's was
+# put off while another blocker held it, so the blocker that holds it now has brought it back.
 held_on J-80 J-81 new
 node -e 'import(process.argv[1]).then((m) => { const off = (t, b, cat) => console.log(JSON.stringify(m.putOffEntry({ question: `${t} held`, ticket: t,
   inputs: { ticket: t, need: `held by ${b} (${cat}, in no batch), outside this batch`, blockers: `${b}:${cat === "to do" ? "new" : "indeterminate"}@none` } })));
-  off("J-70", "J-71", "to do"); off("J-80", "J-81", "in progress"); })' "$B/not-now.mjs" > "$T/state-a/not-now.jsonl"
+  off("J-70", "J-71", "to do"); off("J-80", "J-82", "in progress"); })' "$B/not-now.mjs" > "$T/state-a/not-now.jsonl"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-569 AC1 the held ticket's open blocker in no batch is admitted to its batch, and its hold is an ordinary one" \
   'grep -qx "admit J-61 --by pass" "$T/admits-a" && [ "$(field J-61 state)" != null ] && [ "$(field J-60 held_by)" = "\"J-61\"" ] && [ "$(field J-60 held_outside)" = null ] && [ "$(field J-60 outside_blockers)" = "[]" ] && echo "$out" | grep -q "outside blockers: J-61, holding J-60, admitted to this batch"'
@@ -884,7 +886,7 @@ check "DS-569 AC3 a Done blocker admits nothing, and the held ticket is released
   '! grep -q "J-67" "$T/admits-a" && [ "$(field J-66 state)" = "\"triaged\"" ] && [ "$(field J-66 held_by)" = null ]'
 check "DS-569 a blocker in another Jira project, and one whose held item was put off, are not admitted" \
   '! grep -q "X-69" "$T/admits-a" && ! grep -q "J-71" "$T/admits-a" && [ "$(field J-70 held_outside)" = "\"J-71\"" ]'
-check "DS-569 a held item put off before its blocker moved is back, so its blocker is admitted" \
+check "DS-569 a held item put off before its blockers changed is back, so its blocker is admitted" \
   'grep -qx "admit J-81 --by pass" "$T/admits-a" && [ "$(field J-80 held_outside)" = null ]'
 check "DS-569 a blocker intake refuses is said with its reason, and the ticket stays held outside" \
   'grep -qx "admit J-73 --by pass" "$T/admits-a" && [ "$(field J-72 held_outside)" = "\"J-73\"" ] && [ "$(field J-72 outside_admit_tried)" = "\"J-73\"" ] && echo "$out" | grep -qF "outside blockers: J-73, holding J-72, not admitted to this batch (not admitted J-73: lane C: needs a plan): admit it with /desk-admit J-73"'

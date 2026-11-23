@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: health (the watchdog holds spawns while a sign-in or free disk fails)
+# layer: L3
 # pass.mjs runs health.mjs's checks before it spawns: fake gh, desk-jira, claude and codex on PATH, a
 # fake saved GitHub login for the browser profile and a fake free-disk figure. All passing spawns as
 # usual; a failing required check holds new spawns, leaves running workers alone, names the check and
@@ -97,6 +98,8 @@ for c in gh claude codex desk-jira; do
 case "\$1" in
   agents) echo '[{"sessionId": "live-1"}]'; exit 0 ;;
   auth|login|whoami) echo "\$@" >> "$T/calls.$c" ;;
+  # The rate_limit endpoint answers while the limit is used up: the core reset, as epoch seconds.
+  api) case "\$*" in *rate_limit*) echo 1795000000 ;; esac; exit 0 ;;
   # A real call: refused with the HTTP status in \$T/mode.api (the default login) or in the login
   # folder's \`refused\` file, else answered.
   -p) echo "\${CLAUDE_CONFIG_DIR:-default}" >> "$T/calls.$c-p"
@@ -111,7 +114,20 @@ esac
 [ -n "\${CLAUDE_CONFIG_DIR:-}" ] && [ -f "\$CLAUDE_CONFIG_DIR/signed-out" ] && { echo "Not logged in" >&2; exit 1; }
 case "\$(cat "$T/mode.$c" 2>/dev/null || echo ok)" in
   out) echo "You are not logged in to $c" >&2; exit 1 ;;
+  # The last line gh auth status printed on 2026-11-22 with the token's API limit used up, as health.json kept it.
+  limit) echo "- Error: HTTP 403: API rate limit exceeded for user ID 111733264. If you reach out to GitHub Support for help, please include the request ID FACA:317F01:1FC663D" >&2; exit 1 ;;
   net) printf '%s\n' "error connecting to api.example.com: dial tcp: lookup api.example.com: no such host" "- Active account: true" >&2; exit 1 ;;
+  # Unreachable on the first try, then the API limit on the retry.
+  netlimit) [ -f "$T/netl.$c" ] || { : > "$T/netl.$c"; echo "error connecting to api.example.com: dial tcp: lookup api.example.com: no such host" >&2; exit 1; }
+            echo "- Error: HTTP 403: API rate limit exceeded for user ID 111733264." >&2; exit 1 ;;
+  # Two gh accounts: the active one's line, then (without --active) the other account's.
+  twolimited) echo "- HTTP 403: API rate limit exceeded for user ID 1." >&2
+              case " \$* " in *" --active "*) ;; *) echo "- HTTP 401: Bad credentials (https://api.github.com/)" >&2 ;; esac; exit 1 ;;
+  tworevoked) echo "- HTTP 401: Bad credentials (https://api.github.com/)" >&2
+              case " \$* " in *" --active "*) ;; *) echo "- HTTP 403: API rate limit exceeded for user ID 1." >&2 ;; esac; exit 1 ;;
+  # A gh older than --active refuses the flag; without it, signed in (oldgh) or limited (oldlimit).
+  oldgh|oldlimit) case " \$* " in *" --active "*) printf 'unknown flag: --active\n\nUsage:  gh auth status [flags]\n' >&2; exit 1 ;; esac
+                  [ "\$(cat "$T/mode.$c")" = oldlimit ] && { echo "- HTTP 403: API rate limit exceeded for user ID 1." >&2; exit 1; } ;;
   unreach) echo "desk-jira: could not reach https://acme.atlassian.net (see the curl error above)" >&2; exit 1 ;;
   hang) sleep 5 ;;
   once) [ -f "$T/hung.$c" ] || { : > "$T/hung.$c"; sleep 5; } ;;
@@ -123,6 +139,11 @@ done
 mode(){ echo "$2" > "$T/mode.$1"; }
 printf '#!/bin/sh\n[ -f "%s/notify.fails" ] && exit 1\nprintf "%%s|" "$@" >> "%s/notify.calls"; echo >> "%s/notify.calls"\n' "$T" "$T" "$T" > "$T/stub/osascript"
 chmod +x "$T/stub/osascript"
+# The process table and working directories the pass's test lock gate reads: with $T/ps.out, what it
+# and $T/lsof.out say (and no ages), else the real ps and lsof.
+printf '#!/bin/sh\n[ -f "%s/ps.out" ] && [ "$*" = "-ww -axo pid=,ppid=,args=" ] && exec cat "%s/ps.out"\n[ -f "%s/ps.out" ] && [ "$*" = "-ww -axo pid=,etime=" ] && exit 0\nexec "%s" "$@"\n' "$T" "$T" "$T" "$(command -v ps)" > "$T/stub/ps"
+printf '#!/bin/sh\n[ -f "%s/ps.out" ] && exec cat "%s/lsof.out"\nexec "%s" "$@"\n' "$T" "$T" "$(command -v lsof || echo false)" > "$T/stub/lsof"
+chmod +x "$T/stub/ps" "$T/stub/lsof"
 # A signed-in browser profile: a saved GitHub login cookie expiring next year.
 signin(){ printf '{"user":"t","cookies":[{"name":"user_session","domain":"github.com","expires":%s}],"origins":[]}\n' "$1" > "$T/profile.github-session.json"; }
 signin "$(( $(date +%s) + 31536000 ))"
@@ -130,6 +151,9 @@ signin "$(( $(date +%s) + 31536000 ))"
 export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/desk" DESK_AUTOPILOT_STATE="$T/state" \
   DESK_QUEUE="$T/queue.json" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_ORCHESTRATOR=test \
   DESK_BROWSER_PROFILE="$T/profile" DESK_FREE_DISK_GB=100 DESK_HEALTH_RETRY_MS=0
+# As tests/run.sh does, so this suite run on its own reads no real test lock queue; DS-994's check
+# turns it on against its own listing.
+export AUTOPILOT_LOCK_QUEUE=off
 cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
 field(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; console.log(t?.[process.argv[3]] ?? null)' "$DESK_QUEUE" "$1" "$2"; }
@@ -161,7 +185,7 @@ check "AC2 a first failing run is rechecked, not told"      'grep -q "health: 1 
 check "AC2 an auth failure is not retried"                  '[ "$(calls gh)" = 2 ]'
 pj
 check "DS-333 AC3 failing two runs in a row is told"        '[ "$(field H-2 state)" = triaged ] && ! grep -q "rechecking" <<< "$out"'
-check "AC2 the report names the failed check"               'grep -q "health: GitHub CLI (gh auth status) failed: You are not logged in to gh" <<< "$out"'
+check "AC2 the report names the failed check"               'grep -q "health: GitHub CLI (gh auth status --active) failed: You are not logged in to gh" <<< "$out"'
 check "AC2 the report names the fix"                        'grep -q "fix: gh auth login" <<< "$out"'
 check "AC2 the health line says spawns are held"            'grep -q "health: 1 check(s) failing — gh — holding new spawns" <<< "$out"'
 check "AC2 the pass pushes the gh check"                    '[[ "$(pushes)" =~ ^health:.+:gh$ ]]'
@@ -176,6 +200,69 @@ check "AC5 nothing is pushed once it recovers"              '[ -z "$(pushes)" ]'
 # ---- AC6: free disk under the floor ------------------------------------------------------------
 # Finished tickets free their slots, so only the health checks can hold the next one.
 q set H-1 state=done; q set H-2 state=done
+
+# ---- DS-994: the test lock gate reads this suite's listing, never the machine's queue --------------
+# Two wrappers in this repo's checkout wait on the test lock (1 slot x 2 with no profile), in a lock
+# dir of the suite's own: the queue is deep and all of it this repo's (whatever slug the pass gives
+# the scratch checkout, which has no remote), so a ready ticket is held.
+mkdir -p "$T/locks-lq"
+printf ' 9201     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh\n 9202     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck\n' > "$T/ps.out"
+printf 'p9201\ncbash\nfcwd\nn%s/repo\np9202\ncbash\nfcwd\nn%s/repo\n' "$T" "$T" > "$T/lsof.out"
+q add H-Q; q set H-Q state=triaged branch=fix/H-Q
+out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" node "$B/pass.mjs" 2>&1)
+check "DS-994 AC2 the suite's own deep queue still holds the ticket and names the stall" \
+  '[ "$(field H-Q state)" = triaged ] && grep -qE "test lock queue: 2 run\(s\) waiting on its 1 slot\(s\), at or over the hold at 1 x 2 = 2; runs by repo: [^ ,;]+ 2; this repo.s share ceil\(2 / 1\) = 2, 2 its own: holding new workers and resumes into Stage 4 \(H-Q\)" <<< "$out"'
+rm -f "$T/ps.out" "$T/lsof.out"
+q set H-Q state=done
+
+# ---- DS-969: gh's API limit used up is not a sign-out --------------------------------------------
+q add H-L; q set H-L state=triaged branch=fix/H-L
+mode gh limit; : > "$T/calls.gh"
+pj
+check "DS-969 AC3 a used-up API limit holds no spawn"        '[ "$(field H-L state)" = running ] && grep -q "health: 1 check(s) failing — gh — not holding spawns" <<< "$out"'
+check "DS-969 AC3 it names the API limit and its reset"      'grep -qF "GitHub CLI: the GitHub API limit is used up, not a sign-in; it resets at 2026-11-18T11:06:40.000Z; not holding spawns" <<< "$out"'
+check "DS-969 AC3 no sign-in stall or push, so nothing is asked" '! grep -q "fix: gh auth login" <<< "$out" && ! grep -q "GitHub CLI (gh auth status --active) failed" <<< "$out" && [ -z "$(pushes)" ] && [ "$(calls gh)" = 1 ]'
+pj
+check "DS-969 AC3 a second run is still not told as a sign-out" '! grep -q "fix: gh auth login" <<< "$out" && [ -z "$(pushes)" ]'
+mode gh netlimit; : > "$T/calls.gh"; rm -f "$T/netl.gh"
+pj
+check "DS-969 AC3 a limit met on the network retry is still the limit" '[ "$(calls gh)" = 2 ] && grep -qF "the GitHub API limit is used up, not a sign-in" <<< "$out" && ! grep -q "fix: gh auth login" <<< "$out" && [ -z "$(pushes)" ]'
+mode gh ok
+pj
+check "DS-969 AC4 once the limit resets, gh passes again"     'grep -q "recovered: gh" <<< "$out"'
+q set H-L state=done
+
+# ---- DS-995: with two gh accounts, only the active one's state counts --------------------------
+q add H-A; q set H-A state=triaged branch=fix/H-A
+mode gh twolimited; : > "$T/calls.gh"
+pj
+check "DS-995 AC2 active limited, other revoked: the limit with its reset, no spawn held" \
+  '[ "$(field H-A state)" = running ] && grep -qF "GitHub CLI: the GitHub API limit is used up, not a sign-in; it resets at 2026-11-18T11:06:40.000Z; not holding spawns" <<< "$out" && ! grep -q "fix: gh auth login" <<< "$out"'
+check "DS-995 it reads the active account only"              'grep -q -- "--active" "$T/calls.gh"'
+q set H-A state=done
+q add H-B; q set H-B state=triaged branch=fix/H-B
+mode gh tworevoked
+pj
+check "DS-995 AC3 active revoked, other limited: spawns are held" '[ "$(field H-B state)" = triaged ] && grep -q "health: 1 check(s) failing — gh — holding new spawns" <<< "$out"'
+pj
+check "DS-995 AC3 it is told as not signed in"               'grep -qF "health: GitHub CLI (gh auth status --active) failed: - HTTP 401: Bad credentials" <<< "$out" && grep -q "fix: gh auth login" <<< "$out" && ! grep -q "API limit is used up" <<< "$out"'
+mode gh ok
+pj
+q set H-B state=done
+# A gh older than --active (Ubuntu 24.04's 2.45) refuses the flag: that is no sign-out.
+q add H-O; q set H-O state=triaged branch=fix/H-O
+mode gh oldgh; : > "$T/calls.gh"
+pj
+check "DS-995 a gh without --active, signed in: it passes and holds no spawn" \
+  '[ "$(field H-O state)" = running ] && ! grep -q "failing — gh" <<< "$out" && ! grep -q "fix: gh auth login" <<< "$out"'
+check "DS-995 it reads every account once the flag is refused" 'grep -qx -- "auth status --active" "$T/calls.gh" && grep -qx "auth status" "$T/calls.gh"'
+q set H-O state=done
+mode gh oldlimit
+pj
+check "DS-995 a gh without --active, limited: the limit with its reset, no spawn held" \
+  'grep -qF "GitHub CLI: the GitHub API limit is used up, not a sign-in; it resets at 2026-11-18T11:06:40.000Z; not holding spawns" <<< "$out"'
+mode gh ok
+pj
 q add H-3; q set H-3 state=triaged branch=fix/H-3
 DESK_FREE_DISK_GB=12 pj
 check "AC6 low disk holds spawns"                           '[ "$(field H-3 state)" = triaged ]'
@@ -464,6 +551,7 @@ q add H-10; q set H-10 state=triaged branch=fix/H-10
 echo other > "$T/mode.setup"
 pj
 check "DS-589 AC4 any other setup failure parks as today"            '[ "$(field H-10 state)" = parked ] && grep -q "H-10: worktree setup failed, not spawned — FAIL: §4 Install failed twice" <<< "$out" && ! grep -q "local database" <<< "$out"'
+check "DS-895 a failed setup parks as a failure, not a question"     '[ "$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).tickets[\"H-10\"].park.kind)" "$DESK_QUEUE")" = failure ]'
 check "DS-589 a ticket that waited and spawned keeps no wait mark"   '[ "$(field H-8 db_wait)" = null ]'
 q set H-10 state=done
 q add H-11; q set H-11 state=triaged branch=fix/H-11
@@ -503,7 +591,10 @@ cat > "$T/stub/gh" <<EOF
 case "\$1 \$2" in
   "api user") echo "\${GH_CONFIG_DIR:-default}" >> "$T/calls.ghuser"; echo "\${GH_TOKEN-unset}" >> "$T/calls.ghtoken"
     [ "\$(cat "$T/mode.ghuser" 2>/dev/null || echo ok)" = out ] && { echo "To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4; }
+    [ "\$(cat "$T/mode.ghuser" 2>/dev/null || echo ok)" = limit ] && { echo "gh: API rate limit exceeded for user ID 111733264. (HTTP 403)" >&2; exit 1; }
     cat "$T/ghuser"; exit 0 ;;
+  # Each account's own core reset: the Review account's differs from gh as it stands.
+  "api rate_limit") [ "\${GH_CONFIG_DIR:-}" = "$T/gh-pullbot" ] && echo 1795000000 || echo 1700000000; exit 0 ;;
   "pr view") [ -f "$T/fx/\$3.json" ] || exit 1; cat "$T/fx/\$3.json"; exit 0 ;;
   "pr list") echo '[]'; exit 0 ;;
 esac
@@ -550,6 +641,9 @@ mode ghuser out
 hl
 check "DS-577 AC6 a sign-in failure is a sign-in item, not a mismatch"   '[[ "$(pushes)" =~ ^health:.+:reviewer-signin$ ]] && ! grep -q "desk posts verdicts as" <<< "$out"'
 check "DS-577 AC6 it names the sign-in error and its sign-in command"    'grep -qF "To get started with GitHub CLI" <<< "$out" && grep -qF "GH_CONFIG_DIR=$T/gh-pullbot gh auth login" <<< "$out"'
+mode ghuser limit
+hl
+check "DS-969 AC3 the reviewer's API limit used up is noted with its own reset, not told as a sign-in" '[ "$rv" = null ] && [ -z "$(pushes)" ] && ! grep -q "gh auth login" <<< "$out" && grep -qF "reviewer: the GitHub API limit is used up, not a sign-in; it resets at 2026-11-18T11:06:40.000Z; not holding review or fix tries" <<< "$out"'
 mode ghuser ok
 EXTRA='| Gate reviewers | `agent pullbot` |' config yes yes
 hl

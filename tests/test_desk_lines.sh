@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: wrappers lever (desk-env lines, the worker hints hook)
+# layer: L2
 # covers: desk/bin/desk-lines.mjs hooks/desk-worker-hints.py desk/bin/worker-settings.mjs
 # With config §3b Phase 0 levers naming `wrappers`: `desk-env lines <file> A,B` prints what
 # `sed -n A,Bp <file>` prints (AC1) and refuses what a worker's reading tools are refused (AC2);

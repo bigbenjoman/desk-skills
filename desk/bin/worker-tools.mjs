@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 // WebFetch and WebSearch stay listed: worker-settings.mjs denies them unless §3 worker-web-read is yes.
 // ReportFindings is named outside this repo: a repo whose §4 Local review is /code-review reports with it.
 export const WORKER_TOOLS = [
-  'Agent', 'Bash', 'Edit', 'Glob', 'Grep', 'Read', 'ReportFindings', 'SendMessage', 'Skill',
+  'Agent', 'Bash', 'Edit', 'Glob', 'Grep', 'Read', 'ReportFindings', 'Skill',
   'TaskStop', 'ToolSearch', 'WebFetch', 'WebSearch', 'Write',
 ];
 

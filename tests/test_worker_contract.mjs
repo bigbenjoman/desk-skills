@@ -1,4 +1,5 @@
 // suite: worker contract (a short core, and each stage's rules in its own file)
+// layer: L1
 // covers: skills/desk-autopilot/references/**
 // tests/fixtures/worker-contract-before-split.md is the whole contract as one file. Every heading and
 // every paragraph of it must still be in the core or a stage section, so an edit that drops a rule
@@ -78,8 +79,16 @@ t('DS-328 AC1 typecheck and specs re-run after the rebase', n5.includes('**Re-ru
 t('DS-328 AC2 a hand-written resolution gets a fresh desk-review before the push', n5.includes('**A fresh `desk-review` at the new head, before you push**'), true);
 t('DS-328 AC3 it parks only when both sides cannot stand, naming the files and the decision', n5.includes('**Park only when the two sides cannot both stand**') && n5.includes('Park naming the files and the decision needed'), true);
 t('DS-328 AC3 the core keeps only that park', core.includes('- **A merge conflict only a product or design call settles** (Stage 5 file, §4).'), true);
-t('DS-571 AC1 a screenshot park checks the whole app with drift --app first', n5.includes('Before any park on it, run `desk-env drift --app <its directory>`: it prints every §4 row the app lacks, `NODEV` (Dev server) and `NOENV` (Env files), each with the value to add'), true);
-t('DS-571 AC1 and parks once naming every row drift printed, each with its value', n5.includes('park once naming every row `drift --app` printed, and only those, each with its value') && n5.includes('"config:env-files": "<what desk-env get env-files prints>"'), true);
+t('DS-571 AC1 a screenshot park checks the whole app with drift --app first', n5.includes('Before any park on it, run `desk-env drift --app <its directory>`: it prints every §4 row the app lacks, `NODEV` (Dev server), `NOENV` (Env files) and `NOSIGNIN` (Test sign-in), each with the value to add'), true);
+t('DS-571 AC1 and parks once naming every row drift printed, each with its value', n5.includes('park once naming every row `drift --app` printed, and only those, each with its value') && n5.includes('one `"config:<row id>": "<what desk-env get <row id> prints>"` for each row it names (`dev-cmd`, `env-files`, `test-signin`), and no other row'), true);
+// DS-804: a configured second app is never reported missing, and one with a sign-in user is captured locally.
+t('DS-804 AC2 a row of several items is read whole, never with get', n5.includes('`desk-env cmds dev-cmd`, `desk-env list env-files` and `desk-env cmds test-signin` print every app\'s item; `desk-env get` prints only a row\'s first')
+  && n5.includes('An app `drift --app` does not name for a row has that row: a park never says it is missing.'), true);
+t('DS-804 AC1 an app with a Dev server and a Test sign-in item is captured locally, signed in, without parking', n5.includes('**A Dev server item and a Test sign-in item for the app?** Capture from your own dev server on your port, signed in as that user')
+  && n5.includes('never park for a preview you cannot sign in to'), true);
+t('DS-804 AC5 a key that is not a development instance\'s parks naming the env file and the reason', n5.includes('that is a park naming the env file and the reason') && n5.includes('holds a CLERK_SECRET_KEY that is not a development instance\'s (sk_test_)'), true);
+t('DS-804 AC6 the one park names the Test sign-in row with its value', n5.includes('§4 Test sign-in "apps/portal: <email of an existing development user who holds the app\'s grant>"')
+  && n5.includes('a page behind sign-in and no §4 Test sign-in item for it?'), true);
 t('DS-571 AC2 an app missing only its env files names that row alone', n5.includes('parks the same way, naming the Env files row alone.'), true);
 t('DS-328 AC4 without git-force-with-lease a pushed branch merges the default branch in', n5.includes('with `git-force-with-lease` not `yes` takes `git merge origin/<default>` instead: no rebase, no force push.'), true);
 
@@ -166,7 +175,10 @@ t('DS-587 AC5 batch-notes-header keeps its refused with-lock.sh rule', notes.inc
   t('DS-839 AC5 and no step messages the orchestrator', /SendMessage|ListAgents|notify_when_idle/.test(steps), false);
   t('DS-839 AC5 no contract file tells a worker to message the orchestrator', files.some((f) => /SendMessage` the orchestrator|notify_when_idle/.test(read(f))), false);
   t('DS-839 AC1 the park file carries the approve object with kind, target and the exact body',
-    steps.includes('`"approve": {"kind": "jira-comment", "target": "<ticket, or PR number>", "body": "<the exact text>"}`'), true);
+    steps.includes('"approve": {"kind": "jira-comment", "target": "<ticket or PR>", "body": "<exact text>"}'), true);
+  const flat = steps.replace(/\s+/g, ' ');
+  t('DS-887 AC1 and AC2 the park steps print the marker, and a re-invoked worker reads its answer file before it continues',
+    flat.includes('`AUTOPILOT_PARK: <one-line question>`') && flat.includes('the answer file named in yours if you are invoked again: read it, continue'), true);
   t('DS-839 AC1 Stage 8 puts a comment it may not post in the park file\'s approve', read('worker-contract-stage-8.md').replace(/\s+/g, ' ').includes('write the park file with the same body as its `approve`'), true);
 }
 
@@ -229,6 +241,8 @@ const REWRITTEN = [
   // shortened to fit the push-nothing region in the Stage 4 file's cap; the briefing's batch notes assign the port
   ['DS-889', 'kill a server you did not start, it is likely another session\'s.', 1],
   ['DS-889', 'it posts at a head nothing has reviewed.', 1], // the verdict rule shortened; desk-review phase-7-post.md holds it whole
+  // shortened to fit the Stage 3 file's cap: a hung call now ends at its timeout, and desk-review's Phase 4 holds UNREFUTED
+  ['DS-857', 'heartbeating into your log so the orchestrator cannot see the stall', 1],
 
 ];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });

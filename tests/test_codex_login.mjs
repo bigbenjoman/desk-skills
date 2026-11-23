@@ -1,4 +1,5 @@
 // suite: codex login (desk-codex calls run on the Codex default and never move to another login)
+// layer: L2
 // covers: desk/bin/codex-login.mjs desk/bin/desk-codex.mjs
 // A scratch HOME with ~/.codex and folders under ~/.codex-logins, each with its own rollout log in the
 // shape Codex writes, and a fake codex on PATH that records the CODEX_HOME each call ran under. A folder

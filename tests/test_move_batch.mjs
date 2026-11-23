@@ -1,4 +1,5 @@
 // suite: move-batch (a standing batch on a base moves to its epic's own batch slot)
+// layer: L2
 // move-batch.mjs against fixture queues and state folders in a throwaway HOME and DESK_HOME.
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -204,6 +205,9 @@ for (const [f, text] of Object.entries({ ...moving, ...staying })) put(join(stan
 // A merge driver holding its lock: a process that outlives this check, reparented so it is reaped.
 const sleeper = Number(spawnSync('bash', ['-c', 'sleep 60 >/dev/null 2>&1 & echo $!'], { encoding: 'utf8' }).stdout.trim());
 put(join(standingS, 'merge-driver.lock.d', 'pid'), `${sleeper}\n`);
+// The repo's one driver, whose lock lives in this folder while it merges the repo's other batches.
+const repoSleeper = Number(spawnSync('bash', ['-c', 'sleep 60 >/dev/null 2>&1 & echo $!'], { encoding: 'utf8' }).stdout.trim());
+put(join(standingS, 'merge-driver', 'repo.lock.d', 'pid'), `${repoSleeper}\n`);
 // The supervisor had read the batch as idle, with that driver running.
 put(join(standingS, 'supervisor.json'), JSON.stringify({ idle: 'abc123', notified: ['x'], driver: { pid: sleeper, started: 'then', failures: 1 },
   decider: { pid: dead, out: join(standingS, 'decider', 'd.json') } }));
@@ -232,6 +236,9 @@ let driverAlive = true;
 try { process.kill(sleeper, 0); } catch { driverAlive = false; }
 t('AC1 the merge driver was stopped, for the supervisor to start again in E-1', driverAlive, false);
 t('AC1 and the output says so', r.out.includes(`its merge driver (pid ${sleeper}) was stopped`), true);
+let repoAlive = true;
+try { process.kill(repoSleeper, 0); } catch { repoAlive = false; }
+t('DS-972: the repo\'s one driver, whose lock is in the moving folder, was stopped too', repoAlive, false);
 const sup = JSON.parse(read(join(namedS('E-1'), 'supervisor.json')));
 t('AC2 the supervisor no longer reads the moved batch as idle, so its next tick runs a pass', sup.idle, null);
 t('AC2 the stopped driver counts no failed start', `${sup.driver.pid}/${sup.driver.failures}`, 'null/1');
@@ -273,6 +280,7 @@ put(join(standingS, 'parks', 'K-2.json'), '{"question":"which colour?"}');
 put(join(standingS, 'answers', 'K-2.txt'), 'blue');
 put(join(standingS, 'intake.json'), '{"seen":{}}');
 put(join(standingS, 'asks.json'), '{"next":2,"asks":[{"id":1,"text":"merge PR #9"}]}');
+put(join(standingS, 'config-pushed.json'), '{"keys":["config-invalid:x"]}');
 r = move();
 const slotted = 'feat-epics-coverage-to-podcasts';
 t('several epics: moved', r.code, 0);
@@ -282,6 +290,7 @@ t('several epics: its parks and answers moved', `${read(join(namedS(slotted), 'p
 t('several epics: the standing slot has no queue', existsSync(standingQ), false);
 t('several epics: intake\'s register stays with the standing slot', existsSync(join(standingS, 'intake.json')), true);
 t('several epics: the repo\'s asks stay with the standing slot', existsSync(join(standingS, 'asks.json')) && !existsSync(join(namedS(slotted), 'asks.json')), true);
+t('several epics: the refused config rows already pushed stay with the standing slot', existsSync(join(standingS, 'config-pushed.json')) && !existsSync(join(namedS(slotted), 'config-pushed.json')), true);
 const listed2 = spawnSync('node', ['--input-type=module', '-e', `import * as B from '${join(BIN, 'batches.mjs')}'; console.log(B.listBatches().map((b) => b.name ?? '-').join(' '))`], { encoding: 'utf8', env: base });
 t('several epics: the repo lists the standing slot and the branch-named batch', listed2.stdout.trim(), `- ${slotted}`);
 // The slot name keeps only what a batch name may hold.

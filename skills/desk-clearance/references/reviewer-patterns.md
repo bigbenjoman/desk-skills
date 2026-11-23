@@ -1,7 +1,7 @@
 # What reviews here keep asking for
 
-The list itself lives in the repo's config, **§4 "What review here consistently asks for"** (resolve
-it with `desk-env where`, then Read it). This file is how that table is used and kept. Nothing about
+The list itself lives in the repo's config, **§4 "What review here consistently asks for"** (read
+it with `desk-env get review-asks`). This file is how that table is used and kept. Nothing about
 any one repo's reviewers is written here.
 
 Mined from the open review corpus (`clearance-state.mjs corpus`). **`corpus` reads open PRs only,

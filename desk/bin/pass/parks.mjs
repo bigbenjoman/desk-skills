@@ -18,7 +18,7 @@
 //   requeue {key}                 -> queue.mjs requeue's {ok, out}
 //   lift-put-off {key, question}  -> not-now.mjs clearPutOff's {ok, why}
 //   front {key}                   move the ticket to the front of the queue
-//   park {key, question}          park the ticket
+//   park {key, question, kind?}   park the ticket, on that park kind where one is named
 //   date-line {line}              a line of the report's date-hold list
 //   epic-line {line}              a line of the report's epic list
 //   read-blockers {keys}          -> {unread, why}: keys' blockers read from Jira into their triage records
@@ -94,6 +94,13 @@ function* settleClear(t, s) {
   }
   const r = yield { type: 'check', key: t.key, cond: c };
   if (r.error) { yield say(t.key, 'clears', `${t.key}: could not check "${cond}" (${r.error}): left parked`); return; }
+  // A condition that can never hold no longer moves by itself: recorded none, so needs-you puts the park
+  // to the person with why (park.stale).
+  if (r.never) {
+    yield set(t.key, `park.clears_when=${JSON.stringify({ kind: 'none' })}`, `park.stale=${r.never}`);
+    yield say(t.key, 'clears', `${t.key}: "${cond}" can never hold (${r.never}): recorded as none, for the person`);
+    return;
+  }
   // A condition that says how far it has got (an Actions run in progress) is reported as waited on.
   if (!r.holds) { if (r.note) yield say(t.key, 'clears', `${t.key}: waiting on "${cond}" (${r.note}): left parked`); return; }
   const what = r.note ? `${cond}, ${r.note}` : cond;
@@ -197,7 +204,7 @@ export function decidePersonInputs(s) {
     const outside = [...new Set([...keysOf(t.held_outside), ...inputs])];
     const mergeAfter = keysOf(t.merge_after).filter((p) => !inputs.includes(p));
     const others = by.filter((p) => !inputs.includes(p));
-    out.push({ type: 'park', key: t.key, question: `${HELD_PREFIX}: blocked by ${by.join(', ')} — starts once ${inputs.join(', ')} ${inputs.length === 1 ? 'is' : 'are'} Done in Jira${others.length ? ` and ${others.join(', ')} ${others.length === 1 ? 'is' : 'are'} no longer holding it` : ''}` });
+    out.push({ type: 'park', key: t.key, kind: 'hold', question: `${HELD_PREFIX}: blocked by ${by.join(', ')} — starts once ${inputs.join(', ')} ${inputs.length === 1 ? 'is' : 'are'} Done in Jira${others.length ? ` and ${others.join(', ')} ${others.length === 1 ? 'is' : 'are'} no longer holding it` : ''}` });
     // A date hold waits behind these, and is read again once they release it (queue.mjs hold).
     out.push(set(t.key, `held_by=${by.join('|')}`, `held_outside=${outside.join('|')}`, `merge_after=${mergeAfter.join('|') || 'null'}`, ...(dateHeld(t) ? ['held_label=null'] : [])));
     out.push(dateLine(line));
@@ -236,7 +243,7 @@ export function decideDateHolds(s) {
       ? `${HELD_PREFIX}: ${badLabelText(want.label)}`
       : `${HELD_PREFIX}: blocked until ${want.until} (label ${want.label}) — starts on that date by itself`;
     if (s.dry) { out.push(dateLine(`date hold (dry run): ${t.key}: would hold it: ${why}`)); continue; }
-    out.push({ type: 'park', key: t.key, question: why });
+    out.push({ type: 'park', key: t.key, kind: 'date', question: why });
     out.push(set(t.key, `held_label=${want.label}`));
     if (held) out.push(dateLine(`date hold: ${t.key}: now held on its label ${want.label}`));
   }

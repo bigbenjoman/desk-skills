@@ -1,4 +1,5 @@
 // suite: bench arm 2 (a shadow Codex review seat against the current seat on seeded defects)
+// layer: L2
 // covers: desk/bin/bench-arm2.mjs desk/bin/bench-arm3.mjs desk/bin/bench.mjs
 // A scratch repo whose PR has two acted-on findings, one revertible and one overwritten by a later
 // commit. Stub claude and codex binaries on PATH log what each seat could see, then answer from the

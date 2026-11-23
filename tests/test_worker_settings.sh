@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: worker-settings (shell-script toolchain)
+# layer: L2
 # worker-settings.mjs and a shell-script toolchain: `bash|sh <repo-relative .sh path>` is allowed exactly
 # and probed with `<shell> --version`; any other shell item (flags, a command string, an absolute or
 # parent path, another shell) is still refused. Scratch HOME and repo only.
@@ -340,7 +341,8 @@ check "AC3 Storybook and Python capture under the browser lock" \
 check "AC3 never outside the worktree or without the lock"  'no "$L browser node ../x.mjs" "$L browser node ./../x.mjs" "$L browser python3 /etc/x.py" "$L browser python3 ./a/../../x.py" \
       "$L browser node $T/other/shot.mjs" "$L browser python3 -c print" "node ./shot.mjs" "python3 ./shot.py" "./node_modules/.bin/playwright test"'
 check "AC5 local-services yes: compose up for a §4 entry, in the main checkout's project" 'ok "$UP typesense" "$UP mailpit"'
-check "an item written name: port is that service" '[[ "$out" != *"does not start with a compose service name"* ]] && ok "$UP search"'
+check "DS-873 AC1 an item written name: port is that service, with no warning" '[[ "$out" != *"§4 Local services item"* ]] && ok "$UP search"'
+check "DS-873 AC2 an item written name :port is allow-listed as before" 'ok "$UP typesense" "docker-compose -f $T/repo/compose.yaml up -d --no-recreate --no-deps typesense"'
 check "AC5 not the worktree's own project, another service or a recreate" 'no "docker compose up -d typesense" "docker compose up typesense" "$UP postgres" "$UP typesense postgres" \
       "$UP typesense --force-recreate" "docker compose -f compose.yaml up -d --no-recreate --no-deps typesense" "docker compose -f $W/../x.yaml up -d typesense"'
 check "AC5 down, rm and run stay refused"                  'no "docker compose down" "docker compose down -v" "docker rm -f typesense" "docker run --rm alpine" "docker compose rm typesense" "docker compose run typesense sh"'
@@ -391,7 +393,7 @@ check "web-read yes: the only allow rules added are the two tools" '[ "$(jq -c "
 triage
 check "web-read yes: a triage pass gets neither"           '[ $rc -eq 0 ] && ! allows WebSearch && ! allows WebFetch'
 PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Local services | `Typesense on port 8108` |' "$(rows3 worker-local-services=yes)"
-check "local services: an item with no service name warns" '[ $rc -eq 0 ] && [[ "$out" == *"does not start with a compose service name"* ]] && no "$UP Typesense"'
+check "DS-873 AC3 an item with no service name warns, naming the form" '[ $rc -eq 0 ] && [[ "$out" == *"§4 Local services item \"Typesense on port 8108\" is not \`<service> [:<port>]\`"* ]] && no "$UP Typesense" "$UP typesense"'
 : > "$T/repo/compose.override.yaml"
 PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-local-services=yes)"
 check "local services: the main checkout's override file is merged in" 'ok "docker compose -f $T/repo/compose.yaml -f $T/repo/compose.override.yaml up -d --no-recreate --no-deps typesense" && no "$UP typesense"'
@@ -492,6 +494,32 @@ $WF"
 done
 settings '`bash tests/run.sh`' '| Evidence workflow | `pr evidence.sh` |' "$(rows3 worker-workflow-dispatch=yes)"
 check "DS-549 a malformed evidence row warns and allows nothing" '[ $rc -eq 0 ] && [[ "$out" == *"CONFIG_WARN: §4 Evidence workflow"* ]] && [ "$(ev_rules)" = "[]" ] && denies "Bash(gh workflow:*)"'
+
+# ---- DS-550: §4 Preview database, provisioned for the worker's own PR through preview-db.mjs up ----
+PDB='| Preview database | `create: neonctl branches create --name {db}` `migrate: pnpm db:migrate` `override: ./env.sh set {branch} {db}` `rebuild: ./env.sh redeploy {branch}` `delete: neonctl branches delete {db}` |'
+PDBUP="node $B/preview-db.mjs up fix/fix-thing 935"
+PDBCHECK="node $B/preview-db.mjs check $T/state/images/fix-thing"
+pdb_rules(){ jq -c '[.permissions.allow[] | select(test("preview-db\\.mjs up"))]' "$T/ws.json"; }
+settings '`bash tests/run.sh`' "$PDB" "$(rows3 worker-preview-db=yes)"
+check "DS-550 AC1 preview-db yes: its own branch's up is allowed, fixed to that branch" \
+  '[ $rc -eq 0 ] && ok "$PDBUP" && [ "$(pdb_rules)" = "[\"Bash(node $B/preview-db.mjs up fix/fix-thing *)\"]" ] && [[ "$out" != *"CONFIG_DENIED: worker-preview-db"* ]]'
+check "DS-550 AC1 another branch, or another subcommand, is refused" \
+  'no "node $B/preview-db.mjs up fix/other 935" "node $B/preview-db.mjs up main 935" "node $B/preview-db.mjs down 935" "node $B/preview-db.mjs up fix/fix-thing-2 935"'
+check "DS-550 AC2 the error-page check is allowed on its own screenshots only" \
+  'ok "$PDBCHECK" "$PDBCHECK/" && no "node $B/preview-db.mjs check $T/state/images/other" "node $B/preview-db.mjs check $T/state"'
+for v in ask no; do
+  settings '`bash tests/run.sh`' "$PDB" "$(rows3 worker-preview-db=$v)"
+  check "DS-550 preview-db $v: up is refused and the row named" '[ $rc -eq 0 ] && no "$PDBUP" && [ "$(pdb_rules)" = "[]" ] && denied_line worker-preview-db $v'
+done
+settings '`bash tests/run.sh`' '' "$(rows3 worker-preview-db=yes)"
+check "DS-550 AC5 no recipe: no up rule, and the row is not named" '[ $rc -eq 0 ] && no "$PDBUP" && [ "$(pdb_rules)" = "[]" ] && [[ "$out" != *"worker-preview-db"* ]]'
+settings '`bash tests/run.sh`' '| Preview database | `create: neonctl branches create --name {name}` |' "$(rows3 worker-preview-db=yes)"
+check "DS-550 a malformed recipe warns and allows no up" '[ $rc -eq 0 ] && [[ "$out" == *"CONFIG_WARN: §4 Preview database"* ]] && [ "$(pdb_rules)" = "[]" ]'
+settings '`bash tests/run.sh`' "$PDB" "$(rows3 worker-preview-db=yes)"
+out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" --branch fix/fix-thing --out "$T/ws.json" --dry 2>&1); rc=$?
+check "DS-550 a dry run provisions nothing" '[ $rc -eq 0 ] && no "$PDBUP" && denies "Bash(node $B/preview-db.mjs up:*)"'
+out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket fix-thing --wt "$T/repo" --branch main --out "$T/ws.json" 2>&1); rc=$?
+check "DS-550 no branch of its own: no up" '[ $rc -eq 0 ] && no "node $B/preview-db.mjs up main 935" && [ "$(pdb_rules)" = "[]" ]'
 
 # ---- DS-390: a force-push the person approved once, and no rebase of a pushed branch without one ----
 PUSH3="$(rows3 git-push=yes git-force-with-lease=ask)"

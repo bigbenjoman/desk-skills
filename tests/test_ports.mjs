@@ -1,4 +1,5 @@
 // suite: dev ports across repo configs
+// layer: L2
 // Dev ports across repo configs: a port /desk-setup proposes meets no other repo's port or worker
 // block, and a repo whose block already meets another's is flagged. Fixture configs only.
 import { mkdirSync, writeFileSync } from 'node:fs';

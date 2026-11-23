@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: context handoff hook (threshold, Stop block, clear/compact resume)
+# layer: L2
 # The context handoff hook (hooks/desk-handoff.py), fed hook inputs and fixture transcripts in a
 # throwaway repo: one injection past the §2 threshold and none under it, the main chain only, the
 # window (200k, [1m], a chosen model's [1m], past 200k, DESK_CONTEXT_WINDOW), the separate 1M-window row (unset, the 200k row's), a

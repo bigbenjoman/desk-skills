@@ -159,7 +159,12 @@ export function withOutcomes(rows, batches) {
     }
     const recs = postMerge.get(state);
     let pm = 0;
-    if (Array.isArray(recs)) pm = recs.filter((x) => x.ticket === r.key && (x.kind === 'revert' || x.kind === 'red_main')).length;
+    // A red main its workflow has since gone green on (red_recovered) is not the ticket's.
+    if (Array.isArray(recs)) {
+      const mine = recs.filter((x) => x.ticket === r.key);
+      const recovered = new Set(mine.filter((x) => x.kind === 'red_recovered').map((x) => x.run?.id));
+      pm = mine.filter((x) => x.kind === 'revert' || (x.kind === 'red_main' && !recovered.has(x.run?.id))).length;
+    }
     else if (r.merged_at) { pm = null; missing.push(recs?.incomplete ? `${postMergePath(state)} (its latest scan is incomplete)` : postMergePath(state)); }
     return { ...r, review_p0_p1: review, post_merge: pm, ...(missing.length ? { outcome_missing: missing } : {}) };
   });

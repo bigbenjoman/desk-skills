@@ -29,6 +29,7 @@
 //   note {line}                    a batch-notes line
 //   hold {key, limit, was}         the worker is paused at `limit`, its usage_paused `was`
 //   suite-wait {key, worktree}     -> the suite the worktree runs or waits for, or null
+//   progress {key}                 -> {head (the worktree's HEAD), pushed (origin's branch, or null)}, or null unread
 //   kill {key, pid}                stop the worker's process
 //   park {key, question}           park the ticket
 //   build-park {key, question}     -> the park waits only on a §4 Check builds check: {pr, head, checks, command}, or null
@@ -46,6 +47,7 @@
 //   register {key, question, cond} -> the park against the "not now" register: {inputs, status, entry, line}
 //   recommends {key, question}     -> the call the park recommends, or null
 //   approval {key, question}       -> the write the park awaits approval for: {approve, missing} (batch-state.mjs parkApproval)
+//   park-file {key, question}      -> what the park file holds that it does not declare, or null (batch-state.mjs parkFileFault)
 //   keep-links {key, needs, pr}    keep links not made as follow-on steps
 //   decisions {key, pr}            log the calls the worker took
 //   refuse-lease {key, question}   -> true where the park went back to a worker, told to name its lease
@@ -53,17 +55,17 @@
 //   lifted {key, limit}            -> whether the limit on the worker's login has lifted
 //   exit-code {key}                -> the exit code spawn-worker.sh recorded, or null
 //   uncommitted {key}              -> how many files git status lists in the worktree, or null unread
-//   fail {key, why, tail}          mark the ticket failed
+//   fail {key, why, tail, subtype} mark the ticket failed, with the error its session ended in (or null)
 import { expandHome, SCREENSHOT_FILE } from '../desk-env.mjs';
 import { LIVE_READ, needsSession, unnamedForcePush, approvalText } from '../batch-state.mjs';
-import { endedNormally, followOnIn, workerEnd, budgetStop, hostFault } from '../harvest.mjs';
+import { endedNormally, followOnIn, workerEnd, budgetStop, hostFault, errorSubtype } from '../harvest.mjs';
 import { noteLine } from '../decisions.mjs';
 import { usageLimit, resetText, limitName } from '../usage-limit.mjs';
-import { wroteSince } from '../worker-cost.mjs';
+import { wroteSince, heartbeatOnly } from '../worker-cost.mjs';
 import { crashOf } from '../undraft.mjs';
 import { ticketShotDir } from '../evidence.mjs';
 import { SUITE_WAIT_TEXT } from '../suite-wait.mjs';
-import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, BUDGET_RESUME_USD, WORKER_BUDGET_ROW, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say, runsInCloud, notOwnPr, foreignQuestion } from './shared.mjs';
+import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, TOOL_CALL_CEILING_MS, BUDGET_RESUME_USD, WORKER_BUDGET_ROW, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say, runsInCloud, notOwnPr, foreignQuestion } from './shared.mjs';
 
 // Why a worker that is not in the registry, and ended with no marker and no result, stopped.
 export const REBOOT = 'the computer restarted after its last log write';
@@ -111,6 +113,12 @@ function* hostPark(t, fault, verb) {
   yield say(t.key, 'parked', `${t.key}: ${question}`);
 }
 
+// A wedged worker's park, once the pass has stopped it: `why` says what read as wedged.
+function* wedgedPark(t, why) {
+  yield { type: 'park', key: t.key, question: `wedged — ${why}, worker stopped (session ${t.session_id}). Requeue it with queue.mjs requeue ${t.key} (desk-autopilot's orchestrator-recovery.md); never resume the session by hand, which would run it without the worker sandbox` };
+  yield say(t.key, 'stalled', `${t.key}: ${why} — stopped and parked, slot freed`);
+}
+
 export function* decideAdvance(s) {
   const { t, log, registry } = s;
   if (runsInCloud(t) && t.cloud) { yield { type: 'cloud', key: t.key }; return; }
@@ -144,22 +152,37 @@ export function* decideAdvance(s) {
   }
   const pausedOnLimit = pausedOn(limit, s.now);
   // Kept by the usage-limit step only while the ticket is still running once every ticket has had its turn.
+  // Waiting for a reset is not a stall either: the progress clock starts again once the hold lifts.
+  const unpaused = !pausedOnLimit && !!t.usage_paused;
   if (pausedOnLimit) yield { type: 'hold', key: t.key, limit, was: t.usage_paused };
-  else if (t.usage_paused) yield set(t.key, 'usage_paused=null');
+  else if (unpaused) yield set(t.key, 'usage_paused=null', `progress_at=${new Date(s.now).toISOString()}`);
 
   // Log growth is the honest liveness signal: it comes from the harness, not from self-reporting.
-  // It is not sufficient on its own — a hung `codex exec` emits a tool_progress heartbeat every 30s
-  // until the harness moves the call to the background at 600s, so for those ten minutes log growth
-  // overstates liveness. See references/orchestrator-recovery.md.
+  // It is not sufficient on its own: a hung call (a `codex exec`) keeps the harness writing a
+  // tool_progress heartbeat every 30s, so growth that is only that heartbeat, for one call past
+  // TOOL_CALL_CEILING_MS, is a hang. Its session's processes are ended, each group whole, so the hung
+  // call goes with it and no other session's is touched.
   // Workers log no partial messages, so a long model turn writes nothing until its message ends: six
   // quiet passes is the margin for it. A suite under the test lock, or a wait for it, is read from the
   // worktree's processes instead, up to SUITE_WAIT_CEILING_MS.
   let wedged = false;
-  if (wroteSince(log.raw, t.log_bytes ?? 0)) {
+  // A suite wait that ended this pass under its ceiling, in ms: the progress clock was paused for it.
+  let suitePaused = 0;
+  const hung = heartbeatOnly(log.raw, t.log_bytes ?? 0);
+  // Only a live session: one that has exited is the exit handling's below, as it is with no ceiling.
+  if (hung && hung.secs * 1000 > TOOL_CALL_CEILING_MS && !done && !handoff && !reboot && live) {
+    yield set(t.key, `log_bytes=${log.size}`, ...(t.suite_wait_since != null ? ['suite_wait_since=null'] : []));
+    yield { type: 'kill', key: t.key, sid: t.session_id, pid: pidOf() };
+    wedged = true;
+    yield* wedgedPark(t, `one ${hung.tool} call${hung.id ? ` (${hung.id})` : ''} running for ${Math.floor(hung.secs / 60)} minutes, past the ${TOOL_CALL_CEILING_MS / 60000}-minute ceiling, with only its tool_progress heartbeat in the log`);
+  } else if (wroteSince(log.raw, t.log_bytes ?? 0)) {
+    if (t.suite_wait_since != null) suitePaused = Math.min(Math.max(0, s.now - t.suite_wait_since), SUITE_WAIT_CEILING_MS);
     yield set(t.key, `log_bytes=${log.size}`, 'idle_passes=0', ...(t.suite_wait_since != null ? ['suite_wait_since=null'] : []));
   } else if (pausedOnLimit) {
     // Waiting for the reset is not a stall.
     if (t.idle_passes) yield set(t.key, 'idle_passes=0');
+  } else if (s.woken) {
+    // A pass another worker's exit woke counts no quiet pass: six still take six intervals.
   } else {
     const idle = (t.idle_passes ?? 0) + 1;
     const stall = idle >= WEDGE_PASSES && !done && !handoff && !reboot;
@@ -177,11 +200,9 @@ export function* decideAdvance(s) {
       const pid = pidOf();
       if (pid) yield { type: 'kill', key: t.key, pid };
       wedged = true;
-      const why = overCeiling
+      yield* wedgedPark(t, overCeiling
         ? `no output for ${idle} passes, ${SUITE_WAIT_TEXT[waitOn]} for over the ${SUITE_WAIT_CEILING_MS / 60000}-minute ceiling`
-        : `no output for ${idle} passes`;
-      yield { type: 'park', key: t.key, question: `wedged — ${why}, worker stopped (session ${t.session_id}). Requeue it with queue.mjs requeue ${t.key} (desk-autopilot's orchestrator-recovery.md); never resume the session by hand, which would run it without the worker sandbox` };
-      yield say(t.key, 'stalled', `${t.key}: ${why} — stopped and parked, slot freed`);
+        : `no output for ${idle} passes`);
     } else if (idle >= QUIET_PASSES) yield say(t.key, 'quiet', `${t.key}: quiet for ${idle} passes`);
   }
 
@@ -216,8 +237,12 @@ export function* decideAdvance(s) {
     // A directory that is missing or holds no screenshot means no images, not a failed upload. A
     // running worker may still capture into it, so only a finished one is recorded as having none.
     const shots = (yield { type: 'shots', key: t.key, dir: imgDir }).filter((f) => SCREENSHOT_FILE.test(f));
+    // A before/after pair whose two files are the same shows no change: the PR body leaves it out
+    // (desk-pr screenshots.md), so it is nothing to upload.
+    const same = shots.length ? yield { type: 'same-pairs', key: t.key, dir: imgDir, shots } : [];
+    const changed = shots.filter((f) => !same.includes(f));
     const finished = done || built || mergeOnly;
-    if (!shots.length) {
+    if (!changed.length) {
       if (finished) yield set(t.key, 'images_uploaded=none');
     } else if (!namedImgDir && (crashOf(t, prNo) || !(finished && (yield { type: 'cells', key: t.key, pr: prNo, shots })))) {
       // The briefed directory, unnamed this round, is uploaded only once its worker is finished (with no
@@ -227,12 +252,17 @@ export function* decideAdvance(s) {
       // again. A body that could not be read waits for the undraft step, which reads it again. An
       // upload of it that crashed is the crashed-uploads step's, which keeps to UPLOAD_TRIES.
     } else if (s.upload.allowed) {
+      // A preview-database PR's uploader posts only the files its error-page check passed (upload-batches.mjs
+      // runUpload `passed`); the cells it leaves go to the undraft step, which sends them to a capture worker.
       yield { type: 'upload', key: t.key, pr: prNo, dir: imgDir };
     } else if (!t.images_reported) {
       yield* setAndSay(t.key, ['images_reported=true'], 'waiting', `${t.key}: screenshots for PR #${prNo} are in ${imgDir} — config §3 ${s.upload.key} is "${s.upload.perm}". ` +
         `Ask, then: DESK_UPLOAD_APPROVED=1 node ${s.upload.command} ${prNo} ${imgDir}`);
     }
   }
+
+  // A worker still at work (or one the unread registry cannot tell apart from it): its progress time.
+  if ((live || !registry.read) && !wedged && !done && !handoff && !reboot && !park) yield* progressOf(t, s.now, stage, suitePaused, unpaused);
 
   let stopped = '';
   if (live && (done || handoff || reboot)) {
@@ -307,6 +337,9 @@ export function* decideAdvance(s) {
     const approve = approval?.approve ?? null;
     const awaiting = approve ? ` — awaiting approval, ${approvalText(approve)}`
       : approval?.missing ? ` — incomplete: ${approval.missing}` : '';
+    // A field its park file does not declare is logged, never a reason to refuse the park.
+    const undeclared = yield { type: 'park-file', key: t.key, question };
+    if (undeclared) yield say(t.key, 'inputs', `${t.key}: ${undeclared}, taken in as it is`);
     // A merge question keeps the park's words as its follow-on too, so a merge by hand still lists them.
     yield set(t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(cleared)}`,
       ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []), ...(approve ? [`park.approve=${JSON.stringify(approve)}`] : []),
@@ -424,10 +457,30 @@ export function* decideAdvance(s) {
         yield* hostPark(t, hostFault(log.text), 'stopped');
       } else {
         const code = yield { type: 'exit-code', key: t.key };
-        yield { type: 'fail', key: t.key, why: `exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at ${limitName(limit.type)}${limit.resetsAt != null ? ` (resets ${resetText(limit.resetsAt)})` : ''}` : ''} (${workerEnd(log.text)}, ${exitText(code)})`, tail: ` — check ${log.path}` };
+        yield { type: 'fail', key: t.key, why: `exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at ${limitName(limit.type)}${limit.resetsAt != null ? ` (resets ${resetText(limit.resetsAt)})` : ''}` : ''} (${workerEnd(log.text)}, ${exitText(code)})`, tail: ` — check ${log.path}`, subtype: errorSubtype(log.text) };
       }
     }
   }
+}
+
+// A running worker's progress time (progress_at, ISO) and what it was read from (progress_sha: its
+// worktree's HEAD and its branch's pushed head). Progress is a stage change, a new commit or a push, never
+// log growth alone, so a hung call that heartbeats into the log still ages. `paused` is a suite wait that
+// ended this pass under its ceiling, which the clock does not count; `restarted`, a usage hold that
+// lifted this pass, has already started it again at `now`. The deadline sweep reads both
+// (pass/deadlines.mjs, the progress wait). A read that fails changes nothing but a stage change.
+function* progressOf(t, now, stage, paused, restarted) {
+  const read = yield { type: 'progress', key: t.key };
+  const was = t.progress_sha && typeof t.progress_sha === 'object' ? t.progress_sha : null;
+  const sha = read?.head ? { head: read.head, pushed: read.pushed ?? null } : was;
+  const moved = (stage != null && stage !== t.stage) || !Number.isFinite(Date.parse(t.progress_at))
+    || (!!read?.head && (!was || was.head !== sha.head || was.pushed !== sha.pushed));
+  const at = restarted ? null : moved ? now : paused ? Math.min(now, Date.parse(t.progress_at) + paused) : null;
+  const fields = [
+    ...(at != null && new Date(at).toISOString() !== t.progress_at ? [`progress_at=${new Date(at).toISOString()}`] : []),
+    ...(sha && JSON.stringify(sha) !== JSON.stringify(was) ? [`progress_sha=${JSON.stringify(sha)}`] : []),
+  ];
+  if (fields.length) yield set(t.key, ...fields);
 }
 
 // The issue links a ticket recorded done asked for: made, and any not made park it (park-links).

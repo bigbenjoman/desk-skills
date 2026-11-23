@@ -1,4 +1,5 @@
 // suite: check-in digest (slots, one digest per slot across repos, answers and overrides)
+// layer: L2
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, appendFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join, dirname } from 'node:path';

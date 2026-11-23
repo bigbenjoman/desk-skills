@@ -1,4 +1,5 @@
 // suite: worker tools (each headless claude -p call is offered only the tools it uses, and a batch's workers share one system prompt)
+// layer: L2
 // budget: 45 DS-943 (about 30 whole spawn-worker.sh runs, each a dozen node starts; 34-37 s on CI)
 // covers: desk/bin/worker-tools.mjs desk/bin/spawn-worker.sh desk/bin/desk-env.sh agents/** skills/**/*.md
 // The worker's --tools list matches what the worker contract and the skills it loads name, in both
@@ -28,6 +29,12 @@ const NOT_OFFERED = {
   AskUserQuestion: 'a headless worker cannot ask: the contract says it has none',
   Monitor: 'a blocking primitive the contract says is refused',
 };
+// A worker reaches nothing with these, so none is offered and no file a worker reads may name one:
+// a worker told to use one spends its park on a dead path. A park's channel is the park file.
+const UNREACHABLE = {
+  SendMessage: 'a worker starts with --setting-sources "", often on another Claude login, so it can never reach the orchestrator\'s agent registry',
+  ListAgents: 'it lists only the agent registry of the worker\'s own login, which never holds the orchestrator',
+};
 // Offered, and named only by a skill a worker loads from outside this repo, so the scan cannot see it.
 const NAMED_OUTSIDE = {
   ReportFindings: "a repo's §4 Local review /code-review reports its findings with it",
@@ -35,12 +42,13 @@ const NAMED_OUTSIDE = {
 // Text that spells a tool's name but is not the tool.
 const NOT_A_TOOL = [/§4 Workflow/g, /`Workflow` and its named states/g];
 
-// What a worker reads: the contract, the skills its stages load, and the agents it dispatches.
+// What a worker reads: the contract, the batch notes header its briefing carries (queue.mjs seeds
+// batch-notes.md from it), the skills its stages load, and the agents it dispatches.
 const mdUnder = (d) => readdirSync(d, { withFileTypes: true }).flatMap((e) =>
   e.isDirectory() ? mdUnder(join(d, e.name)) : e.name.endsWith('.md') ? [join(d, e.name)] : []);
 const refs = join(root, 'skills/desk-autopilot/references');
 const SOURCES = [
-  ...readdirSync(refs).filter((f) => /^(autopilot-worker-contract|worker-contract-.*|ask-or-take)\.md$/.test(f)).map((f) => join(refs, f)),
+  ...readdirSync(refs).filter((f) => /^(autopilot-worker-contract|worker-contract-.*|ask-or-take|batch-notes-header)\.md$/.test(f)).map((f) => join(refs, f)),
   ...['desk-ticket', 'desk-pr', 'desk-jira', 'desk-review', 'desk-review-response', 'desk-kiss', 'desk-dev']
     .flatMap((s) => mdUnder(join(root, 'skills', s))),
   ...mdUnder(join(root, 'agents')),
@@ -54,19 +62,42 @@ t('every listed tool is a Claude Code built-in', [...WORKER_TOOLS, ...TRIAGE_TOO
 
 // AC7 and AC2: every tool a file names is offered (naming the tool and the file), and every tool
 // offered is named somewhere.
-const named = new Map();
-for (const f of SOURCES) {
-  let s = readFileSync(f, 'utf8');
+const toolsNamed = (text) => {
+  let s = text;
   for (const re of NOT_A_TOOL) s = s.replace(re, '');
-  for (const tool of BUILTIN) if (new RegExp(`\\b${tool}\\b`).test(s)) named.set(tool, [...(named.get(tool) || []), relative(root, f)]);
-}
+  return BUILTIN.filter((tool) => new RegExp(`\\b${tool}\\b`).test(s));
+};
+const namedIn = (texts) => {
+  const m = new Map();
+  for (const [f, text] of texts) for (const tool of toolsNamed(text)) m.set(tool, [...(m.get(tool) || []), relative(root, f)]);
+  return m;
+};
+const named = namedIn(SOURCES.map((f) => [f, readFileSync(f, 'utf8')]));
 t(`the scan read the worker's files (${SOURCES.length})`, SOURCES.length > 40, true);
-const missing = [...named].filter(([tool]) => !WORKER_TOOLS.includes(tool) && !NOT_OFFERED[tool]).map(([tool, fs]) => `${tool} (named in ${fs.join(', ')})`);
+const missing = [...named].filter(([tool]) => !WORKER_TOOLS.includes(tool) && !NOT_OFFERED[tool] && !UNREACHABLE[tool]).map(([tool, fs]) => `${tool} (named in ${fs.join(', ')})`);
 t('AC7 every tool the contract and skills name is in the worker list', missing, []);
 t('AC2 every tool in the worker list is named by the contract or a skill', WORKER_TOOLS.filter((x) => !named.has(x) && !NAMED_OUTSIDE[x]), []);
 t('a tool named outside this repo is offered and not also named here (else drop it from NAMED_OUTSIDE)',
   Object.keys(NAMED_OUTSIDE).filter((x) => !WORKER_TOOLS.includes(x) || named.has(x)), []);
 t('a tool named but not offered is still named (else drop it from NOT_OFFERED)', Object.keys(NOT_OFFERED).filter((x) => !named.has(x)), []);
+
+// No tool a worker cannot reach anything with is offered, or named by a file a worker reads.
+const unreachableIn = (m) => [...m].filter(([tool]) => UNREACHABLE[tool])
+  .flatMap(([tool, fs]) => fs.map((f) => `${f} names ${tool}, which a worker cannot reach: ${UNREACHABLE[tool]}`));
+t('DS-887 every unreachable tool is a Claude Code built-in with a reason', Object.entries(UNREACHABLE).filter(([x, why]) => !BUILTIN.includes(x) || !why), []);
+t('DS-887 AC5 the worker list offers no unreachable tool', WORKER_TOOLS.filter((x) => UNREACHABLE[x]), []);
+t('DS-887 AC3 no file a worker reads names a tool it cannot reach', unreachableIn(named), []);
+{
+  const contract = join(refs, 'autopilot-worker-contract.md');
+  const added = `${readFileSync(contract, 'utf8')}\n2. \`SendMessage\` the orchestrator with the question.\n`;
+  const [got] = unreachableIn(namedIn([[contract, added]]));
+  t('DS-887 AC3 a line telling a worker to SendMessage the orchestrator fails, naming the file, the tool and why',
+    !!got && got.startsWith('skills/desk-autopilot/references/autopilot-worker-contract.md names SendMessage,') && got.includes('agent registry'), true);
+  // The orchestrator's own references message live workers, and are not what a worker reads.
+  const orch = ['sharing-the-machine.md', 'orchestrator-recovery.md', 'concurrency-and-memory.md'].map((f) => join(refs, f));
+  t('DS-887 AC4 the orchestrator references name SendMessage (else this check proves nothing)', orch.every((f) => /\bSendMessage\b/.test(readFileSync(f, 'utf8'))), true);
+  t('DS-887 AC4 they are not read as a worker\'s, so raise no reachability finding', orch.filter((f) => SOURCES.includes(f)), []);
+}
 
 // AC5: every tool an agent definition names is in the worker's list.
 for (const f of readdirSync(join(root, 'agents')).filter((x) => x.endsWith('.md'))) {
@@ -162,6 +193,8 @@ let a = argv('run', 0);
 t('AC1 dry-run spawn launches the worker', r.status === 0 && !!a && a.includes('-p') && a.includes('--append-system-prompt'), true);
 t('AC1 the worker is launched with --tools <worker list>', toolsOf(a), LIST);
 t('AC1 its --tools excludes Workflow', (toolsOf(a) || '').split(',').includes('Workflow'), false);
+t('DS-887 AC5 the spawned worker is offered neither SendMessage nor ListAgents',
+  (toolsOf(a) || 'unset').split(',').filter((x) => ['SendMessage', 'ListAgents'].includes(x)), []);
 
 // AC3: the preflight offers the same list; the finder model check offers none.
 r = spawnWorker('preflight', 'pre', { AUTOPILOT_PREFLIGHT: '1', AUTOPILOT_FINDER_MODEL: 'opus' });

@@ -130,7 +130,7 @@ export function promotionFor({ slug, root, ghRepo, def, ref: raw, staging, exec 
 // A repo's promotion inputs from its own config, for the digest, which reads every repo's.
 export function promotionInputs(slug) {
   const v = (id) => E.repoConfigValue(slug, id);
-  return { slug, root: E.expandHome(v('repo-root')), ghRepo: v('gh-repo'), def: v('default-branch') ?? 'main', ref: v('promotion-ref'), staging: E.repoConfigValues(slug, 'staging') };
+  return { slug, root: E.repoDirs(slug).root, ghRepo: v('gh-repo'), def: v('default-branch') ?? 'main', ref: v('promotion-ref'), staging: E.repoConfigValues(slug, 'staging') };
 }
 
 const stateFile = (state) => join(state, 'promotion.json');

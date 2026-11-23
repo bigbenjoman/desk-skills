@@ -1,4 +1,5 @@
 // suite: prose baseline guard, a pull request cannot add an entry to the prose baseline
+// layer: L2
 // covers: tests/fixtures/prose-baseline-guard/*.json .github/workflows/tests.yml
 // tests/prose_baseline_guard.mjs on fixture baselines, then its --base form in a scratch repo, then the
 // CI step that runs it on every pull request.

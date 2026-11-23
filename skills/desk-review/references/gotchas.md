@@ -133,12 +133,12 @@ Constraints behind the patterns, each found against real repositories:
 - **Migrations by directory, never bare `\.sql$`.** dbt models are `.sql` too (`dbt/models/…`) and
   are not schema changes. Alembic lives under `alembic/versions/` or `migrations/versions/`, raw SQL
   under `migrations/`; both are covered by the directory match.
-- **Python tests have three shapes**: `tests/…`, `test_x.py`, and `x_test.py` next to the code. Miss
+- **Python tests have three shapes**: `tests/…`, `test_x.py`, and `x_test.py` next to the code. Miss <!-- prose-ok: example file names in a reviewed repo -->
   one and a test file raises the tier.
 - **Payment words are unanchored on purpose.** A presentational `PaymentSummary.tsx` goes HIGH and
   costs one extra agent; anchoring to a server directory misses repos whose money code lives
-  elsewhere (`app/flows/handlers/subscriptions.py`). Over-tiering is the cheap direction.
-- **A filename says auth only at a word boundary**: `auth.py`, `require-auth.ts`, `session_store.py`
+  elsewhere (`app/flows/handlers/subscriptions.py`). Over-tiering is the cheap direction. <!-- prose-ok: an example path in a reviewed repo -->
+- **A filename says auth only at a word boundary**: `auth.py`, `require-auth.ts`, `session_store.py` <!-- prose-ok: example file names in a reviewed repo -->
   match; `AuthorCard.tsx` must not. An auth *directory* is HIGH wherever it sits, including
   `components/auth/`, since UI there usually carries the sign-in flow.
 - **`\.env` fires on `.env.example`**, which is intended: the example is the environment contract.

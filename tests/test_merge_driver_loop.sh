@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: merge driver: loops, releases and its log (offline, fake gh)
+# layer: L3
 # The real merge-driver.sh and gate.mjs, one loop at a time, set up by merge_driver_setup.sh: which PR
 # merges in a loop, the held tickets a merge releases (the driver's and pass.mjs's), a feature spine, a
 # stop in the pause, and --log with its rotation.
@@ -150,8 +151,9 @@ check "a spine PR merged without approval releases nothing"          '[ "$(qf T-
 jq '."107".state = "open"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
 loop
 check "the spine's draft PR is not merged before approval"           '! grep -q "^107 " "$T/merges.log" && echo "$out" | grep -q "draft (still reviewing): #107"'
-out=$(node "$B/queue.mjs" approve T-7 2>&1); rc=$?
+rm -f "$SD/wake"; out=$(node "$B/queue.mjs" approve T-7 2>&1); rc=$?
 check "approve undrafts the spine PR and hands it to the merge driver, exit 0" '[ $rc -eq 0 ] && [ "$(qf T-7 .state)" = done ] && [ "$(jq -r ".\"107\".draft" "$T/prs.json")" = false ] && echo "$out" | grep -q "the merge driver merges PR #107 once it is green; T-8 is released once it merges"'
+check "DS-971 AC2: approving the spine wakes the merge driver from an idle pause" '[ -f "$SD/wake" ]'
 loop; loop
 check "the approved spine merges, pinned, and its child is released" 'grep -qx "107 main $SHA7" "$T/merges.log" && [ "$(qf T-8 .state)" = triaged ] && echo "$out" | grep -q "RELEASED T-8"'
 
@@ -248,6 +250,35 @@ loops 2 --log
 check "DS-759: a driver whose log was moved re-opens merge-driver.log on its next loop" '[ $rc -eq 143 ] && grep -q "merge driver up" "$T/state/moved.log" && grep -q "merge driver exited 143$" "$T/state/merge-driver.log" && ! grep -q "merge driver exited" "$T/state/moved.log"'
 rm -f "$T/between.1" "$T/state/moved.log" "$T/state/merge-driver.log" "$T/sleeps"
 
+# ---- DS-971: an idle driver backs off from 1 minute to 10, and a worker's exit or an undraft wakes it --
+echo '{}' > "$T/prs.json"
+# 60s, then 120, 240, 480 and 600 twice: 1+2+4+8+10+1 one-minute slices, stopped in the sixth pause.
+loops 26
+check "DS-971 AC1: each idle pause in a row is twice the last, up to 10 minutes, slept a minute at a time" \
+  '[ $rc -eq 143 ] && [ "$(grep -o "next look in [0-9]*s" <<< "$out" | grep -o "[0-9]*" | paste -sd" " -)" = "120 240 480 600 600" ] && [ "$(sort -u "$T/sleeps")" = 60 ]'
+# Woken in its second pause: the third loop's pause is the next step up, not the rest of the second.
+mkdir -p "$T/state/exits"
+printf '#!/bin/sh\ntouch "%s/state/exits/T-9.1.json"\n' "$T" > "$T/between.2"; chmod +x "$T/between.2"
+loops 3
+check "DS-971 AC2: a worker's exit during a long pause ends it within a minute" \
+  '[ $rc -eq 143 ] && echo "$out" | grep -q "woken: a worker exited" && echo "$out" | grep -q "next look in 240s" && [ "$(wc -l < "$T/sleeps" | tr -d " ")" = 3 ]'
+printf '#!/bin/sh\ntouch "%s/state/merge-driver/wake"\n' "$T" > "$T/between.2"
+loops 3
+check "DS-971 AC2: an undraft by the pass ends it too" \
+  '[ $rc -eq 143 ] && echo "$out" | grep -q "woken: a PR left draft" && echo "$out" | grep -q "next look in 240s"'
+rm -f "$T/between.2"
+# Idle, then a ready PR that merges on its second green loop, then idle again: the merge pauses 30s
+# as before, and the idle run after it starts again at a minute.
+SHA971=9719719719719719719719719719719719719719
+q add T-971 Task A; q set T-971 branch=fix/T-971 state=done result.pr=971
+printf '#!/bin/sh\necho %s > "%s/prs.json"\n' "'{ \"971\": { \"head\": \"fix/T-971\", \"base\": \"main\", \"sha\": \"$SHA971\", \"state\": \"open\", \"draft\": false, \"checks\": [[\"test\", \"SUCCESS\"]] } }'" "$T" > "$T/between.1"; chmod +x "$T/between.1"
+loops 4
+check "DS-971 AC3: a loop that merged pauses 30s as before, and the next idle run starts at a minute" \
+  '[ $rc -eq 143 ] && grep -q "^971 main $SHA971" "$T/merges.log" && [ "$(paste -sd" " - < "$T/sleeps")" = "60 120 30 60" ] && ! echo "$out" | grep -q "next look in"'
+rm -f "$T/between.1"; q drop T-971
+out=$(MERGE_DRIVER_WAKE_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1" 2>&1); rc=$?
+check "DS-971: a pause setting that is not a whole number above 0 stops the driver at start" '[ $rc -eq 2 ] && echo "$out" | grep -q "MERGE_DRIVER_WAKE_SECS is .0."'
+
 # ---- DS-835: a merge GitHub refuses leaves no merged entry in the merge log -----------------------
 SHA835=8358358358358358358358358358358358358358
 q add T-835 Task A; q set T-835 branch=fix/T-835 state=done result.pr=835
@@ -256,6 +287,91 @@ loop; loop
 check "DS-835 AC2: a refused merge is backed off, recorded failed for its ticket, and has no merged entry" \
   'echo "$out" | grep -q "#835 merge refused" && [ -z "$(node "$B/merge-log.mjs" show --repo acme/widgets --pr 835 --latest)" ] && [ "$(jq -r "select(.pr == \"835\") | .event" "$HOME/.desk-autopilot/merges.jsonl" | sort -u | tr "\n" " ")" = "claim failed " ] && jq -e "select(.pr == \"835\" and .event == \"failed\") | .ticket == \"T-835\"" "$HOME/.desk-autopilot/merges.jsonl" >/dev/null'
 q drop T-835
+
+# ---- DS-850: a red main takes no merge but its repair ticket's; green or unread, it merges as before --
+# main's tip R1 has Lint's run still going; its parent R0's run of the required check `test` failed.
+R1=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1; R0=a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0; R2=a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2; R3=a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3; R4=a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4
+cat > "$T/prs.json" <<EOF
+{
+  "851": { "head": "fix/T-851", "base": "main", "sha": "$SHA1", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] },
+  "852": { "head": "fix/base-red-main-20261121090000", "base": "main", "sha": "$SHA2", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] }
+}
+EOF
+# The red spell began at 09:00 UTC, so its repair ticket is base-red-main-20261121090000.
+printf '{"branch":"main","checks":[],"since":"2026-11-21T09:00:00.000Z","at":"2026-11-21T09:00:00.000Z"}\n' > "$T/state/base-red.json"
+# The loops above read main green after their merges; this spell's driver has no green read before it,
+# so the hold names the last merges the log holds.
+rm -f "$T/state/base-green.json"
+printf '{"tip":"%s","commits":{"%s":{"parent":"%s","runs":[["test","in_progress",null]]},"%s":{"parent":null,"runs":[["test","completed","failure","https://github.com/acme/widgets/actions/runs/850"]]}}}\n' "$R1" "$R1" "$R0" "$R0" > "$T/base.json"
+: > "$T/merges.log"
+rloop(){ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-851 base-red-main-20261121090000" 2>&1); rc=$?; }
+rloop; first="$out"; rloop
+check "DS-850 AC1: on a main red on a required check's latest run, nothing merges but the repair ticket's PR, and the log names the check" \
+  '[ "$(merged)" = 852 ] && echo "$first" | grep -qF "HOLDING on red main: required check \"test\" (run https://github.com/acme/widgets/actions/runs/850) failed on its latest run there" && ! echo "$first$out" | grep -q "#851 " && [ "$(jq -r ".checks[0].name" "$T/state/base-red.json")" = test ]'
+check "DS-850 AC1: the hold names the last merges desk made" 'echo "$first" | grep -qE "the last merges desk made: #[0-9]+"'
+printf '{"tip":"%s","commits":{"%s":{"parent":null,"runs":[["test","completed","success"]]}}}\n' "$R1" "$R1" > "$T/base.json"
+rloop; rloop
+check "DS-850 AC6: once the check passes on main again, merging resumes and the record goes" \
+  '[ "$(merged)" = "852 851" ] && ! echo "$out" | grep -q "HOLDING on red" && [ ! -e "$T/state/base-red.json" ]'
+check "a green read of main's tip is kept as when the base was last green" '[ "$(jq -r .branch "$T/state/base-green.json")" = main ]'
+jq --arg s "$SHA4" '."853" = { head: "fix/T-853", base: "main", sha: $s, state: "open", draft: false, checks: [["test", "SUCCESS"]] }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+touch "$T/base.broken"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-853" 2>&1); first="$out"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-853" 2>&1)
+check "DS-969 AC1: with main unreadable (an API error), the driver merges nothing and says it holds" \
+  '[ "$(merged)" = "852 851" ] && echo "$first" | grep -qF "base unreadable on main (the tip of main could not be read) — holding merges until it can be read" && ! echo "$first$out" | grep -q "merging as before"'
+rm -f "$T/base.broken"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-853" 2>&1)
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-853" 2>&1)
+check "DS-969 AC4: once main can be read again, the held PR merges with no person step" '[ "$(merged)" = "852 851 853" ]'
+# Every read answers, but no completed run of the required check is on main's newest commits. A new
+# tip, as a merge gives: R1's completed runs are kept from the loops above.
+jq --arg s "$SHA5" '."855" = { head: "fix/T-855", base: "main", sha: $s, state: "open", draft: false, checks: [["test", "SUCCESS"]] }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+printf '{"tip":"%s","commits":{"%s":{"parent":null,"runs":[["test","in_progress",null]]}}}\n' "$R4" "$R4" > "$T/base.json"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-855" 2>&1); first="$out"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-855" 2>&1)
+check "DS-969 AC2: with every read answered but no completed run on main, the driver merges as today" \
+  '[ "$(merged)" = "852 851 853 855" ] && echo "$first" | grep -qF "base state unknown on main (no completed run of test on the newest 5 commits of main) — merging as before"'
+rm -f "$T/base.json"
+# With no PR ready (only drafts), the driver still reads the base every loop, so the record the pass reports
+# from is written when main goes red and goes once it is green.
+printf '{"854": { "head": "fix/T-854", "base": "main", "sha": "%s", "state": "open", "draft": true, "checks": [["test", "FAILURE"]] }}\n' "$SHA4" > "$T/prs.json"
+# A new tip each time main changes, as a merge gives: the driver keeps a commit's completed runs (DS-989).
+printf '{"tip":"%s","commits":{"%s":{"parent":null,"runs":[["test","completed","failure","https://github.com/acme/widgets/actions/runs/854"]]}}}\n' "$R2" "$R2" > "$T/base.json"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-854" 2>&1)
+check "DS-850 AC1: with only drafts open, a red main is still read and recorded for the pass" \
+  'echo "$out" | grep -qF "HOLDING on red main" && [ "$(jq -r ".checks[0].url" "$T/state/base-red.json")" = https://github.com/acme/widgets/actions/runs/854 ]'
+# Reads of a commit or its check runs by SHA; the tip itself is read by branch name here, as this
+# checkout's origin is not on GitHub.
+shareads(){ grep -cE "^api repos/acme/widgets/commits/[0-9a-f]{40}" "$T/gh.log"; }
+reads0=$(shareads)
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-854" 2>&1)
+check "DS-989 AC1: a loop on a tip already read, its runs all completed, reads no commit or check runs and still holds" \
+  'echo "$out" | grep -qF "HOLDING on red main" && [ "$(shareads)" = "$reads0" ]'
+# A repair merge moves the tip, which is read afresh (DS-989 AC4).
+printf '{"tip":"%s","commits":{"%s":{"parent":"%s","runs":[["test","completed","success"]]}}}\n' "$R3" "$R3" "$R2" > "$T/base.json"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-854" 2>&1)
+check "DS-850 AC6: with only drafts open, a main green again drops the record" '[ ! -e "$T/state/base-red.json" ]'
+rm -f "$T/base.json"
+
+# ---- #1281: a later red spell lets in the repair an earlier spell left open -----------------------
+# The pass admits no second repair while one is open, so on a red that began at 11:00 the earlier
+# spell's repair (base-red-main-20261121090000) is the PR that may merge, and no other one is.
+R5=a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5; SHA857=8578578578578578578578578578578578578578; SHA858=8588588588588588588588588588588588588588
+cat > "$T/prs.json" <<EOF
+{
+  "857": { "head": "fix/base-red-main-20261121090000", "base": "main", "sha": "$SHA857", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] },
+  "858": { "head": "fix/T-858", "base": "main", "sha": "$SHA858", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] }
+}
+EOF
+printf '{"branch":"main","checks":[],"since":"2026-11-21T11:00:00.000Z","at":"2026-11-21T11:00:00.000Z"}\n' > "$T/state/base-red.json"
+printf '{"tip":"%s","commits":{"%s":{"parent":null,"runs":[["test","completed","failure","https://github.com/acme/widgets/actions/runs/857"]]}}}\n' "$R5" "$R5" > "$T/base.json"
+: > "$T/merges.log"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-858 base-red-main-20261121090000" 2>&1); first="$out"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-858 base-red-main-20261121090000" 2>&1)
+check "#1281: on a later red spell, the earlier spell's open repair PR still merges, and no other PR does" \
+  '[ "$(merged)" = 857 ] && echo "$first" | grep -qF "HOLDING on red main" && ! echo "$first$out" | grep -q "#858 "'
+rm -f "$T/base.json" "$T/state/base-red.json"
 
 # ---- DS-810: the driver's lock names the release it runs from, not the installed one --------------
 # A desk home with one release, old0, holding a copy of these scripts, while installed.json names new1.

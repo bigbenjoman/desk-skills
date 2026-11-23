@@ -93,17 +93,19 @@ export async function pickPort({ env, taken, inUse, own = null, floor, repo, bat
   }
 }
 
-// Hands port lease `id` from the pass to the worker's process, labelled with its repo, batch and
-// ticket. A worker whose pid is unknown leaves it with the pass, so it lapses when the pass exits.
-// -> null, or why it was not handed over.
-export function handToWorker({ env, id, port, workerPid, label, dir }) {
+// Hands lease `id` from the pass to the worker's process, renewing it as `req` (its kind, key, units
+// and label) for WORKER_TTL under the worker's pid. A worker whose pid is unknown leaves it with the
+// pass, so it lapses when the pass exits. -> null, or why it was not handed over.
+export function handLeaseToWorker({ env, id, req, workerPid, dir }) {
   if (!id) return null;
   if (!(Number(workerPid) > 0)) return 'spawn-worker.sh printed no worker pid';
   try {
-    const r = renew(id, { ...portReq(port, WORKER_TTL, label, Number(workerPid)) }, { env, ...(dir == null ? {} : { dir }) });
+    const r = renew(id, { ...req, ttl: WORKER_TTL, pid: Number(workerPid) }, { env, ...(dir == null ? {} : { dir }) });
     return r.code === EXIT_OK ? null : r.why;
   } catch (e) { return e.message; }
 }
+// The port lease's hand-off, labelled with the worker's repo, batch and ticket.
+export const handToWorker = ({ env, id, port, workerPid, label, dir }) => handLeaseToWorker({ env, id, req: portReq(port, WORKER_TTL, label, null), workerPid, dir });
 
 // The worker pid spawn-worker.sh printed (`[spawn] ticket=… pid=<pid> …`), or null.
 export const spawnedPid = (out) => {

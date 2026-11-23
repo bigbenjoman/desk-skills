@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: batch end to end (triage records to done, offline, scripted workers)
+# layer: L3
 # One autopilot batch driven through the real queue.mjs admit, pass.mjs, setup-worktree.sh,
 # spawn-worker.sh (preflight included), harvest.mjs and answer.mjs. Only `claude` and `gh` are
 # replaced, by scripts on PATH: the fake claude answers the preflight checks and
@@ -50,6 +51,7 @@ check "DS-158 AC3 a preflight that gives no result says its cost is unknown, not
 check "both tickets reach done with the PRs their workers printed" '[ "$(state T-1)" = done ] && [ "$(field T-1 result.pr)" = 101 ] && [ "$(state T-2)" = done ] && [ "$(field T-2 result.pr)" = 102 ]'
 check "the stage a worker printed is recorded"                  '[ "$(field T-1 stage)" = "\"4/9\"" ]'
 check "DS-554 AC1 the worker's exit code is recorded for its session once it exits" 'grep -qE "^\{\"session\":\"[0-9a-f-]{36}\",\"code\":0,\"at\":\"[0-9T:-]+Z\"\}$" "$T/state/workers/T-1.exit.json"'
+check "DS-695 AC1 the same record is renamed into the repo's exits folder, with no temp file left" '[ "$(cat "$T/state/exits"/T-1.[0-9]*.json)" = "$(cat "$T/state/workers/T-1.exit.json")" ] && ! ls -A "$T/state/exits" | grep -q "^\."'
 check "the held ticket spawns once its blocker has finished"    '[ $rc -eq 0 ] && [ "$(state T-3)" = running ] && live T-3'
 
 finish T-3
