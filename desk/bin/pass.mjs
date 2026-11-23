@@ -1837,7 +1837,8 @@ if (BASE_RED) {
   else if (DRY) baseRedRepair = { key, state: 'to be admitted (dry run)' };
   else {
     const reran = baseReran();
-    const first = baseRerun(BASE_RED, { reran, view: (id) => ghRun(id, 'jobs'), status: (id) => ghRun(id, 'status,conclusion'), perm: E.permission('ci-rerun') });
+    const first = baseRerun(BASE_RED, { reran, view: (id) => ghRun(id, 'jobs'), status: (id) => ghRun(id, 'status,conclusion'), perm: E.permission('ci-rerun'),
+      notes: (jobId) => jobAnnotations(GH_REPO, jobId), flaky: parseFlaky(E.configValues('flaky-checks')).flaky.map((x) => x.name) });
     const refused = [];
     if (first.rerun) {
       for (const id of first.rerun) { const r = shOut('gh', ['run', 'rerun', id, '--repo', GH_REPO, '--failed']); if (!r.ok) refused.push(`run ${id}: ${r.out.split('\n').pop()}`); }
@@ -1850,7 +1851,26 @@ if (BASE_RED) {
   }
 }
 // The repair admitted, as before any rerun; `note` says why no rerun held it, where one was weighed.
+// While an earlier spell's repair of this base is still open (being worked, parked included, or done with
+// its PR still open), no second one
+// is admitted: this red is noted on that one instead (`red_again` on its row, and a line in its ticket
+// file, which its worker reads), once per spell.
 function admitBaseRepair(key, was, closed, qB, note) {
+  // Open: still being worked (parked included), or done with its PR neither merged nor closed.
+  const open = Object.values(qB.tickets).find((x) => x.key !== key && E.isBaseRedKey(x.key, BASE_RED.branch)
+    && (x.state !== 'done' || (x.result?.pr && !x.merged_at && !prClosed(x))));
+  if (open) {
+    const checks = BASE_RED.checks.map((c) => c.name).join(', ');
+    if (open.red_again?.key !== key) {
+      const red = { key, at: BASE_RED.since, sha: BASE_RED.sha, checks: BASE_RED.checks.map((c) => ({ name: c.name, url: c.url ?? null })) };
+      q('set', open.key, `red_again=${JSON.stringify(red)}`);
+      try {
+        appendFileSync(join(STATE, 'tickets', `${open.key}.md`), `\n${BASE_RED.branch} went red again since this ticket was made: ${BASE_RED.checks.map((c) => `${c.name}${c.url ? ` (run ${c.url})` : ''}`).join(', ')} at ${String(BASE_RED.sha).slice(0, 12)}, since ${BASE_RED.since}. Fix it with this repair; no second repair ticket is made while this one is open.\n`);
+      } catch {}
+    }
+    baseRedRepair = { key: open.key, state: `${open.state}, the repair of an earlier red, so no second repair is admitted: this red (${checks}) is noted on it` };
+    return;
+  }
   // Dropped first, so one that refuses leaves its round's files as they were.
   const dropped = closed && !isArchived(qB, key) ? qTry(['drop', key]) : { ok: true };
   if (!dropped.ok) baseRedRepair = { key, state: `done with its PR #${was.result.pr} closed unmerged, and could not be dropped to start again (${dropped.out.split('\n').pop()}): drop or requeue it, which needs-you offers`, needs: true };

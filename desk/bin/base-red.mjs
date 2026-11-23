@@ -166,14 +166,32 @@ export const SETUP_STEP = /\b(?:install(?:s|ing)?|set ?up|setup-[\w-]+|checkout|
 // jobs, so an install that failed one job explains the check downstream of it that found nothing to test.
 export const setupFailed = (view) => (Array.isArray(view?.jobs) ? view.jobs : [])
   .flatMap((j) => (Array.isArray(j?.steps) ? j.steps : []).filter((x) => stepFailed(x) && SETUP_STEP.test(String(x?.name ?? ''))).map((x) => x.name));
+// The jobs of a run that ended by timeout rather than by a failing assertion: a job or step whose
+// conclusion is timed_out, or a failed job whose annotations say a step or the job ran out of time
+// (`The action '…' has timed out after 12 minutes`, `… has exceeded the maximum execution time of …`).
+// notes(jobId): the job's annotations ([{ message }]), null or undefined unread.
+export const TIMEOUT_LINE = /\bhas timed out after \d+ minutes?\b|\bexceeded the maximum execution time\b/i;
+const ENDED = new Set(['failure', 'timed_out', 'cancelled']);
+export function timedOut(view, notes = () => null) {
+  return (Array.isArray(view?.jobs) ? view.jobs : []).filter((j) => {
+    const c = String(j?.conclusion ?? '').toLowerCase();
+    if (c === 'timed_out' || (Array.isArray(j?.steps) && j.steps.some((x) => String(x?.conclusion ?? '').toLowerCase() === 'timed_out'))) return true;
+    if (!ENDED.has(c)) return false;
+    const lines = notes(j?.databaseId);
+    return Array.isArray(lines) && lines.some((x) => TIMEOUT_LINE.test(String(x?.message ?? '')));
+  }).map((j) => j.name);
+}
 // The runs a red base's checks failed in, re-run once before its repair is admitted where the runner
-// failed them and not the code, as a PR's red check classed runner or resource is (fix-tries.mjs).
+// failed them and not the code, as a PR's red check classed runner or resource is (fix-tries.mjs): a
+// setup step failed in it, a job of it timed out, or every red check is a §4 Known flaky check (flaky:
+// their names).
 // reran: the run ids already re-run for a red base (a rerun keeps its run's id, and a rerun still going
 // can read the base green and start a new spell, so the ids and not the spell say a rerun was had).
-// view(id): the run's jobs, null unread; status(id): { status, conclusion }, null unread; perm: §3 ci-rerun.
+// view(id): the run's jobs, null unread; notes(jobId): a job's annotations; status(id): { status,
+// conclusion }, null unread; perm: §3 ci-rerun.
 // -> { rerun: [id], why } (re-run these, admit nothing), { wait: why } (a rerun is still going, or passed
 //    and the driver has yet to read it), or { admit: true, why? } (admit the repair as before).
-export function baseRerun(r, { reran = [], view, status, perm }) {
+export function baseRerun(r, { reran = [], view, status, perm, notes = () => null, flaky = [] }) {
   // A check's run is named by its details URL (`…/actions/runs/<id>/job/<job>`).
   const ids = (r?.checks ?? []).map((c) => runIdFrom(c.url));
   if (!ids.length || ids.some((x) => !x)) return { admit: true };
@@ -192,11 +210,18 @@ export function baseRerun(r, { reran = [], view, status, perm }) {
     if (again.length) return { admit: true, why: `re-run once already, run${plural(again)} ${again.join(', ')} failed again` };
     if (!fresh.length) return { wait: `its re-run of run${plural(had)} ${had.join(', ')} passed, so no repair is admitted while the merge driver reads ${r.branch} again` };
   }
-  const steps = fresh.map((x) => ({ id: x, steps: setupFailed(view(x)) }));
-  if (!steps.every((x) => x.steps.length)) return { admit: true };
-  const named = [...new Set(steps.flatMap((x) => x.steps))].map((n) => `"${n}"`).join(', ');
-  if (perm !== 'yes') return { admit: true, why: `it failed at a setup step (${named}), but config §3 ci-rerun is "${perm ?? 'no'}", so it is not re-run first` };
-  return { rerun: fresh, why: `its failed run${plural(fresh)} ${fresh.join(', ')} failed at a setup step (${named}), the runner's and not the code's, so ${fresh.length === 1 ? 'it is' : 'they are'} re-run once before any repair is admitted` };
+  // Why each run reads as the runner's, not the code's: a setup step, a timeout, or only known flaky checks.
+  const allFlaky = (r.checks ?? []).length > 0 && r.checks.every((c) => flaky.includes(c.name));
+  const why = fresh.map((x) => {
+    if (allFlaky) return 'a §4 Known flaky check';
+    const v = view(x);
+    const setup = setupFailed(v), out = timedOut(v, notes);
+    return [...(setup.length ? [`a setup step (${[...new Set(setup)].map((n) => `"${n}"`).join(', ')})`] : []), ...(out.length ? [`a timeout (${[...new Set(out)].map((n) => `"${n}"`).join(', ')})`] : [])].join(' and ');
+  });
+  if (!why.every(Boolean)) return { admit: true };
+  const named = [...new Set(why)].join('; ');
+  if (perm !== 'yes') return { admit: true, why: `it failed at ${named}, but config §3 ci-rerun is "${perm ?? 'no'}", so it is not re-run first` };
+  return { rerun: fresh, why: `its failed run${plural(fresh)} ${fresh.join(', ')} failed at ${named}, the runner's and not the code's, so ${fresh.length === 1 ? 'it is' : 'they are'} re-run once before any repair is admitted` };
 }
 
 // The record to keep for state `s` read now, carrying `since` from the one before while it is red.
