@@ -702,17 +702,27 @@ export function buildMap(files, read) {
     const u = users(mod, ids, undefined, true);
     if (u.full) return u;
     const got = new Set([...u.suites, ...whole]);
-    // A shell script's embedded node code (a heredoc, a `node -e`) importing the module: loads() reads a
-    // script's shell lines only, so its lines importing the module are read here. Where they import a
-    // reached name, or take it other than by name (whole, or so no name can be followed), the suites
-    // claiming the script run: the embedded code runs only inside it.
+    // A shell script's embedded node code (a heredoc, a `node -e`) taking the module: loads() reads a
+    // script's shell lines only, so its lines naming the module in an import, or as a quoted file name (an
+    // import helper's `load('x.mjs')`), are read here. Where one takes a reached name, or takes the module
+    // other than by name (whole, or so no name can be followed), the suites claiming the script run: the
+    // embedded code runs only inside it.
     const file = mod.slice(mod.lastIndexOf('/') + 1);
+    const quotedFile = new RegExp(`['"\`]${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"\`]`);
+    // `const { a, b: c } = await <helper>('<file>')`: the names an import helper's result is read by.
+    const helperNames = (l) => {
+      const m = l.match(/\b(?:const|let|var)\s*\{([^{}]*)\}\s*=\s*(?:await\s+)?[A-Za-z_$][\w$.]*\(\s*(['"`])[^'"`]*\2\s*\)/);
+      return new Set(m ? m[1].split(',').map((x) => x.trim().split(/\s*:\s*|\s+as\s+/)[0]).filter(Boolean) : []);
+    };
     if (r.exported.length) for (const f of shells) {
       if (f === mod || isSuite(f)) continue;
-      const code = uncommented(f, textOf(f)).split('\n').filter((l) => /\bimport\b/.test(l) && l.includes(file)).join('\n');
-      if (!code) continue;
-      const took = importedNames(code, mod);
-      if (!took.size || untraced(f, code, mod, r.exported) || r.exported.some((n) => took.has(n))) for (const s of claims.get(f) ?? []) got.add(s);
+      const lines = uncommented(f, textOf(f)).split('\n').filter((l) => (/\bimport\b/.test(l) && l.includes(file)) || quotedFile.test(l));
+      const takes = (l) => {
+        const imported = importedNames(l, mod);
+        const took = imported.size ? imported : helperNames(l);
+        return !took.size || untraced(f, l, mod, r.exported) || r.exported.some((n) => took.has(n));
+      };
+      if (lines.some(takes)) for (const s of claims.get(f) ?? []) got.add(s);
     }
     if (r.main) for (const f of nodes) {
       if (f === mod || !isCode(f) || !isMod(loads(f, unimported(textOf(f))), mod)) continue;

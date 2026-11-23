@@ -596,7 +596,12 @@ t('DS-1002 a shell script\'s embedded code importing a reached name, or taking t
   fmtOn(triWith("const load = (f) => import(join(process.argv[2], f));\nconst { keys } = await import(join(process.argv[2], 'desk-q.mjs'));\nconsole.log(keys(1));")),
   fmtOn(triWhole),
   fmtOn(triWith("import(process.argv[2] + '/desk-q.mjs').then((m) => console.log(m.rows(1)));")),
-], ['some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs', 'some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh']);
+  // Through an import helper: the names its result is destructured into count, as an import's do.
+  fmtOn(triWith("const load = (f) => import(join(process.argv[2], f));\nconst { rows } = await load('desk-q.mjs');\nconsole.log(rows(1));")),
+  fmtOn(triWith("const load = (f) => import(join(process.argv[2], f));\nconst { keys } = await load('desk-q.mjs');\nconsole.log(keys(1));")),
+  fmtOn(triWith("const load = (f) => import(join(process.argv[2], f));\nconst Q = await load('desk-q.mjs');\nconsole.log(Q.rows(1));")),
+], ['some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs', 'some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh',
+  'some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh', 'some: test_lint.sh test_needs.mjs test_q.mjs', 'some: test_lint.sh test_needs.mjs test_q.mjs test_tri.sh']);
 t('DS-1002 a foundational desk/bin/ module (untracked.mjs) is not narrowed by name', decide([{ status: 'M', path: 'desk/bin/untracked.mjs', names: { names: ['deskUntracked'] } }], real, { byName: true }).scope, 'full');
 // On this repo: an edit to desk-q.mjs's checkFlags, which its command line and the screen run. Its
 // command line reaches most of the module, and bin/desk-q, which launches it, is claimed through
@@ -614,6 +619,12 @@ const limitEdit = limitSrc.replace('export function usageLimit(text) {\n  const 
 const limitScope = (opts) => decide([{ status: 'M', path: 'desk/bin/usage-limit.mjs', names: changedNames(limitSrc, limitEdit) }], real, opts);
 t('DS-1002 on the real usage-limit.mjs: an edit to usageLimit, which triage.sh imports in embedded code, runs test_triage.sh',
   [limitEdit !== limitSrc, limitScope({}).suites.includes('test_triage.sh'), limitScope({ byName: true }).suites.includes('test_triage.sh'), limitScope({ byName: true }).narrowed], [true, true, true, ['desk/bin/usage-limit.mjs: usageLimit']]);
+// And decisions.mjs's ticketCalls, which triage.sh takes through its `load('decisions.mjs')` helper.
+const callsSrc = readFileSync(join(R, 'desk/bin/decisions.mjs'), 'utf8');
+const callsEdit = callsSrc.replace('const over = new Map(overrides.filter(', 'const over = new Map([].concat(overrides).filter(');
+const callsScope = decide([{ status: 'M', path: 'desk/bin/decisions.mjs', names: changedNames(callsSrc, callsEdit) }], real, { byName: true });
+t('DS-1002 on the real decisions.mjs: an edit to ticketCalls, which triage.sh takes through an import helper, runs test_triage.sh',
+  [callsEdit !== callsSrc, callsScope.suites.includes('test_triage.sh'), callsScope.narrowed], [true, true, ['desk/bin/decisions.mjs: ticketCalls']]);
 // DS-1003 AC1: a frozen literal constant no load-time code reaches narrows to the suites naming it.
 const frozenEnv = cliEnv.replace('export function alone() {', "export const KINDS = Object.freeze(['a', 'b']);\nexport function alone() {");
 const frozenNamed = { ...named, 'desk/bin/desk-env.mjs': frozenEnv, 'tests/test_kinds.mjs': "// suite: kinds\nimport { KINDS } from '../desk/bin/desk-env.mjs';" };
