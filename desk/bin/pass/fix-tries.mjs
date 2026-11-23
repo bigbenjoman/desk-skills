@@ -45,6 +45,7 @@ import { baseHeldAt, fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, r
 import { reviewerGated, set, say } from './shared.mjs';
 import { OUTAGE_MS, outageWait } from './deadlines.mjs';
 import { externalReview } from '../review-threads.mjs';
+import { FAILED } from '../gate.mjs';
 
 const out = (line) => ({ type: 'out', line });
 const waiting = (key, line) => say(key, 'waiting', line);
@@ -84,9 +85,8 @@ export function* decideFixTries(s) {
 // (fix-tries.mjs staleChecks), are red because its base was, not because a platform fails: the outage
 // reads the PR without them, so they neither start, join nor re-run a hold, and its fix tries update
 // its branch from the base (staleBase).
-const FAILED_RUN = new Set(['FAILURE', 'TIMED_OUT', 'STARTUP_FAILURE', 'ERROR']);
 const baseOut = (staleOf) => (e) => {
-  const red = [...new Set((e.s?.checks ?? []).filter((c) => FAILED_RUN.has(String(c.conclusion ?? c.state ?? '').toUpperCase())).map((c) => c.name))];
+  const red = [...new Set((e.s?.checks ?? []).filter((c) => FAILED.has(String(c.conclusion ?? '').toLowerCase())).map((c) => c.name))];
   const off = new Set([...baseHeldAt(e.t, e.s?.head), ...(red.length && staleOf ? staleOf(e.t, e.s, red) : [])]);
   return off.size ? { ...e, s: { ...e.s, checks: (e.s.checks ?? []).filter((c) => !off.has(c.name)) } } : e;
 };
