@@ -2,13 +2,15 @@
 // merges and memory from one store, so none silently shares one. `desk-env lease …` runs this CLI.
 //
 //   <dir>/leases.json         { leases: [{ id, kind, key, pool, units, owner: { pid, start } | null,
-//                               label, ttl, acquired, renewed?, expires }] }, rewritten whole under
-//                               <dir>/leases.json.lock
+//                               label, ttl, acquired, renewed?, expires }], wants?: [the queue, below] },
+//                               rewritten whole under <dir>/leases.json.lock
 //   <dir>/leases.log.jsonl    one line per change: grant, would-refuse, refuse, gave-up, renew,
 //                               re-create, release, force-release, lapse, reset, trial (a restart of
 //                               the shadow kinds' trial, trialOf), and queued: a lock run that starts
 //                               to wait. A lock run's queued, grant, refuse and gave-up lines carry its
-//                               wait (waitFields), whatever the slot kind's mode
+//                               wait (waitFields), whatever the slot kind's mode. With a kind on, a
+//                               queued run's place: rejoin (a run taking back the place it gave up)
+//                               and drop (a place whose owner exited, or whose rejoin time passed)
 //
 // <dir> is DESK_LEASE_DIR, else ~/.desk-autopilot/machine. A lease's owner is a pid and that process's
 // start time, read inside the store lock, so a lease whose owner has exited, or whose pid now belongs
@@ -201,6 +203,8 @@ export function readStore(file = storeFile()) {
   const ok = (l) => l && typeof l.id === 'string' && typeof l.pool === 'string' && Number.isInteger(l.units)
     && (l.owner === null || Number.isInteger(l.owner?.pid));
   if (!s || !Array.isArray(s.leases) || !s.leases.every(ok)) throw new LeaseStoreError(`the lease store ${file} is unreadable: it is not { leases: [...] } with an id, pool, units and owner on each`);
+  const want = (w) => w && typeof w.pool === 'string' && Number.isInteger(w.units) && Number.isInteger(w.owner?.pid) && Number.isFinite(Date.parse(w.arrived));
+  if (s.wants !== undefined && !(Array.isArray(s.wants) && s.wants.every(want))) throw new LeaseStoreError(`the lease store ${file} is unreadable: its wants are not a list with a pool, units, owner and arrival on each`);
   return s;
 }
 
@@ -325,33 +329,88 @@ function sweep(store, log, starts, t, lapsed = null) {
     return !gone;
   });
 }
-const ownerStarts = (store, env, more = []) => startTimes([...store.leases.flatMap((l) => (l.owner ? [l.owner.pid] : [])), ...more], env.psRows);
+const ownerStarts = (store, env, more = []) => startTimes([...store.leases.flatMap((l) => (l.owner ? [l.owner.pid] : [])),
+  ...(store.wants ?? []).flatMap((w) => (w.left == null ? [w.owner.pid] : [])), ...more], env.psRows);
+
+// ---- the queue: who waits for a pool, oldest first --------------------------------------------
+// A request that names its `queue` ({ worktree, cmd, express }: a lock run, slot-lease.mjs) with its
+// kind on holds a want while it waits: { want, pool, key, units, owner, label, worktree, cmd, arrived,
+// express?, left? }. A pool's free units go to its live wants in the order they arrived, so a request
+// is granted only where the units the older live wants ask for leave room for it. A run that gives up
+// at its deadline is marked `left` and keeps its place for REJOIN_S seconds, served to nobody, for the
+// next request from the same worktree with the same command to take back; a want whose owner exits
+// without giving up is dropped.
+const REJOIN_S = 120;
+const byArrival = (a, b) => Date.parse(a.arrived) - Date.parse(b.arrived);
+const wantBrief = (w) => ({ want: w.want, kind: w.kind, key: w.key, pool: w.pool, owner: w.owner, label: w.label, worktree: w.worktree, arrived: w.arrived });
+// Drops each want whose owner has exited without giving up, and each given-up place past REJOIN_S.
+function sweepWants(store, log, starts, t) {
+  if (!store.wants) return;
+  store.wants = store.wants.filter((w) => {
+    const why = w.left != null ? (t - Date.parse(w.left) > REJOIN_S * 1000 ? `gave up at ${w.left}, and nobody took the place back in ${REJOIN_S}s` : null)
+      : starts.get(w.owner.pid) !== w.owner.start ? 'owner exited' : null;
+    if (why) log({ event: 'drop', ...wantBrief(w), why });
+    return !why;
+  });
+  if (!store.wants.length) delete store.wants;
+}
+// The want of a request owned by `owner`: its own live one, else a given-up place from the same
+// worktree and command, taken back with its arrival, else a new one at the back.
+function joinQueue(store, log, req, p, owner, t) {
+  const q = req.queue;
+  const wants = (store.wants ??= []);
+  const mine = wants.find((w) => w.pool === p.pool && w.left == null && w.owner.pid === owner.pid && w.owner.start === owner.start);
+  if (mine) return mine;
+  const back = wants.filter((w) => w.pool === p.pool && w.left != null && w.worktree === q.worktree && w.cmd === q.cmd).sort(byArrival)[0];
+  if (back) {
+    log({ event: 'rejoin', ...wantBrief(back), was: back.owner, left: back.left, owner });
+    delete back.left;
+    return Object.assign(back, { owner, units: req.units, label: req.label, express: !!q.express });
+  }
+  const w = { want: `W-${randomBytes(5).toString('hex')}`, kind: req.kind, pool: p.pool, key: p.key, units: req.units, owner, label: req.label,
+    worktree: q.worktree, cmd: q.cmd, arrived: new Date(t).toISOString(), express: !!q.express };
+  wants.push(w);
+  return w;
+}
+const leaveQueue = (store, w) => {
+  store.wants = store.wants.filter((x) => x !== w);
+  if (!store.wants.length) delete store.wants;
+};
 
 const holderText = (l) => `${l.label} (${l.owner ? `pid ${l.owner.pid}` : 'no owner'}, lease ${l.id}${l.units > 1 ? `, ${l.units} units` : ''})`;
-// Why an acquire of `units` from pool `p` is refused, with `holders` holding `held` units of it.
+// Why an acquire of `units` from pool `p` is refused, with `holders` holding `held` units of it: the
+// pool is full, or the room it has goes to runs that waited longer (the queue).
 export function refusal(p, units, holders, held) {
   const who = holders.map(holderText).join('; ');
+  if (held + units <= p.capacity) return `${held} of ${p.capacity} ${p.many} are held, and runs that started to wait earlier are served first`;
   if (p.capacity === 1) return `${p.one} is held by ${who}`;
   if (held >= p.capacity) return `all ${p.capacity} ${p.many} are held: ${who}`;
   return `${held} of ${p.capacity} ${p.many} are held, and this asks for ${units}: ${who}`;
 }
+
+// The leases pool `p` holds, and the units they hold.
+const heldIn = (store, p) => {
+  const holders = store.leases.filter((l) => l.pool === p.pool);
+  return { holders, held: holders.reduce((n, l) => n + l.units, 0) };
+};
 
 const newLease = (req, p, owner, t, id = `L-${randomBytes(5).toString('hex')}`) => ({ id, kind: req.kind, key: p.key, pool: p.pool, units: req.units,
   owner, label: req.label, ttl: req.ttl, acquired: new Date(t).toISOString(), expires: new Date(t + req.ttl * 1000).toISOString() });
 
 // Places a lease in pool `p` under the store lock, as a grant (`event` 'grant') or a renew's
 // re-create. Over capacity it is refused, or in shadow granted with a would-refuse logged naming
-// every holder. `note(event)`, where given, returns fields added to the grant, refuse or gave-up line
-// (a lock run's wait, waitFields). -> { lease, shadow? } or { refused }.
-function place(store, log, req, p, owner, t, { mode, final, waited, id, event = 'grant', note = null }) {
-  const holders = store.leases.filter((l) => l.pool === p.pool);
-  const held = holders.reduce((n, l) => n + l.units, 0);
-  const fits = held + req.units <= p.capacity;
+// every holder. `ahead` is the units older waiters ask for first (the queue), and `at` the fields a
+// refuse or gave-up line adds for the run's place in it. `note(event)`, where given, returns fields
+// added to the grant, refuse or gave-up line (a lock run's wait, waitFields). -> { lease, shadow? } or
+// { refused }.
+function place(store, log, req, p, owner, t, { mode, final, waited, id, event = 'grant', note = null, ahead = 0, at = null }) {
+  const { holders, held } = heldIn(store, p);
+  const fits = held + ahead + req.units <= p.capacity;
   const why = fits ? null : refusal(p, req.units, holders, held);
   if (!fits && mode !== 'shadow') {
     if (final) {
       const e = waited ? 'gave-up' : 'refuse';
-      log({ event: e, kind: req.kind, key: p.key, units: req.units, owner, label: req.label, why, ...(waited ? { wait_s: waited } : {}), ...note?.(e) });
+      log({ event: e, kind: req.kind, key: p.key, units: req.units, owner, label: req.label, why, ...(waited ? { wait_s: waited } : {}), ...at, ...note?.(e) });
     }
     return { refused: why };
   }
@@ -377,12 +436,22 @@ const sameHolder = (store, req, p) => (req.pid == null && req.label && req.label
 
 // One try at a lease. req: { kind, key, units, ttl, label, pid (null: no owner), final, waited };
 // a refused try is logged only when `final` (a refuse with no wait, else gave-up). An ownerless
-// request whose label a live ownerless lease of the pool holds renews that lease instead. `env` is
-// desk-env's exports; `note` is place()'s. -> { lease, shadow? } or { refused: why }.
-export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now, mode = kindMode(req.kind, env).mode, note = null }) {
-  const p = poolOf(req.kind, req.key, caps);
-  if (req.units > p.capacity) throw usage(`this asks for ${req.units} of ${p.many}, more than the ${p.capacity} there are`);
+// request whose label a live ownerless lease of the pool holds renews that lease instead. With the kind
+// on, a request with an owner that names its `queue` waits its turn in it (joinQueue); `lane()`, where
+// given and the request's queue is `express`, is tried when the pool refuses it and it is the oldest
+// live express waiter (the light lock's express lane, true once taken). `caps` is capacities(), or a
+// function read under the store lock. `env` is desk-env's exports; `note` is place()'s. -> { lease,
+// shadow? }, { lane: true }, or { refused: why, at? }, `at` its place in the queue: { position,
+// waiting, held, capacity }.
+export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now, mode = kindMode(req.kind, env).mode, note = null, lane = null }) {
+  const sized = () => {
+    const p = poolOf(req.kind, req.key, typeof caps === 'function' ? caps() : caps);
+    if (req.units > p.capacity) throw usage(`this asks for ${req.units} of ${p.many}, more than the ${p.capacity} there are`);
+    return p;
+  };
+  if (typeof caps !== 'function') sized();
   return withStore(dir, (store, log) => {
+    const p = sized();
     const t = now();
     const starts = ownerStarts(store, env, req.pid == null ? [] : [req.pid]);
     sweep(store, log, starts, t);
@@ -392,16 +461,34 @@ export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env),
       log({ event: 'renew', ...brief(l), ttl: l.ttl, expires: l.expires });
       return { lease: l, renewed: true };
     }
-    return place(store, log, req, p, ownerOf(req, starts), t, { mode, final: req.final, waited: req.waited, note });
+    const owner = ownerOf(req, starts);
+    if (!(req.queue && owner && mode === 'on')) return place(store, log, req, p, owner, t, { mode, final: req.final, waited: req.waited, note });
+    sweepWants(store, log, starts, t);
+    const w = joinQueue(store, log, req, p, owner, t);
+    const live = store.wants.filter((x) => x.pool === p.pool && x.left == null).sort(byArrival);
+    const i = live.indexOf(w);
+    const ahead = live.slice(0, i).reduce((n, x) => n + x.units, 0);
+    const { held } = heldIn(store, p);
+    const at = { position: i + 1, waiting: live.length, held, capacity: p.capacity };
+    if (held + ahead + req.units > p.capacity && lane && w.express && live.find((x) => x.express) === w && lane()) {
+      leaveQueue(store, w);
+      return { lane: true };
+    }
+    const r = place(store, log, req, p, owner, t, { mode, final: req.final, waited: req.waited, note, ahead, at: { position: at.position, waiting: at.waiting } });
+    if (r.lease) leaveQueue(store, w);
+    else if (req.final) w.left = new Date(t).toISOString();
+    return r.lease ? r : { ...r, at };
   });
 }
 
 // Takes a lease, waiting up to `wait` seconds for it (Infinity: until it is granted), trying every
-// `poll` ms and calling `onWait(why)` at the first refusal it waits past. With the kind off, takes nothing.
-// `caps` is capacities(), or a function giving them afresh for each try (a pool headroom admission
-// grows while the run waits). `note` is place()'s. -> { code, lease?, why? }, `why` beside a lease
-// saying what shadow let through.
-export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now, poll = POLL_MS, onWait = null, note = null }) {
+// `poll` ms and calling `onWait(why, at)` at the first refusal it waits past (`at` its place in the
+// queue, tryAcquire's), and `beforeTry(at)` before each try after that, `at` the last refusal's place
+// (null where it had none). With the kind off, takes nothing.
+// `caps` is capacities(), or a function giving them afresh for each try, read under the store lock (a
+// pool headroom admission grows while the run waits). `note` and `lane` are tryAcquire's. -> { code,
+// lease?, lane?, why?, at? }, `why` beside a lease saying what shadow let through, `at` beside a give-up.
+export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now, poll = POLL_MS, onWait = null, note = null, beforeTry = null, lane = null }) {
   const capsNow = typeof caps === 'function' ? caps : () => caps;
   const { mode } = kindMode(req.kind, env);
   if (mode === 'off') {
@@ -410,14 +497,18 @@ export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), no
   }
   const wait = req.wait ?? 0;
   const until = now() + wait * 1000;
-  let waiting = false;
+  let waiting = false, lastAt = null;
   for (;;) {
     const final = now() >= until;
-    const r = tryAcquire({ ...req, final, waited: wait }, { env, dir, caps: capsNow(), now, mode, note });
+    if (waiting) beforeTry?.(lastAt);
+    const r = tryAcquire({ ...req, final, waited: wait }, { env, dir, caps: capsNow, now, mode, note, lane });
+    if (r.lane) return { code: EXIT_OK, lane: true };
     // A renewed unit says so (`renewed …` on stderr), so a caller whose push fails keeps a build's unit.
     if (r.lease) return { code: EXIT_OK, lease: r.lease, ...(r.shadow ? { why: `shadow: granted, but on would refuse: ${r.shadow}` } : r.renewed ? { why: `renewed ${r.lease.kind} ${r.lease.key} (lease ${r.lease.id}), which the label ${r.lease.label} already held` } : {}) };
-    if (final) return wait ? { code: EXIT_GAVE_UP, why: `gave up after ${wait}s waiting: ${r.refused}` } : { code: EXIT_REFUSED, why: `refused: ${r.refused}` };
-    if (!waiting) { waiting = true; onWait?.(r.refused); }
+    const at = r.at ? { at: r.at } : {};
+    if (final) return wait ? { code: EXIT_GAVE_UP, why: `gave up after ${wait}s waiting: ${r.refused}`, ...at } : { code: EXIT_REFUSED, why: `refused: ${r.refused}`, ...at };
+    lastAt = r.at ?? null;
+    if (!waiting) { waiting = true; onWait?.(r.refused, lastAt); }
     sleepSync(Math.max(1, Math.min(poll, until - now())));
   }
 }

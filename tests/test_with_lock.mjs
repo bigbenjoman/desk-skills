@@ -76,14 +76,15 @@ const wl = (env, args, opts = {}) => spawnSync('bash', [script, ...args], { env,
 const held = [];
 // `cmd` turns the mark file into the command, which must create it and then wait for `<mark>.go`.
 const holdSh = (mark) => ['sh', '-c', `: > '${mark}'; while [ ! -e '${mark}.go' ]; do sleep 0.05; done`];
-const hold = async (env, args, opts = {}, cmd = holdSh) => {
+// `ms` is how long to wait for the command to start: 0 returns at once, for a run that will wait.
+const hold = async (env, args, opts = {}, cmd = holdSh, { ms = 10_000 } = {}) => {
   const mark = join(S, `held-${n++}`);
   const c = spawn('bash', [script, ...args, '--', ...cmd(mark)], { env, stdio: ['ignore', 'ignore', 'pipe'], ...opts });
   let err = ''; c.stderr.on('data', (d) => { err += d; });
   // 'exit', not 'close': a wrapper SIGKILLed leaves its stderr open in the command it ran.
   const h = { c, mark, err: () => err, release: () => writeFileSync(`${mark}.go`, ''), done: new Promise((r) => c.on('exit', (code) => r(code))) };
   held.push(h);
-  for (let i = 0; i < 200 && !existsSync(mark); i++) await sleep(50);
+  for (let i = 0; i < ms / 50 && !existsSync(mark); i++) await sleep(50);
   return h;
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -355,6 +356,29 @@ try {
         t('DS-975 AC6 off, mkdir path: the command starts before the grant line is read', startedAt(stamp) < Date.parse(g?.at), true);
       }
     } else console.log('skip DS-975 AC6 with a failing sysctl: this is not macOS (test_leases.mjs covers a failing /proc read)');
+  }
+  // With the slot kind on, runs waiting for a pool are served oldest first, told their place
+  // as they wait, and told it again as they give up.
+  {
+    const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: machine({ 'lease-kinds': 'slot=on', 'test-lock-slots': '1' }) });
+    const h = await hold(env, ['light']);
+    const a = await hold(env, ['light'], {}, holdSh, { ms: 0 });
+    await until(() => a.err().includes('waiting'));
+    const b = await hold(env, ['light'], {}, holdSh, { ms: 0 });
+    await until(() => b.err().includes('waiting'));
+    t('DS-981 AC2 each waiting run says its place in the queue and how many hold the pool',
+      [/waiting for the light slot, position 1 of 1 in its queue, 1 of 1 slot held: /.test(a.err()), /position 2 of 2 in its queue, 1 of 1 slot held/.test(b.err())], [true, true]);
+    h.release(); await h.done;
+    await until(() => existsSync(a.mark) || existsSync(b.mark));
+    await sleep(2500);
+    t('DS-981 AC1 the slot freed goes to the run that waited first, and the later one waits on', [existsSync(a.mark), existsSync(b.mark)], [true, false]);
+    a.release(); await a.done;
+    await until(() => existsSync(b.mark));
+    t('DS-981 AC1 then the next', existsSync(b.mark), true);
+    const r = wl(env, ['light', '--timeout', '2', '--', 'true']);
+    t('DS-981 AC6 a run giving up at its deadline exits 75 naming its place then',
+      [r.status, /gave up waiting for the light slot after 2s at position 1 of 1 in its queue, 1 of 1 slot held: /.test(r.stderr)], [75, true]);
+    b.release(); await b.done;
   }
   // DS-977: headroom admission in shadow judges a run that waits, and changes nothing it is granted.
   {
