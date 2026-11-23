@@ -157,6 +157,34 @@ function againstBase(t, head, mine, notMine, ctx) {
   return { held: { call: 'held', class: 'base red', base_red: b.record,
     why: `base red: ${where}, so no fix try is spent on it; it goes to a fix try once that job passes on ${b.branch}` } };
 }
+// The checks a ticket's base red hold names at this head, held or cleared (failure-class.mjs baseSplit).
+export const baseHeldAt = (t, head) => {
+  const at = head && t?.base_red?.head === head ? t.base_red : null;
+  return new Set([...(at?.checks ?? []), ...(at?.cleared ?? [])]);
+};
+// Of the named red checks, those red on the base where the PR branched that have passed on the base
+// since: held at this head and passed on the base's latest run, or red at the merge base and passed
+// since. read: failure-class.mjs baseSplit's reads.
+export function staleChecks(t, head, names, read) {
+  const held = baseHeldAt(t, head);
+  return names.filter((n) => (held.has(n) ? read.latestOnBase(n, { held: true }) === 'pass'
+    : read.atMergeBase(n) === 'fail' && read.latestOnBase(n) === 'pass'));
+}
+// A PR red on a check that was red on the base where it branched (at its merge base, or held as base
+// red at this head, failure-class.mjs baseSplit) and has passed on the base since is red on the base it
+// was built on, not on its own change: a re-run replays the same merge commit and fails the same way, and
+// a fix try has nothing of its own to fix. It gets its branch updated from the base instead (`refresh`),
+// so its checks run on the green base, ahead of any outage hold, re-run or fix try: once per head
+// (`t.base_refresh`, the pass's record of the update), and only where §3 pr-update-branch lets the pass
+// update a branch (ctx.refreshBase). -> { call: 'refresh', checks, why } or null.
+function staleBase(t, head, mine, ctx) {
+  if (!ctx.baseRead || !ctx.refreshBase || !mine.length || t.base_refresh?.head === head) return null;
+  const names = staleChecks(t, head, [...new Set(mine.map((f) => f.name))], ctx.baseRead);
+  if (!names.length) return null;
+  const branch = ctx.base ?? 'the base', one = names.length === 1;
+  return { call: 'refresh', checks: names,
+    why: `${names.join(', ')} ${one ? 'was' : 'were'} red on ${branch} too and ${one ? 'has' : 'have'} passed on ${branch} since, so its branch is updated from ${branch} for a run on the green base, with no re-run and no fix try` };
+}
 const stillRed = (done, mine, notMine, ctx) => checksStuck(`still red after ${tries(done.length)}`, mine, notMine, ctx);
 // A red check's error lines, as pr_status keeps them: its job's annotations, else what its failed log
 // names. One asking a person's approval is no cause a worker can clear.
@@ -287,7 +315,8 @@ const treeTry = (base, held, at) => ({ ...conflictTry(base, null, false, at), wh
 // the step names its run failed at, reruns(name) -> reruns tried at s.head, cooledDown (the last rerun
 // has had its gap to report), waived(names) -> the driver merges past these as known flaky checks,
 // conflictFiles() -> [file] | null, baseRead (failure-class.mjs baseSplit's reads, which the pass
-// gives wherever it knows the head), build(failing, gate) -> undraft.mjs buildCall's answer for the red §4 Check builds
+// gives wherever it knows the head), refreshBase (§3 pr-update-branch is yes: a PR red only where its
+// base was red, the base green since, gets its branch updated, staleBase), build(failing, gate) -> undraft.mjs buildCall's answer for the red §4 Check builds
 // checks, or null where the pass builds none }. Besides the calls above it answers buildCall's `build`,
 // `rebuilt` and `wait` for a ready PR the pass builds, and a stuck answer may carry a `build` to start.
 export function fixCall(t, s, ctx) {
@@ -324,6 +353,8 @@ export function fixCall(t, s, ctx) {
     }
     split = splitFailing(built ? rest.filter((f) => !built.names.includes(f.name)) : rest, ctx);
     let { mine, notMine } = split;
+    const refresh = staleBase(t, s.head, mine, ctx);
+    if (refresh) return refresh;
     // Beside a check that is not a worker's, a check an outage holds on this PR is set aside first, so
     // the PR goes that check's way, and a try it gets is told to leave the held one red. A held check is
     // the pass's, never a person's: beside a check build it neither stops the build nor joins a stuck answer.
@@ -1250,6 +1281,8 @@ export function draftChecksFix(t, { pr, head, failing, checks }, ctx) {
     const kept = c.checks.filter((x) => !state.some((s) => s.name === x.name));
     return kept.length ? { ...c, checks: kept } : { call: 'stuck', why: c.why };
   };
+  const refresh = staleBase(t, head, mine, ctx);
+  if (refresh) return refresh;
   // As fixCall: beside a check that is not a worker's, a held check is set aside first.
   const aside = notMine.length ? outageOn(pr, mine, ctx) : [];
   mine = mine.filter((f) => !aside.includes(f));
