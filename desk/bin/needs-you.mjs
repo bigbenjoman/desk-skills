@@ -63,8 +63,11 @@
 //   needs-you.mjs move <repo> <TICKET> <batch>        record's move alone: the one action the decider is
 //                                                     allowed, so its allow rule names no other
 //   needs-you.mjs left [<repo>]                       how many items desk-q still counts, and where passes stopped
-//   needs-you.mjs ask <repo> "<what to do>"           an action a session hands the person, as an item
-//                                                     `ask:<n>` of the repo's until they say done (asks.mjs)
+//   needs-you.mjs ask <repo> "<what to do>" [--until <TICKET>[,<TICKET>...]]
+//                                                     an action a session hands the person, as an item
+//                                                     `ask:<n>` of the repo's until they say done (asks.mjs);
+//                                                     with --until, a wait on those tickets, which a pass
+//                                                     drops once they are all merged or done
 //
 // Two items are the repo's rather than a ticket's, and are named in place of one: `unset:<key>`, every
 // ticket parked naming a §3 row the repo's config does not set (done requeues them once it is set), and
@@ -109,7 +112,7 @@ import { evidenceHold } from './preview-db.mjs';
 import { cellPlan, parseVerdict, reviewStep, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
-import { deskHome, expandHome, machineValue, psRows, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, repoDirs, PERMISSION_KEYS } from './desk-env.mjs';
+import { SAFE_ID, deskHome, expandHome, machineValue, psRows, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, repoDirs, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { liveBaseRed, MERGES_SHOWN } from './base-red.mjs';
 import { describeCond } from './clears-when.mjs';
@@ -2594,12 +2597,14 @@ export function leftText({ word = null, now = Date.now(), repos = loadRepos(now,
 }
 
 // Records an action a session hands the person on the repo `word` names: { ok, line }.
-export function ask({ word, text, now = Date.now(), repos = loadRepos(now, word) }) {
+// `until`: the tickets it waits on (--until), so a pass drops it once they are all merged or done.
+export function ask({ word, text, until = [], now = Date.now(), repos = loadRepos(now, word) }) {
   const what = String(text ?? '').replace(/\s+/g, ' ').trim();
-  if (!what) return { ok: false, line: 'say what the person is to do: needs-you.mjs ask <repo> "<what to do>"' };
+  if (!what) return { ok: false, line: 'say what the person is to do: needs-you.mjs ask <repo> "<what to do>" [--until <TICKET>[,<TICKET>...]]' };
+  if (until.some((k) => !SAFE_ID.test(k))) return { ok: false, line: `--until wants ticket keys, comma-separated, not "${until.join(',')}"` };
   const r = standingOf(repos, batchesNamed(repos, word).named);
-  const { id, added } = addAsk(r.stateDir, what, now);
-  return { ok: true, line: `${r.repo} ${ASK}${id}: ${added ? 'recorded' : 'already recorded'}; /desk-needs-you and desk-q list it until you say done.` };
+  const { id, added } = addAsk(r.stateDir, what, now, { until });
+  return { ok: true, line: `${r.repo} ${ASK}${id}: ${added ? 'recorded' : 'already recorded'}; /desk-needs-you and desk-q list it until you say done${until.length ? `, or a pass finds ${until.join(', ')} merged or done` : ''}.` };
 }
 
 // One run of the command line, in this process: { code, out, err }, which the entry below prints and exits
@@ -2630,11 +2635,11 @@ export function run(argv, { reads } = {}) {
       const res = record({ word, ticket, action: 'move', text: to, ...at });
       lines.push(res.line);
       if (!res.ok) return end(EXIT.SHOW_PERSON);
-    } else if (cmd === 'ask' && rest.length === 2) {
-      const res = ask({ word: rest[0], text: rest[1] });
+    } else if (cmd === 'ask' && (rest.length === 2 || (rest.length === 4 && rest[2] === '--until'))) {
+      const res = ask({ word: rest[0], text: rest[1], until: rest.length === 4 ? rest[3].split(',').map((k) => k.trim()).filter(Boolean) : [] });
       lines.push(res.line);
       if (!res.ok) return end(EXIT.SHOW_PERSON);
-    } else return end(EXIT.SHOW_PERSON, 'usage: needs-you.mjs list [--json] [--no-settle] [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>"\n');
+    } else return end(EXIT.SHOW_PERSON, 'usage: needs-you.mjs list [--json] [--no-settle] [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>" [--until <TICKET>[,<TICKET>...]]\n');
   } catch (e) { return end(EXIT.SHOW_PERSON, `${e.message}\n`); }
   return end(0);
 }

@@ -29,12 +29,14 @@ function update(stateDir, change) {
 }
 
 // Adds `text`, or finds it already there: { id, added }. Ids never repeat, so a put-off one stays its own.
-export function addAsk(stateDir, text, now = Date.now()) {
+// `until`: the tickets the ask waits on, when it is a wait on them (needs-you.mjs ask --until), which
+// pruneAsks drops once every one is finished; an ask with none stays until the person says done.
+export function addAsk(stateDir, text, now = Date.now(), { until = [] } = {}) {
   return update(stateDir, (f) => {
     const same = f.asks.find((a) => a.text === text);
     if (same) return { id: same.id, added: false };
     const id = f.next ?? Math.max(0, ...f.asks.map((a) => a.id)) + 1;
-    f.asks.push({ id, text, at: new Date(now).toISOString() });
+    f.asks.push({ id, text, at: new Date(now).toISOString(), ...(until.length ? { until: [...new Set(until)] } : {}) });
     f.next = id + 1;
     return { id, added: true };
   });
@@ -49,17 +51,14 @@ export function removeAsk(stateDir, id) {
   });
 }
 
-// The ticket keys an ask names: words shaped like a key (letters, then a dash and digits).
-const KEY_WORD = /\b[A-Za-z][A-Za-z0-9_]*-\d+\b/g;
-// Drops each ask whose text names tickets, every one of them `known` to the queue and `finished`
-// (merged, or done with no PR): what it waited on has happened another way, so it waits on nothing.
-// An ask naming no ticket, or one the queue does not know, stays.
+// Drops each ask recorded as a wait on tickets (its `until`), every one of them `known` to the queue and
+// `finished` (merged, or done with no PR): what it waited on has happened, so it waits on nothing. An
+// ask with no `until` is a step the person owes whatever the tickets do, and stays until they say done.
 //   -> the asks dropped, each { id, text, keys }
 export function pruneAsks(stateDir, { known, finished }) {
-  const stale = readAsks(stateDir).map((a) => ({ ...a, keys: [...new Set(String(a.text ?? '').match(KEY_WORD) ?? [])] }))
-    .filter((a) => a.keys.length && a.keys.every((k) => known(k) && finished(k)));
+  const stale = readAsks(stateDir).filter((a) => Array.isArray(a.until) && a.until.length && a.until.every((k) => known(k) && finished(k)));
   if (!stale.length) return [];
   const ids = new Set(stale.map((a) => a.id));
   update(stateDir, (f) => { f.asks = f.asks.filter((a) => !ids.has(a.id)); });
-  return stale.map(({ id, text, keys }) => ({ id, text, keys }));
+  return stale.map(({ id, text, until }) => ({ id, text, keys: until }));
 }

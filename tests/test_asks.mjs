@@ -10,15 +10,17 @@ const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; cons
 
 const dir = mkdtempSync(join(tmpdir(), 'asks-'));
 try {
-  addAsk(dir, 'admit DS-1 DS-2 once the person says admit');
-  addAsk(dir, 'admit DS-1 and DS-3 once the person says admit');
-  addAsk(dir, 'admit DS-1 and X-9 once the person says admit');
-  addAsk(dir, 'file the follow-up for the e2e config');
+  addAsk(dir, 'admit DS-1 DS-2 once the person says admit', Date.now(), { until: ['DS-1', 'DS-2'] });
+  addAsk(dir, 'admit DS-1 and DS-3 once the person says admit', Date.now(), { until: ['DS-1', 'DS-3'] });
+  addAsk(dir, 'admit DS-1 and X-9 once the person says admit', Date.now(), { until: ['DS-1', 'X-9'] });
+  addAsk(dir, 'run the backfill once DS-1 merges');
   const tickets = { 'DS-1': 'merged', 'DS-2': 'done', 'DS-3': 'running' };
-  const gone = pruneAsks(dir, { known: (k) => k in tickets, finished: (k) => ['merged', 'done'].includes(tickets[k]) });
-  t('#1341 an ask whose every ticket is merged or done is dropped, naming its tickets', JSON.stringify(gone), JSON.stringify([{ id: 1, text: 'admit DS-1 DS-2 once the person says admit', keys: ['DS-1', 'DS-2'] }]));
-  t('#1341 one naming a ticket still open, one naming a ticket the queue does not know, and one naming none stay', JSON.stringify(readAsks(dir).map((a) => a.id)), '[2,3,4]');
-  t('#1341 with nothing stale, nothing is dropped', pruneAsks(dir, { known: (k) => k in tickets, finished: (k) => ['merged', 'done'].includes(tickets[k]) }).length, 0);
+  const opts = { known: (k) => k in tickets, finished: (k) => ['merged', 'done'].includes(tickets[k]) };
+  const gone = pruneAsks(dir, opts);
+  t('#1341 an ask recorded as a wait on tickets, every one merged or done, is dropped, naming them', JSON.stringify(gone), JSON.stringify([{ id: 1, text: 'admit DS-1 DS-2 once the person says admit', keys: ['DS-1', 'DS-2'] }]));
+  t('#1341 a wait on a ticket still open, or one the queue does not know, stays', JSON.stringify(readAsks(dir).filter((a) => a.until).map((a) => a.id)), '[2,3]');
+  t('#1341 a step the person owes that only names a finished ticket (no --until) is never dropped', readAsks(dir).some((a) => a.text === 'run the backfill once DS-1 merges'), true);
+  t('#1341 with nothing stale, nothing is dropped', pruneAsks(dir, opts).length, 0);
 } finally { rmSync(dir, { recursive: true, force: true }); }
 
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }

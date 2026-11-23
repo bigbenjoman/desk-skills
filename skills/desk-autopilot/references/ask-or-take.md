@@ -249,8 +249,10 @@ running passes for every other ticket, and put the question where an answer come
 
 - **A step only the person takes** (file, sign in, merge by hand): record it at once with
   `needs-you.mjs ask <repo> "<the step, and your recommended default>"`, so desk-q and
-  desk-needs-you list it until the person says done. Each pass drops an ask whose tickets are all
-  merged or done (`needs-you: ask <n> dropped`).
+  desk-needs-you list it until the person says done. One that waits on tickets happening (`--until
+  <TICKET>[,<TICKET>...]`) is dropped by the pass once they are all merged or done (`needs-you: ask
+  <n> dropped`). Pass `--until` only for such a wait, never for a step the person still owes once
+  they merge.
 
 **A wait on the person lives only as a needs-you item, never as a line in your `/loop` prompt.**
 Your loop prompt, a pending note, a handoff or a summary is read by no one but you. A wait kept there
