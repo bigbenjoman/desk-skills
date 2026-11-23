@@ -66,7 +66,7 @@ import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
 import { liveBaseRed, readBaseRed, baseRedPath, batchLine, repairTicket, repairTriage, baseRerun, TIMEOUT_AGAIN_MS } from './base-red.mjs';
-import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
+import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockGate, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { blockersOf } from './queue-states.mjs';
@@ -104,7 +104,7 @@ import { decideBaseGate, decideBaseRed } from './pass/base-gate.mjs';
 import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
 import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
-import { kindMode, leaseCli, releasePreviews } from './leases.mjs';
+import { kindMode, leaseCli, releasePreviews, slotPools } from './leases.mjs';
 import { handToWorker as handMemToWorker, memPool, reserveForWorker } from './mem-lease.mjs';
 import { archivedOf, isArchived, keepPrs, mergedPrs, prClosed, owesReopen, recordedPr } from './queue-store.mjs';
 
@@ -2121,11 +2121,13 @@ const lowMemory = MIN_AVAIL_GB > 0 && (availGB < MIN_AVAIL_GB || HARM.length > 0
 // default 2 / 3). The report says whose number it is, and whether memory lowered it.
 const CONC = batchConcurrency(fresh, E.concurrencyLimits(), { avail: availGB, start: MIN_AVAIL_GB });
 const concurrency = CONC.n;
-// Test lock gate: each repo gets a share of the machine-wide queue on the test lock. The hold point is
-// test-lock-slots x test-lock-queue-factor runs waiting (machine profile; 1 and 2 without one). At or
-// over it, each repo with a run holding or waiting on the lock (this one always counted) gets an equal
-// share of the hold point, and this repo starts at most its share less its own runs; below it, at most
-// the hold point less the runs waiting. A run is a repo's when it works in that repo's main checkout or
+// Test lock gate: each repo gets a share of the machine-wide queue on the test lock, and a repo whose
+// §4 Suite weight is light, of the light lock's queue too, which its suites take; each pool is read
+// against its own hold point, its current slots (the floor plus the runs admission let in above it,
+// leases.mjs slotPools) x test-lock-queue-factor (machine profile; 2 without one), and the tighter of
+// the two binds. At or over a hold point, each repo with a run holding or waiting on that lock (this
+// one always counted) gets an equal share of the hold point, and this repo starts at most its share
+// less its own runs; below it, at most the hold point less the runs waiting. A run is a repo's when it works in that repo's main checkout or
 // worktrees directory (configured repos; the rest count as one, `other`). The gate covers new local
 // workers and resumes into a stage that runs suites, since each would only join the queue; every other
 // resume goes ahead. AUTOPILOT_LOCK_QUEUE=off skips the read, as the test runner does: its passes must
@@ -2133,8 +2135,6 @@ const concurrency = CONC.n;
 const SUITE_STAGES = ['4', '4b'];
 const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
   const whole = (v, d) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) >= 1 ? Number(v) : d);
-  const holders = lockHolders(E.lockDir());
-  const held = lockHolderRuns({ procs: processList(), holders, cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(E.lockDir()) });
   let slug = null;
   try { slug = E.repoSlug(); } catch { /* no slug: this repo is still listed, by its checkout */ }
   // Another repo whose config cannot be read is left out, so its runs count under `other`.
@@ -2152,14 +2152,27 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
       if (d.root) repos.push({ name: names[i], dirs: [d.root, d.worktrees] });
     } catch { /* unreadable: its runs count under `other` */ }
   });
-  return lockQueue({
-    waiting: lockWaiters({ procs: processList(), holders }),
-    held,
-    counts: lockRunsByRepo(repos, { procs: processList(), holders, cwds: processCwds(), held }),
-    self,
-    slots: E.testLockSlots(),
-    factor: whole(E.machineValue('test-lock-queue-factor'), 2),
-  });
+  // The pools unread: each at its floor.
+  let pools = null;
+  // machineProfile: the rows as with-lock's admission reads them, so a TODO sizes the pool as it does there.
+  try { pools = slotPools({ ...LEASE_ENV, machineProfile: E.machineProfile, lockDir: E.lockDir }); } catch { /* as above */ }
+  const factor = whole(E.machineValue('test-lock-queue-factor'), 2);
+  const queueOf = (locks, slots) => {
+    const holders = lockHolders(E.lockDir(), { locks });
+    const held = lockHolderRuns({ procs: processList(), holders, cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(E.lockDir(), { locks }), locks });
+    return lockQueue({
+      waiting: lockWaiters({ procs: processList(), holders, locks }),
+      held,
+      counts: lockRunsByRepo(repos, { procs: processList(), holders, cwds: processCwds(), held, locks }),
+      self, slots, factor, lock: locks,
+    });
+  };
+  let light = false;
+  try { light = E.configValue('suite-weight') === 'light'; } catch { /* unread: heavy, the default */ }
+  return lockGate([
+    queueOf('test', pools?.heavy.current ?? E.testLockSlots()),
+    light ? queueOf('light', pools?.light.current ?? 1) : null,
+  ]);
 })();
 // The stage a requeue resumes its last round at, or null where it starts again: no round to resume,
 // or an unfinished fix try, whose next worker gets the try's own task (fixTask), which runs suites.

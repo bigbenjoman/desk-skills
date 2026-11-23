@@ -407,6 +407,43 @@ rmSync(gtmp, { recursive: true, force: true });
   t('a deep queue whose runs cannot be placed gives no room, and says so', `${q('b', null).room} ${q('b', null).line.includes('whose runs they are is unknown')}`, '0 true');
   t('below the hold, unplaced runs still give the hold less those waiting', q('b', null, 2).room, 4);
 }
+// A repo whose suites take the light lock is gated on the light lock's queue as well as the test lock's,
+// each against its own current slots x factor; a heavy repo on the test lock's alone.
+{
+  const { lockWaiters, lockRunsByRepo, lockQueue, lockGate } = await import('../desk/bin/suite-wait.mjs');
+  const heavyRun = (pid) => ({ pid, ppid: 1, args: 'bash /h/.claude/desk/bin/with-lock.sh test --cwd . -- pnpm test' });
+  const lightRun = (pid) => ({ pid, ppid: 1, args: 'bash /h/.claude/desk/bin/with-lock.sh light --cwd . -- bash tests/run.sh' });
+  const repos = [{ name: 'l', dirs: ['/u/l', '/u/l-wt'] }, { name: 'h', dirs: ['/u/h', '/u/h-wt'] }];
+  // Repo l: two light runs waiting; repo h: one heavy run waiting, and one light run waiting.
+  const procs = [lightRun(11), lightRun(12), heavyRun(21), lightRun(22)];
+  const cwds = [{ pid: 11, cwd: '/u/l-wt/L-1' }, { pid: 12, cwd: '/u/l-wt/L-2' }, { pid: 21, cwd: '/u/h-wt/H-1' }, { pid: 22, cwd: '/u/h-wt/H-2' }];
+  const none = new Set();
+  const read = (locks, slots, self, ps = procs) => lockQueue({
+    waiting: lockWaiters({ procs: ps, holders: none, locks }),
+    counts: lockRunsByRepo(repos, { procs: ps, holders: none, cwds, locks }),
+    slots, factor: 2, self, lock: locks,
+  });
+  t('light waiters are counted on the light lock, heavy ones on the test lock', `${lockWaiters({ procs, holders: none, locks: 'light' })} ${lockWaiters({ procs, holders: none })}`, '3 1');
+  t('the light lock\'s runs are placed by repo', JSON.stringify([...lockRunsByRepo(repos, { procs, holders: none, cwds, locks: 'light' })].sort()), JSON.stringify([['h', 1], ['l', 2]]));
+  const lOnly = procs.slice(0, 2);
+  const ac1 = lockGate([read('test', 1, 'l', lOnly), read('light', 1, 'l', lOnly)]);
+  t('AC1 a light repo with 2 light runs waiting on a light pool of 1 x 2 is held, naming the light lock queue',
+    `${ac1.holds} ${ac1.room} ${ac1.line.startsWith('light lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2')}`, 'true 0 true');
+  const one = [procs[0]];
+  const ac2 = lockGate([read('test', 1, 'l', one), read('light', 1, 'l', one)]);
+  t('AC2 with 1 light run waiting it may start 1, the hold of 2 less the 1 waiting', `${ac2.holds} ${ac2.room}`, 'false 1');
+  const ac3 = lockGate([read('test', 1, 'h', [heavyRun(21), ...[31, 32, 33, 34].map(lightRun)]), null]);
+  t('AC3 a heavy repo is not held by a deep light queue', `${ac3.holds} ${ac3.room} ${ac3.line.startsWith('test lock queue: 1 run(s)')}`, 'false 1 true');
+  const ac4 = lockQueue({ waiting: 0, slots: 2, factor: 2, counts: new Map(), self: 'l', lock: 'light' });
+  t('AC4 a light pool of 2 current slots holds at 2 x 2 = 4', `${ac4.at} ${ac4.line.includes('waiting on its 2 slot(s), under the hold at 2 x 2 = 4')}`, '4 true');
+  const ac5 = lockGate([read('test', 1, 'l', one), lockQueue({ waiting: null, slots: 1, factor: 2, lock: 'light' })]);
+  t('AC5 a light queue not read holds nothing on the light pool and says so; the test lock\'s room of 2 stands', `${ac5.holds} ${ac5.room} ${ac5.queues[1].line}`,
+    'false 2 light lock queue: not read (ps could not be read), so workers start as they would without it');
+  // Repo l's two runs waiting on each lock, so both queues are at their hold and l at its share of each.
+  const both = lockGate([read('test', 1, 'l', [heavyRun(11), heavyRun(12)]), read('light', 1, 'l', lOnly)]);
+  t('both pools holding name both queues', `${both.holds} ${both.line.startsWith('test lock queue: 2')} ${both.line.includes('; and light lock queue: 2')}`, 'true true true');
+  t('no queue read is no gate', lockGate([null]), null);
+}
 // Who holds the test lock is named, whatever the repo, so a batch held behind it shows what it waits on.
 {
   const { lockHolderRuns, holdersText, lockQueue, etimeSeconds } = await import('../desk/bin/suite-wait.mjs');

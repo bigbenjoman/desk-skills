@@ -59,7 +59,7 @@ function budgetOf(budget) {
 //   pace          usage-pace.mjs's {bad, hold, line}, and paceProbe what a probe call for it read
 //   memory        {low, avail, hold, start, dropTo, harm}: the spawn gate (config §3b "Spawn gate"), and
 //                 harm, the memory watch's recent harm signal that also holds it, or null
-//   lockQueue     suite-wait.mjs lockQueue's reading, or null where it is not read
+//   lockQueue     suite-wait.mjs lockGate's reading, or null where it is not read
 //   spawnGrant    {may, key, perm, queueBin}: config §3 autopilot-workers, and the queue.mjs path
 //   maintHold     whether the maintenance window holds
 //   usageHold     the usage limit holding the batch, or null, and probes each probe call's why
@@ -90,7 +90,7 @@ export function* decideEligibility(s) {
       : `memory: ${m.avail.toFixed(1)}G available, in the §3b hold band (${m.hold}–${m.start}G) — holding spawns this pass ` +
         `(${running} running; a worker mid-suite will drain)`);
   }
-  if (s.lockQueue?.unread) yield say(null, 'stalled', s.lockQueue.line);
+  for (const q of s.lockQueue?.queues ?? []) if (q.unread) yield say(null, 'stalled', q.line);
 
   const eligibleBase = [];
   for (const r of all) {
