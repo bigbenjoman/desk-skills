@@ -9,6 +9,14 @@ export const PARK_KINDS = ['person-step', 'question', 'hold', 'stopped', 'date',
 // still sets (null once released), is read wherever the ticket has the field, so a writer that changes
 // only held_by is read as it left it; `holds` is the same list, which each queue write lays beside it
 // (holdsLaid), read only for a ticket without held_by.
+// A requeue keeps a ticket's merged_at (ownPr reads it as the earlier work's) and records when it sent the
+// ticket back (reworked_at), so the merge can outlive the work it recorded: a ticket sent back for more is
+// not merged while that runs, nor once done again on a PR of its own until that PR merges. Whether t's
+// recorded merge is its current work's: done, and either never sent back since the merge, no PR of its own
+// (done by another's PR, or with no PR), or its PR read merged.
+export const mergeRecorded = (t) => !!t?.merged_at && t.state === 'done'
+  && (!(Date.parse(t.reworked_at) >= Date.parse(t.merged_at)) || t.result?.pr == null
+    || (t.pr_status?.state === 'MERGED' && Number(t.pr_status.pr) === Number(t.result.pr)));
 export const blockersOf = (t) => {
   if (!t || typeof t !== 'object') return [];
   if ('held_by' in t || !Array.isArray(t.holds)) return String(t.held_by ?? '').split('|').filter(Boolean);

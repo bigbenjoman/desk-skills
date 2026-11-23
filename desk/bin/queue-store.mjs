@@ -13,7 +13,7 @@ import { basename, dirname, join } from 'node:path';
 import { writeJsonAtomic } from './dir-lock.mjs';
 import { followOnPending, postMergeUnmade } from './harvest.mjs';
 import { ledgerOn, missedLine, recordWrite } from './queue-ledger.mjs';
-import { blockersOf, holdsLaid } from './queue-states.mjs';
+import { blockersOf, holdsLaid, mergeRecorded } from './queue-states.mjs';
 
 export const versionOf = (q) => {
   const n = Number(q?.version);
@@ -96,7 +96,7 @@ const HOLD_FIELDS = ['held_outside', 'merge_after'];
 export const keys = (v) => String(v ?? '').split('|').filter(Boolean);
 
 // Whether ticket `key` of queue `q` moves to the archive: done, with its PR merged (recorded by
-// `queue.mjs merged`) or closed, no follow-on steps waiting on the person or owed by the pass, and nothing live still
+// `queue.mjs merged`, and its current work's: queue-states.mjs mergeRecorded) or closed, no follow-on steps waiting on the person or owed by the pass, and nothing live still
 // pointing at it (another ticket's hold or merge gate, or the batch's own key, spine or epic). A batch
 // with a base, an epic or feature mode counts its finished children, so it archives nothing.
 export function archivable(q, key) {
@@ -104,7 +104,7 @@ export function archivable(q, key) {
   const t = q.tickets[key];
   if (t?.state !== 'done' || t.result?.pr == null || followOnPending(t)) return false;
   const closed = prClosed(t);
-  if (!t.merged_at && !closed) return false;
+  if (!mergeRecorded(t) && !closed) return false;
   // A PR the pass closed to reopen for its CI is not closed for good: archived, the reopen is never retried.
   if (closed && owesReopen(t)) return false;
   // A merged PR's criteria its review left for after the merge that the pass has not made follow-on
