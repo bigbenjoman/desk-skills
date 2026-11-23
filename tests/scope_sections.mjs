@@ -104,22 +104,28 @@ function groupEnd(text, close, wrap) {
   return -1;
 }
 const asExpression = (p) => `(${p}\n)`;
+// A regex matching any of these identifiers as a whole word.
+const wordsRe = (ids) => new RegExp(`(?<![\\w$])(?:${ids.map((n) => n.replace(/\$/g, '\\$')).join('|')})(?![\\w$])`);
+// A static import statement (not an `import()` call).
+const isImport = (c) => /^import\s*[{*'"\w]/.test(c) && !/^import\s*\(/.test(c);
+// A statement starting with a name, which cannot carry on the statement before it the way `(`, `[`,
+// `.` or an operator can.
+const startsWithName = (c) => /^[A-Za-z_$]/.test(c) && !/^(?:in|instanceof)(?![\w$])/.test(c);
 // Whole top-level chunks of a module as script that compiles where the module does: imports and export
 // lists become `;`, `export` comes off a declaration, `import.meta` is renamed, and a `#!` line (only
 // allowed first, before the 'use strict' compiles() adds) is dropped.
-const asScript = (chunks) => chunks.map((c) => (/^import\s*[{*'"\w]/.test(c) && !/^import\s*\(/.test(c)) || /^export\s*[{*]/.test(c) ? ';' : c.replace(/^export\s+(?:default\s+)?/, ''))
+const asScript = (chunks) => chunks.map((c) => isImport(c) || /^export\s*[{*]/.test(c) ? ';' : c.replace(/^export\s+(?:default\s+)?/, ''))
   .join('\n').replace(/^#!.*/, '').replace(/\bimport\.meta\b/g, 'import_meta');
 // Only comments: every line a line comment (which any line terminator ends), or one block comment whose
 // first `*/` is its end.
 const isComment = (c) => /^\/\/[^\n\r\p{Zl}\p{Zp}]*(?:\n\/\/[^\n\r\p{Zl}\p{Zp}]*)*$/u.test(c) || /^\/\*(?:(?!\*\/)[\s\S])*\*\/$/.test(c);
 // Whether a new chunk can go in after the first `i` old chunks without changing them: the old code up
 // to there compiles (so no bracket, string, template or comment is open), and the next old statement
-// starts with a name, which cannot carry on the statement before it the way `(`, `[`, `.` or an
-// operator can.
+// startsWithName().
 function boundary(old, i) {
   if (i > 0 && !compilesAsModuleBody(asScript(old.slice(0, i)))) return false;
   const next = old.slice(i).find((c) => !isComment(c));
-  return !next || (/^[A-Za-z_$]/.test(next) && !/^(?:in|instanceof)(?![\w$])/.test(next));
+  return !next || startsWithName(next);
 }
 // No BigInt (`n` is left as a letter, so it is refused): `+1n` and `1n + 1` throw on load.
 const NUMBER = /(?<![\w$.])(?:0[xob][\da-f_]+|\d[\d_]*(?:\.\d+)?(?:e[+-]?\d+)?)(?![\w$.])/gi;
@@ -151,25 +157,32 @@ function fnValue(v) {
   const end = groupEnd(head, ')', (q) => `(${q} => 0\n)`);
   return end > 0 && /^[ \t]*=>/.test(head.slice(end));
 }
-// A new top-level statement that declares an export and runs nothing when the module loads: a function
-// declaration, or a const whose value is a function or a literal. -> its name, or null. A class (its
-// static members and extends run on load) or any other value is refused, and so is a name the old module
-// already uses or a global's (declaring it would change what the unchanged code refers to), a name
-// written with an escape, and `then` (it makes the module's namespace a thenable, which `import()`
-// calls). HTML-like comments (`<!--`, `-->`) are refused: a script reads them as comments, a module not.
-function newExport(chunk, before) {
+// A top-level statement that declares one name and runs nothing when the module loads: a function
+// declaration, or a const or let with one declarator whose value is a function or a literal.
+// -> { name, exported, kind: 'function' | 'const' | 'let' }, or null for anything else: a class (its
+// static members and extends run on load), a destructuring, a call or any other value, a name written
+// with an escape. HTML-like comments (`<!--`, `-->`) are refused: a script reads them as comments, a
+// module not.
+function declOf(chunk) {
   if (/<!--|-->/.test(chunk)) return null;
-  let name = null;
-  const fn = chunk.match(/^export\s+((?:async\s+)?function\b\s*\*?\s*([A-Za-z_$][\w$]*)\s*\([\s\S]*)$/);
+  const exported = /^export\s+(?!default\b)/.test(chunk);
+  const c = exported ? chunk.replace(/^export\s+/, '') : chunk;
+  const fn = c.match(/^((?:async\s+)?function\b\s*\*?\s*([A-Za-z_$][\w$]*)\s*\([\s\S]*)$/);
   if (fn) {
     const end = groupEnd(fn[1], '}', asExpression);
-    if (end > 0 && /^\s*;?\s*$/.test(fn[1].slice(end))) name = fn[2];
-  } else {
-    const c = chunk.match(/^export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*([\s\S]*?)\s*;?\s*$/);
-    if (c && (literal(c[2]) || fnValue(c[2]))) name = c[1];
+    return end > 0 && /^\s*;?\s*$/.test(fn[1].slice(end)) ? { name: fn[2], exported, kind: 'function' } : null;
   }
-  if (!name || name === 'then' || name in globalThis || new RegExp(`(?<![\\w$])${name.replace(/\$/g, '\\$')}(?![\\w$])`).test(before)) return null;
-  return name;
+  const v = c.match(/^(const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*([\s\S]*?)\s*;?\s*$/);
+  return v && (literal(v[3]) || fnValue(v[3])) ? { name: v[2], exported, kind: v[1] } : null;
+}
+// A new top-level statement that declares an export, a function or a const, by declOf(). -> its name, or
+// null. Refused too: a name the old module already uses or a global's (declaring it would change what
+// the unchanged code refers to), and `then` (it makes the module's namespace a thenable, which
+// `import()` calls).
+function newExport(chunk, before) {
+  const d = declOf(chunk);
+  if (!d?.exported || d.kind === 'let' || d.name === 'then' || d.name in globalThis || wordsRe([d.name]).test(before)) return null;
+  return d.name;
 }
 // The names a change to a module only adds as exports, or null when it does anything else: every old
 // top-level statement is still there unchanged and in order, each new one goes in at a boundary(), and
@@ -189,30 +202,14 @@ export function addedExports(before, after) {
   return i === old.length ? names : null;
 }
 
-const wordsRe = (ids) => new RegExp(`(?<![\\w$])(?:${ids.map((n) => n.replace(/\$/g, '\\$')).join('|')})(?![\\w$])`);
-// A top-level statement that declares one name and runs nothing else: a function declaration, or a
-// const or let with one declarator (a `,` would start another property of the object compiles() reads
-// the value in). -> { name, exported }, or null for anything else (a class, a destructuring, a call).
-function declOf(chunk) {
-  if (/<!--|-->/.test(chunk)) return null;
-  const exported = /^export\s+(?!default\b)/.test(chunk);
-  const c = exported ? chunk.replace(/^export\s+/, '') : chunk;
-  const fn = c.match(/^((?:async\s+)?function\b\s*\*?\s*([A-Za-z_$][\w$]*)\s*\([\s\S]*)$/);
-  if (fn) {
-    const end = groupEnd(fn[1], '}', asExpression);
-    return end > 0 && /^\s*;?\s*$/.test(fn[1].slice(end)) ? { name: fn[2], exported } : null;
-  }
-  const v = c.match(/^(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*([\s\S]*?)\s*;?\s*$/);
-  return v && compiles(`({ k: ${v[2]}\n})`) ? { name: v[1], exported } : null;
-}
+// A module's top-level statements bar comments, each with its declOf(). One with none (module-level code,
+// a const set by a call) runs when the module loads.
 const statements = (text) => topLevel(text).filter((c) => !isComment(c)).map((c) => ({ c, decl: declOf(c) }));
-const isImport = (c) => /^import\s*[{*'"\w]/.test(c) && !/^import\s*\(/.test(c);
-const startsWithName = (c) => /^[A-Za-z_$]/.test(c) && !/^(?:in|instanceof)(?![\w$])/.test(c);
 
 // The top-level names a change to a module edits or declares anew, when that is all it does: every
 // other statement is unchanged and in order, no name goes or stops being exported, an edited
-// statement is still one named function or constant, a new one runs nothing on load (newExport(),
-// exported or not), and each compiles alone with a name starting the statement after it.
+// statement is still a declOf() that runs nothing on load, a new one is also a newExport() (exported
+// or not), and each compiles alone with a name starting the statement after it.
 // -> { names } or { full: why }.
 export function changedNames(before, after) {
   const old = statements(before);
@@ -231,8 +228,8 @@ export function changedNames(before, after) {
       if (s.c === was.c) continue;
       if (was.decl.exported && !s.decl.exported) return { full: `${s.decl.name} is no longer exported` };
     } else if (oldKeys.has(k)) return newKeys.has(key(old[i])) ? { full: `${s.decl?.name ?? 'a top-level statement'} moved` } : gone(old[i]);
-    else if (!s.decl) return { full: `a top-level statement that is not a named function or constant changed: ${s.c.split('\n')[0]}` };
-    else if (!newExport(s.decl.exported ? s.c : `export ${s.c}`, before)) return { full: `the new ${s.decl.name} runs code when the module loads` };
+    else if (!s.decl) return { full: `a top-level statement that runs code when the module loads changed: ${s.c.split('\n')[0]}` };
+    else if (!newExport(s.decl.exported ? s.c : `export ${s.c}`, before)) return { full: `the new ${s.decl.name} is a let, or a name already in use` };
     if (!compilesAsModuleBody(asScript([s.c])) || (j + 1 < neu.length && !startsWithName(neu[j + 1].c))) return { full: `${s.decl.name} does not stand alone` };
     names.push(s.decl.name);
   }
@@ -278,7 +275,7 @@ function cliCases(c) {
 // -> { names, exported: the exported ones, under their exported names, commands: the cliCases()
 // commands whose case names one, code: the first line of a statement that is not a declaration, an
 // import, an export list or such a case but names one (module-level code, which runs on load), or null }
-export function reach(text, seeds) {
+function reach(text, seeds) {
   const stmts = statements(text);
   const names = new Set(seeds);
   for (let grew = names.size > 0; grew;) {
@@ -433,8 +430,9 @@ export function buildMap(files, read) {
   const shells = new Set(files.filter((f) => /\.(sh|bash)$/.test(f) || (!/\.[A-Za-z0-9]+$/.test(f.slice(f.lastIndexOf('/') + 1)) && /^#!.*[/ ](ba)?sh( |$)/.test(textOf(f).split('\n')[0]))));
   // The suites (bar ALWAYS) whose text names any of these identifiers as a whole word.
   const uses = (ids) => {
-    const res = ids.map((n) => new RegExp(`(?<![\\w$])${n.replace(/\$/g, '\\$')}(?![\\w$])`));
-    return suites.filter((s) => !ALWAYS.includes(s.slice(6)) && res.some((r) => r.test(textOf(s)))).map((s) => s.slice(6));
+    if (!ids.length) return [];
+    const re = wordsRe(ids);
+    return suites.filter((s) => !ALWAYS.includes(s.slice(6)) && re.test(textOf(s))).map((s) => s.slice(6));
   };
   // The suites a change to these top-level names of an EXPORTS_ONLY module reaches, through reach(): those
   // naming an exported name it reaches, and those claiming a script that loads the module and names one
