@@ -63,7 +63,7 @@ const hereRepo = () => { try { return ghRepo(); } catch { return null; } };
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer', 'stop', 'finish'];
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'drop-worktree', 'get', 'transfer', 'stop', 'finish'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -1334,6 +1334,17 @@ switch (cmd) {
     const hb = JSON.parse(readFileSync(file, 'utf8'));
     writeFileSync(file, JSON.stringify({ ...hb, next: new Date(at).toISOString() }));
     console.log(`next pass ${new Date(at).toISOString()}`);
+    break;
+  }
+
+  // A ticket recorded done with no worker (pass.mjs, done by another's PR): its worktree removed with its
+  // local branch when nothing in it is missing from origin. It stays in the batch.
+  case 'drop-worktree': {
+    const key = args[0];
+    const t = ticket(q, key);
+    if (t.state === 'running') throw new Error(`${key} is running: its worktree is left`);
+    const removed = dropWorktree(key, t);
+    if (removed) console.log(`its worktree ${removed}, holding nothing origin lacks, was removed`);
     break;
   }
 
