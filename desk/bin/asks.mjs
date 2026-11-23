@@ -61,10 +61,14 @@ export function removeAsk(stateDir, id) {
 // `finished` (merged, or done with no PR): what it waited on has happened, so it waits on nothing. An
 // ask with no `until` is a step the person owes whatever the tickets do, and stays until they say done.
 //   -> the asks dropped, each { id, text, keys }
+// The unlocked read only spares a write when nothing is stale: what is dropped is decided again under
+// the lock, so an ask asked again with open tickets meanwhile is kept.
 export function pruneAsks(stateDir, { known, finished }) {
-  const stale = readAsks(stateDir).filter((a) => Array.isArray(a.until) && a.until.length && a.until.every((k) => known(k) && finished(k)));
-  if (!stale.length) return [];
-  const ids = new Set(stale.map((a) => a.id));
-  update(stateDir, (f) => { f.asks = f.asks.filter((a) => !ids.has(a.id)); });
-  return stale.map(({ id, text, until }) => ({ id, text, keys: until }));
+  const spent = (a) => Array.isArray(a.until) && a.until.length && a.until.every((k) => known(k) && finished(k));
+  if (!readAsks(stateDir).some(spent)) return [];
+  return update(stateDir, (f) => {
+    const stale = f.asks.filter(spent);
+    f.asks = f.asks.filter((a) => !spent(a));
+    return stale.map(({ id, text, until }) => ({ id, text, keys: until }));
+  });
 }

@@ -27,5 +27,16 @@ try {
   t('#1341 asked again with no --until, the kept list stands', `${bare.until?.join()} ${readAsks(dir).find((a) => a.id === bare.id)?.until?.join()}`, 'DS-3 DS-3');
 } finally { rmSync(dir, { recursive: true, force: true }); }
 
+const raced = mkdtempSync(join(tmpdir(), 'asks-'));
+try {
+  addAsk(raced, 'say whether to admit DS-1', Date.now(), { until: ['DS-1'] });
+  const status = { 'DS-1': 'merged', 'DS-3': 'running' };
+  let asked = false;
+  // The ask is asked again, now on an open ticket, after the pass read it as spent but before it locks.
+  const finished = (k) => { if (!asked) { asked = true; addAsk(raced, 'say whether to admit DS-1', Date.now(), { until: ['DS-3'] }); } return status[k] === 'merged'; };
+  const gone = pruneAsks(raced, { known: (k) => k in status, finished });
+  t('#1341 an ask asked again on an open ticket while a pass prunes is kept', `${gone.length} ${readAsks(raced).map((a) => a.until.join()).join()}`, '0 DS-3');
+} finally { rmSync(raced, { recursive: true, force: true }); }
+
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }
 console.log('all passed');
