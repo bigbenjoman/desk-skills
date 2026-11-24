@@ -5,13 +5,14 @@
 // at N% of a W-token window (threshold T%)"), or that of the session whose handoff it resumed; a
 // session with neither is `unknown`, shown and never recommended. Per arm: sessions, handoffs per
 // session (compactions, and sessions that start from a .handoffs/*.md file), the resume overhead of
-// each (the input tokens of the first request after it), and the primary metric, cost-weighted tokens
-// per active hour. The guardrails are levers-evaluate's fix tries and parks, and post-merge reverts,
-// per ticket, reached through each session's git branch (a ticket whose queue branch it is, or whose
-// key the branch names); a session on no ticket's branch measures none, and an arm whose guardrails
+// each (the input tokens of the first request after it), and the primary metric, API-equivalent
+// dollars per active hour (cache-report.mjs requestUsd, at worker-cost.mjs MODEL_PRICES). The
+// guardrails are levers-evaluate's fix tries and parks, and post-merge reverts, per ticket with an
+// outcome (its outcomeIn), reached through each session's git branch (a ticket whose queue branch it
+// is, or whose key the branch names); a session on no ticket's branch measures none, and an arm whose guardrails
 // are not measured is never recommended on cost alone.
 //
-// It recommends, per window, the arm with the fewest weighted tokens per active hour whose guardrails
+// It recommends, per window, the arm with the fewest dollars per active hour whose guardrails
 // hold, against the 45/50 baseline; a person applies it as the §2 "Handoff at context %" row (or its
 // 1M row). It never writes config.
 //
@@ -24,10 +25,10 @@ import { readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { requestOf } from './cache-report.mjs';
+import { requestOf, requestUsd } from './cache-report.mjs';
 import { projectsDirs } from './claude-logins.mjs';
 import { GUARDRAILS } from './lever-registry.mjs';
-import { EVIDENCE_KEEP_DAYS, GUARDS, withOutcomes } from './levers-evaluate.mjs';
+import { EVIDENCE_KEEP_DAYS, GUARDS, outcomeIn, withOutcomes } from './levers-evaluate.mjs';
 import { allBatches, DAY_MS, perTicket } from './phase0-report.mjs';
 import { everyTicket } from './queue-store.mjs';
 import { readQueue } from './batch-state.mjs';
@@ -40,8 +41,6 @@ const MIN_TICKETS = 3;
 const BASELINE_PCTS = [45, 50];
 // A gap between two lines longer than this counts as this much: idle time is not active time.
 const IDLE_CAP_MS = 5 * 60 * 1000;
-// Token weights relative to uncached input, as list prices weigh them.
-const WEIGHTS = { uncached: 1, w5m: 1.25, w1h: 2, read: 0.1, output: 5 };
 const CHECKED = ['fix-tries-parks', 'post-merge'];
 
 const GUIDANCE = [
@@ -63,11 +62,10 @@ const NAMED = /\(repo-relative: (\.handoffs\/[^\s)]+\.md)\)/;
 const HANDOFF_FILE = /\.handoffs\/[A-Za-z0-9._-]+\.md/;
 
 const inputOf = (r) => r.uncached + r.w5m + r.w1h + r.read;
-const weightOf = (r) => Object.entries(WEIGHTS).reduce((s, [k, w]) => s + w * r[k], 0);
 const label = (a) => (a ? `${a.pct}% of ${a.window.toLocaleString('en-US')}` : 'unknown');
 const rowName = (window) => (window >= 1_000_000 ? 'Handoff at context % on a 1M window' : 'Handoff at context %');
 
-// One transcript's session: its arm, handoffs, resume overheads, weighted tokens and active hours.
+// One transcript's session: its arm, handoffs, resume overheads, dollars and active hours.
 function sessionOf(file, text) {
   const lines = [];
   for (const l of text.split('\n')) {
@@ -119,7 +117,8 @@ function sessionOf(file, text) {
   return {
     id: basename(file, '.jsonl'), project: basename(join(file, '..')), arm, named, resumed_from: resumedFrom,
     fires: fires.size, compactions, resumed, handoffs: compactions + (resumed ? 1 : 0), resume_overheads: overheads,
-    weighted_tokens: Math.round([...requests.values()].reduce((s, r) => s + weightOf(r), 0)),
+    usd: [...requests.values()].reduce((s, r) => s + (requestUsd(r)?.total ?? 0), 0),
+    unpriced: [...requests.values()].filter((r) => !requestUsd(r)).length,
     active_hours: active / 3_600_000, branch: [...branches].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null,
   };
 }
@@ -171,10 +170,11 @@ function armRows(sessions, tickets) {
   }
   return [...by.values()].map(({ list, ...a }) => {
     const hours = list.reduce((x, s) => x + s.active_hours, 0);
-    const weighted = list.reduce((x, s) => x + s.weighted_tokens, 0);
+    const usd = list.reduce((x, s) => x + s.usd, 0);
     const overheads = list.flatMap((s) => s.resume_overheads);
     const mapped = new Map();
-    for (const s of list) { const t = ticketOf(s.branch, tickets); if (t) mapped.set(`${t.batch ?? ''}|${t.key}`, t); }
+    // Only a ticket with an outcome counts: an open one's post-merge is 0 and its fix tries so far.
+    for (const s of list) { const t = ticketOf(s.branch, tickets); if (t && outcomeIn(t)) mapped.set(`${t.batch ?? ''}|${t.key}`, t); }
     const rates = Object.fromEntries(CHECKED.map((g) => {
       const vals = [...mapped.values()].map(GUARDS[g].value).filter((v) => v != null);
       return [g, { tickets: vals.length, rate: mean(vals) }];
@@ -183,7 +183,7 @@ function armRows(sessions, tickets) {
       ...a, sessions: list.length, handoffs: list.reduce((x, s) => x + s.handoffs, 0), fires: list.reduce((x, s) => x + s.fires, 0),
       handoffs_per_session: list.length ? list.reduce((x, s) => x + s.handoffs, 0) / list.length : 0,
       resume_overhead_mean: mean(overheads), resume_samples: overheads.length,
-      weighted_tokens: weighted, active_hours: hours, per_active_hour: hours > 0 ? weighted / hours : null,
+      usd, unpriced: list.reduce((x, s) => x + s.unpriced, 0), active_hours: hours, usd_per_active_hour: hours > 0 ? usd / hours : null,
       sessions_on_tickets: list.filter((s) => ticketOf(s.branch, tickets)).length, guardrails: rates,
     };
   });
@@ -211,10 +211,10 @@ function recommend(arms) {
     const counts = Object.fromEntries(here.map((a) => [a.arm, a.sessions]));
     const out = { window, row: rowName(window), counts };
     const base = here.filter((a) => BASELINE_PCTS.includes(a.pct)).sort((x, y) => y.sessions - x.sessions)[0];
-    if (!base || base.sessions < MIN_SESSIONS || base.per_active_hour == null) {
+    if (!base || base.sessions < MIN_SESSIONS || base.usd_per_active_hour == null) {
       return { ...out, verdict: 'not enough data', why: `the ${BASELINE_PCTS.join('/')}% baseline has ${base?.sessions ?? 0} session(s); needs ${MIN_SESSIONS}` };
     }
-    const others = here.filter((a) => a !== base && a.sessions >= MIN_SESSIONS && a.per_active_hour != null);
+    const others = here.filter((a) => a !== base && a.sessions >= MIN_SESSIONS && a.usd_per_active_hour != null);
     if (!others.length) return { ...out, baseline: base.arm, verdict: 'not enough data', why: `no other arm has ${MIN_SESSIONS} session(s)` };
     const refused = [];
     const eligible = [base];
@@ -225,12 +225,12 @@ function recommend(arms) {
       if (bad.length) refused.push({ arm: a.arm, why: bad.map(([k, v]) => `${k} ${v.status}: ${v.why}`).join('; ') });
       else eligible.push(a);
     }
-    const best = eligible.reduce((x, y) => (y.per_active_hour < x.per_active_hour ? y : x));
-    const save = 1 - best.per_active_hour / base.per_active_hour;
+    const best = eligible.reduce((x, y) => (y.usd_per_active_hour < x.usd_per_active_hour ? y : x));
+    const save = 1 - best.usd_per_active_hour / base.usd_per_active_hour;
     return {
       ...out, baseline: base.arm, verdict: 'recommend', arm: best.arm, pct: best.pct, refused,
       why: best === base ? 'no other arm is cheaper with its guardrails measured and holding: keep the baseline'
-        : `${(100 * save).toFixed(0)}% fewer weighted tokens per active hour than the ${base.arm} baseline, guardrails holding`,
+        : `${(100 * save).toFixed(0)}% fewer dollars per active hour than the ${base.arm} baseline, guardrails holding`,
     };
   });
 }
@@ -238,17 +238,18 @@ function recommend(arms) {
 const fmt = (v, places = 0) => (v == null ? '-' : Number(v).toLocaleString('en-US', { maximumFractionDigits: places }));
 
 function reportText(rep) {
-  const head = ['arm', 'sessions', 'handoffs/session', 'resume overhead (mean, n)', 'weighted tokens/active hour', 'active hours', ...CHECKED];
+  const head = ['arm', 'sessions', 'handoffs/session', 'resume overhead (mean, n)', '$/active hour', 'active hours', ...CHECKED];
   const rows = rep.arms.map((a) => [a.arm, a.sessions, fmt(a.handoffs_per_session, 2), `${fmt(a.resume_overhead_mean)} (${a.resume_samples})`,
-    fmt(a.per_active_hour), fmt(a.active_hours, 1), ...CHECKED.map((g) => a.guardrail_status?.[g]?.status ?? `${a.guardrails[g].tickets} ticket(s)`)]);
+    a.usd_per_active_hour == null ? '-' : `$${a.usd_per_active_hour.toFixed(2)}`, fmt(a.active_hours, 1), ...CHECKED.map((g) => a.guardrail_status?.[g]?.status ?? `${a.guardrails[g].tickets} ticket(s)`)]);
   const width = head.map((h, i) => Math.max(h.length, ...rows.map((r) => String(r[i]).length)));
   const line = (r) => `  ${r.map((c, i) => String(c).padEnd(width[i])).join('  ')}`.trimEnd();
-  const w = Object.entries(WEIGHTS).map(([k, v]) => `${k} ${v}`).join(', ');
+  const unpriced = rep.arms.reduce((x, a) => x + a.unpriced, 0);
   return [
-    `HANDOFF REPORT (${rep.scope}): ${rep.sessions.length} session(s); weighted tokens weigh ${w}; active hours count each gap up to ${IDLE_CAP_MS / 60000} minutes`,
+    `HANDOFF REPORT (${rep.scope}): ${rep.sessions.length} session(s); dollars are API-equivalent at list prices (worker-cost.mjs MODEL_PRICES); active hours count each gap up to ${IDLE_CAP_MS / 60000} minutes`,
     line(head), ...rows.map(line),
+    ...(unpriced ? [`  (${unpriced} request(s) on a model with no price, left out of the dollars)`] : []),
     ...(rep.ticket_note ? [`  (${rep.ticket_note}; guardrails not measured)`] : []),
-    `  (${rep.sessions.filter((s) => s.ticket).length} session(s) on a ticket's branch; the rest measure no guardrail)`,
+    `  (${rep.sessions.filter((s) => s.ticket).length} session(s) on a ticket's branch; the rest measure no guardrail, and only tickets merged or done, parked or failed count)`,
     'RECOMMENDATION',
     ...(rep.recommendations.length ? rep.recommendations.map((r) => (r.verdict === 'recommend'
       ? `  §2 "${r.row}": ${r.pct} (${r.arm}): ${r.why}${r.refused.length ? `; not ${r.refused.map((x) => `${x.arm} (${x.why})`).join(', ')}` : ''}`

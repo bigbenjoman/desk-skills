@@ -3,8 +3,9 @@
 // covers: desk/bin/handoff-report.mjs
 // handoff-report.mjs on fixture transcripts in a scratch HOME and projects folder: the arm read from the
 // hook's injection, a compaction and its resume overhead, a resumed session taking the arm of the
-// session that named its handoff, active hours with an idle gap capped, cost weighting, per-arm
-// totals, and the recommendation against the guardrails from a per-ticket rows file.
+// session that named its handoff, active hours with an idle gap capped, dollars at list prices and
+// an unpriced model counted, per-arm totals, and the recommendation against the guardrails from a
+// per-ticket rows file, where only tickets with an outcome count.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -25,9 +26,9 @@ for (const d of [HOME, P, OTHER]) mkdirSync(d, { recursive: true });
 const T0 = Date.parse('2026-11-02T10:00:00Z');
 const at = (min) => new Date(T0 + min * 60_000).toISOString();
 const user = (min, text = 'go', branch = 'main') => ({ type: 'user', timestamp: at(min), gitBranch: branch, message: { role: 'user', content: text } });
-const req = (id, min, { uncached = 0, w5m = 0, w1h = 0, read = 0, output = 0 } = {}) => ({
+const req = (id, min, { uncached = 0, w5m = 0, w1h = 0, read = 0, output = 0, model = 'claude-opus-5-5' } = {}) => ({
   type: 'assistant', requestId: id, timestamp: at(min), isSidechain: false,
-  message: { model: 'claude-opus-5-5', usage: { input_tokens: uncached, cache_creation_input_tokens: w5m + w1h, cache_read_input_tokens: read, output_tokens: output,
+  message: { model, usage: { input_tokens: uncached, cache_creation_input_tokens: w5m + w1h, cache_read_input_tokens: read, output_tokens: output,
     cache_creation: { ephemeral_5m_input_tokens: w5m, ephemeral_1h_input_tokens: w1h } } },
 });
 const fireText = (pct, window, rel) => `desk handoff: context is at ${pct}% of a ${window.toLocaleString('en-US')}-token window (threshold ${pct}%). `
@@ -41,15 +42,17 @@ const fire = (min, pct, window, rel = '.handoffs/2026-11-02.md', id = `tool-${mi
 const compact = (min) => ({ type: 'system', subtype: 'compact_boundary', timestamp: at(min), isSidechain: false, content: 'Conversation compacted' });
 const session = (dir, name, lines) => writeFileSync(join(dir, `${name}.jsonl`), `${lines.flat().map((l) => (typeof l === 'string' ? l : JSON.stringify(l))).join('\n')}\n`);
 
-// One hour of work (a line every 5 minutes), one request of `cost` uncached tokens, on `branch`.
-const hour = (name, cost, branch, armAt = null) => session(P, name, [
-  ...Array.from({ length: 12 }, (_, i) => user(i * 5, 'go', branch)), req(`${name}-r`, 60, { uncached: cost }), ...(armAt ? fire(30, ...armAt) : []),
+// One hour of work (a line every 5 minutes), one Opus request of `cost` uncached tokens ($4 a
+// million), on `branch`; `extra` more lines.
+const hour = (name, cost, branch, armAt = null, extra = []) => session(P, name, [
+  ...Array.from({ length: 12 }, (_, i) => user(i * 5, 'go', branch)), req(`${name}-r`, 60, { uncached: cost }), ...(armAt ? fire(30, ...armAt) : []), ...extra,
 ]);
 for (let i = 1; i <= 5; i += 1) {
-  hour(`base${i}`, 1000, `feat/${100 + i}-base`, [45, 200_000]);
-  hour(`twenty${i}`, 600, `fix/twenty-${i}`, [20, 200_000]);
-  hour(`thirty${i}`, 300, `fix/thirty-${i}`, [30, 200_000]);
-  hour(`plain${i}`, 100, 'main');
+  hour(`base${i}`, 1_000_000, `feat/${100 + i}-base`, [45, 200_000]);
+  hour(`twenty${i}`, 600_000, `fix/twenty-${i}`, [20, 200_000]);
+  hour(`thirty${i}`, 300_000, `fix/thirty-${i}`, [30, 200_000]);
+  // One request on a model with no price: counted, and left out of the dollars.
+  hour(`plain${i}`, 100_000, 'main', null, i === 1 ? [req('plain1-x', 61, { uncached: 5_000_000, model: 'some-other-model' })] : []);
 }
 
 // A compaction: the first request after the boundary is its resume overhead; the second is not.
@@ -61,12 +64,15 @@ session(P, 'resumed', [user(2, 'Read .handoffs/2026-11-02-2.md and continue from
 // Another project's session: read with --all only.
 session(OTHER, 'elsewhere', [user(0), req('o1', 1, { uncached: 1 }), fire(2, 45, 200_000)]);
 
-const ticket = (key, branch, fixTries) => ({ key, batch: null, branch, fix_tries: fixTries, parks_by_class: {}, post_merge: 0 });
+// A ticket with its outcome: merged and done, unless `open` leaves it in flight.
+const ticket = (key, branch, fixTries, open = false) => ({ key, batch: null, branch, fix_tries: fixTries, parks_by_class: {}, post_merge: 0,
+  ...(open ? { state: 'running', merged_at: null } : { state: 'done', merged_at: '2026-11-03T10:00:00Z' }) });
 const baseTickets = [1, 2, 3, 4, 5].map((i) => ticket(String(100 + i), null, 1));
 const write = (name, rows) => { const f = join(T, name); writeFileSync(f, JSON.stringify(rows)); return f; };
 const HOLDS = write('holds.json', [...baseTickets, ...[1, 2, 3, 4, 5].map((i) => ticket(`T${i}`, `fix/twenty-${i}`, 1)),
   ...[1, 2, 3, 4, 5].map((i) => ticket(`H${i}`, `fix/thirty-${i}`, 5))]);
 const BASE_ONLY = write('base-only.json', baseTickets);
+const IN_FLIGHT = write('in-flight.json', [...baseTickets, ...[1, 2, 3].map((i) => ticket(`T${i}`, `fix/twenty-${i}`, 0, true))]);
 
 const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('DESK_') && k !== 'CLAUDE_CONFIG_DIR')), HOME, DESK_REPO_ROOT: '/x/repo' };
 const run = (...args) => spawnSync(process.execPath, [BIN, '--root', ROOT, ...args], { cwd: T, env, encoding: 'utf8' });
@@ -84,14 +90,15 @@ t('a session starting from a handoff file is resumed, its first request the over
   [s('resumed').resumed, s('resumed').handoffs, s('resumed').resume_overheads], [true, 1, [1210]]);
 t('a resumed session takes the arm of the session that named its handoff', s('resumed').arm, { pct: 50, window: 1_000_000 });
 t('active hours count an idle gap as 5 minutes', +s('resumed').active_hours.toFixed(4), +(6 / 60).toFixed(4));
-t('weights: input 1, 5m write 1.25, 1h write 2, read 0.1, output 5, a repeated request once at its largest output',
-  s('resumed').weighted_tokens, 10 + 125 + 200 + 100 + 50);
+t('dollars at Opus list prices (a cache read 0.05 of input), a repeated request once at its largest output',
+  Math.round(s('resumed').usd * 1e6), 10 * 4 + 100 * 5 + 100 * 8 + 1000 * 0.2 + 10 * 20);
+t('a request on a model with no price is counted, not priced', [s('plain1').unpriced, Math.round(s('plain1').usd * 100)], [1, 40]);
 t('a session maps to a ticket by its queue branch or by the key its branch names', [s('twenty2').ticket, s('base3').ticket, s('plain1').ticket], ['T2', '103', null]);
 
 const arm = (name) => rep.arms.find((a) => a.arm === name);
-t('per-arm sessions and weighted tokens per active hour',
-  ['45% of 200,000', '20% of 200,000', '30% of 200,000', 'unknown'].map((k) => [arm(k).sessions, Math.round(arm(k).per_active_hour)]),
-  [[5, 1000], [5, 600], [5, 300], [5, 100]]);
+t('per-arm sessions, dollars per active hour (in cents) and unpriced requests',
+  ['45% of 200,000', '20% of 200,000', '30% of 200,000', 'unknown'].map((k) => [arm(k).sessions, Math.round(arm(k).usd_per_active_hour * 100), arm(k).unpriced]),
+  [[5, 400, 0], [5, 240, 0], [5, 120, 0], [5, 40, 1]]);
 t('per-arm handoffs per session and mean resume overhead',
   [arm('50% of 1,000,000').sessions, arm('50% of 1,000,000').handoffs_per_session, arm('50% of 1,000,000').resume_overhead_mean, arm('50% of 1,000,000').resume_samples],
   [2, 1, 2255, 2]);
@@ -108,9 +115,14 @@ const unmeasured = rec(json('--tickets', BASE_ONLY), 200_000);
 t('an arm whose guardrails are not measured is not recommended on cost alone: keep the baseline',
   [unmeasured.pct, unmeasured.refused.map((x) => [x.arm, x.why.includes('not measured')]).sort()], [45, [['20% of 200,000', true], ['30% of 200,000', true]]]);
 
+const open = rec(json('--tickets', IN_FLIGHT), 200_000).refused.find((x) => x.arm === '20% of 200,000');
+t('tickets still in flight do not make an arm\'s guardrail measured', open?.why ?? 'recommended', 'fix-tries-parks not measured: 0 ticket(s) on this arm, 5 on the baseline; needs 3 each; post-merge not measured: 0 ticket(s) on this arm, 5 on the baseline; needs 3 each');
+
 const noTickets = run();
 t('without a ticket file and with no desk state, it still reports, guardrails not measured',
   [noTickets.status, /RECOMMENDATION\n {2}§2 "Handoff at context %": 45 /.test(noTickets.stdout)], [0, true]);
+t('the text report gives dollars per active hour and counts the unpriced requests',
+  [/\$\/active hour/.test(noTickets.stdout), / {2}45% of 200,000 .* \$4\.00 /.test(noTickets.stdout), noTickets.stdout.includes('(1 request(s) on a model with no price, left out of the dollars)')], [true, true, true]);
 t('--all reads every project folder', json('--all', '--tickets', BASE_ONLY).sessions.length, 23);
 t('the text report lists the guidance it took the arms from, with links',
   [noTickets.stdout.includes('\nGUIDANCE\n'), noTickets.stdout.split('\n').filter((l) => /^ {2}- .+: https:\/\/\S+$/.test(l)).length >= 5, noTickets.stdout.includes('No source measures a handoff at 20-30%')],
