@@ -82,15 +82,24 @@ const out = (x) => console.log(typeof x === 'string' ? x : JSON.stringify(x));
 if (a[0] === 'pr' && a[1] === 'list') {
   out(Object.entries(prs).filter(([, p]) => p.state === at('--state') && (!a.includes('--base') || p.base === at('--base'))
       && (!a.includes('--author') || (p.author ?? 'tester') === at('--author')))
-    .map(([n, p]) => ({ number: Number(n), title: 't', headRefName: p.head, baseRefName: p.base, isDraft: p.draft, headRefOid: p.sha, mergeStateStatus: p.mergeState ?? 'CLEAN' })));
+    .map(([n, p]) => ({ number: Number(n), title: p.title ?? 't', headRefName: p.head, baseRefName: p.base, isDraft: p.draft, headRefOid: p.sha, mergeStateStatus: p.mergeState ?? 'CLEAN' })));
 } else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'state') {
   out(String(prs[a[2]]?.state ?? '').toUpperCase());
+} else if (a[0] === 'pr' && a[1] === 'view' && at('--json') === 'mergedAt,headRefName,baseRefName') {
+  // GitHub's merge time, a PR's "mergedAt" or gh's unset time, its branch and its base, tab-separated.
+  out((prs[a[2]]?.mergedAt ?? '0001-01-01T00:00:00Z') + '\t' + (prs[a[2]]?.head ?? '') + '\t' + (prs[a[2]]?.base ?? ''));
 } else if (a[0] === 'pr' && a[1] === 'view') {
   const p = prs[a[2]];
   out({ number: Number(a[2]), title: p.title ?? 't', headRefOid: p.sha, headRefName: p.head, baseRefName: p.base, isDraft: p.draft,
     state: p.state.toUpperCase(), mergeable: p.mergeState === 'DIRTY' ? 'CONFLICTING' : 'MERGEABLE', mergeStateStatus: p.mergeState ?? 'CLEAN', reviewDecision: (p.feedback ?? '').split(' ')[0], autoMergeRequest: null,
     statusCheckRollup: p.checks.map(([name, conclusion, run, job, startedAt]) => ({ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion, workflowName: 'ci', startedAt,
       detailsUrl: run ? 'https://github.com/acme/widgets/actions/runs/' + run + '/job/' + (job ?? run) : undefined })) });
+} else if (a[0] === 'api' && fs.existsSync('$T/api-out.json') && JSON.parse(fs.readFileSync('$T/api-out.json', 'utf8'))[a[1]] !== undefined) {
+  // api-out.json: an endpoint's output as gh prints it with its --jq already applied (the base reads
+  // stale-base.mjs makes, base-reads.mjs); a null one is a read GitHub refuses.
+  const v = JSON.parse(fs.readFileSync('$T/api-out.json', 'utf8'))[a[1]];
+  if (v === null) { console.error('gh: Server Error (HTTP 502)'); process.exit(1); }
+  out(v);
 } else if (a[0] === 'api' && /check-runs\/\d+\/annotations/.test(a[1] ?? '')) {
   // A job's annotations: annotations.json maps a job id to the error its run gave, or to its annotations.
   const id = /check-runs\/(\d+)/.exec(a[1])[1];
@@ -137,8 +146,10 @@ if (a[0] === 'pr' && a[1] === 'list') {
   const sha = /^[0-9a-f]{40}$/.test(m[1]) ? m[1] : (b.tips ?? {})[decodeURIComponent(m[1])] ?? b.tip;
   const c = b.commits[sha];
   if (!c) { console.error('gh: Not Found (HTTP 404)'); process.exit(1); }
-  if (m[2]) out((c.runs ?? []).map(([name, status, conclusion, url]) => ({ name, status, conclusion, url: url ?? null })));
-  else out({ sha, parent: c.parent ?? null });
+  // As gh api PATH -i prints it: the status line, a blank line, the REST body (base-red.mjs condGet).
+  const http = (body) => process.stdout.write('HTTP/2.0 200 OK\r\n\r\n' + JSON.stringify(body));
+  if (m[2]) http({ check_runs: (c.runs ?? []).map(([name, status, conclusion, url]) => ({ name, status, conclusion, details_url: url ?? null })) });
+  else http({ sha, parents: c.parent ? [{ sha: c.parent }] : [] });
 } else if (a[0] === 'api' && a.join(' ').includes('/contents/')) {
   // A file at a ref, from contents/<path>; one with no file there is GitHub's 404.
   const f = '$T/contents/' + decodeURIComponent(/contents\/([^?]+)/.exec(a.join(' '))[1]);
@@ -161,6 +172,8 @@ if (a[0] === 'pr' && a[1] === 'list') {
   fs.writeFileSync(F, JSON.stringify(prs));
 } else if (a[0] === 'pr' && a[1] === 'merge') {
   const p = prs[a[2]];
+  // gh.hang: a merge call that does not return for the seconds it holds (30 when empty), merging nothing before then.
+  if (fs.existsSync('$T/gh.hang')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, (Number(fs.readFileSync('$T/gh.hang', 'utf8')) || 30) * 1000);
   // "refuse": a PR GitHub will not merge, whatever its head.
   if (!p || p.state !== 'open' || p.refuse || at('--match-head-commit') !== p.sha) { console.error('merge refused'); process.exit(1); }
   p.state = 'merged';

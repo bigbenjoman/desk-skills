@@ -65,7 +65,7 @@ function stateEvent(from, now, at) {
       return { type: 'parked', data: { ...p, kind: PARK_KINDS.includes(p.kind) ? p.kind : parkKindOf(p.question),
         question: text(p.question), approve: p.approve && typeof p.approve === 'object' ? p.approve : null, since: text(p.since) ?? at, deadline: text(p.deadline) } };
     }
-    case 'done': return { type: 'finished', data: { pr: count(now.result?.pr) } };
+    case 'done': return { type: 'finished', data: { pr: count(now.result?.pr), fields: null } };
     case 'failed': return { type: 'failed', data: { subtype: text(now.failed?.subtype) ?? 'unknown' } };
     default: return null;
   }
@@ -96,6 +96,33 @@ function stateEvents(was, now, at) {
 }
 // The typed events whose replay clears a ticket's park (ticket-ledger.mjs apply).
 const CLEARS_PARK = ['admitted', 'requeued', 'spawned', 'finished', 'unparked'];
+
+// The fields a ticket is recorded done with (batch-state.mjs doneOnPr, and the branch queue.mjs finish
+// sets where the ticket had none): written with a finished event, they go in its data, never a legacy_set.
+export const DONE_FIELDS = ['park', 'result', 'draft_pr', 'handoff_stage', 'branch'];
+
+// The done fields among `fields`, taken out of them into finished event `e`.
+function doneFields(e, fields) {
+  const picked = Object.fromEntries(DONE_FIELDS.filter((f) => own(fields, f)).map((f) => [f, fields[f]]));
+  if (!Object.keys(picked).length) return;
+  e.data.fields = picked;
+  for (const f of Object.keys(picked)) delete fields[f];
+}
+
+// The merged event for ticket `now`, whose state after this write's state events is `from`, when its
+// merge record (queue.mjs merged) changed in `fields` and names who merged which PR at which head onto
+// which base: dated the merge's own time, and taken out of `fields` with merged_at where the event's
+// replay leaves it as queue.json keeps it (a first merge). A record missing any of them (a merge recorded
+// with no PR, by an older caller) is recorded as the field. -> the event, or null.
+function mergedEvent(was, now, fields, from, { batch, key }) {
+  const m = now.merge;
+  if (!own(fields, 'merge') || from !== 'done' || !m || typeof m !== 'object' || !text(m.at)) return null;
+  const e = { type: 'merged', batch, key, data: { by: m.by, pr: m.pr, head_sha: m.head_sha, base: m.base }, at: m.at };
+  if (invalid(e) || Object.keys(m).some((f) => !own(e.data, f) && f !== 'at')) return null;
+  delete fields.merge;
+  if (own(fields, 'merged_at') && was?.merged_at == null && same(now.merged_at, m.at)) delete fields.merged_at;
+  return e;
+}
 
 // The triage questions ticket `was` gained as answered in becoming `now`, each an answered event, taken
 // out of the fields `fields` records with it. Only answers added to the list it had, on a ticket already
@@ -185,7 +212,6 @@ export function queueEvents(before, after, { batch, archived = {}, elsewhere = (
       } else if (own(fields, 'state')) {
         const { events: typed, reached, to } = stateEvents(was, now, at);
         if (typed.length && typed.every((e) => !invalid({ ...e, batch, key }))) {
-          for (const e of typed) ev(key, e.type, e.data);
           from = to;
           if (reached) delete fields.state;
           // A park the queue keeps is laid back over one an event's replay cleared, and one a parked
@@ -193,11 +219,16 @@ export function queueEvents(before, after, { batch, archived = {}, elsewhere = (
           const parked = typed.findLast((e) => e.type === 'parked');
           if (parked && same(parkOf(parked.data), now.park)) delete fields.park;
           else if (now.park != null && typed.some((e) => CLEARS_PARK.includes(e.type))) fields.park = now.park;
+          const finished = typed.find((e) => e.type === 'finished');
+          if (finished) doneFields(finished, fields);
+          for (const e of typed) ev(key, e.type, e.data);
         }
       }
       for (const e of holdEvents(was, now, fields, from, was === undefined ? logged(key) : null)) ev(key, e.type, e.data);
       for (const qid of newlyAnswered(was, now, fields)) ev(key, 'answered', { qid });
       for (const e of waitEvents(was, now, fields)) ev(key, e.type, e.data);
+      const merged = mergedEvent(was, now, fields, from, { batch, key });
+      if (merged) out.push(merged);
       if (Object.keys(fields).length) ev(key, 'legacy_set', { fields });
     }
     if (own(archived, key)) ev(key, 'archived', {});

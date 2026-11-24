@@ -33,6 +33,9 @@ done
 printf '# and calls newThing from desk-env.mjs\n' >> "$R/tests/test_c.sh"
 printf 'export const one = 1;\n\nexport function two() {\n  return 2;\n}\n' > "$R/desk/bin/desk-env.mjs"
 printf 'echo "ok suite lint"\n' > "$R/tests/test_lint.sh"
+# Recorded seconds: test_a.sh, test_b.sh and test_lint.sh total 300, a small run; test_e2e.sh (added
+# later) takes them to 301; test_c.sh has no record.
+printf '{ "seconds": { "test_a.sh": 100, "test_b.sh": 100, "test_lint.sh": 100, "test_e2e.sh": 1 } }\n' > "$R/tests/suite_durations.json"
 git -C "$R" init -q -b main; git -C "$R" add -A; git -C "$R" commit -q -m init
 git -C "$R" update-ref refs/remotes/origin/main HEAD
 git -C "$R" checkout -q -b fix/x
@@ -90,13 +93,18 @@ git -C "$R" reset -q --hard HEAD~1
 printf '\n// The second thing.\nexport function newThing() {\n  return 3;\n}\n' >> "$R/desk/bin/desk-env.mjs"; git -C "$R" commit -q -am 'add newThing'
 related
 check "DS-818 AC2 a new desk-env.mjs export runs the suites using it, with the branch's other suites" '[ $rc -eq 0 ] && [[ "$out" == *"scope some against origin/main: test_a.sh test_c.sh test_lint.sh"* ]] && ! ran b'
-# AC3: changing or removing an existing export runs every suite.
+# DS-999: changing an existing export runs the suites reaching it, and the scope line names it; CI,
+# without --by-name, still runs every suite. Removing one runs every suite.
 printf 'export const one = 9;\n\nexport function two() {\n  return 2;\n}\n' > "$R/desk/bin/desk-env.mjs"
 related
-check "DS-818 AC3 a changed desk-env.mjs export runs every suite" '[ $rc -eq 0 ] && ran b && [[ "$out" == *"(desk/bin/desk-env.mjs is shared by every suite), so every suite runs"* ]]'
+check "DS-999 AC1 a changed desk-env.mjs export runs the suites reaching it, not every suite" '[ $rc -eq 0 ] && ran a && ! ran b'
+check "DS-999 AC6 the scope line names the changed names it narrowed on" '[[ "$out" == *"related: scope some against origin/main: test_a.sh test_lint.sh (narrowed on the changed names in desk/bin/desk-env.mjs: one)"* ]]'
+: > "$T/gh_ci"
+(cd "$R" && GITHUB_OUTPUT="$T/gh_ci" node tests/scope_sections.mjs --base origin/main --worktree --l3-direct --github-output >/dev/null)
+check "DS-999 AC4 without --by-name, as CI runs it, the same change runs every suite" 'grep -qx "scope=full" "$T/gh_ci"'
 printf 'export function two() {\n  return 2;\n}\n' > "$R/desk/bin/desk-env.mjs"
 related
-check "DS-818 AC3 a removed desk-env.mjs export runs every suite" '[ $rc -eq 0 ] && ran b && [[ "$out" == *"(desk/bin/desk-env.mjs is shared by every suite), so every suite runs"* ]]'
+check "DS-818 AC3 a removed desk-env.mjs export runs every suite" '[ $rc -eq 0 ] && ran b && [[ "$out" == *"(desk/bin/desk-env.mjs is shared by every suite, and the change is not narrowed by name: one was removed or renamed), so every suite runs"* ]]'
 git -C "$R" reset -q --hard HEAD~1
 
 # DS-818 AC8: related.sh and CI's pull request plan choose the same suites for one branch. main moves
@@ -157,7 +165,7 @@ git -C "$R" update-ref refs/remotes/origin/main main
 mkdir -p "$HOME/.claude/desk/bin"; WL="$HOME/.claude/desk/bin/with-lock.sh"; CALLS="$T/calls"
 cat > "$WL" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\ncwd %s\n' "$*" "$(pwd -P)" >> "$STUB_CALLS"
+printf '%s\ncwd %s\nsmall %s\n' "$*" "$(pwd -P)" "${DESK_LIGHT_SMALL:-}" >> "$STUB_CALLS"
 name=$1; shift; t=""; [ "$1" = --timeout ] && { t=$2; shift 2; }; [ "$1" = -- ] && shift
 case "${STUB:-run}" in
   wait) echo "with-lock.sh: waiting for $name lock (all 1 slots held): ~/other: bash tests/run.sh, held 2m" >&2 ;;
@@ -167,10 +175,37 @@ export DESK_LOCK_HELD="$name"; exec "$@"
 EOF
 export STUB_CALLS="$CALLS"
 : > "$CALLS"; out=$(cd "$R" && STUB='wait' bash tests/related.sh 2>&1); rc=$?
-check "DS-924 AC1 it takes a test slot through the wrapper, with an hour's deadline" '[[ "$(head -n 1 "$CALLS")" == "test --timeout 3600 -- env DESK_LOCK_HELD=test "*"bash $R/tests/related.sh" ]]'
+check "DS-924 AC1 it takes a test slot through the wrapper, with an hour's deadline" '[[ "$(head -n 1 "$CALLS")" == "test --timeout 3600 -- env DESK_LOCK_HELD=test "*"bash $R/tests/run.sh test_a.sh test_b.sh test_lint.sh" ]]'
+check "DS-980 AC1 it decides its scope before asking for the slot, and asks as a small run at 300 s" \
+  '[ "$(sed -n 3p "$CALLS")" = "small 1" ] && [[ "$out" == *"related: scope some against origin/main: test_a.sh test_b.sh test_lint.sh"*"related: a small run (300s of recorded suite time, small at 300s or less)"*"related: taking a test slot first"* ]]'
 check "DS-924 AC1 it says it waits, and on whom, and runs once it holds the slot" \
   '[ $rc -eq 0 ] && [[ "$out" == *"related: taking a test slot first, waiting up to 3600s for one"*"with-lock.sh: waiting for test lock (all 1 slots held): ~/other"* ]] && ran a && ! ran c'
 check "DS-924 AC1 the wrapper is called once: the run inside the slot takes no second" '[ "$(grep -c -- --timeout "$CALLS")" -eq 1 ]'
+printf '. "$ROOT/lib/a.sh"\necho top\n' > "$R/lib/top.sh"
+: > "$CALLS"; out=$(cd "$R" && bash tests/related.sh 2>&1); rc=$?
+check "DS-980 AC1 past 300 s of recorded suite time it asks as a large run" \
+  '[ $rc -eq 0 ] && ran e2e && [ "$(sed -n 3p "$CALLS")" = "small " ] && [[ "$out" == *"related: a large run (301s of recorded suite time, small at 300s or less)"* ]]'
+git -C "$R" checkout -q -- lib/top.sh
+printf 'echo c9\n' > "$R/lib/c.sh"
+: > "$CALLS"; out=$(cd "$R" && bash tests/related.sh 2>&1); rc=$?
+check "DS-980 AC5 a selected suite with no recorded duration makes the run large" \
+  '[ $rc -eq 0 ] && ran c && [ "$(sed -n 3p "$CALLS")" = "small " ] && [[ "$out" == *"related: a large run (test_c.sh has no recorded duration, small at 300s or less)"* ]]'
+git -C "$R" checkout -q -- lib/c.sh
+printf 'x\n' > "$R/.gitignore"
+: > "$CALLS"; out=$(cd "$R" && bash tests/related.sh 2>&1); rc=$?
+check "DS-980 AC6 a full scope asks as a large run, with no size line" \
+  '[ $rc -eq 0 ] && ran b && [ "$(sed -n 3p "$CALLS")" = "small " ] && [[ "$(head -n 1 "$CALLS")" == *"bash $R/tests/run.sh" ]] && [[ "$out" != *"a small run"* ]]'
+git -C "$R" clean -q -f .gitignore
+printf 'process.exit(1);\n' > "$R/tests/scope_sections.mjs"
+: > "$CALLS"; out=$(cd "$R" && bash tests/related.sh 2>&1); rc=$?
+check "DS-980 AC6 scope_sections.mjs failing asks for the slot as a full, large run" \
+  '[ $rc -eq 0 ] && ran b && [ "$(sed -n 3p "$CALLS")" = "small " ] && [[ "$out" == *"related: scope_sections.mjs failed against origin/main, so every suite runs"* ]]'
+cp "$T/scope_sections.mjs" "$R/tests/scope_sections.mjs"
+git -C "$R" update-ref -d refs/remotes/origin/main
+: > "$CALLS"; out=$(cd "$R" && bash tests/related.sh 2>&1); rc=$?
+check "DS-980 AC6 with no merge base it asks for the slot as a full, large run" \
+  '[ $rc -eq 0 ] && ran b && [ "$(sed -n 3p "$CALLS")" = "small " ] && [[ "$out" == *"related: no merge base with origin/main, so every suite runs"* ]]'
+git -C "$R" update-ref refs/remotes/origin/main main
 : > "$CALLS"; out=$(cd "$R" && DESK_RELATED_WAIT=90 bash tests/related.sh 2>&1); rc=$?
 check "DS-924 DESK_RELATED_WAIT sets the deadline in seconds" '[ $rc -eq 0 ] && [[ "$(head -n 1 "$CALLS")" == "test --timeout 90 -- "* ]]'
 out=$(cd "$R" && DESK_RELATED_WAIT=1h bash tests/related.sh 2>&1); rc=$?

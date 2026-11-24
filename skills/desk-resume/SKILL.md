@@ -27,7 +27,9 @@ carries on in the same turn. This command is still the way back in after a `/cle
    because that handoff is unwritten, stale or already resumed. List the `.md` files in `<repo root>/.handoffs/` changed in
    the last day that do not start `<!-- desk handoff placeholder`, with each one's first lines, and
    ask which to resume, or say there is none and stop.
-2. **Read it whole**, along with any file it says to read first.
+2. **Read it whole**, along with any file it says to read first. **If it has a `Session name:`
+   line, your first output is the line `/rename <that name>`**, on its own, for the person to run:
+   `/clear` dropped the name, and only the person can run `/rename`.
 3. **Treat its decisions as made and its open questions as still open.** Do not re-ask what it
    settled, and do not re-run a step it records as done unless it says to check it.
 4. **Re-check external state before acting**: the branch and worktree it names still exist, a PR it
@@ -41,3 +43,4 @@ carries on in the same turn. This command is still the way back in after a `/cle
 - Asking the person what to do next when the handoff names a next step
 - Starting work the handoff does not name before its next step is done
 - Resuming a handoff the context did not name without the person choosing it
+- Burying the `/rename` line after other output, or leaving it out when the handoff names the session

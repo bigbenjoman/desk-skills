@@ -25,5 +25,10 @@ t('the loop keeps running passes for every other ticket', take.includes('Keep ru
 t('a carousel stays for Stage 3 and a user in the conversation', take.includes("A carousel stays right where nothing waits on it: Stage 3's round, before the loop, and a question the user asks you, or answers, while they are in the conversation with you."), true);
 t('the paragraph on questions with no recommendation moved whole', take.includes('## Questions with no recommendation Two have no recommendation to give') && !core.includes('Two have no recommendation to give'), true);
 
+t('#1341 a step only the person takes is recorded as an ask with a recommended default', take.includes('**A step only the person takes** (file, sign in, merge by hand): record it at once with `needs-you.mjs ask <repo> "<the step, and your recommended default>"`'), true);
+t('#1341 a wait on tickets is recorded with --until, never a step still owed after they merge', take.includes('One that waits on tickets happening (`--until <TICKET>[,<TICKET>...]`) is dropped by the pass once they are all merged or done') && take.includes('never for a step the person still owes once they merge'), true);
+t('#1341 a wait on the person lives only as a needs-you item, never in the loop prompt', take.includes('**A wait on the person lives only as a needs-you item, never as a line in your `/loop` prompt.**') && take.includes('Your loop prompt, a pending note, a handoff or a summary is read by no one but you'), true);
+t('#1341 an admit is the desk\'s own step, never held for the person to say admit', take.includes('**An admit is the desk\'s own step, never a wait on the person.**') && take.includes('Never hold one for the person to say "admit"'), true);
+
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }
 console.log('all passed');

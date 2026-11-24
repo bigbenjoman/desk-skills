@@ -69,6 +69,8 @@ const hasFlock = spawnSync('sh', ['-c', 'command -v flock'], { encoding: 'utf8' 
 const caseEnv = ({ leases, locks, profile, extra = {} }) => {
   const e = { ...process.env, HOME: S, DESK_LEASE_DIR: leases, DESK_LOCK_DIR: locks, DESK_MACHINE: profile, DESK_CONFIG: join(S, 'no-config.md'), ...extra };
   delete e.DESK_TEST_LOCK_SLOTS;
+  // run.sh tells the suites it runs that they hold a job token; each case is an outer run.
+  if (!('TEST_JOB_TOKENS' in extra)) delete e.TEST_JOB_TOKENS;
   return e;
 };
 const wl = (env, args, opts = {}) => spawnSync('bash', [script, ...args], { env, encoding: 'utf8', ...opts });
@@ -76,14 +78,15 @@ const wl = (env, args, opts = {}) => spawnSync('bash', [script, ...args], { env,
 const held = [];
 // `cmd` turns the mark file into the command, which must create it and then wait for `<mark>.go`.
 const holdSh = (mark) => ['sh', '-c', `: > '${mark}'; while [ ! -e '${mark}.go' ]; do sleep 0.05; done`];
-const hold = async (env, args, opts = {}, cmd = holdSh) => {
+// `ms` is how long to wait for the command to start: 0 returns at once, for a run that will wait.
+const hold = async (env, args, opts = {}, cmd = holdSh, { ms = 10_000 } = {}) => {
   const mark = join(S, `held-${n++}`);
   const c = spawn('bash', [script, ...args, '--', ...cmd(mark)], { env, stdio: ['ignore', 'ignore', 'pipe'], ...opts });
   let err = ''; c.stderr.on('data', (d) => { err += d; });
   // 'exit', not 'close': a wrapper SIGKILLed leaves its stderr open in the command it ran.
   const h = { c, mark, err: () => err, release: () => writeFileSync(`${mark}.go`, ''), done: new Promise((r) => c.on('exit', (code) => r(code))) };
   held.push(h);
-  for (let i = 0; i < 200 && !existsSync(mark); i++) await sleep(50);
+  for (let i = 0; i < ms / 50 && !existsSync(mark); i++) await sleep(50);
   return h;
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -356,6 +359,58 @@ try {
       }
     } else console.log('skip DS-975 AC6 with a failing sysctl: this is not macOS (test_leases.mjs covers a failing /proc read)');
   }
+  // With the slot kind on, runs waiting for a pool are served oldest first, told their place
+  // as they wait, and told it again as they give up.
+  {
+    const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: machine({ 'lease-kinds': 'slot=on', 'test-lock-slots': '1' }) });
+    const h = await hold(env, ['light']);
+    const a = await hold(env, ['light'], {}, holdSh, { ms: 0 });
+    await until(() => a.err().includes('waiting'));
+    const b = await hold(env, ['light'], {}, holdSh, { ms: 0 });
+    await until(() => b.err().includes('waiting'));
+    t('DS-981 AC2 each waiting run says its place in the queue and how many hold the pool',
+      [/waiting for the light slot, position 1 of 1 in its queue, 1 of 1 slot held: /.test(a.err()), /position 2 of 2 in its queue, 1 of 1 slot held/.test(b.err())], [true, true]);
+    h.release(); await h.done;
+    await until(() => existsSync(a.mark) || existsSync(b.mark));
+    await sleep(2500);
+    t('DS-981 AC1 the slot freed goes to the run that waited first, and the later one waits on', [existsSync(a.mark), existsSync(b.mark)], [true, false]);
+    a.release(); await a.done;
+    await until(() => existsSync(b.mark));
+    t('DS-981 AC1 then the next', existsSync(b.mark), true);
+    const r = wl(env, ['light', '--timeout', '2', '--', 'true']);
+    t('DS-981 AC6 a run giving up at its deadline exits 75 naming its place then',
+      [r.status, /gave up waiting for the light slot after 2s at position 1 of 1 in its queue, 1 of 1 slot held: /.test(r.stderr)], [75, true]);
+    b.release(); await b.done;
+  }
+  // DS-998: with the slot kind on, a run on the lock files with no lease (an older wrapper, played by a
+  // run with the kind off on the same lock directory) holds its slot; and every grant line names the release.
+  {
+    const leases = fresh('l'), locks = fresh('k');
+    const home = fresh('h'); writeFileSync(join(home, 'installed.json'), JSON.stringify({ commit: 'c0ffee1' }));
+    const ON1 = machine({ 'lease-kinds': 'slot=on', 'test-lock-slots': '1' });
+    const on = caseEnv({ leases, locks, profile: ON1, extra: { DESK_HOME: home } });
+    const old = await hold(caseEnv({ leases, locks, profile: OFF1, extra: { PATH: noFlock, DESK_HOME: home } }), ['test']);
+    const ran = join(S, `ran-${n++}`);
+    const r = wl(on, ['test', '--timeout', '2', '--', 'sh', '-c', `: > '${ran}'`]);
+    t('DS-998 AC1 every heavy slot held by a lock-file run with no lease: an on run waits and is not granted',
+      [r.status, existsSync(ran), /the lock file \S*\/desk-test\.lock\.d \(pid \d+, no lease\)/.test(r.stderr), leaseList(on).length], [75, false, true, 0]);
+    old.release(); await old.done;
+    // A flock holder file outlives its run: one naming a pid that has exited holds nothing.
+    const gone = spawnSync('sh', ['-c', 'echo $$'], { encoding: 'utf8' }).stdout.trim();
+    writeFileSync(join(locks, 'desk-test.lock.pid'), `${gone}\n`);
+    const r2 = wl(on, ['test', '--timeout', '2', '--', 'sh', '-c', `: > '${ran}'`]);
+    t('DS-998 AC2 a lock file whose holder has exited does not count: the on run is granted', [r2.status, existsSync(ran)], [0, true]);
+    t('DS-998 AC4 the lock-file run\'s grant line and the lease\'s both name the installed release',
+      leaseLog(leases).filter((e) => e.event === 'grant').map((e) => [e.id != null, e.release]), [[false, 'c0ffee1'], [true, 'c0ffee1']]);
+    for (const [mode, profile] of [['off', OFF1], ['shadow', SHADOW1]]) {
+      const l = fresh('l');
+      wl(caseEnv({ leases: l, locks: fresh('k'), profile, extra: { DESK_HOME: home } }), ['test', '--', 'true']);
+      t(`DS-998 AC4 kind ${mode}: the grant line names the installed release`, leaseLog(l).filter((e) => e.event === 'grant').map((e) => e.release), ['c0ffee1']);
+    }
+    const l = fresh('l');
+    const r3 = wl(caseEnv({ leases: l, locks: fresh('k'), profile: ON1, extra: { DESK_HOME: fresh('h') } }), ['test', '--', 'true']);
+    t('DS-998 AC5 no readable release record: the run is granted, its grant line naming the release unknown', [r3.status, leaseLog(l).filter((e) => e.event === 'grant').map((e) => e.release)], [0, ['unknown']]);
+  }
   // DS-977: headroom admission in shadow judges a run that waits, and changes nothing it is granted.
   {
     const admitLines = (env) => leaseLog(env.DESK_LEASE_DIR).filter((e) => e.event === 'would-admit' || e.event === 'would-deny');
@@ -403,6 +458,97 @@ try {
       const r = wl(env, ['light', '--timeout', '3', '--', 'true']);
       t('DS-977 AC1 the light pool grants 1, and no admission line is logged', [r.status, admitLines(env)], [75, []]);
       a.release(); b.release(); h.release(); await a.done; await b.done; await h.done;
+    }
+  }
+
+  // ---- DS-984: with job tokens on, a light run holds no light slot ------------------------------
+  // A scratch repo whose desk/ is the real one, so its tests/run.sh has job-token.mjs beside it and takes
+  // its suites' tokens itself; the fake run.sh records what it was told, then waits for its go file.
+  {
+    const jrepo = fresh('jrepo');
+    mkdirSync(join(jrepo, 'tests'));
+    symlinkSync(join(root, 'desk'), join(jrepo, 'desk'));
+    const runSh = join(jrepo, 'tests', 'run.sh');
+    writeFileSync(runSh, ': > "$1"; echo "${DESK_LOCK_HELD:-} ${DESK_LOCK_CLASS:-} ${TEST_JOB_TOKENS:-}" > "$1.env"; while [ ! -e "$1.go" ]; do sleep 0.05; done\n');
+    const asRun = (mark) => ['bash', runSh, mark];
+    // related.sh's form: the run.sh behind env and an assignment.
+    const asRelated = (mark) => ['env', 'DESK_LOCK_HELD=test', 'bash', runSh, mark];
+    const told = (h) => readFileSync(`${h.mark}.env`, 'utf8').trim();
+    const lightFiles = (env) => readdirSync(env.DESK_LOCK_DIR).filter((f) => f.startsWith('desk-light.lock'));
+    const jobLeases = (env) => leaseList(env).filter((l) => l.key === 'job');
+    const rows = (kinds, slots, cap, tokens = 'on') => machine({ 'lease-kinds': `slot=${kinds}`, 'job-tokens': tokens, 'test-lock-slots': slots, 'test-cap': cap });
+    for (const kinds of ['off', 'on']) {
+      const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: rows(kinds, '3', '4') });
+      // Four commands hold a token each, 8 of the 12 left free.
+      const cmds = [];
+      for (let i = 0; i < 4; i++) cmds.push(await hold(env, ['light']));
+      const four = jobLeases(env);
+      t(`DS-984 slot=${kinds}: a light command that is not run.sh holds one job token, owned by the command`,
+        [cmds.every((h) => existsSync(h.mark)), four.length, cmds.every((h) => four.some((l) => l.owner?.pid === h.c.pid))], [true, 4, true]);
+      t(`DS-984 slot=${kinds}: each token is labelled with its whole command, so no two commands share a place in the queue`,
+        cmds.every((h) => four.some((l) => l.label.includes(h.mark))), true);
+      const a = await hold(env, ['light'], {}, asRun);
+      const b = await hold(env, ['light', '--timeout', '5'], {}, asRelated);
+      t(`DS-984 AC1 AC2 slot=${kinds}: with 4 tokens held and 8 free, two light run.sh runs start at once, neither in a light slot`,
+        [existsSync(a.mark), existsSync(b.mark), lightFiles(env), leaseList(env).filter((l) => l.key === 'light').length, jobLeases(env).length], [true, true, [], 0, 4]);
+      t(`DS-984 AC1 slot=${kinds}: run.sh is told it runs in the light class with no token held, so it takes one per suite`, [told(a), told(b)], ['light light', 'test light']);
+      for (const h of [...cmds, a, b]) h.release();
+      for (const h of [...cmds, a, b]) await h.done;
+    }
+    // The triage call: one token for the whole command, so with one token on the machine a second command
+    // waits for it, and gives up at its --timeout, as a run.sh does before it starts.
+    {
+      const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: rows('off', '1', '1') });
+      const h = await hold(env, ['light']);
+      const r = wl(env, ['light', '--timeout', '2', '--', 'true']);
+      t('DS-984 with its one token held, a second light command waits for it and gives up at its timeout',
+        [r.status, /^with-lock\.sh: true waits for a job token \(1 on this machine\)/m.test(r.stderr), lightFiles(env)], [75, true, []]);
+      t('DS-984 and says so with the give-up line every lock prints, which the pre-push hook reads as a busy box',
+        /^with-lock\.sh: gave up waiting for the light lock after 2s/m.test(r.stderr), true);
+      const late = join(S, `late-${n++}`);
+      const rr = wl(env, ['light', '--timeout', '2', '--', ...asRelated(late)]);
+      t('DS-984 a light run.sh waits for a token to start too, and gives up at its timeout having run nothing',
+        [rr.status, existsSync(late), lightFiles(env)], [75, false, []]);
+      h.release(); await h.done;
+      const a = await hold(env, ['light'], {}, asRun);
+      t('DS-984 once one is free run.sh starts, the wrapper\'s token given back for its suites to take',
+        [existsSync(a.mark), told(a), jobLeases(env).length], [true, 'light light', 0]);
+      a.release(); await a.done;
+      const s = wl(env, ['light', '--', 'sh', '-c', 'echo "$TEST_JOB_TOKENS"']);
+      t('DS-984 once it is free the next command takes it, and is told it holds one, so a run.sh it starts takes none',
+        [s.status, s.stdout.trim(), jobLeases(env).length], [0, 'held', 0]);
+      const inner = wl({ ...env, TEST_JOB_TOKENS: 'held' }, ['light', '--timeout', '2', '--', 'true']);
+      const h2 = await hold(env, ['light']);
+      const nested = wl({ ...env, TEST_JOB_TOKENS: 'held' }, ['light', '--timeout', '2', '--', 'true']);
+      t('DS-984 a command inside a suite runs on that suite\'s token, never waiting for another', [inner.status, nested.status], [0, 0]);
+      h2.release(); await h2.done;
+    }
+    // A lease store the broker cannot read gives no token, so run.sh, whose own takes would then run
+    // every suite with none, runs in the light slot instead, as any other command does.
+    {
+      const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: rows('off', '3', '4') });
+      writeFileSync(join(env.DESK_LEASE_DIR, 'leases.json'), 'not json');
+      const a = await hold(env, ['light'], {}, asRun);
+      const r = wl(env, ['light', '--timeout', '2', '--', 'true']);
+      t('DS-984 with the lease store unreadable a light run.sh falls back to the light slot, and a second light run waits for it',
+        [existsSync(a.mark), lightFiles(env).length > 0, r.status], [true, true, 75]);
+      a.release(); await a.done;
+    }
+    // AC3: job tokens off: a light run takes the light slot for the whole run, as before.
+    {
+      const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: rows('off', '1', '4', 'off') });
+      const a = await hold(env, ['light'], {}, asRun);
+      const r = wl(env, ['light', '--timeout', '2', '--', 'bash', runSh, join(S, `never-${n++}`)]);
+      t('DS-984 AC3 job tokens off: a light run.sh holds the light slot, and a second waits for it', [lightFiles(env).length > 0, r.status, jobLeases(env).length], [true, 75, 0]);
+      a.release(); await a.done;
+    }
+    // AC4: job tokens on: test and tsc still take a heavy slot for the whole run, and no token.
+    {
+      const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: rows('off', '1', '4') });
+      const a = await hold(env, ['test'], {}, asRun);
+      const r = wl(env, ['tsc', '--timeout', '2', '--', 'true']);
+      t('DS-984 AC4 job tokens on: a heavy run holds its heavy slot, and a typecheck waits for it', [r.status, jobLeases(env).length, readdirSync(env.DESK_LOCK_DIR).some((f) => f.startsWith('desk-test.lock'))], [75, 0, true]);
+      a.release(); await a.done;
     }
   }
 } finally {

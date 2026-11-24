@@ -270,6 +270,32 @@ await sleep(150);
 t('once saved, the next check puts it on standby', writes.map((w) => w.args.join(' ')).at(-1), `set claude ${held} unused`);
 V.done();
 
+// ---- DS-1004: a check that overlaps a save is dropped, the add panel's timer starts none during one,
+// and a fresh check runs once the save is done
+writes.length = 0;
+const checks = [];
+const R = open({ loginsWith: (args, done) => (args[0] === 'check' ? checks : writes).push({ args, done }) });
+const answer = async (logins) => { checks.at(-1).done({ code: 0, out: JSON.stringify({ logins }), err: '' }); await sleep(20); };
+await sleep(20);
+await R.press('6');
+await answer([]);
+await R.until((x) => has(x, 'a add ·'));
+await R.press('a');
+const raced = folderOf(R.frame());
+const inFlight = checks.length;
+await R.press('\x1b[A', 'x');
+t('DS-1004 a removal is saving while a check is in flight', `${writes.length} ${checks.length}`, `1 ${inFlight}`);
+const standby = [{ tool: 'claude', configDir: L(raced ?? 'missing'), state: 'signed in', rule: 'standby', email: 'raced@example.test' }];
+await answer(standby);
+t('DS-1004 AC2 that check\'s result is dropped: the row keeps waiting', `${has(R.frame(), 'raced@example.test is added')} ${!!waitingRow(R.frame())}`, 'false true');
+await sleep(200);
+t('DS-1004 AC3 the panel\'s timer starts no check while the save runs', checks.length, inFlight);
+await release();
+t('DS-1004 AC2 once saved, a fresh check runs', checks.length, inFlight + 1);
+await answer(standby);
+t('DS-1004 and its result is used', has(R.frame(), 'raced@example.test is added'), true);
+R.done();
+
 // ---- AC5 and AC10 with no subscriptions file: esc before the first sign-in writes nothing; after it,
 // the pinned folder stays
 rmSync(env.DESK_SUBSCRIPTIONS);

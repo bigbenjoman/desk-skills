@@ -54,7 +54,9 @@ cat > "$T/stub/gh" <<EOF
 case "\$1 \$2" in
   "pr view") if [ "\$7" = headRefOid,statusCheckRollup ]; then [ -f "$T/gh/checks-\$3.json" ] && { cat "$T/gh/checks-\$3.json"; exit 0; }; echo "gh: HTTP 502 reading checks of PR \$3" >&2; exit 1; fi
     if [ "\$7" = headRefOid,reviews ]; then [ -f "$T/gh/reviews-\$3.json" ] && { cat "$T/gh/reviews-\$3.json"; exit 0; }; echo "gh: HTTP 502 reading reviews of PR \$3" >&2; exit 1; fi
-    [ -f "$T/gh/pr-\$3.json" ] && { cat "$T/gh/pr-\$3.json"; exit 0; }; echo "gh: HTTP 502 for PR \$3" >&2; exit 1 ;;
+    n="\$3"; jq=""; while [ \$# -gt 0 ]; do [ "\$1" = -q ] && jq="\$2"; shift; done
+    [ -f "$T/gh/pr-\$n.json" ] || { echo "gh: HTTP 502 for PR \$n" >&2; exit 1; }
+    if [ -n "\$jq" ]; then jq -r "\$jq" "$T/gh/pr-\$n.json"; else cat "$T/gh/pr-\$n.json"; fi; exit 0 ;;
   "pr list") h=""; jq=""; while [ \$# -gt 0 ]; do [ "\$1" = --head ] && h="\$2"; [ "\$1" = -q ] && jq="\$2"; shift; done
     [ -n "\$h" ] || { echo "[]"; exit 0; }
     # A file holding a PR as JSON is the list's one entry, read through the caller's -q as gh would.
@@ -62,6 +64,8 @@ case "\$1 \$2" in
     case "\$(head -c1 "\$f")" in "{") jq -c "[.] | \$jq" "\$f" ;; *) cat "\$f" ;; esac; exit 0 ;;
   "variable list") [ -f "$T/gh/vars.fail" ] && { echo "gh: HTTP 401: Bad credentials" >&2; exit 1; }
     cat "$T/gh/vars.json" 2>/dev/null || echo "[]"; exit 0 ;;
+  "api --paginate") n=\$(echo "\$3" | sed -n 's#.*/pulls/\([0-9]*\)/files.*#\1#p')
+    [ -n "\$n" ] && [ -f "$T/gh/files-\$n.txt" ] && cat "$T/gh/files-\$n.txt"; exit 0 ;;
   "run view") [ -f "$T/gh/run-\$3.json" ] && { cat "$T/gh/run-\$3.json"; exit 0; }; echo "gh: HTTP 404: run \$3 not found" >&2; exit 1 ;;
 esac
 exit 0
@@ -157,6 +161,19 @@ pushpark P-9 A "git push --force-with-lease=feat/P-9:$HELD origin feat/P-9 succe
 q set P-9 "grant={\"step\":\"force-push\",\"branch\":\"feat/P-9\",\"lease\":\"$HELD\",\"pinned\":true,\"at\":\"2026-11-01T00:00:00Z\"}"
 git -C "$T/repo" push -q origin "$HELD:refs/heads/feat/P-10"
 pushpark P-10 A "git push --force-with-lease=feat/P-10:$HELD origin feat/P-10 succeeds"; git -C "$T/repo" branch -f feat/P-10 "$REWRITTEN"
+# A not-its-own park whose worktree holds a commit of its own draft: O-5's changes only ci.yml, which
+# #886 changed too, so #886 covers it; O-6's also changes notes.txt, which #887 did not, so it is its own.
+git -C "$T/repo" push -q origin HEAD:refs/heads/main; git -C "$T/repo" fetch -q origin
+draft(){ local w="$T/wt-$1"; git -C "$T/repo" worktree add -q -b "feat/$1" "$w" origin/main; shift
+  for f in "$@"; do echo "$f draft" > "$w/$f"; done; git -C "$w" add -A; git -C "$w" -c user.email=t@t -c user.name=t commit -qm draft; }
+for k in 5 6; do
+  if [ "$k" = 6 ]; then draft "O-$k" ci.yml notes.txt; else draft "O-$k" ci.yml; fi
+  parked "O-$k" A "its PR #88$((k + 1)) is not its own: PR #88$((k + 1)) is on branch fix/other-88$((k + 1)), not O-$k's branch feat/O-$k. desk takes as a ticket's result only a PR on the branch its worker made"
+  q set "O-$k" "worktree=$T/wt-O-$k" "result.pr=88$((k + 1))"
+  printf '{"state":"MERGED","isDraft":false,"mergedAt":"2026-11-23T12:00:00Z","headRefName":"fix/other-88%s","author":{"login":"someone-else"}}\n' "$((k + 1))" > "$T/gh/pr-88$((k + 1)).json"
+  # The PR's files as the paginated API lists them: ci.yml after the first 100, past what gh pr view returns.
+  { seq 1 120 | sed 's/^/src\/f/'; echo ci.yml; } > "$T/gh/files-88$((k + 1)).txt"
+done
 q set P-10 "grant={\"step\":\"force-push\",\"branch\":\"feat/P-10\",\"lease\":\"$PIN\",\"pinned\":true,\"at\":\"2026-11-01T00:00:00Z\"}"
 q add C-4 Story A; q set C-4 state=running branch=feat/C-4 session_id=gone
 say "AUTOPILOT_PARK: GitHub refused the push of feat/C-4 with a 5xx" "AUTOPILOT_PARK_CLEARS_WHEN: git push -u origin feat/C-4 succeeds" > "$T/state/logs/C-4.log"
@@ -404,12 +421,34 @@ say "AUTOPILOT_PARK: Please save the export to out/export.csv" "AUTOPILOT_PARK_C
 # #1290: a park on another author's PR on another branch merging, with no work of its own, is done by it;
 # one on its own branch's PR is requeued as before.
 parked O-1 A "PR #880 fixes the same thing" "pr 880 merged"
-printf '{"state":"MERGED","isDraft":false,"headRefName":"fix/other-880","author":{"login":"someone-else"}}\n' > "$T/gh/pr-880.json"
+printf '{"state":"MERGED","isDraft":false,"mergedAt":"2026-11-23T10:00:00Z","headRefName":"fix/other-880","author":{"login":"someone-else"}}\n' > "$T/gh/pr-880.json"
+# #1294: H-1 held behind O-1 is released once O-1 is done by #880; O-4, parked as not its own before
+# such a park was settled, is done by its PR once that merged.
+q add H-1 Story A; q set H-1 state=triaged; q hold H-1 O-1
+# H-2 is held behind R-9, requeued after an earlier round merged (its merged_at kept) and done again on a
+# PR still open: that earlier merge does not release H-2.
+q add R-9 Story A; q set R-9 state=done result.pr=884 merged_at=2026-01-01T00:00:00Z; pr 884 OPEN false
+q add H-2 Story A; q set H-2 state=triaged; q hold H-2 R-9
+# H-3 is held behind R-8, once done by #880 and then done again on its own PR #885, still open: its old
+# done_by does not release H-3.
+q add R-8 Story A; q set R-8 state=done result.pr=885 merged_at=2026-01-01T00:00:00Z 'done_by={"pr":880,"why":"x"}'; pr 885 OPEN false
+q add H-3 Story A; q set H-3 state=triaged; q hold H-3 R-8
+parked O-4 A "its PR #883 is not its own: PR #883 is on branch fix/other-883, not O-4's branch feat/O-4. desk takes as a ticket's result only a PR on the branch its worker made"; q set O-4 result.pr=883
+printf '{"state":"MERGED","isDraft":false,"mergedAt":"2026-11-23T11:00:00Z","headRefName":"fix/other-883","author":{"login":"someone-else"}}\n' > "$T/gh/pr-883.json"
 parked O-2 A "waiting on my PR #881" "pr 881 merged"
 printf '{"state":"MERGED","isDraft":false,"headRefName":"feat/O-2","author":{"login":"someone-else"}}\n' > "$T/gh/pr-881.json"
 out=$(node "$B/pass.mjs" 2>&1)
 check "#1290 a park on another branch's PR merging is done by it, with no requeue and no result PR" \
   '[ "$(field O-1 state)" = "\"done\"" ] && [ "$(field O-1 done_by.pr)" = 880 ] && [ "$(field O-1 result.pr)" = null ] && [ "$(field O-1 park)" = null ] && grep -qF "O-1: \"PR #880 merged\" holds, and #880 is not its own (PR #880 is on branch fix/other-880, not O-1'"'"'s branch feat/O-1) with no work of its own beside it: recorded done by #880, no worker spawned" <<< "$out" && ! grep -q "\[spawn\] ticket=O-1" <<< "$out"'
+check "#1294 a ticket held behind one done by another's PR is released" \
+  '[ "$(field O-1 merged_at)" = "\"2026-11-23T10:00:00Z\"" ] && [ "$(field H-1 state)" = "\"triaged\"" ] && [ "$(field H-1 held_by)" = null ] && grep -q "released: H-1, every blocker merged (O-1)" <<< "$out"'
+check "#1294 an earlier round's merged_at does not release what is held behind a ticket whose PR is still open" '[ "$(field H-2 state)" = "\"parked\"" ] && [ "$(field H-2 held_by)" = "\"R-9\"" ] && ! grep -q "released: H-2" <<< "$out"'
+check "#1294 an old done_by does not release what is held behind a ticket done again on its own PR, still open" '[ "$(field H-3 state)" = "\"parked\"" ] && ! grep -q "released: H-3" <<< "$out"'
+check "#1294 a not-its-own park whose PR merged is done by it, its foreign result PR cleared" \
+  '[ "$(field O-4 state)" = "\"done\"" ] && [ "$(field O-4 done_by.pr)" = 883 ] && [ "$(field O-4 result.pr)" = null ] && [ "$(field O-4 merged_at)" = "\"2026-11-23T11:00:00Z\"" ] && grep -qF "O-4: \"PR #883 merged\" holds, and #883 is not its own" <<< "$out"'
+check "a not-its-own park whose commits change only files its merged PR changed is done by it, its worktree kept" \
+  '[ "$(field O-5 state)" = "\"done\"" ] && [ "$(field O-5 done_by.pr)" = 886 ] && [ -d "$T/wt-O-5" ] && grep -qF "O-5: \"PR #886 merged\" holds, and #886 is not its own (PR #886 is on branch fix/other-886, not O-5'"'"'s branch feat/O-5), and its 1 commit(s) past main change only files #886 changed (ci.yml): recorded done by #886, no worker spawned; its worktree was left" <<< "$out"'
+check "one whose commits change a file its merged PR did not is its own work: left parked" '[ "$(field O-6 state)" = "\"parked\"" ] && [ "$(field O-6 done_by)" = null ]'
 check "#1290 a park on its own branch's PR merging is requeued as before" '[ "$(field O-2 state)" = "\"triaged\"" ] && grep -qF "O-2: \"PR #881 merged\" holds: requeued" <<< "$out"'
 check "DS-269 AC2 a worker's park records its condition" '[ "$(field C-1 state)" = "\"parked\"" ] && [ "$(field C-1 park.clears_when)" = "{\"kind\":\"pr-merged\",\"pr\":41}" ]'
 check "DS-563 AC3 an unreadable condition is kept for the decider to restate, and reported" \
@@ -516,6 +555,9 @@ mkdir -p "$T/state/fixtures/FP-1"; : > "$T/state/fixtures/FP-1/compare-pass.txt"
 q set C-8 'park.clears_when={"kind":"unreadable","text":"KAN-1086s fix PR is merged to main","why":"x","at":"2026-01-01T00:00:00Z"}'
 out=$(node "$B/pass.mjs" 2>&1)
 check "#1290 the next pass leaves it done: no re-park" '[ "$(field O-1 state)" = "\"done\"" ] && [ "$(field O-1 park)" = null ]'
+check "#1294 the next pass leaves O-4 done: no re-park as not its own" '[ "$(field O-4 state)" = "\"done\"" ] && [ "$(field O-4 park)" = null ]'
+node "$B/queue.mjs" requeue O-4 >/dev/null 2>&1
+check "#1294 a requeue sends it back for work of its own: no longer done by its PR, nor merged by it" '[ "$(field O-4 done_by)" = null ] && [ "$(field O-4 merged_at)" = null ] && [ "$(field O-4 state)" = "\"triaged\"" ]'
 # #1290: with the §1 handle set, a merged PR a collaborator opened from the ticket's own branch is not its
 # own: done by it, not recorded as its result (which the PR status step would park as not its own).
 cp "$T/config.md" "$T/config-h.md"; printf '\n## 1. Who you are\n| Field | Value |\n|---|---|\n| GitHub handle | `me` |\n' >> "$T/config-h.md"

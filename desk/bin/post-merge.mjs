@@ -16,6 +16,8 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { everyTicket } from './queue-store.mjs';
 import { promotionPr } from './batch-state.mjs';
+import { repoOfPr } from './pass/pr-status.mjs';
+import { ownerRepoFromUrl } from './desk-env.mjs';
 // gh with a buffer a page of runs fits in: one can pass spawnSync's 1 MiB default.
 import { gh as ghRead } from './gate.mjs';
 
@@ -48,15 +50,22 @@ export function revertedPr(subject) {
 }
 
 // Every ticket in the queue with a merged PR, archived ones included (a merged ticket is archived
-// within a pass of its merge): [{ticket, pr, merged_at, own, base, promotion}]. `own` is the merge
+// within a pass of its merge): [{ticket, pr, merged_at, own, base, promotion, repo}]. `own` is the merge
 // commit the pass read from the PR (pr_status.merge_commit) or null, `base` the branch it merged into,
 // and `promotion` the promotion PR that took a batch child on (batch-state promotionPr) or null.
+// `repo` is the owner/name its PR status url names ('' for a url naming none), or null with no url: a
+// ticket done on another repo's PR (needs-you's elsewhereDone) keeps that PR's url, and this repo's
+// reverts and runs are not its own, though its PR may have the same number as one of this repo's.
 export function mergedTickets(queue) {
   const out = [];
   for (const [ticket, t] of Object.entries(everyTicket(queue))) {
     const pr = mergedPr(t);
     const own = SHA40.test(String(t.pr_status?.merge_commit ?? '')) ? t.pr_status.merge_commit : null;
-    if (pr) out.push({ ticket, pr, merged_at: t.merged_at, own, base: t.pr_status?.base ?? null, promotion: promotionPr(queue, t) });
+    const url = t.pr_status?.url;
+    if (pr) {
+      out.push({ ticket, pr, merged_at: t.merged_at, own, base: t.pr_status?.base ?? null, promotion: promotionPr(queue, t),
+        repo: url ? ownerRepoFromUrl(repoOfPr(url)) ?? '' : null });
+    }
   }
   return out;
 }
@@ -86,6 +95,28 @@ export function landedPr(subject) {
   return n ? Number(n[1]) : null;
 }
 
+// Whether owner/name `name` is this repo, `repo` (origin's spelling). A rename leaves origin, and every
+// PR url recorded before it, on the old name, while later PR urls name the new one, so a name spelt
+// otherwise than origin is judged by the repo GitHub resolves each to now (`resolveRepo(name)` gives
+// GitHub's url for it, following a rename). A name GitHub does not resolve is judged by its spelling,
+// and `why` says so: the scan is then incomplete, as it may have left out one of this repo's tickets.
+function repoJudge(repo, resolveRepo, why) {
+  const now = new Map();
+  const resolved = (name) => {
+    const k = name.toLowerCase();
+    if (!now.has(k)) {
+      let r = k;
+      if (resolveRepo) {
+        try { r = ownerRepoFromUrl(resolveRepo(name))?.toLowerCase() ?? ''; if (!r) throw new Error('not a repo url'); }
+        catch (e) { r = k; why.push(`${name} not looked up on GitHub, so judged by that name: ${firstLine(e)}`); }
+      }
+      now.set(k, r);
+    }
+    return now.get(k);
+  };
+  return (name) => !!name && (name.toLowerCase() === repo.toLowerCase() || resolved(name) === resolved(repo));
+}
+
 // Queue ticket `t`'s merged PR number, or null when it has none merged.
 export const mergedPr = (t) => {
   const pr = Number(t?.pr_status?.pr ?? t?.result?.pr);
@@ -99,13 +130,15 @@ const recordKey = (r) => (r.kind === 'revert' ? `${r.ticket}|revert|${r.commit}`
 // read for, or null when none could be read. A merge's `sha` and `landed_at` are where and when its code
 // reached the default branch: a push run on that commit failing within RED_HOURS of then is the merge's.
 export function findRecords({ merges, commits, runs, at }) {
-  const byPr = new Map(merges.map((m) => [m.pr, m]));
+  // A PR can be recorded on more than one ticket, so its revert is each one's.
+  const byPr = new Map();
+  for (const m of merges) byPr.set(m.pr, [...(byPr.get(m.pr) ?? []), m]);
   const found = [];
   for (const c of commits) {
-    const m = byPr.get(revertedPr(c.subject));
-    if (!m) continue;
-    const gap = Date.parse(c.at) - Date.parse(m.merged_at);
-    if (gap >= 0 && gap <= WATCH_DAYS * DAY_MS) found.push({ kind: 'revert', ticket: m.ticket, pr: m.pr, merged_at: m.merged_at, commit: c.sha, subject: c.subject, at });
+    for (const m of byPr.get(revertedPr(c.subject)) ?? []) {
+      const gap = Date.parse(c.at) - Date.parse(m.merged_at);
+      if (gap >= 0 && gap <= WATCH_DAYS * DAY_MS) found.push({ kind: 'revert', ticket: m.ticket, pr: m.pr, merged_at: m.merged_at, commit: c.sha, subject: c.subject, at });
+    }
   }
   for (const r of runs ?? []) {
     if (!FAILED.has(r.conclusion) || r.event !== 'push') continue;
@@ -134,14 +167,16 @@ export function postMergeDue({ state, queue, now = Date.now() }) {
 // and `latest(workflowId)` that workflow's newest completed push run on the default branch, or null.
 // Each merge's runs are read on the commit that put its code there (landing). A batch child merged into
 // another branch (`branch` names the default) whose promotion has not merged is not there yet: it has
-// no runs to read.
+// no runs to read. Given `repo` (origin's owner/name), a ticket whose PR url names another repo is left
+// out (repoJudge, with `resolveRepo`).
 // -> {ran, written: [records], line}
-export function postMergeScan({ state, queue, log, runs, latest = () => null, branch = null, now = Date.now() }) {
+export function postMergeScan({ state, queue, log, runs, latest = () => null, branch = null, repo = null, resolveRepo = null, now = Date.now() }) {
   const have = readPostMerge(state);
   if (now - lastScan(have) < SCAN_EVERY_MS) return { ran: false, written: [], line: null };
   const at = new Date(now).toISOString();
-  const merges = watched(queue, now);
   const why = [];
+  const here = repo ? repoJudge(repo, resolveRepo, why) : null;
+  const merges = watched(queue, now).filter((m) => !here || m.repo === null || here(m.repo));
   let commits = [];
   let runList = null;
   if (merges.length) {
@@ -215,7 +250,9 @@ export function ghLatest(repo, branch, id, gh = ghRead) {
 export function postMergeWatch({ state, queue, repo, branch, cwd }) {
   try {
     return postMergeScan({
-      state, queue, branch,
+      state, queue, branch, repo,
+      // GitHub follows a rename, so this names a repo as its PR urls do now.
+      resolveRepo: (name) => execFileSync('gh', ['repo', 'view', name, '--json', 'url', '--jq', '.url'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
       log: (since) => {
         execFileSync('git', ['-C', cwd, 'fetch', '-q', 'origin', branch], { stdio: 'ignore' });
         return gitLog(cwd, `origin/${branch}`, since);

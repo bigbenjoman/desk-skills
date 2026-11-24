@@ -4,7 +4,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { personClears } from './clears-when.mjs';
-import { attachArchive } from './queue-store.mjs';
+import { attachArchive, mergedPrs } from './queue-store.mjs';
 import { PARK_KINDS, blockersOf } from './queue-states.mjs';
 import { postMergeUnmade } from './harvest.mjs';
 
@@ -57,6 +57,25 @@ export const openUnknowns = (unknowns, t) => {
 // The PR state the last pass recorded for a done ticket's PR (pr_status), or null when none was read.
 // Nothing here calls GitHub.
 export const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null && t.pr_status?.pr === t.result.pr ? t.pr_status : null);
+
+// merged_at keeps only a ticket's first merge, so a live ticket requeued after it is not merged on it: only
+// its current PR merging counts (merge-driver.sh release_chain, queue.mjs requeue's own holds). Whether t,
+// merged once, has gone round again since: waiting for its next worker (triaged or running, held behind its
+// own blockers at the requeue, or failed before a worker spawned); respawned, in any state (merged_pr, which
+// its spawn keeps); or, respawned before merged_pr was kept, done on a PR its status reads OPEN after
+// merged_at, or done on a PR other than the one its status names. A status read before merged_at is from
+// before the driver merged it, so it counts at once. A parked ticket never requeued (one a stop holds
+// included), or a done one never respawned, keeps the merge it records. Never for an archived ticket.
+const through = (t) => t.state === 'done' && (t.result?.pr == null || prStatusOf(t)?.state === 'MERGED');
+// Waiting for its next worker: queued or running, held behind its blockers (held_by: a stop holds behind
+// none), or failed before a worker spawned (a requeue clears session_id, and only a spawn sets it).
+export const awaitingWorker = (t) => ['triaged', 'running'].includes(t.state)
+  || (t.state === 'parked' && String(t.park?.question ?? '').startsWith('held by orchestrator') && blockersOf(t).length > 0)
+  || (t.state === 'failed' && t.spawn_failed === true && !t.session_id);
+const openLater = (t) => prStatusOf(t)?.state === 'OPEN' && Date.parse(t.pr_status.at) > Date.parse(t.merged_at);
+// Done on a PR other than the one its status names: that status is from an earlier round.
+const otherRound = (t) => t.state === 'done' && t.result?.pr != null && t.pr_status?.pr != null && Number(t.pr_status.pr) !== Number(t.result.pr);
+export const reworked = (t) => !!t?.merged_at && !through(t) && (awaitingWorker(t) || mergedPrs(t).length > 0 || openLater(t) || otherRound(t));
 
 // A ticket shipped outside its worker, recorded done: the `queue.mjs` arguments pass.mjs and
 // needs-you.mjs both write. Where the queue's PR status is that PR's, it is marked merged as well, or the
@@ -669,7 +688,7 @@ function holdLeadsTo(q, t, prState, seen, memo = new Map()) {
     const pt = q.tickets?.[p];
     if (!pt) { if (!outside.includes(p)) parks = null; }
     else if (['running', 'triaged'].includes(pt.state) || spinePark(pt)) continue;
-    else if (pt.state === 'done') { if (pt.result?.pr == null || prState(pt.result.pr) === 'CLOSED') parks = null; }
+    else if (pt.state === 'done') { if (!blockerThrough(pt, prState) && (pt.result?.pr == null || prState(pt.result.pr) === 'CLOSED')) parks = null; }
     else if (pt.state === 'failed' || (pt.state === 'parked' && !isHeld(pt))) parks.push(p);
     else { const up = holdLeadsTo(q, pt, prState, seen, memo); parks = up && [...parks, ...up]; }
     if (!parks) break;
@@ -746,12 +765,13 @@ export function batchSettled(q, prState) {
 }
 
 // Idle: settled, and every done ticket's PR merged or closed, so the merge driver has nothing left.
-// A done ticket with no PR is finished; a PR whose state is unknown counts as open. A merged ticket
+// A done ticket with no PR is finished, as is one whose own status names its PR merged (another repo's
+// PR, needs-you's elsewhereDone, which prStates never holds); a PR whose state is unknown counts as open. A merged ticket
 // whose review's post-merge criteria the pass has not made follow-on steps yet is not: only a pass adds
 // them, so the batch keeps getting passes until one has.
 export function batchIdle(q, prState = () => null) {
   return batchSettled(q, prState) && Object.values(q.tickets ?? {})
-    .every((t) => (t.state !== 'done' || t.result?.pr == null || ['MERGED', 'CLOSED'].includes(prState(t.result.pr))) && !postMergeUnmade(t));
+    .every((t) => (t.state !== 'done' || t.result?.pr == null || prStatusOf(t)?.state === 'MERGED' || ['MERGED', 'CLOSED'].includes(prState(t.result.pr))) && !postMergeUnmade(t));
 }
 
 // An epic batch not in feature mode lands its base on the default branch through one epic PR (the
@@ -761,14 +781,49 @@ export const epicBatch = (q) => q?.feature !== true && !!q?.epic && !!q?.base;
 export const epicChildren = (q) => Object.values(q.tickets ?? {}).filter((t) => !blockersOf(t).includes(q.epic));
 // A child is through once done and merged into the base, or done with no PR (nothing to merge).
 export const childDone = (t) => t.state === 'done' && (!!t.merged_at || t.result?.pr == null);
-// The blockers among `keys` to hold ticket `key` behind, less `key` itself and those in `tickets`
-// already merged or through (childDone), which nothing would release. -> { holds, cycles: those in
+// A blocker is through, so nothing held behind it waits on it: done, with its merge recorded (merged_at)
+// or its PR merged. `prState(n)` is the PR's state where the caller read it from GitHub, and null counts
+// as not merged; without it, the last pass's pr_status is read and a PR it has not read counts as
+// merged. Done with no PR and no merge is not through: whether its dependants start is the person's.
+// One done by another's PR (done_by) has no result.pr of its own, and that PR's merge is its merged_at.
+// With a PR of its own, merged_at is not read: it keeps only a ticket's first merge, so a requeued
+// blocker whose new PR is open, closed unmerged or (where the caller reads GitHub) unread is not through
+// on it: its dependants wait on the change that PR lands. A status naming its current PR merged is
+// final, and is how a ticket done on another repo's PR is read (needs-you's elsewhereDone), never as
+// this repo's PR of the same number.
+export const blockerThrough = (t, prState = null) => {
+  if (t?.state !== 'done') return false;
+  const n = t.result?.pr;
+  if (n == null) return !!t.merged_at;
+  const kept = prStatusOf(t)?.state;
+  if (kept === 'MERGED') return true;
+  const s = prState ? prState(n) : kept;
+  if (s === 'MERGED') return true;
+  return !prState && !['OPEN', 'CLOSED'].includes(s);
+};
+// Whether ticket k of `tickets` has merged its current work: a merge recorded (merged_at), unless it is a
+// live one gone round again since (reworked). An archived one (found through `tickets`' archive, not its
+// own) never is reworked. A merge moves its ticket to Done in Jira and a requeue moves it back from
+// nothing, so a reworked ticket is usually Done there: every reader asks this, whatever the tracker says.
+export function mergedCurrent(tickets, k) {
+  const o = tickets?.[k];
+  return !!o?.merged_at && !(Object.hasOwn(tickets, k) && reworked(o));
+}
+// Whether blocker k of `tickets` is finished for laying holds, which nothing would release: its current
+// work merged, or done with no PR and no merge (childDone's other half). A reader asking only whether it
+// merged (a requeue's own holds, a route to another batch) keeps a ticket behind one done with no PR: whether
+// its dependants start is the person's.
+export function holdThrough(tickets, k) {
+  const o = tickets?.[k];
+  return !!o && (mergedCurrent(tickets, k) || (!o.merged_at && childDone(o)));
+}
+// The blockers among `keys` to hold ticket `key` behind, less `key` itself and those in `tickets` through
+// for holds (holdThrough). -> { holds, cycles: those in
 // `behind` (heldBehindOf), already waiting behind `key`, so not held, outside: the holds in no batch }.
 export function holdsAmong(key, keys, tickets, behind) {
   const holds = []; const cycles = [];
   for (const k of new Set(keys)) {
-    const o = tickets[k];
-    if (k === key || (o && (o.merged_at || childDone(o)))) continue;
+    if (k === key || holdThrough(tickets, k)) continue;
     (behind.has(k) ? cycles : holds).push(k);
   }
   return { holds, cycles, outside: holds.filter((k) => !tickets[k]) };

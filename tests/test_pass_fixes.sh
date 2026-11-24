@@ -45,9 +45,15 @@ q set F-2 result.pr=704; fx 704 "$H1" CONFLICTING tests:SUCCESS
 q set F-3 result.pr=696; fx 696 "$H1" MERGEABLE tests:SUCCESS "Flows image missing:FAILURE:903"
 q set F-4 result.pr=698; fx 698 "$H1" MERGEABLE tests:SUCCESS "Flows image missing:FAILURE:903" Lint:FAILURE:904; reran 698 "$H1" "Flows image missing" Lint
 q set F-5 result.pr=699; fx 699 "$H1" MERGEABLE tests:SUCCESS Lint:FAILURE:905; printf 'Lint\n' > "$T/state-f/merge-driver/reruns-699-$H1"
+# #1341: an ask recorded for the person whose tickets are all merged or done waits on nothing: each pass drops it.
+q add F-8; q set F-8 state=done lane=A branch=fix/F-8 result.pr=690 merged_at=2026-11-20T10:00:00Z
+printf '%s\n' '{"next":6,"asks":[{"id":4,"text":"config drift: the GitHub repo row","at":"2026-11-20T09:00:00Z","settles":"drift","rows":["§0 \"GitHub repo\""]},{"id":5,"text":"config drift: Test sign-in","at":"2026-11-20T09:00:00Z","settles":"drift","rows":["§0 \"GitHub repo\"","§4 \"Test sign-in\""]},{"id":1,"text":"admit F-8 once the person says admit","at":"2026-11-20T09:00:00Z","until":["F-8"]},{"id":2,"text":"admit F-8 and X-9 once the person says admit","at":"2026-11-20T09:00:00Z","until":["F-8","X-9"]},{"id":3,"text":"run the backfill once F-8 merges","at":"2026-11-20T09:00:00Z"}]}' > "$T/state-f/asks.json"
 : > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-278 AC2 red after the driver's two reruns: requeued once for a fix worker, try 1" \
   '[ "$(field F-1 state)" = "\"triaged\"" ] && [ "$(field F-1 fix.try)" = 1 ] && [ "$(field F-1 fix_tries | jq length)" = 1 ] && echo "$out" | grep -q "fix try 1 of 2: F-1 requeued for PR #697 — red: Backend tests, Lint"'
+check "#1341 the pass drops an ask whose every ticket is merged, saying so" 'echo "$out" | grep -qF "needs-you: ask 1 dropped, as every ticket it names (F-8) is merged or done: \"admit F-8 once the person says admit\"" && [ "$(jq -c "[.asks[].id] | map(select(. < 4))" "$T/state-f/asks.json")" = "[2,3]" ]'
+check "#1341 and keeps a wait on a ticket it does not know, and a step owed after F-8 merges that waits on nothing" '! echo "$out" | grep -q "needs-you: ask [23] dropped"'
+check "#1361 a config-drift ask whose rows the config now has is dropped, and one naming a row still missing stays" 'echo "$out" | grep -qF "needs-you: ask 4 dropped, as the config now has the rows it named (§0 \"GitHub repo\")" && [ "$(jq -c "[.asks[].id | select(. >= 4)]" "$T/state-f/asks.json")" = "[5]" ]'
 check "DS-278 AC2 a check with one rerun so far is left to the driver" '[ "$(field F-5 state)" = "\"done\"" ] && [ "$(field F-5 fix)" = null ]'
 check "DS-278 AC3 a DIRTY PR is requeued once for the conflict" '[ "$(field F-2 state)" = "\"triaged\"" ] && [ "$(field F-2 fix.kind)" = "\"conflict\"" ] && [ "$(field F-2 fix.what)" = "\"conflicts with main\"" ]'
 check "DS-278 AC6 red only on a check no worker can fix: never requeued, stuck with its command" \
@@ -165,6 +171,7 @@ else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
 else if (a[0] === 'api' && a[1] in api) console.log(api[a[1]]);
 else if (a[0] === 'run' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fx/run-' + a[2] + '-' + a[a.indexOf('--json') + 1] + '.json', 'utf8')); } catch { process.exit(1); } }
 else if (a[0] === 'run' && a[1] === 'rerun') process.exit(0);
+else if (a[0] === 'pr' && a[1] === 'update-branch') process.exit(0);
 else process.exit(1);
 EOF
 { cat "$T/config-f.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `failure-class` |\n'; } > "$T/config-fl.md"
@@ -295,9 +302,28 @@ check "#1281: with the push grant not given, a later red is still noted on the o
   '[ "$(field base-red-main-20261123060000 state)" = null ] && [ "$(field base-red-main-20261123000000 red_again | jq -r .key)" = base-red-main-20261123060000 ] && [ "$(grep -c "went red again" "$T/state-fb/tickets/base-red-main-20261123000000.md")" = 2 ]'
 q set base-red-main-20261123000000 state=done session_id=null; q drop base-red-main-20261123000000
 rm -f "$T/state-fb/base-red.json"; q set base-red-main state=done; q drop base-red-main
+# #1326: a repair parked while someone else fixed main. Main read green since it was admitted, the red
+# record gone: before any spawn its row is closed out as done by the PR that fixed main, no worker runs.
+q add base-red-main-20261123070000 Bug A; q set base-red-main-20261123070000 state=parked added_at="$(isoago 7200)" 'park={"question":"the base still fails Lint"}'
+printf '{"branch":"main","at":"%s"}\n' "$(isoago 60)" > "$T/state-fb/base-green.json"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "#1326 a repair whose base went green since it was admitted is recorded done before any spawn, and no worker starts" \
+  '[ "$(field base-red-main-20261123070000 state)" = "\"done\"" ] && [ "$(field base-red-main-20261123070000 park)" = null ] && ! echo "$out" | grep -q "base-red-main-20261123070000 port=" && echo "$out" | grep -qF "base-red-main-20261123070000: main has gone green since it began"'
+q drop base-red-main-20261123070000; rm -f "$T/state-fb/base-green.json"
 out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-850 AC6 once the driver reads main green, the pass drops the line" '! echo "$out" | grep -q "^RED BASE:" && echo "$out" | grep -q "FB-4: BASE RED"'
 runs "$MB5" Lint '[{"status":"completed","conclusion":"success"}]'
+# #1327: where §3 pr-update-branch is yes, a PR red only where its base was red, the base green since,
+# has its branch updated from the base instead: no re-run, no fix try. Once per head: the next pass,
+# at the same head, goes on as before.
+awk '{ print } /^\| `pr-conflict-unreviewed`/ { print "| `pr-update-branch` | Update branch | `yes` | `yes` |" }' "$T/config-f.md" > "$T/config-fu.md"
+: > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fu.md" node "$B/pass.mjs" 2>&1)
+check "#1327 once its held check passes on the base, the PR's branch is updated from it, with no re-run and no fix try" \
+  '[ "$(grep -c "^pr update-branch 813 --repo acme/widgets$" "$T/gh-calls")" = 1 ] && ! grep -q "^run rerun" "$T/gh-calls" && [ "$(field FB-4 state)" = "\"done\"" ] && [ "$(field FB-4 fix)" = null ] && [ "$(field FB-4 fix_tries)" = null ] && [ "$(field FB-4 base_refresh | jq -c "[.head, .ok, .checks]")" = "[\"$H4\",true,[\"Lint\"]]" ]'
+check "#1327 and the pass says why" 'echo "$out" | grep -qF "fix tries: PR #813 (FB-4) had its branch updated from main (gh pr update-branch): Lint was red on main too and has passed on main since"'
+: > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fu.md" node "$B/pass.mjs" 2>&1)
+check "#1330 a pass at the same head, its update made, waits for the new head: no second update and no fix try" \
+  '! grep -q "^pr update-branch" "$T/gh-calls" && [ "$(field FB-4 fix)" = null ] && [ "$(field FB-4 fix_tries)" = null ] && echo "$out" | grep -qF "fix tries: PR #813 (FB-4) is out of draft: its branch was updated from main at" && echo "$out" | grep -qF "it waits for the run at its new head, with no re-run and no fix try"'
 out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-614 AC2 once the job passes on the base, the hold clears and a fix try proceeds as today" \
   '[ "$(field FB-4 state)" = "\"triaged\"" ] && [ "$(field FB-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-4 fix.class)" = "\"application defect\"" ] && [ "$(field FB-4 base_red | jq -c "[.checks, .cleared]")" = "[[],[\"Lint\"]]" ]'

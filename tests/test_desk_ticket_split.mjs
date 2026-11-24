@@ -47,6 +47,9 @@ const REWRITTEN = [
   ['DS-912', 'the Testing-bullet standard and the before/after image table. Ends with', 1], // desk-pr also owns the preview-build lease
   ['DS-888', '`git status --porcelain` after every round; a dirty tree is an aborted round', 1], // the round-end check runs desk-env tree-status
   ['DS-875', 'Where the review refutes its findings with `codex` (a cross-vendor pass), whether codex answers is', 1], // names the row's desk-env read
+  // a session is named for its role, <repo>-ticket-<TICKET>, not <TICKET>-<type>
+  ...['Sessions want naming for the ticket', '<TICKET>-<type> ABC-448-bug', '`<type>` is the literal Jira issue type', '`/rename ABC-612-bug`',
+    "If the ticket type isn't obvious yet"].map((s) => ['#1308', s, 1]),
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 

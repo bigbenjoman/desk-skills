@@ -10,7 +10,8 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { workerLocation, LEVERS, parseLevers, HOME, deskHome } from './desk-env.mjs';
+import { workerLocation, workerModels, parseWorkerModels, parseWorkerLocation, repoConfigValue, LEVERS, FINDER_MODEL_LEVER, parseLevers, HOME, deskHome } from './desk-env.mjs';
+import { ALIAS, ROWS } from './config-schema.mjs';
 
 export const LAYERS = Object.freeze(['low-risk', 'quality-risk']);
 // The evaluation states in which a lever has been kept.
@@ -115,6 +116,15 @@ export const ENTRIES = Object.freeze({
     code: [code('desk/bin/desk-env.mjs', 'effort')],
     preconditions: [Object.freeze({ id: 'worker-location', want: 'local', why: 'effort is set on the local claude launch; a cloud worker never takes it' })],
   },
+  // desk-review's Claude finder seats on `model` (the on arm) against the finders' model today. Bea, the
+  // refuters, codex and the audit keep theirs.
+  'finder-model': {
+    layer: 'quality-risk', trialled: true, model: FINDER_MODEL_LEVER,
+    mechanism: metric('dollars per start', null),
+    trips: [POST_MERGE_REVERT, ownStepError('desk-env model finder'), AUDIT_P0],
+    code: [code('desk/bin/desk-env.mjs', 'model finder')],
+    preconditions: [Object.freeze({ id: 'worker-finder-model', not: FINDER_MODEL_LEVER, why: `§3b Worker models already runs its finders on ${FINDER_MODEL_LEVER}, so both arms would be the same` })],
+  },
   // The ticket ledger only records queue writes beside queue.json, which stays the truth, so it is not
   // trialled: it is pinned on where a repo wants the log.
   ledger: {
@@ -197,8 +207,9 @@ export function loadRegistry(entries = ENTRIES, names = LEVERS) {
     if (!Array.isArray(e.code) || !e.code.length || e.code.some((c) => !c?.path)) throw missing('code');
     for (const key of ['trips', 'preconditions']) if (!Array.isArray(e[key])) throw missing(key);
     if (typeof e.trialled !== 'boolean') throw missing('trialled');
+    if ('model' in e && !ALIAS.test(e.model ?? '')) throw new LeverRegistryError(`lever-registry: lever "${name}" has model "${e.model}"; want an Agent tool alias`);
     out[name] = Object.freeze({
-      name, layer: e.layer, trialled: e.trialled, mechanism: Object.freeze({ ...e.mechanism }),
+      name, layer: e.layer, trialled: e.trialled, ...('model' in e ? { model: e.model } : {}), mechanism: Object.freeze({ ...e.mechanism }),
       guardrails: GUARDRAILS, trips: Object.freeze([...e.trips]), code: Object.freeze([...e.code]),
       ramp: RAMPS[e.layer], preconditions: Object.freeze([...e.preconditions]),
     });
@@ -222,8 +233,17 @@ export function trialable(items, registry = REGISTRY) {
   return { ok, refused, message };
 }
 
-// The config values the preconditions read, from this repo's config.
-export const repoValues = () => ({ 'worker-location': workerLocation() });
+// The config values the preconditions read, from this repo's config; `repoValuesOf` reads another
+// repo's (the levers view). `worker-finder-model` is §3b Worker models' `finder=`, `none` when unset,
+// and null when the row cannot be read (a malformed row holds spawns on its own).
+const finderOf = (read) => { try { return read().finder ?? 'none'; } catch { return null; } };
+export const repoValues = () => ({ 'worker-location': workerLocation(), 'worker-finder-model': finderOf(workerModels) });
+export function repoValuesOf(slug, root) {
+  const raw = (id) => repoConfigValue(slug, id, root) ?? ROWS.find((e) => e.id === id).default;
+  let location = null;
+  try { location = parseWorkerLocation(raw('worker-location')); } catch { /* unreadable: left null */ }
+  return { 'worker-location': location, 'worker-finder-model': finderOf(() => parseWorkerModels(raw('worker-models'))) };
+}
 
 // Where install.sh puts a registry code path: `desk/<rest>` under DESK_HOME, anything else (`hooks/…`)
 // under ~/.claude.
@@ -252,12 +272,14 @@ export function leverFingerprints(registry = REGISTRY, resolve = installedPath) 
 }
 
 // Whether a lever is eligible in a repo, given its config values (repoValues() for this one). A lever
-// the registry does not declare is never eligible.
-//   -> { eligible, reasons: [text] }
+// the registry does not declare is never eligible. A precondition holds where the value is its `want`,
+// or, for one declaring `not` instead, where the value is anything but `not`.
+//   -> { eligible, reasons: [text], failed: [precondition] }
 export function preconditions(name, values = repoValues(), registry = REGISTRY) {
   const l = registry[name];
-  if (!l) return { eligible: false, reasons: [`"${name}" is not declared in the lever registry`] };
-  const reasons = l.preconditions.filter((p) => values?.[p.id] !== p.want)
-    .map((p) => `${name} is ineligible: config "${p.id}" is ${values?.[p.id] ?? 'unset'}, want ${p.want} (${p.why})`);
-  return { eligible: reasons.length === 0, reasons };
+  if (!l) return { eligible: false, reasons: [`"${name}" is not declared in the lever registry`], failed: [] };
+  const failed = l.preconditions.filter((p) => ('not' in p ? values?.[p.id] === p.not : values?.[p.id] !== p.want));
+  const reasons = failed.map((p) => ('not' in p ? `${name} is ineligible: config "${p.id}" is already ${p.not} (${p.why})`
+    : `${name} is ineligible: config "${p.id}" is ${values?.[p.id] ?? 'unset'}, want ${p.want} (${p.why})`));
+  return { eligible: reasons.length === 0, reasons, failed };
 }

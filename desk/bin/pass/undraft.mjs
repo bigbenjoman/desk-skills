@@ -226,7 +226,7 @@ export function* decideUndraft(snap) {
     let rf = null;
     if (hold || gated) rf = null;
     else if (gateFix) rf = gateFix;
-    else if (c.call === 'findings') rf = reviewFix(t, { pr: n, head, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement, outside: () => reads.outside?.(n, head, t.key) ?? null, title: () => reads.title?.(t.key) ?? null });
+    else if (c.call === 'findings') rf = reviewFix(t, { pr: n, head, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement, workerMay: cfg.workerMay, outside: () => reads.outside?.(n, head, t.key) ?? null, title: () => reads.title?.(t.key) ?? null });
     // A draft the outage step re-ran this pass, its hold cleared, waits for that run, as a ready PR does.
     else if (c.call === 'checks' && snap.outageRerun?.includes(n)) rf = null;
     else if (c.call === 'checks' && !snap.fixRowErrors.length) {
@@ -261,6 +261,8 @@ export function* decideUndraft(snap) {
     else if (rf) {
       yield { type: 'apply-fix', key: t.key, t, pr: n, head, fix: rf };
       if (rf.call === 'rerun' || rf.call === 'wait') rec = { ...rec, call: rf.call, why: rf.why, action: null };
+      // A branch updated from the base waits for the run at its new head.
+      else if (rf.call === 'refresh') rec = { ...rec, call: 'wait', why: rf.why, action: null };
     }
     else if (gated) { /* the gate-hold action reported it */ }
     else if (c.call === 'wait') yield out(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);

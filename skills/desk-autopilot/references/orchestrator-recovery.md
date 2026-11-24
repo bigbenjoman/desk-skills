@@ -42,6 +42,7 @@ How to resume, by what was parked:
 |---|---|
 | a Stage 3 unknown (state still `triaged`, open questions above 0) | answer every question; the count reaching 0 makes it eligible at the next pass. One a linked design frame answers, read through this session's design connector and write into the ticket's Design section first (`desk-admit` §2) |
 | triage lane C, or lane D parked on its design (only in Figma, or a canvas not on the base) | **never requeued for a headless worker** (a lane D whose canvas is then saved on the base is triaged and planned again, and runs): it goes to an interactive `desk-ticket` session. Only if the user rules the lane itself wrong: `queue.mjs set <TICKET> lane=<A, B or E>`, answer its triage unknowns with `answer.mjs`, then `queue.mjs requeue <TICKET>` |
+| a fix try the pass queued (the ticket `triaged`, its `fix` set) for something you then settled outside a worker (a gap you closed by dispatching the workflow, say) | take the try back before it spawns: `queue.mjs withdraw <TICKET> "<why>"`, naming what settled it. The ticket goes back to done on its PR, and the try counts against none of its tries. A withdrawn review try also holds its head: no review try is drafted there again until you push, post a clean review of it, or send it back with `/desk-needs-you` fix. Refused once its worker is running: `queue.mjs stop <TICKET>` instead |
 | a worker's `AUTOPILOT_PARK` on a single remaining step (a Jira comment, the PR, the review post) | finish that step yourself from the exact text the park holds (its `approve`, in `queue.mjs get <TICKET>`; else the worker's printed payload), then record it done on its PR: `queue.mjs finish <TICKET> --pr <n>`, never a hand-written `queue.mjs set` (refused unless the PR is open or merged, on the ticket's branch, into the batch's base, and for a running, held or claimed ticket, a spine or plan park, and a feature spine or a child owning criteria, changing nothing) |
 | a worker's `AUTOPILOT_PARK` whose only blocker is a red check §4 Check builds names (`desk-env list check-builds`): someone to run its build | not the person's. The pass records one done at harvest when its draft PR is red on such checks alone, and its undraft step runs the build. One still parked on lane A, B, D or E: requeue it, as its worker finishes DONE on that check (worker contract Stage 5 file) |
 | a worker's `AUTOPILOT_PARK` that needs more agent work | requeue it: `queue.mjs requeue <TICKET>` (below) |
@@ -210,6 +211,11 @@ re-running a ticket from scratch.
   `tool_progress` `elapsed_time_seconds` in the log tail; a single
   tool call past a few minutes is a hang. Kill **that worker's** codex by the PID you resolved
   (`ps -o etimes= -p <pid>`), never `pkill -f codex`: other sessions run codex concurrently.
+- **A running ticket's queue fields are as of the last pass.** Its `stage` moves only when a pass
+  reads the worker's log, so a live worker can show `0/9` for its whole run. Before calling a spawn
+  dead, read `live` in `queue.mjs get <TICKET>`: the stage the worker last said since this spawn
+  (`stage`, `said_at`) and when its log last grew (`heartbeat_at`). A recent heartbeat is a live
+  worker; `log: null` is one that never started.
 - **A worker at a usage limit is paused, not dead.** Any limit counts: the 5-hour one, the weekly
   one, or one Claude Code names some other way. A headless worker ends its session at the limit.
   `pass.mjs` reads the limit from the worker's log (`usage-limit.mjs`), keeps the ticket running,

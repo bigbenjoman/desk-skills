@@ -65,14 +65,16 @@ are **not** using, with the reason. A plan that buries the routing reads as impr
 
 ## Session rename (Stage 0)
 
-Sessions want naming for the ticket so parallel ones are tellable apart:
+Sessions are named for their role, so parallel ones are tellable apart and a peer session can
+reach them by name: a ticket session is `<repo>-ticket-<TICKET>`, `<repo>` being the name part of
+§0 GitHub repo (`widgets` for `acme/widgets` below): substitute this repo's before printing it.
 
 ```
-<TICKET>-<type>        ABC-448-bug   ABC-473-task   ABC-440-story   issue-81-bug   fix-login-redirect-bug
+widgets-ticket-ABC-448   widgets-ticket-issue-81   widgets-ticket-fix-login-redirect
 ```
 
-`<type>` is the literal Jira issue type, lowercased (`bug`, `task`, `story`), or with no tracker
-the type Stage 0 settled (`bug`, `feature`, `chore`).
+The name stays the ticket's for its whole life: a handoff records it, and `/desk-resume` gives it
+back after `/clear`. An autopilot worker is named this way at spawn and skips this section.
 
 **You cannot do this yourself.** `/rename` is a built-in command and only the user can type it.
 Writing the `name` field in `~/.claude/sessions/<pid>.json` does change the stored value, but the
@@ -81,9 +83,7 @@ it looks like nothing happened.
 
 So at Stage 0, ask for it in one line and move on. Don't wait for it, and don't edit the file:
 
-> Worth renaming this session: `/rename ABC-612-bug`
-
-If the ticket type isn't obvious yet, say the name once you know it rather than guessing.
+> Worth renaming this session: `/rename widgets-ticket-ABC-612`
 
 ## Red flags at this stage — stop
 

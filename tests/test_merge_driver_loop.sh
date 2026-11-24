@@ -50,6 +50,15 @@ check "DS-835 AC1: the merged entry names the PR, its head, the ticket and the m
   '[ "$(jq -r "[.event, .pr, .sha, .ticket, .repo] | join(\" \")" <<< "$ml101")" = "merged 101 $SHA1 T-1 acme/widgets" ] && jq -e ".by | startswith(\"merge-driver \")" <<< "$ml101" >/dev/null'
 check "DS-835 AC3: the reader gives the latest entry back with its time" 'jq -e ".at | test(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}T\")" <<< "$ml101" >/dev/null && ! echo "$out" | grep -q "merge not written to the merge log"'
 
+check "DS-899 AC1: the ticket's merge record names the driver, the PR, the head it merged at and the base, which desk-q shows" \
+  '[ "$(qf T-1 ".merge | [.pr, .head_sha, .base] | map(tostring) | join(\" \")")" = "101 $SHA1 main" ] && [ "$(qf T-1 .merge.by)" = "$(jq -r .by <<< "$ml101")" ] && [ "$(qf T-1 .merge.at)" = "$(qf T-1 .merged_at)" ]'
+# With the ledger lever on, the driver's write of that record is one merged event and no legacy one.
+d899=$(node --input-type=module -e "import { readFileSync } from 'node:fs'; import { queueEvents } from '$B/queue-ledger.mjs';
+  const q = JSON.parse(readFileSync(process.argv[1], 'utf8')); const before = structuredClone(q); delete before.tickets['T-1'].merge; before.tickets['T-1'].merged_at = null;
+  const evs = queueEvents(before, q, { batch: 'b' }).filter((e) => e.key === 'T-1');
+  console.log(evs.map((e) => e.type === 'legacy_set' ? 'legacy_set:' + Object.keys(e.data.fields).join(',') : e.type + ':' + e.data.pr + ':' + e.data.head_sha + ':' + e.data.base).join(' '))" "$DESK_QUEUE" 2>&1)
+check "DS-899 AC2: the driver's merge record is one merged event with who, PR, head and base, and no legacy event for it" '[ "$d899" = "merged:101:$SHA1:main" ]'
+
 check "#809 the merge is claimed and recorded in the merge log, by this driver, at its head" 'node "$B/merge-log.mjs" show --repo acme/widgets --pr 101 | awk "{print \$3, \$5}" | tr "\n" " " | grep -Fqx "claim ${SHA1:0:12} merged ${SHA1:0:12} " && node "$B/merge-log.mjs" show --repo acme/widgets --pr 101 | grep -q "by merge-driver "'
 
 # ---- #809: a PR a session has claimed is not merged by the driver ------------------------------
@@ -123,6 +132,32 @@ check "DS-714 AC5: a lane C park held behind a merged blocker is not released to
   '[ "$(qf T-16 .state)" = parked ] && [[ "$(qf T-16 .park.question)" == "lane C"* ]] && [ "$(qf T-16 .held_by)" = T-11 ] && ! echo "$out" | grep -q "RELEASED T-16"'
 q drop T-16
 q drop T-11; q drop T-12; q drop T-13; q drop T-14
+
+# ---- #1298: a ticket merged, then sent back for more and done again on a new PR, still open, ----------
+# is not merged: neither its kept merged_at nor its old merged PR, which still names it, releases T-42.
+jq --arg s "$SHA4" '."441" = { head: "fix/T-41", base: "main", sha: $s, state: "merged", draft: false, checks: [["test", "SUCCESS"]] }
+  | ."442" = { head: "fix/T-41", base: "main", sha: $s, state: "open", draft: true, checks: [["test", "SUCCESS"]] }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+q add T-41 Task A; q set T-41 state=done branch=fix/T-41 result.pr=441 pr_status.pr=441 pr_status.state=MERGED; q merged T-41 2026-11-02T02:20:59.000Z
+q requeue T-41; q set T-41 state=done result.pr=442
+q add T-42 Task A; q set T-42 state=triaged branch=fix/T-42; q hold T-42 T-41
+loop
+check "#1298 a ticket done again on a new open PR after its earlier merge does not release what is held behind it" \
+  '[ "$(qf T-42 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-42"'
+jq '."442".state = "merged" | ."442".draft = false' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+loop
+check "#1298 once that new PR merges, it does" '[ "$(qf T-42 .state)" = triaged ] && echo "$out" | grep -q "merged: T-41#442 -> RELEASED T-42"'
+q drop T-41; q drop T-42
+
+# ---- #1306: requeue holds a ticket behind a blocker merged once and done again on a PR still open ------
+# T-52 is parked for its own reason (lane C) with its hold on T-51 beside it, as DS-714's; T-51 merged on
+# 451, was requeued, and is done again on 452. A requeue of T-52 keeps it behind T-51, not to a worker.
+q add T-51 Task A; q set T-51 state=done branch=fix/T-51 result.pr=451 pr_status.pr=451 pr_status.state=MERGED; q merged T-51 2026-11-02T02:20:59.000Z
+q requeue T-51; q set T-51 state=done result.pr=452
+q add T-52 Task B; q set T-52 state=triaged branch=fix/T-52; q hold T-52 T-51; q park T-52 "lane C — needs a plan"; q set T-52 lane=B
+rq=$(node "$B/queue.mjs" requeue T-52 2>&1); rc=$?
+check "#1306 a requeue keeps a ticket behind a blocker done again on a PR still open after its first merge" \
+  '[ $rc -eq 0 ] && [ "$(qf T-52 .state)" = parked ] && [ "$(qf T-52 .held_by)" = T-51 ] && echo "$rq" | grep -q "held behind T-51 until they merge"'
+q drop T-52; q drop T-51
 check "AC3: the red PR is never merged"                              '! grep -q "^104 " "$T/merges.log" && echo "$out" | grep -q "#104 red"'
 check "AC5: every merge went into the default branch"                '[ "$(cut -d" " -f2 "$T/merges.log" | sort -u)" = main ]'
 check "AC5: a PR on another base is never the batch'\''s"            '! grep -q "^105 " "$T/merges.log" && ! echo "$out" | grep -q "#105"'
@@ -383,5 +418,140 @@ echo '{}' > "$T/prs.json"
 printf 'cp "%s/state/merge-driver.lock.d/version" "%s/seen-version"\n' "$T" "$T" > "$T/gh.atlist"
 out=$(DESK_HOME="$RH" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$RH/releases/old0/bin/merge-driver.sh" --tickets "T-1" 2>&1); rc=$?
 check "DS-810 AC1: a driver started from an older release writes that release's commit into its lock, not the installed one" '[ $rc -eq 0 ] && [ "$(cat "$T/seen-version" 2>/dev/null)" = old0 ]'
+
+# ---- DS-796: a PR built outside its worker is recorded on its ticket, with GitHub's merge time -----
+# T-31 is triaged, its worker never started, and PR #131, opened on its branch by a session, merges.
+qg(){ node "$B/queue.mjs" get "$1" 2>/dev/null | jq -r "$2"; }
+# Whether ticket $1 still owes a pass its review's after-merge criteria, which keeps it from the
+# archive and from a new batch's drop (harvest.mjs postMergeUnmade).
+owed(){ node --input-type=module -e "import { readFileSync } from 'node:fs'; import { postMergeUnmade } from '$B/harvest.mjs';
+  process.exit(postMergeUnmade(JSON.parse(readFileSync(process.argv[1], 'utf8')).tickets[process.argv[2]]) ? 0 : 1)" "$DESK_QUEUE" "$1"; }
+SHA31=3131313131313131313131313131313131313131
+cat > "$T/prs.json" <<EOF
+{ "131": { "head": "fix/T-31", "base": "main", "sha": "$SHA31", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "mergedAt": "2026-11-18T11:40:02Z" } }
+EOF
+q add T-31 Task A; q set T-31 state=triaged branch=fix/T-31
+for i in 1 2; do out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-31" 2>&1); done
+check "DS-796 AC1: the merge records the PR on the ticket and GitHub's mergedAt as its merge time" \
+  'grep -q "^131 main " "$T/merges.log" && [ "$(qg T-31 .result.pr)" = 131 ] && [ "$(qg T-31 .merged_at)" = 2026-11-18T11:40:02.000Z ]'
+check "DS-796 AC1: and the ticket is done, shipped outside its worker, so no worker is started for it" \
+  '[ "$(qg T-31 .state)" = done ] && [ "$(qg T-31 .result.summary)" = "shipped outside its worker: PR #131 merged by the merge driver" ]'
+check "DS-796: it owes a pass that PR's review until one reads it, and not after" \
+  'owed T-31 && q set T-31 "pr_status={\"pr\":131,\"state\":\"MERGED\"}" && ! owed T-31'
+# T-34 was recorded done on another repo's PR #134 (needs-you's elsewhereDone), then requeued and
+# respawned, keeping that status. This repo's PR #134 from its branch merges: the other repo's status is
+# dropped, not marked merged in this PR's place, so the ticket owes a pass this PR's review. T-35's
+# kept status is this repo's own PR #135, so it is kept and marked merged.
+q add T-34 Task A; q set T-34 state=triaged branch=fix/T-34 'pr_status={"pr":134,"state":"MERGED","url":"https://github.com/other/thing/pull/134"}'
+q merged T-34 2026-11-18T11:45:00Z --pr 134 --head fix/T-34
+q add T-35 Task A; q set T-35 state=triaged branch=fix/T-35 'pr_status={"pr":135,"state":"OPEN","url":"https://github.com/Acme/Widgets/pull/135"}'
+q merged T-35 2026-11-18T11:46:00Z --pr 135 --head fix/T-35
+check "DS-796: a kept status naming another repo's PR of the merged number is dropped, and the ticket owes that PR's review" \
+  '[ "$(qg T-34 .result.pr)" = 134 ] && [ "$(qg T-34 .shipped_pr)" = 134 ] && [ "$(qg T-34 .pr_status)" = null ] && owed T-34'
+check "DS-796: one naming this repo's own PR is kept and marked merged" \
+  '[ "$(qg T-35 .pr_status.state)" = MERGED ] && [ "$(qg T-35 .pr_status.url)" = https://github.com/Acme/Widgets/pull/135 ] && [ "$(qg T-35 .result.pr)" = 135 ]'
+# T-33 records no branch, and PR #133 names it only in its title: another ticket's PR. Its merge time is
+# recorded as before, and the ticket is not taken as shipped on it.
+cat > "$T/prs.json" <<EOF
+{ "133": { "head": "fix/other-work", "title": "fix: T-33 follow-up", "base": "main", "sha": "$SHA31", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "mergedAt": "2026-11-18T11:41:00Z" } }
+EOF
+q add T-33 Task A; q set T-33 state=triaged
+for i in 1 2; do out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-33" 2>&1); done
+check "DS-796: a PR whose branch does not name the ticket is not recorded as its PR" \
+  'grep -q "^133 main " "$T/merges.log" && [ "$(qg T-33 .state)" = triaged ] && [ "$(qg T-33 .result.pr)" = null ] && [ "$(qg T-33 .merged_at)" = 2026-11-18T11:41:00.000Z ]'
+# T-32's own worker opened PR #132 and parked: the merge records its time and leaves the ticket as its
+# worker left it, for the pass to send back for its after-merge steps.
+cat > "$T/prs.json" <<EOF
+{ "132": { "head": "fix/T-32", "base": "main", "sha": "$SHA31", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] } }
+EOF
+q add T-32 Task A; q set T-32 state=parked branch=fix/T-32 draft_pr=132 'park={"question":"Stage 8: comment"}'
+for i in 1 2; do out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-32" 2>&1); done
+check "DS-796: a ticket that records its own PR keeps its state, and gh's unset time falls back to the driver's clock" \
+  'grep -q "^132 main " "$T/merges.log" && [ "$(qg T-32 .state)" = parked ] && [ "$(qg T-32 .result.pr)" = null ] && [ "$(qg T-32 .merged_at | cut -c1-4)" = "$(date -u +%Y)" ]'
+
+# ---- DS-796: a blocker requeued after its first PR merged holds its dependants until its new PR merges ----
+# T-41's first PR #140 merged (merged_at, merged_pr) and GitHub still lists it on its branch; its new PR
+# #141 is open. T-43, never requeued, merged on #142, which GitHub does not list: its merge still counts.
+cat > "$T/prs.json" <<EOF
+{ "140": { "head": "fix/T-41", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] },
+  "141": { "head": "fix/T-41", "base": "main", "sha": "$SHA31", "state": "open", "draft": true, "checks": [] } }
+EOF
+q add T-41 Task A; q set T-41 state=done branch=fix/T-41 result.pr=141 merged_pr=140 'pr_status={"pr":141,"state":"OPEN"}'; q merged T-41 2026-11-10T00:00:00.000Z
+q add T-43 Task A; q set T-43 state=done branch=fix/T-43 result.pr=142 'pr_status={"pr":142,"state":"MERGED"}'; q merged T-43 2026-11-11T00:00:00.000Z
+q add T-42 Task A; q set T-42 state=triaged branch=fix/T-42; q hold T-42 T-41
+q add T-44 Task A; q set T-44 state=triaged branch=fix/T-44; q hold T-44 T-43
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-41" 2>&1)
+check "DS-796 a requeued blocker's first merge, recorded or listed, does not release what waits on its open PR" \
+  '[ "$(qg T-42 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-42"'
+check "DS-796 a blocker never requeued still releases on its recorded merge" '[ "$(qg T-44 .state)" = triaged ] && echo "$out" | grep -q "merged: T-43#142 -> RELEASED T-44"'
+node --input-type=module -e "import { readFileSync, writeFileSync } from 'node:fs'; const f = process.argv[1]; const p = JSON.parse(readFileSync(f, 'utf8')); p['141'].state = 'merged'; writeFileSync(f, JSON.stringify(p))" "$T/prs.json"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-41" 2>&1)
+check "DS-796 and its new PR merging releases them" '[ "$(qg T-42 .state)" = triaged ] && echo "$out" | grep -q "merged: T-41#141 -> RELEASED T-42"'
+# T-45 is requeued (back to triaged, no spawn yet), its first PR #145 merged and listed: what waits on it
+# waits for its new round. T-47, never requeued, was just merged by the driver: its status still reads
+# open until a pass reads it, and GitHub does not list it, but its recorded merge releases T-48.
+cat > "$T/prs.json" <<EOF
+{ "145": { "head": "fix/T-45", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] } }
+EOF
+q add T-45 Task A; q set T-45 state=done branch=fix/T-45 result.pr=145 'pr_status={"pr":145,"state":"MERGED"}'; q merged T-45 2026-11-12T00:00:00.000Z; q set T-45 state=triaged
+q add T-47 Task A; q set T-47 state=done branch=fix/T-47 result.pr=147 'pr_status={"pr":147,"state":"OPEN"}'; q merged T-47 2026-11-12T00:00:00.000Z
+q add T-46 Task A; q set T-46 state=triaged branch=fix/T-46; q hold T-46 T-45
+q add T-48 Task A; q set T-48 state=triaged branch=fix/T-48; q hold T-48 T-47
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-45" 2>&1)
+check "DS-796 a blocker requeued before its new worker starts does not release on its first merge" '[ "$(qg T-46 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-46"'
+check "DS-796 a blocker the driver just merged releases on that merge before a pass reads its status" '[ "$(qg T-48 .state)" = triaged ] && echo "$out" | grep -q "merged: T-47#147 -> RELEASED T-48"'
+# T-51 was respawned (merged_pr) after its first PR #151 merged, and its new worker parked; T-61's new
+# worker failed. T-53 was requeued behind its own unmerged blocker T-55, so it is parked, held. T-57 was
+# respawned before merged_pr was kept: done again on #157, read open after its first merge. None of them
+# releases what waits on it on that first merge, recorded or listed.
+cat > "$T/prs.json" <<EOF
+{ "151": { "head": "fix/T-51", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] },
+  "153": { "head": "fix/T-53", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] },
+  "156": { "head": "fix/T-57", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] },
+  "161": { "head": "fix/T-61", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] },
+  "163": { "head": "fix/T-63", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] },
+  "165": { "head": "fix/T-65", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] },
+  "166": { "head": "fix/T-67", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] } }
+EOF
+# T-63 was requeued after #163 merged, and its next spawn failed its preflight: no worker ran. T-67 was
+# respawned before merged_pr was kept and is done again on #167, its status still naming #166. T-65, never
+# requeued, was stopped (held behind nothing) and then its draft #165 merged: that merge counts.
+q add T-63 Task A; q set T-63 state=failed branch=fix/T-63 result.pr=163 spawn_failed=true; q merged T-63 2026-11-13T00:00:00.000Z
+q add T-67 Task A; q set T-67 state=done branch=fix/T-67 result.pr=167 'pr_status={"pr":166,"state":"MERGED"}'; q merged T-67 2026-11-13T00:00:00.000Z
+q add T-65 Task A; q set T-65 state=parked branch=fix/T-65 draft_pr=165 'park={"question":"held by orchestrator: stopped by queue.mjs stop at 2026-11-13T00:00:00.000Z"}'; q merged T-65 2026-11-14T00:00:00.000Z
+for s in 64:63 68:67 66:65; do q add "T-${s%%:*}" Task A; q set "T-${s%%:*}" state=triaged branch="fix/T-${s%%:*}"; q hold "T-${s%%:*}" "T-${s##*:}"; done
+q add T-51 Task A; q set T-51 state=parked branch=fix/T-51 merged_pr=151 'park={"question":"Stage 8: comment"}'; q merged T-51 2026-11-13T00:00:00.000Z
+q add T-61 Task A; q set T-61 state=failed branch=fix/T-61 merged_pr=161; q merged T-61 2026-11-13T00:00:00.000Z
+q add T-55 Task A; q set T-55 state=triaged branch=fix/T-55
+q add T-53 Task A; q set T-53 state=done branch=fix/T-53 result.pr=153; q merged T-53 2026-11-13T00:00:00.000Z
+q set T-53 state=parked result=null held_by=T-55 'park={"question":"held by orchestrator: blocked by T-55"}'
+q add T-57 Task A; q set T-57 state=done branch=fix/T-57 result.pr=157 'pr_status={"pr":157,"state":"OPEN","at":"2026-11-14T00:00:00.000Z"}'; q merged T-57 2026-11-13T00:00:00.000Z
+for s in 52:51 62:61 54:53 58:57; do q add "T-${s%%:*}" Task A; q set "T-${s%%:*}" state=triaged branch="fix/T-${s%%:*}"; q hold "T-${s%%:*}" "T-${s##*:}"; done
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-51" 2>&1)
+check "DS-796 a respawned blocker whose new worker parked or failed does not release on its first merge" \
+  '[ "$(qg T-52 .state)" = parked ] && [ "$(qg T-62 .state)" = parked ] && ! echo "$out" | grep -qE "RELEASED T-(52|62)"'
+check "DS-796 a blocker held behind its own blockers at its requeue does not release on its first merge" \
+  '[ "$(qg T-54 .state)" = parked ] && [ "$(qg T-53 .state)" = parked ] && ! echo "$out" | grep -qE "RELEASED T-5[34]"'
+check "DS-796 a blocker respawned before merged_pr, its new PR read open after its merge, does not release on that merge" \
+  '[ "$(qg T-58 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-58"'
+check "DS-796 a requeued blocker whose next spawn failed before any worker ran does not release on its first merge" \
+  '[ "$(qg T-64 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-64"'
+check "DS-796 a blocker respawned before merged_pr, done on a PR its status does not name yet, does not release on its first merge" \
+  '[ "$(qg T-68 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-68"'
+check "DS-796 a stopped blocker never requeued releases on the merge it records" '[ "$(qg T-66 .state)" = triaged ] && echo "$out" | grep -q "RELEASED T-66"'
+node --input-type=module -e "import { readFileSync, writeFileSync } from 'node:fs'; const f = process.argv[1]; const p = JSON.parse(readFileSync(f, 'utf8')); p['157'] = { ...p['156'], state: 'merged' }; p['167'] = { ...p['166'], state: 'merged' }; writeFileSync(f, JSON.stringify(p))" "$T/prs.json"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-51" 2>&1)
+check "DS-796 and its current PR merging releases what waits on it" '[ "$(qg T-58 .state)" = triaged ] && echo "$out" | grep -q "merged: T-57#157 -> RELEASED T-58" && [ "$(qg T-68 .state)" = triaged ] && echo "$out" | grep -q "merged: T-67#167 -> RELEASED T-68"'
+# T-71's #171 merged, it was requeued, and the pass parked it before any worker spawned (its worktree
+# setup failed): the requeue itself keeps #171 as merged_pr, so what waits on it waits for its next PR.
+cat > "$T/prs.json" <<EOF
+{ "171": { "head": "fix/T-71", "base": "main", "sha": "$SHA31", "state": "merged", "draft": false, "checks": [] } }
+EOF
+q add T-71 Task A; q set T-71 state=done lane=B branch=fix/T-71 result.pr=171 'pr_status={"pr":171,"state":"MERGED"}'; q merged T-71 2026-11-15T00:00:00.000Z
+q requeue T-71; q park T-71 "worktree setup failed, not spawned — no space left"
+q add T-72 Task A; q set T-72 state=triaged branch=fix/T-72; q hold T-72 T-71
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-71" 2>&1)
+check "DS-796 a requeue keeps the merged PR, so a blocker parked before its next worker spawned does not release on it" \
+  '[ "$(qg T-71 .merged_pr | tr -d " \n")" = "[171]" ] && [ "$(qg T-71 .state)" = parked ] && [ "$(qg T-72 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-72"'
 
 finish loop

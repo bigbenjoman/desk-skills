@@ -26,11 +26,12 @@ const numberAtLeast = (min) => (v) => /^\d+(\.\d+)?$/.test(v) && Number(v) >= mi
 // Each lock pool, heavy (test-lock-slots) and light (light-lock-slots), has a floor of slots always
 // granted and a ceiling (test-lock-max, light-lock-max) it never passes. Between them a run is let in
 // only while the machine's load, free memory and memory pressure leave room for it (admission.mjs).
-// lock-admission says whether that runs: off, or shadow, which logs what it would do and grants
-// nothing. A row here that does not read makes admission off, so a typo never takes a slot away.
-const ADMISSION_MODES = Object.freeze(['off', 'shadow']);
+// lock-admission says whether that runs: off; shadow, which logs what it would do and grants nothing;
+// or on, which grants it. A row here that does not read makes admission off, so a typo never takes a
+// slot away and never grants one.
+const ADMISSION_MODES = Object.freeze(['off', 'shadow', 'on']);
 const ADMISSION_RULES = Object.freeze({
-  'lock-admission': { ok: (v) => ADMISSION_MODES.includes(v), want: ADMISSION_MODES.join(' or ') },
+  'lock-admission': { ok: (v) => ADMISSION_MODES.includes(v), want: 'off, shadow or on' },
   'light-lock-slots': { ok: wholeAtLeast(1), want: 'a whole number of slots, 1 or more' },
   'light-lock-max': { ok: wholeAtLeast(1), want: 'a whole number of slots, 1 or more' },
   'test-lock-max': { ok: wholeAtLeast(1), want: 'a whole number of slots, 1 or more' },
@@ -95,6 +96,16 @@ const SIZING_RULES = Object.freeze({
 });
 export const SIZING_KEYS = Object.freeze(Object.keys(SIZING_RULES));
 
+// The light lock's express lane: one fixed slot of its own, never gated on headroom, that only a run
+// with-lock.sh is told is small may take. Off unless the row is exactly `on`.
+const EXPRESS_LANE_KEY = 'light-express-lane';
+// A Sizing row that is a lever, on or off, checked as text.
+const ON_OFF = Object.freeze(['on', 'off']);
+const onOffRule = (key, why) => ({ text: true, problem: (v) => (ON_OFF.includes(v) ? null : `\`${key}\` is "${v}": want on or off`), why });
+// The job-token lever: with it on, each suite tests/run.sh starts holds one token from a machine-wide
+// budget of test-lock-slots x test-cap (leases.mjs's job pool). Off unless the row is exactly `on`.
+export const JOB_TOKENS_KEY = 'job-tokens';
+export const jobTokensOn = (v) => String(v ?? '').trim() === 'on';
 // The bench's quota settings: Sizing rows no proposal makes, set by `desk-env machine set` from the
 // user's answers and read by bench-quota.mjs.
 export const BENCH_CAP_KEY = 'bench-cap-points';
@@ -111,7 +122,13 @@ const BENCH_RULES = Object.freeze({
   // The lease broker's per-kind lever, read as text rather than a number.
   'lease-kinds': { text: true, problem: (v) => leaseKindsProblem(v),
     why: 'off, shadow or on for each lease kind desk-env lease decides; a kind not named is shadow' },
+  [EXPRESS_LANE_KEY]: onOffRule(EXPRESS_LANE_KEY,
+    'on gives a small light run (tests/related.sh) one light slot of its own, outside light-lock-max; off when unset'),
+  [JOB_TOKENS_KEY]: onOffRule(JOB_TOKENS_KEY,
+    'on makes each suite tests/run.sh starts hold one of test-lock-slots x test-cap job tokens across the machine; off when unset'),
 });
+// The lever rows profileProblems checks, each with what reads as off when its row is wrong.
+const LEVER_ROWS = Object.freeze([[EXPRESS_LANE_KEY, 'the express lane stays off'], [JOB_TOKENS_KEY, 'job tokens stay off']]);
 
 // ---- lease kinds ------------------------------------------------------------------------------
 // The lease broker's kinds (leases.mjs takes its list from here, as this file cannot import it) and
@@ -141,15 +158,21 @@ export function leaseKindsProblem(raw) {
   if (unknown.length) return `\`lease-kinds\` names ${unknown.length === 1 ? 'an entry' : 'entries'} it does not know: ${unknown.map((e) => `"${e}"`).join(', ')}: want ${want}`;
   return Object.keys(modes).length ? null : `\`lease-kinds\` is empty: want ${want}`;
 }
-// The checks on Sizing rows a person may have edited by hand, one line each: lease-kinds and the
-// admission rows, whose problems end with the locks granting as with lock-admission off.
+// The checks on Sizing rows a person may have edited by hand, one line each: lease-kinds, the
+// admission rows, whose problems end with the locks granting as with lock-admission off, and the
+// express lane's and job tokens' rows.
 // A profile row's value as written (Sizing, else Hardware), TODO and all, or null.
 export const profileValue = (profile, k) => profile?.sizing?.[k]?.value ?? profile?.hardware?.[k]?.value ?? null;
 export function profileProblems(profile) {
   const v = profile?.sizing?.['lease-kinds']?.value;
   const bad = v == null ? null : leaseKindsProblem(v);
   const admit = admissionRows((k) => profileValue(profile, k)).problems.map((p) => `${p}; the locks grant as with \`lock-admission\` off`);
-  return [...(bad ? [bad] : []), ...admit];
+  const levers = LEVER_ROWS.flatMap(([k, off]) => {
+    const raw = profile?.sizing?.[k]?.value;
+    const p = raw == null ? null : BENCH_RULES[k].problem(String(raw).trim());
+    return p ? [`${p}; ${off}`] : [];
+  });
+  return [...(bad ? [bad] : []), ...admit, ...levers];
 }
 // `bench-run-limit-<provider>`: the most runs the bench may start in a rolling week on a provider it
 // has no meter or allowance ledger for, which it otherwise refuses.
@@ -397,7 +420,7 @@ export function propose(hw, r = RULES) {
   add('pre-push-lock-timeout-s', r.prePushLockTimeoutS,
     'how long the pre-push hook waits for the test lock before skipping a typecheck or suite; CI runs it anyway');
   const testCap = rows.find((s) => s.key === 'test-cap').value;
-  add('lock-admission', ADMISSION_FIXED['lock-admission'], 'off: the locks grant their floors only; shadow logs what headroom admission would grant above them');
+  add('lock-admission', ADMISSION_FIXED['lock-admission'], 'off: the locks grant their floors only; shadow logs what headroom admission would grant above them; on grants it');
   add('light-lock-slots', 1, 'the light lock\'s floor: slots always granted');
   add('light-lock-max', 1, 'the light lock\'s ceiling, never passed: its floor');
   add('test-lock-max', slots, 'the test lock\'s ceiling, never passed: test-lock-slots');

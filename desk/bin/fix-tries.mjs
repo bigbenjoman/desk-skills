@@ -65,7 +65,10 @@ export const tries = (n) => `${n} fix ${n === 1 ? 'try' : 'tries'}`;
 // (kind `rereview`), a capture try (`capture`) and a protected-files try (`protected`, which moves it only
 // when a change is not needed) move no head by design, so they do not count here.
 const OWN_HEAD = new Set(['rereview', 'capture', 'protected', 'renames']);
-const fixedAt = (done, head) => done.some((x) => x.head === head && !OWN_HEAD.has(x.kind));
+// A try withdrawn before its worker started (queue.mjs withdraw) made none: only a withdrawn review try
+// holds its head, in reviewFix (withdrawnAt).
+const fixedAt = (done, head) => done.some((x) => x.head === head && !x.withdrawn && !OWN_HEAD.has(x.kind));
+const withdrawnAt = (done, head) => (done ?? []).find((x) => x.head === head && x.withdrawn && x.kind === 'review') ?? null;
 
 // The steps the job for `check` failed at, by name and in order, read from `gh run view <run> --json
 // jobs`; null where the run names no such job or the payload holds no steps array to read.
@@ -157,7 +160,50 @@ function againstBase(t, head, mine, notMine, ctx) {
   return { held: { call: 'held', class: 'base red', base_red: b.record,
     why: `base red: ${where}, so no fix try is spent on it; it goes to a fix try once that job passes on ${b.branch}` } };
 }
-const stillRed = (done, mine, notMine, ctx) => checksStuck(`still red after ${tries(done.length)}`, mine, notMine, ctx);
+// The checks a ticket's base red hold names at this head, held or cleared (failure-class.mjs baseSplit).
+export const baseHeldAt = (t, head) => {
+  const at = head && t?.base_red?.head === head ? t.base_red : null;
+  return new Set([...(at?.checks ?? []), ...(at?.cleared ?? [])]);
+};
+// Of the named red checks, those red on the base where the PR branched that have passed on the base
+// since: held at this head and passed on the base's latest run, or red at the merge base and passed
+// since. read: failure-class.mjs baseSplit's reads.
+export function staleChecks(t, head, names, read) {
+  const held = baseHeldAt(t, head);
+  return names.filter((n) => (held.has(n) ? read.latestOnBase(n, { held: true }) === 'pass'
+    : read.atMergeBase(n) === 'fail' && read.latestOnBase(n) === 'pass'));
+}
+// A PR red on a check that was red on the base where it branched (at its merge base, or held as base
+// red at this head, failure-class.mjs baseSplit) and has passed on the base since is red on the base it
+// was built on, not on its own change: a re-run replays the same merge commit and fails the same way, and
+// a fix try has nothing of its own to fix. It gets its branch updated from the base instead (`refresh`),
+// so its checks run on the green base, ahead of any outage hold, re-run or fix try. Once per head: the
+// update, made by the pass (pass.mjs refreshBranch) or the merge driver (merge-driver.sh stale_base), is
+// recorded on the ticket as `base_refresh` { head, at, ok }. One that went through holds the PR at that
+// head (`wait`), with no re-run and no fix try, for REFRESH_WAIT_MS while GitHub makes its new head; one
+// refused, or past that, leaves it its usual way. The pass's fix tries (staleBase) and the merge
+// driver (stale-base.mjs), before it re-runs a red PR, both decide by this.
+// -> { call: 'refresh', checks, why } | { call: 'wait', why } | null.
+const REFRESH_WAIT_MS = 30 * 60 * 1000;
+export function staleCall(t, head, names, read, { base = 'the base', now = Date.now() } = {}) {
+  const r = t?.base_refresh?.head === head ? t.base_refresh : null;
+  if (r?.ok === true && now - Date.parse(r.at ?? '') < REFRESH_WAIT_MS) {
+    return { call: 'wait', why: `its branch was updated from ${base} at ${String(r.at).slice(0, 16).replace('T', ' ')} UTC, as it was red only where ${base} was; it waits for the run at its new head, with no re-run and no fix try` };
+  }
+  if (r || !names.length) return null;
+  const stale = staleChecks(t, head, names, read);
+  if (!stale.length) return null;
+  const one = stale.length === 1;
+  return { call: 'refresh', checks: stale,
+    why: `${stale.join(', ')} ${one ? 'was' : 'were'} red on ${base} too and ${one ? 'has' : 'have'} passed on ${base} since, so its branch is updated from ${base} for a run on the green base, with no re-run and no fix try` };
+}
+// Where §3 pr-update-branch lets the pass update a branch (ctx.refreshBase), staleCall for the checks a
+// worker would fix.
+function staleBase(t, head, mine, ctx) {
+  if (!ctx.baseRead || !ctx.refreshBase || !mine.length) return null;
+  return staleCall(t, head, [...new Set(mine.map((f) => f.name))], ctx.baseRead, { base: ctx.base ?? 'the base', now: ctx.now ?? Date.now() });
+}
+const stillRed = (done, mine, notMine, ctx) => checksStuck(`still red after ${tries(done.filter((x) => !x.withdrawn).length)}`, mine, notMine, ctx);
 // A red check's error lines, as pr_status keeps them: its job's annotations, else what its failed log
 // names. One asking a person's approval is no cause a worker can clear.
 const LINE_CHARS = 300, LINES_PER_CHECK = 5;
@@ -188,7 +234,8 @@ function spentOnRed(done, { pr, head, draft }, mine, notMine, ctx, checks, base 
 // The tries that count against FIX_TRIES_MAX: all but the extra tries, the review tries (reviewTry),
 // which have REVIEW_TRIES_PER_HEAD at each head, the capture try (captureTry), which is the PR's own one,
 // and the protected-files tries (gateTry), which have their own.
-const ownCount = (x) => x.extra || x.kind === 'rereview' || x.kind === 'capture' || x.kind === 'protected';
+// A try withdrawn before its worker started (queue.mjs withdraw) counts against none either.
+const ownCount = (x) => x.extra || x.withdrawn || x.kind === 'rereview' || x.kind === 'capture' || x.kind === 'protected';
 export const triesMade = (done) => (done ?? []).filter((x) => !ownCount(x)).length;
 // No try is left: FIX_TRIES_MAX made, or one already made at this head (triedHere).
 const spent = (done, triedHere) => triesMade(done) >= FIX_TRIES_MAX || triedHere;
@@ -205,7 +252,7 @@ export const triesSpent = (done, head) => spent(done, fixedAt(done, head));
 // REVIEW_TRIES_CEILING bounds those, so a loop where every fix makes a new finding still ends.
 const FIX_TRIES_TOTAL = FIX_TRIES_MAX + 1;
 export const REVIEW_TRIES_CEILING = 4;
-const isReviewTry = (x) => !x.extra && x.kind === 'review';
+const isReviewTry = (x) => !x.extra && !x.withdrawn && x.kind === 'review';
 const quoted = (x) => Boolean(x.findings?.length || x.gaps?.length || x.taken?.length);
 const reviewTriesMade = (done) => (done ?? []).filter(isReviewTry).length;
 // The review fix tries left: below the ceiling, and, over the tries not known to have cleared what
@@ -250,7 +297,7 @@ function triesByKind(done) {
 // try with either read missing counts. CONFLICT_REPAIRS_MAX bounds every try, worked or not.
 const CONFLICT_REPAIRS_MAX = 5;
 const conflictTry = (base, files, draft, at) => ({ kind: 'conflict', ...(draft ? { draft: true } : {}), what: `${draft ? 'draft ' : ''}conflicts with ${base}`, base, files: files ?? null, ...(at ?? {}) });
-const conflictTries = (done) => (done ?? []).filter((x) => !x.extra && x.kind === 'conflict');
+const conflictTries = (done) => (done ?? []).filter((x) => !x.extra && !x.withdrawn && x.kind === 'conflict');
 const repairWorked = (x, next) => !!(x.base_sha && x.merge_base && next?.base_sha && next.merge_base
   && next.head !== x.head && next.merge_base !== x.merge_base && next.base_sha !== x.base_sha);
 export const conflictTriesMade = (done, now) => {
@@ -287,7 +334,8 @@ const treeTry = (base, held, at) => ({ ...conflictTry(base, null, false, at), wh
 // the step names its run failed at, reruns(name) -> reruns tried at s.head, cooledDown (the last rerun
 // has had its gap to report), waived(names) -> the driver merges past these as known flaky checks,
 // conflictFiles() -> [file] | null, baseRead (failure-class.mjs baseSplit's reads, which the pass
-// gives wherever it knows the head), build(failing, gate) -> undraft.mjs buildCall's answer for the red §4 Check builds
+// gives wherever it knows the head), refreshBase (§3 pr-update-branch is yes: a PR red only where its
+// base was red, the base green since, gets its branch updated, staleBase), build(failing, gate) -> undraft.mjs buildCall's answer for the red §4 Check builds
 // checks, or null where the pass builds none }. Besides the calls above it answers buildCall's `build`,
 // `rebuilt` and `wait` for a ready PR the pass builds, and a stuck answer may carry a `build` to start.
 export function fixCall(t, s, ctx) {
@@ -324,6 +372,8 @@ export function fixCall(t, s, ctx) {
     }
     split = splitFailing(built ? rest.filter((f) => !built.names.includes(f.name)) : rest, ctx);
     let { mine, notMine } = split;
+    const refresh = staleBase(t, s.head, mine, ctx);
+    if (refresh) return refresh;
     // Beside a check that is not a worker's, a check an outage holds on this PR is set aside first, so
     // the PR goes that check's way, and a try it gets is told to leave the held one red. A held check is
     // the pass's, never a person's: beside a check build it neither stops the build nor joins a stuck answer.
@@ -744,15 +794,36 @@ export function recommendedOf(gap) {
     .replace(/\s*\.$/, '').replace(/^(\*\*|__|[*_`])(.+)\1$/, '$2').trim();
   return option && !/^(none|no recommendation|n\/a)\b/i.test(option) ? option : null;
 }
+// What a recommendation may need that §3 can deny workers: the row, what it reads like, and the action.
+// A worker under a row that is not yes cannot carry it out, so no try is spent on it.
+const WORKER_ROUTES = [
+  { row: 'worker-workflow-dispatch', test: /\bdispatch(?:es|ed|ing)?\b|\bworkflow_dispatch\b|\bgh workflow run\b|\b(?:run|start|trigger)\w*\s+(?:the\s+)?[\w.-]+(?:\s+[\w.-]+)?\s+workflow\b/i, action: 'dispatch the workflow' },
+];
+// The route a tagged gap's recommendation needs that `workerMay` (row -> whether §3 grants workers it)
+// denies, or null; null too where no grants are given.
+export function deniedRoute(gap, workerMay) {
+  const answer = recommendedOf(gap);
+  if (!answer || typeof workerMay !== 'function') return null;
+  return WORKER_ROUTES.find((r) => r.test.test(answer) && !workerMay(r.row)) ?? null;
+}
 // The tagged gaps a try may settle on their recommendations, as { gap, answer }: only under §3
 // autopilot-judgement yes, only when they are all the review leaves open (`alone`), and only when every
-// one names a recommendation and none reads as an ask category (decisions.mjs askCategoryIn);
-// otherwise [] and all of them stay the person's.
-function takenGaps(person, judgement, alone) {
+// one names a recommendation, none reads as an ask category (decisions.mjs askCategoryIn) and none needs
+// a route §3 denies workers (deniedRoute); otherwise [] and all of them stay the person's.
+function takenGaps(person, judgement, alone, workerMay) {
   if (judgement !== 'yes' || !alone || !person.length) return [];
   const taken = person.map((gap) => ({ gap, answer: recommendedOf(gap) }));
-  return taken.every((x) => x.answer && !askCategoryIn(x.gap)) ? taken : [];
+  return taken.every((x) => x.answer && !askCategoryIn(x.gap) && !deniedRoute(x.gap, workerMay)) ? taken : [];
 }
+// A gap the review did not tag whose recommendation needs a denied route is the person's all the same:
+// tagged as their call wherever it is quoted, so a stuck reason gives it up to needs-you (personGapsIn).
+const personLabel = (workerMay) => (g) => (!personsCall(g) && deniedRoute(g, workerMay) ? `PERSON'S CALL · ${g}` : g);
+// A tagged gap as the person's item names: with a recommendation no worker may carry out, the action
+// and the row, so the person, or a session §3 grants it, does it without asking anyone else.
+const personGapText = (gap, workerMay) => {
+  const r = deniedRoute(gap, workerMay);
+  return r ? `${gap} [no fix try: its recommendation, "${recommendedOf(gap)}", needs config §3 ${r.row}, which workers are not granted: ${r.action} on the PR's branch yourself, or from a session allowed to, or take the other option]` : gap;
+};
 
 const gapCount = (n) => `${n} ${n === 1 ? 'gap' : 'gaps'}`;
 // What a review stuck reason puts before the findings and gaps that outlasted the try that quoted them.
@@ -788,9 +859,12 @@ export function reviewFix(t, review, opts = {}) {
   const sevs = p2s ? ['P2'] : undefined;
   const gapsOpen = opts.judgement === 'yes' ? Number(review.verdict?.gaps) || 0 : 0;
   const allGaps = gapsOpen ? reviewGaps(review.body) : [];
-  const tagged = allGaps.filter(personsCall);
+  // The person's: a gap tagged their call, or one whose recommendation needs a route §3 denies workers.
+  const persons = (g) => personsCall(g) || deniedRoute(g, opts.workerMay) != null;
+  const label = personLabel(opts.workerMay);
+  const tagged = allGaps.filter(persons).map(label);
   // As personGapsCall reads a review with nothing open but the person's gaps.
-  const taken = takenGaps(tagged, opts.judgement, !counts && !(Number(v?.deferred) > 0) && gapsOpen <= tagged.length);
+  const taken = takenGaps(tagged, opts.judgement, !counts && !(Number(v?.deferred) > 0) && gapsOpen <= tagged.length, opts.workerMay);
   const personGaps = taken.length ? [] : tagged;
   const codeGaps = Math.max(0, gapsOpen - personGaps.length);
   const what = [counts, codeGaps ? gapCount(codeGaps) : ''].filter(Boolean).join(', ');
@@ -800,12 +874,16 @@ export function reviewFix(t, review, opts = {}) {
   const room = reviewTriesLeft(done);
   const byKind = triesByKind(done);
   const after = `review not clean after ${tries(triesMade(done))}${byKind ? ` (${byKind})` : ''}: ${what}`;
-  if (room <= 0 || fixedAt(done, review.head)) {
+  const pulled = withdrawnAt(done, review.head);
+  if (room <= 0 || fixedAt(done, review.head) || pulled) {
     // The review at this head is the last try's own, so its findings and gaps say what is still open.
     // Only the body's: its inline comments are not read once no try is left.
-    const left = [...(counts ? reviewFindings(review.body, sevs).map((x) => `${x.sev}: ${x.text}`) : []), ...allGaps];
-    const lead = made >= REVIEW_TRIES_CEILING && !fixedAt(done, review.head)
-      ? after.replace(/: /, ', the most review fix tries a PR may make: ') : after;
+    const left = [...(counts ? reviewFindings(review.body, sevs).map((x) => `${x.sev}: ${x.text}`) : []), ...allGaps.filter((g) => !persons(g)), ...tagged];
+    // A review try withdrawn at this head (queue.mjs withdraw) was settled outside a worker, so no try
+    // is drafted at it again: a push, a clean review of it, or the person's fix (desk-needs-you) moves it.
+    const lead = pulled ? `review not clean at this head, whose review fix try was withdrawn (${pulled.withdrawn_why ?? 'settled outside a worker'}), so no try is drafted at it again: push to the branch, post a clean review of the head once it is settled, or send it back with desk-needs-you fix: ${what}`
+      : made >= REVIEW_TRIES_CEILING && !fixedAt(done, review.head)
+        ? after.replace(/: /, ', the most review fix tries a PR may make: ') : after;
     return { call: 'stuck', why: `${lead}${left.length ? ` — ${left.join('; ')}` : ''}` };
   }
   const listed = counts ? reviewFindings(review.body, sevs) : [];
@@ -813,7 +891,7 @@ export function reviewFix(t, review, opts = {}) {
   const comments = !counts || p2s ? null : typeof review.comments === 'function' ? review.comments() : review.comments;
   const inline = inlineFindings(comments).filter((x) => !listed.some((b) => owns(b.text, x.at)));
   const findings = [...listed, ...inline.map(({ sev, text }) => ({ sev, text }))];
-  const gaps = codeGaps ? allGaps.filter((g) => !personsCall(g)) : [];
+  const gaps = codeGaps ? allGaps.filter((g) => !persons(g)) : [];
   if (counts ? !findings.length : !gaps.length && !taken.length) return null;
   // Before survivors: a gap repeating an earlier one's words at new sites reads to survivors as the same gap.
   const wide = !findings.length && !taken.length ? widening(done, gaps, opts) : null;
@@ -869,8 +947,8 @@ export function personGapsCall(review, opts = {}) {
   const v = review.verdict, open = Number(v?.gaps) || 0;
   // A deferred P2 earns no try either (reviewFix), so it does not keep the gaps from the person.
   if (opts.judgement !== 'yes' || !open || reviewCounts(v) || (Number(v?.p2) > 0 && !(Number(v?.deferred) > 0))) return null;
-  const person = reviewGaps(review.body).filter(personsCall);
-  return person.length && open <= person.length ? { call: 'stuck', why: `${PERSON_GAPS}${person.join('; ')}` } : null;
+  const person = reviewGaps(review.body).filter((g) => personsCall(g) || deniedRoute(g, opts.workerMay) != null).map(personLabel(opts.workerMay));
+  return person.length && open <= person.length ? { call: 'stuck', why: `${PERSON_GAPS}${person.map((g) => personGapText(g, opts.workerMay)).join('; ')}` } : null;
 }
 
 // The person's call on a PR's review gaps (desk-needs-you), as the fix it sends back: not one of the
@@ -1250,6 +1328,8 @@ export function draftChecksFix(t, { pr, head, failing, checks }, ctx) {
     const kept = c.checks.filter((x) => !state.some((s) => s.name === x.name));
     return kept.length ? { ...c, checks: kept } : { call: 'stuck', why: c.why };
   };
+  const refresh = staleBase(t, head, mine, ctx);
+  if (refresh) return refresh;
   // As fixCall: beside a check that is not a worker's, a held check is set aside first.
   const aside = notMine.length ? outageOn(pr, mine, ctx) : [];
   mine = mine.filter((f) => !aside.includes(f));
