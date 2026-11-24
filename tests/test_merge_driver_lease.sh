@@ -67,6 +67,7 @@ FREE_AT=$(jq -r 'select(.kind == "merge" and .event == "release") | .at' "$LLOG"
 MERGED_AT=$(jq -r 'select(.type == "merged" and .key == "T-1") | .at' "$T/ledger/events.jsonl" 2>/dev/null)
 check "AC2 the ledger read, the merge and the merged record all happen inside one hold, released after the record" '[ "$(merged)" = 501 ] && [ "$(events)" = "grant release" ] && [ -n "$MERGED_AT" ] && [[ "$GRANT_AT" < "$MERGED_AT" || "$GRANT_AT" == "$MERGED_AT" ]] && [[ "$MERGED_AT" < "$FREE_AT" || "$MERGED_AT" == "$FREE_AT" ]]'
 check "AC2 the lease is the repo and base's, labelled with the driver and the PR" 'jq -r "select(.event == \"grant\") | .key + \" \" + .label" "$LLOG" | grep -q "^acme/widgets@main merge-driver .* #501$"'
+check "AC2 the lease outlasts the merge bound and the records around it: a TTL of the bound plus 60" '[ "$(jq -r "select(.event == \"grant\") | .ttl" "$LLOG")" = 180 ]'
 
 # ---- AC3: on, a record from another path at this head -------------------------------------------------
 fresh on; record merged "session other"; go
@@ -107,6 +108,7 @@ check "AC8 in shadow with the store unreadable it merges as before, and says lea
 fresh on; touch "$T/gh.hang"
 out=""; for _ in 1 2; do out="$out$(DESK_LEVERS=ledger MERGE_DRIVER_MERGE_SECS=1 MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2" 2>&1)"$'\n'; done
 check "AC10 a merge call past its bound releases the lease and logs the PR as unconfirmed" '[ -z "$(merged)" ] && [ "$(events)" = "grant release" ] && echo "$out" | grep -q "#501 merge UNCONFIRMED: gh pr merge did not return in 1s" && qf T-1 .merge_blocked | grep -q "^merge unconfirmed:"'
+check "AC10 the lease TTL follows the merge bound it covers" '[ "$(jq -r "select(.event == \"grant\") | .ttl" "$LLOG")" = 61 ]'
 fresh shadow; echo 3 > "$T/gh.hang"
 out=""; for _ in 1 2; do out="$out$(DESK_LEVERS=ledger MERGE_DRIVER_MERGE_SECS=1 MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2" 2>&1)"$'\n'; done
 check "AC4 in shadow the merge call is not bounded: a slow one merges as before" '[ "$(merged)" = 501 ] && ! echo "$out" | grep -q "UNCONFIRMED"'

@@ -177,8 +177,8 @@
 #   MERGE_DRIVER_GREEN_SECS=<n>  how long a head must stay green before it merges (default 60)
 #   MERGE_DRIVER_LEASE_WAIT_SECS=<n>, MERGE_DRIVER_MERGE_SECS=<n>
 #                                with the merge lease kind not off, how long it waits for the merge
-#                                lease (merge-lease.mjs, default 240), and with it on, the bound on
-#                                one merge call inside it (default 120)
+#                                lease (default twice its TTL, the merge bound plus 60), and with it
+#                                on, the bound on one merge call inside it (default 120)
 #   MERGE_DRIVER_IDLE_SECS=<n>, MERGE_DRIVER_IDLE_MAX_SECS=<n>, MERGE_DRIVER_WAKE_SECS=<n>
 #                                the pause after a loop with no ready PR: the first, doubled on
 #                                each such loop in a row up to the most (defaults 60 and 600), and how
@@ -634,12 +634,16 @@ back_off(){ echo $(( $(date +%s) + ${2:-600} )) > "$SD/backoff-$1"; }
 # The merge lease for the repo and base (merge-lease.mjs), held around one ledger check, merge and
 # record. lease_take <n> <sha> <base> -> 0 to merge, with MLEASE the lease to release (empty: none
 # taken) and MLEASE_ENFORCED set where the kind is on, which bounds the merge call. A store that cannot
-# be read in shadow is said once until it reads again.
+# be read in shadow is said once until it reads again. MERGE_SECS is that bound, a whole number of
+# seconds (120 where unset or not one), and the lease's TTL is it plus a minute for the claim before
+# the merge and the records after it, so the lease outlasts the hold it covers.
 MLEASE=""; MLEASE_ENFORCED=""
+MERGE_SECS="${MERGE_DRIVER_MERGE_SECS:-120}"
+case "$MERGE_SECS" in ''|*[!0-9]*) MERGE_SECS=120 ;; *) MERGE_SECS=$((10#$MERGE_SECS)); [ "$MERGE_SECS" -gt 0 ] || MERGE_SECS=120 ;; esac
 lease_take(){
   local res rc skip="" l
   MLEASE=""; MLEASE_ENFORCED=""
-  res=$(node "$DESK_RUN_BIN/merge-lease.mjs" take "$1" "$2" --repo "$REPO" --base "$3" --by "$MERGER" --pid "$$" ${MERGE_DRIVER_LEASE_WAIT_SECS:+--wait "$MERGE_DRIVER_LEASE_WAIT_SECS"} </dev/null); rc=$?
+  res=$(node "$DESK_RUN_BIN/merge-lease.mjs" take "$1" "$2" --repo "$REPO" --base "$3" --by "$MERGER" --pid "$$" --ttl "$((MERGE_SECS + 60))" ${MERGE_DRIVER_LEASE_WAIT_SECS:+--wait "$MERGE_DRIVER_LEASE_WAIT_SECS"} </dev/null); rc=$?
   if ! printf '%s' "$res" | jq -e 'type == "object"' >/dev/null 2>&1; then log "#$1 NOT merged: the merge lease could not be taken (merge-lease.mjs exit $rc) — retrying next loop"; return 1; fi
   [ "$(printf '%s' "$res" | jq -r .mode)" = on ] && MLEASE_ENFORCED=1
   MLEASE=$(printf '%s' "$res" | jq -r '.lease // empty')
@@ -1381,7 +1385,7 @@ EOF_RESOLVE
   lease_take "$n" "$sha" "$want" || return 1
   # With the kind on, the merge call is bounded (desk_timeout: 124, or 137 where it outlived the TERM),
   # so the hold is too; in shadow it runs as before.
-  local mcall=() mrc msecs="${MERGE_DRIVER_MERGE_SECS:-120}"
+  local mcall=() mrc msecs="$MERGE_SECS"
   [ -n "$MLEASE_ENFORCED" ] && mcall=(desk_timeout "$msecs")
   # Claimed in the machine-wide merge log first (merge-log.mjs), so a session merging the same PR, or
   # one that already did, stops this merge instead of racing it, and who merged it is recorded.
