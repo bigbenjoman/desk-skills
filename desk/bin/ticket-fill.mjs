@@ -1,5 +1,5 @@
 // What /desk-admit writes into a ticket triage would refuse only for sections desk can write from the
-// ticket itself (#1383): acceptance criteria triage drafted from its goal and proposal (its
+// ticket itself: acceptance criteria triage drafted from its goal and proposal (its
 // `drafted_criteria`), "No UI." where triage found nothing renders, and, with either, "None." under a
 // missing Out of scope and the repo's test command under a missing Verification. intake.mjs admit
 // writes them (a GitHub issue under config §3 gh-issue-edit, a ticket file always), lints the ticket
@@ -22,12 +22,14 @@ export const draftedCriteria = (rec) => (Array.isArray(rec?.drafted_criteria)
 // Whether the ticket has no criteria and triage found no testable outcome in its text to draft them from.
 export const noTestableOutcome = (rec) => blocking(rec, 'criteria') && draftedCriteria(rec)?.length === 0;
 
-// The Design section's reason where triage found nothing renders.
-export function noUiReason(rec) {
+// The files a ticket triage found renders nothing changes, as its reason says them (`: it changes a, b,
+// c and 2 more`), or '' with none: the refusal line (intake.mjs) and the Design section written here.
+export function changesClause(rec) {
   const files = (Array.isArray(rec.files_in_scope) ? rec.files_in_scope : []).filter((f) => typeof f === 'string');
-  const which = files.length ? `: it changes ${files.slice(0, 3).join(', ')}${files.length > 3 ? ` and ${files.length - 3} more` : ''}` : '';
-  return `No UI. Triage found nothing renders${which}.`;
+  return files.length ? `: it changes ${files.slice(0, 3).join(', ')}${files.length > 3 ? ` and ${files.length - 3} more` : ''}` : '';
 }
+// The Design section's reason where triage found nothing renders.
+export const noUiReason = (rec) => `No UI. Triage found nothing renders${changesClause(rec)}.`;
 
 // The repo's test command, as Verification says it: §4 Unit tests' items, each in backticks; '' unset.
 export function testCommand(read = (id) => E.configValues(id)) {
@@ -72,8 +74,9 @@ const block = (kind, key, target, said, secs) => [`${kind} ${key} — ${said}`, 
   ...secs.flatMap((s) => [`## ${s.name}`, s.body])].join('\n');
 
 const lastLine = (r) => `${r.stderr ?? ''}${r.stdout ?? ''}${r.error?.message ?? ''}`.trim().split('\n').pop() || `exited ${r.status}`;
-const issueBody = (n, repo) => {
-  const r = spawnSync('gh', ['issue', 'view', n, '--repo', repo, '--json', 'body', '--jq', '.body'], { encoding: 'utf8' });
+// A GitHub issue's body, the text triage lints (ticket-facts.mjs) and admit fills: {text}, or {why}.
+export const issueBody = (n, repo) => {
+  const r = spawnSync('gh', ['issue', 'view', n, '--repo', repo, '--json', 'body', '--jq', '.body'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   return r.status === 0 ? { text: r.stdout } : { why: lastLine(r) };
 };
 

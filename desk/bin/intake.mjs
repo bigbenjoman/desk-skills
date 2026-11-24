@@ -86,7 +86,7 @@ import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, pr
 import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
 import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
 import { tryLockFile, unlockFile } from './dir-lock.mjs';
-import { DRAFTED_NOTE, draftedCriteria, fillTicket, noTestableOutcome } from './ticket-fill.mjs';
+import { DRAFTED_NOTE, changesClause, draftedCriteria, fillTicket, noTestableOutcome } from './ticket-fill.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const INTAKE_EVERY_MS = 15 * 60 * 1000;
@@ -137,9 +137,7 @@ const lintBlocking = (r) => {
 // and admits it again, rather than asking anyone for a design no change of it shows.
 const rendersNothing = (r) => {
   if (r.renders !== false) return '';
-  const files = (Array.isArray(r.files_in_scope) ? r.files_in_scope : []).filter((f) => typeof f === 'string');
-  const which = files.length ? `: it changes ${files.slice(0, 3).join(', ')}${files.length > 3 ? ` and ${files.length - 3} more` : ''}` : '';
-  return ` — triage found nothing renders${which}; write "No UI." with that reason in its Design section, then admit it again`;
+  return ` — triage found nothing renders${changesClause(r)}; write "No UI." with that reason in its Design section, then admit it again`;
 };
 // No acceptance criteria: the ones triage drafted from the ticket's goal and proposal, to write as they
 // are, or that its text states no testable outcome, which only the person can settle.
