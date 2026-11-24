@@ -17,6 +17,10 @@
 //   repo      §0 GitHub repo, for a PR's url where its read gave none
 //   logins    desk's accounts, as E.verdictLogins gives them (null when unset)
 //   previews  preview-build leases are in use: §4 Vercel names a team and the kind is not off
+//   ledger    the ledger lever is on
+//   mergeLog  the merge log's events, each with its line (merge-log.mjs readLogLines), or null unreadable
+//   folded    the last merge-log line the ticket ledger folded, by ticket key, or null when the ledger
+//             was unread
 //
 // Actions ("->" is what the handler returns):
 //   fix-finished {key, at, fixTries}   the ticket's fix try is over: fix.finished=at, and, for a
@@ -29,7 +33,12 @@
 //                                      not archived, while by.key still holds them (tookPostMerge)
 //   pr-status {key, status}            keep status on the ticket as pr_status
 //   set {key, fields}                  -> queue.mjs set's result
-//   merged {key, at}                   -> queue.mjs merged's record, or '' (at: GitHub's merge time, or null)
+//   merged {key, at, merge}            -> queue.mjs merged's record, or '' (at: GitHub's merge time, or null).
+//                                      With the ledger lever on, merge is {by, pr, head_sha, base}, who
+//                                      merged which PR at which head onto which base, recorded on the
+//                                      ticket as its merge (queue.mjs merged --by --pr --head-sha --base)
+//   automerge {key, events}            append these automerge_armed and automerge_disarmed events, each
+//                                      folding one merge-log line, to the ticket ledger
 //   follow-on {key, fields, expect}    -> queue.mjs set's result for fields, written only while the
 //                                      ticket's followState is one of `expect` ({ ok, skipped } when not)
 //   out {line}                         a report line
@@ -39,14 +48,44 @@
 //   free-previews {done}               -> { freed: [pr] }, { unreadable: why } or { failed: why }:
 //                                      release the preview-build unit of each { pr, at, reason } in
 //                                      done, unless taken or renewed after `at`, when its preview finished
-//   lists {drafts, undrafted, reopens, prStates, merges, unread}   what the steps after this one work from:
-//                                      each list of { t, s } (reopens with `owed`), each PR's state by
-//                                      number, the merge lines, and the PRs whose read failed (`unread`)
+//   lists {drafts, undrafted, reopens, prStates, merges, unread, unknownMergers}   what the steps after
+//                                      this one work from: each list of { t, s } (reopens with `owed`), each
+//                                      PR's state by number, the merge lines, the PRs whose read failed
+//                                      (`unread`), and how many merges were recorded with the merge log
+//                                      unread, so with their merger unknown
 import { FOLLOW_ON_MAX, followOnPending, postMergeOwed } from '../harvest.mjs';
 import { fromReview, reviewStep } from '../undraft.mjs';
 import { LINK_STEP, notOwnPr, foreignQuestion } from './shared.mjs';
 import { owesReopen } from '../queue-store.mjs';
 import { FAILED, PREVIEW_CHECK } from '../gate.mjs';
+import { latest } from '../merge-log.mjs';
+import { invalid } from '../ticket-ledger.mjs';
+
+// Who a merge no merge-log line names was made by: GitHub, under auto-merge, as no desk process made it.
+export const GITHUB_AUTOMERGE = 'github-automerge';
+const sameRepo = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
+
+// Who merged ticket t's PR #n, as status st read it merged: the PR's merged line in the merge log, else
+// GitHub under auto-merge. The head is the one GitHub merged, else the line's. null with the lever off.
+function mergerOf(s, n, st) {
+  if (!s.ledger) return null;
+  const line = s.mergeLog ? latest(s.mergeLog, { repo: s.repo, pr: n }) : null;
+  const m = line?.event === 'merged' ? line : null;
+  return { by: m?.by ?? GITHUB_AUTOMERGE, pr: Number(n), head_sha: st.head ?? m?.sha ?? null, base: st.base ?? null };
+}
+
+// The merge-log lines on ticket t's PR #n that arm or disarm auto-merge and that the ledger has not yet
+// folded, as ledger events, oldest first. None with the lever off, or the merge log or ledger unread.
+function armEvents(s, t, n) {
+  if (!s.ledger || !s.mergeLog || !s.folded) return [];
+  const after = s.folded[t.key] ?? -1;
+  return s.mergeLog
+    .filter((e) => Number.isInteger(e.line) && e.line > after && sameRepo(e.repo, s.repo) && String(e.pr) === String(n) && ['armed', 'disarmed'].includes(e.event))
+    .map((e) => (e.event === 'armed'
+      ? { type: 'automerge_armed', data: { by: e.by, pr: Number(n), head_sha: e.sha, line: e.line }, at: e.at }
+      : { type: 'automerge_disarmed', data: { by: e.by, pr: Number(n), line: e.line }, at: e.at }))
+    .filter((e) => !invalid({ ...e, batch: 'batch', key: t.key }));
+}
 
 const IS_PREVIEW = new RegExp(PREVIEW_CHECK, 'i');
 // A PR's preview once every preview check on its head has finished: { failed: [names], at }, `at` the
@@ -102,6 +141,7 @@ export function* decidePrStatus(s) {
   const undrafted = [];
   const reopens = [];
   const previews = [];
+  let unknownMergers = 0;
   // A PR recorded on two tickets (the merge driver's shipped_pr on one, shippedElsewhere's on the
   // other) is read from GitHub once a pass (pass.mjs's read-pr handler), and each ticket keeps its
   // status: one left without it would owe that PR's review for good (harvest.mjs postMergeUnmade).
@@ -183,11 +223,18 @@ export function* decidePrStatus(s) {
         } else if (owed && !s.dry) yield { type: 'set', key: t.key, fields: ['reopening=null'] };
       }
     }
+    // Auto-merge armed or disarmed on the PR, as the merge log has it, before any merge it led to.
+    const arms = s.dry ? [] : armEvents(s, t, n);
+    if (arms.length) yield { type: 'automerge', key: t.key, events: arms };
     // merged_at on the ticket and its eta-history line (queue.mjs merged keeps the first merge time and
-    // appends a key once).
+    // appends a key once), with who merged it, which the ledger records as one merged event.
     if (st.state === 'MERGED' && !t.merged_at && !s.dry) {
-      const rec = yield { type: 'merged', key: t.key, at: st.merged_at ?? null };
-      if (rec) merges.push(`${t.key} (PR #${n}): ${rec.split('\n').join('; ')}`);
+      const merge = mergerOf(s, n, st);
+      const rec = yield { type: 'merged', key: t.key, at: st.merged_at ?? null, ...(merge ? { merge } : {}) };
+      if (rec) {
+        merges.push(`${t.key} (PR #${n}): ${rec.split('\n').join('; ')}`);
+        if (merge && !s.mergeLog) unknownMergers++;
+      }
     }
     // A criterion its review left for after the merge is a follow-on step from now on, which needs-you
     // lists: the person checks it once, on the live system, rather than before the merge. Kept apart from
@@ -255,5 +302,5 @@ export function* decidePrStatus(s) {
     const open = [...new Set(Object.values(s.tickets).map((t) => t.result?.pr).filter((n) => n != null && !PR_FINAL.includes(prStates[n])).map(String))];
     yield { type: 'prune-builds', open };
   }
-  yield { type: 'lists', drafts, undrafted, reopens, prStates, merges, unread };
+  yield { type: 'lists', drafts, undrafted, reopens, prStates, merges, unread, unknownMergers };
 }

@@ -82,7 +82,9 @@ import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-audit.mjs';
 import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
-import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference } from './queue-ledger.mjs';
+import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget } from './queue-ledger.mjs';
+import { fold as ledgerFold, append as ledgerAppend } from './ticket-ledger.mjs';
+import { readLogLines } from './merge-log.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
@@ -4395,9 +4397,25 @@ const reopens = [];
 const prStatusReads = {};
 // The preview-build team whose units a finished preview frees: null with no §4 Vercel team or the kind off.
 const PREVIEW_TEAM = (() => { try { const team = E.previewTeam(); return team && kindMode('preview-build', LEASE_ENV).mode !== 'off' ? team : null; } catch { return null; } })();
+// With the ledger lever on, a merge or an auto-merge arm made outside queue.mjs is learnt from the
+// machine's merge log, each line folded into the ticket ledger once by its position.
+const LEDGER_ON = !DRY && ledgerOn();
+const LEDGER_AT = ledgerTarget(QUEUE_FILE);
+const mergeLogNow = () => { try { return readLogLines(); } catch { return null; } };
+// null until the log has named this batch: an event appended first would stop its seeding
+// (queue-ledger.mjs recordWrite), so its lines wait for a pass after the seed.
+const foldedNow = () => {
+  try {
+    const st = ledgerFold(LEDGER_AT.repoDir);
+    if (!Object.hasOwn(st.batches, LEDGER_AT.batch)) return null;
+    return Object.fromEntries(Object.values(st.tickets).map((t) => [t.key, t.merge_log ?? -1]));
+  } catch { return null; }
+};
+let unknownMergers = 0;
 runSteps({
   name: 'PR status',
-  snapshot: () => ({ ...phaseSnapshot({ tickets: qNow.tickets, registry: REGISTRY, now: Date.now() }), dry: DRY, passAt: PASS_AT, archived: archivedOf(qNow), repo: GH_REPO, logins: conflictHandle, previews: !!PREVIEW_TEAM }),
+  snapshot: () => ({ ...phaseSnapshot({ tickets: qNow.tickets, registry: REGISTRY, now: Date.now() }), dry: DRY, passAt: PASS_AT, archived: archivedOf(qNow), repo: GH_REPO, logins: conflictHandle, previews: !!PREVIEW_TEAM,
+    ledger: LEDGER_ON, ...(LEDGER_ON ? { mergeLog: mergeLogNow(), folded: foldedNow() } : {}) }),
   decide: decidePrStatus,
   handlers: {
     ...OUT_HANDLERS,
@@ -4415,7 +4433,12 @@ runSteps({
     },
     'pr-status': (a) => q('set', a.key, `pr_status=${JSON.stringify(a.status)}`),
     'free-previews': (a) => releasePreviews(PREVIEW_TEAM, a.done.map((d) => ({ ...d, label: E.previewLabel(GH_REPO, { pr: d.pr }) })), { env: LEASE_ENV }),
-    merged: (a) => q('merged', a.key, ...(a.at ? [a.at] : [])),
+    merged: (a) => q('merged', a.key, ...(a.at ? [a.at] : []), ...(a.merge ? ['--pr', String(a.merge.pr), '--by', a.merge.by,
+      ...(a.merge.head_sha ? ['--head-sha', a.merge.head_sha] : []), ...(a.merge.base ? ['--base', a.merge.base] : [])] : [])),
+    automerge: (a) => {
+      try { ledgerAppend(LEDGER_AT.repoDir, a.events.map((e) => ({ ...e, batch: LEDGER_AT.batch, key: a.key })), { by: 'pass' }); }
+      catch (e) { report.failed.push(`${MISSED_PREFIX} for ${a.key}'s auto-merge lines in the merge log: ${String(e?.message ?? e).split('\n')[0]}. The next pass folds them`); }
+    },
     'follow-on': (a) => {
       const args = ['set', a.key, ...a.fields];
       // An archived owner that took them stays so; a live one must still have them under the lock.
@@ -4440,6 +4463,7 @@ runSteps({
       drafts.push(...a.drafts); undrafted.push(...a.undrafted); reopens.push(...a.reopens);
       Object.assign(prStates, a.prStates); merges.push(...a.merges);
       for (const n of a.unread ?? []) prUnread.add(n);
+      unknownMergers += a.unknownMergers ?? 0;
     },
   },
   report,
@@ -5883,7 +5907,7 @@ if (!DRY && ledgerOn()) {
   catch (e) { check = { error: String(e?.message ?? e).split('\n')[0] }; }
   const l = ledgerLine({ check, missed, queueBin: join(SHOWN_BIN, 'queue.mjs') });
   if (l) lines.push(l);
-  ledgerRec = { ledger_diffs: check.error ? null : check.diffs.length, ledger_missed: missed };
+  ledgerRec = { ledger_diffs: check.error ? null : check.diffs.length, ledger_missed: missed, merges_unknown_merger: unknownMergers };
 }
 
 // ---- pass metrics ------------------------------------------------------------

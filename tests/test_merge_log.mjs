@@ -55,6 +55,12 @@ M.claim({ repo: R, pr: 11, sha: 'bbb2222', by: S, now: NOW, path });
 M.record({ repo: R, pr: 11, sha: 'bbb2222', by: S, event: 'failed', why: 'not mergeable', now: NOW + 1000, path });
 t('#809 a merger whose last event is a failure no longer holds the PR', M.claim({ repo: R, pr: 11, sha: 'bbb2222', by: D, now: NOW + 2000, path }).ok, true);
 t('#809 a torn line is skipped, never fatal', (() => { appendFileSync(path, '{"at": "torn\n'); const n = readFileSync(path, 'utf8').split('\n').filter(Boolean).length; const l = M.readLog(path); return [l.length === n - 1, l.every((e) => e.repo)]; })(), [true, true]);
+{
+  const P = join(T, 'lines.jsonl');
+  writeFileSync(P, '{"pr":"1","event":"armed"}\n{"at": "torn\n{"pr":"1","event":"disarmed"}\n');
+  t('DS-900 each event carries its line in the log, a torn line keeping its place', M.readLogLines(P).map((e) => [e.event, e.line]), [['armed', 0], ['disarmed', 2]]);
+  t('DS-900 no log yet is no events', M.readLogLines(join(T, 'none.jsonl')), []);
+}
 
 // The CLI: exit 11 naming the other on a refusal, 0 and one line each otherwise.
 const cli = (...a) => spawnSync('node', [BIN, ...a, '--repo', R], { encoding: 'utf8', env: { ...process.env } });

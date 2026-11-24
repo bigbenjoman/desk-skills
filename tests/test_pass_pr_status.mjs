@@ -260,5 +260,54 @@ const lists = (acts) => acts.at(-1);
   t('DS-913 a status kept from an earlier pass, not read now, frees nothing', ofType(kept, 'free-previews').length, 0);
 }
 
+// ---- DS-900: merges and auto-merge arms made outside queue.mjs, learnt from the merge log
+{
+  const REPO = 'o/r';
+  const HEAD = 'abc1234def5678';
+  const line = (n, event, by, fields = {}) => ({ at: `2026-11-19T0${n}:00:00.000Z`, repo: REPO, pr: '40', sha: HEAD, by, event, line: n, ...fields });
+  const mergedRead = { 40: status(40, 'MERGED', { merged_at: '2026-11-19T09:00:00Z', head: HEAD, base: 'main' }) };
+  const openRead = { 40: status(40, 'OPEN', { head: HEAD, base: 'main' }) };
+  const on = (fields) => snap([done('M', 40)], { repo: REPO, ledger: true, folded: {}, ...fields });
+
+  const session = run(on({ mergeLog: [line(0, 'claim', 'session s1'), line(1, 'merged', 'session s1')] }), mergedRead);
+  t('DS-900 AC1 a merge a session recorded in the merge log is recorded naming the session, with the PR, head and base',
+    j(ofType(session, 'merged')), j([{ type: 'merged', key: 'M', at: '2026-11-19T09:00:00Z', merge: { by: 'session s1', pr: 40, head_sha: HEAD, base: 'main' } }]));
+  t('DS-900 AC1 its merger is known', lists(session).unknownMergers, 0);
+
+  const recorded = done('M', 40, { merged_at: '2026-11-19T09:00:00Z', pr_status: mergedRead[40] });
+  const again = run(snap([recorded], { repo: REPO, ledger: true, folded: {}, mergeLog: [line(1, 'merged', 'session s1')] }), mergedRead);
+  t('DS-900 AC2 a second pass over the same merge-log line records no second merge', ofType(again, 'merged').length, 0);
+
+  const armed = run(on({ mergeLog: [line(2, 'armed', 'session s2')] }), openRead);
+  t('DS-900 AC3 auto-merge a session armed is one automerge_armed event naming who armed it, the PR and the head',
+    j(ofType(armed, 'automerge')), j([{ type: 'automerge', key: 'M', events: [{ type: 'automerge_armed', data: { by: 'session s2', pr: 40, head_sha: HEAD, line: 2 }, at: '2026-11-19T02:00:00.000Z' }] }]));
+  const armedAgain = run(on({ mergeLog: [line(2, 'armed', 'session s2')], folded: { M: 2 } }), openRead);
+  t('DS-900 AC3 a line the ledger already folded is not appended again', ofType(armedAgain, 'automerge').length, 0);
+  const otherPr = run(on({ mergeLog: [line(2, 'armed', 'session s2', { pr: '41' }), line(3, 'armed', 'session s2', { repo: 'o/other' })] }), openRead);
+  t('DS-900 AC3 nor is one on another PR or another repo', ofType(otherPr, 'automerge').length, 0);
+
+  const disarmed = run(on({ mergeLog: [line(2, 'armed', 'session s2'), line(3, 'disarmed', 'merge-driver o__r')], folded: { M: 2 } }), openRead);
+  t('DS-900 AC4 a disarm by the merge driver is one automerge_disarmed event naming it',
+    j(ofType(disarmed, 'automerge')[0]?.events), j([{ type: 'automerge_disarmed', data: { by: 'merge-driver o__r', pr: 40, line: 3 }, at: '2026-11-19T03:00:00.000Z' }]));
+
+  const github = run(on({ mergeLog: [line(2, 'armed', 'session s2')] }), mergedRead);
+  t('DS-900 AC5 a merge with no merged line in the merge log is recorded by github-automerge at the merged head',
+    j(ofType(github, 'merged')[0]?.merge), j({ by: 'github-automerge', pr: 40, head_sha: HEAD, base: 'main' }));
+  t('DS-900 AC5 the arm it merged under is appended before the merge', j(github.filter((a) => ['automerge', 'merged'].includes(a.type)).map((a) => a.type)), j(['automerge', 'merged']));
+  t('DS-900 AC5 its merger is known: the merge log was read', lists(github).unknownMergers, 0);
+
+  const unread = run(on({ mergeLog: null }), mergedRead);
+  t('DS-900 AC6 with the merge log unreadable the merge is recorded by github-automerge',
+    j(ofType(unread, 'merged')[0]?.merge), j({ by: 'github-automerge', pr: 40, head_sha: HEAD, base: 'main' }));
+  t('DS-900 AC6 and counted as one merge whose merger is unknown', lists(unread).unknownMergers, 1);
+  t('DS-900 AC6 and no auto-merge line is folded', ofType(unread, 'automerge').length, 0);
+
+  const off = run(snap([done('M', 40)], { repo: REPO, ledger: false, mergeLog: [line(2, 'armed', 'session s2'), line(3, 'merged', 'session s2')], folded: {} }), mergedRead);
+  t('DS-900 AC7 with the ledger lever off the merge is recorded as before, naming no merger, and nothing is appended',
+    j([ofType(off, 'merged'), ofType(off, 'automerge').length, lists(off).unknownMergers]), j([[{ type: 'merged', key: 'M', at: '2026-11-19T09:00:00Z' }], 0, 0]));
+  const unseeded = run(on({ mergeLog: [line(2, 'armed', 'session s2')], folded: null }), openRead);
+  t('DS-900 a ledger that could not be read, or has not named the batch yet, gets no auto-merge line', ofType(unseeded, 'automerge').length, 0);
+}
+
 if (fails) { console.log(`${fails} failed`); process.exit(1); }
 console.log('all passed');
