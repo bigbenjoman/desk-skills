@@ -4403,12 +4403,13 @@ const LEDGER_ON = !DRY && ledgerOn();
 const LEDGER_AT = ledgerTarget(QUEUE_FILE);
 const mergeLogNow = () => { try { return readLogLines(); } catch { return null; } };
 // null until the log has named this batch: an event appended first would stop its seeding
-// (queue-ledger.mjs recordWrite), so its lines wait for a pass after the seed.
+// (queue-ledger.mjs recordWrite), so its lines wait for a pass after the seed. Only the tickets the log
+// has in this batch: an event this pass appends names this batch, which would move one from another.
 const foldedNow = () => {
   try {
     const st = ledgerFold(LEDGER_AT.repoDir);
     if (!Object.hasOwn(st.batches, LEDGER_AT.batch)) return null;
-    return Object.fromEntries(Object.values(st.tickets).map((t) => [t.key, t.merge_log ?? -1]));
+    return Object.fromEntries(Object.values(st.tickets).filter((t) => t.batch === LEDGER_AT.batch).map((t) => [t.key, t.merge_log ?? -1]));
   } catch { return null; }
 };
 let unknownMergers = 0;

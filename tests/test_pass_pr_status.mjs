@@ -267,7 +267,7 @@ const lists = (acts) => acts.at(-1);
   const line = (n, event, by, fields = {}) => ({ at: `2026-11-19T0${n}:00:00.000Z`, repo: REPO, pr: '40', sha: HEAD, by, event, line: n, ...fields });
   const mergedRead = { 40: status(40, 'MERGED', { merged_at: '2026-11-19T09:00:00Z', head: HEAD, base: 'main' }) };
   const openRead = { 40: status(40, 'OPEN', { head: HEAD, base: 'main' }) };
-  const on = (fields) => snap([done('M', 40)], { repo: REPO, ledger: true, folded: {}, ...fields });
+  const on = (fields) => snap([done('M', 40)], { repo: REPO, ledger: true, folded: { M: -1 }, ...fields });
 
   const session = run(on({ mergeLog: [line(0, 'claim', 'session s1'), line(1, 'merged', 'session s1')] }), mergedRead);
   t('DS-900 AC1 a merge a session recorded in the merge log is recorded naming the session, with the PR, head and base',
@@ -313,9 +313,11 @@ const lists = (acts) => acts.at(-1);
   const late = drive(decidePrStatus(on({ mergeLog: [line(0, 'claim', 'session s1')] })), freshly([line(0, 'claim', 'session s1'), line(1, 'merged', 'session s1')]));
   t('DS-900 a session that recorded its merge after the pass took its snapshot is still named the merger',
     ofType(late, 'merged')[0]?.merge?.by, 'session s1');
-  const claimed = run(on({ mergeLog: [line(2, 'armed', 'session s2'), { ...line(3, 'claim', 'session s1'), at: '2026-11-19T09:55:00.000Z' }] }), mergedRead);
-  t('DS-900 a desk merger that claimed the PR minutes ago and has not recorded its merge yet is named the merger',
+  const claimed = run(on({ mergeLog: [line(2, 'armed', 'session s2'), { ...line(3, 'claim', 'session s1'), at: '2026-11-19T08:55:00.000Z' }] }), mergedRead);
+  t('DS-900 a desk merger that claimed the PR minutes before its merge and has not recorded it yet is named the merger',
     ofType(claimed, 'merged')[0]?.merge?.by, 'session s1');
+  const afterMerge = run(on({ mergeLog: [{ ...line(3, 'claim', 'session s1'), at: '2026-11-19T09:05:00.000Z' }] }), mergedRead);
+  t('DS-900 a claim made after the merge merged nothing: github-automerge', ofType(afterMerge, 'merged')[0]?.merge?.by, 'github-automerge');
   const stale = run(on({ mergeLog: [line(3, 'claim', 'session s1')] }), mergedRead);
   t('DS-900 a claim older than the claim window names nobody: github-automerge', ofType(stale, 'merged')[0]?.merge?.by, 'github-automerge');
   const unreadNow = drive(decidePrStatus(on({ mergeLog: [line(1, 'merged', 'session s1')] })), freshly(null));
@@ -324,7 +326,7 @@ const lists = (acts) => acts.at(-1);
 
   // A status needs-you kept naming another repo's PR of the same number takes nothing of this repo's PR.
   const elsewhere = done('M', 40, { pr_status: status(40, 'MERGED', { merged_at: '2026-11-19T09:00:00Z', url: 'https://github.com/o/other/pull/40' }) });
-  const foreign = run(snap([elsewhere], { repo: REPO, ledger: true, folded: {}, mergeLog: [line(2, 'armed', 'session s2'), line(3, 'merged', 'session s2')] }), {});
+  const foreign = run(snap([elsewhere], { repo: REPO, ledger: true, folded: { M: -1 }, mergeLog: [line(2, 'armed', 'session s2'), line(3, 'merged', 'session s2')] }), {});
   t('DS-900 a ticket done on another repo\'s PR is recorded merged as before, naming no merger, and folds no line of this repo\'s PR',
     j([ofType(foreign, 'merged'), ofType(foreign, 'automerge').length]), j([[{ type: 'merged', key: 'M', at: '2026-11-19T09:00:00Z' }], 0]));
 
@@ -333,8 +335,16 @@ const lists = (acts) => acts.at(-1);
   t('DS-900 a merged ticket recorded already still folds an arm line left unfolded', j(ofType(keptMerged, 'automerge')[0]?.events.map((e) => e.data.line)), j([2]));
   const gone = { ...recorded, key: 'G' };
   const archived = run(snap([], { repo: REPO, ledger: true, archived: { G: gone, H: { ...gone, key: 'H' } }, folded: { G: -1 }, mergeLog: [line(2, 'armed', 'session s2')] }), {});
-  t('DS-900 an archived ticket the ledger knows folds its unfolded lines; one it does not know folds none',
+  t('DS-900 an archived ticket the ledger has in this batch folds its unfolded lines; one it does not folds none',
     j(ofType(archived, 'automerge').map((a) => [a.key, a.events.length])), j([['G', 1]]));
+  const moved = run(on({ mergeLog: [line(2, 'armed', 'session s2')], folded: {} }), openRead);
+  t('DS-900 a ticket the ledger has in another batch folds nothing here, which would move it', ofType(moved, 'automerge').length, 0);
+
+  // A PR read this pass that is not the ticket's own folds none of its lines.
+  const branchRead = { 40: status(40, 'OPEN', { head: HEAD, base: 'main', branch: 'epic/E', author: 'me' }) };
+  const notOwn = run(snap([done('M', 40, { branch: 'fix/M' })], { repo: REPO, ledger: true, logins: 'me', folded: { M: -1 }, mergeLog: [line(2, 'armed', 'session s2')] }), branchRead);
+  t('DS-900 a PR on another branch parks its ticket before any of its merge-log lines is folded',
+    j([ofType(notOwn, 'park').length, ofType(notOwn, 'automerge').length]), j([1, 0]));
 }
 
 if (fails) { console.log(`${fails} failed`); process.exit(1); }
