@@ -86,6 +86,7 @@ import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, pr
 import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
 import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
 import { tryLockFile, unlockFile } from './dir-lock.mjs';
+import { DRAFTED_NOTE, draftedCriteria, fillTicket, noTestableOutcome } from './ticket-fill.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const INTAKE_EVERY_MS = 15 * 60 * 1000;
@@ -140,6 +141,13 @@ const rendersNothing = (r) => {
   const which = files.length ? `: it changes ${files.slice(0, 3).join(', ')}${files.length > 3 ? ` and ${files.length - 3} more` : ''}` : '';
   return ` — triage found nothing renders${which}; write "No UI." with that reason in its Design section, then admit it again`;
 };
+// No acceptance criteria: the ones triage drafted from the ticket's goal and proposal, to write as they
+// are, or that its text states no testable outcome, which only the person can settle.
+const criteriaDrafted = (r) => {
+  const drafted = draftedCriteria(r);
+  if (drafted?.length) return ` — triage drafted ${drafted.length} from its goal and proposal; write them as its Acceptance criteria, under "${DRAFTED_NOTE}", then admit it again: ${drafted.map((c, i) => `AC${i + 1}: ${c}`).join(' · ')}`;
+  return noTestableOutcome(r) ? ' — its text states no testable outcome, so desk drafted none: the person writes them (asked on /desk-needs-you)' : '';
+};
 // A ticket labelled as the person's step (labelPark) has none: it is admitted parked on it, whatever its
 // lane, lint or questions, since no worker takes it.
 export function intakeReasons(r) {
@@ -147,7 +155,9 @@ export function intakeReasons(r) {
   if (labelPark(r, E.personStepLabels(), E.personInputLabels())) return out;
   if (needsPersonLane(r)) out.push(`lane ${r.lane}: ${r.lane === 'D' ? `${designGap(r)}; ` : ''}${String(r.lane_reason ?? 'needs a person').slice(0, 160)}`);
   if (r.lint_error) out.push(`lint did not run (${r.lint_error})`);
-  for (const f of lintBlocking(r)) out.push(`lint (blocking): ${f.message}${f.rule === 'design' ? rendersNothing(r) : ''}`);
+  for (const f of lintBlocking(r)) out.push(`lint (blocking): ${f.message}${f.rule === 'design' ? rendersNothing(r) : f.rule === 'criteria' ? criteriaDrafted(r) : ''}`);
+  // Sections desk drafted for an issue but could not write (ticket-fill.mjs): the whole new body is in a file.
+  if (r.fill) out.push(`desk drafted ${r.fill.names} for it but wrote nothing, as ${r.fill.why}: once the person agrees, write it with gh issue edit ${r.fill.issue} --repo ${r.fill.repo} --body-file ${r.fill.path}, then admit it again`);
   if (r.facts_error) out.push(`its Jira facts could not be read (${r.facts_error})`);
   const { ask } = triageCalls(r);
   if (ask.length) out.push(`open question(s): ${ask.join(' · ')}`);
@@ -964,8 +974,20 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
     // The person's own step (labelPark) is admitted parked on that instead: no worker reads its design.
     const unread = needsPersonLane(t.rec) || labelPark(t.rec, E.personStepLabels(), E.personInputLabels()) ? [] : unreadCanvases(t.rec);
     if (unread.length) return refuse(key, `design not snapshotted: ${unread.join(', ')}: snapshot it into ${join(state, 'designs', key)}/ and record it (desk-design write), import its HTML export (desk-design import), or have it shared with this subscription, then run /desk-admit ${key} again`);
-    recs[key] = t.rec;
-    seen[key] = t.rec;
+    // Sections desk writes from the ticket itself go in, and the ticket is linted again, before it is
+    // placed; one whose text states no testable outcome is asked of the person once, on needs-you.
+    let rec = t.rec;
+    try {
+      const f = fillTicket(key, rec, { state });
+      f.lines.forEach(say);
+      rec = f.rec;
+    } catch (e) { say(`fill: ${key} not filled: ${e.message}`); }
+    if (noTestableOutcome(rec)) {
+      const { added } = addAsk(state, `write acceptance criteria for ${key}: its text states no testable outcome, so desk drafted none and /desk-admit admitted nothing`, now.getTime(), { until: [key], settles: 'admit' });
+      say(`needs-you: ${added ? 'recorded' : 'already records'} writing acceptance criteria for ${key}`);
+    }
+    recs[key] = rec;
+    seen[key] = rec;
   };
 
   let started = null;

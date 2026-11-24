@@ -153,15 +153,30 @@ no design link is not the user's where the ticket's comments answer it: read the
 - **no design link**: a Figma or Claude Design URL in a comment from the designer (the product owner
   where Designer is `none`);
 - **no acceptance criteria**: criteria that follow from the ticket's text and those comments alone.
-  A criterion neither states is a question, never a guess (gate 1 of `desk-ticket`).
+  A criterion neither states is a question, never a guess (gate 1 of `desk-ticket`). Where the line
+  adds `triage drafted <n> from its goal and proposal`, it lists them: write them as they are, under
+  the note it quotes. Where it adds `its text states no testable outcome`, admit has put that one
+  ask on `/desk-needs-you`: say so, and do not ask it again below.
 - **no design link** where the line adds `triage found nothing renders` (its change is confined to
   tests, CI, tooling or config): no comment is needed. Write `No UI.` and the reason the line gives
   (`No UI. Triage found nothing renders: it changes …`) as the Design section.
 
+**Admit has already written what it could.** For a GitHub issue where config §3 `gh-issue-edit` is
+`yes`, and for a ticket in a ticket file, it writes the criteria triage drafted and `No UI.` itself,
+with `None.` under a missing Out of scope and §4 Unit tests (`desk-env cmds test-cmd`) under a missing
+Verification, prints the `ISSUE EDIT` (or `TICKET FILE EDIT`) block marked `posted`, lints the
+ticket again and places it on that: nothing is left to do for it. Where `gh-issue-edit` is not
+`yes`, a `desk drafted … but wrote nothing` line follows the block marked `awaiting approval`: at
+`ask`, show that block, ask, and on yes run the `gh issue edit … --body-file …` it names, then run
+step 1 again; at `no`, hand the person the sections to paste. On Jira, write `None.` under a missing
+Out of scope and the test command under a missing Verification with the rest below.
+
 Write each settled finding into the description through `desk-jira` (§3 `jira-edit`; with no
-tracker, the ticket file), before asking about any other: the `Acceptance criteria` section, a
-`Design` section holding the link, and the decision line reworded as decided, with a dated entry
-under `Decisions` naming the comment's author and date. Print the `JIRA EDIT` block as it goes and
+tracker, a GitHub issue through `gh issue edit` under §3 `gh-issue-edit`, since triage reads the
+issue, not a file; any other ticket, its ticket file), before asking about any other: the
+`Acceptance criteria` section, a `Design` section holding the link, and the decision line
+reworded as decided, with a dated entry under `Decisions` naming the comment's author and date.
+Print the `JIRA EDIT` (or `ISSUE EDIT`) block as it goes and
 read it back. With none left, run step 1 again for it. Only a finding no comment settles goes to the
 user, as below, saying which were folded in; once its answer is recorded the same way, run step 1 again.
 

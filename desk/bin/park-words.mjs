@@ -82,6 +82,7 @@ export const GRANT_WORDS = {
   'gh-close-linked-issue': 'close linked GitHub issues',
   'gh-issue-create': 'create GitHub issues',
   'gh-issue-comment': 'comment on GitHub issues',
+  'gh-issue-edit': 'edit GitHub issue bodies',
   'autopilot-workers': 'run at all',
   'autopilot-worker-mode': 'run in that permission mode',
   'autopilot-merge': 'merge PRs',
