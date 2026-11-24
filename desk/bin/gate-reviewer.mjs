@@ -3,7 +3,10 @@
 // fix-tries step reads that reviewer's reviews on every ready PR waiting for it; the pass records here,
 // per reviewer login, the latest review it saw, how long each of its recent reviews took after the PR
 // first waited on it, and which PRs wait now, in <repo state>/gate-reviewer.json:
-//   { reviewers: { <login>: { last: ISO|null, lags: [minutes], waiting: { <pr>: { head, since, batch? } } } } }
+//   { reviewers: { <login>: { last: ISO|null, lags: [minutes], seeded?: ISO, waiting: { <pr>: { head, since, batch? } } } } }
+// A reviewer new to the record is seeded from GitHub once (seedOf): its latest review on the repo, its
+// recent lags, and when each PR waiting on it began waiting, so an outage already under way when the
+// record starts reads as down at once, from when it began.
 // Down is: ready PRs waiting on it, none reviewed for longer than its threshold (four times its recent
 // median lag, at least an hour), and no review from it in that time. The pass then puts one repo-level
 // ask to the person in place of each PR's wait, and drops it on the reviewer's next review.
@@ -11,6 +14,7 @@ import { existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { writeJsonAtomic, lock, unlock } from './dir-lock.mjs';
 import { addAsk, settleReviewer } from './asks.mjs';
+import { loginIn } from './gate.mjs';
 
 export const FLOOR_MIN = 60;
 export const LAGS_KEPT = 20;
@@ -41,7 +45,9 @@ export function threshold(lags = []) {
 // the head it waited at adds its lag. -> a new record
 // `live`, the repo's named batches that still exist (null: not read): a wait of a batch no longer among
 // them, archived without a last pass, goes, as no pass of it will clear it.
-export function update(rec, { seen = [], waits = [], now = Date.now(), batch = null, live = null }) {
+// `began`, { <login>: { <pr>: ISO } } from seedOf: when each PR began waiting, read from GitHub, which a
+// wait new to the record starts from, and which moves an earlier start back.
+export function update(rec, { seen = [], waits = [], now = Date.now(), batch = null, live = null, began = {} }) {
   const mine = (w) => (w.batch ?? null) === batch;
   const gone = (w) => live != null && w.batch != null && !live.includes(w.batch);
   const out = { reviewers: { ...rec.reviewers } };
@@ -63,10 +69,126 @@ export function update(rec, { seen = [], waits = [], now = Date.now(), batch = n
     r.waiting = Object.fromEntries(Object.entries(before).filter(([, w]) => !mine(w) && !gone(w)));
     for (const w of waits.filter((x) => x.login === login)) {
       const had = before[w.pr];
-      r.waiting[w.pr] = { head: w.head, since: had && had.head === w.head ? had.since : iso(now), ...(batch ? { batch } : {}) };
+      const b = began[login]?.[w.pr] && Date.parse(began[login][w.pr]) <= now ? began[login][w.pr] : null;
+      const since = had && had.head === w.head ? (b && Date.parse(b) < Date.parse(had.since) ? b : had.since) : b ?? iso(now);
+      r.waiting[w.pr] = { head: w.head, since, ...(batch ? { batch } : {}) };
     }
   }
   return out;
+}
+
+// Seeding from GitHub. A cold seed reads the repo's most recently updated PRs, SEED_PRS a page, until
+// it has the reviewer's latest review (a review updates its PR, so one no older than the oldest PR read
+// is the latest), or SEED_PAGES pages, past which its last review is left unknown.
+export const SEED_PRS = 50;
+export const SEED_PAGES = 4;
+// REVIEW_PAGES: how many earlier pages of one PR's reviews a seed reads to find that reviewer's.
+export const REVIEW_PAGES = 5;
+const reviewsQuery = (n) => `query($owner:String!,$name:String!,$before:String!){repository(owner:$owner,name:$name){pullRequest(number:${Number(n)}){reviews(last:100,before:$before){pageInfo{hasPreviousPage startCursor} nodes{author{login} submittedAt}}}}}`;
+const PR_FIELDS = 'number createdAt updatedAt commits(last:1){nodes{commit{committedDate}}} timelineItems(itemTypes:[READY_FOR_REVIEW_EVENT],last:20){nodes{... on ReadyForReviewEvent{createdAt}}} reviews(last:50){pageInfo{hasPreviousPage startCursor} nodes{author{login} submittedAt}}';
+// The GraphQL query for a seed ($owner, $name; with `cold` $q, seedSearch's, and with `after` $after):
+// each of `prs`, and with `cold` a page of the repo's most recently updated PRs too.
+export function seedQuery(prs, cold, after = false) {
+  const each = prs.map((n) => `p${Number(n)}: pullRequest(number:${Number(n)}){${PR_FIELDS}}`).join(' ');
+  const recent = cold ? `recent: search(query:$q,type:ISSUE,first:${SEED_PRS}${after ? ',after:$after' : ''}){pageInfo{hasNextPage endCursor} nodes{... on PullRequest{${PR_FIELDS}}}} ` : '';
+  return `query($owner:String!,$name:String!${cold ? ',$q:String!' : ''}${cold && after ? ',$after:String!' : ''}){${recent}repository(owner:$owner,name:$name){${each || 'id'}}}`;
+}
+// A seed for `login` in `repo` read through `gql(query, vars)` (the payload, or null unread): seedOf's
+// result over every page read, or null where a page could not be read.
+export function seedRead(gql, repo, login, prs, cold) {
+  const nodes = [];
+  let named = null;
+  let after = null;
+  // Proven: the PRs ran out, or the latest review read is no older than the oldest PR read.
+  let proven = false;
+  for (let page = 0; page < (cold ? SEED_PAGES : 1); page++) {
+    const p = gql(seedQuery(page ? [] : prs, cold, !!after), { ...(cold ? { q: seedSearch(repo) } : {}), ...(after ? { after } : {}) });
+    if (!p?.data) return null;
+    if (!page) named = p.data.repository ?? {};
+    if (!cold) { if (!fill(gql, Object.values(named).filter((n) => n?.number), login)) return null; break; }
+    const r = p.data.recent ?? {};
+    const fresh = (r.nodes ?? []).filter((n) => n?.number);
+    if (!page && !fill(gql, Object.values(named).filter((n) => n?.number), login)) return null;
+    if (!fill(gql, fresh, login)) return null;
+    nodes.push(...fresh);
+    const floor = nodes.map((n) => n.updatedAt).filter(Boolean).sort()[0];
+    const last = seedOf({ data: { recent: { nodes } } }, login).last;
+    if (!r.pageInfo?.hasNextPage || (last && floor && Date.parse(last) >= Date.parse(floor))) { proven = true; break; }
+    after = r.pageInfo.endCursor;
+  }
+  const s = seedOf({ data: { recent: { nodes }, repository: named } }, login);
+  // Past the pages, a later review may sit on a PR not read: its last review is unknown, not the one read.
+  return cold && !proven ? { ...s, last: null } : s;
+}
+// Each of `prs` whose reviews are cut off with none of `login`'s shown has its earlier reviews read in,
+// REVIEW_PAGES pages at most, until one of that reviewer's is among them or none are left. -> false where
+// a page could not be read or the pages ran out first: no other author's review stands in for theirs.
+function fill(gql, prs, login) {
+  for (const p of prs) {
+    for (let page = 0; cutOff(p, login); page++) {
+      if (page >= REVIEW_PAGES) return false;
+      const r = gql(reviewsQuery(p.number), { before: p.reviews.pageInfo.startCursor })?.data?.repository?.pullRequest?.reviews;
+      if (!r) return false;
+      p.reviews = { pageInfo: r.pageInfo ?? {}, nodes: [...(r.nodes ?? []), ...(p.reviews.nodes ?? [])] };
+    }
+  }
+  return true;
+}
+const cutOff = (p, login) => !!p.reviews?.pageInfo?.hasPreviousPage && !(p.reviews.nodes ?? []).some((r) => loginIn(r?.author?.login, login));
+export const seedSearch = (repo) => `repo:${repo} is:pr sort:updated-desc`;
+
+// What a seed query's payload says of `login`: { last (its latest review read), lags (minutes from each
+// recent PR's ready time to its first review after it, oldest first), began ({ <pr>: ISO }, when each
+// PR queried by number began waiting: the latest of its ready time, its head commit, and that
+// reviewer's last review on it) }.
+export function seedOf(payload, login) {
+  const d = payload?.data ?? {};
+  const reviews = (p) => (p.reviews?.nodes ?? []).filter((r) => r?.submittedAt && loginIn(r.author?.login, login)).map((r) => r.submittedAt).sort();
+  const latest = (p) => reviews(p).at(-1) ?? null;
+  const readies = (p) => (p.timelineItems?.nodes ?? []).map((e) => e?.createdAt).filter(Boolean).sort();
+  const recent = (d.recent?.nodes ?? []).filter((p) => p?.number);
+  const named = Object.entries(d.repository ?? {}).filter(([k, p]) => /^p\d+$/.test(k) && p?.number).map(([, p]) => p);
+  // Pages read without reaching its latest review leave it unknown (null): no other activity stands in,
+  // and verdict then counts the quiet from when the oldest PR began waiting.
+  const last = [...recent, ...named].map(latest).filter(Boolean).sort().at(-1) ?? null;
+  const lags = [];
+  for (const p of recent) {
+    // A PR whose earlier reviews were not read cannot say which of that reviewer's came first.
+    const first = p.reviews?.pageInfo?.hasPreviousPage ? null : reviews(p)[0];
+    if (!first) continue;
+    const ready = readies(p).filter((t) => t <= first).at(-1) ?? p.createdAt;
+    const lag = (Date.parse(first) - Date.parse(ready)) / 60000;
+    if (Number.isFinite(lag) && lag >= 0) lags.push({ at: first, lag: Math.round(lag) });
+  }
+  const began = {};
+  for (const p of named) {
+    const ts = [readies(p).at(-1) ?? p.createdAt, p.commits?.nodes?.[0]?.commit?.committedDate, latest(p)].map((t) => Date.parse(t)).filter(Number.isFinite);
+    if (ts.length) began[p.number] = iso(Math.max(...ts));
+  }
+  return { last, lags: lags.sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).slice(-LAGS_KEPT).map((x) => x.lag), began };
+}
+
+// The record with each reviewer that PRs wait on seeded where it needs it, through `seed(login, prs,
+// cold)` (seedOf's result, or null unread): one not yet seeded is read cold, with every PR waiting on it;
+// one seeded already, only for the PRs new to its waits. -> { rec, began, lines }
+export function seeded(rec, waits, seed, now = Date.now()) {
+  const out = { reviewers: { ...rec.reviewers } };
+  const began = {};
+  const lines = [];
+  for (const login of [...new Set(waits.map((w) => w.login))]) {
+    const r = out.reviewers[login];
+    const cold = !r?.seeded;
+    const prs = waits.filter((w) => w.login === login && (cold || !r.waiting?.[w.pr])).map((w) => w.pr);
+    if (!cold && !prs.length) continue;
+    let s = null;
+    try { s = seed(login, prs, cold); } catch { s = null; }
+    if (!s) { lines.push(`gate reviewer: ${login}'s reviews could not be read from GitHub, so its record goes on what the passes saw`); continue; }
+    began[login] = s.began ?? {};
+    if (!cold) continue;
+    const last = [r?.last, s.last].filter(Boolean).sort().at(-1) ?? null;
+    out.reviewers[login] = { last, lags: r?.lags?.length ? r.lags : s.lags ?? [], waiting: r?.waiting ?? {}, seeded: iso(now) };
+  }
+  return { rec: out, began, lines };
 }
 
 // Whether `login` reads as down: { down, since (its last review, else when the oldest wait began),
@@ -96,7 +218,8 @@ export function downAsk(login, v, { repo, owner = null } = {}) {
 // reads as down put to the person as one ask in `state` (the repo's), replacing the last pass's for it,
 // in place of each PR's wait line, and the ask of one that no longer reads as down (its next review
 // seen, or nothing waiting on it) dropped. A dry run writes nothing. -> the pass's report lines
-export function reviewerStep(state, { seen = [], waits = [], now = Date.now(), owner = null, repo = '', dry = false, batch = null, live = null } = {}) {
+// `seed`: seeded's reader, or null to read nothing from GitHub.
+export function reviewerStep(state, { seen = [], waits = [], now = Date.now(), owner = null, repo = '', dry = false, batch = null, live = null, seed = null } = {}) {
   if (!seen.length && !waits.length && !hasRecord(state)) return [];
   // The record is the repo's, shared by its batches' passes: read, changed and written under its lock.
   let held = null;
@@ -105,12 +228,16 @@ export function reviewerStep(state, { seen = [], waits = [], now = Date.now(), o
       return [...waits.map((w) => w.line), `gate reviewer: its record could not be locked (${firstLine(e)}), so whether it is down is not known this pass`];
     }
   }
-  try { return step(state, { seen, waits, now, owner, repo, dry, batch, live }); } finally { if (held) unlock(held); }
+  try { return step(state, { seen, waits, now, owner, repo, dry, batch, live, seed }); } finally { if (held) unlock(held); }
 }
-function step(state, { seen, waits, now, owner, repo, dry, batch, live }) {
+function step(state, { seen, waits, now, owner, repo, dry, batch, live, seed }) {
   const lines = [];
   let rec;
-  try { rec = update(readRecord(state), { seen, waits, now, batch, live }); } catch (e) {
+  try {
+    const sd = seed ? seeded(readRecord(state), waits, seed, now) : { rec: readRecord(state), began: {}, lines: [] };
+    lines.push(...sd.lines);
+    rec = update(sd.rec, { seen, waits, now, batch, live, began: sd.began });
+  } catch (e) {
     return [...waits.map((w) => w.line), `gate reviewer: its record could not be read (${firstLine(e)}), so whether it is down is not known this pass`];
   }
   const down = new Set();
