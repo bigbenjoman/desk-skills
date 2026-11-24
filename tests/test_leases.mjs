@@ -4,7 +4,7 @@
 // The real CLI against a scratch lease directory, with real child processes as owners. A reused pid is
 // a live owner whose recorded start time is a fixture, and a lease's age is set by rewriting its times.
 // Every kind is on unless a case says otherwise (with no lease-kinds row, every kind is shadow).
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,8 @@ import { capacities, claudeAncestor, kindMode, leaseCli, listRow, poolOf, releas
 import { decidePrStatus } from '../desk/bin/pass/pr-status.mjs';
 import { latestPerCheck, normaliseRollup } from '../desk/bin/gate.mjs';
 import { previewLabel, psRows } from '../desk/bin/desk-env.mjs';
+import { lockFileHolders } from '../desk/bin/suite-wait.mjs';
+import { recordedCommit } from '../desk/bin/installed.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -825,6 +827,52 @@ try {
       t('DS-981 AC9 B, asking first once the pool grows by one, is refused: A waited longer', ask(d, b, { wt: '/w/b', caps: grown }).at, { position: 2, waiting: 2, held: 1, capacity: 2 });
       t('DS-981 AC9 A gets the slot above the floor, read under the store lock', !!ask(d, a, { caps: grown }).lease, true);
       t('DS-981 AC9 and B keeps waiting', [ask(d, b, { wt: '/w/b', caps: grown }).at, wants(d).map(([p]) => p)], [{ position: 1, waiting: 1, held: 2, capacity: 2 }, [b.pid]]);
+    }
+    // DS-998: with the kind on, a slot a run holds by its lock file with no lease counts as held.
+    {
+      const locks = fresh(); mkdirSync(join(locks, 'desk-light.lock.d'), { recursive: true });
+      const holder = owner();
+      writeFileSync(join(locks, 'desk-light.lock.d', 'pid'), `${holder.pid}\n`);
+      const outside = (p) => lockFileHolders(locks, p.pool).map((h) => ({ label: `the lock file ${h.file}`, owner: h.pid == null ? null : { pid: h.pid } }));
+      const askOn = (d, o, opts = {}) => tryAcquire({ kind: 'slot', key: 'light', units: 1, ttl: 600, label: `run ${o.pid}`, pid: o.pid, final: false, waited: 0, queue: { worktree: '/w/a', cmd: 'c1', express: false } },
+        { env: qenv(opts.kinds), dir: opts.dir ?? fresh(), caps: caps1, outside });
+      const a = owner();
+      const r = askOn(fresh(), a);
+      t('DS-998 AC1 every slot held by a lock file with no lease: the run is refused and waits', [r.lease, r.at, r.refused?.includes(`the lock file ${join(locks, 'desk-light.lock.d')} (pid ${holder.pid}, no lease)`)], [undefined, { position: 1, waiting: 1, held: 1, capacity: 1 }, true]);
+      const sh = askOn(fresh(), a, { kinds: 'slot=shadow' });
+      t('DS-998 in shadow the lock files are not read: granted with no would-refuse', [!!sh.lease, sh.shadow], [true, undefined]);
+      holder.kill(); await exited(holder);
+      t('DS-998 AC2 the holder has exited: its lock file holds nothing, and the run is granted', [lockFileHolders(locks, 'slot:light'), !!askOn(fresh(), a).lease], [[], true]);
+    }
+    {
+      const locks = fresh(); mkdirSync(locks, { recursive: true });
+      const live = owner(); const later = owner();
+      writeFileSync(join(locks, 'desk-test.lock.pid'), `${live.pid}\n`);
+      writeFileSync(join(locks, 'desk-test.lock.2.pid'), `${later.pid}\n`);
+      const old = (Date.now() - 3_600_000) / 1000;
+      utimesSync(join(locks, 'desk-test.lock.2.pid'), old, old); // written before its pid's process started: a reused pid
+      writeFileSync(join(locks, 'desk-test.lock.3.pid'), '999999\n');
+      mkdirSync(join(locks, 'desk-test.lock.4.d')); // taken, its pid not yet written
+      mkdirSync(join(locks, 'desk-test.lock.5.d')); writeFileSync(join(locks, 'desk-test.lock.5.d', 'pid'), '');
+      utimesSync(join(locks, 'desk-test.lock.5.d'), old, old); // its pid never written, over a minute ago
+      writeFileSync(join(locks, 'desk-test.lock.6.pid'), ''); // a holder file whose write failed
+      mkdirSync(join(locks, 'desk-light.lock.express.d')); writeFileSync(join(locks, 'desk-light.lock.express.d', 'pid'), `${live.pid}\n`);
+      t('DS-998 a flock holder file names its live run; a reused or dead pid, an empty holder file and an old mkdir slot with no pid hold nothing; a fresh one holds',
+        lockFileHolders(locks, 'slot:heavy').map((h) => [h.file.slice(locks.length + 1), h.pid]).sort(), [['desk-test.lock.4.d', null], ['desk-test.lock.pid', live.pid]]);
+      t('DS-998 the express lane sits outside the light pool', lockFileHolders(locks, 'slot:light'), []);
+      const none = fresh(); mkdirSync(none);
+      t('DS-998 with no lock file held, ps is not read', lockFileHolders(none, 'slot:heavy', { rows: () => { throw new Error('read ps'); } }), []);
+    }
+    // DS-998 AC4, AC5: a grant line names the release the run's script comes from (its recorded commit), or unknown.
+    {
+      const made = fresh(); mkdirSync(join(made, 'releases', 'abc123', 'bin'), { recursive: true });
+      const home = realpathSync(made); const rel = join(home, 'releases', 'abc123');
+      writeFileSync(join(rel, 'release.json'), JSON.stringify({ commit: 'abc123def' }));
+      t('DS-998 AC4 run from a release folder: its release.json commit', recordedCommit(home, join(rel, 'bin')), 'abc123def');
+      writeFileSync(join(home, 'installed.json'), JSON.stringify({ commit: 'fedcba987' }));
+      t('DS-998 AC4 outside a release folder: the installed commit', recordedCommit(home, join(root, 'desk', 'bin')), 'fedcba987');
+      writeFileSync(join(rel, 'release.json'), '{not json');
+      t('DS-998 AC5 a release record that does not read: none', [recordedCommit(home, join(rel, 'bin')), recordedCommit(fresh(), join(root, 'desk', 'bin'))], [null, null]);
     }
     // A store whose wants do not read is unreadable, so a lock run falls back to its lock files.
     {

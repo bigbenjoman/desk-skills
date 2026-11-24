@@ -38,14 +38,18 @@ export const installedFile = (home = E.deskHome()) => join(home, 'installed.json
 export function readInstalled(home = E.deskHome()) {
   try { const v = JSON.parse(readFileSync(installedFile(home), 'utf8')); return v?.commit ? v : null; } catch { return null; }
 }
+// The commit recorded for the desk a script in `bin` runs: its release folder's release.json, else
+// outside a release folder the installed one (installed.json); null where that record does not read.
+export function recordedCommit(home = E.deskHome(), bin = HERE) {
+  const dir = E.releaseDirOf(bin, home);
+  if (!dir) return readInstalled(home)?.commit ?? null;
+  try { return JSON.parse(readFileSync(join(dir, RELEASE_FILE), 'utf8'))?.commit || null; } catch { return null; }
+}
 // The desk version this script runs: its release folder's (releaseCommit), so one started from an older
 // release reads as old whatever is installed since. Outside a release folder, the installed commit, or null.
 export function runningVersion(home = E.deskHome()) {
   const dir = E.releaseDirOf(HERE, home);
-  if (!dir) return readInstalled(home)?.commit ?? null;
-  let info = null;
-  try { info = JSON.parse(readFileSync(join(dir, RELEASE_FILE), 'utf8')); } catch { /* none written */ }
-  return releaseCommit(basename(dir), info);
+  return dir ? releaseCommit(basename(dir), { commit: recordedCommit(home) }) : recordedCommit(home);
 }
 // A process runs old code when an installed version is known and the one it started at is not it.
 export const oldCode = (version, installed = readInstalled()) => Boolean(installed?.commit) && version !== installed.commit;

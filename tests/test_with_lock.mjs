@@ -380,6 +380,35 @@ try {
       [r.status, /gave up waiting for the light slot after 2s at position 1 of 1 in its queue, 1 of 1 slot held: /.test(r.stderr)], [75, true]);
     b.release(); await b.done;
   }
+  // DS-998: with the slot kind on, a run on the lock files with no lease (an older wrapper, played by a
+  // run with the kind off on the same lock directory) holds its slot; and every grant line names the release.
+  {
+    const leases = fresh('l'), locks = fresh('k');
+    const home = fresh('h'); writeFileSync(join(home, 'installed.json'), JSON.stringify({ commit: 'c0ffee1' }));
+    const ON1 = machine({ 'lease-kinds': 'slot=on', 'test-lock-slots': '1' });
+    const on = caseEnv({ leases, locks, profile: ON1, extra: { DESK_HOME: home } });
+    const old = await hold(caseEnv({ leases, locks, profile: OFF1, extra: { PATH: noFlock, DESK_HOME: home } }), ['test']);
+    const ran = join(S, `ran-${n++}`);
+    const r = wl(on, ['test', '--timeout', '2', '--', 'sh', '-c', `: > '${ran}'`]);
+    t('DS-998 AC1 every heavy slot held by a lock-file run with no lease: an on run waits and is not granted',
+      [r.status, existsSync(ran), /the lock file \S*\/desk-test\.lock\.d \(pid \d+, no lease\)/.test(r.stderr), leaseList(on).length], [75, false, true, 0]);
+    old.release(); await old.done;
+    // A flock holder file outlives its run: one naming a pid that has exited holds nothing.
+    const gone = spawnSync('sh', ['-c', 'echo $$'], { encoding: 'utf8' }).stdout.trim();
+    writeFileSync(join(locks, 'desk-test.lock.pid'), `${gone}\n`);
+    const r2 = wl(on, ['test', '--timeout', '2', '--', 'sh', '-c', `: > '${ran}'`]);
+    t('DS-998 AC2 a lock file whose holder has exited does not count: the on run is granted', [r2.status, existsSync(ran)], [0, true]);
+    t('DS-998 AC4 the lock-file run\'s grant line and the lease\'s both name the installed release',
+      leaseLog(leases).filter((e) => e.event === 'grant').map((e) => [e.id != null, e.release]), [[false, 'c0ffee1'], [true, 'c0ffee1']]);
+    for (const [mode, profile] of [['off', OFF1], ['shadow', SHADOW1]]) {
+      const l = fresh('l');
+      wl(caseEnv({ leases: l, locks: fresh('k'), profile, extra: { DESK_HOME: home } }), ['test', '--', 'true']);
+      t(`DS-998 AC4 kind ${mode}: the grant line names the installed release`, leaseLog(l).filter((e) => e.event === 'grant').map((e) => e.release), ['c0ffee1']);
+    }
+    const l = fresh('l');
+    const r3 = wl(caseEnv({ leases: l, locks: fresh('k'), profile: ON1, extra: { DESK_HOME: fresh('h') } }), ['test', '--', 'true']);
+    t('DS-998 AC5 no readable release record: the run is granted, its grant line naming the release unknown', [r3.status, leaseLog(l).filter((e) => e.event === 'grant').map((e) => e.release)], [0, ['unknown']]);
+  }
   // DS-977: headroom admission in shadow judges a run that waits, and changes nothing it is granted.
   {
     const admitLines = (env) => leaseLog(env.DESK_LEASE_DIR).filter((e) => e.event === 'would-admit' || e.event === 'would-deny');
