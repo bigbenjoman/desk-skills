@@ -110,7 +110,7 @@ import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 import { kindMode, leaseCli, releasePreviews, slotPools } from './leases.mjs';
 import { handToWorker as handMemToWorker, memPool, reserveForWorker } from './mem-lease.mjs';
-import { pruneAsks, settleDrift, readAsks } from './asks.mjs';
+import { pruneAsks, settleDrift, readAsks, dueAsks, answerAsk, unlogged, markLogged } from './asks.mjs';
 import * as GR from './gate-reviewer.mjs';
 import { considered, takeRows, devDirsIn } from './drift-asks.mjs';
 import { readArchive, archivedOf, isArchived, keepPrs, mergedPrs, prClosed, owesReopen, recordedPr } from './queue-store.mjs';
@@ -5288,6 +5288,23 @@ if (!DRY && E.batchName() == null) {
   try {
     // Its archived tickets too: a merged one is archived, often by this very pass.
     const tickets = { ...readArchive(QUEUE_FILE).tickets, ...queue().tickets };
+    // A choice nobody answered by its deadline takes its recommendation (ask-defaults.mjs): recorded as
+    // chosen by default, which the session that asked reads, and as a taken decision the check-in digest lists.
+    // Answered first, logged after: one whose log write fails stays `logged: false`, and a later pass logs it.
+    for (const due of dueAsks(STATE)) {
+      const a = answerAsk(STATE, due.id, { chose: due.recommended, by: 'default', due: true });
+      if (a) out.push(`needs-you: ask ${a.id} applied ${a.recommended} by default, as nobody chose by ${a.apply_by}: "${a.text}" (in the check-in digest)`);
+    }
+    for (const a of unlogged(STATE)) {
+      const others = a.options.filter((o) => o !== a.chose);
+      // The decision's id is fixed by its fields, so one already logged before a failed mark is not logged twice.
+      appendDecisions([decisionEntry({
+        decision: { question: `${a.text} Nobody chose by ${a.apply_by}, so desk applied the recommendation by default at ${a.answered_at}. To reverse it, override it here with ${others.join(' or ')}: the session that asked reads the override (needs-you.mjs ask-status).`,
+          options: a.options, chose: a.chose, category: 'scope' },
+        ticket: `ask:${a.id}`, run: null, repo: GH_REPO, pr: null, at: a.answered_at, source: 'default',
+      })], STATE);
+      markLogged(STATE, a.id);
+    }
     for (const a of pruneAsks(STATE, { known: (k) => tickets[k] != null, finished: (k) => holdThrough(tickets, k) })) {
       out.push(`needs-you: ask ${a.id} dropped, as every ticket it names (${a.keys.join(', ')}) is merged or done: "${a.text}"`);
     }

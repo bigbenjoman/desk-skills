@@ -37,21 +37,57 @@ function update(stateDir, change) {
 // settleAdmitted drops. `settles: 'drift'` with `rows` marks one naming config rows a release added
 // that the config lacks (drift-asks.mjs), which settleDrift drops; `settles: 'reviewer'` with `login` one
 // saying that gate reviewer is down (gate-reviewer.mjs), which settleReviewer drops.
-export function addAsk(stateDir, text, now = Date.now(), { until = [], settles = null, rows = null, login = null } = {}) {
+// `choice` ({ options, recommended, apply_by, never_default }) makes it a choice between `options` (each
+// one word), its `recommended` one applied by itself at `apply_by` unless `never_default` says why it
+// never is (ask-defaults.mjs; a pass answers it once due, dueAsks); asked again with one, that choice replaces the one kept.
+export function addAsk(stateDir, text, now = Date.now(), { until = [], settles = null, rows = null, login = null, choice = null } = {}) {
   const keys = [...new Set(until)];
+  const pick = choice?.options?.length >= 2 ? Object.fromEntries(Object.entries({ options: [...choice.options], recommended: choice.recommended ?? null,
+    apply_by: choice.apply_by ?? null, never_default: choice.never_default ?? null }).filter(([, v]) => v != null)) : null;
   return update(stateDir, (f) => {
     const same = f.asks.find((a) => a.text === text);
     if (same) {
       if (keys.length) same.until = keys;
       if (keys.length && settles) same.settles = settles;
-      return { id: same.id, added: false, until: same.until ?? [] };
+      if (pick) { for (const k of ['options', 'recommended', 'apply_by', 'never_default']) delete same[k]; Object.assign(same, pick); }
+      return { id: same.id, added: false, until: same.until ?? [], ask: { ...same } };
     }
     const id = f.next ?? Math.max(0, ...f.asks.map((a) => a.id)) + 1;
     const drift = settles === 'drift' && rows?.length ? { settles, rows: [...rows] } : settles === 'reviewer' && login ? { settles, login } : null;
-    f.asks.push({ id, text, at: new Date(now).toISOString(), ...(keys.length ? { until: keys, ...(settles ? { settles } : {}) } : drift ?? {}) });
+    const a = { id, text, at: new Date(now).toISOString(), ...(keys.length ? { until: keys, ...(settles ? { settles } : {}) } : drift ?? {}), ...(pick ?? {}) };
+    f.asks.push(a);
     f.next = id + 1;
-    return { id, added: true, until: keys };
+    return { id, added: true, until: keys, ask: { ...a } };
   });
+}
+
+// Records ask `id` answered with `chose` (one of its options) `by` the person or by default, and takes it
+// off the list. The answer is kept in the file's `answered` (the last ANSWERS_KEPT), so the session that
+// asked reads it (needs-you.mjs ask-status). `due`: only where it is still unanswered and due at `now`,
+// decided under the lock. -> the ask as answered, or null where it is not there (or not due)
+const ANSWERS_KEPT = 50;
+export function answerAsk(stateDir, id, { chose, by = 'person', at = Date.now(), due = false } = {}) {
+  return update(stateDir, (f) => {
+    const a = f.asks.find((x) => x.id === id);
+    if (!a || (due && !isDue(a, at))) return null;
+    f.asks = f.asks.filter((x) => x.id !== id);
+    // One applied by default is `logged: false` until its decision is in the log (markLogged), so a pass
+    // whose log write failed retries it (unlogged).
+    const answered = { ...a, chose, by, answered_at: new Date(at).toISOString(), ...(by === 'default' ? { logged: false } : {}) };
+    // The last ANSWERS_KEPT are kept, and every default not yet logged besides, so none is lost unlogged.
+    const all = [...(f.answered ?? []), answered];
+    const kept = new Set(all.filter((x) => x.logged !== false).slice(-ANSWERS_KEPT));
+    f.answered = all.filter((x) => x.logged === false || kept.has(x));
+    return answered;
+  });
+}
+// Whether ask `a` applies its recommendation by itself at `now`.
+export const isDue = (a, now = Date.now()) => !!a.recommended && !a.never_default && !!a.apply_by && Date.parse(a.apply_by) <= now;
+// The asks due at `now`.
+export const dueAsks = (stateDir, now = Date.now()) => readAsks(stateDir).filter((a) => isDue(a, now));
+// An answered ask, by id, or null.
+export function answerOf(stateDir, id) {
+  try { return (JSON.parse(readFileSync(asksPath(stateDir), 'utf8')).answered ?? []).filter((a) => a.id === id).at(-1) ?? null; } catch { return null; }
 }
 
 // Removes ask `id`; whether it was there.
@@ -94,4 +130,13 @@ function dropAsks(stateDir, gone) {
     f.asks = f.asks.filter((a) => !gone(a));
     return out.map(({ id, text, until, rows }) => ({ id, text, keys: until ?? rows }));
   });
+}
+
+// The asks applied by default whose decision is not yet logged.
+export function unlogged(stateDir) {
+  try { return (JSON.parse(readFileSync(asksPath(stateDir), 'utf8')).answered ?? []).filter((a) => a.logged === false); } catch { return []; }
+}
+// Marks the default answer to ask `id` logged.
+export function markLogged(stateDir, id) {
+  update(stateDir, (f) => { for (const a of f.answered ?? []) if (a.id === id && a.logged === false) a.logged = true; });
 }
