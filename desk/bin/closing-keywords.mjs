@@ -28,6 +28,9 @@ export const closesOnly = (line) => ONLY.test(line.replace(MARKER, '').replace(/
 
 // Every line of `body` with a closing keyword outside a line that says the PR closes it.
 // -> [{ line, text, uses }], `line` counted from 1 and `uses` the keyword and reference as written.
+// The issue numbers `body` closes, as GitHub reads its closing keywords.
+export const closedBy = (body) => [...String(body ?? '').matchAll(USE)].map((m) => Number(/(\d+)$/.exec(m[0])[1]));
+
 export function strayClosings(body) {
   const out = [];
   String(body ?? '').split(/\r?\n/).forEach((text, i) => {
