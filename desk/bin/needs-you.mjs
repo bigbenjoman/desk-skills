@@ -64,10 +64,17 @@
 //                                                     allowed, so its allow rule names no other
 //   needs-you.mjs left [<repo>]                       how many items desk-q still counts, and where passes stopped
 //   needs-you.mjs ask <repo> "<what to do>" [--until <TICKET>[,<TICKET>...]]
+//                     [--options <a>|<b>[|...] [--recommend <a>] [--apply-by <HH:MM|ISO>] [--never-default "<why>"]]
 //                                                     an action a session hands the person, as an item
 //                                                     `ask:<n>` of the repo's until they say done (asks.mjs);
 //                                                     with --until, a wait on those tickets, which a pass
-//                                                     drops once they are all merged or done
+//                                                     drops once they are all merged or done. With --options,
+//                                                     a choice: each option (one word) is an action, the
+//                                                     recommended one first, and a pass applies it by itself
+//                                                     at --apply-by, else the next §3b check-in, unless it
+//                                                     must never default (ask-defaults.mjs)
+//   needs-you.mjs ask-status <repo> <id>              whether ask <id> is open, or which option was chosen,
+//                                                     by the person or by default, and when
 //
 // Two items are the repo's rather than a ticket's, and are named in place of one: `unset:<key>`, every
 // ticket parked naming a §3 row the repo's config does not set (done requeues them once it is set), and
@@ -135,7 +142,8 @@ import { promotionRef } from './promotion.mjs';
 import { kindMode, readLog, restartTrial, trialOf, TRIAL_DAYS } from './leases.mjs';
 import { LEASE_KINDS } from './machine.mjs';
 import { saveAnswer } from './briefing.mjs';
-import { addAsk, removeAsk } from './asks.mjs';
+import { addAsk, removeAsk, readAsks, answerAsk, answerOf } from './asks.mjs';
+import { OPTION, applyByOf, neverDefault, nextCheckin, checkinTimesFrom, deadlineText } from './ask-defaults.mjs';
 import { finishedCloud, readArchived, readPending, recordArchived } from './cloud-worker.mjs';
 import { readArchive } from './queue-store.mjs';
 import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
@@ -1547,7 +1555,16 @@ function leaseTrialAnswer(verb, now, say) {
 // ---- what a session handed the person (asks.mjs): one item an ask, on the repo's standing batch ----
 const ASK = 'ask:';
 const askItems = (batches) => batches.filter((b) => b.batch == null && !b.error).flatMap((r) => (r.asks ?? []).map((a) => ({ r, dir: r.stateDir, t: { key: `${ASK}${a.id}` },
-  item: { kind: 'ask', repoLevel: true, id: a.id, need: a.text, actions: [['done', 'a session handed this to you; say done once it is done, and it leaves the list'], ['not-now']], since: timeOf(a.at) } })));
+  item: { kind: 'ask', repoLevel: true, id: a.id, ...askShape(a), since: timeOf(a.at) } })));
+// An ask's need and actions: a plain ask is done once done; a choice offers each option, the recommended
+// one first, saying when it applies by itself (ask-defaults.mjs deadlineText).
+function askShape(a, now = new Date()) {
+  if (!(a.options?.length >= 2)) return { need: a.text, actions: [['done', 'a session handed this to you; say done once it is done, and it leaves the list'], ['not-now']] };
+  const when = deadlineText(a, now);
+  const ordered = a.recommended ? [a.recommended, ...a.options.filter((o) => o !== a.recommended)] : a.options;
+  return { need: when ? `${a.text} (${when})` : a.text, choice: true,
+    actions: [...ordered.map((o) => (o === a.recommended ? [o, when ?? 'the session that asked recommends it'] : [o])), ['done', 'it is settled some other way: it leaves the list, no option recorded'], ['not-now']] };
+}
 
 // ---- a pending priority proposal on a ticket (priority-proposal.mjs): one item a ticket --------------
 // A ticket whose triage record carries `priority_proposal` (ticket-facts.mjs: a label §4 Priority
@@ -2541,6 +2558,11 @@ function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = R
   if (i.promotion != null) return say(true, `noted: the next pass reads promotion PR #${i.promotion}'s checks again, and this item goes once they pass.`);
   if (i.blocker) return say(true, `noted: the next pass that reads ${i.ticket}'s blockers clears this once ${i.blocker} is no longer linked, and lifts any hold on it.`);
   if (i.kind === REVIEWER) return say(true, 'noted: the next pass checks the account again, and lifts the hold on every PR it names once the check passes.');
+  if (i.kind === 'ask' && i.choice && verb !== 'done') {
+    let a;
+    try { a = answerAsk(i.r.stateDir, i.id, { chose: verb, by: 'person', at: now }); } catch (e) { return say(false, `the choice could not be recorded (${one(e.message)}).`); }
+    return a ? say(true, `${verb}, recorded as your choice; the session that asked reads it (needs-you.mjs ask-status), and it is off your list.`) : say(false, 'it is no longer open: it was answered or applied already.');
+  }
   if (i.kind === 'ask') {
     try { removeAsk(i.r.stateDir, i.id); } catch (e) { return say(false, `it could not be taken off the list (${one(e.message)}).`); }
     return say(true, 'done, so it is off your list.');
@@ -2599,13 +2621,54 @@ export function leftText({ word = null, now = Date.now(), repos = loadRepos(now,
 
 // Records an action a session hands the person on the repo `word` names: { ok, line }.
 // `until`: the tickets it waits on (--until), so a pass drops it once they are all merged or done.
-export function ask({ word, text, until = [], now = Date.now(), repos = loadRepos(now, word) }) {
+export function ask({ word, text, until = [], options = [], recommend = null, applyBy = null, neverDefault: never = null, now = Date.now(), repos = loadRepos(now, word) }) {
   const what = String(text ?? '').replace(/\s+/g, ' ').trim();
   if (!what) return { ok: false, line: 'say what the person is to do: needs-you.mjs ask <repo> "<what to do>" [--until <TICKET>[,<TICKET>...]]' };
   if (until.some((k) => !SAFE_ID.test(k))) return { ok: false, line: `--until wants ticket keys, comma-separated, not "${until.join(',')}"` };
   const r = standingOf(repos, batchesNamed(repos, word).named);
-  const { id, added, until: kept } = addAsk(r.stateDir, what, now, { until });
-  return { ok: true, line: `${r.repo} ${ASK}${id}: ${added ? 'recorded' : 'already recorded'}; /desk-needs-you and desk-q list it until you say done${kept.length ? `, or a pass finds ${kept.join(', ')} merged or done` : ''}.` };
+  let choice = null;
+  if (options.length || recommend || applyBy || never) {
+    if (options.length < 2 || options.some((o) => !OPTION.test(o)) || new Set(options).size < options.length) return { ok: false, line: `--options wants two or more different one-word options, |-separated, not "${options.join('|')}"` };
+    if (options.some((o) => ['done', 'not-now'].includes(o))) return { ok: false, line: '--options cannot be done or not-now: those are every ask\'s own' };
+    if (recommend != null && !options.includes(recommend)) return { ok: false, line: `--recommend wants one of the options (${options.join(', ')}), not "${recommend}"` };
+    const by = applyBy == null ? null : applyByOf(applyBy, new Date(now));
+    if (applyBy != null && !by) return { ok: false, line: `--apply-by wants a local HH:MM or an ISO time, not "${applyBy}"` };
+    const nd = recommend ? neverDefault(what, recommend, never) : null;
+    let times = null;
+    try { times = [].concat(repoConfigValues(r.slug, 'checkin-times') ?? []).join(' ') || null; } catch { /* unread: the default times */ }
+    const at = !recommend || nd ? null : by ?? nextCheckin(checkinTimesFrom(times), new Date(now));
+    choice = { options, recommended: recommend, apply_by: at ? at.toISOString() : null, never_default: nd };
+  }
+  const { id, added, until: kept, ask: a } = addAsk(r.stateDir, what, now, { until, choice });
+  const when = choice ? deadlineText(a, new Date(now)) : null;
+  return { ok: true, line: `${r.repo} ${ASK}${id}: ${added ? 'recorded' : 'already recorded'}; /desk-needs-you and desk-q list it until you ${choice ? `choose (${options.join(', ')})` : 'say done'}${kept.length ? `, or a pass finds ${kept.join(', ')} merged or done` : ''}${when ? `; it ${when}` : ''}.` };
+}
+
+// ask's flags after the repo and text: { until, options, recommend, applyBy, neverDefault }, or null where
+// one is unknown or has no value.
+function askFlags(args) {
+  const f = { until: [], options: [], recommend: null, applyBy: null, neverDefault: null };
+  for (let i = 0; i < args.length; i += 2) {
+    const [k, v] = [args[i], args[i + 1]];
+    if (v == null) return null;
+    if (k === '--until') f.until = v.split(',').map((x) => x.trim()).filter(Boolean);
+    else if (k === '--options') f.options = v.split('|').map((x) => x.trim()).filter(Boolean);
+    else if (k === '--recommend') f.recommend = v.trim();
+    else if (k === '--apply-by') f.applyBy = v.trim();
+    else if (k === '--never-default') f.neverDefault = v;
+    else return null;
+  }
+  return f;
+}
+
+// Whether ask `id` of the repo is open, or which option was chosen, by whom, and when.
+export function askStatus({ word, id, now = Date.now(), repos = loadRepos(now, word) }) {
+  const r = standingOf(repos, batchesNamed(repos, word).named);
+  const open = readAsks(r.stateDir).find((a) => a.id === id);
+  if (open) return { ok: true, line: `${r.repo} ${ASK}${id}: open${open.recommended ? `; it ${deadlineText(open, new Date(now)) ?? 'waits for the person'}` : ''}` };
+  const a = answerOf(r.stateDir, id);
+  if (!a) return { ok: true, line: `${r.repo} ${ASK}${id}: not open, and no choice is recorded (done, or never asked)` };
+  return { ok: true, line: `${r.repo} ${ASK}${id}: ${a.chose}, chosen ${a.by === 'default' ? 'by default, nobody having chosen,' : 'by the person'} at ${a.answered_at}` };
 }
 
 // One run of the command line, in this process: { code, out, err }, which the entry below prints and exits
@@ -2636,11 +2699,14 @@ export function run(argv, { reads } = {}) {
       const res = record({ word, ticket, action: 'move', text: to, ...at });
       lines.push(res.line);
       if (!res.ok) return end(EXIT.SHOW_PERSON);
-    } else if (cmd === 'ask' && (rest.length === 2 || (rest.length === 4 && rest[2] === '--until'))) {
-      const res = ask({ word: rest[0], text: rest[1], until: rest.length === 4 ? rest[3].split(',').map((k) => k.trim()).filter(Boolean) : [] });
+    } else if (cmd === 'ask' && rest.length >= 2 && askFlags(rest.slice(2))) {
+      const f = askFlags(rest.slice(2));
+      const res = ask({ word: rest[0], text: rest[1], ...f });
       lines.push(res.line);
       if (!res.ok) return end(EXIT.SHOW_PERSON);
-    } else return end(EXIT.SHOW_PERSON, 'usage: needs-you.mjs list [--json] [--no-settle] [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>" [--until <TICKET>[,<TICKET>...]]\n');
+    } else if (cmd === 'ask-status' && rest.length === 2 && /^(ask:)?\d+$/.test(rest[1])) {
+      lines.push(askStatus({ word: rest[0], id: Number(rest[1].replace(/^ask:/, '')) }).line);
+    } else return end(EXIT.SHOW_PERSON, 'usage: needs-you.mjs list [--json] [--no-settle] [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>" [--until <TICKET>[,<TICKET>...]] [--options <a>|<b> [--recommend <a>] [--apply-by <HH:MM|ISO>] [--never-default "<why>"]] | ask-status <repo> <id>\n');
   } catch (e) { return end(EXIT.SHOW_PERSON, `${e.message}\n`); }
   return end(0);
 }

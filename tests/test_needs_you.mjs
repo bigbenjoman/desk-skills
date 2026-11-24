@@ -3582,6 +3582,20 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   const done = N.record({ word: 'ask811', ticket: 'ask:1', action: 'done' });
   t('#811 done takes it off the list', `${done.ok} ${done.line} ${asks().length}`, 'true ask811 ask:1: done, so it is off your list. 0');
   t('#811 an empty ask is refused', cli('ask', 'ask811', '  ').code, 11);
+  // #1366: a choice offers each option, recommended first, says when it applies by itself, and keeps the answer.
+  const c1 = cli('ask', 'ask811', 'Merge PR #12 now, or hold it for the release?', '--options', 'merge|hold', '--recommend', 'hold', '--apply-by', '2099-01-01T17:00:00Z');
+  const cid = /ask:(\d+)/.exec(c1.out)?.[1];
+  t('#1366 a choice is recorded, saying what to choose and when its recommendation applies', `${c1.code} ${c1.out.includes('until you choose (merge, hold)')} ${/it applies hold at .* unless you choose\.$/.test(c1.out.trim())}`, '0 true true');
+  const ci = asks().find((i) => i.t.key === `ask:${cid}`);
+  t('#1366 its item offers each option, the recommended one first, then done and not-now', ci.actions.map((a) => a[0]).join(), 'hold,merge,done,not-now');
+  t('#1366 and its need says when it applies', /^Merge PR #12 now, or hold it for the release\? \(applies hold at .* unless you choose\)$/.test(ci.need), true);
+  t('#1366 before anyone chooses, ask-status says it is open and when it applies', /^ask811 ask:\d+: open; it applies hold at /.test(cli('ask-status', 'ask811', cid).out), true);
+  const chose = N.record({ word: 'ask811', ticket: `ask:${cid}`, action: 'merge' });
+  t('#1366 choosing an option records it and takes the item off the list', `${chose.ok} ${asks().some((i) => i.t.key === `ask:${cid}`)}`, 'true false');
+  t('#1366 the session that asked reads the choice', /^ask811 ask:\d+: merge, chosen by the person at /.test(cli('ask-status', 'ask811', cid).out), true);
+  const money = cli('ask', 'ask811', 'Upgrade the CI plan to the paid tier?', '--options', 'upgrade|stay', '--recommend', 'upgrade');
+  t('#1366 a recommendation that spends money never applies by itself, and says so', money.out.includes('it never applies by itself: it is a money call'), true);
+  t('#1366 a choice needs two one-word options, and a recommendation among them', `${cli('ask', 'ask811', 'x', '--options', 'merge').code} ${cli('ask', 'ask811', 'x', '--options', 'merge|two words').code} ${cli('ask', 'ask811', 'x', '--options', 'merge|hold', '--recommend', 'ship').code}`, '11 11 11');
   const a3 = cli('ask', 'ask811', 'Say whether to admit F-8', '--until', 'F-8, G-9');
   t('#1341 ask --until records the tickets it waits on, and says a pass drops it once they finish',
     `${a3.code} ${a3.out.includes('or a pass finds F-8, G-9 merged or done')} ${JSON.stringify(JSON.parse(readFileSync(join(standing.stateDir, 'asks.json'), 'utf8')).asks.find((a) => a.text === 'Say whether to admit F-8')?.until)}`,
@@ -3976,7 +3990,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
 // ---- DS-929 AC1: every in-process collect and refresh above ran on injected repos and reads, and started
 // no gh, git, desk-jira or launchctl process.
 t('DS-929 AC1 no collect or refresh on the stubs started a gh, git, desk-jira or launchctl process', startedOnStubs.join(' | '), '');
-t('DS-929 AC2 every CLI command still has a run end to end', [...cliRan].sort().join(), 'ask,left,list,record');
+t('DS-929 AC2 every CLI command still has a run end to end', [...cliRan].sort().join(), 'ask,ask-status,left,list,record');
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');
 process.exit(fails ? 1 : 0);

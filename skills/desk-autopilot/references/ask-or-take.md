@@ -266,6 +266,15 @@ running passes for every other ticket, and put the question where an answer come
   <TICKET>[,<TICKET>...]`) is dropped by the pass once they are all merged or done (`needs-you: ask
   <n> dropped`). Pass `--until` only for such a wait, never for a step the person still owes once
   they merge.
+- **A choice for the person** is an ask with options: `needs-you.mjs ask <repo> "<the question,
+  saying what each option does>" --options <a>|<b> --recommend <a>`. Each option is one word and an
+  action the person taps, the recommended one first. Nobody choosing by the next §3b check-in (or
+  `--apply-by <HH:MM|ISO>`), the pass applies the recommendation, logs it as a taken decision the
+  check-in digest lists with how to reverse it, and `needs-you.mjs ask-status <repo> <id>` tells you
+  which option stands and whether it was chosen or applied by default. Act on that. Pass
+  `--never-default "<why>"` where the recommendation contacts anyone outside the team, widens a §3
+  permission or cannot be undone: that one stays open until the person chooses. One that spends money
+  or touches production never defaults whatever you pass.
 
 **A wait on the person lives only as a needs-you item, never as a line in your `/loop` prompt.**
 Your loop prompt, a pending note, a handoff or a summary is read by no one but you. A wait kept there
