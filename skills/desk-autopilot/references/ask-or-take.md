@@ -47,7 +47,7 @@ type a value: where the answer is a value, offer the values you can recommend as
 or a digest line names the choice and where to make it, never a word to send back.
 
 **A config value desk can recommend is taken, not asked.** A row desk can set with a stated reason (a
-template default that already applies while it is unset, a least-privilege `no` or `none` that
+template default that already applies while it is unset (not one the machine profile fills while absent), a least-privilege `no` or `none` that
 matches what desk does now, a value read from the repo such as a user its seed files create) is set
 by desk, noted `set by desk: <why>`, and logged as a taken decision for the check-in digest, where the
 person can change it. Only a row that widens what workers may do, spends, reaches an external system,

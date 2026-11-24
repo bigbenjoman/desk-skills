@@ -41,6 +41,7 @@ t('#1363 Test sign-in is taken as the seeded user, for the one app', D.considere
 t('#1363 with two apps, which user for which is the person\'s', D.considered(m('4', '"Test sign-in"'), { root: repo, devDirs: ['apps/web', 'apps/admin'] }), null);
 t('#1363 a row with no default and nothing to read is the person\'s', D.considered(m('4', '"Staging"'), { root: repo }), null);
 t('#1363 a §3 row never or stop is not taken', D.considered(m('3', 'legal-content')), null);
+t('#1363 a row the machine profile fills while it is absent is left absent, neither set nor asked', JSON.stringify(D.considered(m('3b', '"Autopilot worker concurrency"'))), JSON.stringify({ leave: true }));
 
 config('acme__lacks', { rows: [['Dev server', '`npm run dev`']] });
 config('acme__full', { perm: [['autopilot-workers', '`yes`'], ['worker-preview-db', '`no`']], rows: [['Dev server', '`npm run dev`'], ['Test sign-in', '`dev@acme.test`'], ['Preview database', '`none`'], ['Staging', '`none`']] });
@@ -68,6 +69,13 @@ mkdirSync(join(T, 'cfg', 'repos', 'acme__notable'), { recursive: true });
 writeFileSync(cfgPath('acme__notable'), `## 2. Paths\n| Field | Value |\n|---|---|\n| Primary repo root | \`${repo}\` |\n\n${table([['Dev server', '`npm run dev`'], ['Test sign-in', '`dev@acme.test`'], ['Preview database', '`none`'], ['Staging', '`none`']])}`);
 const nt = D.recordDriftAsks({});
 t('#1363 a row desk could not write is put to the person with the rest', nt.some((l) => l.startsWith('acme__notable lacks ') && l.includes('§3 worker-preview-db')), true);
+
+// A decision log that cannot be written is named: the row stays set, but the digest cannot list it.
+config('acme__nolog', { rows: [['Dev server', '`npm run dev`'], ['Test sign-in', '`dev@acme.test`'], ['Staging', '`none`']], perm: [['autopilot-workers', '`yes`'], ['worker-preview-db', '`no`']] });
+mkdirSync(join(E.batchPaths('acme__nolog').state, 'decisions.jsonl'), { recursive: true });
+const nl = D.recordDriftAsks({}).filter((l) => l.startsWith('acme__nolog'));
+t('#1363 a row whose decision could not be logged is named, and not said to be in the digest',
+  `${nl[0]} | ${nl[1]?.startsWith('acme__nolog\'s decision log could not be written for §4 "Preview database" (')}`, 'acme__nolog had 1 config row(s) desk set itself, each noted as desk\'s (§4 "Preview database" = none) | true');
 
 // One repo's unreadable asks file leaves the next repo's ask recorded.
 config('acme__a1', { rows: [['Dev server', '`npm run dev`']] });

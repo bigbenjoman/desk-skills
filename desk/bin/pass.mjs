@@ -111,7 +111,7 @@ import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } 
 import { kindMode, leaseCli, releasePreviews, slotPools } from './leases.mjs';
 import { handToWorker as handMemToWorker, memPool, reserveForWorker } from './mem-lease.mjs';
 import { pruneAsks, settleDrift, readAsks } from './asks.mjs';
-import { considered, takeRows } from './drift-asks.mjs';
+import { considered, takeRows, devDirsIn } from './drift-asks.mjs';
 import { readArchive, archivedOf, isArchived, keepPrs, mergedPrs, prClosed, owesReopen, recordedPr } from './queue-store.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -3704,7 +3704,7 @@ function rowsNeeded(key, rec) {
       const config = E.configPathOrNull();
       const m = E.configDrift({ config }).missing.find((x) => x.section === '4' && x.label === '"Test sign-in"');
       const root = E.configFileRoot(config) ?? E.currentRepo().dir;
-      const c = m && considered(m, { root, devDirs: [...new Set(dev.map((x) => E.parseCommandItem(x).dir || '.'))] });
+      const c = m && considered(m, { root, devDirs: devDirsIn(dev) });
       const took = c ? takeRows(config, [{ m, ...c }], { slug: E.repoSlug(), state: E.repoStateOf(STATE) }) : null;
       if (took?.done.length) { report.recovered.push(`${key}: desk set config ${took.done[0]} (${c.why}), so its screenshots can sign in; in the check-in digest`); return null; }
     } catch { /* not taken: the person is asked, below */ }

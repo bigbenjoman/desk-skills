@@ -56,7 +56,8 @@ const schemaOf = (m) => {
 };
 const rowName = (m) => m.label.replace(/^"(.*)"$/, '$1');
 
-// The value desk takes for MISSING row `m` itself, as { value, why }, or null where it needs the person:
+// The value desk takes for MISSING row `m` itself, as { value, why }, { leave: true } for a row whose
+// absence is right (it falls back to the machine profile), or null where it needs the person:
 // - a §3 permission: `no`, which a row the config lacks already reads as, so nothing is widened;
 // - a row whose template default already applies while it is unset: that default;
 // - §4 Test sign-in: a user the repo's seed files create, for its one app (devDirs, the §4 Dev server
@@ -67,6 +68,9 @@ export function considered(m, { root = null, devDirs = [] } = {}) {
   if (!r) return null;
   if (r.kind === 'perm') return r.type === 'perm' && r.example === 'yes'
     ? { value: 'no', why: 'a §3 row the config lacks already reads as no, so this widens nothing workers may do; set it to yes to grant it' } : null;
+  // A row with a machine-profile fallback reads the profile while it is absent, not its default: absent
+  // is its right state, so it is neither set nor asked.
+  if (r.machine) return { leave: true };
   const d = r.default == null ? [] : [].concat(r.default);
   if (d.length === 1) return { value: String(d[0]), why: "the template's default, which already applies while the row is unset" };
   if (r.id === 'test-signin' && devDirs.length <= 1) {
@@ -79,17 +83,17 @@ export function considered(m, { root = null, devDirs = [] } = {}) {
 
 // The directories repo `slug`'s §4 Dev server items run in ('.' for the root), [] with none.
 export function devDirsOf(slug, cfgRoot = null) {
-  let dev;
-  try { dev = E.repoConfigValues(slug, 'dev-cmd', ...(cfgRoot ? [cfgRoot] : [])); } catch { return []; }
-  return !dev || isNone(dev) ? [] : [...new Set(dev.map((x) => parseCommandItem(x).dir || '.'))];
+  try { return devDirsIn(E.repoConfigValues(slug, 'dev-cmd', ...(cfgRoot ? [cfgRoot] : []))); } catch { return []; }
 }
+// The same, from the row's items as read.
+export const devDirsIn = (dev) => (!dev || isNone(dev) ? [] : [...new Set(dev.map((x) => parseCommandItem(x).dir || '.'))]);
 
 // Writes `taken` ({ m, value, why }) into `config`, each row noted as desk's with its reason, and logs
 // each as a taken decision in the repo's state, so the check-in digest lists it with how to change it.
 // -> { done: the rows written, as "§<section> <row> = <value>", failed: [{ m, why }] the config refused,
-//    which go to the person instead }
+//    which go to the person instead, unlogged: the rows written whose decision could not be logged }
 export function takeRows(config, taken, { slug, state, short = null, template } = {}) {
-  const done = [], failed = [];
+  const done = [], failed = [], unlogged = [];
   for (const { m, value, why } of taken) {
     try { E.addTemplateRow({ config, section: m.section, row: rowName(m), value, note: `set by desk: ${why}`, ...(template ? { template } : {}) }); }
     catch (e) { failed.push({ m, why: String(e?.message ?? e) }); continue; }
@@ -100,9 +104,12 @@ export function takeRows(config, taken, { slug, state, short = null, template } 
           options: [value, 'ask the person'], chose: value, category: 'engineering' },
         ticket: 'config', run: short, repo: slug, pr: null, source: 'drift',
       })], state);
-    } catch { /* the row is written; a log that cannot be written never undoes it */ }
+    } catch (e) {
+      // The row stays written, noted as desk's in the config; the line names it, as the digest cannot.
+      unlogged.push(`§${m.section} ${m.label} (${String(e?.message ?? e).split('\n')[0]})`);
+    }
   }
-  return { done, failed };
+  return { done, failed, unlogged };
 }
 
 // One repo's drift: the rows desk takes itself (`taken`, each { m, value, why }), the rest (`left`), and
@@ -110,7 +117,11 @@ export function takeRows(config, taken, { slug, state, short = null, template } 
 export function driftAsk(config, { root = null, short = null, template, devDirs = [] } = {}) {
   const { missing } = E.configDrift({ config, root, ...(template ? { template } : {}) });
   const taken = [], left = [];
-  for (const m of missing) { const c = considered(m, { root, devDirs }); if (c) taken.push({ m, ...c }); else left.push(m); }
+  for (const m of missing) {
+    const c = considered(m, { root, devDirs });
+    if (c?.leave) continue;
+    if (c) taken.push({ m, ...c }); else left.push(m);
+  }
   return { taken, left, ask: askFor(left, short) };
 }
 
@@ -133,8 +144,9 @@ export function recordDriftAsks({ short = null, repos = E.configuredRepos(), tem
       const root = (() => { try { return E.configFileRoot(config); } catch { return null; } })();
       const state = E.batchPaths(slug).state;
       const drift = driftAsk(config, { root, short, template, devDirs: devDirsOf(slug, cfgRoot) });
-      const { done: set, failed } = drift.taken.length ? takeRows(config, drift.taken, { slug, state, short, template }) : { done: [], failed: [] };
-      if (set.length) lines.push(`${slug} had ${set.length} config row(s) desk set itself, each noted as desk's and in the check-in digest (${set.join('; ')})`);
+      const { done: set, failed, unlogged } = drift.taken.length ? takeRows(config, drift.taken, { slug, state, short, template }) : { done: [], failed: [], unlogged: [] };
+      if (set.length) lines.push(`${slug} had ${set.length} config row(s) desk set itself, each noted as desk's${unlogged.length ? '' : ' and in the check-in digest'} (${set.join('; ')})`);
+      if (unlogged.length) lines.push(`${slug}'s decision log could not be written for ${unlogged.join('; ')}: the check-in digest does not list ${unlogged.length === 1 ? 'it' : 'them'}`);
       // A row desk could not write goes to the person with the rest.
       const a = failed.length ? askFor([...drift.left, ...failed.map((f) => f.m)], short) : drift.ask;
       // An earlier install's ask naming other rows goes; one naming these same rows stays as it is, so

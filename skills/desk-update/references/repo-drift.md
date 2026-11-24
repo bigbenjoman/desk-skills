@@ -41,7 +41,7 @@ If any parked ticket names a row answered here, say that `/desk-needs-you` (its 
 
 Every install (`install.sh`, by hand or the pass's auto-release) settles each configured repo's
 `MISSING` rows itself where it has a considered value (`drift-asks.mjs`): a §3 permission as `no`,
-which the missing row already reads as; a row whose template default already applies; §4 Test
+which the missing row already reads as; a row whose template default already applies (never one that falls back to the machine profile while absent, which stays absent); §4 Test
 sign-in as a user the repo's seed files create, where it runs one app. Each is written noted
 `set by desk: <why>` and logged as a taken decision, so the check-in digest lists it with how to
 change it. Only the rest go to the person, as one `config drift: …` ask pointing at `/desk-setup`,
