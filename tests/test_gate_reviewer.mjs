@@ -109,11 +109,17 @@ t('#1370 a cold seed reads on past PRs updated since, and stops at the page hold
 const endless = () => ({ data: { recent: { nodes: [upd(pr(30, { created: H(13, 0) }), H(13, 30))], pageInfo: { hasNextPage: true, endCursor: 'x' } }, repository: {} } });
 t('#1370 with its latest review past the pages it reads, its last review is taken as the oldest PR read, so the quiet is never overstated', GR.seedRead(endless, 'acme/widgets', BOT, [], true).last, H(13, 30));
 t('#1370 a page GitHub cannot answer is no seed', GR.seedRead(() => null, 'acme/widgets', BOT, [9], true), null);
-// A PR showing only its latest 50 reviews, none of the reviewer's, may hide one: the oldest shown stands in.
-const busy = { ...pr(40, { created: H(8, 0), reviews: [['sam', H(13, 10)], ['kim', H(13, 20)]] }), updatedAt: H(13, 20) };
-busy.reviews.pageInfo = { hasPreviousPage: true };
-const hd = GR.seedOf({ data: { recent: { nodes: [busy, pr(8, { created: H(9, 37), reviews: [[BOT, H(9, 46)]] })] }, repository: { p40: busy } } }, BOT);
-t('#1370 a PR whose reviews are cut off, none shown the reviewer\'s, bounds its last review and that PR\'s wait by the oldest shown', j([hd.last, hd.began[40]]), j([H(13, 10), new Date(H(13, 10)).toISOString()]));
+// A PR showing only its latest reviews, none of the reviewer's, has its earlier ones read until one is.
+const busy = () => { const b = { ...pr(40, { created: H(8, 0), reviews: [['sam', H(13, 10)], ['kim', H(13, 20)]] }), updatedAt: H(13, 20) }; b.reviews.pageInfo = { hasPreviousPage: true, startCursor: 'r1' }; return b; };
+const older = { r1: { pageInfo: { hasPreviousPage: true, startCursor: 'r0' }, nodes: [{ author: { login: 'sam' }, submittedAt: H(11, 0) }] }, r0: { pageInfo: { hasPreviousPage: false }, nodes: [{ author: { login: BOT }, submittedAt: H(10, 15) }] } };
+const bq = [];
+const bgql = (q, vars) => {
+  if (vars.before) { bq.push(vars.before); return { data: { repository: { pullRequest: { reviews: older[vars.before] } } } }; }
+  return { data: { recent: { nodes: [busy()], pageInfo: { hasNextPage: false } }, repository: { p40: busy() } } };
+};
+const bs = GR.seedRead(bgql, 'acme/widgets', BOT, [40], true);
+t('#1370 a PR whose reviews are cut off, none shown the reviewer\'s, has its earlier reviews read until one is', j([bs.last, bs.began[40], bq]), j([H(10, 15), new Date(H(10, 15)).toISOString(), ['r1', 'r0', 'r1', 'r0']]));
+t('#1370 no other author\'s review stands in: earlier reviews that cannot be read are no seed', GR.seedRead((q, vars) => (vars.before ? null : bgql(q, vars)), 'acme/widgets', BOT, [40], true), null);
 const SD = scratch('gate-reviewer-seed-');
 const calls = [];
 const seed = (login, prs, cold) => { calls.push([login, prs, cold]); return sd; };

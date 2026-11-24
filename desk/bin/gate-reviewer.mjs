@@ -82,7 +82,10 @@ export function update(rec, { seen = [], waits = [], now = Date.now(), batch = n
 // is the latest), or SEED_PAGES pages.
 export const SEED_PRS = 50;
 export const SEED_PAGES = 4;
-const PR_FIELDS = 'number createdAt updatedAt commits(last:1){nodes{commit{committedDate}}} timelineItems(itemTypes:[READY_FOR_REVIEW_EVENT],last:20){nodes{... on ReadyForReviewEvent{createdAt}}} reviews(last:50){pageInfo{hasPreviousPage} nodes{author{login} submittedAt}}';
+// REVIEW_PAGES: how many earlier pages of one PR's reviews a seed reads to find that reviewer's.
+export const REVIEW_PAGES = 5;
+const reviewsQuery = (n) => `query($owner:String!,$name:String!,$before:String!){repository(owner:$owner,name:$name){pullRequest(number:${Number(n)}){reviews(last:100,before:$before){pageInfo{hasPreviousPage startCursor} nodes{author{login} submittedAt}}}}}`;
+const PR_FIELDS = 'number createdAt updatedAt commits(last:1){nodes{commit{committedDate}}} timelineItems(itemTypes:[READY_FOR_REVIEW_EVENT],last:20){nodes{... on ReadyForReviewEvent{createdAt}}} reviews(last:50){pageInfo{hasPreviousPage startCursor} nodes{author{login} submittedAt}}';
 // The GraphQL query for a seed ($owner, $name; with `cold` $q, seedSearch's, and with `after` $after):
 // each of `prs`, and with `cold` a page of the repo's most recently updated PRs too.
 export function seedQuery(prs, cold, after = false) {
@@ -101,9 +104,12 @@ export function seedRead(gql, repo, login, prs, cold) {
     const p = gql(seedQuery(page ? [] : prs, cold, !!after), { ...(cold ? { q: seedSearch(repo) } : {}), ...(after ? { after } : {}) });
     if (!p?.data) return null;
     if (!page) named = p.data.repository ?? {};
-    if (!cold) break;
+    if (!cold) { if (!fill(gql, Object.values(named).filter((n) => n?.number), login)) return null; break; }
     const r = p.data.recent ?? {};
-    nodes.push(...(r.nodes ?? []).filter((n) => n?.number));
+    const fresh = (r.nodes ?? []).filter((n) => n?.number);
+    if (!page && !fill(gql, Object.values(named).filter((n) => n?.number), login)) return null;
+    if (!fill(gql, fresh, login)) return null;
+    nodes.push(...fresh);
     const floor = nodes.map((n) => n.updatedAt).filter(Boolean).sort()[0];
     const last = seedOf({ data: { recent: { nodes } } }, login).last;
     if (!r.pageInfo?.hasNextPage || (last && floor && Date.parse(last) >= Date.parse(floor))) { complete = true; break; }
@@ -111,6 +117,21 @@ export function seedRead(gql, repo, login, prs, cold) {
   }
   return seedOf({ data: { recent: { nodes, complete }, repository: named } }, login);
 }
+// Each of `prs` whose reviews are cut off with none of `login`'s shown has its earlier reviews read in,
+// REVIEW_PAGES pages at most, until one of that reviewer's is among them or none are left. -> false where
+// a page could not be read or the pages ran out first: no other author's review stands in for theirs.
+function fill(gql, prs, login) {
+  for (const p of prs) {
+    for (let page = 0; cutOff(p, login); page++) {
+      if (page >= REVIEW_PAGES) return false;
+      const r = gql(reviewsQuery(p.number), { before: p.reviews.pageInfo.startCursor })?.data?.repository?.pullRequest?.reviews;
+      if (!r) return false;
+      p.reviews = { pageInfo: r.pageInfo ?? {}, nodes: [...(r.nodes ?? []), ...(p.reviews.nodes ?? [])] };
+    }
+  }
+  return true;
+}
+const cutOff = (p, login) => !!p.reviews?.pageInfo?.hasPreviousPage && !(p.reviews.nodes ?? []).some((r) => loginIn(r?.author?.login, login));
 export const seedSearch = (repo) => `repo:${repo} is:pr sort:updated-desc`;
 
 // What a seed query's payload says of `login`: { last (its latest review read), lags (minutes from each
@@ -120,11 +141,7 @@ export const seedSearch = (repo) => `repo:${repo} is:pr sort:updated-desc`;
 export function seedOf(payload, login) {
   const d = payload?.data ?? {};
   const reviews = (p) => (p.reviews?.nodes ?? []).filter((r) => r?.submittedAt && loginIn(r.author?.login, login)).map((r) => r.submittedAt).sort();
-  // A PR showing only its latest reviews, none of them that reviewer's, may hide one of its older than
-  // the oldest shown: that time stands in for it, overstating neither its quiet nor a PR's wait.
-  const hidden = (p) => (p.reviews?.pageInfo?.hasPreviousPage && !reviews(p).length
-    ? (p.reviews.nodes ?? []).map((r) => r?.submittedAt).filter(Boolean).sort()[0] ?? null : null);
-  const latest = (p) => reviews(p).at(-1) ?? hidden(p);
+  const latest = (p) => reviews(p).at(-1) ?? null;
   const readies = (p) => (p.timelineItems?.nodes ?? []).map((e) => e?.createdAt).filter(Boolean).sort();
   const recent = (d.recent?.nodes ?? []).filter((p) => p?.number);
   const named = Object.entries(d.repository ?? {}).filter(([k, p]) => /^p\d+$/.test(k) && p?.number).map(([, p]) => p);
@@ -135,7 +152,8 @@ export function seedOf(payload, login) {
   const last = [found, floor].filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1) ?? null;
   const lags = [];
   for (const p of recent) {
-    const first = reviews(p)[0];
+    // A PR whose earlier reviews were not read cannot say which of that reviewer's came first.
+    const first = p.reviews?.pageInfo?.hasPreviousPage ? null : reviews(p)[0];
     if (!first) continue;
     const ready = readies(p).filter((t) => t <= first).at(-1) ?? p.createdAt;
     const lag = (Date.parse(first) - Date.parse(ready)) / 60000;
