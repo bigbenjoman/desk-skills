@@ -32,6 +32,7 @@ const VALID = {
   automerge_armed: { by: 'session x', pr: 12, head_sha: SHA, line: 0 },
   automerge_disarmed: { by: 'merge-driver', pr: 12, line: 1 },
   merged: { by: 'merge-driver', pr: 12, head_sha: SHA, base: 'main' },
+  merge_stages: { pr: 12, stages: { undraft: 4, merge: 2 } },
   finished: { pr: 12, fields: null },
   failed: { subtype: 'crash' },
   requeued: {},

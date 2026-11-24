@@ -3,7 +3,8 @@
 // fix-tries step reads that reviewer's reviews on every ready PR waiting for it; the pass records here,
 // per reviewer login, the latest review it saw, how long each of its recent reviews took after the PR
 // first waited on it, and which PRs wait now, in <repo state>/gate-reviewer.json:
-//   { reviewers: { <login>: { last: ISO|null, lags: [minutes], seeded?: ISO, waiting: { <pr>: { head, since, batch? } } } } }
+//   { reviewers: { <login>: { last: ISO|null, lags: [minutes], seeded?: ISO, waiting: { <pr>: { head, since, batch? } } } },
+//     outages: [{ login, from, to: ISO|null }] }   (outagesAfter)
 // A reviewer new to the record is seeded from GitHub once (seedOf): its latest review on the repo, its
 // recent lags, and when each PR waiting on it began waiting, so an outage already under way when the
 // record starts reads as down at once, from when it began.
@@ -239,13 +240,15 @@ function step(state, { seen, waits, now, owner, repo, dry, batch, live, seed }) 
   let rec;
   let sd;
   try {
-    sd = seed ? seeded(readRecord(state), waits, seed, now) : { rec: readRecord(state), began: {}, lines: [], fresh: new Set() };
+    const base = readRecord(state);
+    sd = seed ? seeded(base, waits, seed, now) : { rec: base, began: {}, lines: [], fresh: new Set() };
     lines.push(...sd.lines);
-    rec = update(sd.rec, { seen, waits, now, batch, live, began: sd.began });
+    rec = { ...update(sd.rec, { seen, waits, now, batch, live, began: sd.began }), outages: Array.isArray(base.outages) ? base.outages : [] };
   } catch (e) {
     return [...waits.map((w) => w.line), `gate reviewer: its record could not be read (${firstLine(e)}), so whether it is down is not known this pass`];
   }
   const down = new Set();
+  const downSince = {};
   for (const login of Object.keys(rec.reviewers)) {
     let v = verdict(rec, login, now);
     if (!v.down) continue;
@@ -262,6 +265,7 @@ function step(state, { seen, waits, now, owner, repo, dry, batch, live, seed }) 
       }
     }
     down.add(login);
+    downSince[login] = v.since;
     const { text } = downAsk(login, v, { repo, owner });
     lines.push(`gate reviewer: ${login} reads as down: no review since ${v.since}, over its ${v.threshold}-minute threshold, while ${v.prs.length} ready PR(s) wait on it (${v.prs.map((n) => `#${n}`).join(', ')}): on the needs-you list in place of each PR's wait`);
     if (dry) continue;
@@ -276,8 +280,22 @@ function step(state, { seen, waits, now, owner, repo, dry, batch, live, seed }) 
   try {
     for (const a of settleReviewer(state, (x) => !down.has(x.login))) lines.push(`needs-you: ask ${a.id} dropped, as the gate reviewer it named reviews again or nothing waits on it`);
   } catch (e) { lines.push(`gate reviewer: its asks could not be rechecked (${firstLine(e)})`); }
+  rec.outages = outagesAfter(rec.outages, downSince, now);
   try { writeRecord(state, rec); } catch (e) { lines.push(`gate reviewer: its record could not be written (${firstLine(e)})`); }
   return lines;
+}
+
+// The outage history after a pass: each reviewer down now has one open outage ({ login, from: its last
+// review or first wait, to: null }); one no longer down has its open outage closed at `now`. The
+// newest OUTAGES_KEPT are kept, for merge-stages.mjs to leave the waits inside them out of its medians.
+export const OUTAGES_KEPT = 50;
+export function outagesAfter(outages, downSince, now = Date.now()) {
+  const out = (outages ?? []).map((o) => ({ ...o }));
+  for (const o of out) if (o.to == null && !(o.login in downSince)) o.to = iso(now);
+  for (const [login, since] of Object.entries(downSince)) {
+    if (!out.some((o) => o.login === login && o.to == null)) out.push({ login, from: since ?? iso(now), to: null });
+  }
+  return out.slice(-OUTAGES_KEPT);
 }
 // `login`'s latest review across the repo, through `seed` read cold for no PR: an ISO time, null where
 // none is proven among the pages read, or undefined where GitHub could not be read.

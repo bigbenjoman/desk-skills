@@ -84,6 +84,7 @@ import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-a
 import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget } from './queue-ledger.mjs';
 import { fold as ledgerFold, append as ledgerAppend } from './ticket-ledger.mjs';
+import * as MS from './merge-stages.mjs';
 import { readLogLines } from './merge-log.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
@@ -5154,18 +5155,33 @@ const externalSeen = [], externalWaits = [];
 function liveNamed() { try { return listBatches().map((b) => b.name).filter(Boolean); } catch { return null; } }
 // Whether each outside gate reviewer PRs wait on has stopped reviewing across the repo (gate-reviewer.mjs
 // reviewerStep): one that has is one repo-level ask in place of each PR's wait line.
+// A GraphQL read of this repo ($owner and $name set, `vars` each a string): the payload, or null unread.
+const repoGql = (query, vars = {}) => {
+  const [o, name] = GH_REPO.split('/');
+  const r = shOut('gh', ['api', 'graphql', '-f', `owner=${o}`, '-f', `name=${name}`, ...Object.entries(vars).flatMap(([k, v]) => ['-f', `${k}=${v}`]), '-f', `query=${query}`]);
+  if (!r.ok) return null;
+  try { return JSON.parse(r.out); } catch { return null; }
+};
 {
   let owner = null;
   try { const v = E.declaredValue('infra-owner'); owner = v && !/^(you|none|todo)$/i.test(v.trim()) ? v.trim() : null; } catch { /* unread: none named */ }
   // A reviewer new to the record, or a PR new to its waits, is read from GitHub (gate-reviewer.mjs seeded).
-  const gql = (query, vars) => {
-    const [o, name] = GH_REPO.split('/');
-    const r = shOut('gh', ['api', 'graphql', '-f', `owner=${o}`, '-f', `name=${name}`, ...Object.entries(vars).flatMap(([k, v]) => ['-f', `${k}=${v}`]), '-f', `query=${query}`]);
-    if (!r.ok) return null;
-    try { return JSON.parse(r.out); } catch { return null; }
-  };
-  const seed = (login, prs, cold) => GR.seedRead(gql, GH_REPO, login, prs, cold);
+  const seed = (login, prs, cold) => GR.seedRead(repoGql, GH_REPO, login, prs, cold);
   out.push(...GR.reviewerStep(E.repoStateOf(STATE), { seen: externalSeen, waits: externalWaits, owner, repo: GH_REPO, dry: DRY, batch: E.batchName() ?? null, live: liveNamed(), seed }));
+}
+// Each merged ticket's PR time by stage (merge-stages.mjs stagesStep), read from its GitHub timeline
+// once it has merged, a few a pass, into the repo's merge-stages.jsonl and, with the ledger lever on,
+// the ledger.
+if (!DRY) {
+  let desk = null, clean = null, outages = [], required = [];
+  try { desk = E.verdictLogins(); clean = E.configValue('clean-verdict'); required = E.configValues('required-checks') ?? []; } catch { /* unread: no desk rounds */ }
+  try { outages = GR.readRecord(E.repoStateOf(STATE)).outages ?? []; } catch { /* none recorded */ }
+  const external = stateRow.checks.find((c) => c.kind === 'external')?.login ?? null;
+  out.push(...MS.stagesStep(E.repoStateOf(STATE), {
+    tickets: queue().tickets, gql: (q) => repoGql(q), now: PASS_AT,
+    ctx: { desk, external, clean, outages, required }, local: (key) => MS.localReview(STATE, key),
+    ledger: LEDGER_ON ? (key, pr, entry) => ledgerAppend(LEDGER_AT.repoDir, [{ id: `merge_stages:${key}:${pr}`, type: 'merge_stages', batch: LEDGER_AT.batch, key, data: { pr, stages: entry } }], { by: 'pass' }) : null,
+  }));
 }
 // With `gate`, the read also holds `gateReview`: the latest desk-review a §4 Gate reviewer posted, where
 // it is at the head and not clean, read apart from desk's own so a later verdict of desk's cannot hide

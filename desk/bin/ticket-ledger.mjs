@@ -63,6 +63,8 @@ export const EVENTS = Object.freeze({
   automerge_armed: { scope: 'ticket', data: { by: 'string', pr: 'int', head_sha: 'sha', line: 'int' } },
   automerge_disarmed: { scope: 'ticket', data: { by: 'string', pr: 'int', line: 'int' } },
   merged: { scope: 'ticket', data: { by: 'string', pr: 'int', head_sha: 'sha', base: 'string' } },
+  // stages: the merged PR's time by stage, as merge-stages.mjs records it.
+  merge_stages: { scope: 'ticket', data: { pr: 'int', stages: 'object' } },
   // fields: the done fields written with it (queue-ledger.mjs DONE_FIELDS), laid on as a legacy_set's are.
   finished: { scope: 'ticket', data: { pr: 'int?', fields: 'object?' } },
   failed: { scope: 'ticket', data: { subtype: 'string' } },
@@ -99,6 +101,8 @@ export const TRANSITIONS = Object.freeze({
     .map((t) => [t, { from: UNFINISHED, to: KEEP }])),
   // A done ticket's PR can still wait, on GitHub's mergeability answer, and have auto-merge armed or disarmed.
   ...Object.fromEntries(['waiting', 'waited', 'automerge_armed', 'automerge_disarmed'].map((t) => [t, { from: STATES, to: KEEP }])),
+  // A merged PR's stages are read after its merge, whatever the ticket's state by then.
+  merge_stages: { from: ANY, to: KEEP },
 });
 
 export const ledgerPaths = (repoDir) => {
@@ -132,7 +136,7 @@ export function invalid(ev) {
 
 export const emptyState = () => ({ v: 1, seq: 0, tickets: {}, batches: {}, ids: [] });
 const newTicket = (key) => ({ key, batch: null, state: null, archived: false, fields: {}, park: null, holds: [], pr: null, merge: null,
-  questions: [], answered: [], waits: {}, automerge: null, merge_log: null, spawn: null });
+  questions: [], answered: [], waits: {}, automerge: null, merge_log: null, spawn: null, merge_stages: null });
 // The queue.json field holding the triage questions answered so far, each an answered event's qid.
 export const ANSWERED = 'answered_questions';
 // The queue.json field holding a ticket's open waits, { <on>: a waiting event's data less its `on` }, or
@@ -211,6 +215,7 @@ function apply(state, ev) {
     case 'automerge_disarmed': t.automerge = null; t.merge_log = Math.max(t.merge_log ?? -1, d.line); break;
     // merged_at keeps a ticket's first merge, as queue.mjs merged does.
     case 'merged': t.merge = { ...d, at: ev.at }; t.fields.merged_at ??= ev.at; t.automerge = null; break;
+    case 'merge_stages': t.merge_stages = { pr: d.pr, ...d.stages }; break;
     case 'finished': t.park = null; if (d.fields) overlay(t, d.fields); if (d.pr != null) t.pr = d.pr; break;
     // A ticket that leaves every batch leaves its blockers there: added again, it is held by what then holds it.
     case 'moved': t.batch = d.to; if (d.to == null) { t.holds = []; delete t.fields.held_by; } break;

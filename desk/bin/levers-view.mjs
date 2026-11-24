@@ -29,6 +29,7 @@ import { ageWords, renderPage } from './levers-page.mjs';
 import { reworkSummary } from './rework.mjs';
 import { withDirLock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
 import { spendsNeedsYou } from './lever-log.mjs';
+import * as MS from './merge-stages.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -513,9 +514,17 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   return {
     v: VERSION, generated_at: new Date(generatedAt).toISOString(), tz,
     repos: repoView, baseline,
-    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends },
+    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root) },
     line,
   };
+}
+
+// Each repo's merged PR time by stage (merge-stages.mjs summary), for the repos with any recorded:
+// { repos: [{ name, prs, stages: { <stage>: { n, median, p75 } }, outage }] }.
+function mergeStagesPanel(configured, root) {
+  const names = shownNames(configured.map((r) => r.slug));
+  const repos = configured.map((r, i) => ({ name: names[i], ...MS.summary(MS.readStages(join(root, r.slug))) })).filter((r) => r.prs);
+  return { repos };
 }
 
 // What build.json records: when it built, how long it took, each input's age and every panel error.
