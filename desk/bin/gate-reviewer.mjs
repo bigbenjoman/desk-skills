@@ -219,9 +219,9 @@ export function downAsk(login, v, { repo, owner = null } = {}) {
 }
 
 // One pass's step, after its fix tries: the record updated with `seen` and `waits`, each reviewer that
-// reads as down put to the person as one ask in `state` (the repo's), replacing the last pass's for it,
-// in place of each PR's wait line, and the ask of one that no longer reads as down (its next review
-// seen, or nothing waiting on it) dropped. A dry run writes nothing. -> the pass's report lines
+// reads as down put to the person as one ask in `state` (the repo's), the last pass's for it brought up
+// to date under its id while the outage is the same, in place of each PR's wait line, and the ask of one whose
+// outage has ended (its next review seen, or nothing waiting on it) dropped. A dry run writes nothing. -> the pass's report lines
 // `seed`: seeded's reader, also the repo-wide read of a reviewer's latest review before it is called
 // down (repoLast), or null to read nothing from GitHub.
 export function reviewerStep(state, { seen = [], waits = [], now = Date.now(), owner = null, repo = '', dry = false, batch = null, live = null, seed = null } = {}) {
@@ -249,6 +249,12 @@ function step(state, { seen, waits, now, owner, repo, dry, batch, live, seed }) 
   }
   const down = new Set();
   const downSince = {};
+  // An ask's outage has ended once its reviewer has reviewed since it was raised, or nothing waits on it.
+  // Waits that restart on a new head end nothing: the same outage keeps its ask and its not-now.
+  const ended = (a) => {
+    const r = rec.reviewers[a.login];
+    return !Object.keys(r?.waiting ?? {}).length || (!!r.last && Date.parse(r.last) > Date.parse(a.at));
+  };
   for (const login of Object.keys(rec.reviewers)) {
     let v = verdict(rec, login, now);
     if (!v.down) continue;
@@ -270,15 +276,15 @@ function step(state, { seen, waits, now, owner, repo, dry, batch, live, seed }) 
     lines.push(`gate reviewer: ${login} reads as down: no review since ${v.since}, over its ${v.threshold}-minute threshold, while ${v.prs.length} ready PR(s) wait on it (${v.prs.map((n) => `#${n}`).join(', ')}): on the needs-you list in place of each PR's wait`);
     if (dry) continue;
     try {
-      // The last pass's ask for it goes where this one says something else (more PRs waiting).
-      settleReviewer(state, (a) => a.login === login && a.text !== text);
+      // The same outage keeps its ask, its text brought up to date; an ended one's ask goes for a fresh one.
+      settleReviewer(state, (a) => a.login === login && ended(a));
       addAsk(state, text, now, { settles: 'reviewer', login });
     } catch (e) { lines.push(`gate reviewer: the ask for ${login} could not be recorded (${firstLine(e)})`); }
   }
   for (const w of waits) if (!down.has(w.login)) lines.push(w.line);
   if (dry) return lines;
   try {
-    for (const a of settleReviewer(state, (x) => !down.has(x.login))) lines.push(`needs-you: ask ${a.id} dropped, as the gate reviewer it named reviews again or nothing waits on it`);
+    for (const a of settleReviewer(state, (x) => !down.has(x.login) && ended(x))) lines.push(`needs-you: ask ${a.id} dropped, as the gate reviewer it named reviews again or nothing waits on it`);
   } catch (e) { lines.push(`gate reviewer: its asks could not be rechecked (${firstLine(e)})`); }
   rec.outages = outagesAfter(rec.outages, downSince, now);
   try { writeRecord(state, rec); } catch (e) { lines.push(`gate reviewer: its record could not be written (${firstLine(e)})`); }
