@@ -19,19 +19,27 @@
 // names `issue-N`. A PR in another repo (--repo, its URL) is not this repo's. A session that reaches no ticket is measured on the
 // session guardrails alone, listed as such: its handoffs, resume overhead and rework, the share of its
 // tool calls that returned an error (each a turn of its own redone). Rework above the baseline's by
-// the fix-tries margin refuses an arm; it never makes one eligible, and an arm whose ticket guardrails
-// are not measured is never recommended on cost alone.
-// Where a window lacks data, the report says how many sessions it mapped and why the rest did not.
+// the fix-tries margin refuses an arm; it never makes one eligible.
+//
+// Work no queue ticket is behind is measured on its merged PRs instead (pr-outcomes.mjs, read from
+// GitHub in batches and cached once final, or not at all with --offline): reverts and red main runs,
+// follow-up fixes within 48 hours on the same files, and review rounds, each against the baseline at
+// the registry's margin. A session maps to its ticket where one is behind its work, else to its PRs,
+// never both. An arm is judged on whichever of the two (tickets or PRs) is measured on it and the
+// baseline; a breach of either refuses it, and with neither measured it is never recommended on cost
+// alone. Each window states its sample per arm against the minimum, and where it lacks data, how many
+// sessions it mapped and why the rest did not.
 //
 // It recommends, per window, the arm with the fewest dollars per active hour whose guardrails
 // hold, against the 45/50 baseline; a person applies it as the §2 "Handoff at context %" row (or its
 // 1M row). It never writes config.
 //
-//   node handoff-report.mjs [--all] [--root <projects dir>] [--tickets <file>] [--json]
+//   node handoff-report.mjs [--all] [--root <projects dir>] [--tickets <file>] [--offline] [--json]
 //     --all        every project folder, not only this repo's primary root's
 //     --root       a projects folder to read instead of every Claude login's
 //     --tickets    per-ticket rows (a JSON list: key, branch, prs, state, merged_at, fix_tries,
 //                  parks_by_class, post_merge) to read instead of this repo's batches
+//     --offline    read no PR from GitHub: only the outcomes already cached count
 import { readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,12 +54,13 @@ import { keyPattern, readQueue } from './batch-state.mjs';
 import { isNone } from './config-schema.mjs';
 import { closedBy } from './closing-keywords.mjs';
 import { FINISHED, STATES } from './queue-states.mjs';
+import { FOLLOW_UP_HOURS, prOutcomes } from './pr-outcomes.mjs';
 
 // The queue states a ticket is still in progress in: neither finished nor parked.
 const IN_PROGRESS = STATES.filter((s) => !FINISHED.includes(s) && s !== 'parked');
 
-// The fewest sessions an arm needs before it is compared, and the fewest tickets with a value a
-// guardrail needs on both the arm and the baseline before it counts as measured.
+// The fewest sessions an arm needs before it is compared, and the fewest tickets (or PRs) with a value
+// a guardrail needs on both the arm and the baseline before it counts as measured.
 const MIN_SESSIONS = 5;
 const MIN_TICKETS = 3;
 // The thresholds the earlier defaults used (DEFAULT_PCT 45 in the hook; 50 on a 1M window).
@@ -59,6 +68,14 @@ const BASELINE_PCTS = [45, 50];
 // A gap between two lines longer than this counts as this much: idle time is not active time.
 const IDLE_CAP_MS = 5 * 60 * 1000;
 const CHECKED = ['fix-tries-parks', 'post-merge'];
+// The guardrails of a merged PR no ticket is behind (pr-outcomes.mjs), each with the registry margin of
+// the ticket guardrail it stands for: reverts and red main as post-merge, a follow-up fix as a defect
+// found after the merge, review rounds as review findings.
+const PR_CHECKED = {
+  'pr-post-merge': { margin: GUARDRAILS['post-merge'].margin.max_rate_ratio, value: (o) => o.post_merge },
+  'follow-up-fixes': { margin: GUARDRAILS['post-merge'].margin.max_rate_ratio, value: (o) => o.follow_ups.length },
+  'review-rounds': { margin: GUARDRAILS['review-p0-p1'].margin.max_rate_ratio, value: (o) => o.review_rounds },
+};
 // Rework is fix tries' analogue within a session, so it takes that guardrail's margin.
 const REWORK_MARGIN = GUARDRAILS['fix-tries-parks'].margin.max_rate_ratio;
 
@@ -315,7 +332,11 @@ function mapSession(s, rows, { repo, base, pattern, tracker }) {
   if (hit.length) return { tickets: [], why: 'no outcome', keys: hit.map((t) => t.key) };
   if (!prs.length && !branches.length) return { tickets: [], why: 'no pr', keys: [] };
   const keys = keysNamed(texts, { pattern, tracker });
-  return { tickets: [], why: keys.length ? 'no ticket' : 'no key', keys };
+  // No ticket is behind this work, so its PRs are measured themselves: by number, else by head branch.
+  const refs = [...new Set(numbers)].map((n) => ({ number: n }));
+  const named = new Set(prs.filter((p) => p.number != null).map((p) => p.head));
+  for (const b of branches) if (!named.has(b)) refs.push({ head: b });
+  return { tickets: [], why: keys.length ? 'no ticket' : 'no key', keys, refs };
 }
 
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
@@ -334,6 +355,13 @@ function armRows(sessions) {
     const mapped = new Map();
     // Only a ticket with an outcome counts: an open one's post-merge is 0 and its fix tries so far.
     for (const s of list) for (const t of s.map.tickets) mapped.set(`${t.batch ?? ''}|${t.key}`, t);
+    const prs = new Map();
+    for (const s of list) for (const o of s.map.prs ?? []) prs.set(o.number, o);
+    const prRates = Object.fromEntries(Object.entries(PR_CHECKED).map(([g, { value }]) => {
+      const vals = [...prs.values()].map(value);
+      return [g, { prs: vals.length, rate: mean(vals) }];
+    }));
+    const on = (s) => s.map.tickets.length || s.map.prs?.length;
     const calls = list.reduce((x, s) => x + s.tool_calls, 0);
     const errs = list.reduce((x, s) => x + s.tool_errors, 0);
     const rates = Object.fromEntries(CHECKED.map((g) => {
@@ -345,18 +373,30 @@ function armRows(sessions) {
       handoffs_per_session: list.length ? list.reduce((x, s) => x + s.handoffs, 0) / list.length : 0,
       resume_overhead_mean: mean(overheads), resume_samples: overheads.length,
       usd, unpriced: list.reduce((x, s) => x + s.unpriced, 0), active_hours: hours, usd_per_active_hour: hours > 0 ? usd / hours : null,
-      sessions_on_tickets: list.filter((s) => s.map.tickets.length).length, sessions_without_ticket: list.filter((s) => !s.map.tickets.length).length,
-      guardrails: rates, rework: { tool_calls: calls, tool_errors: errs, rate: calls ? errs / calls : null },
-      mapping: { sessions: list.length, mapped: list.filter((s) => s.map.tickets.length).length,
+      sessions_on_tickets: list.filter((s) => s.map.tickets.length).length, sessions_on_prs: list.filter((s) => s.map.prs?.length).length,
+      sessions_without_ticket: list.filter((s) => !on(s)).length, tickets_mapped: mapped.size, prs_mapped: prs.size,
+      guardrails: rates, pr_guardrails: prRates, rework: { tool_calls: calls, tool_errors: errs, rate: calls ? errs / calls : null },
+      mapping: { sessions: list.length, mapped: list.filter(on).length,
         ...Object.fromEntries(['no pr', 'no key', 'no ticket', 'no outcome'].map((w) => [w.replace(' ', '_'), list.filter((s) => s.map.why === w).length])),
         keys: [...new Set(list.filter((s) => s.map.why === 'no ticket').flatMap((s) => s.map.keys))] },
     };
   });
 }
 
-// Each guardrail of an arm against the baseline: holds, breach, or not measured (with why).
+// Each guardrail of an arm against the baseline: holds, breach, or not measured (with why), the ticket
+// guardrails then the PR ones.
 function guardrailsAgainst(arm, base) {
-  return Object.fromEntries(CHECKED.map((g) => {
+  const ratio = (a, b, margin) => (b === 0 ? a > 0 : a > b * margin);
+  const prs = Object.entries(PR_CHECKED).map(([g, { margin }]) => {
+    const a = arm.pr_guardrails[g];
+    const b = base.pr_guardrails[g];
+    if (a.prs < MIN_TICKETS || b.prs < MIN_TICKETS) return [g, { status: 'not measured', why: `${a.prs} PR(s) on this arm, ${b.prs} on the baseline; needs ${MIN_TICKETS} each` }];
+    return [g, { status: ratio(a.rate, b.rate, margin) ? 'breach' : 'holds', why: `${a.rate.toFixed(2)} per PR against ${b.rate.toFixed(2)} (margin ${margin}x)` }];
+  });
+  return Object.fromEntries([...ticketGuardrails(arm, base), ...prs]);
+}
+function ticketGuardrails(arm, base) {
+  return CHECKED.map((g) => {
     const a = arm.guardrails[g];
     const b = base.guardrails[g];
     const margin = GUARDRAILS[g].margin.max_rate_ratio;
@@ -365,7 +405,7 @@ function guardrailsAgainst(arm, base) {
     }
     const breach = b.rate === 0 ? a.rate > 0 : a.rate > b.rate * margin;
     return [g, { status: breach ? 'breach' : 'holds', why: `${a.rate.toFixed(2)} per ticket against ${b.rate.toFixed(2)} (margin ${margin}x)` }];
-  }));
+  });
 }
 
 // Per window: the cheapest arm whose guardrails hold, or why there is not enough data.
@@ -377,7 +417,8 @@ function recommend(arms) {
     const sum = (k) => here.reduce((x, a) => x + a.mapping[k], 0);
     const mapping = { ...Object.fromEntries(['sessions', 'mapped', 'no_pr', 'no_key', 'no_ticket', 'no_outcome'].map((k) => [k, sum(k)])),
       keys: [...new Set(here.flatMap((a) => a.mapping.keys))] };
-    const out = { window, row: rowName(window), counts, mapping };
+    const samples = here.map((a) => ({ arm: a.arm, baseline: BASELINE_PCTS.includes(a.pct), sessions: a.sessions, tickets: a.tickets_mapped, prs: a.prs_mapped }));
+    const out = { window, row: rowName(window), counts, mapping, samples };
     const base = here.filter((a) => BASELINE_PCTS.includes(a.pct)).sort((x, y) => y.sessions - x.sessions)[0];
     if (!base || base.sessions < MIN_SESSIONS || base.usd_per_active_hour == null) {
       return { ...out, verdict: 'not enough data', why: `the ${BASELINE_PCTS.join('/')}% baseline has ${base?.sessions ?? 0} session(s); needs ${MIN_SESSIONS}` };
@@ -396,9 +437,14 @@ function recommend(arms) {
           why: `${(100 * a.rework.rate).toFixed(1)}% of tool calls errored against ${(100 * base.rework.rate).toFixed(1)}% (margin ${REWORK_MARGIN}x)` }
         : { status: 'not measured', why: 'no tool calls on this arm or the baseline' };
       a.rework_status = rw;
+      // An arm is judged on the tickets or the PRs its sessions reached, whichever (or both) is
+      // measured on it and the baseline: a breach of either refuses it, and with neither measured it is
+      // not recommended on cost alone.
+      const family = (names) => names.every((k) => g[k].status !== 'not measured');
+      const measured = family(CHECKED) || family(Object.keys(PR_CHECKED));
       // Dollars are compared on complete data only: an unpriced request adds hours but no dollars.
       const bad = [...(a.unpriced ? [`${a.unpriced} request(s) on a model with no price`] : []),
-        ...Object.entries(g).filter(([, v]) => v.status !== 'holds').map(([k, v]) => `${k} ${v.status}: ${v.why}`),
+        ...Object.entries(g).filter(([, v]) => v.status === 'breach' || (!measured && v.status === 'not measured')).map(([k, v]) => `${k} ${v.status}: ${v.why}`),
         ...(rw.status === 'breach' ? [`rework breach: ${rw.why}`] : [])];
       if (bad.length) refused.push({ arm: a.arm, why: bad.join('; ') });
       else eligible.push(a);
@@ -419,17 +465,22 @@ function mappingText(m) {
     [m.no_pr, 'touched no PR and ran on the default branch: open, push or merge the work\'s PR from the session, or work on a branch named for its ticket'],
     [m.no_key, 'touched a PR or branch that names no ticket key: put the key in the PR title or branch (a PR merged by number shows no title)'],
     [m.no_ticket, `named a key no queue ticket has (${m.keys.slice(0, 5).join(', ')}${m.keys.length > 5 ? ` and ${m.keys.length - 5} more` : ''}): run the ticket through desk so its queue records it`],
-    [m.no_outcome, 'reached a ticket with no outcome yet: it counts once merged, or done, parked or failed'],
+    [m.no_outcome, `reached a ticket or PR with no outcome yet: a ticket counts once merged, or done, parked or failed, a PR ${FOLLOW_UP_HOURS} hours after it merged`],
   ].filter(([n]) => n).map(([n, why]) => `${n} ${why}`);
-  return `    saw ${m.sessions} session(s), mapped ${m.mapped} to a ticket with an outcome${rest.length ? `; ${rest.join('; ')}` : ''}`;
+  return `    saw ${m.sessions} session(s), mapped ${m.mapped} to a ticket or PR with an outcome${rest.length ? `; ${rest.join('; ')}` : ''}`;
 }
+
+// A window's sample per arm against what a decision needs.
+const sampleText = (r) => `    sample (an arm and the baseline each need ${MIN_SESSIONS} sessions, and ${MIN_TICKETS} tickets or ${MIN_TICKETS} PRs): ${r.samples.map((x) => `${x.arm}${x.baseline ? ' (baseline)' : ''} `
+  + `${x.sessions}/${MIN_SESSIONS} sessions, ${x.tickets}/${MIN_TICKETS} tickets, ${x.prs}/${MIN_TICKETS} PRs`).join('; ')}`;
 
 const fmt = (v, places = 0) => (v == null ? '-' : Number(v).toLocaleString('en-US', { maximumFractionDigits: places }));
 
 function reportText(rep) {
-  const head = ['arm', 'sessions', 'on tickets', 'handoffs/session', 'resume overhead (mean, n)', '$/active hour', 'active hours', ...CHECKED, 'rework'];
-  const rows = rep.arms.map((a) => [a.arm, a.sessions, a.sessions_on_tickets, fmt(a.handoffs_per_session, 2), `${fmt(a.resume_overhead_mean)} (${a.resume_samples})`,
+  const head = ['arm', 'sessions', 'on tickets', 'on PRs', 'handoffs/session', 'resume overhead (mean, n)', '$/active hour', 'active hours', ...CHECKED, ...Object.keys(PR_CHECKED), 'rework'];
+  const rows = rep.arms.map((a) => [a.arm, a.sessions, a.sessions_on_tickets, a.sessions_on_prs, fmt(a.handoffs_per_session, 2), `${fmt(a.resume_overhead_mean)} (${a.resume_samples})`,
     a.usd_per_active_hour == null ? '-' : `$${a.usd_per_active_hour.toFixed(2)}`, fmt(a.active_hours, 1), ...CHECKED.map((g) => a.guardrail_status?.[g]?.status ?? `${a.guardrails[g].tickets} ticket(s)`),
+    ...Object.keys(PR_CHECKED).map((g) => a.guardrail_status?.[g]?.status ?? `${a.pr_guardrails[g].prs} PR(s)`),
     a.rework_status?.status ?? (a.rework.rate == null ? '-' : `${(100 * a.rework.rate).toFixed(1)}%`)]);
   const width = head.map((h, i) => Math.max(h.length, ...rows.map((r) => String(r[i]).length)));
   const line = (r) => `  ${r.map((c, i) => String(c).padEnd(width[i])).join('  ')}`.trimEnd();
@@ -439,11 +490,13 @@ function reportText(rep) {
     line(head), ...rows.map(line),
     ...(unpriced ? [`  (${unpriced} request(s) on a model with no price, left out of the dollars)`] : []),
     ...(rep.ticket_note ? [`  (${rep.ticket_note}; guardrails not measured)`] : []),
-    `  (${rep.sessions.filter((s) => s.measured_on === 'tickets').length} session(s) reached a ticket with an outcome (merged, or done, parked or failed) and are measured on its guardrails; ${rep.sessions.filter((s) => s.measured_on === 'session only').length} are measured on the session guardrails alone (handoffs, resume overhead, rework: tool calls that errored), which can refuse an arm but never make one eligible)`,
+    `  (PR guardrails: ${rep.pr_read.offline ? 'not read from GitHub (--offline)' : `${rep.pr_read.reads} GitHub quer(ies)`}, ${rep.pr_read.cached} PR(s) from the cache${rep.pr_read.note ? `; ${rep.pr_read.note}` : ''})`,
+    `  (${rep.sessions.filter((s) => s.measured_on === 'tickets').length} session(s) reached a ticket with an outcome (merged, or done, parked or failed) and are measured on its guardrails; ${rep.sessions.filter((s) => s.measured_on === 'prs').length} reached no ticket but merged PRs with an outcome and are measured on theirs; ${rep.sessions.filter((s) => s.measured_on === 'session only').length} are measured on the session guardrails alone (handoffs, resume overhead, rework: tool calls that errored), which can refuse an arm but never make one eligible)`,
     'RECOMMENDATION',
     ...(rep.recommendations.length ? rep.recommendations.flatMap((r) => [r.verdict === 'recommend'
       ? `  §2 "${r.row}": ${r.pct} (${r.arm}): ${r.why}${r.refused.length ? `; not ${r.refused.map((x) => `${x.arm} (${x.why})`).join(', ')}` : ''}`
       : `  §2 "${r.row}" (${r.window.toLocaleString('en-US')}-token window): not enough data: ${r.why} (sessions per arm: ${Object.entries(r.counts).map(([k, v]) => `${k} ${v}`).join(', ')})`,
+    sampleText(r),
     // Where a window lacks data: what its sessions reached, and what would map the rest.
     ...(r.verdict !== 'recommend' || r.refused.some((x) => x.why.includes('not measured')) ? [mappingText(r.mapping)] : [])])
       : ['  not enough data: no session ran under a known threshold']),
@@ -485,16 +538,28 @@ if (isMain) {
   const read = (f) => { try { return f(); } catch { return null; } };
   const ctx = { repo: read(E.ghRepo), base: read(E.defaultBranch) ?? 'main', pattern: read(() => E.configValue('ticket-pattern')),
     tracker: String(read(() => E.configValue('tracker')) ?? '').trim().toLowerCase() };
+  for (const s of sessions) s.map = mapSession(s, tickets.rows, ctx);
+  // A session reaches its ticket where one is behind its work, else its merged PRs, never both: one
+  // batched read for every session's PRs, final outcomes cached in the repo's state.
+  const offline = argv.includes('--offline');
+  const refs = [...new Map(sessions.flatMap((s) => s.map.refs ?? []).map((r) => [r.number != null ? `n${r.number}` : `h${r.head}`, r])).values()];
+  const cachePath = read(() => join(E.repoStateOf(E.stateDir()), 'handoff-pr-outcomes.json'));
+  const outcomes = prOutcomes(refs, { repo: ctx.repo, base: ctx.base, cachePath, offline, now });
   for (const s of sessions) {
-    s.map = mapSession(s, tickets.rows, ctx);
+    const found = (s.map.refs ?? []).map(outcomes.of).filter(Boolean);
+    s.map.prs = [...new Map(found.filter((o) => o.final).map((o) => [o.number, o])).values()];
+    if (s.map.prs.length) s.map.why = null;
+    else if (found.length) s.map.why = 'no outcome';
     s.tickets = s.map.tickets.map((t) => t.key);
-    s.measured_on = s.tickets.length ? 'tickets' : 'session only';
+    s.prs_measured = s.map.prs.map(({ number, post_merge: pm, follow_ups: fu, review_rounds: rr }) => ({ number, post_merge: pm, follow_ups: fu, review_rounds: rr }));
+    s.measured_on = s.tickets.length ? 'tickets' : s.map.prs.length ? 'prs' : 'session only';
     s.unmapped = s.map.why;
   }
   const arms = armRows(sessions);
   const rep = {
     scope: project ? `project ${project}` : 'every project', sessions: sessions.map(({ named, resumed_from, map, ...s }) => s), arms,
-    recommendations: recommend(arms), ticket_note: tickets.note, guidance: GUIDANCE.map(([title, url]) => ({ title, url })), gap: GAP,
+    recommendations: recommend(arms), ticket_note: tickets.note,
+    pr_read: { offline, reads: outcomes.reads, cached: outcomes.cached, note: outcomes.note ?? (cachePath ? null : 'no repo state, so PR outcomes are not cached') }, guidance: GUIDANCE.map(([title, url]) => ({ title, url })), gap: GAP,
   };
   console.log(argv.includes('--json') ? JSON.stringify(rep, null, 2) : reportText(rep));
 }
