@@ -28,8 +28,8 @@ the diff's included. They make the results file's `rests_on` (the core's *The ve
 Every Claude finder's prompt, the simplicity finder's included, then carries the paragraph under
 *Tracing a server-set value* (below), word for word; codex's brief carries it too.
 
-**Learned checks.** `review-bar.learned.md` in the repo's desk state (`desk-env paths` prints
-`DESK_STATE`; `node ~/.claude/desk/bin/review-misses.mjs` prints the file's path and lines) holds
+**Learned checks.** `review-bar.learned.md`, at the path `node ~/.claude/desk/bin/review-misses.mjs`
+prints first (the repo's state, never a batch's `DESK_STATE`), holds
 checks learned from what the outside gate reviewer found after desk's clean verdict on merged PRs:
 one line per kind of miss seen on two PRs or more, each citing those PRs. Where it exists, every
 seat's prompt and codex's brief carry it verbatim, straight after the bar and §4 review-asks.

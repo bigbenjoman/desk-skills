@@ -13,15 +13,17 @@
 // stays, and its PRs only grow, so the learned bar only ever adds a check. Each line's wording is fixed
 // per kind here; no reviewer's text reaches it.
 //   node review-misses.mjs            the learned bar's path and its lines for this repo
-import { appendFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loginIn } from './gate.mjs';
-import { cleanOf, due } from './merge-stages.mjs';
+import { appendLine, cleanOf, readDue, readLatest } from './merge-stages.mjs';
+import { quantile } from './quantile.mjs';
 import { reviewFindings } from './fix-tries.mjs';
 import { parseVerdict } from './undraft.mjs';
 import { writeJsonAtomic } from './dir-lock.mjs';
+import { callLogin } from './call-login.mjs';
 
 // Each kind, and the check its learned line adds.
 export const KINDS = Object.freeze({
@@ -39,8 +41,6 @@ export const KINDS = Object.freeze({
 });
 // How many PRs a kind is missed on before it becomes a learned line.
 export const LEARN_MIN = 2;
-// How many merged PRs a pass reads from GitHub at most.
-export const PER_PASS = 3;
 const CLASSIFY_TIMEOUT_MS = 120_000;
 const MARK = 'KINDS:';
 const logOf = (state) => join(state, 'review-misses.jsonl');
@@ -104,10 +104,14 @@ export function kindsOf(text, n) {
   return Array.from({ length: n }, (_, i) => (Object.hasOwn(KINDS, got[i]) ? got[i] : 'other'));
 }
 
-// One headless model call: the reply text, or null where it could not be made.
-export function runModel(prompt, { claude = 'claude', env = process.env } = {}) {
+// One headless model call on the repo's subscription (call-login.mjs callLogin): the reply text, or null
+// where it could not be made, where no login here may take it, or where `refused(login)` (the pass's last
+// health check, health.mjs refusedIn) finds the API refusing that login.
+export function runModel(prompt, { claude = 'claude', env = process.env, refused = () => null } = {}) {
+  const c = callLogin({ env });
+  if (c.refuse || refused(c.login)) return null;
   const r = spawnSync(claude, ['-p', prompt, '--output-format', 'json', '--model', 'haiku', '--setting-sources', '', '--strict-mcp-config', '--tools', ''], {
-    encoding: 'utf8', timeout: CLASSIFY_TIMEOUT_MS, killSignal: 'SIGKILL', env, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024,
+    encoding: 'utf8', timeout: CLASSIFY_TIMEOUT_MS, killSignal: 'SIGKILL', env: c.env, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024,
   });
   if (r.status !== 0) return null;
   try { return String(JSON.parse(r.stdout).result ?? ''); } catch { return null; }
@@ -124,17 +128,8 @@ export function classify(findings, run = runModel) {
 }
 
 // Every recorded line, the latest per PR. A line that does not read is skipped.
-export function readMisses(state) {
-  let text = '';
-  try { text = readFileSync(logOf(state), 'utf8'); } catch { return []; }
-  const byPr = new Map();
-  for (const line of text.split('\n')) {
-    if (!line.trim()) continue;
-    try { const e = JSON.parse(line); if (e?.pr != null) byPr.set(Number(e.pr), e); } catch { /* skipped */ }
-  }
-  return [...byPr.values()];
-}
-const recordMisses = (state, entry) => { mkdirSync(dirname(logOf(state)), { recursive: true }); appendFileSync(logOf(state), `${JSON.stringify(entry)}\n`); };
+export const readMisses = (state) => readLatest(logOf(state));
+const recordMisses = (state, entry) => appendLine(logOf(state), entry);
 
 // Each kind missed on LEARN_MIN PRs or more, with those PRs: { <kind>: [pr] }. 'other' names no check.
 export function recurring(entries, min = LEARN_MIN) {
@@ -181,38 +176,25 @@ export function relearn(state, { repo = '', now = new Date().toISOString() } = {
   return fresh;
 }
 
-// One pass's step: the merged tickets of `tickets` with no line yet, oldest first, PER_PASS read through
-// `gql(query)` (a payload, or null unread), their findings classified through `run` and recorded, then
-// the learned bar rewritten. `ctx`: missesOf's options. -> the pass's report lines.
+// One pass's step: the merged tickets of `tickets` with no line yet, read through `gql(query)` (a
+// payload, or null unread) as merge-stages.mjs readDue bounds them, their findings classified through
+// `run` and recorded, then the learned bar rewritten. `ctx`: missesOf's options. -> the pass's report lines.
 export function missesStep(state, { tickets, gql, run = runModel, ctx = {}, repo = '', now = new Date().toISOString() }) {
-  const lines = [];
-  if (!ctx.external) return lines;
-  let reads = 0, tries = 0;
-  // An unread PR is due again once merge-stages.mjs's RETRY_MS has passed.
-  for (const { key, pr } of due(tickets, readMisses(state), ms(now))) {
-    if (reads >= PER_PASS || tries >= 2 * PER_PASS) break;
-    tries += 1;
-    let payload = null;
-    try { payload = gql(missesQuery(pr)); } catch { payload = null; }
-    if (!payload?.data) {
-      lines.push(`review misses: PR #${pr} (${key}) could not be read from GitHub; a pass tries again in an hour`);
-      try { recordMisses(state, { key, pr, unread: true, recorded: now }); } catch { /* tried again next pass */ }
-      continue;
-    }
-    reads += 1;
+  if (!ctx.external) return [];
+  const record = (entry) => recordMisses(state, entry);
+  const lines = readDue({ tickets, gql, now, label: 'review misses', query: missesQuery, recorded: readMisses(state), record }, (key, pr, payload) => {
     const m = missesOf(payload, ctx);
-    if (!m) { try { recordMisses(state, { key, pr, unmerged: true, recorded: now }); } catch { /* read again */ } continue; }
+    if (!m) { try { record({ key, pr, unmerged: true, recorded: now }); } catch { /* read again */ } return []; }
     const misses = classify(m.findings, run);
     if (!misses) {
-      lines.push(`review misses: the ${m.findings.length} finding(s) desk missed on PR #${pr} (${key}) could not be classified; a pass tries again in an hour`);
-      try { recordMisses(state, { key, pr, unread: true, recorded: now }); } catch { /* tried again next pass */ }
-      continue;
+      try { record({ key, pr, unread: true, recorded: now }); } catch { /* tried again next pass */ }
+      return [`review misses: the ${m.findings.length} finding(s) desk missed on PR #${pr} (${key}) could not be classified; a pass tries again in an hour`];
     }
-    try { recordMisses(state, { key, pr, recorded: now, misses: misses.map(({ head, kind, text, link }) => ({ head, kind, text, link })) }); } catch (e) {
-      lines.push(`review misses: PR #${pr} (${key}) could not be recorded (${String(e?.message ?? e).split('\n')[0]})`); continue;
+    try { record({ key, pr, recorded: now, misses: misses.map(({ head, kind, text, link }) => ({ head, kind, text, link })) }); } catch (e) {
+      return [`review misses: PR #${pr} (${key}) could not be recorded (${String(e?.message ?? e).split('\n')[0]})`];
     }
-    if (misses.length) lines.push(`review misses: PR #${pr} (${key}): the gate reviewer found ${misses.length} thing(s) after desk's clean verdict (${[...new Set(misses.map((x) => x.kind))].join(', ')})`);
-  }
+    return misses.length ? [`review misses: PR #${pr} (${key}): the gate reviewer found ${misses.length} thing(s) after desk's clean verdict (${[...new Set(misses.map((x) => x.kind))].join(', ')})`] : [];
+  });
   try {
     const fresh = relearn(state, { repo, now });
     if (fresh.length) lines.push(`review misses: learned ${fresh.length} new review check(s) (${fresh.join(', ')}) into ${learnedPath(state)}`);
@@ -223,17 +205,17 @@ export function missesStep(state, { tickets, gql, run = runModel, ctx = {}, repo
 // External re-reviews per PR and undraft-to-approval time, before and after the learned bar began
 // (`since`), over merge-stages.mjs's entries with an outside review. A PR is after when it opened at or
 // after `since`. -> { since, before, after }, each { prs, rereviews (mean per PR), approval (median
-// minutes from undraft to the reviewer's last review) }; null without a learned bar.
+// minutes from undraft to the reviewer's last review) }; null without a learned bar. A wait inside a
+// reviewer outage is left out of `approval`, as merge-stages.mjs summary leaves it out of its medians.
 export function beforeAfter(stages, since) {
   if (!since) return null;
   const side = (xs) => {
     const ext = xs.filter((e) => e.external?.rounds > 0);
-    const appr = ext.map((e) => (Number.isFinite(e.external.wait) && Number.isFinite(e.external.rereviews) ? e.external.wait + e.external.rereviews : null)).filter(Number.isFinite).sort((a, b) => a - b);
-    const mid = appr.length >> 1;
     return {
       prs: ext.length,
       rereviews: ext.length ? Math.round((ext.reduce((s, e) => s + e.external.rounds - 1, 0) / ext.length) * 100) / 100 : null,
-      approval: !appr.length ? null : appr.length % 2 ? appr[mid] : (appr[mid - 1] + appr[mid]) / 2,
+      approval: quantile(ext.filter((e) => !e.external.outage && Number.isFinite(e.external.wait) && Number.isFinite(e.external.rereviews))
+        .map((e) => e.external.wait + e.external.rereviews), 0.5),
     };
   };
   const read = stages.filter((e) => !e.unmerged && !e.unread);

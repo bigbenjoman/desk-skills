@@ -75,6 +75,9 @@ t('#1375 AC3 a finding\'s own text never reaches the learned bar', /never traced
 const st = (n, opened, rounds, wait, rereviews) => ({ pr: n, opened, external: { rounds, wait, rereviews } });
 const ba = RM.beforeAfter([st(1, H(9, 0), 3, 60, 120), st(2, H(10, 0), 2, 30, 30), st(3, H(15, 0), 1, 20, 0), st(4, H(16, 0), 2, 40, 20), { pr: 5, unread: true }], H(14, 0));
 t('#1375 AC4 re-reviews per PR and undraft-to-approval median split at the learned bar\'s start', j(ba), j({ since: H(14, 0), before: { prs: 2, rereviews: 1.5, approval: 120 }, after: { prs: 2, rereviews: 0.5, approval: 40 } }));
+const out = { pr: 6, opened: H(15, 30), external: { rounds: 1, wait: 600, rereviews: 0, outage: true } };
+t('#1375 AC4 a wait inside a reviewer outage is left out of the approval median, not the re-reviews',
+  j(RM.beforeAfter([st(3, H(15, 0), 1, 20, 0), out], H(14, 0)).after), j({ prs: 2, rereviews: 0, approval: 20 }));
 t('#1375 AC4 with no learned bar there is no comparison', RM.beforeAfter([st(1, H(9, 0), 1, 1, 0)], null), null);
 const view = (repos) => ({ v: 1, generated_at: H(13, 0), tz: 'UTC', repos: [], baseline: null, line: { state: 'today' },
   panels: { status: {}, waiting: { items: [] }, cost: {}, guardrails: {}, board: { levers: [] }, changes: {}, overhead: {}, data_quality: {}, trends: { metrics: {} }, merge_stages: { repos } } });

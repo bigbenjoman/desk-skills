@@ -5204,7 +5204,7 @@ if (!DRY) {
   }));
   // What the outside reviewer found after desk's clean verdict on each merged PR, and the review checks
   // learned from it (review-misses.mjs).
-  out.push(...RM.missesStep(E.repoStateOf(STATE), { tickets: queue().tickets, gql: (q) => repoGql(q), now: PASS_AT, repo: GH_REPO, ctx: { desk, external, clean } }));
+  out.push(...RM.missesStep(E.repoStateOf(STATE), { tickets: queue().tickets, gql: (q) => repoGql(q), run: (p) => RM.runModel(p, { refused: refusedOf }), now: PASS_AT, repo: GH_REPO, ctx: { desk, external, clean } }));
 }
 // With `gate`, the read also holds `gateReview`: the latest desk-review a §4 Gate reviewer posted, where
 // it is at the head and not clean, read apart from desk's own so a later verdict of desk's cannot hide
