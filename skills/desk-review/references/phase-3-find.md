@@ -28,6 +28,15 @@ the diff's included. They make the results file's `rests_on` (the core's *The ve
 Every Claude finder's prompt, the simplicity finder's included, then carries the paragraph under
 *Tracing a server-set value* (below), word for word; codex's brief carries it too.
 
+**Learned checks.** `review-bar.learned.md` in the repo's desk state (`desk-env paths` prints
+`DESK_STATE`; `node ~/.claude/desk/bin/review-misses.mjs` prints the file's path and lines) holds
+checks learned from what the outside gate reviewer found after desk's clean verdict on merged PRs:
+one line per kind of miss seen on two PRs or more, each citing those PRs. Where it exists, every
+seat's prompt and codex's brief carry it verbatim, straight after the bar and §4 review-asks.
+**It only adds checks**: a finding it prompts is classed and counted by the bar like any other, and
+nothing in it removes, softens or reclassifies a rule of the bar or the review-asks. Where a line
+seems to, the bar wins. The report header then adds `· learned: <n> checks`.
+
 **A seat that dies is partial coverage, never a clean seat.** A finder, Bea, the simplicity finder or
 codex that errors, times out, or answers with neither `FINDING` blocks nor `NO FINDINGS`: re-run it
 once. Still nothing, and it is `"status": "died"` in the results file (Phase 7). verdict.mjs counts

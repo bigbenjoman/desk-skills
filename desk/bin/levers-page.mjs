@@ -333,6 +333,17 @@ function trends(v) {
   return `<section aria-labelledby="tr-h" class="stack12">${head}${notes(p)}${body}</section>`;
 }
 
+// The outside reviewer's re-reviews per PR and undraft-to-approval time, before and after the learned
+// review bar began (review-misses.mjs beforeAfter). Nothing until a check has been learned.
+function learned(r) {
+  const l = r.learned;
+  if (!l) return '';
+  const row = (name, s) => `<tr><th scope="row">${name}</th><td>${s.prs}</td><td>${s.rereviews ?? '—'}</td><td>${esc(MS.fmt(s.approval))}</td></tr>`;
+  return `<table class="stages"><caption>${esc(r.name)} · learned review bar since ${esc(String(l.since).slice(0, 10))}</caption>`
+    + '<thead><tr><th scope="col">Learned bar</th><th scope="col">PRs</th><th scope="col">External re-reviews per PR</th><th scope="col">Undraft to approval (median)</th></tr></thead><tbody>'
+    + `${row('Before', l.before)}${row('After', l.after)}</tbody></table>`;
+}
+
 // Each repo's merged PR time by stage (merge-stages.mjs): median and p75 per stage, and how many
 // external waits inside a reviewer outage were left out. Nothing until a merged PR has its stages.
 function mergeStages(v) {
@@ -341,7 +352,7 @@ function mergeStages(v) {
   const table = (r) => `<table class="stages"><caption>${esc(r.name)} · ${r.prs} merged PR${r.prs === 1 ? '' : 's'}</caption>`
     + '<thead><tr><th scope="col">Stage</th><th scope="col">Median</th><th scope="col">p75</th><th scope="col">PRs</th></tr></thead><tbody>'
     + MS.STAGES.filter((k) => r.stages?.[k]?.n).map((k) => `<tr><th scope="row">${esc(MS.STAGE_NAMES[k])}</th><td>${esc(MS.fmt(r.stages[k].median))}</td><td>${esc(MS.fmt(r.stages[k].p75))}</td><td>${r.stages[k].n}</td></tr>`).join('')
-    + `</tbody></table>${r.outage ? `<p class="muted small">${r.outage} external review wait${r.outage === 1 ? '' : 's'} inside a gate reviewer outage left out of the medians.</p>` : ''}`;
+    + `</tbody></table>${r.outage ? `<p class="muted small">${r.outage} external review wait${r.outage === 1 ? '' : 's'} inside a gate reviewer outage left out of the medians.</p>` : ''}${learned(r)}`;
   return `<section aria-labelledby="ms-h" class="stack12"><div class="sec-head"><h2 id="ms-h">Merge time by stage</h2></div>${repos.map(table).join('')}</section>`;
 }
 

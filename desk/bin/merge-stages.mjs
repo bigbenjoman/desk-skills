@@ -35,7 +35,7 @@ export const stagesQuery = (n) => `query($owner:String!,$name:String!){repositor
 
 // Whether a review's body is a clean desk-review verdict under the §4 Clean review verdict `clean`:
 // true, false, or null for a body with no verdict marker.
-function cleanOf(body, clean) {
+export function cleanOf(body, clean) {
   const v = parseVerdict(body ?? '');
   return v ? verdictAt(v, v.sha, clean).clean : null;
 }
