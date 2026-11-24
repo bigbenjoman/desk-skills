@@ -82,7 +82,7 @@ import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-audit.mjs';
 import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
-import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget, recordMode, restoreQueue } from './queue-ledger.mjs';
+import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget, recordMode, restoreQueue, REBUILT_MARK } from './queue-ledger.mjs';
 import { fold as ledgerFold, append as ledgerAppend } from './ticket-ledger.mjs';
 import { readLogLines } from './merge-log.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
@@ -92,7 +92,7 @@ import { decidePrStatus, followState, onThisPr, tookPostMerge, repoOfPr } from '
 import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict, ledgerLine, recordLine, mergeGaps, mergeGapLine } from './pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict, ledgerLine, recordLine, rebuiltLine, mergeGaps, mergeGapLine } from './pass/report.mjs';
 import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
@@ -189,13 +189,18 @@ const WOKEN = process.argv.includes('--woken');
 // Record mode (queue-ledger.mjs recordMode): a queue.json that is missing or behind the log is restored
 // from it before anything reads it, and the report says so (pass/report.mjs recordLine). One rebuilt
 // whole has none of the batch's own fields, its base among them, which this pass has already read
-// (E.applyBatchBase above), so the pass stops there for a person to set them again.
+// (E.applyBatchBase above), so every pass stops while it carries REBUILT_MARK, until a person has set
+// them again and cleared it.
 const RECORD = recordMode();
 let LEDGER_RESTORE = null;
 if (!DRY && RECORD.on) {
   try { LEDGER_RESTORE = restoreQueue(QUEUE_FILE, { waitMs: LOCK_WAIT_MS }); }
   catch (e) { LEDGER_RESTORE = { error: String(e?.message ?? e).split('\n')[0] }; }
-  if (LEDGER_RESTORE.restored === 'missing') refuse(recordLine({ restore: LEDGER_RESTORE, ignored: false }));
+}
+{
+  let mark = null;
+  try { mark = JSON.parse(readFileSync(QUEUE_FILE, 'utf8'))[REBUILT_MARK] ?? null; } catch { /* missing or corrupt: refused below */ }
+  if (mark) refuse(rebuiltLine(mark, join(SHOWN_BIN, 'queue.mjs')));
 }
 if (!existsSync(QUEUE_FILE)) {
   refuse(`no queue at ${QUEUE_FILE} — run: node ${SHOWN_BIN}/queue.mjs init <batch-name>`);

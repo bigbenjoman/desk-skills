@@ -154,6 +154,23 @@ levers(RECORD);
   try { writeQueueFile(f, { ...read(f), tickets: { A: tk('A', { lane: 'C' }) } }, { by: 'test', onLedger: () => { throw new Error('crash'); } }); } catch { /* the crash */ }
   t('a crash in the first record-mode write leaves queue.json stamped, without the change', [Number.isInteger(read(f).ledger_seq), read(f).tickets.A.lane], [true, 'A']);
   t('so the next restore lays the change on', [restoreQueue(f).restored, read(f).tickets.A.lane], ['behind', 'C']);
+
+  // A refused first record-mode write leaves queue.json as it was, unstamped.
+  levers('ledger');
+  const g = fixture({ version: 1, batch: 'b', tickets: { D: tk('D', { state: 'done', result: { pr: 7 } }) } });
+  writeQueueFile(g, read(g), { by: 'test' });
+  const fileBefore = readFileSync(g, 'utf8');
+  const r = queueCmd(g, RECORD, 'set', 'D', 'state=running', 'session_id=s-9');
+  t('AC3 on a queue written before record mode, the refusal leaves queue.json byte for byte', [r.status !== 0, readFileSync(g, 'utf8') === fileBefore], [true, true]);
+
+  // A write outside record mode drops the log position, so a later record-mode period starts afresh.
+  levers(RECORD);
+  writeQueueFile(f, read(f), { by: 'test' });
+  levers('ledger');
+  writeQueueFile(f, { ...read(f), tickets: { A: { ...read(f).tickets.A, lane: 'D' } } }, { by: 'test' });
+  t('a shadow write drops ledger_seq', read(f).ledger_seq, undefined);
+  levers(RECORD);
+  t('so record mode back on leaves that queue as it is', [restoreQueue(f).restored, read(f).tickets.A.lane], [null, 'D']);
 }
 
 // An append that fails in record mode writes nothing: queue.json is never ahead of the log.
@@ -211,6 +228,8 @@ levers(RECORD);
   t('AC2 its merge record', got.M.merge, want.M.merge);
   t('AC2 the report says it was rebuilt', /queue.json was missing, so it was rebuilt from the log \(4 ticket\(s\)\)/.test(recordLine({ restore: r, ignored: false })), true);
   t('AC2 and names no batch name, which only queue.json held', Object.hasOwn(read(f), 'batch'), false);
+  t('AC2 and is marked rebuilt until a person clears it', read(f).rebuilt_from_log?.tickets, 4);
+  t('a later restore keeps the mark', [restoreQueue(f).restored, read(f).rebuilt_from_log?.tickets], [null, 4]);
   writeFileSync(f, '{ torn');
   let threw = null;
   try { restoreQueue(f); } catch (e) { threw = e; }

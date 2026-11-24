@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { writeJsonAtomic } from './dir-lock.mjs';
 import { followOnPending, postMergeUnmade } from './harvest.mjs';
-import { ledgerOn, recordOn, missedLine, recordWrite, logSeq } from './queue-ledger.mjs';
+import { ledgerOn, recordOn, missedLine, recordWrite } from './queue-ledger.mjs';
 import { blockersOf, holdsLaid } from './queue-states.mjs';
 
 export const versionOf = (q) => {
@@ -29,26 +29,23 @@ export const versionOf = (q) => {
 // In record mode (queue-ledger.mjs recordMode) the append comes first and the write records the log's
 // seq as `ledger_seq`; a write refused (queue-ledger.mjs recordWrite) or an append that fails throws
 // LedgerRefusal, and neither the log nor queue.json changes, so queue.json is never ahead of the log.
-// A queue written before record mode is first stamped with the log's seq, so a crash between the
-// first append and its write still leaves queue.json behind the log, which a restore repairs.
+// A queue with no ledger_seq is stamped with the log's seq just before the first append it makes, so a
+// crash between that append and the write still leaves queue.json behind the log, which a restore
+// repairs (a failed append can leave the stamp, and nothing else). Any write outside record mode drops
+// ledger_seq, so a queue last written while the log trailed it is never restored from the log.
 export function writeQueueFile(file, q, { by, archived, record = true, onLedger = reportMissed(file) } = {}) {
   const on = record && ledgerOn();
   const strict = on && recordOn();
   const before = on ? readQueueAt(file) : null;
   if (on) holdsLaid(q);
   if (strict) {
-    if (before && !Number.isInteger(before.ledger_seq)) {
-      const seq = logSeq(file);
-      if (seq == null) throw new LedgerRefusal(`refused, nothing written: the ticket ledger could not be read`);
-      before.ledger_seq = seq;
-      writeJsonAtomic(file, before);
-    }
-    const r = recordWrite(file, before, q, { by, archived, mode: 'record' });
+    const stamp = before && !Number.isInteger(before.ledger_seq) ? (seq) => writeJsonAtomic(file, { ...before, ledger_seq: seq }) : undefined;
+    const r = recordWrite(file, before, q, { by, archived, mode: 'record', stamp });
     if (r.refused) throw new LedgerRefusal(r.why);
-    if (r.missed) throw new LedgerRefusal(`refused, nothing written: the ticket ledger could not be appended to (${r.why})`);
+    if (r.missed) throw new LedgerRefusal(`refused, queue.json not written: the ticket ledger could not be appended to (${r.why})`);
     q.ledger_seq = r.seq;
     onLedger(r);
-  }
+  } else delete q.ledger_seq;
   q.version = versionOf(q) + 1;
   writeJsonAtomic(file, q);
   if (on && !strict) onLedger(recordWrite(file, before, q, { by, archived }));

@@ -303,8 +303,8 @@ export const seedEvents = (q, batch, skip = new Set(), at = new Date().toISOStri
 // carries `seq`, the `ledger_seq` the write records: the log's seq after the append, or `before`'s own
 // for a write that appends nothing over a queue.json behind the log, which a restore still owes. Every
 // other transition is appended as in shadow mode, so a ticket whose log and queue.json disagree is
-// recorded, not refused.
-export function recordWrite(file, before, after, { by, archived = {}, from = null, mode = 'shadow' } = {}) {
+// recorded, not refused. `stamp(seq)`, where given, is called with the log's seq just before the append.
+export function recordWrite(file, before, after, { by, archived = {}, from = null, mode = 'shadow', stamp } = {}) {
   const strict = mode === 'record';
   try {
     const { repoDir, batch } = ledgerTarget(file);
@@ -325,6 +325,7 @@ export function recordWrite(file, before, after, { by, archived = {}, from = nul
     const legacy = events.filter((e) => e.type === 'legacy_set').length;
     if (!events.length) return { appended: 0, legacy, ...(strict ? { seq: behind ? since : state.seq } : {}) };
     if (behind) return { appended: 0, refused: true, why: `refused, nothing written: queue.json is behind the ticket ledger (a write the log took and queue.json never did); the next pass restores it from the log, then make this change again` };
+    stamp?.(state.seq);
     const out = append(repoDir, events, { by });
     return { appended: events.length, legacy, ...(strict ? { seq: out.at(-1).seq } : {}) };
   } catch (e) {
@@ -377,15 +378,13 @@ export function queueDifference(file, { seed = false, by, waitMs = 10_000 } = {}
 const underQueueLock = (file, waitMs, fn) => withDirLock(`${file}.lock`, fn,
   { waitMs, timeout: (pid) => new Error(`the queue is locked by pid ${pid ?? '?'} past the ${waitMs / 1000}s wait`) });
 
+// The batch field a queue.json rebuilt whole from the log carries until a person clears it.
+export const REBUILT_MARK = 'rebuilt_from_log';
+
 // The events of `batch` in the log past seq `since` that queue.json holds the outcome of: each one of a
 // ticket's, but for the auto-merge lines the pass folds from the merge log, which queue.json does not hold.
 const UNPROJECTED = ['automerge_armed', 'automerge_disarmed'];
 const owed = (repoDir, batch, since) => read(repoDir, { batch, since }).events.filter((e) => e.key != null && !UNPROJECTED.includes(e.type));
-
-// The log's seq for queue `file`'s repo, or null when the log cannot be read.
-export function logSeq(file) {
-  try { return fold(ledgerTarget(file).repoDir).seq; } catch { return null; }
-}
 
 // A rebuilt ticket's `holds`, which a writer lays only beside a held_by (queue-states.mjs holdsLaid).
 function tidyHolds(q) {
@@ -432,6 +431,9 @@ export function restoreQueue(file, { waitMs = 10_000 } = {}) {
     // which only queue.json held.
     const { batch: _id, ...rebuilt } = tidyHolds(project(state, batch, current));
     const out = current ? restoredFrom(current, rebuilt, touched) : rebuilt;
+    // A whole rebuild has none of the batch's own fields: REBUILT_MARK keeps every pass stopped until a
+    // person has set them again and cleared it (pass.mjs).
+    if (!current) out[REBUILT_MARK] = { at: new Date().toISOString(), seq: state.seq, tickets: Object.keys(out.tickets).length };
     const was = current?.tickets ?? {};
     const tickets = [...new Set([...Object.keys(was), ...Object.keys(out.tickets)])].filter((k) => !same(was[k], out.tickets[k]));
     out.ledger_seq = state.seq;
