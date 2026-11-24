@@ -1,7 +1,7 @@
 // suite: move-batch (a standing batch on a base moves to its epic's own batch slot)
 // layer: L2
 // move-batch.mjs against fixture queues and state folders in a throwaway HOME and DESK_HOME.
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, chmodSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -239,7 +239,7 @@ t('AC1 its tickets and parks are unchanged', JSON.stringify(moved.tickets), JSON
 for (const [f, text] of Object.entries(moving)) t(`AC1 state ${f} moved, unchanged`, existsSync(join(namedS('E-1'), f)) && read(join(namedS('E-1'), f)), text);
 for (const f of Object.keys(moving)) t(`AC1 state ${f} is gone from the standing slot`, existsSync(join(standingS, f)), false);
 for (const [f, text] of Object.entries(staying)) t(`AC1 ${f} stays with the standing slot`, existsSync(join(standingS, f)) && read(join(standingS, f)), text);
-t('the standing slot\'s batch identity is retired: neither kept there nor moved', [existsSync(join(standingS, 'stuck-batch.json')), existsSync(join(namedS('E-1'), 'stuck-batch.json'))].join(), 'false,false');
+t('the standing slot\'s batch identity is retired: neither kept there nor moved, and no retired copy is left', [existsSync(join(standingS, 'stuck-batch.json')), existsSync(join(namedS('E-1'), 'stuck-batch.json')), existsSync(join(standingS, 'stuck-batch.retired.json')), existsSync(join(namedS('E-1'), 'stuck-batch.retired.json'))].join(), 'false,false,false,false');
 t('AC1 the standing slot has no queue', existsSync(standingQ), false);
 t('AC1 no lock is left behind', ['orchestrator.lock', 'supervisor.lock'].some((f) => existsSync(join(standingS, f))) || existsSync(`${standingQ}.lock`), false);
 let driverAlive = true;
@@ -306,6 +306,27 @@ t('several epics: the repo lists the standing slot and the branch-named batch', 
 // The slot name keeps only what a batch name may hold.
 const slots = spawnSync('node', ['--input-type=module', '-e', `import { slotFor } from '${join(BIN, 'batches.mjs')}'; console.log(JSON.stringify(['feat/a b..c/', '-x/y', 'ok'].map((base) => slotFor({ base }).name)), slotFor({ base: 'feat/x', epic: 'E-2' }).name)`], { encoding: 'utf8', env: base });
 t('slotFor: a branch name made a batch name, an epic used as it is', slots.stdout.trim(), '["feat-a-b.c","x-y","ok"] E-2');
+
+// A move refused part-way (a parks folder that cannot be moved: renaming a folder to a new parent needs
+// write permission on the folder itself) puts the standing slot's batch identity back.
+reset();
+put(standingQ, queue({ epic: 'E-9', supervised: true, base: 'feat/epics' }));
+put(join(standingS, 'parks', 'K-2.json'), '{"question":"which colour?"}');
+put(join(standingS, 'stuck-batch.json'), '{"name":null,"created":"2026-11-20T00:00:00.000Z"}');
+chmodSync(join(standingS, 'parks'), 0o555);
+r = move();
+chmodSync(join(standingS, 'parks'), 0o755);
+t('a move refused part-way: refused', r.code !== 0 && r.out.includes('could not move the batch'), true);
+t('a move refused part-way: the standing identity is put back, and no retired copy is left', [read(join(standingS, 'stuck-batch.json')), existsSync(join(standingS, 'stuck-batch.retired.json'))].join(), '{"name":null,"created":"2026-11-20T00:00:00.000Z"},false');
+
+// An identity that cannot be retired (its retired name taken by a folder) refuses the move: it never
+// reports a move while the standing slot still reads as the moved batch.
+reset();
+put(standingQ, queue({ epic: 'E-9', supervised: true, base: 'feat/epics' }));
+put(join(standingS, 'stuck-batch.json'), '{"name":null,"created":"2026-11-20T00:00:00.000Z"}');
+put(join(standingS, 'stuck-batch.retired.json', 'x'), 'a folder in the way');
+r = move();
+t('an identity that cannot be retired: the move is refused, and the batch stays', [r.code !== 0 && r.out.includes('could not move the batch'), existsSync(standingQ), existsSync(namedQ('E-9'))].join(), 'true,true,false');
 
 if (fails) { console.log(`\n${fails} failure(s)`); process.exit(1); }
 console.log('\nall passed');

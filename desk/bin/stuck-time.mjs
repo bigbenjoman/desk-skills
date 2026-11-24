@@ -10,7 +10,8 @@
 //   { key, batch, created, cause, start, end (null while open), recorded }
 // A batch's identity is <batch state>/stuck-batch.json, { name, created }, written by its first pass: the
 // name its passes record intervals under (DESK_BATCH, null for the standing batch) and when that pass
-// ran. An archive or a move carries it with the batch's folder, and every reader takes a batch's name and
+// ran. An archive carries it with the batch's folder; a move retires the standing slot's, so the moved batch
+// and the next standing batch each write their own. Every reader takes a batch's name and
 // `created` from it alone (batchIdentity), falling back to the batch's listed name only where it is
 // missing. A batch started later under a name an archived one had has a new folder, so it is another
 // batch, which neither closes nor takes up the earlier one's intervals. Each pass also notes when
