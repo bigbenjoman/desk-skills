@@ -14,6 +14,7 @@ import { hold } from '../desk/bin/merge-lease-hold.mjs';
 import { psRows, repoSlug } from '../desk/bin/desk-env.mjs';
 import { readLog } from '../desk/bin/merge-log.mjs';
 import { append } from '../desk/bin/ticket-ledger.mjs';
+import { QUEUE_COMMANDS } from '../desk/bin/queue-commands.mjs';
 
 let fails = 0;
 const t = (name, got, want) => {
@@ -40,8 +41,11 @@ function run({ mode = 'on', merges = 1, head = SHA, enqueue = 0, readLedger = no
   let clock = Date.parse('2026-11-24T10:00:00Z');
   const lines = [], calls = [], ledger = [];
   let polls = 0;
-  const gh = (args) => {
+  const bounds = [];
+  const gh = (args, ms) => {
     calls.push(args.join(' '));
+    bounds.push(ms);
+    if (args.includes('PUT') && enqueue === 'timeout') return { status: 1, stdout: '', stderr: 'gh did not answer within 60s', timedOut: true };
     if (args.includes('PUT')) return { status: enqueue, stdout: '', stderr: enqueue ? 'Pull Request is not mergeable' : '' };
     polls++;
     return { status: 0, stdout: `${merges && polls >= merges ? 'true' : 'false'} ${head}\n`, stderr: '' };
@@ -53,7 +57,7 @@ function run({ mode = 'on', merges = 1, head = SHA, enqueue = 0, readLedger = no
   };
   const code = hold({ pr: 501, sha: SHA, repo: R, base: 'main', by: BY, method: 'squash', ticket, head: ticket ? 'feat/T-1' : null, settle, poll, wait,
     env: envOf(mode), dir, ledger: true, readLedger, gh, recordLedger, logPath, now: () => clock, sleep: (ms) => { clock += ms; }, say: (l) => lines.push(l) });
-  return { code, lines, calls, ledger, dir, log: readLog(logPath), clock: (clock - Date.parse('2026-11-24T10:00:00Z')) / 1000, polls };
+  return { code, lines, calls, bounds, ledger, dir, log: readLog(logPath), clock: (clock - Date.parse('2026-11-24T10:00:00Z')) / 1000, polls };
 }
 const events = (d) => leaseLog(d).filter((e) => e.kind === 'merge').map((e) => e.event).join(' ');
 // A live process holding the merge lease on acme/widgets@main as `label`, in lease directory `dir`.
@@ -83,6 +87,11 @@ function holdLease(dir, mode, label) {
 {
   const r = run({ merges: 0, settle: 7, poll: 5 });
   t('AC5 the settle time bounds the hold, the last read at the bound', [r.clock, r.polls], [7, 3]);
+  t('AC5 every gh call is ended in time: the enqueue at a minute, each read at what is left of the settle time', r.bounds, [60000, 7000, 2000, 1000]);
+}
+{
+  const r = run({ enqueue: 'timeout', merges: 2 });
+  t('AC5 an enqueue gh did not answer is read from the PR, not recorded failed', [r.code, r.log.map((e) => e.event), r.lines.some((l) => l.includes('for the enqueue: reading whether GitHub merged it'))], [0, ['claim', 'merged'], true]);
 }
 
 // AC4: the ledger records the PR, the head, the base and the session before the lease is released.
@@ -164,25 +173,41 @@ function holdLease(dir, mode, label) {
 }
 
 // AC1 to AC8: the skill steps name the lease, the ledger check and the record inside one hold, by mode.
+// The prose is read with its whitespace folded, so a rewrap changes nothing; every command it quotes
+// is checked against the flags its CLI takes, so a renamed or dropped flag fails here.
 {
-  const s7 = readFileSync(join(root, 'skills/desk-ticket/references/stage-7-pr.md'), 'utf8');
+  const fold = (s) => s.replace(/\s+/g, ' ');
+  const read = (p) => fold(readFileSync(join(root, p), 'utf8'));
+  const s7 = read('skills/desk-ticket/references/stage-7-pr.md');
   const sec = s7.slice(s7.indexOf('**Every merge and every arming is one hold of the merge lease**'), s7.indexOf('Where the repo does not allow auto-merge,'));
   const has = (s) => sec.includes(s);
-  t('Stage 7 has the merge lease step', sec.length > 200, true);
+  // The flags a quoted command passes, from `<script> <first word>` up to its closing backtick or fence.
+  const quoted = (text, start) => { const i = text.indexOf(start); return i === -1 ? null : text.slice(i, text.indexOf('`', i)).match(/--[a-z][a-z-]*/g) ?? []; };
+  // The flags a CLI's usage line names: run with no arguments, it prints its usage on stderr, exit 2.
+  const usageFlags = (script, ...args) => { const r = spawnSync(process.execPath, [join(root, 'desk/bin', script), ...args], { encoding: 'utf8' }); return r.status === 2 ? new Set(r.stderr.match(/--[a-z][a-z-]*/g)) : new Set(); };
+  const takes = (flags, cli) => !!flags?.length && flags.every((f) => cli.has(f));
+  const takeFlags = usageFlags('merge-lease.mjs');
+  t('Stage 7 has the merge lease step', has('`desk-env lease mode merge` says how'), true);
   t('AC7 Stage 7: off merges as before, with no lease and no ledger check', has('**`off`**: merge or arm as before, with no lease and no ledger check.'), true);
-  t('AC1 Stage 7: the take comes before the claim, as the session, and on waits naming the merge driver', has('before the claim, take the lease and the ledger check') && has('merge-lease.mjs take <n> <headRefOid> --repo <repo> --base <the PR\'s base> --by "session <your session name>" --owner claude') && has('say you are waiting\n  on that holder (the merge driver'), true);
+  t('AC1 Stage 7: the take comes before the claim, as the session, and on waits naming the merge driver', has('before the claim, take the lease and the ledger check') && has('--by "session <your session name>" --owner claude') && has('say you are waiting on that holder (the merge driver'), true);
+  t('AC1 Stage 7: every flag the quoted take passes is one merge-lease.mjs takes', takes(quoted(sec, 'merge-lease.mjs take'), takeFlags), true);
+  t('Stage 7: the take gets the Bash tool\'s longest timeout', has('Give this call the Bash tool\'s longest timeout (600000 ms)'), true);
   t('AC6 Stage 7: shadow never waits and logs a would-refuse naming both', has('In shadow it never waits') && has('would-refuse naming you and the holder'), true);
   t('AC2 Stage 7: exit 3 does not merge and reports the path', has('**Exit 3**') && has('Do not merge or arm it; report the line, which names that path.'), true);
-  t('AC3 Stage 7: arming releases once the arming call returns', has('Arming releases it once the arming call\n    returns and `armed` is recorded'), true);
+  t('AC3 Stage 7: arming releases once the arming call returns', has('Arming releases it once the arming call returns and `armed` is recorded'), true);
   t('AC8 Stage 7: an unreadable store does not merge and names the reset command', has('**Exit 4**') && has('merges wait for the lease store') && has('desk-env lease reset --reason <why>'), true);
-  t('Stage 7: the release names the owner the take printed', has('leases.mjs release <lease> --pid <owner>'), true);
-  const open = readFileSync(join(root, 'skills/desk-pr/references/opening.md'), 'utf8');
-  t('AC3 desk-pr: arming takes the lease and the ledger check, released once the arming call returns', open.includes('merge-lease.mjs take … --owner claude') && open.includes('released once the\narming call returns') && open.includes('With it `off`, arm or merge as before.'), true);
-  const lane = readFileSync(join(root, 'skills/desk-clearance/references/phase-6-merge-lane.md'), 'utf8');
-  t('AC4 clearance: the lane records its merge in the ledger before releasing', lane.includes('record the merge in the ledger before releasing the lease') && lane.includes('queue.mjs merged <TICKET> --pr <n> --head <branch> --head-sha <head>\n   --base <base> --by "session <your session name>"'), true);
-  t('AC5 clearance: a stacked merge goes through the hold, until merged or 120 seconds', lane.includes('merge-lease-hold.mjs <n> <head> --repo <§0 GitHub repo> --base <the PR\'s base> --method <method>') && lane.includes('until GitHub reports\n   the PR merged or 120 seconds pass, whichever is first'), true);
+  t('Stage 7: the release names the owner the take printed, on every path out of the hold', has('leases.mjs release <lease> --pid <owner>') && has('Release it on every other path out of the hold too: a refused claim'), true);
+  const open = read('skills/desk-pr/references/opening.md');
+  t('AC3 desk-pr: arming takes the lease and the ledger check, released once the arming call returns', open.includes('merge-lease.mjs take … --owner claude') && open.includes('released once the arming call returns') && open.includes('With it `off`, arm or merge as before.'), true);
+  const lane = read('skills/desk-clearance/references/phase-6-merge-lane.md');
+  t('AC4 clearance: the lane records its merge in the ledger before releasing', lane.includes('record the merge in the ledger before releasing the lease') && lane.includes('queue.mjs merged <TICKET> --pr <n> --head <branch> --head-sha <head> --base <base> --by "session <your session name>"'), true);
+  t('AC4 clearance: every flag the quoted queue.mjs merged passes is one it takes', takes(quoted(lane, 'queue.mjs merged'), new Set(QUEUE_COMMANDS.merged)), true);
+  t('AC5 clearance: a stacked merge goes through the hold, until merged or 120 seconds', lane.includes('merge-lease-hold.mjs <n> <head> --repo <§0 GitHub repo> --base <the PR\'s base> --method <method>') && lane.includes('until GitHub reports the PR merged or 120 seconds pass, whichever is first'), true);
+  const hold = lane.slice(lane.indexOf('node ~/.claude/desk/bin/merge-lease-hold.mjs'));
+  t('AC5 clearance: every flag the quoted hold passes is one merge-lease-hold.mjs takes', takes(hold.slice(0, hold.indexOf('```')).match(/--[a-z][a-z-]*/g), usageFlags('merge-lease-hold.mjs')), true);
+  t('AC5 clearance: the hold gets the Bash tool\'s longest timeout, and the release is on every path', lane.includes('Give it the Bash tool\'s longest timeout (600000 ms)') && lane.includes('on every path out of the hold: a refused claim'), true);
   t('AC5 clearance: the raw enqueue call is gone from the lane', lane.includes('gh api -X PUT'), false);
-  t('AC6 AC7 AC8 clearance: off, shadow and on, and the unreadable store', lane.includes('`off`\n   merges as before, with no lease and no ledger check') && lane.includes('`shadow` takes the lease without waiting') && lane.includes('desk-env lease reset --reason <why>'), true);
+  t('AC6 AC7 AC8 clearance: off, shadow and on, and the unreadable store', lane.includes('`off` merges as before, with no lease and no ledger check') && lane.includes('`shadow` takes the lease without waiting') && lane.includes('desk-env lease reset --reason <why>'), true);
 }
 
 for (const c of holders) c.kill();

@@ -27,13 +27,13 @@
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { EXIT_GAVE_UP, EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_USAGE, LeaseStoreError, LeaseUsageError, RESET_COMMAND, acquire, claudeAncestor, kindMode, leaseDir, logEvent, release } from './leases.mjs';
+import { EXIT_GAVE_UP, EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_USAGE, LeaseStoreError, LeaseUsageError, RESET_COMMAND, acquire, kindMode, leaseDir, logEvent, ownerClaude, release } from './leases.mjs';
 import { fold } from './ticket-ledger.mjs';
 import { ledgerOn, ledgerTarget } from './queue-ledger.mjs';
 
 // The lease's TTL where --ttl is not given. A holder that hangs lapses at twice its TTL, so the
 // default wait, twice the TTL, outlasts it.
-export const HOLD_S = 120;
+const HOLD_S = 120;
 
 export const mergeKey = (repo, base) => `${repo}@${base}`;
 const sameHead = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length >= 7 && b.length >= 7 && (a.startsWith(b) || b.startsWith(a));
@@ -94,11 +94,7 @@ const whole = (v, what) => { if (!/^\d+$/.test(String(v ?? ''))) throw new Lease
 // The lease's owner: --pid, or with --owner claude the Claude Code session above the caller.
 function ownerPid(opt, env) {
   if (opt.pid != null && opt.owner != null) throw new LeaseUsageError('name one owner, not --pid and --owner');
-  if (opt.owner == null) return whole(opt.pid, '--pid');
-  if (opt.owner !== 'claude') throw new LeaseUsageError(`--owner takes claude, not "${opt.owner}"`);
-  const pid = claudeAncestor(env.psRows('pid=,ppid=,args='), process.pid);
-  if (pid == null) throw new LeaseUsageError('--owner claude: no Claude session was found above the caller');
-  return pid;
+  return opt.owner == null ? whole(opt.pid, '--pid') : ownerClaude(opt.owner, env);
 }
 
 // The folded ledger of the queue $DESK_QUEUE names, else this repo's queue as desk-env finds it.

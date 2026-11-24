@@ -94,8 +94,9 @@ A refused claim stops the arming or merge: report the line it printed, which nam
 head when another desk path already has the PR. With the merge lease kind not `off` (`desk-env lease
 mode merge`), the claim, the arming or merge and its record sit inside one hold of the merge lease,
 taken with the ledger check first (`merge-lease.mjs take … --owner claude`) and released once the
-arming call returns, or after the `merged` record: `desk-ticket` Stage 7 has the command and what
-each exit means. With it `off`, arm or merge as before.
+arming call returns, or after the `merged` record, and on every other path out (a refused claim
+too): `desk-ticket` Stage 7 has the command, its timeout and what each exit means. With it `off`,
+arm or merge as before.
 
 **The title follows §5 PR title exactly** — the format (e.g. conventional commits
 `type(scope): <TICKET> description`), where the key sits, and whether CI checks it. When §4 Merge

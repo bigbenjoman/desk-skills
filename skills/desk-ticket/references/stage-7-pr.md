@@ -96,6 +96,8 @@ another desk path already merged or armed. `desk-env lease mode merge` says how:
   node ~/.claude/desk/bin/merge-lease.mjs take <n> <headRefOid> --repo <repo> --base <the PR's base> --by "session <your session name>" --owner claude
   ```
 
+  Give this call the Bash tool's longest timeout (600000 ms): on, it can wait four minutes for the
+  lease, and a call the tool cuts off at its two-minute default never prints its line or its exit.
   It prints one JSON line, `{ lease, owner, mode, unreadable, lines }`: relay each of `lines`. On,
   while another holder has the lease it waits, and says on stderr who holds it: say you are waiting
   on that holder (the merge driver, where the label names `merge-driver`). In shadow it never waits:
@@ -104,7 +106,9 @@ another desk path already merged or armed. `desk-env lease mode merge` says how:
     `node ~/.claude/desk/bin/leases.mjs release <lease> --pid <owner>` (a null `lease`: nothing to
     release). A merge releases it after the `merged` record. Arming releases it once the arming call
     returns and `armed` is recorded: the hold makes the ledger check and the arming one decision, and
-    does not serialise the merge GitHub makes later.
+    does not serialise the merge GitHub makes later. Release it on every other path out of the hold
+    too: a refused claim, a merge or arming gh refuses (after its `failed` record), or a stop for any
+    other reason. A lease left held blocks every merge into that base until it lapses.
   - **Exit 3**: the ledger records the PR merged or armed for auto-merge by another desk path at this
     head. Do not merge or arm it; report the line, which names that path.
   - **Exit 4**: the lease store (or the ledger) cannot be read. Do not merge or arm; report that

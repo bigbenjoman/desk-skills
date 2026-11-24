@@ -45,13 +45,16 @@ Before each merge, from freshly derived state:
    `node ~/.claude/desk/bin/queue.mjs merged <TICKET> --pr <n> --head <branch> --head-sha <head>
    --base <base> --by "session <your session name>"`. A ticket no batch holds is refused there, and
    the merge log's line is its record. Release with `node ~/.claude/desk/bin/leases.mjs release
-   <lease> --pid <owner>`.
+   <lease> --pid <owner>`, on every path out of the hold: a refused claim or a merge gh refuses
+   releases it too, or it blocks every merge into that base until it lapses.
    **Stacked** (the render says `STACKED`): every ordinary path refuses, including `--auto`; the merge
    goes through GitHub's enqueue-only call (`merge-async`), and one command makes the whole hold:
    ```bash
    node ~/.claude/desk/bin/merge-lease-hold.mjs <n> <head> --repo <§0 GitHub repo> --base <the PR's base> --method <method> --by "session <your session name>" --ticket <TICKET> --head <branch>
    ```
-   It takes the lease and the ledger check, claims, enqueues, polls `.merged` until GitHub reports
+   Give it the Bash tool's longest timeout (600000 ms): it can wait six minutes for the lease and two
+   for GitHub, and a call the tool cuts off at its two-minute default never releases the lease or
+   records the merge. It takes the lease and the ledger check, claims, enqueues, polls `.merged` until GitHub reports
    the PR merged or 120 seconds pass, whichever is first, records the merge in the merge log and the
    ledger, and only then releases the lease, so the next PR's check can see this one. Leave out
    `--ticket` and `--head` for a PR with no ticket. Exit 0 is merged at that head; 1 is not merged in

@@ -6,11 +6,10 @@
 // in the stack is never checked against a ledger that cannot yet show this one.
 //
 //   merge-lease-hold.mjs <PR> <head sha> --repo <owner/name> --base <base> --by <merger> --method <merge|squash|rebase>
-//                        [--ticket <KEY> [--head <branch>]] [--settle <seconds>] [--poll <seconds>] [--wait <seconds>]
+//                        [--ticket <KEY> [--head <branch>]]
 //
-// --settle is how long the hold waits for GitHub to report the merge (default 120), --poll how often it
-// reads (default 5), --wait how long it waits for the lease (default twice its TTL, the settle time
-// plus a minute). With --ticket and the kind not off, the batch holding the ticket records the merge
+// The hold waits up to 120 seconds for GitHub to report the merge, reading every 5, and up to twice the
+// lease's TTL (the settle time plus a minute) for the lease. With --ticket and the kind not off, the batch holding the ticket records the merge
 // (queue.mjs merged, which the ledger records with its lever on) before the lease is released; a ticket
 // no batch holds has the merge log's line as its record.
 //
@@ -28,25 +27,33 @@ import { sleepSync } from './dir-lock.mjs';
 import { EXIT_OK, EXIT_USAGE, LeaseUsageError, leaseDir, release } from './leases.mjs';
 import { mergeKey, repoLedger, take } from './merge-lease.mjs';
 import { claim, record } from './merge-log.mjs';
-import { ledgerOn } from './queue-ledger.mjs';
+import { MISSED_PREFIX, ledgerOn } from './queue-ledger.mjs';
 
-export const SETTLE_S = 120;
-export const POLL_S = 5;
-export const EXIT_NOT_MERGED = 1;
-export const EXIT_CLAIMED = 11;
+const SETTLE_S = 120;
+const POLL_S = 5;
+const EXIT_NOT_MERGED = 1;
+const EXIT_CLAIMED = 11;
 const METHODS = ['merge', 'squash', 'rebase'];
 const BIN = dirname(fileURLToPath(import.meta.url));
 
-const ghRun = (args) => {
-  const r = spawnSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  return { status: r.status ?? 1, stdout: r.stdout ?? '', stderr: (r.stderr ?? '').trim() };
+const ENQUEUE_MS = 60_000;
+
+// One gh call, ended at `ms`: -> { status, stdout, stderr, timedOut }.
+const ghRun = (args, ms) => {
+  const r = spawnSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: ms, killSignal: 'SIGKILL' });
+  const timedOut = r.error?.code === 'ETIMEDOUT';
+  return { status: r.status ?? 1, stdout: r.stdout ?? '', stderr: timedOut ? `gh did not answer within ${Math.round(ms / 1000)}s` : (r.stderr ?? '').trim(), timedOut };
 };
 
 // The ledger record of the merge through queue.mjs merged, which acts on the batch holding the ticket.
+// queue.mjs writes queue.json and exits 0 even when the ledger append misses, saying so on stderr, so
+// that line makes it not recorded.
 const queueMerged = ({ ticket, pr, head, sha, base, by }) => {
   const r = spawnSync(process.execPath, [join(BIN, 'queue.mjs'), 'merged', ticket, '--pr', String(pr), ...(head ? ['--head', head] : []), '--head-sha', sha, '--base', base, '--by', by],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  return { ok: r.status === 0, text: ((r.status === 0 ? r.stdout : r.stderr) ?? '').trim().split('\n')[0] };
+  const missed = (r.stderr ?? '').split('\n').find((l) => l.startsWith(MISSED_PREFIX));
+  if (r.status === 0 && !missed) return { ok: true, text: (r.stdout ?? '').trim().split('\n')[0] };
+  return { ok: false, text: (missed ?? (r.stderr ?? '').trim().split('\n')[0]) || `queue.mjs exit ${r.status}` };
 };
 
 // One hold. `gh(args)` -> { status, stdout, stderr }; `recordLedger` queueMerged's shape; `say(line)`
@@ -64,15 +71,18 @@ export function hold({ pr, sha, repo, base, by, method, ticket = null, head = nu
   try {
     const c = claim({ repo, pr, sha, by, ...log });
     if (!c.ok) { say(`#${pr} ${c.why}`); return EXIT_CLAIMED; }
-    const q = gh(['api', '-X', 'PUT', `repos/${repo}/pulls/${pr}/merge-async`, '-f', `merge_method=${method}`]);
-    if (q.status !== 0) {
+    const q = gh(['api', '-X', 'PUT', `repos/${repo}/pulls/${pr}/merge-async`, '-f', `merge_method=${method}`], ENQUEUE_MS);
+    // An enqueue gh did not answer may still have reached GitHub, so its outcome is read from the PR.
+    if (q.timedOut) say(`#${pr} ${q.stderr} for the enqueue: reading whether GitHub merged it`);
+    else if (q.status !== 0) {
       record({ repo, pr, sha, by, event: 'failed', why: q.stderr || `gh exit ${q.status}`, ...log });
       say(`#${pr} NOT merged: GitHub refused the enqueue: ${q.stderr || `gh exit ${q.status}`}`);
       return EXIT_NOT_MERGED;
     }
     const until = now() + settle * 1000;
     for (;;) {
-      const r = gh(['api', `repos/${repo}/pulls/${pr}`, '--jq', '"\\(.merged) \\(.head.sha)"']);
+      // Each read is ended at the settle time's end (a second at least), so a stalled read never holds the lease past it.
+      const r = gh(['api', `repos/${repo}/pulls/${pr}`, '--jq', '"\\(.merged) \\(.head.sha)"'], Math.max(1000, until - now()));
       const [merged, got] = r.status === 0 ? r.stdout.trim().split(/\s+/) : [];
       if (merged === 'true') {
         const at = got || sha;
@@ -99,8 +109,8 @@ export function hold({ pr, sha, repo, base, by, method, ticket = null, head = nu
   }
 }
 
-const USAGE = 'usage: merge-lease-hold.mjs <PR> <head sha> --repo <owner/name> --base <base> --by <merger> --method <merge|squash|rebase> [--ticket <KEY> [--head <branch>]] [--settle <seconds>] [--poll <seconds>] [--wait <seconds>]';
-const OPTIONS = Object.fromEntries(['repo', 'base', 'by', 'method', 'ticket', 'head', 'settle', 'poll', 'wait'].map((k) => [k, { type: 'string' }]));
+const USAGE = 'usage: merge-lease-hold.mjs <PR> <head sha> --repo <owner/name> --base <base> --by <merger> --method <merge|squash|rebase> [--ticket <KEY> [--head <branch>]]';
+const OPTIONS = Object.fromEntries(['repo', 'base', 'by', 'method', 'ticket', 'head'].map((k) => [k, { type: 'string' }]));
 const whole = (v, what, min = 0) => { if (!/^\d+$/.test(String(v ?? '')) || Number(v) < min) throw new LeaseUsageError(`${what} is a whole number${min ? ` from ${min}` : ''}, not "${v ?? ''}"`); return Number(v); };
 
 async function cli(argv) {
@@ -115,9 +125,7 @@ async function cli(argv) {
     if (opt.head && !opt.ticket) throw new LeaseUsageError('--head goes with --ticket');
     const env = await import('./desk-env.mjs');
     return hold({ pr: whole(pos[0], 'the PR', 1), sha: pos[1], repo: opt.repo, base: opt.base, by: opt.by, method: opt.method,
-      ticket: opt.ticket ?? null, head: opt.head ?? null,
-      settle: opt.settle == null ? SETTLE_S : whole(opt.settle, '--settle', 1), poll: opt.poll == null ? POLL_S : whole(opt.poll, '--poll', 1),
-      wait: opt.wait == null ? null : whole(opt.wait, '--wait'), env,
+      ticket: opt.ticket ?? null, head: opt.head ?? null, env,
       onWait: (why) => console.error(`${new Date().toISOString().slice(11, 19)}Z #${pos[0]} waiting for the merge lease on ${mergeKey(opt.repo, opt.base)}: ${why}`) });
   } catch (e) {
     if (e instanceof LeaseUsageError) { console.error(`merge-lease-hold: ${e.message}`); console.error(USAGE); return EXIT_USAGE; }
