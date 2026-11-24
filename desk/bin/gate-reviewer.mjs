@@ -99,6 +99,8 @@ export function seedRead(gql, repo, login, prs, cold) {
   const nodes = [];
   let named = null;
   let after = null;
+  // Proven: the PRs ran out, or the latest review read is no older than the oldest PR read.
+  let proven = false;
   for (let page = 0; page < (cold ? SEED_PAGES : 1); page++) {
     const p = gql(seedQuery(page ? [] : prs, cold, !!after), { ...(cold ? { q: seedSearch(repo) } : {}), ...(after ? { after } : {}) });
     if (!p?.data) return null;
@@ -111,10 +113,12 @@ export function seedRead(gql, repo, login, prs, cold) {
     nodes.push(...fresh);
     const floor = nodes.map((n) => n.updatedAt).filter(Boolean).sort()[0];
     const last = seedOf({ data: { recent: { nodes } } }, login).last;
-    if (!r.pageInfo?.hasNextPage || (last && floor && Date.parse(last) >= Date.parse(floor))) break;
+    if (!r.pageInfo?.hasNextPage || (last && floor && Date.parse(last) >= Date.parse(floor))) { proven = true; break; }
     after = r.pageInfo.endCursor;
   }
-  return seedOf({ data: { recent: { nodes }, repository: named } }, login);
+  const s = seedOf({ data: { recent: { nodes }, repository: named } }, login);
+  // Past the pages, a later review may sit on a PR not read: its last review is unknown, not the one read.
+  return cold && !proven ? { ...s, last: null } : s;
 }
 // Each of `prs` whose reviews are cut off with none of `login`'s shown has its earlier reviews read in,
 // REVIEW_PAGES pages at most, until one of that reviewer's is among them or none are left. -> false where

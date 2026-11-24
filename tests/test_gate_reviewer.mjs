@@ -120,6 +120,8 @@ const bgql = (q, vars) => {
 const bs = GR.seedRead(bgql, 'acme/widgets', BOT, [40], true);
 t('#1370 a PR whose reviews are cut off, none shown the reviewer\'s, has its earlier reviews read until one is', j([bs.last, bs.began[40], bq]), j([H(10, 15), new Date(H(10, 15)).toISOString(), ['r1', 'r0', 'r1', 'r0']]));
 t('#1370 no other author\'s review stands in: earlier reviews that cannot be read are no seed', GR.seedRead((q, vars) => (vars.before ? null : bgql(q, vars)), 'acme/widgets', BOT, [40], true), null);
+const stale = () => ({ data: { recent: { nodes: [upd(pr(31, { created: H(6, 0), reviews: [[BOT, H(6, 30)]] }), H(13, 40)), upd(pr(32, { created: H(13, 0) }), H(13, 30))], pageInfo: { hasNextPage: true, endCursor: 'x' } }, repository: {} } });
+t('#1370 nor does an older review read before the pages ran out, as a later one may sit on a PR not read', GR.seedRead(stale, 'acme/widgets', BOT, [], true).last, null);
 const SD = scratch('gate-reviewer-seed-');
 const calls = [];
 const seed = (login, prs, cold) => { calls.push([login, prs, cold]); return sd; };
