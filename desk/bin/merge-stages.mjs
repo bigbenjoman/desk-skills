@@ -6,7 +6,8 @@
 // on to its last (the re-reviews), and the last required check green to the merge. Each merged PR's
 // stages are one line of <state>/merge-stages.jsonl, and one merge_stages event in the ticket ledger
 // where the ledger lever is on:
-// (or { key, pr, unmerged: true, recorded } for a ticket's PR GitHub reads as not merged, so it is not read again)
+// (or { key, pr, unmerged: true, recorded } for a ticket's PR GitHub reads as not merged, so it is not
+// read again, or { key, pr, unread: true, recorded } for one GitHub did not answer, read again in an hour)
 //   { key, pr, opened, merged, recorded, desk: { minutes, local: { start, rounds } | null,
 //     rounds: [{ start, end, minutes, clean }] },
 //     undraft, external: { login, wait, rereviews, rounds, outage } | null, merge }  (minutes, or null)
@@ -120,8 +121,10 @@ export function recordStages(state, entry) {
 
 // The merged tickets of `tickets` (queue tickets) whose PR has no line recorded, oldest merge first:
 // { key, pr }. A pass reads PER_PASS of them at most, moving past any it cannot read.
-export function due(tickets, recorded) {
-  const have = new Set(recorded.map((e) => Number(e.pr)));
+// A PR GitHub did not answer is read again once RETRY_MS has passed, never on the very next pass.
+export const RETRY_MS = 60 * 60 * 1000;
+export function due(tickets, recorded, now = Date.now()) {
+  const have = new Set(recorded.filter((e) => !(e.unread && now - ms(e.recorded) >= RETRY_MS)).map((e) => Number(e.pr)));
   return Object.entries(tickets ?? {})
     .map(([key, t]) => ({ key, pr: Number(t?.merge?.pr ?? t?.result?.pr), at: t?.merged_at }))
     .filter((x) => x.at && Number.isInteger(x.pr) && !have.has(x.pr))
@@ -131,8 +134,9 @@ export function due(tickets, recorded) {
 // Each stage's { n, median, p75 } in minutes over `entries`, and how many external waits were left
 // out as inside a reviewer outage.
 export function summary(all) {
-  // A PR read as never merged (`unmerged`, a ticket's PR that is not the one that merged) has no stages.
-  const entries = all.filter((e) => !e.unmerged);
+  // A PR read as never merged (`unmerged`, a ticket's PR that is not the one that merged), or not yet
+  // read (`unread`), has no stages.
+  const entries = all.filter((e) => !e.unmerged && !e.unread);
   const vals = { desk: [], undraft: [], external_wait: [], external_rereviews: [], merge: [] };
   let outage = 0;
   for (const e of entries) {
@@ -163,20 +167,25 @@ export function stagesLine(s) {
 // One pass's step: the merged tickets of `tickets` with no line yet, oldest first, PER_PASS read through
 // `gql(query)` (a payload, or null unread), each recorded in `state`'s merge-stages.jsonl. `ledger(key,
 // pr, entry)`, where the ledger lever is on, appends its event under an id fixed by the PR and throws on
-// a failed write: the PR is then left due, so a retry writes it once. An unread PR spends no read and is
-// tried again next pass; one read as never merged is marked and never read again. `ctx`: stagesOf's
+// a failed write: the PR is then left due, so a retry writes it once. An unread PR spends no read, is
+// marked `unread` and tried again once RETRY_MS has passed; one read as never merged is marked and never
+// read again. `ctx`: stagesOf's
 // options, and `local(key)` for localReview. -> the pass's report lines.
 export function stagesStep(state, { tickets, gql, ledger = null, ctx = {}, local = () => null, now = new Date().toISOString() }) {
   const lines = [];
   // PER_PASS PRs read a pass; one GitHub does not answer spends no read, so it holds up no later PR,
   // and twice PER_PASS tries in all bound a pass while GitHub is down.
   let reads = 0, tries = 0;
-  for (const { key, pr } of due(tickets, readStages(state))) {
+  for (const { key, pr } of due(tickets, readStages(state), ms(now))) {
     if (reads >= PER_PASS || tries >= 2 * PER_PASS) break;
     tries += 1;
     let payload = null;
     try { payload = gql(stagesQuery(pr)); } catch { payload = null; }
-    if (!payload?.data) { lines.push(`merge stages: PR #${pr} (${key}) could not be read from GitHub; the next pass tries again`); continue; }
+    if (!payload?.data) {
+      lines.push(`merge stages: PR #${pr} (${key}) could not be read from GitHub; a pass tries again in an hour`);
+      try { recordStages(state, { key, pr, unread: true, recorded: now }); } catch { /* tried again next pass */ }
+      continue;
+    }
     reads += 1;
     const st = stagesOf(payload, { ...ctx, local: local(key) });
     const entry = st ? { key, ...st, pr, recorded: now } : { key, pr, unmerged: true, recorded: now };

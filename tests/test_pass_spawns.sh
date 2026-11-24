@@ -984,7 +984,8 @@ check "DS-570 a review that left none, or one by anyone but the §1 handle, adds
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 # The one call a settled pass still makes is DS-836's list of the handle's open PRs (ticketless PRs): it
 # reads no merged PR again.
-check "DS-570 the next pass reads no PR again and adds no step twice" '! grep -v "^pr list .* --author ben " "$T/gh-calls" | grep -q . &&[ "$(field PM-1 follow_on.length)" = 2 ] && [ "$(field PM-10 follow_on.length)" = 2 ] && [ "$(field PM-11 follow_on.length)" = 3 ] && [ "$(field PM-13 follow_on.length)" = 3 ] && [ "$(field PM-14 follow_on.length)" = 3 ]'
+# A merged PR's stage read (merge-stages.mjs) is the next of the backlog each pass, never one read before.
+check "DS-570 the next pass reads no PR again and adds no step twice" '! grep -v "^pr list .* --author ben " "$T/gh-calls" | grep -v "mergedAt timelineItems" | grep -q . &&[ "$(field PM-1 follow_on.length)" = 2 ] && [ "$(field PM-10 follow_on.length)" = 2 ] && [ "$(field PM-11 follow_on.length)" = 3 ] && [ "$(field PM-13 follow_on.length)" = 3 ] && [ "$(field PM-14 follow_on.length)" = 3 ]'
 # A merge recorded before the pass read it still gains its steps: the merge driver's (merged_at set, its
 # kept status still open), and needs-you's done or a hand-shipped ticket's (the kept status set merged,
 # carrying the criteria an earlier read of the open PR kept).
