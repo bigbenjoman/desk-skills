@@ -31,7 +31,7 @@ const reads = (o = {}) => ({ ctx: ctx(o.ctx), baseMerge: () => false, moves: () 
 // The runner with stub handlers: each read answers from `answers` (a value, or a function of the
 // action), else from what a quiet pass reads.
 const READS = { 'conflict-files': ['src/a.ts'], 'note-conflict': null, 'human-seen': false, reads: () => reads(), feedback: null, 'settle-worked': [], 'check-build': null };
-const WRITES = ['set', 'report', 'out', 'gate-hold', 'apply'];
+const WRITES = ['set', 'report', 'out', 'gate-hold', 'apply', 'external-seen', 'external-wait'];
 function drive(s, answers = {}) {
   const handlers = Object.fromEntries([...Object.keys(READS), ...WRITES].map((type) => [type, (a) => {
     const v = Object.hasOwn(answers, type) ? answers[type] : READS[type];
@@ -76,7 +76,9 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
   const tried = tk({ fix_tries: [{ try: 1, of: 2, head: OLD, kind: 'feedback', what: 'review feedback: changes requested' }] });
   const as = drive(snap([[tried, pr([ok('tests'), red('🔐 Review gate', '88')])]], { stateChecks: EXT }), { feedback: fb, reads: () => reads({ ctx: { stateChecks: EXT } }) });
   t('#737 a stale changes-requested from the outside reviewer waits for its next review, not the person', applied(as).length, 0);
-  t('#925 and the pass says it waits for that reviewer', lines(as).some((l) => /PR #697 \(T-1\) is out of draft: .*waits for agent-pullbot to review the head/.test(l)), true);
+  t('#925 and the pass says it waits for that reviewer', lines(as, 'external-wait').some((l) => /PR #697 \(T-1\) is out of draft: .*waits for agent-pullbot to review the head/.test(l)), true);
+  t('#1365 the wait goes to the pass as one on that reviewer, with its head, not as a line of its own', j([as.filter((a) => a.type === 'external-wait').map((a) => [a.pr, a.head === HEAD, a.login]), lines(as).some((l) => /waits for agent-pullbot/.test(l))]), j([[[697, true, 'agent-pullbot']], false]));
+  t('#1365 and the reviewer read is reported: no review at the head, its last one when it was', j(as.filter((a) => a.type === 'external-seen').map((a) => [a.login, a.reviewedAtHead, a.last])), j([['agent-pullbot', false, null]]));
   const wasStuck = drive(snap([[{ ...tried, stuck: { why: 'x' } }, pr([ok('tests'), red('🔐 Review gate', '88')])]], { stateChecks: EXT }), { feedback: fb, reads: () => reads({ ctx: { stateChecks: EXT } }) });
   t('#925 a ticket stuck before has its stuck record cleared while it waits for the reviewer', j(wasStuck.filter((a) => a.type === 'set')), j([{ type: 'set', key: 'T-1', fields: ['stuck=null'] }]));
   const at = { ...payload, data: { repository: { pullRequest: { ...payload.data.repository.pullRequest, reviews: { nodes: [{ id: 'R2', author: { login: 'agent-pullbot' }, body: 'P1: still drops it', state: 'CHANGES_REQUESTED', commit: { oid: HEAD } }] } } } } };

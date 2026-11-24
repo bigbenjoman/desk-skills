@@ -2302,6 +2302,8 @@ function rowValue(id, rows = CONFIG_ROWS) {
   const r = id === 'default-branch' ? defaultBranchFrom() : id === 'suite-weight' ? suiteWeightFrom(parseConfig()) : configValueFrom(parseConfig(), id, rows);
   return { ...r, value: expandHome(r.value) ?? null };
 }
+// A declared row's value, read as `get --json` reads it, so an unread row (§4 People's) reads too; null unset.
+export const declaredValue = (id) => rowValue(id, DECLARED_ROWS).value ?? null;
 // What `get` prints for a config id, with where it came from: -> { value, source } (rowValue's).
 export const configValueSource = (id) => { const { value, source } = rowValue(id); return { value, source }; };
 // What `list` prints for a config id: -> { items, refused }, refused the DeskConfigError list throws.
