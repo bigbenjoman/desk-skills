@@ -542,6 +542,10 @@ export const planFirstClaim = (t) => (planFirst(t) && t.park?.claim?.session && 
 // Whether unclaimed plan-first work has waited past `ms` since it parked, so the person hears of it.
 export const planFirstDue = (t, ms, now = Date.now()) => planFirst(t) && !planFirstClaim(t)
   && now - (Date.parse(t.park?.since ?? '') || 0) > ms;
+// The one item a batch's due plan-first tickets make, as needs-you lists it and the digest asks it: its
+// lead words, and the not-now key it is put off under, which the same tickets in any order keep.
+export const planFirstWaits = (keys) => `${keys.length} plan-first ticket${keys.length === 1 ? ' waits' : 's wait'} for a session`;
+export const planFirstPutOff = (keys) => ({ question: 'plan-first waiting', inputs: { waiting: [...keys].sort().join(', ') } });
 
 // A park a pass settles without the person: its recorded clears-when is one a script reads, no step of
 // the person's makes it hold, and a worker rather than a session takes the ticket on once it does. A

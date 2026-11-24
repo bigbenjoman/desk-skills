@@ -2829,14 +2829,15 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   }
 }
 
-// A lane C park whose hold the pass lifted once its sibling merged is listed as its own session item.
+// A lane C park whose hold the pass lifted once its sibling merged is listed, as the batch's plan-first
+// item (issue-1384), recommending open.
 {
   put('chi715', { port: 4715, beat: 1, supervised: true, tickets: {
     'L-1': { ...parked('C', 20, 'lane C — spans layers'), held_by: null, held_outside: null },
     'L-0': { state: 'done', lane: 'A', result: { pr: 70 }, merged_at: minsAgo(30), pr_status: { pr: 70, state: 'MERGED' } },
   } });
-  const it = N.collect({ word: 'chi715' }).items.find((i) => i.t.key === 'L-1');
-  t('DS-715 AC2 a lane C park whose hold lifted is a session item recommending open', `${it?.kind} ${it?.actions[0][0]}`, 'session open');
+  const it = N.collect({ word: 'chi715' }).items.find((i) => i.t.key === 'L-1' || i.planFirst?.includes('L-1'));
+  t('DS-715 AC2 a lane C park whose hold lifted is listed recommending open', `${it?.kind} ${it?.actions[0][0]}`, 'plan-first open');
 }
 
 // ---- DS-546: list settles what finished outside desk, reading GitHub, Jira and git again (stubbed here),
@@ -4070,10 +4071,23 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   writeFileSync(qf, JSON.stringify(q));
   const back = N.collect({ word: 'pf1384' }).items.find((i) => i.kind === 'plan-first');
   t('issue-1384 AC3 a dropped claim returns the ticket to the unclaimed rule, bringing the put-off item back', back?.planFirst.join(), 'F-1,F-2,F-4');
-  // One alone past the wait stays its own session item.
+  // One alone past the wait is the same item, naming the count of one and the next step.
   put('pf1384b', { port: 4701, beat: 1, planFirstWait: 4, tickets: { 'G-1': lane(600), 'G-2': lane(20) } });
   const one = N.collect({ word: 'pf1384b' }).items;
-  t('issue-1384 one unclaimed plan-first ticket past the wait is its own session item', one.map((i) => `${i.t.key} ${i.kind}`).join(), 'G-1 session');
+  const pf1 = one.find((i) => i.kind === 'plan-first');
+  t('issue-1384 AC2 one unclaimed plan-first ticket past the wait is the plan-first item, naming the count and the next step',
+    `${one.map((i) => i.t.key).join()} ${/^1 plan-first ticket waits for a session: G-1\. No session has claimed it /.test(pf1?.need ?? '')} ${pf1?.actions[0][1].replace(/ in .*;/, ';')}`,
+    'plan-first true start /desk-ticket G-1; it claims G-1');
+  const open1 = N.record({ word: 'pf1384b', ticket: 'plan-first', action: 'open' });
+  t('issue-1384 AC2 open on one names no others', /it claims G-1\.$/.test(open1.line), true);
+  // The digest asks what needs-you lists, and a not-now there puts the digest's question off too.
+  const { putOffQuestions } = await import('../desk/bin/digest.mjs');
+  const dr = { slug: 'acme__pf1384b', state: join(env.HOME, '.desk-autopilot', 'acme__pf1384b'), queue: join(env.DESK_HOME, 'repos', 'acme__pf1384b', 'queue.json') };
+  const asked = () => digestQuestions(dr).filter((x) => x.kind === 'plan-first' || ['G-1', 'G-2'].includes(x.ticket)).map((x) => `${x.kind}:${x.text.split(':')[0]}`).join();
+  t('issue-1384 the digest asks the one plan-first question needs-you lists', asked(), 'plan-first:1 plan-first ticket waits for a session');
+  N.record({ word: 'pf1384b', ticket: 'plan-first', action: 'not-now' });
+  t('issue-1384 a not-now in needs-you puts the digest\'s plan-first question off, and lists it as put off',
+    `${asked() || 'none'} ${putOffQuestions(dr).map((x) => `${x.question}=${x.tickets.join()}`).join()}`, 'none 1 plan-first ticket waits for a session=G-1');
 }
 
 // ---- DS-929 AC1: every in-process collect and refresh above ran on injected repos and reads, and started

@@ -125,7 +125,7 @@ import { liveBaseRed, MERGES_SHOWN } from './base-red.mjs';
 import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { landedPr } from './post-merge.mjs';
-import { promotionPr, readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, EXIT, planFirst } from './batch-state.mjs';
+import { promotionPr, readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, EXIT, planFirst, planFirstWaits, planFirstPutOff } from './batch-state.mjs';
 import { promotionTitle } from './pass/promotion-pr.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { dayAndTime } from './desk-q-eta.mjs';
@@ -971,22 +971,22 @@ function startNoPr(i, say) {
 
 // ---- plan-first work no session has claimed ---------------------------------------------------------
 // A lane C ticket parked at triage reaches the person only once it has waited unclaimed past config §3b
-// "Plan-first wait before needs-you (hours)" (desk-q's shownState). Two or more such in one batch are one
-// item, `plan-first`, recommending the first be started in the batch's session, which claims it; one
-// alone is its own session item. Not-now puts it off until the tickets it names change.
+// "Plan-first wait before needs-you (hours)" (desk-q's shownState). Those of one batch, one or more, are
+// one item, `plan-first`, naming the count and recommending the first be started in the batch's session,
+// which claims it. Not-now puts it off until the tickets it names change. One that holds tickets behind
+// it stays its own session item, counted and kept listed by them as any park is (judged).
 const PLAN_FIRST = 'plan-first';
-const planFirstRows = (b) => needsRows(b).filter((x) => !x.pr && planFirst(x.t));
-const planFirstHeld = (b, x) => !x.pr && planFirst(x.t) && planFirstRows(b).length > 1;
+const planFirstHeld = (b, x) => !x.pr && planFirst(x.t) && !heldBehind(b, x.t.key);
 function planFirstItems(r) {
-  const ts = planFirstRows(r).map((x) => x.t);
-  if (ts.length < 2) return [];
+  const ts = needsRows(r).filter((x) => planFirstHeld(x.b ?? r, x)).map((x) => x.t);
+  if (!ts.length) return [];
   const keys = ts.map((t) => t.key), first = keys[0];
   const w = runner(r);
   const where = w.by === 'session' ? `the batch's session${w.name ? ` (${w.name})` : ''}` : `an interactive session in ${repoConfigValue(r.slug, 'repo-root') ?? r.name}`;
   const hours = (r.ctx?.planFirstMs ?? 0) / 3600e3;
   return [{ r, t: { key: PLAN_FIRST }, dir: r.stateDir, item: { kind: PLAN_FIRST, planFirst: keys, ticket: first,
-    need: `${keys.length} plan-first tickets wait for a session: ${andList(keys)}. No session has claimed them for more than ${hours}h`,
-    actions: [['open', `start /desk-ticket ${first} in ${where}; it claims ${first}, and the others wait for that session or another`], ['not-now']],
+    need: `${planFirstWaits(keys)}: ${andList(keys)}. No session has claimed ${keys.length === 1 ? 'it' : 'them'} for more than ${hours}h`,
+    actions: [['open', `start /desk-ticket ${first} in ${where}; it claims ${first}${keys.length > 1 ? ', and the others wait for that session or another' : ''}`], ['not-now']],
     since: finite(Math.min(...ts.map((t) => timeOf(t.park?.since) ?? Infinity))) } }];
 }
 
@@ -1889,7 +1889,7 @@ function putOffKey(r, t, item) {
   if (item.kind === 'follow') return { question: `${t.key} follow-on`, inputs: { ticket: item.ticket, steps: item.need } };
   // A ticket newly held behind it brings it back.
   if (item.finished) return { question: `${t.key} finished`, inputs: { blocker: item.finished, waiting: item.waiting.join(', ') } };
-  if (item.planFirst) return { question: `${t.key} waiting`, inputs: { waiting: item.planFirst.join(', ') } };
+  if (item.planFirst) return planFirstPutOff(item.planFirst);
   if (item.blocker) return { question: `${t.key} link`, inputs: { ticket: item.ticket, blocker: item.blocker } };
   // A promotion PR opened, or one that changes state, brings it back.
   if (item.unpromoted) return { question: `${t.key} unpromoted`, inputs: { ticket: item.ticket, blocker: item.waitsOn, branch: item.unpromoted.branch, pr: String(item.unpromoted.pr ?? 'none'), state: item.unpromoted.state } };
@@ -2586,7 +2586,7 @@ function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = R
   if (i.proposal) return proposalAnswer(i, verb, text, reads ?? READS, now, say);
   if (i.unpromoted) return verb === 'promote' ? promoteBase(i, say) : startWithout(i, say);
   if (i.finished) return startNoPr(i, say);
-  if (i.planFirst) return say(true, `nothing recorded. Open the batch's session, or an interactive one in ${rootOf(i.r)}, and run /desk-ticket ${i.ticket}: it claims ${i.ticket}, and ${andList(i.planFirst.slice(1))} wait for a session to take ${i.planFirst.length === 2 ? 'it' : 'them'} on.`);
+  if (i.planFirst) return say(true, `nothing recorded. Open the batch's session, or an interactive one in ${rootOf(i.r)}, and run /desk-ticket ${i.ticket}: it claims ${i.ticket}${i.planFirst.length > 1 ? `, and ${andList(i.planFirst.slice(1))} wait for a session to take ${i.planFirst.length === 2 ? 'it' : 'them'} on` : ''}.`);
   if (i.promotion != null) return say(true, `noted: the next pass reads promotion PR #${i.promotion}'s checks again, and this item goes once they pass.`);
   if (i.blocker) return say(true, `noted: the next pass that reads ${i.ticket}'s blockers clears this once ${i.blocker} is no longer linked, and lifts any hold on it.`);
   if (i.kind === REVIEWER) return say(true, 'noted: the next pass checks the account again, and lifts the hold on every PR it names once the check passes.');

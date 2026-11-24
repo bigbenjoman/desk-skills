@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { CHECKIN_TIME, checkinTimesOf } from './config-schema.mjs';
 import { jiraSearch, keySearch } from './jira-search.mjs';
-import { isHeld, settlesByScript, localDay, openUnknowns, planFirst, planFirstClaim, planFirstDue } from './batch-state.mjs';
+import { isHeld, settlesByScript, localDay, openUnknowns, planFirst, planFirstClaim, planFirstDue, planFirstWaits, planFirstPutOff, heldBehindOf } from './batch-state.mjs';
 import { planFirstWaitMs } from './claims.mjs';
 import { stalledPrs as stalledOf, STALL_FOR } from './desk-q.mjs';
 import { namedBatches } from './batches.mjs';
@@ -133,13 +133,15 @@ export function putOffQuestions(r, register = readRegister(r.state)) {
   const q = readJson(r.queue, null);
   const out = new Map();
   for (const t of Object.values(q?.tickets ?? {})) {
-    if (t.state !== 'parked' || isHeld(t)) continue;
+    if (t.state !== 'parked' || isHeld(t) || planFirstOwnAsk(r, q, t) === false) continue;
     const l = parkPutOff(register, t);
     if (l.status !== 'put_off') continue;
     const o = out.get(l.entry.key) ?? { question: l.entry.question, at: l.entry.at, by: l.entry.by ?? null, tickets: [] };
     o.tickets.push(t.key);
     out.set(l.entry.key, o);
   }
+  const pf = planFirstAsk(r, q, register);
+  if (pf?.l.status === 'put_off') out.set(pf.l.entry.key, { question: pf.lead, at: pf.l.entry.at, by: pf.l.entry.by ?? null, tickets: [...pf.keys] });
   return [...out.values()].map((o) => ({ ...o, tickets: o.tickets.sort() })).sort((a, b) => a.tickets[0].localeCompare(b.tickets[0]));
 }
 
@@ -188,6 +190,16 @@ export function jiraLine(slug, j) {
 
 // The key the one plan-first question of a batch is answered under: it names no single ticket.
 const PLAN_FIRST_KEY = 'plan-first';
+// One repo's plan-first tickets waiting unclaimed past their wait, as needs-you's one item: their keys,
+// its lead words, and whether the person put it off there (planFirstPutOff). Null with none. One that
+// holds tickets behind it asks its own park question, as needs-you lists it.
+const planFirstGrouped = (r, q, t) => planFirstDue(t, planFirstWaitMs(r.slug)) && !heldBehindOf(q, t.key).size;
+// Whether a plan-first ticket asks its own park question: null for any other ticket.
+const planFirstOwnAsk = (r, q, t) => (planFirst(t) ? planFirstDue(t, planFirstWaitMs(r.slug)) && !planFirstGrouped(r, q, t) : null);
+function planFirstAsk(r, q, register) {
+  const keys = Object.values(q?.tickets ?? {}).filter((t) => planFirstGrouped(r, q, t)).map((t) => t.key);
+  return keys.length ? { keys, lead: planFirstWaits(keys), l: lookup(register, planFirstPutOff(keys)) } : null;
+}
 // One repo's plan-first tickets an interactive session has claimed: [{ ticket, session }].
 export function sessionWork(r) {
   const q = readJson(r.queue, null);
@@ -218,20 +230,18 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
   for (const h of handedByIntake(r.state)) {
     out.push({ ticket: h.ticket, kind: 'intake', text: `not admitted by intake: ${h.text}`, key: questionKey(r.slug, h.ticket, `${h.text}\0${h.at}`), state: r.state });
   }
-  // Plan-first work a session works, or that has not waited unclaimed past its wait, asks nothing; two or
-  // more past it are one question, as needs-you lists them.
-  const waitMs = planFirstWaitMs(r.slug);
-  const planDue = Object.values(q?.tickets ?? {}).filter((t) => planFirstDue(t, waitMs));
-  if (planDue.length > 1) {
-    const keys = planDue.map((t) => t.key);
-    const text = `${keys.length} plan-first tickets wait for a session: ${keys.join(', ')}. Start /desk-ticket ${keys[0]} in the batch's session, which claims it`;
+  // Plan-first work a session works, or that has not waited unclaimed past its wait, asks nothing; what
+  // is past it is one question, as needs-you lists it, unless the person put that item off there.
+  const pf = planFirstAsk(r, q, register);
+  if (pf && pf.l.status !== 'put_off') {
+    const text = `${pf.lead}: ${pf.keys.join(', ')}. Start /desk-ticket ${pf.keys[0]} in the batch's session, which claims it${pf.l.status === 'changed' ? ` (${pf.l.line})` : ''}`;
     const key = questionKey(r.slug, PLAN_FIRST_KEY, text);
-    if (!answered[key]) out.push({ ticket: keys[0], kind: 'plan-first', text, key });
+    if (!answered[key]) out.push({ ticket: pf.keys[0], kind: 'plan-first', text, key });
   }
   for (const t of Object.values(q?.tickets ?? {})) {
     if (t.state === 'parked' && !isHeld(t)) {
       if (settlesByScript(t)) continue;
-      if (planFirst(t) && (!planFirstDue(t, waitMs) || planDue.length > 1)) continue;
+      if (planFirstOwnAsk(r, q, t) === false) continue;
       const l = parkPutOff(register, t);
       if (l.status === 'put_off') continue;
       const text = `${String(t.park?.question ?? 'parked, with no question recorded')}${l.status === 'changed' ? ` (${l.line})` : ''}`;
