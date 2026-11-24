@@ -3639,6 +3639,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
     GR.writeRecord(S, { reviewers: { [bot2]: { last: iso(0), lags: [5, 6, 7], waiting: { 7: { head: 'h7', since: iso(10) } } } } });
     GR.reviewerStep(S, { waits: [w2('h7')], now: at(80), repo: 'acme/ask811' });
     const quiet = readAsks(S).find((a) => a.login === bot2);
+    t('#1380 a second reviewer\'s outage is on the list before its not-now', asks().some((i) => i.t.key === `ask:${quiet.id}`), true);
     N.record({ word: 'ask811', ticket: `ask:${quiet.id}`, action: 'not-now' });
     GR.reviewerStep(S, { waits: [w2('h7b')], now: at(90), repo: 'acme/ask811' });
     GR.reviewerStep(S, { waits: [w2('h7b')], now: at(160), repo: 'acme/ask811' });
