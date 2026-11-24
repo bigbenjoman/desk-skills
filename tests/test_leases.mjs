@@ -14,6 +14,7 @@ import { latestPerCheck, normaliseRollup } from '../desk/bin/gate.mjs';
 import { previewLabel, psRows } from '../desk/bin/desk-env.mjs';
 import { lockFileHolders } from '../desk/bin/suite-wait.mjs';
 import { recordedCommit } from '../desk/bin/installed.mjs';
+import { profileProblems } from '../desk/bin/machine.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -734,6 +735,21 @@ try {
     t('DS-987 ps that cannot be read counts each admit by its pid alone, and the pool read does not fail',
       capacities({ ...capEnv(rows), psRows: () => { throw new Error('ps could not be read'); } }).light, 3);
     t('DS-987 a row that does not read is the floor alone',capacities(capEnv({ ...rows, 'light-lock-max': '0' })).light, 1);
+  }
+  // DS-983: run.sh's job tokens, a pool of test-lock-slots x test-cap behind the job-tokens row.
+  {
+    const jobRows = { 'job-tokens': 'on', 'test-lock-slots': '3', 'test-cap': '4' };
+    const jenv = (r) => ({ machineValue: (k) => r[k] ?? null, testLockSlots: () => Number(r['test-lock-slots']) });
+    const c = capacities(jenv(jobRows));
+    t('DS-983 AC2 job-tokens on, test-lock-slots 3 and test-cap 4: the broker reports a job pool of 12', [c.job, poolOf('slot', 'job', c).pool, poolOf('slot', 'job', c).capacity], [12, 'slot:job', 12]);
+    t('DS-983 a profile with no test-cap has one job token per heavy slot', capacities(jenv({ 'test-lock-slots': '3' })).job, 3);
+    // The lever as job-token.mjs reads it, from a fixture machine profile.
+    const lever = (rows) => spawnSync(process.execPath, [join(root, 'desk/bin/job-token.mjs'), 'lever'], { encoding: 'utf8', cwd: S, env: env({ DESK_MACHINE: rows ? machineWith(rows) : NO_MACHINE }) }).stdout.trim();
+    t('DS-983 AC1 with no job-tokens row the lever reads as off, and on only as on', [lever(null), lever({ 'test-cap': '4' }), lever(jobRows)], ['off', 'off', 'on']);
+    t('DS-983 AC6 a job-tokens row with an unknown value: the lever reads as off', lever({ 'job-tokens': 'maybe' }), 'off');
+    t('DS-983 AC6 and the machine profile check names the row', profileProblems({ sizing: { 'job-tokens': { value: 'maybe' } } }).join(' | '),
+      '`job-tokens` is "maybe": want on or off; job tokens stay off');
+    t('DS-983 AC6 a job-tokens row of on or off passes the check', ['on', 'off'].map((value) => profileProblems({ sizing: { 'job-tokens': { value } } }).length), [0, 0]);
   }
   // With the slot kind on, a lock run that names its queue waits its turn for its pool, oldest
   // first. In-process against a scratch lease directory, real sleeping processes as owners, the light

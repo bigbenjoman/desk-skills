@@ -100,6 +100,10 @@ export const SIZING_KEYS = Object.freeze(Object.keys(SIZING_RULES));
 // with-lock.sh is told is small may take. Off unless the row is exactly `on`.
 const EXPRESS_LANE_KEY = 'light-express-lane';
 const EXPRESS_LANE_VALUES = Object.freeze(['on', 'off']);
+// The job-token lever: with it on, each suite tests/run.sh starts holds one token from a machine-wide
+// budget of test-lock-slots x test-cap (leases.mjs's job pool). Off unless the row is exactly `on`.
+export const JOB_TOKENS_KEY = 'job-tokens';
+export const jobTokensOn = (v) => String(v ?? '').trim() === 'on';
 // The bench's quota settings: Sizing rows no proposal makes, set by `desk-env machine set` from the
 // user's answers and read by bench-quota.mjs.
 export const BENCH_CAP_KEY = 'bench-cap-points';
@@ -118,6 +122,8 @@ const BENCH_RULES = Object.freeze({
     why: 'off, shadow or on for each lease kind desk-env lease decides; a kind not named is shadow' },
   [EXPRESS_LANE_KEY]: { text: true, problem: (v) => (EXPRESS_LANE_VALUES.includes(v) ? null : `\`${EXPRESS_LANE_KEY}\` is "${v}": want on or off`),
     why: 'on gives a small light run (tests/related.sh) one light slot of its own, outside light-lock-max; off when unset' },
+  [JOB_TOKENS_KEY]: { text: true, problem: (v) => (EXPRESS_LANE_VALUES.includes(v) ? null : `\`${JOB_TOKENS_KEY}\` is "${v}": want on or off`),
+    why: 'on makes each suite tests/run.sh starts hold one of test-lock-slots x test-cap job tokens across the machine; off when unset' },
 });
 
 // ---- lease kinds ------------------------------------------------------------------------------
@@ -150,7 +156,7 @@ export function leaseKindsProblem(raw) {
 }
 // The checks on Sizing rows a person may have edited by hand, one line each: lease-kinds, the
 // admission rows, whose problems end with the locks granting as with lock-admission off, and the
-// express lane's row.
+// express lane's and job tokens' rows.
 // A profile row's value as written (Sizing, else Hardware), TODO and all, or null.
 export const profileValue = (profile, k) => profile?.sizing?.[k]?.value ?? profile?.hardware?.[k]?.value ?? null;
 export function profileProblems(profile) {
@@ -159,7 +165,10 @@ export function profileProblems(profile) {
   const admit = admissionRows((k) => profileValue(profile, k)).problems.map((p) => `${p}; the locks grant as with \`lock-admission\` off`);
   const lane = profile?.sizing?.[EXPRESS_LANE_KEY]?.value;
   const laneBad = lane == null ? null : BENCH_RULES[EXPRESS_LANE_KEY].problem(String(lane).trim());
-  return [...(bad ? [bad] : []), ...admit, ...(laneBad ? [`${laneBad}; the express lane stays off`] : [])];
+  const jobs = profile?.sizing?.[JOB_TOKENS_KEY]?.value;
+  const jobsBad = jobs == null ? null : BENCH_RULES[JOB_TOKENS_KEY].problem(String(jobs).trim());
+  return [...(bad ? [bad] : []), ...admit, ...(laneBad ? [`${laneBad}; the express lane stays off`] : []),
+    ...(jobsBad ? [`${jobsBad}; job tokens stay off`] : [])];
 }
 // `bench-run-limit-<provider>`: the most runs the bench may start in a rolling week on a provider it
 // has no meter or allowance ledger for, which it otherwise refuses.

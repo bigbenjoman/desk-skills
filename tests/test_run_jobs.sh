@@ -60,6 +60,68 @@ jobs_of(){ tail -n 1 "$LOGF" | grep -oE '"jobs":[0-9]+' | grep -oE '[0-9]+'; }
 starts(){ grep '^start' "$LOG" | tr '\n' ' '; }
 blocks(){ printf '%s\n' "$out" | grep '^== ' | tr '\n' ' '; }
 
+# Job tokens (DS-983): a second scratch repo whose desk/ is the real one, so run.sh finds
+# desk/bin/job-token.mjs, run against a fixture machine profile and a scratch lease directory. A suite
+# starts with no DESK_* variable, so a fixture suite finds the lease store through $LEASES.
+J="$T/jrepo/tests"; mkdir -p "$J"
+for f in run.sh suite_env.sh plan_shards.mjs scope_sections.mjs; do cat "$S/$f" > "$J/$f"; done
+ln -s "$(cd "$S/.." && pwd)/desk" "$T/jrepo/desk"
+# test_j1..j3: each writes its name, how many job tokens its own label holds and how many suites run
+# at once, then waits half a second.
+for x in 1 2 3; do cat > "$J/test_j$x.sh" <<EOF
+: > "\$CONC/\$\$"; mine=\$(grep -oE '"label": ?"job test_j$x\.sh in ' "\$LEASES/leases.json" | wc -l | tr -d ' ')
+echo "test_j$x.sh \$mine \$(ls "\$CONC" | wc -l | tr -d ' ')" >> "\$SEEN"
+sleep 0.5; rm -f "\$CONC/\$\$"; echo "ok j$x"
+EOF
+done
+printf ': > "$STARTED"; exec sleep 30\n' > "$J/test_jsleep.sh"
+# A machine profile holding Sizing rows $2..., written as $T/machine-$1.md, its path printed.
+profile(){ p="$T/machine-$1.md"; shift; printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n' > "$p"
+  for kv in "$@"; do printf '| `%s` | `%s` | test |\n' "${kv%%=*}" "${kv#*=}" >> "$p"; done; echo "$p"; }
+P_NONE=$(profile none test-lock-slots=3 test-cap=4)
+P_BAD=$(profile bad job-tokens=maybe test-lock-slots=3 test-cap=4)
+P_ON=$(profile on job-tokens=on test-lock-slots=3 test-cap=4)
+P_ONE=$(profile one job-tokens=on test-lock-slots=1 test-cap=1)
+# run.sh under bash $B against profile $1, as an outer run (TEST_JOB_TOKENS is held inside this suite).
+jrun(){ m=$1; shift; TEST_JOB_TOKENS='' DESK_MACHINE="$m" DESK_LEASE_DIR="$LEASES" "$B" "$J/run.sh" --no-hook-test "$@"; }
+# How many lines of the lease log are a job token's $1 event.
+jlog(){ grep "\"event\":\"$1\"" "$LEASES/leases.log.jsonl" 2>/dev/null | grep -c '"key":"job"'; }
+fresh_jobs(){ k=$((k + 1)); export LEASES="$T/leases-$v-$k" CONC="$T/jconc-$v-$k" SEEN="$T/jseen-$v-$k"; mkdir -p "$CONC"; : > "$SEEN"; }
+k=0
+token_checks(){
+  # AC1: no job-tokens row, and AC6: a row that is neither on nor off: no token is taken.
+  for c in NONE:"no job-tokens row" BAD:"job-tokens maybe"; do
+    fresh_jobs; eval "pf=\$P_${c%%:*}"
+    out=$(jrun "$pf" -j 2 test_j1.sh test_j2.sh 2>&1); rc=$?
+    check "DS-983 AC1 AC6 $at ${c#*:}: run.sh takes no job token and runs as before" \
+      '[ $rc -eq 0 ] && [ ! -e "$LEASES/leases.log.jsonl" ] && [ "$(wc -l < "$SEEN" | tr -d " ")" = 2 ] && printf "%s\n" "$out" | grep -qx "all passed: 2 checks"'
+  done
+  # AC3: on, with 12 tokens: each suite holds one token of its own while it runs, and the log has a
+  # take and a release for each.
+  fresh_jobs; out=$(jrun "$P_ON" -j 1 test_j1.sh test_j2.sh test_j3.sh 2>&1); rc=$?
+  out="$out
+seen: $(cat "$SEEN")"
+  check "DS-983 AC3 $at job-tokens on: each suite holds one job token while it runs" \
+    '[ $rc -eq 0 ] && [ "$(cut -d " " -f 1,2 "$SEEN" | tr "\n" " ")" = "test_j1.sh 1 test_j2.sh 1 test_j3.sh 1 " ]'
+  check "DS-983 AC3 $at and the lease log records a take and a release for each, with none held after" \
+    '[ "$(jlog grant)" = 3 ] && [ "$(jlog release)" = 3 ] && [ -f "$LEASES/leases.json" ] && ! grep -qE "\"key\": ?\"job\"" "$LEASES/leases.json"'
+  # AC4: on, with one token: -j 3 runs one suite at a time, the others waiting in order for the token.
+  fresh_jobs; out=$(jrun "$P_ONE" -j 3 test_j1.sh test_j2.sh test_j3.sh 2>&1); rc=$?
+  most=$(cut -d " " -f 3 "$SEEN" | LC_ALL=C sort -n | tail -n 1)
+  check "DS-983 AC4 $at one token: the suites wait their turn for it, one running at a time, and all run" \
+    '[ $rc -eq 0 ] && [ "$most" = 1 ] && [ "$(wc -l < "$SEEN" | tr -d " ")" = 3 ] && [ "$(jlog grant)" = 3 ]'
+  check "DS-983 AC4 $at and a waiting suite says what it waits for and its place" \
+    'printf "%s\n" "$out" | grep -qE "^run\.sh: test_j[0-9]\.sh waits for a job token \(1 on this machine\), position [0-9]+ of [0-9]+: "'
+  # AC5: a run.sh stopped mid-suite: once its suite has exited, its token lapses and the next run gets it.
+  fresh_jobs; export STARTED="$T/started-$v"; rm -f "$STARTED"
+  TEST_JOB_TOKENS='' DESK_MACHINE="$P_ONE" DESK_LEASE_DIR="$LEASES" "$B" "$J/run.sh" --no-hook-test -j 2 test_jsleep.sh >"$T/killed-$v.out" 2>&1 & bg=$!
+  i=0; while [ ! -e "$STARTED" ] && [ $i -lt 200 ]; do sleep 0.1; i=$((i + 1)); done
+  kill -TERM "$bg" 2>/dev/null; wait "$bg" 2>/dev/null
+  out=$(jrun "$P_ONE" -j 1 test_j1.sh 2>&1); rc=$?
+  check "DS-983 AC5 $at a run.sh killed mid-suite: its token lapses, and the next run takes it" \
+    '[ -e "$STARTED" ] && [ $rc -eq 0 ] && [ "$(grep "\"event\":\"lapse\"" "$LEASES/leases.log.jsonl" | grep "\"key\":\"job\"" | grep -c "owner exited")" = 1 ] && [ "$(jlog grant)" = 2 ]'
+}
+
 checks(){ B=$1; v=$("$B" -c 'echo "${BASH_VERSINFO[0]}"'); at="(bash $v)"
 
   # AC1: no -j, test-cap 4: four of the five rendezvous suites run at once, never five.
@@ -163,6 +225,7 @@ checks(){ B=$1; v=$("$B" -c 'echo "${BASH_VERSINFO[0]}"'); at="(bash $v)"
   out=$(DESK_SUITE_DURATIONS="$dur" "$B" "$R/run.sh" --no-hook-test -j 2 test_over.sh test_one.sh 2>&1); rc=$?
   check "DS-927 AC1 $at DESK_SUITE_DURATIONS gets each suite's seconds and CPU seconds, by file, as JSON" \
     '[ $rc -eq 0 ] && node -e "const d = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")); const k = (o) => Object.keys(o).sort().join(); process.exit(k(d.seconds) === \"test_one.sh,test_over.sh\" && k(d.cpu) === k(d.seconds) && d.cpu[\"test_over.sh\"] > 0 ? 0 : 1)" "$dur"'
+  token_checks
 }
 
 checks "$BASH"

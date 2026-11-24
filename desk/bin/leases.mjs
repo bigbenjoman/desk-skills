@@ -52,8 +52,9 @@ export const EXIT_REFUSED = 3;
 export const EXIT_UNREADABLE = 4;
 export const EXIT_GAVE_UP = 75;
 export const KINDS = LEASE_KINDS;
-// test, tsc and lint share the heavy pool; browser and light are one slot each.
-export const SLOTS = Object.freeze({ test: 'heavy', tsc: 'heavy', lint: 'heavy', browser: 'browser', light: 'light' });
+// test, tsc and lint share the heavy pool; browser and light are one slot each. job is tests/run.sh's
+// job tokens (job-token.mjs): one per suite it runs, with the machine profile's job-tokens row on.
+export const SLOTS = Object.freeze({ test: 'heavy', tsc: 'heavy', lint: 'heavy', browser: 'browser', light: 'light', job: 'job' });
 // No operation holds the store lock for more than a second, so one this old was left by a holder that
 // died, whatever process its pid names now.
 export const STORE_LOCK_MAX_AGE_MS = 10_000;
@@ -88,13 +89,18 @@ export function slotPools(env) {
 }
 // Each pid's process start time as the ledger records it (admit-ledger.mjs startStamp): Map pid -> stamp.
 export const ledgerStarts = (pids, psRows) => new Map([...startTimes(pids, psRows)].map(([p, s]) => [p, startStamp(s)]));
-// The pools' sizes: the heavy and light slots' current sizes (slotPools), preview builds per Vercel
-// team from preview-build-slots, memory from memory-ceiling-gb. `env` is desk-env's exports.
+// The job pool's size: a token for each test worker every heavy slot may run, test-lock-slots x
+// test-cap (test-cap 1 where unset), which bounds the suites running across the machine.
+export const jobTokens = (env) => env.testLockSlots() * (whole(env.machineValue('test-cap')) ?? 1);
+// The pools' sizes: the heavy and light slots' current sizes (slotPools), the job pool (jobTokens),
+// preview builds per Vercel team from preview-build-slots, memory from memory-ceiling-gb. `env` is
+// desk-env's exports.
 export const capacities = (env) => {
   const pools = slotPools(env);
   return {
     heavy: pools.heavy.current,
     light: pools.light.current,
+    job: jobTokens(env),
     previewBuild: whole(env.machineValue('preview-build-slots')) ?? 1,
     mem: whole(env.machineValue('memory-ceiling-gb')),
   };
@@ -127,6 +133,7 @@ export function poolOf(kind, key, caps) {
       const p = SLOTS[k];
       if (!p) throw usage(`a slot lease's key is one of ${Object.keys(SLOTS).join(', ')}, not "${k}"`);
       if (p === 'heavy') return { pool: 'slot:heavy', key: k, capacity: caps.heavy, one: 'the heavy slot', many: 'heavy slots' };
+      if (p === 'job') return { pool: 'slot:job', key: k, capacity: caps.job ?? 1, one: 'a job token', many: 'job tokens' };
       return { pool: `slot:${p}`, key: k, capacity: p === 'light' ? caps.light ?? 1 : 1, one: `the ${p} slot`, many: `${p} slots` };
     }
     case 'preview-build':
@@ -493,9 +500,10 @@ export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env),
 // `caps` is capacities(), or a function giving them afresh for each try, read under the store lock (a
 // pool headroom admission grows while the run waits). `note`, `lane` and `outside` are tryAcquire's. ->
 // { code, lease?, lane?, why?, at? }, `why` beside a lease saying what shadow let through, `at` beside a give-up.
-export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now, poll = POLL_MS, onWait = null, note = null, beforeTry = null, lane = null, outside = null }) {
+// `mode`, where given, stands in for the kind's (a job token's lever is its own profile row).
+export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now, poll = POLL_MS, onWait = null, note = null, beforeTry = null, lane = null, outside = null, mode: given = null }) {
   const capsNow = typeof caps === 'function' ? caps : () => caps;
-  const { mode } = kindMode(req.kind, env);
+  const mode = given ?? kindMode(req.kind, env).mode;
   if (mode === 'off') {
     poolOf(req.kind, req.key, offCaps(capsNow()));
     return { code: EXIT_OK, why: `the ${req.kind} lease kind is off: nothing taken` };
