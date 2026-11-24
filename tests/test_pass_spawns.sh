@@ -54,6 +54,26 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-177 AC1 a <kebab-slug> branch is rebuilt from the title, keeping its prefix, with no < or >" \
   '[ "$(field B-4 branch)" = "\"feat/B-4-branch-keeps-the-kebab-slug-placeholder\"" ] && [ "$(field B-4 state)" = "\"running\"" ] && echo "$out" | grep -qF "branch feat/B-4-<kebab-slug> was unusable"'
 
+# ---- #1361: a ticket that renders, with an app to run and §4 Test sign-in unset, is asked for the row
+# at spawn, not after its PR opens; with the row set it spawns.
+export DESK_QUEUE="$T/queue-sg.json" DESK_AUTOPILOT_STATE="$T/state-sg" DESK_CONFIG="$T/config-sg.md"
+cp "$T/config.md" "$DESK_CONFIG"; mkdir -p "$T/state-sg/logs" "$T/state-sg/triage"
+printf '\n## 4. Checks\n| Field | Value |\n|---|---|\n| Dev server | `npm run dev` |\n' >> "$DESK_CONFIG"
+q init sg; q set-batch concurrency=3
+q add SG-1; q set SG-1 state=triaged branch=feat/SG-1 lane=A
+printf '{"ticket":"SG-1","summary":"A new page","renders":true}' > "$T/state-sg/triage/SG-1.json"
+q add SG-2; q set SG-2 state=triaged branch=fix/SG-2
+printf '{"ticket":"SG-2","summary":"A query fix","renders":false}' > "$T/state-sg/triage/SG-2.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1361 a ticket that renders is parked at spawn on the unset Test sign-in row, with no worker" \
+  '[ "$(field SG-1 state)" = "\"parked\"" ] && [ "$(field SG-1 session_id)" = null ] && jq -r ".tickets[\"SG-1\"].park.question" "$DESK_QUEUE" | grep -q "^NEEDS ROW — SG-1 renders, .* §4 Test sign-in is unset, so no worker was spawned" && [ "$(jq -r ".tickets[\"SG-1\"].park.kind" "$DESK_QUEUE")" = question ]'
+check "#1361 one that renders nothing spawns" '[ "$(field SG-2 state)" = "\"running\"" ]'
+printf '| Test sign-in | `dev-user@example.test` |\n' >> "$DESK_CONFIG"
+q requeue SG-1 >/dev/null 2>&1
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1361 with the row set, it spawns" '[ "$(field SG-1 state)" = "\"running\"" ]'
+export DESK_CONFIG="$T/config.md"
+
 # ---- pass.mjs --batch X-1, with no queue or state exported, works X-1's queue, and the
 # worktree setup and the worker it starts resolve X-1's queue and state too.
 unset DESK_QUEUE DESK_AUTOPILOT_STATE DESK_BATCH

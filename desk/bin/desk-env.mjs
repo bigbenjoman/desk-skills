@@ -637,6 +637,9 @@ const configRepoRoot = (parsed, { cwd = true } = {}) => {
   return cwd ? git(currentRepo().dir, 'rev-parse', '--show-toplevel') || null : null;
 };
 
+// The main checkout config file `config` names in §2 Primary repo root, or null.
+export const configFileRoot = (config) => configRepoRoot(parseConfigFile(config), { cwd: false });
+
 // §4 Suite weight describes the repo's suites, so the repo's committed settings carry it, as
 // env.DESK_SUITE_WEIGHT in <root>/.claude/settings.json. -> { value, file } or null when unset.
 export function committedSuiteWeight(root) {

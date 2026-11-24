@@ -39,6 +39,13 @@ grants, and each ticket that needs it parks naming it (needs-you lists those par
 If any parked ticket names a row answered here, say that `/desk-needs-you` (its `unset:<key>` item,
 `done`) requeues them.
 
+Every install (`install.sh`, by hand or the pass's auto-release) also puts each configured repo's
+`MISSING` rows on its needs-you list as one ask, `config drift: …`, with a recommended value where one
+can be read (for §4 Test sign-in, a user the repo's seed files create, for the person to confirm). A
+pass drops it once the config has those rows, and the next install replaces it if they change. Rows
+written here settle it. Before a ticket that renders spawns, the pass checks §4 Test sign-in: unset
+with a Dev server item, the ticket parks at once (`NEEDS ROW — …`) rather than at its screenshots.
+
 ## Merge holds an agent can clear
 
 A §4 Merge holds item whose step is a check an agent can run, written with no routine, puts every PR

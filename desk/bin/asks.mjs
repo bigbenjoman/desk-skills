@@ -34,8 +34,9 @@ function update(stateDir, change) {
 // again with an `until`, that list replaces the one kept; asked again with none, the kept one stands.
 // `until` in the result is what is kept, so a caller says what a pass will act on. `settles: 'admit'`
 // marks an ask its tickets' admission settles too (intake.mjs admit's ask to start a session), which
-// settleAdmitted drops.
-export function addAsk(stateDir, text, now = Date.now(), { until = [], settles = null } = {}) {
+// settleAdmitted drops. `settles: 'drift'` with `rows` marks one naming config rows a release added
+// that the config lacks (drift-asks.mjs), which settleDrift drops.
+export function addAsk(stateDir, text, now = Date.now(), { until = [], settles = null, rows = null } = {}) {
   const keys = [...new Set(until)];
   return update(stateDir, (f) => {
     const same = f.asks.find((a) => a.text === text);
@@ -45,7 +46,8 @@ export function addAsk(stateDir, text, now = Date.now(), { until = [], settles =
       return { id: same.id, added: false, until: same.until ?? [] };
     }
     const id = f.next ?? Math.max(0, ...f.asks.map((a) => a.id)) + 1;
-    f.asks.push({ id, text, at: new Date(now).toISOString(), ...(keys.length ? { until: keys, ...(settles ? { settles } : {}) } : {}) });
+    const drift = settles === 'drift' && rows?.length ? { settles, rows: [...rows] } : null;
+    f.asks.push({ id, text, at: new Date(now).toISOString(), ...(keys.length ? { until: keys, ...(settles ? { settles } : {}) } : drift ?? {}) });
     f.next = id + 1;
     return { id, added: true, until: keys };
   });
@@ -73,6 +75,11 @@ export const pruneAsks = (stateDir, { known, finished }) =>
 export const settleAdmitted = (stateDir, placed) =>
   dropAsks(stateDir, (a) => a.settles === 'admit' && Array.isArray(a.until) && a.until.length && a.until.every((k) => placed(k)));
 
+// Drops each config-drift ask (`settles: 'drift'`) `gone(ask)` holds for.
+//   -> the asks dropped, each { id, text, keys } (keys: the rows it named)
+export const settleDrift = (stateDir, gone) =>
+  dropAsks(stateDir, (a) => a.settles === 'drift' && Array.isArray(a.rows) && gone(a));
+
 // Drops each ask `gone(ask)` holds for. The unlocked read only spares a write when none does: what is
 // dropped is decided again under the lock, so an ask asked again meanwhile is judged as it now is.
 function dropAsks(stateDir, gone) {
@@ -80,6 +87,6 @@ function dropAsks(stateDir, gone) {
   return update(stateDir, (f) => {
     const out = f.asks.filter(gone);
     f.asks = f.asks.filter((a) => !gone(a));
-    return out.map(({ id, text, until }) => ({ id, text, keys: until }));
+    return out.map(({ id, text, until, rows }) => ({ id, text, keys: until ?? rows }));
   });
 }
