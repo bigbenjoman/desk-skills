@@ -283,7 +283,7 @@ t('#805 with the lever off, a runner fault naming no changed file is re-run as s
   const NOW = Date.parse('2026-11-23T12:00:00Z');
   const done = (at, ok = true) => ({ ...tk, base_refresh: { head: HEAD, at, ok } });
   const waits = fixCall(done('2026-11-23T11:50:00Z'), pr([ok('tests'), red('Lint')]), up({ now: NOW, baseRead: read({ Lint: 'fail' }, { Lint: 'pass' }) }));
-  t('#1330 updated at this head minutes ago (by the pass or the merge driver): it waits for the new head, no fix try', `${waits?.call} ${/updated from main at 11:50 UTC.*waits for the run at its new head/.test(waits?.why ?? '')}`, 'wait true');
+  t('#1330 updated at this head minutes ago (by the pass or the merge driver): it waits for the new head, no fix try', `${waits?.call} ${/updated from main at 2026-11-23 11:50 UTC.*waits for the run at its new head/.test(waits?.why ?? '')}`, 'wait true');
   t('#1330 past the wait, a fix try as before', fixCall(done('2026-11-23T11:00:00Z'), pr([ok('tests'), red('Lint')]), up({ now: NOW, baseRead: read({ Lint: 'fail' }, { Lint: 'pass' }) }))?.call, 'requeue');
   t('#1330 the wait is the merge driver\'s too (stale-base.mjs reads staleCall)', staleCall(done('2026-11-23T11:50:00Z'), HEAD, ['Lint'], read({ Lint: 'fail' }, { Lint: 'pass' }), { base: 'main', now: NOW })?.call, 'wait');
   t('#1330 and so is the refresh', JSON.stringify(staleCall({ key: 'T-1' }, HEAD, ['Lint'], read({ Lint: 'fail' }, { Lint: 'pass' }), { base: 'main' })?.checks), '["Lint"]');
