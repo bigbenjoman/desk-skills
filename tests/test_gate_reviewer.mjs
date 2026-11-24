@@ -70,6 +70,9 @@ t('#1365 a batch\'s pass with nothing waiting leaves another batch\'s waits', j(
 t('#1365 and the reviewer reads as down from them', j([GR.verdict(mb, BOT, at(90)).down, GR.verdict(mb, BOT, at(90)).prs]), j([true, [6]]));
 mb = GR.update(mb, { waits: [], now: at(91), batch: 'X-1' });
 t('#1365 that batch\'s own pass with nothing waiting clears them', j(mb.reviewers[BOT].waiting), '{}');
+let ar = GR.update({ reviewers: {} }, { waits: [wait(8)], now: at(0), batch: 'X-2' });
+ar = GR.update(ar, { waits: [], now: at(120), live: ['X-1'] });
+t('#1365 a batch archived without a last pass has its waits dropped by the next pass, so the reviewer is not read as down from them', j([ar.reviewers[BOT].waiting, GR.verdict(ar, BOT, at(120)).down]), j([{}, false]));
 
 const D = scratch('gate-reviewer-dry-');
 GR.writeRecord(D, quiet);

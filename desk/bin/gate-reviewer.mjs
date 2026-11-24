@@ -39,8 +39,11 @@ export function threshold(lags = []) {
 // reviewedAtHead, last: ISO of its latest review on that PR, or null }), and `waits`, its PRs waiting on
 // a reviewer ({ login, pr, head }). A PR waiting at the same head keeps when it began; one reviewed at
 // the head it waited at adds its lag. -> a new record
-export function update(rec, { seen = [], waits = [], now = Date.now(), batch = null }) {
+// `live`, the repo's named batches that still exist (null: not read): a wait of a batch no longer among
+// them, archived without a last pass, goes, as no pass of it will clear it.
+export function update(rec, { seen = [], waits = [], now = Date.now(), batch = null, live = null }) {
   const mine = (w) => (w.batch ?? null) === batch;
+  const gone = (w) => live != null && w.batch != null && !live.includes(w.batch);
   const out = { reviewers: { ...rec.reviewers } };
   const of = (login) => (out.reviewers[login] = { last: null, lags: [], waiting: {}, ...out.reviewers[login] });
   for (const x of seen) {
@@ -57,7 +60,7 @@ export function update(rec, { seen = [], waits = [], now = Date.now(), batch = n
     const r = out.reviewers[login];
     const before = r.waiting ?? {};
     // Another batch's waits stay as its own last pass left them.
-    r.waiting = Object.fromEntries(Object.entries(before).filter(([, w]) => !mine(w)));
+    r.waiting = Object.fromEntries(Object.entries(before).filter(([, w]) => !mine(w) && !gone(w)));
     for (const w of waits.filter((x) => x.login === login)) {
       const had = before[w.pr];
       r.waiting[w.pr] = { head: w.head, since: had && had.head === w.head ? had.since : iso(now), ...(batch ? { batch } : {}) };
@@ -93,7 +96,7 @@ export function downAsk(login, v, { repo, owner = null } = {}) {
 // reads as down put to the person as one ask in `state` (the repo's), replacing the last pass's for it,
 // in place of each PR's wait line, and the ask of one that no longer reads as down (its next review
 // seen, or nothing waiting on it) dropped. A dry run writes nothing. -> the pass's report lines
-export function reviewerStep(state, { seen = [], waits = [], now = Date.now(), owner = null, repo = '', dry = false, batch = null } = {}) {
+export function reviewerStep(state, { seen = [], waits = [], now = Date.now(), owner = null, repo = '', dry = false, batch = null, live = null } = {}) {
   if (!seen.length && !waits.length && !hasRecord(state)) return [];
   // The record is the repo's, shared by its batches' passes: read, changed and written under its lock.
   let held = null;
@@ -102,12 +105,12 @@ export function reviewerStep(state, { seen = [], waits = [], now = Date.now(), o
       return [...waits.map((w) => w.line), `gate reviewer: its record could not be locked (${firstLine(e)}), so whether it is down is not known this pass`];
     }
   }
-  try { return step(state, { seen, waits, now, owner, repo, dry, batch }); } finally { if (held) unlock(held); }
+  try { return step(state, { seen, waits, now, owner, repo, dry, batch, live }); } finally { if (held) unlock(held); }
 }
-function step(state, { seen, waits, now, owner, repo, dry, batch }) {
+function step(state, { seen, waits, now, owner, repo, dry, batch, live }) {
   const lines = [];
   let rec;
-  try { rec = update(readRecord(state), { seen, waits, now, batch }); } catch (e) {
+  try { rec = update(readRecord(state), { seen, waits, now, batch, live }); } catch (e) {
     return [...waits.map((w) => w.line), `gate reviewer: its record could not be read (${firstLine(e)}), so whether it is down is not known this pass`];
   }
   const down = new Set();

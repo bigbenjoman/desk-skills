@@ -63,7 +63,7 @@ export function* decideFixTries(s) {
     // reviewer is reviewing, whatever PR waits on it (gate-reviewer.mjs). The check's finish is that review's time.
     const passed = p.state === 'OPEN' && p.isDraft === false && p.head ? externalPassed(p.checks, s.stateChecks) : null;
     if (passed) {
-      const last = (p.checks ?? []).filter((c) => c.name === passed.name).map((c) => c.completedAt).filter(Boolean).sort().at(-1) ?? null;
+      const last = (p.checks ?? []).filter((c) => c.name === passed.name).map((c) => c.completed ?? c.completedAt).filter(Boolean).sort().at(-1) ?? null;
       yield { type: 'external-seen', key: t.key, pr: p.pr, head: p.head, login: passed.login, reviewedAtHead: true, last };
     }
     if (s.outageRerun?.includes(p.pr)) continue;

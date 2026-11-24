@@ -5134,12 +5134,14 @@ const externalSeen = [], externalWaits = [];
     },
   });
 }
+// The repo's named batches that still exist, or null where they cannot be listed.
+function liveNamed() { try { return listBatches().map((b) => b.name).filter(Boolean); } catch { return null; } }
 // Whether each outside gate reviewer PRs wait on has stopped reviewing across the repo (gate-reviewer.mjs
 // reviewerStep): one that has is one repo-level ask in place of each PR's wait line.
 {
   let owner = null;
   try { const v = E.declaredValue('infra-owner'); owner = v && !/^(you|none|todo)$/i.test(v.trim()) ? v.trim() : null; } catch { /* unread: none named */ }
-  out.push(...GR.reviewerStep(E.repoStateOf(STATE), { seen: externalSeen, waits: externalWaits, owner, repo: GH_REPO, dry: DRY, batch: E.batchName() ?? null }));
+  out.push(...GR.reviewerStep(E.repoStateOf(STATE), { seen: externalSeen, waits: externalWaits, owner, repo: GH_REPO, dry: DRY, batch: E.batchName() ?? null, live: liveNamed() }));
 }
 // With `gate`, the read also holds `gateReview`: the latest desk-review a §4 Gate reviewer posted, where
 // it is at the head and not clean, read apart from desk's own so a later verdict of desk's cannot hide
