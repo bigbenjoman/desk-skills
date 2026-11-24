@@ -201,25 +201,28 @@ const weekName = (start) => {
 };
 
 // Repo state `state`'s time stuck in the ISO week `weeksAgo` before the one holding `now`: the hours
-// (each ticket's overlapping causes counted once), the tickets affected, and each cause with its
+// (each ticket's overlapping causes and batches counted once), the tickets affected, and each cause with its
 // hours, tickets and tracking issue, most hours first (`live` as counted takes it):
 //   { week, from, to, hours, tickets, causes: [{ cause, hours, tickets, link: { ref, url } | null }] }
 export function weekSummary(state, { now = Date.now(), weeksAgo = 0, live = null } = {}) {
   const from = weekStart(now) - weeksAgo * WEEK_MS, to = from + WEEK_MS, upto = Math.min(to, now);
   const links = readLinks(state);
+  // A ticket counts once, by its key, whichever batches it sat stuck in (a move reopens its park in the
+  // new batch from the park's since, over the time the old batch's interval already holds): its spans,
+  // and each cause's, are joined before they are summed.
   const byCause = new Map(), spans = new Map();
+  const add = (m, k, span) => m.set(k, [...(m.get(k) ?? []), span]);
   for (const e of counted(state, live) ?? []) {
     const a = Math.max(ms(e.start), from), b = Math.min(e.end == null ? now : ms(e.end), upto);
     if (!(b > a)) continue;
-    const c = byCause.get(e.cause) ?? { ms: 0, tickets: new Set() };
-    c.ms += b - a;
-    c.tickets.add(ticketOf(e));
-    byCause.set(e.cause, c);
-    spans.set(ticketOf(e), [...(spans.get(ticketOf(e)) ?? []), [a, b]]);
+    if (!byCause.has(e.cause)) byCause.set(e.cause, new Map());
+    add(byCause.get(e.cause), e.key, [a, b]);
+    add(spans, e.key, [a, b]);
   }
-  const causes = [...byCause].sort((x, y) => y[1].ms - x[1].ms)
-    .map(([cause, c]) => ({ cause, hours: hours(c.ms), tickets: c.tickets.size, link: links[cause] ?? null }));
-  const total = [...spans.values()].reduce((n, s) => n + unionMs(s), 0);
+  const msOf = (m) => [...m.values()].reduce((n, s) => n + unionMs(s), 0);
+  const causes = [...byCause].map(([cause, m]) => ({ cause, ms: msOf(m), tickets: m.size })).sort((x, y) => y.ms - x.ms)
+    .map(({ cause, ms: m, tickets }) => ({ cause, hours: hours(m), tickets, link: links[cause] ?? null }));
+  const total = msOf(spans);
   return { week: weekName(from), from: new Date(from).toISOString(), to: new Date(to).toISOString(), hours: hours(total), tickets: spans.size, causes };
 }
 

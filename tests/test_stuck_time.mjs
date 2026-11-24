@@ -1,7 +1,7 @@
 // suite: stuck time (each park, hold and stall as an interval with its cause, and the hours stuck per cause per repo per week)
 // layer: L1
 // covers: desk/bin/stuck-time.mjs desk/bin/ticket-ledger.mjs desk/bin/levers-page.mjs desk/bin/lever-registry.mjs
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -109,6 +109,31 @@ const open = (S) => intervals(S).filter((e) => e.end == null).map((e) => `${e.ke
   t('a ticket of one name in two batches counts, in each, only that batch\'s hours, though admitted before the later one\'s',
     j([h('F-2', D(23, 9), 'K', Date.parse(D(23, 8))), h('F-2', D(24, 9), 'K', Date.parse(D(24, 9)))]), j([2, 2]));
   t('while that first batch is the live one, it still counts to now', ST.weekSummary(S, { now: Date.parse(D(25, 12)), live: ST.liveOf([{ name: 'F-2', state: firstState }]) }).hours, 51);
+}
+
+// ---- a standing batch moved into its slot (move-batch.mjs), then a new standing batch -------------------------------
+{
+  const S = scratch('stuck-time-moved-');
+  const slot = join(S, 'batches', 'E-1');
+  mkdirSync(slot, { recursive: true });
+  const parkedK = [{ key: 'K', kind: 'question', since: D(23, 9) }];
+  // The standing batch parks K at 09:00 and passes again at 11:00.
+  ST.stuckStep(S, { batch: null, batchState: S, parked: parkedK, now: D(23, 9) });
+  ST.stuckStep(S, { batch: null, batchState: S, parked: parkedK, now: D(23, 11) });
+  const before = ST.batchIdentity(S);
+  // The move takes the queue and its state to the slot, keeps the repo's stuck files and retires the
+  // standing slot's identity.
+  rmSync(join(S, 'stuck-batch.json'));
+  ST.stuckStep(S, { batch: 'E-1', batchState: slot, parked: parkedK, now: D(23, 12) });
+  ST.stuckStep(S, { batch: 'E-1', batchState: slot, parked: parkedK, now: D(23, 15) });
+  // A new standing batch's first pass, with nothing stuck.
+  ST.stuckStep(S, { batch: null, batchState: S, parked: [], now: D(23, 16) });
+  t('the new standing batch writes its own identity and closes nothing of the moved one\'s',
+    j([ST.batchIdentity(S), intervals(S).filter((e) => e.end != null).length]), j([{ name: null, created: D(23, 16) }, 0]));
+  t('the moved batch\'s identity was the standing slot\'s until the move', j(before), j({ name: null, created: D(23, 9) }));
+  const live = ST.liveOf([{ name: null, state: S }, { name: 'E-1', state: slot }]);
+  const s = ST.weekSummary(S, { now: Date.parse(D(24, 9)), live });
+  t('the week shows the moved ticket once, with the hours it really sat parked', j([s.hours, s.tickets, s.causes.map((c) => [c.cause, c.hours, c.tickets])]), j([24, 1, [['park: question', 24, 1]]]));
 }
 
 // ---- the ledger: each interval's opening and closing is a stuck event, written first, once ----------------------

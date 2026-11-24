@@ -201,15 +201,16 @@ const staying = {
   // The repo's record of finished cloud sessions archived, and a write of it in progress.
   'cloud-archived.json': '{"sessions":["session_a"]}',
   'cloud-archived.json.tmp.4242': '{"sessions":["session_a","session_b"]}',
-  // The repo's time stuck by cause, and the standing slot's own batch identity (stuck-time.mjs).
+  // The repo's time stuck by cause (stuck-time.mjs).
   'stuck-intervals.jsonl': '{"key":"K-1","batch":null,"cause":"usage","start":"then","end":null}\n',
   'stuck-passes.json': '{}',
   'stuck-links.json': '{}',
-  'stuck-batch.json': '{"name":null,"created":"2026-11-20T00:00:00.000Z"}',
   'ref/acme__web/f.txt': 'a read-only clone is the repo\'s, not a batch\'s\n',
   'batches/OTHER/parks/O-1.json': '{"question":"other batch"}',
 };
 for (const [f, text] of Object.entries({ ...moving, ...staying })) put(join(standingS, f), text);
+// The standing slot's batch identity (stuck-time.mjs) is the moved batch's: it is retired, not moved.
+put(join(standingS, 'stuck-batch.json'), '{"name":null,"created":"2026-11-20T00:00:00.000Z"}');
 // A merge driver holding its lock: a process that outlives this check, reparented so it is reaped.
 const sleeper = Number(spawnSync('bash', ['-c', 'sleep 60 >/dev/null 2>&1 & echo $!'], { encoding: 'utf8' }).stdout.trim());
 put(join(standingS, 'merge-driver.lock.d', 'pid'), `${sleeper}\n`);
@@ -238,6 +239,7 @@ t('AC1 its tickets and parks are unchanged', JSON.stringify(moved.tickets), JSON
 for (const [f, text] of Object.entries(moving)) t(`AC1 state ${f} moved, unchanged`, existsSync(join(namedS('E-1'), f)) && read(join(namedS('E-1'), f)), text);
 for (const f of Object.keys(moving)) t(`AC1 state ${f} is gone from the standing slot`, existsSync(join(standingS, f)), false);
 for (const [f, text] of Object.entries(staying)) t(`AC1 ${f} stays with the standing slot`, existsSync(join(standingS, f)) && read(join(standingS, f)), text);
+t('the standing slot\'s batch identity is retired: neither kept there nor moved', [existsSync(join(standingS, 'stuck-batch.json')), existsSync(join(namedS('E-1'), 'stuck-batch.json'))].join(), 'false,false');
 t('AC1 the standing slot has no queue', existsSync(standingQ), false);
 t('AC1 no lock is left behind', ['orchestrator.lock', 'supervisor.lock'].some((f) => existsSync(join(standingS, f))) || existsSync(`${standingQ}.lock`), false);
 let driverAlive = true;
