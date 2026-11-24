@@ -5157,7 +5157,14 @@ function liveNamed() { try { return listBatches().map((b) => b.name).filter(Bool
 {
   let owner = null;
   try { const v = E.declaredValue('infra-owner'); owner = v && !/^(you|none|todo)$/i.test(v.trim()) ? v.trim() : null; } catch { /* unread: none named */ }
-  out.push(...GR.reviewerStep(E.repoStateOf(STATE), { seen: externalSeen, waits: externalWaits, owner, repo: GH_REPO, dry: DRY, batch: E.batchName() ?? null, live: liveNamed() }));
+  // A reviewer new to the record, or a PR new to its waits, is read from GitHub (gate-reviewer.mjs seeded).
+  const seed = (login, prs, cold) => {
+    const [o, name] = GH_REPO.split('/');
+    const r = shOut('gh', ['api', 'graphql', '-f', `owner=${o}`, '-f', `name=${name}`, ...(cold ? ['-f', `q=${GR.seedSearch(GH_REPO)}`] : []), '-f', `query=${GR.seedQuery(prs, cold)}`]);
+    if (!r.ok) return null;
+    try { return GR.seedOf(JSON.parse(r.out), login); } catch { return null; }
+  };
+  out.push(...GR.reviewerStep(E.repoStateOf(STATE), { seen: externalSeen, waits: externalWaits, owner, repo: GH_REPO, dry: DRY, batch: E.batchName() ?? null, live: liveNamed(), seed }));
 }
 // With `gate`, the read also holds `gateReview`: the latest desk-review a §4 Gate reviewer posted, where
 // it is at the head and not clean, read apart from desk's own so a later verdict of desk's cannot hide

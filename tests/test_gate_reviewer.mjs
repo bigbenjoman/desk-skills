@@ -74,6 +74,44 @@ let ar = GR.update({ reviewers: {} }, { waits: [wait(8)], now: at(0), batch: 'X-
 ar = GR.update(ar, { waits: [], now: at(120), live: ['X-1'] });
 t('#1365 a batch archived without a last pass has its waits dropped by the next pass, so the reviewer is not read as down from them', j([ar.reviewers[BOT].waiting, GR.verdict(ar, BOT, at(120)).down]), j([{}, false]));
 
+// Seeded from GitHub: a record that starts while the reviewer is already down reads as down at once,
+// from its last review. Its last review on the repo was at 09:46, and PR #9 left draft at 12:38; the
+// record starts at 14:17.
+const H = (h, m) => `2026-11-24T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00Z`;
+const pr = (number, { created, ready = [], reviews = [], commit = null }) => ({ number, createdAt: created,
+  commits: { nodes: commit ? [{ commit: { committedDate: commit } }] : [] },
+  timelineItems: { nodes: ready.map((createdAt) => ({ createdAt })) },
+  reviews: { nodes: reviews.map(([login, submittedAt]) => ({ author: { login }, submittedAt })) } });
+const payload = { data: {
+  recent: { nodes: [
+    pr(9, { created: H(11, 0), ready: [H(12, 38)], commit: H(12, 30) }),
+    pr(7, { created: H(8, 0), ready: [H(9, 0)], reviews: [[BOT, H(9, 6)], ['sam', H(9, 30)]] }),
+    pr(8, { created: H(9, 37), reviews: [[BOT, H(9, 46)]] }),
+  ] },
+  repository: { p9: pr(9, { created: H(11, 0), ready: [H(12, 38)], commit: H(12, 30) }) } } };
+const sd = GR.seedOf(payload, BOT);
+t('#1370 a seed reads the reviewer\'s latest review on the repo', sd.last, H(9, 46));
+t('#1370 its lags, from each PR\'s ready time (or its opening, never drafted) to its first review', j(sd.lags), j([6, 9]));
+t('#1370 and when each waiting PR began waiting: the latest of its ready time, head commit and last review', sd.began[9], new Date(H(12, 38)).toISOString());
+t('#1370 the query reads the recent PRs only when cold, and each waiting PR by number', j([/recent: search/.test(GR.seedQuery([9], true)), /recent: search/.test(GR.seedQuery([9], false)), /p9: pullRequest\(number:9\)/.test(GR.seedQuery([9], false))]), j([true, false, true]));
+const SD = scratch('gate-reviewer-seed-');
+const calls = [];
+const seed = (login, prs, cold) => { calls.push([login, prs, cold]); return sd; };
+const now = Date.parse(H(14, 17));
+let sl = GR.reviewerStep(SD, { waits: [wait(9, 'h9')], now, repo: 'acme/widgets', seed });
+t('#1370 a cold record seeded from GitHub reads as down on its first pass, since the last review', j([sl.some((l) => l.startsWith(`gate reviewer: ${BOT} reads as down: no review since ${H(9, 46)}`)), readAsks(SD).length]), j([true, 1]));
+t('#1370 the waiting PR\'s wait starts when it left draft, not when the pass first saw it', GR.readRecord(SD).reviewers[BOT].waiting[9].since, new Date(H(12, 38)).toISOString());
+GR.reviewerStep(SD, { waits: [wait(9, 'h9'), wait(10)], now: now + 60000, repo: 'acme/widgets', seed });
+t('#1370 seeded once: the next pass reads GitHub only for a PR new to its waits', j(calls.map((c) => [c[1], c[2]])), j([[[9], true], [[10], false]]));
+const SF = scratch('gate-reviewer-seedfail-');
+const fl = GR.reviewerStep(SF, { waits: [wait(9, 'h9')], now, seed: () => null });
+t('#1370 a seed GitHub cannot answer says so, and the record goes on what the passes see', j([fl.some((l) => /could not be read from GitHub/.test(l)), GR.readRecord(SF).reviewers[BOT].waiting[9].since, GR.readRecord(SF).reviewers[BOT].seeded ?? null]), j([true, new Date(now).toISOString(), null]));
+// A record from before seeding (no `seeded`) is seeded on its next pass, moving an observed start back.
+const OLD = scratch('gate-reviewer-old-');
+GR.writeRecord(OLD, { reviewers: { [BOT]: { last: null, lags: [], waiting: { 9: { head: 'h9', since: H(14, 17) } } } } });
+GR.reviewerStep(OLD, { waits: [wait(9, 'h9')], now: now + 120000, seed: () => sd });
+t('#1370 a record written before seeding is seeded on its next pass, its wait moved back to when it began', j([GR.readRecord(OLD).reviewers[BOT].last, GR.readRecord(OLD).reviewers[BOT].waiting[9].since]), j([H(9, 46), new Date(H(12, 38)).toISOString()]));
+
 const D = scratch('gate-reviewer-dry-');
 GR.writeRecord(D, quiet);
 GR.reviewerStep(D, { waits: [wait(3, 'h3'), wait(4, 'h4')], now: at(80), dry: true });
