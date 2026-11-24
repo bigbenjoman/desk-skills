@@ -291,6 +291,7 @@ Write ONLY this JSON to $OUT — no prose, no code fence:
   "unknowns": [{"question": "<one line>", "category": "<an ask or take category, above>", "options": ["<at least two>"], "recommended": "<one of options, or null>", "reserved": <true only for a call a criterion reserves for the user's record>}],
   "already_met": ["<an acceptance criterion the code already satisfies>: <file:line>"],
   "verify_only": <true only when every acceptance criterion is in already_met>,
+  "drafted_criteria": <null when the ticket has an Acceptance criteria section; otherwise ["Given <state>, when <action>, then <testable result>", one per outcome its goal and proposal state], or [] when its text states no testable outcome>,
   "prior_art": ["<branch or PR that already touches these files, and in one clause what it does — opposite intent, same intent, or partial. Empty if none found.>"],
   "blocker_needs": {"<KEY of an open blocker>": {"needs": "build|merge|none", "why": "<one line>"}},
   "ben_steps": [{"step": "<a step only the user can take, from the routing file's list>", "blocker": "<the proposed blocker ticket's summary: what the user does, and what it unblocks>"}],
@@ -301,6 +302,8 @@ Write ONLY this JSON to $OUT — no prose, no code fence:
 
 files_in_scope drives collision detection across the batch, so be concrete and do not pad it.
 unknowns and already_met are [] when there are none.
+drafted_criteria is written into the ticket as desk's draft, so draft each from the ticket's own words:
+a value, name or number its text does not hold is never guessed, and an outcome it leaves open is not one.
 ben_steps is [] when the ticket needs no step only the user can take.
 blocker_needs has one entry per open "is blocked by" link, and is {} when the ticket has none.
 PROMPT_END
@@ -409,6 +412,7 @@ d.unknowns = ask;
 d.decided = taken;
 d.already_met = (Array.isArray(d.already_met) ? d.already_met : []).map(String).filter((s) => s.trim());
 d.verify_only = d.verify_only === true && d.already_met.length > 0;
+d.drafted_criteria = Array.isArray(d.drafted_criteria) ? d.drafted_criteria.map((c) => String(c ?? '').trim()).filter(Boolean) : null;
 writeFileSync(out, `${JSON.stringify(d, null, 2)}\n`);
 if (taken.length) console.log(`[triage] ${d.ticket}  took ${taken.length} call(s) on their recommendation`);
 CALLS_END

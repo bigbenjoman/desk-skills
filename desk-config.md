@@ -178,6 +178,7 @@ Skip the whole round (write `no`) when §4 Tracker is `none`.
 | `gh-close-linked-issue` | Close a GitHub issue in this repo that your tickets' web links name, with a comment naming them and their PRs, once every ticket linking it is done | `yes` | `TODO` |
 | `gh-issue-create` | Open a GitHub issue in this repo (a follow-up, or a ticket where §4 Tracker is `none`), its exact text printed as it goes | `ask` | `TODO` |
 | `gh-issue-comment` | Comment on a GitHub issue in this repo, its exact text printed as it goes (never on the issue a ticket in progress works from: its PR closes that one) | `ask` | `TODO` |
+| `gh-issue-edit` | Edit a GitHub issue's body in this repo, its exact text printed as it goes: `/desk-admit` writing the sections triage drafted (acceptance criteria, `No UI.`, Out of scope, Verification) into an issue it would otherwise refuse | `ask` | `TODO` |
 
 `pr-auto-merge` merges on green by itself, so it needs `pr-merge-green` as well; setup asks again
 if the two differ. `pr-merge-green` `no` means you merge: skills report a PR ready at `APPROVED` +
