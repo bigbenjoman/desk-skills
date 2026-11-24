@@ -36,9 +36,10 @@
 // is made then, with the label it is listed under. The supervisor command runs that repo's supervisor.mjs install, uninstall or
 // status, and changes no config row or approval. The one other write is a repo's <state>/eta.jsonl,
 // which gains a ticket's first ship estimate the first time a live batch's forecast dates it.
+import * as MS from './merge-stages.mjs';
 import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
@@ -3280,6 +3281,14 @@ const GROUPS = [['Running', 'running'], ['Ready', 'ready'], ['Merging', 'merging
 // to that epic's tickets, each keeping its place in the whole queue. A group's heading is a row with
 // no id, which the selection steps over. `title` leads with the place and time, as the interactive
 // screen's breadcrumb does.
+// The repo's merge time by stage (merge-stages.mjs), one line once a merged PR has its stages read.
+function stagesHead(r) {
+  if (!r.stateDir) return [];
+  // A named batch's state is under the repo's, which holds the record (needs-you.mjs standingDir).
+  const dir = r.batch == null ? r.stateDir : resolve(r.stateDir, '..', '..');
+  const line = MS.stagesLine(MS.summary(MS.readStages(dir)));
+  return line ? [line] : [];
+}
 function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = null, title = false, usage = null, pinUsage = false } = {}) {
   const none = { rows: [], foot: [] };
   if (r.error) return { head: [`${r.name} · queue unreadable: ${r.error}`], ...none };
@@ -3306,6 +3315,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     ...(ep ? [`${ep.key} · ${ep.summary} · ${ep.done} of ${ep.total} children done`] : []),
     countsLine(r, now),
     ...passHead(r, now),
+    ...stagesHead(r),
     ...(r.unreadable ?? []).map(unreadableText),
     ...((p) => (p ? [uploadPauseText(p)] : []))(uploadPause()),
     ...(pinUsage ? [] : usageLines(usage ?? usageOf([r], now), { now, solid: solidBars(width) })),

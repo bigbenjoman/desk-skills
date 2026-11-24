@@ -4,6 +4,7 @@
 // file:// fetches, and a small inline script ages the page at the moment it is opened.
 //
 //   import { renderPage, pageAge } from './levers-page.mjs'
+import * as MS from './merge-stages.mjs';
 import { DECISION_RULE, GUARDRAILS, KEPT_STATES as KEPT, REGISTRY } from './lever-registry.mjs';
 
 // An age in seconds as words, for the view model and the page alike: "3 hours ago". `short` gives
@@ -329,6 +330,18 @@ function trends(v) {
     ? `<div class="cards">${Object.keys(METRICS).filter((k) => ms[k]).map((k) => wbrCard(k, ms[k])).join('')}</div>`
     : `<div class="cards">${Object.values(METRICS).map((m) => `<article class="card awaiting"><div class="awaiting-head"><h3>${esc(m.title)}</h3><span class="rag rag-sm" role="img" aria-label="Grey: no data yet" style="background:${C.grey}"></span></div><div class="awaiting-body"><span class="muted">Awaiting data</span><span class="muted small">This fills in once desk has evaluated its first tickets.</span></div></article>`).join('')}</div>`;
   return `<section aria-labelledby="tr-h" class="stack12">${head}${notes(p)}${body}</section>`;
+}
+
+// Each repo's merged PR time by stage (merge-stages.mjs): median and p75 per stage, and how many
+// external waits inside a reviewer outage were left out. Nothing until a merged PR has its stages.
+function mergeStages(v) {
+  const repos = v.panels.merge_stages?.repos ?? [];
+  if (!repos.length) return '';
+  const table = (r) => `<table class="stages"><caption>${esc(r.name)} · ${r.prs} merged PR${r.prs === 1 ? '' : 's'}</caption>`
+    + '<thead><tr><th scope="col">Stage</th><th scope="col">Median</th><th scope="col">p75</th><th scope="col">PRs</th></tr></thead><tbody>'
+    + MS.STAGES.filter((k) => r.stages?.[k]?.n).map((k) => `<tr><th scope="row">${esc(MS.STAGE_NAMES[k])}</th><td>${esc(MS.fmt(r.stages[k].median))}</td><td>${esc(MS.fmt(r.stages[k].p75))}</td><td>${r.stages[k].n}</td></tr>`).join('')
+    + `</tbody></table>${r.outage ? `<p class="muted small">${r.outage} external review wait${r.outage === 1 ? '' : 's'} inside a gate reviewer outage left out of the medians.</p>` : ''}`;
+  return `<section aria-labelledby="ms-h" class="stack12"><div class="sec-head"><h2 id="ms-h">Merge time by stage</h2></div>${repos.map(table).join('')}</section>`;
 }
 
 // When desk last kept `lever` in `repo`, from the change list; null when no change records it.
@@ -670,6 +683,7 @@ export function renderPage(view, { now = Date.parse(view.generated_at) } = {}) {
 ${summary(view)}
 ${tiles(view, today)}
 ${trends(view)}
+${mergeStages(view)}
 ${leverTable(view, today)}
 ${changes(view, today)}
 ${today ? '' : howDesk()}
