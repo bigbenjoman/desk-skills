@@ -39,7 +39,8 @@
 // elapsed part of those windows (final PRs and open ones together), with how many PRs and hours it
 // rests on. It never recommends: a recommendation needs final outcomes. But reverts, red main runs
 // and follow-ups only accumulate, so an arm whose provisional reading already breaches the baseline's
-// is refused at once.
+// final reading (MIN_TICKETS final PRs or more, which no later event moves) is refused at once. Against
+// a baseline still short of final PRs, the comparison is only shown, as above the baseline so far.
 //
 // Usage and flags: USAGE below (--help).
 import { readdirSync, readFileSync, realpathSync } from 'node:fs';
@@ -446,15 +447,26 @@ function recommend(arms) {
       keys: [...new Set(here.flatMap((a) => a.mapping.keys))] };
     const samples = here.map((a) => ({ arm: a.arm, baseline: BASELINE_PCTS.includes(a.pct), sessions: a.sessions, tickets: a.tickets_mapped, prs: a.prs_mapped }));
     const base = here.filter((a) => BASELINE_PCTS.includes(a.pct)).sort((x, y) => y.sessions - x.sessions)[0];
-    // Provisional: each arm with a PR window still open, and the breaches it already shows against the
-    // baseline's reading so far, each side resting on MIN_TICKETS PRs or more.
+    // Provisional: each arm with a PR window still open (resting on MIN_TICKETS PRs or more), and the
+    // breaches it already shows. Against the baseline's final reading (MIN_TICKETS final PRs or more,
+    // which a later event cannot move) a breach refuses the arm at once; against the baseline's own
+    // provisional reading, which still grows, it is only shown, as above the baseline so far.
     const provisional = here.filter((a) => a.provisional.open).map((a) => {
       const p = a.provisional;
-      const b = base?.provisional;
-      const breaches = a === base || !b || p.prs < MIN_TICKETS || b.prs < MIN_TICKETS ? []
-        : PROVISIONAL_BREACHES.filter((g) => ratio(p.rates[g], b.rates[g], PR_CHECKED[g].margin))
-          .map((g) => `provisional ${g} breach: ${p.rates[g].toFixed(2)} per PR so far against ${b.rates[g].toFixed(2)} on the baseline (margin ${PR_CHECKED[g].margin}x)`);
-      return { arm: a.arm, baseline: a === base, prs: p.prs, open: p.open, elapsed_hours: p.elapsed_hours, rates: p.rates, breaches };
+      const breaches = [];
+      const above = [];
+      if (a !== base && base && p.prs >= MIN_TICKETS) {
+        for (const g of PROVISIONAL_BREACHES) {
+          const fin = base.pr_guardrails[g];
+          const margin = PR_CHECKED[g].margin;
+          if (fin.prs >= MIN_TICKETS) {
+            if (ratio(p.rates[g], fin.rate, margin)) breaches.push(`provisional ${g} breach: ${p.rates[g].toFixed(2)} per PR so far against ${fin.rate.toFixed(2)} on the baseline's final PRs (margin ${margin}x)`);
+          } else if (base.provisional.prs >= MIN_TICKETS && ratio(p.rates[g], base.provisional.rates[g], margin)) {
+            above.push(`${g} ${p.rates[g].toFixed(2)} per PR above the baseline so far (${base.provisional.rates[g].toFixed(2)}, ${fin.prs} of its PRs final; not a refusal until ${MIN_TICKETS} are)`);
+          }
+        }
+      }
+      return { arm: a.arm, baseline: a === base, prs: p.prs, open: p.open, elapsed_hours: p.elapsed_hours, rates: p.rates, breaches, above };
     });
     const out = { window, row: rowName(window), counts, mapping, samples, provisional };
     if (!base || base.sessions < MIN_SESSIONS || base.usd_per_active_hour == null) {
@@ -483,7 +495,8 @@ function recommend(arms) {
       const bad = [...(a.unpriced ? [`${a.unpriced} request(s) on a model with no price`] : []),
         ...Object.entries(g).filter(([, v]) => v.status === 'breach' || (!measured && v.status === 'not measured')).map(([k, v]) => `${k} ${v.status}: ${v.why}`),
         ...(rw.status === 'breach' ? [`rework breach: ${rw.why}`] : [])];
-      // A breach already seen while the windows are open stays one: it refuses the arm now.
+      // A breach already seen while the windows are open, against the baseline's final reading, stays
+      // one: it refuses the arm now.
       bad.push(...(provisional.find((x) => x.arm === a.arm)?.breaches ?? []));
       if (bad.length) refused.push({ arm: a.arm, why: bad.join('; ') });
       else eligible.push(a);
@@ -516,6 +529,7 @@ const provisionalText = (r) => (r.provisional.length ? [
   `    provisional, from the elapsed part of open windows (never a recommendation on its own): ${r.provisional.map((x) => `${x.arm}${x.baseline ? ' (baseline)' : ''} `
     + `${x.prs} PR(s), ${x.open} open at ${Math.round(x.elapsed_hours)}h elapsed on average: ${Object.entries(x.rates).map(([g, v]) => `${g} ${v.toFixed(2)}`).join(', ')}`).join('; ')}`,
   ...r.provisional.flatMap((x) => x.breaches.map((why) => `    ${x.arm} refused at once: ${why}`)),
+  ...r.provisional.flatMap((x) => x.above.map((why) => `    ${x.arm}: ${why}`)),
 ] : []);
 
 // A window's sample per arm against what a decision needs.
