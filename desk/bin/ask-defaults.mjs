@@ -4,22 +4,14 @@
 // money, reaches outside (a customer, a vendor, anyone not on the team), widens a §3 permission, or
 // cannot be undone. The session recording the ask says so (--never-default "<why>"); a recommendation
 // decisions.mjs reads as an ask category (money, legal, production, customer copy) is one too.
-import { CHECKIN_TIME, checkinTimesOf, CONFIG_ROWS } from './config-schema.mjs';
+import { CHECKIN_TIME } from './config-schema.mjs';
 import { askCategoryIn } from './decisions.mjs';
 
 // An option is one word, as a needs-you action is: the ask's text says what each one does.
 export const OPTION = /^[A-Za-z][A-Za-z0-9-]{0,39}$/;
 const NEVER_CATEGORIES = new Set(['money', 'legal', 'production', 'customer-copy']);
 
-// The §3b Check-in times row (its raw spans joined) as sorted HH:MM, its default where unset or unread.
-export function checkinTimesFrom(raw) {
-  const fallback = checkinTimesOf(String(CONFIG_ROWS['checkin-times']?.default ?? '08:00, 17:00'));
-  if (raw == null || raw === '' || /^todo\b/i.test(raw)) return fallback;
-  const parts = checkinTimesOf(String(raw));
-  return parts.length && parts.every((p) => CHECKIN_TIME.test(p)) ? [...new Set(parts)].sort() : fallback;
-}
-
-// The first check-in slot after `now` (local time), as a Date.
+// The first check-in slot after `now` (local time), as a Date. `times`: digest.mjs checkinTimes's.
 export function nextCheckin(times, now = new Date()) {
   for (let ahead = 0; ahead < 3; ahead++) {
     const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + ahead);

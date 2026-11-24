@@ -64,13 +64,15 @@ export function addAsk(stateDir, text, now = Date.now(), { until = [], settles =
 // off the list. The answer is kept in the file's `answered` (the last ANSWERS_KEPT), so the session that
 // asked reads it (needs-you.mjs ask-status). `due`: only where it is still unanswered and due at `now`,
 // decided under the lock. -> the ask as answered, or null where it is not there (or not due)
-export const ANSWERS_KEPT = 50;
+const ANSWERS_KEPT = 50;
 export function answerAsk(stateDir, id, { chose, by = 'person', at = Date.now(), due = false } = {}) {
   return update(stateDir, (f) => {
     const a = f.asks.find((x) => x.id === id);
     if (!a || (due && !isDue(a, at))) return null;
     f.asks = f.asks.filter((x) => x.id !== id);
-    const answered = { ...a, chose, by, answered_at: new Date(at).toISOString() };
+    // One applied by default is `logged: false` until its decision is in the log (markLogged), so a pass
+    // whose log write failed retries it (unlogged).
+    const answered = { ...a, chose, by, answered_at: new Date(at).toISOString(), ...(by === 'default' ? { logged: false } : {}) };
     f.answered = [...(f.answered ?? []), answered].slice(-ANSWERS_KEPT);
     return answered;
   });
@@ -120,4 +122,13 @@ function dropAsks(stateDir, gone) {
     f.asks = f.asks.filter((a) => !gone(a));
     return out.map(({ id, text, until, rows }) => ({ id, text, keys: until ?? rows }));
   });
+}
+
+// The asks applied by default whose decision is not yet logged.
+export function unlogged(stateDir) {
+  try { return (JSON.parse(readFileSync(asksPath(stateDir), 'utf8')).answered ?? []).filter((a) => a.logged === false); } catch { return []; }
+}
+// Marks the default answer to ask `id` logged.
+export function markLogged(stateDir, id) {
+  update(stateDir, (f) => { for (const a of f.answered ?? []) if (a.id === id && a.logged === false) a.logged = true; });
 }

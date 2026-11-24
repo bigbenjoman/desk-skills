@@ -133,7 +133,7 @@ import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
 import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, passesPaused, unmergedBlockers, throughOnRecord } from './desk-q.mjs';
-import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
+import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN, checkinTimes, DEFAULT_TIMES } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
 import { followOnPending, postMergeOwed } from './harvest.mjs';
@@ -143,7 +143,7 @@ import { kindMode, readLog, restartTrial, trialOf, TRIAL_DAYS } from './leases.m
 import { LEASE_KINDS } from './machine.mjs';
 import { saveAnswer } from './briefing.mjs';
 import { addAsk, removeAsk, readAsks, answerAsk, answerOf } from './asks.mjs';
-import { OPTION, applyByOf, neverDefault, nextCheckin, checkinTimesFrom, deadlineText } from './ask-defaults.mjs';
+import { OPTION, applyByOf, neverDefault, nextCheckin, deadlineText } from './ask-defaults.mjs';
 import { finishedCloud, readArchived, readPending, recordArchived } from './cloud-worker.mjs';
 import { readArchive } from './queue-store.mjs';
 import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
@@ -2636,7 +2636,8 @@ export function ask({ word, text, until = [], options = [], recommend = null, ap
     const nd = recommend ? neverDefault(what, recommend, never) : null;
     let times = null;
     try { times = [].concat(repoConfigValues(r.slug, 'checkin-times') ?? []).join(' ') || null; } catch { /* unread: the default times */ }
-    const at = !recommend || nd ? null : by ?? nextCheckin(checkinTimesFrom(times), new Date(now));
+    const c = checkinTimes(times);
+    const at = !recommend || nd ? null : by ?? nextCheckin(c.ok ? c.times : DEFAULT_TIMES, new Date(now));
     choice = { options, recommended: recommend, apply_by: at ? at.toISOString() : null, never_default: nd };
   }
   const { id, added, until: kept, ask: a } = addAsk(r.stateDir, what, now, { until, choice });
@@ -2668,6 +2669,9 @@ export function askStatus({ word, id, now = Date.now(), repos = loadRepos(now, w
   if (open) return { ok: true, line: `${r.repo} ${ASK}${id}: open${open.recommended ? `; it ${deadlineText(open, new Date(now)) ?? 'waits for the person'}` : ''}` };
   const a = answerOf(r.stateDir, id);
   if (!a) return { ok: true, line: `${r.repo} ${ASK}${id}: not open, and no choice is recorded (done, or never asked)` };
+  // A default the person overrode from the check-in digest (digest.mjs override) stands as their choice.
+  const o = a.by === 'default' ? readDecisions(r.stateDir).overrides.filter((x) => x.ticket === `${ASK}${id}`).at(-1) : null;
+  if (o) return { ok: true, line: `${r.repo} ${ASK}${id}: ${o.chose}, chosen by the person at ${o.at}, overriding ${a.chose}, which desk applied by default at ${a.answered_at}` };
   return { ok: true, line: `${r.repo} ${ASK}${id}: ${a.chose}, chosen ${a.by === 'default' ? 'by default, nobody having chosen,' : 'by the person'} at ${a.answered_at}` };
 }
 

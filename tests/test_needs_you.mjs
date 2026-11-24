@@ -3593,6 +3593,14 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   const chose = N.record({ word: 'ask811', ticket: `ask:${cid}`, action: 'merge' });
   t('#1366 choosing an option records it and takes the item off the list', `${chose.ok} ${asks().some((i) => i.t.key === `ask:${cid}`)}`, 'true false');
   t('#1366 the session that asked reads the choice', /^ask811 ask:\d+: merge, chosen by the person at /.test(cli('ask-status', 'ask811', cid).out), true);
+  {
+    const { addAsk: add, answerAsk: answer } = await import('../desk/bin/asks.mjs');
+    const d = add(standing.stateDir, 'Squash the branch, or keep its commits?', Date.parse('2026-11-24T10:00:00Z'), { choice: { options: ['squash', 'keep'], recommended: 'squash', apply_by: '2026-11-24T17:00:00.000Z' } }).ask;
+    answer(standing.stateDir, d.id, { chose: 'squash', by: 'default', at: Date.parse('2026-11-24T17:00:05Z'), due: true });
+    t('#1366 a default nobody overrode reads as applied by default', /: squash, chosen by default, nobody having chosen,/.test(cli('ask-status', 'ask811', d.id).out), true);
+    writeFileSync(join(standing.stateDir, 'decisions.jsonl'), `${JSON.stringify({ id: 'o1', override_of: 'x1', at: '2026-11-24T18:00:00.000Z', ticket: `ask:${d.id}`, was: 'squash', chose: 'keep', by: 'person' })}\n`, { flag: 'a' });
+    t('#1366 the person overriding it from the check-in digest is what ask-status reports', cli('ask-status', 'ask811', d.id).out.trim(), `ask811 ask:${d.id}: keep, chosen by the person at 2026-11-24T18:00:00.000Z, overriding squash, which desk applied by default at 2026-11-24T17:00:05.000Z`);
+  }
   const money = cli('ask', 'ask811', 'Upgrade the CI plan to the paid tier?', '--options', 'upgrade|stay', '--recommend', 'upgrade');
   t('#1366 a recommendation that spends money never applies by itself, and says so', money.out.includes('it never applies by itself: it is a money call'), true);
   t('#1366 a choice needs two one-word options, and a recommendation among them', `${cli('ask', 'ask811', 'x', '--options', 'merge').code} ${cli('ask', 'ask811', 'x', '--options', 'merge|two words').code} ${cli('ask', 'ask811', 'x', '--options', 'merge|hold', '--recommend', 'ship').code}`, '11 11 11');

@@ -1,7 +1,7 @@
 // suite: asks (what a session handed the person; an ask whose tickets are all finished waits on nothing)
 // layer: L1
 // covers: desk/bin/asks.mjs
-import { addAsk, readAsks, pruneAsks, settleAdmitted, answerAsk, answerOf, dueAsks, isDue } from '../desk/bin/asks.mjs';
+import { addAsk, readAsks, pruneAsks, settleAdmitted, answerAsk, answerOf, dueAsks, isDue, unlogged, markLogged } from '../desk/bin/asks.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -60,6 +60,9 @@ const ch = scratch('asks-');
   const a = answerAsk(ch, 1, { chose: 'merge', by: 'default', at: Date.parse('2026-11-24T17:00:01Z'), due: true });
   t('#1366 answered by default, it leaves the list and its answer is kept', JSON.stringify([a.chose, a.by, readAsks(ch).map((x) => x.id), answerOf(ch, 1)?.chose]), JSON.stringify(['merge', 'default', [2, 3], 'merge']));
   t('#1366 an answered ask cannot be answered again', answerAsk(ch, 1, { chose: 'hold' }), null);
+  t('#1366 one applied by default stays unlogged until its decision is logged, so a pass whose log write failed retries it', JSON.stringify(unlogged(ch).map((x) => x.id)), '[1]');
+  markLogged(ch, 1);
+  t('#1366 marked logged, it is not retried', JSON.stringify([unlogged(ch).length, answerOf(ch, 1)?.chose]), JSON.stringify([0, 'merge']));
 }
 
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }

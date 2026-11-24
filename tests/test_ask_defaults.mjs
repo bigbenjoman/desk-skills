@@ -8,8 +8,6 @@ const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; cons
 const local = (d, h, m) => new Date(2026, 10, d, h, m);
 const hm = (x) => (x ? `${x.getDate()} ${String(x.getHours()).padStart(2, '0')}:${String(x.getMinutes()).padStart(2, '0')}` : null);
 
-t('#1366 the check-in times are the §3b row, sorted', D.checkinTimesFrom('17:00 08:30').join(), '08:30,17:00');
-t('#1366 unset or unreadable, they are the row\'s default', `${D.checkinTimesFrom(null).join()} ${D.checkinTimesFrom('noon').join()}`, '08:00,17:00 08:00,17:00');
 t('#1366 the next check-in is the first slot after now, today', hm(D.nextCheckin(['08:00', '17:00'], local(24, 10, 0))), '24 17:00');
 t('#1366 past the last slot, it is tomorrow\'s first', hm(D.nextCheckin(['08:00', '17:00'], local(24, 18, 0))), '25 08:00');
 t('#1366 --apply-by takes a local HH:MM, the next one', hm(D.applyByOf('09:15', local(24, 10, 0))), '25 09:15');
