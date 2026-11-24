@@ -39,12 +39,12 @@
 import * as MS from './merge-stages.mjs';
 import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
+import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns } from './batch-state.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { blockersOf } from './queue-states.mjs';
@@ -3284,9 +3284,7 @@ const GROUPS = [['Running', 'running'], ['Ready', 'ready'], ['Merging', 'merging
 // The repo's merge time by stage (merge-stages.mjs), one line once a merged PR has its stages read.
 function stagesHead(r) {
   if (!r.stateDir) return [];
-  // A named batch's state is under the repo's, which holds the record (needs-you.mjs standingDir).
-  const dir = r.batch == null ? r.stateDir : resolve(r.stateDir, '..', '..');
-  const line = MS.stagesLine(MS.summary(MS.readStages(dir)));
+  const line = MS.stagesLine(MS.summary(MS.readStages(repoStateOf(r.stateDir))));
   return line ? [line] : [];
 }
 function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = null, title = false, usage = null, pinUsage = false } = {}) {

@@ -6,6 +6,7 @@
 // on to its last (the re-reviews), and the last required check green to the merge. Each merged PR's
 // stages are one line of <state>/merge-stages.jsonl, and one merge_stages event in the ticket ledger
 // where the ledger lever is on:
+// (or { key, pr, unmerged: true, recorded } for a ticket's PR GitHub reads as not merged, so it is not read again)
 //   { key, pr, opened, merged, recorded, desk: { minutes, local: { start, rounds } | null,
 //     rounds: [{ start, end, minutes, clean }] },
 //     undraft, external: { login, wait, rereviews, rounds, outage } | null, merge }  (minutes, or null)
@@ -47,7 +48,9 @@ const inOutage = (outages, login, from, to) => (outages ?? []).some((o) => o?.lo
 // `clean`: §4 Clean review verdict; `outages`: gate-reviewer.mjs's. -> the record (without key and
 // recorded), or null for a PR not merged.
 // `local`: localReview's { starts, rounds } for the ticket, the review desk ran before the PR opened.
-export function stagesOf(payload, { desk, external = null, clean, outages = [], local = null }) {
+// `required`: §4 Required checks, the checks whose last passing run starts the merge stage (with none,
+// every check counts).
+export function stagesOf(payload, { desk, external = null, clean, outages = [], local = null, required = [] }) {
   const p = payload?.data?.repository?.pullRequest;
   if (!p?.mergedAt) return null;
   const opened = p.createdAt, merged = p.mergedAt;
@@ -71,12 +74,18 @@ export function stagesOf(payload, { desk, external = null, clean, outages = [], 
     rounds: theirs.length,
     outage: inOutage(outages, external, ready, theirs[0]?.submittedAt ?? merged),
   } : null;
-  // The last required green: the newest check to finish passing on the head that merged.
-  const ctx = p.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
-  const greens = ctx.map((c) => (c?.__typename === 'StatusContext'
-    ? (c.state === 'SUCCESS' ? c.createdAt : null)
-    : (['SUCCESS', 'SKIPPED', 'NEUTRAL'].includes(c?.conclusion) ? c.completedAt : null))).filter((t) => t && ms(t) <= ms(merged)).sort();
-  const green = greens.at(-1) ?? null;
+  // The last required green: the newest of each required check's latest passing run on the head that
+  // merged (success or skipped, as the gate counts one; neutral does not pass a required check).
+  const want = (required ?? []).filter((x) => x && !/^none$/i.test(x));
+  const latest = new Map();
+  for (const c of p.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []) {
+    const name = c?.__typename === 'StatusContext' ? c.context : c?.name;
+    const at = c?.__typename === 'StatusContext' ? c.createdAt : c?.completedAt;
+    const ok = c?.__typename === 'StatusContext' ? c.state === 'SUCCESS' : ['SUCCESS', 'SKIPPED'].includes(c?.conclusion);
+    if (!name || !ok || !at || ms(at) > ms(merged) || (want.length && !want.includes(name))) continue;
+    if (!latest.has(name) || ms(at) > ms(latest.get(name))) latest.set(name, at);
+  }
+  const green = want.length && want.some((n) => !latest.has(n)) ? null : [...latest.values()].sort().at(-1) ?? null;
   return {
     pr: p.number, opened, merged,
     desk: { minutes: verdict ? mins(reviewFrom, verdict.end) : null, local: localStart ? { start: localStart, rounds: local?.rounds ?? null } : null, rounds },
@@ -112,27 +121,29 @@ export function recordStages(state, entry) {
   appendFileSync(fileOf(state), `${JSON.stringify(entry)}\n`);
 }
 
-// The merged tickets of `tickets` (queue tickets) whose PR has no stages recorded, oldest merge first,
-// PER_PASS at most: { key, pr }.
+// The merged tickets of `tickets` (queue tickets) whose PR has no line recorded, oldest merge first:
+// { key, pr }. A pass reads PER_PASS of them at most, moving past any it cannot read.
 export function due(tickets, recorded) {
   const have = new Set(recorded.map((e) => Number(e.pr)));
   return Object.entries(tickets ?? {})
     .map(([key, t]) => ({ key, pr: Number(t?.merge?.pr ?? t?.result?.pr), at: t?.merged_at }))
     .filter((x) => x.at && Number.isInteger(x.pr) && !have.has(x.pr))
-    .sort((a, b) => ms(a.at) - ms(b.at)).slice(0, PER_PASS).map(({ key, pr }) => ({ key, pr }));
+    .sort((a, b) => ms(a.at) - ms(b.at)).map(({ key, pr }) => ({ key, pr }));
 }
 
 // Each stage's { n, median, p75 } in minutes over `entries`, and how many external waits were left
 // out as inside a reviewer outage.
-export function summary(entries) {
+export function summary(all) {
+  // A PR read as never merged (`unmerged`, a ticket's PR that is not the one that merged) has no stages.
+  const entries = all.filter((e) => !e.unmerged);
   const vals = { desk: [], undraft: [], external_wait: [], external_rereviews: [], merge: [] };
   let outage = 0;
   for (const e of entries) {
     vals.desk.push(e.desk?.minutes);
     vals.undraft.push(e.undraft);
     vals.merge.push(e.merge);
-    if (e.external?.outage) { outage += 1; continue; }
-    vals.external_wait.push(e.external?.wait);
+    // An outage is over the wait for the reviewer's first review; the re-reviews after it still count.
+    if (e.external?.outage) outage += 1; else vals.external_wait.push(e.external?.wait);
     vals.external_rereviews.push(e.external?.rereviews);
   }
   const stages = Object.fromEntries(STAGES.map((s) => {
@@ -150,4 +161,29 @@ export function stagesLine(s) {
   const parts = STAGES.filter((k) => s.stages[k].n).map((k) => `${STAGE_NAMES[k]} ${fmt(s.stages[k].median)} / ${fmt(s.stages[k].p75)}`);
   const out = s.outage ? `; ${s.outage} external wait${s.outage === 1 ? '' : 's'} inside a reviewer outage left out` : '';
   return `merge time by stage over ${s.prs} merged PR${s.prs === 1 ? '' : 's'} (median / p75): ${parts.join(' · ') || 'no stage read yet'}${out}`;
+}
+
+// One pass's step: the merged tickets of `tickets` with no line yet, oldest first, PER_PASS read through
+// `gql(query)` (a payload, or null unread), each recorded in `state`'s merge-stages.jsonl. `ledger(key,
+// pr, entry)`, where the ledger lever is on, appends its event under an id fixed by the PR and throws on
+// a failed write: the PR is then left due, so a retry writes it once. An unread PR is tried again next
+// pass, after the rest; one read as never merged is marked and never read again. `ctx`: stagesOf's
+// options, and `local(key)` for localReview. -> the pass's report lines.
+export function stagesStep(state, { tickets, gql, ledger = null, ctx = {}, local = () => null, now = new Date().toISOString() }) {
+  const lines = [];
+  let reads = 0;
+  for (const { key, pr } of due(tickets, readStages(state))) {
+    if (reads >= PER_PASS) break;
+    reads += 1;
+    let payload = null;
+    try { payload = gql(stagesQuery(pr)); } catch { payload = null; }
+    if (!payload?.data) { lines.push(`merge stages: PR #${pr} (${key}) could not be read from GitHub; the next pass tries again`); continue; }
+    const st = stagesOf(payload, { ...ctx, local: local(key) });
+    const entry = st ? { key, ...st, pr, recorded: now } : { key, pr, unmerged: true, recorded: now };
+    if (ledger && st) {
+      try { ledger(key, pr, entry); } catch (e) { lines.push(`merge stages: PR #${pr} (${key}) could not be added to the ticket ledger (${String(e?.message ?? e).split('\n')[0]}); the next pass tries again`); continue; }
+    }
+    try { recordStages(state, entry); } catch (e) { lines.push(`merge stages: PR #${pr} (${key}) could not be recorded (${String(e?.message ?? e).split('\n')[0]})`); }
+  }
+  return lines;
 }

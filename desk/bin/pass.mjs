@@ -5169,27 +5169,19 @@ const repoGql = (query, vars = {}) => {
   const seed = (login, prs, cold) => GR.seedRead(repoGql, GH_REPO, login, prs, cold);
   out.push(...GR.reviewerStep(E.repoStateOf(STATE), { seen: externalSeen, waits: externalWaits, owner, repo: GH_REPO, dry: DRY, batch: E.batchName() ?? null, live: liveNamed(), seed }));
 }
-// Each merged ticket's PR time by stage (merge-stages.mjs), read from its GitHub timeline once it has
-// merged, a few a pass, into the repo's merge-stages.jsonl and, with the ledger lever on, the ledger.
+// Each merged ticket's PR time by stage (merge-stages.mjs stagesStep), read from its GitHub timeline
+// once it has merged, a few a pass, into the repo's merge-stages.jsonl and, with the ledger lever on,
+// the ledger.
 if (!DRY) {
-  const repoState = E.repoStateOf(STATE);
-  const todo = MS.due(queue().tickets, MS.readStages(repoState));
-  if (todo.length) {
-    let desk = null, clean = null, outages = [];
-    try { desk = E.verdictLogins(); clean = E.configValue('clean-verdict'); } catch { /* unread: no desk rounds */ }
-    try { outages = GR.readRecord(repoState).outages ?? []; } catch { /* none recorded */ }
-    const external = stateRow.checks.find((c) => c.kind === 'external')?.login ?? null;
-    for (const { key, pr } of todo) {
-      const st = MS.stagesOf(repoGql(MS.stagesQuery(pr)), { desk, external, clean, outages, local: MS.localReview(STATE, key) });
-      if (!st) { out.push(`merge stages: PR #${pr} (${key}) could not be read from GitHub; the next pass tries again`); continue; }
-      const entry = { key, ...st, recorded: PASS_AT };
-      try { MS.recordStages(repoState, entry); } catch (e) { out.push(`merge stages: PR #${pr} (${key}) could not be recorded (${String(e?.message ?? e).split('\n')[0]})`); continue; }
-      if (LEDGER_ON) {
-        try { ledgerAppend(LEDGER_AT.repoDir, [{ type: 'merge_stages', batch: LEDGER_AT.batch, key, data: { pr, stages: entry } }], { by: 'pass' }); }
-        catch (e) { report.failed.push(`${MISSED_PREFIX} for ${key}'s merge stages: ${String(e?.message ?? e).split('\n')[0]}`); }
-      }
-    }
-  }
+  let desk = null, clean = null, outages = [], required = [];
+  try { desk = E.verdictLogins(); clean = E.configValue('clean-verdict'); required = E.configValues('required-checks') ?? []; } catch { /* unread: no desk rounds */ }
+  try { outages = GR.readRecord(E.repoStateOf(STATE)).outages ?? []; } catch { /* none recorded */ }
+  const external = stateRow.checks.find((c) => c.kind === 'external')?.login ?? null;
+  out.push(...MS.stagesStep(E.repoStateOf(STATE), {
+    tickets: queue().tickets, gql: (q) => repoGql(q), now: PASS_AT,
+    ctx: { desk, external, clean, outages, required }, local: (key) => MS.localReview(STATE, key),
+    ledger: LEDGER_ON ? (key, pr, entry) => ledgerAppend(LEDGER_AT.repoDir, [{ id: `merge_stages:${key}:${pr}`, type: 'merge_stages', batch: LEDGER_AT.batch, key, data: { pr, stages: entry } }], { by: 'pass' }) : null,
+  }));
 }
 // With `gate`, the read also holds `gateReview`: the latest desk-review a §4 Gate reviewer posted, where
 // it is at the head and not clean, read apart from desk's own so a later verdict of desk's cannot hide

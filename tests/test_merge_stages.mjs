@@ -33,6 +33,12 @@ t('#1378 undraft is the clean verdict to the PR leaving draft', s.undraft, 30);
 t('#1378 the external review splits into the wait for its first review and the re-reviews after it',
   j([s.external.wait, s.external.rereviews, s.external.rounds, s.external.outage]), j([40, 30, 2, false]));
 t('#1378 merge is the last required check green to the merge', s.merge, 20);
+// The merge stage starts at the last required check's latest passing run; an optional check after it
+// does not move it, nor does a neutral one.
+const rq = pr({ checks: [{ __typename: 'CheckRun', name: 'tests', completedAt: H(12, 10), conclusion: 'SUCCESS' }, { __typename: 'CheckRun', name: 'tests', completedAt: H(12, 30), conclusion: 'SUCCESS' }, { __typename: 'CheckRun', name: 'preview', completedAt: H(12, 50), conclusion: 'SUCCESS' }, { __typename: 'CheckRun', name: 'lint', completedAt: H(12, 55), conclusion: 'NEUTRAL' }] });
+t('#1378 merge starts at the required check\'s latest passing run, not an optional check after it', MS.stagesOf(rq, { desk: DESK, clean: CLEAN, required: ['tests'] }).merge, 30);
+t('#1378 with no required checks set, every passing check counts, a neutral one never', MS.stagesOf(rq, { desk: DESK, clean: CLEAN }).merge, 10);
+t('#1378 a required check with no passing run leaves the merge stage unread', MS.stagesOf(rq, { desk: DESK, clean: CLEAN, required: ['tests', 'e2e'] }).merge, null);
 t('#1378 a repo with no outside reviewer has no external stage', MS.stagesOf(p, { desk: DESK, external: null, clean: CLEAN }).external, null);
 t('#1378 a PR not merged has no stages', MS.stagesOf(pr({ merged: null }), { desk: DESK, clean: CLEAN }), null);
 t('#1378 a PR never in draft has no undraft, and its desk rounds run to the merge', j((({ undraft, desk }) => [undraft, desk.rounds.length])(MS.stagesOf(pr({ ready: [], reviews: [[DESK, H(9, 30), verdict('abc1234', 0)]] }), { desk: DESK, clean: CLEAN }))), j([null, 1]));
@@ -67,19 +73,40 @@ const e = (desk, undraft, wait, rere, merge, outage = false) => ({ pr: Math.rand
 const sum = MS.summary([e(60, 10, 30, 0, 5), e(120, 20, 50, 20, 15), e(90, 30, 40, 10, 10), e(100, 40, 600, 0, 20, true)]);
 t('#1378 each stage has its median and p75', j([sum.stages.desk.median, sum.stages.desk.p75, sum.stages.undraft.median]), j([95, 105, 25]));
 t('#1378 a wait inside an outage is left out of the external medians and counted', j([sum.stages.external_wait.n, sum.stages.external_wait.median, sum.outage]), j([3, 40, 1]));
+t('#1378 its re-reviews, after the outage, still count', sum.stages.external_rereviews.n, 4);
+t('#1378 a PR read as never merged has no stages and is left out', MS.summary([e(60, 10, 30, 0, 5), { key: 'X', pr: 9, unmerged: true }]).prs, 1);
 t('#1378 the line names each stage\'s median and p75, and the waits left out',
-  MS.stagesLine(sum), 'merge time by stage over 4 merged PRs (median / p75): desk review 1.6h / 1.8h · undraft 25m / 33m · external review wait 40m / 45m · external re-reviews 10m / 15m · merge 13m / 16m; 1 external wait inside a reviewer outage left out');
+  MS.stagesLine(sum), 'merge time by stage over 4 merged PRs (median / p75): desk review 1.6h / 1.8h · undraft 25m / 33m · external review wait 40m / 45m · external re-reviews 5m / 13m · merge 13m / 16m; 1 external wait inside a reviewer outage left out');
 t('#1378 with nothing recorded there is no line', MS.stagesLine(MS.summary([])), null);
 
 // What a pass reads: merged tickets with no stages yet, oldest first, a few at a time; the record keeps
 // the latest line per PR.
 const tickets = { A: { merged_at: H(12, 0), merge: { pr: 1 } }, B: { merged_at: H(10, 0), result: { pr: 2 } }, C: { merged_at: H(11, 0), merge: { pr: 3 } }, D: { state: 'running' }, E: { merged_at: H(9, 0), merge: { pr: 4 } }, F: { merged_at: H(8, 0), merge: { pr: 5 } } };
-t('#1378 a pass reads merged tickets with no stages, oldest merge first, three at most', j(MS.due(tickets, [{ pr: 5 }])), j([{ key: 'E', pr: 4 }, { key: 'B', pr: 2 }, { key: 'C', pr: 3 }]));
+t('#1378 a pass has every merged ticket with no line yet, oldest merge first', j(MS.due(tickets, [{ pr: 5 }])), j([{ key: 'E', pr: 4 }, { key: 'B', pr: 2 }, { key: 'C', pr: 3 }, { key: 'A', pr: 1 }]));
+t('#1378 one marked as never merged is not read again', j(MS.due(tickets, [{ pr: 5 }, { pr: 4, unmerged: true }]).map((x) => x.key)), j(['B', 'C', 'A']));
 const S = scratch('merge-stages-');
 MS.recordStages(S, { key: 'A', pr: 1, merge: 5 });
 MS.recordStages(S, { key: 'A', pr: 1, merge: 7 });
 MS.recordStages(S, { key: 'B', pr: 2, merge: 3 });
 t('#1378 the record keeps the latest line per PR', j(MS.readStages(S).map((x) => [x.pr, x.merge])), j([[1, 7], [2, 3]]));
+
+// The pass's step: a few a pass; an unread PR does not hold up the rest; a ledger write that fails
+// leaves the PR due; a PR read as never merged is marked and not read again.
+{
+  const P = scratch('merge-stages-step-');
+  const merged = (n) => pr({ merged: H(13, n) });
+  const tk = { A: { merged_at: H(8, 0), merge: { pr: 11 } }, B: { merged_at: H(9, 0), merge: { pr: 12 } }, C: { merged_at: H(10, 0), merge: { pr: 13 } }, D: { merged_at: H(11, 0), merge: { pr: 14 } } };
+  const reads = [];
+  const gql = (q) => { const n = Number(/number:(\d+)/.exec(q)[1]); reads.push(n); return n === 11 ? null : n === 12 ? { data: { repository: { pullRequest: { number: 12, mergedAt: null } } } } : merged(n); };
+  let failLedger = true;
+  const ledger = () => { if (failLedger) throw new Error('disk full'); };
+  const l1 = MS.stagesStep(P, { tickets: tk, gql, ledger, ctx: { desk: DESK, clean: CLEAN } });
+  t('#1378 a pass reads three at most, the unread one reported and the rest read past it', j([reads, l1.filter((l) => /could not be read from GitHub/.test(l)).length]), j([[11, 12, 13], 1]));
+  t('#1378 a PR read as never merged is marked; a failed ledger write records nothing for its PR', j(MS.readStages(P).map((x) => [x.pr, !!x.unmerged])), j([[12, true]]));
+  failLedger = false; reads.length = 0;
+  MS.stagesStep(P, { tickets: tk, gql, ledger, ctx: { desk: DESK, clean: CLEAN } });
+  t('#1378 the next pass retries the unread and the ledger-failed PRs, never the never-merged one', j([reads, MS.readStages(P).map((x) => x.pr).sort()]), j([[11, 13, 14], [12, 13, 14]]));
+}
 
 // The levers report shows the stages per repo, and nothing where none are recorded.
 const view = (repos) => ({ v: 1, generated_at: H(13, 0), tz: 'UTC', repos: [], baseline: null, line: { state: 'today' },
