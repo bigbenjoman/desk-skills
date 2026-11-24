@@ -112,6 +112,7 @@ import { kindMode, leaseCli, releasePreviews, slotPools } from './leases.mjs';
 import { handToWorker as handMemToWorker, memPool, reserveForWorker } from './mem-lease.mjs';
 import { pruneAsks, settleDrift, readAsks } from './asks.mjs';
 import * as GR from './gate-reviewer.mjs';
+import { considered, takeRows, devDirsIn } from './drift-asks.mjs';
 import { readArchive, archivedOf, isArchived, keepPrs, mergedPrs, prClosed, owesReopen, recordedPr } from './queue-store.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -3697,6 +3698,21 @@ function rowsNeeded(key, rec) {
   let dev, signin;
   try { dev = E.configValues('dev-cmd'); signin = E.configValues('test-signin'); } catch { return null; }
   if (!dev || E.isNone(dev) || signin) return null;
+  // A user the repo's seed files create, for its one app, is desk's to take where the config lacks the row:
+  // written noted as desk's and logged for the check-in digest, and the ticket spawns.
+  if (!DRY) {
+    try {
+      const config = E.configPathOrNull();
+      const m = E.configDrift({ config }).missing.find((x) => x.section === '4' && x.label === '"Test sign-in"');
+      const root = E.configFileRoot(config) ?? E.currentRepo().dir;
+      const c = m && considered(m, { root, devDirs: devDirsIn(dev) });
+      const took = c ? takeRows(config, [{ m, ...c }], { slug: E.repoSlug(), state: E.repoStateOf(STATE) }) : null;
+      if (took?.done.length) {
+        report.recovered.push(`${key}: desk set config ${took.done[0]} (${c.why}), so its screenshots can sign in; ${took.unlogged.length ? `the decision log could not be written (${took.unlogged[0]}), so the check-in digest does not list it: the row's note in the config says it is desk's` : 'in the check-in digest'}`);
+        return null;
+      }
+    } catch { /* not taken: the person is asked, below */ }
+  }
   return `NEEDS ROW — ${key} renders, so its screenshots sign in as a test user, and §4 Test sign-in is unset, so no worker was spawned to park on it after its PR opens. Add one item per app a §4 Dev server item names, \`<app dir>: <email>\` (bare for the root), of an existing development user who holds the grant its signed-in pages need, never a password, or \`none\` where no app needs signing in to. Where the config has no such row, add it with node ${join(E.runBin(), 'desk-env.mjs')} add-row 4 "Test sign-in" "<value>"; else set it in ${E.configPathOrNull() ?? 'the config'}. Then requeue it`;
 }
 
