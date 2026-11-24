@@ -434,7 +434,8 @@ How to turn what you find into rows:
   for the root), e.g. `` `apps/portal/apps/web: <email>` ``, and say what the user must hold: an
   existing user in that app's development auth instance (never production, never a new one) who
   already holds the grant its signed-in pages need, so a worker can sign in as them for screenshots.
-  The email is a fact only the user has: never guess one, and never take a password. `none` is a
+  The email is a fact only the user has: never guess one, and never take a password. A user the
+  repo's seed files create is read, not guessed: offer it as the Recommended option. `none` is a
   fine answer where no app has a page behind sign-in. `desk-env drift --app <dir>` names an app with
   a Dev server item and no item here `NOSIGNIN`; propose its item on every run, a re-run's
   included.

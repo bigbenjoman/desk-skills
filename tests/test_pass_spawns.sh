@@ -72,6 +72,16 @@ printf '| Test sign-in | `dev-user@example.test` |\n' >> "$DESK_CONFIG"
 q requeue SG-1 >/dev/null 2>&1
 out=$(node "$B/pass.mjs" 2>&1)
 check "#1361 with the row set, it spawns" '[ "$(field SG-1 state)" = "\"running\"" ]'
+# #1363: with a user the repo's seed files create, desk sets the row itself, logs it, and the ticket spawns.
+cp "$T/config.md" "$DESK_CONFIG"; printf '\n## 4. Checks\n| Field | Value |\n|---|---|\n| Dev server | `npm run dev` |\n' >> "$DESK_CONFIG"
+mkdir -p "$T/repo/prisma"; printf "await db.user.create({ data: { email: 'maya.dev@acme.test' } });\n" > "$T/repo/prisma/seed.ts"
+q add SG-3; q set SG-3 state=triaged branch=feat/SG-3 lane=A
+printf '{"ticket":"SG-3","summary":"Another page","renders":true}' > "$T/state-sg/triage/SG-3.json"
+out=$(node "$B/pass.mjs" 2>&1)
+rm -rf "$T/repo/prisma"
+check "#1363 a seeded user is taken for Test sign-in at spawn: the row is written noted as desk's, and the ticket spawns" \
+  '[ "$(field SG-3 state)" = "\"running\"" ] && grep -qF "| Test sign-in | \`maya.dev@acme.test\` (set by desk: a development user prisma/seed.ts creates;" "$DESK_CONFIG" && echo "$out" | grep -qF "SG-3: desk set config §4 \"Test sign-in\" = maya.dev@acme.test"'
+check "#1363 and it is a taken decision for the check-in digest" 'jq -e "select(.chose == \"maya.dev@acme.test\" and .ticket == \"config\")" "$T/state-sg/decisions.jsonl" >/dev/null'
 export DESK_CONFIG="$T/config.md"
 
 # ---- pass.mjs --batch X-1, with no queue or state exported, works X-1's queue, and the

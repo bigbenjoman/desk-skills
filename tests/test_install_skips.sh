@@ -208,7 +208,7 @@ check "#734 the folder stays where it was, and desk's copy is not installed besi
 
 # #1361: the install put each row this release has that o__r's config lacks on its needs-you list, as one ask.
 check "#1361 the install records the rows a configured repo's config lacks as one needs-you ask" \
-  '[ "$(jq -r ".asks | map(select(.settles == \"drift\")) | length" "$HOME/.desk-autopilot/o__r/asks.json")" = 1 ] && [[ "$out" == *"o__r lacks "*" config row(s) this release has ("*"), now on its needs-you list as ask:1"* ]]'
+  '[ "$(jq -r ".asks | map(select(.settles == \"drift\")) | length" "$HOME/.desk-autopilot/o__r/asks.json")" = 1 ] && [[ "$out" == *"o__r lacks "*" config row(s) this release has that need the person ("*"), now on its needs-you list as ask:1"* ]]'
 rm -f "$HOME/.desk-autopilot/o__r/asks.json"
 # A new shell runs desk-q from any directory, and it finds the repo set up above.
 # shellcheck disable=SC2034  # q_out is read inside check's eval string

@@ -40,6 +40,19 @@ A worker's park may also open `lane C: ` where a rule asks for it, and ends with
 `Not reached: …` list: needs-you (`park-words.mjs`) puts the key and desk's other terms in plain
 words and leaves that list out, which the worker log keeps.
 
+**A question is a choice, never a typed reply.** Put it as options, your recommendation first and
+labelled, each with its one-line trade-off (an `AskUserQuestion` carousel in a session; numbered
+actions on a needs-you item). Never ask the person to reply a word ("reply yes", "say admit") or to
+type a value: where the answer is a value, offer the values you can recommend as the options. A push
+or a digest line names the choice and where to make it, never a word to send back.
+
+**A config value desk can recommend is taken, not asked.** A row desk can set with a stated reason (a
+template default that already applies while it is unset, a least-privilege `no` or `none` that
+matches what desk does now, a value read from the repo such as a user its seed files create) is set
+by desk, noted `set by desk: <why>`, and logged as a taken decision for the check-in digest, where the
+person can change it. Only a row that widens what workers may do, spends, reaches an external system,
+names a person, or makes a product or design call is put to the person.
+
 **Do not re-ask what the user put off.** An answer of "not now" puts the question in the repo's
 register, `<state>/not-now.jsonl` (`not-now.mjs`), with the date and the inputs it depends on: the
 ticket, a PR head SHA, config rows, an external value it read, whatever the question names. A
