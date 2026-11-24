@@ -37,7 +37,9 @@ function update(stateDir, change) {
 // settleAdmitted drops. `settles: 'drift'` with `rows` marks one naming config rows a release added
 // that the config lacks (drift-asks.mjs), which settleDrift drops; `settles: 'reviewer'` with `login` one
 // saying that gate reviewer is down (gate-reviewer.mjs), which settleReviewer drops; asked again for that
-// login with other text, it takes that text under its own id.
+// login with other text, it takes that text under its own id. `settles: 'tmpfs'` marks the one saying what
+// still holds a tmpfs /tmp over its line (tmp-sweep.mjs), of which there is one: asked again with other
+// text, it takes that text under its own id too. settleTmpfs drops it.
 // `choice` ({ options, recommended, apply_by, never_default }) makes it a choice between `options` (each
 // one word), its `recommended` one applied by itself at `apply_by` unless `never_default` says why it
 // never is (ask-defaults.mjs; a pass answers it once due, dueAsks); asked again with one, that choice replaces the one kept.
@@ -53,11 +55,12 @@ export function addAsk(stateDir, text, now = Date.now(), { until = [], settles =
       if (pick) { for (const k of ['options', 'recommended', 'apply_by', 'never_default']) delete same[k]; Object.assign(same, pick); }
       return { id: same.id, added: false, until: same.until ?? [], ask: { ...same } };
     }
-    // A reviewer's ask kept up to date takes the new text and keeps its id, so a not-now on it holds.
-    const kept = settles === 'reviewer' && login ? f.asks.find((a) => a.settles === 'reviewer' && a.login === login) : null;
+    // A reviewer's ask, or the tmpfs one, kept up to date takes the new text and keeps its id, so a not-now on it holds.
+    const kept = settles === 'reviewer' && login ? f.asks.find((a) => a.settles === 'reviewer' && a.login === login)
+      : settles === 'tmpfs' ? f.asks.find((a) => a.settles === 'tmpfs') : null;
     if (kept) { kept.text = text; return { id: kept.id, added: false, until: [], ask: { ...kept } }; }
     const id = f.next ?? Math.max(0, ...f.asks.map((a) => a.id)) + 1;
-    const drift = settles === 'drift' && rows?.length ? { settles, rows: [...rows] } : settles === 'reviewer' && login ? { settles, login } : null;
+    const drift = settles === 'drift' && rows?.length ? { settles, rows: [...rows] } : settles === 'reviewer' && login ? { settles, login } : settles === 'tmpfs' ? { settles } : null;
     const a = { id, text, at: new Date(now).toISOString(), ...(keys.length ? { until: keys, ...(settles ? { settles } : {}) } : drift ?? {}), ...(pick ?? {}) };
     f.asks.push(a);
     f.next = id + 1;
@@ -119,6 +122,10 @@ export const settleAdmitted = (stateDir, placed) =>
 // Drops each gate-reviewer-down ask (`settles: 'reviewer'`, its `login`) `gone(ask)` holds for.
 //   -> the asks dropped, each { id, text, keys }
 export const settleReviewer = (stateDir, gone) => dropAsks(stateDir, (a) => a.settles === 'reviewer' && gone(a));
+
+// Drops the tmpfs ask (`settles: 'tmpfs'`): /tmp is under its line again.
+//   -> the asks dropped, each { id, text, keys }
+export const settleTmpfs = (stateDir) => dropAsks(stateDir, (a) => a.settles === 'tmpfs');
 
 // Drops each config-drift ask (`settles: 'drift'`) `gone(ask)` holds for.
 //   -> the asks dropped, each { id, text, keys } (keys: the rows it named)

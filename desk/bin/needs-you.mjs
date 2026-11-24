@@ -1860,7 +1860,7 @@ function itemOf(r, x, reads = null, finds = reads) {
 // `legacy` reads an entry's inputs as recorded before blockers were settled, so an older entry stays
 // put off while what it keys to is unchanged.
 const PARK_KINDS = ['parked', 'session', 'spine', 'plan'];
-const KEPT_ASKS = ['reviewer', 'drift'];
+const KEPT_ASKS = ['reviewer', 'drift', 'tmpfs'];
 function putOffKey(r, t, item) {
   if (PARK_KINDS.includes(item.kind)) return { question: t.park?.question ?? '', inputs: t.park?.inputs ?? {} };
   // A step: what waits on it in every batch of the repo, not its need, which names only those passed.

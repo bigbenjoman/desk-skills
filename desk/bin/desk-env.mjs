@@ -1231,6 +1231,9 @@ export const queueFile = () => expandHome(process.env.DESK_QUEUE ?? batchPaths(r
 // The repo's exits folder, whichever batch this is: a worker's exit file renamed in here wakes the
 // supervisor's next tick (spawn-worker.sh writes it, supervisor.mjs watches and empties it).
 export const exitsDir = () => join(repoStateOf(stateDir()), 'exits');
+// The repo's cache folder on disk, whichever batch this is: a worker's Node compile cache, Jest cache
+// and test runs' temporary output go here rather than to a tmpfs /tmp (spawn-worker.sh, with-lock.sh).
+export const cacheDir = () => join(repoStateOf(stateDir()), 'cache');
 // The clones of §4 Worker read-only repos belong to the repo, not to a batch: they sit under the
 // standing batch's folder whichever batch this is, and DESK_AUTOPILOT_STATE, which names one batch, never moves them.
 export const readRepoDir = () => join(batchPaths(repoSlug()).state, 'ref');
@@ -1824,16 +1827,21 @@ export function harmSample() {
     const out = execFileSync('dmesg', [], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, maxBuffer: 64 * 1024 * 1024 });
     oom = oomKills(out);
   } catch { /* dmesg_restrict, or no dmesg */ }
-  let tmpGiB = null, tmpInodes = null;
+  const { gib: tmpGiB, inodes: tmpInodes } = tmpfsUsage();
+  return { swapGiB, oom, tmpGiB, tmpInodes, vmmem };
+}
+
+// What a tmpfs /tmp holds: { gib, inodes: { used, total } }, each null where /tmp is no tmpfs or
+// cannot be read.
+export function tmpfsUsage() {
   try {
     const tmpfs = readFileSync('/proc/mounts', 'utf8').split('\n').some((l) => { const f = l.split(' '); return f[1] === '/tmp' && f[2] === 'tmpfs'; });
     if (tmpfs) {
       const st = statfsSync('/tmp');
-      tmpGiB = ((st.blocks - st.bfree) * st.bsize) / GiB;
-      tmpInodes = { used: st.files - st.ffree, total: st.files };
+      return { gib: ((st.blocks - st.bfree) * st.bsize) / GiB, inodes: { used: st.files - st.ffree, total: st.files } };
     }
   } catch { /* not Linux */ }
-  return { swapGiB, oom, tmpGiB, tmpInodes, vmmem };
+  return { gib: null, inodes: null };
 }
 
 // ---- misc ----------------------------------------------------------------------------------
@@ -2205,7 +2213,7 @@ export async function setRepoSubscription(slug, value, root = deskConfigRoot()) 
 // for another repo must not inherit that part, so PER_REPO_ENV names it (with DESK_BATCH, an input).
 const PATHS = {
   DESK_REPO_ROOT: repoRoot, DESK_WORKTREES_DIR: worktreesDir, DESK_HOME: deskHome, DESK_SLUG: repoSlug, DESK_REPO_CONFIG_DIR: repoConfigDir, DESK_DEFAULT_BRANCH: defaultBranch,
-  DESK_BIN: binDir, DESK_RUN_BIN: runBin, DESK_STATE: stateDir, DESK_QUEUE: queueFile, DESK_EXITS_DIR: exitsDir, DESK_SKILLS_DIR: skillsDir,
+  DESK_BIN: binDir, DESK_RUN_BIN: runBin, DESK_STATE: stateDir, DESK_QUEUE: queueFile, DESK_EXITS_DIR: exitsDir, DESK_CACHE_DIR: cacheDir, DESK_SKILLS_DIR: skillsDir,
   DESK_LOCK_DIR: lockDir, DESK_MEMORY_DIR: memoryDir, DESK_GH_REPO: ghRepo,
   DESK_PG_CONTAINER: pgContainer, DESK_DEV_PORT: devPort, DESK_WORKER_PORT_FLOOR: workerPortFloor, DESK_IS_WSL: () => (isWSL() ? 'yes' : 'no'),
 };
