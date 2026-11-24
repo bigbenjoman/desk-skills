@@ -197,7 +197,7 @@ fs.appendFileSync(T + '/calls.log', 'claude worker ' + ticket + '\n');
 onLogin('worker');
 const round = fs.readdirSync(T + '/runs').filter((f) => f.startsWith(ticket + '.')).length + 1;
 const gitEnv = ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL'].map((k) => process.env[k] ?? '-').join('|');
-fs.writeFileSync(T + '/runs/' + ticket + '.' + round, JSON.stringify({ prompt, git: gitEnv, system: at('--append-system-prompt'), cwd: process.cwd(), sid, model, partial: a.includes('--include-partial-messages'), agents: a.includes('--agents') ? Object.keys(JSON.parse(fs.readFileSync(at('--agents'), 'utf8'))) : null, sources: a.includes('--setting-sources') ? at('--setting-sources') : null, settings: a.filter((x) => x === '--settings').length }));
+fs.writeFileSync(T + '/runs/' + ticket + '.' + round, JSON.stringify({ prompt, git: gitEnv, compileCache: process.env.NODE_COMPILE_CACHE ?? null, system: at('--append-system-prompt'), cwd: process.cwd(), sid, model, partial: a.includes('--include-partial-messages'), agents: a.includes('--agents') ? Object.keys(JSON.parse(fs.readFileSync(at('--agents'), 'utf8'))) : null, sources: a.includes('--setting-sources') ? at('--setting-sources') : null, settings: a.filter((x) => x === '--settings').length }));
 const reg = T + '/live/' + sid + '.json';
 fs.writeFileSync(reg, JSON.stringify({ sessionId: sid, pid: process.pid }));
 const script = fs.readFileSync(T + '/scripts/' + ticket + '.' + round, 'utf8').split('\n').filter(Boolean);

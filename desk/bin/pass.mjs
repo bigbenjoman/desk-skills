@@ -114,6 +114,7 @@ import { kindMode, leaseCli, releasePreviews, slotPools } from './leases.mjs';
 import { handToWorker as handMemToWorker, memPool, reserveForWorker } from './mem-lease.mjs';
 import { pruneAsks, settleDrift, readAsks, dueAsks, answerAsk, unlogged, markLogged } from './asks.mjs';
 import * as GR from './gate-reviewer.mjs';
+import { tmpfsStep, settledLines as tmpfsSettled } from './tmp-sweep.mjs';
 import { considered, takeRows, devDirsIn } from './drift-asks.mjs';
 import { readArchive, archivedOf, isArchived, keepPrs, mergedPrs, prClosed, owesReopen, recordedPr } from './queue-store.mjs';
 
@@ -2195,7 +2196,18 @@ const availGB = E.availableGiB();
 // memory does, whatever avail reads. AUTOPILOT_MIN_AVAIL_GB=0 turns this off with the rest of the gate,
 // and so does the mem lease kind set off (desk-env lease mode mem), which restores the avail ladder alone.
 const MEM_MODE = (() => { try { return kindMode('mem', LEASE_ENV).mode; } catch { return null; } })();
-const HARM = MIN_AVAIL_GB > 0 && MEM_MODE !== 'off' ? E.harmHold(STATE) : [];
+const HARM_HELD = MIN_AVAIL_GB > 0 && MEM_MODE !== 'off' ? E.harmHold(STATE) : [];
+// TMPFS-HIGH is what /tmp holds now: the pass clears the regenerable caches in it, and the signal holds
+// only while /tmp is still over its line, with a needs-you ask naming what is left.
+const TMPFS = (() => {
+  const askState = E.repoStateOf(STATE);
+  try {
+    if (!HARM_HELD.some((h) => h.signal === 'TMPFS-HIGH')) return { lines: DRY ? [] : tmpfsSettled(askState), over: false };
+    return tmpfsStep({ askState, limitGiB: E.harmThresholds().tmpfsGiB, usage: () => E.tmpfsUsage().gib, dry: DRY });
+  } catch (e) { return { lines: [`/tmp (tmpfs): its sweep failed (${String(e?.message ?? e).split('\n')[0]})`], over: true }; }
+})();
+report.recovered.push(...TMPFS.lines);
+const HARM = TMPFS.over ? HARM_HELD : HARM_HELD.filter((h) => h.signal !== 'TMPFS-HIGH');
 const harmWhy = HARM.length ? `memory harm: ${HARM.map((h) => h.signal).join(', ')} within the last ${E.HARM_WINDOW_MS / 60000}m (${HARM[0].line})` : null;
 const lowMemory = MIN_AVAIL_GB > 0 && (availGB < MIN_AVAIL_GB || HARM.length > 0);
 // Concurrency: the queue's field (the orchestrator's per-pass ladder decision, or a count the user
