@@ -84,7 +84,8 @@ export function readThreads(payload, { handle, clean }) {
 
 // An outside reviewer's read of the PR, for a §4 State check of kind external: whether `login` has
 // reviewed the head, that review's state and body, and the threads still open that its reviews began
-// (each { id, text }). payload: THREADS_QUERY's response. -> { head, reviewed, state, body, threads } | null.
+// (each { id, text }), and `last`, when its latest review of this PR was submitted (ISO, null with none).
+// payload: THREADS_QUERY's response. -> { head, reviewed, state, body, threads, last } | null.
 export function externalReview(payload, login) {
   const pr = payload?.data?.repository?.pullRequest;
   if (!pr) return null;
@@ -93,7 +94,8 @@ export function externalReview(payload, login) {
   const at = [...mine].reverse().find((r) => r.commit?.oid === head) ?? null;
   const ids = new Set(mine.map((r) => r.id));
   const threads = (pr.reviewThreads?.nodes ?? []).filter((t) => !t.isResolved && ids.has(t.comments?.nodes?.[0]?.pullRequestReview?.id)).map(threadOf);
-  return { head, reviewed: !!at, state: at?.state ?? null, body: String(at?.body ?? '').trim(), threads };
+  const last = mine.map((r) => r.submittedAt).filter(Boolean).sort().at(-1) ?? null;
+  return { head, reviewed: !!at, state: at?.state ?? null, body: String(at?.body ?? '').trim(), threads, last };
 }
 
 // Whether §4 Local review command names a review, so that a merge waits on its clean verdict.

@@ -111,6 +111,7 @@ import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } 
 import { kindMode, leaseCli, releasePreviews, slotPools } from './leases.mjs';
 import { handToWorker as handMemToWorker, memPool, reserveForWorker } from './mem-lease.mjs';
 import { pruneAsks, settleDrift, readAsks } from './asks.mjs';
+import * as GR from './gate-reviewer.mjs';
 import { considered, takeRows, devDirsIn } from './drift-asks.mjs';
 import { readArchive, archivedOf, isArchived, keepPrs, mergedPrs, prClosed, owesReopen, recordedPr } from './queue-store.mjs';
 
@@ -5114,6 +5115,8 @@ function fixReads(t, s, dirty, dirtyFiles) {
       ? readVerdict(payload, { handle: conflictHandle, clean: E.configValue('clean-verdict'), carry, scope }) : null),
   };
 }
+// An outside gate reviewer's reads and the PRs waiting on it, this pass (gate-reviewer.mjs).
+const externalSeen = [], externalWaits = [];
 {
   const fixTicket = (k) => undrafted.find((e) => e.t.key === k);
   runSteps({
@@ -5142,8 +5145,19 @@ function fixReads(t, s, dirty, dirtyFiles) {
         return a.call.call === 'build' ? startCheckBuild(t, a.pr, a.head, a.call, null, true) : rerunBuilt(t, a.pr, a.head, a.call, null, true);
       },
       apply: (a) => applyFix(fixTicket(a.key).t, a.pr, a.head, a.call),
+      'external-seen': (a) => { externalSeen.push(a); },
+      'external-wait': (a) => { externalWaits.push(a); },
     },
   });
+}
+// The repo's named batches that still exist, or null where they cannot be listed.
+function liveNamed() { try { return listBatches().map((b) => b.name).filter(Boolean); } catch { return null; } }
+// Whether each outside gate reviewer PRs wait on has stopped reviewing across the repo (gate-reviewer.mjs
+// reviewerStep): one that has is one repo-level ask in place of each PR's wait line.
+{
+  let owner = null;
+  try { const v = E.declaredValue('infra-owner'); owner = v && !/^(you|none|todo)$/i.test(v.trim()) ? v.trim() : null; } catch { /* unread: none named */ }
+  out.push(...GR.reviewerStep(E.repoStateOf(STATE), { seen: externalSeen, waits: externalWaits, owner, repo: GH_REPO, dry: DRY, batch: E.batchName() ?? null, live: liveNamed() }));
 }
 // With `gate`, the read also holds `gateReview`: the latest desk-review a §4 Gate reviewer posted, where
 // it is at the head and not clean, read apart from desk's own so a later verdict of desk's cannot hide
