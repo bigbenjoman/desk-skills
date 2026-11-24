@@ -142,7 +142,9 @@ const config = (name, tracker, pattern) => {
 // A gh on PATH: logs each call, and answers each aliased read of a GraphQL query from the fixture
 // file its environment names: a PR by number (its first page of files and reviews, or a later page
 // of either, a page being 100), the merged PRs a head branch heads, and a search, filtered by its
-// `merged:` range and `revert in:title`, sorted by merge time, paged by the fixture's searchPage.
+// `merged:` range and `revert in:title`, sorted by merge time, paged by the fixture's searchPage. A
+// number no fixture PR has is answered as GitHub does: null with a NOT_FOUND error, and exit 1 (or
+// the fixture's errorType for every read, to stand for another failure).
 function stubGh() {
   const fs = require('fs');
   const args = process.argv.slice(2);
@@ -155,15 +157,20 @@ function stubGh() {
   const any = (n) => fx.prs[n] || (fx.search || []).find((c) => c.number === Number(n));
   const repository = {};
   const top = {};
+  const errors = [];
+  const none = (alias) => { errors.push({ type: fx.errorType || 'NOT_FOUND', path: ['repository', alias], message: 'Could not resolve to a PullRequest' }); return null; };
   const re = /(a\d+): (?:pullRequest\(number:(\d+)\)\{(?:(files|reviews)\(first:100(?:, after:"(\d+)")?\)|number )|pullRequests\(headRefName:("(?:[^"\\]|\\.)*")|search\(query:("(?:[^"\\]|\\.)*"), type:ISSUE, first:100(?:, after:"(\d+)")?)/g;
   for (const m of q.matchAll(re)) {
     const [, alias, n, list, from, head, search, sFrom] = m;
-    if (n && list) repository[alias] = { [list]: page(list === 'files' ? files(any(n)) : reviews(any(n)), Number(from || 0)) };
+    if (n && list) repository[alias] = any(n) ? { [list]: page(list === 'files' ? files(any(n)) : reviews(any(n)), Number(from || 0)) } : none(alias);
     else if (n) {
       const p = fx.prs[n];
-      repository[alias] = p ? { number: p.number, title: p.title, mergedAt: p.mergedAt, mergeCommit: p.mergeCommit,
-        files: { totalCount: files(p).length, ...page(files(p), 0) }, reviews: { totalCount: reviews(p).length, ...page(reviews(p), 0) } } : null;
-    } else if (head) repository[alias] = { nodes: Object.values(fx.prs).filter((p) => p.headRefName === JSON.parse(head) && p.mergedAt).map((p) => ({ number: p.number })) };
+      repository[alias] = p && !fx.errorType ? { number: p.number, title: p.title, mergedAt: p.mergedAt, baseRefName: p.baseRefName, mergeCommit: p.mergeCommit,
+        files: { totalCount: files(p).length, ...page(files(p), 0) }, reviews: { totalCount: reviews(p).length, ...page(reviews(p), 0) } } : none(alias);
+    } else if (head) {
+      const mine = Object.values(fx.prs).filter((p) => p.headRefName === JSON.parse(head) && p.mergedAt).sort((x, y) => x.createdAt.localeCompare(y.createdAt));
+      repository[alias] = page(mine.map((p) => ({ number: p.number, createdAt: p.createdAt, mergedAt: p.mergedAt })), 0);
+    }
     else {
       const text = JSON.parse(search);
       const [, a, b] = /merged:(\S+)\.\.(\S+)/.exec(text);
@@ -173,7 +180,8 @@ function stubGh() {
       top[alias] = page(hits, Number(sFrom || 0), fx.searchPage || 100);
     }
   }
-  process.stdout.write(JSON.stringify({ data: { repository, ...top } }));
+  process.stdout.write(JSON.stringify({ data: { repository, ...top }, ...(errors.length ? { errors } : {}) }));
+  if (errors.length) process.exitCode = 1;
 }
 const STUB = join(T, 'stub');
 mkdirSync(STUB, { recursive: true });
@@ -269,7 +277,7 @@ t('sessions measured on the session guardrails alone never make an arm eligible'
 
 // A window short of data says how many sessions it saw, how many it mapped, and why the rest did not.
 t('the window counts its sessions, the ones mapped, and why each of the rest did not map',
-  r6.mapping, { sessions: 10, mapped: 0, no_pr: 7, no_key: 1, no_ticket: 1, no_outcome: 1, keys: ['DS-99'] });
+  r6.mapping, { sessions: 10, mapped: 0, no_pr: 7, no_key: 1, no_ticket: 1, no_outcome: 1, off_default: 0, no_match: 0, keys: ['DS-99'] });
 const text = run('--tickets', HOLDS).stdout;
 t('the text report says it, with what would map the rest',
   [/saw 10 session\(s\), mapped 0 to a ticket or PR with an outcome; 7 touched no PR and ran on the default branch: .*; 1 touched a PR or branch that names no ticket key: .*; 1 named a key no queue ticket has \(DS-99\): .*; 1 reached a ticket or PR with no outcome yet/.test(text),
@@ -311,9 +319,9 @@ const M = Date.now() - 20 * DAY_MS;
 const iso = (ms) => new Date(ms).toISOString();
 // A merged PR in the fixture: its files, its reviews (on the commits named, `late` ones after the
 // merge) and the check suites on its merge commit.
-const pr = (n, { mergedAt = M, title = `feat: change ${n}`, files = [`src/f${n}.js`], reviewed = ['a'], late = [], suites = [] } = {}) => ({
-  number: n, title, mergedAt: mergedAt == null ? null : iso(mergedAt), headRefName: `feat/change-${n}`,
-  mergeCommit: { oid: `m${n}`, checkSuites: { totalCount: suites.length, nodes: suites.map((x, i) => ({ conclusion: x.conclusion, workflowRun: { databaseId: n * 10 + i, event: 'push', createdAt: iso(x.at), url: `u${n}`, workflow: { databaseId: 1, name: 'ci' } } })) } },
+const pr = (n, { mergedAt = M, title = `feat: change ${n}`, files = [`src/f${n}.js`], reviewed = ['a'], late = [], suites = [], head = `feat/change-${n}`, base = 'main', createdAt = null } = {}) => ({
+  number: n, title, mergedAt: mergedAt == null ? null : iso(mergedAt), headRefName: head, baseRefName: base, createdAt: iso(createdAt ?? (mergedAt ?? M) - 3 * 3_600_000),
+  mergeCommit: { oid: `m${n}`, checkSuites: { totalCount: suites.length, nodes: suites.map((x, i) => ({ conclusion: x.conclusion, branch: { name: x.branch ?? 'main' }, workflowRun: { databaseId: n * 10 + i, event: 'push', createdAt: iso(x.at), url: `u${n}`, workflow: { databaseId: 1, name: 'ci' } } })) } },
   files,
   reviews: [...reviewed.map((oid, i) => ({ at: iso((mergedAt ?? M) - DAY_MS + i), oid })), ...late.map((oid) => ({ at: iso((mergedAt ?? M) + DAY_MS), oid }))],
 });
@@ -434,6 +442,46 @@ const again9 = readFileSync(GH_LOG, 'utf8').split('\n').filter(Boolean).slice(lo
 t('a later run reads only the open windows: 901\'s reverts and 902\'s follow-ups, no PR again',
   [again9.length > 0, again9.every((q) => !q.includes('pullRequest(number:')), again9.every((q) => [901, 902].some((n) => q.includes(iso(N - (n === 901 ? 3 : 20) * DAY_MS).slice(0, 13))))],
   [true, true, true]);
+
+// A number that names no PR here beside one that does; a PR merged into another branch; a failed run
+// on the merge commit pushed to another branch; and one branch name used for two PRs, at two times.
+const FX10 = write('fx10.json', {
+  prs: Object.fromEntries([
+    pr(1001, { suites: [{ conclusion: 'FAILURE', at: M + 3_600_000, branch: 'feat/elsewhere' }] }),
+    pr(1002, { base: 'feat/epic' }),
+    pr(1003, { head: 'feat/reused', createdAt: T0 - 3_600_000, mergedAt: T0 + 2 * 3_600_000 }),
+    pr(1004, { head: 'feat/reused', createdAt: T0 + 3 * DAY_MS - 3_600_000, mergedAt: T0 + 3 * DAY_MS + 2 * 3_600_000 }),
+  ].map((p) => [p.number, p])),
+  search: [],
+});
+const ROOT10 = join(T, 'projects10');
+const P10 = join(ROOT10, '-x-repo');
+mkdirSync(P10, { recursive: true });
+session(P10, 'pair', [user(0), req('pair-r', 1, { uncached: 1 }), ...bash(2, 'gh pr merge 1001'), ...bash(3, 'gh pr merge 1999')]);
+session(P10, 'epic', [user(0), req('epic-r', 1, { uncached: 1 }), ...bash(2, 'gh pr merge 1002')]);
+const later = (d) => 60 * 24 * d;
+session(P10, 'reusedA', [user(0), req('ra-r', 1, { uncached: 1 }), ...bash(2, 'git push origin feat/reused')]);
+session(P10, 'reusedB', [user(later(3)), req('rb-r', later(3) + 1, { uncached: 1 }), ...bash(later(3) + 2, 'git push origin feat/reused')]);
+session(P10, 'reusedC', [user(later(8)), req('rc-r', later(8) + 1, { uncached: 1 }), ...bash(later(8) + 2, 'git push origin feat/reused')]);
+const S10 = join(T, 'state10');
+const run10 = (fx = FX10, state = S10) => JSON.parse(spawnSync(process.execPath, [BIN, '--root', ROOT10, '--tickets', NONE, '--json'],
+  { cwd: T, env: { ...env, DESK_AUTOPILOT_STATE: state, HANDOFF_GH_FIXTURE: fx }, encoding: 'utf8' }).stdout);
+const p10 = run10();
+const x = (id) => p10.sessions.find((y) => y.id === id);
+t('a number that names no PR here (GitHub\'s NOT_FOUND, gh exiting 1) leaves the PR beside it measured',
+  [x('pair').measured_on, x('pair').prs_measured.map((o) => o.number), p10.pr_read.note], ['prs', [1001], null]);
+t('a failed run on the merge commit pushed to another branch is not red main', x('pair').prs_measured[0]?.post_merge, 0);
+t('a PR merged into another branch than the default is not measured, and says so', [x('epic').measured_on, x('epic').unmapped], ['session only', 'off default']);
+t('one branch name used for two PRs maps each session to the PR whose lifetime overlaps it',
+  [x('reusedA').prs_measured.map((o) => o.number), x('reusedB').prs_measured.map((o) => o.number), [x('reusedC').measured_on, x('reusedC').unmapped]], [[1003], [1004], ['session only', 'no match']]);
+const cache10 = JSON.parse(readFileSync(join(S10, 'handoff-pr-outcomes.json'), 'utf8'));
+t('the cache holds PRs by number only, and the number that names no PR as not asked again', [Object.keys(cache10).sort(), cache10.missing], [['missing', 'prs'], [1999]]);
+before = ghCalls();
+run10();
+const again10 = readFileSync(GH_LOG, 'utf8').split('\n').filter(Boolean).slice(before).map((l) => JSON.parse(l).find((a) => a.startsWith('query=')));
+t('the next run asks again only for the branch\'s PRs, not for the number that named none', [again10.length, again10.some((q) => q.includes('1999')), again10.every((q) => q.includes('headRefName'))], [1, false, true]);
+const failed = run10(write('fx10-fail.json', { prs: { 1001: pr(1001) }, search: [], errorType: 'RATE_LIMITED' }), join(T, 'state10-fail'));
+t('any other error drops the read and says so', [failed.pr_read.note?.startsWith('PRs not read from GitHub'), failed.sessions.filter((y) => y.measured_on === 'prs').length], [true, 0]);
 
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
 console.log('all passed');

@@ -257,7 +257,7 @@ function sessionOf(file, text) {
     fires: fires.size, compactions, resumed, handoffs: compactions + (resumed ? 1 : 0), resume_overheads: overheads,
     usd: [...requests.values()].reduce((s, r) => s + (requestUsd(r)?.total ?? 0), 0),
     unpriced: [...requests.values()].filter((r) => !requestUsd(r)).length,
-    active_hours: active / 3_600_000, branch: [...branches].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null,
+    active_hours: active / 3_600_000, start: times[0] ?? null, end: times.at(-1) ?? null, branch: [...branches].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null,
     branches: [...branches.keys()], prs: work.prs, pushed: [...new Set(work.pushed)], tool_calls: calls.size, tool_errors: errors,
   };
 }
@@ -337,7 +337,8 @@ function mapSession(s, rows, { repo, base, pattern, tracker }) {
   // No ticket is behind this work, so its PRs are measured themselves: by number, else by head branch.
   const refs = [...new Set(numbers)].map((n) => ({ number: n }));
   const named = new Set(prs.filter((p) => p.number != null).map((p) => p.head));
-  for (const b of branches) if (!named.has(b)) refs.push({ head: b });
+  // A branch alone names the merged PR from it whose lifetime overlaps this session.
+  for (const b of branches) if (!named.has(b)) refs.push({ head: b, from: s.start, to: s.end });
   return { tickets: [], why: keys.length ? 'no ticket' : 'no key', keys, refs };
 }
 
@@ -379,7 +380,7 @@ function armRows(sessions) {
       sessions_without_ticket: list.filter((s) => !on(s)).length, tickets_mapped: mapped.size, prs_mapped: prs.size,
       guardrails: rates, pr_guardrails: prRates, rework: { tool_calls: calls, tool_errors: errs, rate: calls ? errs / calls : null },
       mapping: { sessions: list.length, mapped: list.filter(on).length,
-        ...Object.fromEntries(['no pr', 'no key', 'no ticket', 'no outcome'].map((w) => [w.replace(' ', '_'), list.filter((s) => s.map.why === w).length])),
+        ...Object.fromEntries(['no pr', 'no key', 'no ticket', 'no outcome', 'off default', 'no match'].map((w) => [w.replace(' ', '_'), list.filter((s) => s.map.why === w).length])),
         keys: [...new Set(list.filter((s) => s.map.why === 'no ticket').flatMap((s) => s.map.keys))] },
     };
   });
@@ -417,7 +418,7 @@ function recommend(arms) {
     const here = arms.filter((a) => a.window === window);
     const counts = Object.fromEntries(here.map((a) => [a.arm, a.sessions]));
     const sum = (k) => here.reduce((x, a) => x + a.mapping[k], 0);
-    const mapping = { ...Object.fromEntries(['sessions', 'mapped', 'no_pr', 'no_key', 'no_ticket', 'no_outcome'].map((k) => [k, sum(k)])),
+    const mapping = { ...Object.fromEntries(['sessions', 'mapped', 'no_pr', 'no_key', 'no_ticket', 'no_outcome', 'off_default', 'no_match'].map((k) => [k, sum(k)])),
       keys: [...new Set(here.flatMap((a) => a.mapping.keys))] };
     const samples = here.map((a) => ({ arm: a.arm, baseline: BASELINE_PCTS.includes(a.pct), sessions: a.sessions, tickets: a.tickets_mapped, prs: a.prs_mapped }));
     const out = { window, row: rowName(window), counts, mapping, samples };
@@ -468,6 +469,8 @@ function mappingText(m) {
     [m.no_key, 'touched a PR or branch that names no ticket key: put the key in the PR title or branch (a PR merged by number shows no title)'],
     [m.no_ticket, `named a key no queue ticket has (${m.keys.slice(0, 5).join(', ')}${m.keys.length > 5 ? ` and ${m.keys.length - 5} more` : ''}): run the ticket through desk so its queue records it`],
     [m.no_outcome, `reached a ticket or PR with no outcome yet: a ticket counts once merged, or done, parked or failed, a PR once its windows close, ${WATCH_DAYS} days after it merged`],
+    [m.off_default, 'merged its PRs into another branch than the default: they are not measured'],
+    [m.no_match, 'pushed a branch no merged PR from the session\'s time heads: open or merge the PR from the session'],
   ].filter(([n]) => n).map(([n, why]) => `${n} ${why}`);
   return `    saw ${m.sessions} session(s), mapped ${m.mapped} to a ticket or PR with an outcome${rest.length ? `; ${rest.join('; ')}` : ''}`;
 }
@@ -544,14 +547,16 @@ if (isMain) {
   // A session reaches its ticket where one is behind its work, else its merged PRs, never both: one
   // batched read for every session's PRs, final outcomes cached in the repo's state.
   const offline = argv.includes('--offline');
-  const refs = [...new Map(sessions.flatMap((s) => s.map.refs ?? []).map((r) => [r.number != null ? `n${r.number}` : `h${r.head}`, r])).values()];
+  const refs = [...new Map(sessions.flatMap((s) => s.map.refs ?? []).map((r) => [r.number != null ? `n${r.number}` : `h${r.head}|${r.from}|${r.to}`, r])).values()];
   const cachePath = read(() => join(E.repoStateOf(E.stateDir()), 'handoff-pr-outcomes.json'));
-  const outcomes = prOutcomes(refs, { repo: ctx.repo, cachePath, offline, now });
+  const outcomes = prOutcomes(refs, { repo: ctx.repo, base: ctx.base, cachePath, offline, now });
   for (const s of sessions) {
     const found = (s.map.refs ?? []).map(outcomes.of).filter(Boolean);
     s.map.prs = [...new Map(found.filter((o) => o.final).map((o) => [o.number, o])).values()];
     if (s.map.prs.length) s.map.why = null;
-    else if (found.length) s.map.why = 'no outcome';
+    else if (found.some((o) => !o.off_default && !o.unmatched)) s.map.why = 'no outcome';
+    else if (found.some((o) => o.off_default)) s.map.why = 'off default';
+    else if (found.some((o) => o.unmatched)) s.map.why = 'no match';
     s.tickets = s.map.tickets.map((t) => t.key);
     s.prs_measured = s.map.prs.map(({ number, post_merge: pm, follow_ups: fu, review_rounds: rr }) => ({ number, post_merge: pm, follow_ups: fu, review_rounds: rr }));
     s.measured_on = s.tickets.length ? 'tickets' : s.map.prs.length ? 'prs' : 'session only';

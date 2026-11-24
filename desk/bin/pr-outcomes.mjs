@@ -22,7 +22,7 @@ import { dirname } from 'node:path';
 import { gh as ghRead } from './gate.mjs';
 import { findRecords, RED_HOURS, revertedPr, WATCH_DAYS } from './post-merge.mjs';
 
-export const FOLLOW_UP_HOURS = 48;
+const FOLLOW_UP_HOURS = 48;
 const HOUR_MS = 3_600_000;
 const CHUNK = 10;
 const PAGE = 100;
@@ -32,12 +32,12 @@ const SUITES = 50;
 const FIX_TITLE = /^(?:fix|hotfix|revert)\b/i;
 const pageOf = (fields) => `pageInfo{hasNextPage endCursor} nodes{${fields}}`;
 const REVIEWS = 'submittedAt commit{oid}';
-const CORE = `number title mergedAt mergeCommit{oid checkSuites(first:${SUITES}){totalCount nodes{conclusion workflowRun{databaseId event createdAt url workflow{databaseId name}}}}} `
+const CORE = `number title mergedAt baseRefName mergeCommit{oid checkSuites(first:${SUITES}){totalCount nodes{conclusion branch{name} workflowRun{databaseId event createdAt url workflow{databaseId name}}}}} `
   + `files(first:${PAGE}){totalCount ${pageOf('path')}} reviews(first:${PAGE}){totalCount ${pageOf(REVIEWS)}}`;
 const CANDIDATE = `... on PullRequest{number title body mergedAt files(first:${PAGE}){totalCount ${pageOf('path')}}}`;
 
 const readCache = (path) => {
-  try { const d = JSON.parse(readFileSync(path, 'utf8')); return { prs: d?.prs ?? {}, heads: d?.heads ?? {} }; } catch { return { prs: {}, heads: {} }; }
+  try { const d = JSON.parse(readFileSync(path, 'utf8')); return { prs: d?.prs ?? {}, missing: d?.missing ?? [] }; } catch { return { prs: {}, missing: [] }; }
 };
 function writeCache(path, cache) {
   mkdirSync(dirname(path), { recursive: true });
@@ -47,6 +47,19 @@ function writeCache(path, cache) {
 }
 const firstLine = (e) => String(e?.stderr || e?.message || e).trim().split('\n')[0];
 const after = (c) => (c ? `, after:${JSON.stringify(c)}` : '');
+
+// A GraphQL query's answer. GitHub answers a query in which an alias names no PR (an issue's number,
+// another repo's PR) with that alias null and a NOT_FOUND error, and gh then exits 1: that answer is
+// used, its other aliases read as usual. Any other error throws.
+function ask(gh, query) {
+  try { return JSON.parse(gh(['api', 'graphql', '-f', `query=${query}`])); }
+  catch (e) {
+    let body = null;
+    try { body = JSON.parse(String(e?.stdout ?? '')); } catch { /* not an answer */ }
+    if (body?.data && Array.isArray(body.errors) && body.errors.length && body.errors.every((x) => x?.type === 'NOT_FOUND')) return body;
+    throw e;
+  }
+}
 
 // Many paged reads at once, CHUNK aliased in each query, each list's further pages in the rounds
 // after, up to MAX_PAGES. `items`: [{ id, top, sel(cursor) -> selection, conn(answer) -> { pageInfo,
@@ -75,7 +88,7 @@ function readPaged(items, { gh, repoSel, count, first = new Map() }) {
       const part = now.slice(i, i + CHUNK);
       const inRepo = part.map((x, j) => (x.top ? '' : `a${j}: ${x.sel(x.cursor)}`)).join(' ').trim();
       const outside = part.map((x, j) => (x.top ? `a${j}: ${x.sel(x.cursor)}` : '')).join(' ').trim();
-      const data = JSON.parse(gh(['api', 'graphql', '-f', `query=query{${inRepo ? `${repoSel}{${inRepo}}` : ''} ${outside}}`])).data ?? {};
+      const data = ask(gh, `query{${inRepo ? `${repoSel}{${inRepo}}` : ''} ${outside}}`).data ?? {};
       count();
       part.forEach((x, j) => take(x, x.top ? data[`a${j}`] : data.repository?.[`a${j}`]));
     }
@@ -84,32 +97,51 @@ function readPaged(items, { gh, repoSel, count, first = new Map() }) {
   return out;
 }
 
-// The outcomes of the PRs `refs` name ([{ number } | { head }]) in `repo` (owner/name). `cachePath` is
-// the cache file (none: nothing cached); `offline` reads nothing.
+// The outcomes of the PRs `refs` name in `repo` (owner/name), whose default branch is `base`: a ref is
+// { number }, or { head, from, to } for a branch a session pushed between those times (epoch ms), the
+// merged PR with that head whose lifetime (opened to merged) overlaps the session's. `cachePath` is the
+// cache file (none: nothing cached); `offline` reads nothing.
 //   -> { of(ref) -> outcome | null, reads, cached, note }
 // An outcome: { number, title, merged_at, final, open: [window], reverts, red_main, post_merge,
-// follow_ups: [n], review_rounds }, or { number, merged_at: null, final: false } for a PR not merged.
-export function prOutcomes(refs, { repo, cachePath = null, offline = false, now = Date.now(), gh = ghRead }) {
-  const cache = cachePath ? readCache(cachePath) : { prs: {}, heads: {} };
+// follow_ups: [n], review_rounds }; { number, merged_at: null, final: false } for a PR not merged;
+// { number, off_default: true, final: false } for one merged into another branch than `base`; or
+// { head, unmatched: true } for a head whose merged PRs none overlaps the session (null where it has none). A number that names no
+// PR here is null, and is cached as such so it is not asked again.
+export function prOutcomes(refs, { repo, base, cachePath = null, offline = false, now = Date.now(), gh = ghRead }) {
+  const cache = cachePath ? readCache(cachePath) : { prs: {}, missing: [] };
   const recs = new Map(Object.entries(cache.prs).map(([n, o]) => [Number(n), o]));
-  const heads = new Map(Object.entries(cache.heads));
-  const known = (r) => (r.number != null ? r.number : heads.get(r.head));
-  const want = refs.filter((r) => !recs.get(known(r))?.final);
-  const cached = refs.length - want.length;
+  const missing = new Set(cache.missing.map(Number));
+  const headKey = (r) => `${r.head}|${r.from}|${r.to}`;
+  const chosen = new Map();
+  const unmatched = new Set();
+  const known = (r) => (r.number != null ? r.number : chosen.get(headKey(r)) ?? null);
+  // Settled: final, merged elsewhere, or no PR here; none is read again.
+  const settled = (n) => missing.has(n) || recs.get(n)?.final || recs.get(n)?.off_default;
   let reads = 0;
   const count = () => { reads += 1; };
   const notes = [];
-  if (want.length && offline) notes.push(`${want.length} PR(s) not read from GitHub (--offline)`);
-  else if (want.length && !repo) notes.push(`${want.length} PR(s) not read: no GitHub repo for this checkout`);
-  else if (want.length) {
+  const headRefs = refs.filter((r) => r.number == null);
+  let cached = refs.filter((r) => r.number != null && settled(r.number)).length;
+  if (offline) {
+    const want = refs.filter((r) => r.number == null || !settled(r.number)).length;
+    if (want) notes.push(`${want} PR(s) not read from GitHub (--offline)`);
+  } else if (!repo) {
+    if (refs.length > cached) notes.push(`${refs.length - cached} PR(s) not read: no GitHub repo for this checkout`);
+  } else if (refs.length) {
     const [owner, name] = repo.split('/');
     const repoSel = `repository(owner:${JSON.stringify(owner)},name:${JSON.stringify(name)})`;
     try {
-      // The head branches a session pushed, as the merged PRs they head.
-      const unknownHeads = [...new Set(want.filter((r) => r.number == null && !heads.has(r.head)).map((r) => r.head))];
-      const byHead = readPaged(unknownHeads.map((h) => ({ id: h, sel: () => `pullRequests(headRefName:${JSON.stringify(h)}, states:MERGED, first:1){nodes{number}}`, conn: (a) => a })), { gh, repoSel, count });
-      for (const [h, r] of byHead) if (r.nodes[0]?.number) heads.set(h, r.nodes[0].number);
-      const numbers = [...new Set(want.map(known).filter((n) => n != null))];
+      // The merged PRs each pushed head branch has had, oldest first; a ref takes the one whose
+      // lifetime overlaps its session, so a branch name used again maps each session to its own PR.
+      const names = [...new Set(headRefs.map((r) => r.head))];
+      const byHead = readPaged(names.map((h) => ({ id: h, sel: (c) => `pullRequests(headRefName:${JSON.stringify(h)}, states:MERGED, first:${PAGE}${after(c)}, orderBy:{field:CREATED_AT, direction:ASC}){${pageOf('number createdAt mergedAt')}}`, conn: (a) => a })), { gh, repoSel, count });
+      for (const r of headRefs) {
+        const p = (byHead.get(r.head)?.nodes ?? []).find((x) => Date.parse(x.createdAt) <= r.to && Date.parse(x.mergedAt) >= r.from);
+        chosen.set(headKey(r), p?.number ?? null);
+        if (!p && byHead.get(r.head)?.nodes?.length) unmatched.add(headKey(r));
+        if (p && settled(p.number)) cached += 1;
+      }
+      const numbers = [...new Set(refs.map(known).filter((n) => n != null && !settled(n)))];
 
       // Each PR, its files and reviews paged, where its red-main and review window is not done.
       const core = numbers.filter((n) => !recs.get(n)?.core?.done);
@@ -118,11 +150,15 @@ export function prOutcomes(refs, { repo, cachePath = null, offline = false, now 
         { gh, repoSel, count, first: new Map(core.map((n) => [n, fresh.get(n)?.answer ?? null])) });
       for (const n of core) {
         const p = fresh.get(n)?.answer;
-        if (!p?.number) continue;
+        // Asked and answered with nothing: no PR of this repo has that number.
+        if (!p?.number) { if (fresh.has(n) && fresh.get(n).answer === null) missing.add(n); continue; }
         const merged = Date.parse(p.mergedAt);
         if (!Number.isFinite(merged)) { recs.set(n, { number: n, merged_at: null, final: false }); continue; }
+        // Merged into another branch than the default: its merge commit is not the default branch's.
+        if (base && p.baseRefName && p.baseRefName !== base) { recs.set(n, { number: n, merged_at: p.mergedAt, base: p.baseRefName, off_default: true }); continue; }
         const sha = p.mergeCommit?.oid ?? null;
-        const runs = (p.mergeCommit?.checkSuites?.nodes ?? []).filter((s) => s?.workflowRun).map((s) => ({
+        // Only the default branch's suites on that commit: the same commit pushed elsewhere is not its merge.
+        const runs = (p.mergeCommit?.checkSuites?.nodes ?? []).filter((s) => s?.workflowRun && (!base || s.branch?.name === base)).map((s) => ({
           id: s.workflowRun.databaseId, name: s.workflowRun.workflow?.name ?? null, url: s.workflowRun.url, conclusion: String(s.conclusion ?? '').toLowerCase(),
           created_at: s.workflowRun.createdAt, event: s.workflowRun.event, workflow_id: s.workflowRun.workflow?.databaseId ?? null, sha }));
         const red = findRecords({ merges: [{ ticket: null, pr: n, merged_at: p.mergedAt, sha, landed_at: p.mergedAt }], commits: [], runs, at: new Date(now).toISOString() })
@@ -137,7 +173,7 @@ export function prOutcomes(refs, { repo, cachePath = null, offline = false, now 
       }
 
       // A search per open window of each merged PR, bounded to that window: follow-ups and reverts.
-      const merged = numbers.map((n) => recs.get(n)).filter((o) => o?.merged_at && o.core);
+      const merged = numbers.map((n) => recs.get(n)).filter((o) => o?.merged_at && o.core && !o.off_default);
       const range = (o, ms) => `merged:${o.merged_at}..${new Date(Math.min(now, Date.parse(o.merged_at) + ms)).toISOString()}`;
       const searches = merged.flatMap((o) => [
         ...(o.follow?.done ? [] : [{ id: `f${o.number}`, o, kind: 'follow', q: `repo:${repo} is:pr is:merged ${range(o, FOLLOW_UP_HOURS * HOUR_MS)} sort:created-asc` }]),
@@ -177,20 +213,25 @@ export function prOutcomes(refs, { repo, cachePath = null, offline = false, now 
   }
   // Final once every window is done.
   for (const o of recs.values()) {
-    if (!o.merged_at || !o.core) continue;
+    if (!o.merged_at || !o.core || o.off_default) continue;
     o.open = [!o.core.done && 'red main and reviews', !o.follow?.done && 'follow-ups', !o.revert?.done && 'reverts'].filter(Boolean);
     o.final = !o.open.length;
   }
   if (cachePath) {
     // Every merged PR's windows, done or not: a later run reads only the open ones.
-    const keep = [...recs].filter(([, o]) => o.merged_at && o.core);
-    const out = { prs: Object.fromEntries(keep), heads: Object.fromEntries([...heads].filter(([, n]) => recs.get(n)?.core)) };
+    const keep = [...recs].filter(([, o]) => o.merged_at && (o.core || o.off_default));
+    const out = { prs: Object.fromEntries(keep), missing: [...missing].sort((a, b) => a - b) };
     try { writeCache(cachePath, out); } catch (e) { notes.push(`cache not written: ${firstLine(e)}`); }
   }
-  const view = (o) => (o?.merged_at && o.core ? {
+  const view = (o) => (o?.off_default ? { number: o.number, off_default: true, final: false } : o?.merged_at && o.core ? {
     number: o.number, title: o.title, merged_at: o.merged_at, final: o.final, open: o.open,
     reverts: o.revert?.list?.length ?? 0, red_main: o.core.red_main, post_merge: (o.revert?.list?.length ?? 0) + o.core.red_main,
     follow_ups: o.follow?.list ?? [], review_rounds: o.core.review_rounds,
   } : o ?? null);
-  return { of: (r) => view(recs.get(known(r))), reads, cached, note: notes.join('; ') || null };
+  const of = (r) => {
+    if (r.number == null && unmatched.has(headKey(r))) return { head: r.head, unmatched: true };
+    const n = known(r);
+    return n == null || missing.has(n) ? null : view(recs.get(n));
+  };
+  return { of, reads, cached, note: notes.join('; ') || null };
 }
