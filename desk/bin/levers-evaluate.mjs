@@ -189,7 +189,7 @@ export function withOutcomes(rows, batches, now = Date.now()) {
 
 // ---- which rows a lever's evaluation reads -------------------------------------------------------------
 const ARMS = { trial: ['on', 'off'], reverted: ['on', 'off'], adopted: ['adopted', 'holdback'] };
-const outcomeIn = (r) => !!r.merged_at || OUTCOME_STATES.includes(r.state);
+export const outcomeIn = (r) => !!r.merged_at || OUTCOME_STATES.includes(r.state);
 
 // The fingerprints of a lever's code a row ran on: its starts' records, else its pin's at admission.
 function rowFps(r, lever) {
