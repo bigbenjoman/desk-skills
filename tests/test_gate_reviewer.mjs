@@ -55,6 +55,22 @@ lines = GR.reviewerStep(S, { seen: [{ login: BOT, pr: 3, head: 'h3', reviewedAtH
 t('#1365 its next review drops the ask, and the PRs still waiting are reported each as before',
   j([readAsks(S).length, lines.filter((l) => l.startsWith('fix tries:')).length, lines.some((l) => /^needs-you: ask \d+ dropped, as the gate reviewer it named reviews again/.test(l))]), j([0, 2, true]));
 t('#1365 that review records its lag from when PR #3 began waiting', GR.readRecord(S).reviewers[BOT].lags.at(-1), 85);
+// A clean review, its check green at the head, is the reviewer at work: it clears the ask, though another PR still waits.
+const C = scratch('gate-reviewer-clean-');
+GR.writeRecord(C, quiet);
+GR.reviewerStep(C, { waits: [wait(3, 'h3'), wait(4, 'h4')], now: at(80) });
+const cl = GR.reviewerStep(C, { seen: [{ login: BOT, pr: 3, head: 'h3', reviewedAtHead: true, last: iso(95) }], waits: [wait(4, 'h4')], now: at(96) });
+t('#1365 a clean review of one PR clears the ask, and the other PR\'s wait is its own line again', j([readAsks(C).length, cl.filter((l) => l.startsWith('fix tries: PR #4')).length]), j([0, 1]));
+// Each batch's pass replaces only its own waits: the standing batch's pass with nothing waiting leaves a
+// named batch's waits, and the reviewer still reads as down from them.
+let mb = GR.update({ reviewers: {} }, { waits: [wait(6)], now: at(0), batch: 'X-1' });
+mb = GR.update(mb, { waits: [wait(7)], now: at(0) });
+mb = GR.update(mb, { waits: [], now: at(90) });
+t('#1365 a batch\'s pass with nothing waiting leaves another batch\'s waits', j(Object.keys(mb.reviewers[BOT].waiting)), j(['6']));
+t('#1365 and the reviewer reads as down from them', j([GR.verdict(mb, BOT, at(90)).down, GR.verdict(mb, BOT, at(90)).prs]), j([true, [6]]));
+mb = GR.update(mb, { waits: [], now: at(91), batch: 'X-1' });
+t('#1365 that batch\'s own pass with nothing waiting clears them', j(mb.reviewers[BOT].waiting), '{}');
+
 const D = scratch('gate-reviewer-dry-');
 GR.writeRecord(D, quiet);
 GR.reviewerStep(D, { waits: [wait(3, 'h3'), wait(4, 'h4')], now: at(80), dry: true });

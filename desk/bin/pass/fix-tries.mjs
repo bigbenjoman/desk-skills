@@ -48,7 +48,7 @@ import { baseHeldAt, fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, r
 import { reviewerGated, set, say } from './shared.mjs';
 import { OUTAGE_MS, outageWait } from './deadlines.mjs';
 import { externalReview } from '../review-threads.mjs';
-import { FAILED } from '../gate.mjs';
+import { FAILED, externalPassed } from '../gate.mjs';
 
 const out = (line) => ({ type: 'out', line });
 const waiting = (key, line) => say(key, 'waiting', line);
@@ -59,6 +59,13 @@ export function* decideFixTries(s) {
   // A PR the outage step re-ran this pass, its hold cleared, waits for that run rather than a fix try.
   const snap = s.outage?.size ? s : { ...s, outage: null };
   for (const { t, s: p } of s.undrafted) {
+    // A ready PR whose outside reviewer's check passed at its head was reviewed there, cleanly: that
+    // reviewer is reviewing, whatever PR waits on it (gate-reviewer.mjs). The check's finish is that review's time.
+    const passed = p.state === 'OPEN' && p.isDraft === false && p.head ? externalPassed(p.checks, s.stateChecks) : null;
+    if (passed) {
+      const last = (p.checks ?? []).filter((c) => c.name === passed.name).map((c) => c.completedAt).filter(Boolean).sort().at(-1) ?? null;
+      yield { type: 'external-seen', key: t.key, pr: p.pr, head: p.head, login: passed.login, reviewedAtHead: true, last };
+    }
     if (s.outageRerun?.includes(p.pr)) continue;
     yield* fixTry(t, p, snap);
   }

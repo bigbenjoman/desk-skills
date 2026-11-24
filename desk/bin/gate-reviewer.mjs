@@ -3,13 +3,13 @@
 // fix-tries step reads that reviewer's reviews on every ready PR waiting for it; the pass records here,
 // per reviewer login, the latest review it saw, how long each of its recent reviews took after the PR
 // first waited on it, and which PRs wait now, in <repo state>/gate-reviewer.json:
-//   { reviewers: { <login>: { last: ISO|null, lags: [minutes], waiting: { <pr>: { head, since } } } } }
+//   { reviewers: { <login>: { last: ISO|null, lags: [minutes], waiting: { <pr>: { head, since, batch? } } } } }
 // Down is: ready PRs waiting on it, none reviewed for longer than its threshold (four times its recent
 // median lag, at least an hour), and no review from it in that time. The pass then puts one repo-level
 // ask to the person in place of each PR's wait, and drops it on the reviewer's next review.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { writeJsonAtomic } from './dir-lock.mjs';
+import { writeJsonAtomic, lock, unlock } from './dir-lock.mjs';
 import { addAsk, settleReviewer } from './asks.mjs';
 
 export const FLOOR_MIN = 60;
@@ -34,11 +34,13 @@ export function threshold(lags = []) {
   return Math.max(FLOOR_MIN, 4 * median);
 }
 
-// The record after one pass: `seen`, the reviewer reads it made ({ login, pr, head, reviewedAtHead,
-// last: ISO of its latest review on that PR, or null }), and `waits`, the PRs waiting on a reviewer
-// ({ login, pr, head }). A PR waiting at the same head keeps when it began; one reviewed at the head it
-// waited at adds its lag. -> a new record
-export function update(rec, { seen = [], waits = [], now = Date.now() }) {
+// The record after one pass of `batch` (each batch's pass reads only its own PRs, so it replaces only
+// its own waits; null is the standing batch): `seen`, the reviewer reads it made ({ login, pr, head,
+// reviewedAtHead, last: ISO of its latest review on that PR, or null }), and `waits`, its PRs waiting on
+// a reviewer ({ login, pr, head }). A PR waiting at the same head keeps when it began; one reviewed at
+// the head it waited at adds its lag. -> a new record
+export function update(rec, { seen = [], waits = [], now = Date.now(), batch = null }) {
+  const mine = (w) => (w.batch ?? null) === batch;
   const out = { reviewers: { ...rec.reviewers } };
   const of = (login) => (out.reviewers[login] = { last: null, lags: [], waiting: {}, ...out.reviewers[login] });
   for (const x of seen) {
@@ -50,16 +52,17 @@ export function update(rec, { seen = [], waits = [], now = Date.now() }) {
       if (Number.isFinite(lag) && lag >= 0) r.lags = [...(r.lags ?? []), Math.round(lag)].slice(-LAGS_KEPT);
     }
   }
+  for (const w of waits) of(w.login);
   for (const login of Object.keys(out.reviewers)) {
     const r = out.reviewers[login];
     const before = r.waiting ?? {};
-    r.waiting = {};
+    // Another batch's waits stay as its own last pass left them.
+    r.waiting = Object.fromEntries(Object.entries(before).filter(([, w]) => !mine(w)));
     for (const w of waits.filter((x) => x.login === login)) {
       const had = before[w.pr];
-      r.waiting[w.pr] = { head: w.head, since: had && had.head === w.head ? had.since : iso(now) };
+      r.waiting[w.pr] = { head: w.head, since: had && had.head === w.head ? had.since : iso(now), ...(batch ? { batch } : {}) };
     }
   }
-  for (const w of waits) if (!out.reviewers[w.login]) of(w.login).waiting = { [w.pr]: { head: w.head, since: iso(now) } };
   return out;
 }
 
@@ -90,11 +93,21 @@ export function downAsk(login, v, { repo, owner = null } = {}) {
 // reads as down put to the person as one ask in `state` (the repo's), replacing the last pass's for it,
 // in place of each PR's wait line, and the ask of one that no longer reads as down (its next review
 // seen, or nothing waiting on it) dropped. A dry run writes nothing. -> the pass's report lines
-export function reviewerStep(state, { seen = [], waits = [], now = Date.now(), owner = null, repo = '', dry = false } = {}) {
+export function reviewerStep(state, { seen = [], waits = [], now = Date.now(), owner = null, repo = '', dry = false, batch = null } = {}) {
   if (!seen.length && !waits.length && !hasRecord(state)) return [];
+  // The record is the repo's, shared by its batches' passes: read, changed and written under its lock.
+  let held = null;
+  if (!dry) {
+    try { mkdirSync(state, { recursive: true }); lock(`${fileOf(state)}.lock`); held = `${fileOf(state)}.lock`; } catch (e) {
+      return [...waits.map((w) => w.line), `gate reviewer: its record could not be locked (${firstLine(e)}), so whether it is down is not known this pass`];
+    }
+  }
+  try { return step(state, { seen, waits, now, owner, repo, dry, batch }); } finally { if (held) unlock(held); }
+}
+function step(state, { seen, waits, now, owner, repo, dry, batch }) {
   const lines = [];
   let rec;
-  try { rec = update(readRecord(state), { seen, waits, now }); } catch (e) {
+  try { rec = update(readRecord(state), { seen, waits, now, batch }); } catch (e) {
     return [...waits.map((w) => w.line), `gate reviewer: its record could not be read (${firstLine(e)}), so whether it is down is not known this pass`];
   }
   const down = new Set();
