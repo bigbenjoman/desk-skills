@@ -35,12 +35,13 @@
 // hold, against the 45/50 baseline; a person applies it as the §2 "Handoff at context %" row (or its
 // 1M row). It never writes config.
 //
-//   node handoff-report.mjs [--all] [--root <projects dir>] [--tickets <file>] [--offline] [--json]
-//     --all        every project folder, not only this repo's primary root's
-//     --root       a projects folder to read instead of every Claude login's
-//     --tickets    per-ticket rows (a JSON list: key, branch, prs, state, merged_at, fix_tries,
-//                  parks_by_class, post_merge) to read instead of this repo's batches
-//     --offline    read no PR from GitHub: only the outcomes already cached count
+// While PRs' windows are still open, each window also gets a provisional reading per arm, from the
+// elapsed part of those windows (final PRs and open ones together), with how many PRs and hours it
+// rests on. It never recommends: a recommendation needs final outcomes. But reverts, red main runs
+// and follow-ups only accumulate, so an arm whose provisional reading already breaches the baseline's
+// is refused at once.
+//
+// Usage and flags: USAGE below (--help).
 import { readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -69,6 +70,17 @@ const MIN_TICKETS = 3;
 const BASELINE_PCTS = [45, 50];
 // A gap between two lines longer than this counts as this much: idle time is not active time.
 const IDLE_CAP_MS = 5 * 60 * 1000;
+const USAGE = `usage: node handoff-report.mjs [--all] [--root <projects dir>] [--tickets <file>] [--offline] [--json]
+  --all        every project folder, not only this repo's primary root's
+  --root       a projects folder to read instead of every Claude login's
+  --tickets    per-ticket rows (a JSON list: key, branch, prs, state, merged_at, fix_tries,
+               parks_by_class, post_merge) to read instead of this repo's batches
+  --offline    read no PR from GitHub: only the outcomes already cached count
+  --json       the report as JSON
+  -h, --help   this usage; reads and writes nothing`;
+// The PR guardrails a provisional reading can already call breached: counts that only grow while a
+// window is open (review rounds are settled a day after the merge, so they wait for the final reading).
+const PROVISIONAL_BREACHES = ['pr-post-merge', 'follow-up-fixes'];
 const CHECKED = ['fix-tries-parks', 'post-merge'];
 // The guardrails of a merged PR no ticket is behind (pr-outcomes.mjs), each with the registry margin of
 // the ticket guardrail it stands for: reverts and red main as post-merge, a follow-up fix as a defect
@@ -344,7 +356,7 @@ function mapSession(s, rows, { repo, base, pattern, tracker }) {
 
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 
-function armRows(sessions) {
+function armRows(sessions, now) {
   const by = new Map();
   for (const s of sessions) {
     const k = label(s.arm);
@@ -364,6 +376,15 @@ function armRows(sessions) {
       const vals = [...prs.values()].map(value);
       return [g, { prs: vals.length, rate: mean(vals) }];
     }));
+    // The provisional pool: final PRs and those with windows still open, each counted once.
+    const pool = new Map(prs);
+    for (const s of list) for (const o of s.map.open ?? []) if (!pool.has(o.number)) pool.set(o.number, o);
+    const opened = [...pool.values()].filter((o) => !o.final);
+    const provisional = {
+      prs: pool.size, open: opened.length,
+      elapsed_hours: opened.length ? mean(opened.map((o) => Math.min(now - Date.parse(o.merged_at), WATCH_DAYS * 24 * 3_600_000) / 3_600_000)) : null,
+      rates: Object.fromEntries(Object.entries(PR_CHECKED).map(([g, { value }]) => [g, mean([...pool.values()].map(value))])),
+    };
     const on = (s) => s.map.tickets.length || s.map.prs?.length;
     const calls = list.reduce((x, s) => x + s.tool_calls, 0);
     const errs = list.reduce((x, s) => x + s.tool_errors, 0);
@@ -378,7 +399,7 @@ function armRows(sessions) {
       usd, unpriced: list.reduce((x, s) => x + s.unpriced, 0), active_hours: hours, usd_per_active_hour: hours > 0 ? usd / hours : null,
       sessions_on_tickets: list.filter((s) => s.map.tickets.length).length, sessions_on_prs: list.filter((s) => s.map.prs?.length).length,
       sessions_without_ticket: list.filter((s) => !on(s)).length, tickets_mapped: mapped.size, prs_mapped: prs.size,
-      guardrails: rates, pr_guardrails: prRates, rework: { tool_calls: calls, tool_errors: errs, rate: calls ? errs / calls : null },
+      guardrails: rates, pr_guardrails: prRates, provisional, rework: { tool_calls: calls, tool_errors: errs, rate: calls ? errs / calls : null },
       mapping: { sessions: list.length, mapped: list.filter(on).length,
         ...Object.fromEntries(['no pr', 'no key', 'no ticket', 'no outcome', 'off default', 'no match'].map((w) => [w.replace(' ', '_'), list.filter((s) => s.map.why === w).length])),
         keys: [...new Set(list.filter((s) => s.map.why === 'no ticket').flatMap((s) => s.map.keys))] },
@@ -424,8 +445,18 @@ function recommend(arms) {
     const mapping = { ...Object.fromEntries(['sessions', 'mapped', 'no_pr', 'no_key', 'no_ticket', 'no_outcome', 'off_default', 'no_match'].map((k) => [k, sum(k)])),
       keys: [...new Set(here.flatMap((a) => a.mapping.keys))] };
     const samples = here.map((a) => ({ arm: a.arm, baseline: BASELINE_PCTS.includes(a.pct), sessions: a.sessions, tickets: a.tickets_mapped, prs: a.prs_mapped }));
-    const out = { window, row: rowName(window), counts, mapping, samples };
     const base = here.filter((a) => BASELINE_PCTS.includes(a.pct)).sort((x, y) => y.sessions - x.sessions)[0];
+    // Provisional: each arm with a PR window still open, and the breaches it already shows against the
+    // baseline's reading so far, each side resting on MIN_TICKETS PRs or more.
+    const provisional = here.filter((a) => a.provisional.open).map((a) => {
+      const p = a.provisional;
+      const b = base?.provisional;
+      const breaches = a === base || !b || p.prs < MIN_TICKETS || b.prs < MIN_TICKETS ? []
+        : PROVISIONAL_BREACHES.filter((g) => ratio(p.rates[g], b.rates[g], PR_CHECKED[g].margin))
+          .map((g) => `provisional ${g} breach: ${p.rates[g].toFixed(2)} per PR so far against ${b.rates[g].toFixed(2)} on the baseline (margin ${PR_CHECKED[g].margin}x)`);
+      return { arm: a.arm, baseline: a === base, prs: p.prs, open: p.open, elapsed_hours: p.elapsed_hours, rates: p.rates, breaches };
+    });
+    const out = { window, row: rowName(window), counts, mapping, samples, provisional };
     if (!base || base.sessions < MIN_SESSIONS || base.usd_per_active_hour == null) {
       return { ...out, verdict: 'not enough data', why: `the ${BASELINE_PCTS.join('/')}% baseline has ${base?.sessions ?? 0} session(s); needs ${MIN_SESSIONS}` };
     }
@@ -452,6 +483,8 @@ function recommend(arms) {
       const bad = [...(a.unpriced ? [`${a.unpriced} request(s) on a model with no price`] : []),
         ...Object.entries(g).filter(([, v]) => v.status === 'breach' || (!measured && v.status === 'not measured')).map(([k, v]) => `${k} ${v.status}: ${v.why}`),
         ...(rw.status === 'breach' ? [`rework breach: ${rw.why}`] : [])];
+      // A breach already seen while the windows are open stays one: it refuses the arm now.
+      bad.push(...(provisional.find((x) => x.arm === a.arm)?.breaches ?? []));
       if (bad.length) refused.push({ arm: a.arm, why: bad.join('; ') });
       else eligible.push(a);
     }
@@ -477,6 +510,13 @@ function mappingText(m) {
   ].filter(([n]) => n).map(([n, why]) => `${n} ${why}`);
   return `    saw ${m.sessions} session(s), mapped ${m.mapped} to a ticket or PR with an outcome${rest.length ? `; ${rest.join('; ')}` : ''}`;
 }
+
+// A window's provisional reading per arm with a PR window open, and the breaches it already shows.
+const provisionalText = (r) => (r.provisional.length ? [
+  `    provisional, from the elapsed part of open windows (never a recommendation on its own): ${r.provisional.map((x) => `${x.arm}${x.baseline ? ' (baseline)' : ''} `
+    + `${x.prs} PR(s), ${x.open} open at ${Math.round(x.elapsed_hours)}h elapsed on average: ${Object.entries(x.rates).map(([g, v]) => `${g} ${v.toFixed(2)}`).join(', ')}`).join('; ')}`,
+  ...r.provisional.flatMap((x) => x.breaches.map((why) => `    ${x.arm} refused at once: ${why}`)),
+] : []);
 
 // A window's sample per arm against what a decision needs.
 const sampleText = (r) => `    sample (an arm and the baseline each need ${MIN_SESSIONS} sessions, and ${MIN_TICKETS} tickets or ${MIN_TICKETS} PRs): ${r.samples.map((x) => `${x.arm}${x.baseline ? ' (baseline)' : ''} `
@@ -505,6 +545,7 @@ function reportText(rep) {
       ? `  §2 "${r.row}": ${r.pct} (${r.arm}): ${r.why}${r.refused.length ? `; not ${r.refused.map((x) => `${x.arm} (${x.why})`).join(', ')}` : ''}`
       : `  §2 "${r.row}" (${r.window.toLocaleString('en-US')}-token window): not enough data: ${r.why} (sessions per arm: ${Object.entries(r.counts).map(([k, v]) => `${k} ${v}`).join(', ')})`,
     sampleText(r),
+    ...provisionalText(r),
     // Where a window lacks data: what its sessions reached, and what would map the rest.
     ...(r.verdict !== 'recommend' || r.refused.some((x) => x.why.includes('not measured')) ? [mappingText(r.mapping)] : [])])
       : ['  not enough data: no session ran under a known threshold']),
@@ -521,6 +562,7 @@ const isMain = (() => {
 })();
 if (isMain) {
   const argv = process.argv.slice(2);
+  if (argv.includes('--help') || argv.includes('-h')) { console.log(USAGE); process.exit(0); }
   const opt = (k) => { const i = argv.indexOf(k); return i < 0 ? undefined : argv[i + 1]; };
   const now = Date.now();
   let project = null;
@@ -556,6 +598,7 @@ if (isMain) {
   for (const s of sessions) {
     const found = (s.map.refs ?? []).map(outcomes.of).filter(Boolean);
     s.map.prs = [...new Map(found.filter((o) => o.final).map((o) => [o.number, o])).values()];
+    s.map.open = found.filter((o) => o.merged_at && !o.final && !o.off_default && o.post_merge != null);
     if (s.map.prs.length) s.map.why = null;
     else if (found.some((o) => !o.off_default && !o.unmatched)) s.map.why = 'no outcome';
     else if (found.some((o) => o.off_default)) s.map.why = 'off default';
@@ -565,7 +608,7 @@ if (isMain) {
     s.measured_on = s.tickets.length ? 'tickets' : s.map.prs.length ? 'prs' : 'session only';
     s.unmapped = s.map.why;
   }
-  const arms = armRows(sessions);
+  const arms = armRows(sessions, now);
   const rep = {
     scope: project ? `project ${project}` : 'every project', sessions: sessions.map(({ named, resumed_from, map, ...s }) => s), arms,
     recommendations: recommend(arms), ticket_note: tickets.note,

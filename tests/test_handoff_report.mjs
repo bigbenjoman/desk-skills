@@ -535,5 +535,47 @@ t('and that run\'s own report measures the PR as final', [pair10.measured_on, pa
 const failed = run10(write('fx10-fail.json', { prs: { 1001: pr(1001) }, search: [], errorType: 'RATE_LIMITED' }), join(T, 'state10-fail'));
 t('any other error drops the read and says so', [failed.pr_read.note?.startsWith('PRs not read from GitHub'), failed.sessions.filter((y) => y.measured_on === 'prs').length], [true, 0]);
 
+// ---- windows still open: a provisional reading ------------------------------------------------------
+// An 800,000-token window, five sessions per arm, three of each merging a PR three days ago: the 20%
+// arm's first already reverted, the 30% arm cheapest and clean.
+const D3 = Date.now() - 3 * DAY_MS;
+const FX11 = write('fx11.json', {
+  prs: Object.fromEntries([1101, 1102, 1103, 1111, 1112, 1113, 1121, 1122, 1123].map((n) => [n, pr(n, { mergedAt: D3 })])),
+  search: [cand(1191, 'Revert "feat: change 1111"', D3 + 2.5 * DAY_MS, ['src/f1111.js'], 'Reverts acme/widgets#1111')],
+});
+const ROOT11 = join(T, 'projects11');
+const P11 = join(ROOT11, '-x-repo');
+mkdirSync(P11, { recursive: true });
+for (const [arm, cost, first] of [[45, 1_000_000, 1101], [20, 500_000, 1111], [30, 250_000, 1121]]) {
+  for (let i = 0; i < 5; i += 1) {
+    session(P11, `p${arm}_${i}`, [...Array.from({ length: 12 }, (_, k) => user(k * 5)), req(`p${arm}_${i}-r`, 60, { uncached: cost }), ...fire(30, arm, 800_000),
+      ...(i < 3 ? bash(31, `gh pr merge ${first + i}`) : [])]);
+  }
+}
+const run11 = (state, ...args) => spawnSync(process.execPath, [BIN, '--root', ROOT11, '--tickets', NONE, ...args], { cwd: T, env: { ...env, DESK_AUTOPILOT_STATE: state, HANDOFF_GH_FIXTURE: FX11 }, encoding: 'utf8' });
+const S11 = join(T, 'state11');
+const p11 = JSON.parse(run11(S11, '--json').stdout);
+const r11 = rec(p11, 800_000);
+const pv = (arm) => r11.provisional?.find((x) => x.arm === arm);
+t('with PRs merged three days ago, each arm gets a provisional reading with the PRs and elapsed hours it rests on',
+  ['45% of 800,000', '20% of 800,000', '30% of 800,000'].map((a) => [pv(a)?.prs, pv(a)?.open, Math.round(pv(a)?.elapsed_hours ?? 0)]), [[3, 3, 72], [3, 3, 72], [3, 3, 72]]);
+t('a revert already seen refuses its arm at once', [pv('20% of 800,000')?.breaches, r11.refused.find((x) => x.arm === '20% of 800,000')?.why.includes('provisional pr-post-merge breach: 0.33 per PR so far against 0.00 on the baseline (margin 1.25x)')],
+  [['provisional pr-post-merge breach: 0.33 per PR so far against 0.00 on the baseline (margin 1.25x)'], true]);
+t('a clean provisional reading recommends nothing on its own', [pv('30% of 800,000')?.breaches, r11.pct, r11.refused.find((x) => x.arm === '30% of 800,000')?.why.includes('not measured')], [[], 45, true]);
+const t11 = run11(S11).stdout;
+t('the text labels the reading provisional, with its PRs and hours, and names the arm refused at once',
+  [t11.includes('provisional, from the elapsed part of open windows (never a recommendation on its own): '), t11.includes('20% of 800,000 3 PR(s), 3 open at 72h elapsed on average: pr-post-merge 0.33'),
+    t11.includes('    20% of 800,000 refused at once: provisional pr-post-merge breach')], [true, true, true]);
+
+// --help and -h print the usage and exit 0, reading no GitHub and writing no cache.
+for (const flag of ['--help', '-h']) {
+  const S12 = join(T, `state12${flag}`);
+  before = ghCalls();
+  const h = run11(S12, flag);
+  t(`${flag} prints the usage and its flags and exits 0, with no GitHub read and no cache written`,
+    [h.status, h.stdout.startsWith('usage: node handoff-report.mjs'), ['--offline', '--json', '--help'].every((f) => h.stdout.includes(f)), ghCalls() - before, existsSync(join(S12, 'handoff-pr-outcomes.json'))],
+    [0, true, true, 0, false]);
+}
+
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
 console.log('all passed');
