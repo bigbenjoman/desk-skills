@@ -1555,7 +1555,7 @@ function leaseTrialAnswer(verb, now, say) {
 // ---- what a session handed the person (asks.mjs): one item an ask, on the repo's standing batch ----
 const ASK = 'ask:';
 const askItems = (batches) => batches.filter((b) => b.batch == null && !b.error).flatMap((r) => (r.asks ?? []).map((a) => ({ r, dir: r.stateDir, t: { key: `${ASK}${a.id}` },
-  item: { kind: 'ask', repoLevel: true, id: a.id, ...askShape(a), since: timeOf(a.at) } })));
+  item: { kind: 'ask', repoLevel: true, id: a.id, ...(a.settles ? { settles: a.settles } : {}), ...askShape(a), since: timeOf(a.at) } })));
 // An ask's need and actions: a plain ask is done once done; a choice offers each option, the recommended
 // one first, saying when it applies by itself (ask-defaults.mjs deadlineText).
 function askShape(a, now = new Date()) {
@@ -1860,6 +1860,7 @@ function itemOf(r, x, reads = null, finds = reads) {
 // `legacy` reads an entry's inputs as recorded before blockers were settled, so an older entry stays
 // put off while what it keys to is unchanged.
 const PARK_KINDS = ['parked', 'session', 'spine', 'plan'];
+const KEPT_ASKS = ['reviewer', 'drift'];
 function putOffKey(r, t, item) {
   if (PARK_KINDS.includes(item.kind)) return { question: t.park?.question ?? '', inputs: t.park?.inputs ?? {} };
   // A step: what waits on it in every batch of the repo, not its need, which names only those passed.
@@ -1871,6 +1872,8 @@ function putOffKey(r, t, item) {
   // A promotion PR opened, or one that changes state, brings it back.
   if (item.unpromoted) return { question: `${t.key} unpromoted`, inputs: { ticket: item.ticket, blocker: item.waitsOn, branch: item.unpromoted.branch, pr: String(item.unpromoted.pr ?? 'none'), state: item.unpromoted.state } };
   if (item.promotion != null) return { question: `${t.key} red`, inputs: { 'pr-head': item.head, checks: item.checks.join(', ') } };
+  // An ask desk keeps up to date itself is the same ask while its id stands: new wording brings nothing back.
+  if (item.kind === 'ask' && KEPT_ASKS.includes(item.settles)) return { question: `${t.key} ask`, inputs: { ticket: t.key }, legacy: ({ need, ...was }) => was };
   const inputs = { ticket: t.key };
   if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
   else inputs.need = item.putOffNeed ?? item.rawNeed ?? item.need;

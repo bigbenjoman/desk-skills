@@ -219,8 +219,8 @@ export function downAsk(login, v, { repo, owner = null } = {}) {
 }
 
 // One pass's step, after its fix tries: the record updated with `seen` and `waits`, each reviewer that
-// reads as down put to the person as one ask in `state` (the repo's), replacing the last pass's for it,
-// in place of each PR's wait line, and the ask of one that no longer reads as down (its next review
+// reads as down put to the person as one ask in `state` (the repo's), the last pass's for it brought up
+// to date under its id while the outage is the same, in place of each PR's wait line, and the ask of one that no longer reads as down (its next review
 // seen, or nothing waiting on it) dropped. A dry run writes nothing. -> the pass's report lines
 // `seed`: seeded's reader, also the repo-wide read of a reviewer's latest review before it is called
 // down (repoLast), or null to read nothing from GitHub.
@@ -270,8 +270,10 @@ function step(state, { seen, waits, now, owner, repo, dry, batch, live, seed }) 
     lines.push(`gate reviewer: ${login} reads as down: no review since ${v.since}, over its ${v.threshold}-minute threshold, while ${v.prs.length} ready PR(s) wait on it (${v.prs.map((n) => `#${n}`).join(', ')}): on the needs-you list in place of each PR's wait`);
     if (dry) continue;
     try {
-      // The last pass's ask for it goes where this one says something else (more PRs waiting).
-      settleReviewer(state, (a) => a.login === login && a.text !== text);
+      // The same outage keeps its ask, its text brought up to date; a review since it was raised ends that
+      // outage, and its ask goes for a fresh one.
+      const last = rec.reviewers[login].last;
+      settleReviewer(state, (a) => a.login === login && !!last && Date.parse(last) > Date.parse(a.at));
       addAsk(state, text, now, { settles: 'reviewer', login });
     } catch (e) { lines.push(`gate reviewer: the ask for ${login} could not be recorded (${firstLine(e)})`); }
   }
