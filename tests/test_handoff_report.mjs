@@ -535,5 +535,71 @@ t('and that run\'s own report measures the PR as final', [pair10.measured_on, pa
 const failed = run10(write('fx10-fail.json', { prs: { 1001: pr(1001) }, search: [], errorType: 'RATE_LIMITED' }), join(T, 'state10-fail'));
 t('any other error drops the read and says so', [failed.pr_read.note?.startsWith('PRs not read from GitHub'), failed.sessions.filter((y) => y.measured_on === 'prs').length], [true, 0]);
 
+// ---- windows still open: a provisional reading ------------------------------------------------------
+// Sessions on three windows, one PR merged in each of the first sessions of an arm (five sessions an
+// arm at least). An 800,000-token window: the baseline's PRs final and clean (merged 20 days ago), the
+// 20% arm's three days old with one already reverted, the 30% arm's three days old, cheapest and clean.
+// A 900,000-token window: the baseline has three final clean PRs and two open ones already reverted
+// (0.40 so far), the 20% arm one revert in six open ones. A 950,000-token window: the same as the
+// 800,000 one, all merged 20 days ago, so final.
+const D3 = Date.now() - 3 * DAY_MS;
+const D20 = Date.now() - 20 * DAY_MS;
+const ARMS11 = [
+  { pct: 45, win: 800_000, cost: 1_000_000, prs: [[1101, D20], [1102, D20], [1103, D20]] },
+  { pct: 20, win: 800_000, cost: 500_000, prs: [[1111, D3], [1112, D3], [1113, D3]] },
+  { pct: 30, win: 800_000, cost: 250_000, prs: [[1121, D3], [1122, D3], [1123, D3]] },
+  { pct: 45, win: 900_000, cost: 1_000_000, prs: [[1201, D20], [1202, D20], [1203, D20], [1204, D3], [1205, D3]] },
+  { pct: 20, win: 900_000, cost: 500_000, prs: [1211, 1212, 1213, 1214, 1215, 1216].map((n) => [n, D3]) },
+  { pct: 45, win: 950_000, cost: 1_000_000, prs: [[1301, D20], [1302, D20], [1303, D20]] },
+  { pct: 20, win: 950_000, cost: 500_000, prs: [[1311, D20], [1312, D20], [1313, D20]] },
+];
+const reverts11 = [[1111, D3], [1204, D3], [1205, D3], [1211, D3], [1311, D20]];
+const FX11 = write('fx11.json', {
+  prs: Object.fromEntries(ARMS11.flatMap((x) => x.prs).map(([n, at]) => [n, pr(n, { mergedAt: at })])),
+  search: reverts11.map(([n, at], i) => cand(1900 + i, `Revert "feat: change ${n}"`, at + 2.5 * DAY_MS, [`src/f${n}.js`], `Reverts acme/widgets#${n}`)),
+});
+const ROOT11 = join(T, 'projects11');
+const P11 = join(ROOT11, '-x-repo');
+mkdirSync(P11, { recursive: true });
+for (const x of ARMS11) {
+  for (let i = 0; i < Math.max(5, x.prs.length); i += 1) {
+    session(P11, `p${x.pct}_${x.win}_${i}`, [...Array.from({ length: 12 }, (_, k) => user(k * 5)), req(`p${x.pct}_${x.win}_${i}-r`, 60, { uncached: x.cost }), ...fire(30, x.pct, x.win),
+      ...(x.prs[i] ? bash(31, `gh pr merge ${x.prs[i][0]}`) : [])]);
+  }
+}
+const run11 = (state, ...args) => spawnSync(process.execPath, [BIN, '--root', ROOT11, '--tickets', NONE, ...args], { cwd: T, env: { ...env, DESK_AUTOPILOT_STATE: state, HANDOFF_GH_FIXTURE: FX11 }, encoding: 'utf8' });
+const S11 = join(T, 'state11');
+const p11 = JSON.parse(run11(S11, '--json').stdout);
+const r8 = rec(p11, 800_000);
+const pv = (r, arm) => r.provisional?.find((x) => x.arm === arm);
+const provisionalRefusal = (r) => r.refused.filter((x) => /provisional/.test(x.why)).map((x) => x.arm);
+t('with PRs merged three days ago, each arm with open windows gets a provisional reading with the PRs and elapsed hours it rests on',
+  ['20% of 800,000', '30% of 800,000'].map((a) => [pv(r8, a)?.prs, pv(r8, a)?.open, Math.round(pv(r8, a)?.elapsed_hours ?? 0)]), [[3, 3, 72], [3, 3, 72]]);
+t('an arm revert against a clean baseline is flagged as would be refused on what is seen so far, the verdict unchanged',
+  [pv(r8, '20% of 800,000')?.flags, r8.pct, provisionalRefusal(r8)],
+  [['pr-post-merge 0.33 per PR against 0.00 on the baseline so far (margin 1.25x; provisional, the verdict waits for the windows to close)'], 45, []]);
+t('a clean provisional reading is not flagged and recommends nothing on its own',
+  [pv(r8, '30% of 800,000')?.flags, r8.refused.find((x) => x.arm === '30% of 800,000')?.why.includes('not measured')], [[], true]);
+const r9 = rec(p11, 900_000);
+t('an arm at one revert in six, against a baseline already at 0.40 so far, is not flagged, and nothing is refused on a provisional reading',
+  [pv(r9, '20% of 900,000')?.flags, Math.round(100 * (pv(r9, '20% of 900,000')?.rates?.['pr-post-merge'] ?? 0)), provisionalRefusal(r9)], [[], 17, []]);
+const r95 = rec(p11, 950_000);
+t('the same PRs once final: the verdict comes from the final reading alone',
+  [r95.provisional, r95.refused.map((x) => [x.arm, x.why])], [[], [['20% of 950,000', 'pr-post-merge breach: 0.33 per PR against 0.00 (margin 1.25x)']]]);
+const t11 = run11(S11).stdout;
+t('the text labels the reading provisional, with its PRs and hours, and flags the arm that would be refused so far',
+  [t11.includes('provisional, from the elapsed part of open windows (never a recommendation on its own): '), t11.includes('20% of 800,000 3 PR(s), 3 open at 72h elapsed on average: pr-post-merge 0.33'),
+    t11.includes('    20% of 800,000 would be refused on what is seen so far: pr-post-merge 0.33 per PR against 0.00 on the baseline so far'), t11.includes('refused at once')], [true, true, true, false]);
+
+// --help and -h print the usage and exit 0, reading no GitHub and writing no cache.
+for (const flag of ['--help', '-h']) {
+  const S12 = join(T, `state12${flag}`);
+  before = ghCalls();
+  const h = run11(S12, flag);
+  t(`${flag} prints the usage and its flags and exits 0, with no GitHub read and no cache written`,
+    [h.status, h.stdout.startsWith('usage: node handoff-report.mjs'), ['--offline', '--json', '--help'].every((f) => h.stdout.includes(f)), ghCalls() - before, existsSync(join(S12, 'handoff-pr-outcomes.json'))],
+    [0, true, true, 0, false]);
+}
+
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
 console.log('all passed');
