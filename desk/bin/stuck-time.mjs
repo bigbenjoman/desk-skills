@@ -7,10 +7,13 @@
 // time), a cause gone closes it at the pass's time. Each opening and closing is one line of the repo's
 // <state>/stuck-intervals.jsonl, appended (the latest line per interval wins, a cut line is skipped),
 // and one `stuck` event in the ticket ledger where the ledger lever is on, written first:
-//   { key, batch, cause, start, end (null while open), recorded }
-// Each pass also notes when it ran, per batch, in <state>/stuck-passes.json: a reader given the repo's
-// live batches counts an interval still open in a batch that has gone (archived or discarded, so no pass
-// will close it) as closed at that batch's last pass.
+//   { key, batch, created, cause, start, end (null while open), recorded }
+// `created` is when the batch's first pass ran, kept in its own state folder (<batch state>/stuck-batch.json,
+// which an archive moves with it): a batch started later under a name an archived one had has a new
+// folder, so it is another batch, which neither closes nor takes up the earlier one's intervals. Each pass also notes when
+// it ran, per batch, in <state>/stuck-passes.json: a reader given the repo's live batches (liveOf) counts
+// an interval still open in a batch that has gone (archived, discarded, or replaced by a later one of its
+// name, so no pass will close it) as closed at that batch's last pass.
 // A cause's tracking issue is set by hand, in <state>/stuck-links.json:
 //   node stuck-time.mjs link <cause> <issue number | #N | URL>     node stuck-time.mjs unlink <cause>
 //   node stuck-time.mjs                                            this week's and last week's lines
@@ -22,11 +25,14 @@ import { writeJsonAtomic } from './dir-lock.mjs';
 const fileOf = (state) => join(state, 'stuck-intervals.jsonl');
 const linksFile = (state) => join(state, 'stuck-links.json');
 const passesFile = (state) => join(state, 'stuck-passes.json');
+const batchFile = (batchState) => join(batchState, 'stuck-batch.json');
 const HOUR_MS = 3600_000;
 const WEEK_MS = 7 * 24 * HOUR_MS;
 const ms = (iso) => Date.parse(iso ?? '');
 const pair = (key, cause) => `${key}\0${cause}`;
 const ticketOf = (e) => `${e.batch ?? ''}\0${e.key}`;
+// A batch as an interval and the passes record name it: its name and when it began.
+const batchOf = (name, created) => `${name ?? ''}\0${created ?? ''}`;
 const hours = (m) => Math.round((m / HOUR_MS) * 10) / 10;
 // How many causes the line names.
 const TOP = 3;
@@ -55,7 +61,7 @@ function readAll(state) {
     if (!line.trim()) continue;
     try {
       const e = JSON.parse(line);
-      if (e?.key && e.cause && Number.isFinite(ms(e.start))) byId.set(`${ticketOf(e)}\0${e.cause}\0${e.start}`, e);
+      if (e?.key && e.cause && Number.isFinite(ms(e.start))) byId.set(`${batchOf(e.batch, e.created)}\0${e.key}\0${e.cause}\0${e.start}`, e);
     } catch { /* skipped */ }
   }
   return [...byId.values()];
@@ -65,17 +71,26 @@ const readJson = (file) => {
   try { const v = JSON.parse(readFileSync(file, 'utf8')); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch { return {}; }
 };
 
-// The intervals as a reader counts them: with `live`, the repo's live batch names (null the standing
-// one), one still open in a batch not among them closes at that batch's last pass, or at its own record
-// where none is noted. Null where the file cannot be read.
+// When the batch whose state folder is `batchState` began, as its first pass noted it; null for none noted.
+const createdOf = (batchState) => {
+  const c = batchState ? readJson(batchFile(batchState)).created : null;
+  return typeof c === 'string' && Number.isFinite(ms(c)) ? c : null;
+};
+// The repo's live batches as readers take them, from batch entries { name, state } (batches.mjs
+// listBatches; an archived entry is left out): [{ name, created }].
+export const liveOf = (batches) => (batches ?? []).filter((b) => !b?.archived).map((b) => ({ name: b.name ?? null, created: createdOf(b.state) }));
+
+// The intervals as a reader counts them: with `live` (liveOf), one still open in a batch not among them
+// closes at that batch's last pass, or at its own record where none is noted. Null where the file
+// cannot be read.
 function counted(state, live) {
   const all = readAll(state);
   if (!all || !live) return all;
-  const names = new Set(live.map((n) => n ?? ''));
+  const names = new Set(live.map((b) => batchOf(b.name, b.created)));
   const passes = readJson(passesFile(state));
   return all.map((e) => {
-    if (e.end != null || names.has(e.batch ?? '')) return e;
-    const last = [e.recorded, passes[e.batch ?? '']].filter((x) => Number.isFinite(ms(x))).sort((a, b) => ms(a) - ms(b)).at(-1);
+    if (e.end != null || names.has(batchOf(e.batch, e.created))) return e;
+    const last = [e.recorded, passes[batchOf(e.batch, e.created)]].filter((x) => Number.isFinite(ms(x))).sort((a, b) => ms(a) - ms(b)).at(-1);
     return { ...e, end: last && ms(last) > ms(e.start) ? last : e.start };
   });
 }
@@ -96,12 +111,17 @@ function record(state, entry) {
   appendFileSync(f, `${lead}${JSON.stringify(entry)}\n`);
 }
 
-// One pass's step for batch `batch` (null for the standing one). `parked`: [{ key, kind, class, since }]
+// One pass's step for batch `batch` (null for the standing one), whose state folder is `batchState`
+// (its first pass notes there when it began). `parked`: [{ key, kind, class, since }]
 // for each parked ticket; `waits`: [{ key, cause }] for each ticket a hold or stall kept waiting this
 // pass. `ledger(entry)`, where the ledger lever is on, appends its event under an id fixed by the
 // interval and throws on a failed write: the change is then not recorded, so the next pass makes it
 // again. -> the pass's report lines (only what could not be written).
-export function stuckStep(state, { batch = null, parked = [], waits = [], ledger = null, now = new Date().toISOString() }) {
+export function stuckStep(state, { batch = null, batchState = null, parked = [], waits = [], ledger = null, now = new Date().toISOString() }) {
+  let created = createdOf(batchState);
+  if (batchState && !created) {
+    try { writeJsonAtomic(batchFile(batchState), { created: now }); created = now; } catch { /* noted by the next pass */ }
+  }
   const want = new Map();
   for (const p of parked) {
     if (!p?.key) continue;
@@ -109,7 +129,7 @@ export function stuckStep(state, { batch = null, parked = [], waits = [], ledger
     want.set(pair(p.key, parkCause(p.kind, p.class)), { key: p.key, cause: parkCause(p.kind, p.class), start: since });
   }
   for (const w of waits) if (w?.key && w.cause && !want.has(pair(w.key, w.cause))) want.set(pair(w.key, w.cause), { key: w.key, cause: w.cause, start: now });
-  const open = readIntervals(state).filter((e) => e.end == null && (e.batch ?? null) === batch);
+  const open = readIntervals(state).filter((e) => e.end == null && batchOf(e.batch, e.created) === batchOf(batch, created));
   const lines = [];
   const write = (entry) => {
     const what = `${entry.key}'s ${entry.cause} interval`;
@@ -119,11 +139,11 @@ export function stuckStep(state, { batch = null, parked = [], waits = [], ledger
     try { record(state, entry); } catch (e) { lines.push(`stuck time: ${what} could not be recorded (${String(e?.message ?? e).split('\n')[0]})`); }
   };
   for (const e of open) {
-    if (!want.has(pair(e.key, e.cause))) write({ key: e.key, batch, cause: e.cause, start: e.start, end: now, recorded: now });
+    if (!want.has(pair(e.key, e.cause))) write({ key: e.key, batch, created, cause: e.cause, start: e.start, end: now, recorded: now });
   }
   const opened = new Set(open.map((e) => pair(e.key, e.cause)));
-  for (const [k, w] of want) if (!opened.has(k)) write({ ...w, batch, end: null, recorded: now });
-  try { writeJsonAtomic(passesFile(state), { ...readJson(passesFile(state)), [batch ?? '']: now }); } catch { /* the next pass notes it */ }
+  for (const [k, w] of want) if (!opened.has(k)) write({ ...w, batch, created, end: null, recorded: now });
+  try { writeJsonAtomic(passesFile(state), { ...readJson(passesFile(state)), [batchOf(batch, created)]: now }); } catch { /* the next pass notes it */ }
   return lines;
 }
 
@@ -222,7 +242,7 @@ if (isMain()) {
     if (cmd == null) {
       const { listBatches } = await import('./batches.mjs');
       let live = null;
-      try { live = listBatches(E.repoSlug()).map((b) => b.name); } catch { /* every batch read as live */ }
+      try { live = liveOf(listBatches(E.repoSlug())); } catch { /* every batch read as live */ }
       for (const weeksAgo of [0, 1]) {
         const s = weekSummary(state, { weeksAgo, live });
         console.log(stuckLine(s) ?? `time parked by cause, week ${s.week}: none recorded`);

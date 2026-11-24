@@ -6066,7 +6066,7 @@ if (!DRY) {
   ];
   const parkedEnd = Object.values(qEnd.tickets).filter((t) => t.state === 'parked').map((t) => ({ key: t.key, kind: parkKind(t), class: t.park?.class ?? null, since: t.park?.since ?? null }));
   lines.push(...ST.stuckStep(E.repoStateOf(STATE), {
-    batch, parked: parkedEnd, waits, now: PASS_AT,
+    batch, batchState: STATE, parked: parkedEnd, waits, now: PASS_AT,
     ledger: LEDGER_ON ? (e) => ledgerAppend(LEDGER_AT.repoDir, [{ id: `stuck:${e.key}:${e.cause}:${e.start}:${e.end == null ? 'open' : 'close'}`, type: 'stuck', batch: LEDGER_AT.batch, key: e.key, data: { cause: e.cause, start: e.start, end: e.end } }], { by: 'pass' }) : null,
   }));
 }

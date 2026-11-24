@@ -140,27 +140,30 @@ t('and it keeps the lever from adopting: it reverts, naming the guardrail', [ph.
 const PHok = 'acme__parked-even';
 run([stuckRepo(PHok, 2, 2)]);
 t('the same lever with parked hours even across the arms adopts', [wrappersRow(PHok).guardrails.find((g) => g.name === 'parked-hours')?.status, wrappersRow(PHok).decision], ['ok', 'adopt']);
-// Tickets of an archived batch (batches.mjs archivedBatches: named "<batch> (archived)", its state under
-// batches/.done/) are read by the name the pass recorded them under, in the repo's own record.
-{
-  const { archivedBatches } = await import('../desk/bin/batches.mjs');
-  const PA = 'acme__parked-archived';
-  const r = stuckRepo(PA, 12, 2);
-  const qroot = join(T, 'queues', PA);
-  mkdirSync(join(qroot, 'batches', '.done', 'F-1'), { recursive: true });
-  writeFileSync(join(qroot, 'batches', '.done', 'F-1', 'queue.json'), '{"tickets":{}}');
-  mkdirSync(join(stateOf(PA), 'batches', '.done', 'F-1', 'workers'), { recursive: true });
-  const done = archivedBatches({ queueRoot: qroot, stateRoot: stateOf(PA) });
+// Tickets of an archived batch (batches.mjs archivedBatches: named "<folder> (archived)", its state under
+// batches/.done/) are read by the name the pass recorded them under, in the repo's own record; a second
+// batch of one name archives into a folder with a time added, and still goes by the name its queue holds.
+const { archivedBatches } = await import('../desk/bin/batches.mjs');
+const archivedRun = (slug, folder, queue) => {
+  const r = stuckRepo(slug, 12, 2);
+  const qroot = join(T, 'queues', slug);
+  mkdirSync(join(qroot, 'batches', '.done', folder), { recursive: true });
+  writeFileSync(join(qroot, 'batches', '.done', folder, 'queue.json'), JSON.stringify(queue));
+  mkdirSync(join(stateOf(slug), 'batches', '.done', folder, 'workers'), { recursive: true });
+  const done = archivedBatches({ queueRoot: qroot, stateRoot: stateOf(slug) });
   for (const x of r.rows) {
     x.batch = done[0].name;
     if (x.merged_at) writeFileSync(join(done[0].state, 'workers', `${x.key}.findings.jsonl`), `${JSON.stringify({ ticket: x.key, round: 1, reviewer: 'self', p0: 0, p1: 0, p2: 0, fixed: 0 })}\n`);
   }
   writeFileSync(join(done[0].state, 'post-merge.jsonl'), `${JSON.stringify({ kind: 'scan', at: at(-1), complete: true })}\n`);
-  const recorded = readFileSync(join(stateOf(PA), 'stuck-intervals.jsonl'), 'utf8').split('\n').map((l) => JSON.stringify({ ...JSON.parse(l), batch: 'F-1' }));
-  writeFileSync(join(stateOf(PA), 'stuck-intervals.jsonl'), recorded.join('\n'));
-  run([{ ...r, batches: [{ name: null, state: stateOf(PA) }, ...done] }]);
-  t('an archived batch\'s tickets carry their parked hours: the lever that raised them reverts', [wrappersRow(PA).guardrails.find((g) => g.name === 'parked-hours')?.status, wrappersRow(PA).reason_code], ['breached', 'guardrail_parked_hours']);
-}
+  const recorded = readFileSync(join(stateOf(slug), 'stuck-intervals.jsonl'), 'utf8').split('\n').map((l) => JSON.stringify({ ...JSON.parse(l), batch: 'F-1' }));
+  writeFileSync(join(stateOf(slug), 'stuck-intervals.jsonl'), recorded.join('\n'));
+  run([{ ...r, batches: [{ name: null, state: stateOf(slug) }, ...done] }]);
+  return [wrappersRow(slug).guardrails.find((g) => g.name === 'parked-hours')?.status, wrappersRow(slug).reason_code];
+};
+t('an archived batch\'s tickets carry their parked hours: the lever that raised them reverts', archivedRun('acme__parked-archived', 'F-1', { batch: 'F-1', tickets: {} }), ['breached', 'guardrail_parked_hours']);
+t('so do those of a second batch of that name, archived beside the first under a folder with its time', archivedRun('acme__parked-rearchived', 'F-1.2026-10-30T11-00-00-000Z', { batch: 'F-1', tickets: {} }), ['breached', 'guardrail_parked_hours']);
+t('and one whose queue names no batch goes by its folder less that time', archivedRun('acme__parked-rearchived-unnamed', 'F-1.2026-10-30T11-00-00-000Z', { tickets: {} }), ['breached', 'guardrail_parked_hours']);
 // A ticket admitted again carries none of its earlier stay's hours.
 {
   const PR = 'acme__parked-readmitted';

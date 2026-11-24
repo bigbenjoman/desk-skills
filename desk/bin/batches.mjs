@@ -29,13 +29,20 @@ export function listBatches(slug = E.repoSlug()) {
 
 // The archived named batches: batch.mjs moves a batch's queue folder and its state folder into
 // batches/.done/ under the same name, so a batch archived inside the window still counts. Each carries
-// its own name as `archived` and its repo's state folder as `repoState`, which its path no longer gives.
+// its own name as `archived` (its queue's `batch`, or, where that is not recorded, the folder's name less
+// the time batch.mjs adds to a second archive of one name) and its repo's state folder as `repoState`,
+// which its path no longer gives.
+const DONE_SUFFIX = /\.\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d-\d{3}Z$/;
+const ownName = (queue, folder) => {
+  try { const b = JSON.parse(readFileSync(queue, 'utf8'))?.batch; if (typeof b === 'string' && b) return b; } catch { /* named by its folder */ }
+  return folder.replace(DONE_SUFFIX, '');
+};
 export function archivedBatches({ queueRoot, stateRoot }) {
   const qdone = join(queueRoot, E.BATCHES_DIR, '.done');
   let names = [];
   try { names = readdirSync(qdone, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort(); } catch { return []; }
   return names.filter((n) => existsSync(join(qdone, n, 'queue.json')))
-    .map((n) => ({ name: `${n} (archived)`, queue: join(qdone, n, 'queue.json'), state: join(stateRoot, E.BATCHES_DIR, '.done', n), archived: n, repoState: stateRoot }));
+    .map((n) => ({ name: `${n} (archived)`, queue: join(qdone, n, 'queue.json'), state: join(stateRoot, E.BATCHES_DIR, '.done', n), archived: ownName(join(qdone, n, 'queue.json'), n), repoState: stateRoot }));
 }
 // Every batch of the repo, archived named ones last.
 export const allBatches = (slug) => {

@@ -43,7 +43,7 @@ import { bootstrap, costRatio, interval, meanDiff, rateRatio, seedOf } from './l
 import { guardrailStatus, leversDir, autopilotRoot, readJsonl } from './levers-view.mjs';
 import { findingsPath, runsPath, stillMissing } from './findings.mjs';
 import { postMergePath, readPostMerge } from './post-merge.mjs';
-import { parkedHours } from './stuck-time.mjs';
+import { parkedHours, liveOf } from './stuck-time.mjs';
 import { perTicket, allBatches, failedRuns } from './phase0-report.mjs';
 import { everyTicket } from './queue-store.mjs';
 import { readQueue } from './batch-state.mjs';
@@ -132,7 +132,7 @@ export function withOutcomes(rows, batches, now = Date.now()) {
   const batchOf = new Map(batches.map((b) => [b.name ?? null, b]));
   const postMerge = new Map();
   const stuck = new Map();
-  const live = batches.filter((b) => !b.archived).map((b) => b.name ?? null);
+  const live = liveOf(batches);
   let newestFindings = null;
   let newestScan = null;
   const out = rows.map((r) => {

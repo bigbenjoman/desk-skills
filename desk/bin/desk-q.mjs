@@ -3292,7 +3292,7 @@ function stagesHead(r) {
 function stuckHead(r, now) {
   if (!r.stateDir) return [];
   let live = null;
-  try { live = listBatches(r.slug).map((b) => b.name); } catch { /* every batch read as live */ }
+  try { live = ST.liveOf(listBatches(r.slug)); } catch { /* every batch read as live */ }
   const line = ST.stuckLine(ST.weekSummary(repoStateOf(r.stateDir), { now, live }));
   return line ? [line] : [];
 }

@@ -73,15 +73,34 @@ const open = (S) => intervals(S).filter((e) => e.end == null).map((e) => `${e.ke
   ST.stuckStep(S, { batch: 'F-1', parked: [{ key: 'K', kind: 'question', since: D(23, 12) }], now: D(23, 12) });
   ST.stuckStep(S, { batch: 'F-1', parked: [{ key: 'K', kind: 'question', since: D(23, 12) }], now: D(23, 13) });
   const now = Date.parse(D(25, 12));
-  const live = ST.parkedHours(S, { now, live: [null] });
+  const live = ST.parkedHours(S, { now, live: [{ name: null, created: null }] });
   t('a ticket admitted again counts only the hours after its new admission', j([live('F-1', 'K'), live('F-1', 'K', Date.parse(D(23, 11)))]), j([2, 1]));
   t('an interval its gone batch left open ends at that batch\'s last pass, every week after too',
-    j([ST.weekSummary(S, { now, live: [null] }).hours, ST.weekSummary(S, { now: now + 7 * 86_400_000, live: [null] }).tickets]), j([2, 0]));
-  t('while the batch is live it still counts to now', ST.parkedHours(S, { now, live: [null, 'F-1'] })('F-1', 'K'), 49);
+    j([ST.weekSummary(S, { now, live: [{ name: null, created: null }] }).hours, ST.weekSummary(S, { now: now + 7 * 86_400_000, live: [{ name: null, created: null }] }).tickets]), j([2, 0]));
+  t('while the batch is live it still counts to now', ST.parkedHours(S, { now, live: [{ name: null, created: null }, { name: 'F-1', created: null }] })('F-1', 'K'), 49);
   const U = scratch('stuck-time-unreadable-');
   mkdirSync(join(U, 'stuck-intervals.jsonl'));
   t('a record that cannot be read gives no hours, not none', ST.parkedHours(U), null);
   t('no record at all gives none', ST.parkedHours(scratch('stuck-time-none-'))(null, 'K'), 0);
+}
+
+// ---- a name used again: the later batch neither closes nor revives the earlier one's open interval -----------------
+{
+  const S = scratch('stuck-time-reused-');
+  // The first F-2's state folder; archived, a second F-2 gets a new one (batch.mjs moves the first to .done/).
+  const firstState = join(S, 'batches', 'F-2'), secondState = join(S, 'batches', 'F-2-again');
+  mkdirSync(firstState, { recursive: true });
+  mkdirSync(secondState, { recursive: true });
+  // The first F-2 parks K at 09:00 on the 23rd; its last pass is at 11:00, then it is archived.
+  ST.stuckStep(S, { batch: 'F-2', batchState: firstState, parked: [{ key: 'K', kind: 'question', since: D(23, 9) }], now: D(23, 9) });
+  ST.stuckStep(S, { batch: 'F-2', batchState: firstState, parked: [{ key: 'K', kind: 'question', since: D(23, 9) }], now: D(23, 11) });
+  // A second F-2 passes on the 24th with nothing stuck.
+  ST.stuckStep(S, { batch: 'F-2', batchState: secondState, parked: [], now: D(24, 9) });
+  t('a later batch of the same name does not close the earlier one\'s interval', intervals(S).filter((e) => e.end != null).length, 0);
+  const live = ST.liveOf([{ name: 'F-2', state: secondState }, { name: 'F-2 (archived)', state: firstState, archived: 'F-2' }]);
+  t('the live batches are read with when each began, an archived one left out', j(live), j([{ name: 'F-2', created: D(24, 9) }]));
+  t('the earlier one\'s open interval ends at its own last pass, not revived by the name', ST.weekSummary(S, { now: Date.parse(D(25, 12)), live }).hours, 2);
+  t('while that first batch is the live one, it still counts to now', ST.weekSummary(S, { now: Date.parse(D(25, 12)), live: ST.liveOf([{ name: 'F-2', state: firstState }]) }).hours, 51);
 }
 
 // ---- the ledger: each interval's opening and closing is a stuck event, written first, once ----------------------

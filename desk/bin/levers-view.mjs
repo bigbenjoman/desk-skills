@@ -533,7 +533,7 @@ function mergeStagesPanel(configured, root) {
 // with a ticket stuck in either: { repos: [{ name, weeks: [this week's, last week's] }] }.
 function stuckTimePanel(configured, root, now) {
   const names = shownNames(configured.map((r) => r.slug));
-  const liveOf = (slug) => { try { return listBatches(slug).map((b) => b.name); } catch { return null; } };
+  const liveOf = (slug) => { try { return ST.liveOf(listBatches(slug)); } catch { return null; } };
   const repos = configured.map((r, i) => {
     const live = liveOf(r.slug);
     return { name: names[i], weeks: [0, 1].map((weeksAgo) => ST.weekSummary(join(root, r.slug), { now, weeksAgo, live })) };
