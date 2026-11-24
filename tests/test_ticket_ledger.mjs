@@ -29,8 +29,8 @@ const VALID = {
   waiting: { on: 'mergeability', since: '2026-11-20T10:00:00Z', deadline: '2026-11-20T10:30:00Z', escalate_to: 'person' },
   waited: { on: 'mergeability' },
   pr_opened: { pr: 12, head_sha: SHA },
-  automerge_armed: { by: 'session x', pr: 12, head_sha: SHA },
-  automerge_disarmed: { by: 'merge-driver', pr: 12 },
+  automerge_armed: { by: 'session x', pr: 12, head_sha: SHA, line: 0 },
+  automerge_disarmed: { by: 'merge-driver', pr: 12, line: 1 },
   merged: { by: 'merge-driver', pr: 12, head_sha: SHA, base: 'main' },
   finished: { pr: 12, fields: null },
   failed: { subtype: 'crash' },
@@ -78,6 +78,19 @@ for (const [type, row] of Object.entries(L.TRANSITIONS)) {
   if (no !== undefined) t(`${type} from ${no ?? 'none'} is illegal`, j(L.legality(at(no), ev(type))), j({ legal: false, from: no }));
 }
 t('a batch event is never illegal', L.legality(L.emptyState(), ev('base_red')).legal, true);
+{
+  // A done ticket's PR can have auto-merge armed and disarmed, and the fold keeps the last merge-log line it folded.
+  const s = at('done');
+  t('DS-900 auto-merge armed on a done ticket is legal', L.legality(s, ev('automerge_armed')).legal, true);
+  const env = (seq, type, data) => ({ v: 1, seq, id: `m${seq}`, ...ev(type, data) });
+  const after = L.reduce([env(2, 'automerge_armed', { ...VALID.automerge_armed, line: 4 }), env(3, 'automerge_disarmed', { ...VALID.automerge_disarmed, line: 7 })], s);
+  t('DS-900 the fold keeps the last merge-log line folded, and the arm ended', j([after.tickets['DS-1'].merge_log, after.tickets['DS-1'].automerge]), j([7, null]));
+  const reseeded = L.reduce([env(4, 'seeded', VALID.seeded)], after);
+  t('DS-900 a seed keeps how far the merge log was folded', reseeded.tickets['DS-1'].merge_log, 7);
+  const merged = L.reduce([env(5, 'merged', VALID.merged), env(6, 'automerge_armed', { ...VALID.automerge_armed, pr: VALID.merged.pr, line: 9 })], s);
+  t('DS-900 an arm on the merged PR folded after its merge arms nothing, and is still counted folded',
+    j([merged.tickets['DS-1'].automerge, merged.tickets['DS-1'].merge_log]), j([null, 9]));
+}
 
 // AC1: three valid events append in order, each with a rising seq, its time and its writer.
 {
