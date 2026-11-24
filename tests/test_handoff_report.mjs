@@ -6,7 +6,9 @@
 // session that named its handoff, active hours with an idle gap capped, dollars at list prices and
 // an unpriced model counted, per-arm totals, and the recommendation against the guardrails from a
 // per-ticket rows file, where only tickets with an outcome count, and dollars compared only where
-// every request is priced.
+// every request is priced. A session on the default branch reaches its tickets through the PRs its
+// Bash calls opened, pushed or merged; one that reaches none is measured on the session guardrails
+// alone; and a window short of data says how many sessions it mapped and why the rest did not.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -71,12 +73,56 @@ session(P, 'resumed', [user(2, 'Read .handoffs/2026-11-02-2.md and continue from
 // Another project's session: read with --all only.
 session(OTHER, 'elsewhere', [user(0), req('o1', 1, { uncached: 1 }), fire(2, 45, 200_000)]);
 
+// One Bash call and its result, on the default branch.
+let calls = 0;
+const bash = (min, command, output = '', isError = false) => {
+  const id = `call-${calls += 1}`;
+  return [
+    { type: 'assistant', requestId: `${id}-req`, timestamp: at(min), isSidechain: false, message: { model: 'claude-opus-5-5', content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }],
+      usage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 } } },
+    { type: 'user', timestamp: at(min), gitBranch: 'main', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: output, is_error: isError }] } },
+  ];
+};
+const failing = (min) => bash(min, 'ls missing', 'ls: cannot access', true);
+const URL_OF = (n) => `https://github.com/acme/widgets/pull/${n}`;
+// A 500,000-token window, every session on main. The 45% baseline reaches its tickets five ways: a
+// PR title it opened, a PR number the queue records, a branch it pushed, the title a merge printed,
+// and an opened PR's head the queue records. Half its tool calls error.
+const base5 = [
+  bash(31, `gh pr create --title "DS-11: add a thing" --body "$(cat <<'EOF'\nWhat it does\nEOF\n)"`, `${URL_OF(511)}\n`),
+  bash(31, 'gh pr merge 512 --squash --delete-branch', ''),
+  bash(31, 'cd /x/repo-worktrees/DS-13 && git push -u origin feat/DS-13-thing 2>&1 | tail -2', 'branch set up to track'),
+  bash(31, `gh pr merge ${URL_OF(514)} --squash`, '✓ Squashed and merged pull request acme/widgets#514 (DS-14 fix the thing)'),
+  bash(31, 'gh pr create --head feat/x-5 --title tidy --fill', URL_OF(515)),
+];
+for (let i = 1; i <= 5; i += 1) {
+  hour(`base5_${i}`, 1_000_000, 'main', [45, 500_000], [...base5[i - 1], ...failing(32)]);
+  // The 20% arm: cheaper, its own PRs, the same share of tool calls erroring. The first also merges a
+  // PR in another repo whose number the queue records for this one's ticket: not this repo's.
+  hour(`low5_${i}`, 500_000, 'main', [20, 500_000], [...bash(31, `gh pr create -t "DS-2${i} a change"`, URL_OF(520 + i)), ...failing(32),
+    ...(i === 1 ? bash(33, 'gh pr merge 512 --repo other/thing --squash', '') : [])]);
+  // The 30% arm: cheapest, its tickets' guardrails holding, but every tool call errors.
+  hour(`rw5_${i}`, 250_000, 'main', [30, 500_000], [...bash(31, `gh pr create --title "DS-3${i} another"`, URL_OF(530 + i), true), ...failing(32), ...failing(33)]);
+}
+// A session in the 20% arm that touched no PR: measured on the session guardrails alone.
+hour('low5_nopr', 500_000, 'main', [20, 500_000], failing(32));
+// A 600,000-token window no session of which reaches a ticket with an outcome: two touch nothing,
+// one pushes a branch naming no key, one opens a PR naming a key no queue ticket has, and one merges
+// the PR of a ticket still in flight. The 20% arm touches nothing.
+const a6 = [[], [], bash(31, 'git push origin feat/cleanup'), bash(31, 'gh pr create --title "DS-99 a thing"', URL_OF(699)), bash(31, 'gh pr merge 698', '')];
+for (let i = 1; i <= 5; i += 1) {
+  hour(`a6_${i}`, 1_000_000, 'main', [45, 600_000], a6[i - 1]);
+  hour(`b6_${i}`, 500_000, 'main', [20, 600_000], bash(31, 'ls', 'a'));
+}
+
 // A ticket with its outcome: merged and done, unless `open` leaves it in flight.
 const ticket = (key, branch, fixTries, open = false) => ({ key, batch: null, branch, fix_tries: fixTries, parks_by_class: {}, post_merge: 0,
   ...(open ? { state: 'running', merged_at: null } : { state: 'done', merged_at: '2026-11-03T10:00:00Z' }) });
 const baseTickets = [1, 2, 3, 4, 5].map((i) => ticket(String(100 + i), null, 1));
 const write = (name, rows) => { const f = join(T, name); writeFileSync(f, JSON.stringify(rows)); return f; };
-const HOLDS = write('holds.json', [...baseTickets, ...[1, 2, 3, 4, 5].map((i) => ticket(`T${i}`, `fix/twenty-${i}`, 1)),
+const prTickets = [ticket('DS-11', null, 1), { ...ticket('DS-12', null, 1), prs: [512] }, ticket('DS-13', null, 1), ticket('DS-14', null, 1),
+  ticket('DS-15', 'feat/x-5', 1), ...[1, 2, 3, 4, 5].flatMap((i) => [ticket(`DS-2${i}`, null, 1), ticket(`DS-3${i}`, null, 1)]), { ...ticket('DS-98', null, 0, true), prs: [698] }];
+const HOLDS = write('holds.json', [...baseTickets, ...prTickets, ...[1, 2, 3, 4, 5].map((i) => ticket(`T${i}`, `fix/twenty-${i}`, 1)),
   ...[1, 2, 3, 4, 5].map((i) => ticket(`H${i}`, `fix/thirty-${i}`, 5)),
   ...[1, 2, 3, 4, 5].flatMap((i) => [ticket(String(200 + i), null, 1), ticket(`W${i}`, `fix/w3-25-${i}`, 1)])]);
 const BASE_ONLY = write('base-only.json', baseTickets);
@@ -84,13 +130,20 @@ const IN_FLIGHT = write('in-flight.json', [...baseTickets, ...[1, 2, 3].map((i) 
 // Requeued: merged once, running again.
 const REQUEUED = write('requeued.json', [...baseTickets, ...[1, 2, 3].map((i) => ({ ...ticket(`T${i}`, `fix/twenty-${i}`, 0), state: 'running' }))]);
 
-const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('DESK_') && k !== 'CLAUDE_CONFIG_DIR')), HOME, DESK_REPO_ROOT: '/x/repo' };
+// A repo config holding only its §4 tracker rows.
+const config = (name, tracker, pattern) => {
+  const f = join(T, name);
+  writeFileSync(f, `## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Tracker | \`${tracker}\` |\n| Ticket key pattern | \`${pattern}\` |\n`);
+  return f;
+};
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('DESK_') && k !== 'CLAUDE_CONFIG_DIR')), HOME, DESK_REPO_ROOT: '/x/repo',
+  DESK_CONFIG: config('jira.md', 'jira', 'DS-[0-9]+'), DESK_GH_REPO: 'acme/widgets', DESK_DEFAULT_BRANCH: 'main' };
 const run = (...args) => spawnSync(process.execPath, [BIN, '--root', ROOT, ...args], { cwd: T, env, encoding: 'utf8' });
 const json = (...args) => { const r = run(...args, '--json'); if (r.status !== 0) console.log(r.stderr); return JSON.parse(r.stdout); };
 
 const rep = json('--tickets', HOLDS);
 const s = (id) => rep.sessions.find((x) => x.id === id);
-t('this repo\'s project folder only, without --all', [rep.sessions.length, !!s('elsewhere')], [42, false]);
+t('this repo\'s project folder only, without --all', [rep.sessions.length, !!s('elsewhere')], [68, false]);
 t('the arm is the threshold and window the injection names', s('base1').arm, { pct: 45, window: 200_000 });
 t('a session with no injection has no arm', s('plain1').arm, null);
 t('one injection logged on two lines fires once', s('compacting').fires, 1);
@@ -103,7 +156,7 @@ t('active hours count an idle gap as 5 minutes', +s('resumed').active_hours.toFi
 t('dollars at Opus list prices (a cache read 0.05 of input), a repeated request once at its largest output',
   Math.round(s('resumed').usd * 1e6), 10 * 4 + 100 * 5 + 100 * 8 + 1000 * 0.2 + 10 * 20);
 t('a request on a model with no price is counted, not priced', [s('plain1').unpriced, Math.round(s('plain1').usd * 100)], [1, 40]);
-t('a session maps to a ticket by its queue branch or by the key its branch names', [s('twenty2').ticket, s('base3').ticket, s('plain1').ticket], ['T2', '103', null]);
+t('a session maps to a ticket by its queue branch or by the key its branch names', [s('twenty2').tickets, s('base3').tickets, s('plain1').tickets], [['T2'], ['103'], []]);
 
 const arm = (name) => rep.arms.find((a) => a.arm === name);
 t('per-arm sessions, dollars per active hour (in cents) and unpriced requests',
@@ -143,10 +196,67 @@ t('without a ticket file and with no desk state, it still reports, guardrails no
   [noTickets.status, /RECOMMENDATION\n {2}§2 "Handoff at context %": 45 /.test(noTickets.stdout)], [0, true]);
 t('the text report gives dollars per active hour and counts the unpriced requests',
   [/\$\/active hour/.test(noTickets.stdout), / {2}45% of 200,000 .* \$4\.00 /.test(noTickets.stdout), noTickets.stdout.includes('(7 request(s) on a model with no price, left out of the dollars)')], [true, true, true]);
-t('--all reads every project folder', json('--all', '--tickets', BASE_ONLY).sessions.length, 43);
+t('--all reads every project folder', json('--all', '--tickets', BASE_ONLY).sessions.length, 69);
 t('the text report lists the guidance it took the arms from, with links',
   [noTickets.stdout.includes('\nGUIDANCE\n'), noTickets.stdout.split('\n').filter((l) => /^ {2}- .+: https:\/\/\S+$/.test(l)).length >= 5, noTickets.stdout.includes('No source measures a handoff at 20-30%')],
   [true, true, true]);
+
+// A session on the default branch reaches the ticket of each PR it opened, pushed or merged.
+t('a PR title it opened, a PR number the queue records, a pushed branch, a merge\'s printed title and an opened PR\'s head each reach a ticket',
+  [1, 2, 3, 4, 5].map((i) => [s(`base5_${i}`).tickets, s(`base5_${i}`).measured_on]), [1, 2, 3, 4, 5].map((i) => [[`DS-1${i}`], 'tickets']));
+t('a PR merged in another repo is not this repo\'s', s('low5_1').tickets, ['DS-21']);
+const r5 = rec(rep, 500_000);
+t('with its PRs mapped, a window on the default branch is measured and its cheapest arm recommended',
+  [r5.verdict, r5.pct, ['fix-tries-parks', 'post-merge'].map((g) => rep.arms.find((a) => a.arm === '20% of 500,000').guardrail_status[g].status)], ['recommend', 20, ['holds', 'holds']]);
+t('rework (tool calls that errored) above the baseline\'s by the margin refuses an arm whose ticket guardrails hold',
+  r5.refused, [{ arm: '30% of 500,000', why: 'rework breach: 100.0% of tool calls errored against 50.0% (margin 1.25x)' }]);
+
+// A session that touched no PR is measured on the session guardrails alone, and listed as such.
+t('a session that touched no PR is kept, measured on the session guardrails alone',
+  [s('low5_nopr').measured_on, s('low5_nopr').unmapped, s('low5_nopr').handoffs, s('low5_nopr').tool_calls, s('low5_nopr').tool_errors], ['session only', 'no pr', 0, 1, 1]);
+const low5 = rep.arms.find((a) => a.arm === '20% of 500,000');
+t('the arm counts it among its sessions and its rework, not its tickets',
+  [low5.sessions, low5.sessions_on_tickets, low5.sessions_without_ticket, low5.rework], [6, 5, 1, { tool_calls: 12, tool_errors: 6, rate: 0.5 }]);
+const r6 = rec(rep, 600_000);
+t('sessions measured on the session guardrails alone never make an arm eligible',
+  [r6.pct, r6.refused.map((x) => [x.arm, x.why.includes('not measured') && !x.why.includes('rework')])], [45, [['20% of 600,000', true]]]);
+
+// A window short of data says how many sessions it saw, how many it mapped, and why the rest did not.
+t('the window counts its sessions, the ones mapped, and why each of the rest did not map',
+  r6.mapping, { sessions: 10, mapped: 0, no_pr: 7, no_key: 1, no_ticket: 1, no_outcome: 1, keys: ['DS-99'] });
+const text = run('--tickets', HOLDS).stdout;
+t('the text report says it, with what would map the rest',
+  [/saw 10 session\(s\), mapped 0 to a ticket with an outcome; 7 touched no PR and ran on the default branch: .*; 1 touched a PR or branch that names no ticket key: .*; 1 named a key no queue ticket has \(DS-99\): .*; 1 reached a ticket with no outcome yet/.test(text),
+    text.includes('measured on the session guardrails alone')], [true, true]);
+
+// On a GitHub tracker, a PR's closing keywords and a branch starting with the issue number name it.
+const GH = join(T, 'gh-projects');
+mkdirSync(join(GH, '-z-gh'), { recursive: true });
+const ghSession = (name, lines) => session(join(GH, '-z-gh'), name, [user(0), req(`${name}-r`, 1, { uncached: 1 }), ...lines]);
+ghSession('closes', bash(2, `gh pr create --title "fix: a thing" --body "$(cat <<'EOF'\nWhat it does; see #7.\n\nCloses #42\nEOF\n)" 2>&1`, 'https://github.com/acme/gh/pull/50'));
+ghSession('numbered', bash(2, 'git push origin fix/43-slug'));
+ghSession('unqueued', bash(2, 'git push origin fix/44-slug'));
+// A body closing an issue of another repo and one of this repo named with its owner (in other case).
+ghSession('crossrepo', bash(2, 'gh pr create --title "fix: more" --body "Closes other/thing#42\nFixes ACME/GH#46"', 'https://github.com/acme/gh/pull/51'));
+// A key in lower case in a branch, and a plain merge's "Merged pull request" output naming the title.
+ghSession('lower', bash(2, 'git push origin feat/kan-12-fix'));
+ghSession('lowerunq', bash(2, 'git push origin feat/kan-77-fix'));
+ghSession('nodever', bash(2, 'git push origin feat/node-20-upgrade'));
+ghSession('merged', bash(2, 'gh pr merge 60 --merge', '✓ Merged pull request acme/gh#60 (fix: issue-45 the thing)'));
+const GH_TICKETS = write('gh.json', ['issue-42', 'issue-43', 'issue-45', 'issue-46', 'KAN-12'].map((k) => ticket(k, null, 1)));
+const ghRun = (cfg) => JSON.parse(spawnSync(process.execPath, [BIN, '--root', GH, '--json', '--tickets', GH_TICKETS],
+  { cwd: T, env: { ...env, DESK_REPO_ROOT: '/z/gh', DESK_GH_REPO: 'acme/gh', DESK_CONFIG: cfg }, encoding: 'utf8' }).stdout);
+const gh = ghRun(config('gh.md', 'none', 'none'));
+const g = (id) => gh.sessions.find((x) => x.id === id);
+t('on a GitHub tracker the issue a PR closes, and the number a branch starts with, name its ticket',
+  [g('closes').tickets, g('numbered').tickets, [g('unqueued').tickets, g('unqueued').unmapped]], [['issue-42'], ['issue-43'], [[], 'no ticket']]);
+t('a closing reference to another repo\'s issue does not map; one naming this repo does', g('crossrepo').tickets, ['issue-46']);
+t('a key in a branch maps whatever its case', g('lower').tickets, ['KAN-12']);
+t('a plain merge\'s "Merged pull request" output gives the PR\'s title', g('merged').tickets, ['issue-45']);
+const kan = ghRun(config('kan.md', 'jira', 'KAN-[0-9]+')).sessions.find((x) => x.id === 'lowerunq');
+t('the §4 pattern matches with its case, so a lower-case key no queue ticket has reads as naming no key', [kan.unmapped, kan.tickets], ['no key', []]);
+const wide = ghRun(config('wide.md', 'jira', '[A-Z][A-Z0-9]+-[0-9]+')).sessions.find((x) => x.id === 'nodever');
+t('a lower-case word and number in a branch is not a key under a Jira pattern', [wide.unmapped, wide.tickets], ['no key', []]);
 
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
 console.log('all passed');
