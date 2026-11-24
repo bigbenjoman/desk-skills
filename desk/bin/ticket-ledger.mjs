@@ -30,6 +30,9 @@ export const ESCALATE_TO = ['person', 'repair', 'requeue'];
 // How many of the latest event ids a fold keeps, so a retry that straddles a snapshot is still skipped.
 const ID_WINDOW = 1000;
 
+// A commit SHA as a ledger event's head_sha holds it: lowercase hex, 7 to 40 characters.
+export const isSha = (v) => typeof v === 'string' && /^[0-9a-f]{7,40}$/.test(v);
+
 // A field's check: a name ending in ? also takes null, but the field must still be present.
 const CHECKS = {
   string: (v) => typeof v === 'string' && v !== '',
@@ -37,7 +40,7 @@ const CHECKS = {
   list: (v) => Array.isArray(v),
   strings: (v) => Array.isArray(v) && v.length > 0 && v.every(CHECKS.string),
   object: (v) => v != null && typeof v === 'object' && !Array.isArray(v),
-  sha: (v) => typeof v === 'string' && /^[0-9a-f]{7,40}$/.test(v),
+  sha: isSha,
   kind: (v) => PARK_KINDS.includes(v),
   escalate: (v) => ESCALATE_TO.includes(v),
 };
@@ -59,7 +62,8 @@ export const EVENTS = Object.freeze({
   automerge_armed: { scope: 'ticket', data: { by: 'string', pr: 'int', head_sha: 'sha' } },
   automerge_disarmed: { scope: 'ticket', data: { by: 'string', pr: 'int' } },
   merged: { scope: 'ticket', data: { by: 'string', pr: 'int', head_sha: 'sha', base: 'string' } },
-  finished: { scope: 'ticket', data: { pr: 'int?' } },
+  // fields: the done fields written with it (queue-ledger.mjs DONE_FIELDS), laid on as a legacy_set's are.
+  finished: { scope: 'ticket', data: { pr: 'int?', fields: 'object?' } },
   failed: { scope: 'ticket', data: { subtype: 'string' } },
   requeued: { scope: 'ticket', data: {} },
   moved: { scope: 'ticket', data: { from: 'string?', to: 'string?' } },
@@ -202,8 +206,9 @@ function apply(state, ev) {
     case 'pr_opened': t.pr = d.pr; break;
     case 'automerge_armed': t.automerge = { ...d }; break;
     case 'automerge_disarmed': t.automerge = null; break;
-    case 'merged': t.merge = { ...d, at: ev.at }; t.automerge = null; break;
-    case 'finished': t.park = null; if (d.pr != null) t.pr = d.pr; break;
+    // merged_at keeps a ticket's first merge, as queue.mjs merged does.
+    case 'merged': t.merge = { ...d, at: ev.at }; t.fields.merged_at ??= ev.at; t.automerge = null; break;
+    case 'finished': t.park = null; if (d.fields) overlay(t, d.fields); if (d.pr != null) t.pr = d.pr; break;
     // A ticket that leaves every batch leaves its blockers there: added again, it is held by what then holds it.
     case 'moved': t.batch = d.to; if (d.to == null) { t.holds = []; delete t.fields.held_by; } break;
     case 'archived': t.archived = true; break;
@@ -246,7 +251,7 @@ export function project(state, batch, current = null) {
     // Unheld is null, as every writer that releases a hold leaves it.
     if (t.holds.length || 'held_by' in t.fields) out.held_by = t.holds.length ? t.holds.join('|') : null;
     if (t.pr != null) out.result = { ...(t.fields.result ?? {}), pr: t.pr };
-    if (t.merge) { out.merge = { ...t.merge }; out.merged_at = t.merge.at ?? t.fields.merged_at; }
+    if (t.merge) { out.merge = { ...t.merge }; out.merged_at = t.fields.merged_at ?? t.merge.at; }
     if (t.answered.length) out[ANSWERED] = [...t.answered];
     const waits = Object.entries(t.waits);
     if (waits.length || WAITS in t.fields) out[WAITS] = waits.length ? Object.fromEntries(waits.map(([on, { on: _, ...w }]) => [on, w])) : t.fields[WAITS] ?? null;

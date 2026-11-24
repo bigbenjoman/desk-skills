@@ -115,6 +115,30 @@ check "DS-826 a feature spine is refused, pointing to requeue" '[ $rc -ne 0 ] &&
 # DS-826 AC6: the recovery row for a park on a single remaining step names the command.
 check "DS-826 AC6: the recovery reference names queue.mjs finish on that row" 'grep -E "^\| a worker.s .AUTOPILOT_PARK. on a single remaining step" "$S/../skills/desk-autopilot/references/orchestrator-recovery.md" | grep -q "queue.mjs finish <TICKET> --pr <n>"'
 
+# DS-899 AC5: with the ledger lever on, finish's write is one finished event naming the PR, with the done
+# fields it set, and no legacy event holds any of them; the queue rebuilt from the log is queue.json.
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n'; } > "$T/config-on.md"
+mkdir -p "$T/lq"
+lq(){ out=$(DESK_CONFIG="$T/config-on.md" DESK_QUEUE="$T/lq/queue.json" node "$B/queue.mjs" "$@" 2>&1); rc=$?; }
+lq init t; lq add fix-l; lq set fix-l branch=fix/fix-l; lq park fix-l "AUTOPILOT_PARK: gh pr create was refused"
+pr 81 OPEN true fix/fix-l
+lq finish fix-l --pr 81
+check "DS-899 AC5: finish records the ticket done with the lever on" '[ $rc -eq 0 ] && [ "$(DESK_QUEUE="$T/lq/queue.json" f fix-l state)" = "\"done\"" ]'
+led=$(DESK_CONFIG="$T/config-on.md" node --input-type=module -e '
+const [B, dir] = process.argv.slice(1);
+const f = `${dir}/queue.json`;
+const { read } = await import(`${B}/ticket-ledger.mjs`);
+const { queueDifference, DONE_FIELDS } = await import(`${B}/queue-ledger.mjs`);
+const evs = read(dir).events.filter((e) => e.key === "fix-l");
+const at = evs.findLastIndex((e) => e.type === "finished");
+const fin = evs[at];
+const legacy = evs.slice(at).filter((e) => e.type === "legacy_set").flatMap((e) => Object.keys(e.data.fields)).filter((k) => DONE_FIELDS.includes(k));
+console.log(`${fin?.data.pr} ${Object.keys(fin?.data.fields ?? {}).sort().join(",")} ${fin?.by.proc} legacy=${legacy.join(",") || "none"} diffs=${queueDifference(f).diffs.length}`);
+' "$B" "$T/lq" 2>&1)
+check "DS-899 AC5: one finished event names the PR and holds the done fields, written by queue.mjs finish" '[ "${led% legacy=*}" = "81 draft_pr,handoff_stage,park,result queue.mjs finish" ]'
+check "DS-899 AC5: no legacy event holds a done field" '[[ "$led" == *" legacy=none "* ]]'
+check "DS-899 AC6: the queue rebuilt from the log is queue.json" '[[ "$led" == *" diffs=0" ]]'
+
 # #1339: a fix try the pass queued and no worker started is withdrawn once what it was for is settled
 # outside a worker: the ticket goes back to done on its PR, and the try counts against none.
 q add fix-w; q set fix-w branch=fix/fix-w state=done result.pr=71

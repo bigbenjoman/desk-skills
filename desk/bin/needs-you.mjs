@@ -2355,7 +2355,8 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     const status = { pr, state: 'MERGED', merged_at: at, url: `https://github.com/${repo}/pull/${pr}` };
     const m = queueCmd(r, [...shippedSet(x.t, how, pr, at), `pr_status=${JSON.stringify(status)}`]);
     if (!m.ok) return say(false, `recording it done was refused: ${m.out}`);
-    const g = queueCmd(r, ['merged', ticket, at]);
+    // Recorded as needs-you's, on that PR: its head and base are the other repo's, so they are left out.
+    const g = queueCmd(r, ['merged', ticket, at, '--pr', String(pr), '--by', 'needs-you']);
     if (!g.ok) return say(true, `recorded done (${how}), so it is off your list; its merge time was not recorded (${g.out}), which the next pass records.`);
     return say(true, `recorded done (${how}), so it is off your list and the tickets held behind it can start.`);
   };

@@ -3548,6 +3548,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-799 AC2 its PR reads merged, as the pass reads it, so no pass reads #3324 as one of repo A\'s PRs',
     `${prStatusOf(s1)?.state} ${s1.pr_status.pr === s1.result.pr} ${Date.parse(s1.merged_at) === Date.parse(queueOf('web799').tickets['S-1'].merged_at)}`, 'MERGED true true');
   t('DS-799 AC2 it is off the list', zen()['S-1'], undefined);
+  t('DS-899 AC3 the merge it records names needs-you as the recorder, and the PR', `${s1.merge?.by} ${s1.merge?.pr} ${Date.parse(s1.merge?.at) === Date.parse(s1.merged_at)}`, 'needs-you 3324 true');
   const d3 = N.record({ word: 'zen799', ticket: 'S-3', action: 'done', reads });
   t('DS-799 AC3 done on the held item records it as in AC2', `${d3.ok} ${zq()['S-3'].state} ${zq()['S-3'].result.pr} ${prStatusOf(zq()['S-3'])?.state} ${!!zq()['S-3'].merged_at}`, 'true done 3117 MERGED true');
   const d4 = N.record({ word: 'zen799', ticket: 'S-4', action: 'done', reads });
