@@ -79,7 +79,7 @@ export function update(rec, { seen = [], waits = [], now = Date.now(), batch = n
 
 // Seeding from GitHub. A cold seed reads the repo's most recently updated PRs, SEED_PRS a page, until
 // it has the reviewer's latest review (a review updates its PR, so one no older than the oldest PR read
-// is the latest), or SEED_PAGES pages.
+// is the latest), or SEED_PAGES pages, past which its last review is left unknown.
 export const SEED_PRS = 50;
 export const SEED_PAGES = 4;
 // REVIEW_PAGES: how many earlier pages of one PR's reviews a seed reads to find that reviewer's.
@@ -99,7 +99,6 @@ export function seedRead(gql, repo, login, prs, cold) {
   const nodes = [];
   let named = null;
   let after = null;
-  let complete = !cold;
   for (let page = 0; page < (cold ? SEED_PAGES : 1); page++) {
     const p = gql(seedQuery(page ? [] : prs, cold, !!after), { ...(cold ? { q: seedSearch(repo) } : {}), ...(after ? { after } : {}) });
     if (!p?.data) return null;
@@ -112,10 +111,10 @@ export function seedRead(gql, repo, login, prs, cold) {
     nodes.push(...fresh);
     const floor = nodes.map((n) => n.updatedAt).filter(Boolean).sort()[0];
     const last = seedOf({ data: { recent: { nodes } } }, login).last;
-    if (!r.pageInfo?.hasNextPage || (last && floor && Date.parse(last) >= Date.parse(floor))) { complete = true; break; }
+    if (!r.pageInfo?.hasNextPage || (last && floor && Date.parse(last) >= Date.parse(floor))) break;
     after = r.pageInfo.endCursor;
   }
-  return seedOf({ data: { recent: { nodes, complete }, repository: named } }, login);
+  return seedOf({ data: { recent: { nodes }, repository: named } }, login);
 }
 // Each of `prs` whose reviews are cut off with none of `login`'s shown has its earlier reviews read in,
 // REVIEW_PAGES pages at most, until one of that reviewer's is among them or none are left. -> false where
@@ -145,11 +144,9 @@ export function seedOf(payload, login) {
   const readies = (p) => (p.timelineItems?.nodes ?? []).map((e) => e?.createdAt).filter(Boolean).sort();
   const recent = (d.recent?.nodes ?? []).filter((p) => p?.number);
   const named = Object.entries(d.repository ?? {}).filter(([k, p]) => /^p\d+$/.test(k) && p?.number).map(([, p]) => p);
-  // Pages read without reaching its latest review: none came after the oldest PR read was last updated,
-  // so that is when it last reviewed at the latest, which understates the quiet rather than overstating it.
-  const found = [...recent, ...named].map(latest).filter(Boolean).sort().at(-1) ?? null;
-  const floor = d.recent?.complete === false ? recent.map((p) => p.updatedAt).filter(Boolean).sort()[0] ?? null : null;
-  const last = [found, floor].filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1) ?? null;
+  // Pages read without reaching its latest review leave it unknown (null): no other activity stands in,
+  // and verdict then counts the quiet from when the oldest PR began waiting.
+  const last = [...recent, ...named].map(latest).filter(Boolean).sort().at(-1) ?? null;
   const lags = [];
   for (const p of recent) {
     // A PR whose earlier reviews were not read cannot say which of that reviewer's came first.

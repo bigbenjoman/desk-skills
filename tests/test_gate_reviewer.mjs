@@ -107,7 +107,7 @@ const gql = (q, vars) => { gqlCalls.push(vars.after ?? null); return { data: { r
 const rd = GR.seedRead(gql, 'acme/widgets', BOT, [], true);
 t('#1370 a cold seed reads on past PRs updated since, and stops at the page holding its latest review', j([rd.last, gqlCalls]), j([H(9, 46), [null, 'c1']]));
 const endless = () => ({ data: { recent: { nodes: [upd(pr(30, { created: H(13, 0) }), H(13, 30))], pageInfo: { hasNextPage: true, endCursor: 'x' } }, repository: {} } });
-t('#1370 with its latest review past the pages it reads, its last review is taken as the oldest PR read, so the quiet is never overstated', GR.seedRead(endless, 'acme/widgets', BOT, [], true).last, H(13, 30));
+t('#1370 with its latest review past the pages it reads, its last review is unknown: no other activity stands in for it', GR.seedRead(endless, 'acme/widgets', BOT, [], true).last, null);
 t('#1370 a page GitHub cannot answer is no seed', GR.seedRead(() => null, 'acme/widgets', BOT, [9], true), null);
 // A PR showing only its latest reviews, none of the reviewer's, has its earlier ones read until one is.
 const busy = () => { const b = { ...pr(40, { created: H(8, 0), reviews: [['sam', H(13, 10)], ['kim', H(13, 20)]] }), updatedAt: H(13, 20) }; b.reviews.pageInfo = { hasPreviousPage: true, startCursor: 'r1' }; return b; };
@@ -129,6 +129,9 @@ t('#1370 a cold record seeded from GitHub reads as down on its first pass, since
 t('#1370 the waiting PR\'s wait starts when it left draft, not when the pass first saw it', GR.readRecord(SD).reviewers[BOT].waiting[9].since, new Date(H(12, 38)).toISOString());
 GR.reviewerStep(SD, { waits: [wait(9, 'h9'), wait(10)], now: now + 60000, repo: 'acme/widgets', seed });
 t('#1370 seeded once: the next pass reads GitHub only for a PR new to its waits', j(calls.map((c) => [c[1], c[2]])), j([[[9], true], [[10], false]]));
+const SU = scratch('gate-reviewer-seedunknown-');
+const ul = GR.reviewerStep(SU, { waits: [wait(9, 'h9')], now, seed: () => ({ last: null, lags: [], began: { 9: new Date(H(12, 38)).toISOString() } }) });
+t('#1370 with its last review unknown, it still reads as down at once, from when the PR began waiting', ul.some((l) => l.startsWith(`gate reviewer: ${BOT} reads as down: no review since ${new Date(H(12, 38)).toISOString()}`)), true);
 const SF = scratch('gate-reviewer-seedfail-');
 const fl = GR.reviewerStep(SF, { waits: [wait(9, 'h9')], now, seed: () => null });
 t('#1370 a seed GitHub cannot answer says so, and the record goes on what the passes see', j([fl.some((l) => /could not be read from GitHub/.test(l)), GR.readRecord(SF).reviewers[BOT].waiting[9].since, GR.readRecord(SF).reviewers[BOT].seeded ?? null]), j([true, new Date(now).toISOString(), null]));
