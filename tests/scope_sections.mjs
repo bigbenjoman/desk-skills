@@ -65,9 +65,9 @@ import { deskUntracked } from '../desk/bin/untracked.mjs';
 
 export const ALWAYS = ['test_lint.sh'];
 // The suites that check every test file against the repo's rules for them (a suite's layer label against
-// what it does, its sections): a suite added or changed runs them, since it can break a rule no claim
-// leads to. A helper under tests/ carries no label, so it runs only the suites that claim it.
-export const TEST_CHECKS = ['test_scope_sections.mjs'];
+// what it does, its sections): any change under tests/ runs them, since it can break a rule no claim
+// leads to. A helper counts too: the layer check reads every tests/ helper a suite imports.
+const TEST_CHECKS = ['test_scope_sections.mjs'];
 // Shared by everything: a change here can move any suite.
 const FOUNDATION = [/^tests\/(run\.sh|suite_env\.sh|scope_sections\.mjs|bash32_check\.sh|bash32_features\.txt)$/, /^\.github\//, /^desk\/bin\/desk-env\.(mjs|sh)$/, /^desk\/bin\/config-schema\.mjs$/, /^desk\/bin\/untracked\.mjs$/];
 // Foundational modules whose change, when it only adds exports, reaches only the suites using them.
@@ -556,7 +556,7 @@ export function decide(changes, map, { l3Direct = false, byName = false } = {}) 
     if (!by?.size) return full(`no suite claims ${path}`);
     for (const s of by) (l3.has(s) && !map.direct?.get(path)?.has(s) ? left : pick).add(s);
   }
-  if (changes.some((c) => isSuite(c.path))) for (const s of TEST_CHECKS) if (all.includes(s)) pick.add(s);
+  if (changes.some((c) => c.path.startsWith('tests/'))) for (const s of TEST_CHECKS) if (all.includes(s)) pick.add(s);
   const suites = all.filter((s) => pick.has(s));
   const ci = all.filter((s) => left.has(s) && !pick.has(s));
   const claimed = [...map.claims].filter(([, by]) => [...by].some((s) => pick.has(s))).map(([p]) => p);

@@ -70,13 +70,14 @@ const M = (...paths) => paths.map((path) => ({ status: 'M', path }));
 const scope = (ch) => { const d = decide(ch, map); return `${d.scope}: ${d.scope === 'full' ? d.reason : d.suites.join(' ')}`; };
 t('nothing changed', scope([]), 'none: ' + ALWAYS.join(' '));
 t('a script runs its suites and the always set', scope(M('desk/bin/lib.sh')), 'some: test_drive.sh test_lint.sh');
-// The suites checking every test file against the rules for them run on any change under tests/.
+// The suites checking every test file against the rules for them run on any change under tests/, a
+// helper included, since the layer check reads every helper a suite imports.
 {
   const ctree = { ...tree, 'tests/test_scope_sections.mjs': '// suite: CI scope\n' };
   const cmap = buildMap(Object.keys(ctree), (p) => ctree[p]);
   const cscope = (ch) => decide(ch, cmap).suites.join(' ');
   t('a suite added or changed runs the checks on every test file', [cscope([{ status: 'A', path: 'tests/test_skill_a.mjs' }]), cscope(M('tests/test_pass.mjs'))].map((x) => x.includes('test_scope_sections.mjs')), [true, true]);
-  t('a change to a script no suite file touches does not run them', cscope(M('desk/bin/lib.sh')).includes('test_scope_sections.mjs'), false);
+  t('a change outside tests/ does not run them', cscope(M('desk/bin/lib.sh')).includes('test_scope_sections.mjs'), false);
 }
 t('a changed suite runs itself', scope(M('tests/test_docs.mjs')), 'some: test_docs.mjs test_lint.sh');
 t('a shell change lists its scripts for bash 3.2', decide(M('desk/bin/lib.sh'), map).shells, ['bin/tool', 'desk/bin/drive.sh', 'desk/bin/lib.sh', 'tests/test_drive.sh', 'tests/test_lint.sh']);
@@ -300,10 +301,12 @@ for (const [f, suite] of [['desk/bin/github-signin.mjs', 'test_playwright.mjs'],
 t('DS-920 AC4 a changed pass suite runs test_compare_pass.sh', ['test_pass_other_repo.sh', 'test_pass_spawns.sh'].map((s) => decide(M(`tests/${s}`), real).suites.includes('test_compare_pass.sh')), [true, true]);
 const MERGE_DRIVER_SUITES = ['loop', 'reruns', 'approval', 'holds', 'review', 'tree'].map((s) => `test_merge_driver_${s}.sh`);
 t('merge-driver.sh reaches every merge driver suite', MERGE_DRIVER_SUITES.filter((s) => !decide(M('desk/bin/merge-driver.sh'), real).suites.includes(s)), []);
+// A helper that L1 suites import decides their layer, so changing it runs the check on every test file.
+{ const d = decide(M('tests/prose_check.mjs'), real); t('a helper L1 suites import runs the checks on every test file', [d.scope, d.suites.includes('test_scope_sections.mjs')], ['some', true]); }
 // DS-818 AC4 to AC6 on this repo: each runs the suites that claim it, not every suite.
 for (const f of ['desk-config.md', 'install.sh', 'tests/compare_pass.sh', 'tests/compare_pass.mjs', 'tests/pass_setup.sh']) {
   const d = decide(M(f), real);
-  t(`DS-818 ${f} runs the suites that claim it`, [d.scope, d.suites], ['some', real.suites.map((s) => s.file).filter((s) => ALWAYS.includes(s) || real.claims.get(f)?.has(s))]);
+  t(`DS-818 ${f} runs the suites that claim it`, [d.scope, d.suites], ['some', real.suites.map((s) => s.file).filter((s) => ALWAYS.includes(s) || real.claims.get(f)?.has(s) || (f.startsWith('tests/') && s === 'test_scope_sections.mjs'))]);
 }
 // DS-884 AC5: a change only to a module the prose check imports, directly or through another, runs it.
 const proseCovers = real.suites.find((s) => s.file === 'test_prose_code.mjs').covers.filter((p) => /\.mjs$/.test(p) && !p.includes('*'));
