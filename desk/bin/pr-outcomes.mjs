@@ -243,13 +243,16 @@ export function prOutcomes(refs, { repo, base, cachePath = null, offline = false
         const cur = readCache(cachePath);
         const prs = { ...cur.prs };
         const miss = new Set(cur.missing.map(Number));
+        const mergedNow = new Map();
         for (const n of touched) {
           const o = recs.get(n);
           if (missing.has(n)) { miss.add(n); delete prs[n]; }
-          else if (o?.merged_at && (o.core || o.off_default)) { miss.delete(n); prs[n] = mergeWindows(prs[n], o); }
+          else if (o?.merged_at && (o.core || o.off_default)) { miss.delete(n); prs[n] = mergeWindows(prs[n], o); mergedNow.set(n, prs[n]); }
           else miss.delete(n);
         }
         writeJsonAtomic(cachePath, { prs, missing: [...miss].sort((a, b) => a - b) });
+        // Written: this run reports what the cache now holds for them (a lock or write failure keeps its own).
+        for (const [n, o] of mergedNow) recs.set(n, o);
       });
     } catch (e) { notes.push(`cache not written: ${firstLine(e)}`); }
   }

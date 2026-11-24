@@ -526,10 +526,12 @@ t('a cache write by another run during this one keeps both runs\' PRs, and a num
 const S10f = join(T, 'state10-final');
 const done1001 = { number: 1001, title: 'feat: change 1001', merged_at: iso(M), core: { done: true, red_main: 0, files: ['src/f1001.js'], review_rounds: 1 },
   follow: { done: true, list: [] }, revert: { done: true, list: [] }, open: [], final: true };
-run10(write('fx10-final.json', { ...JSON.parse(readFileSync(FX10, 'utf8')), failSearch: true,
+const cut10 = run10(write('fx10-final.json', { ...JSON.parse(readFileSync(FX10, 'utf8')), failSearch: true,
   inject: { path: join(S10f, 'handoff-pr-outcomes.json'), once: join(T, 'final-once'), cache: { prs: { 1001: done1001 }, missing: [] } } }), S10f);
 const kept = JSON.parse(readFileSync(join(S10f, 'handoff-pr-outcomes.json'), 'utf8')).prs['1001'];
 t('a run whose read of a PR was cut short keeps the final entry another run wrote', [kept?.final, kept?.open, kept?.follow?.done], [true, [], true]);
+const pair10 = cut10.sessions.find((y) => y.id === 'pair');
+t('and that run\'s own report measures the PR as final', [pair10.measured_on, pair10.prs_measured.map((o) => o.number)], ['prs', [1001]]);
 const failed = run10(write('fx10-fail.json', { prs: { 1001: pr(1001) }, search: [], errorType: 'RATE_LIMITED' }), join(T, 'state10-fail'));
 t('any other error drops the read and says so', [failed.pr_read.note?.startsWith('PRs not read from GitHub'), failed.sessions.filter((y) => y.measured_on === 'prs').length], [true, 0]);
 
