@@ -3634,6 +3634,17 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
     const fresh = readAsks(S).filter((a) => a.settles === 'reviewer');
     t('#1380 AC2 an outage after the reviewer reviewed again is a fresh ask, back on the list',
       `${fresh.length} ${fresh[0]?.id !== first.id} ${asks().some((i) => i.t.key === `ask:${fresh[0]?.id}`)}`, '1 true true');
+    // Its only PR's head moves mid-outage, so its wait restarts and it stops reading as down a while, with no review.
+    const bot2 = 'agent-gatebot', w2 = (head) => ({ login: bot2, pr: 7, head, line: 'PR #7 waits' });
+    GR.writeRecord(S, { reviewers: { [bot2]: { last: iso(0), lags: [5, 6, 7], waiting: { 7: { head: 'h7', since: iso(10) } } } } });
+    GR.reviewerStep(S, { waits: [w2('h7')], now: at(80), repo: 'acme/ask811' });
+    const quiet = readAsks(S).find((a) => a.login === bot2);
+    N.record({ word: 'ask811', ticket: `ask:${quiet.id}`, action: 'not-now' });
+    GR.reviewerStep(S, { waits: [w2('h7b')], now: at(90), repo: 'acme/ask811' });
+    GR.reviewerStep(S, { waits: [w2('h7b')], now: at(160), repo: 'acme/ask811' });
+    const still = readAsks(S).filter((a) => a.login === bot2);
+    t('#1380 AC1 an outage whose wait restarts on a new head, with no review, keeps its id and its not-now',
+      `${still.length} ${still[0]?.id === quiet.id} ${asks().some((i) => i.t.key === `ask:${quiet.id}`)}`, '1 true false');
   }
 }
 
