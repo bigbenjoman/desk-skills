@@ -1,5 +1,5 @@
 // suite: stuck time (each park, hold and stall as an interval with its cause, and the hours stuck per cause per repo per week)
-// layer: L1
+// layer: L2
 // covers: desk/bin/stuck-time.mjs desk/bin/ticket-ledger.mjs desk/bin/levers-page.mjs desk/bin/lever-registry.mjs
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
