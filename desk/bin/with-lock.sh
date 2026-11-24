@@ -174,16 +174,15 @@ if [ "$name" = light ] && [ "$(node "$here/job-token.mjs" lever 2>/dev/null)" = 
   case $? in
     0) if [ -n "$token" ]; then
          export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$((SECONDS - t0))"
-         if [ -n "$per_suite" ]; then
-           # Given back before run.sh's suites ask for theirs; a release that fails leaves it held by
-           # this pid, run.sh once it execs, so the run holds one more token than its suites, never fewer.
-           node "$here/job-token.mjs" release "$token" --pid "$$" >/dev/null </dev/null
-         else
-           export TEST_JOB_TOKENS=held
-         fi
-         exec "$@"
+         # Given back before run.sh's suites ask for theirs. A release that fails leaves it held by this
+         # pid, run.sh once it execs, where a suite could wait on it until run.sh ends: so run.sh then
+         # takes none, and runs in the light slot below, as with the row off.
+         [ -n "$per_suite" ] && node "$here/job-token.mjs" release "$token" --pid "$$" >/dev/null </dev/null && exec "$@"
+         export TEST_JOB_TOKENS=held
+         [ -n "$per_suite" ] || exec "$@"
        fi ;;
-    75) exit 75 ;;
+    # The line every lock's give-up prints, which the pre-push hook reads as the box being busy.
+    75) echo "with-lock.sh: gave up waiting for the $name lock after ${timeout}s (no job token came free)" >&2; exit 75 ;;
   esac
 fi
 # The run's wait on the lock files: queued once it starts to wait, when its marker (named by this pid)

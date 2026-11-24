@@ -496,13 +496,15 @@ try {
       for (const h of [...cmds, a, b]) await h.done;
     }
     // The triage call: one token for the whole command, so with one token on the machine a second command
-    // waits for it, and gives up at its --timeout; run.sh still starts, its suites taking their own.
+    // waits for it, and gives up at its --timeout, as a run.sh does before it starts.
     {
       const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: rows('off', '1', '1') });
       const h = await hold(env, ['light']);
       const r = wl(env, ['light', '--timeout', '2', '--', 'true']);
       t('DS-984 with its one token held, a second light command waits for it and gives up at its timeout',
         [r.status, /^with-lock\.sh: true waits for a job token \(1 on this machine\)/m.test(r.stderr), lightFiles(env)], [75, true, []]);
+      t('DS-984 and says so with the give-up line every lock prints, which the pre-push hook reads as a busy box',
+        /^with-lock\.sh: gave up waiting for the light lock after 2s/m.test(r.stderr), true);
       const late = join(S, `late-${n++}`);
       const rr = wl(env, ['light', '--timeout', '2', '--', ...asRelated(late)]);
       t('DS-984 a light run.sh waits for a token to start too, and gives up at its timeout having run nothing',
