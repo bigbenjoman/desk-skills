@@ -172,6 +172,8 @@ if (a[0] === 'pr' && a[1] === 'list') {
   fs.writeFileSync(F, JSON.stringify(prs));
 } else if (a[0] === 'pr' && a[1] === 'merge') {
   const p = prs[a[2]];
+  // gh.hang: a merge call that does not return for 30s, merging nothing before then.
+  if (fs.existsSync('$T/gh.hang')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000);
   // "refuse": a PR GitHub will not merge, whatever its head.
   if (!p || p.state !== 'open' || p.refuse || at('--match-head-commit') !== p.sha) { console.error('merge refused'); process.exit(1); }
   p.state = 'merged';
