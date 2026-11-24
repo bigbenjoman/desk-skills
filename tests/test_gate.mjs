@@ -444,6 +444,46 @@ rmSync(gtmp, { recursive: true, force: true });
   t('both pools holding name both queues', `${both.holds} ${both.line.startsWith('test lock queue: 2')} ${both.line.includes('; and light lock queue: 2')}`, 'true true true');
   t('no queue read is no gate', lockGate([null]), null);
 }
+// DS-984: with job tokens on, a light run holds tokens rather than a light slot, and a run waiting for a
+// token is a light waiter: each run once, however many of its suites hold or wait.
+{
+  const { lockWaiters, lockRunsByRepo, lockHolderRuns, lockHolders, lockQueue } = await import('../desk/bin/suite-wait.mjs');
+  const run = (pid, ppid = 1) => ({ pid, ppid, args: 'bash /u/l-wt/L-1/tests/run.sh' });
+  const take = (pid, ppid) => ({ pid, ppid, args: `node /u/l-wt/L-2/desk/bin/job-token.mjs take --pid ${ppid} --worktree /u/l-wt/L-2 -- test_${pid}.sh` });
+  const wrap = { pid: 320, ppid: 1, args: 'bash /h/.claude/desk/bin/with-lock.sh light --cwd . -- node x.mjs' };
+  const procs = [
+    run(300), run(301, 300), run(302, 300), run(303, 300), run(304, 300), // a full run, its four suites each holding a token
+    { ...run(310), args: 'bash /u/l-wt/L-2/tests/run.sh' }, { ...run(311, 310), args: 'bash /u/l-wt/L-2/tests/run.sh' }, { ...run(312, 310), args: 'bash /u/l-wt/L-2/tests/run.sh' },
+    take(313, 311), take(314, 312), // a second run, two suites waiting for a token
+    wrap, { ...wrap, pid: 321, ppid: 320 }, { ...take(322, 321), args: 'node /h/.claude/desk/bin/job-token.mjs take --pid 320 --worktree /u/h -- x.mjs' }, // one command waiting for its token
+  ];
+  const holders = new Set([301, 302, 303, 304]);
+  const cwds = [300, 301, 302, 303, 304].map((pid) => ({ pid, cwd: '/u/l-wt/L-1' })).concat([310, 311, 312, 313, 314].map((pid) => ({ pid, cwd: '/u/l-wt/L-2' })), [320, 321, 322].map((pid) => ({ pid, cwd: '/u/h' })));
+  const now = Date.parse('2026-11-24T12:00:00Z');
+  const stamps = new Map([301, 302, 303, 304].map((p, i) => [p, now - (60 + i) * 1000]));
+  const ages = new Map(procs.map((p) => [p.pid, 600]));
+  const held = lockHolderRuns({ procs, holders, cwds, ages, stamps, now, locks: 'light' });
+  t('DS-984 AC5 runs waiting for job tokens are light waiters, each run once', `${lockWaiters({ procs, holders, locks: 'light' })} ${lockWaiters({ procs, holders })}`, '2 0');
+  t('DS-984 AC5 a run whose suites hold job tokens is one light holder, held as long as its oldest token', JSON.stringify(held.map((r) => [r.pid, r.cwd, r.seconds])), JSON.stringify([[300, '/u/l-wt/L-1', 63]]));
+  const counts = lockRunsByRepo([{ name: 'l', dirs: ['/u/l', '/u/l-wt'] }], { procs, holders, cwds, held, locks: 'light' });
+  t('DS-984 AC5 and each is placed by repo', JSON.stringify([...counts].sort()), JSON.stringify([['l', 2], ['other', 1]]));
+  const q = lockQueue({ waiting: lockWaiters({ procs, holders, locks: 'light' }), slots: 1, factor: 2, counts, self: 'l', lock: 'light' });
+  t('DS-984 AC5 so the light gate, at 1 x 2, holds repo l at its share', `${q.deep} ${q.holds} ${q.line.startsWith('light lock queue: 2 run(s) waiting')}`, 'true true true');
+  // The job pool's leases name the light lock's holders, and no heavy one.
+  const tmp = scratch('gate-jobs-');
+  const was = process.env.DESK_LEASE_DIR;
+  process.env.DESK_LEASE_DIR = tmp;
+  try {
+    const lease = (pid) => ({ id: `L-${pid}`, kind: 'slot', key: 'job', pool: 'slot:job', units: 1, owner: { pid, start: 'x' }, label: `job test_${pid}.sh in ~/w`,
+      ttl: 600, acquired: new Date(now).toISOString(), expires: new Date(now + 600_000).toISOString() });
+    writeFileSync(join(tmp, 'leases.json'), JSON.stringify({ leases: [301, 302].map(lease) }));
+    t('DS-984 AC5 a job token lease holds the light lock, and not the test lock', JSON.stringify([[...lockHolders(tmp, { locks: 'light' })], [...lockHolders(tmp)], [...lockHolders(tmp, { locks: 'both' })]]),
+      JSON.stringify([[301, 302], [], [301, 302]]));
+  } finally {
+    if (was === undefined) delete process.env.DESK_LEASE_DIR; else process.env.DESK_LEASE_DIR = was;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
 // Who holds the test lock is named, whatever the repo, so a batch held behind it shows what it waits on.
 {
   const { lockHolderRuns, holdersText, lockQueue, etimeSeconds } = await import('../desk/bin/suite-wait.mjs');

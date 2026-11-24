@@ -3,20 +3,23 @@
 // the machine, so the suites running at once are bounded per suite rather than per whole run.
 //
 //   node job-token.mjs lever                                  # on or off; a value but on or off is off
-//   node job-token.mjs take --pid <owner> --worktree <dir> -- <suite>   # waits for a token; prints its id
+//   node job-token.mjs take --pid <owner> --worktree <dir> [--timeout <s>] [--as <caller>] -- <suite>
+//                                                             # waits for a token; prints its id
 //   node job-token.mjs release <id> --pid <owner>             # gives it back
 //
-// `take` waits in the job pool's queue, oldest first, for as long as it takes, saying once on stderr
-// what it waits on and its place. The owner is the run.sh job that runs the suite: its token is
-// released when the suite exits, and lapses at the broker's next command where that job exits first
-// (a run.sh killed mid-run).
+// `take` waits in the job pool's queue, oldest first, for as long as it takes (up to --timeout seconds
+// where given), saying once on stderr, as <caller> (run.sh by default), what it waits on and its place.
+// The owner is the run.sh job that runs the suite, or with-lock.sh light, which execs into its command:
+// its token is released when the suite exits, and lapses at the broker's next command where that
+// owner exits first (a run.sh killed mid-run).
 //
 // Exit codes: 0 granted, released, or the lever is off (nothing printed); 2 usage; 4 the lease store is
-// unreadable; 1 the broker failed otherwise. run.sh runs the suite without a token on any failure.
+// unreadable; 75 gave up at --timeout; 1 the broker failed otherwise. run.sh runs the suite without a
+// token on any failure.
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { EXIT_OK, EXIT_UNREADABLE, LeaseStoreError, acquire, capacities, poolOf, release } from './leases.mjs';
+import { EXIT_GAVE_UP, EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, LeaseStoreError, acquire, capacities, poolOf, release } from './leases.mjs';
 import { JOB_TOKENS_KEY, jobTokensOn } from './machine.mjs';
 import { tilde } from './logins.mjs';
 
@@ -26,24 +29,26 @@ const POLL_MS = 1000;
 const TTL_S = 600;
 const on = () => jobTokensOn(E.machineValue(JOB_TOKENS_KEY));
 
-const USAGE = 'usage: job-token.mjs lever | take --pid <owner> --worktree <dir> -- <suite> | release <id> --pid <owner>';
+const USAGE = 'usage: job-token.mjs lever | take --pid <owner> --worktree <dir> [--timeout <s>] [--as <caller>] -- <suite> | release <id> --pid <owner>';
 const pidOf = (v) => (/^\d+$/.test(v ?? '') && Number(v) > 0 ? Number(v) : null);
 
-function take(pid, worktree, suite) {
+function take(pid, worktree, suite, { timeout = Infinity, as = 'run.sh' } = {}) {
   if (!on()) return EXIT_OK;
-  const say = (s) => console.error(s);
+  const say = (s) => console.error(`${as}: ${s}`);
   try {
     const p = poolOf('slot', 'job', capacities(E));
-    const r = acquire({ kind: 'slot', key: 'job', units: 1, ttl: TTL_S, label: `job ${suite} in ${tilde(worktree)}`, pid, wait: Infinity,
+    const r = acquire({ kind: 'slot', key: 'job', units: 1, ttl: TTL_S, label: `job ${suite} in ${tilde(worktree)}`, pid, wait: timeout,
       queue: { worktree, cmd: suite, express: false } }, {
       env: E, mode: 'on', caps: () => capacities(E), poll: POLL_MS,
-      onWait: (why, at) => say(`run.sh: ${suite} waits for ${p.one} (${p.capacity} on this machine)${at ? `, position ${at.position} of ${at.waiting}` : ''}: ${why}`),
+      onWait: (why, at) => say(`${suite} waits for ${p.one} (${p.capacity} on this machine)${at ? `, position ${at.position} of ${at.waiting}` : ''}: ${why}`),
     });
     if (r.lease) console.log(r.lease.id);
+    // A timeout of 0 is one try, which the broker calls refused rather than given up.
+    if (r.code === EXIT_GAVE_UP || r.code === EXIT_REFUSED) { say(`${suite} gave up waiting for ${p.one} after ${timeout}s`); return EXIT_GAVE_UP; }
     return r.code;
   } catch (e) {
-    if (e instanceof LeaseStoreError) { say(`run.sh: leases were unreadable (${e.message}), so ${suite} runs without a job token`); return EXIT_UNREADABLE; }
-    say(`run.sh: the lease broker failed (${e.message}), so ${suite} runs without a job token`);
+    if (e instanceof LeaseStoreError) { say(`leases were unreadable (${e.message}), so ${suite} runs without a job token`); return EXIT_UNREADABLE; }
+    say(`the lease broker failed (${e.message}), so ${suite} runs without a job token`);
     return 1;
   }
 }
@@ -56,7 +61,9 @@ function cli(argv) {
   if (sub === 'lever' && !rest.length) { console.log(on() ? 'on' : 'off'); return EXIT_OK; }
   if (sub === 'take') {
     const pid = pidOf(opt('pid')), worktree = opt('worktree'), words = at < 0 ? [] : rest.slice(at + 1);
-    if (pid && worktree && words.length === 1) return take(pid, worktree, words[0]);
+    const t = opt('timeout'), as = opt('as') ?? undefined;
+    const timeout = t == null ? Infinity : /^\d+$/.test(t) ? Number(t) : null;
+    if (pid && worktree && words.length === 1 && timeout != null && as !== '') return take(pid, worktree, words[0], { timeout, as });
   }
   if (sub === 'release') {
     const pid = pidOf(opt('pid')), id = head[0];

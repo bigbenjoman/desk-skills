@@ -72,6 +72,9 @@
 # slot of its own (desk-light.lock.express), outside light-lock-max, that only a run called with
 # DESK_LIGHT_SMALL=1 may take, once it finds every pool slot it may take held. Its grant line names the
 # lane, and headroom admission counts it as a recent admit at light-run-gb.
+#
+# With the machine profile's job-tokens row on, the light lock takes no slot at all: a run is bounded
+# by the job tokens (job-token.mjs) it takes, one per suite for tests/run.sh, one for any other command.
 set -uo pipefail
 # This script's own directory, taken before --cwd moves us: desk-env.mjs is installed beside it.
 here="$(cd "$(dirname "$0")" && pwd -P)"
@@ -137,6 +140,39 @@ export DESK_LOCK_HELD="$name"
 # it starts is sized by whoever starts it.
 small="${DESK_LIGHT_SMALL:-}"
 unset DESK_LIGHT_SMALL
+
+# With the machine profile's job-tokens row on (job-token.mjs lever), a light run holds no light slot:
+# the job tokens it takes bound it instead, so a long run holds back only the tokens its suites use. A
+# tests/run.sh with job-token.mjs in the desk/bin beside it takes one for each suite itself, so it runs
+# at once; so does a command inside a suite (TEST_JOB_TOKENS=held), which runs on that suite's token.
+# Any other command holds one token while it runs, owned by this pid, which execs into it, and is told
+# TEST_JOB_TOKENS=held so a run.sh it starts takes none. Neither waits on the lock files nor logs a
+# light grant. A token the broker cannot give falls back to the light slot below.
+# The script a command runs: its first word past an `env`, VAR=value words and a shell's options.
+script_of() {
+  [ "${1##*/}" = env ] && shift
+  while [ "$#" -gt 0 ]; do case "$1" in [A-Za-z_]*=*) shift ;; *) break ;; esac; done
+  case "${1##*/}" in
+    bash|sh|zsh|dash)
+      shift
+      while [ "$#" -gt 0 ]; do case "$1" in -c) return 0 ;; -*) shift ;; *) break ;; esac; done ;;
+  esac
+  printf '%s\n' "${1:-}"
+}
+if [ "$name" = light ] && [ "$(node "$here/job-token.mjs" lever 2>/dev/null)" = on ]; then
+  script="$(script_of "$@")"
+  if [ "${TEST_JOB_TOKENS:-}" = held ] || { [ "${script##*/}" = run.sh ] && [ -f "$(dirname "$script")/../desk/bin/job-token.mjs" ]; }; then
+    export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED=0
+    exec "$@"
+  fi
+  t0=$SECONDS
+  label="${script##*/}"; [ -n "$label" ] || label="${1##*/}"
+  token="$(node "$here/job-token.mjs" take --pid "$$" --worktree "$(pwd -P)" --as with-lock.sh ${timeout:+--timeout "$timeout"} -- "$label" </dev/null)"
+  case $? in
+    0) if [ -n "$token" ]; then export TEST_JOB_TOKENS=held DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$((SECONDS - t0))"; exec "$@"; fi ;;
+    75) exit 75 ;;
+  esac
+fi
 # The run's wait on the lock files: queued once it starts to wait, when its marker (named by this pid)
 # sits in the lock's waiting directory, which slot-lease.mjs counts as the queue. A run granted at its
 # first try waited 0 seconds.
