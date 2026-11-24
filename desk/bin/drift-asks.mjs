@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { addAsk, settleDrift, readAsks } from './asks.mjs';
 
-export const DRIFT_PREFIX = 'config drift:';
+const DRIFT_PREFIX = 'config drift:';
 const SEED_EXT = /\.(ts|js|mjs|cjs|sql|json|ya?ml|rb|py|exs?)$/;
 const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'vendor', 'coverage', '.turbo']);
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
@@ -72,18 +72,20 @@ export function recordDriftAsks({ short = null, repos = E.configuredRepos(), tem
   const lines = [];
   for (const { slug, config } of repos) {
     if (!existsSync(config)) continue;
-    let a;
-    const root = (() => { try { return E.configFileRoot(config); } catch { return null; } })();
-    try { a = driftAsk(config, { root, short, template }); } catch (e) { lines.push(`${slug}'s config could not be checked for drift (${e.message})`); continue; }
-    const state = E.batchPaths(slug).state;
-    // An earlier install's ask naming other rows goes; one naming these same rows stays as it is, so
-    // the person's not-now on it holds.
-    const same = (old) => a != null && old.rows.length === a.rows.length && old.rows.every((r, i) => r === a.rows[i]);
-    settleDrift(state, (old) => !same(old));
-    if (!a) continue;
-    const kept = readAsks(state).find((x) => x.settles === 'drift' && Array.isArray(x.rows) && same(x));
-    const { id } = kept ?? addAsk(state, a.text, Date.now(), { rows: a.rows, settles: 'drift' });
-    lines.push(`${slug} lacks ${a.rows.length} config row(s) this release has (${a.rows.join(', ')}), now on its needs-you list as ask:${id}`);
+    // Each repo on its own: a config or an asks file one cannot read leaves the others' asks recorded.
+    try {
+      const root = (() => { try { return E.configFileRoot(config); } catch { return null; } })();
+      const a = driftAsk(config, { root, short, template });
+      const state = E.batchPaths(slug).state;
+      // An earlier install's ask naming other rows goes; one naming these same rows stays as it is, so
+      // the person's not-now on it holds.
+      const same = (old) => a != null && old.rows.length === a.rows.length && old.rows.every((r, i) => r === a.rows[i]);
+      settleDrift(state, (old) => !same(old));
+      if (!a) continue;
+      const kept = readAsks(state).find((x) => x.settles === 'drift' && Array.isArray(x.rows) && same(x));
+      const { id } = kept ?? addAsk(state, a.text, Date.now(), { rows: a.rows, settles: 'drift' });
+      lines.push(`${slug} lacks ${a.rows.length} config row(s) this release has (${a.rows.join(', ')}), now on its needs-you list as ask:${id}`);
+    } catch (e) { lines.push(`${slug}'s drift could not be checked or recorded (${String(e?.message ?? e).split('\n')[0]})`); }
   }
   return lines.length ? lines : ['no configured repo lacks a config row this release has'];
 }

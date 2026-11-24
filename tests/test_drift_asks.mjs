@@ -44,5 +44,14 @@ t('#1361 a later install with the same rows missing keeps the ask as it was', JS
 config('acme__lacks', [['Dev server', '`npm run dev`'], ['Test sign-in', '`dev@acme.test`']]);
 t('#1361 once the config has the rows, the next install drops the ask', `${D.recordDriftAsks({}).join()} ${readAsks(E.batchPaths('acme__lacks').state).length}`, 'no configured repo lacks a config row this release has 0');
 
+// One repo's unreadable asks file leaves the next repo's ask recorded.
+config('acme__a1', [['Dev server', '`npm run dev`']]);
+config('acme__a2', [['Dev server', '`npm run dev`']]);
+mkdirSync(E.batchPaths('acme__a1').state, { recursive: true });
+writeFileSync(join(E.batchPaths('acme__a1').state, 'asks.json'), '{not json');
+const broken = D.recordDriftAsks({});
+t('#1361 a repo whose asks cannot be written is named, and the next repo still gets its ask',
+  `${broken.some((l) => l.startsWith("acme__a1's drift could not be checked or recorded")) } ${readAsks(E.batchPaths('acme__a2').state).length}`, 'true 1');
+
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }
 console.log('all passed');
