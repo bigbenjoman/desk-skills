@@ -128,9 +128,10 @@ const seed = (login, prs, cold) => { calls.push([login, prs, cold]); return sd; 
 const now = Date.parse(H(14, 17));
 let sl = GR.reviewerStep(SD, { waits: [wait(9, 'h9')], now, repo: 'acme/widgets', seed });
 t('#1370 a cold record seeded from GitHub reads as down on its first pass, since the last review', j([sl.some((l) => l.startsWith(`gate reviewer: ${BOT} reads as down: no review since ${H(9, 46)}`)), readAsks(SD).length]), j([true, 1]));
+t('#1372 a reviewer seeded cold this pass, and down, is not read across the repo a second time', calls.length, 1);
 t('#1370 the waiting PR\'s wait starts when it left draft, not when the pass first saw it', GR.readRecord(SD).reviewers[BOT].waiting[9].since, new Date(H(12, 38)).toISOString());
 GR.reviewerStep(SD, { waits: [wait(9, 'h9'), wait(10)], now: now + 60000, repo: 'acme/widgets', seed });
-t('#1370 seeded once: the next pass reads GitHub only for a PR new to its waits', j(calls.map((c) => [c[1], c[2]])), j([[[9], true], [[10], false]]));
+t('#1370 seeded once: the next pass reads GitHub only for a PR new to its waits', j(calls.filter((c) => c[1].length).map((c) => [c[1], c[2]])), j([[[9], true], [[10], false]]));
 const SU = scratch('gate-reviewer-seedunknown-');
 const ul = GR.reviewerStep(SU, { waits: [wait(9, 'h9')], now, seed: () => ({ last: null, lags: [], began: { 9: new Date(H(12, 38)).toISOString() } }) });
 t('#1370 with its last review unknown, it still reads as down at once, from when the PR began waiting', ul.some((l) => l.startsWith(`gate reviewer: ${BOT} reads as down: no review since ${new Date(H(12, 38)).toISOString()}`)), true);
@@ -142,6 +143,24 @@ const OLD = scratch('gate-reviewer-old-');
 GR.writeRecord(OLD, { reviewers: { [BOT]: { last: null, lags: [], waiting: { 9: { head: 'h9', since: H(14, 17) } } } } });
 GR.reviewerStep(OLD, { waits: [wait(9, 'h9')], now: now + 120000, seed: () => sd });
 t('#1370 a record written before seeding is seeded on its next pass, its wait moved back to when it began', j([GR.readRecord(OLD).reviewers[BOT].last, GR.readRecord(OLD).reviewers[BOT].waiting[9].since]), j([H(9, 46), new Date(H(12, 38)).toISOString()]));
+
+// Before calling it down, its latest review is read across the repo: the record sees only desk's PRs.
+const elsewhere = (last) => { const R = scratch('gate-reviewer-elsewhere-'); GR.writeRecord(R, { reviewers: { [BOT]: { ...quiet.reviewers[BOT], seeded: iso(0) } } }); const calls = []; return { R, calls, seed: (login, prs, cold) => { calls.push([login, prs, cold]); return last === undefined ? null : { last, lags: [], began: {} }; } }; };
+{
+  const e = elsewhere(iso(70));
+  const el = GR.reviewerStep(e.R, { waits: [wait(3, 'h3'), wait(4, 'h4')], now: at(80), repo: 'acme/widgets', seed: e.seed });
+  t('#1372 reviewing PRs desk does not track within the threshold, it is not down: only behind on desk\'s PRs', j([readAsks(e.R).length, el.filter((l) => l.startsWith('fix tries:')).length, GR.readRecord(e.R).reviewers[BOT].last]), j([0, 2, iso(70)]));
+  t('#1372 that read is across the repo, for no PR in particular', j(e.calls), j([[BOT, [], true]]));
+  const f = elsewhere(iso(5));
+  GR.reviewerStep(f.R, { waits: [wait(3, 'h3'), wait(4, 'h4')], now: at(80), repo: 'acme/widgets', seed: f.seed });
+  t('#1372 still down, the ask names its real latest review', readAsks(f.R)[0]?.text.includes(`has posted no review since ${iso(5)}`), true);
+  const g = elsewhere(undefined);
+  const gl = GR.reviewerStep(g.R, { waits: [wait(3, 'h3'), wait(4, 'h4')], now: at(80), seed: g.seed });
+  t('#1372 a repo-wide read GitHub cannot answer says so, and the verdict goes on what the passes saw', j([gl.some((l) => /latest review across the repo could not be read/.test(l)), readAsks(g.R).length]), j([true, 1]));
+  const h = elsewhere(null);
+  GR.reviewerStep(h.R, { waits: [wait(3, 'h3'), wait(4, 'h4')], now: at(80), seed: h.seed });
+  t('#1372 one it cannot prove leaves the recorded last review', readAsks(h.R)[0]?.text.includes(`since ${iso(0)}`), true);
+}
 
 const D = scratch('gate-reviewer-dry-');
 GR.writeRecord(D, quiet);

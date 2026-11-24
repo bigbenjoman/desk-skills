@@ -170,11 +170,13 @@ export function seedOf(payload, login) {
 
 // The record with each reviewer that PRs wait on seeded where it needs it, through `seed(login, prs,
 // cold)` (seedOf's result, or null unread): one not yet seeded is read cold, with every PR waiting on it;
-// one seeded already, only for the PRs new to its waits. -> { rec, began, lines }
+// one seeded already, only for the PRs new to its waits. -> { rec, began, lines, fresh (the logins read
+// cold this pass) }
 export function seeded(rec, waits, seed, now = Date.now()) {
   const out = { reviewers: { ...rec.reviewers } };
   const began = {};
   const lines = [];
+  const fresh = new Set();
   for (const login of [...new Set(waits.map((w) => w.login))]) {
     const r = out.reviewers[login];
     const cold = !r?.seeded;
@@ -187,8 +189,9 @@ export function seeded(rec, waits, seed, now = Date.now()) {
     if (!cold) continue;
     const last = [r?.last, s.last].filter(Boolean).sort().at(-1) ?? null;
     out.reviewers[login] = { last, lags: r?.lags?.length ? r.lags : s.lags ?? [], waiting: r?.waiting ?? {}, seeded: iso(now) };
+    fresh.add(login);
   }
-  return { rec: out, began, lines };
+  return { rec: out, began, lines, fresh };
 }
 
 // Whether `login` reads as down: { down, since (its last review, else when the oldest wait began),
@@ -218,7 +221,8 @@ export function downAsk(login, v, { repo, owner = null } = {}) {
 // reads as down put to the person as one ask in `state` (the repo's), replacing the last pass's for it,
 // in place of each PR's wait line, and the ask of one that no longer reads as down (its next review
 // seen, or nothing waiting on it) dropped. A dry run writes nothing. -> the pass's report lines
-// `seed`: seeded's reader, or null to read nothing from GitHub.
+// `seed`: seeded's reader, also the repo-wide read of a reviewer's latest review before it is called
+// down (repoLast), or null to read nothing from GitHub.
 export function reviewerStep(state, { seen = [], waits = [], now = Date.now(), owner = null, repo = '', dry = false, batch = null, live = null, seed = null } = {}) {
   if (!seen.length && !waits.length && !hasRecord(state)) return [];
   // The record is the repo's, shared by its batches' passes: read, changed and written under its lock.
@@ -233,8 +237,9 @@ export function reviewerStep(state, { seen = [], waits = [], now = Date.now(), o
 function step(state, { seen, waits, now, owner, repo, dry, batch, live, seed }) {
   const lines = [];
   let rec;
+  let sd;
   try {
-    const sd = seed ? seeded(readRecord(state), waits, seed, now) : { rec: readRecord(state), began: {}, lines: [] };
+    sd = seed ? seeded(readRecord(state), waits, seed, now) : { rec: readRecord(state), began: {}, lines: [], fresh: new Set() };
     lines.push(...sd.lines);
     rec = update(sd.rec, { seen, waits, now, batch, live, began: sd.began });
   } catch (e) {
@@ -242,8 +247,20 @@ function step(state, { seen, waits, now, owner, repo, dry, batch, live, seed }) 
   }
   const down = new Set();
   for (const login of Object.keys(rec.reviewers)) {
-    const v = verdict(rec, login, now);
+    let v = verdict(rec, login, now);
     if (!v.down) continue;
+    // The record sees only the PRs desk tracks: before calling it down, its latest review is read across
+    // the repo (seedRead's proven read, through `seed`), and one there within the threshold means it is
+    // only behind on desk's PRs. One seeded cold this pass was read so already.
+    if (seed && !sd.fresh.has(login)) {
+      const latest = repoLast(seed, login);
+      if (latest === undefined) lines.push(`gate reviewer: ${login}'s latest review across the repo could not be read from GitHub, so whether it is down goes on what the passes saw`);
+      else if (latest && (!rec.reviewers[login].last || Date.parse(latest) > Date.parse(rec.reviewers[login].last))) {
+        rec.reviewers[login] = { ...rec.reviewers[login], last: latest };
+        v = verdict(rec, login, now);
+        if (!v.down) continue;
+      }
+    }
     down.add(login);
     const { text } = downAsk(login, v, { repo, owner });
     lines.push(`gate reviewer: ${login} reads as down: no review since ${v.since}, over its ${v.threshold}-minute threshold, while ${v.prs.length} ready PR(s) wait on it (${v.prs.map((n) => `#${n}`).join(', ')}): on the needs-you list in place of each PR's wait`);
@@ -261,5 +278,12 @@ function step(state, { seen, waits, now, owner, repo, dry, batch, live, seed }) 
   } catch (e) { lines.push(`gate reviewer: its asks could not be rechecked (${firstLine(e)})`); }
   try { writeRecord(state, rec); } catch (e) { lines.push(`gate reviewer: its record could not be written (${firstLine(e)})`); }
   return lines;
+}
+// `login`'s latest review across the repo, through `seed` read cold for no PR: an ISO time, null where
+// none is proven among the pages read, or undefined where GitHub could not be read.
+function repoLast(seed, login) {
+  let s;
+  try { s = seed(login, [], true); } catch { s = null; }
+  return s ? s.last ?? null : undefined;
 }
 const firstLine = (e) => String(e?.message ?? e).split('\n')[0];
