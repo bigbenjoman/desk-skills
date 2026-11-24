@@ -188,7 +188,7 @@ const REFRESH_WAIT_MS = 30 * 60 * 1000;
 export function staleCall(t, head, names, read, { base = 'the base', now = Date.now() } = {}) {
   const r = t?.base_refresh?.head === head ? t.base_refresh : null;
   if (r?.ok === true && now - Date.parse(r.at ?? '') < REFRESH_WAIT_MS) {
-    return { call: 'wait', why: `its branch was updated from ${base} at ${String(r.at).slice(11, 16)} UTC, as it was red only where ${base} was; it waits for the run at its new head, with no re-run and no fix try` };
+    return { call: 'wait', why: `its branch was updated from ${base} at ${String(r.at).slice(0, 16).replace('T', ' ')} UTC, as it was red only where ${base} was; it waits for the run at its new head, with no re-run and no fix try` };
   }
   if (r || !names.length) return null;
   const stale = staleChecks(t, head, names, read);
