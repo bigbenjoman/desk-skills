@@ -386,10 +386,13 @@ function armRows(sessions) {
   });
 }
 
+// Whether an arm's rate `a` breaches the baseline's `b` at `margin`: above b by more than the margin,
+// or above none where the baseline has none.
+const ratio = (a, b, margin) => (b === 0 ? a > 0 : a > b * margin);
+
 // Each guardrail of an arm against the baseline: holds, breach, or not measured (with why), the ticket
 // guardrails then the PR ones.
 function guardrailsAgainst(arm, base) {
-  const ratio = (a, b, margin) => (b === 0 ? a > 0 : a > b * margin);
   const prs = Object.entries(PR_CHECKED).map(([g, { margin }]) => {
     const a = arm.pr_guardrails[g];
     const b = base.pr_guardrails[g];
@@ -406,7 +409,7 @@ function ticketGuardrails(arm, base) {
     if (a.tickets < MIN_TICKETS || b.tickets < MIN_TICKETS) {
       return [g, { status: 'not measured', why: `${a.tickets} ticket(s) on this arm, ${b.tickets} on the baseline; needs ${MIN_TICKETS} each` }];
     }
-    const breach = b.rate === 0 ? a.rate > 0 : a.rate > b.rate * margin;
+    const breach = ratio(a.rate, b.rate, margin);
     return [g, { status: breach ? 'breach' : 'holds', why: `${a.rate.toFixed(2)} per ticket against ${b.rate.toFixed(2)} (margin ${margin}x)` }];
   });
 }
@@ -436,7 +439,7 @@ function recommend(arms) {
       a.guardrail_status = g;
       // Rework needs no ticket: measured, it can refuse an arm, never make one eligible.
       const rw = a.rework.rate != null && base.rework.rate != null
-        ? { status: (base.rework.rate === 0 ? a.rework.rate > 0 : a.rework.rate > base.rework.rate * REWORK_MARGIN) ? 'breach' : 'holds',
+        ? { status: ratio(a.rework.rate, base.rework.rate, REWORK_MARGIN) ? 'breach' : 'holds',
           why: `${(100 * a.rework.rate).toFixed(1)}% of tool calls errored against ${(100 * base.rework.rate).toFixed(1)}% (margin ${REWORK_MARGIN}x)` }
         : { status: 'not measured', why: 'no tool calls on this arm or the baseline' };
       a.rework_status = rw;

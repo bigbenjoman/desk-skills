@@ -142,7 +142,7 @@ const config = (name, tracker, pattern) => {
 // A gh on PATH: logs each call, and answers each aliased read of a GraphQL query from the fixture
 // file its environment names: a PR by number (its first page of files and reviews, or a later page
 // of either, a page being 100), the merged PRs a head branch heads, and a search, filtered by its
-// `merged:` range and `revert in:title`, sorted by merge time, paged by the fixture's searchPage. A
+// `merged:` range, `base:`, `revert in:title` and `reverts in:body`, sorted by merge time, paged by the fixture's searchPage. A
 // number no fixture PR has is answered as GitHub does: null with a NOT_FOUND error, and exit 1 (or
 // the fixture's errorType for every read, to stand for another failure).
 function stubGh() {
@@ -160,6 +160,12 @@ function stubGh() {
   const errors = [];
   const none = (alias) => { errors.push({ type: fx.errorType || 'NOT_FOUND', path: ['repository', alias], message: 'Could not resolve to a PullRequest' }); return null; };
   const re = /(a\d+): (?:pullRequest\(number:(\d+)\)\{(?:(files|reviews)\(first:100(?:, after:"(\d+)")?\)|number )|pullRequests\(headRefName:("(?:[^"\\]|\\.)*")|search\(query:("(?:[^"\\]|\\.)*"), type:ISSUE, first:100(?:, after:"(\d+)")?)/g;
+  // A repository the token cannot see: GitHub answers it null, with a NOT_FOUND at the repository.
+  if (fx.repoMissing) {
+    process.stdout.write(JSON.stringify({ data: { repository: null }, errors: [{ type: 'NOT_FOUND', path: ['repository'], message: 'Could not resolve to a Repository' }] }));
+    process.exitCode = 1;
+    return;
+  }
   for (const m of q.matchAll(re)) {
     const [, alias, n, list, from, head, search, sFrom] = m;
     if (n && list) repository[alias] = any(n) ? { [list]: page(list === 'files' ? files(any(n)) : reviews(any(n)), Number(from || 0)) } : none(alias);
@@ -174,9 +180,11 @@ function stubGh() {
     else {
       const text = JSON.parse(search);
       const [, a, b] = /merged:(\S+)\.\.(\S+)/.exec(text);
-      const hits = (fx.search || []).filter((c) => c.mergedAt >= a && c.mergedAt <= b && (!text.includes('revert in:title') || /revert/i.test(c.title)))
+      const onBase = /\bbase:(\S+)/.exec(text);
+      const hits = (fx.search || []).filter((c) => c.mergedAt >= a && c.mergedAt <= b && (!text.includes('revert in:title') || /revert/i.test(c.title))
+        && (!text.includes('reverts in:body') || /reverts/i.test(c.body || '')) && (!onBase || (c.baseRefName || 'main') === onBase[1]))
         .sort((x, y) => x.mergedAt.localeCompare(y.mergedAt))
-        .map((c) => ({ number: c.number, title: c.title, body: c.body || '', mergedAt: c.mergedAt, files: { totalCount: files(c).length, ...page(files(c), 0) } }));
+        .map((c) => ({ number: c.number, title: c.title, body: c.body || '', mergedAt: c.mergedAt, baseRefName: c.baseRefName || 'main', files: { totalCount: files(c).length, ...page(files(c), 0) } }));
       top[alias] = page(hits, Number(sFrom || 0), fx.searchPage || 100);
     }
   }
@@ -325,7 +333,7 @@ const pr = (n, { mergedAt = M, title = `feat: change ${n}`, files = [`src/f${n}.
   files,
   reviews: [...reviewed.map((oid, i) => ({ at: iso((mergedAt ?? M) - DAY_MS + i), oid })), ...late.map((oid) => ({ at: iso((mergedAt ?? M) + DAY_MS), oid }))],
 });
-const cand = (number, title, at, files, body = '') => ({ number, title, body, mergedAt: iso(at), files });
+const cand = (number, title, at, files, body = '', baseRefName = 'main') => ({ number, title, body, mergedAt: iso(at), files, baseRefName });
 const FX7 = write('fx7.json', {
   prs: Object.fromEntries([
     pr(701, { reviewed: ['a', 'b', 'b'], late: ['c'] }), pr(702), pr(703), pr(704), pr(705),
@@ -374,8 +382,8 @@ t('a ticketless PR arm with a revert and a red run breaches post-merge against t
   [['20% of 700,000', 'pr-post-merge breach: 0.40 per PR against 0.00 (margin 1.25x)']]);
 t('one without is clean, and with its PR guardrails measured it is recommended', [r7.verdict, r7.pct, Object.keys(pr7.arms.find((a) => a.arm === '30% of 700,000').guardrail_status ?? {}).filter((k) => !['fix-tries-parks', 'post-merge'].includes(k))
   .map((k) => pr7.arms.find((a) => a.arm === '30% of 700,000').guardrail_status[k].status)], ['recommend', 30, ['holds', 'holds', 'holds']]);
-t('15 PRs are read in batched queries of 10 reads (2 for the PRs, 3 for the 30 window searches), and the final outcomes cached in the repo state',
-  [first, existsSync(join(S7, 'handoff-pr-outcomes.json'))], [5, true]);
+t('15 PRs are read in batched queries of 10 reads (2 for the PRs, 5 for the 45 window searches), and the final outcomes cached in the repo state',
+  [first, existsSync(join(S7, 'handoff-pr-outcomes.json'))], [7, true]);
 before = ghCalls();
 const again = JSON.parse(run7(S7, '--json'));
 t('a second run reads nothing from GitHub and gives the same outcomes from the cache', [ghCalls() - before, rec(again, 700_000).pct, again.pr_read?.cached], [0, 30, 15]);
@@ -451,13 +459,20 @@ const FX10 = write('fx10.json', {
     pr(1002, { base: 'feat/epic' }),
     pr(1003, { head: 'feat/reused', createdAt: T0 - 3_600_000, mergedAt: T0 + 2 * 3_600_000 }),
     pr(1004, { head: 'feat/reused', createdAt: T0 + 3 * DAY_MS - 3_600_000, mergedAt: T0 + 3 * DAY_MS + 2 * 3_600_000 }),
+    pr(1005), pr(1006),
   ].map((p) => [p.number, p])),
-  search: [],
+  search: [
+    // A revert of 1005 its body alone names, and one of 1006 merged into a side branch.
+    cand(1095, 'Back out the change', M + 2 * DAY_MS, ['src/f1005.js'], 'Reverts acme/widgets#1005'),
+    cand(1096, 'Revert "feat: change 1006"', M + 2 * DAY_MS, ['src/f1006.js'], 'Reverts acme/widgets#1006', 'feat/side'),
+  ],
 });
 const ROOT10 = join(T, 'projects10');
 const P10 = join(ROOT10, '-x-repo');
 mkdirSync(P10, { recursive: true });
 session(P10, 'pair', [user(0), req('pair-r', 1, { uncached: 1 }), ...bash(2, 'gh pr merge 1001'), ...bash(3, 'gh pr merge 1999')]);
+session(P10, 'bodyrev', [user(0), req('bodyrev-r', 1, { uncached: 1 }), ...bash(2, 'gh pr merge 1005')]);
+session(P10, 'siderev', [user(0), req('siderev-r', 1, { uncached: 1 }), ...bash(2, 'gh pr merge 1006')]);
 session(P10, 'epic', [user(0), req('epic-r', 1, { uncached: 1 }), ...bash(2, 'gh pr merge 1002')]);
 const later = (d) => 60 * 24 * d;
 session(P10, 'reusedA', [user(0), req('ra-r', 1, { uncached: 1 }), ...bash(2, 'git push origin feat/reused')]);
@@ -480,6 +495,14 @@ before = ghCalls();
 run10();
 const again10 = readFileSync(GH_LOG, 'utf8').split('\n').filter(Boolean).slice(before).map((l) => JSON.parse(l).find((a) => a.startsWith('query=')));
 t('the next run asks again only for the branch\'s PRs, not for the number that named none', [again10.length, again10.some((q) => q.includes('1999')), again10.every((q) => q.includes('headRefName'))], [1, false, true]);
+t('a revert its body alone names counts', x('bodyrev').prs_measured.map((o) => [o.number, o.post_merge]), [[1005, 1]]);
+t('a revert merged into a side branch does not count', x('siderev').prs_measured.map((o) => [o.number, o.post_merge]), [[1006, 0]]);
+const S10r = join(T, 'state10-repo');
+const blind = run10(write('fx10-blind.json', { ...JSON.parse(readFileSync(FX10, 'utf8')), repoMissing: true }), S10r);
+const blindCache = JSON.parse(readFileSync(join(S10r, 'handoff-pr-outcomes.json'), 'utf8'));
+t('a repository GitHub does not find drops the read with a note, and marks no PR as missing',
+  [blind.pr_read.note?.startsWith('PRs not read from GitHub'), blindCache.missing, blind.sessions.filter((y) => y.measured_on === 'prs').length], [true, [], 0]);
+t('and a later good run reads the PRs', run10(FX10, S10r).sessions.find((y) => y.id === 'pair').prs_measured.map((o) => o.number), [1001]);
 const failed = run10(write('fx10-fail.json', { prs: { 1001: pr(1001) }, search: [], errorType: 'RATE_LIMITED' }), join(T, 'state10-fail'));
 t('any other error drops the read and says so', [failed.pr_read.note?.startsWith('PRs not read from GitHub'), failed.sessions.filter((y) => y.measured_on === 'prs').length], [true, 0]);
 

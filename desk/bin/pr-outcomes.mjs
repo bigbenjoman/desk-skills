@@ -4,8 +4,9 @@
 //                 (post-merge.mjs findRecords, on the check suites of that commit)
 //   follow-ups    merged PRs titled as a fix, hotfix or revert within FOLLOW_UP_HOURS that touch any
 //                 of its files
-//   reverts       merged PRs titled Revert within post-merge's WATCH_DAYS whose title reverts its
-//                 title, or whose body says it reverts it ("Reverts owner/repo#N"); a revert pushed
+//   reverts       PRs merged into the default branch within post-merge's WATCH_DAYS, found by a
+//                 title search for Revert and a body search for Reverts, whose title reverts its
+//                 title or whose body says it reverts it ("Reverts owner/repo#N"); a revert pushed
 //                 straight to the default branch, with no PR, is not seen
 //   review rounds the distinct commits its reviews before the merge were on
 // A window is done once it has closed and was read in full; a PR is final once all are done. Each
@@ -17,8 +18,8 @@
 // per open window, by a bounded `merged:` range sorted by creation; and the further pages of any
 // list over a page (a PR's files or reviews, a search's results, a follow-up's files), at most
 // MAX_PAGES pages of each. A list longer than that leaves its window open.
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { writeJsonAtomic } from './dir-lock.mjs';
 import { gh as ghRead } from './gate.mjs';
 import { findRecords, RED_HOURS, revertedPr, WATCH_DAYS } from './post-merge.mjs';
 
@@ -34,29 +35,26 @@ const pageOf = (fields) => `pageInfo{hasNextPage endCursor} nodes{${fields}}`;
 const REVIEWS = 'submittedAt commit{oid}';
 const CORE = `number title mergedAt baseRefName mergeCommit{oid checkSuites(first:${SUITES}){totalCount nodes{conclusion branch{name} workflowRun{databaseId event createdAt url workflow{databaseId name}}}}} `
   + `files(first:${PAGE}){totalCount ${pageOf('path')}} reviews(first:${PAGE}){totalCount ${pageOf(REVIEWS)}}`;
-const CANDIDATE = `... on PullRequest{number title body mergedAt files(first:${PAGE}){totalCount ${pageOf('path')}}}`;
+const CANDIDATE = `... on PullRequest{number title body mergedAt baseRefName files(first:${PAGE}){totalCount ${pageOf('path')}}}`;
 
 const readCache = (path) => {
   try { const d = JSON.parse(readFileSync(path, 'utf8')); return { prs: d?.prs ?? {}, missing: d?.missing ?? [] }; } catch { return { prs: {}, missing: [] }; }
 };
-function writeCache(path, cache) {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(cache)}\n`);
-  renameSync(tmp, path);
-}
 const firstLine = (e) => String(e?.stderr || e?.message || e).trim().split('\n')[0];
 const after = (c) => (c ? `, after:${JSON.stringify(c)}` : '');
 
 // A GraphQL query's answer. GitHub answers a query in which an alias names no PR (an issue's number,
 // another repo's PR) with that alias null and a NOT_FOUND error, and gh then exits 1: that answer is
-// used, its other aliases read as usual. Any other error throws.
-function ask(gh, query) {
+// used, its other aliases read as usual, when the repository answered and every error is a NOT_FOUND
+// at one of the repository aliases asked (`prAliases`). Any other error throws, a repository not
+// found (one the token cannot see) among them.
+function ask(gh, query, prAliases) {
   try { return JSON.parse(gh(['api', 'graphql', '-f', `query=${query}`])); }
   catch (e) {
     let body = null;
     try { body = JSON.parse(String(e?.stdout ?? '')); } catch { /* not an answer */ }
-    if (body?.data && Array.isArray(body.errors) && body.errors.length && body.errors.every((x) => x?.type === 'NOT_FOUND')) return body;
+    const named = (x) => x?.type === 'NOT_FOUND' && Array.isArray(x.path) && x.path.length === 2 && x.path[0] === 'repository' && prAliases.has(x.path[1]);
+    if (body?.data?.repository && Array.isArray(body.errors) && body.errors.length && body.errors.every(named)) return body;
     throw e;
   }
 }
@@ -88,7 +86,7 @@ function readPaged(items, { gh, repoSel, count, first = new Map() }) {
       const part = now.slice(i, i + CHUNK);
       const inRepo = part.map((x, j) => (x.top ? '' : `a${j}: ${x.sel(x.cursor)}`)).join(' ').trim();
       const outside = part.map((x, j) => (x.top ? `a${j}: ${x.sel(x.cursor)}` : '')).join(' ').trim();
-      const data = ask(gh, `query{${inRepo ? `${repoSel}{${inRepo}}` : ''} ${outside}}`).data ?? {};
+      const data = ask(gh, `query{${inRepo ? `${repoSel}{${inRepo}}` : ''} ${outside}}`, new Set(part.map((x, j) => (x.top ? null : `a${j}`)).filter(Boolean))).data ?? {};
       count();
       part.forEach((x, j) => take(x, x.top ? data[`a${j}`] : data.repository?.[`a${j}`]));
     }
@@ -177,7 +175,9 @@ export function prOutcomes(refs, { repo, base, cachePath = null, offline = false
       const range = (o, ms) => `merged:${o.merged_at}..${new Date(Math.min(now, Date.parse(o.merged_at) + ms)).toISOString()}`;
       const searches = merged.flatMap((o) => [
         ...(o.follow?.done ? [] : [{ id: `f${o.number}`, o, kind: 'follow', q: `repo:${repo} is:pr is:merged ${range(o, FOLLOW_UP_HOURS * HOUR_MS)} sort:created-asc` }]),
-        ...(o.revert?.done ? [] : [{ id: `r${o.number}`, o, kind: 'revert', q: `repo:${repo} is:pr is:merged revert in:title ${range(o, WATCH_DAYS * 24 * HOUR_MS)} sort:created-asc` }]),
+        // Reverts by title (GitHub's revert button) or by body ("Reverts owner/repo#N"), into the default branch.
+        ...(o.revert?.done ? [] : ['revert in:title', 'reverts in:body'].map((how, i) => ({ id: `r${i}-${o.number}`, o, kind: 'revert',
+          q: `repo:${repo} is:pr is:merged ${base ? `base:${base} ` : ''}${how} ${range(o, WATCH_DAYS * 24 * HOUR_MS)} sort:created-asc` }))),
       ]);
       const found = readPaged(searches.map((x) => ({ id: x.id, top: true, sel: (c) => `search(query:${JSON.stringify(x.q)}, type:ISSUE, first:${PAGE}${after(c)}){${pageOf(CANDIDATE)}}`, conn: (a) => a })), { gh, repoSel, count });
       // A follow-up candidate with more files than a page has its others read, to find a shared one.
@@ -189,21 +189,24 @@ export function prOutcomes(refs, { repo, base, cachePath = null, offline = false
       const files = readPaged(longer.map((c) => ({ id: c.number, sel: (cur) => `pullRequest(number:${c.number}){files(first:${PAGE}${after(cur)}){${pageOf('path')}}}`, conn: (a) => a.files })),
         { gh, repoSel, count, first: new Map(longer.map((c) => [c.number, { files: c.files }])) });
       const filesOf = (c) => files.get(c.number) ?? { nodes: c.files?.nodes ?? [], complete: !!c.files };
-      for (const x of searches) {
+      for (const x of searches.filter((y) => y.kind === 'follow')) {
         const o = x.o;
         const at = Date.parse(o.merged_at);
         const hits = found.get(x.id);
-        if (x.kind === 'follow') {
-          const mine = new Set(o.core.files);
-          const cands = hits.nodes.map((c) => fixes.get(c?.number)).filter((c) => c && c.number !== o.number && Date.parse(c.mergedAt) > at);
-          o.follow = { done: hits.complete && cands.every((c) => filesOf(c).complete) && now - at >= FOLLOW_UP_HOURS * HOUR_MS,
-            list: cands.filter((c) => filesOf(c).nodes.some((f) => mine.has(f.path))).map((c) => c.number) };
-        } else {
-          const names = (c) => revertedPr(c.title) === o.number || c.title === `Revert "${o.title}"`
-            || [...String(c.body ?? '').matchAll(/\bReverts\s+([\w.-]+\/[\w.-]+)?#(\d+)\b/gi)].some((m) => Number(m[2]) === o.number && (!m[1] || m[1].toLowerCase() === repo.toLowerCase()));
-          o.revert = { done: hits.complete && now - at >= WATCH_DAYS * 24 * HOUR_MS,
-            list: hits.nodes.filter((c) => c?.number && c.number !== o.number && Date.parse(c.mergedAt) >= at && names(c)).map((c) => c.number) };
-        }
+        const mine = new Set(o.core.files);
+        const cands = hits.nodes.map((c) => fixes.get(c?.number)).filter((c) => c && c.number !== o.number && Date.parse(c.mergedAt) > at);
+        o.follow = { done: hits.complete && cands.every((c) => filesOf(c).complete) && now - at >= FOLLOW_UP_HOURS * HOUR_MS,
+          list: cands.filter((c) => filesOf(c).nodes.some((f) => mine.has(f.path))).map((c) => c.number) };
+      }
+      // A PR's reverts: the candidates of both its searches, merged into the default branch, that name it.
+      for (const o of merged.filter((m) => !m.revert?.done)) {
+        const at = Date.parse(o.merged_at);
+        const both = searches.filter((x) => x.kind === 'revert' && x.o === o).map((x) => found.get(x.id));
+        const names = (c) => revertedPr(c.title) === o.number || c.title === `Revert "${o.title}"`
+          || [...String(c.body ?? '').matchAll(/\bReverts\s+([\w.-]+\/[\w.-]+)?#(\d+)\b/gi)].some((m) => Number(m[2]) === o.number && (!m[1] || m[1].toLowerCase() === repo.toLowerCase()));
+        const list = [...new Set(both.flatMap((h) => h.nodes).filter((c) => c?.number && c.number !== o.number && Date.parse(c.mergedAt) >= at
+          && (!base || c.baseRefName === base) && names(c)).map((c) => c.number))];
+        o.revert = { done: both.every((h) => h.complete) && now - at >= WATCH_DAYS * 24 * HOUR_MS, list };
       }
       const cut = [...fresh.values(), ...reviews.values(), ...found.values(), ...files.values()].filter((r) => r.answer && !r.complete).length;
       if (cut) notes.push(`${cut} list(s) longer than ${MAX_PAGES} pages, so their windows stay open`);
@@ -221,7 +224,7 @@ export function prOutcomes(refs, { repo, base, cachePath = null, offline = false
     // Every merged PR's windows, done or not: a later run reads only the open ones.
     const keep = [...recs].filter(([, o]) => o.merged_at && (o.core || o.off_default));
     const out = { prs: Object.fromEntries(keep), missing: [...missing].sort((a, b) => a - b) };
-    try { writeCache(cachePath, out); } catch (e) { notes.push(`cache not written: ${firstLine(e)}`); }
+    try { writeJsonAtomic(cachePath, out); } catch (e) { notes.push(`cache not written: ${firstLine(e)}`); }
   }
   const view = (o) => (o?.off_default ? { number: o.number, off_default: true, final: false } : o?.merged_at && o.core ? {
     number: o.number, title: o.title, merged_at: o.merged_at, final: o.final, open: o.open,
