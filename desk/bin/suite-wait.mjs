@@ -243,10 +243,12 @@ export function lockRunsByRepo(repos, { procs, holders, cwds, held = [], locks =
   if (!procs || !cwds) return null;
   const ins = repos.map((r) => ({ name: r.name, in: r.dirs.filter(Boolean).map(insideOf) }));
   const repoOf = (cwd) => (cwd && ins.find((r) => r.in.some((f) => f(cwd)))?.name) || 'other';
+  // Each run once: a run.sh with one suite holding a job token and another waiting for one both holds
+  // and waits, under the same pid (runOf), and is one of its repo's runs, not two.
+  const runs = new Map(held.map((r) => [r.pid, r.cwd]));
+  for (const p of waitingRuns(procs, holders, locks)) if (!runs.has(p.pid)) runs.set(p.pid, cwds.find((c) => c.pid === p.pid)?.cwd ?? null);
   const counts = new Map();
-  const add = (cwd) => { const n = repoOf(cwd); counts.set(n, (counts.get(n) ?? 0) + 1); };
-  for (const p of waitingRuns(procs, holders, locks)) add(cwds.find((c) => c.pid === p.pid)?.cwd ?? null);
-  for (const r of held) add(r.cwd);
+  for (const cwd of runs.values()) { const n = repoOf(cwd); counts.set(n, (counts.get(n) ?? 0) + 1); }
   return counts;
 }
 

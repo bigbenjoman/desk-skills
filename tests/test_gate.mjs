@@ -467,6 +467,14 @@ rmSync(gtmp, { recursive: true, force: true });
   t('DS-984 AC5 a run whose suites hold job tokens is one light holder, held as long as its oldest token', JSON.stringify(held.map((r) => [r.pid, r.cwd, r.seconds])), JSON.stringify([[300, '/u/l-wt/L-1', 63]]));
   const counts = lockRunsByRepo([{ name: 'l', dirs: ['/u/l', '/u/l-wt'] }], { procs, holders, cwds, held, locks: 'light' });
   t('DS-984 AC5 and each is placed by repo', JSON.stringify([...counts].sort()), JSON.stringify([['l', 2], ['other', 1]]));
+  // A run with one suite holding a token and another waiting for one both holds and waits: one run.
+  const mixed = [run(330), run(331, 330), run(332, 330), take(333, 332)];
+  const mixedHolders = new Set([331]);
+  const mixedCwds = [330, 331, 332, 333].map((pid) => ({ pid, cwd: '/u/l-wt/L-3' }));
+  const mixedHeld = lockHolderRuns({ procs: mixed, holders: mixedHolders, cwds: mixedCwds, ages: new Map(mixed.map((p) => [p.pid, 600])), stamps: new Map([[331, now - 5000]]), now, locks: 'light' });
+  t('DS-984 AC5 a run both holding and waiting for job tokens is one of its repo\'s runs, not two',
+    `${mixedHeld.map((r) => r.pid)} ${lockWaiters({ procs: mixed, holders: mixedHolders, locks: 'light' })} ${JSON.stringify([...lockRunsByRepo([{ name: 'l', dirs: ['/u/l-wt'] }], { procs: mixed, holders: mixedHolders, cwds: mixedCwds, held: mixedHeld, locks: 'light' })])}`,
+    `330 1 ${JSON.stringify([['l', 1]])}`);
   const q = lockQueue({ waiting: lockWaiters({ procs, holders, locks: 'light' }), slots: 1, factor: 2, counts, self: 'l', lock: 'light' });
   t('DS-984 AC5 so the light gate, at 1 x 2, holds repo l at its share', `${q.deep} ${q.holds} ${q.line.startsWith('light lock queue: 2 run(s) waiting')}`, 'true true true');
   // The job pool's leases name the light lock's holders, and no heavy one.

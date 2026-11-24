@@ -485,6 +485,8 @@ try {
       const four = jobLeases(env);
       t(`DS-984 slot=${kinds}: a light command that is not run.sh holds one job token, owned by the command`,
         [cmds.every((h) => existsSync(h.mark)), four.length, cmds.every((h) => four.some((l) => l.owner?.pid === h.c.pid))], [true, 4, true]);
+      t(`DS-984 slot=${kinds}: each token is labelled with its whole command, so no two commands share a place in the queue`,
+        cmds.every((h) => four.some((l) => l.label.includes(h.mark))), true);
       const a = await hold(env, ['light'], {}, asRun);
       const b = await hold(env, ['light', '--timeout', '5'], {}, asRelated);
       t(`DS-984 AC1 AC2 slot=${kinds}: with 4 tokens held and 8 free, two light run.sh runs start at once, neither in a light slot`,
@@ -501,9 +503,15 @@ try {
       const r = wl(env, ['light', '--timeout', '2', '--', 'true']);
       t('DS-984 with its one token held, a second light command waits for it and gives up at its timeout',
         [r.status, /^with-lock\.sh: true waits for a job token \(1 on this machine\)/m.test(r.stderr), lightFiles(env)], [75, true, []]);
+      const late = join(S, `late-${n++}`);
+      const rr = wl(env, ['light', '--timeout', '2', '--', ...asRelated(late)]);
+      t('DS-984 a light run.sh waits for a token to start too, and gives up at its timeout having run nothing',
+        [rr.status, existsSync(late), lightFiles(env)], [75, false, []]);
+      h.release(); await h.done;
       const a = await hold(env, ['light'], {}, asRun);
-      t('DS-984 and a light run.sh still starts', existsSync(a.mark), true);
-      h.release(); a.release(); await h.done; await a.done;
+      t('DS-984 once one is free run.sh starts, the wrapper\'s token given back for its suites to take',
+        [existsSync(a.mark), told(a), jobLeases(env).length], [true, 'light light', 0]);
+      a.release(); await a.done;
       const s = wl(env, ['light', '--', 'sh', '-c', 'echo "$TEST_JOB_TOKENS"']);
       t('DS-984 once it is free the next command takes it, and is told it holds one, so a run.sh it starts takes none',
         [s.status, s.stdout.trim(), jobLeases(env).length], [0, 'held', 0]);
@@ -512,6 +520,17 @@ try {
       const nested = wl({ ...env, TEST_JOB_TOKENS: 'held' }, ['light', '--timeout', '2', '--', 'true']);
       t('DS-984 a command inside a suite runs on that suite\'s token, never waiting for another', [inner.status, nested.status], [0, 0]);
       h2.release(); await h2.done;
+    }
+    // A lease store the broker cannot read gives no token, so run.sh, whose own takes would then run
+    // every suite with none, runs in the light slot instead, as any other command does.
+    {
+      const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: rows('off', '3', '4') });
+      writeFileSync(join(env.DESK_LEASE_DIR, 'leases.json'), 'not json');
+      const a = await hold(env, ['light'], {}, asRun);
+      const r = wl(env, ['light', '--timeout', '2', '--', 'true']);
+      t('DS-984 with the lease store unreadable a light run.sh falls back to the light slot, and a second light run waits for it',
+        [existsSync(a.mark), lightFiles(env).length > 0, r.status], [true, true, 75]);
+      a.release(); await a.done;
     }
     // AC3: job tokens off: a light run takes the light slot for the whole run, as before.
     {

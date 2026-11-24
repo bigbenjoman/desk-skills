@@ -143,11 +143,14 @@ unset DESK_LIGHT_SMALL
 
 # With the machine profile's job-tokens row on (job-token.mjs lever), a light run holds no light slot:
 # the job tokens it takes bound it instead, so a long run holds back only the tokens its suites use. A
-# tests/run.sh with job-token.mjs in the desk/bin beside it takes one for each suite itself, so it runs
-# at once; so does a command inside a suite (TEST_JOB_TOKENS=held), which runs on that suite's token.
-# Any other command holds one token while it runs, owned by this pid, which execs into it, and is told
-# TEST_JOB_TOKENS=held so a run.sh it starts takes none. Neither waits on the lock files nor logs a
-# light grant. A token the broker cannot give falls back to the light slot below.
+# command inside a suite (TEST_JOB_TOKENS=held) runs at once on that suite's token. Any other command
+# first takes one token, owned by this pid, which execs into it, waiting in the job pool's queue (up to
+# --timeout, exiting 75 having run nothing). A tests/run.sh with job-token.mjs in the desk/bin beside it
+# takes one for each suite itself, so it gives that first token back as it starts: the take is only its
+# admission, which keeps --timeout's bound and proves the broker answers. Any other command keeps its
+# token while it runs, and is told TEST_JOB_TOKENS=held so a run.sh it starts takes none. Neither waits
+# on the lock files nor logs a light grant. A token the broker cannot give (an unreadable lease store, a
+# failing broker) falls back to the light slot below, so a run is never left with neither.
 # The script a command runs: its first word past an `env`, VAR=value words and a shell's options.
 script_of() {
   [ "${1##*/}" = env ] && shift
@@ -160,16 +163,26 @@ script_of() {
   printf '%s\n' "${1:-}"
 }
 if [ "$name" = light ] && [ "$(node "$here/job-token.mjs" lever 2>/dev/null)" = on ]; then
+  if [ "${TEST_JOB_TOKENS:-}" = held ]; then export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED=0; exec "$@"; fi
   script="$(script_of "$@")"
-  if [ "${TEST_JOB_TOKENS:-}" = held ] || { [ "${script##*/}" = run.sh ] && [ -f "$(dirname "$script")/../desk/bin/job-token.mjs" ]; }; then
-    export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED=0
-    exec "$@"
-  fi
+  per_suite=""
+  [ "${script##*/}" = run.sh ] && [ -f "$(dirname "$script")/../desk/bin/job-token.mjs" ] && per_suite=1
   t0=$SECONDS
-  label="${script##*/}"; [ -n "$label" ] || label="${1##*/}"
-  token="$(node "$here/job-token.mjs" take --pid "$$" --worktree "$(pwd -P)" --as with-lock.sh ${timeout:+--timeout "$timeout"} -- "$label" </dev/null)"
+  # The whole command is the token's label and its place's identity in the queue, so two commands in
+  # one worktree never take each other's place back.
+  token="$(node "$here/job-token.mjs" take --pid "$$" --worktree "$(pwd -P)" --as with-lock.sh ${timeout:+--timeout "$timeout"} -- "$*" </dev/null)"
   case $? in
-    0) if [ -n "$token" ]; then export TEST_JOB_TOKENS=held DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$((SECONDS - t0))"; exec "$@"; fi ;;
+    0) if [ -n "$token" ]; then
+         export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$((SECONDS - t0))"
+         if [ -n "$per_suite" ]; then
+           # Given back before run.sh's suites ask for theirs; a release that fails leaves it held by
+           # this pid, run.sh once it execs, so the run holds one more token than its suites, never fewer.
+           node "$here/job-token.mjs" release "$token" --pid "$$" >/dev/null </dev/null
+         else
+           export TEST_JOB_TOKENS=held
+         fi
+         exec "$@"
+       fi ;;
     75) exit 75 ;;
   esac
 fi
