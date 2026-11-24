@@ -322,8 +322,13 @@ t('per-ticket AC1: every key once', new Set(pt.rows.map((r) => r.key)).size, 36)
     'RW-1': { key: 'RW-1', state: 'triaged', added_at: iso(3 * DAY_MS), merged_at: iso(2 * DAY_MS), branch: 'feat/RW-1' },
     'RW-2': { key: 'RW-2', state: 'done', added_at: iso(3 * DAY_MS), merged_at: iso(2 * DAY_MS), branch: 'feat/RW-2' },
   } }));
+  // An archived ticket's round is over: respawned on PR 12, closed unmerged, it still reads as finished.
+  writeFileSync(join(PR_ROOT, 'rw', 'queue.archive.json'), JSON.stringify({ tickets: {
+    'RW-3': { key: 'RW-3', state: 'done', added_at: iso(3 * DAY_MS), merged_at: iso(2 * DAY_MS), branch: 'feat/RW-3', result: { pr: 12 }, merged_pr: [5], pr_status: { pr: 12, state: 'CLOSED' } },
+  } }));
   const rw = perTicket({ slug: 'o__r', batches: [{ name: 'RW', queue: rq, state: rs }], since: SINCE, until: NOW, ci: false });
   t('per-ticket: a merged ticket requeued since is marked reworked, one never requeued is not', ['RW-1', 'RW-2'].map((k) => rw.rows.find((r) => r.key === k)?.reworked).join(), 'true,false');
+  t('per-ticket: an archived ticket is never marked reworked', rw.rows.find((r) => r.key === 'RW-3')?.reworked, false);
 }
 t('per-ticket AC1: the archived batch\'s tickets are there', rowOf('P-30')?.batch, 'E-8 (archived)');
 const aggregateOf = () => ptBatches.map((b) => batchFigures({ queue: b.queue, state: b.state, slug: 'o__r', since: SINCE })).reduce((n, f) => n + f.cost, 0);
