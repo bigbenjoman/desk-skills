@@ -99,7 +99,9 @@ export const SIZING_KEYS = Object.freeze(Object.keys(SIZING_RULES));
 // The light lock's express lane: one fixed slot of its own, never gated on headroom, that only a run
 // with-lock.sh is told is small may take. Off unless the row is exactly `on`.
 const EXPRESS_LANE_KEY = 'light-express-lane';
-const EXPRESS_LANE_VALUES = Object.freeze(['on', 'off']);
+// A Sizing row that is a lever, on or off, checked as text.
+const ON_OFF = Object.freeze(['on', 'off']);
+const onOffRule = (key, why) => ({ text: true, problem: (v) => (ON_OFF.includes(v) ? null : `\`${key}\` is "${v}": want on or off`), why });
 // The job-token lever: with it on, each suite tests/run.sh starts holds one token from a machine-wide
 // budget of test-lock-slots x test-cap (leases.mjs's job pool). Off unless the row is exactly `on`.
 export const JOB_TOKENS_KEY = 'job-tokens';
@@ -120,11 +122,13 @@ const BENCH_RULES = Object.freeze({
   // The lease broker's per-kind lever, read as text rather than a number.
   'lease-kinds': { text: true, problem: (v) => leaseKindsProblem(v),
     why: 'off, shadow or on for each lease kind desk-env lease decides; a kind not named is shadow' },
-  [EXPRESS_LANE_KEY]: { text: true, problem: (v) => (EXPRESS_LANE_VALUES.includes(v) ? null : `\`${EXPRESS_LANE_KEY}\` is "${v}": want on or off`),
-    why: 'on gives a small light run (tests/related.sh) one light slot of its own, outside light-lock-max; off when unset' },
-  [JOB_TOKENS_KEY]: { text: true, problem: (v) => (EXPRESS_LANE_VALUES.includes(v) ? null : `\`${JOB_TOKENS_KEY}\` is "${v}": want on or off`),
-    why: 'on makes each suite tests/run.sh starts hold one of test-lock-slots x test-cap job tokens across the machine; off when unset' },
+  [EXPRESS_LANE_KEY]: onOffRule(EXPRESS_LANE_KEY,
+    'on gives a small light run (tests/related.sh) one light slot of its own, outside light-lock-max; off when unset'),
+  [JOB_TOKENS_KEY]: onOffRule(JOB_TOKENS_KEY,
+    'on makes each suite tests/run.sh starts hold one of test-lock-slots x test-cap job tokens across the machine; off when unset'),
 });
+// The lever rows profileProblems checks, each with what reads as off when its row is wrong.
+const LEVER_ROWS = Object.freeze([[EXPRESS_LANE_KEY, 'the express lane stays off'], [JOB_TOKENS_KEY, 'job tokens stay off']]);
 
 // ---- lease kinds ------------------------------------------------------------------------------
 // The lease broker's kinds (leases.mjs takes its list from here, as this file cannot import it) and
@@ -163,12 +167,12 @@ export function profileProblems(profile) {
   const v = profile?.sizing?.['lease-kinds']?.value;
   const bad = v == null ? null : leaseKindsProblem(v);
   const admit = admissionRows((k) => profileValue(profile, k)).problems.map((p) => `${p}; the locks grant as with \`lock-admission\` off`);
-  const lane = profile?.sizing?.[EXPRESS_LANE_KEY]?.value;
-  const laneBad = lane == null ? null : BENCH_RULES[EXPRESS_LANE_KEY].problem(String(lane).trim());
-  const jobs = profile?.sizing?.[JOB_TOKENS_KEY]?.value;
-  const jobsBad = jobs == null ? null : BENCH_RULES[JOB_TOKENS_KEY].problem(String(jobs).trim());
-  return [...(bad ? [bad] : []), ...admit, ...(laneBad ? [`${laneBad}; the express lane stays off`] : []),
-    ...(jobsBad ? [`${jobsBad}; job tokens stay off`] : [])];
+  const levers = LEVER_ROWS.flatMap(([k, off]) => {
+    const raw = profile?.sizing?.[k]?.value;
+    const p = raw == null ? null : BENCH_RULES[k].problem(String(raw).trim());
+    return p ? [`${p}; ${off}`] : [];
+  });
+  return [...(bad ? [bad] : []), ...admit, ...levers];
 }
 // `bench-run-limit-<provider>`: the most runs the bench may start in a rolling week on a provider it
 // has no meter or allowance ledger for, which it otherwise refuses.

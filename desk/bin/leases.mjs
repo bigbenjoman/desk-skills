@@ -91,7 +91,7 @@ export function slotPools(env) {
 export const ledgerStarts = (pids, psRows) => new Map([...startTimes(pids, psRows)].map(([p, s]) => [p, startStamp(s)]));
 // The job pool's size: a token for each test worker every heavy slot may run, test-lock-slots x
 // test-cap (test-cap 1 where unset), which bounds the suites running across the machine.
-export const jobTokens = (env) => env.testLockSlots() * (whole(env.machineValue('test-cap')) ?? 1);
+const jobTokens = (env) => env.testLockSlots() * (whole(env.machineValue('test-cap')) ?? 1);
 // The pools' sizes: the heavy and light slots' current sizes (slotPools), the job pool (jobTokens),
 // preview builds per Vercel team from preview-build-slots, memory from memory-ceiling-gb. `env` is
 // desk-env's exports.
