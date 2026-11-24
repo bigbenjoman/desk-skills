@@ -313,6 +313,22 @@ export function ledgerLine({ check, missed, queueBin }) {
   return `${seeded || 'ledger: '}${n} field(s) differ between queue.json and the queue rebuilt from the log, ${missed} missed append(s) this pass${n ? `: ${named}${more}. See each with node ${queueBin} rebuild` : ''}`;
 }
 
+// The ledger-record lever's line, or null when there is nothing to say. `restore` is queue-ledger.mjs
+// restoreQueue's result this pass, { error } when it did not run, or null with record mode off;
+// `ignored` is the lever on without the ledger lever (queue-ledger.mjs recordMode).
+export function recordLine({ restore, ignored }) {
+  if (ignored) return 'ledger: the ledger-record lever is ignored: it needs the ledger lever on as well, so queue.json is written as before';
+  if (!restore) return null;
+  if (restore.error) return `ledger: queue.json could not be checked against the log, so it was not restored (${restore.error})`;
+  if (restore.restored === 'missing') return `ledger: queue.json was missing or unreadable, so it was rebuilt from the log (${restore.tickets.length} ticket(s)); the log holds no batch fields (concurrency, base, …), so set any it had again with queue.mjs set-batch`;
+  if (restore.restored === 'behind' && restore.tickets.length) {
+    const named = restore.tickets.slice(0, LEDGER_SHOWN).join(', ');
+    const more = restore.tickets.length > LEDGER_SHOWN ? `, and ${restore.tickets.length - LEDGER_SHOWN} more` : '';
+    return `ledger: queue.json was behind the log, so it was rebuilt from it: ${named}${more}`;
+  }
+  return null;
+}
+
 // ---- merges recorded with no PR ------------------------------------------------
 // Each merge recorded with its PR missing (queue.mjs merged run with no --pr, by an older caller) among
 // `tickets`, as `<key>@<merge time>`: a ticket merged again with its PR missing is a second one.

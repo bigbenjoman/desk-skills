@@ -918,6 +918,15 @@ field that differs and counts the pass's missed appends, and its line in `passes
 counts (`ledger_diffs`, `ledger_missed`). `queue.mjs rebuild [<batch | standing>]` writes the rebuilt
 queue to `queue.rebuilt.json` beside queue.json and prints each field that differs.
 
+With the `ledger-record` lever on as well (it does nothing without `ledger`, and a pass says so),
+the log is written first. A write the log refuses as an illegal transition, such as starting a done
+ticket running without a requeue, fails naming the ticket's state and the event, and changes
+neither file. queue.json records the log position it holds (`ledger_seq`), so a pass that finds
+queue.json missing, unreadable or behind the log rebuilds it from the log before reading it, and its
+report says so. Fields still written as `legacy_set` events are kept and counted (`ledger_legacy` in
+`passes.jsonl`). Turn it on only once the shadow difference has stayed at zero; turning it off goes
+straight back to writing queue.json first.
+
 The desk-skills test suite runs against throwaway homes and repos, never yours:
 
 ```bash

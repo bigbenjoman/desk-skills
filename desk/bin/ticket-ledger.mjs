@@ -351,6 +351,9 @@ export function fold(repoDir) {
   return reduce(events, base);
 }
 
+// The code of the error a record-mode append throws for an illegal transition.
+export const ILLEGAL = 'ELEDGER_ILLEGAL';
+
 const byOf = (by) => (by && typeof by === 'object' ? by : { proc: by ?? basename(process.argv[1] ?? 'node'), pid: process.pid });
 
 // Appends `events` (each { type, batch, key, data } and optionally id and at) to repo `repoDir`'s log
@@ -377,7 +380,7 @@ export function append(repoDir, events, { mode = 'shadow', by, now = () => new D
       for (const ev of out) {
         if (seen.has(ev.id)) continue;
         const { legal, from } = legality(work, ev);
-        if (!legal) throw new Error(`refused, nothing written: ${ev.type} for ${ev.key} is illegal from its current state ${from ?? '(none: no event yet)'} (allowed from: ${TRANSITIONS[ev.type].from.map((s) => s ?? 'none').join('|')})`);
+        if (!legal) throw Object.assign(new Error(`refused, nothing written: ${ev.type} for ${ev.key} is illegal from its current state ${from ?? '(none: no event yet)'} (allowed from: ${TRANSITIONS[ev.type].from.map((s) => s ?? 'none').join('|')})`), { code: ILLEGAL });
         apply(work, ev);
         seen.add(ev.id);
       }

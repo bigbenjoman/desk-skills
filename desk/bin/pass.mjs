@@ -82,7 +82,7 @@ import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-audit.mjs';
 import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
-import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget } from './queue-ledger.mjs';
+import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget, recordMode, restoreQueue } from './queue-ledger.mjs';
 import { fold as ledgerFold, append as ledgerAppend } from './ticket-ledger.mjs';
 import { readLogLines } from './merge-log.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
@@ -92,7 +92,7 @@ import { decidePrStatus, followState, onThisPr, tookPostMerge, repoOfPr } from '
 import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict, ledgerLine, mergeGaps, mergeGapLine } from './pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict, ledgerLine, recordLine, mergeGaps, mergeGapLine } from './pass/report.mjs';
 import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
@@ -186,6 +186,14 @@ const PASS_AT = new Date().toISOString();
 // sooner than the interval would.
 const WOKEN = process.argv.includes('--woken');
 
+// Record mode (queue-ledger.mjs recordMode): a queue.json that is missing, unreadable or behind the log
+// is restored from it before anything reads it, and the report says so (pass/report.mjs recordLine).
+const RECORD = recordMode();
+let LEDGER_RESTORE = null;
+if (!DRY && RECORD.on) {
+  try { LEDGER_RESTORE = restoreQueue(QUEUE_FILE, { waitMs: LOCK_WAIT_MS }); }
+  catch (e) { LEDGER_RESTORE = { error: String(e?.message ?? e).split('\n')[0] }; }
+}
 if (!existsSync(QUEUE_FILE)) {
   refuse(`no queue at ${QUEUE_FILE} — run: node ${SHOWN_BIN}/queue.mjs init <batch-name>`);
 }
@@ -291,8 +299,11 @@ function refusedLine(args, refused, why) {
 }
 // The report lines of one queue-writer.mjs flush: each change a refused write did not record, or each
 // field another writer had changed meanwhile, whose value stays; and done tickets left unarchived.
+// LEDGER_LEGACY counts the legacy_set events record mode appended for them, which record mode keeps.
+let LEDGER_LEGACY = 0;
 function writeLines(r) {
   if (!r.ok) return r.lost.map((args) => refusedLine(args, 'not recorded', r.why));
+  LEDGER_LEGACY += r.ledgerLegacy ?? 0;
   return [
     ...r.conflicts.map((c) => `${c.ticket ?? 'batch'}: queue write not made for ${c.field === 'order' ? 'the spawn order' : c.field === '*' ? 'the whole ticket' : c.field}: ${c.gone ? 'another writer took the ticket out of the queue' : 'another writer changed it after this pass read the queue, and its value stays'}`),
     ...(r.archiveError ? [`queue archive: done tickets were not archived this pass (${r.archiveError})`] : []),
@@ -5909,7 +5920,12 @@ if (!DRY && ledgerOn()) {
   catch (e) { check = { error: String(e?.message ?? e).split('\n')[0] }; }
   const l = ledgerLine({ check, missed, queueBin: join(SHOWN_BIN, 'queue.mjs') });
   if (l) lines.push(l);
-  ledgerRec = { ledger_diffs: check.error ? null : check.diffs.length, ledger_missed: missed, merges_unknown_merger: unknownMergers };
+  ledgerRec = { ledger_diffs: check.error ? null : check.diffs.length, ledger_missed: missed, merges_unknown_merger: unknownMergers,
+    ...(RECORD.on ? { ledger_legacy: LEDGER_LEGACY } : {}) };
+}
+{
+  const l = DRY ? null : recordLine({ restore: LEDGER_RESTORE, ignored: RECORD.ignored });
+  if (l) lines.push(l);
 }
 
 // ---- pass metrics ------------------------------------------------------------

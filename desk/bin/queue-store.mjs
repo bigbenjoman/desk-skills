@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { writeJsonAtomic } from './dir-lock.mjs';
 import { followOnPending, postMergeUnmade } from './harvest.mjs';
-import { ledgerOn, missedLine, recordWrite } from './queue-ledger.mjs';
+import { ledgerOn, recordOn, missedLine, recordWrite } from './queue-ledger.mjs';
 import { blockersOf, holdsLaid } from './queue-states.mjs';
 
 export const versionOf = (q) => {
@@ -26,15 +26,28 @@ export const versionOf = (q) => {
 // the file it replaced (queue-ledger.mjs recordWrite), naming `by` as the writer; `archived` holds the tickets
 // the write moved to the archive. `onLedger(result)` hears the append's outcome; by default a missed
 // append is printed to stderr. `record: false` is a writer that records its write itself (move-batch).
+// In record mode (queue-ledger.mjs recordMode) the append comes first and the write records the log's
+// seq as `ledger_seq`; an append refused as an illegal transition throws LedgerRefusal, and neither
+// the log nor queue.json changes.
 export function writeQueueFile(file, q, { by, archived, record = true, onLedger = reportMissed(file) } = {}) {
   const on = record && ledgerOn();
+  const strict = on && recordOn();
   const before = on ? readQueueAt(file) : null;
   if (on) holdsLaid(q);
+  if (strict) {
+    const r = recordWrite(file, before, q, { by, archived, mode: 'record' });
+    if (r.refused) throw new LedgerRefusal(r.why);
+    if (Number.isInteger(r.seq)) q.ledger_seq = r.seq;
+    onLedger(r);
+  }
   q.version = versionOf(q) + 1;
   writeJsonAtomic(file, q);
-  if (on) onLedger(recordWrite(file, before, q, { by, archived }));
+  if (on && !strict) onLedger(recordWrite(file, before, q, { by, archived }));
   return q.version;
 }
+
+// A queue write record mode refused: its message names the ticket, its state and the event.
+export class LedgerRefusal extends Error {}
 
 export const reportMissed = (file) => (r) => { const l = missedLine(r, file); if (l) console.error(l); };
 
