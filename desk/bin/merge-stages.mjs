@@ -15,7 +15,7 @@
 import { readFileSync, appendFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { quantile } from './quantile.mjs';
-import { loginIn } from './gate.mjs';
+import { loginIn, normaliseRollup, requiredPasses } from './gate.mjs';
 import { parseVerdict, verdictAt } from './undraft.mjs';
 
 export const STAGES = Object.freeze(['desk', 'undraft', 'external_wait', 'external_rereviews', 'merge']);
@@ -30,7 +30,7 @@ const mins = (from, to) => {
 };
 
 // The GraphQL query for PR `n`'s timeline ($owner, $name).
-export const stagesQuery = (n) => `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequest(number:${Number(n)}){number createdAt mergedAt timelineItems(itemTypes:[READY_FOR_REVIEW_EVENT],last:20){nodes{... on ReadyForReviewEvent{createdAt}}} reviews(last:100){nodes{author{login} submittedAt body commit{oid}}} commits(last:1){nodes{commit{oid statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name completedAt conclusion} ... on StatusContext{context createdAt state}}}}}}}}}}`;
+export const stagesQuery = (n) => `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequest(number:${Number(n)}){number createdAt mergedAt timelineItems(itemTypes:[READY_FOR_REVIEW_EVENT],last:20){nodes{... on ReadyForReviewEvent{createdAt}}} reviews(last:100){nodes{author{login} submittedAt body commit{oid}}} commits(last:1){nodes{commit{oid statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name status completedAt conclusion} ... on StatusContext{context state completedAt: createdAt}}}}}}}}}}`;
 
 // Whether a review's body is a clean desk-review verdict under the §4 Clean review verdict `clean`:
 // true, false, or null for a body with no verdict marker.
@@ -78,12 +78,9 @@ export function stagesOf(payload, { desk, external = null, clean, outages = [], 
   // merged (success or skipped, as the gate counts one; neutral does not pass a required check).
   const want = (required ?? []).filter((x) => x && !/^none$/i.test(x));
   const latest = new Map();
-  for (const c of p.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []) {
-    const name = c?.__typename === 'StatusContext' ? c.context : c?.name;
-    const at = c?.__typename === 'StatusContext' ? c.createdAt : c?.completedAt;
-    const ok = c?.__typename === 'StatusContext' ? c.state === 'SUCCESS' : ['SUCCESS', 'SKIPPED'].includes(c?.conclusion);
-    if (!name || !ok || !at || ms(at) > ms(merged) || (want.length && !want.includes(name))) continue;
-    if (!latest.has(name) || ms(at) > ms(latest.get(name))) latest.set(name, at);
+  for (const c of normaliseRollup(p.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [])) {
+    if (!requiredPasses(c) || !c.completedAt || ms(c.completedAt) > ms(merged) || (want.length && !want.includes(c.name))) continue;
+    if (!latest.has(c.name) || ms(c.completedAt) > ms(latest.get(c.name))) latest.set(c.name, c.completedAt);
   }
   const green = want.length && want.some((n) => !latest.has(n)) ? null : [...latest.values()].sort().at(-1) ?? null;
   return {
@@ -166,18 +163,21 @@ export function stagesLine(s) {
 // One pass's step: the merged tickets of `tickets` with no line yet, oldest first, PER_PASS read through
 // `gql(query)` (a payload, or null unread), each recorded in `state`'s merge-stages.jsonl. `ledger(key,
 // pr, entry)`, where the ledger lever is on, appends its event under an id fixed by the PR and throws on
-// a failed write: the PR is then left due, so a retry writes it once. An unread PR is tried again next
-// pass, after the rest; one read as never merged is marked and never read again. `ctx`: stagesOf's
+// a failed write: the PR is then left due, so a retry writes it once. An unread PR spends no read and is
+// tried again next pass; one read as never merged is marked and never read again. `ctx`: stagesOf's
 // options, and `local(key)` for localReview. -> the pass's report lines.
 export function stagesStep(state, { tickets, gql, ledger = null, ctx = {}, local = () => null, now = new Date().toISOString() }) {
   const lines = [];
-  let reads = 0;
+  // PER_PASS PRs read a pass; one GitHub does not answer spends no read, so it holds up no later PR,
+  // and twice PER_PASS tries in all bound a pass while GitHub is down.
+  let reads = 0, tries = 0;
   for (const { key, pr } of due(tickets, readStages(state))) {
-    if (reads >= PER_PASS) break;
-    reads += 1;
+    if (reads >= PER_PASS || tries >= 2 * PER_PASS) break;
+    tries += 1;
     let payload = null;
     try { payload = gql(stagesQuery(pr)); } catch { payload = null; }
     if (!payload?.data) { lines.push(`merge stages: PR #${pr} (${key}) could not be read from GitHub; the next pass tries again`); continue; }
+    reads += 1;
     const st = stagesOf(payload, { ...ctx, local: local(key) });
     const entry = st ? { key, ...st, pr, recorded: now } : { key, pr, unmerged: true, recorded: now };
     if (ledger && st) {

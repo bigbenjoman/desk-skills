@@ -101,8 +101,13 @@ t('#1378 the record keeps the latest line per PR', j(MS.readStages(S).map((x) =>
   let failLedger = true;
   const ledger = () => { if (failLedger) throw new Error('disk full'); };
   const l1 = MS.stagesStep(P, { tickets: tk, gql, ledger, ctx: { desk: DESK, clean: CLEAN } });
-  t('#1378 a pass reads three at most, the unread one reported and the rest read past it', j([reads, l1.filter((l) => /could not be read from GitHub/.test(l)).length]), j([[11, 12, 13], 1]));
+  t('#1378 a pass reads three at most, the unread one reported, spending no read, and the rest read past it', j([reads, l1.filter((l) => /could not be read from GitHub/.test(l)).length]), j([[11, 12, 13, 14], 1]));
   t('#1378 a PR read as never merged is marked; a failed ledger write records nothing for its PR', j(MS.readStages(P).map((x) => [x.pr, !!x.unmerged])), j([[12, true]]));
+  const DN = scratch('merge-stages-down-');
+  const many = Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8].map((n) => [`K${n}`, { merged_at: H(8, n), merge: { pr: 20 + n } }]));
+  const downReads = [];
+  MS.stagesStep(DN, { tickets: many, gql: (q) => { const n = Number(/number:(\d+)/.exec(q)[1]); downReads.push(n); return n <= 23 ? null : merged(n); }, ctx: { desk: DESK, clean: CLEAN } });
+  t('#1378 three PRs GitHub never answers do not hold up the later ones, and a pass stops at six tries', j([downReads, MS.readStages(DN).map((x) => x.pr)]), j([[21, 22, 23, 24, 25, 26], [24, 25, 26]]));
   failLedger = false; reads.length = 0;
   MS.stagesStep(P, { tickets: tk, gql, ledger, ctx: { desk: DESK, clean: CLEAN } });
   t('#1378 the next pass retries the unread and the ledger-failed PRs, never the never-merged one', j([reads, MS.readStages(P).map((x) => x.pr).sort()]), j([[11, 13, 14], [12, 13, 14]]));

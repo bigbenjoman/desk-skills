@@ -102,6 +102,8 @@ export const since = (ms) => {
 // A required check passes as branch protection passes it: success, or a job its workflow skipped by
 // `if:`. A head whose every check was skipped still fails clause 3 (no success).
 const REQUIRED_PASS = new Set(['success', 'skipped']);
+// Whether a normalised check (normaliseCheck) passes a required check: completed, success or skipped.
+export const requiredPasses = (c) => c?.status === 'completed' && REQUIRED_PASS.has(c.conclusion);
 const lc = (s) => String(s ?? '').toLowerCase();
 
 // The services that comment on PRs under a login of their own. A personal-token bot goes here too,
