@@ -200,6 +200,15 @@ export function claudeAncestor(rows, pid) {
   return null;
 }
 
+// The pid an `--owner <value>` names: only `claude`, the Claude Code session above this process.
+// Throws a usage error for any other value, or when no session is found. `env` is desk-env's exports.
+export function ownerClaude(value, env) {
+  if (value !== 'claude') throw usage(`--owner takes claude, not "${value}"`);
+  const pid = claudeAncestor(env.psRows('pid=,ppid=,args='), process.pid);
+  if (pid == null) throw usage('--owner claude: no Claude session was found above the caller');
+  return pid;
+}
+
 export function readStore(file = storeFile()) {
   let raw;
   try { raw = readFileSync(file, 'utf8'); } catch (e) {
@@ -758,12 +767,7 @@ function requestedOwner(opt, kind, env) {
     if (kind !== 'preview-build') throw usage(`only a preview-build lease may have no owner, not a ${kind} lease`);
     return null;
   }
-  if (opt.owner != null) {
-    if (opt.owner !== 'claude') throw usage(`--owner takes claude, not "${opt.owner}"`);
-    const pid = claudeAncestor(env.psRows('pid=,ppid=,args='), process.pid);
-    if (pid == null) throw usage('--owner claude: no Claude session was found above the caller');
-    return pid;
-  }
+  if (opt.owner != null) return ownerClaude(opt.owner, env);
   return ownerPid(opt.pid);
 }
 // The --ttl, --units and --label an acquire or renew takes; a renew with no --label keeps its label.
