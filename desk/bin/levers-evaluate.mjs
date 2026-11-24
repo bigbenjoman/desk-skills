@@ -43,6 +43,7 @@ import { bootstrap, costRatio, interval, meanDiff, rateRatio, seedOf } from './l
 import { guardrailStatus, leversDir, autopilotRoot, readJsonl } from './levers-view.mjs';
 import { findingsPath, runsPath, stillMissing } from './findings.mjs';
 import { postMergePath, readPostMerge } from './post-merge.mjs';
+import { ticketHours } from './stuck-time.mjs';
 import { perTicket, allBatches, failedRuns } from './phase0-report.mjs';
 import { everyTicket } from './queue-store.mjs';
 import { readQueue } from './batch-state.mjs';
@@ -115,21 +116,28 @@ export const GUARDS = Object.freeze({
   'ci-reds': { kind: 'ratio', margin: GUARDRAILS['ci-reds'].margin.max_rate_ratio, value: (r) => (Number.isFinite(r.ci_reds) ? r.ci_reds : null) },
   'review-p0-p1': { kind: 'ratio', margin: GUARDRAILS['review-p0-p1'].margin.max_rate_ratio, value: (r) => r.review_p0_p1 ?? null },
   'post-merge': { kind: 'ratio', margin: GUARDRAILS['post-merge'].margin.max_rate_ratio, value: (r) => r.post_merge ?? null },
+  'parked-hours': { kind: 'ratio', margin: GUARDRAILS['parked-hours'].margin.max_rate_ratio, value: (r) => (Number.isFinite(r.parked_hours) ? r.parked_hours : null) },
 });
 
 // ---- outcome files -----------------------------------------------------------------------------------
 // Each row with its review P0 and P1 count (from its findings file) and its post-merge records (from
 // its batch's post-merge.jsonl). A merged ticket whose file is missing, or whose post-merge file's
-// latest scan did not complete, gets null, and the file is named in its `outcome_missing`.
+// latest scan did not complete, gets null, and the file is named in its `outcome_missing`. Its
+// `parked_hours` are its hours stuck to `now` (stuck-time.mjs, the repo's stuck-intervals.jsonl), 0
+// with none recorded.
 //   -> { rows, newest: { findings, post_merge } }, the newest as ms
-export function withOutcomes(rows, batches) {
+export function withOutcomes(rows, batches, now = Date.now()) {
   const stateOf = new Map(batches.map((b) => [b.name ?? null, b.state]));
   const postMerge = new Map();
+  const stuck = new Map();
   let newestFindings = null;
   let newestScan = null;
   const out = rows.map((r) => {
     const state = stateOf.get(r.batch ?? null);
-    if (!state) return { ...r, review_p0_p1: null, post_merge: null };
+    if (!state) return { ...r, review_p0_p1: null, post_merge: null, parked_hours: null };
+    const repoState = E.repoStateOf(state);
+    if (!stuck.has(repoState)) stuck.set(repoState, ticketHours(repoState, now));
+    const parked = stuck.get(repoState).get(`${r.batch ?? ''}\0${r.key}`) ?? 0;
     const missing = [];
     let review = 0;
     const f = findingsPath(state, r.key);
@@ -167,7 +175,7 @@ export function withOutcomes(rows, batches) {
       pm = mine.filter((x) => x.kind === 'revert' || (x.kind === 'red_main' && !recovered.has(x.run?.id))).length;
     }
     else if (r.merged_at) { pm = null; missing.push(recs?.incomplete ? `${postMergePath(state)} (its latest scan is incomplete)` : postMergePath(state)); }
-    return { ...r, review_p0_p1: review, post_merge: pm, ...(missing.length ? { outcome_missing: missing } : {}) };
+    return { ...r, review_p0_p1: review, post_merge: pm, parked_hours: parked, ...(missing.length ? { outcome_missing: missing } : {}) };
   });
   return { rows: out, newest: { findings: newestFindings, post_merge: newestScan } };
 }
@@ -368,7 +376,7 @@ export function evaluate({
     let log = null;
     let unreadable = null;
     try { log = read(r.slug); if (log.bad.length) unreadable = `line ${log.bad.map((b) => b.line).join(', ')} of its lever log does not parse`; } catch (e) { unreadable = e.message; }
-    const outcomes = withOutcomes(r.rows, r.batches);
+    const outcomes = withOutcomes(r.rows, r.batches, now);
     const prior = readJsonl(evalsFile(r.state)).rows;
     return { ...r, log, unreadable, byLever: log ? leverStatesIn(log.events, registry) : null, outcomes, prior, audits: auditsOf(r.state), done: prior.some((p) => p.at && dayOf(Date.parse(p.at), tz) === today) };
   });

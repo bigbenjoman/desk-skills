@@ -30,6 +30,7 @@ import { reworkSummary } from './rework.mjs';
 import { withDirLock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
 import { spendsNeedsYou } from './lever-log.mjs';
 import * as MS from './merge-stages.mjs';
+import * as ST from './stuck-time.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -514,7 +515,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   return {
     v: VERSION, generated_at: new Date(generatedAt).toISOString(), tz,
     repos: repoView, baseline,
-    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root) },
+    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now) },
     line,
   };
 }
@@ -524,6 +525,15 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
 function mergeStagesPanel(configured, root) {
   const names = shownNames(configured.map((r) => r.slug));
   const repos = configured.map((r, i) => ({ name: names[i], ...MS.summary(MS.readStages(join(root, r.slug))) })).filter((r) => r.prs);
+  return { repos };
+}
+
+// Each repo's time parked by cause (stuck-time.mjs weekSummary) this ISO week and last, for the repos
+// with a ticket stuck in either: { repos: [{ name, weeks: [this week's, last week's] }] }.
+function stuckTimePanel(configured, root, now) {
+  const names = shownNames(configured.map((r) => r.slug));
+  const repos = configured.map((r, i) => ({ name: names[i], weeks: [0, 1].map((weeksAgo) => ST.weekSummary(join(root, r.slug), { now, weeksAgo })) }))
+    .filter((r) => r.weeks.some((w) => w.tickets));
   return { repos };
 }
 

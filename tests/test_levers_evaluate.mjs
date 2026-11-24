@@ -90,7 +90,7 @@ const a1 = wrappersRow(A1);
 t('AC1 wrappers is adopted', [a1.decision, a1.state, a1.reason_code], ['adopt', 'adopted', 'adopt_all_conditions']);
 t('AC1 the mechanism is down about 60% with its interval clear of 25%', [Math.round(a1.mechanism.est * 100), a1.mechanism.hi90 < -0.25, a1.mechanism.p_benefit >= 0.9], [-60, true, true]);
 t('AC1 the cost ratio\'s upper bound is under 1.05', a1.cost.hi90 < 1.05, true);
-t('AC1 every guardrail is within its margin', a1.guardrails.map((g) => g.status), ['ok', 'ok', 'ok', 'ok', 'ok']);
+t('AC1 every guardrail is within its margin', a1.guardrails.map((g) => g.status), ['ok', 'ok', 'ok', 'ok', 'ok', 'ok']);
 const a1t = transitionOf(A1);
 t('AC1 one transition line, trial to adopted, with a 10% holdback', a1t.map((e) => [e.from, e.to, e.holdback?.share]), [['trial', 'adopted', 0.1]]);
 t('AC16 it is a transition event with its reason code', [a1t[0].kind, a1t[0].reason_code, a1t[0].actor], ['transition', 'adopt_all_conditions', 'levers-auto']);
@@ -99,7 +99,7 @@ const e = a1t[0];
 t('AC11 the line holds n per arm, both estimates with 90% intervals, each guardrail, the commit range, the fingerprint and the reason',
   [e.n.on != null && e.n.off != null, ['est', 'lo90', 'hi90'].every((k) => Number.isFinite(e.mechanism[k])), ['ratio', 'lo90', 'hi90'].every((k) => Number.isFinite(e.cost[k])),
     e.guardrails.map((g) => g.name), e.desk_commit_range, e.lever_fp, typeof e.reason === 'string' && e.reason.length > 20],
-  [true, true, true, ['acceptance', 'fix-tries-parks', 'ci-reds', 'review-p0-p1', 'post-merge'], ['a'.repeat(12), 'b'.repeat(12)], 'fpW', true]);
+  [true, true, true, ['acceptance', 'fix-tries-parks', 'ci-reds', 'review-p0-p1', 'post-merge', 'parked-hours'], ['a'.repeat(12), 'b'.repeat(12)], 'fpW', true]);
 const ev = jsonl(join(stateOf(A1), a1.evidence_file));
 t('AC14 the evidence file holds every row the evaluation read, with the excluded ones marked', [ev.length, ev.filter((x) => x.excluded).map((x) => x.excluded).sort()], [63, ['cost_incomplete', 'cost_incomplete', 'pin_mismatch']]);
 t('AC14 the row holds the evidence file\'s sha256', a1.evidence_sha256, createHash('sha256').update(readFileSync(join(stateOf(A1), a1.evidence_file))).digest('hex'));
@@ -122,6 +122,24 @@ t('AC2 the lever reverts before the minimum sample', [a2.decision, a2.state, a2.
 const A2q = 'acme__quota';
 run([repo(A2q, arms(A2q, initial(A2q), 12, (i) => ({ ...better.on(i), parks_by_class: { quota: 4 } }), () => ({ denials: 1 })))]);
 t('AC2 parks for quota do not count against the guardrail', wrappersRow(A2q).decision, 'hold');
+
+// ---- parked hours per ticket: a lever that otherwise adopts is reverted when its tickets sit stuck longer ----------
+// Each row's hours come from the repo's stuck-intervals.jsonl (stuck-time.mjs), as a pass records them.
+const stuckRepo = (slug, onHours, offHours) => {
+  const rows = arms(slug, initial(slug), 30, better.on, better.off);
+  const r = repo(slug, rows);
+  writeFileSync(join(stateOf(slug), 'stuck-intervals.jsonl'), rows.map((x, i) => JSON.stringify({ key: x.key, batch: null, cause: 'park: question',
+    start: at(-15), end: new Date(Date.parse(at(-15)) + ((x.pin.arms.wrappers === 'on' ? onHours : offHours) + (i % 3)) * 3600_000).toISOString(), recorded: at(-14) })).join('\n'));
+  return r;
+};
+const PH = 'acme__parked';
+run([stuckRepo(PH, 12, 2)]);
+const ph = wrappersRow(PH);
+t('parked hours per ticket six times higher on the lever\'s arm is a breached guardrail', ph.guardrails.find((g) => g.name === 'parked-hours')?.status, 'breached');
+t('and it keeps the lever from adopting: it reverts, naming the guardrail', [ph.decision, ph.reason_code], ['revert', 'guardrail_parked_hours']);
+const PHok = 'acme__parked-even';
+run([stuckRepo(PHok, 2, 2)]);
+t('the same lever with parked hours even across the arms adopts', [wrappersRow(PHok).guardrails.find((g) => g.name === 'parked-hours')?.status, wrappersRow(PHok).decision], ['ok', 'adopt']);
 
 // ---- AC3: at most one change every 7 days ----------------------------------------------------------------------
 const A3 = 'acme__cooldown';

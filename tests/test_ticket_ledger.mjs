@@ -33,6 +33,7 @@ const VALID = {
   automerge_disarmed: { by: 'merge-driver', pr: 12, line: 1 },
   merged: { by: 'merge-driver', pr: 12, head_sha: SHA, base: 'main' },
   merge_stages: { pr: 12, stages: { undraft: 4, merge: 2 } },
+  stuck: { cause: 'usage', start: '2026-11-20T10:00:00Z', end: null },
   finished: { pr: 12, fields: null },
   failed: { subtype: 'crash' },
   requeued: {},

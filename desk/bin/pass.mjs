@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { tryLockFile, filePid, writeJsonAtomic, withDirLock } from './dir-lock.mjs';
-import { holdThrough, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage } from './batch-state.mjs';
+import { holdThrough, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, keyPattern, parkKind, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
@@ -85,6 +85,7 @@ import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget } from './queue-ledger.mjs';
 import { fold as ledgerFold, append as ledgerAppend } from './ticket-ledger.mjs';
 import * as MS from './merge-stages.mjs';
+import * as ST from './stuck-time.mjs';
 import { readLogLines } from './merge-log.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
@@ -2007,6 +2008,9 @@ function admitBaseRepair(key, was, closed, qB, note) {
 }
 // The PRs held on it, which its one line names in place of a BASE RED line each.
 const baseRedHeld = [];
+// Each ticket a hold or stall kept waiting this pass outside the spawn holds, { key, cause }, for the
+// time-stuck record (stuck-time.mjs stuckStep).
+const stuckWaits = [];
 
 // ---- red-base repairs another PR made needless (pass/repair-superseded.mjs) --------------------
 // Before any spawn: a repair whose base has gone green since it began (the driver's last green read of
@@ -5256,6 +5260,7 @@ function applyFix(t, n, head, c) {
   const heldOn = c.base_red?.checks ?? [];
   if (c.call === 'held' && !c.label && BASE_RED && heldOn.length && heldOn.every((x) => BASE_RED.checks.some((b) => b.name === x))) {
     baseRedHeld.push(`#${n} (${t.key})`);
+    stuckWaits.push({ key: t.key, cause: 'base red' });
     return;
   }
   // An outage's PRs are named in its one waiting line (pass/fix-tries.mjs decideOutage).
@@ -6045,6 +6050,25 @@ if (!DRY) {
   else if (step.warn) lines.push(`collision warning (sent to the check-in digest): ${line.warning}`);
   // A warning whose line was not written was not given: the next pass gives it.
   collisionRec = { collision_streak: step.streak, collision_warned: step.warn && !wrote.ok ? false : step.warned };
+  // The time stuck by cause (stuck-time.mjs stuckStep): each parked ticket's park, and each ticket a hold
+  // kept waiting this pass (the spawn hold counted above on the eligible tickets left unspawned, a
+  // collision, the test lock queue, a red base, a gate reviewer read as down), into the repo's
+  // stuck-intervals.jsonl and, with the ledger lever on, the ledger.
+  const spawnCause = ST.spawnHoldCause({ why: holdWhy, held, harm: HARM[0]?.signal ?? null });
+  let down = new Set();
+  try { down = new Set((GR.readRecord(E.repoStateOf(STATE)).outages ?? []).filter((o) => o?.to == null).map((o) => o.login)); } catch { /* none read as down */ }
+  const waits = [
+    ...(spawnCause ? eligible.filter((r) => qEnd.tickets[r.key]?.state === 'triaged').map((r) => ({ key: r.key, cause: spawnCause })) : []),
+    ...collisions.map((c) => ({ key: c.key, cause: 'collision' })),
+    ...lockQueueHeld.map((key) => ({ key, cause: 'test lock queue' })),
+    ...stuckWaits,
+    ...externalWaits.filter((w) => down.has(w.login)).map((w) => ({ key: w.key, cause: 'gate reviewer down' })),
+  ];
+  const parkedEnd = Object.values(qEnd.tickets).filter((t) => t.state === 'parked').map((t) => ({ key: t.key, kind: parkKind(t), class: t.park?.class ?? null, since: t.park?.since ?? null }));
+  lines.push(...ST.stuckStep(E.repoStateOf(STATE), {
+    batch, parked: parkedEnd, waits, now: PASS_AT,
+    ledger: LEDGER_ON ? (e) => ledgerAppend(LEDGER_AT.repoDir, [{ id: `stuck:${e.key}:${e.cause}:${e.start}:${e.end == null ? 'open' : 'close'}`, type: 'stuck', batch: LEDGER_AT.batch, key: e.key, data: { cause: e.cause, start: e.start, end: e.end } }], { by: 'pass' }) : null,
+  }));
 }
 const late = [...ledgerLate, ...recordPass((prev) => {
   const released = (prev.held_tickets ?? []).some((k) => qEnd.tickets[k] && !heldEnd.includes(k));

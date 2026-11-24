@@ -37,6 +37,7 @@
 // status, and changes no config row or approval. The one other write is a repo's <state>/eta.jsonl,
 // which gains a ticket's first ship estimate the first time a live batch's forecast dates it.
 import * as MS from './merge-stages.mjs';
+import * as ST from './stuck-time.mjs';
 import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -3287,6 +3288,12 @@ function stagesHead(r) {
   const line = MS.stagesLine(MS.summary(MS.readStages(repoStateOf(r.stateDir))));
   return line ? [line] : [];
 }
+// The repo's time parked by cause this week (stuck-time.mjs), one line once a ticket has sat stuck in it.
+function stuckHead(r, now) {
+  if (!r.stateDir) return [];
+  const line = ST.stuckLine(ST.weekSummary(repoStateOf(r.stateDir), { now }));
+  return line ? [line] : [];
+}
 function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = null, title = false, usage = null, pinUsage = false } = {}) {
   const none = { rows: [], foot: [] };
   if (r.error) return { head: [`${r.name} · queue unreadable: ${r.error}`], ...none };
@@ -3314,6 +3321,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     countsLine(r, now),
     ...passHead(r, now),
     ...stagesHead(r),
+    ...stuckHead(r, now),
     ...(r.unreadable ?? []).map(unreadableText),
     ...((p) => (p ? [uploadPauseText(p)] : []))(uploadPause()),
     ...(pinUsage ? [] : usageLines(usage ?? usageOf([r], now), { now, solid: solidBars(width) })),

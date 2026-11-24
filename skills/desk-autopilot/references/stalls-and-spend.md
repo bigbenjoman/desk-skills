@@ -20,6 +20,14 @@ finish its stage. It waits like any spawn while the
 batch budget is spent, and the report says so. A second stop in that session parks it, naming the
 budget and whether its worktree holds uncommitted work.
 
+**Every park, hold and stall is timed by its cause** (`stuck-time.mjs`). Each pass records in the
+repo's `stuck-intervals.jsonl`, and in the ticket ledger where that lever is on, when a ticket was
+parked (its park kind and failure class) or kept waiting by a hold (usage, memory harm by signal or
+low memory, the lock or the test lock queue, a collision, a red base, a gate reviewer down), and when
+that ended. desk-q's repo screen and the levers report show the week's hours per cause, the tickets
+affected and the top causes, each with the tracking issue `node stuck-time.mjs link <cause> <issue>`
+set; parked hours per ticket is a lever guardrail.
+
 **Which model each worker runs on is config §3b "Worker models".** At `default` (also when the row
 is absent) no `--model` is passed and every worker runs on the session default. At
 `standard=<model> high=<model>`, `pass.mjs` picks a tier per ticket at spawn: a lane A or E ticket

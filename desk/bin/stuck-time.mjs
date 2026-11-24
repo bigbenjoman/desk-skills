@@ -1,0 +1,211 @@
+// Time stuck by cause: each park, hold and stall a ticket sits in, as an interval with its cause, and the
+// hours per cause per repo per ISO week (UTC, Monday to Monday). A pass hands stuckStep the causes it
+// sees each ticket in (a parked ticket's park kind and failure class; a spawn the pass held, for the
+// tickets it kept waiting: usage, memory harm by signal, low memory, the lock, the test lock queue, a
+// collision with a running ticket's files, a red base, a gate reviewer down) and the step diffs them
+// against the batch's open intervals: a new cause opens one (from the park's `since`, else the pass's
+// time), a cause gone closes it at the pass's time. Each opening and closing is one line of the repo's
+// <state>/stuck-intervals.jsonl, appended (the latest line per interval wins, a cut line is skipped),
+// and one `stuck` event in the ticket ledger where the ledger lever is on, written first:
+//   { key, batch, cause, start, end (null while open), recorded }
+// A cause's tracking issue is set by hand, in <state>/stuck-links.json:
+//   node stuck-time.mjs link <cause> <issue number | #N | URL>     node stuck-time.mjs unlink <cause>
+//   node stuck-time.mjs                                            this week's and last week's lines
+import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { writeJsonAtomic } from './dir-lock.mjs';
+
+const fileOf = (state) => join(state, 'stuck-intervals.jsonl');
+const linksFile = (state) => join(state, 'stuck-links.json');
+const HOUR_MS = 3600_000;
+const WEEK_MS = 7 * 24 * HOUR_MS;
+const ms = (iso) => Date.parse(iso ?? '');
+const pair = (key, cause) => `${key}\0${cause}`;
+const ticketOf = (e) => `${e.batch ?? ''}\0${e.key}`;
+const hours = (m) => Math.round((m / HOUR_MS) * 10) / 10;
+// How many causes the line names.
+const TOP = 3;
+
+// A parked ticket's cause: its park kind (queue-states.mjs PARK_KINDS), and its failure class where set.
+const parkCause = (kind, cls) => `park: ${kind ?? 'question'}${cls ? ` (${cls})` : ''}`;
+
+// The cause of the spawn hold a pass's metrics count (`why`: usage, memory or lock) or, with none of
+// those, of the hold that kept every spawn (`held`, pass/eligibility.mjs's words); `harm` is the
+// newest memory harm signal (TMPFS-HIGH, VMMEM-HIGH, …) where one holds. Null where nothing held.
+export function spawnHoldCause({ why = null, held = null, harm = null } = {}) {
+  if (why === 'usage') return 'usage';
+  if (why === 'memory') return harm ? `memory harm: ${harm}` : 'memory: low available';
+  if (why === 'lock') return 'lock';
+  if (!held) return null;
+  return /maintenance/.test(held) ? 'maintenance' : /budget/.test(held) ? 'budget' : /health check/.test(held) ? 'health check' : 'config';
+}
+
+// Every interval recorded in repo state `state`, the latest line of each. A line that does not read is skipped.
+export function readIntervals(state) {
+  let text = '';
+  try { text = readFileSync(fileOf(state), 'utf8'); } catch { return []; }
+  const byId = new Map();
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const e = JSON.parse(line);
+      if (e?.key && e.cause && Number.isFinite(ms(e.start))) byId.set(`${ticketOf(e)}\0${e.cause}\0${e.start}`, e);
+    } catch { /* skipped */ }
+  }
+  return [...byId.values()];
+}
+
+// One line appended; a line cut off mid-write before it stays a line of its own.
+function record(state, entry) {
+  const f = fileOf(state);
+  mkdirSync(dirname(f), { recursive: true });
+  let lead = '';
+  try {
+    const fd = openSync(f, 'r');
+    try {
+      const { size } = fstatSync(fd);
+      const b = Buffer.alloc(1);
+      if (size && readSync(fd, b, 0, 1, size - 1) === 1 && b[0] !== 10) lead = '\n';
+    } finally { closeSync(fd); }
+  } catch { /* a new file */ }
+  appendFileSync(f, `${lead}${JSON.stringify(entry)}\n`);
+}
+
+// One pass's step for batch `batch` (null for the standing one). `parked`: [{ key, kind, class, since }]
+// for each parked ticket; `waits`: [{ key, cause }] for each ticket a hold or stall kept waiting this
+// pass. `ledger(entry)`, where the ledger lever is on, appends its event under an id fixed by the
+// interval and throws on a failed write: the change is then not recorded, so the next pass makes it
+// again. -> the pass's report lines (only what could not be written).
+export function stuckStep(state, { batch = null, parked = [], waits = [], ledger = null, now = new Date().toISOString() }) {
+  const want = new Map();
+  for (const p of parked) {
+    if (!p?.key) continue;
+    const since = Number.isFinite(ms(p.since)) && ms(p.since) <= ms(now) ? p.since : now;
+    want.set(pair(p.key, parkCause(p.kind, p.class)), { key: p.key, cause: parkCause(p.kind, p.class), start: since });
+  }
+  for (const w of waits) if (w?.key && w.cause && !want.has(pair(w.key, w.cause))) want.set(pair(w.key, w.cause), { key: w.key, cause: w.cause, start: now });
+  const open = readIntervals(state).filter((e) => e.end == null && (e.batch ?? null) === batch);
+  const lines = [];
+  const write = (entry) => {
+    const what = `${entry.key}'s ${entry.cause} interval`;
+    if (ledger) {
+      try { ledger(entry); } catch (e) { lines.push(`stuck time: ${what} could not be added to the ticket ledger (${String(e?.message ?? e).split('\n')[0]}); the next pass tries again`); return; }
+    }
+    try { record(state, entry); } catch (e) { lines.push(`stuck time: ${what} could not be recorded (${String(e?.message ?? e).split('\n')[0]})`); }
+  };
+  for (const e of open) {
+    if (!want.has(pair(e.key, e.cause))) write({ key: e.key, batch, cause: e.cause, start: e.start, end: now, recorded: now });
+  }
+  const opened = new Set(open.map((e) => pair(e.key, e.cause)));
+  for (const [k, w] of want) if (!opened.has(k)) write({ ...w, batch, end: null, recorded: now });
+  return lines;
+}
+
+// The length of the union of spans [[a, b]].
+function unionMs(spans) {
+  let total = 0, end = -Infinity;
+  for (const [a, b] of [...spans].sort((x, y) => x[0] - y[0])) {
+    if (b <= end) continue;
+    total += b - Math.max(a, end);
+    end = b;
+  }
+  return total;
+}
+
+// Each ticket's hours stuck up to `now` (an interval still open runs to it), overlapping causes counted
+// once: a Map of `<batch>\0<key>` (batch '' for the standing one) to hours.
+export function ticketHours(state, now = Date.now()) {
+  const spans = new Map();
+  for (const e of readIntervals(state)) {
+    const a = ms(e.start), b = Math.min(e.end == null ? now : ms(e.end), now);
+    if (b > a) spans.set(ticketOf(e), [...(spans.get(ticketOf(e)) ?? []), [a, b]]);
+  }
+  return new Map([...spans].map(([k, s]) => [k, hours(unionMs(s))]));
+}
+
+// The cause links set with `link`: { <cause>: { ref, url } }.
+export function readLinks(state) {
+  try { const v = JSON.parse(readFileSync(linksFile(state), 'utf8')); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch { return {}; }
+}
+
+// The Monday 00:00 UTC that starts the ISO week holding `t`, and the week's name, 2026-W48.
+const weekStart = (t) => { const d = new Date(t); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); };
+const weekName = (start) => {
+  const thu = new Date(start + 3 * 24 * HOUR_MS);
+  const y = thu.getUTCFullYear();
+  return `${y}-W${String(Math.floor((thu - Date.UTC(y, 0, 1)) / WEEK_MS) + 1).padStart(2, '0')}`;
+};
+
+// Repo state `state`'s time stuck in the ISO week `weeksAgo` before the one holding `now`: the hours
+// (each ticket's overlapping causes counted once), the tickets affected, and each cause with its
+// hours, tickets and tracking issue, most hours first:
+//   { week, from, to, hours, tickets, causes: [{ cause, hours, tickets, link: { ref, url } | null }] }
+export function weekSummary(state, { now = Date.now(), weeksAgo = 0 } = {}) {
+  const from = weekStart(now) - weeksAgo * WEEK_MS, to = from + WEEK_MS, upto = Math.min(to, now);
+  const links = readLinks(state);
+  const byCause = new Map(), spans = new Map();
+  for (const e of readIntervals(state)) {
+    const a = Math.max(ms(e.start), from), b = Math.min(e.end == null ? now : ms(e.end), upto);
+    if (!(b > a)) continue;
+    const c = byCause.get(e.cause) ?? { ms: 0, tickets: new Set() };
+    c.ms += b - a;
+    c.tickets.add(ticketOf(e));
+    byCause.set(e.cause, c);
+    spans.set(ticketOf(e), [...(spans.get(ticketOf(e)) ?? []), [a, b]]);
+  }
+  const causes = [...byCause].sort((x, y) => y[1].ms - x[1].ms)
+    .map(([cause, c]) => ({ cause, hours: hours(c.ms), tickets: c.tickets.size, link: links[cause] ?? null }));
+  const total = [...spans.values()].reduce((n, s) => n + unionMs(s), 0);
+  return { week: weekName(from), from: new Date(from).toISOString(), to: new Date(to).toISOString(), hours: hours(total), tickets: spans.size, causes };
+}
+
+export const fmtHours = (h) => `${h < 10 ? h.toFixed(1) : Math.round(h)}h`;
+const many = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+// The summary as one line, or null with no ticket stuck that week.
+export function stuckLine(s) {
+  if (!s?.tickets) return null;
+  const top = s.causes.slice(0, TOP).map((c) => `${c.cause} ${fmtHours(c.hours)} (${many(c.tickets, 'ticket')}${c.link ? `, ${c.link.ref}` : ''})`);
+  return `time parked by cause, week ${s.week}: ${fmtHours(s.hours)} over ${many(s.tickets, 'ticket')}; top: ${top.join(' · ')}`;
+}
+
+// What `link` stores for an issue number, #N or URL; null for anything else.
+function linkOf(target, ghRepo) {
+  const n = /^#?(\d+)$/.exec(target ?? '');
+  if (n) return { ref: `#${n[1]}`, url: ghRepo ? `https://github.com/${ghRepo}/issues/${n[1]}` : null };
+  if (!/^https?:\/\/\S+$/.test(target ?? '')) return null;
+  const i = /\/(?:issues|pull|browse)\/([A-Z][A-Z0-9]*-\d+|\d+)\b/.exec(target);
+  return { ref: i ? (/^\d+$/.test(i[1]) ? `#${i[1]}` : i[1]) : target, url: target };
+}
+
+const isMain = () => {
+  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+};
+if (isMain()) {
+  const [cmd, cause, target] = process.argv.slice(2);
+  const usage = 'usage: stuck-time.mjs [link <cause> <issue number | #N | URL> | unlink <cause>]';
+  try {
+    const E = await import('./desk-env.mjs');
+    const state = E.repoStateOf(E.stateDir());
+    if (cmd == null) {
+      for (const weeksAgo of [0, 1]) console.log(stuckLine(weekSummary(state, { weeksAgo })) ?? `time parked by cause, week ${weekSummary(state, { weeksAgo }).week}: none recorded`);
+    } else if (cmd === 'link' && cause && target) {
+      let gh = null;
+      try { gh = E.ghRepo(); } catch { /* the issue number alone */ }
+      const link = linkOf(target, gh);
+      if (!link) { console.error(`stuck-time: "${target}" is not an issue number, #N or URL\n${usage}`); process.exit(2); }
+      writeJsonAtomic(linksFile(state), { ...readLinks(state), [cause]: link });
+      console.log(`stuck-time: ${cause} → ${link.ref}${link.url && link.url !== link.ref ? ` (${link.url})` : ''}`);
+    } else if (cmd === 'unlink' && cause) {
+      const links = readLinks(state);
+      if (!(cause in links)) { console.error(`stuck-time: no link for "${cause}"`); process.exit(1); }
+      delete links[cause];
+      writeJsonAtomic(linksFile(state), links);
+      console.log(`stuck-time: ${cause} unlinked`);
+    } else { console.error(usage); process.exit(2); }
+  } catch (e) {
+    console.error(`stuck-time: ${e.message ?? e}`);
+    process.exit(1);
+  }
+}
