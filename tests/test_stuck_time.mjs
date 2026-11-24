@@ -60,7 +60,7 @@ const open = (S) => intervals(S).filter((e) => e.end == null).map((e) => `${e.ke
   ST.stuckStep(O, { batch: null, parked: [], waits: [{ key: 'X', cause: 'base red' }, { key: 'X', cause: 'gate reviewer down' }], now: D(23, 9) });
   ST.stuckStep(O, { batch: null, parked: [], waits: [{ key: 'X', cause: 'gate reviewer down' }], now: D(23, 11) });
   ST.stuckStep(O, { batch: null, parked: [], waits: [], now: D(23, 12) });
-  t('a ticket stuck on two causes at once counts its hours once', j([ST.weekSummary(O, { now: Date.parse(D(25, 12)) }).hours, ST.parkedHours(O, { now: Date.parse(D(25, 12)) })(null, 'X')]), j([3, 3]));
+  t('a ticket stuck on two causes at once counts its hours once', j([ST.weekSummary(O, { now: Date.parse(D(25, 12)) }).hours, ST.parkedHours(O, { now: Date.parse(D(25, 12)) })(null, null, 'X')]), j([3, 3]));
 }
 
 // ---- a ticket's hours: from its admission, and an interval its gone batch left open ends at that batch's last pass ---------
@@ -74,14 +74,14 @@ const open = (S) => intervals(S).filter((e) => e.end == null).map((e) => `${e.ke
   ST.stuckStep(S, { batch: 'F-1', parked: [{ key: 'K', kind: 'question', since: D(23, 12) }], now: D(23, 13) });
   const now = Date.parse(D(25, 12));
   const live = ST.parkedHours(S, { now, live: [{ name: null, created: null }] });
-  t('a ticket admitted again counts only the hours after its new admission', j([live('F-1', 'K'), live('F-1', 'K', Date.parse(D(23, 11)))]), j([2, 1]));
+  t('a ticket admitted again counts only the hours after its new admission', j([live('F-1', null, 'K'), live('F-1', null, 'K', Date.parse(D(23, 11)))]), j([2, 1]));
   t('an interval its gone batch left open ends at that batch\'s last pass, every week after too',
     j([ST.weekSummary(S, { now, live: [{ name: null, created: null }] }).hours, ST.weekSummary(S, { now: now + 7 * 86_400_000, live: [{ name: null, created: null }] }).tickets]), j([2, 0]));
-  t('while the batch is live it still counts to now', ST.parkedHours(S, { now, live: [{ name: null, created: null }, { name: 'F-1', created: null }] })('F-1', 'K'), 49);
+  t('while the batch is live it still counts to now', ST.parkedHours(S, { now, live: [{ name: null, created: null }, { name: 'F-1', created: null }] })('F-1', null, 'K'), 49);
   const U = scratch('stuck-time-unreadable-');
   mkdirSync(join(U, 'stuck-intervals.jsonl'));
   t('a record that cannot be read gives no hours, not none', ST.parkedHours(U), null);
-  t('no record at all gives none', ST.parkedHours(scratch('stuck-time-none-'))(null, 'K'), 0);
+  t('no record at all gives none', ST.parkedHours(scratch('stuck-time-none-'))(null, null, 'K'), 0);
 }
 
 // ---- a name used again: the later batch neither closes nor revives the earlier one's open interval -----------------
@@ -100,6 +100,14 @@ const open = (S) => intervals(S).filter((e) => e.end == null).map((e) => `${e.ke
   const live = ST.liveOf([{ name: 'F-2', state: secondState }, { name: 'F-2 (archived)', state: firstState, archived: 'F-2' }]);
   t('the live batches are read with when each began, an archived one left out', j(live), j([{ name: 'F-2', created: D(24, 9) }]));
   t('the earlier one\'s open interval ends at its own last pass, not revived by the name', ST.weekSummary(S, { now: Date.parse(D(25, 12)), live }).hours, 2);
+  t('each batch\'s first pass writes its identity, the name its passes run under and when, in its own folder',
+    j([ST.batchIdentity(firstState), ST.batchIdentity(secondState), ST.batchIdentity(join(S, 'none'))]), j([{ name: 'F-2', created: D(23, 9) }, { name: 'F-2', created: D(24, 9) }, null]));
+  // The second F-2 parks K too, from 10:00 to 12:00 on the 24th: each F-2's K counts only its own hours.
+  ST.stuckStep(S, { batch: 'F-2', batchState: secondState, parked: [{ key: 'K', kind: 'question', since: D(24, 10) }], now: D(24, 10) });
+  ST.stuckStep(S, { batch: 'F-2', batchState: secondState, parked: [], now: D(24, 12) });
+  const h = ST.parkedHours(S, { now: Date.parse(D(25, 12)), live });
+  t('a ticket of one name in two batches counts, in each, only that batch\'s hours, though admitted before the later one\'s',
+    j([h('F-2', D(23, 9), 'K', Date.parse(D(23, 8))), h('F-2', D(24, 9), 'K', Date.parse(D(24, 9)))]), j([2, 2]));
   t('while that first batch is the live one, it still counts to now', ST.weekSummary(S, { now: Date.parse(D(25, 12)), live: ST.liveOf([{ name: 'F-2', state: firstState }]) }).hours, 51);
 }
 

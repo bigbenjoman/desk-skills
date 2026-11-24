@@ -8,9 +8,12 @@
 // <state>/stuck-intervals.jsonl, appended (the latest line per interval wins, a cut line is skipped),
 // and one `stuck` event in the ticket ledger where the ledger lever is on, written first:
 //   { key, batch, created, cause, start, end (null while open), recorded }
-// `created` is when the batch's first pass ran, kept in its own state folder (<batch state>/stuck-batch.json,
-// which an archive moves with it): a batch started later under a name an archived one had has a new
-// folder, so it is another batch, which neither closes nor takes up the earlier one's intervals. Each pass also notes when
+// A batch's identity is <batch state>/stuck-batch.json, { name, created }, written by its first pass: the
+// name its passes record intervals under (DESK_BATCH, null for the standing batch) and when that pass
+// ran. An archive or a move carries it with the batch's folder, and every reader takes a batch's name and
+// `created` from it alone (batchIdentity), falling back to the batch's listed name only where it is
+// missing. A batch started later under a name an archived one had has a new folder, so it is another
+// batch, which neither closes nor takes up the earlier one's intervals. Each pass also notes when
 // it ran, per batch, in <state>/stuck-passes.json: a reader given the repo's live batches (liveOf) counts
 // an interval still open in a batch that has gone (archived, discarded, or replaced by a later one of its
 // name, so no pass will close it) as closed at that batch's last pass.
@@ -71,14 +74,18 @@ const readJson = (file) => {
   try { const v = JSON.parse(readFileSync(file, 'utf8')); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch { return {}; }
 };
 
-// When the batch whose state folder is `batchState` began, as its first pass noted it; null for none noted.
-const createdOf = (batchState) => {
-  const c = batchState ? readJson(batchFile(batchState)).created : null;
-  return typeof c === 'string' && Number.isFinite(ms(c)) ? c : null;
-};
+// The identity of the batch whose state folder is `batchState`, { name, created }, as its first pass
+// wrote it; null where none is written.
+export function batchIdentity(batchState) {
+  const v = batchState ? readJson(batchFile(batchState)) : {};
+  const ok = (v.name === null || (typeof v.name === 'string' && v.name)) && typeof v.created === 'string' && Number.isFinite(ms(v.created));
+  return ok ? { name: v.name, created: v.created } : null;
+}
 // The repo's live batches as readers take them, from batch entries { name, state } (batches.mjs
-// listBatches; an archived entry is left out): [{ name, created }].
-export const liveOf = (batches) => (batches ?? []).filter((b) => !b?.archived).map((b) => ({ name: b.name ?? null, created: createdOf(b.state) }));
+// listBatches; an archived entry is left out): [{ name, created }], each from its identity, or its listed
+// name and no `created` where it has none.
+export const liveOf = (batches) => (batches ?? []).filter((b) => !b?.archived)
+  .map((b) => batchIdentity(b.state) ?? { name: b.name ?? null, created: null });
 
 // The intervals as a reader counts them: with `live` (liveOf), one still open in a batch not among them
 // closes at that batch's last pass, or at its own record where none is noted. Null where the file
@@ -118,9 +125,9 @@ function record(state, entry) {
 // interval and throws on a failed write: the change is then not recorded, so the next pass makes it
 // again. -> the pass's report lines (only what could not be written).
 export function stuckStep(state, { batch = null, batchState = null, parked = [], waits = [], ledger = null, now = new Date().toISOString() }) {
-  let created = createdOf(batchState);
+  let created = batchIdentity(batchState)?.created ?? null;
   if (batchState && !created) {
-    try { writeJsonAtomic(batchFile(batchState), { created: now }); created = now; } catch { /* noted by the next pass */ }
+    try { writeJsonAtomic(batchFile(batchState), { name: batch, created: now }); created = now; } catch { /* written by the next pass */ }
   }
   const want = new Map();
   for (const p of parked) {
@@ -159,19 +166,24 @@ function unionMs(spans) {
 }
 
 // Each ticket's hours stuck up to `now` (an interval still open runs to it, or to its gone batch's last
-// pass, `live` as counted takes it), overlapping causes counted once: a function of (batch, key, from)
-// giving the hours from `from` (ms; the ticket's admission, so a ticket admitted again does not carry its
-// earlier stay's), 0 with none recorded; null where the file cannot be read.
+// pass, `live` as counted takes it), overlapping causes counted once: a function of (batch, created, key,
+// from) giving the hours of that batch's ticket from `from` (ms; the ticket's admission, so a ticket
+// admitted again does not carry its earlier stay's), 0 with none recorded; null where the file cannot be
+// read. A batch with no `created` (no identity) takes every interval of its name.
 export function parkedHours(state, { now = Date.now(), live = null } = {}) {
   const all = counted(state, live);
   if (!all) return null;
   const spans = new Map();
+  const add = (k, span) => spans.set(k, [...(spans.get(k) ?? []), span]);
   for (const e of all) {
     const a = ms(e.start), b = Math.min(e.end == null ? now : ms(e.end), now);
-    if (b > a) spans.set(ticketOf(e), [...(spans.get(ticketOf(e)) ?? []), [a, b]]);
+    if (!(b > a)) continue;
+    add(ticketOf(e), [a, b]);
+    if (e.created) add(`${batchOf(e.batch, e.created)}\0${e.key}`, [a, b]);
   }
-  return (batch, key, from = -Infinity) => {
-    const s = (spans.get(`${batch ?? ''}\0${key}`) ?? []).map(([a, b]) => [Math.max(a, from), b]).filter(([a, b]) => b > a);
+  return (batch, created, key, from = -Infinity) => {
+    const s = (spans.get(created ? `${batchOf(batch, created)}\0${key}` : `${batch ?? ''}\0${key}`) ?? [])
+      .map(([a, b]) => [Math.max(a, from), b]).filter(([a, b]) => b > a);
     return hours(unionMs(s));
   };
 }
@@ -233,7 +245,9 @@ function linkOf(target, ghRepo) {
 const isMain = () => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
 };
-if (isMain()) {
+// Run once this module has loaded, not awaited at its top level: batches.mjs imports this module, so
+// awaiting its import here would wait on this module's own loading.
+async function main() {
   const [cmd, cause, target] = process.argv.slice(2);
   const usage = 'usage: stuck-time.mjs [link <cause> <issue number | #N | URL> | unlink <cause>]';
   try {
@@ -266,3 +280,4 @@ if (isMain()) {
     process.exit(1);
   }
 }
+if (isMain()) main();

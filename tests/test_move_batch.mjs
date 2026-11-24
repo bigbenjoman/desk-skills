@@ -201,6 +201,11 @@ const staying = {
   // The repo's record of finished cloud sessions archived, and a write of it in progress.
   'cloud-archived.json': '{"sessions":["session_a"]}',
   'cloud-archived.json.tmp.4242': '{"sessions":["session_a","session_b"]}',
+  // The repo's time stuck by cause, and the standing slot's own batch identity (stuck-time.mjs).
+  'stuck-intervals.jsonl': '{"key":"K-1","batch":null,"cause":"usage","start":"then","end":null}\n',
+  'stuck-passes.json': '{}',
+  'stuck-links.json': '{}',
+  'stuck-batch.json': '{"name":null,"created":"2026-11-20T00:00:00.000Z"}',
   'ref/acme__web/f.txt': 'a read-only clone is the repo\'s, not a batch\'s\n',
   'batches/OTHER/parks/O-1.json': '{"question":"other batch"}',
 };

@@ -37,12 +37,15 @@ crashShowsPerson((e) => console.error(`move-batch: ${describeCrash(e)}`));
 // the repo's asks (asks.mjs), the refused config rows already pushed (supervisor.mjs), the exits folder
 // the supervisor watches with its tick lock and wake record (every batch's workers write there), and the
 // levers' repo-level records with their locks: the lever log (lever-log.mjs), the blind audits and their
-// queue (levers-audit.mjs) and the evaluations with their evidence (levers-evaluate.mjs). Each is kept
-// once per repo, not per batch, and read from this folder. The ticket ledger is not here: it sits beside
+// queue (levers-audit.mjs), the evaluations with their evidence (levers-evaluate.mjs) and the time stuck by
+// cause (stuck-time.mjs: its intervals, passes and links, and the standing slot's own batch identity, which
+// the moved batch does not take: its first pass in its slot writes its own). Each is kept once per repo,
+// not per batch, and read from this folder. The ticket ledger is not here: it sits beside
 // the queue under repos/<slug>, which a move leaves alone.
 const STAYS = [E.BATCHES_DIR, 'ref', 'orchestrator.lock', 'supervisor.lock', 'supervisor.agent.log', 'intake.json', 'asks.json',
   'config-pushed.json', 'exits', 'supervisor.tick.lock', 'supervisor.wake'];
-const REPO_LEVEL = ['cloud-archived.json', 'levers.jsonl', 'audit.jsonl', 'audit-queue.json', 'lever-evals.jsonl', 'levers-evidence'];
+const REPO_LEVEL = ['cloud-archived.json', 'levers.jsonl', 'audit.jsonl', 'audit-queue.json', 'lever-evals.jsonl', 'levers-evidence',
+  'stuck-intervals.jsonl', 'stuck-passes.json', 'stuck-links.json', 'stuck-batch.json'];
 // A repo-level file's lock and its write in progress (dir-lock.mjs writeTextAtomic's .tmp.<pid>) stay too.
 const stays = (f) => STAYS.includes(f) || REPO_LEVEL.some((n) => f === n || f.startsWith(`${n}.lock`) || f.startsWith(`${n}.tmp.`));
 // How long a stopped merge driver has to let go of its lock.

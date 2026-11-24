@@ -141,29 +141,53 @@ const PHok = 'acme__parked-even';
 run([stuckRepo(PHok, 2, 2)]);
 t('the same lever with parked hours even across the arms adopts', [wrappersRow(PHok).guardrails.find((g) => g.name === 'parked-hours')?.status, wrappersRow(PHok).decision], ['ok', 'adopt']);
 // Tickets of an archived batch (batches.mjs archivedBatches: named "<folder> (archived)", its state under
-// batches/.done/) are read by the name the pass recorded them under, in the repo's own record; a second
-// batch of one name archives into a folder with a time added, and still goes by the name its queue holds.
+// batches/.done/) are read by the name the pass recorded them under, in the repo's own record: the
+// identity its first pass wrote in its folder (stuck-batch.json), which an archive carries with it, or,
+// with none, its folder's name less the time a second archive of one name adds.
 const { archivedBatches } = await import('../desk/bin/batches.mjs');
-const archivedRun = (slug, folder, queue) => {
+const archivedRun = (slug, folder, queue, identity = null) => {
   const r = stuckRepo(slug, 12, 2);
   const qroot = join(T, 'queues', slug);
   mkdirSync(join(qroot, 'batches', '.done', folder), { recursive: true });
   writeFileSync(join(qroot, 'batches', '.done', folder, 'queue.json'), JSON.stringify(queue));
   mkdirSync(join(stateOf(slug), 'batches', '.done', folder, 'workers'), { recursive: true });
+  if (identity) writeFileSync(join(stateOf(slug), 'batches', '.done', folder, 'stuck-batch.json'), JSON.stringify(identity));
   const done = archivedBatches({ queueRoot: qroot, stateRoot: stateOf(slug) });
   for (const x of r.rows) {
     x.batch = done[0].name;
     if (x.merged_at) writeFileSync(join(done[0].state, 'workers', `${x.key}.findings.jsonl`), `${JSON.stringify({ ticket: x.key, round: 1, reviewer: 'self', p0: 0, p1: 0, p2: 0, fixed: 0 })}\n`);
   }
   writeFileSync(join(done[0].state, 'post-merge.jsonl'), `${JSON.stringify({ kind: 'scan', at: at(-1), complete: true })}\n`);
-  const recorded = readFileSync(join(stateOf(slug), 'stuck-intervals.jsonl'), 'utf8').split('\n').map((l) => JSON.stringify({ ...JSON.parse(l), batch: 'F-1' }));
+  const recorded = readFileSync(join(stateOf(slug), 'stuck-intervals.jsonl'), 'utf8').split('\n').map((l) => JSON.stringify({ ...JSON.parse(l), batch: identity?.name ?? 'F-1', created: identity?.created ?? null }));
   writeFileSync(join(stateOf(slug), 'stuck-intervals.jsonl'), recorded.join('\n'));
   run([{ ...r, batches: [{ name: null, state: stateOf(slug) }, ...done] }]);
   return [wrappersRow(slug).guardrails.find((g) => g.name === 'parked-hours')?.status, wrappersRow(slug).reason_code];
 };
 t('an archived batch\'s tickets carry their parked hours: the lever that raised them reverts', archivedRun('acme__parked-archived', 'F-1', { batch: 'F-1', tickets: {} }), ['breached', 'guardrail_parked_hours']);
-t('so do those of a second batch of that name, archived beside the first under a folder with its time', archivedRun('acme__parked-rearchived', 'F-1.2026-10-30T11-00-00-000Z', { batch: 'F-1', tickets: {} }), ['breached', 'guardrail_parked_hours']);
-t('and one whose queue names no batch goes by its folder less that time', archivedRun('acme__parked-rearchived-unnamed', 'F-1.2026-10-30T11-00-00-000Z', { tickets: {} }), ['breached', 'guardrail_parked_hours']);
+t('so do those of a second batch of that name, archived beside the first under a folder with its time', archivedRun('acme__parked-rearchived', 'F-1.2026-10-30T11-00-00-000Z', { batch: 'F-1', tickets: {} }, { name: 'F-1', created: at(-25) }), ['breached', 'guardrail_parked_hours']);
+t('and those of a batch moved into its slot from the standing one, whose queue keeps the standing name', archivedRun('acme__parked-moved', 'E-1', { batch: '2026-11-01T10:00', epic: 'E-1', tickets: {} }, { name: 'E-1', created: at(-25) }), ['breached', 'guardrail_parked_hours']);
+t('with no identity written, a second archive goes by its folder less the time', archivedRun('acme__parked-rearchived-unnamed', 'F-1.2026-10-30T11-00-00-000Z', { batch: 'OLD', tickets: {} }), ['breached', 'guardrail_parked_hours']);
+
+// Two batches of one name, each holding the same ticket: each row counts only its own batch's hours,
+// though the earlier row's admission comes before the later batch's intervals.
+{
+  const { withOutcomes } = await import('../desk/bin/levers-evaluate.mjs');
+  const slug = 'acme__parked-twice';
+  const qroot = join(T, 'queues', slug);
+  const folders = ['F-1', 'F-1.2026-10-30T11-00-00-000Z'];
+  const created = [at(-30), at(-15)];
+  folders.forEach((f, i) => {
+    mkdirSync(join(qroot, 'batches', '.done', f), { recursive: true });
+    writeFileSync(join(qroot, 'batches', '.done', f, 'queue.json'), '{"batch":"F-1","tickets":{}}');
+    mkdirSync(join(stateOf(slug), 'batches', '.done', f), { recursive: true });
+    writeFileSync(join(stateOf(slug), 'batches', '.done', f, 'stuck-batch.json'), JSON.stringify({ name: 'F-1', created: created[i] }));
+  });
+  const span = (c, from, h) => JSON.stringify({ key: 'T-x', batch: 'F-1', created: c, cause: 'park: question', start: at(from), end: new Date(Date.parse(at(from)) + h * 3600_000).toISOString(), recorded: at(from) });
+  writeFileSync(join(stateOf(slug), 'stuck-intervals.jsonl'), [span(created[0], -29, 3), span(created[1], -14, 10)].join('\n'));
+  const done = archivedBatches({ queueRoot: qroot, stateRoot: stateOf(slug) });
+  const rows = done.map((b, i) => ({ key: 'T-x', batch: b.name, admitted_at: created[i], merged_at: null, state: 'parked' }));
+  t('a ticket in two batches of one name counts, in each, only that batch\'s parked hours', withOutcomes(rows, done, NOW).rows.map((r) => r.parked_hours), [3, 10]);
+}
 // A ticket admitted again carries none of its earlier stay's hours.
 {
   const PR = 'acme__parked-readmitted';

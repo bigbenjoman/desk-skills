@@ -43,7 +43,7 @@ import { bootstrap, costRatio, interval, meanDiff, rateRatio, seedOf } from './l
 import { guardrailStatus, leversDir, autopilotRoot, readJsonl } from './levers-view.mjs';
 import { findingsPath, runsPath, stillMissing } from './findings.mjs';
 import { postMergePath, readPostMerge } from './post-merge.mjs';
-import { parkedHours, liveOf } from './stuck-time.mjs';
+import { parkedHours, liveOf, batchIdentity } from './stuck-time.mjs';
 import { perTicket, allBatches, failedRuns } from './phase0-report.mjs';
 import { everyTicket } from './queue-store.mjs';
 import { readQueue } from './batch-state.mjs';
@@ -142,7 +142,9 @@ export function withOutcomes(rows, batches, now = Date.now()) {
     const repoState = b.repoState ?? E.repoStateOf(state);
     if (!stuck.has(repoState)) stuck.set(repoState, parkedHours(repoState, { now, live }));
     const from = Date.parse(r.admitted_at ?? '');
-    const parked = stuck.get(repoState)?.(b.archived ?? b.name ?? null, r.key, Number.isFinite(from) ? from : -Infinity) ?? null;
+    // The batch as its passes recorded it (its identity), or by its name where it has none.
+    const id = b.archived ? { name: b.archived, created: b.created ?? null } : batchIdentity(state) ?? { name: b.name ?? null, created: null };
+    const parked = stuck.get(repoState)?.(id.name, id.created, r.key, Number.isFinite(from) ? from : -Infinity) ?? null;
     const missing = [];
     let review = 0;
     const f = findingsPath(state, r.key);
