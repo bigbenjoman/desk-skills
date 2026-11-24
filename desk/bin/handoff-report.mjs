@@ -11,12 +11,12 @@
 // The ticket guardrails are levers-evaluate's fix tries and parks, and post-merge reverts, per ticket
 // with an outcome (its outcomeIn, and not in progress again). A session reaches its tickets through
 // the work its transcript shows: the branches it ran on or pushed (`git push <remote> <branch>`), and
-// the PRs it opened (`gh pr create`: its --title and --head, the issues its --body closes, its number
-// from the URL printed) or merged (`gh pr merge <n|url|branch>`, and the title its output names). A
-// ticket is the queue's whose branch or PR (result.pr, shipped_pr, draft_pr) that is, or whose key
-// (batch-state keyPattern) a PR title or one of those branches names; unless the tracker is Jira, a
-// closed issue or a branch starting with its number (`fix/850-slug`) names `issue-N`. A PR in another
-// repo (--repo, its URL) is not this repo's. A session that reaches no ticket is measured on the
+// the PRs it opened (`gh pr create`: its --title and --head, the issues of this repo its --body
+// closes, its number from the URL printed) or merged (`gh pr merge <n|url|branch>`, and the title its
+// output names). A ticket is the queue's whose branch or PR (result.pr, shipped_pr, draft_pr) that
+// is, or whose key (batch-state keyPattern, ignoring case) a PR title or one of those branches names;
+// unless the tracker is Jira, a closed issue or a branch starting with its number (`fix/850-slug`)
+// names `issue-N`. A PR in another repo (--repo, its URL) is not this repo's. A session that reaches no ticket is measured on the
 // session guardrails alone, listed as such: its handoffs, resume overhead and rework, the share of its
 // tool calls that returned an error (each a turn of its own redone). Rework above the baseline's by
 // the fix-tries margin refuses an arm; it never makes one eligible, and an arm whose ticket guardrails
@@ -111,10 +111,10 @@ function commandsIn(cmd) {
 const GH_VALUED = new Set(['-t', '--title', '-H', '--head', '-R', '--repo', '-b', '--body', '-B', '--base', '-F', '--body-file',
   '--subject', '-A', '--author-email', '--match-head-commit', '-l', '--label', '-a', '--assignee', '-r', '--reviewer', '-m', '--milestone', '-p', '--project', '-T', '--template']);
 const PR_URL = /github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/;
-const MERGED = /merged pull request \S*?#(\d+) \((.+)\)/;
+const MERGED = /merged pull request \S*?#(\d+) \((.+)\)/i;
 
 // The PRs and branches one Bash call touched, from its command and what it printed:
-//   -> { prs: [{ number, title, head, repo }], pushed: [branch] }
+//   -> { prs: [{ number, title, head, repo, closes }], pushed: [branch] }
 function workIn(command, output) {
   const prs = [];
   const pushed = [];
@@ -284,7 +284,7 @@ const hasOutcome = (t) => outcomeIn(t) && !IN_PROGRESS.includes(t.state);
 function keysNamed(texts, { pattern, tracker }) {
   const keys = new Set();
   let re = null;
-  try { if (pattern && !isNone(pattern)) re = new RegExp(pattern, 'g'); } catch { /* not a usable regex */ }
+  try { if (pattern && !isNone(pattern)) re = new RegExp(pattern, 'gi'); } catch { /* not a usable regex */ }
   for (const x of texts) {
     if (re) for (const m of x.matchAll(re)) keys.add(m[0]);
     if (tracker !== 'jira') for (const m of x.matchAll(/(?:^|[^A-Za-z0-9])(?:#|issue-)(\d+)(?![0-9])/g)) keys.add(`issue-${m[1]}`);
@@ -297,16 +297,18 @@ function keysNamed(texts, { pattern, tracker }) {
 // session that reaches none says why: `no pr` (no PR, only the default branch), `no key` (nothing it
 // touched names a ticket key), `no ticket` (it names keys no queue ticket has: `keys`) or `no outcome`.
 function mapSession(s, rows, { repo, base, pattern, tracker }) {
-  const ours = (p) => !repo || !p.repo || p.repo.toLowerCase() === repo.toLowerCase();
-  const prs = s.prs.filter(ours);
+  // A reference naming no repo is this one's; one naming a repo must name this one.
+  const same = (r) => !repo || !r || r.toLowerCase() === repo.toLowerCase();
+  const prs = s.prs.filter((p) => same(p.repo));
   const branches = [...new Set([...s.branches, ...s.pushed, ...prs.map((p) => p.head)])].filter((b) => b && b !== base && b !== 'HEAD');
   // A PR's closing keywords name its issues as `issue-N`, the work id of a GitHub issue; so, unless
   // the tracker is Jira, does a branch that starts with the issue's number (`fix/850-slug`).
   const issues = tracker === 'jira' ? [] : branches.flatMap((b) => [...b.matchAll(/(?:^|\/)(\d+)(?=-|$)/g)].map((m) => `issue-${m[1]}`));
-  const texts = [...branches, ...prs.map((p) => p.title).filter(Boolean), ...prs.flatMap((p) => (p.closes ?? []).map((n) => `issue-${n}`)), ...issues];
+  const texts = [...branches, ...prs.map((p) => p.title).filter(Boolean), ...prs.flatMap((p) => (p.closes ?? []).filter((c) => same(c.repo)).map((c) => `issue-${c.number}`)), ...issues];
   const numbers = prs.map((p) => p.number).filter((n) => n != null);
   const hit = rows.filter((t) => (t.branch && branches.includes(t.branch)) || (t.prs ?? []).some((n) => numbers.includes(Number(n)))
-    || (t.key && texts.some((x) => new RegExp(keyPattern(String(t.key))).test(x))));
+    // Keys match ignoring case, as scope-precision does: some repos name branches in lower case.
+    || (t.key && texts.some((x) => new RegExp(keyPattern(String(t.key)), 'i').test(x))));
   const counted = hit.filter(hasOutcome);
   if (counted.length) return { tickets: counted, why: null, keys: [] };
   if (hit.length) return { tickets: [], why: 'no outcome', keys: hit.map((t) => t.key) };

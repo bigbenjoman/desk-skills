@@ -26,11 +26,16 @@ const ONLY = new RegExp(String.raw`^${KEYWORD}${JOIN}${REF}(?:${GAP}(?:${KEYWORD
 // Whether `line` says only that the PR closes the issues it names.
 export const closesOnly = (line) => ONLY.test(line.replace(MARKER, '').replace(/\*\*|__/g, '').trim());
 
+// The issues `body` closes, as GitHub reads its closing keywords, each with the repo its reference
+// names (`owner/repo#12`, an issue URL), or null for one in the PR's own repo (`#12`, `gh-12`).
+// -> [{ repo, number }]
+export const closedBy = (body) => [...String(body ?? '').matchAll(USE)].map((m) => {
+  const r = /(?:github\.com\/([\w.-]+\/[\w.-]+)\/issues\/|([\w.-]+\/[\w.-]+)#)\d+$/i.exec(m[0]);
+  return { repo: r ? r[1] ?? r[2] : null, number: Number(/(\d+)$/.exec(m[0])[1]) };
+});
+
 // Every line of `body` with a closing keyword outside a line that says the PR closes it.
 // -> [{ line, text, uses }], `line` counted from 1 and `uses` the keyword and reference as written.
-// The issue numbers `body` closes, as GitHub reads its closing keywords.
-export const closedBy = (body) => [...String(body ?? '').matchAll(USE)].map((m) => Number(/(\d+)$/.exec(m[0])[1]));
-
 export function strayClosings(body) {
   const out = [];
   String(body ?? '').split(/\r?\n/).forEach((text, i) => {

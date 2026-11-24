@@ -236,11 +236,24 @@ const ghSession = (name, lines) => session(join(GH, '-z-gh'), name, [user(0), re
 ghSession('closes', bash(2, `gh pr create --title "fix: a thing" --body "$(cat <<'EOF'\nWhat it does; see #7.\n\nCloses #42\nEOF\n)" 2>&1`, 'https://github.com/acme/gh/pull/50'));
 ghSession('numbered', bash(2, 'git push origin fix/43-slug'));
 ghSession('unqueued', bash(2, 'git push origin fix/44-slug'));
-const gh = JSON.parse(spawnSync(process.execPath, [BIN, '--root', GH, '--json', '--tickets', write('gh.json', [ticket('issue-42', null, 1), ticket('issue-43', null, 1)])],
-  { cwd: T, env: { ...env, DESK_REPO_ROOT: '/z/gh', DESK_GH_REPO: 'acme/gh', DESK_CONFIG: config('gh.md', 'none', 'none') }, encoding: 'utf8' }).stdout);
+// A body closing an issue of another repo and one of this repo named with its owner (in other case).
+ghSession('crossrepo', bash(2, 'gh pr create --title "fix: more" --body "Closes other/thing#42\nFixes ACME/GH#46"', 'https://github.com/acme/gh/pull/51'));
+// A key in lower case in a branch, and a plain merge's "Merged pull request" output naming the title.
+ghSession('lower', bash(2, 'git push origin feat/kan-12-fix'));
+ghSession('lowerunq', bash(2, 'git push origin feat/kan-77-fix'));
+ghSession('merged', bash(2, 'gh pr merge 60 --merge', '✓ Merged pull request acme/gh#60 (fix: issue-45 the thing)'));
+const GH_TICKETS = write('gh.json', ['issue-42', 'issue-43', 'issue-45', 'issue-46', 'KAN-12'].map((k) => ticket(k, null, 1)));
+const ghRun = (cfg) => JSON.parse(spawnSync(process.execPath, [BIN, '--root', GH, '--json', '--tickets', GH_TICKETS],
+  { cwd: T, env: { ...env, DESK_REPO_ROOT: '/z/gh', DESK_GH_REPO: 'acme/gh', DESK_CONFIG: cfg }, encoding: 'utf8' }).stdout);
+const gh = ghRun(config('gh.md', 'none', 'none'));
 const g = (id) => gh.sessions.find((x) => x.id === id);
 t('on a GitHub tracker the issue a PR closes, and the number a branch starts with, name its ticket',
   [g('closes').tickets, g('numbered').tickets, [g('unqueued').tickets, g('unqueued').unmapped]], [['issue-42'], ['issue-43'], [[], 'no ticket']]);
+t('a closing reference to another repo\'s issue does not map; one naming this repo does', g('crossrepo').tickets, ['issue-46']);
+t('a key in a branch maps whatever its case', g('lower').tickets, ['KAN-12']);
+t('a plain merge\'s "Merged pull request" output gives the PR\'s title', g('merged').tickets, ['issue-45']);
+const kan = ghRun(config('kan.md', 'jira', 'KAN-[0-9]+')).sessions.find((x) => x.id === 'lowerunq');
+t('the §4 pattern finds a key in lower case that no queue ticket has', [kan.unmapped, kan.tickets], ['no ticket', []]);
 
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
 console.log('all passed');
