@@ -27,7 +27,10 @@ const SKILLS = {
   },
   'desk-clearance': {
     unit: 'phase', steps: ['1', '2', '3', '4', '5', '6', '7', '8'], headings: 30, kept: ['hazards.md', 'repo-facts.md', 'reviewer-patterns.md', 'subagent-briefs.md'],
-    rewritten: [['DS-875', 'Then **Read the `CONFIG` file**.', 1]], // read by section through desk-env show, never whole
+    rewritten: [
+      ['DS-875', 'Then **Read the `CONFIG` file**.', 1], // read by section through desk-env show, never whole
+      ['DS-915', '*enqueues* — poll `.merged`. Merge stacks bottom-up.', 1], // a stacked merge is one merge lease hold, merge-lease-hold.mjs
+    ],
   },
 };
 
