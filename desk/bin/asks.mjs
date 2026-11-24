@@ -32,17 +32,20 @@ function update(stateDir, change) {
 // `until`: the tickets the ask waits on, when it is a wait on them (needs-you.mjs ask --until), which
 // pruneAsks drops once every one is finished; an ask with none stays until the person says done. Asked
 // again with an `until`, that list replaces the one kept; asked again with none, the kept one stands.
-// `until` in the result is what is kept, so a caller says what a pass will act on.
-export function addAsk(stateDir, text, now = Date.now(), { until = [] } = {}) {
+// `until` in the result is what is kept, so a caller says what a pass will act on. `settles: 'admit'`
+// marks an ask its tickets' admission settles too (intake.mjs admit's ask to start a session), which
+// settleAdmitted drops.
+export function addAsk(stateDir, text, now = Date.now(), { until = [], settles = null } = {}) {
   const keys = [...new Set(until)];
   return update(stateDir, (f) => {
     const same = f.asks.find((a) => a.text === text);
     if (same) {
       if (keys.length) same.until = keys;
+      if (keys.length && settles) same.settles = settles;
       return { id: same.id, added: false, until: same.until ?? [] };
     }
     const id = f.next ?? Math.max(0, ...f.asks.map((a) => a.id)) + 1;
-    f.asks.push({ id, text, at: new Date(now).toISOString(), ...(keys.length ? { until: keys } : {}) });
+    f.asks.push({ id, text, at: new Date(now).toISOString(), ...(keys.length ? { until: keys, ...(settles ? { settles } : {}) } : {}) });
     f.next = id + 1;
     return { id, added: true, until: keys };
   });
@@ -70,5 +73,18 @@ export function pruneAsks(stateDir, { known, finished }) {
     const stale = f.asks.filter(spent);
     f.asks = f.asks.filter((a) => !spent(a));
     return stale.map(({ id, text, until }) => ({ id, text, keys: until }));
+  });
+}
+
+// Drops each ask its tickets' admission settles (`settles: 'admit'`) whose every `until` ticket is
+// `placed` in a batch now: no session needs starting for them. Decided under the lock, as pruneAsks.
+//   -> the asks dropped, each { id, text, keys }
+export function settleAdmitted(stateDir, placed) {
+  const settled = (a) => a.settles === 'admit' && Array.isArray(a.until) && a.until.length && a.until.every((k) => placed(k));
+  if (!readAsks(stateDir).some(settled)) return [];
+  return update(stateDir, (f) => {
+    const gone = f.asks.filter(settled);
+    f.asks = f.asks.filter((a) => !settled(a));
+    return gone.map(({ id, text, until }) => ({ id, text, keys: until }));
   });
 }

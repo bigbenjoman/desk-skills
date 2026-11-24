@@ -73,8 +73,8 @@ import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic, blockersFact } from './desk-q-eta.mjs';
-import { machineCap } from './borrow.mjs';
-import { addAsk } from './asks.mjs';
+import { machineCap, lastBeat } from './borrow.mjs';
+import { addAsk, settleAdmitted } from './asks.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { readUsage } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
@@ -1081,11 +1081,22 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
   // No supervisor runs a session-run repo's batches, so nothing is promised of one there.
   if (theirs && bySession) say(`no supervisor runs this repo's batches (config §3b "${E.CONFIG_ROWS['batches-run-by'].row}" is session): ${ours.length ? `the other${theirs === 1 ? '' : 's'}` : theirs === 1 ? 'it' : 'they'} ${theirs === 1 ? 'waits' : 'wait'} for a session to run ${theirs === 1 ? 'its' : 'their'} batch (/desk-autopilot)`);
   else if (theirs) say(`the supervisor's next tick picks ${ours.length ? `up the other${theirs === 1 ? '' : 's'}` : `${theirs === 1 ? 'it' : 'them'} up`}`);
-  // Nothing else shows a ticket refused as unrun: it is in no queue, so desk-q has no row for it.
-  if (unrunKeys.length) {
-    const { added } = addAsk(state, `start /desk-autopilot ${unrunKeys.join(' ')} in a session: no supervisor runs this repo's batches, so /desk-admit admitted nothing`, now.getTime());
+  // Nothing else shows a ticket refused as unrun: it is in no queue, so desk-q has no row for it. Run in
+  // the session whose pass wrote the batch's last heartbeat, that session admits it itself, so nothing
+  // waits on the person. Else the ask waits on those tickets being admitted (`settles: 'admit'`): the
+  // admit that takes them drops it, below.
+  const here = process.env.CLAUDE_CODE_SESSION_ID || null;
+  if (unrunKeys.length && here && lastBeat(state, E.queueFile())?.session === here) {
+    say(`this session runs this repo's batches: admit ${unrunKeys.join(' ')} again with --session (node ${join(HERE, 'intake.mjs')} admit ${unrunKeys.join(' ')} --session); nothing is put on needs-you`);
+  } else if (unrunKeys.length) {
+    const { added } = addAsk(state, `start /desk-autopilot ${unrunKeys.join(' ')} in a session: no supervisor runs this repo's batches, so /desk-admit admitted nothing`, now.getTime(), { until: unrunKeys, settles: 'admit' });
     say(`needs-you: ${added ? 'recorded' : 'already records'} starting /desk-autopilot for ${unrunKeys.join(' ')}`);
   }
+  // An ask to start a session for tickets now admitted, here or before, waits on nothing.
+  let after = null;
+  try { after = readQueue(); } catch { /* unread: nothing is known placed but what this run admitted */ }
+  const placed = new Set([...admitted, ...Object.keys(after?.tickets ?? {})]);
+  for (const a of settleAdmitted(state, (k) => placed.has(k))) say(`needs-you: ask ${a.id} dropped, as ${a.keys.join(', ')} ${a.keys.length === 1 ? 'is' : 'are'} admitted, so no session needs starting for ${a.keys.length === 1 ? 'it' : 'them'}`);
   // Open blockers in no batch are admitted next, by the same command, with no question: the person
   // naming what they block is the approval.
   if (next.size) say(`admit next: ${[...next].join(' ')} (open blockers in no batch)`);

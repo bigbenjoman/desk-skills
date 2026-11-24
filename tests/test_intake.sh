@@ -13,7 +13,7 @@ trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/home" "$T/bin" "$T/fakes" "$T/repo" "$T/state/triage" "$T/recs" "$T/no-skills"
 export HOME="$T/home"
 unset DESK_CONFIG DESK_REPO_DIR DESK_REPO_ROOT DESK_SLUG DESK_STATE DESK_DEFAULT_BRANCH DESK_GH_REPO \
-  AUTOPILOT_DRY_RUN AUTOPILOT_BASE_PUSH_APPROVED AUTOPILOT_USER_APPROVED DESK_DIGEST_DIR DESK_BATCH
+  AUTOPILOT_DRY_RUN AUTOPILOT_BASE_PUSH_APPROVED AUTOPILOT_USER_APPROVED DESK_DIGEST_DIR DESK_BATCH CLAUDE_CODE_SESSION_ID
 export DESK_CONFIG_ROOT="$T/cfg" DESK_REPO_OVERRIDE=acme/widgets DESK_HOME="$T/desk" \
   DESK_AUTOPILOT_STATE="$T/state" DESK_QUEUE="$T/queue.json" DESK_SKILLS_DIR="$T/no-skills" DESK_TRIAGE_RETRY_MS=0
 PASS=0; FAIL=0; out=""
@@ -635,8 +635,17 @@ out=$(admit H-31); rc=$?
 check "#1331 session-run, batch finished, a fresh heartbeat but no --session: nothing admitted, and no standing batch started" '[ $rc -eq 11 ] && [ "$(qget batch)" = s9 ] && [ "$(qget tickets.H-31)" = undefined ]'
 check "#1331 it says so plainly, never that a supervisor picks it up" 'grep -qF "not admitted H-31: no supervisor runs this repo'"'"'s batches (config §3b \"Batches run by\" is session) and batch s9 is finished, so no batch is started for it: if a session runs this repo'"'"'s batches, admit it from that session with --session; else start /desk-autopilot in a session" <<< "$out" && ! grep -q "supervisor.s next tick" <<< "$out"'
 check "#1331 and puts it on needs-you" 'jq -e ".asks[] | select(.text | startswith(\"start /desk-autopilot H-31 in a session\"))" "$T/state/asks.json" >/dev/null && grep -q "^needs-you: recorded starting /desk-autopilot for H-31$" <<< "$out"'
+check "#1359 the ask waits on H-31 being admitted" '[ "$(jq -c ".asks[] | select(.text | startswith(\"start /desk-autopilot H-31\")) | [.until, .settles]" "$T/state/asks.json")" = "[[\"H-31\"],\"admit\"]" ]'
 out=$(admit H-31 --session); rc=$?
 check "#1331 the session that runs the batch (--session) joins the finished one, not a standing one" '[ $rc -eq 0 ] && [ "$(qget batch)" = s9 ] && [ "$(qget supervised)" = false ] && [ "$(qget tickets.H-31.state)" = triaged ] && grep -q "^this session.s next pass picks up H-31$" <<< "$out" && ! grep -q "supervisor" <<< "$out"'
+check "#1359 admitting it drops the ask to start a session for it, saying so" '! jq -e ".asks[] | select(.text | startswith(\"start /desk-autopilot H-31\"))" "$T/state/asks.json" >/dev/null && grep -q "^needs-you: ask [0-9]* dropped, as H-31 is admitted, so no session needs starting for it$" <<< "$out"'
+# #1359: the beat names the Claude Code session whose pass wrote it; an admit refused in that session
+# says to run it again with --session and puts nothing on needs-you.
+done_q; rm -rf "$T/state/asks.json"; beat "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; f=$(ls "$T/state/orchestrators/"*.json); jq -c '. + {session: "sess-9"}' "$f" > "$f.t" && mv "$f.t" "$f"; rec H-34 A
+out=$(CLAUDE_CODE_SESSION_ID=sess-9 admit H-34); rc=$?
+check "#1359 refused in the session that runs the batch: it says to admit it again with --session, and records no ask" '[ $rc -eq 11 ] && [ "$(qget tickets.H-34)" = undefined ] && grep -q "^this session runs this repo.s batches: admit H-34 again with --session (node .*intake.mjs admit H-34 --session); nothing is put on needs-you$" <<< "$out" && [ "$(jq ".asks | length" "$T/state/asks.json" 2>/dev/null || echo 0)" = 0 ]'
+out=$(CLAUDE_CODE_SESSION_ID=sess-other admit H-34)
+check "#1359 refused in any other session, the ask is recorded" 'jq -e ".asks[] | select(.text | startswith(\"start /desk-autopilot H-34 in a session\"))" "$T/state/asks.json" >/dev/null'
 rm -f "$DESK_QUEUE"; rm -rf "$T/state/orchestrators"; rec H-33 A
 out=$(admit H-33 --session); rc=$?
 check "#1331 session-run with no batch at all: nothing admitted, even with --session, and it names /desk-autopilot" '[ $rc -eq 11 ] && [ ! -f "$DESK_QUEUE" ] && grep -qF "not admitted H-33: no supervisor runs this repo'"'"'s batches (config §3b \"Batches run by\" is session) and no batch is set up, so no batch is started for it" <<< "$out"'
