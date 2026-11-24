@@ -22,9 +22,10 @@
 // the fix-tries margin refuses an arm; it never makes one eligible.
 //
 // Work no queue ticket is behind is measured on its merged PRs instead (pr-outcomes.mjs, read from
-// GitHub in batches and cached once final, or not at all with --offline): reverts and red main runs,
-// follow-up fixes within 48 hours on the same files, and review rounds, each against the baseline at
-// the registry's margin. A session maps to its ticket where one is behind its work, else to its PRs,
+// GitHub in batches, each PR on its own windows, cached with the windows still open, or not at all
+// with --offline): reverts and red main runs, follow-up fixes within 48 hours on the same files, and
+// review rounds, each against the baseline at the registry's margin. A PR counts once final, every
+// window closed (the revert watch's 14 days) and read in full. A session maps to its ticket where one is behind its work, else to its PRs,
 // never both. An arm is judged on whichever of the two (tickets or PRs) is measured on it and the
 // baseline; a breach of either refuses it, and with neither measured it is never recommended on cost
 // alone. Each window states its sample per arm against the minimum, and where it lacks data, how many
@@ -54,7 +55,8 @@ import { keyPattern, readQueue } from './batch-state.mjs';
 import { isNone } from './config-schema.mjs';
 import { closedBy } from './closing-keywords.mjs';
 import { FINISHED, STATES } from './queue-states.mjs';
-import { FOLLOW_UP_HOURS, prOutcomes } from './pr-outcomes.mjs';
+import { prOutcomes } from './pr-outcomes.mjs';
+import { WATCH_DAYS } from './post-merge.mjs';
 
 // The queue states a ticket is still in progress in: neither finished nor parked.
 const IN_PROGRESS = STATES.filter((s) => !FINISHED.includes(s) && s !== 'parked');
@@ -465,7 +467,7 @@ function mappingText(m) {
     [m.no_pr, 'touched no PR and ran on the default branch: open, push or merge the work\'s PR from the session, or work on a branch named for its ticket'],
     [m.no_key, 'touched a PR or branch that names no ticket key: put the key in the PR title or branch (a PR merged by number shows no title)'],
     [m.no_ticket, `named a key no queue ticket has (${m.keys.slice(0, 5).join(', ')}${m.keys.length > 5 ? ` and ${m.keys.length - 5} more` : ''}): run the ticket through desk so its queue records it`],
-    [m.no_outcome, `reached a ticket or PR with no outcome yet: a ticket counts once merged, or done, parked or failed, a PR ${FOLLOW_UP_HOURS} hours after it merged`],
+    [m.no_outcome, `reached a ticket or PR with no outcome yet: a ticket counts once merged, or done, parked or failed, a PR once its windows close, ${WATCH_DAYS} days after it merged`],
   ].filter(([n]) => n).map(([n, why]) => `${n} ${why}`);
   return `    saw ${m.sessions} session(s), mapped ${m.mapped} to a ticket or PR with an outcome${rest.length ? `; ${rest.join('; ')}` : ''}`;
 }
@@ -544,7 +546,7 @@ if (isMain) {
   const offline = argv.includes('--offline');
   const refs = [...new Map(sessions.flatMap((s) => s.map.refs ?? []).map((r) => [r.number != null ? `n${r.number}` : `h${r.head}`, r])).values()];
   const cachePath = read(() => join(E.repoStateOf(E.stateDir()), 'handoff-pr-outcomes.json'));
-  const outcomes = prOutcomes(refs, { repo: ctx.repo, base: ctx.base, cachePath, offline, now });
+  const outcomes = prOutcomes(refs, { repo: ctx.repo, cachePath, offline, now });
   for (const s of sessions) {
     const found = (s.map.refs ?? []).map(outcomes.of).filter(Boolean);
     s.map.prs = [...new Map(found.filter((o) => o.final).map((o) => [o.number, o])).values()];

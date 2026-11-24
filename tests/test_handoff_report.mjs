@@ -139,31 +139,45 @@ const config = (name, tracker, pattern) => {
   writeFileSync(f, `## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Tracker | \`${tracker}\` |\n| Ticket key pattern | \`${pattern}\` |\n`);
   return f;
 };
-// A gh on PATH: logs each call, and answers a GraphQL query from the fixture file its environment
-// names: each aliased pullRequest by number or by head branch, and the default branch's history and
-// the merged-PR search.
+// A gh on PATH: logs each call, and answers each aliased read of a GraphQL query from the fixture
+// file its environment names: a PR by number (its first page of files and reviews, or a later page
+// of either, a page being 100), the merged PRs a head branch heads, and a search, filtered by its
+// `merged:` range and `revert in:title`, sorted by merge time, paged by the fixture's searchPage.
+function stubGh() {
+  const fs = require('fs');
+  const args = process.argv.slice(2);
+  fs.appendFileSync(process.env.HANDOFF_GH_LOG, `${JSON.stringify(args)}\n`);
+  const q = (args.find((a) => a.startsWith('query=')) || '').slice(6);
+  const fx = process.env.HANDOFF_GH_FIXTURE ? JSON.parse(fs.readFileSync(process.env.HANDOFF_GH_FIXTURE, 'utf8')) : { prs: {}, search: [] };
+  const page = (list, from, size = 100) => ({ pageInfo: { hasNextPage: from + size < list.length, endCursor: String(from + size) }, nodes: list.slice(from, from + size) });
+  const files = (p) => (p.files || []).map((path) => ({ path }));
+  const reviews = (p) => (p.reviews || []).map((r) => ({ submittedAt: r.at, commit: { oid: r.oid } }));
+  const any = (n) => fx.prs[n] || (fx.search || []).find((c) => c.number === Number(n));
+  const repository = {};
+  const top = {};
+  const re = /(a\d+): (?:pullRequest\(number:(\d+)\)\{(?:(files|reviews)\(first:100(?:, after:"(\d+)")?\)|number )|pullRequests\(headRefName:("(?:[^"\\]|\\.)*")|search\(query:("(?:[^"\\]|\\.)*"), type:ISSUE, first:100(?:, after:"(\d+)")?)/g;
+  for (const m of q.matchAll(re)) {
+    const [, alias, n, list, from, head, search, sFrom] = m;
+    if (n && list) repository[alias] = { [list]: page(list === 'files' ? files(any(n)) : reviews(any(n)), Number(from || 0)) };
+    else if (n) {
+      const p = fx.prs[n];
+      repository[alias] = p ? { number: p.number, title: p.title, mergedAt: p.mergedAt, mergeCommit: p.mergeCommit,
+        files: { totalCount: files(p).length, ...page(files(p), 0) }, reviews: { totalCount: reviews(p).length, ...page(reviews(p), 0) } } : null;
+    } else if (head) repository[alias] = { nodes: Object.values(fx.prs).filter((p) => p.headRefName === JSON.parse(head) && p.mergedAt).map((p) => ({ number: p.number })) };
+    else {
+      const text = JSON.parse(search);
+      const [, a, b] = /merged:(\S+)\.\.(\S+)/.exec(text);
+      const hits = (fx.search || []).filter((c) => c.mergedAt >= a && c.mergedAt <= b && (!text.includes('revert in:title') || /revert/i.test(c.title)))
+        .sort((x, y) => x.mergedAt.localeCompare(y.mergedAt))
+        .map((c) => ({ number: c.number, title: c.title, body: c.body || '', mergedAt: c.mergedAt, files: { totalCount: files(c).length, ...page(files(c), 0) } }));
+      top[alias] = page(hits, Number(sFrom || 0), fx.searchPage || 100);
+    }
+  }
+  process.stdout.write(JSON.stringify({ data: { repository, ...top } }));
+}
 const STUB = join(T, 'stub');
 mkdirSync(STUB, { recursive: true });
-writeFileSync(join(STUB, 'gh'), `#!/usr/bin/env node
-const fs = require('fs');
-const args = process.argv.slice(2);
-fs.appendFileSync(process.env.HANDOFF_GH_LOG, JSON.stringify(args) + '\\n');
-const q = (args.find((a) => a.startsWith('query=')) || '').slice(6);
-const fx = process.env.HANDOFF_GH_FIXTURE ? JSON.parse(fs.readFileSync(process.env.HANDOFF_GH_FIXTURE, 'utf8')) : { prs: {}, history: [], search: [] };
-let data;
-if (q.includes('history(') || q.includes('search(')) {
-  // With pageHistory, the history comes in two pages: the first commit, then the rest.
-  const more = !!fx.pageHistory && !/history\\([^)]*after:/.test(q);
-  const history = { pageInfo: { hasNextPage: more, endCursor: more ? 'c1' : null }, nodes: fx.pageHistory ? (more ? fx.history.slice(0, 1) : fx.history.slice(1)) : fx.history };
-  data = { ...(q.includes('history(') ? { repository: { object: { history } } } : {}), ...(q.includes('search(') ? { search: { pageInfo: { hasNextPage: false }, nodes: fx.search } } : {}) };
-} else {
-  const repo = {};
-  for (const m of q.matchAll(/(\\w+): pullRequest\\(number:(\\d+)\\)/g)) repo[m[1]] = fx.prs[m[2]] || null;
-  for (const m of q.matchAll(/(\\w+): pullRequests\\(headRefName:("(?:[^"\\\\]|\\\\.)*")/g)) repo[m[1]] = { nodes: Object.values(fx.prs).filter((p) => p.headRefName === JSON.parse(m[2]) && p.mergedAt) };
-  data = { repository: repo };
-}
-process.stdout.write(JSON.stringify({ data }));
-`);
+writeFileSync(join(STUB, 'gh'), `#!/usr/bin/env node\n(${stubGh.toString()})();\n`);
 chmodSync(join(STUB, 'gh'), 0o755);
 const GH_LOG = join(T, 'gh.log');
 const ghCalls = () => (existsSync(GH_LOG) ? readFileSync(GH_LOG, 'utf8').split('\n').filter(Boolean).length : 0);
@@ -293,32 +307,32 @@ t('a lower-case word and number in a branch is not a key under a Jira pattern', 
 // ---- merged PRs no queue ticket is behind, read from GitHub --------------------------------------
 // A 700,000-token window of sessions on main, each merging one PR by number, with no ticket rows.
 const DAY_MS = 86_400_000;
-const M = Date.now() - 10 * DAY_MS;
+const M = Date.now() - 20 * DAY_MS;
 const iso = (ms) => new Date(ms).toISOString();
-// A merged PR as the GraphQL query reads it: its files, reviews (on the commits named, `late` after
-// the merge) and the check suites on its merge commit.
+// A merged PR in the fixture: its files, its reviews (on the commits named, `late` ones after the
+// merge) and the check suites on its merge commit.
 const pr = (n, { mergedAt = M, title = `feat: change ${n}`, files = [`src/f${n}.js`], reviewed = ['a'], late = [], suites = [] } = {}) => ({
   number: n, title, mergedAt: mergedAt == null ? null : iso(mergedAt), headRefName: `feat/change-${n}`,
   mergeCommit: { oid: `m${n}`, checkSuites: { totalCount: suites.length, nodes: suites.map((x, i) => ({ conclusion: x.conclusion, workflowRun: { databaseId: n * 10 + i, event: 'push', createdAt: iso(x.at), url: `u${n}`, workflow: { databaseId: 1, name: 'ci' } } })) } },
-  files: { totalCount: files.length, nodes: files.map((path) => ({ path })) },
-  reviews: { nodes: [...reviewed.map((oid, i) => ({ submittedAt: iso(M - DAY_MS + i), commit: { oid } })), ...late.map((oid) => ({ submittedAt: iso(M + DAY_MS), commit: { oid } }))] },
+  files,
+  reviews: [...reviewed.map((oid, i) => ({ at: iso((mergedAt ?? M) - DAY_MS + i), oid })), ...late.map((oid) => ({ at: iso((mergedAt ?? M) + DAY_MS), oid }))],
 });
+const cand = (number, title, at, files, body = '') => ({ number, title, body, mergedAt: iso(at), files });
 const FX7 = write('fx7.json', {
   prs: Object.fromEntries([
     pr(701, { reviewed: ['a', 'b', 'b'], late: ['c'] }), pr(702), pr(703), pr(704), pr(705),
     pr(711), pr(712, { suites: [{ conclusion: 'FAILURE', at: M + 3_600_000 }, { conclusion: 'SUCCESS', at: M + 3_600_000 }] }), pr(713), pr(714), pr(715),
     pr(721), pr(722), pr(723), pr(724), pr(725),
   ].map((p) => [p.number, p])),
-  // Two pages of history, the revert on the second.
-  pageHistory: true,
-  history: [{ oid: 'x1', committedDate: iso(M + DAY_MS), messageHeadline: 'feat: other (#799)' }, { oid: 'r711', committedDate: iso(M + DAY_MS), messageHeadline: 'Revert "feat: change 711 (#711)"' }],
-  // After PR 702: a fix on its file within 48 hours (a follow-up), one after them, a feature on its
-  // file, and a fix on another file.
   search: [
-    { number: 790, title: 'fix: correct the thing', mergedAt: iso(M + 5 * 3_600_000), files: { nodes: [{ path: 'src/f702.js' }] } },
-    { number: 791, title: 'fix: much later', mergedAt: iso(M + 60 * 3_600_000), files: { nodes: [{ path: 'src/f702.js' }] } },
-    { number: 792, title: 'feat: more on it', mergedAt: iso(M + 5 * 3_600_000), files: { nodes: [{ path: 'src/f702.js' }] } },
-    { number: 793, title: 'fix: elsewhere', mergedAt: iso(M + 5 * 3_600_000), files: { nodes: [{ path: 'src/other.js' }] } },
+    // After PR 702: a fix on its file within 48 hours (a follow-up), one after them, a feature on its
+    // file, and a fix on another file.
+    cand(790, 'fix: correct the thing', M + 5 * 3_600_000, ['src/f702.js']),
+    cand(791, 'fix: much later', M + 60 * 3_600_000, ['src/f702.js']),
+    cand(792, 'feat: more on it', M + 5 * 3_600_000, ['src/f702.js']),
+    cand(793, 'fix: elsewhere', M + 5 * 3_600_000, ['src/other.js']),
+    // A revert of PR 711 on its fifth day, the way GitHub's revert button writes one.
+    cand(780, 'Revert "feat: change 711"', M + 5 * DAY_MS, ['src/f711.js'], 'Reverts acme/widgets#711'),
   ],
 });
 const ROOT7 = join(T, 'projects7');
@@ -344,7 +358,7 @@ const first = ghCalls() - before;
 const s7 = (id) => pr7.sessions.find((x) => x.id === id);
 t('a session merging a PR no ticket is behind is measured on that PR', [s7('base7_3').measured_on, s7('base7_3').unmapped, s7('base7_3').prs_measured],
   ['prs', null, [{ number: 703, post_merge: 0, follow_ups: [], review_rounds: 1 }]]);
-t('a revert of it and a red default-branch run on its merge commit count as post-merge', [s7('low7_1').prs_measured?.[0]?.post_merge, s7('low7_2').prs_measured?.[0]?.post_merge], [1, 1]);
+t('a revert PR on its fifth day and a red default-branch run on its merge commit count as post-merge', [s7('low7_1').prs_measured?.[0]?.post_merge, s7('low7_2').prs_measured?.[0]?.post_merge], [1, 1]);
 t('a fix PR merged within 48 hours on one of its files is a follow-up; a later one, a feature, or a fix elsewhere is not', s7('base7_2').prs_measured?.[0]?.follow_ups, [790]);
 t('its review rounds are the distinct commits reviewed before the merge', s7('base7_1').prs_measured?.[0]?.review_rounds, 2);
 const r7 = rec(pr7, 700_000);
@@ -352,8 +366,8 @@ t('a ticketless PR arm with a revert and a red run breaches post-merge against t
   [['20% of 700,000', 'pr-post-merge breach: 0.40 per PR against 0.00 (margin 1.25x)']]);
 t('one without is clean, and with its PR guardrails measured it is recommended', [r7.verdict, r7.pct, Object.keys(pr7.arms.find((a) => a.arm === '30% of 700,000').guardrail_status ?? {}).filter((k) => !['fix-tries-parks', 'post-merge'].includes(k))
   .map((k) => pr7.arms.find((a) => a.arm === '30% of 700,000').guardrail_status[k].status)], ['recommend', 30, ['holds', 'holds', 'holds']]);
-t('the PRs are read in one batched query, then one per page of commits and merged PRs over their span, and the final outcomes cached in the repo state',
-  [first, existsSync(join(S7, 'handoff-pr-outcomes.json'))], [3, true]);
+t('15 PRs are read in batched queries of 10 reads (2 for the PRs, 3 for the 30 window searches), and the final outcomes cached in the repo state',
+  [first, existsSync(join(S7, 'handoff-pr-outcomes.json'))], [5, true]);
 before = ghCalls();
 const again = JSON.parse(run7(S7, '--json'));
 t('a second run reads nothing from GitHub and gives the same outcomes from the cache', [ghCalls() - before, rec(again, 700_000).pct, again.pr_read?.cached], [0, 30, 15]);
@@ -369,7 +383,7 @@ const offFresh = JSON.parse(run7(join(T, 'state7-fresh'), '--offline', '--json')
 t('--offline with nothing cached measures no PR, so no arm is decided on cost alone',
   [ghCalls() - before, rec(offFresh, 700_000).pct, offFresh.sessions.filter((x) => x.measured_on === 'prs').length, offFresh.pr_read?.note], [0, 45, 0, '15 PR(s) not read from GitHub (--offline)']);
 // A PR merged hours ago: its follow-up window is open, so it is read each run and not counted yet.
-const FX8 = write('fx8.json', { prs: { 741: pr(741, { mergedAt: Date.now() - 10 * 3_600_000 }) }, history: [], search: [] });
+const FX8 = write('fx8.json', { prs: { 741: pr(741, { mergedAt: Date.now() - 10 * 3_600_000 }) }, search: [] });
 const ROOT8 = join(T, 'projects8');
 mkdirSync(join(ROOT8, '-x-repo'), { recursive: true });
 session(join(ROOT8, '-x-repo'), 'recent', [user(0), req('recent-r', 1, { uncached: 1 }), ...bash(2, 'gh pr merge 741')]);
@@ -377,7 +391,49 @@ const run8 = () => JSON.parse(spawnSync(process.execPath, [BIN, '--root', ROOT8,
   { cwd: T, env: { ...env, DESK_AUTOPILOT_STATE: join(T, 'state8'), HANDOFF_GH_FIXTURE: FX8 }, encoding: 'utf8' }).stdout);
 before = ghCalls();
 const recent = [run8(), run8()].map((r) => [r.sessions[0].measured_on, r.sessions[0].unmapped]);
-t('a PR merged under 48 hours ago is not counted and not cached, so each run reads it again', [recent, ghCalls() - before], [[['session only', 'no outcome'], ['session only', 'no outcome']], 4]);
+t('a PR merged hours ago is not counted, and each run reads its open windows again', [recent, ghCalls() - before], [[['session only', 'no outcome'], ['session only', 'no outcome']], 4]);
+
+// Each PR on its own windows: one merged three days ago is not final while its revert window is open,
+// and a later run reads only that window; one whose follow-up window holds more merged PRs than the
+// pages read stays open, while one whose windows fit is final and cached; a follow-up's shared file
+// past its first page of files is found; and reviews past a page all count.
+const N = Date.now();
+const FX9 = write('fx9.json', {
+  searchPage: 1,
+  prs: Object.fromEntries([
+    pr(901, { mergedAt: N - 3 * DAY_MS }), pr(902, { mergedAt: N - 20 * DAY_MS }), pr(903, { mergedAt: N - 30 * DAY_MS }),
+    pr(904, { mergedAt: N - 25 * DAY_MS, files: ['src/deep.js'] }),
+    pr(905, { mergedAt: N - 40 * DAY_MS, reviewed: Array.from({ length: 120 }, (_, i) => `c${i}`) }),
+  ].map((p) => [p.number, p])),
+  search: [
+    ...Array.from({ length: 11 }, (_, i) => cand(960 + i, `fix: busy ${i}`, N - 20 * DAY_MS + (i + 1) * 3_600_000, ['src/elsewhere.js'])),
+    cand(930, 'fix: after 903', N - 30 * DAY_MS + 3_600_000, ['src/f903.js']),
+    cand(950, 'fix: wide change', N - 25 * DAY_MS + 3 * 3_600_000, [...Array.from({ length: 140 }, (_, i) => `src/w${i}.js`), 'src/deep.js', ...Array.from({ length: 9 }, (_, i) => `src/z${i}.js`)]),
+  ],
+});
+const ROOT9 = join(T, 'projects9');
+mkdirSync(join(ROOT9, '-x-repo'), { recursive: true });
+for (const n of [901, 902, 903, 904, 905]) session(join(ROOT9, '-x-repo'), `w${n}`, [user(0), req(`w${n}-r`, 1, { uncached: 1 }), ...bash(2, `gh pr merge ${n}`)]);
+const S9 = join(T, 'state9');
+const run9 = () => JSON.parse(spawnSync(process.execPath, [BIN, '--root', ROOT9, '--tickets', NONE, '--json'],
+  { cwd: T, env: { ...env, DESK_AUTOPILOT_STATE: S9, HANDOFF_GH_FIXTURE: FX9 }, encoding: 'utf8' }).stdout);
+const w9 = run9();
+const w = (n) => w9.sessions.find((x) => x.id === `w${n}`);
+const cache9 = JSON.parse(readFileSync(join(S9, 'handoff-pr-outcomes.json'), 'utf8')).prs;
+t('a PR merged three days ago is not final while its revert window is open, and is cached with that window open',
+  [w(901).measured_on, w(901).unmapped, cache9['901'].final, cache9['901'].open], ['session only', 'no outcome', false, ['reverts']]);
+t('a PR whose follow-up window holds more merged PRs than the pages read stays open',
+  [w(902).measured_on, cache9['902'].final, cache9['902'].open], ['session only', false, ['follow-ups']]);
+t('a PR whose own windows were read in full is final and cached, though another\'s were cut short',
+  [w(903).measured_on, w(903).prs_measured, cache9['903'].final], ['prs', [{ number: 903, post_merge: 0, follow_ups: [930], review_rounds: 1 }], true]);
+t('a follow-up whose shared file is past its first page of files is found', w(904).prs_measured?.[0]?.follow_ups, [950]);
+t('reviews past a page all count as rounds', w(905).prs_measured?.[0]?.review_rounds, 120);
+const log9 = ghCalls();
+run9();
+const again9 = readFileSync(GH_LOG, 'utf8').split('\n').filter(Boolean).slice(log9).map((l) => JSON.parse(l).find((a) => a.startsWith('query=')));
+t('a later run reads only the open windows: 901\'s reverts and 902\'s follow-ups, no PR again',
+  [again9.length > 0, again9.every((q) => !q.includes('pullRequest(number:')), again9.every((q) => [901, 902].some((n) => q.includes(iso(N - (n === 901 ? 3 : 20) * DAY_MS).slice(0, 13))))],
+  [true, true, true]);
 
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
 console.log('all passed');
