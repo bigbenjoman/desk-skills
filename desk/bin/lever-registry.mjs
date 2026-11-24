@@ -38,6 +38,7 @@ export const GUARDRAILS = Object.freeze({
   'ci-reds': Object.freeze({ metric: 'CI reds on the branch per ticket', margin: Object.freeze({ max_rate_ratio: 1.25 }) }),
   'review-p0-p1': Object.freeze({ metric: 'review P0 and P1 findings per ticket', margin: Object.freeze({ max_rate_ratio: 1.25 }) }),
   'post-merge': Object.freeze({ metric: 'post-merge reverts or red main within 24 hours per ticket', margin: Object.freeze({ max_rate_ratio: 1.25 }) }),
+  'parked-hours': Object.freeze({ metric: 'parked hours per ticket', margin: Object.freeze({ max_rate_ratio: 1.25 }) }),
 });
 
 // How much of a repo's tickets a lever reaches. The low-risk layer is a factorial, each lever drawn on
@@ -153,6 +154,7 @@ export const REASON_CODES = Object.freeze({
   guardrail_ci_reds: 'CI reds per ticket rose past their margin',
   guardrail_review_p0_p1: 'review P0 and P1 findings per ticket rose past their margin',
   guardrail_post_merge: 'post-merge reverts or red main rose past their margin',
+  guardrail_parked_hours: 'parked hours per ticket rose past their margin',
   ben_override: 'Ben set it by hand',
   freeze: 'trials were frozen',
   thaw: 'trials were thawed',

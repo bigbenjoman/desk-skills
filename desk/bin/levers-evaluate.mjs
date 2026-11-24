@@ -43,6 +43,7 @@ import { bootstrap, costRatio, interval, meanDiff, rateRatio, seedOf } from './l
 import { guardrailStatus, leversDir, autopilotRoot, readJsonl } from './levers-view.mjs';
 import { findingsPath, runsPath, stillMissing } from './findings.mjs';
 import { postMergePath, readPostMerge } from './post-merge.mjs';
+import { parkedHours, liveOf, batchIdentity } from './stuck-time.mjs';
 import { perTicket, allBatches, failedRuns } from './phase0-report.mjs';
 import { everyTicket } from './queue-store.mjs';
 import { readQueue } from './batch-state.mjs';
@@ -115,21 +116,35 @@ export const GUARDS = Object.freeze({
   'ci-reds': { kind: 'ratio', margin: GUARDRAILS['ci-reds'].margin.max_rate_ratio, value: (r) => (Number.isFinite(r.ci_reds) ? r.ci_reds : null) },
   'review-p0-p1': { kind: 'ratio', margin: GUARDRAILS['review-p0-p1'].margin.max_rate_ratio, value: (r) => r.review_p0_p1 ?? null },
   'post-merge': { kind: 'ratio', margin: GUARDRAILS['post-merge'].margin.max_rate_ratio, value: (r) => r.post_merge ?? null },
+  'parked-hours': { kind: 'ratio', margin: GUARDRAILS['parked-hours'].margin.max_rate_ratio, value: (r) => (Number.isFinite(r.parked_hours) ? r.parked_hours : null) },
 });
 
 // ---- outcome files -----------------------------------------------------------------------------------
 // Each row with its review P0 and P1 count (from its findings file) and its post-merge records (from
 // its batch's post-merge.jsonl). A merged ticket whose file is missing, or whose post-merge file's
-// latest scan did not complete, gets null, and the file is named in its `outcome_missing`.
+// latest scan did not complete, gets null, and the file is named in its `outcome_missing`. Its
+// `parked_hours` are its hours stuck from its admission to `now` (stuck-time.mjs, the repo's
+// stuck-intervals.jsonl, its batch named as the pass named it, an archived one's interval still open
+// closed at its last pass), 0 with none recorded, null where that file cannot be read.
 //   -> { rows, newest: { findings, post_merge } }, the newest as ms
-export function withOutcomes(rows, batches) {
+export function withOutcomes(rows, batches, now = Date.now()) {
   const stateOf = new Map(batches.map((b) => [b.name ?? null, b.state]));
+  const batchOf = new Map(batches.map((b) => [b.name ?? null, b]));
   const postMerge = new Map();
+  const stuck = new Map();
+  const live = liveOf(batches);
   let newestFindings = null;
   let newestScan = null;
   const out = rows.map((r) => {
     const state = stateOf.get(r.batch ?? null);
-    if (!state) return { ...r, review_p0_p1: null, post_merge: null };
+    if (!state) return { ...r, review_p0_p1: null, post_merge: null, parked_hours: null };
+    const b = batchOf.get(r.batch ?? null);
+    const repoState = b.repoState ?? E.repoStateOf(state);
+    if (!stuck.has(repoState)) stuck.set(repoState, parkedHours(repoState, { now, live }));
+    const from = Date.parse(r.admitted_at ?? '');
+    // The batch as its passes recorded it (its identity), or by its name where it has none.
+    const id = b.archived ? { name: b.archived, created: b.created ?? null } : batchIdentity(state) ?? { name: b.name ?? null, created: null };
+    const parked = stuck.get(repoState)?.(id.name, id.created, r.key, Number.isFinite(from) ? from : -Infinity) ?? null;
     const missing = [];
     let review = 0;
     const f = findingsPath(state, r.key);
@@ -167,7 +182,7 @@ export function withOutcomes(rows, batches) {
       pm = mine.filter((x) => x.kind === 'revert' || (x.kind === 'red_main' && !recovered.has(x.run?.id))).length;
     }
     else if (r.merged_at) { pm = null; missing.push(recs?.incomplete ? `${postMergePath(state)} (its latest scan is incomplete)` : postMergePath(state)); }
-    return { ...r, review_p0_p1: review, post_merge: pm, ...(missing.length ? { outcome_missing: missing } : {}) };
+    return { ...r, review_p0_p1: review, post_merge: pm, parked_hours: parked, ...(missing.length ? { outcome_missing: missing } : {}) };
   });
   return { rows: out, newest: { findings: newestFindings, post_merge: newestScan } };
 }
@@ -368,7 +383,7 @@ export function evaluate({
     let log = null;
     let unreadable = null;
     try { log = read(r.slug); if (log.bad.length) unreadable = `line ${log.bad.map((b) => b.line).join(', ')} of its lever log does not parse`; } catch (e) { unreadable = e.message; }
-    const outcomes = withOutcomes(r.rows, r.batches);
+    const outcomes = withOutcomes(r.rows, r.batches, now);
     const prior = readJsonl(evalsFile(r.state)).rows;
     return { ...r, log, unreadable, byLever: log ? leverStatesIn(log.events, registry) : null, outcomes, prior, audits: auditsOf(r.state), done: prior.some((p) => p.at && dayOf(Date.parse(p.at), tz) === today) };
   });

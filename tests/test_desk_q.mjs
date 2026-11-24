@@ -183,6 +183,18 @@ t('show of a key not in the queue refuses', W.run('--plain', 'voicepa', 'show', 
 const bare = W.run();
 t('AC12 piped with no arguments prints the overview', bare.code === 0 && /^◆ .*\n● \d+ workers? running │ /.test(bare.out) && rowOf(bare.out, 'voicepa') != null, true);
 
+// ---- the repo screen has the week's time parked by cause (stuck-time.mjs), each cause with its tracking issue
+{
+  const st = join(W.env.HOME, '.desk-autopilot', 'acme__voicepa');
+  writeFileSync(join(st, 'stuck-intervals.jsonl'), `${JSON.stringify({ key: 'VPL-3', batch: null, cause: 'park: hold', start: clockAgo(5), end: null })}\n`);
+  writeFileSync(join(st, 'stuck-links.json'), JSON.stringify({ 'park: hold': { ref: '#42', url: null } }));
+  const stuckLines = lines(W.run('--plain', 'voicepa').out).filter((l) => l.startsWith('time parked by cause'));
+  t('the repo screen names the week\'s hours parked, the tickets and the top causes with their tracking issues',
+    stuckLines.length === 1 && /^time parked by cause, week \d{4}-W\d\d: \d+\.\dh over 1 ticket; top: park: hold \d+\.\dh \(1 ticket, #42\)$/.test(stuckLines[0]), true);
+  rmSync(join(st, 'stuck-intervals.jsonl'));
+  rmSync(join(st, 'stuck-links.json'));
+}
+
 // ---- AC6 (DS-217 AC5): a held ticket whose blocker is parked for its own reason waits on that blocker,
 // which is counted as needing you; open Jira blockers outside the batch are what blocks a ticket.
 const S = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch: 'vp', concurrency: 3, tickets: {

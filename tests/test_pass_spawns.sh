@@ -1145,6 +1145,8 @@ check "DS-758 AC2 a ticket held for memory counts under memory, not collision" \
   'echo "$ml" | jq -e ".held.memory == 1 and .held.collision == 1" >/dev/null'
 check "DS-758 the line names the held ticket, the running one holding it and the file" \
   'echo "$ml" | jq -e ".collisions == [{\"key\":\"MX-2\",\"with\":[\"MX-1\"],\"files\":[\"src/a.ts\"]}]" >/dev/null'
+check "the pass opens a stuck interval for each ticket a hold kept waiting, with its cause, from the pass's time" \
+  '[ "$(jq -sc "map(select(.end == null) | [.key, .cause, .start == .recorded]) | sort" "$T/state-mx/stuck-intervals.jsonl")" = "[[\"MX-2\",\"collision\",true],[\"MX-3\",\"memory: low available\",true]]" ]'
 check "DS-758 AC4 after nine such passes, this 10th one (1 of 5 running) carries the warning, stamped when written" \
   'echo "$ml" | jq -e ".concurrency == 5 and (.warning | test(\"^10 passes in a row .*MX-2 \\\\(behind MX-1 on src/a.ts\\\\)\")) and .warned_at >= .at" >/dev/null && echo "$out" | grep -q "^collision warning (sent to the check-in digest): 10 passes"'
 check "DS-758 the queue's pass record carries the streak and the warning on to the next pass" \

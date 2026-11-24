@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import * as E from './desk-env.mjs';
 import { readQueue, prStatusOf } from './batch-state.mjs';
 import { archivedOf, everyTicket } from './queue-store.mjs';
+import { batchIdentity } from './stuck-time.mjs';
 
 // The named batches' folders under a standing batch's queue or state folder `dir`, sorted. A name that
 // is not a safe id, `.done` included, is not a batch.
@@ -28,13 +29,21 @@ export function listBatches(slug = E.repoSlug()) {
 }
 
 // The archived named batches: batch.mjs moves a batch's queue folder and its state folder into
-// batches/.done/ under the same name, so a batch archived inside the window still counts.
+// batches/.done/ under the same name, so a batch archived inside the window still counts. Each carries
+// its identity (stuck-time.mjs batchIdentity: the name its passes ran under, as `archived`, and `created`)
+// and its repo's state folder as `repoState`, which its path no longer gives. One with no identity is
+// named by its folder, less the time batch.mjs adds to a second archive of one name.
+const DONE_SUFFIX = /\.\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d-\d{3}Z$/;
+const archivedEntry = (folder, queue, state, repoState) => {
+  const id = batchIdentity(state);
+  return { name: `${folder} (archived)`, queue, state, archived: id?.name || folder.replace(DONE_SUFFIX, ''), created: id?.created ?? null, repoState };
+};
 export function archivedBatches({ queueRoot, stateRoot }) {
   const qdone = join(queueRoot, E.BATCHES_DIR, '.done');
   let names = [];
   try { names = readdirSync(qdone, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort(); } catch { return []; }
   return names.filter((n) => existsSync(join(qdone, n, 'queue.json')))
-    .map((n) => ({ name: `${n} (archived)`, queue: join(qdone, n, 'queue.json'), state: join(stateRoot, E.BATCHES_DIR, '.done', n) }));
+    .map((n) => archivedEntry(n, join(qdone, n, 'queue.json'), join(stateRoot, E.BATCHES_DIR, '.done', n), stateRoot));
 }
 // Every batch of the repo, archived named ones last.
 export const allBatches = (slug) => {

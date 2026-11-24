@@ -5,6 +5,7 @@
 //
 //   import { renderPage, pageAge } from './levers-page.mjs'
 import * as MS from './merge-stages.mjs';
+import { fmtHours } from './stuck-time.mjs';
 import { DECISION_RULE, GUARDRAILS, KEPT_STATES as KEPT, REGISTRY } from './lever-registry.mjs';
 
 // An age in seconds as words, for the view model and the page alike: "3 hours ago". `short` gives
@@ -342,6 +343,21 @@ function mergeStages(v) {
     + MS.STAGES.filter((k) => r.stages?.[k]?.n).map((k) => `<tr><th scope="row">${esc(MS.STAGE_NAMES[k])}</th><td>${esc(MS.fmt(r.stages[k].median))}</td><td>${esc(MS.fmt(r.stages[k].p75))}</td><td>${r.stages[k].n}</td></tr>`).join('')
     + `</tbody></table>${r.outage ? `<p class="muted small">${r.outage} external review wait${r.outage === 1 ? '' : 's'} inside a gate reviewer outage left out of the medians.</p>` : ''}`;
   return `<section aria-labelledby="ms-h" class="stack12"><div class="sec-head"><h2 id="ms-h">Merge time by stage</h2></div>${repos.map(table).join('')}</section>`;
+}
+
+// Each repo's time parked by cause (stuck-time.mjs), this ISO week and last: the hours, the tickets
+// affected and each cause, most hours first, with its tracking issue where one is linked. Nothing until a
+// ticket has sat stuck.
+function stuckTime(v) {
+  const repos = v.panels.stuck_time?.repos ?? [];
+  if (!repos.length) return '';
+  const issue = (l) => (!l ? '—' : l.url ? `<a href="${esc(l.url)}">${esc(l.ref)}</a>` : esc(l.ref));
+  const table = (name, w) => `<table class="stages"><caption>${esc(name)} · week ${esc(w.week)} · ${esc(fmtHours(w.hours))} over ${w.tickets} ticket${w.tickets === 1 ? '' : 's'}</caption>`
+    + '<thead><tr><th scope="col">Cause</th><th scope="col">Hours</th><th scope="col">Tickets</th><th scope="col">Tracking issue</th></tr></thead><tbody>'
+    + w.causes.map((c) => `<tr><th scope="row">${esc(c.cause)}</th><td>${esc(fmtHours(c.hours))}</td><td>${c.tickets}</td><td>${issue(c.link)}</td></tr>`).join('')
+    + '</tbody></table>';
+  const body = repos.map((r) => r.weeks.filter((w) => w.tickets).map((w) => table(r.name, w)).join('')).join('');
+  return `<section aria-labelledby="st-h" class="stack12"><div class="sec-head"><h2 id="st-h">Time parked by cause</h2></div>${body}</section>`;
 }
 
 // When desk last kept `lever` in `repo`, from the change list; null when no change records it.
@@ -684,6 +700,7 @@ ${summary(view)}
 ${tiles(view, today)}
 ${trends(view)}
 ${mergeStages(view)}
+${stuckTime(view)}
 ${leverTable(view, today)}
 ${changes(view, today)}
 ${today ? '' : howDesk()}
