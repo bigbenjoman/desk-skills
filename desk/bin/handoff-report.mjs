@@ -32,6 +32,10 @@ import { EVIDENCE_KEEP_DAYS, GUARDS, outcomeIn, withOutcomes } from './levers-ev
 import { allBatches, DAY_MS, perTicket } from './phase0-report.mjs';
 import { everyTicket } from './queue-store.mjs';
 import { readQueue } from './batch-state.mjs';
+import { FINISHED, STATES } from './queue-states.mjs';
+
+// The queue states a ticket is still in progress in: neither finished nor parked.
+const IN_PROGRESS = STATES.filter((s) => !FINISHED.includes(s) && s !== 'parked');
 
 // The fewest sessions an arm needs before it is compared, and the fewest tickets with a value a
 // guardrail needs on both the arm and the baseline before it counts as measured.
@@ -173,8 +177,12 @@ function armRows(sessions, tickets) {
     const usd = list.reduce((x, s) => x + s.usd, 0);
     const overheads = list.flatMap((s) => s.resume_overheads);
     const mapped = new Map();
-    // Only a ticket with an outcome counts: an open one's post-merge is 0 and its fix tries so far.
-    for (const s of list) { const t = ticketOf(s.branch, tickets); if (t && outcomeIn(t)) mapped.set(`${t.batch ?? ''}|${t.key}`, t); }
+    // Only a ticket with an outcome counts: an open one's post-merge is 0 and its fix tries so far. A
+    // requeued ticket keeps its first merged_at while it runs again, so its current state must be done too.
+    for (const s of list) {
+      const t = ticketOf(s.branch, tickets);
+      if (t && outcomeIn(t) && !IN_PROGRESS.includes(t.state)) mapped.set(`${t.batch ?? ''}|${t.key}`, t);
+    }
     const rates = Object.fromEntries(CHECKED.map((g) => {
       const vals = [...mapped.values()].map(GUARDS[g].value).filter((v) => v != null);
       return [g, { tickets: vals.length, rate: mean(vals) }];
@@ -214,6 +222,7 @@ function recommend(arms) {
     if (!base || base.sessions < MIN_SESSIONS || base.usd_per_active_hour == null) {
       return { ...out, verdict: 'not enough data', why: `the ${BASELINE_PCTS.join('/')}% baseline has ${base?.sessions ?? 0} session(s); needs ${MIN_SESSIONS}` };
     }
+    if (base.unpriced) return { ...out, baseline: base.arm, verdict: 'not enough data', why: `the ${base.arm} baseline has ${base.unpriced} request(s) on a model with no price` };
     const others = here.filter((a) => a !== base && a.sessions >= MIN_SESSIONS && a.usd_per_active_hour != null);
     if (!others.length) return { ...out, baseline: base.arm, verdict: 'not enough data', why: `no other arm has ${MIN_SESSIONS} session(s)` };
     const refused = [];
@@ -221,8 +230,10 @@ function recommend(arms) {
     for (const a of others) {
       const g = guardrailsAgainst(a, base);
       a.guardrail_status = g;
-      const bad = Object.entries(g).filter(([, v]) => v.status !== 'holds');
-      if (bad.length) refused.push({ arm: a.arm, why: bad.map(([k, v]) => `${k} ${v.status}: ${v.why}`).join('; ') });
+      // Dollars are compared on complete data only: an unpriced request adds hours but no dollars.
+      const bad = [...(a.unpriced ? [`${a.unpriced} request(s) on a model with no price`] : []),
+        ...Object.entries(g).filter(([, v]) => v.status !== 'holds').map(([k, v]) => `${k} ${v.status}: ${v.why}`)];
+      if (bad.length) refused.push({ arm: a.arm, why: bad.join('; ') });
       else eligible.push(a);
     }
     const best = eligible.reduce((x, y) => (y.usd_per_active_hour < x.usd_per_active_hour ? y : x));
