@@ -82,6 +82,16 @@ rm -rf "$T/repo/prisma"
 check "#1363 a seeded user is taken for Test sign-in at spawn: the row is written noted as desk's, and the ticket spawns" \
   '[ "$(field SG-3 state)" = "\"running\"" ] && grep -qF "| Test sign-in | \`maya.dev@acme.test\` (set by desk: a development user prisma/seed.ts creates;" "$DESK_CONFIG" && echo "$out" | grep -qF "SG-3: desk set config §4 \"Test sign-in\" = maya.dev@acme.test"'
 check "#1363 and it is a taken decision for the check-in digest" 'jq -e "select(.chose == \"maya.dev@acme.test\" and .ticket == \"config\")" "$T/state-sg/decisions.jsonl" >/dev/null'
+# A decision log that cannot be written is said, not claimed to be in the digest.
+cp "$T/config.md" "$DESK_CONFIG"; printf '\n## 4. Checks\n| Field | Value |\n|---|---|\n| Dev server | `npm run dev` |\n' >> "$DESK_CONFIG"
+mkdir -p "$T/repo/prisma"; printf "await db.user.create({ data: { email: 'omar.dev@acme.test' } });\n" > "$T/repo/prisma/seed.ts"
+chmod a-w "$T/state-sg/decisions.jsonl"
+for k in SG-1 SG-2 SG-3; do q set "$k" state=done; done; q add SG-4; q set SG-4 state=triaged branch=feat/SG-4 lane=A
+printf '{"ticket":"SG-4","summary":"A third page","renders":true}' > "$T/state-sg/triage/SG-4.json"
+out=$(node "$B/pass.mjs" 2>&1)
+rm -rf "$T/repo/prisma"; chmod u+w "$T/state-sg/decisions.jsonl"
+check "#1363 with the decision log unwritable, the line says the digest does not list it, and the ticket still spawns" \
+  '[ "$(field SG-4 state)" = "\"running\"" ] && echo "$out" | grep -q "SG-4: desk set config §4 \"Test sign-in\" = omar.dev@acme.test .*the decision log could not be written (.*), so the check-in digest does not list it" && ! echo "$out" | grep -q "SG-4: .*; in the check-in digest$"'
 export DESK_CONFIG="$T/config.md"
 
 # ---- pass.mjs --batch X-1, with no queue or state exported, works X-1's queue, and the

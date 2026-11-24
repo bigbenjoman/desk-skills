@@ -3706,7 +3706,10 @@ function rowsNeeded(key, rec) {
       const root = E.configFileRoot(config) ?? E.currentRepo().dir;
       const c = m && considered(m, { root, devDirs: devDirsIn(dev) });
       const took = c ? takeRows(config, [{ m, ...c }], { slug: E.repoSlug(), state: E.repoStateOf(STATE) }) : null;
-      if (took?.done.length) { report.recovered.push(`${key}: desk set config ${took.done[0]} (${c.why}), so its screenshots can sign in; in the check-in digest`); return null; }
+      if (took?.done.length) {
+        report.recovered.push(`${key}: desk set config ${took.done[0]} (${c.why}), so its screenshots can sign in; ${took.unlogged.length ? `the decision log could not be written (${took.unlogged[0]}), so the check-in digest does not list it: the row's note in the config says it is desk's` : 'in the check-in digest'}`);
+        return null;
+      }
     } catch { /* not taken: the person is asked, below */ }
   }
   return `NEEDS ROW — ${key} renders, so its screenshots sign in as a test user, and §4 Test sign-in is unset, so no worker was spawned to park on it after its PR opens. Add one item per app a §4 Dev server item names, \`<app dir>: <email>\` (bare for the root), of an existing development user who holds the grant its signed-in pages need, never a password, or \`none\` where no app needs signing in to. Where the config has no such row, add it with node ${join(E.runBin(), 'desk-env.mjs')} add-row 4 "Test sign-in" "<value>"; else set it in ${E.configPathOrNull() ?? 'the config'}. Then requeue it`;
