@@ -82,7 +82,7 @@ export function update(rec, { seen = [], waits = [], now = Date.now(), batch = n
 // is the latest), or SEED_PAGES pages.
 export const SEED_PRS = 50;
 export const SEED_PAGES = 4;
-const PR_FIELDS = 'number createdAt updatedAt commits(last:1){nodes{commit{committedDate}}} timelineItems(itemTypes:[READY_FOR_REVIEW_EVENT],last:20){nodes{... on ReadyForReviewEvent{createdAt}}} reviews(last:50){nodes{author{login} submittedAt}}';
+const PR_FIELDS = 'number createdAt updatedAt commits(last:1){nodes{commit{committedDate}}} timelineItems(itemTypes:[READY_FOR_REVIEW_EVENT],last:20){nodes{... on ReadyForReviewEvent{createdAt}}} reviews(last:50){pageInfo{hasPreviousPage} nodes{author{login} submittedAt}}';
 // The GraphQL query for a seed ($owner, $name; with `cold` $q, seedSearch's, and with `after` $after):
 // each of `prs`, and with `cold` a page of the repo's most recently updated PRs too.
 export function seedQuery(prs, cold, after = false) {
@@ -120,12 +120,17 @@ export const seedSearch = (repo) => `repo:${repo} is:pr sort:updated-desc`;
 export function seedOf(payload, login) {
   const d = payload?.data ?? {};
   const reviews = (p) => (p.reviews?.nodes ?? []).filter((r) => r?.submittedAt && loginIn(r.author?.login, login)).map((r) => r.submittedAt).sort();
+  // A PR showing only its latest reviews, none of them that reviewer's, may hide one of its older than
+  // the oldest shown: that time stands in for it, overstating neither its quiet nor a PR's wait.
+  const hidden = (p) => (p.reviews?.pageInfo?.hasPreviousPage && !reviews(p).length
+    ? (p.reviews.nodes ?? []).map((r) => r?.submittedAt).filter(Boolean).sort()[0] ?? null : null);
+  const latest = (p) => reviews(p).at(-1) ?? hidden(p);
   const readies = (p) => (p.timelineItems?.nodes ?? []).map((e) => e?.createdAt).filter(Boolean).sort();
   const recent = (d.recent?.nodes ?? []).filter((p) => p?.number);
   const named = Object.entries(d.repository ?? {}).filter(([k, p]) => /^p\d+$/.test(k) && p?.number).map(([, p]) => p);
   // Pages read without reaching its latest review: none came after the oldest PR read was last updated,
   // so that is when it last reviewed at the latest, which understates the quiet rather than overstating it.
-  const found = [...recent, ...named].flatMap(reviews).sort().at(-1) ?? null;
+  const found = [...recent, ...named].map(latest).filter(Boolean).sort().at(-1) ?? null;
   const floor = d.recent?.complete === false ? recent.map((p) => p.updatedAt).filter(Boolean).sort()[0] ?? null : null;
   const last = [found, floor].filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1) ?? null;
   const lags = [];
@@ -138,7 +143,7 @@ export function seedOf(payload, login) {
   }
   const began = {};
   for (const p of named) {
-    const ts = [readies(p).at(-1) ?? p.createdAt, p.commits?.nodes?.[0]?.commit?.committedDate, reviews(p).at(-1)].map((t) => Date.parse(t)).filter(Number.isFinite);
+    const ts = [readies(p).at(-1) ?? p.createdAt, p.commits?.nodes?.[0]?.commit?.committedDate, latest(p)].map((t) => Date.parse(t)).filter(Number.isFinite);
     if (ts.length) began[p.number] = iso(Math.max(...ts));
   }
   return { last, lags: lags.sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).slice(-LAGS_KEPT).map((x) => x.lag), began };
