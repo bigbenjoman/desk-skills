@@ -325,4 +325,127 @@ run --ledger "$T/amr-ledger.json" --user-settings "$BADU" automode "$T/am-vp.jso
 printf '{"autoMode": {' > "$BADU"
 run --ledger "$T/amr-ledger.json" --user-settings "$BADU" --settings "$T/amr/.claude/settings.local.json" remove pr-merge-green pr-ready
 check "an unreadable user settings file in remove: named as failed, exit 1, permission rules still revoked" '[ $rc -eq 1 ] && [[ "$out" == *"FAILED   autoMode.allow [bigbenjoman/voicepa] merge"* ]] && [[ "$out" == *"REMOVED  allow Bash(gh pr ready *)"* ]] && ! grep -q "gh pr ready" "$T/amr/.claude/settings.local.json" && jq -e ".automode[] | select(.kind == \"merge\")" "$T/amr-ledger.json" >/dev/null'
+
+# orchestrator sweep: with more than one configured repo, each repo's pinned merge with its own merge
+# method, desk's reinstall, needs-you and intake, and the issue and tracker commands per repo
+CR="$HOME/.config/desk/repos"; SRC=/src/desk-skills
+cfg(){ # <slug> <owner/name> <merge method> <pr-merge-green cell> [<§3 key> <cell>]...
+  local slug=$1 repo=$2 method=$3 green=$4; shift 4; mkdir -p "$CR/$slug"
+  { printf '## 0. This repo\n\n| Field | Value |\n|---|---|\n| GitHub repo | `%s` (`owner/name`) |\n\n' "$repo"
+    printf '## 3. Permissions\n\n### Round\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n'
+    printf '| `pr-merge-green` | merge | `yes` | %s |\n' "$green"
+    while [ $# -gt 1 ]; do printf '| `%s` | x | `ask` | %s |\n' "$1" "$2"; shift 2; done
+    printf '\n## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Merge method | `%s` (`squash`, `merge` or `rebase`) |\n' "$method"
+  } > "$CR/$slug/config.md"
+}
+cfg acme__web acme/web squash '`yes`' gh-issue-create '`ask` (`yes` once filed)'
+cfg acme__api acme/api merge '`yes`' gh-issue-create '`yes`' gh-issue-comment '`yes`' read-own-work '`yes`' read-others '`yes`' jira-comment '`yes`'
+cfg acme__ops acme/ops Rebase '`yes` (no approval wait)' pr-auto-merge '`yes`'
+cfg acme__off acme/off merge '`ask`'
+mkdir -p "$HOME/.claude/desk"; printf '%s\n' "$SRC" > "$HOME/.claude/desk/source-checkout"
+ln -s "$S/../desk/bin" "$HOME/.claude/desk/bin"  # the configs are read through desk-env.mjs
+mkrepo sw; printf '.claude/settings.local.json\n' > "$T/sw/.gitignore"; SW="$T/sw/.claude/settings.local.json"
+printf '{"add":[]}\n' > "$T/empty.json"
+run --ledger "$T/sw.json" --settings "$SW" add "$T/empty.json"
+merges=$(jq -r '.permissions.allow[] | select(startswith("Bash(gh pr merge"))' "$SW")
+check "a repo's cross-repo merge rule takes its own merge method, never another's, whatever its case" '[ $rc -eq 0 ] && [[ "$merges" == *"--repo acme/api --merge --match-head-commit *)"* ]] && [[ "$merges" == *"--repo acme/ops --rebase --match-head-commit *)"* ]] && [[ "$merges" == *"--repo acme/web --squash --match-head-commit *)"* ]] && [ "$(printf "%s\n" "$merges" | grep -c .)" = 3 ]'
+check "  … none for a repo whose pr-merge-green is not yes" '! grep -q -- "--repo acme/off" "$SW"'
+check "  … every one pinned, with the pin guards beside them" '! printf "%s\n" "$merges" | grep -v -- "--match-head-commit \*)$" && jq -e ".permissions.ask | index(\"Bash(gh pr merge *--auto*)\") and index(\"Bash(gh pr merge *--match-head-commit=*)\") and index(\"Bash(gh pr merge *--repo*--repo*)\")" "$SW" >/dev/null'
+check "a row that says yes only in a note grants nothing" '! grep -q "gh issue create --repo acme/web" "$SW" && grep -qF "Bash(gh issue create --repo acme/api *)" "$SW"'
+# Claude Code's matching, as permission-rows.md's syntax table states it: deny, then ask, then allow;
+# * is any text; a trailing " *" that is the rule's only wildcard also matches the bare command.
+verdicts(){ python3 -c '
+import json, re, sys
+perm = json.load(open(sys.argv[1]))["permissions"]
+def hit(rule, cmd):
+    if not rule.startswith("Bash("):
+        return False
+    p = rule[5:-1]
+    rx = re.escape(p[:-2]) + "( .*)?" if p.endswith(" *") and p.count("*") == 1 else re.escape(p).replace(r"\*", ".*")
+    return re.fullmatch(rx, cmd, re.S) is not None
+for cmd in sys.stdin.read().splitlines():
+    print(next((l for l in ("deny", "ask", "allow") if any(hit(r, cmd) for r in perm.get(l, []))), "prompt") + "\t" + cmd)
+' "$1"; }
+out=$(verdicts "$SW" <<E | grep -v '^allow'
+gh pr merge 41 --repo acme/api --merge --match-head-commit 0a1b2c3d
+gh pr merge 7 --repo acme/ops --rebase --match-head-commit 0a1b2c3d
+gh pr merge 9 --repo acme/web --squash --match-head-commit 0a1b2c3d
+git -C $SRC branch --show-current
+git -C $SRC status --short
+git -C $SRC fetch -q
+git -C $SRC log --oneline HEAD..origin/main
+git -C $SRC pull --ff-only
+$SRC/install.sh </dev/null
+node ~/.claude/desk/bin/needs-you.mjs list
+node ~/.claude/desk/bin/needs-you.mjs left api
+node ~/.claude/desk/bin/needs-you.mjs record api ABC-12 resume "go ahead"
+node ~/.claude/desk/bin/needs-you.mjs ask api "rotate the key"
+node ~/.claude/desk/bin/needs-you.mjs ask-status api 3
+node ~/.claude/desk/bin/intake.mjs run --force
+node ~/.claude/desk/bin/intake.mjs admit ABC-12 --session
+DESK_REPO_OVERRIDE=acme/api node ~/.claude/desk/bin/intake.mjs admit ABC-12 --by ben
+gh issue create --repo acme/api --title Follow-up --body-file /tmp/f.md
+gh issue comment 12 --repo acme/api --body-file /tmp/c.md
+DESK_REPO_OVERRIDE=acme/api desk-jira search project=ABC
+DESK_REPO_OVERRIDE=acme/api desk-jira get ABC-12
+DESK_REPO_OVERRIDE=acme/api desk-jira comment ABC-12 /tmp/c.md
+E
+)
+check "every routine command of an orchestrator sweep matches a written allow rule, so none prompts" '[ -z "$out" ]'
+out=$(verdicts "$SW" <<E | grep -v '^ask\|^prompt'
+gh pr merge 41 --repo acme/api --merge
+gh pr merge 41 --repo acme/api --squash --match-head-commit 0a1b2c3d
+gh pr merge 41 --repo acme/off --merge --match-head-commit 0a1b2c3d
+gh pr merge 41 --repo acme/api --merge --match-head-commit 0a1b2c3d --repo acme/off
+gh pr merge 41 --repo acme/api --merge --match-head-commit 0a1b2c3d -R acme/off
+gh pr merge 41 --repo acme/api --merge --match-head-commit 0a1b2c3d --auto
+gh pr merge 41 --repo acme/api --merge --match-head-commit=0a1b2c3d
+gh pr merge https://github.com/acme/off/pull/5 --repo acme/api --merge --match-head-commit 0a1b2c3d
+gh issue comment https://github.com/acme/off/issues/5 --repo acme/api --body-file /tmp/c.md
+gh issue create --repo acme/web --title x
+gh issue create --repo acme/api --title x --repo acme/off
+DESK_REPO_OVERRIDE=acme/web desk-jira comment ABC-1 /tmp/c.md
+desk-jira comment ABC-1 /tmp/c.md
+git -C $SRC pull
+git -C $SRC push
+git -C /elsewhere pull --ff-only
+$SRC/install.sh --any-branch
+node ~/.claude/desk/bin/needs-you.mjs prune
+E
+)
+check "  … while an unpinned merge, another method, an ungranted repo, a second repo, a URL and anything else still prompt" '[ -z "$out" ]'
+# this repo's pr-auto-merge unguards *--auto*; a swept repo whose own pr-auto-merge is not yes keeps --auto prompting
+mkrepo sa; printf '.claude/settings.local.json\n' > "$T/sa/.gitignore"; SA="$T/sa/.claude/settings.local.json"
+cat > "$T/auto.json" <<'J'
+{"add":[{"list":"allow","rule":"Bash(gh pr merge * --auto --squash --match-head-commit *)","rows":["pr-auto-merge","pr-merge-green"]}],"remove_guards":[{"list":"ask","rule":"Bash(gh pr merge *--auto*)","rows":["pr-auto-merge"]}]}
+J
+run --ledger "$T/sa.json" --settings "$SA" add "$T/empty.json"
+run --ledger "$T/sa.json" --settings "$SA" add "$T/auto.json"
+out=$(verdicts "$SA" <<E | grep -v '^ask'
+gh pr merge 41 --repo acme/api --merge --match-head-commit 0a1b2c3d --auto
+gh pr merge 41 --auto --repo acme/api --merge --match-head-commit 0a1b2c3d
+gh pr merge 9 --repo acme/web --squash --match-head-commit 0a1b2c3d --auto
+E
+)
+check "with this repo's *--auto* guard removed, --auto on a swept repo whose pr-auto-merge is not yes still prompts" '! jq -e ".permissions.ask | index(\"Bash(gh pr merge *--auto*)\")" "$SA" >/dev/null && [ -z "$out" ]'
+check "  … and a swept repo that grants pr-auto-merge gets no such ask" '! grep -qF -- "--repo acme/ops*--auto" "$SA" && grep -qF -- "--repo acme/api*--auto*" "$SA"'
+out=$(jq -r '[.rules[] | select(.rule | test("--repo acme/|needs-you|intake|install.sh|desk-skills|desk-jira"))] | (length > 20) and (map(.rows == ["orchestrator-sweep"]) | all)' "$T/sw.json")
+check "each sweep rule is recorded under orchestrator-sweep" '[ "$out" = true ]'
+run --ledger "$T/sw.json" list --markdown
+check "  … and the §3c table lists them under that row" '[[ "$out" == *"| \`Bash(gh pr merge * --repo acme/api --merge --match-head-commit *)\` | allow | \`orchestrator-sweep\` |"* ]] && [[ "$out" == *"| \`Bash(git -C $SRC pull --ff-only)\` | allow | \`orchestrator-sweep\` |"* ]]'
+cfg acme__api acme/api merge '`no`'
+run --ledger "$T/sw.json" --settings "$SW" add "$T/empty.json"
+check "a repo whose pr-merge-green is revoked loses its cross-repo merge on the next add, and only that" '[ $rc -eq 0 ] && [[ "$out" == *"DROPPED  allow Bash(gh pr merge * --repo acme/api --merge --match-head-commit *)"* ]] && ! grep -q -- "--repo acme/api" "$SW" && ! grep -q -- "--repo acme/api" "$T/sw.json" && grep -qF -- "--repo acme/ops --rebase" "$SW"'
+cat > "$T/green.json" <<'J'
+{"add":[{"list":"allow","rule":"Bash(gh pr merge * --squash --match-head-commit *)","rows":["pr-merge-green"]},{"list":"ask","rule":"Bash(gh pr merge *--auto*)","rows":["pr-merge-green"]}]}
+J
+run --ledger "$T/sw.json" --settings "$SW" add "$T/green.json"
+run --ledger "$T/sw.json" --settings "$SW" remove orchestrator-sweep
+check "revoking orchestrator-sweep removes every sweep rule" '[ $rc -eq 0 ] && ! grep -qE -- "--repo acme/|needs-you|intake|install.sh|desk-skills|desk-jira" "$SW" && ! grep -q orchestrator-sweep "$T/sw.json" && grep -q "Monitor" "$SW"'
+check "  … but keeps a guard this repo's own merge rule still needs" 'jq -e ".permissions.ask | index(\"Bash(gh pr merge *--auto*)\")" "$SW" >/dev/null && jq -e ".rules[] | select(.rule == \"Bash(gh pr merge *--auto*)\" and .rows == [\"pr-merge-green\"])" "$T/sw.json" >/dev/null && ! jq -e ".permissions.ask | index(\"Bash(gh pr merge *--repo*--repo*)\")" "$SW" >/dev/null'
+chmod 000 "$CR/acme__ops/config.md"
+run --ledger "$T/sa.json" --settings "$SA" add "$T/empty.json"
+check "a config desk-env cannot read is named, and its repo gets no sweep rules" '[ $rc -eq 0 ] && [[ "$out" == *"unread   $CR/acme__ops/config.md"* ]] && [[ "$out" == *"DROPPED  allow Bash(gh pr merge * --repo acme/ops --rebase"* ]] && ! grep -q -- "acme/ops" "$SA"'
+chmod 644 "$CR/acme__ops/config.md"; rm -rf "$CR"
+
 echo; echo "$PASS passed, $FAIL failed"; [ $FAIL = 0 ]

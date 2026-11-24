@@ -68,6 +68,25 @@ reported `kept` and left in place. Workers never get them.
 | `orchestrator-tools` | `Monitor` `mcp__claude-in-chrome__*` `ArtifactComments` `ArtifactData` `Bash(node ~/.claude/desk/bin/desk-design.mjs check *)` `… status *` `… save *` `… import *` `… propose *` (`/desk-design`: these write only the state folder, the design directory and a `docs/design-*` worktree, and never push; `write` and `compare --out` take any path and `render` and `compare` launch a browser, so those three keep prompting) `Edit(~/.claude/projects/<repo root, each non-alphanumeric character as ->/memory/**)` (the repo's session memory directory, `desk-env paths`'s `DESK_MEMORY_DIR`) |
 | `orchestrator-tools` | `additionalDirectories`: `~/.desk-autopilot` and `~/.claude/desk` (written as absolute paths). Allows `Read(~/.desk-autopilot/**)` `Read(~/.claude/desk/**)` `Edit(~/.desk-autopilot/**)` (batch state, design snapshots) and `Read(~/.config/desk/repos/*/config.md)` `Read(~/.config/desk/machine.md)`. Ask `Edit(~/.config/desk/**)` and `Edit(~/.claude/desk/**)`: a config change can widen what workers may do, and the install is what they run, so both stay your call. `~/.config/desk` is not an additional directory and gets no wider Read: the credentials kept beside each config (the Jira token, a staging bypass secret under any name) keep prompting |
 
+## Written with a repo's plan once desk has more than one repo — the orchestrator sweep
+
+An orchestrator session runs in one repo but sweeps every configured repo: it merges green PRs in
+another repo with that repo's merge method, reinstalls desk, and records answers. That repo's own
+rules carry only this repo's merge flag, so `harness-rules.py add` also writes these, read from each
+`~/.config/desk/repos/*/config.md` through `desk-env get --json` (§0 GitHub repo, §3, §4 Merge
+method) whenever there are two or more; a config it cannot read is named `unread` and its repo gets
+none. Owner `orchestrator-sweep`, not a §3 row: `remove orchestrator-sweep` revokes them (until the
+next `add`), and each `add` reads the configs again, so a rule whose repo row is no longer `yes` is
+dropped (printed `DROPPED`). A repo's rule is written only while **that repo's** rows are `yes`.
+_Reach_: a `*` can still hold a flag such as `--auto` or a URL selector, which the asks below catch.
+`--auto` is caught by asks naming the swept repo, not by `*--auto*` alone, which this repo's
+`pr-auto-merge` removes. Workers never get them.
+
+| Owner | Allows |
+|---|---|
+| `orchestrator-sweep` | Desk's own commands: `Bash(node ~/.claude/desk/bin/needs-you.mjs list *)` `… left *` `… record *` `… ask *` `… ask-status *` `Bash(node ~/.claude/desk/bin/intake.mjs run *)` `… admit *` `… forget *`. The reinstall `/desk-update` §1 runs, on the checkout `~/.claude/desk/source-checkout` names, written out as an absolute path `<D>` (none when that file names no plain absolute path): `Bash(git -C <D> branch --show-current)` `Bash(git -C <D> status --short)` `Bash(git -C <D> fetch -q)` `Bash(git -C <D> log --oneline HEAD..origin/main)` `Bash(git -C <D> pull --ff-only)` `Bash(<D>/install.sh)` `Bash(<D>/install.sh </dev/null)`; never another git command there, nor `install.sh --any-branch` |
+| `orchestrator-sweep` | Per configured repo `<owner/name>`, while its own rows are `yes`: `pr-merge-green`: `Bash(gh pr merge * --repo <owner/name> <its merge> --match-head-commit *)`; `gh-issue-create`: `Bash(gh issue create --repo <owner/name> *)`; `gh-issue-comment`: `Bash(gh issue comment * --repo <owner/name> *)`; `read-own-work` + `read-others`: `Bash(DESK_REPO_OVERRIDE=<owner/name> desk-jira get *)` `… search *` `… comments *`; `jira-comment`: `Bash(DESK_REPO_OVERRIDE=<owner/name> desk-jira comment *)`; always: `Bash(DESK_REPO_OVERRIDE=<owner/name> node ~/.claude/desk/bin/intake.mjs run *)` `… admit *` `… forget *` (intake reads the repo's rows itself). Run them in exactly these forms. Asks with them: `pr-merge-green`'s pin guards on `gh pr merge` (`*--auto*`, the quote, comment, redirect, expansion and `--match-head-commit=*` asks), for each repo whose own `pr-auto-merge` is not `yes`, `ask: Bash(gh pr merge *--auto*--repo <owner/name>*)` and `ask: Bash(gh pr merge *--repo <owner/name>*--auto*)` (no plan unguards these, so `--auto` keeps prompting there whatever this repo's `pr-auto-merge` says); on each of `gh pr merge`, `gh issue create` and `gh issue comment`, `*--repo*--repo*` and `* -R*` (a second repo); and on `gh pr merge` and `gh issue comment`, `*://*`, since gh takes a PR or issue URL over `--repo` (`gh issue create` takes no selector). These catch the common ways to reach another repo, not every shell construct. An ask stays while any owner is granted, so revoking this row leaves the guards the repo's own merge rules need |
+
 ## Auto-mode entries — per repo, in the user settings
 
 `harness-rules.py automode` (desk-setup §4 step 5) writes these to `autoMode.allow` in

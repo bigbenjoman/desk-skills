@@ -40,6 +40,10 @@ REPO_RULES=(--settings "$ROOT/.claude/settings.local.json" --ledger "$CREDS/harn
      ArtifactData, Edit on this repo's session memory directory, the desk folders
      `~/.desk-autopilot` and `~/.claude/desk`, and Read on the desk config files): `add` writes them with every plan,
      owner `orchestrator-tools` (permission-rows.md). Show them in step 3 all the same.
+   - nor the orchestrator sweep: with two or more configured repos, `add` writes each repo's pinned
+     merge with **that repo's** merge method, the desk reinstall, needs-you, intake, issue and
+     tracker commands, owner `orchestrator-sweep` (permission-rows.md), from the configs. Show them
+     in step 3 too.
 3. **Show the plan** grouped by row, _Reach_ notes included, name the file it goes to
    (`<root>/.claude/settings.local.json`), and get a yes.
 4. Apply it **to this repo only**, then refresh §3c:
