@@ -4435,6 +4435,7 @@ runSteps({
     'free-previews': (a) => releasePreviews(PREVIEW_TEAM, a.done.map((d) => ({ ...d, label: E.previewLabel(GH_REPO, { pr: d.pr }) })), { env: LEASE_ENV }),
     merged: (a) => q('merged', a.key, ...(a.at ? [a.at] : []), ...(a.merge ? ['--pr', String(a.merge.pr), '--by', a.merge.by,
       ...(a.merge.head_sha ? ['--head-sha', a.merge.head_sha] : []), ...(a.merge.base ? ['--base', a.merge.base] : [])] : [])),
+    'merge-log': () => ({ events: mergeLogNow() }),
     automerge: (a) => {
       try { ledgerAppend(LEDGER_AT.repoDir, a.events.map((e) => ({ ...e, batch: LEDGER_AT.batch, key: a.key })), { by: 'pass' }); }
       catch (e) { report.failed.push(`${MISSED_PREFIX} for ${a.key}'s auto-merge lines in the merge log: ${String(e?.message ?? e).split('\n')[0]}. The next pass folds them`); }

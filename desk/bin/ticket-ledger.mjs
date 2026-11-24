@@ -206,7 +206,8 @@ function apply(state, ev) {
     case 'waiting': t.waits[d.on] = { ...d }; t.fields[WAITS] = null; break;
     case 'waited': delete t.waits[d.on]; t.fields[WAITS] = null; break;
     case 'pr_opened': t.pr = d.pr; break;
-    case 'automerge_armed': t.automerge = { by: d.by, pr: d.pr, head_sha: d.head_sha }; t.merge_log = Math.max(t.merge_log ?? -1, d.line); break;
+    // An arm on the PR the ticket's merge already names is history folded late: it arms nothing.
+    case 'automerge_armed': if (t.merge?.pr !== d.pr) t.automerge = { by: d.by, pr: d.pr, head_sha: d.head_sha }; t.merge_log = Math.max(t.merge_log ?? -1, d.line); break;
     case 'automerge_disarmed': t.automerge = null; t.merge_log = Math.max(t.merge_log ?? -1, d.line); break;
     // merged_at keeps a ticket's first merge, as queue.mjs merged does.
     case 'merged': t.merge = { ...d, at: ev.at }; t.fields.merged_at ??= ev.at; t.automerge = null; break;

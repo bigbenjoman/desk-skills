@@ -87,6 +87,9 @@ t('a batch event is never illegal', L.legality(L.emptyState(), ev('base_red')).l
   t('DS-900 the fold keeps the last merge-log line folded, and the arm ended', j([after.tickets['DS-1'].merge_log, after.tickets['DS-1'].automerge]), j([7, null]));
   const reseeded = L.reduce([env(4, 'seeded', VALID.seeded)], after);
   t('DS-900 a seed keeps how far the merge log was folded', reseeded.tickets['DS-1'].merge_log, 7);
+  const merged = L.reduce([env(5, 'merged', VALID.merged), env(6, 'automerge_armed', { ...VALID.automerge_armed, pr: VALID.merged.pr, line: 9 })], s);
+  t('DS-900 an arm on the merged PR folded after its merge arms nothing, and is still counted folded',
+    j([merged.tickets['DS-1'].automerge, merged.tickets['DS-1'].merge_log]), j([null, 9]));
 }
 
 // AC1: three valid events append in order, each with a rising seq, its time and its writer.

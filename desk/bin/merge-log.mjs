@@ -34,19 +34,19 @@ export const CLAIM_MS = 10 * 60 * 1000;
 export const EVENTS = ['claim', 'merged', 'armed', 'disarmed', 'failed'];
 export const logPath = () => E.expandHome(process.env.DESK_MERGE_LOG ?? join(E.HOME, '.desk-autopilot', 'merges.jsonl'));
 
-// Every event in the log, oldest first; a torn line is skipped, never fatal.
-export function readLog(path = logPath()) {
+// Each parsed line of the log with its position from 0, oldest first; a torn line is skipped, never fatal.
+function parsed(path) {
   if (!existsSync(path)) return [];
-  return readFileSync(path, 'utf8').split('\n').filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
+  return readFileSync(path, 'utf8').split('\n').flatMap((l, line) => { if (!l) return []; try { return [{ v: JSON.parse(l), line }]; } catch { return []; } });
 }
-// readLog's events, each with `line`: its line's position in the log from 0, which an append never
-// moves, so a reader folding the log keeps how far it has read. Throws when the log cannot be read.
+// Every event in the log, oldest first.
+export function readLog(path = logPath()) {
+  return parsed(path).map((p) => p.v);
+}
+// readLog's events, each with `line`: its line's position in the log, which an append never moves, so a
+// reader folding the log keeps how far it has read. Throws when the log cannot be read.
 export function readLogLines(path = logPath()) {
-  if (!existsSync(path)) return [];
-  return readFileSync(path, 'utf8').split('\n').flatMap((l, line) => {
-    if (!l) return [];
-    try { const e = JSON.parse(l); return e && typeof e === 'object' ? [{ ...e, line }] : []; } catch { return []; }
-  });
+  return parsed(path).flatMap(({ v, line }) => (v && typeof v === 'object' ? [{ ...v, line }] : []));
 }
 const append = (e, path) => { mkdirSync(dirname(path), { recursive: true }); appendFileSync(path, `${JSON.stringify(e)}\n`); };
 // Every read-check-append under one lock beside the log, so two mergers claiming at once cannot both

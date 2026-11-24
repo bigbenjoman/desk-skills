@@ -307,6 +307,34 @@ const lists = (acts) => acts.at(-1);
     j([ofType(off, 'merged'), ofType(off, 'automerge').length, lists(off).unknownMergers]), j([[{ type: 'merged', key: 'M', at: '2026-11-19T09:00:00Z' }], 0, 0]));
   const unseeded = run(on({ mergeLog: [line(2, 'armed', 'session s2')], folded: null }), openRead);
   t('DS-900 a ledger that could not be read, or has not named the batch yet, gets no auto-merge line', ofType(unseeded, 'automerge').length, 0);
+
+  // The merge log is read again when the merge is recorded, after the PR's read.
+  const freshly = (log) => (a) => (a.type === 'merge-log' ? { events: log } : answers(mergedRead)(a));
+  const late = drive(decidePrStatus(on({ mergeLog: [line(0, 'claim', 'session s1')] })), freshly([line(0, 'claim', 'session s1'), line(1, 'merged', 'session s1')]));
+  t('DS-900 a session that recorded its merge after the pass took its snapshot is still named the merger',
+    ofType(late, 'merged')[0]?.merge?.by, 'session s1');
+  const claimed = run(on({ mergeLog: [line(2, 'armed', 'session s2'), { ...line(3, 'claim', 'session s1'), at: '2026-11-19T09:55:00.000Z' }] }), mergedRead);
+  t('DS-900 a desk merger that claimed the PR minutes ago and has not recorded its merge yet is named the merger',
+    ofType(claimed, 'merged')[0]?.merge?.by, 'session s1');
+  const stale = run(on({ mergeLog: [line(3, 'claim', 'session s1')] }), mergedRead);
+  t('DS-900 a claim older than the claim window names nobody: github-automerge', ofType(stale, 'merged')[0]?.merge?.by, 'github-automerge');
+  const unreadNow = drive(decidePrStatus(on({ mergeLog: [line(1, 'merged', 'session s1')] })), freshly(null));
+  t('DS-900 a merge log unreadable when the merge is recorded counts its merger unknown',
+    j([ofType(unreadNow, 'merged')[0]?.merge?.by, lists(unreadNow).unknownMergers]), j(['github-automerge', 1]));
+
+  // A status needs-you kept naming another repo's PR of the same number takes nothing of this repo's PR.
+  const elsewhere = done('M', 40, { pr_status: status(40, 'MERGED', { merged_at: '2026-11-19T09:00:00Z', url: 'https://github.com/o/other/pull/40' }) });
+  const foreign = run(snap([elsewhere], { repo: REPO, ledger: true, folded: {}, mergeLog: [line(2, 'armed', 'session s2'), line(3, 'merged', 'session s2')] }), {});
+  t('DS-900 a ticket done on another repo\'s PR is recorded merged as before, naming no merger, and folds no line of this repo\'s PR',
+    j([ofType(foreign, 'merged'), ofType(foreign, 'automerge').length]), j([[{ type: 'merged', key: 'M', at: '2026-11-19T09:00:00Z' }], 0]));
+
+  // A line one pass could not fold is folded by a later one, merged or archived.
+  const keptMerged = run(snap([recorded], { repo: REPO, ledger: true, folded: { M: -1 }, mergeLog: [line(2, 'armed', 'session s2'), line(3, 'merged', 'session s2')] }), mergedRead);
+  t('DS-900 a merged ticket recorded already still folds an arm line left unfolded', j(ofType(keptMerged, 'automerge')[0]?.events.map((e) => e.data.line)), j([2]));
+  const gone = { ...recorded, key: 'G' };
+  const archived = run(snap([], { repo: REPO, ledger: true, archived: { G: gone, H: { ...gone, key: 'H' } }, folded: { G: -1 }, mergeLog: [line(2, 'armed', 'session s2')] }), {});
+  t('DS-900 an archived ticket the ledger knows folds its unfolded lines; one it does not know folds none',
+    j(ofType(archived, 'automerge').map((a) => [a.key, a.events.length])), j([['G', 1]]));
 }
 
 if (fails) { console.log(`${fails} failed`); process.exit(1); }

@@ -37,8 +37,11 @@
 //                                      With the ledger lever on, merge is {by, pr, head_sha, base}, who
 //                                      merged which PR at which head onto which base, recorded on the
 //                                      ticket as its merge (queue.mjs merged --by --pr --head-sha --base)
+//   merge-log {}                       -> { events }: the merge log read now, as mergeLog is (with the
+//                                      lever on, before a merge is recorded). No answer keeps mergeLog
 //   automerge {key, events}            append these automerge_armed and automerge_disarmed events, each
-//                                      folding one merge-log line, to the ticket ledger
+//                                      folding one merge-log line, to the ticket ledger (a live or an
+//                                      archived ticket's)
 //   follow-on {key, fields, expect}    -> queue.mjs set's result for fields, written only while the
 //                                      ticket's followState is one of `expect` ({ ok, skipped } when not)
 //   out {line}                         a report line
@@ -58,26 +61,35 @@ import { fromReview, reviewStep } from '../undraft.mjs';
 import { LINK_STEP, notOwnPr, foreignQuestion } from './shared.mjs';
 import { owesReopen } from '../queue-store.mjs';
 import { FAILED, PREVIEW_CHECK } from '../gate.mjs';
-import { latest } from '../merge-log.mjs';
+import { latest, CLAIM_MS } from '../merge-log.mjs';
 import { invalid } from '../ticket-ledger.mjs';
 
 // Who a merge no merge-log line names was made by: GitHub, under auto-merge, as no desk process made it.
-export const GITHUB_AUTOMERGE = 'github-automerge';
+const GITHUB_AUTOMERGE = 'github-automerge';
 const sameRepo = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
+// Whether ticket t's PR #n is this repo's: a status kept from needs-you's elsewhereDone names another
+// repo's PR of the same number, whose merge-log lines are not this ticket's.
+const ownRepoPr = (s, t, n) => !(t.pr_status?.pr === n && t.pr_status.url && s.repo)
+  || repoOfPr(t.pr_status.url) === repoOfPr(`https://github.com/${s.repo}/pull/${n}`);
 
-// Who merged ticket t's PR #n, as status st read it merged: the PR's merged line in the merge log, else
-// GitHub under auto-merge. The head is the one GitHub merged, else the line's. null with the lever off.
-function mergerOf(s, n, st) {
+// Who merged ticket t's PR #n, as status st read it merged, from the merge log `log` as read when the
+// merge is recorded: the PR's merged line, else a desk merger's claim on it under CLAIM_MS old (it merged
+// and has not recorded it yet: GitHub's auto-merge never claims), else GitHub under auto-merge. The head
+// is the one GitHub merged, else the line's. null with the lever off.
+function mergerOf(s, n, st, log) {
   if (!s.ledger) return null;
-  const line = s.mergeLog ? latest(s.mergeLog, { repo: s.repo, pr: n }) : null;
-  const m = line?.event === 'merged' ? line : null;
+  const mine = (log ?? []).filter((e) => sameRepo(e.repo, s.repo) && String(e.pr) === String(n));
+  const line = latest(mine, { repo: s.repo, pr: n });
+  const last = mine.at(-1);
+  const m = line?.event === 'merged' ? line
+    : last?.event === 'claim' && Date.parse(s.passAt) - Date.parse(last.at) < CLAIM_MS ? last : null;
   return { by: m?.by ?? GITHUB_AUTOMERGE, pr: Number(n), head_sha: st.head ?? m?.sha ?? null, base: st.base ?? null };
 }
 
 // The merge-log lines on ticket t's PR #n that arm or disarm auto-merge and that the ledger has not yet
 // folded, as ledger events, oldest first. None with the lever off, or the merge log or ledger unread.
 function armEvents(s, t, n) {
-  if (!s.ledger || !s.mergeLog || !s.folded) return [];
+  if (!s.ledger || !s.mergeLog || !s.folded || !ownRepoPr(s, t, n)) return [];
   const after = s.folded[t.key] ?? -1;
   return s.mergeLog
     .filter((e) => Number.isInteger(e.line) && e.line > after && sameRepo(e.repo, s.repo) && String(e.pr) === String(n) && ['armed', 'disarmed'].includes(e.event))
@@ -182,6 +194,10 @@ export function* decidePrStatus(s) {
     // A status kept from an earlier pass is checked too, before a merged or closed one is taken as read.
     const keptForeign = t.pr_status?.pr === n ? foreignWhy(t, n, t.pr_status, s.logins) : null;
     if (keptForeign) { yield* parkForeign(t, n, keptForeign, t.pr_status.state, s, prStates); continue; }
+    // Auto-merge armed or disarmed on the PR, as the merge log has it, before any merge it led to, and
+    // on every pass, merged or not, so a line one pass could not fold is folded by the next.
+    const arms = s.dry ? [] : armEvents(s, t, n);
+    if (arms.length) yield { type: 'automerge', key: t.key, events: arms };
     // A PR this pass's reopen closed and could not reopen is read again until it reopens.
     const owed = owesReopen(t);
     if (t.pr_status?.pr === n && PR_FINAL.includes(t.pr_status.state) && !(owed && t.pr_status.state === 'CLOSED')) {
@@ -223,17 +239,17 @@ export function* decidePrStatus(s) {
         } else if (owed && !s.dry) yield { type: 'set', key: t.key, fields: ['reopening=null'] };
       }
     }
-    // Auto-merge armed or disarmed on the PR, as the merge log has it, before any merge it led to.
-    const arms = s.dry ? [] : armEvents(s, t, n);
-    if (arms.length) yield { type: 'automerge', key: t.key, events: arms };
     // merged_at on the ticket and its eta-history line (queue.mjs merged keeps the first merge time and
-    // appends a key once), with who merged it, which the ledger records as one merged event.
+    // appends a key once), with who merged it, which the ledger records as one merged event. The merge log
+    // is read again here, after the PR's read: a merger records its line only once it has merged.
     if (st.state === 'MERGED' && !t.merged_at && !s.dry) {
-      const merge = mergerOf(s, n, st);
+      const own = s.ledger && ownRepoPr(s, t, n);
+      const log = own ? ((yield { type: 'merge-log' }) ?? { events: s.mergeLog }).events : null;
+      const merge = own ? mergerOf(s, n, st, log) : null;
       const rec = yield { type: 'merged', key: t.key, at: st.merged_at ?? null, ...(merge ? { merge } : {}) };
       if (rec) {
         merges.push(`${t.key} (PR #${n}): ${rec.split('\n').join('; ')}`);
-        if (merge && !s.mergeLog) unknownMergers++;
+        if (merge && !log) unknownMergers++;
       }
     }
     // A criterion its review left for after the merge is a follow-on step from now on, which needs-you
@@ -283,6 +299,16 @@ export function* decidePrStatus(s) {
           yield* readPostMerge(t, n, pm, url, { key: owner.key, archived: !!took && !tookLive, url: pm.url ?? url });
         }
       }
+    }
+  }
+  // A ticket archived with merge-log lines still unfolded (its batch unseeded, or the append refused, in
+  // the pass that merged it) has them folded now, while the ledger knows it. The archive is not written.
+  if (!s.dry && s.folded) {
+    for (const o of Object.values(s.archived ?? {})) {
+      const n = o?.state === 'done' ? o.result?.pr : null;
+      if (n == null || Object.hasOwn(s.tickets, o.key) || !Object.hasOwn(s.folded, o.key)) continue;
+      const arms = armEvents(s, o, n);
+      if (arms.length) yield { type: 'automerge', key: o.key, events: arms };
     }
   }
   for (const m of merges) yield { type: 'out', line: `merge recorded: ${m}` };
