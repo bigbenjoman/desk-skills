@@ -70,6 +70,14 @@ const M = (...paths) => paths.map((path) => ({ status: 'M', path }));
 const scope = (ch) => { const d = decide(ch, map); return `${d.scope}: ${d.scope === 'full' ? d.reason : d.suites.join(' ')}`; };
 t('nothing changed', scope([]), 'none: ' + ALWAYS.join(' '));
 t('a script runs its suites and the always set', scope(M('desk/bin/lib.sh')), 'some: test_drive.sh test_lint.sh');
+// The suites checking every test file against the rules for them run on any change under tests/.
+{
+  const ctree = { ...tree, 'tests/test_scope_sections.mjs': '// suite: CI scope\n' };
+  const cmap = buildMap(Object.keys(ctree), (p) => ctree[p]);
+  const cscope = (ch) => decide(ch, cmap).suites.join(' ');
+  t('a suite added or changed runs the checks on every test file', [cscope([{ status: 'A', path: 'tests/test_skill_a.mjs' }]), cscope(M('tests/test_pass.mjs'))].map((x) => x.includes('test_scope_sections.mjs')), [true, true]);
+  t('a change to a script no suite file touches does not run them', cscope(M('desk/bin/lib.sh')).includes('test_scope_sections.mjs'), false);
+}
 t('a changed suite runs itself', scope(M('tests/test_docs.mjs')), 'some: test_docs.mjs test_lint.sh');
 t('a shell change lists its scripts for bash 3.2', decide(M('desk/bin/lib.sh'), map).shells, ['bin/tool', 'desk/bin/drive.sh', 'desk/bin/lib.sh', 'tests/test_drive.sh', 'tests/test_lint.sh']);
 t('README.md alone is a document', scope(M('README.md')), 'full: no suite claims README.md');
