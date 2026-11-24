@@ -13,7 +13,7 @@ import { decidePrStatus } from '../desk/bin/pass/pr-status.mjs';
 import { latestPerCheck, normaliseRollup } from '../desk/bin/gate.mjs';
 import { previewLabel, psRows } from '../desk/bin/desk-env.mjs';
 import { lockFileHolders } from '../desk/bin/suite-wait.mjs';
-import { runningRelease } from '../desk/bin/slot-lease.mjs';
+import { recordedCommit } from '../desk/bin/installed.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -839,7 +839,8 @@ try {
       const a = owner();
       const r = askOn(fresh(), a);
       t('DS-998 AC1 every slot held by a lock file with no lease: the run is refused and waits', [r.lease, r.at, r.refused?.includes(`the lock file ${join(locks, 'desk-light.lock.d')} (pid ${holder.pid}, no lease)`)], [undefined, { position: 1, waiting: 1, held: 1, capacity: 1 }, true]);
-      t('DS-998 AC3 in shadow the lock files are not read: granted as today', !!askOn(fresh(), a, { kinds: 'slot=shadow' }).lease, true);
+      const sh = askOn(fresh(), a, { kinds: 'slot=shadow' });
+      t('DS-998 in shadow the lock files are not read: granted with no would-refuse', [!!sh.lease, sh.shadow], [true, undefined]);
       holder.kill(); await exited(holder);
       t('DS-998 AC2 the holder has exited: its lock file holds nothing, and the run is granted', [lockFileHolders(locks, 'slot:light'), !!askOn(fresh(), a).lease], [[], true]);
     }
@@ -852,23 +853,26 @@ try {
       utimesSync(join(locks, 'desk-test.lock.2.pid'), old, old); // written before its pid's process started: a reused pid
       writeFileSync(join(locks, 'desk-test.lock.3.pid'), '999999\n');
       mkdirSync(join(locks, 'desk-test.lock.4.d')); // taken, its pid not yet written
+      mkdirSync(join(locks, 'desk-test.lock.5.d')); writeFileSync(join(locks, 'desk-test.lock.5.d', 'pid'), '');
+      utimesSync(join(locks, 'desk-test.lock.5.d'), old, old); // its pid never written, over a minute ago
+      writeFileSync(join(locks, 'desk-test.lock.6.pid'), ''); // a holder file whose write failed
       mkdirSync(join(locks, 'desk-light.lock.express.d')); writeFileSync(join(locks, 'desk-light.lock.express.d', 'pid'), `${live.pid}\n`);
-      t('DS-998 a flock holder file names its live run; a reused or dead pid holds nothing; a fresh mkdir slot with no pid holds',
+      t('DS-998 a flock holder file names its live run; a reused or dead pid, an empty holder file and an old mkdir slot with no pid hold nothing; a fresh one holds',
         lockFileHolders(locks, 'slot:heavy').map((h) => [h.file.slice(locks.length + 1), h.pid]).sort(), [['desk-test.lock.4.d', null], ['desk-test.lock.pid', live.pid]]);
       t('DS-998 the express lane sits outside the light pool', lockFileHolders(locks, 'slot:light'), []);
       const none = fresh(); mkdirSync(none);
       t('DS-998 with no lock file held, ps is not read', lockFileHolders(none, 'slot:heavy', { rows: () => { throw new Error('read ps'); } }), []);
     }
-    // DS-998 AC4, AC5: a grant line names the release the run's script comes from, or unknown.
+    // DS-998 AC4, AC5: a grant line names the release the run's script comes from (its recorded commit), or unknown.
     {
       const made = fresh(); mkdirSync(join(made, 'releases', 'abc123', 'bin'), { recursive: true });
       const home = realpathSync(made); const rel = join(home, 'releases', 'abc123');
       writeFileSync(join(rel, 'release.json'), JSON.stringify({ commit: 'abc123def' }));
-      t('DS-998 AC4 run from a release folder: its release.json commit', runningRelease(join(rel, 'bin'), home), 'abc123def');
+      t('DS-998 AC4 run from a release folder: its release.json commit', recordedCommit(home, join(rel, 'bin')), 'abc123def');
       writeFileSync(join(home, 'installed.json'), JSON.stringify({ commit: 'fedcba987' }));
-      t('DS-998 AC4 outside a release folder: the installed commit', runningRelease(join(root, 'desk', 'bin'), home), 'fedcba987');
+      t('DS-998 AC4 outside a release folder: the installed commit', recordedCommit(home, join(root, 'desk', 'bin')), 'fedcba987');
       writeFileSync(join(rel, 'release.json'), '{not json');
-      t('DS-998 AC5 a release record that does not read: unknown', [runningRelease(join(rel, 'bin'), home), runningRelease(join(root, 'desk', 'bin'), fresh())], ['unknown', 'unknown']);
+      t('DS-998 AC5 a release record that does not read: none', [recordedCommit(home, join(rel, 'bin')), recordedCommit(fresh(), join(root, 'desk', 'bin'))], [null, null]);
     }
     // A store whose wants do not read is unreadable, so a lock run falls back to its lock files.
     {

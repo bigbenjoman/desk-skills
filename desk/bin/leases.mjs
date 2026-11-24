@@ -11,7 +11,7 @@
 //                               wait (waitFields), whatever the slot kind's mode. With a kind on, a
 //                               queued run's place: rejoin (a run taking back the place it gave up)
 //                               and drop (a place whose owner exited, or whose rejoin time passed). A
-//                               slot's grant line names the release that took it (`release`)
+//                               lock run's grant line names the release that took it (`release`)
 //
 // <dir> is DESK_LEASE_DIR, else ~/.desk-autopilot/machine. A lease's owner is a pid and that process's
 // start time, read inside the store lock, so a lease whose owner has exited, or whose pid now belongs
