@@ -279,12 +279,13 @@ function repoTicketRows(now) {
 // requeued ticket keeps its first merged_at while it runs again).
 const hasOutcome = (t) => outcomeIn(t) && !IN_PROGRESS.includes(t.state);
 
-// The ticket keys a text names by the §4 Ticket key pattern, and, unless the tracker is Jira, the
+// The ticket keys a text names by the §4 Ticket key pattern, matched with its case (ignoring it, a
+// Jira pattern reads `node-20` and `utf-8` as keys), and, unless the tracker is Jira, the
 // GitHub issue work ids `#N` and `issue-N` (batch-state keyPattern's `issue-N`).
 function keysNamed(texts, { pattern, tracker }) {
   const keys = new Set();
   let re = null;
-  try { if (pattern && !isNone(pattern)) re = new RegExp(pattern, 'gi'); } catch { /* not a usable regex */ }
+  try { if (pattern && !isNone(pattern)) re = new RegExp(pattern, 'g'); } catch { /* not a usable regex */ }
   for (const x of texts) {
     if (re) for (const m of x.matchAll(re)) keys.add(m[0]);
     if (tracker !== 'jira') for (const m of x.matchAll(/(?:^|[^A-Za-z0-9])(?:#|issue-)(\d+)(?![0-9])/g)) keys.add(`issue-${m[1]}`);
