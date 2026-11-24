@@ -110,7 +110,7 @@ import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 import { kindMode, leaseCli, releasePreviews, slotPools } from './leases.mjs';
 import { handToWorker as handMemToWorker, memPool, reserveForWorker } from './mem-lease.mjs';
-import { pruneAsks } from './asks.mjs';
+import { pruneAsks, settleDrift, readAsks } from './asks.mjs';
 import { readArchive, archivedOf, isArchived, keepPrs, mergedPrs, prClosed, owesReopen, recordedPr } from './queue-store.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -3687,6 +3687,18 @@ function handAway(t, p) {
   else report.failed.push(`${t.key}: admitted into ${p.ghRepo} (${h.line}), but not taken out of this queue: queue.mjs drop ${t.key}`);
 }
 
+// The rows a ticket starting fresh needs that the config lacks, as the park line that asks for them, or
+// null: a ticket that renders (its triage record's `renders`) has its screenshots taken signed in, so
+// with an app to run (§4 Dev server) and §4 Test sign-in unset it would only park on NOSIGNIN after
+// its PR opens. `none` there is the person's answer that no app needs signing in to.
+function rowsNeeded(key, rec) {
+  if (rec?.renders !== true) return null;
+  let dev, signin;
+  try { dev = E.configValues('dev-cmd'); signin = E.configValues('test-signin'); } catch { return null; }
+  if (!dev || E.isNone(dev) || signin) return null;
+  return `NEEDS ROW — ${key} renders, so its screenshots sign in as a test user, and §4 Test sign-in is unset, so no worker was spawned to park on it after its PR opens. Add one item per app a §4 Dev server item names, \`<app dir>: <email>\` (bare for the root), of an existing development user who holds the grant its signed-in pages need, never a password, or \`none\` where no app needs signing in to. Where the config has no such row, add it with node ${join(E.runBin(), 'desk-env.mjs')} add-row 4 "Test sign-in" "<value>"; else set it in ${E.configPathOrNull() ?? 'the config'}. Then requeue it`;
+}
+
 // A worktree held is kept on the ticket (`worktree_busy`), so desk-q and desk-needs-you show it as
 // needing the person (desk-q worktreeBusy) and not as ready; it is dropped once a pass finds it clean.
 const busyNow = new Set();
@@ -3755,6 +3767,7 @@ const SPAWN_HANDLERS = {
   shipped: (a, s) => shippedElsewhere(s.t),
   fresh: (a, s) => startsFresh(s.t),
   placement: (a) => E.triagePlacement(triageRec(a.key)),
+  'rows-needed': (a) => rowsNeeded(a.key, triageRec(a.key)),
   busy: (a, s) => busyWorktree(s.t, { push: true }),
   'busy-held': (a) => { busyNow.add(a.key); },
   'lock-queue': (a, s) => lockQueueHolds(s.t),
@@ -3786,6 +3799,11 @@ const SPAWN_HANDLERS = {
     // The spawn loop parks only when a ticket could not be spawned (an unreachable host, a failed
     // worktree setup): a failure, not a question.
     q('park', a.key, '--kind', 'failure', a.line);
+    report.parked.push(`${a.key}: ${a.line}`);
+  },
+  'park-ask': (a) => {
+    // A question for the person before any worker runs: no slot is taken.
+    if (!DRY) q('park', a.key, '--kind', 'question', a.line);
     report.parked.push(`${a.key}: ${a.line}`);
   },
   'hand-away': (a, s) => handAway(s.t, a.placement),
@@ -5242,6 +5260,13 @@ if (!DRY && E.batchName() == null) {
     const tickets = { ...readArchive(QUEUE_FILE).tickets, ...queue().tickets };
     for (const a of pruneAsks(STATE, { known: (k) => tickets[k] != null, finished: (k) => holdThrough(tickets, k) })) {
       out.push(`needs-you: ask ${a.id} dropped, as every ticket it names (${a.keys.join(', ')}) is merged or done: "${a.text}"`);
+    }
+    // A config-drift ask (drift-asks.mjs) whose rows the config now has: nothing is missing.
+    if (readAsks(STATE).some((a) => a.settles === 'drift')) {
+      const missing = new Set(E.configDrift({ config: E.configPathOrNull() }).missing.map((m) => `§${m.section} ${m.label}`));
+      for (const a of settleDrift(STATE, (x) => x.rows.every((r) => !missing.has(r)))) {
+        out.push(`needs-you: ask ${a.id} dropped, as the config now has the rows it named (${a.keys.join(', ')})`);
+      }
     }
   } catch (e) { out.push(`needs-you: the recorded asks could not be rechecked (${String(e?.message ?? e).split('\n')[0]})`); }
 }

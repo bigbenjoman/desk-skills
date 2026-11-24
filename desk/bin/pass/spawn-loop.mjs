@@ -1,5 +1,5 @@
 // The spawn loop's choices, as a per-ticket step: pass.mjs calls it for each candidate in turn, and it
-// ends in one verdict for that ticket: skip, record-done, park (the slot taken), hand-away or start.
+// ends in one verdict for that ticket: skip, record-done, park (the slot taken), park-ask, hand-away or start.
 //
 // The step is a generator (pass/run-phase.mjs runSteps). A read only some candidates reach (gh, git,
 // the triage record), and a locked write whose result it goes on to use (the upload claim, the
@@ -27,6 +27,7 @@
 //   shipped {key}        -> { pr, branch, mergedAt } or { jira: true } where it shipped outside its worker, else null
 //   fresh {key}          -> true where it starts from Stage 0, with no session, fix try or PR in this repo behind it
 //   placement {key}      -> its triage record's placement in another repo, or null
+//   rows-needed {key}    -> the park line asking for a config row it needs that the config lacks, or null
 //   busy {key}           -> why its worktree is held, or null (pushing its last worker's commits first)
 //   busy-held {key}      the worktree is held this pass
 //   lock-queue {key}     -> true where the test-lock queue holds it
@@ -45,6 +46,7 @@
 //   record-done {key, how, pr, mergedAt, line, dropStatus?} record it done, shipped outside its worker;
 //                                             dropStatus: its PR status is another repo's PR of that number
 //   park {key, line}                          park it
+//   park-ask {key, line}                      park it with a question for the person, no slot taken
 //   hand-away {key, placement}                admit it in the repo its code is in
 //   start {key, how, pick?, setup?}           start it: `how` is resume, handoff, cloud or local
 
@@ -68,8 +70,12 @@ export function* decideSpawn(s) {
   }
   // Its code wholly in another repo by its triage record: handed over without taking a slot. Whether it
   // starts fresh is read here, not in the snapshot: the fix-try check above can finish its fix try.
-  const away = (yield { type: 'fresh', key }) ? yield { type: 'placement', key } : null;
+  const fresh = yield { type: 'fresh', key };
+  const away = fresh ? yield { type: 'placement', key } : null;
   if (away) return yield { type: 'hand-away', key, placement: away };
+  // A row it needs that the config lacks is asked for now, not after its PR opens, without taking a slot.
+  const needs = fresh ? yield { type: 'rows-needed', key } : null;
+  if (needs) return yield { type: 'park-ask', key, line: needs };
   // Held without taking a slot: another ticket may spawn in its place.
   const busy = yield { type: 'busy', key };
   if (busy) {
