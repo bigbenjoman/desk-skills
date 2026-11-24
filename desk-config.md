@@ -178,6 +178,7 @@ Skip the whole round (write `no`) when §4 Tracker is `none`.
 | `gh-close-linked-issue` | Close a GitHub issue in this repo that your tickets' web links name, with a comment naming them and their PRs, once every ticket linking it is done | `yes` | `TODO` |
 | `gh-issue-create` | Open a GitHub issue in this repo (a follow-up, or a ticket where §4 Tracker is `none`), its exact text printed as it goes | `ask` | `TODO` |
 | `gh-issue-comment` | Comment on a GitHub issue in this repo, its exact text printed as it goes (never on the issue a ticket in progress works from: its PR closes that one) | `ask` | `TODO` |
+| `gh-issue-edit` | Edit a GitHub issue's body in this repo, its exact text printed as it goes: `/desk-admit` writing the sections triage drafted (acceptance criteria, `No UI.`, Out of scope, Verification) into an issue it would otherwise refuse | `ask` | `TODO` |
 
 `pr-auto-merge` merges on green by itself, so it needs `pr-merge-green` as well; setup asks again
 if the two differ. `pr-merge-green` `no` means you merge: skills report a PR ready at `APPROVED` +
@@ -268,7 +269,7 @@ These are not oversights. Editing them to `yes` changes nothing; the skills refu
 | Memory ceiling for parallel work (GB) | WSL: `16` · otherwise physical RAM minus ~8 | `TODO` (`DESK_CLEARANCE_MEM_GB` overrides) |
 | Spawn gate (available memory) | start work > 8 GiB · hold 4–8 · drop to 1 below 4 | `TODO` |
 | Swap growth that holds spawns (GB) | `2` | `TODO` (a number of GB: on Linux, `desk-env mem watch` says `SWAP-GROWING` when swap used grows by this much within 10 minutes, and the pass holds new workers for 10 minutes after. Unset is `2`) |
-| tmpfs /tmp size that holds spawns (GB) | `2` | `TODO` (a number of GB: on Linux, with `/tmp` a tmpfs, the watch says `TMPFS-HIGH` when it holds this much, and the pass holds new workers while it does and for 10 minutes after. Unset is `2`) |
+| tmpfs /tmp size that holds spawns (GB) | `2` | `TODO` (a number of GB: on Linux, with `/tmp` a tmpfs, the watch says `TMPFS-HIGH` when it holds this much, and the pass clears the regenerable caches in it, then holds new workers while it still holds this much, naming what is left in needs-you. Unset is `2`) |
 | WSL VM share of its grant that holds spawns (%) | `90` | `TODO` (a whole number of percent, read only where §2 "Running on WSL?" is `yes`: the watch says `VMMEM-HIGH` when the VM holds this share of its `.wslconfig` grant, and the pass holds new workers while it does and for 10 minutes after. Unset is `90`) |
 | Per-file collision budget | `3 over 1000 lines, else 1; serial: none` | `TODO` (how many running tickets may name one file before a ticket naming it waits: `<k> over <n> lines, else <k>`, by the file's length on the batch base, then `; serial: <glob>, ...` for files kept at 1, or a bare `1` for one at a time everywhere, all in one code span. Unset is the recommended value; a row that does not read is 1 for every file, and the pass report says so) |
 | Test worker cap under the test lock | `4`, `2` while the spawn gate says hold | `TODO` |

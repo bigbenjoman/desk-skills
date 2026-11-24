@@ -237,6 +237,12 @@ t('AC6 the pooled mechanism counts both repos', wrappersRow(A6a).n.pooled_on, 60
 t('AC6 the other repo adopts', wrappersRow(A6a).decision, 'adopt');
 t('AC6 the repo whose acceptance drops in the lever arm reverts', [wrappersRow(A6b).decision, wrappersRow(A6b).reason_code], ['revert', 'guardrail_acceptance']);
 
+// A ticket requeued after merging has no outcome until its current round finishes; one merged and never
+// requeued still counts.
+const A6c = 'acme__reworked';
+run([repo(A6c, arms(A6c, initial(A6c), 30, (i) => ({ ...better.on(i), ...(i % 2 ? { reworked: true } : {}) }), better.off))]);
+t('a ticket requeued after merging is left out of the arm; the rest still count', wrappersRow(A6c).n.pooled_on, 15);
+
 // ---- AC7: a second revert freezes ---------------------------------------------------------------------------------------------
 const A7 = 'acme__twice';
 append(A7, { kind: 'transition', lever: 'wrappers', from: 'trial', to: 'reverted', actor: 'levers-auto', reason_code: 'guardrail_ci_reds', reason: 'the first revert', eval_id: 'evl_y', evidence_file: 'levers-evidence/evl_y.jsonl', at: at(-40) });

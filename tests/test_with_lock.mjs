@@ -556,5 +556,26 @@ try {
   rmSync(S, { recursive: true, force: true });
 }
 
+// ---- #1382 AC2: a worker's test run keeps its temporary files in the repo's cache folder ---------
+{
+  const C = scratch('with-lock-cache-');
+  const cache = join(C, 'cache'), locks = join(C, 'locks');
+  for (const d of ['jest', 'runs/999999999', 'runs/notapid', 'locks']) mkdirSync(d === 'locks' ? locks : join(cache, d), { recursive: true });
+  const base = { ...process.env, DESK_LOCK_DIR: locks, DESK_LEASE_DIR: locks, DESK_TEST_LOCK_SLOTS: '1', DESK_CACHE_DIR: cache };
+  delete base.DESK_AUTOPILOT_WORKER;
+  const tmpOf = (env, cls = 'test') => spawnSync('bash', [script, cls, '--', 'sh', '-c', 'echo "$TMPDIR"; ls -l "$TMPDIR"'], { env, encoding: 'utf8' });
+  const r = tmpOf({ ...base, DESK_AUTOPILOT_WORKER: '1' });
+  const tmp = r.stdout.split('\n')[0];
+  const b36 = Number(spawnSync('id', ['-u'], { encoding: 'utf8' }).stdout.trim()).toString(36);
+  t("#1382 AC2 a worker's test run gets a TMPDIR of its own in the cache folder, named by its pid",
+    [r.status, dirname(tmp) === join(cache, 'runs'), /^\d+$/.test(tmp.split('/').pop())], [0, true, true]);
+  t("#1382 AC2 Jest's default cache there links to the cache folder's jest, so it outlives the run",
+    r.stdout.includes(`jest_${b36} -> ${join(cache, 'jest')}`), true);
+  t('#1382 AC2 a run folder whose pid is gone is removed, anything else in runs is left',
+    [existsSync(join(cache, 'runs', '999999999')), existsSync(join(cache, 'runs', 'notapid'))], [false, true]);
+  t('#1382 AC2 a typecheck, and a run outside a worker, keep the TMPDIR they were given',
+    [tmpOf({ ...base, DESK_AUTOPILOT_WORKER: '1', TMPDIR: C }, 'tsc').stdout.split('\n')[0], tmpOf({ ...base, TMPDIR: C }).stdout.split('\n')[0]], [C, C]);
+}
+
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }
 console.log('all passed');
