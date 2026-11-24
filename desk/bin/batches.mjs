@@ -28,13 +28,14 @@ export function listBatches(slug = E.repoSlug()) {
 }
 
 // The archived named batches: batch.mjs moves a batch's queue folder and its state folder into
-// batches/.done/ under the same name, so a batch archived inside the window still counts.
+// batches/.done/ under the same name, so a batch archived inside the window still counts. Each carries
+// its own name as `archived` and its repo's state folder as `repoState`, which its path no longer gives.
 export function archivedBatches({ queueRoot, stateRoot }) {
   const qdone = join(queueRoot, E.BATCHES_DIR, '.done');
   let names = [];
   try { names = readdirSync(qdone, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort(); } catch { return []; }
   return names.filter((n) => existsSync(join(qdone, n, 'queue.json')))
-    .map((n) => ({ name: `${n} (archived)`, queue: join(qdone, n, 'queue.json'), state: join(stateRoot, E.BATCHES_DIR, '.done', n) }));
+    .map((n) => ({ name: `${n} (archived)`, queue: join(qdone, n, 'queue.json'), state: join(stateRoot, E.BATCHES_DIR, '.done', n), archived: n, repoState: stateRoot }));
 }
 // Every batch of the repo, archived named ones last.
 export const allBatches = (slug) => {

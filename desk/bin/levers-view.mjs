@@ -31,6 +31,7 @@ import { withDirLock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
 import { spendsNeedsYou } from './lever-log.mjs';
 import * as MS from './merge-stages.mjs';
 import * as ST from './stuck-time.mjs';
+import { listBatches } from './batches.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -532,7 +533,11 @@ function mergeStagesPanel(configured, root) {
 // with a ticket stuck in either: { repos: [{ name, weeks: [this week's, last week's] }] }.
 function stuckTimePanel(configured, root, now) {
   const names = shownNames(configured.map((r) => r.slug));
-  const repos = configured.map((r, i) => ({ name: names[i], weeks: [0, 1].map((weeksAgo) => ST.weekSummary(join(root, r.slug), { now, weeksAgo })) }))
+  const liveOf = (slug) => { try { return listBatches(slug).map((b) => b.name); } catch { return null; } };
+  const repos = configured.map((r, i) => {
+    const live = liveOf(r.slug);
+    return { name: names[i], weeks: [0, 1].map((weeksAgo) => ST.weekSummary(join(root, r.slug), { now, weeksAgo, live })) };
+  })
     .filter((r) => r.weeks.some((w) => w.tickets));
   return { repos };
 }

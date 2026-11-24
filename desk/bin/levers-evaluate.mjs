@@ -43,7 +43,7 @@ import { bootstrap, costRatio, interval, meanDiff, rateRatio, seedOf } from './l
 import { guardrailStatus, leversDir, autopilotRoot, readJsonl } from './levers-view.mjs';
 import { findingsPath, runsPath, stillMissing } from './findings.mjs';
 import { postMergePath, readPostMerge } from './post-merge.mjs';
-import { ticketHours } from './stuck-time.mjs';
+import { parkedHours } from './stuck-time.mjs';
 import { perTicket, allBatches, failedRuns } from './phase0-report.mjs';
 import { everyTicket } from './queue-store.mjs';
 import { readQueue } from './batch-state.mjs';
@@ -123,21 +123,26 @@ export const GUARDS = Object.freeze({
 // Each row with its review P0 and P1 count (from its findings file) and its post-merge records (from
 // its batch's post-merge.jsonl). A merged ticket whose file is missing, or whose post-merge file's
 // latest scan did not complete, gets null, and the file is named in its `outcome_missing`. Its
-// `parked_hours` are its hours stuck to `now` (stuck-time.mjs, the repo's stuck-intervals.jsonl), 0
-// with none recorded.
+// `parked_hours` are its hours stuck from its admission to `now` (stuck-time.mjs, the repo's
+// stuck-intervals.jsonl, its batch named as the pass named it, an archived one's interval still open
+// closed at its last pass), 0 with none recorded, null where that file cannot be read.
 //   -> { rows, newest: { findings, post_merge } }, the newest as ms
 export function withOutcomes(rows, batches, now = Date.now()) {
   const stateOf = new Map(batches.map((b) => [b.name ?? null, b.state]));
+  const batchOf = new Map(batches.map((b) => [b.name ?? null, b]));
   const postMerge = new Map();
   const stuck = new Map();
+  const live = batches.filter((b) => !b.archived).map((b) => b.name ?? null);
   let newestFindings = null;
   let newestScan = null;
   const out = rows.map((r) => {
     const state = stateOf.get(r.batch ?? null);
     if (!state) return { ...r, review_p0_p1: null, post_merge: null, parked_hours: null };
-    const repoState = E.repoStateOf(state);
-    if (!stuck.has(repoState)) stuck.set(repoState, ticketHours(repoState, now));
-    const parked = stuck.get(repoState).get(`${r.batch ?? ''}\0${r.key}`) ?? 0;
+    const b = batchOf.get(r.batch ?? null);
+    const repoState = b.repoState ?? E.repoStateOf(state);
+    if (!stuck.has(repoState)) stuck.set(repoState, parkedHours(repoState, { now, live }));
+    const from = Date.parse(r.admitted_at ?? '');
+    const parked = stuck.get(repoState)?.(b.archived ?? b.name ?? null, r.key, Number.isFinite(from) ? from : -Infinity) ?? null;
     const missing = [];
     let review = 0;
     const f = findingsPath(state, r.key);

@@ -1,7 +1,7 @@
 // suite: stuck time (each park, hold and stall as an interval with its cause, and the hours stuck per cause per repo per week)
 // layer: L1
 // covers: desk/bin/stuck-time.mjs desk/bin/ticket-ledger.mjs desk/bin/levers-page.mjs desk/bin/lever-registry.mjs
-import { existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -17,8 +17,11 @@ const j = JSON.stringify;
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'stuck-time.mjs');
 // Wednesday of ISO week 2026-W48, which runs from Monday 23 November.
 const D = (day, h, m = 0) => `2026-11-${String(day).padStart(2, '0')}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00.000Z`;
-const lines = (S) => (existsSync(join(S, 'stuck-intervals.jsonl')) ? readFileSync(join(S, 'stuck-intervals.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
-const open = (S) => ST.readIntervals(S).filter((e) => e.end == null).map((e) => `${e.key} ${e.cause} ${e.start}`).sort();
+const lines = (S) => (existsSync(join(S, 'stuck-intervals.jsonl')) ? readFileSync(join(S, 'stuck-intervals.jsonl'), 'utf8').split('\n').filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } }) : []);
+// The record as a reader takes it: the latest line of each interval.
+const intervals = (S) => [...new Map(lines(S).map((e) => [`${e.batch}|${e.key}|${e.cause}|${e.start}`, e])).values()];
+const links = (S) => JSON.parse(readFileSync(join(S, 'stuck-links.json'), 'utf8'));
+const open = (S) => intervals(S).filter((e) => e.end == null).map((e) => `${e.key} ${e.cause} ${e.start}`).sort();
 
 // ---- a pass's step: an interval opens when its cause appears and closes when it goes ----------------------------
 {
@@ -33,7 +36,7 @@ const open = (S) => ST.readIntervals(S).filter((e) => e.end == null).map((e) => 
   t('a cause still there writes nothing more', lines(S).length, 3);
   // Pass 3, 12:00: B spawned, C's collision ended and the memory gate holds it, A still parked.
   ST.stuckStep(S, { batch: 'b1', parked, waits: [{ key: 'C', cause: ST.spawnHoldCause({ why: 'memory', harm: 'TMPFS-HIGH' }) }], now: D(24, 12) });
-  const closed = ST.readIntervals(S).filter((e) => e.end != null).map((e) => [e.key, e.cause, e.start, e.end]);
+  const closed = intervals(S).filter((e) => e.end != null).map((e) => [e.key, e.cause, e.start, e.end]);
   t('a cause gone closes its interval at the pass, with its start and cause',
     j(closed), j([['B', 'usage', D(24, 10), D(24, 12)], ['C', 'collision', D(24, 10), D(24, 12)]]));
   t('a new cause on the same ticket opens its own interval', open(S).includes(`C memory harm: TMPFS-HIGH ${D(24, 12)}`), true);
@@ -43,7 +46,7 @@ const open = (S) => ST.readIntervals(S).filter((e) => e.end == null).map((e) => 
   // A line cut off mid-write is skipped, and the next line is still read.
   appendFileSync(join(S, 'stuck-intervals.jsonl'), '{"key":"Q","cau');
   ST.stuckStep(S, { batch: 'b1', parked: [], waits: [{ key: 'C', cause: 'memory harm: TMPFS-HIGH' }], now: D(24, 14) });
-  t('after a cut line, the next pass\'s close of A is read', ST.readIntervals(S).find((e) => e.key === 'A' && e.end)?.end, D(24, 14));
+  t('after a cut line, the next pass\'s close of A is read', intervals(S).find((e) => e.key === 'A' && e.end)?.end, D(24, 14));
 
   // The summary for week 2026-W48 at Wednesday noon: A 08:00-14:00 (6h), B 2h, C 2h collision then
   // 12:00 to now memory (24h), Z 12:30 to now lock (23.5h).
@@ -57,7 +60,28 @@ const open = (S) => ST.readIntervals(S).filter((e) => e.end == null).map((e) => 
   ST.stuckStep(O, { batch: null, parked: [], waits: [{ key: 'X', cause: 'base red' }, { key: 'X', cause: 'gate reviewer down' }], now: D(23, 9) });
   ST.stuckStep(O, { batch: null, parked: [], waits: [{ key: 'X', cause: 'gate reviewer down' }], now: D(23, 11) });
   ST.stuckStep(O, { batch: null, parked: [], waits: [], now: D(23, 12) });
-  t('a ticket stuck on two causes at once counts its hours once', j([ST.weekSummary(O, { now: Date.parse(D(25, 12)) }).hours, ST.ticketHours(O, Date.parse(D(25, 12))).get('\0X')]), j([3, 3]));
+  t('a ticket stuck on two causes at once counts its hours once', j([ST.weekSummary(O, { now: Date.parse(D(25, 12)) }).hours, ST.parkedHours(O, { now: Date.parse(D(25, 12)) })(null, 'X')]), j([3, 3]));
+}
+
+// ---- a ticket's hours: from its admission, and an interval its gone batch left open ends at that batch's last pass ---------
+{
+  const S = scratch('stuck-time-hours-');
+  // Batch F-1's passes: K parked at 09:00 (first admission), requeued at 10:00; K again from 12:00; F-1's
+  // last pass at 13:00, after which it was archived with an interval still open.
+  ST.stuckStep(S, { batch: 'F-1', parked: [{ key: 'K', kind: 'question', since: D(23, 9) }], now: D(23, 9) });
+  ST.stuckStep(S, { batch: 'F-1', parked: [], now: D(23, 10) });
+  ST.stuckStep(S, { batch: 'F-1', parked: [{ key: 'K', kind: 'question', since: D(23, 12) }], now: D(23, 12) });
+  ST.stuckStep(S, { batch: 'F-1', parked: [{ key: 'K', kind: 'question', since: D(23, 12) }], now: D(23, 13) });
+  const now = Date.parse(D(25, 12));
+  const live = ST.parkedHours(S, { now, live: [null] });
+  t('a ticket admitted again counts only the hours after its new admission', j([live('F-1', 'K'), live('F-1', 'K', Date.parse(D(23, 11)))]), j([2, 1]));
+  t('an interval its gone batch left open ends at that batch\'s last pass, every week after too',
+    j([ST.weekSummary(S, { now, live: [null] }).hours, ST.weekSummary(S, { now: now + 7 * 86_400_000, live: [null] }).tickets]), j([2, 0]));
+  t('while the batch is live it still counts to now', ST.parkedHours(S, { now, live: [null, 'F-1'] })('F-1', 'K'), 49);
+  const U = scratch('stuck-time-unreadable-');
+  mkdirSync(join(U, 'stuck-intervals.jsonl'));
+  t('a record that cannot be read gives no hours, not none', ST.parkedHours(U), null);
+  t('no record at all gives none', ST.parkedHours(scratch('stuck-time-none-'))(null, 'K'), 0);
 }
 
 // ---- the ledger: each interval's opening and closing is a stuck event, written first, once ----------------------
@@ -72,10 +96,10 @@ const open = (S) => ST.readIntervals(S).filter((e) => e.end == null).map((e) => 
   let failing = true;
   const flaky = (e) => { if (failing) throw new Error('disk full'); return ledger(e); };
   const said = ST.stuckStep(S, { batch: 'b1', parked: [], waits: [{ key: 'B', cause: 'test lock queue' }], ledger: flaky, now: D(24, 11) });
-  t('a ledger write that fails records nothing, and says the next pass tries again', j([said.length, /next pass tries again/.test(said[0] ?? ''), ST.readIntervals(S).filter((e) => e.end).length]), j([1, true, 0]));
+  t('a ledger write that fails records nothing, and says the next pass tries again', j([said.length, /next pass tries again/.test(said[0] ?? ''), intervals(S).filter((e) => e.end).length]), j([1, true, 0]));
   failing = false;
   ST.stuckStep(S, { batch: 'b1', parked: [], waits: [{ key: 'B', cause: 'test lock queue' }], ledger: flaky, now: D(24, 12) });
-  t('the next pass closes it, in the ledger and the record', j([fold(L).tickets.A.stuck, ST.readIntervals(S).find((e) => e.key === 'A' && e.end)?.end]), j([{}, D(24, 12)]));
+  t('the next pass closes it, in the ledger and the record', j([fold(L).tickets.A.stuck, intervals(S).find((e) => e.key === 'A' && e.end)?.end]), j([{}, D(24, 12)]));
   // A retry of an event already written (its record write lost) is folded once.
   ledger({ key: 'A', cause: 'park: person-step', start: D(24, 8), end: D(24, 12) });
   const events = readFileSync(join(L, 'ledger', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((x) => JSON.parse(x)).filter((e) => e.key === 'A');
@@ -105,7 +129,7 @@ t('the spawn holds the pass counts name their cause', j([
   ].map((x) => JSON.stringify(x)).join('\n'));
   const linked = cli('link', 'usage', '1377');
   const linked2 = cli('link', 'park: question', 'https://github.com/acme/app/issues/88');
-  t('link sets a cause\'s tracking issue, from its number or its URL', j([linked.status, linked.stdout.trim(), linked2.status, ST.readLinks(S)['park: question']]),
+  t('link sets a cause\'s tracking issue, from its number or its URL', j([linked.status, linked.stdout.trim(), linked2.status, links(S)['park: question']]),
     j([0, 'stuck-time: usage → #1377 (https://github.com/acme/app/issues/1377)', 0, { ref: '#88', url: 'https://github.com/acme/app/issues/88' }]));
   t('a target that is no issue is refused', cli('link', 'lock', 'soon').status, 2);
   const s = ST.weekSummary(S, { now: Date.parse(D(25, 12)) });
@@ -114,7 +138,7 @@ t('the spawn holds the pass counts name their cause', j([
   t('with nothing stuck that week there is no line', ST.stuckLine(ST.weekSummary(S, { now: Date.parse(D(25, 12)), weeksAgo: 2 })), null);
   t('the CLI prints this week\'s line and last week\'s', cli().stdout.split('\n')[1], 'time parked by cause, week 2026-W47: none recorded');
   const un = cli('unlink', 'usage');
-  t('unlink drops a cause\'s link', j([un.status, 'usage' in ST.readLinks(S), cli('unlink', 'usage').status]), j([0, false, 1]));
+  t('unlink drops a cause\'s link', j([un.status, 'usage' in links(S), cli('unlink', 'usage').status]), j([0, false, 1]));
   cli('link', 'usage', '#1377');
 
   const view = (repos) => ({ v: 1, generated_at: D(25, 12), tz: 'UTC', repos: [], baseline: null, line: { state: 'today' },

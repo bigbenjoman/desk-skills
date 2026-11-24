@@ -8,6 +8,9 @@
 // <state>/stuck-intervals.jsonl, appended (the latest line per interval wins, a cut line is skipped),
 // and one `stuck` event in the ticket ledger where the ledger lever is on, written first:
 //   { key, batch, cause, start, end (null while open), recorded }
+// Each pass also notes when it ran, per batch, in <state>/stuck-passes.json: a reader given the repo's
+// live batches counts an interval still open in a batch that has gone (archived or discarded, so no pass
+// will close it) as closed at that batch's last pass.
 // A cause's tracking issue is set by hand, in <state>/stuck-links.json:
 //   node stuck-time.mjs link <cause> <issue number | #N | URL>     node stuck-time.mjs unlink <cause>
 //   node stuck-time.mjs                                            this week's and last week's lines
@@ -18,6 +21,7 @@ import { writeJsonAtomic } from './dir-lock.mjs';
 
 const fileOf = (state) => join(state, 'stuck-intervals.jsonl');
 const linksFile = (state) => join(state, 'stuck-links.json');
+const passesFile = (state) => join(state, 'stuck-passes.json');
 const HOUR_MS = 3600_000;
 const WEEK_MS = 7 * 24 * HOUR_MS;
 const ms = (iso) => Date.parse(iso ?? '');
@@ -41,10 +45,11 @@ export function spawnHoldCause({ why = null, held = null, harm = null } = {}) {
   return /maintenance/.test(held) ? 'maintenance' : /budget/.test(held) ? 'budget' : /health check/.test(held) ? 'health check' : 'config';
 }
 
-// Every interval recorded in repo state `state`, the latest line of each. A line that does not read is skipped.
-export function readIntervals(state) {
+// Every interval recorded in repo state `state`, the latest line of each; none with no file, and null
+// for a file that is there but cannot be read. A line that does not read is skipped.
+function readAll(state) {
   let text = '';
-  try { text = readFileSync(fileOf(state), 'utf8'); } catch { return []; }
+  try { text = readFileSync(fileOf(state), 'utf8'); } catch (e) { return e?.code === 'ENOENT' ? [] : null; }
   const byId = new Map();
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
@@ -54,6 +59,25 @@ export function readIntervals(state) {
     } catch { /* skipped */ }
   }
   return [...byId.values()];
+}
+const readIntervals = (state) => readAll(state) ?? [];
+const readJson = (file) => {
+  try { const v = JSON.parse(readFileSync(file, 'utf8')); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch { return {}; }
+};
+
+// The intervals as a reader counts them: with `live`, the repo's live batch names (null the standing
+// one), one still open in a batch not among them closes at that batch's last pass, or at its own record
+// where none is noted. Null where the file cannot be read.
+function counted(state, live) {
+  const all = readAll(state);
+  if (!all || !live) return all;
+  const names = new Set(live.map((n) => n ?? ''));
+  const passes = readJson(passesFile(state));
+  return all.map((e) => {
+    if (e.end != null || names.has(e.batch ?? '')) return e;
+    const last = [e.recorded, passes[e.batch ?? '']].filter((x) => Number.isFinite(ms(x))).sort((a, b) => ms(a) - ms(b)).at(-1);
+    return { ...e, end: last && ms(last) > ms(e.start) ? last : e.start };
+  });
 }
 
 // One line appended; a line cut off mid-write before it stays a line of its own.
@@ -99,6 +123,7 @@ export function stuckStep(state, { batch = null, parked = [], waits = [], ledger
   }
   const opened = new Set(open.map((e) => pair(e.key, e.cause)));
   for (const [k, w] of want) if (!opened.has(k)) write({ ...w, batch, end: null, recorded: now });
+  try { writeJsonAtomic(passesFile(state), { ...readJson(passesFile(state)), [batch ?? '']: now }); } catch { /* the next pass notes it */ }
   return lines;
 }
 
@@ -113,23 +138,29 @@ function unionMs(spans) {
   return total;
 }
 
-// Each ticket's hours stuck up to `now` (an interval still open runs to it), overlapping causes counted
-// once: a Map of `<batch>\0<key>` (batch '' for the standing one) to hours.
-export function ticketHours(state, now = Date.now()) {
+// Each ticket's hours stuck up to `now` (an interval still open runs to it, or to its gone batch's last
+// pass, `live` as counted takes it), overlapping causes counted once: a function of (batch, key, from)
+// giving the hours from `from` (ms; the ticket's admission, so a ticket admitted again does not carry its
+// earlier stay's), 0 with none recorded; null where the file cannot be read.
+export function parkedHours(state, { now = Date.now(), live = null } = {}) {
+  const all = counted(state, live);
+  if (!all) return null;
   const spans = new Map();
-  for (const e of readIntervals(state)) {
+  for (const e of all) {
     const a = ms(e.start), b = Math.min(e.end == null ? now : ms(e.end), now);
     if (b > a) spans.set(ticketOf(e), [...(spans.get(ticketOf(e)) ?? []), [a, b]]);
   }
-  return new Map([...spans].map(([k, s]) => [k, hours(unionMs(s))]));
+  return (batch, key, from = -Infinity) => {
+    const s = (spans.get(`${batch ?? ''}\0${key}`) ?? []).map(([a, b]) => [Math.max(a, from), b]).filter(([a, b]) => b > a);
+    return hours(unionMs(s));
+  };
 }
 
-// The cause links set with `link`: { <cause>: { ref, url } }.
-export function readLinks(state) {
-  try { const v = JSON.parse(readFileSync(linksFile(state), 'utf8')); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch { return {}; }
-}
+const readLinks = (state) => readJson(linksFile(state));
 
-// The Monday 00:00 UTC that starts the ISO week holding `t`, and the week's name, 2026-W48.
+// The Monday 00:00 UTC that starts the ISO week holding `t`, and the week's name, 2026-W48. A copy of
+// levers-audit.mjs weekStart: that module reaches this one through levers-view, so importing it would
+// make a cycle.
 const weekStart = (t) => { const d = new Date(t); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); };
 const weekName = (start) => {
   const thu = new Date(start + 3 * 24 * HOUR_MS);
@@ -139,13 +170,13 @@ const weekName = (start) => {
 
 // Repo state `state`'s time stuck in the ISO week `weeksAgo` before the one holding `now`: the hours
 // (each ticket's overlapping causes counted once), the tickets affected, and each cause with its
-// hours, tickets and tracking issue, most hours first:
+// hours, tickets and tracking issue, most hours first (`live` as counted takes it):
 //   { week, from, to, hours, tickets, causes: [{ cause, hours, tickets, link: { ref, url } | null }] }
-export function weekSummary(state, { now = Date.now(), weeksAgo = 0 } = {}) {
+export function weekSummary(state, { now = Date.now(), weeksAgo = 0, live = null } = {}) {
   const from = weekStart(now) - weeksAgo * WEEK_MS, to = from + WEEK_MS, upto = Math.min(to, now);
   const links = readLinks(state);
   const byCause = new Map(), spans = new Map();
-  for (const e of readIntervals(state)) {
+  for (const e of counted(state, live) ?? []) {
     const a = Math.max(ms(e.start), from), b = Math.min(e.end == null ? now : ms(e.end), upto);
     if (!(b > a)) continue;
     const c = byCause.get(e.cause) ?? { ms: 0, tickets: new Set() };
@@ -189,7 +220,13 @@ if (isMain()) {
     const E = await import('./desk-env.mjs');
     const state = E.repoStateOf(E.stateDir());
     if (cmd == null) {
-      for (const weeksAgo of [0, 1]) console.log(stuckLine(weekSummary(state, { weeksAgo })) ?? `time parked by cause, week ${weekSummary(state, { weeksAgo }).week}: none recorded`);
+      const { listBatches } = await import('./batches.mjs');
+      let live = null;
+      try { live = listBatches(E.repoSlug()).map((b) => b.name); } catch { /* every batch read as live */ }
+      for (const weeksAgo of [0, 1]) {
+        const s = weekSummary(state, { weeksAgo, live });
+        console.log(stuckLine(s) ?? `time parked by cause, week ${s.week}: none recorded`);
+      }
     } else if (cmd === 'link' && cause && target) {
       let gh = null;
       try { gh = E.ghRepo(); } catch { /* the issue number alone */ }

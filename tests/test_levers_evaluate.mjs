@@ -3,7 +3,7 @@
 // covers: desk/bin/levers-evaluate.mjs desk/bin/lever-changes.mjs desk/bin/digest.mjs desk/bin/levers-trips.mjs desk/bin/decisions.mjs desk/bin/lever-stats.mjs desk/bin/levers-auto.mjs desk/bin/lever-registry.mjs desk/bin/lever-log.mjs desk/bin/phase0-report.mjs
 // evaluate() runs on synthetic per-ticket rows, findings files and post-merge files in a scratch HOME,
 // with a fixed clock, so its seeded bootstrap draws the same numbers every run.
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { scratch } from './scratch.mjs';
@@ -140,6 +140,43 @@ t('and it keeps the lever from adopting: it reverts, naming the guardrail', [ph.
 const PHok = 'acme__parked-even';
 run([stuckRepo(PHok, 2, 2)]);
 t('the same lever with parked hours even across the arms adopts', [wrappersRow(PHok).guardrails.find((g) => g.name === 'parked-hours')?.status, wrappersRow(PHok).decision], ['ok', 'adopt']);
+// Tickets of an archived batch (batches.mjs archivedBatches: named "<batch> (archived)", its state under
+// batches/.done/) are read by the name the pass recorded them under, in the repo's own record.
+{
+  const { archivedBatches } = await import('../desk/bin/batches.mjs');
+  const PA = 'acme__parked-archived';
+  const r = stuckRepo(PA, 12, 2);
+  const qroot = join(T, 'queues', PA);
+  mkdirSync(join(qroot, 'batches', '.done', 'F-1'), { recursive: true });
+  writeFileSync(join(qroot, 'batches', '.done', 'F-1', 'queue.json'), '{"tickets":{}}');
+  mkdirSync(join(stateOf(PA), 'batches', '.done', 'F-1', 'workers'), { recursive: true });
+  const done = archivedBatches({ queueRoot: qroot, stateRoot: stateOf(PA) });
+  for (const x of r.rows) {
+    x.batch = done[0].name;
+    if (x.merged_at) writeFileSync(join(done[0].state, 'workers', `${x.key}.findings.jsonl`), `${JSON.stringify({ ticket: x.key, round: 1, reviewer: 'self', p0: 0, p1: 0, p2: 0, fixed: 0 })}\n`);
+  }
+  writeFileSync(join(done[0].state, 'post-merge.jsonl'), `${JSON.stringify({ kind: 'scan', at: at(-1), complete: true })}\n`);
+  const recorded = readFileSync(join(stateOf(PA), 'stuck-intervals.jsonl'), 'utf8').split('\n').map((l) => JSON.stringify({ ...JSON.parse(l), batch: 'F-1' }));
+  writeFileSync(join(stateOf(PA), 'stuck-intervals.jsonl'), recorded.join('\n'));
+  run([{ ...r, batches: [{ name: null, state: stateOf(PA) }, ...done] }]);
+  t('an archived batch\'s tickets carry their parked hours: the lever that raised them reverts', [wrappersRow(PA).guardrails.find((g) => g.name === 'parked-hours')?.status, wrappersRow(PA).reason_code], ['breached', 'guardrail_parked_hours']);
+}
+// A ticket admitted again carries none of its earlier stay's hours.
+{
+  const PR = 'acme__parked-readmitted';
+  const r = stuckRepo(PR, 2, 2);
+  appendFileSync(join(stateOf(PR), 'stuck-intervals.jsonl'), `\n${r.rows.filter((x) => x.pin.arms.wrappers === 'on').map((x) => JSON.stringify({ key: x.key, batch: null, cause: 'usage', start: at(-40), end: at(-30), recorded: at(-30) })).join('\n')}`);
+  run([r]);
+  t('hours from before a ticket\'s admission do not count against its arm', [wrappersRow(PR).guardrails.find((g) => g.name === 'parked-hours')?.status, wrappersRow(PR).decision], ['ok', 'adopt']);
+}
+// A record that cannot be read leaves the guardrail without data, so nothing adopts on it.
+{
+  const PU = 'acme__parked-unreadable';
+  const r = repo(PU, arms(PU, initial(PU), 30, better.on, better.off));
+  mkdirSync(join(stateOf(PU), 'stuck-intervals.jsonl'));
+  run([r]);
+  t('a stuck record that cannot be read gives no parked hours, and the lever does not adopt', [wrappersRow(PU).guardrails.find((g) => g.name === 'parked-hours')?.status, wrappersRow(PU).decision], ['no_data', 'hold']);
+}
 
 // ---- AC3: at most one change every 7 days ----------------------------------------------------------------------
 const A3 = 'acme__cooldown';

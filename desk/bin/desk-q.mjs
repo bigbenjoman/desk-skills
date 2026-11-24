@@ -3291,7 +3291,9 @@ function stagesHead(r) {
 // The repo's time parked by cause this week (stuck-time.mjs), one line once a ticket has sat stuck in it.
 function stuckHead(r, now) {
   if (!r.stateDir) return [];
-  const line = ST.stuckLine(ST.weekSummary(repoStateOf(r.stateDir), { now }));
+  let live = null;
+  try { live = listBatches(r.slug).map((b) => b.name); } catch { /* every batch read as live */ }
+  const line = ST.stuckLine(ST.weekSummary(repoStateOf(r.stateDir), { now, live }));
   return line ? [line] : [];
 }
 function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = null, title = false, usage = null, pinUsage = false } = {}) {

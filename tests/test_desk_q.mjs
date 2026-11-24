@@ -186,7 +186,7 @@ t('AC12 piped with no arguments prints the overview', bare.code === 0 && /^◆ .
 // ---- the repo screen has the week's time parked by cause (stuck-time.mjs), each cause with its tracking issue
 {
   const st = join(W.env.HOME, '.desk-autopilot', 'acme__voicepa');
-  writeFileSync(join(st, 'stuck-intervals.jsonl'), `${JSON.stringify({ key: 'VPL-3', batch: 'vp-batch', cause: 'park: hold', start: clockAgo(5), end: null })}\n`);
+  writeFileSync(join(st, 'stuck-intervals.jsonl'), `${JSON.stringify({ key: 'VPL-3', batch: null, cause: 'park: hold', start: clockAgo(5), end: null })}\n`);
   writeFileSync(join(st, 'stuck-links.json'), JSON.stringify({ 'park: hold': { ref: '#42', url: null } }));
   const stuckLines = lines(W.run('--plain', 'voicepa').out).filter((l) => l.startsWith('time parked by cause'));
   t('the repo screen names the week\'s hours parked, the tickets and the top causes with their tracking issues',
