@@ -73,7 +73,10 @@ export function answerAsk(stateDir, id, { chose, by = 'person', at = Date.now(),
     // One applied by default is `logged: false` until its decision is in the log (markLogged), so a pass
     // whose log write failed retries it (unlogged).
     const answered = { ...a, chose, by, answered_at: new Date(at).toISOString(), ...(by === 'default' ? { logged: false } : {}) };
-    f.answered = [...(f.answered ?? []), answered].slice(-ANSWERS_KEPT);
+    // The last ANSWERS_KEPT are kept, and every default not yet logged besides, so none is lost unlogged.
+    const all = [...(f.answered ?? []), answered];
+    const kept = new Set(all.filter((x) => x.logged !== false).slice(-ANSWERS_KEPT));
+    f.answered = all.filter((x) => x.logged === false || kept.has(x));
     return answered;
   });
 }

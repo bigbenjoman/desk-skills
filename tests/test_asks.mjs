@@ -3,6 +3,8 @@
 // covers: desk/bin/asks.mjs
 import { addAsk, readAsks, pruneAsks, settleAdmitted, answerAsk, answerOf, dueAsks, isDue, unlogged, markLogged } from '../desk/bin/asks.mjs';
 import { scratch } from './scratch.mjs';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -61,6 +63,13 @@ const ch = scratch('asks-');
   t('#1366 answered by default, it leaves the list and its answer is kept', JSON.stringify([a.chose, a.by, readAsks(ch).map((x) => x.id), answerOf(ch, 1)?.chose]), JSON.stringify(['merge', 'default', [2, 3], 'merge']));
   t('#1366 an answered ask cannot be answered again', answerAsk(ch, 1, { chose: 'hold' }), null);
   t('#1366 one applied by default stays unlogged until its decision is logged, so a pass whose log write failed retries it', JSON.stringify(unlogged(ch).map((x) => x.id)), '[1]');
+  {
+    const many = scratch('asks-many-');
+    const first = addAsk(many, 'Keep the flag on?', 0, { choice: { options: ['on', 'off'], recommended: 'on', apply_by: '2026-11-24T17:00:00.000Z' } }).ask;
+    answerAsk(many, first.id, { chose: 'on', by: 'default', at: Date.parse('2026-11-24T17:00:01Z'), due: true });
+    for (let i = 0; i < 60; i++) { const x = addAsk(many, `ask ${i}`, 0).ask; answerAsk(many, x.id, { chose: 'done' }); }
+    t('#1366 a default not yet logged outlasts the answers kept', JSON.stringify([unlogged(many).map((x) => x.id), JSON.parse(readFileSync(join(many, 'asks.json'), 'utf8')).answered.length]), JSON.stringify([[first.id], 51]));
+  }
   markLogged(ch, 1);
   t('#1366 marked logged, it is not retried', JSON.stringify([unlogged(ch).length, answerOf(ch, 1)?.chose]), JSON.stringify([0, 'merge']));
 }
