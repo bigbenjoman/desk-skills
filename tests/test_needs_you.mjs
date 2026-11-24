@@ -3609,6 +3609,44 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
     `${a3.code} ${a3.out.includes('or a pass finds F-8, G-9 merged or done')} ${JSON.stringify(JSON.parse(readFileSync(join(standing.stateDir, 'asks.json'), 'utf8')).asks.find((a) => a.text === 'Say whether to admit F-8')?.until)}`,
     '0 true ["F-8","G-9"]');
   t('#1341 ask --until refuses a value that is not ticket keys', cli('ask', 'ask811', 'Merge it', '--until', 'F-8;rm').code, 11);
+  // #1380: a gate-reviewer-down ask keeps its id and its not-now while the outage is the same one.
+  {
+    const GR = await import('../desk/bin/gate-reviewer.mjs');
+    const { addAsk: add, readAsks } = await import('../desk/bin/asks.mjs');
+    const { addPutOff, putOffEntry } = await import('../desk/bin/not-now.mjs');
+    const at = (min) => Date.parse('2026-11-24T10:00:00Z') + min * 60000, iso = (min) => new Date(at(min)).toISOString();
+    const bot = 'agent-pullbot', w = (pr) => ({ login: bot, pr, head: `h${pr}`, line: `PR #${pr} waits` });
+    const S = standing.stateDir;
+    GR.writeRecord(S, { reviewers: { [bot]: { last: iso(0), lags: [5, 6, 7], waiting: { 3: { head: 'h3', since: iso(10) }, 4: { head: 'h4', since: iso(30) } } } } });
+    GR.reviewerStep(S, { waits: [w(3), w(4)], now: at(80), repo: 'acme/ask811' });
+    const first = asks().find((i) => i.need.startsWith('gate reviewer down'));
+    N.record({ word: 'ask811', ticket: first.t.key, action: 'not-now' });
+    GR.reviewerStep(S, { waits: [w(3), w(4), w(5)], now: at(90), repo: 'acme/ask811' });
+    const kept = readAsks(S).filter((a) => a.settles === 'reviewer');
+    t('#1380 AC1 refreshing the outage\'s text and waiting PRs keeps its id', `${kept.length} ${kept[0]?.id === first.id} ${kept[0]?.text.includes('(#3, #4, #5)')}`, `1 true true`);
+    t('#1380 AC1 and its not-now holds: it does not come back to the list', asks().some((i) => i.need.startsWith('gate reviewer down')), false);
+    // A not-now recorded while an ask's text was one of its inputs still holds once the text changes.
+    const legacy = add(S, 'config drift: desk abc added a config row this repo\'s config lacks that need you: §4 Staging. Run /desk-setup', Date.now(), { settles: 'drift', rows: ['§4 Staging'] });
+    addPutOff(putOffEntry({ question: `ask:${legacy.id} ask`, ticket: `ask:${legacy.id}`, inputs: { ticket: `ask:${legacy.id}`, need: 'config drift: an older wording' } }), S);
+    t('#1380 AC1 a drift ask put off under its older text stays put off', asks().some((i) => i.t.key === `ask:${legacy.id}`), false);
+    // The reviewer reviews again, then goes quiet past its threshold before the next pass: a new outage.
+    GR.reviewerStep(S, { seen: [{ login: bot, pr: 3, head: 'h3', reviewedAtHead: true, last: iso(95) }], waits: [w(4), w(5)], now: at(200), repo: 'acme/ask811' });
+    const fresh = readAsks(S).filter((a) => a.settles === 'reviewer');
+    t('#1380 AC2 an outage after the reviewer reviewed again is a fresh ask, back on the list',
+      `${fresh.length} ${fresh[0]?.id !== first.id} ${asks().some((i) => i.t.key === `ask:${fresh[0]?.id}`)}`, '1 true true');
+    // Its only PR's head moves mid-outage, so its wait restarts and it stops reading as down a while, with no review.
+    const bot2 = 'agent-gatebot', w2 = (head) => ({ login: bot2, pr: 7, head, line: 'PR #7 waits' });
+    GR.writeRecord(S, { reviewers: { [bot2]: { last: iso(0), lags: [5, 6, 7], waiting: { 7: { head: 'h7', since: iso(10) } } } } });
+    GR.reviewerStep(S, { waits: [w2('h7')], now: at(80), repo: 'acme/ask811' });
+    const quiet = readAsks(S).find((a) => a.login === bot2);
+    t('#1380 a second reviewer\'s outage is on the list before its not-now', asks().some((i) => i.t.key === `ask:${quiet.id}`), true);
+    N.record({ word: 'ask811', ticket: `ask:${quiet.id}`, action: 'not-now' });
+    GR.reviewerStep(S, { waits: [w2('h7b')], now: at(90), repo: 'acme/ask811' });
+    GR.reviewerStep(S, { waits: [w2('h7b')], now: at(160), repo: 'acme/ask811' });
+    const still = readAsks(S).filter((a) => a.login === bot2);
+    t('#1380 AC1 an outage whose wait restarts on a new head, with no review, keeps its id and its not-now',
+      `${still.length} ${still[0]?.id === quiet.id} ${asks().some((i) => i.t.key === `ask:${quiet.id}`)}`, '1 true false');
+  }
 }
 
 // DS-796: a done blocker whose merge is recorded, with no PR, is through, so a ticket held behind it and

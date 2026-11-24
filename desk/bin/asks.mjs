@@ -36,7 +36,8 @@ function update(stateDir, change) {
 // marks an ask its tickets' admission settles too (intake.mjs admit's ask to start a session), which
 // settleAdmitted drops. `settles: 'drift'` with `rows` marks one naming config rows a release added
 // that the config lacks (drift-asks.mjs), which settleDrift drops; `settles: 'reviewer'` with `login` one
-// saying that gate reviewer is down (gate-reviewer.mjs), which settleReviewer drops.
+// saying that gate reviewer is down (gate-reviewer.mjs), which settleReviewer drops; asked again for that
+// login with other text, it takes that text under its own id.
 // `choice` ({ options, recommended, apply_by, never_default }) makes it a choice between `options` (each
 // one word), its `recommended` one applied by itself at `apply_by` unless `never_default` says why it
 // never is (ask-defaults.mjs; a pass answers it once due, dueAsks); asked again with one, that choice replaces the one kept.
@@ -52,6 +53,9 @@ export function addAsk(stateDir, text, now = Date.now(), { until = [], settles =
       if (pick) { for (const k of ['options', 'recommended', 'apply_by', 'never_default']) delete same[k]; Object.assign(same, pick); }
       return { id: same.id, added: false, until: same.until ?? [], ask: { ...same } };
     }
+    // A reviewer's ask kept up to date takes the new text and keeps its id, so a not-now on it holds.
+    const kept = settles === 'reviewer' && login ? f.asks.find((a) => a.settles === 'reviewer' && a.login === login) : null;
+    if (kept) { kept.text = text; return { id: kept.id, added: false, until: [], ask: { ...kept } }; }
     const id = f.next ?? Math.max(0, ...f.asks.map((a) => a.id)) + 1;
     const drift = settles === 'drift' && rows?.length ? { settles, rows: [...rows] } : settles === 'reviewer' && login ? { settles, login } : null;
     const a = { id, text, at: new Date(now).toISOString(), ...(keys.length ? { until: keys, ...(settles ? { settles } : {}) } : drift ?? {}), ...(pick ?? {}) };

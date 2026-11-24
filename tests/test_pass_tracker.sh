@@ -156,6 +156,7 @@ cat > "$T/stub/gh" <<EOF
 echo "\$*" >> "$T/gh-calls"
 case "\$*" in
   "pr view 400 "*) echo '{"state":"MERGED","url":"https://github.com/acme/widgets/pull/400","mergedAt":"$MERGED","statusCheckRollup":[]}' ;;
+  "pr view 402 "*) echo '{"state":"MERGED","url":"https://github.com/acme/widgets/pull/402","mergedAt":"$MERGED","headRefName":"feat/co-4-renamed","statusCheckRollup":[]}' ;;
   "pr view 501 "*) if [ -f "$T/n-merged" ]; then echo '{"state":"MERGED","url":"https://github.com/acme/widgets/pull/501","mergedAt":"$MERGED","statusCheckRollup":[]}'
                    else echo '{"state":"OPEN","url":"https://github.com/acme/widgets/pull/501","mergedAt":"0001-01-01T00:00:00Z","statusCheckRollup":[]}'; fi ;;
   "pr list "*) echo '[]' ;;
@@ -204,6 +205,7 @@ mkdir -p "$T/state-co/logs"; q init co
 q add CO-1; q park CO-1 "which copy?"
 q add CO-2; q park CO-2 "which tier?"
 q add CO-3; q park CO-3 "which plan?"; node "$B/closeout.mjs" CO-3 >/dev/null; q set CO-3 added_at=2099-01-01T00:00:00.000Z
+q add CO-4; q set CO-4 branch=feat/co-4; q park CO-4 "which flow?"; node "$B/closeout.mjs" CO-4 --pr 402 >/dev/null
 out=$(node "$B/closeout.mjs" CO-1 --pr 400 2>&1)
 check "DS-180 AC8 closing out a parked ticket leaves a note for the batch and says so" '[ -f "$T/state-co/closed-out/CO-1.json" ] && echo "$out" | grep -q "^CO-1 is parked in batch co: noted for its orchestrator"'
 out=$(node "$B/closeout.mjs" NOPE-1 --how "done" 2>&1)
@@ -212,6 +214,9 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-180 AC9 the next pass records it done with its PR, and clears the note" \
   '[ "$(field CO-1 state)" = "\"done\"" ] && [ "$(field CO-1 result.pr)" = 400 ] && [ "$(field CO-1 park)" = null ] && [ ! -f "$T/state-co/closed-out/CO-1.json" ] && echo "$out" | grep -q "CO-1: closed out from an interactive session (merged, PR #400)"'
 check "DS-180 AC9 a ticket nobody closed out stays parked" '[ "$(field CO-2 state)" = "\"parked\"" ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "a merge closed out with its PR stays done though the PR was opened from another branch" \
+  '[ "$(field CO-4 state)" = "\"done\"" ] && [ "$(field CO-4 shipped_pr)" = 402 ] && [ "$(field CO-4 park)" = null ] && ! echo "$out" | grep -q "CO-4.*not its own"'
 check "DS-180 a note older than the ticket's place in the queue is stale: dropped, and the ticket stays parked" '[ "$(field CO-3 state)" = "\"parked\"" ] && [ ! -f "$T/state-co/closed-out/CO-3.json" ]'
 # DS-757: a close-out whose write is refused (the queue locked past its wait) keeps its note, and the
 # next pass records it.
