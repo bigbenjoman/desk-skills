@@ -38,7 +38,7 @@ import { pinDisagrees } from './lever-pin.mjs';
 import { ticketRework, reworkSummary } from './rework.mjs';
 import { toolOutcomes, codexCalls, waitCalls } from './log-tool-calls.mjs';
 import { everyTicket } from './queue-store.mjs';
-import { readQueue as readQueueFile } from './batch-state.mjs';
+import { readQueue as readQueueFile, reworked } from './batch-state.mjs';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const NR = 'not recorded';
@@ -344,7 +344,7 @@ export function ticketRows({ queue, state, slug, batch = null, since, until = In
     }));
     rows.push({
       slug, batch, key: t.key, type: t.type ?? null, lane: t.lane ?? null, size: size === 'unknown' ? null : size,
-      admitted_at: t.added_at, merged_at: t.merged_at ?? null, state: t.state ?? null,
+      admitted_at: t.added_at, merged_at: t.merged_at ?? null, state: t.state ?? null, reworked: reworked(t),
       cost: x.cost, cost_complete: !x.c || (!x.c.cloud && !x.c.unknown), input: x.input, output: x.output,
       preflight_cost: x.c?.preflight.cost ?? 0, runs: x.c?.runs ?? 0, unknown_runs: x.c?.unknown ?? 0,
       starts: starts.length, fix_tries: triesMade(t.fix_tries), parks: x.parks, parks_by_class: x.parkClasses,
