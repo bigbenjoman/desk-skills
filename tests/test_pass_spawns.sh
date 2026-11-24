@@ -1937,8 +1937,8 @@ check "DS-905 AC1 in record mode a pass's spawn is a spawned event, and queue.js
   '[ "$(field RC-1 state)" = "\"running\"" ] && jq -e "select(.key == \"RC-1\" and .type == \"spawned\")" "$T/rec/ledger/events.jsonl" >/dev/null && [ "$(jq .ledger_seq "$T/rec/queue.json")" = "$(tail -1 "$T/rec/ledger/events.jsonl" | jq .seq)" ] && ! echo "$out" | grep -q "differ between queue.json"'
 rm "$T/rec/queue.json"
 out=$(DESK_CONFIG="$T/config-rec.md" node "$B/pass.mjs" 2>&1)
-check "DS-905 AC2 a deleted queue.json is rebuilt from the log by the next pass, which says so" \
-  '[ "$(field RC-1 state)" = "\"running\"" ] && [ "$(field RC-1 branch)" = "\"fix/RC-1\"" ] && echo "$out" | grep -q "ledger: queue.json was missing or unreadable, so it was rebuilt from the log (1 ticket(s))"'
+check "DS-905 AC2 a deleted queue.json is rebuilt from the log by the next pass, which says so and stops for the batch fields" \
+  '[ "$(field RC-1 state)" = "\"running\"" ] && [ "$(field RC-1 branch)" = "\"fix/RC-1\"" ] && echo "$out" | grep -q "ledger: queue.json was missing, so it was rebuilt from the log (1 ticket(s)).*so this pass stopped"'
 out=$(DESK_CONFIG="$T/config-reconly.md" node "$B/pass.mjs" 2>&1)
 check "DS-905 AC6 the record lever without the ledger lever is ignored, and the pass says it needs the ledger lever" \
   'echo "$out" | grep -q "ledger: the ledger-record lever is ignored: it needs the ledger lever on as well"'

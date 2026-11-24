@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { writeJsonAtomic } from './dir-lock.mjs';
 import { followOnPending, postMergeUnmade } from './harvest.mjs';
-import { ledgerOn, recordOn, missedLine, recordWrite } from './queue-ledger.mjs';
+import { ledgerOn, recordOn, missedLine, recordWrite, logSeq } from './queue-ledger.mjs';
 import { blockersOf, holdsLaid } from './queue-states.mjs';
 
 export const versionOf = (q) => {
@@ -27,17 +27,26 @@ export const versionOf = (q) => {
 // the write moved to the archive. `onLedger(result)` hears the append's outcome; by default a missed
 // append is printed to stderr. `record: false` is a writer that records its write itself (move-batch).
 // In record mode (queue-ledger.mjs recordMode) the append comes first and the write records the log's
-// seq as `ledger_seq`; an append refused as an illegal transition throws LedgerRefusal, and neither
-// the log nor queue.json changes.
+// seq as `ledger_seq`; a write refused (queue-ledger.mjs recordWrite) or an append that fails throws
+// LedgerRefusal, and neither the log nor queue.json changes, so queue.json is never ahead of the log.
+// A queue written before record mode is first stamped with the log's seq, so a crash between the
+// first append and its write still leaves queue.json behind the log, which a restore repairs.
 export function writeQueueFile(file, q, { by, archived, record = true, onLedger = reportMissed(file) } = {}) {
   const on = record && ledgerOn();
   const strict = on && recordOn();
   const before = on ? readQueueAt(file) : null;
   if (on) holdsLaid(q);
   if (strict) {
+    if (before && !Number.isInteger(before.ledger_seq)) {
+      const seq = logSeq(file);
+      if (seq == null) throw new LedgerRefusal(`refused, nothing written: the ticket ledger could not be read`);
+      before.ledger_seq = seq;
+      writeJsonAtomic(file, before);
+    }
     const r = recordWrite(file, before, q, { by, archived, mode: 'record' });
     if (r.refused) throw new LedgerRefusal(r.why);
-    if (Number.isInteger(r.seq)) q.ledger_seq = r.seq;
+    if (r.missed) throw new LedgerRefusal(`refused, nothing written: the ticket ledger could not be appended to (${r.why})`);
+    q.ledger_seq = r.seq;
     onLedger(r);
   }
   q.version = versionOf(q) + 1;

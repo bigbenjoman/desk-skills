@@ -128,15 +128,65 @@ levers(RECORD);
   t('a second restore has nothing to do', restoreQueue(f).restored, null);
   t('and nothing to report', recordLine({ restore: restoreQueue(f), ignored: false }), null);
 
-  // A write over the stale copy, after a crash, keeps the old position so the restore is still owed.
-  const g = fixture({ version: 1, batch: 'b', tickets: { A: tk('A') } });
+  // A write worked out from the stale copy, after a crash, is refused until the restore has run.
+  const g = fixture({ version: 1, batch: 'b', tickets: { A: tk('A', { held_by: 'X' }), X: tk('X'), Y: tk('Y') } });
   writeQueueFile(g, read(g), { by: 'test' });
   const old = read(g);
-  recordWrite(g, old, { ...old, tickets: { A: { ...old.tickets.A, lane: 'C' } } }, { by: 'test', mode: 'record' });
-  writeQueueFile(g, { ...read(g), tickets: { A: { ...read(g).tickets.A, type: 'Bug' } } }, { by: 'test' });
-  t('a write after the crash keeps the old log position', read(g).ledger_seq, old.ledger_seq);
+  recordWrite(g, old, { ...old, tickets: { ...old.tickets, A: { ...old.tickets.A, held_by: 'Y' } } }, { by: 'test', mode: 'record' });
+  const logged = log(g).length;
+  let threw = null;
+  try { writeQueueFile(g, { ...read(g), tickets: { ...read(g).tickets, A: { ...read(g).tickets.A, held_by: null } } }, { by: 'test' }); } catch (e) { threw = e; }
+  t('a write over a queue.json behind the log is refused, saying why', [threw instanceof LedgerRefusal, /queue.json is behind the ticket ledger/.test(threw?.message)], [true, true]);
+  t('and neither the log nor queue.json changes', [log(g).length, read(g).tickets.A.held_by, read(g).ledger_seq], [logged, 'X', old.ledger_seq]);
   restoreQueue(g);
-  t('so the restore still lays both changes', [read(g).tickets.A.lane, read(g).tickets.A.type], ['C', 'Bug']);
+  t('the restore lays the crashed change on', read(g).tickets.A.held_by, 'Y');
+  writeQueueFile(g, { ...read(g), tickets: { ...read(g).tickets, A: { ...read(g).tickets.A, held_by: null } } }, { by: 'test' });
+  t('so the same write is then made, and the rebuild agrees', [read(g).tickets.A.held_by, queueDifference(g).diffs], [null, []]);
+}
+
+// The first record-mode write over a queue written in shadow mode stamps it with the log's position
+// first, so a crash between its append and its write is still restored.
+{
+  levers('ledger');
+  const f = fixture({ version: 1, batch: 'b', tickets: { A: tk('A') } });
+  writeQueueFile(f, read(f), { by: 'test' });
+  levers(RECORD);
+  try { writeQueueFile(f, { ...read(f), tickets: { A: tk('A', { lane: 'C' }) } }, { by: 'test', onLedger: () => { throw new Error('crash'); } }); } catch { /* the crash */ }
+  t('a crash in the first record-mode write leaves queue.json stamped, without the change', [Number.isInteger(read(f).ledger_seq), read(f).tickets.A.lane], [true, 'A']);
+  t('so the next restore lays the change on', [restoreQueue(f).restored, read(f).tickets.A.lane], ['behind', 'C']);
+}
+
+// An append that fails in record mode writes nothing: queue.json is never ahead of the log.
+{
+  const f = fixture({ version: 1, batch: 'b', tickets: { A: tk('A') } });
+  writeQueueFile(f, read(f), { by: 'test' });
+  const fileBefore = readFileSync(f, 'utf8');
+  const held = join(dirname(f), 'ledger', '.lock');
+  mkdirSync(held);
+  writeFileSync(join(held, 'pid'), `${process.pid}\n`);
+  let threw = null;
+  try { writeQueueFile(f, { ...read(f), tickets: { A: tk('A', { lane: 'C' }) } }, { by: 'test' }); } catch (e) { threw = e; }
+  rmSync(held, { recursive: true });
+  t('a failed append refuses the write, saying why', [threw instanceof LedgerRefusal, /could not be appended to/.test(threw?.message)], [true, true]);
+  t('and queue.json is unchanged', readFileSync(f, 'utf8') === fileBefore, true);
+}
+
+// The pass's own auto-merge lines in the log leave queue.json as it is; a restore changes only the
+// tickets the log has moved on, keeping any other queue.json holds.
+{
+  const f = fixture({ version: 1, batch: 'b', tickets: { A: tk('A', { state: 'running' }), B: tk('B') } });
+  writeQueueFile(f, read(f), { by: 'test' });
+  append(dirname(f), [{ type: 'automerge_armed', batch: STANDING, key: 'A', data: { by: 'session', pr: 4, head_sha: 'abc1234', line: 0 } }], { by: 'pass' });
+  const fileBefore = readFileSync(f, 'utf8');
+  t('an auto-merge line leaves queue.json as it is', [restoreQueue(f).restored, readFileSync(f, 'utf8') === fileBefore], [null, true]);
+  writeQueueFile(f, { ...read(f), tickets: { ...read(f).tickets, B: tk('B', { lane: 'B' }) } }, { by: 'test' });
+  t('and a write after it is made', read(f).tickets.B.lane, 'B');
+  const stale = read(f);
+  write(f, { ...stale, tickets: { ...stale.tickets, Z: tk('Z') } });
+  recordWrite(f, stale, { ...stale, tickets: { ...stale.tickets, B: { ...stale.tickets.B, lane: 'C' } } }, { by: 'test', mode: 'record' });
+  const r = restoreQueue(f);
+  t('a restore names only the ticket the log moved on', [r.restored, r.tickets], ['behind', ['B']]);
+  t('and keeps a ticket only queue.json holds', [read(f).tickets.B.lane, Object.keys(read(f).tickets)], ['C', ['A', 'B', 'Z']]);
 }
 
 // AC2: queue.json deleted; the next pass rebuilds it from the log with every live ticket's state,
@@ -159,9 +209,12 @@ levers(RECORD);
   t('AC2 its holds', [got.H.held_by, got.H.holds], ['A', ['A']]);
   t('AC2 its park', got.P.park.question, 'which colour?');
   t('AC2 its merge record', got.M.merge, want.M.merge);
-  t('AC2 the report says it was rebuilt', /queue.json was missing or unreadable, so it was rebuilt from the log \(4 ticket\(s\)\)/.test(recordLine({ restore: r, ignored: false })), true);
+  t('AC2 the report says it was rebuilt', /queue.json was missing, so it was rebuilt from the log \(4 ticket\(s\)\)/.test(recordLine({ restore: r, ignored: false })), true);
+  t('AC2 and names no batch name, which only queue.json held', Object.hasOwn(read(f), 'batch'), false);
   writeFileSync(f, '{ torn');
-  t('a queue.json that does not read is rebuilt the same way', [restoreQueue(f).restored, Object.keys(read(f).tickets).length], ['missing', 4]);
+  let threw = null;
+  try { restoreQueue(f); } catch (e) { threw = e; }
+  t('a queue.json that does not read is left as it is, and the restore says so', [/does not read as a queue/.test(threw?.message), readFileSync(f, 'utf8')], [true, '{ torn']);
   t('a batch the log has never named is not rebuilt', (() => { const g = join(T, 'empty', 'queue.json'); mkdirSync(dirname(g)); return restoreQueue(g).restored; })(), null);
 }
 

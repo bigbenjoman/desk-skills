@@ -186,13 +186,16 @@ const PASS_AT = new Date().toISOString();
 // sooner than the interval would.
 const WOKEN = process.argv.includes('--woken');
 
-// Record mode (queue-ledger.mjs recordMode): a queue.json that is missing, unreadable or behind the log
-// is restored from it before anything reads it, and the report says so (pass/report.mjs recordLine).
+// Record mode (queue-ledger.mjs recordMode): a queue.json that is missing or behind the log is restored
+// from it before anything reads it, and the report says so (pass/report.mjs recordLine). One rebuilt
+// whole has none of the batch's own fields, its base among them, which this pass has already read
+// (E.applyBatchBase above), so the pass stops there for a person to set them again.
 const RECORD = recordMode();
 let LEDGER_RESTORE = null;
 if (!DRY && RECORD.on) {
   try { LEDGER_RESTORE = restoreQueue(QUEUE_FILE, { waitMs: LOCK_WAIT_MS }); }
   catch (e) { LEDGER_RESTORE = { error: String(e?.message ?? e).split('\n')[0] }; }
+  if (LEDGER_RESTORE.restored === 'missing') refuse(recordLine({ restore: LEDGER_RESTORE, ignored: false }));
 }
 if (!existsSync(QUEUE_FILE)) {
   refuse(`no queue at ${QUEUE_FILE} — run: node ${SHOWN_BIN}/queue.mjs init <batch-name>`);

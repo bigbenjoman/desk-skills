@@ -320,7 +320,7 @@ export function recordLine({ restore, ignored }) {
   if (ignored) return 'ledger: the ledger-record lever is ignored: it needs the ledger lever on as well, so queue.json is written as before';
   if (!restore) return null;
   if (restore.error) return `ledger: queue.json could not be checked against the log, so it was not restored (${restore.error})`;
-  if (restore.restored === 'missing') return `ledger: queue.json was missing or unreadable, so it was rebuilt from the log (${restore.tickets.length} ticket(s)); the log holds no batch fields (concurrency, base, …), so set any it had again with queue.mjs set-batch`;
+  if (restore.restored === 'missing') return `ledger: queue.json was missing, so it was rebuilt from the log (${restore.tickets.length} ticket(s)); the log holds no batch fields (base, concurrency, supervised, …), so this pass stopped: set any the batch had again with queue.mjs set-batch, then run the pass again`;
   if (restore.restored === 'behind' && restore.tickets.length) {
     const named = restore.tickets.slice(0, LEDGER_SHOWN).join(', ');
     const more = restore.tickets.length > LEDGER_SHOWN ? `, and ${restore.tickets.length - LEDGER_SHOWN} more` : '';
