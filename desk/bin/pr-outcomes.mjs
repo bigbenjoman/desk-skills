@@ -12,14 +12,15 @@
 // A window is done once it has closed and was read in full; a PR is final once all are done. Each
 // PR's reads are bounded to its own windows, so one whose windows were read in full is final even
 // when another's were too long to read. Outcomes are cached in the repo's state, partial ones with
-// their windows still open, and a later run reads only the windows not done.
+// their windows still open, and a later run reads only the windows not done. Runs at once merge
+// their outcomes into the cache under its lock.
 //
 // The reads are batched GraphQL queries, CHUNK aliased reads in each: the PRs themselves; one search
 // per open window, by a bounded `merged:` range sorted by creation; and the further pages of any
 // list over a page (a PR's files or reviews, a search's results, a follow-up's files), at most
 // MAX_PAGES pages of each. A list longer than that leaves its window open.
 import { readFileSync } from 'node:fs';
-import { writeJsonAtomic } from './dir-lock.mjs';
+import { withDirLock, writeJsonAtomic } from './dir-lock.mjs';
 import { gh as ghRead } from './gate.mjs';
 import { findRecords, RED_HOURS, revertedPr, WATCH_DAYS } from './post-merge.mjs';
 
@@ -109,6 +110,8 @@ export function prOutcomes(refs, { repo, base, cachePath = null, offline = false
   const cache = cachePath ? readCache(cachePath) : { prs: {}, missing: [] };
   const recs = new Map(Object.entries(cache.prs).map(([n, o]) => [Number(n), o]));
   const missing = new Set(cache.missing.map(Number));
+  // The PRs this run read from GitHub: only these are written back over the cache.
+  const touched = new Set();
   const headKey = (r) => `${r.head}|${r.from}|${r.to}`;
   const chosen = new Map();
   const unmatched = new Set();
@@ -147,6 +150,7 @@ export function prOutcomes(refs, { repo, base, cachePath = null, offline = false
       const reviews = readPaged(core.map((n) => ({ id: n, sel: (c) => `pullRequest(number:${n}){reviews(first:${PAGE}${after(c)}){${pageOf(REVIEWS)}}}`, conn: (a) => a.reviews })),
         { gh, repoSel, count, first: new Map(core.map((n) => [n, fresh.get(n)?.answer ?? null])) });
       for (const n of core) {
+        if (fresh.has(n)) touched.add(n);
         const p = fresh.get(n)?.answer;
         // Asked and answered with nothing: no PR of this repo has that number.
         if (!p?.number) { if (fresh.has(n) && fresh.get(n).answer === null) missing.add(n); continue; }
@@ -199,6 +203,7 @@ export function prOutcomes(refs, { repo, base, cachePath = null, offline = false
           list: cands.filter((c) => filesOf(c).nodes.some((f) => mine.has(f.path))).map((c) => c.number) };
       }
       // A PR's reverts: the candidates of both its searches, merged into the default branch, that name it.
+      for (const o of merged) touched.add(o.number);
       for (const o of merged.filter((m) => !m.revert?.done)) {
         const at = Date.parse(o.merged_at);
         const both = searches.filter((x) => x.kind === 'revert' && x.o === o).map((x) => found.get(x.id));
@@ -221,10 +226,23 @@ export function prOutcomes(refs, { repo, base, cachePath = null, offline = false
     o.final = !o.open.length;
   }
   if (cachePath) {
-    // Every merged PR's windows, done or not: a later run reads only the open ones.
-    const keep = [...recs].filter(([, o]) => o.merged_at && (o.core || o.off_default));
-    const out = { prs: Object.fromEntries(keep), missing: [...missing].sort((a, b) => a - b) };
-    try { writeJsonAtomic(cachePath, out); } catch (e) { notes.push(`cache not written: ${firstLine(e)}`); }
+    // Every merged PR's windows, done or not, so a later run reads only the open ones. Merged into the
+    // cache as it is now, under its lock: another run's outcomes written since this one read it are
+    // kept, and only the PRs this run read replace theirs (a number read and found leaves `missing`).
+    try {
+      withDirLock(`${cachePath}.lock`, () => {
+        const cur = readCache(cachePath);
+        const prs = { ...cur.prs };
+        const miss = new Set(cur.missing.map(Number));
+        for (const n of touched) {
+          const o = recs.get(n);
+          if (missing.has(n)) { miss.add(n); delete prs[n]; }
+          else if (o?.merged_at && (o.core || o.off_default)) { miss.delete(n); prs[n] = o; }
+          else miss.delete(n);
+        }
+        writeJsonAtomic(cachePath, { prs, missing: [...miss].sort((a, b) => a - b) });
+      });
+    } catch (e) { notes.push(`cache not written: ${firstLine(e)}`); }
   }
   const view = (o) => (o?.off_default ? { number: o.number, off_default: true, final: false } : o?.merged_at && o.core ? {
     number: o.number, title: o.title, merged_at: o.merged_at, final: o.final, open: o.open,

@@ -151,6 +151,8 @@ function stubGh() {
   fs.appendFileSync(process.env.HANDOFF_GH_LOG, `${JSON.stringify(args)}\n`);
   const q = (args.find((a) => a.startsWith('query=')) || '').slice(6);
   const fx = process.env.HANDOFF_GH_FIXTURE ? JSON.parse(fs.readFileSync(process.env.HANDOFF_GH_FIXTURE, 'utf8')) : { prs: {}, search: [] };
+  // Another run's cache write landing while this run reads: written at the first call only.
+  if (fx.inject && !fs.existsSync(fx.inject.once)) { fs.writeFileSync(fx.inject.once, ''); fs.mkdirSync(require('path').dirname(fx.inject.path), { recursive: true }); fs.writeFileSync(fx.inject.path, JSON.stringify(fx.inject.cache)); }
   const page = (list, from, size = 100) => ({ pageInfo: { hasNextPage: from + size < list.length, endCursor: String(from + size) }, nodes: list.slice(from, from + size) });
   const files = (p) => (p.files || []).map((path) => ({ path }));
   const reviews = (p) => (p.reviews || []).map((r) => ({ submittedAt: r.at, commit: { oid: r.oid } }));
@@ -503,6 +505,16 @@ const blindCache = JSON.parse(readFileSync(join(S10r, 'handoff-pr-outcomes.json'
 t('a repository GitHub does not find drops the read with a note, and marks no PR as missing',
   [blind.pr_read.note?.startsWith('PRs not read from GitHub'), blindCache.missing, blind.sessions.filter((y) => y.measured_on === 'prs').length], [true, [], 0]);
 t('and a later good run reads the PRs', run10(FX10, S10r).sessions.find((y) => y.id === 'pair').prs_measured.map((o) => o.number), [1001]);
+// Another run writes the cache while this one reads GitHub: a PR of its own, and two numbers it found
+// naming no PR, one of which this run reads as a PR.
+const S10c = join(T, 'state10-race');
+const theirs = { number: 777, title: 'feat: theirs', merged_at: iso(M), core: { done: true, red_main: 0, files: [], review_rounds: 0 },
+  follow: { done: true, list: [] }, revert: { done: true, list: [] }, open: [], final: true };
+run10(write('fx10-race.json', { ...JSON.parse(readFileSync(FX10, 'utf8')),
+  inject: { path: join(S10c, 'handoff-pr-outcomes.json'), once: join(T, 'race-once'), cache: { prs: { 777: theirs }, missing: [1001, 1888] } } }), S10c);
+const raced = JSON.parse(readFileSync(join(S10c, 'handoff-pr-outcomes.json'), 'utf8'));
+t('a cache write by another run during this one keeps both runs\' PRs, and a number this run read as a PR leaves missing',
+  [['777', '1001', '1003', '1004', '1005'].every((n) => raced.prs[n]), raced.missing], [true, [1888, 1999]]);
 const failed = run10(write('fx10-fail.json', { prs: { 1001: pr(1001) }, search: [], errorType: 'RATE_LIMITED' }), join(T, 'state10-fail'));
 t('any other error drops the read and says so', [failed.pr_read.note?.startsWith('PRs not read from GitHub'), failed.sessions.filter((y) => y.measured_on === 'prs').length], [true, 0]);
 
