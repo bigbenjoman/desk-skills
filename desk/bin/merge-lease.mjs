@@ -4,13 +4,15 @@
 // yet" and both act on one PR. The lease is held only for one check, merge and record, never for the
 // driver's life, and with the kind on the driver bounds the merge call (desk_timeout) so the hold is too.
 //
-//   merge-lease.mjs take <PR> <head sha> --repo <owner/name> --base <base> --by <merger> --pid <owner pid>
+//   merge-lease.mjs take <PR> <head sha> --repo <owner/name> --base <base> --by <merger> (--pid <owner pid> | --owner claude)
 //                        [--ttl <seconds>] [--wait <seconds>]
 //       takes the lease for --ttl (default 120: the driver passes its merge bound plus the claim's and
-//       the records' margin) and waits for it up to --wait (default twice the TTL). Prints one JSON line: { lease, mode, unreadable, lines }. `lease` is the lease id to release
-//       after the record (null where none was taken; the driver releases it with leases.mjs release),
-//       `unreadable` whether the lease store could not be read, `lines` what to log. While it waits,
-//       says on stderr who holds the lease. The ledger is that of the queue $DESK_QUEUE names.
+//       the records' margin) and waits for it up to --wait (default twice the TTL). Prints one JSON line: { lease, owner, mode, unreadable, lines }. `lease` is the lease id to release
+//       after the record (null where none was taken; release it with leases.mjs release <lease> --pid <owner>),
+//       `owner` the pid that owns it (--owner claude: the nearest Claude Code session above the caller, so
+//       a session's lease outlives the command that took it), `unreadable` whether the lease store could
+//       not be read, `lines` what to log. While it waits, says on stderr who holds the lease. The ledger
+//       is that of the queue $DESK_QUEUE names, else desk-env's queue for this repo.
 //       Exit 0 merge, 3 the ledger already records a merge or an armed auto-merge at this head, 4 the
 //       lease store or the ledger is unreadable with the kind on, 75 gave up waiting, 2 usage.
 //
@@ -25,15 +27,15 @@
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { EXIT_GAVE_UP, EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_USAGE, LeaseStoreError, LeaseUsageError, RESET_COMMAND, acquire, kindMode, leaseDir, logEvent, release } from './leases.mjs';
+import { EXIT_GAVE_UP, EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_USAGE, LeaseStoreError, LeaseUsageError, RESET_COMMAND, acquire, claudeAncestor, kindMode, leaseDir, logEvent, release } from './leases.mjs';
 import { fold } from './ticket-ledger.mjs';
 import { ledgerOn, ledgerTarget } from './queue-ledger.mjs';
 
 // The lease's TTL where --ttl is not given. A holder that hangs lapses at twice its TTL, so the
 // default wait, twice the TTL, outlasts it.
-const HOLD_S = 120;
+export const HOLD_S = 120;
 
-const mergeKey = (repo, base) => `${repo}@${base}`;
+export const mergeKey = (repo, base) => `${repo}@${base}`;
 const sameHead = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length >= 7 && b.length >= 7 && (a.startsWith(b) || b.startsWith(a));
 
 // The ledger's record of PR `pr` merged or armed for auto-merge at head `sha`, from folded state
@@ -50,7 +52,7 @@ const recordText = (r) => `the ticket ledger records it ${r.event === 'merged' ?
 // One hold's start: the lease, then the ledger check inside it. `env` is desk-env's exports; `ledger`
 // whether the ledger lever is on; `readLedger()` the folded ledger. -> { code, lease, mode, unreadable,
 // lines }; a refused or failed take has released any lease it took.
-function take({ pr, sha, repo, base, by, pid, ttl, wait, env, dir = leaseDir(), ledger, readLedger, onWait }) {
+export function take({ pr, sha, repo, base, by, pid, ttl, wait, env, dir = leaseDir(), ledger, readLedger, onWait }) {
   const key = mergeKey(repo, base);
   const { mode } = kindMode('merge', env);
   let unreadable = false;
@@ -84,10 +86,23 @@ function take({ pr, sha, repo, base, by, pid, ttl, wait, env, dir = leaseDir(), 
   return out(EXIT_OK, lease, [...lines, `shadow: ${why}, which on would refuse; merging as before`]);
 }
 
-const USAGE = 'usage: merge-lease.mjs take <PR> <head sha> --repo <owner/name> --base <base> --by <merger> --pid <owner pid> [--ttl <seconds>] [--wait <seconds>]';
-const OPTIONS = Object.fromEntries(['repo', 'base', 'by', 'pid', 'ttl', 'wait'].map((k) => [k, { type: 'string' }]));
+const USAGE = 'usage: merge-lease.mjs take <PR> <head sha> --repo <owner/name> --base <base> --by <merger> (--pid <owner pid> | --owner claude) [--ttl <seconds>] [--wait <seconds>]';
+const OPTIONS = Object.fromEntries(['repo', 'base', 'by', 'pid', 'owner', 'ttl', 'wait'].map((k) => [k, { type: 'string' }]));
 
 const whole = (v, what) => { if (!/^\d+$/.test(String(v ?? ''))) throw new LeaseUsageError(`${what} is a whole number, not "${v ?? ''}"`); return Number(v); };
+
+// The lease's owner: --pid, or with --owner claude the Claude Code session above the caller.
+function ownerPid(opt, env) {
+  if (opt.pid != null && opt.owner != null) throw new LeaseUsageError('name one owner, not --pid and --owner');
+  if (opt.owner == null) return whole(opt.pid, '--pid');
+  if (opt.owner !== 'claude') throw new LeaseUsageError(`--owner takes claude, not "${opt.owner}"`);
+  const pid = claudeAncestor(env.psRows('pid=,ppid=,args='), process.pid);
+  if (pid == null) throw new LeaseUsageError('--owner claude: no Claude session was found above the caller');
+  return pid;
+}
+
+// The folded ledger of the queue $DESK_QUEUE names, else this repo's queue as desk-env finds it.
+export const repoLedger = (env) => () => fold(ledgerTarget(env.queueFile()).repoDir);
 
 async function cli(argv) {
   const [sub, ...rest] = argv;
@@ -101,15 +116,15 @@ async function cli(argv) {
     const pr = whole(pos[0], 'the PR');
     const ttl = opt.ttl == null ? HOLD_S : whole(opt.ttl, '--ttl');
     if (!ttl) throw new LeaseUsageError('--ttl is 1 second or more');
-    const queue = process.env.DESK_QUEUE;
+    const env = await import('./desk-env.mjs');
+    const pid = ownerPid(opt, env);
     const key = mergeKey(opt.repo, opt.base);
     const onWait = (why) => console.error(`${new Date().toISOString().slice(11, 19)}Z #${pr} waiting for the merge lease on ${key}: ${why}`);
-    const r = take({ pr, sha: pos[1], repo: opt.repo, base: opt.base, by: opt.by, pid: whole(opt.pid, '--pid'), ttl,
-      wait: opt.wait == null ? 2 * ttl : whole(opt.wait, '--wait'), env: await import('./desk-env.mjs'), ledger: ledgerOn(), onWait,
-      readLedger: () => { if (!queue) throw new Error('no queue file names the ledger'); return fold(ledgerTarget(queue).repoDir); } });
+    const r = take({ pr, sha: pos[1], repo: opt.repo, base: opt.base, by: opt.by, pid, ttl,
+      wait: opt.wait == null ? 2 * ttl : whole(opt.wait, '--wait'), env, ledger: ledgerOn(), onWait, readLedger: repoLedger(env) });
     // One log line each: a JSON parse error's message spans lines.
     const lines = r.lines.map((l) => l.replace(/\s*\n\s*/g, ' '));
-    console.log(JSON.stringify({ lease: r.lease, mode: r.mode, unreadable: r.unreadable, lines }));
+    console.log(JSON.stringify({ lease: r.lease, owner: pid, mode: r.mode, unreadable: r.unreadable, lines }));
     return r.code;
   } catch (e) {
     if (e instanceof LeaseUsageError) { console.error(`merge-lease: ${e.message}`); console.error(USAGE); return EXIT_USAGE; }

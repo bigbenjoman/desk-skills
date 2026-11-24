@@ -91,7 +91,11 @@ fails, fall back to handing over the raw markdown to paste.
 Arming or merging, claim it first and record it after in the merge log, as `desk-ticket` Stage 7
 says (`merge-log.mjs claim`, then `record --event armed` or `merged`, and `disarmed` when you turn auto-merge off).
 A refused claim stops the arming or merge: report the line it printed, which names who and at which
-head when another desk path already has the PR.
+head when another desk path already has the PR. With the merge lease kind not `off` (`desk-env lease
+mode merge`), the claim, the arming or merge and its record sit inside one hold of the merge lease,
+taken with the ledger check first (`merge-lease.mjs take … --owner claude`) and released once the
+arming call returns, or after the `merged` record: `desk-ticket` Stage 7 has the command and what
+each exit means. With it `off`, arm or merge as before.
 
 **The title follows §5 PR title exactly** — the format (e.g. conventional commits
 `type(scope): <TICKET> description`), where the key sits, and whether CI checks it. When §4 Merge

@@ -85,6 +85,33 @@ other refusal (a usage error, an unreadable repo) is not another merger, so do n
 "session <your session name>" --event merged` (`armed` for auto-merge, `disarmed` when you turn it off, `failed` when gh refuses).
 `merge-log.mjs show --pr <n>` says who did.
 
+**Every merge and every arming is one hold of the merge lease**, the one the merge driver takes for
+the repo and base, with the ticket ledger checked inside it, so a session never merges or arms a PR
+another desk path already merged or armed. `desk-env lease mode merge` says how:
+
+- **`off`**: merge or arm as before, with no lease and no ledger check.
+- **`shadow` or `on`**: before the claim, take the lease and the ledger check:
+
+  ```bash
+  node ~/.claude/desk/bin/merge-lease.mjs take <n> <headRefOid> --repo <repo> --base <the PR's base> --by "session <your session name>" --owner claude
+  ```
+
+  It prints one JSON line, `{ lease, owner, mode, unreadable, lines }`: relay each of `lines`. On,
+  while another holder has the lease it waits, and says on stderr who holds it: say you are waiting
+  on that holder (the merge driver, where the label names `merge-driver`). In shadow it never waits:
+  it takes the lease, and the lease log records a would-refuse naming you and the holder.
+  - **Exit 0**: claim, merge or arm, record, then release the lease with
+    `node ~/.claude/desk/bin/leases.mjs release <lease> --pid <owner>` (a null `lease`: nothing to
+    release). A merge releases it after the `merged` record. Arming releases it once the arming call
+    returns and `armed` is recorded: the hold makes the ledger check and the arming one decision, and
+    does not serialise the merge GitHub makes later.
+  - **Exit 3**: the ledger records the PR merged or armed for auto-merge by another desk path at this
+    head. Do not merge or arm it; report the line, which names that path.
+  - **Exit 4**: the lease store (or the ledger) cannot be read. Do not merge or arm; report that
+    merges wait for the lease store, and that a person moves it aside with
+    `desk-env lease reset --reason <why>`.
+  - **Exit 75**: it gave up waiting. Do not merge; report who held the lease, and try again later.
+
 Where the repo does not allow auto-merge, undrafting is the same and the merge is yours to make on
 green under `pr-merge-green`, always pinned: `gh pr merge <n> --<§4 Merge method>
 --match-head-commit <the head SHA whose checks you read>`. **A PR that touches a glob in §4 Merge
