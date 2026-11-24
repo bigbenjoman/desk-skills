@@ -340,7 +340,7 @@ cfg(){ # <slug> <owner/name> <merge method> <pr-merge-green cell> [<§3 key> <ce
 }
 cfg acme__web acme/web squash '`yes`' gh-issue-create '`ask` (`yes` once filed)'
 cfg acme__api acme/api merge '`yes`' gh-issue-create '`yes`' gh-issue-comment '`yes`' read-own-work '`yes`' read-others '`yes`' jira-comment '`yes`'
-cfg acme__ops acme/ops rebase '`yes` (no approval wait)' pr-auto-merge '`yes`'
+cfg acme__ops acme/ops Rebase '`yes` (no approval wait)' pr-auto-merge '`yes`'
 cfg acme__off acme/off merge '`ask`'
 mkdir -p "$HOME/.claude/desk"; printf '%s\n' "$SRC" > "$HOME/.claude/desk/source-checkout"
 ln -s "$S/../desk/bin" "$HOME/.claude/desk/bin"  # the configs are read through desk-env.mjs
@@ -348,7 +348,7 @@ mkrepo sw; printf '.claude/settings.local.json\n' > "$T/sw/.gitignore"; SW="$T/s
 printf '{"add":[]}\n' > "$T/empty.json"
 run --ledger "$T/sw.json" --settings "$SW" add "$T/empty.json"
 merges=$(jq -r '.permissions.allow[] | select(startswith("Bash(gh pr merge"))' "$SW")
-check "a repo's cross-repo merge rule takes its own merge method, never another's" '[ $rc -eq 0 ] && [[ "$merges" == *"--repo acme/api --merge --match-head-commit *)"* ]] && [[ "$merges" == *"--repo acme/ops --rebase --match-head-commit *)"* ]] && [[ "$merges" == *"--repo acme/web --squash --match-head-commit *)"* ]] && [ "$(printf "%s\n" "$merges" | grep -c .)" = 3 ]'
+check "a repo's cross-repo merge rule takes its own merge method, never another's, whatever its case" '[ $rc -eq 0 ] && [[ "$merges" == *"--repo acme/api --merge --match-head-commit *)"* ]] && [[ "$merges" == *"--repo acme/ops --rebase --match-head-commit *)"* ]] && [[ "$merges" == *"--repo acme/web --squash --match-head-commit *)"* ]] && [ "$(printf "%s\n" "$merges" | grep -c .)" = 3 ]'
 check "  … none for a repo whose pr-merge-green is not yes" '! grep -q -- "--repo acme/off" "$SW"'
 check "  … every one pinned, with the pin guards beside them" '! printf "%s\n" "$merges" | grep -v -- "--match-head-commit \*)$" && jq -e ".permissions.ask | index(\"Bash(gh pr merge *--auto*)\") and index(\"Bash(gh pr merge *--match-head-commit=*)\") and index(\"Bash(gh pr merge *--repo*--repo*)\")" "$SW" >/dev/null'
 check "a row that says yes only in a note grants nothing" '! grep -q "gh issue create --repo acme/web" "$SW" && grep -qF "Bash(gh issue create --repo acme/api *)" "$SW"'

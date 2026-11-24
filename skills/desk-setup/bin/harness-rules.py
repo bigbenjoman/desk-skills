@@ -504,7 +504,9 @@ def repo_rows(config, notes):
     if not isinstance(rows, dict):
         notes.append(f"unread   {config}  (desk-env could not read it: no {SWEEP} rules for that repo)")
         return None
-    return {k: v.get("value") for k, v in rows.items() if isinstance(v, dict) and not v.get("errors")}
+    # merge-method's parsed form is lower-cased, as merge-driver.sh and clearance-state.mjs read it
+    return {k: v.get("parsed" if k == "merge-method" else "value") for k, v in rows.items()
+            if isinstance(v, dict) and not v.get("errors")}
 
 
 def sweep_entries(notes):
