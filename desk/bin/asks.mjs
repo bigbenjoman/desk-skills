@@ -32,17 +32,20 @@ function update(stateDir, change) {
 // `until`: the tickets the ask waits on, when it is a wait on them (needs-you.mjs ask --until), which
 // pruneAsks drops once every one is finished; an ask with none stays until the person says done. Asked
 // again with an `until`, that list replaces the one kept; asked again with none, the kept one stands.
-// `until` in the result is what is kept, so a caller says what a pass will act on.
-export function addAsk(stateDir, text, now = Date.now(), { until = [] } = {}) {
+// `until` in the result is what is kept, so a caller says what a pass will act on. `settles: 'admit'`
+// marks an ask its tickets' admission settles too (intake.mjs admit's ask to start a session), which
+// settleAdmitted drops.
+export function addAsk(stateDir, text, now = Date.now(), { until = [], settles = null } = {}) {
   const keys = [...new Set(until)];
   return update(stateDir, (f) => {
     const same = f.asks.find((a) => a.text === text);
     if (same) {
       if (keys.length) same.until = keys;
+      if (keys.length && settles) same.settles = settles;
       return { id: same.id, added: false, until: same.until ?? [] };
     }
     const id = f.next ?? Math.max(0, ...f.asks.map((a) => a.id)) + 1;
-    f.asks.push({ id, text, at: new Date(now).toISOString(), ...(keys.length ? { until: keys } : {}) });
+    f.asks.push({ id, text, at: new Date(now).toISOString(), ...(keys.length ? { until: keys, ...(settles ? { settles } : {}) } : {}) });
     f.next = id + 1;
     return { id, added: true, until: keys };
   });
@@ -61,14 +64,22 @@ export function removeAsk(stateDir, id) {
 // `finished` (merged, or done with no PR): what it waited on has happened, so it waits on nothing. An
 // ask with no `until` is a step the person owes whatever the tickets do, and stays until they say done.
 //   -> the asks dropped, each { id, text, keys }
-// The unlocked read only spares a write when nothing is stale: what is dropped is decided again under
-// the lock, so an ask asked again with open tickets meanwhile is kept.
-export function pruneAsks(stateDir, { known, finished }) {
-  const spent = (a) => Array.isArray(a.until) && a.until.length && a.until.every((k) => known(k) && finished(k));
-  if (!readAsks(stateDir).some(spent)) return [];
+export const pruneAsks = (stateDir, { known, finished }) =>
+  dropAsks(stateDir, (a) => Array.isArray(a.until) && a.until.length && a.until.every((k) => known(k) && finished(k)));
+
+// Drops each ask its tickets' admission settles (`settles: 'admit'`) whose every `until` ticket is
+// `placed` in a batch now: no session needs starting for them.
+//   -> the asks dropped, each { id, text, keys }
+export const settleAdmitted = (stateDir, placed) =>
+  dropAsks(stateDir, (a) => a.settles === 'admit' && Array.isArray(a.until) && a.until.length && a.until.every((k) => placed(k)));
+
+// Drops each ask `gone(ask)` holds for. The unlocked read only spares a write when none does: what is
+// dropped is decided again under the lock, so an ask asked again meanwhile is judged as it now is.
+function dropAsks(stateDir, gone) {
+  if (!readAsks(stateDir).some(gone)) return [];
   return update(stateDir, (f) => {
-    const stale = f.asks.filter(spent);
-    f.asks = f.asks.filter((a) => !spent(a));
-    return stale.map(({ id, text, until }) => ({ id, text, keys: until }));
+    const out = f.asks.filter(gone);
+    f.asks = f.asks.filter((a) => !gone(a));
+    return out.map(({ id, text, until }) => ({ id, text, keys: until }));
   });
 }

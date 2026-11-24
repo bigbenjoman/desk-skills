@@ -425,5 +425,16 @@ out = await passRepo(W, 'acme__a', { conc: '2 / 4', running: 0, ready: 3, borrow
 t('DS-308 pass AC6: a lone standing batch starts its own number of 2', runningIn('acme__a'), 2);
 t('DS-308 pass AC6: and prints no repo workers line', /repo workers/.test(out), false);
 
+// #1359: a beat names the Claude Code session whose pass wrote it, and none outside one.
+{
+  const dir = join(T, 'beat-1359'), qp = join(dir, 'queue.json');
+  process.env.CLAUDE_CODE_SESSION_ID = 'sess-1359';
+  B.writeBeat(dir, qp, { batch: 's1' });
+  t('#1359 a beat written in a session names it', B.lastBeat(dir, qp)?.session, 'sess-1359');
+  delete process.env.CLAUDE_CODE_SESSION_ID;
+  B.writeBeat(dir, qp, { batch: 's1', now: Date.now() + 1000 });
+  t('#1359 one written outside a session names none', B.lastBeat(dir, qp)?.session, null);
+}
+
 console.log(fails ? `${fails} FAILED` : 'all borrow checks passed');
 process.exit(fails ? 1 : 0);

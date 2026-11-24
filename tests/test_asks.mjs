@@ -1,7 +1,7 @@
 // suite: asks (what a session handed the person; an ask whose tickets are all finished waits on nothing)
 // layer: L1
 // covers: desk/bin/asks.mjs
-import { addAsk, readAsks, pruneAsks } from '../desk/bin/asks.mjs';
+import { addAsk, readAsks, pruneAsks, settleAdmitted } from '../desk/bin/asks.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -34,6 +34,16 @@ const raced = scratch('asks-');
   const finished = (k) => { if (!asked) { asked = true; addAsk(raced, 'say whether to admit DS-1', Date.now(), { until: ['DS-3'] }); } return status[k] === 'merged'; };
   const gone = pruneAsks(raced, { known: (k) => k in status, finished });
   t('#1341 an ask asked again on an open ticket while a pass prunes is kept', `${gone.length} ${readAsks(raced).map((a) => a.until.join()).join()}`, '0 DS-3');
+}
+
+const adm = scratch('asks-');
+{
+  addAsk(adm, 'start /desk-autopilot DS-1 in a session', Date.now(), { until: ['DS-1'], settles: 'admit' });
+  addAsk(adm, 'start /desk-autopilot DS-1 DS-2 in a session', Date.now(), { until: ['DS-1', 'DS-2'], settles: 'admit' });
+  addAsk(adm, 'merge DS-1 once it is green', Date.now(), { until: ['DS-1'] });
+  const gone = settleAdmitted(adm, (k) => k === 'DS-1');
+  t('#1359 an ask its admission settles is dropped once every ticket it waits on is admitted', JSON.stringify(gone), JSON.stringify([{ id: 1, text: 'start /desk-autopilot DS-1 in a session', keys: ['DS-1'] }]));
+  t('#1359 one with a ticket not yet admitted, or a wait on its merge, stays', readAsks(adm).map((a) => a.id).join(), '2,3');
 }
 
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }
