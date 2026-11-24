@@ -94,6 +94,21 @@ t('#1370 a seed reads the reviewer\'s latest review on the repo', sd.last, H(9, 
 t('#1370 its lags, from each PR\'s ready time (or its opening, never drafted) to its first review', j(sd.lags), j([6, 9]));
 t('#1370 and when each waiting PR began waiting: the latest of its ready time, head commit and last review', sd.began[9], new Date(H(12, 38)).toISOString());
 t('#1370 the query reads the recent PRs only when cold, and each waiting PR by number', j([/recent: search/.test(GR.seedQuery([9], true)), /recent: search/.test(GR.seedQuery([9], false)), /p9: pullRequest\(number:9\)/.test(GR.seedQuery([9], false))]), j([true, false, true]));
+// A cold seed reads further pages until it has the reviewer's latest review: one no older than the
+// oldest PR read (a review updates its PR), or none left to read.
+const upd = (p, updatedAt) => ({ ...p, updatedAt });
+const pages = [
+  { nodes: [upd(pr(20, { created: H(13, 0) }), H(14, 0)), upd(pr(21, { created: H(13, 5) }), H(13, 50))], pageInfo: { hasNextPage: true, endCursor: 'c1' } },
+  { nodes: [upd(pr(8, { created: H(9, 37), reviews: [[BOT, H(9, 46)]] }), H(9, 46))], pageInfo: { hasNextPage: true, endCursor: 'c2' } },
+  { nodes: [upd(pr(5, { created: H(7, 0), reviews: [[BOT, H(7, 5)]] }), H(7, 5))], pageInfo: { hasNextPage: false } },
+];
+const gqlCalls = [];
+const gql = (q, vars) => { gqlCalls.push(vars.after ?? null); return { data: { recent: pages[gqlCalls.length - 1], repository: {} } }; };
+const rd = GR.seedRead(gql, 'acme/widgets', BOT, [], true);
+t('#1370 a cold seed reads on past PRs updated since, and stops at the page holding its latest review', j([rd.last, gqlCalls]), j([H(9, 46), [null, 'c1']]));
+const endless = () => ({ data: { recent: { nodes: [upd(pr(30, { created: H(13, 0) }), H(13, 30))], pageInfo: { hasNextPage: true, endCursor: 'x' } }, repository: {} } });
+t('#1370 with its latest review past the pages it reads, its last review is taken as the oldest PR read, so the quiet is never overstated', GR.seedRead(endless, 'acme/widgets', BOT, [], true).last, H(13, 30));
+t('#1370 a page GitHub cannot answer is no seed', GR.seedRead(() => null, 'acme/widgets', BOT, [9], true), null);
 const SD = scratch('gate-reviewer-seed-');
 const calls = [];
 const seed = (login, prs, cold) => { calls.push([login, prs, cold]); return sd; };

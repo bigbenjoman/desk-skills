@@ -77,15 +77,39 @@ export function update(rec, { seen = [], waits = [], now = Date.now(), batch = n
   return out;
 }
 
-// Seeding from GitHub. SEED_PRS: how many of the repo's most recently updated PRs a cold seed reads.
-export const SEED_PRS = 30;
-const PR_FIELDS = 'number createdAt commits(last:1){nodes{commit{committedDate}}} timelineItems(itemTypes:[READY_FOR_REVIEW_EVENT],last:20){nodes{... on ReadyForReviewEvent{createdAt}}} reviews(last:50){nodes{author{login} submittedAt}}';
-// The GraphQL query for a seed ($owner, $name, and with `cold` $q, seedSearch's): each of `prs`, and
-// with `cold` the repo's SEED_PRS most recently updated PRs too.
-export function seedQuery(prs, cold) {
+// Seeding from GitHub. A cold seed reads the repo's most recently updated PRs, SEED_PRS a page, until
+// it has the reviewer's latest review (a review updates its PR, so one no older than the oldest PR read
+// is the latest), or SEED_PAGES pages.
+export const SEED_PRS = 50;
+export const SEED_PAGES = 4;
+const PR_FIELDS = 'number createdAt updatedAt commits(last:1){nodes{commit{committedDate}}} timelineItems(itemTypes:[READY_FOR_REVIEW_EVENT],last:20){nodes{... on ReadyForReviewEvent{createdAt}}} reviews(last:50){nodes{author{login} submittedAt}}';
+// The GraphQL query for a seed ($owner, $name; with `cold` $q, seedSearch's, and with `after` $after):
+// each of `prs`, and with `cold` a page of the repo's most recently updated PRs too.
+export function seedQuery(prs, cold, after = false) {
   const each = prs.map((n) => `p${Number(n)}: pullRequest(number:${Number(n)}){${PR_FIELDS}}`).join(' ');
-  const recent = cold ? `recent: search(query:$q,type:ISSUE,first:${SEED_PRS}){nodes{... on PullRequest{${PR_FIELDS}}}} ` : '';
-  return `query($owner:String!,$name:String!${cold ? ',$q:String!' : ''}){${recent}repository(owner:$owner,name:$name){${each || 'id'}}}`;
+  const recent = cold ? `recent: search(query:$q,type:ISSUE,first:${SEED_PRS}${after ? ',after:$after' : ''}){pageInfo{hasNextPage endCursor} nodes{... on PullRequest{${PR_FIELDS}}}} ` : '';
+  return `query($owner:String!,$name:String!${cold ? ',$q:String!' : ''}${cold && after ? ',$after:String!' : ''}){${recent}repository(owner:$owner,name:$name){${each || 'id'}}}`;
+}
+// A seed for `login` in `repo` read through `gql(query, vars)` (the payload, or null unread): seedOf's
+// result over every page read, or null where a page could not be read.
+export function seedRead(gql, repo, login, prs, cold) {
+  const nodes = [];
+  let named = null;
+  let after = null;
+  let complete = !cold;
+  for (let page = 0; page < (cold ? SEED_PAGES : 1); page++) {
+    const p = gql(seedQuery(page ? [] : prs, cold, !!after), { ...(cold ? { q: seedSearch(repo) } : {}), ...(after ? { after } : {}) });
+    if (!p?.data) return null;
+    if (!page) named = p.data.repository ?? {};
+    if (!cold) break;
+    const r = p.data.recent ?? {};
+    nodes.push(...(r.nodes ?? []).filter((n) => n?.number));
+    const floor = nodes.map((n) => n.updatedAt).filter(Boolean).sort()[0];
+    const last = seedOf({ data: { recent: { nodes } } }, login).last;
+    if (!r.pageInfo?.hasNextPage || (last && floor && Date.parse(last) >= Date.parse(floor))) { complete = true; break; }
+    after = r.pageInfo.endCursor;
+  }
+  return seedOf({ data: { recent: { nodes, complete }, repository: named } }, login);
 }
 export const seedSearch = (repo) => `repo:${repo} is:pr sort:updated-desc`;
 
@@ -99,7 +123,11 @@ export function seedOf(payload, login) {
   const readies = (p) => (p.timelineItems?.nodes ?? []).map((e) => e?.createdAt).filter(Boolean).sort();
   const recent = (d.recent?.nodes ?? []).filter((p) => p?.number);
   const named = Object.entries(d.repository ?? {}).filter(([k, p]) => /^p\d+$/.test(k) && p?.number).map(([, p]) => p);
-  const last = [...recent, ...named].flatMap(reviews).sort().at(-1) ?? null;
+  // Pages read without reaching its latest review: none came after the oldest PR read was last updated,
+  // so that is when it last reviewed at the latest, which understates the quiet rather than overstating it.
+  const found = [...recent, ...named].flatMap(reviews).sort().at(-1) ?? null;
+  const floor = d.recent?.complete === false ? recent.map((p) => p.updatedAt).filter(Boolean).sort()[0] ?? null : null;
+  const last = [found, floor].filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1) ?? null;
   const lags = [];
   for (const p of recent) {
     const first = reviews(p)[0];
