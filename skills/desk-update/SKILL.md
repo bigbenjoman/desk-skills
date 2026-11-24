@@ -49,6 +49,10 @@ git -C "$D" status --short                          # must be clean to pull
 git -C "$D" fetch -q && git -C "$D" log --oneline HEAD..origin/main
 ```
 
+Run each of this section's commands as its own call with `$D` written out as the absolute path
+that file holds: that is the form desk-setup's `orchestrator-sweep` rules allow, so they run without
+a prompt.
+
 **Off `main`, pull and install nothing.** If the checkout is on any other branch (or a detached
 HEAD), skip the pull and every `./install.sh` in this run, and say which branch is checked out and
 how to get back: `git -C "$D" switch main`, once that branch's work is committed. A feature branch's

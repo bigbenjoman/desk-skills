@@ -232,6 +232,10 @@ location: a path only, never the token.
   `FAILED` line (exit 1) one it could not read or write, so pass each one on for the user to fix
   there. Do not argue for the capability it costs.
 - A row newly `yes` on a re-run: `add` a plan with just its rules (and any `unguard:`).
+- A changed `pr-merge-green`, `gh-issue-*`, `read-*` or `jira-comment` row, or §4 Merge method, also
+  changes the `orchestrator-sweep` rules every other configured repo holds for this one: offer to
+  `add` a plan of `{"add":[]}` with each other repo's `REPO_RULES`, which rewrites them from the
+  configs and drops what no longer holds.
 
 ## Red flags — stop
 
