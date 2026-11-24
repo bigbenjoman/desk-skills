@@ -64,27 +64,22 @@ export function removeAsk(stateDir, id) {
 // `finished` (merged, or done with no PR): what it waited on has happened, so it waits on nothing. An
 // ask with no `until` is a step the person owes whatever the tickets do, and stays until they say done.
 //   -> the asks dropped, each { id, text, keys }
-// The unlocked read only spares a write when nothing is stale: what is dropped is decided again under
-// the lock, so an ask asked again with open tickets meanwhile is kept.
-export function pruneAsks(stateDir, { known, finished }) {
-  const spent = (a) => Array.isArray(a.until) && a.until.length && a.until.every((k) => known(k) && finished(k));
-  if (!readAsks(stateDir).some(spent)) return [];
-  return update(stateDir, (f) => {
-    const stale = f.asks.filter(spent);
-    f.asks = f.asks.filter((a) => !spent(a));
-    return stale.map(({ id, text, until }) => ({ id, text, keys: until }));
-  });
-}
+export const pruneAsks = (stateDir, { known, finished }) =>
+  dropAsks(stateDir, (a) => Array.isArray(a.until) && a.until.length && a.until.every((k) => known(k) && finished(k)));
 
 // Drops each ask its tickets' admission settles (`settles: 'admit'`) whose every `until` ticket is
-// `placed` in a batch now: no session needs starting for them. Decided under the lock, as pruneAsks.
+// `placed` in a batch now: no session needs starting for them.
 //   -> the asks dropped, each { id, text, keys }
-export function settleAdmitted(stateDir, placed) {
-  const settled = (a) => a.settles === 'admit' && Array.isArray(a.until) && a.until.length && a.until.every((k) => placed(k));
-  if (!readAsks(stateDir).some(settled)) return [];
+export const settleAdmitted = (stateDir, placed) =>
+  dropAsks(stateDir, (a) => a.settles === 'admit' && Array.isArray(a.until) && a.until.length && a.until.every((k) => placed(k)));
+
+// Drops each ask `gone(ask)` holds for. The unlocked read only spares a write when none does: what is
+// dropped is decided again under the lock, so an ask asked again meanwhile is judged as it now is.
+function dropAsks(stateDir, gone) {
+  if (!readAsks(stateDir).some(gone)) return [];
   return update(stateDir, (f) => {
-    const gone = f.asks.filter(settled);
-    f.asks = f.asks.filter((a) => !settled(a));
-    return gone.map(({ id, text, until }) => ({ id, text, keys: until }));
+    const out = f.asks.filter(gone);
+    f.asks = f.asks.filter((a) => !gone(a));
+    return out.map(({ id, text, until }) => ({ id, text, keys: until }));
   });
 }

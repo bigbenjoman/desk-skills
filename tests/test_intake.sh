@@ -657,6 +657,12 @@ NB="$DESK_HOME/repos/acme__widgets/batches/X-1"; mkdir -p "$NB"
 printf '{"version":1,"batch":"X-1","tickets":{"X-2":{"key":"X-2","state":"running"}}}\n' > "$NB/queue.json"
 config yes; running_batch; rm -f "$T/state/intake.json"
 rec X-2 A; rec X-3 A '"epic":{"key":"X-1","summary":"a feature"}'; rec X-4 A '"epic":{"key":"X-1","summary":"a feature"}'
+# #1359: an ask to start a session for a ticket another live batch already holds is dropped by the admit
+# that finds it there.
+printf '{"next":2,"asks":[{"id":1,"text":"start /desk-autopilot X-2 in a session","at":"2026-01-01T00:00:00Z","until":["X-2"],"settles":"admit"}]}\n' > "$T/state/asks.json"
+out=$(admit X-2)
+check "#1359 an admit finding the ticket in another live batch drops the ask to start a session for it" 'grep -q "X-2 is in batch X-1" <<< "$out" && [ "$(jq ".asks | length" "$T/state/asks.json")" = 0 ] && grep -q "^needs-you: ask 1 dropped, as X-2 is admitted" <<< "$out"'
+rm -f "$T/state/asks.json"
 n=$(count "$T/triage.calls")
 search X-2; out=$(intake)
 check "DS-307 AC2: a ticket in another batch is not triaged, admitted or handed on" '[ "$(count "$T/triage.calls")" = "$n" ] && [ "$(qget tickets.X-2)" = undefined ] && [ "$(handed X-2)" = none ]'

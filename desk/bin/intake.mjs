@@ -1092,11 +1092,12 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
     const { added } = addAsk(state, `start /desk-autopilot ${unrunKeys.join(' ')} in a session: no supervisor runs this repo's batches, so /desk-admit admitted nothing`, now.getTime(), { until: unrunKeys, settles: 'admit' });
     say(`needs-you: ${added ? 'recorded' : 'already records'} starting /desk-autopilot for ${unrunKeys.join(' ')}`);
   }
-  // An ask to start a session for tickets now admitted, here or before, waits on nothing.
+  // An ask to start a session for tickets now admitted, here or before, into this batch or another
+  // live one, waits on nothing.
   let after = null;
   try { after = readQueue(); } catch { /* unread: nothing is known placed but what this run admitted */ }
   const placed = new Set([...admitted, ...Object.keys(after?.tickets ?? {})]);
-  for (const a of settleAdmitted(state, (k) => placed.has(k))) say(`needs-you: ask ${a.id} dropped, as ${a.keys.join(', ')} ${a.keys.length === 1 ? 'is' : 'are'} admitted, so no session needs starting for ${a.keys.length === 1 ? 'it' : 'them'}`);
+  for (const a of settleAdmitted(state, (k) => placed.has(k) || !!belongsElsewhere(k, null, E.queueFile())?.held)) say(`needs-you: ask ${a.id} dropped, as ${a.keys.join(', ')} ${a.keys.length === 1 ? 'is' : 'are'} admitted, so no session needs starting for ${a.keys.length === 1 ? 'it' : 'them'}`);
   // Open blockers in no batch are admitted next, by the same command, with no question: the person
   // naming what they block is the approval.
   if (next.size) say(`admit next: ${[...next].join(' ')} (open blockers in no batch)`);
