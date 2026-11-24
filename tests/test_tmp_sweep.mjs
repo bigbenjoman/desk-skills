@@ -87,9 +87,10 @@ t('#1382 AC3 the pass says what is left', over.lines.some((l) => l.startsWith('/
 tmpfsStep({ askState, limitGiB: 2, usage: () => 2.6, sweep: sweepStub(left.slice(1)), now: NOW });
 const again = readAsks(askState);
 t('#1382 AC3 the next pass updates the same ask rather than adding one', [again.length, again[0].id === asks[0].id, again[0].text.includes('holds 2.6G') && again[0].text.includes('Largest left: cdk.outNew 300M.')], [1, true, true]);
-const under = tmpfsStep({ askState, limitGiB: 2, usage: () => 1.2, sweep: sweepStub([]), now: NOW });
+const under = tmpfsStep({ askState, limitGiB: 2, usage: () => 1.2, sweep: sweepStub(left.slice(1)), now: NOW });
 t('#1382 AC3 under the line after the sweep: the hold lifts and the ask is dropped', [under.over, readAsks(askState).length, under.lines.at(-1)],
   [false, 0, `needs-you: ask ${asks[0].id} dropped, as /tmp is under its line`]);
+t('#1382 AC1 under the line after the sweep, the pass still names the largest entries', under.lines.includes('/tmp (tmpfs): 1.2G now, under its 2G line, so it no longer holds spawns: largest left cdk.outNew 300M'), true);
 const dry = tmpfsStep({ askState, limitGiB: 2, usage: () => 3, dry: true, sweep: () => { throw new Error('a dry run swept'); }, now: NOW });
 t('#1382 AC3 a dry run clears nothing and records no ask', [dry.over, readAsks(askState).length], [true, 0]);
 t('#1382 AC3 /tmp unreadable after the sweep keeps the hold', tmpfsStep({ askState, limitGiB: 2, usage: () => null, sweep: sweepStub([]), now: NOW }).over, true);

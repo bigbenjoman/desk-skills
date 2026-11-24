@@ -126,7 +126,7 @@ export function tmpfsStep({ askState, limitGiB, usage, dry = false, sweep = swee
       const { id, added } = addAsk(askState, askText({ gib, limitGiB, left: r.left }), now, { settles: 'tmpfs' });
       lines.push(`/tmp (tmpfs): still ${gib.toFixed(1)}G, over its ${limitGiB}G line: largest left ${largest(r.left) || 'none listed'}${added ? ` (needs-you: ask ${id})` : ''}`);
     } else {
-      lines.push(`/tmp (tmpfs): ${gib.toFixed(1)}G now, under its ${limitGiB}G line, so it no longer holds spawns`);
+      lines.push(`/tmp (tmpfs): ${gib.toFixed(1)}G now, under its ${limitGiB}G line, so it no longer holds spawns: largest left ${largest(r.left) || 'none listed'}`);
       lines.push(...settledLines(askState));
     }
   } catch (e) { lines.push(`/tmp (tmpfs): its needs-you ask could not be updated (${String(e?.message ?? e).split('\n')[0]})`); }
