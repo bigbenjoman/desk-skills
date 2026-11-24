@@ -73,17 +73,19 @@ reported `kept` and left in place. Workers never get them.
 An orchestrator session runs in one repo but sweeps every configured repo: it merges green PRs in
 another repo with that repo's merge method, reinstalls desk, and records answers. That repo's own
 rules carry only this repo's merge flag, so `harness-rules.py add` also writes these, read from each
-`~/.config/desk/repos/*/config.md` (§0 GitHub repo, §3, §4 Merge method) whenever there are two or
-more. Owner `orchestrator-sweep`, not a §3 row: `remove orchestrator-sweep` revokes them (until the
+`~/.config/desk/repos/*/config.md` through `desk-env get --json` (§0 GitHub repo, §3, §4 Merge
+method) whenever there are two or more; a config it cannot read is named `unread` and its repo gets
+none. Owner `orchestrator-sweep`, not a §3 row: `remove orchestrator-sweep` revokes them (until the
 next `add`), and each `add` reads the configs again, so a rule whose repo row is no longer `yes` is
 dropped (printed `DROPPED`). A repo's rule is written only while **that repo's** rows are `yes`.
-_Reach_: a trailing `*` can still hold a flag such as `--auto` placed after the pin, which the asks
-below catch. Workers never get them.
+_Reach_: a `*` can still hold a flag such as `--auto` or a URL selector, which the asks below catch.
+`--auto` is caught by asks naming the swept repo, not by `*--auto*` alone, which this repo's
+`pr-auto-merge` removes. Workers never get them.
 
 | Owner | Allows |
 |---|---|
 | `orchestrator-sweep` | Desk's own commands: `Bash(node ~/.claude/desk/bin/needs-you.mjs list *)` `… left *` `… record *` `… ask *` `… ask-status *` `Bash(node ~/.claude/desk/bin/intake.mjs run *)` `… admit *` `… forget *`. The reinstall `/desk-update` §1 runs, on the checkout `~/.claude/desk/source-checkout` names, written out as an absolute path `<D>` (none when that file names no plain absolute path): `Bash(git -C <D> branch --show-current)` `Bash(git -C <D> status --short)` `Bash(git -C <D> fetch -q)` `Bash(git -C <D> log --oneline HEAD..origin/main)` `Bash(git -C <D> pull --ff-only)` `Bash(<D>/install.sh)` `Bash(<D>/install.sh </dev/null)`; never another git command there, nor `install.sh --any-branch` |
-| `orchestrator-sweep` | Per configured repo `<owner/name>`, while its own rows are `yes`: `pr-merge-green`: `Bash(gh pr merge * --repo <owner/name> <its merge> --match-head-commit *)`; `gh-issue-create`: `Bash(gh issue create --repo <owner/name> *)`; `gh-issue-comment`: `Bash(gh issue comment * --repo <owner/name> *)`; `read-own-work` + `read-others`: `Bash(DESK_REPO_OVERRIDE=<owner/name> desk-jira get *)` `… search *` `… comments *`; `jira-comment`: `Bash(DESK_REPO_OVERRIDE=<owner/name> desk-jira comment *)`; always: `Bash(DESK_REPO_OVERRIDE=<owner/name> node ~/.claude/desk/bin/intake.mjs run *)` `… admit *` `… forget *` (intake reads the repo's rows itself). Run them in exactly these forms. Asks with them: `pr-merge-green`'s pin guards on `gh pr merge` (`*--auto*`, the quote, comment, redirect, expansion and `--match-head-commit=*` asks), and on each of `gh pr merge`, `gh issue create` and `gh issue comment`, `*--repo*--repo*` and `* -R*`, so the command cannot name a second repo. An ask stays while any owner is granted, so revoking this row leaves the guards the repo's own merge rules need |
+| `orchestrator-sweep` | Per configured repo `<owner/name>`, while its own rows are `yes`: `pr-merge-green`: `Bash(gh pr merge * --repo <owner/name> <its merge> --match-head-commit *)`; `gh-issue-create`: `Bash(gh issue create --repo <owner/name> *)`; `gh-issue-comment`: `Bash(gh issue comment * --repo <owner/name> *)`; `read-own-work` + `read-others`: `Bash(DESK_REPO_OVERRIDE=<owner/name> desk-jira get *)` `… search *` `… comments *`; `jira-comment`: `Bash(DESK_REPO_OVERRIDE=<owner/name> desk-jira comment *)`; always: `Bash(DESK_REPO_OVERRIDE=<owner/name> node ~/.claude/desk/bin/intake.mjs run *)` `… admit *` `… forget *` (intake reads the repo's rows itself). Run them in exactly these forms. Asks with them: `pr-merge-green`'s pin guards on `gh pr merge` (`*--auto*`, the quote, comment, redirect, expansion and `--match-head-commit=*` asks), for each repo whose own `pr-auto-merge` is not `yes`, `ask: Bash(gh pr merge *--auto*--repo <owner/name>*)` and `ask: Bash(gh pr merge *--repo <owner/name>*--auto*)` (no plan unguards these, so `--auto` keeps prompting there whatever this repo's `pr-auto-merge` says); on each of `gh pr merge`, `gh issue create` and `gh issue comment`, `*--repo*--repo*` and `* -R*` (a second repo); and on `gh pr merge` and `gh issue comment`, `*://*`, since gh takes a PR or issue URL over `--repo` (`gh issue create` takes no selector). These catch the common ways to reach another repo, not every shell construct. An ask stays while any owner is granted, so revoking this row leaves the guards the repo's own merge rules need |
 
 ## Auto-mode entries — per repo, in the user settings
 

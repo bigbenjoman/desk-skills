@@ -340,9 +340,10 @@ cfg(){ # <slug> <owner/name> <merge method> <pr-merge-green cell> [<§3 key> <ce
 }
 cfg acme__web acme/web squash '`yes`' gh-issue-create '`ask` (`yes` once filed)'
 cfg acme__api acme/api merge '`yes`' gh-issue-create '`yes`' gh-issue-comment '`yes`' read-own-work '`yes`' read-others '`yes`' jira-comment '`yes`'
-cfg acme__ops acme/ops rebase '`yes` (no approval wait)'
+cfg acme__ops acme/ops rebase '`yes` (no approval wait)' pr-auto-merge '`yes`'
 cfg acme__off acme/off merge '`ask`'
 mkdir -p "$HOME/.claude/desk"; printf '%s\n' "$SRC" > "$HOME/.claude/desk/source-checkout"
+ln -s "$S/../desk/bin" "$HOME/.claude/desk/bin"  # the configs are read through desk-env.mjs
 mkrepo sw; printf '.claude/settings.local.json\n' > "$T/sw/.gitignore"; SW="$T/sw/.claude/settings.local.json"
 printf '{"add":[]}\n' > "$T/empty.json"
 run --ledger "$T/sw.json" --settings "$SW" add "$T/empty.json"
@@ -399,6 +400,8 @@ gh pr merge 41 --repo acme/api --merge --match-head-commit 0a1b2c3d --repo acme/
 gh pr merge 41 --repo acme/api --merge --match-head-commit 0a1b2c3d -R acme/off
 gh pr merge 41 --repo acme/api --merge --match-head-commit 0a1b2c3d --auto
 gh pr merge 41 --repo acme/api --merge --match-head-commit=0a1b2c3d
+gh pr merge https://github.com/acme/off/pull/5 --repo acme/api --merge --match-head-commit 0a1b2c3d
+gh issue comment https://github.com/acme/off/issues/5 --repo acme/api --body-file /tmp/c.md
 gh issue create --repo acme/web --title x
 gh issue create --repo acme/api --title x --repo acme/off
 DESK_REPO_OVERRIDE=acme/web desk-jira comment ABC-1 /tmp/c.md
@@ -410,7 +413,22 @@ $SRC/install.sh --any-branch
 node ~/.claude/desk/bin/needs-you.mjs prune
 E
 )
-check "  … while an unpinned merge, another method, an ungranted repo, a second repo and anything else still prompt" '[ -z "$out" ]'
+check "  … while an unpinned merge, another method, an ungranted repo, a second repo, a URL and anything else still prompt" '[ -z "$out" ]'
+# this repo's pr-auto-merge unguards *--auto*; a swept repo whose own pr-auto-merge is not yes keeps --auto prompting
+mkrepo sa; printf '.claude/settings.local.json\n' > "$T/sa/.gitignore"; SA="$T/sa/.claude/settings.local.json"
+cat > "$T/auto.json" <<'J'
+{"add":[{"list":"allow","rule":"Bash(gh pr merge * --auto --squash --match-head-commit *)","rows":["pr-auto-merge","pr-merge-green"]}],"remove_guards":[{"list":"ask","rule":"Bash(gh pr merge *--auto*)","rows":["pr-auto-merge"]}]}
+J
+run --ledger "$T/sa.json" --settings "$SA" add "$T/empty.json"
+run --ledger "$T/sa.json" --settings "$SA" add "$T/auto.json"
+out=$(verdicts "$SA" <<E | grep -v '^ask'
+gh pr merge 41 --repo acme/api --merge --match-head-commit 0a1b2c3d --auto
+gh pr merge 41 --auto --repo acme/api --merge --match-head-commit 0a1b2c3d
+gh pr merge 9 --repo acme/web --squash --match-head-commit 0a1b2c3d --auto
+E
+)
+check "with this repo's *--auto* guard removed, --auto on a swept repo whose pr-auto-merge is not yes still prompts" '! jq -e ".permissions.ask | index(\"Bash(gh pr merge *--auto*)\")" "$SA" >/dev/null && [ -z "$out" ]'
+check "  … and a swept repo that grants pr-auto-merge gets no such ask" '! grep -qF -- "--repo acme/ops*--auto" "$SA" && grep -qF -- "--repo acme/api*--auto*" "$SA"'
 out=$(jq -r '[.rules[] | select(.rule | test("--repo acme/|needs-you|intake|install.sh|desk-skills|desk-jira"))] | (length > 20) and (map(.rows == ["orchestrator-sweep"]) | all)' "$T/sw.json")
 check "each sweep rule is recorded under orchestrator-sweep" '[ "$out" = true ]'
 run --ledger "$T/sw.json" list --markdown
@@ -425,6 +443,9 @@ run --ledger "$T/sw.json" --settings "$SW" add "$T/green.json"
 run --ledger "$T/sw.json" --settings "$SW" remove orchestrator-sweep
 check "revoking orchestrator-sweep removes every sweep rule" '[ $rc -eq 0 ] && ! grep -qE -- "--repo acme/|needs-you|intake|install.sh|desk-skills|desk-jira" "$SW" && ! grep -q orchestrator-sweep "$T/sw.json" && grep -q "Monitor" "$SW"'
 check "  … but keeps a guard this repo's own merge rule still needs" 'jq -e ".permissions.ask | index(\"Bash(gh pr merge *--auto*)\")" "$SW" >/dev/null && jq -e ".rules[] | select(.rule == \"Bash(gh pr merge *--auto*)\" and .rows == [\"pr-merge-green\"])" "$T/sw.json" >/dev/null && ! jq -e ".permissions.ask | index(\"Bash(gh pr merge *--repo*--repo*)\")" "$SW" >/dev/null'
-rm -rf "$CR"
+chmod 000 "$CR/acme__ops/config.md"
+run --ledger "$T/sa.json" --settings "$SA" add "$T/empty.json"
+check "a config desk-env cannot read is named, and its repo gets no sweep rules" '[ $rc -eq 0 ] && [[ "$out" == *"unread   $CR/acme__ops/config.md"* ]] && [[ "$out" == *"DROPPED  allow Bash(gh pr merge * --repo acme/ops --rebase"* ]] && ! grep -q -- "acme/ops" "$SA"'
+chmod 644 "$CR/acme__ops/config.md"; rm -rf "$CR"
 
 echo; echo "$PASS passed, $FAIL failed"; [ $FAIL = 0 ]

@@ -11,8 +11,9 @@
                                             first; Read on the config files in ~/.config/desk, and
                                             Edit under it on ask). With more than one repo in
                                             ~/.config/desk/repos it also gets the orchestrator-sweep
-                                            entries (SWEEP_DESK, REINSTALL, SWEEP_REPO), and drops
-                                            those no config calls for any more
+                                            entries (SWEEP_DESK, REINSTALL, SWEEP_REPO; each config
+                                            read through desk-env.mjs get --json), and drops those
+                                            no config calls for any more
   harness-rules.py baseline [--check] [--slack-prefix P]... [<plan.json>]
                                             apply the deny-only plan (default
                                             ../references/baseline-deny.json); --check exits 0
@@ -481,65 +482,32 @@ SWEEP_REPO = ([("Bash(gh pr merge * --repo {repo} {merge} --match-head-commit *)
               [(f"Bash({OVERRIDE} desk-jira {c} *)", ["read-own-work", "read-others"]) for c in ("get", "search", "comments")] +
               [(f"Bash({OVERRIDE} desk-jira comment *)", ["jira-comment"])] +
               [(f"Bash({OVERRIDE} node {DESK_BIN}/intake.mjs {c} *)", []) for c in INTAKE])
-# The asks written with a command SWEEP_REPO allows: pr-merge-green's own guards, and a second
-# --repo or a -R, which would send the command to another repo.
-REPO_GUARDS = {"gh pr merge": ["--auto", '"', "'", "#", "<", ">(", "$", "`", "--match-head-commit=", "--repo*--repo", " -R"],
-               "gh issue create": ["--repo*--repo", " -R"], "gh issue comment": ["--repo*--repo", " -R"]}
+# The asks written with a command SWEEP_REPO allows: pr-merge-green's own guards; a second --repo or
+# a -R, which would send the command to another repo; and a URL, which gh takes as the PR or issue
+# over --repo. Per swept repo whose own pr-auto-merge is not yes, --auto on either side of its
+# --repo: that repo's own asks, which no repo plan unguards (pr-auto-merge removes only *--auto*).
+REPO_GUARDS = {"gh pr merge": ["--auto", '"', "'", "#", "<", ">(", "$", "`", "--match-head-commit=", "--repo*--repo", " -R", "://"],
+               "gh issue create": ["--repo*--repo", " -R"], "gh issue comment": ["--repo*--repo", " -R", "://"]}
+SWEEP_IDS = ["gh-repo", "merge-method", "pr-auto-merge"] + sorted({k for _, need in SWEEP_REPO for k in need})
 
 
-def norm(s):
-    return " ".join(s.replace("*", "").replace("`", "").split()).lower()
-
-
-def split_row(line):
-    """A markdown table row's cells; a | inside a code span is text."""
-    cells, cur, span = [], "", False
-    for c in line.strip().strip("|"):
-        if c == "`":
-            span = not span
-        if c == "|" and not span:
-            cells.append(cur.strip())
-            cur = ""
-        else:
-            cur += c
-    return cells + [cur.strip()]
-
-
-def config_rows(path):
-    """{(section, key): value} for a desk config's table rows, as desk-env reads them: keyed by the
-    Key cell, else the first; the value is the setting cell (Your setting, Value or Setting), or its
-    first code span where the cell starts with one, so a note after it never reads as the value."""
-    rows, section, header = {}, None, None
+def repo_rows(config, notes):
+    """{id: value} for SWEEP_IDS in one config, read by desk-env (`get --json`, DESK_CONFIG naming
+    it); a row desk-env reports an error on is left out. None, with a note, when it cannot be read."""
+    env = dict(os.environ, DESK_CONFIG=config)
     try:
-        with open(path) as f:
-            lines = f.read().split("\n")
-    except OSError:
-        return rows
-    for raw in lines:
-        line = raw.strip()
-        h = line.split(None, 2) if line.startswith("## ") else []
-        if len(h) > 1:
-            section, header = h[1].rstrip(".)").lower(), None
-            continue
-        if not section or not line.startswith("|"):
-            header = None
-            continue
-        cells = split_row(line)
-        if all(set(c) <= set(":-") for c in cells):
-            continue
-        if header is None:
-            header = [norm(c) for c in cells]
-            continue
-        col = next((header.index(n) for n in ("your setting", "value", "setting") if n in header), 1)
-        k = header.index("key") if "key" in header else 0
-        key = norm(cells[k]) if k < len(cells) else ""
-        if key and col < len(cells):
-            v = cells[col]
-            rows[(section, key)] = v.split("`")[1].strip() if v.startswith("`") and v.count("`") > 1 else v
-    return rows
+        r = subprocess.run(["node", os.path.expanduser(f"{DESK_BIN}/desk-env.mjs"), "get", "--json", *SWEEP_IDS],
+                           capture_output=True, text=True, timeout=30, env=env, cwd=os.path.dirname(config))
+        rows = json.loads(r.stdout)["rows"] if r.returncode in (0, 4) else None
+    except Exception:  # noqa: BLE001
+        rows = None
+    if not isinstance(rows, dict):
+        notes.append(f"unread   {config}  (desk-env could not read it: no {SWEEP} rules for that repo)")
+        return None
+    return {k: v.get("value") for k, v in rows.items() if isinstance(v, dict) and not v.get("errors")}
 
 
-def sweep_entries():
+def sweep_entries(notes):
     """The orchestrator-sweep add entries, or none while the desk config lists fewer than two repos."""
     root = os.environ.get("DESK_CONFIG_ROOT") or os.path.expanduser(CONFIG_FOLDER)
     try:
@@ -558,20 +526,24 @@ def sweep_entries():
     if d.startswith("/") and ".." not in d and all(c.isalnum() or c in "_.-/" for c in d):
         out += [("allow", f"Bash(git -C {d} {c})") for c in REINSTALL]
         out += [("allow", f"Bash({d}/install.sh)"), ("allow", f"Bash({d}/install.sh </dev/null)")]
-    guarded = set()
+    guarded, auto = set(), []
     for slug in slugs:
-        rows = config_rows(os.path.join(root, "repos", slug, "config.md"))
-        repo = rows.get(("0", "github repo")) or slug.replace("__", "/")
+        rows = repo_rows(os.path.join(root, "repos", slug, "config.md"), notes)
+        if rows is None:
+            continue
+        repo = rows.get("gh-repo") or slug.replace("__", "/")
         if repo.count("/") != 1 or "" in repo.split("/") or not all(c.isalnum() or c in "_.-/" for c in repo):
             continue
-        flag = "--" + rows.get(("4", "merge method"), "").split(" ")[0].lower()
+        flag = f"--{rows.get('merge-method')}"
         for rule, need in SWEEP_REPO:
-            if ("{merge}" in rule and flag not in MERGE_FLAGS or
-                    any(rows.get(("3", k), "").split(" ")[0].lower() != "yes" for k in need)):
+            if "{merge}" in rule and flag not in MERGE_FLAGS or any(rows.get(k) != "yes" for k in need):
                 continue
             out.append(("allow", rule.format(repo=repo, merge=flag)))
             guarded |= {cmd for cmd in REPO_GUARDS if rule.startswith(f"Bash({cmd} ")}
+            if "{merge}" in rule and rows.get("pr-auto-merge") != "yes":
+                auto += [f"Bash(gh pr merge *--auto*--repo {repo}*)", f"Bash(gh pr merge *--repo {repo}*--auto*)"]
     out += [("ask", f"Bash({cmd} *{g}*)") for cmd in sorted(guarded) for g in REPO_GUARDS[cmd]]
+    out += [("ask", r) for r in auto]
     return [{"list": lst, "rule": r, "rows": [SWEEP]} for lst, r in out]
 
 
@@ -601,7 +573,7 @@ def memory_dir_rule(root):
     return f"Edit(~/.claude/projects/{slug}/memory/**)"
 
 
-def orchestrator_entries(settings_path):
+def orchestrator_entries(settings_path, notes=None):
     """The orchestrator-tools add entries for a repo-level settings file; none at user level."""
     scope = repo_settings_scope(settings_path)
     if scope is None:
@@ -610,7 +582,7 @@ def orchestrator_entries(settings_path):
     root = top.stdout.strip() if top and top.returncode == 0 else scope[0]
     tools = [("allow", r) for r in ORCHESTRATOR_TOOLS + [memory_dir_rule(root)]]
     dirs = [(DIRS, os.path.expanduser(d)) for d in DESK_FOLDERS]
-    return [{"list": lst, "rule": r, "rows": [ORCHESTRATOR]} for lst, r in tools + DESK_FOLDER_RULES + dirs] + sweep_entries()
+    return [{"list": lst, "rule": r, "rows": [ORCHESTRATOR]} for lst, r in tools + DESK_FOLDER_RULES + dirs] + sweep_entries([] if notes is None else notes)
 
 
 def retire(st):
@@ -642,7 +614,7 @@ def retire(st):
 
 def cmd_add(st, plan_path):
     plan = read_plan(plan_path)
-    always = orchestrator_entries(st.settings_path)
+    always = orchestrator_entries(st.settings_path, st.log)
     plan["add"] = plan.get("add", []) + always
     note = check_destination(st.settings_path, plan)
     if note:
