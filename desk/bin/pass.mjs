@@ -1137,7 +1137,10 @@ for (const c of readCloseouts(STATE)) {
   if (t?.state === 'running' && !stale) { report.advanced.push(`${t.key}: ${how} while its worker runs; recorded once the worker ends`); continue; }
   if (t && t.state !== 'done' && !stale) {
     const before = report.failed.length;
-    q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.summary=${how}`, ...(c.pr ? [`result.pr=${c.pr}`] : []));
+    // A merge closed out with its PR is that PR's shipped record (shipped_pr), as the merge driver's is: the
+    // PR status step then takes the merged PR as the ticket's own, whatever branch it was opened from.
+    q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.summary=${how}`, ...(c.pr ? [`result.pr=${c.pr}`] : []),
+      ...(c.pr && c.how !== 'done' ? [`shipped_pr=${c.pr}`] : []));
     if (report.failed.length !== before) continue;
     closedOut.push({ c, line: `${t.key}: ${how}` });
     continue;
