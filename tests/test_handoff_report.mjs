@@ -157,6 +157,12 @@ function stubGh() {
   const files = (p) => (p.files || []).map((path) => ({ path }));
   const reviews = (p) => (p.reviews || []).map((r) => ({ submittedAt: r.at, commit: { oid: r.oid } }));
   const any = (n) => fx.prs[n] || (fx.search || []).find((c) => c.number === Number(n));
+  // Every search failing, as a read cut short part-way would.
+  if (fx.failSearch && q.includes('search(')) {
+    process.stdout.write(JSON.stringify({ data: null, errors: [{ type: 'INTERNAL', message: 'Something went wrong' }] }));
+    process.exitCode = 1;
+    return;
+  }
   const repository = {};
   const top = {};
   const errors = [];
@@ -515,6 +521,15 @@ run10(write('fx10-race.json', { ...JSON.parse(readFileSync(FX10, 'utf8')),
 const raced = JSON.parse(readFileSync(join(S10c, 'handoff-pr-outcomes.json'), 'utf8'));
 t('a cache write by another run during this one keeps both runs\' PRs, and a number this run read as a PR leaves missing',
   [['777', '1001', '1003', '1004', '1005'].every((n) => raced.prs[n]), raced.missing], [true, [1888, 1999]]);
+// Another run has already settled PR 1001 as final; this run's read of it is cut short after its PR
+// read, so its windows stay open, and the cache keeps the final entry.
+const S10f = join(T, 'state10-final');
+const done1001 = { number: 1001, title: 'feat: change 1001', merged_at: iso(M), core: { done: true, red_main: 0, files: ['src/f1001.js'], review_rounds: 1 },
+  follow: { done: true, list: [] }, revert: { done: true, list: [] }, open: [], final: true };
+run10(write('fx10-final.json', { ...JSON.parse(readFileSync(FX10, 'utf8')), failSearch: true,
+  inject: { path: join(S10f, 'handoff-pr-outcomes.json'), once: join(T, 'final-once'), cache: { prs: { 1001: done1001 }, missing: [] } } }), S10f);
+const kept = JSON.parse(readFileSync(join(S10f, 'handoff-pr-outcomes.json'), 'utf8')).prs['1001'];
+t('a run whose read of a PR was cut short keeps the final entry another run wrote', [kept?.final, kept?.open, kept?.follow?.done], [true, [], true]);
 const failed = run10(write('fx10-fail.json', { prs: { 1001: pr(1001) }, search: [], errorType: 'RATE_LIMITED' }), join(T, 'state10-fail'));
 t('any other error drops the read and says so', [failed.pr_read.note?.startsWith('PRs not read from GitHub'), failed.sessions.filter((y) => y.measured_on === 'prs').length], [true, 0]);
 

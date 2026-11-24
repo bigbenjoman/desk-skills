@@ -220,11 +220,20 @@ export function prOutcomes(refs, { repo, base, cachePath = null, offline = false
     }
   }
   // Final once every window is done.
-  for (const o of recs.values()) {
-    if (!o.merged_at || !o.core || o.off_default) continue;
+  const settle = (o) => {
+    if (!o?.merged_at || !o.core || o.off_default) return o;
     o.open = [!o.core.done && 'red main and reviews', !o.follow?.done && 'follow-ups', !o.revert?.done && 'reverts'].filter(Boolean);
     o.final = !o.open.length;
-  }
+    return o;
+  };
+  for (const o of recs.values()) settle(o);
+  // A PR's entry merged with the cache's, window by window: a window done there is kept over one this
+  // run left open (a read cut short, or an older run's), so a final entry stays final.
+  const mergeWindows = (cur, o) => {
+    if (!cur?.merged_at || cur.off_default || !o.core) return o;
+    const pick = (k) => (cur[k]?.done && !o[k]?.done ? cur[k] : o[k] ?? cur[k]);
+    return settle({ ...o, core: pick('core'), follow: pick('follow'), revert: pick('revert') });
+  };
   if (cachePath) {
     // Every merged PR's windows, done or not, so a later run reads only the open ones. Merged into the
     // cache as it is now, under its lock: another run's outcomes written since this one read it are
@@ -237,7 +246,7 @@ export function prOutcomes(refs, { repo, base, cachePath = null, offline = false
         for (const n of touched) {
           const o = recs.get(n);
           if (missing.has(n)) { miss.add(n); delete prs[n]; }
-          else if (o?.merged_at && (o.core || o.off_default)) { miss.delete(n); prs[n] = o; }
+          else if (o?.merged_at && (o.core || o.off_default)) { miss.delete(n); prs[n] = mergeWindows(prs[n], o); }
           else miss.delete(n);
         }
         writeJsonAtomic(cachePath, { prs, missing: [...miss].sort((a, b) => a - b) });
