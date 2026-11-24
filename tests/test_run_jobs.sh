@@ -90,8 +90,8 @@ fresh_jobs(){ k=$((k + 1)); export LEASES="$T/leases-$v-$k" CONC="$T/jconc-$v-$k
 k=0
 token_checks(){
   # AC1: no job-tokens row, and AC6: a row that is neither on nor off: no token is taken.
-  for c in NONE:"no job-tokens row" BAD:"job-tokens maybe"; do
-    fresh_jobs; eval "pf=\$P_${c%%:*}"
+  for c in "$P_NONE:no job-tokens row" "$P_BAD:job-tokens maybe"; do
+    fresh_jobs; pf=${c%%:*}
     out=$(jrun "$pf" -j 2 test_j1.sh test_j2.sh 2>&1); rc=$?
     check "DS-983 AC1 AC6 $at ${c#*:}: run.sh takes no job token and runs as before" \
       '[ $rc -eq 0 ] && [ ! -e "$LEASES/leases.log.jsonl" ] && [ "$(wc -l < "$SEEN" | tr -d " ")" = 2 ] && printf "%s\n" "$out" | grep -qx "all passed: 2 checks"'
