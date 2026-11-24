@@ -107,6 +107,9 @@ check "AC8 in shadow with the store unreadable it merges as before, and says lea
 fresh on; touch "$T/gh.hang"
 out=""; for _ in 1 2; do out="$out$(DESK_LEVERS=ledger MERGE_DRIVER_MERGE_SECS=1 MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2" 2>&1)"$'\n'; done
 check "AC10 a merge call past its bound releases the lease and logs the PR as unconfirmed" '[ -z "$(merged)" ] && [ "$(events)" = "grant release" ] && echo "$out" | grep -q "#501 merge UNCONFIRMED: gh pr merge did not return in 1s" && qf T-1 .merge_blocked | grep -q "^merge unconfirmed:"'
+fresh shadow; echo 3 > "$T/gh.hang"
+out=""; for _ in 1 2; do out="$out$(DESK_LEVERS=ledger MERGE_DRIVER_MERGE_SECS=1 MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2" 2>&1)"$'\n'; done
+check "AC4 in shadow the merge call is not bounded: a slow one merges as before" '[ "$(merged)" = 501 ] && ! echo "$out" | grep -q "UNCONFIRMED"'
 rm -f "$T/gh.hang"
 
 finish lease

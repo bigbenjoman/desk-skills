@@ -141,8 +141,9 @@
 # Unless the merge lease kind is off, the claim, the merge and those records happen inside one merge
 # lease hold for the repo and the PR's base (merge-lease.mjs), released once the ticket's merge is
 # recorded: with the ledger lever on, the ticket ledger is read first and a merge or armed auto-merge
-# it records at this head stops the merge (in shadow, the lease log records a would-refuse). A merge
-# call that does not return within its bound releases the lease and is noted as unconfirmed.
+# it records at this head stops the merge (in shadow, the lease log records a would-refuse). With the
+# kind on, a merge call that does not return within its bound releases the lease and is noted as
+# unconfirmed.
 # A ticket that is Done then has the GitHub issues its web links name closed by linked-issues.mjs, each
 # once every ticket linking it is done, under §3 gh-close-linked-issue.
 # Where §3 ci-rerun is yes, a red PR whose runs have all completed gets `gh run rerun --failed` on
@@ -176,8 +177,8 @@
 #   MERGE_DRIVER_GREEN_SECS=<n>  how long a head must stay green before it merges (default 60)
 #   MERGE_DRIVER_LEASE_WAIT_SECS=<n>, MERGE_DRIVER_MERGE_SECS=<n>
 #                                with the merge lease kind not off, how long it waits for the merge
-#                                lease, and the bound on one merge call inside it (merge-lease.mjs:
-#                                defaults 240 and 120)
+#                                lease (merge-lease.mjs, default 240), and with it on, the bound on
+#                                one merge call inside it (default 120)
 #   MERGE_DRIVER_IDLE_SECS=<n>, MERGE_DRIVER_IDLE_MAX_SECS=<n>, MERGE_DRIVER_WAKE_SECS=<n>
 #                                the pause after a loop with no ready PR: the first, doubled on
 #                                each such loop in a row up to the most (defaults 60 and 600), and how
@@ -632,15 +633,15 @@ backed_off(){ local f="$SD/backoff-$1"; [ -f "$f" ] && [ "$(date +%s)" -lt "$(ca
 back_off(){ echo $(( $(date +%s) + ${2:-600} )) > "$SD/backoff-$1"; }
 # The merge lease for the repo and base (merge-lease.mjs), held around one ledger check, merge and
 # record. lease_take <n> <sha> <base> -> 0 to merge, with MLEASE the lease to release (empty: none
-# taken) and MLEASE_ON set unless the kind is off. A store that cannot be read in shadow is said once
-# until it reads again.
-MLEASE=""; MLEASE_ON=""
+# taken) and MLEASE_ENFORCED set where the kind is on, which bounds the merge call. A store that cannot
+# be read in shadow is said once until it reads again.
+MLEASE=""; MLEASE_ENFORCED=""
 lease_take(){
   local res rc skip="" l
-  MLEASE=""; MLEASE_ON=""
+  MLEASE=""; MLEASE_ENFORCED=""
   res=$(node "$DESK_RUN_BIN/merge-lease.mjs" take "$1" "$2" --repo "$REPO" --base "$3" --by "$MERGER" --pid "$$" ${MERGE_DRIVER_LEASE_WAIT_SECS:+--wait "$MERGE_DRIVER_LEASE_WAIT_SECS"} </dev/null); rc=$?
   if ! printf '%s' "$res" | jq -e 'type == "object"' >/dev/null 2>&1; then log "#$1 NOT merged: the merge lease could not be taken (merge-lease.mjs exit $rc) — retrying next loop"; return 1; fi
-  [ "$(printf '%s' "$res" | jq -r .mode)" = off ] || MLEASE_ON=1
+  [ "$(printf '%s' "$res" | jq -r .mode)" = on ] && MLEASE_ENFORCED=1
   MLEASE=$(printf '%s' "$res" | jq -r '.lease // empty')
   if [ "$(printf '%s' "$res" | jq -r .unreadable)" != true ]; then rm -f "$SD/lease-unreadable"
   elif [ "$rc" -eq 0 ]; then if [ -e "$SD/lease-unreadable" ]; then skip=1; else touch "$SD/lease-unreadable"; fi; fi
@@ -650,7 +651,7 @@ lease_take(){
 }
 lease_free(){ # lease_free <n>
   [ -n "$MLEASE" ] || return 0
-  node "$DESK_RUN_BIN/merge-lease.mjs" release "$MLEASE" --pid "$$" </dev/null >/dev/null 2>&1 || log "#$1 merge lease $MLEASE not released — it lapses at its TTL"
+  node "$DESK_RUN_BIN/leases.mjs" release "$MLEASE" --pid "$$" </dev/null >/dev/null 2>&1 || log "#$1 merge lease $MLEASE not released — it lapses at its TTL"
   MLEASE=""
 }
 # Turn off a PR's armed auto-merge (disarm <n> <its gate JSON>), and say so in the merge log, which
@@ -1378,8 +1379,10 @@ EOF_RESOLVE
   # The ledger check, the merge and its record happen inside one merge lease hold for this base.
   blocked_clear "$key" "merge unconfirmed:"
   lease_take "$n" "$sha" "$want" || return 1
+  # With the kind on, the merge call is bounded (desk_timeout: 124, or 137 where it outlived the TERM),
+  # so the hold is too; in shadow it runs as before.
   local mcall=() mrc msecs="${MERGE_DRIVER_MERGE_SECS:-120}"
-  [ -n "$MLEASE_ON" ] && mcall=(node "$DESK_RUN_BIN/merge-lease.mjs" run --timeout "$msecs" --)
+  [ -n "$MLEASE_ENFORCED" ] && mcall=(desk_timeout "$msecs")
   # Claimed in the machine-wide merge log first (merge-log.mjs), so a session merging the same PR, or
   # one that already did, stops this merge instead of racing it, and who merged it is recorded.
   if ! claimed=$(node "$DESK_RUN_BIN/merge-log.mjs" claim "$n" "$sha" --by "$MERGER" --repo "$REPO" 2>&1); then
@@ -1387,7 +1390,7 @@ EOF_RESOLVE
     log "#$n NOT merged: ${claimed#merge-log: } — backing off 10m"; back_off "$n"; return 1
   fi
   out=$(${mcall[@]+"${mcall[@]}"} gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); mrc=$?
-  if [ -n "$MLEASE_ON" ] && [ "$mrc" -eq 124 ]; then
+  if [ -n "$MLEASE_ENFORCED" ] && { [ "$mrc" -eq 124 ] || [ "$mrc" -eq 137 ]; }; then
     # Its claim stays in the merge log, so no other merger takes the PR before GitHub is read again.
     lease_free "$n"
     log "#$n merge UNCONFIRMED: gh pr merge did not return in ${msecs}s at ${sha:0:9} — the merge lease is released; the next pass reads from GitHub whether it merged"
