@@ -35,7 +35,7 @@ export const stagesQuery = (n) => `query($owner:String!,$name:String!){repositor
 
 // Whether a review's body is a clean desk-review verdict under the §4 Clean review verdict `clean`:
 // true, false, or null for a body with no verdict marker.
-function cleanOf(body, clean) {
+export function cleanOf(body, clean) {
   const v = parseVerdict(body ?? '');
   return v ? verdictAt(v, v.sha, clean).clean : null;
 }
@@ -103,10 +103,10 @@ export function localReview(state, key) {
   return { starts, rounds: self.length ? new Set(self.map((r) => `${r.head}:${r.round}`)).size : null };
 }
 
-// Every recorded line, the latest per PR. A line that does not read is skipped.
-export function readStages(state) {
+// Every line of the per-PR JSONL log at `file`, the latest per PR. A line that does not read is skipped.
+export function readLatest(file) {
   let text = '';
-  try { text = readFileSync(fileOf(state), 'utf8'); } catch { return []; }
+  try { text = readFileSync(file, 'utf8'); } catch { return []; }
   const byPr = new Map();
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
@@ -114,10 +114,12 @@ export function readStages(state) {
   }
   return [...byPr.values()];
 }
-export function recordStages(state, entry) {
-  mkdirSync(dirname(fileOf(state)), { recursive: true });
-  appendFileSync(fileOf(state), `${JSON.stringify(entry)}\n`);
+export function appendLine(file, entry) {
+  mkdirSync(dirname(file), { recursive: true });
+  appendFileSync(file, `${JSON.stringify(entry)}\n`);
 }
+export const readStages = (state) => readLatest(fileOf(state));
+export const recordStages = (state, entry) => appendLine(fileOf(state), entry);
 
 // The merged tickets of `tickets` (queue tickets) whose PR has no line recorded, oldest merge first:
 // { key, pr }. A pass reads PER_PASS of them at most, moving past any it cannot read.
@@ -172,27 +174,37 @@ export function stagesLine(s) {
 // read again. `ctx`: stagesOf's
 // options, and `local(key)` for localReview. -> the pass's report lines.
 export function stagesStep(state, { tickets, gql, ledger = null, ctx = {}, local = () => null, now = new Date().toISOString() }) {
-  const lines = [];
-  // PER_PASS PRs read a pass; one GitHub does not answer spends no read, so it holds up no later PR,
-  // and twice PER_PASS tries in all bound a pass while GitHub is down.
-  let reads = 0, tries = 0;
-  for (const { key, pr } of due(tickets, readStages(state), ms(now))) {
-    if (reads >= PER_PASS || tries >= 2 * PER_PASS) break;
-    tries += 1;
-    let payload = null;
-    try { payload = gql(stagesQuery(pr)); } catch { payload = null; }
-    if (!payload?.data) {
-      lines.push(`merge stages: PR #${pr} (${key}) could not be read from GitHub; a pass tries again in an hour`);
-      try { recordStages(state, { key, pr, unread: true, recorded: now }); } catch { /* tried again next pass */ }
-      continue;
-    }
-    reads += 1;
+  return readDue({ tickets, gql, now, label: 'merge stages', query: stagesQuery, recorded: readStages(state), record: (e) => recordStages(state, e) }, (key, pr, payload) => {
     const st = stagesOf(payload, { ...ctx, local: local(key) });
     const entry = st ? { key, ...st, pr, recorded: now } : { key, pr, unmerged: true, recorded: now };
     if (ledger && st) {
-      try { ledger(key, pr, entry); } catch (e) { lines.push(`merge stages: PR #${pr} (${key}) could not be added to the ticket ledger (${String(e?.message ?? e).split('\n')[0]}); the next pass tries again`); continue; }
+      try { ledger(key, pr, entry); } catch (e) { return [`merge stages: PR #${pr} (${key}) could not be added to the ticket ledger (${String(e?.message ?? e).split('\n')[0]}); the next pass tries again`]; }
     }
-    try { recordStages(state, entry); } catch (e) { lines.push(`merge stages: PR #${pr} (${key}) could not be recorded (${String(e?.message ?? e).split('\n')[0]})`); }
+    try { recordStages(state, entry); } catch (e) { return [`merge stages: PR #${pr} (${key}) could not be recorded (${String(e?.message ?? e).split('\n')[0]})`]; }
+    return [];
+  });
+}
+
+// The bounded read of merged PRs a pass step makes: each PR of `due(tickets, recorded)` read through
+// `gql(query(pr))` and handed to `onRead(key, pr, payload)`, which records it and returns report lines.
+// PER_PASS PRs read a pass; one GitHub does not answer spends no read, so it holds up no later PR, is
+// `record`ed as `unread` and tried again once RETRY_MS has passed, and twice PER_PASS tries in all bound
+// a pass while GitHub is down. `label` starts each report line. -> the pass's report lines.
+export function readDue({ tickets, gql, query, recorded, record, label, now }, onRead) {
+  const lines = [];
+  let reads = 0, tries = 0;
+  for (const { key, pr } of due(tickets, recorded, ms(now))) {
+    if (reads >= PER_PASS || tries >= 2 * PER_PASS) break;
+    tries += 1;
+    let payload = null;
+    try { payload = gql(query(pr)); } catch { payload = null; }
+    if (!payload?.data) {
+      lines.push(`${label}: PR #${pr} (${key}) could not be read from GitHub; a pass tries again in an hour`);
+      try { record({ key, pr, unread: true, recorded: now }); } catch { /* tried again next pass */ }
+      continue;
+    }
+    reads += 1;
+    lines.push(...onRead(key, pr, payload));
   }
   return lines;
 }
