@@ -449,6 +449,13 @@ t('#1434 grant: what it posts reads as the person\'s acceptance, so the same pas
 t('#1434 grant negative: not again once the handle has accepted the gap, even before a later review', grantedPost(accT(), grantPr([said('me', '2026-11-20T09:00:00Z', ACCEPTS)]), accOpts), null);
 t('#1434 grant negative: nor once desk posted it under the grant from another account', grantedPost(accT(), grantPr([said('other-login', '2026-11-20T11:00:00Z', grant?.body ?? '')]), accOpts), null);
 t('#1434 grant negative: nor for a gap the person settles another way', grantedPost(accT(), grantPr([], { reviews: [{ author: { login: 'me' }, submittedAt: '2026-11-20T10:00:00Z', body: accBody([REC_GAP]) }] }), accOpts), null);
+for (const [what, body] of [['refused', 'I don\'t accept AC3 as built, implement it'], ['asked about', 'AC3: let me think about it'], ['answered through needs-you', 'The person\'s call on this PR\'s review gaps, recorded through desk-needs-you:\n\n> Fix AC3 rather than accept it']]) {
+  t(`#1434 grant negative: never over the person's words: not for a gap the handle ${what} on the PR`, grantedPost(accT(), grantPr([said('me', '2026-11-20T11:00:00Z', body)]), accOpts), null);
+}
+t('#1434 grant: another account naming the gap does not stop it', grantedPost(accT(), grantPr([said('stranger', '2026-11-20T11:00:00Z', 'I don\'t accept AC3')]), accOpts)?.gaps.length, 1);
+t('#1434 grant: nor does desk\'s own reply under the handle', grantedPost(accT(), grantPr([said('me', '2026-11-20T11:00:00Z', '<!-- desk-review:reply -->\nAC3 is left for the person to accept.')]), accOpts)?.gaps.length, 1);
+const UNNAMED = `- PERSON'S CALL · the export button — only a live run can check it. Recommended: accept it as built`;
+t('#1434 grant negative: a gap with no label or quoted criterion, which no comment could name, is left to the person', grantedPost(accT(), grantPr([], { reviews: [{ author: { login: 'me' }, submittedAt: '2026-11-20T10:00:00Z', body: accBody([UNNAMED]) }] }), accOpts), null);
 t('#1434 grant negative: nor on a closed PR, nor while another fix waits for its worker', `${grantedPost(accT(), grantPr([], { state: 'CLOSED' }), accOpts)} ${grantedPost(accT({ fix: { kind: 'review' } }), grantPr([]), accOpts)}`, 'null null');
 t('#1434 AC3 negative: not one stuck on a gap the person settles another way, nor a merged PR', `${awaitsAcceptance(accT({ stuck: { why: `review gaps only you can settle: ${PERSON_GAP.slice(2)}` } }))} ${awaitsAcceptance(accT({ pr_status: { state: 'MERGED' } }))}`, 'false false');
 t('DS-585 recommendedOf reads the last Recommended: and drops a trailing full stop', `${recommendedOf(`${REC_GAP}.`)}|${recommendedOf(PERSON_GAP)}`, `${REC}|null`);

@@ -38,7 +38,7 @@ import { IDLE_RECHECK_MS } from './batch-state.mjs';
 import { normaliseLine } from './evidence.mjs';
 import { stepFits } from './workflow-yaml.mjs';
 import { askCategoryIn } from './decisions.mjs';
-import { GRANTED, acceptOnly, acceptanceOn, acceptedAnswer, evidenceIn, grantComment, personsCall, recommendedOf } from './accept-gaps.mjs';
+import { GRANTED, acceptOnly, acceptanceOn, acceptedAnswer, evidenceIn, grantComment, nameable, personsCall, recommendedOf, spokenFor } from './accept-gaps.mjs';
 import { parseVerdict as markerOf, COUNTS } from '../templates/scripts/desk/review-gate.mjs';
 import { statesPhrase, leftOver } from './review-plain.mjs';
 import { pairs } from './desk-env.mjs';
@@ -979,15 +979,19 @@ export function acceptedFix(t, v, { logins }) {
 // The acceptance the pass posts as the §1 GitHub handle where config §3 accept-review-gaps is yes
 // (accept-gaps.mjs grantComment), for the gaps only that comment accepts on desk's latest review at the
 // head: { gaps, body }, or null where there are none. `v` as acceptedFix reads it, with `body` (the PR's,
-// for its evidence). Once per gap: one the handle has accepted on the PR before, at any time, is left
-// out, and so is one desk posted for under the grant from any account (GRANTED), so a later review
-// that still lists it, or a gh signed in as someone else, puts it to the person rather than posting again.
+// for its evidence). Once per gap, and never over the person's words: a gap the handle has named on the
+// PR at any time (accepted, refused or asked about: spokenFor) is left out, and so is one desk posted
+// for under the grant from any account (GRANTED), so a later review that still lists it, or a gh signed
+// in as someone else, puts it to the person rather than posting again. So is a gap with neither a label
+// nor a quoted criterion, which no comment can name, so nothing could show it was posted for.
 export function grantedPost(t, v, { logins }) {
   const handle = String(logins ?? '').split(',')[0].trim();
   if (!handle || v?.state !== 'OPEN' || !v.headRefOid || (t.fix && !t.fix.finished)) return null;
   const review = verdictReviewAt(v.reviews, logins, v.headRefOid);
   const items = [...(v.comments ?? []), ...(v.reviews ?? [])].map((x) => (String(x?.body ?? '').includes(GRANTED) ? { ...x, author: { login: handle } } : x));
-  const gaps = review ? reviewGaps(review.body).filter(acceptOnly).filter((g) => !acceptanceOn([g], items, { handle })) : [];
+  const open = review ? reviewGaps(review.body).filter(acceptOnly).filter(nameable) : [];
+  const spoken = spokenFor(open, items, { handle });
+  const gaps = open.filter((g) => !spoken.includes(g));
   return gaps.length ? { gaps, body: grantComment(gaps, evidenceIn(v.body, gaps)) } : null;
 }
 

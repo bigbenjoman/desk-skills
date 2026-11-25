@@ -55,6 +55,24 @@ export function gapParts(gap) {
 
 // What a comment names a gap by: its label, else its criterion.
 const nameOf = (p) => p.ac ?? (p.criterion ? `"${p.criterion}"` : null);
+// Whether a gap has a label or a quoted criterion, so a comment on the PR can name it.
+export const nameable = (gap) => nameOf(gapParts(gap)) != null;
+// Whether `body` names `gap`, by its label or its quoted criterion.
+const names = (gap, body) => {
+  const p = gapParts(gap);
+  return !!((p.ac && new RegExp(`\\b${p.ac.replace(/(\d+)$/, '\\s?$1')}\\b`, 'i').test(body)) || (p.criterion && body.includes(p.criterion)));
+};
+// desk's own reviews and replies, which post under the same handle and quote each gap.
+const deskReview = (body) => /^\s*<!-- desk-review/.test(body);
+const by = (x, me) => String(x?.author?.login ?? '').toLowerCase() === me;
+// The gaps of `gaps` that a comment or review by `handle` names at any time, whatever it says: accepted,
+// refused, asked about or answered through desk-needs-you. desk's own reviews and replies are not the
+// person's words. `items` as acceptanceOn takes them.
+export function spokenFor(gaps, items, { handle }) {
+  const me = String(handle ?? '').toLowerCase();
+  const said = (items ?? []).filter((x) => by(x, me) && !deskReview(String(x?.body ?? ''))).map((x) => String(x.body));
+  return me ? gaps.filter((g) => said.some((body) => names(g, body))) : [];
+}
 
 // The comment the person posts to accept `gaps`, naming each one's criterion.
 export function acceptComment(gaps) {
@@ -122,18 +140,13 @@ export function acceptanceOn(gaps, items, { handle, since = null }) {
   const me = String(handle ?? '').toLowerCase();
   if (!me || !gaps.length) return null;
   const after = Date.parse(since ?? '');
-  const named = (body) => gaps.filter((g) => {
-    const p = gapParts(g);
-    return (p.ac && new RegExp(`\\b${p.ac.replace(/(\d+)$/, '\\s?$1')}\\b`, 'i').test(body)) || (p.criterion && body.includes(p.criterion));
-  });
   let found = null;
   for (const x of items ?? []) {
     const at = x?.createdAt ?? x?.submittedAt ?? null;
     const body = String(x?.body ?? '');
-    // desk's own reviews post under the same handle, and quote each gap's recommendation.
-    if (String(x?.author?.login ?? '').toLowerCase() !== me || !ACCEPT_LINE.test(body) || REFUSES.test(unquoted(body)) || /^\s*<!-- desk-review/.test(body)) continue;
+    if (!by(x, me) || !ACCEPT_LINE.test(body) || REFUSES.test(unquoted(body)) || deskReview(body)) continue;
     if (!Number.isNaN(after) && !(Date.parse(at ?? '') > after)) continue;
-    const these = named(body);
+    const these = gaps.filter((g) => names(g, body));
     if (!these.length || (found && Date.parse(found.at) >= Date.parse(at))) continue;
     found = { by: x.author.login, at, url: x.url ?? null, body, gaps: these };
   }

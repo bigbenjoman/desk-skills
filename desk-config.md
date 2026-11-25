@@ -224,8 +224,9 @@ Code's permission mode.
 `accept-review-gaps` is read by `pass.mjs`. At `yes`, a PR left on review gaps that only your
 comment accepts gets that comment from the pass, posted as your §1 GitHub handle with `gh pr comment`.
 It names each gap's criterion and quotes only what the review and the PR body already say. The ticket
-then goes back to a worker on the PR, which records the acceptance. The pass posts once per gap: if a
-later review still lists the gap, it is put to you. Unset or anything else reads as `no`, and you are
+then goes back to a worker on the PR, which records the acceptance. The pass posts once per gap, and
+never for a gap your own comment on the PR names (one refusing it, say): if a later review still lists
+the gap, or you have spoken to it, it is put to you. Unset or anything else reads as `no`, and you are
 given the ready comment to post yourself. `/desk-setup` writes the matching auto-mode entry at `yes`.
 `machine-reboot` is `yes`, `ask` or `no`, and unset reads as `ask`: at `ask` the maintenance window
 puts "ready to reboot" in the next check-in rather than restarting, and at `no` it does neither. With
