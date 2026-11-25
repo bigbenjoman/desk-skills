@@ -38,7 +38,7 @@ import { IDLE_RECHECK_MS } from './batch-state.mjs';
 import { normaliseLine } from './evidence.mjs';
 import { stepFits } from './workflow-yaml.mjs';
 import { askCategoryIn } from './decisions.mjs';
-import { acceptOnly, acceptanceOn, acceptedAnswer, personsCall, recommendedOf } from './accept-gaps.mjs';
+import { GRANTED, acceptOnly, acceptanceOn, acceptedAnswer, evidenceIn, grantComment, personsCall, recommendedOf } from './accept-gaps.mjs';
 import { parseVerdict as markerOf, COUNTS } from '../templates/scripts/desk/review-gate.mjs';
 import { statesPhrase, leftOver } from './review-plain.mjs';
 import { pairs } from './desk-env.mjs';
@@ -975,6 +975,20 @@ export function acceptedFix(t, v, { logins }) {
   const a = acceptanceOn(gaps, [...(v.comments ?? []), ...(v.reviews ?? [])], { handle, since: review.submittedAt });
   if (!a || (t.fix?.kind === 'gaps' && t.fix.accepted === (a.url ?? a.at))) return null;
   return { acceptance: a, fix: { ...gapsFix({ pr: t.result.pr, head, ready: v.isDraft === false, answer: acceptedAnswer(a) }), accepted: a.url ?? a.at } };
+}
+// The acceptance the pass posts as the §1 GitHub handle where config §3 accept-review-gaps is yes
+// (accept-gaps.mjs grantComment), for the gaps only that comment accepts on desk's latest review at the
+// head: { gaps, body }, or null where there are none. `v` as acceptedFix reads it, with `body` (the PR's,
+// for its evidence). Once per gap: one the handle has accepted on the PR before, at any time, is left
+// out, and so is one desk posted for under the grant from any account (GRANTED), so a later review
+// that still lists it, or a gh signed in as someone else, puts it to the person rather than posting again.
+export function grantedPost(t, v, { logins }) {
+  const handle = String(logins ?? '').split(',')[0].trim();
+  if (!handle || v?.state !== 'OPEN' || !v.headRefOid || (t.fix && !t.fix.finished)) return null;
+  const review = verdictReviewAt(v.reviews, logins, v.headRefOid);
+  const items = [...(v.comments ?? []), ...(v.reviews ?? [])].map((x) => (String(x?.body ?? '').includes(GRANTED) ? { ...x, author: { login: handle } } : x));
+  const gaps = review ? reviewGaps(review.body).filter(acceptOnly).filter((g) => !acceptanceOn([g], items, { handle })) : [];
+  return gaps.length ? { gaps, body: grantComment(gaps, evidenceIn(v.body, gaps)) } : null;
 }
 
 // The rule a reviewed fix worker's task states for a push of nothing, and its one exception, which only

@@ -62,6 +62,33 @@ export function acceptComment(gaps) {
   return [`I accept ${gaps.length === 1 ? 'this requirement gap as it stands' : 'these requirement gaps as they stand'} on this PR:`, ...lines].join('\n');
 }
 
+// The lines of a PR's body naming each gap's criterion label, keyed by label (`AC2`), at most three
+// each: the evidence already on the PR (acceptNeed, grantComment).
+export function evidenceIn(body, gaps) {
+  const acs = [...new Set(gaps.map((g) => gapParts(g).ac).filter(Boolean))];
+  const lines = String(body ?? '').split(/\r?\n/).map((l) => l.replace(/^[\s>*|#-]+/, '').replace(/\s*\|\s*/g, ' | ').trim()).filter((l) => l && !/^<!--/.test(l));
+  return Object.fromEntries(acs.map((ac) => [ac, lines.filter((l) => new RegExp(`\\b${ac.replace(/(\d+)$/, '\\s?$1')}\\b`, 'i').test(l)).slice(0, 3)]));
+}
+
+// Text quoted inside the comment, so acceptanceOn reads none of it as the person's own words: its quote
+// marks made plain, on one line, wrapped in curly quotes.
+const quoted = (s) => `“${String(s).replace(/["“”]/g, "'").replace(/\s+/g, ' ').trim()}”`;
+// The acceptance desk posts as the §1 GitHub handle under config §3 accept-review-gaps: the ready comment
+// (acceptComment), with what the review found for each gap and the PR body's lines naming its criterion
+// (`evidence`, evidenceIn) quoted under it, and a last line saying desk posted it under that row. It
+// quotes only what is already on the PR.
+export function grantComment(gaps, evidence = {}) {
+  const [head, ...lines] = acceptComment(gaps).split('\n');
+  const each = gaps.map(gapParts).flatMap((p, i) => {
+    const ev = (p.ac && evidence[p.ac]) || [];
+    return [lines[i], ...(p.open ? [`  - The review found: ${quoted(p.open)}`] : []), ...(ev.length ? [`  - The PR's evidence for it: ${ev.map(quoted).join('; ')}`] : [])];
+  });
+  return [head, ...each, '', GRANTED].join('\n');
+}
+// grantComment's last line, which marks a comment as desk's post under the grant, whichever account it
+// went up under.
+export const GRANTED = "Posted by desk under this repo's config §3 accept-review-gaps, which lets it accept a review gap the review recommends accepting.";
+
 // That comment as one command the person runs: `gh pr comment`, its body single-quoted for the shell.
 export const acceptCommand = (pr, repo, gaps) => `gh pr comment ${pr} --repo ${repo} --body '${acceptComment(gaps).replace(/'/g, `'\\''`)}'`;
 

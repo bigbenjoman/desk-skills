@@ -155,7 +155,7 @@ import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
 import { prsNaming } from './recoveries.mjs';
 import { parkWords, plainTerms, GRANT_WORDS } from './park-words.mjs';
 import { askAnswered, ledgerOnIn } from './ask-ledger.mjs';
-import { acceptNeed, acceptOnly, gapParts } from './accept-gaps.mjs';
+import { acceptNeed, acceptOnly, evidenceIn, gapParts } from './accept-gaps.mjs';
 
 // The decisions a parked item offers to override, newest first.
 const DECISIONS_SHOWN = 3;
@@ -241,11 +241,9 @@ function draftGapsOf(r, t, reads) {
 // acceptNeed): the body's lines naming the gap's criterion label, keyed by label (`AC2`), at most
 // three each. {} without reads, or when the body cannot be read.
 function prEvidence(r, t, reads, gaps) {
-  const acs = [...new Set(gaps.map((g) => gapParts(g).ac).filter(Boolean))];
-  if (!reads || !acs.length || t?.result?.pr == null) return {};
+  if (!reads || !gaps.some((g) => gapParts(g).ac) || t?.result?.pr == null) return {};
   const body = String(reads.pr(r, t.result.pr, ',body').v?.body ?? '');
-  const lines = body.split(/\r?\n/).map((l) => l.replace(/^[\s>*|#-]+/, '').replace(/\s*\|\s*/g, ' | ').trim()).filter((l) => l && !/^<!--/.test(l));
-  return Object.fromEntries(acs.map((ac) => [ac, lines.filter((l) => new RegExp(`\\b${ac.replace(/(\d+)$/, '\\s?$1')}\\b`, 'i').test(l)).slice(0, 3).map(one)]));
+  return Object.fromEntries(Object.entries(evidenceIn(body, gaps)).map(([ac, lines]) => [ac, lines.map(one)]));
 }
 const prComment = (text) => `The person's call on this PR's review gaps, recorded through desk-needs-you:\n\n${text.split('\n').map((l) => `> ${l}`).join('\n')}\n\nA worker on this branch carries it out.`;
 // Every open PR takes an instruction for a worker on it, whatever else the item offers.

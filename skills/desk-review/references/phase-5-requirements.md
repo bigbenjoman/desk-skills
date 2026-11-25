@@ -189,7 +189,11 @@ In an autopilot batch the pass reads the PR for one each pass while it waits on 
 comment or review from §1 GitHub handle, posted after that verdict, names the criterion and accepts
 it (a line opening "I accept", "Accepted" or "Accepting", as desk's ready comment does, and no words
 refusing or limiting it, which leave it to the person), the ticket goes back to a worker on the PR with the comment as the person's call (`desk/bin/fix-tries.mjs`
-`acceptedFix`), with no message to the batch's session.
+`acceptedFix`), with no message to the batch's session. Where config §3 `accept-review-gaps` is `yes`,
+the pass posts that comment itself as the handle, once per gap, before it reads (`grantedPost`): the
+ready comment, with what the review found and the PR body's lines naming the criterion quoted under
+each gap, and a last line saying desk posted it under that row. So keep a recommendation to accept
+accurate, because at `yes` nobody reads it before it is acted on.
 
 An acceptance recorded after the head's verdict posted is the one case for a second verdict at that
 SHA (Phase 7, `phase-7-post.md`): the same round's results, with only the accepted gaps moved from

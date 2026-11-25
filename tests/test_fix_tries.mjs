@@ -1,7 +1,7 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 // layer: L1
 import { readFileSync } from 'node:fs';
-import { deniedRoute, triesMade, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, acceptedFix, awaitsAcceptance, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { deniedRoute, triesMade, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, acceptedFix, awaitsAcceptance, grantedPost, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
@@ -439,6 +439,17 @@ t('#1434 AC3 negative: a review at another head lists nothing to accept', accept
 t('#1434 AC3 negative: a closed PR', acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', ACCEPTS)], { state: 'CLOSED' }), accOpts), null);
 t('#1434 AC3 a draft\'s fix stays in draft', acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', ACCEPTS)], { isDraft: true }), accOpts)?.fix.ready, false);
 t('#1434 AC3 the pass reads a ready PR stuck on such a gap, and a draft whose review left gaps', `${awaitsAcceptance(accT())} ${awaitsAcceptance(tk({ result: { pr: 1 }, pr_status: { state: 'OPEN', isDraft: true }, undraft: { why: 'its review verdict at abc1234 is not clean (gaps=1)' } }))}`, 'true true');
+// #1434 grant path: config §3 accept-review-gaps yes, so the pass posts the acceptance as the handle.
+const grantPr = (comments, o = {}) => accPr(comments, { body: '### Testing\n- AC3: `pass.mjs` requeues it, "covered" by spec 12\n- AC2: not this one', ...o });
+const grant = grantedPost(accT(), grantPr([]), accOpts);
+t('#1434 grant: a gap only the person\'s comment accepts gets a comment naming its criterion', `${JSON.stringify(grant?.gaps)} ${grant?.body.split('\n').slice(0, 2).join(' | ')}`, `${JSON.stringify([ACC_GAP.slice(2)])} I accept this requirement gap as it stands on this PR: | - AC3: "the pass requeues it"`);
+t('#1434 grant: it quotes only the review\'s finding and the PR body\'s lines naming the criterion', grant?.body.includes('The review found: “only a live run can check it”') && grant.body.includes("The PR's evidence for it: “AC3: `pass.mjs` requeues it, 'covered' by spec 12”") && !grant.body.includes('AC2'), true);
+const posted = said('me', '2026-11-20T11:00:00Z', grant?.body ?? '');
+t('#1434 grant: what it posts reads as the person\'s acceptance, so the same pass requeues it', acceptedFix(accT(), grantPr([posted]), accOpts)?.fix.kind, 'gaps');
+t('#1434 grant negative: not again once the handle has accepted the gap, even before a later review', grantedPost(accT(), grantPr([said('me', '2026-11-20T09:00:00Z', ACCEPTS)]), accOpts), null);
+t('#1434 grant negative: nor once desk posted it under the grant from another account', grantedPost(accT(), grantPr([said('other-login', '2026-11-20T11:00:00Z', grant?.body ?? '')]), accOpts), null);
+t('#1434 grant negative: nor for a gap the person settles another way', grantedPost(accT(), grantPr([], { reviews: [{ author: { login: 'me' }, submittedAt: '2026-11-20T10:00:00Z', body: accBody([REC_GAP]) }] }), accOpts), null);
+t('#1434 grant negative: nor on a closed PR, nor while another fix waits for its worker', `${grantedPost(accT(), grantPr([], { state: 'CLOSED' }), accOpts)} ${grantedPost(accT({ fix: { kind: 'review' } }), grantPr([]), accOpts)}`, 'null null');
 t('#1434 AC3 negative: not one stuck on a gap the person settles another way, nor a merged PR', `${awaitsAcceptance(accT({ stuck: { why: `review gaps only you can settle: ${PERSON_GAP.slice(2)}` } }))} ${awaitsAcceptance(accT({ pr_status: { state: 'MERGED' } }))}`, 'false false');
 t('DS-585 recommendedOf reads the last Recommended: and drops a trailing full stop', `${recommendedOf(`${REC_GAP}.`)}|${recommendedOf(PERSON_GAP)}`, `${REC}|null`);
 t('DS-585 recommendedOf keeps the option as written, dropping only emphasis around it', JSON.stringify(['Recommended: rename it to batch_name', 'Recommended: **keep `__init__`**.', '**Recommended:** _the batch name_'].map(recommendedOf)), JSON.stringify(['rename it to batch_name', 'keep `__init__`', 'the batch name']));

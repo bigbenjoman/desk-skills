@@ -197,6 +197,7 @@ protection is `none`, nothing on GitHub stops a red merge, so `pr-merge-green` a
 | `merge-hold-routine` | Let the merge driver run the routine a §4 Merge holds item names (`desk runs: <command>`) on this computer, then merge the PR pinned to its head | `no` | `TODO` |
 | `batch-base-push` | Push to a batch's base branch: the merge of the default branch into it before a pass spawns | `ask` | `TODO` |
 | `autopilot-judgement` | Take the recommendation on any call outside the ask categories (money, legal, production data or credentials, customer copy where length means cost, facts only you hold) and log it, instead of parking; ask-category calls and other people's rulings still stop | `yes` | `TODO` |
+| `accept-review-gaps` | Accept a desk-review requirement gap whose recommendation is to accept it, by posting the acceptance on the PR as your §1 GitHub handle: it names each gap's criterion and cites only evidence already on the PR, and the ticket requeues by itself. Otherwise you are given the ready comment to post | `yes` | `TODO` |
 | `autopilot-reclaim` | Under memory pressure, kill an orphaned dev server or stale typecheck (never a worker mid-commit, never another session's) | `yes` | `TODO` |
 | `machine-reboot` | Restart this computer at the end of the §3b Maintenance window, once it has drained, updated desk-skills and the reboot check found no blocker | `ask` | `TODO` |
 | `worker-dependency-install` | Let a worker add a dependency or sync the lockfile with §4 Package manager (`pnpm add <pkg>`, `uv add <pkg>`, `uv sync`); never global, never another directory | `ask` | `TODO` |
@@ -220,6 +221,12 @@ runs as you, with whatever your shell can reach (production databases included),
 Code's permission mode.
 `batch-base-push` unset reads as `ask`: one approval per batch, asked at Stage 3 and passed to
 `pass.mjs` as `AUTOPILOT_BASE_PUSH_APPROVED=1`.
+`accept-review-gaps` is read by `pass.mjs`. At `yes`, a PR left on review gaps that only your
+comment accepts gets that comment from the pass, posted as your §1 GitHub handle with `gh pr comment`.
+It names each gap's criterion and quotes only what the review and the PR body already say. The ticket
+then goes back to a worker on the PR, which records the acceptance. The pass posts once per gap: if a
+later review still lists the gap, it is put to you. Unset or anything else reads as `no`, and you are
+given the ready comment to post yourself. `/desk-setup` writes the matching auto-mode entry at `yes`.
 `machine-reboot` is `yes`, `ask` or `no`, and unset reads as `ask`: at `ask` the maintenance window
 puts "ready to reboot" in the next check-in rather than restarting, and at `no` it does neither. With
 FileVault on, `yes` does as `ask` does: a restarted Mac waits at the unlock screen until you log in.
