@@ -775,10 +775,10 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   t('question handling: and the revert says which guardrail', /^one-at-a-time against batched: interruptions per ticket \(each push, and each digest push shared among the asks it listed\) worse than its margin/.test(q2.reason), true);
   // A digest's one push is shared among the asks its page listed, and one sent with no push counts none.
   const QA4 = 'acme__qh-shared';
-  run([qrepo(QA4, 30, { batched: (i) => ({ ...dear(i), page: `pair-${Math.floor(i / 2)}` }), 'one-at-a-time': cheap, mixed: (i) => ({ ...dear(i), silent: i % 2 === 0 }) })]);
+  run([qrepo(QA4, 30, { batched: (i) => ({ ...dear(i), page: `pair-${Math.floor(i / 2)}` }), 'one-at-a-time': cheap, mixed: (i) => ({ ...dear(i), silent: true, push: i % 2 === 0 ? 1 : 0 }) })]);
   const q4 = qhRow(QA4);
   t('question handling: a digest page listing two asks counts half an interruption for each', interruptions(q4, 'one-at-a-time').est, 2);
-  t('question handling: a digest listing that sent no push counts none', interruptions(q4, 'mixed').est, 1);
+  t('question handling: a digest listing that sent no push counts none; a push counts one whatever lists it after', interruptions(q4, 'mixed').est, 1);
   // An ask whose raise could not be read: its ticket stays an asking ticket but leaves the dollars.
   const QA3 = 'acme__qh-unread';
   run([qrepo(QA3, 30, { batched: (i) => ({ ...dear(i), complete: i >= 5 }), 'one-at-a-time': cheap, mixed: dear })]);
