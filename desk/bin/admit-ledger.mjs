@@ -56,7 +56,7 @@ export function liveAdmits(entries, opts = {}) {
 // the locks grant them, and with the rows not reading, mode off. -> { mode, floor, ceiling }.
 export function poolRows(pool, { rows, mode }) {
   if (mode !== 'on') {
-    const floor = pool === 'heavy' ? rows['test-lock-slots'] : 1;
+    const floor = rows[pool === 'heavy' ? 'test-lock-slots' : 'light-lock-slots'] ?? 1;
     return { mode, floor, ceiling: floor };
   }
   return pool === 'heavy' ? { mode, floor: rows['test-lock-slots'], ceiling: rows['test-lock-max'] }

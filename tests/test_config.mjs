@@ -690,6 +690,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'preview-db|4|Preview database', // DS-550
     'plan-first-wait|3b|Plan-first wait before needs-you (hours)', // issue-1384
     'slot-candidates|3b|Propose candidates for a free slot', // #1394
+    'light-lock-slots|3b|Light lock slots', // #1458
   ];
   const ADDED_PERMS = ['worker-preview-db', 'gh-issue-edit']; // DS-550, #1383
   const sorted = (a) => [...a].sort().join('\n');

@@ -378,6 +378,23 @@ out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" DESK_CONFIG="$T/config
 check "DS-958 two repos named api under different owners keep separate counts, named owner/name" \
   'echo "$out" | grep -qF "runs by repo: acme/api 4, beta/api 3; this repo'"'"'s share ceil(6 / 3) = 2, 0 its own" && [ $(( $(spawns_of LQ-13) + $(spawns_of LQ-14) + $(spawns_of LQ-15) )) = 2 ]'
 for k in LQ-13 LQ-14 LQ-15; do q set "$k" state=done session_id=null; done
+# #1458 AC2: a light repo whose light queue is deep (one run holds its 1 slot, two wait) and whose test
+# lock is idle starts a new ticket, which begins at triage, and holds a resume into Stage 4.
+{ echo ' 9101     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh light --cwd . -- bash tests/run.sh'
+  echo ' 9102  9101 bash tests/run.sh'
+  for p in 9201 9202; do echo " $p     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh light --cwd . -- bash tests/run.sh"; done; } > "$T/ps.out"
+printf ' 9101  10:05\n 9102  10:04\n 9201  00:30\n 9202  00:20\n' > "$T/ps-ages.out"
+printf 'p9101\ncbash\nfcwd\nn%s/repo\np9201\ncbash\nfcwd\nn%s/repo\np9202\ncbash\nfcwd\nn%s/repo\n' "$T" "$T" "$T" > "$T/lsof.out"
+mkdir -p "$T/locks-ll/desk-light.lock.d"; echo "9101 9102" > "$T/locks-ll/desk-light.lock.d/pid"
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `8 / 8` |\n| Light lock slots | `2` | `1` |\n'
+  printf '\n## 4. Checks\n| Field | Value |\n|---|---|\n| Suite weight | `light` |\n'; } > "$T/config-ll.md"
+git -C "$T/repo" worktree add -q -b fix/LL-2 "$T/wt/LL-2"
+q add LL-1; q set LL-1 state=triaged lane=A branch=fix/LL-1
+q add LL-2; q set LL-2 state=triaged lane=A branch=fix/LL-2 "worktree=$T/wt/LL-2" session_id=sess-ll2 stage=4/9 resume=pending resume_why=x
+out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-ll" DESK_CONFIG="$T/config-ll.md" DESK_MACHINE="$T/no-machine.md" node "$B/pass.mjs" 2>&1)
+check "#1458 AC2 with only the light queue full, a new ticket starts and a resume into Stage 4 is held, naming the light lock queue" \
+  '[ "$(spawns_of LL-1)" = 1 ] && [ "$(spawns_of LL-2)" = 0 ] && [ "$(field LL-2 resume)" = "\"pending\"" ] && echo "$out" | grep -qF "light lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2" && echo "$out" | grep -q "Stage 4 (LL-2)"'
+for k in LL-1 LL-2; do q set "$k" state=done session_id=null; done
 rm -f "$T/ps.out" "$T/lsof.out"
 rm "$T/desk/bin/queue.mjs"; ln -s "$B/queue.mjs" "$T/desk/bin/queue.mjs"
 

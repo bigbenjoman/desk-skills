@@ -551,6 +551,33 @@ try {
       a.release(); await a.done;
     }
   }
+
+  // ---- #1458: the light lock admits §3b "Light lock slots" runs at once ------------------------
+  {
+    const conf = (slots) => {
+      const p = join(S, `config-${n++}.md`);
+      writeFileSync(p, `## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Light lock slots | \`2\` | \`${slots}\` |\n`);
+      return p;
+    };
+    // Three light runs: how many hold at once, and whether the third, given 2 s, gave up waiting.
+    const three = async (env, opts = {}) => {
+      const a = await hold(env, ['light'], opts); const b = await hold(env, ['light'], opts, holdSh, { ms: 3000 });
+      const r = wl(env, ['light', '--timeout', '2', '--', 'true'], opts);
+      const got = [[a, b].filter((h) => existsSync(h.mark)).length, r.status];
+      for (const h of [a, b]) { h.release(); await h.done; }
+      return got;
+    };
+    const envOf = (profile, slots, avail = '64') => caseEnv({ leases: fresh('l'), locks: fresh('k'), profile,
+      extra: { DESK_CONFIG: conf(slots), DESK_MEM_AVAIL_GB: avail, AUTOPILOT_MIN_AVAIL_GB: '' } });
+    const paths = [['lock files', OFF1, {}], ['slot lease on', machine({ 'lease-kinds': 'slot=on', 'test-lock-slots': '1' }), {}]];
+    if (hasFlock) paths.push(['mkdir fallback', OFF1, { noFlock: true }]);
+    for (const [label, profile, o] of paths) {
+      const at = (slots, avail) => { const e = envOf(profile, slots, avail); if (o.noFlock) e.PATH = noFlock; return e; };
+      t(`#1458 AC1 ${label}: with the row at 2, two light runs hold the lock at once and a third waits`, await three(at('2')), [2, 75]);
+      t(`#1458 AC3 ${label}: with the row unset, one light run holds it and the others wait`, await three(at('TODO')), [1, 75]);
+      t(`#1458 AC1 ${label}: with available memory under the spawn gate's start, the row at 2 admits one`, await three(at('2', '2')), [1, 75]);
+    }
+  }
 } finally {
   for (const h of held) { h.release(); if (h.c.exitCode === null) h.c.kill(); }
   rmSync(S, { recursive: true, force: true });

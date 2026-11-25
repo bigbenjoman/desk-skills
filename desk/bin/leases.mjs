@@ -31,7 +31,7 @@
 //
 // This module imports nothing from desk-env.mjs: desk-env's CLI imports it at run time, and a cycle
 // through desk-env's top-level await never settles (node exits 13). What it needs from desk-env
-// (machineValue, testLockSlots, psRows) is passed in as `env`: desk-env passes its own, and this
+// (machineValue, testLockSlots, lightLockSlots, psRows) is passed in as `env`: desk-env passes its own, and this
 // file's CLI imports desk-env itself.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -52,7 +52,7 @@ export const EXIT_REFUSED = 3;
 export const EXIT_UNREADABLE = 4;
 export const EXIT_GAVE_UP = 75;
 export const KINDS = LEASE_KINDS;
-// test, tsc and lint share the heavy pool; browser and light are one slot each. job is tests/run.sh's
+// test, tsc and lint share the heavy pool; browser is one slot, light its floor (lightLockSlots). job is tests/run.sh's
 // job tokens (job-token.mjs): one per suite it runs, with the machine profile's job-tokens row on.
 export const SLOTS = Object.freeze({ test: 'heavy', tsc: 'heavy', lint: 'heavy', browser: 'browser', light: 'light', job: 'job' });
 // No operation holds the store lock for more than a second, so one this old was left by a holder that
@@ -78,7 +78,7 @@ const whole = (v) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) > 0 ? Nu
 export function slotPools(env) {
   // The rows as the profile holds them, as admission.mjs reads them: a TODO is a row that does not read.
   const get = env.machineProfile ? (k) => profileValue(env.machineProfile(), k) : (k) => env.machineValue(k);
-  const admission = admissionRows(get, { testSlots: env.testLockSlots() });
+  const admission = admissionRows(get, { testSlots: env.testLockSlots(), lightSlots: env.lightLockSlots?.() ?? null });
   const entries = admission.mode === 'on' ? readLedger(env.lockDir?.() ?? process.env.DESK_LOCK_DIR ?? '/tmp') : [];
   let starts = null;
   // ps unreadable: each admit counts by its pid alone, so a pool read never fails on it.
