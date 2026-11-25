@@ -271,6 +271,41 @@ t('DS-280 AC8 the digest lists each Merging PR unchanged for 2h or more, how lon
   '### Merging, no change for 2h or more\n\n- `M-1` [#1](https://github.com/acme/m/pull/1): Lint failed · no change for 2h 10m\n- `M-3` [#3](https://github.com/acme/m/pull/3): e2e running · no change for 2h\n');
 t('DS-280 AC8 the page\'s count line says so', page11.includes('; 2 merging PR(s) with no change for 2h or more.'), true);
 
+// The check-in presents each fresh park it lists as an ask, in that park's own repo's ticket ledger,
+// under that ledger's lock, where that repo's ledger lever is on.
+{
+  const { ledgerPaths, fold } = await import('../desk/bin/ticket-ledger.mjs');
+  const { readAsks } = await import('../desk/bin/ask-ledger.mjs');
+  const { lock, unlock } = await import('../desk/bin/dir-lock.mjs');
+  const j = JSON.stringify;
+  mkdirSync(join(root, 'cfg', 'repos', 'acme__ask'), { recursive: true });
+  writeFileSync(join(root, 'cfg', 'repos', 'acme__ask', 'config.md'), '## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n');
+  const since = '2026-10-29T06:00:00.000Z';
+  const ON = repo('acme__ask', { 'K-1': { key: 'K-1', state: 'parked', park: { kind: 'question', question: 'which tier?', since } }, 'K-2': { key: 'K-2', state: 'triaged', open_questions: 1 } });
+  const OFF = repo('acme__quiet', { 'Q-1': { key: 'Q-1', state: 'parked', park: { question: 'which colour?', since } } });
+  const ledgerOf = (r) => ledgerPaths(dirname(r.queue)).events;
+  const events = (r) => (existsSync(ledgerOf(r)) ? readFileSync(ledgerOf(r), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+  const opts = { times: DEFAULT_TIMES, dir, list: [OFF, ON], bin: BIN, self: 'acme__quiet', promote: () => null, checkJira: () => null };
+  const d1 = await checkin({ ...opts, now: at('2026-10-29', '08:01') });
+  t('a fresh park listed by the check-in is raised and presented in its own repo\'s ledger, the calling repo being another; a triage question is no ask',
+    j(events(ON).map((e) => `${e.type} ${e.key} ${e.data.ask}`)), j([`ask_raised K-1 K-1:${since}`, `ask_presented K-1 K-1:${since}`]));
+  const p = events(ON)[1]?.data;
+  t('presented by the digest: its page, and the push that names it', j([p?.via, p?.ref, p?.notification]), j(['digest', d1.page, d1.push?.key]));
+  t('a repo whose ledger lever is off gets no ledger, and nothing failed', j([existsSync(ledgerOf(ON)), existsSync(ledgerOf(OFF)), d1.ledger]), '[true,false,[]]');
+  t('the ask reads back from the fold', j(readAsks(fold(dirname(ON.queue))).map((a) => [a.key, a.presented.map((x) => x.via)])), j([['K-1', ['digest']]]));
+  // The next slot lists K-1 again, no longer fresh: nothing new. A park new to it, with that repo's
+  // ledger locked, is not written, and the check-in says so rather than failing.
+  writeFileSync(ON.queue, JSON.stringify({ batch: 'b', tickets: { 'K-1': { key: 'K-1', state: 'parked', park: { kind: 'question', question: 'which tier?', since } }, 'K-3': { key: 'K-3', state: 'parked', park: { kind: 'question', question: 'which plan?', since } } } }));
+  const text = () => (existsSync(ledgerOf(ON)) ? readFileSync(ledgerOf(ON), 'utf8') : '');
+  const before = text();
+  lock(ledgerPaths(dirname(ON.queue)).lock);
+  let d2, threw = null;
+  try { d2 = await checkin({ ...opts, now: at('2026-10-29', '17:01') }); } catch (e) { threw = e.message; }
+  unlock(ledgerPaths(dirname(ON.queue)).lock);
+  t('with the other repo\'s ledger locked, the check-in is still sent, writes nothing past that lock, and says which asks were not recorded',
+    threw === null && d2?.status === 'sent' && before !== '' && text() === before && d2?.ledger?.length === 1 && d2.ledger[0].startsWith("ask ledger: K-3's ask_raised, K-3's ask_presented could not be added to the ticket ledger"), true);
+}
+
 rmSync(root, { recursive: true, force: true });
 t('cleaned up', existsSync(root), false);
 if (fails) { console.log(`${fails} failed`); process.exit(1); }

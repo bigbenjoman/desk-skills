@@ -1967,4 +1967,28 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-894 AC7 with the lever off, no difference line and no difference count" \
   '! echo "$out" | grep -q "differ between queue.json" && [ "$(tail -1 "$T/state-lg/passes.jsonl" | jq "has(\"ledger_diffs\") or has(\"ledger_missed\")")" = false ]'
 
+# ---- the ask ledger: with the ledger lever on, the first worker after a park's requeue acts on its
+# answer, and a production-broken park pushed now is an ask presented by push; a pass again writes
+# neither twice, and with the lever off neither is written.
+export DESK_QUEUE="$T/ak/queue.json" DESK_AUTOPILOT_STATE="$T/state-ak"; mkdir -p "$T/ak" "$T/state-ak/logs"
+q init ak; q set-batch concurrency=2
+q add AK-1; q set AK-1 state=triaged lane=A branch=fix/AK-1 'prev_park={"question":"which copy?","since":"2026-11-20T10:00:00Z","requeued_at":"2026-11-20T11:00:00Z","round":2}'
+q add AK-2; q set AK-2 state=parked lane=A branch=fix/AK-2 'park={"kind":"question","question":"PRODUCTION BROKEN: checkout returns 500","since":"2026-11-20T09:00:00Z"}'
+out=$(DESK_CONFIG="$T/config-lg.md" node "$B/pass.mjs" 2>&1)
+akev(){ jq -sc "[.[] | select(.type | startswith(\"ask_\")) | [.type, .key, .data.ask, (.data.round // .data.via // .data.kind)]]" "$T/ak/ledger/events.jsonl"; }
+check "ask ledger: the spawn after a park's requeue acts on its ask, with the park's round" \
+  '[ "$(field AK-1 state)" = "\"running\"" ] && akev | jq -e "any(. == [\"ask_acted\",\"AK-1\",\"AK-1:2026-11-20T10:00:00Z\",2])" >/dev/null'
+check "ask ledger: a production-broken park pushed now is raised and presented by push" \
+  'echo "$out" | grep -q "PUSH: AK-2: PRODUCTION BROKEN" && akev | jq -e "any(. == [\"ask_raised\",\"AK-2\",\"AK-2:2026-11-20T09:00:00Z\",\"question\"]) and any(. == [\"ask_presented\",\"AK-2\",\"AK-2:2026-11-20T09:00:00Z\",\"push\"])" >/dev/null'
+n=$(akev | jq length)
+out=$(DESK_CONFIG="$T/config-lg.md" node "$B/pass.mjs" 2>&1)
+check "ask ledger: the next pass, pushing it again, writes nothing twice" '[ "$(akev | jq length)" = "$n" ] && [ "$n" = 3 ]'
+export DESK_QUEUE="$T/ak-off/queue.json" DESK_AUTOPILOT_STATE="$T/state-ak-off"; mkdir -p "$T/ak-off" "$T/state-ak-off/logs"
+q init akoff; q set-batch concurrency=2
+q add AK-3; q set AK-3 state=triaged lane=A branch=fix/AK-3 'prev_park={"question":"which copy?","since":"2026-11-20T10:00:00Z","round":1}'
+q add AK-4; q set AK-4 state=parked lane=A branch=fix/AK-4 'park={"kind":"question","question":"PRODUCTION BROKEN: login fails","since":"2026-11-20T09:00:00Z"}'
+out=$(node "$B/pass.mjs" 2>&1)
+check "ask ledger: with the lever off, the same spawn and push as with it on write no ledger and the pass reports nothing of it" \
+  '[ "$n" = 3 ] && [ "$(field AK-3 state)" = "\"running\"" ] && echo "$out" | grep -q "PUSH: AK-4: PRODUCTION BROKEN" && [ ! -e "$T/ak-off/ledger" ] && ! echo "$out" | grep -q "ask ledger"'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

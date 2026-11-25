@@ -20,6 +20,7 @@ import { readRegistry } from './claude-logins.mjs';
 import { parseDecision } from './decisions.mjs';
 import { recommendedAnswer } from './recoveries.mjs';
 import { saveAnswer } from './briefing.mjs';
+import { askAnswered } from './ask-ledger.mjs';
 
 crashShowsPerson();
 const QUEUE = join(runBin(), 'queue.mjs');
@@ -121,12 +122,14 @@ let waiting = false;
 let sessionId = null;
 let parkedReason = null;
 let heldNow = false;
+let parkSince = null;
 try {
   const Q0 = JSON.parse(readFileSync(queueFile(), 'utf8'));
   const sid = Q0.tickets?.[ticket]?.session_id;
   sessionId = sid ?? null;
   const park = Q0.tickets?.[ticket]?.park;
   if (park) parkedReason = (park.question ?? JSON.stringify(park)).slice(0, 300);
+  if (Q0.tickets?.[ticket]?.state === 'parked') parkSince = park?.since ?? null;
   heldNow = isHeld(Q0.tickets?.[ticket]);
   if (sid) {
     waiting = !!readRegistry().live?.some((a) => a.sessionId === sid);
@@ -166,6 +169,12 @@ if (waiting) {
 // The briefing is what a future or resumed worker actually reads, so the answer has to
 // survive there too — the answers file is consumed and deleted by the worker.
 saveAnswer(STATE, ticket, text, stamp);
+
+// An answer to a park answers its ask (ask-ledger.mjs), by the decider when taken, else the person, in
+// the session it came from where one is named. A "not now" puts the ask off, and answers nothing.
+if (parkSince && !heldNow && !putOffAnswer) {
+  for (const l of askAnswered(queueFile(), { key: ticket, since: parkSince, by: taken ? 'decider' : 'person', session: process.env.CLAUDE_CODE_SESSION_ID ?? null, at: stamp }, { by: 'answer.mjs' })) console.error(l);
+}
 
 // A taken call is taken once, as the pass's own take records it (pass.mjs takeRecommended): the same
 // park asked again goes to the person, not to another take.

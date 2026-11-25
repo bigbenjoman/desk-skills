@@ -107,6 +107,7 @@ import { supervisorLabel, launchdDomain, supervisorLoaded, backend, systemctl } 
 import { notify as show } from './notify.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
 import { lastBeat, writeBeat } from './borrow.mjs';
+import { recordAsks } from './ask-ledger.mjs';
 import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, dropHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome, runningBatches, restateKeys, baseSyncLine } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -1065,8 +1066,18 @@ function restampRestate(items, now) {
   return done.length ? [`decider: the hour to restate an unreadable clears-when starts again once one runs: ${done.join(', ')}`] : [];
 }
 
+// The asks among items `items` (each a park with its since: ask-ledger.mjs) as ask steps `steps`, each
+// a function of the item giving that step's fields, written to the batch's ticket ledger. -> its report lines.
+function asksOf(items, q, steps) {
+  const parks = items.filter((i) => i.kind === 'parked' && i.since);
+  const park = (i) => q?.tickets?.[i.ticket]?.park ?? {};
+  return recordAsks(E.queueFile(), parks.flatMap((i) => steps.map((f) => ({ key: i.ticket, since: i.since, ...f(i, park(i)) }))), { by: 'supervisor' });
+}
+const raised = (i, p) => ({ step: 'raised', kind: p.kind, question: p.question ?? i.text });
+
 // Stops a decider past its time and hands its items on; records an ended one's outcome. Returns the
-// lines for the batch report.
+// lines for the batch report. An ask it handed on is raised (handed to the person); one it settled
+// whose park is gone was answered by the decider.
 function reapDecider(state, s, now = new Date()) {
   const rec = s.decider;
   if (!rec) return [];
@@ -1087,8 +1098,14 @@ function reapDecider(state, s, now = new Date()) {
   noteOutcome(state, o, now);
   s.decider = null;
   s.settled = o.settled.map((x) => x.item.id);
+  // A queue that could not be read says nothing of which parks are gone.
+  const gone = (i) => { const t = q.tickets?.[i.ticket]; return !!q.tickets && !(t?.state === 'parked' && t.park?.since === i.since); };
+  const asked = [
+    ...asksOf(o.handed.map((x) => x.item), q, [raised]),
+    ...asksOf(o.settled.map((x) => x.item).filter(gone), q, [() => ({ step: 'answered', by: 'decider', at: now })]),
+  ];
   // A session the usage limit refused saw nothing: its items wait for the next one.
-  return [reportLine(rec, o), ...(o.kept ? [] : restatedNone(rec.items))];
+  return [reportLine(rec, o), ...(o.kept ? [] : restatedNone(rec.items)), ...asked];
 }
 
 // origin's head of the batch base, as the pass fetched it, when the pass lists a base sync line: or null.
@@ -1123,6 +1140,7 @@ function decide(state, s, v, q, now = new Date()) {
   const again = ask.filter((i) => settled.includes(i.id));
   const added = handItems(state, [...hand, ...again.map((item) => ({ item, why: 'the decider settled it, but the next pass still lists it' }))], now);
   if (added.length) lines.push(`decider: handed to the digest without a session: ${added.map((x) => `${x.item.ticket} (${x.why})`).join(', ')}`);
+  lines.push(...asksOf(added.map((x) => x.item), q, [raised]));
   const fresh = freshItems(state, ask.filter((i) => !again.includes(i)));
   // An unreadable clears-when no session will see now (handed on, or handed already and unanswered)
   // is none from here.
@@ -1136,12 +1154,14 @@ function decide(state, s, v, q, now = new Date()) {
   const rules = recoveryRules();
   if (!existsSync(rules)) {
     handItems(state, fresh.map((item) => ({ item, why: `no decider: the recovery rules are missing at ${rules}` })), now);
+    lines.push(...asksOf(fresh, q, [raised]));
     return [...lines, `decider: not started, the recovery rules are missing at ${rules}; ${fresh.map((i) => i.ticket).join(', ')} handed to the digest`, ...restatedNone(fresh)];
   }
   const started = startDecider({ state, slug: E.repoSlug(), bin: HERE, report: v.message, items: fresh, rules: readFileSync(rules, 'utf8'),
     webRead: E.permission('worker-web-read') === 'yes', judgement: E.permission('autopilot-judgement'), targets: runningBatches(HERE, { cwd: process.cwd() }), cwd: process.cwd(), now });
   if (started.wait) return [...lines, `decider: not started, ${started.wait}; ${fresh.map((i) => i.ticket).join(', ')} wait for the next decider`, ...restampRestate(fresh, now)];
   s.decider = started;
+  lines.push(...asksOf(fresh, q, [raised, () => ({ step: 'presented', via: 'decider', ref: started.id })]));
   return [...lines, `decider: started (pid ${s.decider.pid})${s.decider.login ? ` on login ${s.decider.login}` : ''} for ${fresh.map((i) => i.ticket).join(', ')}; its output is ${s.decider.out}`];
 }
 

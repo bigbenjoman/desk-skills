@@ -84,6 +84,7 @@ import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-a
 import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget } from './queue-ledger.mjs';
 import { fold as ledgerFold, append as ledgerAppend } from './ticket-ledger.mjs';
+import { recordAsks } from './ask-ledger.mjs';
 import * as MS from './merge-stages.mjs';
 import * as RM from './review-misses.mjs';
 import * as ST from './stuck-time.mjs';
@@ -3847,6 +3848,8 @@ const SPAWN_HANDLERS = {
   'hand-away': (a, s) => handAway(s.t, a.placement),
   start: () => {},
 };
+// What the ask ledger could not record this pass (ask-ledger.mjs), for the report's end.
+const askLines = [];
 for (const t of spawnable) {
   const [verdict] = runSteps({
     name: 'spawn loop',
@@ -3971,6 +3974,8 @@ for (const t of spawnable) {
   report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (${tryLabel(t.fix)} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
+  // The first worker after a park's requeue acts on its answer (queue.mjs requeue keeps it as prev_park).
+  if (t.prev_park?.since) askLines.push(...recordAsks(QUEUE_FILE, [{ step: 'acted', key: t.key, since: t.prev_park.since, round: t.prev_park.round }], { on: !DRY && ledgerOn(), by: 'pass' }));
 }
 const lockQueueHeldText = lockQueueHeld.length
   ? `${LOCK_QUEUE.line}: holding new workers and resumes into Stage 4 (${lockQueueHeld.join(', ')}), past the ${LOCK_QUEUE.room} this pass had room for`
@@ -5964,6 +5969,17 @@ runPhase({
   handlers: { ...LINE_HANDLERS, push: (a) => push.push(a.push) },
   report,
 });
+// A park pushed now (a production breakage, digest.mjs urgentParks) is an ask presented by push.
+{
+  const lead = `urgent:${SLUG}:`;
+  const steps = push.filter((p) => String(p.key ?? '').startsWith(lead)).flatMap((p) => {
+    const t = qEnd.tickets[p.key.slice(lead.length)];
+    if (!t?.park?.since) return [];
+    return [{ step: 'raised', key: t.key, since: t.park.since, kind: t.park.kind, question: t.park.question },
+      { step: 'presented', key: t.key, since: t.park.since, via: 'push', ref: p.key, notification: p.key }];
+  });
+  askLines.push(...recordAsks(QUEUE_FILE, steps, { on: !DRY && ledgerOn(), by: 'pass' }));
+}
 // A merged fix for a production breakage asks to promote at once, not at the day's last check-in.
 const PROMOTION_REF = promotionRef(E.configValue('promotion-ref')).ref;
 if (!DRY && PROMOTION_REF) {
@@ -5980,7 +5996,9 @@ if (CHECKIN.ok && !DRY) {
   const d = await checkin({ times: CHECKIN.times, self: SLUG, list: digestRepos({ self: { slug: SLUG, batch: E.batchName(), state: STATE, queue: QUEUE_FILE, self: true } }) });
   if (d.status === 'sent') lines.push(`check-in ${d.slot}: ${d.questions} question(s), ${d.decisions} decision(s) — ${d.page}${d.push ? '' : ' (nothing new: no push)'}`);
   if (d.push) push.unshift(d.push);
+  askLines.push(...(d.ledger ?? []));
 }
+lines.push(...askLines);
 push.push(...HEALTH.push, ...claimPush);
 push.push(...(MAINT.push ?? []));
 // The status table, filled in once this pass's last queue write has been made.

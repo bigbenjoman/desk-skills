@@ -28,6 +28,12 @@ that ended. desk-q's repo screen and the levers report show the week's hours per
 affected and the top causes, each with the tracking issue `node stuck-time.mjs link <cause> <issue>`
 set; parked hours per ticket is a lever guardrail.
 
+**Every ask is recorded step by step where the ledger lever is on** (`ask-ledger.mjs`). An ask is a
+park handed to the person or the decider, keyed `<KEY>:<park.since>`. The ticket ledger records it
+raised, presented (by push, the check-in digest or the decider), answered (by the person, with the
+session it came from where one is named, or by the decider) with its latency from the park, and acted
+on by the next worker. Each step is written once, and a write that fails is a line in the report.
+
 **Which model each worker runs on is config §3b "Worker models".** At `default` (also when the row
 is absent) no `--model` is passed and every worker runs on the session default. At
 `standard=<model> high=<model>`, `pass.mjs` picks a tier per ticket at spawn: a lane A or E ticket

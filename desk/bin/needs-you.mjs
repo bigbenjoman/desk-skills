@@ -149,6 +149,7 @@ import { readArchive } from './queue-store.mjs';
 import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
 import { prsNaming } from './recoveries.mjs';
 import { parkWords, plainTerms, GRANT_WORDS } from './park-words.mjs';
+import { askAnswered, ledgerOnIn } from './ask-ledger.mjs';
 
 // The decisions a parked item offers to override, newest first.
 const DECISIONS_SHOWN = 3;
@@ -2225,6 +2226,9 @@ function namedFixturesText(r, ticket, text) {
   ].map((s) => ` ${s}`).join('');
 }
 
+// The actions that answer a park's ask; a not-now puts it off, and a move or drop answers nothing.
+const ASK_ANSWERS = ['answer', 'resume', 'approve', 'reject', 'done', 'requeue'];
+
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
   if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(NOPR) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
@@ -2250,7 +2254,12 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   const w = runner(r);
   const tail = w.by === 'stopped' ? ` Passes are stopped in ${r.name}: nothing acts on it until they resume.` : '';
   let copiedNote = '';
-  const say = (ok, line, message = null) => ({ ok, line: `${r.name} ${ticket}: ${line}${ok ? tail : ''}${copiedNote}`, message });
+  // An action recorded on a park answers its ask (ask-ledger.mjs), by the person, in this session where
+  // one is named: answer.mjs records it too where the action goes through it, and the ledger keeps the first.
+  const asked = (ok) => (ok && ASK_ANSWERS.includes(verb) && x.t.state === 'parked' && x.t.park?.since && !isHeld(x.t)
+    ? askAnswered(r.queuePath, { key: ticket, since: x.t.park.since, by: 'person', session: process.env.CLAUDE_CODE_SESSION_ID ?? null, at: now }, { on: ledgerOnIn(r.slug), by: 'needs-you' }).map((l) => ` ${l}`).join('')
+    : '');
+  const say = (ok, line, message = null) => ({ ok, line: `${r.name} ${ticket}: ${line}${ok ? tail : ''}${copiedNote}${asked(ok)}`, message });
   if (['answer', 'resume', 'reject', 'override'].includes(verb) && !text.trim()) return say(false, `${verb} needs the text to record.`);
   // A file the answer names is copied where the ticket's next worker reads it, before any requeue.
   if (['answer', 'resume'].includes(verb)) copiedNote = namedFixturesText(r, ticket, text);

@@ -100,6 +100,7 @@ function put(name, r) {
     Object.entries(r.rows ?? {}).map(([k, v]) => `| \`${k}\` | ${k} | \`ask\` | \`${v}\` |\n`).join('') + '\n' +
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n` +
     `| Batches run by | \`supervisor\` | \`${r.supervised ? 'supervisor' : 'session'}\` |\n` +
+    (r.levers ? `| Phase 0 levers | \`none\` | \`${r.levers}\` |\n` : '') +
     (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : '') +
     (r.gateReviewers ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Gate reviewers | \`${r.gateReviewers}\` |\n` : '') +
     (r.evidence ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Evidence workflow | \`${r.evidence}\` |\n` : '') +
@@ -4031,6 +4032,27 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-896 AC2 needs-you names the same two, in the same order as desk-q', str.ny, str.deskQ);
   t('DS-896 AC3 queue.mjs watch names the same two, in the same order as desk-q', str.watch, str.deskQ);
   t('DS-896 AC4 blockers kept as the pipe-joined held_by read the same as the list', JSON.stringify(str), JSON.stringify(list));
+}
+
+// ---- an action recorded on a park answers its ask in that repo's ticket ledger, by the person, in the
+// session named where one is; with that repo's ledger lever off, nothing is written.
+{
+  const { fold, ledgerPaths } = await import('../desk/bin/ticket-ledger.mjs');
+  const { readAsks } = await import('../desk/bin/ask-ledger.mjs');
+  const since = minsAgo(90);
+  const repoDir = (name) => join(env.DESK_HOME, 'repos', `acme__${name}`);
+  put('asked', { port: 5910, beat: 1, supervised: true, levers: 'ledger', tickets: { 'K-1': { state: 'parked', lane: 'A', park: { question: 'Which tier?', since } } } });
+  put('unasked', { port: 5920, beat: 1, supervised: true, tickets: { 'U-1': { state: 'parked', lane: 'A', park: { question: 'Which tier?', since } } } });
+  const had = process.env.CLAUDE_CODE_SESSION_ID;
+  process.env.CLAUDE_CODE_SESSION_ID = 'sess-ny';
+  const k = N.record({ word: 'asked', ticket: 'K-1', action: 'resume', text: 'the free tier' });
+  const u = N.record({ word: 'unasked', ticket: 'U-1', action: 'resume', text: 'the free tier' });
+  if (had === undefined) delete process.env.CLAUDE_CODE_SESSION_ID; else process.env.CLAUDE_CODE_SESSION_ID = had;
+  const ask = readAsks(fold(repoDir('asked'))).find((a) => a.key === 'K-1');
+  t('a resume on a park answers its ask, by the person, in the session it came from', `${k.ok} ${ask?.ask} ${ask?.answered?.by} ${ask?.answered?.session}`, `true K-1:${since} person sess-ny`);
+  t('its latency runs from the park', Math.abs(ask?.answered?.latency_s - 90 * 60) < 120, true);
+  t('the line says nothing of the ledger when it was written', `${!!ask?.answered} ${k.line.includes('ask ledger')}`, 'true false');
+  t('a repo whose ledger lever is off gets no ask from it', `${u.ok} ${existsSync(ledgerPaths(repoDir('unasked')).events)} ${!!ask?.answered}`, 'true false true');
 }
 
 // ---- DS-929 AC1: every in-process collect and refresh above ran on injected repos and reads, and started
