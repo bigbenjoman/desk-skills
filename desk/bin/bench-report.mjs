@@ -28,6 +28,7 @@ import { quantile } from './desk-ci.mjs';
 import { GO, OWN_USE, armVendor } from './bench-quota.mjs';
 import { tallyChecks, UNFINISHED } from './bench-checks.mjs';
 import { MODEL_PRICES, modelFamily } from './worker-cost.mjs';
+import { usdAt } from './cache-report.mjs';
 
 const USAGE = 'usage: bench-report.mjs --tasks <file.json> [--out <dir>] [--blind <dir>] [--baseline <file>] [--plans <file>]';
 export const NOT_SCORED = 'not scored';
@@ -142,13 +143,14 @@ const median = (values) => quantile(values, 0.5);
 // Input tokens of all kinds, for one run.
 export const allInput = (t) => ['uncached', 'cacheWrite', 'cacheRead'].reduce((s, k) => s + (Number(t[k]) || 0), 0);
 // A run's tokens as uncached input tokens of the same list price for its model's family: cache writes
-// at the 5-minute rate (the CLI's default cache), cache reads and output at theirs. Null for a model
-// MODEL_PRICES does not price.
+// at the 5-minute rate (the CLI's default cache), cache reads and output at theirs. Its base prices, never
+// a per-request tier: a run's tokens are summed over its requests. Null for a model MODEL_PRICES does
+// not price.
 export function inputEquivalent(t, model) {
   const p = MODEL_PRICES[modelFamily(model)];
   if (!p) return null;
   const n = (k) => Number(t[k]) || 0;
-  return n('uncached') + (n('cacheWrite') * p.write5m + n('cacheRead') * p.read + n('output') * p.output) / p.input;
+  return usdAt(p, { uncached: n('uncached'), w5m: n('cacheWrite'), w1h: 0, read: n('cacheRead'), output: n('output') }).total * 1e6 / p.input;
 }
 // joined.json's scores for one arm. -> { mean, n } | null
 export const meanScore = (list) => (list.length ? { mean: list.reduce((s, x) => s + x.score, 0) / list.length, n: list.length } : null);

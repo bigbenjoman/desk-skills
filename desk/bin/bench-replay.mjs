@@ -29,7 +29,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { USD } from './skill-eval.mjs';
-import { logTokens } from './worker-cost.mjs';
+import { logTokens, WORKER_LOG } from './worker-cost.mjs';
 import { readLogFile } from './harvest.mjs';
 import { armOrder, armEnv, spendGuard } from './bench.mjs';
 import { quantile } from './desk-ci.mjs';
@@ -276,7 +276,7 @@ function recordsIn(dir, since) {
 export function loggedPreflights(state, since) {
   const dir = join(state, 'logs');
   let names = [];
-  try { names = readdirSync(dir).filter((n) => /\.log(\.round\d+(\.gz)?)?$/.test(n)); } catch { return 0; }
+  try { names = readdirSync(dir).filter((n) => WORKER_LOG.test(n)); } catch { return 0; }
   let n = 0;
   for (const name of names) {
     let text = '';

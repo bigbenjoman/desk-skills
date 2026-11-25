@@ -536,11 +536,12 @@ logs of the last `--days` (default 14), it prints the sessions, the bytes they r
 and the mean remaining-turn fraction of those reads: a Read at turn i of n rides the n - 1 - i turns
 after it, where a pack loaded at turn 0 rides them all. The byte-weighted mean is the share of the
 read bytes that rides the rest of the session. A session is one spawn, from `spawn-worker.sh`'s
-`desk_spawn` event to the next, and only the main thread's Reads count. `--files <stage>` lists that
-stage's skill files instead:
+`desk_spawn` event to the next, and only the main thread's Reads count. It reads every batch's logs
+(the standing batch, named and archived ones) unless `--logs` names the folders. `--files <stage>`
+lists that stage's skill files instead:
 
 ```
-node ~/.claude/desk/bin/skill-ride.mjs [--days 14] [--logs <dir>] [--skills <dir>]… [--files <stage>]
+node ~/.claude/desk/bin/skill-ride.mjs [--days 14] [--logs <dir>]… [--skills <dir>]… [--files <stage>]
 ```
 
 **`bench-arm2.mjs`** runs arm 2, a shadow Codex review seat against the current Opus finder seat, on

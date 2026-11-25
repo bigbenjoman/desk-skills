@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { logSessions, stageRows, stageFiles, collect, rideOf, UNKNOWN } from '../desk/bin/skill-ride.mjs';
+import { logSessions, stageRows, stageFiles, collect, rideOf, parseArgs, UNKNOWN } from '../desk/bin/skill-ride.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -87,6 +87,16 @@ t('AC1 a 7 row from the gzipped round', run.stdout.includes('| 7 | 1 | 1 | 1 | 2
 t('AC1 no row for the session before the window', /\| 0 \|/.test(run.stdout), false);
 const listed = spawnSync(process.execPath, [SCRIPT, '--logs', logs, '--skills', skills, '--files', '4b'], { encoding: 'utf8' });
 t('--files lists one stage\'s files', listed.stdout.includes(`| ${b} | 1 | 1 | 2.9 KiB |`), true);
+// AC1 covers every batch's logs: by default the standing, named and archived batches' folders, each
+// named in the header; a batch with no logs folder yet adds nothing.
+t('the default logs are every batch\'s', parseArgs(['--skills', skills], () => ['/s/logs', '/s/batches/E-1/logs']).logs.join(' '), '/s/logs /s/batches/E-1/logs');
+const named = join(dir, 'batches', 'E-1', 'logs');
+mkdirSync(named, { recursive: true });
+writeFileSync(join(named, 'DS-5.log'), lines(spawn('7'), turn([['n1', a]]), result('n1', 'n'.repeat(2048)), turn()));
+const both = spawnSync(process.execPath, [SCRIPT, '--logs', logs, '--logs', named, '--logs', join(dir, 'none'), '--skills', skills], { encoding: 'utf8' });
+t('AC1 several logs folders run', both.status, 0);
+t('AC1 a named batch\'s session counts with the standing one\'s', both.stdout.includes('| 7 | 2 | 2 | 2 | 4.0 KiB | 2.0 KiB | 50.0% | 50.0% |'), true);
+t('the header names every folder read', both.stdout.includes(`${logs}, ${named}`), true);
 t('a bad --days is refused', spawnSync(process.execPath, [SCRIPT, '--days', '0'], { encoding: 'utf8' }).status, 2);
 
 if (fails) { console.log(`FAIL ${fails} check(s) failed`); process.exit(1); }

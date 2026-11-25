@@ -11,19 +11,23 @@
 // session with no desk_spawn before it is stage `unknown`. A session counts when its spawn is no older
 // than --days, or for `unknown`, when its log was last written then. Skill files are those under
 // each --skills directory (default: the installed skills, desk-env's skillsDir, and ~/.claude/skills).
-// --files <stage> lists that stage's skill files instead: how many of its sessions read each, and the
-// bytes.
+// The logs read are every --logs directory, by default every batch's of the repo (the standing batch,
+// named and archived ones). --files <stage> lists that stage's skill files instead: how many of its
+// sessions read each, and the bytes.
 import { readdirSync, statSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readLogFile } from './harvest.mjs';
-import { HOME, repoStateOf, skillsDir, stateDir } from './desk-env.mjs';
+import { HOME, repoSlug, skillsDir } from './desk-env.mjs';
+import { allBatches } from './batches.mjs';
+import { resultsIn } from './log-tool-calls.mjs';
+import { WORKER_LOG } from './worker-cost.mjs';
 
-const USAGE = 'usage: skill-ride.mjs [--days 14] [--logs <dir>] [--skills <dir>]… [--files <stage>]';
+const USAGE = 'usage: skill-ride.mjs [--days 14] [--logs <dir>]… [--skills <dir>]… [--files <stage>]';
 export const UNKNOWN = 'unknown';
 
-export function parseArgs(argv) {
-  const o = { days: 14, logs: null, skills: [], files: null };
+export function parseArgs(argv, batchLogs = () => allBatches(repoSlug()).map((b) => join(b.state, 'logs'))) {
+  const o = { days: 14, logs: [], skills: [], files: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (!['--days', '--logs', '--skills', '--files'].includes(a)) throw new Error(`unknown argument ${a}\n${USAGE}`);
@@ -32,16 +36,13 @@ export function parseArgs(argv) {
     if (a === '--days') {
       if (!/^\d+$/.test(v) || !(Number(v) > 0)) throw new Error(`--days must be a positive whole number, not ${v}`);
       o.days = Number(v);
-    } else if (a === '--skills') o.skills.push(v);
-    else o[a.slice(2)] = v;
+    } else if (a === '--skills' || a === '--logs') o[a.slice(2)].push(v);
+    else o.files = v;
   }
   if (!o.skills.length) o.skills = [skillsDir(), join(HOME, '.claude', 'skills')];
-  o.logs ??= join(repoStateOf(stateDir()), 'logs');
+  if (!o.logs.length) o.logs = batchLogs();
   return o;
 }
-
-const textOf = (content) => (typeof content === 'string' ? content
-  : Array.isArray(content) ? content.filter((c) => c?.type === 'text').map((c) => c.text ?? '').join('\n') : '');
 
 // One log's sessions. -> [{ stage, at, turns, reads: [{ file, turn, bytes }] }], each read a Read of a
 // file under one of `roots` that came back with a result.
@@ -65,12 +66,12 @@ export function logSessions(text, roots) {
       for (const c of d.message?.content ?? []) {
         if (c?.type === 'tool_use' && c.name === 'Read' && under(c.input?.file_path)) s.calls.set(c.id, { file: c.input.file_path, turn: s.turns - 1 });
       }
-    } else if (d?.type === 'user' && s) {
-      for (const c of Array.isArray(d.message?.content) ? d.message.content : []) {
-        const call = c?.type === 'tool_result' ? s.calls.get(c.tool_use_id) : null;
+    } else if (s) {
+      for (const { id, text } of resultsIn(d)) {
+        const call = s.calls.get(id);
         if (!call) continue;
-        s.calls.delete(c.tool_use_id);
-        s.reads.push({ ...call, bytes: Buffer.byteLength(textOf(c.content)) });
+        s.calls.delete(id);
+        s.reads.push({ ...call, bytes: Buffer.byteLength(text) });
       }
     }
   }
@@ -117,11 +118,14 @@ export function stageFiles(sessions, stage) {
   return { sessions: of.length, files: [...by.values()].map((f) => ({ ...f, sessions: f.sessions.size })).sort((a, b) => b.bytes - a.bytes) };
 }
 
-// Every session in `dir`'s worker logs that falls inside the window.
+// Every session in `dir`'s worker logs that falls inside the window; none for a batch with no logs
+// folder yet.
 export function collect(dir, roots, since) {
   const out = [];
-  for (const name of readdirSync(dir)) {
-    if (!/\.log(\.round\d+(\.gz)?)?$/.test(name)) continue;
+  let names;
+  try { names = readdirSync(dir); } catch (e) { if (e.code === 'ENOENT') return out; throw e; }
+  for (const name of names) {
+    if (!WORKER_LOG.test(name)) continue;
     const file = join(dir, name);
     let mtime;
     try { mtime = statSync(file).mtimeMs; } catch { continue; }
@@ -139,7 +143,7 @@ const kb = (b) => `${(b / 1024).toFixed(1)} KiB`;
 
 export function render(rows, { days, logs }) {
   const head = ['start stage', 'sessions', 'sessions reading', 'skill Reads', 'bytes read', 'per session', 'mean remaining-turn fraction', 'byte-weighted'];
-  const lines = [`SKILL READS BY START STAGE — worker logs in ${logs}, sessions spawned in the last ${days} day(s); main-thread Reads only`,
+  const lines = [`SKILL READS BY START STAGE — worker logs in ${[logs].flat().join(', ')}, sessions spawned in the last ${days} day(s); main-thread Reads only`,
     `| ${head.join(' | ')} |`, `|${head.map(() => '---|').join('')}`];
   for (const r of rows) lines.push(`| ${r.stage} | ${r.sessions} | ${r.reading} | ${r.reads} | ${kb(r.bytes)} | ${kb(r.bytes / r.sessions)} | ${pct(r.meanRide)} | ${pct(r.byteRide)} |`);
   return lines.join('\n');
@@ -159,7 +163,8 @@ const isMain = (() => {
 if (isMain) {
   try {
     const o = parseArgs(process.argv.slice(2));
-    const sessions = collect(o.logs, o.skills, Date.now() - o.days * 86400000);
+    const since = Date.now() - o.days * 86400000;
+    const sessions = o.logs.flatMap((dir) => collect(dir, o.skills, since));
     console.log(o.files ? renderFiles(stageFiles(sessions, o.files), o.files) : render(stageRows(sessions), o));
   } catch (e) {
     console.error(e.message);
