@@ -679,6 +679,12 @@ t('issue-1425 AC2 a name\'s own Costs say the same for its sources', Q.run(['cos
   [Q.NO_COST_READABLE, '', GH_NOTE, VC_NOTE].join('\n'));
 const json1425 = JSON.parse(Q.run(['--json', 'costs'], { now: FIXED, costWith: noRead }));
 t('issue-1425 AC2 --json carries the same lines', `${json1425.charges} | ${json1425.lines.head.join('\n')}`, `null | ${[Q.NO_COST_READABLE, '', GH_NOTE, VC_NOTE].join('\n')}`);
+// A Vercel team just added, with no record yet beside the one that can't be read: still to come.
+const costs1425 = readFileSync(process.env.DESK_COSTS, 'utf8');
+writeFileSync(process.env.DESK_COSTS, costs1425.replace('`site` |\n', '`site` |\n| `newco` | `none` | `team_new` | `newco` | `pro` | `no` | `web` |\n'));
+const new1425 = Q.run(['costs'], { now: FIXED, costWith: noRead }).split('\n');
+t('issue-1425 AC3 a source with no record yet keeps the reading pending, though its supplier was read', `${new1425[0]} | ${new1425.includes(VC_NOTE)}`, `${Q.NO_COST_READING} | true`);
+writeFileSync(process.env.DESK_COSTS, costs1425);
 // GitHub read, Vercel not yet: a reading is still to come, and the account that can't be read still says why.
 write1425({ github: github1425 });
 const some1425 = Q.run(['costs'], { now: FIXED, costWith: noRead }).split('\n');
@@ -691,6 +697,13 @@ const fig1425 = Q.run(['costs'], { now: FIXED, costWith: noRead }).split('\n');
 t('issue-1425 AC2 beside figures, each name the unreadable account bills gets a note saying why and the fix', fig1425.filter((l) => l.includes('◌ sophos')).join('\n'), [
   "note  ◌ sophos       Its GitHub bill can't be read: billing not readable from the signed-in account. Sign in to Sophos-Education with desk-env logins.",
   "      ◌ sophos-api   Its GitHub bill can't be read: billing not readable from the signed-in account. Sign in to Sophos-Education with desk-env logins."].join('\n'));
+const text1425 = (ls) => ls.map((l) => (typeof l === 'string' ? l : l.line)).join('\n');
+const page1425 = Q.supplierPageParts([], 'sophos', 'github', { now: FIXED });
+t('issue-1425 AC2 the GitHub page of a name with figures elsewhere says why and the fix', text1425(page1425.foot),
+  ['', "note  ◌ GitHub       Its bill can't be read: billing not readable from the signed-in account. Sign in to Sophos-Education with desk-env logins."].join('\n'));
+write1425({ github: github1425, vercel: vercel1425 });
+t('issue-1425 AC3 a supplier page with every source unreadable says so at the top', text1425(Q.supplierPageParts([], 'sophos', 'vercel', { now: FIXED }).head.slice(0, 3)),
+  [Q.NO_COST_READABLE, '', '      ◌ Vercel sophos-education  No billing access (HTTP 404). Use a login with billing access to sophos-education.'.replace(/^ {6}/, 'note  ')].join('\n'));
 process.env.DESK_COSTS = env.DESK_COSTS;
 process.env.DESK_COST_DIR = MAIN;
 

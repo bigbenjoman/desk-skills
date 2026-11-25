@@ -766,47 +766,61 @@ export function actionsCharged({ cache, costs, period }) {
 }
 
 // Each supplier's sources in costs.md.
-export const sourcesOf = (costs) => ({
+const sourcesOf = (costs) => ({
   github: costs.entries.filter((e) => e.supplier === 'github'),
   vercel: costs.entries.filter((e) => e.supplier === 'vercel' && e.teamId),
   aws: costs.entries.filter((e) => e.supplier === 'aws'),
   neon: costs.entries.filter((e) => e.supplier === 'neon' && e.orgId),
 });
 
-// Each source the cache has no figure for because it could not be read, and why: a GitHub account gh
-// is not signed in to (one per account), else a source whose last call failed with no good figures
-// kept. `fix` is what would let desk read it, where desk knows; `names` the cost names it bills.
+// Why one source has no figure because it could not be read, or null: a GitHub account gh is not
+// signed in to, else a last call that failed with no good figures kept. `fix` is what would let desk
+// read it, where desk knows.
+//   -> { label, why, fix | null } | null
+const UNREAD = {
+  github: (s, cache) => {
+    const g = cache?.github, e = g?.repos?.[s.key];
+    if (e?.cantRead) return { label: e.cantRead.account, why: `billing not readable from ${g.login ?? 'the signed-in account'}`, fix: `sign in to ${e.cantRead.account} with desk-env logins` };
+    return e?.failed && e.total == null ? { label: s.key, why: e.failed.why, fix: null } : null;
+  },
+  vercel: (s, cache) => {
+    const t = cache?.vercel?.teams?.[s.teamId];
+    if (!t?.failed || t.lines) return null;
+    const team = t.team ?? s.team;
+    return /^HTTP 404\b/.test(t.failed.why) ? { label: team, why: 'no billing access (HTTP 404)', fix: `use a login with billing access to ${team}` } : { label: team, why: t.failed.why, fix: null };
+  },
+  aws: (s, cache) => {
+    const p = cache?.aws?.profiles?.[s.key];
+    return p?.failed && !p.lines ? { label: s.key, why: p.failed.why, fix: null } : null;
+  },
+  neon: (s, cache) => {
+    const o = cache?.neon?.orgs?.[s.orgId];
+    return o?.failed && !o.usage ? { label: s.key.split('/')[0], why: o.failed.why, fix: null } : null;
+  },
+};
+const eachSource = (costs) => Object.entries(sourcesOf(costs)).flatMap(([supplier, list]) => list.map((s) => [supplier, s]));
+
+// Each source the cache has no figure for because it could not be read, and why (UNREAD), one per
+// GitHub account, Vercel team, AWS profile or Neon org; `names` the cost names it bills.
 //   -> [{ supplier, label, why, fix | null, names }]
 export function unreadSources({ cache, costs }) {
   if (!costs?.exists) return [];
-  const src = sourcesOf(costs);
   const out = [];
-  const add = (supplier, label, why, fix, name) => {
-    const had = out.find((u) => u.supplier === supplier && u.label === label);
-    if (had) { if (!had.names.includes(name)) had.names.push(name); return; }
-    out.push({ supplier, label, why, fix, names: [name] });
-  };
-  const g = cache?.github;
-  for (const s of src.github) {
-    const e = g?.repos?.[s.key];
-    if (e?.cantRead) add('github', e.cantRead.account, `billing not readable from ${g.login ?? 'the signed-in account'}`, `sign in to ${e.cantRead.account} with desk-env logins`, s.name);
-    else if (e?.failed && e.total == null) add('github', s.key, e.failed.why, null, s.name);
-  }
-  for (const s of src.vercel) {
-    const t = cache?.vercel?.teams?.[s.teamId];
-    if (!t?.failed || t.lines) continue;
-    const hidden = /^HTTP 404\b/.test(t.failed.why);
-    add('vercel', t.team ?? s.team, hidden ? 'no billing access (HTTP 404)' : t.failed.why, hidden ? `use a login with billing access to ${t.team ?? s.team}` : null, s.name);
-  }
-  for (const s of src.aws) {
-    const p = cache?.aws?.profiles?.[s.key];
-    if (p?.failed && !p.lines) add('aws', s.key, p.failed.why, null, s.name);
-  }
-  for (const s of src.neon) {
-    const o = cache?.neon?.orgs?.[s.orgId];
-    if (o?.failed && !o.usage) add('neon', s.key.split('/')[0], o.failed.why, null, s.name);
+  for (const [supplier, s] of eachSource(costs)) {
+    const u = UNREAD[supplier](s, cache);
+    if (!u) continue;
+    const had = out.find((x) => x.supplier === supplier && x.label === u.label);
+    if (had) { if (!had.names.includes(s.name)) had.names.push(s.name); }
+    else out.push({ supplier, ...u, names: [s.name] });
   }
   return out;
+}
+
+// Whether every source in costs.md has been tried and could not be read, so no reading is pending.
+// A source with no record yet (just added, or its supplier not read) is still to come.
+export function allUnread({ cache, costs }) {
+  const all = costs?.exists ? eachSource(costs) : [];
+  return all.length > 0 && all.every(([supplier, s]) => UNREAD[supplier](s, cache) != null);
 }
 
 // GitHub and Vercel are due with no reading, failed or not, in the last READ_EVERY_MS. AWS is due

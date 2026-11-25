@@ -73,7 +73,7 @@ import { codexLogins } from './codex-usage.mjs';
 import { claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogin, defaultOf, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, migrateLogins,
   multiAccount, needsPinMigration, nextLoginFolder, readSubscriptions, repoSubscription, signInParts, toolDefault } from './logins.mjs';
 import { limitName, limitWord } from './usage-limit.mjs';
-import { startRefresh, readCache, chargesByName, forCosts, unreadSources, sourcesOf, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
+import { startRefresh, readCache, chargesByName, forCosts, unreadSources, allUnread, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 import { itemKey, leaseTrialAsk, leaseTrialHome, needsCount } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
@@ -1659,18 +1659,18 @@ const whyFix = (u, lead = '') => `${lead ? `${lead}${u.why}` : capital(u.why)}${
 // With no figure, a ◌ note per source that could not be read, named by its account or team.
 const unreadNotes = (unread) => unread.map((u) => ({ tag: `◌ ${SUPPLIER_LABEL[u.supplier]} ${u.label}`, sgr: GREY, text: [[whyFix(u), null]] }));
 // Beside figures, one per name it bills, tagged as a figure not read today is, so the notes keep their
-// column; on one name's screen (`supplier`), tagged by supplier.
-const unreadNameNotes = (unread, { supplier = false } = {}) => unread.flatMap((u) => (supplier ? [null] : u.names).map((name) => ({
-  tag: `◌ ${name ?? SUPPLIER_LABEL[u.supplier]}`, sgr: GREY, text: [[whyFix(u, `Its ${name ? `${SUPPLIER_LABEL[u.supplier]} ` : ''}bill can't be read: `), null]] })));
+// column; on one name's screen (`supplier`), tagged by supplier. A name whose row already says why
+// (`said(name, supplier)`, its can't-read tag) gets a note only where desk knows the fix.
+const unreadNameNotes = (unread, { supplier = false, said = () => false } = {}) => unread.flatMap((u) => (supplier ? [null] : u.names)
+  .filter((name) => u.fix || !said(name, u.supplier)).map((name) => ({
+    tag: `◌ ${name ?? SUPPLIER_LABEL[u.supplier]}`, sgr: GREY, text: [[whyFix(u, `Its ${name ? `${SUPPLIER_LABEL[u.supplier]} ` : ''}bill can't be read: `), null]] })));
 // The tag column noteLines pads to (plus one), so the longest tag keeps a gap before its text.
 const noteWidth = (notes) => Math.max(14, ...notes.map((n) => (n.tag ?? '').length + 1));
-// With no figure yet: whether every supplier with sources has been read, so nothing is still pending.
-const allTried = (costs, cache) => Object.entries(sourcesOf(costs)).every(([s, list]) => !list.length || cache?.[s]);
-// The head when no figure can be shown: every source unreadable, else a reading still to come; then
-// a note per source that could not be read.
+// The head when no figure can be shown: every source tried and unreadable, else a reading still to
+// come; then a note per source that could not be read.
 function noFigureHead(unread, costs, cache, width) {
   const notes = unreadNotes(unread);
-  return [unread.length && allTried(costs, cache) ? NO_COST_READABLE : NO_COST_READING, ...(notes.length ? ['', ...noteLines(notes, noteWidth(notes), width)] : [])];
+  return [allUnread({ cache, costs }) ? NO_COST_READABLE : NO_COST_READING, ...(notes.length ? ['', ...noteLines(notes, noteWidth(notes), width)] : [])];
 }
 const usd = (n) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 // "October, 1–26" while the month runs, "September" once it is read in full.
@@ -1777,7 +1777,7 @@ function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), c
     ...stale.map((r) => ({ tag: `◌ ${r.name}`, sgr: GREY, text: [[r.failedToday
       ? `Its ${SUPPLIER_LABEL[r.supplier]} bill couldn't be read today, so this shows the ${dayMonth(r.at)} figure. desk-q tries again every hour.`
       : `Its ${SUPPLIER_LABEL[r.supplier]} bill hasn't been read yet today, so this shows the ${dayMonth(r.at)} figure.`, null]] })),
-    ...unreadNameNotes(unread),
+    ...unreadNameNotes(unread, { said: (name, s) => c.names.some((x) => x.name === name && x.cantRead?.supplier === s) }),
   ];
   return { head: [charged, '', bold(`  ${pad('REPO', nw)}${rpad('CHARGED', aw)}`)], rows,
     foot: [segLine([[`  ${pad('total', nw)}`, GREY], [rpad(usd(c.total), aw), BOLD], ...includes]), ...(notes.length ? ['', ...noteLines(notes, Math.max(nw, noteWidth(notes)), width)] : []), ...foot] };
@@ -1845,7 +1845,7 @@ function supplierParts(repos, name, { now = Date.now(), costs = readCosts(costsP
   // The budget note on a name GitHub bills; it is the account's budget, not the name's.
   const notes = [...(mine.some((e) => e.supplier === 'github') ? budgetNotes(costs, fc, c.period) : []),
     ...(x.credits > 0 ? [warnNote('▲ credits', `AWS credits covered ${usd(x.credits)}. Without them, ${name} would have been charged ${
-      usd((Math.round((x.total ?? 0) * 100) + Math.round(x.credits * 100)) / 100)}.`)] : []), ...unreadNameNotes(unread, { supplier: true })];
+      usd((Math.round((x.total ?? 0) * 100) + Math.round(x.credits * 100)) / 100)}.`)] : []), ...unreadNameNotes(unread, { supplier: true, said: (_, s) => x.cantRead?.supplier === s })];
   return { head: [charged, '', bold(`  ${pad('SUPPLIER', SUPPLIER_W)}${pad('FOR', FOR_W)}${rpad('CHARGED', aw)}`)], rows,
     foot: [segLine([[`  ${pad('total', SUPPLIER_W + FOR_W)}`, GREY], [rpad(money(x.total), aw), BOLD]]), ...(notes.length ? ['', ...noteLines(notes, 14, width)] : []), ...foot] };
 }
@@ -1981,7 +1981,8 @@ export function supplierPageParts(repos, name, supplier, { now = Date.now(), cos
   // The cache as costs.md has it now, as on the repo screen, so both count the same profiles.
   const cache = forCosts(raw, costs);
   const c = chargesByName({ cache, names: [name] });
-  if (!c) return { head: [NO_COST_READING], rows: [], foot: [], bill };
+  const unread = unreadSources({ cache, costs }).filter((u) => u.supplier === supplier && u.names.includes(name));
+  if (!c) return { head: noFigureHead(unread, { ...costs, entries: mine }, cache, width), rows: [], foot: [], bill };
   const x = c.names.find((n) => n.name === name);
   const total = x.by[supplier] ?? null;
   const where = supplier === 'vercel' ? [...new Set(mine.map((e) => e.team).filter(Boolean))].map((t) => `team ${t}`)
@@ -1992,8 +1993,9 @@ export function supplierPageParts(repos, name, supplier, { now = Date.now(), cos
   const awsLines = supplier === 'aws' && total != null ? awsLinesOf(cache, name, c.period) : [];
   const aws = awsLines.length ? awsParts(awsLines, mine) : null;
   const body = total == null ? [] : supplier === 'github' ? githubParts(cache, name, c.period, total) : supplier === 'vercel' ? vercelParts(cache, name) : aws?.lines ?? [];
-  const notes = supplier === 'github' ? budgetNotes(costs, cache, c.period)
-    : supplier === 'vercel' && body.length ? [{ tag: 'builds', sgr: GREY, text: [[VERCEL_BUILDS_NOTE, null]] }] : aws?.notes ?? [];
+  const notes = [...(supplier === 'github' ? budgetNotes(costs, cache, c.period)
+    : supplier === 'vercel' && body.length ? [{ tag: 'builds', sgr: GREY, text: [[VERCEL_BUILDS_NOTE, null]] }] : aws?.notes ?? []),
+  ...unreadNameNotes(unread, { supplier: true, said: (_, s) => x.cantRead?.supplier === s })];
   return { head: [charged, ...body], rows: [], foot: notes.length ? ['', ...noteLines(notes, 14, width)] : [], bill };
 }
 
@@ -5143,7 +5145,7 @@ export function interactive({
     // One at a time: the probe's start lock refuses a second caller in the same moment.
     const due = probesDue(repos, { now });
     (async () => { for (const p of due) await probeWith({ now, ...p, done: () => { if (!done) draw(); } }).catch(() => {}); })();
-    try { costWith({ now }); } catch { /* the next check tries again */ }
+    costCheck(costWith, now);
   }, probeMs);
   // Opened on Costs, the check runs at once rather than at the timer's first tick.
   if (start?.kind === 'costs') costCheck(costWith, clock());
