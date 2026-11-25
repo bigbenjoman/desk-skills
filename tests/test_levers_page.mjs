@@ -548,7 +548,7 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
 }
 
 // Every lever has its one-line description, question handling's too.
-t('WHAT: question handling says what it does', /<tr data-lever="question-handling">.*?Handles worker questions without parking the ticket/.test(section(hSix, 'lev-h')), true);
+t('WHAT: question handling says what it does', /<tr data-lever="question-handling">.*?Decides whether a parked ticket’s question is pushed to you at once or waits for the digest/.test(section(hSix, 'lev-h')), true);
 
 console.log(fails ? `${fails} check(s) failed` : 'all checks passed');
 process.exit(fails ? 1 : 0);

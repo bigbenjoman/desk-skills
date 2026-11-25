@@ -64,7 +64,7 @@ const WHAT = Object.freeze({
   codex: 'Has Codex review pull requests instead of Claude',
   effort: 'Uses less thinking on simple steps',
   'finder-model': 'Runs the review’s Claude finders on a cheaper model',
-  'question-handling': 'Handles worker questions without parking the ticket',
+  'question-handling': 'Decides whether a parked ticket’s question is pushed to you at once or waits for the digest',
   ledger: 'Records every queue change in a ticket log beside queue.json',
 });
 
