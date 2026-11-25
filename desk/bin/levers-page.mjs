@@ -346,15 +346,32 @@ function trends(v) {
   return `<section aria-labelledby="tr-h" class="stack12">${head}${notes(p)}${body}</section>`;
 }
 
+// A data section in the house style of "Is each lever working?": a card with its heading and a muted
+// intro line, then one table, each group (a repo, or a repo's week or lever) a header row over its rows.
+// `cols` are { label, num }, a numeric column right-aligned with tabular figures; each row is its cells
+// as HTML, the first its row header; a group's `note` is a muted line under its rows.
+function dataSection({ id, title, intro, cols, groups }) {
+  const cls = (c, base) => `${base}${c.num ? ' n' : ''}`;
+  const head = `<tr>${cols.map((c) => `<th scope="col" class="${cls(c, 'th')}">${esc(c.label)}</th>`).join('')}</tr>`;
+  const body = groups.map((g) => `<tr class="grp"${g.attrs ?? ''}><th scope="colgroup" colspan="${cols.length}" class="td grp">${esc(g.head)}</th></tr>`
+    + g.rows.map((r) => `<tr>${r.map((v, i) => (i === 0 ? `<th scope="row" class="td">${v}</th>` : `<td class="${cls(cols[i], 'td')}">${v}</td>`)).join('')}</tr>`).join('')
+    + (g.note ? `<tr><td colspan="${cols.length}" class="td muted small">${esc(g.note)}</td></tr>` : '')).join('');
+  return `<section aria-labelledby="${id}" class="card levers"><div class="levers-head"><div class="stack4"><h2 id="${id}">${esc(title)}</h2><p class="muted small">${esc(intro)}</p></div></div>`
+    + `<div class="scroll"><table class="levtable data"><thead>${head}</thead><tbody>${body}</tbody></table></div></section>`;
+}
+
 // The outside reviewer's re-reviews per PR and undraft-to-approval time, before and after the learned
-// review bar began (review-misses.mjs beforeAfter). Nothing until a check has been learned.
-function learned(r) {
-  const l = r.learned;
-  if (!l) return '';
-  const row = (name, s) => `<tr><th scope="row">${name}</th><td>${s.prs}</td><td>${s.rereviews ?? '—'}</td><td>${esc(MS.fmt(s.approval))}</td></tr>`;
-  return `<table class="stages"><caption>${esc(r.name)} · learned review bar since ${esc(String(l.since).slice(0, 10))}</caption>`
-    + '<thead><tr><th scope="col">Learned bar</th><th scope="col">PRs</th><th scope="col">External re-reviews per PR</th><th scope="col">Undraft to approval (median)</th></tr></thead><tbody>'
-    + `${row('Before', l.before)}${row('After', l.after)}</tbody></table>`;
+// review bar began (review-misses.mjs beforeAfter), for each repo with one. Nothing until a check has
+// been learned.
+function learned(v) {
+  const repos = (v.panels.merge_stages?.repos ?? []).filter((r) => r.learned);
+  if (!repos.length) return '';
+  const row = (name, s) => [name, String(s.prs), s.rereviews == null ? DASH : esc(String(s.rereviews)), esc(MS.fmt(s.approval))];
+  return dataSection({
+    id: 'lr-h', title: 'Learned review bar', intro: 'The outside reviewer’s re-reviews per PR and the time from undraft to approval, before and after desk learned its review bar.',
+    cols: [{ label: 'Learned bar' }, { label: 'PRs', num: true }, { label: 'External re-reviews per PR', num: true }, { label: 'Undraft to approval (median)', num: true }],
+    groups: repos.map((r) => ({ head: `${r.name} · learned review bar since ${String(r.learned.since).slice(0, 10)}`, rows: [row('Before', r.learned.before), row('After', r.learned.after)] })),
+  });
 }
 
 // Each repo's merged PR time by stage (merge-stages.mjs): median and p75 per stage, and how many
@@ -362,44 +379,58 @@ function learned(r) {
 function mergeStages(v) {
   const repos = v.panels.merge_stages?.repos ?? [];
   if (!repos.length) return '';
-  const table = (r) => `<table class="stages"><caption>${esc(r.name)} · ${r.prs} merged PR${r.prs === 1 ? '' : 's'}</caption>`
-    + '<thead><tr><th scope="col">Stage</th><th scope="col">Median</th><th scope="col">p75</th><th scope="col">PRs</th></tr></thead><tbody>'
-    + MS.STAGES.filter((k) => r.stages?.[k]?.n).map((k) => `<tr><th scope="row">${esc(MS.STAGE_NAMES[k])}</th><td>${esc(MS.fmt(r.stages[k].median))}</td><td>${esc(MS.fmt(r.stages[k].p75))}</td><td>${r.stages[k].n}</td></tr>`).join('')
-    + `</tbody></table>${r.outage ? `<p class="muted small">${r.outage} external review wait${r.outage === 1 ? '' : 's'} inside a gate reviewer outage left out of the medians.</p>` : ''}${learned(r)}`;
-  return `<section aria-labelledby="ms-h" class="stack12"><div class="sec-head"><h2 id="ms-h">Merge time by stage</h2></div>${repos.map(table).join('')}</section>`;
+  return dataSection({
+    id: 'ms-h', title: 'Merge time by stage', intro: 'How long each stage of a merged PR took: the median, and the time 3 in 4 PRs came in under.',
+    cols: [{ label: 'Stage' }, { label: 'Median', num: true }, { label: 'p75', num: true }, { label: 'PRs', num: true }],
+    groups: repos.map((r) => ({
+      head: `${r.name} · ${r.prs} merged PR${r.prs === 1 ? '' : 's'}`,
+      rows: MS.STAGES.filter((k) => r.stages?.[k]?.n).map((k) => [esc(MS.STAGE_NAMES[k]), esc(MS.fmt(r.stages[k].median)), esc(MS.fmt(r.stages[k].p75)), String(r.stages[k].n)]),
+      note: r.outage ? `${r.outage} external review wait${r.outage === 1 ? '' : 's'} inside a gate reviewer outage left out of the medians.` : null,
+    })),
+  }) + learned(v);
 }
 
 // Each repo's asks by arm of a lever weighed on them (question handling, levers-evaluate.mjs): per
 // asking ticket, the dollars and tokens of each step, the pushes and digests, the share answered by
 // default and the median time to an answer. Nothing until an evaluation has asking tickets.
-const usd = (x) => (x == null ? '—' : `$${x.toFixed(2)}`);
-const share = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
-const latency = (s) => (s == null ? '—' : s >= 3600 ? `${(s / 3600).toFixed(1)}h` : `${Math.round(s / 60)}m`);
-const tokens = (x) => (x == null ? '—' : Math.round(x).toLocaleString('en-US'));
+const usd = (x) => (x == null ? DASH : `$${x.toFixed(2)}`);
+const share = (x) => (x == null ? DASH : `${Math.round(x * 100)}%`);
+const latency = (s) => (s == null ? DASH : s >= 3600 ? `${(s / 3600).toFixed(1)}h` : `${Math.round(s / 60)}m`);
+const tokens = (x) => (x == null ? DASH : Math.round(x).toLocaleString('en-US'));
 function asksByArm(v) {
   const repos = v.panels.asks?.repos ?? [];
   if (!repos.length) return '';
-  const table = (r) => { const steps = Object.keys(Object.values(r.arms)[0]?.steps ?? {}); return `<table class="stages asks" data-lever="${esc(r.lever)}"><caption>${esc(r.name)} · ${esc(r.lever)} · asking tickets by arm, as of ${esc(String(r.at).slice(0, 10))}</caption>`
-    + `<thead><tr><th scope="col">Arm</th><th scope="col">Tickets</th>${steps.map((k) => `<th scope="col">${cap(k)} $ (tokens)</th>`).join('')}<th scope="col">Pushes</th><th scope="col">Digests</th><th scope="col">Defaulted</th><th scope="col">Median to answer</th></tr></thead><tbody>`
-    + Object.entries(r.arms).map(([arm, a]) => `<tr><th scope="row">${esc(arm)}</th><td>${a.tickets}</td>${steps.map((k) => `<td>${usd(a.steps?.[k]?.usd_per_ticket)} (${tokens(a.steps?.[k]?.tokens_per_ticket)})</td>`).join('')}`
-      + `<td>${a.pushes_per_ticket ?? '—'}</td><td>${a.digests_per_ticket ?? '—'}</td><td>${share(a.defaulted_share)}</td><td>${latency(a.median_latency_s)}</td></tr>`).join('')
-    + '</tbody></table>'; };
-  return `<section aria-labelledby="asks-h" class="stack12"><div class="sec-head"><h2 id="asks-h">Questions to you, by arm</h2></div><p class="muted small">Per asking ticket: what each step of its questions cost, how often it interrupted you, how many applied by default, and how long an answer took.</p>${repos.map(table).join('')}</section>`;
+  const steps = [...new Set(repos.flatMap((r) => Object.values(r.arms).flatMap((a) => Object.keys(a.steps ?? {}))))];
+  return dataSection({
+    id: 'asks-h', title: 'Questions to you, by arm',
+    intro: 'Per asking ticket: what each step of its questions cost, how often it interrupted you, how many applied by default, and how long an answer took.',
+    cols: [{ label: 'Arm' }, { label: 'Tickets', num: true }, ...steps.map((k) => ({ label: `${cap(k)} $ (tokens)`, num: true })),
+      { label: 'Pushes', num: true }, { label: 'Digests', num: true }, { label: 'Defaulted', num: true }, { label: 'Median to answer', num: true }],
+    groups: repos.map((r) => ({
+      head: `${r.name} · ${r.lever} · asking tickets by arm, as of ${String(r.at).slice(0, 10)}`, attrs: ` data-lever="${esc(r.lever)}"`,
+      rows: Object.entries(r.arms).map(([a, x]) => [esc(a), String(x.tickets), ...steps.map((k) => `${usd(x.steps?.[k]?.usd_per_ticket)} (${tokens(x.steps?.[k]?.tokens_per_ticket)})`),
+        esc(String(x.pushes_per_ticket ?? DASH)), esc(String(x.digests_per_ticket ?? DASH)), share(x.defaulted_share), latency(x.median_latency_s)]),
+    })),
+  });
 }
 
 // Each repo's time parked by cause (stuck-time.mjs), this ISO week and last: the hours, the tickets
-// affected and each cause, most hours first, with its tracking issue where one is linked. Nothing until a
-// ticket has sat stuck.
+// affected and each cause, most hours first, with its tracking issue where one is linked (the column only
+// once a cause has one). Nothing until a ticket has sat stuck.
 function stuckTime(v) {
   const repos = v.panels.stuck_time?.repos ?? [];
   if (!repos.length) return '';
-  const issue = (l) => (!l ? '—' : l.url ? `<a href="${esc(l.url)}">${esc(l.ref)}</a>` : esc(l.ref));
-  const table = (name, w) => `<table class="stages"><caption>${esc(name)} · week ${esc(w.week)} · ${esc(fmtHours(w.hours))} over ${w.tickets} ticket${w.tickets === 1 ? '' : 's'}</caption>`
-    + '<thead><tr><th scope="col">Cause</th><th scope="col">Hours</th><th scope="col">Tickets</th><th scope="col">Tracking issue</th></tr></thead><tbody>'
-    + w.causes.map((c) => `<tr><th scope="row">${esc(c.cause)}</th><td>${esc(fmtHours(c.hours))}</td><td>${c.tickets}</td><td>${issue(c.link)}</td></tr>`).join('')
-    + '</tbody></table>';
-  const body = repos.map((r) => r.weeks.filter((w) => w.tickets).map((w) => table(r.name, w)).join('')).join('');
-  return `<section aria-labelledby="st-h" class="stack12"><div class="sec-head"><h2 id="st-h">Time parked by cause</h2></div>${body}</section>`;
+  const weeks = repos.flatMap((r) => r.weeks.filter((w) => w.tickets).map((w) => ({ name: r.name, w })));
+  const linked = weeks.some(({ w }) => w.causes.some((c) => c.link));
+  const issue = (l) => (!l ? DASH : l.url ? `<a href="${esc(l.url)}">${esc(l.ref)}</a>` : esc(l.ref));
+  return dataSection({
+    id: 'st-h', title: 'Time parked by cause', intro: 'Hours tickets sat parked this week and last, by cause, most hours first.',
+    cols: [{ label: 'Cause' }, { label: 'Hours', num: true }, { label: 'Tickets', num: true }, ...(linked ? [{ label: 'Tracking issue' }] : [])],
+    groups: weeks.map(({ name, w }) => ({
+      head: `${name} · week ${w.week} · ${fmtHours(w.hours)} over ${w.tickets} ticket${w.tickets === 1 ? '' : 's'}`,
+      rows: w.causes.map((c) => [esc(c.cause), esc(fmtHours(c.hours)), String(c.tickets), ...(linked ? [issue(c.link)] : [])]),
+    })),
+  });
 }
 
 // When desk last kept `lever` in `repo`, from the change list; null when no change records it.
@@ -649,6 +680,11 @@ button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #11
 .levtable{width:100%;border-collapse:collapse}
 .th{font-size:12px;font-weight:500;color:#6B7280;text-align:left;padding:10px 16px;border-bottom:1px solid #E5E7EB}
 .td{padding:14px 16px;border-bottom:1px solid #F0F1F3;vertical-align:top;font-size:14px}
+.scroll{overflow-x:auto}
+.levtable .n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.levtable th.td{text-align:left;font-weight:500}
+.levtable .grp{background:#F9FAFB;padding:9px 16px;font-size:13px;font-weight:600;color:#374151;border-bottom:1px solid #E5E7EB}
+.levtable tr:last-child>.td{border-bottom:0}
 .bar{height:6px;border-radius:3px;background:#F0F1F3}.bar div{height:6px;border-radius:3px;background:#111827}
 .repo{display:flex;align-items:center;gap:6px}
 .note{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:#FFFBEB;border:1px solid #FCD34D;border-radius:6px;font-size:13px;line-height:1.45;color:#92400E;width:100%}
@@ -673,10 +709,11 @@ button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #11
 .toggle{display:grid;grid-template-columns:1fr 1fr;width:100%}.toggle button{min-height:44px;padding:0 12px}
 .awaiting{padding:14px 16px}.awaiting-head h3{font-size:15px}.awaiting-body{height:120px}
 .callouts{grid-template-columns:repeat(3,minmax(0,1fr))}.callout{border-bottom:1px solid #E5E7EB}
-.levtable thead{display:none}
-.levtable,.levtable tbody,.levtable tr,.levtable td{display:block;width:auto}
-.levtable tr{border-top:1px solid #F0F1F3;padding:10px 0}
-.levtable td{border:0;padding:4px 16px}
+.levtable:not(.data) thead{display:none}
+.levtable:not(.data),.levtable:not(.data) tbody,.levtable:not(.data) tr,.levtable:not(.data) td{display:block;width:auto}
+.levtable:not(.data) tr{border-top:1px solid #F0F1F3;padding:10px 0}
+.levtable:not(.data) td{border:0;padding:4px 16px}
+.levtable.data .td,.levtable.data .th{padding:10px 12px}
 .change summary{grid-template-columns:1fr;gap:3px}
 .change-dl{grid-template-columns:1fr;margin-left:0;gap:2px}
 .change-dl dd{margin-bottom:8px}

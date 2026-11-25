@@ -108,7 +108,7 @@ const stages = { desk: { n: 0 }, undraft: { n: 0 }, external_wait: { n: 0 }, ext
 let page = '';
 try { page = renderPage(view([{ name: 'desk-skills', prs: 4, stages, outage: 0, learned: ba }])); } catch (err) { page = `threw: ${err.message}`; }
 t('#1375 AC4 the levers report shows re-reviews per PR and undraft to approval before and after the learned bar',
-  j([/learned review bar since 2026-11-24/.test(page), /<th scope="row">Before<\/th><td>2<\/td><td>1.5<\/td><td>2h<\/td>/.test(page), /<th scope="row">After<\/th><td>2<\/td><td>0.5<\/td><td>40m<\/td>/.test(page)]), j([true, true, true]));
+  j([/learned review bar since 2026-11-24/.test(page), /<th scope="row" class="td">Before<\/th><td class="td n">2<\/td><td class="td n">1.5<\/td><td class="td n">2h<\/td>/.test(page), /<th scope="row" class="td">After<\/th><td class="td n">2<\/td><td class="td n">0.5<\/td><td class="td n">40m<\/td>/.test(page)]), j([true, true, true]));
 
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }
 console.log('all passed');

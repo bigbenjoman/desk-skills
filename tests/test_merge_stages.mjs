@@ -123,7 +123,7 @@ const view = (repos) => ({ v: 1, generated_at: H(13, 0), tz: 'UTC', repos: [], b
 let page = '';
 try { page = renderPage(view([{ name: 'desk-skills', ...sum }])); } catch (err) { page = `threw: ${err.message}`; }
 t('#1378 the levers report has a merge-time-by-stage table per repo, with the outage note',
-  j([/Merge time by stage/.test(page), /desk-skills · 4 merged PRs/.test(page), /<th scope="row">desk review<\/th><td>1.6h<\/td><td>1.8h<\/td>/.test(page), /1 external review wait inside a gate reviewer outage/.test(page)]), j([true, true, true, true]));
+  j([/Merge time by stage/.test(page), /desk-skills · 4 merged PRs/.test(page), /<th scope="row" class="td">desk review<\/th><td class="td n">1.6h<\/td><td class="td n">1.8h<\/td>/.test(page), /1 external review wait inside a gate reviewer outage/.test(page)]), j([true, true, true, true]));
 let bare = '';
 try { bare = renderPage(view([])); } catch (err) { bare = `threw: ${err.message}`; }
 t('#1378 with no stages recorded the report has no such section', /Merge time by stage/.test(bare) || /^threw/.test(bare), false);

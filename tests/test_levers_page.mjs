@@ -347,11 +347,47 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('the view carries each repo\'s latest per-arm ask report', j(panel.map((r) => [r.name, r.lever, Object.keys(r.arms)])), j([['desk-skills', 'question-handling', ['batched', 'one-at-a-time']]]));
   t('and no other lever has one', j((six.panels.asks?.repos ?? []).length), '0');
   const sec = section(P.renderPage(asked), 'asks-h');
-  const rowOf = (a) => sec.split(`<th scope="row">${a}</th>`)[1]?.split('</tr>')[0] ?? '';
+  const cells = (...xs) => xs.map((x) => `<td class="td n">${x}</td>`).join('');
+  const rowOf = (a) => sec.split(`<th scope="row" class="td">${a}</th>`)[1]?.split('</tr>')[0] ?? '';
   t('the page shows a row per arm', ['batched', 'one-at-a-time'].every((a) => rowOf(a)), true);
-  t('each with dollars and tokens per ticket by step', rowOf('batched').includes('<td>$0.41 (410)</td><td>$0.00 (0)</td><td>$0.60 (600)</td>'), true);
-  t('pushes and digests per ticket, the share defaulted and the median to an answer', [rowOf('batched').includes('<td>0</td><td>1</td><td>25%</td><td>1.5h</td>'), rowOf('one-at-a-time').includes('<td>1</td><td>0</td><td>0%</td><td>10m</td>')].join(' '), 'true true');
+  t('each with dollars and tokens per ticket by step', rowOf('batched').includes('<td class="td n">$0.41 (410)</td><td class="td n">$0.00 (0)</td><td class="td n">$0.60 (600)</td>'), true);
+  t('pushes and digests per ticket, the share defaulted and the median to an answer', [rowOf('batched').includes(cells('0', '1', '25%', '1.5h')), rowOf('one-at-a-time').includes(cells('1', '0', '0%', '10m'))].join(' '), 'true true');
   t('with no ask report, the page has no such section', section(hSix, 'asks-h'), '');
+}
+
+// The merge-time, learned-bar, time-parked and asks sections, in the house style of the lever table:
+// one card table per section, each repo a group header row, numbers right-aligned, and every class the
+// page puts on a section or table part has a CSS rule.
+{
+  const arm = { tickets: 30, steps: { raise: { tokens_per_ticket: 410, usd_per_ticket: 0.41 } }, pushes_per_ticket: 0, digests_per_ticket: 1, defaulted_share: 0.25, median_latency_s: 5400 };
+  const full = structuredClone(six);
+  full.panels.merge_stages = { repos: [{ name: 'desk-skills', prs: 4, stages: { desk: { n: 4, median: 96, p75: 108 }, merge: { n: 3, median: 5, p75: 9 } }, outage: 1,
+    learned: { since: '2026-11-24T00:00:00.000Z', before: { prs: 2, rereviews: 1.5, approval: 120 }, after: { prs: 2, rereviews: 0.5, approval: 40 } } }] };
+  full.panels.stuck_time = { repos: [{ name: 'desk-skills', weeks: [{ week: '2026-W52', hours: 20, tickets: 5, causes: [{ cause: 'usage', hours: 15, tickets: 2, link: null }, { cause: 'lock', hours: 0.5, tickets: 1, link: null }] }, { week: '2026-W51', hours: 0, tickets: 0, causes: [] }] }] };
+  full.panels.asks = { repos: [{ name: 'desk-skills', lever: 'question-handling', at: '2026-12-28T06:00:00.000Z', state: 'trial', arms: { batched: arm, 'one-at-a-time': arm } }] };
+  const h = P.renderPage(full);
+  const css = h.split('<style>')[1].split('</style>')[0];
+  const ruled = new Set([...css.matchAll(/\.([A-Za-z][\w-]*)/g)].map((m) => m[1]));
+  const used = new Set([...h.matchAll(/<(?:section|table|thead|tbody|tr|th|td)\b[^>]*\bclass="([^"]*)"/g)].flatMap((m) => m[1].split(/\s+/)).filter(Boolean));
+  t('styles: every class on a section or table part has a CSS rule', j([...used].filter((c) => !ruled.has(c))), '[]');
+  for (const id of ['ms-h', 'lr-h', 'st-h', 'asks-h']) {
+    const sec = h.slice(h.lastIndexOf('<section', h.indexOf(`aria-labelledby="${id}"`)), h.indexOf('</section>', h.indexOf(`aria-labelledby="${id}"`)));
+    t(`styles ${id}: a card like the lever table`, /^<section aria-labelledby="[^"]+" class="card levers/.test(sec) && sec.includes('<div class="levers-head">'), true);
+    t(`styles ${id}: one table`, count(sec, /<table /g), 1);
+    t(`styles ${id}: a muted intro line`, /<h2 id="[^"]+">[^<]+<\/h2><p class="muted small">[^<]+<\/p>/.test(sec), true);
+    t(`styles ${id}: the repo as a group header row`, /<tr class="grp"[^>]*><th scope="colgroup" colspan="\d+" class="td grp">desk-skills/.test(sec), true);
+  }
+  const ms = section(h, 'ms-h');
+  t('styles: numbers right-aligned', ms.includes('<tr><th scope="row" class="td">desk review</th><td class="td n">1.6h</td><td class="td n">1.8h</td><td class="td n">4</td></tr>'), true);
+  t('styles: their headers too', ms.includes('<th scope="col" class="th n">Median</th>'), true);
+  t('styles: the outage note sits under its repo', ms.includes('1 external review wait inside a gate reviewer outage left out of the medians.'), true);
+  t('styles: the right-aligned cells have tabular figures', /\.levtable \.n\{[^}]*text-align:right[^}]*font-variant-numeric:tabular-nums/.test(css), true);
+  const st = section(h, 'st-h');
+  t('styles: no Tracking issue column when no cause has one', st.includes('Tracking issue'), false);
+  t('styles: a week with nothing parked has no group', st.includes('2026-W51'), false);
+  const linked = structuredClone(full);
+  linked.panels.stuck_time.repos[0].weeks[0].causes[0].link = { ref: '#1377', url: 'https://example.invalid/1377' };
+  t('styles: the Tracking issue column shows once a cause has one', section(P.renderPage(linked), 'st-h').includes('<th scope="col" class="th">Tracking issue</th>'), true);
 }
 
 // Text from the view is escaped, and view.json cannot close its script element.
