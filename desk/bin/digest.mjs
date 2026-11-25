@@ -38,6 +38,7 @@ import { read as readLeverLog, appendChecked as appendCheckedLeverLog, isStateCh
 import { changeLine, overrideEvent, isDecided, recordLeverDecision } from './lever-changes.mjs';
 import { leversDir } from './levers-view.mjs';
 import { pageState as leversPageState, refresh as refreshLevers } from './levers-refresh.mjs';
+import { recordAsks, ledgerOnIn, ASK_LEDGER_ENV } from './ask-ledger.mjs';
 
 export const DEFAULT_TIMES = ['08:00', '17:00'];
 export { PRODUCTION_BROKEN };
@@ -476,8 +477,28 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
       ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s)${asks.length ? `, ${asks.length} promotion question(s)` : ''}, ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nl ? `, ${nl} lever change(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''}${nw ? `, ${nw} warning(s)` : ''} across ${repoCount} repo(s). ${page}` }
       : null;
     writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd, listed, lever_seen: leverSeen, by: self, push }, null, 2)}\n`);
-    return { status: 'sent', slot: slot.id, page, questions: nq, promotions: asks.length, decisions: nd, push };
+    const ledger = presentAsks({ list, groups, fresh, page, push, now });
+    return { status: 'sent', slot: slot.id, page, questions: nq, promotions: asks.length, decisions: nd, push, ledger };
   } finally { lock.release(); }
+}
+
+// Each park the page lists fresh is an ask it presents (ask-ledger.mjs), raised where nothing raised it
+// before: written to its own repo's ticket ledger, under that ledger's lock, with that repo's ledger
+// lever on. `groups` are the page's, one per batch of `list`. -> the lines of any write that failed.
+function presentAsks({ list, groups, fresh, page, push, now }) {
+  const isFresh = new Set(fresh);
+  return list.flatMap((r, i) => {
+    const parks = (groups[i]?.questions ?? []).filter((q) => q.kind === 'parked' && isFresh.has(q.key));
+    if (!parks.length) return [];
+    const tickets = readJson(r.queue, null)?.tickets ?? {};
+    const steps = parks.flatMap(({ ticket }) => {
+      const p = tickets[ticket]?.park;
+      if (!p?.since) return [];
+      return [{ step: 'raised', key: ticket, since: p.since, kind: p.kind, question: p.question },
+        { step: 'presented', key: ticket, since: p.since, via: 'digest', ref: page, notification: push?.key ?? null }];
+    });
+    return recordAsks(r.queue, steps, { on: ledgerOnIn(r.slug), by: 'digest', now });
+  });
 }
 
 // Pushed at once, outside the check-in times: each parked ticket whose question reads production broken.
@@ -509,10 +530,13 @@ export function answer({ slug, ticket, text, dir = digestDir(), list = repos(), 
   const r = batchFor(list, slug, ticket);
   if (!r) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
   const question = openQuestions(r).find((q) => q.ticket === ticket);
+  // answer.mjs reads that repo's config, not the caller's, where it has one; its ask is gated on that
+  // repo's ledger lever either way, which is off for a repo with no config.
+  const config = join(E.deskConfigRoot(), 'repos', slug, 'config.md');
   let out;
   try {
     out = execFileSync('node', [join(bin, 'answer.mjs'), ticket, '--all', text], {
-      encoding: 'utf8', env: { ...process.env, DESK_AUTOPILOT_STATE: r.state, DESK_QUEUE: r.queue }, stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8', env: { ...process.env, DESK_AUTOPILOT_STATE: r.state, DESK_QUEUE: r.queue, [ASK_LEDGER_ENV]: ledgerOnIn(slug) ? 'on' : 'off', ...(existsSync(config) ? { DESK_CONFIG: config } : {}) }, stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) { return { ok: false, why: `answer.mjs refused: ${`${e.stdout ?? ''}${e.stderr ?? ''}`.trim()}` }; }
   // A "not now" is not settled: the register hides it, and ask-again must be able to bring it back.
