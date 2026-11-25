@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { listCandidates, renderLines, priorityOf, rankOf, leftOut, missingSections, namedFiles, overlapOf, onMain, slotLines, slotCandidatesOn, candidatesJql, CANDIDATES_EVERY_MS } from '../desk/bin/candidates.mjs';
+import { listCandidates, renderLines, priorityOf, rankOf, leftOut, missingSections, namedFiles, overlapOf, onMain, slotLines, slotCandidatesOn, candidatesJqls, CANDIDATES_EVERY_MS } from '../desk/bin/candidates.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -18,12 +18,19 @@ const issue = (key, type, p, extra = {}) => ({ key, fields: { issuetype: { name:
 const blockedBy = (key, category) => ({ type: { name: 'Blocks', inward: 'is blocked by', outward: 'blocks' }, inwardIssue: { key, fields: { status: { statusCategory: { key: category } } } } });
 const CLEAN = 'h2. Acceptance criteria\n* Given x, when y, then z\nh2. Design\nNo UI.';
 
-// reads: every ticket's description, merged PRs and commits keyed by ticket, and the recent PRs.
+// reads: every ticket's description, merged PRs and commits keyed by ticket, and the recent PRs. The
+// search answers each priority tier's JQL with that tier's issues, one page of `max`.
 function readsOf({ issues, desc = {}, prs = {}, commits = {}, recent = [], queued = [], liveEpics = [] }) {
   const calls = { search: [], recent: 0 };
   return {
     calls,
-    search: (jql, max, fields) => { calls.search.push({ jql, max, fields }); return { ok: true, issues }; },
+    search: (jql, max, fields) => {
+      calls.search.push({ jql, max, fields });
+      const tier = /cf\[10300\] = "([^"]+)"/.exec(jql)?.[1];
+      const rest = /is EMPTY OR/.test(jql);
+      const hits = issues.filter((i) => { const v = i.fields.customfield_10300?.value ?? null; return tier ? v === tier : rest ? !['P0', 'P1', 'P2'].includes(v) : true; });
+      return { ok: true, issues: hits.slice(0, max), more: hits.length > max };
+    },
     description: (k) => (k in desc ? { ok: true, text: desc[k] } : { ok: false, why: 'no such issue' }),
     mergedPrs: (k) => prs[k] ?? [],
     commits: (k) => commits[k] ?? [],
@@ -35,8 +42,15 @@ function readsOf({ issues, desc = {}, prs = {}, commits = {}, recent = [], queue
 const list = (reads) => listCandidates({ project: 'ACME', priority: PRIORITY, reads, now: Date.parse('2026-11-25T12:00:00Z') });
 
 // AC1: unassigned, unstarted Bugs and self-contained Tasks, ranked by the repo's priority field.
-t('AC1 the search asks for unassigned, unstarted Bugs and Tasks', candidatesJql('ACME'),
-  'project = "ACME" AND issuetype in (Bug, Task) AND assignee is EMPTY AND statusCategory = "To Do" ORDER BY created ASC');
+const BASE = 'project = "ACME" AND issuetype in (Bug, Task) AND assignee is EMPTY AND statusCategory = "To Do"';
+t('AC1 the searches ask for unassigned, unstarted Bugs and Tasks, a priority tier each, then the unset or unlisted', candidatesJqls('ACME', priorityOf(PRIORITY)), [
+  `${BASE} AND cf[10300] = "P0" ORDER BY created ASC`,
+  `${BASE} AND cf[10300] = "P1" ORDER BY created ASC`,
+  `${BASE} AND cf[10300] = "P2" ORDER BY created ASC`,
+  `${BASE} AND (cf[10300] is EMPTY OR cf[10300] not in ("P0", "P1", "P2")) ORDER BY created ASC`,
+]);
+t('AC1 with no values listed, one search Jira orders by its own priority', candidatesJqls('ACME', priorityOf(['none'])), [`${BASE} ORDER BY priority DESC, created ASC`]);
+t('AC1 a quote in a value is escaped', candidatesJqls('ACME', priorityOf(['Must "now"']))[0], `${BASE} AND priority = "Must \\"now\\"" ORDER BY created ASC`);
 {
   const r = readsOf({
     issues: [issue('ACME-1', 'Task', 'P2'), issue('ACME-2', 'Bug', 'P0'), issue('ACME-3', 'Task', null), issue('ACME-4', 'Bug', 'P1')],
@@ -47,7 +61,7 @@ t('AC1 the search asks for unassigned, unstarted Bugs and Tasks', candidatesJql(
   t('AC1 the priority field is asked for beside the links and parent', r.calls.search[0].fields, ['issuelinks', 'parent', 'customfield_10300']);
 }
 t('AC1 a row naming no field ranks Jira\'s own priority by its own names', rankOf({ fields: { priority: { name: 'High' } } }, priorityOf(['none'])), 1);
-t('AC1 the field is read from the row', priorityOf(PRIORITY), { field: 'customfield_10300', order: ['p0', 'p1', 'p2'] });
+t('AC1 the field is read from the row', priorityOf(PRIORITY), { field: 'customfield_10300', names: ['P0', 'P1', 'P2'], order: ['p0', 'p1', 'p2'] });
 t('AC1 a Task with an open blocker is left out', leftOut(issue('ACME-5', 'Task', 'P1', { issuelinks: [blockedBy('ACME-9', 'indeterminate')] })), 'blocked by ACME-9');
 t('AC1 one whose blocker is done is self-contained', leftOut(issue('ACME-5', 'Task', 'P1', { issuelinks: [blockedBy('ACME-9', 'done')] })), null);
 t('AC1 a Task under an epic with a running feature batch is left out',
@@ -79,12 +93,15 @@ t('AC2 a key inside another word is not named', onMain('ACME-1', { prs: [{ numbe
   t('AC2 an unread GitHub is said, not taken as not on main', list(r).offered[0].flags, ['not checked against merged PRs: it could not be read']);
 }
 
-// AC3: no Acceptance criteria or no Design section is said.
+// AC3: no Acceptance criteria or no Design section is said, as triage's lint reads them.
+const NO_DESIGN = 'no Design section (no design link or "No UI." line)';
 t('AC3 wiki headings', missingSections(CLEAN), []);
 t('AC3 markdown headings', missingSections('## Acceptance criteria\n- AC1\n## Design\nNo UI.'), []);
-t('AC3 a bold title line counts as a heading', missingSections('*Acceptance criteria*\n# x\n*Design:*\nNo UI.'), []);
-t('AC3 neither section', missingSections('h2. Problem\nIt breaks.'), ['no Acceptance criteria', 'no Design section']);
-t('AC3 the words in prose are not a section', missingSections('The design has no acceptance criteria yet.'), ['no Acceptance criteria', 'no Design section']);
+t('AC3 neither section', missingSections('h2. Problem\nIt breaks.'), ['no Acceptance criteria', NO_DESIGN]);
+t('AC3 the words in prose are not a section', missingSections('The design has no acceptance criteria yet.'), ['no Acceptance criteria', NO_DESIGN]);
+t('AC3 an empty criteria section is no criteria', missingSections('h2. Acceptance criteria\n\nh2. Design\nNo UI.'), ['no Acceptance criteria']);
+t('AC3 a Design section with no link and no "No UI." is said', missingSections('h2. Acceptance criteria\n* AC1\nh2. Design\nTo follow.'), [NO_DESIGN]);
+t('AC3 a Figma link anywhere is a design, as lint takes it', missingSections('h2. Acceptance criteria\n* AC1\nSee https://www.figma.com/file/abc/x'), []);
 
 // AC4: a named file a PR merged in the last 7 days changed names that PR.
 t('AC4 the files a description names', [...namedFiles('Fix `desk/bin/pass.mjs` and intake.mjs; see https://example.com/a/b.html and v1.2 notes.')], ['desk/bin/pass.mjs', 'intake.mjs']);
@@ -119,7 +136,15 @@ t('AC4 a bare name matches it in any directory', overlapOf(new Set(['intake.mjs'
   const issues = Array.from({ length: 20 }, (_, i) => issue(`ACME-${100 + i}`, 'Bug', 'P1'));
   const r = readsOf({ issues, desc: Object.fromEntries(issues.map((x) => [x.key, CLEAN])) });
   const got = listCandidates({ project: 'ACME', priority: PRIORITY, reads: r, checkMax: 3 });
-  t('only the first checkMax are checked, the rest counted', [got.offered.length, got.unchecked], [3, 17]);
+  t('only the first checkMax are checked, the rest counted, and no lower tier searched', [got.offered.length, got.unchecked, got.more, r.calls.search.length], [3, 17, true, 2]);
+  t('the listing says so', renderLines(got, { project: 'ACME' }).at(-2), '17+ more not checked: only the first 15 by priority are');
+}
+{
+  // A backlog past a page: the first page of the top tier is read, not refused.
+  const issues = Array.from({ length: 150 }, (_, i) => issue(`ACME-${200 + i}`, 'Bug', 'P0'));
+  const r = readsOf({ issues, desc: Object.fromEntries(issues.map((x) => [x.key, CLEAN])) });
+  const got = list(r);
+  t('a tier past one page lists its first page', [got.ok, got.offered.length, got.offered[0].key, got.unchecked, got.more], [true, 15, 'ACME-200', 85, true]);
 }
 t('a failed search is said', renderLines(listCandidates({ project: 'ACME', priority: PRIORITY, reads: { ...readsOf({ issues: [] }), search: () => ({ ok: false, why: 'HTTP 401' }) } }), { project: 'ACME' }), ['no candidates: HTTP 401']);
 

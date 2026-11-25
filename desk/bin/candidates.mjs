@@ -7,11 +7,13 @@
 //                                  tracker or project in the config, 2 on bad usage
 //
 // A Task is self-contained with no open "is blocked by" link and no parent epic whose feature batch is
-// live. A ticket already in a live batch is left out. Of the rest, the first CHECK_MAX by priority are
-// read from Jira and GitHub:
+// live. A ticket already in a live batch is left out. Jira is searched a priority tier at a time, one
+// page each, until CHECK_MAX are found; of those, the first CHECK_MAX by priority are read from Jira
+// and GitHub:
 //   - a PR merged into §0 Default branch whose title or head branch names its key, or a commit on
 //     origin/<default> naming it: "already on main (PR #n)", and not offered;
-//   - no Acceptance criteria or no Design section: said, so it is not sent expecting a clean admit;
+//   - no Acceptance criteria or no design, as triage's lint reads them: said, so it is not sent
+//     expecting a clean admit;
 //   - a file its description names that a PR merged in the last OVERLAP_DAYS days changed: that PR is
 //     named as possible overlap.
 // Clean candidates come first, then flagged ones, each in priority order.
@@ -27,7 +29,8 @@ import * as E from './desk-env.mjs';
 import { jiraSearch } from './jira-search.mjs';
 import { blockersFact } from './desk-q-eta.mjs';
 import { keyPattern } from './batch-state.mjs';
-import { sections } from './desk-design.mjs';
+import { lintTicket } from './ticket-lint.mjs';
+import { mergedNaming } from './recoveries.mjs';
 import { listBatches, liveBatch, repoTickets } from './batches.mjs';
 
 // Jira's largest page for a search returning fields.
@@ -42,13 +45,14 @@ const GH_TIMEOUT_MS = 30 * 1000;
 // Jira's own priority names, highest first, for a §4 Priority row that lists no order.
 const STANDARD = ['highest', 'high', 'medium', 'low', 'lowest'];
 
-// §4 Priority as { field, order }: the custom field it names (else Jira's `priority`) and its values,
-// highest first, lower case (else Jira's own names).
+// §4 Priority as { field, names, order }: the custom field it names (else Jira's `priority`), the values
+// it lists as written, highest first (empty where it lists none), and those in lower case (else Jira's
+// own names).
 export function priorityOf(items) {
   const list = [].concat(items ?? []).map((v) => String(v ?? '').trim()).filter((v) => v && !E.isNone(v) && !/^todo\b/i.test(v));
   const field = list.map((v) => /customfield_\d+/.exec(v)?.[0]).find(Boolean) ?? 'priority';
-  const order = list.filter((v) => !/customfield_\d+/.test(v)).map((v) => v.toLowerCase());
-  return { field, order: order.length ? order : STANDARD };
+  const names = list.filter((v) => !/customfield_\d+/.test(v));
+  return { field, names, order: names.length ? names.map((v) => v.toLowerCase()) : STANDARD };
 }
 const valueOf = (v) => String((v && typeof v === 'object' ? v.value ?? v.name : v) ?? '').trim();
 // Where an issue's priority sits in `order`: an unset or unknown value ranks after every listed one.
@@ -57,8 +61,17 @@ export function rankOf(issue, { field, order }) {
   return i < 0 ? order.length : i;
 }
 
-export const candidatesJql = (project) =>
-  `project = "${project}" AND issuetype in (Bug, Task) AND assignee is EMPTY AND statusCategory = "To Do" ORDER BY created ASC`;
+const jqlValue = (v) => `"${String(v).replace(/["\\]/g, '\\$&')}"`;
+// The searches, highest priority first, each read one page: one per value §4 Priority lists, then one
+// for a value unset or unlisted, so a backlog past a page still reads its top tickets first. With none
+// listed, one search, which Jira orders by its own priority (a custom field: by age).
+export function candidatesJqls(project, { field, names }) {
+  const base = `project = "${project}" AND issuetype in (Bug, Task) AND assignee is EMPTY AND statusCategory = "To Do"`;
+  if (!names.length) return [`${base} ORDER BY ${field === 'priority' ? 'priority DESC, ' : ''}created ASC`];
+  const f = field === 'priority' ? 'priority' : `cf[${field.slice('customfield_'.length)}]`;
+  return [...names.map((v) => `${base} AND ${f} = ${jqlValue(v)} ORDER BY created ASC`),
+    `${base} AND (${f} is EMPTY OR ${f} not in (${names.map(jqlValue).join(', ')})) ORDER BY created ASC`];
+}
 
 // Why a searched issue is not a candidate, or null: it is in a live batch (`queued`), or it is a Task
 // with an open blocker or a parent epic in `liveEpics`.
@@ -71,19 +84,12 @@ export function leftOut(issue, { queued = new Set(), liveEpics = new Set() } = {
   return parent && liveEpics.has(parent) ? `a child of epic ${parent}, whose feature batch is running` : null;
 }
 
-// The section headings a description has: wiki or markdown headings, and lines holding only a bold or
-// colon-ended title.
-const headings = (text) => [
-  ...sections(text).map((s) => s.name),
-  ...String(text ?? '').split(/\r?\n/).map((l) => /^\s*[*_]+([^*_]+?)[*_:]*\s*$|^\s*([A-Za-z][A-Za-z ]+):\s*$/.exec(l)).filter(Boolean).map((m) => (m[1] ?? m[2]).trim()),
-];
-// What a description lacks that triage's lint would refuse on: no Acceptance criteria, no Design section.
-export function missingSections(text) {
-  const names = headings(text);
-  const out = [];
-  if (!names.some((n) => /^(acceptance criteria|definition of done)\b/i.test(n))) out.push('no Acceptance criteria');
-  if (!names.some((n) => /^design\b/i.test(n))) out.push('no Design section');
-  return out;
+// The flag each of triage's lint rules a candidate list names is said as.
+const SECTION_FLAGS = { criteria: 'no Acceptance criteria', design: 'no Design section (no design link or "No UI." line)' };
+// What triage's lint (ticket-lint.mjs) refuses a description on that the list says: no Acceptance
+// criteria, no design.
+export function missingSections(text, key) {
+  return lintTicket({ key, text }).filter((f) => f.severity === 'blocking' && SECTION_FLAGS[f.rule]).map((f) => SECTION_FLAGS[f.rule]);
 }
 
 const EXT = 'mjs|cjs|js|jsx|ts|tsx|py|sh|md|json|ya?ml|toml|css|scss|sql|go|rs|rb|java|kt|swift|php|html|vue|svelte';
@@ -107,9 +113,9 @@ export function overlapOf(names, recent) {
 // ([{sha, subject}] on it): { pr } for a PR naming it in its title or head branch, or a commit naming
 // it whose subject names its PR; { commit } for one that does not; null for neither.
 export function onMain(key, { prs = [], commits = [] } = {}) {
-  const names = new RegExp(keyPattern(key));
-  const pr = prs.find((p) => names.test(`${p?.title ?? ''} ${p?.headRefName ?? ''}`));
+  const pr = mergedNaming(key, prs);
   if (pr) return { pr: pr.number };
+  const names = new RegExp(keyPattern(key));
   const c = commits.find((x) => names.test(x?.subject ?? ''));
   if (!c) return null;
   const n = /#(\d+)/.exec(c.subject)?.[1];
@@ -117,24 +123,31 @@ export function onMain(key, { prs = [], commits = [] } = {}) {
 }
 
 // The listing, read through `reads` (defaultReads gives the real ones):
-//   search(jql, max, fields)  -> {ok, issues} | {ok: false, why}
+//   search(jql, max, fields)  -> {ok, issues, more} (one page; `more` when one lies behind it) | {ok: false, why}
 //   description(key)          -> {ok, text} | {ok: false, why}
 //   mergedPrs(key)            -> [{number, title, headRefName}] merged into the default branch, or null when unread
 //   commits(key)              -> [{sha, subject}] on origin/<default>, or null when unread
 //   recent(sinceDate)         -> [{number, files}] merged into the default branch since then, or null when unread
 //   queued()                  -> Set of keys in a live batch;  liveEpics() -> Set of epic keys with a live feature batch
-// -> {ok, offered, onMain, left, unchecked} | {ok: false, why}. Each offered or on-main entry is
+// -> {ok, offered, onMain, left, unchecked, more} | {ok: false, why}. Each offered or on-main entry is
 // {key, type, priority, summary, rank, flags, overlap[, pr | commit]}.
 export function listCandidates({ project, priority, reads, now = Date.now(), checkMax = CHECK_MAX }) {
   const pr = priorityOf(priority);
-  const res = reads.search(candidatesJql(project), SEARCH_MAX, ['issuelinks', 'parent', ...(pr.field === 'priority' ? [] : [pr.field])]);
-  if (!res?.ok) return { ok: false, why: res?.why ?? 'the Jira search failed' };
+  const fields = ['issuelinks', 'parent', ...(pr.field === 'priority' ? [] : [pr.field])];
   const ctx = { queued: reads.queued(), liveEpics: reads.liveEpics() };
   const left = [];
   const pool = [];
-  for (const i of res.issues) {
-    const why = leftOut(i, ctx);
-    if (why) left.push({ key: i.key, why }); else pool.push(i);
+  // `more`: a match was not read, on a page past the first or in a lower tier no search was needed for.
+  let more = false;
+  for (const jql of candidatesJqls(project, pr)) {
+    if (pool.length >= checkMax) { more = true; break; }
+    const res = reads.search(jql, SEARCH_MAX, fields);
+    if (!res?.ok) return { ok: false, why: res?.why ?? 'the Jira search failed' };
+    if (res.more) more = true;
+    for (const i of res.issues) {
+      const why = leftOut(i, ctx);
+      if (why) left.push({ key: i.key, why }); else pool.push(i);
+    }
   }
   pool.sort((a, b) => rankOf(a, pr) - rankOf(b, pr));
   let recent;
@@ -151,7 +164,7 @@ export function listCandidates({ project, priority, reads, now = Date.now(), che
     const d = reads.description(i.key);
     if (!d?.ok) c.flags.push(`its description could not be read (${d?.why ?? 'desk-jira get failed'})`);
     else {
-      c.flags.push(...missingSections(d.text));
+      c.flags.push(...missingSections(d.text, i.key));
       const names = namedFiles(d.text);
       if (names.size) {
         if (recent === undefined) recent = reads.recent(new Date(now - OVERLAP_DAYS * DAY_MS));
@@ -163,7 +176,7 @@ export function listCandidates({ project, priority, reads, now = Date.now(), che
   }
   const flagged = (c) => (c.flags.length || c.overlap.length ? 1 : 0);
   offered.sort((a, b) => flagged(a) - flagged(b) || a.rank - b.rank);
-  return { ok: true, offered, onMain: main, left, unchecked: Math.max(0, pool.length - checkMax) };
+  return { ok: true, offered, onMain: main, left, unchecked: Math.max(0, pool.length - checkMax), more };
 }
 
 // What a candidate's line says after its key: priority, type, summary, then each flag and overlap.
@@ -184,7 +197,7 @@ export function renderLines(r, { project }) {
     for (const c of r.onMain) out.push(`  ${c.key}  already on main (${c.pr != null ? `PR #${c.pr}` : `commit ${c.commit}`})`);
   }
   if (r.left.length) out.push(`left out: ${r.left.map((l) => `${l.key} (${l.why})`).join(', ')}`);
-  if (r.unchecked) out.push(`${r.unchecked} more not checked: only the first ${CHECK_MAX} by priority are`);
+  if (r.unchecked || r.more) out.push(`${r.unchecked ? `${r.unchecked}${r.more ? '+' : ''} more` : 'more'} not checked: only the first ${CHECK_MAX} by priority are`);
   if (r.offered.length) out.push('admit one with /desk-admit <KEY>; this list admits nothing');
   return out;
 }
@@ -196,7 +209,7 @@ const ghJson = (args) => {
 // The real reads, against `repo` (owner/name), the checkout at `root`, and its default branch `base`.
 export function defaultReads({ repo, root, base }) {
   return {
-    search: (jql, max, fields) => jiraSearch({}, jql, max, fields),
+    search: (jql, max, fields) => jiraSearch({ partial: true }, jql, max, fields),
     description: (key) => {
       const r = spawnSync('desk-jira', ['get', key, '--json'], { encoding: 'utf8', timeout: GH_TIMEOUT_MS, maxBuffer: 64 << 20 });
       if (r.status !== 0) return { ok: false, why: `${r.stderr ?? ''}${r.error?.message ?? ''}`.trim().split('\n').pop() || `desk-jira exited ${r.status}` };
