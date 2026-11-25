@@ -1,5 +1,6 @@
-// The release watch, the safety net behind the auto-release (maintenance.mjs): every release it or the
-// maintenance window installs is recorded in releases.jsonl beside its state, and once that release's window ends (WINDOW_TICKETS
+// The release watch, the safety net behind the auto-release (maintenance.mjs): every release install.sh
+// installs (for the auto-release, the maintenance window or a person) is recorded in releases.jsonl beside
+// its state by install.sh's record step (installed.mjs), and once that release's window ends (WINDOW_TICKETS
 // tickets finished on it, or WINDOW_HOURS since it went in, whichever comes first) its tickets are
 // weighed against the previous release's: fix tries per ticket, parked hours per ticket, post-merge
 // reverts, and parks in an error class the previous release's tickets never parked in. A ticket counts
@@ -69,7 +70,7 @@ export function readWatch(dir) {
 }
 const writeWatch = (dir, s) => { mkdirSync(dir, { recursive: true }); writeJsonAtomic(watchFile(dir), s); };
 
-// The auto-release's record of one install: the commit before it, the commit installed, and how many
+// The record of one install: the commit before it, the commit installed, and how many
 // merges to main it carried.
 export function recordRelease(dir, { at, from, to, merges }, home = E.deskHome()) {
   mkdirSync(dir, { recursive: true });

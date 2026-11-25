@@ -188,17 +188,22 @@ rmSync(join(m.dir, 'release.lock.d'), { recursive: true });
 winSaid = windowPass();
 t('AC2 window: a pinned desk is not updated by the maintenance window', [/maintenance: desk-skills not updated: desk is pinned to/.test(winSaid), m.g('rev-parse', 'HEAD') === m.p, /reboot check/.test(readFileSync(join(m.dir, 'maintenance.log'), 'utf8'))], [true, true, true]);
 
-// With no pin the window updates, and records the release against what was installed, not the checkout.
+// With no pin the window updates, and install.sh's record step records the release once, against what
+// was installed, not the checkout: the checkout sits one merge past the installed commit.
 writeFileSync(join(m.dir, 'release-watch.json'), '{}');
-const installedBefore = 'c'.repeat(40);
+const installedBefore = m.p;
 writeFileSync(join(m.home, 'installed.json'), JSON.stringify({ commit: installedBefore }));
-writeFileSync(join(m.src, 'install.sh'), '#!/bin/sh\nexit 0\n');
+m.g('reset', '-q', '--hard', `${m.r}^`);
+writeFileSync(join(m.src, 'install.sh'), `#!/bin/sh\nDESK_MAINT_DIR='${m.dir}' exec '${process.execPath}' '${join(ROOT, 'desk/bin/installed.mjs')}' record "$PWD"\n`);
 chmodSync(join(m.src, 'install.sh'), 0o755);
 writeFileSync(join(m.src, '.git', 'info', 'exclude'), 'install.sh\n');
+const recs = () => { try { return readFileSync(join(m.dir, 'releases.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
+const recsBefore = recs().length;
 updating();
 winSaid = windowPass();
-const lastRec = readFileSync(join(m.dir, 'releases.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).at(-1);
-t('AC1 window: its install is recorded for the watch, from the installed commit', [/desk-skills updated/.test(winSaid), lastRec?.from, lastRec?.to], [true, installedBefore, m.r]);
+const lastRec = recs().at(-1);
+t('AC1 window: its install is recorded for the watch, from the installed commit', [/desk-skills updated/.test(winSaid), lastRec?.from, lastRec?.to, lastRec?.merges], [true, installedBefore, m.r, 2]);
+t('issue-1455 AC3 window: exactly one row for the move, install.sh\'s', recs().length - recsBefore, 1);
 
 // ---- AC3: desk-q rollback <commit> does the same on demand ------------------------------------------------
 const q = fixture('ac3');
