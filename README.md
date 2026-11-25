@@ -454,7 +454,10 @@ node ~/.claude/desk/bin/bench-blind.mjs join --tasks <tasks.json> [--out <dir>] 
 Phase 0 baseline. For each arm it shows the tasks accepted out of the tasks run, the mean blind score
 from `joined.json`, and the runs that failed, which count in no other figure. Per accepted task, it
 gives the median uncached input, cache-write, cache-read and output tokens, and the median quota
-points per account. The baseline column comes from `phase0-report.mjs`'s output saved as
+points per account. Over every scored run, accepted or rejected, it gives the median cache-write
+tokens and the median input-equivalent tokens: each kind of token at its list price for the arm's
+model, as uncached input (cache writes at the 5-minute rate), or "not priced" for a model desk has no
+prices for. The baseline column comes from `phase0-report.mjs`'s output saved as
 `<out>/phase0-baseline.txt` (or `--baseline <file>`). It holds the baseline's tokens per accepted
 ticket, its 7-day quota points divided by the tickets it accepted, and its fix tries per accepted
 ticket, and it names the baseline's last day. With no baseline, the column reads "no baseline" and
@@ -512,6 +515,32 @@ the report. The report then puts `filed` beside `packet`:
 ```
 node ~/.claude/desk/bin/bench-arm1.mjs --tasks <tasks.json> --max-budget-usd <usd> [--total-budget-usd 5] \
   [--out <dir>] [--timeout 1800] [--seed <n>]
+```
+
+**`bench-arm-pack.mjs`** asks whether a start-4b stage pack saves quota: the first `--limit` tasks
+(default 10) run as the baseline and as `pack-4b`, both on opus at medium effort, the second with the
+start-4b pack appended to its system prompt, so it is in context from turn 0. The pack is the skill
+files a worker starting at Stage 4b reads, taken from the installed skills (`--skills`) and joined
+with every paragraph an earlier file already holds dropped. Each pack run keeps it as `system.md`,
+and its run key hashes it, so a changed skill file is a new run. The baseline arm keeps the name an
+earlier run gave it (`--baseline-arm`, default `opus`), so its stored results are reused rather than
+paid for again. No arm may read the skills folder. `bench-report.mjs` then puts the two side by side:
+
+```
+node ~/.claude/desk/bin/bench-arm-pack.mjs --tasks <tasks.json> --max-budget-usd <usd> [--total-budget-usd 5] \
+  [--out <dir>] [--timeout 1800] [--seed <n>] [--limit 10] [--baseline-arm opus] [--skills <dir>]
+```
+
+**`skill-ride.mjs`** measures what such a pack would replace. For each start stage, over the worker
+logs of the last `--days` (default 14), it prints the sessions, the bytes they read from skill files
+and the mean remaining-turn fraction of those reads: a Read at turn i of n rides the n - 1 - i turns
+after it, where a pack loaded at turn 0 rides them all. The byte-weighted mean is the share of the
+read bytes that rides the rest of the session. A session is one spawn, from `spawn-worker.sh`'s
+`desk_spawn` event to the next, and only the main thread's Reads count. `--files <stage>` lists that
+stage's skill files instead:
+
+```
+node ~/.claude/desk/bin/skill-ride.mjs [--days 14] [--logs <dir>] [--skills <dir>]… [--files <stage>]
 ```
 
 **`bench-arm2.mjs`** runs arm 2, a shadow Codex review seat against the current Opus finder seat, on
