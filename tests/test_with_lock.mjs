@@ -552,7 +552,7 @@ try {
     }
   }
 
-  // ---- #1458: the light lock admits §3b "Light lock slots" runs at once ------------------------
+  // ---- the light lock admits §3b "Light lock slots" runs at once ------------------------
   {
     const conf = (slots) => {
       const p = join(S, `config-${n++}.md`);

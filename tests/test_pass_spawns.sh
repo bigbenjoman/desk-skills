@@ -378,7 +378,7 @@ out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" DESK_CONFIG="$T/config
 check "DS-958 two repos named api under different owners keep separate counts, named owner/name" \
   'echo "$out" | grep -qF "runs by repo: acme/api 4, beta/api 3; this repo'"'"'s share ceil(6 / 3) = 2, 0 its own" && [ $(( $(spawns_of LQ-13) + $(spawns_of LQ-14) + $(spawns_of LQ-15) )) = 2 ]'
 for k in LQ-13 LQ-14 LQ-15; do q set "$k" state=done session_id=null; done
-# #1458 AC2: a light repo whose light queue is deep (one run holds its 1 slot, two wait) and whose test
+# A light repo whose light queue is deep (one run holds its 1 slot, two wait) and whose test
 # lock is idle starts a new ticket, which begins at triage, and holds a resume into Stage 4.
 { echo ' 9101     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh light --cwd . -- bash tests/run.sh'
   echo ' 9102  9101 bash tests/run.sh'

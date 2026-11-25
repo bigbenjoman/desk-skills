@@ -496,9 +496,10 @@ export function testLockSlots() {
 // else the profile's light-lock-slots, else 1; anything but a whole number from 1 is 1. Above 1 only
 // while available memory is at or over the spawn gate's start (a gate at 0 is off).
 export function lightLockSlots({ avail = availableGiB } = {}) {
+  // The row's machine fallback is the profile's light-lock-slots (config-schema.mjs).
   let v = null;
-  try { v = configValue('light-lock-slots'); } catch { /* outside a repo: the profile's */ }
-  v = String(v ?? machineValue('light-lock-slots') ?? '').trim();
+  try { v = configValue('light-lock-slots'); } catch { v = machineValue('light-lock-slots'); /* outside a repo */ }
+  v = String(v ?? '').trim();
   const n = /^\d+$/.test(v) && Number(v) >= 1 ? Number(v) : 1;
   if (n === 1) return 1;
   let start = 0;
