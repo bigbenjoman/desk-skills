@@ -24,6 +24,12 @@ One script, registered by install.sh on five events; it reads `hook_event_name` 
                                  the handoff becomes a `/rename <name>` line to print first, since
                                  /clear drops the name. Any source also records the session's
                                  model, which says whether the window is 1M.
+  Stop, UserPromptSubmit,        For a batch this session runs through /loop, where the step above
+  PostToolUse                    did not act: at a turn's end, block it once per pass while the batch
+                                 has work a pass could move and no next pass recorded still to come
+                                 ("schedule the next tick first"); as the session works, once no pass
+                                 has run for twice the loop's interval, inject once per pass "re-arm
+                                 the loop", logged for needs-you (desk/bin/loop-tick.mjs decides both).
   PreCompact                     In compaction mode, where this session's handoff is written (and
                                  rewritten since it last fired): print
                                  it as an instruction for the compaction summary (its path, and that
@@ -56,6 +62,7 @@ Never fails a session: any error exits 0 with no output.
 Run as `desk-handoff.py offer-1m [--asked] [<dir>]` (not a hook event), it is /desk-update's one-time
 offer to lower a 1M threshold of 45 to 20: see offer_1m.
 """
+import calendar
 import glob
 import json
 import os
@@ -522,15 +529,16 @@ def on_context(event, data, session, root):
         "Record each action it leaves for the person (file this, merge that, run this) with "
         "`node ~/.claude/desk/bin/needs-you.mjs ask <SLUG from desk-env where> \"<what to do>\"`, "
         f"so desk-q lists it. {tail}"))
+    return True
 
 
 def on_stop(data, session, root):
     if data.get("stop_hook_active"):
-        return
+        return False
     state = load_state(session)
     fired = state.get("fired_at")
     if not fired or state.get("blocked"):
-        return
+        return False
     own = state.get("handoff")
     if own:
         # Written since this firing: a handoff kept from before a compaction must be refreshed.
@@ -547,6 +555,105 @@ def on_stop(data, session, root):
         f"desk handoff: write the handoff first. Context passed the threshold; write {path} "
         "(where things stand, the task in progress and its next step, decisions made, open "
         f"questions, the paste-in line){then}")}))
+    return True
+
+
+# A batch this session runs through /loop (loop-tick.mjs): the Stop step blocks a turn's end once
+# per pass while no next pass is recorded still to come, and the turn steps (UserPromptSubmit,
+# PostToolUse) inject a re-arm once per pass when no pass has run for twice the loop's interval.
+# Heartbeats are read here first, so the node call runs only for a beat this session wrote that is
+# due and not yet acted on.
+HALF_LIVE = 450  # with no next pass recorded, the interval is half of desk-q's LIVE_MS
+
+
+def session_slug(state, root):
+    if state.get("slug_root") != root:
+        rc, out = desk_env(root, "where")
+        state["slug_root"] = root
+        state["slug"] = next((line.split("=", 1)[1].strip().strip("'\"") for line in out.splitlines()
+                              if line.startswith("SLUG=")), "") if rc == 0 and "EXISTS=yes" in out else ""
+    return state["slug"]
+
+
+def own_beats(slug, session):
+    """(pass, next) in seconds, next None when unrecorded, of each queue's newest heartbeat that this
+    session wrote, in the repo's standing batch and its named ones."""
+    base = os.path.join(HOME, ".desk-autopilot", slug)
+    newest = {}
+    for path in (glob.glob(os.path.join(base, "orchestrators", "*.json"))
+                 + glob.glob(os.path.join(base, "batches", "*", "orchestrators", "*.json"))):
+        try:
+            with open(path) as f:
+                hb = json.load(f)
+            at = parse_iso(hb["at"])
+        except Exception:
+            continue
+        k = (os.path.dirname(path), hb.get("queue"))
+        if k not in newest or at > newest[k][0]:
+            newest[k] = (at, hb)
+    out = []
+    for _, hb in newest.values():
+        if hb.get("session") != session:
+            continue
+        p = parse_iso(hb.get("pass") or hb.get("at"))
+        n = parse_iso(hb["next"]) if hb.get("next") else None
+        if p is not None:
+            out.append((p, n))
+    return out
+
+
+def parse_iso(s):
+    try:
+        return float(calendar.timegm(time.strptime(str(s)[:19], "%Y-%m-%dT%H:%M:%S")))
+    except Exception:
+        return None
+
+
+def loop_due(slug, session, lost):
+    """A key for the passes whose beats are due: no next pass still to come, and with `lost`, no pass
+    for twice the interval. "" when none is."""
+    now, keys = time.time(), []
+    for p, n in own_beats(slug, session):
+        if n is not None and n > now:
+            continue
+        gap = n - p if n is not None and n > p else HALF_LIVE
+        if lost and now - p < 2 * gap:
+            continue
+        keys.append(f"{p:.0f}")
+    return " ".join(sorted(keys))
+
+
+def loop_tick(root, session, mode):
+    """loop-tick.mjs check's {key, text}, or None."""
+    script = os.path.join(DESK_HOME, "bin", "loop-tick.mjs")
+    try:
+        p = subprocess.run(["node", script, "check", session, mode], capture_output=True, text=True,
+                           timeout=10, cwd=root, env=dict(os.environ, DESK_REPO_DIR=root))
+        return json.loads(p.stdout) if p.returncode == 0 and p.stdout.strip() else None
+    except Exception:
+        return None
+
+
+def on_loop(event, data, session, root):
+    stop = event == "Stop"
+    if stop and data.get("stop_hook_active"):
+        return
+    state = load_state(session)
+    slug = session_slug(state, root)
+    mark = "loop_stop" if stop else "loop_turn"
+    key = loop_due(slug, session, not stop) if slug else ""
+    if not key or state.get(mark) == key:
+        save_state(session, state)
+        return
+    state[mark] = key  # acted on once, whatever the check says
+    save_state(session, state)
+    out = loop_tick(root, session, "stop" if stop else "turn")
+    if not out or not out.get("text"):
+        return
+    if stop:
+        print(json.dumps({"decision": "block", "reason": out["text"]}))
+    else:
+        inject(event, out["text"])
 
 
 def recorded_handoff(state, session, root, source):
@@ -714,9 +821,11 @@ def main():
     if not root or not session:
         return
     if event in ("UserPromptSubmit", "PostToolUse"):
-        on_context(event, data, session, root)
+        if not on_context(event, data, session, root):
+            on_loop(event, data, session, root)
     elif event == "Stop":
-        on_stop(data, session, root)
+        if not on_stop(data, session, root):
+            on_loop(event, data, session, root)
     elif event == "SessionStart":
         on_session_start(data, session, root)
     elif event == "PreCompact":

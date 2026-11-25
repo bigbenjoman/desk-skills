@@ -1074,9 +1074,11 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
 const SOON = MINUTE;
 // The shown states a pass can still move on: anything else waits on the user.
 const MOVABLE_STATES = ['running', 'finishing', 'ready', 'queued', 'waiting'];
+// Whether the batch has a ticket a pass could move.
+export const movable = (r) => r.rows.some((x) => MOVABLE_STATES.includes(x.k));
 // A batch whose passes stopped while it has a ticket autopilot could move: forecastOf's `paused`, and
 // needs-you's stalled item for a batch a session runs.
-export const passesPaused = (r) => !r.live && r.rows.some((x) => MOVABLE_STATES.includes(x.k));
+export const passesPaused = (r) => !r.live && movable(r);
 const undatable = (F) => !F || F.none || F.paused || F.idle;
 const etaOf = (F, key) => (undatable(F) ? null : F.T[key]);
 // With passes stopped there are no dates, but a running worker carries on, so its row says so.

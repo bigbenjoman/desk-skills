@@ -3850,7 +3850,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   const stalled = (w) => N.collect({ word: w }).items.filter((i) => i.kind === 'stalled');
   const s = stalled('stall911');
   t('#911 one item for the batch, naming its last pass and how to resume it', s.length === 1 && s[0].t.key === 'stalled'
-    && /^passes stopped in stall911, a batch a session runs, so nothing new starts or merges there: its last pass ran at \d{4}-\d\d-\d\d \d\d:\d\d UTC\. The session running it looks stalled: resume it, or run \/desk-autopilot in stall911$/.test(s[0].need), true);
+    && /^passes stopped in stall911, a batch a session runs, so nothing new starts or merges there: its last pass ran at \d{4}-\d\d-\d\d \d\d:\d\d UTC\. The loop lost its next tick, and the session could not re-arm it: it has taken no turn since \d{4}-\d\d-\d\d \d\d:\d\d UTC, when it was due to: resume the session, or run \/desk-autopilot in stall911$/.test(s[0].need), true);
   t('#911 its note says how long, and that its running worker carries on', s[0]?.note, 'Passes stopped 1h ago. Running workers carry on.');
   t('#911 it offers done and not-now', s[0]?.actions.map((a) => a[0]).join(), 'done,not-now');
   const standing = () => loadRepos(Date.now(), 'stall911').find((r) => r.slug === 'acme__stall911' && r.batch == null);
