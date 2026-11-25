@@ -31,7 +31,9 @@
 //
 // A valued lever is in the set on any value but its baseline, and the pin's `values` names the value
 // each valued lever runs on: its arm on trial, its adopted value while kept or on its holdback's
-// adopted arm, else its baseline.
+// adopted arm, the value it was set to by hand, else its baseline. One kept or set by hand with no
+// value recorded refuses the draw, with a needs-you item naming it, rather than run on the baseline;
+// one the row names is left out of the pin, with a warning, since the row names no value.
 //
 // The pin is the queue ticket's `levers: { set, arms, trial_ids, fp, block, at }`, with `values` where
 // it carries a valued lever (lever-pin.mjs); one
@@ -68,6 +70,11 @@ const blockSizeOf = (registry = REGISTRY) => Object.values(registry)
   .filter((l) => l.layer === 'low-risk' && l.trialled && isValued(l))
   .reduce((n, l) => (n * l.values.length) / gcd(n, l.values.length), BLOCK_SIZE);
 export const ACTOR = 'levers-auto';
+// A lever with more than two arms kept or set by hand with no value of its own: the draw is refused
+// rather than run on the baseline, and the repo gets a needs-you item naming the lever.
+class ValueMissing extends Error {
+  constructor(lever, message) { super(message); this.lever = lever; }
+}
 const WEEK_MS = 7 * 24 * 3_600_000;
 
 // A uniform draw in [0, 1) from the system's random source.
@@ -76,7 +83,8 @@ const systemRandom = () => randomBytes(4).readUInt32LE(0) / 2 ** 32;
 // Each registry lever's state in a repo, from its lever log's events (oldest first):
 //   -> { <lever>: { state, at, id, value? } }, `at` and `id` those of the event that set it, null with
 //   none. A kept lever carries the `value` its adopt chose, where the event names one (a lever with
-//   more than two arms), through to settled. An overridden lever (lever-changes.mjs) carries the `value`, `on` or `off`, it was set to. An
+//   more than two arms), through to settled. An overridden lever (lever-changes.mjs) carries the `value`,
+//   `on` or `off` (one of its values, for a lever with more than two), it was set to. An
 //   override whose `to` is `on` or `off` with that same `value` (levers.mjs decide) is overridden to it;
 //   one with no value (levers.mjs undo, back to a plain state) is that state. An override carrying
 //   `restores: { id, at }` (levers.mjs undo) takes the restored state's `id` and `at`, so a trial keeps its
@@ -96,7 +104,11 @@ export function leverStatesIn(events, registry = REGISTRY) {
     // A value carries from adopted to settled with no event naming it again.
     const keptValue = typeof e.value === 'string' ? e.value : KEPT_STATES.includes(out[e.lever].state) ? out[e.lever].value : undefined;
     const kept = KEPT_STATES.includes(state) && isValued(registry[e.lever]) && keptValue ? { value: keptValue } : {};
-    out[e.lever] = { state, at: from.at ?? null, id: from.id ?? null, ...(state === 'overridden' ? { value: value === 'on' ? 'on' : 'off' } : kept) };
+    // An overridden lever with more than two arms carries the value it was set to, or none where the
+    // override named no value of its own (the draw refuses it then).
+    const vals = registry[e.lever].values;
+    const overridden = vals ? (vals.includes(value) ? { value } : {}) : { value: value === 'on' ? 'on' : 'off' };
+    out[e.lever] = { state, at: from.at ?? null, id: from.id ?? null, ...(state === 'overridden' ? overridden : kept) };
   }
   return out;
 }
@@ -108,14 +120,16 @@ const blockSize = (size) => {
 };
 
 // The block the next ticket of `size` joins, from the repo's earlier assign events: the latest block
-// of that size while it has fewer than `n` members, else the next one.
+// of that size while it has fewer than `n` members and every member `fits` it, else the next one. A
+// member drawn before a lever on trial had its values (its arm not one of them) does not fit, so the
+// first block drawn with the values starts empty and can balance.
 //   -> { id, members: [assign event] }
-function nextBlock(slug, key, size, assigns, n = BLOCK_SIZE) {
+function nextBlock(slug, key, size, assigns, n = BLOCK_SIZE, fits = () => true) {
   if (!size) return { id: `${slug}/unsized/${key}`, members: [] };
   const sized = assigns.filter((e) => e.size === size && typeof e.block === 'string');
   const last = sized.at(-1)?.block;
   const members = last ? sized.filter((e) => e.block === last) : [];
-  if (last && members.length < n) return { id: last, members };
+  if (last && members.length < n && members.every(fits)) return { id: last, members };
   const next = last ? Number(last.split('/').pop()) + 1 : 1;
   return { id: `${slug}/${size}/${Number.isFinite(next) ? next : sized.length + 1}`, members: [] };
 }
@@ -339,19 +353,29 @@ function draw({ slug, key, size, events, states, frozen, values, random, now, re
   const trialIds = {};
   const leverValues = {};
   const perBlock = blockSizeOf(registry);
-  const b = frozen ? { id: null, members: [] } : nextBlock(slug, key, size, events.filter((e) => e.kind === 'assign'), perBlock);
+  // The valued levers drawn in a block here: each member of the block joined must hold one of their values.
+  const auto = (name) => states[name] === 'auto' && preconditions(name, values, registry).eligible;
+  const valuedTrials = Object.keys(registry).filter((n) => isValued(registry[n]) && registry[n].layer === 'low-risk' && auto(n) && byLever[n].state === 'trial');
+  const fits = (e) => valuedTrials.every((n) => registry[n].values.includes(e.arms?.[n]));
+  const b = frozen ? { id: null, members: [] } : nextBlock(slug, key, size, events.filter((e) => e.kind === 'assign'), perBlock, fits);
   let blocked = false;
+  const refused = [];
   for (const name of Object.keys(registry)) {
     const row = states[name];
+    // The row names no value, so it cannot pin a lever with more than two arms.
+    if (row === 'pinned' && isValued(registry[name])) { refused.push(name); continue; }
     if (row === 'pinned') { set.push(name); continue; }
-    if (row !== 'auto' || !preconditions(name, values, registry).eligible) continue;
+    if (!auto(name)) continue;
     const l = registry[name];
     const s = byLever[name];
-    // A valued lever runs on its baseline unless drawn, or kept on, another value below.
-    if (isValued(l)) leverValues[name] = KEPT_STATES.includes(s.state) ? s.value ?? l.baseline : l.baseline;
+    if (isValued(l) && ['overridden', ...KEPT_STATES].includes(s.state) && !s.value) {
+      throw new ValueMissing(name, `${name} is ${s.state} with no value of its own recorded (want one of ${l.values.join(', ')}); set one with levers decide`);
+    }
+    // A valued lever runs on its baseline unless drawn, kept on or set to another value below.
+    if (isValued(l)) leverValues[name] = ['overridden', ...KEPT_STATES].includes(s.state) ? s.value : l.baseline;
     // Set by hand: pinned to its value, with no arm, whatever the freeze or the layer.
     if (s.state === 'overridden') {
-      if (s.value === 'on') set.push(name);
+      if (isValued(l) ? s.value !== l.baseline : s.value === 'on') set.push(name);
       continue;
     }
     // The quality-risk layer is drawn as one, below.
@@ -391,7 +415,7 @@ function draw({ slug, key, size, events, states, frozen, values, random, now, re
       : `${key} drew ${drawn ? Object.entries(arms).map(([n, a]) => `${n} ${a}`).join(', ') : 'no arm'} at admission`,
     ticket: key, size, block, arms, trial_ids: trialIds, set, ...valued,
   };
-  return { pin, event };
+  return { pin, event, refused };
 }
 
 // The pin ticket `key` is admitted with, given its triage size. In a repo with `auto` in its levers
@@ -404,8 +428,11 @@ export function assignPin(key, {
   size = null, slug, states = leverStates({}).states, frozen, random = systemRandom,
   now = new Date(), registry = REGISTRY, values = null, inFlight = null, merged = null,
 } = {}) {
-  const rowPin = () => pinAtAdmission({ on: Object.keys(states).filter((n) => states[n] === 'pinned') }, now);
-  if (!Object.values(states).includes('auto')) return { pin: rowPin(), assigned: false, warning: null };
+  // A lever with more than two arms is never pinned by the row, which names no value for it.
+  const rowRefused = Object.keys(states).filter((n) => states[n] === 'pinned' && isValued(registry[n]));
+  const refusedText = (names) => (names.length ? `levers: the levers row names ${names.join(', ')}, which ha${names.length === 1 ? 's' : 've'} more than two arms and no value the row can give, so ${key} is not pinned with ${names.length === 1 ? 'it' : 'them'}; leave ${names.length === 1 ? 'it' : 'them'} to auto` : null);
+  const rowPin = () => pinAtAdmission({ on: Object.keys(states).filter((n) => states[n] === 'pinned' && !rowRefused.includes(n)) }, now);
+  if (!Object.values(states).includes('auto')) return { pin: rowPin(), assigned: false, warning: refusedText(rowRefused) };
   let result = null;
   let unreadable = null;
   try {
@@ -443,15 +470,27 @@ export function assignPin(key, {
       }
       const t = tickets();
       const pending = t.saved ? pendingPins(log.events, { saved: t.saved, merged: t.merged, key, now: now.getTime() }) : [];
-      result = draw({ slug, key, size: blockSize(size), events: log.events, states, frozen: !!frozen, values, random, now, registry, inFlight: [...t.inFlight, ...pending] });
+      try {
+        result = draw({ slug, key, size: blockSize(size), events: log.events, states, frozen: !!frozen, values, random, now, registry, inFlight: [...t.inFlight, ...pending] });
+      } catch (e) {
+        if (!(e instanceof ValueMissing)) throw e;
+        unreadable = e.message;
+        // One item while the value stays missing: a later change to the lever spends it.
+        const last = log.events.at(-1);
+        if (last?.kind === 'needs_you' && last.reason_code === 'value_missing' && last.lever === e.lever) return null;
+        return { kind: 'needs_you', lever: e.lever, actor: ACTOR, reason_code: 'value_missing', reason: unassignableText(slug, e.message), ticket: key };
+      }
       return result.event;
-    });
+    }, { registry });
   } catch (e) {
     unreadable ??= e.message;
     result = null;
   }
-  if (unreadable || !result) return { pin: rowPin(), assigned: false, warning: `levers: ${slug} cannot be assigned trial arms (${unreadable}); ${key} is pinned with the row's named levers alone` };
-  return { pin: result.pin, assigned: true, warning: null };
+  if (unreadable || !result) {
+    const why = `levers: ${slug} cannot be assigned trial arms (${unreadable}); ${key} is pinned with the row's named levers alone`;
+    return { pin: rowPin(), assigned: false, warning: [why, refusedText(rowRefused)].filter(Boolean).join('\n') };
+  }
+  return { pin: result.pin, assigned: true, warning: refusedText(result.refused) };
 }
 
 const isMain = (() => {

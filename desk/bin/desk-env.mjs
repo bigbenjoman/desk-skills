@@ -2527,10 +2527,15 @@ if (isMain) {
           if (!args[0]) process.exitCode = 1;
         }
         if (args[0]) {
-          // A lever with more than two arms prints the value this ticket's pin gave it.
+          // A lever with more than two arms prints the value this ticket's pin gave it, else its
+          // baseline: never on or off. The registry imports this module, so it is loaded without await.
           const value = leverValue(args[0]);
-          console.log(value ?? (leverOn(args[0], l) ? 'on' : 'off'));
-          if (!value && !LEVERS.includes(args[0])) console.error(`desk-env: "${args[0]}" is not a lever desk knows (${known}); read as off`);
+          if (value) { console.log(value); break; }
+          import('./lever-registry.mjs').then(({ REGISTRY, isValued }) => {
+            const reg = REGISTRY[args[0]];
+            console.log(isValued(reg) ? reg.baseline : leverOn(args[0], l) ? 'on' : 'off');
+            if (!LEVERS.includes(args[0])) console.error(`desk-env: "${args[0]}" is not a lever desk knows (${known}); read as off`);
+          }, (e) => { console.error(`desk-env levers: the lever registry: ${e.message}`); process.exitCode = 1; });
           break;
         }
         console.log(`on: ${l.on.join(' ') || 'none'}`);

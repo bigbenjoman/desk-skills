@@ -702,6 +702,17 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   const v3 = wrappersRow(V3);
   t('valued: a guardrail breach on one value reverts the lever to its baseline', [v3.decision, v3.state, v3.value, v3.reason_code], ['revert', 'reverted', 'mixed', 'guardrail_fix_tries_parks']);
   t('valued: the revert carries no value', transitionOf(V3).map((e) => [e.to, e.value ?? null]), [['reverted', null]]);
+  // A breach on one value reverts the lever, though another value would adopt.
+  const V4 = 'acme__valued-breach-adopt';
+  evalV([repo(V4, valueRows(V4, 30, { 'one-at-a-time': calm, batched: (i) => ({ ...better.on(i), ...calm(i) }), mixed: parks }))]);
+  const v4 = wrappersRow(V4);
+  t('valued: one value adopts while another breaches, and the breach wins, reverting the lever to its baseline',
+    [v4.values.batched.decision, v4.values.mixed.decision, v4.decision, v4.state, v4.value, transitionOf(V4).map((e) => e.to)], ['adopt', 'revert', 'revert', 'reverted', 'mixed', ['reverted']]);
+  // Two values weighed at once: each must clear 1 - 0.1 / 2.
+  t('valued: with two values beside the baseline, each needs 95%', v1.p_required, 0.95);
+  const near = { ...good, mechanism: { ...good.mechanism, p_benefit: 0.92 } };
+  t('valued: a benefit that clears 90% but not 95% does not adopt', [decide({ ...base, ...near }).decision, decide({ ...base, ...near, probability: 0.95 }).decision], ['adopt', 'hold']);
+  t('valued: and the hold says what each value needs', /under the 95% each of its values needs/.test(decide({ ...base, ...near, probability: 0.95 }).reason), true);
 }
 
 rmSync(T, { recursive: true, force: true });

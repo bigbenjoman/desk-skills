@@ -181,6 +181,7 @@ export const REASON_CODES = Object.freeze({
   ramp_clean: 'its tickets so far ran with no hard trip, so it reaches more tickets',
   audit_missing: 'no blind audit has been recorded in this repo yet',
   audits_pending: 'blind audits are due and not yet recorded',
+  value_missing: 'a lever with more than two arms is kept or set by hand with no value of its own recorded, so its tickets cannot be assigned arms',
 });
 
 // The wording for a reason code, or null for a code not in the list.

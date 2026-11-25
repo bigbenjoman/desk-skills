@@ -312,6 +312,40 @@ t('usage: a missing choice exits 2', ru.status, 2);
   t('valued: the summary line counts its smallest value', sl, 'levers: wrappers trial 1/30');
   const kept = [{ kind: 'transition', lever: 'wrappers', from: 'trial', to: 'settled', value: 'batched', at: at(60), id: 'e1', actor: 'levers-auto', reason_code: 'holdback_ended', reason: 'x' }];
   t('valued: a kept lever shows its value', summaryLine({ slug: DS, states: { wrappers: 'auto' }, events: kept, registry: VR }), 'levers: wrappers settled batched');
+
+  // Decisions and overrides take the lever's values, never on or off.
+  const { leverDecision, overrideEvent } = await import('../desk/bin/lever-changes.mjs');
+  const { decide: decideBy, undo: undoBy } = await import('../desk/bin/levers.mjs');
+  const adoptV = { id: 'av1', repo: DS, at: at(5), kind: 'transition', lever: 'wrappers', from: 'trial', to: 'adopted', value: 'batched', actor: 'levers-auto', reason_code: 'adopt_all_conditions', reason: 'every adopt condition held', ...ev };
+  const dAdopt = leverDecision(adoptV, { slug: DS, registry: VR });
+  t('valued: an adopt is logged as the value chosen, the baseline and the other values the choices', [dAdopt.chose, dAdopt.options], ['batched', ['batched', 'one-at-a-time', 'mixed']]);
+  t('valued: a revert is logged as the baseline', leverDecision({ ...adoptV, to: 'reverted', value: undefined }, { slug: DS, registry: VR }).chose, 'one-at-a-time');
+  t('valued: an override to on or off is refused, naming its values', /more than two arms.*\(one-at-a-time, batched, mixed\), not "off"/.test(overrideEvent(dAdopt, 'off', [], { registry: VR }).why), true);
+  const ov = overrideEvent(dAdopt, 'mixed', [adoptV], { registry: VR }).event;
+  t('valued: an override to a value sets it', [ov.to, ov.value], ['overridden', 'mixed']);
+  let refusedOff = '';
+  try { decideBy({ repo: 'desk-skills', lever: 'wrappers', choice: 'off', configRoot: CONFIG, registry: VR }); } catch (e) { refusedOff = e.message; }
+  t('valued: levers decide refuses off for it', /one of its values or trial \(one-at-a-time, batched, mixed, trial\), not "off"/.test(refusedOff), true);
+  // Adopted on a value, set to another by hand, then undone: back to adopted on its value.
+  reset(DS);
+  mkdirSync(state(DS), { recursive: true });
+  writeFileSync(logFile(DS), `${JSON.stringify({ v: 1, ...adoptV })}\n`);
+  const dv = decideBy({ repo: 'desk-skills', lever: 'wrappers', choice: 'mixed', configRoot: CONFIG, registry: VR });
+  t('valued: levers decide sets the value, logging it with the values as the choices', [dv.event.to, dv.event.value, dv.entry.chose, dv.entry.options], ['overridden', 'mixed', 'mixed', ['mixed', 'one-at-a-time', 'batched', 'trial']]);
+  t('valued: set to a value, it reads overridden to it', leverStatesIn(events(DS), VR).wrappers, { state: 'overridden', at: dv.event.at, id: dv.event.id, value: 'mixed' });
+  const uv = undoBy({ repo: 'desk-skills', lever: 'wrappers', configRoot: CONFIG, registry: VR });
+  t('valued: the undo puts back the adopt with its value', [uv.event.to, uv.event.value], ['adopted', 'batched']);
+  const back = leverStatesIn(events(DS), VR).wrappers;
+  t('valued: and the lever reads adopted on that value again', [back.state, back.value, back.id], ['adopted', 'batched', 'av1']);
+  const after = assignPin('V-9', { slug: DS, size: 'S', states: { ...Object.fromEntries(Object.keys(VR).map((n) => [n, 'off'])), wrappers: 'auto' }, now: new Date(), registry: VR, values: { 'worker-location': 'local' } }).pin;
+  t('valued: the next ticket runs the adopted value, or the baseline on its holdback', after.values.wrappers, after.arms.wrappers === 'holdback' ? 'one-at-a-time' : 'batched');
+  // Undoing desk's adopt puts it back on its baseline, by hand.
+  reset(DS);
+  mkdirSync(state(DS), { recursive: true });
+  writeFileSync(logFile(DS), `${JSON.stringify({ v: 1, ...adoptV })}\n`);
+  const ub = undoBy({ repo: 'desk-skills', lever: 'wrappers', configRoot: CONFIG, registry: VR });
+  t('valued: undoing desk\'s adopt sets the baseline, never off', [ub.event.to, ub.event.value, ub.entry.chose], ['overridden', 'one-at-a-time', 'one-at-a-time']);
+  reset(DS);
 }
 
 console.log(fails ? `\n${fails} failed` : '\nall passed');

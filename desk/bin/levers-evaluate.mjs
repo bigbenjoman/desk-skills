@@ -20,10 +20,14 @@
 // installed now (its recorded fingerprint) is left out and counted as excluded.
 //
 // A lever with more than two arms (lever-registry.mjs `values`) on trial is weighed value by value, each
-// against its baseline arm, by the same rule. It adopts the value with the best mechanism estimate among
-// those every adopt condition holds for, carried as the transition's `value`; a guardrail breach on any
-// value reverts it to the baseline; it reverts at the maximum sample only once no value can adopt. Its
-// row holds each value's figures under `values`, and the leading value's at the top level.
+// against its baseline arm, by the same rule, but with the mechanism's probability corrected for the k
+// values weighed at once (Bonferroni): each must clear 1 - (1 - p) / k, p the rule's probability, so a
+// lever with one value beside its baseline is weighed as an on/off one. A guardrail breach on any value
+// reverts the lever to its baseline, whatever another value shows; otherwise it adopts the value with the
+// best mechanism estimate among those every adopt condition holds for, carried as the transition's
+// `value`, and it reverts at the maximum sample only once no value can adopt. Its row holds each value's
+// figures under `values`, the probability each needed as `p_required`, and the leading value's figures
+// at the top level.
 //
 // It writes, under ~/.desk-autopilot/<slug>/: one lever-evals.jsonl row per lever evaluated, whatever
 // the decision; the rows each evaluation used in levers-evidence/<eval_id>.jsonl (kept 180 days), whose
@@ -309,11 +313,12 @@ export const frozenText = (lever, name, why) => `${lever} is frozen in ${name} a
 // times the repo's log has reverted it before, `changedAt` when it last changed state there (ms or
 // null). A quality-risk trial passes `audits`, its blind audits in the repo: it adopts only once one is
 // recorded and none due is still waiting; `auditP0`, one reverted by a blind audit's P0, never adopts.
-// A pair trial (`pair`) is weighed on the rule's cost bound and
+// `probability` is what the mechanism's benefit must clear: the rule's, or a valued lever's corrected
+// one. A pair trial (`pair`) is weighed on the rule's cost bound and
 // guardrails alone, each lever's mechanism having been proven when it was adopted alone.
 //   -> { decision, to, reason_code, reason, next }
-export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, frozen = false, incomplete = [], changedAt = null, priorReverts = 0, now, holdbackWeeks, audits = null, auditP0 = false, pair = false }) {
-  const R = DECISION_RULE;
+export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, frozen = false, incomplete = [], changedAt = null, priorReverts = 0, now, holdbackWeeks, audits = null, auditP0 = false, pair = false, probability = DECISION_RULE.probability }) {
+  const R = { ...DECISION_RULE, probability };
   const smaller = Math.min(n.on, n.off);
   const earliest = changedAt == null ? now : changedAt + R.cooldown_days * DAY_MS;
   const cooling = now < earliest;
@@ -344,7 +349,7 @@ export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, froz
 
   const unmet = [];
   if (pair) { /* no mechanism of its own */ } else if (mechanism.min_benefit == null) unmet.push(`${mechanism.metric} has no registered minimum`);
-  else if (!(mechanism.p_benefit >= R.probability)) unmet.push(`${mechanism.metric} ${pct(mechanism.est)} (90%: ${pct(mechanism.lo90)} to ${pct(mechanism.hi90)}) is ${pct(mechanism.min_benefit)} or better with only ${Math.round((mechanism.p_benefit ?? 0) * 100)}% probability`);
+  else if (!(mechanism.p_benefit >= R.probability)) unmet.push(`${mechanism.metric} ${pct(mechanism.est)} (90%: ${pct(mechanism.lo90)} to ${pct(mechanism.hi90)}) is ${pct(mechanism.min_benefit)} or better with only ${Math.round((mechanism.p_benefit ?? 0) * 100)}% probability${probability !== DECISION_RULE.probability ? `, under the ${Math.round(probability * 1000) / 10}% each of its values needs` : ''}`);
   if (!(Number.isFinite(cost.hi90) && cost.hi90 < R.cost_ratio_max)) unmet.push(`cost ratio ${x2(cost.ratio)} (90%: ${x2(cost.lo90)} to ${x2(cost.hi90)}) does not rule out ${x2(R.cost_ratio_max)}`);
   const notOk = guardrails.filter((g) => g.status !== 'ok');
   if (notOk.length) unmet.push(`guardrails not within margin: ${notOk.map((g) => `${g.name} ${g.status}`).join(', ')}`);
@@ -370,16 +375,17 @@ export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, froz
 }
 
 // The value a valued lever's evaluation acts on, from each value's weighing against the baseline
-// ({ <value>: { mechanism, d } }): of those that adopt, the best mechanism estimate (lowest, every
-// metric falling); else one reverting on a guardrail; else, once every value reverts at the maximum
+// ({ <value>: { mechanism, d } }): one reverting on a guardrail, which reverts the lever to its
+// baseline whatever the others show; else, of those that adopt, the best mechanism estimate (lowest,
+// every metric falling); else, once every value reverts at the maximum
 // sample, the first; else the best estimate among those holding.
 function leadValue(perValue) {
   const all = Object.entries(perValue);
   const best = (xs) => [...xs].sort(([, a], [, b]) => (a.mechanism?.est ?? Infinity) - (b.mechanism?.est ?? Infinity))[0][0];
-  const adopts = all.filter(([, x]) => x.d.decision === 'adopt');
-  if (adopts.length) return best(adopts);
   const breach = all.find(([, x]) => x.d.decision === 'revert' && x.d.reason_code.startsWith('guardrail_'));
   if (breach) return breach[0];
+  const adopts = all.filter(([, x]) => x.d.decision === 'adopt');
+  if (adopts.length) return best(adopts);
   const holds = all.filter(([, x]) => x.d.decision !== 'revert');
   return holds.length ? best(holds) : all[0][0];
 }
@@ -491,15 +497,18 @@ export function evaluate({
       const quality = reg.layer === 'quality-risk' && ['trial', 'reverted'].includes(s.state);
       const audits = quality ? auditCount(r.audits, s.state === 'trial' ? trialId(r.slug, lever, s) : p.rows[0]?.pin?.trial_ids?.[lever] ?? null) : null;
       const auditP0 = quality && s.state === 'reverted' && (r.log.events ?? []).filter((e) => e.lever === lever && e.id === s.id).some((e) => e.reason_code === 'audit_p0');
-      const decideOn = (w) => decide({ state: s.state, n: w.n, minN, maxN: DECISION_RULE.max_per_arm, mechanism: w.mechanism, cost: w.cost, guardrails: w.guardrails, frozen, incomplete, changedAt, priorReverts, now, holdbackWeeks: reg.ramp.holdback_weeks, audits, auditP0 });
+      const decideOn = (w, probability) => decide({ state: s.state, n: w.n, minN, maxN: DECISION_RULE.max_per_arm, mechanism: w.mechanism, cost: w.cost, guardrails: w.guardrails, frozen, incomplete, changedAt, priorReverts, now, holdbackWeeks: reg.ramp.holdback_weeks, audits, auditP0, probability });
+      // A valued lever's values are weighed at once: each clears the rule's probability shared among them.
+      const others = isValued(reg) ? reg.values.filter((v) => v !== reg.baseline) : [];
+      const pRequired = r4(1 - (1 - DECISION_RULE.probability) / Math.max(1, others.length));
       let w;
       let d;
       let perValue = null;
       if (isValued(reg) && s.state !== 'adopted') {
         // Each value against the baseline; the lead value's figures and decision stand for the lever.
-        perValue = Object.fromEntries(reg.values.filter((v) => v !== reg.baseline).map((v) => {
+        perValue = Object.fromEntries(others.map((v) => {
           const wv = weigh(valueRows(used, v, reg.baseline), pooled?.values?.[v] ?? null, `${seed}|${v}`);
-          return [v, { ...wv, d: decideOn(wv) }];
+          return [v, { ...wv, d: decideOn(wv, pRequired) }];
         }));
         const value = leadValue(perValue);
         ({ d, ...w } = perValue[value]);
@@ -556,7 +565,7 @@ export function evaluate({
           written.events.push(e);
           to = d.to;
           // An adopt or a revert is a call taken without asking: the digest lists it, to be overridden.
-          recordLeverDecision([e], { slug: r.slug, repo: r.ghRepo ?? null, state: r.state });
+          recordLeverDecision([e], { slug: r.slug, repo: r.ghRepo ?? null, state: r.state, registry });
           if (d.to === 'frozen') {
             append({ kind: 'needs_you', lever, actor: ACTOR, reason_code: 'frozen_second_revert', at, ...evidence,
               reason: frozenText(lever, r.name, d.reason) });
@@ -567,7 +576,7 @@ export function evaluate({
         ...base, state: to ?? s.state, ...(to ? { from: s.state } : {}), arm_share_7d: share, n, mechanism, cost, guardrails,
         decision: to ? d.decision : 'hold', reason_code: d.reason_code, reason: d.to && !to ? `${d.reason}; not written, as the lever changed state while it was evaluated` : d.reason, next: d.next,
         ...(incomplete.length ? { missing: incomplete } : {}), ...(audits ? { audits } : {}),
-        ...(perValue ? { value: d.value, baseline: reg.baseline, values: Object.fromEntries(Object.entries(perValue).map(([v, x]) => [v, { n: x.n, mechanism: x.mechanism, cost: x.cost, guardrails: x.guardrails, decision: x.d.decision, reason_code: x.d.reason_code, reason: x.d.reason }])) } : {}),
+        ...(perValue ? { value: d.value, baseline: reg.baseline, p_required: pRequired, values: Object.fromEntries(Object.entries(perValue).map(([v, x]) => [v, { n: x.n, mechanism: x.mechanism, cost: x.cost, guardrails: x.guardrails, decision: x.d.decision, reason_code: x.d.reason_code, reason: x.d.reason }])) } : {}),
         ...evidence, desk_commit_range: range, claude_versions: versions, inputs_age_s: inputsAge(r, now),
       });
     }

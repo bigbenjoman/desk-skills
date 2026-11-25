@@ -3,7 +3,7 @@
 // taken call in category `engineering` in the repo's decision log, so the check-in digest lists it on its
 // Levers section with the evidence behind it, and `digest.mjs override <slug> <id> off|on` sets the lever
 // by hand: one `override` event in the repo's lever log, actor `ben`, whose `to` is `overridden` and whose
-// `value` is the choice. An overridden lever is pinned to that value for every ticket admitted after it,
+// `value` is the choice (one of its values, for a lever with more than two arms). An overridden lever is pinned to that value for every ticket admitted after it,
 // and is neither evaluated nor tripped again. `desk-env levers` prints one summary line of each managed
 // lever's state in a repo whose levers row reads `auto`.
 //
@@ -25,16 +25,22 @@ const repoName = (slug) => shortName(String(slug ?? ''));
 // Whether a lever log event is an adopt or a revert the person is told about.
 export const isDecided = (e) => ['transition', 'trip'].includes(e?.kind) && DECIDED.includes(e.to) && !!e.lever;
 
+// The choices a lever is overridden to: `on` and `off`, or a lever with more than two arms' values.
+export const choicesOf = (lever, registry = REGISTRY) => (isValued(registry[lever]) ? registry[lever].values : VALUES);
+
 // The taken call an adopt or revert event is, as a decision log entry, or null for any other event. Its
 // `chose` is the lever's value after it: `on` for an adopt, `off` for a revert; the override takes the
-// other. `ticket` is the ticket a trip names, else null.
-export function leverDecision(e, { slug = e?.repo, repo = null } = {}) {
+// other. A lever with more than two arms chose the value it was adopted on, or its baseline on a
+// revert, and the override takes any of its values. `ticket` is the ticket a trip names, else null.
+export function leverDecision(e, { slug = e?.repo, repo = null, registry = REGISTRY } = {}) {
   if (!isDecided(e)) return null;
-  const chose = e.to === 'adopted' ? 'on' : 'off';
+  const l = registry[e.lever];
+  const chose = isValued(l) ? (e.to === 'adopted' ? e.value ?? l.baseline : l.baseline) : e.to === 'adopted' ? 'on' : 'off';
+  const options = [chose, ...choicesOf(e.lever, registry).filter((c) => c !== chose)];
   const why = e.kind === 'trip' ? `a hard trip, ${e.trip ?? e.reason_code} on ${e.ticket}` : reasonWording(e.reason_code) ?? e.reason_code;
   const question = `Is ${e.lever} ${chose} in ${repoName(slug)}? desk ${e.to === 'adopted' ? 'adopted' : e.to === 'frozen' ? 'reverted and froze' : 'reverted'} it (${why}).`;
   const entry = decisionEntry({
-    decision: { question, options: chose === 'on' ? ['on', 'off'] : ['off', 'on'], chose, category: CATEGORY },
+    decision: { question, options, chose, category: CATEGORY },
     ticket: e.kind === 'trip' ? e.ticket ?? null : null, run: e.id, repo, pr: null, at: e.at, source: 'levers',
   });
   return { ...entry, slug, lever: e.lever, lever_event: e.id };
@@ -44,9 +50,9 @@ export function leverDecision(e, { slug = e?.repo, repo = null } = {}) {
 // own state folder), once each. Never throws: a decision log that cannot be written never undoes the
 // change. The refusal goes to stderr, and the digest records a missing decision again when it lists the
 // change (digest.mjs leverChanges). -> the entries appended.
-export function recordLeverDecision(events, { slug, repo = null, state }) {
+export function recordLeverDecision(events, { slug, repo = null, state, registry = REGISTRY }) {
   try {
-    const entries = (events ?? []).map((e) => leverDecision(e, { slug, repo })).filter(Boolean);
+    const entries = (events ?? []).map((e) => leverDecision(e, { slug, repo, registry })).filter(Boolean);
     return entries.length ? appendDecisions(entries, state) : [];
   } catch (err) {
     process.stderr.write(`lever-changes: ${slug}'s decision log in ${state} refused a lever decision: ${err.message}\n`);
@@ -114,8 +120,11 @@ export function changeLine(e, { decision = null, overridden = false, cmd = 'dige
 // The lever log event an override of lever decision `d` writes, given the repo's events so far, or
 // {why} when it cannot be overridden.
 export function overrideEvent(d, choice, events, { registry = REGISTRY, at = new Date().toISOString() } = {}) {
-  if (!VALUES.includes(choice)) return { why: `a lever decision is overridden to on or off, not "${choice}"` };
   if (!Object.hasOwn(registry, d.lever)) return { why: `${d.lever} is not a lever the registry declares` };
+  if (isValued(registry[d.lever]) && !choicesOf(d.lever, registry).includes(choice)) {
+    return { why: `${d.lever} has more than two arms: a decision on it is overridden to one of its values (${choicesOf(d.lever, registry).join(', ')}), not "${choice}"` };
+  }
+  if (!choicesOf(d.lever, registry).includes(choice)) return { why: `a lever decision is overridden to on or off, not "${choice}"` };
   const s = leverStatesIn(events, registry)[d.lever];
   return {
     event: {

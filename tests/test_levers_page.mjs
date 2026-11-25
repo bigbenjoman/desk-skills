@@ -309,8 +309,8 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
     ...machine({ repos: autoRepos, now: NOW2, files: { [`${DS}/lever-evals.jsonl`]: jsonl(valuedEvals), [`${DS}/levers.jsonl`]: jsonl(log), [`${DS}/levers-evidence/evl_1.jsonl`]: jsonl(rows) } }),
     now: NOW2, tz: 'UTC', generatedAt: NOW2,
   });
-  const vkept = section(P.renderPage(valuedView), 'ch-h').split('<details class="change">')[1].split('</details>')[0];
-  t('a valued lever: tickets per arm name its value and baseline', vkept.match(/<dt>Tickets per arm<\/dt><dd>(.*?)<\/dd>/)?.[1], '40 batched, 38 one-at-a-time');
+  const vchange = valuedView.panels.changes.all.find((c) => c.lever === 'preflight' && c.evidence);
+  t('a valued lever: the view names the arms its counts are of, its value and baseline', JSON.stringify([vchange?.evidence?.n?.arms, vchange?.evidence?.n?.on, vchange?.evidence?.n?.off]), '[["batched","one-at-a-time"],40,38]');
   t('AC11 a change citing no evaluation says so', section(hSix, 'ch-h').split('<details class="change">')[3].includes('<dt>Tickets per arm</dt><dd><span class="muted">not recorded</span>'), true);
 }
 
