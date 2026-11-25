@@ -18,7 +18,8 @@
 // The pushes are reconciled on each supervisor tick, under its batch lock (duePushes): every park
 // still handed on and unanswered (<state>/handed.json) that its arm pushes, and that no push and no
 // digest has presented, is due. Once the notification is out, markPushed keeps it in
-// <state>/ask-pushes.json and records the ask as presented by push. The digest still lists a pushed
+// <state>/ask-pushes.json and records the ask as presented by push in the ledger; either record counts
+// as pushed, so one whose register write failed is not pushed again. The digest still lists a pushed
 // ask, but not as fresh (pushedAsks).
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -66,13 +67,14 @@ export const raisedOf = (t, q) => ({ step: 'raised', key: t.key, since: t.park?.
 // The same for handed item `i` (one park, `p` its park record), its key and since given by the caller.
 export const raised = (i, p, q) => ({ step: 'raised', kind: p.kind, question: p.question ?? i.text, ...armFields(i.ticket, q) });
 
-// The time each ask of queue file `queue`'s ledger was presented by a check-in digest: Map(ask id ->
-// at), empty where the ledger cannot be read.
-export function digestPresented(queue) {
+// The time each ask of queue file `queue`'s ledger was presented `via` a check-in digest or a push:
+// Map(ask id -> at), empty where the ledger cannot be read.
+function presentedVia(queue, via) {
   try {
-    return new Map(readAsks(fold(ledgerTarget(queue).repoDir)).flatMap((a) => a.presented.filter((p) => p.via === 'digest').map((p) => [a.ask, p.at])));
+    return new Map(readAsks(fold(ledgerTarget(queue).repoDir)).flatMap((a) => a.presented.filter((p) => p.via === via).map((p) => [a.ask, p.at])));
   } catch { return new Map(); }
 }
+export const digestPresented = (queue) => presentedVia(queue, 'digest');
 
 const registerPath = (state) => join(state, 'ask-pushes.json');
 // The asks pushed from batch state folder `state`: { <ask id>: at }.
@@ -100,8 +102,10 @@ export function duePushes(state, q, { queue, slug, now = new Date() } = {}) {
   const pushed = readPushed(state);
   const left = asks.filter((a) => !pushed[a.ask] && !answered(state, a.entry));
   if (!left.length) return [];
+  // The ledger's record of a push stands where the register's write failed.
   const shown = digestPresented(queue);
-  return [...new Map(left.filter((a) => !shown.has(a.ask)).map((a) => [a.ask, a])).values()]
+  const sent = presentedVia(queue, 'push');
+  return [...new Map(left.filter((a) => !shown.has(a.ask) && !sent.has(a.ask)).map((a) => [a.ask, a])).values()]
     .map((a) => ({ key: `ask:${slug}:${a.ask}`, text: `${a.ticket}: ${a.question}`, ticket: a.ticket, since: a.since }));
 }
 
@@ -121,8 +125,14 @@ export function markPushed(state, sent, { queue, now = new Date() } = {}) {
   return [...lines, ...recordAsks(queue, sent.map((p) => ({ step: 'presented', key: p.ticket, since: p.since, via: 'push', ref: p.key, notification: p.key })), { by: 'supervisor', now })];
 }
 
-// The asks pushed from batch state folder `state`, by ask id (<KEY>:<park.since>).
-export const pushedAsks = (state) => new Set(Object.keys(readPushed(state)));
+// The asks pushed from batch state folder `state`, by ask id (<KEY>:<park.since>): the register's, and
+// with its queue file `queue` any the ledger records presented by push, which stands where the
+// register's write failed.
+export function pushedAsks(state, queue = null) {
+  const out = new Set(Object.keys(readPushed(state)));
+  if (queue) for (const a of presentedVia(queue, 'push').keys()) out.add(a);
+  return out;
+}
 
 // Whether call `d` (a parsed decision) must never apply by default: a product call, one a check-in
 // default never takes (ask-defaults.mjs neverDefault: money, legal, production, customer copy), or a

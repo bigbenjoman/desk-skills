@@ -489,7 +489,8 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
 // The keys of the parks the page lists that were pushed already as their ask was handed on.
 function pushedQuestions(list, groups) {
   return new Set(list.flatMap((r, i) => {
-    const asks = pushedAsks(r.state);
+    if (!(groups[i]?.questions ?? []).some((q) => q.kind === 'parked')) return [];
+    const asks = pushedAsks(r.state, r.queue);
     if (!asks.size) return [];
     const tickets = readJson(r.queue, null)?.tickets ?? {};
     return (groups[i]?.questions ?? []).filter((q) => q.kind === 'parked' && asks.has(askId(q.ticket, tickets[q.ticket]?.park?.since))).map((q) => q.key);

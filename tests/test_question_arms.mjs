@@ -79,6 +79,8 @@ t('and none with the lever off', Object.keys(QA.raisedOf(parked('A'), queue(park
     mkdirSync(join(b.state, 'ask-pushes.json'));
     try { return QA.markPushed(b.state, [first[0]], { queue: b.file, now: DAY }).some((l) => l.startsWith('question-handling: O pushed, but not recorded')); } catch { return 'threw'; }
   })(), true);
+  t('the ledger\'s record of that push stands for it: only the ask not yet sent is due', due(b, q), ['MB']);
+  t('and the digest reads it as pushed', [...QA.pushedAsks(b.state, b.file)], [`O:${SINCE}`]);
   const b2 = batch(q, ['O', 'MB']);
   QA.markPushed(b2.state, [first[0]], { queue: b2.file, now: DAY });
   t('once sent, it is kept as pushed by its ask id', [...QA.pushedAsks(b2.state)], [`O:${SINCE}`]);

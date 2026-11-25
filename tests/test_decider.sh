@@ -664,6 +664,8 @@ mv "$T/state/ask-pushes.json" "$T/ask-pushes.kept"; mkdir "$T/state/ask-pushes.j
 cverdict Q6; out=$(qtick 12); out=$(qtick 12)
 check "question handling: a push the register cannot record is sent once, and the tick carries on, saying so" \
   '[ "$(grep -c "Q6: Q6" "$T/notified")" = 1 ] && grep -q "question-handling: Q6 pushed, but not recorded" "$LOG" && [ "$(handed | grep -c "^Q6|")" = 1 ]'
+out=$(qtick 23); out=$(qtick 12)
+check "question handling: nor is it sent again after a quiet-hours tick, the ledger's record of the push standing for the register" '[ "$(grep -c "Q6: Q6" "$T/notified")" = 1 ]'
 rmdir "$T/state/ask-pushes.json"; mv "$T/ask-pushes.kept" "$T/state/ask-pushes.json"
 # An idle batch: Q7 handed on in quiet hours, then ticks with no pass. One that finds the batch's lock
 # held sends nothing; the next sends it.

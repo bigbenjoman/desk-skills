@@ -372,6 +372,15 @@ t('DS-280 AC8 the page\'s count line says so', page11.includes('; 2 merging PR(s
   queueDifference(armed.queue, { seed: true });
   await slot(armed, join(root, 'digest-armed'));
   const raisedEv = readFileSync(join(dirname(armed.queue), 'ledger', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.type === 'ask_raised');
+  // Pushed, its register unwritten: the ledger's record of the push stands, and it pushes nothing.
+  mkdirSync(join(root, 'cfg', 'repos', 'acme__unkept'), { recursive: true });
+  writeFileSync(join(root, 'cfg', 'repos', 'acme__unkept', 'config.md'), '## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n');
+  const unkept = repo('acme__unkept', { 'U-1': park('one-at-a-time') });
+  queueDifference(unkept.queue, { seed: true });
+  const { recordAsks } = await import('../desk/bin/ask-ledger.mjs');
+  recordAsks(unkept.queue, [{ step: 'presented', key: 'U-1', since, via: 'push', ref: 'ask:acme__unkept:x', notification: 'ask:acme__unkept:x' }], { on: true, now: at('2026-10-30', '10:00') });
+  const ud = await slot(unkept, join(root, 'digest-unkept'));
+  t('an ask the ledger records pushed, with no register, sets off no push either', `${ud.questions} ${ud.push}`, '1 null');
   t('an ask the digest raises first carries its arm and blocking flag', JSON.stringify([raisedEv?.data.arm, raisedEv?.data.blocking]), JSON.stringify(['mixed', true]));
 }
 
