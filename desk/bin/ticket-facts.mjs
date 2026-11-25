@@ -45,6 +45,7 @@ import { join } from 'node:path';
 import { ghRepo, queueFile, stateDir, ticketKind, personStepLabels, personInputLabels, proposalLabelPatterns } from './desk-env.mjs';
 import { priorityProposal } from './priority-proposal.mjs';
 import { lintTicket, designRoot, SIZE_LINE } from './ticket-lint.mjs';
+import { issueBody } from './ticket-fill.mjs';
 import { baseRef, designFact } from './desk-design.mjs';
 import { SIZES, epicFact, blockersFact, splitOwnEpic, queueEpic } from './desk-q-eta.mjs';
 import { jiraSearch, keySearch } from './jira-search.mjs';
@@ -196,8 +197,9 @@ if (kind.kind !== 'tracker') {
   const file = join(stateDir(), 'tickets', `${key}.md`);
   let text = null;
   if (kind.kind === 'issue') {
-    try { text = execFileSync('gh', ['issue', 'view', key.replace(/^issue-/, ''), '--repo', ghRepo(), '--json', 'body', '--jq', '.body'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
-    catch (e) { rec.lint_error = lastLine(e) || 'gh issue view failed'; }
+    const b = issueBody(key.replace(/^issue-/, ''), ghRepo());
+    if (b.why) rec.lint_error = b.why;
+    else text = b.text;
   } else if (existsSync(file)) text = readFileSync(file, 'utf8');
   else rec.lint_error = `no ticket file at ${file}`;
   if (text !== null) { rec.lint = lintTicket({ key, text, wiki: false }, designRoot()); design(text); }

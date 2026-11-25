@@ -40,7 +40,8 @@ config(){ mkdir -p "$T/cfg/repos/acme__widgets"; cat > "$T/cfg/repos/acme__widge
 | \`git-push\` | Push a branch | \`ask\` | \`yes\` |
 | \`jira-create\` | Create a ticket | \`ask\` | \`yes\` |
 | \`jira-edit\` | Edit a ticket | \`ask\` | \`${JIRA_EDIT:-yes}\` |
-${JUDGEMENT:+| \`autopilot-judgement\` | Take calls outside the ask categories | \`yes\` | \`$JUDGEMENT\` |}
+${GH_ISSUE_EDIT:+| \`gh-issue-edit\` | Edit an issue body | \`ask\` | \`$GH_ISSUE_EDIT\` |
+}${JUDGEMENT:+| \`autopilot-judgement\` | Take calls outside the ask categories | \`yes\` | \`$JUDGEMENT\` |}
 
 ## 3b. Cost and autonomy
 | Field | Recommended | Your setting |
@@ -139,6 +140,8 @@ case "\$*" in
   "pr list "*"--head "*) [ -f "$T/promos.fails" ] && exit 1
     node -e 'const a = process.argv, h = a[a.indexOf("--head") + 1], b = a[a.indexOf("--base") + 1], s = a[a.indexOf("--state") + 1]; let v = []; try { v = JSON.parse(require("fs").readFileSync("$T/promos.json", "utf8")); } catch {} console.log(JSON.stringify(v.filter((p) => p.headRefName === h && p.baseRefName === b && (!p.state || p.state === s))))' -- "\$@" ;;
   "pr list "*) cat "$T/prs.json" 2>/dev/null || echo "[]" ;;
+  "issue view "*) cat "$T/issues/\$3.md" ;;
+  "issue edit "*) echo "\$*" >> "$T/issue-edit.calls"; cat "\$7" > "$T/issues/\$3.md" ;;
   "api repos/"*"/contents/.github/workflows?ref="*) [ -d "$T/wf" ] && echo .github/workflows/ci.yml || exit 1 ;;
   "api -H Accept: application/vnd.github.raw repos/"*"/contents/.github/workflows/ci.yml?ref="*) a="\$*"; cat "$T/wf/\${a##*ref=}.yml" ;;
   *) echo OPEN ;;
@@ -612,6 +615,44 @@ rec H-42 A '"renders":true,"lint":[{"severity":"blocking","rule":"design","messa
 out=$(admit H-42 --session)
 check "#1332 one that may render keeps the finding as it was" 'grep -qF "no design link and no \"No UI.\" line" <<< "$out" && ! grep -q "triage found nothing renders" <<< "$out"'
 check "#1332 desk-admit writes No UI. with the line's reason and admits it again, asking no one" 'grep -q "^- \*\*no design link\*\* where the line adds \`triage found nothing renders\`" "$SK" && grep -qF "(\`No UI. Triage found nothing renders: it changes …\`) as the Design section." "$SK"'
+# #1383: on a GitHub-issues repo, admit writes what desk can draft from the issue itself (the criteria
+# triage drafted, "No UI." where nothing renders, "None." and the test command) with gh issue edit under
+# §3 gh-issue-edit, lints it again and admits it; a text with no testable outcome is one needs-you ask.
+issues_cfg(){ GH_ISSUE_EDIT="$1" config yes '`none`'; printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | `none` |\n| Unit tests | `bash tests/run.sh` |\n' >> "$T/cfg/repos/acme__widgets/config.md"; }
+issue_body(){ mkdir -p "$T/issues"; printf '## Goal\nRefunds show in the ledger.\n\n## Proposal\nWrite a ledger row per refund.\n' > "$T/issues/$1.md"; }
+LINT_AC='{"severity":"blocking","rule":"criteria","message":"no acceptance criteria: add an \"Acceptance criteria\" section (an Epic'\''s \"Definition of done\") of AC1: Given …, when …, then … items"}'
+LINT_UI='{"severity":"blocking","rule":"design","message":"no design link and no \"No UI.\" line: put the Figma or Claude Design URL in a Design section, or write \"No UI.\" there"}'
+DRAFTED='"drafted_criteria":["Given a refund, when it is issued, then the ledger has a row for it","AC2: Given two refunds, when both are issued, then the ledger has two rows"]'
+issues_cfg yes
+printf '{"version":1,"batch":"s1","supervised":false,"tickets":{"P":{"key":"P","state":"running"}}}\n' > "$DESK_QUEUE"
+rm -f "$T/issue-edit.calls"; issue_body 71
+rec issue-71 A "\"renders\":false,$DRAFTED,\"lint\":[$LINT_AC,$LINT_UI]"
+out=$(admit issue-71 --session); rc=$?
+B71="$(cat "$T/issues/71.md")"
+check "#1383 AC1 a GitHub issue whose triage found nothing renders gets a Design section of No UI. and the reason, through gh issue edit" '[ "$(count "$T/issue-edit.calls")" = 1 ] && grep -q "^issue edit 71 --repo acme/widgets --body-file " "$T/issue-edit.calls" && grep -qxF "## Design" <<< "$B71" && grep -qxF "No UI. Triage found nothing renders: it changes src/issue-71.js." <<< "$B71"'
+check "#1383 AC2 with no criteria, the ones triage drafted from the proposal are written as AC1… items noted as drafted by desk" 'grep -qxF "## Acceptance criteria" <<< "$B71" && grep -qxF "_Drafted by desk from the proposal: reviewed like any other criteria._" <<< "$B71" && grep -qxF -- "- AC1: Given a refund, when it is issued, then the ledger has a row for it" <<< "$B71" && grep -qxF -- "- AC2: Given two refunds, when both are issued, then the ledger has two rows" <<< "$B71" && grep -qxF "Write a ledger row per refund." <<< "$B71"'
+check "#1383 AC4 a missing Out of scope and Verification are filled with None. and the repo test command" 'grep -A1 -xF "## Out of scope" <<< "$B71" | grep -qxF "None." && grep -A1 -xF "## Verification" <<< "$B71" | grep -qxF "\`bash tests/run.sh\`."'
+check "#1383 AC1/AC2 the edit is printed as posted, the issue linted again, and it is admitted" '[ $rc -ne 11 ] && grep -qF "ISSUE EDIT issue-71 — posted" <<< "$out" && grep -q "^target : acme/widgets#71$" <<< "$out" && grep -q "^admitted issue-71 by hand into batch s1" <<< "$out" && [ "$(jget "$T/state/triage/issue-71.json" lint.length)" = 0 ]'
+issues_cfg ask
+rm -f "$T/issue-edit.calls"; issue_body 72
+rec issue-72 A "\"renders\":false,$DRAFTED,\"lint\":[$LINT_AC,$LINT_UI]"
+out=$(admit issue-72 --session); rc=$?
+check "#1383 at gh-issue-edit ask nothing is written: the block awaits approval and the line names the gh issue edit to run" '[ $rc -eq 11 ] && [ "$(count "$T/issue-edit.calls")" = 0 ] && ! grep -q "## Design" "$T/issues/72.md" && grep -qF "ISSUE EDIT issue-72 — awaiting approval" <<< "$out" && grep -qF "desk drafted Acceptance criteria, Design, Out of scope, Verification for it but wrote nothing, as config §3 gh-issue-edit is \"ask\": once the person agrees, write it with gh issue edit 72 --repo acme/widgets --body-file $T/state/fills/issue-72.md, then admit it again" <<< "$out" && grep -qxF "No UI. Triage found nothing renders: it changes src/issue-72.js." "$T/state/fills/issue-72.md"'
+check "#1383 and the criteria line lists what triage drafted, to write as they are" 'grep -qF "triage drafted 2 from its goal and proposal; write them as its Acceptance criteria, under \"Drafted by desk from the proposal: reviewed like any other criteria.\", then admit it again: AC1: Given a refund, when it is issued, then the ledger has a row for it · AC2: Given two refunds" <<< "$out"'
+issues_cfg yes
+rm -f "$T/issue-edit.calls" "$T/state/asks.json"; issue_body 73
+rec issue-73 A '"renders":true,"drafted_criteria":[],"lint":['"$LINT_AC"']'
+out=$(admit issue-73 --session); rc=$?
+out2=$(admit issue-73 --session)
+check "#1383 AC3 a text with no testable outcome drafts no criteria, writes nothing and is refused" '[ $rc -eq 11 ] && [ "$(count "$T/issue-edit.calls")" = 0 ] && grep -qF "not admitted issue-73: lint (blocking): no acceptance criteria" <<< "$out" && grep -qF "its text states no testable outcome, so desk drafted none" <<< "$out"'
+check "#1383 AC3 and raises one needs-you ask for that ticket, however often it is admitted" '[ "$(node -e "const a=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).asks.filter((x)=>x.text.includes(\"acceptance criteria for issue-73\")); console.log(a.length+\" \"+a[0].until.join())" "$T/state/asks.json")" = "1 issue-73" ] && grep -q "^needs-you: already records writing acceptance criteria for issue-73$" <<< "$out2"'
+# A ticket file (a slug, with no tracker) is written in place, with no grant needed.
+mkdir -p "$T/state/tickets"; printf '# fix-ledger-rows\n\nSource: the user\n\nRefunds show in the ledger.\n\n## Acceptance criteria\n- AC1: Given a refund, when it is issued, then the ledger has a row\n' > "$T/state/tickets/fix-ledger-rows.md"
+rec fix-ledger-rows A "\"renders\":false,\"lint\":[$LINT_UI]"
+out=$(admit fix-ledger-rows --session); rc=$?
+check "#1383 a ticket file gets No UI., None. and the test command written into it, and is admitted" '[ $rc -ne 11 ] && grep -qF "TICKET FILE EDIT fix-ledger-rows — posted" <<< "$out" && grep -qxF "No UI. Triage found nothing renders: it changes src/fix-ledger-rows.js." "$T/state/tickets/fix-ledger-rows.md" && grep -qxF "None." "$T/state/tickets/fix-ledger-rows.md" && [ "$(grep -c "^## Acceptance criteria" "$T/state/tickets/fix-ledger-rows.md")" = 1 ] && grep -q "^admitted fix-ledger-rows by hand" <<< "$out"'
+check "#1383 desk-admit says admit writes what it drafted itself, and how to write it at gh-issue-edit ask" 'grep -q "^\*\*Admit has already written what it could.\*\*" "$SK" && grep -q "triage drafted <n> from its goal and proposal" "$SK" && grep -q "its text states no testable outcome" "$SK"'
+config yes '`none`'
 AO="$S/../skills/desk-autopilot/references/ask-or-take.md"
 check "#877 desk-autopilot admits tickets the person already chose without asking again" 'grep -q "^\*\*Tickets the person already chose are not asked again.\*\*" "$AO" && grep -q "intake.mjs admit <TICKET>... --session" "$AO"'
 check "#1317 desk-admit folds in a lint refusal a routed comment settles, then admits it again, asking only for the rest" \

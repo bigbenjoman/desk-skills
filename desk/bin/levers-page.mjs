@@ -4,6 +4,8 @@
 // file:// fetches, and a small inline script ages the page at the moment it is opened.
 //
 //   import { renderPage, pageAge } from './levers-page.mjs'
+import * as MS from './merge-stages.mjs';
+import { fmtHours } from './stuck-time.mjs';
 import { DECISION_RULE, GUARDRAILS, KEPT_STATES as KEPT, REGISTRY } from './lever-registry.mjs';
 
 // An age in seconds as words, for the view model and the page alike: "3 hours ago". `short` gives
@@ -331,6 +333,44 @@ function trends(v) {
   return `<section aria-labelledby="tr-h" class="stack12">${head}${notes(p)}${body}</section>`;
 }
 
+// The outside reviewer's re-reviews per PR and undraft-to-approval time, before and after the learned
+// review bar began (review-misses.mjs beforeAfter). Nothing until a check has been learned.
+function learned(r) {
+  const l = r.learned;
+  if (!l) return '';
+  const row = (name, s) => `<tr><th scope="row">${name}</th><td>${s.prs}</td><td>${s.rereviews ?? '—'}</td><td>${esc(MS.fmt(s.approval))}</td></tr>`;
+  return `<table class="stages"><caption>${esc(r.name)} · learned review bar since ${esc(String(l.since).slice(0, 10))}</caption>`
+    + '<thead><tr><th scope="col">Learned bar</th><th scope="col">PRs</th><th scope="col">External re-reviews per PR</th><th scope="col">Undraft to approval (median)</th></tr></thead><tbody>'
+    + `${row('Before', l.before)}${row('After', l.after)}</tbody></table>`;
+}
+
+// Each repo's merged PR time by stage (merge-stages.mjs): median and p75 per stage, and how many
+// external waits inside a reviewer outage were left out. Nothing until a merged PR has its stages.
+function mergeStages(v) {
+  const repos = v.panels.merge_stages?.repos ?? [];
+  if (!repos.length) return '';
+  const table = (r) => `<table class="stages"><caption>${esc(r.name)} · ${r.prs} merged PR${r.prs === 1 ? '' : 's'}</caption>`
+    + '<thead><tr><th scope="col">Stage</th><th scope="col">Median</th><th scope="col">p75</th><th scope="col">PRs</th></tr></thead><tbody>'
+    + MS.STAGES.filter((k) => r.stages?.[k]?.n).map((k) => `<tr><th scope="row">${esc(MS.STAGE_NAMES[k])}</th><td>${esc(MS.fmt(r.stages[k].median))}</td><td>${esc(MS.fmt(r.stages[k].p75))}</td><td>${r.stages[k].n}</td></tr>`).join('')
+    + `</tbody></table>${r.outage ? `<p class="muted small">${r.outage} external review wait${r.outage === 1 ? '' : 's'} inside a gate reviewer outage left out of the medians.</p>` : ''}${learned(r)}`;
+  return `<section aria-labelledby="ms-h" class="stack12"><div class="sec-head"><h2 id="ms-h">Merge time by stage</h2></div>${repos.map(table).join('')}</section>`;
+}
+
+// Each repo's time parked by cause (stuck-time.mjs), this ISO week and last: the hours, the tickets
+// affected and each cause, most hours first, with its tracking issue where one is linked. Nothing until a
+// ticket has sat stuck.
+function stuckTime(v) {
+  const repos = v.panels.stuck_time?.repos ?? [];
+  if (!repos.length) return '';
+  const issue = (l) => (!l ? '—' : l.url ? `<a href="${esc(l.url)}">${esc(l.ref)}</a>` : esc(l.ref));
+  const table = (name, w) => `<table class="stages"><caption>${esc(name)} · week ${esc(w.week)} · ${esc(fmtHours(w.hours))} over ${w.tickets} ticket${w.tickets === 1 ? '' : 's'}</caption>`
+    + '<thead><tr><th scope="col">Cause</th><th scope="col">Hours</th><th scope="col">Tickets</th><th scope="col">Tracking issue</th></tr></thead><tbody>'
+    + w.causes.map((c) => `<tr><th scope="row">${esc(c.cause)}</th><td>${esc(fmtHours(c.hours))}</td><td>${c.tickets}</td><td>${issue(c.link)}</td></tr>`).join('')
+    + '</tbody></table>';
+  const body = repos.map((r) => r.weeks.filter((w) => w.tickets).map((w) => table(r.name, w)).join('')).join('');
+  return `<section aria-labelledby="st-h" class="stack12"><div class="sec-head"><h2 id="st-h">Time parked by cause</h2></div>${body}</section>`;
+}
+
 // When desk last kept `lever` in `repo`, from the change list; null when no change records it.
 const keptAt = (v, lever, repo) => ((v.panels.changes?.all ?? v.panels.changes?.events ?? [])
   .filter((e) => e.kind === 'transition' && KEPT.includes(e.to) && e.lever === lever && e.repo === repo)
@@ -471,7 +511,8 @@ const interval = (x) => (x?.lo90 != null && x?.hi90 != null ? `90% range ${signe
 function changeDetails(e) {
   const ev = e.evidence;
   const reason = e.wording || e.reason ? `${esc(cap(e.wording ?? e.reason))}${e.reason_code ? ` <span class="mono tiny muted">${esc(e.reason_code)}</span>` : ''}` : notRecorded;
-  const arms = ev?.n && (ev.n.on != null || ev.n.off != null) ? `${ev.n.on ?? DASH} on, ${ev.n.off ?? DASH} off` : notRecorded;
+  const [onArm, offArm] = (ev?.n?.arms ?? ['on', 'off']).map((a) => esc(String(a)));
+  const arms = ev?.n && (ev.n.on != null || ev.n.off != null) ? `${ev.n.on ?? DASH} ${onArm}, ${ev.n.off ?? DASH} ${offArm}` : notRecorded;
   const mech = ev?.effect ? `${esc(cap(ev.effect.label))}, ${esc(interval(ev.effect))}${ev.effect.est != null ? `, estimate ${signed(ev.effect.est)}` : ''}` : notRecorded;
   const cost = ev?.cost ? `${esc(cap(ev.cost.label))}, ${esc(interval(ev.cost))}, margin ${signed(ev.cost.margin)}` : notRecorded;
   const guards = ev?.guardrails?.length
@@ -670,6 +711,8 @@ export function renderPage(view, { now = Date.parse(view.generated_at) } = {}) {
 ${summary(view)}
 ${tiles(view, today)}
 ${trends(view)}
+${mergeStages(view)}
+${stuckTime(view)}
 ${leverTable(view, today)}
 ${changes(view, today)}
 ${today ? '' : howDesk()}

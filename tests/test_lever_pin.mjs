@@ -4,7 +4,7 @@
 // queue.mjs admit and add pin the row's levers; desk-env levers prints DESK_LEVERS over the row; and
 // spawn-worker.sh exports a pinned ticket's set to its preflight, its spawn line and its worker, and
 // leaves an unpinned one on the row. A stub claude on PATH answers the version, account and agent
-// registry reads, and records each -p call's argv and DESK_LEVERS. Scratch HOME, queue and repo only.
+// registry reads, and records each -p call's argv, DESK_LEVERS and DESK_LEVER_VALUES. Scratch HOME, queue and repo only.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync, cpSync, symlinkSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -103,6 +103,7 @@ if [ "$1" = --version ]; then echo '2.0.0 (Claude Code)'; exit 0; fi
 if [ "$1 $2" = "auth status" ]; then echo '{"loggedIn":true,"email":"a@example.com"}'; exit 0; fi
 if [ "$1" = agents ]; then echo '[{"sessionId":"${SID}","pid":4242}]'; exit 0; fi
 printf '%s\\n' "\${DESK_LEVERS-unset}" >> "${T}/levers-env"
+printf '%s\\n' "\${DESK_LEVER_VALUES-unset}" >> "${T}/values-env"
 printf '%s' "$*" | tr '\\n' ' ' >> "${T}/calls"
 echo >> "${T}/calls"
 echo '{"type":"result","result":"W_IN=OK\\nW_OUT=BLOCKED\\nTOOL1=OK\\nAGENTS=OK\\nDENY=BLOCKED\\nDENY2=BLOCKED\\nESCAPE=BLOCKED\\nCODEX=BLOCKED","total_cost_usd":0.1,"num_turns":3}'
@@ -148,10 +149,34 @@ t('AC4 an empty pin prints none', deskEnv([], { DESK_LEVERS: 'none' }), 'on: non
 const KEY = 'pin-thing';
 const calls = () => (existsSync(join(T, 'calls')) ? readFileSync(join(T, 'calls'), 'utf8').trim().split('\n') : []);
 const seen = () => (existsSync(join(T, 'levers-env')) ? readFileSync(join(T, 'levers-env'), 'utf8').trim().split('\n') : []);
-const reset = () => { for (const f of ['calls', 'levers-env']) rmSync(join(T, f), { force: true }); rmSync(join(STATE, 'workers', `${KEY}.preflight.json`), { force: true }); };
-const pinned = (set) => seed({ [KEY]: { key: KEY, state: 'running', ...(set ? { levers: { set, at: '2026-11-14T00:00:00.000Z' } } : {}) } });
+const reset = () => { for (const f of ['calls', 'levers-env', 'values-env']) rmSync(join(T, f), { force: true }); rmSync(join(STATE, 'workers', `${KEY}.preflight.json`), { force: true }); };
+const pinned = (set, values) => seed({ [KEY]: { key: KEY, state: 'running', ...(set ? { levers: { set, ...(values ? { values } : {}), at: '2026-11-14T00:00:00.000Z' } } : {}) } });
+const valuesSeen = () => (existsSync(join(T, 'values-env')) ? readFileSync(join(T, 'values-env'), 'utf8').trim().split('\n') : []);
 const spawn = (sid, extra = {}) => spawnSync('bash', [join(BIN, 'spawn-worker.sh'), KEY, join(T, 'repo'), sid], { cwd: join(T, 'repo'), env: env(extra), encoding: 'utf8', timeout: 60000 });
-const preflight = (extra) => { reset(); const x = spawn('preflight', { AUTOPILOT_PREFLIGHT: '1', ...extra }); return { status: x.status, call: calls()[0] ?? '', levers: seen()[0], out: x.stdout + x.stderr }; };
+const preflight = (extra) => { reset(); const x = spawn('preflight', { AUTOPILOT_PREFLIGHT: '1', ...extra }); return { status: x.status, call: calls()[0] ?? '', levers: seen()[0], values: valuesSeen()[0], out: x.stdout + x.stderr }; };
+
+// A valued lever's value reaches the worker, and desk-env there returns it.
+pinned(['preflight'], { memory: 'batched' });
+let v = preflight({ DESK_LEVER_VALUES: 'memory=stale' });
+t('a pin with values: the worker carries them as DESK_LEVER_VALUES', [v.status, v.values], [0, 'memory=batched']);
+t('desk-env levers <lever> in that worker prints its value', deskEnv(['memory'], { DESK_LEVERS: 'preflight', DESK_LEVER_VALUES: v.values }), 'batched');
+pinned(['preflight']);
+v = preflight({ DESK_LEVER_VALUES: 'memory=stale' });
+t('a pin with no values: the worker carries none, whatever its caller had', [v.status, v.values], [0, 'unset']);
+pinned(null);
+v = preflight({ DESK_LEVER_VALUES: 'memory=stale' });
+t('no pin: the worker carries no values', v.values, 'unset');
+seed({ [KEY]: { key: KEY, state: 'running', levers: { set: [], values: ['memory'], at: '2026-11-14T00:00:00.000Z' } } });
+v = preflight();
+t('values that cannot be read refuse the spawn', [v.status, /levers pin values could not be read/.test(v.out)], [1, true]);
+// `lever-pin.mjs values`: the pin's values as DESK_LEVER_VALUES takes them; desk-env reads its lever's.
+const pinValues = (tickets, key = KEY) => { seed(tickets); const x = node([join(BIN, 'lever-pin.mjs'), 'values', key]); return [x.status, x.stdout.trim()]; };
+t('values: each valued lever as lever=value, space-separated', pinValues({ [KEY]: { key: KEY, levers: { set: [], values: { memory: 'batched', wrappers: 'mixed' } } } }), [0, 'memory=batched wrappers=mixed']);
+t('values: a pin with none prints an empty line', pinValues({ [KEY]: { key: KEY, levers: { set: ['memory'] } } }), [0, '']);
+t('values: no pin exits 3', pinValues({ [KEY]: { key: KEY } })[0], 3);
+t('values: a value DESK_LEVER_VALUES cannot carry exits 1', pinValues({ [KEY]: { key: KEY, levers: { set: [], values: { memory: 'a b' } } } })[0], 1);
+t('values: a blind audit carries none', pinValues({}, `audit.${KEY}`), [0, '']);
+t('desk-env levers <lever> is on or off for a lever DESK_LEVER_VALUES does not carry', deskEnv(['preflight'], { DESK_LEVERS: 'preflight', DESK_LEVER_VALUES: 'memory=batched' }), 'on');
 
 // AC3: an empty pin runs the preflight as with the lever off, though the row has it on.
 pinned([]);

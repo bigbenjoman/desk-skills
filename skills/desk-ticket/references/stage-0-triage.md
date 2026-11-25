@@ -8,7 +8,8 @@ a "below" here that this file does not hold points there.
 |---|---|---|
 | 0 | Triage | Read the ticket fully: description, comments, linked issues, the design link if one is set, and, for context only, its parent epic or story (this ticket's own criteria are its scope). Note the issue type. Rename the session (below). Assign to the user if unassigned (Jira only). Pick a **provisional** lane and state it with its cost, **plus which skills own which stage** (below). Write the resume file. **Do not transition the ticket yet.** |
 
-**Where the ticket's Design section links a Claude Design artifact**, read
+**Where the ticket links a claude.ai artifact** (a Claude Design one in its Design section, or a spec
+or notes page anywhere else), read
 `design-canvas.md` (beside this file) now: it holds this stage's check and Stage 1's save.
 
 ### What the ticket can be, and the ticket file

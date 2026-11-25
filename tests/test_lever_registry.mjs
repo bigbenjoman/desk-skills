@@ -3,7 +3,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ENTRIES, REGISTRY, GUARDRAILS, DECISION_RULE, LeverRegistryError, loadRegistry, lever, trialable, preconditions, REASON_CODES } from '../desk/bin/lever-registry.mjs';
+import { ENTRIES, REGISTRY, GUARDRAILS, DECISION_RULE, LeverRegistryError, loadRegistry, lever, trialable, preconditions, REASON_CODES, isValued } from '../desk/bin/lever-registry.mjs';
 import { LEVERS, FINDER_MODEL_LEVER, parseLevers, parseWorkerModels } from '../desk/bin/desk-env.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -93,6 +93,18 @@ const dead = lever('codex').trips.find((x) => x.id === 'codex-dead-seats');
 t('codex trips on dead seats (exit 124 or 75) above 20% of its last 10 calls', JSON.stringify([dead?.exits, dead?.calls, dead?.rate]), '[[124,75],10,0.2]');
 t('every reason code a DS-646 event or row carries is in the list', ['codex_dead_seats', 'ramp_clean', 'audit_missing', 'audits_pending'].every((c) => c in REASON_CODES), true);
 t('every lever holds back 10% for 4 weeks after an adopt', Object.values(REGISTRY).every((l) => l.ramp.holdback === 0.1 && l.ramp.holdback_weeks === 4), true);
+
+// A lever with more than two arms: its values and the baseline among them.
+const valued = (v, baseline, o = {}) => ({ ...ENTRIES, memory: { ...ENTRIES.memory, values: v, baseline, ...o } });
+const vreg = loadRegistry(valued(['one-at-a-time', 'batched', 'mixed'], 'one-at-a-time'));
+t('a lever may declare values and its baseline', `${vreg.memory.values.join(' ')} | ${vreg.memory.baseline} | ${isValued(vreg.memory)}`, 'one-at-a-time batched mixed | one-at-a-time | true');
+t('a valued lever\'s values are frozen', Object.isFrozen(vreg.memory.values), true);
+t('a lever with no values is on or off, as before', `${isValued(REGISTRY.memory)} ${'values' in REGISTRY.memory} ${'baseline' in REGISTRY.memory}`, 'false false false');
+t('a baseline that is not one of the values fails loading', loadError(valued(['a', 'b'], 'c')), 'lever-registry: lever "memory" has baseline "c"; want one of its values (a, b)');
+t('a single value fails loading', loadError(valued(['a'], 'a')), 'lever-registry: lever "memory" has "values" that are not two or more distinct arm names');
+t('a value named like an on/off arm fails loading', loadError(valued(['on', 'b'], 'b')), 'lever-registry: lever "memory" has value "on"; want a lower-case word other than on, off, adopted, holdback');
+t('a value DESK_LEVER_VALUES could not carry fails loading', /has value "a b"/.test(loadError(valued(['a b', 'c'], 'c'))), true);
+t('values on the quality-risk layer fail loading', loadError({ ...ENTRIES, codex: { ...ENTRIES.codex, values: ['a', 'b'], baseline: 'a' } }), 'lever-registry: lever "codex" declares "values" on the quality-risk layer; only a low-risk lever may have more than two arms');
 
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
 console.log('all checks passed');

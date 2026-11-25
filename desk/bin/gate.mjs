@@ -102,6 +102,8 @@ export const since = (ms) => {
 // A required check passes as branch protection passes it: success, or a job its workflow skipped by
 // `if:`. A head whose every check was skipped still fails clause 3 (no success).
 const REQUIRED_PASS = new Set(['success', 'skipped']);
+// Whether a normalised check (normaliseCheck) passes a required check: completed, success or skipped.
+export const requiredPasses = (c) => c?.status === 'completed' && REQUIRED_PASS.has(c.conclusion);
 const lc = (s) => String(s ?? '').toLowerCase();
 
 // The services that comment on PRs under a login of their own. A personal-token bot goes here too,
@@ -169,7 +171,7 @@ export function latestPerCheck(checks) {
 // does not run there (a workflow that skips drafts), not a check to fix. Undrafting it runs them.
 export function skippedOnly(allChecks) {
   const checks = latestPerCheck(allChecks ?? []);
-  return checks.some((c) => c.conclusion === 'skipped') && checks.every((c) => c.status === 'completed' && ['success', 'skipped'].includes(c.conclusion));
+  return checks.some((c) => c.conclusion === 'skipped') && checks.every(requiredPasses);
 }
 export const SKIPPED_ON_DRAFT = 'CI does not run on a draft, so its checks were skipped';
 
@@ -319,7 +321,7 @@ export function evaluateGate(allChecks, { required = [], advisory = [], runs = [
     }
     for (const h of hits) {
       if (h.status !== 'completed') { pending.push(n); running.push({ name: n, runId: h.runId ?? null }); reasons.push(`required check "${n}" is ${h.status}`); }
-      else if (!REQUIRED_PASS.has(h.conclusion)) {
+      else if (!requiredPasses(h)) {
         if (FAILED.has(h.conclusion)) failing.push({ name: n, conclusion: h.conclusion, runId: h.runId });
         reasons.push(`required check "${n}" is ${h.conclusion ?? 'unknown'}`);
       }

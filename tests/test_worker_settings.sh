@@ -69,7 +69,7 @@ check "desk-env logins set denied"                        'jq -e ".permissions.d
 check "DS-618 AC10 desk-env logins default denied"        'jq -e ".permissions.deny | index(\"Bash(desk-env logins default:*)\") and index(\"Bash(node $B/desk-env.mjs logins default:*)\")" "$T/ws.json" >/dev/null'
 check "desk-env logins remove denied"                   'jq -e ".permissions.deny | index(\"Bash(desk-env logins remove:*)\") and index(\"Bash(node $B/desk-env.mjs logins remove:*)\")" "$T/ws.json" >/dev/null'
 check "DS-619 AC12 desk-env subscription set denied"     'jq -e ".permissions.deny | index(\"Bash(desk-env subscription set:*)\") and index(\"Bash(node $B/desk-env.mjs subscription set:*)\")" "$T/ws.json" >/dev/null'
-check "desk-design save, status and check allowed, not write" 'allows "Bash(node $B/desk-design.mjs save:*)" && allows "Bash(node $B/desk-design.mjs check:*)" && allows "Bash(node $B/desk-design.mjs status:*)" && ! allows "Bash(node $B/desk-design.mjs write:*)" && ! allows "Bash(node $B/desk-design.mjs:*)"'
+check "desk-design save, status, check and copies allowed, not write" 'allows "Bash(node $B/desk-design.mjs save:*)" && allows "Bash(node $B/desk-design.mjs check:*)" && allows "Bash(node $B/desk-design.mjs status:*)" && allows "Bash(node $B/desk-design.mjs copies:*)" && ! allows "Bash(node $B/desk-design.mjs write:*)" && ! allows "Bash(node $B/desk-design.mjs:*)"'
 check "DS-593 handoff.mjs write allowed bare, for this ticket only, outside the node .. deny" 'allows "Bash($B/handoff.mjs write fix-thing *)" && ! allows "Bash(node $B/handoff.mjs write fix-thing *)" && ! jq -e ".permissions.allow[] | select(test(\"handoff.mjs write (?!fix-thing )\"))" "$T/ws.json" >/dev/null && ! jq -e ".permissions.deny[] | select(startswith(\"Bash($B/handoff.mjs\") or . == \"Bash(*..*)\")" "$T/ws.json" >/dev/null'
 check "DS-705 desk-wait allowed bare and through node, at the installed bin" 'allows "Bash($B/desk-wait.mjs:*)" && allows "Bash(node $B/desk-wait.mjs:*)"'
 check "desk-design render allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/desk-design.mjs render:*)" && ! allows "Bash(node $B/desk-design.mjs render:*)"'
@@ -390,6 +390,7 @@ check "web-read TODO: the row is there, so it is no, not unset" '! allows WebSea
 PMROW='`pnpm`' settings '`bash tests/run.sh`' "$SVC" "$(rows3 worker-web-read=yes)"
 check "web-read yes: WebSearch and WebFetch allowed, not denied" '[ $rc -eq 0 ] && allows WebSearch && allows WebFetch && ! denies WebSearch && ! denies WebFetch && [[ "$out" != *worker-web-read* ]]'
 check "web-read yes: the only allow rules added are the two tools" '[ "$(jq -c "[.permissions.allow[]] - $(jq -c .permissions.allow "$T/ws-off.json")" "$T/ws.json")" = "[\"WebSearch\",\"WebFetch\"]" ]'
+check "issue-1381 AC2 web-read yes: a claude.ai link is still never fetched, its repo copy read instead" 'denies "WebFetch(domain:claude.ai)"'
 triage
 check "web-read yes: a triage pass gets neither"           '[ $rc -eq 0 ] && ! allows WebSearch && ! allows WebFetch'
 PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Local services | `Typesense on port 8108` |' "$(rows3 worker-local-services=yes)"

@@ -39,7 +39,7 @@ the gate and an unattended batch cannot ask; on a repo with no branch protection
 
 - **Never write a permission the user did not choose in this conversation.** Recommended, or
   another repo's answer, is the first option of the *question*, never the answer.
-- **Never fill a value you merely guessed.** Detected-then-confirmed is fine; guessed is not.
+- **Never fill a value you merely guessed.** Detected-then-confirmed is fine; guessed is not. A value read from the repo (a user its seed files create, its current settings), a template default that already applies while the row is unset, and a least-privilege `no` or `none` that matches what desk does now are not guesses: they are the Recommended option, and `drift-asks.mjs` sets them itself where an install finds the row missing.
 - **Never change an existing config or settings file without a before/after**, and back up every
   `settings.json` / `settings.local.json` before touching it.
 - **Never ask for, echo or write a token.** The user writes credentials to `CREDS` themselves; you
@@ -232,6 +232,10 @@ location: a path only, never the token.
   `FAILED` line (exit 1) one it could not read or write, so pass each one on for the user to fix
   there. Do not argue for the capability it costs.
 - A row newly `yes` on a re-run: `add` a plan with just its rules (and any `unguard:`).
+- A changed `pr-merge-green`, `gh-issue-*`, `read-*` or `jira-comment` row, or §4 Merge method, also
+  changes the `orchestrator-sweep` rules every other configured repo holds for this one: offer to
+  `add` a plan of `{"add":[]}` with each other repo's `REPO_RULES`, which rewrites them from the
+  configs and drops what no longer holds.
 
 ## Red flags — stop
 

@@ -133,6 +133,27 @@ case "$name" in
   *) echo "with-lock.sh: unknown lock '$name'" >&2; exit 2 ;;
 esac
 [ -n "$lock" ] || exec "$@"
+# An autopilot worker's test run keeps its temporary files on disk, never in a tmpfs /tmp: its TMPDIR is
+# a folder of its own in the repo's cache folder (spawn-worker.sh), named by this pid, which the command
+# keeps, so a later run removes it once that pid is gone. In it, Jest's default cache (jest_<uid in base
+# 36>) links to the cache folder's jest, so it outlives the run; CDK synth output and every other
+# temporary folder is the run's own.
+if [ "${DESK_AUTOPILOT_WORKER:-}" = 1 ] && { [ "$name" = test ] || [ "$name" = light ]; } && [ -d "${DESK_CACHE_DIR:-}/runs" ]; then
+  runs="$DESK_CACHE_DIR/runs"
+  for d in "$runs"/*; do
+    p="${d##*/}"
+    case "$p" in ''|*[!0-9]*) continue ;; esac
+    [ -d "$d" ] && ! kill -0 "$p" 2>/dev/null && rm -rf "$d" 2>/dev/null
+  done
+  uid=$(id -u 2>/dev/null); b36=""; digits=0123456789abcdefghijklmnopqrstuvwxyz
+  case "$uid" in ''|*[!0-9]*) ;; *)
+    while :; do b36="${digits:$((uid % 36)):1}$b36"; uid=$((uid / 36)); [ "$uid" -gt 0 ] || break; done ;;
+  esac
+  if mkdir -p "$runs/$$" 2>/dev/null; then
+    [ -z "$b36" ] || ln -sfn "$DESK_CACHE_DIR/jest" "$runs/$$/jest_$b36" 2>/dev/null
+    export TMPDIR="$runs/$$"
+  fi
+fi
 # The command knows it already runs inside a slot of this lock, so a script that takes a slot itself
 # (tests/related.sh) does not wait for a second one behind its own.
 export DESK_LOCK_HELD="$name"

@@ -208,7 +208,7 @@ check "#734 the folder stays where it was, and desk's copy is not installed besi
 
 # #1361: the install put each row this release has that o__r's config lacks on its needs-you list, as one ask.
 check "#1361 the install records the rows a configured repo's config lacks as one needs-you ask" \
-  '[ "$(jq -r ".asks | map(select(.settles == \"drift\")) | length" "$HOME/.desk-autopilot/o__r/asks.json")" = 1 ] && [[ "$out" == *"o__r lacks "*" config row(s) this release has ("*"), now on its needs-you list as ask:1"* ]]'
+  '[ "$(jq -r ".asks | map(select(.settles == \"drift\")) | length" "$HOME/.desk-autopilot/o__r/asks.json")" = 1 ] && [[ "$out" == *"o__r lacks "*" config row(s) this release has that need the person ("*"), now on its needs-you list as ask:1"* ]]'
 rm -f "$HOME/.desk-autopilot/o__r/asks.json"
 # A new shell runs desk-q from any directory, and it finds the repo set up above.
 # shellcheck disable=SC2034  # q_out is read inside check's eval string
@@ -222,7 +222,7 @@ lv_node="$(cd / && unset DESK_HOME DESK_MACHINE && node "$HOME/.claude/desk/bin/
 check "DS-709 AC13: levers-view build on PATH writes view.json and build.json and prints where, as node levers-view.mjs build does" \
   '[ -x "$HOME/.local/bin/levers-view" ] && [ "$lv_path" = "$lv_node" ] && [[ "$lv_path" == "levers-view: wrote $HOME/.desk-autopilot/levers/view.json and $HOME/.desk-autopilot/levers/build.json"* ]] && [ -f "$HOME/.desk-autopilot/levers/view.json" ] && [ -f "$HOME/.desk-autopilot/levers/build.json" ]'
 check "DS-709: levers is on PATH and names its commands" \
-  '[ -x "$HOME/.local/bin/levers" ] && [[ "$("$HOME/.local/bin/levers" 2>&1)" == "usage: levers decide <repo> <lever> off|trial · levers undo <repo> <lever>" ]]'
+  '[ -x "$HOME/.local/bin/levers" ] && [[ "$("$HOME/.local/bin/levers" 2>&1)" == "usage: levers decide <repo> <lever> off|trial|<value> · levers undo <repo> <lever>" ]]'
 
 # #733: another tool's hook script of the same name, which desk never installed (no pristine copy), on
 # an install with no terminal: replacing it is asked and skipped, the file kept, and it is not registered.

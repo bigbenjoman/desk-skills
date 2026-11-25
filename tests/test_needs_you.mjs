@@ -100,6 +100,7 @@ function put(name, r) {
     Object.entries(r.rows ?? {}).map(([k, v]) => `| \`${k}\` | ${k} | \`ask\` | \`${v}\` |\n`).join('') + '\n' +
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n` +
     `| Batches run by | \`supervisor\` | \`${r.supervised ? 'supervisor' : 'session'}\` |\n` +
+    (r.levers ? `| Phase 0 levers | \`none\` | \`${r.levers}\` |\n` : '') +
     (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : '') +
     (r.gateReviewers ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Gate reviewers | \`${r.gateReviewers}\` |\n` : '') +
     (r.evidence ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Evidence workflow | \`${r.evidence}\` |\n` : '') +
@@ -326,7 +327,7 @@ const needsCell = () => {
   return h.find((l) => l.startsWith('  alpha '))?.slice(0, end).match(/(\d+(?: \(\+\d+ put off\))?)$/)?.[1];
 };
 t('DS-376 AC1 the NEEDS YOU cell shows what needs you, then how many are put off', needsCell(), '2 (+2 put off)');
-t('DS-376 AC1 the header counts what needs you, as the cell does', home()[0].startsWith('◆ 3 tickets need you'), true);
+t('DS-376 AC1 the header counts what needs you, as the cell does', home().find((l) => !l.startsWith(' ✕ '))?.startsWith('◆ 3 tickets need you'), true);
 t('DS-376 AC2 left attributes to desk-q the count its table shows', `${left[0].match(/^desk-q counts (\d+) /)?.[1]} ${N.needsCount(loadRepos().find((r) => r.name === 'alpha'))?.shown}`, '3 2');
 
 // ---- DS-324 AC2: a put-off item comes back once its blocker or its inputs change
@@ -1846,6 +1847,42 @@ t('DS-389 AC7 it has waited since the copy was first found behind', Math.round((
 const tDone = N.record({ word: 'nu', ticket: 'templates', action: 'done' });
 t('DS-389 AC7 done checks the copies again, and clears once none is behind', `${tDone.ok} ${tDone.line} ${nu().some((i) => i.kind === 'templates')}`, 'true nu templates: no copy is behind on origin/main now, so it is off your list. false');
 
+// ---- issue-1381 AC3: tickets a headless admit parked on claude.ai artifacts no session has read are one repo item
+const ART1 = 'https://claude.ai/design/p/art-one';
+const ART2 = 'https://claude.ai/public/artifacts/spec-two';
+const artPark = (urls) => BS.designPark({ design: { canvases: urls.map((url) => ({ url, saved: null, snapshot: null })) } });
+put('na', { port: 5400, beat: 1, supervised: true, tickets: {
+  'R-1': parked('A', 40, artPark([ART1])),
+  'R-2': parked('A', 30, artPark([ART1, ART2])),
+  'R-3': parked('A', 20, 'Which copy?'),
+} });
+const na = () => N.collect({ word: 'na' }).items;
+t('issue-1381 AC3 the tickets parked on unread artifacts are one item; another park stays its own', na().map((i) => `${i.t.key} ${i.kind}`).sort().join(), 'R-3 parked,artifacts artifacts');
+const naRow = na().find((i) => i.kind === 'artifacts');
+t('issue-1381 AC3 its need lists every artifact with the tickets it holds, and the one admit that reads them all',
+  [naRow?.need.startsWith('2 tickets (R-1 and R-2) link 2 claude.ai artifacts no session has read'), naRow?.need.includes(`${ART1} (R-1 and R-2); ${ART2} (R-2)`), naRow?.need.includes('/desk-admit R-1 R-2'), naRow?.actions.map((x) => x[0]).join()].join(), 'true,true,true,done,not-now');
+t('issue-1381 AC3 the list shows it as one line', here('list', 'na').out.split('\n').filter((l) => l.startsWith('na artifacts artifacts')).length, 1);
+const naState = join(env.HOME, '.desk-autopilot', 'acme__na');
+mkdirSync(join(naState, 'designs', 'R-1'), { recursive: true });
+writeFileSync(join(naState, 'designs', 'R-1', 'source.json'), JSON.stringify({ url: ART1, version: '1', kind: 'page' }));
+const naDone = N.record({ word: 'na', ticket: 'artifacts', action: 'done' });
+t('issue-1381 AC3 done requeues each ticket whose artifacts all have a snapshot, and names what is still unread',
+  `${naDone.ok} ${['R-1', 'R-2', 'R-3'].map((k) => queueOf('na').tickets[k].state).join()} ${naDone.line.includes(`still no copy of R-2 (${ART2})`)}`, 'false triaged,parked,parked true');
+// A copy saved on the base (desk-design save or propose, merged) counts as a snapshot does.
+const naRoot = join(T, 'repos', 'na');
+mkdirSync(join(naRoot, 'docs', 'design', 'R-2'), { recursive: true });
+writeFileSync(join(naRoot, 'docs', 'design', 'R-2', 'source.json'), JSON.stringify({ url: ART2, version: '1', kind: 'page' }));
+spawnSync('git', ['-C', naRoot, 'add', '-A']);
+spawnSync('git', ['-C', naRoot, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'spec']);
+spawnSync('git', ['-C', naRoot, 'branch', '-M', 'main']);
+const naDone2 = N.record({ word: 'na', ticket: 'artifacts', action: 'done' });
+t('issue-1381 AC3 done requeues a ticket whose artifact is saved on the base, with no snapshot',
+  `${naDone2.ok} ${queueOf('na').tickets['R-2'].state}`, 'true triaged');
+// Lane D: a saved canvas is buildable; an unread spec page parks on designPark, which the artifacts item groups.
+const laneD = { lane: 'D', design: { ref: 'origin/main', canvases: [{ url: ART1, saved: 'docs/design/R-1/', snapshot: null }], artifacts: [{ url: ART2, saved: null, snapshot: null }] } };
+t('issue-1381 AC3 lane D with its canvas saved needs no person; its unread spec page is a design park',
+  `${BS.needsPersonLane(laneD)} ${JSON.stringify(BS.designParkUrls(BS.designPark(laneD)))}`, `false ${JSON.stringify([ART2])}`);
+
 // ---- DS-577 AC8: the repo's failing reviewer check is one item, naming every PR the pass holds on it
 const rvWhy = 'the review gate counts agent-pullbot; desk posts verdicts as bigbenjoman';
 const gated = (pr) => redPr(pr, { gate_hold: { item: 'health:acme__rv:reviewer', head: `h${pr}`, why: rvWhy, at: minsAgo(30 + pr - 300) } });
@@ -2253,16 +2290,30 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   } });
   const scr = () => strip(repoScreen(loadRepos().find((r) => r.slug === 'acme__phi934')));
   t('DS-934 every ticket done: the follow item is a Needs you row, the count matches it, and the Queue does not say there is nothing',
-    `${N.needsCount(loadRepos().find((r) => r.slug === 'acme__phi934')).shown} ${/Needs you · 1\b/.test(scr())} ${/P-1 +◆ needs you +Check: check the invoice totals look right/.test(scr())} ${scr().includes('No unfinished tickets')}`, '1 true true false');
+    `${N.needsCount(loadRepos().find((r) => r.slug === 'acme__phi934')).shown} ${/Needs you · 1\b/.test(scr())} ${/P-1 +◆ needs you +(\d+[dhm]( \d+[hm])? +)?Check: check the invoice totals look right/.test(scr())} ${scr().includes('No unfinished tickets')}`, '1 true true false');
   N.record({ word: 'phi934', ticket: 'follow:P-1', action: 'not-now' });
   t('DS-934 put off, it is a grey Put off row, and the Queue still does not say there is nothing',
     `${/Put off · 1\b/.test(scr())} ${/P-1 +◇ put off/.test(scr())} ${/Needs you ·/.test(scr())} ${scr().includes('No unfinished tickets')}`, 'true true false false');
+  const phiCount = () => N.needsCount(loadRepos().find((r) => r.slug === 'acme__phi934'));
+  const dropP1 = N.record({ word: 'phi934', ticket: 'P-1', action: 'drop' });
+  t('issue-1419 AC3 a put-off follow check drops by the ticket key its Put off row shows',
+    `${dropP1.ok} ${/^\S+ follow:P-1: dropped \(.*not-now\.jsonl\)/.test(dropP1.line)} ${/Put off/.test(scr())} ${phiCount().offItems.length} ${phiCount().shown}`, 'true true false 0 0');
+  put('phi934', { port: 4410, beat: 1, supervised: true, merge: 'yes', tickets: {
+    'P-1': merged(71, { follow_on: [{ step: 'check the refund totals look right', row: null }] }),
+  } });
+  t('issue-1419 a dropped item comes back once what it keys to changes, as a put-off one does',
+    `${phiCount().shown} ${/P-1 +◆ needs you .*Check: check the refund totals/.test(scr())}`, '1 true');
   // A batch's base-push item is the repo's, not a ticket's, and is a Needs you row all the same.
   put('chi934', { port: 4411, beat: 1, supervised: true, batch: { base: 'feat/x', base_push_ask: { since: minsAgo(40), base: 'feat/x', source: 'main' } },
     tickets: { 'C-1': { state: 'triaged', lane: 'A' } } });
   const bpScr = () => strip(repoScreen(loadRepos().find((r) => r.slug === 'acme__chi934')));
   t('DS-934 a base-push item is a Needs you row, matching the count',
     `${N.needsCount(loadRepos().find((r) => r.slug === 'acme__chi934')).shown} ${/Needs you · 1\b/.test(bpScr())} ${/base-push +◆ needs you +feat\/x is behind main/.test(bpScr())}`, '1 true true');
+  const chiOff = N.record({ word: 'chi934', ticket: 'base-push', action: 'not-now' });
+  t('issue-1419 a put-off base-push hold sits under Put off', `${chiOff.ok} ${/Put off · 1\b/.test(bpScr())}`, 'true true');
+  const chiDrop = N.record({ word: 'chi934', ticket: 'base-push', action: 'drop' });
+  t('issue-1419 AC3 a put-off base-push hold drops too, and leaves Put off',
+    `${chiDrop.ok} ${/Put off/.test(bpScr())} ${N.needsCount(loadRepos().find((r) => r.slug === 'acme__chi934')).offItems.length}`, 'true false 0');
   N.record({ word: 'chi934', ticket: 'base-push', action: 'not-now' });
   t('DS-934 put off, the base-push item is a Put off row', `${/Put off · 1\b/.test(bpScr())} ${/base-push +◇ put off/.test(bpScr())} ${/Needs you ·/.test(bpScr())}`, 'true true false');
 }
@@ -3573,20 +3624,90 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('#811 desk-q counts both', N.needsCount(standing).shown, 2);
   const askScreen = strip(repoScreen(standing));
   t('DS-934 with no batch, the repo Queue has a row for each ask, not "Nothing to show"',
-    `${/Needs you · 2\b/.test(askScreen)} ${/ask:1 +◆ needs you +File the follow-up issue/.test(askScreen)} ${/ask:2 +◆ needs you +Merge PR #12/.test(askScreen)} ${askScreen.includes('Nothing to show')}`, 'true true true false');
+    `${/Needs you · 2\b/.test(askScreen)} ${/ask:1 +◆ needs you +(\d+[dhm]( \d+[hm])? +)?File the follow-up issue/.test(askScreen)} ${/ask:2 +◆ needs you +(\d+[dhm]( \d+[hm])? +)?Merge PR #12/.test(askScreen)} ${askScreen.includes('Nothing to show')}`, 'true true true false');
   const { shownRepos } = await import('../desk/bin/desk-q.mjs');
   t('#811 desk-q shows a repo whose only items are asks', shownRepos(loadRepos(Date.now()), false).some((r) => r.slug === 'acme__ask811'), true);
   t('#811 left counts them', here('left', 'ask811').out.split('\n')[0], 'desk-q counts 2 items needing you in ask811.');
   const off = N.record({ word: 'ask811', ticket: 'ask:2', action: 'not-now' });
   t('#811 not-now puts one off', `${off.ok} ${asks().map((i) => i.t.key).join()}`, 'true ask:1');
+  // issue-1419: a put-off ask is listed under Put off, its time in WAITING and STARTS empty, until it is dropped.
+  const offScreen = strip(repoScreen(standing));
+  t('issue-1419 AC2 a put-off ask sits under Put off, its time in WAITING, and STARTS holds no time',
+    `${/Put off · 1\b/.test(offScreen)} ${/TICKET +STATE +WAITING +WHAT IT NEEDS +STARTS/.test(offScreen)} ${/ask:2 .* \d+m +Merge PR #12 .* — +— +a session asked you$/m.test(offScreen)} ${/ for \d/.test(offScreen)}`, 'true true true false');
+  const dropped = N.record({ word: 'ask811', ticket: 'ask:2', action: 'drop' });
+  t('issue-1419 AC3 drop on a put-off ask takes it, and it leaves Put off',
+    `${dropped.ok} ${/^ask811 ask:2: dropped \(.*not-now\.jsonl\), so it leaves Put off and is not listed again until it changes\.$/.test(dropped.line)} ${N.needsCount(standing).offItems.length} ${N.collect({ word: 'ask811' }).putOff} ${/Put off/.test(strip(repoScreen(standing)))}`, 'true true 0 0 false');
+  t('issue-1419 AC3 a dropped item is not listed again while it stands, and a second drop finds nothing',
+    `${asks().map((i) => i.t.key).join()} ${N.record({ word: 'ask811', ticket: 'ask:2', action: 'drop' }).ok}`, 'ask:1 false');
+  t('issue-1419 drop is still refused on an item that is not put off', N.record({ word: 'ask811', ticket: 'ask:1', action: 'drop' }).ok, false);
   const done = N.record({ word: 'ask811', ticket: 'ask:1', action: 'done' });
   t('#811 done takes it off the list', `${done.ok} ${done.line} ${asks().length}`, 'true ask811 ask:1: done, so it is off your list. 0');
   t('#811 an empty ask is refused', cli('ask', 'ask811', '  ').code, 11);
+  // #1366: a choice offers each option, recommended first, says when it applies by itself, and keeps the answer.
+  const c1 = cli('ask', 'ask811', 'Merge PR #12 now, or hold it for the release?', '--options', 'merge|hold', '--recommend', 'hold', '--apply-by', '2099-01-01T17:00:00Z');
+  const cid = /ask:(\d+)/.exec(c1.out)?.[1];
+  t('#1366 a choice is recorded, saying what to choose and when its recommendation applies', `${c1.code} ${c1.out.includes('until you choose (merge, hold)')} ${/it applies hold at .* unless you choose\.$/.test(c1.out.trim())}`, '0 true true');
+  const ci = asks().find((i) => i.t.key === `ask:${cid}`);
+  t('#1366 its item offers each option, the recommended one first, then done and not-now', ci.actions.map((a) => a[0]).join(), 'hold,merge,done,not-now');
+  t('#1366 and its need says when it applies', /^Merge PR #12 now, or hold it for the release\? \(applies hold at .* unless you choose\)$/.test(ci.need), true);
+  t('#1366 before anyone chooses, ask-status says it is open and when it applies', /^ask811 ask:\d+: open; it applies hold at /.test(cli('ask-status', 'ask811', cid).out), true);
+  const chose = N.record({ word: 'ask811', ticket: `ask:${cid}`, action: 'merge' });
+  t('#1366 choosing an option records it and takes the item off the list', `${chose.ok} ${asks().some((i) => i.t.key === `ask:${cid}`)}`, 'true false');
+  t('#1366 the session that asked reads the choice', /^ask811 ask:\d+: merge, chosen by the person at /.test(cli('ask-status', 'ask811', cid).out), true);
+  {
+    const { addAsk: add, answerAsk: answer } = await import('../desk/bin/asks.mjs');
+    const d = add(standing.stateDir, 'Squash the branch, or keep its commits?', Date.parse('2026-11-24T10:00:00Z'), { choice: { options: ['squash', 'keep'], recommended: 'squash', apply_by: '2026-11-24T17:00:00.000Z' } }).ask;
+    answer(standing.stateDir, d.id, { chose: 'squash', by: 'default', at: Date.parse('2026-11-24T17:00:05Z'), due: true });
+    t('#1366 a default nobody overrode reads as applied by default', /: squash, chosen by default, nobody having chosen,/.test(cli('ask-status', 'ask811', d.id).out), true);
+    writeFileSync(join(standing.stateDir, 'decisions.jsonl'), `${JSON.stringify({ id: 'o1', override_of: 'x1', at: '2026-11-24T18:00:00.000Z', ticket: `ask:${d.id}`, was: 'squash', chose: 'keep', by: 'person' })}\n`, { flag: 'a' });
+    t('#1366 the person overriding it from the check-in digest is what ask-status reports', cli('ask-status', 'ask811', d.id).out.trim(), `ask811 ask:${d.id}: keep, chosen by the person at 2026-11-24T18:00:00.000Z, overriding squash, which desk applied by default at 2026-11-24T17:00:05.000Z`);
+  }
+  const money = cli('ask', 'ask811', 'Upgrade the CI plan to the paid tier?', '--options', 'upgrade|stay', '--recommend', 'upgrade');
+  t('#1366 a recommendation that spends money never applies by itself, and says so', money.out.includes('it never applies by itself: it is a money call'), true);
+  t('#1366 a choice needs two one-word options, and a recommendation among them', `${cli('ask', 'ask811', 'x', '--options', 'merge').code} ${cli('ask', 'ask811', 'x', '--options', 'merge|two words').code} ${cli('ask', 'ask811', 'x', '--options', 'merge|hold', '--recommend', 'ship').code}`, '11 11 11');
   const a3 = cli('ask', 'ask811', 'Say whether to admit F-8', '--until', 'F-8, G-9');
   t('#1341 ask --until records the tickets it waits on, and says a pass drops it once they finish',
     `${a3.code} ${a3.out.includes('or a pass finds F-8, G-9 merged or done')} ${JSON.stringify(JSON.parse(readFileSync(join(standing.stateDir, 'asks.json'), 'utf8')).asks.find((a) => a.text === 'Say whether to admit F-8')?.until)}`,
     '0 true ["F-8","G-9"]');
   t('#1341 ask --until refuses a value that is not ticket keys', cli('ask', 'ask811', 'Merge it', '--until', 'F-8;rm').code, 11);
+  // #1380: a gate-reviewer-down ask keeps its id and its not-now while the outage is the same one.
+  {
+    const GR = await import('../desk/bin/gate-reviewer.mjs');
+    const { addAsk: add, readAsks } = await import('../desk/bin/asks.mjs');
+    const { addPutOff, putOffEntry } = await import('../desk/bin/not-now.mjs');
+    const at = (min) => Date.parse('2026-11-24T10:00:00Z') + min * 60000, iso = (min) => new Date(at(min)).toISOString();
+    const bot = 'agent-pullbot', w = (pr) => ({ login: bot, pr, head: `h${pr}`, line: `PR #${pr} waits` });
+    const S = standing.stateDir;
+    GR.writeRecord(S, { reviewers: { [bot]: { last: iso(0), lags: [5, 6, 7], waiting: { 3: { head: 'h3', since: iso(10) }, 4: { head: 'h4', since: iso(30) } } } } });
+    GR.reviewerStep(S, { waits: [w(3), w(4)], now: at(80), repo: 'acme/ask811' });
+    const first = asks().find((i) => i.need.startsWith('gate reviewer down'));
+    N.record({ word: 'ask811', ticket: first.t.key, action: 'not-now' });
+    GR.reviewerStep(S, { waits: [w(3), w(4), w(5)], now: at(90), repo: 'acme/ask811' });
+    const kept = readAsks(S).filter((a) => a.settles === 'reviewer');
+    t('#1380 AC1 refreshing the outage\'s text and waiting PRs keeps its id', `${kept.length} ${kept[0]?.id === first.id} ${kept[0]?.text.includes('(#3, #4, #5)')}`, `1 true true`);
+    t('#1380 AC1 and its not-now holds: it does not come back to the list', asks().some((i) => i.need.startsWith('gate reviewer down')), false);
+    // A not-now recorded while an ask's text was one of its inputs still holds once the text changes.
+    const legacy = add(S, 'config drift: desk abc added a config row this repo\'s config lacks that need you: §4 Staging. Run /desk-setup', Date.now(), { settles: 'drift', rows: ['§4 Staging'] });
+    addPutOff(putOffEntry({ question: `ask:${legacy.id} ask`, ticket: `ask:${legacy.id}`, inputs: { ticket: `ask:${legacy.id}`, need: 'config drift: an older wording' } }), S);
+    t('#1380 AC1 a drift ask put off under its older text stays put off', asks().some((i) => i.t.key === `ask:${legacy.id}`), false);
+    // The reviewer reviews again, then goes quiet past its threshold before the next pass: a new outage.
+    GR.reviewerStep(S, { seen: [{ login: bot, pr: 3, head: 'h3', reviewedAtHead: true, last: iso(95) }], waits: [w(4), w(5)], now: at(200), repo: 'acme/ask811' });
+    const fresh = readAsks(S).filter((a) => a.settles === 'reviewer');
+    t('#1380 AC2 an outage after the reviewer reviewed again is a fresh ask, back on the list',
+      `${fresh.length} ${fresh[0]?.id !== first.id} ${asks().some((i) => i.t.key === `ask:${fresh[0]?.id}`)}`, '1 true true');
+    // Its only PR's head moves mid-outage, so its wait restarts and it stops reading as down a while, with no review.
+    const bot2 = 'agent-gatebot', w2 = (head) => ({ login: bot2, pr: 7, head, line: 'PR #7 waits' });
+    GR.writeRecord(S, { reviewers: { [bot2]: { last: iso(0), lags: [5, 6, 7], waiting: { 7: { head: 'h7', since: iso(10) } } } } });
+    GR.reviewerStep(S, { waits: [w2('h7')], now: at(80), repo: 'acme/ask811' });
+    const quiet = readAsks(S).find((a) => a.login === bot2);
+    t('#1380 a second reviewer\'s outage is on the list before its not-now', asks().some((i) => i.t.key === `ask:${quiet.id}`), true);
+    N.record({ word: 'ask811', ticket: `ask:${quiet.id}`, action: 'not-now' });
+    GR.reviewerStep(S, { waits: [w2('h7b')], now: at(90), repo: 'acme/ask811' });
+    GR.reviewerStep(S, { waits: [w2('h7b')], now: at(160), repo: 'acme/ask811' });
+    const still = readAsks(S).filter((a) => a.login === bot2);
+    t('#1380 AC1 an outage whose wait restarts on a new head, with no review, keeps its id and its not-now',
+      `${still.length} ${still[0]?.id === quiet.id} ${asks().some((i) => i.t.key === `ask:${quiet.id}`)}`, '1 true false');
+  }
 }
 
 // DS-796: a done blocker whose merge is recorded, with no PR, is through, so a ticket held behind it and
@@ -3973,10 +4094,31 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-896 AC4 blockers kept as the pipe-joined held_by read the same as the list', JSON.stringify(str), JSON.stringify(list));
 }
 
+// ---- an action recorded on a park answers its ask in that repo's ticket ledger, by the person, in the
+// session named where one is; with that repo's ledger lever off, nothing is written.
+{
+  const { fold, ledgerPaths } = await import('../desk/bin/ticket-ledger.mjs');
+  const { readAsks } = await import('../desk/bin/ask-ledger.mjs');
+  const since = minsAgo(90);
+  const repoDir = (name) => join(env.DESK_HOME, 'repos', `acme__${name}`);
+  put('asked', { port: 5910, beat: 1, supervised: true, levers: 'ledger', tickets: { 'K-1': { state: 'parked', lane: 'A', park: { question: 'Which tier?', since } } } });
+  put('unasked', { port: 5920, beat: 1, supervised: true, tickets: { 'U-1': { state: 'parked', lane: 'A', park: { question: 'Which tier?', since } } } });
+  const had = process.env.CLAUDE_CODE_SESSION_ID;
+  process.env.CLAUDE_CODE_SESSION_ID = 'sess-ny';
+  const k = N.record({ word: 'asked', ticket: 'K-1', action: 'resume', text: 'the free tier' });
+  const u = N.record({ word: 'unasked', ticket: 'U-1', action: 'resume', text: 'the free tier' });
+  if (had === undefined) delete process.env.CLAUDE_CODE_SESSION_ID; else process.env.CLAUDE_CODE_SESSION_ID = had;
+  const ask = readAsks(fold(repoDir('asked'))).find((a) => a.key === 'K-1');
+  t('a resume on a park answers its ask, by the person, in the session it came from', `${k.ok} ${ask?.ask} ${ask?.answered?.by} ${ask?.answered?.session}`, `true K-1:${since} person sess-ny`);
+  t('its latency runs from the park', Math.abs(ask?.answered?.latency_s - 90 * 60) < 120, true);
+  t('the line says nothing of the ledger when it was written', `${!!ask?.answered} ${k.line.includes('ask ledger')}`, 'true false');
+  t('a repo whose ledger lever is off gets no ask from it', `${u.ok} ${existsSync(ledgerPaths(repoDir('unasked')).events)} ${!!ask?.answered}`, 'true false true');
+}
+
 // ---- DS-929 AC1: every in-process collect and refresh above ran on injected repos and reads, and started
 // no gh, git, desk-jira or launchctl process.
 t('DS-929 AC1 no collect or refresh on the stubs started a gh, git, desk-jira or launchctl process', startedOnStubs.join(' | '), '');
-t('DS-929 AC2 every CLI command still has a run end to end', [...cliRan].sort().join(), 'ask,left,list,record');
+t('DS-929 AC2 every CLI command still has a run end to end', [...cliRan].sort().join(), 'ask,ask-status,left,list,record');
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');
 process.exit(fails ? 1 : 0);

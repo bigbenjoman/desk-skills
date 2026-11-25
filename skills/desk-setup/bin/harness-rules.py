@@ -9,7 +9,11 @@
                                             ~/.desk-autopilot and ~/.claude/desk as
                                             additionalDirectories with Read on each, Edit on the
                                             first; Read on the config files in ~/.config/desk, and
-                                            Edit under it on ask)
+                                            Edit under it on ask). With more than one repo in
+                                            ~/.config/desk/repos it also gets the orchestrator-sweep
+                                            entries (SWEEP_DESK, REINSTALL, SWEEP_REPO; each config
+                                            read through desk-env.mjs get --json), and drops those
+                                            no config calls for any more
   harness-rules.py baseline [--check] [--slack-prefix P]... [<plan.json>]
                                             apply the deny-only plan (default
                                             ../references/baseline-deny.json); --check exits 0
@@ -45,7 +49,8 @@ Plan shape:
    "remove_guards": [{"list": "ask", "rule": "Bash(gh pr merge *--auto*)", "rows": ["pr-auto-merge"]}]}
 
 `rows` on an add entry are its owners: the rule exists only while every one is granted, so
-revoking any of them removes it. A rule already in settings.json that the ledger did not add is
+revoking any of them removes it. An `ask` is the exception: it guards each owner's allows, so it
+stays while any owner is granted. A rule already in settings.json that the ledger did not add is
 the user's own: it is left alone and never recorded. A guard is removed only if setup added it,
 stays removed when a plan re-adds it, and is put back once when the row that removed it is
 revoked. A baseline plan may hold only deny entries; `<slack>` in a rule expands to
@@ -456,6 +461,112 @@ DESK_FOLDER_RULES = ([("allow", f"Read({d}/**)") for d in DESK_FOLDERS] +
                       ("allow", f"Edit({STATE_FOLDER}/**)"), ("ask", f"Edit({CONFIG_FOLDER}/**)"),
                       ("ask", f"Edit({INSTALL_FOLDER}/**)")])
 
+# The orchestrator's routine sweep across repos, written with every repo plan once the desk config
+# lists more than one repo (owner orchestrator-sweep). Desk's own commands: needs-you.mjs and
+# intake.mjs by subcommand, and the reinstall /desk-update runs, on the checkout
+# ~/.claude/desk/source-checkout names, spelled out. Then for each configured repo, the commands that
+# act on it by name, each only while that repo's own §3 rows (SWEEP_REPO) are all yes: a merge pinned
+# to a head commit with that repo's §4 Merge method flag, an issue, the tracker CLI. `add` reads the
+# configs again each time, so a rule no config calls for any more loses this owner.
+SWEEP = "orchestrator-sweep"
+DESK_BIN = f"{INSTALL_FOLDER}/bin"
+INTAKE = ["run", "admit", "forget"]
+SWEEP_DESK = ([f"Bash(node {DESK_BIN}/needs-you.mjs {c} *)" for c in ("list", "left", "record", "ask", "ask-status")] +
+              [f"Bash(node {DESK_BIN}/intake.mjs {c} *)" for c in INTAKE])
+REINSTALL = ["branch --show-current", "status --short", "fetch -q", "log --oneline HEAD..origin/main", "pull --ff-only"]
+OVERRIDE = "DESK_REPO_OVERRIDE={repo}"  # how desk-jira and intake.mjs act on a repo other than the cwd's
+# (rule, the repo's §3 rows that must all be yes); {repo} is its §0 GitHub repo, {merge} its flag.
+SWEEP_REPO = ([("Bash(gh pr merge * --repo {repo} {merge} --match-head-commit *)", ["pr-merge-green"]),
+               ("Bash(gh issue create --repo {repo} *)", ["gh-issue-create"]),
+               ("Bash(gh issue comment * --repo {repo} *)", ["gh-issue-comment"])] +
+              [(f"Bash({OVERRIDE} desk-jira {c} *)", ["read-own-work", "read-others"]) for c in ("get", "search", "comments")] +
+              [(f"Bash({OVERRIDE} desk-jira comment *)", ["jira-comment"])] +
+              [(f"Bash({OVERRIDE} node {DESK_BIN}/intake.mjs {c} *)", []) for c in INTAKE])
+# The asks written with a command SWEEP_REPO allows: pr-merge-green's own guards; a second --repo or
+# a -R, which would send the command to another repo; and a URL, which gh takes as the PR or issue
+# over --repo. Per swept repo whose own pr-auto-merge is not yes, --auto on either side of its
+# --repo: that repo's own asks, which no repo plan unguards (pr-auto-merge removes only *--auto*).
+REPO_GUARDS = {"gh pr merge": ["--auto", '"', "'", "#", "<", ">(", "$", "`", "--match-head-commit=", "--repo*--repo", " -R", "://"],
+               "gh issue create": ["--repo*--repo", " -R"], "gh issue comment": ["--repo*--repo", " -R", "://"]}
+SWEEP_IDS = ["gh-repo", "merge-method", "pr-auto-merge"] + sorted({k for _, need in SWEEP_REPO for k in need})
+
+
+def repo_rows(config, notes):
+    """{id: value} for SWEEP_IDS in one config, read by desk-env (`get --json`, DESK_CONFIG naming
+    it); a row desk-env reports an error on is left out. None, with a note, when it cannot be read."""
+    env = dict(os.environ, DESK_CONFIG=config)
+    try:
+        r = subprocess.run(["node", os.path.expanduser(f"{DESK_BIN}/desk-env.mjs"), "get", "--json", *SWEEP_IDS],
+                           capture_output=True, text=True, timeout=30, env=env, cwd=os.path.dirname(config))
+        rows = json.loads(r.stdout)["rows"] if r.returncode in (0, 4) else None
+    except Exception:  # noqa: BLE001
+        rows = None
+    if not isinstance(rows, dict):
+        notes.append(f"unread   {config}  (desk-env could not read it: no {SWEEP} rules for that repo)")
+        return None
+    # merge-method's parsed form is lower-cased, as merge-driver.sh and clearance-state.mjs read it
+    return {k: v.get("parsed" if k == "merge-method" else "value") for k, v in rows.items()
+            if isinstance(v, dict) and not v.get("errors")}
+
+
+def sweep_entries(notes):
+    """The orchestrator-sweep add entries, or none while the desk config lists fewer than two repos."""
+    root = os.environ.get("DESK_CONFIG_ROOT") or os.path.expanduser(CONFIG_FOLDER)
+    try:
+        slugs = sorted(s for s in os.listdir(os.path.join(root, "repos"))
+                       if os.path.isfile(os.path.join(root, "repos", s, "config.md")))
+    except OSError:
+        slugs = []
+    if len(slugs) < 2:
+        return []
+    out = [("allow", r) for r in SWEEP_DESK]
+    try:
+        with open(os.path.expanduser(f"{INSTALL_FOLDER}/source-checkout")) as f:
+            d = f.read().strip().rstrip("/")
+    except OSError:
+        d = ""
+    if d.startswith("/") and ".." not in d and all(c.isalnum() or c in "_.-/" for c in d):
+        out += [("allow", f"Bash(git -C {d} {c})") for c in REINSTALL]
+        out += [("allow", f"Bash({d}/install.sh)"), ("allow", f"Bash({d}/install.sh </dev/null)")]
+    guarded, auto = set(), []
+    for slug in slugs:
+        rows = repo_rows(os.path.join(root, "repos", slug, "config.md"), notes)
+        if rows is None:
+            continue
+        repo = rows.get("gh-repo") or slug.replace("__", "/")
+        if repo.count("/") != 1 or "" in repo.split("/") or not all(c.isalnum() or c in "_.-/" for c in repo):
+            continue
+        flag = f"--{rows.get('merge-method')}"
+        for rule, need in SWEEP_REPO:
+            if "{merge}" in rule and flag not in MERGE_FLAGS or any(rows.get(k) != "yes" for k in need):
+                continue
+            out.append(("allow", rule.format(repo=repo, merge=flag)))
+            guarded |= {cmd for cmd in REPO_GUARDS if rule.startswith(f"Bash({cmd} ")}
+            if "{merge}" in rule and rows.get("pr-auto-merge") != "yes":
+                auto += [f"Bash(gh pr merge *--auto*--repo {repo}*)", f"Bash(gh pr merge *--repo {repo}*--auto*)"]
+    out += [("ask", f"Bash({cmd} *{g}*)") for cmd in sorted(guarded) for g in REPO_GUARDS[cmd]]
+    out += [("ask", r) for r in auto]
+    return [{"list": lst, "rule": r, "rows": [SWEEP]} for lst, r in out]
+
+
+def drop_unswept(st, wanted):
+    """Take orchestrator-sweep off each rule and removed-guard record it owns that is not in
+    `wanted` ((list, rule) pairs); a rule it alone owned is removed."""
+    for rec in [r for r in st.ledger["rules"] if SWEEP in r["rows"] and (r["list"], r["rule"]) not in wanted]:
+        rec["rows"].remove(SWEEP)
+        if rec["rows"]:
+            st.log.append(f"recorded {rec['list']:5} {rec['rule']}  (owners now {', '.join(rec['rows'])})")
+            continue
+        st.ledger["rules"].remove(rec)
+        cur = st.perm_list(rec["list"], create=False) or []
+        if rec["rule"] in cur:
+            cur.remove(rec["rule"])
+        st.log.append(f"DROPPED  {rec['list']:5} {rec['rule']}  ({SWEEP}: no desk config calls for it now)")
+    for g in [g for g in st.ledger["removed_guards"] if SWEEP in g["guard_rows"] and (g["list"], g["rule"]) not in wanted]:
+        g["guard_rows"].remove(SWEEP)
+        if not g["guard_rows"]:
+            st.ledger["removed_guards"].remove(g)
+
 
 def memory_dir_rule(root):
     """Edit on <root>'s session memory directory, named as Claude Code names a project
@@ -464,7 +575,7 @@ def memory_dir_rule(root):
     return f"Edit(~/.claude/projects/{slug}/memory/**)"
 
 
-def orchestrator_entries(settings_path):
+def orchestrator_entries(settings_path, notes=None):
     """The orchestrator-tools add entries for a repo-level settings file; none at user level."""
     scope = repo_settings_scope(settings_path)
     if scope is None:
@@ -473,7 +584,7 @@ def orchestrator_entries(settings_path):
     root = top.stdout.strip() if top and top.returncode == 0 else scope[0]
     tools = [("allow", r) for r in ORCHESTRATOR_TOOLS + [memory_dir_rule(root)]]
     dirs = [(DIRS, os.path.expanduser(d)) for d in DESK_FOLDERS]
-    return [{"list": lst, "rule": r, "rows": [ORCHESTRATOR]} for lst, r in tools + DESK_FOLDER_RULES + dirs]
+    return [{"list": lst, "rule": r, "rows": [ORCHESTRATOR]} for lst, r in tools + DESK_FOLDER_RULES + dirs] + sweep_entries([] if notes is None else notes)
 
 
 def retire(st):
@@ -505,11 +616,14 @@ def retire(st):
 
 def cmd_add(st, plan_path):
     plan = read_plan(plan_path)
-    plan["add"] = plan.get("add", []) + orchestrator_entries(st.settings_path)
+    always = orchestrator_entries(st.settings_path, st.log)
+    plan["add"] = plan.get("add", []) + always
     note = check_destination(st.settings_path, plan)
     if note:
         st.log.append(f"gitignore {st.settings_path}: {note}")
     retire(st)
+    if always:
+        drop_unswept(st, {(e["list"], e["rule"]) for e in always if e["rows"] == [SWEEP]})
     apply_plan(st, plan)
     st.save()
 
@@ -555,6 +669,10 @@ def cmd_remove(st, rows, everything, user_settings):
     hit = (lambda owners: True) if everything else (lambda owners: bool(revoked & set(owners)))
     missing = not st.settings_existed
     for rec in [r for r in st.ledger["rules"] if hit(r["rows"])]:
+        if rec["list"] == "ask" and not everything and set(rec["rows"]) - revoked:
+            rec["rows"] = sorted(set(rec["rows"]) - revoked)  # a guard stays while a row it guards for is granted
+            st.log.append(f"recorded {rec['list']:5} {rec['rule']}  (owners now {', '.join(rec['rows'])})")
+            continue
         cur = st.perm_list(rec["list"], create=False) or []
         st.ledger["rules"].remove(rec)
         if rec["rule"] in cur:
@@ -567,9 +685,11 @@ def cmd_remove(st, rows, everything, user_settings):
             st.log.append(f"absent   {rec['list']:5} {rec['rule']}  (no longer in {st.settings_path}; "
                           "ledger record dropped)")
     for g in list(st.ledger["removed_guards"]):
-        if everything or revoked & set(g["guard_rows"]):
-            st.ledger["removed_guards"].remove(g)  # the rule it guarded is gone too
-        elif revoked & set(g["rows"]) and missing:
+        if everything or not set(g["guard_rows"]) - revoked:
+            st.ledger["removed_guards"].remove(g)  # every rule it guarded is gone too
+            continue
+        g["guard_rows"] = sorted(set(g["guard_rows"]) - revoked)
+        if revoked & set(g["rows"]) and missing:
             st.ledger["removed_guards"].remove(g)
             st.log.append(f"absent   {g['list']:5} {g['rule']}  ({st.settings_path} does not exist: "
                           "guard not restored; ledger record dropped)")
@@ -589,9 +709,9 @@ def cmd_remove(st, rows, everything, user_settings):
         what = "any recorded rule" if everything else f"a recorded rule owned by {', '.join(rows)}"
         where = f"{st.settings_path} does not exist and the" if missing else "the"
         st.log.append(f"nothing to remove: {where} ledger ({st.ledger_path}) has no {what}")
-    if everything or ORCHESTRATOR in revoked:  # the user's own copies of what this row writes
+    if everything or revoked & {ORCHESTRATOR, SWEEP}:  # the user's own copies of what these rows write
         for e in orchestrator_entries(st.settings_path):
-            if e["rule"] in (st.perm_list(e["list"], create=False) or []) and not st.recorded(e["list"], e["rule"]):
+            if (everything or revoked & set(e["rows"])) and e["rule"] in (st.perm_list(e["list"], create=False) or []) and not st.recorded(e["list"], e["rule"]):
                 st.log.append(f"kept     {e['list']:5} {e['rule']}  (yours: setup did not add it; left in place)")
     before = read_bytes(st.settings_path)
     if us:

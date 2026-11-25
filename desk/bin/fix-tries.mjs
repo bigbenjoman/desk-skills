@@ -1158,7 +1158,7 @@ export function externalTry(t, s, ctx, gate = evaluateGate(s.checks ?? [], { req
   const f = reds[0];
   const r = ctx.external?.(f.login);
   // No review of theirs at the head: the PR waits for one, whatever the check's text names, and says so.
-  if (!r?.reviewed || r.head !== s.head) return { call: 'wait', external: true, why: `its "${f.name}" check reads ${f.login}'s review, so it waits for ${f.login} to review the head` };
+  if (!r?.reviewed || r.head !== s.head) return { call: 'wait', external: true, login: f.login, why: `its "${f.name}" check reads ${f.login}'s review, so it waits for ${f.login} to review the head` };
   // A clean review body, its counts all 0 whatever findings it lists as refuted, is no feedback (bodyFeedback).
   // Any other body goes to the worker as review feedback: each P0 to P2 finding it lists, with its
   // file:line, as an item of its own marked as the body's (`body`: no thread to answer it on), since one on

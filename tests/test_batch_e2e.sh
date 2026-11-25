@@ -113,6 +113,7 @@ finish T-80
 pass
 check "DS-155 AC2 after a handoff the real spawn-worker starts a new session in the same worktree, told to start at Stage 4b" '[ "$(state T-80)" = running ] && [ -e "$T/runs/T-80.2" ] && grep -q "This session starts at Stage 4b" "$T/runs/T-80.2" && grep -q "\"cwd\":\"$T/wt/T-80\"" "$T/runs/T-80.2" && [ "$(node -e "const r = (n) => JSON.parse(require(\"fs\").readFileSync(process.argv[1] + n, \"utf8\")).sid; console.log(r(1) !== r(2))" "$T/runs/T-80.")" = true ]'
 check "a worker whose §1 Git author name / email is TODO is given no git author or committer" 'grep -qF "\"git\":\"-|-|-|-\"" "$T/runs/T-80.1"'
+check "#1382 AC2 a worker's Node compile cache is the repo's cache folder on disk, made before it starts" 'grep -qF "\"compileCache\":\"$T/state/cache/node-compile-cache\"" "$T/runs/T-80.1" && [ -d "$T/state/cache/jest" ] && [ -d "$T/state/cache/runs" ]'
 check "DS-155 AC2 with the handoff briefing in its first message" 'run_has "$T/runs/T-80.2" prompt "# Briefing for this ticket" && run_has "$T/runs/T-80.2" prompt "## Handoff: this session starts at Stage 4b" && grep -q "AC1: h saves" "$T/runs/T-80.2" && grep -q "fix/T-80" "$T/runs/T-80.2" && [ "$(ran_on T-80 2)" = sonnet ]'
 finish T-80
 pass

@@ -113,6 +113,8 @@ function put(T, env, name, r) {
 
 const W = world();
 const lines = (s) => s.split('\n');
+// The lines under the red bands, which open home above what needs you.
+const unbanded = (s) => lines(s).filter((l) => !l.startsWith(' ✕ '));
 // The text of each amber note tagged `▲ <tag>` in the rendered lines, its tag stripped.
 const notesIn = (ls, tag) => ls.filter((l) => new RegExp(`^(note| {4}) {2}▲ ${tag} +`).test(l)).map((l) => l.replace(new RegExp(`^(note| {4}) {2}▲ ${tag} +`), ''));
 const rowOf = (out, name) => lines(out).find((l) => l.startsWith(`  ${name} `));
@@ -133,7 +135,7 @@ t('AC3 every set-up repo listed', ['voicepa', 'desk-skills', 'pr-ninja', 'pranic
 t('AC3 no-batch repos marked', /no batch/.test(rowOf(all.out, 'forewatt') ?? ''), true);
 // ---- AC4: header gives running workers, live batches' allowance against the machine cap, free memory
 // The line under what needs you.
-const head = lines(ov.out)[1];
+const head = unbanded(ov.out)[1];
 t('AC4 (DS-188 AC5, DS-215 AC12) header', /^● 2 workers running │ machine cap 10 · room for \d+ more │ \d+\.\d GiB free$/.test(head), true);
 // ---- AC5: overlapping worker port blocks named with the shared range
 t('AC5 port overlap note', lines(ov.out).some((l) => /^(note| {4}) {2}▲ ports +desk-skills \+ pranicuk share 3502–3503\./.test(l)), true);
@@ -181,7 +183,19 @@ t('AC11 show lists the merged blocker under its count, as a does on screen', lin
 t('show of a key not in the queue refuses', W.run('--plain', 'voicepa', 'show', 'VPL-77').code !== 0, true);
 // ---- AC12: no arguments, output not a terminal: the overview, exit 0
 const bare = W.run();
-t('AC12 piped with no arguments prints the overview', bare.code === 0 && /^◆ .*\n● \d+ workers? running │ /.test(bare.out) && rowOf(bare.out, 'voicepa') != null, true);
+t('AC12 piped with no arguments prints the overview', bare.code === 0 && /^◆ .*\n● \d+ workers? running │ /.test(unbanded(bare.out).join('\n')) && rowOf(bare.out, 'voicepa') != null, true);
+
+// ---- the repo screen has the week's time parked by cause (stuck-time.mjs), each cause with its tracking issue
+{
+  const st = join(W.env.HOME, '.desk-autopilot', 'acme__voicepa');
+  writeFileSync(join(st, 'stuck-intervals.jsonl'), `${JSON.stringify({ key: 'VPL-3', batch: null, cause: 'park: hold', start: clockAgo(5), end: null })}\n`);
+  writeFileSync(join(st, 'stuck-links.json'), JSON.stringify({ 'park: hold': { ref: '#42', url: null } }));
+  const stuckLines = lines(W.run('--plain', 'voicepa').out).filter((l) => l.startsWith('time parked by cause'));
+  t('the repo screen names the week\'s hours parked, the tickets and the top causes with their tracking issues',
+    stuckLines.length === 1 && /^time parked by cause, week \d{4}-W\d\d: \d+\.\dh over 1 ticket; top: park: hold \d+\.\dh \(1 ticket, #42\)$/.test(stuckLines[0]), true);
+  rmSync(join(st, 'stuck-intervals.jsonl'));
+  rmSync(join(st, 'stuck-links.json'));
+}
 
 // ---- AC6 (DS-217 AC5): a held ticket whose blocker is parked for its own reason waits on that blocker,
 // which is counted as needing you; open Jira blockers outside the batch are what blocks a ticket.
@@ -193,7 +207,7 @@ const S = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch:
 t('AC6 (DS-217 AC5) held behind a ticket parked for its own reason reads waiting, which needs you', /VPL-6\s+· waiting\s+behind VPL-5, which needs you\s/.test(S.run('--plain', 'voicepa').out), true);
 const blockedViews = { overview: S.run('--plain').out, queue: S.run('--plain', 'voicepa').out, ticket: S.run('--plain', 'voicepa', 'show', 'VPL-7').out };
 t('DS-279 AC6 a ticket held outside the batch needs you on every screen, and no screen says blocked or stuck',
-  JSON.stringify([...Object.values(blockedViews).map((s) => /stuck|blocked/i.test(s)), /^◆ 4 tickets need you .*│ voicepa 2 · pr-ninja 1 · pranicuk 1$/.test(lines(blockedViews.overview)[0]),
+  JSON.stringify([...Object.values(blockedViews).map((s) => /stuck|blocked/i.test(s)), /^◆ 4 tickets need you .*│ voicepa 2 · pr-ninja 1 · pranicuk 1$/.test(unbanded(blockedViews.overview)[0]),
     /VPL-7\s+◆ needs you\s+held by 2 Jira tickets outside: start anyway\?/.test(blockedViews.queue),
     lines(blockedViews.ticket)[0].startsWith('VPL-7  ◆ needs you'), lines(blockedViews.ticket).some((l) => /^ {2}◌ EXT-2 +In Progress$/.test(l))]),
   '[false,false,false,true,true,true,true]');
@@ -508,7 +522,7 @@ put(I.T, I.env, 'pr-ninja', { port: 3200, conc: '2 / 4', beat: 1, queue: { batch
   'PN-1': { state: 'running', stage: '4/9' }, 'PN-2': { state: 'running', stage: '2/9' }, 'PN-3': { state: 'triaged', open_questions: 0 } } } });
 const room = Q.overview(Q.loadRepos(), { avail: 36.6 });
 t('DS-116 AC11 (DS-188 AC5) the header gives running, the machine cap, the room left and free memory',
-  lines(room)[1], '● 4 workers running │ machine cap 10 · room for 6 more │ 36.6 GiB free');
+  unbanded(room)[1], '● 4 workers running │ machine cap 10 · room for 6 more │ 36.6 GiB free');
 t('DS-116 AC11 the room is the smaller of the machine cap and free memory', Q.headroom({ running: 4, cap: 10, avail: 18, gate: 8, perWorker: 3 }), 3);
 // The room uses the spawn gate the repos set, the highest of them, and 8 GiB only for a repo that sets none.
 const gateRoom = (over, avail) => {
@@ -1166,16 +1180,52 @@ const slOut = SL.run('--plain', 'voicepa').out;
 t('DS-190 AC1 the CLI shows the worker\'s stage since its marker', (lines(slOut).find((l) => /VPL-1/.test(l)) ?? '').includes(`stage 4/9 verify since ${saidAt.toTimeString().slice(0, 5)}`), true);
 t('DS-190 AC3 a running ticket with no log keeps the last pass\'s stage', /VPL-2\s+● running\s+stage 0\/9 as of \d\d:\d\d\s/.test(lines(slOut).find((l) => /VPL-2/.test(l)) ?? ''), true);
 
+// issue-1418: a worker that said it finished reads as finishing and holds no worker; a ship date at
+// or before now reads overdue, never the render time.
+const wrapTickets = { 'W-1': { state: 'running', stage: '8/9' }, 'W-2': { state: 'running', stage: '8/9' }, 'W-3': { state: 'running', stage: '8/9' } };
+const WR = world({ wrap: { port: 6418, conc: '3 / 5', beat: 1, queue: { batch: 'wrap', concurrency: 3, tickets: wrapTickets },
+  triage: Object.fromEntries(Object.keys(wrapTickets).map((k) => [k, { summary: `${k} title`, size: 'M' }])) } });
+const wrapState = join(WR.env.HOME, '.desk-autopilot', 'acme__wrap');
+const wrapAt = Date.now();
+writeFileSync(join(wrapState, 'eta-history.jsonl'), [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5].map((h, i) => {
+  const merged = wrapAt - (i + 1) * HOUR;
+  return `${JSON.stringify({ key: `H-${i}`, size: 'M', spawned_at: new Date(merged - h * HOUR).toISOString(), merged_at: new Date(merged).toISOString(), hours: h })}\n`;
+}).join(''));
+mkdirSync(join(wrapState, 'logs'), { recursive: true });
+const saidLine = (text) => `${JSON.stringify({ type: 'assistant', timestamp: new Date(wrapAt - 60000).toISOString(), message: { content: [{ type: 'text', text }] } })}\n`;
+writeFileSync(join(wrapState, 'logs', 'W-1.log'), saidLine('AUTOPILOT_STAGE: 9/9 done'));
+writeFileSync(join(wrapState, 'logs', 'W-2.log'), saidLine('AUTOPILOT_STAGE: 9/9 cleanup') + saidLine('AUTOPILOT_DONE: pr=12 jira=none'));
+writeFileSync(join(wrapState, 'logs', 'W-3.log'), saidLine('AUTOPILOT_STAGE: 9/9 cleanup'));
+const wrapOut = lines(WR.run('--plain', 'wrap').out);
+const wrapRow = (key) => (wrapOut.find((l) => l.includes(` ${key} `)) ?? '').replace(/\s+/g, ' ').trim();
+t('issue-1418 AC1 a final stage marked done reads as finishing, not running', wrapRow('W-1').startsWith('1 W-1 ◑ finishing worker finished, next pass records it started overdue') || wrapRow('W-1'), true);
+t('issue-1418 AC1 so does a worker that printed its DONE marker', wrapRow('W-2').startsWith('2 W-2 ◑ finishing ') || wrapRow('W-2'), true);
+t('issue-1418 AC1 a worker still in its last stage is running', wrapRow('W-3').startsWith('3 W-3 ● running ') || wrapRow('W-3'), true);
+t('issue-1418 AC1 only the running one counts as a held worker', wrapOut.find((l) => /workers \d+ of \d+/.test(l))?.match(/workers \d+ of \d+/)?.[0], 'workers 1 of 3');
+// The render time, and the minute either side of it the run may have crossed.
+const renderTimes = [-1, 0, 1].map((m) => whenAt(wrapAt + m * 60000, wrapAt));
+t('issue-1418 AC2 a ship estimate at or before now reads overdue, never the render time',
+  ['W-1', 'W-2', 'W-3'].map((k) => `${wrapRow(k).includes('overdue')} ${renderTimes.some((s) => wrapRow(k).includes(s))}`).join(', '), 'true false, true false, true false');
+t('issue-1418 AC1 the ticket page says a finishing ticket waits on the next pass, not that it starts',
+  WR.run('--plain', 'wrap', 'show', 'W-1').out.includes('Moves without you: worker finished, next pass records it.'), true);
+t('issue-1418 AC2 the ships view\'s all done by is never the render time',
+  ((l) => `${l.includes('overdue')} ${renderTimes.some((s) => l.includes(s))}`)(lines(WR.run('--plain', 'ships', 'wrap').out).find((l) => l.startsWith('All done by:')) ?? ''), 'true false');
+{
+  const { passesPaused } = await import('../desk/bin/desk-q.mjs');
+  t('issue-1418 AC1 a stopped batch with only a finishing ticket left reads as paused, not idle', passesPaused({ live: false, rows: [{ k: 'finishing' }] }), true);
+}
+
 // ---- Lead with what needs you, a repo's Queue grouped by state, a ticket's status first.
 // AC1: voicepa has two tickets parked on the user and one blocked behind them; pr-ninja has one.
 const NY = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch: 'vp', concurrency: 3, tickets: {
   'VPL-1': { state: 'parked', park: { question: 'which copy?' } }, 'VPL-2': { state: 'parked', park: { question: 'which price?' } },
   'VPL-3': { state: 'parked', held_by: 'VPL-1', park: { question: 'held by orchestrator: blocked by VPL-1' }, open_questions: 1, outside_blockers: [{ key: 'EXT-3', category: 'new' }] } } } } });
 t('DS-187 AC1 (DS-279 AC6) the overview opens with how many need you, each repo\'s count, most first, a ticket held outside the batch among them',
-  lines(NY.run('--plain').out)[0], '◆ 5 tickets need you │ voicepa 3 · pr-ninja 1 · pranicuk 1');
+  unbanded(NY.run('--plain').out)[0], '◆ 5 tickets need you │ voicepa 3 · pr-ninja 1 · pranicuk 1');
 const NYs = screen({ kind: 'overview', all: false }, 400);
 await sleep(20);
-t('DS-187 AC1 on the screen it is the first line under the tabs', `${NYs.frame()[1].startsWith('1 Queue')} ${NYs.frame()[3].startsWith('◆ ')} ${NYs.frame()[3] === lines(Q.overview(Q.loadRepos(), { avail: 30 }))[0]}`, 'true true true');
+const nyFirst = NYs.frame().slice(3).find((l) => !l.startsWith(' ✕ ')) ?? '';
+t('DS-187 AC1 on the screen it is the first line under the tabs and bands', `${NYs.frame()[1].startsWith('1 Queue')} ${nyFirst.startsWith('◆ ')} ${nyFirst === unbanded(Q.overview(Q.loadRepos(), { avail: 30 }))[0]}`, 'true true true');
 NYs.ui.finish(0);
 
 // mixed's queue order is not its group order: needs you, ready, blocked, running, ready, waiting.
@@ -1312,7 +1362,7 @@ G7.ui.finish(0);
 // AC8: with passes stopped, the merging row says when its checks were read, dimmed.
 const stoppedRow = landRow(landQueue(landRepo([ubuntu, macos], { beat: 300 })), 'LD-1');
 const hhmm = new Date(NOW - 60000).toTimeString().slice(0, 5);
-t('DS-194 AC8 passes stopped: as of the last read, what holds it', new RegExp(`▸ merging {4}#164 · as of ${hhmm}: tests \\(macos-latest\\) queued`).test(stoppedRow), true);
+t('DS-194 AC8 passes stopped: as of the last read, what holds it', new RegExp(`▸ merging +#164 · as of ${hhmm}: tests \\(macos-latest\\) queued`).test(stoppedRow), true);
 t('DS-194 AC8 and it is grey', coloured((await landingRaw([ubuntu, macos], 'LD-1', { beat: 300 })).l, true).some((c) => c.startsWith(`38;5;247:as of ${hhmm}: tests (macos-latest) queued`)), true);
 // AC9: once the pass records the PR merged, the ticket leaves Merging and counts as merged.
 const mergedQ = landQueue(landRepo([ubuntu], { ps: { ...prOpen([ubuntu]), state: 'MERGED' } }));
@@ -1576,7 +1626,7 @@ const ov215l = Q.overview(Q.loadRepos(NOW), { now: NOW, avail: 30 });
 const halt215l = Q.repoScreen(at215('halt'), { now: NOW });
 process.env.DESK_PLATFORM = 'darwin';
 t('DS-215 AC9 neither macOS nor Linux: every repo reads session, with no supervisor state, band or note',
-  `${/^ {2}sup +● session · 2m ago /.test(rowOf(ov215l, 'sup') ?? '')} ${/^ {2}off +● session · 3m ago /.test(rowOf(ov215l, 'off') ?? '')} ${/supervisor|Batches run by/.test(ov215l)} ${/✕/.test(ov215l)}`, 'true true false false');
+  `${/^ {2}sup +● session · 2m ago /.test(rowOf(ov215l, 'sup') ?? '')} ${/^ {2}off +● session · 3m ago /.test(rowOf(ov215l, 'off') ?? '')} ${/supervisor|Batches run by/.test(ov215l)} ${lines(ov215l).some((l) => l.includes('✕') && !l.includes('loop'))}`, 'true true false false');
 t('DS-215 AC9 and a repo screen offers no supervisor fix', /Supervisor's last log line|supervisor on/.test(halt215l), false);
 const plain215 = I.run('--plain').out;
 t('DS-215 AC10 --plain: the same words and glyphs, no colour, the band and notes as plain lines',
@@ -1673,6 +1723,39 @@ t('DS-215 AC6 a stopped session-run batch set to the supervisor with only ready 
   `${/^ {2}closed +■ stopped · 50m /.test(rowOf(ovClosed, 'closed') ?? '')} ${/▲ closed +passes stopped\. To resume: run \/desk-autopilot in closed; it hands the batch to the supervisor at Stage 4\.$/m.test(ovClosed)}`, 'true true');
 t('DS-215 AC7 with one ticket that needs you, the note still gives the count',
   lines(ovStall).some((l) => / {2}◆ needs you +\/desk-needs-you, in a Claude session, asks you about the 1 ticket\.$/.test(l)), true);
+
+// #1416: a repo set to session whose batch is marked handed over (a standing batch always is) reads as
+// its session's, with no supervisor band; once its passes stop with a ticket to move, the band names
+// that session's loop; and where no supervisor can run, nothing offers `supervisor on`.
+put(I.T, I.env, 's1416', { port: 5295, conc: '2 / 3', beat: 3, runBy: 'session', queue: { batch: 's1416', concurrency: 2, supervised: true, tickets: { 'SS-1': ready } } });
+put(I.T, I.env, 'x1416', { port: 5296, conc: '2 / 3', beat: 50, runBy: 'session', queue: { batch: 'x1416', concurrency: 2, supervised: true, tickets: { 'SX-1': ready } } });
+writeFileSync(join(I.env.HOME, '.desk-autopilot', 'acme__x1416', 'orchestrators', 'q.json'),
+  JSON.stringify({ queue: join(I.env.DESK_HOME, 'repos', 'acme__x1416', 'queue.json'), batch: 'x1416', pid: 1, at: minsAgo(50), session: 'sess-1416' }));
+const ov1416 = (names) => Q.overview(Q.loadRepos(NOW).filter((r) => names.includes(r.name)), { now: NOW, avail: 30 });
+const live1416 = ov1416(['s1416']);
+t('#1416 AC1 a repo set to session whose batch is marked handed over: ● session, and no supervisor band',
+  `${/^ {2}s1416 +● session · 3m ago /.test(rowOf(live1416, 's1416') ?? '')} ${/supervisor/.test(live1416)} ${/✕/.test(live1416)}`, 'true false false');
+const stop1416 = ov1416(['x1416']);
+t('#1416 AC2 its passes stopped with a ticket to move: the band says the session\'s loop stopped, names the session and not the supervisor',
+  `${lines(stop1416).includes(' ✕ x1416: the loop in session sess-1416 has stopped, so no passes run. Run /desk-autopilot in x1416')} ${/supervisor/.test(stop1416)}`, 'true false');
+process.env.DESK_PLATFORM = 'linux';
+writeFileSync(join(I.T, 'bin', 'systemctl'), '#!/bin/sh\necho "Failed to connect to bus: No medium found" >&2\nexit 1\n', { mode: 0o755 });
+const wsl1416 = `${ov1416(['off', 'halt'])}\n${Q.repoScreen(at215('off'), { now: NOW })}`;
+process.env.DESK_PLATFORM = 'darwin';
+rmSync(join(I.T, 'bin', 'systemctl'));
+t('#1416 AC3 Linux with no systemd user manager: no supervisor-off band or cell, and nothing offers supervisor on',
+  `${/supervisor on|supervisor off/.test(wsl1416)} ${/^ {2}off +● session · 3m ago /.test(rowOf(wsl1416, 'off') ?? '')}`, 'false true');
+// The supervisor runs every handed-over queue whatever the row says (an epic's plan hands one over,
+// `supervisor on` loads it), so in a repo set to session a handed-over batch is still the supervisor's
+// while its agent is loaded, or while the supervisor ran its last pass: then an unloaded agent is the
+// supervisor-off band, not a stopped loop.
+put(I.T, I.env, 'l1416', { port: 5297, conc: '2 / 3', beat: 3, runBy: 'session', queue: { batch: 'l1416', concurrency: 2, supervised: true, tickets: { 'SL-1': ready } } });
+put(I.T, I.env, 'p1416', { port: 5298, conc: '2 / 3', beat: 50, runBy: 'session', queue: { batch: 'p1416', concurrency: 2, supervised: true, pass: { by: 'supervisor', at: minsAgo(50) }, tickets: { 'SP-1': ready } } });
+I.loaded('sup', 'halt', 'l1416');
+const own1416 = ov1416(['l1416', 'p1416']);
+I.loaded('sup', 'halt');
+t('#1416 a repo set to session whose handed-over batch a loaded supervisor runs reads ● supervisor; one the supervisor last passed, its agent off, is the supervisor-off band',
+  `${/^ {2}l1416 +● supervisor · 3m ago /.test(rowOf(own1416, 'l1416') ?? '')} ${lines(own1416).some((l) => l.startsWith(' ✕ p1416: the supervisor is off'))} ${/✕ p1416: the (loop|session)/.test(own1416)}`, 'true true false');
 
 // ---- DS-218: the ticket screen leads with whether it moves without you; the tabs match the Queue.
 // The 2026-10-24 desk-skills queue: DS-168 behind three merged blockers, DS-150's draft PR and 27 open
@@ -2097,6 +2180,15 @@ put(I.T, I.env, 'fixrr', { port: 5640, conc: '3 / 5', beat: 1, perms: grant, que
 const reposFx = Q.loadRepos(NOW), rGo = reposFx.find((r) => r.name === 'fixgo'), rNo = reposFx.find((r) => r.name === 'fixno'), rRr = reposFx.find((r) => r.name === 'fixrr');
 const qGo = lines(Q.repoScreen(rGo, { now: NOW })), qNo = lines(Q.repoScreen(rNo, { now: NOW })), qRr = lines(Q.repoScreen(rRr, { now: NOW }));
 const fxRow = (ls, key) => ls.find((l) => new RegExp(`^ +(-|\\*?\\d+) {2}${key} `).test(l)) ?? '';
+// One cell of a repo Queue row, trimmed, cut where the header puts its column: WAITING is there only
+// while a row shows a time, and TICKET widens to the longest key, so no column has a fixed place.
+const QUEUE_COLS = ['TICKET', 'STATE', 'WAITING', 'WHAT IT NEEDS', 'STARTS', 'SHIPS', 'TITLE'];
+const cellOf = (ls, key, name) => {
+  const h = ls.find((l) => /TICKET +STATE /.test(l)) ?? '';
+  const cols = QUEUE_COLS.map((c) => [c, h.indexOf(c)]).filter(([, i]) => i >= 0);
+  const at = cols.findIndex(([c]) => c === name);
+  return at < 0 ? null : fxRow(ls, key).slice(cols[at][1], cols[at + 1]?.[1]).trim();
+};
 t('DS-279 (DS-280 AC2) a red PR the merge driver reruns is merging, and names the check and the rerun next',
   `${/F-1 +▸ merging/.test(fxRow(qGo, 'F-1'))} ${rail279('F-1', rGo)}`, 'true Moves without you: PR #801, e2e failed · rerun 1 of 2 next.');
 t('DS-279 a red PR nothing reruns needs you: fix or re-run it, with no merge grant or with §3 ci-rerun not yes',
@@ -2196,20 +2288,53 @@ const r280 = Q.loadRepos(NOW).find((r) => r.name === 'ds280');
 const q280 = lines(Q.repoScreen(r280, { now: NOW, width: 200 }));
 const row280 = (key) => fxRow(q280, key);
 // WHAT IT NEEDS and STARTS of a row, each trimmed, at 200 columns (NEED_W 52).
-const cells280 = (key) => { const l = row280(key); return [l.slice(31, 83).trim(), l.slice(83, 96).trim()]; };
+const cells280 = (key) => [cellOf(q280, key, 'WHAT IT NEEDS'), cellOf(q280, key, 'STARTS')];
+const wait280 = (key) => cellOf(q280, key, 'WAITING');
 // WHAT IT NEEDS is 52 columns on a row, so a longer reason is cut there and read whole on the ticket page.
 // The row names the rerun to come, so one rerun had reads "rerun 2 of 2" until the driver runs it.
 t('DS-280 AC1 a red PR with one rerun had: Merging, the check, and when the next is due',
   `${/M-1 +▸ merging/.test(row280('M-1'))} ${cells280('M-1')[0]}`, `true #901 · Lint failed · rerun 2 of 2 at ${new Date(due280).toTimeString().slice(0, 5)}`);
 t('DS-280 AC1 once its cooldown passes, the same rerun is next, not a different count',
-  fxRow(lines(Q.repoScreen(r280, { now: due280 + 60000, width: 200 })), 'M-1').slice(31, 83).trim(), '#901 · Lint failed · rerun 2 of 2 next');
+  cellOf(lines(Q.repoScreen(r280, { now: due280 + 60000, width: 200 })), 'M-1', 'WHAT IT NEEDS'), '#901 · Lint failed · rerun 2 of 2 next');
 t('DS-280 AC2 two red before any rerun: Merging, leading with the checks, never a pass count',
-  `${/M-2 +▸ merging +#902 · Backend tests, Lint failed · rerun/.test(row280('M-2'))} ${rail279('M-2', r280)}`, 'true Moves without you: PR #902, Backend tests, Lint failed · rerun 1 of 2 next.');
+  `${/M-2 +▸ merging +\S+ +#902 · Backend tests, Lint failed · rerun/.test(row280('M-2'))} ${rail279('M-2', r280)}`, 'true Moves without you: PR #902, Backend tests, Lint failed · rerun 1 of 2 next.');
 t('DS-280 AC3 both reruns spent and no fix try yet: Merging, a worker repairs it next',
-  `${/M-3 +▸ merging +#903 · red after 2 reruns: Lint · a worker/.test(row280('M-3'))} ${rail279('M-3', r280)}`, 'true Moves without you: PR #903, red after 2 reruns: Lint · a worker repairs it next.');
+  `${/M-3 +▸ merging +\S+ +#903 · red after 2 reruns: Lint · a worker/.test(row280('M-3'))} ${rail279('M-3', r280)}`, 'true Moves without you: PR #903, red after 2 reruns: Lint · a worker repairs it next.');
 t('DS-280 more than two red checks lead with the count and the first', Q.needText(r280, { t: { ...ds280['M-2'], pr_status: { ...ds280['M-2'].pr_status, checks: [lint, backend, { ...red, name: 'e2e' }] } }, k: 'merging', pr: true }),
   '#902 · 3 checks failed: Lint +2 · rerun 1 of 2 next');
-t('DS-280 AC4 STARTS says how long a PR has been in Merging', cells280('M-4')[1], 'for 2h 5m');
+t('DS-280 AC4 (issue-1419 AC2) WAITING says how long a PR has been in Merging, and STARTS that it started', `${wait280('M-4')} | ${cells280('M-4')[1]}`, '2h 5m | started');
+
+// ---- #1417: a PR red only on an outside reviewer's gate while that reviewer is down (gate-reviewer.mjs's
+// open outage) waits on the reviewer: no "failed", no rerun named, its rerun count left as it is.
+{
+  const gate1417 = { ...red, name: '🔐 Review gate' };
+  const down1417 = new Date(NOW - 3 * 3600000).toISOString();
+  const tickets = {
+    'G-1': { ...prOn(951, [...okChecks(2), gate1417], { reruns: {}, rerun_at: null, ...fresh }), group: at280(5) },
+    'G-2': { ...prOn(952, [...okChecks(2), gate1417], { reruns: {}, rerun_at: null, ...fresh }), group: at280(5) },
+    // Red on its own code as well: not only the gate, so it reads as before.
+    'G-3': { ...prOn(953, [...okChecks(2), gate1417, lint], { reruns: {}, rerun_at: null, ...fresh }), group: at280(5) },
+  };
+  put(I.T, I.env, 'ds1417', { port: 5651, conc: '3 / 5', beat: 1, perms: { ...grant, 'ci-rerun': 'yes' }, queue: { batch: 'ds1417', concurrency: 3, supervised: true, tickets } });
+  const slug = 'acme__ds1417';
+  const cfg1417 = join(I.env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md');
+  writeFileSync(cfg1417, `${readFileSync(cfg1417, 'utf8')}\n## 4. Checks\n\n| Field | Value |\n|---|---|\n| State checks | \`🔐 Review gate: external agent-pullbot\` |\n`);
+  const gr1417 = join(I.env.HOME, '.desk-autopilot', slug, 'gate-reviewer.json');
+  const outage = (to) => writeFileSync(gr1417, JSON.stringify({ reviewers: {}, outages: [{ login: 'agent-pullbot', from: down1417, to }] }));
+  const need = (key) => { const r = Q.loadRepos(NOW).find((x) => x.name === 'ds1417'); return Q.needText(r, r.prs.find((p) => p.t.key === key)); };
+  outage(null);
+  // The clock today, else the day and the clock (just after midnight the outage began yesterday).
+  const { dayAndTime } = await import('../desk/bin/desk-q-eta.mjs');
+  const when1417 = new Date(down1417).toDateString() === new Date(NOW).toDateString() ? new Date(down1417).toTimeString().slice(0, 5) : dayAndTime(Date.parse(down1417));
+  t('#1417 AC1 red only on the down reviewer\'s gate: waiting on it, since when, not "failed"', need('G-1'), `#951 · waiting on agent-pullbot (down since ${when1417})`);
+  t('#1417 AC2 no rerun is named for it, and each PR waiting on it reads the same', `${/rerun|failed/.test(need('G-1'))} ${/^#952 · waiting on agent-pullbot \(down/.test(need('G-2'))}`, 'false true');
+  t('#1417 a PR red on its own code too reads as before', need('G-3'), '#953 · 🔐 Review gate, Lint failed · rerun 1 of 2 next');
+  // With passes stopped the row reads prNeed with no clock of its own, and says the same time.
+  { const r = Q.loadRepos(NOW).find((x) => x.name === 'ds1417');
+    t('#1417 passes stopped: the same "down since" time', Q.needText({ ...r, live: false }, r.prs.find((p) => p.t.key === 'G-1')).endsWith(`: waiting on agent-pullbot (down since ${when1417})`), true); }
+  outage(new Date(NOW - 60000).toISOString());
+  t('#1417 AC3 once the reviewer posts again (outage closed), the gate is handled as before, with its full rerun budget', need('G-1'), '#951 · 🔐 Review gate failed · rerun 1 of 2 next');
+}
 
 // ---- DS-420: a red PR the merge driver declined reads as the driver's reason, not its failed checks.
 const ci420 = { ...red, name: 'CI gate' };
@@ -2234,21 +2359,22 @@ t('DS-420 AC5 a PR being merged with no decline reads as merging', `${Q.prWhy(r2
 const q420 = { tickets: { B: { key: 'B', ...red420(921, { merge_blocked: thread420 }) }, W: { key: 'W', ...heldBy('B') } } };
 t('DS-420 AC6 a ticket waiting behind a declined PR gives the PR\'s reason, not its failed-check count',
   Q.holdOf(q420, q420.tickets.W, r280.ctx).text, 'behind #921: 1 unresolved thread on a red PR, first src/a.ts:3 "P0 drops the row"');
-t('DS-280 AC5 STARTS says how long a ticket has been in Needs you', `${/N-5 +◆ needs you/.test(row280('N-5'))} ${cells280('N-5')[1]}`, 'true for 1d 1h');
+t('DS-280 AC5 (issue-1419 AC2) WAITING says how long a ticket has been in Needs you, and STARTS holds no time', `${/N-5 +◆ needs you/.test(row280('N-5'))} ${wait280('N-5')} | ${cells280('N-5')[1]}`, 'true 1d 1h | —');
 t('DS-280 AC6 no change for 2 hours: WHAT IT NEEDS ends saying so', cells280('M-6')[0], '#906 · check 1 running, 2h 30m · no change for 2h');
 t('DS-280 AC7 a check that changed 30 minutes ago: no note', `${cells280('M-4')[0]} | ${q280.filter((l) => /no change/.test(l)).length}`, '#904 · check 1 running, 30m · 2 of 3 done | 1');
 t('DS-280 a stamp of another group, before the next pass, shows no age', (() => {
   put(I.T, I.env, 'ds280b', { port: 5660, conc: '3 / 5', beat: 1, perms: { ...grant, 'ci-rerun': 'yes' }, queue: { batch: 'ds280b', concurrency: 3, supervised: true, tickets: { 'M-9': { ...ds280['M-4'], group: { g: 'running', at: ago194(300) } } } } });
-  return fxRow(lines(Q.repoScreen(Q.loadRepos(NOW).find((r) => r.name === 'ds280b'), { now: NOW, width: 200 })), 'M-9').slice(83, 96).trim();
-})(), 'started');
+  const ls = lines(Q.repoScreen(Q.loadRepos(NOW).find((r) => r.name === 'ds280b'), { now: NOW, width: 200 }));
+  return `${cellOf(ls, 'M-9', 'STARTS')} ${cellOf(ls, 'M-9', 'WAITING')}`;
+})(), 'started null');
 const raw280 = async (key) => {
   const s = screen({ kind: 'repo', slug: 'acme__ds280' }, 200, () => NOW);
   await sleep(20);
   const l = lastFrame(s).find((x) => new RegExp(`^.\\s+(-|\\d+) {2}${key} `).test(x.replace(ANSI, ''))) ?? '';
   s.ui.finish(0);
-  return coloured(l).filter((c) => /^for /.test(c.split(':')[1] ?? '')).join();
+  return coloured(l).filter((c) => /^\d+[dhm]( \d+[hm])?$/.test(c.split(':')[1] ?? '')).join();
 };
-t('DS-280 AC6 and DS-421 a Merging age of 2 hours or more is amber, whether or not a check changed since', `${await raw280('M-6')} | ${await raw280('M-4')}`, '38;5;180:for 3h | 38;5;180:for 2h 5m');
+t('DS-280 AC6 and DS-421 a Merging age of 2 hours or more is amber, whether or not a check changed since', `${await raw280('M-6')} | ${await raw280('M-4')}`, '38;5;180:3h | 38;5;180:2h 5m');
 t('DS-280 AC9 behind only a PR that needs you: Waiting, saying so, and starting after it', `${/V-504 +· waiting/.test(row280('V-504'))} ${cells280('V-504').join(' | ')}`,
   'true behind #698, which needs you | after #698');
 t('DS-280 AC10 held behind it and asking its own question: Needs you, for its question, on its row and its page', `${/V-510 +◆ needs you/.test(row280('V-510'))} ${cells280('V-510')[0]} | ${rail279('V-510', r280)}`,
@@ -2281,18 +2407,18 @@ const ds421 = {
 };
 put(I.T, I.env, 'ds421', { port: 5670, conc: '3 / 5', beat: 1, perms: { ...grant, 'ci-rerun': 'yes' }, queue: { batch: 'ds421', concurrency: 3, supervised: true, tickets: ds421 } });
 const q421 = lines(Q.repoScreen(Q.loadRepos(NOW).find((r) => r.name === 'ds421'), { now: NOW, width: 200 }));
-const starts421 = (key) => fxRow(q421, key).slice(83, 96).trim();
-t('DS-421 AC1 after a restart a PR pushed 10 days ago reads 10 days, not the time since', starts421('R-1'), 'for 10d');
-t('DS-421 AC2 a migrated PR keeps its age', starts421('R-2'), 'for 10d');
-t('DS-421 AC3 a new head counts from its push', starts421('R-3'), 'for 20m');
+const starts421 = (key) => cellOf(q421, key, 'WAITING');
+t('DS-421 AC1 after a restart a PR pushed 10 days ago reads 10 days, not the time since', starts421('R-1'), '10d');
+t('DS-421 AC2 a migrated PR keeps its age', starts421('R-2'), '10d');
+t('DS-421 AC3 a new head counts from its push', starts421('R-3'), '20m');
 const raw421 = async (key) => {
   const s = screen({ kind: 'repo', slug: 'acme__ds421' }, 200, () => NOW);
   await sleep(20);
   const l = lastFrame(s).find((x) => new RegExp(`^.\\s+(-|\\d+) {2}${key} `).test(x.replace(ANSI, ''))) ?? '';
   s.ui.finish(0);
-  return coloured(l).filter((c) => /^for /.test(c.split(':')[1] ?? '')).join();
+  return coloured(l).filter((c) => /^\d+[dhm]( \d+[hm])?$/.test(c.split(':')[1] ?? '')).join();
 };
-t('DS-421 AC4 2 hours stuck is amber and 10 days red, so the two never render alike', `${await raw421('R-4')} | ${await raw421('R-1')}`, '38;5;180:for 2h 5m | 38;5;210:for 10d');
+t('DS-421 AC4 2 hours stuck is amber and 10 days red, so the two never render alike', `${await raw421('R-4')} | ${await raw421('R-1')}`, '38;5;180:2h 5m | 38;5;210:10d');
 
 // ---- DS-655: a worker still reviewing its draft PR is running, whatever pr_status its last done stint
 // left, and its Merging clock starts once it finishes, not at a head it pushed while reviewing.
@@ -2312,8 +2438,23 @@ const q655 = lines(Q.repoScreen(r655, { now: NOW, width: 200 }));
 t('DS-655 AC1 a running worker with its draft PR open is in Running, once, not Merging',
   `${/P-1 +● running/.test(fxRow(q655, 'P-1'))} ${q655.filter((l) => / P-1 /.test(l)).length} ${r655.prs.some((x) => x.t.key === 'P-1')}`, 'true 1 false');
 t('DS-655 AC2 once it finishes, its Merging age counts from entering Merging, not from the head pushed under review',
-  `${fxRow(q655, 'P-2').slice(83, 96).trim()} | ${fxRow(q655, 'P-4').slice(83, 96).trim()}`, 'for 3m | for 10d');
+  `${cellOf(q655, 'P-2', 'WAITING')} | ${cellOf(q655, 'P-4', 'WAITING')}`, '3m | 10d');
 t('DS-655 AC3 a fix try running on an open PR shows as it did: Running, a worker repairing it', /P-3 +● running +#953 · /.test(fxRow(q655, 'P-3')), true);
+
+// ---- issue-1419: TICKET fits the longest key plus a space, and a parked row's time is in WAITING, never STARTS.
+put(I.T, I.env, 'i1419', { port: 5680, conc: '3 / 5', beat: 1, perms: grant, queue: { batch: 'i1419', concurrency: 3, supervised: true, tickets: {
+  'issue-1381': { state: 'queued', lane: 'A' },
+  'issue-14190': { state: 'parked', lane: 'A', park: { question: 'which copy?' }, group: { g: 'needs', at: ago194(6 * 60 + 29) } },
+  'SV-1': { state: 'queued', lane: 'A' },
+} } });
+const q1419 = lines(Q.repoScreen(Q.loadRepos(NOW).find((r) => r.name === 'i1419'), { now: NOW, width: 200 }));
+const head1419 = q1419.find((l) => /TICKET +STATE /.test(l)) ?? '';
+t('issue-1419 AC1 TICKET is as wide as the longest key plus a space, so no key runs into its state',
+  `${head1419.indexOf('STATE') - head1419.indexOf('TICKET')} ${/issue-1381 +○ ready/.test(fxRow(q1419, 'issue-1381'))} ${/issue-14190 ◆ needs you/.test(fxRow(q1419, 'issue-14190'))} ${/SV-1 +○ ready/.test(fxRow(q1419, 'SV-1'))}`, '12 true true true');
+t('issue-1419 AC2 a parked row\'s time is in WAITING, between STATE and WHAT IT NEEDS, and STARTS holds none',
+  `${head1419.indexOf('WAITING') === head1419.indexOf('STATE') + 13} ${cellOf(q1419, 'issue-14190', 'WAITING')} | ${cellOf(q1419, 'issue-14190', 'STARTS')} | ${q1419.some((l) => / for \d+[dhm]/.test(l))}`, 'true 6h 29m | — | false');
+t('issue-1419 AC2 WAITING is as wide as its longest time, or its heading, plus two',
+  head1419.indexOf('WHAT IT NEEDS') - head1419.indexOf('WAITING'), 9);
 t('DS-655 the pass stamps the same groups desk-q draws', JSON.stringify(Q.groupsNow({ slug: 'acme__ds655', stateDir: r655.stateDir, queuePath: r655.queuePath, q: r655.q, now: NOW })),
   JSON.stringify({ 'P-1': 'running', 'P-2': 'merging', 'P-3': 'running', 'P-4': 'merging' }));
 t('DS-421 under 2 hours the age is uncoloured', await raw421('R-3'), '');

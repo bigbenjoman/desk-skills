@@ -634,7 +634,7 @@ export const ROWS = Object.freeze([
   p('pr-auto-merge', forces(settledBy('repo-merge-settings', { clause: AUTO_MERGE_OFF }, 'no', 'gh pr merge --auto cannot arm where the repo has auto-merge off'))),
   p('pr-merge-green'), p('merge-feedback-first'), p('pr-update-branch'),
   p('pr-conflict-unreviewed'), p('pr-conflict-reviewed'), p('ci-rerun'), p('codex-review'), p('ci-protection'),
-  p('gh-close-linked-issue'), p('gh-issue-create'), p('gh-issue-comment'),
+  p('gh-close-linked-issue'), p('gh-issue-create'), p('gh-issue-comment'), p('gh-issue-edit'),
   // §3 Autopilot
   p('autopilot-workers'), p('autopilot-worker-mode', { type: 'text', example: 'dontAsk' }), p('autopilot-merge'), p('merge-hold-routine'),
   p('batch-base-push'), p('autopilot-judgement'), p('autopilot-reclaim'), p('machine-reboot'),
@@ -682,6 +682,7 @@ export const ROWS = Object.freeze([
   v('codex-models', '3b', 'Codex review', 'codex-review', 'finder=gpt-6.1-sol:medium refuter=gpt-6.1-sol:low timeout=600', dflt('none')),
   v('intake-query', '3b', 'Intake query', 'text', 'project = ABC AND labels = autopilot AND statusCategory = "To Do"', dflt('none')),
   v('triage-concurrency', '3b', 'Triage concurrency', 'whole', '1', dflt('1')),
+  v('slot-candidates', '3b', 'Propose candidates for a free slot', 'on-off', 'off', dflt('off')),
   // §4 Tracker
   v('tracker', '4', 'Tracker', 'tracker', 'jira'),
   v('jira-site', '4', 'Jira site', 'text', 'yourteam.atlassian.net'),
