@@ -2012,22 +2012,36 @@ check "ask ledger: with the lever off, the same spawn and push as with it on wri
   '[ "$n" -ge 6 ] && [ "$(field AK-3 state)" = "\"running\"" ] && echo "$out" | grep -q "PUSH: AK-4: PRODUCTION BROKEN" && [ ! -e "$T/ak-off/ledger" ] && ! echo "$out" | grep -q "ask ledger"'
 
 # ---- question handling: on the batched arm, a park's recommended call desk may not take for the worker
-# applies by default once a check-in has passed since it parked; never with the lever off, nor a product
-# call. Each parked at 07:00Z five days ago, so the default 08:00 and 17:00 check-ins have passed.
+# applies by default at the first check-in after a digest listed it; never before a digest has, nor with
+# the lever off, nor for a product call. QH-1 to QH-3 were listed at 09:00Z five days ago, so a check-in
+# has passed since; QH-5 was listed just now. Whichever path raises an ask first, it carries the arm.
 export DESK_CONFIG="$T/config-lg.md" DESK_QUEUE="$T/qh/queue.json" DESK_AUTOPILOT_STATE="$T/state-qh"; mkdir -p "$T/qh" "$T/state-qh/logs"
 q init qh; q set-batch concurrency=1
-QH_PIN='levers={"set":[],"values":{"question-handling":"batched"},"at":"2026-11-20T00:00:00Z"}'
+qh_pin(){ printf 'levers={"set":[],"values":{"question-handling":"%s"},"at":"2026-11-20T00:00:00Z"}' "$1"; }
 qh_park(){ q add "$1"; q set "$1" state=parked lane=A "park={\"kind\":\"question\",\"question\":\"$1: two columns or one?\",\"since\":\"2026-11-20T07:00:00Z\",\"recommends\":{\"question\":\"Two columns or one?\",\"options\":[\"two columns\",\"one column\"],\"chose\":\"two columns\",\"category\":\"$2\"}}" "${@:3}"; }
-qh_park QH-1 design "$QH_PIN"; qh_park QH-2 design; qh_park QH-3 product "$QH_PIN"
+qh_park QH-1 design "$(qh_pin batched)"; qh_park QH-2 design; qh_park QH-3 product "$(qh_pin batched)"; qh_park QH-4 design "$(qh_pin batched)"; qh_park QH-5 design "$(qh_pin batched)"
+q add QH-6; q set QH-6 state=parked lane=A 'park={"kind":"question","question":"PRODUCTION BROKEN: search returns 500","since":"2026-11-20T08:00:00Z"}' "$(qh_pin one-at-a-time)"
+node --input-type=module -e "
+import { queueDifference } from '$B/queue-ledger.mjs';
+import { recordAsks } from '$B/ask-ledger.mjs';
+queueDifference('$DESK_QUEUE', { seed: true });
+const listed = (key, at) => recordAsks('$DESK_QUEUE', [{ step: 'presented', key, since: '2026-11-20T07:00:00Z', via: 'digest', ref: 'page.md' }], { on: true, now: new Date(at) });
+for (const k of ['QH-1', 'QH-2', 'QH-3']) listed(k, '2026-11-20T09:00:00Z');
+listed('QH-5', new Date().toISOString());"
 out=$(node "$B/pass.mjs" 2>&1)
-check "question handling: a batched-arm design call applies its recommendation by default at the check-in, and is requeued" \
-  '[ "$(field QH-1 state)" != "\"parked\"" ] && [ "$(field QH-1 auto_answered.chose)" = "\"two columns\"" ] && grep -q "^two columns. This was the option the last worker recommended .* desk applied it by default" "$T/state-qh/briefings/QH-1.md" && echo "$out" | grep -qF "QH-1: nobody answered its design call by the check-in, so its recommended option (\"two columns\") applied by default"'
+qh_raised(){ jq -sc "[.[] | select(.type == \"ask_raised\" and .key == \"$1\") | [.data.arm, .data.blocking]]" "$T/qh/ledger/events.jsonl"; }
+check "question handling: a batched-arm design call a digest listed applies its recommendation by default at the next check-in, and is requeued" \
+  '[ "$(field QH-1 state)" != "\"parked\"" ] && [ "$(field QH-1 auto_answered.chose)" = "\"two columns\"" ] && grep -q "^two columns. This was the option the last worker recommended .* listed it and nobody answered it by the next check-in, so desk applied it by default" "$T/state-qh/briefings/QH-1.md" && echo "$out" | grep -qF "QH-1: nobody answered its design call by the check-in after the digest listed it, so its recommended option (\"two columns\") applied by default"'
 check "question handling: it is logged as a decision taken by default, saying how to reverse it" \
   'jq -e "select(.ticket == \"QH-1\" and .source == \"default\" and .chose == \"two columns\" and (.question | test(\"To reverse it, override it here with one column\")))" "$T/state-qh/decisions.jsonl" >/dev/null'
-check "question handling: and its ask is answered by default in the ticket ledger" \
-  '[ "$(jq -sc "[.[] | select(.type == \"ask_answered\" and .key == \"QH-1\") | .data.by]" "$T/qh/ledger/events.jsonl")" = "[\"default\"]" ]'
+check "question handling: and its ask is answered by default in the ticket ledger, raised by the take with its arm" \
+  '[ "$(jq -sc "[.[] | select(.type == \"ask_answered\" and .key == \"QH-1\") | .data.by]" "$T/qh/ledger/events.jsonl")" = "[\"default\"]" ] && [ "$(qh_raised QH-1)" = "[[\"batched\",true]]" ]'
+check "question handling: never before a digest has listed it, nor before the check-in after the digest that did" \
+  '[ "$(field QH-4 state)" = "\"parked\"" ] && [ "$(field QH-5 state)" = "\"parked\"" ] && ! grep -q "QH-[45]" "$T/state-qh/decisions.jsonl"'
 check "question handling: with the lever off, and for a product call, nothing applies by default" \
   '[ "$(field QH-2 state)" = "\"parked\"" ] && [ "$(field QH-3 state)" = "\"parked\"" ] && [ "$(field QH-2 auto_answered)" = null ] && ! grep -q "QH-[23]" "$T/state-qh/decisions.jsonl"'
+check "question handling: a production-broken park raised by the pass's own push carries its arm" \
+  'echo "$out" | grep -q "PUSH: QH-6: PRODUCTION BROKEN" && [ "$(qh_raised QH-6 | jq -c "map(.[0])")" = "[\"one-at-a-time\"]" ]'
 export DESK_CONFIG="$AK_CONFIG"
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

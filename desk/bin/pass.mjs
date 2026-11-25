@@ -86,7 +86,7 @@ import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget } from './queue-ledger.mjs';
 import { fold as ledgerFold, append as ledgerAppend } from './ticket-ledger.mjs';
 import { recordAsks, measure as measureAsks, ASK_BY_ENV } from './ask-ledger.mjs';
-import { defaultsAtCheckin, defaultAnswer, defaultCall } from './question-arms.mjs';
+import { defaultsAtCheckin, defaultAnswer, defaultCall, digestPresented, raisedOf } from './question-arms.mjs';
 import * as MS from './merge-stages.mjs';
 import * as RM from './review-misses.mjs';
 import * as ST from './stuck-time.mjs';
@@ -1625,14 +1625,18 @@ function finishPush(t) {
 }
 // The §3b check-in times, or null where the row cannot be read (the digest says why).
 const checkinTimesNow = () => { try { return checkinTimes(checkinRow()).times ?? null; } catch { return null; } };
+// When a check-in digest listed each ask of this batch (question-arms.mjs digestPresented), read once.
+let digestListed = null;
+const listedByDigest = () => (digestListed ??= digestPresented(QUEUE_FILE));
 // A take call parked with a recommended option: answer it with that option, requeue, log the call. One
-// the pass may not take applies by default once a check-in has passed, where the ticket's
-// question-handling arm says so (question-arms.mjs defaultsAtCheckin): logged so the digest can reverse it.
+// the pass may not take applies by default at the first check-in pass after a digest listed it, where
+// the ticket's question-handling arm says so (question-arms.mjs defaultsAtCheckin): logged so the
+// digest can reverse it.
 function takeRecommended(t) {
   const d = parseDecision(JSON.stringify(t.park?.recommends ?? null));
   if (!d.ok) return false;
   const byDefault = !takeable(d.decision, E.permission('autopilot-judgement'));
-  if (byDefault && !defaultsAtCheckin(t, d.decision, { times: checkinTimesNow() })) return false;
+  if (byDefault && !defaultsAtCheckin(t, d.decision, { times: checkinTimesNow(), presented: listedByDigest })) return false;
   // An answer since it parked is the decider's to act on; the same park after an earlier take is the person's.
   if (t.park.since && answered(STATE, { ticket: t.key, at: t.park.since })) return false;
   if (t.auto_answered && samePark(t.auto_answered.question, t.park.question, t.key)) return false;
@@ -1643,7 +1647,7 @@ function takeRecommended(t) {
   };
   flushQueue();
   // The take answers the park's ask by default (ask-ledger.mjs), raised first if nothing raised it.
-  if (t.park.since) askLines.push(...recordAsks(QUEUE_FILE, [{ step: 'raised', key: t.key, since: t.park.since, kind: t.park.kind, question: t.park.question }], { on: !DRY && ledgerOn(), by: 'pass' }));
+  if (t.park.since) askLines.push(...recordAsks(QUEUE_FILE, [raisedOf(t, queue())], { on: !DRY && ledgerOn(), by: 'pass' }));
   const ans = shOut('node', [join(BIN, 'answer.mjs'), t.key, byDefault ? defaultAnswer(d.decision) : recommendedAnswer(d.decision)], { env: { ...process.env, [ASK_BY_ENV]: 'default' } });
   if (!ans.ok) return left(`answer.mjs refused it (${lastLine(ans.out)})`);
   const question = t.park.question;
@@ -1653,7 +1657,7 @@ function takeRecommended(t) {
   q('set', t.key, `auto_answered=${JSON.stringify({ question, chose: d.decision.chose, at })}`);
   if (byDefault) {
     appendDecisions([decisionEntry({ decision: defaultCall(d.decision, t.key, at), ticket: t.key, run: t.session_id ?? null, repo: GH_REPO, pr: null, at, source: 'default' })], STATE);
-    report.recovered.push(`${t.key}: nobody answered its ${d.decision.category} call by the check-in, so its recommended option ("${d.decision.chose}") applied by default: answered and requeued; logged as a decision the digest can reverse`);
+    report.recovered.push(`${t.key}: nobody answered its ${d.decision.category} call by the check-in after the digest listed it, so its recommended option ("${d.decision.chose}") applied by default: answered and requeued; logged as a decision the digest can reverse`);
     return true;
   }
   appendDecisions([decisionEntry({ decision: d.decision, ticket: t.key, run: t.session_id ?? null, repo: GH_REPO, pr: null, source: 'pass' })], STATE);
@@ -6008,7 +6012,7 @@ runPhase({
   const steps = push.filter((p) => String(p.key ?? '').startsWith(lead)).flatMap((p) => {
     const t = qEnd.tickets[p.key.slice(lead.length)];
     if (!t?.park?.since) return [];
-    return [{ step: 'raised', key: t.key, since: t.park.since, kind: t.park.kind, question: t.park.question },
+    return [raisedOf(t, qEnd),
       { step: 'presented', key: t.key, since: t.park.since, via: 'push', ref: p.key, notification: p.key }];
   });
   askLines.push(...recordAsks(QUEUE_FILE, steps, { on: !DRY && ledgerOn(), by: 'pass' }));

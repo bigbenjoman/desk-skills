@@ -174,12 +174,14 @@ node ~/.claude/desk/bin/digest.mjs ask-again <slug> <TICKET>
   and on its own (the worker contract says when a worker may use it), unless the ticket's pin sets
   the `question-handling` lever (`question-arms.mjs`, `desk-config.md` Phase 0 levers): on
   `one-at-a-time` the supervisor pushes each park it hands to the digest, on `mixed` only a blocking
-  one, and on neither between 22:00 and 08:00, when it waits for the digest. A production-broken park
-  is pushed at any hour on every arm.
+  one, but never one this page listed first, and on neither between 22:00 and 08:00 (one handed on
+  then is pushed once they end, unless this page lists it first). A production-broken park is pushed
+  at any hour on every arm. Whichever way an ask is raised first, the ledger records its arm.
 - **Applied by default, on `batched`.** Where a ticket's pin sets `question-handling` to `batched`, a
   park recommending a call desk may not take for its worker (`AUTOPILOT_PARK_RECOMMENDS`, a design
-  or wording call without §3 `autopilot-judgement` `yes`) takes its recommendation at the first
-  check-in after it parked, if nobody answered: the pass answers and requeues it, and logs a call
+  or wording call without §3 `autopilot-judgement` `yes`) takes its recommendation once this page has
+  listed it and the next check-in has passed with no answer: never before you have seen it. The pass
+  at that check-in answers and requeues it, and logs a call
   with source `default` that this page lists with its override command, saying how to reverse it. A
   product call, and one naming money, legal, production, customer copy or a fact only you hold, never
   applies by itself. With the lever off, nothing does.
