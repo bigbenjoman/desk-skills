@@ -30,8 +30,8 @@ const config = (rows) => {
 const env = (cfg) => ({ ...process.env, DESK_CONFIG: cfg, DESK_MACHINE: join(T, 'none.md'), HOME: T });
 const levers = (cfg, ...a) => execFileSync('node', [ENV_BIN, 'levers', ...a], { encoding: 'utf8', env: env(cfg), stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const noRow = config('');
-t('AC5: no levers row: every lever is off', LEVERS.filter((l) => !isValued(REGISTRY[l])).map((l) => levers(noRow, l)).every((v) => v === 'off'), true);
-t('AC5: no levers row: a lever with more than two arms reads its baseline', LEVERS.filter((l) => isValued(REGISTRY[l])).every((l) => levers(noRow, l) === REGISTRY[l].baseline), true);
+t('AC5: no levers row: every lever is off', LEVERS.map((l) => levers(noRow, l)).every((v) => v === 'off'), true);
+t('AC5: no levers row: a lever with more than two arms reads off, not its baseline', LEVERS.filter((l) => isValued(REGISTRY[l])).map((l) => levers(noRow, l)).join(' '), 'off');
 t('AC5: no levers row: nothing on', levers(noRow).split('\n')[0], 'on: none');
 t('AC5: the template TODO is off', levers(config('| Phase 0 levers | `none` | `TODO` (names) |'), 'codex'), 'off');
 t('AC5: none is off', levers(config('| Phase 0 levers | `none` | `none` |')).split('\n')[0], 'on: none');
