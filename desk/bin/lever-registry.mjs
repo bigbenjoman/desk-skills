@@ -135,13 +135,13 @@ export const ENTRIES = Object.freeze({
   // How a parked ticket's question reaches the person (question-arms.mjs): `batched` waits for the
   // check-in digest, where a recommended call applies by default; `one-at-a-time` pushes each ask as it
   // is handed on; `mixed` pushes only a blocking one. Weighed only on the tickets that raised an ask
-  // (`rows`), its cost the shared one, worker dollars per ticket, and an arm pushing 25% more than
-  // batched per ticket is refused. Declared, not yet trialled: levers decide sets it.
+  // (`rows`), its cost the shared one, worker dollars per ticket, and an arm notifying the person 25%
+  // more than batched per ticket is refused (levers-evaluate.mjs weighs each).
   'question-handling': {
-    layer: 'low-risk', trialled: false, values: ['batched', 'one-at-a-time', 'mixed'], baseline: 'batched',
+    layer: 'low-risk', trialled: true, values: ['batched', 'one-at-a-time', 'mixed'], baseline: 'batched',
     mechanism: metric('ask dollars per asking ticket', 0.1),
     rows: 'tickets that raised an ask',
-    guardrails: { interruptions: { metric: 'interruptions (pushes and digests) per ticket', margin: { max_rate_ratio: 1.25 } } },
+    guardrails: { interruptions: { metric: 'interruptions per ticket (each push, and each digest push shared among the asks it listed)', margin: { max_rate_ratio: 1.25 } } },
     trips: [POST_MERGE_REVERT, ownStepError('question-arms.mjs')],
     code: [code('desk/bin/question-arms.mjs')],
     preconditions: [Object.freeze({ id: 'ledger', want: 'on', why: 'its asks and what they cost are read from the ticket ledger' })],

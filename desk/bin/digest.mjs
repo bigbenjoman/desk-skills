@@ -517,7 +517,7 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
       ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s)${asks.length ? `, ${asks.length} promotion question(s)` : ''}, ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nl ? `, ${nl} lever change(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''}${nw ? `, ${nw} warning(s)` : ''} across ${repoCount} repo(s). ${page}` }
       : null;
     writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd, listed, lever_seen: leverSeen, by: self, push }, null, 2)}\n`);
-    const ledger = presentAsks({ list, groups, fresh, page, push, now });
+    const ledger = presentAsks({ list, groups, fresh, pushed, page, push, now });
     return { status: 'sent', slot: slot.id, page, questions: nq, promotions: asks.length, decisions: nd, push, ledger };
   } finally { lock.release(); }
 }
@@ -535,19 +535,23 @@ function pushedQuestions(list, groups) {
 
 // Each park the page lists fresh is an ask it presents (ask-ledger.mjs), raised where nothing raised it
 // before: written to its own repo's ticket ledger, under that ledger's lock, with that repo's ledger
-// lever on. `groups` are the page's, one per batch of `list`. -> the lines of any write that failed.
-function presentAsks({ list, groups, fresh, page, push, now }) {
+// lever on. `groups` are the page's, one per batch of `list`. Each carries its `share` of the page's
+// one push: 1 over the fresh parks across every repo the page lists that no push has presented, 0 for
+// one pushed already (`pushed`, keys) or with no push sent. -> the lines of any write that failed.
+function presentAsks({ list, groups, fresh, pushed, page, push, now }) {
   const isFresh = new Set(fresh);
+  const sharing = groups.flatMap((g) => g.questions ?? []).filter((q) => q.kind === 'parked' && isFresh.has(q.key) && !pushed.has(q.key)).length;
+  const shareOf = (key) => (push && sharing && !pushed.has(key) ? Math.round((1 / sharing) * 1e6) / 1e6 : 0);
   return list.flatMap((r, i) => {
     const parks = (groups[i]?.questions ?? []).filter((q) => q.kind === 'parked' && isFresh.has(q.key));
     if (!parks.length) return [];
     const q = readJson(r.queue, null);
     const tickets = q?.tickets ?? {};
-    const steps = parks.flatMap(({ ticket }) => {
+    const steps = parks.flatMap(({ ticket, key }) => {
       const p = tickets[ticket]?.park;
       if (!p?.since) return [];
       return [raisedOf({ ...tickets[ticket], key: ticket }, q),
-        { step: 'presented', key: ticket, since: p.since, via: 'digest', ref: page, notification: push?.key ?? null }];
+        { step: 'presented', key: ticket, since: p.since, via: 'digest', ref: page, notification: push?.key ?? null, share: shareOf(key) }];
     });
     return recordAsks(r.queue, steps, { on: ledgerOnIn(r.slug), by: 'digest', now });
   });

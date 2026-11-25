@@ -518,7 +518,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   return {
     v: VERSION, generated_at: new Date(generatedAt).toISOString(), tz,
     repos: repoView, baseline,
-    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now) },
+    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now), asks: asksPanel(repos, latest) },
     line,
   };
 }
@@ -533,6 +533,16 @@ function mergeStagesPanel(configured, root) {
     return { name: names[i], ...MS.summary(st), learned: RM.beforeAfter(st, RM.readLearned(join(root, r.slug)).since) };
   }).filter((r) => r.prs);
   return { repos };
+}
+
+// Each repo's latest per-arm ask report (levers-evaluate.mjs: tokens and dollars per ticket by step,
+// pushes and digests per ticket, the share defaulted, the median answer latency), for each lever whose
+// evaluation carries one: { repos: [{ name, lever, at, state, arms: { <arm>: report } }] }.
+function asksPanel(repos, latest) {
+  return {
+    repos: repos.flatMap((r) => [...latest.entries()].filter(([k, e]) => k.startsWith(`${r.slug}|`) && e.ask_report && Object.keys(e.ask_report).length)
+      .map(([, e]) => ({ name: r.name, lever: e.lever, at: e.at, state: e.state ?? null, arms: e.ask_report }))),
+  };
 }
 
 // Each repo's time parked by cause (stuck-time.mjs weekSummary) this ISO week and last, for the repos

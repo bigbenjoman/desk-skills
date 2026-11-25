@@ -53,6 +53,7 @@ const CHECKS = {
   answerer: (v) => ASK_BY.includes(v),
   tokenStep: (v) => ASK_TOKEN_STEPS.includes(v),
   usd: (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0,
+  share: (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1,
 };
 
 // Every event type, the scope it belongs to (a ticket's, or a batch's with key null), and its data fields.
@@ -80,7 +81,7 @@ export const EVENTS = Object.freeze({
   // An ask, a park handed to the person or the decider, as ask-ledger.mjs records each step of it: `ask`
   // is its id, <KEY>:<park.since>.
   ask_raised: { scope: 'ticket', data: { ask: 'string', since: 'string', kind: 'kind', blocking: 'bool?', arm: 'string?' } },
-  ask_presented: { scope: 'ticket', data: { ask: 'string', via: 'via', ref: 'string?', notification: 'string?' } },
+  ask_presented: { scope: 'ticket', data: { ask: 'string', via: 'via', ref: 'string?', notification: 'string?', share: 'share?' } },
   ask_answered: { scope: 'ticket', data: { ask: 'string', by: 'answerer', session: 'string?', latency_s: 'int?' } },
   ask_acted: { scope: 'ticket', data: { ask: 'string', round: 'int?' } },
   // One step's tokens and list-price dollars, by its source (the round's log, the decider, the person's
@@ -204,7 +205,7 @@ const PARK_NULLABLE = Object.entries(EVENTS.parked.data).filter(([, c]) => c.end
 export const parkOf = (d) => Object.fromEntries(Object.entries(d ?? {}).filter(([f, v]) => !(v == null && PARK_NULLABLE.includes(f))));
 
 // Lays an ask event onto ticket `t`'s record of that ask: { ask, since, kind, blocking, arm, raised_at,
-// presented: [{ via, ref, notification, at }], answered: { by, session, latency_s, at } | null,
+// presented: [{ via, ref, notification, share, at }], answered: { by, session, latency_s, at } | null,
 // acted: { round, at } | null, tokens: { <step>:<source>: ask_tokens data and at } }. A step recorded
 // already keeps its first record.
 const askRecord = (ask) => ({ ask, since: null, kind: null, blocking: null, arm: null, raised_at: null, presented: [], answered: null, acted: null, tokens: {} });
@@ -215,7 +216,7 @@ function askStep(t, ev) {
   t.asks ??= {};
   const a = (t.asks[d.ask] ??= askRecord(d.ask));
   if (ev.type === 'ask_raised') { if (a.raised_at == null) Object.assign(a, { since: d.since, kind: d.kind, blocking: d.blocking ?? null, arm: d.arm ?? null, raised_at: ev.at }); }
-  else if (ev.type === 'ask_presented') { if (!a.presented.some((p) => p.via === d.via)) a.presented.push({ via: d.via, ref: d.ref ?? null, notification: d.notification ?? null, at: ev.at }); }
+  else if (ev.type === 'ask_presented') { if (!a.presented.some((p) => p.via === d.via)) a.presented.push({ via: d.via, ref: d.ref ?? null, notification: d.notification ?? null, share: d.share ?? null, at: ev.at }); }
   else if (ev.type === 'ask_answered') a.answered ??= { by: d.by, session: d.session ?? null, latency_s: d.latency_s ?? null, at: ev.at };
   else if (ev.type === 'ask_acted') a.acted ??= { round: d.round ?? null, at: ev.at };
   else if (ev.type === 'ask_tokens') { a.tokens ??= {}; a.tokens[tokensKey(d)] ??= { ...d, at: ev.at }; }

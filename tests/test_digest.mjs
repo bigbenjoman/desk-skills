@@ -391,6 +391,35 @@ t('DS-280 AC8 the page\'s count line says so', page11.includes('; 2 merging PR(s
   t('an ask the digest raises first carries its arm and blocking flag', JSON.stringify([raisedEv?.data.arm, raisedEv?.data.blocking]), JSON.stringify(['mixed', true]));
 }
 
+// Each ask a page presents carries its share of the page's one push: 1 over the fresh parks, across
+// every repo on the page, that no push presented; 0 for one pushed already, and 0 with no push sent.
+{
+  const { queueDifference } = await import('../desk/bin/queue-ledger.mjs');
+  const { recordAsks } = await import('../desk/bin/ask-ledger.mjs');
+  const since = '2026-10-31T09:00:00.000Z';
+  const parked = (key, arm) => ({ key, state: 'parked', lane: 'C', park: { kind: 'question', question: `${key}: which banner?`, since }, levers: { set: [], values: { 'question-handling': arm }, at: since } });
+  const ledgered = (slug, tickets, pushed = []) => {
+    mkdirSync(join(root, 'cfg', 'repos', slug), { recursive: true });
+    writeFileSync(join(root, 'cfg', 'repos', slug, 'config.md'), '## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n');
+    const r = repo(slug, Object.fromEntries(tickets.map((x) => [x.key, x])));
+    queueDifference(r.queue, { seed: true });
+    recordAsks(r.queue, pushed.map((key) => ({ step: 'presented', key, since, via: 'push', ref: `ask:${slug}:${key}`, notification: `ask:${slug}:${key}` })), { on: true, now: at('2026-10-31', '10:00') });
+    return r;
+  };
+  const shares = (r) => readFileSync(join(dirname(r.queue), 'ledger', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    .filter((e) => e.type === 'ask_presented' && e.data.via === 'digest').map((e) => [e.key, e.data.share]).sort();
+  const slotOf = async (list, d) => checkin({ times: DEFAULT_TIMES, now: at('2026-10-31', '17:01'), dir: join(root, d), list, bin: BIN, self: list[0].slug, promote: () => null, checkJira: () => null });
+  const one = ledgered('acme__onepage', [parked('X-1', 'batched'), parked('Y-1', 'one-at-a-time'), parked('Z-1', 'one-at-a-time')], ['Y-1', 'Z-1']);
+  const d1 = await slotOf([one], 'digest-onepage');
+  t('a page listing a batched ask beside pushed ones: the batched ask carries the whole push, the pushed ones none', JSON.stringify([!!d1.push, shares(one)]), JSON.stringify([true, [['X-1', 1], ['Y-1', 0], ['Z-1', 0]]]));
+  const two = [ledgered('acme__page-a', [parked('A-1', 'batched')]), ledgered('acme__page-b', [parked('B-1', 'batched')])];
+  await slotOf(two, 'digest-twopage');
+  t('asks of two repos on one page share its push between them', JSON.stringify(two.map(shares)), JSON.stringify([[['A-1', 0.5]], [['B-1', 0.5]]]));
+  const quiet = ledgered('acme__nopush', [parked('Q-1', 'one-at-a-time')], ['Q-1']);
+  const dq = await slotOf([quiet], 'digest-nopush');
+  t('a page that sent no push gives its listings no share', JSON.stringify([dq.push, shares(quiet)]), JSON.stringify([null, [['Q-1', 0]]]));
+}
+
 rmSync(root, { recursive: true, force: true });
 t('cleaned up', existsSync(root), false);
 if (fails) { console.log(`${fails} failed`); process.exit(1); }

@@ -3,7 +3,8 @@
 // question parked again after a requeue is another ask. Its steps are four ticket events, each legal
 // from any state and leaving it as it is (ticket-ledger.mjs):
 //   ask_raised     { ask, since, kind, blocking, arm }   handed to the person or the decider
-//   ask_presented  { ask, via, ref, notification }       via push, digest, decider or session
+//   ask_presented  { ask, via, ref, notification, share } via push, digest, decider or session; a
+//                                                         digest's share of its one push (digest.mjs)
 //   ask_answered   { ask, by, session, latency_s }       by the person, the decider or a default
 //   ask_acted      { ask, round }                        the spawn that resumes the ticket after it
 // latency_s is the answer's time less the park's since. Each step is written once: its event id is
@@ -63,7 +64,7 @@ function eventOf(s, batch, now) {
         data: { ask, since, kind: parkKind({ park: { kind: s.kind, question: s.question } }), blocking: typeof s.blocking === 'boolean' ? s.blocking : null, arm: text(s.arm) } };
     case 'presented':
       return { ...base, id: `ask:${ask}:presented:${s.via}`, type: 'ask_presented', at: now,
-        data: { ask, via: s.via, ref: text(s.ref), notification: text(s.notification) } };
+        data: { ask, via: s.via, ref: text(s.ref), notification: text(s.notification), share: Number.isFinite(s.share) && s.share >= 0 && s.share <= 1 ? s.share : null } };
     case 'answered': {
       const at = s.at != null ? iso(s.at) : now;
       const late = ms(at) - ms(since);
@@ -99,7 +100,7 @@ function holds(state, ev) {
 }
 
 // Appends ask steps `steps` ([{ step, key, since, ... }]: raised takes kind (else read from question),
-// blocking and arm (the question-handling lever's, question-arms.mjs); presented via, ref and notification; answered by, session and at; acted round) to the ledger of queue file `at` (or `{ repoDir, batch }`), in one append. `on`
+// blocking and arm (the question-handling lever's, question-arms.mjs); presented via, ref, notification and share; answered by, session and at; acted round) to the ledger of queue file `at` (or `{ repoDir, batch }`), in one append. `on`
 // is the ledger lever. -> the report lines: none, or one saying the steps could not be written.
 export function recordAsks(at, steps, { on = ledgerOn(), by, now = new Date(), waitMs = LOCK_WAIT_MS } = {}) {
   const list = [].concat(steps ?? []).filter(Boolean);
