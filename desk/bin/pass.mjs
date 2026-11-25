@@ -279,7 +279,7 @@ const sh = (cmd, args, { fresh, ...opts } = {}) => {
 // nothing to take (no §4 Vercel team, the lease kind off, or a lease store it cannot read, where
 // leases.mjs says to go on without it). A push that fails starts no build, so freeSlot gives back a
 // unit it placed, unless another taker renewed it since, and keeps one it only renewed.
-const LEASE_ENV = { machineValue: E.machineValue, testLockSlots: E.testLockSlots, psRows: E.psRows };
+const LEASE_ENV = { machineValue: E.machineValue, testLockSlots: E.testLockSlots, lightLockSlots: E.lightLockSlots, psRows: E.psRows };
 const leaseQuiet = (args) => leaseCli(args, { env: LEASE_ENV, out: () => {}, err: () => {} });
 function previewSlot(t, branch) {
   if (DRY || !E.previewSlotArgs('', 0)) return {};
@@ -2335,32 +2335,38 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
   try { light = E.configValue('suite-weight') === 'light'; } catch { /* unread: heavy, the default */ }
   return lockGate([
     queueOf('test', pools?.heavy.current ?? E.testLockSlots()),
-    light ? queueOf('light', pools?.light.current ?? 1) : null,
+    light ? queueOf('light', pools?.light.current ?? E.lightLockSlots()) : null,
   ]);
 })();
 // The stage a requeue resumes its last round at, or null where it starts again: no round to resume,
 // or an unfinished fix try, whose next worker gets the try's own task (fixTask), which runs suites.
 // resumeRound and the test lock gate both read it, so they agree on where a requeue starts.
 const resumedStage = (t) => (t.fix && !t.fix.finished ? null : roundStage(t.last_round?.stage));
-// Bound for the suites: a local session that starts at Stage 0 or one that runs suites: a killed worker
-// last at Stage 4 or 4b, a handoff to 4b, or a requeue resuming its last round there (resumeRound, which
-// resumes only in a kept worktree).
+// Bound for the suites: a local session that starts at Stage 0 ('fresh') or one that runs suites
+// ('suite'): an unfinished fix try, a killed worker last at Stage 4 or 4b, a handoff to 4b, or a requeue
+// resuming its last round there (resumeRound, which resumes only in a kept worktree). Null otherwise.
 const suiteBound = (r) => {
-  if (runsInCloud(r)) return false;
-  if (toResume(r)) return SUITE_STAGES.includes(roundStage(r.stage));
-  if (toHandoff(r)) return SUITE_STAGES.includes(String(r.handoff_stage));
+  if (runsInCloud(r)) return null;
+  if (toResume(r)) return SUITE_STAGES.includes(roundStage(r.stage)) ? 'suite' : null;
+  if (toHandoff(r)) return SUITE_STAGES.includes(String(r.handoff_stage)) ? 'suite' : null;
+  if (r.fix && !r.fix.finished) return 'suite';
   const round = existsSync(join(WORKTREES, r.key)) ? resumedStage(r) : null;
-  return !round || SUITE_STAGES.includes(round);
+  return !round ? 'fresh' : SUITE_STAGES.includes(round) ? 'suite' : null;
 };
-// The gate's room left this pass: each suite-bound ticket let through uses one, and once none is left
-// the rest are held. A ticket skipped later in the pass keeps its unit used, which errs on the side of
-// starting fewer.
-let lockRoom = LOCK_QUEUE?.room ?? Infinity;
-const lockQueueHolds = (r) => {
-  if (!suiteBound(r)) return false;
-  if (lockRoom <= 0) return true;
-  lockRoom -= 1;
+// Each lock queue's room left this pass: each suite-bound ticket let through uses one of every queue it
+// would join, and once one has none left the tickets bound for it are held. A fresh session joins only
+// the test lock's queue (its typechecks): its suites are a stage away, so a full light queue holds only
+// the tickets whose next step is a suite. A ticket skipped later in the pass keeps its units used, which
+// errs on the side of starting fewer.
+const lockRoom = Object.fromEntries(['test', 'light'].map((l) => [l, LOCK_QUEUE?.queues.find((q) => q.lock === l)?.room ?? Infinity]));
+const takeLockRoom = (locks) => {
+  if (locks.some((l) => lockRoom[l] <= 0)) return true;
+  for (const l of locks) lockRoom[l] -= 1;
   return false;
+};
+const lockQueueHolds = (r) => {
+  const bound = suiteBound(r);
+  return !!bound && takeLockRoom(bound === 'fresh' ? ['test'] : ['test', 'light']);
 };
 const lockQueueHeld = [];
 const runningKeys = new Set(running.map((r) => r.key));
@@ -3448,8 +3454,7 @@ async function spawnBaseFix({ wt, fix: asked }) {
       : { ticket: baseFixTicket, brief: baseFixBrief, task: baseFixTask };
   // A base try runs suites as a ticket's worker does, so it takes a unit of the test lock gate's room
   // first: with room for one, a pass starts the base try or a ticket, not both.
-  if (lockRoom <= 0) { out.push(`base ${tryWhat(fix)}: held, ${LOCK_QUEUE.line}`); return; }
-  lockRoom -= 1;
+  if (takeLockRoom(['test', 'light'])) { out.push(`base ${tryWhat(fix)}: held, ${LOCK_QUEUE.line}`); return; }
   if (DRY) { out.push(`base ${tryWhat(fix)} (dry run): would start try ${fix.try} of ${fix.of} on ${BASE} in ${wt}`); return; }
   // No login to start on: no try is spent, and the next pass looks again.
   const pick = repoLogin();

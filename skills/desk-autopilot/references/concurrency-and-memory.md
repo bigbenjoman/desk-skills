@@ -69,7 +69,11 @@ directory, and runs in no configured repo count as one, `other`. Repos are named
 so two of one name under different owners are two. A repo whose §4 Suite weight is light is read
 against the light lock's queue (`with-lock.sh light`) as well, each queue against its own hold point,
 and the tighter binds; a heavy repo is never held by the light queue. A pool's hold point is its
-current slots (its floor plus the runs headroom admission let in above it) × `test-lock-queue-factor` (1 × 2 with no profile). At or over it, each repo with a
+current slots (its floor plus the runs headroom admission let in above it) × `test-lock-queue-factor` (1 × 2 with no profile).
+The light floor is §3b "Light lock slots" (else the machine profile's `light-lock-slots`, else 1), 1
+while available memory is under the spawn gate's start, and at most `light-lock-max` with
+`lock-admission` on. A full light queue holds only what would run a suite next; a new worker, which
+starts at triage, is held by the test lock's queue alone. At or over it, each repo with a
 run on the lock, this one always counted, gets a share of ceil(hold / active repos), and the pass starts
 at most its share less its own runs; below it, at most the hold less the runs waiting. That room covers
 new local workers, fix tries, handoffs to 4b, resumes of a worker or a requeued round last at Stage 4

@@ -50,6 +50,8 @@ export { ledgerFile, parseLedger, poolRows };
 const isWaitingIn = (dir) => (e) => existsSync(join(waitingDir(e.pool === 'heavy' ? 'test' : 'light', dir), String(e.pid)));
 // A lock class's pool (the broker's SLOTS), where admission judges it: heavy or light, else null.
 const poolOf = (cls) => (SLOTS[cls] === 'heavy' || SLOTS[cls] === 'light' ? SLOTS[cls] : null);
+// The pools' floors as the locks read them, for admissionRows: `env.lightLockSlots` is optional.
+const slotsOf = (env) => ({ testSlots: env.testLockSlots(), lightSlots: env.lightLockSlots?.() ?? null });
 const LOCK_WAIT_MS = 2000;
 const LOCK_MAX_AGE_MS = 5000;
 // A waiting run's line is printed again, on a new reason, no sooner than this after the last.
@@ -109,7 +111,7 @@ export function admit({ cls, pid, last = null, env, dir, held, logDir, sample = 
   isWaiting = isWaitingIn(dir) }) {
   const pool = poolOf(cls);
   if (!pool) return null;
-  const { rows, mode } = admissionRows((k) => env.machineValue(k), { testSlots: env.testLockSlots() });
+  const { rows, mode } = admissionRows((k) => env.machineValue(k), slotsOf(env));
   if (mode !== 'shadow') return null;
   sample ??= sampleLoad();
   const level = pressureLevel(sample, platform);
@@ -185,7 +187,7 @@ export const sayNow = ({ key, said, saidAt, at, every = SAY_EVERY_S }) => said =
 export function grant({ cls, pid, last = null, said = null, saidAt = null, env, dir, logDir, sample = null, platform = process.platform, now = Date.now, isAlive = alive, startsOf = null }) {
   const pool = poolOf(cls);
   if (!pool) return null;
-  const admission = admissionRows((k) => env.machineValue(k), { testSlots: env.testLockSlots() });
+  const admission = admissionRows((k) => env.machineValue(k), slotsOf(env));
   const { mode, floor, ceiling } = poolRows(pool, admission);
   if (mode !== 'on') return null;
   const { rows } = admission;
@@ -235,7 +237,7 @@ export function grant({ cls, pid, last = null, said = null, saidAt = null, env, 
 // admit-ramp-s counts it among the recent admits. It holds no slot of the light pool, whose floor and
 // ceiling it sits outside. `env` and `startsOf` are grant()'s. -> true when it was recorded.
 export function express({ pid, env, dir, sample = null, now = Date.now, startsOf = null }) {
-  const { rows, mode } = admissionRows((k) => env.machineValue(k), { testSlots: env.testLockSlots() });
+  const { rows, mode } = admissionRows((k) => env.machineValue(k), slotsOf(env));
   if (mode === 'off') return false;
   sample ??= sampleLoad();
   try { lock(lockPath(dir), { waitMs: LOCK_WAIT_MS, maxAgeMs: LOCK_MAX_AGE_MS }); } catch { return false; }
@@ -259,19 +261,19 @@ const fixtureSample = () => {
 
 // The rows as the profile holds them, as machine detect's check reads them: a TODO is a row that does
 // not read, not one left unset. `E` is desk-env's exports.
-const profileEnv = (E) => ({ machineValue: (k) => profileValue(E.machineProfile(), k), testLockSlots: E.testLockSlots });
+const profileEnv = (E) => ({ machineValue: (k) => profileValue(E.machineProfile(), k), testLockSlots: E.testLockSlots, lightLockSlots: E.lightLockSlots });
 
 async function judgeCli(cls, pid, last) {
   const E = await import('./desk-env.mjs');
-  // Every run that waits found its pool's real slots full: today's grants, heavy test-lock-slots, light 1.
-  const held = poolOf(cls) === 'heavy' ? E.testLockSlots() : 1;
+  // Every run that waits found its pool's real slots full: heavy test-lock-slots, light lightLockSlots.
+  const held = poolOf(cls) === 'heavy' ? E.testLockSlots() : E.lightLockSlots();
   const key = admit({ cls, pid, last, env: profileEnv(E), dir: E.lockDir(), held, logDir: leaseDir(), ...(fixtureSample() ? { sample: fixtureSample() } : {}) });
   if (key) console.log(key);
 }
 
 async function poolCli(cls) {
   const env = profileEnv(await import('./desk-env.mjs'));
-  const p = poolRows(poolOf(cls), admissionRows(env.machineValue, { testSlots: env.testLockSlots() }));
+  const p = poolRows(poolOf(cls), admissionRows(env.machineValue, slotsOf(env)));
   console.log(`${p.mode} ${p.floor} ${p.ceiling}`);
 }
 // grant() for a real run, with desk-env's exports `E`: the profile's rows, the lock directory, the lease
