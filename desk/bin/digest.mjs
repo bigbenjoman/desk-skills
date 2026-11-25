@@ -346,11 +346,12 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   const footer = () => (skipped.length ? [...lines, '## Promotion', '', ...skipped, ''] : lines).join('\n');
   const nl = levers.length;
   const nlc = levers.filter((l) => l.slug).length;
-  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns && !nw && !nl) {
+  const nses = groups.reduce((n, g) => n + (g.sessions?.length ?? 0), 0);
+  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns && !nw && !nl && !nses) {
     lines.push(`Nothing to answer, and no decisions taken${since ? ` since ${since}` : ''}.`, '');
     return footer();
   }
-  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${nlc ? `; ${nlc} lever change(s)` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nw ? `; ${nw} warning(s)` : ''}.`, '');
+  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${nlc ? `; ${nlc} lever change(s)` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nw ? `; ${nw} warning(s)` : ''}${nses ? `; ${nses} being worked in a session` : ''}.`, '');
   if (nm) {
     lines.push('## Maintenance', '');
     for (const m of maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);

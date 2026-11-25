@@ -1709,6 +1709,13 @@ for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
   const plan = planFirst(t), session = needsSession(t);
   const tr = transcriptOf(c.session);
   const since = Math.max(tr?.mtimeMs ?? 0, Date.parse(c.at) || 0);
+  // A session that comes back after its uncommitted work was noted works the ticket again: its park
+  // takes back the question it had, and the claim is the news once more.
+  if (tr && c.dirty_at && tr.mtimeMs > Date.parse(c.dirty_at)) {
+    q('set', t.key, `park.question=${c.was ?? claimQuestion(c.session)}`, 'park.claim.dirty_at=null', 'park.claim.was=null');
+    report.clears.push(`${t.key}: session ${c.session} is active again, so it works the ticket and the note on its uncommitted changes is cleared`);
+    continue;
+  }
   if (tr && Date.now() - since <= CLAIMS.hours * 3600e3) continue;
   const idle = `session ${c.session} has been idle since ${new Date(since).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
   // A claim whose transcript is gone and whose uncommitted work its park's question already names
@@ -1731,7 +1738,7 @@ for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
     const why = `claimed by session ${c.session}, which has been idle past ${CLAIMS.hours}h, but its worktree ${wt} has uncommitted changes (${files}): commit or discard them, or say who carries on`;
     // A park of the ticket's own keeps its question in front, where the requeue guards read it.
     const was = t.park.question;
-    q('set', t.key, `park.question=${was && was !== claimQuestion(c.session) ? `${was}; ${why}` : why}`, `park.since=${new Date().toISOString()}`, `park.claim.dirty_at=${new Date().toISOString()}`);
+    q('set', t.key, `park.question=${was && was !== claimQuestion(c.session) ? `${was}; ${why}` : why}`, `park.since=${new Date().toISOString()}`, `park.claim.dirty_at=${new Date().toISOString()}`, `park.claim.was=${was}`);
     report.parked.push(`${t.key}: ${why}`);
     continue;
   }

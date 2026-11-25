@@ -104,6 +104,8 @@ q park K-8 --claimed-by sid-live; worktree K-8
 for k in K-9 K-10; do q add "$k" Story C; q set "$k" state=triaged; q park "$k" "lane C — spans layers"; done
 q park K-9 --claimed-by sid-idle; q set K-9 park.claim.at=2026-01-01T00:00:00Z; worktree K-9 plan.md
 q park K-10 --claimed-by sid-live
+# A lane A claim whose session leaves uncommitted work, then comes back.
+session sid-back old; claimed K-11 sid-back; worktree K-11 wip.txt
 check "DS-244 a held ticket cannot be claimed" '[ $rc -ne 0 ] && grep -q "cannot be claimed" <<< "$out" && [ "$(field K-7 park.claim)" = null ]'
 
 # ---- AC5: the row at 0 never releases -----------------------------------------------------------------
@@ -137,6 +139,11 @@ since=$(field K-2 park.since)
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-244 AC3 the dirty claim goes to the digest once: not reported or changed again" '! grep -q "K-2: claimed" <<< "$out" && [ "$(field K-2 park.since)" = "$since" ]'
 check "DS-244 AC2 a released ticket is not pushed again" '! grep -q "K-1 went back" <<< "$out"'
+
+check "issue-1384 an idle session's uncommitted work is noted on its claim" '[ "$(field K-11 park.claim.dirty_at)" != null ] && grep -q "uncommitted changes (wip.txt)" <<< "$(field K-11 park.question)"'
+session sid-back now
+out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1384 once that session is active again, it is the session's claim again, with its own question back" '[ "$(field K-11 state)" = "\"parked\"" ] && [ "$(field K-11 park.claim.session)" = "\"sid-back\"" ] && [ "$(field K-11 park.claim.dirty_at)" = null ] && [ "$(field K-11 park.question)" = "\"claimed by session sid-back: worked there, not by a worker\"" ] && grep -q "K-11: session sid-back is active again" <<< "$out"'
 
 git -C "$T/wt/K-2" clean -qf
 out=$(node "$B/pass.mjs" 2>&1)
