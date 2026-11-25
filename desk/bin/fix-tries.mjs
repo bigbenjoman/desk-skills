@@ -35,7 +35,7 @@
 import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, externalPassed, PENDING_LIMIT_MS, FAILED } from './gate.mjs';
 import { baseSplit, runnerOrResource } from './failure-class.mjs';
 import { IDLE_RECHECK_MS } from './batch-state.mjs';
-import { normaliseLine } from './evidence.mjs';
+import { normaliseLine, READ_ERROR } from './evidence.mjs';
 import { stepFits } from './workflow-yaml.mjs';
 import { askCategoryIn } from './decisions.mjs';
 import { parseVerdict as markerOf, COUNTS } from '../templates/scripts/desk/review-gate.mjs';
@@ -214,6 +214,28 @@ const stateClears = (kind) => (kind === 'verdict'
   ? 'a §4 State check, which reads the review verdict at the head and not the code, so only a review of a new head turns it green'
   : kind === 'external' ? 'a §4 State check, which reads an outside reviewer\'s review at the head and not the code, so only that reviewer\'s review of a new head turns it green'
   : 'a §4 State check, which reads the PR\'s reviews or approvals and not its code, so no fix try turns it green; a person clears what it reads');
+// A red §4 State check whose error lines say a read from GitHub failed (evidence.mjs READ_ERROR) failed
+// on that read, not on the state it reads, so its run is re-run once at the head before the PR is
+// called stuck, through rerun.sh, whose record (r.reruns, r.rerunsOk) counts it. r: { perm (§3
+// ci-rerun), reruns(name), rerunsOk(name) }. -> { hit: [{ name, runId, line }], call (the rerun, while
+// one is left), note (why none is, otherwise) }.
+export const READ_STATE = 'a §4 State check failing on a GitHub read error';
+function readErrorRerun(state, checks, r) {
+  const latest = latestPerCheck(checks ?? []);
+  const lineOf = (f) => errorLines(latest.find((c) => c.name === f.name)).find((l) => READ_ERROR.test(l)) ?? null;
+  const hit = [...new Map(state.map((f) => [f.name, { name: f.name, runId: f.runId, line: lineOf(f) }])).values()].filter((f) => f.line);
+  if (!hit.length) return { hit };
+  const rerun = rerunGate(hit);
+  if (!rerun) return { hit, note: 'it has no run to re-run' };
+  if (r?.perm !== 'yes') return { hit, note: `config §3 ci-rerun is "${r?.perm ?? 'no'}", so it is not re-run` };
+  const used = runnerRerunsSpent(hit, (f) => r.rerunsOk?.(f.name) ?? 0, (f) => r.reruns?.(f.name) ?? 0);
+  if (used === 'ran') return { hit, note: 're-run once at this head, it failed the same way' };
+  if (used === 'refused') return { hit, note: `GitHub refused desk's ${RERUNS_MAX} re-runs at this head` };
+  const names = hit.map((f) => `"${f.name}"`).join(', '), one = hit.length === 1;
+  return { hit, call: { call: 'rerun', why: `its ${names} ${one ? 'state check' : 'state checks'} failed on a GitHub read error ("${hit[0].line.slice(0, LINE_CHARS)}"), not on what ${one ? 'it reads' : 'they read'}, so ${one ? 'its run is' : 'their runs are'} re-run once at this head before the PR is called stuck`, gate: rerun.gate } };
+}
+// What clears a state check readErrorRerun found failing on a read error, once no re-run is left.
+const readClears = (f, note) => `${READ_STATE} ("${f.line.slice(0, LINE_CHARS)}"): ${note}; re-run it once GitHub answers again`;
 const withLines = (mine, checks) => {
   const latest = latestPerCheck(checks ?? []);
   return mine.map((f) => ({ ...f, lines: errorLines(latest.find((c) => c.name === f.name)).slice(0, LINES_PER_CHECK).map((l) => l.slice(0, LINE_CHARS)) }));
@@ -384,10 +406,13 @@ export function fixCall(t, s, ctx) {
     if (!mine.length) {
       // Red only on state checks. One reading the verdict or an approval has its route; one reading other
       // state (a title) nothing reruns or fixes, so it is the person's, unless one of those may be its cause.
-      const bare = [...new Set(state.filter((x) => !x.kind).map((x) => `"${x.name}"`))];
-      return bare.length && !state.some((x) => x.kind)
-        ? { call: 'stuck', why: `red on ${bare.join(', ')}, a §4 State check: it reads the PR's state, not its code, so no rerun or fix try turns it green; a person clears what it reads` }
-        : null;
+      // One that failed on a read from GitHub is re-run once first (readErrorRerun), after its run's other checks finish.
+      if (!state.length || state.some((x) => x.kind)) return null;
+      const read = readErrorRerun(state, s.checks, { perm: ctx.rerunPerm, reruns: ctx.reruns, rerunsOk: ctx.rerunsOk });
+      if (read.call) return gate.pending.length ? null : { ...read.call, ready: true };
+      const bare = [...new Set(state.filter((x) => !read.hit.some((h) => h.name === x.name)).map((x) => `"${x.name}"`))];
+      return { call: 'stuck', why: [...read.hit.map((f) => `red on "${f.name}", ${readClears(f, read.note)}`),
+        ...(bare.length ? [`red on ${bare.join(', ')}, a §4 State check: it reads the PR's state, not its code, so no rerun or fix try turns it green; a person clears what it reads`] : [])].join('; ') };
     }
     if (ctx.waived?.(mine.map((f) => f.name))) return null;
     // A check red on several open PRs at once with the same error line (ctx.outage, outagePlan) reads as
@@ -1318,12 +1343,17 @@ export function draftChecksFix(t, { pr, head, failing, checks }, ctx) {
   // named in the brief as not theirs, and on its own it is stuck with the step it failed at.
   const latest = latestPerCheck(checks ?? []);
   const lineOf = (f) => checkLines(latest.find((x) => x.name === f.name))[0] ?? null;
-  const state = [...new Map(stateFailing(failing, ctx.stateChecks, lineOf).map((f) => [f.name, { name: f.name, runId: f.runId, state: true, command: stateClears(f.kind) }])).values()];
+  const failingState = stateFailing(failing, ctx.stateChecks, lineOf);
+  // One that failed on a read from GitHub is re-run once (readErrorRerun) where the answer would be stuck.
+  const read = readErrorRerun(failingState, checks, ctx.classRerun);
+  const clears = (f) => { const h = !read.call && read.hit.find((x) => x.name === f.name); return h ? readClears(h, read.note) : stateClears(f.kind); };
+  const state = [...new Map(failingState.map((f) => [f.name, { name: f.name, runId: f.runId, state: true, command: clears(f) }])).values()];
   const split = splitFailing((failing ?? []).filter((f) => !state.some((x) => x.name === f.name)), ctx);
   let mine = split.mine, notMine = [...split.notMine, ...state];
   // A stuck answer names a state check in its reason only: its record's checks are those a worker or an
   // off-GitHub step clears, and a record left with none holds at this head, as fixCall's does.
   const unstated = (c) => {
+    if (c?.call === 'stuck' && read.call) return read.call;
     if (c?.call !== 'stuck' || !state.length || !Array.isArray(c.checks)) return c;
     const kept = c.checks.filter((x) => !state.some((s) => s.name === x.name));
     return kept.length ? { ...c, checks: kept } : { call: 'stuck', why: c.why };

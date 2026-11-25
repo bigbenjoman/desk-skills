@@ -810,6 +810,33 @@ const stateRed = pr([ok('tests'), red('🌿 Local Adversarial Code Review', '414
 t('DS-422 AC1 red only on state checks, reruns spent: no fix try is sent', fixCall(tk(), stateRed, ctx({ stateChecks: STATE })), null);
 const bareRed = fixCall(tk(), pr([ok('tests'), red('PR title', '77')]), ctx({ stateChecks: [...STATE, { name: 'PR title', kind: null }], reruns: () => 0 }));
 t('DS-422 AC1 red only on a state check of no kind, never rerun: put to the person as stuck', `${bareRed?.call} ${bareRed?.why}`, 'stuck red on "PR title", a §4 State check: it reads the PR\'s state, not its code, so no rerun or fix try turns it green; a person clears what it reads');
+// #1435: a state check that failed on a read from GitHub is re-run once before the PR is called stuck.
+const READ_LOG = ['PR title\tValidate PR title\t2026-11-20T10:00:00.0000000Z Validating the PR title',
+  'PR title\tValidate PR title\t2026-11-20T10:00:01.0000000Z ##[error]unexpected end of JSON input'].join('\n');
+const titleState = [{ name: 'PR title', kind: null }];
+const readRed = (o = {}) => ({ ...red('PR title', '77'), jobId: '7701', errors: [], log_errors: errorLinesIn(READ_LOG), ...o });
+const readCtx = (o = {}) => ctx({ stateChecks: titleState, rerunPerm: 'yes', reruns: () => 0, rerunsOk: () => 0, ...o });
+t('#1435 the fixture log\'s read error is kept as its error line', errorLinesIn(READ_LOG).join('|'), 'unexpected end of JSON input');
+const rr1435 = fixCall(tk(), pr([ok('tests'), readRed()]), readCtx());
+t('#1435 AC1 a state check red on a GitHub read error is re-run once, not stuck', `${rr1435?.call} ${rr1435?.gate?.failedRuns?.join(',')} ${rr1435?.ready}`, 'rerun 77 true');
+t('#1435 AC1 the re-run says why', /"PR title" state check failed on a GitHub read error \("unexpected end of JSON input"\)/.test(rr1435?.why ?? ''), true);
+t('#1435 AC1 nor is the state check named in the gate rerun.sh skips', rr1435?.gate?.stateFailing, undefined);
+t('#1435 AC1 not while another check is still running, its tries spent', fixCall(tk({ fix_tries: [{ head: HEAD }] }), pr([ok('tests'), readRed(), { name: 'e2e', status: 'in_progress', conclusion: null }]), readCtx()), null);
+const st1435 = fixCall(tk(), pr([ok('tests'), readRed()]), readCtx({ reruns: () => 1, rerunsOk: () => 1 }));
+t('#1435 AC2 re-run once and red on a read error again: stuck as a read error, not a state a person clears', `${st1435?.call} ${/a §4 State check failing on a GitHub read error \("unexpected end of JSON input"\): re-run once at this head, it failed the same way/.test(st1435?.why ?? '')} ${/a person clears what it reads/.test(st1435?.why ?? '')}`, 'stuck true false');
+const noPerm1435 = fixCall(tk(), pr([ok('tests'), readRed()]), readCtx({ rerunPerm: 'ask' }));
+t('#1435 with §3 ci-rerun not granted it is stuck as a read error, saying so', `${noPerm1435?.call} ${/failing on a GitHub read error .*ci-rerun is "ask"/.test(noPerm1435?.why ?? '')}`, 'stuck true');
+const own1435 = fixCall(tk(), pr([ok('tests'), readRed({ log_errors: ['No release type found in pull request title "Fix things"'] })]), readCtx());
+t('#1435 AC3 a state check red on its own condition is stuck as before', `${own1435?.call} ${own1435?.why}`, 'stuck red on "PR title", a §4 State check: it reads the PR\'s state, not its code, so no rerun or fix try turns it green; a person clears what it reads');
+// A draft's: beside a red code check whose tries are spent, the read-error state check is re-run first.
+const draftRead = (o = {}) => draftChecksFix(tk({ fix_tries: [{ head: HEAD }] }), { pr: 701, head: HEAD, failing: [red('Unit', '8'), red('PR title', '77')], checks: [{ ...red('Unit', '8'), errors: [] }, readRed()] },
+  { repo: 'acme/widgets', stateChecks: titleState, classRerun: { perm: 'yes', reruns: () => 0, rerunsOk: () => 0, ...o } });
+t('#1435 a draft red on a read-error state check is re-run once where it would be stuck', `${draftRead()?.call} ${draftRead()?.gate?.failedRuns?.join(',')}`, 'rerun 77');
+const draftSpent = draftRead({ reruns: () => 1, rerunsOk: () => 1 });
+t('#1435 and once re-run, its stuck reason names the read error', `${draftSpent?.call} ${draftSpent?.why?.includes('PR title · a §4 State check failing on a GitHub read error ("unexpected end of JSON input"): re-run once at this head')}`, 'stuck true');
+const draftTry = draftChecksFix(tk(), { pr: 701, head: HEAD, failing: [red('Unit', '8'), red('PR title', '77')], checks: [{ ...red('Unit', '8'), errors: [] }, readRed()] },
+  { repo: 'acme/widgets', stateChecks: titleState, classRerun: { perm: 'yes', reruns: () => 0, rerunsOk: () => 0 } });
+t('#1435 a draft with a fix try left still gets it', draftTry?.call, 'requeue');
 const codeAndState = pr([...stateRed.checks, red('Backend tests', '901')]);
 t('DS-422 AC2 a red test beside them still waits on its own reruns', fixCall(tk(), codeAndState, ctx({ stateChecks: STATE, reruns: (n) => (n === 'Backend tests' ? 1 : 0) })), null);
 const c422 = fixCall(tk(), codeAndState, ctx({ stateChecks: STATE, reruns: (n) => (n === 'Backend tests' ? 2 : 0) }));

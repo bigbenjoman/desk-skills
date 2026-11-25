@@ -126,9 +126,12 @@ export function firstErrorLine(log) {
 const LOG_ERRORS_MAX = 5;
 const NAMES_CAUSE = /\b[A-Za-z]*(?:Error|Exception)\b|\b(?:ENOENT|EACCES|EPERM|EEXIST|ECONNREFUSED|ETIMEDOUT|EADDRINUSE)\b|\bFAIL\b/;
 const NO_CAUSE = /\bcontinue-on-error\b|\b0 (?:errors?|failed|failures?)\b/i;
+// A line saying a read from GitHub's API failed rather than what the job checks: a truncated or
+// unparsable JSON body, a 5xx, a gh or Octokit HTTP error, a dropped connection.
+export const READ_ERROR = /\bunexpected end of JSON input\b|\bUnexpected token .{0,40}\bin JSON\b|\bHTTP 5\d\d\b|\b5\d\d (?:Internal Server Error|Bad Gateway|Service Unavailable|Gateway Timeout)\b|\bgh: .*\(HTTP \d{3}\)|\bHttpError\b|\bECONNRESET\b|\bsocket hang up\b|\bfetch failed\b/i;
 export function errorLinesIn(log) {
   const lines = failureLines(logLines(log).map((l) => ({ annotation_level: 'failure', message: l.replace(/^##\[error\]\s*/, '').trim() })));
-  return [...new Set(lines.filter((l) => (NAMES_CAUSE.test(l) || ERROR.test(l)) && !NO_CAUSE.test(l)))].slice(0, LOG_ERRORS_MAX);
+  return [...new Set(lines.filter((l) => (NAMES_CAUSE.test(l) || ERROR.test(l) || READ_ERROR.test(l)) && !NO_CAUSE.test(l)))].slice(0, LOG_ERRORS_MAX);
 }
 
 // The line with what differs between two runs of one failure taken out: timestamps, SHAs, run ids and
