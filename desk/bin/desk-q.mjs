@@ -1048,7 +1048,7 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
 
 const SOON = MINUTE;
 // The shown states a pass can still move on: anything else waits on the user.
-const MOVABLE_STATES = ['running', 'ready', 'queued', 'waiting'];
+const MOVABLE_STATES = ['running', 'finishing', 'ready', 'queued', 'waiting'];
 // A batch whose passes stopped while it has a ticket autopilot could move: forecastOf's `paused`, and
 // needs-you's stalled item for a batch a session runs.
 export const passesPaused = (r) => !r.live && r.rows.some((x) => MOVABLE_STATES.includes(x.k));
@@ -1120,10 +1120,10 @@ function queueDone(r, now, checkin) {
     if (!left.length) return 'nothing left';
     if (left.length === 1) return queueDone(left[0], now, checkin);
     const Fs = left.map((b) => forecastOf(b, { now, checkin }));
-    return Fs.every((F) => !F.none && !F.paused && F.clears) ? when(Math.max(...Fs.map((F) => F.clears)), now) : 'no date yet';
+    return Fs.every((F) => !F.none && !F.paused && F.clears) ? shipWhen(Math.max(...Fs.map((F) => F.clears)), now) : 'no date yet';
   }
   const F = forecastOf(r, { now, checkin });
-  return !F ? '' : F.idle ? 'nothing left' : F.none ? 'no history' : F.paused ? 'passes stopped' : F.clears ? when(F.clears, now) : 'no date yet';
+  return !F ? '' : F.idle ? 'nothing left' : F.none ? 'no history' : F.paused ? 'passes stopped' : F.clears ? shipWhen(F.clears, now) : 'no date yet';
 }
 
 // `desk-q ships [<repo>]`: one line per unfinished ticket, the form Claude reads.
@@ -1150,7 +1150,7 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
     if (note) { out.push(note); continue; }
     out.push(forecastLine(r.name, now, F.count, r.workers, checkin), passLines(r, now)[0], hitLine(r));
     table(r, F);
-    out.push(`All done by: ${F.clears ? when(F.clears, now) : 'no ticket has a date yet'}${F.undated ? `, ${F.undated} with no date` : ''}.`);
+    out.push(`All done by: ${F.clears ? shipWhen(F.clears, now) : 'no ticket has a date yet'}${F.undated ? `, ${F.undated} with no date` : ''}.`);
     const epics = Object.values(F.epics);
     if (epics.length) {
       out.push('', `  ${pad('EPIC', 10)}${pad('TITLE', 32)}${pad('DONE', 7)}${pad('STARTS', 13)}SHIPS`);
@@ -3414,6 +3414,7 @@ function moveOf(r, row, k, t, h, now) {
   if (!row) return { text: k === 'done' ? 'Done: nothing left to move.' : `${capital(k)}.` };
   const f = fixOn(t);
   if (k === 'running') return { text: `Moves without you: a worker is on it, ${f ? `${segText(fixSegs(f, true))}, ` : ''}${runningStage(r, row)}.` };
+  if (k === 'finishing') return { text: `Moves without you: ${FINISHING_TEXT}.` };
   if (heldDraft(t)) {
     return { text: `Needs you. Held by you: you put its PR #${t.result.pr} back to draft, so no pass undrafts it and nothing merges it.`,
       lead: 'Undraft it to release it, and it merges once it is green:', cmds: [`gh pr ready ${t.result.pr} --repo ${r.slug.replace('__', '/')}`] };

@@ -1204,6 +1204,14 @@ t('issue-1418 AC1 only the running one counts as a held worker', wrapOut.find((l
 const renderTimes = [-1, 0, 1].map((m) => whenAt(wrapAt + m * 60000, wrapAt));
 t('issue-1418 AC2 a ship estimate at or before now reads overdue, never the render time',
   ['W-1', 'W-2', 'W-3'].map((k) => `${wrapRow(k).includes('overdue')} ${renderTimes.some((s) => wrapRow(k).includes(s))}`).join(', '), 'true false, true false, true false');
+t('issue-1418 AC1 the ticket page says a finishing ticket waits on the next pass, not that it starts',
+  WR.run('--plain', 'wrap', 'show', 'W-1').out.includes('Moves without you: worker finished, next pass records it.'), true);
+t('issue-1418 AC2 the ships view\'s all done by is never the render time',
+  ((l) => `${l.includes('overdue')} ${renderTimes.some((s) => l.includes(s))}`)(lines(WR.run('--plain', 'ships', 'wrap').out).find((l) => l.startsWith('All done by:')) ?? ''), 'true false');
+{
+  const { passesPaused } = await import('../desk/bin/desk-q.mjs');
+  t('issue-1418 AC1 a stopped batch with only a finishing ticket left reads as paused, not idle', passesPaused({ live: false, rows: [{ k: 'finishing' }] }), true);
+}
 
 // ---- Lead with what needs you, a repo's Queue grouped by state, a ticket's status first.
 // AC1: voicepa has two tickets parked on the user and one blocked behind them; pr-ninja has one.
