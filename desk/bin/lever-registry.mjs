@@ -121,7 +121,7 @@ export const ENTRIES = Object.freeze({
     mechanism: metric('dollars per start', null),
     trips: [POST_MERGE_REVERT, ownStepError('desk-env effort'), AUDIT_P0],
     code: [code('desk/bin/desk-env.mjs', 'effort')],
-    preconditions: [Object.freeze({ id: 'worker-location', want: 'local', why: 'effort is set on the local claude launch; a cloud worker never takes it' })],
+    preconditions: [Object.freeze({ id: 'worker-location', want: 'local', status: 'needs local workers', why: 'effort is set on the local claude launch; a cloud worker never takes it' })],
   },
   // desk-review's Claude finder seats on `model` (the on arm) against the finders' model today. Bea, the
   // refuters, codex and the audit keep theirs.
@@ -130,7 +130,7 @@ export const ENTRIES = Object.freeze({
     mechanism: metric('dollars per start', null),
     trips: [POST_MERGE_REVERT, ownStepError('desk-env model finder'), AUDIT_P0],
     code: [code('desk/bin/desk-env.mjs', 'model finder')],
-    preconditions: [Object.freeze({ id: 'worker-finder-model', not: FINDER_MODEL_LEVER, why: `§3b Worker models already runs its finders on ${FINDER_MODEL_LEVER}, so both arms would be the same` })],
+    preconditions: [Object.freeze({ id: 'worker-finder-model', not: FINDER_MODEL_LEVER, status: `finders already on ${FINDER_MODEL_LEVER}`, why: `§3b Worker models already runs its finders on ${FINDER_MODEL_LEVER}, so both arms would be the same` })],
   },
   // How a parked ticket's question reaches the person (question-arms.mjs): `batched` waits for the
   // check-in digest, where a recommended call applies by default; `one-at-a-time` pushes each ask as it
@@ -144,7 +144,7 @@ export const ENTRIES = Object.freeze({
     guardrails: { interruptions: { metric: 'interruptions per ticket (each push, and each digest push shared among the asks it listed)', margin: { max_rate_ratio: 1.25 } } },
     trips: [POST_MERGE_REVERT, ownStepError('question-arms.mjs')],
     code: [code('desk/bin/question-arms.mjs')],
-    preconditions: [Object.freeze({ id: 'ledger', want: 'on', why: 'its asks and what they cost are read from the ticket ledger' })],
+    preconditions: [Object.freeze({ id: 'ledger', want: 'on', status: 'needs ledger on', why: 'its asks and what they cost are read from the ticket ledger' })],
   },
   // The ticket ledger only records queue writes beside queue.json, which stays the truth, so it is not
   // trialled: it is pinned on where a repo wants the log.
@@ -189,7 +189,7 @@ export const REASON_CODES = Object.freeze({
   holdback_running: 'the lever is adopted and its holdback is still running',
   not_evaluated: 'the lever is settled, frozen, overridden or off here, so it is not weighed',
   fp_reset: 'the lever\'s own code changed, so evidence from before the change was dropped',
-  evidence_incomplete: 'an outcome file the evaluation reads is missing',
+  evidence_incomplete: 'some outcomes the evaluation reads weren’t recorded',
   frozen_second_revert: 'the lever was reverted a second time in this repo, so it is frozen there',
   audit_recorded: 'a blind audit of a merged PR was recorded',
   audit_p0: 'a blind audit found a P0 in a merged PR drawn on for the lever',

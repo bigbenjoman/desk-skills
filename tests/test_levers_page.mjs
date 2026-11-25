@@ -18,6 +18,42 @@ const w = (path, body) => { mkdirSync(dirname(path), { recursive: true }); write
 const jsonl = (rows) => rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
 const count = (s, re) => (s.match(re) ?? []).length;
 
+// The page's CSS, read as a browser would enough to check it: `subjects` holds each class some rule
+// selects (the last compound of a selector, a class inside :not() aside), and style(el, ancestors)
+// gives the declarations the rules outside @media give an element { tag, classes } under its ancestors
+// (nearest last), by specificity then order. A compound with a pseudo-class other than :not, or an
+// attribute, never matches here.
+function cssChecks(css) {
+  const rules = (text) => [...text.replace(/\/\*[^]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m, order) => ({ sels: m[1].split(',').map((s) => s.trim()).filter(Boolean), body: m[2], order }));
+  const compounds = (sel) => sel.replace(/\s*([>+~])\s*/g, ' $1 ').trim().split(/\s+/);
+  const parse = (c) => {
+    const nots = [...c.matchAll(/:not\(\.([\w-]+)\)/g)].map((m) => m[1]);
+    const rest = c.replace(/:not\([^)]*\)/g, '');
+    return { tag: /^[a-z][\w-]*|^\*/.exec(rest)?.[0] ?? null, classes: [...rest.matchAll(/\.([A-Za-z][\w-]*)/g)].map((m) => m[1]), nots,
+      odd: /\[|:(?!not)/.test(rest), spec: [0, (rest.match(/\.|\[|:(?!:)/g) ?? []).length + nots.length, /^[a-z]/.test(rest) ? 1 : 0] };
+  };
+  const subjects = new Set(rules(css).flatMap((r) => r.sels.map((s) => parse(compounds(s).at(-1)).classes)).flat());
+  const fits = (p, el) => !p.odd && (!p.tag || p.tag === '*' || p.tag === el.tag) && p.classes.every((c) => el.classes.includes(c)) && !p.nots.some((c) => el.classes.includes(c));
+  const matches = (parts, el, ancestors) => {
+    if (!fits(parse(parts.at(-1)), el)) return false;
+    if (parts.length === 1) return true;
+    const comb = parts.at(-2);
+    if (comb === '>') return ancestors.length > 0 && matches(parts.slice(0, -2), ancestors.at(-1), ancestors.slice(0, -1));
+    if (comb === '+' || comb === '~') return false;
+    return ancestors.some((a, i) => matches(parts.slice(0, -1), a, ancestors.slice(0, i)));
+  };
+  const specOf = (sel) => compounds(sel).filter((c) => !/^[>+~]$/.test(c)).map((c) => parse(c).spec).reduce((a, s) => a.map((v, i) => v + s[i]), [0, 0, 0]);
+  const desktop = rules(css.split('@media')[0]);
+  const style = (el, ancestors = []) => {
+    const hit = desktop.flatMap((r) => r.sels.filter((s) => matches(compounds(s), el, ancestors)).map((s) => ({ spec: specOf(s), order: r.order, body: r.body })));
+    hit.sort((a, b) => a.spec[0] - b.spec[0] || a.spec[1] - b.spec[1] || a.spec[2] - b.spec[2] || a.order - b.order);
+    const out = {};
+    for (const x of hit) for (const d of x.body.split(';')) { const i = d.indexOf(':'); if (i > 0) out[d.slice(0, i).trim()] = d.slice(i + 1).trim(); }
+    return out;
+  };
+  return { subjects, style };
+}
+
 const DS = 'bigbenjoman__desk-skills';
 const REPOS = [
   { slug: DS, gh: 'bigbenjoman/desk-skills', levers: '`preflight`' },
@@ -205,12 +241,32 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   t('AC5 How desk decides', hSix.includes('<h2 id="how-h">How desk decides</h2>') && hSix.includes('Once 30 tickets on each side'), true);
 }
 
+// The headline tiles: the figure since desk started recording, its window and ticket count, with last
+// week's and yesterday's beneath it, each with its own count.
+{
+  const tileOf = (h, label) => h.split('aria-label="Headline numbers"')[1].split('</section>')[0].split(`<h3 class="muted">${label}</h3>`)[1].split('</article>')[0];
+  const c = tileOf(hSix, 'Cost per ticket');
+  t('tiles: cost shows the figure to date', tilesOf(hSix)[0], 'Cost per ticket=$17.01');
+  t('tiles: labelled with its window and ticket count', c.includes('Since 6 Nov · 53 tickets'), true);
+  t('tiles: last week and yesterday beneath, each with its count', c.includes('Last week $16.68, 7 tickets · Yesterday $16.62, 1 ticket'), true);
+  t('tiles: no Was line', hSix.includes('>Was $'), false);
+  const over = structuredClone(six);
+  over.panels.trends.metrics.fixes.callouts.to_date = 0.2;
+  const f = tileOf(P.renderPage(over), 'Fix tries per ticket');
+  t('tiles: fix tries over the 0.16 limit turn amber', f.includes('<span class="tile-s" style="color:#B45309"><span class="dot" style="background:#D97706"></span>Over the 0.16 limit</span>'), true);
+  t('tiles: fix tries under it do not', tileOf(hSix, 'Fix tries per ticket').includes('Over the'), false);
+}
+
 const cards = hSix.split('<article class="card wbr"').slice(1).map((c) => c.split('</article>')[0]);
 const chartOf = (c, view) => c.split(`<div class="chart" data-view="${view}"`)[1].split('<div class="legend">')[0];
 
 // AC6: each metric is a WBR card.
 {
-  const want = { cost: ['Cost per Ticket', 'API-equivalent spend per accepted ticket, all repos'], tokens: ['Tokens per Ticket', 'Input tokens per accepted ticket'], prompts: ['Permission Prompts per Start', 'Times a worker was blocked asking to run a command'], fixes: ['Fix Tries per Ticket', 'Must stay under 0.16 for a lever to be kept'] };
+  const want = {
+    cost: ['Cost per Ticket', 'API-equivalent spend per merged ticket, by the day it merged, all repos'], tokens: ['Tokens per Ticket', 'Input tokens per merged ticket, by the day it merged'],
+    prompts: ['Permission Prompts per Start', 'Times a worker was blocked asking to run a command, per start, by the day its ticket merged'],
+    fixes: ['Fix Tries per Ticket', 'Per merged ticket, by the day it merged. Must stay under 0.16 for a lever to be kept'],
+  };
   for (const [i, [key, [title, sub]]] of Object.entries(want).entries()) {
     const c = cards[i];
     t(`AC6 ${key}: title`, c.includes(`<h3>${title}</h3>`), true);
@@ -272,6 +328,43 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('AC9 a single month before recording: the note', labels(chartOf(fc, 'wbr')).filter((l) => l === 'desk started recording on 10 Feb').length, 1);
 }
 
+// Chart labels: the recording note sits above the plot, clear of the baseline; each value label stays
+// inside its panel, clear of the tick labels beside it; and with under 3 weekly points the trends open
+// on the last 30 days.
+{
+  const spans = (ch) => [...ch.matchAll(/<span(?: class="(gap-note)")? style="left:([\d.]+)%;top:([\d.]+)%;transform:([^;]*);color:([^"]*)">([^<]*)<\/span>/g)]
+    .map((m) => ({ note: !!m[1], left: Number(m[2]), top: Number(m[3]), tf: m[4], c: m[5], s: m[6] }));
+  const ch = chartOf(cards[0], 'wbr');
+  const note = spans(ch).find((x) => x.note);
+  t('labels: the recording note sits above the top of the plot', note.top < 12 && note.tf.endsWith('-100%)'), true);
+  // A 10px label is about 7 chart units a character wide; the panels span 8% to 48% and 54% to 91%.
+  const width = (s) => (s.length * 7 / 700) * 100;
+  const inside = (x, lo, hi) => /^translate\(0,(-100%|0)\)$/.test(x.tf) && x.left >= lo - 0.01 && x.left + width(x.s) <= hi + 0.01;
+  const values = (c) => spans(c).filter((x) => x.c === '#111827');
+  const vs = values(ch);
+  t('labels: the weekly values stay inside the left panel', vs.filter((x) => x.left < 50).every((x) => inside(x, 8, 48)), true);
+  t('labels: the monthly values stay inside the right panel, clear of its ticks', vs.filter((x) => x.left >= 50).every((x) => inside(x, 54, 91)), true);
+  t('labels: the 30-day values stay inside their panel', values(chartOf(cards[0], 'days')).every((x) => inside(x, 8, 95)), true);
+  // Two weeks in: under 3 weekly points.
+  const early = structuredClone(six);
+  for (const m of Object.values(early.panels.trends.metrics)) m.weekly = m.weekly.map((p, i) => (i < 4 ? { ...p, value: null } : p));
+  const h = P.renderPage(early);
+  const c0 = h.split('<article class="card wbr"')[1].split('</article>')[0];
+  t('labels: under 3 weekly points the 30 days show by default', [/^ hidden>/.test(chartOf(c0, 'wbr')), /^>/.test(chartOf(c0, 'days'))].join(), 'true,true');
+  t('labels: and its button is the pressed one', h.includes('<button type="button" data-show="days" aria-pressed="true">Last 30 days</button>'), true);
+  t('labels: with its line of the heading', h.includes('<p class="muted small" data-view="wbr" hidden>') && h.includes('<p class="muted small" data-view="days">'), true);
+  const sparkPts = (html) => /<svg viewBox="0 0 220 32"[^]*?<polyline points="([^"]*)"/.exec(html.split('aria-label="Headline numbers"')[1])[1].split(' ').filter(Boolean).length;
+  t('labels: the tile sparkline follows the days too, rather than one weekly point', sparkPts(h) > 3, true);
+  t('labels: and the weeks once there are 3', sparkPts(hSix), 6);
+  // A dip: its label goes under the point, where the line into and out of it does not run.
+  const dip = structuredClone(six);
+  const dm = dip.panels.trends.metrics.cost;
+  dm.daily = dm.daily.map((p, i) => ({ ...p, value: [17, 18, 12, 18][i % 4] }));
+  const dd = spans(chartOf(P.renderPage(dip).split('<article class="card wbr"')[1].split('</article>')[0], 'days')).filter((x) => x.c === '#111827');
+  t('labels: a dip is labelled under its point', dd.some((x) => x.s === '$12.00' && x.tf === 'translate(0,0)'), true);
+  t('labels: a peak above it', dd.some((x) => x.s === '$18.00' && x.tf === 'translate(0,-100%)'), true);
+}
+
 // AC10: an effect with no verdict is grey, says too early, and has no direction word.
 {
   const lev = section(hSix, 'lev-h');
@@ -327,11 +420,101 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('the view carries each repo\'s latest per-arm ask report', j(panel.map((r) => [r.name, r.lever, Object.keys(r.arms)])), j([['desk-skills', 'question-handling', ['batched', 'one-at-a-time']]]));
   t('and no other lever has one', j((six.panels.asks?.repos ?? []).length), '0');
   const sec = section(P.renderPage(asked), 'asks-h');
-  const rowOf = (a) => sec.split(`<th scope="row">${a}</th>`)[1]?.split('</tr>')[0] ?? '';
+  const cells = (...xs) => xs.map((x) => `<td class="td n">${x}</td>`).join('');
+  const rowOf = (a) => sec.split(`<th scope="row" class="td">${a}</th>`)[1]?.split('</tr>')[0] ?? '';
   t('the page shows a row per arm', ['batched', 'one-at-a-time'].every((a) => rowOf(a)), true);
-  t('each with dollars and tokens per ticket by step', rowOf('batched').includes('<td>$0.41 (410)</td><td>$0.00 (0)</td><td>$0.60 (600)</td>'), true);
-  t('pushes and digests per ticket, the share defaulted and the median to an answer', [rowOf('batched').includes('<td>0</td><td>1</td><td>25%</td><td>1.5h</td>'), rowOf('one-at-a-time').includes('<td>1</td><td>0</td><td>0%</td><td>10m</td>')].join(' '), 'true true');
+  t('each with dollars and tokens per ticket by step', rowOf('batched').includes('<td class="td n">$0.41 (410)</td><td class="td n">$0.00 (0)</td><td class="td n">$0.60 (600)</td>'), true);
+  t('pushes and digests per ticket, the share defaulted and the median to an answer', [rowOf('batched').includes(cells('0', '1', '25%', '1.5h')), rowOf('one-at-a-time').includes(cells('1', '0', '0%', '10m'))].join(' '), 'true true');
   t('with no ask report, the page has no such section', section(hSix, 'asks-h'), '');
+}
+
+// The merge-time, learned-bar, time-parked and asks sections, in the house style of the lever table:
+// one card table per section, each repo a group header row, numbers right-aligned, and every class the
+// page puts on a section or table part has a CSS rule.
+{
+  const arm = { tickets: 30, steps: { raise: { tokens_per_ticket: 410, usd_per_ticket: 0.41 } }, pushes_per_ticket: 0, digests_per_ticket: 1, defaulted_share: 0.25, median_latency_s: 5400 };
+  const full = structuredClone(six);
+  full.panels.merge_stages = { repos: [{ name: 'desk-skills', prs: 4, stages: { desk: { n: 4, median: 96, p75: 108 }, merge: { n: 3, median: 5, p75: 9 } }, outage: 1,
+    learned: { since: '2026-11-24T00:00:00.000Z', before: { prs: 2, rereviews: 1.5, approval: 120 }, after: { prs: 2, rereviews: 0.5, approval: 40 } } }] };
+  full.panels.stuck_time = { repos: [{ name: 'desk-skills', weeks: [{ week: '2026-W52', hours: 20, tickets: 5, causes: [{ cause: 'usage', hours: 15, tickets: 2, link: null }, { cause: 'lock', hours: 0.5, tickets: 1, link: null }] }, { week: '2026-W51', hours: 0, tickets: 0, causes: [] }] }] };
+  full.panels.asks = { repos: [{ name: 'desk-skills', lever: 'question-handling', at: '2026-12-28T06:00:00.000Z', state: 'trial', arms: { batched: arm, 'one-at-a-time': arm } }] };
+  const h = P.renderPage(full);
+  const css = h.split('<style>')[1].split('</style>')[0];
+  const check = cssChecks(css);
+  const used = new Set([...h.matchAll(/<(?:section|table|thead|tbody|tr|th|td)\b[^>]*\bclass="([^"]*)"/g)].flatMap((m) => m[1].split(/\s+/)).filter(Boolean));
+  t('styles: every class on a section or table part is the subject of a CSS rule', j([...used].filter((c) => !check.subjects.has(c))), '[]');
+  // What the desktop rules give a numeric header and body cell of a data table, and its group row.
+  const table = { tag: 'table', classes: ['levtable', 'data'] };
+  const cell = (tag, classes) => check.style({ tag, classes }, [table, { tag: 'tbody', classes: [] }, { tag: 'tr', classes: [] }]);
+  const numTh = cell('th', ['th', 'n']);
+  const numTd = cell('td', ['td', 'n']);
+  t('styles: a numeric header cell is right-aligned with tabular figures', `${numTh['text-align']} ${numTh['font-variant-numeric']}`, 'right tabular-nums');
+  t('styles: a numeric body cell too', `${numTd['text-align']} ${numTd['font-variant-numeric']}`, 'right tabular-nums');
+  t('styles: a row header stays left-aligned', cell('th', ['td'])['text-align'], 'left');
+  t('styles: a group row has its own background', cell('th', ['td', 'grp']).background, '#F9FAFB');
+  // The checks catch a page whose table rules are gone.
+  const bare = cssChecks(css.replace(/\.levtable \.(n|grp)\{[^}]*\}/g, ''));
+  t('styles: without the table rules the checks fail', j([bare.subjects.has('grp'), bare.style({ tag: 'td', classes: ['td', 'n'] }, [table])['text-align'] ?? null]), '[false,null]');
+  for (const id of ['ms-h', 'lr-h', 'st-h', 'asks-h']) {
+    const sec = h.slice(h.lastIndexOf('<section', h.indexOf(`aria-labelledby="${id}"`)), h.indexOf('</section>', h.indexOf(`aria-labelledby="${id}"`)));
+    t(`styles ${id}: a card like the lever table`, /^<section aria-labelledby="[^"]+" class="card levers/.test(sec) && sec.includes('<div class="levers-head">'), true);
+    t(`styles ${id}: one table`, count(sec, /<table /g), 1);
+    t(`styles ${id}: a muted intro line`, /<h2 id="[^"]+">[^<]+<\/h2><p class="muted small">[^<]+<\/p>/.test(sec), true);
+    t(`styles ${id}: the repo as a group header row`, /<tr class="grp"[^>]*><th scope="colgroup" colspan="\d+" class="td grp">desk-skills/.test(sec), true);
+  }
+  const ms = section(h, 'ms-h');
+  t('styles: numbers right-aligned', ms.includes('<tr><th scope="row" class="td">desk review</th><td class="td n">1.6h</td><td class="td n">1.8h</td><td class="td n">4</td></tr>'), true);
+  t('styles: their headers too', ms.includes('<th scope="col" class="th n">Median</th>'), true);
+  t('styles: the outage note sits under its repo', ms.includes('1 external review wait inside a gate reviewer outage left out of the medians.'), true);
+  const st = section(h, 'st-h');
+  t('styles: no Tracking issue column when no cause has one', st.includes('Tracking issue'), false);
+  t('styles: a week with nothing parked has no group', st.includes('2026-W51'), false);
+  const linked = structuredClone(full);
+  linked.panels.stuck_time.repos[0].weeks[0].causes[0].link = { ref: '#1377', url: 'https://example.invalid/1377' };
+  t('styles: the Tracking issue column shows once a cause has one', section(P.renderPage(linked), 'st-h').includes('<th scope="col" class="th">Tracking issue</th>'), true);
+}
+
+// The change list words each change from its reason code, never the raw reason with its paths; an
+// evidence_incomplete event recorded once per lever reads as one, naming the levers, and its details
+// name the tickets and files not recorded.
+{
+  const st = '/home/x/.desk-autopilot/bigbenjoman__desk-skills';
+  const missing = [`${st}/post-merge.jsonl (its latest scan is incomplete)`, `${st}/workers/DS-261.runs.jsonl`];
+  const inc = (lever, i) => ({ v: 1, id: `inc-${lever}`, at: iso2(Date.parse('2026-12-22T00:00:29.000Z') + i), repo: DS, lever, kind: 'evidence_incomplete', actor: 'levers-auto', reason_code: 'evidence_incomplete', missing,
+    reason: `${lever} in desk-skills: nothing adopts while outcome files are missing: ${missing.join(', ')}` });
+  const v = V.buildView({
+    ...machine({ repos: autoRepos, now: NOW2, files: { [`${DS}/lever-evals.jsonl`]: jsonl(evals), [`${DS}/levers.jsonl`]: jsonl([...log, inc('wrappers', 0), inc('memory', 1), inc('codex', 2)]), [`${DS}/levers-evidence/evl_1.jsonl`]: jsonl(rows) } }),
+    now: NOW2, tz: 'UTC', generatedAt: NOW2,
+  });
+  const ch = section(P.renderPage(v), 'ch-h');
+  const incs = ch.split('<details class="change">').slice(1).filter((d) => d.includes('was incomplete'));
+  t('change log: one event for the three levers', incs.length, 1);
+  t('change log: naming them', incs[0]?.includes('Evidence for codex, memory and wrappers in desk-skills was incomplete'), true);
+  t('change log: worded from its reason code', incs[0]?.includes('<span class="muted small">Some outcomes the evaluation reads weren’t recorded</span>'), true);
+  t('change log: no absolute path anywhere in it', ch.includes('/home/x'), false);
+  t('change log: the details name the tickets and files', incs[0]?.includes('<dt>Not recorded</dt><dd><ul class="guards"><li>A review round’s findings weren’t recorded: DS-261</li><li>The post-merge watch’s latest scan didn’t finish: post-merge.jsonl</li></ul></dd>'), true);
+}
+
+// A reason a person typed, or one carrying a value (a row's new reading, an arm set by hand), is
+// shown as written: only the machine-written reasons of incomplete evidence and code changes give way
+// to their reason code's wording.
+{
+  const at = (h) => iso2(Date.parse('2026-12-23T09:00:00.000Z') + h * HOUR);
+  const human = [
+    { v: 1, id: 'rc', at: at(0), repo: DS, kind: 'row_change', actor: 'ben', reason_code: 'row_change', reason: 'config §3b "Phase 0 levers" now reads `auto`', before: 'none', after: 'auto' },
+    { v: 1, id: 'fz', at: at(1), repo: DS, kind: 'freeze', actor: 'ben', reason_code: 'freeze', reason: 'holiday week, nobody to answer' },
+    { v: 1, id: 'ov', at: at(2), repo: DS, lever: 'question-handling', kind: 'override', actor: 'ben', reason_code: 'ben_override', to: 'one-at-a-time', reason: 'set to one-at-a-time by hand to see the pushes' },
+  ];
+  const v = V.buildView({
+    ...machine({ repos: autoRepos, now: NOW2, files: { [`${DS}/lever-evals.jsonl`]: jsonl(evals), [`${DS}/levers.jsonl`]: jsonl([...log, ...human]), [`${DS}/levers-evidence/evl_1.jsonl`]: jsonl(rows) } }),
+    now: NOW2, tz: 'UTC', generatedAt: NOW2,
+  });
+  const ch = section(P.renderPage(v), 'ch-h');
+  const summaryOf = (what) => ch.split('<details class="change">').slice(1).find((d) => d.includes(what))?.split('</summary>')[0] ?? '';
+  t('change log: a row change names the reading before and after', summaryOf('The levers row in desk-skills changed').includes('changed from none to auto'), true);
+  t('change log: and shows its reason as written', summaryOf('The levers row in desk-skills changed').includes('<span class="muted small">Config §3b &quot;Phase 0 levers&quot; now reads `auto`</span>'), true);
+  t('change log: a freeze shows the reason typed for it', summaryOf('Trials frozen').includes('<span class="muted small">Holiday week, nobody to answer</span>'), true);
+  t('change log: an arm set by hand shows its reason', summaryOf('set question-handling to one-at-a-time').includes('<span class="muted small">Set to one-at-a-time by hand to see the pushes</span>'), true);
 }
 
 // Text from the view is escaped, and view.json cannot close its script element.
@@ -358,10 +541,14 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
 // DS-1000 AC4: once results show, a repo the lever is not tested in still says why in its cell.
 {
   const v = structuredClone(six);
-  v.panels.board.levers.find((l) => l.lever === 'finder-model').cells = [{ repo: 'desk-skills', state: 'ineligible', why: 'both arms would be the same', note: 'not tested in desk-skills: both arms would be the same' }];
+  v.panels.board.levers.find((l) => l.lever === 'finder-model').cells = [{ repo: 'desk-skills', state: 'ineligible', status: 'finders already on sonnet', why: 'both arms would be the same', note: 'not tested in desk-skills: both arms would be the same' }];
   const h = P.renderPage(v);
-  t('DS-1000 AC4 the results layout names the reason', h.includes('desk-skills: not tested here, as both arms would be the same'), true);
+  t('DS-1000 AC4 the results layout names the reason as a short status, its rationale on hover', h.includes('<span class="repo" title="both arms would be the same"><span class="dot dot-sm" style="background:#9CA3AF"></span><span>desk-skills: not tested, finders already on sonnet</span>'), true);
+  t('DS-1000 AC4 not the rationale as the reason', h.includes('not tested here, as'), false);
 }
+
+// Every lever has its one-line description, question handling's too.
+t('WHAT: question handling says what it does', /<tr data-lever="question-handling">.*?Decides whether a parked ticket’s question is pushed to you at once or waits for the digest/.test(section(hSix, 'lev-h')), true);
 
 console.log(fails ? `${fails} check(s) failed` : 'all checks passed');
 process.exit(fails ? 1 : 0);
