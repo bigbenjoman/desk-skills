@@ -205,9 +205,10 @@ t('a batch event is never illegal', L.legality(L.emptyState(), ev('base_red')).l
   t('AC7 a snapshot cut off mid-write is replayed from the start', j(L.fold(dir)), j(L.reduce(all)));
   t('AC7 and the read still returns every event', L.read(dir).events.length, 14);
   // A snapshot folded under older fold rules (no `fold`, or another number) holds what those rules
-  // made of the events, such as a dropped ticket back in the batch that closed its interval.
+  // made of the events, such as a dropped ticket back in the batch that closed its interval. The
+  // planted ticket is one no later event touches, so only a replay from the start leaves it out.
   const stale = L.reduce(all.filter((e) => e.seq <= 10));
-  stale.tickets['DS-1'].batch = 'B-OLD-RULES';
+  stale.tickets['DS-PLANT'] = { ...structuredClone(stale.tickets['DS-1']), key: 'DS-PLANT', batch: 'B-OLD-RULES' };
   for (const fold of [undefined, L.FOLD_RULES - 1]) {
     writeFileSync(p.snapshot, JSON.stringify({ v: 1, ...(fold === undefined ? {} : { fold }), state: stale }));
     t(`AC7 a snapshot under fold rules ${fold ?? '(none)'} is replayed from the start`, j(L.fold(dir)), j(L.reduce(all)));
