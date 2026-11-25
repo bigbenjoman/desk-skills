@@ -24,12 +24,13 @@ One script, registered by install.sh on five events; it reads `hook_event_name` 
                                  the handoff becomes a `/rename <name>` line to print first, since
                                  /clear drops the name. Any source also records the session's
                                  model, which says whether the window is 1M.
-  Stop, UserPromptSubmit,        For a batch this session runs through /loop, where the step above
-  PostToolUse                    did not act: at a turn's end, block it once per pass while the batch
-                                 has work a pass could move and no next pass recorded still to come
-                                 ("schedule the next tick first"); as the session works, once no pass
-                                 has run for twice the loop's interval, inject once per pass "re-arm
-                                 the loop", logged for needs-you (desk/bin/loop-tick.mjs decides both).
+  Stop, UserPromptSubmit,        For a batch whose /loop this session runs, where the step above did
+  PostToolUse                    not act: at a turn's end, block it once per pass while the batch has
+                                 work a pass could move and no next pass recorded still to come
+                                 ("schedule the next tick first"); as the session works, once the
+                                 loop reads lost (twice its interval with no pass, or sooner where
+                                 needs-you would show it stalled), inject once per pass "re-arm the
+                                 loop now", logged for needs-you (desk/bin/loop-tick.mjs decides both).
   PreCompact                     In compaction mode, where this session's handoff is written (and
                                  rewritten since it last fired): print
                                  it as an instruction for the compaction summary (its path, and that
@@ -558,12 +559,11 @@ def on_stop(data, session, root):
     return True
 
 
-# A batch this session runs through /loop (loop-tick.mjs): the Stop step blocks a turn's end once
-# per pass while no next pass is recorded still to come, and the turn steps (UserPromptSubmit,
-# PostToolUse) inject a re-arm once per pass when no pass has run for twice the loop's interval.
-# Heartbeats are read here first, so the node call runs only for a beat this session wrote that is
-# due and not yet acted on.
-HALF_LIVE = 450  # with no next pass recorded, the interval is half of desk-q's LIVE_MS
+# A batch this session runs through /loop (loop-tick.mjs decides): the Stop step blocks a turn's end
+# once per pass while no next pass is recorded still to come, and the turn steps (UserPromptSubmit,
+# PostToolUse) inject a re-arm once per pass once the loop reads lost. Heartbeats are read here first,
+# so node runs only for a beat whose loop is this session's with no next pass to come; a check that
+# finds nothing to say is not asked again until its batch's queue changes or the time it gave.
 
 
 def session_slug(state, root):
@@ -576,8 +576,9 @@ def session_slug(state, root):
 
 
 def own_beats(slug, session):
-    """(pass, next) in seconds, next None when unrecorded, of each queue's newest heartbeat that this
-    session wrote, in the repo's standing batch and its named ones."""
+    """(pass, next, queue) of each queue's newest heartbeat whose loop is this session's (the session
+    that recorded its next pass, else the one its last pass ran in), in the repo's standing batch and
+    its named ones: times in seconds, next None when unrecorded."""
     base = os.path.join(HOME, ".desk-autopilot", slug)
     newest = {}
     for path in (glob.glob(os.path.join(base, "orchestrators", "*.json"))
@@ -593,12 +594,12 @@ def own_beats(slug, session):
             newest[k] = (at, hb)
     out = []
     for _, hb in newest.values():
-        if hb.get("session") != session:
+        if (hb.get("loop") or hb.get("session")) != session:
             continue
-        p = parse_iso(hb.get("pass") or hb.get("at"))
+        p = parse_iso(hb["pass"] if "pass" in hb else hb.get("at"))
         n = parse_iso(hb["next"]) if hb.get("next") else None
         if p is not None:
-            out.append((p, n))
+            out.append((p, n, str(hb.get("queue") or "")))
     return out
 
 
@@ -609,22 +610,23 @@ def parse_iso(s):
         return None
 
 
-def loop_due(slug, session, lost):
-    """A key for the passes whose beats are due: no next pass still to come, and with `lost`, no pass
-    for twice the interval. "" when none is."""
-    now, keys = time.time(), []
-    for p, n in own_beats(slug, session):
+def loop_due(slug, session):
+    """(key, stamp) for the passes with no next pass still to come: the key names the passes, the
+    stamp their queues' modification times. ("", "") when none is."""
+    now, keys, stamps = time.time(), [], []
+    for p, n, queue in own_beats(slug, session):
         if n is not None and n > now:
             continue
-        gap = n - p if n is not None and n > p else HALF_LIVE
-        if lost and now - p < 2 * gap:
-            continue
         keys.append(f"{p:.0f}")
-    return " ".join(sorted(keys))
+        try:
+            stamps.append(f"{os.path.getmtime(queue):.3f}")
+        except OSError:
+            stamps.append("-")
+    return " ".join(sorted(keys)), " ".join(sorted(stamps))
 
 
 def loop_tick(root, session, mode):
-    """loop-tick.mjs check's {key, text}, or None."""
+    """loop-tick.mjs check's {text} or {recheck}, or None."""
     script = os.path.join(DESK_HOME, "bin", "loop-tick.mjs")
     try:
         p = subprocess.run(["node", script, "check", session, mode], capture_output=True, text=True,
@@ -635,21 +637,25 @@ def loop_tick(root, session, mode):
 
 
 def on_loop(event, data, session, root):
+    # A Stop with stop_hook_active still runs: the handoff's block may have taken this turn's first
+    # Stop, and the once-per-pass mark below keeps this block to one.
     stop = event == "Stop"
-    if stop and data.get("stop_hook_active"):
-        return
     state = load_state(session)
     slug = session_slug(state, root)
     mark = "loop_stop" if stop else "loop_turn"
-    key = loop_due(slug, session, not stop) if slug else ""
-    if not key or state.get(mark) == key:
+    key, stamp = loop_due(slug, session) if slug else ("", "")
+    idle = state.get(mark + "_idle") or [None, None, None]
+    if (not key or state.get(mark) == key
+            or (idle[:2] == [key, stamp] and (idle[2] is None or time.time() * 1000 < idle[2]))):
         save_state(session, state)
         return
-    state[mark] = key  # acted on once, whatever the check says
-    save_state(session, state)
     out = loop_tick(root, session, "stop" if stop else "turn")
     if not out or not out.get("text"):
+        state[mark + "_idle"] = [key, stamp, (out or {}).get("recheck")]
+        save_state(session, state)
         return
+    state[mark] = key  # acted on once per pass
+    save_state(session, state)
     if stop:
         print(json.dumps({"decision": "block", "reason": out["text"]}))
     else:

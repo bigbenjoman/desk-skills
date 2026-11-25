@@ -1767,20 +1767,20 @@ function cloudItems(batches) {
 // pass and what the session did about it (rearmOf), so not-now holds until a later stall or a re-arm;
 // done records nothing: the next pass drops it.
 const STALLED = 'stalled';
-// What the session running the batch did about its lost tick: hooks/desk-handoff.py re-arms the loop
-// on the session's first turn once no pass has run for twice its interval (loop-tick.mjs).
-function rearmOf(b, now) {
+// What the session running the batch did about its lost tick: hooks/desk-handoff.py tells it to re-arm
+// the loop on its first turn once the loop reads lost, which is never later than this item shows, and
+// queue.mjs next-pass logs the re-arm (loop-tick.mjs).
+function rearmOf(b) {
   const rec = readRearm(b.stateDir, b.last);
   if (rec?.why) return `the session could not re-arm it: ${one(rec.why)}`;
   if (rec?.rearmed_at) return `the session re-armed it at ${utc(rec.rearmed_at)}, but no pass has run since`;
-  const due = lostAt(b);
-  return now < due ? `the session re-arms it by itself on its first turn after ${utc(due)}`
-    : `the session could not re-arm it: it has taken no turn since ${utc(due)}, when it was due to`;
+  if (rec?.told_at) return `the session could not re-arm it yet: it was told to at ${utc(rec.told_at)} and has not recorded a next pass since`;
+  return `the session could not re-arm it: it has taken no turn since ${utc(lostAt(b))}, when it was due to`;
 }
 const stalledItems = (batches, now = Date.now()) => batches
   .filter((b) => !b.error && b.q && sessionStalled(b))
   .map((b) => ({ r: b, dir: b.stateDir, t: { key: b.batch == null ? STALLED : `${STALLED}:${b.batch}` }, item: { kind: STALLED, repoLevel: true,
-    need: `passes stopped in ${b.name}, a batch a session runs, so nothing new starts or merges there: its last pass ran at ${utc(b.last)}${b.next != null ? `, and the next was due at ${utc(b.next)}` : ''}. The loop lost its next tick, and ${rearmOf(b, now)}: resume the session, or ${resumeOf(b)}`,
+    need: `passes stopped in ${b.name}, a batch a session runs, so nothing new starts or merges there: its last pass ran at ${utc(b.last)}${b.next != null ? `, and the next was due at ${utc(b.next)}` : ''}. The loop lost its next tick, and ${rearmOf(b)}: resume the session, or ${resumeOf(b)}`,
     note: `Passes stopped ${since(now - b.last)} ago.${b.rows.some((x) => x.k === 'running') ? ' Running workers carry on.' : ''}`,
     actions: [['done', 'once a pass runs again this item leaves the list; done records nothing'], ['not-now']],
     since: b.last } }));

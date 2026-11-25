@@ -43,9 +43,11 @@ const NOW = Date.now();
 const iso = (m) => new Date(NOW + m * 60000).toISOString();
 const queue = (tickets) => writeFileSync(QUEUE, JSON.stringify({ version: 1, batch: 'loop-batch', concurrency: 2, supervised: false,
   tickets: Object.fromEntries(Object.entries(tickets).map(([k, v]) => [k, { key: k, added_at: iso(-600), ...v }])) }));
-// beat(<last pass, minutes from now>, <next pass, minutes from now, or null>, <session>)
-const beat = (pass, next, session = 's1') => writeFileSync(join(STATE, 'orchestrators', 'q.json'),
-  JSON.stringify({ queue: QUEUE, batch: 'loop-batch', pid: 1, at: iso(pass), pass: iso(pass), ...(next == null ? {} : { next: iso(next) }), session }));
+// beat(<last pass, minutes from now>, <next pass, minutes from now, or null>, <session>, <loop session>),
+// in the file pass.mjs and queue.mjs next-pass write
+const BEAT = join(STATE, 'orchestrators', `${QUEUE.replace(/[^A-Za-z0-9]/g, '-')}.json`);
+const beat = (pass, next, session = 's1', loop = null) => writeFileSync(BEAT,
+  JSON.stringify({ queue: QUEUE, batch: 'loop-batch', pid: 1, at: iso(pass), pass: iso(pass), ...(next == null ? {} : { next: iso(next) }), session, ...(loop ? { loop } : {}) }));
 queue({ 'L-1': { state: 'triaged', lane: 'A' } });
 
 let out = '';
@@ -76,16 +78,39 @@ beat(-3, null);
 hook('Stop');
 t('AC1 a batch with nothing a pass could move is never blocked: its loop may stop', out, '');
 queue({ 'L-1': { state: 'triaged', lane: 'A' } });
+o = hook('Stop');
+t('AC1 that pass is checked again once its queue has work a pass could move', /no next pass is scheduled/.test(reason(o)), true);
+beat(-2.5, null);
+o = hook('Stop', 's1', { stop_hook_active: true });
+t('AC1 a turn end another block (the handoff\'s) already held is still blocked, once', /no next pass is scheduled/.test(reason(o)), true);
+hook('Stop', 's1', { stop_hook_active: true });
+t('AC1 and its follow-up turn end is not blocked again', out, '');
+
+// A pass run by hand: another session's pass keeps the loop's session, so only the loop's is held to it
+beat(-1.5, null, 's2', 's1');
+hook('Stop', 's2');
+t('AC1 a pass run by hand in another session does not hold that session to the loop', out, '');
+o = hook('Stop');
+t('AC1 the session whose loop it is is held to it', /no next pass is scheduled/.test(reason(o)), true);
+const B = await import('../desk/bin/borrow.mjs');
+const carried = (prev, opts) => B.loopCarried(prev, { now: NOW, ...opts });
+t('a pass with --next is the loop\'s: its session is the loop\'s', carried({ next: NOW + 60e3, loop: 's1' }, { next: NOW + 120e3, session: 's2' }), 's2');
+t('a pass run by hand keeps the loop\'s session while its next pass is to come', carried({ next: NOW + 60e3, loop: 's1' }, { session: 's2' }), 's1');
+t('and after another such pass, which recorded no next pass', carried({ next: null, loop: 's1' }, { session: 's2' }), 's1');
+t('with the loop\'s next pass gone by, the session it ran in schedules the next', carried({ next: NOW - 60e3, loop: 's1' }, { session: 's2' }), null);
 
 // ---- AC2: twice the interval with no pass, the session's next turn re-arms the loop and logs it
 beat(-15, -5);
 hook('PostToolUse');
 t('AC2 under twice the interval (15 of 20 minutes): nothing injected', out, '');
+beat(-36, -11);
+o = hook('PostToolUse');
+t('AC2 under twice a 25-minute interval but read stalled by needs-you: told already', /loop lost its next tick/.test(ctx(o)), true);
 beat(-40, -25);
 o = hook('PostToolUse');
-t('AC2 past twice the interval: the turn is told the loop lost its next tick', /loop lost its next tick: no pass has run since \d\d:\d\d UTC, twice its 15-minute interval/.test(ctx(o)), true);
-t('AC2 and to re-arm it: a pass, the next tick, and its record', /re-arm it: run a pass \(node ~\/\.claude\/desk\/bin\/pass\.mjs --json\)/.test(ctx(o)) && /queue\.mjs next-pass \+<seconds>/.test(ctx(o)), true);
-t('AC2 the re-arm is logged for that pass and session', `${tick()?.pass} ${tick()?.session} ${!!tick()?.rearmed_at}`, `${iso(-40)} s1 true`);
+t('AC2 past twice the interval: the turn is told the loop lost its next tick', /loop lost its next tick: no pass has run since \d\d:\d\d UTC, and none is scheduled/.test(ctx(o)), true);
+t('AC2 and to re-arm it now: a pass, the next tick, and its record', /Re-arm it now, before you carry on: run a pass \(node ~\/\.claude\/desk\/bin\/pass\.mjs --json\)/.test(ctx(o)) && /queue\.mjs next-pass \+<seconds>/.test(ctx(o)), true);
+t('AC2 being told is logged for that pass and session, the re-arm not yet', `${tick()?.pass} ${tick()?.session} ${!!tick()?.told_at} ${!!tick()?.rearmed_at}`, `${iso(-40)} s1 true false`);
 hook('UserPromptSubmit');
 t('AC2 once per pass', out, '');
 hook('PostToolUse', 's2');
@@ -94,13 +119,18 @@ t('AC2 only the session that runs the batch is told', out, '');
 // ---- AC3: needs-you's stalled item says the loop lost its next tick, and what the session did
 const N = await import('../desk/bin/needs-you.mjs');
 const need = () => N.collect({ word: 'loop' }).items.find((i) => i.kind === 'stalled')?.need ?? '';
-t('AC3 re-armed: the item says so', /The loop lost its next tick, and the session re-armed it at \d{4}-\d\d-\d\d \d\d:\d\d UTC, but no pass has run since: resume the session, or run \/desk-autopilot in loop$/.test(need()), true);
-const r = spawnSync(process.execPath, [join(ROOT, 'desk', 'bin', 'loop-tick.mjs'), 'could-not', 'the', 'session', 'is', 'mid-build'], { cwd: REPO, encoding: 'utf8', env: { ...process.env, DESK_REPO_DIR: REPO } });
+t('AC3 told, not yet re-armed: the item says so', /The loop lost its next tick, and the session could not re-arm it yet: it was told to at \d{4}-\d\d-\d\d \d\d:\d\d UTC and has not recorded a next pass since: resume the session, or run \/desk-autopilot in loop$/.test(need()), true);
+const run = (script, ...a) => spawnSync(process.execPath, [join(ROOT, 'desk', 'bin', script), ...a], { cwd: REPO, encoding: 'utf8', env: { ...process.env, DESK_REPO_DIR: REPO, CLAUDE_CODE_SESSION_ID: 's1' } });
+let r = run('queue.mjs', 'next-pass', '+600');
+t('AC2 recording the next pass logs the re-arm', `${r.status} ${/re-armed/.test(r.stdout)} ${!!tick()?.rearmed_at}`, '0 true true');
+t('AC2 and names the session as the loop\'s', JSON.parse(readFileSync(BEAT, 'utf8')).loop, 's1');
+t('AC3 re-armed, so not stalled: no item', need(), '');
+beat(-40, -25);
+t('AC3 re-armed, then lost again with no pass since: the item says so', /The loop lost its next tick, and the session re-armed it at \d{4}-\d\d-\d\d \d\d:\d\d UTC, but no pass has run since: /.test(need()), true);
+r = run('loop-tick.mjs', 'could-not', 'the', 'session', 'is', 'mid-build');
 t('AC3 could-not records why', `${r.status} ${tick()?.why}`, '0 the session is mid-build');
 t('AC3 could not: the item says why', /The loop lost its next tick, and the session could not re-arm it: the session is mid-build: /.test(need()), true);
 beat(-50, -35);
 t('AC3 no turn since it was due: the item says it could not, and why', /the session could not re-arm it: it has taken no turn since \d{4}-\d\d-\d\d \d\d:\d\d UTC, when it was due to: /.test(need()), true);
-beat(-60, -25);
-t('AC3 not yet due: the item says when the session re-arms it', /the session re-arms it by itself on its first turn after \d{4}-\d\d-\d\d \d\d:\d\d UTC: /.test(need()), true);
 
 process.exit(fails ? 1 : 0);

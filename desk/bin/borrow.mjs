@@ -47,16 +47,28 @@ export const beatFile = (stateDir, queuePath) => join(stateDir, 'orchestrators',
 // known), and `pass` when the last pass ran: now for a pass, the earlier one carried for a supervisor's
 // idle tick, which runs none (null with none recorded). `session`, the Claude Code session it runs in
 // (CLAUDE_CODE_SESSION_ID), where there is one: intake.mjs admit reads it to know it runs in the session
-// that runs the batch. Advisory: a failed write is ignored.
-export function writeBeat(stateDir, queuePath, { batch = null, next = null, pass = Date.now(), now = Date.now() } = {}) {
+// that runs the batch. `loop`, the session whose /loop schedules the batch's passes, where known
+// (loopCarried). Advisory: a failed write is ignored.
+export function writeBeat(stateDir, queuePath, { batch = null, next = null, pass = Date.now(), now = Date.now(), loop = null } = {}) {
   const session = process.env.CLAUDE_CODE_SESSION_ID || null;
   const iso = (t) => (t == null ? null : new Date(t).toISOString());
   try {
     mkdirSync(join(stateDir, 'orchestrators'), { recursive: true });
     writeFileSync(beatFile(stateDir, queuePath), JSON.stringify({
-      queue: queuePath, batch, pid: process.pid, at: iso(now), pass: iso(pass), ...(next == null ? {} : { next: iso(next) }), ...(session ? { session } : {}),
+      queue: queuePath, batch, pid: process.pid, at: iso(now), pass: iso(pass), ...(next == null ? {} : { next: iso(next) }), ...(session ? { session } : {}), ...(loop ? { loop } : {}),
     }));
   } catch { /* advisory */ }
+}
+
+// The loop session a pass's heartbeat records. A pass given its next time (--next) is the loop's own,
+// so its session is the loop's. One given none, as a pass run by hand is, keeps the loop's session
+// unless the loop's next pass has gone by, so a pass run in another session does not move the loop
+// there; with it gone by the loop is lost, and the session the pass ran in is the one to schedule the
+// next.
+//   prev: lastBeat's, or null  ->  the session, or null
+export function loopCarried(prev, { next = null, session = process.env.CLAUDE_CODE_SESSION_ID || null, now = Date.now() } = {}) {
+  if (next != null) return session;
+  return prev?.loop && (prev.next == null || prev.next > now) ? prev.loop : null;
 }
 
 // A next-pass time as given on a command line: `+<seconds>` or `<seconds>` from now, or an ISO time.
@@ -72,7 +84,8 @@ export function parseNext(word, now = Date.now()) {
 // file into the state directory, so only that queue's count. `next` is the pass or tick planned after,
 // where one was recorded; `pass` is when the last pass ran (`at` for a beat that does not say).
 //   -> { at, next, pass } in epoch ms (next and pass null when none), with `session` the Claude Code
-//      session it was written in (null with none), or null with no heartbeat
+//      session it was written in and `loop` the session whose /loop runs the batch (each null with
+//      none), or null with no heartbeat
 export function lastBeat(stateDir, queuePath) {
   const dir = join(stateDir, 'orchestrators');
   let last = null;
@@ -83,7 +96,8 @@ export function lastBeat(stateDir, queuePath) {
       const next = hb.next == null ? NaN : Date.parse(hb.next);
       const pass = 'pass' in hb ? Date.parse(hb.pass ?? '') : at;
       if (hb.queue === queuePath && Number.isFinite(at) && (last == null || at > last.at)) {
-        last = { at, next: Number.isFinite(next) ? next : null, pass: Number.isFinite(pass) ? pass : null, session: typeof hb.session === 'string' ? hb.session : null };
+        last = { at, next: Number.isFinite(next) ? next : null, pass: Number.isFinite(pass) ? pass : null, session: typeof hb.session === 'string' ? hb.session : null,
+          loop: typeof hb.loop === 'string' ? hb.loop : null };
       }
     } catch { /* a torn heartbeat is no heartbeat */ }
   }

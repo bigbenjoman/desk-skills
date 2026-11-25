@@ -11,8 +11,10 @@ Where it says "above" or "below" of something this file does not hold, or cites 
 it (`queue.mjs next-pass`) before acting on what it printed, whatever its exit, a crash included: a
 long pass, a PR opened or a failed spawn handled after it must not end the turn without one. The
 handoff hook holds you to it: a turn that ends with no next pass recorded is blocked once, and once
-no pass has run for twice the loop's interval your next turn is told to re-arm the loop, which it logs
-for needs-you. If you cannot re-arm it, say why with `loop-tick.mjs could-not "<why>"`.
+no pass has run for twice the loop's interval your next turn is told to re-arm the loop now; recording
+the next pass logs the re-arm for needs-you. If you cannot re-arm it, say why with
+`loop-tick.mjs could-not "<why>"`. A pass run by hand in another session, with no `--next`, leaves the
+loop with the session that recorded its next pass.
 
 Spend follows config §3b. Where "Autopilot batch budget (USD)" is `none`, leave `budget_usd` unset so
 `pass.mjs` never stops spawning, and do not surface a running total as a finding. Where a cap is set,

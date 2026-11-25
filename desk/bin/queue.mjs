@@ -18,6 +18,7 @@ import { isSpineOf, ownsSpecsOf } from './pass/shared.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck, ownDraftWhy, withQuestion } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory, sizeOf } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
+import { markRearmed } from './loop-tick.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, wakeMergeDriver, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, githubHandle, ticketKind, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation } from './desk-env.mjs';
@@ -1417,8 +1418,11 @@ switch (cmd) {
     const file = beatFile(stateDir(), QUEUE);
     if (!existsSync(file)) throw new Error('no pass has run on this queue yet: run pass.mjs --next instead');
     const hb = JSON.parse(readFileSync(file, 'utf8'));
-    writeFileSync(file, JSON.stringify({ ...hb, next: new Date(at).toISOString() }));
+    // The session that records the next pass is the one whose /loop runs the batch (loop-tick.mjs).
+    const loop = process.env.CLAUDE_CODE_SESSION_ID || hb.loop;
+    writeFileSync(file, JSON.stringify({ ...hb, next: new Date(at).toISOString(), ...(loop ? { loop } : {}) }));
     console.log(`next pass ${new Date(at).toISOString()}`);
+    if (markRearmed(stateDir(), Date.parse(hb.pass ?? hb.at))) console.log('the loop that lost its next tick is re-armed, and needs-you says so');
     break;
   }
 

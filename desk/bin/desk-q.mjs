@@ -790,6 +790,7 @@ function loadBatch(c, repoName, batch, limits, now) {
   r.next = beat?.next ?? null;
   r.live = liveBeat(beat, now);
   r.session = beat?.session ?? null;
+  r.loop = beat?.loop ?? null;
   r.ctx = r.q ? holdContext(r) : NOBODY;
   const rows = Object.values(r.q?.tickets ?? {});
   // A row's place is queue.mjs's: its position among the unfinished tickets, where a failed one
