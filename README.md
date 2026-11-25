@@ -94,7 +94,7 @@ plain sentence: `/desk-ticket "the export button is greyed out for admins"`.
 can solve it, and always finishes with the same tail.
 
 ```mermaid
-flowchart LR
+flowchart TB
     T([Ticket]) --> TR[Triage<br/>read ticket, size, lane]
     TR --> B[Build<br/>branch, worktree when needed]
     B --> SR[Self-review<br/>desk-review, up to 3 rounds]
