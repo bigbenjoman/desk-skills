@@ -1273,7 +1273,7 @@ EOF
 cat > "$T/stub/gh" <<'EOF'
 #!/bin/sh
 case "$*" in
-  "pr view 901 "*) echo '{"state":"MERGED","mergedAt":"2026-11-12T15:38:26Z","headRefOid":"h1","statusCheckRollup":[]}' ;;
+  "pr view 901 "*|"pr view 911 "*) echo '{"state":"MERGED","mergedAt":"2026-11-12T15:38:26Z","headRefOid":"h1","statusCheckRollup":[]}' ;;
   "pr view 902 "*) echo '{"state":"CLOSED","mergedAt":null,"headRefOid":"h1","statusCheckRollup":[]}' ;;
   "pr view 903 "*) echo '{"state":"OPEN","mergedAt":null,"headRefOid":"h2","statusCheckRollup":[]}' ;;
   "pr view 904 "*) echo '{"state":"OPEN","mergedAt":null,"headRefOid":"h1","statusCheckRollup":[]}' ;;
@@ -1302,6 +1302,7 @@ q add FT-8; q set FT-8 state=triaged lane=A branch=fix/FT-8 resume=pending \
   'fix={"try":1,"of":2,"pr":908,"head":"h1","kind":"checks","what":"red: Lint","at":"2026-11-12T15:28:05Z"}' \
   'fix_tries=[{"try":1,"head":"h1","kind":"checks","what":"red: Lint","at":"2026-11-12T15:28:05Z"}]'
 out=$(node "$B/pass.mjs" 2>&1)
+check "#1396 a fix try whose PR merged since records the merge naming that PR" '[ "$(field FT-1 merge.pr)" = 901 ]'
 check "DS-605 AC1 a fix try whose PR merged since spawns no worker, is finished, and the ticket is recorded merged" \
   '! grep -qx FT-1 "$T/ft-spawns" && [ "$(field FT-1 state)" = "\"done\"" ] && [ "$(field FT-1 fix.finished)" != null ] && [ "$(field FT-1 merged_at)" = "\"2026-11-12T15:38:26.000Z\"" ] && echo "$out" | grep -qF "FT-1: its fix try 2 of 2 on PR #901 was not spawned, PR #901 merged at 2026-11-12T15:38:26Z: the try is finished and the ticket done on its PR again, recorded merged"'
 check "DS-605 AC2 a fix try whose PR was closed unmerged spawns no worker and is finished" \
@@ -1328,6 +1329,16 @@ q add FT-9; q set FT-9 state=triaged lane=A branch=fix/FT-9 result.pr=909 \
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-605 a migration renames try, which holds the merge, is not ended by a moved head either" \
   'grep -qx FT-9 "$T/ft-spawns" && [ "$(field FT-9 fix.finished)" = null ]'
+# FT-11's PR merged since too, and the merge driver already recorded who merged it; a pass of its own.
+export DESK_QUEUE="$T/queue-ft11.json" DESK_AUTOPILOT_STATE="$T/state-ft11"; mkdir -p "$T/state-ft11/logs"
+q init ft11; q set-batch concurrency=1
+q add FT-11; q set FT-11 state=triaged lane=A branch=fix/FT-11 result.pr=911 \
+  'merge={"by":"merge driver","pr":911,"head_sha":"0123456789abcdef0123456789abcdef01234567","base":"main","at":"2026-11-12T15:38:26.000Z"}' \
+  'fix={"try":1,"of":2,"pr":911,"head":"h1","kind":"checks","what":"red: Lint","at":"2026-11-12T15:28:05Z"}' \
+  'fix_tries=[{"try":1,"head":"h1","kind":"checks","what":"red: Lint","at":"2026-11-12T15:28:05Z"}]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1396 a fix try ending on a merge already recorded with its PR and merger keeps that record" \
+  '! grep -qx FT-11 "$T/ft-spawns" && [ "$(field FT-11 fix.finished)" != null ] && [ "$(field FT-11 merge.by)" = "\"merge driver\"" ] && [ "$(field FT-11 merge.pr)" = 911 ] && [ "$(field FT-11 merge.base)" = "\"main\"" ]'
 # FT-10's fix try worker parked, and its PR #901 merged since: tailAfterMerge sent it back for
 # its after-merge steps (merged_tail, cleared.tail). That tail spawns; its merged PR does not end it.
 export DESK_QUEUE="$T/queue-ft10.json" DESK_AUTOPILOT_STATE="$T/state-ft10"; mkdir -p "$T/state-ft10/logs"
