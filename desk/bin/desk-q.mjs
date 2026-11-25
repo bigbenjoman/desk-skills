@@ -58,7 +58,8 @@ import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
 export { logStage, STAGE_TAIL };
 import { listBatches } from './batches.mjs';
 import { backend, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
-import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson } from './gate.mjs';
+import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson, parseStateChecks } from './gate.mjs';
+import { readRecord as gateReviewerRecord, waitingOnDown } from './gate-reviewer.mjs';
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeIn, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
@@ -225,8 +226,13 @@ function holdContext(r) {
   // The pass syncs a batch base behind the default branch only where §3 batch-base-push is yes.
   let basePush = 'no';
   try { basePush = repoPermission(r.slug, 'batch-base-push'); } catch { /* a row that cannot be read is no */ }
+  // An outside gate reviewer's open outage (gate-reviewer.mjs, the repo's record) and the §4 State checks
+  // of kind external that read it: a PR red only on those waits on that reviewer, not on a rerun.
+  const stateChecks = parseStateChecks(list('state-checks')).checks.filter((c) => c.kind === 'external');
+  let outages = [];
+  if (stateChecks.length && r.stateDir) { try { outages = gateReviewerRecord(repoStateOf(r.stateDir)).outages ?? []; } catch { /* none recorded */ } }
   // With passes stopped nothing merges, but a PR the grant covers merges by itself once they resume.
-  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null };
+  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -451,6 +457,10 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   const gate = evaluateGate(checks, { required: ctx.required ?? [], advisory: ctx.advisory ?? [], untriggered: ps.untriggered ?? {} });
   const red = [...new Set(gate.failing.map((f) => f.name))];
   if (red.length) {
+    // Red only on an outside reviewer's gate while that reviewer is down: nothing failed and nothing is
+    // rerun, so it waits on the reviewer (one repo-level ask on needs-you), its rerun count untouched.
+    const down = waitingOnDown(red, ctx.stateChecks, ctx.outages);
+    if (down) return merging([`waiting on ${down.login} (down${down.since ? ` since ${sinceWhen(down.since, now)}` : ''})`, WARN]);
     // Only the merge driver reruns a red check, where §3 ci-rerun lets it, and a fix try waits for its
     // reruns: without both nothing moves. After both tries the pass records it stuck once the reruns
     // on the new head are spent (t.stuck, above), and until then the driver may still merge it.
@@ -511,6 +521,8 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
 // reruns, per check at this head, and rerun_at, its last): the rerun it is on and when the next is due.
 // It always names the rerun to come, so the count only moves when the driver reruns. With `now` null,
 // a due time is left out.
+// A past time as a row says it: the clock today, else the day and the clock.
+const sinceWhen = (iso, now) => { const t = Date.parse(iso); if (!Number.isFinite(t)) return String(iso); return new Date(t).toDateString() === new Date(now ?? Date.now()).toDateString() ? clock(t) : dayAndTime(t); };
 const rerunsTried = (ps, red) => Math.max(0, ...red.map((n) => Number(ps.reruns?.[n]) || 0));
 function rerunStep(ps, red, triesLeft, now) {
   const tried = rerunsTried(ps, red);
