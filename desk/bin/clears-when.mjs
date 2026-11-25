@@ -258,10 +258,15 @@ function askedAt(question, at) {
   return !/\b(?:once|when|after|until|while|before|if|unless|since)\b/i.test(sentence.slice(Math.max(...ends)));
 }
 
+// A clause after an ask that waits on someone else first (once the worker saves …, after run 991 finishes).
+const HANDOFF = /\b(?:once|when|after|until|while|before|if|unless|since)\b.*\b(?:worker|pass|job|CI|script|orchestrator|bot|run\s+#?\d+)\b/i;
 // Whether question `q` asks the person for a step in any of its sentences. Unlike askedAt, a clause after
-// the ask (… before resuming) leaves it an ask: it says when, not who makes the file.
+// the ask that only says when (… before resuming) leaves it an ask; one waiting on another actor does not.
 export function asksStep(q) {
-  return String(q ?? '').split(/[.?!]\s+/).some((s) => ASKS.some((re) => [...s.matchAll(re)].length > 0));
+  return String(q ?? '').split(/[.?!]\s+/).some((s) => {
+    const ends = ASKS.flatMap((re) => [...s.matchAll(re)].map((m) => m.index + m[0].length));
+    return ends.length > 0 && !HANDOFF.test(s.slice(Math.min(...ends)));
+  });
 }
 
 // A file-exists condition read against the question of the park it clears: {ok: true, cond} or

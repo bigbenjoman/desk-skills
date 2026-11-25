@@ -2674,6 +2674,8 @@ t('DS-1005 AC1 a park asking the person for a step, on a file no pass makes, nee
   st1005(park1005(q1005, lock1005)), 'needs');
 t('DS-1005 AC1 so does one whose ask is followed by when to take it',
   st1005(park1005('Please run npm install in the worktree before resuming.', lock1005)), 'needs');
+t('DS-1005 AC3 one asking for a step only once the worker saves the file still waits',
+  st1005(park1005('Please run the check once the worker saves $DESK_STATE/fixtures/X/meet.json.', { kind: 'file-exists', root: 'state', path: 'fixtures/X/meet.json' })), 'waiting');
 t('DS-1005 AC1 so does one stored with it', st1005(park1005(q1005, { ...lock1005, person: true })), 'needs');
 t('DS-1005 AC1 negative: a file the question leaves to a script still waits',
   st1005(park1005('waiting on the recall capture to write $DESK_STATE/fixtures/X/meet.json', { kind: 'file-exists', root: 'state', path: 'fixtures/X/meet.json' })), 'waiting');
