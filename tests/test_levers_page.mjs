@@ -177,7 +177,7 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   t('AC4 no chart yet', tr.includes('<svg'), false);
   const lev = section(hToday, 'lev-h');
   t('AC4 the lever table has What happens next', lev.includes('>What happens next</th>'), true);
-  t('AC4 one row per lever', count(lev, /<tr data-lever=/g), 10);
+  t('AC4 one row per lever', count(lev, /<tr data-lever=/g), 11);
   t('AC4 the ledger, never trialled, says it is on only where named (DS-893)', /<tr data-lever="ledger">.*?Not trialled: on only where a repo’s levers row names it\./.test(lev), true);
   t('a lever with more than two arms, never trialled, says levers decide sets it', /<tr data-lever="question-handling">.*?Not trialled: on only where levers decide sets it to batched, one-at-a-time, mixed in a repo\./.test(lev), true);
   t('AC4 preflight is on by hand, first', /<tr data-lever="preflight">.*?On by hand/.test(lev) && lev.indexOf('data-lever="preflight"') < lev.indexOf('data-lever="wrappers"'), true);
