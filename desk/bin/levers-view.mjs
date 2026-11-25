@@ -534,7 +534,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   const changesRaw = repos.flatMap((r) => r.log.rows.filter((e) => CHANGE_KINDS.includes(e.kind) && !Number.isNaN(Date.parse(e.at))).map((e) => {
     const ev = e.eval_id ? evalById.get(`${r.slug}|${e.eval_id}`) : null;
     return {
-      at: e.at, repo: e.repo === '*' ? '*' : r.name, lever: e.lever ?? e.pair ?? null, kind: e.kind, from: e.from ?? null, to: e.to ?? null, actor: e.actor ?? null,
+      at: e.at, repo: e.repo === '*' ? '*' : r.name, lever: e.lever ?? e.pair ?? null, kind: e.kind, from: e.from ?? e.before ?? null, to: e.to ?? e.after ?? null, actor: e.actor ?? null,
       reason_code: e.reason_code ?? null, wording: reasonWording(e.reason_code), reason: e.reason ?? null, ticket: e.ticket ?? null,
       eval_id: e.eval_id ?? null, evidence_file: e.evidence_file ?? null, decision_id: e.decision_id ?? null, desk_commit_range: e.desk_commit_range ?? null,
       evidence: ev ? evalEvidence(ev, DECISION_RULE.min_per_arm[REGISTRY[ev.lever]?.layer] ?? null) : null,

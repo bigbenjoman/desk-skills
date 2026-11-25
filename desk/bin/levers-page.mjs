@@ -614,6 +614,12 @@ function changeDetails(e) {
     + `${e.missing?.length ? row('Not recorded', `<ul class="guards">${e.missing.map((g) => `<li>${esc(cap(g.what))}: ${esc((g.tickets ?? g.files ?? []).join(', '))}</li>`).join('')}</ul>`) : ''}</dl>`;
 }
 
+// The line under a change: its reason as written, which may be typed by a person or carry a value (a row's
+// new reading, an arm set by hand); only a reason desk wrote for the log (incomplete evidence, a lever's
+// code changing, anything naming missing files) gives way to its reason code's wording.
+const MACHINE_REASONS = Object.freeze(['evidence_incomplete', 'fp_reset']);
+const shownReason = (e) => (MACHINE_REASONS.includes(e.kind) || e.missing ? e.wording ?? e.reason : e.reason ?? e.wording);
+
 function changes(v, today) {
   const p = v.panels.changes;
   const tz = v.tz;
@@ -624,7 +630,7 @@ function changes(v, today) {
   const sub = today ? '' : `<p class="muted small sub">${started ? `Newest first, since testing started on ${esc(dayMonth(started, tz))}.` : 'Newest first.'}</p>`;
   let body;
   if (list.length) {
-    body = list.map((e) => `<details class="change"><summary><span class="muted num small when">${esc(when(e.at, tz))}</span><span class="stack3"><span class="b">${esc(changeWhat(e))}</span>${e.wording || e.reason ? `<span class="muted small">${esc(cap(e.wording ?? e.reason))}</span>` : ''}</span></summary>${changeDetails(e)}</details>`).join('');
+    body = list.map((e) => `<details class="change"><summary><span class="muted num small when">${esc(when(e.at, tz))}</span><span class="stack3"><span class="b">${esc(changeWhat(e))}</span>${shownReason(e) ? `<span class="muted small">${esc(cap(shownReason(e)))}</span>` : ''}</span></summary>${changeDetails(e)}</details>`).join('');
   } else if (today) {
     const last = p.last_change;
     body = `<p class="empty">No lever changed this week.${last ? ` Last change: ${esc(dayMonth(last.at, tz))}, ${esc(lowerFirst(changeWhat(last)))}.` : ''}</p>`;

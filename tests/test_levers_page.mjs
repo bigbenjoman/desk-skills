@@ -495,10 +495,32 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('change log: the details name the tickets and files', incs[0]?.includes('<dt>Not recorded</dt><dd><ul class="guards"><li>A review round’s findings weren’t recorded: DS-261</li><li>The post-merge watch’s latest scan didn’t finish: post-merge.jsonl</li></ul></dd>'), true);
 }
 
+// A reason a person typed, or one carrying a value (a row's new reading, an arm set by hand), is
+// shown as written: only the machine-written reasons of incomplete evidence and code changes give way
+// to their reason code's wording.
+{
+  const at = (h) => iso2(Date.parse('2026-12-23T09:00:00.000Z') + h * HOUR);
+  const human = [
+    { v: 1, id: 'rc', at: at(0), repo: DS, kind: 'row_change', actor: 'ben', reason_code: 'row_change', reason: 'config §3b "Phase 0 levers" now reads `auto`', before: 'none', after: 'auto' },
+    { v: 1, id: 'fz', at: at(1), repo: DS, kind: 'freeze', actor: 'ben', reason_code: 'freeze', reason: 'holiday week, nobody to answer' },
+    { v: 1, id: 'ov', at: at(2), repo: DS, lever: 'question-handling', kind: 'override', actor: 'ben', reason_code: 'ben_override', to: 'one-at-a-time', reason: 'set to one-at-a-time by hand to see the pushes' },
+  ];
+  const v = V.buildView({
+    ...machine({ repos: autoRepos, now: NOW2, files: { [`${DS}/lever-evals.jsonl`]: jsonl(evals), [`${DS}/levers.jsonl`]: jsonl([...log, ...human]), [`${DS}/levers-evidence/evl_1.jsonl`]: jsonl(rows) } }),
+    now: NOW2, tz: 'UTC', generatedAt: NOW2,
+  });
+  const ch = section(P.renderPage(v), 'ch-h');
+  const summaryOf = (what) => ch.split('<details class="change">').slice(1).find((d) => d.includes(what))?.split('</summary>')[0] ?? '';
+  t('change log: a row change names the reading before and after', summaryOf('The levers row in desk-skills changed').includes('changed from none to auto'), true);
+  t('change log: and shows its reason as written', summaryOf('The levers row in desk-skills changed').includes('<span class="muted small">Config §3b &quot;Phase 0 levers&quot; now reads `auto`</span>'), true);
+  t('change log: a freeze shows the reason typed for it', summaryOf('Trials frozen').includes('<span class="muted small">Holiday week, nobody to answer</span>'), true);
+  t('change log: an arm set by hand shows its reason', summaryOf('set question-handling to one-at-a-time').includes('<span class="muted small">Set to one-at-a-time by hand to see the pushes</span>'), true);
+}
+
 // Text from the view is escaped, and view.json cannot close its script element.
 {
   const evil = structuredClone(six);
-  evil.panels.changes.all[0].wording = '</script><img onerror=x>';
+  evil.panels.changes.all[0].reason = '</script><img onerror=x>';
   const h = P.renderPage(evil);
   t('escaped in the markup', h.includes('&lt;/script&gt;&lt;img onerror=x&gt;'), true);
   t('escaped in the inline JSON', h.includes('\\u003c/script>\\u003cimg'), true);
