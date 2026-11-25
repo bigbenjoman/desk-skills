@@ -28,7 +28,8 @@
 //   - appends the report to <state>/supervisor.log;
 //   - sends one desktop notification (notify.mjs) for the pass's `push` entries the last notification did not carry
 //     (the check-in digest, a production-broken park, a failing health check), or for a pass that
-//     refused or failed;
+//     refused or failed, and for each ask handed on whose question-handling arm pushes it
+//     (question-arms.mjs), an idle tick included;
 //   - once every batch has run, starts the repo's one merge driver (merge-driver.sh --all-batches) when a
 //     batch's pass left tickets to merge (where §3 autopilot-merge and pr-merge-green are both `yes`, or
 //     the batch's `approved.merge` is true where they are `yes` or `ask`: the driver reads it itself)
@@ -108,6 +109,7 @@ import { notify as show } from './notify.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
 import { lastBeat, writeBeat } from './borrow.mjs';
 import { recordAsks } from './ask-ledger.mjs';
+import { raised, queuePushes, duePushes, markPushed } from './question-arms.mjs';
 import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, dropHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome, runningBatches, restateKeys, baseSyncLine } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -700,6 +702,7 @@ function batchInterval(intake) {
     intakeAlone();
     const reaped = reapDecider(state, s);
     if (reaped.length) { writeState(state, s); log([`== ${stamp()} ${reaped.join('\n')}`]); }
+    idleAskPushes(state, s, log, q);
     idleBeat(state, q);
     idleCheckin(state, s, log, stamp);
     return;
@@ -904,11 +907,14 @@ function runPass(state, q, s, log, stamp, intake = []) {
     else driverWanted = true;
   }
 
-  // A pass that crashed or hung gave no verdict, and needs the person as much as one that said so.
-  const pushes = toPush(v);
+  // A pass that crashed or hung gave no verdict, and needs the person as much as one that said so. An
+  // ask handed on that its question-handling arm pushes goes out with it.
+  const asks = duePushes(state, qAfter);
+  const pushes = [...toPush(v), ...asks];
   const items = pushes.map((p) => p.key);
   const { sent, line } = pushFresh(state, s, pushes, (ps) => ps.map((p) => p.key).join(', '), 'pass');
   if (line) out.push(line);
+  if (sent) out.push(...markPushed(state, asks.map((p) => p.key), { queue: qf }));
   // A failed notification records nothing new, so the next pass sends it again. A pass that refused
   // or failed checked nothing, so it keeps the keys already sent rather than dropping them.
   if (v.status === 'error') s.notified = sent ? [...new Set([...s.notified, ...items])] : s.notified;
@@ -1067,13 +1073,23 @@ function restampRestate(items, now) {
 }
 
 // The asks among items `items` (each a park with its since: ask-ledger.mjs) as ask steps `steps`, each
-// a function of the item giving that step's fields, written to the batch's ticket ledger. -> its report lines.
+// a function of the item, its park and the queue giving that step's fields (question-arms.mjs raised),
+// written to the batch's ticket ledger. -> its report lines.
 function asksOf(items, q, steps) {
   const parks = items.filter((i) => i.kind === 'parked' && i.since);
   const park = (i) => q?.tickets?.[i.ticket]?.park ?? {};
-  return recordAsks(E.queueFile(), parks.flatMap((i) => steps.map((f) => ({ key: i.ticket, since: i.since, ...f(i, park(i)) }))), { by: 'supervisor' });
+  return recordAsks(E.queueFile(), parks.flatMap((i) => steps.map((f) => ({ key: i.ticket, since: i.since, ...f(i, park(i), q) }))), { by: 'supervisor' });
 }
-const raised = (i, p) => ({ step: 'raised', kind: p.kind, question: p.question ?? i.text });
+// Items `items` handed to the person now: raised, and queued for a push where their question-handling
+// arm pushes one (question-arms.mjs). -> report lines.
+const handedOn = (state, items, q, now) => [...asksOf(items, q, [raised]), ...queuePushes(state, items, q, { slug: E.repoSlug(), now })];
+// Sends what question-arms.mjs has queued, from an idle tick, and records each push that went out.
+function idleAskPushes(state, s, log, q) {
+  const due = duePushes(state, q);
+  for (const p of due) pushOnce(state, s, log, stamp, 'ask', p);
+  const lines = markPushed(state, due.filter((p) => s.notified.includes(p.key)).map((p) => p.key), { queue: E.queueFile() });
+  if (lines.length) log([`== ${stamp()} ${lines.join('\n')}`]);
+}
 
 // Stops a decider past its time and hands its items on; records an ended one's outcome. Returns the
 // lines for the batch report. An ask it handed on is raised (handed to the person); one it settled
@@ -1101,7 +1117,7 @@ function reapDecider(state, s, now = new Date()) {
   // A queue that could not be read says nothing of which parks are gone.
   const gone = (i) => { const t = q.tickets?.[i.ticket]; return !!q.tickets && !(t?.state === 'parked' && t.park?.since === i.since); };
   const asked = [
-    ...asksOf(o.handed.map((x) => x.item), q, [raised]),
+    ...handedOn(state, o.handed.map((x) => x.item), q, now),
     ...asksOf(o.settled.map((x) => x.item).filter(gone), q, [() => ({ step: 'answered', by: 'decider', at: now })]),
   ];
   // A session the usage limit refused saw nothing: its items wait for the next one.
@@ -1140,7 +1156,7 @@ function decide(state, s, v, q, now = new Date()) {
   const again = ask.filter((i) => settled.includes(i.id));
   const added = handItems(state, [...hand, ...again.map((item) => ({ item, why: 'the decider settled it, but the next pass still lists it' }))], now);
   if (added.length) lines.push(`decider: handed to the digest without a session: ${added.map((x) => `${x.item.ticket} (${x.why})`).join(', ')}`);
-  lines.push(...asksOf(added.map((x) => x.item), q, [raised]));
+  lines.push(...handedOn(state, added.map((x) => x.item), q, now));
   const fresh = freshItems(state, ask.filter((i) => !again.includes(i)));
   // An unreadable clears-when no session will see now (handed on, or handed already and unanswered)
   // is none from here.
@@ -1154,7 +1170,7 @@ function decide(state, s, v, q, now = new Date()) {
   const rules = recoveryRules();
   if (!existsSync(rules)) {
     handItems(state, fresh.map((item) => ({ item, why: `no decider: the recovery rules are missing at ${rules}` })), now);
-    lines.push(...asksOf(fresh, q, [raised]));
+    lines.push(...handedOn(state, fresh, q, now));
     return [...lines, `decider: not started, the recovery rules are missing at ${rules}; ${fresh.map((i) => i.ticket).join(', ')} handed to the digest`, ...restatedNone(fresh)];
   }
   const started = startDecider({ state, slug: E.repoSlug(), bin: HERE, report: v.message, items: fresh, rules: readFileSync(rules, 'utf8'),

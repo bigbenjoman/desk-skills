@@ -68,6 +68,11 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
   the digest's included) runs a pass again even in an idle batch. A decider still running after 15
   minutes is stopped and its items handed on as `decider timed out`. What each session cost, settled
   and handed on goes in the next report in `<state>/supervisor.log` and in the batch notes;
+- where a ticket's pin sets the `question-handling` lever (`question-arms.mjs`), pushes a park it
+  hands to the digest at once: every one on `one-at-a-time`, a blocking one on `mixed` (another
+  ticket is held behind it, or nothing else is running). Nothing settled by the decider is pushed,
+  nor anything between 22:00 and 08:00, when the park waits for the digest; an idle tick sends what a
+  reaped decider handed on. With the lever off, or on `batched`, nothing is pushed but as above;
 - once a pass reports the batch idle, runs nothing more for it until the queue changes (a new batch,
   or a ticket admitted or requeued into this one), a park is answered, or, with anything parked,
   failed or held behind a blocker in no batch, `DESK_IDLE_RECHECK_MS` (30 minutes) passes, or

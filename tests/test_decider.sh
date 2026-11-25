@@ -624,5 +624,35 @@ verdict '{"status":"show_person","code":11,"message":"PARKED","waiting":[],"park
 out=$(tick)
 check "ask ledger: a park listed again, still handed on, is not raised again" '[ "$n" = 2 ] && [ "$(askevents ask_raised)" = "$n" ]'
 
+# ---- question handling: an ask handed to the person is pushed where its ticket's arm says so --------
+# A notifier that works, and a time zone where the clock reads noon (the arms push nothing 22:00 to
+# 08:00), or 23:00 for the quiet-hours case.
+printf '#!/bin/sh\nprintf "%%s|%%s\\n" "$2" "$3" >> "%s/notified"\nexit 0\n' "$T" > "$T/fakes/notify-send"; chmod +x "$T/fakes/notify-send"
+tz_at(){ local o=$(( $1 - 10#$(date -u +%H) )); [ "$o" -gt 12 ] && o=$((o - 24)); [ "$o" -lt -11 ] && o=$((o + 24)); if [ "$o" -ge 0 ]; then echo "Etc/GMT-$o"; else echo "Etc/GMT+$(( -o ))"; fi; }
+qtick(){ (cd "$T/repo" && TZ="$(tz_at "$1")" DESK_PLATFORM=linux node "$T/bin/supervisor.mjs" tick --foreground 2>&1); }
+arm(){ printf ',"levers":{"set":["question-handling"],"values":{"question-handling":"%s"},"at":"2026-10-28T00:00:00Z"}' "$1"; }
+cpark(){ printf '"%s":{"key":"%s","state":"parked","lane":"C","park":{"kind":"question","question":"%s: which of two layouts?","since":"2026-10-28T1%s:00:00Z"}%s}' "$1" "$1" "$1" "$2" "$3"; }
+cverdict(){ local ps=""; for k in "$@"; do ps="$ps${ps:+,}{\"key\":\"$k\",\"question\":\"$k: which of two layouts?\"}"; done; verdict "{\"status\":\"show_person\",\"code\":11,\"message\":\"PARKED\",\"waiting\":[],\"parked\":[$ps],\"notify\":true,\"push\":[]}"; }
+arms(){ node --input-type=module -e "
+import { fold } from '$B/ticket-ledger.mjs';
+import { readAsks } from '$B/ask-ledger.mjs';
+for (const a of readAsks(fold('$T')).filter((x) => x.key.startsWith('Q'))) console.log([a.key, a.arm ?? '-', a.blocking ?? '-', a.presented.map((p) => p.via).join(',') || '-'].join('|'));"; }
+rm -f "$T/state/handed.json" "$T/notified"
+queue "{$(cpark Q0 0 ""),$(cpark Q1 1 "$(arm one-at-a-time)"),$(cpark Q2 2 "$(arm mixed)"),\"R\":{\"key\":\"R\",\"state\":\"running\",\"lane\":\"A\"}}"
+node --input-type=module -e "import { queueDifference } from '$B/queue-ledger.mjs'; queueDifference('$DESK_QUEUE', { seed: true });"
+cverdict Q0 Q1 Q2; out=$(qtick 12)
+check "question handling: a one-at-a-time ask handed to the person is pushed at once" 'grep -qx "desk: acme__widgets|Q1: Q1: which of two layouts?" "$T/notified"'
+check "question handling: with the lever off, and on the mixed arm with another ticket running, nothing is pushed for it" '[ "$(grep -c "Q0\|Q2" "$T/notified")" = 0 ]'
+check "question handling: the pushed ask is presented by push; each raised records its arm and blocking flag, none with the lever off" \
+  '[ "$(arms | sort | paste -sd " " -)" = "Q0|-|-|- Q1|one-at-a-time|false|push Q2|mixed|false|-" ]'
+n=$(wc -l < "$T/notified"); out=$(qtick 12)
+check "question handling: the next pass, the ask still handed on, pushes nothing again" '[ "$(wc -l < "$T/notified")" = "$n" ]'
+queue "{$(cpark Q3 3 "$(arm mixed)"),$(cpark Q4 4 "$(arm one-at-a-time)")}"
+cverdict Q3 Q4; out=$(qtick 23)
+check "question handling: in quiet hours nothing is pushed, and the log says the ask waits for the digest" \
+  '! grep -q "Q3\|Q4" "$T/notified" && grep -q "question-handling: not pushed in quiet hours (22:00 to 08:00), each waits for the check-in digest: Q3 (mixed), Q4 (one-at-a-time)" "$LOG"'
+rm -f "$T/state/handed.json"; out=$(qtick 12)
+check "question handling: a mixed ask with nothing else running is blocking, and pushed" 'grep -q "^desk: acme__widgets|Q3: Q3: which of two layouts?" "$T/notified"'
+
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
