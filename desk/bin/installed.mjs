@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // The installed desk version, and moving what still runs onto it. install.sh runs both at the end:
 //   node installed.mjs record <checkout> [<release dir>]   write <DESK_HOME>/installed.json: the commit
-//                                          installed from (and the release's own release.json)
+//                                          installed from (and the release's own release.json), and
+//                                          a move to another commit in the release watch's releases.jsonl
 //   node installed.mjs version             print the installed commit (nothing when none is recorded)
 //   node installed.mjs running             print the commit of the release this script runs from (the
 //                                          installed one outside a release folder)
@@ -70,9 +71,26 @@ function record(src, release = null) {
     v.release = basename(release);
     writeFileSync(join(release, RELEASE_FILE), `${JSON.stringify(v, null, 2)}\n`);
   }
+  const before = readInstalled();
   mkdirSync(E.deskHome(), { recursive: true });
   writeFileSync(installedFile(), `${JSON.stringify(v, null, 2)}\n`);
-  return v;
+  return { v, move: movedFrom(git, before?.commit, v) };
+}
+// The install's move for the release watch, as {at, from, to, merges}: null when the commit is unchanged,
+// or when either end is no git commit (a first install, an unversioned source) or the merges between them
+// cannot be counted. `merges` counts main's own commits between them, first parent only, as the
+// auto-release does.
+const SHA = /^[0-9a-f]{40}$/;
+function movedFrom(git, from, v) {
+  if (!SHA.test(from ?? '') || !SHA.test(v.commit) || from === v.commit) return null;
+  const n = git('rev-list', '--first-parent', '--count', `${from}..${v.commit}`);
+  const merges = Number(n.stdout.trim());
+  return n.status === 0 && Number.isInteger(merges) ? { at: v.at, from, to: v.commit, merges } : null;
+}
+// Records the move in the release watch's releases.jsonl, the one row a release gets whoever installed it.
+async function recordMove(move) {
+  const [{ recordRelease }, { maintDir }] = await Promise.all([import('./release-watch.mjs'), import('./maintenance.mjs')]);
+  recordRelease(maintDir(), move);
 }
 
 // ---- releases --------------------------------------------------------------------------------
@@ -371,7 +389,12 @@ const isMain = () => {
 if (isMain()) {
   const [cmd, arg, rel] = process.argv.slice(2);
   try {
-    if (cmd === 'record' && arg) { const v = record(arg, rel ?? null); console.log(`${v.commit}${v.dirty ? ' (with uncommitted changes)' : ''}${v.dirty === null ? ' (not a git checkout)' : ''}`); }
+    if (cmd === 'record' && arg) {
+      const { v, move } = record(arg, rel ?? null);
+      console.log(`${v.commit}${v.dirty ? ' (with uncommitted changes)' : ''}${v.dirty === null ? ' (not a git checkout)' : ''}`);
+      // Not awaited: release-watch.mjs imports this module, which must finish evaluating first.
+      if (move) recordMove(move).catch((e) => console.error(`installed: the release ${move.from.slice(0, 12)} -> ${move.to.slice(0, 12)} was not recorded for the release watch: ${e.message}`));
+    }
     else if (cmd === 'version') { const v = readInstalled(); if (v) console.log(v.commit); }
     else if (cmd === 'running') { const v = runningVersion(); if (v) console.log(v); }
     else if (cmd === 'restart') for (const l of restart()) console.log(l);

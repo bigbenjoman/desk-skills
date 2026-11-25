@@ -95,6 +95,22 @@ check "AC4: version prints it back" '[ "$out" = "$head_sha" ]'
 out=$(node "$T/bin/installed.mjs" record "$T/repo" 2>&1); rc=$?
 check "AC4: a directory that is not a checkout replaces the commit with a version of its own, and says so" '[ $rc -eq 0 ] && grep -q "^unversioned-.* (not a git checkout)$" <<< "$out" && ! grep -q "$head_sha" "$T/desk/installed.json" && grep -q "\"commit\": \"unversioned-" "$T/desk/installed.json"'
 check "AC4: so what started at the commit before it reads as old code" 'node --input-type=module -e "import { oldCode } from \"$T/bin/installed.mjs\"; process.exit(oldCode(\"$head_sha\") ? 0 : 1)"'
+# ---- issue-1455: an install that moves the commit is recorded for the release watch ---------------
+RJ="$HOME/.desk-autopilot/maintenance/releases.jsonl"
+check "issue-1455: a first install, and one from a source with no commit, record no release" '[ ! -f "$RJ" ]'
+node "$T/bin/installed.mjs" record "$G" >/dev/null 2>&1
+check "issue-1455: nor does a move from an unversioned install, whose from is no commit" '[ ! -f "$RJ" ]'
+out=$(node "$T/bin/installed.mjs" record "$G" 2>&1)
+check "issue-1455 AC2: reinstalling the same commit adds no row" '[ "$out" = "$head_sha" ] && [ ! -f "$RJ" ]'
+git -C "$G" -c user.name=t -c user.email=t@t commit -q --allow-empty -m two
+git -C "$G" -c user.name=t -c user.email=t@t commit -q --allow-empty -m three
+new_sha="$(git -C "$G" rev-parse HEAD)"
+out=$(node "$T/bin/installed.mjs" record "$G" 2>&1); rc=$?
+check "issue-1455 AC1: a move from A to B adds one row: from A, to B, its time and the merges between them" '[ $rc -eq 0 ] && [ "$out" = "$new_sha" ] && [ "$(count "$RJ")" = 1 ] && jq -e --arg a "$head_sha" --arg b "$new_sha" "select(.from == \$a and .to == \$b and .merges == 2 and (.at | test(\"^[0-9]{4}-\")))" "$RJ" >/dev/null'
+check "issue-1455 AC4: the release it replaced is held from pruning until the watch judges it" 'grep -qx "$head_sha" "$T/desk/releases/.held"'
+node "$T/bin/installed.mjs" record "$G" >/dev/null 2>&1
+check "issue-1455 AC2: a second install with nothing new adds none" '[ "$(count "$RJ")" = 1 ]'
+head_sha="$new_sha"
 # ---- DS-810: a driver records the version of the release it runs from ----------------------------
 # Two release folders under a desk home of their own: relA (commit aaa1), relB (bbb2, installed), and
 # relC with no release.json. `current` links to relB, as install.sh leaves it.

@@ -383,7 +383,7 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
     if (!u.ok) return blocked(u.why, to);
     delete s.blocked;
     save();
-    watch.recordRelease(dir, { at, from: base, to: u.new, merges: u.merges });
+    // install.sh's record step wrote the release watch's row for this move (installed.mjs).
     // A driver install.sh restarted logs "merge driver exited 143" (its SIGTERM), which is not a crash.
     const restarted = u.restarted?.length ? `; merge driver restarted on the new code, so its log's "merge driver exited 143" is this restart: ${u.restarted.join(', ')}` : '';
     const reach = `${live.length ? `; running workers that pick it up on their next call: ${live.join(', ')}` : ''}${restarted}`;
@@ -521,16 +521,13 @@ function step(s, { dir, at, running, stop, selfQueue, watch }) {
         lines.push(`maintenance: desk-skills not updated: ${held}`);
         save({ phase: 'checking' });
       } else {
-        // The release before this one is what is installed, as the auto-release records it.
-        const base = readInstalled()?.commit ?? null;
+        // install.sh's record step writes the release watch's row for the move (installed.mjs).
         const u = updateDesk();
         if (!u.ok) {
           log(`update failed: ${u.why}${u.old ? ` (installed version stays at ${short(u.old)})` : ''}`);
           note(`desk-skills update failed in the maintenance window, so the computer was not restarted: ${u.why}`);
           return finish(`desk-skills update failed (${u.why}), so no restart`);
         }
-        const from = base ?? u.old;
-        if (u.new !== from) watch.recordRelease(dir, { at, from, to: u.new, merges: u.merges });
         log(`update: desk-skills ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main), pulled fast-forward and installed`);
         lines.push(`maintenance: desk-skills updated ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main) and installed`);
         save({ phase: 'checking', update: { old: u.old, new: u.new, merges: u.merges } });
