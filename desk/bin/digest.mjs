@@ -360,7 +360,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   const ns = groups.reduce((n, g) => n + (g.stalled?.length ?? 0), 0);
   const nw = groups.reduce((n, g) => n + (g.warnings?.length ?? 0), 0);
   const nwait = groups.reduce((n, g) => n + (g.waiting?.length ?? 0), 0);
-  const npr =groups.filter((g) => g.promotion?.key).length;
+  const npr = groups.filter((g) => g.promotion?.key).length;
   const nj = groups.filter((g) => jiraLine(g.slug, g.jira)).length;
   const ndone = groups.reduce((n, g) => n + (g.jira?.done?.length ?? 0), 0);
   const cmd = join(bin, 'digest.mjs');
