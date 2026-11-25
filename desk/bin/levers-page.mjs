@@ -94,25 +94,33 @@ const isoWeek = (k) => {
 
 // ---- the four trend metrics, as the page titles and formats them ------------------------------------------
 const fixLimit = (base) => (base == null ? null : Math.round(base * GUARDRAILS['fix-tries-parks'].margin.max_rate_ratio * 100) / 100);
+// `sub` words a card's one-line description from its baseline and whether the view keyed its days by
+// the day each ticket merged.
+const perTicket = (merged) => (merged ? 'per merged ticket, by the day it merged' : 'per accepted ticket');
 const METRICS = Object.freeze({
-  cost: { title: 'Cost per Ticket', tile: 'Cost per ticket', sub: () => 'API-equivalent spend per accepted ticket, all repos', scale: 1, v: (x) => `$${x.toFixed(2)}`, pre: '$', post: '' },
-  tokens: { title: 'Tokens per Ticket', tile: 'Tokens per ticket', sub: () => 'Input tokens per accepted ticket', scale: 1e-6, v: (x) => `${x.toFixed(1)}M`, pre: '', post: 'M' },
-  prompts: { title: 'Permission Prompts per Start', tile: 'Prompts per start', sub: () => 'Times a worker was blocked asking to run a command', scale: 1, v: (x) => x.toFixed(1), pre: '', post: '' },
+  cost: { title: 'Cost per Ticket', tile: 'Cost per ticket', sub: (_, merged) => `API-equivalent spend ${perTicket(merged)}, all repos`, scale: 1, v: (x) => `$${x.toFixed(2)}`, pre: '$', post: '' },
+  tokens: { title: 'Tokens per Ticket', tile: 'Tokens per ticket', sub: (_, merged) => `Input tokens ${perTicket(merged)}`, scale: 1e-6, v: (x) => `${x.toFixed(1)}M`, pre: '', post: 'M' },
+  prompts: { title: 'Permission Prompts per Start', tile: 'Prompts per start', sub: (_, merged) => `Times a worker was blocked asking to run a command${merged ? ', per start, by the day its ticket merged' : ''}`, scale: 1, v: (x) => x.toFixed(1), pre: '', post: '' },
   fixes: {
     title: 'Fix Tries per Ticket', tile: 'Fix tries per ticket', scale: 1, v: (x) => x.toFixed(2), pre: '', post: '', minStep: 0.01,
-    sub: (base) => (fixLimit(base) == null ? 'Fix tries per accepted ticket' : `Must stay under ${fixLimit(base).toFixed(2)} for a lever to be kept`),
+    sub: (base, merged) => {
+      const limit = fixLimit(base) == null ? null : `Must stay under ${fixLimit(base).toFixed(2)} for a lever to be kept`;
+      if (!merged) return limit ?? 'Fix tries per accepted ticket';
+      return limit ? `${cap(perTicket(true))}. ${limit}` : `Fix tries ${perTicket(true)}`;
+    },
   },
 });
 const scaled = (m, v) => (v == null ? null : v * m.scale);
 
 // Lower is better for every metric: green under the baseline, amber over it, grey with nothing to compare.
 // Fix tries are judged against their guardrail limit instead.
-function rag(key, metric) {
-  const vs = metric.callouts.last_week_vs_before_pct;
+// `over` is the figure judged: last week's (the cards) or the one since desk started recording (the tiles).
+function rag(key, metric, over = 'last_week') {
+  const vs = metric.callouts[`${over}_vs_before_pct`];
   const better = vs != null && vs <= -1;
   if (key === 'fixes') {
     const limit = fixLimit(metric.baseline.value);
-    const last = metric.callouts.last_week;
+    const last = metric.callouts[over];
     if (limit == null || last == null) return { c: C.grey, label: 'Grey: no comparison yet', words: 'No comparison yet' };
     if (last > limit) return { c: C.amber, label: `Amber: over the ${limit.toFixed(2)} limit`, words: `Over the ${limit.toFixed(2)} limit`, ink: C.amberInk };
     return { c: C.green, label: `Green: under the ${limit.toFixed(2)} limit`, words: better ? 'Better than before levers' : 'Holding steady', ink: better ? C.greenInk : '#374151', dot: better ? C.green : C.grey };
@@ -224,7 +232,7 @@ function wbrCard(key, metric) {
   });
   return `<article class="card wbr" data-metric="${key}">
 <div class="wbr-head"><div></div><h3>${esc(m.title)}</h3><div class="wbr-rag"><span class="rag" role="img" aria-label="${esc(r.label)}" title="${esc(r.label)}" style="background:${r.c}"></span></div></div>
-<p class="muted wbr-sub">${esc(m.sub(metric.baseline.value))}</p>
+<p class="muted wbr-sub">${esc(m.sub(metric.baseline.value, metric.keyed_by === 'merged_at'))}</p>
 ${chart(key, metric, 'wbr')}
 ${chart(key, metric, 'days')}
 <div class="callouts">${cells.map((k) => `<div class="callout"><span class="callout-l">${esc(k.l)}</span><span class="callout-v mono" style="color:${k.c}">${esc(k.v)}</span></div>`).join('')}</div>
@@ -283,7 +291,7 @@ function spark(metric, m) {
   return `<svg viewBox="0 0 220 32" width="100%" height="32" aria-hidden="true" class="spark">${base == null ? '' : `<line x1="0" y1="${y(base)}" x2="220" y2="${y(base)}" stroke="${C.grey}" stroke-dasharray="3 3" stroke-width="1"></line>`}<polyline points="${pts}" fill="none" stroke="${C.ink}" stroke-width="2"></polyline></svg>`;
 }
 
-const tile = (t) => `<article class="card tile"${t.edge ? ' style="border-color:#FCD34D;background:#FFFBEB"' : ''}><h3 class="muted">${esc(t.label)}</h3><span class="num tile-v">${esc(t.value)}</span><span class="tile-s" style="color:${t.ink ?? '#374151'}"><span class="dot" style="background:${t.dot ?? C.grey}"></span>${esc(t.status)}</span><span class="muted num tile-sub">${esc(t.sub)}</span>${t.spark ?? ''}</article>`;
+const tile = (t) => `<article class="card tile"${t.edge ? ' style="border-color:#FCD34D;background:#FFFBEB"' : ''}><h3 class="muted">${esc(t.label)}</h3><span class="num tile-v">${esc(t.value)}</span><span class="tile-s" style="color:${t.ink ?? '#374151'}"><span class="dot" style="background:${t.dot ?? C.grey}"></span>${esc(t.status)}</span><span class="muted num tile-sub">${esc(t.sub)}</span>${t.sub2 ? `<span class="muted num tile-sub">${esc(t.sub2)}</span>` : ''}${t.spark ?? ''}</article>`;
 
 function tiles(v, today) {
   const b = v.baseline;
@@ -305,11 +313,16 @@ function tiles(v, today) {
     const metricTile = (key) => {
       const m = METRICS[key];
       const metric = ms[key];
-      const r = rag(key, metric);
-      const last = metric.callouts.last_week;
-      const base = metric.baseline.value;
-      const was = base == null ? 'No starting point recorded' : `Was ${m.v(scaled(m, base))}${key === 'fixes' && fixLimit(base) != null ? ` · limit ${fixLimit(base).toFixed(2)}` : ''}`;
-      return { label: m.tile, value: last == null ? DASH : m.v(scaled(m, last)), status: r.words, ink: r.ink, dot: r.dot ?? r.c, sub: was, spark: spark(metric, m) };
+      // The figure since desk started recording, its window and ticket count; last week's and
+      // yesterday's beneath it, each with its own count.
+      const r = rag(key, metric, 'to_date');
+      const c = metric.callouts;
+      const n = metric.counts ?? {};
+      const fig = (x) => (x == null ? DASH : m.v(scaled(m, x)));
+      const tickets = (k) => (n[k] == null ? '' : `, ${n[k]} ticket${n[k] === 1 ? '' : 's'}`);
+      const window = metric.first_recorded ? `Since ${dayLabel(metric.first_recorded)}${n.to_date == null ? '' : ` · ${n.to_date} ticket${n.to_date === 1 ? '' : 's'}`}` : 'Nothing recorded yet';
+      const recent = `Last week ${fig(c.last_week)}${tickets('last_week')} · Yesterday ${fig(c.yesterday)}${tickets('yesterday')}`;
+      return { label: m.tile, value: fig(c.to_date), status: r.words, ink: r.ink, dot: r.dot ?? r.c, sub: window, sub2: recent, spark: spark(metric, m) };
     };
     const items = leverItems(v);
     const first = items[0];
@@ -318,7 +331,7 @@ function tiles(v, today) {
       : { label: 'Needs you', value: '0', status: 'Nothing needs you', sub: 'desk will ask here when a lever needs a decision' }];
   }
   const none = !today && list.slice(0, 3).every((t) => t.value === DASH);
-  return `<section aria-label="Headline numbers" class="tiles">${list.map(tile).join('')}</section>${none ? `<p class="muted small">No ticket finished last week, so each number shows ${DASH}.</p>` : ''}`;
+  return `<section aria-label="Headline numbers" class="tiles">${list.map(tile).join('')}</section>${none ? `<p class="muted small">No ticket has merged since desk started recording, so each number shows ${DASH}.</p>` : ''}`;
 }
 
 function trends(v) {

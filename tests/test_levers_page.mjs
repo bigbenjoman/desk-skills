@@ -205,12 +205,32 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   t('AC5 How desk decides', hSix.includes('<h2 id="how-h">How desk decides</h2>') && hSix.includes('Once 30 tickets on each side'), true);
 }
 
+// The headline tiles: the figure since desk started recording, its window and ticket count, with last
+// week's and yesterday's beneath it, each with its own count.
+{
+  const tileOf = (h, label) => h.split('aria-label="Headline numbers"')[1].split('</section>')[0].split(`<h3 class="muted">${label}</h3>`)[1].split('</article>')[0];
+  const c = tileOf(hSix, 'Cost per ticket');
+  t('tiles: cost shows the figure to date', tilesOf(hSix)[0], 'Cost per ticket=$17.01');
+  t('tiles: labelled with its window and ticket count', c.includes('Since 6 Nov · 53 tickets'), true);
+  t('tiles: last week and yesterday beneath, each with its count', c.includes('Last week $16.68, 7 tickets · Yesterday $16.62, 1 ticket'), true);
+  t('tiles: no Was line', hSix.includes('>Was $'), false);
+  const over = structuredClone(six);
+  over.panels.trends.metrics.fixes.callouts.to_date = 0.2;
+  const f = tileOf(P.renderPage(over), 'Fix tries per ticket');
+  t('tiles: fix tries over the 0.16 limit turn amber', f.includes('<span class="tile-s" style="color:#B45309"><span class="dot" style="background:#D97706"></span>Over the 0.16 limit</span>'), true);
+  t('tiles: fix tries under it do not', tileOf(hSix, 'Fix tries per ticket').includes('Over the'), false);
+}
+
 const cards = hSix.split('<article class="card wbr"').slice(1).map((c) => c.split('</article>')[0]);
 const chartOf = (c, view) => c.split(`<div class="chart" data-view="${view}"`)[1].split('<div class="legend">')[0];
 
 // AC6: each metric is a WBR card.
 {
-  const want = { cost: ['Cost per Ticket', 'API-equivalent spend per accepted ticket, all repos'], tokens: ['Tokens per Ticket', 'Input tokens per accepted ticket'], prompts: ['Permission Prompts per Start', 'Times a worker was blocked asking to run a command'], fixes: ['Fix Tries per Ticket', 'Must stay under 0.16 for a lever to be kept'] };
+  const want = {
+    cost: ['Cost per Ticket', 'API-equivalent spend per merged ticket, by the day it merged, all repos'], tokens: ['Tokens per Ticket', 'Input tokens per merged ticket, by the day it merged'],
+    prompts: ['Permission Prompts per Start', 'Times a worker was blocked asking to run a command, per start, by the day its ticket merged'],
+    fixes: ['Fix Tries per Ticket', 'Per merged ticket, by the day it merged. Must stay under 0.16 for a lever to be kept'],
+  };
   for (const [i, [key, [title, sub]]] of Object.entries(want).entries()) {
     const c = cards[i];
     t(`AC6 ${key}: title`, c.includes(`<h3>${title}</h3>`), true);
