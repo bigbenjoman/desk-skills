@@ -4555,7 +4555,7 @@ runSteps({
     'pr-status': (a) => q('set', a.key, `pr_status=${JSON.stringify(a.status)}`),
     'free-previews': (a) => releasePreviews(PREVIEW_TEAM, a.done.map((d) => ({ ...d, label: E.previewLabel(GH_REPO, { pr: d.pr }) })), { env: LEASE_ENV }),
     // A PR merged by hand has no merger's record (a.merge), but its PR is still the ticket's own (a.pr).
-    merged: (a) => q('merged', a.key, ...(a.at ? [a.at] : []), ...((a.merge?.pr ?? a.pr) != null ? ['--pr', String(a.merge?.pr ?? a.pr)] : []),
+    merged: (a) => q('merged', a.key, ...(a.at ? [a.at] : []), '--pr', String(a.pr),
       ...(a.merge ? ['--by', a.merge.by, ...(a.merge.head_sha ? ['--head-sha', a.merge.head_sha] : []), ...(a.merge.base ? ['--base', a.merge.base] : [])] : [])),
     'merge-log': () => ({ events: mergeLogNow() }),
     automerge: (a) => {
