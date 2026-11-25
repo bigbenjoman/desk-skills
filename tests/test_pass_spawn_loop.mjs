@@ -1,4 +1,5 @@
 // suite: pass phase: the spawn loop's per-ticket step (skip, record-done, park, hand-away or start)
+// layer: L1
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideSpawn, whyOf } from '../desk/bin/pass/spawn-loop.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
@@ -17,10 +18,10 @@ const PICK = { login: { name: 'a' }, vars: {}, row: 'login=null', line: '' };
 const SET_UP = { wt: '/wt/A', kept: false, renamed: '', ok: true, exitOk: true, out: '[setup-worktree] worktree=/wt/A\n', retried: '' };
 // What each read answers when a case gives nothing: the ticket spawns as nothing holds it.
 const READS = {
-  'file-budget': false, 'fix-try-stale': false, shipped: null, fresh: true, placement: null, busy: null, 'lock-queue': false,
+  'file-budget': false, 'fix-try-stale': false, shipped: null, fresh: true, placement: null, 'rows-needed': null, busy: null, 'lock-queue': false,
   'claim-upload': { ok: true, up: null }, 'read-repos': [], login: PICK, setup: SET_UP,
 };
-const WRITES = ['set', 'report', 'busy-held', 'lock-queue-held', 'take-slot', 'remote-hung', 'db-down', 'skip', 'record-done', 'park', 'hand-away', 'start'];
+const WRITES = ['set', 'report', 'busy-held', 'lock-queue-held', 'take-slot', 'remote-hung', 'db-down', 'skip', 'record-done', 'park', 'park-ask', 'hand-away', 'start'];
 const handlersFor = (answers = {}, extra = {}) => Object.fromEntries([...Object.keys(READS), ...WRITES].map((type) => [type, (a) => {
   if (extra[type]) extra[type](a);
   const v = Object.hasOwn(answers, type) ? answers[type] : READS[type];
@@ -138,6 +139,15 @@ const { threw, calls } = withNoIo(() => {
     t('whether it starts fresh is read after the fix-try and shipped checks', j(order.slice(0, 5)), j(['file-budget', 'fix-try-stale', 'shipped', 'fresh', 'placement']));
   }
 
+  // #1361: a ticket starting fresh that needs a config row the config lacks is asked for it, no slot taken.
+  {
+    const { actions, verdict } = step(snap(ticket('A')), { 'rows-needed': 'NEEDS ROW — A renders' });
+    t('#1361 a fresh ticket needing a missing row parks with the question', j(verdict), j({ type: 'park-ask', key: 'A', line: 'NEEDS ROW — A renders' }));
+    t('#1361 and takes no slot', types(actions).includes('take-slot'), false);
+    const later = step(snap(ticket('A', { result: { pr: 3 } })), { fresh: false, 'rows-needed': () => { throw new Error('read'); } });
+    t('#1361 a ticket that does not start fresh is not checked for its rows', later.verdict.type, 'start');
+  }
+
   // AC7: the upload claim found the last round's upload still running.
   {
     const { actions, verdict } = step(snap(ticket('A')), { 'claim-upload': { ok: true, up: { pr: 41 } } });
@@ -166,7 +176,7 @@ const { threw, calls } = withNoIo(() => {
   {
     t('a fix try that ended with no worker is skipped', j(types(step(snap(ticket('A')), { 'fix-try-stale': true }).actions)), j(['file-budget', 'fix-try-stale', 'skip']));
     const busy = step(snap(ticket('A')), { busy: 'its worktree /wt/A is the working directory of vim' });
-    t('a worktree in use is held and recorded on the ticket', j([types(busy.actions), sets(busy.actions)]), j([['file-budget', 'fix-try-stale', 'shipped', 'fresh', 'placement', 'busy', 'busy-held', 'set', 'report', 'skip'],
+    t('a worktree in use is held and recorded on the ticket', j([types(busy.actions), sets(busy.actions)]), j([['file-budget', 'fix-try-stale', 'shipped', 'fresh', 'placement', 'rows-needed', 'busy', 'busy-held', 'set', 'report', 'skip'],
       [`worktree_busy=${j({ why: 'its worktree /wt/A is the working directory of vim', at: AT })}`]]));
     const same = step(snap(ticket('A', { worktree_busy: { why: 'x', at: 'then' } })), { busy: 'x' });
     t('one held for the same reason is not recorded again', sets(same.actions).length, 0);

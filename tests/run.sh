@@ -12,11 +12,19 @@
 #                                         name order. Without -j: `desk-env get test-cap`, else a quarter
 #                                         of the cores (at least 1).
 # Every suite's TMPDIR is a symlink to the real temporary directory, on Linux as on a Mac.
+# With the machine profile's job-tokens row on, each suite holds one job token from the machine's
+# budget of test-lock-slots x test-cap while it runs, waiting in order for one (desk/bin/job-token.mjs).
 # A suite that fails is run once more: passing then, the run passes and names it under `flaked:`;
 # failing again, the run fails and prints both runs. test_compare_pass.sh is never retried.
 # Each report gives the suite's user plus system CPU seconds, and a run that finishes appends one line
 # to ~/.desk-autopilot/test-runs.jsonl ($TEST_RUNS_LOG): its date, suites, job count, wall and CPU
-# seconds, and the one-minute load average at its start.
+# seconds, the one-minute load average at its start, its scope (full or changed) and why, the worktree
+# it ran in, the lock it ran under and the seconds it waited for it (null for each without one), and
+# how many L3 suites related.sh left for CI (null for a run it did not start).
+# related.sh gives the scope, its reason and that count (DESK_RUN_SCOPE, DESK_RUN_REASON,
+# DESK_RUN_LEFT_FOR_CI); a run it did not start is
+# full with no suite named and changed with some. with-lock.sh gives the lock (DESK_LOCK_CLASS,
+# DESK_LOCK_WAITED).
 # CI's CPU budgets: with DESK_SUITE_BUDGETS=warn, a suite whose last run took more CPU seconds than its
 # budget prints a ::warning:: naming it and the summary lists it under `over budget:`; with `enforce`
 # the same until BUDGETS_FAIL_FROM, and from that date (DESK_SUITE_BUDGETS_TODAY, YYYY-MM-DD, stands in
@@ -53,6 +61,27 @@ fi
 case "$jobs" in ''|*[!0-9]*) jobs=0 ;; *) jobs=$((10#$jobs)) ;; esac
 [ "$jobs" -ge 1 ] || { echo "-j wants how many suites run at once, a whole number from 1"; exit 2; }
 T="$(cd "$(dirname "$0")" && pwd)"
+# The run's scope and slot, for its record, read before suite_env.sh clears every DESK_* variable.
+rec_scope=${DESK_RUN_SCOPE:-}; rec_reason=${DESK_RUN_REASON:-}; rec_lock=${DESK_LOCK_CLASS:-}; rec_waited=${DESK_LOCK_WAITED:-}; rec_left=${DESK_RUN_LEFT_FOR_CI:-}
+if [ -z "$rec_scope" ]; then
+  if [ $# -gt 0 ]; then rec_scope=changed; rec_reason="suites named on the command line"
+  else rec_scope=full; rec_reason="no suite named"; fi
+fi
+case "$rec_waited" in ''|*[!0-9]*) rec_waited=null ;; esac
+case "$rec_left" in ''|*[!0-9]*) rec_left=null ;; esac
+rec_tree=$(cd "$T/.." && pwd -P)
+# Job tokens (desk/bin/job-token.mjs), with the machine profile's job-tokens row on: each suite holds
+# one from the machine's job pool, test-lock-slots x test-cap, for as long as it runs, waiting its turn
+# for one when every token is held. The helper runs with the DESK_* variables it reads saved here, as
+# suite_env.sh clears them. A run.sh that a suite starts takes none: that suite holds one already.
+jt=; jt_bin="$T/../desk/bin/job-token.mjs"; jt_env=
+if [ "${TEST_JOB_TOKENS:-}" != held ] && [ -f "$jt_bin" ] && [ "$(node "$jt_bin" lever 2>/dev/null)" = on ]; then
+  jt=on
+  for v in DESK_LEASE_DIR DESK_MACHINE DESK_CONFIG_ROOT DESK_TEST_LOCK_SLOTS DESK_LOCK_DIR; do
+    eval "jv=\${$v-}"; [ -z "$jv" ] || jt_env="$jt_env export $v=$(printf %q "$jv");"
+  done
+fi
+export TEST_JOB_TOKENS=held
 # shellcheck source=suite_env.sh
 . "$T/suite_env.sh"
 # Where the run's record goes ($TEST_RUNS_LOG, set empty for none). A run.sh a suite starts records
@@ -107,8 +136,15 @@ cpu_now() { times >"$OUT/$1.times"; { read -r _; read -r cu cs; } <"$OUT/$1.time
 # fails runs once more, its first output kept as $1.out1, so one flake costs a suite's time rather than a
 # CI rerun; test_compare_pass.sh never does, as it is there to find nondeterminism. The suite replaces
 # its subshell (exec), so with -j above 1 the pid this job waits on and passes a TERM to is the suite's
-# own. The CPU is both runs'.
-job() { s=$SECONDS; c=; runs=0; rc1=0; cpu1=0
+# own. The CPU is both runs'. With job tokens on, the job takes its suite's token first, owned by the
+# job's own process (the pid of the sh it execs, whose parent it is), and gives it back once the suite
+# has exited, before its done file; a job killed first leaves it to lapse. Without one, the suite runs.
+# The suite's seconds and CPU start once it has its token, so neither counts the wait or the helper.
+job() { c=; runs=0; rc1=0; cpu1=0; cpu0=0; tok=; me=
+  if [ -n "$jt" ]; then me=$(exec sh -c 'echo "$PPID"')
+    tok=$(eval "$jt_env"; exec node "$jt_bin" take --pid "$me" --worktree "$rec_tree" -- "${name[$1]}")
+    cpu_now "$1"; cpu0=$cpu; fi
+  s=$SECONDS
   suite() { case "${kind[$1]}" in
       hook) exec python3 "${file[$1]}" --self-test ;;
       sh) exec "$SH" "${file[$1]}" ;;
@@ -122,9 +158,10 @@ job() { s=$SECONDS; c=; runs=0; rc1=0; cpu1=0
     fi
     [ $runs -eq 1 ] && [ "${name[$1]}" != test_compare_pass.sh ] || break
     why_failed "$OUT/$1.out" "$rc"; [ -n "$why" ] || break
-    mv "$OUT/$1.out" "$OUT/$1.out1"; rc1=$rc; cpu_now "$1"; cpu1=$cpu
+    mv "$OUT/$1.out" "$OUT/$1.out1"; rc1=$rc; cpu_now "$1"; cpu1=$((cpu - cpu0))
   done
-  cpu_now "$1"
+  cpu_now "$1"; cpu=$((cpu - cpu0))
+  [ -z "$tok" ] || (eval "$jt_env"; exec node "$jt_bin" release "$tok" --pid "$me") >/dev/null
   echo "$rc $((SECONDS - s)) $cpu $runs $rc1 $((cpu - cpu1))" >"$OUT/$1.tmp" && mv "$OUT/$1.tmp" "$OUT/$1.done"; }
 # Whole and thousandths of a second for $1 milliseconds.
 secs() { printf '%d.%03d' $(($1 / 1000)) $(($1 % 1000)); }
@@ -225,8 +262,11 @@ while [ $shown -lt $n ]; do
 done
 wait; pids=""
 wall=$((SECONDS - start))
-[ -z "$runs_log" ] || ( mkdir -p "$(dirname "$runs_log")" && printf '{"date":"%s","suites":[%s],"jobs":%d,"wall_s":%d,"cpu_s":%s,"load":%s}\n' \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ran" "$jobs" "$wall" "$(secs "$cpu_all")" "$load" >>"$runs_log" ) 2>/dev/null
+# $1 as a JSON string, or null when it is empty.
+jstr() { local s=$1; [ -n "$s" ] || { printf null; return; }; s=${s//\\/\\\\}; s=${s//\"/\\\"}; printf '"%s"' "$s"; }
+[ -z "$runs_log" ] || ( mkdir -p "$(dirname "$runs_log")" && printf '{"date":"%s","suites":[%s],"jobs":%d,"wall_s":%d,"cpu_s":%s,"load":%s,"scope":%s,"reason":%s,"worktree":%s,"lock":%s,"wait_s":%s,"left_for_ci":%s}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ran" "$jobs" "$wall" "$(secs "$cpu_all")" "$load" \
+  "$(jstr "$rec_scope")" "$(jstr "$rec_reason")" "$(jstr "$rec_tree")" "$(jstr "$rec_lock")" "$rec_waited" "$rec_left" >>"$runs_log" ) 2>/dev/null
 [ -z "$durations_out" ] || printf '{"seconds":{%s},"cpu":{%s}}\n' "$dsec" "$dcpu" >"$durations_out"
 # The last lines name each suite that flaked (failed, then passed its retry), each over its CPU budget
 # (as <suite>=<CPU seconds>/<budget>) and each that failed, by file, for the CI shard that ran them to

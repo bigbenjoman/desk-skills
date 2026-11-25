@@ -1,4 +1,5 @@
 // suite: undraft (which §4 Clean review verdict values the pass can read a review against)
+// layer: L2
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
@@ -261,6 +262,14 @@ t('DS-330 AC1 and records it in the driver\'s files', `${read(`sd/reruns-701-${H
 t('DS-330 AC1 rerun.sh exits 0', ran.status, 0);
 rerunSh('yes');
 t('DS-330 AC1 a second rerun inside the cooldown is not made', read('gh.log').split('\n').filter(Boolean).length, 2);
+// #1417: an outside reviewer's gate (a §4 State check of kind external) the only red check, as while that
+// reviewer is down: the driver's rerun makes no gh call and leaves the PR's rerun count where it was.
+const ext1417 = { gate: { pending: [], failedRuns: [], failedJobs: [], failing: [{ name: '🔐 Review gate', runId: '7' }], reasons: ['"🔐 Review gate" failure'],
+  stateFailing: [{ name: '🔐 Review gate', kind: 'external', login: 'agent-pullbot', runId: '7', why: 'no review from agent-pullbot at the head' }] } };
+const ran1417 = spawnSync('bash', [fileURLToPath(new URL('../desk/bin/rerun.sh', import.meta.url)), join(tmp, 'sd'), 'o/r', '951', HEAD], {
+  input: JSON.stringify(ext1417), encoding: 'utf8', env: { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, RERUN_PERM: 'yes' } });
+t('#1417 AC2 the driver reruns no reviewer\'s gate check, and its rerun count is unchanged',
+  JSON.stringify([ran1417.status, read('gh.log').split('\n').filter(Boolean).length, read(`sd/reruns-951-${HEAD}`), /a state check: a rerun reads the same PR state, so it is not rerun/.test(ran1417.stdout)]), JSON.stringify([0, 2, '', true]));
 rmSync(tmp, { recursive: true, force: true });
 
 // DS-490: a check pending with its run completed (an orphaned job), or pending past the limit, is
@@ -465,6 +474,15 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   const badAfter = followOnIn('pr=1 follow_on=[{"step": "run x", "row": null}, {"step": "run y", "row": null, "after": "staging"}]');
   t('DS-785 AC7 an "after" that is not merge, main or production keeps nothing and names the entry',
     `${badAfter.steps.length} ${badAfter.error}`, '0 an entry\'s "after" is not one of merge, main, production: {"step":"run y","row":null,"after":"staging"}');
+  t('DS-966 AC2 a step\'s "wait_days" is kept',
+    fo('pr=1 follow_on=[{"step": "read audit.jsonl", "row": null, "wait_days": 14}]'), JSON.stringify({ steps: [{ step: 'read audit.jsonl', row: null, wait_days: 14 }], error: null }));
+  t('DS-966 a "wait_days" that is not a positive number keeps nothing',
+    followOnIn('pr=1 follow_on=[{"step": "read audit.jsonl", "row": null, "wait_days": "2w"}]').error?.startsWith('an entry\'s "wait_days" is not a positive number'), true);
+  const twins = followOnIn('pr=1 follow_on=[{"step": "read audit.jsonl", "row": null, "wait_days": 7}, {"step": "read audit.jsonl", "row": null, "wait_days": 28}]');
+  t('DS-966 two steps alike but for their wait keep nothing, as one would settle the other',
+    `${twins.steps.length} ${twins.error}`, '0 two entries have the same "step" and "after": "read audit.jsonl"');
+  t('DS-966 the same text under two gates is two steps',
+    followOnIn('pr=1 follow_on=[{"step": "read audit.jsonl", "row": null}, {"step": "read audit.jsonl", "row": null, "after": "main"}]').steps.length, 2);
   const step = [{ step: 'run x', row: null }];
   t('DS-509 AC5 a merged ticket with steps not yet run waits on the person', followOnPending({ merged_at: '2026-11-08T10:00:00Z', follow_on: step }), true);
   t('DS-509 AC5 one not merged, one said run, and one with no steps do not',
@@ -599,6 +617,8 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('DS-549 AC1 an unreadable PR is refused', dc(['fix/a', '935'], { view: null }).refused, 'PR #935 could not be read');
   t('DS-549 AC2 dispatch not yes is refused', /worker-workflow-dispatch/.test(dc(['fix/a', '935'], { allowed: false }).refused ?? ''), true);
   t('DS-549 AC3 no evidence workflow is refused', /names no usable workflow/.test(dc(['fix/a', '935'], { workflow: null }).refused ?? ''), true);
+  t('DS-550 AC2 a preview-database PR held for its error-page check is refused, saying why', dc(['fix/a', '935'], { hold: 'held: run the check' }).refused, 'held: run the check');
+  t('DS-550 AC1 and once its check passed it is dispatched (negative control)', dc(['fix/a', '935'], { hold: null }).args?.join(' '), 'workflow run pr-evidence.yml --repo o/r --ref main -f pr=935');
   t('EV run id from gh workflow run', runIdFrom('https://github.com/o/r/actions/runs/41191877067\n'), '41191877067');
   const evDir = scratch('desk-evidence-');
   t('EV nothing recorded at a head reads as none', evidenceRecord(evDir, 740, HEAD, () => null), null);

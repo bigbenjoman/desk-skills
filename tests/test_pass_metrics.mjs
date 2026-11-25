@@ -1,4 +1,5 @@
 // suite: pass metrics (one line per pass, the collision warning over a series of lines)
+// layer: L1
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { heldCounts, collisionStep, warningText, appendMetrics, readWarnings, metricsPath, STREAK_PASSES, parseSetupSteps, setupMedians, setupMediansText, repoStates } from '../desk/bin/pass-metrics.mjs';

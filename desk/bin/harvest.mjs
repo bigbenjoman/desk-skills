@@ -2,7 +2,7 @@
 // Read a worker's stream-json log and print what the orchestrator needs: the
 // AUTOPILOT_* markers and the final result. Never print the whole log — that is
 // how the orchestrator's context stops being O(1).
-import { readFileSync, realpathSync, readdirSync, mkdirSync, openSync, closeSync, writeFileSync, constants } from 'node:fs';
+import { readFileSync, realpathSync, readdirSync, mkdirSync, openSync, closeSync, readSync, statSync, writeFileSync, constants } from 'node:fs';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
@@ -111,6 +111,56 @@ export function lastStage(logText) {
   return last;
 }
 
+// How much of a worker log's end is read for its stage: a log runs to several MB, and a marker
+// further back than this is one the last pass has already put on the queue.
+export const STAGE_TAIL = 256 * 1024;
+const logStages = new Map();
+
+// A file's last `bytes` as text, read at `size` (its length now unless given). Throws with no file.
+export function tailText(path, bytes, size = statSync(path).size) {
+  const n = Math.min(bytes, size), buf = Buffer.alloc(n);
+  let fd;
+  try { fd = openSync(path, 'r'); readSync(fd, buf, 0, n, size - n); } finally { if (fd != null) closeSync(fd); }
+  return buf.toString('utf8');
+}
+
+// Whether the worker said it finished, read as lastStage reads stages: an AUTOPILOT_DONE marker.
+function saidDone(logText) {
+  for (const line of logText.split('\n')) {
+    if (!line.includes('AUTOPILOT_DONE')) continue;
+    let d;
+    try { d = JSON.parse(line); } catch { continue; }
+    if (markersIn(saidBy(d)).some(([k]) => k === 'AUTOPILOT_DONE')) return true;
+  }
+  return false;
+}
+// A last stage that is the final one and says it is done: "9/9 done".
+const finalStageDone = (s) => /^(\d+)\/\1\s+done\b/i.test(s?.label ?? '');
+
+// A worker log's last stage marker (lastStage) since its last spawn (the desk_spawn line written
+// before each spawn or resume), with `done: true` once the worker said it finished (saidDone, or a
+// final stage marked done), from its last STAGE_TAIL bytes only, or null with no log and neither
+// there: an earlier round's stage is not where this worker is. Kept until the log grows, so a
+// refresh rereads nothing. desk-q's status table and queue.mjs get both read a worker's stage here.
+export function logStage(path) {
+  let st;
+  try { st = statSync(path); } catch { return null; }
+  const hit = logStages.get(path);
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.s;
+  let text;
+  try { text = tailText(path, STAGE_TAIL, st.size); } catch { return null; }
+  // A read that starts mid-file starts mid-line: that line is not whole, so it is dropped.
+  if (st.size > STAGE_TAIL) text = text.slice(text.indexOf('\n') + 1);
+  const spawned = text.lastIndexOf('{"type":"desk_spawn"');
+  const round = spawned < 0 ? text : text.slice(spawned);
+  const last = lastStage(round);
+  const done = saidDone(round) || finalStageDone(last);
+  const s = done ? { stage: null, label: null, at: null, ...last, done } : last;
+  if (logStages.size > 256) logStages.clear();
+  logStages.set(path, { size: st.size, mtimeMs: st.mtimeMs, s });
+  return s;
+}
+
 // A session that ended on its own closes its last turn with a result event; one that was killed (a
 // reboot, a crash, a kill) stops mid-turn. Bookkeeping the CLI writes after a result (a
 // command_lifecycle event, say) is not a turn, so only turn events after the last result count.
@@ -152,6 +202,11 @@ const BUDGET_SUBTYPE = 'error_max_budget_usd';
 // Whether the log's last launch ended at its per-worker budget: its own result event says so. With the
 // budget (desk-env.mjs workerBudget) off, no ceiling was passed, so that subtype is any other error.
 export const budgetStop = (logText, budget) => !budget?.off && lastResult(logText, { launch: true })?.subtype === BUDGET_SUBTYPE;
+// The subtype of the error that ended the log's last launch, or null where it ended without one or was killed.
+export const errorSubtype = (logText) => {
+  const r = lastResult(logText, { launch: true });
+  return r?.is_error && typeof r.subtype === 'string' && r.subtype ? r.subtype : null;
+};
 
 export const endedNormally = (logText) => lastResult(logText) != null;
 
@@ -186,7 +241,8 @@ export function prBodyIn(texts) {
 }
 
 // The steps a DONE marker names as waiting on its PR's merge: `follow_on=` then a one-line JSON array of
-// {"step": "<one line>", "row": "<the §3 key it needs>", "after": "<gate>"} (row null where none says),
+// {"step": "<one line>", "row": "<the §3 key it needs>", "after": "<gate>", "wait_days": <n>} (row null
+// where none says; wait_days, the days after the merge it falls due, only where it waits),
 // before any said=, which runs to the line's end. -> { steps, error }: steps [] with no follow_on=, and
 // with an error naming why where one is there but does not read.
 export const FOLLOW_ON_MAX = 500;
@@ -210,7 +266,14 @@ export function followOnIn(done) {
   if (bad !== undefined) return { steps: [], error: `an entry is not {"step": "…", "row": "…"}: ${JSON.stringify(bad)}` };
   const badGate = list.find((x) => x.after != null && !FOLLOW_GATES.includes(x.after));
   if (badGate !== undefined) return { steps: [], error: `an entry's "after" is not one of ${FOLLOW_GATES.join(', ')}: ${JSON.stringify(badGate)}` };
-  return { steps: list.map((x) => ({ step: x.step.trim().slice(0, FOLLOW_ON_MAX), row: x.row?.trim() || null, ...gateOf(x.after) })), error: null };
+  const badWait = list.find((x) => x.wait_days != null && !(typeof x.wait_days === 'number' && x.wait_days > 0 && Number.isFinite(x.wait_days)));
+  if (badWait !== undefined) return { steps: [], error: `an entry's "wait_days" is not a positive number: ${JSON.stringify(badWait)}` };
+  const steps = list.map((x) => ({ step: x.step.trim().slice(0, FOLLOW_ON_MAX), row: x.row?.trim() || null, ...gateOf(x.after),
+    ...(x.wait_days != null ? { wait_days: x.wait_days } : {}) }));
+  // A step is known by its text and gate (sameStep), so two alike would be settled and checked as one.
+  const twin = steps.find((x, i) => steps.findIndex((y) => sameStep(x, y)) !== i);
+  if (twin !== undefined) return { steps: [], error: `two entries have the same "step" and "after": ${JSON.stringify(twin.step)}` };
+  return { steps, error: null };
 }
 // A queue entry whose follow-on steps wait on the person: its PR merged, steps kept, none said run yet.
 // Two follow-on steps are the same step by their text and gate (`after`, none for the merge).
@@ -230,8 +293,10 @@ export const followOnPending = (t) => !!t?.merged_at && !t.follow_on_done && Arr
 export const postMergeOwed = (t, n = t?.result?.pr) => (t?.pr_status?.post_merge ?? []).length > 0 && String(t.post_merge_read ?? '') !== String(n);
 // A merged ticket the pass still owes those steps: its batch is not finished, nor is it archived or
 // dropped by a new batch, until the pass has added them. Only a done ticket's PR is read (pass.mjs), so
-// a requeued one owes nothing until it is done again.
-export const postMergeUnmade = (t) => t?.state === 'done' && !!t.merged_at && t.result?.pr != null && Number(t.pr_status?.pr) === Number(t.result.pr) && postMergeOwed(t);
+// a requeued one owes nothing until it is done again. One the merge driver recorded shipped on a PR
+// (shipped_pr) that no pass has read yet may owe them: they are on that PR's review.
+export const postMergeUnmade = (t) => t?.state === 'done' && !!t.merged_at && t.result?.pr != null
+  && (Number(t.pr_status?.pr) === Number(t.result.pr) ? postMergeOwed(t) : Number(t.shipped_pr) === Number(t.result.pr));
 
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }

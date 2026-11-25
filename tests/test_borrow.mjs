@@ -1,4 +1,5 @@
 // suite: borrow (a batch borrows worker slots other live batches are not using)
+// layer: L3
 // borrow.mjs against fixture queues, heartbeats and repo configs in a throwaway HOME, DESK_HOME and
 // DESK_CONFIG_ROOT, with a fixture machine profile and the available memory injected; then the real
 // pass.mjs, with stub claude, gh, setup-worktree and spawn-worker, for the report, the spawn and two
@@ -423,6 +424,17 @@ W = passWorld(10);
 out = await passRepo(W, 'acme__a', { conc: '2 / 4', running: 0, ready: 3, borrow: null, batch: null, machine: false, floor: 46100 })();
 t('DS-308 pass AC6: a lone standing batch starts its own number of 2', runningIn('acme__a'), 2);
 t('DS-308 pass AC6: and prints no repo workers line', /repo workers/.test(out), false);
+
+// #1359: a beat names the Claude Code session whose pass wrote it, and none outside one.
+{
+  const dir = join(T, 'beat-1359'), qp = join(dir, 'queue.json');
+  process.env.CLAUDE_CODE_SESSION_ID = 'sess-1359';
+  B.writeBeat(dir, qp, { batch: 's1' });
+  t('#1359 a beat written in a session names it', B.lastBeat(dir, qp)?.session, 'sess-1359');
+  delete process.env.CLAUDE_CODE_SESSION_ID;
+  B.writeBeat(dir, qp, { batch: 's1', now: Date.now() + 1000 });
+  t('#1359 one written outside a session names none', B.lastBeat(dir, qp)?.session, null);
+}
 
 console.log(fails ? `${fails} FAILED` : 'all borrow checks passed');
 process.exit(fails ? 1 : 0);

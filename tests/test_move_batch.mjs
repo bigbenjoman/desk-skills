@@ -1,6 +1,7 @@
 // suite: move-batch (a standing batch on a base moves to its epic's own batch slot)
+// layer: L2
 // move-batch.mjs against fixture queues and state folders in a throwaway HOME and DESK_HOME.
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, chmodSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -197,13 +198,25 @@ const staying = {
   'audit-queue.json.lock/pid': '1\n',
   'lever-evals.jsonl': '{"v":1}\n',
   'levers-evidence/e1.jsonl': '{"v":1}\n',
+  // The repo's record of finished cloud sessions archived, and a write of it in progress.
+  'cloud-archived.json': '{"sessions":["session_a"]}',
+  'cloud-archived.json.tmp.4242': '{"sessions":["session_a","session_b"]}',
+  // The repo's time stuck by cause (stuck-time.mjs).
+  'stuck-intervals.jsonl': '{"key":"K-1","batch":null,"cause":"usage","start":"then","end":null}\n',
+  'stuck-passes.json': '{}',
+  'stuck-links.json': '{}',
   'ref/acme__web/f.txt': 'a read-only clone is the repo\'s, not a batch\'s\n',
   'batches/OTHER/parks/O-1.json': '{"question":"other batch"}',
 };
 for (const [f, text] of Object.entries({ ...moving, ...staying })) put(join(standingS, f), text);
+// The standing slot's batch identity (stuck-time.mjs) is the moved batch's: it is retired, not moved.
+put(join(standingS, 'stuck-batch.json'), '{"name":null,"created":"2026-11-20T00:00:00.000Z"}');
 // A merge driver holding its lock: a process that outlives this check, reparented so it is reaped.
 const sleeper = Number(spawnSync('bash', ['-c', 'sleep 60 >/dev/null 2>&1 & echo $!'], { encoding: 'utf8' }).stdout.trim());
 put(join(standingS, 'merge-driver.lock.d', 'pid'), `${sleeper}\n`);
+// The repo's one driver, whose lock lives in this folder while it merges the repo's other batches.
+const repoSleeper = Number(spawnSync('bash', ['-c', 'sleep 60 >/dev/null 2>&1 & echo $!'], { encoding: 'utf8' }).stdout.trim());
+put(join(standingS, 'merge-driver', 'repo.lock.d', 'pid'), `${repoSleeper}\n`);
 // The supervisor had read the batch as idle, with that driver running.
 put(join(standingS, 'supervisor.json'), JSON.stringify({ idle: 'abc123', notified: ['x'], driver: { pid: sleeper, started: 'then', failures: 1 },
   decider: { pid: dead, out: join(standingS, 'decider', 'd.json') } }));
@@ -226,12 +239,16 @@ t('AC1 its tickets and parks are unchanged', JSON.stringify(moved.tickets), JSON
 for (const [f, text] of Object.entries(moving)) t(`AC1 state ${f} moved, unchanged`, existsSync(join(namedS('E-1'), f)) && read(join(namedS('E-1'), f)), text);
 for (const f of Object.keys(moving)) t(`AC1 state ${f} is gone from the standing slot`, existsSync(join(standingS, f)), false);
 for (const [f, text] of Object.entries(staying)) t(`AC1 ${f} stays with the standing slot`, existsSync(join(standingS, f)) && read(join(standingS, f)), text);
+t('the standing slot\'s batch identity is retired: neither kept there nor moved, and no retired copy is left', [existsSync(join(standingS, 'stuck-batch.json')), existsSync(join(namedS('E-1'), 'stuck-batch.json')), existsSync(join(standingS, 'stuck-batch.retired.json')), existsSync(join(namedS('E-1'), 'stuck-batch.retired.json'))].join(), 'false,false,false,false');
 t('AC1 the standing slot has no queue', existsSync(standingQ), false);
 t('AC1 no lock is left behind', ['orchestrator.lock', 'supervisor.lock'].some((f) => existsSync(join(standingS, f))) || existsSync(`${standingQ}.lock`), false);
 let driverAlive = true;
 try { process.kill(sleeper, 0); } catch { driverAlive = false; }
 t('AC1 the merge driver was stopped, for the supervisor to start again in E-1', driverAlive, false);
 t('AC1 and the output says so', r.out.includes(`its merge driver (pid ${sleeper}) was stopped`), true);
+let repoAlive = true;
+try { process.kill(repoSleeper, 0); } catch { repoAlive = false; }
+t('DS-972: the repo\'s one driver, whose lock is in the moving folder, was stopped too', repoAlive, false);
 const sup = JSON.parse(read(join(namedS('E-1'), 'supervisor.json')));
 t('AC2 the supervisor no longer reads the moved batch as idle, so its next tick runs a pass', sup.idle, null);
 t('AC2 the stopped driver counts no failed start', `${sup.driver.pid}/${sup.driver.failures}`, 'null/1');
@@ -289,6 +306,27 @@ t('several epics: the repo lists the standing slot and the branch-named batch', 
 // The slot name keeps only what a batch name may hold.
 const slots = spawnSync('node', ['--input-type=module', '-e', `import { slotFor } from '${join(BIN, 'batches.mjs')}'; console.log(JSON.stringify(['feat/a b..c/', '-x/y', 'ok'].map((base) => slotFor({ base }).name)), slotFor({ base: 'feat/x', epic: 'E-2' }).name)`], { encoding: 'utf8', env: base });
 t('slotFor: a branch name made a batch name, an epic used as it is', slots.stdout.trim(), '["feat-a-b.c","x-y","ok"] E-2');
+
+// A move refused part-way (a parks folder that cannot be moved: renaming a folder to a new parent needs
+// write permission on the folder itself) puts the standing slot's batch identity back.
+reset();
+put(standingQ, queue({ epic: 'E-9', supervised: true, base: 'feat/epics' }));
+put(join(standingS, 'parks', 'K-2.json'), '{"question":"which colour?"}');
+put(join(standingS, 'stuck-batch.json'), '{"name":null,"created":"2026-11-20T00:00:00.000Z"}');
+chmodSync(join(standingS, 'parks'), 0o555);
+r = move();
+chmodSync(join(standingS, 'parks'), 0o755);
+t('a move refused part-way: refused', r.code !== 0 && r.out.includes('could not move the batch'), true);
+t('a move refused part-way: the standing identity is put back, and no retired copy is left', [read(join(standingS, 'stuck-batch.json')), existsSync(join(standingS, 'stuck-batch.retired.json'))].join(), '{"name":null,"created":"2026-11-20T00:00:00.000Z"},false');
+
+// An identity that cannot be retired (its retired name taken by a folder) refuses the move: it never
+// reports a move while the standing slot still reads as the moved batch.
+reset();
+put(standingQ, queue({ epic: 'E-9', supervised: true, base: 'feat/epics' }));
+put(join(standingS, 'stuck-batch.json'), '{"name":null,"created":"2026-11-20T00:00:00.000Z"}');
+put(join(standingS, 'stuck-batch.retired.json', 'x'), 'a folder in the way');
+r = move();
+t('an identity that cannot be retired: the move is refused, and the batch stays', [r.code !== 0 && r.out.includes('could not move the batch'), existsSync(standingQ), existsSync(namedQ('E-9'))].join(), 'true,true,false');
 
 if (fails) { console.log(`\n${fails} failure(s)`); process.exit(1); }
 console.log('\nall passed');

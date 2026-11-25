@@ -8,7 +8,8 @@ a "below" here that this file does not hold points there.
 |---|---|---|
 | 0 | Triage | Read the ticket fully: description, comments, linked issues, the design link if one is set, and, for context only, its parent epic or story (this ticket's own criteria are its scope). Note the issue type. Rename the session (below). Assign to the user if unassigned (Jira only). Pick a **provisional** lane and state it with its cost, **plus which skills own which stage** (below). Write the resume file. **Do not transition the ticket yet.** |
 
-**Where the ticket's Design section links a Claude Design artifact**, read
+**Where the ticket links a claude.ai artifact** (a Claude Design one in its Design section, or a spec
+or notes page anywhere else), read
 `design-canvas.md` (beside this file) now: it holds this stage's check and Stage 1's save.
 
 ### What the ticket can be, and the ticket file
@@ -54,6 +55,27 @@ silently skipped:
   in the form §5 PR body uses, and adds a closing keyword only if that convention does.
 - **"The ticket is done"** means the PR merged (and, for an issue, that it is closed).
 
+### Claim plan-first work parked in a batch
+
+**An interactive session taking on a ticket an autopilot batch parked claims it (Stage 0)**, whatever
+its lane, so the batch shows it as this session's work rather than on the person's needs-you list,
+and recommends no resume while this session is alive. Read it with
+`node ~/.claude/desk/bin/queue.mjs get <TICKET>` (run in the repo; it finds the batch holding the
+key, and refuses one in no queue, which has nothing to claim). Where it is `"state": "parked"`,
+claim it:
+
+```bash
+node ~/.claude/desk/bin/queue.mjs park <TICKET> --claimed-by "$CLAUDE_CODE_SESSION_ID"
+```
+
+The park keeps its question, so no worker takes it. Once this session's transcript has been still
+past §3b "Release idle claims after (hours)" (`desk-env get claim-release`), a pass ends the claim:
+plan-first work (lane C parked at triage) waits for a session again, and reaches needs-you once
+unclaimed past §3b "Plan-first wait before needs-you (hours)" (`desk-env get plan-first-wait`); any
+other lane C or D park needs the person again; a lane A or B one with a clean worktree goes back to
+the workers. A held ticket or a spine cannot be claimed. An autopilot worker never claims: its
+ticket is running, not parked.
+
 ### Skill routing
 
 **Skill routing goes in the plan, not a closing checklist (Stage 0).** State a short table of which
@@ -65,14 +87,16 @@ are **not** using, with the reason. A plan that buries the routing reads as impr
 
 ## Session rename (Stage 0)
 
-Sessions want naming for the ticket so parallel ones are tellable apart:
+Sessions are named for their role, so parallel ones are tellable apart and a peer session can
+reach them by name: a ticket session is `<repo>-ticket-<TICKET>`, `<repo>` being the name part of
+§0 GitHub repo (`widgets` for `acme/widgets` below): substitute this repo's before printing it.
 
 ```
-<TICKET>-<type>        ABC-448-bug   ABC-473-task   ABC-440-story   issue-81-bug   fix-login-redirect-bug
+widgets-ticket-ABC-448   widgets-ticket-issue-81   widgets-ticket-fix-login-redirect
 ```
 
-`<type>` is the literal Jira issue type, lowercased (`bug`, `task`, `story`), or with no tracker
-the type Stage 0 settled (`bug`, `feature`, `chore`).
+The name stays the ticket's for its whole life: a handoff records it, and `/desk-resume` gives it
+back after `/clear`. An autopilot worker is named this way at spawn and skips this section.
 
 **You cannot do this yourself.** `/rename` is a built-in command and only the user can type it.
 Writing the `name` field in `~/.claude/sessions/<pid>.json` does change the stored value, but the
@@ -81,9 +105,7 @@ it looks like nothing happened.
 
 So at Stage 0, ask for it in one line and move on. Don't wait for it, and don't edit the file:
 
-> Worth renaming this session: `/rename ABC-612-bug`
-
-If the ticket type isn't obvious yet, say the name once you know it rather than guessing.
+> Worth renaming this session: `/rename widgets-ticket-ABC-612`
 
 ## Red flags at this stage — stop
 

@@ -6,11 +6,12 @@
 // desk-env's LEVERS: the registry declares an entry for each of them and no other.
 //
 //   import { REGISTRY, trialable, preconditions, repoValues, REASON_CODES, reasonWording,
-//            leverFingerprints } from './lever-registry.mjs'
+//            leverFingerprints, isValued } from './lever-registry.mjs'
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { workerLocation, LEVERS, parseLevers, HOME, deskHome } from './desk-env.mjs';
+import { workerLocation, workerModels, parseWorkerModels, parseWorkerLocation, repoConfigValue, LEVERS, FINDER_MODEL_LEVER, parseLevers, HOME, deskHome } from './desk-env.mjs';
+import { ALIAS, ROWS } from './config-schema.mjs';
 
 export const LAYERS = Object.freeze(['low-risk', 'quality-risk']);
 // The evaluation states in which a lever has been kept.
@@ -37,6 +38,7 @@ export const GUARDRAILS = Object.freeze({
   'ci-reds': Object.freeze({ metric: 'CI reds on the branch per ticket', margin: Object.freeze({ max_rate_ratio: 1.25 }) }),
   'review-p0-p1': Object.freeze({ metric: 'review P0 and P1 findings per ticket', margin: Object.freeze({ max_rate_ratio: 1.25 }) }),
   'post-merge': Object.freeze({ metric: 'post-merge reverts or red main within 24 hours per ticket', margin: Object.freeze({ max_rate_ratio: 1.25 }) }),
+  'parked-hours': Object.freeze({ metric: 'parked hours per ticket', margin: Object.freeze({ max_rate_ratio: 1.25 }) }),
 });
 
 // How much of a repo's tickets a lever reaches. The low-risk layer is a factorial, each lever drawn on
@@ -65,6 +67,10 @@ const metric = (name, minimum) => Object.freeze({ metric: name, direction: 'down
 
 // `minimum` is the relative decrease an adopt needs (0.3 is down 30%); null is not yet set, and no
 // lever with an unset minimum can be adopted. `trialled: false` is declared but not yet put on trial.
+// A lever with more than an on and an off arm declares `values`, two or more arm names, and which of
+// them is its `baseline`, the arm a ticket runs on outside a trial. Only a low-risk lever may: each
+// ticket is drawn one of its values in blocks, and every other value is weighed against the baseline
+// (levers-auto.mjs, levers-evaluate.mjs). A lever with no `values` is on or off.
 export const ENTRIES = Object.freeze({
   preflight: {
     layer: 'low-risk', trialled: true,
@@ -115,6 +121,15 @@ export const ENTRIES = Object.freeze({
     code: [code('desk/bin/desk-env.mjs', 'effort')],
     preconditions: [Object.freeze({ id: 'worker-location', want: 'local', why: 'effort is set on the local claude launch; a cloud worker never takes it' })],
   },
+  // desk-review's Claude finder seats on `model` (the on arm) against the finders' model today. Bea, the
+  // refuters, codex and the audit keep theirs.
+  'finder-model': {
+    layer: 'quality-risk', trialled: true, model: FINDER_MODEL_LEVER,
+    mechanism: metric('dollars per start', null),
+    trips: [POST_MERGE_REVERT, ownStepError('desk-env model finder'), AUDIT_P0],
+    code: [code('desk/bin/desk-env.mjs', 'model finder')],
+    preconditions: [Object.freeze({ id: 'worker-finder-model', not: FINDER_MODEL_LEVER, why: `§3b Worker models already runs its finders on ${FINDER_MODEL_LEVER}, so both arms would be the same` })],
+  },
   // The ticket ledger only records queue writes beside queue.json, which stays the truth, so it is not
   // trialled: it is pinned on where a repo wants the log.
   ledger: {
@@ -143,6 +158,7 @@ export const REASON_CODES = Object.freeze({
   guardrail_ci_reds: 'CI reds per ticket rose past their margin',
   guardrail_review_p0_p1: 'review P0 and P1 findings per ticket rose past their margin',
   guardrail_post_merge: 'post-merge reverts or red main rose past their margin',
+  guardrail_parked_hours: 'parked hours per ticket rose past their margin',
   ben_override: 'Ben set it by hand',
   freeze: 'trials were frozen',
   thaw: 'trials were thawed',
@@ -165,6 +181,7 @@ export const REASON_CODES = Object.freeze({
   ramp_clean: 'its tickets so far ran with no hard trip, so it reaches more tickets',
   audit_missing: 'no blind audit has been recorded in this repo yet',
   audits_pending: 'blind audits are due and not yet recorded',
+  value_missing: 'a lever with more than two arms is kept or set by hand with no value of its own recorded, so its tickets cannot be assigned arms',
 });
 
 // The wording for a reason code, or null for a code not in the list.
@@ -176,6 +193,23 @@ export const reasonWording = (code) => (Object.hasOwn(REASON_CODES, code) ? REAS
 export const unassignableText = (repo, why) => `${repo} cannot be assigned trial arms: ${why}; tickets get the levers row's named levers alone until it is fixed`;
 
 export class LeverRegistryError extends Error {}
+
+// A valued lever's arm name: one word, as DESK_LEVER_VALUES carries it, and none of the names the
+// on/off arms and the holdback use.
+const VALUE = /^[a-z0-9][a-z0-9._-]*$/;
+const RESERVED_ARMS = Object.freeze(['on', 'off', 'adopted', 'holdback']);
+// A valued lever's `values` and `baseline`, checked: {} for a lever with neither.
+function valuesOf(name, e) {
+  if (!('values' in e) && !('baseline' in e)) return {};
+  const bad = (why) => new LeverRegistryError(`lever-registry: lever "${name}" ${why}`);
+  const v = e.values;
+  if (!Array.isArray(v) || v.length < 2 || new Set(v).size !== v.length) throw bad('has "values" that are not two or more distinct arm names');
+  const wrong = v.find((x) => typeof x !== 'string' || !VALUE.test(x) || RESERVED_ARMS.includes(x));
+  if (wrong !== undefined) throw bad(`has value "${wrong}"; want a lower-case word other than ${RESERVED_ARMS.join(', ')}`);
+  if (!v.includes(e.baseline)) throw bad(`has baseline "${e.baseline}"; want one of its values (${v.join(', ')})`);
+  if (e.layer !== 'low-risk') throw bad('declares "values" on the quality-risk layer; only a low-risk lever may have more than two arms');
+  return { values: Object.freeze([...v]), baseline: e.baseline };
+}
 
 // Every entry, checked and frozen, with its layer's ramp and the shared guardrails filled in. Throws
 // LeverRegistryError naming the first lever and key that is missing or malformed, and naming every
@@ -197,8 +231,9 @@ export function loadRegistry(entries = ENTRIES, names = LEVERS) {
     if (!Array.isArray(e.code) || !e.code.length || e.code.some((c) => !c?.path)) throw missing('code');
     for (const key of ['trips', 'preconditions']) if (!Array.isArray(e[key])) throw missing(key);
     if (typeof e.trialled !== 'boolean') throw missing('trialled');
+    if ('model' in e && !ALIAS.test(e.model ?? '')) throw new LeverRegistryError(`lever-registry: lever "${name}" has model "${e.model}"; want an Agent tool alias`);
     out[name] = Object.freeze({
-      name, layer: e.layer, trialled: e.trialled, mechanism: Object.freeze({ ...e.mechanism }),
+      name, layer: e.layer, trialled: e.trialled, ...('model' in e ? { model: e.model } : {}), ...valuesOf(name, e), mechanism: Object.freeze({ ...e.mechanism }),
       guardrails: GUARDRAILS, trips: Object.freeze([...e.trips]), code: Object.freeze([...e.code]),
       ramp: RAMPS[e.layer], preconditions: Object.freeze([...e.preconditions]),
     });
@@ -208,6 +243,8 @@ export function loadRegistry(entries = ENTRIES, names = LEVERS) {
 
 export const REGISTRY = loadRegistry();
 export const lever = (name, registry = REGISTRY) => registry[name] ?? null;
+// Whether a registry lever has more than two arms, each a value.
+export const isValued = (l) => Array.isArray(l?.values);
 
 // Which levers in a repo's levers row (its items, read as desk-env's parseLevers reads them) may be
 // trialled: the ones the registry declares. Every other name is refused, and `message` names each
@@ -222,8 +259,17 @@ export function trialable(items, registry = REGISTRY) {
   return { ok, refused, message };
 }
 
-// The config values the preconditions read, from this repo's config.
-export const repoValues = () => ({ 'worker-location': workerLocation() });
+// The config values the preconditions read, from this repo's config; `repoValuesOf` reads another
+// repo's (the levers view). `worker-finder-model` is §3b Worker models' `finder=`, `none` when unset,
+// and null when the row cannot be read (a malformed row holds spawns on its own).
+const finderOf = (read) => { try { return read().finder ?? 'none'; } catch { return null; } };
+export const repoValues = () => ({ 'worker-location': workerLocation(), 'worker-finder-model': finderOf(workerModels) });
+export function repoValuesOf(slug, root) {
+  const raw = (id) => repoConfigValue(slug, id, root) ?? ROWS.find((e) => e.id === id).default;
+  let location = null;
+  try { location = parseWorkerLocation(raw('worker-location')); } catch { /* unreadable: left null */ }
+  return { 'worker-location': location, 'worker-finder-model': finderOf(() => parseWorkerModels(raw('worker-models'))) };
+}
 
 // Where install.sh puts a registry code path: `desk/<rest>` under DESK_HOME, anything else (`hooks/…`)
 // under ~/.claude.
@@ -252,12 +298,14 @@ export function leverFingerprints(registry = REGISTRY, resolve = installedPath) 
 }
 
 // Whether a lever is eligible in a repo, given its config values (repoValues() for this one). A lever
-// the registry does not declare is never eligible.
-//   -> { eligible, reasons: [text] }
+// the registry does not declare is never eligible. A precondition holds where the value is its `want`,
+// or, for one declaring `not` instead, where the value is anything but `not`.
+//   -> { eligible, reasons: [text], failed: [precondition] }
 export function preconditions(name, values = repoValues(), registry = REGISTRY) {
   const l = registry[name];
-  if (!l) return { eligible: false, reasons: [`"${name}" is not declared in the lever registry`] };
-  const reasons = l.preconditions.filter((p) => values?.[p.id] !== p.want)
-    .map((p) => `${name} is ineligible: config "${p.id}" is ${values?.[p.id] ?? 'unset'}, want ${p.want} (${p.why})`);
-  return { eligible: reasons.length === 0, reasons };
+  if (!l) return { eligible: false, reasons: [`"${name}" is not declared in the lever registry`], failed: [] };
+  const failed = l.preconditions.filter((p) => ('not' in p ? values?.[p.id] === p.not : values?.[p.id] !== p.want));
+  const reasons = failed.map((p) => ('not' in p ? `${name} is ineligible: config "${p.id}" is already ${p.not} (${p.why})`
+    : `${name} is ineligible: config "${p.id}" is ${values?.[p.id] ?? 'unset'}, want ${p.want} (${p.why})`));
+  return { eligible: reasons.length === 0, reasons, failed };
 }

@@ -1,4 +1,5 @@
 // suite: worker models (the tier decision and the §3b row)
+// layer: L2
 // Config §3b "Worker models" and the per-ticket tier pass.mjs takes from a triage record. The spawn
 // arguments, the preflight and the requeue bump run end to end in test_batch_e2e.sh.
 import { spawnSync } from 'node:child_process';
@@ -66,17 +67,30 @@ t('AC5 an unknown key after the tiers is named too', /unknown key `finders`/.tes
 
 // `desk-env model finder|text` prints the model, or `none` with exit 0 when the row names none.
 const T = scratch('worker-models-');
-const cli = (row, which) => {
+const cli = (row, which, extra = {}) => {
   const cfg = join(T, 'config.md');
   writeFileSync(cfg, `## 3b. Caps\n| Field | Value |\n|---|---|\n| Worker models | \`${row}\` |\n`);
-  const r = spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-env.mjs'), 'model', which],
-    { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: cfg, DESK_MACHINE: join(T, 'none.md'), HOME: T } });
+  const env = { ...process.env, DESK_CONFIG: cfg, DESK_MACHINE: join(T, 'none.md'), HOME: T, ...extra };
+  delete env.DESK_LEVERS;
+  if (extra.DESK_LEVERS != null) env.DESK_LEVERS = extra.DESK_LEVERS;
+  const r = spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-env.mjs'), 'model', ...which.split(' ')],
+    { encoding: 'utf8', env });
   return `${r.status} ${r.stdout.trim()}`;
 };
 t('DS-398 AC6 finder unset: prints none, exits 0', cli('standard=sonnet high=opus', 'finder'), '0 none');
 t('DS-398 AC6 text unset under default: prints none, exits 0', cli('default', 'text'), '0 none');
 t('DS-398 AC6 finder set: prints it', cli('default finder=haiku', 'finder'), '0 haiku');
 t('DS-398 a malformed row still exits 4', cli('opus', 'finder').split(' ')[0], '4');
+// DS-1000: a ticket's pin with the finder-model lever on prints the lever's alias; off, what the row says.
+t('DS-1000 AC2 lever on, finder unset: prints the on-arm alias', cli('default', 'finder', { DESK_LEVERS: 'finder-model' }), '0 sonnet');
+t('DS-1000 AC2 lever on beside others, finder=haiku: the on-arm alias wins', cli('default finder=haiku', 'finder', { DESK_LEVERS: 'memory finder-model' }), '0 sonnet');
+t('DS-1000 AC3 lever off, finder unset: none', cli('default', 'finder', { DESK_LEVERS: 'memory' }), '0 none');
+t('DS-1000 AC3 lever off, finder=haiku: haiku', cli('default finder=haiku', 'finder', { DESK_LEVERS: 'none' }), '0 haiku');
+t('DS-1000 the lever does not move the text model', cli('default text=haiku', 'text', { DESK_LEVERS: 'finder-model' }), '0 haiku');
+t('DS-1000 --row: the row\'s finder whatever the lever (the simplicity seat)', cli('default finder=haiku', 'finder --row', { DESK_LEVERS: 'finder-model' }), '0 haiku');
+t('DS-1000 --row with finder unset: none', cli('default', 'finder --row', { DESK_LEVERS: 'finder-model' }), '0 none');
+t('DS-1000 lever on, a malformed row still exits 4', cli('opus', 'finder', { DESK_LEVERS: 'finder-model' }).split(' ')[0], '4');
+t('DS-1000 an unknown flag is refused', cli('default', 'finder --raw').split(' ')[0] === '0', false);
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} failed` : 'worker models: all checks passed');

@@ -1,4 +1,5 @@
 // suite: gate (one definition of green)
+// layer: L2
 import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseFlaky, flakyWaiver, failureNotes, notesIn, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold, holdKind, holdNeedsPerson, agentLast, NO_REASON, UNREAD_FILES } from '../desk/bin/gate.mjs';
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -406,6 +407,91 @@ rmSync(gtmp, { recursive: true, force: true });
   t('a deep queue whose runs cannot be placed gives no room, and says so', `${q('b', null).room} ${q('b', null).line.includes('whose runs they are is unknown')}`, '0 true');
   t('below the hold, unplaced runs still give the hold less those waiting', q('b', null, 2).room, 4);
 }
+// A repo whose suites take the light lock is gated on the light lock's queue as well as the test lock's,
+// each against its own current slots x factor; a heavy repo on the test lock's alone.
+{
+  const { lockWaiters, lockRunsByRepo, lockQueue, lockGate } = await import('../desk/bin/suite-wait.mjs');
+  const heavyRun = (pid) => ({ pid, ppid: 1, args: 'bash /h/.claude/desk/bin/with-lock.sh test --cwd . -- pnpm test' });
+  const lightRun = (pid) => ({ pid, ppid: 1, args: 'bash /h/.claude/desk/bin/with-lock.sh light --cwd . -- bash tests/run.sh' });
+  const repos = [{ name: 'l', dirs: ['/u/l', '/u/l-wt'] }, { name: 'h', dirs: ['/u/h', '/u/h-wt'] }];
+  // Repo l: two light runs waiting; repo h: one heavy run waiting, and one light run waiting.
+  const procs = [lightRun(11), lightRun(12), heavyRun(21), lightRun(22)];
+  const cwds = [{ pid: 11, cwd: '/u/l-wt/L-1' }, { pid: 12, cwd: '/u/l-wt/L-2' }, { pid: 21, cwd: '/u/h-wt/H-1' }, { pid: 22, cwd: '/u/h-wt/H-2' }];
+  const none = new Set();
+  const read = (locks, slots, self, ps = procs) => lockQueue({
+    waiting: lockWaiters({ procs: ps, holders: none, locks }),
+    counts: lockRunsByRepo(repos, { procs: ps, holders: none, cwds, locks }),
+    slots, factor: 2, self, lock: locks,
+  });
+  t('light waiters are counted on the light lock, heavy ones on the test lock', `${lockWaiters({ procs, holders: none, locks: 'light' })} ${lockWaiters({ procs, holders: none })}`, '3 1');
+  t('the light lock\'s runs are placed by repo', JSON.stringify([...lockRunsByRepo(repos, { procs, holders: none, cwds, locks: 'light' })].sort()), JSON.stringify([['h', 1], ['l', 2]]));
+  const lOnly = procs.slice(0, 2);
+  const ac1 = lockGate([read('test', 1, 'l', lOnly), read('light', 1, 'l', lOnly)]);
+  t('AC1 a light repo with 2 light runs waiting on a light pool of 1 x 2 is held, naming the light lock queue',
+    `${ac1.holds} ${ac1.room} ${ac1.line.startsWith('light lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2')}`, 'true 0 true');
+  const one = [procs[0]];
+  const ac2 = lockGate([read('test', 1, 'l', one), read('light', 1, 'l', one)]);
+  t('AC2 with 1 light run waiting it may start 1, the hold of 2 less the 1 waiting', `${ac2.holds} ${ac2.room}`, 'false 1');
+  const ac3 = lockGate([read('test', 1, 'h', [heavyRun(21), ...[31, 32, 33, 34].map(lightRun)]), null]);
+  t('AC3 a heavy repo is not held by a deep light queue', `${ac3.holds} ${ac3.room} ${ac3.line.startsWith('test lock queue: 1 run(s)')}`, 'false 1 true');
+  const ac4 = lockQueue({ waiting: 0, slots: 2, factor: 2, counts: new Map(), self: 'l', lock: 'light' });
+  t('AC4 a light pool of 2 current slots holds at 2 x 2 = 4', `${ac4.at} ${ac4.line.includes('waiting on its 2 slot(s), under the hold at 2 x 2 = 4')}`, '4 true');
+  const ac5 = lockGate([read('test', 1, 'l', one), lockQueue({ waiting: null, slots: 1, factor: 2, lock: 'light' })]);
+  t('AC5 a light queue not read holds nothing on the light pool and says so; the test lock\'s room of 2 stands', `${ac5.holds} ${ac5.room} ${ac5.queues[1].line}`,
+    'false 2 light lock queue: not read (ps could not be read), so workers start as they would without it');
+  // Repo l's two runs waiting on each lock, so both queues are at their hold and l at its share of each.
+  const both = lockGate([read('test', 1, 'l', [heavyRun(11), heavyRun(12)]), read('light', 1, 'l', lOnly)]);
+  t('both pools holding name both queues', `${both.holds} ${both.line.startsWith('test lock queue: 2')} ${both.line.includes('; and light lock queue: 2')}`, 'true true true');
+  t('no queue read is no gate', lockGate([null]), null);
+}
+// DS-984: with job tokens on, a light run holds tokens rather than a light slot, and a run waiting for a
+// token is a light waiter: each run once, however many of its suites hold or wait.
+{
+  const { lockWaiters, lockRunsByRepo, lockHolderRuns, lockHolders, lockQueue } = await import('../desk/bin/suite-wait.mjs');
+  const run = (pid, ppid = 1) => ({ pid, ppid, args: 'bash /u/l-wt/L-1/tests/run.sh' });
+  const take = (pid, ppid) => ({ pid, ppid, args: `node /u/l-wt/L-2/desk/bin/job-token.mjs take --pid ${ppid} --worktree /u/l-wt/L-2 -- test_${pid}.sh` });
+  const wrap = { pid: 320, ppid: 1, args: 'bash /h/.claude/desk/bin/with-lock.sh light --cwd . -- node x.mjs' };
+  const procs = [
+    run(300), run(301, 300), run(302, 300), run(303, 300), run(304, 300), // a full run, its four suites each holding a token
+    { ...run(310), args: 'bash /u/l-wt/L-2/tests/run.sh' }, { ...run(311, 310), args: 'bash /u/l-wt/L-2/tests/run.sh' }, { ...run(312, 310), args: 'bash /u/l-wt/L-2/tests/run.sh' },
+    take(313, 311), take(314, 312), // a second run, two suites waiting for a token
+    wrap, { ...wrap, pid: 321, ppid: 320 }, { ...take(322, 321), args: 'node /h/.claude/desk/bin/job-token.mjs take --pid 320 --worktree /u/h -- x.mjs' }, // one command waiting for its token
+  ];
+  const holders = new Set([301, 302, 303, 304]);
+  const cwds = [300, 301, 302, 303, 304].map((pid) => ({ pid, cwd: '/u/l-wt/L-1' })).concat([310, 311, 312, 313, 314].map((pid) => ({ pid, cwd: '/u/l-wt/L-2' })), [320, 321, 322].map((pid) => ({ pid, cwd: '/u/h' })));
+  const now = Date.parse('2026-11-24T12:00:00Z');
+  const stamps = new Map([301, 302, 303, 304].map((p, i) => [p, now - (60 + i) * 1000]));
+  const ages = new Map(procs.map((p) => [p.pid, 600]));
+  const held = lockHolderRuns({ procs, holders, cwds, ages, stamps, now, locks: 'light' });
+  t('DS-984 AC5 runs waiting for job tokens are light waiters, each run once', `${lockWaiters({ procs, holders, locks: 'light' })} ${lockWaiters({ procs, holders })}`, '2 0');
+  t('DS-984 AC5 a run whose suites hold job tokens is one light holder, held as long as its oldest token', JSON.stringify(held.map((r) => [r.pid, r.cwd, r.seconds])), JSON.stringify([[300, '/u/l-wt/L-1', 63]]));
+  const counts = lockRunsByRepo([{ name: 'l', dirs: ['/u/l', '/u/l-wt'] }], { procs, holders, cwds, held, locks: 'light' });
+  t('DS-984 AC5 and each is placed by repo', JSON.stringify([...counts].sort()), JSON.stringify([['l', 2], ['other', 1]]));
+  // A run with one suite holding a token and another waiting for one both holds and waits: one run.
+  const mixed = [run(330), run(331, 330), run(332, 330), take(333, 332)];
+  const mixedHolders = new Set([331]);
+  const mixedCwds = [330, 331, 332, 333].map((pid) => ({ pid, cwd: '/u/l-wt/L-3' }));
+  const mixedHeld = lockHolderRuns({ procs: mixed, holders: mixedHolders, cwds: mixedCwds, ages: new Map(mixed.map((p) => [p.pid, 600])), stamps: new Map([[331, now - 5000]]), now, locks: 'light' });
+  t('DS-984 AC5 a run both holding and waiting for job tokens is one of its repo\'s runs, not two',
+    `${mixedHeld.map((r) => r.pid)} ${lockWaiters({ procs: mixed, holders: mixedHolders, locks: 'light' })} ${JSON.stringify([...lockRunsByRepo([{ name: 'l', dirs: ['/u/l-wt'] }], { procs: mixed, holders: mixedHolders, cwds: mixedCwds, held: mixedHeld, locks: 'light' })])}`,
+    `330 1 ${JSON.stringify([['l', 1]])}`);
+  const q = lockQueue({ waiting: lockWaiters({ procs, holders, locks: 'light' }), slots: 1, factor: 2, counts, self: 'l', lock: 'light' });
+  t('DS-984 AC5 so the light gate, at 1 x 2, holds repo l at its share', `${q.deep} ${q.holds} ${q.line.startsWith('light lock queue: 2 run(s) waiting')}`, 'true true true');
+  // The job pool's leases name the light lock's holders, and no heavy one.
+  const tmp = scratch('gate-jobs-');
+  const was = process.env.DESK_LEASE_DIR;
+  process.env.DESK_LEASE_DIR = tmp;
+  try {
+    const lease = (pid) => ({ id: `L-${pid}`, kind: 'slot', key: 'job', pool: 'slot:job', units: 1, owner: { pid, start: 'x' }, label: `job test_${pid}.sh in ~/w`,
+      ttl: 600, acquired: new Date(now).toISOString(), expires: new Date(now + 600_000).toISOString() });
+    writeFileSync(join(tmp, 'leases.json'), JSON.stringify({ leases: [301, 302].map(lease) }));
+    t('DS-984 AC5 a job token lease holds the light lock, and not the test lock', JSON.stringify([[...lockHolders(tmp, { locks: 'light' })], [...lockHolders(tmp)], [...lockHolders(tmp, { locks: 'both' })]]),
+      JSON.stringify([[301, 302], [], [301, 302]]));
+  } finally {
+    if (was === undefined) delete process.env.DESK_LEASE_DIR; else process.env.DESK_LEASE_DIR = was;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
 // Who holds the test lock is named, whatever the repo, so a batch held behind it shows what it waits on.
 {
   const { lockHolderRuns, holdersText, lockQueue, etimeSeconds } = await import('../desk/bin/suite-wait.mjs');
@@ -525,5 +611,26 @@ rmSync(gtmp, { recursive: true, force: true });
   const f = { name: 'Integration', runId: '9' };
   t('#831 notesIn reads the error_notes the pass kept', JSON.stringify(notesIn(kept)(f)), JSON.stringify([listed]));
   t('#831 notesIn is undefined where a run kept none', notesIn(checks)(f), undefined);
+}
+{
+  // DS-989 AC3 AC4: a PR's file list is read once per head SHA, and again for a new head or once it is
+  // older than the cache's 30 minutes; a read that fails is not kept.
+  const { prFilesAt } = await import('../desk/bin/gate.mjs');
+  const { openCache, CACHE_MS } = await import('../desk/bin/read-cache.mjs');
+  const path = join(scratch('gate-files-'), 'pr-files.json');
+  let reads = 0, fail = false;
+  const read = () => { reads++; if (fail) throw new Error('HTTP 502'); return ['a.ts', `b${reads}.ts`]; };
+  const at = (now, head = 'h1') => prFilesAt({ cache: openCache(path, { now }), repo: 'Acme/Widgets', n: '7', head, read });
+  const t0 = Date.parse('2026-11-22T10:00:00Z');
+  const first = JSON.stringify(at(t0));
+  t('DS-989 AC3 a PR\'s file list at an unchanged head is read once across loops', JSON.stringify([at(t0 + 60_000), at(t0 + CACHE_MS), reads]), JSON.stringify([JSON.parse(first), JSON.parse(first), 1]));
+  t('DS-989 AC4 a new head reads afresh', JSON.stringify([at(t0 + 60_000, 'h2'), reads]), JSON.stringify([['a.ts', 'b2.ts'], 2]));
+  t('DS-989 AC4 a list older than 30 minutes reads afresh', JSON.stringify([at(t0 + CACHE_MS + 1), reads]), JSON.stringify([['a.ts', 'b3.ts'], 3]));
+  fail = true;
+  let threw = false;
+  try { at(t0 + 60_000, 'h3'); } catch { threw = true; }
+  fail = false;
+  t('DS-989 a failed read throws and keeps nothing, so the next loop reads again', JSON.stringify([threw, at(t0 + 60_000, 'h3').length, reads]), JSON.stringify([true, 2, 5]));
+  t('DS-989 with no cache file every call reads', JSON.stringify([prFilesAt({ cache: openCache(null), repo: 'a/b', n: '7', head: 'h1', read }).length, prFilesAt({ cache: openCache(null), repo: 'a/b', n: '7', head: 'h1', read }).length, reads]), JSON.stringify([2, 2, 7]));
 }
 process.exit(fails ? 1 : 0);

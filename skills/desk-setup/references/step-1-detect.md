@@ -147,6 +147,8 @@ How to turn what you find into rows:
 - **Required fields.** Propose them from `desk-jira meta`, then ask which fields the team expects on
   a new ticket that Jira does not require (a house rule, often enforced by a bot after creation), and
   add those to the row too: desk reads the row, not Jira, for the tickets it creates and drafts.
+  Then ask what each one is on a follow-up nobody set it for, for §4 Field defaults: a value (a
+  source such as Tech Debt) or `from parent` (a repository the parent ticket names).
 - **Branch protection and Required checks.** Merge what classic protection and the rulesets
   (`rules/branches/<default>`: `required_status_checks` rules, `pull_request` rules for approvals,
   `required_linear_history`) say; name which source each check came from. A repo that answers 404
@@ -180,12 +182,12 @@ How to turn what you find into rows:
   sends no review or fix try to a PR red only on that check until it is fixed.
 - **Checks workers can't fix.** Search the repo instructions and the workflows for checks that fail
   until a person does something outside the code: an image built by hand, a credential, a service
-  only they can reach ("run `ensure-flows-image.sh` if the Flows check says the image is missing").
+  only they can reach ("run `ensure-flows-image.sh` if the Flows check says the image is missing"). <!-- prose-ok: an example of a repo's own script -->
   Propose each as `` `<check>: <what fixes it>` ``, the check named exactly as GitHub shows it; the
   user confirms each, and `none` is the default. Say that autopilot never sends a PR red only on one
   of these back to a worker: it is put to the user as stuck, with what fixes it.
 - **Check builds.** Where what fixes such a check is a command run on this computer (a script that
-  builds and pushes an image, "build it from the branch with: `./scripts/ensure-flows-image.sh`"),
+  builds and pushes an image, "build it from the branch with: `./scripts/ensure-flows-image.sh`"), <!-- prose-ok: an example of a repo's own script -->
   propose it for §4 Check builds as well as the row above, as `` `<check>: <command>` ``, the check
   named exactly as GitHub shows it and the command as the instructions give it, run from the repo
   root. Never leave it as prose only. The user confirms each; `none` is the default. Say that the
@@ -205,8 +207,14 @@ How to turn what you find into rows:
   fetched before each run (never the ticket's worktree or the user's own checkout), exactly as
   written with nothing from the park added; that it saves up to 1 MiB of its output where the
   requeued worker reads it as an untrusted response; that the command must install and write
-  nothing in that checkout; and that nothing that writes to a live system or places a call belongs
-  here.
+  nothing in that checkout; and that nothing that writes to a live system belongs here. For each,
+  ask whether the call costs money (a POST to a model API, say). A paid one needs both caps, a £
+  per call and a £ per day, recorded as `` `<name> [£0.10/call, £2/day]: <command>` ``: ask for
+  both, and write no paid entry without them (the config check refuses a bracket missing either).
+  Say that a worker parks with its estimate beside the name (`gateway-chat (est £0.03)`), that the
+  pass runs the call only within both caps and logs each one to the repo's spend log, and that a
+  park with no estimate, or over either cap, comes to the user naming the estimate or the day's
+  spend.
 - **Pre-merge steps.** Search the repo instructions and the workflows for a step a person must take
   before a PR can go green, that a check or a step in one tests ("apply the migration to staging
   before merging": a schema check run against the real staging database). Propose each for §4
@@ -235,8 +243,17 @@ How to turn what you find into rows:
   `none` is the default. Say that the autopilot pass starts it once per head for a draft whose body
   still has `_drag` cells and an `evidence` block, so those screenshots are never put to the user
   while it can take them.
+- **Preview database.** Where the repo has migrations and its previews read a shared staging
+  database (a Neon or other branching database host, a preview env file or a Vercel project whose
+  Preview database variable is staging's), ask how the user gives a migration PR a database of its
+  own, and write it as §4 Preview database, one `` `<step>: <command>` `` span per step (`create`,
+  `migrate`, `seed`, `override`, `rebuild`, `delete`) with `{branch}`, `{db}` and `{pr}` for the PR's
+  branch, its database branch and its number. Propose commands only from what the repo already
+  has (its scripts, its database host's CLI); never invent a project id, a variable name or a
+  connection string, which are the user's. `none` is the default, and a migration PR's evidence is
+  taken as before. Set, it goes with §3 `worker-preview-db`.
 - **Merge holds.** Search the repo instructions for steps a person must do before merging certain
-  changes ("before merging backend changes run `./scripts/build-lambda-images-local.sh`"). Propose
+  changes ("before merging backend changes run `./scripts/build-lambda-images-local.sh`"). Propose <!-- prose-ok: an example of a repo's own script -->
   each as `` `<glob>: <why>` ``, e.g. `` `backend/**: build and push Lambda images first` ``; the
   user confirms or writes `none`. **The row must be set**: `none` is a fine answer, but while it is
   unset the merge driver refuses to start and clearance parks every PR. Say that clearance never merges a held PR, and
@@ -405,7 +422,7 @@ How to turn what you find into rows:
   is a fine answer.
 - **PR-description checks.** A workflow step that reads `github.event.pull_request.body` (or a
   `PR_BODY`-style variable set from it) and runs a script is the candidate: propose that script's
-  command, e.g. `` `node scripts/check-pr-body.mjs` ``. desk-pr runs it with the draft body's file
+  command, e.g. `` `node scripts/check-pr-body.mjs` ``. desk-pr runs it with the draft body's file <!-- prose-ok: an example of a repo's own script -->
   path appended, so **read the script** and say whether it accepts a file path. One that reads only
   the event or an environment variable cannot run before the PR exists: propose `none` and say that
   adding a file-path argument is a change to the repo, for its own PR. No such step: `none`.
@@ -417,7 +434,8 @@ How to turn what you find into rows:
   for the root), e.g. `` `apps/portal/apps/web: <email>` ``, and say what the user must hold: an
   existing user in that app's development auth instance (never production, never a new one) who
   already holds the grant its signed-in pages need, so a worker can sign in as them for screenshots.
-  The email is a fact only the user has: never guess one, and never take a password. `none` is a
+  The email is a fact only the user has: never guess one, and never take a password. A user the
+  repo's seed files create is read, not guessed: offer it as the Recommended option. `none` is a
   fine answer where no app has a page behind sign-in. `desk-env drift --app <dir>` names an app with
   a Dev server item and no item here `NOSIGNIN`; propose its item on every run, a re-run's
   included.
@@ -506,7 +524,9 @@ How to turn what you find into rows:
 - **Handoff at context % on a 1M window.** Propose `20`, with one line of why: replaying 71
   orchestrator sessions, a fresh start at about 200k tokens saved 53% of the tokens re-read each
   turn, against 10% at 45% of a 1M window (450k). A whole number from `1` to `99`, `0` to turn it off
-  on 1M windows only, or empty to take the row above's value.
+  on 1M windows only, or empty to take the row above's value. Later, `node
+  ~/.claude/desk/bin/handoff-report.mjs` measures the thresholds sessions ran under and names the
+  cheapest within guardrails for either row.
 - **Design canvases directory.** Propose `docs/design/`, or the directory the repo already commits
   canvases in when the design scan found one. It is relative to the repo root and committed, so
   autopilot workers and the design agents read the same files; a shared artifact link alone is not

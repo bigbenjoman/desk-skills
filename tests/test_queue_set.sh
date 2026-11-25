@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: queue set (JSON objects and arrays; move and placed)
+# layer: L2
 # queue.mjs set must store a value opening with { or [ as JSON, refuse an invalid one, and keep an
 # object's other keys when one nested key is set. move puts an unfinished ticket at a position and
 # marks it placed, and front and requeue then leave it there.

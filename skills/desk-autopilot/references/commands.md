@@ -28,6 +28,7 @@ node ~/.claude/desk/bin/queue.mjs set-batch approved.merge=true       # Stage 3:
 node ~/.claude/desk/bin/desk-env.mjs merge-grant                      # config, batch or none, and why: whether the merge driver may merge this batch
 node ~/.claude/desk/bin/queue.mjs render                              # status
 node ~/.claude/desk/bin/queue.mjs rebuild ABC-120                     # ledger lever: the batch's queue rebuilt from the log, written to queue.rebuilt.json beside queue.json, and each field that differs (`standing`, or none: this batch)
+node ~/.claude/desk/bin/ask-ledger.mjs                                # ledger lever: every ask the repo's ledger holds (raised, presented, answered, acted), one JSON line each
 node ~/.claude/desk/bin/queue.mjs front ABC-123                       # move a released ticket to the front of the spawn order (one the user placed stays put)
 node ~/.claude/desk/bin/queue.mjs move ABC-123 2                      # the user's order: position among unfinished tickets, or `last`; marks it placed
 node ~/.claude/desk/bin/queue.mjs hold ABC-124 ABC-123               # hold a ticket behind a blocker (recorded; released on its merge)
@@ -47,7 +48,7 @@ AUTOPILOT_DRY_RUN=1 …                                                 # no pus
 AUTOPILOT_USER_APPROVED=1 node ~/.claude/desk/bin/pass.mjs            # only when §3 autopilot-workers is `ask` and the user confirmed this batch
 AUTOPILOT_BASE_PUSH_APPROVED=1 node ~/.claude/desk/bin/pass.mjs       # only when §3 batch-base-push is `ask`/unset and the user approved syncing this batch's base
 AUTOPILOT_ALLOW_NO_CODEX=1 node ~/.claude/desk/bin/pass.mjs           # codex-review is yes but codex is not installed: accept same-vendor reviews knowingly
-nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2" --deps "ABC-2:ABC-1" --log &   # output to <state>/merge-driver.log; not for a batch handed to the supervisor
+nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2" --deps "ABC-2:ABC-1" --log &   # output to <state>/merge-driver.log; not for a batch handed to the supervisor, whose one driver (merge-driver.sh --all-batches --log) merges every handed-over batch of the repo
 
 AUTOPILOT_DEFAULT_TOOLS=1 node ~/.claude/desk/bin/pass.mjs            # workers, preflights and triage get Claude Code's default tool list, not worker-tools.mjs's
 
@@ -69,7 +70,7 @@ desk-env heavy                   # suites, typechecks, dev servers actually runn
 node ~/.claude/desk/bin/queue.mjs watch   # table + memory line at start, then only on a state or question change, not a stage step (--stages adds them; quiet: one line per changed ticket); every 90s, or --interval <s>
 desk-env mem watch               # SUSTAINED-HIGH: avail=<x>G below <band>G for 5m with nothing heavy running
                                   # also WORKER-OOM; on Linux SWAP-GROWING, OOM-KILL, TMPFS-HIGH; on WSL VMMEM-HIGH;
-                                  # each held by the pass for 10m (concurrency-and-memory.md)
+                                  # each held by the pass for 10m, TMPFS-HIGH only while /tmp is over (concurrency-and-memory.md)
 
 # waiting on one PR, under Monitor: one line, then exit (never a loop around gh pr checks / gh pr view)
 node ~/.claude/desk/bin/pr-watch.mjs checks 123          # every check done: "none failed", or each failed check named

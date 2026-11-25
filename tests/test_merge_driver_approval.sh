@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: merge driver: merge approval, Done moves and review threads (offline, fake gh)
+# layer: L3
 # The real merge-driver.sh and gate.mjs, one loop at a time, set up by merge_driver_setup.sh: merging
 # asked once per batch where §3 says ask (and pass.mjs and decider.mjs on a PR left to the person),
 # a merged ticket moved to §4 Done state, and desk-review threads a clean verdict settles.

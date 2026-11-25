@@ -1,4 +1,5 @@
 // suite: levers view (one view model of every repo's levers, with input ages and the honesty rules)
+// layer: L2
 import { mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { scratch } from './scratch.mjs';
@@ -136,6 +137,32 @@ const autoRepos = REPOS.map((r) => (r.slug === DS ? { ...r, levers: '`auto`' } :
   const v = view(machine({ repos: autoRepos, files: { [`${DS}/lever-evals.jsonl`]: jsonl([evalRow('wrappers', { at: iso(40 * HOUR) }), evalRow('memory', { at: iso(30 * HOUR) })]) } }));
   t('AC6 the board is stale', v.panels.board.state, 'stale');
   t('AC6 with its age in words', v.panels.board.age.words, '30 hours ago');
+}
+
+// DS-1000 AC4: an auto repo whose §3b Worker models already runs its finders on the finder-model
+// lever's alias never draws it, and the view says why in one line.
+{
+  const m = machine({ repos: autoRepos });
+  w(join(m.configRoot, 'repos', DS, 'config.md'), `${config('bigbenjoman/desk-skills', '`auto`')}| Worker models | \`default\` | \`default finder=sonnet\` |\n`);
+  const c = cell(view(m), 'finder-model');
+  t('DS-1000 AC4 the cell reads ineligible', c.state, 'ineligible');
+  t('DS-1000 AC4 one line says both arms would be the same', c.note, 'not tested in desk-skills: §3b Worker models already runs its finders on sonnet, so both arms would be the same');
+  t('DS-1000 AC4 the other levers are unaffected', cell(view(m), 'codex').state, 'off');
+  w(join(m.configRoot, 'repos', DS, 'config.md'), `${config('bigbenjoman/desk-skills', '`auto`')}| Worker models | \`default\` | \`default finder=haiku\` |\n`);
+  t('DS-1000 AC4 finder=haiku: finder-model reads off, as any lever with no evaluation yet', cell(view(m), 'finder-model').state, 'off');
+}
+// DS-1000 AC4: the daily evaluation still writes the ineligible lever a trial row; the view keeps
+// saying why rather than reading it as testing, and a kept lever keeps its result.
+{
+  const m = machine({ repos: autoRepos, files: { [`${DS}/lever-evals.jsonl`]: jsonl([evalRow('finder-model'), evalRow('wrappers')]) } });
+  w(join(m.configRoot, 'repos', DS, 'config.md'), `${config('bigbenjoman/desk-skills', '`auto`')}| Worker models | \`default\` | \`default finder=sonnet\` |\n`);
+  const c = cell(view(m), 'finder-model');
+  t('DS-1000 AC4 an evaluated trial row: the cell still reads ineligible', c.state, 'ineligible');
+  t('DS-1000 AC4 an evaluated trial row: its reason is kept apart for the page', c.why, '§3b Worker models already runs its finders on sonnet, so both arms would be the same');
+  t('DS-1000 AC4 an evaluated trial row: an eligible lever keeps its evaluation', cell(view(m), 'wrappers').state, 'trial');
+  const k = machine({ repos: autoRepos, files: { [`${DS}/lever-evals.jsonl`]: jsonl([evalRow('finder-model', { state: 'adopted' })]) } });
+  w(join(k.configRoot, 'repos', DS, 'config.md'), `${config('bigbenjoman/desk-skills', '`auto`')}| Worker models | \`default\` | \`default finder=sonnet\` |\n`);
+  t('DS-1000 AC4 a kept lever keeps its result', cell(view(k), 'finder-model').state, 'adopted');
 }
 
 // AC7: a repo with no levers row is not enrolled, and waiting on you says how to enrol it.

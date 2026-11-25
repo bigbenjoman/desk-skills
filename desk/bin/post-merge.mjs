@@ -1,10 +1,14 @@
 // The post-merge watch. For WATCH_DAYS after a ticket's PR merges, a revert of it on the default
 // branch, or a default-branch run that fails within RED_HOURS of the merge, is recorded against the
-// ticket in <state>/post-merge.jsonl. A merge's runs are the default branch's runs on its merge
-// commit, read one merge at a time, so a busy branch costs no more than a quiet one.
+// ticket in <state>/post-merge.jsonl. A merge's runs are the default branch's push runs on its merge
+// commit, read one merge at a time, so a busy branch costs no more than a quiet one: a scheduled or
+// workflow_run run on that commit is not the merge's doing. A failure its workflow has since gone green
+// on, in a later push run on the default branch, is recorded as recovered rather than red.
 // The queue maps a PR to its ticket and its merge time. Appended only, one line per record:
 //   {kind: 'revert',   ticket, pr, merged_at, commit, subject, at}
 //   {kind: 'red_main', ticket, pr, merged_at, run: {id, name, url, created_at}, at}
+//   {kind: 'red_recovered', ticket, pr, merged_at, run, green: {id, url, created_at}, at}   a red_main
+//       run (recorded or not) whose workflow's newest completed push run since is green
 //   {kind: 'scan', at, complete, why?}   one per scan; the next is due SCAN_EVERY_MS after it
 // A scan that could not read a source says so on its scan line and records nothing from that source.
 import { readFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
@@ -12,6 +16,10 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { everyTicket } from './queue-store.mjs';
 import { promotionPr } from './batch-state.mjs';
+import { repoOfPr } from './pass/pr-status.mjs';
+import { ownerRepoFromUrl } from './desk-env.mjs';
+// gh with a buffer a page of runs fits in: one can pass spawnSync's 1 MiB default.
+import { gh as ghRead } from './gate.mjs';
 
 export const FILE = 'post-merge.jsonl';
 export const WATCH_DAYS = 14;
@@ -42,15 +50,22 @@ export function revertedPr(subject) {
 }
 
 // Every ticket in the queue with a merged PR, archived ones included (a merged ticket is archived
-// within a pass of its merge): [{ticket, pr, merged_at, own, base, promotion}]. `own` is the merge
+// within a pass of its merge): [{ticket, pr, merged_at, own, base, promotion, repo}]. `own` is the merge
 // commit the pass read from the PR (pr_status.merge_commit) or null, `base` the branch it merged into,
 // and `promotion` the promotion PR that took a batch child on (batch-state promotionPr) or null.
+// `repo` is the owner/name its PR status url names ('' for a url naming none), or null with no url: a
+// ticket done on another repo's PR (needs-you's elsewhereDone) keeps that PR's url, and this repo's
+// reverts and runs are not its own, though its PR may have the same number as one of this repo's.
 export function mergedTickets(queue) {
   const out = [];
   for (const [ticket, t] of Object.entries(everyTicket(queue))) {
     const pr = mergedPr(t);
     const own = SHA40.test(String(t.pr_status?.merge_commit ?? '')) ? t.pr_status.merge_commit : null;
-    if (pr) out.push({ ticket, pr, merged_at: t.merged_at, own, base: t.pr_status?.base ?? null, promotion: promotionPr(queue, t) });
+    const url = t.pr_status?.url;
+    if (pr) {
+      out.push({ ticket, pr, merged_at: t.merged_at, own, base: t.pr_status?.base ?? null, promotion: promotionPr(queue, t),
+        repo: url ? ownerRepoFromUrl(repoOfPr(url)) ?? '' : null });
+    }
   }
   return out;
 }
@@ -80,33 +95,57 @@ export function landedPr(subject) {
   return n ? Number(n[1]) : null;
 }
 
+// Whether owner/name `name` is this repo, `repo` (origin's spelling). A rename leaves origin, and every
+// PR url recorded before it, on the old name, while later PR urls name the new one, so a name spelt
+// otherwise than origin is judged by the repo GitHub resolves each to now (`resolveRepo(name)` gives
+// GitHub's url for it, following a rename). A name GitHub does not resolve is judged by its spelling,
+// and `why` says so: the scan is then incomplete, as it may have left out one of this repo's tickets.
+function repoJudge(repo, resolveRepo, why) {
+  const now = new Map();
+  const resolved = (name) => {
+    const k = name.toLowerCase();
+    if (!now.has(k)) {
+      let r = k;
+      if (resolveRepo) {
+        try { r = ownerRepoFromUrl(resolveRepo(name))?.toLowerCase() ?? ''; if (!r) throw new Error('not a repo url'); }
+        catch (e) { r = k; why.push(`${name} not looked up on GitHub, so judged by that name: ${firstLine(e)}`); }
+      }
+      now.set(k, r);
+    }
+    return now.get(k);
+  };
+  return (name) => !!name && (name.toLowerCase() === repo.toLowerCase() || resolved(name) === resolved(repo));
+}
+
 // Queue ticket `t`'s merged PR number, or null when it has none merged.
 export const mergedPr = (t) => {
   const pr = Number(t?.pr_status?.pr ?? t?.result?.pr);
   return Number.isInteger(pr) && pr > 0 && Number.isFinite(Date.parse(t?.merged_at)) ? pr : null;
 };
 
-const recordKey = (r) => (r.kind === 'revert' ? `${r.ticket}|revert|${r.commit}` : r.kind === 'red_main' ? `${r.ticket}|red_main|${r.run?.id}` : null);
+const recordKey = (r) => (r.kind === 'revert' ? `${r.ticket}|revert|${r.commit}` : ['red_main', 'red_recovered'].includes(r.kind) ? `${r.ticket}|${r.kind}|${r.run?.id}` : null);
 
 // The records a scan finds. `commits` are [{sha, at, subject, first}] from the default branch; `runs` are
-// [{id, name, url, conclusion, created_at, sha}], each on the commit `sha` it was read for, or null
-// when none could be read. A merge's `sha` and `landed_at` are where and when its code reached the
-// default branch: a run on that commit failing within RED_HOURS of then is the merge's.
+// [{id, name, url, conclusion, created_at, event, workflow_id, sha}], each on the commit `sha` it was
+// read for, or null when none could be read. A merge's `sha` and `landed_at` are where and when its code
+// reached the default branch: a push run on that commit failing within RED_HOURS of then is the merge's.
 export function findRecords({ merges, commits, runs, at }) {
-  const byPr = new Map(merges.map((m) => [m.pr, m]));
+  // A PR can be recorded on more than one ticket, so its revert is each one's.
+  const byPr = new Map();
+  for (const m of merges) byPr.set(m.pr, [...(byPr.get(m.pr) ?? []), m]);
   const found = [];
   for (const c of commits) {
-    const m = byPr.get(revertedPr(c.subject));
-    if (!m) continue;
-    const gap = Date.parse(c.at) - Date.parse(m.merged_at);
-    if (gap >= 0 && gap <= WATCH_DAYS * DAY_MS) found.push({ kind: 'revert', ticket: m.ticket, pr: m.pr, merged_at: m.merged_at, commit: c.sha, subject: c.subject, at });
+    for (const m of byPr.get(revertedPr(c.subject)) ?? []) {
+      const gap = Date.parse(c.at) - Date.parse(m.merged_at);
+      if (gap >= 0 && gap <= WATCH_DAYS * DAY_MS) found.push({ kind: 'revert', ticket: m.ticket, pr: m.pr, merged_at: m.merged_at, commit: c.sha, subject: c.subject, at });
+    }
   }
   for (const r of runs ?? []) {
-    if (!FAILED.has(r.conclusion)) continue;
+    if (!FAILED.has(r.conclusion) || r.event !== 'push') continue;
     for (const m of merges.filter((x) => x.sha && x.sha === r.sha)) {
       const gap = Date.parse(r.created_at) - Date.parse(m.landed_at ?? m.merged_at);
       if (gap > 0 && gap <= RED_HOURS * 3_600_000) {
-        found.push({ kind: 'red_main', ticket: m.ticket, pr: m.pr, merged_at: m.merged_at, run: { id: r.id, name: r.name, url: r.url, created_at: r.created_at }, at });
+        found.push({ kind: 'red_main', ticket: m.ticket, pr: m.pr, merged_at: m.merged_at, run: { id: r.id, name: r.name, url: r.url, created_at: r.created_at }, workflow_id: r.workflow_id, at });
       }
     }
   }
@@ -123,18 +162,21 @@ export function postMergeDue({ state, queue, now = Date.now() }) {
   return now - lastScan(readPostMerge(state)) >= SCAN_EVERY_MS && watched(queue, now).length > 0;
 }
 
-// One scan, if one is due: `log(sinceIso)` gives the default branch's commits since then and
-// `runs(sha)` the default branch's runs on one commit, each throwing when it cannot read all of them.
+// One scan, if one is due: `log(sinceIso)` gives the default branch's commits since then,
+// `runs(sha)` the default branch's runs on one commit, each throwing when it cannot read all of them,
+// and `latest(workflowId)` that workflow's newest completed push run on the default branch, or null.
 // Each merge's runs are read on the commit that put its code there (landing). A batch child merged into
 // another branch (`branch` names the default) whose promotion has not merged is not there yet: it has
-// no runs to read.
+// no runs to read. Given `repo` (origin's owner/name), a ticket whose PR url names another repo is left
+// out (repoJudge, with `resolveRepo`).
 // -> {ran, written: [records], line}
-export function postMergeScan({ state, queue, log, runs, branch = null, now = Date.now() }) {
+export function postMergeScan({ state, queue, log, runs, latest = () => null, branch = null, repo = null, resolveRepo = null, now = Date.now() }) {
   const have = readPostMerge(state);
   if (now - lastScan(have) < SCAN_EVERY_MS) return { ran: false, written: [], line: null };
   const at = new Date(now).toISOString();
-  const merges = watched(queue, now);
   const why = [];
+  const here = repo ? repoJudge(repo, resolveRepo, why) : null;
+  const merges = watched(queue, now).filter((m) => !here || m.repo === null || here(m.repo));
   let commits = [];
   let runList = null;
   if (merges.length) {
@@ -152,13 +194,24 @@ export function postMergeScan({ state, queue, log, runs, branch = null, now = Da
     }
     if (unread.length) why.push(`default-branch runs not read: ${unread.join('; ')}`);
   }
+  const newest = new Map();
+  const unrecovered = [];
+  const found = findRecords({ merges, commits, runs: runList, at }).map(({ workflow_id: wf, ...r }) => {
+    if (r.kind !== 'red_main' || wf == null) return r;
+    if (!newest.has(wf)) { try { newest.set(wf, latest(wf)); } catch (e) { newest.set(wf, null); unrecovered.push(`workflow ${wf}: ${firstLine(e)}`); } }
+    const g = newest.get(wf);
+    return g?.conclusion === 'success' && Date.parse(g.created_at) > Date.parse(r.run.created_at)
+      ? { ...r, kind: 'red_recovered', green: { id: g.id, url: g.url, created_at: g.created_at } } : r;
+  });
+  if (unrecovered.length) why.push(`later runs not read: ${unrecovered.join('; ')}`);
   const seen = new Set(have.map(recordKey).filter(Boolean));
-  const written = findRecords({ merges, commits, runs: runList, at }).filter((r) => !seen.has(recordKey(r)) && seen.add(recordKey(r)));
+  const written = found.filter((r) => !seen.has(recordKey(r)) && seen.add(recordKey(r)));
   const complete = !why.length;
   const lines = [...written, { kind: 'scan', at, complete, ...(complete ? {} : { why: why.join('; ') }) }];
   mkdirSync(state, { recursive: true });
   appendFileSync(postMergePath(state), lines.map((l) => `${JSON.stringify(l)}\n`).join(''));
-  const named = written.map((r) => `${r.ticket} ${r.kind === 'revert' ? `reverted by ${r.commit.slice(0, 12)}` : `red main in run ${r.run.id}`}`);
+  const named = written.map((r) => `${r.ticket} ${r.kind === 'revert' ? `reverted by ${r.commit.slice(0, 12)}`
+    : r.kind === 'red_recovered' ? `red main in run ${r.run.id}, since green in run ${r.green.id}` : `red main in run ${r.run.id}`}`);
   const line = written.length || !complete
     ? `post-merge watch: ${named.length ? named.join(', ') : 'nothing recorded'}${complete ? '' : `; scan incomplete (${why.join('; ')})`}`
     : null;
@@ -177,13 +230,19 @@ export function gitLog(cwd, ref, since) {
   return read().map((c) => ({ ...c, first: first.has(c.sha) }));
 }
 
-// The default branch's workflow runs on GitHub on commit `sha`. A merge commit has a few runs, so one
+// The default branch's push runs on GitHub on commit `sha`. A merge commit has a few runs, so one
 // page holds them; one with more than a page throws rather than pass for a complete read.
-export function ghRuns(repo, branch, sha, gh = (args) => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })) {
-  const page = JSON.parse(gh(['api', `repos/${repo}/actions/runs?head_sha=${sha}&branch=${encodeURIComponent(branch)}&per_page=${RUN_PAGE}`]));
+export function ghRuns(repo, branch, sha, gh = ghRead) {
+  const page = JSON.parse(gh(['api', `repos/${repo}/actions/runs?head_sha=${sha}&branch=${encodeURIComponent(branch)}&event=push&per_page=${RUN_PAGE}`]));
   const list = page.workflow_runs ?? [];
   if (Number(page.total_count) > list.length) throw new Error(`${page.total_count} runs on ${sha.slice(0, 12)}, more than one page read`);
-  return list.map((r) => ({ id: r.id, name: r.name, url: r.html_url, conclusion: r.conclusion, created_at: r.created_at }));
+  return list.map((r) => ({ id: r.id, name: r.name, url: r.html_url, conclusion: r.conclusion, created_at: r.created_at, event: r.event, workflow_id: r.workflow_id }));
+}
+
+// Workflow `id`'s newest completed push run on the default branch, or null when it has none.
+export function ghLatest(repo, branch, id, gh = ghRead) {
+  const r = JSON.parse(gh(['api', `repos/${repo}/actions/workflows/${id}/runs?branch=${encodeURIComponent(branch)}&event=push&status=completed&per_page=1`])).workflow_runs?.[0];
+  return r ? { id: r.id, url: r.html_url, conclusion: r.conclusion, created_at: r.created_at } : null;
 }
 
 // The scan as a pass runs it, once a day: the default branch fetched in `cwd`, then read from origin.
@@ -191,12 +250,15 @@ export function ghRuns(repo, branch, sha, gh = (args) => execFileSync('gh', args
 export function postMergeWatch({ state, queue, repo, branch, cwd }) {
   try {
     return postMergeScan({
-      state, queue, branch,
+      state, queue, branch, repo,
+      // GitHub follows a rename, so this names a repo as its PR urls do now.
+      resolveRepo: (name) => execFileSync('gh', ['repo', 'view', name, '--json', 'url', '--jq', '.url'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
       log: (since) => {
         execFileSync('git', ['-C', cwd, 'fetch', '-q', 'origin', branch], { stdio: 'ignore' });
         return gitLog(cwd, `origin/${branch}`, since);
       },
       runs: (sha) => ghRuns(repo, branch, sha),
+      latest: (id) => ghLatest(repo, branch, id),
     }).line;
   } catch (e) { return `post-merge watch: not run (${firstLine(e)})`; }
 }

@@ -3,7 +3,8 @@
 //
 //   levers decide <repo> <lever> off|trial   sets the lever by hand: one `override` event, actor ben,
 //                                            in the repo's lever log, and one line in its decision log
-//                                            with the same id
+//                                            with the same id. A lever with more than two arms takes
+//                                            one of its values or trial, never off
 //   levers undo <repo> <lever>               reverses the lever's latest change there: desk's adopt is
 //                                            turned off by hand; Ben's own call puts the lever back in
 //                                            the state it had before it, with the needs-you items that
@@ -12,7 +13,8 @@
 // <repo> is the repo's name as desk-q shows it, or its slug. The override is read by admission and
 // the levers view as any other (levers-auto.mjs leverStatesIn): `off` pins the lever off, `trial` puts it
 // on trial with a fresh trial id. An undo back to an earlier state names it in `restores`, so a trial keeps its trial
-// id and an adopt its holdback. Both refuse a lever the repo's Phase 0 levers row does not leave to
+// id and an adopt its holdback, and a lever with more than two arms its value. Undoing desk's adopt of
+// such a lever puts it back on its baseline. Both refuse a lever the repo's Phase 0 levers row does not leave to
 // `auto`, since admission never reads the lever log for it. A run that wrote its override but not its
 // decision line is finished by running it again, not repeated. Exits 0 once recorded (or with nothing
 // to undo), 2 on a refusal that writes nothing, 1 when a log could not be written.
@@ -21,10 +23,10 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { batchPaths, configuredRepos, deskConfigRoot, leverRow, repoConfigValues, rowStates } from './desk-env.mjs';
 import { auditP0Replay } from './levers-audit.mjs';
-import { KEPT_STATES, REGISTRY } from './lever-registry.mjs';
+import { KEPT_STATES, REGISTRY, isValued } from './lever-registry.mjs';
 import { appendChecked, isStateChange, spendsNeedsYou, stampAfter as stamp } from './lever-log.mjs';
 import { leverStatesIn } from './levers-auto.mjs';
-import { CATEGORY, VALUES, recordLeverDecision } from './lever-changes.mjs';
+import { CATEGORY, VALUES, choicesOf, recordLeverDecision } from './lever-changes.mjs';
 import { appendDecisions } from './decisions.mjs';
 import { readDecisions } from './digest.mjs';
 import { resolveRepo as resolveShown, shortName, shownNames, Usage } from './desk-q-model.mjs';
@@ -58,9 +60,12 @@ export function resolveRepo(want, root = deskConfigRoot()) {
   }
 }
 
-function checkLever(lever) {
-  if (!Object.hasOwn(REGISTRY, lever)) refuse(`levers: ${lever} is not a lever the registry declares; declared: ${Object.keys(REGISTRY).join(', ')}`);
+function checkLever(lever, registry = REGISTRY) {
+  if (!Object.hasOwn(registry, lever)) refuse(`levers: ${lever} is not a lever the registry declares; declared: ${Object.keys(registry).join(', ')}`);
 }
+// The choices `levers decide` takes for a lever: off or trial, or a lever with more than two arms'
+// values or trial.
+const decideChoices = (lever, registry) => (isValued(registry[lever]) ? [...registry[lever].values, 'trial'] : CHOICES);
 
 // Admission reads the lever log only for a lever the repo's Phase 0 levers row leaves to `auto`
 // (levers-auto.mjs assignPin), so a call on any other would change nothing it does.
@@ -98,9 +103,9 @@ function latestCall(events, lever) {
 
 // Appends what `build` returns from the repo's log under its lock (lever-log.mjs appendChecked). -> the
 // event (or events) as written, or null; throws on a refusal, which writes nothing.
-function appendFrom(slug, build) {
+function appendFrom(slug, build, registry = REGISTRY) {
   let r;
-  try { r = appendChecked(slug, build); } catch (e) { throw new Error(`levers: ${slug}'s lever log refused it: ${e.message}`); }
+  try { r = appendChecked(slug, build, { registry }); } catch (e) { throw new Error(`levers: ${slug}'s lever log refused it: ${e.message}`); }
   if (r.why) throw new Error(`levers: nothing written: ${r.why}`);
   return r.event;
 }
@@ -111,30 +116,33 @@ function logDecision(state, entry) {
   }
 }
 
-// Ben's call on `lever` in `repo`: `off` or `trial`. -> { event, entry, repo, text }
-export function decide({ repo, lever, choice, configRoot = deskConfigRoot(), now = new Date() }) {
+// Ben's call on `lever` in `repo`: `off` or `trial`, or one of a valued lever's values. -> { event, entry, repo, text }
+export function decide({ repo, lever, choice, configRoot = deskConfigRoot(), now = new Date(), registry = REGISTRY }) {
   const r = resolveRepo(repo, configRoot);
-  checkLever(lever);
-  if (!CHOICES.includes(choice)) refuse(`levers decide: the choice is ${CHOICES.join(' or ')}, not "${choice}"`);
-  if (choice === 'trial' && !REGISTRY[lever].trialled) refuse(`levers decide: ${lever} is not trialled; name it in the repo's Phase 0 levers row to turn it on`);
+  checkLever(lever, registry);
+  const choices = decideChoices(lever, registry);
+  if (!choices.includes(choice)) refuse(`levers decide: the choice ${isValued(registry[lever]) ? `for ${lever}, which has more than two arms, is one of its values or trial (${choices.join(', ')})` : `is ${CHOICES.join(' or ')}`}, not "${choice}"`);
+  if (choice === 'trial' && !registry[lever].trialled) refuse(`levers decide: ${lever} is not trialled; name it in the repo's Phase 0 levers row to turn it on`);
   checkRow(r, lever, configRoot);
   const state = batchPaths(r.slug).state;
   let pending = null;
   const written = appendFrom(r.slug, (events) => {
     const last = latestChange(events, lever);
-    if (unfinished(last, loggedIds(state)) && last.undoes_event == null && last.to === choice) { pending = last; return null; }
+    if (unfinished(last, loggedIds(state)) && last.undoes_event == null && (last.to === choice || (last.to === 'overridden' && last.value === choice))) { pending = last; return null; }
     const at = stamp(events, now);
-    const s = leverStatesIn(events)[lever];
+    const s = leverStatesIn(events, registry)[lever];
+    // A valued lever set to a value is overridden to it, as a digest override sets one.
+    const valued = isValued(registry[lever]) && choice !== 'trial';
     return {
-      kind: 'override', lever, actor: BY_HAND, reason_code: 'ben_override', at, from: s.state, to: choice,
-      ...(VALUES.includes(choice) ? { value: choice } : {}), decision_id: decisionId(r.slug, lever, choice, at),
+      kind: 'override', lever, actor: BY_HAND, reason_code: 'ben_override', at, from: s.state, to: valued ? 'overridden' : choice,
+      ...(valued || VALUES.includes(choice) ? { value: choice } : {}), decision_id: decisionId(r.slug, lever, choice, at),
       reason: `set ${choice} by hand with levers decide (it was ${s.state})`,
     };
-  });
+  }, registry);
   const event = written ?? pending;
   const entry = {
     id: event.decision_id, at: event.at, repo: r.ghRepo, ticket: null, question: `Is ${lever} ${choice} in ${r.name}?`,
-    options: [choice, ...CHOICES.filter((c) => c !== choice)], chose: choice, category: CATEGORY, pr: null, source: 'levers', run: null,
+    options: [choice, ...choices.filter((c) => c !== choice)], chose: choice, category: CATEGORY, pr: null, source: 'levers', run: null,
     by: BY_HAND, slug: r.slug, lever,
   };
   logDecision(state, entry);
@@ -159,9 +167,10 @@ function adoptOf(events, kept) {
 
 // Reverses `lever`'s latest change in `repo`. -> { event, entry, relisted, repo, text } (event null
 // with nothing to undo)
-export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Date() }) {
+export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Date(), registry = REGISTRY }) {
   const r = resolveRepo(repo, configRoot);
-  checkLever(lever);
+  checkLever(lever, registry);
+  const valuedLever = isValued(registry[lever]);
   checkRow(r, lever, configRoot);
   const state = batchPaths(r.slug).state;
   let nothing = null;
@@ -185,19 +194,21 @@ export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Dat
     const last = latestChange(events, lever);
     const at = stamp(events, now);
     const id = decisionId('undo', r.slug, lever, at);
-    const cur = leverStatesIn(events)[lever];
+    const cur = leverStatesIn(events, registry)[lever];
     if (last?.kind === 'override' && last.actor === BY_HAND) {
       const i = events.indexOf(last);
-      const restored = leverStatesIn(events.slice(0, i))[lever];
+      const restored = leverStatesIn(events.slice(0, i), registry)[lever];
       undone = last;
       // Back to an earlier call by hand, pinned to its value again; back to a plain state (a lever that
-      // was simply off, or paused) with no value, so it reads as that state and is not pinned.
-      const to = restored.state === 'overridden' ? restored.value : restored.state;
+      // was simply off, or paused) with no value, so it reads as that state and is not pinned. A lever
+      // with more than two arms takes back the value it was kept on or set to.
+      const valued = valuedLever && restored.value != null && ['overridden', ...KEPT_STATES].includes(restored.state);
+      const to = restored.state === 'overridden' && !valued ? restored.value : restored.state;
       const override = {
         kind: 'override', lever, actor: BY_HAND, reason_code: 'ben_override', at, from: cur.state, to,
-        ...(restored.state === 'overridden' ? { value: to } : {}), restores: { id: restored.id, at: restored.at },
+        ...(restored.state === 'overridden' || valued ? { value: restored.value } : {}), restores: { id: restored.id, at: restored.at },
         decision_id: id, undoes_event: last.id, ...(last.decision_id ? { undoes: last.decision_id } : {}),
-        reason: `undid ${last.decision_id ? `decision ${last.decision_id}` : 'the last change by hand'} with levers undo: back to ${to}`,
+        reason: `undid ${last.decision_id ? `decision ${last.decision_id}` : 'the last change by hand'} with levers undo: back to ${to}${valued ? ` on ${restored.value}` : ''}`,
       };
       // The items Ben's call cleared are listed again, after the undo that brings them back, in the same write.
       const relist = spentBy(events, i, lever).map(({ v, id: itemId, at: _at, repo: _repo, ...rest }) => ({ ...rest, at, relisted_from: itemId, relisted_by: id }));
@@ -211,10 +222,13 @@ export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Dat
     if (last && last.kind === 'transition' && KEPT_STATES.includes(last.to)) {
       undone = last;
       adopt = adoptOf(events, last);
+      // A lever with more than two arms goes back to its baseline, set by hand.
+      const back = valuedLever ? { to: 'overridden', value: registry[lever].baseline } : { to: 'off', value: 'off' };
       return {
-        kind: 'override', lever, actor: BY_HAND, reason_code: 'ben_override', at, from: cur.state, to: 'off', value: 'off',
+        kind: 'override', lever, actor: BY_HAND, reason_code: 'ben_override', at, from: cur.state, ...back,
         decision_id: id, undoes_event: last.id,
-        reason: `turned off by hand with levers undo, reversing desk's ${last.to === 'settled' ? 'settled adopt' : 'adopt'}`,
+        reason: valuedLever ? `put back on its baseline, ${back.value}, by hand with levers undo, reversing desk's ${last.to === 'settled' ? 'settled adopt' : 'adopt'}`
+          : `turned off by hand with levers undo, reversing desk's ${last.to === 'settled' ? 'settled adopt' : 'adopt'}`,
       };
     }
     const ever = events.some((e) => e.lever === lever && ((e.kind === 'transition' && KEPT_STATES.includes(e.to)) || e.kind === 'override'));
@@ -222,7 +236,7 @@ export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Dat
       ? `${lever}'s latest change in ${r.name} is desk's ${last.to}, not an adopt or your own call, so there's nothing to undo.`
       : `${lever} has never been adopted in ${r.name}, so there's nothing to undo.`;
     return null;
-  });
+  }, registry);
   if (!written && !pending) return { event: null, entry: null, relisted: [], repo: r, text: nothing };
   if (!written) replays = pendingReplay.length;
   const lines = written ? [written].flat() : [pending, ...relisted, ...pendingReplay];
@@ -231,22 +245,24 @@ export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Dat
 
   // An adopt desk logged as a taken call is overridden by this undo, so the digest stops offering it.
   const adoptCall = adopt ? readDecisions(state).taken.find((d) => d.lever_event === adopt.id || d.lever_event === undone.id) : null;
+  // A valued lever's call names its value: the baseline an undone adopt goes back to, or the value restored.
+  const shown = valuedLever && event.value ? event.value : event.to;
   const entry = {
-    id: event.decision_id, at: event.at, repo: r.ghRepo, ticket: null, question: `Is ${lever} ${event.to} in ${r.name}?`,
+    id: event.decision_id, at: event.at, repo: r.ghRepo, ticket: null, question: `Is ${lever} ${shown} in ${r.name}?`,
     ...(adoptCall
-      ? { override_of: adoptCall.id, was: adoptCall.chose, chose: 'off' }
-      : { options: [event.to, event.from], chose: event.to, category: CATEGORY, pr: null, source: 'levers', run: null }),
+      ? { override_of: adoptCall.id, was: adoptCall.chose, chose: valuedLever ? event.value : 'off' }
+      : { options: valuedLever && event.value ? [event.value, ...choicesOf(lever, registry).filter((c) => c !== event.value)] : [event.to, event.from], chose: shown, category: CATEGORY, pr: null, source: 'levers', run: null }),
     by: BY_HAND, slug: r.slug, lever, ...(event.undoes ? { undoes: event.undoes } : {}),
   };
   logDecision(state, entry);
-  recordLeverDecision(replayed.filter((e) => e.kind === 'trip'), { slug: r.slug, repo: r.ghRepo, state });
+  recordLeverDecision(replayed.filter((e) => e.kind === 'trip'), { slug: r.slug, repo: r.ghRepo, state, registry });
   const text = undone?.kind === 'transition'
-    ? `Turned off ${lever} in ${r.name}. It stays off until you set it back.`
+    ? (valuedLever ? `Put ${lever} back on its baseline, ${event.value}, in ${r.name}. It stays there until you set it again.` : `Turned off ${lever} in ${r.name}. It stays off until you set it back.`)
     : `Put ${lever} back to ${event.to} in ${r.name}, undoing your decision ${event.undoes ?? '(no id)'}.${items.length ? ` Its needs-you item${items.length === 1 ? ' is' : 's are'} listed again.` : ''}${replayed.length ? ' A blind audit found a P0 on its trial while it was off, so that trial is reverted now.' : ''}`;
   return { event, entry, relisted: items, replayed, repo: r, text };
 }
 
-const USAGE = 'usage: levers decide <repo> <lever> off|trial · levers undo <repo> <lever>';
+const USAGE = 'usage: levers decide <repo> <lever> off|trial|<value> · levers undo <repo> <lever>';
 
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }

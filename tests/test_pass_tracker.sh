@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: pass: tracker (preflight cost, the test lock, PR status and merges, outside blockers, undraft, evidence)
+# layer: L3
 # pass.mjs with Jira as the tracker: each spawn's preflight cost, a worker quiet under the test lock,
 # a done ticket's PR status and merge, blockers outside the batch, a draft leaving draft, a supervised
 # batch admitting a held ticket's blocker, and evidence runs that fail the same way. Runs the real
@@ -155,6 +156,7 @@ cat > "$T/stub/gh" <<EOF
 echo "\$*" >> "$T/gh-calls"
 case "\$*" in
   "pr view 400 "*) echo '{"state":"MERGED","url":"https://github.com/acme/widgets/pull/400","mergedAt":"$MERGED","statusCheckRollup":[]}' ;;
+  "pr view 402 "*) echo '{"state":"MERGED","url":"https://github.com/acme/widgets/pull/402","mergedAt":"$MERGED","headRefName":"feat/co-4-renamed","statusCheckRollup":[]}' ;;
   "pr view 501 "*) if [ -f "$T/n-merged" ]; then echo '{"state":"MERGED","url":"https://github.com/acme/widgets/pull/501","mergedAt":"$MERGED","statusCheckRollup":[]}'
                    else echo '{"state":"OPEN","url":"https://github.com/acme/widgets/pull/501","mergedAt":"0001-01-01T00:00:00Z","statusCheckRollup":[]}'; fi ;;
   "pr list "*) echo '[]' ;;
@@ -203,6 +205,7 @@ mkdir -p "$T/state-co/logs"; q init co
 q add CO-1; q park CO-1 "which copy?"
 q add CO-2; q park CO-2 "which tier?"
 q add CO-3; q park CO-3 "which plan?"; node "$B/closeout.mjs" CO-3 >/dev/null; q set CO-3 added_at=2099-01-01T00:00:00.000Z
+q add CO-4; q set CO-4 branch=feat/co-4; q park CO-4 "which flow?"; node "$B/closeout.mjs" CO-4 --pr 402 >/dev/null
 out=$(node "$B/closeout.mjs" CO-1 --pr 400 2>&1)
 check "DS-180 AC8 closing out a parked ticket leaves a note for the batch and says so" '[ -f "$T/state-co/closed-out/CO-1.json" ] && echo "$out" | grep -q "^CO-1 is parked in batch co: noted for its orchestrator"'
 out=$(node "$B/closeout.mjs" NOPE-1 --how "done" 2>&1)
@@ -211,6 +214,9 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-180 AC9 the next pass records it done with its PR, and clears the note" \
   '[ "$(field CO-1 state)" = "\"done\"" ] && [ "$(field CO-1 result.pr)" = 400 ] && [ "$(field CO-1 park)" = null ] && [ ! -f "$T/state-co/closed-out/CO-1.json" ] && echo "$out" | grep -q "CO-1: closed out from an interactive session (merged, PR #400)"'
 check "DS-180 AC9 a ticket nobody closed out stays parked" '[ "$(field CO-2 state)" = "\"parked\"" ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "a merge closed out with its PR stays done though the PR was opened from another branch" \
+  '[ "$(field CO-4 state)" = "\"done\"" ] && [ "$(field CO-4 shipped_pr)" = 402 ] && [ "$(field CO-4 park)" = null ] && ! echo "$out" | grep -q "CO-4.*not its own"'
 check "DS-180 a note older than the ticket's place in the queue is stale: dropped, and the ticket stays parked" '[ "$(field CO-3 state)" = "\"parked\"" ] && [ ! -f "$T/state-co/closed-out/CO-3.json" ]'
 # DS-757: a close-out whose write is refused (the queue locked past its wait) keeps its note, and the
 # next pass records it.
@@ -869,12 +875,13 @@ held_on J-66 J-67 'done'
 held_on J-68 X-69 indeterminate
 held_on J-70 J-71 new
 held_on J-72 J-73 new; touch "$T/refuse-J-73"
-# J-70's held item is put off on the inputs needs-you keys it to now; J-80's was put off while its
-# blocker was in progress, so the blocker moving to To Do has brought it back.
+# J-70's held item is put off on the inputs needs-you keys it to now, in the form entries took before
+# blockers were settled: its blocker's Jira status since moving in flight leaves it put off. J-80's was
+# put off while another blocker held it, so the blocker that holds it now has brought it back.
 held_on J-80 J-81 new
 node -e 'import(process.argv[1]).then((m) => { const off = (t, b, cat) => console.log(JSON.stringify(m.putOffEntry({ question: `${t} held`, ticket: t,
   inputs: { ticket: t, need: `held by ${b} (${cat}, in no batch), outside this batch`, blockers: `${b}:${cat === "to do" ? "new" : "indeterminate"}@none` } })));
-  off("J-70", "J-71", "to do"); off("J-80", "J-81", "in progress"); })' "$B/not-now.mjs" > "$T/state-a/not-now.jsonl"
+  off("J-70", "J-71", "to do"); off("J-80", "J-82", "in progress"); })' "$B/not-now.mjs" > "$T/state-a/not-now.jsonl"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-569 AC1 the held ticket's open blocker in no batch is admitted to its batch, and its hold is an ordinary one" \
   'grep -qx "admit J-61 --by pass" "$T/admits-a" && [ "$(field J-61 state)" != null ] && [ "$(field J-60 held_by)" = "\"J-61\"" ] && [ "$(field J-60 held_outside)" = null ] && [ "$(field J-60 outside_blockers)" = "[]" ] && echo "$out" | grep -q "outside blockers: J-61, holding J-60, admitted to this batch"'
@@ -884,7 +891,7 @@ check "DS-569 AC3 a Done blocker admits nothing, and the held ticket is released
   '! grep -q "J-67" "$T/admits-a" && [ "$(field J-66 state)" = "\"triaged\"" ] && [ "$(field J-66 held_by)" = null ]'
 check "DS-569 a blocker in another Jira project, and one whose held item was put off, are not admitted" \
   '! grep -q "X-69" "$T/admits-a" && ! grep -q "J-71" "$T/admits-a" && [ "$(field J-70 held_outside)" = "\"J-71\"" ]'
-check "DS-569 a held item put off before its blocker moved is back, so its blocker is admitted" \
+check "DS-569 a held item put off before its blockers changed is back, so its blocker is admitted" \
   'grep -qx "admit J-81 --by pass" "$T/admits-a" && [ "$(field J-80 held_outside)" = null ]'
 check "DS-569 a blocker intake refuses is said with its reason, and the ticket stays held outside" \
   'grep -qx "admit J-73 --by pass" "$T/admits-a" && [ "$(field J-72 held_outside)" = "\"J-73\"" ] && [ "$(field J-72 outside_admit_tried)" = "\"J-73\"" ] && echo "$out" | grep -qF "outside blockers: J-73, holding J-72, not admitted to this batch (not admitted J-73: lane C: needs a plan): admit it with /desk-admit J-73"'

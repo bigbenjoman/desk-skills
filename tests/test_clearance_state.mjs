@@ -1,4 +1,5 @@
 // suite: desk-clearance state (config rows read through desk-env)
+// layer: L2
 // covers: skills/desk-clearance/bin/clearance-state.mjs
 // clearance-state.mjs reads its config rows through desk-env, so the memory ceiling `capacity` reports
 // names the source `desk-env get memory-ceiling` reads it from. Scratch directories only.

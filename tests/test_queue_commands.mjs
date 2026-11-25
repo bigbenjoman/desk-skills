@@ -1,7 +1,8 @@
 // suite: queue.mjs command list (its switch and the flags each command reads equal QUEUE_COMMANDS; usage from it)
+// layer: L2
 // covers: desk/bin/queue.mjs desk/bin/queue-commands.mjs
 // Scratch directories only.
-import { readFileSync, rmSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -61,7 +62,7 @@ function parity(text, list) {
   return out;
 }
 
-t('the switch handles every listed command (31)', Object.keys(QUEUE_COMMANDS).length, 31);
+t('the switch handles every listed command (33)', Object.keys(QUEUE_COMMANDS).length, 33);
 t('the switch and its flags equal QUEUE_COMMANDS', parity(source, QUEUE_COMMANDS), []);
 
 // A branch that adds a command, or a flag read, without the list fails naming it.
@@ -83,6 +84,29 @@ for (const [label, args] of [['an unknown command', ['frobnicate']], ['no comman
 }
 t('an unknown command is named', /unknown command "frobnicate"/.test(run(['frobnicate']).stderr), true);
 t('watch lists its flags in the usage', /watch \[--interval\] \[--stages\]/.test(run(['frobnicate']).stderr), true);
+
+// #1319: get on a running worker reads where it is from its log, which the queue learns only at the
+// next pass: this spawn's last stage marker and when the log last grew. An earlier spawn's stage is not it.
+{
+  const at = '2026-11-23T10:00:00.000Z';
+  writeFileSync(join(S, 'queue.json'), JSON.stringify({ version: 1, batch: 'b', tickets: {
+    'R-1': { key: 'R-1', state: 'running', stage: '0/9', session_id: 's1', updated_at: at },
+    'R-2': { key: 'R-2', state: 'running', stage: '0/9', session_id: 's2', updated_at: at },
+    'R-3': { key: 'R-3', state: 'running', stage: '0/9', session_id: 's3', updated_at: at },
+    'D-1': { key: 'D-1', state: 'done', stage: '9/9', updated_at: at } } }));
+  mkdirSync(join(S, 'state', 'logs'), { recursive: true });
+  const said = (stage, ts) => JSON.stringify({ type: 'assistant', timestamp: ts, message: { content: [{ type: 'text', text: `AUTOPILOT_STAGE: ${stage}` }] } });
+  const spawn = (sid) => JSON.stringify({ type: 'desk_spawn', session: sid, at });
+  writeFileSync(join(S, 'state', 'logs', 'R-1.log'), [spawn('s0'), said('7/9 pr', '2026-11-22T10:00:00Z'), spawn('s1'), said('2/9 understand', '2026-11-23T10:05:00Z'), said('3/9 implement', '2026-11-23T10:20:00Z'), ''].join('\n'));
+  writeFileSync(join(S, 'state', 'logs', 'R-2.log'), [spawn('s2'), ''].join('\n'));
+  const get = (k) => JSON.parse(run(['get', k]).stdout);
+  const r1 = get('R-1').live;
+  t('#1319 a running worker\'s get shows this spawn\'s last stage, when it said it, and the log\'s heartbeat',
+    `${r1?.stage} ${r1?.said_at} ${r1?.log?.endsWith('R-1.log')} ${Date.now() - Date.parse(r1?.heartbeat_at) < 60_000}`, '3/9 2026-11-23T10:20:00.000Z true true');
+  t('#1319 one spawned and silent since shows its log with no stage', JSON.stringify([get('R-2').live.stage, !!get('R-2').live.heartbeat_at]), '[null,true]');
+  t('#1319 one with no log yet shows none', JSON.stringify(get('R-3').live), JSON.stringify({ log: null, stage: null, said_at: null, heartbeat_at: null }));
+  t('#1319 a ticket not running is as recorded, with no live block', 'live' in get('D-1'), false);
+}
 
 rmSync(S, { recursive: true, force: true });
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }

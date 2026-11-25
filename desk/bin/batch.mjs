@@ -27,11 +27,15 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, EXIT, crashShowsPerson, describeCrash, LEFT_PREFIX, promotedAt } from './batch-state.mjs';
+import { blockersOf } from './queue-states.mjs';
 import { listBatches, onlyKeptTriage, finished, prState, prMergedAt, lastPromotion, lastPromotionRecorded, orchestratorHolder, supervisorHolder, batchEnv } from './batches.mjs';
 import { readHanded, handItems, dropHanded } from './decider.mjs';
 import { admissionRefusal } from './gate.mjs';
 import { followOnPending, postMergeUnmade } from './harvest.mjs';
 import { auditsIn } from './levers-audit.mjs';
+import { readRecords as readPreviewDbs } from './preview-db.mjs';
+import { finishedCloud, handOver, readArchived, readPending } from './cloud-worker.mjs';
+import { readArchive } from './queue-store.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DONE_DIR = '.done';
@@ -239,9 +243,10 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
   const moved = [];
   const stay = [];
   for (const t of left) {
-    const ready = ['triaged', 'queued'].includes(t.state) && !t.held_by && !t.held_outside;
+    const by = blockersOf(t);
+    const ready = ['triaged', 'queued'].includes(t.state) && !by.length && !t.held_outside;
     const why = ps === 'CLOSED' ? `batch ${b.name}'s promotion PR #${p} was closed, so its epic may be abandoned`
-      : !ready ? `it is ${t.state}${t.held_outside ? `, held behind ${String(t.held_outside).split('|').join(', ')} outside every batch, so whether it moves with its hold is the person's call` : t.held_by ? `, held behind ${String(t.held_by).split('|').join(', ')}, so whether it moves with its hold is the person's call` : ', which a move would not carry over'}`
+      : !ready ? `it is ${t.state}${t.held_outside ? `, held behind ${String(t.held_outside).split('|').join(', ')} outside every batch, so whether it moves with its hold is the person's call` : by.length ? `, held behind ${by.join(', ')}, so whether it moves with its hold is the person's call` : ', which a move would not carry over'}`
         : move(b, t.key);
     if (why) stay.push({ t, why }); else moved.push(t.key);
   }
@@ -267,6 +272,18 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
   // Every ticket left behind has moved or been parked by now, so a batch kept for follow-on steps runs
   // nothing more.
   if (follows.length || owedSteps.length) return { ...none, lines: [...lines, ...(moved.length ? [`archive: batch ${b.name} ${movedText}and waits on follow-on steps`] : [])] };
+  // A preview database a worker made (preview-db.mjs) is deleted only by this batch's pass, from the
+  // record in its state folder: archiving would move the record where no pass reads it, and the
+  // database branch and its preview override would be left. The batch is not idle while one is left,
+  // so its pass runs and deletes it, and the batch is archived on a later tick.
+  const dbs = readPreviewDbs(b.state);
+  if (dbs.length) return { ...none, lines: [...lines, `archive: batch ${b.name} ${movedText}waits on its pass to delete preview database${dbs.length > 1 ? 's' : ''} ${dbs.map((d) => `${d.db} (PR #${d.pr})`).join(', ')}`] };
+  // An archived batch is no longer listed, so its finished cloud sessions the person has not recorded
+  // archived move to the standing batch's list (cloud-worker.mjs handOver), where needs-you still asks.
+  // The record is the repo's, outside this batch's state folder, so the move below leaves it.
+  try {
+    handOver(b.state, finishedCloud(q.tickets, readArchive(b.queue).tickets, readArchived(b.state), readPending(b.state)));
+  } catch (e) { return { ...none, lines: [...lines, `archive: batch ${b.name} ${movedText}waits: its finished cloud sessions could not be handed to the standing batch (${e.message})`] }; }
   const told = readStopped(b.state);
   const q2 = moveDone(dirname(b.queue), now);
   const s2 = moveDone(b.state, now);

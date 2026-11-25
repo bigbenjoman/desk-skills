@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: pass: fixes (red checks, reviews, conflicts and feedback go back to a fix worker; check builds; live reads)
+# layer: L3
 # pass.mjs sending a PR back to a fix worker: red after the driver's reruns, in conflict, a review at
 # its head that is not clean, unresolved review threads; usage pacing; check
 # builds and live reads run on the host; a park that waits only on a merge. Runs the real pass.mjs,
@@ -44,9 +45,18 @@ q set F-2 result.pr=704; fx 704 "$H1" CONFLICTING tests:SUCCESS
 q set F-3 result.pr=696; fx 696 "$H1" MERGEABLE tests:SUCCESS "Flows image missing:FAILURE:903"
 q set F-4 result.pr=698; fx 698 "$H1" MERGEABLE tests:SUCCESS "Flows image missing:FAILURE:903" Lint:FAILURE:904; reran 698 "$H1" "Flows image missing" Lint
 q set F-5 result.pr=699; fx 699 "$H1" MERGEABLE tests:SUCCESS Lint:FAILURE:905; printf 'Lint\n' > "$T/state-f/merge-driver/reruns-699-$H1"
+# #1341: an ask recorded for the person whose tickets are all merged or done waits on nothing: each pass drops it.
+q add F-8; q set F-8 state=done lane=A branch=fix/F-8 result.pr=690 merged_at=2026-11-20T10:00:00Z
+printf '%s\n' '{"next":8,"asks":[{"id":6,"text":"Merge PR #12 now, or hold it?","at":"2026-11-20T09:00:00Z","options":["merge","hold"],"recommended":"hold","apply_by":"2026-11-20T17:00:00Z"},{"id":7,"text":"Upgrade the plan?","at":"2026-11-20T09:00:00Z","options":["upgrade","stay"],"recommended":"upgrade","never_default":"a money call"},{"id":4,"text":"config drift: the GitHub repo row","at":"2026-11-20T09:00:00Z","settles":"drift","rows":["§0 \"GitHub repo\""]},{"id":5,"text":"config drift: Test sign-in","at":"2026-11-20T09:00:00Z","settles":"drift","rows":["§0 \"GitHub repo\"","§4 \"Test sign-in\""]},{"id":1,"text":"admit F-8 once the person says admit","at":"2026-11-20T09:00:00Z","until":["F-8"]},{"id":2,"text":"admit F-8 and X-9 once the person says admit","at":"2026-11-20T09:00:00Z","until":["F-8","X-9"]},{"id":3,"text":"run the backfill once F-8 merges","at":"2026-11-20T09:00:00Z"}]}' > "$T/state-f/asks.json"
 : > "$T/spawns"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-278 AC2 red after the driver's two reruns: requeued once for a fix worker, try 1" \
   '[ "$(field F-1 state)" = "\"triaged\"" ] && [ "$(field F-1 fix.try)" = 1 ] && [ "$(field F-1 fix_tries | jq length)" = 1 ] && echo "$out" | grep -q "fix try 1 of 2: F-1 requeued for PR #697 — red: Backend tests, Lint"'
+check "#1341 the pass drops an ask whose every ticket is merged, saying so" 'echo "$out" | grep -qF "needs-you: ask 1 dropped, as every ticket it names (F-8) is merged or done: \"admit F-8 once the person says admit\"" && [ "$(jq -c "[.asks[].id] | map(select(. < 4))" "$T/state-f/asks.json")" = "[2,3]" ]'
+check "#1341 and keeps a wait on a ticket it does not know, and a step owed after F-8 merges that waits on nothing" '! echo "$out" | grep -q "needs-you: ask [23] dropped"'
+check "#1361 a config-drift ask whose rows the config now has is dropped, and one naming a row still missing stays" 'echo "$out" | grep -qF "needs-you: ask 4 dropped, as the config now has the rows it named (§0 \"GitHub repo\")" && [ "$(jq -c "[.asks[].id | select(. >= 4 and . < 6)]" "$T/state-f/asks.json")" = "[5]" ]'
+check "#1366 a choice nobody answered by its deadline takes its recommendation, recorded as chosen by default" 'echo "$out" | grep -qF "needs-you: ask 6 applied hold by default, as nobody chose by 2026-11-20T17:00:00Z" && [ "$(jq -r ".answered[] | select(.id == 6) | \"\(.chose) \(.by)\"" "$T/state-f/asks.json")" = "hold default" ]'
+check "#1366 and as a taken decision the check-in digest lists, saying how to reverse it" 'jq -e "select(.ticket == \"ask:6\" and .chose == \"hold\" and .source == \"default\" and (.question | test(\"To reverse it, override it here with merge: the session that asked reads the override\")))" "$T/state-f/decisions.jsonl" >/dev/null'
+check "#1366 one that must never default stays open" 'jq -e ".asks[] | select(.id == 7)" "$T/state-f/asks.json" >/dev/null && ! jq -e ".answered[]? | select(.id == 7)" "$T/state-f/asks.json" >/dev/null'
 check "DS-278 AC2 a check with one rerun so far is left to the driver" '[ "$(field F-5 state)" = "\"done\"" ] && [ "$(field F-5 fix)" = null ]'
 check "DS-278 AC3 a DIRTY PR is requeued once for the conflict" '[ "$(field F-2 state)" = "\"triaged\"" ] && [ "$(field F-2 fix.kind)" = "\"conflict\"" ] && [ "$(field F-2 fix.what)" = "\"conflicts with main\"" ]'
 check "DS-278 AC6 red only on a check no worker can fix: never requeued, stuck with its command" \
@@ -162,6 +172,9 @@ try { api = JSON.parse(fs.readFileSync('$T/fx/api.json', 'utf8')); } catch {}
 if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fx/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
 else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
 else if (a[0] === 'api' && a[1] in api) console.log(api[a[1]]);
+else if (a[0] === 'run' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fx/run-' + a[2] + '-' + a[a.indexOf('--json') + 1] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'run' && a[1] === 'rerun') process.exit(0);
+else if (a[0] === 'pr' && a[1] === 'update-branch') process.exit(0);
 else process.exit(1);
 EOF
 { cat "$T/config-f.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `failure-class` |\n'; } > "$T/config-fl.md"
@@ -222,8 +235,8 @@ check "DS-850 AC3 with the grant, one repair ticket is started, its ticket namin
   '{ [ -e "$T/state-fb/logs/base-red-main.log.round1.gz" ] || [ -e "$T/state-fb/logs/base-red-main.log.round1" ]; } && [ "$(field base-red-main state)" = "\"running\"" ] && [ "$(echo "$out" | grep -o "base-red-main port=" | wc -l | tr -d " ")" = 1 ] && grep -qF "run https://github.com/acme/widgets/actions/runs/77" "$T/state-fb/tickets/base-red-main.md" && grep -qF "PR #802 (FB-0)" "$T/state-fb/tickets/base-red-main.md"'
 q set base-red-main session_id=live-1
 out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
-check "DS-850 AC4 with the repair running, no second one starts, and the line names it" \
-  '[ "$(field base-red-main state)" = "\"running\"" ] && ! echo "$out" | grep -q "base-red-main port=" && echo "$out" | grep -A1 "^RED BASE:" | grep -qF "Repair ticket base-red-main is running"'
+check "DS-850 AC4 with the repair running, no second one starts, and (DS-903 AC2) the same red spell sends no second notice" \
+  '[ "$(field base-red-main state)" = "\"running\"" ] && ! echo "$out" | grep -q "base-red-main port=" && ! echo "$out" | grep -q "^RED BASE:" && [ "$(jq -r .base_red.check "$DESK_QUEUE")" = Lint ]'
 # This spell's repair, its PR closed unmerged and archived: done with, so the key is admitted again. Its
 # reopening marker names an earlier PR (700), so owes #901 nothing.
 q set base-red-main state=done session_id=null result.pr=901 'pr_status={"pr":901,"state":"CLOSED"}' reopening=700
@@ -240,10 +253,80 @@ out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-f.md" node "$B/pass.
 check "DS-850 AC3 a repair merged in an earlier red spell does not stop the next spell's repair, and keeps its own row and steps" \
   '[ "$(field base-red-main-20261121090000 state)" = "\"running\"" ] && echo "$out" | grep -q "base-red-main-20261121090000 port=" && [ "$(field base-red-main state)" = "\"done\"" ] && [ "$(field base-red-main merged_at)" != null ] && [ "$(field base-red-main follow_on | jq -r ".[0].step")" = "check main is green" ]'
 q set base-red-main-20261121090000 state=done session_id=null; q drop base-red-main-20261121090000
+# A red main whose run failed only at an install step is the runner's: its failed run is re-run once
+# and no repair admitted, nothing more while the rerun goes, and the repair once it fails again.
+sed -e 's/^| `autopilot-workers` .*$/&\n| `ci-rerun` | Re-run CI | `yes` | `yes` |/' "$T/config-f.md" > "$T/config-frr.md"
+printf '%s\n' '{"jobs":[{"name":"Install","steps":[{"name":"Set up job","conclusion":"success"},{"name":"Install browsers","conclusion":"failure"}]},{"name":"Lint","steps":[{"name":"Run tests","conclusion":"failure"}]}]}' > "$T/fx/run-78-jobs.json"
+redrec "$(isoago 60)"; jq '.repair_key = "base-red-main-rr" | .checks[0].url = "https://github.com/acme/widgets/actions/runs/78/job/5"' "$T/state-fb/base-red.json" > "$T/state-fb/base-red.tmp" && mv "$T/state-fb/base-red.tmp" "$T/state-fb/base-red.json"
+: > "$T/gh-calls"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1); red=$(printf '%s\n' "$out" | grep -A1 '^RED BASE:' | tail -1)
+check "a red main failing only at an install step has its failed run re-run once, and no repair is admitted" \
+  '[ "$(grep -c "^run rerun 78 --repo acme/widgets --failed$" "$T/gh-calls")" = 1 ] && [ "$(field base-red-main-rr state)" = null ] && echo "$red" | grep -qF "No repair ticket is admitted yet: its failed run 78 failed at a setup step (\"Install browsers\")" && echo "$red" | grep -qF "Repair ticket base-red-main-rr is admitted if it fails again"'
+printf '%s\n' '{"status":"in_progress","conclusion":""}' > "$T/fx/run-78-status,conclusion.json"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "while the rerun goes, it is not re-run again and no repair is admitted" \
+  '[ "$(grep -c "^run rerun 78" "$T/gh-calls")" = 1 ] && [ "$(field base-red-main-rr state)" = null ]'
+printf '%s\n' '{"status":"completed","conclusion":"failure"}' > "$T/fx/run-78-status,conclusion.json"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "red again after the rerun, the repair is admitted and started, with no second rerun" \
+  '[ "$(grep -c "^run rerun 78" "$T/gh-calls")" = 1 ] && [ "$(field base-red-main-rr state)" = "\"running\"" ] && echo "$out" | grep -q "base-red-main-rr port="'
+q set base-red-main-rr state=done session_id=null; q drop base-red-main-rr
+# A red main whose only failure is a test step that ran out of time is the runner's as well: rerun
+# once, nothing admitted.
+printf '%s\n' '{"jobs":[{"name":"Lint","databaseId":7901,"conclusion":"failure","steps":[{"name":"Set up job","conclusion":"success"},{"name":"Run tests","conclusion":"failure"}]}]}' > "$T/fx/run-79-jobs.json"
+api "repos/acme/widgets/check-runs/7901/annotations?per_page=100" '[{"annotation_level":"failure","message":"The action '"'"'Run tests'"'"' has timed out after 12 minutes."}]'
+redrec "$(isoago 60)"; jq '.repair_key = "base-red-main-to" | .checks[0].url = "https://github.com/acme/widgets/actions/runs/79/job/7901"' "$T/state-fb/base-red.json" > "$T/state-fb/base-red.tmp" && mv "$T/state-fb/base-red.tmp" "$T/state-fb/base-red.json"
+: > "$T/gh-calls"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1); red=$(printf '%s\n' "$out" | grep -A1 '^RED BASE:' | tail -1)
+check "a red main failing only on a step timeout has its run re-run once, and nothing is admitted" \
+  '[ "$(grep -c "^run rerun 79 --repo acme/widgets --failed$" "$T/gh-calls")" = 1 ] && [ "$(field base-red-main-to state)" = null ] && echo "$red" | grep -qF "failed at a timeout (\"Lint\")"'
+check "the job re-run for a timeout is kept with when" '[ "$(jq -r ".timeouts[-1].job" "$T/state-fb/base-red-reran.json")" = Lint ]'
+# #1281: the same job timing out on main again, on a new run within the day, is too slow for its limit,
+# not unlucky: the repair is admitted rather than a second rerun.
+cp "$T/fx/run-79-jobs.json" "$T/fx/run-80-jobs.json"
+redrec "$(isoago 30)"; jq '.repair_key = "base-red-main-to2" | .checks[0].url = "https://github.com/acme/widgets/actions/runs/80/job/7901"' "$T/state-fb/base-red.json" > "$T/state-fb/base-red.tmp" && mv "$T/state-fb/base-red.tmp" "$T/state-fb/base-red.json"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "#1281: the same job timing out on main again within a day admits the repair, with no second rerun" \
+  '! grep -q "^run rerun 80" "$T/gh-calls" && [ "$(field base-red-main-to2 state)" = "\"running\"" ]'
+q set base-red-main-to2 state=done session_id=null; q drop base-red-main-to2
+# While an earlier spell's repair is still open (parked), a new red admits no second repair: it is noted on
+# the open one, on its row and in its ticket file.
+q add base-red-main-20261123000000 Bug A; q set base-red-main-20261123000000 state=parked branch=fix/base-red-main-20261123000000
+redrec "$(isoago 60)"; jq '.repair_key = "base-red-main-20261123050000" | .since = "2026-11-23T05:00:00Z" | .checks[0].url = null' "$T/state-fb/base-red.json" > "$T/state-fb/base-red.tmp" && mv "$T/state-fb/base-red.tmp" "$T/state-fb/base-red.json"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "a second red while a repair ticket is open admits no second ticket, and is noted on the open one" \
+  '[ "$(field base-red-main-20261123050000 state)" = null ] && [ "$(field base-red-main-20261123000000 red_again | jq -r .key)" = base-red-main-20261123050000 ] && grep -qF "went red again since this ticket was made: Lint" "$T/state-fb/tickets/base-red-main-20261123000000.md"'
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "a pass after it notes it no second time" '[ "$(grep -c "went red again" "$T/state-fb/tickets/base-red-main-20261123000000.md")" = 1 ] && [ "$(field base-red-main-20261123050000 state)" = null ]'
+# A third spell with the base worker's push not approved: the grant stops a new worker, not the note.
+jq '.repair_key = "base-red-main-20261123060000" | .since = "2026-11-23T06:00:00Z"' "$T/state-fb/base-red.json" > "$T/state-fb/base-red.tmp" && mv "$T/state-fb/base-red.tmp" "$T/state-fb/base-red.json"
+out=$(DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "#1281: with the push grant not given, a later red is still noted on the open repair" \
+  '[ "$(field base-red-main-20261123060000 state)" = null ] && [ "$(field base-red-main-20261123000000 red_again | jq -r .key)" = base-red-main-20261123060000 ] && [ "$(grep -c "went red again" "$T/state-fb/tickets/base-red-main-20261123000000.md")" = 2 ]'
+q set base-red-main-20261123000000 state=done session_id=null; q drop base-red-main-20261123000000
 rm -f "$T/state-fb/base-red.json"; q set base-red-main state=done; q drop base-red-main
+# #1326: a repair parked while someone else fixed main. Main read green since it was admitted, the red
+# record gone: before any spawn its row is closed out as done by the PR that fixed main, no worker runs.
+q add base-red-main-20261123070000 Bug A; q set base-red-main-20261123070000 state=parked added_at="$(isoago 7200)" 'park={"question":"the base still fails Lint"}'
+printf '{"branch":"main","at":"%s"}\n' "$(isoago 60)" > "$T/state-fb/base-green.json"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-frr.md" node "$B/pass.mjs" 2>&1)
+check "#1326 a repair whose base went green since it was admitted is recorded done before any spawn, and no worker starts" \
+  '[ "$(field base-red-main-20261123070000 state)" = "\"done\"" ] && [ "$(field base-red-main-20261123070000 park)" = null ] && ! echo "$out" | grep -q "base-red-main-20261123070000 port=" && echo "$out" | grep -qF "base-red-main-20261123070000: main has gone green since it began"'
+q drop base-red-main-20261123070000; rm -f "$T/state-fb/base-green.json"
 out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-850 AC6 once the driver reads main green, the pass drops the line" '! echo "$out" | grep -q "^RED BASE:" && echo "$out" | grep -q "FB-4: BASE RED"'
 runs "$MB5" Lint '[{"status":"completed","conclusion":"success"}]'
+# #1327: where §3 pr-update-branch is yes, a PR red only where its base was red, the base green since,
+# has its branch updated from the base instead: no re-run, no fix try. Once per head: the next pass,
+# at the same head, goes on as before.
+awk '{ print } /^\| `pr-conflict-unreviewed`/ { print "| `pr-update-branch` | Update branch | `yes` | `yes` |" }' "$T/config-f.md" > "$T/config-fu.md"
+: > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fu.md" node "$B/pass.mjs" 2>&1)
+check "#1327 once its held check passes on the base, the PR's branch is updated from it, with no re-run and no fix try" \
+  '[ "$(grep -c "^pr update-branch 813 --repo acme/widgets$" "$T/gh-calls")" = 1 ] && ! grep -q "^run rerun" "$T/gh-calls" && [ "$(field FB-4 state)" = "\"done\"" ] && [ "$(field FB-4 fix)" = null ] && [ "$(field FB-4 fix_tries)" = null ] && [ "$(field FB-4 base_refresh | jq -c "[.head, .ok, .checks]")" = "[\"$H4\",true,[\"Lint\"]]" ]'
+check "#1327 and the pass says why" 'echo "$out" | grep -qF "fix tries: PR #813 (FB-4) had its branch updated from main (gh pr update-branch): Lint was red on main too and has passed on main since"'
+: > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fu.md" node "$B/pass.mjs" 2>&1)
+check "#1330 a pass at the same head, its update made, waits for the new head: no second update and no fix try" \
+  '! grep -q "^pr update-branch" "$T/gh-calls" && [ "$(field FB-4 fix)" = null ] && [ "$(field FB-4 fix_tries)" = null ] && echo "$out" | grep -qF "fix tries: PR #813 (FB-4) is out of draft: its branch was updated from main at" && echo "$out" | grep -qF "it waits for the run at its new head, with no re-run and no fix try"'
 out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-614 AC2 once the job passes on the base, the hold clears and a fix try proceeds as today" \
   '[ "$(field FB-4 state)" = "\"triaged\"" ] && [ "$(field FB-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-4 fix.class)" = "\"application defect\"" ] && [ "$(field FB-4 base_red | jq -c "[.checks, .cleared]")" = "[[],[\"Lint\"]]" ]'
@@ -1202,14 +1285,16 @@ check "DS-426 AC3 a park naming no Live reads entry is parked as today" \
   '[ "$(field L-3 state)" = "\"parked\"" ] && [ "$(field L-3 park.question)" = "\"which price should the plan show? Not reached: the PR\"" ] && [ "$(field L-3 park.clears_when.kind)" = "\"none\"" ]'
 check "DS-426 AC3 and so is one that asks a question beside the entry: nothing runs for it" \
   '[ "$(field L-4 state)" = "\"parked\"" ] && [ "$(field L-4 park.clears_when.kind)" = "\"none\"" ] && ! ls "$T/state-l/live-reads" | grep -q "^L-4-"'
-# L-5's read has finished, but a session claimed its park: the session's, so nothing is requeued.
+# L-5's read has finished, but a live session claimed its park: the session's, so nothing is requeued.
+# The session's transcript is fresh: a claim whose transcript is gone ends with it (tests/test_claims.sh).
+mkdir -p "$HOME/.claude/projects/-work-repo"; : > "$HOME/.claude/projects/-work-repo/s-live.jsonl"
 git init -q -b fix/L-5 "$T/wt/L-5"; git -C "$T/wt/L-5" commit -q --allow-empty -m L-5; HL5=$(git -C "$T/wt/L-5" rev-parse HEAD)
 printf '{"name":"gateway-models","command":"x","pid":0}\n' > "$T/state-l/live-reads/L-5-$HL5-gateway-models.json"
 echo 0 > "$T/state-l/live-reads/L-5-$HL5-gateway-models.code"; echo '{}' > "$T/state-l/live-reads/L-5-$HL5-gateway-models.out"
-q add L-5; q set L-5 state=parked lane=A branch=fix/L-5 "worktree=$T/wt/L-5" "park={\"question\":\"need live read gateway-models.\",\"clears_when\":{\"kind\":\"live-read\",\"reads\":[\"gateway-models\"],\"head\":\"$HL5\",\"base\":\"$LBASE\"},\"claim\":{\"session\":\"s-gone\",\"at\":\"2026-11-04T00:00:00Z\"}}"
+q add L-5; q set L-5 state=parked lane=A branch=fix/L-5 "worktree=$T/wt/L-5" "park={\"question\":\"need live read gateway-models.\",\"clears_when\":{\"kind\":\"live-read\",\"reads\":[\"gateway-models\"],\"head\":\"$HL5\",\"base\":\"$LBASE\"},\"claim\":{\"session\":\"s-live\",\"at\":\"2026-11-04T00:00:00Z\"}}"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-426 a finished read on a park a session claimed is left to the session: not requeued, the claim kept" \
-  '[ "$(field L-5 state)" = "\"parked\"" ] && [ "$(field L-5 park.claim.session)" = "\"s-gone\"" ] && ! echo "$out" | grep -q "L-5: live read"'
+  '[ "$(field L-5 state)" = "\"parked\"" ] && [ "$(field L-5 park.claim.session)" = "\"s-live\"" ] && ! echo "$out" | grep -q "L-5: live read"'
 # L-6 names gateway-models with text of its own beside it, a flag, a path and a command substitution;
 # L-7 names big-read, which prints one byte over 1 MiB.
 for k in 6 7; do git init -q -b "fix/L-$k" "$T/wt/L-$k"; git -C "$T/wt/L-$k" commit -q --allow-empty -m "L-$k"; done
@@ -1245,6 +1330,52 @@ out1=$(node "$B/pass.mjs" 2>&1); read_done L-9 "$HL9" gateway-models; out=$(node
 check "DS-426 a batch based on a feature branch still reads from §0 Default branch, never the batch base" \
   '[ ! -e "$T/feat-ran" ] && [ "$(cat "$T/state-l/fixtures/L-9/gateway-models.json")" = "{\"models\":[\"gw-1\"]}" ] && [ "$(jq -r .base "$T/state-l/live-reads/L-9-$HL9-gateway-models.json")" = "$LBASE" ]'
 q set-batch base=
+
+# ---- DS-574: a paid §4 Live reads entry runs within its per-call and daily caps, else goes to the person
+# gateway-chat is a stubbed POST endpoint capped at £0.10 a call and £2 a day. P-1 asks for it at £0.03,
+# P-2 at £0.12, P-3 with no estimate; then the day's log is brought to £2 and P-4 asks at £0.03.
+printf 'echo "chat:$#" >> "%s/chat-calls"\necho %s\n' "$T" "'{\"reply\":\"ok\"}'" > "$T/chat.sh"
+sed -e '/^| Live reads /d' "$T/config-l.md" > "$T/config-p.md"
+printf '| Live reads | `gateway-models: ./scripts/fetch-gateway-models.sh` `gateway-chat [£0.10/call, £2/day]: sh %s/chat.sh` |\n' "$T" >> "$T/config-p.md"
+export DESK_CONFIG="$T/config-p.md"
+for k in 1 2 3 4; do git init -q -b "fix/P-$k" "$T/wt/P-$k"; git -C "$T/wt/P-$k" commit -q --allow-empty -m "P-$k"; done
+HP1=$(git -C "$T/wt/P-1" rev-parse HEAD); TODAY=$(date +%Y-%m-%d); SPEND="$T/state-l/live-read-spend.jsonl"
+say "AUTOPILOT_PARK: need live read gateway-chat (est £0.03). Not reached: the PR" > "$T/state-l/logs/P-1.log"
+say "AUTOPILOT_PARK: need live read gateway-chat (est £0.12). Not reached: the PR" > "$T/state-l/logs/P-2.log"
+say "AUTOPILOT_PARK: need live read gateway-chat. Not reached: the PR" > "$T/state-l/logs/P-3.log"
+for k in 1 2 3; do q add "P-$k"; q set "P-$k" state=running lane=A "branch=fix/P-$k" "worktree=$T/wt/P-$k" "session_id=run-P-$k"; done
+: > "$T/chat-calls"; out1=$(node "$B/pass.mjs" 2>&1); read_done P-1 "$HP1" gateway-chat; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-574 AC1 a paid call estimated within both caps runs once, its response saved as the ticket's fixture" \
+  '[ "$(grep -c "^chat:0" "$T/chat-calls")" = 1 ] && [ "$(cat "$T/state-l/fixtures/P-1/gateway-chat.json")" = "{\"reply\":\"ok\"}" ] && [ "$(field P-1 state)" != "\"parked\"" ]'
+check "DS-574 AC1 and its cost is logged against the day, and reported" \
+  '[ "$(jq -c "[.name, .key, .day, .est]" "$SPEND")" = "[\"gateway-chat\",\"P-1\",\"$TODAY\",0.03]" ] && echo "$out1" | grep -qF "P-1: live read gateway-chat started from the pass'"'"'s clean checkout of origin/main at ${LBASE:0:9} (gateway-chat estimated at £0.03, £0.03 of its £2.00/day cap spent today, logged in $SPEND)"'
+check "DS-574 AC2 a call estimated over the per-call cap goes to the person naming the estimate, and nothing runs or is logged" \
+  '[ "$(field P-2 state)" = "\"parked\"" ] && [ "$(field P-2 park.clears_when.kind)" = "\"none\"" ] && field P-2 park.question | grep -qF "live read gateway-chat is estimated at £0.12, over its £0.10/call cap" && ! ls "$T/state-l/live-reads" | grep -q "^P-2-" && ! grep -q "P-2" "$SPEND"'
+check "DS-574 a paid call the park gives no estimate for goes to the person" \
+  '[ "$(field P-3 state)" = "\"parked\"" ] && field P-3 park.question | grep -qF "live read gateway-chat is a paid call (£0.10/call, £2.00/day), and the park gave no estimate for it" && ! ls "$T/state-l/live-reads" | grep -q "^P-3-"'
+printf '{"day":"%s","name":"gateway-chat","key":"X-1","est":1.97}\n' "$TODAY" >> "$SPEND"
+say "AUTOPILOT_PARK: need live read gateway-chat (est £0.03). Not reached: the PR" > "$T/state-l/logs/P-4.log"
+q add P-4; q set P-4 state=running lane=A branch=fix/P-4 "worktree=$T/wt/P-4" session_id=run-P-4
+: > "$T/chat-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-574 AC3 once the day's logged spend has reached the daily cap, another call goes to the person naming the spend so far" \
+  '[ "$(field P-4 state)" = "\"parked\"" ] && field P-4 park.question | grep -qF "live read gateway-chat has spent £2.00 today of its £2.00/day cap, so a call estimated at £0.03 would pass it" && [ ! -s "$T/chat-calls" ] && ! grep -q "P-4" "$SPEND"'
+# P-5's read was started and logged by a pass that stopped before its queue write landed: its park has
+# no base, but the read's record is there.
+git init -q -b fix/P-5 "$T/wt/P-5"; git -C "$T/wt/P-5" commit -q --allow-empty -m P-5; HP5=$(git -C "$T/wt/P-5" rev-parse HEAD)
+printf '{"name":"gateway-chat","command":"x","pid":0,"base":"%s"}\n' "$LBASE" > "$T/state-l/live-reads/P-5-$HP5-gateway-chat.json"
+echo 0 > "$T/state-l/live-reads/P-5-$HP5-gateway-chat.code"; echo '{"reply":"earlier"}' > "$T/state-l/live-reads/P-5-$HP5-gateway-chat.out"
+q add P-5; q set P-5 state=parked lane=A branch=fix/P-5 "worktree=$T/wt/P-5" "park={\"question\":\"need live read gateway-chat (est £0.03).\",\"clears_when\":{\"kind\":\"live-read\",\"reads\":[\"gateway-chat\"],\"head\":\"$HP5\",\"est\":{\"gateway-chat\":0.03}}}"
+: > "$T/chat-calls"; out1=$(node "$B/pass.mjs" 2>&1); out=$(node "$B/pass.mjs" 2>&1)
+check "DS-574 a read an earlier pass started but did not record in the queue is neither run nor logged again, and its output is saved" \
+  'echo "$out1" | grep -qF "P-5: live read gateway-chat was already started at this head by an earlier pass: left parked" && [ ! -s "$T/chat-calls" ] && ! grep -q "P-5" "$SPEND" && [ "$(cat "$T/state-l/fixtures/P-5/gateway-chat.json")" = "{\"reply\":\"earlier\"}" ]'
+# P-6 waits to start gateway-chat when the row is edited to name it first without caps, then with them.
+sed -e '/^| Live reads /d' "$T/config-l.md" > "$T/config-dup.md"
+printf '| Live reads | `gateway-chat: sh %s/chat.sh` `gateway-chat [£0.10/call, £2/day]: sh %s/chat.sh` |\n' "$T" "$T" >> "$T/config-dup.md"
+git init -q -b fix/P-6 "$T/wt/P-6"; git -C "$T/wt/P-6" commit -q --allow-empty -m P-6; HP6=$(git -C "$T/wt/P-6" rev-parse HEAD)
+q add P-6; q set P-6 state=parked lane=A branch=fix/P-6 "worktree=$T/wt/P-6" "park={\"question\":\"need live read gateway-chat (est £0.03).\",\"clears_when\":{\"kind\":\"live-read\",\"reads\":[\"gateway-chat\"],\"head\":\"$HP6\",\"est\":{\"gateway-chat\":0.03}}}"
+: > "$T/chat-calls"; out=$(DESK_CONFIG="$T/config-dup.md" node "$B/pass.mjs" 2>&1)
+check "DS-574 a waiting paid read does not start while the row does not parse, so a repeated uncapped name cannot run it uncapped" \
+  'echo "$out" | grep -qF "P-6: live read gateway-chat waits for config §4 Live reads to parse: left parked" && [ ! -s "$T/chat-calls" ] && ! ls "$T/state-l/live-reads" | grep -q "^P-6-" && [ "$(field P-6 park.clears_when.kind)" = "\"live-read\"" ]'
 
 # ---- DS-419: a ready PR held for review feedback, or with a review at its head that is not clean,
 # goes back to a fix worker; the threads a finished try worked are replied on and resolved.

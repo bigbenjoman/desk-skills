@@ -221,7 +221,8 @@ export function decideGroups(s) {
 //   prStates                 { [pr]: state } for each PR the pass read
 //   gatePending, epicPending, promotionPending   a base gate, epic PR or promotion still to come
 //   followPending            a follow-step checker running or still to start (pass/follow-steps.mjs)
-//   spawned                  how many tickets this pass spawned
+//   previewDbPending         a preview database still to delete (preview-db.mjs records)
+//   spawned                 how many tickets this pass spawned
 // -> { waiting, parked, idle, status, needsYou }
 // A park a pass settles by checking its recorded clears-when. One still to be restated is not: it stays
 // in `parked`, the only way the decider (decider.mjs deciderItems) is asked to restate it.
@@ -240,7 +241,7 @@ export function verdictOf(s) {
   // A park with a note is still the person's: the PR it waits on conflicts with its base or was closed
   // unmerged, so it cannot merge on its own and the condition a pass checks would never hold.
   const parked = ownParks(s).filter(({ t, p }) => p.note || !passChecks(t)).map(({ p }) => p);
-  const idle = batchIdle(s.queue, (n) => s.prStates[n] ?? null) && !s.gatePending && !s.epicPending && !s.promotionPending && !s.followPending;
+  const idle = batchIdle(s.queue, (n) => s.prStates[n] ?? null) && !s.gatePending && !s.epicPending && !s.promotionPending && !s.followPending && !s.previewDbPending;
   const status = idle ? 'idle' : (waiting.length || parked.length) ? 'show_person' : s.spawned ? 'go_on' : 'nothing_yet';
   const needsYou = [...parked.map((p) => p.key), ...waiting.map((x) => x.split(':')[0])];
   return { waiting, parked, idle, status, needsYou };
@@ -310,6 +311,24 @@ export function ledgerLine({ check, missed, queueBin }) {
   const named = check.diffs.slice(0, LEDGER_SHOWN).map((d) => d.path).join(', ');
   const more = n > LEDGER_SHOWN ? `, and ${n - LEDGER_SHOWN} more` : '';
   return `${seeded || 'ledger: '}${n} field(s) differ between queue.json and the queue rebuilt from the log, ${missed} missed append(s) this pass${n ? `: ${named}${more}. See each with node ${queueBin} rebuild` : ''}`;
+}
+
+// ---- merges recorded with no PR ------------------------------------------------
+// Each merge recorded with its PR missing (queue.mjs merged run with no --pr, by an older caller) among
+// `tickets`, as `<key>@<merge time>`: a ticket merged again with its PR missing is a second one.
+export function mergeGaps(tickets) {
+  return tickets.filter((t) => t?.merge && typeof t.merge === 'object' && t.merge.pr == null).map((t) => `${t.key}@${t.merge.at}`);
+}
+
+// The line naming each ticket whose merge was recorded with its PR missing, or null when there is none.
+// `tickets` is the queue's tickets at the pass's end, and `reported` the merges an earlier pass named
+// (mergeGaps, kept in the pass record): a ticket a batch keeps live after its merge would otherwise be
+// named again by every pass.
+export function mergeGapLine(tickets, reported = []) {
+  const seen = new Set(reported);
+  const keys = tickets.filter((t) => t?.merge && typeof t.merge === 'object' && t.merge.pr == null && !seen.has(`${t.key}@${t.merge.at}`)).map((t) => t.key);
+  if (!keys.length) return null;
+  return `merges: ${keys.length} recorded with the PR missing (${keys.join(', ')}): queue.mjs merged was run with no --pr, so the merge names no PR`;
 }
 
 // Why nothing spawned while something could have: the first hold that applied this pass, or null.

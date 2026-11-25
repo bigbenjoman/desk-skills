@@ -1,4 +1,5 @@
 // suite: memory watch (avail band, heavy processes)
+// layer: L1
 // The sustained-high watch and what counts as heavy: fixture `ps` output and stubbed memory
 // figures only; nothing reads this computer.
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';

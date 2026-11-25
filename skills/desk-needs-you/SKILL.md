@@ -38,7 +38,8 @@ Otherwise it prints:
 `<repo>` is `<repo>:<batch>` for an item in a named batch (an epic's feature batch): pass it to
 `record` as printed.
 
-`<kind>` is `parked` (lane A, B or E), `session` (lane C or D), `spine` (feature specs), `plan` (an
+`<kind>` is `parked` (lane A, B or E), `session` (lane C or D), `plan-first` (a batch's lane C
+work no session claimed, past §3b "Plan-first wait before needs-you (hours)", as one item), `spine` (feature specs), `plan` (an
 epic admitted with `/desk-admit` or by intake: its drafted plan, in the file the need names, waits
 for start, discard or an edit, and its children wait behind it. The supervisor acts on the answer
 at its next tick: start starts the feature batch, an edit is applied as it stands and the batch
@@ -48,7 +49,7 @@ comes back as a new `plan` item naming why), `triage`
 (an unmerged PR only the user's step on GitHub moves; one closed unmerged recommends `drop`),
 `worktree` (no worker spawns into its worktree until it is clean), `usage` (a usage limit holds the batch:
 one item, `usage-limit`, that lifts by itself or sooner after a subscription
-switch), `base-push` (approve the sync) or `follow` (try it first: `references/follow.md`); `config`, `templates`: run `/desk-update`. Action 1 is the recommendation when it says `recommended`. A `pr` item stuck on a step
+switch), `base-push` (approve the sync) or `follow` (try it first: `references/follow.md`); `config`, `templates`: run `/desk-update`. A `pr` item stuck on a step
 outside GitHub has none: its need names the step, and it leaves once its check is green.
 
 ## 2. Ask, four at a time
@@ -79,12 +80,12 @@ node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> <action> "<text>"
 node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> override <id> "<choice>"
 ```
 
-Leave `"<text>"` off for every action but `answer`, `resume`, `reject`, `override` and `move`. Each
-prints what it recorded.
+Leave `"<text>"` off for every action but `answer`, `resume`, `reject`, `override`, `move` and
+`promote`. Each prints what it records.
 
 - **`MESSAGE <name>: <text>`** on the next line: a live session runs that batch, so the ticket was
   answered but not requeued. `SendMessage` that text to the session named `<name>`. If that name is
-  unreachable, run `ListAgents` once and send to the one row for the same batch. If none matches,
+  unreachable, run `ListAgents` once and send to the one row for the same batch. If none does,
   tell the user to give the message to that repo's session themselves.
 - **`drop`**: out of its batch, its clean worktree removed (`queue.mjs drop`).
 - **`open`** (lane C or D) and **`admit`**: record nothing; show the line naming the
@@ -94,8 +95,6 @@ prints what it recorded.
   it (listed first, saying how many).
 - **`waiting`**: as `not-now`, until the PR gets an approval or its head moves.
 - **A refusal** (exit 11): show the line, and offer to answer differently or skip it.
-
-Where the supervisor runs the batch, its next pass picks the answer up.
 
 Never run `queue.mjs`, `answer.mjs` or `digest.mjs` yourself, or edit a queue: `record` does.
 

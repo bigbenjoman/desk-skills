@@ -1,4 +1,5 @@
 // suite: worker tools (each headless claude -p call is offered only the tools it uses, and a batch's workers share one system prompt)
+// layer: L2
 // budget: 45 DS-943 (about 30 whole spawn-worker.sh runs, each a dozen node starts; 34-37 s on CI)
 // covers: desk/bin/worker-tools.mjs desk/bin/spawn-worker.sh desk/bin/desk-env.sh agents/** skills/**/*.md
 // The worker's --tools list matches what the worker contract and the skills it loads name, in both
@@ -191,6 +192,7 @@ let r = spawnWorker(SID, 'run', { AUTOPILOT_DRY_RUN: '1' });
 let a = argv('run', 0);
 t('AC1 dry-run spawn launches the worker', r.status === 0 && !!a && a.includes('-p') && a.includes('--append-system-prompt'), true);
 t('AC1 the worker is launched with --tools <worker list>', toolsOf(a), LIST);
+t('the worker is named <repo>-ticket-<KEY>', a && a[a.indexOf('--name') + 1], 'widgets-ticket-fix-thing');
 t('AC1 its --tools excludes Workflow', (toolsOf(a) || '').split(',').includes('Workflow'), false);
 t('DS-887 AC5 the spawned worker is offered neither SendMessage nor ListAgents',
   (toolsOf(a) || 'unset').split(',').filter((x) => ['SendMessage', 'ListAgents'].includes(x)), []);

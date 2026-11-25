@@ -1,11 +1,12 @@
 // suite: machine profile (detection, sizing, §3b fallback)
+// layer: L2
 // The machine profile: hardware parsing from fixture output, the sizing rules, the profile file, and
 // the §3b fallback through desk-env. Scratch directories only; nothing reads this computer.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList, rewrittenSizing, sizesProposed, sizingOverrides, isOverride } from '../desk/bin/machine.mjs';
+import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList, rewrittenSizing, sizesProposed, sizingOverrides, isOverride, sizingSettingError, sizingWarnings, profileProblems } from '../desk/bin/machine.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -242,6 +243,12 @@ const reWritten = parseProfile(renderProfile(small, rewrittenSizing(ovProfile, p
 t('a re-write keeps each override', `${reWritten.sizing['test-lock-slots'].value} ${reWritten.sizing['test-cap'].value} ${isOverride(reWritten.sizing['test-lock-slots'])}`, '3 6 true');
 const dropped = parseProfile(renderProfile(small, rewrittenSizing(ovProfile, propose(small), ['test-cap']), '2026-11-15'));
 t('a re-write drops only the override named', `${dropped.sizing['test-cap'].value} ${isOverride(dropped.sizing['test-cap'])} ${dropped.sizing['test-lock-slots'].value}`, '16 false 3');
+t('DS-977 a re-write proposes test-lock-max and admit-run-load from the overrides it keeps, so the ceiling is never under the floor',
+  `${reWritten.sizing['test-lock-max'].value} ${reWritten.sizing['admit-run-load'].value} ${isOverride(reWritten.sizing['test-lock-max'])} [${profileProblems(reWritten).join(' | ')}]`, '3 6 false []');
+t('DS-977 a dropped override leaves the row it was followed by at the proposal', dropped.sizing['admit-run-load'].value, '16');
+const lightOv = rewrittenSizing({ sizing: { 'light-lock-slots': { value: '2', why: 'override: measured' } } }, propose(small));
+t('DS-977 a re-write proposes light-lock-max from a kept light-lock-slots override', lightOv.find((s) => s.key === 'light-lock-max')?.value, '2');
+t('DS-977 a profile row written TODO is one that does not read', profileProblems({ sizing: { 'admit-max-load': { value: 'TODO' } } })[0]?.startsWith('`admit-max-load` is "TODO"'), true);
 t('clearing an override puts the proposal for the recorded hardware back', `${setErr(['test-cap='], ov)} ${env(['machine', 'get', 'test-cap'], absent, ov)} ${env(['machine', 'why', 'test-cap'], absent, ov)}`, 'exit 0 16 the 16 performance cores');
 // detect and write size from this computer, so the override is one more slot than it proposes: an
 // override equal to the proposal would read as no change whether or not it is kept.
@@ -290,6 +297,48 @@ writeFileSync(handEdited, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| 
 t('DS-908 AC17: the profile check names each entry a hand-edited row holds that it does not know',
   env(['machine', 'detect'], absent, handEdited).includes('`lease-kinds` names entries it does not know: "port=maybe", "sockets=on"'), true);
 t('a good row is no problem to detect', env(['machine', 'detect'], absent, kinds).includes('cannot read'), false);
+// light-express-lane, the light lock's express lane, is a Sizing row set by machine set: on or off.
+const lane = join(T, 'express-lane.md');
+t('DS-980 machine set stores light-express-lane on, and it reads back', `${setErr(['light-express-lane=on'], lane)} ${env(['machine', 'get', 'light-express-lane'], absent, lane)}`, 'exit 0 on');
+t('DS-980 and refuses a value that is not on or off', setErr(['light-express-lane=yes'], lane), 'exit 1: nothing written: `light-express-lane` is "yes": want on or off');
+t('DS-980 the profile check names a hand-edited express lane row that does not read',
+  profileProblems({ sizing: { 'light-express-lane': { value: 'maybe' } } }).join(' | '), '`light-express-lane` is "maybe": want on or off; the express lane stays off');
+
+// ---- DS-977: headroom admission's rows
+// AC14: 18 CPU cores in all (10 performance, 8 efficiency), which size test-cap 4 and test-lock-slots 3.
+const eighteen = { 'memory-gb': 64, 'cpu-cores': 18, 'performance-cores': 10, 'efficiency-cores': 8, wsl: 'no' };
+const e18 = sized(eighteen);
+t('DS-977 AC14 the machine sizes test-cap 4 and test-lock-slots 3', `${e18['test-cap'].value} ${e18['test-lock-slots'].value}`, '4 3');
+t('DS-977 AC14 the admission rows proposed', ['lock-admission', 'light-lock-slots', 'light-lock-max', 'test-lock-max', 'admit-max-load', 'admit-run-load', 'admit-reserve-gb', 'heavy-run-gb', 'light-run-gb', 'admit-max-pressure', 'admit-ramp-s'].map((k) => `${k}=${e18[k]?.value}`).join(' '),
+  'lock-admission=off light-lock-slots=1 light-lock-max=1 test-lock-max=3 admit-max-load=30 admit-run-load=4 admit-reserve-gb=8 heavy-run-gb=16 light-run-gb=16 admit-max-pressure=2 admit-ramp-s=90');
+t('DS-977 AC14 each proposed row passes its own check, as an override must', propose(eighteen).filter((s) => sizingSettingError(s.key, s.value)).map((s) => s.key).join(), '');
+t('DS-977 AC14 the proposal itself warns of nothing', sizingWarnings(propose(eighteen), eighteen).length, 0);
+// AC15: ceilings whose test workers pass twice the counted cores (10 + 8 / 2 = 14) are warned of, by name.
+const over = propose(eighteen).map((s) => (s.key === 'test-lock-max' ? { ...s, value: '7' } : s));
+t('DS-977 AC15 (test-lock-max 7 + light-lock-max 1) x test-cap 4 = 32 over twice 14 counted cores warns, naming the rows', sizingWarnings(over, eighteen).join(),
+  '(`test-lock-max` 7 + `light-lock-max` 1) x `test-cap` 4 is 32 test workers at the ceilings, more than twice the 14 counted cores (efficiency cores at 0.5)');
+t('DS-977 AC15 at exactly twice, no warning', sizingWarnings(propose(eighteen).map((s) => (s.key === 'test-lock-max' ? { ...s, value: '6' } : s)), eighteen).length, 0);
+// AC13: each broken admission row is named by the profile check, with what it wants.
+const admitBad = join(T, 'admission-bad.md');
+writeFileSync(admitBad, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `test-lock-slots` | `3` | t |\n| `test-cap` | `4` | t |\n| `lock-admission` | `maybe` | t |\n| `light-lock-slots` | `0` | t |\n| `test-lock-max` | `2` | t |\n| `admit-ramp-s` | `soon` | t |\n');
+const badDetect = env(['machine', 'detect'], absent, admitBad);
+t('DS-977 AC13 the check names each admission row and what it wants, and that the locks grant as with it off', [
+  '`lock-admission` is "maybe": want off, shadow or on; the locks grant as with `lock-admission` off',
+  '`light-lock-slots` is "0": want a whole number of slots, 1 or more',
+  '`admit-ramp-s` is "soon": want a whole number of seconds',
+  '`test-lock-max` is "2": want a whole number of slots, at least `test-lock-slots` (3)',
+].filter((l) => !badDetect.includes(l)).join(' | '), '');
+const lightMax = join(T, 'admission-light-max.md');
+writeFileSync(lightMax, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `light-lock-slots` | `2` | t |\n| `light-lock-max` | `1` | t |\n');
+t('DS-977 AC13 a light-lock-max below light-lock-slots is named', env(['machine', 'detect'], absent, lightMax).includes('`light-lock-max` is "1": want a whole number of slots, at least `light-lock-slots` (2)'), true);
+t('DS-977 AC13 a profile with no admission rows has no admission problem', profileProblems(parseProfile(renderProfile(small, propose(small).filter((s) => !s.key.startsWith('admit') && !s.key.includes('lock-max') && s.key !== 'lock-admission' && s.key !== 'light-lock-slots'), '2026-11-22'))).join(' | '), '');
+t('DS-987 machine set takes lock-admission shadow and on, and refuses another word', ['shadow', 'on', 'maybe'].map((v) => setErr([`lock-admission=${v}`], join(T, 'admission-set.md'))).join(' | '),
+  'exit 0 | exit 0 | exit 1: nothing written: `lock-admission` is "maybe": want off, shadow or on');
+// DS-987 AC14: a profile with lock-admission on, its rows as proposed, passes the profile check.
+const onProfile = join(T, 'admission-on.md');
+writeFileSync(onProfile, renderProfile(eighteen, propose(eighteen).map((s) => (s.key === 'lock-admission' ? { ...s, value: 'on' } : s.key === 'light-lock-max' ? { ...s, value: '3' } : s)), '2026-11-23'));
+t('DS-987 AC14 a machine profile with lock-admission on passes the profile check', `${parseProfile(readFileSync(onProfile, 'utf8')).sizing['lock-admission']?.value} [${profileProblems(parseProfile(readFileSync(onProfile, 'utf8'))).join(' | ')}]`, 'on []');
+t('DS-987 AC14 and machine detect names no admission row', /lock-admission|light-lock|admit-/.test(env(['machine', 'detect'], absent, onProfile).split('\n').filter((l) => /want /.test(l)).join('\n')), false);
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'machine: all checks passed');

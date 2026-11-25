@@ -1,4 +1,5 @@
 // suite: park words (a worker's park question in plain words for needs-you, its not-reached list cut off)
+// layer: L1
 // covers: desk/bin/park-words.mjs desk/bin/config-schema.mjs desk/bin/batch-state.mjs desk/bin/undraft.mjs
 // park-words.mjs on park questions as workers wrote them, the SV-4017 one from 2026-11-19 among them, and
 // on the classifiers in batch-state.mjs still reading the raw question. One check or more per criterion

@@ -1,4 +1,5 @@
 // suite: desk-q eta history (spawn to merge, per merged ticket) and ship forecast
+// layer: L2
 // The eta history against a fixture queue, fixture worker logs and a temporary state directory, with
 // a fake gh on PATH; then the forecast against fixture repos under a temporary HOME and DESK_HOME.
 // Nothing touches your real queue, state or GitHub.

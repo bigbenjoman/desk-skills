@@ -37,13 +37,18 @@ crashShowsPerson((e) => console.error(`move-batch: ${describeCrash(e)}`));
 // the repo's asks (asks.mjs), the refused config rows already pushed (supervisor.mjs), the exits folder
 // the supervisor watches with its tick lock and wake record (every batch's workers write there), and the
 // levers' repo-level records with their locks: the lever log (lever-log.mjs), the blind audits and their
-// queue (levers-audit.mjs) and the evaluations with their evidence (levers-evaluate.mjs). Each is kept
-// once per repo, not per batch, and read from this folder. The ticket ledger is not here: it sits beside
+// queue (levers-audit.mjs), the evaluations with their evidence (levers-evaluate.mjs) and the time stuck by
+// cause (stuck-time.mjs: its intervals, passes and links). Each is kept once per repo, not per batch, and
+// read from this folder. The standing slot's batch identity (stuck-time.mjs stuck-batch.json) is the moved
+// batch's, so it neither moves (the moved batch's first pass in its slot writes its own) nor stays: it is
+// removed once the move is made, and the next standing batch's first pass writes a new one. The ticket ledger is not here: it sits beside
 // the queue under repos/<slug>, which a move leaves alone.
 const STAYS = [E.BATCHES_DIR, 'ref', 'orchestrator.lock', 'supervisor.lock', 'supervisor.agent.log', 'intake.json', 'asks.json',
   'config-pushed.json', 'exits', 'supervisor.tick.lock', 'supervisor.wake'];
-const REPO_LEVEL = ['levers.jsonl', 'audit.jsonl', 'audit-queue.json', 'lever-evals.jsonl', 'levers-evidence'];
-const stays = (f) => STAYS.includes(f) || REPO_LEVEL.some((n) => f === n || f.startsWith(`${n}.lock`));
+const REPO_LEVEL = ['cloud-archived.json', 'levers.jsonl', 'audit.jsonl', 'audit-queue.json', 'lever-evals.jsonl', 'levers-evidence',
+  'stuck-intervals.jsonl', 'stuck-passes.json', 'stuck-links.json', 'stuck-batch.json', 'stuck-batch.retired.json'];
+// A repo-level file's lock and its write in progress (dir-lock.mjs writeTextAtomic's .tmp.<pid>) stay too.
+const stays = (f) => STAYS.includes(f) || REPO_LEVEL.some((n) => f === n || f.startsWith(`${n}.lock`) || f.startsWith(`${n}.tmp.`));
 // How long a stopped merge driver has to let go of its lock.
 const DRIVER_WAIT_MS = Number(process.env.DESK_MOVE_DRIVER_WAIT_MS) > 0 ? Number(process.env.DESK_MOVE_DRIVER_WAIT_MS) : 30_000;
 
@@ -142,13 +147,18 @@ if (!inAudit) refuse(`the repo's audit queue (${join(from.state, 'audit-queue.js
 const audits = inAudit.map((i) => i.ticket);
 if (audits.length) refuse(`the blind audit of ${audits.join(', ')} is running or not yet recorded, and its log is read from the standing slot: run this again once a pass has recorded it. Nothing was moved`);
 
-const driver = E.mergeDriverHolder(from.state);
-if (driver === 'starting') refuse('the merge driver is starting: run this again in a minute. Nothing was moved');
-if (driver) {
-  try { process.kill(driver, 'SIGTERM'); } catch { /* already gone */ }
+// The batch's own driver, and the repo's one driver, whose lock lives in this folder too: both stop
+// before anything moves, and the supervisor's next tick starts the repo's again in the standing slot.
+let driver = null;
+for (const lock of [undefined, E.REPO_DRIVER_LOCK]) {
+  const pid = E.mergeDriverHolder(from.state, lock);
+  if (pid === 'starting') refuse('the merge driver is starting: run this again in a minute. Nothing was moved');
+  if (!pid) continue;
+  try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
   const until = Date.now() + DRIVER_WAIT_MS;
-  while (E.mergeDriverHolder(from.state) && Date.now() < until) sleep(200);
-  if (E.mergeDriverHolder(from.state)) refuse(`the merge driver (pid ${driver}) was asked to stop and is still running after ${DRIVER_WAIT_MS / 1000}s: stop it, then run this again. Nothing was moved`);
+  while (E.mergeDriverHolder(from.state, lock) && Date.now() < until) sleep(200);
+  if (E.mergeDriverHolder(from.state, lock)) refuse(`the merge driver (pid ${pid}) was asked to stop and is still running after ${DRIVER_WAIT_MS / 1000}s: stop it, then run this again. Nothing was moved`);
+  driver ??= pid;
 }
 
 // Everything moves, or nothing does: a failed rename puts back what went before it.
@@ -156,6 +166,9 @@ if (leftover) rmSync(to.state, { recursive: true, force: true });
 mkdirSync(to.state, { recursive: true });
 mkdirSync(dirname(to.queue), { recursive: true });
 const moved = [];
+// The standing slot's identity, retired by the move under a name no reader takes.
+const RETIRED_ID = 'stuck-batch.retired.json';
+let retired = false;
 try {
   // The supervisor's next tick must run a pass, not read the batch as the idle one it was: only a
   // pass starts a merge driver. A driver this move stopped did not fail, so it counts no failed start.
@@ -167,6 +180,9 @@ try {
     writeFileSync(sup, `${JSON.stringify(s, null, 2)}\n`);
   }
   for (const n of notes) writeFileSync(n.file, `${JSON.stringify({ ...JSON.parse(n.was), queue: to.queue })}\n`);
+  // The standing slot's batch identity is the moved batch's: it is retired here, in the move, under a name
+  // no reader takes (stuck-time.mjs batchIdentity), and put back if the move is refused.
+  if (existsSync(join(from.state, 'stuck-batch.json'))) { renameSync(join(from.state, 'stuck-batch.json'), join(from.state, RETIRED_ID)); retired = true; }
   for (const f of readdirSync(from.state)) {
     if (stays(f)) continue;
     renameSync(join(from.state, f), join(to.state, f));
@@ -179,11 +195,13 @@ try {
   if (existsSync(archivePath(from.queue))) renameSync(archivePath(from.queue), archivePath(to.queue));
 } catch (e) {
   if (existsSync(from.queue)) rmSync(to.queue, { force: true });
+  if (retired) { try { renameSync(join(from.state, RETIRED_ID), join(from.state, 'stuck-batch.json')); } catch { /* left retired: the next standing pass writes a new one */ } }
   const stuck = moved.reverse().filter((f) => { try { renameSync(join(to.state, f), join(from.state, f)); return false; } catch { return true; } });
   for (const n of notes) { try { if (existsSync(n.file)) writeFileSync(n.file, n.was); } catch { /* left naming the new queue */ } }
   try { rmdirSync(to.state); rmdirSync(dirname(to.queue)); } catch { /* not empty */ }
   refuse(`could not move the batch (${e.message})${stuck.length ? `; still in ${to.state}, to move back by hand: ${stuck.join(', ')}` : ': nothing was moved'}`);
 }
+try { rmSync(join(from.state, RETIRED_ID), { force: true }); } catch { /* left under a name no reader takes */ }
 // The ledger records the move once it has happened: a moved event per ticket naming both batches.
 if (before) reportMissed(to.queue)(recordWrite(to.queue, before, readQueueAt(to.queue), { by: BY, from: ledgerTarget(from.queue).batch }));
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: reboot-check (worktrees across repos, heavy, FileVault)
+# layer: L2
 # reboot-check.mjs across several configured repos: a worktree with uncommitted changes and one with
 # commits on no remote are each counted and named, clean trees are not, and a repo with no root or a
 # root that is not a checkout is reported rather than skipped.
@@ -64,7 +65,7 @@ rm -rf "$T/cfg/repos"
 out=$(cd "$T" && node "$B/reboot-check.mjs" 2>&1); rc=$?
 check "no configured repos: still reports, exits 0" '[ $rc -eq 0 ] && grep -q "^worktrees: 0 configured repos, 0 worktrees" <<< "$out"'
 
-mkdir -p "$T/bin"; cp "$B/reboot-check.mjs" "$B/desk-env.mjs" "$B/machine.mjs" "$B/test-scope.mjs" "$B/workflow-yaml.mjs" "$B/config-schema.mjs" "$B/build-memo.mjs" "$B/log-tool-calls.mjs" "$B/dir-lock.mjs" "$T/bin/"
+mkdir -p "$T/bin"; cp "$B/reboot-check.mjs" "$B/desk-env.mjs" "$B/machine.mjs" "$B/test-scope.mjs" "$B/workflow-yaml.mjs" "$B/config-schema.mjs" "$B/build-memo.mjs" "$B/log-tool-calls.mjs" "$B/dir-lock.mjs" "$B/untracked.mjs" "$T/bin/"
 
 # FileVault: on, off, and anything that cannot be read as either counts as unknown.
 fv on; out=$(cd "$T" && node "$T/bin/reboot-check.mjs" 2>&1)

@@ -46,9 +46,15 @@ const WRAPPER = wrapperOf('test|tsc|light');
 const BROWSER = wrapperOf('browser');
 const LIGHT = wrapperOf('light');
 // What with-lock.sh runs while it waits for a slot, besides itself: the lock, the pause between rounds,
-// the lease broker and config reads, and the file and git steps it takes on the way.
-const HELPER = /^(?:\S*\/)?(?:flock|sleep|cat|mkdir|find|mv|rm|git|dirname|pwd|lsof)(?:\s|$)/;
-const NODE_HELPER = /^(?:\S*\/)?node\s+\S*(?:slot-lease|desk-env)\.mjs(?:\s|$)/;
+// the lease broker and config reads, the file and git steps it takes on the way, the process reads that
+// name the lock's holders, the load and memory reading its wait's log lines carry, and headroom
+// admission's watcher and the judges it runs.
+const HELPER = /^(?:\S*\/)?(?:flock|sleep|cat|mkdir|find|mv|rm|git|dirname|pwd|lsof|ps|sysctl)(?:\s|$)/;
+// Matched by the script's whole file name, so a suite such as tests/test_admission.mjs is not one.
+const NODE_HELPER = /^(?:\S*\/)?node\s+(?:\S*\/)?(?:slot-lease|desk-env|admission)\.mjs(?:\s|$)/;
+// The node calls with-lock.sh makes on the way to its slot: the lease client, its config reads, and
+// the admission watcher.
+const WAIT_CLIENT = /^(?:\S*\/)?node\s+(?:\S*\/)?(?:slot-lease\.mjs|admission\.mjs|desk-env\.mjs\s+(?:get|machine))(?:\s|$)/;
 // A Bash tool background task's output file.
 const TASK_OUTPUT = /\/tasks\/[^/]+\.output$/;
 
@@ -74,7 +80,11 @@ export function treeOf(pids, procs) {
 export function standing(run) {
   if (!run.length) return { state: 'done' };
   const top = (ps) => ps.find((p) => !ps.some((q) => q.pid === p.ppid)) ?? ps[0];
-  const cmd = run.filter((p) => !isWaiter(p.args));
+  // Whatever those calls run (a git shim, the load reading, a process read) is part of the wait too:
+  // the command is never their child. Not any other desk-env.mjs call's: `desk-env workspace-test` runs
+  // the suite.
+  const helped = treeOf(run.filter((p) => WAIT_CLIENT.test(p.args)).map((p) => p.pid), run);
+  const cmd = run.filter((p) => !isWaiter(p.args) && !helped.has(p.pid));
   if (cmd.length) return { state: 'started', pid: top(cmd).pid };
   const wrappers = run.filter((p) => WRAPPER.test(p.args) || BROWSER.test(p.args));
   if (!wrappers.length) return { state: 'started', pid: top(run).pid };

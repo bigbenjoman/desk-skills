@@ -23,12 +23,16 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSyn
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, leverRow, localDay, repoConfigValues, shownNames } from './desk-env.mjs';
-import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, reasonWording, unassignableText } from './lever-registry.mjs';
+import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, preconditions, reasonWording, repoValuesOf, unassignableText } from './lever-registry.mjs';
 import { parseBaseline } from './bench-report.mjs';
 import { ageWords, renderPage } from './levers-page.mjs';
 import { reworkSummary } from './rework.mjs';
 import { withDirLock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
 import { spendsNeedsYou } from './lever-log.mjs';
+import * as MS from './merge-stages.mjs';
+import * as RM from './review-misses.mjs';
+import * as ST from './stuck-time.mjs';
+import { listBatches } from './batches.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -194,7 +198,7 @@ function readRepo(r, root) {
     try { return { file, at: JSON.parse(readFileSync(file, 'utf8')).at ?? null, error: null }; } catch (e) { return { file, at: null, error: { file, line: null, message: e.message } }; }
   });
   return {
-    slug: r.slug, name, config: r.config, items, configRead: { error: configError },
+    slug: r.slug, name, config: r.config, items, configRead: { error: configError }, values: repoValuesOf(r.slug, r.root),
     enrol: configError ? { row: 'error', auto: false, pinned: [] } : enrolment(items),
     supervisor_at: f.supervisor.map(mtimeIso).filter(Boolean).sort().pop() ?? null, healths,
     log: readJsonl(f.log[0]), evals: readJsonl(f.evals[0]), audit: readJsonl(f.audit[0]),
@@ -269,13 +273,14 @@ function trend(metric, rows, base, today, first) {
 
 // ---- the build ---------------------------------------------------------------------------------------------
 // What one evaluation row showed, with the honesty rules applied: its arms, mechanism effect, cost and
-// each guardrail's status.
+// each guardrail's status. A lever with more than two arms names its lead value and baseline as `arms`,
+// the arms its `on` and `off` counts are of.
 function evalEvidence(e, layerMin) {
   const minN = e.min_n ?? layerMin;
   const n = smallerArm(e.n);
   return {
     eval_id: e.eval_id ?? null, at: e.at ?? null, state: e.state ?? null,
-    n: { on: e.n?.on ?? null, off: e.n?.off ?? null, smaller: n, min: minN },
+    n: { on: e.n?.on ?? null, off: e.n?.off ?? null, smaller: n, min: minN, ...(e.value && e.baseline ? { arms: [e.value, e.baseline] } : {}) },
     effect: effectView(e.mechanism, n, minN), cost: costView(e.cost, n, minN, KEPT.includes(e.state)),
     guardrails: (e.guardrails ?? []).map((g) => ({ ...g, status: guardrailStatus(g, n, minN) })),
   };
@@ -379,6 +384,13 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
         const e = latest.get(`${r.slug}|${lever}`);
         // Only a lever with no evaluation reads its state from the levers row.
         if (!e && r.configRead.error) return { repo: r.name, state: 'error', error: r.configRead.error };
+        // An auto repo whose config fails the lever's preconditions never draws it, though the daily
+        // evaluation still writes it a row until it is kept: one line says why.
+        const pre = !r.configRead.error && r.enrol.auto && !r.enrol.pinned.includes(lever) && !KEPT.includes(e?.state) ? preconditions(lever, r.values) : null;
+        if (pre && !pre.eligible) {
+          const why = pre.failed.map((p) => p.why).join('; ');
+          return { repo: r.name, state: 'ineligible', why, note: `not tested in ${r.name}: ${why}`, stale: col.column === 'stale' };
+        }
         if (!e) {
           if (r.enrol.pinned.includes(lever)) return { repo: r.name, state: 'pinned', note: 'pinned by hand: before/after only, not a trial', stale: col.column === 'stale' };
           return { repo: r.name, state: r.enrol.auto ? 'off' : 'not_enrolled', stale: col.column === 'stale' };
@@ -506,9 +518,34 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   return {
     v: VERSION, generated_at: new Date(generatedAt).toISOString(), tz,
     repos: repoView, baseline,
-    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends },
+    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now) },
     line,
   };
+}
+
+// Each repo's merged PR time by stage (merge-stages.mjs summary), for the repos with any recorded:
+// { repos: [{ name, prs, stages: { <stage>: { n, median, p75 } }, outage, learned }] }, `learned` the outside
+// reviewer's re-reviews and undraft-to-approval time before and after the learned review bar, or null.
+function mergeStagesPanel(configured, root) {
+  const names = shownNames(configured.map((r) => r.slug));
+  const repos = configured.map((r, i) => {
+    const st = MS.readStages(join(root, r.slug));
+    return { name: names[i], ...MS.summary(st), learned: RM.beforeAfter(st, RM.readLearned(join(root, r.slug)).since) };
+  }).filter((r) => r.prs);
+  return { repos };
+}
+
+// Each repo's time parked by cause (stuck-time.mjs weekSummary) this ISO week and last, for the repos
+// with a ticket stuck in either: { repos: [{ name, weeks: [this week's, last week's] }] }.
+function stuckTimePanel(configured, root, now) {
+  const names = shownNames(configured.map((r) => r.slug));
+  const liveOf = (slug) => { try { return ST.liveOf(listBatches(slug)); } catch { return null; } };
+  const repos = configured.map((r, i) => {
+    const live = liveOf(r.slug);
+    return { name: names[i], weeks: [0, 1].map((weeksAgo) => ST.weekSummary(join(root, r.slug), { now, weeksAgo, live })) };
+  })
+    .filter((r) => r.weeks.some((w) => w.tickets));
+  return { repos };
 }
 
 // What build.json records: when it built, how long it took, each input's age and every panel error.

@@ -11,13 +11,13 @@ Workers have no Artifact tool, so a ticket whose design is a Claude Design artif
 snapshot **at Stage 1, before its triage**, taken by you. Find them with
 `node ~/.claude/desk/bin/desk-design.mjs check <KEY>` per ticket (a `blocking` line: no copy is saved
 in the repo yet). List the artifact's files (`Artifact action:list scope:files`), then read
-`project/canvas.json`, every `project/*.dc.html`, and the `support.js`, stylesheets and fonts they
+`project/canvas.json`, every `project/*.dc.html`, and the `support.js`, stylesheets and fonts they <!-- prose-ok: a design artifact's file, not desk's -->
 load, with `paths` and `out_dir: <state>/designs/<TICKET>/` (they land under
 `<state>/designs/<TICKET>/project/`; triage and workers can read `<state>`, and a named batch's
 workers the repo's own `designs/`, read only). Read too what the
 published files leave out: each `/_blob/<id>` asset a board names, in its attributes or script, one
 `read` with `path: "/_blob/<id>"` apiece (a `paths` read refuses asset ids), and
-`artifact-type/dc-runtime.js` when a board loads a `support.js` the artifact does not publish
+`artifact-type/dc-runtime.js` when a board loads a `support.js` the artifact does not publish <!-- prose-ok: a design artifact's files, not desk's -->
 (desk-ticket `design-canvas.md` has why). The saves need no
 approval: `/desk-setup` grants this session the state folder (`orchestrator-tools`), so a prompt per
 file means the repo was set up before that, and re-running `/desk-setup` fixes it. Then record where it
@@ -39,7 +39,12 @@ the exact copy, colours and sizes. For a ticket whose canvas is already saved (`
 or an `advisory`), read the artifact's current version (`Artifact action:list`) and run
 `desk-design.mjs status <URL> --version <v>`. Exit 3 means it has moved on: re-saving is a Stage 3
 question, and on a yes you snapshot it as above.
-An artifact the user does not own returns a summary, not the files: that, or one that will not
+**A claude.ai artifact a ticket links outside its Design section** (a spec or notes page) is found
+by the same `check` and snapshotted the same way, as a page. One made outside the user's
+organisation asks, on its first read, whether Claude may read it for the rest of this conversation:
+read every such artifact the batch links here, in one go, so the user answers while they are here.
+Workers then read each copy (`desk-design.mjs copies <KEY>`), never the link.
+An artifact that still returns a summary, not the files, or one that will not
 read, is asked at Stage 1, before any ticket is spawned, never left for Stage 3: name the artifact
 and ask the user for its HTML export by path (Recommended), or to share it with this subscription.
 `desk-design.mjs import <path> --url <URL> --epic <EPIC, or the first ticket> --key <KEY> …` takes
@@ -68,6 +73,7 @@ never blocking, and a link with neither a saved copy nor a snapshot is blocking,
 **Every way into a batch takes the snapshot first.** `/desk-admit` snapshots in its own session
 before it admits (its step 0), from the same list as above. Where no session can (standing intake, a
 feature batch started headless, a ticket plan-batch seeds with no snapshot), the ticket is parked on
-`design not snapshotted: <URL>` rather than admitted runnable, so it shows as one need naming the
-artifact, and plan-batch lists it under `PARKED ON DESIGN`. A snapshot in the repo's own state
+`design not snapshotted: <URL>` rather than admitted runnable, and plan-batch lists it under
+`PARKED ON DESIGN`. `/desk-needs-you` lists every ticket of the repo parked so as one item, naming
+each artifact and the tickets it holds, so one session reads them all (`/desk-admit` for those tickets). A snapshot in the repo's own state
 folder is found from a feature batch's too.

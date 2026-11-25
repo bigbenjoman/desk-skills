@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: pass: spawns (memory, branches, other batches, cloud workers, busy worktrees, recoveries, links, collisions, screenshot uploads)
+# layer: L3
 # budget: 205 DS-943 (122 whole pass.mjs runs, each about 1.3 CPU s with its queue.mjs children; 155-169 s on CI)
 # pass.mjs deciding what starts: the memory ladder, a branch with a placeholder left in, --batch,
 # cloud workers, a state=running write the queue refuses, a kept worktree in use, routine recoveries,
@@ -53,6 +54,46 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-177 AC1 a <kebab-slug> branch is rebuilt from the title, keeping its prefix, with no < or >" \
   '[ "$(field B-4 branch)" = "\"feat/B-4-branch-keeps-the-kebab-slug-placeholder\"" ] && [ "$(field B-4 state)" = "\"running\"" ] && echo "$out" | grep -qF "branch feat/B-4-<kebab-slug> was unusable"'
 
+# ---- #1361: a ticket that renders, with an app to run and §4 Test sign-in unset, is asked for the row
+# at spawn, not after its PR opens; with the row set it spawns.
+export DESK_QUEUE="$T/queue-sg.json" DESK_AUTOPILOT_STATE="$T/state-sg" DESK_CONFIG="$T/config-sg.md"
+cp "$T/config.md" "$DESK_CONFIG"; mkdir -p "$T/state-sg/logs" "$T/state-sg/triage"
+printf '\n## 4. Checks\n| Field | Value |\n|---|---|\n| Dev server | `npm run dev` |\n' >> "$DESK_CONFIG"
+q init sg; q set-batch concurrency=3
+q add SG-1; q set SG-1 state=triaged branch=feat/SG-1 lane=A
+printf '{"ticket":"SG-1","summary":"A new page","renders":true}' > "$T/state-sg/triage/SG-1.json"
+q add SG-2; q set SG-2 state=triaged branch=fix/SG-2
+printf '{"ticket":"SG-2","summary":"A query fix","renders":false}' > "$T/state-sg/triage/SG-2.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1361 a ticket that renders is parked at spawn on the unset Test sign-in row, with no worker" \
+  '[ "$(field SG-1 state)" = "\"parked\"" ] && [ "$(field SG-1 session_id)" = null ] && jq -r ".tickets[\"SG-1\"].park.question" "$DESK_QUEUE" | grep -q "^NEEDS ROW — SG-1 renders, .* §4 Test sign-in is unset, so no worker was spawned" && [ "$(jq -r ".tickets[\"SG-1\"].park.kind" "$DESK_QUEUE")" = question ]'
+check "#1361 one that renders nothing spawns" '[ "$(field SG-2 state)" = "\"running\"" ]'
+printf '| Test sign-in | `dev-user@example.test` |\n' >> "$DESK_CONFIG"
+q requeue SG-1 >/dev/null 2>&1
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1361 with the row set, it spawns" '[ "$(field SG-1 state)" = "\"running\"" ]'
+# #1363: with a user the repo's seed files create, desk sets the row itself, logs it, and the ticket spawns.
+cp "$T/config.md" "$DESK_CONFIG"; printf '\n## 4. Checks\n| Field | Value |\n|---|---|\n| Dev server | `npm run dev` |\n' >> "$DESK_CONFIG"
+mkdir -p "$T/repo/prisma"; printf "await db.user.create({ data: { email: 'maya.dev@acme.test' } });\n" > "$T/repo/prisma/seed.ts"
+q add SG-3; q set SG-3 state=triaged branch=feat/SG-3 lane=A
+printf '{"ticket":"SG-3","summary":"Another page","renders":true}' > "$T/state-sg/triage/SG-3.json"
+out=$(node "$B/pass.mjs" 2>&1)
+rm -rf "$T/repo/prisma"
+check "#1363 a seeded user is taken for Test sign-in at spawn: the row is written noted as desk's, and the ticket spawns" \
+  '[ "$(field SG-3 state)" = "\"running\"" ] && grep -qF "| Test sign-in | \`maya.dev@acme.test\` (set by desk: a development user prisma/seed.ts creates;" "$DESK_CONFIG" && echo "$out" | grep -qF "SG-3: desk set config §4 \"Test sign-in\" = maya.dev@acme.test"'
+check "#1363 and it is a taken decision for the check-in digest" 'jq -e "select(.chose == \"maya.dev@acme.test\" and .ticket == \"config\")" "$T/state-sg/decisions.jsonl" >/dev/null'
+# A decision log that cannot be written is said, not claimed to be in the digest.
+cp "$T/config.md" "$DESK_CONFIG"; printf '\n## 4. Checks\n| Field | Value |\n|---|---|\n| Dev server | `npm run dev` |\n' >> "$DESK_CONFIG"
+mkdir -p "$T/repo/prisma"; printf "await db.user.create({ data: { email: 'omar.dev@acme.test' } });\n" > "$T/repo/prisma/seed.ts"
+chmod a-w "$T/state-sg/decisions.jsonl"
+for k in SG-1 SG-2 SG-3; do q set "$k" state=done; done; q add SG-4; q set SG-4 state=triaged branch=feat/SG-4 lane=A
+printf '{"ticket":"SG-4","summary":"A third page","renders":true}' > "$T/state-sg/triage/SG-4.json"
+out=$(node "$B/pass.mjs" 2>&1)
+rm -rf "$T/repo/prisma"; chmod u+w "$T/state-sg/decisions.jsonl"
+check "#1363 with the decision log unwritable, the line says the digest does not list it, and the ticket still spawns" \
+  '[ "$(field SG-4 state)" = "\"running\"" ] && echo "$out" | grep -q "SG-4: desk set config §4 \"Test sign-in\" = omar.dev@acme.test .*the decision log could not be written (.*), so the check-in digest does not list it" && ! echo "$out" | grep -q "SG-4: .*; in the check-in digest$"'
+export DESK_CONFIG="$T/config.md"
+
 # ---- pass.mjs --batch X-1, with no queue or state exported, works X-1's queue, and the
 # worktree setup and the worker it starts resolve X-1's queue and state too.
 unset DESK_QUEUE DESK_AUTOPILOT_STATE DESK_BATCH
@@ -94,6 +135,7 @@ cat > "$T/stub/claude" <<EOF
 #!/bin/sh
 if [ "\$1" = --cloud ]; then
   printf '%s' "\$2" > "$T/cloud-prompt"
+  printf '%s|%s\n' "\$3" "\$4" > "$T/cloud-name"
   [ -e "$T/cloud-fail" ] && { cat "$S/fixtures/cloud/print-refused.txt" >&2; exit 1; }
   # This test script holds the queue lock from the session's start, so the pass's writes after it are refused.
   if [ -e "$T/lock-after-cloud" ]; then mkdir "\$DESK_QUEUE.lock"; echo $$ > "\$DESK_QUEUE.lock/pid"; fi
@@ -113,6 +155,7 @@ q init cl; q set-batch concurrency=2
 cloud_ticket CW-1
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC2 a cloud ticket starts as a cloud session, recorded running" '[ "$(field CW-1 state)" = "\"running\"" ] && [ "$(field CW-1 cloud.session)" = "\"session_01Vy49H7Z4T3CSgAhSxsuhqj\"" ]'
+check "the cloud session is named <repo>-ticket-<KEY>, and the name is kept with it" '[ "$(cat "$T/cloud-name")" = "--name|widgets-ticket-CW-1" ] && [ "$(field CW-1 cloud.name)" = "\"widgets-ticket-CW-1\"" ]'
 check "DS-124 AC2 its prompt carries the ticket's text and its branch" 'grep -q "AC1: it saves" "$T/cloud-prompt" && grep -q "feat/CW-1" "$T/cloud-prompt"'
 check "DS-124 AC2 no worktree or local worker is made for it" '[ ! -e "$T/wt/CW-1" ] && [ "$(field CW-1 session_id)" = null ] && echo "$out" | grep -q "CW-1 in a cloud session: https://claude.ai/code/"'
 out=$(node "$B/pass.mjs" 2>&1)
@@ -941,7 +984,8 @@ check "DS-570 a review that left none, or one by anyone but the §1 handle, adds
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 # The one call a settled pass still makes is DS-836's list of the handle's open PRs (ticketless PRs): it
 # reads no merged PR again.
-check "DS-570 the next pass reads no PR again and adds no step twice" '! grep -v "^pr list .* --author ben " "$T/gh-calls" | grep -q . &&[ "$(field PM-1 follow_on.length)" = 2 ] && [ "$(field PM-10 follow_on.length)" = 2 ] && [ "$(field PM-11 follow_on.length)" = 3 ] && [ "$(field PM-13 follow_on.length)" = 3 ] && [ "$(field PM-14 follow_on.length)" = 3 ]'
+# A merged PR's stage read (merge-stages.mjs) is the next of the backlog each pass, never one read before.
+check "DS-570 the next pass reads no PR again and adds no step twice" '! grep -v "^pr list .* --author ben " "$T/gh-calls" | grep -v "mergedAt timelineItems" | grep -q . &&[ "$(field PM-1 follow_on.length)" = 2 ] && [ "$(field PM-10 follow_on.length)" = 2 ] && [ "$(field PM-11 follow_on.length)" = 3 ] && [ "$(field PM-13 follow_on.length)" = 3 ] && [ "$(field PM-14 follow_on.length)" = 3 ]'
 # A merge recorded before the pass read it still gains its steps: the merge driver's (merged_at set, its
 # kept status still open), and needs-you's done or a hand-shipped ticket's (the kept status set merged,
 # carrying the criteria an earlier read of the open PR kept).
@@ -989,6 +1033,97 @@ check "DS-570 AC2 a merge needs-you or a hand-ship recorded gains the steps its 
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-570 and once they are follow-on steps, no pass reads those PRs or adds them again" \
   '! grep -qE "pr view (70[4-8]|710) " "$T/gh-calls" && [ "$(field PM-4 follow_on.length)" = 2 ] && [ "$(field PM-5 follow_on.length)" = 1 ] && [ "$(field PM-6 follow_on.length)" = 1 ] && [ "$(field PM-7 follow_on.length)" = 1 ]'
+# DS-796: one PR recorded on two tickets, by the pass's shippedElsewhere on PM-15 (queued first) and by
+# the merge driver's shipped_pr on PM-16. Both get its status from one read, so neither owes it for good.
+node --input-type=module -e "
+import { readFileSync, writeFileSync } from 'node:fs';
+writeFileSync('$T/pm-715.json', readFileSync('$T/pm-702.json', 'utf8').replaceAll('/pull/702', '/pull/715'));
+writeFileSync('$T/pm-716.json', readFileSync('$T/pm-702.json', 'utf8').replaceAll('/pull/702', '/pull/716'));
+"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/gh-calls"
+case "\$*" in
+  "pr view 715 "*) cat "$T/pm-715.json" ;;
+  "pr view 716 "*) cat "$T/pm-716.json" ;;
+  "pr list "*) echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+q add PM-15; q set PM-15 state=done result.pr=715
+q add PM-16; q set PM-16 state=done result.pr=715 shipped_pr=715 merged_at=2026-11-10T09:00:00Z
+# PR 716's criteria were already taken by PM-19 (its follow item since run): PM-18, recorded on it later
+# with a lower key, takes none.
+q add PM-18; q set PM-18 state=done result.pr=716 shipped_pr=716 merged_at=2026-11-10T09:00:00Z
+q add PM-19; q set PM-19 state=done result.pr=716 merged_at=2026-11-10T09:00:00Z post_merge_read=716
+unmade(){ node --input-type=module -e "import { readFileSync } from 'node:fs'; import { postMergeUnmade } from '$B/harvest.mjs'; console.log(postMergeUnmade(JSON.parse(readFileSync('$DESK_QUEUE', 'utf8')).tickets['$1']))"; }
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-796 a PR recorded on two tickets is read once, and each keeps its status, so the merge driver's owes its review no longer" \
+  '[ "$(grep -c "pr view 715 " "$T/gh-calls")" = 1 ] && [ "$(field PM-15 pr_status.pr)" = 715 ] && [ "$(field PM-16 pr_status.pr)" = 715 ] && [ "$(field PM-16 post_merge_read)" = 715 ] && [ "$(unmade PM-16)" = false ] && [ "$(unmade PM-15)" = false ]'
+check "DS-796 and its review's post-merge criteria go to one of the two tickets, so the person is not asked for each twice" \
+  '[ "$(field PM-15 follow_on.length)" = 2 ] && [ "$(field PM-16 follow_on)" = null ] && [ "$(field PM-16 post_merge_by)" = "\"PM-15\"" ] && [ "$(field PM-15 post_merge_by)" = null ]'
+check "DS-796 a ticket recorded on a PR whose criteria another ticket already took takes none, whatever its key" \
+  '[ "$(field PM-18 follow_on)" = null ] && [ "$(field PM-18 post_merge_read)" = 716 ] && [ "$(field PM-18 post_merge_by)" = "\"PM-19\"" ] && [ "$(unmade PM-18)" = false ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-796 nor on a later pass" '[ "$(field PM-15 follow_on.length)" = 2 ] && [ "$(field PM-16 follow_on)" = null ]'
+# PR 717 is also recorded on PM-20, archived and never given its criteria (a requeued ticket re-shipped
+# on it): an archived ticket is never written, so the live PM-21 takes them, whatever the keys.
+# PR 718's lower key PM-22 keeps a merged status naming no criteria (needs-you's done), so the pass skips
+# it, and PM-23, which reads the PR, writes PM-22's share before stamping itself.
+# PR 719's lower key PM-24 was recorded done on another repo's PR #719 (needs-you's elsewhereDone), and
+# PR 720's lower key PM-26 is archived on it and readmitted, queued: neither takes the criteria.
+node --input-type=module -e "
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+for (const n of [717, 718, 719, 720, 721]) writeFileSync('$T/pm-' + n + '.json', readFileSync('$T/pm-702.json', 'utf8').replaceAll('/pull/702', '/pull/' + n));
+// PR 722 as GitHub names it after the repo was renamed: the remote still says acme/widgets.
+writeFileSync('$T/pm-722.json', readFileSync('$T/pm-702.json', 'utf8').replaceAll('acme/widgets/pull/702', 'acme/renamed/pull/722'));
+const f = '${DESK_QUEUE%.json}.archive.json';
+const a = existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : { tickets: {} };
+const gone = (key, pr) => ({ key, type: 'Task', lane: 'A', state: 'done', park: null, result: { pr }, merged_at: '2026-11-10T09:00:00Z',
+  pr_status: { pr, state: 'MERGED', merged_at: '2026-11-10T09:00:00Z', checks: [] }, archived_at: '2026-11-10T10:00:00Z' });
+a.tickets['PM-20'] = gone('PM-20', 717);
+a.tickets['PM-26'] = gone('PM-26', 720);
+writeFileSync(f, JSON.stringify(a));
+"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/gh-calls"
+case "\$*" in
+  "pr view 717 "*) cat "$T/pm-717.json" ;;
+  "pr view 718 "*) cat "$T/pm-718.json" ;;
+  "pr view 719 "*) cat "$T/pm-719.json" ;;
+  "pr view 720 "*) cat "$T/pm-720.json" ;;
+  "pr view 721 "*) cat "$T/pm-721.json" ;;
+  "pr view 722 "*) cat "$T/pm-722.json" ;;
+  "pr list "*) echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+# PR 721's PM-29, reached first, keeps criteria from before the last review; its owner PM-28 has no status.
+q add PM-29; q set PM-29 state=done result.pr=721 merged_at=2026-11-10T09:00:00Z \
+  'pr_status={"pr":721,"state":"MERGED","merged_at":"2026-11-10T09:00:00Z","url":"https://github.com/acme/widgets/pull/721","checks":[],"post_merge":[{"step":"a criterion the last review dropped"}]}'
+q add PM-28; q set PM-28 state=done result.pr=721 merged_at=2026-11-10T09:00:00Z
+q add PM-30; q set PM-30 state=done result.pr=722
+q add PM-21; q set PM-21 state=done result.pr=717 merged_at=2026-11-10T09:00:00Z
+q add PM-22; q set PM-22 state=done result.pr=718 merged_at=2026-11-10T09:00:00Z 'pr_status={"pr":718,"state":"MERGED","merged_at":"2026-11-10T09:00:00Z","merge_commit":"c","checks":[]}'
+q add PM-23; q set PM-23 state=done result.pr=718 shipped_pr=718 merged_at=2026-11-10T09:00:00Z
+q add PM-24; q set PM-24 state=done result.pr=719 merged_at=2026-11-10T09:00:00Z 'pr_status={"pr":719,"state":"MERGED","merged_at":"2026-11-10T09:00:00Z","url":"https://github.com/acme/elsewhere/pull/719"}'
+q add PM-25; q set PM-25 state=done result.pr=719 merged_at=2026-11-10T09:00:00Z
+q add PM-26; q set PM-26 state=queued result.pr=720
+q add PM-27; q set PM-27 state=done result.pr=720 merged_at=2026-11-10T09:00:00Z
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-796 an archived ticket on the PR that never took its criteria is not their owner: the live ticket takes them" \
+  '[ "$(field PM-21 follow_on.length)" = 2 ] && [ "$(field PM-21 post_merge_by)" = null ] && [ "$(field PM-21 post_merge_read)" = 717 ] && [ "$(field PM-20 follow_on)" = null ]'
+check "DS-796 a ticket done on a PR of the same number in another repo is not their owner either: the ticket on this repo takes them" \
+  '[ "$(field PM-25 follow_on.length)" = 2 ] && [ "$(field PM-25 post_merge_by)" = null ] && [ "$(field PM-24 follow_on)" = null ] && [ "$(field PM-24 post_merge_read)" = null ]'
+check "DS-796 a shared PR gives its owner the criteria of a read this pass, not those another ticket kept from before the last review" \
+  '[ "$(field PM-28 follow_on | jq -c "[.[].step]")" = "[\"fill in the switch date at the production relay run\",\"place a test call on staging\"]" ] && [ "$(field PM-29 post_merge_by)" = "\"PM-28\"" ] && [ "$(field PM-29 follow_on)" = null ] && [ "$(grep -c "pr view 721 " "$T/gh-calls")" = 1 ]'
+check "DS-796 a PR GitHub names under the renamed repo still gives its ticket the criteria" \
+  '[ "$(field PM-30 follow_on.length)" = 2 ] && [ "$(field PM-30 post_merge_read)" = 722 ]'
+check "DS-796 nor is a readmitted ticket, by its archived entry: the done ticket takes them and the queued one is left alone" \
+  '[ "$(field PM-27 follow_on.length)" = 2 ] && [ "$(field PM-27 post_merge_by)" = null ] && [ "$(field PM-26 follow_on)" = null ] && [ "$(field PM-26 post_merge_read)" = null ] && [ "$(field PM-26 state)" = "\"queued\"" ]'
+check "DS-796 an owner the pass does not read for itself is given its criteria by the ticket that reads the PR, before that one names it" \
+  '[ "$(field PM-22 follow_on.length)" = 2 ] && [ "$(field PM-22 post_merge_read)" = 718 ] && [ "$(field PM-23 follow_on)" = null ] && [ "$(field PM-23 post_merge_by)" = "\"PM-22\"" ] && [ "$(grep -c "merge recorded: PM-22 (PR #718): 2 criteria" <<<"$out")" = 1 ]'
 
 # Pass metrics: MX-2 collides with the running MX-1 on src/a.ts, and MX-3 is eligible while the memory
 # gate holds every spawn.
@@ -1010,6 +1145,8 @@ check "DS-758 AC2 a ticket held for memory counts under memory, not collision" \
   'echo "$ml" | jq -e ".held.memory == 1 and .held.collision == 1" >/dev/null'
 check "DS-758 the line names the held ticket, the running one holding it and the file" \
   'echo "$ml" | jq -e ".collisions == [{\"key\":\"MX-2\",\"with\":[\"MX-1\"],\"files\":[\"src/a.ts\"]}]" >/dev/null'
+check "the pass opens a stuck interval for each ticket a hold kept waiting, with its cause, from the pass's time" \
+  '[ "$(jq -sc "map(select(.end == null) | [.key, .cause, .start == .recorded]) | sort" "$T/state-mx/stuck-intervals.jsonl")" = "[[\"MX-2\",\"collision\",true],[\"MX-3\",\"memory: low available\",true]]" ]'
 check "DS-758 AC4 after nine such passes, this 10th one (1 of 5 running) carries the warning, stamped when written" \
   'echo "$ml" | jq -e ".concurrency == 5 and (.warning | test(\"^10 passes in a row .*MX-2 \\\\(behind MX-1 on src/a.ts\\\\)\")) and .warned_at >= .at" >/dev/null && echo "$out" | grep -q "^collision warning (sent to the check-in digest): 10 passes"'
 check "DS-758 the queue's pass record carries the streak and the warning on to the next pass" \
@@ -1725,8 +1862,8 @@ cat > "$T/stub/claude" <<EOF
 case "\$1 \$2" in
   "-p You are the autopilot follow-step checker for "*)
     echo started >> "$T/follow-prompts"
-    case "\$2" in *"FS-2's PR"*) r=fail ;; *) r=pass ;; esac
-    $NODE -e 'console.log(JSON.stringify({ type: "result", total_cost_usd: 0.03, result: "FOLLOW_RESULT: " + JSON.stringify({ steps: [{ n: 0, result: process.argv[1], found: process.argv[1] === "pass" ? "run 9 is green" : "run 9 failed lint", evidence: "https://github.com/acme/widgets/actions/runs/9" }] }) }))' "\$r"
+    case "\$2" in *"FS-2's PR"*) r=fail ;; *"FS-4's PR"*) r=broken; [ -e "$T/fs4-pending" ] && r=pending ;; *) r=pass ;; esac
+    $NODE -e 'const r = process.argv[1]; console.log(JSON.stringify({ type: "result", total_cost_usd: 0.03, result: "FOLLOW_RESULT: " + JSON.stringify({ steps: [{ n: 0, result: r, found: r === "pass" ? "run 9 is green" : r === "broken" ? "the a11y scan crashed loading, 0 pages scanned" : "run 9 failed lint", evidence: "https://github.com/acme/widgets/actions/runs/9", ...(r === "broken" ? { source: "E2E (advisory) › a11y scan", issue: 812 } : {}) }] }) }))' "\$r"
     exit 0 ;;
 esac
 exec "$T/claude-before-fs" "\$@"
@@ -1749,20 +1886,40 @@ q init fs
 fs_merged FS-1 801 "follow_on=[$CI_STEP,$PAGE_STEP]"
 fs_merged FS-2 802 "follow_on=[$CI_STEP]"
 fs_merged FS-3 803 "follow_on=[$PAGE_STEP]"
+fs_merged FS-4 804 "follow_on=[$CI_STEP]"
 : > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" 2>&1)
 check "DS-798 AC1 once the merge is recorded, the pass starts a follow-step checker on each ticket's step that only reads CI" \
   'echo "$out" | grep -qF "FS-1 follow steps: a follow-step checker started" && [ "$(field FS-1 follow_run.steps | jq -c "[.[].step]")" = "[\"the CI run on main for the merge commit is green\"]" ] && [ "$(field FS-2 follow_run.steps | jq length)" = 1 ]'
 check "DS-798 AC4 a ticket with no step a checker can run gets none" '[ "$(field FS-3 follow_run)" = null ] && ! echo "$out" | grep -qF "FS-3 follow steps"'
-for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do [ "$(grep -l FOLLOW_RESULT "$DESK_AUTOPILOT_STATE"/follow/FS-*.json 2>/dev/null | grep -vc settings)" -ge 2 ] && break; sleep 0.2; done
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do [ "$(grep -l FOLLOW_RESULT "$DESK_AUTOPILOT_STATE"/follow/FS-*.json 2>/dev/null | grep -vc settings)" -ge 3 ] && break; sleep 0.2; done
 : > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" 2>&1)
 check "DS-798 AC1 the next pass records the step it passed and settles it, leaving the person's step" \
   '[ "$(field FS-1 follow_run)" = null ] && [ "$(field FS-1 follow_checks | jq -c "[.[] | [.result, .evidence, .pr]]")" = "[[\"pass\",\"https://github.com/acme/widgets/actions/runs/9\",801]]" ] && [ "$(field FS-1 follow_on)" = "[$PAGE_STEP]" ]'
 check "DS-798 AC1 and says what it found on the ticket's PR" \
   'grep -q "^pr comment 801 --repo acme/widgets --body A desk follow-step checker ran the step FS-1 left" "$T/gh-calls" && echo "$out" | grep -qF "FS-1 follow steps: its follow-step checker passed 1 and failed 0; said on PR #801"'
+check "#1318 a comment whose ticket keeps a step open (FS-1's page check) does not say nothing is left" \
+  'grep -qF "Its other follow steps are still open: needs-you lists each one a person has to take." "$T/gh-calls" && ! grep -qF "Nothing is left for a person." "$T/gh-calls"'
 check "DS-798 AC2 a step it failed is recorded with what it found and the run URL, and stays a follow step" \
   '[ "$(field FS-2 follow_checks | jq -c "[.[] | [.result, .found]]")" = "[[\"fail\",\"run 9 failed lint\"]]" ] && [ "$(field FS-2 follow_on | jq length)" = 1 ] && [ "$(field FS-2 follow_on_done)" = null ] && echo "$out" | grep -qF "FS-2 follow steps: its follow-step checker passed 0 and failed 1, each listed in needs-you"'
+check "#1318 a step whose evidence source ran and produced nothing is recorded broken, with the step that broke and its issue, and stays a follow step" \
+  '[ "$(field FS-4 follow_checks | jq -c "[.[] | [.result, .source, .issue]]")" = "[[\"broken\",\"E2E (advisory) › a11y scan\",812]]" ] && [ "$(field FS-4 follow_on | jq length)" = 1 ] && echo "$out" | grep -qF "FS-4 follow steps: its follow-step checker passed 0 and failed 0, and found the evidence source of 1 broken, ran but produced nothing to judge: E2E (advisory) › a11y scan (#812); listed in needs-you and checked again later"'
 check "DS-798 a step a checker ran is not run again" \
   ': > "$T/follow-prompts"; DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" >/dev/null 2>&1; [ ! -s "$T/follow-prompts" ] && [ "$(field FS-2 follow_run)" = null ]'
+# #1318: six hours on, the broken step is checked again. Still broken as it was, it is not said on the
+# PR again; a re-check that finds the run still going keeps it broken, on the same cadence.
+fs4_recheck(){
+  q set FS-4 "follow_checks=$(field FS-4 follow_checks | jq -c '.[0].at = "2026-11-20T00:00:00.000Z"')"
+  n=0; for f in "$DESK_AUTOPILOT_STATE"/follow/FS-4-*.json; do case "$f" in *settings*|*'*'*) ;; *) n=$((n+1)) ;; esac; done
+  DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" >/dev/null 2>&1
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do [ "$(grep -l FOLLOW_RESULT "$DESK_AUTOPILOT_STATE"/follow/FS-4-*.json 2>/dev/null | grep -vc settings)" -gt "$n" ] && break; sleep 0.2; done
+  : > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" 2>&1)
+}
+fs4_recheck
+check "#1318 a step still broken as it was is checked again and not said on the PR again" \
+  '[ "$(field FS-4 follow_checks | jq -c "[.[] | .result]")" = "[\"broken\"]" ] && [ "$(field FS-4 follow_checks | jq -r ".[0].at")" != 2026-11-20T00:00:00.000Z ] && ! grep -q "^pr comment 804" "$T/gh-calls" && echo "$out" | grep -qF "FS-4 follow steps: its follow-step checker passed 0 and failed 0, and found the evidence source of 1 broken"'
+: > "$T/fs4-pending"; fs4_recheck; rm -f "$T/fs4-pending"
+check "#1318 a re-check that finds the run still going keeps the step broken, with its source and issue" \
+  '[ "$(field FS-4 follow_checks | jq -c "[.[] | [.result, .source, .issue]]")" = "[[\"broken\",\"E2E (advisory) › a11y scan\",812]]" ] && [ "$(field FS-4 follow_checks | jq -r ".[0].at")" != 2026-11-20T00:00:00.000Z ]'
 cp "$T/claude-before-fs" "$T/stub/claude"
 
 # ---- DS-843 AC4: a config row the pass cannot read stops it before it starts any worker.
@@ -1809,5 +1966,49 @@ check "DS-894 AC5 the pass whose spawn missed its append counts it, and names th
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-894 AC7 with the lever off, no difference line and no difference count" \
   '! echo "$out" | grep -q "differ between queue.json" && [ "$(tail -1 "$T/state-lg/passes.jsonl" | jq "has(\"ledger_diffs\") or has(\"ledger_missed\")")" = false ]'
+
+# ---- the ask ledger: with the ledger lever on, the first worker after a park's requeue acts on its
+# answer, on a plain spawn and a handoff's alike; a production-broken park pushed now is an ask presented
+# by push; the pass's own take of a recommended option answers its ask by default. A pass again writes
+# nothing twice, and with the lever off nothing is written. The batch is made with the lever on, so its
+# ledger names it from the start, as a batch run with the lever on has.
+AK_CONFIG="$DESK_CONFIG"; export DESK_CONFIG="$T/config-lg.md"
+export DESK_QUEUE="$T/ak/queue.json" DESK_AUTOPILOT_STATE="$T/state-ak"; mkdir -p "$T/ak" "$T/state-ak/logs" "$T/state-ak/handoffs"
+q init ak; q set-batch concurrency=4
+q add AK-1; q set AK-1 state=triaged lane=A branch=fix/AK-1 'prev_park={"question":"which copy?","since":"2026-11-20T10:00:00Z","requeued_at":"2026-11-20T11:00:00Z","round":2}'
+q add AK-2; q set AK-2 state=parked lane=A branch=fix/AK-2 'park={"kind":"question","question":"PRODUCTION BROKEN: checkout returns 500","since":"2026-11-20T09:00:00Z"}'
+git -C "$T/repo" worktree add -q -b fix/AK-6 "$T/wt/AK-6"
+q add AK-6; q set AK-6 state=triaged lane=A branch=fix/AK-6 "worktree=$T/wt/AK-6" handoff=pending handoff_stage=4b 'prev_park={"question":"which width?","since":"2026-11-20T08:00:00Z","round":1}'; hfile AK-6 4b "typecheck: pass"
+AKQ='AK-5: widen this PR to cover the CSV export too (recommended), or split the export into a follow-up?'
+q add AK-5; q set AK-5 state=parked lane=A "park={\"kind\":\"question\",\"question\":\"$AKQ\",\"since\":\"2026-11-20T07:00:00Z\",\"recommends\":{\"question\":\"Widen this PR, or split?\",\"options\":[\"widen this PR\",\"split it into a follow-up\"],\"chose\":\"widen this PR\",\"category\":\"scope\"}}"
+out=$(CLAUDE_CODE_SESSION_ID=sess-pass node "$B/pass.mjs" 2>&1)
+akev(){ jq -sc "[.[] | select(.type | startswith(\"ask_\")) | [.type, .key, .data.ask, (.data.round // .data.via // .data.by // .data.kind)]]" "$T/ak/ledger/events.jsonl"; }
+has(){ akev | jq -e "any(. == $1)" >/dev/null; }
+# AK-1 and AK-5 (requeued by the take) both wait on a plain spawn; the repo's shared cap may leave room
+# for one, so each that started is checked, and one must have.
+plain(){ local n=0
+  if [ "$(field AK-1 state)" = "\"running\"" ]; then has "[\"ask_acted\",\"AK-1\",\"AK-1:2026-11-20T10:00:00Z\",2]" || return 1; n=1; fi
+  if [ "$(field AK-5 state)" = "\"running\"" ]; then has "[\"ask_acted\",\"AK-5\",\"AK-5:2026-11-20T07:00:00Z\",1]" || return 1; n=1; fi
+  [ "$n" = 1 ]; }
+check "ask ledger: a plain spawn after a park's requeue acts on its ask, with the park's round" 'plain'
+check "ask ledger: so does a requeued ticket's handoff spawn" \
+  'echo "$out" | grep -q "AK-6 fresh session from Stage 4b (handed off)" && has "[\"ask_acted\",\"AK-6\",\"AK-6:2026-11-20T08:00:00Z\",1]"'
+check "ask ledger: a production-broken park pushed now is raised and presented by push" \
+  'echo "$out" | grep -q "PUSH: AK-2: PRODUCTION BROKEN" && has "[\"ask_raised\",\"AK-2\",\"AK-2:2026-11-20T09:00:00Z\",\"question\"]" && has "[\"ask_presented\",\"AK-2\",\"AK-2:2026-11-20T09:00:00Z\",\"push\"]"'
+check "ask ledger: the pass's take of a recommended option raises its ask and answers it by default, with no session" \
+  'echo "$out" | grep -qF "AK-5: took the recommended option" && has "[\"ask_raised\",\"AK-5\",\"AK-5:2026-11-20T07:00:00Z\",\"question\"]" && has "[\"ask_answered\",\"AK-5\",\"AK-5:2026-11-20T07:00:00Z\",\"default\"]" && [ "$(jq -sc "[.[] | select(.type == \"ask_answered\") | .data.session]" "$T/ak/ledger/events.jsonl")" = "[null]" ]'
+check "ask ledger: the pass measures each ask's tokens: a raise no worker log wrote is complete false, with no figures" \
+  '[ "$(jq -sc "[.[] | select(.type == \"ask_tokens\" and .key == \"AK-2\") | [.data.step, .data.source, .data.input, .data.complete]]" "$T/ak/ledger/events.jsonl")" = "[[\"raise\",\"log\",null,false]]" ]'
+n=$(akev | jq length)
+out=$(node "$B/pass.mjs" 2>&1)
+check "ask ledger: the next pass, pushing it again, writes nothing twice" '[ "$n" -ge 6 ] && [ "$(akev | jq length)" = "$n" ]'
+export DESK_CONFIG="$AK_CONFIG"
+export DESK_QUEUE="$T/ak-off/queue.json" DESK_AUTOPILOT_STATE="$T/state-ak-off"; mkdir -p "$T/ak-off" "$T/state-ak-off/logs"
+q init akoff; q set-batch concurrency=2
+q add AK-3; q set AK-3 state=triaged lane=A branch=fix/AK-3 'prev_park={"question":"which copy?","since":"2026-11-20T10:00:00Z","round":1}'
+q add AK-4; q set AK-4 state=parked lane=A branch=fix/AK-4 'park={"kind":"question","question":"PRODUCTION BROKEN: login fails","since":"2026-11-20T09:00:00Z"}'
+out=$(node "$B/pass.mjs" 2>&1)
+check "ask ledger: with the lever off, the same spawn and push as with it on write no ledger and the pass reports nothing of it" \
+  '[ "$n" -ge 6 ] && [ "$(field AK-3 state)" = "\"running\"" ] && echo "$out" | grep -q "PUSH: AK-4: PRODUCTION BROKEN" && [ ! -e "$T/ak-off/ledger" ] && ! echo "$out" | grep -q "ask ledger"'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

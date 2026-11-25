@@ -4,8 +4,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { personClears } from './clears-when.mjs';
-import { attachArchive } from './queue-store.mjs';
-import { PARK_KINDS } from './queue-states.mjs';
+import { attachArchive, mergedPrs } from './queue-store.mjs';
+import { PARK_KINDS, blockersOf } from './queue-states.mjs';
 import { postMergeUnmade } from './harvest.mjs';
 
 // pass.mjs, plan-batch.mjs, queue.mjs and answer.mjs exit only with these, so the orchestrator branches
@@ -57,6 +57,25 @@ export const openUnknowns = (unknowns, t) => {
 // The PR state the last pass recorded for a done ticket's PR (pr_status), or null when none was read.
 // Nothing here calls GitHub.
 export const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null && t.pr_status?.pr === t.result.pr ? t.pr_status : null);
+
+// merged_at keeps only a ticket's first merge, so a live ticket requeued after it is not merged on it: only
+// its current PR merging counts (merge-driver.sh release_chain, queue.mjs requeue's own holds). Whether t,
+// merged once, has gone round again since: waiting for its next worker (triaged or running, held behind its
+// own blockers at the requeue, or failed before a worker spawned); respawned, in any state (merged_pr, which
+// its spawn keeps); or, respawned before merged_pr was kept, done on a PR its status reads OPEN after
+// merged_at, or done on a PR other than the one its status names. A status read before merged_at is from
+// before the driver merged it, so it counts at once. A parked ticket never requeued (one a stop holds
+// included), or a done one never respawned, keeps the merge it records. Never for an archived ticket.
+const through = (t) => t.state === 'done' && (t.result?.pr == null || prStatusOf(t)?.state === 'MERGED');
+// Waiting for its next worker: queued or running, held behind its blockers (held_by: a stop holds behind
+// none), or failed before a worker spawned (a requeue clears session_id, and only a spawn sets it).
+export const awaitingWorker = (t) => ['triaged', 'running'].includes(t.state)
+  || (t.state === 'parked' && String(t.park?.question ?? '').startsWith('held by orchestrator') && blockersOf(t).length > 0)
+  || (t.state === 'failed' && t.spawn_failed === true && !t.session_id);
+const openLater = (t) => prStatusOf(t)?.state === 'OPEN' && Date.parse(t.pr_status.at) > Date.parse(t.merged_at);
+// Done on a PR other than the one its status names: that status is from an earlier round.
+const otherRound = (t) => t.state === 'done' && t.result?.pr != null && t.pr_status?.pr != null && Number(t.pr_status.pr) !== Number(t.result.pr);
+export const reworked = (t) => !!t?.merged_at && !through(t) && (awaitingWorker(t) || mergedPrs(t).length > 0 || openLater(t) || otherRound(t));
 
 // A ticket shipped outside its worker, recorded done: the `queue.mjs` arguments pass.mjs and
 // needs-you.mjs both write. Where the queue's PR status is that PR's, it is marked merged as well, or the
@@ -225,7 +244,7 @@ export function parkKindOf(question) {
 // Ticket `t`'s park kind: the one its park records, else the one its question opens as.
 export const parkKind = (t) => (PARK_KINDS.includes(t?.park?.kind) ? t.park.kind : parkKindOf(t?.park?.question));
 
-export const stoppedHold = (t) => t?.state === 'parked' && !String(t.held_by ?? '').split('|').some(Boolean) && parkKind(t) === 'stopped';
+export const stoppedHold = (t) => t?.state === 'parked' && !blockersOf(t).length && parkKind(t) === 'stopped';
 
 // Parked on a hold, a stop or a date (a dependency chain, released by merge-driver.sh release_chain or by
 // the one sanctioned manual release once every predecessor's PR has merged).
@@ -234,7 +253,7 @@ export const isHeld = (t) => t?.state === 'parked' && HELD_KINDS.includes(parkKi
 // Waiting behind the blockers in its held_by: held by the orchestrator, or parked at triage for its own
 // reason (triagePark) with holds kept beside the park. Every reader that follows a chain of holds asks
 // this, so a lane C or D, size, design or step park held behind a sibling reads as held to all of them.
-export const holdsKept = (t) => isHeld(t) || (triagePark(t) && String(t.held_by ?? '').split('|').some(Boolean));
+export const holdsKept = (t) => isHeld(t) || (triagePark(t) && blockersOf(t).length > 0);
 
 // A blocker outside the batch Done this long with its code merged only into another branch is raised to
 // the person (pass/parks.mjs `unpromoted`, needs-you's unpromoted item).
@@ -242,7 +261,7 @@ export const UNPROMOTED_AFTER_MS = 24 * 3600_000;
 // The blockers ticket `t` is still held behind outside its batch that the pass recorded as merged only
 // into another branch, Done UNPROMOTED_AFTER_MS or more by `now`: [[key, {branch, pr, state, since, promote?}]].
 export const unpromotedHolds = (t, now = Date.now()) => (holdsKept(t) ? Object.entries(t.unpromoted ?? {}) : [])
-  .filter(([b, u]) => u?.branch && String(t.held_by ?? '').split('|').includes(b) && String(t.held_outside ?? '').split('|').includes(b)
+  .filter(([b, u]) => u?.branch && blockersOf(t).includes(b) && String(t.held_outside ?? '').split('|').includes(b)
     && now - Date.parse(u.since) >= UNPROMOTED_AFTER_MS);
 // An unpromoted record's promotion PR state as words: "a draft", "open" or "red".
 export const promotionState = (u) => (u.state === 'draft' ? 'a draft' : u.state);
@@ -254,7 +273,7 @@ export function heldBehindOf(q, key) {
   const held = Object.values(q?.tickets ?? {}).filter((o) => o.key !== key && holdsKept(o));
   const behind = new Set();
   for (let edge = new Set([key]); edge.size;) {
-    const next = held.filter((o) => !behind.has(o.key) && String(o.held_by ?? '').split('|').some((k) => edge.has(k))).map((o) => o.key);
+    const next = held.filter((o) => !behind.has(o.key) && blockersOf(o).some((k) => edge.has(k))).map((o) => o.key);
     next.forEach((k) => behind.add(k));
     edge = new Set(next);
   }
@@ -285,7 +304,7 @@ export function dateHoldOf(labels) {
 // reads its label again once they release it. A stopped ticket is held on no date: the held_label a
 // release left behind stays, so its start is not held again on that label, but never starts it.
 /** @type {(t: any) => { label: string, until?: string, bad?: boolean } | null} */
-export const dateHeld = (t) => (isHeld(t) && !stoppedHold(t) && t.held_label &&!String(t.held_by ?? '').split('|').some(Boolean) ? dateHoldOf([t.held_label]) : null);
+export const dateHeld = (t) => (isHeld(t) && !stoppedHold(t) && t.held_label && !blockersOf(t).length ? dateHoldOf([t.held_label]) : null);
 // What the person is told about a blocked-until label whose date cannot be read.
 export const badLabelText = (label) => `its label ${label} names no date desk can read (blocked-until-YYYY-MM-DD): fix the label and re-run triage.sh, or let it start`;
 
@@ -324,16 +343,17 @@ export function designGap(r) {
   if (r?.design_error) return `its design could not be read (${r.design_error})`;
   const d = r?.design;
   if (!d) return 'its design was never read: re-run triage';
-  const missing = unreadCanvases(r);
+  // Only its canvases: an unread spec or notes page parks on designPark, in any lane.
+  const missing = (d.canvases ?? []).filter((c) => !c.saved && !c.snapshot).map((c) => c.url);
   if (missing.length) return `its canvas is not on ${d.ref}: save ${missing.join(', ')} there (desk-design save), or snapshot it`;
   if (!(d.canvases ?? []).length) return d.figma ? 'its only design is a Figma frame, which a worker cannot read' : 'it links no Claude Design canvas';
   return null;
 }
 
-// The Claude Design canvases a triage record links that a worker cannot read: neither saved on the
-// base nor snapshotted.
+// The Claude Design canvases, and other claude.ai artifacts, a triage record links that a worker cannot
+// read: neither saved on the base nor snapshotted.
 export function unreadCanvases(r) {
-  return (r?.design?.canvases ?? []).filter((c) => !c.saved && !c.snapshot).map((c) => c.url);
+  return [...(r?.design?.canvases ?? []), ...(r?.design?.artifacts ?? [])].filter((c) => !c.saved && !c.snapshot).map((c) => c.url);
 }
 
 // The park for a ticket in any lane whose design no worker can read, or null: a session that can read
@@ -344,6 +364,11 @@ export function designPark(r) {
   return urls.length
     ? `${DESIGN_PARK_PREFIX}${urls.join(', ')}: snapshot it from a session that can read it (/desk-admit does), or have it shared with that subscription, then resume`
     : null;
+}
+// The artifact URLs a designPark question names, or null for any other park.
+export function designParkUrls(question) {
+  const q = String(question ?? '');
+  return q.startsWith(DESIGN_PARK_PREFIX) ? q.slice(DESIGN_PARK_PREFIX.length).split(/:\s/)[0].split(/,\s*/).filter(Boolean) : null;
 }
 
 // Lane C always needs a person before code; lane D only while its design is not saved where a worker
@@ -514,6 +539,26 @@ export const personOnlyStep = (question) => String(question ?? '').split(/(?<=[.
 // approved where no worker can run it (park.session_step, answer.mjs). Any other lane D park is requeued.
 export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.park?.question ?? '') || sessionPark(String(t?.park?.question ?? '')) || !!t?.park?.session_step;
 
+// Plan-first work: a lane C ticket parked at triage on its lane (lanePark's words), with nothing ahead
+// of it, which only an interactive session takes on. A worker's own lane C park asks its own question,
+// and one whose lane challenge could not read the code asks the person to confirm it, so neither is.
+export const planFirst = (t) => t?.state === 'parked' && t.lane === 'C' && !isHeld(t) && !t.park?.session_step
+  && !blockersOf(t).length && String(t.park?.question ?? '').startsWith(laneParkHead('C', false));
+// The claim of the interactive session working a parked ticket in any lane (queue.mjs park --claimed-by),
+// or null. That session works it, so nobody else is asked to; a pass drops the claim once the session
+// has ended (pass.mjs). Once a pass finds uncommitted work behind it, the park's question says what to
+// do, so the claim is no longer the news.
+export const sessionClaim = (t) => (t?.state === 'parked' && !isHeld(t) && t.park?.claim?.session && !t.park.claim.dirty_at ? t.park.claim : null);
+// The claim of the interactive session working a plan-first ticket, or null.
+export const planFirstClaim = (t) => (planFirst(t) ? sessionClaim(t) : null);
+// Whether unclaimed plan-first work has waited past `ms` since it parked, so the person hears of it.
+export const planFirstDue = (t, ms, now = Date.now()) => planFirst(t) && !planFirstClaim(t)
+  && now - (Date.parse(t.park?.since ?? '') || 0) > ms;
+// The one item a batch's due plan-first tickets make, as needs-you lists it and the digest asks it: its
+// lead words, and the not-now key it is put off under, which the same tickets in any order keep.
+export const planFirstWaits = (keys) => `${keys.length} plan-first ticket${keys.length === 1 ? ' waits' : 's wait'} for a session`;
+export const planFirstPutOff = (keys) => ({ question: 'plan-first waiting', inputs: { waiting: [...keys].sort().join(', ') } });
+
 // A park a pass settles without the person: its recorded clears-when is one a script reads, no step of
 // the person's makes it hold, and a worker rather than a session takes the ticket on once it does. A
 // claimed park is its session's (pass.mjs clearable never settles one), so it is not one. Nor is it the
@@ -663,14 +708,14 @@ function holdLeadsTo(q, t, prState, seen, memo = new Map()) {
   // (each ticket naming every one before it) has exponentially many paths.
   if (memo.has(t)) return memo.get(t);
   seen.add(t);
-  const preds = String(t.held_by ?? '').split('|').filter(Boolean);
+  const preds = blockersOf(t);
   const outside = String(t.held_outside ?? '').split('|');
   let parks = preds.length > 0 ? [] : null;
   for (const p of preds) {
     const pt = q.tickets?.[p];
     if (!pt) { if (!outside.includes(p)) parks = null; }
     else if (['running', 'triaged'].includes(pt.state) || spinePark(pt)) continue;
-    else if (pt.state === 'done') { if (pt.result?.pr == null || prState(pt.result.pr) === 'CLOSED') parks = null; }
+    else if (pt.state === 'done') { if (!blockerThrough(pt, prState) && (pt.result?.pr == null || prState(pt.result.pr) === 'CLOSED')) parks = null; }
     else if (pt.state === 'failed' || (pt.state === 'parked' && !isHeld(pt))) parks.push(p);
     else { const up = holdLeadsTo(q, pt, prState, seen, memo); parks = up && [...parks, ...up]; }
     if (!parks) break;
@@ -696,7 +741,7 @@ export function waitingOnPark(q, t, prState = () => null) {
 function holdPath(q, from, to, seen = new Set()) {
   if (!holdsKept(from) || seen.has(from.key)) return null;
   seen.add(from.key);
-  const preds = String(from.held_by ?? '').split('|').filter(Boolean);
+  const preds = blockersOf(from);
   if (preds.includes(to)) return [from.key, to];
   for (const p of preds) {
     const up = holdPath(q, q.tickets?.[p], to, seen);
@@ -747,29 +792,65 @@ export function batchSettled(q, prState) {
 }
 
 // Idle: settled, and every done ticket's PR merged or closed, so the merge driver has nothing left.
-// A done ticket with no PR is finished; a PR whose state is unknown counts as open. A merged ticket
+// A done ticket with no PR is finished, as is one whose own status names its PR merged (another repo's
+// PR, needs-you's elsewhereDone, which prStates never holds); a PR whose state is unknown counts as open. A merged ticket
 // whose review's post-merge criteria the pass has not made follow-on steps yet is not: only a pass adds
 // them, so the batch keeps getting passes until one has.
 export function batchIdle(q, prState = () => null) {
   return batchSettled(q, prState) && Object.values(q.tickets ?? {})
-    .every((t) => (t.state !== 'done' || t.result?.pr == null || ['MERGED', 'CLOSED'].includes(prState(t.result.pr))) && !postMergeUnmade(t));
+    .every((t) => (t.state !== 'done' || t.result?.pr == null || prStatusOf(t)?.state === 'MERGED' || ['MERGED', 'CLOSED'].includes(prState(t.result.pr))) && !postMergeUnmade(t));
 }
 
 // An epic batch not in feature mode lands its base on the default branch through one epic PR (the
 // queue's `promotion`), opened once every child has merged into the base. A ticket held behind the
 // epic key itself waits on that PR, so it is not a child the PR waits for.
 export const epicBatch = (q) => q?.feature !== true && !!q?.epic && !!q?.base;
-export const epicChildren = (q) => Object.values(q.tickets ?? {}).filter((t) => !String(t.held_by ?? '').split('|').includes(q.epic));
+export const epicChildren = (q) => Object.values(q.tickets ?? {}).filter((t) => !blockersOf(t).includes(q.epic));
 // A child is through once done and merged into the base, or done with no PR (nothing to merge).
 export const childDone = (t) => t.state === 'done' && (!!t.merged_at || t.result?.pr == null);
-// The blockers among `keys` to hold ticket `key` behind, less `key` itself and those in `tickets`
-// already merged or through (childDone), which nothing would release. -> { holds, cycles: those in
+// A blocker is through, so nothing held behind it waits on it: done, with its merge recorded (merged_at)
+// or its PR merged. `prState(n)` is the PR's state where the caller read it from GitHub, and null counts
+// as not merged; without it, the last pass's pr_status is read and a PR it has not read counts as
+// merged. Done with no PR and no merge is not through: whether its dependants start is the person's.
+// One done by another's PR (done_by) has no result.pr of its own, and that PR's merge is its merged_at.
+// With a PR of its own, merged_at is not read: it keeps only a ticket's first merge, so a requeued
+// blocker whose new PR is open, closed unmerged or (where the caller reads GitHub) unread is not through
+// on it: its dependants wait on the change that PR lands. A status naming its current PR merged is
+// final, and is how a ticket done on another repo's PR is read (needs-you's elsewhereDone), never as
+// this repo's PR of the same number.
+export const blockerThrough = (t, prState = null) => {
+  if (t?.state !== 'done') return false;
+  const n = t.result?.pr;
+  if (n == null) return !!t.merged_at;
+  const kept = prStatusOf(t)?.state;
+  if (kept === 'MERGED') return true;
+  const s = prState ? prState(n) : kept;
+  if (s === 'MERGED') return true;
+  return !prState && !['OPEN', 'CLOSED'].includes(s);
+};
+// Whether ticket k of `tickets` has merged its current work: a merge recorded (merged_at), unless it is a
+// live one gone round again since (reworked). An archived one (found through `tickets`' archive, not its
+// own) never is reworked. A merge moves its ticket to Done in Jira and a requeue moves it back from
+// nothing, so a reworked ticket is usually Done there: every reader asks this, whatever the tracker says.
+export function mergedCurrent(tickets, k) {
+  const o = tickets?.[k];
+  return !!o?.merged_at && !(Object.hasOwn(tickets, k) && reworked(o));
+}
+// Whether blocker k of `tickets` is finished for laying holds, which nothing would release: its current
+// work merged, or done with no PR and no merge (childDone's other half). A reader asking only whether it
+// merged (a requeue's own holds, a route to another batch) keeps a ticket behind one done with no PR: whether
+// its dependants start is the person's.
+export function holdThrough(tickets, k) {
+  const o = tickets?.[k];
+  return !!o && (mergedCurrent(tickets, k) || (!o.merged_at && childDone(o)));
+}
+// The blockers among `keys` to hold ticket `key` behind, less `key` itself and those in `tickets` through
+// for holds (holdThrough). -> { holds, cycles: those in
 // `behind` (heldBehindOf), already waiting behind `key`, so not held, outside: the holds in no batch }.
 export function holdsAmong(key, keys, tickets, behind) {
   const holds = []; const cycles = [];
   for (const k of new Set(keys)) {
-    const o = tickets[k];
-    if (k === key || (o && (o.merged_at || childDone(o)))) continue;
+    if (k === key || holdThrough(tickets, k)) continue;
     (behind.has(k) ? cycles : holds).push(k);
   }
   return { holds, cycles, outside: holds.filter((k) => !tickets[k]) };

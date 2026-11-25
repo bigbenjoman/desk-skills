@@ -40,6 +40,19 @@ A worker's park may also open `lane C: ` where a rule asks for it, and ends with
 `Not reached: …` list: needs-you (`park-words.mjs`) puts the key and desk's other terms in plain
 words and leaves that list out, which the worker log keeps.
 
+**A question is a choice, never a typed reply.** Put it as options, your recommendation first and
+labelled, each with its one-line trade-off (an `AskUserQuestion` carousel in a session; numbered
+actions on a needs-you item). Never ask the person to reply a word ("reply yes", "say admit") or to
+type a value: where the answer is a value, offer the values you can recommend as the options. A push
+or a digest line names the choice and where to make it, never a word to send back.
+
+**A config value desk can recommend is taken, not asked.** A row desk can set with a stated reason (a
+template default that already applies while it is unset (not one the machine profile fills while absent), a least-privilege `no` or `none` that
+matches what desk does now, a value read from the repo such as a user its seed files create) is set
+by desk, noted `set by desk: <why>`, and logged as a taken decision for the check-in digest, where the
+person can change it. Only a row that widens what workers may do, spends, reaches an external system,
+names a person, or makes a product or design call is put to the person.
+
 **Do not re-ask what the user put off.** An answer of "not now" puts the question in the repo's
 register, `<state>/not-now.jsonl` (`not-now.mjs`), with the date and the inputs it depends on: the
 ticket, a PR head SHA, config rows, an external value it read, whatever the question names. A
@@ -246,6 +259,33 @@ running passes for every other ticket, and put the question where an answer come
   option and your recommendation, and run the loop without it. It is the user's to answer when they
   are back in the conversation. Never `needs-you.mjs ask`: that records a step for the person to
   take, with no answer for the loop to read.
+
+- **A step only the person takes** (file, sign in, merge by hand): record it at once with
+  `needs-you.mjs ask <repo> "<the step, and your recommended default>"`, so desk-q and
+  desk-needs-you list it until the person says done. One that waits on tickets happening (`--until
+  <TICKET>[,<TICKET>...]`) is dropped by the pass once they are all merged or done (`needs-you: ask
+  <n> dropped`). Pass `--until` only for such a wait, never for a step the person still owes once
+  they merge.
+- **A choice for the person** is an ask with options: `needs-you.mjs ask <repo> "<the question,
+  saying what each option does>" --options <a>|<b> --recommend <a>`. Each option is one word and an
+  action the person taps, the recommended one first. Nobody choosing by the next §3b check-in (or
+  `--apply-by <HH:MM|ISO>`), the pass applies the recommendation, logs it as a taken decision the
+  check-in digest lists with how to reverse it, and `needs-you.mjs ask-status <repo> <id>` tells you
+  which option stands and whether it was chosen or applied by default. Act on that. Pass
+  `--never-default "<why>"` where the recommendation contacts anyone outside the team, widens a §3
+  permission or cannot be undone: that one stays open until the person chooses. One that spends money
+  or touches production never defaults whatever you pass.
+
+**A wait on the person lives only as a needs-you item, never as a line in your `/loop` prompt.**
+Your loop prompt, a pending note, a handoff or a summary is read by no one but you. A wait kept there
+reaches neither desk-q nor needs-you, and goes stale, and the person learns of it only when they read your summary, if at all.
+Every wait goes where the list above puts it: a park, an ask, or the report for a call nothing waits on.
+
+**An admit is the desk's own step, never a wait on the person.** Admit tickets the person named, an
+`admit next:` line names, or a pass's report hands you, yourself, at once (`intake.mjs admit
+<TICKET>... --session`, the batch's standing approval and §3 allowing). Never hold one for the person
+to say "admit". A refusal goes through `desk-admit`'s step 2: fold in what a comment or triage settles,
+then admit again. Ask only what nothing settles, as a park or an ask.
 
 A carousel stays right where nothing waits on it: Stage 3's round, before the loop, and a question
 the user asks you, or answers, while they are in the conversation with you.

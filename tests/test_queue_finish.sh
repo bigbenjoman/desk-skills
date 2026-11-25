@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: queue finish (a parked ticket whose last step the orchestrator finished)
+# layer: L2
 # queue.mjs finish records a parked ticket done on its PR, as the pass records one whose draft PR it
 # opened, and refuses a ticket that is not parked and a PR that is not open or merged, from a fork, on
 # another branch or into another base. A running, held or claimed ticket, a spine or plan park, and a
@@ -113,6 +114,56 @@ check "DS-826 a feature spine is refused, pointing to requeue" '[ $rc -ne 0 ] &&
 
 # DS-826 AC6: the recovery row for a park on a single remaining step names the command.
 check "DS-826 AC6: the recovery reference names queue.mjs finish on that row" 'grep -E "^\| a worker.s .AUTOPILOT_PARK. on a single remaining step" "$S/../skills/desk-autopilot/references/orchestrator-recovery.md" | grep -q "queue.mjs finish <TICKET> --pr <n>"'
+
+# DS-899 AC5: with the ledger lever on, finish's write is one finished event naming the PR, with the done
+# fields it set, and no legacy event holds any of them; the queue rebuilt from the log is queue.json.
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n'; } > "$T/config-on.md"
+mkdir -p "$T/lq"
+lq(){ out=$(DESK_CONFIG="$T/config-on.md" DESK_QUEUE="$T/lq/queue.json" node "$B/queue.mjs" "$@" 2>&1); rc=$?; }
+lq init t; lq add fix-l; lq set fix-l branch=fix/fix-l; lq park fix-l "AUTOPILOT_PARK: gh pr create was refused"
+pr 81 OPEN true fix/fix-l
+lq finish fix-l --pr 81
+check "DS-899 AC5: finish records the ticket done with the lever on" '[ $rc -eq 0 ] && [ "$(DESK_QUEUE="$T/lq/queue.json" f fix-l state)" = "\"done\"" ]'
+led=$(DESK_CONFIG="$T/config-on.md" node --input-type=module -e '
+const [B, dir] = process.argv.slice(1);
+const f = `${dir}/queue.json`;
+const { read } = await import(`${B}/ticket-ledger.mjs`);
+const { queueDifference, DONE_FIELDS } = await import(`${B}/queue-ledger.mjs`);
+const evs = read(dir).events.filter((e) => e.key === "fix-l");
+const at = evs.findLastIndex((e) => e.type === "finished");
+const fin = evs[at];
+const legacy = evs.slice(at).filter((e) => e.type === "legacy_set").flatMap((e) => Object.keys(e.data.fields)).filter((k) => DONE_FIELDS.includes(k));
+console.log(`${fin?.data.pr} ${Object.keys(fin?.data.fields ?? {}).sort().join(",")} ${fin?.by.proc} legacy=${legacy.join(",") || "none"} diffs=${queueDifference(f).diffs.length}`);
+' "$B" "$T/lq" 2>&1)
+check "DS-899 AC5: one finished event names the PR and holds the done fields, written by queue.mjs finish" '[ "${led% legacy=*}" = "81 draft_pr,handoff_stage,park,result queue.mjs finish" ]'
+check "DS-899 AC5: no legacy event holds a done field" '[[ "$led" == *" legacy=none "* ]]'
+check "DS-899 AC6: the queue rebuilt from the log is queue.json" '[[ "$led" == *" diffs=0" ]]'
+
+# #1339: a fix try the pass queued and no worker started is withdrawn once what it was for is settled
+# outside a worker: the ticket goes back to done on its PR, and the try counts against none.
+q add fix-w; q set fix-w branch=fix/fix-w state=done result.pr=71
+FIX='{"try":1,"of":2,"pr":71,"head":"h1","kind":"review","what":"review not clean: 1 gap","at":"2026-11-23T10:00:00Z"}'
+q set fix-w state=triaged "fix=$FIX" 'fix_tries=[{"try":1,"head":"h0","kind":"checks","what":"red: Lint","at":"2026-11-22T10:00:00Z"},{"try":1,"head":"h1","kind":"review","what":"review not clean: 1 gap","at":"2026-11-23T10:00:00Z"}]'
+q withdraw fix-w "the E2E workflow was dispatched on the branch and passed: run 123"
+check "#1339 a queued fix try is withdrawn, saying so" '[ $rc -eq 0 ] && [ "$out" = "fix-w: its queued fix try 1 on PR #71 (review not clean: 1 gap) withdrawn: no worker is spawned for it, it counts against none of the PR'"'"'s tries, and no review try is drafted again at its head h1: the E2E workflow was dispatched on the branch and passed: run 123" ]'
+check "#1339 the ticket is back done on its PR, the try cleared, and kept in its tries marked withdrawn with why" '[ "$(f fix-w state)" = "\"done\"" ] && [ "$(f fix-w fix)" = null ] && [ "$(f fix-w result.pr)" = 71 ] && [ "$(f fix-w fix_tries | jq -c "[.[] | [.head, (.withdrawn != null), .withdrawn_why]]")" = "[[\"h0\",false,null],[\"h1\",true,\"the E2E workflow was dispatched on the branch and passed: run 123\"]]" ]'
+before=$(sum); q withdraw fix-w "again"
+check "#1339 with no queued fix try, nothing is withdrawn" '[ $rc -ne 0 ] && grep -q "no queued fix try is there to withdraw: nothing withdrawn" <<< "$out" && [ "$(sum)" = "$before" ]'
+q set fix-w state=triaged "fix=$FIX"; sleep 60 & PASS_PID=$!
+mkdir -p "$HOME/.desk-autopilot"; STATE_DIR=$(node -e 'import("'"$B"'/desk-env.mjs").then((m) => console.log(m.stateDir()))')
+mkdir -p "$STATE_DIR"; printf '{"pid":%s}\n' "$PASS_PID" > "$STATE_DIR/orchestrator.lock"; before=$(sum); q withdraw fix-w "mid-pass"
+check "#1339 while a pass runs, which may be spawning the try, nothing is withdrawn" '[ $rc -ne 0 ] && grep -q "a pass is running, and may be spawning fix-w.s fix try: run queue.mjs withdraw fix-w again once it ends" <<< "$out" && [ "$(sum)" = "$before" ]'
+kill "$PASS_PID" 2>/dev/null; rm -f "$STATE_DIR/orchestrator.lock"
+q add fix-r; q set fix-r branch=fix/fix-r state=done result.pr=72; before=$(sum)
+q set fix-r --unless state=done state=running session_id=s1
+check "#1339 a pass's running write is refused for a ticket done since (a withdrawn try), so no worker starts" '[ $rc -ne 0 ] && grep -qF "fix-r'"'"'s state is done now, so it is not written (--unless state=done)" <<< "$out" && [ "$(sum)" = "$before" ]'
+q set fix-r state=triaged; q set fix-r --unless state=done state=running
+check "#1339 and goes ahead for one still waiting" '[ $rc -eq 0 ] && [ "$(f fix-r state)" = "\"running\"" ]'
+q set fix-w state=running "fix=$FIX"; before=$(sum); q withdraw fix-w "too late"
+check "#1339 a running fix try is not withdrawn: it names stop" '[ $rc -ne 0 ] && grep -qF "its fix try has started. Stop it (queue.mjs stop fix-w)" <<< "$out" && [ "$(sum)" = "$before" ]'
+q withdraw fix-w
+check "#1339 withdraw wants why" '[ $rc -ne 0 ] && grep -q "usage: queue.mjs withdraw <TICKET>" <<< "$out"'
+check "#1339 the recovery reference names queue.mjs withdraw for a queued try settled outside a worker" 'grep -q "queue.mjs withdraw <TICKET> \"<why>\"" "$S/../skills/desk-autopilot/references/orchestrator-recovery.md"'
 
 rm -rf "$T"
 echo "queue finish: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: merge driver: red checks, reruns and waivers (offline, fake gh)
+# layer: L3
 # The real merge-driver.sh and gate.mjs, one loop at a time, set up by merge_driver_setup.sh: §4 Known
 # flaky checks waived, a signed-out gh, why a red PR is not merged, §4 State checks never rerun, an
 # approval check rerun once for an approval its run never saw, and a preview check's rerun and a
@@ -329,5 +330,32 @@ check "DS-912: with the team's one unit held, a BEHIND PR is not updated, and th
 rm -rf "$LD"
 uploop
 check "DS-912: once a unit is free the update takes it, labelled with the PR, and runs" 'grep -q "pr update-branch 1916 --repo acme/widgets" "$T/gh.log" && [ "$(leases)" = "acme/widgets#1916 null" ] && [ -e "$SD/updated-1916-$SHA916" ]'
+
+# ---- a ready PR red only where its base was red, the base green since ----------------------------
+# Where §3 pr-update-branch is yes, the driver updates its branch from the base rather than rerun its
+# old merge commit (stale-base.mjs, the pass's own predicate), records it on the ticket, and waits for
+# the new head; without the grant it reruns as before.
+SHA930=f930000000000000000000000000000000000000; MB930=f93a000000000000000000000000000000000000; TIP930=f93b000000000000000000000000000000000000
+jq --arg s "$SHA930" '. + { "1930": { head: "fix/T-930", base: "main", sha: $s, state: "open", draft: false, checks: [["test", "SUCCESS", 9090], ["lint", "FAILURE", 9930]] } }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+q add T-930 Bug A; q set T-930 branch=fix/T-930 state=done result.pr=1930
+runs930(){ printf '[{"status":"completed","conclusion":"%s"}]' "$1"; }
+jq -n --arg s "$SHA930" --arg mb "$MB930" --arg tip "$TIP930" --arg red "$(runs930 failure)" --arg green "$(runs930 success)" '{
+  ("repos/acme/widgets/compare/main..." + $s): ($tip + "\t" + $mb),
+  ("repos/acme/widgets/compare/" + $mb + "...main?per_page=100"): ($tip + "\t" + $mb),
+  ("repos/acme/widgets/commits/" + $mb + "/check-runs?check_name=lint&filter=latest&per_page=100"): $red,
+  ("repos/acme/widgets/commits/" + $tip + "/check-runs?check_name=lint&filter=latest&per_page=100"): $green }' > "$T/api-out.json"
+sed -e 's/| `ci-rerun` | Rerun CI | `yes` | `no` |/| `ci-rerun` | Rerun CI | `yes` | `yes` |/' "$T/config.md" > "$T/config-930.md"
+awk '{ print } /^\| `pr-ready`/ { print "| `pr-update-branch` | Update branch | `yes` | `yes` |" }' "$T/config-930.md" > "$T/config-930-up.md"
+loop930(){ out=$(DESK_CONFIG="$1" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets T-930 2>&1); rc=$?; }
+: > "$T/gh.log"; loop930 "$T/config-930-up.md"
+check "#1330 a ready PR red on a check red where its base was, green there since, has its branch updated and is not rerun" \
+  'grep -q "^pr update-branch 1930 --repo acme/widgets" "$T/gh.log" && ! grep -q "run rerun 9930" "$T/gh.log" && [ "$(qf T-930 .base_refresh | jq -c "[.head, .ok, .checks]")" = "[\"$SHA930\",true,[\"lint\"]]" ]'
+check "#1330 and the log says why" 'echo "$out" | grep -qF "#1930 red at f93000000 on lint, red on main too and green there since -> gh pr update-branch (a run on the green base follows), no rerun"'
+: > "$T/gh.log"; loop930 "$T/config-930-up.md"
+check "#1330 at the same head a loop later it waits for the new head: no second update and no rerun" \
+  '! grep -q "pr update-branch 1930" "$T/gh.log" && ! grep -q "run rerun 9930" "$T/gh.log" && echo "$out" | grep -qF "it waits for the run at its new head, with no re-run and no fix try"'
+q set T-930 base_refresh=null; : > "$T/gh.log"; loop930 "$T/config-930.md"
+check "#1330 with §3 pr-update-branch not yes it is rerun as before" '! grep -q "pr update-branch 1930" "$T/gh.log" && grep -q "run rerun 9930 --repo acme/widgets --failed" "$T/gh.log"'
+rm -f "$T/api-out.json"
 
 finish reruns

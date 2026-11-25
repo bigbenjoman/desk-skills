@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: repo templates (tests/lib/repo_template.sh: built once per run, copied per case)
+# layer: L2
 # repo_template builds a template once per REPO_TPL_ROOT, however many suites ask for it or race to
 # build it, and repo_copy gives each case its own copy with its remotes pointed at the copy. Scratch
 # HOME only; the suites that race are background subshells of this one.

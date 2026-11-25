@@ -1,4 +1,5 @@
 // suite: pass phase: PR status (each done ticket's PR read, merges recorded, the lists the steps after it use)
+// layer: L1
 import { decidePrStatus, followState } from '../desk/bin/pass/pr-status.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
@@ -45,6 +46,17 @@ const lists = (acts) => acts.at(-1);
   t('and so does a closed one, so the ticket is not left done on it', j([ofType(cachedClosed, 'park').length, lists(cachedClosed).prStates[70]]), j([1, 'CLOSED']));
   const noHandle = run(snap([mine('F')], { logins: null }), read({ author: 'alice' }));
   t('with no account configured only the branch is checked', lists(noHandle).undrafted.length, 1);
+  // DS-796: recorded shipped outside its worker on a merged PR from a branch that names its key (pass.mjs
+  // shippedElsewhere, or the merge driver's queue.mjs merged): that PR is its result, never parked.
+  const shippedRead = { branch: 'fix/F-session', author: 'alice', state: 'MERGED', merged_at: '2026-11-19T09:00:00Z' };
+  const shipped = run(snap([mine('F', { shipped_pr: 70, merged_at: '2026-11-19T09:00:01Z' })], { logins: 'me' }), read(shippedRead));
+  t('DS-796 a merged PR its ticket was recorded shipped on is not parked as not its own, and its status is kept', j([ofType(shipped, 'park').length, ofType(shipped, 'pr-status').length, lists(shipped).prStates[70]]), j([0, 1, 'MERGED']));
+  const shippedKept = run(snap([mine('F', { shipped_pr: 70, merged_at: '2026-11-19T09:00:01Z', pr_status: status(70, 'MERGED', { branch: 'fix/F-session', merged_at: '2026-11-19T09:00:00Z' }) })], { logins: 'me' }), {});
+  t('DS-796 nor is one kept from an earlier pass', ofType(shippedKept, 'park').length, 0);
+  const shippedOpen = run(snap([mine('F', { shipped_pr: 70 })], { logins: 'me' }), read({ ...shippedRead, state: 'OPEN', merged_at: null }));
+  t('DS-796 but shipped_pr does not let an open PR on another branch through', ofType(shippedOpen, 'park').length, 1);
+  const otherShipped = run(snap([mine('F', { shipped_pr: 69 })], { logins: 'me' }), read(shippedRead));
+  t('DS-796 nor a merged PR other than the one it was recorded shipped on', ofType(otherShipped, 'park').length, 1);
 }
 
 // ---- AC1: a merged PR with no merged time recorded
@@ -119,6 +131,11 @@ const lists = (acts) => acts.at(-1);
   const kept = run(snap([withCommit]));
   t('one with its merge commit is not read again', ofType(kept, 'read-pr').length, 0);
   t('origin is still fetched for its gated step', ofType(kept, 'fetch-origin').length, 1);
+  const failed = run(snap([noCommit]), {});
+  t('DS-853 a merged PR whose merge-commit read fails is read, and is not unread', j([ofType(failed, 'read-pr').length, lists(failed).unread]), j([1, []]));
+  t('DS-853 it stays merged in the PR states', lists(failed).prStates[27], 'MERGED');
+  const owedPost = done('V2', 30, { merged_at: 'x', pr_status: status(30, 'MERGED', { post_merge: [{ step: 'p' }] }) });
+  t('DS-853 nor is one read for its post-merge criteria', j(lists(run(snap([owedPost]), {})).unread), j([]));
   const mergeOnly = done('X', 29, { merged_at: 'x', follow_on: [{ step: 's', row: null }], pr_status: status(29, 'MERGED', { merged_at: 'x' }) });
   t('a step gated on the merge alone needs neither', j(run(snap([mergeOnly])).map((a) => a.type)), j(['prune-builds', 'lists']));
 }
@@ -145,9 +162,16 @@ const lists = (acts) => acts.at(-1);
 {
   const tickets = [done('I', 19), { key: 'J', state: 'running' }, done('K', 19)];
   const acts = run(snap(tickets), { 19: status(19, 'OPEN', { reopen: { tests: 'main' } }) });
-  t('one PR two tickets share is read once', ofType(acts, 'read-pr').length, 1);
+  // GitHub is asked once (pass.mjs's read-pr handler keeps the read); each ticket keeps the status.
+  t('DS-796 one PR two tickets share is read for each, and each keeps its status', j(ofType(acts, 'pr-status').map((a) => a.key)), j(['I', 'K']));
+  t('DS-796 only the first acts on it', j(lists(acts).undrafted.map(({ t: x }) => x.key)), j(['I']));
+  // The second ticket on the PR owes a reopen that failed: the PR's one reopen is that ticket's.
+  const owing = run(snap([done('I2', 22), done('K2', 22, { reopening: 22 })]), { 22: status(22, 'CLOSED') });
+  t('DS-796 a shared PR\'s owed reopen goes to the ticket that owes it, not the first reached', j(lists(owing).reopens.map(({ t: x, owed }) => [x.key, owed])), j([['K2', true]]));
+  t('DS-796 and the PR counts as open while it is owed', lists(owing).prStates[22], 'OPEN');
   t('an open PR whose base now runs its untriggered checks is in the reopens', j(lists(acts).reopens.map(({ t: x, owed }) => [x.key, owed])), j([['I', false]]));
   t('a read that fails keeps nothing for that PR', j(run(snap([done('L', 20)]), {}).filter((a) => a.type !== 'read-pr').map((a) => a.type)), j(['prune-builds', 'lists']));
+  t('and lists it as unread, for the outage hold', j(lists(run(snap([done('L', 20)]), {})).unread), j([20]));
 }
 {
   const owed = done('M', 21, { reopening: 21 });
@@ -173,12 +197,154 @@ const lists = (acts) => acts.at(-1);
   t('a dry run reads and keeps pr_status, and writes nothing else', j(acts.map((a) => a.type)), j(['read-pr', 'pr-status', 'read-pr', 'pr-status', 'lists']));
 }
 
+// ---- DS-796: a ticket done on another repo's PR never fills this repo's PR of the same number
+{
+  const foreignDone = done('X', 31, { merged_at: '2026-11-18T09:00:00Z', pr_status: status(31, 'MERGED', { merged_at: '2026-11-18T09:00:00Z', url: 'https://github.com/other/repo/pull/31' }) });
+  const requeued = done('B', 31, { merged_at: '2026-11-10T09:00:00Z', pr_status: status(31, 'OPEN') });
+  for (const order of [[requeued, foreignDone], [foreignDone, requeued]]) {
+    const acts = run(snap(order, { repo: 'me/here' }), { 31: status(31, 'OPEN', { url: 'https://github.com/me/here/pull/31' }) });
+    t(`DS-796 this repo's open #31 stays open beside another repo's merged #31 (${order.map((x) => x.key).join(' then ')})`, lists(acts).prStates[31], 'OPEN');
+  }
+  const own = run(snap([done('Y', 32, { pr_status: status(32, 'MERGED', { merged_at: 'm', url: 'https://github.com/Me/Here/pull/32' }) })], { repo: 'me/here' }));
+  t('DS-796 a kept status naming this repo\'s PR (any case) is its PR state', lists(own).prStates[32], 'MERGED');
+}
+
 // ---- AC5: the decision does no I/O
 {
   const list = [done('S', 24), done('T', 25, { pr_status: status(25, 'MERGED', { merged_at: 'z' }) }), { key: 'U', state: 'done', fix: { kind: 'conflict', at: 'a' }, fix_tries: [] }];
   const { out, threw, calls } = withNoIo(() => run(snap(list), { 24: status(24, 'OPEN', { isDraft: true }) }));
   t('AC5 it returns its actions without starting a process or writing a file', j({ threw, calls }), j({ threw: null, calls: [] }));
   t('AC5 and the actions are there', j(out.map((a) => a.type)), j(['read-pr', 'pr-status', 'merged', 'fix-finished', 'out', 'prune-builds', 'lists']));
+}
+
+// ---- A PR's preview-build unit is freed once its preview checks finish
+{
+  // A check run carries its completion time; a status context (Vercel's own) only when its state was set.
+  const check = (name, st, conclusion = null, completed = st === 'completed' ? '2026-11-19T09:59:00.000Z' : null, started = null) => ({ name, status: st, conclusion, started, completed });
+  const read = (pr, checks) => status(pr, 'OPEN', { at: '2026-11-19T10:00:01.000Z', checks });
+  // free-previews answered as releasePreviews would with every unit held: each PR named is freed.
+  const freeing = (reads, answer = (a) => ({ freed: a.done.map((d) => d.pr) })) => (a) => (a.type === 'free-previews' ? answer(a) : answers(reads)(a));
+  const go = (s, reads, answer) => drive(decidePrStatus(s), freeing(reads, answer));
+  const reads = {
+    31: read(31, [check('tests', 'completed', 'success', '2026-11-19T09:50:00.000Z'), check('Vercel', 'completed', 'success', null, '2026-11-19T09:58:30.000Z'), check('Vercel Preview Comments', 'completed', 'success', '2026-11-19T09:58:10.000Z')]),
+    32: read(32, [check('Vercel', 'completed', 'failure'), check('tests', 'in_progress')]),
+    33: read(33, [check('Vercel', 'in_progress'), check('tests', 'completed', 'success')]),
+    34: read(34, [check('tests', 'completed', 'success')]),
+    36: read(36, [check('Vercel', 'completed', 'success', null)]),
+  };
+  const list = [done('V', 31), done('W', 32), done('X', 33), done('Y', 34), done('U', 36)];
+  const acts = go(snap(list, { previews: true }), reads);
+  const free = ofType(acts, 'free-previews');
+  t('DS-913 AC1 one release for the pass, naming each PR whose preview checks all passed or failed, with the earliest time its preview checks finished',
+    j(free.map((a) => a.done.map((d) => [d.pr, d.at, d.reason]))), j([[[31, '2026-11-19T09:58:10.000Z', 'preview finished'], [32, '2026-11-19T09:59:00.000Z', 'preview finished: Vercel failed']]]));
+  t('DS-913 AC3 a PR whose preview is still pending, or that has no preview check, is not released', free[0].done.some((d) => d.pr === 33 || d.pr === 34), false);
+  t('DS-913 a finished preview check carrying no time is not released, so a build taken since it cannot be freed by it', free[0].done.some((d) => d.pr === 36), false);
+  const lines = ofType(acts, 'out').map((a) => a.line);
+  t('DS-913 AC1 the report says the finished preview freed its unit', lines.includes("preview builds: PR #31's preview finished, so its preview-build unit is free for the next build"), true);
+  t('DS-913 AC2 the report names the failed preview', lines.includes("preview builds: PR #32's preview failed (Vercel), so its preview-build unit is free for the next build"), true);
+  const none = go(snap(list, { previews: true }), reads, () => ({ freed: [] }));
+  t('DS-913 a PR holding no unit gets no report line', ofType(none, 'out').some((a) => a.line.startsWith('preview builds:')), false);
+  const off = go(snap(list, { previews: false }), reads);
+  t('DS-913 AC5 with the kind off (or no §4 Vercel team) it reads and releases no lease and reports as before',
+    j([ofType(off, 'free-previews').length, ofType(off, 'out').length, ofType(off, 'pr-status').length]), j([0, 0, 5]));
+  const bad = go(snap(list, { previews: true }), reads, () => ({ unreadable: 'the lease store /x/leases.json is unreadable: bad JSON' }));
+  t('DS-913 AC6 an unreadable store is a report line', j(ofType(bad, 'out').map((a) => a.line)), j(['preview builds: leases were unreadable, so no preview-build unit was freed this pass (the lease store /x/leases.json is unreadable: bad JSON)']));
+  t('DS-913 AC6 and the rest of the pass runs as before', j([ofType(bad, 'pr-status').length, lists(bad).undrafted.length]), j([5, 5]));
+  const broke = go(snap(list, { previews: true }), reads, () => ({ failed: "EACCES: permission denied, mkdir '/x'" }));
+  t('DS-913 AC6 any other lease failure is a report line too, and the rest of the pass runs as before',
+    j([ofType(broke, 'out').map((a) => a.line), lists(broke).undrafted.length]),
+    j([["preview builds: freeing finished previews' preview-build units failed (EACCES: permission denied, mkdir '/x'); a unit still held lapses at its TTL"], 5]));
+  const dry = go(snap(list, { previews: true, dry: true }), reads);
+  t('DS-913 a dry run frees nothing', ofType(dry, 'free-previews').length, 0);
+  const kept = go(snap([done('Z', 35, { pr_status: status(35, 'MERGED', { merged_at: 'm', checks: [check('Vercel', 'completed', 'success')] }) })], { previews: true }), {});
+  t('DS-913 a status kept from an earlier pass, not read now, frees nothing', ofType(kept, 'free-previews').length, 0);
+}
+
+// ---- DS-900: merges and auto-merge arms made outside queue.mjs, learnt from the merge log
+{
+  const REPO = 'o/r';
+  const HEAD = 'abc1234def5678';
+  const line = (n, event, by, fields = {}) => ({ at: `2026-11-19T0${n}:00:00.000Z`, repo: REPO, pr: '40', sha: HEAD, by, event, line: n, ...fields });
+  const mergedRead = { 40: status(40, 'MERGED', { merged_at: '2026-11-19T09:00:00Z', head: HEAD, base: 'main' }) };
+  const openRead = { 40: status(40, 'OPEN', { head: HEAD, base: 'main' }) };
+  const on = (fields) => snap([done('M', 40)], { repo: REPO, ledger: true, folded: { M: -1 }, ...fields });
+
+  const session = run(on({ mergeLog: [line(0, 'claim', 'session s1'), line(1, 'merged', 'session s1')] }), mergedRead);
+  t('DS-900 AC1 a merge a session recorded in the merge log is recorded naming the session, with the PR, head and base',
+    j(ofType(session, 'merged')), j([{ type: 'merged', key: 'M', at: '2026-11-19T09:00:00Z', merge: { by: 'session s1', pr: 40, head_sha: HEAD, base: 'main' } }]));
+  t('DS-900 AC1 its merger is known', lists(session).unknownMergers, 0);
+
+  const recorded = done('M', 40, { merged_at: '2026-11-19T09:00:00Z', pr_status: mergedRead[40] });
+  const again = run(snap([recorded], { repo: REPO, ledger: true, folded: {}, mergeLog: [line(1, 'merged', 'session s1')] }), mergedRead);
+  t('DS-900 AC2 a second pass over the same merge-log line records no second merge', ofType(again, 'merged').length, 0);
+
+  const armed = run(on({ mergeLog: [line(2, 'armed', 'session s2')] }), openRead);
+  t('DS-900 AC3 auto-merge a session armed is one automerge_armed event naming who armed it, the PR and the head',
+    j(ofType(armed, 'automerge')), j([{ type: 'automerge', key: 'M', events: [{ type: 'automerge_armed', data: { by: 'session s2', pr: 40, head_sha: HEAD, line: 2 }, at: '2026-11-19T02:00:00.000Z' }] }]));
+  const armedAgain = run(on({ mergeLog: [line(2, 'armed', 'session s2')], folded: { M: 2 } }), openRead);
+  t('DS-900 AC3 a line the ledger already folded is not appended again', ofType(armedAgain, 'automerge').length, 0);
+  const otherPr = run(on({ mergeLog: [line(2, 'armed', 'session s2', { pr: '41' }), line(3, 'armed', 'session s2', { repo: 'o/other' })] }), openRead);
+  t('DS-900 AC3 nor is one on another PR or another repo', ofType(otherPr, 'automerge').length, 0);
+
+  const disarmed = run(on({ mergeLog: [line(2, 'armed', 'session s2'), line(3, 'disarmed', 'merge-driver o__r')], folded: { M: 2 } }), openRead);
+  t('DS-900 AC4 a disarm by the merge driver is one automerge_disarmed event naming it',
+    j(ofType(disarmed, 'automerge')[0]?.events), j([{ type: 'automerge_disarmed', data: { by: 'merge-driver o__r', pr: 40, line: 3 }, at: '2026-11-19T03:00:00.000Z' }]));
+
+  const github = run(on({ mergeLog: [line(2, 'armed', 'session s2')] }), mergedRead);
+  t('DS-900 AC5 a merge with no merged line in the merge log is recorded by github-automerge at the merged head',
+    j(ofType(github, 'merged')[0]?.merge), j({ by: 'github-automerge', pr: 40, head_sha: HEAD, base: 'main' }));
+  t('DS-900 AC5 the arm it merged under is appended before the merge', j(github.filter((a) => ['automerge', 'merged'].includes(a.type)).map((a) => a.type)), j(['automerge', 'merged']));
+  t('DS-900 AC5 its merger is known: the merge log was read', lists(github).unknownMergers, 0);
+
+  const unread = run(on({ mergeLog: null }), mergedRead);
+  t('DS-900 AC6 with the merge log unreadable the merge is recorded by github-automerge',
+    j(ofType(unread, 'merged')[0]?.merge), j({ by: 'github-automerge', pr: 40, head_sha: HEAD, base: 'main' }));
+  t('DS-900 AC6 and counted as one merge whose merger is unknown', lists(unread).unknownMergers, 1);
+  t('DS-900 AC6 and no auto-merge line is folded', ofType(unread, 'automerge').length, 0);
+
+  const off = run(snap([done('M', 40)], { repo: REPO, ledger: false, mergeLog: [line(2, 'armed', 'session s2'), line(3, 'merged', 'session s2')], folded: {} }), mergedRead);
+  t('DS-900 AC7 with the ledger lever off the merge is recorded as before, naming no merger, and nothing is appended',
+    j([ofType(off, 'merged'), ofType(off, 'automerge').length, lists(off).unknownMergers]), j([[{ type: 'merged', key: 'M', at: '2026-11-19T09:00:00Z' }], 0, 0]));
+  const unseeded = run(on({ mergeLog: [line(2, 'armed', 'session s2')], folded: null }), openRead);
+  t('DS-900 a ledger that could not be read, or has not named the batch yet, gets no auto-merge line', ofType(unseeded, 'automerge').length, 0);
+
+  // The merge log is read again when the merge is recorded, after the PR's read.
+  const freshly = (log) => (a) => (a.type === 'merge-log' ? { events: log } : answers(mergedRead)(a));
+  const late = drive(decidePrStatus(on({ mergeLog: [line(0, 'claim', 'session s1')] })), freshly([line(0, 'claim', 'session s1'), line(1, 'merged', 'session s1')]));
+  t('DS-900 a session that recorded its merge after the pass took its snapshot is still named the merger',
+    ofType(late, 'merged')[0]?.merge?.by, 'session s1');
+  const claimed = run(on({ mergeLog: [line(2, 'armed', 'session s2'), { ...line(3, 'claim', 'session s1'), at: '2026-11-19T08:55:00.000Z' }] }), mergedRead);
+  t('DS-900 a desk merger that claimed the PR minutes before its merge and has not recorded it yet is named the merger',
+    ofType(claimed, 'merged')[0]?.merge?.by, 'session s1');
+  const afterMerge = run(on({ mergeLog: [{ ...line(3, 'claim', 'session s1'), at: '2026-11-19T09:05:00.000Z' }] }), mergedRead);
+  t('DS-900 a claim made after the merge merged nothing: github-automerge', ofType(afterMerge, 'merged')[0]?.merge?.by, 'github-automerge');
+  const stale = run(on({ mergeLog: [line(3, 'claim', 'session s1')] }), mergedRead);
+  t('DS-900 a claim older than the claim window names nobody: github-automerge', ofType(stale, 'merged')[0]?.merge?.by, 'github-automerge');
+  const unreadNow = drive(decidePrStatus(on({ mergeLog: [line(1, 'merged', 'session s1')] })), freshly(null));
+  t('DS-900 a merge log unreadable when the merge is recorded counts its merger unknown',
+    j([ofType(unreadNow, 'merged')[0]?.merge?.by, lists(unreadNow).unknownMergers]), j(['github-automerge', 1]));
+
+  // A status needs-you kept naming another repo's PR of the same number takes nothing of this repo's PR.
+  const elsewhere = done('M', 40, { pr_status: status(40, 'MERGED', { merged_at: '2026-11-19T09:00:00Z', url: 'https://github.com/o/other/pull/40' }) });
+  const foreign = run(snap([elsewhere], { repo: REPO, ledger: true, folded: { M: -1 }, mergeLog: [line(2, 'armed', 'session s2'), line(3, 'merged', 'session s2')] }), {});
+  t('DS-900 a ticket done on another repo\'s PR is recorded merged as before, naming no merger, and folds no line of this repo\'s PR',
+    j([ofType(foreign, 'merged'), ofType(foreign, 'automerge').length]), j([[{ type: 'merged', key: 'M', at: '2026-11-19T09:00:00Z' }], 0]));
+
+  // A line one pass could not fold is folded by a later one, merged or archived.
+  const keptMerged = run(snap([recorded], { repo: REPO, ledger: true, folded: { M: -1 }, mergeLog: [line(2, 'armed', 'session s2'), line(3, 'merged', 'session s2')] }), mergedRead);
+  t('DS-900 a merged ticket recorded already still folds an arm line left unfolded', j(ofType(keptMerged, 'automerge')[0]?.events.map((e) => e.data.line)), j([2]));
+  const gone = { ...recorded, key: 'G' };
+  const archived = run(snap([], { repo: REPO, ledger: true, archived: { G: gone, H: { ...gone, key: 'H' } }, folded: { G: -1 }, mergeLog: [line(2, 'armed', 'session s2')] }), {});
+  t('DS-900 an archived ticket the ledger has in this batch folds its unfolded lines; one it does not folds none',
+    j(ofType(archived, 'automerge').map((a) => [a.key, a.events.length])), j([['G', 1]]));
+  const moved = run(on({ mergeLog: [line(2, 'armed', 'session s2')], folded: {} }), openRead);
+  t('DS-900 a ticket the ledger has in another batch folds nothing here, which would move it', ofType(moved, 'automerge').length, 0);
+
+  // A PR read this pass that is not the ticket's own folds none of its lines.
+  const branchRead = { 40: status(40, 'OPEN', { head: HEAD, base: 'main', branch: 'epic/E', author: 'me' }) };
+  const notOwn = run(snap([done('M', 40, { branch: 'fix/M' })], { repo: REPO, ledger: true, logins: 'me', folded: { M: -1 }, mergeLog: [line(2, 'armed', 'session s2')] }), branchRead);
+  t('DS-900 a PR on another branch parks its ticket before any of its merge-log lines is folded',
+    j([ofType(notOwn, 'park').length, ofType(notOwn, 'automerge').length]), j([1, 0]));
 }
 
 if (fails) { console.log(`${fails} failed`); process.exit(1); }

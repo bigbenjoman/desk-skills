@@ -39,6 +39,7 @@ or the ticket itself (`check` names the folder). With no ticket named, ask for o
 | a canvas or deck saved into the repo | Artifact reads, then `save` (on the ticket's branch) or `write` + `propose` (no branch yet) | step 2 |
 | a design's HTML export saved | `import` | step 3 |
 | to know whether the saved copy is current | `status` | step 4 |
+| where each claude.ai artifact the ticket links is saved (what a worker reads instead of the link) | `copies <TICKET>` | `design-canvas.md` |
 | screenshots of every board | `render` | step 5 |
 | the built UI set beside each board | `compare` | step 6 |
 | how many uploads the ticket's PR needs, and how long | `estimate` | step 7 |
@@ -65,12 +66,14 @@ node ~/.claude/desk/bin/desk-design.mjs check <TICKET>
 ## 2. Save a canvas or deck
 
 First check who owns the artifact, before listing or reading any file (`design-canvas.md`'s
-`blocking` step): one created outside the user's organisation goes straight to the ask below.
-Otherwise read every file the design needs, with the Artifact tool, into `$DESK_STATE/designs/<TICKET>/`
+`blocking` step): one created outside the user's organisation asks once whether Claude may read it
+for the rest of this conversation, which the user answers here; a session that cannot ask reads none.
+A spec or notes page the ticket links outside its Design section is saved the same way, as a page.
+Then read every file the design needs, with the Artifact tool, into `$DESK_STATE/designs/<TICKET>/`
 (`desk-env paths` prints `DESK_STATE`). **Read `desk-ticket/references/design-canvas.md` first**: it
 lists the files (`project/canvas.json`, every `project/*.dc.html`, what they load), and the two kinds
 a board needs that are not among the published files (each `/_blob/<id>` asset, one `read` apiece;
-`artifact-type/dc-runtime.js` for `support.js`). A deck is `project/deck.json` and
+`artifact-type/dc-runtime.js` for `support.js`). A deck is `project/deck.json` and <!-- prose-ok: a design artifact's files, not desk's -->
 `project/slides/<id>.html`. Note the artifact's version from the files listing.
 
 **An artifact that returns a summary or an error, not its files,** is not one this account can read.

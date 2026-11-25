@@ -52,13 +52,25 @@ import { runUpload, shotIndex, UploadStop } from './upload-batches.mjs';
 import { logUpload, uploadLogFile } from './upload-log.mjs';
 import { findComposer, EXIT_PAGE_CHANGED, NO_COMPOSER, NO_FILE_INPUT } from './pr-composer.mjs';
 import { permission, permissionKey, browserProfile, ghRepo, DeskConfigError, psRows } from './desk-env.mjs';
+import { runBatches } from './batches.mjs';
+import { checkedShas } from './preview-db.mjs';
 import { findPlaywright, importPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies, loginState } from './find-playwright.mjs';
 
+// --state <dir>: the state dir of the batch whose job this is, where its PR's preview-database record
+// is (pass.mjs passes it on every job, as a job another batch's pass runs has that pass's environment).
+// By hand, without it, every batch of the repo is read (below).
 const args = process.argv.slice(2);
-const maxAt = args.indexOf('--max');
-const max = maxAt < 0 ? null : Number(args[maxAt + 1]);
-const [pr, dir] = maxAt < 0 ? args : args.filter((_, i) => i !== maxAt && i !== maxAt + 1);
-if (!pr || !dir || (max != null && !(Number.isInteger(max) && max > 0))) { console.error('usage: upload-images.mjs <pr-number> <image-dir> [--max <images>]'); process.exit(1); }
+const flags = {};
+const rest = [];
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--max' || args[i] === '--state') flags[args[i].slice(2)] = args[++i];
+  else rest.push(args[i]);
+}
+const max = 'max' in flags ? Number(flags.max) : null;
+const [pr, dir] = rest;
+if (!pr || !dir || rest.length > 2 || (max != null && !(Number.isInteger(max) && max > 0)) || ('state' in flags && !flags.state)) {
+  console.error('usage: upload-images.mjs <pr-number> <image-dir> [--max <images>] [--state <batch state dir>]'); process.exit(1);
+}
 if (!existsSync(dir)) { console.error(`no such directory: ${dir}`); process.exit(1); }
 
 const perm = permission('pr-images');
@@ -99,6 +111,22 @@ if (!playwright.entry) {
 const { chromium } = await importPlaywright(playwright);
 
 if (!shotIndex(dir).size) { console.error(`no images in ${dir} or a folder under it`); process.exit(1); }
+
+// A PR with a preview database posts only the files its last passing error-page check read, whichever
+// route queued this upload: the advance step, the undraft step, a crashed upload tried again, a paced job.
+// The record is read from --state; else, run by hand, from every batch of this repo (the one pinned by
+// DESK_BATCH or DESK_AUTOPILOT_STATE, or with none pinned each one listed), as the person's shell names
+// no batch while the PR's record may sit in a named one. Two batches holding a record for it is refused.
+let passed;
+try {
+  const states = flags.state ? [flags.state] : runBatches().map((b) => b.state);
+  const found = states.map((s) => ({ s, shas: checkedShas(s, pr) })).filter((x) => x.shas);
+  if (found.length > 1) throw new Error(`more than one batch holds a preview-database record for it (${found.map((x) => x.s).join(', ')}); name one with --state`);
+  passed = found[0]?.shas ?? null;
+} catch (e) {
+  console.error(`[upload] whether PR #${pr} has a preview database could not be read (${e.message}), so nothing is uploaded`);
+  process.exit(6);
+}
 
 // Refuse to run two at once: the profile has a single lock and a collision either kills
 // the browser or closes the page mid-upload. `ps` rather than `pgrep -a` (procps-only).
@@ -152,7 +180,7 @@ const writeBody = (body) => execFileSync('gh', ['pr', 'edit', pr, '--repo', REPO
 let result;
 try {
   result = await runUpload({
-    dir, readBody, writeBody, openPage, record, max,
+    dir, readBody, writeBody, openPage, record, max, passed,
     log: (l) => console.log(`[upload] #${pr} ${l}`),
     sleep: (ms) => new Promise((r) => { setTimeout(r, ms); }),
   });

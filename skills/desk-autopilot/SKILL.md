@@ -77,7 +77,8 @@ an earlier copy of this skill. `/desk-update` reinstalls it.
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no  (exit 3 outside a repo)
 ```
 
-Read `desk-env show` (rules and rows, no §3c). **`EXISTS=no` means stop**: say which slug was looked up and offer
+Read `desk-env show rules 0 1 2 3 3b 4 5`: the rules for the agent and the rows of the sections
+the table below names, never the file whole and never the §3c ledger. **`EXISTS=no` means stop**: say which slug was looked up and offer
 `/desk-setup`. A `TODO` in a row the batch needs is a question, not a default. The scripts read the
 same file and fail loudly on a missing identity or path rather than guessing; say which value is
 missing and offer `/desk-setup`. **The config is per repo**: a batch in one repo never uses another
@@ -95,7 +96,7 @@ repo's answers, and the batch state lives per repo too (`<state>` below is
 | §4 "Merge holds" | PRs into §0 Default branch a person merges: you never merge them, and the driver does only after running a hold's named routine where §3 `merge-hold-routine` is `yes` (`references/merging.md`) |
 | §4 "Checks workers can't fix" | checks the pass never sends back to a fix worker: a PR red only on one is stuck, with what fixes it (*Fix tries*) |
 | §4 "Check builds" | a host-side command per check: a PR, draft or ready, red only on these gets the command run once at its head, then the checks re-run (`references/merging.md`) |
-| §4 "Live reads" | a host-side command per live API response a worker cannot fetch: a park naming only these gets them run once per head from the pass's clean checkout of the default branch under `<state>/live-read-checkout` (never the ticket's worktree), up to 1 MiB of the output saved to `<state>/fixtures/<ticket>/<name>.json`, and the ticket requeued; a failed one is the person's |
+| §4 "Live reads" | a host-side command per live API response a worker cannot fetch: a park naming only these gets them run once per head from the pass's clean checkout of the default branch under `<state>/live-read-checkout` (never the ticket's worktree), up to 1 MiB of the output saved to `<state>/fixtures/<ticket>/<name>.json`, and the ticket requeued; a failed or over-cap one is the person's |
 | §4 "Pre-merge steps" | steps a person takes first (a staging migration), by the check or step that fails until then: never sent to a fix worker; stuck, naming the step |
 | §4 "Incidental paths" | files a worker may change outside its triaged scope unreported (unset: the lockfiles; test files always). The pass lists the rest per finished ticket under `out of triaged scope`, and an idle batch prints the `scope:` total. Report only: nothing parks on it |
 | §4 "Local review command", "Clean review verdict" | what a worker runs at Stage 4b, and what "reviewed with no findings" reads as |

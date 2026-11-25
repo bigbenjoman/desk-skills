@@ -33,11 +33,21 @@ grants, and each ticket that needs it parks naming it (needs-you lists those par
   worker's settings read the row when each worker spawns, so the answer takes effect on the next spawn.
 - **No `MISSING  §3` line, no permission question.** A config with every template row asks none.
 - `MISSING` rows in §2, §3b, §4 and §5 are detected facts, not grants: report them on one ROW line and
-  offer `/desk-setup` (a re-run asks exactly those). `INVALID`, `STALLS`, `UNLISTED`, `NODEV`, `JOBKEY` and `DONTASK` lines are
+  offer `/desk-setup` (a re-run asks exactly those). `INVALID`, `CONFLICT`, `STALLS`, `UNLISTED`, `NODEV`, `JOBKEY` and `DONTASK` lines are
   `/desk-setup`'s too: report them, change nothing.
 
 If any parked ticket names a row answered here, say that `/desk-needs-you` (its `unset:<key>` item,
 `done`) requeues them.
+
+Every install (`install.sh`, by hand or the pass's auto-release) settles each configured repo's
+`MISSING` rows itself where it has a considered value (`drift-asks.mjs`): a §3 permission as `no`,
+which the missing row already reads as; a row whose template default already applies (never one that falls back to the machine profile while absent, which stays absent); §4 Test
+sign-in as a user the repo's seed files create, where it runs one app. Each is written noted
+`set by desk: <why>` and logged as a taken decision, so the check-in digest lists it with how to
+change it. Only the rest go to the person, as one `config drift: …` ask pointing at `/desk-setup`,
+which puts each as a choice. A pass drops that ask once the config has those rows. Before a ticket
+that renders spawns, the pass checks §4 Test sign-in the same way: with a seeded user it sets the
+row and spawns; with none, the ticket parks at once (`NEEDS ROW — …`) rather than at its screenshots.
 
 ## Merge holds an agent can clear
 

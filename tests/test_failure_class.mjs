@@ -1,6 +1,7 @@
 // suite: failure class (every park and fix try records one class; a red check is read against the base)
+// layer: L1
 import { CLASSES, WAITING_CLASSES, PARK_RULES, parkClass, FIX_RULES, fixClass, runsState, baseSplit, keptHold } from '../desk/bin/failure-class.mjs';
-import { fixCall, fixBrief, draftChecksFix, parseOperatorChecks } from '../desk/bin/fix-tries.mjs';
+import { fixCall, fixBrief, draftChecksFix, parseOperatorChecks, staleCall } from '../desk/bin/fix-tries.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -261,6 +262,33 @@ t('#805 with the lever off, a runner fault naming no changed file is re-run as s
   t('keptHold: one after a cleared hold begins anew', keptHold({ ...rec([]), cleared: ['Lint'], since: A }, { call: 'held', base_red: rec(['Lint']) }, B).since, B);
   t('keptHold: a fix try beside it does not hold the PR', keptHold(null, { call: 'requeue', base_red: rec(['Lint']) }, A).held, false);
   t('keptHold: a call that clears it clears it', keptHold({ ...rec(['Lint']), since: A }, { call: 'requeue', base_red: null }, B), null);
+}
+
+// #1327: a PR red where its base was red when it branched, the base green since, is updated from the
+// base, where §3 pr-update-branch lets the pass, rather than re-run or given a fix try.
+{
+  const up = (o = {}) => ctx({ refreshBase: true, ...o });
+  const rf = fixCall(tk, pr([ok('tests'), red('Lint')]), up({ baseRead: read({ Lint: 'fail' }, { Lint: 'pass' }) }));
+  t('#1327 a held check that has passed on the base since: its branch is updated, with no fix try', `${rf?.call} ${JSON.stringify(rf?.checks)} ${rf?.fix}`, 'refresh ["Lint"] undefined');
+  t('#1327 and says why', rf?.why, 'Lint was red on main too and has passed on main since, so its branch is updated from main for a run on the green base, with no re-run and no fix try');
+  t('#1327 so is one red at the merge base and green since, with no hold yet', fixCall({ key: 'T-1' }, pr([ok('tests'), red('Lint')]), up({ baseRead: read({ Lint: 'fail' }, { Lint: 'pass' }) }))?.call, 'refresh');
+  t('#1327 and one held as red on the base\'s latest run, now green', fixCall(lateTk, pr([ok('tests'), red('Size')]), up({ baseRead: read({ Size: 'pass' }, { Size: 'pass' }) }))?.call, 'refresh');
+  t('#1327 before the driver\'s reruns are spent, so no rerun replays the red merge', fixCall(tk, pr([ok('tests'), red('Lint')]), up({ cooledDown: false, reruns: () => 0, baseRead: read({ Lint: 'fail' }, { Lint: 'pass' }) }))?.call, 'refresh');
+  const outage = new Map([['Lint', { line: 'x', text: 'x', prs: [700, 702], runnable: true }]]);
+  t('#1327 and before an outage hold that names it', fixCall(tk, pr([ok('tests'), red('Lint')]), up({ outage, baseRead: read({ Lint: 'fail' }, { Lint: 'pass' }) }))?.call, 'refresh');
+  t('#1327 still red on the base: held as before', fixCall(tk, pr([ok('tests'), red('Lint')]), up({ baseRead: read({ Lint: 'fail' }, { Lint: 'fail' }) }))?.call, 'held');
+  t('#1327 green at the merge base: the PR\'s own, a fix try as before', fixCall({ key: 'T-1' }, pr([ok('tests'), red('Lint')]), up({ baseRead: read({ Lint: 'pass' }, { Lint: 'pass' }) }))?.call, 'requeue');
+  t('#1327 once per head: updated at this head already, a fix try as before', fixCall({ ...tk, base_refresh: { head: HEAD, ok: false } }, pr([ok('tests'), red('Lint')]), up({ baseRead: read({ Lint: 'fail' }, { Lint: 'pass' }) }))?.call, 'requeue');
+  t('#1327 with §3 pr-update-branch not yes, a fix try as before', fixCall(tk, pr([ok('tests'), red('Lint')]), ctx({ baseRead: read({ Lint: 'fail' }, { Lint: 'pass' }) }))?.call, 'requeue');
+  const NOW = Date.parse('2026-11-23T12:00:00Z');
+  const done = (at, ok = true) => ({ ...tk, base_refresh: { head: HEAD, at, ok } });
+  const waits = fixCall(done('2026-11-23T11:50:00Z'), pr([ok('tests'), red('Lint')]), up({ now: NOW, baseRead: read({ Lint: 'fail' }, { Lint: 'pass' }) }));
+  t('#1330 updated at this head minutes ago (by the pass or the merge driver): it waits for the new head, no fix try', `${waits?.call} ${/updated from main at 2026-11-23 11:50 UTC.*waits for the run at its new head/.test(waits?.why ?? '')}`, 'wait true');
+  t('#1330 past the wait, a fix try as before', fixCall(done('2026-11-23T11:00:00Z'), pr([ok('tests'), red('Lint')]), up({ now: NOW, baseRead: read({ Lint: 'fail' }, { Lint: 'pass' }) }))?.call, 'requeue');
+  t('#1330 the wait is the merge driver\'s too (stale-base.mjs reads staleCall)', staleCall(done('2026-11-23T11:50:00Z'), HEAD, ['Lint'], read({ Lint: 'fail' }, { Lint: 'pass' }), { base: 'main', now: NOW })?.call, 'wait');
+  t('#1330 and so is the refresh', JSON.stringify(staleCall({ key: 'T-1' }, HEAD, ['Lint'], read({ Lint: 'fail' }, { Lint: 'pass' }), { base: 'main' })?.checks), '["Lint"]');
+  const d = draftChecksFix({ key: 'T-1' }, { pr: 701, head: HEAD, failing: [red('Lint')] }, { repo: 'acme/widgets', base: 'main', refreshBase: true, baseRead: read({ Lint: 'fail' }, { Lint: 'pass' }) });
+  t('#1327 a draft is updated the same way', `${d?.call} ${JSON.stringify(d?.checks)}`, 'refresh ["Lint"]');
 }
 
 if (fails) { console.log(`${fails} check(s) failed`); process.exit(1); }

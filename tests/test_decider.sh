@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: decider (a headless session settles what a pass needs the person for)
+# layer: L2
 # supervisor.mjs with a fake pass that exits 11 with set reports, a fake claude that records its
 # arguments and prompt and answers as told, and the real digest's question list as the intake: a lane
 # A park is requeued and noted, a lane C or D park and an ungranted §3 row go to the digest, an item
@@ -597,6 +598,31 @@ git -C "$T/repo" -c user.name=t -c user.email=t@example.com commit -q --allow-em
 for n in 24 25; do sync "$n"; out=$(tick); settle; done
 check "DS-809 AC2: handed on and unanswered, a new base head starts one new session, and later passes none" '[ "$(calls)" = 2 ] && [ "$(handed | grep -c "^base sync|")" = 1 ]'
 verdict '{"status":"nothing_yet","code":10,"message":"x","waiting":[],"parked":[],"notify":false,"push":[]}'
+
+# ---- the ask ledger: with the ledger lever on, a park handed to the decider is raised and presented by
+# it, the decider's take is its answer, and a park handed to the person without a session is raised only
+printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n' >> "$T/cfg/repos/acme__widgets/config.md"
+unset CLAUDE_CODE_SESSION_ID
+asks(){ node --input-type=module -e "
+import { fold } from '$B/ticket-ledger.mjs';
+import { readAsks } from '$B/ask-ledger.mjs';
+for (const a of readAsks(fold('$T'))) console.log([a.ask, a.kind, a.presented.map((p) => p.via + ':' + (p.ref ? 'ref' : '-')).join(',') || '-', a.answered ? [a.answered.by, a.answered.session, a.answered.latency_s === Math.round((Date.parse(a.answered.at) - Date.parse(a.since)) / 1000)].join(':') : '-'].join('|'));"; }
+askevents(){ grep -c "\"type\":\"$1\"" "$T/ledger/events.jsonl" 2>/dev/null || echo 0; }
+mark; rm -f "$T/state/handed.json"; echo "take J6" > "$T/claude.mode"
+queue '{"J6":{"key":"J6","state":"parked","lane":"A","park":{"kind":"question","question":"'"$REC"' (J6)","since":"2026-10-28T08:00:00Z"}},"C2":{"key":"C2","state":"parked","lane":"C","park":{"kind":"question","question":"which of two layouts?","since":"2026-10-28T09:00:00Z"}}}'
+# The batch named in its ledger, as its first queue write with the lever on would.
+node --input-type=module -e "import { queueDifference } from '$B/queue-ledger.mjs'; queueDifference('$DESK_QUEUE', { seed: true });"
+verdict '{"status":"show_person","code":11,"message":"PARKED","waiting":[],"parked":[{"key":"J6","question":"'"$REC"' (J6)"},{"key":"C2","question":"which of two layouts?"}],"notify":true,"push":[]}'
+out=$(tick); settle
+verdict '{"status":"nothing_yet","code":10,"message":"no change this pass","waiting":[],"parked":[],"notify":false,"push":[]}'
+out=$(tick)
+check "ask ledger: the decider's park is raised, presented by the decider, and answered by it, its latency from the park" 'asks | grep -qx "J6:2026-10-28T08:00:00Z|question|decider:ref|decider::true"'
+check "ask ledger: a park handed to the person without a session is raised, and neither presented nor answered" 'asks | grep -qx "C2:2026-10-28T09:00:00Z|question|-|-"'
+check "ask ledger: answer.mjs --taken and the reaped session's settle write one answer between them" '[ "$(askevents ask_answered)" = 1 ]'
+n=$(askevents ask_raised)
+verdict '{"status":"show_person","code":11,"message":"PARKED","waiting":[],"parked":[{"key":"C2","question":"which of two layouts?"}],"notify":true,"push":[]}'
+out=$(tick)
+check "ask ledger: a park listed again, still handed on, is not raised again" '[ "$n" = 2 ] && [ "$(askevents ask_raised)" = "$n" ]'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

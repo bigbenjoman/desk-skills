@@ -1,4 +1,5 @@
 // suite: desk-cleanup and desk-clearance split (a core of 20 KB or less, each step's rules in its own file)
+// layer: L1
 // covers: skills/desk-cleanup/** skills/desk-clearance/**
 // tests/fixtures/desk-<skill>-before-split.md is each SKILL.md as one file. Every heading, table row
 // and paragraph of it must still be in the core or exactly one reference file, the core must name
@@ -19,9 +20,18 @@ const CAP = 20480;
 const SKILLS = {
   'desk-cleanup': {
     unit: 'step', steps: ['1', '2', '3', '4', '5', '6'], headings: 19, kept: ['portable-checks.md'],
-    rewritten: [['DS-460', 'the path with `/` turned into `-`', 1]], // the folder name maps every non-alphanumeric character
+    rewritten: [
+      ['DS-460', 'the path with `/` turned into `-`', 1], // the folder name maps every non-alphanumeric character
+      ['DS-875', 'Then **Read the `CONFIG` file**.', 1], // read by section through desk-env show, never whole
+    ],
   },
-  'desk-clearance': { unit: 'phase', steps: ['1', '2', '3', '4', '5', '6', '7', '8'], headings: 30, kept: ['hazards.md', 'repo-facts.md', 'reviewer-patterns.md', 'subagent-briefs.md'] },
+  'desk-clearance': {
+    unit: 'phase', steps: ['1', '2', '3', '4', '5', '6', '7', '8'], headings: 30, kept: ['hazards.md', 'repo-facts.md', 'reviewer-patterns.md', 'subagent-briefs.md'],
+    rewritten: [
+      ['DS-875', 'Then **Read the `CONFIG` file**.', 1], // read by section through desk-env show, never whole
+      ['DS-915', '*enqueues* — poll `.merged`. Merge stacks bottom-up.', 1], // a stacked merge is one merge lease hold, merge-lease-hold.mjs
+    ],
+  },
 };
 
 const loaded = {};

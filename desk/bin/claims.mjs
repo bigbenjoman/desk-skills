@@ -25,6 +25,18 @@ export function claimHours(raw = E.configValue('claim-release')) {
   return { bad: `config §3b "${CLAIM_ROW}" is "${raw}" — want a number of hours, or 0 to never release a claim` };
 }
 
+// Config §3b "Plan-first wait before needs-you (hours)", in milliseconds: how long a plan-first ticket
+// no session has claimed waits before it reaches needs-you. Unset, or a value that does not read, is 4
+// hours. `slug` reads another repo's config, as desk-q and needs-you do.
+export const PLAN_FIRST_ROW = E.CONFIG_ROWS['plan-first-wait'].row;
+export const DEFAULT_PLAN_FIRST_HOURS = 4;
+export function planFirstWaitMs(slug = null) {
+  let raw = null;
+  try { raw = slug ? E.repoConfigValue(slug, 'plan-first-wait') : E.configValue('plan-first-wait'); } catch { /* an unreadable config reads as unset */ }
+  const v = String(raw ?? '').trim();
+  return (/^\d+(\.\d+)?$/.test(v) ? Number(v) : DEFAULT_PLAN_FIRST_HOURS) * 3600e3;
+}
+
 // The session's transcript, `<projects>/<any project>/<session>.jsonl` under any Claude login's folder,
 // and when it last changed: the newest where a session id appears under more than one project. Null
 // when there is none.

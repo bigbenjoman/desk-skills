@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: worker Read hook (no re-reading a file unchanged since the last read)
+# layer: L2
 # hooks/desk-worker-reread.py fed fake PreToolUse/PostToolUse Read events and a PreCompact: a repeat
 # read of an unchanged file and range is refused naming the earlier read (AC1); a changed file (AC2),
 # another range (AC3), a compaction (AC4), a subagent (AC5), the off switch (AC6) and a non-worker

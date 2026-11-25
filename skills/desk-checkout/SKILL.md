@@ -23,7 +23,8 @@ Slack message.** `§3 slack-send` is `never`, however the request is worded.
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no
 ```
 
-Read the `CONFIG` file. `EXISTS=no` means stop: say which slug was looked up and offer `/desk-setup`.
+Read `desk-env show rules 1 3 4 5` (never the `CONFIG` file whole). `EXISTS=no` means stop: say
+which slug was looked up and offer `/desk-setup`.
 §1 gives the user's name and the short form colleagues use, §3 says which sources you may read,
 §4 Tracker and Ticket key pattern say how tickets are named, §4 People names who's who, and
 **§4 Check-out destination** says where the draft goes:
@@ -59,7 +60,7 @@ written the next morning for its own day covered only that day, so the window st
 A draft never sent posted nothing, so it moves nothing. Every item it called in review or WIP is
 read again for its state now (step 3).
 Where the destination cannot be read back (no connector, no permission, or `none`), cover the whole
-day and say so. Say the window in your one line.
+day and say so. Say the window in your one line to the user, never in the post (step 4).
 
 ## 2. Gather
 
@@ -162,6 +163,12 @@ For each item, settle:
   posting** as read earlier in the run. Read only in a repo the GitHub collector read (its
   `read-own-work` `yes`, or `ask` and the user agreed). Never read a PR in any other repo: its
   state stays as its source gave it.
+  **A setting, config row or other change that is not a PR is read from its source too**, before
+  its line says when it was made, starts or takes effect: the config file (`desk-env get <id>`,
+  and its git log for when it changed), the settings file, or the tracker. A session's narration of
+  a plan is not the source. Write what the source shows: a change already in effect is in the past
+  or present tense ("now 20%, since today"), never "from tomorrow". If the source cannot be read,
+  name the claim under **Check before posting** with why.
 - **What anyone else needs to do**, with the person named (§4 People for roles).
 
 Then sort:
@@ -203,10 +210,16 @@ Write it in the user's voice. Their previous check-out (gathered in step 2 when 
 channel, or the previous entry in the destination file) is the model for register, header and
 layout; `references/style.md` has the conventions and a worked example for when there is none. The
 short version:
-- The header is whatever their previous check-out used; with none, `Check-out`, with the day if it
-  isn't today.
-- When the window starts at a previous check-out (step 1), say so in one line under the header, e.g.
-  `Since my 12:00 check-out:`, so nobody reads the post as the whole day.
+- The header is the form their previous check-out used; with none, `Check-out`. It never says the
+  window: no `since …` in it and no `Since my … check-out` line under it, since every check-out
+  starts where the last one ended. The window goes in your one line to the user (step 1). Add a day
+  only when the post is made on a later day than the work, naming the day the work happened:
+  `Check-out (Friday)`.
+- **Every count or figure covers the post's window**, from the previous post onwards (step 1), not
+  since midnight: PRs merged, tickets raised, tests run. Work between the previous post and
+  midnight is in the counts as well as the items. Compute each one from its source, with timestamps
+  filtered on the window start (the collectors' `--since` output, or a `gh` or Jira query from that
+  time), and name it under **Check before posting** with its query and window (step 5).
 - Lead each item with the problem in plain words, then the fix and its state.
   Use `(merged)`, `(in review)`, `(raised)`, `WIP`, `waiting on @Name`.
 - Name tickets by their key (`ABC-1891`) and PRs as `#1533`. Slack auto-links neither, so don't add
@@ -245,7 +258,8 @@ says, and give the path. Under it, briefly:
   was missing ("was the #release update sent? No Slack connector"; "#1534 in review per Claude's
   narration; GitHub not readable: §3 read-own-work is no"), and each PR whose state could not be
   read again when its line was written ("#1534's state is from the collectors, read earlier in the
-  run"). Then each meeting left out for want of
+  run"). Each count or figure in the post, with the query and window behind it, so the user can
+  check it ("27 merged: merged PRs since yesterday 19:02, from the GitHub collector"). Then each meeting left out for want of
   attendance evidence (step 3), one question each: "Were you in <meeting> (<time>)? It has no
   line until you say so".
 - **Left out**: the out-of-scope or sensitive items you dropped, one line each.

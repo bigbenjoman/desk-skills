@@ -1,4 +1,5 @@
 // suite: person step (how a step only the person takes holds the ticket it blocks: merge, build or neither)
+// layer: L1
 import { personStep, labelPark, blockerCall, blockerHold, uncalledBlockers } from '../desk/bin/batch-state.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };

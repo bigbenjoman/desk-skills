@@ -1,8 +1,9 @@
 // suite: post-merge watch (reverts and a red default branch within the watch, recorded once)
-import { rmSync, readFileSync, writeFileSync } from 'node:fs';
+// layer: L2
+import { rmSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { postMergeScan, postMergeDue, readPostMerge, revertedPr, landedPr, gitLog, ghRuns, postMergePath } from '../desk/bin/post-merge.mjs';
+import { postMergeScan, postMergeDue, readPostMerge, revertedPr, landedPr, gitLog, ghRuns, ghLatest, postMergePath } from '../desk/bin/post-merge.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -39,10 +40,10 @@ const queue = { tickets: {
 // Each merge commit's runs: `runs(sha)` as the scan asks for them.
 const runsAt = {
   [SHA_B]: [
-    { id: 101, name: 'CI', url: 'https://example.com/r/101', conclusion: 'failure', created_at: iso(NOW - 30 * H) },   // T-B +10h
-    { id: 102, name: 'CI', url: 'https://example.com/r/102', conclusion: 'success', created_at: iso(NOW - 35 * H) },   // T-B +5h, green
+    { id: 101, name: 'CI', url: 'https://example.com/r/101', conclusion: 'failure', created_at: iso(NOW - 30 * H), event: 'push', workflow_id: 9 },   // T-B +10h
+    { id: 102, name: 'CI', url: 'https://example.com/r/102', conclusion: 'success', created_at: iso(NOW - 35 * H), event: 'push', workflow_id: 9 },   // T-B +5h, green
   ],
-  [shaC]: [{ id: 103, name: 'CI', url: 'https://example.com/r/103', conclusion: 'failure', created_at: iso(NOW - 50 * H) }],   // T-C +30h
+  [shaC]: [{ id: 103, name: 'CI', url: 'https://example.com/r/103', conclusion: 'failure', created_at: iso(NOW - 50 * H), event: 'push', workflow_id: 9 }],   // T-C +30h
 };
 const runs = (sha) => runsAt[sha] ?? [];
 const log = (since) => gitLog(repo, 'main', since);
@@ -105,7 +106,7 @@ t('one merge\'s runs not read is said with its PR and commit', readPostMerge(sta
 // are read on the promotion PR's merge commit, from when that merged.
 const EPIC = 'e'.repeat(40);
 const child = (promotion) => ({ promotion, tickets: { 'T-K': { merged_at: iso(NOW - 30 * H), pr_status: { pr: 7, base: 'epic', merge_commit: EPIC } } } });
-const atP = { [shaP]: [{ id: 701, name: 'CI', url: 'https://example.com/r/701', conclusion: 'failure', created_at: iso(NOW - 19 * H) }] };
+const atP = { [shaP]: [{ id: 701, name: 'CI', url: 'https://example.com/r/701', conclusion: 'failure', created_at: iso(NOW - 19 * H), event: 'push', workflow_id: 9 }] };
 const asked13 = [];
 const r13 = postMergeScan({ state: join(tmp, 'state13'), queue: child({ pr: 50, merged_at: iso(NOW - 20 * H), merge_commit: shaP }), log, runs: (sha) => { asked13.push(sha); return atP[sha] ?? []; }, branch: 'main', now: NOW });
 t('a promoted batch child\'s runs are read on the promotion\'s merge commit, not its own', asked13.join(), shaP);
@@ -144,12 +145,12 @@ t('a revert inside a merged branch is still read', r18.written.filter((r) => r.k
 
 // A busy default branch: 1,200 runs in the window, two of them on the watched merge's commit. The API is
 // asked for that commit's runs only, so the watch reads them whole and records the failure.
-const busy = Array.from({ length: 1200 }, (_, i) => ({ id: 5000 + i, name: 'CI', html_url: `https://example.com/r/${5000 + i}`, conclusion: 'failure', created_at: iso(NOW - 30 * H + i * 1000), head_sha: i % 600 === 7 ? SHA_B : 'f'.repeat(40), head_branch: 'main' }));
+const busy = Array.from({ length: 1200 }, (_, i) => ({ id: 5000 + i, name: 'CI', html_url: `https://example.com/r/${5000 + i}`, conclusion: 'failure', created_at: iso(NOW - 30 * H + i * 1000), event: 'push', head_sha: i % 600 === 7 ? SHA_B : 'f'.repeat(40), head_branch: 'main' }));
 const calls = [];
 const api = (args) => {
   calls.push(args.join(' '));
   const u = new URL(`https://api.github.com/${args[1]}`);
-  const hit = busy.filter((r) => r.head_sha === u.searchParams.get('head_sha') && r.head_branch === u.searchParams.get('branch'));
+  const hit = busy.filter((r) => r.head_sha === u.searchParams.get('head_sha') && r.head_branch === u.searchParams.get('branch') && r.event === u.searchParams.get('event'));
   const per = Number(u.searchParams.get('per_page'));
   return JSON.stringify({ total_count: hit.length, workflow_runs: hit.slice(0, per) });
 };
@@ -158,10 +159,54 @@ const r12 = postMergeScan({ state: state12, queue: { tickets: { 'T-B': queue.tic
 t('with 1,200 runs on the branch, the watched merge\'s failed runs are recorded', r12.written.map((r) => r.run.id).join(), '5007,5607');
 t('and the scan is complete', readPostMerge(state12).find((r) => r.kind === 'scan')?.complete, true);
 t('the pass line names them', r12.line, 'post-merge watch: T-B red main in run 5007, T-B red main in run 5607');
-t('one API call, for that commit on the default branch', calls.join('|'), `api repos/o/r/actions/runs?head_sha=${SHA_B}&branch=main&per_page=100`);
+t('one API call, for that commit\'s push runs on the default branch', calls.join('|'), `api repos/o/r/actions/runs?head_sha=${SHA_B}&branch=main&event=push&per_page=100`);
 const many = (args) => JSON.stringify({ total_count: 150, workflow_runs: busy.slice(0, 100) });
 let threw = null; try { ghRuns('o/r', 'main', SHA_B, many); } catch (e) { threw = e.message; }
 t('a commit with more runs than one page throws rather than read as complete', threw, `150 runs on ${SHA_B.slice(0, 12)}, more than one page read`);
+
+// Only a push run on the merge commit is the merge's: a scheduled job, a workflow_run deploy, or a push
+// run from before the merge landed on that commit is not.
+const atS = { [SHA_B]: [
+  { id: 801, name: 'parity', url: 'https://example.com/r/801', conclusion: 'failure', created_at: iso(NOW - 30 * H), event: 'schedule', workflow_id: 21 },
+  { id: 802, name: 'deploy', url: 'https://example.com/r/802', conclusion: 'failure', created_at: iso(NOW - 30 * H), event: 'workflow_run', workflow_id: 22 },
+  { id: 803, name: 'CI', url: 'https://example.com/r/803', conclusion: 'failure', created_at: iso(NOW - 41 * H), event: 'push', workflow_id: 9 },
+] };
+const r19 = postMergeScan({ state: join(tmp, 'state19'), queue: { tickets: { 'T-B': queue.tickets['T-B'] } }, log, runs: (sha) => atS[sha] ?? [], now: NOW });
+t('a scheduled red run, a workflow_run red run and a push run from before the merge are not the merge\'s', r19.written.length, 0);
+
+// A failure its workflow has since gone green on, in a later push run on the default branch, is recovered.
+const green = (id, ago) => ({ id, url: `https://example.com/r/${id}`, conclusion: 'success', created_at: iso(NOW - ago * H) });
+const asked20 = [];
+const r20 = postMergeScan({ state: join(tmp, 'state20'), queue: { tickets: { 'T-B': queue.tickets['T-B'] } }, log, runs, latest: (wf) => { asked20.push(wf); return green(150, 20); }, now: NOW });
+t('a red run whose workflow is green on a later push run is recorded as recovered, not red', r20.written.map((r) => `${r.kind} ${r.run.id} ${r.green?.id}`).join(), 'red_recovered 101 150');
+t('the newest run is asked for on the failed run\'s workflow', asked20.join(), '9');
+t('the pass line says it has since gone green', r20.line, 'post-merge watch: T-B red main in run 101, since green in run 150');
+const r21 = postMergeScan({ state: join(tmp, 'state21'), queue: { tickets: { 'T-B': queue.tickets['T-B'] } }, log, runs, latest: () => green(99, 31), now: NOW });
+t('a green run from before the failure is no recovery', r21.written.map((r) => r.kind).join(), 'red_main');
+const r22 = postMergeScan({ state: join(tmp, 'state22'), queue: { tickets: { 'T-B': queue.tickets['T-B'] } }, log, runs, latest: () => ({ ...green(151, 20), conclusion: 'failure' }), now: NOW });
+t('a later run that is red too is no recovery', r22.written.map((r) => r.kind).join(), 'red_main');
+// The next day's scan finds the workflow green since: the red_main already recorded gets its recovery.
+const state23 = join(tmp, 'state23');
+postMergeScan({ state: state23, queue: { tickets: { 'T-B': queue.tickets['T-B'] } }, log, runs, now: NOW });
+const r23 = postMergeScan({ state: state23, queue: { tickets: { 'T-B': queue.tickets['T-B'] } }, log, runs, latest: () => green(152, 2), now: NOW + 25 * H });
+t('a red main recorded before its workflow went green gets a recovered record later', `${readPostMerge(state23).filter((r) => r.kind !== 'scan').map((r) => r.kind).join()} ${r23.written.length}`, 'red_main,red_recovered 1');
+const state24 = join(tmp, 'state24');
+const r24 = postMergeScan({ state: state24, queue: { tickets: { 'T-B': queue.tickets['T-B'] } }, log, runs, latest: () => { throw new Error('gh: HTTP 502'); }, now: NOW });
+t('a workflow whose later runs cannot be read keeps the red record and leaves the scan incomplete', `${r24.written.map((r) => r.kind).join()} ${readPostMerge(state24).find((r) => r.kind === 'scan')?.why}`, 'red_main later runs not read: workflow 9: gh: HTTP 502');
+const latestCalls = [];
+const l25 = ghLatest('o/r', 'main', 9, (args) => { latestCalls.push(args.join(' ')); return JSON.stringify({ workflow_runs: [{ id: 160, html_url: 'u', conclusion: 'success', created_at: iso(NOW) }] }); });
+t('the newest run is read as one completed push run of that workflow on the default branch', `${latestCalls.join()} ${l25.id}`, 'api repos/o/r/actions/workflows/9/runs?branch=main&event=push&status=completed&per_page=1 160');
+
+// A page of runs larger than spawnSync's 1 MiB default is read whole through gh.
+const ghDir = join(tmp, 'gh-bin');
+mkdirSync(ghDir);
+writeFileSync(join(ghDir, 'gh'), `#!/bin/sh\nexec node -e 'const r = Array.from({ length: 100 }, (_, i) => ({ id: i, name: "CI", html_url: "u", conclusion: "success", created_at: "2026-11-12T00:00:00Z", event: "push", workflow_id: 9, pad: "x".repeat(30000) })); process.stdout.write(JSON.stringify({ total_count: 100, workflow_runs: r }))'\n`);
+chmodSync(join(ghDir, 'gh'), 0o755);
+const pathWas = process.env.PATH;
+process.env.PATH = `${ghDir}:${pathWas}`;
+let big = null; try { big = ghRuns('o/r', 'main', SHA_B).length; } catch (e) { big = e.code ?? e.message; }
+process.env.PATH = pathWas;
+t('a 3 MB page of runs is read, not ended by ENOBUFS', big, 100);
 
 // The supervisor runs a pass on an idle batch when a scan falls due, so the watch outlives the batch's last pass.
 t('a scan is due with no scan yet and a merge watched', postMergeDue({ state: join(tmp, 'state8'), queue, now: NOW }), true);
@@ -180,6 +225,45 @@ t('the ticket was archived, out of the live tickets', `${movedA} ${Object.keys(a
 t('a scan is due for an archived merge', postMergeDue({ state: join(tmp, 'state9'), queue: archivedQueue, now: NOW }), true);
 postMergeScan({ state: join(tmp, 'state9'), queue: archivedQueue, log, runs: () => [], now: NOW });
 t('an archived ticket\'s revert inside the watch is recorded', readPostMerge(join(tmp, 'state9')).filter((r) => r.kind === 'revert').map((r) => r.ticket).join(), 'T-A');
+
+// A PR recorded on two tickets (a shipped-elsewhere PR and the merge driver's record): its revert is each one's.
+const shared = { tickets: { 'T-A': { merged_at: iso(mergedA), result: { pr: 1 } }, 'T-F': { merged_at: iso(mergedA), pr_status: { pr: 1 } } } };
+// Each scan below has its own state directory (`own-*`): a scan runs once a day per directory.
+const revertsOf = (s) => readPostMerge(join(tmp, s)).filter((r) => r.kind === 'revert').map((r) => r.ticket).sort().join();
+const scanOf = (s) => readPostMerge(join(tmp, s)).find((r) => r.kind === 'scan');
+postMergeScan({ state: join(tmp, 'own-shared'), queue: shared, log, runs: () => [], now: NOW });
+t('a revert of a PR on two tickets is recorded on both', revertsOf('own-shared'), 'T-A,T-F');
+
+// A ticket done on another repo's PR #1 (needs-you's elsewhereDone keeps that PR's url) is not this repo's #1.
+const foreign = { tickets: { ...shared.tickets, 'T-G': { merged_at: iso(mergedA), result: { pr: 1 }, pr_status: { pr: 1, state: 'MERGED', url: 'https://github.com/o/other/pull/1' } } } };
+postMergeScan({ state: join(tmp, 'own-foreign'), queue: foreign, repo: 'O/Here', log, runs: () => [], now: NOW });
+t('another repo\'s PR of the same number gets no revert record', revertsOf('own-foreign'), 'T-A,T-F');
+const local = { tickets: { 'T-H': { merged_at: iso(mergedA), pr_status: { pr: 1, url: 'https://github.com/o/here/pull/1' } } } };
+postMergeScan({ state: join(tmp, 'own-local'), queue: local, repo: 'O/Here', log, runs: () => [], now: NOW });
+t('this repo\'s PR, its url spelt in another case, still gets its revert record', revertsOf('own-local'), 'T-H');
+
+// Renamed from O/Old to O/Here: T-I's #1 merged before the rename (its url names O/Old), T-H's after it
+// (O/Here), and T-G's #1 is another repo's. GitHub resolves either name of this repo to O/Here.
+const renamed = { tickets: { ...local.tickets, 'T-G': foreign.tickets['T-G'],
+  'T-I': { merged_at: iso(mergedA), pr_status: { pr: 1, url: 'https://github.com/O/Old/pull/1' } } } };
+const github = { 'o/old': 'https://github.com/O/Here\n', 'o/here': 'https://github.com/O/Here\n', 'o/other': 'https://github.com/o/other\n' };
+const lookedUp = [];
+const resolveRepo = (name) => { lookedUp.push(name); return github[name.toLowerCase()]; };
+const rOld = postMergeScan({ state: join(tmp, 'own-renamed-old'), queue: renamed, repo: 'O/Old', resolveRepo, log, runs: () => [], now: NOW });
+t('after a rename with origin on the old name, both names\' tickets get their revert record, another repo\'s #1 none', revertsOf('own-renamed-old'), 'T-H,T-I');
+t('after a rename, the scan is complete', scanOf('own-renamed-old')?.complete, true);
+t('after a rename, the pass line names the revert', /T-H reverted by/.test(rOld.line), true);
+t('each name is looked up on GitHub once a scan', lookedUp.map((n) => n.toLowerCase()).sort().join(), 'o/here,o/old,o/other');
+postMergeScan({ state: join(tmp, 'own-renamed-new'), queue: renamed, repo: 'O/Here', resolveRepo, log, runs: () => [], now: NOW });
+t('after a rename with origin moved to the new name, a ticket merged under the old name keeps its revert record', revertsOf('own-renamed-new'), 'T-H,T-I');
+const rUnread = postMergeScan({ state: join(tmp, 'own-unread'), queue: renamed, repo: 'O/Old', resolveRepo: () => { throw new Error('gh: HTTP 502'); }, log, runs: () => [], now: NOW });
+t('with GitHub unread, a ticket is judged by its url\'s spelling', revertsOf('own-unread'), 'T-I');
+t('with GitHub unread, the scan is incomplete', scanOf('own-unread')?.complete, false);
+t('saying which name was judged by its spelling', /not looked up on GitHub, so judged by that name: gh: HTTP 502/.test(scanOf('own-unread')?.why), true);
+t('and the pass line says so', /scan incomplete/.test(rUnread.line), true);
+const notAsked = [];
+postMergeScan({ state: join(tmp, 'own-spelt'), queue: local, repo: 'O/Here', resolveRepo: (n) => { notAsked.push(n); return github[n.toLowerCase()]; }, log, runs: () => [], now: NOW });
+t('with every url on origin\'s spelling, GitHub is not asked', notAsked.join(), '');
 
 rmSync(tmp, { recursive: true, force: true });
 if (fails) { console.log(`${fails} failed`); process.exit(1); }

@@ -76,6 +76,7 @@ import { grantPush } from './batch-state.mjs';
 import { baseRefspec } from './base-fix.mjs';
 import { wrappersFile } from './desk-lines.mjs';
 import { parseEvidenceRow } from './evidence.mjs';
+import { parseRecipe } from './preview-db.mjs';
 
 const [mode, ...rest] = process.argv.slice(2);
 const opt = {};
@@ -405,8 +406,9 @@ if (mode === 'triage') {
     'Bash(desk-gh read:*)', `Bash(${E.HOME}/.local/bin/desk-gh read:*)`, 'Bash(~/.local/bin/desk-gh read:*)',
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-gh.mjs read:*)`, `Bash(node ${b}/desk-gh.mjs read:*)`]),
     // desk-design copies the orchestrator's Claude Design snapshot into this checkout's Design
-    // canvases directory, so the worker commits it on its branch. Not `write`, which takes any folder.
-    ...BIN_FORMS.flatMap((b) => [' save', ' status', ' check'].flatMap((s) => [`Bash(${b}/desk-design.mjs${s}:*)`, `Bash(node ${b}/desk-design.mjs${s}:*)`])),
+    // canvases directory, so the worker commits it on its branch, and `copies` names where each linked
+    // claude.ai artifact's copy is. Not `write`, which takes any folder.
+    ...BIN_FORMS.flatMap((b) => [' save', ' status', ' check', ' copies'].flatMap((s) => [`Bash(${b}/desk-design.mjs${s}:*)`, `Bash(node ${b}/desk-design.mjs${s}:*)`])),
     // Its own handoff briefing, written as JSON from flags, for this ticket only. Run bare, since
     // `node *..*` below refuses a criterion or a git range holding `..`.
     ...BIN_FORMS.map((b) => `Bash(${b}/handoff.mjs write ${T} *)`),
@@ -642,6 +644,16 @@ if (mode === 'triage') {
   if (DISPATCH !== 'yes') denied.push(`${E.permissionKey('worker-workflow-dispatch')} (${setting('worker-workflow-dispatch')})`);
   else if (!DISPATCH_RULES.length && !EVIDENCE_RULES.length) warns.push(`§3 worker-workflow-dispatch is yes, but ${dispatchRef ? '§4 Worker workflows names no usable workflow' : 'this ticket has no branch of its own to run one on'} — no workflow is allowed`);
   allow.push(...DISPATCH_RULES, ...EVIDENCE_RULES);
+  // §3 worker-preview-db: §4 Preview database's recipe for this ticket's own PR, through preview-db.mjs up
+  // with this ticket's branch fixed by the rule; it checks the PR is the branch's own open one and adds
+  // a migration. The error-page check reads and moves only this ticket's screenshots. A repo with no
+  // recipe has nothing to deny, so its workers are not told of the row.
+  const recipe = parseRecipe(cfgList('preview-db'));
+  if (recipe?.errors) warns.push(`§4 Preview database ${recipe.errors.join('; ')} — not allow-listed`);
+  else if (recipe && !baseFix && dispatchRef) {
+    grant('worker-preview-db', BIN_FORMS.map((b) => `Bash(node ${b}/preview-db.mjs up ${BRANCH} *)`), []);
+  }
+  allow.push(...BIN_FORMS.flatMap((b) => ['', '/'].map((s) => `Bash(node ${b}/preview-db.mjs check ${STATE}/images/${T}${s})`)));
   deny.push(...bash('gh', ' issue comment', ' issue edit', ' issue close', ' issue create'));
   grant('jira-comment', bash('desk-jira', ' comment'));
   grant('jira-transition', bash('desk-jira', ' transition'), JIRA_TRANSITION_DENY);
@@ -708,6 +720,8 @@ if (mode === 'triage') {
 
   // Reading the public web: searching, and fetching any URL on any host by GET (no domain limit).
   grant('worker-web-read', ['WebSearch', 'WebFetch']);
+  // A claude.ai artifact is read from its copy in the repo or the snapshot (desk-design copies), never the link.
+  deny.push('WebFetch(domain:claude.ai)');
 
   // Starting a §4 Local services entry, detached, by its compose service name (each item read by the
   // schema's service-port type, `<service> [:<port>]`). Compose names a project after its directory, so from a worktree a bare `up` would start a
@@ -756,6 +770,7 @@ if (mode === 'triage') {
       ...bash('git', ' push'),
       ...bash('gh', ' pr create', ' pr edit', ' pr review', ' pr comment', ' issue comment', ' pr update-branch', ' run rerun', ' workflow'),
       ...BIN_FORMS.map((b) => `Bash(node ${b}/evidence.mjs dispatch:*)`),
+      ...BIN_FORMS.map((b) => `Bash(node ${b}/preview-db.mjs up:*)`),
       ...bash('desk-jira', ' edit', ' comment', ' create', ' create-batch', ' attach', ' labels', ...JIRA_NEVER), ...JIRA_TRANSITION_DENY,
     );
   }

@@ -73,7 +73,7 @@ fallback_slug() {
 # Which repo, where its config and credentials live, and every config row read below, from one
 # desk-env.mjs run: `get --json --where`, whose `where` is what `desk-env where` prints. Parsed with jq,
 # never eval'd. CONFIG_JSON stays empty where that run gave no `where`, and each read then runs node.
-CONFIG_ROW_IDS=(tracker jira-site jira-project jira-priority jira-size-field jira-required-fields jira-priority-user-only jira-assign-self)
+CONFIG_ROW_IDS=(tracker jira-site jira-project jira-priority jira-size-field jira-required-fields jira-field-defaults jira-priority-user-only jira-assign-self)
 SLUG="" CONFIG_PATH="" REPO_DIR="" CONFIG_JSON=""
 if [[ -r "$DESK_ENV_MJS" ]] && command -v node >/dev/null 2>&1; then
   CONFIG_JSON=$({ node "$DESK_ENV_MJS" get --json --where "${CONFIG_ROW_IDS[@]}" 2>/dev/null || true; } | jq -c 'select(.where | type == "object")' 2>/dev/null || true)
@@ -159,11 +159,14 @@ JQ_VAL='def val: if . == null then "-"
   elif type == "object" then (.value // .name // .displayName // .accountId // tojson)
   else tostring end;'
 
-# jq helper (needs JQ_VAL): one line per field in $sent but not in $skip, read back from an issue's
-# .fields. A field sent with a value that reads back blank did not stick.
-JQ_READBACK='def blank: . == null or . == "" or . == [] or . == {}
-    or (type == "object" and (keys == ["value"] or keys == ["name"]) and ((.value // .name // "") == ""));
-  def readback($sent; $skip): .fields as $got | $sent | keys[] | select(. as $x | $skip | any(. == $x) | not) as $k
+# jq helper: a field value read as empty, by the field rules, the read-back and a batch row's carried
+# fields alike: null, "", [], {}, or an option named by an empty value or name.
+JQ_BLANK='def byname: type == "object" and (keys == ["value"] or keys == ["name"]);
+    def blank: . == null or . == "" or . == [] or . == {} or (byname and ((.value // .name // "") == ""));'
+
+# jq helper (needs JQ_VAL and JQ_BLANK): one line per field in $sent but not in $skip, read back from an
+# issue's .fields. A field sent with a value that reads back blank did not stick.
+JQ_READBACK='def readback($sent; $skip): .fields as $got | $sent | keys[] | select(. as $x | $skip | any(. == $x) | not) as $k
     | if ($got[$k] | blank) and ($sent[$k] | blank | not) then "  \($k): (empty - the write did not stick)"
       else "  \($k): " + ($got[$k] | val | gsub("\n"; " ") | if length > 120 then .[0:120] + "..." else . end) end;'
 
@@ -295,6 +298,14 @@ print_links() {
     | if length == 0 then "links: none" else "links:", (.[] | "  \(.)") end'
 }
 
+# A row of this repo's config as the config schema parses it (desk-env get --json's `parsed`), as JSON;
+# [] when it is unset or has an item the schema refuses.
+cfg_parsed() {
+  [[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] || { printf '[]'; return 0; }
+  if [[ -n "$CONFIG_JSON" ]]; then jq -c --arg id "$1" '.rows[$id].parsed // []' <<<"$CONFIG_JSON"; return 0; fi
+  { node "$DESK_ENV_MJS" get --json "$1" 2>/dev/null || true; } | jq -c --arg id "$1" '.rows[$id].parsed // []' 2>/dev/null || printf '[]'
+}
+
 # A list row of this repo's config, as a JSON array of its items; `none` and unset are [].
 cfg_list() {
   [[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] || { printf '[]'; return 0; }
@@ -325,10 +336,13 @@ cfg_required() {
 #   Priorities only you set  values of the §4 Priority field a headless autopilot worker may never set
 #                            (spawn-worker.sh exports DESK_AUTOPILOT_WORKER), and an interactive session
 #                            sets only with --approved, which is recorded on the ticket as a comment
-RULES_LOADED=0 RULES_REQ='[]' RULES_TOP='[]' RULES_SIZE=''
+#   Field defaults           one item per field, `<field> = <value>` or `<field> = from parent`: what create
+#                            fills a required field the call leaves out with
+RULES_LOADED=0 RULES_REQ='[]' RULES_TOP='[]' RULES_SIZE='' RULES_DEF='{}'
 load_rules() {
   (( RULES_LOADED )) && return 0
   RULES_REQ=$(cfg_list jira-required-fields)
+  RULES_DEF=$(cfg_parsed jira-field-defaults | jq -c 'map(select(type == "object") | {(.field): (if .parent then {parent: true} else {value} end)}) | add // {}')
   RULES_TOP=$(cfg_list jira-priority-user-only)
   RULES_SIZE=$(cfg jira-size-field | grep -oE 'customfield_[0-9]+' | head -n1 || true)
   RULES_LOADED=1
@@ -344,8 +358,7 @@ rule_errors() {
   jq -rn --arg mode "$1" --arg type "$2" --argjson f "$3" --arg approved "$4" \
     --argjson req "$(cfg_required "$2")" --argjson top "$RULES_TOP" --arg size "$RULES_SIZE" \
     --arg pf "$PRIORITY_KEY" --arg headless "${DESK_AUTOPILOT_WORKER:-}" '
-    def byname: type == "object" and (keys == ["value"] or keys == ["name"]);
-    def blank: . == null or . == "" or . == [] or . == {} or (byname and ((.value // .name // "") == ""));
+    '"$JQ_BLANK"'
     def oname: if type == "string" then . elif byname then (.value // .name) else null end;
     ($type | ascii_downcase) as $t
     | ($req.need | unique) as $need
@@ -376,6 +389,49 @@ rule_errors() {
          elif $approved != "" and ($topset | not) then
            "desk-jira: --approved is only for setting a value in config §4 Priorities only you set, and this write sets none"
          else empty end)'
+}
+
+# The §4 Required fields a create's field=value pairs leave out, filled from §4 Field defaults. Sets
+# DEFAULT_PAIRS (field=value pairs for fields_from_args), FROM_PARENT (the fields to copy off the
+# parent once it is read) and DEFAULT_HINTS (why a field stays unfilled, said beside the rules'
+# refusal of it: one with no default, or one taken from the parent when the create names none).
+# <type> <parent key, or @<row> of a create-batch, or ""> <pairs…>
+DEFAULT_PAIRS=() FROM_PARENT=() DEFAULT_HINTS=''
+fill_defaults() {
+  local type="$1" parent="$2" need k d
+  shift 2
+  load_rules
+  need=$(cfg_required "$type" | jq -c --argjson given "$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(length > 0) | sub("=.*"; ""))')" \
+    '.need | unique | map(select(. as $k | $given | index($k) | not))')
+  while IFS= read -r k; do
+    [[ -n "$k" ]] || continue
+    d=$(jq -c --arg k "$k" '.[$k] // empty' <<<"$RULES_DEF")
+    if [[ -z "$d" ]]; then
+      DEFAULT_HINTS+="  $k: §4 Field defaults gives it none"$'\n'
+    elif jq -e '.parent' <<<"$d" >/dev/null; then
+      if [[ -n "$parent" ]]; then FROM_PARENT+=("$k")
+      else DEFAULT_HINTS+="  $k: §4 Field defaults takes it from the parent, and this create names none: add parent=<KEY> or $k=<value>"$'\n'; fi
+    else DEFAULT_PAIRS+=("$k=$(jq -r '.value' <<<"$d")"); fi
+  done < <(jq -r '.[]' <<<"$need")
+}
+
+# The FROM_PARENT fields read off the parent, each as a write takes it (an option by its value, a user
+# by accountId), merged into the fields json <extra>: a field the parent has empty is refused.
+inherit_fields() {  # parent-key extra-json
+  local back missing
+  back=$(api GET "api/2/issue/$1?fields=$(IFS=,; printf '%s' "${FROM_PARENT[*]}")") || die "desk-jira: could not read $1 for the fields §4 Field defaults takes from it"
+  missing=$(jq -r --argjson ks "$(printf '%s\n' "${FROM_PARENT[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" \
+    "$JQ_BLANK"' .fields as $f | $ks[] | select($f[.] | blank)' <<<"$back")
+  [[ -z "$missing" ]] || die "$(printf '%s\n' "$missing" | sed "s|.*|desk-jira: $1 has no & to give the new ticket (config §4 Field defaults takes it from the parent): add &=<value>|")"
+  jq -c --argjson e "$2" --argjson ks "$(printf '%s\n' "${FROM_PARENT[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" '
+    def norm: if type == "array" then map(norm)
+      elif type != "object" then .
+      elif has("accountId") then {accountId}
+      elif has("value") then {value} + (if .child then {child: (.child | norm)} else {} end)
+      elif has("name") then {name}
+      elif has("key") then {key}
+      else . end;
+    .fields as $f | $e + ([$ks[] | {(.): ($f[.] | norm)}] | add)' <<<"$back"
 }
 
 # After a write that set a priority under --approved: the user's decision goes on the ticket.
@@ -1364,7 +1420,33 @@ case "$cmd" in
       [[ "$pending" =~ ^@[0-9]+$ ]] && (( check )) && [[ -n "$PENDING_PARENT" ]] \
         || die "desk-jira: parent must be an issue key (e.g. ABC-12), got: $pending (parent=@<row> is for create-batch)"
     fi
-    extra=$(fields_from_args ${pairs[@]+"${pairs[@]}"}) || exit 2
+    # The type the rules read: an issuetype= pair's name over <type>.
+    rtype="$type"
+    for a in ${pairs[@]+"${pairs[@]}"}; do
+      [[ "$a" == issuetype=* ]] && rtype=$(jq -rn --arg v "${a#issuetype=}" '($v | try fromjson catch $v) | if type == "object" then (.name // "") elif type == "string" then . else "" end')
+    done
+    parent_key=$pending
+    for a in ${pairs[@]+"${pairs[@]}"}; do [[ "$a" == parent=?* ]] && parent_key="${a#parent=}"; done
+    fill_defaults "$rtype" "$parent_key" ${pairs[@]+"${pairs[@]}"}
+    # A create the defaults leave a required field short of is refused here, before any call: the rules
+    # read the pairs as written (a value as JSON where it parses, else as text), which needs no lookup.
+    if [[ -n "$DEFAULT_HINTS" ]]; then
+      raw=$(printf '%s\n' ${pairs[@]+"${pairs[@]}"} ${DEFAULT_PAIRS[@]+"${DEFAULT_PAIRS[@]}"} | jq -Rsc '[split("\n")[] | select(length > 0)
+        | capture("^(?<k>[^=]*)=(?<v>.*)$") | {(.k): (.v as $v | try ($v | fromjson) catch $v)}] | add // {}')
+      errs=$(rule_errors create "$rtype" "$raw" "$APPROVED") || die "desk-jira: could not check the field rules"
+      die "${errs:+$errs$'\n'}${DEFAULT_HINTS%$'\n'}"
+    fi
+    extra=$(fields_from_args ${pairs[@]+"${pairs[@]}"} ${DEFAULT_PAIRS[@]+"${DEFAULT_PAIRS[@]}"}) || exit 2
+    # A parent that is an earlier create-batch row does not exist yet: its fields are read when the row is sent.
+    if (( ${#FROM_PARENT[@]} )) && [[ "$parent_key" != @* ]]; then extra=$(inherit_fields "$parent_key" "$extra")
+    elif (( ${#FROM_PARENT[@]} )); then
+      # A create-batch row's --check, which sends nothing: a field its parent row will carry (create-batch
+      # names them, from that row's own check) stands in as given; one it will not is refused now, before
+      # the batch sends any row.
+      pp=${PENDING_PARENT:-}; [[ -n "$pp" ]] || pp='{}'
+      short=$(jq -r --arg ks "${FROM_PARENT[*]}" '(.carries // []) as $c | $ks | split(" ")[] | select(. as $k | $c | index($k) | not)' <<<"$pp")
+      [[ -z "$short" ]] || die "$(printf '%s\n' "$short" | sed "s|.*|desk-jira: its parent row ${parent_key#@} will have no & to give it (config §4 Field defaults takes it from the parent): add &=<value> to one of the two rows|")"
+      extra=$(jq -c --arg ks "${FROM_PARENT[*]}" '. + ([$ks | split(" ")[] | {(.): "(from the parent)"}] | add)' <<<"$extra"); fi
     if printf '%s' "$extra" | jq -e 'has("parent") and .parent == null' >/dev/null; then
       die "desk-jira: parent= clears a parent, which only edit does: leave parent out to file the issue under none"
     fi
@@ -1407,7 +1489,12 @@ case "$cmd" in
         die "desk-jira: assignee $want is not you, which routes the ticket to someone else: add --route if that is meant (§3 jira-route)"
       fi
     fi
-    if (( check )); then echo "ok: $type \"$summary\" passes every check (nothing sent)"; exit 0; fi
+    if (( check )); then
+      # create-batch reads the fields a row will carry, so a later row taking one from it is checked against them.
+      # Only a field with a value: one sent empty (JQ_BLANK) gives a later row nothing.
+      [[ -z "${DESK_JIRA_CHECK_CARRIES:-}" ]] || jq -c "$JQ_BLANK"' [to_entries[] | select(.value | blank | not) | .key]' <<<"$extra" > "$DESK_JIRA_CHECK_CARRIES"
+      echo "ok: $type \"$summary\" passes every check (nothing sent)"; exit 0
+    fi
     payload=$(jq -n \
       --arg p "$PROJECT" --arg t "$type" --arg s "$summary" --arg d "$desc" --argjson e "$extra" \
       '{fields: ({project:{key:$p}, issuetype:{name:$t}, summary:$s, description:$d} + $e)}')
@@ -1417,7 +1504,7 @@ case "$cmd" in
     # every field given but the description.
     names=$(printf '%s' "$extra" | jq -r '[keys[] | select(. != "description" and . != "assignee")] + ["assignee"] | join(",")')
     if back=$(api GET "api/2/issue/$key?fields=$names"); then
-      printf '%s' "$back" | jq -r --argjson sent "$extra" "$JQ_VAL$JQ_READBACK"'
+      printf '%s' "$back" | jq -r --argjson sent "$extra" "$JQ_VAL$JQ_BLANK$JQ_READBACK"'
         (if .fields.assignee == null and ($sent.assignee // null) != null then "  assignee: (empty - the assignment did not stick)"
          else "  assignee: \(.fields.assignee | val)" end),
         readback($sent; ["description", "assignee"])'
@@ -1445,10 +1532,11 @@ case "$cmd" in
     [[ ${#rows[@]} -gt 0 ]] || die "desk-jira: $file has no rows"
     # Every row is checked, as create would check it, before any is sent: one refused row and
     # nothing is created. Each refusal is printed with its row number.
-    types=(); sums=(); refused=0
+    types=(); sums=(); carries=(); refused=0
+    carried=$(mktemp)
     for i in "${!rows[@]}"; do
       r=$((i + 1)); IFS=$'\t' read -r -a cols <<<"${rows[$i]}"
-      types+=("${cols[0]:-}"); sums+=("${cols[1]:-}")
+      types+=("${cols[0]:-}"); sums+=("${cols[1]:-}"); carries+=('[]')
       label="row $r (line ${lines[$i]}): ${cols[0]:-?} \"${cols[1]:-}\""
       rowerrs=(); penv=''; after_approved=0
       if [[ ${#cols[@]} -lt 3 ]]; then
@@ -1464,8 +1552,8 @@ case "$cmd" in
               n="${c#parent=@}"
               if [[ "$n" =~ ^[0-9]+$ ]] && (( 10#$n >= 1 && 10#$n < r )); then
                 n=$((10#$n))
-                penv=$(jq -nc --arg k "@$n" --arg t "${types[$((n - 1))]}" --arg s "${sums[$((n - 1))]}" \
-                  '{key:$k, fields:{issuetype:{name:$t}, summary:$s}}')
+                penv=$(jq -nc --arg k "@$n" --arg t "${types[$((n - 1))]}" --arg s "${sums[$((n - 1))]}" --argjson c "${carries[$((n - 1))]}" \
+                  '{key:$k, fields:{issuetype:{name:$t}, summary:$s}, carries:$c}')
               else
                 rowerrs+=("desk-jira: $c names no earlier row: parent=@<n> takes the number of a row above this one")
               fi ;;
@@ -1477,9 +1565,11 @@ case "$cmd" in
         (( ! after_approved )) || rowerrs+=("desk-jira: --approved needs the user's decision as its value")
         # The batch's own flags go before the row's cells, so no cell can take one as its value.
         if [[ ${#rowerrs[@]} -eq 0 ]]; then
-          out=$(DESK_JIRA_PENDING_PARENT="$penv" "$self" create "${cols[0]}" "${cols[1]}" "${cols[2]}" --check "${cols[@]:3}" 2>&1) && rc=0 || rc=$?
+          : > "$carried"
+          out=$(DESK_JIRA_PENDING_PARENT="$penv" DESK_JIRA_CHECK_CARRIES="$carried" "$self" create "${cols[0]}" "${cols[1]}" "${cols[2]}" --check "${cols[@]:3}" 2>&1) && rc=0 || rc=$?
           if (( rc )); then rowerrs+=("$out")
           else
+            [[ -s "$carried" ]] && carries[$i]=$(cat "$carried")
             out=$(printf '%s\n' "$out" | grep -v '^ok: .* passes every check (nothing sent)$' || true)
             [[ -z "$out" ]] || printf '%s\n%s\n' "$label" "$out" | sed '2,$s/^/  /' >&2
           fi
@@ -1490,6 +1580,7 @@ case "$cmd" in
         printf '%s\n' "$label" "${rowerrs[@]}" | sed '2,$s/^/  /' >&2
       fi
     done
+    rm -f "$carried"
     (( refused == 0 )) || die "desk-jira: nothing created: $refused of ${#rows[@]} rows refused (above)"
     # Then each row is sent in order, an @<n> parent as the key row n got. Each was linted above, so
     # it is not linted again. The first failure stops the batch: what was created stays created.
@@ -1570,7 +1661,7 @@ case "$cmd" in
     names=$(printf '%s' "$f" | jq -r 'keys | join(",")')
     back=$(api GET "api/2/issue/$key?fields=$names")
     echo "updated $key - read back:"
-    printf '%s' "$back" | jq -r --argjson sent "$f" "$JQ_VAL$JQ_READBACK"'readback($sent; [])'
+    printf '%s' "$back" | jq -r --argjson sent "$f" "$JQ_VAL$JQ_BLANK$JQ_READBACK"'readback($sent; [])'
     # A parent that does not stick files the issue under the wrong epic or none, so it fails; so does
     # a cleared parent that is still there.
     if printf '%s' "$f" | jq -e 'has("parent")' >/dev/null; then

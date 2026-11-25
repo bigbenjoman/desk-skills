@@ -1,4 +1,5 @@
 // suite: desk-q usage line (5-hour and 7-day bars on every header, and the probe that keeps them fresh)
+// layer: L2
 // desk-q against fixture worker logs carrying rate_limit_event lines, a fixed clock, and a fake claude
 // that records its environment and arguments, under a throwaway HOME, DESK_HOME, DESK_CONFIG_ROOT,
 // DESK_LOCK_DIR and DESK_USAGE_DIR. One check or more per acceptance criterion of DS-220.

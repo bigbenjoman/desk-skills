@@ -1,4 +1,5 @@
 // suite: desk-q rereads on change (an idle open screen rereads no queue and starts no process)
+// layer: L2
 // covers: desk/bin/desk-q.mjs
 // The real interactive() on injected input and output and a fake clock, against a fixture repo under a
 // throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT. Its batch is handed to the supervisor, so every
@@ -43,7 +44,7 @@ mkdirSync(dir, { recursive: true });
 mkdirSync(join(env.DESK_CONFIG_ROOT, 'repos', SLUG), { recursive: true });
 writeFileSync(join(env.DESK_CONFIG_ROOT, 'repos', SLUG, 'config.md'),
   `## 2. Paths\n\n| Field | Value |\n|---|---|\n| Primary repo root | \`${dir}\` |\n\n`
-  + '## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | `3000` | `4500` |\n| Autopilot worker concurrency | `2 / 3` | `2 / 3` |\n');
+  + '## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | `3000` | `4500` |\n| Autopilot worker concurrency | `2 / 3` | `2 / 3` |\n| Batches run by | `supervisor` | `supervisor` |\n');
 mkdirSync(dirname(QUEUE), { recursive: true });
 writeQueue({ 'R-1': { state: 'running', stage: '3/9' }, 'R-2': { state: 'triaged', open_questions: 0 } });
 for (const sub of ['orchestrators', 'logs']) mkdirSync(join(STATE, sub), { recursive: true });

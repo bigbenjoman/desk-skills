@@ -20,6 +20,25 @@ finish its stage. It waits like any spawn while the
 batch budget is spent, and the report says so. A second stop in that session parks it, naming the
 budget and whether its worktree holds uncommitted work.
 
+**Every park, hold and stall is timed by its cause** (`stuck-time.mjs`). Each pass records in the
+repo's `stuck-intervals.jsonl`, and in the ticket ledger where that lever is on, when a ticket was
+parked (its park kind and failure class) or kept waiting by a hold (usage, memory harm by signal or
+low memory, the lock or the test lock queue, a collision, a red base, a gate reviewer down), and when
+that ended. desk-q's repo screen and the levers report show the week's hours per cause, the tickets
+affected and the top causes, each with the tracking issue `node stuck-time.mjs link <cause> <issue>`
+set; parked hours per ticket is a lever guardrail.
+
+**Every ask is recorded step by step where the ledger lever is on** (`ask-ledger.mjs`). An ask is a
+park handed to the person or the decider, keyed `<KEY>:<park.since>`. The ticket ledger records it
+raised, presented (by push, the check-in digest or the decider), answered (by the person, with the
+session it came from where one is named, by the decider, or by default when a pass takes a recommended
+option) with its latency from the park, and acted on by the next worker. Each step is written once, and a write that fails is a line in the report.
+Each pass then measures what each step cost (`ask_tokens`), in tokens and list-price dollars: the
+parked round from its park write to its end (a lower bound), the decider's session over the items it
+listed or the person's session between its answers (approximate; an answer from a shell costs none),
+and the next round to its first stage marker, cache reads and writes apart. A step that cannot be read
+whole, a killed worker's, is marked incomplete, never 0.
+
 **Which model each worker runs on is config §3b "Worker models".** At `default` (also when the row
 is absent) no `--model` is passed and every worker runs on the session default. At
 `standard=<model> high=<model>`, `pass.mjs` picks a tier per ticket at spawn: a lane A or E ticket
@@ -39,7 +58,12 @@ header), and a Stage 7 session spawned from a handoff runs on the text model, wh
 Stage 7 session on the ticket's tier. Every
 preflight also asks each one set for one word on its own, so a value the CLI rejects fails the
 preflight with a `FINDER` or `TEXT` line naming the row and the value, and no worker spawns. Neither
-is set until the eval harness shows finding quality holds on the cheaper model.
+is set until the eval harness shows finding quality holds on the cheaper model. The `finder-model`
+lever trials exactly that: on a ticket whose arms have it on, `desk-env model finder` prints the
+lever's alias (`sonnet`, config-schema's `FINDER_MODEL_LEVER`, which its registry entry records as
+`model`) whatever `finder=` says, and the blind audit compares the two arms. Only the routed finders
+move: the simplicity finder reads `desk-env model finder --row`. A repo whose `finder=` already
+names that alias never draws it.
 
 **The effort each worker session runs at is config §3b "Worker effort"** (`desk-env effort <start>`
 prints it), read only with the `effort` lever on (config §3b "Phase 0 levers"). Off, no `--effort` is
@@ -88,6 +112,10 @@ Once its PR is read the session is over: any later work on that PR (a review try
 kind, a rework) goes to a local worker on the PR's branch at origin's tip, which pushes there.
 The report's cost table shows a cloud worker's session URL and its wall time from session start to
 PR, and its tokens and cost as "not reported for cloud".
+The session is named `<repo>-ticket-<KEY>` (`--name`) and stays open in claude.ai/code once its PR
+merges: nothing here can archive it. So the batch's finished cloud sessions are one desk-needs-you
+item, naming each with its URL, which the person archives by hand; its done records them so none is
+asked about twice.
 
 **A ticket admitted mid-batch is placed the same way.** `queue.mjs admit`, which every mid-batch
 route admits through (intake, `/desk-admit`, an approved epic plan's children, a ticket handed over
@@ -107,7 +135,11 @@ carries on), and resumes it in its own session on the login it started on once t
 its reset or sooner when a probe call succeeds (orchestrator-recovery.md). Log growth
 alone can lie (a hung `codex exec` heartbeats into the log until the harness moves it to the
 background at 600s), so on a batch that has gone
-quiet, check the log tail's newest `tool_progress` `elapsed_time_seconds` too. Recovery for both is
+quiet, check the log tail's newest `tool_progress` `elapsed_time_seconds` too. So the pass also keeps
+each running worker's last progress (a stage change, a commit on its worktree's HEAD or a push of its
+branch) and, with none for 45 minutes (90 at Stage 5), lists it once under WAITING ON YOU as `NOT
+PROGRESSING`, leaving it running; a suite wait under its ceiling pauses that clock, a usage hold
+stops it until the hold lifts, and every new session starts it again. Recovery for both is
 in `references/orchestrator-recovery.md`.
 
 **Stages 4b and 7 run in a fresh session.** A worker ends its session after Stage 4 and after

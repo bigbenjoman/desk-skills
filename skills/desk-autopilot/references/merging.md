@@ -135,11 +135,23 @@ with those lines in its brief, once per PR and outside the two tries (`extra` in
 the stuck reason quotes the line. A check
 §4 Checks workers can't fix names is never a worker's. A PR red only on such a check is stuck with
 `<check> · <what fixes it>`. A PR red on one beside a fixable check is requeued for the fixable one,
-and its briefing says the other is not the worker's to fix. A required check that no GitHub Actions
-run of the repo reports (a deploy or preview service's status), red on three or more ready PRs at
-once, reads as that platform failing: the pass says so once, and a PR red only on it is held
-(`OUTAGE`) with no fix try or stuck answer, naming the step: once the platform is back, redeploy
-there or push to the PR. A PR also red on another kind of check keeps that check's route. desk-q shows each ticket's try and
+and its briefing says the other is not the worker's to fix. A check red on two or more open PRs
+(draft or ready) whose runs have completed, all with the same error line once ids and numbers are
+taken out, and a line that names no file, reads as its deploy or preview platform failing, not their
+code (a platform's own status with no Actions run counts by its description), unless another open PR
+passes it. The pass holds it
+batch-wide, kept in the batch's state folder from pass to pass and recorded once on the batch's
+queue as `platform_outage`: one `OUTAGE` line under `WAITING ON YOU` names the check and
+the error line, and each PR red only on it is held with no fix try or stuck answer. The pass re-runs
+it on one PR whose run has completed, the driver's 12-minute rerun gap after the hold begins, doubling
+after each re-run that stays red up to 30 minutes. Still held 2 hours after it began, it is
+escalated to you once, with a `PLATFORM OUTAGE` line saying how long it has lasted. Once any open PR
+passes it, the hold and the record clear and the other PRs' runs are re-run. A re-run it cannot make yet (the PR's run still going, or the
+preview build taken) is kept as owed, made by a later pass even after the PR that passed has merged,
+and the PR gets no fix try until it is made. A check an outage holds never goes into a PR's stuck
+answer. A check with no Actions run is never re-run: once the platform is
+back, redeploy there or push to the PRs. A check red on the base too stays base red. A PR also red on
+another kind of check keeps that check's route. desk-q shows each ticket's try and
 what it is fixing. Usage pacing never holds a fix try: while 7-day usage is ahead of pace, new
 tickets wait and fix tries still start, within the batch's worker count.
 
@@ -190,8 +202,11 @@ or a ready PR, the needs-you item offers `answer`, and a worker on the PR carrie
 Under §3 `autopilot-judgement` `yes`, tagged gaps that are all the review leaves open and each end
 `Recommended: <option>`, none of them reading as an ask category (`decisions.mjs` `ASK_TERMS`), go to
 a review fix try instead: its worker carries out each recommendation
-and logs it as a decision. One gap with no recommendation, or in an ask category, sends them all to the
-person, and so does a recommended gap still open after its try.
+and logs it as a decision. One gap with no recommendation, in an ask category, or whose recommendation
+needs a route §3 denies workers (a workflow dispatch with `worker-workflow-dispatch` not `yes`), sends
+them all to the person, and so does a recommended gap still open after its try. A gap of that last kind
+goes to the person tagged or not, its item naming the action and the row, so the person, or a session
+allowed it, does it.
 
 An empty commit carries a verdict as a clean merge of the base does: one with a single parent and that
 parent's tree adds nothing to the PR's own diff, so a head reached from the reviewed commit by those
@@ -255,8 +270,9 @@ nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2 ABC-3" --deps "A
 
 `--log` has the driver append its own output to `<state>/merge-driver.log`, so the command carries
 no `>>` redirect: a redirect outside the working directory prompts every time, whatever the allow
-rules say. **Where the batch is handed to the supervisor, do not start one**: it starts the driver for a
-handed-over batch and starts it again after a reboot (*The supervisor*).
+rules say. **Where the batch is handed to the supervisor, do not start one**: it starts one driver for
+all of the repo's handed-over batches (`--all-batches`, each batch merged onto its own base, the
+author's open PRs read once per sweep) and starts it again after a reboot (*The supervisor*).
 
 Each merge it makes is a `merged` line in the merge log naming the PR, the head it merged at, the
 ticket and the driver as the merger; a refused merge is a `failed` line, never `merged`.
@@ -338,14 +354,21 @@ forever) and **no preview build starts without its team's preview-build lease** 
   merge ref leaves a PR with no mergeability answer for good, so a draft or ready PR with none for 30 minutes
   (`DESK_UNKNOWN_SECS`) has its branch updated once with `gh pr update-branch` where §3
   `pr-update-branch` is `yes`, and with still no answer 30 minutes after that, or with no update
-  permitted, it is the person's, named with how long and what was tried. Any other draft it may not undraft is under WAITING ON
+  permitted, it is the person's, named with how long and what was tried. The pass's deadline sweep also
+  keeps each wait on the ticket as `waits`, with its start, its deadline and when it was escalated, once:
+  an open PR with no mergeability answer is escalated when the undraft step or the merge driver makes it
+  the person's (a draft's `DRAFT` line, or a ready PR's `merge ref:` note, said under WAITING ON YOU as
+  `NO MERGE ANSWER`), or with neither acting on it, twice that limit after the pass first saw it; a handoff
+  whose next session has not started 15 minutes after it is under WAITING ON YOU as `HANDOFF NOT STARTED`,
+  with the requeue to run. Each line stays listed while its wait is open, as one item to the decider, and
+  a new escalation is recorded only once that wait ends and a new one starts. Any other draft it may not undraft is under WAITING ON
   YOU as `DRAFT`, with the reason and what to do. Either way it is recorded on the
   ticket as `undraft`; a feature spine is left to `queue.mjs approve`. **A draft the person put back
   to draft is theirs to hold**: one the pass undrafted before, or whose PR events hold a
   `convert_to_draft`, is recorded as `undraft` `held`. The pass then never undrafts it, re-runs or
   builds its checks, or sends it to a review or fix worker, and it is under WAITING ON YOU as `HELD` (desk-q and `/desk-needs-you` show it as needing the person). Their
   own `gh pr ready` releases it, and the driver merges it once green. The driver merges a ready PR,
-  pinned, the moment it is green with a clean review at its head (never a PR under a §4 Merge holds glob). Under a §4 State check of kind `external`, that check passing at the head is the review there: the outside reviewer's, so the driver wants no desk verdict at that head as well, and the pass sends no review worker for one. Do not arm auto-merge.
+  pinned, the moment it is green with a clean review at its head (never a PR under a §4 Merge holds glob). Under a §4 State check of kind `external`, that check passing at the head is the review there: the outside reviewer's, so the driver wants no desk verdict at that head as well, and the pass sends no review worker for one. A PR waiting on that reviewer is a line of the pass's report. Where the reviewer has posted no review across the repo for over four times its usual wait (at least an hour) while ready PRs wait on it, the pass puts one repo-level ask to the person in place of those lines, `gate reviewer down: …`, naming §4 Infra and security owner where it is set and holding a message to send as it is; the ask goes on the reviewer's next review (`gate-reviewer.mjs`). Each pass brings its text up to date under the same id, so a not-now on it holds for the whole outage; an outage after the reviewer has reviewed again is a fresh ask. A reviewer new to that record is read from GitHub first (its latest review, its recent waits, and when each PR began waiting), so an outage already under way reads as down at once, from when it began. Before the ask is raised or refreshed, its latest review across the repo is read again: one within its threshold, on PRs desk does not track, means it is only behind on desk's PRs, not down. Each down spell is kept as an outage, which the merge-time medians leave out: once a ticket's PR has merged, a pass reads its timeline from GitHub and splits its time into desk review rounds, undraft, the outside reviewer's wait and re-reviews, and last green to merge (`merge-stages.mjs`), shown as median and p75 on desk-q's repo screen and in the levers report. The same pass reads each merged PR's reviews for the findings that reviewer posted at a head desk had already called clean, after that verdict, classifies each by kind and logs it in the repo's `review-misses.jsonl` (a PR whose findings the model cannot classify is tried again hourly, and given up after three such tries; a GitHub read that fails is not one, nor a pass whose login could make no model call); a kind missed on two PRs or more becomes a checklist line, citing them, in the repo's `review-bar.learned.md`, which desk-review reads after the bar and only ever adds to (`review-misses.mjs`). The levers report shows that reviewer's re-reviews per PR and undraft-to-approval time before and after the first learned line. Do not arm auto-merge.
   Undrafting earlier pings the reviewer before the evidence is in.
 - **A draft whose every red check was cancelled or timed out is re-run by the pass**, where §3
   `ci-rerun` is `yes`: those runs never tested the code. It keeps the driver's cap of two reruns per

@@ -1,4 +1,5 @@
 // suite: desk-design (save a canvas, source.json, README, check, render)
+// layer: L2
 // desk-design.mjs on a fixture snapshot: write records source.json and a README with the
 // ticket-to-board table; save copies canvas.json, the boards and the local files they reference into
 // the Design canvases directory, once per artifact; status sees a newer version; check reports a
@@ -8,7 +9,7 @@ import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, utimesSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { save, status, checkTicket, designFact, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose, callsHome, unbound, storyEntries, matchStories, compare, applyCrops, kindOfFiles, uploadEstimate, estimateLines } from '../desk/bin/desk-design.mjs';
+import { save, status, checkTicket, designFact, copiesOf, linkedArtifacts, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose, callsHome, unbound, storyEntries, matchStories, compare, applyCrops, kindOfFiles, uploadEstimate, estimateLines } from '../desk/bin/desk-design.mjs';
 import { findPlaywright, importPlaywright } from '../desk/bin/find-playwright.mjs';
 import { scratch } from './scratch.mjs';
 
@@ -281,6 +282,27 @@ const fact2 = designFact(`h2. Design\n[A](${URL1}): no board on this canvas for 
 t('DS-860: triage\'s design fact keeps both canvases a line links beside a no-board note', fact2.canvases.length, 2);
 const fact = designFact(`h2. Design\nThe epic's canvas: ${URL1}. No board for this ticket exists yet.\nh2. Out of scope`, { state: st + '-none', key: 'DS-70' });
 t('DS-860: triage\'s design fact leaves out a canvas the ticket uses no board from', fact.canvases.length, 0);
+
+// ---- a claude.ai artifact the ticket links outside its Design section (a spec, notes) ----
+const SPEC = 'https://claude.ai/public/artifacts/spec-1';
+const specTicket = () => issue(`h2. Outcome\nThe spec: ${SPEC}. Chat: https://claude.ai/chat/xyz\nh2. Design\nNo UI.\nh2. Out of scope\n* https://claude.ai/artifact/later`);
+t('issue-1381 AC1 linkedArtifacts: an artifact anywhere but Design and Out of scope, never a chat link',
+  linkedArtifacts(`## Goal\n${SPEC}\nhttps://claude.ai/chat/xyz\n## Design\n${URL1}\n## Comments\n${URL1} and https://claude.ai/artifact/n2\n## Out of scope\nhttps://claude.ai/artifact/later`).join(' '), `${SPEC} https://claude.ai/artifact/n2`);
+const specUnsaved = checkTicket(specTicket(), { root: r5, dir: DIR, state: `${st}-none` });
+t('issue-1381 AC1 check: an unsaved artifact outside the Design section blocks, naming it and the interactive read',
+  `${specUnsaved.map((f) => f.severity).join(' ')} ${specUnsaved[0]?.message.includes(SPEC)} ${specUnsaved[0]?.message.includes('read it once in an interactive session')}`, 'blocking true true');
+t('issue-1381 AC1 triage\'s design fact carries it as an artifact a worker cannot read yet', JSON.stringify(designFact(specTicket().fields.description, { state: `${st}-none`, key: 'DS-70' }).artifacts), JSON.stringify([{ url: SPEC, saved: null, snapshot: null }]));
+put(join(st, 'designs/DS-70-spec/source.json'), JSON.stringify({ url: SPEC, version: '1', kind: 'page' }));
+t('issue-1381 AC1 check: once snapshotted it is advisory, the worker saving it from there', checkTicket(specTicket(), { root: r5, dir: DIR, state: st }).map((f) => f.severity).join(' '), 'advisory');
+const rS = repo('rS');
+put(join(rS, DIR, 'DS-70/source.json'), JSON.stringify({ url: SPEC, version: '1', kind: 'page' }));
+git(rS, 'add', '-A'); git(rS, 'commit', '-q', '-m', 'spec');
+t('issue-1381 AC1 check: once saved in the repo it is clean', checkTicket(specTicket(), { root: rS, dir: DIR }).length, 0);
+// The link-to-copy mapping a worker reads in place of the link: the repo copy, else the snapshot, else none.
+const copies = (root, state) => copiesOf(specTicket().fields.description, { root, dir: DIR, ref: 'main', state }).map((c) => `${c.url}=${c.copy}`).join(' ');
+t('issue-1381 AC2 copies: the saved folder in the repo', copies(rS, `${st}-none`), `${SPEC}=docs/design/DS-70/`);
+t('issue-1381 AC2 copies: the snapshot where nothing is saved', copies(r5, st), `${SPEC}=${join(st, 'designs/DS-70-spec')}`);
+t('issue-1381 AC2 copies: none where neither is', copies(r5, `${st}-none`), `${SPEC}=null`);
 
 // ---- check reads the base on origin, not a checkout's working tree ----
 // A main checkout behind origin/main: the canvas is merged on origin only, and another sits in the

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: base sync: CI reopens, the epic PR, the merged-tree check and promotion
+# layer: L3
 # The base sync, set up by base_sync_setup.sh: a PR whose CI runs only once the base has main's
 # trigger, the epic PR and its review try, §4 Merged-tree check, parks waiting on the base containing
 # main, and the promotion PR's check try.

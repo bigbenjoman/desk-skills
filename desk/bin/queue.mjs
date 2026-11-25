@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, doneOnPr } from './batch-state.mjs';
+import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, shippedSet, keyPattern, doneOnPr, mergedCurrent } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
 import { prNames } from './recoveries.mjs';
@@ -24,10 +24,13 @@ import { queueFile, stateDir, wakeMergeDriver, skillsDir, concurrencyLimits, SAF
 import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
-import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
+import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf, keepPrs, recordedPr } from './queue-store.mjs';
+import { repoOfPr } from './pass/pr-status.mjs';
+import { blockersOf } from './queue-states.mjs';
 import { LEDGER_BY_ENV, queueDifference } from './queue-ledger.mjs';
+import { isSha } from './ticket-ledger.mjs';
 import { newPark, parkArgs, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { followOnPending, postMergeUnmade, workerMarkers, lastStage, settleSteps } from './harvest.mjs';
+import { followOnPending, postMergeUnmade, workerMarkers, lastStage, logStage, settleSteps } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
@@ -61,7 +64,7 @@ const hereRepo = () => { try { return ghRepo(); } catch { return null; } };
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer', 'stop', 'finish'];
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'drop-worktree', 'get', 'transfer', 'stop', 'finish', 'withdraw'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -128,6 +131,19 @@ function found(q, key) {
   const t = q.tickets[key];
   if (!t) throw new Error(`no such ticket in the queue: ${key}`);
   return t;
+}
+
+// A running worker as it is now, read from its log rather than the queue, which a pass updates only
+// when it runs: its last stage marker since this spawn (harvest.mjs logStage, as desk-q's table reads
+// it) and when the log last grew (its heartbeat). A worker spawned and silent since has the log and no
+// stage; one with no log has not started.
+//   -> { log, stage, said_at, heartbeat_at } (each null where there is none)
+function liveOf(t) {
+  const log = join(stateDir(), 'logs', `${t.key}.log`);
+  let st;
+  try { st = statSync(log); } catch { return { log: null, stage: null, said_at: null, heartbeat_at: null }; }
+  const s = logStage(log);
+  return { log, stage: s?.stage ?? null, said_at: s?.at ? new Date(s.at).toISOString() : null, heartbeat_at: new Date(st.mtimeMs).toISOString() };
 }
 
 // Is another orchestrator (a second batch) live right now? Its per-batch notes must survive our init.
@@ -256,6 +272,35 @@ function finish(q, key, n, pr) {
   return `${key} recorded done on PR #${n} (${pr.isDraft ? 'a draft' : pr.state.toLowerCase()}, ${pr.headRefName} into ${base}): no longer parked`;
 }
 
+// withdraw <TICKET> "<why>": a fix try the pass queued (its `fix`, the ticket triaged for it) that no
+// worker has started, taken back, because what it was for is settled outside a worker (a gap the
+// orchestrating session closed, say). The ticket goes back to done on its PR and `fix` is cleared. The
+// try stays in `fix_tries`, marked `withdrawn` with why, so it counts against none of the PR's tries
+// (fix-tries.mjs ownCount); a withdrawn review try also holds its head (withdrawnAt), so no review try
+// is drafted there again until a push, a clean review or the person's fix moves it. Refused for a running worker (stop it first), for
+// a ticket with no queued fix try, and while a pass runs, which may be spawning it.
+function withdraw(q, key, why) {
+  const t = ticket(q, key);
+  if (t.state === 'running') throw new Error(`${key} is running: its fix try has started. Stop it (queue.mjs stop ${key}) if it is no longer wanted: nothing withdrawn`);
+  if (t.state !== 'triaged' || !t.fix || t.fix.finished) throw new Error(`${key} is ${t.state ?? 'in no state'}${t.fix ? '' : ' with no fix try'}, so no queued fix try is there to withdraw: nothing withdrawn`);
+  const pr = t.fix.pr ?? t.result?.pr ?? null;
+  if (pr == null) throw new Error(`${key}'s fix try names no PR to go back to: nothing withdrawn`);
+  // A pass under way may already have picked the try to spawn. Its state=running write refuses a
+  // ticket done since (set --unless state=done), so none starts; this says so before anything is changed.
+  if (passRunning()) throw new Error(`a pass is running, and may be spawning ${key}'s fix try: run queue.mjs withdraw ${key} again once it ends (a try it spawns meanwhile is stopped with queue.mjs stop ${key}): nothing withdrawn`);
+  const f = t.fix;
+  const at = new Date().toISOString();
+  const mark = { withdrawn: at, withdrawn_why: why };
+  // The entry the pass wrote for this try, as unrunFields (fix-tries.mjs) finds it.
+  const own = (x) => x.at === f.at && x.kind === f.kind && !x.finished;
+  const tries = t.fix_tries ?? [];
+  const kept = tries.some(own) ? tries.map((x) => (own(x) ? { ...x, ...mark } : x))
+    : [...tries, { try: f.try ?? null, head: f.head ?? null, kind: f.kind, what: f.what, at: f.at ?? at, ...mark }];
+  Object.assign(t, { state: 'done', fix: null, fix_tries: kept, updated_at: at });
+  save(q);
+  return `${key}: its queued fix try${f.try ? ` ${f.try}` : ''} on PR #${pr} (${f.what ?? f.kind ?? 'fix'}) withdrawn: no worker is spawned for it, it counts against none of the PR's tries${f.kind === 'review' ? `, and no review try is drafted again at its head ${String(f.head ?? '?').slice(0, 12)}` : ''}: ${why}`;
+}
+
 // A requeued ticket whose recorded PR is open on another branch goes back on that branch, so its worker
 // is spawned on, and may push, the PR's head: the worktree moves onto it and the queued branch is kept
 // as a backup ref, unless that branch holds commits the PR's head lacks. The PR was read and fetched
@@ -273,6 +318,14 @@ function repointRequeued(t, key) {
   t.branch = moved.branch;
   return `; its branch ${was} re-pointed to its open PR #${pre.pr.number}'s ${moved.branch}${moved.backup ? `, the old one kept as ${moved.backup}` : ''}`;
 }
+
+// A ticket requeued after its PR merged keeps that PR as merged_pr from the requeue on, as its spawn does
+// (keepPrs, queue-store.mjs; pass.mjs keepMergedPr folds it in again by repo), so the merge driver holds
+// what waits on it until its next PR merges whatever happens before a worker spawns: a park, a failed spawn.
+const keepRequeuedPr = (t) => {
+  const kept = keepPrs(t);
+  return kept ? { merged_pr: kept } : {};
+};
 
 function requeue(q, key, { handedBack = false } = {}) {
   const t = ticket(q, key);
@@ -292,7 +345,7 @@ function requeue(q, key, { handedBack = false } = {}) {
     harvested = `; its worker had exited on a park no pass had recorded yet, kept as prev_park: ${p.question}`
       + `${calls.unreadable.map((u) => `; unreadable ${u.what} (${u.why}), nothing logged: ${u.raw}`).join('')}`;
   }
-  if (isHeld(t)) throw new Error(`${key} is held behind ${String(t.held_by ?? '?').split('|').join(', ')}: release it rather than requeue it`);
+  if (isHeld(t)) throw new Error(`${key} is held behind ${blockersOf(t).join(', ') || '?'}: release it rather than requeue it`);
   refuseLeft(t, key, 'requeued');
   // pass.mjs spawns any triaged ticket with no open questions and never reads the lane, so this is
   // the one place an untriaged ticket, unanswered triage questions, a triage park (size, a
@@ -344,11 +397,17 @@ function requeue(q, key, { handedBack = false } = {}) {
   // leaves one on a ticket that is not held.
   // Blockers in no batch (held_outside) stay until pass.mjs lifts them.
   const outside = String(t.held_outside ?? '').split('|').filter((p) => p && !q.tickets[p]);
-  const pending = String(t.held_by ?? '').split('|').filter((p) => p && (q.tickets[p] ? !q.tickets[p].merged_at : outside.includes(p)));
+  // A blocker merged once and gone round again since has not merged its current work, as the merge driver
+  // reads it (batch-state.mjs mergedCurrent): it holds this ticket still.
+  const pending = blockersOf(t).filter((p) => (q.tickets[p] ? !mergedCurrent(q.tickets, p) : outside.includes(p)));
+  // Done by another's PR, its merged_at was that PR's merge: sent back for work of its own, it has none
+  // yet, or the merge driver and the holds above would read the work as merged.
+  const byOther = t.done_by?.pr != null;
   // A fresh session, so a killed worker waiting to resume no longer does.
-  Object.assign(t, { prev_park: prevPark, state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null, failed: null,
+  Object.assign(t, keepRequeuedPr(t), { prev_park: prevPark, ...(byOther ? { merged_at: null } : {}), state: pending.length ? 'parked' : 'triaged', open_questions: 0, park: pending.length ? heldPark(pending) : null, held_by: pending.join('|') || null, ...(t.held_outside ? { held_outside: outside.join('|') || null } : {}), session_id: null, pid: null, idle_passes: 0, log_bytes: 0, resume: null, resume_why: null, usage_paused: null, login_move: null, failed: null,
     handoff: fromStage ? 'pending' : null,
-    spine_check: null, spec_check: null, approved: null, approved_at: null, updated_at: new Date().toISOString() });
+    // Done by another's PR no longer, once sent back for work of its own.
+    spine_check: null, spec_check: null, approved: null, approved_at: null, done_by: null, updated_at: new Date().toISOString() });
   const placed = toFront(q, key);
   if (calls?.entries.length) appendDecisions(calls.entries, stateDir());
   if (p?.notes.length) appendNotes(p.notes, stateDir());
@@ -592,7 +651,7 @@ function missingHolds(q, holdsFor) {
   const view = structuredClone(q);
   const found = [];
   for (const t of Object.values(q.tickets)) {
-    if (!triagePark(t) || personStepPark(t) || t.held_by) continue;
+    if (!triagePark(t) || personStepPark(t) || blockersOf(t).length) continue;
     if (!existsSync(join(stateDir(), 'triage', `${t.key}.json`))) continue;
     const h = holdsFor(readTriage(stateDir(), t.key), q.tickets, baseOf(q));
     const { holds, cycles, outside } = holdsAmong(t.key, [...h.held, ...h.outside], q.tickets, heldBehindOf(view, t.key));
@@ -686,7 +745,7 @@ function transfer(q, key, to) {
   const t = ticket(q, key);
   if (t.state === 'running') throw new Error(`${key} is running: stop its worker first. Nothing was moved`);
   if (t.result?.pr != null && t.pr_status?.state !== 'CLOSED') throw new Error(`${key} has PR #${t.result.pr} against this batch's base: close it first. Nothing was moved`);
-  const behind = Object.values(q.tickets).filter((o) => o.key !== key && String(o.held_by ?? '').split('|').includes(key)).map((o) => o.key);
+  const behind = Object.values(q.tickets).filter((o) => o.key !== key && blockersOf(o).includes(key)).map((o) => o.key);
   if (behind.length) throw new Error(`${behind.join(', ')} ${behind.length === 1 ? 'is' : 'are'} held behind ${key} in this batch: release ${behind.length === 1 ? 'it' : 'them'} first. Nothing was moved`);
   const name = /^standing$/i.test(to) ? null : to;
   if (name != null && (!SAFE_ID.test(name) || name.includes('..'))) throw new Error(`"${to}" is not a batch name. Nothing was moved`);
@@ -736,7 +795,7 @@ function transfer(q, key, to) {
   const outside = [];
   const stays = [];
   const theirs = [];
-  for (const p of String(t.held_by ?? '').split('|')) {
+  for (const p of blockersOf(t)) {
     if (!p || p === key || [holds, outside, stays, theirs, mergeAfter].some((l) => l.includes(p))) continue;
     if (tq.tickets[p]) { if (!(stepThere(p) && blocking.has(p)) && !childDone(tq.tickets[p])) holds.push(p); }
     else if (wasOutside.includes(p) || blocking.has(p)) outside.push(p);
@@ -766,7 +825,7 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'adopt', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'order', 'drop', 'merged', 'transfer', 'finish'];
+const WRITES = ['init', 'add', 'adopt', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'order', 'drop', 'merged', 'transfer', 'finish', 'withdraw'];
 
 try {
 if (!Object.hasOwn(QUEUE_COMMANDS, cmd ?? '')) throw new Error(unknownQueueCommand(cmd));
@@ -954,7 +1013,7 @@ switch (cmd) {
     if (t.state === 'queued') throw new Error(`${key} has not been triaged: triage it and \`queue.mjs admit\` it before holding it`);
     // A date hold waits behind its blockers: once they release it, the pass reads its label again.
     if (dateHeld(t)) t.held_label = null;
-    const all = [...new Set([...String(t.held_by ?? '').split('|').filter(Boolean), ...preds])];
+    const all = [...new Set([...blockersOf(t), ...preds])];
     t.held_by = all.join('|');
     t.state = 'parked';
     if (!keeps) t.park = heldPark(all);
@@ -1053,9 +1112,24 @@ switch (cmd) {
     break;
   }
 
+  // --unless <field>=<value>: written only while the ticket's field, read under the lock, is not that
+  // value. The pass's state=running write passes --unless state=done, so a try withdrawn (withdraw) after
+  // the pass read it as waiting is never marked running, and no worker starts.
   case 'set': {
-    const [key, ...pairs] = args;
-    applySet(ticket(q, key), pairs);
+    const [key, ...rest] = args;
+    const unless = [], pairs = [];
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === '--unless') { unless.push(String(rest[++i] ?? '')); continue; }
+      pairs.push(rest[i]);
+    }
+    const t = ticket(q, key);
+    for (const u of unless) {
+      const eq = u.indexOf('=');
+      if (eq < 1) throw new Error(`set --unless wants <field>=<value>, not "${u}"`);
+      const field = u.slice(0, eq), value = u.slice(eq + 1);
+      if (String(t[field] ?? '') === value) throw new Error(`${key}'s ${field} is ${value} now, so it is not written (--unless ${u}): ${pairs.join(' ')}`);
+    }
+    applySet(t, pairs);
     save(q);
     console.log(`${key}: ${pairs.join(' ')}`);
     break;
@@ -1134,6 +1208,14 @@ switch (cmd) {
     break;
   }
 
+  case 'withdraw': {
+    const [key, ...rest] = args;
+    const why = rest.join(' ').trim();
+    if (!key || !why) throw new Error('usage: queue.mjs withdraw <TICKET> "<why: what settled it, and where>"');
+    console.log(withdraw(q, key, why));
+    break;
+  }
+
   case 'step-done': {
     const [key] = args;
     if (!key) throw new Error('usage: queue.mjs step-done <TICKET>');
@@ -1171,7 +1253,7 @@ switch (cmd) {
     if (pr == null) throw new Error(`${key} records no PR to approve`);
     Object.assign(t, { state: 'done', park: null, approved: true, approved_at: new Date().toISOString(), updated_at: new Date().toISOString() });
     save(q);
-    const held = Object.values(q.tickets).filter((x) => isHeld(x) && String(x.held_by ?? '').split('|').includes(key)).map((x) => x.key);
+    const held = Object.values(q.tickets).filter((x) => isHeld(x) && blockersOf(x).includes(key)).map((x) => x.key);
     const after = held.length ? `${held.join(', ')} ${held.length > 1 ? 'are' : 'is'} released once it merges` : 'nothing is held behind it';
     const repo = ghRepo();
     const lines = [`${key} approved: the spine is done`];
@@ -1276,17 +1358,51 @@ switch (cmd) {
 
   // The merge driver, once a ticket's PR has merged: the first merge time is kept on the ticket, the
   // repo's eta history gains its line, and its saved first estimate gains the merge time beside it
-  // (desk-q-eta.mjs), after the queue lock is released.
+  // (desk-q-eta.mjs), after the queue lock is released. With --pr and --head, the PR that merged and its
+  // branch: a ticket that records no PR of its own (one built outside its worker) and has no worker
+  // running is recorded done on it, as a pass records one shipped outside its worker, where the branch is
+  // the ticket's or names its key. A title is not enough: another ticket's PR often names this key in it.
+  // The merge is kept on the ticket as `merge`: who recorded it (--by), the PR, the head commit it merged
+  // at (--head-sha) and the base it merged onto (--base), and when, which the ticket ledger records as one
+  // merged event (queue-ledger.mjs) and desk-q shows. A merge given no PR, from an older caller, is still
+  // recorded, with its PR missing, which the pass reports (pass/report.mjs mergeGapLine).
   case 'merged': {
-    const [key, at] = args;
-    if (!key) throw new Error('usage: queue.mjs merged <TICKET> [<ISO time>]');
+    const flag = (name) => { const i = args.indexOf(name); return i === -1 ? null : { i, v: args[i + 1] ?? '' }; };
+    const got = Object.fromEntries(QUEUE_COMMANDS.merged.map((f) => [f, flag(f)]));
+    const pr = got['--pr']?.v ?? null;
+    const head = got['--head']?.v ?? null;
+    const sha = got['--head-sha']?.v ?? null;
+    const [key, time] = args.filter((_, i) => !Object.values(got).some((f) => f != null && (i === f.i || i === f.i + 1)));
+    if (!key || (pr != null && !/^\d+$/.test(pr)) || [head, got['--base']?.v, got['--by']?.v].some((v) => v === '' || v?.startsWith('--'))
+      || (sha != null && !isSha(sha))) {
+      throw new Error('usage: queue.mjs merged <TICKET> [<ISO time>] [--pr <n> [--head <branch>] [--head-sha <sha>] [--base <branch>]] [--by <who>]');
+    }
     const t = ticket(q, key);
-    const when = at ?? new Date().toISOString();
+    const when = time ?? new Date().toISOString();
     if (Number.isNaN(Date.parse(when))) throw new Error(`merged: "${when}" is not a time`);
+    const itsBranch = head != null && (head === t.branch || new RegExp(keyPattern(key)).test(head));
+    if (pr != null && itsBranch && t.result?.pr == null && t.draft_pr == null && t.state !== 'running') {
+      // shipped_pr keeps it live until a pass reads that PR's review (harvest.mjs postMergeUnmade). A kept
+      // status naming another repo's PR of this number (needs-you's elsewhereDone, kept through a requeue
+      // and a spawn) is not this PR's: it is dropped, as the pass's shippedElsewhere drops one, so it is
+      // never marked merged in this PR's place and the pass reads this PR and its review afresh. With no
+      // repo to judge by, any status with a url is dropped: a read costs less than a foreign one kept. The
+      // repo is judged as the pass judges it (pass/pr-status.mjs repoOfPr).
+      const here = hereRepo(), { url } = recordedPr(t, pr);
+      const foreign = !!url && (!here || repoOfPr(url) !== repoOfPr(`https://github.com/${here}/pull/`));
+      applySet(t, [...shippedSet(foreign ? { ...t, pr_status: null } : t, `PR #${pr} merged by the merge driver`, Number(pr), new Date(when).toISOString()).slice(2),
+        ...(foreign ? ['pr_status=null'] : []), `shipped_pr=${pr}`]);
+    }
     t.merged_at ??= new Date(when).toISOString();
+    // A call naming no PR (the pass's own, finding the PR merged) never replaces a merge already recorded:
+    // it would wipe who merged which PR at which head, as merged_at keeps the first merge time.
+    if (pr != null || t.merge == null) {
+      t.merge = { by: got['--by']?.v ?? null, pr: pr == null ? null : Number(pr), head_sha: sha, base: got['--base']?.v ?? null, at: new Date(when).toISOString() };
+    }
     t.updated_at = new Date().toISOString();
     save(q);
     console.log(`${key} merged at ${t.merged_at}`);
+    if (pr == null && t.merge.pr == null) console.log(`${key}'s merge is recorded with its PR missing: no --pr was given`);
     console.log(describeHistory(recordMerge({ state: stateDir(), queue: q, key, mergedPrs: () => ghMergedPrs(ghRepo()) })));
     const est = recordEstimateMerge(stateDir(), key, t.merged_at);
     if (est) console.log(`first estimate kept with its merge: could run to ${est.could_run_to}, merged ${Date.parse(est.merged_at) < Date.parse(est.could_run_to) ? 'before' : 'after'} it`);
@@ -1306,6 +1422,17 @@ switch (cmd) {
     break;
   }
 
+  // A ticket recorded done with no worker (pass.mjs, done by another's PR): its worktree removed with its
+  // local branch when nothing in it is missing from origin. It stays in the batch.
+  case 'drop-worktree': {
+    const key = args[0];
+    const t = ticket(q, key);
+    if (t.state === 'running') throw new Error(`${key} is running: its worktree is left`);
+    const removed = dropWorktree(key, t);
+    if (removed) console.log(`its worktree ${removed}, holding nothing origin lacks, was removed`);
+    break;
+  }
+
   case 'drop': {
     const key = args[0];
     const t = ticket(q, key);
@@ -1317,7 +1444,7 @@ switch (cmd) {
     // outside instead, which pass.mjs lifts once Jira has it Done (a step has no code to land).
     const outside = [];
     if (personStepPark(t)) for (const o of Object.values(q.tickets)) {
-      if (!String(o.held_by ?? '').split('|').includes(key)) continue;
+      if (!blockersOf(o).includes(key)) continue;
       const was = String(o.held_outside ?? '').split('|').filter(Boolean);
       if (!was.includes(key)) o.held_outside = [...was, key].join('|');
       outside.push(o.key);
@@ -1327,9 +1454,11 @@ switch (cmd) {
     break;
   }
 
-  case 'get':
-    console.log(JSON.stringify(found(q, args[0]), null, 2));
+  case 'get': {
+    const t = found(q, args[0]);
+    console.log(JSON.stringify(t.state === 'running' && t.location !== 'cloud' ? { ...t, live: liveOf(t) } : t, null, 2));
     break;
+  }
 
   case 'list':
     console.log(JSON.stringify(q, null, 2));
@@ -1474,14 +1603,16 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
     const day = dateHeld(t);
     const stuck = !day && isHeld(t) && !parks && !waitingOnMerge(q, t);
     const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state === 'done' ? doneLabel(t) : handingOff(t) ? 'HANDOFF' : t.state.toUpperCase();
-    const spines = String(t.held_by ?? '').split('|').filter((p) => spinePark(q.tickets[p]));
+    const by = blockersOf(t);
+    const byText = by.join(', ') || '?';
+    const spines = by.filter((p) => spinePark(q.tickets[p]));
     const tail = day?.bad ? badLabelText(day.label)
       : day ? `until ${day.until} (label ${day.label})`
       : stuck && stoppedHold(t) ? 'its worker was stopped (queue.mjs stop): it starts once you let it (needs-you: start)'
-      : stuck ? `held behind ${String(t.held_by ?? '?').split('|').join(', ')}, which will not merge on its own (no PR, a closed PR, or not in the batch): decide what happens to it`
-      : parks ? `waiting on the answer to ${parks.join(', ')} (failed or parked), then until ${String(t.held_by).split('|').join(', ')} merge`
-      : isHeld(t) && spines.length ? `waiting on approval of spine ${spines.join(', ')}, then until ${String(t.held_by).split('|').join(', ')} merge`
-      : isHeld(t) ? `until ${String(t.held_by ?? '?').split('|').join(', ')} merge${(t.open_questions ?? 0) > 0 ? ` · ${t.open_questions} question(s) open` : ''}`
+      : stuck ? `held behind ${byText}, which will not merge on its own (no PR, a closed PR, or not in the batch): decide what happens to it`
+      : parks ? `waiting on the answer to ${parks.join(', ')} (failed or parked), then until ${byText} merge`
+      : isHeld(t) && spines.length ? `waiting on approval of spine ${spines.join(', ')}, then until ${byText} merge`
+      : isHeld(t) ? `until ${byText} merge${(t.open_questions ?? 0) > 0 ? ` · ${t.open_questions} question(s) open` : ''}`
       : t.state === 'parked' ? t.park?.question ?? ''
       : t.state === 'failed' ? failedWhy(t)
       : t.state === 'running' ? `${stages ? `stage ${t.stage ?? '?'}  ` : ''}port ${t.port ?? '-'}${t.model ? `  model ${t.model}` : ''}${t.draft_pr ? `  PR #${t.draft_pr}` : ''}${asks[t.key] ? `  asks: ${asks[t.key]}` : ''}`

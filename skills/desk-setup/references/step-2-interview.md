@@ -24,21 +24,28 @@ it unlocks and what it exposes, the alternatives, and the harness rules it maps 
 **Starting from another repo** (`/desk-setup from <repo>`, or chosen at step 0), the §3 and §3b rows
 are not asked one by one:
 
-1. Settle, unasked, the rows this repo's §4 forces, and say which and why: the Jira rounds when §4
-   Tracker is `none` (`no`), `pr-auto-merge` when §4 Repo merge settings have auto-merge off
-   (`no`), and a row that needs a §4 Local database or Staging this repo lacks (`no`).
+1. Settle, unasked, the rows this repo's §4 forces, and say which and why. The schema holds them, so
+   read them, never recall them: write the template with the rows step 1 confirmed (§3 and §3b as
+   the template has them) to a scratch file outside the repo, and run
+   `DESK_CONFIG=<that file> desk-env forced`. Each `FORCED` line names a row, the value it writes
+   and why: every Jira row with §4 Tracker `none`, `pr-auto-merge` with auto-merge off in §4 Repo
+   merge settings, and each row that needs a §4 Local database, Staging or Local services this repo
+   lacks, all `no`. Write each as its line says, show the lines, and delete the scratch file.
 2. Show every other row in one table, with one **will write** value each: the start-point repo's
    answer, unless a rule here names another for this repo (Branch protection `none` above, say),
-   with the other value beside it (`start-point: yes`, `Recommended: ask`) and the rule that chose.
+   with the rule that chose. Where the start-point answer and the Recommended value differ, show
+   both beside it (`start-point: yes`, `Recommended: ask`).
    For each `yes`, what it unlocks and exposes **in this repo**. A row the start-point repo has no
    answer for writes the Recommended value, marked new. When the table writes `autopilot-workers`
    `yes`, the autopilot statement below comes first.
 3. One `AskUserQuestion`: write the table as shown, edit some rows (ask only the rows the user
-   names, one question per row), or ask every row (the rounds above).
+   names, one question per row; every other row writes its table value), or ask every row (the
+   rounds above).
 4. Then the consistency checks below, on the rows as confirmed. Where an edit turns on a row whose
    dependents the start-point repo had off (`autopilot-workers` from `no` to `yes`, say), ask those
    dependents. A `yes` written this way is one the user chose in this conversation: it was in the
-   table they confirmed.
+   table they confirmed. Keep the rows written `yes` because the start-point repo had them, not
+   asked one by one: step 5's summary names each.
 
 Kept out of the table, and never copied from the start-point repo: the Subscription row and the
 dev-server port (asked on their own, as the core says), and the Phase 0 levers and Codex review rows

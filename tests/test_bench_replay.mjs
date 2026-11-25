@@ -1,4 +1,5 @@
 // suite: bench replay (arm 4: recorded preflight and decider calls on Haiku and with no model)
+// layer: L2
 // covers: desk/bin/bench-replay.mjs desk/bin/preflight-record.mjs desk/bin/bench-quota.mjs
 // Fixture batch state folders hold recorded calls with known Opus answers. A stub claude on PATH
 // answers the usage probe from a usage file and each replay with one matching and one mismatching

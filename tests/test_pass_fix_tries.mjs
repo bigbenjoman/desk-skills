@@ -1,6 +1,7 @@
 // suite: pass phase: fix tries (the decision, run through the generator runner)
+// layer: L1
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
-import { decideFixTries, tryLabel } from '../desk/bin/pass/fix-tries.mjs';
+import { decideFixTries, decideOutage, tryLabel } from '../desk/bin/pass/fix-tries.mjs';
 import { reviewerGated } from '../desk/bin/pass/shared.mjs';
 import { parseOperatorChecks } from '../desk/bin/fix-tries.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
@@ -30,7 +31,7 @@ const reads = (o = {}) => ({ ctx: ctx(o.ctx), baseMerge: () => false, moves: () 
 // The runner with stub handlers: each read answers from `answers` (a value, or a function of the
 // action), else from what a quiet pass reads.
 const READS = { 'conflict-files': ['src/a.ts'], 'note-conflict': null, 'human-seen': false, reads: () => reads(), feedback: null, 'settle-worked': [], 'check-build': null };
-const WRITES = ['set', 'report', 'out', 'gate-hold', 'apply'];
+const WRITES = ['set', 'report', 'out', 'gate-hold', 'apply', 'external-seen', 'external-wait'];
 function drive(s, answers = {}) {
   const handlers = Object.fromEntries([...Object.keys(READS), ...WRITES].map((type) => [type, (a) => {
     const v = Object.hasOwn(answers, type) ? answers[type] : READS[type];
@@ -75,13 +76,17 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
   const tried = tk({ fix_tries: [{ try: 1, of: 2, head: OLD, kind: 'feedback', what: 'review feedback: changes requested' }] });
   const as = drive(snap([[tried, pr([ok('tests'), red('🔐 Review gate', '88')])]], { stateChecks: EXT }), { feedback: fb, reads: () => reads({ ctx: { stateChecks: EXT } }) });
   t('#737 a stale changes-requested from the outside reviewer waits for its next review, not the person', applied(as).length, 0);
-  t('#925 and the pass says it waits for that reviewer', lines(as).some((l) => /PR #697 \(T-1\) is out of draft: .*waits for agent-pullbot to review the head/.test(l)), true);
+  t('#925 and the pass says it waits for that reviewer', lines(as, 'external-wait').some((l) => /PR #697 \(T-1\) is out of draft: .*waits for agent-pullbot to review the head/.test(l)), true);
+  t('#1365 the wait goes to the pass as one on that reviewer, with its head, not as a line of its own', j([as.filter((a) => a.type === 'external-wait').map((a) => [a.pr, a.head === HEAD, a.login]), lines(as).some((l) => /waits for agent-pullbot/.test(l))]), j([[[697, true, 'agent-pullbot']], false]));
+  t('#1365 and the reviewer read is reported: no review at the head, its last one when it was', j(as.filter((a) => a.type === 'external-seen').map((a) => [a.login, a.reviewedAtHead, a.last])), j([['agent-pullbot', false, null]]));
+  const clean = drive(snap([[tk(), pr([ok('tests'), { ...ok('🔐 Review gate'), completed: '2026-11-24T11:35:00Z' }])]], { stateChecks: EXT }), { feedback: fb, reads: () => reads({ ctx: { stateChecks: EXT } }) });
+  t('#1365 a ready PR whose outside reviewer check passed at the head is that reviewer\'s clean review, timed by the check', j(clean.filter((a) => a.type === 'external-seen').map((a) => [a.login, a.pr, a.reviewedAtHead, a.last])), j([['agent-pullbot', 697, true, '2026-11-24T11:35:00Z']]));
   const wasStuck = drive(snap([[{ ...tried, stuck: { why: 'x' } }, pr([ok('tests'), red('🔐 Review gate', '88')])]], { stateChecks: EXT }), { feedback: fb, reads: () => reads({ ctx: { stateChecks: EXT } }) });
   t('#925 a ticket stuck before has its stuck record cleared while it waits for the reviewer', j(wasStuck.filter((a) => a.type === 'set')), j([{ type: 'set', key: 'T-1', fields: ['stuck=null'] }]));
   const at = { ...payload, data: { repository: { pullRequest: { ...payload.data.repository.pullRequest, reviews: { nodes: [{ id: 'R2', author: { login: 'agent-pullbot' }, body: 'P1: still drops it', state: 'CHANGES_REQUESTED', commit: { oid: HEAD } }] } } } } };
   const as2 = drive(snap([[tried, pr([ok('tests'), red('🔐 Review gate', '88')])]], { stateChecks: EXT }), { feedback: { ...fb, payload: at }, reads: () => reads({ ctx: { stateChecks: EXT } }) });
   const c = applied(as2)[0]?.call;
-  t('#737 its review of the new head goes to a feedback try marked for it, with its text', `${c?.call} ${c?.fix?.kind} ${c?.fix?.external?.login} ${c?.fix?.threads?.[0]?.text.startsWith("agent-pullbot's review at the head: P1")}`, 'requeue feedback agent-pullbot true');
+  t('#737 its review of the new head goes to a feedback try marked for it, with its text', `${c?.call} ${c?.fix?.kind} ${c?.fix?.external?.login} ${c?.fix?.threads?.[0]?.text.startsWith("agent-pullbot's review body: P1")}`, 'requeue feedback agent-pullbot true');
 }
 
 // AC2: failed after two fix tries not spent on red checks naming a cause: stuck, and no third try.
@@ -181,6 +186,18 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
   const tried = tk({ state: 'done', fix: { kind: 'feedback', try: 1, of: 2, head: 'e'.repeat(40), finished: 'x', threads: [{ id: 'TH1', text: 'a thread' }] } });
   const unsettled = drive(snap([[tried, green]]), { feedback: worked, 'settle-worked': [] });
   t('a thread a finished try worked that GitHub would not settle holds any new try', j([types(unsettled).includes('settle-worked'), applied(unsettled).length]), j([true, 0]));
+  // After the try, a clean verdict at its head: the thread it quoted is replied on and resolved, and
+  // nothing is stuck. One with a later reply is left open.
+  const at = '2026-11-23T10:00:00Z';
+  const triedAt = tk({ state: 'done', stuck: { why: 'review feedback still open' }, fix: { ...tried.fix, at, threads: [{ id: 'TH1', text: 'a thread', last_at: '2026-11-23T10:00:30Z' }] } });
+  const done = drive(snap([[triedAt, green]]), { feedback: worked, 'settle-worked': (a) => a.worked.map((x) => x.id) });
+  t('a clean verdict after a try that quoted one thread resolves it, and the PR is not stuck', j([done.find((a) => a.type === 'settle-worked')?.worked.map((x) => x.id), applied(done).length, done.some((a) => a.type === 'set' && a.fields.includes('stuck=null'))]), j([['TH1'], 0, true]));
+  const replied = { ...worked, left: [{ id: 'TH1', text: 'a thread', last: { login: 'agent-pullbot', at: '2026-11-23T11:00:00Z', first: 'Not fixed: line 4 still drops it' } }] };
+  const open = drive(snap([[triedAt, green]]), { feedback: replied });
+  t('a thread with a later comment stays open', types(open).includes('settle-worked'), false);
+  const held = snap([[triedAt, pr([ok('tests'), red('desk-review', '9')])]], { gate: { required: ['tests', 'desk-review'], advisory: [] }, stateChecks: [{ name: 'desk-review', kind: 'verdict' }], reviewer: { key: 'reviewer', kind: 'mismatch', why: 'the gate counts another account' } });
+  const heldDone = drive(held, { feedback: worked, 'settle-worked': (a) => a.worked.map((x) => x.id) });
+  t('a PR the reviewer check holds has the thread resolved too', j([heldDone.find((a) => a.type === 'settle-worked')?.worked.map((x) => x.id)?.join(), heldDone.some((a) => a.type === 'gate-hold')]), j(['TH1', true]));
 }
 
 // A §4 Check builds check, built on its own: nothing is applied once the build starts.
@@ -199,17 +216,222 @@ t('tryLabel: a protected files try', tryLabel({ kind: 'protected', try: 1, of: 2
 t('tryLabel: an extra try', tryLabel({ kind: 'checks', extra: true }), 'extra fix try');
 t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
 
-// A check red on several ready PRs at once is said once, and each PR red only on it is held.
+// A deploy platform failing for every PR: one outage for the batch (decideOutage), its PRs held from
+// fix tries, re-run on one PR on a back-off, and cleared once a PR passes it.
 {
-  const G = { required: ['tests', 'Vercel Preview'], advisory: [] };
-  const three = [701, 702, 703].map((n) => [tk({ key: `O-${n}`, branch: `task/O-${n}` }), pr([ok('tests'), red('Vercel Preview')], { pr: n })]);
-  const as = drive(snap(three, { gate: G }), { reads: () => reads({ ctx: { required: G.required } }) });
-  const lines = as.filter((a) => a.type === 'out').map((a) => a.line);
-  t('outage: the pass says it once, naming the PRs', lines.filter((l) => l.includes('red on 3 ready PRs at once')).join('|'),
-    'fix tries: "Vercel Preview" is red on 3 ready PRs at once (#701, #702, #703), which reads as its platform failing, not their code: no fix try is spent on it, and nothing desk reruns turns it green; once the platform is back, redeploy there or push to the PRs');
-  t('outage: each PR is held as an outage, none requeued', applied(as).map((a) => `${a.key} ${a.call.call} ${a.call.label}`).join(), 'O-701 held OUTAGE,O-702 held OUTAGE,O-703 held OUTAGE');
-  const two = drive(snap(three.slice(0, 2), { gate: G }), { reads: () => reads({ ctx: { required: G.required } }) });
-  t('outage: on two PRs it is not one, and each gets its fix try', applied(two).map((a) => a.call.call).join(), 'requeue,requeue');
+  const G = { required: ['tests', 'Deploy preview'], advisory: [] };
+  const LINE = 'Error: The project is blocked by the platform, please retry later';
+  const T0 = Date.parse('2026-11-22T10:00:00Z');
+  const deploy = (n, o = {}) => ({ ...red('Deploy preview', String(900 + n)), errors: [o.line ?? LINE], ...o.check });
+  const entry = (n, checks, o = {}) => ({ t: tk({ key: `O-${n}`, branch: `task/O-${n}` }), s: pr(checks, { pr: n, ...o }) });
+  const three = [701, 702, 703].map((n) => entry(n, [ok('tests'), deploy(n)]));
+  const handlersFor = (answers) => Object.fromEntries(['out', 'report', 'outage-rerun', 'outage-hold', 'outage-held', 'set-batch'].map((type) => [type, (a) => (typeof answers[type] === 'function' ? answers[type](a) : answers[type])]));
+  const outage = (prs, o = {}, answers = {}) => {
+    const report = { failed: [] };
+    const as = runSteps({ name: 'outage', snapshot: () => ({ prs, gate: G, was: {}, now: T0, dry: false, rowErrors: [], ...o }), decide: decideOutage, handlers: handlersFor({ 'outage-rerun': { ok: true }, ...answers }), report });
+    if (report.failed.length) { fails++; console.log(`FAIL a handler was missing: ${j(report.failed)}`); }
+    return { as, held: as.find((a) => a.type === 'outage-held'), hold: as.find((a) => a.type === 'outage-hold')?.hold, reruns: as.filter((a) => a.type === 'outage-rerun') };
+  };
+  const fixes = (prs, o) => drive(snap(prs.map((e) => [e.t, e.s]), { gate: G, outage: o.held.held.size ? o.held.held : null, outageRerun: o.held.rerun }), { reads: () => reads({ ctx: { required: G.required } }) });
+
+  // #1250: 14 PRs red only on a review gate waiting for its reviewer are no outage: no hold, no OUTAGE line.
+  const GATED = { required: ['tests', '🔐 Review gate', 'desk-review verdict', 'Deploy preview'], advisory: [] };
+  const STATE = [{ name: '🔐 Review gate', kind: 'external', login: 'agent-pullbot' }];
+  const waits = (n) => ({ ...red('🔐 Review gate', String(1200 + n)), errors: [`No PullBot review from agent-pullbot at ${'a'.repeat(9)} yet`] });
+  const gated = Array.from({ length: 14 }, (_, i) => entry(800 + i, [ok('tests'), waits(800 + i)]));
+  const quiet = outage(gated, { gate: GATED, stateChecks: STATE });
+  t('#1250 14 PRs red only on a review gate waiting for its reviewer raise no outage', `${quiet.held?.held?.size ?? 0} ${j(quiet.hold ?? {})}`, '0 {}');
+  t('#1250 and the pass says no OUTAGE line', lines(quiet.as, 'report').filter((l) => /OUTAGE/.test(l)).length, 0);
+  const verdictWaits = Array.from({ length: 3 }, (_, i) => entry(830 + i, [ok('tests'), { ...red('desk-review verdict', String(1300 + i)), errors: ['No desk-review verdict on this PR. Run /desk-review and post it.'] }]));
+  t('#1250 nor does desk\'s own verdict check red on many PRs', outage(verdictWaits, { gate: GATED, stateChecks: STATE }).held?.held?.size ?? 0, 0);
+  const shared = [...gated.slice(0, 3).map((e, i) => entry(800 + i, [ok('tests'), waits(800 + i), deploy(800 + i)]))];
+  t('#1250 the same deploy error on a check that is no gate still raises the outage', j(outage(shared, { gate: GATED, stateChecks: STATE }).held?.held?.get('Deploy preview')?.prs), j([800, 801, 802]));
+
+  // AC1: the same check red on three PRs with one platform line: no fix try for any.
+  const first = outage(three);
+  t('AC1 the check is held for the batch, with its three PRs', j(first.held.held.get('Deploy preview')?.prs), j([701, 702, 703]));
+  t('AC1 no fix try is spent on it for any of them', applied(fixes(three, first)).map((a) => `${a.key} ${a.call.call} ${a.call.label}`).join(), 'O-701 held OUTAGE,O-702 held OUTAGE,O-703 held OUTAGE');
+  t('AC1 the hold is kept from the pass it began', j(first.hold), j({ 'Deploy preview': { line: 'error: the project is blocked by the platform, please retry later', text: LINE, prs: [701, 702, 703], since: '2026-11-22T10:00:00.000Z', reruns: [], seen: [701, 702, 703].map((n) => ({ pr: n, head: HEAD, run: String(900 + n) })) } }));
+  // #1327: a check a PR is held on as red on its base at its head is its base's, not a platform's: it neither starts nor joins a hold.
+  const baseHeld = (e) => ({ ...e, t: { ...e.t, base_red: { class: 'base red', head: HEAD, merge_base: 'm'.repeat(40), checks: [], cleared: ['Deploy preview'] } } });
+  const stale = outage([baseHeld(three[0]), baseHeld(three[1]), three[2]]);
+  t('#1327 two of three PRs red on it only as their base was: no outage hold, no OUTAGE line', `${stale.held?.held?.size ?? 0} ${lines(stale.as, 'report').filter((l) => /OUTAGE/.test(l)).length}`, '0 0');
+  t('#1327 the same PRs on another head are read as before', outage([{ ...baseHeld(three[0]), s: { ...three[0].s, head: 'f'.repeat(40) } }, baseHeld(three[1]), three[2]]).held?.held?.size ?? 0, 1);
+  // Red on it at their merge base, with no hold naming it, and green on the base since (staleOf): the same.
+  const staleOf = (tk, p, names) => ([701, 702].includes(p.pr) ? names.filter((n) => n === 'Deploy preview') : []);
+  t('#1327 two PRs red on it where their base was red, green since, start no hold', outage(three, { staleOf }).held?.held?.size ?? 0, 0);
+  const passed = [three[0], three[1], entry(703, [ok('tests'), ok('Deploy preview')])];
+  const staleClear = outage(passed, { staleOf, was: first.hold, now: T0 + 13 * 60 * 1000 });
+  t('#1327 as a hold they were in clears, their stale runs are not re-run', j(staleClear.reruns.map((a) => a.pr)), '[]');
+  t('#1327 nor are they owed a re-run, so their fix tries update them', j(staleClear.held?.rerun ?? []), '[]');
+  // AC2: one line, naming the check and the error line, and no STUCK line.
+  const said = lines(first.as, 'report');
+  t('AC2 the pass says it once, naming the check and the error line', said.length === 1 && said[0].startsWith(`OUTAGE — the deploy platform is failing for every PR: "Deploy preview" is red on 3 open PRs (#701, #702, #703) with the same error, "${LINE}", so no fix try is spent on it and none of them is stuck.`), true);
+  t('AC2 and says when the next re-run is', /next re-run on one PR whose run has completed is due at 10:12 UTC/.test(said[0]), true);
+  t('AC2 no rerun before the back-off has passed', first.reruns.length, 0);
+  // AC3: once the back-off has passed, the check is re-run on one PR whose run has completed.
+  const running = entry(701, [ok('tests'), deploy(701), { name: 'Build', status: 'in_progress', conclusion: null, runId: '1601' }]);
+  running.s.checks[1] = { ...running.s.checks[1], runId: '1601' };
+  const later = outage([running, ...three.slice(1)], { was: first.hold, now: T0 + 13 * 60 * 1000 });
+  t('AC3 after the gap, one PR is re-run, never one whose run is still in progress', j(later.reruns.map((a) => [a.pr, a.run])), j([[702, '1602']]));
+  t('AC3 the re-run is kept on the hold', j(later.hold['Deploy preview'].reruns.map((x) => [x.pr, x.ok])), j([[702, true]]));
+  const after = outage(three, { was: later.hold, now: T0 + 30 * 60 * 1000 });
+  t('AC3 the next waits twice as long after one that stayed red', after.reruns.length, 0);
+  t('AC3 then it is due again', outage(three, { was: later.hold, now: T0 + 38 * 60 * 1000 }).reruns.length, 1);
+  // While that re-run runs, the hold stays though only two PRs are red on it.
+  const probing = [entry(701, [ok('tests'), deploy(701)]), entry(702, [ok('tests'), { name: 'Deploy preview', status: 'in_progress', conclusion: null, runId: '1602' }]), entry(703, [ok('tests'), deploy(703)])];
+  const mid = outage(probing.filter((e) => e.s.pr !== 703), { was: later.hold, now: T0 + 14 * 60 * 1000 });
+  t('a hold whose re-run is still running stays, with one PR left red', j(mid.held.held.get('Deploy preview')?.prs), j([701]));
+  // So does one where another held PR's run of it is running, the merge driver's rerun and not the hold's.
+  const driven = [entry(701, [ok('tests'), deploy(701)]), entry(703, [ok('tests'), { name: 'Deploy preview', status: 'in_progress', conclusion: null, runId: '1603' }])];
+  const byDriver = outage(driven, { was: first.hold, now: T0 + 5 * 60 * 1000 });
+  t('a hold with a held PR re-running it under the driver stays, its start kept', j([byDriver.held.held.get('Deploy preview')?.prs, byDriver.hold?.['Deploy preview']?.since ?? first.hold['Deploy preview'].since, lines(byDriver.as).some((l) => l.includes('its hold is lifted'))]), j([[701], '2026-11-22T10:00:00.000Z', false]));
+  t('and the PR still red on it gets no fix try', applied(fixes(driven, byDriver)).map((a) => `${a.key} ${a.call.call}`).join(), 'O-701 held');
+  // AC4: that re-run goes green: the hold clears, and the other PRs' checks are re-run.
+  const green = [entry(701, [ok('tests'), deploy(701)]), entry(702, [ok('tests'), ok('Deploy preview')]), entry(703, [ok('tests'), deploy(703)])];
+  const cleared = outage(green, { was: later.hold, now: T0 + 20 * 60 * 1000 });
+  t('AC4 the hold clears', j([cleared.held.held.size, cleared.hold]), j([0, {}]));
+  t('AC4 the other PRs\' checks are re-run', j(cleared.reruns.map((a) => [a.pr, a.run])), j([[701, '1601'], [703, '1603']]));
+  t('AC4 the pass says so', lines(cleared.as).some((l) => l.startsWith('outage: "Deploy preview" passes on PR #702 again, so its platform is back and the hold is cleared: re-ran it on #701, #703')), true);
+  t('AC4 a PR re-run as it cleared waits for that run, with no fix try', applied(fixes(green, cleared)).length, 0);
+  // AC5: red on one PR only, it goes on as today.
+  const one = outage([three[0]]);
+  t('AC5 red on one PR there is no hold', j([one.held.held.size, one.reruns.length, lines(one.as, 'report').length]), j([0, 0, 0]));
+  t('AC5 and it gets its fix try as today', applied(fixes([three[0]], one)).map((a) => a.call.call).join(), 'requeue');
+  // AC6: red on several PRs with build-output lines that differ, each goes to its fix tries.
+  const differ = [entry(701, [ok('tests'), deploy(701, { line: 'Type error: x is not a string' })]), entry(702, [ok('tests'), deploy(702, { line: 'Module not found: y' })]), entry(703, [ok('tests'), deploy(703, { line: 'Lint failed: 4 problems' })])];
+  const dif = outage(differ);
+  t('AC6 lines that differ make no hold', dif.held.held.size, 0);
+  t('AC6 each PR goes to its fix tries', applied(fixes(differ, dif)).map((a) => a.call.call).join(), 'requeue,requeue,requeue');
+  // A hold no longer red as one, with no re-run running, is lifted.
+  const gone = outage([three[0]], { was: first.hold, now: T0 + 60 * 1000 });
+  t('a hold red on one PR alone, with nothing re-running, is lifted', j([gone.held.held.size, gone.hold, lines(gone.as).some((l) => l.includes('its hold is lifted'))]), j([0, {}, true]));
+  t('a dry run keeps no hold', outage(three, { dry: true }).hold, undefined);
+  // The hold keeps its own line while a PR is red with it, so those PRs are re-run as it clears.
+  const other = 'Error: Build queue timed out';
+  const shifted = [entry(701, [ok('tests'), deploy(701)]), entry(702, [ok('tests'), ok('Deploy preview')]), ...[703, 704, 705].map((n) => entry(n, [ok('tests'), deploy(n, { line: other })]))];
+  const kept = outage(shifted, { was: { 'Deploy preview': { ...first.hold['Deploy preview'], prs: [701, 702] } }, now: T0 + 20 * 60 * 1000 });
+  t('a hold cleared while more PRs are red with another line re-runs its own and theirs', j(kept.reruns.map((a) => a.pr)), j([701, 703, 704, 705]));
+  const both = outage(shifted.filter((e) => e.s.pr !== 702), { was: { 'Deploy preview': { ...first.hold['Deploy preview'], prs: [701, 702] } }, now: T0 + 5 * 60 * 1000 });
+  t('one PR still red with the hold\'s line and more with a new one: all of them are held', j(both.held.held.get('Deploy preview')?.prs), j([701, 703, 704, 705]));
+  // A re-run waiting on the preview build as the hold clears: the hold is kept, and that PR waits too.
+  const clearing = outage(green, { was: later.hold, now: T0 + 20 * 60 * 1000 }, { 'outage-rerun': (a) => (a.pr === 703 ? { ok: false, wait: true, why: 'waits on the preview build for o/r#701' } : { ok: true }) });
+  t('a re-run waiting on the preview build as it clears is kept as owed for the next pass', j([clearing.hold, clearing.held.rerun]), j([{ 'Deploy preview': { cleared: true, text: LINE, owed: [{ pr: 703, head: HEAD, run: '1603' }] } }, [701, 703]]));
+  t('and says so', lines(clearing.as).some((l) => l.includes('re-ran it on #701; #703 waits on the preview build, and a later pass re-runs it')), true);
+  t('neither gets a fix try this pass', applied(fixes(green, clearing)).length, 0);
+  // DS-853 fix try 2: the owed re-run is made though the PR that passed has merged since, and the PR
+  // waits for it rather than going to a fix try.
+  const merged = [entry(701, [ok('tests'), { name: 'Deploy preview', status: 'in_progress', conclusion: null, runId: '1601' }]), entry(703, [ok('tests'), deploy(703)])];
+  const paid = outage(merged, { was: clearing.hold, now: T0 + 25 * 60 * 1000 });
+  t('an owed re-run is made once the PR that passed has merged', j([paid.reruns.map((a) => [a.pr, a.run]), paid.hold, paid.held.rerun]), j([[[703, '1603']], {}, [703]]));
+  t('and says so', lines(paid.as).some((l) => l === 'outage: "Deploy preview"\'s platform is back, and the re-run its hold owed PR #703 is made now'), true);
+  t('and that PR gets no fix try this pass', applied(fixes(merged, paid)).length, 0);
+  const again = outage(merged, { was: clearing.hold, now: T0 + 25 * 60 * 1000 }, { 'outage-rerun': { ok: false, wait: true, why: 'waits on the preview build for o/r#9' } });
+  // Unchanged, the kept hold is not rewritten: it stays owed as the file holds it.
+  t('an owed re-run that waits again stays owed', j([again.hold, again.held.rerun, again.reruns.length]), j([undefined, [703], 1]));
+  const gotGreen = outage([entry(703, [ok('tests'), ok('Deploy preview')])], { was: clearing.hold, now: T0 + 25 * 60 * 1000 });
+  t('an owed re-run on a PR now green is dropped, with nothing re-run', j([gotGreen.reruns.length, gotGreen.hold, gotGreen.held.rerun]), j([0, {}, []]));
+  const pushed = outage([entry(703, [ok('tests'), deploy(703)], { head: 'f'.repeat(40) })], { was: clearing.hold, now: T0 + 25 * 60 * 1000 });
+  t('one on a PR pushed to since is dropped: its new head\'s runs are its own', j([pushed.reruns.length, pushed.hold]), j([0, {}]));
+  // A PR whose status could not be read this pass keeps its debt; one the pass read as gone drops it.
+  const unread = outage([merged[0]], { was: clearing.hold, now: T0 + 25 * 60 * 1000, unread: new Set([703]) });
+  t('an owed re-run on a PR not read this pass is kept', j([unread.reruns.length, unread.hold]), j([0, undefined]));
+  const closed = outage([merged[0]], { was: clearing.hold, now: T0 + 25 * 60 * 1000, unread: new Set() });
+  t('one on a PR read as merged or closed is dropped', j([closed.reruns.length, closed.hold]), j([0, {}]));
+  // A newer run of the check at the same head (a reopen's) is its own: the debt is dropped, not re-run.
+  const replaced = outage([entry(703, [ok('tests'), deploy(703, { check: { runId: '2603' }, line: 'src/app.ts:12 Type error' })])], { was: clearing.hold, now: T0 + 25 * 60 * 1000 });
+  t('an owed re-run whose run a newer one replaced is dropped, with nothing re-run', j([replaced.reruns.length, replaced.hold]), j([0, {}]));
+  // A same-name check of another kind (a status that passed) is not the run owed: the debt stands.
+  const sameName = outage([entry(703, [ok('tests'), { name: 'Deploy preview', status: 'completed', conclusion: 'success', runId: null, workflow: null }, deploy(703, { check: { workflow: 'Deploy' } })])], { was: clearing.hold, now: T0 + 25 * 60 * 1000 });
+  t('an owed re-run is matched on its run, not a same-name status that passed', j(sameName.reruns.map((a) => [a.pr, a.run])), j([[703, '1603']]));
+  // A held PR the pass could not read as the hold clears is owed its re-run of the run last seen red.
+  const clearUnread = outage([green[0], green[1]], { was: later.hold, now: T0 + 20 * 60 * 1000, unread: new Set([703]) });
+  t('a held PR not read as the hold clears is owed its last red run', j(clearUnread.hold?.['Deploy preview']?.owed), j([{ pr: 703, head: HEAD, run: '1603' }]));
+  const readAgain = outage([entry(703, [ok('tests'), deploy(703)])], { was: clearUnread.hold, now: T0 + 25 * 60 * 1000 });
+  t('and is re-run once it is read again, red on that run', j(readAgain.reruns.map((a) => [a.pr, a.run])), j([[703, '1603']]));
+  // PRs owed a re-run are not counted toward a new outage: their red runs are the cleared one's.
+  const bothWait = outage(green, { was: later.hold, now: T0 + 20 * 60 * 1000 }, { 'outage-rerun': { ok: false, wait: true, why: 'waits on the preview build for o/r#9' } });
+  const twoOwed = outage([entry(701, [ok('tests'), deploy(701)]), entry(703, [ok('tests'), deploy(703)])], { was: bothWait.hold, now: T0 + 25 * 60 * 1000 });
+  t('two PRs owed a re-run make no new outage, and both are re-run', j([twoOwed.held.held.size, twoOwed.reruns.map((a) => a.pr), twoOwed.hold, lines(twoOwed.as, 'report').length]), j([0, [701, 703], {}, 0]));
+  // A PR whose run is still going as the hold clears (another job of it running) is owed its re-run too.
+  const going = entry(703, [ok('tests'), deploy(703), { name: 'Build', status: 'in_progress', conclusion: null, runId: '1603' }]);
+  const unfinished = outage([green[0], green[1], going], { was: later.hold, now: T0 + 20 * 60 * 1000 });
+  t('a PR whose run is still going as it clears is owed its re-run, not re-run yet', j([unfinished.reruns.map((a) => a.pr), unfinished.hold, [...unfinished.held.rerun].sort()]), j([[701], { 'Deploy preview': { cleared: true, text: LINE, owed: [{ pr: 703, head: HEAD, run: '1603' }] } }, [701, 703]]));
+  t('and the pass says a later pass re-runs it', lines(unfinished.as).some((l) => l.includes('re-ran it on #701; #703 has a run still going, and a later pass re-runs it')), true);
+  const still = outage([going], { was: unfinished.hold, now: T0 + 22 * 60 * 1000 });
+  t('while that run goes on, it stays owed, with no fix try', j([still.reruns.length, still.hold, still.held.rerun]), j([0, undefined, [703]]));
+  const done = outage([entry(703, [ok('tests'), deploy(703)])], { was: unfinished.hold, now: T0 + 25 * 60 * 1000 });
+  t('once that run completes red, the next pass re-runs it', j([done.reruns.map((a) => [a.pr, a.run]), done.hold]), j([[[703, '1603']], {}]));
+  // DS-853 fix try 3: an owed run is found among the checks as stored (no `workflow`), though another
+  // workflow's check of the same name is newer, passed or red.
+  const otherWf = (conclusion) => outage([entry(703, [ok('tests'), deploy(703), { name: 'Deploy preview', status: 'completed', conclusion, runId: '2703' }])], { was: unfinished.hold, now: T0 + 25 * 60 * 1000 });
+  t('an owed run is re-run though another workflow\'s same-name check passed since', j(otherWf('success').reruns.map((a) => [a.pr, a.run])), j([[703, '1603']]));
+  t('and though another workflow\'s same-name check is red and newer', j(otherWf('failure').reruns.map((a) => [a.pr, a.run])), j([[703, '1603']]));
+  t('the owed run passing on its own drops the debt, whatever the other workflow reads', j(outage([entry(703, [ok('tests'), { ...ok('Deploy preview'), runId: '1603' }, { ...red('Deploy preview', '2703'), errors: ['src/a.ts:1 x'] }])], { was: unfinished.hold, now: T0 + 25 * 60 * 1000 }).reruns.length), j(0));
+  // A held PR whose run is going again (re-run) keeps its `seen` entry, so a clearing on a pass that
+  // cannot read it still owes it that run.
+  const rerunning = entry(703, [ok('tests'), { name: 'Deploy preview', status: 'in_progress', conclusion: null, runId: '1603' }]);
+  const reGoing = outage([three[0], three[1], rerunning], { was: first.hold, now: T0 + 5 * 60 * 1000 });
+  // Its seen entry kept, the hold is unchanged, so it is not rewritten.
+  t('a held PR re-running its red run keeps its seen entry', j([reGoing.hold, first.hold['Deploy preview'].seen.find((x) => x.pr === 703)]), j([undefined, { pr: 703, head: HEAD, run: '1603' }]));
+  const reHold = reGoing.hold ?? first.hold;
+  const clearsUnread = outage([green[0], green[1]], { was: reHold, now: T0 + 20 * 60 * 1000, unread: new Set([703]) });
+  t('so the hold clearing while it is unread owes it that run', j(clearsUnread.hold?.['Deploy preview']?.owed), j([{ pr: 703, head: HEAD, run: '1603' }]));
+  t('and once read red on that run it is re-run', j(outage([entry(703, [ok('tests'), deploy(703)])], { was: clearsUnread.hold, now: T0 + 25 * 60 * 1000 }).reruns.map((a) => [a.pr, a.run])), j([[703, '1603']]));
+  const clearsGoing = outage([green[0], green[1], rerunning], { was: reHold, now: T0 + 20 * 60 * 1000 });
+  t('a hold clearing while that run is still going owes it too, with no fix try', j([clearsGoing.hold?.['Deploy preview']?.owed, clearsGoing.held.rerun.includes(703)]), j([[{ pr: 703, head: HEAD, run: '1603' }], true]));
+  // A two-PR hold with one PR not read this pass is not lifted: it stays until that PR is read, so the
+  // other PR is still re-run once the unread one reads green.
+  const pair = outage([three[0], three[1]]);
+  const halfRead = outage([three[0]], { was: pair.hold, now: T0 + 5 * 60 * 1000, unread: new Set([702]) });
+  t('a hold with a held PR not read this pass is not lifted, and its other PR stays held', j([lines(halfRead.as).some((l) => l.includes('its hold is lifted')), halfRead.held.held.get('Deploy preview')?.prs, (halfRead.hold ?? pair.hold)['Deploy preview']?.seen?.map((x) => x.pr)]), j([false, [701], [701, 702]]));
+  const pairBack = outage([three[0], entry(702, [ok('tests'), ok('Deploy preview')])], { was: halfRead.hold ?? pair.hold, now: T0 + 10 * 60 * 1000 });
+  t('so once that PR reads green, the hold clears and the other PR is re-run', j(pairBack.reruns.map((a) => [a.pr, a.run])), j([[701, '1601']]));
+  // A held PR the pass did not try to read (its ticket left the queue) is gone, not unread: the hold
+  // lifts, and the PR left red on it goes to its fix tries.
+  const dropped1 = outage([three[0]], { was: pair.hold, now: T0 + 5 * 60 * 1000, unread: new Set() });
+  t('a hold whose other PR left the queue is lifted', j([lines(dropped1.as).some((l) => l.includes('its hold is lifted')), dropped1.hold, dropped1.held.held.size]), j([true, {}, 0]));
+  t('and the PR left red on it gets its fix try', applied(fixes([three[0]], dropped1)).map((a) => a.call.call).join(), 'requeue');
+  t('a seen entry at an old head is not kept', outage([three[0], three[1], entry(703, [ok('tests'), { name: 'Deploy preview', status: 'in_progress', conclusion: null, runId: '1603' }], { head: 'f'.repeat(40) })], { was: first.hold, now: T0 + 5 * 60 * 1000 }).hold?.['Deploy preview']?.seen?.some((x) => x.pr === 703), false);
+  // A stuck record naming a held check drops it, whatever the PR's route this pass.
+  const stuckT = tk({ key: 'O-701', branch: 'task/O-701', stuck: { why: 'x', pr: 701, head: HEAD, lead: 'still red after 2 tries', checks: [{ name: 'Lint' }, { name: 'Deploy preview' }] } });
+  const dropped = drive(snap([[stuckT, three[0].s]], { gate: G, outage: first.held.held, outageRerun: [] }), { reads: () => reads({ ctx: { required: G.required } }) });
+  t('a stuck record naming a check the outage now holds drops it', dropped.filter((a) => a.type === 'set').map((a) => a.fields.join()).join(), `stuck=${j({ ...stuckT.stuck, checks: [{ name: 'Lint' }], why: 'still red after 2 tries: Lint' })}`);
+  // A re-run waiting on the preview build another PR holds is no re-run tried: the back-off does not grow.
+  const leased = outage(three, { was: first.hold, now: T0 + 13 * 60 * 1000 }, { 'outage-rerun': { ok: false, wait: true, why: 'waits on the preview build for o/r#9' } });
+  t('a re-run waiting on the preview build is not counted', j([leased.reruns.length, leased.hold]), j([1, undefined]));
+  t('and the pass says it waits', lines(leased.as, 'report')[0]?.includes('It waits on the preview build before its re-run on PR #701'), true);
+
+  // DS-904: the outage as the batch's one record (the queue's platform_outage), from fixture check runs.
+  const recordOf = (o) => {
+    const f = o.as.filter((a) => a.type === 'set-batch').flatMap((a) => a.fields).find((x) => x.startsWith('platform_outage='));
+    return f === undefined ? undefined : JSON.parse(f.slice('platform_outage='.length));
+  };
+  const rec = recordOf(first);
+  t('DS-904 AC1 the same check red on every open PR with a run of it records one outage for the batch', j(rec), j({ check: '"Deploy preview"', since: '2026-11-22T10:00:00.000Z', deadline: '2026-11-22T12:00:00.000Z' }));
+  t('DS-904 AC1 written once, as one batch field, on no ticket', j([first.as.filter((a) => a.type === 'set-batch').length, first.as.filter((a) => a.type === 'set').length]), '[1,0]');
+  const passing = [...three.slice(0, 2), entry(703, [ok('tests'), ok('Deploy preview')])];
+  const notAll = outage(passing);
+  t('DS-904 AC1 a check another open PR passes is no outage: nothing held or recorded', j([notAll.held.held.size, recordOf(notAll) ?? null]), '[0,null]');
+  t('DS-904 AC1 and each PR red on it gets its own fix try', applied(fixes(passing, notAll)).map((a) => `${a.key} ${a.call.call}`).join(), 'O-701 requeue,O-702 requeue');
+  t('DS-904 AC1 a pair is enough, where no other open PR has a run of it', j(recordOf(outage([...three.slice(0, 2), entry(703, [ok('tests')])]))?.check), j('"Deploy preview"'));
+  const lasting = outage(three, { was: first.hold, recorded: rec, now: T0 + 30 * 60 * 1000 });
+  t('DS-904 AC2 with the outage recorded, a later pass writes nothing more to the batch', recordOf(lasting), undefined);
+  t('DS-904 AC2 and no fix try is spent on that check for any PR', applied(fixes(three, lasting)).map((a) => `${a.key} ${a.call.call} ${a.call.label}`).join(), 'O-701 held OUTAGE,O-702 held OUTAGE,O-703 held OUTAGE');
+  const late = outage(three, { was: first.hold, recorded: rec, now: T0 + 125 * 60 * 1000, base: 'main' });
+  const esc = recordOf(late);
+  t('DS-904 AC3 past its deadline it is escalated once to the person, saying how long it has lasted',
+    lines(late.as, 'report').filter((l) => l.startsWith('main: PLATFORM OUTAGE — ')).map((l) => /^main: PLATFORM OUTAGE — "Deploy preview" has been red on every open PR with a run of it for 125 minutes, since 2026-11-22T10:00:00.000Z, past its 120-minute deadline/.test(l)).join(), 'true');
+  t('DS-904 AC3 and the escalation is recorded', esc?.escalated, '2026-11-22T12:05:00.000Z');
+  t('DS-904 AC3 a later pass does not escalate it again', recordOf(outage(three, { was: first.hold, recorded: esc, now: T0 + 130 * 60 * 1000, base: 'main' })), undefined);
+  const back = outage(green, { was: later.hold, recorded: esc, now: T0 + 135 * 60 * 1000 });
+  t('DS-904 AC4 a PR\'s run of it going green clears the outage', j(back.as.filter((a) => a.type === 'set-batch').map((a) => a.fields)), j([['platform_outage=null']]));
+  t('DS-904 AC4 and fix tries resume for that check', back.held.held.size, 0);
+  const elsewhere = outage([...three.slice(0, 2), entry(704, [ok('tests'), ok('Deploy preview')])], { was: first.hold, recorded: rec, now: T0 + 20 * 60 * 1000 });
+  t('DS-904 AC4 so does a run of it passing on an open PR it never held, re-running the others', j([recordOf(elsewhere), elsewhere.held.held.size, elsewhere.reruns.map((a) => a.pr)]), j([null, 0, [701, 702]]));
+  const lone = outage([three[0]], { recorded: null });
+  t('DS-904 AC5 a check red on one PR only records nothing, and is that PR\'s', j([recordOf(lone) ?? null, applied(fixes([three[0]], lone)).map((a) => a.call.call).join()]), '[null,"requeue"]');
+  t('DS-904 a dry run records nothing', recordOf(outage(three, { dry: true })), undefined);
 }
 
 if (fails) { console.log(`${fails} failure(s)`); process.exit(1); }

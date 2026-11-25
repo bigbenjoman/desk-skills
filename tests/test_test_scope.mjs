@@ -1,4 +1,5 @@
 // suite: worker test scope and the memory status line
+// layer: L2
 // claims: imports (repo file names below are test data, not what this suite runs)
 // What a worker tests before pushing (related tests, or the full suites when a change reaches past the
 // import graph), and the `desk-env mem status` line. Scratch repos only.

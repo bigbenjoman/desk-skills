@@ -13,6 +13,7 @@ import { basename, dirname, join } from 'node:path';
 import { writeJsonAtomic } from './dir-lock.mjs';
 import { followOnPending, postMergeUnmade } from './harvest.mjs';
 import { ledgerOn, missedLine, recordWrite } from './queue-ledger.mjs';
+import { blockersOf, holdsLaid } from './queue-states.mjs';
 
 export const versionOf = (q) => {
   const n = Number(q?.version);
@@ -20,13 +21,15 @@ export const versionOf = (q) => {
 };
 
 // Writes queue `q` to `file` as the version after the one it was read as. -> the version written.
-// With the ledger lever on, it then appends to the ticket ledger what the write changed from the file
-// it replaced (queue-ledger.mjs recordWrite), naming `by` as the writer; `archived` holds the tickets
+// With the ledger lever on, each ticket's blockers are laid beside its held_by as the list `holds`
+// (queue-states.mjs holdsLaid), and the write then appends to the ticket ledger what it changed from
+// the file it replaced (queue-ledger.mjs recordWrite), naming `by` as the writer; `archived` holds the tickets
 // the write moved to the archive. `onLedger(result)` hears the append's outcome; by default a missed
 // append is printed to stderr. `record: false` is a writer that records its write itself (move-batch).
 export function writeQueueFile(file, q, { by, archived, record = true, onLedger = reportMissed(file) } = {}) {
   const on = record && ledgerOn();
   const before = on ? readQueueAt(file) : null;
+  if (on) holdsLaid(q);
   q.version = versionOf(q) + 1;
   writeJsonAtomic(file, q);
   if (on) onLedger(recordWrite(file, before, q, { by, archived }));
@@ -85,11 +88,36 @@ export const isArchived = (q, key) => !!q?.tickets && !Object.hasOwn(q.tickets, 
 
 // Whether ticket `t`'s own PR (result.pr) was last read closed unmerged.
 export const prClosed = (t) => t?.result?.pr != null && Number(t.pr_status?.pr) === Number(t.result.pr) && t.pr_status?.state === 'CLOSED';
-// Whether ticket `t`'s own PR (result.pr) was closed by the pass to restart its CI and is still owed
-// its reopen (`reopening` names that PR). A marker naming an earlier PR owes nothing.
-export const owesReopen = (t) => t?.reopening != null && t?.result?.pr != null && String(t.reopening) === String(t.result.pr);
+// Ticket t owes its PR a reopen: the pass closed it to start its CI and has still to reopen it
+// (`reopening` names the ticket's own PR; a marker naming an earlier PR owes nothing). A PR recorded
+// merged (needs-you's done can record it before any pass reads it again) has nothing left to reopen,
+// whatever `reopening` still says.
+export const owesReopen = (t) => t?.reopening != null && t?.result?.pr != null && String(t.reopening) === String(t.result.pr)
+  && !(String(t.pr_status?.pr) === String(t.result.pr) && t.pr_status?.state === 'MERGED');
 
-const HOLD_FIELDS = ['held_by', 'held_outside', 'merge_after'];
+// The PRs a ticket's spawns kept (merged_pr, pass.mjs keepMergedPr) as { pr, url }. A kept bare number was
+// kept with no url, so no status named another repo's PR of it: it is this repo's (url null), never given
+// the url of a PR status that may now name another repo's PR of its number.
+export const mergedPrs = (t) => [].concat(t?.merged_pr ?? []).filter((x) => x != null)
+  .map((x) => (typeof x === 'object' ? { pr: Number(x.pr), url: x.url ?? null } : { pr: Number(x), url: null }));
+
+// A PR ticket t recorded, n, as { pr, url }: url is the one its PR status gave it, where the status names it,
+// else null.
+export const recordedPr = (t, n) => ({ pr: Number(n), url: t?.pr_status?.pr != null && Number(t.pr_status.pr) === Number(n) ? t.pr_status.url ?? null : null });
+
+// The merged_pr a ticket keeps once its PR has merged (merged_at) and it goes round again: every PR it kept
+// (mergedPrs) with its current one (result.pr, as recordedPr gives it) folded in, as { pr, url } where its
+// PR status names that PR and as the bare number where nothing gave it a url. Two entries are one PR when
+// keyOf gives them one key: by default the same number and url; pass.mjs keepMergedPr passes its repo-aware
+// key. null where there is no merge or no PR to keep. Both a spawn (pass.mjs keepMergedPr) and a requeue
+// (queue.mjs) keep it this way.
+export function keepPrs(t, keyOf = (x) => `${x.url ?? ''}#${x.pr}`) {
+  if (!t?.merged_at || t.result?.pr == null) return null;
+  const kept = new Map([...mergedPrs(t), recordedPr(t, t.result.pr)].map((x) => [keyOf(x), x]));
+  return [...kept.values()].map((x) => (x.url ? x : x.pr));
+}
+
+const HOLD_FIELDS = ['held_outside', 'merge_after'];
 export const keys = (v) => String(v ?? '').split('|').filter(Boolean);
 
 // Whether ticket `key` of queue `q` moves to the archive: done, with its PR merged (recorded by
@@ -100,15 +128,24 @@ export function archivable(q, key) {
   if (q.base || q.epic || q.feature === true) return false;
   const t = q.tickets[key];
   if (t?.state !== 'done' || t.result?.pr == null || followOnPending(t)) return false;
+  const own = Number(t.pr_status?.pr) === Number(t.result.pr) ? t.pr_status : null;
   const closed = prClosed(t);
-  if (!t.merged_at && !closed) return false;
-  // A PR the pass closed to reopen for its CI is not closed for good: archived, the reopen is never retried.
-  if (closed && owesReopen(t)) return false;
+  // merged_at stays from an earlier PR once a ticket is requeued (batch-state.mjs ownPr), so it archives
+  // the ticket only while its current PR is read and not open, or, with no PR status read at all, while no
+  // spawn kept an earlier PR the current one is not among. A status naming another PR leaves the current
+  // one unread: the ticket stays live until a pass reads it.
+  const kept = mergedPrs(t).map((x) => x.pr);
+  const merged = !!t.merged_at && (own ? own.state !== 'OPEN'
+    : t.pr_status?.pr == null && (!kept.length || kept.includes(Number(t.result.pr))));
+  if (!merged && !closed) return false;
+  // A PR the pass still owes a reopen (its retry was refused) is kept whatever its stored state, which a
+  // failed reopen leaves as last read (OPEN): the next pass retries it.
+  if (owesReopen(t)) return false;
   // A merged PR's criteria its review left for after the merge that the pass has not made follow-on
   // steps yet: an append it skipped is owed to the next pass, so the ticket stays.
   if (!closed && postMergeUnmade(t)) return false;
   if ([q.batch, q.spine, q.epic].includes(key)) return false;
-  return !Object.values(q.tickets).some((o) => o?.key !== key && HOLD_FIELDS.some((f) => keys(o?.[f]).includes(key)));
+  return !Object.values(q.tickets).some((o) => o?.key !== key && (blockersOf(o).includes(key) || HOLD_FIELDS.some((f) => keys(o?.[f]).includes(key))));
 }
 
 // Moves every archivable ticket of `q` (read from `file`, its lock held) into the archive, which is

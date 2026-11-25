@@ -66,8 +66,10 @@ to the user's number.
 the test lock machine-wide (`with-lock.sh test` and `tsc`, from every repo and session), and the runs
 holding or waiting by repo: a run is a repo's when it works in that repo's main checkout or worktrees
 directory, and runs in no configured repo count as one, `other`. Repos are named as desk-q names them,
-so two of one name under different owners are two. The hold point is the machine profile's
-`test-lock-slots` × `test-lock-queue-factor` (1 × 2 with no profile). At or over it, each repo with a
+so two of one name under different owners are two. A repo whose §4 Suite weight is light is read
+against the light lock's queue (`with-lock.sh light`) as well, each queue against its own hold point,
+and the tighter binds; a heavy repo is never held by the light queue. A pool's hold point is its
+current slots (its floor plus the runs headroom admission let in above it) × `test-lock-queue-factor` (1 × 2 with no profile). At or over it, each repo with a
 run on the lock, this one always counted, gets a share of ceil(hold / active repos), and the pass starts
 at most its share less its own runs; below it, at most the hold less the runs waiting. That room covers
 new local workers, fix tries, handoffs to 4b, resumes of a worker or a requeued round last at Stage 4
@@ -146,7 +148,12 @@ harm-tmpfs`, `desk-env get harm-vmmem`); unset, they are the figures below:
 - `WORKER-OOM`: a worker's log, since the watch started, shows Node's `JavaScript heap out of memory`
   or a command killed with exit 137; the line names the ticket. Drop to the ladder's lowest count.
 - `TMPFS-HIGH` (Linux): `/tmp` is a tmpfs holding 2 GiB or more. Memory pressure pushes it to swap,
-  which looks like a leak and is not one: see what holds it before lowering anything.
+  which looks like a leak and is not one: see what holds it before lowering anything. While it holds,
+  each pass names the largest entries in `/tmp` and clears the regenerable caches no process has open
+  (`jest_*`, `node-compile-cache`, `v8-compile-cache-*`, turbo and vite caches, and `cdk.out*` unchanged
+  for an hour), saying what it freed. It holds spawns only while `/tmp` is still over the line, and then
+  one needs-you ask names what is left. Workers keep these caches out of `/tmp` to begin with: their
+  Node compile cache, Jest cache and test runs' temporary folders sit in `DESK_CACHE_DIR`, on disk.
 - `VMMEM-HIGH` (WSL): the VM holds 90% or more of its `.wslconfig` grant, past which it can only
   swap. Hold new spawns until it falls.
 - `OOM-UNKNOWN`, once: `dmesg` cannot be read here (`kernel.dmesg_restrict`), so OOM kills go
@@ -160,8 +167,9 @@ kind `off` the pass reads no harm signal and judges memory by the ladder alone. 
 the count when you lower it. On macOS only `WORKER-OOM` is read.
 
 **Memory is reserved from the machine's ceiling as leases**, where the machine profile sets
-`memory-ceiling-gb`. Each worker a pass starts reserves its share (that ceiling over the cap of §3b
-"Autopilot worker concurrency", at least 1 GiB), held by the worker's process and returned when it
+`memory-ceiling-gb`. Each worker a pass starts reserves its share (that ceiling over the profile's
+`autopilot-concurrency` cap, or over the cap of §3b "Autopilot worker concurrency" where the profile
+sets none, at least 1 GiB), held by the worker's process and returned when it
 exits. Before a heavy run of your own (a full suite, a build), reserve for it so every pass counts
 it: `desk-env lease acquire mem <what for> --units <GiB> --owner claude --ttl <seconds>`, which
 your session holds until it exits or twice the TTL passes unrenewed, and `desk-env lease release <id> --pid <the owner pid desk-env

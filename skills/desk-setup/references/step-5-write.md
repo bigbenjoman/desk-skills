@@ -58,6 +58,10 @@ still TODO: <rows>
 The `git / PR` line goes on with the GitHub issue rows: `close-linked-issue <a> · issue-create <a> ·
 issue-comment <a>`.
 
+Started from another repo (step 2's *Starting from another repo*), add one line under the block:
+`copied yes: <key> · <key> … (from <owner/name>)`, naming every §3 and §3b row written `yes` from the
+start-point table without being asked one by one, or `none`.
+
 Every row appears, including the `no`s. Then say how to change it: re-run `/desk-setup` in this
 repo, `/desk-setup permissions`, or edit the file. No reinstall needed. Other repos are untouched.
 

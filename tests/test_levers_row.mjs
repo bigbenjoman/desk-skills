@@ -1,4 +1,5 @@
 // suite: desk-env levers (the levers row's auto, pins and none; the machine-wide freeze; the row's changes logged)
+// layer: L2
 // covers: desk/bin/desk-env.mjs desk/bin/lever-log.mjs desk/bin/lever-pin.mjs desk/bin/lever-changes.mjs desk/bin/queue.mjs desk-config.md
 // `desk-env levers` says where each lever's state comes from, refuses `none` beside another name,
 // sets and clears ~/.desk-autopilot/levers.freeze and logs it in every repo's lever log, and logs a
@@ -92,7 +93,7 @@ t('AC1 every other lever is auto', others(r, 'preflight'), ['auto']);
 t('AC1 only the pin is on', lines(r)[0], 'on: preflight');
 const autoPin = admitPin();
 t('AC2 a ticket admitted under auto preflight is pinned with preflight on, outside any trial', [autoPin?.set.includes('preflight'), Object.hasOwn(autoPin?.arms ?? {}, 'preflight')], [true, false]);
-t('AC2 and only the levers auto hands to trials draw arms', Object.keys(autoPin?.arms ?? {}).sort(), ['codex', 'effort', 'failure-class', 'memory', 'review-reuse', 'wrappers']);
+t('AC2 and only the levers auto hands to trials draw arms', Object.keys(autoPin?.arms ?? {}).sort(), ['codex', 'effort', 'failure-class', 'finder-model', 'memory', 'review-reuse', 'wrappers']);
 
 // ---- AC3: none --------------------------------------------------------------------------------------
 setRow('`none`');
@@ -207,7 +208,7 @@ setRow('`preflight auto`');
 r = run([]);
 const summary = (x) => lines(x).filter((l) => l.startsWith('levers: '));
 // The quality-risk levers are on trial from the start too, with no ticket drawn yet.
-const QR_TRIALS = ' · codex trial 0/40 · review-reuse trial 0/40 · effort trial 0/40';
+const QR_TRIALS = ' · codex trial 0/40 · review-reuse trial 0/40 · effort trial 0/40 · finder-model trial 0/40';
 t('DS-644 AC6 the summary line reads each managed lever\'s state', summary(r), [`levers: preflight pinned · wrappers adopted (holdback 23) · memory trial 31/30${QR_TRIALS}`]);
 t('DS-644 AC6 and is the last line', [lines(r).at(-1), r.status], [`levers: preflight pinned · wrappers adopted (holdback 23) · memory trial 31/30${QR_TRIALS}`, 0]);
 appendFileSync(join(HOME, '.desk-autopilot', 'acme__widgets', 'levers.jsonl'), `${JSON.stringify(ev({ id: 'w-over', at: ago(1), kind: 'override', lever: 'wrappers', from: 'adopted', to: 'overridden', value: 'off', actor: 'ben', reason_code: 'ben_override', reason: 'off by hand', decision_id: 'd1' }))}\n`);

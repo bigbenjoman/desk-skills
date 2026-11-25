@@ -1,4 +1,5 @@
 // suite: desk-ci profile (light and full jobs, the batch-base plan, the saving)
+// layer: L2
 // desk-ci.mjs profile on fixture workflows: a job that needs a database, preview or browser is full
 // and cites its line, a job that needs a full one is full too, the plan gates each full job on PRs
 // into the default branch and writes nothing, a required check only a full job reports is flagged,

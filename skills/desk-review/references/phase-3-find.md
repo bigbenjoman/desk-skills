@@ -12,12 +12,14 @@ directory.
 Send every finder, Bea (Phase 5) and the codex cold finder (below) in one message so they run in
 parallel; cap ~12 in flight on a sweep.
 
-**In an autopilot worker, the finders' model is config §3b Worker models' finder model.** Run
-`desk-env model finder` before dispatching. It prints a model: launch every Claude finder (the
-routed finders and the simplicity finder) with that model as the Agent tool's model override, and
-the report header's first line ends `· finders on <model>`. It prints `none`: there is none, so pass
-no override and each finder runs on the model it always has (its agent file's `model:`, else yours).
-Bea, the refuters and codex keep their own models either way. Outside a worker the row does not apply.
+**In an autopilot worker, the finders' model is config §3b Worker models' finder model**, or, on a
+ticket whose arms have the `finder-model` lever on, that lever's alias. Run
+`desk-env model finder` before dispatching. It prints a model: launch every routed Claude finder
+with that model as the Agent tool's model override, and the report header's first line ends
+`· finders on <model>`. It prints `none`: there is none, so pass no override and each finder runs on
+the model it always has (its agent file's `model:`, else yours). The simplicity finder takes
+`desk-env model finder --row` the same way: the row's model, which the lever never moves. Bea, the
+refuters and codex keep their own models either way. Outside a worker the row does not apply.
 
 Each Claude prompt carries what the core's *Every seat's prompt* lists, in that order, and answers
 in its `FINDING` format. Every seat, codex included, ends its answer, after its blocks or
@@ -25,6 +27,15 @@ in its `FINDING` format. Every seat, codex included, ends its answer, after its 
 the diff's included. They make the results file's `rests_on` (the core's *The verdict*).
 Every Claude finder's prompt, the simplicity finder's included, then carries the paragraph under
 *Tracing a server-set value* (below), word for word; codex's brief carries it too.
+
+**Learned checks.** `review-bar.learned.md`, at the path `node ~/.claude/desk/bin/review-misses.mjs`
+prints first (the repo's state, never a batch's `DESK_STATE`), holds
+checks learned from what the outside gate reviewer found after desk's clean verdict on merged PRs:
+one line per kind of miss seen on two PRs or more, each citing those PRs. Where it exists, every
+seat's prompt and codex's brief carry it verbatim, straight after the bar and §4 review-asks.
+**It only adds checks**: a finding it prompts is classed and counted by the bar like any other, and
+nothing in it removes, softens or reclassifies a rule of the bar or the review-asks. Where a line
+seems to, the bar wins. The report header then adds `· learned: <n> checks`.
 
 **A seat that dies is partial coverage, never a clean seat.** A finder, Bea, the simplicity finder or
 codex that errors, times out, or answers with neither `FINDING` blocks nor `NO FINDINGS`: re-run it

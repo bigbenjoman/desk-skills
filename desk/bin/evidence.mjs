@@ -12,12 +12,14 @@
 // The run is read back by its id (gh workflow run prints the run's URL). A run whose id was not
 // printed is read as done once DISPATCH_GRACE_MS has passed, so its cells go on from then as any left
 // by a finished run do (undraft.mjs undraftCall).
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SCREENSHOT_FILE, expandHome, configValue, configValues, ghRepo, permission, CODE_SPAN as SPAN } from './desk-env.mjs';
+import { SCREENSHOT_FILE, expandHome, configValue, configValues, ghRepo, permission, stateDir, CODE_SPAN as SPAN } from './desk-env.mjs';
+import { evidenceHold } from './preview-db.mjs';
 import { failureLines } from './gate.mjs';
+import { isPrNumber, ownOpenPrRefusal, readPrView } from './own-pr.mjs';
 
 export const DISPATCH_GRACE_MS = 30 * 60 * 1000;
 
@@ -253,17 +255,18 @@ export const evidenceRunArgs = (workflow, repo, ref, n) => ['workflow', 'run', w
 //   node evidence.mjs dispatch <branch> <pr>
 //
 // `view` is gh pr view's { headRefName, state, isCrossRepository } for the PR, or null when it could
-// not be read. -> { args } for `gh`, or { refused } saying why.
-export function dispatchCall({ argv, view, workflow, repo, ref, allowed }) {
+// not be read; `hold` why the PR, having a preview database, takes no run of this workflow
+// (preview-db.mjs evidenceHold), or null. -> { args } for `gh`, or { refused } saying why.
+export function dispatchCall({ argv, view, workflow, repo, ref, allowed, hold = null }) {
   if (argv.length !== 2) return { refused: 'usage: evidence.mjs dispatch <branch> <pr>' };
   const [branch, pr] = argv;
-  if (!/^[1-9]\d*$/.test(pr)) return { refused: `"${pr}" is not a PR number` };
+  if (!isPrNumber(pr)) return { refused: `"${pr}" is not a PR number` };
   if (!allowed) return { refused: '§3 worker-workflow-dispatch is not yes' };
   if (!workflow) return { refused: '§4 Evidence workflow names no usable workflow' };
   if (!repo) return { refused: 'no §0 GitHub repo' };
-  if (!view) return { refused: `PR #${pr} could not be read` };
-  if (view.headRefName !== branch || view.isCrossRepository) return { refused: `PR #${pr} is not ${branch}'s own PR` };
-  if (view.state !== 'OPEN') return { refused: `PR #${pr} is ${String(view.state).toLowerCase()}` };
+  const notOwn = ownOpenPrRefusal(branch, pr, view);
+  if (notOwn) return { refused: notOwn };
+  if (hold) return { refused: hold };
   return { args: evidenceRunArgs(workflow, repo, ref, pr) };
 }
 
@@ -276,11 +279,12 @@ if (isMain) {
   const safe = (f) => { try { return f(); } catch { return null; } };
   const repo = safe(ghRepo);
   const row = parseEvidenceRow(safe(() => configValues('evidence-workflow')));
-  const view = /^[1-9]\d*$/.test(argv[1] ?? '') && repo ? safe(() => JSON.parse(execFileSync('gh', ['pr', 'view', argv[1], '--repo', repo, '--json', 'headRefName,state,isCrossRepository'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }))) : null;
+  const view = readPrView(repo, argv[1]);
   const call = dispatchCall({
     argv, view, workflow: row?.workflow ?? null, repo,
     ref: String(safe(() => configValue('default-branch')) ?? '').trim() || 'main',
     allowed: safe(() => permission('worker-workflow-dispatch')) === 'yes',
+    hold: safe(() => evidenceHold(stateDir(), argv[1])),
   });
   if (call.refused) { console.error(`evidence.mjs: refused: ${call.refused}`); process.exit(1); }
   const r = spawnSync('gh', call.args, { stdio: 'inherit' });

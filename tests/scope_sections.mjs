@@ -22,13 +22,23 @@
 // (the scoping suites themselves): its text names nothing, and only its import statements are followed.
 //
 // The decision, which fails closed: anything it cannot place runs every suite.
-//   full  - a foundational file (tests/run.sh and the environment it gives suites, this script, the
-//           bash 3.2 check, .github/, desk-env.sh, and desk-env.mjs unless the change only adds
-//           exports), a root file that is not a document or a script (.gitignore, a lockfile), a
+//   full  - a foundational file (tests/run.sh and the environment it gives suites, this script and the
+//           untracked.mjs it reads, the bash 3.2 check, .github/, desk-env.sh, and desk-env.mjs and config-schema.mjs unless the
+//           change only adds exports), a root file that is not a document or a script (.gitignore, a lockfile), a
 //           deleted or renamed file, or a changed file no suite claims
 //   some  - the suites that claim a changed file, plus every changed suite and the suites claiming it;
-//           for a change that only adds exports to desk-env.mjs, the suites that name a new export
+//           for a change that only adds exports to desk-env.mjs or config-schema.mjs, the suites that
+//           name a new export; with --by-name, for one that edits their functions, those reaching them
 //   none  - nothing changed
+// With --l3-direct, as tests/related.sh runs it, `some` leaves out an L3 suite (end to end) that claims
+// no changed file directly, only through what loads it, and names it as left for CI. CI never sets it.
+// With --by-name, as tests/related.sh runs it too, a change to desk-env.mjs or config-schema.mjs that
+// only edits or adds named top-level functions and constants (changedNames()) runs the suites reaching
+// them (users()): those naming an exported name the changed ones reach inside the module, those claiming
+// a script that loads the module and names one, and, for a `case` of desk-env.mjs's command line that
+// reaches one, those claiming a script naming desk-env and that command. Module-level code reaching one,
+// or a removed, renamed or unexported name, is still full. CI never sets it, so it backs up a caller
+// these miss (a command run through a wrapper that names neither).
 // The suites in ALWAYS (the syntax and shellcheck pass) run on every pull request whatever the scope,
 // and claim nothing: a file only they cover has no behavioural suite, so changing it runs everything.
 //
@@ -40,19 +50,28 @@
 //   node tests/scope_sections.mjs --files <path>...              decide for these paths, as modified
 //   node tests/scope_sections.mjs --full                         every suite (a push to main)
 //   add --json for the decision as JSON, or --github-output to append scope=, suites= and shells= to
-//   $GITHUB_OUTPUT. --claims <path> lists the suites claiming a path; --unclaimed lists tracked files no
-//   suite claims.
+//   $GITHUB_OUTPUT. --l3-direct (tests/related.sh) runs an L3 suite only for a change it claims
+//   directly, and leaves one it reaches only through imports for CI: `ci` in the JSON, a ci= line, and
+//   "left for CI" lines. --by-name (tests/related.sh) narrows a change to desk-env.mjs or config-schema.mjs
+//   by the names it changes: `narrowed` in the JSON and a narrowed= line. --claims <path> lists the suites claiming a path; --unclaimed lists tracked files no
+//   suite claims; --layers [<file>...] names each suite (every one, or these files) whose layer line is
+//   missing, doubled or unknown, and exits 1 when there is one.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, appendFileSync, existsSync } from 'node:fs';
 import { join, dirname, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Script } from 'node:vm';
+import { deskUntracked } from '../desk/bin/untracked.mjs';
 
 export const ALWAYS = ['test_lint.sh'];
+// The suites that check every test file against the repo's rules for them (a suite's layer label against
+// what it does, its sections): any change under tests/ runs them, since it can break a rule no claim
+// leads to. A helper counts too: the layer check reads every tests/ helper a suite imports.
+const TEST_CHECKS = ['test_scope_sections.mjs'];
 // Shared by everything: a change here can move any suite.
-const FOUNDATION = [/^tests\/(run\.sh|suite_env\.sh|scope_sections\.mjs|bash32_check\.sh|bash32_features\.txt)$/, /^\.github\//, /^desk\/bin\/desk-env\.(mjs|sh)$/, /^desk\/bin\/config-schema\.mjs$/];
-// A foundational module whose change, when it only adds exports, reaches only the suites using them.
-const EXPORTS_ONLY = new Set(['desk/bin/desk-env.mjs']);
+const FOUNDATION = [/^tests\/(run\.sh|suite_env\.sh|scope_sections\.mjs|bash32_check\.sh|bash32_features\.txt)$/, /^\.github\//, /^desk\/bin\/desk-env\.(mjs|sh)$/, /^desk\/bin\/config-schema\.mjs$/, /^desk\/bin\/untracked\.mjs$/];
+// Foundational modules whose change, when it only adds exports, reaches only the suites using them.
+const EXPORTS_ONLY = new Set(['desk/bin/desk-env.mjs', 'desk/bin/config-schema.mjs']);
 const CODE_EXT = /\.(sh|bash|mjs|cjs|js|py)$/;
 const DIR_ROOTS = /^(skills|vendor|docs)\//;
 
@@ -89,22 +108,28 @@ function groupEnd(text, close, wrap) {
   return -1;
 }
 const asExpression = (p) => `(${p}\n)`;
+// A regex matching any of these identifiers as a whole word.
+const wordsRe = (ids) => new RegExp(`(?<![\\w$])(?:${ids.map((n) => n.replace(/\$/g, '\\$')).join('|')})(?![\\w$])`);
+// A static import statement (not an `import()` call).
+const isImport = (c) => /^import\s*[{*'"\w]/.test(c) && !/^import\s*\(/.test(c);
+// A statement starting with a name, which cannot carry on the statement before it the way `(`, `[`,
+// `.` or an operator can.
+const startsWithName = (c) => /^[A-Za-z_$]/.test(c) && !/^(?:in|instanceof)(?![\w$])/.test(c);
 // Whole top-level chunks of a module as script that compiles where the module does: imports and export
 // lists become `;`, `export` comes off a declaration, `import.meta` is renamed, and a `#!` line (only
 // allowed first, before the 'use strict' compiles() adds) is dropped.
-const asScript = (chunks) => chunks.map((c) => (/^import\s*[{*'"\w]/.test(c) && !/^import\s*\(/.test(c)) || /^export\s*[{*]/.test(c) ? ';' : c.replace(/^export\s+(?:default\s+)?/, ''))
+const asScript = (chunks) => chunks.map((c) => isImport(c) || /^export\s*[{*]/.test(c) ? ';' : c.replace(/^export\s+(?:default\s+)?/, ''))
   .join('\n').replace(/^#!.*/, '').replace(/\bimport\.meta\b/g, 'import_meta');
 // Only comments: every line a line comment (which any line terminator ends), or one block comment whose
 // first `*/` is its end.
 const isComment = (c) => /^\/\/[^\n\r\p{Zl}\p{Zp}]*(?:\n\/\/[^\n\r\p{Zl}\p{Zp}]*)*$/u.test(c) || /^\/\*(?:(?!\*\/)[\s\S])*\*\/$/.test(c);
 // Whether a new chunk can go in after the first `i` old chunks without changing them: the old code up
 // to there compiles (so no bracket, string, template or comment is open), and the next old statement
-// starts with a name, which cannot carry on the statement before it the way `(`, `[`, `.` or an
-// operator can.
+// startsWithName().
 function boundary(old, i) {
   if (i > 0 && !compilesAsModuleBody(asScript(old.slice(0, i)))) return false;
   const next = old.slice(i).find((c) => !isComment(c));
-  return !next || (/^[A-Za-z_$]/.test(next) && !/^(?:in|instanceof)(?![\w$])/.test(next));
+  return !next || startsWithName(next);
 }
 // No BigInt (`n` is left as a letter, so it is refused): `+1n` and `1n + 1` throw on load.
 const NUMBER = /(?<![\w$.])(?:0[xob][\da-f_]+|\d[\d_]*(?:\.\d+)?(?:e[+-]?\d+)?)(?![\w$.])/gi;
@@ -136,25 +161,39 @@ function fnValue(v) {
   const end = groupEnd(head, ')', (q) => `(${q} => 0\n)`);
   return end > 0 && /^[ \t]*=>/.test(head.slice(end));
 }
-// A new top-level statement that declares an export and runs nothing when the module loads: a function
-// declaration, or a const whose value is a function or a literal. -> its name, or null. A class (its
-// static members and extends run on load) or any other value is refused, and so is a name the old module
-// already uses or a global's (declaring it would change what the unchanged code refers to), a name
-// written with an escape, and `then` (it makes the module's namespace a thenable, which `import()`
-// calls). HTML-like comments (`<!--`, `-->`) are refused: a script reads them as comments, a module not.
-function newExport(chunk, before) {
+// A top-level statement that declares one name and runs nothing when the module loads: a function
+// declaration, or a const or let with one declarator whose value is a function, a literal or a
+// frozenLiteral().
+// -> { name, exported, kind: 'function' | 'const' | 'let' }, or null for anything else: a class (its
+// static members and extends run on load), a destructuring, a call or any other value, a name written
+// with an escape. HTML-like comments (`<!--`, `-->`) are refused: a script reads them as comments, a
+// module not.
+function declOf(chunk) {
   if (/<!--|-->/.test(chunk)) return null;
-  let name = null;
-  const fn = chunk.match(/^export\s+((?:async\s+)?function\b\s*\*?\s*([A-Za-z_$][\w$]*)\s*\([\s\S]*)$/);
+  const exported = /^export\s+(?!default\b)/.test(chunk);
+  const c = exported ? chunk.replace(/^export\s+/, '') : chunk;
+  const fn = c.match(/^((?:async\s+)?function\b\s*\*?\s*([A-Za-z_$][\w$]*)\s*\([\s\S]*)$/);
   if (fn) {
     const end = groupEnd(fn[1], '}', asExpression);
-    if (end > 0 && /^\s*;?\s*$/.test(fn[1].slice(end))) name = fn[2];
-  } else {
-    const c = chunk.match(/^export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*([\s\S]*?)\s*;?\s*$/);
-    if (c && (literal(c[2]) || fnValue(c[2]))) name = c[1];
+    return end > 0 && /^\s*;?\s*$/.test(fn[1].slice(end)) ? { name: fn[2], exported, kind: 'function' } : null;
   }
-  if (!name || name === 'then' || name in globalThis || new RegExp(`(?<![\\w$])${name.replace(/\$/g, '\\$')}(?![\\w$])`).test(before)) return null;
-  return name;
+  const v = c.match(/^(const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*([\s\S]*?)\s*;?\s*$/);
+  return v && (literal(v[3]) || frozenLiteral(v[3]) || fnValue(v[3])) ? { name: v[2], exported, kind: v[1] } : null;
+}
+// `Object.freeze` of an array or object literal(), and nothing after it: it only holds data. Any other
+// call, or a spread, call or reference inside it, may run code on load.
+function frozenLiteral(v) {
+  const m = v.match(/^Object\.freeze\(\s*([[{][\s\S]*)\)$/);
+  return Boolean(m) && compiles(asExpression(v)) && literal(m[1]);
+}
+// A new top-level statement that declares an export, a function or a const, by declOf(). -> its name, or
+// null. Refused too: a name the old module already uses or a global's (declaring it would change what
+// the unchanged code refers to), and `then` (it makes the module's namespace a thenable, which
+// `import()` calls).
+function newExport(chunk, before) {
+  const d = declOf(chunk);
+  if (!d?.exported || d.kind === 'let' || d.name === 'then' || d.name in globalThis || wordsRe([d.name]).test(before)) return null;
+  return d.name;
 }
 // The names a change to a module only adds as exports, or null when it does anything else: every old
 // top-level statement is still there unchanged and in order, each new one goes in at a boundary(), and
@@ -172,6 +211,108 @@ export function addedExports(before, after) {
     names.push(name);
   }
   return i === old.length ? names : null;
+}
+
+// A module's top-level statements bar comments, each with its declOf(). One with none (module-level code,
+// a const set by a call) runs when the module loads.
+const statements = (text) => topLevel(text).filter((c) => !isComment(c)).map((c) => ({ c, decl: declOf(c) }));
+
+// The top-level names a change to a module edits or declares anew, when that is all it does: every
+// other statement is unchanged and in order, no name goes or stops being exported, an edited
+// statement is still a declOf() that runs nothing on load, a new one is also a newExport() (exported
+// or not), and each compiles alone with a name starting the statement after it.
+// -> { names } or { full: why }.
+export function changedNames(before, after) {
+  const old = statements(before);
+  const neu = statements(after);
+  const key = (s) => (s.decl ? `#${s.decl.name}` : s.c);
+  const oldKeys = new Set(old.map(key));
+  const newKeys = new Set(neu.map(key));
+  if (oldKeys.size !== old.length || newKeys.size !== neu.length) return { full: 'it declares a name twice' };
+  const gone = (s) => ({ full: s.decl ? `${s.decl.name} was removed or renamed` : `a top-level statement was removed: ${s.c.split('\n')[0]}` });
+  const names = [];
+  let i = 0;
+  for (const [j, s] of neu.entries()) {
+    const k = key(s);
+    if (i < old.length && k === key(old[i])) {
+      const was = old[i++];
+      if (s.c === was.c) continue;
+      if (was.decl.exported && !s.decl.exported) return { full: `${s.decl.name} is no longer exported` };
+    } else if (oldKeys.has(k)) return newKeys.has(key(old[i])) ? { full: `${s.decl?.name ?? 'a top-level statement'} moved` } : gone(old[i]);
+    else if (!s.decl) return { full: `a top-level statement that runs code when the module loads changed: ${s.c.split('\n')[0]}` };
+    else if (!newExport(s.decl.exported ? s.c : `export ${s.c}`, before)) return { full: `the new ${s.decl.name} is a let, or a name already in use` };
+    if (!compilesAsModuleBody(asScript([s.c])) || (j + 1 < neu.length && !startsWithName(neu[j + 1].c))) return { full: `${s.decl.name} does not stand alone` };
+    names.push(s.decl.name);
+  }
+  if (i < old.length) return gone(old[i]);
+  if (!compilesAsModuleBody(asScript(topLevel(after)))) return { full: 'it does not compile' };
+  return { names };
+}
+
+// A command line: an `if (` statement whose body switches on `cmd` with `case '<command>':` labels.
+// -> { cases: [{ cmds, body }], shared: the rest of the statement (what runs for every command, and
+// `default:`) }, labels with no body of their own grouped with the case they fall through to; or null.
+function cliCases(c) {
+  if (!/^if\s*\(/.test(c)) return null;
+  const lines = c.split('\n');
+  const sw = lines.findIndex((l) => /^\s+switch \(cmd\) \{$/.test(l));
+  const indent = lines[sw + 1]?.match(/^(\s+)case '/)?.[1];
+  if (sw < 0 || !indent) return null;
+  const label = new RegExp(`^${indent}case '([\\w-]+)':`);
+  const shared = lines.slice(0, sw + 1);
+  const cases = [];
+  let cur = null;
+  let done = false;
+  for (const l of lines.slice(sw + 1)) {
+    if (!done) {
+      const m = l.match(label);
+      if (m) {
+        if (cur && cur.body.every((b) => /^\s*case '[\w-]+':\s*$/.test(b))) cur.cmds.push(m[1]);
+        else cases.push(cur = { cmds: [m[1]], body: [] });
+        cur.body.push(l);
+        continue;
+      }
+      // A case's body is indented past its label; `default:` and the switch's end are not.
+      if (cur && (!l.trim() || l.startsWith(`${indent} `))) { cur.body.push(l); continue; }
+      cur = null;
+      if (l.trim() && !l.startsWith(indent)) done = true;
+    }
+    shared.push(l);
+  }
+  return { cases: cases.map((x) => ({ cmds: x.cmds, body: x.body.join('\n') })), shared: shared.join('\n') };
+}
+
+// What reaches these names in a module: the declarations naming one, and those naming them, and so on.
+// -> { names, exported: the exported ones, under their exported names, commands: the cliCases()
+// commands whose case names one, code: the first line of a statement that is not a declaration, an
+// import, an export list or such a case but names one (module-level code, which runs on load), or null }
+function reach(text, seeds) {
+  const stmts = statements(text);
+  const names = new Set(seeds);
+  for (let grew = names.size > 0; grew;) {
+    grew = false;
+    const re = wordsRe([...names]);
+    for (const { c, decl } of stmts) if (decl && !names.has(decl.name) && re.test(c)) { names.add(decl.name); grew = true; }
+  }
+  const exported = new Set();
+  const commands = new Set();
+  let code = null;
+  const re = names.size ? wordsRe([...names]) : null;
+  const named = (t) => re?.exec(t.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n'))?.[0];
+  for (const { c, decl } of stmts) {
+    if (decl) { if (decl.exported && names.has(decl.name)) exported.add(decl.name); continue; }
+    if (isImport(c)) continue;
+    const list = c.match(/^export\s*\{([^}]*)\}/);
+    if (list) {
+      for (const item of list[1].split(',')) { const [local, as] = item.trim().split(/\s+as\s+/); if (names.has(local)) exported.add(as ?? local); }
+      continue;
+    }
+    const cli = cliCases(c);
+    const hit = named(cli ? cli.shared : c);
+    if (hit) code ??= `${c.split('\n')[0]} (${hit})`;
+    for (const { cmds, body } of cli?.cases ?? []) if (named(body)) for (const k of cmds) commands.add(k);
+  }
+  return { names: [...names], exported: [...exported], commands: [...commands], code };
 }
 
 // `**` spans segments, `*` stays within one.
@@ -199,18 +340,37 @@ export function mentions(text) {
   return out;
 }
 
-// A suite's header, its first 30 lines: the `suite:` label ('' when none), the `covers:` globs and
-// whether it `claims: imports` only.
+// Every suite declares its test layer in one `# layer: <layer>` line (`//` in .mjs) in its first ten
+// lines, as it does its `# budget:`:
+//   L1  in process: its cases import modules and start no process
+//   L2  one process boundary: its cases start a desk script or command each and read what it did
+//   L3  end to end: it runs a pass, a batch, the merge driver or the installer through
+export const LAYERS = ['L1', 'L2', 'L3'];
+const LAYER_LINE = /^(#|\/\/) layer:/;
+// A suite's declared layer, or what is wrong with its declaration: { layer, problem }, layer null and
+// problem set unless it declares exactly one known layer.
+function readLayer(text) {
+  const lines = String(text).split('\n').slice(0, 10).filter((l) => LAYER_LINE.test(l));
+  if (!lines.length) return { layer: null, problem: `declares no layer: add a \`# layer: <${LAYERS.join('|')}>\` line (\`//\` in .mjs) in its first ten lines` };
+  if (lines.length > 1) return { layer: null, problem: `declares ${lines.length} layers: ${lines.join(' / ')}` };
+  const v = lines[0].replace(LAYER_LINE, '').trim();
+  return LAYERS.includes(v) ? { layer: v, problem: '' } : { layer: null, problem: `declares an unknown layer: ${lines[0]} (one of ${LAYERS.join(', ')})` };
+}
+
+// A suite's header, its first 30 lines: the `suite:` label ('' when none), its layer (null unless it
+// declares exactly one known layer), the `covers:` globs and whether it `claims: imports` only.
 export function suiteHeader(text) {
   const head = String(text).split('\n').slice(0, 30);
   return {
     label: (head.slice(0, 10).find((l) => /^(#|\/\/) suite: /.test(l)) ?? '').replace(/^(#|\/\/) suite: /, ''),
+    layer: readLayer(text).layer,
     covers: head.filter((l) => /^(#|\/\/) covers: /.test(l)).flatMap((l) => l.replace(/^(#|\/\/) covers: /, '').trim().split(/\s+/)),
     importsOnly: head.some((l) => /^(#|\/\/) claims: imports\b/.test(l)),
   };
 }
 
-// -> { suites: [{ file, label, covers: [glob] }], claims: Map(path -> Set(suite file)) }
+// -> { suites: [{ file, label, layer, covers: [glob] }], claims: Map(path -> Set(suite file)),
+//      direct: Map(path -> Set(suite file)), the claims made before any load is followed }
 // `files` is every tracked path; `read(path)` returns its text (or '' when unreadable).
 export function buildMap(files, read) {
   const suites = files.filter(isSuite).sort();
@@ -254,16 +414,19 @@ export function buildMap(files, read) {
     return named.get(p);
   };
   const claims = new Map();
+  const direct = new Map(); // path -> the suites claiming it directly, not through what it is loaded by
   const out = [];
   for (const s of suites) {
     const t = textOf(s);
-    const { label, covers, importsOnly } = suiteHeader(t);
-    out.push({ file: s.slice(6), label: label || s.slice(6), covers, importsOnly });
+    const { label, layer, covers, importsOnly } = suiteHeader(t);
+    out.push({ file: s.slice(6), label: label || s.slice(6), layer, covers, importsOnly });
     if (ALWAYS.includes(s.slice(6))) continue;
     const seen = new Set();
     const todo = importsOnly ? [...mentions(loads(s, t, { importsOnly }))].flatMap((k) => [...(names.get(k) ?? [])]) : [...namedBy(s)];
     const res = covers.map(globRe);
     for (const f of nodes) if (!isCode(f) && res.some((r) => r.test(f))) todo.push(f);
+    // What the suite claims directly: what its text names or imports, and what its globs match.
+    const first = new Set(todo);
     while (todo.length) {
       const f = todo.pop();
       if (seen.has(f)) continue;
@@ -271,16 +434,71 @@ export function buildMap(files, read) {
       if (isCode(f) && !FOUNDATION.some((r) => r.test(f))) for (const q of namedBy(f)) if (!seen.has(q)) todo.push(q);
     }
     // Another suite a glob matches is claimed as it stands, and nothing it names is followed.
-    for (const f of suites) if (f !== s && res.some((r) => r.test(f))) seen.add(f);
+    for (const f of suites) if (f !== s && res.some((r) => r.test(f))) { seen.add(f); first.add(f); }
     for (const f of seen) { if (!claims.has(f)) claims.set(f, new Set()); claims.get(f).add(s.slice(6)); }
+    for (const f of first) { if (!direct.has(f)) direct.set(f, new Set()); direct.get(f).add(s.slice(6)); }
   }
   const shells = new Set(files.filter((f) => /\.(sh|bash)$/.test(f) || (!/\.[A-Za-z0-9]+$/.test(f.slice(f.lastIndexOf('/') + 1)) && /^#!.*[/ ](ba)?sh( |$)/.test(textOf(f).split('\n')[0]))));
   // The suites (bar ALWAYS) whose text names any of these identifiers as a whole word.
   const uses = (ids) => {
-    const res = ids.map((n) => new RegExp(`(?<![\\w$])${n.replace(/\$/g, '\\$')}(?![\\w$])`));
-    return suites.filter((s) => !ALWAYS.includes(s.slice(6)) && res.some((r) => r.test(textOf(s)))).map((s) => s.slice(6));
+    if (!ids.length) return [];
+    const re = wordsRe(ids);
+    return suites.filter((s) => !ALWAYS.includes(s.slice(6)) && re.test(textOf(s))).map((s) => s.slice(6));
   };
-  return { suites: out, claims, shells, uses };
+  // The suites a change to these top-level names of an EXPORTS_ONLY module reaches, through reach(): those
+  // naming an exported name it reaches, and those claiming a script that loads the module and names one
+  // outside its comments, followed into another EXPORTS_ONLY module that does. -> { suites } (a Set), or
+  // { full: why } when module-level code runs one, or a foundational file names one.
+  const users = (mod, ids, seen = new Set([mod])) => {
+    const r = reach(textOf(mod), ids);
+    if (r.code) return { full: `${mod} runs one at load: ${r.code}` };
+    const got = new Set();
+    // A command the change reaches: every suite or script that names the module and the command as a
+    // word outside its comments may run it. A foundational shell script (desk-env.sh) that does only
+    // inside shell functions passes it on to every file naming one of those functions.
+    if (r.commands.length) {
+      const word = (ws) => new RegExp(`(?<![\\w-])(?:${ws.join('|')})(?![\\w-])`);
+      const cmd = word(r.commands);
+      const base = mod.slice(mod.lastIndexOf('/') + 1).replace(/\.mjs$/, '');
+      const callers = (re, need, from) => {
+        for (const f of files) {
+          if (f === mod || f === from || !(isSuite(f) || isCode(f))) continue;
+          const code = uncommented(f, textOf(f));
+          const hit = (!need || code.includes(need)) && code.match(re);
+          if (!hit) continue;
+          if (isSuite(f)) { if (!ALWAYS.includes(f.slice(6))) got.add(f.slice(6)); continue; }
+          if (!FOUNDATION.some((x) => x.test(f))) { for (const s of claims.get(f) ?? []) got.add(s); continue; }
+          const fns = from ? null : shellWrappers(f, code, re);
+          const why = from ? `${f}, shared by every suite, runs ${hit[0]} from ${from}` : `${f}, shared by every suite, may run \`${base} ${hit[0]}\``;
+          if (!fns?.length) return why;
+          const w = callers(word(fns), null, f);
+          if (w) return w;
+        }
+        return null;
+      };
+      const why = callers(cmd, base);
+      if (why) return { full: why };
+    }
+    if (!r.exported.length) return { suites: got };
+    for (const s of uses(r.exported)) got.add(s);
+    const re = wordsRe(r.exported);
+    for (const f of nodes) {
+      if (seen.has(f) || !isCode(f) || ![...mentions(loads(f, textOf(f)))].some((k) => names.get(k)?.has(mod))) continue;
+      const code = uncommented(f, textOf(f));
+      const hit = code.match(re);
+      if (!hit) continue;
+      if (EXPORTS_ONLY.has(f)) {
+        seen.add(f);
+        const local = r.exported.flatMap((n) => [n, ...[...code.matchAll(new RegExp(`(?<![\\w$])${n.replace(/\$/g, '\\$')}\\s+as\\s+([A-Za-z_$][\\w$]*)`, 'g'))].map((m) => m[1])]);
+        const u = users(f, local, seen);
+        if (u.full) return u;
+        for (const s of u.suites) got.add(s);
+      } else if (FOUNDATION.some((x) => x.test(f))) return { full: `${f}, shared by every suite, uses ${hit[0]}` };
+      else for (const s of claims.get(f) ?? []) got.add(s);
+    }
+    return { suites: got };
+  };
+  return { suites: out, claims, direct, shells, uses, users };
 }
 
 // `git diff --name-status -M` lines -> [{ status, path, from }]
@@ -299,16 +517,22 @@ export function parseNameStatus(text) {
 // -> { scope: 'full' | 'some' | 'none', reason, suites: [file], shells: [path] }
 // `shells` is the shell scripts to syntax-check under bash 3.2: the changed ones and those the
 // chosen suites claim (every one when the scope is full).
+// With `l3Direct` (tests/related.sh's local runs; CI never sets it), an L3 suite that claims a changed
+// file only through what loads it, never directly, does not run: it is in `ci`, left for CI, which still
+// runs it before merge. One changed file the suite does claim directly runs it.
 export const fullScope = (map, reason) => ({ scope: 'full', reason, suites: map.suites.map((s) => s.file), shells: [...map.shells].sort() });
-export function decide(changes, map) {
+export function decide(changes, map, { l3Direct = false, byName = false } = {}) {
   const all = map.suites.map((s) => s.file);
+  const l3 = new Set(l3Direct ? map.suites.filter((s) => s.layer === 'L3').map((s) => s.file) : []);
+  const left = new Set();
+  const narrowed = [];
   const shellsOf = (paths) => [...new Set(paths.filter((p) => map.shells.has(p)))].sort();
   const full = (reason) => fullScope(map, reason);
   if (!changes.length) return { scope: 'none', reason: 'nothing changed', suites: [...ALWAYS], shells: [] };
   const gone = changes.find((c) => c.status === 'D' || c.status === 'R');
   if (gone) return full(gone.status === 'D' ? `${gone.path} was deleted` : `${gone.from} was renamed to ${gone.path}`);
   const pick = new Set(ALWAYS);
-  for (const { path, exports } of changes) {
+  for (const { path, exports, names } of changes) {
     if (isSuite(path)) {
       if (!all.includes(path.slice(6))) return full(`${path} is not a suite tests/run.sh knows`);
       pick.add(path.slice(6));
@@ -319,15 +543,25 @@ export function decide(changes, map) {
       for (const s of map.uses(exports)) pick.add(s);
       continue;
     }
+    if (byName && EXPORTS_ONLY.has(path) && names) {
+      const u = names.full ? names : map.users(path, names.names);
+      if (u.full) return full(`${path} is shared by every suite, and the change is not narrowed by name: ${u.full}`);
+      for (const s of u.suites) (l3.has(s) && !map.direct?.get(path)?.has(s) ? left : pick).add(s);
+      narrowed.push(`${path}: ${names.names.join(', ')}`);
+      continue;
+    }
     if (FOUNDATION.some((r) => r.test(path))) return full(`${path} is shared by every suite`);
     if (rootConfig(path)) return full(`${path} is a root file`);
     const by = map.claims.get(path);
     if (!by?.size) return full(`no suite claims ${path}`);
-    for (const s of by) pick.add(s);
+    for (const s of by) (l3.has(s) && !map.direct?.get(path)?.has(s) ? left : pick).add(s);
   }
+  if (changes.some((c) => c.path.startsWith('tests/'))) for (const s of TEST_CHECKS) if (all.includes(s)) pick.add(s);
   const suites = all.filter((s) => pick.has(s));
+  const ci = all.filter((s) => left.has(s) && !pick.has(s));
   const claimed = [...map.claims].filter(([, by]) => [...by].some((s) => pick.has(s))).map(([p]) => p);
-  return { scope: 'some', reason: `${changes.length} changed file(s) reach ${suites.length} of ${all.length} suites`, suites, shells: shellsOf([...changes.map((c) => c.path), ...suites.map((s) => `tests/${s}`), ...claimed]) };
+  const reason = `${changes.length} changed file(s) reach ${suites.length} of ${all.length} suites${ci.length ? `, and ${ci.length} L3 suite(s) only through imports, left for CI` : ''}${narrowed.length ? `, narrowed on the changed names in ${narrowed.join('; ')}` : ''}`;
+  return { scope: 'some', reason, suites, shells: shellsOf([...changes.map((c) => c.path), ...suites.map((s) => `tests/${s}`), ...claimed]), ...(l3Direct ? { ci } : {}), ...(byName ? { narrowed } : {}) };
 }
 
 // What a script loads into its own process (ES imports, static or `import()`, and shell `source` / `.`
@@ -336,13 +570,41 @@ export function decide(changes, map) {
 // Python, `"$DIR/x.sh"`, `${DIR}/x`, `$(dirname "$0")/x` in shell. A name in a message or a comment
 // is neither, so it is not followed.
 const quoted = (s) => [...s.matchAll(/(['"`])([^'"`$]*)\1/g)].map((m) => m[2]);
+// A script's text without its whole-line `//` and `#` comments and, outside shell, its block comments.
+// Line comments go first, so a `/*` inside one opens no block; a block opens only at a line's start or
+// after a space, `;` or `,`, so a `/*` glued to a quote, a word or `}` in a string opens none.
+function uncommented(path, text) {
+  const lines = String(text).split('\n').filter((l) => !/^\s*(\/\/|#)/.test(l)).join('\n');
+  return /\.(mjs|cjs|js|py)$/.test(path) ? lines.replace(/(^|[\s;,])\/\*[\s\S]*?\*\//gm, '$1 ') : lines;
+}
+// The shell functions in a script's comment-free `code` whose bodies match `re`, or call one that does
+// -> [name]; or null when it is not a shell script, or its top-level code (which every script sourcing
+// it runs) does either.
+function shellWrappers(path, code, re) {
+  if (!/\.(sh|bash)$/.test(path)) return null;
+  const bodies = new Map();
+  const top = [];
+  let cur = null;
+  for (const l of code.split('\n')) {
+    const m = l.match(/^([A-Za-z_]\w*)\s*\(\)\s*\{(.*)$/);
+    if (m) { bodies.set(m[1], m[2]); cur = /\}\s*(#.*)?$/.test(m[2]) ? null : m[1]; continue; }
+    if (!cur) { top.push(l); continue; }
+    bodies.set(cur, `${bodies.get(cur)}\n${l}`);
+    if (/^\}/.test(l)) cur = null;
+  }
+  const found = new Set();
+  const runs = (t) => re.test(t) || (found.size > 0 && wordsRe([...found]).test(t));
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [n, b] of bodies) if (!found.has(n) && runs(b)) { found.add(n); grew = true; }
+  }
+  return runs(top.join('\n')) ? null : [...found];
+}
 export function loads(path, text, { importsOnly = false } = {}) {
   const t = String(text);
   const out = [];
   if (/\.(mjs|cjs|js|py)$/.test(path)) {
-    // Line comments go first, so a `/*` inside one opens no block; a block opens only at a line's
-    // start or after a space, `;` or `,`, so a `/*` glued to a quote, a word or `}` in a string opens none.
-    const code = t.split('\n').filter((l) => !/^\s*(\/\/|#)/.test(l)).join('\n').replace(/(^|[\s;,])\/\*[\s\S]*?\*\//gm, '$1 ');
+    const code = uncommented(path, t);
     if (!/\.py$/.test(path)) {
       // `import x from './a.mjs'`, `} from './a.mjs'`, `import './a.mjs'`: no quote before the keyword on
       // its line, so a fixture string that holds an import is not one.
@@ -382,16 +644,19 @@ export function repoMap(root) {
 }
 
 // The changes CI and tests/related.sh both decide on: everything since the merge base of `base` and
-// `head`, or, with no head, of `base` and HEAD up to the working tree, untracked files included.
+// `head`, or, with no head, of `base` and HEAD up to the working tree, untracked files included bar the
+// ones desk itself leaves there (deskUntracked: a resume file, a desk-review run's scratch files).
 // A modified EXPORTS_ONLY module carries `exports`: addedExports() between the merge base and the head.
 export function changesAgainst(root, base, head) {
   const mb = git(root, ['merge-base', base, head ?? 'HEAD']).trim();
   const changes = parseNameStatus(git(root, ['diff', '--name-status', '-M', mb, ...(head ? [head] : [])]));
-  if (!head) for (const path of git(root, ['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean)) changes.push({ status: 'A', path });
+  if (!head) for (const path of git(root, ['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean)) if (!deskUntracked(path)) changes.push({ status: 'A', path });
   for (const c of changes) {
     if (c.status !== 'M' || !EXPORTS_ONLY.has(c.path)) continue;
     const after = head ? git(root, ['show', `${head}:${c.path}`]) : readFileSync(join(root, c.path), 'utf8');
-    c.exports = addedExports(git(root, ['show', `${mb}:${c.path}`]), after) ?? undefined;
+    const before = git(root, ['show', `${mb}:${c.path}`]);
+    c.exports = addedExports(before, after) ?? undefined;
+    if (!c.exports) c.names = changedNames(before, after);
   }
   return changes;
 }
@@ -400,6 +665,17 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const args = process.argv.slice(2);
   const opt = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : undefined; };
   const root = git(dirname(fileURLToPath(import.meta.url)), ['rev-parse', '--show-toplevel']).trim();
+  if (args.includes('--layers')) {
+    const given = args.slice(args.indexOf('--layers') + 1).filter((a) => !a.startsWith('--'));
+    const paths = given.length ? given : git(root, ['ls-files']).split('\n').filter(isSuite);
+    let bad = 0;
+    for (const p of paths) {
+      let problem;
+      try { problem = readLayer(readFileSync(given.length ? p : join(root, p), 'utf8')).problem; } catch (e) { problem = `is unreadable: ${e.message}`; }
+      if (problem) { bad++; console.log(`${p}: ${problem}`); }
+    }
+    process.exit(bad ? 1 : 0);
+  }
   const map = repoMap(root);
   if (args.includes('--claims')) {
     const p = opt('--claims');
@@ -417,15 +693,18 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   else if (args.includes('--files')) changes = args.slice(args.indexOf('--files') + 1).filter((a) => !a.startsWith('--')).map((path) => ({ status: 'M', path }));
   else if (opt('--base')) changes = changesAgainst(root, opt('--base'), args.includes('--worktree') ? undefined : opt('--head') ?? 'HEAD');
   else { console.error('usage: scope_sections.mjs --base <ref> [--head <ref> | --worktree] | --files <path>... | --full [--json | --github-output]'); process.exit(2); }
-  d ??= decide(changes, map);
+  const l3Direct = args.includes('--l3-direct');
+  const byName = args.includes('--by-name');
+  d ??= decide(changes, map, { l3Direct, byName });
   if (args.includes('--json')) console.log(JSON.stringify(d, null, 2));
   else {
     console.log(`scope: ${d.scope} (${d.reason})`);
     for (const s of d.suites) console.log(`  ${s}  ${map.suites.find((x) => x.file === s)?.label ?? ''}`);
+    for (const s of d.ci ?? []) console.log(`  left for CI: ${s}  ${map.suites.find((x) => x.file === s)?.label ?? ''}`);
   }
   if (args.includes('--github-output')) {
     const out = process.env.GITHUB_OUTPUT;
     if (!out || !existsSync(dirname(out))) { console.error('GITHUB_OUTPUT is not set'); process.exit(2); }
-    appendFileSync(out, `scope=${d.scope}\nreason=${d.reason}\nsuites=${d.suites.join(' ')}\nshells=${d.shells.join(' ')}\n`);
+    appendFileSync(out, `scope=${d.scope}\nreason=${d.reason}\nsuites=${d.suites.join(' ')}\nshells=${d.shells.join(' ')}\n${l3Direct ? `ci=${(d.ci ?? []).join(' ')}\n` : ''}${byName ? `narrowed=${(d.narrowed ?? []).join('; ')}\n` : ''}`);
   }
 }

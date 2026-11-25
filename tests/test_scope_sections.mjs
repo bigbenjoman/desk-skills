@@ -1,11 +1,12 @@
 // suite: CI scope (the suites a pull request's change reaches; anything unplaced runs every suite)
+// layer: L2
 // claims: imports (repo file names below are test data, not what this suite runs)
 // tests/scope_sections.mjs on a made-up tree, then on this repo, then tests/run.sh's suite filter.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { writeFileSync, readFileSync, rmSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildMap, decide, mentions, globRe, loads, parseNameStatus, repoMap, addedExports, ALWAYS } from './scope_sections.mjs';
+import { buildMap, decide, mentions, globRe, loads, parseNameStatus, repoMap, addedExports, changedNames, ALWAYS, LAYERS, suiteHeader, importClosure, changesAgainst } from './scope_sections.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const g = JSON.stringify(got); const w = JSON.stringify(want); const ok = g === w; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${g}${ok ? '' : ` (want ${w})`}`); };
@@ -69,6 +70,15 @@ const M = (...paths) => paths.map((path) => ({ status: 'M', path }));
 const scope = (ch) => { const d = decide(ch, map); return `${d.scope}: ${d.scope === 'full' ? d.reason : d.suites.join(' ')}`; };
 t('nothing changed', scope([]), 'none: ' + ALWAYS.join(' '));
 t('a script runs its suites and the always set', scope(M('desk/bin/lib.sh')), 'some: test_drive.sh test_lint.sh');
+// The suites checking every test file against the rules for them run on any change under tests/, a
+// helper included, since the layer check reads every helper a suite imports.
+{
+  const ctree = { ...tree, 'tests/test_scope_sections.mjs': '// suite: CI scope\n' };
+  const cmap = buildMap(Object.keys(ctree), (p) => ctree[p]);
+  const cscope = (ch) => decide(ch, cmap).suites.join(' ');
+  t('a suite added or changed runs the checks on every test file', [cscope([{ status: 'A', path: 'tests/test_skill_a.mjs' }]), cscope(M('tests/test_pass.mjs'))].map((x) => x.includes('test_scope_sections.mjs')), [true, true]);
+  t('a change outside tests/ does not run them', cscope(M('desk/bin/lib.sh')).includes('test_scope_sections.mjs'), false);
+}
 t('a changed suite runs itself', scope(M('tests/test_docs.mjs')), 'some: test_docs.mjs test_lint.sh');
 t('a shell change lists its scripts for bash 3.2', decide(M('desk/bin/lib.sh'), map).shells, ['bin/tool', 'desk/bin/drive.sh', 'desk/bin/lib.sh', 'tests/test_drive.sh', 'tests/test_lint.sh']);
 t('README.md alone is a document', scope(M('README.md')), 'full: no suite claims README.md');
@@ -95,6 +105,31 @@ t('DS-920 a covers: glob claims the suites it matches', [[...(rmap.claims.get('t
 t('DS-920 a changed suite runs the suite that covers it', [rscope(M('tests/test_drive.sh')), rscope(M('tests/test_pass.mjs'))], ['test_drive.sh test_lint.sh test_replay.sh', 'test_lint.sh test_pass.mjs']);
 t('DS-920 a covered suite does not pass on what it names', rscope(M('desk/bin/drive.sh')), 'test_drive.sh test_lint.sh');
 
+// DS-986: with l3Direct (tests/related.sh), an L3 suite runs only for a change it claims directly; one it
+// reaches only through imports is left for CI. test_e2e.sh names pass.mjs, which imports queue.mjs, which
+// imports lock.mjs; test_e2e_lock.sh names lock.mjs. test_pass.mjs (L1) and test_drive.sh (L2) reach all three.
+const layered = {
+  ...tree,
+  'tests/test_pass.mjs': "// suite: pass\n// layer: L1\nimport { run } from '../desk/bin/pass.mjs';",
+  'tests/test_drive.sh': '# suite: drive\n# layer: L2\n"$SRC/desk/bin/drive.sh"\n"$SRC/bin/tool"\nnode "$SRC/desk/bin/pass.mjs"',
+  'tests/test_e2e.sh': '# suite: e2e\n# layer: L3\nnode "$SRC/desk/bin/pass.mjs" --once',
+  'tests/test_e2e_lock.sh': '# suite: e2e lock\n# layer: L3\nnode "$SRC/desk/bin/lock.mjs"',
+};
+const lmap = buildMap(Object.keys(layered), (p) => layered[p]);
+const local = (ch) => { const d = decide(ch, lmap, { l3Direct: true }); return [d.scope, d.suites.join(' '), (d.ci ?? []).join(' ')]; };
+t('DS-986 AC1 an L3 suite a change reaches only through imports does not run, and is left for CI', local(M('desk/bin/queue.mjs')), ['some', 'test_drive.sh test_lint.sh test_pass.mjs', 'test_e2e.sh']);
+t('DS-986 AC1 the reason counts it', decide(M('desk/bin/queue.mjs'), lmap, { l3Direct: true }).reason, '1 changed file(s) reach 3 of 8 suites, and 1 L3 suite(s) only through imports, left for CI');
+t('DS-986 AC1 one changed file one L3 suite claims directly, another it reaches through imports', local(M('desk/bin/lock.mjs')), ['some', 'test_data.mjs test_drive.sh test_e2e_lock.sh test_lint.sh test_pass.mjs', 'test_e2e.sh']);
+t('DS-986 AC2 an L3 suite runs for a file it claims directly', local(M('desk/bin/pass.mjs')), ['some', 'test_drive.sh test_e2e.sh test_lint.sh test_pass.mjs', '']);
+t('DS-986 AC2 and for a change to the suite itself', local(M('tests/test_e2e.sh')), ['some', 'test_e2e.sh test_lint.sh', '']);
+t('DS-986 AC2 one direct claim among the changed files runs it, and it is not left for CI', local(M('desk/bin/queue.mjs', 'desk/bin/pass.mjs')), ['some', 'test_drive.sh test_e2e.sh test_lint.sh test_pass.mjs', '']);
+t('DS-986 AC3 L1 and L2 suites reached through imports run as without l3Direct', [local(M('desk/bin/queue.mjs'))[1], decide(M('desk/bin/queue.mjs'), lmap).suites.filter((s) => !s.startsWith('test_e2e')).join(' ')], ['test_drive.sh test_lint.sh test_pass.mjs', 'test_drive.sh test_lint.sh test_pass.mjs']);
+t('DS-986 AC4 a full scope runs every suite, L3 included', local(M('install.sh')), ['full', lmap.suites.map((s) => s.file).join(' '), '']);
+t('DS-986 AC5 without l3Direct (CI) L3 suites are selected through imports as before, and nothing is left',
+  [decide(M('desk/bin/queue.mjs'), lmap).suites.join(' '), 'ci' in decide(M('desk/bin/queue.mjs'), lmap), decide(M('desk/bin/queue.mjs'), lmap).reason],
+  ['test_drive.sh test_e2e.sh test_lint.sh test_pass.mjs', false, '1 changed file(s) reach 4 of 8 suites']);
+t('DS-986 direct claims are what a suite names or globs, before any load is followed', [[...(lmap.direct.get('desk/bin/pass.mjs') ?? [])].sort(), [...(lmap.direct.get('desk/bin/queue.mjs') ?? [])]], [['test_drive.sh', 'test_e2e.sh', 'test_pass.mjs'], []]);
+
 // DS-818: root documents and scripts, and files under tests/ that are not suites, are claimed like any
 // other file; desk-env.mjs gaining exports runs the suites that use them.
 const claimed = {
@@ -112,6 +147,7 @@ const claimed = {
   'tests/test_pass_x.sh': '# suite: pass x\n. "$S/pass_setup.sh"',
   'tests/test_prose.mjs': "// suite: prose\n// covers: skills/writing/**\nimport { scan } from './prose_scan.mjs';\nread('tests/fixtures/prose_baseline.json')",
   'tests/test_env_user.mjs': "// suite: env user\nimport { newThing } from '../desk/bin/desk-env.mjs';",
+  'tests/test_schema_user.mjs': "// suite: schema user\nimport { newRow } from '../desk/bin/config-schema.mjs';",
 };
 const cmap = buildMap(Object.keys(claimed), (p) => claimed[p]);
 const cscope = (ch) => { const d = decide(ch, cmap); return `${d.scope}: ${d.scope === 'full' ? d.reason : d.suites.join(' ')}`; };
@@ -124,6 +160,12 @@ t('DS-818 tests/run.sh and the scoping script stay foundational', [cscope(M('tes
 const E = (exports) => [{ status: 'M', path: 'desk/bin/desk-env.mjs', exports }];
 t('DS-818 AC2 desk-env.mjs gaining exports runs the suites that use them', [cscope(E(['newThing'])), cscope([...E(['newThing']), ...M('install.sh')])], ['some: test_env_user.mjs test_lint.sh', 'some: test_env_user.mjs test_install.sh test_lint.sh']);
 t('DS-818 AC3 any other desk-env.mjs change runs everything', cscope(E(undefined)), 'full: desk/bin/desk-env.mjs is shared by every suite');
+// config-schema.mjs takes the same exports-only rule, checked on the real module.
+const schema = readFileSync(join(R, 'desk/bin/config-schema.mjs'), 'utf8');
+const S = (after) => [{ status: 'M', path: 'desk/bin/config-schema.mjs', exports: addedExports(schema, after) ?? undefined }];
+t('DS-976 AC1 config-schema.mjs gaining an export runs the suites that use it', cscope(S(`${schema}export const newRow = 1;\n`)), 'some: test_lint.sh test_schema_user.mjs');
+t('DS-976 AC2 an edited config-schema.mjs export runs everything', cscope(S(schema.replace("export const EXTRA_MODELS = ['finder', 'text'];", "export const EXTRA_MODELS = ['finder', 'text', 'other'];"))), 'full: desk/bin/config-schema.mjs is shared by every suite');
+t('DS-976 AC3 a removed config-schema.mjs export runs everything', cscope(S(schema.replace("export const LEVERS_AUTO = 'auto';\n", ''))), 'full: desk/bin/config-schema.mjs is shared by every suite');
 const env = 'import { x } from "./y.mjs";\n\nexport const one = 1;\n\nexport function two(a) {\n  return a;\n}\n';
 t('DS-818 addedExports: new exports, in any place, with comments', addedExports(env, 'import { x } from "./y.mjs";\n\nexport const one = 1;\n// three\nexport const three = (a) => a;\n\nexport function two(a) {\n  return a;\n}\n/** four */\nexport async function four() {}\nexport const FIVE = [\'a\'];\n'), ['three', 'four', 'FIVE']);
 t('DS-818 addedExports: an unchanged module adds none', addedExports(env, env), []);
@@ -230,6 +272,24 @@ t('a suite with claims: imports claims nothing it only names, only what it impor
 const walks = /\b(readdirSync|readdir|walk|markdownFiles)\s*\(\s*(\[?\s*join\(\s*(root|R|ROOT|SRC)\b|refs\b|skill\b)|git ls-files/;
 const uncovered = real.suites.filter((s) => !ALWAYS.includes(s.file) && !s.importsOnly && !s.covers.length && walks.test(readFileSync(join(R, 'tests', s.file), 'utf8'))).map((s) => s.file);
 t('every suite that walks the repo tree has a covers: line', uncovered, []);
+// Each suite's test layer: L1 in process, L2 one process boundary, L3 end to end.
+t('DS-985 AC1 every suite in the repo declares exactly one layer, L1, L2 or L3', real.suites.filter((s) => !LAYERS.includes(s.layer)).map((s) => s.file), []);
+t('DS-985 AC1 a second layer line, an unknown layer or none is no layer', ['// suite: x\n// layer: L1\n// layer: L2\n', '# suite: x\n# layer: L4\n', '# suite: x\n', '# suite: x\n# layer: L2\n'].map((h) => suiteHeader(h).layer), [null, null, null, 'L2']);
+const textOf = (p) => { try { return readFileSync(join(R, p), 'utf8'); } catch { return ''; } };
+const layerOf = (f) => real.suites.find((s) => s.file === f)?.layer;
+// End to end: the suites built on the pass, batch and merge driver setups, and those running the real
+// pass.mjs or merge-driver.sh themselves. A claims: imports suite's text is test data, so it is not read
+// for this.
+const endToEnd = real.suites.filter((s) => !s.importsOnly).map((s) => s.file).filter((f) => /^\s*(source|\.) .*(pass_setup|batch_e2e_setup|merge_driver_setup|base_sync_setup)\.sh/m.test(textOf(`tests/${f}`)) || /node "\$B\/pass\.mjs"|join\(BIN, 'pass\.mjs'\)|bash "\$B\/merge-driver\.sh" --tickets/.test(textOf(`tests/${f}`)));
+t('DS-985 AC3 a suite that runs a pass, batch or merge driver end to end is L3', endToEnd.filter((f) => layerOf(f) !== 'L3'), []);
+t('DS-985 AC3 those include the pass, batch, merge driver and installer suites', ['test_pass_spawns.sh', 'test_batch_e2e.sh', 'test_merge_driver_loop.sh', 'test_epic.sh', 'test_install_skips.sh'].map(layerOf), ['L3', 'L3', 'L3', 'L3', 'L3']);
+// In process: a .mjs suite that, with the tests/ helpers it imports, never loads child_process (the
+// pass-phase trap loads it only to refuse every call) and writes no executable stub, which is there only
+// for the module under test to start.
+const startsNothing = (p) => !/child_process|(chmodSync\(.*|mode: )0o7[57][57]\b/.test(textOf(p));
+const inProcess = (f) => f.endsWith('.mjs') && importClosure(`tests/${f}`, textOf).filter((p) => p.startsWith('tests/') && p !== 'tests/pass_phase_trap.mjs').every(startsNothing);
+t('DS-985 AC4 a suite whose cases import modules and start no process is L1', real.suites.map((s) => s.file).filter((f) => inProcess(f) && layerOf(f) !== 'L1'), []);
+t('DS-985 AC4 and an L1 suite starts no process', real.suites.filter((s) => s.layer === 'L1' && !inProcess(s.file)).map((s) => s.file), []);
 const cw = decide(M('desk/bin/clears-when.mjs'), real);
 t('clears-when.mjs, reached through queue.mjs, runs the suites that claim it', [cw.scope, cw.suites], ['some', real.suites.map((s) => s.file).filter((s) => ALWAYS.includes(s) || real.claims.get('desk/bin/clears-when.mjs')?.has(s))]);
 // A script no suite names is unclaimed, and changing it runs everything: each of these has a claim.
@@ -241,10 +301,12 @@ for (const [f, suite] of [['desk/bin/github-signin.mjs', 'test_playwright.mjs'],
 t('DS-920 AC4 a changed pass suite runs test_compare_pass.sh', ['test_pass_other_repo.sh', 'test_pass_spawns.sh'].map((s) => decide(M(`tests/${s}`), real).suites.includes('test_compare_pass.sh')), [true, true]);
 const MERGE_DRIVER_SUITES = ['loop', 'reruns', 'approval', 'holds', 'review', 'tree'].map((s) => `test_merge_driver_${s}.sh`);
 t('merge-driver.sh reaches every merge driver suite', MERGE_DRIVER_SUITES.filter((s) => !decide(M('desk/bin/merge-driver.sh'), real).suites.includes(s)), []);
+// A helper that L1 suites import decides their layer, so changing it runs the check on every test file.
+{ const d = decide(M('tests/prose_check.mjs'), real); t('a helper L1 suites import runs the checks on every test file', [d.scope, d.suites.includes('test_scope_sections.mjs')], ['some', true]); }
 // DS-818 AC4 to AC6 on this repo: each runs the suites that claim it, not every suite.
 for (const f of ['desk-config.md', 'install.sh', 'tests/compare_pass.sh', 'tests/compare_pass.mjs', 'tests/pass_setup.sh']) {
   const d = decide(M(f), real);
-  t(`DS-818 ${f} runs the suites that claim it`, [d.scope, d.suites], ['some', real.suites.map((s) => s.file).filter((s) => ALWAYS.includes(s) || real.claims.get(f)?.has(s))]);
+  t(`DS-818 ${f} runs the suites that claim it`, [d.scope, d.suites], ['some', real.suites.map((s) => s.file).filter((s) => ALWAYS.includes(s) || real.claims.get(f)?.has(s) || (f.startsWith('tests/') && s === 'test_scope_sections.mjs'))]);
 }
 // DS-884 AC5: a change only to a module the prose check imports, directly or through another, runs it.
 const proseCovers = real.suites.find((s) => s.file === 'test_prose_code.mjs').covers.filter((p) => /\.mjs$/.test(p) && !p.includes('*'));
@@ -256,6 +318,161 @@ t('a desk-pr reference reaches the desk-pr split suite', decide(M('skills/desk-p
 const cli = spawnSync(process.execPath, [join(R, 'tests/scope_sections.mjs'), '--files', 'desk/bin/merge-driver.sh', '--json'], { encoding: 'utf8' });
 const j = JSON.parse(cli.stdout || '{}');
 t('cli --files --json', [cli.status, j.scope, j.suites?.includes('test_merge_driver_loop.sh'), j.shells?.includes('desk/bin/merge-driver.sh')], [0, 'some', true, true]);
+// DS-986 on this repo: what related.sh leaves for CI is L3, and with what it runs makes CI's selection.
+for (const f of ['desk/bin/clears-when.mjs', 'desk/bin/queue.mjs']) {
+  const ci = decide(M(f), real), loc = decide(M(f), real, { l3Direct: true });
+  t(`DS-986 ${f}: related.sh leaves only L3 suites for CI, and runs the rest of CI's selection`,
+    [loc.ci.length > 0, loc.ci.filter((s) => layerOf(s) !== 'L3'), [...loc.suites, ...loc.ci].sort().join(' ') === [...ci.suites].sort().join(' ')], [true, [], true]);
+}
+const lcli = spawnSync(process.execPath, [join(R, 'tests/scope_sections.mjs'), '--files', 'desk/bin/queue.mjs', '--l3-direct', '--json'], { encoding: 'utf8' });
+const lj = JSON.parse(lcli.stdout || '{}');
+t('DS-986 cli --l3-direct --json names the suites left for CI', [lcli.status, Array.isArray(lj.ci) && lj.ci.length > 0, lj.ci?.some((s) => lj.suites.includes(s))], [0, true, false]);
+
+// DS-999: with byName (tests/related.sh), an edit to named functions of desk-env.mjs or config-schema.mjs
+// runs the suites reaching them; CI, without it, still runs every suite. The diffs are real merged edits,
+// undone on the current module: to linuxMeminfo, to repoPlacement (with the repoDirs it added), and to
+// machineValue (with a line in the command line's `machine` case).
+const N = (path, before, after) => [{ status: 'M', path, names: changedNames(before, after) }];
+const byName = (ch) => decide(ch, real, { l3Direct: true, byName: true });
+const shown = (d) => [d.scope, d.scope === 'full' ? d.reason : d.suites.length < real.suites.length];
+const meminfoOld = envReal.replace("    const m = M.parseMeminfo(readFileSync('/proc/meminfo', 'utf8'));", "    const m = {};\n    for (const l of readFileSync('/proc/meminfo', 'utf8').split('\\n')) {\n      const x = /^(\\w+):\\s+(\\d+)/.exec(l);\n      if (x) m[x[1]] = Number(x[2]) * 1024;\n    }");
+const mem = byName(N('desk/bin/desk-env.mjs', meminfoOld, envReal));
+t('DS-999 AC1 an edit to linuxMeminfo\'s body runs the suites reaching it, not every suite', [shown(mem), changedNames(meminfoOld, envReal)], [['some', true], { names: ['linuxMeminfo'] }]);
+t('DS-999 AC1 they include a suite running the `desk-env mem` command it serves', mem.suites.includes('test_test_scope.mjs'), true);
+const dirsAt = envReal.indexOf('// A configured repo\'s directories from its own config');
+const dirsEnd = envReal.indexOf('\n}\n', dirsAt) + 3;
+const placementOld = (envReal.slice(0, dirsAt) + envReal.slice(dirsEnd)).replace('root: repoDirs(hits[0].slug, root).root, otherName };', "root: dir && !isNone(dir) ? expandHome(dir) : null, otherName };")
+  .replace('  return { repository, slug: hits[0].slug', "  const dir = String(repoConfigValue(hits[0].slug, 'repo-root', root) ?? '').trim();\n  return { repository, slug: hits[0].slug");
+t('DS-999 AC1 an edited function and a new one beside it narrow on both', changedNames(placementOld, envReal), { names: ['repoPlacement', 'repoDirs'] });
+t('DS-999 AC1 and run the suites reaching them', shown(byName(N('desk/bin/desk-env.mjs', placementOld, envReal))), ['some', true]);
+const machineOld = envReal.replace('  const v = M.profileValue(machineProfile(), key);', '  const p = machineProfile();\n  const v = p?.sizing[key]?.value ?? p?.hardware[key]?.value;');
+t('DS-999 AC1 machineValue\'s edit is full: PATHS, built on load, names repoRoot, which reaches it', shown(byName(N('desk/bin/desk-env.mjs', machineOld, envReal))),
+  ['full', 'desk/bin/desk-env.mjs is shared by every suite, and the change is not narrowed by name: desk/bin/desk-env.mjs runs one at load: const PATHS = { (repoRoot)']);
+const cliLine = '          for (const w of M.sizingWarnings(M.rewrittenSizing(profile, proposal), hw)) console.log(`\\nwarning: ${w}`);\n';
+t('DS-999 AC2 an edit to the command line, module-level code, is full', byName(N('desk/bin/desk-env.mjs', envReal.replace(cliLine, ''), envReal)).reason,
+  'desk/bin/desk-env.mjs is shared by every suite, and the change is not narrowed by name: a top-level statement that runs code when the module loads changed: if (isMain) {');
+t('DS-999 AC2 so is an edited top-level call, a class, or a constant a call sets on load', [
+  changedNames('export const a = 1;\nsetup();\n', 'export const a = 1;\nsetup(2);\n').full,
+  changedNames('export class A {}\n', 'export class A { x() {} }\n').full,
+  changedNames('export const P = read(1);\n', 'export const P = read(2);\n').full,
+], ['a top-level statement that runs code when the module loads changed: setup(2);', 'a top-level statement that runs code when the module loads changed: export class A { x() {} }',
+  'a top-level statement that runs code when the module loads changed: export const P = read(2);']);
+t('DS-999 AC2 and DEFAULT_BROWSER_PROFILE\'s initializer in desk-env.mjs, which runs on every import', byName(N('desk/bin/desk-env.mjs', envReal, envReal.replace("expandHome(rowDefault('browser-profile'))", "expandHome(rowDefault('browser-profiles'))"))).scope, 'full');
+const rowDefaultOld = envReal.replace('const rowDefault = (id) => ROWS.find((e) => e.id === id).default;', 'const rowDefault = (id) => ROWS.find((e) => e.id === id)?.default;');
+t('DS-999 AC2 and a function such an initializer calls: rowDefault, run on load for DEFAULT_BROWSER_PROFILE', [rowDefaultOld !== envReal, changedNames(rowDefaultOld, envReal).names, byName(N('desk/bin/desk-env.mjs', rowDefaultOld, envReal)).reason.includes('runs one at load')],
+  [true, ['rowDefault'], true]);
+t('DS-999 AC2 and a function the command line runs before its switch', byName(N('desk/bin/desk-env.mjs', envReal.replace('const pinConfig = () => { pinned = true; };', 'const pinConfig = () => { pinned = !false; };'), envReal)).reason.endsWith('runs one at load: if (isMain) { (pinConfig)'), true);
+t('DS-999 AC3 a removed, renamed or unexported name is full', [
+  changedNames(envReal, envReal.replace(/\bexport function repoDirs\(/, 'export function repoDirectories(')).full,
+  changedNames(envReal, envReal.replace(/\bexport function repoDirs\(/, 'function repoDirs(')).full,
+  changedNames(schema, schema.replace("export const LEVERS_AUTO = 'auto';\n", '')).full,
+], ['repoDirs was removed or renamed', 'repoDirs is no longer exported', 'LEVERS_AUTO was removed or renamed']);
+t('DS-999 AC3 and its scope says why', byName(N('desk/bin/desk-env.mjs', envReal, envReal.replace(/\bexport function repoDirs\(/, 'function repoDirs('))).reason,
+  'desk/bin/desk-env.mjs is shared by every suite, and the change is not narrowed by name: repoDirs is no longer exported');
+t('DS-999 AC4 without byName (CI) the same edit runs every suite', [decide(N('desk/bin/desk-env.mjs', meminfoOld, envReal), real).scope, decide(N('desk/bin/desk-env.mjs', meminfoOld, envReal), real, { l3Direct: true }).scope], ['full', 'full']);
+const forcedOld = schema.replace('export function forcedRows(read) {\n  const out = [];\n', 'export function forcedRows(read) {\n  const out = [];\n  if (!read) return out;\n');
+t('DS-999 AC5 an edit to a config-schema.mjs function runs the suites reaching it, through desk-env.mjs too, not every suite', [changedNames(forcedOld, schema), shown(byName(N('desk/bin/config-schema.mjs', forcedOld, schema)))], [{ names: ['forcedRows'] }, ['some', true]]);
+t('DS-999 AC5 one TYPES, built on load, reaches is full',byName(N('desk/bin/config-schema.mjs', schema.replace('  if (items == null || isNone(items)) return null;\n  const one', '  if (items == null || isNone(items)) return null;\n  if (!items.length) return undefined;\n  const one'), schema)).reason,
+  'desk/bin/config-schema.mjs is shared by every suite, and the change is not narrowed by name: desk/bin/config-schema.mjs runs one at load: export const TYPES = Object.freeze({ (gitAuthorOf)');
+t('DS-999 AC6 the reason names the changed functions', [mem.reason.endsWith(', narrowed on the changed names in desk/bin/desk-env.mjs: linuxMeminfo'), mem.narrowed], [true, ['desk/bin/desk-env.mjs: linuxMeminfo']]);
+t('DS-999 a comment-only change narrows on nothing', changedNames(envReal, envReal.replace('// ---- CLI ---', '// ---- the CLI ---')), { names: [] });
+t('DS-999 a new helper that runs code on load, or an edit that does not stand alone, is full', [
+  changedNames('export const a = 1;\n', 'export const a = 1;\nconst b = read();\n').full,
+  changedNames('export function f() {}\nexport const a = 1;\n', 'export function f() {} main();\nexport const a = 1;\n').full,
+  changedNames('export const f = () => 1;\nexport const a = 1;\n', 'export const f = () => 1\n(main)();\nexport const a = 1;\n').full,
+  changedNames('export function f() {}\nexport function g() {}\n', 'export function g() {}\nexport function f() {}\n').full,
+  changedNames('export const a = 1;\n', 'export const a = 1;\nlet b = 2;\n').full,
+], ['a top-level statement that runs code when the module loads changed: const b = read();', 'a top-level statement that runs code when the module loads changed: export function f() {} main();', 'f does not stand alone', 'g moved',
+  'the new b is a let, or a name already in use']);
+// DS-1003: a constant set by Object.freeze of a literal only holds data, so an edit to it narrows by name.
+const leversOld = schema.replace("'review-reuse', 'wrappers']);", "'review-reuse']);");
+const levers = byName(N('desk/bin/config-schema.mjs', leversOld, schema));
+// AC1: adding a lever reads as an edit to LEVERS by name, not as load-time code,
+// but TYPES, built on load, reaches LEVERS (through leverRow), so the real edit stays full and the reason says why.
+t('DS-1003 AC1 adding a lever to LEVERS is an edit to LEVERS by name', [leversOld !== schema, changedNames(leversOld, schema)], [true, { names: ['LEVERS'] }]);
+t('DS-1003 AC1 and is full because TYPES, built on load, reaches LEVERS', shown(levers),
+  ['full', 'desk/bin/config-schema.mjs is shared by every suite, and the change is not narrowed by name: desk/bin/config-schema.mjs runs one at load: export const TYPES = Object.freeze({ (leverRow)']);
+t('DS-1003 AC2 a frozen array or object of literals narrows as AC1 does', [
+  changedNames("export const A = Object.freeze(['a', 1, true, null]);\n", "export const A = Object.freeze(['a', 2, false, null, 'b']);\n"),
+  changedNames("export const O = Object.freeze({ a: 'x', b: [1, { c: null }] });\n", "export const O = Object.freeze({ a: 'y', b: [1, { c: -2 }], d: true });\n"),
+  changedNames("export const A = Object.freeze(['a']);\nexport const b = 1;\n", "export const A = Object.freeze([\n  'a',\n  'b',\n]);\nexport const b = 1;\n"),
+], [{ names: ['A'] }, { names: ['O'] }, { names: ['A'] }]);
+const code = (s) => `a top-level statement that runs code when the module loads changed: ${s}`;
+t('DS-1003 AC3 Object.freeze of a spread, a call or a reference is full, as today', [
+  changedNames("export const A = Object.freeze(['a']);\n", "export const A = Object.freeze(['a', ...B]);\n").full,
+  changedNames("export const A = Object.freeze(['a']);\n", "export const A = Object.freeze(['a', f()]);\n").full,
+  changedNames("export const A = Object.freeze({ a: 1 });\n", "export const A = Object.freeze({ a: B });\n").full,
+  changedNames("export const A = Object.freeze(['a']);\n", "export const A = Object.freeze(['a']).map(f);\n").full,
+  changedNames("export const A = Object.freeze(['a']);\n", "export const A = Object.freeze(['a']), b = f();\n").full,
+], [code("export const A = Object.freeze(['a', ...B]);"), code("export const A = Object.freeze(['a', f()]);"), code('export const A = Object.freeze({ a: B });'),
+  code("export const A = Object.freeze(['a']).map(f);"), code("export const A = Object.freeze(['a']), b = f();")]);
+t('DS-1003 AC4 any other call setting a constant is full, as today', [
+  changedNames("export const A = Object.seal(['a']);\n", "export const A = Object.seal(['a', 'b']);\n").full,
+  changedNames("export const A = freeze(['a']);\n", "export const A = freeze(['a', 'b']);\n").full,
+], [code("export const A = Object.seal(['a', 'b']);"), code("export const A = freeze(['a', 'b']);")]);
+t('DS-1003 AC5 without byName (CI) the LEVERS edit runs every suite', [decide(N('desk/bin/config-schema.mjs', leversOld, schema), real).scope, decide(N('desk/bin/config-schema.mjs', leversOld, schema), real, { l3Direct: true }).scope], ['full', 'full']);
+// A made-up desk-env.mjs: helper() is reached through used(), forCmd() only through two commands of its
+// command line, forAll() before its switch, and alone() by a suite naming it.
+const cliEnv = `import { readFileSync } from 'node:fs';
+function helper(a) {
+  return a + 1;
+}
+export function used(a) {
+  return helper(a);
+}
+export function alone() {
+  return 1;
+}
+export function forCmd() {
+  return 2;
+}
+export function forAll() {
+  return 3;
+}
+const isMain = process.argv[1] === 'x';
+if (isMain) {
+  const [cmd] = process.argv.slice(2);
+  forAll();
+  switch (cmd) {
+    case 'one':
+    case 'uno': {
+      console.log(forCmd());
+      break;
+    }
+    case 'two':
+      console.log(readFileSync('x'));
+      break;
+    default:
+      process.exit(2);
+  }
+}
+`;
+const named = {
+  'desk/bin/desk-env.mjs': cliEnv,
+  'desk/bin/user.mjs': "import { used } from './desk-env.mjs';\nexport const u = () => used(1);",
+  'desk/bin/caller.sh': '#!/usr/bin/env bash\ndesk-env uno',
+  'desk/bin/other.sh': '#!/usr/bin/env bash\ndesk-env two',
+  'tests/test_lint.sh': '# suite: lint\n# covers: **',
+  'tests/test_user.mjs': "// suite: user\nimport { u } from '../desk/bin/user.mjs';",
+  'tests/test_caller.sh': '# suite: caller\nbash "$SRC/desk/bin/caller.sh"',
+  'tests/test_other.sh': '# suite: other\nbash "$SRC/desk/bin/other.sh"',
+  'tests/test_alone.mjs': "// suite: alone\nimport { alone } from '../desk/bin/desk-env.mjs';",
+};
+const nmap = buildMap(Object.keys(named), (p) => named[p]);
+const edit = (fn) => { const after = cliEnv.replace(new RegExp(`(function ${fn}\\(a?\\) \\{\\n  return )`), '$1-1 + 1 + '); const d = decide(N('desk/bin/desk-env.mjs', cliEnv, after), nmap, { byName: true }); return `${d.scope}: ${d.scope === 'full' ? d.reason : d.suites.join(' ')}`; };
+t('DS-999 a helper runs the suites claiming the scripts that import and use what calls it', edit('helper'), 'some: test_lint.sh test_user.mjs');
+t('DS-999 an export a suite imports runs that suite', edit('alone'), 'some: test_alone.mjs test_lint.sh');
+t('DS-999 a function only some commands run runs the suites claiming a script naming one', edit('forCmd'), 'some: test_caller.sh test_lint.sh');
+t('DS-999 a function every command runs is full', edit('forAll'), 'full: desk/bin/desk-env.mjs is shared by every suite, and the change is not narrowed by name: desk/bin/desk-env.mjs runs one at load: if (isMain) { (forAll)');
+const runNamed = { ...named, 'tests/run.sh': '#!/usr/bin/env bash\ndesk-env one' };
+const runMap = buildMap(Object.keys(runNamed), (p) => runNamed[p]);
+t('DS-999 a function a command tests/run.sh runs reaches is full', decide(N('desk/bin/desk-env.mjs', cliEnv, cliEnv.replace('function forCmd() {\n  return ', 'function forCmd() {\n  return -1 + 1 + ')), runMap, { byName: true }).reason,
+  'desk/bin/desk-env.mjs is shared by every suite, and the change is not narrowed by name: tests/run.sh, shared by every suite, may run `desk-env one`');
+// DS-1003 AC1: a frozen literal constant no load-time code reaches narrows to the suites naming it.
+const frozenEnv = cliEnv.replace('export function alone() {', "export const KINDS = Object.freeze(['a', 'b']);\nexport function alone() {");
+const frozenNamed = { ...named, 'desk/bin/desk-env.mjs': frozenEnv, 'tests/test_kinds.mjs': "// suite: kinds\nimport { KINDS } from '../desk/bin/desk-env.mjs';" };
+const frozen = decide(N('desk/bin/desk-env.mjs', frozenEnv, frozenEnv.replace("['a', 'b']", "['a', 'b', 'c']")), buildMap(Object.keys(frozenNamed), (p) => frozenNamed[p]), { byName: true });
+t('DS-1003 AC1 a frozen list no load-time code reaches narrows to the suites naming it', [frozen.scope, frozen.suites, frozen.reason.endsWith(', narrowed on the changed names in desk/bin/desk-env.mjs: KINDS')], ['some', ['test_kinds.mjs', 'test_lint.sh'], true]);
 const T = scratch('desk-scope-');
 try {
   const out = join(T, 'out');
@@ -263,6 +480,39 @@ try {
   const gh = spawnSync(process.execPath, [join(R, 'tests/scope_sections.mjs'), '--files', '.github/workflows/tests.yml', '--github-output'], { encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: out } });
   const lines = execFileSync('cat', [out], { encoding: 'utf8' }).split('\n');
   t('cli --github-output writes scope, reason, suites, shells', [gh.status, lines[0], lines[2] === `suites=${listed.join(' ')}`, lines[3].startsWith('shells=')], [0, 'scope=full', true, true]);
+
+  // ---- a worktree's untracked files ---------------------------------------------------------------
+  // A desk resume file or a desk-review run's scratch files, left untracked, are not the change.
+  const W = join(T, 'wt');
+  const g = (...a) => execFileSync('git', ['-C', W, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' });
+  mkdirSync(join(W, 'desk/bin'), { recursive: true });
+  mkdirSync(join(W, 'tests'));
+  writeFileSync(join(W, '.gitignore'), 'node_modules\n');
+  writeFileSync(join(W, 'desk/bin/tool.mjs'), 'export const a = 1;\n');
+  writeFileSync(join(W, 'desk/bin/other.mjs'), 'export const b = 1;\n');
+  writeFileSync(join(W, 'tests/test_tool.mjs'), "// suite: tool\n// layer: L1\nimport { a } from '../desk/bin/tool.mjs';\n");
+  writeFileSync(join(W, 'tests/test_other.mjs'), "// suite: other\n// layer: L1\nimport { b } from '../desk/bin/other.mjs';\n");
+  g('init', '-q', '-b', 'main');
+  g('add', '-A');
+  g('commit', '-qm', 'base');
+  g('checkout', '-qb', 'work');
+  writeFileSync(join(W, 'desk/bin/tool.mjs'), 'export const a = 2;\n');
+  const wmap = repoMap(W);
+  const scopeWith = (...files) => {
+    for (const f of files) { mkdirSync(dirname(join(W, f)), { recursive: true }); writeFileSync(join(W, f), '{}'); }
+    const d = decide(changesAgainst(W, 'main'), wmap);
+    g('clean', '-qfdx');
+    return [d.scope, d.suites];
+  };
+  const toolOnly = ['some', ['test_tool.mjs']];
+  t('DS-997 AC1 an untracked desk-review codex brief at the root leaves the edited script\'s suites', scopeWith('desk-review-codex-brief-r1.txt'), toolOnly);
+  t('DS-997 AC2 an untracked desk-review results file or seat brief at the root does not make it full',
+    [scopeWith('desk-review-results-r1.json'), scopeWith('desk-review-finder-brief-r1.txt')], [toolOnly, toolOnly]);
+  t('DS-997 AC3 an untracked desk-ticket resume file does not change the scope', scopeWith('.claude/desk-ticket-DS-1.json'), toolOnly);
+  t('DS-997 AC4 any other untracked root file is still full', scopeWith('.npmrc')[0], 'full');
+  writeFileSync(join(W, '.gitignore'), 'node_modules\ndist\n');
+  g('commit', '-qam', 'ignore dist');
+  t('DS-997 AC5 a committed root config change is still full with --base and --head', decide(changesAgainst(W, 'main', 'HEAD'), wmap).scope, 'full');
 
   // ---- tests/run.sh's suite filter --------------------------------------------------------------
   const run = (...a) => spawnSync('bash', [join(R, 'tests/run.sh'), ...a], { encoding: 'utf8' });

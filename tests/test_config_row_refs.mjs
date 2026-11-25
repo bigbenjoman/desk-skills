@@ -1,5 +1,6 @@
-// suite: config row references (review-asks reads §4's house bar; worker skills name §3b/§4 rows with their desk-env call)
-// covers: desk/bin/desk-env.mjs desk-config.md skills/desk-setup/SKILL.md skills/desk-ticket/** skills/desk-review/** skills/desk-pr/** skills/desk-review-response/** skills/desk-dev/** skills/desk-jira/** skills/desk-kiss/** skills/desk-autopilot/references/**
+// suite: config row references (review-asks reads §4's house bar; worker skills name §3b/§4 rows with their desk-env call; no skill but setup and update, and no agent, reads the config whole)
+// layer: L2
+// covers: desk/bin/desk-env.mjs desk-config.md skills/**/*.md agents/*.md
 // `desk-env get review-asks` prints §4 "What review here consistently asks for", one ask per line,
 // and exits 3 while it is TODO or still says "Not mined". Every file a worker reads names each §3b
 // and §4 row it mentions with the `desk-env get|list|cmds <id>` call that reads it, at or before the
@@ -86,6 +87,100 @@ for (const f of WORKER_FILES) {
   if (ids.length) t(`AC2: ${relative(ROOT, f)} names every row with its id`, ids.join(' '), '');
 }
 t(`AC2: ${WORKER_FILES.length} worker files checked, rows named without an id`, bare, 0);
+
+// ---- DS-875: skills read the config by section or row, never the file whole -------------------
+// Only desk-setup and desk-update, which write the file, open it whole. A whole read is a Read of
+// the `CONFIG` file, a `cat` of it, a Read of what `desk-env where` resolved, a brief handing on the
+// file's path, or `desk-env show` with no section named (every section). §3c is not a section here:
+// show refuses it.
+const WRITERS = new Set(['desk-setup', 'desk-update']);
+const NOT = String.raw`(?<!(?:not|never|cannot) |-)`; // "globally-read config" is no read of the file
+const WHOLE = [
+  new RegExp(String.raw`${NOT}\bread (?:the |this repo's )?(?:repo )?(?:\`CONFIG\`|config) file\b`, 'i'),
+  new RegExp(String.raw`${NOT}\bread (?:the |this repo's )?(?:repo )?(?:\`CONFIG\`|config)(?=[.,;)*]|$| at\b)`, 'im'),
+  /\bdesk-env where`?,?\s+then\s+read it\b(?!\s+with\b)/i,
+  /<CONFIG path>/,
+  /\bcat\s+"?\$\{?CONFIG\b/,
+  /\bdesk-env show(?![ \t]+(?:§?\d[ab]?|rules)\b)/,
+];
+const SECTION_READ = /\bdesk-env show(?:[ \t]+(?:§?\d[ab]?|rules)\b)+|\bdesk-env get --json(?: --where)? --section\b/;
+const wholeReads = (text, res = WHOLE) => text.replace(/^---\n[\s\S]*?\n---\n/, '').split(/\n\s*\n/)
+  .filter((p) => res.some((re) => re.test(p))).map((p) => p.trim().split('\n')[0].slice(0, 80));
+t('DS-875 can fail: Read the CONFIG file', wholeReads('Read the `CONFIG` file. `EXISTS=no` means stop.').length, 1);
+t('DS-875 can fail: Read the config, in a parenthesis', wholeReads('(resolve it with `desk-env where`, then Read the config)').length, 1);
+t('DS-875 can fail: desk-env show with no section', wholeReads('Read `desk-env show` (rules and rows, no §3c).').length, 1);
+t('DS-875 can fail: desk-env where, then Read it', wholeReads('§-references are to this config (`desk-env where`, then Read it).').length, 1);
+t('DS-875 can fail: a brief reading the repo config at its path', wholeReads('> Read the repo config at `<CONFIG path>`: §4 and §5.').length, 1);
+t('DS-875 can fail: a brief handed the path', wholeReads('> The repo config is at\n> `<CONFIG path>`.').length, 1);
+t('DS-875 can fail: §3c is no section', wholeReads('Read `desk-env show 3c`.').length, 1);
+t('DS-875 passes: desk-env where, then read it by section', wholeReads('(resolve it with `desk-env where`, then read it with `desk-env show 5`)').length, 0);
+t('DS-875 a §3c read is not a section read', SECTION_READ.test('Read `desk-env show 3c`.'), false);
+t('DS-875 passes: a section read',wholeReads('Read `desk-env show rules 0 3 5` (never the `CONFIG` file whole).').length, 0);
+t('DS-875 passes: a row of a section', wholeReads('**Read the config §4 People table** for who reviews.').length, 0);
+t('DS-875 passes: saying a worker cannot read it', wholeReads('Read rows with `desk-env` (a worker cannot read `CONFIG`).').length, 0);
+t('DS-875 passes: a §3b section first', wholeReads('Read `desk-env show 3b 4`.').length, 0);
+const SKILLS = join(ROOT, 'skills');
+const skillDirs = readdirSync(SKILLS).filter((d) => statSync(join(SKILLS, d)).isDirectory());
+let whole = 0;
+for (const d of skillDirs.filter((x) => !WRITERS.has(x))) {
+  for (const f of walk(join(SKILLS, d))) {
+    const hits = wholeReads(readFileSync(f, 'utf8'));
+    whole += hits.length;
+    if (hits.length) t(`DS-875 AC3: ${relative(ROOT, f)} reads the config whole`, hits.join(' | '), '');
+  }
+}
+t(`DS-875 AC3: ${skillDirs.length - WRITERS.size} skills checked, whole-file config reads`, whole, 0);
+// AC1, AC2, AC6: the two entry points name a section read, and still stop on EXISTS=no.
+for (const s of ['desk-ticket', 'desk-autopilot']) {
+  const core = readFileSync(join(SKILLS, s, 'SKILL.md'), 'utf8');
+  t(`DS-875 ${s === 'desk-ticket' ? 'AC1' : 'AC2'}: ${s} reads the config by section`, SECTION_READ.test(core), true);
+  t(`DS-875 AC6: ${s} still stops and offers /desk-setup on EXISTS=no`, /`EXISTS=no` means stop[^]{0,120}\/desk-setup/.test(core), true);
+}
+
+// ---- DS-876: agents read the config by section or row too, and carry on without it -------------
+// An agent reads no config whole (AC1); every config section it names is one a `desk-env show` in it
+// reads, or the paragraph naming it reads the row with desk-env (AC2); and an agent that reads the
+// config still carries on when `desk-env where` prints EXISTS=no or desk-env is missing (AC3). A
+// `§<n> above` or `below` is the agent's own heading, not the config's.
+const AGENT_WHOLE = [...WHOLE, /\bconfig path\b[^]{0,40}\bRead it\b/i, /\bread\b(?:[^.\n§]|\.(?=\w)){0,80}\bthe desk config\b(?!'s)/i];
+const agentWhole = (text) => wholeReads(text, AGENT_WHOLE);
+const ROW_READ = /\bdesk-env\s+(?:get|list|cmds|perm|required-fields)\b/;
+function unreadSections(text) {
+  const body = text.replace(/^---\n[\s\S]*?\n---\n/, '');
+  const shown = new Set([...body.matchAll(/\bdesk-env show((?:[ \t]+(?:§?\d[ab]?|rules)\b)+)/g)]
+    .flatMap((m) => m[1].trim().split(/\s+/).map((s) => s.replace('§', ''))));
+  const out = new Set();
+  for (const p of body.split(/\n\s*\n/)) {
+    for (const m of p.matchAll(/§(\d[ab]?)(?![\w])(?!\s+(?:above|below)\b)/g)) {
+      if (!shown.has(m[1]) && !ROW_READ.test(p)) out.add(`§${m[1]}`);
+    }
+  }
+  return [...out];
+}
+const carriesOn = (text) => /`EXISTS=no`[^]{0,120}\b(?:missing|not installed)\b[^]{0,60}\bcarry on\b/.test(text);
+t('DS-876 can fail: an agent handed the config path to Read', agentWhole('If it names a config path, Read it (§0 One-line description).').length, 1);
+t('DS-876 can fail: an agent told to read the desk config', agentWhole('- Read `CLAUDE.md`, `AGENTS.md` and the desk config where present').length, 1);
+t('DS-876 AC1 passes: a row of the desk config', agentWhole('Read the files the desk config\'s §5 Design system row names.').length, 0);
+t('DS-876 AC1 passes: config that is globally read', agentWhole('Edge Config for small globally-read config.').length, 0);
+t('DS-876 AC2 can fail: a section no read covers', unreadSections('Read `desk-env show rules 0 5`: §0 One-line description, §4 Toolchain.').join(','), '§4');
+t('DS-876 AC2 passes: a row read beside the section', unreadSections('Use config §2 Design canvases directory (`desk-env get design-dir`).').join(','), '');
+t('DS-876 AC2 passes: the agent\'s own §2 above', unreadSections('Roles (see §2 above).').join(','), '');
+t('DS-876 AC3 can fail: an agent that stops on EXISTS=no', carriesOn('If it prints `EXISTS=no`, stop and offer /desk-setup.'), false);
+t('DS-876 AC3 passes: carry on when desk-env is missing', carriesOn('If it prints `EXISTS=no` or `desk-env` is missing, carry on.'), true);
+const AGENTS = join(ROOT, 'agents');
+const agentFiles = readdirSync(AGENTS).filter((f) => f.endsWith('.md'));
+let agentFails = 0;
+for (const f of agentFiles) {
+  const text = readFileSync(join(AGENTS, f), 'utf8');
+  const hits = agentWhole(text);
+  const unread = unreadSections(text);
+  const reads = SECTION_READ.test(text);
+  agentFails += hits.length + unread.length + (reads && !carriesOn(text) ? 1 : 0);
+  if (hits.length) t(`DS-876 AC1: agents/${f} reads the config whole`, hits.join(' | '), '');
+  if (unread.length) t(`DS-876 AC2: agents/${f} names sections with no desk-env read`, unread.join(' '), '');
+  if (reads) t(`DS-876 AC3: agents/${f} carries on on EXISTS=no or with no desk-env`, carriesOn(text), true);
+}
+t(`DS-876: ${agentFiles.length} agents checked, whole reads and unread sections`, agentFails, 0);
 
 // ---- desk-setup asks every §3b row of the template -------------------------------------------
 // The §3b step reads its rows from the template, or, if it lists them by hand, names every one by
