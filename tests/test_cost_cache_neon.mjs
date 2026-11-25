@@ -143,12 +143,14 @@ t('AC4 and its GitHub figure still shows', nameOf(c4, 'voicepa').by.github, 0);
 const sup4 = Q.supplierScreen([], 'voicepa', { now: D1, costs, cache: cache(), pinUsage: true }).split('\n');
 t('AC4 the supplier view tags the Neon row', sup4.find((l) => l.startsWith('  Neon')),
   `  ${'Neon'.padEnd(10)}${'Postgres'.padEnd(24)}${'–'.padStart(11)}  ◌ can't read: no Neon API key in ${env.DESK_NEON_KEY}`);
-// issue-1425: with no use kept, the row's can't-read tag already says why, and desk knows no fix, so
-// no note under it repeats the reason.
+// issue-1425: with no use kept, the row's can't-read tag already says why, and the note under it adds
+// what desk knows would fix it: the key file to save a key in.
 const noUse = structuredClone(cache());
 delete noUse.neon.orgs['org-voice'].usage;
 const sup4n = Q.supplierScreen([], 'voicepa', { now: D1, costs, cache: noUse, pinUsage: true }).split('\n');
-t('issue-1425 a Neon source whose row says it can\'t read gets no note repeating it', `${sup4n.some((l) => l.includes('◌ can\'t read: no Neon API key'))} ${sup4n.some((l) => l.includes('bill can\'t be read'))}`, 'true false');
+t('issue-1425 AC2 a Neon source with no key: its row says why, and a note says where to save the key',
+  `${sup4n.some((l) => l.includes('◌ can\'t read: no Neon API key'))} ${sup4n.filter((l) => l.includes('bill can\'t be read')).map((l) => l.slice(l.indexOf('Its'))).join(' | ')}`,
+  `true Its bill can't be read: no Neon API key in ${env.DESK_NEON_KEY}. Save a Neon API key in ${env.DESK_NEON_KEY}.`);
 t('AC4 a free org needs no key', nameOf(c4, 'hobby').by.neon, 0);
 writeFileSync(env.DESK_NEON_KEY, 'napi_fixture');
 fail = Object.assign(new Error('HTTP 401: Neon refused the API key'), { refused: true });

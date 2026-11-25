@@ -773,29 +773,60 @@ const sourcesOf = (costs) => ({
   neon: costs.entries.filter((e) => e.supplier === 'neon' && e.orgId),
 });
 
+// What would let desk read a source whose last call failed, from the failure's text, where desk knows:
+// a failure that may pass by itself (a timeout, a 429 or 5xx) is tried again at the next cost reading,
+// due an hour after the failed one (READ_EVERY_MS); a missing CLI, a sign-in or a
+// profile that is wrong names its command. A why ending ": run <command>" is split into the two.
+// An unexpected answer has no fix desk knows.  -> { why, fix | null }
+export const RETRY_FIX = 'desk tries again at the next cost reading';
+// The Neon key file as a line names it.
+export const neonKeyFile = () => tilde(neonKeyPath());
+const CLI_NAME = { gh: 'the GitHub CLI (gh)', aws: 'the AWS CLI' };
+export function failureFix(supplier, why, key = null) {
+  const run = /^(.*\S):\s*(run \S.*)$/.exec(why);
+  if (run) return { why: run[1], fix: run[2] };
+  const cli = /\bspawn (gh|aws) ENOENT\b/.exec(why);
+  const fix = (() => {
+    if (cli) return `install ${CLI_NAME[cli[1]]}`;
+    if (/^timed out\b|^could not reach\b|\bHTTP (429|5\d\d)\b/.test(why)) return RETRY_FIX;
+    if (supplier === 'github' && /gh auth login|not logged in|HTTP 401\b/i.test(why)) return 'run gh auth login';
+    if (supplier !== 'aws' || !key) return null;
+    if (/\bSSO\b|token has expired/i.test(why)) return `run aws sso login --profile ${key}`;
+    if (/profile .* could not be found/i.test(why)) return `add the profile ${key} to ~/.aws/config, or correct it in costs.md`;
+    if (/unable to locate credentials/i.test(why)) return `give the profile ${key} credentials: aws configure --profile ${key}`;
+    if (/AccessDenied|not authorized/i.test(why)) return `allow ce:GetCostAndUsage for the profile ${key}`;
+    return null;
+  })();
+  return { why, fix };
+}
+
 // Why one source has no figure because it could not be read, or null: a GitHub account gh is not
-// signed in to, else a last call that failed with no good figures kept. `fix` is what would let desk
-// read it, where desk knows.
+// signed in to, a Neon key missing or refused, else a last call that failed with no good figures
+// kept. `fix` is what would let desk read it, where desk knows (failureFix).
 //   -> { label, why, fix | null } | null
 const UNREAD = {
   github: (s, cache) => {
     const g = cache?.github, e = g?.repos?.[s.key];
     if (e?.cantRead) return { label: e.cantRead.account, why: `billing not readable from ${g.login ?? 'the signed-in account'}`, fix: `sign in to ${e.cantRead.account} with desk-env logins` };
-    return e?.failed && e.total == null ? { label: s.key, why: e.failed.why, fix: null } : null;
+    return e?.failed && e.total == null ? { label: s.key, ...failureFix('github', e.failed.why) } : null;
   },
   vercel: (s, cache) => {
     const t = cache?.vercel?.teams?.[s.teamId];
     if (!t?.failed || t.lines) return null;
     const team = t.team ?? s.team;
-    return /^HTTP 404\b/.test(t.failed.why) ? { label: team, why: 'no billing access (HTTP 404)', fix: `use a login with billing access to ${team}` } : { label: team, why: t.failed.why, fix: null };
+    return /^HTTP 404\b/.test(t.failed.why) ? { label: team, why: 'no billing access (HTTP 404)', fix: `use a login with billing access to ${team}` } : { label: team, ...failureFix('vercel', t.failed.why) };
   },
   aws: (s, cache) => {
     const p = cache?.aws?.profiles?.[s.key];
-    return p?.failed && !p.lines ? { label: s.key, why: p.failed.why, fix: null } : null;
+    return p?.failed && !p.lines ? { label: s.key, ...failureFix('aws', p.failed.why, s.key) } : null;
   },
   neon: (s, cache) => {
     const o = cache?.neon?.orgs?.[s.orgId];
-    return o?.failed && !o.usage ? { label: s.key.split('/')[0], why: o.failed.why, fix: null } : null;
+    if (!o?.failed || o.usage) return null;
+    const label = s.key.split('/')[0], file = neonKeyFile();
+    if (o.cantRead === 'missing') return { label, why: o.failed.why, fix: `save a Neon API key in ${file}` };
+    if (o.cantRead === 'refused') return { label, why: o.failed.why, fix: `replace the API key in ${file} with one that can read this org` };
+    return { label, ...failureFix('neon', o.failed.why) };
   },
 };
 const eachSource = (costs) => Object.entries(sourcesOf(costs)).flatMap(([supplier, list]) => list.map((s) => [supplier, s]));

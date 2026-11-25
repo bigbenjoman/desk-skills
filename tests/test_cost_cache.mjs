@@ -204,5 +204,36 @@ await new Promise((r) => { setTimeout(r, 120); });
 ui.finish(0);
 t('AC6 with a worker running, the open screen still runs the cost check', checks.length > 0, true);
 
+// ---- issue-1425 AC2: every unreadable source says what would fix it where desk knows
+const fixCosts = { exists: true, entries: [
+  { supplier: 'github', key: 'benjo/gone', name: 'gone' },
+  { supplier: 'vercel', teamId: 'team_a', team: 'acme', name: 'acme' },
+  { supplier: 'vercel', teamId: 'team_b', team: 'bco', name: 'bco' },
+  { supplier: 'aws', key: 'sso-prof', name: 'a1' }, { supplier: 'aws', key: 'nokey', name: 'a2' },
+  { supplier: 'aws', key: 'odd', name: 'a3' },
+  { supplier: 'neon', orgId: 'org-m', key: 'org-m/p', name: 'n1' }, { supplier: 'neon', orgId: 'org-r', key: 'org-r/p', name: 'n2' },
+  { supplier: 'neon', orgId: 'org-t', key: 'org-t/p', name: 'n3' }] };
+const failed = (why) => ({ failed: { at: NOV2, why } });
+const fixCache = {
+  github: { repos: { 'benjo/gone': { name: 'gone', ...failed('gh: Server Error (HTTP 502)') } } },
+  vercel: { teams: { team_a: { team: 'acme', ...failed('HTTP 401: the Vercel login has expired or has no access: run vercel login') }, team_b: { team: 'bco', ...failed('timed out after 30s') } } },
+  aws: { profiles: { 'sso-prof': failed('Error when retrieving token from sso: Token has expired and refresh failed'),
+    nokey: failed('Unable to locate credentials. You can configure credentials by running "aws configure".'), odd: failed('unexpected response: no ResultsByTime') } },
+  neon: { orgs: { 'org-m': { cantRead: 'missing', ...failed('no Neon API key in ~/k') }, 'org-r': { cantRead: 'refused', ...failed('HTTP 401: Neon refused the API key') },
+    'org-t': { cantRead: null, ...failed('could not reach Neon: ECONNRESET') } } },
+};
+const fixes = Object.fromEntries(C.unreadSources({ cache: fixCache, costs: fixCosts }).map((u) => [`${u.supplier} ${u.label}`, `${u.why} | ${u.fix}`]));
+const keyFile = C.neonKeyFile();
+t('issue-1425 AC2 a GitHub call that failed with a 5xx says desk tries again', fixes['github benjo/gone'], `gh: Server Error (HTTP 502) | ${C.RETRY_FIX}`);
+t('issue-1425 AC2 an expired Vercel login says why and to run vercel login', fixes['vercel acme'], 'HTTP 401: the Vercel login has expired or has no access | run vercel login');
+t('issue-1425 AC2 a Vercel call that timed out says desk tries again', fixes['vercel bco'], `timed out after 30s | ${C.RETRY_FIX}`);
+t('issue-1425 AC2 an AWS profile whose SSO token expired names the sso login', fixes['aws sso-prof'].split(' | ')[1], 'run aws sso login --profile sso-prof');
+t('issue-1425 AC2 an AWS profile with no credentials names aws configure', fixes['aws nokey'].split(' | ')[1], 'give the profile nokey credentials: aws configure --profile nokey');
+t('issue-1425 AC2 an unexpected answer has no fix desk knows', fixes['aws odd'], 'unexpected response: no ResultsByTime | null');
+t('issue-1425 AC2 a missing Neon key names the key file to save it in', fixes['neon org-m'], `no Neon API key in ~/k | save a Neon API key in ${keyFile}`);
+t('issue-1425 AC2 a refused Neon key names the key file to replace it in', fixes['neon org-r'], `HTTP 401: Neon refused the API key | replace the API key in ${keyFile} with one that can read this org`);
+t('issue-1425 AC2 Neon unreachable says desk tries again', fixes['neon org-t'], `could not reach Neon: ECONNRESET | ${C.RETRY_FIX}`);
+t('issue-1425 AC2 gh missing names the CLI to install', C.failureFix('github', 'spawn gh ENOENT').fix, 'install the GitHub CLI (gh)');
+
 console.log(fails ? `${fails} FAILED` : 'all cost cache checks passed');
 process.exit(fails ? 1 : 0);
