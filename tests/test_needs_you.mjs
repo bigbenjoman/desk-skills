@@ -610,6 +610,18 @@ t('DS-807 AC1 a park on a file its question asks the person to make is listed wi
   `${f807['F-1']?.need === fileQ} ${f807['F-1']?.actions.map((a) => a[0])[0]}`, 'true resume');
 t('DS-807 AC3 one a script makes is still left out', 'F-2' in f807, false);
 
+// ---- DS-1005: a park stored before its question was read as the person's (no person flag) is listed
+// from its question; a self-clearing one is not.
+const q1005 = 'H-1\'s app needs its npm packages installed to make /w/H-1/desk/ui/package-lock.json, and npm is refused to workers. Please run `npm install` in /w/H-1/desk/ui (the next worker commits the lockfile and runs the tests). Not reached: the push, the draft PR.';
+put('host1005', { port: 4905, beat: 1, supervised: true, tickets: {
+  'H-1': filePark(q1005, { root: 'worktree', path: 'desk/ui/package-lock.json' }),
+  'H-2': { ...parked('A', 30, q1005), park: { ...parked('A', 30, q1005).park, clears_when: { kind: 'pr-merged', pr: 12 } } },
+} });
+const h1005 = Object.fromEntries(N.collect({ word: 'host1005' }).items.map((i) => [i.t.key, i]));
+t('DS-1005 AC2 a park asking for a host-side step on a file no pass makes is listed with the step, and resume',
+  `${h1005['H-1']?.need} ${h1005['H-1']?.actions.map((a) => a[0])[0]}`, `${q1005.replace(/ Not reached:.*$/, '')} resume`);
+t('DS-1005 AC3 one on a PR merging is still left out', 'H-2' in h1005, false);
+
 // ---- DS-586: a draft whose review left gaps quotes them from that review, as a ready PR's item does.
 const SHA586 = '65ad4e75a1b2c3d4e5f60718293a4b5c6d7e8f90';
 const review586 = (login, sha, lines) => ({ author: { login }, body: `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${sha} p0=0 p1=0 p2=0 deferred=0 gaps=${lines.length} unrefuted=0 partial=0 vendor=codex round=1 -->\n## desk-review: ${lines.length} requirement gaps\n\n### Requirement gaps\n${lines.map((l) => `- ${l}`).join('\n')}\n` });

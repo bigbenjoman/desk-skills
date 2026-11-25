@@ -25,7 +25,8 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { CHECKIN_TIME, checkinTimesOf } from './config-schema.mjs';
 import { jiraSearch, keySearch } from './jira-search.mjs';
-import { isHeld, settlesByScript, localDay, openUnknowns, planFirst, sessionClaim, planFirstDue, planFirstWaits, planFirstPutOff } from './batch-state.mjs';
+import { describeCond } from './clears-when.mjs';
+import { isHeld, heldBehindOf, settlesByScript, localDay, openUnknowns, planFirst, sessionClaim, planFirstDue, planFirstWaits, planFirstPutOff } from './batch-state.mjs';
 import { planFirstWaitMs } from './claims.mjs';
 import { stalledPrs as stalledOf, STALL_FOR } from './desk-q.mjs';
 import { namedBatches } from './batches.mjs';
@@ -260,6 +261,24 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
   return out.sort((a, b) => a.ticket.localeCompare(b.ticket));
 }
 
+// One repo's parks waiting on a clears-when a pass settles (settlesByScript) that were parked before
+// `before`, the check-in slot ahead of this one, and still hold tickets behind them: [{ticket, since,
+// on, behind}], the most held first. Nothing asks the person for them, so a wait that has outlasted a
+// whole check-in with work stalled behind it is named rather than left unseen.
+export function waitingBehind(r, before) {
+  const q = readJson(r.queue, null);
+  const cut = before?.getTime?.();
+  if (cut == null) return [];
+  return Object.values(q?.tickets ?? {})
+    .filter((t) => settlesByScript(t) && Date.parse(t.park?.since) < cut)
+    .map((t) => ({ ticket: t.key, since: t.park.since, on: describeCond(t.park.clears_when), behind: heldBehindOf(q, t.key).size }))
+    .filter((w) => w.behind > 0)
+    .sort((a, b) => b.behind - a.behind || a.ticket.localeCompare(b.ticket));
+}
+
+// The check-in slot before `slot` ({id, at}, latestSlot's), or null where `times` has none.
+export const previousSlot = (times, slot) => (slot ? latestSlot(times, new Date(slot.at.getTime() - 1)) : null);
+
 // One repo's Merging PRs with no change for desk-q's STALL_MS, as desk-q words them.
 const stalledPrs = (r, now) => stalledOf({ slug: r.slug, stateDir: r.state, queuePath: r.queue, q: readJson(r.queue, null), now: now.getTime() });
 
@@ -340,7 +359,8 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   const nm = maintenance.length;
   const ns = groups.reduce((n, g) => n + (g.stalled?.length ?? 0), 0);
   const nw = groups.reduce((n, g) => n + (g.warnings?.length ?? 0), 0);
-  const npr = groups.filter((g) => g.promotion?.key).length;
+  const nwait = groups.reduce((n, g) => n + (g.waiting?.length ?? 0), 0);
+  const npr =groups.filter((g) => g.promotion?.key).length;
   const nj = groups.filter((g) => jiraLine(g.slug, g.jira)).length;
   const ndone = groups.reduce((n, g) => n + (g.jira?.done?.length ?? 0), 0);
   const cmd = join(bin, 'digest.mjs');
@@ -351,11 +371,11 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   const nl = levers.length;
   const nlc = levers.filter((l) => l.slug).length;
   const nses = groups.reduce((n, g) => n + (g.sessions?.length ?? 0), 0);
-  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns && !nw && !nl && !nses) {
+  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns && !nw && !nl && !nses && !nwait) {
     lines.push(`Nothing to answer, and no decisions taken${since ? ` since ${since}` : ''}.`, '');
     return footer();
   }
-  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${nlc ? `; ${nlc} lever change(s)` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nw ? `; ${nw} warning(s)` : ''}${nses ? `; ${nses} being worked in a session` : ''}.`, '');
+  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${nlc ? `; ${nlc} lever change(s)` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nw ? `; ${nw} warning(s)` : ''}${nwait ? `; ${nwait} wait(s) past the last check-in with tickets held behind` : ''}${nses ? `; ${nses} being worked in a session` : ''}.`, '');
   if (nm) {
     lines.push('## Maintenance', '');
     for (const m of maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);
@@ -366,7 +386,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
     for (const l of levers) lines.push(`- ${l.open ? '[ ] ' : ''}${l.line}`);
     lines.push('', `open: ${leversPage}`, '');
   }
-  for (const g of groups.filter((x) => x.questions.length || x.sessions?.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length || x.warnings?.length)) {
+  for (const g of groups.filter((x) => x.questions.length || x.sessions?.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length || x.waiting?.length || x.warnings?.length)) {
     lines.push(batchHeading(g), '');
     const jl = jiraLine(g.slug, g.jira);
     if (jl) lines.push(jl, '');
@@ -417,6 +437,11 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
       for (const s of g.stalled) lines.push(`- \`${s.ticket}\` ${s.url ? `[#${s.pr}](${s.url})` : `#${s.pr}`}: ${s.check} · no change for ${s.for}`);
       lines.push('');
     }
+    if (g.waiting?.length) {
+      lines.push('### Waiting since before the last check-in, with tickets held behind', '');
+      for (const w of g.waiting) lines.push(`- \`${w.ticket}\`: waiting on ${w.on} since ${String(w.since).slice(0, 16).replace('T', ' ')} · ${w.behind} ticket(s) held behind it`);
+      lines.push('');
+    }
     if (g.putOff?.length) {
       lines.push('### Put off', '');
       for (const p of g.putOff) {
@@ -456,6 +481,7 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
     const since = last?.through ?? null;
     const inWindow = (d) => (!since || d.at > since) && d.at <= now.toISOString();
     const name = slot.id.replace(':', '');
+    const prev = previousSlot(times, slot);
     // Going to production is asked once a day, in the last slot; nothing merged asks nothing.
     // Promotion is the repo's, so only its standing batch asks it.
     const promotionOf = (r) => {
@@ -487,6 +513,7 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
         promotion: promotionOf(r),
         jira,
         stalled: stalledPrs(r, now),
+        waiting: waitingBehind(r, prev?.at).filter((w) => !done.has(w.ticket)),
         warnings: readWarnings(r.state).filter(inWindow),
       };
     });
@@ -503,18 +530,19 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
     const nc = groups.reduce((n, g) => n + g.checks.length, 0);
     const nm = maintenance.length;
     const nw = groups.reduce((n, g) => n + g.warnings.length, 0);
+    const nwait = groups.reduce((n, g) => n + g.waiting.length, 0);
     const asks = groups.filter((g) => g.promotion?.key);
     const listed = [...groups.flatMap((g) => g.questions.map((q) => q.key)), ...asks.map((g) => g.promotion.key)];
     const fresh = listed.filter((k) => !(last?.listed ?? []).includes(k));
     const pushed = pushedQuestions(list, groups);
     const repoCount = new Set([
-      ...groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.warnings.length || g.promotion?.key).map((g) => g.slug),
+      ...groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.warnings.length || g.waiting.length || g.promotion?.key).map((g) => g.slug),
       ...levers.filter((l) => l.slug).map((l) => l.slug),
     ]).size;
     // Put-off questions and checks are listed, never pushed: neither asks anything of the person.
     const nl = levers.filter((l) => l.slug).length;
-    const push = nd || nm || nw || nl || fresh.some((k) => !pushed.has(k))
-      ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s)${asks.length ? `, ${asks.length} promotion question(s)` : ''}, ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nl ? `, ${nl} lever change(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''}${nw ? `, ${nw} warning(s)` : ''} across ${repoCount} repo(s). ${page}` }
+    const push = nd || nm || nw || nl || nwait || fresh.some((k) => !pushed.has(k))
+      ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s)${asks.length ? `, ${asks.length} promotion question(s)` : ''}, ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nl ? `, ${nl} lever change(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''}${nw ? `, ${nw} warning(s)` : ''}${nwait ? `, ${nwait} wait(s) holding tickets` : ''} across ${repoCount} repo(s). ${page}` }
       : null;
     writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd, listed, lever_seen: leverSeen, by: self, push }, null, 2)}\n`);
     const ledger = presentAsks({ list, groups, fresh, pushed, page, push, now });

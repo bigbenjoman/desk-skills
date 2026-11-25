@@ -202,8 +202,13 @@ export function queuedIn(ticket, repo, queues, live) {
 }
 
 // Whether only a step of the person's makes condition `c` hold, so a park waiting on it still asks them:
-// issue links, or a file its park's question asks them to make (withQuestion marks it person).
-export const personClears = (c) => c?.kind === 'links-made' || (c?.kind === 'file-exists' && c.person === true);
+// issue links, or a file its park's question asks them to make (withQuestion marks it person). A file is
+// also the person's where `question`, the park's, asks them for a step in any sentence (asksStep): no pass
+// or worker makes a file for a parked ticket, so a host-side step the person is asked for (`npm install`
+// writing a lockfile) is what makes it. Read here rather than only as recorded, so a park stored before
+// the question was read this way is put to the person too.
+export const personClears = (c, question) => c?.kind === 'links-made'
+  || (c?.kind === 'file-exists' && (c.person === true || asksStep(question)));
 
 // The words of a park's question: one in quotes or backticks runs to the closing one, spaces and all;
 // any other runs to the first unescaped space (`Screen\ Recording.mov`, as a dragged-in path is written).
@@ -251,6 +256,13 @@ function askedAt(question, at) {
   const first = Math.min(...asks.map(([s]) => s));
   const ends = [...asks.map(([, e]) => e), ...[...sentence.matchAll(AND_VERB)].filter((m) => m.index > first).map((m) => m.index + m[0].length)];
   return !/\b(?:once|when|after|until|while|before|if|unless|since)\b/i.test(sentence.slice(Math.max(...ends)));
+}
+
+// Whether question `q` asks the person for a step in any of its sentences, read as askedAt reads one: at
+// the end of each sentence, so the whole sentence is the request.
+export function asksStep(q) {
+  const s = String(q ?? '');
+  return [...[...s.matchAll(/[.?!](?=\s+|$)/g)].map((m) => m.index), s.length].some((at) => askedAt(s, at));
 }
 
 // A file-exists condition read against the question of the park it clears: {ok: true, cond} or

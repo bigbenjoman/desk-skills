@@ -141,7 +141,7 @@ export function presort(items, state = null) {
       hand.push({ item, why: `lane ${item.lane} park: never requeued for a headless worker, it goes to an interactive desk-ticket session` });
     } else if (item.kind === 'parked' && item.restate != null) {
       ask.push(item);
-    } else if (item.kind === 'parked' && item.clears && personClears(JSON.parse(item.clears))) {
+    } else if (item.kind === 'parked' && item.clears && personClears(JSON.parse(item.clears), item.text)) {
       hand.push({ item, why: JSON.parse(item.clears).kind === 'file-exists'
         ? `waits on a file only the person makes (${describeCond(JSON.parse(item.clears))}): a pass requeues it once the file is there`
         : 'waits on issue links only the person makes: a pass records it done again once each is on Jira' });
