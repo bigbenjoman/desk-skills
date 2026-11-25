@@ -106,6 +106,10 @@ q park K-9 --claimed-by sid-idle; q set K-9 park.claim.at=2026-01-01T00:00:00Z; 
 q park K-10 --claimed-by sid-live
 # A lane A claim whose session leaves uncommitted work, then comes back.
 session sid-back old; claimed K-11 sid-back; worktree K-11 wip.txt
+# One noted before the note kept the question it was appended to (no park.claim.was), then comes back.
+session sid-old-note old; q add K-12 Story A; q set K-12 state=triaged "branch=feat/K-12"; q park K-12 "size XL: split it before a worker takes it"
+q park K-12 --claimed-by sid-old-note; q set K-12 park.claim.at=2026-01-01T00:00:00Z park.claim.dirty_at=2026-01-02T00:00:00Z \
+  "park.question=size XL: split it before a worker takes it; claimed by session sid-old-note, which has been idle past 12h, but its worktree x has uncommitted changes (a.txt): commit or discard them, or say who carries on"
 check "DS-244 a held ticket cannot be claimed" '[ $rc -ne 0 ] && grep -q "cannot be claimed" <<< "$out" && [ "$(field K-7 park.claim)" = null ]'
 
 # ---- AC5: the row at 0 never releases -----------------------------------------------------------------
@@ -141,8 +145,9 @@ check "DS-244 AC3 the dirty claim goes to the digest once: not reported or chang
 check "DS-244 AC2 a released ticket is not pushed again" '! grep -q "K-1 went back" <<< "$out"'
 
 check "issue-1384 an idle session's uncommitted work is noted on its claim" '[ "$(field K-11 park.claim.dirty_at)" != null ] && grep -q "uncommitted changes (wip.txt)" <<< "$(field K-11 park.question)"'
-session sid-back now
+session sid-back now; session sid-old-note now
 out=$(node "$B/pass.mjs" 2>&1)
+check "issue-1384 a note written before its question was kept is cut off that question, so the size guard still reads it" '[ "$(field K-12 park.question)" = "\"size XL: split it before a worker takes it\"" ] && [ "$(field K-12 park.claim.dirty_at)" = null ] && [ "$(field K-12 park.claim.session)" = "\"sid-old-note\"" ]'
 check "issue-1384 once that session is active again, it is the session's claim again, with its own question back" '[ "$(field K-11 state)" = "\"parked\"" ] && [ "$(field K-11 park.claim.session)" = "\"sid-back\"" ] && [ "$(field K-11 park.claim.dirty_at)" = null ] && [ "$(field K-11 park.question)" = "\"claimed by session sid-back: worked there, not by a worker\"" ] && grep -q "K-11: session sid-back is active again" <<< "$out"'
 
 git -C "$T/wt/K-2" clean -qf

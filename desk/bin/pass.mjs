@@ -1711,8 +1711,11 @@ for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
   const since = Math.max(tr?.mtimeMs ?? 0, Date.parse(c.at) || 0);
   // A session that comes back after its uncommitted work was noted works the ticket again: its park
   // takes back the question it had, and the claim is the news once more.
+  // A note written before `was` was recorded is cut off the question it was appended to.
   if (tr && c.dirty_at && tr.mtimeMs > Date.parse(c.dirty_at)) {
-    q('set', t.key, `park.question=${c.was ?? claimQuestion(c.session)}`, 'park.claim.dirty_at=null', 'park.claim.was=null');
+    const note = `claimed by session ${c.session}, which has been idle past`, asked = String(t.park.question ?? '');
+    const own = c.was ?? (asked.startsWith(note) ? claimQuestion(c.session) : asked.includes(`; ${note}`) ? asked.slice(0, asked.indexOf(`; ${note}`)) : asked);
+    q('set', t.key, `park.question=${own}`, 'park.claim.dirty_at=null', 'park.claim.was=null');
     report.clears.push(`${t.key}: session ${c.session} is active again, so it works the ticket and the note on its uncommitted changes is cleared`);
     continue;
   }
