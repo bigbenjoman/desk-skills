@@ -2248,6 +2248,9 @@ t('DS-280 AC4 STARTS says how long a PR has been in Merging', cells280('M-4')[1]
   t('#1417 AC1 red only on the down reviewer\'s gate: waiting on it, since when, not "failed"', need('G-1'), `#951 · waiting on agent-pullbot (down since ${when1417})`);
   t('#1417 AC2 no rerun is named for it, and each PR waiting on it reads the same', `${/rerun|failed/.test(need('G-1'))} ${/^#952 · waiting on agent-pullbot \(down/.test(need('G-2'))}`, 'false true');
   t('#1417 a PR red on its own code too reads as before', need('G-3'), '#953 · 🔐 Review gate, Lint failed · rerun 1 of 2 next');
+  // With passes stopped the row reads prNeed with no clock of its own, and says the same time.
+  { const r = Q.loadRepos(NOW).find((x) => x.name === 'ds1417');
+    t('#1417 passes stopped: the same "down since" time', Q.needText({ ...r, live: false }, r.prs.find((p) => p.t.key === 'G-1')).endsWith(`: waiting on agent-pullbot (down since ${when1417})`), true); }
   outage(new Date(NOW - 60000).toISOString());
   t('#1417 AC3 once the reviewer posts again (outage closed), the gate is handled as before, with its full rerun budget', need('G-1'), '#951 · 🔐 Review gate failed · rerun 1 of 2 next');
 }

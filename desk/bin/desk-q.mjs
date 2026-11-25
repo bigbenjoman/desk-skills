@@ -3004,8 +3004,8 @@ function portLeaseOf(r, key, now) {
 export const overview = (repos, opts) => joined(overviewParts(repos, opts));
 
 const clock = (t) => new Date(t).toTimeString().slice(0, 5);
-// A time, epoch ms, as a row says it: the clock today, else the day and the clock.
-const todayOrDay = (t, now = Date.now()) => (new Date(t).toDateString() === new Date(now).toDateString() ? clock(t) : dayAndTime(t));
+// A time, epoch ms, as a row says it: the clock today, else the day and the clock. `now` null is now.
+const todayOrDay = (t, now) => (new Date(t).toDateString() === new Date(now ?? Date.now()).toDateString() ? clock(t) : dayAndTime(t));
 // A usage limit's reset, epoch seconds.
 const resetsWhen = (s) => todayOrDay(s * 1000);
 // The interactive screen's `clock` is its time source, so the breadcrumb's time is read through this.
