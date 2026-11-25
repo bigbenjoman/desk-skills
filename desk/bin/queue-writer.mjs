@@ -9,7 +9,7 @@
 import { readFileSync } from 'node:fs';
 import { lock, unlock } from './dir-lock.mjs';
 import { parkClass } from './failure-class.mjs';
-import { versionOf, writeQueueFile, mergeQueue, archiveDone, attachArchive, same } from './queue-store.mjs';
+import { versionOf, writeQueueFile, mergeQueue, archiveDone, attachArchive, same, LedgerRefusal } from './queue-store.mjs';
 import { STATES, FINISHED, PARK_KINDS } from './queue-states.mjs';
 import { parkKindOf } from './batch-state.mjs';
 
@@ -119,8 +119,9 @@ export const LOCK_WAIT_MS = Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) > 0 ? Nu
 //                tickets whose PR merged or closed to the archive:
 //                { ok: true, wrote, version, conflicts, skipped, archived, archiveError, ops, ledgerMissed },
 //                `skipped` naming the tickets whose conditional set no longer held, `ledgerMissed` why
-//                the ledger lever's append for the write was missed (else null), or, when the lock
-//                is not taken within its wait, { ok: false, why, lost } with nothing written
+//                the ledger lever's append for the write was missed (else null), `ledgerLegacy` how
+//                many legacy_set events it appended, or, when the lock is not taken within its wait or
+//                record mode refuses the write, { ok: false, why, lost } with nothing written
 export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
   // The file's text as last read or written, so an unchanged file costs one read and no parse.
   let baseText = readFileSync(file, 'utf8');
@@ -228,8 +229,17 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
       if (!ops.length && !archived.length) return { ...none(), archiveError };
       out.version = versionOf(base);
       let ledger = null;
-      const version = writeQueueFile(file, out, { by: 'pass', archived: Object.fromEntries(archived.map((k) => [k, live[k]])), onLedger: (l) => { ledger = l; } });
-      const r = { ok: true, wrote: true, version, conflicts: kept, skipped: skipped.map((s) => s.key), archived, archiveError, ops, ledgerMissed: ledger?.missed ? ledger.why : null };
+      let version;
+      try {
+        version = writeQueueFile(file, out, { by: 'pass', archived: Object.fromEntries(archived.map((k) => [k, live[k]])), onLedger: (l) => { ledger = l; } });
+      } catch (e) {
+        if (!(e instanceof LedgerRefusal)) throw e;
+        // Refused by record mode: the archive's copies stay as a crash between the two writes leaves them.
+        const lost = ops;
+        ops = []; conflicts = []; guards = []; mine = structuredClone(base);
+        return { ok: false, why: e.message, lost };
+      }
+      const r = { ok: true, wrote: true, version, conflicts: kept, skipped: skipped.map((s) => s.key), archived, archiveError, ops, ledgerMissed: ledger?.missed ? ledger.why : null, ledgerLegacy: ledger?.legacy ?? 0 };
       base = out; baseText = readFileSync(file, 'utf8'); mine = structuredClone(out); ops = []; conflicts = []; guards = [];
       return r;
     } finally { unlock(dir); }

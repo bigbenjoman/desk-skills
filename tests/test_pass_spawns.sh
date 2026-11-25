@@ -1978,6 +1978,32 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-894 AC7 with the lever off, no difference line and no difference count" \
   '! echo "$out" | grep -q "differ between queue.json" && [ "$(tail -1 "$T/state-lg/passes.jsonl" | jq "has(\"ledger_diffs\") or has(\"ledger_missed\")")" = false ]'
 
+# ---- DS-905: with the ledger and ledger-record levers on, a pass's writes go to the log first and
+# queue.json records the log's position; a queue.json deleted is rebuilt from the log by the next pass,
+# which says so. The record lever alone is ignored, and the pass says it needs the ledger lever.
+export DESK_QUEUE="$T/rec/queue.json" DESK_AUTOPILOT_STATE="$T/state-rec"; mkdir -p "$T/rec" "$T/state-rec/logs"
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger ledger-record` |\n'; } > "$T/config-rec.md"
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger-record` |\n'; } > "$T/config-reconly.md"
+q init rec; q set-batch concurrency=2
+q add RC-1; q set RC-1 state=triaged lane=A branch=fix/RC-1
+out=$(DESK_CONFIG="$T/config-rec.md" node "$B/pass.mjs" 2>&1)
+check "DS-905 AC1 in record mode a pass's spawn is a spawned event, and queue.json records the log position it holds" \
+  '[ "$(field RC-1 state)" = "\"running\"" ] && jq -e "select(.key == \"RC-1\" and .type == \"spawned\")" "$T/rec/ledger/events.jsonl" >/dev/null && [ "$(jq .ledger_seq "$T/rec/queue.json")" = "$(tail -1 "$T/rec/ledger/events.jsonl" | jq .seq)" ] && ! echo "$out" | grep -q "differ between queue.json"'
+rm "$T/rec/queue.json"
+out=$(DESK_CONFIG="$T/config-rec.md" node "$B/pass.mjs" 2>&1)
+check "DS-905 AC2 a deleted queue.json is rebuilt from the log by the next pass, which says so and stops for the batch fields" \
+  '[ "$(field RC-1 state)" = "\"running\"" ] && [ "$(field RC-1 branch)" = "\"fix/RC-1\"" ] && echo "$out" | grep -q "ledger: queue.json was missing, so it was rebuilt from the log at .* (1 ticket(s)).*the pass stops until they are set again"'
+out=$(DESK_CONFIG="$T/config-rec.md" node "$B/pass.mjs" 2>&1)
+check "DS-905 every pass after the rebuild stops too, until the batch fields are set again" \
+  'echo "$out" | grep -q "the pass stops until they are set again"'
+q set-batch concurrency=2 rebuilt_from_log=null
+out=$(DESK_CONFIG="$T/config-rec.md" node "$B/pass.mjs" 2>&1)
+check "DS-905 and once they are, the pass runs" \
+  '! echo "$out" | grep -q "the pass stops until" && [ "$(jq .rebuilt_from_log "$T/rec/queue.json")" = "null" ]'
+out=$(DESK_CONFIG="$T/config-reconly.md" node "$B/pass.mjs" 2>&1)
+check "DS-905 AC6 the record lever without the ledger lever is ignored, and the pass says it needs the ledger lever" \
+  'echo "$out" | grep -q "ledger: the ledger-record lever is ignored: it needs the ledger lever on as well"'
+
 # ---- the ask ledger: with the ledger lever on, the first worker after a park's requeue acts on its
 # answer, on a plain spawn and a handoff's alike; a production-broken park pushed now is an ask presented
 # by push; the pass's own take of a recommended option answers its ask by default. A pass again writes

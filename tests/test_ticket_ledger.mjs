@@ -204,6 +204,23 @@ t('a batch event is never illegal', L.legality(L.emptyState(), ev('base_red')).l
   writeFileSync(p.snapshot, '{"v":1,"state":{"seq":1');
   t('AC7 a snapshot cut off mid-write is replayed from the start', j(L.fold(dir)), j(L.reduce(all)));
   t('AC7 and the read still returns every event', L.read(dir).events.length, 14);
+  // A snapshot folded under older fold rules (no `fold`, or another number) holds what those rules
+  // made of the events, such as a dropped ticket back in the batch that closed its interval. The
+  // planted ticket is one no later event touches, so only a replay from the start leaves it out.
+  const stale = L.reduce(all.filter((e) => e.seq <= 10));
+  stale.tickets['DS-PLANT'] = { ...structuredClone(stale.tickets['DS-1']), key: 'DS-PLANT', batch: 'B-OLD-RULES' };
+  for (const fold of [undefined, L.FOLD_RULES - 1]) {
+    writeFileSync(p.snapshot, JSON.stringify({ v: 1, ...(fold === undefined ? {} : { fold }), state: stale }));
+    t(`AC7 a snapshot under fold rules ${fold ?? '(none)'} is replayed from the start`, j(L.fold(dir)), j(L.reduce(all)));
+  }
+  const d2 = repo();
+  for (const s of steps.slice(0, 5)) L.append(d2, [s], { snapshotEvery: 5 });
+  const p2 = L.ledgerPaths(d2);
+  const own = JSON.parse(readFileSync(p2.snapshot, 'utf8'));
+  t('AC7 a snapshot records the fold rules it was folded under', own.fold, L.FOLD_RULES);
+  own.state.tickets['DS-1'].batch = 'B-MARK';
+  writeFileSync(p2.snapshot, JSON.stringify(own));
+  t('AC7 and one under these rules is the fold\'s base', L.fold(d2).tickets['DS-1'].batch, 'B-MARK');
 }
 
 // AC8: a batch's events project to queue.json's shape.
