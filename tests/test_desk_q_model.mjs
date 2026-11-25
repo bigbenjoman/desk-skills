@@ -1,4 +1,5 @@
 // suite: desk-q's model builds the home view's JSON on its own and loads no terminal code
+// layer: L2
 // covers: desk/bin/desk-q-model.mjs desk/bin/desk-q.mjs
 // A Node process that imports desk-q-model.mjs alone builds home's JSON for a fixture repo under a
 // throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT, and it matches `desk-q --json home` for the same

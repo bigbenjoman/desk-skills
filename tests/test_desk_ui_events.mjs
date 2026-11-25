@@ -1,4 +1,5 @@
 // suite: desk-ui change stream (the watcher, the diff by repo and ticket, resume and the clock tick)
+// layer: L2
 // covers: desk/bin/desk-ui-events.mjs desk/bin/desk-ui.mjs
 // The desk-ui server in this process on a throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT and a
 // test-only port, with fixture queue files it rewrites while a window's stream is open. Its clock,

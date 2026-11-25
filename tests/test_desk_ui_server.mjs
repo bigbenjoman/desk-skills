@@ -1,4 +1,5 @@
 // suite: desk-ui server (the request guard, sign-in, the snapshot and the bind address)
+// layer: L2
 // covers: desk/bin/desk-ui.mjs
 // desk-ui.mjs serve on a throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT and a test-only port, so it
 // never meets a server running on 4823. Nothing touches your real ~/.claude, ~/.config/desk or state.

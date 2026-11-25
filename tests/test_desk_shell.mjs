@@ -1,4 +1,5 @@
 // suite: Desk.app's main process (sign-in, re-sign-in, the unreachable card, one copy only)
+// layer: L2
 // covers: desk/shell/** desk/shell/app.mjs desk/shell/main.mjs desk/shell/preload.cjs desk/shell/status.html desk/shell/status.js desk/shell/package.json desk/bin/desk-ui.mjs
 // desk/shell/app.mjs driven with a stubbed Electron (BrowserWindow, session, ipcMain, app) against the
 // real desk-ui server on a throwaway HOME and a test-only port. Nothing touches your real ~/.claude,
