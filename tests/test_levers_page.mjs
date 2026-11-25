@@ -316,6 +316,24 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
 }
 
 
+// Question handling's per-arm ask report: in the view from the latest evaluation, and on the page.
+{
+  const arm = (o) => ({ tickets: 30, asks: 31, steps: { raise: { tokens_per_ticket: 410, usd_per_ticket: 0.41, tickets: 30 }, present: { tokens_per_ticket: 0, usd_per_ticket: 0, tickets: 30 }, act: { tokens_per_ticket: 600, usd_per_ticket: 0.6, tickets: 28 } },
+    pushes_per_ticket: 0, digests_per_ticket: 1, defaulted_share: 0.25, median_latency_s: 5400, ...o });
+  const report = { batched: arm({}), 'one-at-a-time': arm({ pushes_per_ticket: 1, digests_per_ticket: 0, defaulted_share: 0, median_latency_s: 600 }) };
+  const qh = { ...ev('question-handling', { state: 'trial', on: 30, off: 30 }), ask_report: report };
+  const asked = V.buildView({ ...machine({ repos: autoRepos, now: NOW2, files: { [`${DS}/lever-evals.jsonl`]: jsonl([...evals, qh]) } }), now: NOW2, tz: 'UTC', generatedAt: NOW2 });
+  const panel = asked.panels.asks?.repos ?? [];
+  t('the view carries each repo\'s latest per-arm ask report', j(panel.map((r) => [r.name, r.lever, Object.keys(r.arms)])), j([['desk-skills', 'question-handling', ['batched', 'one-at-a-time']]]));
+  t('and no other lever has one', j((six.panels.asks?.repos ?? []).length), '0');
+  const sec = section(P.renderPage(asked), 'asks-h');
+  const rowOf = (a) => sec.split(`<th scope="row">${a}</th>`)[1]?.split('</tr>')[0] ?? '';
+  t('the page shows a row per arm', ['batched', 'one-at-a-time'].every((a) => rowOf(a)), true);
+  t('each with dollars and tokens per ticket by step', rowOf('batched').includes('<td>$0.41 (410)</td><td>$0.00 (0)</td><td>$0.60 (600)</td>'), true);
+  t('pushes and digests per ticket, the share defaulted and the median to an answer', [rowOf('batched').includes('<td>0</td><td>1</td><td>25%</td><td>1.5h</td>'), rowOf('one-at-a-time').includes('<td>1</td><td>0</td><td>0%</td><td>10m</td>')].join(' '), 'true true');
+  t('with no ask report, the page has no such section', section(hSix, 'asks-h'), '');
+}
+
 // Text from the view is escaped, and view.json cannot close its script element.
 {
   const evil = structuredClone(six);
