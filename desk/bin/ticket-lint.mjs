@@ -64,8 +64,20 @@ const PRODUCTION =/\b(?:in|on|against) (?:production|prod)\b|\bproduction (?:dat
 // "on production this is what every subscriber sees" only describes it.
 const ACT = /\b(?:run|runs|ran|running|execute[sd]?|measure[sd]?|measuring|quer(?:y|ies|ied)|check(?:s|ed)?|verif(?:y|ies|ied)|confirm(?:s|ed)?|test(?:s|ed)?|deploy(?:s|ed)?|backfill(?:s|ed)?|migrate[sd]?|apply|applie[sd]|reproduce[sd]?|trigger(?:s|ed)?|monitor(?:s|ed)?|observe[sd]?|compare[sd]?|benchmark(?:s|ed)?|then)\b/i;
 const runsOnProduction = (p) => p.split(/(?<=[.!?;])\s+/).some((s) => PRODUCTION.test(s) && ACT.test(s));
-// A question inside a quoted phrase is quoted copy, not one the ticket asks.
-const unquoted = (s) => s.replace(/"[^"\n]*"|“[^”\n]*”/g, ' ');
+// A question, an open-decision word or a person step inside a quoted phrase is quoted copy, not the
+// ticket's own. A parenthetical that is all one quote goes first, so a quote nested in another
+// ("leaves a decision open ("decide")") does not pair its marks with the outer one's.
+const QUOTED = /"[^"\n]*"|“[^”\n]*”/g;
+const QUOTED_ASIDE = new RegExp(String.raw`\(\s*(?:${QUOTED.source})\s*\)`, 'g');
+const unquoted = (s) => s.replace(QUOTED_ASIDE, ' ').replace(QUOTED, ' ');
+// A parenthetical listing examples (three or more items, or opened by "for example" or "such as")
+// leaves nothing open; one naming where a value comes from ("entered by hand in /desk-setup costs")
+// asks nobody to act. Each is left out of the check it would otherwise trip; "(to confirm)" is neither.
+const EXAMPLES = /^\s*(?:e\.g\.|for (?:example|instance)|such as)\b|,[^,]*,/i;
+const SOURCE = /^\s*(?:(?:entered|recorded|set|read|taken|kept|stored|written|typed|filled in|supplied|configured|defined|chosen|pasted)\b.*?\b(?:in|by|from|at|on|via|under)\b|(?:comes? |read |taken )?from\b)/i;
+const without = (s, re) => s.replace(/\(([^()\n]*)\)/g, (m, inner) => (re.test(inner) ? ' ' : m));
+// "Neither leaves anything for anyone to decide" says nothing is left open.
+const SETTLED = /\b(?:nothing|(?:neither|not|never|no)\b[^.;:!?]*?\banything)(?:\s+\w+){0,4}?\s+to decide\b/gi;
 const OPERATOR = /\boperator\b|\bby hand\b|\bmanually\b|\bsigns? off\b|\bsign-off\b/i;
 // The Size fallback, a first line `Size: M`, for a project with no Size field.
 export const SIZE_LINE = /^\s*[*_]*size[*_]*\s*:\s*[*_]*\s*([a-z]+)/i;
@@ -106,7 +118,7 @@ export function lintTicket(t, { root, dir, ref } = {}) {
   if (!filled(criteria)) add('blocking', 'criteria', 'no acceptance criteria: add an "Acceptance criteria" section (an Epic\'s "Definition of done") of AC1: Given …, when …, then … items');
 
   for (const l of all) {
-    const p = prose(l.text);
+    const p = without(unquoted(prose(l.text)), EXAMPLES).replace(SETTLED, ' ');
     const hit = OPEN.map((re) => re.exec(p)).find(Boolean);
     if (hit) add('blocking', 'open-decision', `line ${l.n} leaves a decision open ("${hit[0]}"): "${quote(l.text)}": settle it with whoever owns it, then write the dated decision under Decisions`);
   }
@@ -137,7 +149,7 @@ export function lintTicket(t, { root, dir, ref } = {}) {
     const why = (nearKey && nearKey.test(p)) || (/\b(?:in|on|to) Jira\b/i.test(p) && JIRA_VERB.test(p))
       ? 'a Jira write (the filer makes links and field changes when filing)'
       : runsOnProduction(p) ? 'a live production run'
-        : OPERATOR.test(p) ? 'an operator or human step (it belongs under Verification, with who does it)' : null;
+        : OPERATOR.test(without(unquoted(p), SOURCE)) ? 'an operator or human step (it belongs under Verification, with who does it)' : null;
     if (why) add('blocking', 'criterion', `line ${l.n} is a criterion the worker cannot do in its branch, ${why}: "${quote(l.text)}"`);
   }
 
