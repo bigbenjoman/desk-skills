@@ -275,11 +275,12 @@ first), it compares that release's tickets with the previous release's. It looks
 hours per ticket, post-merge reverts, and parks in an error class the previous release never parked in.
 The trips are the lever registry's: a post-merge revert trips at once. Fix tries and parked hours
 trip past their guardrail margin, and a new error class trips too, but each of those three only once
-both releases have 10 tickets. A trip pins the previous release (when install.sh still keeps its
-folder) and opens one revert PR for every merge between the two releases. It also raises one
-needs-you item naming the merges, the metric and the evidence. The pin holds the auto-release until
-main carries the revert, or until the PR is closed unmerged. `desk-q rollback <commit>` does the same
-on demand for the release installed at `<commit>`, and `desk-q rollback --unpin` lifts a pin.
+both releases have 10 tickets. A trip pins the previous release (install.sh keeps the release before
+each one not yet judged, past the newest three) and opens one revert PR for every merge between the two releases. It also raises one
+needs-you item naming the merges, the metric and the evidence. The pin holds the auto-release and the
+maintenance window's update until main carries the revert, or until the PR is closed unmerged.
+`desk-q rollback <commit>` (7 or more hex digits) does the same on demand for the release installed
+at `<commit>`, and `desk-q rollback --unpin` lifts a pin.
 Each repo's queue and the other state under `~/.claude/desk` never move. It records the commit it installed in `~/.claude/desk/installed.json`, rewrites and
 reloads each loaded supervisor agent with the current node, and restarts each merge driver waiting
 between loops on the new code with the same tickets (one mid-loop is left, and named). Each tick

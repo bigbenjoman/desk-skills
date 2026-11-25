@@ -8,6 +8,7 @@
 //   node installed.mjs restart             restart each running merge driver that is between loops, and
 //                                          rewrite and reload each loaded supervisor agent; one line each
 //   node installed.mjs prune               delete all but the newest three releases, never the current one
+//                                          nor one the release watch holds (releases/.held)
 //   node installed.mjs rollback            make the release before the current one current (exit 1: none)
 //
 // install.sh puts each install in a release folder of its own, so a running merge driver keeps its old copy until it is
@@ -106,11 +107,22 @@ export function makeCurrent(name, home = E.deskHome()) {
   symlinkSync(join('releases', name), tmp);
   renameSync(tmp, join(home, 'current'));
 }
-// Deletes all but the newest `keep` releases, never the current one. One line per release deleted.
+// The commits the release watch may still roll back to (release-watch.mjs), one per line: their releases
+// are kept past `keep`.
+export const heldFile = (home = E.deskHome()) => join(releasesDir(home), '.held');
+export function heldCommits(home = E.deskHome()) {
+  try { return new Set(readFileSync(heldFile(home), 'utf8').split('\n').map((l) => l.trim()).filter(Boolean)); } catch { return new Set(); }
+}
+export function holdReleases(commits, home = E.deskHome()) {
+  mkdirSync(releasesDir(home), { recursive: true });
+  writeFileSync(heldFile(home), [...new Set(commits.filter(Boolean))].map((c) => `${c}\n`).join(''));
+}
+// Deletes all but the newest `keep` releases, never the current one nor a held one. One line per release deleted.
 export function pruneReleases(keep = KEEP_RELEASES, home = E.deskHome()) {
   const cur = currentRelease(home);
+  const held = heldCommits(home);
   const list = releases(home);
-  return list.slice(0, Math.max(0, list.length - keep)).filter((r) => r.name !== cur).map((r) => {
+  return list.slice(0, Math.max(0, list.length - keep)).filter((r) => r.name !== cur && !held.has(releaseCommit(r.name, r.info))).map((r) => {
     rmSync(join(releasesDir(home), r.name), { recursive: true, force: true });
     return `removed release ${r.name} (only the newest ${keep} are kept)`;
   });

@@ -1,5 +1,5 @@
-// The release watch, the safety net behind the auto-release (maintenance.mjs): every release it installs
-// is recorded in releases.jsonl beside its state, and once that release's window ends (WINDOW_TICKETS
+// The release watch, the safety net behind the auto-release (maintenance.mjs): every release it or the
+// maintenance window installs is recorded in releases.jsonl beside its state, and once that release's window ends (WINDOW_TICKETS
 // tickets finished on it, or WINDOW_HOURS since it went in, whichever comes first) its tickets are
 // weighed against the previous release's: fix tries per ticket, parked hours per ticket, post-merge
 // reverts, and parks in an error class the previous release's tickets never parked in. A ticket counts
@@ -9,10 +9,12 @@
 // trips it at once, as POST_MERGE_REVERT trips a lever; fix tries and parked hours trip past their
 // guardrail's rate-ratio margin, and a new error class trips, each only once both releases have the
 // registry's revert_min_per_arm tickets. A trip pins the previous release (the release folder install.sh
-// kept for it made current again, and what runs moved onto it), opens one revert PR reverting every
-// merge between the two releases, and raises one needs-you item naming the merges, the metric and the
-// evidence. The pin holds every auto-release until main carries the revert PR's merge, or the PR is
-// closed unmerged (the person kept the release). `desk-q rollback <commit>` does the same on demand.
+// kept for it, held from pruning while it may be needed, made current again, and what runs moved onto
+// it), opens one revert PR reverting every merge between the two releases, and raises one needs-you
+// item naming the merges, the metric and the evidence. The pin holds every auto-release and window
+// update until main carries the revert PR's merge, or the PR is closed unmerged (the person kept the
+// release). `desk-q rollback <commit>` does the same on demand. A rollback takes the auto-release's
+// lock, so it never interleaves with an install.
 //
 // Its state is release-watch.json beside the auto-release's: each release judged, the pin, and when the
 // rows were last read.
@@ -23,13 +25,14 @@ import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { DECISION_RULE, GUARDRAILS, POST_MERGE_REVERT } from './lever-registry.mjs';
-import { releases, makeLive, currentRelease, releaseCommit, restart as restartRunning } from './installed.mjs';
+import { releases, makeLive, currentRelease, releaseCommit, holdReleases, restart as restartRunning } from './installed.mjs';
 import { CLASSES, WAITING_CLASSES } from './failure-class.mjs';
-import { tryLock, unlock, writeJsonAtomic } from './dir-lock.mjs';
+import { writeJsonAtomic } from './dir-lock.mjs';
+import { tryBorrowLock } from './borrow.mjs';
 import { addAsk } from './asks.mjs';
 import { allBatches } from './batches.mjs';
 import { perTicket } from './phase0-report.mjs';
-import { withOutcomes, outcomeIn } from './levers-evaluate.mjs';
+import { withOutcomes, outcomeIn, EVIDENCE_KEEP_DAYS } from './levers-evaluate.mjs';
 import { readPostMerge } from './post-merge.mjs';
 
 const HOUR_MS = 3_600_000;
@@ -41,15 +44,19 @@ export const FIX_TRIES_MARGIN = GUARDRAILS['fix-tries-parks'].margin.max_rate_ra
 export const PARKED_HOURS_MARGIN = GUARDRAILS['parked-hours'].margin.max_rate_ratio;
 // The park classes that are errors: not a wait, a usage limit, or a park no rule could read.
 export const ERROR_CLASSES = Object.freeze(CLASSES.filter((c) => ![...WAITING_CLASSES, 'quota', 'unclassified'].includes(c)));
-// How often the rows are read while a release's window is open, and how far back they reach.
+// How often the rows are read while a release's window is open, and how far back they reach: a ticket
+// counts for the release it last started on, however long it queued, so as far back as the lever
+// evaluation reads.
 export const CHECK_EVERY_MS = HOUR_MS;
-const LOOKBACK_MS = 7 * 24 * HOUR_MS;
+const LOOKBACK_MS = EVIDENCE_KEEP_DAYS * 24 * HOUR_MS;
 // A release recorded longer ago than this is never judged: its window, and the code it ran, are long gone.
 const STALE_MS = 14 * 24 * HOUR_MS;
 
 export const releasesFile = (dir) => join(dir, 'releases.jsonl');
 export const watchFile = (dir) => join(dir, 'release-watch.json');
-const lockDir = (dir) => join(dir, 'release-watch.lock.d');
+// The auto-release's lock (maintenance.mjs), so a rollback never interleaves with an install.
+const RELEASE_LOCK = 'release.lock.d';
+const takeReleaseLock = (dir) => { mkdirSync(dir, { recursive: true }); return tryBorrowLock({ dir, name: RELEASE_LOCK }); };
 const short = (sha) => String(sha ?? '?').slice(0, 12);
 const run = (cmd, args, opts = {}) => {
   const r = spawnSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts });
@@ -64,9 +71,17 @@ const writeWatch = (dir, s) => { mkdirSync(dir, { recursive: true }); writeJsonA
 
 // The auto-release's record of one install: the commit before it, the commit installed, and how many
 // merges to main it carried.
-export function recordRelease(dir, { at, from, to, merges }) {
+export function recordRelease(dir, { at, from, to, merges }, home = E.deskHome()) {
   mkdirSync(dir, { recursive: true });
   appendFileSync(releasesFile(dir), `${JSON.stringify({ at: new Date(at).toISOString(), from, to, merges })}\n`);
+  holdOpen(dir, +new Date(at), home);
+}
+// Keeps install.sh from pruning a release a rollback may still need: the one before each release not
+// yet judged, and the pinned one.
+function holdOpen(dir, now, home) {
+  const s = readWatch(dir);
+  const open = readReleases(dir).filter((r) => !s.judged?.[r.to] && now - Date.parse(r.at) < STALE_MS);
+  try { holdReleases([...open.map((r) => r.from), ...(s.pinned ? [s.pinned.commit] : [])], home); } catch { /* the next record or watch writes it again */ }
 }
 export function readReleases(dir) {
   let body = '';
@@ -202,9 +217,8 @@ export function openRevertPr({ src, dir, tripped, merges, title, body }) {
 // by default the standing batch's of the repo this runs in, or null outside one.
 const ownState = () => { try { return E.batchPaths(E.repoSlug()).state; } catch { return null; } };
 export function fyiState(src, fallback = ownState()) {
-  const url = run('git', ['-C', src, 'config', '--get', 'remote.origin.url']).out;
-  const m = /github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/.exec(url);
-  return m ? E.batchPaths(E.slugOf(m[1])).state : fallback;
+  const ownerRepo = E.ownerRepoFromUrl(run('git', ['-C', src, 'config', '--get', 'remote.origin.url']).out);
+  return ownerRepo ? E.batchPaths(E.slugOf(ownerRepo)).state : fallback;
 }
 
 // Rolls back release `tripped` to `previous`: pins the previous release where install.sh kept it, opens one
@@ -238,8 +252,11 @@ export function rollBack({ dir, src, tripped, previous, metric, evidence, home =
   lines.push(pr.ok ? `release watch: opened revert PR #${pr.pr} (${pr.url})` : `release watch: no revert PR opened: ${pr.why}`);
 
   const s = readWatch(dir);
-  if (pinned) s.pinned = { commit: pinned, tripped, pr: pr.ok ? pr.pr : null, at: new Date(now).toISOString() };
+  // A revert PR an earlier rollback of the same release opened is still the one the pin waits for.
+  const earlier = s.pinned?.tripped === tripped ? s.pinned.pr ?? null : null;
+  if (pinned) s.pinned = { commit: pinned, tripped, pr: pr.ok ? pr.pr : earlier, at: new Date(now).toISOString() };
   writeWatch(dir, s);
+  holdOpen(dir, now, home);
 
   const text = `desk release ${short(tripped)} rolled back on ${metric}: ${evidence}. `
     + `${pinned ? `The previous release ${short(pinned)} is pinned` : `The previous release ${short(previous)} could not be pinned`}; `
@@ -255,20 +272,21 @@ export function rollBack({ dir, src, tripped, previous, metric, evidence, home =
 // ---- the pass's step -----------------------------------------------------------------------------------
 // Judges each recorded release whose window has closed, once, and rolls back the first that trips. The
 // rows are read at most every CHECK_EVERY_MS, and not at all while a pin holds. -> { lines }
-export function watchRelease({ dir, src, at = new Date(), rowsFor = machineRows, ...rest }) {
+export function watchRelease({ dir, src, at = new Date(), rowsFor = machineRows, home = E.deskHome(), ...rest }) {
   const now = +at;
   if (!src || !existsSync(src)) return { lines: [] };
   const s0 = readWatch(dir);
   const open = readReleases(dir).filter((r) => !s0.judged?.[r.to] && now - Date.parse(r.at) < STALE_MS);
   if (!open.length || s0.pinned) return { lines: [] };
   if (now - Date.parse(s0.checked_at ?? '') < CHECK_EVERY_MS) return { lines: [] };
-  if (tryLock(lockDir(dir)) !== true) return { lines: [] };
+  const lock = takeReleaseLock(dir);
+  if (!lock.ok) return { lines: [] };
   try {
     const s = readWatch(dir);
     s.checked_at = new Date(now).toISOString();
     s.judged ??= {};
     writeWatch(dir, s);
-    const since = Math.min(...open.map((r) => Date.parse(r.at))) - LOOKBACK_MS;
+    const since = now - LOOKBACK_MS;
     const rows = rowsFor({ since, now });
     const lines = [];
     for (const rel of open.sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) {
@@ -286,11 +304,12 @@ export function watchRelease({ dir, src, at = new Date(), rowsFor = machineRows,
       writeWatch(dir, s);
       const t = c.trips[0];
       const evidence = c.trips.map((x) => x.why).join('; ');
-      lines.push(...rollBack({ dir, src, tripped: rel.to, previous: rel.from, metric: t.metric, evidence: `${evidence} (${label(c.now)}, against ${label(c.before)})`, now, ...rest }).lines);
+      lines.push(...rollBack({ dir, src, tripped: rel.to, previous: rel.from, metric: t.metric, evidence: `${evidence} (${label(c.now)}, against ${label(c.before)})`, now, home, ...rest }).lines);
       break;
     }
+    holdOpen(dir, now, home);
     return { lines };
-  } finally { unlock(lockDir(dir)); }
+  } finally { lock.release(); }
 }
 
 // Whether the pin holds the auto-release's install of `to`: a reason, or null. The pin lifts once main
@@ -327,21 +346,30 @@ export function manualRollback(argv, { dir, src, home = E.deskHome(), now = Date
     writeWatch(dir, s);
     return { code: 0, text: `unpinned ${short(was.commit)}: the auto-release installs main again once its check passes` };
   }
-  if (arg.startsWith('-')) return { code: 2, text: usage };
+  // A commit is named by 7 or more hex digits, so a typo never matches some other release.
+  if (!/^[0-9a-f]{7,40}$/i.test(arg)) return { code: 2, text: `${usage}  (<commit>: 7 to 40 hex digits)` };
+  const want = arg.toLowerCase();
   if (!src || !existsSync(src)) return { code: 1, text: `nothing rolled back: no desk-skills checkout (${src ?? `${join(home, 'source-checkout')} names none`})` };
-  const list = releases(home);
-  const rel = releaseOf(arg, home);
-  const recorded = readReleases(dir).filter((r) => r.to.startsWith(arg)).at(-1);
-  const tripped = recorded?.to ?? (rel ? releaseCommit(rel.name, rel.info) : null);
-  const before = rel ? list[list.findIndex((r) => r.name === rel.name) - 1] : null;
-  const previous = recorded?.from ?? (before ? releaseCommit(before.name, before.info) : null);
-  if (!tripped || !previous) {
-    const kept = list.map((r) => short(releaseCommit(r.name, r.info))).join(', ') || 'none';
-    return { code: 1, text: `nothing rolled back: ${arg} is not a release with one before it (releases kept: ${kept})` };
-  }
-  const s = readWatch(dir);
-  s.judged = { ...(s.judged ?? {}), [tripped]: { at: new Date(now).toISOString(), from: previous, verdict: 'rolled back by hand' } };
-  writeWatch(dir, s);
-  const r = rollBack({ dir, src, tripped, previous, metric: 'asked by hand', evidence: `desk-q rollback ${arg}`, home, now, ...rest });
-  return { code: r.pinned || r.pr ? 0 : 1, text: r.lines.join('\n') };
+  const lock = takeReleaseLock(dir);
+  if (!lock.ok) return { code: 1, text: `nothing rolled back: a pass is checking or installing desk-skills (${lock.why ?? `pid ${lock.holder ?? '?'}`}); run it again in a minute` };
+  try {
+    const list = releases(home);
+    const rel = releaseOf(want, home);
+    const recorded = readReleases(dir).filter((r) => r.to.startsWith(want)).at(-1);
+    const tripped = recorded?.to ?? (rel ? releaseCommit(rel.name, rel.info) : null);
+    const before = rel ? list[list.findIndex((r) => r.name === rel.name) - 1] : null;
+    const previous = recorded?.from ?? (before ? releaseCommit(before.name, before.info) : null);
+    if (!tripped || !previous) {
+      const kept = list.map((r) => short(releaseCommit(r.name, r.info))).join(', ') || 'none';
+      return { code: 1, text: `nothing rolled back: ${arg} is not a release with one before it (releases kept: ${kept})` };
+    }
+    const s = readWatch(dir);
+    if (s.pinned?.tripped === tripped) {
+      return { code: 1, text: `nothing rolled back: release ${short(tripped)} is already rolled back, with ${short(s.pinned.commit)} pinned${s.pinned.pr ? ` until revert PR #${s.pinned.pr} merges or is closed` : ''}` };
+    }
+    s.judged = { ...(s.judged ?? {}), [tripped]: { at: new Date(now).toISOString(), from: previous, verdict: 'rolled back by hand' } };
+    writeWatch(dir, s);
+    const r = rollBack({ dir, src, tripped, previous, metric: 'asked by hand', evidence: `desk-q rollback ${arg}`, home, now, ...rest });
+    return { code: r.pinned || r.pr ? 0 : 1, text: r.lines.join('\n') };
+  } finally { lock.release(); }
 }

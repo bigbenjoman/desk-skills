@@ -396,6 +396,13 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
 // The release watch (release-watch.mjs), loaded when first used: it reads the per-ticket rows, whose
 // modules import this one.
 const releaseWatch = () => import('./release-watch.mjs');
+// Why the release watch's pin holds an install of origin/main, or null. Fetched only while a pin is set.
+function pinHolds(watch, dir, src = sourceCheckout()) {
+  if (!watch.readWatch(dir).pinned || !src || !existsSync(src)) return null;
+  const git = (...a) => run('git', ['-C', src, ...a], { timeout: FETCH_TIMEOUT_MS });
+  git('fetch', '-q', 'origin', 'main');
+  return watch.pinBlocks({ dir, src, to: git('rev-parse', '--verify', '-q', 'refs/remotes/origin/main').out || 'HEAD' });
+}
 
 // ---- one step ----------------------------------------------------------------------------------
 // The window's step, then, while no window is open, the auto-release's and the release watch's.
@@ -446,7 +453,7 @@ async function windowStep({ dir = maintDir(), running = [], stop = () => ({ ok: 
       record(dir, at, `window ${w.text} opened: draining, no new workers in any repo`);
       return { hold: true, lines: [drainLine(s, running, drainLimit(E.configValue('maintenance-drain')).minutes, at)] };
     }
-    return step(s, { dir, at, running, stop, selfQueue });
+    return step(s, { dir, at, running, stop, selfQueue, watch: await releaseWatch() });
   } finally { lock.release(); }
 }
 
@@ -456,7 +463,7 @@ function drainLine(s, running, limit, at) {
     (running.length ? `${running.length} running (${running.map((t) => t.key).join(', ')}), stopped at the ${limit} min limit, ${left} min from now` : 'none running here');
 }
 
-function step(s, { dir, at, running, stop, selfQueue }) {
+function step(s, { dir, at, running, stop, selfQueue, watch }) {
   const lines = [];
   const save = (patch) => { Object.assign(s, patch); writeState(dir, s); };
   const log = (text) => record(dir, at, text);
@@ -497,6 +504,14 @@ function step(s, { dir, at, running, stop, selfQueue }) {
     save({ phase: 'updating' });
   }
 
+  // A release the release watch rolled back keeps the previous one pinned here too: the window skips
+  // the update and still runs its reboot check.
+  const held = s.phase === 'updating' ? pinHolds(watch, dir) : null;
+  if (held) {
+    log(`update skipped: ${held}`);
+    lines.push(`maintenance: desk-skills not updated: ${held}`);
+    save({ phase: 'checking' });
+  }
   if (s.phase === 'updating') {
     const u = updateDesk();
     if (!u.ok) {
@@ -504,6 +519,7 @@ function step(s, { dir, at, running, stop, selfQueue }) {
       note(`desk-skills update failed in the maintenance window, so the computer was not restarted: ${u.why}`);
       return finish(`desk-skills update failed (${u.why}), so no restart`);
     }
+    if (u.new !== u.old) watch.recordRelease(dir, { at, from: u.old, to: u.new, merges: u.merges });
     log(`update: desk-skills ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main), pulled fast-forward and installed`);
     lines.push(`maintenance: desk-skills updated ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main) and installed`);
     save({ phase: 'checking', update: { old: u.old, new: u.new, merges: u.merges } });
