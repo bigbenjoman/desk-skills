@@ -723,9 +723,10 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   const VALUES = ['batched', 'one-at-a-time', 'mixed'];
   const SINCE = at(-15);
   const qrow = (slug, arm, o = {}) => row(slug, arm, null, { pin: { set: arm === 'batched' ? [] : [QH], arms: { [QH]: arm }, trial_ids: { [QH]: `${slug}/${QH}/initial` }, fp: null }, ...o });
-  // One repo: `n` asking tickets per value, each asking once, plus two that asked nothing; `ask[value](i)`
-  // gives an ask's figures: { raise, act } dollars, { push, digest } presentations, `by` its answerer,
-  // `complete` false for an unread raise.
+  // One repo: `n` asking tickets per value, each asking `count` times (once by default), plus two that
+  // asked nothing; `ask[value](i)` gives each ask's figures: { raise, act } dollars, `push` and `digest`
+  // presentations (the digest on a page of its own unless `page` names one, with a push unless `silent`),
+  // `by` its answerer, `complete` false for an unread raise.
   const qrepo = (slug, n, ask) => {
     const rows = VALUES.flatMap((v) => [...Array.from({ length: n }, () => qrow(slug, v)), qrow(slug, v), qrow(slug, v)]);
     const asking = VALUES.flatMap((v, k) => rows.filter((r) => r.pin.arms[QH] === v).slice(0, n).map((r, i) => ({ r, v, f: ask[v](i) })));
@@ -733,46 +734,58 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
     mkdirSync(join(T, 'queues', slug), { recursive: true });
     writeFileSync(queue, JSON.stringify({ version: 1, batch: 'b', tickets: Object.fromEntries(rows.map((r) => [r.key, { key: r.key, state: 'done', lane: 'A' }])) }));
     queueDifference(queue, { seed: true });
-    const tok = (key, of, source, usd, complete = true) => ({ step: 'tokens', key, since: SINCE, of, source, input: Math.round(usd * 1000), output: 10, cache_read: 0, cache_write: 0, usd, complete });
-    recordAsks(queue, asking.flatMap(({ r, f }) => [
-      { step: 'raised', key: r.key, since: SINCE, kind: 'question', question: 'which?' },
-      ...(f.push ? [{ step: 'presented', key: r.key, since: SINCE, via: 'push', ref: 'p' }] : []),
-      ...(f.digest ? [{ step: 'presented', key: r.key, since: SINCE, via: 'digest', ref: 'd' }] : []),
-      { step: 'answered', key: r.key, since: SINCE, by: f.by ?? 'decider', at: new Date(Date.parse(SINCE) + f.latency * 1000) },
-      { step: 'acted', key: r.key, since: SINCE, round: 2 },
-      tok(r.key, 'raise', 'log', f.raise, f.complete ?? true), tok(r.key, 'act', 'log', f.act),
-    ]), { on: true, now: new Date(Date.parse(SINCE) + 3_600_000) });
+    const tok = (key, since, of, source, usd, complete = true) => ({ step: 'tokens', key, since, of, source, input: Math.round(usd * 1000), output: 10, cache_read: 0, cache_write: 0, usd, complete });
+    recordAsks(queue, asking.flatMap(({ r, f }) => Array.from({ length: f.count ?? 1 }, (_, j) => new Date(Date.parse(SINCE) + j * 60_000).toISOString()).flatMap((since) => [
+      { step: 'raised', key: r.key, since, kind: 'question', question: 'which?' },
+      ...(f.push ? [{ step: 'presented', key: r.key, since, via: 'push', ref: `ask:${r.key}`, notification: `ask:${r.key}` }] : []),
+      ...(f.digest ? [{ step: 'presented', key: r.key, since, via: 'digest', ref: f.page ?? `page-${r.key}-${since}`, notification: f.silent ? null : 'digest:slot' }] : []),
+      { step: 'answered', key: r.key, since, by: f.by ?? 'decider', at: new Date(Date.parse(since) + f.latency * 1000) },
+      { step: 'acted', key: r.key, since, round: 2 },
+      tok(r.key, since, 'raise', 'log', f.raise, f.complete ?? true), tok(r.key, since, 'act', 'log', f.act),
+      // The person answering from a shell spent nothing, as ask-ledger.mjs measure records it.
+      ...(f.by === 'person' ? [tok(r.key, since, 'present', 'shell', 0)] : []),
+    ])), { on: true, now: new Date(Date.parse(SINCE) + 3_600_000) });
     return { ...repo(slug, rows), batches: [{ name: null, state: stateOf(slug), queue }] };
   };
   const qhRow = (slug) => evalsOf(slug).filter((e) => e.lever === QH).at(-1);
   const wiggle = (i) => 0.01 * (i % 3);
   const dear = (i) => ({ raise: 0.4 + wiggle(i), act: 0.6, digest: 1, latency: 3600 * (1 + (i % 2)) });
   const cheap = (i) => ({ raise: 0.2 + wiggle(i), act: 0.3, push: 1, latency: 600, by: i % 3 ? 'person' : 'default' });
+  const interruptions = (row, v) => row.values[v].guardrails.find((g) => g.name === 'interruptions');
   const QA1 = 'acme__qh-adopts';
-  run([qrepo(QA1, 30, { batched: dear, 'one-at-a-time': cheap, mixed: dear })]);
+  // Each one-at-a-time ask is pushed, and the digest lists it later too.
+  run([qrepo(QA1, 30, { batched: dear, 'one-at-a-time': (i) => ({ ...cheap(i), digest: 1 }), mixed: dear })]);
   const q1 = qhRow(QA1);
   t('question handling: only the tickets that raised an ask are weighed', [q1.values['one-at-a-time'].n.on, q1.values['one-at-a-time'].n.off], [30, 30]);
-  t('question handling: the metric is ask dollars per asking ticket', [q1.values['one-at-a-time'].mechanism.metric, Math.round(q1.values['one-at-a-time'].mechanism.est * 100)], ['ask dollars per asking ticket', -50]);
+  t('question handling: the metric is ask dollars per asking ticket', [q1.values['one-at-a-time'].mechanism.metric, Math.round(q1.values['one-at-a-time'].mechanism.est * 100)], ['ask dollars per asking ticket', -49]);
   t('question handling: interruptions per ticket are guarded beside the shared guardrails', q1.values['one-at-a-time'].guardrails.map((g) => g.name), ['acceptance', 'fix-tries-parks', 'ci-reds', 'review-p0-p1', 'post-merge', 'parked-hours', 'interruptions']);
+  t('question handling: a pushed ask the digest later lists counts one interruption, as batched\'s one digest push does', interruptions(q1, 'one-at-a-time').est, 1);
   t('question handling: the arm 50% cheaper with as many interruptions is adopted', [q1.decision, q1.state, q1.value], ['adopt', 'adopted', 'one-at-a-time']);
   const rep = q1.ask_report;
   t('the report: one entry per arm', Object.keys(rep), ['batched', 'mixed', 'one-at-a-time']);
   t('the report: tokens and dollars per ticket by step', [rep.batched.steps.raise.usd_per_ticket, rep.batched.steps.act.usd_per_ticket, rep.batched.steps.present.usd_per_ticket, rep['one-at-a-time'].steps.act.tokens_per_ticket], [0.41, 0.6, 0, 310]);
-  t('the report: pushes and digests per ticket', [rep.batched.pushes_per_ticket, rep.batched.digests_per_ticket, rep['one-at-a-time'].pushes_per_ticket, rep['one-at-a-time'].digests_per_ticket], [0, 1, 1, 0]);
+  t('the report: pushes and digests per ticket', [rep.batched.pushes_per_ticket, rep.batched.digests_per_ticket, rep['one-at-a-time'].pushes_per_ticket, rep['one-at-a-time'].digests_per_ticket], [0, 1, 1, 1]);
   t('the report: the share of asks defaulted', [rep.batched.defaulted_share, rep['one-at-a-time'].defaulted_share], [0, 0.3333]);
   t('the report: the median answer latency', [rep.batched.median_latency_s, rep['one-at-a-time'].median_latency_s], [5400, 600]);
-  // As cheap, but two interruptions a ticket where batched has one: the guardrail reverts the lever.
+  // Two pushed asks a ticket where batched's one ask has a digest push of its own: the guardrail reverts the lever.
   const QA2 = 'acme__qh-noisy';
-  run([qrepo(QA2, 30, { batched: dear, 'one-at-a-time': (i) => ({ ...cheap(i), digest: 1 }), mixed: dear })]);
+  run([qrepo(QA2, 30, { batched: dear, 'one-at-a-time': (i) => ({ ...cheap(i), count: 2 }), mixed: dear })]);
   const q2 = qhRow(QA2);
   t('question handling: an arm with more than 1.25 times batched\'s interruptions reverts the lever', [q2.decision, q2.state, q2.reason_code], ['revert', 'reverted', 'guardrail_interruptions']);
-  t('question handling: and the revert says which guardrail', /^one-at-a-time against batched: interruptions \(pushes and digests\) per ticket worse than its margin/.test(q2.reason), true);
+  t('question handling: and the revert says which guardrail', /^one-at-a-time against batched: interruptions per ticket \(each push, and each digest push shared among the asks it listed\) worse than its margin/.test(q2.reason), true);
+  // A digest's one push is shared among the asks its page listed, and one sent with no push counts none.
+  const QA4 = 'acme__qh-shared';
+  run([qrepo(QA4, 30, { batched: (i) => ({ ...dear(i), page: `pair-${Math.floor(i / 2)}` }), 'one-at-a-time': cheap, mixed: (i) => ({ ...dear(i), silent: i % 2 === 0 }) })]);
+  const q4 = qhRow(QA4);
+  t('question handling: a digest page listing two asks counts half an interruption for each', interruptions(q4, 'one-at-a-time').est, 2);
+  t('question handling: a digest listing that sent no push counts none', interruptions(q4, 'mixed').est, 1);
   // An ask whose raise could not be read: its ticket stays an asking ticket but leaves the dollars.
   const QA3 = 'acme__qh-unread';
   run([qrepo(QA3, 30, { batched: (i) => ({ ...dear(i), complete: i >= 5 }), 'one-at-a-time': cheap, mixed: dear })]);
   const r3 = qhRow(QA3).ask_report.batched;
   t('question handling: a step read incomplete leaves the ticket out of that step and the dollars, never as 0', [r3.tickets, r3.steps.raise.tickets, r3.steps.act.tickets, r3.steps.raise.usd_per_ticket], [30, 25, 30, 0.4104]);
-  t('question handling: and the mechanism weighs only the tickets whose asks cost is whole', Math.round(qhRow(QA3).values['one-at-a-time'].mechanism.est * 100), -51);
+  t('question handling: and the mechanism weighs only the tickets whose asks cost is whole', Math.round(qhRow(QA3).values['one-at-a-time'].mechanism.est * 100), -50);
+  t('question handling: only those count toward the sample, so 25 priced of 30 asking tickets is below the minimum', [qhRow(QA3).values['one-at-a-time'].n.off, qhRow(QA3).values['one-at-a-time'].decision, qhRow(QA3).values['one-at-a-time'].reason_code], [25, 'hold', 'below_min_sample']);
 }
 
 rmSync(T, { recursive: true, force: true });

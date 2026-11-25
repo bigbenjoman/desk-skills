@@ -58,7 +58,7 @@ import { perTicket, allBatches, failedRuns } from './phase0-report.mjs';
 import { everyTicket } from './queue-store.mjs';
 import { readQueue } from './batch-state.mjs';
 import { readAsks } from './ask-ledger.mjs';
-import { fold } from './ticket-ledger.mjs';
+import { fold, ASK_TOKEN_STEPS } from './ticket-ledger.mjs';
 import { ledgerTarget } from './queue-ledger.mjs';
 import { quantile } from './quantile.mjs';
 
@@ -102,6 +102,10 @@ const ROW_FILTERS = Object.freeze({
   [ASKING]: (r) => r.asks > 0,
 });
 const rowFilter = (reg) => (reg?.rows ? ROW_FILTERS[reg.rows] ?? (() => false) : () => true);
+// Of those, the tickets its decision counts toward the sample and weighs: an asking ticket only once
+// its asks' dollars are whole. One whose cost is still incomplete shows in the ask report alone, so
+// tickets with no priced ask can never make up an arm's minimum.
+const weighable = (reg) => (reg?.rows === ASKING ? (r) => Number.isFinite(r.ask_usd) : () => true);
 
 // ---- the blind audit ---------------------------------------------------------------------------------
 // The audit queue states of an audit due and not yet recorded (levers-audit.mjs); a failed one is not
@@ -151,8 +155,7 @@ function ownGuardrail(name) {
 const guardMetric = (name) => GUARDRAILS[name]?.metric ?? ownGuardrail(name)?.metric ?? name;
 
 // ---- asks ------------------------------------------------------------------------------------------------
-// The steps an ask's cost is read for (ask-ledger.mjs measure), and the token kinds summed.
-const ASK_STEPS = Object.freeze(['raise', 'present', 'act']);
+// The token kinds summed over an ask's steps (ticket-ledger.mjs ASK_TOKEN_STEPS).
 const TOKEN_KINDS = ['input', 'output', 'cache_read', 'cache_write'];
 // The token records an ask needs before its cost is whole: the parked round's once raised, the
 // round's that acted once acted, and its presentation's where a decider or the person's session (or
@@ -166,13 +169,15 @@ function wantedSteps(a) {
   return want;
 }
 // One ticket's asks (ask-ledger.mjs readAsks records) as the evaluation reads them: their count, their
-// dollars and tokens by step, its interruptions (pushes and digest presentations), how many were
-// answered and by default, and each answer's latency. A step with a record that is incomplete or
+// dollars and tokens by step, its interruptions, how many were answered and by default, and each
+// answer's latency. Interruptions count notifications: a push is one; a digest listing is its share of
+// that digest's one push, 1 over the asks its page presented (`pageAsks`, by the page in its `ref`),
+// and nothing where no push went out with it or the ask was pushed already, which sets off no push. A step with a record that is incomplete or
 // unpriced, or a record still missing, makes its figure null, and the ticket's dollars null with it,
 // so the ticket leaves the mechanism as a ticket with an incomplete cost does, never read as 0.
-function askFigures(asks) {
-  const steps = Object.fromEntries(ASK_STEPS.map((k) => [k, { tokens: 0, usd: 0 }]));
-  let pushes = 0, digests = 0, answered = 0, defaulted = 0;
+function askFigures(asks, pageAsks = new Map()) {
+  const steps = Object.fromEntries(ASK_TOKEN_STEPS.map((k) => [k, { tokens: 0, usd: 0 }]));
+  let pushes = 0, digests = 0, interruptions = 0, answered = 0, defaulted = 0;
   const latencies = [];
   for (const a of asks) {
     for (const want of wantedSteps(a)) if (!a.tokens?.[want]) steps[want.split(':')[0]] = { tokens: null, usd: null };
@@ -183,18 +188,21 @@ function askFigures(asks) {
       st.tokens += TOKEN_KINDS.reduce((n, k) => n + t[k], 0);
       st.usd = Math.round((st.usd + t.usd) * 1e6) / 1e6;
     }
-    pushes += (a.presented ?? []).filter((p) => p.via === 'push').length;
-    digests += (a.presented ?? []).filter((p) => p.via === 'digest').length;
+    const pushed = (a.presented ?? []).filter((p) => p.via === 'push').length;
+    const listed = (a.presented ?? []).filter((p) => p.via === 'digest');
+    pushes += pushed;
+    digests += listed.length;
+    interruptions += pushed + (pushed ? 0 : listed.reduce((n, p) => n + (p.notification ? 1 / (pageAsks.get(p.ref) ?? 1) : 0), 0));
     if (a.answered) {
       answered += 1;
       if (a.answered.by === 'default') defaulted += 1;
       if (Number.isFinite(a.answered.latency_s)) latencies.push(a.answered.latency_s);
     }
   }
-  const whole = ASK_STEPS.every((k) => steps[k].usd != null);
+  const whole = ASK_TOKEN_STEPS.every((k) => steps[k].usd != null);
   return {
-    asks: asks.length, ask_usd: whole ? Math.round(ASK_STEPS.reduce((n, k) => n + steps[k].usd, 0) * 1e6) / 1e6 : null, ask_steps: steps,
-    pushes, digests, interruptions: pushes + digests, answered, defaulted, latencies,
+    asks: asks.length, ask_usd: whole ? Math.round(ASK_TOKEN_STEPS.reduce((n, k) => n + steps[k].usd, 0) * 1e6) / 1e6 : null, ask_steps: steps,
+    pushes, digests, interruptions: Math.round(interruptions * 1e4) / 1e4, answered, defaulted, latencies,
   };
 }
 
@@ -208,10 +216,13 @@ function withAsks(rows, batches) {
   if (!all) return rows.map((r) => ({ ...r, asks: null }));
   const byKey = new Map();
   for (const a of all) { if (!byKey.has(a.key)) byKey.set(a.key, []); byKey.get(a.key).push(a); }
+  // How many asks each digest page presented, across the repo.
+  const pageAsks = new Map();
+  for (const p of all.flatMap((a) => a.presented ?? []).filter((x) => x.via === 'digest' && x.ref)) pageAsks.set(p.ref, (pageAsks.get(p.ref) ?? 0) + 1);
   return rows.map((r) => {
     const from = Date.parse(r.admitted_at ?? '');
     const mine = (byKey.get(r.key) ?? []).filter((a) => !Number.isFinite(from) || !(Date.parse(a.since) < from));
-    return { ...r, ...askFigures(mine) };
+    return { ...r, ...askFigures(mine, pageAsks) };
   });
 }
 
@@ -227,7 +238,7 @@ function askReport(rows) {
     const answered = rs.reduce((n, r) => n + (r.answered ?? 0), 0);
     return [arm, {
       tickets: rs.length, asks: rs.reduce((n, r) => n + (r.asks ?? 0), 0),
-      steps: Object.fromEntries(ASK_STEPS.map((k) => {
+      steps: Object.fromEntries(ASK_TOKEN_STEPS.map((k) => {
         const whole = rs.filter((r) => r.ask_steps?.[k]?.usd != null);
         return [k, { tokens_per_ticket: per(whole, (r) => r.ask_steps[k].tokens), usd_per_ticket: per(whole, (r) => r.ask_steps[k].usd), tickets: whole.length }];
       })),
@@ -553,7 +564,7 @@ export function evaluate({
   for (const lever of levers) {
     const trials = plan.filter((p) => p.lever === lever && p.s.state !== 'adopted');
     if (!trials.length) continue;
-    const rows = trials.flatMap((p) => p.rows.filter((x) => !x.excluded));
+    const rows = trials.flatMap((p) => p.rows.filter((x) => !x.excluded && weighable(registry[lever])(x)));
     const seed = `${today}|${lever}|pooled`;
     const pooled = (rs, sd) => ({
       n: counts(rs),
@@ -592,6 +603,7 @@ export function evaluate({
       }
       const { s } = p;
       const used = p.rows.filter((x) => !x.excluded);
+      const weighed = used.filter(weighable(reg));
       const pooled = s.state === 'adopted' ? null : pooledBy[lever];
       const seed = `${evalId}`;
       // One arm against its comparison: the pooled estimates for a trial, the repo's guardrails.
@@ -619,14 +631,14 @@ export function evaluate({
       if (isValued(reg) && s.state !== 'adopted') {
         // Each value against the baseline; the lead value's figures and decision stand for the lever.
         perValue = Object.fromEntries(others.map((v) => {
-          const wv = weigh(valueRows(used, v, reg.baseline), pooled?.values?.[v] ?? null, `${seed}|${v}`);
+          const wv = weigh(valueRows(weighed, v, reg.baseline), pooled?.values?.[v] ?? null, `${seed}|${v}`);
           return [v, { ...wv, d: decideOn(wv, pRequired) }];
         }));
         const value = leadValue(perValue);
         ({ d, ...w } = perValue[value]);
         d = { ...d, reason: `${value} against ${reg.baseline}: ${d.reason}`, value };
       } else {
-        w = weigh(used, pooled, seed);
+        w = weigh(weighed, pooled, seed);
         d = decideOn(w);
         // A valued lever keeps the value it was adopted on when it settles.
         if (isValued(reg) && s.value) d = { ...d, value: s.value };
