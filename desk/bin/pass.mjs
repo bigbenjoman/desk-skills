@@ -5369,7 +5369,7 @@ function applyFix(t, n, head, c) {
   if (c.call === 'refresh') { refreshBranch(t, n, head, c); return; }
   if (c.call === 'wait') { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`); return; }
   if (c.call === 'rerun') {
-    if (DRY) out.push(`${c.ready ? 'fix tries' : 'undraft'} (dry run): would re-run run(s) ${c.gate.failedRuns.join(', ')} on PR #${n} (${t.key}): ${c.why}`);
+    if (DRY) out.push(`${c.ready ? 'fix tries' : 'undraft'} (dry run): would re-run ${[...c.gate.failedRuns.map((r) => `run ${r}`), ...(c.gate.failedJobs ?? []).map((j) => `job ${j.jobId} of run ${j.runId}`)].join(', ')} on PR #${n} (${t.key}): ${c.why}`);
     else rerunDraft(t, n, head, c);
     return;
   }

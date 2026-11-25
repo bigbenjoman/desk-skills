@@ -35,7 +35,7 @@
 import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, externalPassed, PENDING_LIMIT_MS, FAILED } from './gate.mjs';
 import { baseSplit, runnerOrResource } from './failure-class.mjs';
 import { IDLE_RECHECK_MS } from './batch-state.mjs';
-import { normaliseLine, READ_ERROR } from './evidence.mjs';
+import { normaliseLine, readError } from './evidence.mjs';
 import { stepFits } from './workflow-yaml.mjs';
 import { askCategoryIn } from './decisions.mjs';
 import { parseVerdict as markerOf, COUNTS } from '../templates/scripts/desk/review-gate.mjs';
@@ -214,16 +214,16 @@ const stateClears = (kind) => (kind === 'verdict'
   ? 'a §4 State check, which reads the review verdict at the head and not the code, so only a review of a new head turns it green'
   : kind === 'external' ? 'a §4 State check, which reads an outside reviewer\'s review at the head and not the code, so only that reviewer\'s review of a new head turns it green'
   : 'a §4 State check, which reads the PR\'s reviews or approvals and not its code, so no fix try turns it green; a person clears what it reads');
-// A red §4 State check whose error lines say a read from GitHub failed (evidence.mjs READ_ERROR) failed
-// on that read, not on the state it reads, so its run is re-run once at the head before the PR is
+// A red §4 State check whose error lines say a read from GitHub failed (evidence.mjs readError) failed
+// on that read, not on the state it reads, so its job is re-run once at the head before the PR is
 // called stuck, through rerun.sh, whose record (r.reruns, r.rerunsOk) counts it. r: { perm (§3
-// ci-rerun), reruns(name), rerunsOk(name) }. -> { hit: [{ name, runId, line }], call (the rerun, while
-// one is left), note (why none is, otherwise) }.
-export const READ_STATE = 'a §4 State check failing on a GitHub read error';
+// ci-rerun), reruns(name), rerunsOk(name) }. -> { hit: [{ name, runId, jobId, line }], call (the rerun,
+// while one is left), note (why none is, otherwise) }.
+const READ_STATE = 'a §4 State check failing on a GitHub read error';
 function readErrorRerun(state, checks, r) {
   const latest = latestPerCheck(checks ?? []);
-  const lineOf = (f) => errorLines(latest.find((c) => c.name === f.name)).find((l) => READ_ERROR.test(l)) ?? null;
-  const hit = [...new Map(state.map((f) => [f.name, { name: f.name, runId: f.runId, line: lineOf(f) }])).values()].filter((f) => f.line);
+  const checkOf = (f) => latest.find((c) => c.name === f.name);
+  const hit = [...new Map(state.map((f) => [f.name, { name: f.name, runId: f.runId, jobId: checkOf(f)?.jobId ?? null, line: errorLines(checkOf(f)).find(readError) ?? null }])).values()].filter((f) => f.line);
   if (!hit.length) return { hit };
   const rerun = rerunGate(hit);
   if (!rerun) return { hit, note: 'it has no run to re-run' };
@@ -231,8 +231,14 @@ function readErrorRerun(state, checks, r) {
   const used = runnerRerunsSpent(hit, (f) => r.rerunsOk?.(f.name) ?? 0, (f) => r.reruns?.(f.name) ?? 0);
   if (used === 'ran') return { hit, note: 're-run once at this head, it failed the same way' };
   if (used === 'refused') return { hit, note: `GitHub refused desk's ${RERUNS_MAX} re-runs at this head` };
+  // A check alone in its run among these is re-run by its job, so `--failed` re-runs no other red job of
+  // that run with it; two in one run share the run's re-run, as a job re-run puts the run in progress,
+  // which refuses the next (gate.mjs failedJobs).
+  const alone = hit.filter((f) => f.runId && f.jobId && hit.filter((x) => String(x.runId) === String(f.runId)).length === 1);
+  const gate = { ...rerun.gate, failedRuns: rerun.gate.failedRuns.filter((id) => !alone.some((f) => String(f.runId) === id)),
+    failedJobs: alone.map((f) => ({ runId: String(f.runId), jobId: String(f.jobId), name: f.name, why: 'alone, so no other red job of its run is re-run with it' })) };
   const names = hit.map((f) => `"${f.name}"`).join(', '), one = hit.length === 1;
-  return { hit, call: { call: 'rerun', why: `its ${names} ${one ? 'state check' : 'state checks'} failed on a GitHub read error ("${hit[0].line.slice(0, LINE_CHARS)}"), not on what ${one ? 'it reads' : 'they read'}, so ${one ? 'its run is' : 'their runs are'} re-run once at this head before the PR is called stuck`, gate: rerun.gate } };
+  return { hit, call: { call: 'rerun', why: `its ${names} ${one ? 'state check' : 'state checks'} failed on a GitHub read error ("${hit[0].line.slice(0, LINE_CHARS)}"), not on what ${one ? 'it reads' : 'they read'}, so ${one ? 'its job is' : 'their jobs are'} re-run once at this head before the PR is called stuck`, gate } };
 }
 // What clears a state check readErrorRerun found failing on a read error, once no re-run is left.
 const readClears = (f, note) => `${READ_STATE} ("${f.line.slice(0, LINE_CHARS)}"): ${note}; re-run it once GitHub answers again`;
