@@ -709,6 +709,7 @@ button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #11
 .th{font-size:12px;font-weight:500;color:#6B7280;text-align:left;padding:10px 16px;border-bottom:1px solid #E5E7EB}
 .td{padding:14px 16px;border-bottom:1px solid #F0F1F3;vertical-align:top;font-size:14px}
 .scroll{overflow-x:auto}
+.levtable.data{min-width:560px}
 .levtable .n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .levtable th.td{text-align:left;font-weight:500}
 .levtable .grp{background:#F9FAFB;padding:9px 16px;font-size:13px;font-weight:600;color:#374151;border-bottom:1px solid #E5E7EB}

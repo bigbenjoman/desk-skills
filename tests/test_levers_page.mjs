@@ -18,6 +18,42 @@ const w = (path, body) => { mkdirSync(dirname(path), { recursive: true }); write
 const jsonl = (rows) => rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
 const count = (s, re) => (s.match(re) ?? []).length;
 
+// The page's CSS, read as a browser would enough to check it: `subjects` holds each class some rule
+// selects (the last compound of a selector, a class inside :not() aside), and style(el, ancestors)
+// gives the declarations the rules outside @media give an element { tag, classes } under its ancestors
+// (nearest last), by specificity then order. A compound with a pseudo-class other than :not, or an
+// attribute, never matches here.
+function cssChecks(css) {
+  const rules = (text) => [...text.replace(/\/\*[^]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m, order) => ({ sels: m[1].split(',').map((s) => s.trim()).filter(Boolean), body: m[2], order }));
+  const compounds = (sel) => sel.replace(/\s*([>+~])\s*/g, ' $1 ').trim().split(/\s+/);
+  const parse = (c) => {
+    const nots = [...c.matchAll(/:not\(\.([\w-]+)\)/g)].map((m) => m[1]);
+    const rest = c.replace(/:not\([^)]*\)/g, '');
+    return { tag: /^[a-z][\w-]*|^\*/.exec(rest)?.[0] ?? null, classes: [...rest.matchAll(/\.([A-Za-z][\w-]*)/g)].map((m) => m[1]), nots,
+      odd: /\[|:(?!not)/.test(rest), spec: [0, (rest.match(/\.|\[|:(?!:)/g) ?? []).length + nots.length, /^[a-z]/.test(rest) ? 1 : 0] };
+  };
+  const subjects = new Set(rules(css).flatMap((r) => r.sels.map((s) => parse(compounds(s).at(-1)).classes)).flat());
+  const fits = (p, el) => !p.odd && (!p.tag || p.tag === '*' || p.tag === el.tag) && p.classes.every((c) => el.classes.includes(c)) && !p.nots.some((c) => el.classes.includes(c));
+  const matches = (parts, el, ancestors) => {
+    if (!fits(parse(parts.at(-1)), el)) return false;
+    if (parts.length === 1) return true;
+    const comb = parts.at(-2);
+    if (comb === '>') return ancestors.length > 0 && matches(parts.slice(0, -2), ancestors.at(-1), ancestors.slice(0, -1));
+    if (comb === '+' || comb === '~') return false;
+    return ancestors.some((a, i) => matches(parts.slice(0, -1), a, ancestors.slice(0, i)));
+  };
+  const specOf = (sel) => compounds(sel).filter((c) => !/^[>+~]$/.test(c)).map((c) => parse(c).spec).reduce((a, s) => a.map((v, i) => v + s[i]), [0, 0, 0]);
+  const desktop = rules(css.split('@media')[0]);
+  const style = (el, ancestors = []) => {
+    const hit = desktop.flatMap((r) => r.sels.filter((s) => matches(compounds(s), el, ancestors)).map((s) => ({ spec: specOf(s), order: r.order, body: r.body })));
+    hit.sort((a, b) => a.spec[0] - b.spec[0] || a.spec[1] - b.spec[1] || a.spec[2] - b.spec[2] || a.order - b.order);
+    const out = {};
+    for (const x of hit) for (const d of x.body.split(';')) { const i = d.indexOf(':'); if (i > 0) out[d.slice(0, i).trim()] = d.slice(i + 1).trim(); }
+    return out;
+  };
+  return { subjects, style };
+}
+
 const DS = 'bigbenjoman__desk-skills';
 const REPOS = [
   { slug: DS, gh: 'bigbenjoman/desk-skills', levers: '`preflight`' },
@@ -404,9 +440,21 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   full.panels.asks = { repos: [{ name: 'desk-skills', lever: 'question-handling', at: '2026-12-28T06:00:00.000Z', state: 'trial', arms: { batched: arm, 'one-at-a-time': arm } }] };
   const h = P.renderPage(full);
   const css = h.split('<style>')[1].split('</style>')[0];
-  const ruled = new Set([...css.matchAll(/\.([A-Za-z][\w-]*)/g)].map((m) => m[1]));
+  const check = cssChecks(css);
   const used = new Set([...h.matchAll(/<(?:section|table|thead|tbody|tr|th|td)\b[^>]*\bclass="([^"]*)"/g)].flatMap((m) => m[1].split(/\s+/)).filter(Boolean));
-  t('styles: every class on a section or table part has a CSS rule', j([...used].filter((c) => !ruled.has(c))), '[]');
+  t('styles: every class on a section or table part is the subject of a CSS rule', j([...used].filter((c) => !check.subjects.has(c))), '[]');
+  // What the desktop rules give a numeric header and body cell of a data table, and its group row.
+  const table = { tag: 'table', classes: ['levtable', 'data'] };
+  const cell = (tag, classes) => check.style({ tag, classes }, [table, { tag: 'tbody', classes: [] }, { tag: 'tr', classes: [] }]);
+  const numTh = cell('th', ['th', 'n']);
+  const numTd = cell('td', ['td', 'n']);
+  t('styles: a numeric header cell is right-aligned with tabular figures', `${numTh['text-align']} ${numTh['font-variant-numeric']}`, 'right tabular-nums');
+  t('styles: a numeric body cell too', `${numTd['text-align']} ${numTd['font-variant-numeric']}`, 'right tabular-nums');
+  t('styles: a row header stays left-aligned', cell('th', ['td'])['text-align'], 'left');
+  t('styles: a group row has its own background', cell('th', ['td', 'grp']).background, '#F9FAFB');
+  // The checks catch a page whose table rules are gone.
+  const bare = cssChecks(css.replace(/\.levtable \.(n|grp)\{[^}]*\}/g, ''));
+  t('styles: without the table rules the checks fail', j([bare.subjects.has('grp'), bare.style({ tag: 'td', classes: ['td', 'n'] }, [table])['text-align'] ?? null]), '[false,null]');
   for (const id of ['ms-h', 'lr-h', 'st-h', 'asks-h']) {
     const sec = h.slice(h.lastIndexOf('<section', h.indexOf(`aria-labelledby="${id}"`)), h.indexOf('</section>', h.indexOf(`aria-labelledby="${id}"`)));
     t(`styles ${id}: a card like the lever table`, /^<section aria-labelledby="[^"]+" class="card levers/.test(sec) && sec.includes('<div class="levers-head">'), true);
@@ -418,7 +466,6 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('styles: numbers right-aligned', ms.includes('<tr><th scope="row" class="td">desk review</th><td class="td n">1.6h</td><td class="td n">1.8h</td><td class="td n">4</td></tr>'), true);
   t('styles: their headers too', ms.includes('<th scope="col" class="th n">Median</th>'), true);
   t('styles: the outage note sits under its repo', ms.includes('1 external review wait inside a gate reviewer outage left out of the medians.'), true);
-  t('styles: the right-aligned cells have tabular figures', /\.levtable \.n\{[^}]*text-align:right[^}]*font-variant-numeric:tabular-nums/.test(css), true);
   const st = section(h, 'st-h');
   t('styles: no Tracking issue column when no cause has one', st.includes('Tracking issue'), false);
   t('styles: a week with nothing parked has no group', st.includes('2026-W51'), false);
