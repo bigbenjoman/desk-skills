@@ -532,6 +532,17 @@ export const personOnlyStep = (question) => String(question ?? '').split(/(?<=[.
 // approved where no worker can run it (park.session_step, answer.mjs). Any other lane D park is requeued.
 export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.park?.question ?? '') || sessionPark(String(t?.park?.question ?? '')) || !!t?.park?.session_step;
 
+// Plan-first work: a lane C ticket parked at triage on its lane (lanePark's words), with nothing ahead
+// of it, which only an interactive session takes on. A worker's own lane C park asks its own question,
+// and one whose lane challenge could not read the code asks the person to confirm it, so neither is.
+export const planFirst = (t) => t?.state === 'parked' && t.lane === 'C' && !isHeld(t) && !t.park?.session_step
+  && !blockersOf(t).length && String(t.park?.question ?? '').startsWith(laneParkHead('C', false));
+// The claim of the interactive session working a plan-first ticket (queue.mjs park --claimed-by), or null.
+export const planFirstClaim = (t) => (planFirst(t) && t.park?.claim?.session && !t.park.claim.dirty_at ? t.park.claim : null);
+// Whether unclaimed plan-first work has waited past `ms` since it parked, so the person hears of it.
+export const planFirstDue = (t, ms, now = Date.now()) => planFirst(t) && !planFirstClaim(t)
+  && now - (Date.parse(t.park?.since ?? '') || 0) > ms;
+
 // A park a pass settles without the person: its recorded clears-when is one a script reads, no step of
 // the person's makes it hold, and a worker rather than a session takes the ticket on once it does. A
 // claimed park is its session's (pass.mjs clearable never settles one), so it is not one. Nor is it the

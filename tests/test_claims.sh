@@ -100,6 +100,10 @@ q add K-7 Story A; q set K-7 state=parked "park.question=held by orchestrator be
 out=$(node "$B/queue.mjs" park K-7 --claimed-by sid-idle 2>&1); rc=$?
 q add K-8 Story A; q set K-8 state=triaged "branch=feat/K-8"; q park K-8 "waiting on PR #7"; q clears-when K-8 pr 7 ready
 q park K-8 --claimed-by sid-live; worktree K-8
+# Plan-first work (a lane C parked at triage), claimed by an idle session and by a live one.
+for k in K-9 K-10; do q add "$k" Story C; q set "$k" state=triaged; q park "$k" "lane C — spans layers"; done
+q park K-9 --claimed-by sid-idle; q set K-9 park.claim.at=2026-01-01T00:00:00Z; worktree K-9 plan.md
+q park K-10 --claimed-by sid-live
 check "DS-244 a held ticket cannot be claimed" '[ $rc -ne 0 ] && grep -q "cannot be claimed" <<< "$out" && [ "$(field K-7 park.claim)" = null ]'
 
 # ---- AC5: the row at 0 never releases -----------------------------------------------------------------
@@ -124,6 +128,9 @@ check "DS-244 a claim whose transcript is gone stays, and is named" '[ "$(field 
 check "DS-244 a claimed park whose clears-when holds stays with its live session" '[ "$(field K-8 state)" = "\"parked\"" ] && [ "$(field K-8 park.claim.session)" = "\"sid-live\"" ] && ! grep -q "K-8: " <<< "$out"'
 check "DS-244 a lane D parked on its design stays claimed however idle the session" '[ "$(field K-5 state)" = "\"parked\"" ] && [ "$(field K-5 park.claim.session)" = "\"sid-idle\"" ] && ! grep -q "K-5 went back" <<< "$out"'
 check "DS-244 a dirty claim on a ticket parked for its size keeps that question in front" 'grep -q "^\"size XL: split it before a worker takes it; claimed by session sid-dirty, .*uncommitted changes (draft.md)" <<< "$(field K-6 park.question)"'
+check "issue-1384 AC3 an idle session's claim on plan-first work is dropped, its park kept, uncommitted work or not" '[ "$(field K-9 state)" = "\"parked\"" ] && [ "$(field K-9 park.claim)" = null ] && [ "$(field K-9 park.question)" = "\"lane C — spans layers\"" ] && ! grep -q "K-9 went back" <<< "$out"'
+check "issue-1384 AC3 the report says the claim was dropped and it waits for a session again" 'grep -q "K-9: session sid-idle has been idle since .*, so its claim is dropped: plan-first work, it waits for a session again" <<< "$out"'
+check "issue-1384 AC1 a live session keeps its claim on plan-first work" '[ "$(field K-10 park.claim.session)" = "\"sid-live\"" ] && ! grep -q "K-10: " <<< "$out"'
 since=$(field K-2 park.since)
 
 out=$(node "$B/pass.mjs" 2>&1)

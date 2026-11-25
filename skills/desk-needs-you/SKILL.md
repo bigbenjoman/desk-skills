@@ -38,7 +38,10 @@ Otherwise it prints:
 `<repo>` is `<repo>:<batch>` for an item in a named batch (an epic's feature batch): pass it to
 `record` as printed.
 
-`<kind>` is `parked` (lane A, B or E), `session` (lane C or D), `spine` (feature specs), `plan` (an
+`<kind>` is `parked` (lane A, B or E), `session` (lane C or D), `plan-first` (two or more lane C
+tickets parked at triage that no session has claimed past §3b "Plan-first wait before needs-you
+(hours)": one item, `plan-first`, whose `open` names the `/desk-ticket` to start, which claims that ticket; a claimed one
+is not listed, desk-q showing it as being worked in its session), `spine` (feature specs), `plan` (an
 epic admitted with `/desk-admit` or by intake: its drafted plan, in the file the need names, waits
 for start, discard or an edit, and its children wait behind it. The supervisor acts on the answer
 at its next tick: start starts the feature batch, an edit is applied as it stands and the batch

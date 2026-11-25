@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { tryLockFile, filePid, writeJsonAtomic, withDirLock } from './dir-lock.mjs';
-import { holdThrough, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, keyPattern, parkKind, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage } from './batch-state.mjs';
+import { holdThrough, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, planFirst, keyPattern, parkKind, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
@@ -1701,13 +1701,20 @@ for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
   const c = t.park?.claim;
   if (t.state !== 'parked' || !c?.session) continue;
   // Held, a spine awaiting its person, a lane C or D parked at triage, or left in a finished feature
-  // batch: never a headless worker's, however idle the session (as the clears-when loop above).
-  if (isHeld(t) || spinePark(t) || needsSession(t) || leftPark(t)) continue;
+  // batch: never a headless worker's, however idle the session (as the clears-when loop above). Plan-first
+  // work loses only the claim: its park stays, and it waits for a session again.
+  const plan = planFirst(t);
+  if (isHeld(t) || spinePark(t) || (needsSession(t) && !plan) || leftPark(t)) continue;
   const tr = transcriptOf(c.session);
-  if (!tr) { report.clears.push(`${t.key}: claimed by session ${c.session}, whose transcript is gone: left claimed`); continue; }
-  const since = Math.max(tr.mtimeMs, Date.parse(c.at) || 0);
+  if (!tr && !plan) { report.clears.push(`${t.key}: claimed by session ${c.session}, whose transcript is gone: left claimed`); continue; }
+  const since = Math.max(tr?.mtimeMs ?? 0, Date.parse(c.at) || 0);
   if (Date.now() - since <= CLAIMS.hours * 3600e3) continue;
   const idle = `session ${c.session} has been idle since ${new Date(since).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+  if (plan) {
+    q('set', t.key, 'park.claim=null');
+    report.clears.push(`${t.key}: ${tr ? idle : `session ${c.session}'s transcript is gone`}, so its claim is dropped: plan-first work, it waits for a session again`);
+    continue;
+  }
   let wt = null, dirty = [];
   try { wt = claimWorktree(t); dirty = wt ? uncommitted(wt) : []; } catch (e) {
     report.clears.push(`${t.key}: ${idle}, but its worktree ${wt ?? ''} could not be read (${String(e.message).split('\n')[0]}): left claimed`);

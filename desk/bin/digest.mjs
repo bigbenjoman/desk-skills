@@ -23,7 +23,8 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { CHECKIN_TIME, checkinTimesOf } from './config-schema.mjs';
 import { jiraSearch, keySearch } from './jira-search.mjs';
-import { isHeld, settlesByScript, localDay, openUnknowns } from './batch-state.mjs';
+import { isHeld, settlesByScript, localDay, openUnknowns, planFirst, planFirstClaim, planFirstDue } from './batch-state.mjs';
+import { planFirstWaitMs } from './claims.mjs';
 import { stalledPrs as stalledOf, STALL_FOR } from './desk-q.mjs';
 import { namedBatches } from './batches.mjs';
 import { takeBorrowLock } from './borrow.mjs';
@@ -185,6 +186,15 @@ export function jiraLine(slug, j) {
     : `${n} parked tickets are Done in Jira; their orchestrators can drop them: ${j.done.join(', ')}`;
 }
 
+// The key the one plan-first question of a batch is answered under: it names no single ticket.
+const PLAN_FIRST_KEY = 'plan-first';
+// One repo's plan-first tickets an interactive session has claimed: [{ ticket, session }].
+export function sessionWork(r) {
+  const q = readJson(r.queue, null);
+  return Object.values(q?.tickets ?? {}).filter((t) => planFirstClaim(t)).map((t) => ({ ticket: t.key, session: t.park.claim.session }))
+    .sort((a, b) => a.ticket.localeCompare(b.ticket));
+}
+
 // One repo's open questions: each parked ticket's question (a hold is not one, nor a question the
 // person put off with the same inputs, nor a park waiting on a recorded clears-when, which a pass
 // settles unless only a session may take the ticket or only the person's step makes it hold) and each triaged or held ticket's unanswered triage unknowns. Questions
@@ -208,9 +218,20 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
   for (const h of handedByIntake(r.state)) {
     out.push({ ticket: h.ticket, kind: 'intake', text: `not admitted by intake: ${h.text}`, key: questionKey(r.slug, h.ticket, `${h.text}\0${h.at}`), state: r.state });
   }
+  // Plan-first work a session works, or that has not waited unclaimed past its wait, asks nothing; two or
+  // more past it are one question, as needs-you lists them.
+  const waitMs = planFirstWaitMs(r.slug);
+  const planDue = Object.values(q?.tickets ?? {}).filter((t) => planFirstDue(t, waitMs));
+  if (planDue.length > 1) {
+    const keys = planDue.map((t) => t.key);
+    const text = `${keys.length} plan-first tickets wait for a session: ${keys.join(', ')}. Start /desk-ticket ${keys[0]} in the batch's session, which claims it`;
+    const key = questionKey(r.slug, PLAN_FIRST_KEY, text);
+    if (!answered[key]) out.push({ ticket: keys[0], kind: 'plan-first', text, key });
+  }
   for (const t of Object.values(q?.tickets ?? {})) {
     if (t.state === 'parked' && !isHeld(t)) {
       if (settlesByScript(t)) continue;
+      if (planFirst(t) && (!planFirstDue(t, waitMs) || planDue.length > 1)) continue;
       const l = parkPutOff(register, t);
       if (l.status === 'put_off') continue;
       const text = `${String(t.park?.question ?? 'parked, with no question recorded')}${l.status === 'changed' ? ` (${l.line})` : ''}`;
@@ -333,7 +354,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
     for (const l of levers) lines.push(`- ${l.open ? '[ ] ' : ''}${l.line}`);
     lines.push('', `open: ${leversPage}`, '');
   }
-  for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length || x.warnings?.length)) {
+  for (const g of groups.filter((x) => x.questions.length || x.sessions?.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length || x.warnings?.length)) {
     lines.push(batchHeading(g), '');
     const jl = jiraLine(g.slug, g.jira);
     if (jl) lines.push(jl, '');
@@ -354,10 +375,16 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
         lines.push(`- [ ] \`${q.ticket}\` (${q.kind}): ${q.text}`);
         // The batch's own items have no ticket to answer: they go once a pass no longer lists them.
         lines.push(q.kind === 'batch' ? '  no answer to record: it clears once a pass no longer lists it'
+          : q.kind === 'plan-first' ? '  no answer to record: it clears once a session claims them'
           : q.kind === 'archive' ? '  no answer to record: it clears once the PR is merged or closed'
           : q.kind === 'intake' ? `  fix the ticket, or run it in a desk-ticket session; to let intake try it again: \`DESK_AUTOPILOT_STATE=${q.state} node ${join(bin, 'intake.mjs')} forget ${q.ticket}\``
             : `  answer: \`node ${cmd} answer ${g.slug} ${q.ticket} "<answer>"\``);
       }
+      lines.push('');
+    }
+    if (g.sessions?.length) {
+      lines.push('### Being worked in a session', '');
+      for (const s of g.sessions) lines.push(`- \`${s.ticket}\`: being worked in session ${s.session}`);
       lines.push('');
     }
     if (g.decisions.length) {
@@ -440,6 +467,7 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
         slug: r.slug,
         batch: r.batch ?? null,
         questions: openQuestions(r, answered, register).filter((q) => !(q.kind === 'parked' && done.has(q.ticket))),
+        sessions: sessionWork(r).filter((s) => !done.has(s.ticket)),
         // A lever's adopt or revert is listed with its evidence under Levers instead.
         decisions: taken.filter((d) => inWindow(d) && !overridden.has(d.id) && !d.lever),
         checks: checks.filter(inWindow),

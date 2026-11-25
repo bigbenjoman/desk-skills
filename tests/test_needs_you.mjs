@@ -100,6 +100,8 @@ function put(name, r) {
     Object.entries(r.rows ?? {}).map(([k, v]) => `| \`${k}\` | ${k} | \`ask\` | \`${v}\` |\n`).join('') + '\n' +
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n` +
     `| Batches run by | \`supervisor\` | \`${r.supervised ? 'supervisor' : 'session'}\` |\n` +
+    // Plan-first work is listed at once unless a world sets its own wait.
+    `| Plan-first wait before needs-you (hours) | \`4\` | \`${r.planFirstWait ?? 0}\` |\n` +
     (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : '') +
     (r.gateReviewers ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Gate reviewers | \`${r.gateReviewers}\` |\n` : '') +
     (r.evidence ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Evidence workflow | \`${r.evidence}\` |\n` : '') +
@@ -4031,6 +4033,47 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-896 AC2 needs-you names the same two, in the same order as desk-q', str.ny, str.deskQ);
   t('DS-896 AC3 queue.mjs watch names the same two, in the same order as desk-q', str.watch, str.deskQ);
   t('DS-896 AC4 blockers kept as the pipe-joined held_by read the same as the list', JSON.stringify(str), JSON.stringify(list));
+}
+
+// ---- issue-1384: plan-first work a session claimed is that session's; unclaimed past the wait, one item
+{
+  const lane = (m, extra = {}) => ({ ...parked('C', m, 'lane C — Feature with no Size, spans layers'), ...extra });
+  const claim = (session, m) => ({ claim: { session, at: minsAgo(m) } });
+  put('pf1384', { port: 4700, beat: 1, planFirstWait: 4, tickets: {
+    'F-1': lane(600), 'F-2': lane(500), 'F-3': lane(30),
+    'F-4': { ...lane(700), park: { ...lane(700).park, ...claim('sess-1384', 60) } },
+    'F-5': parked('A', 300, 'Use the long copy or the short one?'),
+  } });
+  const r = () => loadRepos().find((x) => x.name === 'pf1384');
+  const items = N.collect({ word: 'pf1384' }).items;
+  const pf = items.find((i) => i.kind === 'plan-first');
+  t('issue-1384 AC1 a plan-first ticket a session claimed is not listed', items.some((i) => i.t.key === 'F-4' || i.planFirst?.includes('F-4')), false);
+  t('issue-1384 AC1 desk-q shows it as being worked in that session, not needing you', `${r().rows.find((x) => x.t.key === 'F-4').k} ${ticketScreen(r(), 'F-4', { width: 200 }).includes('Being worked in session sess-1384')}`, 'waiting true');
+  t('issue-1384 AC1 its row says the session', repoScreen(r(), { width: 200 }).includes('being worked in session sess-1384'), true);
+  t('issue-1384 AC2 unclaimed plan-first tickets past the wait are one item naming the count and the next step',
+    `${items.filter((i) => ['F-1', 'F-2'].includes(i.t.key)).length} ${pf?.t.key} ${pf?.planFirst.join()} ${/^2 plan-first tickets wait for a session: F-1 and F-2/.test(pf?.need ?? '')} ${pf?.actions.map((a) => a[0]).join()} ${/start \/desk-ticket F-1 in /.test(pf?.actions[0][1] ?? '')}`,
+    '0 plan-first F-1,F-2 true open,not-now true');
+  t('issue-1384 AC2 one parked under the wait is not listed, and desk-q shows it waiting for a session',
+    `${items.some((i) => i.t.key === 'F-3') || pf?.planFirst.includes('F-3')} ${r().rows.find((x) => x.t.key === 'F-3').k} ${ticketScreen(r(), 'F-3', { width: 200 }).includes('Waits for a session')}`, 'false waiting true');
+  t('issue-1384 AC2 any other park is still its own item', items.some((i) => i.t.key === 'F-5'), true);
+  const c = N.needsCount(r());
+  t('issue-1384 AC2 desk-q counts the plan-first item once, and draws both rows as needing you',
+    `${c.shown} ${c.stepRows.map((x) => x.t.key).sort().join()}`, '2 F-1,F-2');
+  const open = N.record({ word: 'pf1384', ticket: 'plan-first', action: 'open' });
+  t('issue-1384 AC2 open says to run /desk-ticket on the first in a session, and records nothing', `${open.ok} ${/run \/desk-ticket F-1: it claims F-1/.test(open.line)} ${r().q.tickets['F-1'].state}`, 'true true parked');
+  N.record({ word: 'pf1384', ticket: 'plan-first', action: 'not-now' });
+  t('issue-1384 not-now puts the plan-first item off', N.collect({ word: 'pf1384' }).items.some((i) => i.kind === 'plan-first'), false);
+  // AC3: once a pass drops the claim (claims.sh), the ticket is unclaimed again and joins the item.
+  const qf = join(env.DESK_HOME, 'repos', 'acme__pf1384', 'queue.json');
+  const q = JSON.parse(readFileSync(qf, 'utf8'));
+  q.tickets['F-4'].park.claim = null;
+  writeFileSync(qf, JSON.stringify(q));
+  const back = N.collect({ word: 'pf1384' }).items.find((i) => i.kind === 'plan-first');
+  t('issue-1384 AC3 a dropped claim returns the ticket to the unclaimed rule, bringing the put-off item back', back?.planFirst.join(), 'F-1,F-2,F-4');
+  // One alone past the wait stays its own session item.
+  put('pf1384b', { port: 4701, beat: 1, planFirstWait: 4, tickets: { 'G-1': lane(600), 'G-2': lane(20) } });
+  const one = N.collect({ word: 'pf1384b' }).items;
+  t('issue-1384 one unclaimed plan-first ticket past the wait is its own session item', one.map((i) => `${i.t.key} ${i.kind}`).join(), 'G-1 session');
 }
 
 // ---- DS-929 AC1: every in-process collect and refresh above ran on injected repos and reads, and started

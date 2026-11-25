@@ -54,6 +54,23 @@ silently skipped:
   in the form §5 PR body uses, and adds a closing keyword only if that convention does.
 - **"The ticket is done"** means the PR merged (and, for an issue, that it is closed).
 
+### Claim plan-first work parked in a batch
+
+**An interactive session taking on a ticket an autopilot batch parked as plan-first work claims it
+(Stage 0)**, so the batch shows it as this session's work rather than on the person's needs-you list.
+Read it with `node ~/.claude/desk/bin/queue.mjs get <TICKET>` (run in the repo; it finds the batch
+holding the key, and refuses one in no queue, which has nothing to claim). Where it is `"state":
+"parked"` with `"lane": "C"`, claim it:
+
+```bash
+node ~/.claude/desk/bin/queue.mjs park <TICKET> --claimed-by "$CLAUDE_CODE_SESSION_ID"
+```
+
+The park keeps its question, so no worker takes it. Once this session's transcript has been still
+past §3b "Release idle claims after (hours)" (`desk-env get claim-release`), a pass drops the claim and the ticket waits for a session again;
+unclaimed past §3b "Plan-first wait before needs-you (hours)" (`desk-env get plan-first-wait`), it reaches needs-you. An autopilot
+worker never claims: its ticket is running, not parked.
+
 ### Skill routing
 
 **Skill routing goes in the plan, not a closing checklist (Stage 0).** State a short table of which
