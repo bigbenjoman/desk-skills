@@ -126,9 +126,16 @@ export function firstErrorLine(log) {
 const LOG_ERRORS_MAX = 5;
 const NAMES_CAUSE = /\b[A-Za-z]*(?:Error|Exception)\b|\b(?:ENOENT|EACCES|EPERM|EEXIST|ECONNREFUSED|ETIMEDOUT|EADDRINUSE)\b|\bFAIL\b/;
 const NO_CAUSE = /\bcontinue-on-error\b|\b0 (?:errors?|failed|failures?)\b/i;
+// A line saying a read from GitHub's API failed rather than what the job checks: a truncated or
+// unparsable JSON body (Node's, jq's and Python's wording), a 5xx, a gh or Octokit HTTP error, a dropped
+// connection. Text from a line's first double quote to its last is left out first: a title check quotes
+// the title it rejects, and a title such as "Fix HTTP 502 on upload" (or one holding quotes of its own)
+// is the PR's state, not a read that failed.
+const READ_ERROR = /\bunexpected end of JSON input\b|\bin JSON at position \d|\bis not valid JSON\b|\bUnfinished JSON term\b|\bJSONDecodeError\b|\bHTTP 5\d\d\b|\b5\d\d (?:Internal Server Error|Bad Gateway|Service Unavailable|Gateway Timeout)\b|\bgh: .*\(HTTP \d{3}\)|\bHttpError\b|\bECONNRESET\b|\bsocket hang up\b|\bfetch failed\b/i;
+export const readError = (line) => READ_ERROR.test(String(line ?? '').replace(/".*"|“.*”/g, '""'));
 export function errorLinesIn(log) {
   const lines = failureLines(logLines(log).map((l) => ({ annotation_level: 'failure', message: l.replace(/^##\[error\]\s*/, '').trim() })));
-  return [...new Set(lines.filter((l) => (NAMES_CAUSE.test(l) || ERROR.test(l)) && !NO_CAUSE.test(l)))].slice(0, LOG_ERRORS_MAX);
+  return [...new Set(lines.filter((l) => (NAMES_CAUSE.test(l) || ERROR.test(l) || readError(l)) && !NO_CAUSE.test(l)))].slice(0, LOG_ERRORS_MAX);
 }
 
 // The line with what differs between two runs of one failure taken out: timestamps, SHAs, run ids and

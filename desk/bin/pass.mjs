@@ -5108,10 +5108,11 @@ function rerunBuilt(t, n, head, c, rec, ready = false) {
 
 // A draft's cancelled or timed-out runs, re-run by the merge driver's own rerun (rerun.sh), so the
 // driver and the pass keep one record, cap and cooldown per head.
+// A ready PR's (c.ready: a state check that failed on a GitHub read error) goes the same way.
 function rerunDraft(t, n, head, c) {
   const r = shOut('bash', [join(BIN, 'rerun.sh'), DRIVER_DIR, GH_REPO, String(n), head], { input: JSON.stringify({ gate: c.gate }), stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, RERUN_PERM: E.permission('ci-rerun') } });
   const said = r.out.split('\n').filter(Boolean).join('; ');
-  out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why}${said ? ` (${said})` : ''}`);
+  out.push(`${c.ready ? `fix tries: PR #${n} (${t.key}) is out of draft` : `undraft: PR #${n} (${t.key}) stays draft`}: ${c.why}${said ? ` (${said})` : ''}`);
 }
 
 // A draft's run that holds a check stuck pending past its limit: cancelled, so its check reads as
@@ -5187,6 +5188,7 @@ function fixReads(t, s, dirty, dirtyFiles) {
     repo: GH_REPO, base: DEFAULT_BRANCH, ...gateLists(), ...clearsRows, stateChecks: stateRow.checks,
     build: (failing, gate) => buildCall({ pending: gate?.pending ?? [], running: gate?.running, failing }, { builds: buildRow.checks, rerun: E.permission('ci-rerun'), built: (head) => buildRecord(BUILD_DIR, n, head), behind }, n, s.head, t),
     ...driverReruns(n, s.head),
+    rerunPerm: E.permission('ci-rerun'),
     waived: (names) => waivedAt(n, s.head, s.checks, names),
     conflictFiles: () => (dirty ? dirtyFiles : conflictFiles(t.branch)),
     baseAt: () => baseAtOf(s.head),
@@ -5337,8 +5339,8 @@ function refreshBranch(t, n, head, c) {
 // (failure-class.mjs fixClass) recorded before the worker spawns, and `held` (base red) waits with no
 // try. With the failure-class lever on (read per ticket, leverFor), one classed missing decision or
 // dependency wait is not requeued (the item says what it waits for), and `rerun` re-runs a draft's
-// checks classed runner or resource instead of spawning a fix worker, `wait` holding that rerun for
-// the run to finish.
+// checks classed runner or resource instead of spawning a fix worker, or a state check that failed on
+// a GitHub read error, in draft or out, `wait` holding that rerun for the run to finish.
 function applyFix(t, n, head, c) {
   const rec = keptHold(t.base_red, c, PASS_AT);
   if ('base_red' in c && JSON.stringify(t.base_red ?? null) !== JSON.stringify(rec)) {
@@ -5367,7 +5369,7 @@ function applyFix(t, n, head, c) {
   if (c.call === 'refresh') { refreshBranch(t, n, head, c); return; }
   if (c.call === 'wait') { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`); return; }
   if (c.call === 'rerun') {
-    if (DRY) out.push(`undraft (dry run): would re-run run(s) ${c.gate.failedRuns.join(', ')} on PR #${n} (${t.key}): ${c.why}`);
+    if (DRY) out.push(`${c.ready ? 'fix tries' : 'undraft'} (dry run): would re-run ${[...c.gate.failedRuns.map((r) => `run ${r}`), ...(c.gate.failedJobs ?? []).map((j) => `job ${j.jobId} of run ${j.runId}`)].join(', ')} on PR #${n} (${t.key}): ${c.why}`);
     else rerunDraft(t, n, head, c);
     return;
   }
