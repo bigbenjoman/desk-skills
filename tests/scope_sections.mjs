@@ -373,20 +373,42 @@ function scrubCode(t) {
 // Whether a condition tests that the module was run as a command (`process.argv[1]` against
 // `import.meta.url`), and not its negation, nor one an `||`, `??` or `? :` can turn otherwise.
 const launchTest = (t) => /process\.argv\[1\]/.test(t) && /import\.meta\.url/.test(t) && !/!=|!\s*\(|\|\||\?(?!\.(?!\d))/.test(t);
-// Whether a top-level statement runs only when the module is run as a command: an `if` with no `else`
-// whose condition is a const in `guards` set to a launchTest() (`g`, or `g()` where it is an arrow
-// function), or one on a line that opens its block. A block ends where it first compiles; anything
-// after it is an `else` or more code.
+// Whether an `if` condition holds only when the module is run as a command: a launchTest(), or a const
+// in `guards` set to one (`g`, or `g()` where it is an arrow function), alone or as the first operand of
+// an `&&` that no `||`, `?` or top-level `,` follows (`g && process.argv[2] === 'x'`).
+function guardedBy(cond, guards) {
+  if (launchTest(cond)) return true;
+  const g = cond.match(/^([A-Za-z_$][\w$]*)\s*(\(\s*\))?\s*(&&[\s\S]*)?$/);
+  if (!g || guards.get(g[1]) !== (g[2] ? 'call' : 'value')) return false;
+  if (!g[3]) return true;
+  const more = scrubCode(g[3]);
+  let depth = 0;
+  for (const ch of more) {
+    if ('([{'.includes(ch)) depth++;
+    else if (')]}'.includes(ch)) depth--;
+    else if (ch === ',' && depth === 0) return false;
+  }
+  return !/\|\||\?(?!\.(?!\d))/.test(more);
+}
+// Whether a top-level statement runs only when the module is run as a command: an `if`, or a chain of
+// `else if`s with no final `else`, each of whose conditions is guardedBy(). A condition ends at the
+// first `)` that closes it as an expression, and a block where it first compiles.
 function mainOnly(c, guards) {
-  const id = c.match(/^if\s*\(\s*([A-Za-z_$][\w$]*)\s*(\(\s*\))?\s*\)\s*/);
-  const line = c.split('\n')[0].match(/^if\s*\((.*)\)\s*(?=\{\s*$)/);
-  let rest;
-  if (id && guards.get(id[1]) === (id[2] ? 'call' : 'value')) rest = c.slice(id[0].length);
-  else if (line && launchTest(line[1])) rest = c.slice(line[0].length);
-  else return false;
-  if (!rest.startsWith('{')) return !/\belse\b/.test(rest);
-  const end = groupEnd(rest, '}', (p) => `(async function () {\n${p}\n})`);
-  return end > 0 && !rest.slice(end).trim();
+  for (let rest = c; ;) {
+    if (!/^if\s*\(/.test(rest)) return false;
+    rest = rest.replace(/^if\s*/, '');
+    const close = groupEnd(rest, ')', asExpression);
+    if (close < 0 || !guardedBy(rest.slice(1, close - 1).trim(), guards)) return false;
+    rest = rest.slice(close).trimStart();
+    if (!rest.startsWith('{')) return !/\belse\b/.test(rest);
+    const end = groupEnd(rest, '}', (p) => `(async function () {\n${p}\n})`);
+    if (end < 0) return false;
+    rest = rest.slice(end).trim();
+    if (!rest) return true;
+    const next = rest.match(/^else\s+(?=if\b)/);
+    if (!next) return false;
+    rest = rest.slice(next[0].length);
+  }
 }
 
 // What reaches these names in a module: the declarations naming one, and those naming them, and so on.

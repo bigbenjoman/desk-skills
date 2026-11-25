@@ -594,6 +594,17 @@ t('DS-1002 a guard function called as `if (isMain())` keeps the command line com
   drawEdit(isMainQ('() => process.argv[1] === fileURLToPath(import.meta.url)?.0:1', 'isMain()')) === everyClaimer,
   drawEdit(isMainQ('() => globalThis?.process.argv[1] === fileURLToPath(import.meta.url)', 'isMain()')),
 ], ['some: test_cli.sh test_lint.sh', true, true, true, true, 'some: test_cli.sh test_lint.sh']);
+// desk-q.mjs's own dispatch: `if (isMain && argv[2] === 'x') { … } else if (isMain) { … }`.
+const chainQ = (chain) => hubQ.replace('if (isMain) console.log(draw());', chain);
+t('DS-1002 an else-if chain each of whose conditions is the guard, alone or first in an &&, keeps the command line command-only; one an || or a , can turn, or a final else, does not', [
+  drawEdit(chainQ("if (isMain && process.argv[2] === 'rollback') {\n  console.log(1);\n} else if (isMain) {\n  console.log(draw());\n}")),
+  drawEdit(chainQ("if (isMain && process.argv[2] === 'a)') {\n  console.log(draw());\n}")),
+  drawEdit(chainQ("if (isMain && process.argv[2] === 'x') {\n  console.log(1);\n} else if (isMain) {\n  console.log(draw());\n} else {\n  draw();\n}")) === everyClaimer,
+  drawEdit(chainQ("if (isMain && process.argv[2] || true) {\n  console.log(draw());\n}")) === everyClaimer,
+  drawEdit(chainQ("if (isMain && (0, 1), true) {\n  console.log(draw());\n}")) === everyClaimer,
+  drawEdit(chainQ("if (isMain) {\n  console.log(1);\n} else if (process.argv[2]) {\n  console.log(draw());\n}")) === everyClaimer,
+  drawEdit(chainQ("if (!isMain && 1) {\n  console.log(draw());\n}")) === everyClaimer,
+], ['some: test_cli.sh test_lint.sh', 'some: test_cli.sh test_lint.sh', true, true, true, true, true]);
 // A shell script whose embedded node code imports from desk-q.mjs (loads() reads only its shell lines),
 // and which runs pass.mjs, so test_tri.sh claims desk-q.mjs through that.
 const triWith = (imp) => hubWith({
