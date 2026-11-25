@@ -46,7 +46,8 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
-import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns } from './batch-state.mjs';
+import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim } from './batch-state.mjs';
+import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { describeCond, restating } from './clears-when.mjs';
@@ -148,11 +149,14 @@ function stateOf(q, t, ctx, seen) {
   if (ph) return ph.k;
   if (worktreeBusy(t)) return 'needs';
   if (answeredPark(t, ctx) || readPark(t, ctx) || clearsPark(t)) return 'waiting';
+  // A park a live session claimed is that session's, in any lane; plan-first work that has not waited
+  // unclaimed past its wait yet needs nobody either.
+  if (claimOf(t) || (planFirst(t) && !planFirstDue(t, ctx.planFirstMs ?? NOBODY.planFirstMs))) return 'waiting';
   if (t.state === 'parked' || (t.open_questions ?? 0) > 0) return 'needs';
   return t.state === 'queued' ? 'queued' : 'ready';
 }
 
-const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, finished: () => false, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null };
+const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, finished: () => false, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null, planFirstMs: DEFAULT_PLAN_FIRST_HOURS * 3600e3 };
 
 // The one note a screen gives the machine's upload pause on GitHub's PR page (upload-queue.mjs
 // uploadPause), however many of its PRs wait on it.
@@ -236,7 +240,7 @@ function holdContext(r) {
   let outages = [];
   if (stateChecks.length && r.stateDir) { try { outages = gateReviewerRecord(repoStateOf(r.stateDir)).outages ?? []; } catch { /* none recorded */ } }
   // With passes stopped nothing merges, but a PR the grant covers merges by itself once they resume.
-  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, finished, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages };
+  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, finished, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages, planFirstMs: planFirstWaitMs(r.slug) };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -3212,7 +3216,8 @@ function needSegs(r, x, now = Date.now()) {
   if (answeredPark(t, r.ctx)) return [[answeredText(r.q), null]];
   if (clearsPark(t)) return [[clearsText(t), null]];
   if (k === 'ready') return [[readyWhy(r, t), null]];
-  if (k === 'needs' && claimOf(t)) return [[`claimed by session ${claimOf(t).session}`, null]];
+  if (claimOf(t)) return [[`being worked in session ${claimOf(t).session}`, null]];
+  if (k === 'waiting' && planFirst(t)) return [[`plan-first work, waiting for a session to claim it (/desk-ticket ${t.key})`, null]];
   if (k === 'needs') return [[t.state === 'parked' ? (t.park?.question ?? 'parked') : `${t.open_questions} triage question(s) open: answer them`, null]];
   if (k === 'failed') return [[stoppedText(t), null]];
   if (k === 'queued') return [['triaging', null]];
@@ -3222,9 +3227,8 @@ const detail = (r, x) => needSegs(r, x).map((s) => s[0]).join('');
 export { detail as needText };
 // Why an unmerged PR needs the person, as prNeed's `why` ({ code, … }), or null when it does not.
 export const prWhy = (r, t) => (prRow(t) ? prNeed(r.q, t, r.ctx, null).why ?? null : null);
-// An interactive session's claim on a parked ticket (queue.mjs park --claimed-by). Once a pass finds
-// uncommitted work behind it, the park's question says what to do, so the claim is no longer the news.
-const claimOf = (t) => (t.state === 'parked' && t.park?.claim?.session && !t.park.claim.dirty_at ? t.park.claim : null);
+// An interactive session's claim on a parked ticket (queue.mjs park --claimed-by), in any lane.
+const claimOf = sessionClaim;
 
 // How long a row in Merging or Needs you has been in that group, as the pass stamped it (`group`), or
 // null: for any other group, or when the stamp is of another group because no pass has run since.
@@ -3490,9 +3494,17 @@ function moveOf(r, row, k, t, h, now) {
   if (answeredPark(t, r.ctx)) return { text: `Moves without you: ${answeredText(r.q)}, and a worker picks it up from there.` };
   if (readPark(t, r.ctx)) return { text: `Moves without you: a pass runs its live read ${(t.park.clears_when.reads ?? []).join(', ')} on this computer, then requeues it with what it printed.` };
   if (clearsPark(t)) return { text: `Moves without you: ${capital(clearsText(t))}.` };
-  if (k === 'needs' && claimOf(t)) {
-    if (needsSession(t)) return { text: `Claimed by session ${claimOf(t).session}, which works it. It is lane ${t.lane}, so it stays with a person however long that session is idle${q ? `: ${q}` : '.'}` };
-    return { text: `Claimed by session ${claimOf(t).session}, which works it. Once that session has been idle past config §3b "Release idle claims after (hours)", with nothing uncommitted in its worktree, a pass sends it back to the workers.` };
+  if (planFirstClaim(t)) {
+    return { text: `Being worked in session ${planFirstClaim(t).session}, which claimed it. It is plan-first work, so no worker takes it. Once that session has been idle past config §3b "Release idle claims after (hours)", a pass drops the claim and it waits for a session again.` };
+  }
+  if (claimOf(t)) {
+    if (needsSession(t)) return { text: `Being worked in session ${claimOf(t).session}, which claimed it. It is lane ${t.lane}, so no worker takes it. Once that session has been idle past config §3b "Release idle claims after (hours)", a pass drops the claim and it needs you again${q ? `: ${q}` : '.'}` };
+    return { text: `Being worked in session ${claimOf(t).session}, which claimed it. Once that session has been idle past config §3b "Release idle claims after (hours)", with nothing uncommitted in its worktree, a pass sends it back to the workers.` };
+  }
+  if (k === 'waiting' && planFirst(t)) {
+    const h = (r.ctx?.planFirstMs ?? NOBODY.planFirstMs) / 3600e3;
+    return { text: `Waits for a session: it is plan-first work, which only an interactive session takes on. Unclaimed for more than ${h}h since it parked (config §3b "${PLAN_FIRST_ROW}"), it reaches needs-you.`,
+      lead: `To take it on now, in ${r.name}:`, cmds: [`/desk-ticket ${t.key}`] };
   }
   if (k === 'needs') {
     if (needsSession(t)) return { text: q ? `Needs your answer: ${q}` : 'Needs you: it is lane C or D.', lead: `Only an interactive session takes it on. Open one in ${r.name}:`, cmds: [`/desk-ticket ${t.key}`] };

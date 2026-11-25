@@ -538,6 +538,26 @@ export const personOnlyStep = (question) => String(question ?? '').split(/(?<=[.
 // approved where no worker can run it (park.session_step, answer.mjs). Any other lane D park is requeued.
 export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.park?.question ?? '') || sessionPark(String(t?.park?.question ?? '')) || !!t?.park?.session_step;
 
+// Plan-first work: a lane C ticket parked at triage on its lane (lanePark's words), with nothing ahead
+// of it, which only an interactive session takes on. A worker's own lane C park asks its own question,
+// and one whose lane challenge could not read the code asks the person to confirm it, so neither is.
+export const planFirst = (t) => t?.state === 'parked' && t.lane === 'C' && !isHeld(t) && !t.park?.session_step
+  && !blockersOf(t).length && String(t.park?.question ?? '').startsWith(laneParkHead('C', false));
+// The claim of the interactive session working a parked ticket in any lane (queue.mjs park --claimed-by),
+// or null. That session works it, so nobody else is asked to; a pass drops the claim once the session
+// has ended (pass.mjs). Once a pass finds uncommitted work behind it, the park's question says what to
+// do, so the claim is no longer the news.
+export const sessionClaim = (t) => (t?.state === 'parked' && !isHeld(t) && t.park?.claim?.session && !t.park.claim.dirty_at ? t.park.claim : null);
+// The claim of the interactive session working a plan-first ticket, or null.
+export const planFirstClaim = (t) => (planFirst(t) ? sessionClaim(t) : null);
+// Whether unclaimed plan-first work has waited past `ms` since it parked, so the person hears of it.
+export const planFirstDue = (t, ms, now = Date.now()) => planFirst(t) && !planFirstClaim(t)
+  && now - (Date.parse(t.park?.since ?? '') || 0) > ms;
+// The one item a batch's due plan-first tickets make, as needs-you lists it and the digest asks it: its
+// lead words, and the not-now key it is put off under, which the same tickets in any order keep.
+export const planFirstWaits = (keys) => `${keys.length} plan-first ticket${keys.length === 1 ? ' waits' : 's wait'} for a session`;
+export const planFirstPutOff = (keys) => ({ question: 'plan-first waiting', inputs: { waiting: [...keys].sort().join(', ') } });
+
 // A park a pass settles without the person: its recorded clears-when is one a script reads, no step of
 // the person's makes it hold, and a worker rather than a session takes the ticket on once it does. A
 // claimed park is its session's (pass.mjs clearable never settles one), so it is not one. Nor is it the

@@ -100,6 +100,8 @@ function put(name, r) {
     Object.entries(r.rows ?? {}).map(([k, v]) => `| \`${k}\` | ${k} | \`ask\` | \`${v}\` |\n`).join('') + '\n' +
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n` +
     `| Batches run by | \`supervisor\` | \`${r.supervised ? 'supervisor' : 'session'}\` |\n` +
+    // Plan-first work is listed at once unless a world sets its own wait.
+    `| Plan-first wait before needs-you (hours) | \`4\` | \`${r.planFirstWait ?? 0}\` |\n` +
     (r.levers ? `| Phase 0 levers | \`none\` | \`${r.levers}\` |\n` : '') +
     (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : '') +
     (r.gateReviewers ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Gate reviewers | \`${r.gateReviewers}\` |\n` : '') +
@@ -2878,14 +2880,15 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   }
 }
 
-// A lane C park whose hold the pass lifted once its sibling merged is listed as its own session item.
+// A lane C park whose hold the pass lifted once its sibling merged is listed, as the batch's plan-first
+// item (issue-1384), recommending open.
 {
   put('chi715', { port: 4715, beat: 1, supervised: true, tickets: {
     'L-1': { ...parked('C', 20, 'lane C — spans layers'), held_by: null, held_outside: null },
     'L-0': { state: 'done', lane: 'A', result: { pr: 70 }, merged_at: minsAgo(30), pr_status: { pr: 70, state: 'MERGED' } },
   } });
-  const it = N.collect({ word: 'chi715' }).items.find((i) => i.t.key === 'L-1');
-  t('DS-715 AC2 a lane C park whose hold lifted is a session item recommending open', `${it?.kind} ${it?.actions[0][0]}`, 'session open');
+  const it = N.collect({ word: 'chi715' }).items.find((i) => i.t.key === 'L-1' || i.planFirst?.includes('L-1'));
+  t('DS-715 AC2 a lane C park whose hold lifted is listed recommending open', `${it?.kind} ${it?.actions[0][0]}`, 'plan-first open');
 }
 
 // ---- DS-546: list settles what finished outside desk, reading GitHub, Jira and git again (stubbed here),
@@ -3109,21 +3112,22 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     'W-1': waits('Should W-1 be held until PR #991 merges, then requeued?', { kind: 'pr-merged', pr: 991 }),
     'W-2': waits('Which price?', { kind: 'none' }),
     'W-3': waits('Make the issue links', { kind: 'links-made', links: [{ key: 'W-3', type: 'Relates', other: 'W-9' }], pr: 12 }),
-    // A claimed park keeps its clears-when, but no pass settles it: it stays the session's, clean or dirty.
+    // A claimed park keeps its clears-when, but no pass settles it: it stays the session's (issue-1384: not
+    // listed while the claim stands), and once its uncommitted work is named, the person's.
     'W-4': claimed(waits('Should W-4 wait for PR #992?', { kind: 'pr-merged', pr: 992 }), { session: 'sess-562', at: minsAgo(30) }),
     'W-5': claimed(waits('its worktree has uncommitted changes (a.txt)', { kind: 'pr-merged', pr: 993 }), { session: 'sess-562', at: minsAgo(60), dirty_at: minsAgo(30) }),
     'W-7': waits('Wait for the Actions run', { kind: 'run-completed', run: 44719886024 }),
   } });
   const keys = N.collect({ word: 'ds562' }).items.map((i) => i.t.key).sort().join();
-  t('DS-562 AC1, AC3, AC4 a park waiting on a PR merging is not listed; one on none, on links only the person makes, or claimed by a session is', keys, 'W-2,W-3,W-4,W-5');
+  t('DS-562 AC1, AC3, AC4 a park waiting on a PR merging is not listed; one on none, on links only the person makes, or with a dirty claim is', keys, 'W-2,W-3,W-5');
   const r562 = () => loadRepos().find((r) => r.name === 'ds562');
   t('DS-562 AC2 desk-q shows it waiting, not needing you', r562().rows.find((x) => x.t.key === 'W-1').k, 'waiting');
   t('DS-852 AC1 desk-q shows a park on an Actions run waiting, not needing you', r562().rows.find((x) => x.t.key === 'W-7').k, 'waiting');
   t('DS-562 AC2 its row says it waits on PR #991', repoScreen(r562(), { width: 200 }).includes('waiting on PR #991 merged'), true);
   t('DS-562 AC2 its page says it moves without you, on PR #991', ticketScreen(r562(), 'W-1', { width: 200 }).includes('Moves without you: Waiting on PR #991 merged: a pass requeues it then.'), true);
-  t('DS-562 AC2 desk-q counts only the ones the person settles', N.needsCount(r562()).shown, 4);
-  t('DS-562 a claimed park with a clears-when still needs its session, clean or dirty', ['W-4', 'W-5'].map((k) => r562().rows.find((x) => x.t.key === k).k).join(), 'needs,needs');
-  t('DS-562 a claimed park reads as claimed, not as moving without you', ticketScreen(r562(), 'W-4', { width: 200 }).includes('Claimed by session sess-562'), true);
+  t('DS-562 AC2 desk-q counts only the ones the person settles', N.needsCount(r562()).shown, 3);
+  t('issue-1384 a claimed park with a clears-when is its live session\'s; a dirty one needs the person', ['W-4', 'W-5'].map((k) => r562().rows.find((x) => x.t.key === k).k).join(), 'waiting,needs');
+  t('DS-562 a claimed park reads as worked in its session, not as moving on its clears-when', ticketScreen(r562(), 'W-4', { width: 200 }).includes('Being worked in session sess-562'), true);
   // With passes stopped nothing settles it: its page says so and gives the resume step.
   put('ds562off', { port: 4651, beat: 120, tickets: { 'W-6': waits('Hold W-6 for PR #994?', { kind: 'pr-merged', pr: 994 }) } });
   const off = ticketScreen(loadRepos().find((r) => r.name === 'ds562off'), 'W-6', { width: 200 });
@@ -3184,14 +3188,16 @@ const keysIn = (name) => N.collect({ word: name }).items.map((i) => i.t.key);
 
   // AC6 first: with no open blockers, put off with nine behind it, it is listed with the count, as today.
   put('ds716a', { port: 4716, beat: 1, supervised: true, tickets: { 'S-1': { state: 'running', lane: 'A' }, 'C-1': laneC(null), ...nine('C-1') } });
-  const off = N.record({ word: 'ds716a', ticket: 'C-1', action: 'not-now' });
-  const c1 = N.collect({ word: 'ds716a' }).items.find((i) => i.t.key === 'C-1');
+  // A lane C park is its batch's plan-first item (issue-1384), which keeps this rule.
+  const off = N.record({ word: 'ds716a', ticket: 'plan-first', action: 'not-now' });
+  const c1 = N.collect({ word: 'ds716a' }).items.find((i) => i.planFirst?.includes('C-1'));
   t('DS-716 AC6 a lane C park with no open blockers, put off with 9 behind it, is listed with the count',
-    `${off.ok} ${c1?.kind} ${c1?.behind} ${/9 tickets wait behind it/.test(c1?.need ?? '')}`, 'true session 9 true');
+    `${off.ok} ${c1?.kind} ${c1?.behind} ${/9 tickets wait behind it, so it is listed though you put it off/.test(c1?.need ?? '')} ${off.line.includes('It is still listed while 3 or more tickets wait behind it (9 do now).')}`, 'true plan-first 9 true true');
   // AC1 and AC2: held behind its unmerged sibling, it is not listed, and desk-q shows it waiting behind it.
   edit('ds716a', (ts) => { ts['C-1'].held_by = 'S-1'; });
   const a = N.collect({ word: 'ds716a' });
-  t('DS-716 AC1/AC2 put off with 9 behind it and held behind an unmerged sibling, it is not listed', a.items.some((i) => i.t.key === 'C-1'), false);
+  t('DS-716 AC1/AC2 put off with 9 behind it and held behind an unmerged sibling, it is not listed',
+    a.items.some((i) => i.t.key === 'C-1' || (i.planFirst ?? []).includes('C-1')), false);
   const ra = loadRepos().find((r) => r.name === 'ds716a');
   t('DS-716 AC1 desk-q shows it waiting, not needing you', ra.rows.find((x) => x.t.key === 'C-1')?.k, 'waiting');
   t('DS-716 AC1 its page says it moves without you, behind the sibling', ticketScreen(ra, 'C-1', { width: 200 }).includes('Moves without you: behind S-1 (running, stage'), true);
@@ -4094,6 +4100,76 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-896 AC4 blockers kept as the pipe-joined held_by read the same as the list', JSON.stringify(str), JSON.stringify(list));
 }
 
+// ---- issue-1384: plan-first work a session claimed is that session's; unclaimed past the wait, one item
+{
+  const lane = (m, extra = {}) => ({ ...parked('C', m, 'lane C — Feature with no Size, spans layers'), ...extra });
+  const claim = (session, m) => ({ claim: { session, at: minsAgo(m) } });
+  put('pf1384', { port: 4700, beat: 1, planFirstWait: 4, tickets: {
+    'F-1': lane(600), 'F-2': lane(500), 'F-3': lane(30),
+    'F-4': { ...lane(700), park: { ...lane(700).park, ...claim('sess-1384', 60) } },
+    'F-5': parked('A', 300, 'Use the long copy or the short one?'),
+    // A claimed park in any other lane is that session's too; once its uncommitted work is named, it is not.
+    'F-6': { ...parked('A', 300, 'Which price?'), park: { ...parked('A', 300, 'Which price?').park, ...claim('sess-a', 60) } },
+    'F-7': { ...parked('D', 300, 'lane D — its canvas is not on main'), park: { ...parked('D', 300, 'lane D — its canvas is not on main').park, ...claim('sess-d', 60) } },
+    'F-8': { ...parked('A', 300, 'Which size?'), park: { ...parked('A', 300, 'Which size?').park, claim: { session: 'sess-x', at: minsAgo(900), dirty_at: minsAgo(10) } } },
+  } });
+  const r = () => loadRepos().find((x) => x.name === 'pf1384');
+  const items = N.collect({ word: 'pf1384' }).items;
+  const pf = items.find((i) => i.kind === 'plan-first');
+  t('issue-1384 AC1 a plan-first ticket a session claimed is not listed', items.some((i) => i.t.key === 'F-4' || i.planFirst?.includes('F-4')), false);
+  t('issue-1384 AC1 desk-q shows it as being worked in that session, not needing you', `${r().rows.find((x) => x.t.key === 'F-4').k} ${ticketScreen(r(), 'F-4', { width: 200 }).includes('Being worked in session sess-1384')}`, 'waiting true');
+  t('issue-1384 AC1 its row says the session', repoScreen(r(), { width: 200 }).includes('being worked in session sess-1384'), true);
+  t('issue-1384 AC2 unclaimed plan-first tickets past the wait are one item naming the count and the next step',
+    `${items.filter((i) => ['F-1', 'F-2'].includes(i.t.key)).length} ${pf?.t.key} ${pf?.planFirst.join()} ${/^2 plan-first tickets wait for a session: F-1 and F-2/.test(pf?.need ?? '')} ${pf?.actions.map((a) => a[0]).join()} ${/start \/desk-ticket F-1 in /.test(pf?.actions[0][1] ?? '')}`,
+    '0 plan-first F-1,F-2 true open,not-now true');
+  t('issue-1384 AC2 one parked under the wait is not listed, and desk-q shows it waiting for a session',
+    `${items.some((i) => i.t.key === 'F-3') || pf?.planFirst.includes('F-3')} ${r().rows.find((x) => x.t.key === 'F-3').k} ${ticketScreen(r(), 'F-3', { width: 200 }).includes('Waits for a session')}`, 'false waiting true');
+  t('issue-1384 AC2 any other park is still its own item', items.some((i) => i.t.key === 'F-5'), true);
+  t('issue-1384 AC1 a claimed park in lane A or D is not listed, so no resume is recommended on it',
+    items.filter((i) => ['F-6', 'F-7'].includes(i.t.key) || (i.planFirst ?? []).some((k) => ['F-6', 'F-7'].includes(k))).length, 0);
+  t('issue-1384 AC1 desk-q shows a claimed lane A or D park as worked in its session',
+    ['F-6', 'F-7'].map((k) => `${r().rows.find((x) => x.t.key === k).k} ${ticketScreen(r(), k, { width: 200 }).includes(`Being worked in session sess-${k === 'F-6' ? 'a' : 'd'}`)}`).join(), 'waiting true,waiting true');
+  t('issue-1384 a claimed park whose uncommitted work its question names is listed again', items.some((i) => i.t.key === 'F-8'), true);
+  const c = N.needsCount(r());
+  t('issue-1384 AC2 desk-q counts the plan-first item once, and draws both rows as needing you',
+    `${c.shown} ${c.stepRows.map((x) => x.t.key).sort().join()}`, '3 F-1,F-2');
+  const open = N.record({ word: 'pf1384', ticket: 'plan-first', action: 'open' });
+  t('issue-1384 AC2 open says to run /desk-ticket on the first in a session, and records nothing', `${open.ok} ${/run \/desk-ticket F-1: it claims F-1/.test(open.line)} ${r().q.tickets['F-1'].state}`, 'true true parked');
+  N.record({ word: 'pf1384', ticket: 'plan-first', action: 'not-now' });
+  t('issue-1384 not-now puts the plan-first item off', N.collect({ word: 'pf1384' }).items.some((i) => i.kind === 'plan-first'), false);
+  // AC3: once a pass drops the claim (claims.sh), the ticket is unclaimed again and joins the item.
+  const qf = join(env.DESK_HOME, 'repos', 'acme__pf1384', 'queue.json');
+  const q = JSON.parse(readFileSync(qf, 'utf8'));
+  q.tickets['F-4'].park.claim = null;
+  writeFileSync(qf, JSON.stringify(q));
+  const back = N.collect({ word: 'pf1384' }).items.find((i) => i.kind === 'plan-first');
+  t('issue-1384 AC3 a dropped claim returns the ticket to the unclaimed rule, bringing the put-off item back', back?.planFirst.join(), 'F-1,F-2,F-4');
+  // One alone past the wait is the same item, naming the count of one and the next step.
+  put('pf1384b', { port: 4701, beat: 1, planFirstWait: 4, tickets: { 'G-1': lane(600), 'G-2': lane(20) } });
+  const one = N.collect({ word: 'pf1384b' }).items;
+  const pf1 = one.find((i) => i.kind === 'plan-first');
+  t('issue-1384 AC2 one unclaimed plan-first ticket past the wait is the plan-first item, naming the count and the next step',
+    `${one.map((i) => i.t.key).join()} ${/^1 plan-first ticket waits for a session: G-1\. No session has claimed it /.test(pf1?.need ?? '')} ${pf1?.actions[0][1].replace(/ in .*;/, ';')}`,
+    'plan-first true start /desk-ticket G-1; it claims G-1');
+  const open1 = N.record({ word: 'pf1384b', ticket: 'plan-first', action: 'open' });
+  t('issue-1384 AC2 open on one names no others', /it claims G-1\.$/.test(open1.line), true);
+  // The digest asks what needs-you lists, and a not-now there puts the digest's question off too.
+  const { putOffQuestions, askAgain } = await import('../desk/bin/digest.mjs');
+  const dr = { slug: 'acme__pf1384b', state: join(env.HOME, '.desk-autopilot', 'acme__pf1384b'), queue: join(env.DESK_HOME, 'repos', 'acme__pf1384b', 'queue.json') };
+  const asked = () => digestQuestions(dr).filter((x) => x.kind === 'plan-first' || ['G-1', 'G-2'].includes(x.ticket)).map((x) => `${x.kind}:${x.text.split(':')[0]}`).join();
+  t('issue-1384 the digest asks the one plan-first question needs-you lists', asked(), 'plan-first:1 plan-first ticket waits for a session');
+  N.record({ word: 'pf1384b', ticket: 'plan-first', action: 'not-now' });
+  t('issue-1384 a not-now in needs-you puts the digest\'s plan-first question off, and lists it as put off',
+    `${asked() || 'none'} ${putOffQuestions(dr).map((x) => `${x.question}=${x.tickets.join()}`).join()}`, 'none 1 plan-first ticket waits for a session=G-1');
+  t('issue-1384 the digest\'s ask-again on it brings the plan-first item back in both',
+    `${askAgain({ slug: 'acme__pf1384b', ticket: 'G-1', list: [dr] }).ok} ${asked()} ${N.collect({ word: 'pf1384b' }).items.some((i) => i.kind === 'plan-first')}`,
+    'true plan-first:1 plan-first ticket waits for a session true');
+  // Every unclaimed one past the wait is in the one item, a ticket holding others behind it included.
+  put('pf1384c', { port: 4702, beat: 1, planFirstWait: 4, tickets: { 'H-1': lane(600), 'H-2': lane(500), 'H-9': behind('H-9', 'H-2') } });
+  const three = N.collect({ word: 'pf1384c' }).items;
+  t('issue-1384 AC2 a plan-first ticket with one held behind it is in the one item, which counts it',
+    `${three.map((i) => i.t.key).join()} ${three[0]?.planFirst?.join()} ${three[0]?.behind} ${/1 ticket waits behind this/.test(three[0]?.need ?? '')}`, 'plan-first H-1,H-2 1 true');
+}
 // ---- an action recorded on a park answers its ask in that repo's ticket ledger, by the person, in the
 // session named where one is; with that repo's ledger lever off, nothing is written.
 {
