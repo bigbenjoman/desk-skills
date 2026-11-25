@@ -140,6 +140,12 @@ t('a trial recorded for a lever the registry does not trial (the ledger) reads a
   t('set by hand to a value: the ticket runs it, with no arm, in the set', [mixed.values.wrappers, mixed.arms.wrappers ?? null, mixed.set.includes('wrappers')], ['mixed', null, true]);
   const baseSet = setTo('valued-set-base', 'one-at-a-time');
   t('set by hand to its baseline: the ticket runs it, out of the set', [baseSet.values.wrappers, baseSet.set.includes('wrappers')], ['one-at-a-time', false]);
+  // Declared but never trialled or set here: off, so the pin names no value for it at all.
+  const untried = loadRegistry({ ...ENTRIES, wrappers: { ...ENTRIES.wrappers, values: VALUES, baseline: 'one-at-a-time', trialled: false } });
+  const offPin = assignPin('O-1', { slug: 'valued-off', size: 'S', random: seededRandom(1), now: NOW, registry: untried }).pin;
+  t('a valued lever off in its repo: the pin carries no value for it', [offPin.values?.wrappers ?? null, offPin.set.includes('wrappers')], [null, false]);
+  append('valued-off', { kind: 'override', lever: 'wrappers', to: 'overridden', value: 'one-at-a-time', actor: 'ben', reason_code: 'ben_override', reason: 'by hand', at: daysAgo(1) }, { registry: untried });
+  t('set by hand to its baseline there: the pin names the baseline', assignPin('O-2', { slug: 'valued-off', size: 'S', random: seededRandom(1), now: NOW, registry: untried }).pin.values?.wrappers ?? null, 'one-at-a-time');
   let refusedLog = '';
   try { append('valued-set', { kind: 'override', lever: 'wrappers', to: 'overridden', value: 'on', actor: 'ben', reason_code: 'ben_override', reason: 'by hand', at: daysAgo(0) }, { registry: reg }); } catch (err) { refusedLog = err.message; }
   t('the lever log refuses an on/off override of a valued lever', /needs "value", one of wrappers's values/.test(refusedLog), true);
