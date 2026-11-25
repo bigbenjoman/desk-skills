@@ -7,6 +7,13 @@ Where it says "above" or "below" of something this file does not hold, or cites 
 
 ## Stalls and spend
 
+**A session's loop never loses its next tick.** When a pass returns, schedule the next one and record
+it (`queue.mjs next-pass`) before acting on what it printed, whatever its exit, a crash included: a
+long pass, a PR opened or a failed spawn handled after it must not end the turn without one. The
+handoff hook holds you to it: a turn that ends with no next pass recorded is blocked once, and once
+no pass has run for twice the loop's interval your next turn is told to re-arm the loop, which it logs
+for needs-you. If you cannot re-arm it, say why with `loop-tick.mjs could-not "<why>"`.
+
 Spend follows config §3b. Where "Autopilot batch budget (USD)" is `none`, leave `budget_usd` unset so
 `pass.mjs` never stops spawning, and do not surface a running total as a finding. Where a cap is set,
 `pass.mjs` stops spawning at it and says so. The per-worker budget is a runaway guard, not a cap on
