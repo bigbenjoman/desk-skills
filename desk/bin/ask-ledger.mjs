@@ -2,7 +2,7 @@
 // worker's park handed on (supervisor.mjs decide), and its id is <KEY>:<park.since>, so the same
 // question parked again after a requeue is another ask. Its steps are four ticket events, each legal
 // from any state and leaving it as it is (ticket-ledger.mjs):
-//   ask_raised     { ask, since, kind, blocking }        handed to the person or the decider
+//   ask_raised     { ask, since, kind, blocking, arm }   handed to the person or the decider
 //   ask_presented  { ask, via, ref, notification }       via push, digest, decider or session
 //   ask_answered   { ask, by, session, latency_s }       by the person, the decider or a default
 //   ask_acted      { ask, round }                        the spawn that resumes the ticket after it
@@ -60,7 +60,7 @@ function eventOf(s, batch, now) {
   switch (s.step) {
     case 'raised':
       return { ...base, id: `ask:${ask}:raised`, type: 'ask_raised', at: now,
-        data: { ask, since, kind: parkKind({ park: { kind: s.kind, question: s.question } }), blocking: typeof s.blocking === 'boolean' ? s.blocking : null } };
+        data: { ask, since, kind: parkKind({ park: { kind: s.kind, question: s.question } }), blocking: typeof s.blocking === 'boolean' ? s.blocking : null, arm: text(s.arm) } };
     case 'presented':
       return { ...base, id: `ask:${ask}:presented:${s.via}`, type: 'ask_presented', at: now,
         data: { ask, via: s.via, ref: text(s.ref), notification: text(s.notification) } };
@@ -98,8 +98,8 @@ function holds(state, ev) {
   return a.acted != null;
 }
 
-// Appends ask steps `steps` ([{ step, key, since, ... }]: raised takes kind (else read from question) and
-// blocking; presented via, ref and notification; answered by, session and at; acted round) to the ledger of queue file `at` (or `{ repoDir, batch }`), in one append. `on`
+// Appends ask steps `steps` ([{ step, key, since, ... }]: raised takes kind (else read from question),
+// blocking and arm (the question-handling lever's, question-arms.mjs); presented via, ref and notification; answered by, session and at; acted round) to the ledger of queue file `at` (or `{ repoDir, batch }`), in one append. `on`
 // is the ledger lever. -> the report lines: none, or one saying the steps could not be written.
 export function recordAsks(at, steps, { on = ledgerOn(), by, now = new Date(), waitMs = LOCK_WAIT_MS } = {}) {
   const list = [].concat(steps ?? []).filter(Boolean);
@@ -120,7 +120,7 @@ export function recordAsks(at, steps, { on = ledgerOn(), by, now = new Date(), w
 export const askAnswered = (at, asks, opts) => recordAsks(at, [].concat(asks ?? []).map((a) => ({ ...a, step: 'answered' })), opts);
 
 // Every ask a folded ledger state holds, with its ticket's key and batch: [{ key, batch, ask, since,
-// kind, blocking, raised_at, presented, answered, acted, tokens }], by ticket and then by since.
+// kind, blocking, arm, raised_at, presented, answered, acted, tokens }], by ticket and then by since.
 export const readAsks = (state) => Object.values(state?.tickets ?? {})
   .flatMap((t) => Object.values(t.asks ?? {}).map((a) => ({ key: t.key, batch: t.batch, ...structuredClone(a) })))
   .sort((a, b) => a.key.localeCompare(b.key) || String(a.since ?? '').localeCompare(String(b.since ?? '')));
