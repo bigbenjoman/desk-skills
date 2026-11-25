@@ -793,8 +793,10 @@ function loadBatch(c, repoName, batch, limits, now) {
 const unfinished = (r) => r.rows.length > 0 || r.prs.length > 0;
 
 // Who runs the batch's passes: the supervisor once the batch was handed to it (the queue's
-// `supervised`) in a repo whose "Batches run by" row is `supervisor`, else a session: a standing batch
-// is always marked handed over. `set` is that row, `unset` that it has none.
+// `supervised`), else a session. A standing batch is always marked handed over, so in a repo whose
+// "Batches run by" row is not `supervisor` a handed-over batch is the supervisor's only where the
+// supervisor ran its last pass or is loaded now: it runs every handed-over queue whatever the row says
+// (an epic's plan hands one over, `supervisor on` loads it). `set` is that row, `unset` that it has none.
 // `agent` is 'loaded' or 'off' for a handed-over batch not yet finished, read with one launchctl
 // print (or systemctl call) per refresh, and `exit` the loaded agent's failed last run, when it cannot
 // start. With no launchd, and no systemd user manager that answers, there is no supervisor, so every
@@ -804,9 +806,11 @@ function whoRuns(r) {
   let raw = null;
   try { raw = repoConfigValue(r.slug, 'batches-run-by'); } catch { /* a row that cannot be read is unset */ }
   const set = runBySetting(raw).value;
-  const by = r.q.supervised === true && set === 'supervisor' ? 'supervisor' : 'session';
-  const a = by === 'supervisor' && unfinished(r) ? supervisorAgent(r.slug) : null;
-  return { by, set, unset: !String(raw ?? '').trim(), agent: a ? (a.loaded ? 'loaded' : 'off') : null, exit: a?.exit ?? null };
+  const handed = r.q.supervised === true;
+  const a = handed && unfinished(r) ? supervisorAgent(r.slug) : null;
+  const by = handed && (set === 'supervisor' || r.q.pass?.by === 'supervisor' || a?.loaded) ? 'supervisor' : 'session';
+  const agent = by === 'supervisor' && a ? a : null;
+  return { by, set, unset: !String(raw ?? '').trim(), agent: agent ? (agent.loaded ? 'loaded' : 'off') : null, exit: agent?.exit ?? null };
 }
 
 // ---- a batch that has stopped moving -------------------------------------------------------------
@@ -880,9 +884,9 @@ export function usageHoldOf(r) {
 // A session runs a batch the repo sets to the supervisor: its next batch hands over at Stage 4.
 const handsOver = (r) => r.run?.by === 'session' && r.run.set === 'supervisor';
 const supervisorOff = (r) => r.run?.agent === 'off';
-// A batch the repo sets to a session whose passes stopped with a ticket they could move: that
-// session's /loop ended.
-const loopStopped = (r) => r.run?.by === 'session' && r.run.set === 'session' && r.last != null && passesPaused(r);
+// A batch a session runs whose passes stopped with a ticket they could move: that session's /loop
+// ended. needs-you lists the same batches as stalled ones.
+export const sessionStalled = (r) => r.last != null && r.run?.by === 'session' && passesPaused(r);
 
 // How many of the repo's tickets and unmerged PRs are in a shown state.
 const count = (r, k) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === k).length;
@@ -973,7 +977,7 @@ export function shownRepos(repos, all) {
   const b = repos.filter(hasBatch);
   const live = b.filter((r) => r.live).sort((a, c) => c.last - a.last);
   const you = new Map(b.map((r) => [r, r.live ? 0 : attention(r)]));
-  const quiet = b.filter((r) => !r.live && (all || r.error || you.get(r) > 0 || supervisorOff(r) || loopStopped(r) || r.stall?.cannotStart || r.stall?.errors || (handsOver(r) && unfinished(r))))
+  const quiet = b.filter((r) => !r.live && (all || r.error || you.get(r) > 0 || supervisorOff(r) || sessionStalled(r) || r.stall?.cannotStart || r.stall?.errors || (handsOver(r) && unfinished(r))))
     .sort((a, c) => you.get(c) - you.get(a));
   return [...live, ...quiet];
 }
@@ -2608,7 +2612,7 @@ function fixNote(x) {
 const band = (text) => segLine([[` ✕ ${text}`, BAND]]);
 const bandsOf = (r) => [
   ...(supervisorOff(r) ? [band(`${r.name}: the supervisor is off, so no passes run. Run: desk-q ${r.repo} supervisor on`)] : []),
-  ...(loopStopped(r) ? [band(`${r.name}: ${r.session ? `the loop in session ${r.session}` : "the session's loop"} has stopped, so no passes run. ${resumeLine(r)}`)] : []),
+  ...(sessionStalled(r) ? [band(`${r.name}: ${r.session ? `the loop in session ${r.session}` : "the session's loop"} has stopped, so no passes run. ${resumeLine(r)}`)] : []),
   ...(r.stall?.cannotStart ? [band(`${r.name}: the supervisor cannot start (exit ${r.stall.cannotStart.code}): ${r.stall.cannotStart.why ?? 'it logged nothing'}`)] : []),
   ...(r.stall?.errors ? [band(`${r.name}: the last ${r.stall.errors.n} passes errored: ${r.stall.errors.error}`)] : []),
 ];

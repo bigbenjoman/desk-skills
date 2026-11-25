@@ -1710,6 +1710,17 @@ process.env.DESK_PLATFORM = 'darwin';
 rmSync(join(I.T, 'bin', 'systemctl'));
 t('#1416 AC3 Linux with no systemd user manager: no supervisor-off band or cell, and nothing offers supervisor on',
   `${/supervisor on|supervisor off/.test(wsl1416)} ${/^ {2}off +● session · 3m ago /.test(rowOf(wsl1416, 'off') ?? '')}`, 'false true');
+// The supervisor runs every handed-over queue whatever the row says (an epic's plan hands one over,
+// `supervisor on` loads it), so in a repo set to session a handed-over batch is still the supervisor's
+// while its agent is loaded, or while the supervisor ran its last pass: then an unloaded agent is the
+// supervisor-off band, not a stopped loop.
+put(I.T, I.env, 'l1416', { port: 5297, conc: '2 / 3', beat: 3, runBy: 'session', queue: { batch: 'l1416', concurrency: 2, supervised: true, tickets: { 'SL-1': ready } } });
+put(I.T, I.env, 'p1416', { port: 5298, conc: '2 / 3', beat: 50, runBy: 'session', queue: { batch: 'p1416', concurrency: 2, supervised: true, pass: { by: 'supervisor', at: minsAgo(50) }, tickets: { 'SP-1': ready } } });
+I.loaded('sup', 'halt', 'l1416');
+const own1416 = ov1416(['l1416', 'p1416']);
+I.loaded('sup', 'halt');
+t('#1416 a repo set to session whose handed-over batch a loaded supervisor runs reads ● supervisor; one the supervisor last passed, its agent off, is the supervisor-off band',
+  `${/^ {2}l1416 +● supervisor · 3m ago /.test(rowOf(own1416, 'l1416') ?? '')} ${lines(own1416).some((l) => l.startsWith(' ✕ p1416: the supervisor is off'))} ${/✕ p1416: the (loop|session)/.test(own1416)}`, 'true true false');
 
 // ---- DS-218: the ticket screen leads with whether it moves without you; the tabs match the Queue.
 // The 2026-10-24 desk-skills queue: DS-168 behind three merged blockers, DS-150's draft PR and 27 open
