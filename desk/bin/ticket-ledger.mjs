@@ -30,6 +30,8 @@ export const ESCALATE_TO = ['person', 'repair', 'requeue'];
 // How an ask reached its answerer (ask_presented), and who answered it (ask_answered): ask-ledger.mjs.
 export const ASK_VIA = ['push', 'digest', 'decider', 'session'];
 export const ASK_BY = ['person', 'decider', 'default'];
+// The steps an ask's tokens are measured for (ask_tokens): the parked round, its presentation, the round after.
+export const ASK_TOKEN_STEPS = ['raise', 'present', 'act'];
 // How many of the latest event ids a fold keeps, so a retry that straddles a snapshot is still skipped.
 const ID_WINDOW = 1000;
 
@@ -49,6 +51,8 @@ const CHECKS = {
   bool: (v) => typeof v === 'boolean',
   via: (v) => ASK_VIA.includes(v),
   answerer: (v) => ASK_BY.includes(v),
+  tokenStep: (v) => ASK_TOKEN_STEPS.includes(v),
+  usd: (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0,
 };
 
 // Every event type, the scope it belongs to (a ticket's, or a batch's with key null), and its data fields.
@@ -79,6 +83,10 @@ export const EVENTS = Object.freeze({
   ask_presented: { scope: 'ticket', data: { ask: 'string', via: 'via', ref: 'string?', notification: 'string?' } },
   ask_answered: { scope: 'ticket', data: { ask: 'string', by: 'answerer', session: 'string?', latency_s: 'int?' } },
   ask_acted: { scope: 'ticket', data: { ask: 'string', round: 'int?' } },
+  // One step's tokens and list-price dollars, by its source (the round's log, the decider, the person's
+  // session or shell). A step that could not be read whole is complete false, its figures what was read
+  // (null for none), never 0; approx marks a figure that is an attribution, not a reading.
+  ask_tokens: { scope: 'ticket', data: { ask: 'string', step: 'tokenStep', source: 'string', input: 'int?', output: 'int?', cache_read: 'int?', cache_write: 'int?', usd: 'usd?', complete: 'bool', approx: 'bool?' } },
   // fields: the done fields written with it (queue-ledger.mjs DONE_FIELDS), laid on as a legacy_set's are.
   finished: { scope: 'ticket', data: { pr: 'int?', fields: 'object?' } },
   failed: { scope: 'ticket', data: { subtype: 'string' } },
@@ -92,7 +100,7 @@ export const EVENTS = Object.freeze({
   platform_clear: { scope: 'batch', data: {} },
 });
 
-export const ASK_EVENTS = ['ask_raised', 'ask_presented', 'ask_answered', 'ask_acted'];
+export const ASK_EVENTS = ['ask_raised', 'ask_presented', 'ask_answered', 'ask_acted', 'ask_tokens'];
 const UNFINISHED = STATES.filter((s) => !FINISHED.includes(s));
 const ANY = [null, ...STATES];
 const KEEP = Symbol('unchanged');
@@ -197,8 +205,11 @@ export const parkOf = (d) => Object.fromEntries(Object.entries(d ?? {}).filter((
 
 // Lays an ask event onto ticket `t`'s record of that ask: { ask, since, kind, blocking, raised_at,
 // presented: [{ via, ref, notification, at }], answered: { by, session, latency_s, at } | null,
-// acted: { round, at } | null }. A step recorded already keeps its first record.
-const askRecord = (ask) => ({ ask, since: null, kind: null, blocking: null, raised_at: null, presented: [], answered: null, acted: null });
+// acted: { round, at } | null, tokens: { <step>:<source>: ask_tokens data and at } }. A step recorded
+// already keeps its first record.
+const askRecord = (ask) => ({ ask, since: null, kind: null, blocking: null, raised_at: null, presented: [], answered: null, acted: null, tokens: {} });
+// The key an ask's tokens are kept under on its record: its step and source.
+export const tokensKey = (d) => `${d.step}:${d.source}`;
 function askStep(t, ev) {
   const d = ev.data ?? {};
   t.asks ??= {};
@@ -207,6 +218,7 @@ function askStep(t, ev) {
   else if (ev.type === 'ask_presented') { if (!a.presented.some((p) => p.via === d.via)) a.presented.push({ via: d.via, ref: d.ref ?? null, notification: d.notification ?? null, at: ev.at }); }
   else if (ev.type === 'ask_answered') a.answered ??= { by: d.by, session: d.session ?? null, latency_s: d.latency_s ?? null, at: ev.at };
   else if (ev.type === 'ask_acted') a.acted ??= { round: d.round ?? null, at: ev.at };
+  else if (ev.type === 'ask_tokens') { a.tokens ??= {}; a.tokens[tokensKey(d)] ??= { ...d, at: ev.at }; }
 }
 
 // Applies one envelope to `state` in place. An illegal transition is applied all the same: in shadow
@@ -254,7 +266,7 @@ function apply(state, ev) {
     case 'stuck': t.stuck ??= {}; if (d.end == null) t.stuck[d.cause] = d.start; else delete t.stuck[d.cause]; break;
     // t.asks: each ask's record, its steps as they were written (ask-ledger.mjs readAsks). No queue field
     // holds it, so the projection never shows it.
-    case 'ask_raised': case 'ask_presented': case 'ask_answered': case 'ask_acted': askStep(t, ev); break;
+    case 'ask_raised': case 'ask_presented': case 'ask_answered': case 'ask_acted': case 'ask_tokens': askStep(t, ev); break;
     case 'finished': t.park = null; if (d.fields) overlay(t, d.fields); if (d.pr != null) t.pr = d.pr; break;
     // A ticket that leaves every batch leaves its blockers there: added again, it is held by what then holds it.
     case 'moved': t.batch = d.to; if (d.to == null) { t.holds = []; delete t.fields.held_by; } break;

@@ -148,7 +148,7 @@ export function stageUsage(logText) {
 
 // One result event's tokens by kind. Tokens come from modelUsage, which counts subagents' calls as
 // the cost does; `usage` is the fallback for a result event without it.
-function resultTokens(d) {
+export function resultTokens(d) {
   const n = (v) => Number(v) || 0;
   const models = Object.values(d.modelUsage ?? {});
   const sum = (k) => models.reduce((s, m) => s + n(m[k]), 0);
