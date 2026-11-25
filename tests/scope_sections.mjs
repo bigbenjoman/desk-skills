@@ -392,22 +392,26 @@ function guardedBy(cond, guards) {
 }
 // Whether a top-level statement runs only when the module is run as a command: an `if`, or a chain of
 // `else if`s with no final `else`, each of whose conditions is guardedBy(). A condition ends at the
-// first `)` that closes it as an expression, and a block where it first compiles.
+// first `)` that closes it as an expression, and a block where it first compiles, each read with
+// `import.meta` (which no script compiles) renamed to a name of the same length.
 function mainOnly(c, guards) {
-  for (let rest = c; ;) {
-    if (!/^if\s*\(/.test(rest)) return false;
-    rest = rest.replace(/^if\s*/, '');
-    const close = groupEnd(rest, ')', asExpression);
-    if (close < 0 || !guardedBy(rest.slice(1, close - 1).trim(), guards)) return false;
-    rest = rest.slice(close).trimStart();
-    if (!rest.startsWith('{')) return !/\belse\b/.test(rest);
-    const end = groupEnd(rest, '}', (p) => `(async function () {\n${p}\n})`);
+  const read = c.replace(/(?<![\w$.])import\.meta(?![\w$])/g, 'import_meta');
+  for (let at = 0; ;) {
+    const head = read.slice(at).match(/^if\s*(?=\()/);
+    if (!head) return false;
+    at += head[0].length;
+    const close = groupEnd(read.slice(at), ')', asExpression);
+    if (close < 0 || !guardedBy(c.slice(at + 1, at + close - 1).trim(), guards)) return false;
+    at += close;
+    at += read.slice(at).match(/^\s*/)[0].length;
+    if (read[at] !== '{') return !/\belse\b/.test(read.slice(at));
+    const end = groupEnd(read.slice(at), '}', (p) => `(async function () {\n${p}\n})`);
     if (end < 0) return false;
-    rest = rest.slice(end).trim();
-    if (!rest) return true;
-    const next = rest.match(/^else\s+(?=if\b)/);
+    at += end;
+    const next = read.slice(at).match(/^\s*(?:$|else\s+(?=if\b))/);
     if (!next) return false;
-    rest = rest.slice(next[0].length);
+    if (at + next[0].length === read.length) return true;
+    at += next[0].length;
   }
 }
 

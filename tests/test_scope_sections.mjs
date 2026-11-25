@@ -604,7 +604,10 @@ t('DS-1002 an else-if chain each of whose conditions is the guard, alone or firs
   drawEdit(chainQ("if (isMain && (0, 1), true) {\n  console.log(draw());\n}")) === everyClaimer,
   drawEdit(chainQ("if (isMain) {\n  console.log(1);\n} else if (process.argv[2]) {\n  console.log(draw());\n}")) === everyClaimer,
   drawEdit(chainQ("if (!isMain && 1) {\n  console.log(draw());\n}")) === everyClaimer,
-], ['some: test_cli.sh test_lint.sh', 'some: test_cli.sh test_lint.sh', true, true, true, true, true]);
+  // A launch test written in the condition itself, which names import.meta.
+  drawEdit(chainQ('if (process.argv[1] === fileURLToPath(import.meta.url)) {\n  console.log(draw());\n}')),
+  drawEdit(chainQ('if (process.argv[1] !== fileURLToPath(import.meta.url)) {\n  console.log(draw());\n}')) === everyClaimer,
+], ['some: test_cli.sh test_lint.sh', 'some: test_cli.sh test_lint.sh', true, true, true, true, true, 'some: test_cli.sh test_lint.sh', true]);
 // A shell script whose embedded node code imports from desk-q.mjs (loads() reads only its shell lines),
 // and which runs pass.mjs, so test_tri.sh claims desk-q.mjs through that.
 const triWith = (imp) => hubWith({
