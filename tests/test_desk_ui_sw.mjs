@@ -1,4 +1,5 @@
 // suite: the desk app's offline copy (desk/ui/public/sw.js keeps the app, desk/ui/src/snapshot.js the last snapshot)
+// layer: L1
 // covers: desk/ui/public/sw.js desk/ui/src/snapshot.js
 // The service worker runs in a vm with a stand-in Cache Storage and network, so a reload is a fetch
 // event and a stopped server is a fetch that fails. snapshot.js is the page's own module, run here

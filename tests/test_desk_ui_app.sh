@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: the desk app's component tests (Vitest, in desk/ui)
+# layer: L2
 # covers: desk/ui/** desk/ui/vite.config.js desk/ui/public/sw.js desk/ui/src/snapshot.js desk/ui/src/color-scheme.js
 # Installs desk/ui's packages from its lockfile when it has none yet or the lockfile changed since,
 # then runs its Vitest suite once, on two workers. The first run needs npm and the registry.

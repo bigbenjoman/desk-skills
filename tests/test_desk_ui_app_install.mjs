@@ -1,4 +1,5 @@
 // suite: the desk app's build in install.sh (source hash, the swap, the previous build kept, uninstall)
+// layer: L3
 // covers: desk/bin/desk-app.mjs install.sh desk/ui/package.json
 // desk-app.mjs install-ui and uninstall, and install.sh's install_desk_ui_app, on a throwaway HOME
 // with a stub npm whose build copies the source's src/App.jsx into dist/index.html, and fails when it
