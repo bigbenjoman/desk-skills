@@ -77,6 +77,7 @@ function snapshotV3(dir, { second = true } = {}) {
 const v3 = snapshotV3(join(T, 'v3'));
 t('v3 parseBoards: boards keyed by file, sized by w', parseBoards(json(join(v3, 'project/canvas.json'))).map((x) => `${x.name}@${x.width}:${x.file}`).join(' '), 'Home@1440:A-Home.dc.html Landscape@390:Landscape.dc.html');
 t('references: a {{…}} binding names no file', references(`<img src="{{janeSrc}}"><img src='{{ s.src }}'><a href="x.html">`).join(' '), 'x.html');
+t('references: a <dc-import> prop names no file', references(`<dc-import name="BdValue" src="sstl.co.uk/about-us" label="a > b"></dc-import><img src="x.png">`).join(' '), 'x.png');
 t('blobIds: an id in a script string', blobIds(`const items = [{ src: '/_blob/${B2}' }]`).join(' '), B2);
 const cv3 = collect(v3);
 t('v3 collect: no binding reported missing', cv3.missing.join(' | '), '');
