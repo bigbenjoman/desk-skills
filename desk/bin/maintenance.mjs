@@ -29,7 +29,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readRegistry } from './claude-logins.mjs';
-import { takeBorrowLock, otherQueues } from './borrow.mjs';
+import { takeBorrowLock, tryBorrowLock, otherQueues } from './borrow.mjs';
 import { readInstalled } from './installed.mjs';
 import { bootTime, runsInCloud } from './pass/shared.mjs';
 
@@ -504,25 +504,38 @@ function step(s, { dir, at, running, stop, selfQueue, watch }) {
     save({ phase: 'updating' });
   }
 
-  // A release the release watch rolled back keeps the previous one pinned here too: the window skips
-  // the update and still runs its reboot check.
-  const held = s.phase === 'updating' ? pinHolds(watch, dir) : null;
-  if (held) {
-    log(`update skipped: ${held}`);
-    lines.push(`maintenance: desk-skills not updated: ${held}`);
-    save({ phase: 'checking' });
-  }
   if (s.phase === 'updating') {
-    const u = updateDesk();
-    if (!u.ok) {
-      log(`update failed: ${u.why}${u.old ? ` (installed version stays at ${short(u.old)})` : ''}`);
-      note(`desk-skills update failed in the maintenance window, so the computer was not restarted: ${u.why}`);
-      return finish(`desk-skills update failed (${u.why}), so no restart`);
+    // The auto-release's lock, which a rollback takes too, so the update never interleaves with one.
+    // Held: the window waits a pass. One that cannot be made at all holds nothing, so the update runs.
+    const rl = tryBorrowLock({ dir, name: 'release.lock.d' });
+    if (!rl.ok && rl.held) {
+      lines.push(`maintenance: waiting to update desk-skills: a rollback or install holds its lock (pid ${rl.holder ?? '?'})`);
+      return { hold: true, lines };
     }
-    if (u.new !== u.old) watch.recordRelease(dir, { at, from: u.old, to: u.new, merges: u.merges });
-    log(`update: desk-skills ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main), pulled fast-forward and installed`);
-    lines.push(`maintenance: desk-skills updated ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main) and installed`);
-    save({ phase: 'checking', update: { old: u.old, new: u.new, merges: u.merges } });
+    try {
+      // A release the release watch rolled back keeps the previous one pinned here too: the window
+      // skips the update and still runs its reboot check.
+      const held = pinHolds(watch, dir);
+      if (held) {
+        log(`update skipped: ${held}`);
+        lines.push(`maintenance: desk-skills not updated: ${held}`);
+        save({ phase: 'checking' });
+      } else {
+        // The release before this one is what is installed, as the auto-release records it.
+        const base = readInstalled()?.commit ?? null;
+        const u = updateDesk();
+        if (!u.ok) {
+          log(`update failed: ${u.why}${u.old ? ` (installed version stays at ${short(u.old)})` : ''}`);
+          note(`desk-skills update failed in the maintenance window, so the computer was not restarted: ${u.why}`);
+          return finish(`desk-skills update failed (${u.why}), so no restart`);
+        }
+        const from = base ?? u.old;
+        if (u.new !== from) watch.recordRelease(dir, { at, from, to: u.new, merges: u.merges });
+        log(`update: desk-skills ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main), pulled fast-forward and installed`);
+        lines.push(`maintenance: desk-skills updated ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main) and installed`);
+        save({ phase: 'checking', update: { old: u.old, new: u.new, merges: u.merges } });
+      }
+    } finally { rl.release?.(); }
   }
 
   if (s.phase === 'checking') {

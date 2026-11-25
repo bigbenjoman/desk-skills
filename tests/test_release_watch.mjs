@@ -171,12 +171,34 @@ const said = (() => { try { return JSON.parse(step.stdout).lines.join('\n'); } c
 t('AC2 auto-release: a pinned desk installs nothing while the revert PR is open', [/not installed: desk is pinned to/.test(said), m.g('rev-parse', 'HEAD') === m.p], [true, true]);
 
 // So does the maintenance window's update, which otherwise pulls main: it still runs its reboot check.
-writeFileSync(join(m.dir, 'maintenance.json'), JSON.stringify({ week: iso(T0 - 2 * H), phase: 'updating', since: iso(T0 - 2 * H), window: 'Mon 06:30 UTC' }));
-const win = spawnSync(process.execPath, ['--input-type=module', '-e', `const { maintenance } = await import(${JSON.stringify(join(ROOT, 'desk/bin/maintenance.mjs'))}); console.log(JSON.stringify(await maintenance({ dir: ${JSON.stringify(m.dir)} })));`],
-  { encoding: 'utf8', env: { ...process.env, DESK_HOME: m.home, DESK_SOURCE_CHECKOUT: m.src, DESK_RELEASE_CHECK_CMD: 'echo success #', HOME: m.base, XDG_CONFIG_HOME: join(m.base, 'config'),
-    DESK_REBOOT_CHECK_CMD: 'echo summary: dirty=0 unpushed=0 heavy=0 filevault=off', DESK_RESTART_CMD: 'true' } });
-const winSaid = (() => { try { return JSON.parse(win.stdout).lines.join('\n'); } catch { return win.stderr; } })();
+const updating = () => writeFileSync(join(m.dir, 'maintenance.json'), JSON.stringify({ week: iso(T0 - 2 * H), phase: 'updating', since: iso(T0 - 2 * H), window: 'Mon 06:30 UTC' }));
+const windowPass = () => {
+  const p = spawnSync(process.execPath, ['--input-type=module', '-e', `const { maintenance } = await import(${JSON.stringify(join(ROOT, 'desk/bin/maintenance.mjs'))}); console.log(JSON.stringify(await maintenance({ dir: ${JSON.stringify(m.dir)} })));`],
+    { encoding: 'utf8', env: { ...process.env, DESK_HOME: m.home, DESK_SOURCE_CHECKOUT: m.src, DESK_RELEASE_CHECK_CMD: 'echo success #', HOME: m.base, XDG_CONFIG_HOME: join(m.base, 'config'),
+      DESK_REBOOT_CHECK_CMD: 'echo summary: dirty=0 unpushed=0 heavy=0 filevault=off', DESK_RESTART_CMD: 'true' } });
+  try { return JSON.parse(p.stdout).lines.join('\n'); } catch { return p.stderr; }
+};
+const phase = () => JSON.parse(readFileSync(join(m.dir, 'maintenance.json'), 'utf8')).phase;
+updating();
+mkdirSync(join(m.dir, 'release.lock.d'));
+writeFileSync(join(m.dir, 'release.lock.d', 'pid'), String(process.pid));
+let winSaid = windowPass();
+t('AC2 window: while a rollback holds the release lock, the window waits to update', [/waiting to update desk-skills: a rollback or install holds its lock/.test(winSaid), phase(), m.g('rev-parse', 'HEAD') === m.p], [true, 'updating', true]);
+rmSync(join(m.dir, 'release.lock.d'), { recursive: true });
+winSaid = windowPass();
 t('AC2 window: a pinned desk is not updated by the maintenance window', [/maintenance: desk-skills not updated: desk is pinned to/.test(winSaid), m.g('rev-parse', 'HEAD') === m.p, /reboot check/.test(readFileSync(join(m.dir, 'maintenance.log'), 'utf8'))], [true, true, true]);
+
+// With no pin the window updates, and records the release against what was installed, not the checkout.
+writeFileSync(join(m.dir, 'release-watch.json'), '{}');
+const installedBefore = 'c'.repeat(40);
+writeFileSync(join(m.home, 'installed.json'), JSON.stringify({ commit: installedBefore }));
+writeFileSync(join(m.src, 'install.sh'), '#!/bin/sh\nexit 0\n');
+chmodSync(join(m.src, 'install.sh'), 0o755);
+writeFileSync(join(m.src, '.git', 'info', 'exclude'), 'install.sh\n');
+updating();
+winSaid = windowPass();
+const lastRec = readFileSync(join(m.dir, 'releases.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).at(-1);
+t('AC1 window: its install is recorded for the watch, from the installed commit', [/desk-skills updated/.test(winSaid), lastRec?.from, lastRec?.to], [true, installedBefore, m.r]);
 
 // ---- AC3: desk-q rollback <commit> does the same on demand ------------------------------------------------
 const q = fixture('ac3');
