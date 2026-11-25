@@ -1,6 +1,7 @@
 # desk-ticket: a Claude Design canvas
 
-Read at Stage 0 when the ticket's Design section links a Claude Design artifact; it covers that
+Read at Stage 0 when the ticket links a claude.ai artifact (its Design section a Claude Design one,
+or anywhere else a spec or notes page); it covers that
 stage's check and Stage 1's save. A session that reached Stage 1 without reading it at Stage 0
 (one resumed from the resume file) reads it at Stage 1.
 
@@ -39,10 +40,25 @@ file name, saves it as `assets/<id>.<ext>` and points the boards at it, and save
 its epic's) but says no board applies to this ticket: nothing needs saving, and the ticket builds
 without it.
 
+**A claude.ai artifact the ticket's description links outside its Design section** (a spec or notes
+page) is checked and saved the same way, as a page: `check` names it in its own `blocking` or
+`advisory` line. `check` reads only the description, so one linked only in a comment is moved into
+the description first.
+
 **Before you list or read any file of the artifact a `blocking` line names (a canvas, a deck or a
 page), check who owns it**: list the artifact itself with the Artifact tool (`action:list` with no `scope:files`,
-which lists no file). If the listing shows it was created outside the user's organisation, stop there
-and ask for access or an export (below), saving nothing. Otherwise carry on as below.
+which lists no file). One created outside the user's organisation asks, on the first read, whether
+Claude may read it for the rest of this conversation: in an interactive session the user answers it
+once and you carry on as below. A session that cannot answer it (headless, or a worker) reads none:
+it parks naming the artifact. A read that still returns a summary, not the files, is asked as below.
+
+**A worker never reads the link.** It reads the copy instead, wherever it is:
+
+```bash
+node ~/.claude/desk/bin/desk-design.mjs copies <TICKET>   # <url> TAB <saved folder, snapshot, or -> per artifact
+```
+
+A `-` (exit 1) is an artifact with no copy: park naming it, never fetch it.
 
 A `blocking` line means no copy is saved yet. With the Artifact tool, list the artifact's files
 (`action:list scope:files`) and read `project/canvas.json`, every board's `project/*.dc.html`, and

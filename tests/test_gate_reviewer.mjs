@@ -168,6 +168,15 @@ GR.reviewerStep(D, { waits: [wait(3, 'h3'), wait(4, 'h4')], now: at(80), dry: tr
 t('#1365 a dry run records no ask and leaves the record', j([readAsks(D).length, GR.readRecord(D).reviewers[BOT].waiting[3].since]), j([0, iso(10)]));
 t('#1365 a repo with no record and nothing seen or waiting does nothing', j(GR.reviewerStep(join(S, 'none'), {})), '[]');
 
+// #1417: a PR red only on a down reviewer's gate waits on that reviewer (desk-q), and no rerun is spent on it.
+{
+  const sc = [{ name: '🔐 Review gate', kind: 'external', login: BOT }, { name: 'Title', kind: null }];
+  const open = [{ login: BOT, from: iso(0), to: null }];
+  t('#1417 red only on the down reviewer\'s gate: it waits on that reviewer, since the outage began', j(GR.waitingOnDown(['🔐 Review gate'], sc, open)), j({ login: BOT, since: iso(0) }));
+  t('#1417 red on anything else as well, or with the outage closed, or none recorded: not waiting on it',
+    j([GR.waitingOnDown(['🔐 Review gate', 'tests'], sc, open), GR.waitingOnDown(['🔐 Review gate'], sc, [{ ...open[0], to: iso(90) }]), GR.waitingOnDown(['🔐 Review gate'], sc, []), GR.waitingOnDown(['Title'], sc, open)]), j([null, null, null, null]));
+}
+
 // Who runs it: §4 Infra and security owner, a People row no other script reads, read as get --json reads it.
 {
   const { writeFileSync } = await import('node:fs');
