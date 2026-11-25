@@ -179,10 +179,10 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   t('AC4 the lever table has What happens next', lev.includes('>What happens next</th>'), true);
   t('AC4 one row per lever', count(lev, /<tr data-lever=/g), 10);
   t('AC4 the ledger, never trialled, says it is on only where named (DS-893)', /<tr data-lever="ledger">.*?Not trialled: on only where a repo’s levers row names it\./.test(lev), true);
-  t('a lever with more than two arms, never trialled, says levers decide sets it', /<tr data-lever="question-handling">.*?Not trialled: on only where levers decide sets it to batched, one-at-a-time, mixed in a repo\./.test(lev), true);
+  t('question handling is on trial: it waits for a repo set to auto, like the others', /<tr data-lever="question-handling">.*?Testing starts (once|when) a repo is set to auto\./.test(lev), true);
   t('AC4 preflight is on by hand, first', /<tr data-lever="preflight">.*?On by hand/.test(lev) && lev.indexOf('data-lever="preflight"') < lev.indexOf('data-lever="wrappers"'), true);
   t('AC4 its next step', lev.includes('Pinned by hand in desk-skills, so this is a before-and-after, not a test.'), true);
-  t('AC4 the others, quality-risk ones included, are off until a repo is on auto', count(lev, /Testing starts once a repo is set to auto\.|Testing starts when a repo is set to auto\./g), 7);
+  t('AC4 the others, quality-risk ones included, are off until a repo is on auto', count(lev, /Testing starts once a repo is set to auto\.|Testing starts when a repo is set to auto\./g), 8);
   t('AC4 this week\'s changes', section(hToday, 'ch-h').includes('>What changed this week</h2>'), true);
   t('AC4 with nothing changed', section(hToday, 'ch-h').includes('No lever changed this week.'), true);
   t('AC4 no How desk decides', hToday.includes('How desk decides'), false);
@@ -315,6 +315,24 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('AC11 a change citing no evaluation says so', section(hSix, 'ch-h').split('<details class="change">')[3].includes('<dt>Tickets per arm</dt><dd><span class="muted">not recorded</span>'), true);
 }
 
+
+// Question handling's per-arm ask report: in the view from the latest evaluation, and on the page.
+{
+  const arm = (o) => ({ tickets: 30, asks: 31, steps: { raise: { tokens_per_ticket: 410, usd_per_ticket: 0.41, tickets: 30 }, present: { tokens_per_ticket: 0, usd_per_ticket: 0, tickets: 30 }, act: { tokens_per_ticket: 600, usd_per_ticket: 0.6, tickets: 28 } },
+    pushes_per_ticket: 0, digests_per_ticket: 1, defaulted_share: 0.25, median_latency_s: 5400, ...o });
+  const report = { batched: arm({}), 'one-at-a-time': arm({ pushes_per_ticket: 1, digests_per_ticket: 0, defaulted_share: 0, median_latency_s: 600 }) };
+  const qh = { ...ev('question-handling', { state: 'trial', on: 30, off: 30 }), ask_report: report };
+  const asked = V.buildView({ ...machine({ repos: autoRepos, now: NOW2, files: { [`${DS}/lever-evals.jsonl`]: jsonl([...evals, qh]) } }), now: NOW2, tz: 'UTC', generatedAt: NOW2 });
+  const panel = asked.panels.asks?.repos ?? [];
+  t('the view carries each repo\'s latest per-arm ask report', j(panel.map((r) => [r.name, r.lever, Object.keys(r.arms)])), j([['desk-skills', 'question-handling', ['batched', 'one-at-a-time']]]));
+  t('and no other lever has one', j((six.panels.asks?.repos ?? []).length), '0');
+  const sec = section(P.renderPage(asked), 'asks-h');
+  const rowOf = (a) => sec.split(`<th scope="row">${a}</th>`)[1]?.split('</tr>')[0] ?? '';
+  t('the page shows a row per arm', ['batched', 'one-at-a-time'].every((a) => rowOf(a)), true);
+  t('each with dollars and tokens per ticket by step', rowOf('batched').includes('<td>$0.41 (410)</td><td>$0.00 (0)</td><td>$0.60 (600)</td>'), true);
+  t('pushes and digests per ticket, the share defaulted and the median to an answer', [rowOf('batched').includes('<td>0</td><td>1</td><td>25%</td><td>1.5h</td>'), rowOf('one-at-a-time').includes('<td>1</td><td>0</td><td>0%</td><td>10m</td>')].join(' '), 'true true');
+  t('with no ask report, the page has no such section', section(hSix, 'asks-h'), '');
+}
 
 // Text from the view is escaped, and view.json cannot close its script element.
 {
