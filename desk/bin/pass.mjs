@@ -2335,11 +2335,12 @@ const concurrency = CONC.n;
 // where config §3 autopilot-reclaim is yes; with the row anything else it is only named, and one
 // elsewhere is its own repo's pass's. Either way nothing reaches needs-you. Each orphan's first
 // sighting is kept in lock-orphans.json. This pass's lock queue reading below still counts one it ended.
-// AUTOPILOT_LOCK_ORPHANS=off skips it, as the test runner does: its passes must not judge, or end, this
-// machine's real holders.
+// AUTOPILOT_LOCK_QUEUE=off skips it with that reading, as the test runner sets it: its passes must not
+// judge, or end, this machine's real holders (a suite that turns the reading back on runs with a scratch
+// HOME and lock dir, where no real holder shows).
 const ORPHAN_GRACE_MS = 5 * 60_000;
 const ORPHANS_FILE = join(STATE, 'lock-orphans.json');
-if (process.env.AUTOPILOT_LOCK_ORPHANS !== 'off') (() => {
+if (process.env.AUTOPILOT_LOCK_QUEUE !== 'off') (() => {
   let seen = {};
   try { seen = JSON.parse(readFileSync(ORPHANS_FILE, 'utf8')) ?? {}; } catch { /* none seen yet */ }
   const held = lockHolderRuns({ procs: processList(), holders: lockHolders(E.lockDir(), { locks: 'both' }), cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(E.lockDir(), { locks: 'both' }), locks: 'both' });
