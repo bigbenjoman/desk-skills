@@ -1,4 +1,5 @@
 // suite: desk-q reads desk-ui's server (its listing while the server answers, the files when it does not)
+// layer: L2
 // covers: desk/bin/desk-q-server.mjs desk/bin/desk-q.mjs desk/bin/desk-q-model.mjs desk/bin/desk-ui.mjs desk/bin/desk-ui-events.mjs
 // desk-ui's real server (makeServer) on a test-only port, and stub servers on others, against two fixture
 // repos under a throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT. One batch is handed to the supervisor, so a
