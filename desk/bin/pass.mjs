@@ -12,7 +12,7 @@ import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { tryLockFile, filePid, writeJsonAtomic, withDirLock } from './dir-lock.mjs';
 import { holdThrough, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, planFirst, keyPattern, parkKind, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage } from './batch-state.mjs';
-import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
+import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsRun, runSpecs, batchSpecPaths, idScope, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
@@ -490,6 +490,9 @@ const acceptanceSpecs = () => {
   try { row = E.configValues('acceptance-specs'); } catch { /* named where it is used */ }
   return acceptanceSpecsOf(row);
 };
+// The default branch a batch base is cut from: its specs are the ones the base changed against it
+// (spine-check.mjs batchSpecPaths), never another epic's sharing the acceptance directory.
+const specSource = () => { try { return E.configValue('default-branch') || null; } catch { return null; } };
 function parkSpine(t, pr) {
   const { specDir } = acceptanceSpecs();
   const c = pr == null
@@ -512,11 +515,11 @@ function checkOwned(t, pr) {
   if (pr == null) return;
   const { specDir, cmd } = acceptanceSpecs();
   // Under the test lock like any suite, in the child's worktree at the head it pushed.
-  const run = (id) => {
+  const run = (id, scope) => {
     if (!cmd) return { ok: false, out: 'config §4 Acceptance specs has no command taking {ids}' };
-    return runSpecs({ bin: BIN, root: t.worktree, item: cmd, id, timeout: SPEC_RUN_MS });
+    return runSpecs({ bin: BIN, root: t.worktree, item: cmd, id, timeout: SPEC_RUN_MS, scope });
   };
-  const c = checkChild({ worktree: t.worktree, base: DEFAULT_BRANCH, specDir, owners: Q.owners, key: t.key, run });
+  const c = checkChild({ worktree: t.worktree, base: DEFAULT_BRANCH, source: specSource(), specDir, owners: Q.owners, key: t.key, run });
   q('set', t.key, `spec_check=${JSON.stringify({ ok: c.ok, problems: c.problems, at: new Date().toISOString() })}`);
   if (c.ok) return;
   const why = `${CHILD_SPECS_PREFIX}: ${c.problems.join('; ')}. PR #${pr} stays draft: send it back with what to fix (answer.mjs ${t.key} "<note>", then queue.mjs requeue ${t.key})`;
@@ -529,7 +532,9 @@ function ownedBrief(t, wt) {
   if (!ownsSpecs(t)) return '';
   const { specDir, cmd } = acceptanceSpecs();
   const ids = ownedIds(Q.owners, t.key);
-  const owned = specDir ? ownedSpecs(specFilesAt(wt, 'HEAD', specDir), ids) : ids.map((id) => ({ id, specs: [] }));
+  // Only this batch's specs: another epic's in the same directory may be titled with the same id.
+  const mine = specDir ? batchSpecPaths({ worktree: wt, source: specSource(), base: DEFAULT_BRANCH, specDir }) : null;
+  const owned = specDir ? ownedSpecs(specFilesAt(wt, 'HEAD', specDir, mine), ids) : ids.map((id) => ({ id, specs: [] }));
   const lines = owned.flatMap(({ id, specs }) => (specs.length
     ? specs.map((s) => `- ${id}: "${s.title}" in ${s.path}`)
     : [`- ${id}: no spec titled with it on ${DEFAULT_BRANCH}. Park naming it rather than writing one`]));
@@ -542,7 +547,7 @@ function ownedBrief(t, wt) {
     '',
     `For each one: remove the marker that makes it ${EXPECTED_FAIL}, and make it pass. Run these spec files with §4 Unit tests, capped and locked as for any suite, rather than the whole acceptance directory: another child owns every other spec there, and each of those is still expected to fail.`,
     'Change no acceptance spec you do not own. If yours cannot pass without changing one, park naming it and its criterion.',
-    `When you finish, the pass runs only your specs${cmd ? ` (${ids.map((id) => `\`${specsCommand(cmd, id)}\``).join(', ')})` : ''} and parks the ticket, naming the spec, if one you own is still marked expected-fail or skipped, or fails, or if your branch changed a spec another child owns.`,
+    `When you finish, the pass runs only your specs${cmd ? ` (${owned.map(({ id, specs }) => `\`${specsRun(cmd, id, idScope(specDir, mine, specs)).label}\``).join(', ')})` : ''} and parks the ticket, naming the spec, if one you own is still marked expected-fail or skipped, or fails, or if your branch changed a spec another child owns.`,
     '',
   ].join('\n');
 }

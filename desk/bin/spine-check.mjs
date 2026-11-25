@@ -4,9 +4,11 @@
 // and an unexpected pass turns it red. Only the files the spine's branch changed under the spec
 // directory count: a spec an earlier epic left there is not this spine's.
 // Then the check on each child that owns criteria: its owned specs unmarked and passing, and no other
-// child's spec changed (checkChild, below).
+// child's spec changed (checkChild, below). A child's specs, like the base gate's, are the batch's
+// own (batchSpecPaths): another epic's in the same directory, titled with the same id, never count.
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { posix } from 'node:path';
 import { changedFiles } from './scope-report.mjs';
 import { mergeGrant, parseCommandItem } from './desk-env.mjs';
 import { runItem } from './baseline.mjs';
@@ -191,31 +193,80 @@ export const ownedIds = (owners, key) => Object.keys(owners ?? {}).filter((id) =
 
 // The §4 Acceptance specs command for one id, in place of {ids}. One id per run: runners join several
 // differently (a regex alternation for `-t` and `--grep`, `or` for pytest's `-k`).
-export const specsCommand = (cmd, id) => cmd.split('{ids}').join(id);
+// With `scope` ({ dir, specDir, files }), the run takes only those spec files (repo paths), so another
+// epic's spec titled with the same id never runs: they go in place of `{files}` where the command has
+// it, else in place of the spec directory where the command names it (as `dir` sees it, e.g.
+// `specs-it/acceptance` for `packages/app/specs-it/acceptance/` run in packages/app). A command naming
+// neither, or no files, is left as it is.
+export function specsCommand(cmd, id, scope = null) {
+  const c = cmd.split('{ids}').join(id);
+  const files = scope?.files?.length ? scope.files : null;
+  if (!files) return c;
+  const dir = scope.dir && scope.dir !== '.' ? scope.dir.replace(/\/+$/, '') : '.';
+  const list = [...new Set(files)].map((f) => shellWord(dir === '.' ? f : posix.relative(dir, f))).join(' ');
+  if (c.includes('{files}')) return c.split('{files}').join(list);
+  if (!scope.specDir) return c;
+  const root = specRoot(scope.specDir).replace(/\/$/, '');
+  const rel = dir === '.' ? root : posix.relative(dir, root);
+  if (!rel || rel.startsWith('..')) return c;
+  const esc = rel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(^|\\s)(?:\\./)?${esc}/?(?=\\s|$)`);
+  return re.test(c) ? c.replace(re, (_, pre) => `${pre}${list}`) : c;
+}
+// One argument for `sh -c`, quoted where it holds anything but a path's plain characters.
+const shellWord = (w) => (/^[A-Za-z0-9_./@%+=:,-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`);
 
 // The row's command item for one id, read as every §4 command item is (`packages/app: <cmd>` runs in
 // packages/app): { dir, cmd } with {ids} replaced, and `label`, the item as the config writes it.
-export function specsRun(item, id) {
+// `scope` ({ specDir, files }) narrows the run to those files, as specsCommand says.
+export function specsRun(item, id, scope = null) {
   const { dir, cmd } = parseCommandItem(item);
-  const c = specsCommand(cmd, id);
+  const c = specsCommand(cmd, id, scope ? { ...scope, dir } : null);
   return { dir, cmd: c, label: dir === '.' ? c : `${dir}: ${c}` };
 }
 
 // One id's specs, under the test lock, in the item's directory of the worktree at `root`.
 // -> runItem's { out, code, stopped }, plus ok and the command run.
-export function runSpecs({ bin, root, item, id, timeout }) {
-  const { dir, cmd, label } = specsRun(item, id);
+export function runSpecs({ bin, root, item, id, timeout, scope = null }) {
+  const { dir, cmd, label } = specsRun(item, id, scope);
   const r = runItem({ bin, root, dir, cmd, lock: 'test', timeout });
   return { ...r, ok: r.code === 0, command: label };
 }
 
-// Every spec file under specDir at rev: [{path, text}].
-export function specFilesAt(worktree, rev, specDir) {
+// The spec files that are this batch's own: every file under specDir its base changed against the
+// default branch it was cut from (`source`), which is the spine's specs and whatever its children
+// have added there since, plus any the worktree's HEAD changed against the base. Several epics' specs
+// share one acceptance directory, and their criterion ids repeat (every epic has a DoD5), so a child
+// is held to, and runs, only these. `base` is the base's branch; `baseRef` the commit standing for
+// it (origin's, unless the worktree is the base's own). -> sorted repo paths, or null where there is
+// no separate base or it changed nothing there: then every spec under specDir is the batch's, as in
+// a repo whose directory holds one epic's specs.
+export function batchSpecPaths({ worktree, source, base, specDir, baseRef = base ? `origin/${base}` : null }) {
+  if (!worktree || !specDir || !source || !base || source === base) return null;
+  const dir = specRoot(specDir);
+  const diff = (range) => {
+    try {
+      return execFileSync('git', ['-C', worktree, 'diff', '--name-only', range, '--', dir], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+        .split('\n').filter(Boolean);
+    } catch { return null; }
+  };
+  const ofBase = diff(`origin/${source}...${baseRef}`);
+  if (!ofBase?.length) return null;
+  const ofBranch = baseRef === 'HEAD' ? [] : diff(`${baseRef}...HEAD`) ?? [];
+  return [...new Set([...ofBase, ...ofBranch])].filter((p) => p.startsWith(dir)).sort();
+}
+
+// The run scope for one id's specs: only the files they are in, once the batch's own are known.
+export const idScope = (specDir, paths, specs) => (paths ? { specDir, files: [...new Set(specs.map((s) => s.path))] } : null);
+
+// Every spec file under specDir at rev: [{path, text}]. With `only` (batchSpecPaths), just those.
+export function specFilesAt(worktree, rev, specDir, only = null) {
   let paths = [];
   try {
     paths = execFileSync('git', ['-C', worktree, 'ls-tree', '-r', '--name-only', rev, '--', specRoot(specDir)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
       .split('\n').filter(Boolean);
   } catch { return []; }
+  if (only) { const keep = new Set(only); paths = paths.filter((p) => keep.has(p)); }
   return paths.map((path) => ({ path, text: gitShow(worktree, rev, path) ?? '' }));
 }
 
@@ -244,10 +295,13 @@ export function scanChild({ head, changed, owners, key }) {
   return { ok: problems.length === 0, problems };
 }
 
-// A finished child's branch in its worktree, against origin/<base>. `run(id)` runs one owned id's
-// specs ({ok, out, command}); it is only called once the markers are clean, so a spec still marked
-// expected-fail is named as that rather than as a run that passed.
-export function checkChild({ worktree, base, specDir, owners, key, run }) {
+// A finished child's branch in its worktree, against origin/<base>. Its owned specs are found among
+// the batch's own (batchSpecPaths, with `source` the default branch the base was cut from), never
+// another epic's titled with the same id. `run(id, scope)` runs one owned id's specs
+// ({ok, out, command}), `scope` narrowing the run to their files (null: the command as configured);
+// it is only called once the markers are clean, so a spec still marked expected-fail is named as that
+// rather than as a run that passed.
+export function checkChild({ worktree, base, source = null, specDir, owners, key, run }) {
   const fail = (why) => ({ ok: false, problems: [why] });
   const ids = ownedIds(owners, key);
   if (!specDir) return fail('config §4 Acceptance specs names no spec directory');
@@ -259,12 +313,13 @@ export function checkChild({ worktree, base, specDir, owners, key, run }) {
   const dir = specRoot(specDir);
   const changed = changedAll.filter((p) => p.startsWith(dir))
     .map((path) => ({ path, before: gitShow(worktree, mergeBase, path), after: gitShow(worktree, 'HEAD', path) }));
-  const head = specFilesAt(worktree, 'HEAD', dir);
+  const mine = batchSpecPaths({ worktree, source, base, specDir: dir });
+  const head = specFilesAt(worktree, 'HEAD', dir, mine);
   const c = scanChild({ head, changed, owners, key });
   if (!c.ok) return c;
   const problems = [];
   for (const { id, specs } of ownedSpecs(head, ids)) {
-    const r = run(id);
+    const r = run(id, idScope(dir, mine, specs));
     if (r.ok) continue;
     const named = specs.map((s) => `"${s.title}" in ${s.path}`).join(', ');
     const tail = String(r.out ?? '').trim().split('\n').slice(-3).join(' ').slice(0, 300);
