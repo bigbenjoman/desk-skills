@@ -363,15 +363,14 @@ const usd = (x) => (x == null ? '—' : `$${x.toFixed(2)}`);
 const share = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
 const latency = (s) => (s == null ? '—' : s >= 3600 ? `${(s / 3600).toFixed(1)}h` : `${Math.round(s / 60)}m`);
 const tokens = (x) => (x == null ? '—' : Math.round(x).toLocaleString('en-US'));
-const ASK_STEPS = ['raise', 'present', 'act'];
 function asksByArm(v) {
   const repos = v.panels.asks?.repos ?? [];
   if (!repos.length) return '';
-  const table = (r) => `<table class="stages asks" data-lever="${esc(r.lever)}"><caption>${esc(r.name)} · ${esc(r.lever)} · asking tickets by arm, as of ${esc(String(r.at).slice(0, 10))}</caption>`
-    + `<thead><tr><th scope="col">Arm</th><th scope="col">Tickets</th>${ASK_STEPS.map((k) => `<th scope="col">${cap(k)} $ (tokens)</th>`).join('')}<th scope="col">Pushes</th><th scope="col">Digests</th><th scope="col">Defaulted</th><th scope="col">Median to answer</th></tr></thead><tbody>`
-    + Object.entries(r.arms).map(([arm, a]) => `<tr><th scope="row">${esc(arm)}</th><td>${a.tickets}</td>${ASK_STEPS.map((k) => `<td>${usd(a.steps?.[k]?.usd_per_ticket)} (${tokens(a.steps?.[k]?.tokens_per_ticket)})</td>`).join('')}`
+  const table = (r) => { const steps = Object.keys(Object.values(r.arms)[0]?.steps ?? {}); return `<table class="stages asks" data-lever="${esc(r.lever)}"><caption>${esc(r.name)} · ${esc(r.lever)} · asking tickets by arm, as of ${esc(String(r.at).slice(0, 10))}</caption>`
+    + `<thead><tr><th scope="col">Arm</th><th scope="col">Tickets</th>${steps.map((k) => `<th scope="col">${cap(k)} $ (tokens)</th>`).join('')}<th scope="col">Pushes</th><th scope="col">Digests</th><th scope="col">Defaulted</th><th scope="col">Median to answer</th></tr></thead><tbody>`
+    + Object.entries(r.arms).map(([arm, a]) => `<tr><th scope="row">${esc(arm)}</th><td>${a.tickets}</td>${steps.map((k) => `<td>${usd(a.steps?.[k]?.usd_per_ticket)} (${tokens(a.steps?.[k]?.tokens_per_ticket)})</td>`).join('')}`
       + `<td>${a.pushes_per_ticket ?? '—'}</td><td>${a.digests_per_ticket ?? '—'}</td><td>${share(a.defaulted_share)}</td><td>${latency(a.median_latency_s)}</td></tr>`).join('')
-    + '</tbody></table>';
+    + '</tbody></table>'; };
   return `<section aria-labelledby="asks-h" class="stack12"><div class="sec-head"><h2 id="asks-h">Questions to you, by arm</h2></div><p class="muted small">Per asking ticket: what each step of its questions cost, how often it interrupted you, how many applied by default, and how long an answer took.</p>${repos.map(table).join('')}</section>`;
 }
 
