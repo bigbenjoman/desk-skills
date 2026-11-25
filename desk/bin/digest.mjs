@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { CHECKIN_TIME, checkinTimesOf } from './config-schema.mjs';
 import { jiraSearch, keySearch } from './jira-search.mjs';
-import { isHeld, settlesByScript, localDay, openUnknowns, planFirst, planFirstClaim, planFirstDue, planFirstWaits, planFirstPutOff } from './batch-state.mjs';
+import { isHeld, settlesByScript, localDay, openUnknowns, planFirst, sessionClaim, planFirstDue, planFirstWaits, planFirstPutOff } from './batch-state.mjs';
 import { planFirstWaitMs } from './claims.mjs';
 import { stalledPrs as stalledOf, STALL_FOR } from './desk-q.mjs';
 import { namedBatches } from './batches.mjs';
@@ -133,7 +133,7 @@ export function putOffQuestions(r, register = readRegister(r.state)) {
   const q = readJson(r.queue, null);
   const out = new Map();
   for (const t of Object.values(q?.tickets ?? {})) {
-    if (t.state !== 'parked' || isHeld(t) || planFirst(t)) continue;
+    if (t.state !== 'parked' || isHeld(t) || planFirst(t) || sessionClaim(t)) continue;
     const l = parkPutOff(register, t);
     if (l.status !== 'put_off') continue;
     const o = out.get(l.entry.key) ?? { question: l.entry.question, at: l.entry.at, by: l.entry.by ?? null, tickets: [] };
@@ -196,10 +196,10 @@ function planFirstAsk(r, q, register) {
   const keys = Object.values(q?.tickets ?? {}).filter((t) => planFirstDue(t, planFirstWaitMs(r.slug))).map((t) => t.key);
   return keys.length ? { keys, lead: planFirstWaits(keys), l: lookup(register, planFirstPutOff(keys)) } : null;
 }
-// One repo's plan-first tickets an interactive session has claimed: [{ ticket, session }].
+// One repo's parked tickets a live interactive session has claimed, in any lane: [{ ticket, session }].
 export function sessionWork(r) {
   const q = readJson(r.queue, null);
-  return Object.values(q?.tickets ?? {}).filter((t) => planFirstClaim(t)).map((t) => ({ ticket: t.key, session: t.park.claim.session }))
+  return Object.values(q?.tickets ?? {}).filter((t) => sessionClaim(t)).map((t) => ({ ticket: t.key, session: t.park.claim.session }))
     .sort((a, b) => a.ticket.localeCompare(b.ticket));
 }
 
@@ -237,7 +237,8 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
   for (const t of Object.values(q?.tickets ?? {})) {
     if (t.state === 'parked' && !isHeld(t)) {
       if (settlesByScript(t)) continue;
-      if (planFirst(t)) continue;
+      // A park a live session claimed is that session's to settle, in any lane.
+      if (planFirst(t) || sessionClaim(t)) continue;
       const l = parkPutOff(register, t);
       if (l.status === 'put_off') continue;
       const text = `${String(t.park?.question ?? 'parked, with no question recorded')}${l.status === 'changed' ? ` (${l.line})` : ''}`;

@@ -537,8 +537,13 @@ export const needsSession = (t) => t?.lane === 'C' || /^lane [CD]\b/.test(t?.par
 // and one whose lane challenge could not read the code asks the person to confirm it, so neither is.
 export const planFirst = (t) => t?.state === 'parked' && t.lane === 'C' && !isHeld(t) && !t.park?.session_step
   && !blockersOf(t).length && String(t.park?.question ?? '').startsWith(laneParkHead('C', false));
-// The claim of the interactive session working a plan-first ticket (queue.mjs park --claimed-by), or null.
-export const planFirstClaim = (t) => (planFirst(t) && t.park?.claim?.session && !t.park.claim.dirty_at ? t.park.claim : null);
+// The claim of the interactive session working a parked ticket in any lane (queue.mjs park --claimed-by),
+// or null. That session works it, so nobody else is asked to; a pass drops the claim once the session
+// has ended (pass.mjs). Once a pass finds uncommitted work behind it, the park's question says what to
+// do, so the claim is no longer the news.
+export const sessionClaim = (t) => (t?.state === 'parked' && !isHeld(t) && t.park?.claim?.session && !t.park.claim.dirty_at ? t.park.claim : null);
+// The claim of the interactive session working a plan-first ticket, or null.
+export const planFirstClaim = (t) => (planFirst(t) ? sessionClaim(t) : null);
 // Whether unclaimed plan-first work has waited past `ms` since it parked, so the person hears of it.
 export const planFirstDue = (t, ms, now = Date.now()) => planFirst(t) && !planFirstClaim(t)
   && now - (Date.parse(t.park?.since ?? '') || 0) > ms;

@@ -1700,19 +1700,24 @@ if (CLAIMS.bad) report.waiting.push(`${CLAIMS.bad} — no claim is released unti
 for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
   const c = t.park?.claim;
   if (t.state !== 'parked' || !c?.session) continue;
-  // Held, a spine awaiting its person, a lane C or D parked at triage, or left in a finished feature
-  // batch: never a headless worker's, however idle the session (as the clears-when loop above). Plan-first
-  // work loses only the claim: its park stays, and it waits for a session again.
-  const plan = planFirst(t);
-  if (isHeld(t) || spinePark(t) || (needsSession(t) && !plan) || leftPark(t)) continue;
+  // Held, a spine awaiting its person, or left in a finished feature batch: never a headless worker's,
+  // however idle the session (as the clears-when loop above). A ticket only a session takes on (lane C
+  // or D, plan-first work among them) loses only the claim once its session has ended: its park stays,
+  // and it waits for a session, or needs the person, again. So does any claim whose transcript is gone,
+  // since no worktree check can say the work is safe to hand on.
+  if (isHeld(t) || spinePark(t) || leftPark(t)) continue;
+  const plan = planFirst(t), session = needsSession(t);
   const tr = transcriptOf(c.session);
-  if (!tr && !plan) { report.clears.push(`${t.key}: claimed by session ${c.session}, whose transcript is gone: left claimed`); continue; }
   const since = Math.max(tr?.mtimeMs ?? 0, Date.parse(c.at) || 0);
-  if (Date.now() - since <= CLAIMS.hours * 3600e3) continue;
+  if (tr && Date.now() - since <= CLAIMS.hours * 3600e3) continue;
   const idle = `session ${c.session} has been idle since ${new Date(since).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
-  if (plan) {
+  // A claim whose transcript is gone and whose uncommitted work its park's question already names
+  // needs nothing more from a pass: the person already sees it.
+  if (!tr && c.dirty_at && !plan && !session) continue;
+  if (!tr || plan || session) {
     q('set', t.key, 'park.claim=null');
-    report.clears.push(`${t.key}: ${tr ? idle : `session ${c.session}'s transcript is gone`}, so its claim is dropped: plan-first work, it waits for a session again`);
+    const then = plan ? 'plan-first work, it waits for a session again' : session ? 'only a session takes it on, so its park stays and it needs you again' : 'its park stays and it needs you again';
+    report.clears.push(`${t.key}: ${tr ? idle : `session ${c.session}'s transcript is gone`}, so its claim is dropped: ${then}`);
     continue;
   }
   let wt = null, dirty = [];
