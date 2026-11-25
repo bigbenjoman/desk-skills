@@ -157,6 +157,16 @@ t('a trial recorded for a lever the registry does not trial (the ledger) reads a
   t('a row pin of a valued lever is refused, with a warning', [rp.pin.set.includes('wrappers'), rp.pin.arms.wrappers ?? null, /names wrappers, which has more than two arms/.test(rp.warning ?? '')], [false, null, true]);
   const rpOff = assignPin('RP-2', { slug: 'valued-row-off', size: 'S', states: { ...rowStates('preflight'), wrappers: 'pinned' }, now: NOW, registry: reg });
   t('and in a repo with no auto', [rpOff.pin.set, /names wrappers/.test(rpOff.warning ?? '')], [['preflight'], true]);
+  // A valued lever declared but not on trial here leaves the repo's on/off blocks and draws as they were.
+  const drawsIn = (slug, later) => {
+    byHand(slug, 'wrappers', 'reverted', daysAgo(1));
+    const r = seededRandom(21);
+    const pins = Array.from({ length: 10 }, (_, i) => assignPin(`B-${i}`, { slug, size: 'S', random: r, now: NOW, registry: i < 4 ? REGISTRY : later }).pin);
+    return pins.map((p) => ({ block: p.block, arms: p.arms, set: p.set }));
+  };
+  const withInactive = drawsIn('valued-inactive', reg);
+  t('a valued lever off here: the on/off blocks stay four, the complete one never reopened', withInactive.map((p) => p.block), [...Array(4).fill('valued-inactive/S/1'), ...Array(4).fill('valued-inactive/S/2'), ...Array(2).fill('valued-inactive/S/3')]);
+  t('a valued lever off here: the on/off draws are those of a registry without it', JSON.stringify(withInactive.map(({ arms, set }) => ({ arms, set }))), JSON.stringify(drawsIn('valued-inactive-plain', REGISTRY).map(({ arms, set }) => ({ arms, set }))));
   byHand('valued-off', 'wrappers', 'reverted', daysAgo(1));
   const off = assignPin('O-1', { slug: 'valued-off', size: 'S', random: seededRandom(1), now: NOW, registry: reg }).pin;
   t('reverted: the ticket runs the baseline with no arm', [off.values.wrappers, off.arms.wrappers ?? null, off.set.includes('wrappers')], ['one-at-a-time', null, false]);

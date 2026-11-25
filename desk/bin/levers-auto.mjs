@@ -5,7 +5,8 @@
 // randomisation blocked within the repo and the ticket's triage size: every block of four tickets of one
 // size has each lever on for exactly two of them. A lever with more than two arms (lever-registry.mjs
 // `values`) is drawn one of its values the same way, each value as often as the others in a block, so
-// a block then holds the least multiple of four that every such lever's value count divides. A ticket
+// a block then holds the least multiple of four that the value count of every such lever drawn in the
+// repo divides; one declared but not on trial there leaves the repo's blocks at four. A ticket
 // with no triage size is a block of its own.
 //
 // A lever's state in a repo is the `to` of its latest transition, override or trip in the repo's lever log
@@ -63,12 +64,11 @@ import { writeQueueFile } from './queue-store.mjs';
 export const STATES = Object.freeze(['off', 'trial', 'adopted', 'settled', 'reverted', 'frozen', 'overridden']);
 export const BLOCK_SIZE = 4;
 const ON_OFF = Object.freeze(['on', 'off']);
-// The tickets in a block: BLOCK_SIZE, or its least multiple that each trialled low-risk lever's value
-// count divides, so every value is drawn equally often in a full block.
+// The tickets in a block: BLOCK_SIZE, or its least multiple that the value count of each valued lever
+// drawn here (`drawn`, the registry entries of those on trial in this repo) divides, so every value is
+// drawn equally often in a full block. A valued lever declared but not drawn here leaves it at four.
 const gcd = (a, b) => (b ? gcd(b, a % b) : a);
-const blockSizeOf = (registry = REGISTRY) => Object.values(registry)
-  .filter((l) => l.layer === 'low-risk' && l.trialled && isValued(l))
-  .reduce((n, l) => (n * l.values.length) / gcd(n, l.values.length), BLOCK_SIZE);
+const blockSizeOf = (drawn) => drawn.reduce((n, l) => (n * l.values.length) / gcd(n, l.values.length), BLOCK_SIZE);
 export const ACTOR = 'levers-auto';
 // A lever with more than two arms kept or set by hand with no value of its own: the draw is refused
 // rather than run on the baseline, and the repo gets a needs-you item naming the lever.
@@ -352,10 +352,11 @@ function draw({ slug, key, size, events, states, frozen, values, random, now, re
   const arms = {};
   const trialIds = {};
   const leverValues = {};
-  const perBlock = blockSizeOf(registry);
-  // The valued levers drawn in a block here: each member of the block joined must hold one of their values.
+  // The valued levers drawn in a block here: they size the block, and each member of the block joined
+  // must hold one of their values.
   const auto = (name) => states[name] === 'auto' && preconditions(name, values, registry).eligible;
-  const valuedTrials = Object.keys(registry).filter((n) => isValued(registry[n]) && registry[n].layer === 'low-risk' && auto(n) && byLever[n].state === 'trial');
+  const valuedTrials = Object.keys(registry).filter((n) => isValued(registry[n]) && registry[n].layer === 'low-risk' && registry[n].trialled && auto(n) && byLever[n].state === 'trial');
+  const perBlock = blockSizeOf(valuedTrials.map((n) => registry[n]));
   const fits = (e) => valuedTrials.every((n) => registry[n].values.includes(e.arms?.[n]));
   const b = frozen ? { id: null, members: [] } : nextBlock(slug, key, size, events.filter((e) => e.kind === 'assign'), perBlock, fits);
   let blocked = false;
