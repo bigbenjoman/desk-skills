@@ -62,7 +62,7 @@ const lists = (acts) => acts.at(-1);
 // ---- AC1: a merged PR with no merged time recorded
 {
   const acts = run(snap([done('A', 11)]), { 11: status(11, 'MERGED', { merged_at: '2026-11-19T09:00:00Z' }) });
-  t('AC1 a done ticket whose PR merged, with no merged_at, gets one merged record', j(ofType(acts, 'merged')), j([{ type: 'merged', key: 'A', at: '2026-11-19T09:00:00Z' }]));
+  t('AC1 a done ticket whose PR merged, with no merged_at, gets one merged record', j(ofType(acts, 'merged')), j([{ type: 'merged', key: 'A', pr: 11, at: '2026-11-19T09:00:00Z' }]));
   t('AC1 its merge is a report line', j(ofType(acts, 'out').map((a) => a.line)), j(['merge recorded: A (PR #11): merged_at=2026-11-19T09:00:00Z']));
   t('AC1 and is in the merges the metrics count', lists(acts).merges.length, 1);
   t('AC1 its status is kept on the ticket', j(ofType(acts, 'pr-status').map((a) => a.key)), j(['A']));
@@ -271,7 +271,7 @@ const lists = (acts) => acts.at(-1);
 
   const session = run(on({ mergeLog: [line(0, 'claim', 'session s1'), line(1, 'merged', 'session s1')] }), mergedRead);
   t('DS-900 AC1 a merge a session recorded in the merge log is recorded naming the session, with the PR, head and base',
-    j(ofType(session, 'merged')), j([{ type: 'merged', key: 'M', at: '2026-11-19T09:00:00Z', merge: { by: 'session s1', pr: 40, head_sha: HEAD, base: 'main' } }]));
+    j(ofType(session, 'merged')), j([{ type: 'merged', key: 'M', pr: 40, at: '2026-11-19T09:00:00Z', merge: { by: 'session s1', pr: 40, head_sha: HEAD, base: 'main' } }]));
   t('DS-900 AC1 its merger is known', lists(session).unknownMergers, 0);
 
   const recorded = done('M', 40, { merged_at: '2026-11-19T09:00:00Z', pr_status: mergedRead[40] });
@@ -304,7 +304,7 @@ const lists = (acts) => acts.at(-1);
 
   const off = run(snap([done('M', 40)], { repo: REPO, ledger: false, mergeLog: [line(2, 'armed', 'session s2'), line(3, 'merged', 'session s2')], folded: {} }), mergedRead);
   t('DS-900 AC7 with the ledger lever off the merge is recorded as before, naming no merger, and nothing is appended',
-    j([ofType(off, 'merged'), ofType(off, 'automerge').length, lists(off).unknownMergers]), j([[{ type: 'merged', key: 'M', at: '2026-11-19T09:00:00Z' }], 0, 0]));
+    j([ofType(off, 'merged'), ofType(off, 'automerge').length, lists(off).unknownMergers]), j([[{ type: 'merged', key: 'M', pr: 40, at: '2026-11-19T09:00:00Z' }], 0, 0]));
   const unseeded = run(on({ mergeLog: [line(2, 'armed', 'session s2')], folded: null }), openRead);
   t('DS-900 a ledger that could not be read, or has not named the batch yet, gets no auto-merge line', ofType(unseeded, 'automerge').length, 0);
 
@@ -328,7 +328,7 @@ const lists = (acts) => acts.at(-1);
   const elsewhere = done('M', 40, { pr_status: status(40, 'MERGED', { merged_at: '2026-11-19T09:00:00Z', url: 'https://github.com/o/other/pull/40' }) });
   const foreign = run(snap([elsewhere], { repo: REPO, ledger: true, folded: { M: -1 }, mergeLog: [line(2, 'armed', 'session s2'), line(3, 'merged', 'session s2')] }), {});
   t('DS-900 a ticket done on another repo\'s PR is recorded merged as before, naming no merger, and folds no line of this repo\'s PR',
-    j([ofType(foreign, 'merged'), ofType(foreign, 'automerge').length]), j([[{ type: 'merged', key: 'M', at: '2026-11-19T09:00:00Z' }], 0]));
+    j([ofType(foreign, 'merged'), ofType(foreign, 'automerge').length]), j([[{ type: 'merged', key: 'M', pr: 40, at: '2026-11-19T09:00:00Z' }], 0]));
 
   // A line one pass could not fold is folded by a later one, merged or archived.
   const keptMerged = run(snap([recorded], { repo: REPO, ledger: true, folded: { M: -1 }, mergeLog: [line(2, 'armed', 'session s2'), line(3, 'merged', 'session s2')] }), mergedRead);

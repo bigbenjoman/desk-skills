@@ -3728,7 +3728,7 @@ function fixTryStale(t) {
   // done tickets' reading below.
   const unrun = ran ? [] : unrunFields(t, f);
   q('set', t.key, `fix.finished=${PASS_AT}`, `fix.ended=${ended}`, ...unrun, `result.pr=${f.pr}`, 'state=done', 'handoff=null', ...(resumed ? ['resume=null'] : []), 'worktree_busy=null');
-  if (merged) q('merged', t.key, ...(v.mergedAt ? [v.mergedAt] : []));
+  if (merged) q('merged', t.key, ...(v.mergedAt ? [v.mergedAt] : []), '--pr', String(f.pr));
   report.done.push(merged ? `${line}, recorded merged` : line);
   return true;
 }
@@ -4554,8 +4554,9 @@ runSteps({
     },
     'pr-status': (a) => q('set', a.key, `pr_status=${JSON.stringify(a.status)}`),
     'free-previews': (a) => releasePreviews(PREVIEW_TEAM, a.done.map((d) => ({ ...d, label: E.previewLabel(GH_REPO, { pr: d.pr }) })), { env: LEASE_ENV }),
-    merged: (a) => q('merged', a.key, ...(a.at ? [a.at] : []), ...(a.merge ? ['--pr', String(a.merge.pr), '--by', a.merge.by,
-      ...(a.merge.head_sha ? ['--head-sha', a.merge.head_sha] : []), ...(a.merge.base ? ['--base', a.merge.base] : [])] : [])),
+    // A PR merged by hand has no merger's record (a.merge), but its PR is still the ticket's own (a.pr).
+    merged: (a) => q('merged', a.key, ...(a.at ? [a.at] : []), ...((a.merge?.pr ?? a.pr) != null ? ['--pr', String(a.merge?.pr ?? a.pr)] : []),
+      ...(a.merge ? ['--by', a.merge.by, ...(a.merge.head_sha ? ['--head-sha', a.merge.head_sha] : []), ...(a.merge.base ? ['--base', a.merge.base] : [])] : [])),
     'merge-log': () => ({ events: mergeLogNow() }),
     automerge: (a) => {
       try { ledgerAppend(LEDGER_AT.repoDir, a.events.map((e) => ({ ...e, batch: LEDGER_AT.batch, key: a.key })), { by: 'pass' }); }
