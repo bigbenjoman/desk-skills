@@ -511,7 +511,8 @@ const interval = (x) => (x?.lo90 != null && x?.hi90 != null ? `90% range ${signe
 function changeDetails(e) {
   const ev = e.evidence;
   const reason = e.wording || e.reason ? `${esc(cap(e.wording ?? e.reason))}${e.reason_code ? ` <span class="mono tiny muted">${esc(e.reason_code)}</span>` : ''}` : notRecorded;
-  const arms = ev?.n && (ev.n.on != null || ev.n.off != null) ? `${ev.n.on ?? DASH} on, ${ev.n.off ?? DASH} off` : notRecorded;
+  const [onArm, offArm] = (ev?.n?.arms ?? ['on', 'off']).map((a) => esc(String(a)));
+  const arms = ev?.n && (ev.n.on != null || ev.n.off != null) ? `${ev.n.on ?? DASH} ${onArm}, ${ev.n.off ?? DASH} ${offArm}` : notRecorded;
   const mech = ev?.effect ? `${esc(cap(ev.effect.label))}, ${esc(interval(ev.effect))}${ev.effect.est != null ? `, estimate ${signed(ev.effect.est)}` : ''}` : notRecorded;
   const cost = ev?.cost ? `${esc(cap(ev.cost.label))}, ${esc(interval(ev.cost))}, margin ${signed(ev.cost.margin)}` : notRecorded;
   const guards = ev?.guardrails?.length
