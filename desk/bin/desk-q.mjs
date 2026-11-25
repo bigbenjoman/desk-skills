@@ -36,6 +36,8 @@
 // is made then, with the label it is listed under. The supervisor command runs that repo's supervisor.mjs install, uninstall or
 // status, and changes no config row or approval. The one other write is a repo's <state>/eta.jsonl,
 // which gains a ticket's first ship estimate the first time a live batch's forecast dates it.
+import * as MS from './merge-stages.mjs';
+import * as ST from './stuck-time.mjs';
 import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -43,8 +45,9 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
-import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns } from './batch-state.mjs';
+import { repoStateOf, repoDirs, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
+import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords, openUnknowns, planFirst, planFirstClaim, planFirstDue, sessionClaim } from './batch-state.mjs';
+import { DEFAULT_PLAN_FIRST_HOURS, PLAN_FIRST_ROW, planFirstWaitMs } from './claims.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { describeCond, restating } from './clears-when.mjs';
@@ -55,8 +58,9 @@ import { logStage, tailText, STAGE_TAIL } from './harvest.mjs';
 // The stage reader desk-q's table shares with queue.mjs get, kept on desk-q's exports for its callers.
 export { logStage, STAGE_TAIL };
 import { listBatches } from './batches.mjs';
-import { backend, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
-import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson } from './gate.mjs';
+import { backend, canSupervise, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
+import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson, parseStateChecks } from './gate.mjs';
+import { readRecord as gateReviewerRecord, waitingOnDown } from './gate-reviewer.mjs';
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeIn, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
@@ -71,7 +75,7 @@ import { claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogi
 import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
-import { leaseTrialAsk, leaseTrialHome, needsCount } from './needs-you.mjs';
+import { itemKey, leaseTrialAsk, leaseTrialHome, needsCount } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
 import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merge-log.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
@@ -84,11 +88,12 @@ export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour. The screen draws five, named
 // by who moves the ticket next; the rest are reasons inside one of them: an untriaged ticket is
 // ready, and one held outside the batch or whose worker stopped needs the user.
-const GROUP_OF = { queued: 'ready', stuck: 'needs', failed: 'needs' };
+// `finishing`: a running ticket whose worker said it finished, holding no worker until a pass records it.
+const GROUP_OF = { queued: 'ready', stuck: 'needs', failed: 'needs', finishing: 'waiting' };
 const groupOf = (k) => GROUP_OF[k] ?? k;
-// A reason key draws as its group: the same glyph, word and colour (STATE_SGR).
-const byGroup = (m) => { for (const k of Object.keys(GROUP_OF)) m[k] = m[groupOf(k)]; return m; };
-const LABEL = byGroup({ running: '● running', ready: '○ ready', merging: '▸ merging', waiting: '· waiting', needs: '◆ needs you', done: '✓ done', putoff: '◇ put off' });
+// A reason key draws as its group: the same glyph, word and colour (STATE_SGR), unless it has a word of its own.
+const byGroup = (m) => { for (const k of Object.keys(GROUP_OF)) m[k] ??= m[groupOf(k)]; return m; };
+const LABEL = byGroup({ running: '● running', ready: '○ ready', merging: '▸ merging', waiting: '· waiting', needs: '◆ needs you', done: '✓ done', putoff: '◇ put off', finishing: '◑ finishing' });
 // The five shown states, in the order the Queue groups them.
 const SHOWN = ['running', 'ready', 'merging', 'waiting', 'needs'];
 const shownOf = (ks) => SHOWN.filter((g) => ks.some((k) => groupOf(k) === g));
@@ -136,6 +141,7 @@ export function titler(titles) {
 export const shownState = (q, t, ctx = NOBODY) => stateOf(q, t, ctx, new Set());
 function stateOf(q, t, ctx, seen) {
   if (prRow(t)) return prNeed(q, t, ctx, null).k;
+  if (t.state === 'running' && ctx.finished?.(t.key)) return 'finishing';
   if (['running', 'done', 'failed'].includes(t.state)) return t.state;
   if (outsideOf(t).length && (t.open_questions ?? 0) > 0) return 'stuck';
   if (isHeld(t)) return heldAsks(t) ? 'needs' : holdOf(q, t, ctx, seen).k;
@@ -143,11 +149,14 @@ function stateOf(q, t, ctx, seen) {
   if (ph) return ph.k;
   if (worktreeBusy(t)) return 'needs';
   if (answeredPark(t, ctx) || readPark(t, ctx) || clearsPark(t)) return 'waiting';
+  // A park a live session claimed is that session's, in any lane; plan-first work that has not waited
+  // unclaimed past its wait yet needs nobody either.
+  if (claimOf(t) || (planFirst(t) && !planFirstDue(t, ctx.planFirstMs ?? NOBODY.planFirstMs))) return 'waiting';
   if (t.state === 'parked' || (t.open_questions ?? 0) > 0) return 'needs';
   return t.state === 'queued' ? 'queued' : 'ready';
 }
 
-const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null };
+const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, finished: () => false, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null, planFirstMs: DEFAULT_PLAN_FIRST_HOURS * 3600e3 };
 
 // The one note a screen gives the machine's upload pause on GitHub's PR page (upload-queue.mjs
 // uploadPause), however many of its PRs wait on it.
@@ -210,6 +219,8 @@ function holdContext(r) {
   try { granted = mergeGrant(r.q, (id) => repoPermission(r.slug, id)).by != null; } catch { /* a grant that cannot be read is none */ }
   const releases = driver || (granted && r.live && (r.q?.supervised === true || r.q?.pass?.by === 'supervisor'));
   const stage = (key) => { const s = rowStage(r.stateDir, r.q.tickets[key], r.last); return s.label ?? s.stage; };
+  // Whether running ticket `key`'s worker said it finished, so only the next pass's record is left.
+  const finished = (key) => rowStage(r.stateDir, r.q.tickets[key], r.last).done === true;
   // The Jira status category ticket `key`'s triage record last read for its blocker `b`, or undefined.
   const blockerCategory = (key, b) => (triageOf(r, key)?.blockers ?? []).find((x) => x?.key === b)?.category;
   // The base the pass sends a conflict's fix try against: the batch's own, else the repo's default.
@@ -223,8 +234,13 @@ function holdContext(r) {
   // The pass syncs a batch base behind the default branch only where §3 batch-base-push is yes.
   let basePush = 'no';
   try { basePush = repoPermission(r.slug, 'batch-base-push'); } catch { /* a row that cannot be read is no */ }
+  // An outside gate reviewer's open outage (gate-reviewer.mjs, the repo's record) and the §4 State checks
+  // of kind external that read it: a PR red only on those waits on that reviewer, not on a rerun.
+  const stateChecks = parseStateChecks(list('state-checks')).checks.filter((c) => c.kind === 'external');
+  let outages = [];
+  if (stateChecks.length && r.stateDir) { try { outages = gateReviewerRecord(repoStateOf(r.stateDir)).outages ?? []; } catch { /* none recorded */ } }
   // With passes stopped nothing merges, but a PR the grant covers merges by itself once they resume.
-  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null };
+  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, finished, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages, planFirstMs: planFirstWaitMs(r.slug) };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -449,6 +465,10 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   const gate = evaluateGate(checks, { required: ctx.required ?? [], advisory: ctx.advisory ?? [], untriggered: ps.untriggered ?? {} });
   const red = [...new Set(gate.failing.map((f) => f.name))];
   if (red.length) {
+    // Red only on an outside reviewer's gate while that reviewer is down: nothing failed and nothing is
+    // rerun, so it waits on the reviewer (one repo-level ask on needs-you), its rerun count untouched.
+    const down = waitingOnDown(red, ctx.stateChecks, ctx.outages);
+    if (down) return merging([`waiting on ${down.login} (down${down.since ? ` since ${todayOrDay(Date.parse(down.since), now)}` : ''})`, WARN]);
     // Only the merge driver reruns a red check, where §3 ci-rerun lets it, and a fix try waits for its
     // reruns: without both nothing moves. After both tries the pass records it stuck once the reruns
     // on the new head are spent (t.stuck, above), and until then the driver may still merge it.
@@ -769,6 +789,7 @@ function loadBatch(c, repoName, batch, limits, now) {
   r.last = beat?.pass ?? null;
   r.next = beat?.next ?? null;
   r.live = liveBeat(beat, now);
+  r.session = beat?.session ?? null;
   r.ctx = r.q ? holdContext(r) : NOBODY;
   const rows = Object.values(r.q?.tickets ?? {});
   // A row's place is queue.mjs's: its position among the unfinished tickets, where a failed one
@@ -790,17 +811,24 @@ function loadBatch(c, repoName, batch, limits, now) {
 const unfinished = (r) => r.rows.length > 0 || r.prs.length > 0;
 
 // Who runs the batch's passes: the supervisor once the batch was handed to it (the queue's
-// `supervised`), else a session. `set` is the repo's "Batches run by" row, `unset` that it has none.
+// `supervised`), else a session. A standing batch is always marked handed over, so in a repo whose
+// "Batches run by" row is not `supervisor` a handed-over batch is the supervisor's only where the
+// supervisor ran its last pass or is loaded now: it runs every handed-over queue whatever the row says
+// (an epic's plan hands one over, `supervisor on` loads it). `set` is that row, `unset` that it has none.
 // `agent` is 'loaded' or 'off' for a handed-over batch not yet finished, read with one launchctl
 // print (or systemctl call) per refresh, and `exit` the loaded agent's failed last run, when it cannot
-// start. With neither launchd nor systemd there is no supervisor, so every batch is a session's.
+// start. With no launchd, and no systemd user manager that answers, there is no supervisor, so every
+// batch is a session's.
 function whoRuns(r) {
-  if (!backend()) return { by: 'session', set: 'session', unset: false, agent: null, exit: null };
+  if (!canSupervise()) return { by: 'session', set: 'session', unset: false, agent: null, exit: null };
   let raw = null;
   try { raw = repoConfigValue(r.slug, 'batches-run-by'); } catch { /* a row that cannot be read is unset */ }
-  const by = r.q.supervised === true ? 'supervisor' : 'session';
-  const a = by === 'supervisor' && unfinished(r) ? supervisorAgent(r.slug) : null;
-  return { by, set: runBySetting(raw).value, unset: !String(raw ?? '').trim(), agent: a ? (a.loaded ? 'loaded' : 'off') : null, exit: a?.exit ?? null };
+  const set = runBySetting(raw).value;
+  const handed = r.q.supervised === true;
+  const a = handed && unfinished(r) ? supervisorAgent(r.slug) : null;
+  const by = handed && (set === 'supervisor' || r.q.pass?.by === 'supervisor' || a?.loaded) ? 'supervisor' : 'session';
+  const agent = by === 'supervisor' && a ? a : null;
+  return { by, set, unset: !String(raw ?? '').trim(), agent: agent ? (agent.loaded ? 'loaded' : 'off') : null, exit: agent?.exit ?? null };
 }
 
 // ---- a batch that has stopped moving -------------------------------------------------------------
@@ -874,6 +902,9 @@ export function usageHoldOf(r) {
 // A session runs a batch the repo sets to the supervisor: its next batch hands over at Stage 4.
 const handsOver = (r) => r.run?.by === 'session' && r.run.set === 'supervisor';
 const supervisorOff = (r) => r.run?.agent === 'off';
+// A batch a session runs whose passes stopped with a ticket they could move: that session's /loop
+// ended. needs-you lists the same batches as stalled ones.
+export const sessionStalled = (r) => r.last != null && r.run?.by === 'session' && passesPaused(r);
 
 // How many of the repo's tickets and unmerged PRs are in a shown state.
 const count = (r, k) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === k).length;
@@ -958,13 +989,13 @@ const attention = (r) => (r.error || (!r.q && !r.asks?.length) ? 0 : needsCount(
 const hasBatch = (r) => r.q != null || r.error != null || r.asks?.length > 0;
 
 // Live batches first, freshest first; then quiet ones with something for the user (a ticket, a
-// supervisor to turn back on or that cannot start, failing passes, or an unfinished batch to hand
-// over), most first.
+// supervisor to turn back on or that cannot start, a session's loop that stopped, failing passes, or
+// an unfinished batch to hand over), most first.
 export function shownRepos(repos, all) {
   const b = repos.filter(hasBatch);
   const live = b.filter((r) => r.live).sort((a, c) => c.last - a.last);
   const you = new Map(b.map((r) => [r, r.live ? 0 : attention(r)]));
-  const quiet = b.filter((r) => !r.live && (all || r.error || you.get(r) > 0 || supervisorOff(r) || r.stall?.cannotStart || r.stall?.errors || (handsOver(r) && unfinished(r))))
+  const quiet = b.filter((r) => !r.live && (all || r.error || you.get(r) > 0 || supervisorOff(r) || sessionStalled(r) || r.stall?.cannotStart || r.stall?.errors || (handsOver(r) && unfinished(r))))
     .sort((a, c) => you.get(c) - you.get(a));
   return [...live, ...quiet];
 }
@@ -1042,7 +1073,7 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
 
 const SOON = MINUTE;
 // The shown states a pass can still move on: anything else waits on the user.
-const MOVABLE_STATES = ['running', 'ready', 'queued', 'waiting'];
+const MOVABLE_STATES = ['running', 'finishing', 'ready', 'queued', 'waiting'];
 // A batch whose passes stopped while it has a ticket autopilot could move: forecastOf's `paused`, and
 // needs-you's stalled item for a batch a session runs.
 export const passesPaused = (r) => !r.live && r.rows.some((x) => MOVABLE_STATES.includes(x.k));
@@ -1050,14 +1081,17 @@ const undatable = (F) => !F || F.none || F.paused || F.idle;
 const etaOf = (F, key) => (undatable(F) ? null : F.T[key]);
 // With passes stopped there are no dates, but a running worker carries on, so its row says so.
 const startsCell = (F, x, now) => {
+  if (x.k === 'finishing') return 'started';
   if (F && !F.none && F.paused) return x.k === 'running' ? 'running' : '—';
   const e = etaOf(F, x.t.key);
   return !e ? '—' : e.start <= now + SOON ? (x.k === 'running' ? 'running' : 'now') : when(e.start, now);
 };
+// A ship date: one at or before now, for a ticket not merged yet, has been missed rather than met.
+const shipWhen = (at, now) => (at <= now + SOON ? 'overdue' : when(at, now));
 // An undated ticket held behind a blocker whose code waits on another branch's promotion shows that
 // promotion PR's state (none, draft, open or red) in place of "no date".
 const promoOf = (t) => unpromotedHolds(t)[0]?.[1] ?? null;
-const shipsCell = (F, x, now) => (undatable(F) ? '—' : F.T[x.t.key] ? when(F.T[x.t.key].likely, now) : promoOf(x.t) ? `promo ${promoOf(x.t).state}` : 'no date');
+const shipsCell = (F, x, now) => (undatable(F) ? '—' : F.T[x.t.key] ? shipWhen(F.T[x.t.key].likely, now) : promoOf(x.t) ? `promo ${promoOf(x.t).state}` : 'no date');
 const noHistory = (r, F) => `No ship estimate: ${r.name} has ${F.count} merged autopilot tickets in its history (the last ${WINDOW_DAYS} days), and estimates need ${MIN_HISTORY}.`;
 // The same under a note's repo tag, which already names the repo.
 const noHistoryText = (F) => `no ship estimate yet, with ${F.count} of the ${MIN_HISTORY} merged autopilot tickets an estimate needs (the last ${WINDOW_DAYS} days).`;
@@ -1111,10 +1145,10 @@ function queueDone(r, now, checkin) {
     if (!left.length) return 'nothing left';
     if (left.length === 1) return queueDone(left[0], now, checkin);
     const Fs = left.map((b) => forecastOf(b, { now, checkin }));
-    return Fs.every((F) => !F.none && !F.paused && F.clears) ? when(Math.max(...Fs.map((F) => F.clears)), now) : 'no date yet';
+    return Fs.every((F) => !F.none && !F.paused && F.clears) ? shipWhen(Math.max(...Fs.map((F) => F.clears)), now) : 'no date yet';
   }
   const F = forecastOf(r, { now, checkin });
-  return !F ? '' : F.idle ? 'nothing left' : F.none ? 'no history' : F.paused ? 'passes stopped' : F.clears ? when(F.clears, now) : 'no date yet';
+  return !F ? '' : F.idle ? 'nothing left' : F.none ? 'no history' : F.paused ? 'passes stopped' : F.clears ? shipWhen(F.clears, now) : 'no date yet';
 }
 
 // `desk-q ships [<repo>]`: one line per unfinished ticket, the form Claude reads.
@@ -1141,7 +1175,7 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
     if (note) { out.push(note); continue; }
     out.push(forecastLine(r.name, now, F.count, r.workers, checkin), passLines(r, now)[0], hitLine(r));
     table(r, F);
-    out.push(`All done by: ${F.clears ? when(F.clears, now) : 'no ticket has a date yet'}${F.undated ? `, ${F.undated} with no date` : ''}.`);
+    out.push(`All done by: ${F.clears ? shipWhen(F.clears, now) : 'no ticket has a date yet'}${F.undated ? `, ${F.undated} with no date` : ''}.`);
     const epics = Object.values(F.epics);
     if (epics.length) {
       out.push('', `  ${pad('EPIC', 10)}${pad('TITLE', 32)}${pad('DONE', 7)}${pad('STARTS', 13)}SHIPS`);
@@ -1178,7 +1212,7 @@ function epicLine(r, F, e, now, checkin) {
   if (!d) return `${lead}${pad('—', 13)}${epicWhy(r, F, e, checkin)}`;
   const running = r.rows.some((x) => F.of[x.t.key] === e.key && x.k === 'running');
   const starts = d.start == null ? '—' : d.start <= now + SOON ? (running ? 'running' : 'now') : when(d.start, now);
-  return `${lead}${pad(starts, 13)}${pad(when(d.likely, now), 14)}${epicNote(e, d)}`.trimEnd();
+  return `${lead}${pad(starts, 13)}${pad(shipWhen(d.likely, now), 14)}${epicNote(e, d)}`.trimEnd();
 }
 
 // A dated epic's note: why it is provisional, else the child that sets its date.
@@ -1433,7 +1467,7 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
       if (!d) { rows.push(segRow(`${r.id}${e.key}`, [...name, [epicWhy(r, F, e, checkin), whyColour(F)]], open)); continue; }
       const sgr = provisional(e) ? STATE_SGR.waiting : BOLD;
       rows.push(segRow(`${r.id}${e.key}`, [...name, ...bar({ start: d.start ?? now, likely: d.likely, late: d.late }, sgr),
-        [` ${pad(epicStarts(r, F, e, d, now), 13)}${pad(when(d.likely, now), 12)}`, null], ...(provisional(e) ? [['  provisional', sgr]] : [])], open));
+        [` ${pad(epicStarts(r, F, e, d, now), 13)}${pad(shipWhen(d.likely, now), 12)}`, null], ...(provisional(e) ? [['  provisional', sgr]] : [])], open));
     }
     if (items.length) rows.push(segRow(`${s.per[0].r.id}other`, [['  Other work', BOLD], [` · ${items.length} ticket${items.length === 1 ? '' : 's'} with no epic`, DIM]], null));
   }
@@ -1596,7 +1630,7 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = nu
   const rows = list.map(({ r, F, e, d, name = r.repo ?? r.name, opens = r.id }) => {
     const done = Math.round((e.done / e.total) * EP_BAR);
     const queued = e.queued ? Math.min(EP_BAR - done, Math.max(1, Math.round((e.queued / e.total) * EP_BAR))) : 0;
-    const date = d ? [[pad(when(d.likely, now), 14), null], [epicNote(e, d), provisional(e) ? STATE_SGR.waiting : DIM]] : [[epicWhy(r, F, e, checkin), whyColour(F)]];
+    const date = d ? [[pad(shipWhen(d.likely, now), 14), null], [epicNote(e, d), provisional(e) ? STATE_SGR.waiting : DIM]] : [[epicWhy(r, F, e, checkin), whyColour(F)]];
     const n = `${e.done}/${e.total}`;
     return segRow(`${r.id}${e.key}`, [[`  ${all ? pad(name, 12) : ''}${pad(e.key, 10)}${pad(cut(e.summary, 34), 36)}`, null],
       ['■'.repeat(done), STATE_SGR.running], ['■'.repeat(queued), STATE_SGR.waiting], [notYet.repeat(EP_BAR - done - queued), DIM],
@@ -2595,10 +2629,11 @@ function fixNote(x) {
 }
 
 // The red bands, one for each reason no pass can run: a batch handed to a supervisor that is not
-// loaded, a loaded one that cannot start, or passes that keep failing.
+// loaded, a session's loop that stopped, a loaded supervisor that cannot start, or passes that keep failing.
 const band = (text) => segLine([[` ✕ ${text}`, BAND]]);
 const bandsOf = (r) => [
   ...(supervisorOff(r) ? [band(`${r.name}: the supervisor is off, so no passes run. Run: desk-q ${r.repo} supervisor on`)] : []),
+  ...(sessionStalled(r) ? [band(`${r.name}: ${r.session ? `the loop in session ${r.session}` : "the session's loop"} has stopped, so no passes run. ${resumeLine(r)}`)] : []),
   ...(r.stall?.cannotStart ? [band(`${r.name}: the supervisor cannot start (exit ${r.stall.cannotStart.code}): ${r.stall.cannotStart.why ?? 'it logged nothing'}`)] : []),
   ...(r.stall?.errors ? [band(`${r.name}: the last ${r.stall.errors.n} passes errored: ${r.stall.errors.error}`)] : []),
 ];
@@ -2992,8 +3027,10 @@ function portLeaseOf(r, key, now) {
 export const overview = (repos, opts) => joined(overviewParts(repos, opts));
 
 const clock = (t) => new Date(t).toTimeString().slice(0, 5);
-// A usage limit's reset, epoch seconds: the time today, else the day and time.
-const resetsWhen = (s) => (new Date(s * 1000).toDateString() === new Date().toDateString() ? clock(s * 1000) : dayAndTime(s * 1000));
+// A time, epoch ms, as a row says it: the clock today, else the day and the clock. `now` null is now.
+const todayOrDay = (t, now) => (new Date(t).toDateString() === new Date(now ?? Date.now()).toDateString() ? clock(t) : dayAndTime(t));
+// A usage limit's reset, epoch seconds.
+const resetsWhen = (s) => todayOrDay(s * 1000);
 // The interactive screen's `clock` is its time source, so the breadcrumb's time is read through this.
 const hhmm = clock;
 
@@ -3080,6 +3117,8 @@ function startWait(r, t) {
 }
 // Why a ready ticket has not started: startWait, or the pass that will start it.
 const readyWhy = (r, t) => startWait(r, t) ?? (r.live ? 'starts at the next pass' : 'starts when passes resume');
+
+const FINISHING_TEXT = 'worker finished, next pass records it';
 
 // A running ticket's stage: "stage 4/9 verify since 06:38" from its worker's log; with no marker
 // there, the last pass's reading, which the worker may be further on from.
@@ -3173,10 +3212,12 @@ function needSegs(r, x, now = Date.now()) {
   const f = fixOn(t);
   if (f && groupOf(k) !== 'needs') return fixSegs(f, k === 'running', k === 'running' ? null : startWait(r, t));
   if (k === 'running') return [[runningStage(r, x), null]];
+  if (k === 'finishing') return [[FINISHING_TEXT, null]];
   if (answeredPark(t, r.ctx)) return [[answeredText(r.q), null]];
   if (clearsPark(t)) return [[clearsText(t), null]];
   if (k === 'ready') return [[readyWhy(r, t), null]];
-  if (k === 'needs' && claimOf(t)) return [[`claimed by session ${claimOf(t).session}`, null]];
+  if (claimOf(t)) return [[`being worked in session ${claimOf(t).session}`, null]];
+  if (k === 'waiting' && planFirst(t)) return [[`plan-first work, waiting for a session to claim it (/desk-ticket ${t.key})`, null]];
   if (k === 'needs') return [[t.state === 'parked' ? (t.park?.question ?? 'parked') : `${t.open_questions} triage question(s) open: answer them`, null]];
   if (k === 'failed') return [[stoppedText(t), null]];
   if (k === 'queued') return [['triaging', null]];
@@ -3186,9 +3227,8 @@ const detail = (r, x) => needSegs(r, x).map((s) => s[0]).join('');
 export { detail as needText };
 // Why an unmerged PR needs the person, as prNeed's `why` ({ code, … }), or null when it does not.
 export const prWhy = (r, t) => (prRow(t) ? prNeed(r.q, t, r.ctx, null).why ?? null : null);
-// An interactive session's claim on a parked ticket (queue.mjs park --claimed-by). Once a pass finds
-// uncommitted work behind it, the park's question says what to do, so the claim is no longer the news.
-const claimOf = (t) => (t.state === 'parked' && t.park?.claim?.session && !t.park.claim.dirty_at ? t.park.claim : null);
+// An interactive session's claim on a parked ticket (queue.mjs park --claimed-by), in any lane.
+const claimOf = sessionClaim;
 
 // How long a row in Merging or Needs you has been in that group, as the pass stamped it (`group`), or
 // null: for any other group, or when the stamp is of another group because no pass has run since.
@@ -3196,7 +3236,7 @@ function inGroup(x, now) {
   const g = groupOf(x.k), at = Date.parse(x.t.group?.at ?? '');
   return ['merging', 'needs'].includes(g) && x.t.group?.g === g && Number.isFinite(at) ? Math.max(0, now - at) : null;
 }
-// The age STARTS shows: a Merging PR's from its head commit (pr_status head_at), which a driver restart
+// The age WAITING shows: a Merging PR's from its head commit (pr_status head_at), which a driver restart
 // or a migration does not reset and a new head does; else how long the row has been in its group. A
 // head its worker pushed while the row was in Running (`group.from`, since `from_at`) was pushed under
 // review: the age counts from when it entered Merging instead.
@@ -3210,7 +3250,7 @@ function ageOf(x, now) {
 export const AGE_RED_MS = 3 * 24 * 60 * 60 * 1000;
 
 // Each unfinished ticket's and unmerged PR's group, as a running pass reads the batch, for it to stamp
-// when a row entered its group (`group` on the ticket): the age STARTS shows, and the digest's stalled PRs.
+// when a row entered its group (`group` on the ticket): the age WAITING shows, and the digest's stalled PRs.
 export function groupsNow({ slug, stateDir, queuePath, q, now = Date.now() }) {
   const r = { slug, stateDir, queuePath, q, live: true, last: now };
   const ctx = holdContext(r);
@@ -3250,8 +3290,21 @@ function fitSegs(segs, max, w) {
 // WHAT IT NEEDS takes NEED_W while the title keeps TITLE_MIN; narrower than that, the title is cut
 // first, then the reason, down to NEED_MIN ("waits for a worker (12 of 12 busy)").
 const NEED_W = 52, NEED_MIN = 36, TITLE_MIN = 12;
-// The columns before TITLE on a ticket row, less WHAT IT NEEDS.
+// The columns before TITLE on a ticket row, less WHAT IT NEEDS, with TICKET at its narrowest and no WAITING.
 const ROW_LEAD = 2 + 4 + 2 + 10 + STATE_W + 13 + 14;
+// TICKET fits the longest key shown plus a space, and is never narrower than 10.
+const keyW = (keys) => Math.max(10, ...keys.map((k) => String(k).length + 1));
+// WAITING, between STATE and WHAT IT NEEDS, holds how long a row has sat in Merging, Needs you or Put
+// off, so STARTS holds only a start. It fits the longest such time shown, and is left out when none is.
+const WAIT_HEAD = 'WAITING';
+const waitW = (spans) => (spans.some(Boolean) ? Math.max(WAIT_HEAD.length, ...spans.map((s) => s.length)) + 2 : 0);
+// The repo Queue's widths: TICKET (`kw`), WAITING (`ww`), WHAT IT NEEDS (`nw`) and TITLE (`tw`).
+function queueWidths(width, keys, spans) {
+  const kw = keyW(keys), ww = waitW(spans), lead = ROW_LEAD + (kw - 10) + ww;
+  const nw = width == null ? NEED_W : Math.max(NEED_MIN, Math.min(NEED_W, width - lead - TITLE_MIN));
+  return { kw, ww, nw, tw: width == null ? 60 : Math.max(1, width - lead - nw) };
+}
+const queueHead = ({ kw, ww, nw }) => bold(`  ${rpad('#', 4)}  ${pad('TICKET', kw)}${pad('STATE', STATE_W)}${ww ? pad(WAIT_HEAD, ww) : ''}${pad('WHAT IT NEEDS', nw)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`);
 // A repo's Queue in groups, each in queue order: what autopilot is moving first, then what needs the user.
 // A Needs you row put off with not-now goes under Put off, last and grey: needsCount leaves it out of
 // every count, so Needs you lists exactly what the counts and /desk-needs-you do.
@@ -3261,17 +3314,18 @@ const ITEM_TITLE = { follow: 'check after merge', ask: 'a session asked you' };
 // A Queue row for a counted item that is not a ticket row, in group `k`. A follow item's need leads
 // with where its ticket is, which the TICKET column already names, so WHAT IT NEEDS starts at its
 // first check. In a repo of several batches, TITLE names the item's batch; a step is the repo's, so
-// it names none. TICKET is the ticket the item is about: `item.ticket` where it has one, else its key
-// past a follow:, link:, unpromoted: or step: prefix.
-const itemKey = (t, item) => item.ticket ?? (/^(follow|link|unpromoted|step):/.test(t.key) ? t.key.replace(/^[a-z]+:/, '').split(':')[0] : t.key);
-const itemRowOf = (r, k, { now, nw, tw }) => ({ r: b, t, item }) => {
+// it names none. TICKET is the ticket the item is about (itemKey), the key a drop of a put-off item takes.
+// How long an item has waited, for WAITING, or ''.
+const itemWait = (item, now) => (item.since != null ? span(Math.max(0, now - item.since)) : '');
+const itemRowOf = (r, k, { now, kw, ww, nw, tw }) => ({ r: b, t, item }) => {
   const need = String(item.need ?? '').replace(/\s+/g, ' ').trim();
   const shown = item.kind === 'follow' && need.includes('Check: ') ? need.slice(need.indexOf('Check: ')) : need;
   const what = `${ITEM_TITLE[item.kind] ?? item.kind ?? ''}${(r.batches?.length ?? 0) > 1 && item.kind !== 'step' ? ` · ${b?.batch ?? 'standing batch'}` : ''}`;
   return segRow(null, [
-    [`  ${rpad('-', 4)}  ${pad(cut(itemKey(t, item), 9), 10)}`, null], [pad(LABEL[k], STATE_W), STATE_SGR[k]],
+    [`  ${rpad('-', 4)}  ${pad(itemKey(t, item), kw)}`, null], [pad(LABEL[k], STATE_W), STATE_SGR[k]],
+    ...(ww ? [[pad(itemWait(item, now), ww), null]] : []),
     ...fitSegs([[shown, k === PUT_OFF ? GREY : null]], nw - 2, nw),
-    [pad(item.since != null ? `for ${span(now - item.since)}` : '', 13), null], [`${pad('—', 14)}${cut(what, tw)}`, null],
+    [pad('—', 13), null], [`${pad('—', 14)}${cut(what, tw)}`, null],
   ], null);
 };
 const GROUPS = [['Running', 'running'], ['Ready', 'ready'], ['Merging', 'merging'], ['Waiting', 'waiting'], ['Needs you', 'needs'], ['Put off', PUT_OFF]];
@@ -3280,22 +3334,35 @@ const GROUPS = [['Running', 'running'], ['Ready', 'ready'], ['Merging', 'merging
 // to that epic's tickets, each keeping its place in the whole queue. A group's heading is a row with
 // no id, which the selection steps over. `title` leads with the place and time, as the interactive
 // screen's breadcrumb does.
+// The repo's merge time by stage (merge-stages.mjs), one line once a merged PR has its stages read.
+function stagesHead(r) {
+  if (!r.stateDir) return [];
+  const line = MS.stagesLine(MS.summary(MS.readStages(repoStateOf(r.stateDir))));
+  return line ? [line] : [];
+}
+// The repo's time parked by cause this week (stuck-time.mjs), one line once a ticket has sat stuck in it.
+function stuckHead(r, now) {
+  if (!r.stateDir) return [];
+  let live = null;
+  try { live = ST.liveOf(listBatches(r.slug)); } catch { /* every batch read as live */ }
+  const line = ST.stuckLine(ST.weekSummary(repoStateOf(r.stateDir), { now, live }));
+  return line ? [line] : [];
+}
 function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = null, title = false, usage = null, pinUsage = false } = {}) {
   const none = { rows: [], foot: [] };
   if (r.error) return { head: [`${r.name} · queue unreadable: ${r.error}`], ...none };
   if (!r.q) {
     const setUp = `${r.name} · set up, no autopilot batch yet · cap ${r.cap} · ports ${r.claim.port}–${r.claim.last}`;
     // A session's asks need the person with no batch yet: each is a row, as in a batch's Queue.
-    const nc = needsCount(r), nw = width == null ? NEED_W : Math.max(NEED_MIN, Math.min(NEED_W, width - ROW_LEAD - TITLE_MIN));
-    const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD - nw);
+    const nc = needsCount(r);
     const groups = [['Needs you', 'needs', nc.items], ['Put off', PUT_OFF, nc.offItems]].filter(([, , xs]) => xs.length);
     if (!groups.length) return { head: [setUp, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
-    const rows = groups.flatMap(([name, k, xs]) => [segRow(null, [[`  ${name}`, k === PUT_OFF ? GREY : BOLD], [` · ${xs.length}`, GREY]], null), ...xs.map(itemRowOf(r, k, { now, nw, tw }))]);
-    return { head: [...(title ? [`desk-q › ${r.name} · ${clock(now)}`] : []), setUp, '', bold(`  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', STATE_W)}${pad('WHAT IT NEEDS', nw)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`)],
+    const all = groups.flatMap(([, , xs]) => xs);
+    const w = queueWidths(width, all.map(({ t, item }) => itemKey(t, item)), all.map(({ item }) => itemWait(item, now)));
+    const rows = groups.flatMap(([name, k, xs]) => [segRow(null, [[`  ${name}`, k === PUT_OFF ? GREY : BOLD], [` · ${xs.length}`, GREY]], null), ...xs.map(itemRowOf(r, k, { now, ...w }))]);
+    return { head: [...(title ? [`desk-q › ${r.name} · ${clock(now)}`] : []), setUp, '', queueHead(w)],
       rows, foot: ['', ...stateKey(groups.map(([, k]) => k), width)] };
   }
-  const nw = width == null ? NEED_W : Math.max(NEED_MIN, Math.min(NEED_W, width - ROW_LEAD - TITLE_MIN));
-  const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD - nw);
   // A repo of several batches dates and words each row by its own batch, `x.b`.
   const Fs = new Map((r.batches ?? [r]).map((b) => [b, forecastOf(b, { now, checkin })]));
   const F = Fs.get(r) ?? null;
@@ -3306,13 +3373,14 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     ...(ep ? [`${ep.key} · ${ep.summary} · ${ep.done} of ${ep.total} children done`] : []),
     countsLine(r, now),
     ...passHead(r, now),
+    ...stagesHead(r),
+    ...stuckHead(r, now),
     ...(r.unreadable ?? []).map(unreadableText),
     ...((p) => (p ? [uploadPauseText(p)] : []))(uploadPause()),
     ...(pinUsage ? [] : usageLines(usage ?? usageOf([r], now), { now, solid: solidBars(width) })),
   ];
   // Wrapped to the terminal, so how to resume passes is never cut.
   const fit = head.flatMap((s) => (width == null ? [s] : typeof s === 'string' ? wrap(s, width) : barWrap(s, width)));
-  fit.push('', bold(`  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', STATE_W)}${pad('WHAT IT NEEDS', nw)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`));
   const rows0 = [...r.rows, ...r.prs];
   const list = epic ? rows0.filter((x) => F.of[x.t.key] === epic) : rows0;
   const summary = (x) => summaryOf({ r: of(x), x });
@@ -3321,26 +3389,32 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   // Needs you is Put off.
   const nc = needsCount(r), asked = new Set([...nc.rows, ...nc.stepRows]);
   const gk = (x) => (groupOf(x.k) === 'needs' && !asked.has(x) ? PUT_OFF : x.k);
-  // A ticket with a PR open has started and has no ship date of its own. One in Merging or Needs you
-  // says how long it has been there instead (ageOf), a Merging PR's amber or red by that age.
-  const starts = (x) => { const a = afterPrs(of(x), x), g = ageOf(x, now); return g != null ? `for ${span(g)}` : x.pr ? 'started' : a ? cut(a, 12) : startsCell(Fof(x), x, now); };
-  const startsSgr = (x) => {
+  // Every counted item that is not a ticket row (a step, a follow-on check, an ask, a sign-in, …) is a
+  // Needs you row too, so the count above never names more than the table shows.
+  // A put-off item goes under Put off, grey, as a put-off ticket row does.
+  const items = epic ? [] : nc.items, offItems = epic ? [] : nc.offItems;
+  // A row in Merging or Needs you says in WAITING how long it has been there (ageOf), a Merging PR's
+  // amber or red by that age.
+  const wait = (x) => { const g = ageOf(x, now); return g == null ? '' : span(g); };
+  const its = [...items, ...offItems];
+  const { kw, ww, nw, tw } = queueWidths(width, [...list.map((x) => x.t.key), ...its.map(({ t, item }) => itemKey(t, item))], [...list.map(wait), ...its.map(({ item }) => itemWait(item, now))]);
+  fit.push('', queueHead({ kw, ww, nw }));
+  // A ticket with a PR open has started and has no ship date of its own.
+  const starts = (x) => { const a = afterPrs(of(x), x); return x.pr ? 'started' : a ? cut(a, 12) : startsCell(Fof(x), x, now); };
+  const waitSgr = (x) => {
     const g = of(x).live && groupOf(x.k) === 'merging' ? ageOf(x, now) : null;
     return g == null || g < STALL_MS ? null : g >= AGE_RED_MS ? FAIL : WARN;
   };
   const ships = (x) => (x.pr ? '—' : shipsCell(Fof(x), x, now));
   const row = (x) => segRow(x.t.key, [
-    [`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, 10)}`, null], [pad(LABEL[gk(x)], STATE_W), STATE_SGR[gk(x)]],
+    [`  ${rpad(x.pos == null ? '-' : `${x.t.placed ? '*' : ''}${x.pos}`, 4)}  ${pad(x.t.key, kw)}`, null], [pad(LABEL[gk(x)], STATE_W), STATE_SGR[gk(x)]],
+    ...(ww ? [[pad(wait(x), ww), waitSgr(x)]] : []),
     // A PR's detail runs to one space before STARTS, so "#164 · tests (macos-latest): no runner, 14m ·
     // 1 of 2 done" keeps as much as it can. A put-off row's is grey.
     ...fitSegs(gk(x) === PUT_OFF ? needSegs(of(x), x, now).map(([t]) => [t, GREY]) : needSegs(of(x), x, now), nw - (x.pr ? 1 : 2), nw),
-    [pad(starts(x), 13), startsSgr(x)], [`${pad(ships(x), 14)}${cut(tt(summary(x)), tw)}`, null],
+    [pad(starts(x), 13), null], [`${pad(ships(x), 14)}${cut(tt(summary(x)), tw)}`, null],
   ], { kind: 'ticket', slug: of(x).id, key: x.t.key, ...(epic ? { epic } : {}) });
-  // Every counted item that is not a ticket row (a step, a follow-on check, an ask, a sign-in, …) is a
-  // Needs you row too, so the count above never names more than the table shows.
-  // A put-off item goes under Put off, grey, as a put-off ticket row does.
-  const items = epic ? [] : nc.items, offItems = epic ? [] : nc.offItems;
-  const itemRow = (k) => itemRowOf(r, k, { now, nw, tw });
+  const itemRow = (k) => itemRowOf(r, k, { now, kw, ww, nw, tw });
   const extraOf = { needs: items, [PUT_OFF]: offItems };
   const rows = GROUPS.flatMap(([name, k]) => {
     const g = list.filter((x) => groupOf(gk(x)) === k);
@@ -3386,6 +3460,7 @@ function moveOf(r, row, k, t, h, now) {
   if (!row) return { text: k === 'done' ? 'Done: nothing left to move.' : `${capital(k)}.` };
   const f = fixOn(t);
   if (k === 'running') return { text: `Moves without you: a worker is on it, ${f ? `${segText(fixSegs(f, true))}, ` : ''}${runningStage(r, row)}.` };
+  if (k === 'finishing') return { text: `Moves without you: ${FINISHING_TEXT}.` };
   if (heldDraft(t)) {
     return { text: `Needs you. Held by you: you put its PR #${t.result.pr} back to draft, so no pass undrafts it and nothing merges it.`,
       lead: 'Undraft it to release it, and it merges once it is green:', cmds: [`gh pr ready ${t.result.pr} --repo ${r.slug.replace('__', '/')}`] };
@@ -3419,9 +3494,17 @@ function moveOf(r, row, k, t, h, now) {
   if (answeredPark(t, r.ctx)) return { text: `Moves without you: ${answeredText(r.q)}, and a worker picks it up from there.` };
   if (readPark(t, r.ctx)) return { text: `Moves without you: a pass runs its live read ${(t.park.clears_when.reads ?? []).join(', ')} on this computer, then requeues it with what it printed.` };
   if (clearsPark(t)) return { text: `Moves without you: ${capital(clearsText(t))}.` };
-  if (k === 'needs' && claimOf(t)) {
-    if (needsSession(t)) return { text: `Claimed by session ${claimOf(t).session}, which works it. It is lane ${t.lane}, so it stays with a person however long that session is idle${q ? `: ${q}` : '.'}` };
-    return { text: `Claimed by session ${claimOf(t).session}, which works it. Once that session has been idle past config §3b "Release idle claims after (hours)", with nothing uncommitted in its worktree, a pass sends it back to the workers.` };
+  if (planFirstClaim(t)) {
+    return { text: `Being worked in session ${planFirstClaim(t).session}, which claimed it. It is plan-first work, so no worker takes it. Once that session has been idle past config §3b "Release idle claims after (hours)", a pass drops the claim and it waits for a session again.` };
+  }
+  if (claimOf(t)) {
+    if (needsSession(t)) return { text: `Being worked in session ${claimOf(t).session}, which claimed it. It is lane ${t.lane}, so no worker takes it. Once that session has been idle past config §3b "Release idle claims after (hours)", a pass drops the claim and it needs you again${q ? `: ${q}` : '.'}` };
+    return { text: `Being worked in session ${claimOf(t).session}, which claimed it. Once that session has been idle past config §3b "Release idle claims after (hours)", with nothing uncommitted in its worktree, a pass sends it back to the workers.` };
+  }
+  if (k === 'waiting' && planFirst(t)) {
+    const h = (r.ctx?.planFirstMs ?? NOBODY.planFirstMs) / 3600e3;
+    return { text: `Waits for a session: it is plan-first work, which only an interactive session takes on. Unclaimed for more than ${h}h since it parked (config §3b "${PLAN_FIRST_ROW}"), it reaches needs-you.`,
+      lead: `To take it on now, in ${r.name}:`, cmds: [`/desk-ticket ${t.key}`] };
   }
   if (k === 'needs') {
     if (needsSession(t)) return { text: q ? `Needs your answer: ${q}` : 'Needs you: it is lane C or D.', lead: `Only an interactive session takes it on. Open one in ${r.name}:`, cmds: [`/desk-ticket ${t.key}`] };
@@ -3480,8 +3563,8 @@ function timingFields(r, F, x, h, now) {
     // Drawn from the whole history, the line still says how many of this size it holds, or that triage gave none.
     const of = own ? '' : size === 'unknown' ? ' (triage recorded no size)' : ` (${n} of size ${size}${n ? ', too few to use alone' : ''})`;
     return [
-      ['Starts', [[e.start <= now + SOON ? (k === 'running' ? 'running now' : 'now') : when(e.start, now), null]]],
-      ['Ships', [[when(e.likely, now), BOLD], [`  could run to ${when(e.late, now)} (1 run in 5 is later)`, DIM]]],
+      ['Starts', [[k === 'finishing' ? 'started' : e.start <= now + SOON ? (k === 'running' ? 'running now' : 'now') : when(e.start, now), null]]],
+      ['Ships', [[shipWhen(e.likely, now), BOLD], ...(shipWhen(e.late, now) === 'overdue' ? [] : [[`  could run to ${when(e.late, now)} (1 run in 5 is later)`, DIM]])]],
       ['Based on', [[`${v.length} merged ${own ? `size ${size} ` : ''}tickets in ${r.name}${of} · typical ${quantile(v, 0.5).toFixed(1)} h spawn to merge, 4 in 5 within ${quantile(v, 0.8).toFixed(1)} h`, DIM]]],
     ];
   }
@@ -3623,7 +3706,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   const portField = () => {
     if (!port) return;
     const at = Date.parse(port.acquired), expires = Date.parse(port.expires);
-    if (!overdue(port, now)) return field('Port', [[printable(String(port.key)), null], [` · its dev server, held since ${new Date(at).toDateString() === new Date(now).toDateString() ? clock(at) : dayAndTime(at)}`, DIM]]);
+    if (!overdue(port, now)) return field('Port', [[printable(String(port.key)), null], [` · its dev server, held since ${todayOrDay(at, now)}`, DIM]]);
     field('Port', [[`${printable(String(port.key))} · stopped checking in ${span(now - expires)} ago`, WARN]]);
     out.push({ ...segLine([[pad('', FIELD_W), null], [forceReleaseCommand(port.id), BOLD]]), whole: true });
   };
@@ -3817,6 +3900,9 @@ function apply(repos, v) {
 // ---- the supervisor ----------------------------------------------------------------------------
 
 export const NEEDS_LAUNCHD = 'The supervisor needs macOS launchd or Linux systemd, so it cannot run on this computer. Nothing changed.';
+export const NEEDS_SYSTEMD = 'The supervisor needs systemctl --user to answer, and it does not here (on WSL, set systemd=true under [boot] in /etc/wsl.conf), so it cannot run on this computer. Nothing changed.';
+// Why no supervisor can run on this computer, or null where one can.
+const noSupervisor = () => (!backend() ? NEEDS_LAUNCHD : canSupervise() ? null : NEEDS_SYSTEMD);
 
 // The named repo's own checkout, { cwd, env }, so a child run there acts as that repo (its slug,
 // config and GitHub repo) and not as the one this process runs in. `doing` ends the refusal.
@@ -3841,9 +3927,10 @@ function supervisorState(r, run = supervisorRunner(r)) {
 
 // `on` and `off` say what changed in one line; a refusal or a failure says nothing changed.
 function supervisor(r, op) {
-  if (!backend()) {
-    if (op === 'status') return `${r.name}: no supervisor. ${NEEDS_LAUNCHD.replace(' Nothing changed.', '')}`;
-    throw new Usage(NEEDS_LAUNCHD);
+  const no = noSupervisor();
+  if (no) {
+    if (op === 'status') return `${r.name}: no supervisor. ${no.replace(' Nothing changed.', '')}`;
+    throw new Usage(no);
   }
   const run = supervisorRunner(r);
   const was = supervisorState(r, run);
@@ -4951,7 +5038,7 @@ export function interactive({
       if (!r) return;
       const v = { kind: 'supervisor', slug: r.slug };
       let state = null;
-      if (!backend()) msg = NEEDS_LAUNCHD;
+      if (noSupervisor()) msg = noSupervisor();
       else { try { ({ state } = supervisorState(r)); } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); } }
       if (state === 'loaded') { ask = { name: r.repo, v: { ...v, op: 'off' } }; msg = ''; }
       else if (state) act({ ...v, op: 'on' });

@@ -3,7 +3,7 @@
 // covers: desk/bin/levers-evaluate.mjs desk/bin/lever-changes.mjs desk/bin/digest.mjs desk/bin/levers-trips.mjs desk/bin/decisions.mjs desk/bin/lever-stats.mjs desk/bin/levers-auto.mjs desk/bin/lever-registry.mjs desk/bin/lever-log.mjs desk/bin/phase0-report.mjs
 // evaluate() runs on synthetic per-ticket rows, findings files and post-merge files in a scratch HOME,
 // with a fixed clock, so its seeded bootstrap draws the same numbers every run.
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { scratch } from './scratch.mjs';
@@ -90,7 +90,7 @@ const a1 = wrappersRow(A1);
 t('AC1 wrappers is adopted', [a1.decision, a1.state, a1.reason_code], ['adopt', 'adopted', 'adopt_all_conditions']);
 t('AC1 the mechanism is down about 60% with its interval clear of 25%', [Math.round(a1.mechanism.est * 100), a1.mechanism.hi90 < -0.25, a1.mechanism.p_benefit >= 0.9], [-60, true, true]);
 t('AC1 the cost ratio\'s upper bound is under 1.05', a1.cost.hi90 < 1.05, true);
-t('AC1 every guardrail is within its margin', a1.guardrails.map((g) => g.status), ['ok', 'ok', 'ok', 'ok', 'ok']);
+t('AC1 every guardrail is within its margin', a1.guardrails.map((g) => g.status), ['ok', 'ok', 'ok', 'ok', 'ok', 'ok']);
 const a1t = transitionOf(A1);
 t('AC1 one transition line, trial to adopted, with a 10% holdback', a1t.map((e) => [e.from, e.to, e.holdback?.share]), [['trial', 'adopted', 0.1]]);
 t('AC16 it is a transition event with its reason code', [a1t[0].kind, a1t[0].reason_code, a1t[0].actor], ['transition', 'adopt_all_conditions', 'levers-auto']);
@@ -99,7 +99,7 @@ const e = a1t[0];
 t('AC11 the line holds n per arm, both estimates with 90% intervals, each guardrail, the commit range, the fingerprint and the reason',
   [e.n.on != null && e.n.off != null, ['est', 'lo90', 'hi90'].every((k) => Number.isFinite(e.mechanism[k])), ['ratio', 'lo90', 'hi90'].every((k) => Number.isFinite(e.cost[k])),
     e.guardrails.map((g) => g.name), e.desk_commit_range, e.lever_fp, typeof e.reason === 'string' && e.reason.length > 20],
-  [true, true, true, ['acceptance', 'fix-tries-parks', 'ci-reds', 'review-p0-p1', 'post-merge'], ['a'.repeat(12), 'b'.repeat(12)], 'fpW', true]);
+  [true, true, true, ['acceptance', 'fix-tries-parks', 'ci-reds', 'review-p0-p1', 'post-merge', 'parked-hours'], ['a'.repeat(12), 'b'.repeat(12)], 'fpW', true]);
 const ev = jsonl(join(stateOf(A1), a1.evidence_file));
 t('AC14 the evidence file holds every row the evaluation read, with the excluded ones marked', [ev.length, ev.filter((x) => x.excluded).map((x) => x.excluded).sort()], [63, ['cost_incomplete', 'cost_incomplete', 'pin_mismatch']]);
 t('AC14 the row holds the evidence file\'s sha256', a1.evidence_sha256, createHash('sha256').update(readFileSync(join(stateOf(A1), a1.evidence_file))).digest('hex'));
@@ -122,6 +122,88 @@ t('AC2 the lever reverts before the minimum sample', [a2.decision, a2.state, a2.
 const A2q = 'acme__quota';
 run([repo(A2q, arms(A2q, initial(A2q), 12, (i) => ({ ...better.on(i), parks_by_class: { quota: 4 } }), () => ({ denials: 1 })))]);
 t('AC2 parks for quota do not count against the guardrail', wrappersRow(A2q).decision, 'hold');
+
+// ---- parked hours per ticket: a lever that otherwise adopts is reverted when its tickets sit stuck longer ----------
+// Each row's hours come from the repo's stuck-intervals.jsonl (stuck-time.mjs), as a pass records them.
+const stuckRepo = (slug, onHours, offHours) => {
+  const rows = arms(slug, initial(slug), 30, better.on, better.off);
+  const r = repo(slug, rows);
+  writeFileSync(join(stateOf(slug), 'stuck-intervals.jsonl'), rows.map((x, i) => JSON.stringify({ key: x.key, batch: null, cause: 'park: question',
+    start: at(-15), end: new Date(Date.parse(at(-15)) + ((x.pin.arms.wrappers === 'on' ? onHours : offHours) + (i % 3)) * 3600_000).toISOString(), recorded: at(-14) })).join('\n'));
+  return r;
+};
+const PH = 'acme__parked';
+run([stuckRepo(PH, 12, 2)]);
+const ph = wrappersRow(PH);
+t('parked hours per ticket six times higher on the lever\'s arm is a breached guardrail', ph.guardrails.find((g) => g.name === 'parked-hours')?.status, 'breached');
+t('and it keeps the lever from adopting: it reverts, naming the guardrail', [ph.decision, ph.reason_code], ['revert', 'guardrail_parked_hours']);
+const PHok = 'acme__parked-even';
+run([stuckRepo(PHok, 2, 2)]);
+t('the same lever with parked hours even across the arms adopts', [wrappersRow(PHok).guardrails.find((g) => g.name === 'parked-hours')?.status, wrappersRow(PHok).decision], ['ok', 'adopt']);
+// Tickets of an archived batch (batches.mjs archivedBatches: named "<folder> (archived)", its state under
+// batches/.done/) are read by the name the pass recorded them under, in the repo's own record: the
+// identity its first pass wrote in its folder (stuck-batch.json), which an archive carries with it, or,
+// with none, its folder's name less the time a second archive of one name adds.
+const { archivedBatches } = await import('../desk/bin/batches.mjs');
+const archivedRun = (slug, folder, queue, identity = null) => {
+  const r = stuckRepo(slug, 12, 2);
+  const qroot = join(T, 'queues', slug);
+  mkdirSync(join(qroot, 'batches', '.done', folder), { recursive: true });
+  writeFileSync(join(qroot, 'batches', '.done', folder, 'queue.json'), JSON.stringify(queue));
+  mkdirSync(join(stateOf(slug), 'batches', '.done', folder, 'workers'), { recursive: true });
+  if (identity) writeFileSync(join(stateOf(slug), 'batches', '.done', folder, 'stuck-batch.json'), JSON.stringify(identity));
+  const done = archivedBatches({ queueRoot: qroot, stateRoot: stateOf(slug) });
+  for (const x of r.rows) {
+    x.batch = done[0].name;
+    if (x.merged_at) writeFileSync(join(done[0].state, 'workers', `${x.key}.findings.jsonl`), `${JSON.stringify({ ticket: x.key, round: 1, reviewer: 'self', p0: 0, p1: 0, p2: 0, fixed: 0 })}\n`);
+  }
+  writeFileSync(join(done[0].state, 'post-merge.jsonl'), `${JSON.stringify({ kind: 'scan', at: at(-1), complete: true })}\n`);
+  const recorded = readFileSync(join(stateOf(slug), 'stuck-intervals.jsonl'), 'utf8').split('\n').map((l) => JSON.stringify({ ...JSON.parse(l), batch: identity?.name ?? 'F-1', created: identity?.created ?? null }));
+  writeFileSync(join(stateOf(slug), 'stuck-intervals.jsonl'), recorded.join('\n'));
+  run([{ ...r, batches: [{ name: null, state: stateOf(slug) }, ...done] }]);
+  return [wrappersRow(slug).guardrails.find((g) => g.name === 'parked-hours')?.status, wrappersRow(slug).reason_code];
+};
+t('an archived batch\'s tickets carry their parked hours: the lever that raised them reverts', archivedRun('acme__parked-archived', 'F-1', { batch: 'F-1', tickets: {} }), ['breached', 'guardrail_parked_hours']);
+t('so do those of a second batch of that name, archived beside the first under a folder with its time', archivedRun('acme__parked-rearchived', 'F-1.2026-10-30T11-00-00-000Z', { batch: 'F-1', tickets: {} }, { name: 'F-1', created: at(-25) }), ['breached', 'guardrail_parked_hours']);
+t('and those of a batch moved into its slot from the standing one, whose queue keeps the standing name', archivedRun('acme__parked-moved', 'E-1', { batch: '2026-11-01T10:00', epic: 'E-1', tickets: {} }, { name: 'E-1', created: at(-25) }), ['breached', 'guardrail_parked_hours']);
+t('with no identity written, a second archive goes by its folder less the time', archivedRun('acme__parked-rearchived-unnamed', 'F-1.2026-10-30T11-00-00-000Z', { batch: 'OLD', tickets: {} }), ['breached', 'guardrail_parked_hours']);
+
+// Two batches of one name, each holding the same ticket: each row counts only its own batch's hours,
+// though the earlier row's admission comes before the later batch's intervals.
+{
+  const { withOutcomes } = await import('../desk/bin/levers-evaluate.mjs');
+  const slug = 'acme__parked-twice';
+  const qroot = join(T, 'queues', slug);
+  const folders = ['F-1', 'F-1.2026-10-30T11-00-00-000Z'];
+  const created = [at(-30), at(-15)];
+  folders.forEach((f, i) => {
+    mkdirSync(join(qroot, 'batches', '.done', f), { recursive: true });
+    writeFileSync(join(qroot, 'batches', '.done', f, 'queue.json'), '{"batch":"F-1","tickets":{}}');
+    mkdirSync(join(stateOf(slug), 'batches', '.done', f), { recursive: true });
+    writeFileSync(join(stateOf(slug), 'batches', '.done', f, 'stuck-batch.json'), JSON.stringify({ name: 'F-1', created: created[i] }));
+  });
+  const span = (c, from, h) => JSON.stringify({ key: 'T-x', batch: 'F-1', created: c, cause: 'park: question', start: at(from), end: new Date(Date.parse(at(from)) + h * 3600_000).toISOString(), recorded: at(from) });
+  writeFileSync(join(stateOf(slug), 'stuck-intervals.jsonl'), [span(created[0], -29, 3), span(created[1], -14, 10)].join('\n'));
+  const done = archivedBatches({ queueRoot: qroot, stateRoot: stateOf(slug) });
+  const rows = done.map((b, i) => ({ key: 'T-x', batch: b.name, admitted_at: created[i], merged_at: null, state: 'parked' }));
+  t('a ticket in two batches of one name counts, in each, only that batch\'s parked hours', withOutcomes(rows, done, NOW).rows.map((r) => r.parked_hours), [3, 10]);
+}
+// A ticket admitted again carries none of its earlier stay's hours.
+{
+  const PR = 'acme__parked-readmitted';
+  const r = stuckRepo(PR, 2, 2);
+  appendFileSync(join(stateOf(PR), 'stuck-intervals.jsonl'), `\n${r.rows.filter((x) => x.pin.arms.wrappers === 'on').map((x) => JSON.stringify({ key: x.key, batch: null, cause: 'usage', start: at(-40), end: at(-30), recorded: at(-30) })).join('\n')}`);
+  run([r]);
+  t('hours from before a ticket\'s admission do not count against its arm', [wrappersRow(PR).guardrails.find((g) => g.name === 'parked-hours')?.status, wrappersRow(PR).decision], ['ok', 'adopt']);
+}
+// A record that cannot be read leaves the guardrail without data, so nothing adopts on it.
+{
+  const PU = 'acme__parked-unreadable';
+  const r = repo(PU, arms(PU, initial(PU), 30, better.on, better.off));
+  mkdirSync(join(stateOf(PU), 'stuck-intervals.jsonl'));
+  run([r]);
+  t('a stuck record that cannot be read gives no parked hours, and the lever does not adopt', [wrappersRow(PU).guardrails.find((g) => g.name === 'parked-hours')?.status, wrappersRow(PU).decision], ['no_data', 'hold']);
+}
 
 // ---- AC3: at most one change every 7 days ----------------------------------------------------------------------
 const A3 = 'acme__cooldown';
@@ -154,6 +236,12 @@ run([
 t('AC6 the pooled mechanism counts both repos', wrappersRow(A6a).n.pooled_on, 60);
 t('AC6 the other repo adopts', wrappersRow(A6a).decision, 'adopt');
 t('AC6 the repo whose acceptance drops in the lever arm reverts', [wrappersRow(A6b).decision, wrappersRow(A6b).reason_code], ['revert', 'guardrail_acceptance']);
+
+// A ticket requeued after merging has no outcome until its current round finishes; one merged and never
+// requeued still counts.
+const A6c = 'acme__reworked';
+run([repo(A6c, arms(A6c, initial(A6c), 30, (i) => ({ ...better.on(i), ...(i % 2 ? { reworked: true } : {}) }), better.off))]);
+t('a ticket requeued after merging is left out of the arm; the rest still count', wrappersRow(A6c).n.pooled_on, 15);
 
 // ---- AC7: a second revert freezes ---------------------------------------------------------------------------------------------
 const A7 = 'acme__twice';
@@ -581,6 +669,50 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   const { leverChanges: pairChanges } = await import('../desk/bin/digest.mjs');
   const pairLines = pairChanges({ list: [{ slug: Q10b, state: stateOf(Q10b) }], now: new Date(NOW + 3_600_000) }).changes.map((c) => c.line);
   t('AC10 the digest lists the pair adopt as the repo\'s new default', pairLines.some((l) => l.startsWith('adopted codex with review-reuse together in q10b, now its default')), true);
+}
+
+// ---- a lever with more than two arms: each value weighed against the baseline ------------------------------
+{
+  const { ENTRIES, loadRegistry } = await import('../desk/bin/lever-registry.mjs');
+  const { leverStatesIn } = await import('../desk/bin/levers-auto.mjs');
+  const VR = loadRegistry({ ...ENTRIES, wrappers: { ...ENTRIES.wrappers, values: ['one-at-a-time', 'batched', 'mixed'], baseline: 'one-at-a-time' } });
+  const evalV = (repos) => evaluate({ repos, now: NOW, tz: 'UTC', root: join(T, `pooled-v-${++seq}`), frozen: false, fingerprints: FP, registry: VR });
+  // `n` rows on each value; `o[value](i)` gives each row's overrides.
+  const valueRows = (slug, n, o = {}) => ['one-at-a-time', 'batched', 'mixed'].flatMap((v) => Array.from({ length: n }, (_, i) => row(slug, v, initial(slug), o[v]?.(i) ?? {})));
+  const V1 = 'acme__valued';
+  evalV([repo(V1, valueRows(V1, 30, { batched: better.on }))]);
+  const v1 = wrappersRow(V1);
+  t('valued: each value is reported against the baseline', Object.keys(v1.values), ['batched', 'mixed']);
+  t('valued: each value carries its metric, cost and guardrails', Object.values(v1.values).every((x) => x.mechanism && x.cost && x.guardrails.length === 6 && x.n.on === 30 && x.n.off === 30), true);
+  t('valued: the value that beat the baseline adopts, the other holds', [v1.values.batched.decision, v1.values.mixed.decision], ['adopt', 'hold']);
+  t('valued: the lever adopts that value', [v1.decision, v1.state, v1.value, v1.baseline], ['adopt', 'adopted', 'batched', 'one-at-a-time']);
+  t('valued: the row\'s figures are that value\'s against the baseline', [v1.n.on, v1.n.off, v1.mechanism.est === v1.values.batched.mechanism.est], [30, 30, true]);
+  const v1t = transitionOf(V1);
+  t('valued: one transition to adopted, carrying the value', v1t.map((e) => [e.from, e.to, e.value]), [['trial', 'adopted', 'batched']]);
+  t('valued: the lever\'s state is read back with its adopted value', leverStatesIn(read(V1).events, VR).wrappers.value, 'batched');
+  const V2 = 'acme__valued-none';
+  evalV([repo(V2, valueRows(V2, 30))]);
+  const v2 = wrappersRow(V2);
+  t('valued: no value beats the baseline, so it holds on the baseline', [v2.decision, v2.state, v2.reason_code, transitionOf(V2).length], ['hold', 'trial', 'adopt_conditions_unmet', 0]);
+  t('valued: and the hold names the value and the baseline', /^(batched|mixed) against one-at-a-time: /.test(v2.reason), true);
+  const V3 = 'acme__valued-breach';
+  const parks = (i) => ({ parks: 4, parks_by_class: { 'agent mistake': 3 + (i % 3) } });
+  const calm = (i) => ({ parks: 1, parks_by_class: { 'agent mistake': i % 3 } });
+  evalV([repo(V3, valueRows(V3, 12, { 'one-at-a-time': calm, batched: calm, mixed: parks }))]);
+  const v3 = wrappersRow(V3);
+  t('valued: a guardrail breach on one value reverts the lever to its baseline', [v3.decision, v3.state, v3.value, v3.reason_code], ['revert', 'reverted', 'mixed', 'guardrail_fix_tries_parks']);
+  t('valued: the revert carries no value', transitionOf(V3).map((e) => [e.to, e.value ?? null]), [['reverted', null]]);
+  // A breach on one value reverts the lever, though another value would adopt.
+  const V4 = 'acme__valued-breach-adopt';
+  evalV([repo(V4, valueRows(V4, 30, { 'one-at-a-time': calm, batched: (i) => ({ ...better.on(i), ...calm(i) }), mixed: parks }))]);
+  const v4 = wrappersRow(V4);
+  t('valued: one value adopts while another breaches, and the breach wins, reverting the lever to its baseline',
+    [v4.values.batched.decision, v4.values.mixed.decision, v4.decision, v4.state, v4.value, transitionOf(V4).map((e) => e.to)], ['adopt', 'revert', 'revert', 'reverted', 'mixed', ['reverted']]);
+  // Two values weighed at once: each must clear 1 - 0.1 / 2.
+  t('valued: with two values beside the baseline, each needs 95%', v1.p_required, 0.95);
+  const near = { ...good, mechanism: { ...good.mechanism, p_benefit: 0.92 } };
+  t('valued: a benefit that clears 90% but not 95% does not adopt', [decide({ ...base, ...near }).decision, decide({ ...base, ...near, probability: 0.95 }).decision], ['adopt', 'hold']);
+  t('valued: and the hold says what each value needs', /under the 95% each of its values needs/.test(decide({ ...base, ...near, probability: 0.95 }).reason), true);
 }
 
 rmSync(T, { recursive: true, force: true });

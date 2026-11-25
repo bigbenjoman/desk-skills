@@ -36,7 +36,11 @@
 //       drop                take a parked, session or stopped-session ticket, or one whose PR was closed
 //                           unmerged, out of the batch and remove its worktree (queue.mjs drop), refused
 //                           naming the worktree and what it holds while that has unpushed work; Jira is
-//                           left as it is. Recommended first where the park says it has no worker work
+//                           left as it is. Recommended first where the park says it has no worker work.
+//                           Taken on any ticket row put off with not-now; a put-off item that is no
+//                           ticket row (an ask, a step, a follow-on check, a batch-wide hold) is recorded
+//                           dismissed in the not-now register instead, by its own key or the ticket key
+//                           desk-q shows for it, so it leaves Put off until what it keys to changes
 //       move "<batch>"      a parked or stopped ticket out of its batch and into another running batch of
 //                           the repo (queue.mjs transfer), its next worker on that batch's base; a batch
 //                           not running is refused, naming those that are
@@ -64,10 +68,17 @@
 //                                                     allowed, so its allow rule names no other
 //   needs-you.mjs left [<repo>]                       how many items desk-q still counts, and where passes stopped
 //   needs-you.mjs ask <repo> "<what to do>" [--until <TICKET>[,<TICKET>...]]
+//                     [--options <a>|<b>[|...] [--recommend <a>] [--apply-by <HH:MM|ISO>] [--never-default "<why>"]]
 //                                                     an action a session hands the person, as an item
 //                                                     `ask:<n>` of the repo's until they say done (asks.mjs);
 //                                                     with --until, a wait on those tickets, which a pass
-//                                                     drops once they are all merged or done
+//                                                     drops once they are all merged or done. With --options,
+//                                                     a choice: each option (one word) is an action, the
+//                                                     recommended one first, and a pass applies it by itself
+//                                                     at --apply-by, else the next §3b check-in, unless it
+//                                                     must never default (ask-defaults.mjs)
+//   needs-you.mjs ask-status <repo> <id>              whether ask <id> is open, or which option was chosen,
+//                                                     by the person or by default, and when
 //
 // Two items are the repo's rather than a ticket's, and are named in place of one: `unset:<key>`, every
 // ticket parked naming a §3 row the repo's config does not set (done requeues them once it is set), and
@@ -118,15 +129,16 @@ import { liveBaseRed, MERGES_SHOWN } from './base-red.mjs';
 import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { landedPr } from './post-merge.mjs';
-import { promotionPr, readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, EXIT } from './batch-state.mjs';
+import { promotionPr, readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, designParkUrls, EXIT, planFirst, planFirstWaits, planFirstPutOff } from './batch-state.mjs';
+import { snapshotOf, savedAt, canonicalUrl } from './desk-design.mjs';
 import { promotionTitle } from './pass/promotion-pr.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { dayAndTime } from './desk-q-eta.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
-import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, passesPaused, unmergedBlockers, throughOnRecord } from './desk-q.mjs';
-import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
+import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, sessionStalled, unmergedBlockers, throughOnRecord } from './desk-q.mjs';
+import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN, checkinTimes, DEFAULT_TIMES } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, changes, inputsHash, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
 import { followOnPending, postMergeOwed } from './harvest.mjs';
@@ -135,12 +147,14 @@ import { promotionRef } from './promotion.mjs';
 import { kindMode, readLog, restartTrial, trialOf, TRIAL_DAYS } from './leases.mjs';
 import { LEASE_KINDS } from './machine.mjs';
 import { saveAnswer } from './briefing.mjs';
-import { addAsk, removeAsk } from './asks.mjs';
+import { addAsk, removeAsk, readAsks, answerAsk, answerOf } from './asks.mjs';
+import { OPTION, applyByOf, neverDefault, nextCheckin, deadlineText } from './ask-defaults.mjs';
 import { finishedCloud, readArchived, readPending, recordArchived } from './cloud-worker.mjs';
 import { readArchive } from './queue-store.mjs';
 import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
 import { prsNaming } from './recoveries.mjs';
 import { parkWords, plainTerms, GRANT_WORDS } from './park-words.mjs';
+import { askAnswered, ledgerOnIn } from './ask-ledger.mjs';
 
 // The decisions a parked item offers to override, newest first.
 const DECISIONS_SHOWN = 3;
@@ -820,6 +834,62 @@ function unsetItem(g) {
     need: `${n === 1 ? 'A ticket' : `${n} tickets`} (${andList(keys)}) parked because ${g.r.repo}'s desk config does not say whether workers may ${GRANT_WORDS[g.key] ?? 'take the step they need'}, so they can't. Answer it once with /desk-update in ${rootOf(g.r)}, then say done and ${n === 1 ? 'it goes' : 'each goes'} back to a worker`,
     actions: [['done', `once you have answered it, done sends ${n === 1 ? 'the ticket' : `all ${n} tickets`} parked on it back to a worker`], ['not-now']] };
 }
+// A ticket admitted headless whose claude.ai artifact (a design, a spec page) no session has read parks
+// on it (batch-state designPark): only a session that can answer the platform's prompt to read one made
+// outside the organisation can. One session reads them all, so every such ticket of the repo is one
+// item, `artifacts`, naming each artifact and its tickets; its done requeues each ticket whose
+// artifacts all have a copy now.
+const ARTIFACTS = 'artifacts';
+function artifactsItem(g) {
+  const keys = g.parked.map((p) => p.t.key);
+  const n = keys.length;
+  const urls = [...new Set(g.parked.flatMap((p) => p.urls))];
+  const each = urls.map((u) => `${u} (${andList(g.parked.filter((p) => p.urls.includes(u)).map((p) => p.t.key))})`);
+  return { kind: ARTIFACTS, repoLevel: true, parked: g.parked,
+    need: `${n === 1 ? 'A ticket' : `${n} tickets`} (${andList(keys)}) ${n === 1 ? 'links' : 'link'} ${urls.length === 1 ? 'a claude.ai artifact' : `${urls.length} claude.ai artifacts`} no session has read, so no worker can: ${each.join('; ')}. Read ${urls.length === 1 ? 'it' : 'them all'} in one interactive session in ${rootOf(g.r)} with /desk-admit ${keys.join(' ')}, which saves each (you answer once whether Claude may read one made outside your organisation), then say done and ${n === 1 ? 'it goes' : 'each goes'} back to a worker`,
+    actions: [['done', `once ${urls.length === 1 ? 'it is' : 'they are'} saved, done sends each ticket whose artifacts all have a copy back to a worker`], ['not-now']] };
+}
+// The copies saved under the repo's Design canvases directory on its batch's base, as desk-design's
+// savedAt reads them (origin/<base> where fetched), or none.
+function savedOnBase(r) {
+  const dir = String(repoConfigValue(r.slug, 'design-dir') ?? 'docs/design/').trim().replace(/\/+$/, '');
+  if (!dir || /^none$/i.test(dir)) return [];
+  const base = r.q?.base ?? defaultOf(r);
+  for (const ref of [`origin/${base}`, base]) { try { return savedAt(rootOf(r), dir, ref); } catch { /* no such ref */ } }
+  return [];
+}
+// Done on the artifacts item: each ticket whose every artifact has a copy, a snapshot or one saved on
+// its base, is requeued in its own batch (or named for the live session that runs it); the rest stay,
+// naming what is still unread.
+function artifactsDone(i, say) {
+  const ready = [], unread = [];
+  for (const p of i.parked) {
+    const saved = savedOnBase(p.r);
+    const missing = p.urls.filter((u) => !snapshotOf(p.r.stateDir, u) && !saved.some((c) => canonicalUrl(c.url) === canonicalUrl(u)));
+    if (missing.length) unread.push(`${p.t.key} (${missing.join(', ')})`); else ready.push(p);
+  }
+  const { refused, parts, first } = requeueParked(ready);
+  if (unread.length) parts.push(`still no copy of ${andList(unread)}, so ${unread.length === 1 ? 'it stays' : 'they stay'} parked: run /desk-admit for ${unread.length === 1 ? 'it' : 'them'} in a session`);
+  return say(!refused.length && !unread.length, `${parts.join('; ')}.`,
+    first ? { to: first[0], text: `${andList(first[1])} parked on a claude.ai artifact that now has a copy: requeue ${themOf(first[1])} (node ~/.claude/desk/bin/queue.mjs requeue <TICKET>).` } : null);
+}
+// Sends each parked ticket back to a worker: requeued in its own batch, or named for the live session
+// that runs it. `parts` is the answer's line, a clause each; `first` the first session to message.
+const themOf = (ks) => (ks.length === 1 ? 'it' : 'them');
+function requeueParked(parked) {
+  const requeued = [], refused = [], bySession = new Map();
+  for (const p of parked) {
+    const w = runner(p.r);
+    if (w.by === 'session') { const s = w.name ?? '(no batch name recorded)'; bySession.set(s, [...(bySession.get(s) ?? []), p.t.key]); continue; }
+    const q = queueCmd(p.r, ['requeue', p.t.key]);
+    if (q.ok) requeued.push(p.t.key); else refused.push(`${p.t.key} (${q.out})`);
+  }
+  const parts = [...(requeued.length ? [`requeued ${andList(requeued)}; the next pass can spawn ${themOf(requeued)}`] : []),
+    ...(refused.length ? [`the requeue was refused for ${andList(refused)}`] : []),
+    ...[...bySession].map(([s, ks]) => `a live session (${s}) runs ${andList(ks)}: message it to requeue ${themOf(ks)}`)];
+  const [first] = bySession;
+  return { refused, parts, first };
+}
 // A committed copy of a desk template (the pre-push hook, the desk gate) the template has moved on
 // from, as the supervisor's last template check found it (repo-templates.mjs): one item for the repo.
 const TEMPLATES = 'templates';
@@ -959,6 +1029,27 @@ function startNoPr(i, say) {
     done.push(x.key); words.push(m.words);
   }
   return say(true, `hold on ${b} lifted from ${andList(done)}: ${words.join('; ')}.`);
+}
+
+// ---- plan-first work no session has claimed ---------------------------------------------------------
+// A lane C ticket parked at triage reaches the person only once it has waited unclaimed past config §3b
+// "Plan-first wait before needs-you (hours)" (desk-q's shownState). Those of one batch, one or more, are
+// one item, `plan-first`, naming the count and recommending the first be started in the batch's session,
+// which claims it. Not-now puts it off until the tickets it names change, unless HOLDS_BACK or more held
+// tickets wait behind them, as for any park (judged): then it is still listed, saying so.
+const PLAN_FIRST = 'plan-first';
+const planFirstHeld = (x) => !x.pr && planFirst(x.t);
+function planFirstItems(r) {
+  const ts = needsRows(r).filter(planFirstHeld).map((x) => x.t);
+  if (!ts.length) return [];
+  const keys = ts.map((t) => t.key), first = keys[0];
+  const w = runner(r);
+  const where = w.by === 'session' ? `the batch's session${w.name ? ` (${w.name})` : ''}` : `an interactive session in ${repoConfigValue(r.slug, 'repo-root') ?? r.name}`;
+  const hours = (r.ctx?.planFirstMs ?? 0) / 3600e3;
+  return [{ r, t: { key: PLAN_FIRST }, dir: r.stateDir, behind: heldBehindAll(keys.map((k) => [r, k])), item: { kind: PLAN_FIRST, planFirst: keys, ticket: first,
+    need: `${planFirstWaits(keys)}: ${andList(keys)}. No session has claimed ${keys.length === 1 ? 'it' : 'them'} for more than ${hours}h`,
+    actions: [['open', `start /desk-ticket ${first} in ${where}; it claims ${first}${keys.length > 1 ? ', and the others wait for that session or another' : ''}`], ['not-now']],
+    since: finite(Math.min(...ts.map((t) => timeOf(t.park?.since) ?? Infinity))) } }];
 }
 
 // ---- follow-on steps: what a ticket left for after its PR merges (pass.mjs follow_on) -------------
@@ -1547,7 +1638,16 @@ function leaseTrialAnswer(verb, now, say) {
 // ---- what a session handed the person (asks.mjs): one item an ask, on the repo's standing batch ----
 const ASK = 'ask:';
 const askItems = (batches) => batches.filter((b) => b.batch == null && !b.error).flatMap((r) => (r.asks ?? []).map((a) => ({ r, dir: r.stateDir, t: { key: `${ASK}${a.id}` },
-  item: { kind: 'ask', repoLevel: true, id: a.id, need: a.text, actions: [['done', 'a session handed this to you; say done once it is done, and it leaves the list'], ['not-now']], since: timeOf(a.at) } })));
+  item: { kind: 'ask', repoLevel: true, id: a.id, ...(a.settles ? { settles: a.settles } : {}), ...askShape(a), since: timeOf(a.at) } })));
+// An ask's need and actions: a plain ask is done once done; a choice offers each option, the recommended
+// one first, saying when it applies by itself (ask-defaults.mjs deadlineText).
+function askShape(a, now = new Date()) {
+  if (!(a.options?.length >= 2)) return { need: a.text, actions: [['done', 'a session handed this to you; say done once it is done, and it leaves the list'], ['not-now']] };
+  const when = deadlineText(a, now);
+  const ordered = a.recommended ? [a.recommended, ...a.options.filter((o) => o !== a.recommended)] : a.options;
+  return { need: when ? `${a.text} (${when})` : a.text, choice: true,
+    actions: [...ordered.map((o) => (o === a.recommended ? [o, when ?? 'the session that asked recommends it'] : [o])), ['done', 'it is settled some other way: it leaves the list, no option recorded'], ['not-now']] };
+}
 
 // ---- a pending priority proposal on a ticket (priority-proposal.mjs): one item a ticket --------------
 // A ticket whose triage record carries `priority_proposal` (ticket-facts.mjs: a label §4 Priority
@@ -1656,7 +1756,7 @@ function cloudItems(batches) {
   });
 }
 
-// ---- a session-run batch whose passes stopped (desk-q passesPaused): one item a batch ---------------
+// ---- a session-run batch whose passes stopped (desk-q sessionStalled): one item a batch -------------
 // A batch an interactive session runs (§3b Batches run by `session`) has no supervisor to start its
 // passes again, so when that session stalls (a turn that ended short of its next step, a request that
 // hung) nothing moves there. Once such a batch has run a pass and desk-q reads it paused (no pass for
@@ -1666,7 +1766,7 @@ function cloudItems(batches) {
 // pass, so not-now holds until a later stall; done records nothing: the next pass drops it.
 const STALLED = 'stalled';
 const stalledItems = (batches, now = Date.now()) => batches
-  .filter((b) => !b.error && b.q && b.last != null && b.run?.by === 'session' && passesPaused(b))
+  .filter((b) => !b.error && b.q && sessionStalled(b))
   .map((b) => ({ r: b, dir: b.stateDir, t: { key: b.batch == null ? STALLED : `${STALLED}:${b.batch}` }, item: { kind: STALLED, repoLevel: true,
     need: `passes stopped in ${b.name}, a batch a session runs, so nothing new starts or merges there: its last pass ran at ${utc(b.last)}${b.next != null ? `, and the next was due at ${utc(b.next)}` : ''}. The session running it looks stalled: resume it, or ${resumeOf(b)}`,
     note: `Passes stopped ${since(now - b.last)} ago.${b.rows.some((x) => x.k === 'running') ? ' Running workers carry on.' : ''}`,
@@ -1843,6 +1943,7 @@ function itemOf(r, x, reads = null, finds = reads) {
 // `legacy` reads an entry's inputs as recorded before blockers were settled, so an older entry stays
 // put off while what it keys to is unchanged.
 const PARK_KINDS = ['parked', 'session', 'spine', 'plan'];
+const KEPT_ASKS = ['reviewer', 'drift', 'tmpfs'];
 function putOffKey(r, t, item) {
   if (PARK_KINDS.includes(item.kind)) return { question: t.park?.question ?? '', inputs: t.park?.inputs ?? {} };
   // A step: what waits on it in every batch of the repo, not its need, which names only those passed.
@@ -1850,10 +1951,13 @@ function putOffKey(r, t, item) {
   if (item.kind === 'follow') return { question: `${t.key} follow-on`, inputs: { ticket: item.ticket, steps: item.need } };
   // A ticket newly held behind it brings it back.
   if (item.finished) return { question: `${t.key} finished`, inputs: { blocker: item.finished, waiting: item.waiting.join(', ') } };
+  if (item.planFirst) return planFirstPutOff(item.planFirst);
   if (item.blocker) return { question: `${t.key} link`, inputs: { ticket: item.ticket, blocker: item.blocker } };
   // A promotion PR opened, or one that changes state, brings it back.
   if (item.unpromoted) return { question: `${t.key} unpromoted`, inputs: { ticket: item.ticket, blocker: item.waitsOn, branch: item.unpromoted.branch, pr: String(item.unpromoted.pr ?? 'none'), state: item.unpromoted.state } };
   if (item.promotion != null) return { question: `${t.key} red`, inputs: { 'pr-head': item.head, checks: item.checks.join(', ') } };
+  // An ask desk keeps up to date itself is the same ask while its id stands: new wording brings nothing back.
+  if (item.kind === 'ask' && KEPT_ASKS.includes(item.settles)) return { question: `${t.key} ask`, inputs: { ticket: t.key }, legacy: ({ need, ...was }) => was };
   const inputs = { ticket: t.key };
   if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
   else inputs.need = item.putOffNeed ?? item.rawNeed ?? item.need;
@@ -1870,12 +1974,15 @@ function putOffKey(r, t, item) {
   };
   return { question: `${t.key} ${item.kind}`, inputs, legacy };
 }
+// The ticket an item is about, as desk-q's TICKET column shows it: `item.ticket` where it has one, else
+// its key past a follow:, link:, unpromoted: or step: prefix.
+export const itemKey = (t, item) => item.ticket ?? (/^(follow|link|unpromoted|step):/.test(t.key) ? t.key.replace(/^[a-z]+:/, '').split(':')[0] : t.key);
 // lookup, with an entry recorded in an older form read through the key's `legacy`.
 function lookupItem(register, key) {
   const l = lookup(register, key);
   if (l.status !== 'changed' || !key.legacy) return l;
   const was = key.legacy(l.entry.inputs ?? {});
-  return inputsHash(was) === inputsHash(key.inputs) ? { status: 'put_off', entry: l.entry } : { ...l, line: changedLine(l.entry, changes(was, key.inputs)) };
+  return inputsHash(was) === inputsHash(key.inputs) ? { status: l.entry.dismissed ? 'dismissed' : 'put_off', entry: l.entry } : { ...l, line: changedLine(l.entry, changes(was, key.inputs)) };
 }
 
 // A needs row as an item, and what the not-now register says of it: the one rule desk-q's count and
@@ -1903,10 +2010,8 @@ function heldBehindAll(pairs, self = false) {
 const holdingWords = (n) => `${n} tickets wait behind it, so it is listed though you put it off`;
 const behindWords = (n) => (n === 1 ? '1 ticket waits behind this' : `${n} tickets wait behind this`);
 // What a reply putting `key` off adds while enough tickets wait behind it that it stays listed.
-function stillListed(r, key) {
-  const n = heldBehind(r, key);
-  return n >= HOLDS_BACK ? ` It is still listed while ${HOLDS_BACK} or more tickets wait behind it (${n} do now).` : '';
-}
+const stillWords = (n) => (n >= HOLDS_BACK ? ` It is still listed while ${HOLDS_BACK} or more tickets wait behind it (${n} do now).` : '');
+const stillListed = (r, key) => stillWords(heldBehind(r, key));
 function judged(r, x, register, reads = null) {
   const item = itemOf(r, x, reads);
   const l = lookupItem(register, putOffKey(r, x.t, item));
@@ -1960,41 +2065,46 @@ export function needsCount(r) {
   const rows = [], held = [];
   let putOff = 0;
   const items = [], offItems = [];
+  // An item that is no ticket row, by its register entry: put off, dropped (neither listed nor
+  // counted), or listed, `listed` saying so. `dir` is the state folder it is put off in.
+  const place = (s, dir, listed = () => {}) => {
+    const st = lookupItem(register({ stateDir: dir }), putOffKey(s.r, s.t, s.item)).status;
+    if (st === 'dismissed') return;
+    if (st === 'put_off') { putOff++; offItems.push(s); } else { items.push(s); listed(); }
+  };
   // A batch's base-sync, base-push and subscription-off items are no ticket's row, so they are items.
   for (const x of countedBatchRows(r)) {
     const { item, l } = judged(x.b, x, register(x.b));
+    if (l.status === 'dismissed') continue;
     if (l.status === 'put_off') { putOff++; offItems.push({ r: x.b, t: x.t, item }); } else items.push({ r: x.b, t: x.t, item });
   }
   for (const x of needsRows(r)) {
     const b = x.b ?? r;
-    if (stepHeld(b, x) || noPrHeld(b, x)) { held.push(x); continue; }
+    if (stepHeld(b, x) || noPrHeld(b, x) || planFirstHeld(x)) { held.push(x); continue; }
     if (judged(b, x, register(b)).l.status === 'put_off') putOff++; else rows.push(x);
   }
   const live = new Set(), liveNoPr = new Set();
-  for (const s of stepItems((r.batches ?? [r]).filter((x) => x.q))) {
-    if (lookupItem(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else { items.push(s); live.add(s.item.step); }
-  }
-  for (const s of (r.batches ?? [r]).filter((x) => x.q).flatMap(noPrItems)) {
-    if (lookupItem(register(s.r), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else { items.push(s); liveNoPr.add(`${s.r.stateDir}\t${s.item.finished}`); }
+  for (const s of stepItems((r.batches ?? [r]).filter((x) => x.q))) place(s, s.dir, () => live.add(s.item.step));
+  for (const s of (r.batches ?? [r]).filter((x) => x.q).flatMap(noPrItems)) place(s, s.r.stateDir, () => liveNoPr.add(`${s.r.stateDir}\t${s.item.finished}`));
+  // A plan-first item put off or dropped is still listed while HOLDS_BACK or more wait behind it.
+  const livePlanFirst = new Set();
+  for (const s of (r.batches ?? [r]).filter((x) => x.q).flatMap(planFirstItems)) {
+    const st = lookupItem(register(s.r), putOffKey(s.r, s.t, s.item)).status;
+    const holding = s.behind >= HOLDS_BACK;
+    if (st === 'dismissed' && !holding) continue;
+    if (st === 'put_off' && !holding) { putOff++; offItems.push(s); } else { items.push(s); livePlanFirst.add(s.r.stateDir); }
   }
   // A row held by a step or a blocker with no PR is drawn as needing the person while that item is listed.
   const stepRows = held.filter((x) => {
     const b = x.b ?? r;
-    return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)) || unmergedBlockers(b.q, x.t).some((k) => liveNoPr.has(`${b.stateDir}\t${k}`));
+    return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)) || unmergedBlockers(b.q, x.t).some((k) => liveNoPr.has(`${b.stateDir}\t${k}`))
+      || (planFirstHeld(x) && livePlanFirst.has(b.stateDir));
   });
-  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...promotionItems(b), ...baseRedItems(b), ...duplicateItems(b)])) {
-    if (lookupItem(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') { putOff++; offItems.push(f); } else items.push(f);
-  }
-  for (const s of reviewerItems((r.batches ?? [r]).filter((x) => x.q))) {
-    if (lookupItem(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
-  }
+  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...promotionItems(b), ...baseRedItems(b), ...duplicateItems(b)])) place(f, f.r.stateDir);
+  for (const s of reviewerItems((r.batches ?? [r]).filter((x) => x.q))) place(s, s.dir);
   const own = (r.batches ?? [r]).filter((x) => x.q);
-  for (const s of [...signinItems(own, own), ...pageItems(own, { home: true })]) {
-    if (lookupItem(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
-  }
-  for (const s of [...askItems(r.batches ?? [r]), ...stalledItems(own), ...ticketlessItems(own), ...cloudItems(own), ...proposalItems(own)]) {
-    if (lookupItem(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
-  }
+  for (const s of [...signinItems(own, own), ...pageItems(own, { home: true })]) place(s, s.dir);
+  for (const s of [...askItems(r.batches ?? [r]), ...stalledItems(own), ...ticketlessItems(own), ...cloudItems(own), ...proposalItems(own)]) place(s, s.dir);
   return { shown: rows.length + items.length, putOff, rows, stepRows, items, offItems };
 }
 
@@ -2008,35 +2118,49 @@ const scopeOf = (repos, word) => (word ? batchesNamed(repos, word) : { named: nu
 // `ciRed` (READS.ciRed) reads the red-main issues assigned to the person; null reads none.
 export function collect({ word = null, now = Date.now(), repos = loadRepos(now, word), reads = READS, ciRed = reads?.ciRed ?? null } = {}) {
   const { named, scope } = scopeOf(repos, word);
-  const items = [];
+  const items = [], off = [];
   let putOff = 0;
   const seen = new Map();
   const unsetIn = (slug, k) => { const id = `${slug}\t${k}`; if (!seen.has(id)) seen.set(id, repoPermissionUnset(slug, k)); return seen.get(id); };
   const groups = new Map();
+  // Tickets parked on a claude.ai artifact no session has read, by repo: one item each (artifactsItem).
+  const unread = new Map();
   // The repo-level and step items, put off under their own key as any other item is.
   // `dir` is where it is put off, its batch's state folder unless the item names another.
   // `behind` held tickets wait behind it: it says so and ranks by that, as a ticket's item does (judged).
-  // `say` false ranks it without the words.
-  const repoItem = (r, t, item, since, dir = r.stateDir, behind = 0, say = true) => {
+  // `say` false ranks it without the words. `holds`: put off, it is still listed while HOLDS_BACK or more
+  // wait behind it, as a ticket's item is. One put off is kept in `off`, unlisted, for a drop to find;
+  // one dropped is neither listed nor counted.
+  const repoItem = (r, t, item, since, dir = r.stateDir, behind = 0, say = true, holds = false) => {
     const key = putOffKey(r, t, item);
     const l = lookupItem(readRegister(dir), key);
-    if (l.status === 'put_off') { putOff++; return; }
+    const holding = (l.status === 'put_off' || l.status === 'dismissed') && holds && behind >= HOLDS_BACK;
+    if (l.status === 'dismissed' && !holding) return;
+    if (l.status === 'put_off' && !holding) { putOff++; off.push({ r, t, ...item, putOffKey: key, putOffDir: dir, since }); return; }
     if (l.status === 'changed') item.need = `${item.need} (${l.line})`;
-    if (behind > 0 && say) item.need = `${item.need} (${behindWords(behind)})`;
+    if (behind > 0 && say) item.need = `${item.need} (${(holding ? holdingWords : behindWords)(behind)})`;
     items.push({ r, t, ...item, putOffKey: key, putOffDir: dir, since, broken: false, ...(behind > 0 ? { behind } : {}) });
   };
   for (const r of scope.filter((x) => !x.error && x.q)) {
     const register = readRegister(r.stateDir);
     for (const x of [...batchRows(r), ...needsRows(r)]) {
-      if (stepHeld(r, x) || noPrHeld(r, x)) continue;
+      if (stepHeld(r, x) || noPrHeld(r, x) || planFirstHeld(x)) continue;
       const { item, l } = judged(r, x, register, reads);
-      if (l.status === 'put_off') { putOff++; continue; }
+      if (l.status === 'dismissed') continue;
+      // A put-off batch-wide hold is no ticket row, so a drop finds it in `off` as a repo-level item.
+      if (l.status === 'put_off') { putOff++; if (!r.q.tickets?.[x.t.key]) off.push({ r, t: x.t, ...item, putOffKey: putOffKey(r, x.t, item), putOffDir: r.stateDir }); continue; }
       const since = x.baseSync ? timeOf(r.q.base_sync_stuck.since) : x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : x.subOff ? timeOf(r.q.subscription_off.since) : timeOf(x.t.park?.since ?? (x.pr ? x.t.undraft?.at : null) ?? x.t.added_at);
       const row = item.kind === 'parked' ? unsetRowOf(r, x.t, unsetIn) : null;
       if (row) {
         const id = `${r.slug}\t${row}`;
         if (!groups.has(id)) groups.set(id, { r: standingOf(repos, r), key: row, parked: [] });
         groups.get(id).parked.push({ r, t: x.t, since });
+        continue;
+      }
+      const urls = item.kind === 'parked' && !item.personOnly ? designParkUrls(x.t.park?.question) : null;
+      if (urls?.length) {
+        if (!unread.has(r.slug)) unread.set(r.slug, { r: standingOf(repos, r), parked: [] });
+        unread.get(r.slug).parked.push({ r, t: x.t, since, urls });
         continue;
       }
       if (l.status === 'changed') item.need = `${item.need} (${l.line})`;
@@ -2053,6 +2177,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   }
   for (const f of inScope.flatMap((b) => [...followItems(b, reads), ...linkItems(b), ...unpromotedItems(b), ...duplicateItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
   for (const f of inScope.flatMap(noPrItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, f.said);
+  for (const f of inScope.flatMap(planFirstItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, true, true);
   for (const f of inScope.flatMap(baseRedItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
   // Its need names the follow items waiting on it, so it ranks by them without saying the count.
   for (const f of inScope.flatMap(promotionItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
@@ -2070,6 +2195,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   // Unscoped, every configured repo: a quiet repo, which the home screen does not show, is where a lane goes stale.
   if (ciRed) for (const s of ciRedItems(repos, word ? scope : repos, ciRed)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))), g.r.stateDir, heldBehindAll(g.parked.map((p) => [p.r, p.t.key])));
+  for (const g of unread.values()) repoItem(g.r, { key: ARTIFACTS }, artifactsItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))), g.r.stateDir, heldBehindAll(g.parked.map((p) => [p.r, p.t.key])));
   const slugs = new Set((word ? scope : repos).map((x) => x.slug));
   for (const slug of slugs) {
     const r = repos.find((x) => x.slug === slug && x.batch == null);
@@ -2081,7 +2207,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   const built = (x) => Object.keys(x.r?.q?.tickets ?? {}).indexOf(x.t.key);
   const heads = (a, b) => (a.r === b.r && (a.behind ?? 0) > 0 && built(a) >= 0 && built(b) >= 0 ? built(a) - built(b) : 0);
   items.sort((a, b) => (b.broken - a.broken) || (!!b.holdsAll - !!a.holdsAll) || ((b.behind ?? 0) - (a.behind ?? 0)) || heads(a, b) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
-  return { repos, scope, items, named, putOff };
+  return { repos, scope, items, named, putOff, off };
 }
 
 const actionText = ([name, why, note], i) => `${i + 1}. ${name}${why ? ` (recommended: ${why})` : note ? ` (${note})` : ''}`;
@@ -2205,9 +2331,12 @@ function namedFixturesText(r, ticket, text) {
   ].map((s) => ` ${s}`).join('');
 }
 
+// The actions that answer a park's ask; a not-now puts it off, and a move or drop answers nothing.
+const ASK_ANSWERS = ['answer', 'resume', 'approve', 'reject', 'done', 'requeue'];
+
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(NOPR) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(NOPR) || ticket === PLAN_FIRST || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === ARTIFACTS || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -2221,16 +2350,26 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   // offers, and a not-now puts off beside its own row's item.
   const dup = r.q ? duplicateRow(r, ticket) : null;
   const x = !row || verb === 'drop' ? dup ?? row : row;
-  if (!x) return movedOn(r, ticket, verb, text, now);
+  // A drop the ticket's own row does not take may name a put-off item by the ticket key desk-q shows.
+  const offDrop = () => (verb === 'drop' ? dropPutOff(collect({ word, now, repos, reads: null }), ticket, now) : null);
+  if (!x) return offDrop() ?? movedOn(r, ticket, verb, text, now);
   const item = itemOf(r, x, null, reads);
   // move is taken on any parked or stopped item, listed or not, so one naming no running batch is
   // refused naming those that are.
-  const allowed = [...item.actions.map(([a]) => a.split(' ')[0]), ...(MOVABLE.includes(item.kind) ? ['move'] : [])];
-  if (!allowed.includes(verb)) return { ok: false, line: `${r.name} ${ticket}: ${verb} is not an action for a ${item.kind} item (${[...new Set(allowed)].join(', ')}).` };
+  // A put-off ticket row can always be dropped (queue.mjs drop says if it cannot), so one whose premise
+  // was decided otherwise leaves Put off.
+  const putOffRow = verb === 'drop' && !!r.q.tickets?.[x.t.key] && judged(r, x, readRegister(r.stateDir), reads).l.status === 'put_off';
+  const allowed = [...item.actions.map(([a]) => a.split(' ')[0]), ...(MOVABLE.includes(item.kind) ? ['move'] : []), ...(putOffRow ? ['drop'] : [])];
+  if (!allowed.includes(verb)) return offDrop() ?? { ok: false, line: `${r.name} ${ticket}: ${verb} is not an action for a ${item.kind} item (${[...new Set(allowed)].join(', ')}).` };
   const w = runner(r);
   const tail = w.by === 'stopped' ? ` Passes are stopped in ${r.name}: nothing acts on it until they resume.` : '';
   let copiedNote = '';
-  const say = (ok, line, message = null) => ({ ok, line: `${r.name} ${ticket}: ${line}${ok ? tail : ''}${copiedNote}`, message });
+  // An action recorded on a park answers its ask (ask-ledger.mjs), by the person, in this session where
+  // one is named: answer.mjs records it too where the action goes through it, and the ledger keeps the first.
+  const asked = (ok) => (ok && ASK_ANSWERS.includes(verb) && x.t.state === 'parked' && x.t.park?.since && !isHeld(x.t)
+    ? askAnswered(r.queuePath, { key: ticket, since: x.t.park.since, by: 'person', session: process.env.CLAUDE_CODE_SESSION_ID ?? null, at: now }, { on: ledgerOnIn(r.slug), by: 'needs-you' }).map((l) => ` ${l}`).join('')
+    : '');
+  const say = (ok, line, message = null) => ({ ok, line: `${r.name} ${ticket}: ${line}${ok ? tail : ''}${copiedNote}${asked(ok)}`, message });
   if (['answer', 'resume', 'reject', 'override'].includes(verb) && !text.trim()) return say(false, `${verb} needs the text to record.`);
   // A file the answer names is copied where the ticket's next worker reads it, before any requeue.
   if (['answer', 'resume'].includes(verb)) copiedNote = namedFixturesText(r, ticket, text);
@@ -2504,14 +2643,29 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   }
 }
 
+// A put-off item that is no ticket row has no batch to drop it from, so a drop records it dismissed:
+// it leaves Put off and is not listed again until what it keys to changes. Found in collect's `off`
+// by its own key, else by the ticket key desk-q shows for it (itemKey); refused naming each own key
+// where more than one shows so. null where none is put off under the key.
+function dropPutOff(c, ticket, now) {
+  const own = c.off.filter((y) => y.t.key === ticket);
+  const hits = own.length ? own : c.off.filter((y) => itemKey(y.t, y) === ticket);
+  if (!hits.length) return null;
+  if (hits.length > 1) return { ok: false, line: `${c.named?.name ?? hits[0].r.repo} ${ticket}: ${hits.length} put-off items show as ${ticket}, so nothing was dropped. Drop one by its own key: ${hits.map((y) => y.t.key).join(', ')}.`, message: null };
+  const [off] = hits, dir = off.putOffDir ?? off.r.stateDir;
+  addPutOff({ ...putOffEntry({ question: off.putOffKey.question, ticket: off.t.key, inputs: off.putOffKey.inputs, at: new Date(now).toISOString() }), dismissed: true }, dir);
+  return { ok: true, line: `${off.r.repo} ${off.t.key}: dropped (${notNowPath(dir)}), so it leaves Put off and is not listed again until it changes.`, message: null };
+}
+
 // A repo-level or step item's answer. Done on an unset row requeues every ticket parked on it once the
 // row is set, each in its own batch (or names the live session to message); done on behind templates
 // checks the copies again now; done on a step records nothing, since the pass reads the step from Jira.
 function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = READS }) {
   const c = collect({ word, now, repos, reads: null, ciRed: ticket.startsWith(CI_RED) ? (reads ?? READS).ciRed : null });
-  let i = c.items.find((y) => (y.repoLevel || y.proposal || y.kind === 'step' || y.kind === 'follow' || y.blocker || y.unpromoted || y.finished || y.promotion != null) && y.t.key === ticket);
-  // A row set since the list was shown no longer groups its parks there; done still finds them.
-  if (!i && ticket.startsWith(UNSET) && c.named) {
+  let i = c.items.find((y) => (y.repoLevel || y.proposal || y.kind === 'step' || y.kind === 'follow' || y.blocker || y.unpromoted || y.finished || y.planFirst || y.promotion != null) && y.t.key === ticket);
+  // A row set since the list was shown no longer groups its parks there; done still finds them. One
+  // put off is dropped as it stands, before that.
+  if (!i && ticket.startsWith(UNSET) && c.named && !(action.split(/\s+/)[0] === 'drop' && c.off.some((y) => y.t.key === ticket))) {
     const key = ticket.slice(UNSET.length);
     const parked = repos.filter((b) => b.slug === c.named.slug && !b.error && b.q)
       .flatMap((b) => needsRows(b).filter((x) => x.t.state === 'parked' && namesRow(String(x.t.park?.question ?? ''), key)).map((x) => ({ r: b, t: x.t })));
@@ -2521,13 +2675,15 @@ function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = R
       i.putOffKey = putOffKey(i.r, i.t, i);
     }
   }
-  if (!i) return { ok: false, line: `${c.named?.name ?? word} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
   const [verb] = action.split(/\s+/);
+  const dropped = !i && verb === 'drop' ? dropPutOff(c, ticket, now) : null;
+  if (dropped) return dropped;
+  if (!i) return { ok: false, line: `${c.named?.name ?? word} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
   const say = (ok, line, message = null) => ({ ok, line: `${i.r.repo} ${ticket}: ${line}`, message });
   if (!i.actions.some(([a]) => a === verb)) return say(false, `${verb} is not an action for a ${i.kind} item (${i.actions.map(([a]) => a).join(', ')}).`);
   if (verb === 'not-now') {
     addPutOff(putOffEntry({ ...i.putOffKey, ticket, at: new Date(now).toISOString(), ...(i.kind === 'step' ? { actions: verbsOf(i) } : {}) }), i.putOffDir ?? i.r.stateDir);
-    return say(true, `put off (${notNowPath(i.putOffDir ?? i.r.stateDir)}).`);
+    return say(true, `put off (${notNowPath(i.putOffDir ?? i.r.stateDir)}).${i.planFirst ? stillWords(i.behind ?? 0) : ''}`);
   }
   // Done on a follow item records the steps it lists as settled (run, or closed on the PR's own evidence), each by its text and gate, under the queue
   // lock, so the ticket's other steps (another gate's, or one written since this read) are kept.
@@ -2538,9 +2694,15 @@ function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = R
   if (i.proposal) return proposalAnswer(i, verb, text, reads ?? READS, now, say);
   if (i.unpromoted) return verb === 'promote' ? promoteBase(i, say) : startWithout(i, say);
   if (i.finished) return startNoPr(i, say);
+  if (i.planFirst) return say(true, `nothing recorded. Open the batch's session, or an interactive one in ${rootOf(i.r)}, and run /desk-ticket ${i.ticket}: it claims ${i.ticket}${i.planFirst.length > 1 ? `, and ${andList(i.planFirst.slice(1))} wait for a session to take ${i.planFirst.length === 2 ? 'it' : 'them'} on` : ''}.`);
   if (i.promotion != null) return say(true, `noted: the next pass reads promotion PR #${i.promotion}'s checks again, and this item goes once they pass.`);
   if (i.blocker) return say(true, `noted: the next pass that reads ${i.ticket}'s blockers clears this once ${i.blocker} is no longer linked, and lifts any hold on it.`);
   if (i.kind === REVIEWER) return say(true, 'noted: the next pass checks the account again, and lifts the hold on every PR it names once the check passes.');
+  if (i.kind === 'ask' && i.choice && verb !== 'done') {
+    let a;
+    try { a = answerAsk(i.r.stateDir, i.id, { chose: verb, by: 'person', at: now }); } catch (e) { return say(false, `the choice could not be recorded (${one(e.message)}).`); }
+    return a ? say(true, `${verb}, recorded as your choice; the session that asked reads it (needs-you.mjs ask-status), and it is off your list.`) : say(false, 'it is no longer open: it was answered or applied already.');
+  }
   if (i.kind === 'ask') {
     try { removeAsk(i.r.stateDir, i.id); } catch (e) { return say(false, `it could not be taken off the list (${one(e.message)}).`); }
     return say(true, 'done, so it is off your list.');
@@ -2557,6 +2719,7 @@ function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = R
   if (i.kind === LEASE_TRIAL) return leaseTrialAnswer(verb, now, say);
   if (i.kind === PAGE) return say(true, 'noted: once desk is installed again, the next upload checks the page; once it finds the composer this item goes and the upload queue resumes.');
   if (i.kind === 'step') return say(true, `noted: the next pass that reads ${i.step} from Jira lifts the hold on what waits for it once it is Done${i.r.ctx?.merges ? ', and desk then merges them' : ''}.`);
+  if (i.kind === ARTIFACTS) return artifactsDone(i, say);
   if (i.kind === TEMPLATES) {
     let rec;
     try { rec = templatesCheck({ slug: i.r.slug, force: true, now }).record; } catch (e) { return say(false, `could not check the copies again (${one(e.message)}), so it stays on your list.`); }
@@ -2567,20 +2730,9 @@ function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = R
   }
   const key = ticket.slice(UNSET.length);
   if (repoPermissionUnset(i.r.slug, key)) return say(false, `§3 ${key} is still not set in ${i.r.repo}'s config, so nothing was requeued. Answer it with /desk-update in ${rootOf(i.r)} first.`);
-  const requeued = [], refused = [], bySession = new Map();
-  for (const p of i.parked) {
-    const w = runner(p.r);
-    if (w.by === 'session') { const s = w.name ?? '(no batch name recorded)'; bySession.set(s, [...(bySession.get(s) ?? []), p.t.key]); continue; }
-    const q = queueCmd(p.r, ['requeue', p.t.key]);
-    if (q.ok) requeued.push(p.t.key); else refused.push(`${p.t.key} (${q.out})`);
-  }
-  const them = (ks) => (ks.length === 1 ? 'it' : 'them');
-  const parts = [...(requeued.length ? [`requeued ${andList(requeued)}; the next pass can spawn ${them(requeued)}`] : []),
-    ...(refused.length ? [`the requeue was refused for ${andList(refused)}`] : []),
-    ...[...bySession].map(([s, ks]) => `a live session (${s}) runs ${andList(ks)}: message it to requeue ${them(ks)}`)];
-  const [first] = bySession;
+  const { refused, parts, first } = requeueParked(i.parked);
   return say(!refused.length, `§3 ${key} is set now: ${parts.join('; ')}.`,
-    first ? { to: first[0], text: `${andList(first[1])} parked on §3 ${key}, which is now set: requeue ${them(first[1])} (node ~/.claude/desk/bin/queue.mjs requeue <TICKET>).` } : null);
+    first ? { to: first[0], text: `${andList(first[1])} parked on §3 ${key}, which is now set: requeue ${themOf(first[1])} (node ~/.claude/desk/bin/queue.mjs requeue <TICKET>).` } : null);
 }
 
 // What is left: desk-q's NEEDS YOU count in scope (needsCount's rule), then a line for each unfinished batch there whose passes are
@@ -2599,13 +2751,58 @@ export function leftText({ word = null, now = Date.now(), repos = loadRepos(now,
 
 // Records an action a session hands the person on the repo `word` names: { ok, line }.
 // `until`: the tickets it waits on (--until), so a pass drops it once they are all merged or done.
-export function ask({ word, text, until = [], now = Date.now(), repos = loadRepos(now, word) }) {
+export function ask({ word, text, until = [], options = [], recommend = null, applyBy = null, neverDefault: never = null, now = Date.now(), repos = loadRepos(now, word) }) {
   const what = String(text ?? '').replace(/\s+/g, ' ').trim();
   if (!what) return { ok: false, line: 'say what the person is to do: needs-you.mjs ask <repo> "<what to do>" [--until <TICKET>[,<TICKET>...]]' };
   if (until.some((k) => !SAFE_ID.test(k))) return { ok: false, line: `--until wants ticket keys, comma-separated, not "${until.join(',')}"` };
   const r = standingOf(repos, batchesNamed(repos, word).named);
-  const { id, added, until: kept } = addAsk(r.stateDir, what, now, { until });
-  return { ok: true, line: `${r.repo} ${ASK}${id}: ${added ? 'recorded' : 'already recorded'}; /desk-needs-you and desk-q list it until you say done${kept.length ? `, or a pass finds ${kept.join(', ')} merged or done` : ''}.` };
+  let choice = null;
+  if (options.length || recommend || applyBy || never) {
+    if (options.length < 2 || options.some((o) => !OPTION.test(o)) || new Set(options).size < options.length) return { ok: false, line: `--options wants two or more different one-word options, |-separated, not "${options.join('|')}"` };
+    if (options.some((o) => ['done', 'not-now'].includes(o))) return { ok: false, line: '--options cannot be done or not-now: those are every ask\'s own' };
+    if (recommend != null && !options.includes(recommend)) return { ok: false, line: `--recommend wants one of the options (${options.join(', ')}), not "${recommend}"` };
+    const by = applyBy == null ? null : applyByOf(applyBy, new Date(now));
+    if (applyBy != null && !by) return { ok: false, line: `--apply-by wants a local HH:MM or an ISO time, not "${applyBy}"` };
+    const nd = recommend ? neverDefault(what, recommend, never) : null;
+    let times = null;
+    try { times = [].concat(repoConfigValues(r.slug, 'checkin-times') ?? []).join(' ') || null; } catch { /* unread: the default times */ }
+    const c = checkinTimes(times);
+    const at = !recommend || nd ? null : by ?? nextCheckin(c.ok ? c.times : DEFAULT_TIMES, new Date(now));
+    choice = { options, recommended: recommend, apply_by: at ? at.toISOString() : null, never_default: nd };
+  }
+  const { id, added, until: kept, ask: a } = addAsk(r.stateDir, what, now, { until, choice });
+  const when = choice ? deadlineText(a, new Date(now)) : null;
+  return { ok: true, line: `${r.repo} ${ASK}${id}: ${added ? 'recorded' : 'already recorded'}; /desk-needs-you and desk-q list it until you ${choice ? `choose (${options.join(', ')})` : 'say done'}${kept.length ? `, or a pass finds ${kept.join(', ')} merged or done` : ''}${when ? `; it ${when}` : ''}.` };
+}
+
+// ask's flags after the repo and text: { until, options, recommend, applyBy, neverDefault }, or null where
+// one is unknown or has no value.
+function askFlags(args) {
+  const f = { until: [], options: [], recommend: null, applyBy: null, neverDefault: null };
+  for (let i = 0; i < args.length; i += 2) {
+    const [k, v] = [args[i], args[i + 1]];
+    if (v == null) return null;
+    if (k === '--until') f.until = v.split(',').map((x) => x.trim()).filter(Boolean);
+    else if (k === '--options') f.options = v.split('|').map((x) => x.trim()).filter(Boolean);
+    else if (k === '--recommend') f.recommend = v.trim();
+    else if (k === '--apply-by') f.applyBy = v.trim();
+    else if (k === '--never-default') f.neverDefault = v;
+    else return null;
+  }
+  return f;
+}
+
+// Whether ask `id` of the repo is open, or which option was chosen, by whom, and when.
+export function askStatus({ word, id, now = Date.now(), repos = loadRepos(now, word) }) {
+  const r = standingOf(repos, batchesNamed(repos, word).named);
+  const open = readAsks(r.stateDir).find((a) => a.id === id);
+  if (open) return { ok: true, line: `${r.repo} ${ASK}${id}: open${open.recommended ? `; it ${deadlineText(open, new Date(now)) ?? 'waits for the person'}` : ''}` };
+  const a = answerOf(r.stateDir, id);
+  if (!a) return { ok: true, line: `${r.repo} ${ASK}${id}: not open, and no choice is recorded (done, or never asked)` };
+  // A default the person overrode from the check-in digest (digest.mjs override) stands as their choice.
+  const o = a.by === 'default' ? readDecisions(r.stateDir).overrides.filter((x) => x.ticket === `${ASK}${id}`).at(-1) : null;
+  if (o) return { ok: true, line: `${r.repo} ${ASK}${id}: ${o.chose}, chosen by the person at ${o.at}, overriding ${a.chose}, which desk applied by default at ${a.answered_at}` };
+  return { ok: true, line: `${r.repo} ${ASK}${id}: ${a.chose}, chosen ${a.by === 'default' ? 'by default, nobody having chosen,' : 'by the person'} at ${a.answered_at}` };
 }
 
 // One run of the command line, in this process: { code, out, err }, which the entry below prints and exits
@@ -2636,11 +2833,14 @@ export function run(argv, { reads } = {}) {
       const res = record({ word, ticket, action: 'move', text: to, ...at });
       lines.push(res.line);
       if (!res.ok) return end(EXIT.SHOW_PERSON);
-    } else if (cmd === 'ask' && (rest.length === 2 || (rest.length === 4 && rest[2] === '--until'))) {
-      const res = ask({ word: rest[0], text: rest[1], until: rest.length === 4 ? rest[3].split(',').map((k) => k.trim()).filter(Boolean) : [] });
+    } else if (cmd === 'ask' && rest.length >= 2 && askFlags(rest.slice(2))) {
+      const f = askFlags(rest.slice(2));
+      const res = ask({ word: rest[0], text: rest[1], ...f });
       lines.push(res.line);
       if (!res.ok) return end(EXIT.SHOW_PERSON);
-    } else return end(EXIT.SHOW_PERSON, 'usage: needs-you.mjs list [--json] [--no-settle] [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>" [--until <TICKET>[,<TICKET>...]]\n');
+    } else if (cmd === 'ask-status' && rest.length === 2 && /^(ask:)?\d+$/.test(rest[1])) {
+      lines.push(askStatus({ word: rest[0], id: Number(rest[1].replace(/^ask:/, '')) }).line);
+    } else return end(EXIT.SHOW_PERSON, 'usage: needs-you.mjs list [--json] [--no-settle] [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>" [--until <TICKET>[,<TICKET>...]] [--options <a>|<b> [--recommend <a>] [--apply-by <HH:MM|ISO>] [--never-default "<why>"]] | ask-status <repo> <id>\n');
   } catch (e) { return end(EXIT.SHOW_PERSON, `${e.message}\n`); }
   return end(0);
 }

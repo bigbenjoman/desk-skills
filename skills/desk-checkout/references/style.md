@@ -55,8 +55,9 @@ The team's own previous posts (in the §4 Check-out destination channel or file)
 here. Where there are none to read:
 
 - Headers vary ("Check out", "Check-out", "Monday check-out"). Keep the user's own form; the
-  default is `Check-out`, with the day when posting late or for another day:
-  `Check-out (Friday)`.
+  default is `Check-out`. A day goes in only when posting on a later day than the work, and it is
+  the day the work happened: `Check-out (Friday)`. Never a window qualifier such as
+  `(since yesterday's post)`: every check-out starts where the last one ended.
 - Status suffixes a team reads at a glance: `(merged)`, `(in review)`, `(raised)`,
   `(investigated, no code change)`, `(on hold pending ABC-nnn)`, `(not started)`.
 - Tickets by their key (§4 Ticket key pattern), and PRs as `#1234` next to their ticket:
@@ -67,6 +68,10 @@ here. Where there are none to read:
 ## Don'ts
 
 - Don't write "Worked on X" with no outcome. Say what changed or what was found.
+- Don't give a count over a different window from the post's. "17 more fixes merged" since midnight
+  in a post that covers the evening before too is wrong; count from the previous post.
+- Don't take when a setting changed from a plan. Read it: one already applied is "now", not
+  "from tomorrow".
 - Don't list every ticket key raised in bulk triage.
 - Don't use em-dashes as connectors; use a spaced hyphen ` - `, a colon or a full stop.
 - Don't use reflexive hedges like "I think" or "possibly". State real uncertainty once, with what

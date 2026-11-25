@@ -34,7 +34,7 @@ EOF
 # record <type> <by>: the ledger records #501 merged (or armed) by another desk path at SHA1.
 record(){
   node --input-type=module -e "const { append } = await import('$B/ticket-ledger.mjs');
-    const data = '$1' === 'merged' ? { by: '$2', pr: 501, head_sha: '$SHA1', base: 'main' } : { by: '$2', pr: 501, head_sha: '$SHA1' };
+    const data = '$1' === 'merged' ? { by: '$2', pr: 501, head_sha: '$SHA1', base: 'main' } : { by: '$2', pr: 501, head_sha: '$SHA1', line: 0 };
     append('$T', [{ type: '$1', batch: 'standing', key: 'T-1', data }]);"
 }
 # go [<levers>]: two loops, the first confirming #501 green and the second reaching its merge.

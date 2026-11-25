@@ -1389,6 +1389,19 @@ if [ -f "$SRC/vendor/sources.json" ]; then
 fi
 
 # ---------------------------------------------------------------------------------------------
+section "Config drift  -> each repo's needs-you list"
+
+# A release can add config rows a repo's config lacks. Each such repo gets one needs-you ask naming them,
+# so a release installed mid-batch is not found out by a ticket parking on one.
+if [ -f "$DESKDIR/bin/drift-asks.mjs" ]; then
+  if out="$(DESK_HOME="$DESKDIR" node "$DESKDIR/bin/drift-asks.mjs" "$(DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" version 2>/dev/null)" 2>&1)"; then
+    printf '%s\n' "$out" | sed 's/^/  /'
+  else
+    warn "could not check the repos' configs for rows this release added"; show_err "$out"
+  fi
+fi
+
+# ---------------------------------------------------------------------------------------------
 section "Running autopilot  -> onto the code just installed"
 
 # Last, once every file is in place: a merge driver or supervisor agent already running keeps the

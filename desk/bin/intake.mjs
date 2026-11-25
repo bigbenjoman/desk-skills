@@ -73,8 +73,8 @@ import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic, blockersFact } from './desk-q-eta.mjs';
-import { machineCap } from './borrow.mjs';
-import { addAsk } from './asks.mjs';
+import { machineCap, lastBeat } from './borrow.mjs';
+import { addAsk, settleAdmitted } from './asks.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { readUsage } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
@@ -86,6 +86,7 @@ import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, pr
 import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
 import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
 import { tryLockFile, unlockFile } from './dir-lock.mjs';
+import { DRAFTED_NOTE, changesClause, draftedCriteria, fillTicket, noTestableOutcome } from './ticket-fill.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const INTAKE_EVERY_MS = 15 * 60 * 1000;
@@ -136,9 +137,14 @@ const lintBlocking = (r) => {
 // and admits it again, rather than asking anyone for a design no change of it shows.
 const rendersNothing = (r) => {
   if (r.renders !== false) return '';
-  const files = (Array.isArray(r.files_in_scope) ? r.files_in_scope : []).filter((f) => typeof f === 'string');
-  const which = files.length ? `: it changes ${files.slice(0, 3).join(', ')}${files.length > 3 ? ` and ${files.length - 3} more` : ''}` : '';
-  return ` — triage found nothing renders${which}; write "No UI." with that reason in its Design section, then admit it again`;
+  return ` — triage found nothing renders${changesClause(r)}; write "No UI." with that reason in its Design section, then admit it again`;
+};
+// No acceptance criteria: the ones triage drafted from the ticket's goal and proposal, to write as they
+// are, or that its text states no testable outcome, which only the person can settle.
+const criteriaDrafted = (r) => {
+  const drafted = draftedCriteria(r);
+  if (drafted?.length) return ` — triage drafted ${drafted.length} from its goal and proposal; write them as its Acceptance criteria, under "${DRAFTED_NOTE}", then admit it again: ${drafted.map((c, i) => `AC${i + 1}: ${c}`).join(' · ')}`;
+  return noTestableOutcome(r) ? ' — its text states no testable outcome, so desk drafted none: the person writes them (asked on /desk-needs-you)' : '';
 };
 // A ticket labelled as the person's step (labelPark) has none: it is admitted parked on it, whatever its
 // lane, lint or questions, since no worker takes it.
@@ -147,7 +153,9 @@ export function intakeReasons(r) {
   if (labelPark(r, E.personStepLabels(), E.personInputLabels())) return out;
   if (needsPersonLane(r)) out.push(`lane ${r.lane}: ${r.lane === 'D' ? `${designGap(r)}; ` : ''}${String(r.lane_reason ?? 'needs a person').slice(0, 160)}`);
   if (r.lint_error) out.push(`lint did not run (${r.lint_error})`);
-  for (const f of lintBlocking(r)) out.push(`lint (blocking): ${f.message}${f.rule === 'design' ? rendersNothing(r) : ''}`);
+  for (const f of lintBlocking(r)) out.push(`lint (blocking): ${f.message}${f.rule === 'design' ? rendersNothing(r) : f.rule === 'criteria' ? criteriaDrafted(r) : ''}`);
+  // Sections desk drafted for an issue but could not write (ticket-fill.mjs): the whole new body is in a file.
+  if (r.fill) out.push(`desk drafted ${r.fill.names} for it but wrote nothing, as ${r.fill.why}: once the person agrees, write it with gh issue edit ${r.fill.issue} --repo ${r.fill.repo} --body-file ${r.fill.path}, then admit it again`);
   if (r.facts_error) out.push(`its Jira facts could not be read (${r.facts_error})`);
   const { ask } = triageCalls(r);
   if (ask.length) out.push(`open question(s): ${ask.join(' · ')}`);
@@ -964,8 +972,20 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
     // The person's own step (labelPark) is admitted parked on that instead: no worker reads its design.
     const unread = needsPersonLane(t.rec) || labelPark(t.rec, E.personStepLabels(), E.personInputLabels()) ? [] : unreadCanvases(t.rec);
     if (unread.length) return refuse(key, `design not snapshotted: ${unread.join(', ')}: snapshot it into ${join(state, 'designs', key)}/ and record it (desk-design write), import its HTML export (desk-design import), or have it shared with this subscription, then run /desk-admit ${key} again`);
-    recs[key] = t.rec;
-    seen[key] = t.rec;
+    // Sections desk writes from the ticket itself go in, and the ticket is linted again, before it is
+    // placed; one whose text states no testable outcome is asked of the person once, on needs-you.
+    let rec = t.rec;
+    try {
+      const f = fillTicket(key, rec, { state });
+      f.lines.forEach(say);
+      rec = f.rec;
+    } catch (e) { say(`fill: ${key} not filled: ${e.message}`); }
+    if (noTestableOutcome(rec)) {
+      const { added } = addAsk(state, `write acceptance criteria for ${key}: its text states no testable outcome, so desk drafted none and /desk-admit admitted nothing`, now.getTime(), { until: [key], settles: 'admit' });
+      say(`needs-you: ${added ? 'recorded' : 'already records'} writing acceptance criteria for ${key}`);
+    }
+    recs[key] = rec;
+    seen[key] = rec;
   };
 
   let started = null;
@@ -1081,11 +1101,23 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
   // No supervisor runs a session-run repo's batches, so nothing is promised of one there.
   if (theirs && bySession) say(`no supervisor runs this repo's batches (config §3b "${E.CONFIG_ROWS['batches-run-by'].row}" is session): ${ours.length ? `the other${theirs === 1 ? '' : 's'}` : theirs === 1 ? 'it' : 'they'} ${theirs === 1 ? 'waits' : 'wait'} for a session to run ${theirs === 1 ? 'its' : 'their'} batch (/desk-autopilot)`);
   else if (theirs) say(`the supervisor's next tick picks ${ours.length ? `up the other${theirs === 1 ? '' : 's'}` : `${theirs === 1 ? 'it' : 'them'} up`}`);
-  // Nothing else shows a ticket refused as unrun: it is in no queue, so desk-q has no row for it.
-  if (unrunKeys.length) {
-    const { added } = addAsk(state, `start /desk-autopilot ${unrunKeys.join(' ')} in a session: no supervisor runs this repo's batches, so /desk-admit admitted nothing`, now.getTime());
+  // Nothing else shows a ticket refused as unrun: it is in no queue, so desk-q has no row for it. Run in
+  // the session whose pass wrote the batch's last heartbeat, that session admits it itself, so nothing
+  // waits on the person. Else the ask waits on those tickets being admitted (`settles: 'admit'`): the
+  // admit that takes them drops it, below.
+  const here = process.env.CLAUDE_CODE_SESSION_ID || null;
+  if (unrunKeys.length && here && lastBeat(state, E.queueFile())?.session === here) {
+    say(`this session runs this repo's batches: admit ${unrunKeys.join(' ')} again with --session (node ${join(HERE, 'intake.mjs')} admit ${unrunKeys.join(' ')} --session); nothing is put on needs-you`);
+  } else if (unrunKeys.length) {
+    const { added } = addAsk(state, `start /desk-autopilot ${unrunKeys.join(' ')} in a session: no supervisor runs this repo's batches, so /desk-admit admitted nothing`, now.getTime(), { until: unrunKeys, settles: 'admit' });
     say(`needs-you: ${added ? 'recorded' : 'already records'} starting /desk-autopilot for ${unrunKeys.join(' ')}`);
   }
+  // An ask to start a session for tickets now admitted, here or before, into this batch or another
+  // live one, waits on nothing.
+  let after = null;
+  try { after = readQueue(); } catch { /* unread: nothing is known placed but what this run admitted */ }
+  const placed = new Set([...admitted, ...Object.keys(after?.tickets ?? {})]);
+  for (const a of settleAdmitted(state, (k) => placed.has(k) || !!belongsElsewhere(k, null, E.queueFile())?.held)) say(`needs-you: ask ${a.id} dropped, as ${a.keys.join(', ')} ${a.keys.length === 1 ? 'is' : 'are'} admitted, so no session needs starting for ${a.keys.length === 1 ? 'it' : 'them'}`);
   // Open blockers in no batch are admitted next, by the same command, with no question: the person
   // naming what they block is the approval.
   if (next.size) say(`admit next: ${[...next].join(' ')} (open blockers in no batch)`);

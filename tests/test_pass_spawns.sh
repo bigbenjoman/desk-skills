@@ -54,6 +54,46 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-177 AC1 a <kebab-slug> branch is rebuilt from the title, keeping its prefix, with no < or >" \
   '[ "$(field B-4 branch)" = "\"feat/B-4-branch-keeps-the-kebab-slug-placeholder\"" ] && [ "$(field B-4 state)" = "\"running\"" ] && echo "$out" | grep -qF "branch feat/B-4-<kebab-slug> was unusable"'
 
+# ---- #1361: a ticket that renders, with an app to run and §4 Test sign-in unset, is asked for the row
+# at spawn, not after its PR opens; with the row set it spawns.
+export DESK_QUEUE="$T/queue-sg.json" DESK_AUTOPILOT_STATE="$T/state-sg" DESK_CONFIG="$T/config-sg.md"
+cp "$T/config.md" "$DESK_CONFIG"; mkdir -p "$T/state-sg/logs" "$T/state-sg/triage"
+printf '\n## 4. Checks\n| Field | Value |\n|---|---|\n| Dev server | `npm run dev` |\n' >> "$DESK_CONFIG"
+q init sg; q set-batch concurrency=3
+q add SG-1; q set SG-1 state=triaged branch=feat/SG-1 lane=A
+printf '{"ticket":"SG-1","summary":"A new page","renders":true}' > "$T/state-sg/triage/SG-1.json"
+q add SG-2; q set SG-2 state=triaged branch=fix/SG-2
+printf '{"ticket":"SG-2","summary":"A query fix","renders":false}' > "$T/state-sg/triage/SG-2.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1361 a ticket that renders is parked at spawn on the unset Test sign-in row, with no worker" \
+  '[ "$(field SG-1 state)" = "\"parked\"" ] && [ "$(field SG-1 session_id)" = null ] && jq -r ".tickets[\"SG-1\"].park.question" "$DESK_QUEUE" | grep -q "^NEEDS ROW — SG-1 renders, .* §4 Test sign-in is unset, so no worker was spawned" && [ "$(jq -r ".tickets[\"SG-1\"].park.kind" "$DESK_QUEUE")" = question ]'
+check "#1361 one that renders nothing spawns" '[ "$(field SG-2 state)" = "\"running\"" ]'
+printf '| Test sign-in | `dev-user@example.test` |\n' >> "$DESK_CONFIG"
+q requeue SG-1 >/dev/null 2>&1
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1361 with the row set, it spawns" '[ "$(field SG-1 state)" = "\"running\"" ]'
+# #1363: with a user the repo's seed files create, desk sets the row itself, logs it, and the ticket spawns.
+cp "$T/config.md" "$DESK_CONFIG"; printf '\n## 4. Checks\n| Field | Value |\n|---|---|\n| Dev server | `npm run dev` |\n' >> "$DESK_CONFIG"
+mkdir -p "$T/repo/prisma"; printf "await db.user.create({ data: { email: 'maya.dev@acme.test' } });\n" > "$T/repo/prisma/seed.ts"
+q add SG-3; q set SG-3 state=triaged branch=feat/SG-3 lane=A
+printf '{"ticket":"SG-3","summary":"Another page","renders":true}' > "$T/state-sg/triage/SG-3.json"
+out=$(node "$B/pass.mjs" 2>&1)
+rm -rf "$T/repo/prisma"
+check "#1363 a seeded user is taken for Test sign-in at spawn: the row is written noted as desk's, and the ticket spawns" \
+  '[ "$(field SG-3 state)" = "\"running\"" ] && grep -qF "| Test sign-in | \`maya.dev@acme.test\` (set by desk: a development user prisma/seed.ts creates;" "$DESK_CONFIG" && echo "$out" | grep -qF "SG-3: desk set config §4 \"Test sign-in\" = maya.dev@acme.test"'
+check "#1363 and it is a taken decision for the check-in digest" 'jq -e "select(.chose == \"maya.dev@acme.test\" and .ticket == \"config\")" "$T/state-sg/decisions.jsonl" >/dev/null'
+# A decision log that cannot be written is said, not claimed to be in the digest.
+cp "$T/config.md" "$DESK_CONFIG"; printf '\n## 4. Checks\n| Field | Value |\n|---|---|\n| Dev server | `npm run dev` |\n' >> "$DESK_CONFIG"
+mkdir -p "$T/repo/prisma"; printf "await db.user.create({ data: { email: 'omar.dev@acme.test' } });\n" > "$T/repo/prisma/seed.ts"
+chmod a-w "$T/state-sg/decisions.jsonl"
+for k in SG-1 SG-2 SG-3; do q set "$k" state=done; done; q add SG-4; q set SG-4 state=triaged branch=feat/SG-4 lane=A
+printf '{"ticket":"SG-4","summary":"A third page","renders":true}' > "$T/state-sg/triage/SG-4.json"
+out=$(node "$B/pass.mjs" 2>&1)
+rm -rf "$T/repo/prisma"; chmod u+w "$T/state-sg/decisions.jsonl"
+check "#1363 with the decision log unwritable, the line says the digest does not list it, and the ticket still spawns" \
+  '[ "$(field SG-4 state)" = "\"running\"" ] && echo "$out" | grep -q "SG-4: desk set config §4 \"Test sign-in\" = omar.dev@acme.test .*the decision log could not be written (.*), so the check-in digest does not list it" && ! echo "$out" | grep -q "SG-4: .*; in the check-in digest$"'
+export DESK_CONFIG="$T/config.md"
+
 # ---- pass.mjs --batch X-1, with no queue or state exported, works X-1's queue, and the
 # worktree setup and the worker it starts resolve X-1's queue and state too.
 unset DESK_QUEUE DESK_AUTOPILOT_STATE DESK_BATCH
@@ -944,7 +984,8 @@ check "DS-570 a review that left none, or one by anyone but the §1 handle, adds
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 # The one call a settled pass still makes is DS-836's list of the handle's open PRs (ticketless PRs): it
 # reads no merged PR again.
-check "DS-570 the next pass reads no PR again and adds no step twice" '! grep -v "^pr list .* --author ben " "$T/gh-calls" | grep -q . &&[ "$(field PM-1 follow_on.length)" = 2 ] && [ "$(field PM-10 follow_on.length)" = 2 ] && [ "$(field PM-11 follow_on.length)" = 3 ] && [ "$(field PM-13 follow_on.length)" = 3 ] && [ "$(field PM-14 follow_on.length)" = 3 ]'
+# A merged PR's stage read (merge-stages.mjs) is the next of the backlog each pass, never one read before.
+check "DS-570 the next pass reads no PR again and adds no step twice" '! grep -v "^pr list .* --author ben " "$T/gh-calls" | grep -v "mergedAt timelineItems" | grep -q . &&[ "$(field PM-1 follow_on.length)" = 2 ] && [ "$(field PM-10 follow_on.length)" = 2 ] && [ "$(field PM-11 follow_on.length)" = 3 ] && [ "$(field PM-13 follow_on.length)" = 3 ] && [ "$(field PM-14 follow_on.length)" = 3 ]'
 # A merge recorded before the pass read it still gains its steps: the merge driver's (merged_at set, its
 # kept status still open), and needs-you's done or a hand-shipped ticket's (the kept status set merged,
 # carrying the criteria an earlier read of the open PR kept).
@@ -1104,6 +1145,8 @@ check "DS-758 AC2 a ticket held for memory counts under memory, not collision" \
   'echo "$ml" | jq -e ".held.memory == 1 and .held.collision == 1" >/dev/null'
 check "DS-758 the line names the held ticket, the running one holding it and the file" \
   'echo "$ml" | jq -e ".collisions == [{\"key\":\"MX-2\",\"with\":[\"MX-1\"],\"files\":[\"src/a.ts\"]}]" >/dev/null'
+check "the pass opens a stuck interval for each ticket a hold kept waiting, with its cause, from the pass's time" \
+  '[ "$(jq -sc "map(select(.end == null) | [.key, .cause, .start == .recorded]) | sort" "$T/state-mx/stuck-intervals.jsonl")" = "[[\"MX-2\",\"collision\",true],[\"MX-3\",\"memory: low available\",true]]" ]'
 check "DS-758 AC4 after nine such passes, this 10th one (1 of 5 running) carries the warning, stamped when written" \
   'echo "$ml" | jq -e ".concurrency == 5 and (.warning | test(\"^10 passes in a row .*MX-2 \\\\(behind MX-1 on src/a.ts\\\\)\")) and .warned_at >= .at" >/dev/null && echo "$out" | grep -q "^collision warning (sent to the check-in digest): 10 passes"'
 check "DS-758 the queue's pass record carries the streak and the warning on to the next pass" \
@@ -1949,5 +1992,49 @@ check "DS-905 and once they are, the pass runs" \
 out=$(DESK_CONFIG="$T/config-reconly.md" node "$B/pass.mjs" 2>&1)
 check "DS-905 AC6 the record lever without the ledger lever is ignored, and the pass says it needs the ledger lever" \
   'echo "$out" | grep -q "ledger: the ledger-record lever is ignored: it needs the ledger lever on as well"'
+
+# ---- the ask ledger: with the ledger lever on, the first worker after a park's requeue acts on its
+# answer, on a plain spawn and a handoff's alike; a production-broken park pushed now is an ask presented
+# by push; the pass's own take of a recommended option answers its ask by default. A pass again writes
+# nothing twice, and with the lever off nothing is written. The batch is made with the lever on, so its
+# ledger names it from the start, as a batch run with the lever on has.
+AK_CONFIG="$DESK_CONFIG"; export DESK_CONFIG="$T/config-lg.md"
+export DESK_QUEUE="$T/ak/queue.json" DESK_AUTOPILOT_STATE="$T/state-ak"; mkdir -p "$T/ak" "$T/state-ak/logs" "$T/state-ak/handoffs"
+q init ak; q set-batch concurrency=4
+q add AK-1; q set AK-1 state=triaged lane=A branch=fix/AK-1 'prev_park={"question":"which copy?","since":"2026-11-20T10:00:00Z","requeued_at":"2026-11-20T11:00:00Z","round":2}'
+q add AK-2; q set AK-2 state=parked lane=A branch=fix/AK-2 'park={"kind":"question","question":"PRODUCTION BROKEN: checkout returns 500","since":"2026-11-20T09:00:00Z"}'
+git -C "$T/repo" worktree add -q -b fix/AK-6 "$T/wt/AK-6"
+q add AK-6; q set AK-6 state=triaged lane=A branch=fix/AK-6 "worktree=$T/wt/AK-6" handoff=pending handoff_stage=4b 'prev_park={"question":"which width?","since":"2026-11-20T08:00:00Z","round":1}'; hfile AK-6 4b "typecheck: pass"
+AKQ='AK-5: widen this PR to cover the CSV export too (recommended), or split the export into a follow-up?'
+q add AK-5; q set AK-5 state=parked lane=A "park={\"kind\":\"question\",\"question\":\"$AKQ\",\"since\":\"2026-11-20T07:00:00Z\",\"recommends\":{\"question\":\"Widen this PR, or split?\",\"options\":[\"widen this PR\",\"split it into a follow-up\"],\"chose\":\"widen this PR\",\"category\":\"scope\"}}"
+out=$(CLAUDE_CODE_SESSION_ID=sess-pass node "$B/pass.mjs" 2>&1)
+akev(){ jq -sc "[.[] | select(.type | startswith(\"ask_\")) | [.type, .key, .data.ask, (.data.round // .data.via // .data.by // .data.kind)]]" "$T/ak/ledger/events.jsonl"; }
+has(){ akev | jq -e "any(. == $1)" >/dev/null; }
+# AK-1 and AK-5 (requeued by the take) both wait on a plain spawn; the repo's shared cap may leave room
+# for one, so each that started is checked, and one must have.
+plain(){ local n=0
+  if [ "$(field AK-1 state)" = "\"running\"" ]; then has "[\"ask_acted\",\"AK-1\",\"AK-1:2026-11-20T10:00:00Z\",2]" || return 1; n=1; fi
+  if [ "$(field AK-5 state)" = "\"running\"" ]; then has "[\"ask_acted\",\"AK-5\",\"AK-5:2026-11-20T07:00:00Z\",1]" || return 1; n=1; fi
+  [ "$n" = 1 ]; }
+check "ask ledger: a plain spawn after a park's requeue acts on its ask, with the park's round" 'plain'
+check "ask ledger: so does a requeued ticket's handoff spawn" \
+  'echo "$out" | grep -q "AK-6 fresh session from Stage 4b (handed off)" && has "[\"ask_acted\",\"AK-6\",\"AK-6:2026-11-20T08:00:00Z\",1]"'
+check "ask ledger: a production-broken park pushed now is raised and presented by push" \
+  'echo "$out" | grep -q "PUSH: AK-2: PRODUCTION BROKEN" && has "[\"ask_raised\",\"AK-2\",\"AK-2:2026-11-20T09:00:00Z\",\"question\"]" && has "[\"ask_presented\",\"AK-2\",\"AK-2:2026-11-20T09:00:00Z\",\"push\"]"'
+check "ask ledger: the pass's take of a recommended option raises its ask and answers it by default, with no session" \
+  'echo "$out" | grep -qF "AK-5: took the recommended option" && has "[\"ask_raised\",\"AK-5\",\"AK-5:2026-11-20T07:00:00Z\",\"question\"]" && has "[\"ask_answered\",\"AK-5\",\"AK-5:2026-11-20T07:00:00Z\",\"default\"]" && [ "$(jq -sc "[.[] | select(.type == \"ask_answered\") | .data.session]" "$T/ak/ledger/events.jsonl")" = "[null]" ]'
+check "ask ledger: the pass measures each ask's tokens: a raise no worker log wrote is complete false, with no figures" \
+  '[ "$(jq -sc "[.[] | select(.type == \"ask_tokens\" and .key == \"AK-2\") | [.data.step, .data.source, .data.input, .data.complete]]" "$T/ak/ledger/events.jsonl")" = "[[\"raise\",\"log\",null,false]]" ]'
+n=$(akev | jq length)
+out=$(node "$B/pass.mjs" 2>&1)
+check "ask ledger: the next pass, pushing it again, writes nothing twice" '[ "$n" -ge 6 ] && [ "$(akev | jq length)" = "$n" ]'
+export DESK_CONFIG="$AK_CONFIG"
+export DESK_QUEUE="$T/ak-off/queue.json" DESK_AUTOPILOT_STATE="$T/state-ak-off"; mkdir -p "$T/ak-off" "$T/state-ak-off/logs"
+q init akoff; q set-batch concurrency=2
+q add AK-3; q set AK-3 state=triaged lane=A branch=fix/AK-3 'prev_park={"question":"which copy?","since":"2026-11-20T10:00:00Z","round":1}'
+q add AK-4; q set AK-4 state=parked lane=A branch=fix/AK-4 'park={"kind":"question","question":"PRODUCTION BROKEN: login fails","since":"2026-11-20T09:00:00Z"}'
+out=$(node "$B/pass.mjs" 2>&1)
+check "ask ledger: with the lever off, the same spawn and push as with it on write no ledger and the pass reports nothing of it" \
+  '[ "$n" -ge 6 ] && [ "$(field AK-3 state)" = "\"running\"" ] && echo "$out" | grep -q "PUSH: AK-4: PRODUCTION BROKEN" && [ ! -e "$T/ak-off/ledger" ] && ! echo "$out" | grep -q "ask ledger"'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

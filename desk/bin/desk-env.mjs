@@ -36,7 +36,8 @@
 //   node desk-env.mjs batch-base              print the queue's batch base branch, exit 3 if none is set
 //   node desk-env.mjs levers [<lever>]        what is on and where each lever's state comes from (pinned,
 //                                             auto or off), the freeze, unknown names; exit 1 on an invalid
-//                                             row; with <lever>, on or off. A row unlike the last one the
+//                                             row; with <lever>, on or off, or a lever with more
+//                                             than two arms' value from the pin (DESK_LEVER_VALUES). A row unlike the last one the
 //                                             repo's lever log recorded is logged as a row_change. With
 //                                             `auto` in the row, a last `levers: …` line gives each managed
 //                                             lever's state in this repo (lever-changes.mjs summaryLine)
@@ -637,6 +638,9 @@ const configRepoRoot = (parsed, { cwd = true } = {}) => {
   return cwd ? git(currentRepo().dir, 'rev-parse', '--show-toplevel') || null : null;
 };
 
+// The main checkout config file `config` names in §2 Primary repo root, or null.
+export const configFileRoot = (config) => configRepoRoot(parseConfigFile(config), { cwd: false });
+
 // §4 Suite weight describes the repo's suites, so the repo's committed settings carry it, as
 // env.DESK_SUITE_WEIGHT in <root>/.claude/settings.json. -> { value, file } or null when unset.
 export function committedSuiteWeight(root) {
@@ -1004,6 +1008,16 @@ export function levers(env = process.env) {
   return parseLevers(env.DESK_LEVERS != null ? [env.DESK_LEVERS] : leverItems());
 }
 export const leverOn = (name, l = levers()) => l.on.includes(name);
+// The arm a lever with more than two arms runs on for this worker: its value in DESK_LEVER_VALUES
+// (`<lever>=<value>`, space-separated), which spawn-worker.sh exports from the ticket's pin; null
+// where it carries none for `name`.
+function leverValue(name, env = process.env) {
+  for (const w of String(env.DESK_LEVER_VALUES ?? '').split(/\s+/)) {
+    const i = w.indexOf('=');
+    if (i > 0 && w.slice(0, i) === name && w.length > i + 1) return w.slice(i + 1);
+  }
+  return null;
+}
 // The model desk-review's Claude finder seats run on (`desk-env model finder`): the finder-model
 // lever's on-arm alias with the lever on, else §3b Worker models' `finder=`, null when unset. The row
 // is parsed either way, so a malformed one is refused on both arms.
@@ -1228,6 +1242,9 @@ export const queueFile = () => expandHome(process.env.DESK_QUEUE ?? batchPaths(r
 // The repo's exits folder, whichever batch this is: a worker's exit file renamed in here wakes the
 // supervisor's next tick (spawn-worker.sh writes it, supervisor.mjs watches and empties it).
 export const exitsDir = () => join(repoStateOf(stateDir()), 'exits');
+// The repo's cache folder on disk, whichever batch this is: a worker's Node compile cache, Jest cache
+// and test runs' temporary output go here rather than to a tmpfs /tmp (spawn-worker.sh, with-lock.sh).
+export const cacheDir = () => join(repoStateOf(stateDir()), 'cache');
 // The clones of §4 Worker read-only repos belong to the repo, not to a batch: they sit under the
 // standing batch's folder whichever batch this is, and DESK_AUTOPILOT_STATE, which names one batch, never moves them.
 export const readRepoDir = () => join(batchPaths(repoSlug()).state, 'ref');
@@ -1821,16 +1838,21 @@ export function harmSample() {
     const out = execFileSync('dmesg', [], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, maxBuffer: 64 * 1024 * 1024 });
     oom = oomKills(out);
   } catch { /* dmesg_restrict, or no dmesg */ }
-  let tmpGiB = null, tmpInodes = null;
+  const { gib: tmpGiB, inodes: tmpInodes } = tmpfsUsage();
+  return { swapGiB, oom, tmpGiB, tmpInodes, vmmem };
+}
+
+// What a tmpfs /tmp holds: { gib, inodes: { used, total } }, each null where /tmp is no tmpfs or
+// cannot be read.
+export function tmpfsUsage() {
   try {
     const tmpfs = readFileSync('/proc/mounts', 'utf8').split('\n').some((l) => { const f = l.split(' '); return f[1] === '/tmp' && f[2] === 'tmpfs'; });
     if (tmpfs) {
       const st = statfsSync('/tmp');
-      tmpGiB = ((st.blocks - st.bfree) * st.bsize) / GiB;
-      tmpInodes = { used: st.files - st.ffree, total: st.files };
+      return { gib: ((st.blocks - st.bfree) * st.bsize) / GiB, inodes: { used: st.files - st.ffree, total: st.files } };
     }
   } catch { /* not Linux */ }
-  return { swapGiB, oom, tmpGiB, tmpInodes, vmmem };
+  return { gib: null, inodes: null };
 }
 
 // ---- misc ----------------------------------------------------------------------------------
@@ -2202,7 +2224,7 @@ export async function setRepoSubscription(slug, value, root = deskConfigRoot()) 
 // for another repo must not inherit that part, so PER_REPO_ENV names it (with DESK_BATCH, an input).
 const PATHS = {
   DESK_REPO_ROOT: repoRoot, DESK_WORKTREES_DIR: worktreesDir, DESK_HOME: deskHome, DESK_SLUG: repoSlug, DESK_REPO_CONFIG_DIR: repoConfigDir, DESK_DEFAULT_BRANCH: defaultBranch,
-  DESK_BIN: binDir, DESK_RUN_BIN: runBin, DESK_STATE: stateDir, DESK_QUEUE: queueFile, DESK_EXITS_DIR: exitsDir, DESK_SKILLS_DIR: skillsDir,
+  DESK_BIN: binDir, DESK_RUN_BIN: runBin, DESK_STATE: stateDir, DESK_QUEUE: queueFile, DESK_EXITS_DIR: exitsDir, DESK_CACHE_DIR: cacheDir, DESK_SKILLS_DIR: skillsDir,
   DESK_LOCK_DIR: lockDir, DESK_MEMORY_DIR: memoryDir, DESK_GH_REPO: ghRepo,
   DESK_PG_CONTAINER: pgContainer, DESK_DEV_PORT: devPort, DESK_WORKER_PORT_FLOOR: workerPortFloor, DESK_IS_WSL: () => (isWSL() ? 'yes' : 'no'),
 };
@@ -2299,6 +2321,8 @@ function rowValue(id, rows = CONFIG_ROWS) {
   const r = id === 'default-branch' ? defaultBranchFrom() : id === 'suite-weight' ? suiteWeightFrom(parseConfig()) : configValueFrom(parseConfig(), id, rows);
   return { ...r, value: expandHome(r.value) ?? null };
 }
+// A declared row's value, read as `get --json` reads it, so an unread row (§4 People's) reads too; null unset.
+export const declaredValue = (id) => rowValue(id, DECLARED_ROWS).value ?? null;
 // What `get` prints for a config id, with where it came from: -> { value, source } (rowValue's).
 export const configValueSource = (id) => { const { value, source } = rowValue(id); return { value, source }; };
 // What `list` prints for a config id: -> { items, refused }, refused the DeskConfigError list throws.
@@ -2503,13 +2527,21 @@ if (isMain) {
           if (!args[0]) process.exitCode = 1;
         }
         if (args[0]) {
-          console.log(leverOn(args[0], l) ? 'on' : 'off');
-          if (!LEVERS.includes(args[0])) console.error(`desk-env: "${args[0]}" is not a lever desk knows (${known}); read as off`);
+          // A lever with more than two arms prints the value this ticket's pin gave it, else its
+          // baseline: never on or off. The registry imports this module, so it is loaded without await.
+          const value = leverValue(args[0]);
+          if (value) { console.log(value); break; }
+          import('./lever-registry.mjs').then(({ REGISTRY, isValued }) => {
+            const reg = REGISTRY[args[0]];
+            console.log(isValued(reg) ? reg.baseline : leverOn(args[0], l) ? 'on' : 'off');
+            if (!LEVERS.includes(args[0])) console.error(`desk-env: "${args[0]}" is not a lever desk knows (${known}); read as off`);
+          }, (e) => { console.error(`desk-env levers: the lever registry: ${e.message}`); process.exitCode = 1; });
           break;
         }
         console.log(`on: ${l.on.join(' ') || 'none'}`);
         console.log(`from: ${s.from === 'pin' ? 'this ticket\'s pin (DESK_LEVERS)' : `${row}, \`${s.row ?? 'none'}\``}`);
         for (const n of LEVERS) console.log(`${n}: ${s.states[n]}`);
+        if (process.env.DESK_LEVER_VALUES) console.log(`values: ${process.env.DESK_LEVER_VALUES} (this ticket's pin, DESK_LEVER_VALUES)`);
         const f = leversFrozen();
         if (f) console.log(`frozen: every trial in every repo is stopped, since ${f.at}${f.reason ? ` (${f.reason})` : ''}; desk-env levers thaw ends it`);
         if (l.unknown.length) console.log(`unknown: ${l.unknown.join(' ')} (${row} names levers desk does not know; each is read as off; ${known})`);

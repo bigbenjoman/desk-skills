@@ -27,6 +27,11 @@ export const MODES = ['shadow', 'record'];
 export const PROJECTION_ONLY = ['log_bytes', 'idle_passes', 'pr_status', 'suite_wait_since', 'progress_sha', 'progress_at'];
 export { PARK_KINDS };
 export const ESCALATE_TO = ['person', 'repair', 'requeue'];
+// How an ask reached its answerer (ask_presented), and who answered it (ask_answered): ask-ledger.mjs.
+export const ASK_VIA = ['push', 'digest', 'decider', 'session'];
+export const ASK_BY = ['person', 'decider', 'default'];
+// The steps an ask's tokens are measured for (ask_tokens): the parked round, its presentation, the round after.
+export const ASK_TOKEN_STEPS = ['raise', 'present', 'act'];
 // How many of the latest event ids a fold keeps, so a retry that straddles a snapshot is still skipped.
 const ID_WINDOW = 1000;
 
@@ -43,6 +48,11 @@ const CHECKS = {
   sha: isSha,
   kind: (v) => PARK_KINDS.includes(v),
   escalate: (v) => ESCALATE_TO.includes(v),
+  bool: (v) => typeof v === 'boolean',
+  via: (v) => ASK_VIA.includes(v),
+  answerer: (v) => ASK_BY.includes(v),
+  tokenStep: (v) => ASK_TOKEN_STEPS.includes(v),
+  usd: (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0,
 };
 
 // Every event type, the scope it belongs to (a ticket's, or a batch's with key null), and its data fields.
@@ -63,6 +73,20 @@ export const EVENTS = Object.freeze({
   automerge_armed: { scope: 'ticket', data: { by: 'string', pr: 'int', head_sha: 'sha', line: 'int' } },
   automerge_disarmed: { scope: 'ticket', data: { by: 'string', pr: 'int', line: 'int' } },
   merged: { scope: 'ticket', data: { by: 'string', pr: 'int', head_sha: 'sha', base: 'string' } },
+  // stages: the merged PR's time by stage, as merge-stages.mjs records it.
+  merge_stages: { scope: 'ticket', data: { pr: 'int', stages: 'object' } },
+  // A park, hold or stall interval as stuck-time.mjs records it: opened (end null) or closed.
+  stuck: { scope: 'ticket', data: { cause: 'string', start: 'string', end: 'string?' } },
+  // An ask, a park handed to the person or the decider, as ask-ledger.mjs records each step of it: `ask`
+  // is its id, <KEY>:<park.since>.
+  ask_raised: { scope: 'ticket', data: { ask: 'string', since: 'string', kind: 'kind', blocking: 'bool?' } },
+  ask_presented: { scope: 'ticket', data: { ask: 'string', via: 'via', ref: 'string?', notification: 'string?' } },
+  ask_answered: { scope: 'ticket', data: { ask: 'string', by: 'answerer', session: 'string?', latency_s: 'int?' } },
+  ask_acted: { scope: 'ticket', data: { ask: 'string', round: 'int?' } },
+  // One step's tokens and list-price dollars, by its source (the round's log, the decider, the person's
+  // session or shell). A step that could not be read whole is complete false, its figures what was read
+  // (null for none), never 0; approx marks a figure that is an attribution, not a reading.
+  ask_tokens: { scope: 'ticket', data: { ask: 'string', step: 'tokenStep', source: 'string', input: 'int?', output: 'int?', cache_read: 'int?', cache_write: 'int?', usd: 'usd?', complete: 'bool', approx: 'bool?' } },
   // fields: the done fields written with it (queue-ledger.mjs DONE_FIELDS), laid on as a legacy_set's are.
   finished: { scope: 'ticket', data: { pr: 'int?', fields: 'object?' } },
   failed: { scope: 'ticket', data: { subtype: 'string' } },
@@ -76,6 +100,7 @@ export const EVENTS = Object.freeze({
   platform_clear: { scope: 'batch', data: {} },
 });
 
+export const ASK_EVENTS = ['ask_raised', 'ask_presented', 'ask_answered', 'ask_acted', 'ask_tokens'];
 const UNFINISHED = STATES.filter((s) => !FINISHED.includes(s));
 const ANY = [null, ...STATES];
 const KEEP = Symbol('unchanged');
@@ -99,6 +124,12 @@ export const TRANSITIONS = Object.freeze({
     .map((t) => [t, { from: UNFINISHED, to: KEEP }])),
   // A done ticket's PR can still wait, on GitHub's mergeability answer, and have auto-merge armed or disarmed.
   ...Object.fromEntries(['waiting', 'waited', 'automerge_armed', 'automerge_disarmed'].map((t) => [t, { from: STATES, to: KEEP }])),
+  // A merged PR's stages are read after its merge, whatever the ticket's state by then.
+  merge_stages: { from: ANY, to: KEEP },
+  // A stuck interval opens and closes whatever the ticket's state, as a pass reads it.
+  stuck: { from: ANY, to: KEEP },
+  // An ask's steps are recorded whatever the ticket's state by the time each is written.
+  ...Object.fromEntries(ASK_EVENTS.map((t) => [t, { from: ANY, to: KEEP }])),
 });
 
 export const ledgerPaths = (repoDir) => {
@@ -132,7 +163,7 @@ export function invalid(ev) {
 
 export const emptyState = () => ({ v: 1, seq: 0, tickets: {}, batches: {}, ids: [] });
 const newTicket = (key) => ({ key, batch: null, state: null, archived: false, fields: {}, park: null, holds: [], pr: null, merge: null,
-  questions: [], answered: [], waits: {}, automerge: null, merge_log: null, spawn: null });
+  questions: [], answered: [], waits: {}, automerge: null, merge_log: null, spawn: null, merge_stages: null, stuck: {}, asks: {} });
 // The queue.json field holding the triage questions answered so far, each an answered event's qid.
 export const ANSWERED = 'answered_questions';
 // The queue.json field holding a ticket's open waits, { <on>: a waiting event's data less its `on` }, or
@@ -172,6 +203,24 @@ export function legality(state, ev) {
 const PARK_NULLABLE = Object.entries(EVENTS.parked.data).filter(([, c]) => c.endsWith('?')).map(([f]) => f);
 export const parkOf = (d) => Object.fromEntries(Object.entries(d ?? {}).filter(([f, v]) => !(v == null && PARK_NULLABLE.includes(f))));
 
+// Lays an ask event onto ticket `t`'s record of that ask: { ask, since, kind, blocking, raised_at,
+// presented: [{ via, ref, notification, at }], answered: { by, session, latency_s, at } | null,
+// acted: { round, at } | null, tokens: { <step>:<source>: ask_tokens data and at } }. A step recorded
+// already keeps its first record.
+const askRecord = (ask) => ({ ask, since: null, kind: null, blocking: null, raised_at: null, presented: [], answered: null, acted: null, tokens: {} });
+// The key an ask's tokens are kept under on its record: its step and source.
+export const tokensKey = (d) => `${d.step}:${d.source}`;
+function askStep(t, ev) {
+  const d = ev.data ?? {};
+  t.asks ??= {};
+  const a = (t.asks[d.ask] ??= askRecord(d.ask));
+  if (ev.type === 'ask_raised') { if (a.raised_at == null) Object.assign(a, { since: d.since, kind: d.kind, blocking: d.blocking ?? null, raised_at: ev.at }); }
+  else if (ev.type === 'ask_presented') { if (!a.presented.some((p) => p.via === d.via)) a.presented.push({ via: d.via, ref: d.ref ?? null, notification: d.notification ?? null, at: ev.at }); }
+  else if (ev.type === 'ask_answered') a.answered ??= { by: d.by, session: d.session ?? null, latency_s: d.latency_s ?? null, at: ev.at };
+  else if (ev.type === 'ask_acted') a.acted ??= { round: d.round ?? null, at: ev.at };
+  else if (ev.type === 'ask_tokens') { a.tokens ??= {}; a.tokens[tokensKey(d)] ??= { ...d, at: ev.at }; }
+}
+
 // Applies one envelope to `state` in place. An illegal transition is applied all the same: in shadow
 // mode the queue write it records has already happened. Every batch an event names gets an entry in
 // `state.batches`, so a batch with none has never been written to the log.
@@ -191,7 +240,8 @@ function apply(state, ev) {
   if (to !== KEEP) t.state = to;
   switch (ev.type) {
     // merge_log is how far the log has folded the merge log for this ticket, which no seed restates.
-    case 'seeded': Object.assign(t, newTicket(ev.key), { batch: ev.batch, merge_log: t.merge_log }); overlay(t, d.fields); break;
+    // Nor its asks, which are history no queue field holds.
+    case 'seeded': Object.assign(t, newTicket(ev.key), { batch: ev.batch, merge_log: t.merge_log, asks: t.asks ?? {} }); overlay(t, d.fields); break;
     case 'legacy_set': overlay(t, d.fields); break;
     case 'admitted': t.archived = false; t.park = null; break;
     case 'triaged': t.questions = [...d.questions]; break;
@@ -211,6 +261,12 @@ function apply(state, ev) {
     case 'automerge_disarmed': t.automerge = null; t.merge_log = Math.max(t.merge_log ?? -1, d.line); break;
     // merged_at keeps a ticket's first merge, as queue.mjs merged does.
     case 'merged': t.merge = { ...d, at: ev.at }; t.fields.merged_at ??= ev.at; t.automerge = null; break;
+    case 'merge_stages': t.merge_stages = { pr: d.pr, ...d.stages }; break;
+    // t.stuck: each open interval's cause and its start.
+    case 'stuck': t.stuck ??= {}; if (d.end == null) t.stuck[d.cause] = d.start; else delete t.stuck[d.cause]; break;
+    // t.asks: each ask's record, its steps as they were written (ask-ledger.mjs readAsks). No queue field
+    // holds it, so the projection never shows it.
+    case 'ask_raised': case 'ask_presented': case 'ask_answered': case 'ask_acted': case 'ask_tokens': askStep(t, ev); break;
     case 'finished': t.park = null; if (d.fields) overlay(t, d.fields); if (d.pr != null) t.pr = d.pr; break;
     // A ticket that leaves every batch leaves its blockers there: added again, it is held by what then holds it.
     case 'moved': t.batch = d.to; if (d.to == null) { t.holds = []; delete t.fields.held_by; } break;
@@ -356,8 +412,9 @@ const byOf = (by) => (by && typeof by === 'object' ? by : { proc: by ?? basename
 // Appends `events` (each { type, batch, key, data } and optionally id and at) to repo `repoDir`'s log
 // as one write and one fsync, under the ledger lock. Every event is checked first: a malformed one, or
 // in record mode an illegal transition, throws naming it and writes nothing. `by` names the writer.
-// -> the envelopes written.
-export function append(repoDir, events, { mode = 'shadow', by, now = () => new Date().toISOString(), waitMs = LOCK_WAIT_MS, snapshotEvery = SNAPSHOT_EVERY } = {}) {
+// `skip(state, ev)`, where given, is asked of each event with the log folded under the lock, and an event
+// it says is there already is left out, so a retry writes nothing twice. -> the envelopes written.
+export function append(repoDir, events, { mode = 'shadow', by, now = () => new Date().toISOString(), waitMs = LOCK_WAIT_MS, snapshotEvery = SNAPSHOT_EVERY, skip = null } = {}) {
   if (!MODES.includes(mode)) throw new Error(`unknown ledger mode "${mode}" (want: ${MODES.join('|')})`);
   const list = Array.isArray(events) ? events : [events];
   for (const ev of list) { const why = invalid(ev); if (why) throw new Error(`refused, nothing written: ${why}`); }
@@ -368,9 +425,11 @@ export function append(repoDir, events, { mode = 'shadow', by, now = () => new D
   try {
     const { base, events: tail } = load(paths);
     const state = reduce(tail, base);
+    const todo = skip ? list.filter((ev) => !skip(state, ev)) : list;
+    if (!todo.length) return [];
     const writer = byOf(by);
     const seen = new Set(state.ids);
-    const out = list.map((ev, i) => ({ v: 1, seq: state.seq + i + 1, id: ev.id ?? randomUUID(), at: ev.at ?? now(),
+    const out = todo.map((ev, i) => ({ v: 1, seq: state.seq + i + 1, id: ev.id ?? randomUUID(), at: ev.at ?? now(),
       batch: ev.batch, key: ev.key ?? null, type: ev.type, by: writer, data: ev.data ?? {} }));
     if (mode === 'record') {
       const work = structuredClone(state);

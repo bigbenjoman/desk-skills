@@ -188,7 +188,7 @@ const REFRESH_WAIT_MS = 30 * 60 * 1000;
 export function staleCall(t, head, names, read, { base = 'the base', now = Date.now() } = {}) {
   const r = t?.base_refresh?.head === head ? t.base_refresh : null;
   if (r?.ok === true && now - Date.parse(r.at ?? '') < REFRESH_WAIT_MS) {
-    return { call: 'wait', why: `its branch was updated from ${base} at ${String(r.at).slice(11, 16)} UTC, as it was red only where ${base} was; it waits for the run at its new head, with no re-run and no fix try` };
+    return { call: 'wait', why: `its branch was updated from ${base} at ${String(r.at).slice(0, 16).replace('T', ' ')} UTC, as it was red only where ${base} was; it waits for the run at its new head, with no re-run and no fix try` };
   }
   if (r || !names.length) return null;
   const stale = staleChecks(t, head, names, read);
@@ -1158,7 +1158,7 @@ export function externalTry(t, s, ctx, gate = evaluateGate(s.checks ?? [], { req
   const f = reds[0];
   const r = ctx.external?.(f.login);
   // No review of theirs at the head: the PR waits for one, whatever the check's text names, and says so.
-  if (!r?.reviewed || r.head !== s.head) return { call: 'wait', external: true, why: `its "${f.name}" check reads ${f.login}'s review, so it waits for ${f.login} to review the head` };
+  if (!r?.reviewed || r.head !== s.head) return { call: 'wait', external: true, login: f.login, why: `its "${f.name}" check reads ${f.login}'s review, so it waits for ${f.login} to review the head` };
   // A clean review body, its counts all 0 whatever findings it lists as refuted, is no feedback (bodyFeedback).
   // Any other body goes to the worker as review feedback: each P0 to P2 finding it lists, with its
   // file:line, as an item of its own marked as the body's (`body`: no thread to answer it on), since one on

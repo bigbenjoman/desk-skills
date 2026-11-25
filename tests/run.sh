@@ -12,6 +12,8 @@
 #                                         name order. Without -j: `desk-env get test-cap`, else a quarter
 #                                         of the cores (at least 1).
 # Every suite's TMPDIR is a symlink to the real temporary directory, on Linux as on a Mac.
+# With the machine profile's job-tokens row on, each suite holds one job token from the machine's
+# budget of test-lock-slots x test-cap while it runs, waiting in order for one (desk/bin/job-token.mjs).
 # A suite that fails is run once more: passing then, the run passes and names it under `flaked:`;
 # failing again, the run fails and prints both runs. test_compare_pass.sh is never retried.
 # Each report gives the suite's user plus system CPU seconds, and a run that finishes appends one line
@@ -68,6 +70,18 @@ fi
 case "$rec_waited" in ''|*[!0-9]*) rec_waited=null ;; esac
 case "$rec_left" in ''|*[!0-9]*) rec_left=null ;; esac
 rec_tree=$(cd "$T/.." && pwd -P)
+# Job tokens (desk/bin/job-token.mjs), with the machine profile's job-tokens row on: each suite holds
+# one from the machine's job pool, test-lock-slots x test-cap, for as long as it runs, waiting its turn
+# for one when every token is held. The helper runs with the DESK_* variables it reads saved here, as
+# suite_env.sh clears them. A run.sh that a suite starts takes none: that suite holds one already.
+jt=; jt_bin="$T/../desk/bin/job-token.mjs"; jt_env=
+if [ "${TEST_JOB_TOKENS:-}" != held ] && [ -f "$jt_bin" ] && [ "$(node "$jt_bin" lever 2>/dev/null)" = on ]; then
+  jt=on
+  for v in DESK_LEASE_DIR DESK_MACHINE DESK_CONFIG_ROOT DESK_TEST_LOCK_SLOTS DESK_LOCK_DIR; do
+    eval "jv=\${$v-}"; [ -z "$jv" ] || jt_env="$jt_env export $v=$(printf %q "$jv");"
+  done
+fi
+export TEST_JOB_TOKENS=held
 # shellcheck source=suite_env.sh
 . "$T/suite_env.sh"
 # Where the run's record goes ($TEST_RUNS_LOG, set empty for none). A run.sh a suite starts records
@@ -122,8 +136,15 @@ cpu_now() { times >"$OUT/$1.times"; { read -r _; read -r cu cs; } <"$OUT/$1.time
 # fails runs once more, its first output kept as $1.out1, so one flake costs a suite's time rather than a
 # CI rerun; test_compare_pass.sh never does, as it is there to find nondeterminism. The suite replaces
 # its subshell (exec), so with -j above 1 the pid this job waits on and passes a TERM to is the suite's
-# own. The CPU is both runs'.
-job() { s=$SECONDS; c=; runs=0; rc1=0; cpu1=0
+# own. The CPU is both runs'. With job tokens on, the job takes its suite's token first, owned by the
+# job's own process (the pid of the sh it execs, whose parent it is), and gives it back once the suite
+# has exited, before its done file; a job killed first leaves it to lapse. Without one, the suite runs.
+# The suite's seconds and CPU start once it has its token, so neither counts the wait or the helper.
+job() { c=; runs=0; rc1=0; cpu1=0; cpu0=0; tok=; me=
+  if [ -n "$jt" ]; then me=$(exec sh -c 'echo "$PPID"')
+    tok=$(eval "$jt_env"; exec node "$jt_bin" take --pid "$me" --worktree "$rec_tree" -- "${name[$1]}")
+    cpu_now "$1"; cpu0=$cpu; fi
+  s=$SECONDS
   suite() { case "${kind[$1]}" in
       hook) exec python3 "${file[$1]}" --self-test ;;
       sh) exec "$SH" "${file[$1]}" ;;
@@ -137,9 +158,10 @@ job() { s=$SECONDS; c=; runs=0; rc1=0; cpu1=0
     fi
     [ $runs -eq 1 ] && [ "${name[$1]}" != test_compare_pass.sh ] || break
     why_failed "$OUT/$1.out" "$rc"; [ -n "$why" ] || break
-    mv "$OUT/$1.out" "$OUT/$1.out1"; rc1=$rc; cpu_now "$1"; cpu1=$cpu
+    mv "$OUT/$1.out" "$OUT/$1.out1"; rc1=$rc; cpu_now "$1"; cpu1=$((cpu - cpu0))
   done
-  cpu_now "$1"
+  cpu_now "$1"; cpu=$((cpu - cpu0))
+  [ -z "$tok" ] || (eval "$jt_env"; exec node "$jt_bin" release "$tok" --pid "$me") >/dev/null
   echo "$rc $((SECONDS - s)) $cpu $runs $rc1 $((cpu - cpu1))" >"$OUT/$1.tmp" && mv "$OUT/$1.tmp" "$OUT/$1.done"; }
 # Whole and thousandths of a second for $1 milliseconds.
 secs() { printf '%d.%03d' $(($1 / 1000)) $(($1 % 1000)); }

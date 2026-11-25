@@ -20,6 +20,25 @@ finish its stage. It waits like any spawn while the
 batch budget is spent, and the report says so. A second stop in that session parks it, naming the
 budget and whether its worktree holds uncommitted work.
 
+**Every park, hold and stall is timed by its cause** (`stuck-time.mjs`). Each pass records in the
+repo's `stuck-intervals.jsonl`, and in the ticket ledger where that lever is on, when a ticket was
+parked (its park kind and failure class) or kept waiting by a hold (usage, memory harm by signal or
+low memory, the lock or the test lock queue, a collision, a red base, a gate reviewer down), and when
+that ended. desk-q's repo screen and the levers report show the week's hours per cause, the tickets
+affected and the top causes, each with the tracking issue `node stuck-time.mjs link <cause> <issue>`
+set; parked hours per ticket is a lever guardrail.
+
+**Every ask is recorded step by step where the ledger lever is on** (`ask-ledger.mjs`). An ask is a
+park handed to the person or the decider, keyed `<KEY>:<park.since>`. The ticket ledger records it
+raised, presented (by push, the check-in digest or the decider), answered (by the person, with the
+session it came from where one is named, by the decider, or by default when a pass takes a recommended
+option) with its latency from the park, and acted on by the next worker. Each step is written once, and a write that fails is a line in the report.
+Each pass then measures what each step cost (`ask_tokens`), in tokens and list-price dollars: the
+parked round from its park write to its end (a lower bound), the decider's session over the items it
+listed or the person's session between its answers (approximate; an answer from a shell costs none),
+and the next round to its first stage marker, cache reads and writes apart. A step that cannot be read
+whole, a killed worker's, is marked incomplete, never 0.
+
 **Which model each worker runs on is config §3b "Worker models".** At `default` (also when the row
 is absent) no `--model` is passed and every worker runs on the session default. At
 `standard=<model> high=<model>`, `pass.mjs` picks a tier per ticket at spawn: a lane A or E ticket

@@ -406,8 +406,9 @@ if (mode === 'triage') {
     'Bash(desk-gh read:*)', `Bash(${E.HOME}/.local/bin/desk-gh read:*)`, 'Bash(~/.local/bin/desk-gh read:*)',
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-gh.mjs read:*)`, `Bash(node ${b}/desk-gh.mjs read:*)`]),
     // desk-design copies the orchestrator's Claude Design snapshot into this checkout's Design
-    // canvases directory, so the worker commits it on its branch. Not `write`, which takes any folder.
-    ...BIN_FORMS.flatMap((b) => [' save', ' status', ' check'].flatMap((s) => [`Bash(${b}/desk-design.mjs${s}:*)`, `Bash(node ${b}/desk-design.mjs${s}:*)`])),
+    // canvases directory, so the worker commits it on its branch, and `copies` names where each linked
+    // claude.ai artifact's copy is. Not `write`, which takes any folder.
+    ...BIN_FORMS.flatMap((b) => [' save', ' status', ' check', ' copies'].flatMap((s) => [`Bash(${b}/desk-design.mjs${s}:*)`, `Bash(node ${b}/desk-design.mjs${s}:*)`])),
     // Its own handoff briefing, written as JSON from flags, for this ticket only. Run bare, since
     // `node *..*` below refuses a criterion or a git range holding `..`.
     ...BIN_FORMS.map((b) => `Bash(${b}/handoff.mjs write ${T} *)`),
@@ -719,6 +720,8 @@ if (mode === 'triage') {
 
   // Reading the public web: searching, and fetching any URL on any host by GET (no domain limit).
   grant('worker-web-read', ['WebSearch', 'WebFetch']);
+  // A claude.ai artifact is read from its copy in the repo or the snapshot (desk-design copies), never the link.
+  deny.push('WebFetch(domain:claude.ai)');
 
   // Starting a §4 Local services entry, detached, by its compose service name (each item read by the
   // schema's service-port type, `<service> [:<port>]`). Compose names a project after its directory, so from a worktree a bare `up` would start a

@@ -148,7 +148,12 @@ harm-tmpfs`, `desk-env get harm-vmmem`); unset, they are the figures below:
 - `WORKER-OOM`: a worker's log, since the watch started, shows Node's `JavaScript heap out of memory`
   or a command killed with exit 137; the line names the ticket. Drop to the ladder's lowest count.
 - `TMPFS-HIGH` (Linux): `/tmp` is a tmpfs holding 2 GiB or more. Memory pressure pushes it to swap,
-  which looks like a leak and is not one: see what holds it before lowering anything.
+  which looks like a leak and is not one: see what holds it before lowering anything. While it holds,
+  each pass names the largest entries in `/tmp` and clears the regenerable caches no process has open
+  (`jest_*`, `node-compile-cache`, `v8-compile-cache-*`, turbo and vite caches, and `cdk.out*` unchanged
+  for an hour), saying what it freed. It holds spawns only while `/tmp` is still over the line, and then
+  one needs-you ask names what is left. Workers keep these caches out of `/tmp` to begin with: their
+  Node compile cache, Jest cache and test runs' temporary folders sit in `DESK_CACHE_DIR`, on disk.
 - `VMMEM-HIGH` (WSL): the VM holds 90% or more of its `.wslconfig` grant, past which it can only
   swap. Hold new spawns until it falls.
 - `OOM-UNKNOWN`, once: `dmesg` cannot be read here (`kernel.dmesg_restrict`), so OOM kills go

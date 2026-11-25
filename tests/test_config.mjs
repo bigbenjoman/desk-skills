@@ -688,8 +688,10 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     'jira-field-defaults|4|Field defaults',
     'proposal-labels|4|Priority proposal labels',
     'preview-db|4|Preview database', // DS-550
+    'plan-first-wait|3b|Plan-first wait before needs-you (hours)', // issue-1384
+    'slot-candidates|3b|Propose candidates for a free slot', // #1394
   ];
-  const ADDED_PERMS = ['worker-preview-db']; // DS-550
+  const ADDED_PERMS = ['worker-preview-db', 'gh-issue-edit']; // DS-550, #1383
   const sorted = (a) => [...a].sort().join('\n');
   const rowsNow = Object.entries(CONFIG_ROWS).map(([id, r]) => [id, r.section, r.row, ...(r.table ? ['table'] : [])].join('|'));
   t('DS-867 AC4 CONFIG_ROWS holds exactly the ids, sections and rows it held, and the ones added since', sorted(rowsNow), sorted([...BEFORE_ROWS, ...ADDED_ROWS]));

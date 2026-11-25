@@ -1,8 +1,10 @@
 // suite: asks (what a session handed the person; an ask whose tickets are all finished waits on nothing)
 // layer: L1
 // covers: desk/bin/asks.mjs
-import { addAsk, readAsks, pruneAsks } from '../desk/bin/asks.mjs';
+import { addAsk, readAsks, pruneAsks, settleAdmitted, answerAsk, answerOf, dueAsks, isDue, unlogged, markLogged } from '../desk/bin/asks.mjs';
 import { scratch } from './scratch.mjs';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -34,6 +36,42 @@ const raced = scratch('asks-');
   const finished = (k) => { if (!asked) { asked = true; addAsk(raced, 'say whether to admit DS-1', Date.now(), { until: ['DS-3'] }); } return status[k] === 'merged'; };
   const gone = pruneAsks(raced, { known: (k) => k in status, finished });
   t('#1341 an ask asked again on an open ticket while a pass prunes is kept', `${gone.length} ${readAsks(raced).map((a) => a.until.join()).join()}`, '0 DS-3');
+}
+
+const adm = scratch('asks-');
+{
+  addAsk(adm, 'start /desk-autopilot DS-1 in a session', Date.now(), { until: ['DS-1'], settles: 'admit' });
+  addAsk(adm, 'start /desk-autopilot DS-1 DS-2 in a session', Date.now(), { until: ['DS-1', 'DS-2'], settles: 'admit' });
+  addAsk(adm, 'merge DS-1 once it is green', Date.now(), { until: ['DS-1'] });
+  const gone = settleAdmitted(adm, (k) => k === 'DS-1');
+  t('#1359 an ask its admission settles is dropped once every ticket it waits on is admitted', JSON.stringify(gone), JSON.stringify([{ id: 1, text: 'start /desk-autopilot DS-1 in a session', keys: ['DS-1'] }]));
+  t('#1359 one with a ticket not yet admitted, or a wait on its merge, stays', readAsks(adm).map((a) => a.id).join(), '2,3');
+}
+
+// A choice: its options and recommendation kept, due at its deadline, answered once.
+const ch = scratch('asks-');
+{
+  const by = '2026-11-24T17:00:00.000Z';
+  const r = addAsk(ch, 'Merge PR #12 now, or hold it?', Date.parse('2026-11-24T10:00:00Z'), { choice: { options: ['merge', 'hold'], recommended: 'merge', apply_by: by } });
+  addAsk(ch, 'Upgrade the plan?', Date.now(), { choice: { options: ['upgrade', 'stay'], recommended: 'upgrade', never_default: 'a money call' } });
+  addAsk(ch, 'Which name?', Date.now(), { choice: { options: ['alpha', 'beta'] } });
+  t('#1366 a choice keeps its options, recommendation and deadline', JSON.stringify([r.ask.options, r.ask.recommended, r.ask.apply_by]), JSON.stringify([['merge', 'hold'], 'merge', by]));
+  t('#1366 only one with a recommendation, a deadline passed and no never-default is due', JSON.stringify(dueAsks(ch, Date.parse('2026-11-24T17:00:01Z')).map((a) => a.id)), '[1]');
+  t('#1366 before its deadline, it is not', isDue(readAsks(ch)[0], Date.parse('2026-11-24T16:59:00Z')), false);
+  t('#1366 a due answer is refused before its deadline', answerAsk(ch, 1, { chose: 'merge', by: 'default', at: Date.parse('2026-11-24T16:00:00Z'), due: true }), null);
+  const a = answerAsk(ch, 1, { chose: 'merge', by: 'default', at: Date.parse('2026-11-24T17:00:01Z'), due: true });
+  t('#1366 answered by default, it leaves the list and its answer is kept', JSON.stringify([a.chose, a.by, readAsks(ch).map((x) => x.id), answerOf(ch, 1)?.chose]), JSON.stringify(['merge', 'default', [2, 3], 'merge']));
+  t('#1366 an answered ask cannot be answered again', answerAsk(ch, 1, { chose: 'hold' }), null);
+  t('#1366 one applied by default stays unlogged until its decision is logged, so a pass whose log write failed retries it', JSON.stringify(unlogged(ch).map((x) => x.id)), '[1]');
+  {
+    const many = scratch('asks-many-');
+    const first = addAsk(many, 'Keep the flag on?', 0, { choice: { options: ['on', 'off'], recommended: 'on', apply_by: '2026-11-24T17:00:00.000Z' } }).ask;
+    answerAsk(many, first.id, { chose: 'on', by: 'default', at: Date.parse('2026-11-24T17:00:01Z'), due: true });
+    for (let i = 0; i < 60; i++) { const x = addAsk(many, `ask ${i}`, 0).ask; answerAsk(many, x.id, { chose: 'done' }); }
+    t('#1366 a default not yet logged outlasts the answers kept', JSON.stringify([unlogged(many).map((x) => x.id), JSON.parse(readFileSync(join(many, 'asks.json'), 'utf8')).answered.length]), JSON.stringify([[first.id], 51]));
+  }
+  markLogged(ch, 1);
+  t('#1366 marked logged, it is not retried', JSON.stringify([unlogged(ch).length, answerOf(ch, 1)?.chose]), JSON.stringify([0, 'merge']));
 }
 
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }

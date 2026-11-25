@@ -290,6 +290,9 @@ Who runs a repo's batches is config §3b "Batches run by": `supervisor`, the def
 offers on macOS (it installs the agent, and Stage 4 hands each batch over and ends the session), or
 `session` (the batch runs in the interactive session through `/loop`; unset reads as this).
 `run-by.mjs stage4` makes Stage 4's call, installing a supervisor that is missing or unloaded.
+desk-q reads the same row: a repo at `session` is shown as run by its session, with a red band naming
+that session once its loop stops with work left, and desk-q offers `supervisor on` only on a computer
+where a supervisor can run (launchd, or a systemd user manager that answers).
 
 **`skill-eval.mjs`** runs a task set once with a skill loaded and once without it, so prose that
 only restates what the model now does by default can be found. Each task is a prompt with pass/fail
