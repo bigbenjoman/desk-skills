@@ -63,6 +63,7 @@ const WHAT = Object.freeze({
   codex: 'Has Codex review pull requests instead of Claude',
   effort: 'Uses less thinking on simple steps',
   'finder-model': 'Runs the review’s Claude finders on a cheaper model',
+  'question-handling': 'Handles worker questions without parking the ticket',
   ledger: 'Records every queue change in a ticket log beside queue.json',
 });
 
@@ -484,7 +485,8 @@ const repoWord = (c) => {
   if (c.state === 'trial') return { t: `${c.repo}: testing`, c: C.blue };
   if (c.state === 'pinned') return { t: `${c.repo}: on by hand`, c: C.green };
   if (c.state === 'not_enrolled') return { t: `${c.repo}: not enrolled`, c: C.grey };
-  if (c.state === 'ineligible') return { t: `${c.repo}: not tested here, as ${c.why}`, c: C.grey };
+  // The short status in the cell, the precondition's rationale on hover.
+  if (c.state === 'ineligible') return { t: `${c.repo}: not tested, ${c.status ?? c.why}`, c: C.grey, title: c.why };
   return { t: `${c.repo}: ${String(c.state ?? 'off').replace(/_/g, ' ')}`, c: C.grey };
 };
 
@@ -549,7 +551,7 @@ function leverTable(v, today) {
       return `<tr data-lever="${esc(r.lever)}"${r.status === 'needs' ? ' style="background:#FFFBEB"' : ''}>${name(r, true)}<td class="td">${badge(r.status)}</td>`
         + `<td class="td num"><div class="stack3"><span class="b result" data-verdict="${esc(res.verdict ?? 'none')}" style="color:${res.ink}">${esc(res.text)}</span>${res.notes.map((n) => `<span class="muted tiny">${esc(n)}</span>`).join('')}</div></td>`
         + `<td class="td num"><div class="stack6"><div class="bar" role="img" aria-label="${esc(pr.text)}"><div style="width:${pr.pct}%"></div></div><span class="muted tiny">${esc(pr.text)}</span></div></td>`
-        + `<td class="td small"><div class="stack4">${r.cells.map((c) => { const w = repoWord(c); return `<span class="repo"><span class="dot dot-sm" style="background:${w.c}"></span><span>${esc(w.t)}${c.stale ? ' · stale' : ''}</span></span>`; }).join('')}</div></td></tr>`;
+        + `<td class="td small"><div class="stack4">${r.cells.map((c) => { const w = repoWord(c); return `<span class="repo"${w.title ? ` title="${esc(w.title)}"` : ''}><span class="dot dot-sm" style="background:${w.c}"></span><span>${esc(w.t)}${c.stale ? ' · stale' : ''}</span></span>`; }).join('')}</div></td></tr>`;
     }).join('');
   }
   const legend = today ? '' : `<div class="legend-row muted tiny">${['kept', 'testing', 'needs', 'off'].map((s) => `<span><span class="dot" style="background:${STYLE[s].dot}"></span>${s === 'off' ? 'Off or waiting' : STYLE[s].label}</span>`).join('')}</div>`;

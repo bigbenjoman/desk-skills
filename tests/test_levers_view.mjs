@@ -456,6 +456,17 @@ const evidence = (slug, rows, name = 'evl_2026-11-15_x.jsonl') => ({ [`${slug}/l
   t('changes: decisions are never merged', all.filter((e) => e.kind === 'transition').length, 2);
 }
 
+// A lever an auto repo's config rules out says so as a short status, its rationale kept beside it.
+{
+  const v = view(machine({ repos: autoRepos }));
+  const qh = cell(v, 'question-handling');
+  t('preconditions: question handling without the ledger is ineligible', qh.state, 'ineligible');
+  t('preconditions: with a short status', qh.status, 'needs ledger on');
+  t('preconditions: and the rationale kept', qh.why, 'its asks and what they cost are read from the ticket ledger');
+  const { REGISTRY } = await import('../desk/bin/lever-registry.mjs');
+  t('preconditions: every precondition has a short status', Object.values(REGISTRY).flatMap((l) => l.preconditions).every((p) => typeof p.status === 'string' && p.status.length <= 32), true);
+}
+
 // An unrecorded sample size is never worded as 0.
 {
   t('no n: the effect label', V.effectView({ lo90: -0.7, hi90: -0.4 }, null, 30).label, 'too early: sample not recorded, needs 30');

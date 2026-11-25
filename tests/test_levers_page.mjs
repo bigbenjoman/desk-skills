@@ -462,10 +462,14 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
 // DS-1000 AC4: once results show, a repo the lever is not tested in still says why in its cell.
 {
   const v = structuredClone(six);
-  v.panels.board.levers.find((l) => l.lever === 'finder-model').cells = [{ repo: 'desk-skills', state: 'ineligible', why: 'both arms would be the same', note: 'not tested in desk-skills: both arms would be the same' }];
+  v.panels.board.levers.find((l) => l.lever === 'finder-model').cells = [{ repo: 'desk-skills', state: 'ineligible', status: 'finders already on sonnet', why: 'both arms would be the same', note: 'not tested in desk-skills: both arms would be the same' }];
   const h = P.renderPage(v);
-  t('DS-1000 AC4 the results layout names the reason', h.includes('desk-skills: not tested here, as both arms would be the same'), true);
+  t('DS-1000 AC4 the results layout names the reason as a short status, its rationale on hover', h.includes('<span class="repo" title="both arms would be the same"><span class="dot dot-sm" style="background:#9CA3AF"></span><span>desk-skills: not tested, finders already on sonnet</span>'), true);
+  t('DS-1000 AC4 not the rationale as the reason', h.includes('not tested here, as'), false);
 }
+
+// Every lever has its one-line description, question handling's too.
+t('WHAT: question handling says what it does', /<tr data-lever="question-handling">.*?Handles worker questions without parking the ticket/.test(section(hSix, 'lev-h')), true);
 
 console.log(fails ? `${fails} check(s) failed` : 'all checks passed');
 process.exit(fails ? 1 : 0);

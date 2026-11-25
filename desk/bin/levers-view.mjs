@@ -477,8 +477,10 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
         // evaluation still writes it a row until it is kept: one line says why.
         const pre = !r.configRead.error && r.enrol.auto && !r.enrol.pinned.includes(lever) && !KEPT.includes(e?.state) ? preconditions(lever, r.values) : null;
         if (pre && !pre.eligible) {
+          // A short status for the cell (needs ledger on), the rationale beside it.
           const why = pre.failed.map((p) => p.why).join('; ');
-          return { repo: r.name, state: 'ineligible', why, note: `not tested in ${r.name}: ${why}`, stale: col.column === 'stale' };
+          const status = pre.failed.map((p) => p.status ?? p.why).join('; ');
+          return { repo: r.name, state: 'ineligible', status, why, note: `not tested in ${r.name}: ${why}`, stale: col.column === 'stale' };
         }
         if (!e) {
           if (r.enrol.pinned.includes(lever)) return { repo: r.name, state: 'pinned', note: 'pinned by hand: before/after only, not a trial', stale: col.column === 'stale' };
