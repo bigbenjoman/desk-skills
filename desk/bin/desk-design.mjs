@@ -27,8 +27,13 @@
 //   node desk-design.mjs status <saved dir | artifact URL> --version <v>
 //       exit 0 when the saved copy is that version, 3 when the artifact has moved on
 //   node desk-design.mjs check  <KEY | ticket file> [--key <K>]
-//       exit 1 when the ticket's Design section links a Claude Design artifact with no copy saved on
-//       the batch's base (origin/<base> where fetched), whatever the working tree holds
+//       exit 1 when the ticket's Design section links a Claude Design artifact, or the rest of it
+//       (Out of scope aside) a claude.ai artifact, with no copy saved on the batch's base
+//       (origin/<base> where fetched), whatever the working tree holds, and no snapshot
+//   node desk-design.mjs copies <KEY | ticket file> [--key <K>]
+//       one `<url>\t<copy, or ->` line per claude.ai artifact the ticket links: the folder saved in
+//       this checkout or on the base, else its snapshot; what a worker reads instead of the link.
+//       Exit 1 when any has no copy
 //   node desk-design.mjs snapshots <KEY | ticket file> [--key <K>]
 //       one `<url>\t<snapshot folder, or ->` line per Claude Design artifact the Design section links,
 //       found by URL in this state's designs/ and, in a named batch, the repo state's
@@ -953,6 +958,26 @@ export function claudeDesignLinks(section) {
   return out;
 }
 
+// A claude.ai link that names an artifact (a Claude Design project, or a published page such as a spec
+// or notes), not a chat or settings page, which holds nothing to save.
+const ARTIFACT_PATH = /^\/(?:design|artifacts?|public\/artifacts)\//i;
+
+// The claude.ai artifacts a ticket links outside its Design section (a spec in its description, notes in
+// a comment). A worker cannot read one, so each needs a copy in the repo as a design does. What Out of
+// scope links is not the ticket's to read, and a link the Design section also names is a design.
+export function linkedArtifacts(text) {
+  const design = claudeDesignLinks(designSection(text)).map(canonicalUrl);
+  const out = [];
+  for (const s of sections(text).filter((x) => !/^(?:design|out of scope)\b/i.test(x.name))) {
+    for (const u of claudeDesignLinks(s.lines.map((l) => l.text).join('\n'))) {
+      let path = '';
+      try { path = new URL(u).pathname; } catch { /* not a URL */ }
+      if (ARTIFACT_PATH.test(path) && !design.includes(canonicalUrl(u)) && !out.some((x) => canonicalUrl(x) === canonicalUrl(u))) out.push(u);
+    }
+  }
+  return out;
+}
+
 // The snapshot folder under <state>/designs/ that holds this artifact, or null. /desk-admit snapshots
 // an artifact when it admits the ticket, and autopilot before triage; the worker saves it on its
 // branch. A named batch's state (<repo state>/batches/<name>) also reads the repo's own, where
@@ -1042,22 +1067,35 @@ export function usesNoBoard(section, url, key) {
   return claudeDesignLinks(text).length > 1 ? text.split('\n').filter(only).some((l) => re.test(l)) : re.test(text);
 }
 
-// What a lane D worker can build from: {ref, canvases: [{url, saved, snapshot}], figma}. A canvas is
-// readable when it is saved under <dir> on <ref> (the batch's base) or snapshotted under <state>;
-// with no <dir> (the repo saves none) only a snapshot is. An artifact ticket <key> uses no board from
-// (usesNoBoard) is left out: nothing in it needs reading.
+// What a lane D worker can build from: {ref, canvases: [{url, saved, snapshot}], artifacts, figma}. A
+// canvas is readable when it is saved under <dir> on <ref> (the batch's base) or snapshotted under
+// <state>; with no <dir> (the repo saves none) only a snapshot is. An artifact ticket <key> uses no
+// board from (usesNoBoard) is left out: nothing in it needs reading. `artifacts` is the same for each
+// claude.ai artifact the ticket links outside its Design section (linkedArtifacts).
 export function designFact(text, { root, dir, ref, state, key }) {
-  const section = designSection(String(text ?? '').replace(/\\([-_*+^~?#{}[\]|!])/g, '$1'));
+  const plain = String(text ?? '').replace(/\\([-_*+^~?#{}[\]|!])/g, '$1');
+  const section = designSection(plain);
   const saved = dir ? savedAt(root, dir, ref) : [];
+  const readable = (url) => ({ url, saved: saved.find((c) => canonicalUrl(c.url) === canonicalUrl(url))?.path ?? null, snapshot: snapshotOf(state, url) });
   return {
     ref,
-    canvases: claudeDesignLinks(section).filter((url) => !usesNoBoard(section, url, key)).map((url) => ({
-      url,
-      saved: saved.find((c) => canonicalUrl(c.url) === canonicalUrl(url))?.path ?? null,
-      snapshot: snapshotOf(state, url),
-    })),
+    canvases: claudeDesignLinks(section).filter((url) => !usesNoBoard(section, url, key)).map(readable),
+    artifacts: linkedArtifacts(plain).map(readable),
     figma: FIGMA_URL.test(section ?? ''),
   };
+}
+
+// Where a worker reads each claude.ai artifact the ticket links, its Design section's and the rest:
+// [{url, copy}], `copy` the folder committed in this checkout or on <ref>, else its snapshot under
+// <state>, else null (no copy: nothing a worker can read).
+export function copiesOf(text, { root, dir, ref, state }) {
+  const plain = String(text ?? '').replace(/\\([-_*+^~?#{}[\]|!])/g, '$1');
+  let onRef = [];
+  try { onRef = dir ? savedAt(root, dir, ref) : []; } catch { /* a ref that does not resolve holds none */ }
+  return [...claudeDesignLinks(designSection(plain)), ...linkedArtifacts(plain)].map((url) => ({
+    url,
+    copy: (dir ? findSaved(root, dir, url)?.path : null) ?? onRef.find((c) => canonicalUrl(c.url) === canonicalUrl(url))?.path ?? (state ? snapshotOf(state, url) : null),
+  }));
 }
 
 // Findings for one ticket: {severity: 'blocking'|'advisory', message}. `issue` is desk-jira's
@@ -1078,9 +1116,10 @@ export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {
   const section = designSection(text);
   const findings = [];
   const links = claudeDesignLinks(section);
+  const others = linkedArtifacts(text);
   let onBase = [];
   // A base that does not resolve has nothing saved on it; the finding names the ref it read.
-  if (links.length) { try { onBase = savedAt(root, dir, ref); } catch { /* no such ref */ } }
+  if (links.length || others.length) { try { onBase = savedAt(root, dir, ref); } catch { /* no such ref */ } }
   for (const url of links) {
     const saved = onBase.find((c) => canonicalUrl(c.url) === canonicalUrl(url));
     if (!saved) {
@@ -1094,6 +1133,14 @@ export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {
     } else if (!section.includes(saved.path.replace(/\/$/, ''))) {
       findings.push({ severity: 'advisory', message: `design: ${key}'s Design section links ${url} but not its saved copy ${saved.path}: add the repo path beside the link` });
     }
+  }
+  // A spec or notes page linked elsewhere is saved as a page; with neither a copy nor a snapshot, a
+  // session that can answer the platform's prompt to read it must read it before any worker starts.
+  for (const url of others) {
+    if (onBase.some((c) => canonicalUrl(c.url) === canonicalUrl(url))) continue;
+    const message = `design: ${key} links the claude.ai artifact ${url} outside its Design section, but no copy is saved under ${dir}/ on ${ref}: read it once in an interactive session and save it to ${join(dir, epic ?? key)}/ (desk-design write, then save or propose)`;
+    const snap = state ? snapshotOf(state, url) : null;
+    findings.push(snap ? { severity: 'advisory', message: `${message}; it is snapshotted at ${snap}, so the worker saves it from there` } : { severity: 'blocking', message });
   }
   return findings;
 }
@@ -1253,6 +1300,13 @@ if (isMain) {
       if (!target) fail('usage: desk-design snapshots <KEY | ticket file> [--key <K>]');
       const issue = loadIssue(target, opt(rest, '--key'));
       for (const s of designFact(issue.text ?? issue.fields?.description, { state: E.stateDir(), key: issue.key }).canvases) console.log(`${s.url}\t${s.snapshot ?? '-'}`);
+    } else if (cmd === 'copies') {
+      if (!target) fail('usage: desk-design copies <KEY | ticket file> [--key <K>]');
+      const issue = loadIssue(target, opt(rest, '--key'));
+      const root = toplevel(); const dir = designDir();
+      const copies = copiesOf(issue.text ?? issue.fields?.description, { root, dir, ref: baseRef(root), state: E.stateDir() });
+      for (const c of copies) console.log(`${c.url}\t${c.copy ?? '-'}`);
+      process.exit(copies.some((c) => !c.copy) ? 1 : 0);
     } else if (cmd === 'render') {
       if (!target) fail('usage: desk-design render <saved dir>');
       const s = await render(resolve(target), { chromium: await playwrightChromium() });
@@ -1280,7 +1334,7 @@ if (isMain) {
       const key = opt(rest, '--key') ?? null;
       for (const l of estimateLines(uploadEstimate(source, { key, themeCount: themes().length }), { key })) console.log(l);
     } else {
-      fail('usage: desk-design.mjs write|save|import|propose|status|check|snapshots|render|compare|estimate ... (see the top of the file)');
+      fail('usage: desk-design.mjs write|save|import|propose|status|check|snapshots|copies|render|compare|estimate ... (see the top of the file)');
     }
   } catch (e) {
     console.error(`desk-design: ${e.message}`);

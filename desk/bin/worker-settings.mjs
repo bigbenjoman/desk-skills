@@ -719,6 +719,8 @@ if (mode === 'triage') {
 
   // Reading the public web: searching, and fetching any URL on any host by GET (no domain limit).
   grant('worker-web-read', ['WebSearch', 'WebFetch']);
+  // A claude.ai artifact is read from its copy in the repo or the snapshot (desk-design copies), never the link.
+  deny.push('WebFetch(domain:claude.ai)');
 
   // Starting a §4 Local services entry, detached, by its compose service name (each item read by the
   // schema's service-port type, `<service> [:<port>]`). Compose names a project after its directory, so from a worktree a bare `up` would start a

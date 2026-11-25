@@ -18,7 +18,8 @@ epic the script says to plan (step 1b). Never run `queue.mjs admit` yourself.
 ## 0. Snapshot each design
 
 A worker has no Artifact tool, and an artifact private to one subscription cannot be read from
-another, so a ticket's Claude Design canvas is saved now, by this session, before it is admitted.
+another, so a ticket's Claude Design canvas, and any other claude.ai artifact it links (a spec or
+notes page in its description or a comment), is saved now, by this session, before it is admitted.
 For each ticket the user named (an epic is skipped: its children are admitted on their own):
 
 ```bash
@@ -26,7 +27,10 @@ node ~/.claude/desk/bin/desk-design.mjs check <TICKET>
 ```
 
 `ok`, or an `advisory`, needs nothing. Each `blocking` line names an artifact URL with no copy a
-worker can read: snapshot it with the Artifact tool, reading every file
+worker can read. **One made outside the user's organisation is read here too**: reading it asks
+whether Claude may read it for the rest of this conversation, and the user's yes covers every read
+of it after that, so read every such artifact in this call in one go, while they are here to answer.
+Snapshot it with the Artifact tool, reading every file
 `desk-autopilot/references/design-snapshot.md` (read it now) lists, a single-page artifact's page
 and what it loads included, into `out_dir: $DESK_STATE/designs/<TICKET>/` (`desk-env paths` prints
 `DESK_STATE`). Then record it, and check again:
@@ -55,6 +59,10 @@ node ~/.claude/desk/bin/desk-design.mjs check <TICKET>    # now an advisory nami
 
 and admit them in step 1. Exit 4 names the first file the page loads from elsewhere: it is not a
 self-contained export, so ask once more for one that is, or for the artifact to be shared.
+
+A session that cannot answer that prompt (standing intake, any headless admit) never reads an
+artifact: it admits the ticket parked on it, and `/desk-needs-you` lists every such artifact in the
+repo, with the tickets each holds, as one item. Its `/desk-admit` is this step for all of them at once.
 
 ## 1. Admit
 

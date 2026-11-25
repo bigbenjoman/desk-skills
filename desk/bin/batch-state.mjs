@@ -348,10 +348,10 @@ export function designGap(r) {
   return null;
 }
 
-// The Claude Design canvases a triage record links that a worker cannot read: neither saved on the
-// base nor snapshotted.
+// The Claude Design canvases, and other claude.ai artifacts, a triage record links that a worker cannot
+// read: neither saved on the base nor snapshotted.
 export function unreadCanvases(r) {
-  return (r?.design?.canvases ?? []).filter((c) => !c.saved && !c.snapshot).map((c) => c.url);
+  return [...(r?.design?.canvases ?? []), ...(r?.design?.artifacts ?? [])].filter((c) => !c.saved && !c.snapshot).map((c) => c.url);
 }
 
 // The park for a ticket in any lane whose design no worker can read, or null: a session that can read
@@ -362,6 +362,11 @@ export function designPark(r) {
   return urls.length
     ? `${DESIGN_PARK_PREFIX}${urls.join(', ')}: snapshot it from a session that can read it (/desk-admit does), or have it shared with that subscription, then resume`
     : null;
+}
+// The artifact URLs a designPark question names, or null for any other park.
+export function designParkUrls(question) {
+  const q = String(question ?? '');
+  return q.startsWith(DESIGN_PARK_PREFIX) ? q.slice(DESIGN_PARK_PREFIX.length).split(/:\s/)[0].split(/,\s*/).filter(Boolean) : null;
 }
 
 // Lane C always needs a person before code; lane D only while its design is not saved where a worker

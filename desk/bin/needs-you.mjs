@@ -125,7 +125,8 @@ import { liveBaseRed, MERGES_SHOWN } from './base-red.mjs';
 import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { landedPr } from './post-merge.mjs';
-import { promotionPr, readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, EXIT } from './batch-state.mjs';
+import { promotionPr, readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, designParkUrls, EXIT } from './batch-state.mjs';
+import { snapshotOf } from './desk-design.mjs';
 import { promotionTitle } from './pass/promotion-pr.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { dayAndTime } from './desk-q-eta.mjs';
@@ -827,6 +828,42 @@ function unsetItem(g) {
   return { kind: 'config', repoLevel: true, parked: g.parked,
     need: `${n === 1 ? 'A ticket' : `${n} tickets`} (${andList(keys)}) parked because ${g.r.repo}'s desk config does not say whether workers may ${GRANT_WORDS[g.key] ?? 'take the step they need'}, so they can't. Answer it once with /desk-update in ${rootOf(g.r)}, then say done and ${n === 1 ? 'it goes' : 'each goes'} back to a worker`,
     actions: [['done', `once you have answered it, done sends ${n === 1 ? 'the ticket' : `all ${n} tickets`} parked on it back to a worker`], ['not-now']] };
+}
+// A ticket admitted headless whose claude.ai artifact (a design, a spec page) no session has read parks
+// on it (batch-state designPark): only a session that can answer the platform's prompt to read one made
+// outside the organisation can. One session reads them all, so every such ticket of the repo is one
+// item, `artifacts`, naming each artifact and its tickets; its done requeues each ticket whose
+// artifacts all have a snapshot now.
+const ARTIFACTS = 'artifacts';
+function artifactsItem(g) {
+  const keys = g.parked.map((p) => p.t.key);
+  const n = keys.length;
+  const urls = [...new Set(g.parked.flatMap((p) => p.urls))];
+  const each = urls.map((u) => `${u} (${andList(g.parked.filter((p) => p.urls.includes(u)).map((p) => p.t.key))})`);
+  return { kind: ARTIFACTS, repoLevel: true, parked: g.parked,
+    need: `${n === 1 ? 'A ticket' : `${n} tickets`} (${andList(keys)}) ${n === 1 ? 'links' : 'link'} ${urls.length === 1 ? 'a claude.ai artifact' : `${urls.length} claude.ai artifacts`} no session has read, so no worker can: ${each.join('; ')}. Read ${urls.length === 1 ? 'it' : 'them all'} in one interactive session in ${rootOf(g.r)} with /desk-admit ${keys.join(' ')}, which saves each (you answer once whether Claude may read one made outside your organisation), then say done and ${n === 1 ? 'it goes' : 'each goes'} back to a worker`,
+    actions: [['done', `once ${urls.length === 1 ? 'it is' : 'they are'} saved, done sends each ticket whose artifacts all have a copy back to a worker`], ['not-now']] };
+}
+// Done on the artifacts item: each ticket whose every artifact has a snapshot is requeued in its own
+// batch (or named for the live session that runs it); the rest stay, naming what is still unread.
+function artifactsDone(i, say) {
+  const requeued = [], refused = [], unread = [], bySession = new Map();
+  for (const p of i.parked) {
+    const missing = p.urls.filter((u) => !snapshotOf(p.r.stateDir, u));
+    if (missing.length) { unread.push(`${p.t.key} (${missing.join(', ')})`); continue; }
+    const w = runner(p.r);
+    if (w.by === 'session') { const s = w.name ?? '(no batch name recorded)'; bySession.set(s, [...(bySession.get(s) ?? []), p.t.key]); continue; }
+    const q = queueCmd(p.r, ['requeue', p.t.key]);
+    if (q.ok) requeued.push(p.t.key); else refused.push(`${p.t.key} (${q.out})`);
+  }
+  const them = (ks) => (ks.length === 1 ? 'it' : 'them');
+  const parts = [...(requeued.length ? [`requeued ${andList(requeued)}; the next pass can spawn ${them(requeued)}`] : []),
+    ...(refused.length ? [`the requeue was refused for ${andList(refused)}`] : []),
+    ...(unread.length ? [`still no snapshot for ${andList(unread)}, so ${unread.length === 1 ? 'it stays' : 'they stay'} parked: run /desk-admit for ${unread.length === 1 ? 'it' : 'them'} in a session`] : []),
+    ...[...bySession].map(([s, ks]) => `a live session (${s}) runs ${andList(ks)}: message it to requeue ${them(ks)}`)];
+  const [first] = bySession;
+  return say(!refused.length && !unread.length, `${parts.join('; ')}.`,
+    first ? { to: first[0], text: `${andList(first[1])} parked on a claude.ai artifact that is now snapshotted: requeue ${them(first[1])} (node ~/.claude/desk/bin/queue.mjs requeue <TICKET>).` } : null);
 }
 // A committed copy of a desk template (the pre-push hook, the desk gate) the template has moved on
 // from, as the supervisor's last template check found it (repo-templates.mjs): one item for the repo.
@@ -2033,6 +2070,8 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   const seen = new Map();
   const unsetIn = (slug, k) => { const id = `${slug}\t${k}`; if (!seen.has(id)) seen.set(id, repoPermissionUnset(slug, k)); return seen.get(id); };
   const groups = new Map();
+  // Tickets parked on a claude.ai artifact no session has read, by repo: one item each (artifactsItem).
+  const unread = new Map();
   // The repo-level and step items, put off under their own key as any other item is.
   // `dir` is where it is put off, its batch's state folder unless the item names another.
   // `behind` held tickets wait behind it: it says so and ranks by that, as a ticket's item does (judged).
@@ -2057,6 +2096,12 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
         const id = `${r.slug}\t${row}`;
         if (!groups.has(id)) groups.set(id, { r: standingOf(repos, r), key: row, parked: [] });
         groups.get(id).parked.push({ r, t: x.t, since });
+        continue;
+      }
+      const urls = item.kind === 'parked' && !item.personOnly ? designParkUrls(x.t.park?.question) : null;
+      if (urls?.length) {
+        if (!unread.has(r.slug)) unread.set(r.slug, { r: standingOf(repos, r), parked: [] });
+        unread.get(r.slug).parked.push({ r, t: x.t, since, urls });
         continue;
       }
       if (l.status === 'changed') item.need = `${item.need} (${l.line})`;
@@ -2090,6 +2135,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   // Unscoped, every configured repo: a quiet repo, which the home screen does not show, is where a lane goes stale.
   if (ciRed) for (const s of ciRedItems(repos, word ? scope : repos, ciRed)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))), g.r.stateDir, heldBehindAll(g.parked.map((p) => [p.r, p.t.key])));
+  for (const g of unread.values()) repoItem(g.r, { key: ARTIFACTS }, artifactsItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))), g.r.stateDir, heldBehindAll(g.parked.map((p) => [p.r, p.t.key])));
   const slugs = new Set((word ? scope : repos).map((x) => x.slug));
   for (const slug of slugs) {
     const r = repos.find((x) => x.slug === slug && x.batch == null);
@@ -2227,7 +2273,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(NOPR) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(NOPR) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === ARTIFACTS || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -2582,6 +2628,7 @@ function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = R
   if (i.kind === LEASE_TRIAL) return leaseTrialAnswer(verb, now, say);
   if (i.kind === PAGE) return say(true, 'noted: once desk is installed again, the next upload checks the page; once it finds the composer this item goes and the upload queue resumes.');
   if (i.kind === 'step') return say(true, `noted: the next pass that reads ${i.step} from Jira lifts the hold on what waits for it once it is Done${i.r.ctx?.merges ? ', and desk then merges them' : ''}.`);
+  if (i.kind === ARTIFACTS) return artifactsDone(i, say);
   if (i.kind === TEMPLATES) {
     let rec;
     try { rec = templatesCheck({ slug: i.r.slug, force: true, now }).record; } catch (e) { return say(false, `could not check the copies again (${one(e.message)}), so it stays on your list.`); }
