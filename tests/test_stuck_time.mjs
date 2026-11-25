@@ -198,7 +198,7 @@ t('the spawn holds the pass counts name their cause', j([
   let page = '';
   try { page = renderPage(view([{ name: 'app', weeks: [ST.weekSummary(S, { now: Date.parse(D(25, 12)) }), ST.weekSummary(S, { now: Date.parse(D(25, 12)), weeksAgo: 1 })] }])); } catch (err) { page = `threw: ${err.message}`; }
   t('the levers report has a time-parked-by-cause table per repo and week, each cause linked to its tracking issue',
-    j([/Time parked by cause/.test(page), /app · week 2026-W48 · 20h over 5 tickets/.test(page), /<th scope="row">usage<\/th><td>15h<\/td><td>2<\/td><td><a href="https:\/\/github.com\/acme\/app\/issues\/1377">#1377<\/a><\/td>/.test(page), /<th scope="row">lock<\/th><td>0.5h<\/td><td>1<\/td><td>—<\/td>/.test(page), /week 2026-W47/.test(page)]),
+    j([/Time parked by cause/.test(page), /app · week 2026-W48 · 20h over 5 tickets/.test(page), /<th scope="row" class="td">usage<\/th><td class="td n">15h<\/td><td class="td n">2<\/td><td class="td"><a href="https:\/\/github.com\/acme\/app\/issues\/1377">#1377<\/a><\/td>/.test(page), /<th scope="row" class="td">lock<\/th><td class="td n">0.5h<\/td><td class="td n">1<\/td><td class="td">—<\/td>/.test(page), /week 2026-W47/.test(page)]),
     j([true, true, true, true, false]));
   let bare = '';
   try { bare = renderPage(view([])); } catch (err) { bare = `threw: ${err.message}`; }

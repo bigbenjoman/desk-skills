@@ -370,7 +370,7 @@ rmSync(gtmp, { recursive: true, force: true });
   t('one waiting for the light lock is waiting on its lock', at([{ pid: 110, ppid: 1, args: 'bash /h/.claude/desk/bin/with-lock.sh light -- bash tests/run.sh' }], [{ pid: 110, cwd: wt }]), 'lock');
   t('and a light holder its holder file names is its suite', suiteWait(wt, { procs: [{ pid: 120, ppid: 1, args: 'bash tests/run.sh' }], cwds: [{ pid: 120, cwd: wt }], holders: new Set([120]) }), 'suite');
   t('DS-662 AC1 a queue at slots x factor is deep, naming its depth', JSON.stringify(lockQueue({ waiting: 4, slots: 2, factor: 2, counts: new Map([['a', 4]]), self: 'a' })),
-    JSON.stringify({ deep: true, holds: true, room: 0, share: 4, own: 4, unread: false, waiting: 4, at: 4, line: "test lock queue: 4 run(s) waiting on its 2 slot(s), at or over the hold at 2 x 2 = 4; runs by repo: a 4; this repo's share ceil(4 / 1) = 4, 4 its own" }));
+    JSON.stringify({ lock: 'test', deep: true, holds: true, room: 0, share: 4, own: 4, unread: false, waiting: 4, at: 4, line: "test lock queue: 4 run(s) waiting on its 2 slot(s), at or over the hold at 2 x 2 = 4; runs by repo: a 4; this repo's share ceil(4 / 1) = 4, 4 its own" }));
   t('DS-662 AC3 a queue below it holds nothing', lockQueue({ waiting: 3, slots: 2, factor: 2, counts: new Map(), self: 'a' }).deep, false);
   const unread = lockQueue({ waiting: null, slots: 1, factor: 2 });
   t('DS-662 AC5 a queue not read holds nothing and says so', `${unread.deep} ${unread.unread} ${unread.line}`, 'false true test lock queue: not read (ps could not be read), so workers start as they would without it');

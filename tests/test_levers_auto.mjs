@@ -59,14 +59,15 @@ Object.assign(process.env, {
 const { assignPin, leverStatesIn } = await import('../desk/bin/levers-auto.mjs');
 const { seededRandom } = await import('../desk/bin/seeded-random.mjs');
 const { append, read, logFile } = await import('../desk/bin/lever-log.mjs');
-const { REGISTRY, ENTRIES, loadRegistry } = await import('../desk/bin/lever-registry.mjs');
+const { REGISTRY, ENTRIES, loadRegistry, preconditions } = await import('../desk/bin/lever-registry.mjs');
 const { leverRow, LEVERS } = await import('../desk/bin/desk-env.mjs');
 // Each lever's state for a levers row, as desk-env's leverStates gives it for the config's row.
 const rowStates = (row) => { const r = leverRow([row]); return Object.fromEntries(LEVERS.map((n) => [n, r.on.includes(n) ? 'pinned' : r.auto ? 'auto' : 'off'])); };
 const ROW_STATES = rowStates('preflight');
 const AUTO_PIN_STATES = rowStates('auto preflight');
 
-const TRIAL = Object.keys(REGISTRY).filter((n) => REGISTRY[n].layer === 'low-risk' && REGISTRY[n].trialled);
+// The low-risk levers on trial that this config lets draw (question handling needs the ledger named).
+const TRIAL = Object.keys(REGISTRY).filter((n) => REGISTRY[n].layer === 'low-risk' && REGISTRY[n].trialled && preconditions(n).eligible);
 const QUALITY = Object.keys(REGISTRY).filter((n) => REGISTRY[n].layer === 'quality-risk');
 const NOW = new Date('2026-11-16T10:00:00Z');
 const daysAgo = (d) => new Date(NOW.getTime() - d * 86_400_000).toISOString();
@@ -140,6 +141,12 @@ t('a trial recorded for a lever the registry does not trial (the ledger) reads a
   t('set by hand to a value: the ticket runs it, with no arm, in the set', [mixed.values.wrappers, mixed.arms.wrappers ?? null, mixed.set.includes('wrappers')], ['mixed', null, true]);
   const baseSet = setTo('valued-set-base', 'one-at-a-time');
   t('set by hand to its baseline: the ticket runs it, out of the set', [baseSet.values.wrappers, baseSet.set.includes('wrappers')], ['one-at-a-time', false]);
+  // Declared but never trialled or set here: off, so the pin names no value for it at all.
+  const untried = loadRegistry({ ...ENTRIES, wrappers: { ...ENTRIES.wrappers, values: VALUES, baseline: 'one-at-a-time', trialled: false } });
+  const offPin = assignPin('O-1', { slug: 'valued-off', size: 'S', random: seededRandom(1), now: NOW, registry: untried }).pin;
+  t('a valued lever off in its repo: the pin carries no value for it', [offPin.values?.wrappers ?? null, offPin.set.includes('wrappers')], [null, false]);
+  append('valued-off', { kind: 'override', lever: 'wrappers', to: 'overridden', value: 'one-at-a-time', actor: 'ben', reason_code: 'ben_override', reason: 'by hand', at: daysAgo(1) }, { registry: untried });
+  t('set by hand to its baseline there: the pin names the baseline', assignPin('O-2', { slug: 'valued-off', size: 'S', random: seededRandom(1), now: NOW, registry: untried }).pin.values?.wrappers ?? null, 'one-at-a-time');
   let refusedLog = '';
   try { append('valued-set', { kind: 'override', lever: 'wrappers', to: 'overridden', value: 'on', actor: 'ben', reason_code: 'ben_override', reason: 'by hand', at: daysAgo(0) }, { registry: reg }); } catch (err) { refusedLog = err.message; }
   t('the lever log refuses an on/off override of a valued lever', /needs "value", one of wrappers's values/.test(refusedLog), true);
@@ -201,6 +208,18 @@ t('a trial recorded for a lever the registry does not trial (the ledger) reads a
   const e = events[0];
   t('AC11 it holds the ticket, its arms, its trial ids and its block id', [e.ticket, e.arms, e.trial_ids, e.block], ['P-1', pin.arms, pin.trial_ids, pin.block]);
   t('AC11 it is in the repo\'s lever log', logFile('ac3'), join(T, 'home', '.desk-autopilot', 'ac3', 'levers.jsonl'));
+}
+
+// Question handling is on trial: where the ledger is on, each ticket draws one of its values, balanced
+// in blocks of twelve; where it is off, none.
+{
+  const ledgerOn = { 'worker-location': 'local', ledger: 'on' };
+  const random = seededRandom(31);
+  const pins = Array.from({ length: 12 }, (_, i) => assignPin(`QH-${i + 1}`, { slug: 'qh-trial', size: 'S', random, now: NOW, values: ledgerOn }).pin);
+  t('question handling, ledger on: every ticket draws a value as its arm, with a trial id', pins.every((p) => REGISTRY['question-handling'].values.includes(p.arms['question-handling']) && p.trial_ids['question-handling'] === 'qh-trial/question-handling/initial'), true);
+  t('question handling, ledger on: a block of twelve draws each value four times', REGISTRY['question-handling'].values.map((v) => pins.filter((p) => p.arms['question-handling'] === v).length), [4, 4, 4]);
+  const off = assignPin('QH-off', { slug: 'qh-off', size: 'S', random, now: NOW, values: { 'worker-location': 'local', ledger: 'off' } }).pin;
+  t('question handling, ledger off: no arm and no value', [off.arms['question-handling'] ?? null, off.values?.['question-handling'] ?? null], [null, null]);
 }
 
 // ---- AC4: holdback after an adopt --------------------------------------------------------------

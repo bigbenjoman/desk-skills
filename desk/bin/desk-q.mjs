@@ -62,7 +62,7 @@ import { LABEL, cut, wrap, stateStamp, attention, epicShort, epicIn, GREY, DIM, 
   openLeversPage, leversDue, U_NAME, accountOf, loginLabel, checkKey, sameAccountAs, unusable, pickKeys, DROP_IN, DROP_W, R_RUNS, addingName,
   usageParts, usageLines, usageOf, forgetLogins, overviewParts, hhmm, repoParts, logPath, ticketParts, prToOpen, shownState, shownRepos, repoPlace,
   forecastOf, runningOn, andList, probesDue, ZOOMS, Usage, resolveRepo, isWrite, isCommand, target, apply, supervisorState, noSupervisor, readHidden, writeHidden,
-  checkFlags, loadOrRefuse, scopeWord, run, SELECT_BG, OPT_ON, OPT_BOLD, OPT_GREY, OPT_GOOD, printable, systemOpener, REREAD_MS } from './desk-q-model.mjs';
+  checkFlags, loadOrRefuse, scopeWord, run, SELECT_BG, OPT_ON, OPT_BOLD, OPT_GREY, OPT_GOOD, printable, systemOpener, REREAD_MS, costCheck } from './desk-q-model.mjs';
 
 export * from './desk-q-model.mjs';
 
@@ -1041,8 +1041,10 @@ export function interactive({
     // One at a time: the probe's start lock refuses a second caller in the same moment.
     const due = probesDue(repos, { now });
     (async () => { for (const p of due) await probeWith({ now, ...p, done: () => { if (!done) draw(); } }).catch(() => {}); })();
-    try { costWith({ now }); } catch { /* the next check tries again */ }
+    costCheck(costWith, now);
   }, probeMs);
+  // Opened on Costs, the check runs at once rather than at the timer's first tick.
+  if (start?.kind === 'costs') costCheck(costWith, clock());
   draw();
   return { finish };
 }
@@ -1051,7 +1053,15 @@ const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
 })();
-if (isMain) {
+// `desk-q rollback <commit>`: the release watch's rollback, on demand (release-watch.mjs). It reads no
+// queue. Not awaited: release-watch's imports reach back into this module, which must finish loading first.
+if (isMain && process.argv[2] === 'rollback') {
+  Promise.all([import('./maintenance.mjs'), import('./release-watch.mjs')]).then(([m, w]) => {
+    const r = w.manualRollback(process.argv.slice(3), { dir: m.maintDir(), src: m.sourceCheckout() });
+    (r.code === 2 ? console.error : console.log)(r.text);
+    process.exit(r.code);
+  }).catch((e) => { console.error(`desk-q rollback: ${e.message}`); process.exit(1); });
+} else if (isMain) {
   const argv = process.argv.slice(2);
   // Every repo is read from desk-ui's server while it answers (desk-q-server.mjs); with one repo named,
   // or no server, from the files.

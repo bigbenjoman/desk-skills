@@ -28,7 +28,8 @@
 //   - appends the report to <state>/supervisor.log;
 //   - sends one desktop notification (notify.mjs) for the pass's `push` entries the last notification did not carry
 //     (the check-in digest, a production-broken park, a failing health check), or for a pass that
-//     refused or failed;
+//     refused or failed, and for each ask handed on whose question-handling arm pushes it
+//     (question-arms.mjs), an idle tick included;
 //   - once every batch has run, starts the repo's one merge driver (merge-driver.sh --all-batches) when a
 //     batch's pass left tickets to merge (where §3 autopilot-merge and pr-merge-green are both `yes`, or
 //     the batch's `approved.merge` is true where they are `yes` or `ask`: the driver reads it itself)
@@ -108,6 +109,7 @@ import { notify as show } from './notify.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
 import { lastBeat, writeBeat } from './borrow.mjs';
 import { recordAsks } from './ask-ledger.mjs';
+import { raised, duePushes, markPushed } from './question-arms.mjs';
 import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, dropHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome, runningBatches, restateKeys, baseSyncLine } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -684,6 +686,7 @@ function batchInterval(intake) {
     intakeAlone();
     const reaped = reapDecider(state, s);
     if (reaped.length) { writeState(state, s); log([`== ${stamp()} ${reaped.join('\n')}`]); }
+    idleAskPushes(state, s, log, q);
     idleBeat(state, q);
     idleCheckin(state, s, log, stamp);
     return;
@@ -888,11 +891,14 @@ function runPass(state, q, s, log, stamp, intake = []) {
     else driverWanted = true;
   }
 
-  // A pass that crashed or hung gave no verdict, and needs the person as much as one that said so.
-  const pushes = toPush(v);
+  // A pass that crashed or hung gave no verdict, and needs the person as much as one that said so. An
+  // ask handed on that its question-handling arm pushes goes out with it.
+  const asks = duePushes(state, qAfter, { queue: qf, slug });
+  const pushes = [...toPush(v), ...asks];
   const items = pushes.map((p) => p.key);
   const { sent, line } = pushFresh(state, s, pushes, (ps) => ps.map((p) => p.key).join(', '), 'pass');
   if (line) out.push(line);
+  if (sent) out.push(...markPushed(state, asks, { queue: qf }));
   // A failed notification records nothing new, so the next pass sends it again. A pass that refused
   // or failed checked nothing, so it keeps the keys already sent rather than dropping them.
   if (v.status === 'error') s.notified = sent ? [...new Set([...s.notified, ...items])] : s.notified;
@@ -1051,13 +1057,25 @@ function restampRestate(items, now) {
 }
 
 // The asks among items `items` (each a park with its since: ask-ledger.mjs) as ask steps `steps`, each
-// a function of the item giving that step's fields, written to the batch's ticket ledger. -> its report lines.
+// a function of the item, its park and the queue giving that step's fields (question-arms.mjs raised),
+// written to the batch's ticket ledger. -> its report lines.
 function asksOf(items, q, steps) {
   const parks = items.filter((i) => i.kind === 'parked' && i.since);
   const park = (i) => q?.tickets?.[i.ticket]?.park ?? {};
-  return recordAsks(E.queueFile(), parks.flatMap((i) => steps.map((f) => ({ key: i.ticket, since: i.since, ...f(i, park(i)) }))), { by: 'supervisor' });
+  return recordAsks(E.queueFile(), parks.flatMap((i) => steps.map((f) => ({ key: i.ticket, since: i.since, ...f(i, park(i), q) }))), { by: 'supervisor' });
 }
-const raised = (i, p) => ({ step: 'raised', kind: p.kind, question: p.question ?? i.text });
+// The asks handed on whose question-handling arm pushes them (question-arms.mjs), from an idle tick:
+// each sent once, and recorded once out. Read, sent and recorded under the batch's lock, so two ticks
+// never send the same one; a tick that finds it held leaves them to the holder.
+function idleAskPushes(state, s, log, q) {
+  if (takeLock(state)) return;
+  try {
+    const due = duePushes(state, q, { queue: E.queueFile(), slug: E.repoSlug() });
+    for (const p of due) pushOnce(state, s, log, stamp, 'ask', p);
+    const lines = markPushed(state, due.filter((p) => s.notified.includes(p.key)), { queue: E.queueFile() });
+    if (lines.length) log([`== ${stamp()} ${lines.join('\n')}`]);
+  } finally { dropLock(state); }
+}
 
 // Stops a decider past its time and hands its items on; records an ended one's outcome. Returns the
 // lines for the batch report. An ask it handed on is raised (handed to the person); one it settled

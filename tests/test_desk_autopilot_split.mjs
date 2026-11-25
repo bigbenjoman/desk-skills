@@ -89,6 +89,7 @@ const REWRITTEN = [
   ['DS-972', 'starts the merge driver for the queue\'s tickets (it reads their holds from the queue)', 1], // one driver runs for all of a repo's batches
   ['DS-972', 'it starts the driver for a handed-over batch and starts it again after a reboot', 1],
   ['DS-890', 'questions <SPINE> <state>/spine-review-<SPINE>.txt --batch <EPIC>`', 1], // the step names the file saved in step 2, so its script stays checked
+  ['#1376', 'and on its own (the worker contract says when a worker may use it).', 1], // the question-handling lever pushes more between check-ins
 ];
 checkSplit({ t, label: 'AC4', before, files, read, headings: 46, minRows: 100, rewritten: REWRITTEN });
 const deep = before.split('\n').filter((l) => /^#### /.test(l));

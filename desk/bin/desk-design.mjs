@@ -93,11 +93,15 @@ export function parseBoards(canvas) {
 }
 
 // Every reference a board or stylesheet makes: src/href attributes, CSS url() and @import. A
-// template binding (`{{janeSrc}}`) is filled in at runtime, so it names no file.
+// template binding (`{{janeSrc}}`) is filled in at runtime, so it names no file. A `<dc-import>`
+// picks its component by `name`, and its other attributes are that component's props, so a
+// `src="LinkedIn"` on it is a value the board shows, not a file it loads.
+const DC_IMPORT = /<dc-import\b(?:"[^"]*"|'[^']*'|[^>"'])*>/gi;
 export function references(text) {
   const refs = [];
   const add = (r) => { if (r && !refs.includes(r)) refs.push(r); };
-  for (const m of text.matchAll(/\b(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) add(m[1] ?? m[2]);
+  const tags = text.replace(DC_IMPORT, '');
+  for (const m of tags.matchAll(/\b(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) add(m[1] ?? m[2]);
   for (const m of text.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"\s]+))\s*\)/gi)) add(m[1] ?? m[2] ?? m[3]);
   for (const m of text.matchAll(/@import\s+(?:"([^"]*)"|'([^']*)')/gi)) add(m[1] ?? m[2]);
   return refs.map((r) => r.trim()).filter((r) => r && !r.includes('{{'));

@@ -388,6 +388,85 @@ const evidence = (slug, rows, name = 'evl_2026-11-15_x.jsonl') => ({ [`${slug}/l
   t('merged only: the cost panel counts every admitted ticket', v.panels.cost.weeks_before[0].admitted + v.panels.cost.weeks_before[1].admitted, 4);
 }
 
+// A ticket in several levers' evidence files is one row, its ticket-level fields from the newest
+// evaluation's copy, and never a lever's own exclusion: the fleet-wide trends and the cost panel leave
+// out only a ticket-wide reason (a pin mismatch, an incomplete cost).
+{
+  const rows = [row('DS-1', 2, { cost: 10 }), row('DS-2', 2, { cost: 20 }), row('DS-3', 2, { cost: 30 })];
+  const m = machine({ files: {
+    ...evidence(DS, rows, 'evl_2026-11-14_a.jsonl'),
+    // The last file by name, as a lever whose own code changed writes it: every ticket fp_reset.
+    ...evidence(DS, rows.map((r) => ({ ...r, excluded: 'fp_reset' })), 'evl_2026-11-14_wrappers.jsonl'),
+    ...evidence(DS, [{ ...row('DS-4', 2, { cost: 99 }), pin_mismatch: true, excluded: 'pin_mismatch' }], 'evl_2026-11-14_b.jsonl'),
+  } });
+  const v = view(m);
+  const c = v.panels.trends.metrics.cost.callouts;
+  t('dedupe: a lever\'s fp_reset leaves no ticket out of the cost trend', c.to_date, 20);
+  t('dedupe: nor out of the fix tries trend', v.panels.trends.metrics.fixes.callouts.to_date, 0);
+  t('dedupe: a pin mismatch is still left out', v.panels.cost.this_week.usd_per_admitted, 20);
+  t('dedupe: the data quality tally counts ticket-wide reasons only', j(v.panels.data_quality.excluded), '{"cost_incomplete":0,"pin_mismatch":1,"other":0}');
+  t('dedupe: each ticket once', v.panels.data_quality.tickets, 4);
+  // An older evaluation's copy sorts after the newer one by name: the newer copy still wins.
+  const m2 = machine({ files: {
+    ...evidence(DS, [row('DS-1', 2, { cost: 12 })], 'evl_new.jsonl'),
+    ...evidence(DS, [row('DS-1', 2, { cost: 0, complete: false, merged: null })], 'evl_old.jsonl'),
+  } });
+  const ev = (n) => join(m2.root, DS, 'levers-evidence', n);
+  utimesSync(ev('evl_old.jsonl'), new Date(NOW - 2 * DAY), new Date(NOW - 2 * DAY));
+  utimesSync(ev('evl_new.jsonl'), new Date(NOW - HOUR), new Date(NOW - HOUR));
+  t('dedupe: the newest evaluation\'s copy of a ticket wins, not the last file read', view(m2).panels.trends.metrics.cost.callouts.to_date, 12);
+}
+
+// The per accepted ticket trends are keyed by the day each ticket merged, so a slow ticket counts on
+// the day it finished rather than pulling its admission day up after the fact.
+{
+  const slow = { ...row('DS-1', 4, { cost: 40, fix: 2 }), merged_at: iso(1 * DAY) };
+  const v = view(machine({ files: evidence(DS, [slow, row('DS-2', 1, { cost: 10 })]) }));
+  const m = v.panels.trends.metrics;
+  t('merge day: yesterday counts the slow ticket that merged yesterday', m.cost.callouts.yesterday, 25);
+  t('merge day: and its fix tries', m.fixes.callouts.yesterday, 1);
+  t('merge day: the day it was admitted has no point', m.cost.daily.at(-4).value, null);
+  t('merge day: the trends say how many tickets each callout is over', j(m.cost.counts), '{"yesterday":2,"last_week":0,"mtd":2,"to_date":2}');
+  t('merge day: the trends name their window', j([m.cost.keyed_by, m.cost.first_recorded]), '["merged_at","2026-11-11"]');
+}
+
+// The change list: an evidence_incomplete event carries what was not recorded, by ticket and file name
+// rather than absolute path, and one repo's per-lever copies of it on one day are one event naming each
+// lever.
+{
+  const st = '/home/x/.desk-autopilot/bigbenjoman__desk-skills';
+  const missing = [`${st}/post-merge.jsonl (its latest scan is incomplete)`, `${st}/workers/DS-261.runs.jsonl`, `${st}/workers/DS-262.runs.jsonl`, `${st}/workers/DS-263.findings.jsonl`];
+  const inc = (lever, at) => ({ v: 1, id: `i-${lever}-${at}`, at, repo: DS, lever, kind: 'evidence_incomplete', actor: 'levers-auto', reason_code: 'evidence_incomplete', eval_id: `evl_${lever}`, missing, reason: `${lever}: nothing adopts while outcome files are missing: ${missing.join(', ')}` });
+  const log = [inc('wrappers', iso(2 * DAY)), inc('memory', iso(2 * DAY + MIN)), inc('codex', iso(2 * DAY + 2 * MIN)), inc('memory', iso(3 * DAY)),
+    { v: 1, id: 't', at: iso(2 * DAY), repo: DS, lever: 'wrappers', kind: 'transition', from: 'off', to: 'trial', actor: 'controller', reason_code: 'row_change' },
+    { v: 1, id: 't2', at: iso(2 * DAY), repo: DS, lever: 'memory', kind: 'transition', from: 'off', to: 'trial', actor: 'controller', reason_code: 'row_change' }];
+  const v = view(machine({ repos: autoRepos, files: { [`${DS}/levers.jsonl`]: jsonl(log), [`${DS}/lever-evals.jsonl`]: jsonl([evalRow('wrappers')]) } }));
+  const all = v.panels.changes.all;
+  const incs = all.filter((e) => e.kind === 'evidence_incomplete');
+  t('changes: one evidence_incomplete event per repo per day', incs.length, 2);
+  t('changes: naming each lever it was recorded for', j(incs[0].levers), '["codex","memory","wrappers"]');
+  t('changes: a merged event cites no one lever\'s evaluation', incs[0].evidence, null);
+  t('changes: a single one keeps its lever', j([incs[1].levers, incs[1].lever]), '[["memory"],"memory"]');
+  t('changes: what was not recorded, by ticket and file name', j(incs[0].missing), j([
+    { what: 'a review round’s findings weren’t recorded', tickets: ['DS-261', 'DS-262'] },
+    { what: 'no review findings were recorded', tickets: ['DS-263'] },
+    { what: 'the post-merge watch’s latest scan didn’t finish', files: ['post-merge.jsonl'] },
+  ]));
+  t('changes: no absolute path is carried', JSON.stringify(incs[0].missing).includes('/home/x'), false);
+  t('changes: decisions are never merged', all.filter((e) => e.kind === 'transition').length, 2);
+}
+
+// A lever an auto repo's config rules out says so as a short status, its rationale kept beside it.
+{
+  const v = view(machine({ repos: autoRepos }));
+  const qh = cell(v, 'question-handling');
+  t('preconditions: question handling without the ledger is ineligible', qh.state, 'ineligible');
+  t('preconditions: with a short status', qh.status, 'needs ledger on');
+  t('preconditions: and the rationale kept', qh.why, 'its asks and what they cost are read from the ticket ledger');
+  const { REGISTRY } = await import('../desk/bin/lever-registry.mjs');
+  t('preconditions: every precondition has a short status', Object.values(REGISTRY).flatMap((l) => l.preconditions).every((p) => typeof p.status === 'string' && p.status.length <= 32), true);
+}
+
 // An unrecorded sample size is never worded as 0.
 {
   t('no n: the effect label', V.effectView({ lo90: -0.7, hi90: -0.4 }, null, 30).label, 'too early: sample not recorded, needs 30');

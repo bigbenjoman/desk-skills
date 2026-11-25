@@ -33,6 +33,7 @@ import * as MS from './merge-stages.mjs';
 import * as RM from './review-misses.mjs';
 import * as ST from './stuck-time.mjs';
 import { listBatches } from './batches.mjs';
+import { excludedWhy } from './levers-evaluate.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -221,23 +222,54 @@ const weekStart = (k) => addDays(k, -((new Date(keyMs(k)).getUTCDay() + 6) % 7))
 const monthOf = (k) => k.slice(0, 7);
 const addMonths = (m, n) => { const d = new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1 + n, 1)); return d.toISOString().slice(0, 7); };
 
+// ---- the per-ticket rows -----------------------------------------------------------------------------------
+// Each evidence file is one lever's evaluation: its copy of a ticket carries that lever's own fields, the
+// arm it drew (`on`, `arm`) and why that lever left it out (`excluded`, fp_reset when the lever's code
+// changed). The fleet-wide figures want the ticket itself, so each ticket is one row: the copy from the
+// newest evaluation (files read oldest first, by when each was written and then by name), with those
+// per-lever fields dropped and `excluded` only for a reason that holds for every lever (excludedWhy with
+// no lever: a pin mismatch, an incomplete cost). `day` is the day it was admitted, `merged_day` the day it
+// merged, in `tz`.
+const LEVER_FIELDS = ['on', 'arm', 'excluded'];
+function ticketRows(repos, tz) {
+  const files = repos.flatMap((r) => r.evidence.map((f) => ({ ...f, repo: r }))).sort((a, b) => (a.at ?? '').localeCompare(b.at ?? '') || (a.file ?? '').localeCompare(b.file ?? ''));
+  const byTicket = new Map();
+  for (const f of files) for (const row of f.rows) {
+    if (!row.key || !row.admitted_at || Number.isNaN(Date.parse(row.admitted_at))) continue;
+    const ticket = Object.fromEntries(Object.entries(row).filter(([k]) => !LEVER_FIELDS.includes(k)));
+    const why = excludedWhy(ticket, null, null);
+    const merged = row.merged_at && !Number.isNaN(Date.parse(row.merged_at)) ? dayKey(Date.parse(row.merged_at), tz) : null;
+    byTicket.set(`${row.slug ?? f.repo.slug}|${row.batch ?? ''}|${row.key}`, {
+      ...ticket, slug: row.slug ?? f.repo.slug, repo: f.repo.name, day: dayKey(Date.parse(row.admitted_at), tz), merged_day: merged, ...(why ? { excluded: why } : {}),
+    });
+  }
+  return [...byTicket.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([, v]) => v);
+}
+
 // ---- the four trend metrics -------------------------------------------------------------------------------
-const costed = (r) => r.cost_complete === true && !r.excluded && Number.isFinite(r.cost);
+// A ticket counts unless a ticket-wide reason leaves it out; that reason includes an incomplete cost, so
+// every metric reads the same tickets.
 const counted = (r) => !r.excluded;
+const costed = (r) => counted(r) && Number.isFinite(r.cost);
 // The per accepted ticket metrics read merged tickets only, the population their baseline counts;
-// an admitted ticket still in flight or never run would pull the mean down and read as a saving.
-const accepted = (r) => !!r.merged_at;
+// an admitted ticket still in flight or never run would pull the mean down and read as a saving. Each
+// is keyed by the day its ticket merged: keyed by admission, a day's point would hold only the tickets
+// quick enough to have merged so far, and read cheaper than it ends up.
+const accepted = (r) => !!r.merged_at && !!r.merged_day;
 const mean = (xs) => (xs.length ? xs.reduce((n, v) => n + v, 0) / xs.length : null);
 const usdMean = (rows) => mean(rows.filter(costed).map((r) => r.cost));
+const sumOver = (rows, k) => rows.reduce((a, r) => a + r[k], 0);
+// Each metric: the tickets it reads (`of` them is its value), and the field its days are keyed by.
 export const METRICS = Object.freeze({
-  cost: { title: 'Cost per ticket', unit: 'usd', of: (rows) => usdMean(rows.filter(accepted)), base: (b) => b?.cost ?? null, basis: 'per accepted ticket' },
-  tokens: { title: 'Tokens per ticket', unit: 'input tokens', of: (rows) => mean(rows.filter(accepted).filter(costed).filter((r) => Number.isFinite(r.input)).map((r) => r.input)), base: (b) => b?.input_tokens ?? null, basis: 'per accepted ticket' },
+  cost: { title: 'Cost per ticket', unit: 'usd', keyed_by: 'merged_at', over: (rows) => rows.filter(accepted).filter(costed), of: (rs) => mean(rs.map((r) => r.cost)), base: (b) => b?.cost ?? null, basis: 'per accepted ticket' },
+  tokens: { title: 'Tokens per ticket', unit: 'input tokens', keyed_by: 'merged_at', over: (rows) => rows.filter(accepted).filter(costed).filter((r) => Number.isFinite(r.input)), of: (rs) => mean(rs.map((r) => r.input)), base: (b) => b?.input_tokens ?? null, basis: 'per accepted ticket' },
   prompts: {
-    title: 'Permission prompts per start', unit: 'denials per start',
-    of: (rows) => { const s = rows.filter(counted).filter((r) => r.starts > 0 && Number.isFinite(r.denials)); const n = s.reduce((a, r) => a + r.starts, 0); return n ? s.reduce((a, r) => a + r.denials, 0) / n : null; },
+    title: 'Permission prompts per start', unit: 'denials per start', keyed_by: 'merged_at',
+    over: (rows) => rows.filter(accepted).filter(counted).filter((r) => r.starts > 0 && Number.isFinite(r.denials)),
+    of: (rs) => { const n = sumOver(rs, 'starts'); return n ? sumOver(rs, 'denials') / n : null; },
     base: (b) => (b?.denials != null && b?.starts ? b.denials / b.starts : null), basis: 'per start',
   },
-  fixes: { title: 'Fix tries per ticket', unit: 'fix tries', of: (rows) => mean(rows.filter(accepted).filter(counted).filter((r) => Number.isFinite(r.fix_tries)).map((r) => r.fix_tries)), base: (b) => b?.fix_tries ?? null, basis: 'per accepted ticket' },
+  fixes: { title: 'Fix tries per ticket', unit: 'fix tries', keyed_by: 'merged_at', over: (rows) => rows.filter(accepted).filter(counted).filter((r) => Number.isFinite(r.fix_tries)), of: (rs) => mean(rs.map((r) => r.fix_tries)), base: (b) => b?.fix_tries ?? null, basis: 'per accepted ticket' },
 });
 const pct = (a, b) => (a == null || b == null || b === 0 ? null : round(((a - b) / b) * 100, 1));
 const val = (v) => round(v, 4);
@@ -246,7 +278,8 @@ const val = (v) => round(v, 4);
 // ending this month, its baseline and its nine callouts. A point with no tickets, or before the first
 // recorded day, is null.
 function trend(metric, rows, base, today, first) {
-  const at = (pred) => rows.filter((r) => pred(r.day));
+  const mine = metric.over(rows);
+  const at = (pred) => mine.filter((r) => pred(r.merged_day));
   const point = (pred, before) => (first == null || before < first ? null : val(metric.of(at(pred))));
   const yesterday = addDays(today, -1);
   const daily = Array.from({ length: 30 }, (_, i) => addDays(yesterday, i - 29)).map((d) => ({ date: d, value: point((x) => x === d, d) }));
@@ -258,8 +291,13 @@ function trend(metric, rows, base, today, first) {
   const lastWeek = weekly.at(-1).value;
   const mtd = monthly.at(-1).value;
   const toDate = first == null ? null : val(metric.of(at((x) => x < today)));
+  const lastWeekStart = addDays(thisWeek, -WEEK_DAYS);
+  const counts = {
+    yesterday: at((x) => x === yesterday).length, last_week: at((x) => x >= lastWeekStart && x < thisWeek).length,
+    mtd: at((x) => monthOf(x) === month && x < today).length, to_date: at((x) => x < today).length,
+  };
   return {
-    title: metric.title, unit: metric.unit, first_recorded: first,
+    title: metric.title, unit: metric.unit, first_recorded: first, keyed_by: metric.keyed_by, counts,
     baseline: { value: base == null ? null : val(base), basis: metric.basis },
     daily, weekly, monthly,
     callouts: {
@@ -286,6 +324,63 @@ function evalEvidence(e, layerMin) {
   };
 }
 
+// What an evidence_incomplete event's `missing` (the outcome files levers-evaluate named, as absolute
+// paths) says was not recorded, by ticket or file name: a ticket's runs file is there because one of its
+// review rounds' findings were never recorded, a findings file because the ticket has none at all, and
+// post-merge.jsonl because the watch has no scan or its latest did not finish.
+// -> [{ what, tickets } | { what, files }], in that order, each present only when it has any.
+const MISSING = Object.freeze([
+  { re: /\/workers\/([^/]+)\.runs\.jsonl$/, what: 'a review round’s findings weren’t recorded' },
+  { re: /\/workers\/([^/]+)\.findings\.jsonl$/, what: 'no review findings were recorded' },
+  { re: /\/post-merge\.jsonl \(its latest scan is incomplete\)$/, what: 'the post-merge watch’s latest scan didn’t finish', file: true },
+  { re: /\/post-merge\.jsonl$/, what: 'the post-merge watch has no record', file: true },
+]);
+export function missingView(paths) {
+  const groups = new Map();
+  for (const p of paths) {
+    const s = String(p);
+    const kind = MISSING.find((k) => k.re.test(s));
+    const what = kind?.what ?? 'other outcome files weren’t there';
+    if (!groups.has(what)) groups.set(what, { file: !kind || kind.file, items: new Set() });
+    groups.get(what).items.add(kind && !kind.file ? kind.re.exec(s)[1] : s.replace(/ \(.*\)$/, '').split('/').pop());
+  }
+  const order = [...MISSING.map((k) => k.what), 'other outcome files weren’t there'];
+  return order.filter((w) => groups.has(w)).map((what) => {
+    const g = groups.get(what);
+    return { what, [g.file ? 'files' : 'tickets']: [...g.items].sort() };
+  });
+}
+
+// The change events that are one fact recorded once per lever (incomplete evidence, a lever's code
+// changing), for one repo on one day, as one event naming each lever. A merged event cites no one
+// lever's evaluation, and its `missing` is every copy's. Decisions are never merged.
+const PER_LEVER = Object.freeze(['evidence_incomplete', 'fp_reset']);
+function mergePerLever(events, tz) {
+  const out = [];
+  const byKey = new Map();
+  for (const e of [...events].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) {
+    if (!PER_LEVER.includes(e.kind)) { out.push(e); continue; }
+    const k = `${e.repo}|${e.kind}|${e.reason_code}|${dayKey(Date.parse(e.at), tz)}`;
+    const had = byKey.get(k);
+    if (!had) { const first = { ...e, levers: e.lever ? [e.lever] : [] }; byKey.set(k, first); out.push(first); continue; }
+    if (e.lever && !had.levers.includes(e.lever)) had.levers.push(e.lever);
+    had.levers.sort();
+    had.lever = had.levers.length === 1 ? had.levers[0] : null;
+    if (had.levers.length > 1) Object.assign(had, { evidence: null, eval_id: null, evidence_file: null, reason: null });
+    if (e.missing) {
+      const merged = new Map((had.missing ?? []).map((g) => [g.what, g]));
+      for (const g of e.missing) {
+        const key = g.tickets ? 'tickets' : 'files';
+        const into = merged.get(g.what) ?? { what: g.what, [key]: [] };
+        into[key] = [...new Set([...into[key], ...g[key]])].sort();
+        merged.set(g.what, into);
+      }
+      had.missing = [...merged.values()];
+    }
+  }
+  return out;
+}
+
 const panel = (state, body = {}, errors = []) => ({ state: errors.length ? 'error' : state, ...(errors.length ? { errors } : {}), ...body });
 const errs = (...reads) => reads.flat(Infinity).map((x) => x?.error).filter(Boolean);
 
@@ -300,13 +395,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   const today = dayKey(now, tz);
   const weekAgo = now - WEEK_DAYS * DAY_MS;
 
-  // Per-ticket outcome rows: the latest evaluation's copy of each ticket.
-  const byTicket = new Map();
-  for (const r of repos) for (const f of r.evidence) for (const row of f.rows) {
-    if (!row.key || !row.admitted_at || Number.isNaN(Date.parse(row.admitted_at))) continue;
-    byTicket.set(`${row.slug ?? r.slug}|${row.batch ?? ''}|${row.key}`, { ...row, slug: row.slug ?? r.slug, repo: r.name, day: dayKey(Date.parse(row.admitted_at), tz) });
-  }
-  const rows = [...byTicket.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([, v]) => v);
+  const rows = ticketRows(repos, tz);
   const rowErrors = errs(repos.map((r) => r.evidence));
   const first = rows.length ? rows.map((r) => r.day).sort()[0] : null;
 
@@ -388,8 +477,10 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
         // evaluation still writes it a row until it is kept: one line says why.
         const pre = !r.configRead.error && r.enrol.auto && !r.enrol.pinned.includes(lever) && !KEPT.includes(e?.state) ? preconditions(lever, r.values) : null;
         if (pre && !pre.eligible) {
+          // A short status for the cell (needs ledger on), the rationale beside it.
           const why = pre.failed.map((p) => p.why).join('; ');
-          return { repo: r.name, state: 'ineligible', why, note: `not tested in ${r.name}: ${why}`, stale: col.column === 'stale' };
+          const status = pre.failed.map((p) => p.status ?? p.why).join('; ');
+          return { repo: r.name, state: 'ineligible', status, why, note: `not tested in ${r.name}: ${why}`, stale: col.column === 'stale' };
         }
         if (!e) {
           if (r.enrol.pinned.includes(lever)) return { repo: r.name, state: 'pinned', note: 'pinned by hand: before/after only, not a trial', stale: col.column === 'stale' };
@@ -440,15 +531,17 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   // P6 the changes: this week's, and every one, each with the evaluation it cites.
   const evalById = new Map();
   for (const r of repos) for (const e of r.evals.rows) if (e.eval_id) evalById.set(`${r.slug}|${e.eval_id}`, e);
-  const changesAll = repos.flatMap((r) => r.log.rows.filter((e) => CHANGE_KINDS.includes(e.kind) && !Number.isNaN(Date.parse(e.at))).map((e) => {
+  const changesRaw = repos.flatMap((r) => r.log.rows.filter((e) => CHANGE_KINDS.includes(e.kind) && !Number.isNaN(Date.parse(e.at))).map((e) => {
     const ev = e.eval_id ? evalById.get(`${r.slug}|${e.eval_id}`) : null;
     return {
-      at: e.at, repo: e.repo === '*' ? '*' : r.name, lever: e.lever ?? e.pair ?? null, kind: e.kind, from: e.from ?? null, to: e.to ?? null, actor: e.actor ?? null,
+      at: e.at, repo: e.repo === '*' ? '*' : r.name, lever: e.lever ?? e.pair ?? null, kind: e.kind, from: e.from ?? e.before ?? null, to: e.to ?? e.after ?? null, actor: e.actor ?? null,
       reason_code: e.reason_code ?? null, wording: reasonWording(e.reason_code), reason: e.reason ?? null, ticket: e.ticket ?? null,
       eval_id: e.eval_id ?? null, evidence_file: e.evidence_file ?? null, decision_id: e.decision_id ?? null, desk_commit_range: e.desk_commit_range ?? null,
       evidence: ev ? evalEvidence(ev, DECISION_RULE.min_per_arm[REGISTRY[ev.lever]?.layer] ?? null) : null,
+      ...(Array.isArray(e.missing) ? { missing: missingView(e.missing) } : {}),
     };
-  })).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.repo < b.repo ? -1 : 1));
+  }));
+  const changesAll = mergePerLever(changesRaw, tz).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.repo < b.repo ? -1 : 1));
   const week = changesAll.filter((e) => Date.parse(e.at) >= weekAgo);
   const changes = panel(week.length ? 'ok' : 'empty', { events: week, all: changesAll, last_change: changesAll[0] ?? null }, errs(repos.map((r) => r.log)));
 
@@ -466,11 +559,9 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   }, errs(repos.map((r) => r.audit), repos.map((r) => r.log), repos.map((r) => r.evals)));
 
   // P8 data quality.
-  const excluded = { cost_incomplete: 0, pin_mismatch: 0, fp_reset: 0, other: 0 };
-  for (const r of rows) {
-    if (r.excluded) excluded[Object.hasOwn(excluded, r.excluded) ? r.excluded : 'other'] += 1;
-    else if (r.cost_complete !== true) excluded.cost_incomplete += 1;
-  }
+  // Ticket-wide reasons only: a lever's own (fp_reset) is that lever's evaluation's, on its row.
+  const excluded = { cost_incomplete: 0, pin_mismatch: 0, other: 0 };
+  for (const r of rows) if (r.excluded) excluded[Object.hasOwn(excluded, r.excluded) ? r.excluded : 'other'] += 1;
   const starts = rows.flatMap((r) => r.start_records ?? []);
   const dataQuality = panel(rows.length ? 'ok' : 'empty', {
     tickets: rows.length, excluded, excluded_total: Object.values(excluded).reduce((n, v) => n + v, 0),
@@ -484,7 +575,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   const thisWeek = window(weekAgo, now);
   const perRepo = repos.map((r) => {
     const mine = thisWeek.filter((x) => x.slug === r.slug);
-    return { repo: r.name, admitted: mine.length, merged: mine.filter((x) => x.merged_at).length, usd_per_admitted: usdPer(mine), cost_incomplete: mine.filter((x) => !x.excluded && x.cost_complete !== true).length };
+    return { repo: r.name, admitted: mine.length, merged: mine.filter((x) => x.merged_at).length, usd_per_admitted: usdPer(mine), cost_incomplete: mine.filter((x) => x.excluded === 'cost_incomplete').length };
   });
   const savings = cells.flatMap((l) => l.cells.filter((c) => c.cost?.saving_usd).map((c) => ({ lever: l.lever, repo: c.repo, ...c.cost.saving_usd })));
   const cost = panel(thisWeek.length ? 'ok' : 'empty', {
@@ -518,7 +609,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   return {
     v: VERSION, generated_at: new Date(generatedAt).toISOString(), tz,
     repos: repoView, baseline,
-    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now) },
+    panels: { status, waiting, cost, guardrails, board, changes, overhead, data_quality: dataQuality, trends, merge_stages: mergeStagesPanel(configured, root), stuck_time: stuckTimePanel(configured, root, now), asks: asksPanel(repos, latest) },
     line,
   };
 }
@@ -533,6 +624,16 @@ function mergeStagesPanel(configured, root) {
     return { name: names[i], ...MS.summary(st), learned: RM.beforeAfter(st, RM.readLearned(join(root, r.slug)).since) };
   }).filter((r) => r.prs);
   return { repos };
+}
+
+// Each repo's latest per-arm ask report (levers-evaluate.mjs: tokens and dollars per ticket by step,
+// pushes and digests per ticket, the share defaulted, the median answer latency), for each lever whose
+// evaluation carries one: { repos: [{ name, lever, at, state, arms: { <arm>: report } }] }.
+function asksPanel(repos, latest) {
+  return {
+    repos: repos.flatMap((r) => [...latest.entries()].filter(([k, e]) => k.startsWith(`${r.slug}|`) && e.ask_report && Object.keys(e.ask_report).length)
+      .map(([, e]) => ({ name: r.name, lever: e.lever, at: e.at, state: e.state ?? null, arms: e.ask_report }))),
+  };
 }
 
 // Each repo's time parked by cause (stuck-time.mjs weekSummary) this ISO week and last, for the repos

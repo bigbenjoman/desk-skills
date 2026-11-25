@@ -6,7 +6,8 @@
 //   import { renderPage, pageAge } from './levers-page.mjs'
 import * as MS from './merge-stages.mjs';
 import { fmtHours } from './stuck-time.mjs';
-import { DECISION_RULE, GUARDRAILS, KEPT_STATES as KEPT, REGISTRY } from './lever-registry.mjs';
+import { andList } from './desk-q-model.mjs';
+import { DECISION_RULE, GUARDRAILS, KEPT_STATES as KEPT, REGISTRY, isValued } from './lever-registry.mjs';
 
 // An age in seconds as words, for the view model and the page alike: "3 hours ago". `short` gives
 // minutes as "min", as the page's header does. Runs in the browser too, so it uses nothing from outside
@@ -63,6 +64,7 @@ const WHAT = Object.freeze({
   codex: 'Has Codex review pull requests instead of Claude',
   effort: 'Uses less thinking on simple steps',
   'finder-model': 'Runs the review’s Claude finders on a cheaper model',
+  'question-handling': 'Decides whether a parked ticket’s question is pushed to you at once or waits for the digest',
   ledger: 'Records every queue change in a ticket log beside queue.json',
 });
 
@@ -94,25 +96,33 @@ const isoWeek = (k) => {
 
 // ---- the four trend metrics, as the page titles and formats them ------------------------------------------
 const fixLimit = (base) => (base == null ? null : Math.round(base * GUARDRAILS['fix-tries-parks'].margin.max_rate_ratio * 100) / 100);
+// `sub` words a card's one-line description from its baseline and whether the view keyed its days by
+// the day each ticket merged.
+const perTicket = (merged) => (merged ? 'per merged ticket, by the day it merged' : 'per accepted ticket');
 const METRICS = Object.freeze({
-  cost: { title: 'Cost per Ticket', tile: 'Cost per ticket', sub: () => 'API-equivalent spend per accepted ticket, all repos', scale: 1, v: (x) => `$${x.toFixed(2)}`, pre: '$', post: '' },
-  tokens: { title: 'Tokens per Ticket', tile: 'Tokens per ticket', sub: () => 'Input tokens per accepted ticket', scale: 1e-6, v: (x) => `${x.toFixed(1)}M`, pre: '', post: 'M' },
-  prompts: { title: 'Permission Prompts per Start', tile: 'Prompts per start', sub: () => 'Times a worker was blocked asking to run a command', scale: 1, v: (x) => x.toFixed(1), pre: '', post: '' },
+  cost: { title: 'Cost per Ticket', tile: 'Cost per ticket', sub: (_, merged) => `API-equivalent spend ${perTicket(merged)}, all repos`, scale: 1, v: (x) => `$${x.toFixed(2)}`, pre: '$', post: '' },
+  tokens: { title: 'Tokens per Ticket', tile: 'Tokens per ticket', sub: (_, merged) => `Input tokens ${perTicket(merged)}`, scale: 1e-6, v: (x) => `${x.toFixed(1)}M`, pre: '', post: 'M' },
+  prompts: { title: 'Permission Prompts per Start', tile: 'Prompts per start', sub: (_, merged) => `Times a worker was blocked asking to run a command${merged ? ', per start, by the day its ticket merged' : ''}`, scale: 1, v: (x) => x.toFixed(1), pre: '', post: '' },
   fixes: {
     title: 'Fix Tries per Ticket', tile: 'Fix tries per ticket', scale: 1, v: (x) => x.toFixed(2), pre: '', post: '', minStep: 0.01,
-    sub: (base) => (fixLimit(base) == null ? 'Fix tries per accepted ticket' : `Must stay under ${fixLimit(base).toFixed(2)} for a lever to be kept`),
+    sub: (base, merged) => {
+      const limit = fixLimit(base) == null ? null : `Must stay under ${fixLimit(base).toFixed(2)} for a lever to be kept`;
+      if (!merged) return limit ?? 'Fix tries per accepted ticket';
+      return limit ? `${cap(perTicket(true))}. ${limit}` : `Fix tries ${perTicket(true)}`;
+    },
   },
 });
 const scaled = (m, v) => (v == null ? null : v * m.scale);
 
 // Lower is better for every metric: green under the baseline, amber over it, grey with nothing to compare.
 // Fix tries are judged against their guardrail limit instead.
-function rag(key, metric) {
-  const vs = metric.callouts.last_week_vs_before_pct;
+// `over` is the figure judged: last week's (the cards) or the one since desk started recording (the tiles).
+function rag(key, metric, over = 'last_week') {
+  const vs = metric.callouts[`${over}_vs_before_pct`];
   const better = vs != null && vs <= -1;
   if (key === 'fixes') {
     const limit = fixLimit(metric.baseline.value);
-    const last = metric.callouts.last_week;
+    const last = metric.callouts[over];
     if (limit == null || last == null) return { c: C.grey, label: 'Grey: no comparison yet', words: 'No comparison yet' };
     if (last > limit) return { c: C.amber, label: `Amber: over the ${limit.toFixed(2)} limit`, words: `Over the ${limit.toFixed(2)} limit`, ink: C.amberInk };
     return { c: C.green, label: `Green: under the ${limit.toFixed(2)} limit`, words: better ? 'Better than before levers' : 'Holding steady', ink: better ? C.greenInk : '#374151', dot: better ? C.green : C.grey };
@@ -129,6 +139,13 @@ const W = 700;
 const H = 340;
 const TOP = H * 0.12;
 const BOT = H * 0.84;
+// About how wide one character of a 10px label is, in chart units, with the chart drawn about 560px wide.
+const LABEL_W = 7;
+// Below this many weekly points the trends open on the last 30 days, where a new lever shows sooner.
+const WEEKS_FOR_WBR = 3;
+// The view the trends open on, which the tiles' sparklines follow: 'wbr' once a metric has WEEKS_FOR_WBR
+// weekly points, 'days' before.
+const openOn = (metrics) => (Math.max(0, ...Object.values(metrics ?? {}).map((x) => (x.weekly ?? []).filter((p) => p.value != null).length)) >= WEEKS_FOR_WBR ? 'wbr' : 'days');
 function nice(lo, hi, minStep) {
   const span = hi - lo;
   const raw = Math.max(span / 4, minStep || 0) || Math.max(Math.abs(hi) / 4, 1);
@@ -167,14 +184,24 @@ function panel(o, { labels, vals, ends, base, m, x0, x1, side, every, first }) {
     if (v == null) { if (cur.length) o.segs.push(cur.join(' ')); cur = []; return; }
     cur.push(`${xAt(i).toFixed(1)},${y(v).toFixed(1)}`);
     o.dots.push({ x: xAt(i), y: y(v) });
-    if (every === 1 || (n - 1 - i) % every === 0) o.labels.push({ x: xAt(i), y: y(v) - 6, tf: 'translate(-50%,-100%)', s: m.v(v), c: C.ink });
+    // Centred on its point, but kept inside the panel so it never runs into the tick labels beside it;
+    // above the point, or under a dip (the line into and out of it runs above), room allowing.
+    if (every === 1 || (n - 1 - i) % every === 0) {
+      const s = m.v(v);
+      const w = s.length * LABEL_W;
+      const prev = vals[i - 1];
+      const next = vals[i + 1];
+      const dip = prev != null && prev > v && (next == null || next > v) && y(v) + 18 <= BOT;
+      o.labels.push({ x: Math.max(x0, Math.min(xAt(i) - w / 2, x1 - w)), y: dip ? y(v) + 6 : y(v) - 6, tf: dip ? 'translate(0,0)' : 'translate(0,-100%)', s, c: C.ink });
+    }
   });
   if (cur.length) o.segs.push(cur.join(' '));
   const pre = first ? ends.filter((k) => k < first).length : 0;
   if (pre) {
-    // A gap too narrow to centre the note in starts it at the gap's left edge instead.
+    // Above the top of the plot, so it never strikes through the baseline. A gap too narrow to centre
+    // the note in starts it at the gap's left edge instead.
     const wide = pre * dx >= 160;
-    o.labels.push({ x: wide ? x0 + (pre * dx) / 2 : x0 + 4, y: (TOP + BOT) / 2, tf: wide ? 'translate(-50%,-50%)' : 'translate(0,-50%)', s: `desk started recording on ${dayLabel(first)}`, c: C.grey, note: true });
+    o.labels.push({ x: wide ? x0 + (pre * dx) / 2 : x0 + 4, y: TOP - 4, tf: wide ? 'translate(-50%,-100%)' : 'translate(0,-100%)', s: `desk started recording on ${dayLabel(first)}`, c: C.grey, note: true });
   }
 }
 
@@ -182,7 +209,7 @@ function panel(o, { labels, vals, ends, base, m, x0, x1, side, every, first }) {
 const weekEnd = (k) => new Date(Date.parse(`${k}T00:00:00Z`) + 6 * 86_400_000).toISOString().slice(0, 10);
 const monthEnd = (m) => new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0)).toISOString().slice(0, 10);
 
-function chart(key, metric, view) {
+function chart(key, metric, view, shown) {
   const m = METRICS[key];
   const base = scaled(m, metric.baseline.value);
   const o = { grid: [], axes: [], ticks: [], labels: [], bases: [], bdots: [], segs: [], dots: [] };
@@ -197,7 +224,7 @@ function chart(key, metric, view) {
   const aria = `${m.title}: ${view === 'days' ? 'each of the last 30 days' : 'last 6 weeks on the left, last 12 months on the right'}. Black is now${base == null ? '' : `, grey is before levers at ${m.v(base)}`}.`;
   const px = (x) => `${((x / W) * 100).toFixed(3)}%`;
   const py = (y) => `${((y / H) * 100).toFixed(3)}%`;
-  return `<div class="chart" data-view="${view}"${view === 'days' ? ' hidden' : ''}>
+  return `<div class="chart" data-view="${view}"${view === shown ? '' : ' hidden'}>
 <svg viewBox="0 0 ${W} ${H}" width="100%" height="100%" role="img" aria-label="${esc(aria)}">
 ${o.grid.map((g) => `<line x1="${f1(g.x0)}" y1="${f1(g.y)}" x2="${f1(g.x1)}" y2="${f1(g.y)}" stroke="#E0E6F1"></line>`).join('')}
 ${o.axes.map((a) => `<line x1="${f1(a.x0)}" y1="${f1(BOT)}" x2="${f1(a.x1)}" y2="${f1(BOT)}" stroke="#6E7079"></line>`).join('')}
@@ -213,7 +240,7 @@ ${o.dots.map((d) => `<circle class="pt" cx="${f1(d.x)}" cy="${f1(d.y)}" r="3" fi
 }
 
 const CALLOUTS = [['Yesterday', 'yesterday', false], ['DoD%', 'dod_pct', true], ['Last Wk', 'last_week', false], ['WoW%', 'wow_pct', true], ['vs before', 'last_week_vs_before_pct', true], ['MTD', 'mtd', false], ['MoM%', 'mom_pct', true], ['To date', 'to_date', false], ['vs before', 'to_date_vs_before_pct', true]];
-function wbrCard(key, metric) {
+function wbrCard(key, metric, shown) {
   const m = METRICS[key];
   const r = rag(key, metric);
   const cells = CALLOUTS.map(([l, k, pct]) => {
@@ -224,9 +251,9 @@ function wbrCard(key, metric) {
   });
   return `<article class="card wbr" data-metric="${key}">
 <div class="wbr-head"><div></div><h3>${esc(m.title)}</h3><div class="wbr-rag"><span class="rag" role="img" aria-label="${esc(r.label)}" title="${esc(r.label)}" style="background:${r.c}"></span></div></div>
-<p class="muted wbr-sub">${esc(m.sub(metric.baseline.value))}</p>
-${chart(key, metric, 'wbr')}
-${chart(key, metric, 'days')}
+<p class="muted wbr-sub">${esc(m.sub(metric.baseline.value, metric.keyed_by === 'merged_at'))}</p>
+${chart(key, metric, 'wbr', shown)}
+${chart(key, metric, 'days', shown)}
 <div class="callouts">${cells.map((k) => `<div class="callout"><span class="callout-l">${esc(k.l)}</span><span class="callout-v mono" style="color:${k.c}">${esc(k.v)}</span></div>`).join('')}</div>
 </article>`;
 }
@@ -271,8 +298,8 @@ function summary(v) {
   return `<section aria-label="Summary" class="card summary"><p><b>${lead}</b> ${body}</p>${cta}</section>${notes(v.panels.status)}`;
 }
 
-function spark(metric, m) {
-  const vals = metric.weekly.map((p) => scaled(m, p.value));
+function spark(metric, m, shown) {
+  const vals = (shown === 'days' ? metric.daily : metric.weekly).map((p) => scaled(m, p.value));
   const base = scaled(m, metric.baseline.value);
   const all = [...vals.filter((x) => x != null), ...(base == null ? [] : [base])];
   if (!all.length) return '';
@@ -283,7 +310,7 @@ function spark(metric, m) {
   return `<svg viewBox="0 0 220 32" width="100%" height="32" aria-hidden="true" class="spark">${base == null ? '' : `<line x1="0" y1="${y(base)}" x2="220" y2="${y(base)}" stroke="${C.grey}" stroke-dasharray="3 3" stroke-width="1"></line>`}<polyline points="${pts}" fill="none" stroke="${C.ink}" stroke-width="2"></polyline></svg>`;
 }
 
-const tile = (t) => `<article class="card tile"${t.edge ? ' style="border-color:#FCD34D;background:#FFFBEB"' : ''}><h3 class="muted">${esc(t.label)}</h3><span class="num tile-v">${esc(t.value)}</span><span class="tile-s" style="color:${t.ink ?? '#374151'}"><span class="dot" style="background:${t.dot ?? C.grey}"></span>${esc(t.status)}</span><span class="muted num tile-sub">${esc(t.sub)}</span>${t.spark ?? ''}</article>`;
+const tile = (t) => `<article class="card tile"${t.edge ? ' style="border-color:#FCD34D;background:#FFFBEB"' : ''}><h3 class="muted">${esc(t.label)}</h3><span class="num tile-v">${esc(t.value)}</span><span class="tile-s" style="color:${t.ink ?? '#374151'}"><span class="dot" style="background:${t.dot ?? C.grey}"></span>${esc(t.status)}</span><span class="muted num tile-sub">${esc(t.sub)}</span>${t.sub2 ? `<span class="muted num tile-sub">${esc(t.sub2)}</span>` : ''}${t.spark ?? ''}</article>`;
 
 function tiles(v, today) {
   const b = v.baseline;
@@ -305,11 +332,16 @@ function tiles(v, today) {
     const metricTile = (key) => {
       const m = METRICS[key];
       const metric = ms[key];
-      const r = rag(key, metric);
-      const last = metric.callouts.last_week;
-      const base = metric.baseline.value;
-      const was = base == null ? 'No starting point recorded' : `Was ${m.v(scaled(m, base))}${key === 'fixes' && fixLimit(base) != null ? ` · limit ${fixLimit(base).toFixed(2)}` : ''}`;
-      return { label: m.tile, value: last == null ? DASH : m.v(scaled(m, last)), status: r.words, ink: r.ink, dot: r.dot ?? r.c, sub: was, spark: spark(metric, m) };
+      // The figure since desk started recording, its window and ticket count; last week's and
+      // yesterday's beneath it, each with its own count.
+      const r = rag(key, metric, 'to_date');
+      const c = metric.callouts;
+      const n = metric.counts ?? {};
+      const fig = (x) => (x == null ? DASH : m.v(scaled(m, x)));
+      const tickets = (k) => (n[k] == null ? '' : `, ${n[k]} ticket${n[k] === 1 ? '' : 's'}`);
+      const window = metric.first_recorded ? `Since ${dayLabel(metric.first_recorded)}${n.to_date == null ? '' : ` · ${n.to_date} ticket${n.to_date === 1 ? '' : 's'}`}` : 'Nothing recorded yet';
+      const recent = `Last week ${fig(c.last_week)}${tickets('last_week')} · Yesterday ${fig(c.yesterday)}${tickets('yesterday')}`;
+      return { label: m.tile, value: fig(c.to_date), status: r.words, ink: r.ink, dot: r.dot ?? r.c, sub: window, sub2: recent, spark: spark(metric, m, openOn(ms)) };
     };
     const items = leverItems(v);
     const first = items[0];
@@ -318,30 +350,51 @@ function tiles(v, today) {
       : { label: 'Needs you', value: '0', status: 'Nothing needs you', sub: 'desk will ask here when a lever needs a decision' }];
   }
   const none = !today && list.slice(0, 3).every((t) => t.value === DASH);
-  return `<section aria-label="Headline numbers" class="tiles">${list.map(tile).join('')}</section>${none ? `<p class="muted small">No ticket finished last week, so each number shows ${DASH}.</p>` : ''}`;
+  return `<section aria-label="Headline numbers" class="tiles">${list.map(tile).join('')}</section>${none ? `<p class="muted small">No ticket has merged since desk started recording, so each number shows ${DASH}.</p>` : ''}`;
 }
 
 function trends(v) {
   const p = v.panels.trends;
   const ms = p.metrics ?? {};
   const has = p.state !== 'empty' && Object.values(ms).some((m) => m.first_recorded);
-  const toggle = '<div role="group" aria-label="Chart view" class="toggle"><button type="button" data-show="wbr" aria-pressed="true">6 weeks &amp; 12 months</button><button type="button" data-show="days" aria-pressed="false">Last 30 days</button></div>';
-  const head = `<div class="sec-head"><div class="stack4"><h2 id="tr-h">Trends</h2><p class="muted small" data-view="wbr">Black is now, grey is before levers. Left: the last 6 weeks. Right: the last 12 months.</p><p class="muted small" data-view="days" hidden>Black is now, grey is before levers. One point a day, so a lever shows within days.</p></div>${toggle}</div>`;
+  // The 6-week and 12-month view once a metric has WEEKS_FOR_WBR weekly points, the last 30 days before.
+  const shown = openOn(ms);
+  const pressed = (k) => `aria-pressed="${k === shown}"`;
+  const hide = (k) => (k === shown ? '' : ' hidden');
+  const toggle = `<div role="group" aria-label="Chart view" class="toggle"><button type="button" data-show="wbr" ${pressed('wbr')}>6 weeks &amp; 12 months</button><button type="button" data-show="days" ${pressed('days')}>Last 30 days</button></div>`;
+  const head = `<div class="sec-head"><div class="stack4"><h2 id="tr-h">Trends</h2><p class="muted small" data-view="wbr"${hide('wbr')}>Black is now, grey is before levers. Left: the last 6 weeks. Right: the last 12 months.</p><p class="muted small" data-view="days"${hide('days')}>Black is now, grey is before levers. One point a day, so a lever shows within days.</p></div>${toggle}</div>`;
   const body = has
-    ? `<div class="cards">${Object.keys(METRICS).filter((k) => ms[k]).map((k) => wbrCard(k, ms[k])).join('')}</div>`
+    ? `<div class="cards">${Object.keys(METRICS).filter((k) => ms[k]).map((k) => wbrCard(k, ms[k], shown)).join('')}</div>`
     : `<div class="cards">${Object.values(METRICS).map((m) => `<article class="card awaiting"><div class="awaiting-head"><h3>${esc(m.title)}</h3><span class="rag rag-sm" role="img" aria-label="Grey: no data yet" style="background:${C.grey}"></span></div><div class="awaiting-body"><span class="muted">Awaiting data</span><span class="muted small">This fills in once desk has evaluated its first tickets.</span></div></article>`).join('')}</div>`;
   return `<section aria-labelledby="tr-h" class="stack12">${head}${notes(p)}${body}</section>`;
 }
 
+// A data section in the house style of "Is each lever working?": a card with its heading and a muted
+// intro line, then one table, each group (a repo, or a repo's week or lever) a header row over its rows.
+// `cols` are { label, num }, a numeric column right-aligned with tabular figures; each row is its cells
+// as HTML, the first its row header; a group's `note` is a muted line under its rows.
+function dataSection({ id, title, intro, cols, groups }) {
+  const cls = (c, base) => `${base}${c.num ? ' n' : ''}`;
+  const head = `<tr>${cols.map((c) => `<th scope="col" class="${cls(c, 'th')}">${esc(c.label)}</th>`).join('')}</tr>`;
+  const body = groups.map((g) => `<tr class="grp"${g.attrs ?? ''}><th scope="colgroup" colspan="${cols.length}" class="td grp">${esc(g.head)}</th></tr>`
+    + g.rows.map((r) => `<tr>${r.map((v, i) => (i === 0 ? `<th scope="row" class="td">${v}</th>` : `<td class="${cls(cols[i], 'td')}">${v}</td>`)).join('')}</tr>`).join('')
+    + (g.note ? `<tr><td colspan="${cols.length}" class="td muted small">${esc(g.note)}</td></tr>` : '')).join('');
+  return `<section aria-labelledby="${id}" class="card levers"><div class="levers-head"><div class="stack4"><h2 id="${id}">${esc(title)}</h2><p class="muted small">${esc(intro)}</p></div></div>`
+    + `<div class="scroll"><table class="levtable data"><thead>${head}</thead><tbody>${body}</tbody></table></div></section>`;
+}
+
 // The outside reviewer's re-reviews per PR and undraft-to-approval time, before and after the learned
-// review bar began (review-misses.mjs beforeAfter). Nothing until a check has been learned.
-function learned(r) {
-  const l = r.learned;
-  if (!l) return '';
-  const row = (name, s) => `<tr><th scope="row">${name}</th><td>${s.prs}</td><td>${s.rereviews ?? '—'}</td><td>${esc(MS.fmt(s.approval))}</td></tr>`;
-  return `<table class="stages"><caption>${esc(r.name)} · learned review bar since ${esc(String(l.since).slice(0, 10))}</caption>`
-    + '<thead><tr><th scope="col">Learned bar</th><th scope="col">PRs</th><th scope="col">External re-reviews per PR</th><th scope="col">Undraft to approval (median)</th></tr></thead><tbody>'
-    + `${row('Before', l.before)}${row('After', l.after)}</tbody></table>`;
+// review bar began (review-misses.mjs beforeAfter), for each repo with one. Nothing until a check has
+// been learned.
+function learned(v) {
+  const repos = (v.panels.merge_stages?.repos ?? []).filter((r) => r.learned);
+  if (!repos.length) return '';
+  const row = (name, s) => [name, String(s.prs), s.rereviews == null ? DASH : esc(String(s.rereviews)), esc(MS.fmt(s.approval))];
+  return dataSection({
+    id: 'lr-h', title: 'Learned review bar', intro: 'The outside reviewer’s re-reviews per PR and the time from undraft to approval, before and after desk learned its review bar.',
+    cols: [{ label: 'Learned bar' }, { label: 'PRs', num: true }, { label: 'External re-reviews per PR', num: true }, { label: 'Undraft to approval (median)', num: true }],
+    groups: repos.map((r) => ({ head: `${r.name} · learned review bar since ${String(r.learned.since).slice(0, 10)}`, rows: [row('Before', r.learned.before), row('After', r.learned.after)] })),
+  });
 }
 
 // Each repo's merged PR time by stage (merge-stages.mjs): median and p75 per stage, and how many
@@ -349,26 +402,58 @@ function learned(r) {
 function mergeStages(v) {
   const repos = v.panels.merge_stages?.repos ?? [];
   if (!repos.length) return '';
-  const table = (r) => `<table class="stages"><caption>${esc(r.name)} · ${r.prs} merged PR${r.prs === 1 ? '' : 's'}</caption>`
-    + '<thead><tr><th scope="col">Stage</th><th scope="col">Median</th><th scope="col">p75</th><th scope="col">PRs</th></tr></thead><tbody>'
-    + MS.STAGES.filter((k) => r.stages?.[k]?.n).map((k) => `<tr><th scope="row">${esc(MS.STAGE_NAMES[k])}</th><td>${esc(MS.fmt(r.stages[k].median))}</td><td>${esc(MS.fmt(r.stages[k].p75))}</td><td>${r.stages[k].n}</td></tr>`).join('')
-    + `</tbody></table>${r.outage ? `<p class="muted small">${r.outage} external review wait${r.outage === 1 ? '' : 's'} inside a gate reviewer outage left out of the medians.</p>` : ''}${learned(r)}`;
-  return `<section aria-labelledby="ms-h" class="stack12"><div class="sec-head"><h2 id="ms-h">Merge time by stage</h2></div>${repos.map(table).join('')}</section>`;
+  return dataSection({
+    id: 'ms-h', title: 'Merge time by stage', intro: 'How long each stage of a merged PR took: the median, and the time 3 in 4 PRs came in under.',
+    cols: [{ label: 'Stage' }, { label: 'Median', num: true }, { label: 'p75', num: true }, { label: 'PRs', num: true }],
+    groups: repos.map((r) => ({
+      head: `${r.name} · ${r.prs} merged PR${r.prs === 1 ? '' : 's'}`,
+      rows: MS.STAGES.filter((k) => r.stages?.[k]?.n).map((k) => [esc(MS.STAGE_NAMES[k]), esc(MS.fmt(r.stages[k].median)), esc(MS.fmt(r.stages[k].p75)), String(r.stages[k].n)]),
+      note: r.outage ? `${r.outage} external review wait${r.outage === 1 ? '' : 's'} inside a gate reviewer outage left out of the medians.` : null,
+    })),
+  }) + learned(v);
+}
+
+// Each repo's asks by arm of a lever weighed on them (question handling, levers-evaluate.mjs): per
+// asking ticket, the dollars and tokens of each step, the pushes and digests, the share answered by
+// default and the median time to an answer. Nothing until an evaluation has asking tickets.
+const usd = (x) => (x == null ? DASH : `$${x.toFixed(2)}`);
+const share = (x) => (x == null ? DASH : `${Math.round(x * 100)}%`);
+const latency = (s) => (s == null ? DASH : s >= 3600 ? `${(s / 3600).toFixed(1)}h` : `${Math.round(s / 60)}m`);
+const tokens = (x) => (x == null ? DASH : Math.round(x).toLocaleString('en-US'));
+function asksByArm(v) {
+  const repos = v.panels.asks?.repos ?? [];
+  if (!repos.length) return '';
+  const steps = [...new Set(repos.flatMap((r) => Object.values(r.arms).flatMap((a) => Object.keys(a.steps ?? {}))))];
+  return dataSection({
+    id: 'asks-h', title: 'Questions to you, by arm',
+    intro: 'Per asking ticket: what each step of its questions cost, how often it interrupted you, how many applied by default, and how long an answer took.',
+    cols: [{ label: 'Arm' }, { label: 'Tickets', num: true }, ...steps.map((k) => ({ label: `${cap(k)} $ (tokens)`, num: true })),
+      { label: 'Pushes', num: true }, { label: 'Digests', num: true }, { label: 'Defaulted', num: true }, { label: 'Median to answer', num: true }],
+    groups: repos.map((r) => ({
+      head: `${r.name} · ${r.lever} · asking tickets by arm, as of ${String(r.at).slice(0, 10)}`, attrs: ` data-lever="${esc(r.lever)}"`,
+      rows: Object.entries(r.arms).map(([a, x]) => [esc(a), String(x.tickets), ...steps.map((k) => `${usd(x.steps?.[k]?.usd_per_ticket)} (${tokens(x.steps?.[k]?.tokens_per_ticket)})`),
+        esc(String(x.pushes_per_ticket ?? DASH)), esc(String(x.digests_per_ticket ?? DASH)), share(x.defaulted_share), latency(x.median_latency_s)]),
+    })),
+  });
 }
 
 // Each repo's time parked by cause (stuck-time.mjs), this ISO week and last: the hours, the tickets
-// affected and each cause, most hours first, with its tracking issue where one is linked. Nothing until a
-// ticket has sat stuck.
+// affected and each cause, most hours first, with its tracking issue where one is linked (the column only
+// once a cause has one). Nothing until a ticket has sat stuck.
 function stuckTime(v) {
   const repos = v.panels.stuck_time?.repos ?? [];
   if (!repos.length) return '';
-  const issue = (l) => (!l ? '—' : l.url ? `<a href="${esc(l.url)}">${esc(l.ref)}</a>` : esc(l.ref));
-  const table = (name, w) => `<table class="stages"><caption>${esc(name)} · week ${esc(w.week)} · ${esc(fmtHours(w.hours))} over ${w.tickets} ticket${w.tickets === 1 ? '' : 's'}</caption>`
-    + '<thead><tr><th scope="col">Cause</th><th scope="col">Hours</th><th scope="col">Tickets</th><th scope="col">Tracking issue</th></tr></thead><tbody>'
-    + w.causes.map((c) => `<tr><th scope="row">${esc(c.cause)}</th><td>${esc(fmtHours(c.hours))}</td><td>${c.tickets}</td><td>${issue(c.link)}</td></tr>`).join('')
-    + '</tbody></table>';
-  const body = repos.map((r) => r.weeks.filter((w) => w.tickets).map((w) => table(r.name, w)).join('')).join('');
-  return `<section aria-labelledby="st-h" class="stack12"><div class="sec-head"><h2 id="st-h">Time parked by cause</h2></div>${body}</section>`;
+  const weeks = repos.flatMap((r) => r.weeks.filter((w) => w.tickets).map((w) => ({ name: r.name, w })));
+  const linked = weeks.some(({ w }) => w.causes.some((c) => c.link));
+  const issue = (l) => (!l ? DASH : l.url ? `<a href="${esc(l.url)}">${esc(l.ref)}</a>` : esc(l.ref));
+  return dataSection({
+    id: 'st-h', title: 'Time parked by cause', intro: 'Hours tickets sat parked this week and last, by cause, most hours first.',
+    cols: [{ label: 'Cause' }, { label: 'Hours', num: true }, { label: 'Tickets', num: true }, ...(linked ? [{ label: 'Tracking issue' }] : [])],
+    groups: weeks.map(({ name, w }) => ({
+      head: `${name} · week ${w.week} · ${fmtHours(w.hours)} over ${w.tickets} ticket${w.tickets === 1 ? '' : 's'}`,
+      rows: w.causes.map((c) => [esc(c.cause), esc(fmtHours(c.hours)), String(c.tickets), ...(linked ? [issue(c.link)] : [])]),
+    })),
+  });
 }
 
 // When desk last kept `lever` in `repo`, from the change list; null when no change records it.
@@ -393,7 +478,7 @@ function leverRows(v) {
     let next;
     if (status === 'pinned') next = `Pinned by hand in ${l.cells.filter((c) => c.state === 'pinned').map((c) => c.repo).join(', ')}, so this is a before-and-after, not a test.`;
     else if (status === 'error') { const e = l.cells.find((c) => c.error)?.error; next = `Couldn’t read ${basename(e?.file)}${e?.line ? ` line ${e.line}` : ''}.`; }
-    else if (reg && !reg.trialled) next = reg.layer === 'quality-risk' ? 'Tested one at a time with blind reviews, once desk starts trialling it.' : 'Not trialled: on only where a repo’s levers row names it.';
+    else if (reg && !reg.trialled) next = reg.layer === 'quality-risk' ? 'Tested one at a time with blind reviews, once desk starts trialling it.' : isValued(reg) ? `Not trialled: on only where levers decide sets it to ${reg.values.join(', ')} in a repo.` : 'Not trialled: on only where a repo’s levers row names it.';
     else if (status === 'off' && l.cells.some((c) => c.state === 'ineligible')) next = `${cap(l.cells.filter((c) => c.state === 'ineligible').map((c) => c.note).join('. '))}.`;
     else next = anyAuto ? 'Testing starts with the next tickets desk admits.' : 'Testing starts when a repo is set to auto.';
     const decided = status === 'kept' && main ? keptAt(v, l.lever, main.repo) : null;
@@ -407,7 +492,8 @@ const repoWord = (c) => {
   if (c.state === 'trial') return { t: `${c.repo}: testing`, c: C.blue };
   if (c.state === 'pinned') return { t: `${c.repo}: on by hand`, c: C.green };
   if (c.state === 'not_enrolled') return { t: `${c.repo}: not enrolled`, c: C.grey };
-  if (c.state === 'ineligible') return { t: `${c.repo}: not tested here, as ${c.why}`, c: C.grey };
+  // The short status in the cell, the precondition's rationale on hover.
+  if (c.state === 'ineligible') return { t: `${c.repo}: not tested, ${c.status ?? c.why}`, c: C.grey, title: c.why };
   return { t: `${c.repo}: ${String(c.state ?? 'off').replace(/_/g, ' ')}`, c: C.grey };
 };
 
@@ -472,7 +558,7 @@ function leverTable(v, today) {
       return `<tr data-lever="${esc(r.lever)}"${r.status === 'needs' ? ' style="background:#FFFBEB"' : ''}>${name(r, true)}<td class="td">${badge(r.status)}</td>`
         + `<td class="td num"><div class="stack3"><span class="b result" data-verdict="${esc(res.verdict ?? 'none')}" style="color:${res.ink}">${esc(res.text)}</span>${res.notes.map((n) => `<span class="muted tiny">${esc(n)}</span>`).join('')}</div></td>`
         + `<td class="td num"><div class="stack6"><div class="bar" role="img" aria-label="${esc(pr.text)}"><div style="width:${pr.pct}%"></div></div><span class="muted tiny">${esc(pr.text)}</span></div></td>`
-        + `<td class="td small"><div class="stack4">${r.cells.map((c) => { const w = repoWord(c); return `<span class="repo"><span class="dot dot-sm" style="background:${w.c}"></span><span>${esc(w.t)}${c.stale ? ' · stale' : ''}</span></span>`; }).join('')}</div></td></tr>`;
+        + `<td class="td small"><div class="stack4">${r.cells.map((c) => { const w = repoWord(c); return `<span class="repo"${w.title ? ` title="${esc(w.title)}"` : ''}><span class="dot dot-sm" style="background:${w.c}"></span><span>${esc(w.t)}${c.stale ? ' · stale' : ''}</span></span>`; }).join('')}</div></td></tr>`;
     }).join('');
   }
   const legend = today ? '' : `<div class="legend-row muted tiny">${['kept', 'testing', 'needs', 'off'].map((s) => `<span><span class="dot" style="background:${STYLE[s].dot}"></span>${s === 'off' ? 'Off or waiting' : STYLE[s].label}</span>`).join('')}</div>`;
@@ -483,7 +569,9 @@ function leverTable(v, today) {
 // ---- the change list ---------------------------------------------------------------------------------------------
 const you = (e) => e.actor && !['controller', 'supervisor', 'desk'].includes(e.actor);
 function changeWhat(e) {
-  const lever = e.lever ?? 'a lever';
+  // A change the view merged from one per lever names every lever it was recorded for.
+  const many = (e.levers?.length ?? 0) > 1;
+  const lever = many ? andList(e.levers) : e.lever ?? 'a lever';
   const where = e.repo && e.repo !== '*' ? ` in ${e.repo}` : '';
   switch (e.kind) {
     case 'transition':
@@ -498,7 +586,7 @@ function changeWhat(e) {
     case 'freeze': return `Trials frozen${where || ' in every repo'}`;
     case 'thaw': return `Trials thawed${where || ' in every repo'}`;
     case 'row_change': return `The levers row${where} changed${e.from != null && e.to != null ? ` from ${e.from} to ${e.to}` : ''}`;
-    case 'fp_reset': return `${cap(lever)}’s code changed${where}, so its evidence started again`;
+    case 'fp_reset': return many ? `The code of ${lever} changed${where}, so their evidence started again` : `${cap(lever)}’s code changed${where}, so its evidence started again`;
     case 'evidence_incomplete': return `Evidence for ${lever}${where} was incomplete`;
     default: return `${cap(e.kind ?? 'change')}${e.lever ? ` to ${lever}` : ''}${where}`;
   }
@@ -522,8 +610,15 @@ function changeDetails(e) {
   return `<dl class="change-dl">${row('Reason', reason)}${row('Tickets per arm', arms)}${row('Mechanism', mech)}${row('Cost', cost)}${row('Guardrails', guards)}`
     + `${row('Commit range', e.desk_commit_range ? `<span class="mono">${esc(e.desk_commit_range)}</span>` : notRecorded)}`
     + `${row('Evidence file', e.evidence_file ? `<span class="mono">${esc(e.evidence_file)}</span>` : notRecorded)}`
-    + `${e.ticket ? row('Ticket', esc(e.ticket)) : ''}</dl>`;
+    + `${e.ticket ? row('Ticket', esc(e.ticket)) : ''}`
+    + `${e.missing?.length ? row('Not recorded', `<ul class="guards">${e.missing.map((g) => `<li>${esc(cap(g.what))}: ${esc((g.tickets ?? g.files ?? []).join(', '))}</li>`).join('')}</ul>`) : ''}</dl>`;
 }
+
+// The line under a change: its reason as written, which may be typed by a person or carry a value (a row's
+// new reading, an arm set by hand); only a reason desk wrote for the log (incomplete evidence, a lever's
+// code changing, anything naming missing files) gives way to its reason code's wording.
+const MACHINE_REASONS = Object.freeze(['evidence_incomplete', 'fp_reset']);
+const shownReason = (e) => (MACHINE_REASONS.includes(e.kind) || e.missing ? e.wording ?? e.reason : e.reason ?? e.wording);
 
 function changes(v, today) {
   const p = v.panels.changes;
@@ -535,7 +630,7 @@ function changes(v, today) {
   const sub = today ? '' : `<p class="muted small sub">${started ? `Newest first, since testing started on ${esc(dayMonth(started, tz))}.` : 'Newest first.'}</p>`;
   let body;
   if (list.length) {
-    body = list.map((e) => `<details class="change"><summary><span class="muted num small when">${esc(when(e.at, tz))}</span><span class="stack3"><span class="b">${esc(changeWhat(e))}</span>${e.reason || e.wording ? `<span class="muted small">${esc(cap(e.reason ?? e.wording))}</span>` : ''}</span></summary>${changeDetails(e)}</details>`).join('');
+    body = list.map((e) => `<details class="change"><summary><span class="muted num small when">${esc(when(e.at, tz))}</span><span class="stack3"><span class="b">${esc(changeWhat(e))}</span>${shownReason(e) ? `<span class="muted small">${esc(cap(shownReason(e)))}</span>` : ''}</span></summary>${changeDetails(e)}</details>`).join('');
   } else if (today) {
     const last = p.last_change;
     body = `<p class="empty">No lever changed this week.${last ? ` Last change: ${esc(dayMonth(last.at, tz))}, ${esc(lowerFirst(changeWhat(last)))}.` : ''}</p>`;
@@ -618,6 +713,12 @@ button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #11
 .levtable{width:100%;border-collapse:collapse}
 .th{font-size:12px;font-weight:500;color:#6B7280;text-align:left;padding:10px 16px;border-bottom:1px solid #E5E7EB}
 .td{padding:14px 16px;border-bottom:1px solid #F0F1F3;vertical-align:top;font-size:14px}
+.scroll{overflow-x:auto}
+.levtable.data{min-width:560px}
+.levtable .n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.levtable th.td{text-align:left;font-weight:500}
+.levtable .grp{background:#F9FAFB;padding:9px 16px;font-size:13px;font-weight:600;color:#374151;border-bottom:1px solid #E5E7EB}
+.levtable tr:last-child>.td{border-bottom:0}
 .bar{height:6px;border-radius:3px;background:#F0F1F3}.bar div{height:6px;border-radius:3px;background:#111827}
 .repo{display:flex;align-items:center;gap:6px}
 .note{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;background:#FFFBEB;border:1px solid #FCD34D;border-radius:6px;font-size:13px;line-height:1.45;color:#92400E;width:100%}
@@ -642,10 +743,11 @@ button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid #11
 .toggle{display:grid;grid-template-columns:1fr 1fr;width:100%}.toggle button{min-height:44px;padding:0 12px}
 .awaiting{padding:14px 16px}.awaiting-head h3{font-size:15px}.awaiting-body{height:120px}
 .callouts{grid-template-columns:repeat(3,minmax(0,1fr))}.callout{border-bottom:1px solid #E5E7EB}
-.levtable thead{display:none}
-.levtable,.levtable tbody,.levtable tr,.levtable td{display:block;width:auto}
-.levtable tr{border-top:1px solid #F0F1F3;padding:10px 0}
-.levtable td{border:0;padding:4px 16px}
+.levtable:not(.data) thead{display:none}
+.levtable:not(.data),.levtable:not(.data) tbody,.levtable:not(.data) tr,.levtable:not(.data) td{display:block;width:auto}
+.levtable:not(.data) tr{border-top:1px solid #F0F1F3;padding:10px 0}
+.levtable:not(.data) td{border:0;padding:4px 16px}
+.levtable.data .td,.levtable.data .th{padding:10px 12px}
 .change summary{grid-template-columns:1fr;gap:3px}
 .change-dl{grid-template-columns:1fr;margin-left:0;gap:2px}
 .change-dl dd{margin-bottom:8px}
@@ -713,6 +815,7 @@ ${tiles(view, today)}
 ${trends(view)}
 ${mergeStages(view)}
 ${stuckTime(view)}
+${asksByArm(view)}
 ${leverTable(view, today)}
 ${changes(view, today)}
 ${today ? '' : howDesk()}

@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // The installed desk version, and moving what still runs onto it. install.sh runs both at the end:
 //   node installed.mjs record <checkout> [<release dir>]   write <DESK_HOME>/installed.json: the commit
-//                                          installed from (and the release's own release.json)
+//                                          installed from (and the release's own release.json), and
+//                                          a move to another commit in the release watch's releases.jsonl
 //   node installed.mjs version             print the installed commit (nothing when none is recorded)
 //   node installed.mjs running             print the commit of the release this script runs from (the
 //                                          installed one outside a release folder)
 //   node installed.mjs restart             restart each running merge driver that is between loops, and
 //                                          rewrite and reload each loaded supervisor agent; one line each
 //   node installed.mjs prune               delete all but the newest three releases, never the current one
+//                                          nor one the release watch holds (releases/.held)
 //   node installed.mjs rollback            make the release before the current one current (exit 1: none)
 //
 // install.sh puts each install in a release folder of its own, so a running merge driver keeps its old copy until it is
@@ -69,9 +71,33 @@ function record(src, release = null) {
     v.release = basename(release);
     writeFileSync(join(release, RELEASE_FILE), `${JSON.stringify(v, null, 2)}\n`);
   }
+  const before = readInstalled();
   mkdirSync(E.deskHome(), { recursive: true });
   writeFileSync(installedFile(), `${JSON.stringify(v, null, 2)}\n`);
-  return v;
+  return { v, ...movedFrom(git, before?.commit, v) };
+}
+// The install's move for the release watch, as {move: {at, from, to, merges}}, or {} when there is none to
+// judge: the commit unchanged, or either end no git commit (a first install, an unversioned source).
+// Only a clean move forward along origin/main is a release, as the auto-release installs one: a move
+// back, off main or with uncommitted changes gives {why}, said and not recorded, since a trip would pin
+// `from` and revert main's merges between the two. `merges` counts main's own commits between them,
+// first parent only, as the auto-release does.
+const SHA = /^[0-9a-f]{40}$/;
+const MAIN_REF = 'refs/remotes/origin/main';
+function movedFrom(git, from, v) {
+  if (!SHA.test(from ?? '') || !SHA.test(v.commit) || from === v.commit) return {};
+  const skip = (why) => ({ why: `the move ${from.slice(0, 12)} -> ${v.commit.slice(0, 12)} is not recorded for the release watch: ${why}` });
+  if (v.dirty) return skip('the checkout has uncommitted changes');
+  if (git('merge-base', '--is-ancestor', from, v.commit).status !== 0) return skip(`${from.slice(0, 12)} is not an ancestor of it`);
+  if (git('merge-base', '--is-ancestor', v.commit, MAIN_REF).status !== 0) return skip(`it is not on ${MAIN_REF.replace('refs/remotes/', '')}`);
+  const n = git('rev-list', '--first-parent', '--count', `${from}..${v.commit}`);
+  const merges = Number(n.stdout.trim());
+  return n.status === 0 && Number.isInteger(merges) ? { move: { at: v.at, from, to: v.commit, merges } } : skip('the merges between them could not be counted');
+}
+// Records the move in the release watch's releases.jsonl, the one row a release gets whoever installed it.
+async function recordMove(move) {
+  const [{ recordRelease }, { maintDir }] = await Promise.all([import('./release-watch.mjs'), import('./maintenance.mjs')]);
+  recordRelease(maintDir(), move);
 }
 
 // ---- releases --------------------------------------------------------------------------------
@@ -82,7 +108,7 @@ export const KEEP_RELEASES = 3;
 const RELEASE_FILE = 'release.json';
 // A release's version: its release.json commit, else release-<name>. Rollback records it as installed and
 // a driver started from the release records it in its lock, so the two compare equal.
-const releaseCommit = (name, info) => info?.commit || `release-${name}`;
+export const releaseCommit = (name, info) => info?.commit || `release-${name}`;
 export const releasesDir = (home = E.deskHome()) => join(home, 'releases');
 export function currentRelease(home = E.deskHome()) {
   try { return basename(readlinkSync(join(home, 'current'))); } catch { return null; }
@@ -106,11 +132,22 @@ export function makeCurrent(name, home = E.deskHome()) {
   symlinkSync(join('releases', name), tmp);
   renameSync(tmp, join(home, 'current'));
 }
-// Deletes all but the newest `keep` releases, never the current one. One line per release deleted.
+// The commits the release watch may still roll back to (release-watch.mjs), one per line: their releases
+// are kept past `keep`.
+export const heldFile = (home = E.deskHome()) => join(releasesDir(home), '.held');
+export function heldCommits(home = E.deskHome()) {
+  try { return new Set(readFileSync(heldFile(home), 'utf8').split('\n').map((l) => l.trim()).filter(Boolean)); } catch { return new Set(); }
+}
+export function holdReleases(commits, home = E.deskHome()) {
+  mkdirSync(releasesDir(home), { recursive: true });
+  writeFileSync(heldFile(home), [...new Set(commits.filter(Boolean))].map((c) => `${c}\n`).join(''));
+}
+// Deletes all but the newest `keep` releases, never the current one nor a held one. One line per release deleted.
 export function pruneReleases(keep = KEEP_RELEASES, home = E.deskHome()) {
   const cur = currentRelease(home);
+  const held = heldCommits(home);
   const list = releases(home);
-  return list.slice(0, Math.max(0, list.length - keep)).filter((r) => r.name !== cur).map((r) => {
+  return list.slice(0, Math.max(0, list.length - keep)).filter((r) => r.name !== cur && !held.has(releaseCommit(r.name, r.info))).map((r) => {
     rmSync(join(releasesDir(home), r.name), { recursive: true, force: true });
     return `removed release ${r.name} (only the newest ${keep} are kept)`;
   });
@@ -125,10 +162,14 @@ export function rollback(home = E.deskHome()) {
     return { ok: false, line: `nothing rolled back: there is no earlier release than ${cur ? `the current one (${cur})` : 'what is installed'} in ${releasesDir(home)}` };
   }
   const prev = list[at - 1];
-  makeCurrent(prev.name, home);
-  const v = { commit: releaseCommit(prev.name, prev.info), dirty: prev.info?.dirty ?? null, at: new Date().toISOString(), from: prev.info?.from ?? null, release: prev.name };
+  return { ok: true, line: `rolled back from release ${cur} to ${prev.name} (commit ${makeLive(prev, home)})` };
+}
+// Makes release `r` (one of releases()) current and records its commit as installed. -> that commit
+export function makeLive(r, home = E.deskHome()) {
+  makeCurrent(r.name, home);
+  const v = { commit: releaseCommit(r.name, r.info), dirty: r.info?.dirty ?? null, at: new Date().toISOString(), from: r.info?.from ?? null, release: r.name };
   writeFileSync(installedFile(home), `${JSON.stringify(v, null, 2)}\n`);
-  return { ok: true, line: `rolled back from release ${cur} to ${prev.name} (commit ${v.commit})` };
+  return v.commit;
 }
 
 // ---- merge drivers ---------------------------------------------------------------------------
@@ -355,7 +396,13 @@ const isMain = () => {
 if (isMain()) {
   const [cmd, arg, rel] = process.argv.slice(2);
   try {
-    if (cmd === 'record' && arg) { const v = record(arg, rel ?? null); console.log(`${v.commit}${v.dirty ? ' (with uncommitted changes)' : ''}${v.dirty === null ? ' (not a git checkout)' : ''}`); }
+    if (cmd === 'record' && arg) {
+      const { v, move, why } = record(arg, rel ?? null);
+      console.log(`${v.commit}${v.dirty ? ' (with uncommitted changes)' : ''}${v.dirty === null ? ' (not a git checkout)' : ''}`);
+      if (why) console.error(`installed: ${why}`);
+      // Not awaited: release-watch.mjs imports this module, which must finish evaluating first.
+      if (move) recordMove(move).catch((e) => console.error(`installed: the release ${move.from.slice(0, 12)} -> ${move.to.slice(0, 12)} was not recorded for the release watch: ${e.message}`));
+    }
     else if (cmd === 'version') { const v = readInstalled(); if (v) console.log(v.commit); }
     else if (cmd === 'running') { const v = runningVersion(); if (v) console.log(v); }
     else if (cmd === 'restart') for (const l of restart()) console.log(l);

@@ -38,7 +38,8 @@
 //   node desk-env.mjs levers [<lever>]        what is on and where each lever's state comes from (pinned,
 //                                             auto or off), the freeze, unknown names; exit 1 on an invalid
 //                                             row; with <lever>, on or off, or a lever with more
-//                                             than two arms' value from the pin (DESK_LEVER_VALUES). A row unlike the last one the
+//                                             than two arms' value from the pin (DESK_LEVER_VALUES), off
+//                                             with none. A row unlike the last one the
 //                                             repo's lever log recorded is logged as a row_change. With
 //                                             `auto` in the row, a last `levers: …` line gives each managed
 //                                             lever's state in this repo (lever-changes.mjs summaryLine)
@@ -499,6 +500,20 @@ export const machineWhy = (key) => machineProfile()?.sizing[key]?.why || null;
 export function testLockSlots() {
   const v = String(process.env.DESK_TEST_LOCK_SLOTS || machineValue('test-lock-slots') || '').trim();
   return /^\d+$/.test(v) && Number(v) >= 1 ? Number(v) : 1;
+}
+// How many runs may hold the light lock at once: §3b "Light lock slots" of the repo whose run asks,
+// else the profile's light-lock-slots, else 1; anything but a whole number from 1 is 1. Above 1 only
+// while available memory is at or over the spawn gate's start (a gate at 0 is off).
+export function lightLockSlots({ avail = availableGiB } = {}) {
+  // The row's machine fallback is the profile's light-lock-slots (config-schema.mjs).
+  let v = null;
+  try { v = configValue('light-lock-slots'); } catch { v = machineValue('light-lock-slots'); /* outside a repo */ }
+  v = String(v ?? '').trim();
+  const n = /^\d+$/.test(v) && Number(v) >= 1 ? Number(v) : 1;
+  if (n === 1) return 1;
+  let start = 0;
+  try { start = spawnGate().start; } catch { start = spawnGate(null).start; }
+  return start > 0 && !(avail() >= start) ? 1 : n;
 }
 
 // ---- cost sources --------------------------------------------------------------------------
@@ -2560,13 +2575,14 @@ if (isMain) {
           if (!args[0]) process.exitCode = 1;
         }
         if (args[0]) {
-          // A lever with more than two arms prints the value this ticket's pin gave it, else its
-          // baseline: never on or off. The registry imports this module, so it is loaded without await.
+          // A lever with more than two arms prints the value this ticket's pin gave it, else off, as
+          // desk's own reads take it (lever-pin.mjs leverValueFor): the row names no value. The registry
+          // imports this module, so it is loaded without await.
           const value = leverValue(args[0]);
           if (value) { console.log(value); break; }
           import('./lever-registry.mjs').then(({ REGISTRY, isValued }) => {
             const reg = REGISTRY[args[0]];
-            console.log(isValued(reg) ? reg.baseline : leverOn(args[0], l) ? 'on' : 'off');
+            console.log(!isValued(reg) && leverOn(args[0], l) ? 'on' : 'off');
             if (!LEVERS.includes(args[0])) console.error(`desk-env: "${args[0]}" is not a lever desk knows (${known}); read as off`);
           }, (e) => { console.error(`desk-env levers: the lever registry: ${e.message}`); process.exitCode = 1; });
           break;
@@ -3200,7 +3216,7 @@ if (isMain) {
         break;
       }
       case 'lease':
-        process.exit((await import('./leases.mjs')).leaseCli(args, { env: { machineValue, testLockSlots, psRows } }));
+        process.exit((await import('./leases.mjs')).leaseCli(args, { env: { machineValue, testLockSlots, lightLockSlots, psRows } }));
       case 'preview-slot': {
         // preview-slot [--wait <seconds>] <label>: take the preview-build slot before a push, waiting
         // for the build in flight (default PREVIEW_WAIT_S). Exit 0 taken or nothing to take, 3 refused, 75
@@ -3211,7 +3227,7 @@ if (isMain) {
         const label = args.filter((_, k) => i < 0 || (k !== i && k !== i + 1)).join(' ').trim() || 'a push';
         const lease = previewSlotArgs(label, wait);
         if (!lease) { console.log('no preview slot to take: §4 Vercel names no team'); process.exit(0); }
-        process.exit((await import('./leases.mjs')).leaseCli(lease, { env: { machineValue, testLockSlots, psRows } }));
+        process.exit((await import('./leases.mjs')).leaseCli(lease, { env: { machineValue, testLockSlots, lightLockSlots, psRows } }));
       }
       case 'tree-status': {
         // tree-status [--run <run>]: this tree's changes, as `git status --porcelain --untracked-files=all`

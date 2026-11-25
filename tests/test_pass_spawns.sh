@@ -378,6 +378,23 @@ out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" DESK_CONFIG="$T/config
 check "DS-958 two repos named api under different owners keep separate counts, named owner/name" \
   'echo "$out" | grep -qF "runs by repo: acme/api 4, beta/api 3; this repo'"'"'s share ceil(6 / 3) = 2, 0 its own" && [ $(( $(spawns_of LQ-13) + $(spawns_of LQ-14) + $(spawns_of LQ-15) )) = 2 ]'
 for k in LQ-13 LQ-14 LQ-15; do q set "$k" state=done session_id=null; done
+# A light repo whose light queue is deep (one run holds its 1 slot, two wait) and whose test
+# lock is idle starts a new ticket, which begins at triage, and holds a resume into Stage 4.
+{ echo ' 9101     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh light --cwd . -- bash tests/run.sh'
+  echo ' 9102  9101 bash tests/run.sh'
+  for p in 9201 9202; do echo " $p     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh light --cwd . -- bash tests/run.sh"; done; } > "$T/ps.out"
+printf ' 9101  10:05\n 9102  10:04\n 9201  00:30\n 9202  00:20\n' > "$T/ps-ages.out"
+printf 'p9101\ncbash\nfcwd\nn%s/repo\np9201\ncbash\nfcwd\nn%s/repo\np9202\ncbash\nfcwd\nn%s/repo\n' "$T" "$T" "$T" > "$T/lsof.out"
+mkdir -p "$T/locks-ll/desk-light.lock.d"; echo "9101 9102" > "$T/locks-ll/desk-light.lock.d/pid"
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `8 / 8` |\n| Light lock slots | `2` | `1` |\n'
+  printf '\n## 4. Checks\n| Field | Value |\n|---|---|\n| Suite weight | `light` |\n'; } > "$T/config-ll.md"
+git -C "$T/repo" worktree add -q -b fix/LL-2 "$T/wt/LL-2"
+q add LL-1; q set LL-1 state=triaged lane=A branch=fix/LL-1
+q add LL-2; q set LL-2 state=triaged lane=A branch=fix/LL-2 "worktree=$T/wt/LL-2" session_id=sess-ll2 stage=4/9 resume=pending resume_why=x
+out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-ll" DESK_CONFIG="$T/config-ll.md" DESK_MACHINE="$T/no-machine.md" node "$B/pass.mjs" 2>&1)
+check "#1458 AC2 with only the light queue full, a new ticket starts and a resume into Stage 4 is held, naming the light lock queue" \
+  '[ "$(spawns_of LL-1)" = 1 ] && [ "$(spawns_of LL-2)" = 0 ] && [ "$(field LL-2 resume)" = "\"pending\"" ] && echo "$out" | grep -qF "light lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2" && echo "$out" | grep -q "Stage 4 (LL-2)"'
+for k in LL-1 LL-2; do q set "$k" state=done session_id=null; done
 rm -f "$T/ps.out" "$T/lsof.out"
 rm "$T/desk/bin/queue.mjs"; ln -s "$B/queue.mjs" "$T/desk/bin/queue.mjs"
 
@@ -1273,7 +1290,7 @@ EOF
 cat > "$T/stub/gh" <<'EOF'
 #!/bin/sh
 case "$*" in
-  "pr view 901 "*) echo '{"state":"MERGED","mergedAt":"2026-11-12T15:38:26Z","headRefOid":"h1","statusCheckRollup":[]}' ;;
+  "pr view 901 "*|"pr view 911 "*) echo '{"state":"MERGED","mergedAt":"2026-11-12T15:38:26Z","headRefOid":"h1","statusCheckRollup":[]}' ;;
   "pr view 902 "*) echo '{"state":"CLOSED","mergedAt":null,"headRefOid":"h1","statusCheckRollup":[]}' ;;
   "pr view 903 "*) echo '{"state":"OPEN","mergedAt":null,"headRefOid":"h2","statusCheckRollup":[]}' ;;
   "pr view 904 "*) echo '{"state":"OPEN","mergedAt":null,"headRefOid":"h1","statusCheckRollup":[]}' ;;
@@ -1302,6 +1319,7 @@ q add FT-8; q set FT-8 state=triaged lane=A branch=fix/FT-8 resume=pending \
   'fix={"try":1,"of":2,"pr":908,"head":"h1","kind":"checks","what":"red: Lint","at":"2026-11-12T15:28:05Z"}' \
   'fix_tries=[{"try":1,"head":"h1","kind":"checks","what":"red: Lint","at":"2026-11-12T15:28:05Z"}]'
 out=$(node "$B/pass.mjs" 2>&1)
+check "#1396 a fix try whose PR merged since records the merge naming that PR" '[ "$(field FT-1 merge.pr)" = 901 ]'
 check "DS-605 AC1 a fix try whose PR merged since spawns no worker, is finished, and the ticket is recorded merged" \
   '! grep -qx FT-1 "$T/ft-spawns" && [ "$(field FT-1 state)" = "\"done\"" ] && [ "$(field FT-1 fix.finished)" != null ] && [ "$(field FT-1 merged_at)" = "\"2026-11-12T15:38:26.000Z\"" ] && echo "$out" | grep -qF "FT-1: its fix try 2 of 2 on PR #901 was not spawned, PR #901 merged at 2026-11-12T15:38:26Z: the try is finished and the ticket done on its PR again, recorded merged"'
 check "DS-605 AC2 a fix try whose PR was closed unmerged spawns no worker and is finished" \
@@ -1328,6 +1346,16 @@ q add FT-9; q set FT-9 state=triaged lane=A branch=fix/FT-9 result.pr=909 \
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-605 a migration renames try, which holds the merge, is not ended by a moved head either" \
   'grep -qx FT-9 "$T/ft-spawns" && [ "$(field FT-9 fix.finished)" = null ]'
+# FT-11's PR merged since too, and the merge driver already recorded who merged it; a pass of its own.
+export DESK_QUEUE="$T/queue-ft11.json" DESK_AUTOPILOT_STATE="$T/state-ft11"; mkdir -p "$T/state-ft11/logs"
+q init ft11; q set-batch concurrency=1
+q add FT-11; q set FT-11 state=triaged lane=A branch=fix/FT-11 result.pr=911 \
+  'merge={"by":"merge driver","pr":911,"head_sha":"0123456789abcdef0123456789abcdef01234567","base":"main","at":"2026-11-12T15:38:26.000Z"}' \
+  'fix={"try":1,"of":2,"pr":911,"head":"h1","kind":"checks","what":"red: Lint","at":"2026-11-12T15:28:05Z"}' \
+  'fix_tries=[{"try":1,"head":"h1","kind":"checks","what":"red: Lint","at":"2026-11-12T15:28:05Z"}]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1396 a fix try ending on a merge already recorded with its PR and merger keeps that record" \
+  '! grep -qx FT-11 "$T/ft-spawns" && [ "$(field FT-11 fix.finished)" != null ] && [ "$(field FT-11 merge.by)" = "\"merge driver\"" ] && [ "$(field FT-11 merge.pr)" = 911 ] && [ "$(field FT-11 merge.base)" = "\"main\"" ]'
 # FT-10's fix try worker parked, and its PR #901 merged since: tailAfterMerge sent it back for
 # its after-merge steps (merged_tail, cleared.tail). That tail spawns; its merged PR does not end it.
 export DESK_QUEUE="$T/queue-ft10.json" DESK_AUTOPILOT_STATE="$T/state-ft10"; mkdir -p "$T/state-ft10/logs"
@@ -1967,6 +1995,32 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-894 AC7 with the lever off, no difference line and no difference count" \
   '! echo "$out" | grep -q "differ between queue.json" && [ "$(tail -1 "$T/state-lg/passes.jsonl" | jq "has(\"ledger_diffs\") or has(\"ledger_missed\")")" = false ]'
 
+# ---- DS-905: with the ledger and ledger-record levers on, a pass's writes go to the log first and
+# queue.json records the log's position; a queue.json deleted is rebuilt from the log by the next pass,
+# which says so. The record lever alone is ignored, and the pass says it needs the ledger lever.
+export DESK_QUEUE="$T/rec/queue.json" DESK_AUTOPILOT_STATE="$T/state-rec"; mkdir -p "$T/rec" "$T/state-rec/logs"
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger ledger-record` |\n'; } > "$T/config-rec.md"
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger-record` |\n'; } > "$T/config-reconly.md"
+q init rec; q set-batch concurrency=2
+q add RC-1; q set RC-1 state=triaged lane=A branch=fix/RC-1
+out=$(DESK_CONFIG="$T/config-rec.md" node "$B/pass.mjs" 2>&1)
+check "DS-905 AC1 in record mode a pass's spawn is a spawned event, and queue.json records the log position it holds" \
+  '[ "$(field RC-1 state)" = "\"running\"" ] && jq -e "select(.key == \"RC-1\" and .type == \"spawned\")" "$T/rec/ledger/events.jsonl" >/dev/null && [ "$(jq .ledger_seq "$T/rec/queue.json")" = "$(tail -1 "$T/rec/ledger/events.jsonl" | jq .seq)" ] && ! echo "$out" | grep -q "differ between queue.json"'
+rm "$T/rec/queue.json"
+out=$(DESK_CONFIG="$T/config-rec.md" node "$B/pass.mjs" 2>&1)
+check "DS-905 AC2 a deleted queue.json is rebuilt from the log by the next pass, which says so and stops for the batch fields" \
+  '[ "$(field RC-1 state)" = "\"running\"" ] && [ "$(field RC-1 branch)" = "\"fix/RC-1\"" ] && echo "$out" | grep -q "ledger: queue.json was missing, so it was rebuilt from the log at .* (1 ticket(s)).*the pass stops until they are set again"'
+out=$(DESK_CONFIG="$T/config-rec.md" node "$B/pass.mjs" 2>&1)
+check "DS-905 every pass after the rebuild stops too, until the batch fields are set again" \
+  'echo "$out" | grep -q "the pass stops until they are set again"'
+q set-batch concurrency=2 rebuilt_from_log=null
+out=$(DESK_CONFIG="$T/config-rec.md" node "$B/pass.mjs" 2>&1)
+check "DS-905 and once they are, the pass runs" \
+  '! echo "$out" | grep -q "the pass stops until" && [ "$(jq .rebuilt_from_log "$T/rec/queue.json")" = "null" ]'
+out=$(DESK_CONFIG="$T/config-reconly.md" node "$B/pass.mjs" 2>&1)
+check "DS-905 AC6 the record lever without the ledger lever is ignored, and the pass says it needs the ledger lever" \
+  'echo "$out" | grep -q "ledger: the ledger-record lever is ignored: it needs the ledger lever on as well"'
+
 # ---- the ask ledger: with the ledger lever on, the first worker after a park's requeue acts on its
 # answer, on a plain spawn and a handoff's alike; a production-broken park pushed now is an ask presented
 # by push; the pass's own take of a recommended option answers its ask by default. A pass again writes
@@ -2010,5 +2064,38 @@ q add AK-4; q set AK-4 state=parked lane=A branch=fix/AK-4 'park={"kind":"questi
 out=$(node "$B/pass.mjs" 2>&1)
 check "ask ledger: with the lever off, the same spawn and push as with it on write no ledger and the pass reports nothing of it" \
   '[ "$n" -ge 6 ] && [ "$(field AK-3 state)" = "\"running\"" ] && echo "$out" | grep -q "PUSH: AK-4: PRODUCTION BROKEN" && [ ! -e "$T/ak-off/ledger" ] && ! echo "$out" | grep -q "ask ledger"'
+
+# ---- question handling: on the batched arm, a park's recommended call desk may not take for the worker
+# applies by default at the first check-in after a digest listed it; never before a digest has, nor with
+# the lever off, nor for a product call. QH-1 to QH-3 were listed at 09:00Z five days ago, so a check-in
+# has passed since; QH-5 was listed just now. Whichever path raises an ask first, it carries the arm.
+export DESK_CONFIG="$T/config-lg.md" DESK_QUEUE="$T/qh/queue.json" DESK_AUTOPILOT_STATE="$T/state-qh"; mkdir -p "$T/qh" "$T/state-qh/logs"
+q init qh; q set-batch concurrency=1
+qh_pin(){ printf 'levers={"set":[],"values":{"question-handling":"%s"},"at":"2026-11-20T00:00:00Z"}' "$1"; }
+qh_park(){ q add "$1"; q set "$1" state=parked lane=A "park={\"kind\":\"question\",\"question\":\"$1: two columns or one?\",\"since\":\"2026-11-20T07:00:00Z\",\"recommends\":{\"question\":\"Two columns or one?\",\"options\":[\"two columns\",\"one column\"],\"chose\":\"two columns\",\"category\":\"$2\"}}" "${@:3}"; }
+qh_park QH-1 design "$(qh_pin batched)"; qh_park QH-2 design; qh_park QH-3 product "$(qh_pin batched)"; qh_park QH-4 design "$(qh_pin batched)"; qh_park QH-5 design "$(qh_pin batched)"
+q add QH-6; q set QH-6 state=parked lane=A 'park={"kind":"question","question":"PRODUCTION BROKEN: search returns 500","since":"2026-11-20T08:00:00Z"}' "$(qh_pin one-at-a-time)"
+node --input-type=module -e "
+import { queueDifference } from '$B/queue-ledger.mjs';
+import { recordAsks } from '$B/ask-ledger.mjs';
+queueDifference('$DESK_QUEUE', { seed: true });
+const listed = (key, at) => recordAsks('$DESK_QUEUE', [{ step: 'presented', key, since: '2026-11-20T07:00:00Z', via: 'digest', ref: 'page.md' }], { on: true, now: new Date(at) });
+for (const k of ['QH-1', 'QH-2', 'QH-3']) listed(k, '2026-11-20T09:00:00Z');
+listed('QH-5', new Date().toISOString());"
+out=$(node "$B/pass.mjs" 2>&1)
+qh_raised(){ jq -sc "[.[] | select(.type == \"ask_raised\" and .key == \"$1\") | [.data.arm, .data.blocking]]" "$T/qh/ledger/events.jsonl"; }
+check "question handling: a batched-arm design call a digest listed applies its recommendation by default at the next check-in, and is requeued" \
+  '[ "$(field QH-1 state)" != "\"parked\"" ] && [ "$(field QH-1 auto_answered.chose)" = "\"two columns\"" ] && grep -q "^two columns. This was the option the last worker recommended .* listed it and nobody answered it by the next check-in, so desk applied it by default" "$T/state-qh/briefings/QH-1.md" && echo "$out" | grep -qF "QH-1: nobody answered its design call by the check-in after the digest listed it, so its recommended option (\"two columns\") applied by default"'
+check "question handling: it is logged as a decision taken by default, saying how to reverse it" \
+  'jq -e "select(.ticket == \"QH-1\" and .source == \"default\" and .chose == \"two columns\" and (.question | test(\"To reverse it, override it here with one column\")))" "$T/state-qh/decisions.jsonl" >/dev/null'
+check "question handling: and its ask is answered by default in the ticket ledger, raised by the take with its arm" \
+  '[ "$(jq -sc "[.[] | select(.type == \"ask_answered\" and .key == \"QH-1\") | .data.by]" "$T/qh/ledger/events.jsonl")" = "[\"default\"]" ] && [ "$(qh_raised QH-1)" = "[[\"batched\",true]]" ]'
+check "question handling: never before a digest has listed it, nor before the check-in after the digest that did" \
+  '[ "$(field QH-4 state)" = "\"parked\"" ] && [ "$(field QH-5 state)" = "\"parked\"" ] && ! grep -q "QH-[45]" "$T/state-qh/decisions.jsonl"'
+check "question handling: with the lever off, and for a product call, nothing applies by default" \
+  '[ "$(field QH-2 state)" = "\"parked\"" ] && [ "$(field QH-3 state)" = "\"parked\"" ] && [ "$(field QH-2 auto_answered)" = null ] && ! grep -q "QH-[23]" "$T/state-qh/decisions.jsonl"'
+check "question handling: a production-broken park raised by the pass's own push carries its arm" \
+  'echo "$out" | grep -q "PUSH: QH-6: PRODUCTION BROKEN" && [ "$(qh_raised QH-6 | jq -c "map(.[0])")" = "[\"one-at-a-time\"]" ]'
+export DESK_CONFIG="$AK_CONFIG"
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

@@ -21,6 +21,10 @@ import { STATES, FINISHED, PARK_KINDS, blockersOf } from './queue-states.mjs';
 import { batchFields, same } from './queue-store.mjs';
 
 export const SNAPSHOT_EVERY = 1000;
+// The fold rules a snapshot's state was folded under. Raise it whenever apply() folds an event
+// differently, so a snapshot folded under the old rules is replayed from the start (readSnapshot).
+// 2: a HISTORY_EVENTS event never sets a ticket's batch.
+export const FOLD_RULES = 2;
 export const LOCK_WAIT_MS = 2000;
 export const MODES = ['shadow', 'record'];
 // Observations a pass recomputes on every run: written to queue.json, never appended, ignored by the diff.
@@ -53,6 +57,7 @@ const CHECKS = {
   answerer: (v) => ASK_BY.includes(v),
   tokenStep: (v) => ASK_TOKEN_STEPS.includes(v),
   usd: (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0,
+  share: (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1,
 };
 
 // Every event type, the scope it belongs to (a ticket's, or a batch's with key null), and its data fields.
@@ -79,8 +84,8 @@ export const EVENTS = Object.freeze({
   stuck: { scope: 'ticket', data: { cause: 'string', start: 'string', end: 'string?' } },
   // An ask, a park handed to the person or the decider, as ask-ledger.mjs records each step of it: `ask`
   // is its id, <KEY>:<park.since>.
-  ask_raised: { scope: 'ticket', data: { ask: 'string', since: 'string', kind: 'kind', blocking: 'bool?' } },
-  ask_presented: { scope: 'ticket', data: { ask: 'string', via: 'via', ref: 'string?', notification: 'string?' } },
+  ask_raised: { scope: 'ticket', data: { ask: 'string', since: 'string', kind: 'kind', blocking: 'bool?', arm: 'string?' } },
+  ask_presented: { scope: 'ticket', data: { ask: 'string', via: 'via', ref: 'string?', notification: 'string?', share: 'share?' } },
   ask_answered: { scope: 'ticket', data: { ask: 'string', by: 'answerer', session: 'string?', latency_s: 'int?' } },
   ask_acted: { scope: 'ticket', data: { ask: 'string', round: 'int?' } },
   // One step's tokens and list-price dollars, by its source (the round's log, the decider, the person's
@@ -101,6 +106,11 @@ export const EVENTS = Object.freeze({
 });
 
 export const ASK_EVENTS = ['ask_raised', 'ask_presented', 'ask_answered', 'ask_acted', 'ask_tokens'];
+// The ticket events no queue write makes: each is appended by its own writer (the pass's auto-merge
+// lines from the merge log, a merged PR's stages, a stuck interval, an ask's steps), naming the batch
+// that writer is in. They are history, so they never move a ticket into that batch, and queue.json
+// never owes the log one (queue-ledger.mjs).
+export const HISTORY_EVENTS = ['automerge_armed', 'automerge_disarmed', 'merge_stages', 'stuck', ...ASK_EVENTS];
 const UNFINISHED = STATES.filter((s) => !FINISHED.includes(s));
 const ANY = [null, ...STATES];
 const KEEP = Symbol('unchanged');
@@ -203,19 +213,19 @@ export function legality(state, ev) {
 const PARK_NULLABLE = Object.entries(EVENTS.parked.data).filter(([, c]) => c.endsWith('?')).map(([f]) => f);
 export const parkOf = (d) => Object.fromEntries(Object.entries(d ?? {}).filter(([f, v]) => !(v == null && PARK_NULLABLE.includes(f))));
 
-// Lays an ask event onto ticket `t`'s record of that ask: { ask, since, kind, blocking, raised_at,
-// presented: [{ via, ref, notification, at }], answered: { by, session, latency_s, at } | null,
+// Lays an ask event onto ticket `t`'s record of that ask: { ask, since, kind, blocking, arm, raised_at,
+// presented: [{ via, ref, notification, share, at }], answered: { by, session, latency_s, at } | null,
 // acted: { round, at } | null, tokens: { <step>:<source>: ask_tokens data and at } }. A step recorded
 // already keeps its first record.
-const askRecord = (ask) => ({ ask, since: null, kind: null, blocking: null, raised_at: null, presented: [], answered: null, acted: null, tokens: {} });
+const askRecord = (ask) => ({ ask, since: null, kind: null, blocking: null, arm: null, raised_at: null, presented: [], answered: null, acted: null, tokens: {} });
 // The key an ask's tokens are kept under on its record: its step and source.
 export const tokensKey = (d) => `${d.step}:${d.source}`;
 function askStep(t, ev) {
   const d = ev.data ?? {};
   t.asks ??= {};
   const a = (t.asks[d.ask] ??= askRecord(d.ask));
-  if (ev.type === 'ask_raised') { if (a.raised_at == null) Object.assign(a, { since: d.since, kind: d.kind, blocking: d.blocking ?? null, raised_at: ev.at }); }
-  else if (ev.type === 'ask_presented') { if (!a.presented.some((p) => p.via === d.via)) a.presented.push({ via: d.via, ref: d.ref ?? null, notification: d.notification ?? null, at: ev.at }); }
+  if (ev.type === 'ask_raised') { if (a.raised_at == null) Object.assign(a, { since: d.since, kind: d.kind, blocking: d.blocking ?? null, arm: d.arm ?? null, raised_at: ev.at }); }
+  else if (ev.type === 'ask_presented') { if (!a.presented.some((p) => p.via === d.via)) a.presented.push({ via: d.via, ref: d.ref ?? null, notification: d.notification ?? null, share: d.share ?? null, at: ev.at }); }
   else if (ev.type === 'ask_answered') a.answered ??= { by: d.by, session: d.session ?? null, latency_s: d.latency_s ?? null, at: ev.at };
   else if (ev.type === 'ask_acted') a.acted ??= { round: d.round ?? null, at: ev.at };
   else if (ev.type === 'ask_tokens') { a.tokens ??= {}; a.tokens[tokensKey(d)] ??= { ...d, at: ev.at }; }
@@ -235,7 +245,7 @@ function apply(state, ev) {
     return;
   }
   const t = (state.tickets[ev.key] ??= newTicket(ev.key));
-  if (ev.type !== 'moved') t.batch = ev.batch;
+  if (ev.type !== 'moved' && !HISTORY_EVENTS.includes(ev.type)) t.batch = ev.batch;
   const to = TRANSITIONS[ev.type].to;
   if (to !== KEEP) t.state = to;
   switch (ev.type) {
@@ -350,12 +360,14 @@ function parseLines(text, file, torn) {
 }
 
 // The snapshot's state: null when there is none, false when it does not read as one, so the reader
-// replays from the start instead.
+// replays from the start instead. A snapshot folded under other fold rules than these (`fold` not
+// FOLD_RULES; none before rule 2) does not read as one either: its state is what those rules made of
+// the events, and the archives beside it fold them again under these.
 const readSnapshot = (paths) => {
   if (!existsSync(paths.snapshot)) return null;
   try {
     const s = JSON.parse(readFileSync(paths.snapshot, 'utf8'));
-    return s?.state && Number.isInteger(s.state.seq) ? s.state : false;
+    return s?.fold === FOLD_RULES && s.state && Number.isInteger(s.state.seq) ? s.state : false;
   } catch { return false; }
 };
 const rotated = (paths) => (existsSync(paths.dir) ? readdirSync(paths.dir) : [])
@@ -479,7 +491,7 @@ function snapshot(paths) {
   if (!events.length) return;
   const state = reduce(events, base);
   writeDurable(join(paths.dir, `events.${state.seq}.jsonl.gz`), gzipSync(events.map((ev) => `${JSON.stringify(ev)}\n`).join('')));
-  writeDurable(paths.snapshot, `${JSON.stringify({ v: 1, at: new Date().toISOString(), state }, null, 2)}\n`);
+  writeDurable(paths.snapshot, `${JSON.stringify({ v: 1, fold: FOLD_RULES, at: new Date().toISOString(), state }, null, 2)}\n`);
   syncDir(paths.dir);
   writeDurable(paths.events, '');
   syncDir(paths.dir);

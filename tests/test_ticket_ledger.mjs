@@ -34,8 +34,8 @@ const VALID = {
   merged: { by: 'merge-driver', pr: 12, head_sha: SHA, base: 'main' },
   merge_stages: { pr: 12, stages: { undraft: 4, merge: 2 } },
   stuck: { cause: 'usage', start: '2026-11-20T10:00:00Z', end: null },
-  ask_raised: { ask: 'DS-1:2026-11-20T10:00:00Z', since: '2026-11-20T10:00:00Z', kind: 'question', blocking: null },
-  ask_presented: { ask: 'DS-1:2026-11-20T10:00:00Z', via: 'digest', ref: null, notification: null },
+  ask_raised: { ask: 'DS-1:2026-11-20T10:00:00Z', since: '2026-11-20T10:00:00Z', kind: 'question', blocking: null, arm: null },
+  ask_presented: { ask: 'DS-1:2026-11-20T10:00:00Z', via: 'digest', ref: null, notification: null, share: 0.25 },
   ask_answered: { ask: 'DS-1:2026-11-20T10:00:00Z', by: 'person', session: null, latency_s: 90 },
   ask_acted: { ask: 'DS-1:2026-11-20T10:00:00Z', round: 1 },
   ask_tokens: { ask: 'DS-1:2026-11-20T10:00:00Z', step: 'raise', source: 'log', input: 1, output: 2, cache_read: 3, cache_write: 4, usd: 0.01, complete: true, approx: null },
@@ -204,6 +204,23 @@ t('a batch event is never illegal', L.legality(L.emptyState(), ev('base_red')).l
   writeFileSync(p.snapshot, '{"v":1,"state":{"seq":1');
   t('AC7 a snapshot cut off mid-write is replayed from the start', j(L.fold(dir)), j(L.reduce(all)));
   t('AC7 and the read still returns every event', L.read(dir).events.length, 14);
+  // A snapshot folded under older fold rules (no `fold`, or another number) holds what those rules
+  // made of the events, such as a dropped ticket back in the batch that closed its interval. The
+  // planted ticket is one no later event touches, so only a replay from the start leaves it out.
+  const stale = L.reduce(all.filter((e) => e.seq <= 10));
+  stale.tickets['DS-PLANT'] = { ...structuredClone(stale.tickets['DS-1']), key: 'DS-PLANT', batch: 'B-OLD-RULES' };
+  for (const fold of [undefined, L.FOLD_RULES - 1]) {
+    writeFileSync(p.snapshot, JSON.stringify({ v: 1, ...(fold === undefined ? {} : { fold }), state: stale }));
+    t(`AC7 a snapshot under fold rules ${fold ?? '(none)'} is replayed from the start`, j(L.fold(dir)), j(L.reduce(all)));
+  }
+  const d2 = repo();
+  for (const s of steps.slice(0, 5)) L.append(d2, [s], { snapshotEvery: 5 });
+  const p2 = L.ledgerPaths(d2);
+  const own = JSON.parse(readFileSync(p2.snapshot, 'utf8'));
+  t('AC7 a snapshot records the fold rules it was folded under', own.fold, L.FOLD_RULES);
+  own.state.tickets['DS-1'].batch = 'B-MARK';
+  writeFileSync(p2.snapshot, JSON.stringify(own));
+  t('AC7 and one under these rules is the fold\'s base', L.fold(d2).tickets['DS-1'].batch, 'B-MARK');
 }
 
 // AC8: a batch's events project to queue.json's shape.
@@ -329,6 +346,9 @@ const env = (seq, e, atTime = `2026-11-20T10:00:${String(seq).padStart(2, '0')}Z
     return !(type in L.TRANSITIONS) || !L.legality(s, ask(type)).legal || (after.tickets['DS-1']?.state ?? null) !== from;
   }).map((type) => `${type} from ${from}`)))), '[]');
   t('a blocking flag is taken as true, false or null', j([true, false, null].map((b) => L.invalid(ask('ask_raised', { ...VALID.ask_raised, blocking: b })))), '[null,null,null]');
+  t('a digest\'s share of its push is taken from 0 to 1, or null', j([0, 0.5, 1, null, 1.5, -0.1].map((share) => L.invalid(ask('ask_presented', { ...VALID.ask_presented, share })))),
+    j([null, null, null, null, 'ask_presented: field "share" is not a valid share', 'ask_presented: field "share" is not a valid share']));
+  t('an arm is taken as a name or null', j(['mixed', null, 3].map((arm) => L.invalid(ask('ask_raised', { ...VALID.ask_raised, arm })))), j([null, null, 'ask_raised: field "arm" is not a valid string']));
   t('a presentation names its way', L.invalid(ask('ask_presented', { ...VALID.ask_presented, via: 'carrier pigeon' })), 'ask_presented: field "via" is not a valid via');
   t('a step\'s tokens name a step there is, and dollars a figure at or above 0', j([L.invalid(ask('ask_tokens', { ...VALID.ask_tokens, step: 'ponder' })), L.invalid(ask('ask_tokens', { ...VALID.ask_tokens, usd: -1 }))]),
     j(['ask_tokens: field "step" is not a valid tokenStep', 'ask_tokens: field "usd" is not a valid usd']));
@@ -343,9 +363,9 @@ const env = (seq, e, atTime = `2026-11-20T10:00:${String(seq).padStart(2, '0')}Z
     j(L.diffQueues({ ...disk, tickets: { 'DS-1': parked } }, L.project(base, 'B1', disk))));
   const id = 'DS-1:2026-11-20T10:00:00Z';
   const a = get(() => withAsks.tickets['DS-1'].asks[id]);
-  t('the fold keeps the ask: its since, kind and blocking flag, and when it was raised', get(() => j([a.since, a.kind, a.blocking, a.raised_at])), j(['2026-11-20T10:00:00Z', 'question', null, '2026-11-20T10:00:02Z']));
+  t('the fold keeps the ask: its since, kind, blocking flag and arm, and when it was raised', get(() => j([a.since, a.kind, a.blocking, a.arm, a.raised_at])), j(['2026-11-20T10:00:00Z', 'question', null, null, '2026-11-20T10:00:02Z']));
   t('each presentation, its answer and the act on it', get(() => j([a.presented, a.answered, a.acted])),
-    j([[{ via: 'digest', ref: null, notification: null, at: '2026-11-20T10:00:03Z' }], { by: 'person', session: null, latency_s: 90, at: '2026-11-20T10:00:04Z' }, { round: 1, at: '2026-11-20T10:00:05Z' }]));
+    j([[{ via: 'digest', ref: null, notification: null, share: 0.25, at: '2026-11-20T10:00:03Z' }], { by: 'person', session: null, latency_s: 90, at: '2026-11-20T10:00:04Z' }, { round: 1, at: '2026-11-20T10:00:05Z' }]));
   t('a step\'s tokens are kept on the ask by step and source, the first kept', get(() => j(L.reduce([env(12, ask('ask_tokens', { ...VALID.ask_tokens, input: 999 }))], withAsks).tickets['DS-1'].asks[id].tokens)),
     j({ 'raise:log': { ...VALID.ask_tokens, at: '2026-11-20T10:00:06Z' } }));
   t('a second answer to the same ask keeps the first', get(() => L.reduce([env(10, ask('ask_answered', { ...VALID.ask_answered, by: 'decider', latency_s: 500 }))], withAsks).tickets['DS-1'].asks[id].answered.by), 'person');
