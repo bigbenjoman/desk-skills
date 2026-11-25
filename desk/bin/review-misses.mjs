@@ -26,6 +26,7 @@ import { reviewFindings } from './fix-tries.mjs';
 import { parseVerdict } from './undraft.mjs';
 import { writeJsonAtomic } from './dir-lock.mjs';
 import { callLogin } from './call-login.mjs';
+import { readLog } from './merge-log.mjs';
 
 // Each kind, and the check its learned line adds.
 export const KINDS = Object.freeze({
@@ -108,12 +109,15 @@ export function kindsOf(text, n) {
   return Array.from({ length: n }, (_, i) => (Object.hasOwn(KINDS, got[i]) ? got[i] : 'other'));
 }
 
-// One headless model call on the repo's subscription (call-login.mjs callLogin): the reply text, or null
-// where it could not be made, where no login here may take it, or where `refused(login)` (the pass's last
+// What runModel and classify give where no model call was made, which is not a failed classify call.
+export const NOT_RUN = Symbol('model call not made');
+
+// One headless model call on the repo's subscription (call-login.mjs callLogin): the reply text, null
+// where the call failed, or NOT_RUN where no login here may take it or `refused(login)` (the pass's last
 // health check, health.mjs refusedIn) finds the API refusing that login.
 export function runModel(prompt, { claude = 'claude', env = process.env, refused = () => null } = {}) {
   const c = callLogin({ env });
-  if (c.refuse || refused(c.login)) return null;
+  if (c.refuse || refused(c.login)) return NOT_RUN;
   const r = spawnSync(claude, ['-p', prompt, '--output-format', 'json', '--model', 'haiku', '--setting-sources', '', '--strict-mcp-config', '--tools', ''], {
     encoding: 'utf8', timeout: CLASSIFY_TIMEOUT_MS, killSignal: 'SIGKILL', env: c.env, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024,
   });
@@ -122,11 +126,13 @@ export function runModel(prompt, { claude = 'claude', env = process.env, refused
 }
 
 // `findings` each with its kind, through `run(prompt)` (runModel's form). -> the findings with `kind`, or
-// null where the model gave nothing readable, so the PR is read again on a later pass.
+// null where the model gave nothing readable, or NOT_RUN where `run` made no call, so the PR is read
+// again on a later pass.
 export function classify(findings, run = runModel) {
   if (!findings.length) return [];
   let text = null;
   try { text = run(classifyPrompt(findings)); } catch { text = null; }
+  if (text === NOT_RUN) return NOT_RUN;
   const kinds = text == null ? null : kindsOf(text, findings.length);
   return kinds && findings.map((f, i) => ({ ...f, kind: kinds[i] }));
 }
@@ -135,14 +141,13 @@ export function classify(findings, run = runModel) {
 export const readMisses = (state) => readLatest(logOf(state));
 const recordMisses = (state, entry) => appendLine(logOf(state), entry);
 
-// Failed classify calls per PR over the whole log: { <pr>: n }. A PR GitHub could not read is not one.
+// Failed classify calls per PR over the whole log: { <pr>: n }. A PR GitHub could not read is not one,
+// nor a pass where no model call could be made.
 export function classifyFails(state) {
-  let text = '';
-  try { text = readFileSync(logOf(state), 'utf8'); } catch { return {}; }
+  let entries = [];
+  try { entries = readLog(logOf(state)); } catch { return {}; }
   const n = {};
-  for (const line of text.split('\n')) {
-    try { const e = JSON.parse(line); if (e?.unclassified && e.pr != null) n[Number(e.pr)] = (n[Number(e.pr)] ?? 0) + 1; } catch { /* skipped */ }
-  }
+  for (const e of entries) if (e?.unclassified && e.pr != null) n[Number(e.pr)] = (n[Number(e.pr)] ?? 0) + 1;
   return n;
 }
 
@@ -202,6 +207,10 @@ export function missesStep(state, { tickets, gql, run = runModel, ctx = {}, repo
     const m = missesOf(payload, ctx);
     if (!m) { try { record({ key, pr, unmerged: true, recorded: now }); } catch { /* read again */ } return []; }
     const misses = classify(m.findings, run);
+    if (misses === NOT_RUN) {
+      try { record({ key, pr, unread: true, recorded: now }); } catch { /* tried again next pass */ }
+      return [`review misses: PR #${pr} (${key}) was not classified: no model call could be made; a pass tries again in an hour`];
+    }
     if (!misses) {
       const tries = (fails[pr] ?? 0) + 1;
       if (tries >= CLASSIFY_TRIES) {

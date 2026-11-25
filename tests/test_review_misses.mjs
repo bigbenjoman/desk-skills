@@ -77,6 +77,10 @@ t('#1422 AC2 a classify that fails and then succeeds before the limit records th
 const down = passes(scratch('review-misses-down-'), { reply: 'no idea', read: (h) => h >= 16 });
 t('#1422 AC3 a PR GitHub could not read does not count toward the classify limit',
   j([down.calls, down.out.findIndex((ls) => ls.some((l) => /gave up on PR #7/.test(l)))]), j([3, 4]));
+const noLogin = passes(scratch('review-misses-nologin-'), { reply: (h) => (h < 17 ? RM.NOT_RUN : 'no idea') });
+t('#1422 a pass whose login could make no model call does not count toward the classify limit',
+  j([noLogin.calls, noLogin.out.findIndex((ls) => ls.some((l) => /gave up on PR #7/.test(l))), noLogin.out[0].some((l) => /no model call could be made/.test(l))]), j([6, 5, true]));
+t('#1422 a runModel the login refuses makes no call', RM.runModel('p', { claude: '/nonexistent', refused: () => 'refused' }), RM.NOT_RUN);
 t('#1375 a repo with no outside reviewer reads nothing', j(RM.missesStep(scratch('review-misses-none-'), { tickets, gql, run, ctx: { ...CTX, external: null } })), j([]));
 
 // AC3: learned lines only add checks. A line stays once learned, its PRs only grow, its wording is fixed
