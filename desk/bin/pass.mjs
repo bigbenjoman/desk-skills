@@ -84,7 +84,7 @@ import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-a
 import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget } from './queue-ledger.mjs';
 import { fold as ledgerFold, append as ledgerAppend } from './ticket-ledger.mjs';
-import { recordAsks, ASK_BY_ENV } from './ask-ledger.mjs';
+import { recordAsks, measure as measureAsks, ASK_BY_ENV } from './ask-ledger.mjs';
 import * as MS from './merge-stages.mjs';
 import * as RM from './review-misses.mjs';
 import * as ST from './stuck-time.mjs';
@@ -6058,6 +6058,8 @@ if (!DRY && ledgerOn()) {
   const l = ledgerLine({ check, missed, queueBin: join(SHOWN_BIN, 'queue.mjs') });
   if (l) lines.push(l);
   ledgerRec = { ledger_diffs: check.error ? null : check.diffs.length, ledger_missed: missed, merges_unknown_merger: unknownMergers };
+  // What each ask's steps cost in tokens, each step once its figures can be read (ask-ledger.mjs measure).
+  lines.push(...measureAsks(STATE, { queue: QUEUE_FILE, on: true, by: 'pass' }));
 }
 
 // ---- pass metrics ------------------------------------------------------------

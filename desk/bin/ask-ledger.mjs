@@ -17,13 +17,18 @@
 // for the caller's report. The fold keeps each ask on its ticket as t.asks, which readAsks lists.
 //
 //   node ask-ledger.mjs        every ask this repo's ledger holds, one JSON line each
-import { basename } from 'node:path';
-import { realpathSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { append, fold, LOCK_WAIT_MS } from './ticket-ledger.mjs';
+import { append, fold, tokensKey, LOCK_WAIT_MS } from './ticket-ledger.mjs';
 import { ledgerOn, ledgerTarget } from './queue-ledger.mjs';
 import { parkKind } from './batch-state.mjs';
 import { parseLevers, repoConfigValues } from './desk-env.mjs';
+import { markersIn, readLogFile, saidIn } from './harvest.mjs';
+import { logRound, resultTokens, workerLogs } from './worker-cost.mjs';
+import { requestOf, requestUsd } from './cache-report.mjs';
+import { projectsDirs } from './claude-logins.mjs';
+import { DECIDER_TIMEOUT_MS } from './decider.mjs';
 
 export const askId = (key, since) => `${key}:${since}`;
 // Who answers through answer.mjs when it is neither the person nor the decider's --taken: `default`, set
@@ -67,7 +72,13 @@ function eventOf(s, batch, now) {
     }
     case 'acted':
       return { ...base, id: `ask:${ask}:acted`, type: 'ask_acted', at: now, data: { ask, round: count(s.round) } };
-    default: throw new Error(`unknown ask step "${s.step}" (want: raised|presented|answered|acted)`);
+    case 'tokens': {
+      const fig = (k) => count(s[k]);
+      return { ...base, id: `ask:${ask}:tokens:${s.of}:${s.source}`, type: 'ask_tokens', at: now,
+        data: { ask, step: s.of, source: s.source, input: fig('input'), output: fig('output'), cache_read: fig('cache_read'), cache_write: fig('cache_write'),
+          usd: Number.isFinite(s.usd) && s.usd >= 0 ? s.usd : null, complete: s.complete === true, approx: typeof s.approx === 'boolean' ? s.approx : null } };
+    }
+    default: throw new Error(`unknown ask step "${s.step}" (want: raised|presented|answered|acted|tokens)`);
   }
 }
 
@@ -83,6 +94,7 @@ function holds(state, ev) {
   if (ev.type === 'ask_raised') return a.raised_at != null;
   if (ev.type === 'ask_presented') return a.presented.some((p) => p.via === ev.data.via);
   if (ev.type === 'ask_answered') return a.answered != null;
+  if (ev.type === 'ask_tokens') return a.tokens?.[tokensKey(ev.data)] != null;
   return a.acted != null;
 }
 
@@ -108,10 +120,167 @@ export function recordAsks(at, steps, { on = ledgerOn(), by, now = new Date(), w
 export const askAnswered = (at, asks, opts) => recordAsks(at, [].concat(asks ?? []).map((a) => ({ ...a, step: 'answered' })), opts);
 
 // Every ask a folded ledger state holds, with its ticket's key and batch: [{ key, batch, ask, since,
-// kind, blocking, raised_at, presented, answered, acted }], by ticket and then by since.
+// kind, blocking, raised_at, presented, answered, acted, tokens }], by ticket and then by since.
 export const readAsks = (state) => Object.values(state?.tickets ?? {})
   .flatMap((t) => Object.values(t.asks ?? {}).map((a) => ({ key: t.key, batch: t.batch, ...structuredClone(a) })))
   .sort((a, b) => a.key.localeCompare(b.key) || String(a.since ?? '').localeCompare(String(b.since ?? '')));
+
+// ---- what each step of an ask cost --------------------------------------------------------------
+// measure, run once a pass with the ledger lever on, writes each step's ask_tokens once its figures can
+// be read, and never again (recordAsks keeps a step written once):
+//   raise    the parked round's main-session messages from the one that writes the park (its park file,
+//            or the AUTOPILOT_PARK marker) to the round's end: a lower bound, since the work before the
+//            decision to park cannot be told from the ticket's own. The round is the latest of the
+//            ticket's logs that writes a park and was last written by the park's since.
+//   present  a decider's session's tokens over the items its prompt listed (source decider); or the
+//            person's session named on the answer, its requests since that session's previous answer
+//            in this ledger up to this one (source session, approx), or 0 with no session (source shell).
+//            A push or a digest costs no tokens, and is not measured.
+//   act      the round the acting spawn started (its desk_spawn line, by the act's time), from that start
+//            to its first stage marker, the cache reads and writes apart: on a resumed round, whether the
+//            cache was still warm.
+// Tokens and list-price dollars are cache-report.mjs's requestOf and requestUsd over each message once.
+// A step whose round ended without the part it is read from (a killed worker), or whose record is
+// missing, is complete false with what was read, never 0.
+
+// How far a round's log time may lie from the time desk recorded for it: a park's since is the pass's
+// harvest, after the worker's last line; an act is recorded once spawn-worker.sh has written its start.
+const SLACK_MS = 10 * 60 * 1000;
+const parsed = (text) => text.split('\n').flatMap((l) => { if (!l.trim()) return []; try { return [JSON.parse(l)]; } catch { return []; } });
+const round6 = (n) => Math.round(n * 1e6) / 1e6;
+const noFigures = { input: null, output: null, cache_read: null, cache_write: null, usd: null };
+
+// The requests among events `events`, each once by its id with its largest output, summed: tokens by
+// kind and dollars, null dollars where a request's model has no price.
+function sumRequests(events) {
+  const byId = new Map();
+  for (const d of events) {
+    const r = requestOf(d);
+    if (!r) continue;
+    const k = r.id ?? `line-${byId.size}`;
+    const had = byId.get(k);
+    if (had) had.output = Math.max(had.output, r.output); else byId.set(k, { ...r });
+  }
+  const t = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+  let usd = 0, priced = true;
+  for (const r of byId.values()) {
+    t.input += r.uncached; t.output += r.output; t.cache_read += r.read; t.cache_write += r.w1h + r.w5m;
+    const u = requestUsd(r);
+    if (u) usd += u.total; else priced = false;
+  }
+  return { ...t, usd: priced ? round6(usd) : null };
+}
+
+const main = (d) => d?.type === 'assistant' && !d.parent_tool_use_id;
+const writesPark = (d, key) => main(d) && (d.message?.content ?? []).some((c) => (c?.type === 'tool_use' && JSON.stringify(c.input ?? {}).includes(`parks/${key}.json`))
+  || markersIn([saidIn(c) ?? '']).some(([k]) => k === 'AUTOPILOT_PARK'));
+const marksStage = (d) => d?.type === 'assistant' && (d.message?.content ?? []).some((c) => markersIn([saidIn(c) ?? '']).some(([k, v]) => k === 'AUTOPILOT_STAGE' && v.trim()));
+// A ticket's logs, oldest round first, each with its events and when it was last written.
+const roundsOf = (stateDir, key) => workerLogs(stateDir, key).sort((a, b) => logRound(a) - logRound(b)).map((f) => {
+  let events = [], mtime = NaN;
+  try { events = parsed(readLogFile(f)); mtime = statSync(f).mtimeMs; } catch { /* unread: no events */ }
+  return { f, events, mtime, current: logRound(f) === Infinity };
+});
+
+function raiseTokens(stateDir, key, since) {
+  const by = Date.parse(since);
+  const round = roundsOf(stateDir, key).filter((r) => r.events.some((d) => writesPark(d, key)) && !(r.mtime > by + SLACK_MS)).at(-1);
+  if (!round) return { ...noFigures, complete: false };
+  const after = round.events.slice(round.events.findIndex((d) => writesPark(d, key)));
+  return { ...sumRequests(after.filter(main)), complete: after.some((d) => d.type === 'result') };
+}
+
+// null while the round has not reached its first marker and may still.
+function actTokens(stateDir, key, actedAt) {
+  const at = Date.parse(actedAt);
+  const rounds = roundsOf(stateDir, key);
+  let best = null;
+  rounds.forEach((r, ri) => r.events.forEach((d, i) => {
+    const t = d?.type === 'desk_spawn' ? Date.parse(d.at) : NaN;
+    if (Math.abs(t - at) <= SLACK_MS && (!best || Math.abs(t - at) < best.gap)) best = { ri, i, gap: Math.abs(t - at) };
+  }));
+  if (!best) return null;
+  const r = rounds[best.ri];
+  const rest = r.events.slice(best.i + 1);
+  const next = rest.findIndex((d) => d?.type === 'desk_spawn');
+  const seg = next < 0 ? rest : rest.slice(0, next);
+  const mark = seg.findIndex(marksStage);
+  if (mark >= 0) return { ...sumRequests(seg.slice(0, mark)), complete: true };
+  // Ended, moved aside or started again before any marker: what it spent is all there is to read.
+  if (next >= 0 || !r.current || seg.some((d) => d.type === 'result') || best.ri < rounds.length - 1) return { ...sumRequests(seg), complete: false };
+  return null;
+}
+
+// A decider session's share: null while it may still be running.
+function deciderShare(stateDir, id, now) {
+  const dir = join(stateDir, 'decider');
+  let items = 0;
+  try { items = (readFileSync(join(dir, `${id}.prompt.md`), 'utf8').match(/^- id `/gm) ?? []).length; } catch { /* no prompt kept */ }
+  const out = join(dir, `${id}.json`);
+  let text = '';
+  try { text = readFileSync(out, 'utf8'); } catch { /* none written */ }
+  const result = parsed(text).filter((d) => d?.type === 'result').at(-1);
+  if (!result || !items) {
+    let age = Infinity;
+    try { age = now.getTime() - statSync(out).mtimeMs; } catch { /* no output at all */ }
+    return age > DECIDER_TIMEOUT_MS ? { ...noFigures, complete: false } : null;
+  }
+  const t = resultTokens(result);
+  const models = Object.entries(result.modelUsage ?? {});
+  const usds = models.map(([model, m]) => requestUsd({ model, uncached: Number(m.inputTokens) || 0, w5m: Number(m.cacheCreationInputTokens) || 0, w1h: 0, read: Number(m.cacheReadInputTokens) || 0, output: Number(m.outputTokens) || 0 }));
+  const share = (n) => Math.round(n / items);
+  return { input: share(t.uncached), output: share(t.output), cache_read: share(t.cacheRead), cache_write: share(t.cacheWrite),
+    usd: models.length && usds.every(Boolean) ? round6(usds.reduce((s, u) => s + u.total, 0) / items) : null, complete: true };
+}
+
+// Every transcript file of session `session` under login projects folders `dirs`: <project>/<id>.jsonl,
+// and its subagents' under <project>/<id>/.
+function sessionFiles(dirs, session) {
+  const deep = (d) => { try { return readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? deep(join(d, e.name)) : e.name.endsWith('.jsonl') ? [join(d, e.name)] : [])); } catch { return []; } };
+  const projects = dirs.flatMap((dir) => { try { return readdirSync(dir).map((p) => join(dir, p)); } catch { return []; } });
+  return projects.flatMap((p) => [join(p, `${session}.jsonl`), ...deep(join(p, session))]).filter((f) => existsSync(f));
+}
+
+function sessionTokens(dirs, session, from, to) {
+  const files = sessionFiles(dirs, session);
+  if (!files.length) return { ...noFigures, complete: false, approx: true };
+  const inWindow = (d) => { const t = Date.parse(d?.timestamp); return t > from && t <= to; };
+  return { ...sumRequests(files.flatMap((f) => { try { return parsed(readFileSync(f, 'utf8')); } catch { return []; } }).filter(inWindow)), complete: true, approx: true };
+}
+
+// Measures what each ask of queue `queue`'s batch has not had measured yet, from batch state folder
+// `stateDir`, and writes it. `dirs` are the login projects folders (claude-logins.mjs projectsDirs).
+// -> the report lines: what could not be measured or written. Never throws.
+export function measure(stateDir, { queue, on = ledgerOn(), dirs = null, now = new Date(), by = 'pass' } = {}) {
+  if (!on) return [];
+  const lines = [];
+  try {
+    const { repoDir, batch } = ledgerTarget(queue);
+    // An ask's since is in its id, whether or not its raise was recorded.
+    const asks = readAsks(fold(repoDir)).filter((a) => a.batch === batch && a.ask.startsWith(`${a.key}:`)).map((a) => ({ ...a, since: a.since ?? a.ask.slice(a.key.length + 1) }));
+    let logins = dirs;
+    const loginDirs = () => (logins ??= (() => { try { return projectsDirs(); } catch { return []; } })());
+    const steps = [];
+    const put = (a, of, source, fig) => { if (fig && !a.tokens?.[`${of}:${source}`]) steps.push({ step: 'tokens', key: a.key, since: a.since, of, source, ...fig }); };
+    for (const a of asks) {
+      try {
+        if (a.raised_at && !a.tokens?.['raise:log']) put(a, 'raise', 'log', raiseTokens(stateDir, a.key, a.since));
+        for (const p of a.presented.filter((x) => x.via === 'decider' && x.ref)) if (!a.tokens?.['present:decider']) put(a, 'present', 'decider', deciderShare(stateDir, p.ref, now));
+        const ans = a.answered;
+        if (ans?.by === 'person') {
+          if (!ans.session) put(a, 'present', 'shell', { input: 0, output: 0, cache_read: 0, cache_write: 0, usd: 0, complete: true });
+          else if (!a.tokens?.['present:session']) {
+            const prev = asks.map((x) => x.answered).filter((x) => x?.session === ans.session && Date.parse(x.at) < Date.parse(ans.at)).map((x) => Date.parse(x.at));
+            put(a, 'present', 'session', sessionTokens(loginDirs(), ans.session, prev.length ? Math.max(...prev) : -Infinity, Date.parse(ans.at)));
+          }
+        }
+        if (a.acted && !a.tokens?.['act:log']) put(a, 'act', 'log', actTokens(stateDir, a.key, a.acted.at));
+      } catch (e) { lines.push(`ask ledger: ${a.ask}'s tokens not measured (${String(e?.message ?? e).split('\n')[0]})`); }
+    }
+    lines.push(...recordAsks({ repoDir, batch }, steps, { on, by, now }));
+  } catch (e) { lines.push(`ask ledger: tokens not measured (${String(e?.message ?? e).split('\n')[0]})`); }
+  return lines;
+}
 
 const isMain = () => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }

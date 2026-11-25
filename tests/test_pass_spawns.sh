@@ -1997,6 +1997,8 @@ check "ask ledger: a production-broken park pushed now is raised and presented b
   'echo "$out" | grep -q "PUSH: AK-2: PRODUCTION BROKEN" && has "[\"ask_raised\",\"AK-2\",\"AK-2:2026-11-20T09:00:00Z\",\"question\"]" && has "[\"ask_presented\",\"AK-2\",\"AK-2:2026-11-20T09:00:00Z\",\"push\"]"'
 check "ask ledger: the pass's take of a recommended option raises its ask and answers it by default, with no session" \
   'echo "$out" | grep -qF "AK-5: took the recommended option" && has "[\"ask_raised\",\"AK-5\",\"AK-5:2026-11-20T07:00:00Z\",\"question\"]" && has "[\"ask_answered\",\"AK-5\",\"AK-5:2026-11-20T07:00:00Z\",\"default\"]" && [ "$(jq -sc "[.[] | select(.type == \"ask_answered\") | .data.session]" "$T/ak/ledger/events.jsonl")" = "[null]" ]'
+check "ask ledger: the pass measures each ask's tokens: a raise no worker log wrote is complete false, with no figures" \
+  '[ "$(jq -sc "[.[] | select(.type == \"ask_tokens\" and .key == \"AK-2\") | [.data.step, .data.source, .data.input, .data.complete]]" "$T/ak/ledger/events.jsonl")" = "[[\"raise\",\"log\",null,false]]" ]'
 n=$(akev | jq length)
 out=$(node "$B/pass.mjs" 2>&1)
 check "ask ledger: the next pass, pushing it again, writes nothing twice" '[ "$n" -ge 6 ] && [ "$(akev | jq length)" = "$n" ]'
