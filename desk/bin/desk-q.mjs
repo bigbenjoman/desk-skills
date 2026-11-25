@@ -73,7 +73,7 @@ import { claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogi
 import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
-import { leaseTrialAsk, leaseTrialHome, needsCount } from './needs-you.mjs';
+import { itemKey, leaseTrialAsk, leaseTrialHome, needsCount } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
 import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merge-log.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
@@ -3276,9 +3276,7 @@ const ITEM_TITLE = { follow: 'check after merge', ask: 'a session asked you' };
 // A Queue row for a counted item that is not a ticket row, in group `k`. A follow item's need leads
 // with where its ticket is, which the TICKET column already names, so WHAT IT NEEDS starts at its
 // first check. In a repo of several batches, TITLE names the item's batch; a step is the repo's, so
-// it names none. TICKET is the ticket the item is about: `item.ticket` where it has one, else its key
-// past a follow:, link:, unpromoted: or step: prefix.
-const itemKey = (t, item) => item.ticket ?? (/^(follow|link|unpromoted|step):/.test(t.key) ? t.key.replace(/^[a-z]+:/, '').split(':')[0] : t.key);
+// it names none. TICKET is the ticket the item is about (itemKey), the key a drop of a put-off item takes.
 // How long an item has waited, for WAITING, or ''.
 const itemWait = (item, now) => (item.since != null ? span(Math.max(0, now - item.since)) : '');
 const itemRowOf = (r, k, { now, kw, ww, nw, tw }) => ({ r: b, t, item }) => {

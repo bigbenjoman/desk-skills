@@ -85,12 +85,12 @@ export function changes(was = {}, now = {}) {
 
 // {status: 'ask'} for a question nobody put off, {status: 'put_off', entry} when its inputs are
 // unchanged, or {status: 'changed', entry, line} naming what changed since. A dismissed entry (a
-// put-off item the person dropped) is {status: 'dismissed', entry} whatever its inputs: never asked again.
+// put-off item the person dropped) is {status: 'dismissed', entry} while its inputs are unchanged, so
+// the item is not asked again until it changes, and a new occurrence under the same question is.
 export function lookup(register, { question, inputs = {} }) {
   const entry = register?.ok ? register.entries.get(questionKey(question)) : null;
   if (!entry) return { status: 'ask' };
-  if (entry.dismissed) return { status: 'dismissed', entry };
-  if (entry.hash === inputsHash(inputs)) return { status: 'put_off', entry };
+  if (entry.hash === inputsHash(inputs)) return { status: entry.dismissed ? 'dismissed' : 'put_off', entry };
   return { status: 'changed', entry, line: changedLine(entry, changes(entry.inputs, inputs)) };
 }
 
