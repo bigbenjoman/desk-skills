@@ -84,10 +84,12 @@ export function changes(was = {}, now = {}) {
 }
 
 // {status: 'ask'} for a question nobody put off, {status: 'put_off', entry} when its inputs are
-// unchanged, or {status: 'changed', entry, line} naming what changed since.
+// unchanged, or {status: 'changed', entry, line} naming what changed since. A dismissed entry (a
+// put-off item the person dropped) is {status: 'dismissed', entry} whatever its inputs: never asked again.
 export function lookup(register, { question, inputs = {} }) {
   const entry = register?.ok ? register.entries.get(questionKey(question)) : null;
   if (!entry) return { status: 'ask' };
+  if (entry.dismissed) return { status: 'dismissed', entry };
   if (entry.hash === inputsHash(inputs)) return { status: 'put_off', entry };
   return { status: 'changed', entry, line: changedLine(entry, changes(entry.inputs, inputs)) };
 }
@@ -144,6 +146,7 @@ if (isMain) (async () => {
     if (!reg.ok) console.log(`register unreadable (${reg.why}): ask as usual`);
     const r = lookup(reg, { question: rest.join(' '), inputs: inputs() });
     if (r.status === 'put_off') { console.log(`put off on ${day(r.entry.at)}${r.entry.by ? ` by ${r.entry.by}` : ''}, inputs unchanged: do not ask`); process.exit(3); }
+    if (r.status === 'dismissed') { console.log(`dropped on ${day(r.entry.at)}: do not ask`); process.exit(3); }
     console.log(r.status === 'changed' ? `ask, with this line: ${r.line}` : 'ask');
     process.exit(0);
   }
@@ -168,7 +171,7 @@ if (isMain) (async () => {
   if (cmd === 'list') {
     const reg = readRegister();
     if (!reg.ok) refuse(`register unreadable: ${reg.why}`);
-    for (const e of reg.entries.values()) console.log(`${day(e.at)} ${e.ticket ?? '-'} ${e.question}  ${JSON.stringify(e.inputs)}`);
+    for (const e of reg.entries.values()) console.log(`${day(e.at)} ${e.ticket ?? '-'} ${e.question}  ${JSON.stringify(e.inputs)}${e.dismissed ? '  (dismissed)' : ''}`);
     process.exit(0);
   }
   refuse(usage);

@@ -36,7 +36,10 @@
 //       drop                take a parked, session or stopped-session ticket, or one whose PR was closed
 //                           unmerged, out of the batch and remove its worktree (queue.mjs drop), refused
 //                           naming the worktree and what it holds while that has unpushed work; Jira is
-//                           left as it is. Recommended first where the park says it has no worker work
+//                           left as it is. Recommended first where the park says it has no worker work.
+//                           Taken on any ticket row put off with not-now; a put-off item that is no
+//                           ticket row (an ask, a step, a follow-on check) is recorded dismissed in the
+//                           not-now register instead, so it leaves Put off and is never listed again
 //       move "<batch>"      a parked or stopped ticket out of its batch and into another running batch of
 //                           the repo (queue.mjs transfer), its next worker on that batch's base; a batch
 //                           not running is refused, naming those that are
@@ -1980,9 +1983,17 @@ export function needsCount(r) {
   const rows = [], held = [];
   let putOff = 0;
   const items = [], offItems = [];
+  // An item that is no ticket row, by its register entry: put off, dropped (neither listed nor
+  // counted), or listed, `listed` saying so. `dir` is the state folder it is put off in.
+  const place = (s, dir, listed = () => {}) => {
+    const st = lookupItem(register({ stateDir: dir }), putOffKey(s.r, s.t, s.item)).status;
+    if (st === 'dismissed') return;
+    if (st === 'put_off') { putOff++; offItems.push(s); } else { items.push(s); listed(); }
+  };
   // A batch's base-sync, base-push and subscription-off items are no ticket's row, so they are items.
   for (const x of countedBatchRows(r)) {
     const { item, l } = judged(x.b, x, register(x.b));
+    if (l.status === 'dismissed') continue;
     if (l.status === 'put_off') { putOff++; offItems.push({ r: x.b, t: x.t, item }); } else items.push({ r: x.b, t: x.t, item });
   }
   for (const x of needsRows(r)) {
@@ -1991,30 +2002,18 @@ export function needsCount(r) {
     if (judged(b, x, register(b)).l.status === 'put_off') putOff++; else rows.push(x);
   }
   const live = new Set(), liveNoPr = new Set();
-  for (const s of stepItems((r.batches ?? [r]).filter((x) => x.q))) {
-    if (lookupItem(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else { items.push(s); live.add(s.item.step); }
-  }
-  for (const s of (r.batches ?? [r]).filter((x) => x.q).flatMap(noPrItems)) {
-    if (lookupItem(register(s.r), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else { items.push(s); liveNoPr.add(`${s.r.stateDir}\t${s.item.finished}`); }
-  }
+  for (const s of stepItems((r.batches ?? [r]).filter((x) => x.q))) place(s, s.dir, () => live.add(s.item.step));
+  for (const s of (r.batches ?? [r]).filter((x) => x.q).flatMap(noPrItems)) place(s, s.r.stateDir, () => liveNoPr.add(`${s.r.stateDir}\t${s.item.finished}`));
   // A row held by a step or a blocker with no PR is drawn as needing the person while that item is listed.
   const stepRows = held.filter((x) => {
     const b = x.b ?? r;
     return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)) || unmergedBlockers(b.q, x.t).some((k) => liveNoPr.has(`${b.stateDir}\t${k}`));
   });
-  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...promotionItems(b), ...baseRedItems(b), ...duplicateItems(b)])) {
-    if (lookupItem(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') { putOff++; offItems.push(f); } else items.push(f);
-  }
-  for (const s of reviewerItems((r.batches ?? [r]).filter((x) => x.q))) {
-    if (lookupItem(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
-  }
+  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...promotionItems(b), ...baseRedItems(b), ...duplicateItems(b)])) place(f, f.r.stateDir);
+  for (const s of reviewerItems((r.batches ?? [r]).filter((x) => x.q))) place(s, s.dir);
   const own = (r.batches ?? [r]).filter((x) => x.q);
-  for (const s of [...signinItems(own, own), ...pageItems(own, { home: true })]) {
-    if (lookupItem(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
-  }
-  for (const s of [...askItems(r.batches ?? [r]), ...stalledItems(own), ...ticketlessItems(own), ...cloudItems(own), ...proposalItems(own)]) {
-    if (lookupItem(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
-  }
+  for (const s of [...signinItems(own, own), ...pageItems(own, { home: true })]) place(s, s.dir);
+  for (const s of [...askItems(r.batches ?? [r]), ...stalledItems(own), ...ticketlessItems(own), ...cloudItems(own), ...proposalItems(own)]) place(s, s.dir);
   return { shown: rows.length + items.length, putOff, rows, stepRows, items, offItems };
 }
 
@@ -2028,7 +2027,7 @@ const scopeOf = (repos, word) => (word ? batchesNamed(repos, word) : { named: nu
 // `ciRed` (READS.ciRed) reads the red-main issues assigned to the person; null reads none.
 export function collect({ word = null, now = Date.now(), repos = loadRepos(now, word), reads = READS, ciRed = reads?.ciRed ?? null } = {}) {
   const { named, scope } = scopeOf(repos, word);
-  const items = [];
+  const items = [], off = [];
   let putOff = 0;
   const seen = new Map();
   const unsetIn = (slug, k) => { const id = `${slug}\t${k}`; if (!seen.has(id)) seen.set(id, repoPermissionUnset(slug, k)); return seen.get(id); };
@@ -2036,11 +2035,13 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   // The repo-level and step items, put off under their own key as any other item is.
   // `dir` is where it is put off, its batch's state folder unless the item names another.
   // `behind` held tickets wait behind it: it says so and ranks by that, as a ticket's item does (judged).
-  // `say` false ranks it without the words.
+  // `say` false ranks it without the words. One put off is kept in `off`, unlisted, for a drop to find;
+  // one dropped is neither listed nor counted.
   const repoItem = (r, t, item, since, dir = r.stateDir, behind = 0, say = true) => {
     const key = putOffKey(r, t, item);
     const l = lookupItem(readRegister(dir), key);
-    if (l.status === 'put_off') { putOff++; return; }
+    if (l.status === 'dismissed') return;
+    if (l.status === 'put_off') { putOff++; off.push({ r, t, ...item, putOffKey: key, putOffDir: dir, since }); return; }
     if (l.status === 'changed') item.need = `${item.need} (${l.line})`;
     if (behind > 0 && say) item.need = `${item.need} (${behindWords(behind)})`;
     items.push({ r, t, ...item, putOffKey: key, putOffDir: dir, since, broken: false, ...(behind > 0 ? { behind } : {}) });
@@ -2050,6 +2051,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
     for (const x of [...batchRows(r), ...needsRows(r)]) {
       if (stepHeld(r, x) || noPrHeld(r, x)) continue;
       const { item, l } = judged(r, x, register, reads);
+      if (l.status === 'dismissed') continue;
       if (l.status === 'put_off') { putOff++; continue; }
       const since = x.baseSync ? timeOf(r.q.base_sync_stuck.since) : x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : x.subOff ? timeOf(r.q.subscription_off.since) : timeOf(x.t.park?.since ?? (x.pr ? x.t.undraft?.at : null) ?? x.t.added_at);
       const row = item.kind === 'parked' ? unsetRowOf(r, x.t, unsetIn) : null;
@@ -2101,7 +2103,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   const built = (x) => Object.keys(x.r?.q?.tickets ?? {}).indexOf(x.t.key);
   const heads = (a, b) => (a.r === b.r && (a.behind ?? 0) > 0 && built(a) >= 0 && built(b) >= 0 ? built(a) - built(b) : 0);
   items.sort((a, b) => (b.broken - a.broken) || (!!b.holdsAll - !!a.holdsAll) || ((b.behind ?? 0) - (a.behind ?? 0)) || heads(a, b) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
-  return { repos, scope, items, named, putOff };
+  return { repos, scope, items, named, putOff, off };
 }
 
 const actionText = ([name, why, note], i) => `${i + 1}. ${name}${why ? ` (recommended: ${why})` : note ? ` (${note})` : ''}`;
@@ -2245,7 +2247,10 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   const item = itemOf(r, x, null, reads);
   // move is taken on any parked or stopped item, listed or not, so one naming no running batch is
   // refused naming those that are.
-  const allowed = [...item.actions.map(([a]) => a.split(' ')[0]), ...(MOVABLE.includes(item.kind) ? ['move'] : [])];
+  // A put-off ticket row can always be dropped (queue.mjs drop says if it cannot), so one whose premise
+  // was decided otherwise leaves Put off.
+  const putOffRow = verb === 'drop' && !!r.q.tickets?.[x.t.key] && judged(r, x, readRegister(r.stateDir), reads).l.status === 'put_off';
+  const allowed = [...item.actions.map(([a]) => a.split(' ')[0]), ...(MOVABLE.includes(item.kind) ? ['move'] : []), ...(putOffRow ? ['drop'] : [])];
   if (!allowed.includes(verb)) return { ok: false, line: `${r.name} ${ticket}: ${verb} is not an action for a ${item.kind} item (${[...new Set(allowed)].join(', ')}).` };
   const w = runner(r);
   const tail = w.by === 'stopped' ? ` Passes are stopped in ${r.name}: nothing acts on it until they resume.` : '';
@@ -2541,8 +2546,15 @@ function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = R
       i.putOffKey = putOffKey(i.r, i.t, i);
     }
   }
-  if (!i) return { ok: false, line: `${c.named?.name ?? word} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
   const [verb] = action.split(/\s+/);
+  // A put-off item that is no ticket row has no batch to drop it from, so a drop records it dismissed:
+  // it leaves Put off and is never listed again.
+  const off = !i && verb === 'drop' ? c.off.find((y) => y.t.key === ticket) : null;
+  if (off) {
+    addPutOff({ ...putOffEntry({ question: off.putOffKey.question, ticket, inputs: off.putOffKey.inputs, at: new Date(now).toISOString() }), dismissed: true }, off.putOffDir ?? off.r.stateDir);
+    return { ok: true, line: `${off.r.repo} ${ticket}: dropped (${notNowPath(off.putOffDir ?? off.r.stateDir)}), so it leaves Put off and is not listed again.`, message: null };
+  }
+  if (!i) return { ok: false, line: `${c.named?.name ?? word} ${ticket}: desk-q does not count it as needing you, so nothing was recorded.` };
   const say = (ok, line, message = null) => ({ ok, line: `${i.r.repo} ${ticket}: ${line}`, message });
   if (!i.actions.some(([a]) => a === verb)) return say(false, `${verb} is not an action for a ${i.kind} item (${i.actions.map(([a]) => a).join(', ')}).`);
   if (verb === 'not-now') {

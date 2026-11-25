@@ -2253,7 +2253,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   } });
   const scr = () => strip(repoScreen(loadRepos().find((r) => r.slug === 'acme__phi934')));
   t('DS-934 every ticket done: the follow item is a Needs you row, the count matches it, and the Queue does not say there is nothing',
-    `${N.needsCount(loadRepos().find((r) => r.slug === 'acme__phi934')).shown} ${/Needs you · 1\b/.test(scr())} ${/P-1 +◆ needs you +Check: check the invoice totals look right/.test(scr())} ${scr().includes('No unfinished tickets')}`, '1 true true false');
+    `${N.needsCount(loadRepos().find((r) => r.slug === 'acme__phi934')).shown} ${/Needs you · 1\b/.test(scr())} ${/P-1 +◆ needs you +(\d+[dhm]( \d+[hm])? +)?Check: check the invoice totals look right/.test(scr())} ${scr().includes('No unfinished tickets')}`, '1 true true false');
   N.record({ word: 'phi934', ticket: 'follow:P-1', action: 'not-now' });
   t('DS-934 put off, it is a grey Put off row, and the Queue still does not say there is nothing',
     `${/Put off · 1\b/.test(scr())} ${/P-1 +◇ put off/.test(scr())} ${/Needs you ·/.test(scr())} ${scr().includes('No unfinished tickets')}`, 'true true false false');
@@ -3573,12 +3573,22 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('#811 desk-q counts both', N.needsCount(standing).shown, 2);
   const askScreen = strip(repoScreen(standing));
   t('DS-934 with no batch, the repo Queue has a row for each ask, not "Nothing to show"',
-    `${/Needs you · 2\b/.test(askScreen)} ${/ask:1 +◆ needs you +File the follow-up issue/.test(askScreen)} ${/ask:2 +◆ needs you +Merge PR #12/.test(askScreen)} ${askScreen.includes('Nothing to show')}`, 'true true true false');
+    `${/Needs you · 2\b/.test(askScreen)} ${/ask:1 +◆ needs you +(\d+[dhm]( \d+[hm])? +)?File the follow-up issue/.test(askScreen)} ${/ask:2 +◆ needs you +(\d+[dhm]( \d+[hm])? +)?Merge PR #12/.test(askScreen)} ${askScreen.includes('Nothing to show')}`, 'true true true false');
   const { shownRepos } = await import('../desk/bin/desk-q.mjs');
   t('#811 desk-q shows a repo whose only items are asks', shownRepos(loadRepos(Date.now()), false).some((r) => r.slug === 'acme__ask811'), true);
   t('#811 left counts them', here('left', 'ask811').out.split('\n')[0], 'desk-q counts 2 items needing you in ask811.');
   const off = N.record({ word: 'ask811', ticket: 'ask:2', action: 'not-now' });
   t('#811 not-now puts one off', `${off.ok} ${asks().map((i) => i.t.key).join()}`, 'true ask:1');
+  // issue-1419: a put-off ask is listed under Put off, its time in WAITING and STARTS empty, until it is dropped.
+  const offScreen = strip(repoScreen(standing));
+  t('issue-1419 AC2 a put-off ask sits under Put off, its time in WAITING, and STARTS holds no time',
+    `${/Put off · 1\b/.test(offScreen)} ${/TICKET +STATE +WAITING +WHAT IT NEEDS +STARTS/.test(offScreen)} ${/ask:2 .* \d+m +Merge PR #12 .* — +— +a session asked you$/m.test(offScreen)} ${/ for \d/.test(offScreen)}`, 'true true true false');
+  const dropped = N.record({ word: 'ask811', ticket: 'ask:2', action: 'drop' });
+  t('issue-1419 AC3 drop on a put-off ask takes it, and it leaves Put off',
+    `${dropped.ok} ${/^ask811 ask:2: dropped \(.*not-now\.jsonl\), so it leaves Put off and is not listed again\.$/.test(dropped.line)} ${N.needsCount(standing).offItems.length} ${N.collect({ word: 'ask811' }).putOff} ${/Put off/.test(strip(repoScreen(standing)))}`, 'true true 0 0 false');
+  t('issue-1419 AC3 a dropped item is never listed again, and a second drop finds nothing',
+    `${asks().map((i) => i.t.key).join()} ${N.record({ word: 'ask811', ticket: 'ask:2', action: 'drop' }).ok}`, 'ask:1 false');
+  t('issue-1419 drop is still refused on an item that is not put off', N.record({ word: 'ask811', ticket: 'ask:1', action: 'drop' }).ok, false);
   const done = N.record({ word: 'ask811', ticket: 'ask:1', action: 'done' });
   t('#811 done takes it off the list', `${done.ok} ${done.line} ${asks().length}`, 'true ask811 ask:1: done, so it is off your list. 0');
   t('#811 an empty ask is refused', cli('ask', 'ask811', '  ').code, 11);
