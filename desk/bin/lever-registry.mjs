@@ -10,7 +10,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { workerLocation, workerModels, parseWorkerModels, parseWorkerLocation, repoConfigValue, LEVERS, FINDER_MODEL_LEVER, parseLevers, HOME, deskHome } from './desk-env.mjs';
+import { workerLocation, workerModels, parseWorkerModels, parseWorkerLocation, repoConfigValue, repoConfigValues, configValues, LEVERS, FINDER_MODEL_LEVER, parseLevers, HOME, deskHome } from './desk-env.mjs';
 import { ALIAS, ROWS } from './config-schema.mjs';
 
 export const LAYERS = Object.freeze(['low-risk', 'quality-risk']);
@@ -70,7 +70,9 @@ const metric = (name, minimum) => Object.freeze({ metric: name, direction: 'down
 // A lever with more than an on and an off arm declares `values`, two or more arm names, and which of
 // them is its `baseline`, the arm a ticket runs on outside a trial. Only a low-risk lever may: each
 // ticket is drawn one of its values in blocks, and every other value is weighed against the baseline
-// (levers-auto.mjs, levers-evaluate.mjs). A lever with no `values` is on or off.
+// (levers-auto.mjs, levers-evaluate.mjs). A lever with no `values` is on or off. A lever weighed on
+// only some of its tickets names them in `rows`; one with a guardrail of its own declares it in
+// `guardrails`, beside the shared ones, its breach code `guardrail_` and its key in snake_case.
 export const ENTRIES = Object.freeze({
   preflight: {
     layer: 'low-risk', trialled: true,
@@ -130,6 +132,20 @@ export const ENTRIES = Object.freeze({
     code: [code('desk/bin/desk-env.mjs', 'model finder')],
     preconditions: [Object.freeze({ id: 'worker-finder-model', not: FINDER_MODEL_LEVER, why: `§3b Worker models already runs its finders on ${FINDER_MODEL_LEVER}, so both arms would be the same` })],
   },
+  // How a parked ticket's question reaches the person (question-arms.mjs): `batched` waits for the
+  // check-in digest, where a recommended call applies by default; `one-at-a-time` pushes each ask as it
+  // is handed on; `mixed` pushes only a blocking one. Weighed only on the tickets that raised an ask
+  // (`rows`), its cost the shared one, worker dollars per ticket, and an arm pushing 25% more than
+  // batched per ticket is refused. Declared, not yet trialled: levers decide sets it.
+  'question-handling': {
+    layer: 'low-risk', trialled: false, values: ['batched', 'one-at-a-time', 'mixed'], baseline: 'batched',
+    mechanism: metric('ask dollars per asking ticket', 0.1),
+    rows: 'tickets that raised an ask',
+    guardrails: { interruptions: { metric: 'interruptions (pushes and digests) per ticket', margin: { max_rate_ratio: 1.25 } } },
+    trips: [POST_MERGE_REVERT, ownStepError('question-arms.mjs')],
+    code: [code('desk/bin/question-arms.mjs')],
+    preconditions: [Object.freeze({ id: 'ledger', want: 'on', why: 'its asks and what they cost are read from the ticket ledger' })],
+  },
   // The ticket ledger only records queue writes beside queue.json, which stays the truth, so it is not
   // trialled: it is pinned on where a repo wants the log.
   ledger: {
@@ -168,6 +184,7 @@ export const REASON_CODES = Object.freeze({
   guardrail_review_p0_p1: 'review P0 and P1 findings per ticket rose past their margin',
   guardrail_post_merge: 'post-merge reverts or red main rose past their margin',
   guardrail_parked_hours: 'parked hours per ticket rose past their margin',
+  guardrail_interruptions: 'interruptions per ticket rose past their margin',
   ben_override: 'Ben set it by hand',
   freeze: 'trials were frozen',
   thaw: 'trials were thawed',
@@ -220,6 +237,20 @@ function valuesOf(name, e) {
   return { values: Object.freeze([...v]), baseline: e.baseline };
 }
 
+// The shared guardrails, with a lever's own beside them: each a metric and a rate-ratio margin, under a
+// key the shared ones do not use.
+function ownGuardrails(name, e) {
+  if (!('guardrails' in e)) return GUARDRAILS;
+  const bad = (why) => new LeverRegistryError(`lever-registry: lever "${name}" ${why}`);
+  const own = e.guardrails;
+  if (!own || typeof own !== 'object' || Array.isArray(own) || !Object.keys(own).length) throw bad('has "guardrails" that are not an object of its own guardrails');
+  for (const [k, g] of Object.entries(own)) {
+    if (Object.hasOwn(GUARDRAILS, k)) throw bad(`has guardrail "${k}", which is a shared one`);
+    if (!g?.metric || !(g.margin?.max_rate_ratio > 0)) throw bad(`has guardrail "${k}" with no metric or rate-ratio margin`);
+  }
+  return Object.freeze({ ...GUARDRAILS, ...Object.fromEntries(Object.entries(own).map(([k, g]) => [k, Object.freeze({ metric: g.metric, margin: Object.freeze({ ...g.margin }) })])) });
+}
+
 // Every entry, checked and frozen, with its layer's ramp and the shared guardrails filled in. Throws
 // LeverRegistryError naming the first lever and key that is missing or malformed, and naming every
 // lever in `names` with no entry or every entry not in `names`.
@@ -241,9 +272,10 @@ export function loadRegistry(entries = ENTRIES, names = LEVERS) {
     for (const key of ['trips', 'preconditions']) if (!Array.isArray(e[key])) throw missing(key);
     if (typeof e.trialled !== 'boolean') throw missing('trialled');
     if ('model' in e && !ALIAS.test(e.model ?? '')) throw new LeverRegistryError(`lever-registry: lever "${name}" has model "${e.model}"; want an Agent tool alias`);
+    if ('rows' in e && !(typeof e.rows === 'string' && e.rows)) throw missing('rows');
     out[name] = Object.freeze({
       name, layer: e.layer, trialled: e.trialled, ...('model' in e ? { model: e.model } : {}), ...valuesOf(name, e), mechanism: Object.freeze({ ...e.mechanism }),
-      guardrails: GUARDRAILS, trips: Object.freeze([...e.trips]), code: Object.freeze([...e.code]),
+      ...('rows' in e ? { rows: e.rows } : {}), guardrails: ownGuardrails(name, e), trips: Object.freeze([...e.trips]), code: Object.freeze([...e.code]),
       ramp: RAMPS[e.layer], preconditions: Object.freeze([...e.preconditions]),
     });
   }
@@ -272,12 +304,15 @@ export function trialable(items, registry = REGISTRY) {
 // repo's (the levers view). `worker-finder-model` is §3b Worker models' `finder=`, `none` when unset,
 // and null when the row cannot be read (a malformed row holds spawns on its own).
 const finderOf = (read) => { try { return read().finder ?? 'none'; } catch { return null; } };
-export const repoValues = () => ({ 'worker-location': workerLocation(), 'worker-finder-model': finderOf(workerModels) });
+// `ledger` is `on` where the Phase 0 levers row names the ledger lever, as the ledger's writers read it
+// (queue-ledger.mjs ledgerOn), else `off`; null when the row cannot be read.
+const ledgerOf = (read) => { try { return parseLevers(read()).on.includes('ledger') ? 'on' : 'off'; } catch { return null; } };
+export const repoValues = () => ({ 'worker-location': workerLocation(), 'worker-finder-model': finderOf(workerModels), ledger: ledgerOf(() => configValues('levers')) });
 export function repoValuesOf(slug, root) {
   const raw = (id) => repoConfigValue(slug, id, root) ?? ROWS.find((e) => e.id === id).default;
   let location = null;
   try { location = parseWorkerLocation(raw('worker-location')); } catch { /* unreadable: left null */ }
-  return { 'worker-location': location, 'worker-finder-model': finderOf(() => parseWorkerModels(raw('worker-models'))) };
+  return { 'worker-location': location, 'worker-finder-model': finderOf(() => parseWorkerModels(raw('worker-models'))), ledger: ledgerOf(() => repoConfigValues(slug, 'levers', root)) };
 }
 
 // Where install.sh puts a registry code path: `desk/<rest>` under DESK_HOME, anything else (`hooks/…`)

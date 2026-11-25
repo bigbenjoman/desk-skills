@@ -179,6 +179,7 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   t('AC4 the lever table has What happens next', lev.includes('>What happens next</th>'), true);
   t('AC4 one row per lever', count(lev, /<tr data-lever=/g), 10);
   t('AC4 the ledger, never trialled, says it is on only where named (DS-893)', /<tr data-lever="ledger">.*?Not trialled: on only where a repo’s levers row names it\./.test(lev), true);
+  t('a lever with more than two arms, never trialled, says levers decide sets it', /<tr data-lever="question-handling">.*?Not trialled: on only where levers decide sets it to batched, one-at-a-time, mixed in a repo\./.test(lev), true);
   t('AC4 preflight is on by hand, first', /<tr data-lever="preflight">.*?On by hand/.test(lev) && lev.indexOf('data-lever="preflight"') < lev.indexOf('data-lever="wrappers"'), true);
   t('AC4 its next step', lev.includes('Pinned by hand in desk-skills, so this is a before-and-after, not a test.'), true);
   t('AC4 the others, quality-risk ones included, are off until a repo is on auto', count(lev, /Testing starts once a repo is set to auto\.|Testing starts when a repo is set to auto\./g), 7);
@@ -194,9 +195,9 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   t('AC5 the needs-you tile', tilesOf(hSix)[3], 'Needs you=1');
   t('AC5 four WBR cards', count(hSix, /<article class="card wbr"/g), 4);
   const lev = section(hSix, 'lev-h');
-  t('AC5 Is each lever working?, one row per lever', count(lev, /<tr data-lever=/g), 10);
+  t('AC5 Is each lever working?, one row per lever', count(lev, /<tr data-lever=/g), 11);
   t('AC5 with results and progress', lev.includes('>Result so far</th>') && lev.includes('>Progress to a decision</th>'), true);
-  t('AC5 kept first, codex needing you after the tests', [...lev.matchAll(/<tr data-lever="([^"]+)"/g)].map((m) => m[1]).join(), 'preflight,wrappers,memory,failure-class,review-reuse,codex,effort,finder-model,ledger,ledger-record');
+  t('AC5 kept first, codex needing you after the tests', [...lev.matchAll(/<tr data-lever="([^"]+)"/g)].map((m) => m[1]).join(), 'preflight,wrappers,memory,failure-class,review-reuse,codex,effort,finder-model,question-handling,ledger,ledger-record');
   const ch = section(hSix, 'ch-h');
   t('AC5 Every change desk made', ch.includes('>Every change desk made</h2>'), true);
   t('AC5 since testing started', ch.includes('Newest first, since testing started on 17 Nov.'), true);

@@ -200,7 +200,7 @@ levers(RECORD);
   t('and a write after it is made', read(f).tickets.B.lane, 'B');
   // So do the history lines no queue field holds: an ask's step, a stuck interval, a merged PR's stages.
   append(dirname(f), [
-    { type: 'ask_raised', batch: STANDING, key: 'B', data: { ask: 'B:2026-11-20T10:00:00Z', since: '2026-11-20T10:00:00Z', kind: 'question', blocking: true } },
+    { type: 'ask_raised', batch: STANDING, key: 'B', data: { ask: 'B:2026-11-20T10:00:00Z', since: '2026-11-20T10:00:00Z', kind: 'question', blocking: true, arm: null } },
     { type: 'stuck', batch: STANDING, key: 'B', data: { cause: 'park', start: '2026-11-20T10:00:00Z', end: null } },
     { type: 'merge_stages', batch: STANDING, key: 'A', data: { pr: 4, stages: {} } },
   ], { by: 'pass' });
