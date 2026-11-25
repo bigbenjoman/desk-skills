@@ -108,9 +108,15 @@ async function summary(gh, login, period, repo) {
   catch (e) { return { why: e.message || String(e) }; }
 }
 
+// The login gh reads as, or null when it does not say.
+async function signedIn(gh) {
+  try { const u = await gh('/user'); return typeof u?.login === 'string' && u.login ? u.login : null; } catch { return null; }
+}
+
 // One GitHub reading folded into the last one (`last`, the cache's `github`, or null).
-// sources: costs.md's GitHub entries. gh(path) -> parsed body.
-//   -> the new `github`: { at, period, repos, shared, lastMonth }
+// sources: costs.md's GitHub entries. gh(path) -> parsed body. With a repo gh cannot read, the
+// reading also names the login gh reads as (`login`), so Costs can say whose billing it can't see.
+//   -> the new `github`: { at, period, repos, shared, lastMonth, login? }
 export async function readGithub({ sources, last = null, gh = ghApi, now }) {
   const period = readingPeriod(now);
   const before = samePeriod(last?.period, period) ? last : null;
@@ -139,7 +145,8 @@ export async function readGithub({ sources, last = null, gh = ghApi, now }) {
     const items = sharedItems(got.items, read[account]);
     shared[account] = { at: now, total: totalOf(items), items, failed: null };
   }
-  return { at: now, period, repos, shared, lastMonth: await lastMonthOf({ sources, last, period, gh, now }) };
+  const login = sources.some((s) => s.readable === false) ? await signedIn(gh) : null;
+  return { at: now, period, repos, shared, lastMonth: await lastMonthOf({ sources, last, period, gh, now }), ...(login ? { login } : {}) };
 }
 
 // Last month's charged total per repo, for comparison: carried over when the previous reading was
@@ -759,12 +766,48 @@ export function actionsCharged({ cache, costs, period }) {
 }
 
 // Each supplier's sources in costs.md.
-const sourcesOf = (costs) => ({
+export const sourcesOf = (costs) => ({
   github: costs.entries.filter((e) => e.supplier === 'github'),
   vercel: costs.entries.filter((e) => e.supplier === 'vercel' && e.teamId),
   aws: costs.entries.filter((e) => e.supplier === 'aws'),
   neon: costs.entries.filter((e) => e.supplier === 'neon' && e.orgId),
 });
+
+// Each source the cache has no figure for because it could not be read, and why: a GitHub account gh
+// is not signed in to (one per account), else a source whose last call failed with no good figures
+// kept. `fix` is what would let desk read it, where desk knows; `names` the cost names it bills.
+//   -> [{ supplier, label, why, fix | null, names }]
+export function unreadSources({ cache, costs }) {
+  if (!costs?.exists) return [];
+  const src = sourcesOf(costs);
+  const out = [];
+  const add = (supplier, label, why, fix, name) => {
+    const had = out.find((u) => u.supplier === supplier && u.label === label);
+    if (had) { if (!had.names.includes(name)) had.names.push(name); return; }
+    out.push({ supplier, label, why, fix, names: [name] });
+  };
+  const g = cache?.github;
+  for (const s of src.github) {
+    const e = g?.repos?.[s.key];
+    if (e?.cantRead) add('github', e.cantRead.account, `billing not readable from ${g.login ?? 'the signed-in account'}`, `sign in to ${e.cantRead.account} with desk-env logins`, s.name);
+    else if (e?.failed && e.total == null) add('github', s.key, e.failed.why, null, s.name);
+  }
+  for (const s of src.vercel) {
+    const t = cache?.vercel?.teams?.[s.teamId];
+    if (!t?.failed || t.lines) continue;
+    const hidden = /^HTTP 404\b/.test(t.failed.why);
+    add('vercel', t.team ?? s.team, hidden ? 'no billing access (HTTP 404)' : t.failed.why, hidden ? `use a login with billing access to ${t.team ?? s.team}` : null, s.name);
+  }
+  for (const s of src.aws) {
+    const p = cache?.aws?.profiles?.[s.key];
+    if (p?.failed && !p.lines) add('aws', s.key, p.failed.why, null, s.name);
+  }
+  for (const s of src.neon) {
+    const o = cache?.neon?.orgs?.[s.orgId];
+    if (o?.failed && !o.usage) add('neon', s.key.split('/')[0], o.failed.why, null, s.name);
+  }
+  return out;
+}
 
 // GitHub and Vercel are due with no reading, failed or not, in the last READ_EVERY_MS. AWS is due
 // when any profile is, or when a profile's credit in costs.md differs from the cache's: that alone
