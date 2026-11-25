@@ -156,7 +156,7 @@ function stateOf(q, t, ctx, seen) {
   return t.state === 'queued' ? 'queued' : 'ready';
 }
 
-const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, finished: () => false, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null, planFirstMs: DEFAULT_PLAN_FIRST_HOURS * 3600e3 };
+const NOBODY = { releases: false, merges: false, batchMerges: false, reruns: false, live: false, stage: () => null, finished: () => false, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null, planFirstMs: DEFAULT_PLAN_FIRST_HOURS * 3600e3 };
 
 // The one note a screen gives the machine's upload pause on GitHub's PR page (upload-queue.mjs
 // uploadPause), however many of its PRs wait on it.
@@ -240,7 +240,9 @@ function holdContext(r) {
   let outages = [];
   if (stateChecks.length && r.stateDir) { try { outages = gateReviewerRecord(repoStateOf(r.stateDir)).outages ?? []; } catch { /* none recorded */ } }
   // With passes stopped nothing merges, but a PR the grant covers merges by itself once they resume.
-  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, finished, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages, planFirstMs: planFirstWaitMs(r.slug) };
+  // With passes running and no driver, a granted PR waits on whoever merges for the batch (the session
+  // relaying its merge lines), not on the person.
+  return { releases, merges: granted && (releases || !r.live), batchMerges: granted && r.live && !releases, reruns, basePush, live: r.live, stage, finished, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages, planFirstMs: planFirstWaitMs(r.slug) };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -419,6 +421,9 @@ export function parseHoldNote(note) {
   };
 }
 
+// What a green PR waits on where the grant covers it, passes run and no merge driver does (holdContext
+// batchMerges): its merge driver, or the session relaying the batch's merge lines.
+export const BATCH_MERGES = 'waits on whoever merges for the batch';
 function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   const ps = prStatusOf(t);
   const needs = (why, ...segs) => ({ k: 'needs', why, segs }), merging = (...segs) => ({ k: 'merging', segs });
@@ -519,10 +524,11 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
       : passed === checks.length ? (passed === 1 ? '1 check passed' : `all ${passed} checks passed`)
         : `${passed} check${passed === 1 ? '' : 's'} passed`;
     const all = [[lead, ...others].join(', '), advisory ? WARN : GOOD];
-    return ctx.merges ? merging(all, [' · merges at the next pass', null]) : needs({ code: 'green', checks: checks.length, advisory }, all, [' · merge it', null]);
+    if (ctx.merges) return merging(all, [' · merges at the next pass', null]);
+    return ctx.batchMerges ? merging(all, [` · ${BATCH_MERGES}`, null]) : needs({ code: 'green', checks: checks.length, advisory }, all, [' · merge it', null]);
   }
   const progress = checks.length ? [runningCheck(checks, now), [` · ${done} of ${checks.length} done`, null]] : [['no checks reported yet', GREY]];
-  return ctx.merges ? merging(...progress) : needs({ code: 'running', done, checks: checks.length }, ...progress, [' · merge it once green', null]);
+  return ctx.merges || ctx.batchMerges ? merging(...progress) : needs({ code: 'running', done, checks: checks.length }, ...progress, [' · merge it once green', null]);
 }
 
 // Where the merge driver is with a red PR's reruns, from what the pass read of its files (pr_status

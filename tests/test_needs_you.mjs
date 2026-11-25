@@ -489,6 +489,16 @@ const e = N.collect({ word: 'eta' });
 const { needsRows } = await import('../desk/bin/desk-q.mjs');
 t('DS-279 a stopped worker and a PR to merge are items, as many as desk-q counts', `${e.items.map((i) => `${i.t.key} ${i.kind} ${i.need}`).join(' | ')} | ${needsRows(e.named).length}`,
   'E-2 pr PR #61 has its check green, and desk may not merge in this repo. Merge it on GitHub; the ticket is then done. | E-1 stopped worker stopped: tests red | 2');
+// DS-1015: where §3 grants merging and a session runs the batch's passes with no merge driver, a green
+// PR waits on whoever merges for the batch, not on the person; without the grant it is still theirs.
+const green1015 = { state: 'done', lane: 'A', result: { pr: 71 }, pr_status: { pr: 71, state: 'OPEN', url: null, isDraft: false, mergeable: 'MERGEABLE', checks: [{ name: 'build', status: 'completed', conclusion: 'success' }], at: minsAgo(1) } };
+put('granted1015', { port: 3710, beat: 1, merge: 'yes', tickets: { 'G-1': green1015 } });
+put('ungranted1015', { port: 3720, beat: 1, tickets: { 'G-1': green1015 } });
+const g1015 = N.collect({ word: 'granted1015' }), u1015 = N.collect({ word: 'ungranted1015' });
+t('DS-1015 AC1 a green PR in a granted session-run batch with no merge driver is not the person\'s to merge',
+  `${g1015.items.map((i) => i.need).join(' | ')}|${needsRows(g1015.named).length} ${g1015.named?.ctx?.batchMerges}`, '|0 true');
+t('DS-1015 AC2 with the merge rows not yes, a green PR keeps today\'s wording', u1015.items.map((i) => i.need).join(' | '),
+  'PR #71 has its check green, and desk may not merge in this repo. Merge it on GitHub; the ticket is then done.');
 const rq1 = N.record({ word: 'eta', ticket: 'E-1', action: 'requeue' });
 t('DS-279 requeue sends a stopped worker\'s ticket back, under the supervisor', `${rq1.ok} ${queueOf('eta').tickets['E-1'].state !== 'failed'} ${N.collect({ word: 'eta' }).items.some((i) => i.t.key === 'E-1')}`, 'true true false');
 // DS-554: a failed ticket's item quotes the reason the pass recorded on it, and one with none says so.
