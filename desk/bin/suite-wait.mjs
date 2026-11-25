@@ -342,5 +342,9 @@ export function lockGate(queues) {
   return { ...tight, holds: holding.length > 0, line: holding.length ? holding.map((q) => q.line).join('; and ') : tight.line, queues: read };
 }
 
+// Forgets the process table, working directories and ages read so far, so the next read is afresh: for
+// a caller that has just ended processes.
+export function forgetProcesses() { PROCS = undefined; CWDS = undefined; AGES = undefined; }
+
 // What the pass says of each, in its quiet list and in a wedged park's reason.
 export const SUITE_WAIT_TEXT = { suite: 'running its suite', lock: 'waiting on the test lock', unknown: 'ps could not be read, so whether it is running its suite is unknown' };

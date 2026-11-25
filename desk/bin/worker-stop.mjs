@@ -25,6 +25,11 @@ export function startsSession(args, sid) {
 // outlived its parent still goes with its group; `pids` are the rest, outside any such group (no setsid:
 // the group is the spawner's). Never `self`, its ancestors, or a group any of them is in.
 export function workerProcs(sid, rows, self = process.pid) {
+  return treeProcs(rows.filter((r) => startsSession(r.args, sid)), rows, self);
+}
+
+// What to end for the processes `roots` (rows) and every descendant of one, as workerProcs reads them.
+function treeProcs(roots, rows, self, extra = () => false) {
   const byPid = new Map(rows.map((r) => [r.pid, r]));
   const mine = new Set();
   for (let p = byPid.get(self); p && !mine.has(p.pid); p = byPid.get(p.ppid)) mine.add(p.pid);
@@ -35,10 +40,22 @@ export function workerProcs(sid, rows, self = process.pid) {
     tree.add(r.pid);
     for (const c of rows) if (c.ppid === r.pid) walk(c);
   };
-  rows.filter((r) => startsSession(r.args, sid)).forEach(walk);
+  roots.forEach(walk);
   const procs = [...tree].map((p) => byPid.get(p));
-  const groups = new Set(procs.filter((r) => r.pgid === r.pid && !myGroups.has(r.pgid)).map((r) => r.pgid));
+  const groups = new Set(procs.filter((r) => (r.pgid === r.pid || extra(r.pgid)) && !myGroups.has(r.pgid)).map((r) => r.pgid));
   return { groups: [...groups], pids: procs.filter((r) => !groups.has(r.pgid)).map((r) => r.pid) };
+}
+
+// What to end for one run (a lock holder) at `pid`: it and every descendant, and its process group
+// whole. A group it does not lead is ended whole only once its leader has exited and no Claude session
+// (`isSession`, on args) is in it: the group of a dead caller, whose other members are the run's own
+// processes re-parented away from it. { groups, pids }, empty when `pid` is not in `rows`.
+export function runProcs(pid, rows, { self = process.pid, isSession = () => false } = {}) {
+  const root = rows.find((r) => r.pid === pid);
+  if (!root) return { groups: [], pids: [] };
+  const orphanGroup = (g) => g === root.pgid && !rows.some((r) => r.pid === g)
+    && !rows.some((r) => r.pgid === g && isSession(r.args));
+  return treeProcs([root], rows, self, orphanGroup);
 }
 
 // The pids still alive of what `target` names, read from `rows`.

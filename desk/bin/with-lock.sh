@@ -78,6 +78,9 @@
 #
 # With the machine profile's job-tokens row on, the light lock takes no slot at all: a run is bounded
 # by the job tokens (job-token.mjs) it takes, one per suite for tests/run.sh, one for any other command.
+#
+# A run never outlives its caller (this script's parent): once the caller exits, lock-watch.mjs ends the
+# run and its process group, so a worker that dies mid-suite does not leave its suite holding the lock.
 set -uo pipefail
 # This script's own directory, taken before --cwd moves us: desk-env.mjs is installed beside it.
 here="$(cd "$(dirname "$0")" && pwd -P)"
@@ -164,6 +167,11 @@ export DESK_LOCK_HELD="$name"
 # it starts is sized by whoever starts it.
 small="${DESK_LIGHT_SMALL:-}"
 unset DESK_LIGHT_SMALL
+# Runs the command now that it holds its lock, in place of this script: first tying this run to its
+# caller (lock-watch.mjs), so that once the caller exits the run's processes are ended and the lock
+# freed, however the caller went. The watch never holds the lock's descriptor.
+watch_caller() { node "$here/lock-watch.mjs" start "$$" "$PPID" 9>&- </dev/null >/dev/null 2>&1 || true; }
+run_held() { watch_caller; exec "$@"; }
 
 # With the machine profile's job-tokens row on (job-token.mjs lever), a light run holds no light slot:
 # the job tokens it takes bound it instead, so a long run holds back only the tokens its suites use. A
@@ -187,7 +195,7 @@ script_of() {
   printf '%s\n' "${1:-}"
 }
 if [ "$name" = light ] && [ "$(node "$here/job-token.mjs" lever 2>/dev/null)" = on ]; then
-  if [ "${TEST_JOB_TOKENS:-}" = held ]; then export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED=0; exec "$@"; fi
+  if [ "${TEST_JOB_TOKENS:-}" = held ]; then export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED=0; run_held "$@"; fi
   script="$(script_of "$@")"
   per_suite=""
   [ "${script##*/}" = run.sh ] && [ -f "$(dirname "$script")/../desk/bin/job-token.mjs" ] && per_suite=1
@@ -201,9 +209,9 @@ if [ "$name" = light ] && [ "$(node "$here/job-token.mjs" lever 2>/dev/null)" = 
          # Given back before run.sh's suites ask for theirs. A release that fails leaves it held by this
          # pid, run.sh once it execs, where a suite could wait on it until run.sh ends: so run.sh then
          # takes none, and runs in the light slot below, as with the row off.
-         [ -n "$per_suite" ] && node "$here/job-token.mjs" release "$token" --pid "$$" >/dev/null </dev/null && exec "$@"
+         [ -n "$per_suite" ] && node "$here/job-token.mjs" release "$token" --pid "$$" >/dev/null </dev/null && run_held "$@"
          export TEST_JOB_TOKENS=held
-         [ -n "$per_suite" ] || exec "$@"
+         [ -n "$per_suite" ] || run_held "$@"
        fi ;;
     # The line every lock's give-up prints, which the pre-push hook reads as the box being busy.
     75) echo "with-lock.sh: gave up waiting for the $name lock after ${timeout}s (no job token came free)" >&2; exit 75 ;;
@@ -290,8 +298,8 @@ if [ "$lease_mode" = on ]; then
   rc=$?
   unwatch
   case $rc in
-    0) export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$((SECONDS - t0))"; exec "$@" ;;
-    10) w=$((SECONDS - t0)); took_express; granted "$$" "$@"; export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$w"; exec "$@" ;;
+    0) export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$((SECONDS - t0))"; run_held "$@" ;;
+    10) w=$((SECONDS - t0)); took_express; granted "$$" "$@"; export DESK_LOCK_CLASS="$name" DESK_LOCK_WAITED="$w"; run_held "$@" ;;
     75) exit 75 ;;
     *) lease_mode=off; t0=$SECONDS ;;   # it said why: the lock files below, as with the kind off
   esac
@@ -383,7 +391,7 @@ if command -v flock >/dev/null 2>&1; then
     fi
     holder 1
     held; granted "$$" "$@"
-    exec "$@"
+    run_held "$@"
   fi
   # Several slots, or admission on: try each without blocking, and wait 2 s between rounds. A run let
   # in above the floor tries every slot up to the ceiling (slot_order), at once and then each round.
@@ -391,13 +399,13 @@ if command -v flock >/dev/null 2>&1; then
   while :; do
     for i in $(slot_order); do
       exec 9>>"$(slot_path "$i")" || exit 2
-      flock -n 9 && { holder "$i"; held; granted "$$" "$@"; exec "$@"; }
+      flock -n 9 && { holder "$i"; held; granted "$$" "$@"; run_held "$@"; }
       exec 9>&-
     done
     admit_round && continue
     if [ -n "$express" ]; then
       exec 9>>"$elock" || exit 2
-      flock -n 9 && { echo "$$" > "$elock.pid" 2>/dev/null; took_express; held; granted "$$" "$@"; exec "$@"; }
+      flock -n 9 && { echo "$$" > "$elock.pid" 2>/dev/null; took_express; held; granted "$$" "$@"; run_held "$@"; }
       exec 9>&-
     fi
     [ -n "$timeout" ] && [ "$waited" -ge "$timeout" ] && gave_up
@@ -465,7 +473,9 @@ held
 
 # Run the command as a child (explicit <&0: a background job would otherwise get /dev/null) and
 # record its pid beside ours, so the lock counts as held while either is alive — a SIGKILLed wrapper
-# must not free the lock under a suite that is still running.
+# must not free the lock under a suite that is still running. The watch is on this wrapper, whose
+# processes, the command among them, end once its caller has.
+watch_caller
 "$@" <&0 &
 child=$!
 echo "$$ $child" > "$ldir/pid"

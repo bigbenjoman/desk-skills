@@ -69,7 +69,8 @@ import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './revie
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
 import { liveBaseRed, readBaseRed, readGreen, baseRedPath, batchLine, repairTicket, repairTriage, baseRerun, TIMEOUT_AGAIN_MS } from './base-red.mjs';
 import { decideSupersededRepairs } from './pass/repair-superseded.mjs';
-import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockGate, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
+import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsByRepo, lockQueue, lockGate, lockHolderRuns, lockHolderStamps, processAges, forgetProcesses } from './suite-wait.mjs';
+import { orphanGraceS, orphanHolders, orphanLine, endOrphan, logOrphan } from './lock-orphans.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { blockersOf } from './queue-states.mjs';
@@ -2328,6 +2329,25 @@ const lowMemory = MIN_AVAIL_GB > 0 && (availGB < MIN_AVAIL_GB || HARM.length > 0
 // default 2 / 3). The report says whose number it is, and whether memory lowered it.
 const CONC = batchConcurrency(fresh, E.concurrencyLimits(), { avail: availGB, start: MIN_AVAIL_GB });
 const concurrency = CONC.n;
+// Orphaned lock holders (lock-orphans.mjs): a run holding the test or light lock whose worker session has
+// ended is named with its age and why; one held past the grace has its processes ended here and is
+// logged, with nothing raised for the person, so the lock queue below reads the lock as freed. A holder
+// with a live worker is never touched. Skipped with AUTOPILOT_LOCK_QUEUE=off, as the lock queue is.
+if (process.env.AUTOPILOT_LOCK_QUEUE !== 'off') {
+  try {
+    const graceS = orphanGraceS();
+    const procs = processList();
+    const held = lockHolderRuns({ procs, holders: lockHolders(E.lockDir(), { locks: 'both' }), cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(E.lockDir(), { locks: 'both' }), locks: 'both' });
+    let ended = false;
+    for (const o of orphanHolders(held, { procs, worktrees: WORKTREES, tickets: fresh.tickets, graceS })) {
+      if (!o.due || DRY) { report.recovered.push(orphanLine(o, { graceS, dry: DRY })); continue; }
+      const r = endOrphan(o, { rows: processRows() });
+      if (!r.gone) { logOrphan(STATE, o, r); ended = true; }
+      report.recovered.push(orphanLine(o, { graceS, ended: r }));
+    }
+    if (ended) forgetProcesses();
+  } catch (e) { report.recovered.push(`orphaned lock holders: not read (${String(e?.message ?? e).split('\n')[0]})`); }
+}
 // Test lock gate: each repo gets a share of the machine-wide queue on the test lock, and a repo whose
 // §4 Suite weight is light, of the light lock's queue too, which its suites take; each pool is read
 // against its own hold point, its current slots (the floor plus the runs admission let in above it,

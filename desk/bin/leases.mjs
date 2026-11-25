@@ -177,7 +177,7 @@ export function startTimes(pids, psRows) {
 // which joins argv with spaces, so the script's path is matched across them: an npm prefix may hold one.
 const CLAUDE_ENTRY = /(^|\/)@anthropic-ai\/claude-code\/cli\.m?js(\s|$)/;
 const CLAUDE_LINK = /^(\S.*?\/)?claude(\s|$)/;
-const isClaudeProcess = (args) => {
+export const isClaudeProcess = (args) => {
   const words = String(args ?? '').trim().split(/\s+/);
   if (basename(words[0] ?? '') === 'claude') return true;
   if (!/^node(js)?$/.test(basename(words[0] ?? ''))) return false;
