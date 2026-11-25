@@ -682,6 +682,7 @@ export const ROWS = Object.freeze([
   v('codex-models', '3b', 'Codex review', 'codex-review', 'finder=gpt-6.1-sol:medium refuter=gpt-6.1-sol:low timeout=600', dflt('none')),
   v('intake-query', '3b', 'Intake query', 'text', 'project = ABC AND labels = autopilot AND statusCategory = "To Do"', dflt('none')),
   v('triage-concurrency', '3b', 'Triage concurrency', 'whole', '1', dflt('1')),
+  v('slot-candidates', '3b', 'Propose candidates for a free slot', 'on-off', 'off', dflt('off')),
   // §4 Tracker
   v('tracker', '4', 'Tracker', 'tracker', 'jira'),
   v('jira-site', '4', 'Jira site', 'text', 'yourteam.atlassian.net'),
