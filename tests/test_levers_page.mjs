@@ -417,10 +417,31 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('styles: the Tracking issue column shows once a cause has one', section(P.renderPage(linked), 'st-h').includes('<th scope="col" class="th">Tracking issue</th>'), true);
 }
 
+// The change list words each change from its reason code, never the raw reason with its paths; an
+// evidence_incomplete event recorded once per lever reads as one, naming the levers, and its details
+// name the tickets and files not recorded.
+{
+  const st = '/home/x/.desk-autopilot/bigbenjoman__desk-skills';
+  const missing = [`${st}/post-merge.jsonl (its latest scan is incomplete)`, `${st}/workers/DS-261.runs.jsonl`];
+  const inc = (lever, i) => ({ v: 1, id: `inc-${lever}`, at: iso2(Date.parse('2026-12-22T00:00:29.000Z') + i), repo: DS, lever, kind: 'evidence_incomplete', actor: 'levers-auto', reason_code: 'evidence_incomplete', missing,
+    reason: `${lever} in desk-skills: nothing adopts while outcome files are missing: ${missing.join(', ')}` });
+  const v = V.buildView({
+    ...machine({ repos: autoRepos, now: NOW2, files: { [`${DS}/lever-evals.jsonl`]: jsonl(evals), [`${DS}/levers.jsonl`]: jsonl([...log, inc('wrappers', 0), inc('memory', 1), inc('codex', 2)]), [`${DS}/levers-evidence/evl_1.jsonl`]: jsonl(rows) } }),
+    now: NOW2, tz: 'UTC', generatedAt: NOW2,
+  });
+  const ch = section(P.renderPage(v), 'ch-h');
+  const incs = ch.split('<details class="change">').slice(1).filter((d) => d.includes('was incomplete'));
+  t('change log: one event for the three levers', incs.length, 1);
+  t('change log: naming them', incs[0]?.includes('Evidence for codex, memory and wrappers in desk-skills was incomplete'), true);
+  t('change log: worded from its reason code', incs[0]?.includes('<span class="muted small">Some outcomes the evaluation reads weren’t recorded</span>'), true);
+  t('change log: no absolute path anywhere in it', ch.includes('/home/x'), false);
+  t('change log: the details name the tickets and files', incs[0]?.includes('<dt>Not recorded</dt><dd><ul class="guards"><li>A review round’s findings weren’t recorded: DS-261</li><li>The post-merge watch’s latest scan didn’t finish: post-merge.jsonl</li></ul></dd>'), true);
+}
+
 // Text from the view is escaped, and view.json cannot close its script element.
 {
   const evil = structuredClone(six);
-  evil.panels.changes.all[0].reason = '</script><img onerror=x>';
+  evil.panels.changes.all[0].wording = '</script><img onerror=x>';
   const h = P.renderPage(evil);
   t('escaped in the markup', h.includes('&lt;/script&gt;&lt;img onerror=x&gt;'), true);
   t('escaped in the inline JSON', h.includes('\\u003c/script>\\u003cimg'), true);

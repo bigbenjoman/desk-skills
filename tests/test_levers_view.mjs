@@ -430,6 +430,32 @@ const evidence = (slug, rows, name = 'evl_2026-11-15_x.jsonl') => ({ [`${slug}/l
   t('merge day: the trends name their window', j([m.cost.keyed_by, m.cost.first_recorded]), '["merged_at","2026-11-11"]');
 }
 
+// The change list: an evidence_incomplete event carries what was not recorded, by ticket and file name
+// rather than absolute path, and one repo's per-lever copies of it on one day are one event naming each
+// lever.
+{
+  const st = '/home/x/.desk-autopilot/bigbenjoman__desk-skills';
+  const missing = [`${st}/post-merge.jsonl (its latest scan is incomplete)`, `${st}/workers/DS-261.runs.jsonl`, `${st}/workers/DS-262.runs.jsonl`, `${st}/workers/DS-263.findings.jsonl`];
+  const inc = (lever, at) => ({ v: 1, id: `i-${lever}-${at}`, at, repo: DS, lever, kind: 'evidence_incomplete', actor: 'levers-auto', reason_code: 'evidence_incomplete', eval_id: `evl_${lever}`, missing, reason: `${lever}: nothing adopts while outcome files are missing: ${missing.join(', ')}` });
+  const log = [inc('wrappers', iso(2 * DAY)), inc('memory', iso(2 * DAY + MIN)), inc('codex', iso(2 * DAY + 2 * MIN)), inc('memory', iso(3 * DAY)),
+    { v: 1, id: 't', at: iso(2 * DAY), repo: DS, lever: 'wrappers', kind: 'transition', from: 'off', to: 'trial', actor: 'controller', reason_code: 'row_change' },
+    { v: 1, id: 't2', at: iso(2 * DAY), repo: DS, lever: 'memory', kind: 'transition', from: 'off', to: 'trial', actor: 'controller', reason_code: 'row_change' }];
+  const v = view(machine({ repos: autoRepos, files: { [`${DS}/levers.jsonl`]: jsonl(log), [`${DS}/lever-evals.jsonl`]: jsonl([evalRow('wrappers')]) } }));
+  const all = v.panels.changes.all;
+  const incs = all.filter((e) => e.kind === 'evidence_incomplete');
+  t('changes: one evidence_incomplete event per repo per day', incs.length, 2);
+  t('changes: naming each lever it was recorded for', j(incs[0].levers), '["codex","memory","wrappers"]');
+  t('changes: a merged event cites no one lever\'s evaluation', incs[0].evidence, null);
+  t('changes: a single one keeps its lever', j([incs[1].levers, incs[1].lever]), '[["memory"],"memory"]');
+  t('changes: what was not recorded, by ticket and file name', j(incs[0].missing), j([
+    { what: 'a review round’s findings weren’t recorded', tickets: ['DS-261', 'DS-262'] },
+    { what: 'no review findings were recorded', tickets: ['DS-263'] },
+    { what: 'the post-merge watch’s latest scan didn’t finish', files: ['post-merge.jsonl'] },
+  ]));
+  t('changes: no absolute path is carried', JSON.stringify(incs[0].missing).includes('/home/x'), false);
+  t('changes: decisions are never merged', all.filter((e) => e.kind === 'transition').length, 2);
+}
+
 // An unrecorded sample size is never worded as 0.
 {
   t('no n: the effect label', V.effectView({ lo90: -0.7, hi90: -0.4 }, null, 30).label, 'too early: sample not recorded, needs 30');

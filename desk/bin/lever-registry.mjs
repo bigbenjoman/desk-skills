@@ -189,7 +189,7 @@ export const REASON_CODES = Object.freeze({
   holdback_running: 'the lever is adopted and its holdback is still running',
   not_evaluated: 'the lever is settled, frozen, overridden or off here, so it is not weighed',
   fp_reset: 'the lever\'s own code changed, so evidence from before the change was dropped',
-  evidence_incomplete: 'an outcome file the evaluation reads is missing',
+  evidence_incomplete: 'some outcomes the evaluation reads weren’t recorded',
   frozen_second_revert: 'the lever was reverted a second time in this repo, so it is frozen there',
   audit_recorded: 'a blind audit of a merged PR was recorded',
   audit_p0: 'a blind audit found a P0 in a merged PR drawn on for the lever',

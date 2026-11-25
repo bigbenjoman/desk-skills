@@ -324,6 +324,63 @@ function evalEvidence(e, layerMin) {
   };
 }
 
+// What an evidence_incomplete event's `missing` (the outcome files levers-evaluate named, as absolute
+// paths) says was not recorded, by ticket or file name: a ticket's runs file is there because one of its
+// review rounds' findings were never recorded, a findings file because the ticket has none at all, and
+// post-merge.jsonl because the watch has no scan or its latest did not finish.
+// -> [{ what, tickets } | { what, files }], in that order, each present only when it has any.
+const MISSING = Object.freeze([
+  { re: /\/workers\/([^/]+)\.runs\.jsonl$/, what: 'a review round’s findings weren’t recorded' },
+  { re: /\/workers\/([^/]+)\.findings\.jsonl$/, what: 'no review findings were recorded' },
+  { re: /\/post-merge\.jsonl \(its latest scan is incomplete\)$/, what: 'the post-merge watch’s latest scan didn’t finish', file: true },
+  { re: /\/post-merge\.jsonl$/, what: 'the post-merge watch has no record', file: true },
+]);
+export function missingView(paths) {
+  const groups = new Map();
+  for (const p of paths) {
+    const s = String(p);
+    const kind = MISSING.find((k) => k.re.test(s));
+    const what = kind?.what ?? 'other outcome files weren’t there';
+    if (!groups.has(what)) groups.set(what, { file: !kind || kind.file, items: new Set() });
+    groups.get(what).items.add(kind && !kind.file ? kind.re.exec(s)[1] : s.replace(/ \(.*\)$/, '').split('/').pop());
+  }
+  const order = [...MISSING.map((k) => k.what), 'other outcome files weren’t there'];
+  return order.filter((w) => groups.has(w)).map((what) => {
+    const g = groups.get(what);
+    return { what, [g.file ? 'files' : 'tickets']: [...g.items].sort() };
+  });
+}
+
+// The change events that are one fact recorded once per lever (incomplete evidence, a lever's code
+// changing), for one repo on one day, as one event naming each lever. A merged event cites no one
+// lever's evaluation, and its `missing` is every copy's. Decisions are never merged.
+const PER_LEVER = Object.freeze(['evidence_incomplete', 'fp_reset']);
+function mergePerLever(events, tz) {
+  const out = [];
+  const byKey = new Map();
+  for (const e of [...events].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) {
+    if (!PER_LEVER.includes(e.kind)) { out.push(e); continue; }
+    const k = `${e.repo}|${e.kind}|${e.reason_code}|${dayKey(Date.parse(e.at), tz)}`;
+    const had = byKey.get(k);
+    if (!had) { const first = { ...e, levers: e.lever ? [e.lever] : [] }; byKey.set(k, first); out.push(first); continue; }
+    if (e.lever && !had.levers.includes(e.lever)) had.levers.push(e.lever);
+    had.levers.sort();
+    had.lever = had.levers.length === 1 ? had.levers[0] : null;
+    if (had.levers.length > 1) Object.assign(had, { evidence: null, eval_id: null, evidence_file: null, reason: null });
+    if (e.missing) {
+      const merged = new Map((had.missing ?? []).map((g) => [g.what, g]));
+      for (const g of e.missing) {
+        const key = g.tickets ? 'tickets' : 'files';
+        const into = merged.get(g.what) ?? { what: g.what, [key]: [] };
+        into[key] = [...new Set([...into[key], ...g[key]])].sort();
+        merged.set(g.what, into);
+      }
+      had.missing = [...merged.values()];
+    }
+  }
+  return out;
+}
+
 const panel = (state, body = {}, errors = []) => ({ state: errors.length ? 'error' : state, ...(errors.length ? { errors } : {}), ...body });
 const errs = (...reads) => reads.flat(Infinity).map((x) => x?.error).filter(Boolean);
 
@@ -472,15 +529,17 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   // P6 the changes: this week's, and every one, each with the evaluation it cites.
   const evalById = new Map();
   for (const r of repos) for (const e of r.evals.rows) if (e.eval_id) evalById.set(`${r.slug}|${e.eval_id}`, e);
-  const changesAll = repos.flatMap((r) => r.log.rows.filter((e) => CHANGE_KINDS.includes(e.kind) && !Number.isNaN(Date.parse(e.at))).map((e) => {
+  const changesRaw = repos.flatMap((r) => r.log.rows.filter((e) => CHANGE_KINDS.includes(e.kind) && !Number.isNaN(Date.parse(e.at))).map((e) => {
     const ev = e.eval_id ? evalById.get(`${r.slug}|${e.eval_id}`) : null;
     return {
       at: e.at, repo: e.repo === '*' ? '*' : r.name, lever: e.lever ?? e.pair ?? null, kind: e.kind, from: e.from ?? null, to: e.to ?? null, actor: e.actor ?? null,
       reason_code: e.reason_code ?? null, wording: reasonWording(e.reason_code), reason: e.reason ?? null, ticket: e.ticket ?? null,
       eval_id: e.eval_id ?? null, evidence_file: e.evidence_file ?? null, decision_id: e.decision_id ?? null, desk_commit_range: e.desk_commit_range ?? null,
       evidence: ev ? evalEvidence(ev, DECISION_RULE.min_per_arm[REGISTRY[ev.lever]?.layer] ?? null) : null,
+      ...(Array.isArray(e.missing) ? { missing: missingView(e.missing) } : {}),
     };
-  })).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.repo < b.repo ? -1 : 1));
+  }));
+  const changesAll = mergePerLever(changesRaw, tz).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || (a.repo < b.repo ? -1 : 1));
   const week = changesAll.filter((e) => Date.parse(e.at) >= weekAgo);
   const changes = panel(week.length ? 'ok' : 'empty', { events: week, all: changesAll, last_change: changesAll[0] ?? null }, errs(repos.map((r) => r.log)));
 

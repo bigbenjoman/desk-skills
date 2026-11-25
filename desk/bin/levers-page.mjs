@@ -559,8 +559,12 @@ function leverTable(v, today) {
 
 // ---- the change list ---------------------------------------------------------------------------------------------
 const you = (e) => e.actor && !['controller', 'supervisor', 'desk'].includes(e.actor);
+// Names as a list: 'a', 'a and b', 'a, b and c'.
+const andList = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
 function changeWhat(e) {
-  const lever = e.lever ?? 'a lever';
+  // A change the view merged from one per lever names every lever it was recorded for.
+  const many = (e.levers?.length ?? 0) > 1;
+  const lever = many ? andList(e.levers) : e.lever ?? 'a lever';
   const where = e.repo && e.repo !== '*' ? ` in ${e.repo}` : '';
   switch (e.kind) {
     case 'transition':
@@ -575,7 +579,7 @@ function changeWhat(e) {
     case 'freeze': return `Trials frozen${where || ' in every repo'}`;
     case 'thaw': return `Trials thawed${where || ' in every repo'}`;
     case 'row_change': return `The levers row${where} changed${e.from != null && e.to != null ? ` from ${e.from} to ${e.to}` : ''}`;
-    case 'fp_reset': return `${cap(lever)}’s code changed${where}, so its evidence started again`;
+    case 'fp_reset': return many ? `The code of ${lever} changed${where}, so their evidence started again` : `${cap(lever)}’s code changed${where}, so its evidence started again`;
     case 'evidence_incomplete': return `Evidence for ${lever}${where} was incomplete`;
     default: return `${cap(e.kind ?? 'change')}${e.lever ? ` to ${lever}` : ''}${where}`;
   }
@@ -599,7 +603,8 @@ function changeDetails(e) {
   return `<dl class="change-dl">${row('Reason', reason)}${row('Tickets per arm', arms)}${row('Mechanism', mech)}${row('Cost', cost)}${row('Guardrails', guards)}`
     + `${row('Commit range', e.desk_commit_range ? `<span class="mono">${esc(e.desk_commit_range)}</span>` : notRecorded)}`
     + `${row('Evidence file', e.evidence_file ? `<span class="mono">${esc(e.evidence_file)}</span>` : notRecorded)}`
-    + `${e.ticket ? row('Ticket', esc(e.ticket)) : ''}</dl>`;
+    + `${e.ticket ? row('Ticket', esc(e.ticket)) : ''}`
+    + `${e.missing?.length ? row('Not recorded', `<ul class="guards">${e.missing.map((g) => `<li>${esc(cap(g.what))}: ${esc((g.tickets ?? g.files ?? []).join(', '))}</li>`).join('')}</ul>`) : ''}</dl>`;
 }
 
 function changes(v, today) {
@@ -612,7 +617,7 @@ function changes(v, today) {
   const sub = today ? '' : `<p class="muted small sub">${started ? `Newest first, since testing started on ${esc(dayMonth(started, tz))}.` : 'Newest first.'}</p>`;
   let body;
   if (list.length) {
-    body = list.map((e) => `<details class="change"><summary><span class="muted num small when">${esc(when(e.at, tz))}</span><span class="stack3"><span class="b">${esc(changeWhat(e))}</span>${e.reason || e.wording ? `<span class="muted small">${esc(cap(e.reason ?? e.wording))}</span>` : ''}</span></summary>${changeDetails(e)}</details>`).join('');
+    body = list.map((e) => `<details class="change"><summary><span class="muted num small when">${esc(when(e.at, tz))}</span><span class="stack3"><span class="b">${esc(changeWhat(e))}</span>${e.wording || e.reason ? `<span class="muted small">${esc(cap(e.wording ?? e.reason))}</span>` : ''}</span></summary>${changeDetails(e)}</details>`).join('');
   } else if (today) {
     const last = p.last_change;
     body = `<p class="empty">No lever changed this week.${last ? ` Last change: ${esc(dayMonth(last.at, tz))}, ${esc(lowerFirst(changeWhat(last)))}.` : ''}</p>`;
