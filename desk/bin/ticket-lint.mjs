@@ -67,18 +67,30 @@ const runsOnProduction = (p) => p.split(/(?<=[.!?;])\s+/).some((s) => PRODUCTION
 // A question, an open-decision word or a person step inside a quoted phrase is quoted copy, not the
 // ticket's own. A parenthetical that is all one quote goes first, so a quote nested in another
 // ("leaves a decision open ("decide")") does not pair its marks with the outer one's.
-const QUOTED = /"[^"\n]*"|“[^”\n]*”/g;
+// Single quotes pair only at word edges, so an apostrophe ("it's", "users'") never opens one.
+const QUOTED = /"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|(?<!\w)'[^'\n]*'(?!\w)/g;
 const QUOTED_ASIDE = new RegExp(String.raw`\(\s*(?:${QUOTED.source})\s*\)`, 'g');
 const unquoted = (s) => s.replace(QUOTED_ASIDE, ' ').replace(QUOTED, ' ');
-// A parenthetical listing examples (three or more items, or opened by "for example" or "such as")
-// leaves nothing open; one naming where a value comes from ("entered by hand in /desk-setup costs")
-// asks nobody to act. Each is left out of the check it would otherwise trip; "(to confirm)" is neither.
-const EXAMPLES = /^\s*(?:e\.g\.|for (?:example|instance)|such as)\b|,[^,]*,/i;
-const SOURCE = /^\s*(?:(?:entered|recorded|set|read|taken|kept|stored|written|typed|filled in|supplied|configured|defined|chosen|pasted)\b.*?\b(?:in|by|from|at|on|via|under)\b|(?:comes? |read |taken )?from\b)/i;
-const without = (s, re) => s.replace(/\(([^()\n]*)\)/g, (m, inner) => (re.test(inner) ? ' ' : m));
-// "Neither leaves anything for anyone to decide" says nothing is left open.
-const SETTLED = /\b(?:nothing|(?:neither|not|never|no)\b[^.;:!?]*?\banything)(?:\s+\w+){0,4}?\s+to decide\b/gi;
-const OPERATOR = /\boperator\b|\bby hand\b|\bmanually\b|\bsigns? off\b|\bsign-off\b/i;
+const asides = (s, drop) => s.replace(/\(([^()\n]*)\)/g, (m, inner) => (drop(inner) ? ' ' : m));
+// A parenthetical listing examples leaves nothing open: one opened by "e.g.", "for example" or
+// "such as", or three or more short comma-separated items. An item opening with a joining word
+// ("and ask Finance", "then notify X", "by Friday") makes it a run of steps, not a list.
+const EXAMPLE_LEAD = /^\s*(?:e\.g\.|(?:for (?:example|instance)|such as)\b)/i;
+const JOINER = /^(?:and|or|then|with|at|by|before|after|until|once|if|when|while|unless|so|but|to)\b/i;
+const exampleList = (inner) => {
+  if (EXAMPLE_LEAD.test(inner)) return true;
+  const items = inner.split(',').map((x) => x.trim());
+  return items.length >= 3 && items.every((x) => x && x.split(/\s+/).length <= 5 && !JOINER.test(x));
+};
+// A parenthetical naming where a value comes from ("entered by hand in /desk-setup costs",
+// "from subscriptions.md") asks nobody to act, unless it names who does ("entered by the operator").
+const SOURCE = /^\s*(?:(?:entered|recorded|set|read|taken|kept|stored|written|typed|filled in|supplied|configured|defined|chosen|pasted)\s+(?:(?:by hand|manually)\s+)?(?:in|by|from|at|on|via|under|through)\b|(?:comes? |read |taken )?from\b)/i;
+const ACTOR = /\boperator\b|\bsigns? off\b|\bsign-off\b/i;
+const valueSource = (inner) => SOURCE.test(inner) && !ACTOR.test(inner);
+// "Neither leaves anything for anyone to decide" says nothing is left open. The words between are
+// held to a few that keep it a denial, and the span never crosses another "decide".
+const SETTLED = /\b(?:nothing|(?:neither|not|never|no)\b(?:(?!\bdecide\b)[^.;:!?])*?\banything)(?:\s+(?:is|was|are|left|else|more|open|remaining|here|for|anyone|anybody|someone|somebody|us|you|them))*\s+to decide\b/gi;
+const OPERATOR = new RegExp(String.raw`${ACTOR.source}|\bby hand\b|\bmanually\b`, 'i');
 // The Size fallback, a first line `Size: M`, for a project with no Size field.
 export const SIZE_LINE = /^\s*[*_]*size[*_]*\s*:\s*[*_]*\s*([a-z]+)/i;
 
@@ -118,7 +130,7 @@ export function lintTicket(t, { root, dir, ref } = {}) {
   if (!filled(criteria)) add('blocking', 'criteria', 'no acceptance criteria: add an "Acceptance criteria" section (an Epic\'s "Definition of done") of AC1: Given …, when …, then … items');
 
   for (const l of all) {
-    const p = without(unquoted(prose(l.text)), EXAMPLES).replace(SETTLED, ' ');
+    const p = asides(unquoted(prose(l.text)), exampleList).replace(SETTLED, ' ');
     const hit = OPEN.map((re) => re.exec(p)).find(Boolean);
     if (hit) add('blocking', 'open-decision', `line ${l.n} leaves a decision open ("${hit[0]}"): "${quote(l.text)}": settle it with whoever owns it, then write the dated decision under Decisions`);
   }
@@ -149,7 +161,7 @@ export function lintTicket(t, { root, dir, ref } = {}) {
     const why = (nearKey && nearKey.test(p)) || (/\b(?:in|on|to) Jira\b/i.test(p) && JIRA_VERB.test(p))
       ? 'a Jira write (the filer makes links and field changes when filing)'
       : runsOnProduction(p) ? 'a live production run'
-        : OPERATOR.test(without(unquoted(p), SOURCE)) ? 'an operator or human step (it belongs under Verification, with who does it)' : null;
+        : OPERATOR.test(asides(unquoted(p), valueSource)) ? 'an operator or human step (it belongs under Verification, with who does it)' : null;
     if (why) add('blocking', 'criterion', `line ${l.n} is a criterion the worker cannot do in its branch, ${why}: "${quote(l.text)}"`);
   }
 
