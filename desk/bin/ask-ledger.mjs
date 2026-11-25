@@ -185,8 +185,10 @@ const roundsOf = (stateDir, key) => workerLogs(stateDir, key).sort((a, b) => log
 function raiseTokens(stateDir, key, since) {
   const by = Date.parse(since);
   // The round by its time, then whether it wrote the park: a park the pass made (a stall, a budget stop,
-  // a claim) wrote none, and an earlier round's park is another ask's.
-  const round = roundsOf(stateDir, key).filter((r) => !(r.mtime > by + SLACK_MS)).at(-1);
+  // a claim) wrote none, and an earlier round's park is another ask's. A round started after the park
+  // (the respawn a requeue made, in the same pass) is not the one that parked.
+  const firstSpawnAt = (r) => Date.parse(r.events.find((d) => d?.type === 'desk_spawn')?.at);
+  const round = roundsOf(stateDir, key).filter((r) => !(r.mtime > by + SLACK_MS) && !(firstSpawnAt(r) > by)).at(-1);
   if (!round?.events.some((d) => writesPark(d, key))) return { ...noFigures, complete: false };
   const after = round.events.slice(round.events.findIndex((d) => writesPark(d, key)));
   return { ...sumRequests(after.filter(main)), complete: after.some((d) => d.type === 'result') };

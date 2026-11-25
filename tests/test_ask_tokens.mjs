@@ -194,6 +194,21 @@ const fig = (x) => (x ? [x.input, x.output, x.cache_read, x.cache_write, x.usd, 
   t('a park the pass made, its round writing none, is complete false with no figures, not an earlier round\'s park', j(fig(asks(b)['M-1']?.['raise:log'])), j([null, null, null, null, null, false]));
 }
 
+// ---- a round started after the park (a requeue's respawn in the same pass) is not the parked round ----
+{
+  const since = at('10:05');
+  const b = batch({ 'Q-1': parked('Q-1', since) });
+  const r1 = join(b.state, 'logs', 'Q-1.log.round1.gz');
+  write(r1, gzipSync(jsonl([spawnLine(at('09:00')), msg('q1', { tool: parkWrite('Q-1'), input: 5, output: 5 }), result])));
+  setTime(r1, at('10:00'));
+  const cur = join(b.state, 'logs', 'Q-1.log');
+  write(cur, jsonl([spawnLine(at('10:08')), msg('q2', { text: 'starting again', input: 40, output: 40 })]));
+  setTime(cur, at('10:09'));
+  rec(b.queue, [{ step: 'raised', key: 'Q-1', since, kind: 'question' }]);
+  measure(b.state, { queue: b.queue, on: true, dirs: [], now: new Date(at('10:09')) });
+  t('a respawn started after the park is passed over for the round that parked', j(fig(asks(b)['Q-1']?.['raise:log'])), j([5, 5, 0, 0, usd({ input: 5, output: 5 }), true]));
+}
+
 // ---- an act with no start to read: a cloud session at once, a local one once it is past finding -----
 {
   const b = batch({ 'C-1': { ...parked('C-1', at('08:00')), location: 'cloud' }, 'L-1': parked('L-1', at('08:00')), 'Y-1': parked('Y-1', at('08:00')) });
