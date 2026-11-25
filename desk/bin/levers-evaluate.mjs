@@ -170,12 +170,13 @@ function wantedSteps(a) {
 }
 // One ticket's asks (ask-ledger.mjs readAsks records) as the evaluation reads them: their count, their
 // dollars and tokens by step, its interruptions, how many were answered and by default, and each
-// answer's latency. Interruptions count notifications: a push is one; a digest listing is its share of
-// that digest's one push, 1 over the asks its page presented (`pageAsks`, by the page in its `ref`),
-// and nothing where no push went out with it or the ask was pushed already, which sets off no push. A step with a record that is incomplete or
+// answer's latency. Interruptions count notifications: a push is one; a digest listing is the `share`
+// of that digest's one push it was written with (digest.mjs presentAsks: 1 over the fresh, unpushed
+// parks of every repo on its page, 0 for one pushed already or with no push sent). A listing written
+// with no share counts none, as does any listing of an ask pushed already. A step with a record that is incomplete or
 // unpriced, or a record still missing, makes its figure null, and the ticket's dollars null with it,
 // so the ticket leaves the mechanism as a ticket with an incomplete cost does, never read as 0.
-function askFigures(asks, pageAsks = new Map()) {
+function askFigures(asks) {
   const steps = Object.fromEntries(ASK_TOKEN_STEPS.map((k) => [k, { tokens: 0, usd: 0 }]));
   let pushes = 0, digests = 0, interruptions = 0, answered = 0, defaulted = 0;
   const latencies = [];
@@ -192,7 +193,7 @@ function askFigures(asks, pageAsks = new Map()) {
     const listed = (a.presented ?? []).filter((p) => p.via === 'digest');
     pushes += pushed;
     digests += listed.length;
-    interruptions += pushed + (pushed ? 0 : listed.reduce((n, p) => n + (p.notification ? 1 / (pageAsks.get(p.ref) ?? 1) : 0), 0));
+    interruptions += pushed + (pushed ? 0 : listed.reduce((n, p) => n + (Number.isFinite(p.share) ? p.share : 0), 0));
     if (a.answered) {
       answered += 1;
       if (a.answered.by === 'default') defaulted += 1;
@@ -216,13 +217,10 @@ function withAsks(rows, batches) {
   if (!all) return rows.map((r) => ({ ...r, asks: null }));
   const byKey = new Map();
   for (const a of all) { if (!byKey.has(a.key)) byKey.set(a.key, []); byKey.get(a.key).push(a); }
-  // How many asks each digest page presented, across the repo.
-  const pageAsks = new Map();
-  for (const p of all.flatMap((a) => a.presented ?? []).filter((x) => x.via === 'digest' && x.ref)) pageAsks.set(p.ref, (pageAsks.get(p.ref) ?? 0) + 1);
   return rows.map((r) => {
     const from = Date.parse(r.admitted_at ?? '');
     const mine = (byKey.get(r.key) ?? []).filter((a) => !Number.isFinite(from) || !(Date.parse(a.since) < from));
-    return { ...r, ...askFigures(mine, pageAsks) };
+    return { ...r, ...askFigures(mine) };
   });
 }
 

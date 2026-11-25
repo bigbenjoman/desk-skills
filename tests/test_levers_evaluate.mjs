@@ -725,7 +725,8 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   const qrow = (slug, arm, o = {}) => row(slug, arm, null, { pin: { set: arm === 'batched' ? [] : [QH], arms: { [QH]: arm }, trial_ids: { [QH]: `${slug}/${QH}/initial` }, fp: null }, ...o });
   // One repo: `n` asking tickets per value, each asking `count` times (once by default), plus two that
   // asked nothing; `ask[value](i)` gives each ask's figures: { raise, act } dollars, `push` and `digest`
-  // presentations (the digest on a page of its own unless `page` names one, with a push unless `silent`),
+  // presentations (a digest listing carrying `share` of its push, as digest.mjs writes it: 1 unless given,
+  // 0 when `silent`),
   // `by` its answerer, `complete` false for an unread raise.
   const qrepo = (slug, n, ask) => {
     const rows = VALUES.flatMap((v) => [...Array.from({ length: n }, () => qrow(slug, v)), qrow(slug, v), qrow(slug, v)]);
@@ -738,7 +739,7 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
     recordAsks(queue, asking.flatMap(({ r, f }) => Array.from({ length: f.count ?? 1 }, (_, j) => new Date(Date.parse(SINCE) + j * 60_000).toISOString()).flatMap((since) => [
       { step: 'raised', key: r.key, since, kind: 'question', question: 'which?' },
       ...(f.push ? [{ step: 'presented', key: r.key, since, via: 'push', ref: `ask:${r.key}`, notification: `ask:${r.key}` }] : []),
-      ...(f.digest ? [{ step: 'presented', key: r.key, since, via: 'digest', ref: f.page ?? `page-${r.key}-${since}`, notification: f.silent ? null : 'digest:slot' }] : []),
+      ...(f.digest ? [{ step: 'presented', key: r.key, since, via: 'digest', ref: `page-${r.key}-${since}`, notification: f.silent ? null : 'digest:slot', share: f.silent ? 0 : f.share === undefined ? 1 : f.share }] : []),
       { step: 'answered', key: r.key, since, by: f.by ?? 'decider', at: new Date(Date.parse(since) + f.latency * 1000) },
       { step: 'acted', key: r.key, since, round: 2 },
       tok(r.key, since, 'raise', 'log', f.raise, f.complete ?? true), tok(r.key, since, 'act', 'log', f.act),
@@ -773,12 +774,12 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   const q2 = qhRow(QA2);
   t('question handling: an arm with more than 1.25 times batched\'s interruptions reverts the lever', [q2.decision, q2.state, q2.reason_code], ['revert', 'reverted', 'guardrail_interruptions']);
   t('question handling: and the revert says which guardrail', /^one-at-a-time against batched: interruptions per ticket \(each push, and each digest push shared among the asks it listed\) worse than its margin/.test(q2.reason), true);
-  // A digest's one push is shared among the asks its page listed, and one sent with no push counts none.
+  // A digest listing counts the share of its push it was written with, and one sent with no push none.
   const QA4 = 'acme__qh-shared';
-  run([qrepo(QA4, 30, { batched: (i) => ({ ...dear(i), page: `pair-${Math.floor(i / 2)}` }), 'one-at-a-time': cheap, mixed: (i) => ({ ...dear(i), silent: true, push: i % 2 === 0 ? 1 : 0 }) })]);
+  run([qrepo(QA4, 30, { batched: (i) => ({ ...dear(i), share: 0.5 }), 'one-at-a-time': cheap, mixed: (i) => ({ ...dear(i), ...(i % 2 === 0 ? { silent: true, push: 1 } : { share: null }) }) })]);
   const q4 = qhRow(QA4);
-  t('question handling: a digest page listing two asks counts half an interruption for each', interruptions(q4, 'one-at-a-time').est, 2);
-  t('question handling: a digest listing that sent no push counts none; a push counts one whatever lists it after', interruptions(q4, 'mixed').est, 1);
+  t('question handling: a digest listing counts the share of its push it was written with', interruptions(q4, 'one-at-a-time').est, 2);
+  t('question handling: a listing with no push sent, or written with no share, counts none; a push counts one', interruptions(q4, 'mixed').est, 1);
   // An ask whose raise could not be read: its ticket stays an asking ticket but leaves the dollars.
   const QA3 = 'acme__qh-unread';
   run([qrepo(QA3, 30, { batched: (i) => ({ ...dear(i), complete: i >= 5 }), 'one-at-a-time': cheap, mixed: dear })]);
