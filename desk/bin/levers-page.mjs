@@ -6,6 +6,7 @@
 //   import { renderPage, pageAge } from './levers-page.mjs'
 import * as MS from './merge-stages.mjs';
 import { fmtHours } from './stuck-time.mjs';
+import { andList } from './desk-q.mjs';
 import { DECISION_RULE, GUARDRAILS, KEPT_STATES as KEPT, REGISTRY, isValued } from './lever-registry.mjs';
 
 // An age in seconds as words, for the view model and the page alike: "3 hours ago". `short` gives
@@ -567,8 +568,6 @@ function leverTable(v, today) {
 
 // ---- the change list ---------------------------------------------------------------------------------------------
 const you = (e) => e.actor && !['controller', 'supervisor', 'desk'].includes(e.actor);
-// Names as a list: 'a', 'a and b', 'a, b and c'.
-const andList = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
 function changeWhat(e) {
   // A change the view merged from one per lever names every lever it was recorded for.
   const many = (e.levers?.length ?? 0) > 1;
