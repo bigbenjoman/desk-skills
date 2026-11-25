@@ -73,6 +73,7 @@ import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
+import { slotCandidatesOn, slotLines } from './candidates.mjs';
 import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
 import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, prState as batchPrState } from './batches.mjs';
@@ -4183,6 +4184,15 @@ runSteps({
     if (spent.length) q('set', t.key, `outside_admit_tried=${[...before, ...spent].join('|')}`);
     if (now.some((k) => inQueue[k])) q('set', t.key, `outside_blockers=${JSON.stringify((t.outside_blockers ?? []).filter((b) => !inQueue[b?.key]))}`);
   }
+}
+
+// ---- candidates for a free slot ---------------------------------------------
+// With config §3b "Propose candidates for a free slot" on, a standing batch the supervisor runs, with a
+// slot free and nothing ready to take it, lists what could be admitted (candidates.mjs slotLines). It
+// lists only: /desk-admit admits.
+if (onJira && !E.batchName() && queue().supervised === true && running.length < concurrency && !spawnable.length
+  && !lowMemory && !MAINT.hold && slotCandidatesOn()) {
+  epicLines.push(...slotLines({ state: STATE, dry: DRY }));
 }
 
 // ---- outside holds -------------------------------------------------------
