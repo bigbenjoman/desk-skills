@@ -15,7 +15,7 @@ unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_
   CLAUDE_CODE_SESSION_ID AUTOPILOT_DRY_RUN AUTOPILOT_RERUN AUTOPILOT_PORT_FLOOR DESK_UPLOAD_APPROVED AUTOPILOT_BATCH_BUDGET_USD \
   AUTOPILOT_START_STAGE DESK_GITHUB_HANDLE CLAUDE_CONFIG_DIR CODEX_HOME DESK_AUTOPILOT_WORKER
 # As tests/run.sh does, so a suite run on its own reads no real test lock queue; DS-662's checks turn it on.
-export AUTOPILOT_LOCK_QUEUE=off
+export AUTOPILOT_LOCK_QUEUE=off AUTOPILOT_LOCK_ORPHANS=off
 # Every real stand-in worker's session id ends in this, unique to the run: queue.mjs stop finds a worker
 # by its session id across the whole machine, so two suites running at once never end each other's.
 SID_SUFFIX=$(printf %s "${T##*/}" | tr -cd 'A-Za-z0-9')
