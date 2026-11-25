@@ -460,7 +460,7 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
     // Red only on an outside reviewer's gate while that reviewer is down: nothing failed and nothing is
     // rerun, so it waits on the reviewer (one repo-level ask on needs-you), its rerun count untouched.
     const down = waitingOnDown(red, ctx.stateChecks, ctx.outages);
-    if (down) return merging([`waiting on ${down.login} (down${down.since ? ` since ${sinceWhen(down.since, now)}` : ''})`, WARN]);
+    if (down) return merging([`waiting on ${down.login} (down${down.since ? ` since ${todayOrDay(Date.parse(down.since), now)}` : ''})`, WARN]);
     // Only the merge driver reruns a red check, where §3 ci-rerun lets it, and a fix try waits for its
     // reruns: without both nothing moves. After both tries the pass records it stuck once the reruns
     // on the new head are spent (t.stuck, above), and until then the driver may still merge it.
@@ -521,8 +521,6 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
 // reruns, per check at this head, and rerun_at, its last): the rerun it is on and when the next is due.
 // It always names the rerun to come, so the count only moves when the driver reruns. With `now` null,
 // a due time is left out.
-// A past time as a row says it: the clock today, else the day and the clock.
-const sinceWhen = (iso, now) => { const t = Date.parse(iso); if (!Number.isFinite(t)) return String(iso); return new Date(t).toDateString() === new Date(now ?? Date.now()).toDateString() ? clock(t) : dayAndTime(t); };
 const rerunsTried = (ps, red) => Math.max(0, ...red.map((n) => Number(ps.reruns?.[n]) || 0));
 function rerunStep(ps, red, triesLeft, now) {
   const tried = rerunsTried(ps, red);
@@ -3006,8 +3004,10 @@ function portLeaseOf(r, key, now) {
 export const overview = (repos, opts) => joined(overviewParts(repos, opts));
 
 const clock = (t) => new Date(t).toTimeString().slice(0, 5);
-// A usage limit's reset, epoch seconds: the time today, else the day and time.
-const resetsWhen = (s) => (new Date(s * 1000).toDateString() === new Date().toDateString() ? clock(s * 1000) : dayAndTime(s * 1000));
+// A time, epoch ms, as a row says it: the clock today, else the day and the clock.
+const todayOrDay = (t, now = Date.now()) => (new Date(t).toDateString() === new Date(now).toDateString() ? clock(t) : dayAndTime(t));
+// A usage limit's reset, epoch seconds.
+const resetsWhen = (s) => todayOrDay(s * 1000);
 // The interactive screen's `clock` is its time source, so the breadcrumb's time is read through this.
 const hhmm = clock;
 
@@ -3653,7 +3653,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   const portField = () => {
     if (!port) return;
     const at = Date.parse(port.acquired), expires = Date.parse(port.expires);
-    if (!overdue(port, now)) return field('Port', [[printable(String(port.key)), null], [` · its dev server, held since ${new Date(at).toDateString() === new Date(now).toDateString() ? clock(at) : dayAndTime(at)}`, DIM]]);
+    if (!overdue(port, now)) return field('Port', [[printable(String(port.key)), null], [` · its dev server, held since ${todayOrDay(at, now)}`, DIM]]);
     field('Port', [[`${printable(String(port.key))} · stopped checking in ${span(now - expires)} ago`, WARN]]);
     out.push({ ...segLine([[pad('', FIELD_W), null], [forceReleaseCommand(port.id), BOLD]]), whole: true });
   };
