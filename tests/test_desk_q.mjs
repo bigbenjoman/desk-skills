@@ -2672,6 +2672,8 @@ const st1005 = (x) => Q.shownState({ tickets: { X: { key: 'X', ...x } } }, { key
 const lock1005 = { kind: 'file-exists', root: 'worktree', path: 'desk/ui/package-lock.json' };
 t('DS-1005 AC1 a park asking the person for a step, on a file no pass makes, needs them though stored without the person flag',
   st1005(park1005(q1005, lock1005)), 'needs');
+t('DS-1005 AC1 so does one whose ask is followed by when to take it',
+  st1005(park1005('Please run npm install in the worktree before resuming.', lock1005)), 'needs');
 t('DS-1005 AC1 so does one stored with it', st1005(park1005(q1005, { ...lock1005, person: true })), 'needs');
 t('DS-1005 AC1 negative: a file the question leaves to a script still waits',
   st1005(park1005('waiting on the recall capture to write $DESK_STATE/fixtures/X/meet.json', { kind: 'file-exists', root: 'state', path: 'fixtures/X/meet.json' })), 'waiting');

@@ -258,11 +258,10 @@ function askedAt(question, at) {
   return !/\b(?:once|when|after|until|while|before|if|unless|since)\b/i.test(sentence.slice(Math.max(...ends)));
 }
 
-// Whether question `q` asks the person for a step in any of its sentences, read as askedAt reads one: at
-// the end of each sentence, so the whole sentence is the request.
+// Whether question `q` asks the person for a step in any of its sentences. Unlike askedAt, a clause after
+// the ask (… before resuming) leaves it an ask: it says when, not who makes the file.
 export function asksStep(q) {
-  const s = String(q ?? '');
-  return [...[...s.matchAll(/[.?!](?=\s+|$)/g)].map((m) => m.index), s.length].some((at) => askedAt(s, at));
+  return String(q ?? '').split(/[.?!]\s+/).some((s) => ASKS.some((re) => [...s.matchAll(re)].length > 0));
 }
 
 // A file-exists condition read against the question of the park it clears: {ok: true, cond} or
