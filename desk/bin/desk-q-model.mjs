@@ -704,6 +704,9 @@ export function loadRepos(now = Date.now(), word = null) {
 // modelRepos into the same shape, so both print through the same views. A row names its ticket by key,
 // and the hold context, whose readers are functions, is read again from the files it names.
 export const MODEL_VERSION = 1;
+// The oldest listing read again before it is shown, by desk-q's open screen and by desk-ui for desk-q:
+// the ages and stalls it holds move with the clock, which no file stamp or watcher sees.
+export const REREAD_MS = 30 * 1000;
 const rowKeys = (rows) => (rows ?? []).map(({ t, ...x }) => ({ ...x, key: t.key }));
 export function modelWire(repos, at) {
   return { v: MODEL_VERSION, at, machine: repos[0]?.machine ?? null,

@@ -62,15 +62,13 @@ import { LABEL, cut, wrap, stateStamp, attention, epicShort, epicIn, GREY, DIM, 
   openLeversPage, leversDue, U_NAME, accountOf, loginLabel, checkKey, sameAccountAs, unusable, pickKeys, DROP_IN, DROP_W, R_RUNS, addingName,
   usageParts, usageLines, usageOf, forgetLogins, overviewParts, hhmm, repoParts, logPath, ticketParts, prToOpen, shownState, shownRepos, repoPlace,
   forecastOf, runningOn, andList, probesDue, ZOOMS, Usage, resolveRepo, isWrite, isCommand, target, apply, supervisorState, noSupervisor, readHidden, writeHidden,
-  checkFlags, loadOrRefuse, scopeWord, run, SELECT_BG, OPT_ON, OPT_BOLD, OPT_GREY, OPT_GOOD, printable, systemOpener } from './desk-q-model.mjs';
+  checkFlags, loadOrRefuse, scopeWord, run, SELECT_BG, OPT_ON, OPT_BOLD, OPT_GREY, OPT_GOOD, printable, systemOpener, REREAD_MS } from './desk-q-model.mjs';
 
 export * from './desk-q-model.mjs';
 
 // ---- the interactive screen --------------------------------------------------------------------
 
 export const REFRESH_MS = 2000;
-// The longest an open screen goes without rereading the queues while nothing it stamps changes.
-export const REREAD_MS = 30 * 1000;
 const LOG_LINES = 40;
 const MOVE_KEYS = 'shift+↑↓ move · t top · b bottom · + − workers';
 // The question before the supervisor goes off, in the terminal's own text colour with its keys bold.

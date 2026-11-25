@@ -99,9 +99,6 @@ const MAX_TEXT = 2000;
 const MAX_WRITE_BODY = 6 * MAX_TEXT + 1024;
 const WRITE_TIMEOUT_MS = 5 * 60 * 1000;
 const READ_TIMEOUT_MS = 60 * 1000;
-// The oldest read model /api/model hands out before reading it again: the ages and stalls it holds move
-// with the clock, which the watcher does not see. desk-q's own open screen rereads as often.
-const MODEL_MAX_AGE_MS = 30 * 1000;
 const WRITES = { record: 'needs-you.mjs', answer: 'answer.mjs' };
 const STATUS = { 0: 200, 10: 202, 11: 409 };
 const binDir = () => (testHome() && process.env.DESK_UI_TEST_BIN) || HERE;
@@ -166,13 +163,16 @@ export function makeServer({ p = port(), log = (line) => console.log(line), even
     return feed.snapshot(m);
   }
 
-  // desk-q's listing (desk-q-model.mjs modelWire), read again once it is MODEL_MAX_AGE_MS old. With
-  // ?at= naming the one the reader holds, an unchanged listing is only { v, at, same: true }.
+  // desk-q's listing (desk-q-model.mjs modelWire), read again once it is REREAD_MS old. With ?at=
+  // naming the one the reader holds, an unchanged listing is only { v, at, same: true }. A reread that
+  // fails leaves the feed holding the old one, which is refused, so desk-q reads the files instead.
   async function model(res, query) {
     try {
+      const { REREAD_MS } = await import('./desk-q-model.mjs');
       let m = await feed.current();
-      if (m && clock() - m.at > MODEL_MAX_AGE_MS) m = await feed.current({ fresh: true });
+      if (m && clock() - m.at > REREAD_MS) m = await feed.current({ fresh: true });
       if (!m?.wire) throw new Error('no read model');
+      if (clock() - m.at > REREAD_MS) throw new Error('the read model could not be read again');
       return send(res, 200, query.has('at') && Number(query.get('at')) === m.at ? { v: m.wire.v, at: m.at, same: true } : m.wire);
     } catch (e) { console.error(`desk-ui: model: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
   }

@@ -168,6 +168,21 @@ t('AC4 the screen keeps going', frames() > f1, true);
 t('AC4 and asks the server no more', asks.length, asked);
 ui.finish(0);
 
+// ---- A listing past REREAD_MS that cannot be read again is refused, not answered as current
+const { REREAD_MS } = await import(join(BIN, 'desk-q-model.mjs'));
+let clockNow = NOW, failing = false;
+const server3 = makeServer({ p: PORT, log: () => {}, events: { tickMs: 60_000, now: () => clockNow, onError: () => {},
+  build: async (n) => { if (failing) throw new Error('unreadable'); return { at: n, body: {}, tickets: {}, batches: [], wire: { v: 1, at: n, machine: null, repos: [] } }; } } });
+await new Promise((r) => server3.listen(PORT, '127.0.0.1', r));
+const held = await call(bearer);
+t('a current listing is answered', held.status, 200);
+clockNow += REREAD_MS + 1000;
+failing = true;
+t('once it is too old and the reread fails, it is refused', [(await call(bearer, 'GET', `/api/model?at=${JSON.parse(held.text).at}`)).status, (await call(bearer)).status], [500, 500]);
+t('so desk-q reads the files', await serverModel({ since: JSON.parse(held.text).at }), null);
+server3.close();
+await new Promise((r) => server3.once('close', r));
+
 // ---- AC3: a server answering with a version desk-q does not know, desk-q reads the files
 const STUB = await freePort();
 const stub = createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ...wire, v: 999 })); });

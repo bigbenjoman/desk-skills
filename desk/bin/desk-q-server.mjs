@@ -9,7 +9,7 @@ import { port, readToken } from './desk-ui.mjs';
 export const SERVER_WAIT_MS = 200;
 
 // -> { repos, at } with a listing, { same: true, at } when the one dated `since` is still current, or null.
-export function serverModel({ since = null, wait = SERVER_WAIT_MS } = {}) {
+export function serverModel({ since = null } = {}) {
   const token = readToken();
   if (!token) return Promise.resolve(null);
   return new Promise((resolve) => {
@@ -32,7 +32,7 @@ export function serverModel({ since = null, wait = SERVER_WAIT_MS } = {}) {
       });
       res.on('error', () => end(null));
     });
-    const timer = setTimeout(() => end(null), wait);
+    const timer = setTimeout(() => end(null), SERVER_WAIT_MS);
     req.on('error', () => end(null));
     req.end();
   });
