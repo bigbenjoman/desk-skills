@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App.jsx';
@@ -49,8 +51,10 @@ const chrome = (name) => /^(cv-|tl-|win-edge$)/.test(name);
 const appTokens = (t) => Object.fromEntries(Object.entries(t).filter(([k]) => !chrome(k)));
 
 describe("the theme is the canvas's", () => {
-  const canvas = blocks(readFileSync(new URL('../../../docs/design/DS-691/project/index.html', import.meta.url), 'utf8'));
-  const app = blocks(readFileSync(new URL('./theme.css', import.meta.url), 'utf8'));
+  // A path, not a URL object: under jsdom the global URL is jsdom's, which node:fs does not take.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const canvas = blocks(readFileSync(join(here, '../../../docs/design/DS-691/project/index.html'), 'utf8'));
+  const app = blocks(readFileSync(join(here, 'theme.css'), 'utf8'));
 
   it('has every light token, value for value', () => {
     const { 'font-sans': sans, ...rest } = appTokens(canvas.light);

@@ -11,4 +11,10 @@ command -v npm >/dev/null 2>&1 || { echo "FAIL npm is not on PATH, so the desk a
 if [ ! -f "$UI/node_modules/.package-lock.json" ] || [ "$UI/package-lock.json" -nt "$UI/node_modules/.package-lock.json" ]; then
   (cd "$UI" && npm ci --no-audit --no-fund) || { echo "FAIL npm ci in desk/ui"; exit 1; }
 fi
-cd "$UI" && ./node_modules/.bin/vitest run --maxWorkers=2
+# run.sh counts `<n> checks passed`, which Vitest does not print: its summary line becomes one.
+out="$(cd "$UI" && ./node_modules/.bin/vitest run --maxWorkers=2 2>&1)"; rc=$?
+printf '%s\n' "$out"
+[ "$rc" -eq 0 ] || { echo "FAIL vitest exited $rc"; exit "$rc"; }
+n="$(printf '%s\n' "$out" | grep -E '^ +Tests +[0-9]+ passed' | grep -oE '[0-9]+' | head -n 1)"
+[ -n "$n" ] || { echo "FAIL vitest printed no passing tests"; exit 1; }
+echo "$n checks passed"
