@@ -650,8 +650,11 @@ def on_loop(event, data, session, root):
         save_state(session, state)
         return
     out = loop_tick(root, session, "stop" if stop else "turn")
-    if not out or not out.get("text"):
-        state[mark + "_idle"] = [key, stamp, (out or {}).get("recheck")]
+    if not out:  # the check failed: ask again on the next event
+        save_state(session, state)
+        return
+    if not out.get("text"):
+        state[mark + "_idle"] = [key, stamp, out.get("recheck")]
         save_state(session, state)
         return
     state[mark] = key  # acted on once per pass

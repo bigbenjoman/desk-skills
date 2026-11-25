@@ -17,7 +17,7 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { LIVE_MS, PASS_GRACE_MS, lastBeat } from './borrow.mjs';
+import { LIVE_MS, lastBeat } from './borrow.mjs';
 
 // Each batch's lost tick, in its state folder: { pass, session, told_at, rearmed_at, why }.
 export const TICK_FILE = 'loop-tick.json';
@@ -25,13 +25,10 @@ export const TICK_FILE = 'loop-tick.json';
 // The interval the loop keeps: from its last pass to the next it recorded; with none recorded, half
 // of LIVE_MS.
 export const loopInterval = (r) => (r.next != null && r.last != null && r.next > r.last ? r.next - r.last : LIVE_MS / 2);
-// When desk-q reads the batch's passes stopped (borrow.mjs liveBeat): LIVE_MS after its last pass, or
-// PASS_GRACE_MS past the next pass it recorded, whichever is later.
-const stoppedAt = (r) => Math.max(r.last + LIVE_MS, r.next != null ? r.next + PASS_GRACE_MS : -Infinity);
 // When a batch with no next pass to come reads its loop lost: twice its interval after its last pass,
-// or sooner where desk-q reads its passes stopped before that, so needs-you's stalled item never shows
-// a loop its session has not yet been told to re-arm.
-export const lostAt = (r) => Math.min(r.last + 2 * loopInterval(r), stoppedAt(r));
+// or sooner where desk-q reads its passes stopped before that (r.stoppedAt), so needs-you's stalled
+// item never shows a loop its session has not yet been told to re-arm.
+export const lostAt = (r) => Math.min(r.last + 2 * loopInterval(r), r.stoppedAt ?? Infinity);
 // The session whose /loop runs the batch: the one that recorded its next pass, else the one its last
 // pass ran in (borrow.mjs loopCarried).
 export const loopSession = (r) => r.loop ?? r.session;
@@ -39,12 +36,11 @@ export const loopSession = (r) => r.loop ?? r.session;
 export const unscheduled = (r, now = Date.now()) => !!r.q && r.run?.by === 'session' && r.last != null
   && (r.next == null || r.next <= now);
 
+const readTick = (stateDir) => { try { return JSON.parse(readFileSync(join(stateDir, TICK_FILE), 'utf8')) || null; } catch { return null; } };
 // The record for the batch's last pass `last`, or null.
 export function readRearm(stateDir, last) {
-  try {
-    const x = JSON.parse(readFileSync(join(stateDir, TICK_FILE), 'utf8'));
-    return x && Date.parse(x.pass) === last ? x : null;
-  } catch { return null; }
+  const x = readTick(stateDir);
+  return x && Date.parse(x.pass) === last ? x : null;
 }
 function writeRearm(stateDir, rec) {
   mkdirSync(stateDir, { recursive: true });
@@ -53,11 +49,12 @@ function writeRearm(stateDir, rec) {
 const iso = (t) => new Date(t).toISOString();
 
 // queue.mjs next-pass, once it has recorded the next pass after `pass`: a re-arm the session was told
-// to make for that pass is made, and logged. -> whether it was
+// to make, for that pass or an earlier one (re-arming runs a pass first), is made, and logged against
+// `pass`, so the stalled item says so if this pass's loop is lost too. -> whether it was
 export function markRearmed(stateDir, pass, now = Date.now()) {
-  const rec = pass == null ? null : readRearm(stateDir, pass);
-  if (!rec?.told_at || rec.rearmed_at) return false;
-  writeRearm(stateDir, { ...rec, rearmed_at: iso(now) });
+  const rec = readTick(stateDir);
+  if (pass == null || !rec?.told_at || rec.rearmed_at || !(Date.parse(rec.pass) <= pass)) return false;
+  writeRearm(stateDir, { ...rec, pass: iso(pass), rearmed_at: iso(now) });
   return true;
 }
 
@@ -80,8 +77,9 @@ export async function check(session, mode, now = Date.now()) {
   const lost = own.filter((r) => now >= lostAt(r));
   if (!lost.length) return { recheck: own.length ? Math.min(...own.map(lostAt)) : null };
   for (const r of lost) {
+    // Told once per lost pass; a re-arm that was lost again is told afresh.
     const was = readRearm(r.stateDir, r.last);
-    if (!was?.told_at) writeRearm(r.stateDir, { ...was, pass: iso(r.last), session, told_at: iso(now) });
+    if (!was?.told_at || was.rearmed_at) writeRearm(r.stateDir, { pass: iso(r.last), session, told_at: iso(now) });
   }
   return { text: lost.map((r) => `desk loop: ${r.name}'s loop lost its next tick: no pass has run since ${clock(r.last)}, and none is scheduled. `
     + `Re-arm it now, before you carry on: run a pass (node ~/.claude/desk/bin/pass.mjs --json${batchArg(r)}), act on it as the loop does, then schedule the loop's next tick and record it (${NEXT_PASS(r)}). `

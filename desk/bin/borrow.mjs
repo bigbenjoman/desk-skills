@@ -61,14 +61,15 @@ export function writeBeat(stateDir, queuePath, { batch = null, next = null, pass
 }
 
 // The loop session a pass's heartbeat records. A pass given its next time (--next) is the loop's own,
-// so its session is the loop's. One given none, as a pass run by hand is, keeps the loop's session
-// unless the loop's next pass has gone by, so a pass run in another session does not move the loop
-// there; with it gone by the loop is lost, and the session the pass ran in is the one to schedule the
-// next.
+// so its session is the loop's. One given none, as a pass run by hand is, keeps the loop's session (the
+// one the last beat names as the loop's, else the one it ran in) unless the loop's next pass has gone
+// by, so a pass run in another session does not move the loop there; with it gone by the loop is lost,
+// and the session the pass ran in is the one to schedule the next.
 //   prev: lastBeat's, or null  ->  the session, or null
 export function loopCarried(prev, { next = null, session = process.env.CLAUDE_CODE_SESSION_ID || null, now = Date.now() } = {}) {
   if (next != null) return session;
-  return prev?.loop && (prev.next == null || prev.next > now) ? prev.loop : null;
+  const was = prev?.loop ?? prev?.session ?? null;
+  return was && (prev.next == null || prev.next > now) ? was : null;
 }
 
 // A next-pass time as given on a command line: `+<seconds>` or `<seconds>` from now, or an ISO time.
@@ -106,8 +107,9 @@ export function lastBeat(stateDir, queuePath) {
 
 // A batch is live while its last pass is fresher than LIVE_MS, or while the next pass it recorded is
 // not yet PASS_GRACE_MS overdue: an orchestrator waiting longer than LIVE_MS between passes has not gone.
-export const liveBeat = (beat, now = Date.now()) => beat != null
-  && (now - beat.at < LIVE_MS || (beat.next != null && now < beat.next + PASS_GRACE_MS));
+// stoppedAt is when a beat stops reading live (epoch ms).
+export const stoppedAt = (beat) => Math.max(beat.at + LIVE_MS, beat.next != null ? beat.next + PASS_GRACE_MS : -Infinity);
+export const liveBeat = (beat, now = Date.now()) => beat != null && now < stoppedAt(beat);
 
 // Whether otherQueues() entry `o` has an orchestrator with a live beat.
 export const queueLive = (o, { now = Date.now(), stateRoot = join(E.HOME, '.desk-autopilot') } = {}) =>

@@ -98,6 +98,7 @@ t('a pass with --next is the loop\'s: its session is the loop\'s', carried({ nex
 t('a pass run by hand keeps the loop\'s session while its next pass is to come', carried({ next: NOW + 60e3, loop: 's1' }, { session: 's2' }), 's1');
 t('and after another such pass, which recorded no next pass', carried({ next: null, loop: 's1' }, { session: 's2' }), 's1');
 t('with the loop\'s next pass gone by, the session it ran in schedules the next', carried({ next: NOW - 60e3, loop: 's1' }, { session: 's2' }), null);
+t('a beat that names no loop session gives the session it ran in', carried({ next: NOW + 60e3, loop: null, session: 's1' }, { session: 's2' }), 's1');
 
 // ---- AC2: twice the interval with no pass, the session's next turn re-arms the loop and logs it
 beat(-15, -5);
@@ -121,11 +122,12 @@ const N = await import('../desk/bin/needs-you.mjs');
 const need = () => N.collect({ word: 'loop' }).items.find((i) => i.kind === 'stalled')?.need ?? '';
 t('AC3 told, not yet re-armed: the item says so', /The loop lost its next tick, and the session could not re-arm it yet: it was told to at \d{4}-\d\d-\d\d \d\d:\d\d UTC and has not recorded a next pass since: resume the session, or run \/desk-autopilot in loop$/.test(need()), true);
 const run = (script, ...a) => spawnSync(process.execPath, [join(ROOT, 'desk', 'bin', script), ...a], { cwd: REPO, encoding: 'utf8', env: { ...process.env, DESK_REPO_DIR: REPO, CLAUDE_CODE_SESSION_ID: 's1' } });
+beat(-30, null); // the pass the session ran to re-arm it
 let r = run('queue.mjs', 'next-pass', '+600');
-t('AC2 recording the next pass logs the re-arm', `${r.status} ${/re-armed/.test(r.stdout)} ${!!tick()?.rearmed_at}`, '0 true true');
+t('AC2 recording the next pass after it logs the re-arm, against that pass', `${r.status} ${/re-armed/.test(r.stdout)} ${!!tick()?.rearmed_at} ${tick()?.pass}`, `0 true true ${iso(-30)}`);
 t('AC2 and names the session as the loop\'s', JSON.parse(readFileSync(BEAT, 'utf8')).loop, 's1');
 t('AC3 re-armed, so not stalled: no item', need(), '');
-beat(-40, -25);
+beat(-30, -15);
 t('AC3 re-armed, then lost again with no pass since: the item says so', /The loop lost its next tick, and the session re-armed it at \d{4}-\d\d-\d\d \d\d:\d\d UTC, but no pass has run since: /.test(need()), true);
 r = run('loop-tick.mjs', 'could-not', 'the', 'session', 'is', 'mid-build');
 t('AC3 could-not records why', `${r.status} ${tick()?.why}`, '0 the session is mid-build');
