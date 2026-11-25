@@ -1,4 +1,5 @@
 // suite: desk-ui install and uninstall (the token file, the port check and the launchd job)
+// layer: L3
 // covers: desk/bin/desk-ui.mjs install.sh
 // desk-ui.mjs install and install.sh --uninstall-ui on a throwaway HOME with a fake launchctl, which
 // starts and stops the server itself on a test-only port. Nothing touches your real launchd,

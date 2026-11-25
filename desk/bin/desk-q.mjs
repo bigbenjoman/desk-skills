@@ -56,20 +56,19 @@ import { startRefresh } from './cost-cache.mjs';
 import { readCosts } from './costs.mjs';
 import { pageState } from './levers-refresh.mjs';
 import { newBuild, oneBuild } from './build-memo.mjs';
+import { serverModel } from './desk-q-server.mjs';
 import { LABEL, cut, wrap, stateStamp, attention, epicShort, epicIn, GREY, DIM, BOLD, FAINT, STATE_SGR, YOU_BOLD, BAND, UNDERLINE, segLine, dim,
   timelineParts, daysParts, epicsParts, SUPPLIER_LABEL, SUPPLIER_BILL, costsParts, costNameOf, supplierParts, supplierPageParts, parkedBadge,
   openLeversPage, leversDue, U_NAME, accountOf, loginLabel, checkKey, sameAccountAs, unusable, pickKeys, DROP_IN, DROP_W, R_RUNS, addingName,
   usageParts, usageLines, usageOf, forgetLogins, overviewParts, hhmm, repoParts, logPath, ticketParts, prToOpen, shownState, shownRepos, repoPlace,
   forecastOf, runningOn, andList, probesDue, ZOOMS, Usage, resolveRepo, isWrite, isCommand, target, apply, supervisorState, noSupervisor, readHidden, writeHidden,
-  checkFlags, loadOrRefuse, scopeWord, run, SELECT_BG, OPT_ON, OPT_BOLD, OPT_GREY, OPT_GOOD, printable, systemOpener } from './desk-q-model.mjs';
+  checkFlags, loadOrRefuse, scopeWord, run, SELECT_BG, OPT_ON, OPT_BOLD, OPT_GREY, OPT_GOOD, printable, systemOpener, REREAD_MS } from './desk-q-model.mjs';
 
 export * from './desk-q-model.mjs';
 
 // ---- the interactive screen --------------------------------------------------------------------
 
 export const REFRESH_MS = 2000;
-// The longest an open screen goes without rereading the queues while nothing it stamps changes.
-export const REREAD_MS = 30 * 1000;
 const LOG_LINES = 40;
 const MOVE_KEYS = 'shift+↑↓ move · t top · b bottom · + − workers';
 // The question before the supervisor goes off, in the terminal's own text colour with its keys bold.
@@ -228,6 +227,7 @@ export function interactive({
   opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS, clock = Date.now,
   probeMs = PROBE_EVERY_MS, probeWith = probe, costWith = startRefresh, loginsWith = deskEnvLogins, copier = (text) => systemCopier(text, output),
   addCheckMs = ADD_CHECK_MS, subscriptionWith = deskEnvSubscription, leversWith = rebuildLevers, word = null,
+  served = null, serverWith = serverModel,
 } = {}) {
   // Started on a repo (`desk-q <repo>`, scopeWord), the screen loads only that repo, as run() does,
   // while it shows that repo's own queue, timeline, days, epics or tickets. Anywhere else, and a workers
@@ -250,7 +250,12 @@ export function interactive({
     lastRead = { stamp, at: clock() };
     return out;
   };
-  let repos = reload();
+  // `servedAt`: the date of desk-ui's listing (`served`, desk-q-server.mjs) the screen opened on and
+  // refreshes from, every repo's; null once it reads the files, which it then does for good.
+  let servedAt = scope == null && served ? served.at : null;
+  let asking = false;
+  let repos = servedAt != null ? served.repos : reload();
+  if (servedAt != null) avail = availableGiB();
   if (scope != null) scope = repos[0].slug;
   const inScope = () => view?.slug != null && !['costs', 'usage'].includes(tab) && repos.some((x) => x.id === view.slug);
   function widen(always = false) {
@@ -1006,13 +1011,29 @@ export function interactive({
   output.write(ENTER_SCREEN);
   // Every tick redraws, as one build; the queues are reread only once the state stamp has changed, or
   // REREAD_MS has passed, so a heartbeat ageing past LIVE_MS or a countdown still moves.
-  timer = setInterval(() => oneBuild(() => {
+  const fileTick = () => {
     try {
       const stamp = stateStamp();
       if (lastRead == null || stamp !== lastRead.stamp || clock() - lastRead.at >= REREAD_MS) repos = reload(stamp);
     } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
-    draw();
-  }), refreshMs);
+  };
+  // Read from the server, a tick asks it for any newer listing, one ask at a time; a server that has
+  // stopped or will not answer in time hands the screen to the files.
+  const servedTick = () => {
+    if (asking) return;
+    asking = true;
+    serverWith({ since: servedAt }).catch(() => null).then((got) => oneBuild(() => {
+      asking = false;
+      if (done) return;
+      if (got?.repos) { repos = got.repos; servedAt = got.at; avail = availableGiB(); }
+      else if (!got?.same) { servedAt = null; fileTick(); }
+      draw();
+    }));
+  };
+  timer = setInterval(() => {
+    if (servedAt != null && scope == null) servedTick();
+    else oneBuild(() => { fileTick(); draw(); });
+  }, refreshMs);
   // Only while this screen is open: the usage probe, for each login no worker keeps fresh (probesDue),
   // and the cost cache's reading, workers or not.
   probeTimer = setInterval(() => {
@@ -1032,6 +1053,9 @@ const isMain = (() => {
 })();
 if (isMain) {
   const argv = process.argv.slice(2);
+  // Every repo is read from desk-ui's server while it answers (desk-q-server.mjs); with one repo named,
+  // or no server, from the files.
+  const served = argv.includes('--help') || scopeWord(argv) != null ? null : await serverModel();
   try {
     // A terminal on both ends gets the screen; anything piped, --plain and a change typed in the
     // shell get the plain output.
@@ -1040,12 +1064,12 @@ if (isMain) {
       const word = scopeWord(argv);
       if (!process.stdin.isTTY || !process.stdout.isTTY || ['--plain', '--help', '--json'].some((f) => argv.includes(f))) return null;
       checkFlags(argv);
-      const start = target(loadOrRefuse(Date.now(), word), argv);
-      return start && !isCommand(start) ? interactive({ start, word }) : null;
+      const start = target(served?.repos ?? loadOrRefuse(Date.now(), word), argv);
+      return start && !isCommand(start) ? interactive({ start, word, served }) : null;
     });
     if (ui) {
       process.on('SIGTERM', () => ui.finish(143));
       process.on('SIGHUP', () => ui.finish(129));
-    } else console.log(run(argv));
+    } else console.log(run(argv, { repos: served?.repos }));
   } catch (e) { console.error(e instanceof Usage ? e.message : describeCrash(e)); process.exit(1); }
 }

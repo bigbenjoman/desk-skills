@@ -57,7 +57,8 @@ async function readModel(now) {
     tickets[s.slug] = Q.repoJson(repos, r, { now }).tickets.map(({ line, ...row }) => ({ ...row, stage: stage.get(row.key) ?? null }));
   }
   const batches = repos.filter((r) => r.queuePath).map((r) => ({ stateDir: r.stateDir, queuePath: r.queuePath, live: !!r.live }));
-  return { at: now, body, tickets, batches };
+  // `wire` is the listing itself, which desk-q reads (GET /api/model); no event or snapshot carries it.
+  return { at: now, body, tickets, batches, wire: Q.modelWire(repos, now) };
 }
 // Whether any batch's liveness has moved since the model was read, with nothing written.
 const livenessMoved = (model, now) => model.batches.some((b) => liveBeat(lastBeat(b.stateDir, b.queuePath), now) !== b.live);

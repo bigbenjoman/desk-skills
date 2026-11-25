@@ -1,4 +1,5 @@
 // suite: desk-ui writes (the allow-listed commands, their statuses, per-repo order and the audit log)
+// layer: L2
 // covers: desk/bin/desk-ui.mjs
 // desk-ui.mjs serve on a throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT and a test-only port, with
 // DESK_UI_TEST_BIN pointing at stub commands that record their argv and exit with a chosen code. A

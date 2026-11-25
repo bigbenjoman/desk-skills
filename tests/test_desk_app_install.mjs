@@ -1,4 +1,5 @@
 // suite: Desk.app's build in install.sh (source hash, signing, the previous build kept, uninstall)
+// layer: L3
 // covers: desk/bin/desk-app.mjs install.sh
 // desk-app.mjs install and uninstall, and install.sh's install_desk_app and --uninstall-ui, on a
 // throwaway HOME with a stub npm whose electron-builder writes a tiny app bundle, and stub open and
