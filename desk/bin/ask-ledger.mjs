@@ -9,7 +9,8 @@
 // latency_s is the answer's time less the park's since. Each step is written once: its event id is
 // ask:<ask>:<step> (a presentation's names its way too, ask:<ask>:presented:<via>), and an append skips
 // a step the ledger already holds, so a retry writes nothing twice. A step for an ask with no `since`
-// is no ask's, and is not written.
+// is no ask's, and is not written; nor is any step in a batch the ledger has never named, which the
+// batch's first queue write seeds.
 //
 // Only with the ledger lever on (queue-ledger.mjs ledgerOn, or another repo's row for a writer that
 // works across repos: ledgerOnIn). A write that fails never fails its caller: it comes back as a line
@@ -19,12 +20,15 @@
 import { basename } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { append, fold, LOCK_WAIT_MS, PARK_KINDS } from './ticket-ledger.mjs';
+import { append, fold, LOCK_WAIT_MS } from './ticket-ledger.mjs';
 import { ledgerOn, ledgerTarget } from './queue-ledger.mjs';
-import { parkKindOf } from './batch-state.mjs';
+import { parkKind } from './batch-state.mjs';
 import { parseLevers, repoConfigValues } from './desk-env.mjs';
 
 export const askId = (key, since) => `${key}:${since}`;
+// Who answers through answer.mjs when it is neither the person nor the decider's --taken: `default`, set
+// by the pass's own take of a recommended option (pass.mjs takeRecommended).
+export const ASK_BY_ENV = 'DESK_ASK_BY';
 
 // Whether the ledger lever is on in repo `slug`'s config, as ledgerOn reads this repo's: off where it
 // cannot be read.
@@ -46,7 +50,7 @@ function eventOf(s, batch, now) {
   switch (s.step) {
     case 'raised':
       return { ...base, id: `ask:${ask}:raised`, type: 'ask_raised', at: now,
-        data: { ask, since, kind: PARK_KINDS.includes(s.kind) ? s.kind : parkKindOf(s.question), blocking: typeof s.blocking === 'boolean' ? s.blocking : null } };
+        data: { ask, since, kind: parkKind({ park: { kind: s.kind, question: s.question } }), blocking: typeof s.blocking === 'boolean' ? s.blocking : null } };
     case 'presented':
       return { ...base, id: `ask:${ask}:presented:${s.via}`, type: 'ask_presented', at: now,
         data: { ask, via: s.via, ref: text(s.ref), notification: text(s.notification) } };
@@ -62,8 +66,12 @@ function eventOf(s, batch, now) {
   }
 }
 
-// Whether the folded `state` holds event `ev`'s step already: its id, or the step on the ask's record.
+// Whether event `ev` is left out of the folded `state`: a step it holds already (its id, or the step on
+// the ask's record), or any step of a batch the log has never named. A batch's first event names it, and
+// a queue write seeds only a batch the log has not named (queue-ledger.mjs recordWrite), so an ask
+// written first would leave its batch never seeded.
 function holds(state, ev) {
+  if (!Object.hasOwn(state.batches, ev.batch ?? '')) return true;
   if (state.ids.includes(ev.id)) return true;
   const a = state.tickets[ev.key]?.asks?.[ev.data.ask];
   if (!a) return false;
@@ -73,8 +81,8 @@ function holds(state, ev) {
   return a.acted != null;
 }
 
-// Appends ask steps `steps` ([{ step: raised|presented|answered|acted, key, since, ... }], the fields each
-// writer below names) to the ledger of queue file `at` (or `{ repoDir, batch }`), in one append. `on`
+// Appends ask steps `steps` ([{ step, key, since, ... }]: raised takes kind (else read from question) and
+// blocking; presented via, ref and notification; answered by, session and at; acted round) to the ledger of queue file `at` (or `{ repoDir, batch }`), in one append. `on`
 // is the ledger lever. -> the report lines: none, or one saying the steps could not be written.
 export function recordAsks(at, steps, { on = ledgerOn(), by, now = new Date(), waitMs = LOCK_WAIT_MS } = {}) {
   const list = [].concat(steps ?? []).filter(Boolean);
@@ -91,15 +99,8 @@ export function recordAsks(at, steps, { on = ledgerOn(), by, now = new Date(), w
   }
 }
 
-const each = (step, asks) => [].concat(asks ?? []).map((a) => ({ ...a, step }));
-// { key, since, kind (else read from question), blocking }
-export const askRaised = (at, asks, opts) => recordAsks(at, each('raised', asks), opts);
-// { key, since, via, ref, notification }
-export const askPresented = (at, asks, opts) => recordAsks(at, each('presented', asks), opts);
-// { key, since, by, session, at (the answer's time, else now) }
-export const askAnswered = (at, asks, opts) => recordAsks(at, each('answered', asks), opts);
-// { key, since, round }
-export const askActed = (at, asks, opts) => recordAsks(at, each('acted', asks), opts);
+// The answer to asks `asks` ({ key, since, by, session, at: the answer's time, else now }, or a list).
+export const askAnswered = (at, asks, opts) => recordAsks(at, [].concat(asks ?? []).map((a) => ({ ...a, step: 'answered' })), opts);
 
 // Every ask a folded ledger state holds, with its ticket's key and batch: [{ key, batch, ask, since,
 // kind, blocking, raised_at, presented, answered, acted }], by ticket and then by since.

@@ -20,7 +20,7 @@ import { readRegistry } from './claude-logins.mjs';
 import { parseDecision } from './decisions.mjs';
 import { recommendedAnswer } from './recoveries.mjs';
 import { saveAnswer } from './briefing.mjs';
-import { askAnswered } from './ask-ledger.mjs';
+import { askAnswered, ASK_BY_ENV } from './ask-ledger.mjs';
 
 crashShowsPerson();
 const QUEUE = join(runBin(), 'queue.mjs');
@@ -170,10 +170,13 @@ if (waiting) {
 // survive there too — the answers file is consumed and deleted by the worker.
 saveAnswer(STATE, ticket, text, stamp);
 
-// An answer to a park answers its ask (ask-ledger.mjs), by the decider when taken, else the person, in
-// the session it came from where one is named. A "not now" puts the ask off, and answers nothing.
+// An answer to a park answers its ask (ask-ledger.mjs): by the decider when taken, by default when the
+// pass took a recommended option (ASK_BY_ENV), else by the person, in the session it came from where one
+// is named. A "not now" puts the ask off, and answers nothing.
 if (parkSince && !heldNow && !putOffAnswer) {
-  for (const l of askAnswered(queueFile(), { key: ticket, since: parkSince, by: taken ? 'decider' : 'person', session: process.env.CLAUDE_CODE_SESSION_ID ?? null, at: stamp }, { by: 'answer.mjs' })) console.error(l);
+  const by = taken ? 'decider' : process.env[ASK_BY_ENV] === 'default' ? 'default' : 'person';
+  const session = by === 'default' ? null : process.env.CLAUDE_CODE_SESSION_ID ?? null;
+  for (const l of askAnswered(queueFile(), { key: ticket, since: parkSince, by, session, at: stamp }, { by: 'answer.mjs' })) console.error(l);
 }
 
 // A taken call is taken once, as the pass's own take records it (pass.mjs takeRecommended): the same

@@ -610,6 +610,8 @@ for (const a of readAsks(fold('$T'))) console.log([a.ask, a.kind, a.presented.ma
 askevents(){ grep -c "\"type\":\"$1\"" "$T/ledger/events.jsonl" 2>/dev/null || echo 0; }
 mark; rm -f "$T/state/handed.json"; echo "take J6" > "$T/claude.mode"
 queue '{"J6":{"key":"J6","state":"parked","lane":"A","park":{"kind":"question","question":"'"$REC"' (J6)","since":"2026-10-28T08:00:00Z"}},"C2":{"key":"C2","state":"parked","lane":"C","park":{"kind":"question","question":"which of two layouts?","since":"2026-10-28T09:00:00Z"}}}'
+# The batch named in its ledger, as its first queue write with the lever on would.
+node --input-type=module -e "import { queueDifference } from '$B/queue-ledger.mjs'; queueDifference('$DESK_QUEUE', { seed: true });"
 verdict '{"status":"show_person","code":11,"message":"PARKED","waiting":[],"parked":[{"key":"J6","question":"'"$REC"' (J6)"},{"key":"C2","question":"which of two layouts?"}],"notify":true,"push":[]}'
 out=$(tick); settle
 verdict '{"status":"nothing_yet","code":10,"message":"no change this pass","waiting":[],"parked":[],"notify":false,"push":[]}'

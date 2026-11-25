@@ -28,15 +28,21 @@ Object.assign(process.env, { HOME: join(T, 'home'), DESK_CONFIG: ON, DESK_HOME: 
 const A = await import('../desk/bin/ask-ledger.mjs');
 const { fold, read: readLog, ledgerPaths, project } = await import('../desk/bin/ticket-ledger.mjs');
 const { lock, unlock } = await import('../desk/bin/dir-lock.mjs');
-const { queueDifference } = await import('../desk/bin/queue-ledger.mjs');
+const { queueDifference, recordWrite } = await import('../desk/bin/queue-ledger.mjs');
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const j = JSON.stringify;
 const write = (f, q) => { mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, `${JSON.stringify(q, null, 2)}\n`); };
-const log = (f) => { const p = ledgerPaths(dirname(f)).events; return existsSync(p) ? readFileSync(p, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []; };
+const events = (f) => { const p = ledgerPaths(dirname(f)).events; return existsSync(p) ? readFileSync(p, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []; };
+// The ask events in the ledger beside queue `f`.
+const log = (f) => events(f).filter((e) => e.type.startsWith('ask_'));
 let n = 0;
-const fixture = (q) => { const f = join(T, `q${++n}`, 'queue.json'); write(f, q); return f; };
+// A queue whose batch its ledger has named, by seeding it as a queue write would, unless `seed` is false.
+const fixture = (q, { seed = true } = {}) => { const f = join(T, `q${++n}`, 'queue.json'); write(f, q); if (seed) queueDifference(f, { seed: true }); return f; };
+// One step's writer, through recordAsks.
+const step = (name) => (at, asks, opts) => A.recordAsks(at, [].concat(asks).map((a) => ({ ...a, step: name })), opts);
+const raised = step('raised'), presented = step('presented'), acted = step('acted');
 const SINCE = '2026-11-20T10:00:00.000Z';
 const parkedQ = (key = 'P-1', since = SINCE, more = {}) => ({ version: 1, batch: 'b', tickets: { [key]: { key, lane: 'A', state: 'parked', park: { kind: 'question', question: 'which copy?', since }, ...more } } });
 
@@ -47,10 +53,10 @@ t('an ask is its ticket and its park\'s since', A.askId('P-1', SINCE), `P-1:${SI
   const f = fixture(parkedQ());
   const at = (s) => ({ now: new Date(`2026-11-20T10:${s}.000Z`), by: 'test' });
   const lines = [
-    ...A.askRaised(f, { key: 'P-1', since: SINCE, question: 'which copy?' }, at('00:30')),
-    ...A.askPresented(f, { key: 'P-1', since: SINCE, via: 'decider', ref: 'run-1' }, at('01:00')),
+    ...raised(f, { key: 'P-1', since: SINCE, question: 'which copy?' }, at('00:30')),
+    ...presented(f, { key: 'P-1', since: SINCE, via: 'decider', ref: 'run-1' }, at('01:00')),
     ...A.askAnswered(f, { key: 'P-1', since: SINCE, by: 'person', session: null, at: '2026-11-20T10:15:30.000Z' }, at('15:31')),
-    ...A.askActed(f, { key: 'P-1', since: SINCE, round: 2 }, at('20:00')),
+    ...acted(f, { key: 'P-1', since: SINCE, round: 2 }, at('20:00')),
   ];
   t('a write that succeeds reports nothing', j(lines), '[]');
   const ask = `P-1:${SINCE}`;
@@ -70,17 +76,17 @@ t('an ask is its ticket and its park\'s since', A.askId('P-1', SINCE), `P-1:${SI
   // A retry writes nothing twice, and a second answerer is not written over the first.
   const before = (existsSync(ledgerPaths(dirname(f)).events) ? readFileSync(ledgerPaths(dirname(f)).events, 'utf8') : '');
   const again = [
-    ...A.askRaised(f, { key: 'P-1', since: SINCE, kind: 'question' }),
-    ...A.askPresented(f, { key: 'P-1', since: SINCE, via: 'decider', ref: 'run-2' }),
+    ...raised(f, { key: 'P-1', since: SINCE, kind: 'question' }),
+    ...presented(f, { key: 'P-1', since: SINCE, via: 'decider', ref: 'run-2' }),
     ...A.askAnswered(f, { key: 'P-1', since: SINCE, by: 'decider' }),
-    ...A.askActed(f, { key: 'P-1', since: SINCE, round: 3 }),
+    ...acted(f, { key: 'P-1', since: SINCE, round: 3 }),
   ];
   t('a retry of every step reports nothing', j(again), '[]');
   t('and writes nothing to the log the first writes made', before !== '' && (existsSync(ledgerPaths(dirname(f)).events) ? readFileSync(ledgerPaths(dirname(f)).events, 'utf8') : '') === before, true);
-  A.askPresented(f, [{ key: 'P-1', since: SINCE, via: 'digest', ref: '/d/page.md', notification: 'digest:2026-11-20T17:00' }]);
+  presented(f, [{ key: 'P-1', since: SINCE, via: 'digest', ref: '/d/page.md', notification: 'digest:2026-11-20T17:00' }]);
   t('a presentation another way is written beside the first', j(A.readAsks(fold(dirname(f)))[0]?.presented?.map((p) => [p.via, p.notification])),
     j([['decider', null], ['digest', 'digest:2026-11-20T17:00']]));
-  t('so is a park parked again, a new ask', A.askRaised(f, { key: 'P-1', since: '2026-11-21T09:00:00.000Z', kind: 'question' }).length + A.readAsks(fold(dirname(f))).length, 2);
+  t('so is a park parked again, a new ask', raised(f, { key: 'P-1', since: '2026-11-21T09:00:00.000Z', kind: 'question' }).length + A.readAsks(fold(dirname(f))).length, 2);
 }
 
 // Latency: never below zero, and null where the since does not read as a time.
@@ -93,7 +99,7 @@ t('an ask is its ticket and its park\'s since', A.askId('P-1', SINCE), `P-1:${SI
   ]);
   t('an answer stamped before its since is 0 s late; an unreadable since gives no latency; a day is 86,400 s',
     j(log(f).map((e) => e.data?.latency_s)), '[0,null,86400]');
-  t('a step with no since is no ask\'s, and is not written', A.askRaised(f, { key: 'L-4', since: null, kind: 'question' }).length + log(f).length, 3);
+  t('a step with no since is no ask\'s, and is not written', raised(f, { key: 'L-4', since: null, kind: 'question' }).length + log(f).length, 3);
 }
 
 // The events leave the queue's projection, its diff against queue.json and queue.mjs rebuild unchanged.
@@ -119,15 +125,31 @@ t('an ask is its ticket and its park\'s since', A.askId('P-1', SINCE), `P-1:${SI
   t('none of the steps is an illegal transition from the ticket\'s state', j([steps, readLog(dirname(f)).illegal]), j([4, []]));
 }
 
+// An ask is never a batch's first event: a batch the ledger has never named is left for its first queue
+// write to seed, which then seeds every ticket, as it would with no ask written.
+{
+  const q = { version: 1, batch: 'b', tickets: { 'A-1': { key: 'A-1', lane: 'A', state: 'parked', park: { kind: 'question', question: 'which?', since: SINCE } }, 'A-2': { key: 'A-2', lane: 'A', state: 'triaged' } } };
+  const f = fixture(q, { seed: false });
+  const lines = [...A.askAnswered(f, { key: 'A-1', since: SINCE, by: 'person' }), ...raised(f, { key: 'A-1', since: SINCE, kind: 'question' })];
+  const wrote = events(f).length;
+  const after = structuredClone(q); after.tickets['A-1'].lane = 'B';
+  write(f, after);
+  recordWrite(f, q, after, { by: 'test' });
+  t('an ask on a batch the ledger has never named writes nothing and reports nothing', j([wrote, lines]), '[0,[]]');
+  t('so the next queue write still seeds every ticket of it', j(Object.keys(fold(dirname(f)).tickets).sort()), '["A-1","A-2"]');
+  t('and the rebuild matches queue.json', j(queueDifference(f).diffs), '[]');
+}
+
 // With the ledger lever off nothing is written and nothing fails; a failed write is a line, never a throw.
 {
-  const f = fixture(parkedQ());
-  const off = A.askRaised(f, { key: 'P-1', since: SINCE, kind: 'question' }, { on: false });
+  const f = fixture(parkedQ(), { seed: false });
+  const off = raised(f, { key: 'P-1', since: SINCE, kind: 'question' }, { on: false });
   process.env.DESK_CONFIG = OFF;
-  const offCfg = [...A.askAnswered(f, { key: 'P-1', since: SINCE, by: 'person' }), ...A.askActed(f, { key: 'P-1', since: SINCE, round: 1 })];
+  const offCfg = [...A.askAnswered(f, { key: 'P-1', since: SINCE, by: 'person' }), ...acted(f, { key: 'P-1', since: SINCE, round: 1 })];
   process.env.DESK_CONFIG = ON;
   const made = existsSync(ledgerPaths(dirname(f)).dir);
-  A.askRaised(f, { key: 'P-1', since: SINCE, kind: 'question' });
+  queueDifference(f, { seed: true });
+  raised(f, { key: 'P-1', since: SINCE, kind: 'question' });
   t('lever off, as on: false or in the config: nothing reported and no ledger made, where the lever on writes the same step',
     j([off, offCfg, made, log(f).map((e) => e.type)]), j([[], [], false, ['ask_raised']]));
   lock(ledgerPaths(dirname(f)).lock);
@@ -137,7 +159,7 @@ t('an ask is its ticket and its park\'s since', A.askId('P-1', SINCE), `P-1:${SI
   t('a held ledger lock fails the write without a throw, saying what was not recorded, and why', thrown === null && out?.length === 1 && out[0].startsWith('ask ledger: P-1\'s ask_answered could not be added to the ticket ledger (') && out[0].includes('locked by pid'), true);
   t('nothing was written for it', log(f).map((e) => e.type).join(), 'ask_raised');
   writeFileSync(join(T, 'a-file'), 'x');
-  t('a ledger that cannot be made is a line too', A.askActed({ repoDir: join(T, 'a-file'), batch: 'b' }, { key: 'P-1', since: SINCE, round: 1 }).length, 1);
+  t('a ledger that cannot be made is a line too', acted({ repoDir: join(T, 'a-file'), batch: 'b' }, { key: 'P-1', since: SINCE, round: 1 }).length, 1);
   t('as is a step no writer knows', A.recordAsks(f, [{ step: 'forgotten', key: 'P-1', since: SINCE }])[0]?.startsWith('ask ledger: P-1\'s ask_forgotten could not be added'), true);
 }
 
@@ -146,7 +168,8 @@ t('an ask is its ticket and its park\'s since', A.askId('P-1', SINCE), `P-1:${SI
 {
   const named = join(T, 'desk', 'repos', 'acme__y', 'batches', 'B-7', 'queue.json');
   write(named, parkedQ('Y-1'));
-  A.askRaised(named, { key: 'Y-1', since: SINCE, kind: 'question' });
+  queueDifference(named, { seed: true });
+  raised(named, { key: 'Y-1', since: SINCE, kind: 'question' });
   const ev = log(join(T, 'desk', 'repos', 'acme__y', 'queue.json'))[0];
   t('a named batch\'s ask goes to the repo\'s ledger, under the batch', `${ev?.batch} ${ev?.key}`, 'B-7 Y-1');
   mkdirSync(join(T, 'cfg', 'repos', 'acme__y'), { recursive: true });
@@ -169,6 +192,8 @@ t('an ask is its ticket and its park\'s since', A.askId('P-1', SINCE), `P-1:${SI
   t('its latency runs from the park\'s since to the answer', p.ev[0]?.data?.latency_s, Math.round((Date.parse(p.ev[0]?.at) - Date.parse(SINCE)) / 1000));
   const s = answer(parkedQ('N-2'), ['N-2', 'the long copy'], { CLAUDE_CODE_SESSION_ID: 'sess-42' });
   t('an answer from a session names it', s.ev[0]?.data?.session, 'sess-42');
+  const df = answer(parkedQ('N-7'), ['N-7', 'Merge as foundation'], { [A.ASK_BY_ENV]: 'default', CLAUDE_CODE_SESSION_ID: 'sess-pass' });
+  t('an answer made by default (the pass\'s own take) is recorded so, with no session', j([df.r.status, df.ev[0]?.data?.by, df.ev[0]?.data?.session]), j([0, 'default', null]));
   const d = answer(parkedQ('N-3', SINCE, { park: { kind: 'question', question: 'Merge as foundation (recommended), or split?', since: SINCE } }),
     ['--taken', 'N-3', '{"question":"Merge as foundation, or split?","options":["Merge as foundation","Split"],"chose":"Merge as foundation","category":"scope"}']);
   t('a taken call is the decider\'s answer', j([d.r.status, d.ev[0]?.data?.by]), j([0, 'decider']));

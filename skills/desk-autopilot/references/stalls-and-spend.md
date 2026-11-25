@@ -31,8 +31,8 @@ set; parked hours per ticket is a lever guardrail.
 **Every ask is recorded step by step where the ledger lever is on** (`ask-ledger.mjs`). An ask is a
 park handed to the person or the decider, keyed `<KEY>:<park.since>`. The ticket ledger records it
 raised, presented (by push, the check-in digest or the decider), answered (by the person, with the
-session it came from where one is named, or by the decider) with its latency from the park, and acted
-on by the next worker. Each step is written once, and a write that fails is a line in the report.
+session it came from where one is named, by the decider, or by default when a pass takes a recommended
+option) with its latency from the park, and acted on by the next worker. Each step is written once, and a write that fails is a line in the report.
 
 **Which model each worker runs on is config §3b "Worker models".** At `default` (also when the row
 is absent) no `--model` is passed and every worker runs on the session default. At

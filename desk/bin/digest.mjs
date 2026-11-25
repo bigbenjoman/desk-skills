@@ -530,10 +530,12 @@ export function answer({ slug, ticket, text, dir = digestDir(), list = repos(), 
   const r = batchFor(list, slug, ticket);
   if (!r) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
   const question = openQuestions(r).find((q) => q.ticket === ticket);
+  // answer.mjs reads that repo's config, not the caller's: its ledger lever, among others, is the repo's.
+  const config = join(E.deskConfigRoot(), 'repos', slug, 'config.md');
   let out;
   try {
     out = execFileSync('node', [join(bin, 'answer.mjs'), ticket, '--all', text], {
-      encoding: 'utf8', env: { ...process.env, DESK_AUTOPILOT_STATE: r.state, DESK_QUEUE: r.queue }, stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8', env: { ...process.env, DESK_AUTOPILOT_STATE: r.state, DESK_QUEUE: r.queue, ...(existsSync(config) ? { DESK_CONFIG: config } : {}) }, stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) { return { ok: false, why: `answer.mjs refused: ${`${e.stdout ?? ''}${e.stderr ?? ''}`.trim()}` }; }
   // A "not now" is not settled: the register hides it, and ask-again must be able to bring it back.
