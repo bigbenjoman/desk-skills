@@ -184,22 +184,26 @@ const roundsOf = (stateDir, key) => workerLogs(stateDir, key).sort((a, b) => log
 
 function raiseTokens(stateDir, key, since) {
   const by = Date.parse(since);
-  const round = roundsOf(stateDir, key).filter((r) => r.events.some((d) => writesPark(d, key)) && !(r.mtime > by + SLACK_MS)).at(-1);
-  if (!round) return { ...noFigures, complete: false };
+  // The round by its time, then whether it wrote the park: a park the pass made (a stall, a budget stop,
+  // a claim) wrote none, and an earlier round's park is another ask's.
+  const round = roundsOf(stateDir, key).filter((r) => !(r.mtime > by + SLACK_MS)).at(-1);
+  if (!round?.events.some((d) => writesPark(d, key))) return { ...noFigures, complete: false };
   const after = round.events.slice(round.events.findIndex((d) => writesPark(d, key)));
   return { ...sumRequests(after.filter(main)), complete: after.some((d) => d.type === 'result') };
 }
 
-// null while the round has not reached its first marker and may still.
-function actTokens(stateDir, key, actedAt) {
+// null while the round has not reached its first marker and may still. A cloud session writes no log
+// here, and an act no start lies near is past finding once SLACK_MS old: either is unread, once.
+function actTokens(stateDir, key, actedAt, { cloud = false, now = new Date() } = {}) {
   const at = Date.parse(actedAt);
+  if (cloud) return { ...noFigures, complete: false };
   const rounds = roundsOf(stateDir, key);
   let best = null;
   rounds.forEach((r, ri) => r.events.forEach((d, i) => {
     const t = d?.type === 'desk_spawn' ? Date.parse(d.at) : NaN;
     if (Math.abs(t - at) <= SLACK_MS && (!best || Math.abs(t - at) < best.gap)) best = { ri, i, gap: Math.abs(t - at) };
   }));
-  if (!best) return null;
+  if (!best) return now.getTime() - at > SLACK_MS ? { ...noFigures, complete: false } : null;
   const r = rounds[best.ri];
   const rest = r.events.slice(best.i + 1);
   const next = rest.findIndex((d) => d?.type === 'desk_spawn');
@@ -257,7 +261,10 @@ export function measure(stateDir, { queue, on = ledgerOn(), dirs = null, now = n
   try {
     const { repoDir, batch } = ledgerTarget(queue);
     // An ask's since is in its id, whether or not its raise was recorded.
-    const asks = readAsks(fold(repoDir)).filter((a) => a.batch === batch && a.ask.startsWith(`${a.key}:`)).map((a) => ({ ...a, since: a.since ?? a.ask.slice(a.key.length + 1) }));
+    const state = fold(repoDir);
+    // Every ask of the repo, whichever batch: a session's previous answer may be in another batch.
+    const all = readAsks(state);
+    const asks = all.filter((a) => a.batch === batch && a.ask.startsWith(`${a.key}:`)).map((a) => ({ ...a, since: a.since ?? a.ask.slice(a.key.length + 1) }));
     let logins = dirs;
     const loginDirs = () => (logins ??= (() => { try { return projectsDirs(); } catch { return []; } })());
     const steps = [];
@@ -270,11 +277,11 @@ export function measure(stateDir, { queue, on = ledgerOn(), dirs = null, now = n
         if (ans?.by === 'person') {
           if (!ans.session) put(a, 'present', 'shell', { input: 0, output: 0, cache_read: 0, cache_write: 0, usd: 0, complete: true });
           else if (!a.tokens?.['present:session']) {
-            const prev = asks.map((x) => x.answered).filter((x) => x?.session === ans.session && Date.parse(x.at) < Date.parse(ans.at)).map((x) => Date.parse(x.at));
+            const prev = all.map((x) => x.answered).filter((x) => x?.session === ans.session && Date.parse(x.at) < Date.parse(ans.at)).map((x) => Date.parse(x.at));
             put(a, 'present', 'session', sessionTokens(loginDirs(), ans.session, prev.length ? Math.max(...prev) : -Infinity, Date.parse(ans.at)));
           }
         }
-        if (a.acted && !a.tokens?.['act:log']) put(a, 'act', 'log', actTokens(stateDir, a.key, a.acted.at));
+        if (a.acted && !a.tokens?.['act:log']) put(a, 'act', 'log', actTokens(stateDir, a.key, a.acted.at, { cloud: state.tickets[a.key]?.fields?.location === 'cloud', now }));
       } catch (e) { lines.push(`ask ledger: ${a.ask}'s tokens not measured (${String(e?.message ?? e).split('\n')[0]})`); }
     }
     lines.push(...recordAsks({ repoDir, batch }, steps, { on, by, now }));

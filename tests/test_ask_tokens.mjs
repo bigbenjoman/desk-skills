@@ -179,6 +179,57 @@ const fig = (x) => (x ? [x.input, x.output, x.cache_read, x.cache_write, x.usd, 
   t('a decider past its time with no result is complete false, never 0', j(fig(asks(b)['D-3']?.['present:decider'])), j([null, null, null, null, null, false]));
 }
 
+// ---- a park the pass made, in a round that wrote none, takes no earlier round's park ------------------
+{
+  const since = at('10:05');
+  const b = batch({ 'M-1': parked('M-1', since) });
+  const old = join(b.state, 'logs', 'M-1.log.round1.gz');
+  write(old, gzipSync(jsonl([spawnLine(at('07:00')), msg('o1', { tool: parkWrite('M-1'), input: 5, output: 5 }), result])));
+  setTime(old, at('08:00'));
+  const cur = join(b.state, 'logs', 'M-1.log');
+  write(cur, jsonl([spawnLine(at('09:00')), msg('m1', { text: 'working', input: 40, output: 40 })]));
+  setTime(cur, at('10:00'));
+  rec(b.queue, [{ step: 'raised', key: 'M-1', since, kind: 'stopped' }]);
+  measure(b.state, { queue: b.queue, on: true, dirs: [] });
+  t('a park the pass made, its round writing none, is complete false with no figures, not an earlier round\'s park', j(fig(asks(b)['M-1']?.['raise:log'])), j([null, null, null, null, null, false]));
+}
+
+// ---- an act with no start to read: a cloud session at once, a local one once it is past finding -----
+{
+  const b = batch({ 'C-1': { ...parked('C-1', at('08:00')), location: 'cloud' }, 'L-1': parked('L-1', at('08:00')), 'Y-1': parked('Y-1', at('08:00')) });
+  const now = new Date(at('12:05'));
+  rec(b.queue, [{ step: 'acted', key: 'C-1', since: at('08:00'), round: 1 }, { step: 'acted', key: 'L-1', since: at('08:00'), round: 1 }], { now: new Date(at('11:00')) });
+  rec(b.queue, [{ step: 'acted', key: 'Y-1', since: at('08:00'), round: 1 }], { now: new Date(at('12:00')) });
+  measure(b.state, { queue: b.queue, on: true, dirs: [], now });
+  const got = asks(b);
+  t('a cloud act, which writes no log here, is settled at once as complete false with no figures', j(fig(got['C-1']?.['act:log'])), j([null, null, null, null, null, false]));
+  t('a local act with no start within the slack, past it, is settled so too; one still within it waits', `${j(fig(got['L-1']?.['act:log']))} ${got['Y-1']?.['act:log']}`, `${j([null, null, null, null, null, false])} undefined`);
+  // Settled, the cloud act is not read again: a log written for it since changes nothing.
+  const before = tokensLines(b);
+  write(join(b.state, 'logs', 'C-1.log'), jsonl([spawnLine(at('11:00')), msg('c9', { text: 'AUTOPILOT_STAGE: 1/9', input: 9, output: 9 })]));
+  measure(b.state, { queue: b.queue, on: true, dirs: [], now });
+  t('a settled act is not measured again', `${before} ${tokensLines(b)} ${j(fig(asks(b)['C-1']?.['act:log']))}`, `2 2 ${j([null, null, null, null, null, false])}`);
+}
+
+// ---- a session's previous answer may be in another batch of the repo --------------------------------
+{
+  const repo = join(T, 'repo-two');
+  const standing = join(repo, 'queue.json'), named = join(repo, 'batches', 'B-2', 'queue.json');
+  write(standing, JSON.stringify({ version: 1, batch: 's', tickets: { 'A-1': parked('A-1', at('08:00')) } }));
+  write(named, JSON.stringify({ version: 1, batch: 'B-2', tickets: { 'B-1': parked('B-1', at('08:00')) } }));
+  for (const q of [standing, named]) queueDifference(q, { seed: true });
+  const login = join(T, 'login3', 'projects');
+  write(join(login, '-home-x-repo', 'sess-b.jsonl'), jsonl([
+    { ...msg('r1', { input: 100, output: 100 }), requestId: 'req-r1', timestamp: at('09:50') },
+    { ...msg('r2', { input: 7, output: 3 }), requestId: 'req-r2', timestamp: at('10:30') },
+  ]));
+  rec(standing, [{ step: 'answered', key: 'A-1', since: at('08:00'), by: 'person', session: 'sess-b', at: at('10:00') }]);
+  rec(named, [{ step: 'answered', key: 'B-1', since: at('08:00'), by: 'person', session: 'sess-b', at: at('11:00') }]);
+  measure(join(repo, 'batches', 'B-2', 'state'), { queue: named, on: true, dirs: [login] });
+  const b1 = A.readAsks(fold(repo)).find((a) => a.key === 'B-1')?.tokens?.['present:session'];
+  t('a batch\'s answer in a session takes the requests after that session\'s answer in another batch, not before it', j(fig(b1)), j([7, 3, 0, 0, usd({ input: 7, output: 3 }), true]));
+}
+
 // ---- measure never throws: a queue it cannot place is a line ---------------------------------------
 {
   let threw = null, out;
