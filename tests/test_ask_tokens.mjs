@@ -1,5 +1,5 @@
 // suite: ask tokens (what each step of an ask cost: the parked round, the decider's share or the person's session, and the round that acted)
-// layer: L2
+// layer: L1
 // covers: desk/bin/ask-ledger.mjs desk/bin/ticket-ledger.mjs desk/bin/worker-cost.mjs desk/bin/cache-report.mjs
 // measure in process against fixture batches: worker logs (gzipped rounds, a resumed round, a killed
 // worker), decider records, and session transcripts under two logins' projects folders, each beside a
