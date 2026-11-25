@@ -3728,7 +3728,8 @@ function fixTryStale(t) {
   // done tickets' reading below.
   const unrun = ran ? [] : unrunFields(t, f);
   q('set', t.key, `fix.finished=${PASS_AT}`, `fix.ended=${ended}`, ...unrun, `result.pr=${f.pr}`, 'state=done', 'handoff=null', ...(resumed ? ['resume=null'] : []), 'worktree_busy=null');
-  if (merged) q('merged', t.key, ...(v.mergedAt ? [v.mergedAt] : []), '--pr', String(f.pr));
+  // --pr replaces the ticket's merge record, so a merge already recorded with its PR (and who merged it) is kept.
+  if (merged) q('merged', t.key, ...(v.mergedAt ? [v.mergedAt] : []), ...(t.merge?.pr != null ? [] : ['--pr', String(f.pr)]));
   report.done.push(merged ? `${line}, recorded merged` : line);
   return true;
 }
