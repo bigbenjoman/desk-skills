@@ -180,7 +180,7 @@ the end of the batch:
   runs in the base worktree the pass leaves that worktree alone (no sync, no baseline): new children
   branch from origin's base as it stands. In the
   base worktree the gate merges §0 Default branch in, runs §4 Install, the §4 Acceptance specs
-  command once for each criterion id (the spine's, and any other one of the batch's specs is titled with), and
+  command once for each criterion id (the spine's, and any other a spec there is titled with), and
   §4 Typecheck, Lint and Unit tests (Jest and
   Vitest capped at §3b's test cap), each under its lock. Its result is the queue's `gate`, and its
   output is `<state>/logs/base-gate.log`.
