@@ -136,9 +136,9 @@ export const ENTRIES = Object.freeze({
   // check-in digest, where a recommended call applies by default; `one-at-a-time` pushes each ask as it
   // is handed on; `mixed` pushes only a blocking one. Weighed only on the tickets that raised an ask
   // (`rows`), its cost the shared one, worker dollars per ticket, and an arm pushing 25% more than
-  // batched per ticket is refused. Declared, not yet trialled: levers decide sets it.
+  // batched per ticket is refused (levers-evaluate.mjs weighs each).
   'question-handling': {
-    layer: 'low-risk', trialled: false, values: ['batched', 'one-at-a-time', 'mixed'], baseline: 'batched',
+    layer: 'low-risk', trialled: true, values: ['batched', 'one-at-a-time', 'mixed'], baseline: 'batched',
     mechanism: metric('ask dollars per asking ticket', 0.1),
     rows: 'tickets that raised an ask',
     guardrails: { interruptions: { metric: 'interruptions (pushes and digests) per ticket', margin: { max_rate_ratio: 1.25 } } },

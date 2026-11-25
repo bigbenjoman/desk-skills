@@ -19,7 +19,7 @@ const dropCodex = Object.fromEntries(Object.entries(ENTRIES).filter(([n]) => n !
 t('AC1 a lever desk-env knows with no entry fails loading, by name', loadError(dropCodex), 'lever-registry: no entry for "codex", which desk-env knows as a lever');
 t('AC1 an entry desk-env does not know fails loading, by name', loadError({ ...ENTRIES, turbo: ENTRIES.memory }), 'lever-registry: entry "turbo" is not a lever desk-env knows (add it to LEVERS in desk-env.mjs)');
 t('AC1 the quality-risk layer is trialled (DS-646)', Object.values(REGISTRY).filter((l) => l.layer === 'quality-risk').every((l) => l.trialled === true), true);
-t('AC1 the low-risk layer is trialled, but the ledger and question handling', Object.values(REGISTRY).filter((l) => l.layer === 'low-risk' && !['ledger', 'question-handling'].includes(l.name)).every((l) => l.trialled === true), true);
+t('AC1 the low-risk layer is trialled, but the ledger', Object.values(REGISTRY).filter((l) => l.layer === 'low-risk' && l.name !== 'ledger').every((l) => l.trialled === true), true);
 t('AC1 the ledger is declared but not trialled (DS-893)', REGISTRY.ledger.trialled, false);
 t('AC1 the loaded registry is frozen', Object.isFrozen(REGISTRY) && Object.isFrozen(REGISTRY.preflight) && Object.isFrozen(REGISTRY.preflight.code), true);
 
@@ -107,9 +107,9 @@ t('a value named like an on/off arm fails loading', loadError(valued(['on', 'b']
 t('a value DESK_LEVER_VALUES could not carry fails loading', /has value "a b"/.test(loadError(valued(['a b', 'c'], 'c'))), true);
 t('values on the quality-risk layer fail loading', loadError({ ...ENTRIES, codex: { ...ENTRIES.codex, values: ['a', 'b'], baseline: 'a' } }), 'lever-registry: lever "codex" declares "values" on the quality-risk layer; only a low-risk lever may have more than two arms');
 
-// Question handling: three arms, batched the baseline, declared but not trialled.
+// Question handling: three arms, batched the baseline, on trial.
 const qh = lever('question-handling');
-t('question handling: its arms, batched the baseline', `${qh.values.join(' ')} | ${qh.baseline} | ${qh.trialled}`, 'batched one-at-a-time mixed | batched | false');
+t('question handling: its arms, batched the baseline', `${qh.values.join(' ')} | ${qh.baseline} | ${qh.trialled}`, 'batched one-at-a-time mixed | batched | true');
 t('question handling: ask dollars per asking ticket, down at least 10%', min('question-handling'), 'ask dollars per asking ticket down 0.1');
 t('question handling: weighed only on the tickets that raised an ask', qh.rows, 'tickets that raised an ask');
 t('question handling: parked hours guarded, as every lever is', qh.guardrails['parked-hours'] === GUARDRAILS['parked-hours'], true);
