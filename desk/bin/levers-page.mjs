@@ -137,6 +137,10 @@ const W = 700;
 const H = 340;
 const TOP = H * 0.12;
 const BOT = H * 0.84;
+// About how wide one character of a 10px label is, in chart units, with the chart drawn about 560px wide.
+const LABEL_W = 7;
+// Below this many weekly points the trends open on the last 30 days, where a new lever shows sooner.
+const WEEKS_FOR_WBR = 3;
 function nice(lo, hi, minStep) {
   const span = hi - lo;
   const raw = Math.max(span / 4, minStep || 0) || Math.max(Math.abs(hi) / 4, 1);
@@ -175,14 +179,20 @@ function panel(o, { labels, vals, ends, base, m, x0, x1, side, every, first }) {
     if (v == null) { if (cur.length) o.segs.push(cur.join(' ')); cur = []; return; }
     cur.push(`${xAt(i).toFixed(1)},${y(v).toFixed(1)}`);
     o.dots.push({ x: xAt(i), y: y(v) });
-    if (every === 1 || (n - 1 - i) % every === 0) o.labels.push({ x: xAt(i), y: y(v) - 6, tf: 'translate(-50%,-100%)', s: m.v(v), c: C.ink });
+    // Centred over its point, but kept inside the panel so it never runs into the tick labels beside it.
+    if (every === 1 || (n - 1 - i) % every === 0) {
+      const s = m.v(v);
+      const w = s.length * LABEL_W;
+      o.labels.push({ x: Math.max(x0, Math.min(xAt(i) - w / 2, x1 - w)), y: y(v) - 6, tf: 'translate(0,-100%)', s, c: C.ink });
+    }
   });
   if (cur.length) o.segs.push(cur.join(' '));
   const pre = first ? ends.filter((k) => k < first).length : 0;
   if (pre) {
-    // A gap too narrow to centre the note in starts it at the gap's left edge instead.
+    // Above the top of the plot, so it never strikes through the baseline. A gap too narrow to centre
+    // the note in starts it at the gap's left edge instead.
     const wide = pre * dx >= 160;
-    o.labels.push({ x: wide ? x0 + (pre * dx) / 2 : x0 + 4, y: (TOP + BOT) / 2, tf: wide ? 'translate(-50%,-50%)' : 'translate(0,-50%)', s: `desk started recording on ${dayLabel(first)}`, c: C.grey, note: true });
+    o.labels.push({ x: wide ? x0 + (pre * dx) / 2 : x0 + 4, y: TOP - 4, tf: wide ? 'translate(-50%,-100%)' : 'translate(0,-100%)', s: `desk started recording on ${dayLabel(first)}`, c: C.grey, note: true });
   }
 }
 
@@ -190,7 +200,7 @@ function panel(o, { labels, vals, ends, base, m, x0, x1, side, every, first }) {
 const weekEnd = (k) => new Date(Date.parse(`${k}T00:00:00Z`) + 6 * 86_400_000).toISOString().slice(0, 10);
 const monthEnd = (m) => new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0)).toISOString().slice(0, 10);
 
-function chart(key, metric, view) {
+function chart(key, metric, view, shown) {
   const m = METRICS[key];
   const base = scaled(m, metric.baseline.value);
   const o = { grid: [], axes: [], ticks: [], labels: [], bases: [], bdots: [], segs: [], dots: [] };
@@ -205,7 +215,7 @@ function chart(key, metric, view) {
   const aria = `${m.title}: ${view === 'days' ? 'each of the last 30 days' : 'last 6 weeks on the left, last 12 months on the right'}. Black is now${base == null ? '' : `, grey is before levers at ${m.v(base)}`}.`;
   const px = (x) => `${((x / W) * 100).toFixed(3)}%`;
   const py = (y) => `${((y / H) * 100).toFixed(3)}%`;
-  return `<div class="chart" data-view="${view}"${view === 'days' ? ' hidden' : ''}>
+  return `<div class="chart" data-view="${view}"${view === shown ? '' : ' hidden'}>
 <svg viewBox="0 0 ${W} ${H}" width="100%" height="100%" role="img" aria-label="${esc(aria)}">
 ${o.grid.map((g) => `<line x1="${f1(g.x0)}" y1="${f1(g.y)}" x2="${f1(g.x1)}" y2="${f1(g.y)}" stroke="#E0E6F1"></line>`).join('')}
 ${o.axes.map((a) => `<line x1="${f1(a.x0)}" y1="${f1(BOT)}" x2="${f1(a.x1)}" y2="${f1(BOT)}" stroke="#6E7079"></line>`).join('')}
@@ -221,7 +231,7 @@ ${o.dots.map((d) => `<circle class="pt" cx="${f1(d.x)}" cy="${f1(d.y)}" r="3" fi
 }
 
 const CALLOUTS = [['Yesterday', 'yesterday', false], ['DoD%', 'dod_pct', true], ['Last Wk', 'last_week', false], ['WoW%', 'wow_pct', true], ['vs before', 'last_week_vs_before_pct', true], ['MTD', 'mtd', false], ['MoM%', 'mom_pct', true], ['To date', 'to_date', false], ['vs before', 'to_date_vs_before_pct', true]];
-function wbrCard(key, metric) {
+function wbrCard(key, metric, shown) {
   const m = METRICS[key];
   const r = rag(key, metric);
   const cells = CALLOUTS.map(([l, k, pct]) => {
@@ -233,8 +243,8 @@ function wbrCard(key, metric) {
   return `<article class="card wbr" data-metric="${key}">
 <div class="wbr-head"><div></div><h3>${esc(m.title)}</h3><div class="wbr-rag"><span class="rag" role="img" aria-label="${esc(r.label)}" title="${esc(r.label)}" style="background:${r.c}"></span></div></div>
 <p class="muted wbr-sub">${esc(m.sub(metric.baseline.value, metric.keyed_by === 'merged_at'))}</p>
-${chart(key, metric, 'wbr')}
-${chart(key, metric, 'days')}
+${chart(key, metric, 'wbr', shown)}
+${chart(key, metric, 'days', shown)}
 <div class="callouts">${cells.map((k) => `<div class="callout"><span class="callout-l">${esc(k.l)}</span><span class="callout-v mono" style="color:${k.c}">${esc(k.v)}</span></div>`).join('')}</div>
 </article>`;
 }
@@ -338,10 +348,15 @@ function trends(v) {
   const p = v.panels.trends;
   const ms = p.metrics ?? {};
   const has = p.state !== 'empty' && Object.values(ms).some((m) => m.first_recorded);
-  const toggle = '<div role="group" aria-label="Chart view" class="toggle"><button type="button" data-show="wbr" aria-pressed="true">6 weeks &amp; 12 months</button><button type="button" data-show="days" aria-pressed="false">Last 30 days</button></div>';
-  const head = `<div class="sec-head"><div class="stack4"><h2 id="tr-h">Trends</h2><p class="muted small" data-view="wbr">Black is now, grey is before levers. Left: the last 6 weeks. Right: the last 12 months.</p><p class="muted small" data-view="days" hidden>Black is now, grey is before levers. One point a day, so a lever shows within days.</p></div>${toggle}</div>`;
+  // The 6-week and 12-month view once a metric has WEEKS_FOR_WBR weekly points, the last 30 days before.
+  const weeks = Math.max(0, ...Object.values(ms).map((m) => (m.weekly ?? []).filter((p) => p.value != null).length));
+  const shown = weeks >= WEEKS_FOR_WBR ? 'wbr' : 'days';
+  const pressed = (k) => `aria-pressed="${k === shown}"`;
+  const hide = (k) => (k === shown ? '' : ' hidden');
+  const toggle = `<div role="group" aria-label="Chart view" class="toggle"><button type="button" data-show="wbr" ${pressed('wbr')}>6 weeks &amp; 12 months</button><button type="button" data-show="days" ${pressed('days')}>Last 30 days</button></div>`;
+  const head = `<div class="sec-head"><div class="stack4"><h2 id="tr-h">Trends</h2><p class="muted small" data-view="wbr"${hide('wbr')}>Black is now, grey is before levers. Left: the last 6 weeks. Right: the last 12 months.</p><p class="muted small" data-view="days"${hide('days')}>Black is now, grey is before levers. One point a day, so a lever shows within days.</p></div>${toggle}</div>`;
   const body = has
-    ? `<div class="cards">${Object.keys(METRICS).filter((k) => ms[k]).map((k) => wbrCard(k, ms[k])).join('')}</div>`
+    ? `<div class="cards">${Object.keys(METRICS).filter((k) => ms[k]).map((k) => wbrCard(k, ms[k], shown)).join('')}</div>`
     : `<div class="cards">${Object.values(METRICS).map((m) => `<article class="card awaiting"><div class="awaiting-head"><h3>${esc(m.title)}</h3><span class="rag rag-sm" role="img" aria-label="Grey: no data yet" style="background:${C.grey}"></span></div><div class="awaiting-body"><span class="muted">Awaiting data</span><span class="muted small">This fills in once desk has evaluated its first tickets.</span></div></article>`).join('')}</div>`;
   return `<section aria-labelledby="tr-h" class="stack12">${head}${notes(p)}${body}</section>`;
 }

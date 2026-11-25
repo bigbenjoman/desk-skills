@@ -292,6 +292,33 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('AC9 a single month before recording: the note', labels(chartOf(fc, 'wbr')).filter((l) => l === 'desk started recording on 10 Feb').length, 1);
 }
 
+// Chart labels: the recording note sits above the plot, clear of the baseline; each value label stays
+// inside its panel, clear of the tick labels beside it; and with under 3 weekly points the trends open
+// on the last 30 days.
+{
+  const spans = (ch) => [...ch.matchAll(/<span(?: class="(gap-note)")? style="left:([\d.]+)%;top:([\d.]+)%;transform:([^;]*);color:([^"]*)">([^<]*)<\/span>/g)]
+    .map((m) => ({ note: !!m[1], left: Number(m[2]), top: Number(m[3]), tf: m[4], c: m[5], s: m[6] }));
+  const ch = chartOf(cards[0], 'wbr');
+  const note = spans(ch).find((x) => x.note);
+  t('labels: the recording note sits above the top of the plot', note.top < 12 && note.tf.endsWith('-100%)'), true);
+  // A 10px label is about 7 chart units a character wide; the panels span 8% to 48% and 54% to 91%.
+  const width = (s) => (s.length * 7 / 700) * 100;
+  const inside = (x, lo, hi) => x.tf === 'translate(0,-100%)' && x.left >= lo - 0.01 && x.left + width(x.s) <= hi + 0.01;
+  const values = (c) => spans(c).filter((x) => x.c === '#111827');
+  const vs = values(ch);
+  t('labels: the weekly values stay inside the left panel', vs.filter((x) => x.left < 50).every((x) => inside(x, 8, 48)), true);
+  t('labels: the monthly values stay inside the right panel, clear of its ticks', vs.filter((x) => x.left >= 50).every((x) => inside(x, 54, 91)), true);
+  t('labels: the 30-day values stay inside their panel', values(chartOf(cards[0], 'days')).every((x) => inside(x, 8, 95)), true);
+  // Two weeks in: under 3 weekly points.
+  const early = structuredClone(six);
+  for (const m of Object.values(early.panels.trends.metrics)) m.weekly = m.weekly.map((p, i) => (i < 4 ? { ...p, value: null } : p));
+  const h = P.renderPage(early);
+  const c0 = h.split('<article class="card wbr"')[1].split('</article>')[0];
+  t('labels: under 3 weekly points the 30 days show by default', [/^ hidden>/.test(chartOf(c0, 'wbr')), /^>/.test(chartOf(c0, 'days'))].join(), 'true,true');
+  t('labels: and its button is the pressed one', h.includes('<button type="button" data-show="days" aria-pressed="true">Last 30 days</button>'), true);
+  t('labels: with its line of the heading', h.includes('<p class="muted small" data-view="wbr" hidden>') && h.includes('<p class="muted small" data-view="days">'), true);
+}
+
 // AC10: an effect with no verdict is grey, says too early, and has no direction word.
 {
   const lev = section(hSix, 'lev-h');
