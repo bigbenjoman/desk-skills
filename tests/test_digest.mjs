@@ -344,6 +344,25 @@ t('DS-280 AC8 the page\'s count line says so', page11.includes('; 2 merging PR(s
   t('a caller with the ledger on answering a ticket in a repo with no config records no ask there', noConfig, 'true 0');
 }
 
+// An ask its question-handling arm pushed as it was handed on is still listed, but not fresh: it sets
+// off no second push. The same park with the lever off pushes as before.
+{
+  const QA = await import('../desk/bin/question-arms.mjs');
+  const since = '2026-10-30T09:00:00.000Z';
+  const park = (arm) => ({ key: 'U-1', state: 'parked', lane: 'C', park: { kind: 'question', question: 'which banner?', since }, ...(arm ? { levers: { set: ['question-handling'], values: { 'question-handling': arm }, at: since } } : {}) });
+  const slot = async (r, d) => checkin({ times: DEFAULT_TIMES, now: at('2026-10-30', '17:01'), dir: d, list: [r], bin: BIN, self: r.slug, promote: () => null, checkJira: () => null });
+  const pushedR = repo('acme__pushed', { 'U-1': park('one-at-a-time') });
+  const q = JSON.parse(readFileSync(pushedR.queue, 'utf8'));
+  QA.queuePushes(pushedR.state, [{ id: 'parked-U-1', ticket: 'U-1', kind: 'parked', text: 'which banner?', since }], q, { slug: pushedR.slug, now: at('2026-10-30', '10:00') });
+  QA.markPushed(pushedR.state, QA.duePushes(pushedR.state, q, at('2026-10-30', '10:00')).map((p) => p.key), { queue: pushedR.queue, now: at('2026-10-30', '10:00') });
+  const pd = await slot(pushedR, join(root, 'digest-pushed'));
+  t('an ask pushed already is still listed on the page', readFileSync(pd.page, 'utf8').includes('`U-1` (parked): which banner?'), true);
+  t('but sets off no push of its own', `${pd.status} ${pd.questions} ${pd.push}`, 'sent 1 null');
+  const offR = repo('acme__offarm', { 'U-1': park(null) });
+  const od = await slot(offR, join(root, 'digest-offarm'));
+  t('with the lever off, the same fresh park pushes as before', od.push?.key, 'digest:2026-10-30T17:00');
+}
+
 rmSync(root, { recursive: true, force: true });
 t('cleaned up', existsSync(root), false);
 if (fails) { console.log(`${fails} failed`); process.exit(1); }

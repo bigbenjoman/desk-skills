@@ -3,7 +3,9 @@
 // questions and the decisions taken since the last digest, and one push notification naming the
 // counts. Every repo's pass calls checkin(); a machine-wide lock and the last digest's slot make the
 // first pass past a slot the only one to build it, and a slot no pass saw is covered by the next one.
-// Only a park reading `PRODUCTION BROKEN: …` is pushed between check-ins (urgentParks).
+// Only a park reading `PRODUCTION BROKEN: …` is pushed between check-ins (urgentParks), but for an ask
+// its question-handling arm pushes as it is handed on (question-arms.mjs); the page still lists that
+// one, but it is not fresh, so it sets off no second push.
 //
 //   digest.mjs checkin                                    this repo's check-in now, as JSON (the supervisor's idle ticks)
 //   digest.mjs answer <slug> <TICKET> "<answer>"          record it through that repo's answer.mjs
@@ -38,7 +40,8 @@ import { read as readLeverLog, appendChecked as appendCheckedLeverLog, isStateCh
 import { changeLine, overrideEvent, isDecided, recordLeverDecision } from './lever-changes.mjs';
 import { leversDir } from './levers-view.mjs';
 import { pageState as leversPageState, refresh as refreshLevers } from './levers-refresh.mjs';
-import { recordAsks, ledgerOnIn, ASK_LEDGER_ENV } from './ask-ledger.mjs';
+import { recordAsks, ledgerOnIn, askId, ASK_LEDGER_ENV } from './ask-ledger.mjs';
+import { pushedAsks } from './question-arms.mjs';
 
 export const DEFAULT_TIMES = ['08:00', '17:00'];
 export { PRODUCTION_BROKEN };
@@ -467,19 +470,30 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
     const asks = groups.filter((g) => g.promotion?.key);
     const listed = [...groups.flatMap((g) => g.questions.map((q) => q.key)), ...asks.map((g) => g.promotion.key)];
     const fresh = listed.filter((k) => !(last?.listed ?? []).includes(k));
+    const pushed = pushedQuestions(list, groups);
     const repoCount = new Set([
       ...groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.warnings.length || g.promotion?.key).map((g) => g.slug),
       ...levers.filter((l) => l.slug).map((l) => l.slug),
     ]).size;
     // Put-off questions and checks are listed, never pushed: neither asks anything of the person.
     const nl = levers.filter((l) => l.slug).length;
-    const push = nd || nm || nw || nl || fresh.length
+    const push = nd || nm || nw || nl || fresh.some((k) => !pushed.has(k))
       ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s)${asks.length ? `, ${asks.length} promotion question(s)` : ''}, ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nl ? `, ${nl} lever change(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''}${nw ? `, ${nw} warning(s)` : ''} across ${repoCount} repo(s). ${page}` }
       : null;
     writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd, listed, lever_seen: leverSeen, by: self, push }, null, 2)}\n`);
     const ledger = presentAsks({ list, groups, fresh, page, push, now });
     return { status: 'sent', slot: slot.id, page, questions: nq, promotions: asks.length, decisions: nd, push, ledger };
   } finally { lock.release(); }
+}
+
+// The keys of the parks the page lists that were pushed already as their ask was handed on.
+function pushedQuestions(list, groups) {
+  return new Set(list.flatMap((r, i) => {
+    const asks = pushedAsks(r.state);
+    if (!asks.size) return [];
+    const tickets = readJson(r.queue, null)?.tickets ?? {};
+    return (groups[i]?.questions ?? []).filter((q) => q.kind === 'parked' && asks.has(askId(q.ticket, tickets[q.ticket]?.park?.since))).map((q) => q.key);
+  }));
 }
 
 // Each park the page lists fresh is an ask it presents (ask-ledger.mjs), raised where nothing raised it
