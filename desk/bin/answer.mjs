@@ -20,7 +20,7 @@ import { readRegistry } from './claude-logins.mjs';
 import { parseDecision } from './decisions.mjs';
 import { recommendedAnswer } from './recoveries.mjs';
 import { saveAnswer } from './briefing.mjs';
-import { askAnswered, ASK_BY_ENV } from './ask-ledger.mjs';
+import { askAnswered, answerLedgerOn, ASK_BY_ENV } from './ask-ledger.mjs';
 
 crashShowsPerson();
 const QUEUE = join(runBin(), 'queue.mjs');
@@ -176,7 +176,7 @@ saveAnswer(STATE, ticket, text, stamp);
 if (parkSince && !heldNow && !putOffAnswer) {
   const by = taken ? 'decider' : process.env[ASK_BY_ENV] === 'default' ? 'default' : 'person';
   const session = by === 'default' ? null : process.env.CLAUDE_CODE_SESSION_ID ?? null;
-  for (const l of askAnswered(queueFile(), { key: ticket, since: parkSince, by, session, at: stamp }, { by: 'answer.mjs' })) console.error(l);
+  for (const l of askAnswered(queueFile(), { key: ticket, since: parkSince, by, session, at: stamp }, { on: answerLedgerOn(), by: 'answer.mjs' })) console.error(l);
 }
 
 // A taken call is taken once, as the pass's own take records it (pass.mjs takeRecommended): the same

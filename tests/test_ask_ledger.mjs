@@ -194,6 +194,8 @@ t('an ask is its ticket and its park\'s since', A.askId('P-1', SINCE), `P-1:${SI
   t('an answer from a session names it', s.ev[0]?.data?.session, 'sess-42');
   const df = answer(parkedQ('N-7'), ['N-7', 'Merge as foundation'], { [A.ASK_BY_ENV]: 'default', CLAUDE_CODE_SESSION_ID: 'sess-pass' });
   t('an answer made by default (the pass\'s own take) is recorded so, with no session', j([df.r.status, df.ev[0]?.data?.by, df.ev[0]?.data?.session]), j([0, 'default', null]));
+  const gated = [answer(parkedQ('N-8'), ['N-8', 'yes'], { [A.ASK_LEDGER_ENV]: 'off' }), answer(parkedQ('N-9'), ['N-9', 'yes'], { DESK_CONFIG: OFF, [A.ASK_LEDGER_ENV]: 'on' })];
+  t('the lever a caller passes is taken ahead of answer.mjs\'s own config: off over on, on over off', j(gated.map((o) => `${o.r.status} ${o.ev.length}`)), j(['0 0', '0 1']));
   const d = answer(parkedQ('N-3', SINCE, { park: { kind: 'question', question: 'Merge as foundation (recommended), or split?', since: SINCE } }),
     ['--taken', 'N-3', '{"question":"Merge as foundation, or split?","options":["Merge as foundation","Split"],"chose":"Merge as foundation","category":"scope"}']);
   t('a taken call is the decider\'s answer', j([d.r.status, d.ev[0]?.data?.by]), j([0, 'decider']));

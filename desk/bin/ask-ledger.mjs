@@ -29,6 +29,11 @@ export const askId = (key, since) => `${key}:${since}`;
 // Who answers through answer.mjs when it is neither the person nor the decider's --taken: `default`, set
 // by the pass's own take of a recommended option (pass.mjs takeRecommended).
 export const ASK_BY_ENV = 'DESK_ASK_BY';
+// The ledger lever of the repo an answer.mjs run answers in, `on` or `off`, where its caller knows it
+// better than answer.mjs's own config does: digest.mjs answer, for a ticket in another repo.
+export const ASK_LEDGER_ENV = 'DESK_ASK_LEDGER';
+// The lever as answer.mjs takes it: ASK_LEDGER_ENV where set, else its own config's.
+export const answerLedgerOn = (env = process.env) => (['on', 'off'].includes(env[ASK_LEDGER_ENV]) ? env[ASK_LEDGER_ENV] === 'on' : ledgerOn());
 
 // Whether the ledger lever is on in repo `slug`'s config, as ledgerOn reads this repo's: off where it
 // cannot be read.

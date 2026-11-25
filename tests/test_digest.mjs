@@ -330,9 +330,13 @@ t('DS-280 AC8 the page\'s count line says so', page11.includes('; 2 merging PR(s
   };
   const offThere = answered(target('acme__offthere', false), true);
   const onThere = answered(target('acme__onthere', true), false);
+  const bare = repo('acme__noconfig', { 'W-1': { key: 'W-1', state: 'parked', park: { kind: 'question', question: 'which width?', since } } });
+  queueDifference(bare.queue, { seed: true });
+  const noConfig = answered(bare, true);
   for (const [k, v] of Object.entries(kept)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   t('a caller with the ledger on answering a ticket in a repo with it off records no ask there', offThere, 'true 0');
   t('a caller with the ledger off answering a ticket in a repo with it on records the ask there', onThere, 'true 1');
+  t('a caller with the ledger on answering a ticket in a repo with no config records no ask there', noConfig, 'true 0');
 }
 
 rmSync(root, { recursive: true, force: true });
