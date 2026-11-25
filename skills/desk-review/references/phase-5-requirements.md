@@ -187,7 +187,8 @@ criterion is met. Only a requirement gap is accepted: a P0 or P1 is fixed, and a
 
 In an autopilot batch the pass reads the PR for one each pass while it waits on such a gap: once a
 comment or review from §1 GitHub handle, posted after that verdict, names the criterion and accepts
-it, the ticket goes back to a worker on the PR with the comment as the person's call (`desk/bin/fix-tries.mjs`
+it (a line opening "I accept", "Accepted" or "Accepting", as desk's ready comment does, and no words
+refusing or limiting it, which leave it to the person), the ticket goes back to a worker on the PR with the comment as the person's call (`desk/bin/fix-tries.mjs`
 `acceptedFix`), with no message to the batch's session.
 
 An acceptance recorded after the head's verdict posted is the one case for a second verdict at that

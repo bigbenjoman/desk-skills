@@ -317,7 +317,7 @@ t('a change still inside triage\'s files gets its try', wideFix(personBody(1, BR
 t('PR files or a triage scope that could not be read leave the try', wideFix(personBody(1, BROAD2), widened, { outside: () => null })?.call, 'requeue');
 t('a pass that reads no scope leaves the try', wideFix(personBody(1, BROAD2), widened, { outside: undefined })?.call, 'requeue');
 const withPerson = reviewFix(tk({ fix_tries: widened }), { pr: 702, head: HEAD, verdict: { gaps: '2' }, body: personBody(2, BROAD2, PERSON_GAP) }, wideOpts());
-t('a person\'s gap beside the widened one goes to the person with the scope question', JSON.stringify(personGapsIn(withPerson?.why).map((x) => [x.startsWith("PERSON'S CALL: AC2 reads wider"), x.endsWith(PERSON_GAP.slice(2))])), '[[true,true]]');
+t('a person\'s gap beside the widened one goes to the person with the scope question', JSON.stringify(personGapsIn(withPerson?.why).map((x) => [x.startsWith("PERSON'S CALL: AC2 reads wider"), x === PERSON_GAP.slice(2)])), '[[true,false],[false,true]]');
 t('a P1 beside the widened gap gets its try', reviewFix(tk({ fix_tries: widened }), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1', gaps: '1' }, body: `${p1Body}\n\n### Requirement gaps\n${BROAD2}` }, wideOpts())?.call, 'requeue');
 t('the same gap still open after its try is a survivor, as before', wideFix(personBody(1, `- ${BROAD1}`))?.why.startsWith('review not clean after 1 fix try'), true);
 t('one repeating the earlier gap\'s words at a new site is a new site, not a survivor', wideFix(personBody(1, `- ${BROAD1.replace('src/list.tsx:4', 'src/card.tsx:9')}`))?.why.startsWith("review gaps only you can settle: PERSON'S CALL: AC2"), true);
@@ -418,7 +418,12 @@ const accOpts = { logins: 'me,desk-bot' };
 const accepted = acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', ACCEPTS)]), accOpts);
 t('#1434 AC3 the person\'s comment after the review, naming AC3 and accepting it, sends a gaps fix at the head',
   `${accepted?.fix.kind} ${accepted?.fix.ready} ${accepted?.fix.head === HEAD} ${accepted?.fix.accepted} ${JSON.stringify(accepted?.acceptance.gaps)}`, `gaps true true https://github.com/acme/w/pull/702#issuecomment-11 ${JSON.stringify([ACC_GAP.slice(2)])}`);
-t('#1434 AC3 its answer quotes the comment and links it, for the worker\'s accepted entry', accepted?.fix.answer, `${ACCEPTS}\n\n(Posted on the PR by me at 2026-11-20T11:00:00Z: https://github.com/acme/w/pull/702#issuecomment-11. Each gap it names is accepted.)`);
+t('#1434 AC3 its answer quotes the comment and links it, for the worker\'s accepted entry', accepted?.fix.answer, `${ACCEPTS}\n\n(Posted on the PR by me at 2026-11-20T11:00:00Z: https://github.com/acme/w/pull/702#issuecomment-11. Record as accepted only the gaps these words accept.)`);
+for (const [what, body] of [['a refusal', 'I don\'t accept AC3 as built, implement it'], ['one accepting with a "not"', 'I accept these on this PR, but not AC3'],
+  ['a note that leaves it to the person', 'AC3 is left for the person to accept on this PR.'], ['one only quoting the word', 'Will you accept AC3, or should the worker change it?']]) {
+  t(`#1434 AC3 negative: ${what} is not an acceptance`, acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', body)]), accOpts), null);
+}
+t('#1434 AC3 a "not" inside the quoted criterion is the ticket\'s, not a refusal', acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', 'I accept this requirement gap as it stands on this PR:\n- AC3: "the pass requeues it, not the session"')]), accOpts)?.fix.kind, 'gaps');
 const accBrief = fixBrief(tk({ key: 'T-1', fix: accepted.fix }));
 t('#1434 AC3 the worker is told to post the verdict again at the same head with the gap accepted', accBrief.includes('A gap the call accepts, with no code change') && accBrief.includes(ACCEPTS.split('\n')[0]), true);
 t('#1434 AC3 a review by the person accepts too', acceptedFix(accT(), accPr([], { reviews: [...accPr([]).reviews, { author: { login: 'me' }, submittedAt: '2026-11-20T12:00:00Z', body: 'Accepted: AC3 stands as built.', url: 'r1' }] }), accOpts)?.fix.accepted, 'r1');

@@ -26,10 +26,18 @@ export const acceptOnly = (gap) => personsCall(gap) && ACCEPTS.test(recommendedO
 // The option a question marks as its pick: its `Recommended: <option>`, else the option written just
 // before "(recommended)", as a park's question puts it.
 const pickOf = (text) => recommendedOf(text) ?? /([^,;:?()]+)\(recommended\)/i.exec(String(text ?? ''))?.[1].trim() ?? null;
-// Whether a question (an ask, a park, a pass line) puts such a gap to the person with acceptance as the
-// pick: it names a review gap and `chose` (by default, the text's own pick) accepts it.
-export const acceptCall = (text, chose = pickOf(text)) =>
-  (personsCall(text) || /\b(?:requirement|review) gaps?\b/i.test(String(text ?? ''))) && ACCEPTS.test(String(chose ?? ''));
+// Talk of accepting, "acceptance" included, but not an acceptance test or the acceptance criteria.
+const ACCEPT_TALK = /\baccept(?:s|ed|ing|ance)?\b(?!\s+(?:tests?|specs?|criteri))/i;
+// A pick that only says yes to what the question proposes, so the question's own words say what it does.
+const BARE_YES = /^(?:yes|y|ok|okay|post(?: it)?|go(?: ahead)?|approve|proceed|confirm|do it)\b/i;
+// Whether a question (an ask, a park, a pass line) puts such a gap's acceptance up as its pick: it names
+// a review gap (or a criterion on a PR), and `chose` (by default, the text's own pick) accepts it, or
+// only says yes to a question about accepting it ("Post the acceptance of gap AC2 for the person?" yes).
+export function acceptCall(text, chose = pickOf(text)) {
+  const s = String(text ?? ''), c = String(chose ?? '').trim();
+  const gap = personsCall(s) || /\b(?:requirement|review) gaps?\b/i.test(s) || (/\bAC\s?\d+\b/i.test(s) && /\bPR\b|pull request|#\d+/i.test(s));
+  return gap && (ACCEPTS.test(c) || (ACCEPT_TALK.test(s) && BARE_YES.test(c)));
+}
 
 // A tagged gap's parts: its criterion's label (`AC2`), the criterion it quotes, and what is open.
 export function gapParts(gap) {
@@ -58,20 +66,30 @@ export function acceptComment(gaps) {
 export const acceptCommand = (pr, repo, gaps) => `gh pr comment ${pr} --repo ${repo} --body '${acceptComment(gaps).replace(/'/g, `'\\''`)}'`;
 
 // Everything the person needs to accept `gaps` on PR `pr` of `repo`, in one place: the PR, the criteria
-// to name, the evidence already on it (what the review says is open, and the PR's own link) and the
-// ready command.
-export function acceptNeed(pr, repo, gaps) {
-  const each = gaps.map(gapParts).map((p) => `${nameOf(p) ?? 'a gap'}${p.ac && p.criterion ? ` ("${p.criterion}")` : ''}${p.open ? `, where the review found: ${p.open}` : ''}`);
-  return `${each.join('; ')}. Only your own comment can accept ${gaps.length === 1 ? 'it' : 'them'}, so desk applies no default; the evidence is on https://github.com/${repo}/pull/${pr}. ` +
+// to name, the evidence already on it and the ready command. The evidence is what the review found for
+// each gap and, where `evidence` (needs-you.mjs prEvidence) has them, the PR body's lines naming its
+// criterion; then where on the PR the rest is.
+export function acceptNeed(pr, repo, gaps, evidence = {}) {
+  const url = `https://github.com/${repo}/pull/${pr}`;
+  const each = gaps.map(gapParts).map((p) => {
+    const lines = (p.ac && evidence[p.ac]) || [];
+    return `${nameOf(p) ?? 'a gap'}${p.ac && p.criterion ? ` ("${p.criterion}")` : ''}${p.open ? `, where the review found: ${p.open}` : ''}${lines.length ? `, and the PR's evidence for it: ${lines.map((l) => `"${l}"`).join(', ')}` : ''}`;
+  });
+  return `${each.join('; ')}. Only your own comment can accept ${gaps.length === 1 ? 'it' : 'them'}, so desk applies no default; the rest of the evidence is in the PR body's Testing and Evidence sections on ${url} and its checks on ${url}/checks. ` +
     `Post this yourself: ${acceptCommand(pr, repo, gaps)}; the next pass then sends the PR to a worker that records it.`;
 }
 
-// Each gap of a list, where one entry may hold several joined with "; " (fix-tries.mjs personGapsIn).
-export const eachGap = (list) => (list ?? []).flatMap((s) => String(s).split(/;\s+(?=PERSON['’]S CALL)/));
-
+// A line that accepts, as the ready comment opens ("I accept these requirement gaps …"): "I accept",
+// "Accepted" or "Accepting" starting a line. A worker's note that a gap is "left for the person to
+// accept" is not one.
+const ACCEPT_LINE = /^[\s>*-]*(?:I\s+(?:hereby\s+|also\s+)?accept|I(?:['’]m| am) accepting|Accept(?:ed|ing))\b/im;
+// Words that withdraw or limit an acceptance: no script reads a comment holding one, so it stays the
+// person's to settle. A criterion quoted in the comment is the ticket's words, not the person's.
+const unquoted = (body) => body.replace(/"[^"\n]*"|“[^”\n]*”/g, '');
+const REFUSES = /\b(?:not|never|no longer|cannot)\s+(?:\w+\s+){0,2}accept|n['’]t\s+(?:\w+\s+){0,2}accept|\breject|\b(?:but|except)\s+(?:not|for)\b|\bnot\s+(?:yet\b|AC\s?\d)/i;
 // The person's acceptance of any of `gaps` on the PR: the newest comment or review by `handle` posted
-// after `since` (the review that listed the gaps) that accepts and names a gap's criterion, by its label
-// or its quoted text. `items`: the PR's comments and reviews as `gh pr view --json comments,reviews`
+// after `since` (the review that listed the gaps) with a line that accepts (ACCEPT_LINE), no words that
+// refuse (REFUSES), and a gap's criterion named, by its label or its quoted text. `items`: the PR's comments and reviews as `gh pr view --json comments,reviews`
 // gives them. -> { by, at, url, body, gaps } (the gaps it names), or null.
 export function acceptanceOn(gaps, items, { handle, since = null }) {
   const me = String(handle ?? '').toLowerCase();
@@ -86,7 +104,7 @@ export function acceptanceOn(gaps, items, { handle, since = null }) {
     const at = x?.createdAt ?? x?.submittedAt ?? null;
     const body = String(x?.body ?? '');
     // desk's own reviews post under the same handle, and quote each gap's recommendation.
-    if (String(x?.author?.login ?? '').toLowerCase() !== me || !ACCEPTS.test(body) || /^\s*<!-- desk-review/.test(body)) continue;
+    if (String(x?.author?.login ?? '').toLowerCase() !== me || !ACCEPT_LINE.test(body) || REFUSES.test(unquoted(body)) || /^\s*<!-- desk-review/.test(body)) continue;
     if (!Number.isNaN(after) && !(Date.parse(at ?? '') > after)) continue;
     const these = named(body);
     if (!these.length || (found && Date.parse(found.at) >= Date.parse(at))) continue;
@@ -96,5 +114,6 @@ export function acceptanceOn(gaps, items, { handle, since = null }) {
 }
 
 // The person's acceptance as the answer a gaps fix carries (fix-tries.mjs gapsFix): their words, and
-// where they are, so the worker's `accepted` entry links them.
-export const acceptedAnswer = (a) => `${a.body.trim()}\n\n(Posted on the PR by ${a.by} at ${a.at}${a.url ? `: ${a.url}` : ''}. Each gap it names is accepted.)`;
+// where they are, so the worker's `accepted` entry links them. Which gaps the words accept is the
+// worker's reading, as with any gaps call: desk claims none for them.
+export const acceptedAnswer = (a) => `${a.body.trim()}\n\n(Posted on the PR by ${a.by} at ${a.at}${a.url ? `: ${a.url}` : ''}. Record as accepted only the gaps these words accept.)`;

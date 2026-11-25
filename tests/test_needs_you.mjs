@@ -661,12 +661,14 @@ put('acc', { handle: 'me', port: 4211, beat: 1, supervised: true, tickets: {
   'AC-3': draftPr(73, passed, { call: 'person', why: `its review verdict at ${SHA586.slice(0, 9)} is not clean (gaps=1)`, action: 'settle the gaps on #73' }),
 } });
 onGitHub(73, { state: 'OPEN', mergedAt: null, isDraft: true, headRefOid: SHA586, reviews: [review586('me', SHA586, [ACC_GAP])] });
+onGitHub(71, { state: 'OPEN', mergedAt: null, isDraft: false, headRefOid: 'h71', body: '## Testing\n\n- AC3: covered by the requeue test in tests/test_x.mjs\n- AC4: rows sort by name\n' });
 const acc = Object.fromEntries(N.collect({ word: 'acc' }).items.map((i) => [i.t.key, i]));
 const READY = `gh pr comment 71 --repo acme/acc --body 'I accept this requirement gap as it stands on this PR:\n- AC3: "the pass requeues it"'`;
 t('#1434 AC2 a ready PR on a gap only the person accepts names the PR, the criterion, the evidence and the ready comment', acc['AC-1']?.need,
-  `PR #71's code review left a requirement gap only you can accept: AC3 ("the pass requeues it"), where the review found: only a live run can check it. Only your own comment can accept it, so desk applies no default; the evidence is on https://github.com/acme/acc/pull/71. Post this yourself: ${READY}; the next pass then sends the PR to a worker that records it.`);
+  `PR #71's code review left a requirement gap only you can accept: AC3 ("the pass requeues it"), where the review found: only a live run can check it, and the PR's evidence for it: "AC3: covered by the requeue test in tests/test_x.mjs". Only your own comment can accept it, so desk applies no default; the rest of the evidence is in the PR body's Testing and Evidence sections on https://github.com/acme/acc/pull/71 and its checks on https://github.com/acme/acc/pull/71/checks. Post this yourself: ${READY}; the next pass then sends the PR to a worker that records it.`);
 t('#1434 AC1 it offers no answer desk would post, and no default', acc['AC-1']?.actions.map((a) => a[0]).join(), 'not-now,resume');
 t('#1434 AC1 beside a gap the person settles another way, answer stays for that one and the ready comment is still given', `${acc['AC-2']?.actions.map((a) => a[0])[0]} ${acc['AC-2']?.need.includes('settle: PERSON\'S CALL · AC4')} ${acc['AC-2']?.need.includes('It also left a requirement gap only you can accept: AC3')} ${acc['AC-2']?.need.includes('gh pr comment 72 --repo acme/acc')}`, 'answer true true true');
+t('#1434 AC2 where the PR body cannot be read, the need still says where the evidence is', `${acc['AC-2']?.need.includes('and the PR\'s evidence for it')} ${acc['AC-2']?.need.includes('Testing and Evidence sections on https://github.com/acme/acc/pull/72')}`, 'false true');
 t('#1434 AC2 a draft on such a gap gives the ready comment too, and offers no answer', `${acc['AC-3']?.need.includes('The gap only you can accept: AC3 ("the pass requeues it")')} ${acc['AC-3']?.need.includes('gh pr comment 73 --repo acme/acc')} ${acc['AC-3']?.actions.map((a) => a[0]).join()}`, 'true true not-now,resume');
 
 put('instr', { port: 4210, beat: 1, supervised: true, tickets: {

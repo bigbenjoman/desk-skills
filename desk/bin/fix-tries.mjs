@@ -38,7 +38,7 @@ import { IDLE_RECHECK_MS } from './batch-state.mjs';
 import { normaliseLine } from './evidence.mjs';
 import { stepFits } from './workflow-yaml.mjs';
 import { askCategoryIn } from './decisions.mjs';
-import { acceptOnly, acceptanceOn, acceptedAnswer, eachGap, personsCall, recommendedOf } from './accept-gaps.mjs';
+import { acceptOnly, acceptanceOn, acceptedAnswer, personsCall, recommendedOf } from './accept-gaps.mjs';
 import { parseVerdict as markerOf, COUNTS } from '../templates/scripts/desk/review-gate.mjs';
 import { statesPhrase, leftOver } from './review-plain.mjs';
 import { pairs } from './desk-env.mjs';
@@ -926,11 +926,11 @@ function scopeQuestion({ acs, outside }, title) {
 // any other review. Asked once reviewFix has returned null, so never for gaps it sends to a try on
 // their recommendations.
 const PERSON_GAPS = 'review gaps only you can settle: ';
-// The tagged gaps a stuck reason names: all of a personGapsCall reason, or those a review stuck reason
-// (reviewFix) carries beside what outlasted its tries. [] for any other reason.
+// The tagged gaps a stuck reason names, one each: all of a personGapsCall reason, or those a review
+// stuck reason (reviewFix) carries beside what outlasted its tries. [] for any other reason.
 export function personGapsIn(why) {
   const s = String(why ?? '');
-  if (s.startsWith(PERSON_GAPS)) return [s.slice(PERSON_GAPS.length)];
+  if (s.startsWith(PERSON_GAPS)) return s.slice(PERSON_GAPS.length).split(/; (?=PERSON['’]S CALL)/);
   const i = /^review not clean\b/.test(s) ? s.indexOf(' — ') : -1;
   const rest = s.slice(i + 3);
   return i < 0 ? [] : (rest.startsWith(SURVIVED) ? rest.slice(SURVIVED.length) : rest).split(/; (?=P[0-2]: |PERSON['’]S CALL)/).filter((x) => /^PERSON['’]S CALL/.test(x));
@@ -948,11 +948,17 @@ export function personGapsCall(review, opts = {}) {
 // out of draft.
 export const gapsFix = ({ pr, head, ready, answer }) => ({ kind: 'gaps', pr, head: head ?? null, ready: ready === true, what: 'review gaps: your call', answer });
 
+// A draft whose review verdict at its head has requirement gaps open, as its undraft record says.
+export const draftHasGaps = (t) => t?.pr_status?.isDraft === true && /not clean \([^)]*\bgaps=[1-9]/.test(String(t.undraft?.why ?? ''));
+// The latest of desk's own reviews (posted by `logins`, loginIn) whose verdict is at `sha`, or null.
+export const verdictReviewAt = (reviews, logins, sha) => (!sha ? null : (reviews ?? []).filter((x) => loginIn(x.author?.login, logins)).filter((x) => {
+  const at = markerOf(String(x.body ?? '').trim())?.sha;
+  return !!at && (sha.startsWith(at) || at.startsWith(sha));
+}).pop() ?? null);
 // A PR left for the person on requirement gaps: a draft whose review at its head has gaps, or one stuck
 // on gaps only its person settles, some of which only their own comment accepts (accept-gaps.mjs).
 export const awaitsAcceptance = (t) => t?.result?.pr != null && t.pr_status?.state !== 'MERGED' && t.pr_status?.state !== 'CLOSED'
-  && ((t.pr_status?.isDraft === true && /not clean \([^)]*\bgaps=[1-9]/.test(String(t.undraft?.why ?? '')))
-    || eachGap(personGapsIn(t.stuck?.why)).some(acceptOnly));
+  && (draftHasGaps(t) || personGapsIn(t.stuck?.why).some(acceptOnly));
 // The gaps fix the person's acceptance on the PR sends it to (gapsFix), so its worker posts the round's
 // verdict again with those gaps accepted. `v`: the PR as `gh pr view --json
 // state,isDraft,headRefOid,comments,reviews` gives it; `logins`: desk's verdict logins, the §1 GitHub
@@ -963,10 +969,7 @@ export function acceptedFix(t, v, { logins }) {
   const handle = String(logins ?? '').split(',')[0].trim();
   if (!handle || v?.state !== 'OPEN' || !v.headRefOid || (t.fix && !t.fix.finished)) return null;
   const head = v.headRefOid;
-  const review = (v.reviews ?? []).filter((x) => loginIn(x.author?.login, logins)).filter((x) => {
-    const sha = markerOf(String(x.body ?? '').trim())?.sha;
-    return !!sha && (head.startsWith(sha) || sha.startsWith(head));
-  }).pop();
+  const review = verdictReviewAt(v.reviews, logins, head);
   if (!review) return null;
   const gaps = reviewGaps(review.body).filter(acceptOnly);
   const a = acceptanceOn(gaps, [...(v.comments ?? []), ...(v.reviews ?? [])], { handle, since: review.submittedAt });
