@@ -1847,6 +1847,42 @@ t('DS-389 AC7 it has waited since the copy was first found behind', Math.round((
 const tDone = N.record({ word: 'nu', ticket: 'templates', action: 'done' });
 t('DS-389 AC7 done checks the copies again, and clears once none is behind', `${tDone.ok} ${tDone.line} ${nu().some((i) => i.kind === 'templates')}`, 'true nu templates: no copy is behind on origin/main now, so it is off your list. false');
 
+// ---- issue-1381 AC3: tickets a headless admit parked on claude.ai artifacts no session has read are one repo item
+const ART1 = 'https://claude.ai/design/p/art-one';
+const ART2 = 'https://claude.ai/public/artifacts/spec-two';
+const artPark = (urls) => BS.designPark({ design: { canvases: urls.map((url) => ({ url, saved: null, snapshot: null })) } });
+put('na', { port: 5400, beat: 1, supervised: true, tickets: {
+  'R-1': parked('A', 40, artPark([ART1])),
+  'R-2': parked('A', 30, artPark([ART1, ART2])),
+  'R-3': parked('A', 20, 'Which copy?'),
+} });
+const na = () => N.collect({ word: 'na' }).items;
+t('issue-1381 AC3 the tickets parked on unread artifacts are one item; another park stays its own', na().map((i) => `${i.t.key} ${i.kind}`).sort().join(), 'R-3 parked,artifacts artifacts');
+const naRow = na().find((i) => i.kind === 'artifacts');
+t('issue-1381 AC3 its need lists every artifact with the tickets it holds, and the one admit that reads them all',
+  [naRow?.need.startsWith('2 tickets (R-1 and R-2) link 2 claude.ai artifacts no session has read'), naRow?.need.includes(`${ART1} (R-1 and R-2); ${ART2} (R-2)`), naRow?.need.includes('/desk-admit R-1 R-2'), naRow?.actions.map((x) => x[0]).join()].join(), 'true,true,true,done,not-now');
+t('issue-1381 AC3 the list shows it as one line', here('list', 'na').out.split('\n').filter((l) => l.startsWith('na artifacts artifacts')).length, 1);
+const naState = join(env.HOME, '.desk-autopilot', 'acme__na');
+mkdirSync(join(naState, 'designs', 'R-1'), { recursive: true });
+writeFileSync(join(naState, 'designs', 'R-1', 'source.json'), JSON.stringify({ url: ART1, version: '1', kind: 'page' }));
+const naDone = N.record({ word: 'na', ticket: 'artifacts', action: 'done' });
+t('issue-1381 AC3 done requeues each ticket whose artifacts all have a snapshot, and names what is still unread',
+  `${naDone.ok} ${['R-1', 'R-2', 'R-3'].map((k) => queueOf('na').tickets[k].state).join()} ${naDone.line.includes(`still no copy of R-2 (${ART2})`)}`, 'false triaged,parked,parked true');
+// A copy saved on the base (desk-design save or propose, merged) counts as a snapshot does.
+const naRoot = join(T, 'repos', 'na');
+mkdirSync(join(naRoot, 'docs', 'design', 'R-2'), { recursive: true });
+writeFileSync(join(naRoot, 'docs', 'design', 'R-2', 'source.json'), JSON.stringify({ url: ART2, version: '1', kind: 'page' }));
+spawnSync('git', ['-C', naRoot, 'add', '-A']);
+spawnSync('git', ['-C', naRoot, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'spec']);
+spawnSync('git', ['-C', naRoot, 'branch', '-M', 'main']);
+const naDone2 = N.record({ word: 'na', ticket: 'artifacts', action: 'done' });
+t('issue-1381 AC3 done requeues a ticket whose artifact is saved on the base, with no snapshot',
+  `${naDone2.ok} ${queueOf('na').tickets['R-2'].state}`, 'true triaged');
+// Lane D: a saved canvas is buildable; an unread spec page parks on designPark, which the artifacts item groups.
+const laneD = { lane: 'D', design: { ref: 'origin/main', canvases: [{ url: ART1, saved: 'docs/design/R-1/', snapshot: null }], artifacts: [{ url: ART2, saved: null, snapshot: null }] } };
+t('issue-1381 AC3 lane D with its canvas saved needs no person; its unread spec page is a design park',
+  `${BS.needsPersonLane(laneD)} ${JSON.stringify(BS.designParkUrls(BS.designPark(laneD)))}`, `false ${JSON.stringify([ART2])}`);
+
 // ---- DS-577 AC8: the repo's failing reviewer check is one item, naming every PR the pass holds on it
 const rvWhy = 'the review gate counts agent-pullbot; desk posts verdicts as bigbenjoman';
 const gated = (pr) => redPr(pr, { gate_hold: { item: 'health:acme__rv:reviewer', head: `h${pr}`, why: rvWhy, at: minsAgo(30 + pr - 300) } });
