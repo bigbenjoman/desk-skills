@@ -21,6 +21,10 @@ import { STATES, FINISHED, PARK_KINDS, blockersOf } from './queue-states.mjs';
 import { batchFields, same } from './queue-store.mjs';
 
 export const SNAPSHOT_EVERY = 1000;
+// The fold rules a snapshot's state was folded under. Raise it whenever apply() folds an event
+// differently, so a snapshot folded under the old rules is replayed from the start (readSnapshot).
+// 2: a HISTORY_EVENTS event never sets a ticket's batch.
+export const FOLD_RULES = 2;
 export const LOCK_WAIT_MS = 2000;
 export const MODES = ['shadow', 'record'];
 // Observations a pass recomputes on every run: written to queue.json, never appended, ignored by the diff.
@@ -356,12 +360,14 @@ function parseLines(text, file, torn) {
 }
 
 // The snapshot's state: null when there is none, false when it does not read as one, so the reader
-// replays from the start instead.
+// replays from the start instead. A snapshot folded under other fold rules than these (`fold` not
+// FOLD_RULES; none before rule 2) does not read as one either: its state is what those rules made of
+// the events, and the archives beside it fold them again under these.
 const readSnapshot = (paths) => {
   if (!existsSync(paths.snapshot)) return null;
   try {
     const s = JSON.parse(readFileSync(paths.snapshot, 'utf8'));
-    return s?.state && Number.isInteger(s.state.seq) ? s.state : false;
+    return s?.fold === FOLD_RULES && s.state && Number.isInteger(s.state.seq) ? s.state : false;
   } catch { return false; }
 };
 const rotated = (paths) => (existsSync(paths.dir) ? readdirSync(paths.dir) : [])
@@ -485,7 +491,7 @@ function snapshot(paths) {
   if (!events.length) return;
   const state = reduce(events, base);
   writeDurable(join(paths.dir, `events.${state.seq}.jsonl.gz`), gzipSync(events.map((ev) => `${JSON.stringify(ev)}\n`).join('')));
-  writeDurable(paths.snapshot, `${JSON.stringify({ v: 1, at: new Date().toISOString(), state }, null, 2)}\n`);
+  writeDurable(paths.snapshot, `${JSON.stringify({ v: 1, fold: FOLD_RULES, at: new Date().toISOString(), state }, null, 2)}\n`);
   syncDir(paths.dir);
   writeDurable(paths.events, '');
   syncDir(paths.dir);
