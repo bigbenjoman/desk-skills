@@ -7,7 +7,7 @@
 // start, fix and review tries, their preflights, subagents and hooks) runs with it. An empty set is
 // every lever off; only a ticket with no pin reads the row.
 //
-//   import { pinAtAdmission, pinnedSet, envValue } from './lever-pin.mjs'
+//   import { pinAtAdmission, pinnedSet, leverValueFor, envValue } from './lever-pin.mjs'
 //   node lever-pin.mjs env <TICKET>   the pin's set as DESK_LEVERS takes it (`none` when empty, and
 //                                     always for a blind audit, levers-audit.mjs, which runs with
 //                                     every lever off); exit 3 when the ticket has no pin or is not
@@ -63,6 +63,10 @@ function pinnedValues(t) {
   }
   return v;
 }
+// The value lever `name`, one with more than two arms, runs on for ticket `t`, as desk's own reads for
+// the ticket take it: its pin's value, or null where the pin carries none (no pin, or the lever off in
+// its repo). Throws on a mangled pin, as pinnedSet does.
+export const leverValueFor = (name, t) => pinnedValues(t)?.[name] ?? null;
 // Values as DESK_LEVER_VALUES carries them: `<lever>=<value>`, space-separated.
 const valuesEnv = (values) => Object.entries(values ?? {}).map(([k, v]) => `${k}=${v}`).join(' ');
 

@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync, cpSync, 
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { pinAtAdmission, pinnedSet, envValue, leverOnFor, pinDisagrees } from '../desk/bin/lever-pin.mjs';
+import { pinAtAdmission, pinnedSet, envValue, leverOnFor, leverValueFor, pinDisagrees } from '../desk/bin/lever-pin.mjs';
 import { levers } from '../desk/bin/desk-env.mjs';
 import { scratch } from './scratch.mjs';
 
@@ -27,6 +27,8 @@ try { pinnedSet({ key: 'A-1', levers: { set: 'preflight' } }); } catch (e) { thr
 t('a mangled pin throws naming the ticket', /^A-1's levers pin is not/.test(threw), true);
 t('an empty set goes to DESK_LEVERS as none', envValue([]), 'none');
 t('a set goes to DESK_LEVERS space-separated', envValue(['memory', 'preflight']), 'memory preflight');
+t('a valued lever\'s value for a ticket is its pin\'s', leverValueFor('memory', { key: 'A-1', levers: { set: [], values: { memory: 'mixed' }, at: 'x' } }), 'mixed');
+t('a pin naming no value for it reads as off, not its baseline', [leverValueFor('memory', { key: 'A-1', levers: { set: [], at: 'x' } }), leverValueFor('memory', { key: 'A-1' })], [null, null]);
 const now = new Date('2026-11-14T10:00:00Z');
 t('the admission pin is the row\'s set and the time', pinAtAdmission({ on: ['preflight'], unknown: ['turbo'] }, now), { set: ['preflight'], at: '2026-11-14T10:00:00.000Z' });
 t('levers() reads DESK_LEVERS before the row', levers({ DESK_LEVERS: 'Memory, preflight' }).on, ['memory', 'preflight']);
