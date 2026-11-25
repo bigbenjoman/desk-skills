@@ -24,7 +24,7 @@
 import { existsSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
 import { BATCHES_DIR, leverOn, levers } from './desk-env.mjs';
-import { append, fold, read, invalid, diffQueues, project, withoutProjectionOnly, parkOf, waitsOfField, ANSWERED, WAITS, PARK_KINDS, PROJECTION_ONLY, TRANSITIONS, ASK_EVENTS } from './ticket-ledger.mjs';
+import { append, fold, read, invalid, diffQueues, project, withoutProjectionOnly, parkOf, waitsOfField, ANSWERED, WAITS, PARK_KINDS, PROJECTION_ONLY, TRANSITIONS, HISTORY_EVENTS } from './ticket-ledger.mjs';
 import { fieldDiffs, flattenQueue } from './queue-fields.mjs';
 import { readQueueAt, same, versionOf, batchFields } from './queue-store.mjs';
 import { FINISHED, blockersOf } from './queue-states.mjs';
@@ -382,13 +382,10 @@ const underQueueLock = (file, waitMs, fn) => withDirLock(`${file}.lock`, fn,
 export const REBUILT_MARK = 'rebuilt_from_log';
 
 // The events of `batch` in the log past seq `since` that queue.json holds the outcome of: each one of a
-// ticket's, but for the auto-merge lines the pass folds from the merge log, and the history no queue field
-// holds (a merged PR's stages, a stuck interval, an ask's steps), each appended by its own writer, never
-// through queue.json. ASK_EVENTS is read at call time: ticket-ledger.mjs imports this module, so loaded
-// from there first it is not yet initialised when this module's top level runs.
-const UNPROJECTED = ['automerge_armed', 'automerge_disarmed', 'merge_stages', 'stuck'];
-const unprojected = (type) => UNPROJECTED.includes(type) || ASK_EVENTS.includes(type);
-const owed = (repoDir, batch, since) => read(repoDir, { batch, since }).events.filter((e) => e.key != null && !unprojected(e.type));
+// ticket's, but for the history no queue write makes (ticket-ledger.mjs HISTORY_EVENTS). It is read at
+// call time: ticket-ledger.mjs imports this module, so loaded from there first it is not yet
+// initialised when this module's top level runs.
+const owed = (repoDir, batch, since) => read(repoDir, { batch, since }).events.filter((e) => e.key != null && !HISTORY_EVENTS.includes(e.type));
 
 // A rebuilt ticket's `holds`, which a writer lays only beside a held_by (queue-states.mjs holdsLaid).
 function tidyHolds(q) {

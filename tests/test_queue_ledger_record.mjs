@@ -247,6 +247,22 @@ levers(RECORD);
   t('a batch the log has never named is not rebuilt', (() => { const g = join(T, 'empty', 'queue.json'); mkdirSync(dirname(g)); return restoreQueue(g).restored; })(), null);
 }
 
+// A ticket dropped from the batch, whose stuck interval the next pass closes under the batch it left,
+// stays out of a queue.json rebuilt from the log.
+{
+  const f = fixture({ version: 1, batch: 'b', tickets: { A: tk('A'), P: tk('P', { state: 'parked' }) } });
+  writeQueueFile(f, read(f), { by: 'test' });
+  append(dirname(f), [{ type: 'stuck', batch: STANDING, key: 'P', data: { cause: 'park', start: '2026-11-20T10:00:00Z', end: null } }], { by: 'pass' });
+  writeQueueFile(f, { ...read(f), tickets: { A: read(f).tickets.A } }, { by: 'test' });
+  t('a drop is a moved event out of the batch', shape(log(f).slice(-1)), 'moved P');
+  append(dirname(f), [
+    { type: 'stuck', batch: STANDING, key: 'P', data: { cause: 'park', start: '2026-11-20T10:00:00Z', end: '2026-11-20T11:00:00Z' } },
+    { type: 'ask_raised', batch: STANDING, key: 'P', data: { ask: 'P:2026-11-20T10:00:00Z', since: '2026-11-20T10:00:00Z', kind: 'question', blocking: true, arm: null } },
+  ], { by: 'pass' });
+  rmSync(f);
+  t('a rebuild leaves the dropped ticket out, though a stuck close and an ask step named the batch after', [restoreQueue(f).restored, Object.keys(read(f).tickets)], ['missing', ['A']]);
+}
+
 // A queue written before record mode has no log position: the restore leaves it as it is.
 {
   levers('ledger');

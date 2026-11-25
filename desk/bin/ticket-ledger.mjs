@@ -102,6 +102,11 @@ export const EVENTS = Object.freeze({
 });
 
 export const ASK_EVENTS = ['ask_raised', 'ask_presented', 'ask_answered', 'ask_acted', 'ask_tokens'];
+// The ticket events no queue write makes: each is appended by its own writer (the pass's auto-merge
+// lines from the merge log, a merged PR's stages, a stuck interval, an ask's steps), naming the batch
+// that writer is in. They are history, so they never move a ticket into that batch, and queue.json
+// never owes the log one (queue-ledger.mjs).
+export const HISTORY_EVENTS = ['automerge_armed', 'automerge_disarmed', 'merge_stages', 'stuck', ...ASK_EVENTS];
 const UNFINISHED = STATES.filter((s) => !FINISHED.includes(s));
 const ANY = [null, ...STATES];
 const KEEP = Symbol('unchanged');
@@ -236,7 +241,7 @@ function apply(state, ev) {
     return;
   }
   const t = (state.tickets[ev.key] ??= newTicket(ev.key));
-  if (ev.type !== 'moved') t.batch = ev.batch;
+  if (ev.type !== 'moved' && !HISTORY_EVENTS.includes(ev.type)) t.batch = ev.batch;
   const to = TRANSITIONS[ev.type].to;
   if (to !== KEEP) t.state = to;
   switch (ev.type) {
