@@ -364,6 +364,10 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
       to = p.sha;
       why = `; main's head ${short(head)} was not installed: its ${RELEASE_CHECK} check ${failed ? 'failed' : c.word === 'cancelled' ? 'was cancelled, and is read again next pass' : 'is still running'} (${c.word})`;
     }
+    // A release the release watch rolled back keeps the previous one pinned until main carries the revert.
+    const watch = await releaseWatch();
+    const pinned = watch.pinBlocks({ dir, src, to });
+    if (pinned) return blocked(pinned, to);
 
     const o = othersRunning(selfQueue, { self: true, selfView, where: (t) => atStage7(t) || awaitingStage7(t), rows: stage7Rows,
       label: (t) => (runningHere(t) || t.base_fix ? ' at Stage 7' : ' waiting on its Stage 7 session') });
@@ -379,6 +383,7 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
     if (!u.ok) return blocked(u.why, to);
     delete s.blocked;
     save();
+    watch.recordRelease(dir, { at, from: base, to: u.new, merges: u.merges });
     // A driver install.sh restarted logs "merge driver exited 143" (its SIGTERM), which is not a crash.
     const restarted = u.restarted?.length ? `; merge driver restarted on the new code, so its log's "merge driver exited 143" is this restart: ${u.restarted.join(', ')}` : '';
     const reach = `${live.length ? `; running workers that pick it up on their next call: ${live.join(', ')}` : ''}${restarted}`;
@@ -388,15 +393,22 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
   } finally { lock.release(); }
 }
 
+// The release watch (release-watch.mjs), loaded when first used: it reads the per-ticket rows, whose
+// modules import this one.
+const releaseWatch = () => import('./release-watch.mjs');
+
 // ---- one step ----------------------------------------------------------------------------------
-// The window's step, then, while no window is open, the auto-release's.
+// The window's step, then, while no window is open, the auto-release's and the release watch's.
 // -> {hold, lines, push}: hold is true while the window holds every new spawn.
 export async function maintenance(opts = {}) {
   const dir = opts.dir ?? maintDir();
   const at = opts.at ?? now();
   const m = await windowStep({ ...opts, dir, at });
   const lines = [...m.lines];
-  if (!m.hold && !HOLDING.includes(readState(dir)?.phase)) lines.push(...(await autoRelease({ dir, at, selfQueue: opts.selfQueue ?? null, selfView: opts.selfView ?? null })).lines);
+  if (!m.hold && !HOLDING.includes(readState(dir)?.phase)) {
+    lines.push(...(await autoRelease({ dir, at, selfQueue: opts.selfQueue ?? null, selfView: opts.selfView ?? null })).lines);
+    lines.push(...(await releaseWatch()).watchRelease({ dir, src: sourceCheckout(), at }).lines);
+  }
   return { ...m, lines, push: releasePush({ dir }) };
 }
 

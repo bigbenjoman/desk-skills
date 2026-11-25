@@ -82,7 +82,7 @@ export const KEEP_RELEASES = 3;
 const RELEASE_FILE = 'release.json';
 // A release's version: its release.json commit, else release-<name>. Rollback records it as installed and
 // a driver started from the release records it in its lock, so the two compare equal.
-const releaseCommit = (name, info) => info?.commit || `release-${name}`;
+export const releaseCommit = (name, info) => info?.commit || `release-${name}`;
 export const releasesDir = (home = E.deskHome()) => join(home, 'releases');
 export function currentRelease(home = E.deskHome()) {
   try { return basename(readlinkSync(join(home, 'current'))); } catch { return null; }
@@ -125,10 +125,14 @@ export function rollback(home = E.deskHome()) {
     return { ok: false, line: `nothing rolled back: there is no earlier release than ${cur ? `the current one (${cur})` : 'what is installed'} in ${releasesDir(home)}` };
   }
   const prev = list[at - 1];
-  makeCurrent(prev.name, home);
-  const v = { commit: releaseCommit(prev.name, prev.info), dirty: prev.info?.dirty ?? null, at: new Date().toISOString(), from: prev.info?.from ?? null, release: prev.name };
+  return { ok: true, line: `rolled back from release ${cur} to ${prev.name} (commit ${makeLive(prev, home)})` };
+}
+// Makes release `r` (one of releases()) current and records its commit as installed. -> that commit
+export function makeLive(r, home = E.deskHome()) {
+  makeCurrent(r.name, home);
+  const v = { commit: releaseCommit(r.name, r.info), dirty: r.info?.dirty ?? null, at: new Date().toISOString(), from: r.info?.from ?? null, release: r.name };
   writeFileSync(installedFile(home), `${JSON.stringify(v, null, 2)}\n`);
-  return { ok: true, line: `rolled back from release ${cur} to ${prev.name} (commit ${v.commit})` };
+  return v.commit;
 }
 
 // ---- merge drivers ---------------------------------------------------------------------------
