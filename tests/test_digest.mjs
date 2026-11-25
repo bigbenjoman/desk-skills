@@ -210,6 +210,11 @@ t('DS-180 a search reply with issues is read', viaFake('{"issues":[{"key":"A-1"}
 t('DS-180 a reply with no issue list is a failure', viaFake('{"errorMessages":["bad"]}').why, 'desk-jira search returned no issue list (bad)');
 t('DS-180 a reply with more pages behind it is a failure', viaFake('{"issues":[],"nextPageToken":"x"}').ok, false);
 t('DS-180 a refused search says why', viaFake('', 'desk-jira: HTTP 401').why, 'desk-jira: HTTP 401');
+{
+  writeFileSync(fakeOut, '{"issues":[{"key":"A-1"}],"nextPageToken":"x"}');
+  const env = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, FAKE_JIRA_OUT: fakeOut, FAKE_JIRA_ERR: '' };
+  t('#1394 a partial search takes the page and says more lies behind it', JSON.stringify(jiraSearch({ cwd: root, env, partial: true }, 'project = A', 1)), '{"ok":true,"issues":[{"key":"A-1"}],"more":true}');
+}
 
 // AC6: no desk config, or a Tracker that is not jira: every park listed, not-checked line; others checked.
 mkdirSync(join(root, 'cfg', 'repos', 'acme__nodone'), { recursive: true });

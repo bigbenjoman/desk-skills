@@ -58,6 +58,29 @@ t('#1375 AC2 a kind missed on two PRs is a checklist line in the file desk-revie
 t('#1375 AC2 a kind missed on one PR only is not learned', /\*\*i18n\*\*/.test(md), false);
 t('#1375 AC2 the pass reports the check it learned', lines.some((l) => /learned 1 new review check\(s\) \(server-value\)/.test(l)), true);
 t('#1375 a PR already logged is not read again', RM.missesStep(S, { tickets, gql: () => { throw new Error('read'); }, run, ctx: CTX, now: H(15, 0) }).filter((l) => /could not be read/.test(l)).length, 0);
+// A PR whose findings never classify is given up after CLASSIFY_TRIES failed calls; GitHub misses do not count.
+const one = { A: tickets.A };
+const passes = (dir, { reply, read = () => true }) => {
+  let calls = 0;
+  const out = [];
+  for (let h = 14; h < 20; h++) {
+    out.push(RM.missesStep(dir, { tickets: one, gql: (q) => (read(h) ? gql(q) : null), run: (q) => { calls++; return typeof reply === 'function' ? reply(h, q) : reply; }, ctx: CTX, now: H(h, 0) }));
+  }
+  return { calls, out, log: readFileSync(`${dir}/review-misses.jsonl`, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) };
+};
+const never = passes(scratch('review-misses-never-'), { reply: 'no idea' });
+t('#1422 AC1 after CLASSIFY_TRIES failed classify calls the model is called no more', never.calls, RM.CLASSIFY_TRIES);
+t('#1422 AC1 the log holds one give-up entry, with the count', j(never.log.filter((e) => e.gave_up).map((e) => [e.pr, e.tries])), j([[7, RM.CLASSIFY_TRIES]]));
+t('#1422 AC1 the pass that gives up reports it in one line', j(never.out.map((ls) => ls.filter((l) => /gave up on PR #7 \(A\): its 2 finding\(s\) could not be classified in 3 tries/.test(l)).length)), j([0, 0, 1, 0, 0, 0]));
+const later = passes(scratch('review-misses-later-'), { reply: (h, q) => (h === 14 ? 'no idea' : run(q)) });
+t('#1422 AC2 a classify that fails and then succeeds before the limit records the misses', j(later.log.at(-1).misses.map((x) => x.kind)), j(['server-value', 'i18n']));
+const down = passes(scratch('review-misses-down-'), { reply: 'no idea', read: (h) => h >= 16 });
+t('#1422 AC3 a PR GitHub could not read does not count toward the classify limit',
+  j([down.calls, down.out.findIndex((ls) => ls.some((l) => /gave up on PR #7/.test(l)))]), j([3, 4]));
+const noLogin = passes(scratch('review-misses-nologin-'), { reply: (h) => (h < 17 ? RM.NOT_RUN : 'no idea') });
+t('#1422 a pass whose login could make no model call does not count toward the classify limit',
+  j([noLogin.calls, noLogin.out.findIndex((ls) => ls.some((l) => /gave up on PR #7/.test(l))), noLogin.out[0].some((l) => /no model call could be made/.test(l))]), j([6, 5, true]));
+t('#1422 a runModel the login refuses makes no call', RM.runModel('p', { claude: '/nonexistent', refused: () => 'refused' }), RM.NOT_RUN);
 t('#1375 a repo with no outside reviewer reads nothing', j(RM.missesStep(scratch('review-misses-none-'), { tickets, gql, run, ctx: { ...CTX, external: null } })), j([]));
 
 // AC3: learned lines only add checks. A line stays once learned, its PRs only grow, its wording is fixed

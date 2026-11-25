@@ -72,7 +72,7 @@ stage's.
 
 | # | Stage | Read at its start |
 |---|---|---|
-| 0 | Triage | `references/stage-0-triage.md` (and `references/design-canvas.md` when the ticket links a Claude Design artifact) |
+| 0 | Triage | `references/stage-0-triage.md` (and `references/design-canvas.md` when the ticket links a claude.ai artifact) |
 | 1 | Branch | `references/stage-1-branch.md` |
 | 2 | Understand | `references/stage-2-understand.md` |
 | 3 | Implement | `references/stage-3-implement.md` |

@@ -4,7 +4,8 @@ description: >-
   Admits tickets into the autopilot batch the supervisor runs, after the same checks standing intake
   makes: a fresh triage, lane, blocking lint, open questions, size, and blockers outside the batch.
   Use when the user types "/desk-admit", or says "admit DS-123", "add these to the batch", "put this
-  in the supervisor's queue", "get this into autopilot". Not for planning a new batch with approvals
+  in the supervisor's queue", "get this into autopilot", or asks what to admit next ("a slot is free,
+  what should go in?", "candidates for the batch"). Not for planning a new batch with approvals
   (that is desk-autopilot) or working one ticket in this session (that is desk-ticket).
 argument-hint: "<TICKET>... [--front]"
 ---
@@ -15,10 +16,30 @@ One script makes every check and every write, after step 0 saves any design. **R
 else**: no queue, triage record or supervisor log, and do not load `desk-autopilot` except for an
 epic the script says to plan (step 1b). Never run `queue.mjs admit` yourself.
 
+## Candidates, when no ticket was named
+
+When the user asks what to admit rather than naming tickets, list the candidates first; never pick
+from the tracker by hand:
+
+```bash
+node ~/.claude/desk/bin/candidates.mjs
+```
+
+It lists §4 Jira project's unassigned, unstarted Bugs and self-contained Tasks (no open "is blocked
+by" link, and not a child of an epic whose feature batch is running) by §4 Priority, clean ones first.
+A ticket a merged PR or a commit on the default branch already names is shown as `already on main (PR
+#n)` and not offered; one missing its Acceptance criteria or Design section says so, and one naming a
+file a PR merged in the last 7 days changed names that PR as possible overlap. Show the list and ask
+which to admit, then run step 0 and step 1 for the ones chosen. It admits nothing itself. Exit 3 means
+the repo has no Jira tracker or project to list from: say so. With config §3b "Propose candidates for
+a free slot" on, the pass prints the same list under `free slot:` while a slot stays free.
+
 ## 0. Snapshot each design
 
 A worker has no Artifact tool, and an artifact private to one subscription cannot be read from
-another, so a ticket's Claude Design canvas is saved now, by this session, before it is admitted.
+another, so a ticket's Claude Design canvas, and any other claude.ai artifact its description links
+(a spec or notes page), is saved now, by this session, before it is admitted. `check` reads the
+description only, so an artifact linked only in a comment has its link moved there first.
 For each ticket the user named (an epic is skipped: its children are admitted on their own):
 
 ```bash
@@ -26,7 +47,10 @@ node ~/.claude/desk/bin/desk-design.mjs check <TICKET>
 ```
 
 `ok`, or an `advisory`, needs nothing. Each `blocking` line names an artifact URL with no copy a
-worker can read: snapshot it with the Artifact tool, reading every file
+worker can read. **One made outside the user's organisation is read here too**: reading it asks
+whether Claude may read it for the rest of this conversation, and the user's yes covers every read
+of it after that, so read every such artifact in this call in one go, while they are here to answer.
+Snapshot it with the Artifact tool, reading every file
 `desk-autopilot/references/design-snapshot.md` (read it now) lists, a single-page artifact's page
 and what it loads included, into `out_dir: $DESK_STATE/designs/<TICKET>/` (`desk-env paths` prints
 `DESK_STATE`). Then record it, and check again:
@@ -55,6 +79,10 @@ node ~/.claude/desk/bin/desk-design.mjs check <TICKET>    # now an advisory nami
 
 and admit them in step 1. Exit 4 names the first file the page loads from elsewhere: it is not a
 self-contained export, so ask once more for one that is, or for the artifact to be shared.
+
+What no session reads first (standing intake, a feature batch started headless, a ticket plan-batch
+seeds) is admitted parked on its unread artifact, and `/desk-needs-you` lists every such artifact in the
+repo, with the tickets each holds, as one item. Its `/desk-admit` is this step for all of them at once.
 
 ## 1. Admit
 
