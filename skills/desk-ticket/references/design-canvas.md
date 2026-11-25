@@ -40,9 +40,10 @@ file name, saves it as `assets/<id>.<ext>` and points the boards at it, and save
 its epic's) but says no board applies to this ticket: nothing needs saving, and the ticket builds
 without it.
 
-**A claude.ai artifact the ticket links outside its Design section** (a spec or notes page in the
-description or a comment) is checked and saved the same way, as a page: `check` names it in its own
-`blocking` or `advisory` line.
+**A claude.ai artifact the ticket's description links outside its Design section** (a spec or notes
+page) is checked and saved the same way, as a page: `check` names it in its own `blocking` or
+`advisory` line. `check` reads only the description, so one linked only in a comment is moved into
+the description first.
 
 **Before you list or read any file of the artifact a `blocking` line names (a canvas, a deck or a
 page), check who owns it**: list the artifact itself with the Artifact tool (`action:list` with no `scope:files`,

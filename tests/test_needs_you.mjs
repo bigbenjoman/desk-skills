@@ -1866,7 +1866,21 @@ mkdirSync(join(naState, 'designs', 'R-1'), { recursive: true });
 writeFileSync(join(naState, 'designs', 'R-1', 'source.json'), JSON.stringify({ url: ART1, version: '1', kind: 'page' }));
 const naDone = N.record({ word: 'na', ticket: 'artifacts', action: 'done' });
 t('issue-1381 AC3 done requeues each ticket whose artifacts all have a snapshot, and names what is still unread',
-  `${naDone.ok} ${['R-1', 'R-2', 'R-3'].map((k) => queueOf('na').tickets[k].state).join()} ${naDone.line.includes(`still no snapshot for R-2 (${ART2})`)}`, 'false triaged,parked,parked true');
+  `${naDone.ok} ${['R-1', 'R-2', 'R-3'].map((k) => queueOf('na').tickets[k].state).join()} ${naDone.line.includes(`still no copy of R-2 (${ART2})`)}`, 'false triaged,parked,parked true');
+// A copy saved on the base (desk-design save or propose, merged) counts as a snapshot does.
+const naRoot = join(T, 'repos', 'na');
+mkdirSync(join(naRoot, 'docs', 'design', 'R-2'), { recursive: true });
+writeFileSync(join(naRoot, 'docs', 'design', 'R-2', 'source.json'), JSON.stringify({ url: ART2, version: '1', kind: 'page' }));
+spawnSync('git', ['-C', naRoot, 'add', '-A']);
+spawnSync('git', ['-C', naRoot, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'spec']);
+spawnSync('git', ['-C', naRoot, 'branch', '-M', 'main']);
+const naDone2 = N.record({ word: 'na', ticket: 'artifacts', action: 'done' });
+t('issue-1381 AC3 done requeues a ticket whose artifact is saved on the base, with no snapshot',
+  `${naDone2.ok} ${queueOf('na').tickets['R-2'].state}`, 'true triaged');
+// Lane D: a saved canvas is buildable; an unread spec page parks on designPark, which the artifacts item groups.
+const laneD = { lane: 'D', design: { ref: 'origin/main', canvases: [{ url: ART1, saved: 'docs/design/R-1/', snapshot: null }], artifacts: [{ url: ART2, saved: null, snapshot: null }] } };
+t('issue-1381 AC3 lane D with its canvas saved needs no person; its unread spec page is a design park',
+  `${BS.needsPersonLane(laneD)} ${JSON.stringify(BS.designParkUrls(BS.designPark(laneD)))}`, `false ${JSON.stringify([ART2])}`);
 
 // ---- DS-577 AC8: the repo's failing reviewer check is one item, naming every PR the pass holds on it
 const rvWhy = 'the review gate counts agent-pullbot; desk posts verdicts as bigbenjoman';

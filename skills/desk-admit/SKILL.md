@@ -18,8 +18,9 @@ epic the script says to plan (step 1b). Never run `queue.mjs admit` yourself.
 ## 0. Snapshot each design
 
 A worker has no Artifact tool, and an artifact private to one subscription cannot be read from
-another, so a ticket's Claude Design canvas, and any other claude.ai artifact it links (a spec or
-notes page in its description or a comment), is saved now, by this session, before it is admitted.
+another, so a ticket's Claude Design canvas, and any other claude.ai artifact its description links
+(a spec or notes page), is saved now, by this session, before it is admitted. `check` reads the
+description only, so an artifact linked only in a comment has its link moved there first.
 For each ticket the user named (an epic is skipped: its children are admitted on their own):
 
 ```bash

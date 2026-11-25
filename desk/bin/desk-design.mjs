@@ -962,8 +962,8 @@ export function claudeDesignLinks(section) {
 // or notes), not a chat or settings page, which holds nothing to save.
 const ARTIFACT_PATH = /^\/(?:design|artifacts?|public\/artifacts)\//i;
 
-// The claude.ai artifacts a ticket links outside its Design section (a spec in its description, notes in
-// a comment). A worker cannot read one, so each needs a copy in the repo as a design does. What Out of
+// The claude.ai artifacts a ticket's description links outside its Design section (a spec, notes). A
+// worker cannot read one, so each needs a copy in the repo as a design does. What Out of
 // scope links is not the ticket's to read, and a link the Design section also names is a design.
 export function linkedArtifacts(text) {
   const design = claudeDesignLinks(designSection(text)).map(canonicalUrl);
@@ -1303,8 +1303,10 @@ if (isMain) {
     } else if (cmd === 'copies') {
       if (!target) fail('usage: desk-design copies <KEY | ticket file> [--key <K>]');
       const issue = loadIssue(target, opt(rest, '--key'));
-      const root = toplevel(); const dir = designDir();
-      const copies = copiesOf(issue.text ?? issue.fields?.description, { root, dir, ref: baseRef(root), state: E.stateDir() });
+      // A repo that saves no canvases still has snapshots to read.
+      const root = toplevel(); let dir = null;
+      try { dir = designDir(); } catch { /* §2 Design canvases directory is none */ }
+      const copies =copiesOf(issue.text ?? issue.fields?.description, { root, dir, ref: baseRef(root), state: E.stateDir() });
       for (const c of copies) console.log(`${c.url}\t${c.copy ?? '-'}`);
       process.exit(copies.some((c) => !c.copy) ? 1 : 0);
     } else if (cmd === 'render') {

@@ -126,7 +126,7 @@ import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { landedPr } from './post-merge.mjs';
 import { promotionPr, readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, designParkUrls, EXIT } from './batch-state.mjs';
-import { snapshotOf } from './desk-design.mjs';
+import { snapshotOf, savedAt, canonicalUrl } from './desk-design.mjs';
 import { promotionTitle } from './pass/promotion-pr.mjs';
 import { blockersOf } from './queue-states.mjs';
 import { dayAndTime } from './desk-q-eta.mjs';
@@ -833,7 +833,7 @@ function unsetItem(g) {
 // on it (batch-state designPark): only a session that can answer the platform's prompt to read one made
 // outside the organisation can. One session reads them all, so every such ticket of the repo is one
 // item, `artifacts`, naming each artifact and its tickets; its done requeues each ticket whose
-// artifacts all have a snapshot now.
+// artifacts all have a copy now.
 const ARTIFACTS = 'artifacts';
 function artifactsItem(g) {
   const keys = g.parked.map((p) => p.t.key);
@@ -844,26 +844,46 @@ function artifactsItem(g) {
     need: `${n === 1 ? 'A ticket' : `${n} tickets`} (${andList(keys)}) ${n === 1 ? 'links' : 'link'} ${urls.length === 1 ? 'a claude.ai artifact' : `${urls.length} claude.ai artifacts`} no session has read, so no worker can: ${each.join('; ')}. Read ${urls.length === 1 ? 'it' : 'them all'} in one interactive session in ${rootOf(g.r)} with /desk-admit ${keys.join(' ')}, which saves each (you answer once whether Claude may read one made outside your organisation), then say done and ${n === 1 ? 'it goes' : 'each goes'} back to a worker`,
     actions: [['done', `once ${urls.length === 1 ? 'it is' : 'they are'} saved, done sends each ticket whose artifacts all have a copy back to a worker`], ['not-now']] };
 }
-// Done on the artifacts item: each ticket whose every artifact has a snapshot is requeued in its own
-// batch (or named for the live session that runs it); the rest stay, naming what is still unread.
+// The copies saved under the repo's Design canvases directory on its batch's base, as desk-design's
+// savedAt reads them (origin/<base> where fetched), or none.
+function savedOnBase(r) {
+  const dir = String(repoConfigValue(r.slug, 'design-dir') ?? 'docs/design/').trim().replace(/\/+$/, '');
+  if (!dir || /^none$/i.test(dir)) return [];
+  const base = r.q?.base ?? defaultOf(r);
+  for (const ref of [`origin/${base}`, base]) { try { return savedAt(rootOf(r), dir, ref); } catch { /* no such ref */ } }
+  return [];
+}
+// Done on the artifacts item: each ticket whose every artifact has a copy, a snapshot or one saved on
+// its base, is requeued in its own batch (or named for the live session that runs it); the rest stay,
+// naming what is still unread.
 function artifactsDone(i, say) {
-  const requeued = [], refused = [], unread = [], bySession = new Map();
+  const ready = [], unread = [];
   for (const p of i.parked) {
-    const missing = p.urls.filter((u) => !snapshotOf(p.r.stateDir, u));
-    if (missing.length) { unread.push(`${p.t.key} (${missing.join(', ')})`); continue; }
+    const saved = savedOnBase(p.r);
+    const missing = p.urls.filter((u) => !snapshotOf(p.r.stateDir, u) && !saved.some((c) => canonicalUrl(c.url) === canonicalUrl(u)));
+    if (missing.length) unread.push(`${p.t.key} (${missing.join(', ')})`); else ready.push(p);
+  }
+  const { refused, parts, first } = requeueParked(ready);
+  if (unread.length) parts.push(`still no copy of ${andList(unread)}, so ${unread.length === 1 ? 'it stays' : 'they stay'} parked: run /desk-admit for ${unread.length === 1 ? 'it' : 'them'} in a session`);
+  return say(!refused.length && !unread.length, `${parts.join('; ')}.`,
+    first ? { to: first[0], text: `${andList(first[1])} parked on a claude.ai artifact that now has a copy: requeue ${themOf(first[1])} (node ~/.claude/desk/bin/queue.mjs requeue <TICKET>).` } : null);
+}
+// Sends each parked ticket back to a worker: requeued in its own batch, or named for the live session
+// that runs it. `parts` is the answer's line, a clause each; `first` the first session to message.
+const themOf = (ks) => (ks.length === 1 ? 'it' : 'them');
+function requeueParked(parked) {
+  const requeued = [], refused = [], bySession = new Map();
+  for (const p of parked) {
     const w = runner(p.r);
     if (w.by === 'session') { const s = w.name ?? '(no batch name recorded)'; bySession.set(s, [...(bySession.get(s) ?? []), p.t.key]); continue; }
     const q = queueCmd(p.r, ['requeue', p.t.key]);
     if (q.ok) requeued.push(p.t.key); else refused.push(`${p.t.key} (${q.out})`);
   }
-  const them = (ks) => (ks.length === 1 ? 'it' : 'them');
-  const parts = [...(requeued.length ? [`requeued ${andList(requeued)}; the next pass can spawn ${them(requeued)}`] : []),
+  const parts = [...(requeued.length ? [`requeued ${andList(requeued)}; the next pass can spawn ${themOf(requeued)}`] : []),
     ...(refused.length ? [`the requeue was refused for ${andList(refused)}`] : []),
-    ...(unread.length ? [`still no snapshot for ${andList(unread)}, so ${unread.length === 1 ? 'it stays' : 'they stay'} parked: run /desk-admit for ${unread.length === 1 ? 'it' : 'them'} in a session`] : []),
-    ...[...bySession].map(([s, ks]) => `a live session (${s}) runs ${andList(ks)}: message it to requeue ${them(ks)}`)];
+    ...[...bySession].map(([s, ks]) => `a live session (${s}) runs ${andList(ks)}: message it to requeue ${themOf(ks)}`)];
   const [first] = bySession;
-  return say(!refused.length && !unread.length, `${parts.join('; ')}.`,
-    first ? { to: first[0], text: `${andList(first[1])} parked on a claude.ai artifact that is now snapshotted: requeue ${them(first[1])} (node ~/.claude/desk/bin/queue.mjs requeue <TICKET>).` } : null);
+  return { refused, parts, first };
 }
 // A committed copy of a desk template (the pre-push hook, the desk gate) the template has moved on
 // from, as the supervisor's last template check found it (repo-templates.mjs): one item for the repo.
@@ -2639,20 +2659,9 @@ function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = R
   }
   const key = ticket.slice(UNSET.length);
   if (repoPermissionUnset(i.r.slug, key)) return say(false, `§3 ${key} is still not set in ${i.r.repo}'s config, so nothing was requeued. Answer it with /desk-update in ${rootOf(i.r)} first.`);
-  const requeued = [], refused = [], bySession = new Map();
-  for (const p of i.parked) {
-    const w = runner(p.r);
-    if (w.by === 'session') { const s = w.name ?? '(no batch name recorded)'; bySession.set(s, [...(bySession.get(s) ?? []), p.t.key]); continue; }
-    const q = queueCmd(p.r, ['requeue', p.t.key]);
-    if (q.ok) requeued.push(p.t.key); else refused.push(`${p.t.key} (${q.out})`);
-  }
-  const them = (ks) => (ks.length === 1 ? 'it' : 'them');
-  const parts = [...(requeued.length ? [`requeued ${andList(requeued)}; the next pass can spawn ${them(requeued)}`] : []),
-    ...(refused.length ? [`the requeue was refused for ${andList(refused)}`] : []),
-    ...[...bySession].map(([s, ks]) => `a live session (${s}) runs ${andList(ks)}: message it to requeue ${them(ks)}`)];
-  const [first] = bySession;
+  const { refused, parts, first } = requeueParked(i.parked);
   return say(!refused.length, `§3 ${key} is set now: ${parts.join('; ')}.`,
-    first ? { to: first[0], text: `${andList(first[1])} parked on §3 ${key}, which is now set: requeue ${them(first[1])} (node ~/.claude/desk/bin/queue.mjs requeue <TICKET>).` } : null);
+    first ? { to: first[0], text: `${andList(first[1])} parked on §3 ${key}, which is now set: requeue ${themOf(first[1])} (node ~/.claude/desk/bin/queue.mjs requeue <TICKET>).` } : null);
 }
 
 // What is left: desk-q's NEEDS YOU count in scope (needsCount's rule), then a line for each unfinished batch there whose passes are

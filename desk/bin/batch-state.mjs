@@ -342,7 +342,8 @@ export function designGap(r) {
   if (r?.design_error) return `its design could not be read (${r.design_error})`;
   const d = r?.design;
   if (!d) return 'its design was never read: re-run triage';
-  const missing = unreadCanvases(r);
+  // Only its canvases: an unread spec or notes page parks on designPark, in any lane.
+  const missing = (d.canvases ?? []).filter((c) => !c.saved && !c.snapshot).map((c) => c.url);
   if (missing.length) return `its canvas is not on ${d.ref}: save ${missing.join(', ')} there (desk-design save), or snapshot it`;
   if (!(d.canvases ?? []).length) return d.figma ? 'its only design is a Figma frame, which a worker cannot read' : 'it links no Claude Design canvas';
   return null;

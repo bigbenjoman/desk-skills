@@ -406,8 +406,9 @@ if (mode === 'triage') {
     'Bash(desk-gh read:*)', `Bash(${E.HOME}/.local/bin/desk-gh read:*)`, 'Bash(~/.local/bin/desk-gh read:*)',
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-gh.mjs read:*)`, `Bash(node ${b}/desk-gh.mjs read:*)`]),
     // desk-design copies the orchestrator's Claude Design snapshot into this checkout's Design
-    // canvases directory, so the worker commits it on its branch. Not `write`, which takes any folder.
-    ...BIN_FORMS.flatMap((b) => [' save', ' status', ' check'].flatMap((s) => [`Bash(${b}/desk-design.mjs${s}:*)`, `Bash(node ${b}/desk-design.mjs${s}:*)`])),
+    // canvases directory, so the worker commits it on its branch, and `copies` names where each linked
+    // claude.ai artifact's copy is. Not `write`, which takes any folder.
+    ...BIN_FORMS.flatMap((b) => [' save', ' status', ' check', ' copies'].flatMap((s) => [`Bash(${b}/desk-design.mjs${s}:*)`, `Bash(node ${b}/desk-design.mjs${s}:*)`])),
     // Its own handoff briefing, written as JSON from flags, for this ticket only. Run bare, since
     // `node *..*` below refuses a criterion or a git range holding `..`.
     ...BIN_FORMS.map((b) => `Bash(${b}/handoff.mjs write ${T} *)`),
