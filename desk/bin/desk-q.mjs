@@ -525,7 +525,7 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
         : `${passed} check${passed === 1 ? '' : 's'} passed`;
     const all = [[lead, ...others].join(', '), advisory ? WARN : GOOD];
     if (ctx.merges) return merging(all, [' · merges at the next pass', null]);
-    return ctx.batchMerges ? merging(all, [` · ${BATCH_MERGES}`, null]) : needs({ code: 'green', checks: checks.length, advisory }, all, [' · merge it', null]);
+    return ctx.batchMerges ? { ...merging(all, [` · ${BATCH_MERGES}`, null]), byBatch: true } : needs({ code: 'green', checks: checks.length, advisory }, all, [' · merge it', null]);
   }
   const progress = checks.length ? [runningCheck(checks, now), [` · ${done} of ${checks.length} done`, null]] : [['no checks reported yet', GREY]];
   return ctx.merges || ctx.batchMerges ? merging(...progress) : needs({ code: 'running', done, checks: checks.length }, ...progress, [' · merge it once green', null]);
@@ -3259,6 +3259,11 @@ const detail = (r, x) => needSegs(r, x).map((s) => s[0]).join('');
 export { detail as needText };
 // Why an unmerged PR needs the person, as prNeed's `why` ({ code, … }), or null when it does not.
 export const prWhy = (r, t) => (prRow(t) ? prNeed(r.q, t, r.ctx, null).why ?? null : null);
+// The green PRs a batch leaves to whoever merges for it (prNeed's byBatch), as { key, pr, text }, `text`
+// what desk-q's Merging row says after the PR number: needs-you shows each as moving without the person.
+export const batchMerging = (r) => Object.entries(r.q?.tickets ?? {}).filter(([, t]) => t?.result?.pr != null && prRow(t))
+  .map(([key, t]) => ({ key, pr: t.result.pr, m: prNeed(r.q, t, r.ctx ?? NOBODY, null) })).filter((x) => x.m.byBatch)
+  .map(({ key, pr, m }) => ({ key, pr, text: segText(m.segs) }));
 // An interactive session's claim on a parked ticket (queue.mjs park --claimed-by), in any lane.
 const claimOf = sessionClaim;
 

@@ -499,6 +499,10 @@ t('DS-1015 AC1 a green PR in a granted session-run batch with no merge driver is
   `${g1015.items.map((i) => i.need).join(' | ')}|${needsRows(g1015.named).length} ${g1015.named?.ctx?.batchMerges}`, '|0 true');
 t('DS-1015 AC2 with the merge rows not yes, a green PR keeps today\'s wording', u1015.items.map((i) => i.need).join(' | '),
   'PR #71 has its check green, and desk may not merge in this repo. Merge it on GitHub; the ticket is then done.');
+t('DS-1015 AC3 needs-you shows the PR as desk-q\'s Merging row does, outside the person\'s items, in the list and its JSON',
+  `${N.listText(g1015)} | ${JSON.stringify(N.listItems({ word: 'granted1015', reads: null }).moving)} | ${/Moves without you/.test(N.listText(u1015))}`,
+  'Nothing needs you in granted1015. Moves without you: PR #71 (G-1), 1 check passed · waits on whoever merges for the batch.'
+  + ' | [{"batch":"granted1015","key":"G-1","pr":71,"text":"1 check passed · waits on whoever merges for the batch"}] | false');
 const rq1 = N.record({ word: 'eta', ticket: 'E-1', action: 'requeue' });
 t('DS-279 requeue sends a stopped worker\'s ticket back, under the supervisor', `${rq1.ok} ${queueOf('eta').tickets['E-1'].state !== 'failed'} ${N.collect({ word: 'eta' }).items.some((i) => i.t.key === 'E-1')}`, 'true true false');
 // DS-554: a failed ticket's item quotes the reason the pass recorded on it, and one with none says so.

@@ -2209,6 +2209,8 @@ const rMb = Q.loadRepos(NOW).find((r) => r.name === 'mergeby1015'), qMb = lines(
 t('DS-1015 AC1 AC3 a green PR in a granted session-run batch with no merge driver is merging and waits on whoever merges for the batch',
   `${/M-1 +▸ merging/.test(fxRow(qMb, 'M-1'))} ${/M-2 +▸ merging/.test(fxRow(qMb, 'M-2'))} ${Q.needsRows(rMb).length} | ${rail279('M-1', rMb)}`,
   'true true 0 | Moves without you: PR #830, all 2 checks passed · waits on whoever merges for the batch.');
+t('DS-1015 AC3 batchMerging gives needs-you the green PR in the Merging row\'s words, and not one still running',
+  JSON.stringify(Q.batchMerging(rMb)), '[{"key":"M-1","pr":830,"text":"all 2 checks passed · waits on whoever merges for the batch"}]');
 const advQ = { tickets: { 'A-1': { key: 'A-1', ...prOn(810, [okCheck('build'), { ...red, name: 'lint' }]) }, 'A-2': { key: 'A-2', ...heldBy('A-1') } } };
 const advCtx = (advisory, required = []) => ({ releases: true, merges: true, reruns: true, stage: () => null, base: 'main', required, advisory });
 t('DS-279 a failed advisory check is no repair: the PR merges past it, as the fix tries read it',
