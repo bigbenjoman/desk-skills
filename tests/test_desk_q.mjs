@@ -1180,6 +1180,41 @@ const slOut = SL.run('--plain', 'voicepa').out;
 t('DS-190 AC1 the CLI shows the worker\'s stage since its marker', (lines(slOut).find((l) => /VPL-1/.test(l)) ?? '').includes(`stage 4/9 verify since ${saidAt.toTimeString().slice(0, 5)}`), true);
 t('DS-190 AC3 a running ticket with no log keeps the last pass\'s stage', /VPL-2\s+● running\s+stage 0\/9 as of \d\d:\d\d\s/.test(lines(slOut).find((l) => /VPL-2/.test(l)) ?? ''), true);
 
+// issue-1418: a worker that said it finished reads as finishing and holds no worker; a ship date at
+// or before now reads overdue, never the render time.
+const wrapTickets = { 'W-1': { state: 'running', stage: '8/9' }, 'W-2': { state: 'running', stage: '8/9' }, 'W-3': { state: 'running', stage: '8/9' } };
+const WR = world({ wrap: { port: 6418, conc: '3 / 5', beat: 1, queue: { batch: 'wrap', concurrency: 3, tickets: wrapTickets },
+  triage: Object.fromEntries(Object.keys(wrapTickets).map((k) => [k, { summary: `${k} title`, size: 'M' }])) } });
+const wrapState = join(WR.env.HOME, '.desk-autopilot', 'acme__wrap');
+const wrapAt = Date.now();
+writeFileSync(join(wrapState, 'eta-history.jsonl'), [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5].map((h, i) => {
+  const merged = wrapAt - (i + 1) * HOUR;
+  return `${JSON.stringify({ key: `H-${i}`, size: 'M', spawned_at: new Date(merged - h * HOUR).toISOString(), merged_at: new Date(merged).toISOString(), hours: h })}\n`;
+}).join(''));
+mkdirSync(join(wrapState, 'logs'), { recursive: true });
+const saidLine = (text) => `${JSON.stringify({ type: 'assistant', timestamp: new Date(wrapAt - 60000).toISOString(), message: { content: [{ type: 'text', text }] } })}\n`;
+writeFileSync(join(wrapState, 'logs', 'W-1.log'), saidLine('AUTOPILOT_STAGE: 9/9 done'));
+writeFileSync(join(wrapState, 'logs', 'W-2.log'), saidLine('AUTOPILOT_STAGE: 9/9 cleanup') + saidLine('AUTOPILOT_DONE: pr=12 jira=none'));
+writeFileSync(join(wrapState, 'logs', 'W-3.log'), saidLine('AUTOPILOT_STAGE: 9/9 cleanup'));
+const wrapOut = lines(WR.run('--plain', 'wrap').out);
+const wrapRow = (key) => (wrapOut.find((l) => l.includes(` ${key} `)) ?? '').replace(/\s+/g, ' ').trim();
+t('issue-1418 AC1 a final stage marked done reads as finishing, not running', wrapRow('W-1').startsWith('1 W-1 ◑ finishing worker finished, next pass records it started overdue') || wrapRow('W-1'), true);
+t('issue-1418 AC1 so does a worker that printed its DONE marker', wrapRow('W-2').startsWith('2 W-2 ◑ finishing ') || wrapRow('W-2'), true);
+t('issue-1418 AC1 a worker still in its last stage is running', wrapRow('W-3').startsWith('3 W-3 ● running ') || wrapRow('W-3'), true);
+t('issue-1418 AC1 only the running one counts as a held worker', wrapOut.find((l) => /workers \d+ of \d+/.test(l))?.match(/workers \d+ of \d+/)?.[0], 'workers 1 of 3');
+// The render time, and the minute either side of it the run may have crossed.
+const renderTimes = [-1, 0, 1].map((m) => whenAt(wrapAt + m * 60000, wrapAt));
+t('issue-1418 AC2 a ship estimate at or before now reads overdue, never the render time',
+  ['W-1', 'W-2', 'W-3'].map((k) => `${wrapRow(k).includes('overdue')} ${renderTimes.some((s) => wrapRow(k).includes(s))}`).join(', '), 'true false, true false, true false');
+t('issue-1418 AC1 the ticket page says a finishing ticket waits on the next pass, not that it starts',
+  WR.run('--plain', 'wrap', 'show', 'W-1').out.includes('Moves without you: worker finished, next pass records it.'), true);
+t('issue-1418 AC2 the ships view\'s all done by is never the render time',
+  ((l) => `${l.includes('overdue')} ${renderTimes.some((s) => l.includes(s))}`)(lines(WR.run('--plain', 'ships', 'wrap').out).find((l) => l.startsWith('All done by:')) ?? ''), 'true false');
+{
+  const { passesPaused } = await import('../desk/bin/desk-q.mjs');
+  t('issue-1418 AC1 a stopped batch with only a finishing ticket left reads as paused, not idle', passesPaused({ live: false, rows: [{ k: 'finishing' }] }), true);
+}
+
 // ---- Lead with what needs you, a repo's Queue grouped by state, a ticket's status first.
 // AC1: voicepa has two tickets parked on the user and one blocked behind them; pr-ninja has one.
 const NY = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch: 'vp', concurrency: 3, tickets: {

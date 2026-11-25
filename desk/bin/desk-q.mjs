@@ -87,11 +87,12 @@ export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour. The screen draws five, named
 // by who moves the ticket next; the rest are reasons inside one of them: an untriaged ticket is
 // ready, and one held outside the batch or whose worker stopped needs the user.
-const GROUP_OF = { queued: 'ready', stuck: 'needs', failed: 'needs' };
+// `finishing`: a running ticket whose worker said it finished, holding no worker until a pass records it.
+const GROUP_OF = { queued: 'ready', stuck: 'needs', failed: 'needs', finishing: 'waiting' };
 const groupOf = (k) => GROUP_OF[k] ?? k;
-// A reason key draws as its group: the same glyph, word and colour (STATE_SGR).
-const byGroup = (m) => { for (const k of Object.keys(GROUP_OF)) m[k] = m[groupOf(k)]; return m; };
-const LABEL = byGroup({ running: '● running', ready: '○ ready', merging: '▸ merging', waiting: '· waiting', needs: '◆ needs you', done: '✓ done', putoff: '◇ put off' });
+// A reason key draws as its group: the same glyph, word and colour (STATE_SGR), unless it has a word of its own.
+const byGroup = (m) => { for (const k of Object.keys(GROUP_OF)) m[k] ??= m[groupOf(k)]; return m; };
+const LABEL = byGroup({ running: '● running', ready: '○ ready', merging: '▸ merging', waiting: '· waiting', needs: '◆ needs you', done: '✓ done', putoff: '◇ put off', finishing: '◑ finishing' });
 // The five shown states, in the order the Queue groups them.
 const SHOWN = ['running', 'ready', 'merging', 'waiting', 'needs'];
 const shownOf = (ks) => SHOWN.filter((g) => ks.some((k) => groupOf(k) === g));
@@ -139,6 +140,7 @@ export function titler(titles) {
 export const shownState = (q, t, ctx = NOBODY) => stateOf(q, t, ctx, new Set());
 function stateOf(q, t, ctx, seen) {
   if (prRow(t)) return prNeed(q, t, ctx, null).k;
+  if (t.state === 'running' && ctx.finished?.(t.key)) return 'finishing';
   if (['running', 'done', 'failed'].includes(t.state)) return t.state;
   if (outsideOf(t).length && (t.open_questions ?? 0) > 0) return 'stuck';
   if (isHeld(t)) return heldAsks(t) ? 'needs' : holdOf(q, t, ctx, seen).k;
@@ -150,7 +152,7 @@ function stateOf(q, t, ctx, seen) {
   return t.state === 'queued' ? 'queued' : 'ready';
 }
 
-const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null };
+const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, finished: () => false, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null };
 
 // The one note a screen gives the machine's upload pause on GitHub's PR page (upload-queue.mjs
 // uploadPause), however many of its PRs wait on it.
@@ -213,6 +215,8 @@ function holdContext(r) {
   try { granted = mergeGrant(r.q, (id) => repoPermission(r.slug, id)).by != null; } catch { /* a grant that cannot be read is none */ }
   const releases = driver || (granted && r.live && (r.q?.supervised === true || r.q?.pass?.by === 'supervisor'));
   const stage = (key) => { const s = rowStage(r.stateDir, r.q.tickets[key], r.last); return s.label ?? s.stage; };
+  // Whether running ticket `key`'s worker said it finished, so only the next pass's record is left.
+  const finished = (key) => rowStage(r.stateDir, r.q.tickets[key], r.last).done === true;
   // The Jira status category ticket `key`'s triage record last read for its blocker `b`, or undefined.
   const blockerCategory = (key, b) => (triageOf(r, key)?.blockers ?? []).find((x) => x?.key === b)?.category;
   // The base the pass sends a conflict's fix try against: the batch's own, else the repo's default.
@@ -232,7 +236,7 @@ function holdContext(r) {
   let outages = [];
   if (stateChecks.length && r.stateDir) { try { outages = gateReviewerRecord(repoStateOf(r.stateDir)).outages ?? []; } catch { /* none recorded */ } }
   // With passes stopped nothing merges, but a PR the grant covers merges by itself once they resume.
-  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages };
+  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, finished, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null, stateChecks, outages };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -1065,7 +1069,7 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
 
 const SOON = MINUTE;
 // The shown states a pass can still move on: anything else waits on the user.
-const MOVABLE_STATES = ['running', 'ready', 'queued', 'waiting'];
+const MOVABLE_STATES = ['running', 'finishing', 'ready', 'queued', 'waiting'];
 // A batch whose passes stopped while it has a ticket autopilot could move: forecastOf's `paused`, and
 // needs-you's stalled item for a batch a session runs.
 export const passesPaused = (r) => !r.live && r.rows.some((x) => MOVABLE_STATES.includes(x.k));
@@ -1073,14 +1077,17 @@ const undatable = (F) => !F || F.none || F.paused || F.idle;
 const etaOf = (F, key) => (undatable(F) ? null : F.T[key]);
 // With passes stopped there are no dates, but a running worker carries on, so its row says so.
 const startsCell = (F, x, now) => {
+  if (x.k === 'finishing') return 'started';
   if (F && !F.none && F.paused) return x.k === 'running' ? 'running' : '—';
   const e = etaOf(F, x.t.key);
   return !e ? '—' : e.start <= now + SOON ? (x.k === 'running' ? 'running' : 'now') : when(e.start, now);
 };
+// A ship date: one at or before now, for a ticket not merged yet, has been missed rather than met.
+const shipWhen = (at, now) => (at <= now + SOON ? 'overdue' : when(at, now));
 // An undated ticket held behind a blocker whose code waits on another branch's promotion shows that
 // promotion PR's state (none, draft, open or red) in place of "no date".
 const promoOf = (t) => unpromotedHolds(t)[0]?.[1] ?? null;
-const shipsCell = (F, x, now) => (undatable(F) ? '—' : F.T[x.t.key] ? when(F.T[x.t.key].likely, now) : promoOf(x.t) ? `promo ${promoOf(x.t).state}` : 'no date');
+const shipsCell = (F, x, now) => (undatable(F) ? '—' : F.T[x.t.key] ? shipWhen(F.T[x.t.key].likely, now) : promoOf(x.t) ? `promo ${promoOf(x.t).state}` : 'no date');
 const noHistory = (r, F) => `No ship estimate: ${r.name} has ${F.count} merged autopilot tickets in its history (the last ${WINDOW_DAYS} days), and estimates need ${MIN_HISTORY}.`;
 // The same under a note's repo tag, which already names the repo.
 const noHistoryText = (F) => `no ship estimate yet, with ${F.count} of the ${MIN_HISTORY} merged autopilot tickets an estimate needs (the last ${WINDOW_DAYS} days).`;
@@ -1134,10 +1141,10 @@ function queueDone(r, now, checkin) {
     if (!left.length) return 'nothing left';
     if (left.length === 1) return queueDone(left[0], now, checkin);
     const Fs = left.map((b) => forecastOf(b, { now, checkin }));
-    return Fs.every((F) => !F.none && !F.paused && F.clears) ? when(Math.max(...Fs.map((F) => F.clears)), now) : 'no date yet';
+    return Fs.every((F) => !F.none && !F.paused && F.clears) ? shipWhen(Math.max(...Fs.map((F) => F.clears)), now) : 'no date yet';
   }
   const F = forecastOf(r, { now, checkin });
-  return !F ? '' : F.idle ? 'nothing left' : F.none ? 'no history' : F.paused ? 'passes stopped' : F.clears ? when(F.clears, now) : 'no date yet';
+  return !F ? '' : F.idle ? 'nothing left' : F.none ? 'no history' : F.paused ? 'passes stopped' : F.clears ? shipWhen(F.clears, now) : 'no date yet';
 }
 
 // `desk-q ships [<repo>]`: one line per unfinished ticket, the form Claude reads.
@@ -1164,7 +1171,7 @@ export function shipsScreen(repos, slug, { now = Date.now(), checkin = false } =
     if (note) { out.push(note); continue; }
     out.push(forecastLine(r.name, now, F.count, r.workers, checkin), passLines(r, now)[0], hitLine(r));
     table(r, F);
-    out.push(`All done by: ${F.clears ? when(F.clears, now) : 'no ticket has a date yet'}${F.undated ? `, ${F.undated} with no date` : ''}.`);
+    out.push(`All done by: ${F.clears ? shipWhen(F.clears, now) : 'no ticket has a date yet'}${F.undated ? `, ${F.undated} with no date` : ''}.`);
     const epics = Object.values(F.epics);
     if (epics.length) {
       out.push('', `  ${pad('EPIC', 10)}${pad('TITLE', 32)}${pad('DONE', 7)}${pad('STARTS', 13)}SHIPS`);
@@ -1201,7 +1208,7 @@ function epicLine(r, F, e, now, checkin) {
   if (!d) return `${lead}${pad('—', 13)}${epicWhy(r, F, e, checkin)}`;
   const running = r.rows.some((x) => F.of[x.t.key] === e.key && x.k === 'running');
   const starts = d.start == null ? '—' : d.start <= now + SOON ? (running ? 'running' : 'now') : when(d.start, now);
-  return `${lead}${pad(starts, 13)}${pad(when(d.likely, now), 14)}${epicNote(e, d)}`.trimEnd();
+  return `${lead}${pad(starts, 13)}${pad(shipWhen(d.likely, now), 14)}${epicNote(e, d)}`.trimEnd();
 }
 
 // A dated epic's note: why it is provisional, else the child that sets its date.
@@ -1456,7 +1463,7 @@ function timelineParts(repos, slug, { now = Date.now(), width = null, checkin = 
       if (!d) { rows.push(segRow(`${r.id}${e.key}`, [...name, [epicWhy(r, F, e, checkin), whyColour(F)]], open)); continue; }
       const sgr = provisional(e) ? STATE_SGR.waiting : BOLD;
       rows.push(segRow(`${r.id}${e.key}`, [...name, ...bar({ start: d.start ?? now, likely: d.likely, late: d.late }, sgr),
-        [` ${pad(epicStarts(r, F, e, d, now), 13)}${pad(when(d.likely, now), 12)}`, null], ...(provisional(e) ? [['  provisional', sgr]] : [])], open));
+        [` ${pad(epicStarts(r, F, e, d, now), 13)}${pad(shipWhen(d.likely, now), 12)}`, null], ...(provisional(e) ? [['  provisional', sgr]] : [])], open));
     }
     if (items.length) rows.push(segRow(`${s.per[0].r.id}other`, [['  Other work', BOLD], [` · ${items.length} ticket${items.length === 1 ? '' : 's'} with no epic`, DIM]], null));
   }
@@ -1619,7 +1626,7 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = nu
   const rows = list.map(({ r, F, e, d, name = r.repo ?? r.name, opens = r.id }) => {
     const done = Math.round((e.done / e.total) * EP_BAR);
     const queued = e.queued ? Math.min(EP_BAR - done, Math.max(1, Math.round((e.queued / e.total) * EP_BAR))) : 0;
-    const date = d ? [[pad(when(d.likely, now), 14), null], [epicNote(e, d), provisional(e) ? STATE_SGR.waiting : DIM]] : [[epicWhy(r, F, e, checkin), whyColour(F)]];
+    const date = d ? [[pad(shipWhen(d.likely, now), 14), null], [epicNote(e, d), provisional(e) ? STATE_SGR.waiting : DIM]] : [[epicWhy(r, F, e, checkin), whyColour(F)]];
     const n = `${e.done}/${e.total}`;
     return segRow(`${r.id}${e.key}`, [[`  ${all ? pad(name, 12) : ''}${pad(e.key, 10)}${pad(cut(e.summary, 34), 36)}`, null],
       ['■'.repeat(done), STATE_SGR.running], ['■'.repeat(queued), STATE_SGR.waiting], [notYet.repeat(EP_BAR - done - queued), DIM],
@@ -3107,6 +3114,8 @@ function startWait(r, t) {
 // Why a ready ticket has not started: startWait, or the pass that will start it.
 const readyWhy = (r, t) => startWait(r, t) ?? (r.live ? 'starts at the next pass' : 'starts when passes resume');
 
+const FINISHING_TEXT = 'worker finished, next pass records it';
+
 // A running ticket's stage: "stage 4/9 verify since 06:38" from its worker's log; with no marker
 // there, the last pass's reading, which the worker may be further on from.
 function runningStage(r, x) {
@@ -3199,6 +3208,7 @@ function needSegs(r, x, now = Date.now()) {
   const f = fixOn(t);
   if (f && groupOf(k) !== 'needs') return fixSegs(f, k === 'running', k === 'running' ? null : startWait(r, t));
   if (k === 'running') return [[runningStage(r, x), null]];
+  if (k === 'finishing') return [[FINISHING_TEXT, null]];
   if (answeredPark(t, r.ctx)) return [[answeredText(r.q), null]];
   if (clearsPark(t)) return [[clearsText(t), null]];
   if (k === 'ready') return [[readyWhy(r, t), null]];
@@ -3446,6 +3456,7 @@ function moveOf(r, row, k, t, h, now) {
   if (!row) return { text: k === 'done' ? 'Done: nothing left to move.' : `${capital(k)}.` };
   const f = fixOn(t);
   if (k === 'running') return { text: `Moves without you: a worker is on it, ${f ? `${segText(fixSegs(f, true))}, ` : ''}${runningStage(r, row)}.` };
+  if (k === 'finishing') return { text: `Moves without you: ${FINISHING_TEXT}.` };
   if (heldDraft(t)) {
     return { text: `Needs you. Held by you: you put its PR #${t.result.pr} back to draft, so no pass undrafts it and nothing merges it.`,
       lead: 'Undraft it to release it, and it merges once it is green:', cmds: [`gh pr ready ${t.result.pr} --repo ${r.slug.replace('__', '/')}`] };
@@ -3540,8 +3551,8 @@ function timingFields(r, F, x, h, now) {
     // Drawn from the whole history, the line still says how many of this size it holds, or that triage gave none.
     const of = own ? '' : size === 'unknown' ? ' (triage recorded no size)' : ` (${n} of size ${size}${n ? ', too few to use alone' : ''})`;
     return [
-      ['Starts', [[e.start <= now + SOON ? (k === 'running' ? 'running now' : 'now') : when(e.start, now), null]]],
-      ['Ships', [[when(e.likely, now), BOLD], [`  could run to ${when(e.late, now)} (1 run in 5 is later)`, DIM]]],
+      ['Starts', [[k === 'finishing' ? 'started' : e.start <= now + SOON ? (k === 'running' ? 'running now' : 'now') : when(e.start, now), null]]],
+      ['Ships', [[shipWhen(e.likely, now), BOLD], ...(shipWhen(e.late, now) === 'overdue' ? [] : [[`  could run to ${when(e.late, now)} (1 run in 5 is later)`, DIM]])]],
       ['Based on', [[`${v.length} merged ${own ? `size ${size} ` : ''}tickets in ${r.name}${of} · typical ${quantile(v, 0.5).toFixed(1)} h spawn to merge, 4 in 5 within ${quantile(v, 0.8).toFixed(1)} h`, DIM]]],
     ];
   }
