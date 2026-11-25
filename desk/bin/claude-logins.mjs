@@ -12,6 +12,7 @@ import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loginFile, repoSubscriptions, subscriptionsPath } from './desk-env.mjs';
 import { CHECK_TIMEOUT_MS, defaultLogin, isDir, login, loginEnv, readSubscriptions, repoSubscription, toolLogins } from './logins.mjs';
+import { WORKER_LOG } from './worker-cost.mjs';
 
 // A login for a folder no subscriptions row names.
 const envLogin = (dir) => login({ tool: 'claude', name: basename(dir), folder: dir, rule: null, source: 'env' });
@@ -93,7 +94,6 @@ export function workerLoginDir(stateDir, key, none = null) {
 
 // The login a worker log ran on, by its name in <state>/logs: `<key>.log` is the worker's latest start,
 // and `<key>.log.round<n>[.gz]` the login file kept with that round, or the latest with none kept.
-const WORKER_LOG = /^(.+)\.log(?:\.round(\d+)(?:\.gz)?)?$/;
 export function logLoginDir(stateDir, name) {
   const [, key, round] = WORKER_LOG.exec(name) ?? [];
   if (!key) return null;
