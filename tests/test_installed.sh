@@ -105,12 +105,26 @@ check "issue-1455 AC2: reinstalling the same commit adds no row" '[ "$out" = "$h
 git -C "$G" -c user.name=t -c user.email=t@t commit -q --allow-empty -m two
 git -C "$G" -c user.name=t -c user.email=t@t commit -q --allow-empty -m three
 new_sha="$(git -C "$G" rev-parse HEAD)"
+git -C "$G" update-ref refs/remotes/origin/main "$new_sha"
 out=$(node "$T/bin/installed.mjs" record "$G" 2>&1); rc=$?
 check "issue-1455 AC1: a move from A to B adds one row: from A, to B, its time and the merges between them" '[ $rc -eq 0 ] && [ "$out" = "$new_sha" ] && [ "$(count "$RJ")" = 1 ] && jq -e --arg a "$head_sha" --arg b "$new_sha" "select(.from == \$a and .to == \$b and .merges == 2 and (.at | test(\"^[0-9]{4}-\")))" "$RJ" >/dev/null'
 check "issue-1455 AC4: the release it replaced is held from pruning until the watch judges it" 'grep -qx "$head_sha" "$T/desk/releases/.held"'
 node "$T/bin/installed.mjs" record "$G" >/dev/null 2>&1
 check "issue-1455 AC2: a second install with nothing new adds none" '[ "$(count "$RJ")" = 1 ]'
-head_sha="$new_sha"
+# Only a clean move forward along origin/main is a release: a trip pins `from` and reverts main's merges
+# between the two, so a move off main, back, or with uncommitted changes is said and not recorded.
+echo f > "$G/f"; git -C "$G" add f; git -C "$G" -c user.name=t -c user.email=t@t commit -q -m four
+four_sha="$(git -C "$G" rev-parse HEAD)"
+out=$(node "$T/bin/installed.mjs" record "$G" 2>&1); rc=$?
+check "issue-1455: a move to a commit not on origin/main adds no row, and says so" '[ $rc -eq 0 ] && [ "$(count "$RJ")" = 1 ] && grep -q "is not recorded for the release watch: it is not on origin/main" <<< "$out"'
+br="$(git -C "$G" branch --show-current)"; git -C "$G" checkout -q --detach "$new_sha"
+out=$(node "$T/bin/installed.mjs" record "$G" 2>&1); rc=$?
+check "issue-1455: a move back to an older commit adds no row, and says so" '[ $rc -eq 0 ] && [ "$(count "$RJ")" = 1 ] && grep -q "is not an ancestor of it" <<< "$out"'
+git -C "$G" checkout -q "$br"; git -C "$G" update-ref refs/remotes/origin/main "$four_sha"; echo changed > "$G/f"
+out=$(node "$T/bin/installed.mjs" record "$G" 2>&1); rc=$?
+check "issue-1455: a move from a checkout with uncommitted changes adds no row, and says so" '[ $rc -eq 0 ] && [ "$(count "$RJ")" = 1 ] && grep -q "the checkout has uncommitted changes" <<< "$out"'
+git -C "$G" checkout -q -- f
+head_sha="$four_sha"
 # ---- DS-810: a driver records the version of the release it runs from ----------------------------
 # Two release folders under a desk home of their own: relA (commit aaa1), relB (bbb2, installed), and
 # relC with no release.json. `current` links to relB, as install.sh leaves it.
@@ -147,7 +161,8 @@ out=$(node "$T/bin/installed.mjs" record "$G" 2>&1)
 check "DS-760 AC1: a checkout whose only changes are untracked files records dirty false" '[ "$out" = "$head_sha" ] && grep -q "\"dirty\": false" "$T/desk/installed.json"'
 echo one > "$G/tracked.txt"; gc0(){ git -C "$G" -c user.name=t -c user.email=t@t "$@"; }
 gc0 add tracked.txt; gc0 commit -q -m two; head_sha="$(git -C "$G" rev-parse HEAD)"; echo two > "$G/tracked.txt"
-out=$(node "$T/bin/installed.mjs" record "$G" 2>&1)
+# stdout only: the release watch's note that a dirty move is not recorded goes to stderr (issue-1455)
+out=$(node "$T/bin/installed.mjs" record "$G" 2>/dev/null)
 check "DS-760 AC2: a checkout with a modified tracked file records dirty true" '[ "$out" = "$head_sha (with uncommitted changes)" ] && grep -q "\"dirty\": true" "$T/desk/installed.json"'
 git -C "$G" checkout -q -- tracked.txt
 node "$T/bin/installed.mjs" record "$G" >/dev/null

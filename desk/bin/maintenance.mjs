@@ -178,9 +178,10 @@ function incomingBlock(git, dir, to) {
 
 // Fast-forward the desk-skills checkout from origin and install it, as /desk-update does: only on a
 // clean `main`. With `to`, a commit already fetched, it fast-forwards to exactly that commit and only
-// untracked files in its way block it. `merges` counts main's own commits since the old head (first
-// parent only), so a PR merged with a merge commit is one however many commits its branch held.
-// -> {ok, old, new, merges, restarted} | {ok: false, why, old}
+// untracked files in its way block it. `merges` counts main's own commits since `from`, the installed
+// commit where the new head is past it and else the old head (first parent only), so a PR merged with a
+// merge commit is one however many commits its branch held.
+// -> {ok, old, from, new, merges, restarted} | {ok: false, why, old}
 export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   if (!dir || !existsSync(dir)) return { ok: false, why: `no desk-skills checkout (${dir ?? `${join(E.deskHome(), 'source-checkout')} names none`})` };
   const git = (...a) => run('git', ['-C', dir, ...a]);
@@ -192,11 +193,15 @@ export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   const pull = to ? git('merge', '--ff-only', '-q', to) : git('pull', '--ff-only', '-q', 'origin', 'main');
   if (!pull.ok) return { ok: false, old, why: `git ${to ? 'merge' : 'pull'} --ff-only failed in ${dir}: ${said(pull)}` };
   const head = git('rev-parse', 'HEAD').out;
-  const merges = old === head ? 0 : Number(git('rev-list', '--first-parent', '--count', `${old}..${head}`).out) || 0;
+  // Counted from the installed commit where it is behind the new head, as install.sh's record step counts
+  // the release watch's row (installed.mjs), so the log and the row give the same figure.
+  const inst = readInstalled()?.commit;
+  const from = inst && inst !== head && git('merge-base', '--is-ancestor', inst, head).ok ? inst : old;
+  const merges = from === head ? 0 : Number(git('rev-list', '--first-parent', '--count', `${from}..${head}`).out) || 0;
   // Main and ancestry are checked above; `to` may be a tested commit behind an origin that moved since.
-  const inst = run(join(dir, 'install.sh'), ['--any-branch'], { cwd: dir, timeout: UPDATE_TIMEOUT_MS });
-  if (!inst.ok) return { ok: false, old, new: head, why: `install.sh failed in ${dir}: ${said(inst)}` };
-  return { ok: true, old, new: head, merges, restarted: restartedDrivers(inst.out) };
+  const done = run(join(dir, 'install.sh'), ['--any-branch'], { cwd: dir, timeout: UPDATE_TIMEOUT_MS });
+  if (!done.ok) return { ok: false, old, new: head, why: `install.sh failed in ${dir}: ${said(done)}` };
+  return { ok: true, old, from, new: head, merges, restarted: restartedDrivers(done.out) };
 }
 
 // The merge drivers install.sh restarted (installed.mjs restartDriver's line), as "<who> (pid <old> -> <new>)".
@@ -528,8 +533,8 @@ function step(s, { dir, at, running, stop, selfQueue, watch }) {
           note(`desk-skills update failed in the maintenance window, so the computer was not restarted: ${u.why}`);
           return finish(`desk-skills update failed (${u.why}), so no restart`);
         }
-        log(`update: desk-skills ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main), pulled fast-forward and installed`);
-        lines.push(`maintenance: desk-skills updated ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main) and installed`);
+        log(`update: desk-skills ${short(u.from)} -> ${short(u.new)} (${u.merges} merge(s) to main), pulled fast-forward and installed`);
+        lines.push(`maintenance: desk-skills updated ${short(u.from)} -> ${short(u.new)} (${u.merges} merge(s) to main) and installed`);
         save({ phase: 'checking', update: { old: u.old, new: u.new, merges: u.merges } });
       }
     } finally { rl.release?.(); }

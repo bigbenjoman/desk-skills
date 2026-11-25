@@ -74,18 +74,25 @@ function record(src, release = null) {
   const before = readInstalled();
   mkdirSync(E.deskHome(), { recursive: true });
   writeFileSync(installedFile(), `${JSON.stringify(v, null, 2)}\n`);
-  return { v, move: movedFrom(git, before?.commit, v) };
+  return { v, ...movedFrom(git, before?.commit, v) };
 }
-// The install's move for the release watch, as {at, from, to, merges}: null when the commit is unchanged,
-// or when either end is no git commit (a first install, an unversioned source) or the merges between them
-// cannot be counted. `merges` counts main's own commits between them, first parent only, as the
-// auto-release does.
+// The install's move for the release watch, as {move: {at, from, to, merges}}, or {} when there is none to
+// judge: the commit unchanged, or either end no git commit (a first install, an unversioned source).
+// Only a clean move forward along origin/main is a release, as the auto-release installs one: a move
+// back, off main or with uncommitted changes gives {why}, said and not recorded, since a trip would pin
+// `from` and revert main's merges between the two. `merges` counts main's own commits between them,
+// first parent only, as the auto-release does.
 const SHA = /^[0-9a-f]{40}$/;
+const MAIN_REF = 'refs/remotes/origin/main';
 function movedFrom(git, from, v) {
-  if (!SHA.test(from ?? '') || !SHA.test(v.commit) || from === v.commit) return null;
+  if (!SHA.test(from ?? '') || !SHA.test(v.commit) || from === v.commit) return {};
+  const skip = (why) => ({ why: `the move ${from.slice(0, 12)} -> ${v.commit.slice(0, 12)} is not recorded for the release watch: ${why}` });
+  if (v.dirty) return skip('the checkout has uncommitted changes');
+  if (git('merge-base', '--is-ancestor', from, v.commit).status !== 0) return skip(`${from.slice(0, 12)} is not an ancestor of it`);
+  if (git('merge-base', '--is-ancestor', v.commit, MAIN_REF).status !== 0) return skip(`it is not on ${MAIN_REF.replace('refs/remotes/', '')}`);
   const n = git('rev-list', '--first-parent', '--count', `${from}..${v.commit}`);
   const merges = Number(n.stdout.trim());
-  return n.status === 0 && Number.isInteger(merges) ? { at: v.at, from, to: v.commit, merges } : null;
+  return n.status === 0 && Number.isInteger(merges) ? { move: { at: v.at, from, to: v.commit, merges } } : skip('the merges between them could not be counted');
 }
 // Records the move in the release watch's releases.jsonl, the one row a release gets whoever installed it.
 async function recordMove(move) {
@@ -390,8 +397,9 @@ if (isMain()) {
   const [cmd, arg, rel] = process.argv.slice(2);
   try {
     if (cmd === 'record' && arg) {
-      const { v, move } = record(arg, rel ?? null);
+      const { v, move, why } = record(arg, rel ?? null);
       console.log(`${v.commit}${v.dirty ? ' (with uncommitted changes)' : ''}${v.dirty === null ? ' (not a git checkout)' : ''}`);
+      if (why) console.error(`installed: ${why}`);
       // Not awaited: release-watch.mjs imports this module, which must finish evaluating first.
       if (move) recordMove(move).catch((e) => console.error(`installed: the release ${move.from.slice(0, 12)} -> ${move.to.slice(0, 12)} was not recorded for the release watch: ${e.message}`));
     }
