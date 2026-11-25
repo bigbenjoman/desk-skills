@@ -826,6 +826,7 @@ t('#1435 AC1 two in one run share the run\'s re-run, as a job re-run would refus
 for (const [form, line] of [['Node\'s truncated body', 'SyntaxError: Unterminated string in JSON at position 120'], ['Node\'s HTML body', 'SyntaxError: Unexpected token \'<\', "<!DOCTYPE "... is not valid JSON'],
   ['jq\'s', 'parse error: Unfinished JSON term at EOF at line 2, column 0'], ['Python\'s', 'json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)'], ['gh\'s', 'gh: Server Error (HTTP 502)']]) t(`#1435 AC1 ${form} read error is one`, readError(line), true);
 t('#1435 AC3 a title quoted in the failure is not read as one', readError('No release type found in pull request title "Fix HTTP 502 on upload"'), false);
+t('#1435 AC3 nor one holding quotes of its own', readError('No release type found in pull request title "Rename "HTTP 502" handler"'), false);
 t('#1435 AC1 the re-run says why', /"PR title" state check failed on a GitHub read error \("unexpected end of JSON input"\)/.test(rr1435?.why ?? ''), true);
 t('#1435 AC1 nor is the state check named in the gate rerun.sh skips', rr1435?.gate?.stateFailing, undefined);
 t('#1435 AC1 not while another check is still running, its tries spent', fixCall(tk({ fix_tries: [{ head: HEAD }] }), pr([ok('tests'), readRed(), { name: 'e2e', status: 'in_progress', conclusion: null }]), readCtx()), null);
