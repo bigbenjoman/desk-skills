@@ -276,6 +276,13 @@ t('DS-280 AC8 the digest lists each Merging PR unchanged for 2h or more, how lon
   '### Merging, no change for 2h or more\n\n- `M-1` [#1](https://github.com/acme/m/pull/1): Lint failed · no change for 2h 10m\n- `M-3` [#3](https://github.com/acme/m/pull/3): e2e running · no change for 2h\n');
 t('DS-280 AC8 the page\'s count line says so', page11.includes('; 2 merging PR(s) with no change for 2h or more.'), true);
 
+// issue-1384: a page whose only news is work a session claimed still shows it, and counts it.
+{
+  const { renderPage } = await import('../desk/bin/digest.mjs');
+  const only = renderPage({ slot: '2026-11-25T08:00', since: null, groups: [{ slug: 'acme__w', questions: [], decisions: [], sessions: [{ ticket: 'W-1', session: 'sess-w' }] }] });
+  t('issue-1384 a page with only claimed work lists it under its heading, and counts it',
+    `${only.includes('Nothing to answer')} ${only.includes('### Being worked in a session')} ${only.includes('- `W-1`: being worked in session sess-w')} ${only.includes('; 1 being worked in a session.')}`, 'false true true true');
+}
 // The check-in presents each fresh park it lists as an ask, in that park's own repo's ticket ledger,
 // under that ledger's lock, where that repo's ledger lever is on.
 {

@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { tryLockFile, filePid, writeJsonAtomic, withDirLock } from './dir-lock.mjs';
-import { holdThrough, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, keyPattern, parkKind, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage } from './batch-state.mjs';
+import { holdThrough, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, planFirst, keyPattern, parkKind, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
@@ -1724,14 +1724,36 @@ if (CLAIMS.bad) report.waiting.push(`${CLAIMS.bad} — no claim is released unti
 for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
   const c = t.park?.claim;
   if (t.state !== 'parked' || !c?.session) continue;
-  // Held, a spine awaiting its person, a lane C or D parked at triage, or left in a finished feature
-  // batch: never a headless worker's, however idle the session (as the clears-when loop above).
-  if (isHeld(t) || spinePark(t) || needsSession(t) || leftPark(t)) continue;
+  // Held, a spine awaiting its person, or left in a finished feature batch: never a headless worker's,
+  // however idle the session (as the clears-when loop above). A ticket only a session takes on (lane C
+  // or D, plan-first work among them) loses only the claim once its session has ended: its park stays,
+  // and it waits for a session, or needs the person, again. So does any claim whose transcript is gone,
+  // since no worktree check can say the work is safe to hand on.
+  if (isHeld(t) || spinePark(t) || leftPark(t)) continue;
+  const plan = planFirst(t), session = needsSession(t);
   const tr = transcriptOf(c.session);
-  if (!tr) { report.clears.push(`${t.key}: claimed by session ${c.session}, whose transcript is gone: left claimed`); continue; }
-  const since = Math.max(tr.mtimeMs, Date.parse(c.at) || 0);
-  if (Date.now() - since <= CLAIMS.hours * 3600e3) continue;
+  const since = Math.max(tr?.mtimeMs ?? 0, Date.parse(c.at) || 0);
+  // A session that comes back after its uncommitted work was noted works the ticket again: its park
+  // takes back the question it had, and the claim is the news once more.
+  // A note written before `was` was recorded is cut off the question it was appended to.
+  if (tr && c.dirty_at && tr.mtimeMs > Date.parse(c.dirty_at)) {
+    const note = `claimed by session ${c.session}, which has been idle past`, asked = String(t.park.question ?? '');
+    const own = c.was ?? (asked.startsWith(note) ? claimQuestion(c.session) : asked.includes(`; ${note}`) ? asked.slice(0, asked.indexOf(`; ${note}`)) : asked);
+    q('set', t.key, `park.question=${own}`, 'park.claim.dirty_at=null', 'park.claim.was=null');
+    report.clears.push(`${t.key}: session ${c.session} is active again, so it works the ticket and the note on its uncommitted changes is cleared`);
+    continue;
+  }
+  if (tr && Date.now() - since <= CLAIMS.hours * 3600e3) continue;
   const idle = `session ${c.session} has been idle since ${new Date(since).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+  // A claim whose transcript is gone and whose uncommitted work its park's question already names
+  // needs nothing more from a pass: the person already sees it.
+  if (!tr && c.dirty_at && !plan && !session) continue;
+  if (!tr || plan || session) {
+    q('set', t.key, 'park.claim=null');
+    const then = plan ? 'plan-first work, it waits for a session again' : session ? 'only a session takes it on, so its park stays and it needs you again' : 'its park stays and it needs you again';
+    report.clears.push(`${t.key}: ${tr ? idle : `session ${c.session}'s transcript is gone`}, so its claim is dropped: ${then}`);
+    continue;
+  }
   let wt = null, dirty = [];
   try { wt = claimWorktree(t); dirty = wt ? uncommitted(wt) : []; } catch (e) {
     report.clears.push(`${t.key}: ${idle}, but its worktree ${wt ?? ''} could not be read (${String(e.message).split('\n')[0]}): left claimed`);
@@ -1743,7 +1765,7 @@ for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
     const why = `claimed by session ${c.session}, which has been idle past ${CLAIMS.hours}h, but its worktree ${wt} has uncommitted changes (${files}): commit or discard them, or say who carries on`;
     // A park of the ticket's own keeps its question in front, where the requeue guards read it.
     const was = t.park.question;
-    q('set', t.key, `park.question=${was && was !== claimQuestion(c.session) ? `${was}; ${why}` : why}`, `park.since=${new Date().toISOString()}`, `park.claim.dirty_at=${new Date().toISOString()}`);
+    q('set', t.key, `park.question=${was && was !== claimQuestion(c.session) ? `${was}; ${why}` : why}`, `park.since=${new Date().toISOString()}`, `park.claim.dirty_at=${new Date().toISOString()}`, `park.claim.was=${was}`);
     report.parked.push(`${t.key}: ${why}`);
     continue;
   }

@@ -129,7 +129,7 @@ import { liveBaseRed, MERGES_SHOWN } from './base-red.mjs';
 import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { landedPr } from './post-merge.mjs';
-import { promotionPr, readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, designParkUrls, EXIT } from './batch-state.mjs';
+import { promotionPr, readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, designParkUrls, EXIT, planFirst, planFirstWaits, planFirstPutOff } from './batch-state.mjs';
 import { snapshotOf, savedAt, canonicalUrl } from './desk-design.mjs';
 import { promotionTitle } from './pass/promotion-pr.mjs';
 import { blockersOf } from './queue-states.mjs';
@@ -1031,6 +1031,27 @@ function startNoPr(i, say) {
   return say(true, `hold on ${b} lifted from ${andList(done)}: ${words.join('; ')}.`);
 }
 
+// ---- plan-first work no session has claimed ---------------------------------------------------------
+// A lane C ticket parked at triage reaches the person only once it has waited unclaimed past config §3b
+// "Plan-first wait before needs-you (hours)" (desk-q's shownState). Those of one batch, one or more, are
+// one item, `plan-first`, naming the count and recommending the first be started in the batch's session,
+// which claims it. Not-now puts it off until the tickets it names change, unless HOLDS_BACK or more held
+// tickets wait behind them, as for any park (judged): then it is still listed, saying so.
+const PLAN_FIRST = 'plan-first';
+const planFirstHeld = (x) => !x.pr && planFirst(x.t);
+function planFirstItems(r) {
+  const ts = needsRows(r).filter(planFirstHeld).map((x) => x.t);
+  if (!ts.length) return [];
+  const keys = ts.map((t) => t.key), first = keys[0];
+  const w = runner(r);
+  const where = w.by === 'session' ? `the batch's session${w.name ? ` (${w.name})` : ''}` : `an interactive session in ${repoConfigValue(r.slug, 'repo-root') ?? r.name}`;
+  const hours = (r.ctx?.planFirstMs ?? 0) / 3600e3;
+  return [{ r, t: { key: PLAN_FIRST }, dir: r.stateDir, behind: heldBehindAll(keys.map((k) => [r, k])), item: { kind: PLAN_FIRST, planFirst: keys, ticket: first,
+    need: `${planFirstWaits(keys)}: ${andList(keys)}. No session has claimed ${keys.length === 1 ? 'it' : 'them'} for more than ${hours}h`,
+    actions: [['open', `start /desk-ticket ${first} in ${where}; it claims ${first}${keys.length > 1 ? ', and the others wait for that session or another' : ''}`], ['not-now']],
+    since: finite(Math.min(...ts.map((t) => timeOf(t.park?.since) ?? Infinity))) } }];
+}
+
 // ---- follow-on steps: what a ticket left for after its PR merges (pass.mjs follow_on) -------------
 // Once the PR has merged, its steps are one item, `follow:<KEY>`, each with the §3 row it names and
 // that row's value. A step that only reads CI, desk's logs or desk's state is a follow-step checker's
@@ -1930,6 +1951,7 @@ function putOffKey(r, t, item) {
   if (item.kind === 'follow') return { question: `${t.key} follow-on`, inputs: { ticket: item.ticket, steps: item.need } };
   // A ticket newly held behind it brings it back.
   if (item.finished) return { question: `${t.key} finished`, inputs: { blocker: item.finished, waiting: item.waiting.join(', ') } };
+  if (item.planFirst) return planFirstPutOff(item.planFirst);
   if (item.blocker) return { question: `${t.key} link`, inputs: { ticket: item.ticket, blocker: item.blocker } };
   // A promotion PR opened, or one that changes state, brings it back.
   if (item.unpromoted) return { question: `${t.key} unpromoted`, inputs: { ticket: item.ticket, blocker: item.waitsOn, branch: item.unpromoted.branch, pr: String(item.unpromoted.pr ?? 'none'), state: item.unpromoted.state } };
@@ -1988,10 +2010,8 @@ function heldBehindAll(pairs, self = false) {
 const holdingWords = (n) => `${n} tickets wait behind it, so it is listed though you put it off`;
 const behindWords = (n) => (n === 1 ? '1 ticket waits behind this' : `${n} tickets wait behind this`);
 // What a reply putting `key` off adds while enough tickets wait behind it that it stays listed.
-function stillListed(r, key) {
-  const n = heldBehind(r, key);
-  return n >= HOLDS_BACK ? ` It is still listed while ${HOLDS_BACK} or more tickets wait behind it (${n} do now).` : '';
-}
+const stillWords = (n) => (n >= HOLDS_BACK ? ` It is still listed while ${HOLDS_BACK} or more tickets wait behind it (${n} do now).` : '');
+const stillListed = (r, key) => stillWords(heldBehind(r, key));
 function judged(r, x, register, reads = null) {
   const item = itemOf(r, x, reads);
   const l = lookupItem(register, putOffKey(r, x.t, item));
@@ -2060,16 +2080,25 @@ export function needsCount(r) {
   }
   for (const x of needsRows(r)) {
     const b = x.b ?? r;
-    if (stepHeld(b, x) || noPrHeld(b, x)) { held.push(x); continue; }
+    if (stepHeld(b, x) || noPrHeld(b, x) || planFirstHeld(x)) { held.push(x); continue; }
     if (judged(b, x, register(b)).l.status === 'put_off') putOff++; else rows.push(x);
   }
   const live = new Set(), liveNoPr = new Set();
   for (const s of stepItems((r.batches ?? [r]).filter((x) => x.q))) place(s, s.dir, () => live.add(s.item.step));
   for (const s of (r.batches ?? [r]).filter((x) => x.q).flatMap(noPrItems)) place(s, s.r.stateDir, () => liveNoPr.add(`${s.r.stateDir}\t${s.item.finished}`));
+  // A plan-first item put off or dropped is still listed while HOLDS_BACK or more wait behind it.
+  const livePlanFirst = new Set();
+  for (const s of (r.batches ?? [r]).filter((x) => x.q).flatMap(planFirstItems)) {
+    const st = lookupItem(register(s.r), putOffKey(s.r, s.t, s.item)).status;
+    const holding = s.behind >= HOLDS_BACK;
+    if (st === 'dismissed' && !holding) continue;
+    if (st === 'put_off' && !holding) { putOff++; offItems.push(s); } else { items.push(s); livePlanFirst.add(s.r.stateDir); }
+  }
   // A row held by a step or a blocker with no PR is drawn as needing the person while that item is listed.
   const stepRows = held.filter((x) => {
     const b = x.b ?? r;
-    return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)) || unmergedBlockers(b.q, x.t).some((k) => liveNoPr.has(`${b.stateDir}\t${k}`));
+    return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)) || unmergedBlockers(b.q, x.t).some((k) => liveNoPr.has(`${b.stateDir}\t${k}`))
+      || (planFirstHeld(x) && livePlanFirst.has(b.stateDir));
   });
   for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...promotionItems(b), ...baseRedItems(b), ...duplicateItems(b)])) place(f, f.r.stateDir);
   for (const s of reviewerItems((r.batches ?? [r]).filter((x) => x.q))) place(s, s.dir);
@@ -2099,21 +2128,23 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   // The repo-level and step items, put off under their own key as any other item is.
   // `dir` is where it is put off, its batch's state folder unless the item names another.
   // `behind` held tickets wait behind it: it says so and ranks by that, as a ticket's item does (judged).
-  // `say` false ranks it without the words. One put off is kept in `off`, unlisted, for a drop to find;
+  // `say` false ranks it without the words. `holds`: put off, it is still listed while HOLDS_BACK or more
+  // wait behind it, as a ticket's item is. One put off is kept in `off`, unlisted, for a drop to find;
   // one dropped is neither listed nor counted.
-  const repoItem = (r, t, item, since, dir = r.stateDir, behind = 0, say = true) => {
+  const repoItem = (r, t, item, since, dir = r.stateDir, behind = 0, say = true, holds = false) => {
     const key = putOffKey(r, t, item);
     const l = lookupItem(readRegister(dir), key);
-    if (l.status === 'dismissed') return;
-    if (l.status === 'put_off') { putOff++; off.push({ r, t, ...item, putOffKey: key, putOffDir: dir, since }); return; }
+    const holding = (l.status === 'put_off' || l.status === 'dismissed') && holds && behind >= HOLDS_BACK;
+    if (l.status === 'dismissed' && !holding) return;
+    if (l.status === 'put_off' && !holding) { putOff++; off.push({ r, t, ...item, putOffKey: key, putOffDir: dir, since }); return; }
     if (l.status === 'changed') item.need = `${item.need} (${l.line})`;
-    if (behind > 0 && say) item.need = `${item.need} (${behindWords(behind)})`;
+    if (behind > 0 && say) item.need = `${item.need} (${(holding ? holdingWords : behindWords)(behind)})`;
     items.push({ r, t, ...item, putOffKey: key, putOffDir: dir, since, broken: false, ...(behind > 0 ? { behind } : {}) });
   };
   for (const r of scope.filter((x) => !x.error && x.q)) {
     const register = readRegister(r.stateDir);
     for (const x of [...batchRows(r), ...needsRows(r)]) {
-      if (stepHeld(r, x) || noPrHeld(r, x)) continue;
+      if (stepHeld(r, x) || noPrHeld(r, x) || planFirstHeld(x)) continue;
       const { item, l } = judged(r, x, register, reads);
       if (l.status === 'dismissed') continue;
       // A put-off batch-wide hold is no ticket row, so a drop finds it in `off` as a repo-level item.
@@ -2146,6 +2177,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   }
   for (const f of inScope.flatMap((b) => [...followItems(b, reads), ...linkItems(b), ...unpromotedItems(b), ...duplicateItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
   for (const f of inScope.flatMap(noPrItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, f.said);
+  for (const f of inScope.flatMap(planFirstItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, true, true);
   for (const f of inScope.flatMap(baseRedItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
   // Its need names the follow items waiting on it, so it ranks by them without saying the count.
   for (const f of inScope.flatMap(promotionItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
@@ -2304,7 +2336,7 @@ const ASK_ANSWERS = ['answer', 'resume', 'approve', 'reject', 'done', 'requeue']
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(NOPR) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === ARTIFACTS || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(NOPR) || ticket === PLAN_FIRST || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === ARTIFACTS || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS) || ticket.startsWith(`${CLOUD_ARCHIVE}:`) || ticket.startsWith(PROPOSAL)) return recordRepoItem({ word, ticket, action, text, now, repos, reads });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -2630,7 +2662,7 @@ function dropPutOff(c, ticket, now) {
 // checks the copies again now; done on a step records nothing, since the pass reads the step from Jira.
 function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = READS }) {
   const c = collect({ word, now, repos, reads: null, ciRed: ticket.startsWith(CI_RED) ? (reads ?? READS).ciRed : null });
-  let i = c.items.find((y) => (y.repoLevel || y.proposal || y.kind === 'step' || y.kind === 'follow' || y.blocker || y.unpromoted || y.finished || y.promotion != null) && y.t.key === ticket);
+  let i = c.items.find((y) => (y.repoLevel || y.proposal || y.kind === 'step' || y.kind === 'follow' || y.blocker || y.unpromoted || y.finished || y.planFirst || y.promotion != null) && y.t.key === ticket);
   // A row set since the list was shown no longer groups its parks there; done still finds them. One
   // put off is dropped as it stands, before that.
   if (!i && ticket.startsWith(UNSET) && c.named && !(action.split(/\s+/)[0] === 'drop' && c.off.some((y) => y.t.key === ticket))) {
@@ -2651,7 +2683,7 @@ function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = R
   if (!i.actions.some(([a]) => a === verb)) return say(false, `${verb} is not an action for a ${i.kind} item (${i.actions.map(([a]) => a).join(', ')}).`);
   if (verb === 'not-now') {
     addPutOff(putOffEntry({ ...i.putOffKey, ticket, at: new Date(now).toISOString(), ...(i.kind === 'step' ? { actions: verbsOf(i) } : {}) }), i.putOffDir ?? i.r.stateDir);
-    return say(true, `put off (${notNowPath(i.putOffDir ?? i.r.stateDir)}).`);
+    return say(true, `put off (${notNowPath(i.putOffDir ?? i.r.stateDir)}).${i.planFirst ? stillWords(i.behind ?? 0) : ''}`);
   }
   // Done on a follow item records the steps it lists as settled (run, or closed on the PR's own evidence), each by its text and gate, under the queue
   // lock, so the ticket's other steps (another gate's, or one written since this read) are kept.
@@ -2662,6 +2694,7 @@ function recordRepoItem({ word, ticket, action, text = '', now, repos, reads = R
   if (i.proposal) return proposalAnswer(i, verb, text, reads ?? READS, now, say);
   if (i.unpromoted) return verb === 'promote' ? promoteBase(i, say) : startWithout(i, say);
   if (i.finished) return startNoPr(i, say);
+  if (i.planFirst) return say(true, `nothing recorded. Open the batch's session, or an interactive one in ${rootOf(i.r)}, and run /desk-ticket ${i.ticket}: it claims ${i.ticket}${i.planFirst.length > 1 ? `, and ${andList(i.planFirst.slice(1))} wait for a session to take ${i.planFirst.length === 2 ? 'it' : 'them'} on` : ''}.`);
   if (i.promotion != null) return say(true, `noted: the next pass reads promotion PR #${i.promotion}'s checks again, and this item goes once they pass.`);
   if (i.blocker) return say(true, `noted: the next pass that reads ${i.ticket}'s blockers clears this once ${i.blocker} is no longer linked, and lifts any hold on it.`);
   if (i.kind === REVIEWER) return say(true, 'noted: the next pass checks the account again, and lifts the hold on every PR it names once the check passes.');

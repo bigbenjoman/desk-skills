@@ -670,6 +670,7 @@ export const ROWS = Object.freeze([
   v('disk-floor', '3b', 'Free disk floor (GB)', 'whole-or-none', '20', dflt('20')),
   v('promotion-slice', '3b', 'Promotion slice size (children)', 'promotion-slice', '8', dflt('8')),
   v('claim-release', '3b', 'Release idle claims after (hours)', 'number', '12', dflt('12')),
+  v('plan-first-wait', '3b', 'Plan-first wait before needs-you (hours)', 'number', '4', dflt('4')),
   v('usage-pacing', '3b', 'Usage pacing headroom (points)', 'number-or-off', '5', dflt('5')),
   v('subscription', '3b', 'Subscription', 'text', 'default', dflt('default')),
   v('maintenance-window', '3b', 'Maintenance window', 'text', 'Mon 06:30 UTC', dflt('none')),
