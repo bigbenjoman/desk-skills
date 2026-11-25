@@ -1,9 +1,9 @@
-// suite: desk-ui server (the request guard, sign-in, the snapshot and the bind address)
+// suite: desk-ui server (the request guard, sign-in, the snapshot, the app build and the bind address)
 // layer: L2
 // covers: desk/bin/desk-ui.mjs
 // desk-ui.mjs serve on a throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT and a test-only port, so it
 // never meets a server running on 4823. Nothing touches your real ~/.claude, ~/.config/desk or state.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -120,6 +120,32 @@ t('AC12 the root page answers a signed-in window', [root.status, String(root.hea
 t('AC12 it names the server and its version, and holds no state', [/desk-ui c0ffee1234567890/.test(root.text), noState(root)], [true, true]);
 const rootOut = await call('GET', '/', {});
 t('AC12 a window that has not signed in gets nothing', [rootOut.status, rootOut.text.includes('c0ffee')], [401, false]);
+
+// ---- the app build in ~/.claude/desk/ui/dist: read on every request, only its own files
+const dist = join(env.DESK_HOME, 'ui', 'dist');
+mkdirSync(join(dist, 'assets'), { recursive: true });
+writeFileSync(join(dist, 'index.html'), '<!doctype html><title>Desk</title><p>build one</p>\n');
+writeFileSync(join(dist, 'assets', 'index-abc.js'), 'console.log(1)\n');
+writeFileSync(join(dist, 'sw.js'), 'self.x = 1\n');
+writeFileSync(join(dist, 'assets', 'geist.woff2'), Buffer.from([0x77, 0x4f, 0x46, 0x32, 0x00, 0xff]));
+writeFileSync(join(dist, '.hidden.js'), 'secret\n');
+writeFileSync(join(dist, 'notes.md'), 'not served\n');
+writeFileSync(join(T, 'outside.js'), 'outside\n');
+symlinkSync(join(T, 'outside.js'), join(dist, 'assets', 'out.js'));
+const signedIn = { headers: { Cookie: cookie } };
+const built = await call('GET', '/', signedIn);
+t('the root page is the installed build', [built.status, built.headers['content-type'], built.text.includes('build one')], [200, 'text/html; charset=utf-8', true]);
+const js = await call('GET', '/assets/index-abc.js', signedIn);
+t('a build file is served with its type', [js.status, js.headers['content-type'], js.text], [200, 'text/javascript; charset=utf-8', 'console.log(1)\n']);
+t('the service worker is served as script from the root', [(await call('GET', '/sw.js', signedIn)).headers['content-type']], ['text/javascript; charset=utf-8']);
+const font = await call('GET', '/assets/geist.woff2', signedIn);
+t('a font is served whole, as a font', [font.status, font.headers['content-type'], font.headers['content-length']], [200, 'font/woff2', '6']);
+t('a build file needs a signed-in window', (await call('GET', '/assets/index-abc.js', {})).status, 401);
+for (const path of ['/.hidden.js', '/notes.md', '/assets/out.js', '/assets/../../outside.js', '/assets/%2e%2e/%2e%2e/outside.js', '/assets', '/assets/', '/nothing.js', '/%E0%A4%A']) {
+  t(`${path} is not served`, (await call('GET', path, signedIn)).status, 404);
+}
+writeFileSync(join(dist, 'index.html'), '<!doctype html><title>Desk</title><p>build two</p>\n');
+t('a new build shows on the next load, with no restart', (await call('GET', '/', signedIn)).text.includes('build two'), true);
 
 const meta = JSON.parse((await call('GET', '/api/meta', { headers: { Cookie: cookie, 'X-Desk-Load': load } })).text);
 t('/api/meta names the version and port', [meta.version, meta.port], ['c0ffee1234567890', PORT]);

@@ -5,7 +5,13 @@
 //                                                  build, or Desk.app is missing; opens it the
 //                                                  first time. A build that fails leaves the previous
 //                                                  Desk.app in place, names its log and exits 1
-//   node desk-app.mjs uninstall                    remove Desk.app and its build cache; nothing else
+//   node desk-app.mjs install-ui --src <desk/ui>   build the desk app (the SPA the desk-ui server serves)
+//                                                  into ~/.claude/desk/ui/dist when its source changed
+//                                                  since the last build, or there is none. A build that
+//                                                  fails leaves the previous one served, names its log
+//                                                  and exits 1
+//   node desk-app.mjs uninstall                    remove Desk.app, the app build and their build caches;
+//                                                  nothing else
 //
 // Every build is ad-hoc signed with the fixed identifier com.desk-skills.desk and a designated
 // requirement naming only that identifier, so a rebuild meets the requirement macOS recorded when it
@@ -104,11 +110,60 @@ export function install(src) {
   return 0;
 }
 
+// ---- the desk app: the SPA in desk/ui ----------------------------------------------------------
+
+const uiDir = () => join(E.deskHome(), 'ui');
+export const uiDist = () => join(uiDir(), 'dist');
+const uiStampFile = () => join(uiDir(), 'source-hash');
+export const uiLogFile = () => join(E.HOME, '.desk-autopilot', 'ui', 'desk-ui-build.log');
+const uiStamp = () => { try { return readFileSync(uiStampFile(), 'utf8').trim(); } catch { return null; } };
+
+// Builds in a copy of the source, then swaps the new build in for the one the server serves: until
+// the swap the previous build is served.
+function buildUi(src, log) {
+  const work = join(uiDir(), 'build');
+  rmSync(work, { recursive: true, force: true });
+  mkdirSync(work, { recursive: true });
+  for (const f of files(src)) { mkdirSync(join(work, f, '..'), { recursive: true }); cpSync(join(src, f), join(work, f)); }
+  step(log, 'npm', existsSync(join(work, 'package-lock.json')) ? ['ci', '--no-audit', '--no-fund'] : ['install', '--no-audit', '--no-fund'], work);
+  step(log, 'npm', ['run', 'build'], work);
+  if (!existsSync(join(work, 'dist', 'index.html'))) throw new Error('the build wrote no dist/index.html');
+  const next = join(uiDir(), 'dist.new'), old = join(uiDir(), 'dist.old');
+  rmSync(next, { recursive: true, force: true });
+  rmSync(old, { recursive: true, force: true });
+  renameSync(join(work, 'dist'), next);
+  if (existsSync(uiDist())) renameSync(uiDist(), old);
+  renameSync(next, uiDist());
+  rmSync(old, { recursive: true, force: true });
+  rmSync(work, { recursive: true, force: true });
+}
+
+export function installUi(src) {
+  if (!src || !existsSync(join(src, 'package.json'))) { console.error(`desk app: no app source at ${src ?? '(none given)'}`); return 2; }
+  const hash = sourceHash(src);
+  const had = existsSync(join(uiDist(), 'index.html'));
+  if (had && uiStamp() === hash) { console.log(`desk app: unchanged since its last build (${tilde(uiDist())})`); return 0; }
+  mkdirSync(join(uiLogFile(), '..'), { recursive: true });
+  writeFileSync(uiLogFile(), `${new Date().toISOString()} building the desk app from ${src}\n`);
+  try {
+    buildUi(src, uiLogFile());
+  } catch (e) {
+    rmSync(join(uiDir(), 'build'), { recursive: true, force: true });
+    console.error(`desk app: the build failed (${e.message}); ${had ? 'the previous build is still served' : 'no build is installed'}. Build log: ${tilde(uiLogFile())}`);
+    return 1;
+  }
+  writeFileSync(uiStampFile(), `${hash}\n`);
+  console.log(`desk app: ${had ? 'rebuilt' : 'built'}: ${tilde(uiDist())}; an open window shows it once it reloads`);
+  return 0;
+}
+
 export function uninstall() {
-  const had = existsSync(appPath());
+  const had = existsSync(appPath()), hadUi = existsSync(uiDir());
   rmSync(appPath(), { recursive: true, force: true });
   rmSync(cacheDir(), { recursive: true, force: true });
+  rmSync(uiDir(), { recursive: true, force: true });
   console.log(had ? `Desk.app: removed ${tilde(appPath())}` : 'Desk.app: was not installed');
+  if (hadUi) console.log(`desk app: removed its build, ${tilde(uiDir())}`);
   return 0;
 }
 
@@ -119,6 +174,7 @@ const isMain = (() => {
 if (isMain) {
   const [cmd, flag, src] = process.argv.slice(2);
   if (cmd === 'install' && flag === '--src' && src) process.exit(install(src));
+  else if (cmd === 'install-ui' && flag === '--src' && src) process.exit(installUi(src));
   else if (cmd === 'uninstall' && flag === undefined) process.exit(uninstall());
-  else { console.error('usage: desk-app.mjs install --src <desk/shell> | uninstall'); process.exit(2); }
+  else { console.error('usage: desk-app.mjs install --src <desk/shell> | install-ui --src <desk/ui> | uninstall'); process.exit(2); }
 }
