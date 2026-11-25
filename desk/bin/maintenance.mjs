@@ -592,5 +592,6 @@ if (isMain) {
       setBaseFix: () => { const r = run('node', [join(E.runBin(), 'queue.mjs'), 'set-batch', `base_fix=${JSON.stringify({ ...q.base_fix, resume: 'maintenance' })}`]); return { ok: r.ok, why: lastLine(r.out) }; },
     });
   };
-  console.log(JSON.stringify(await maintenance({ running, stop, selfQueue: qf })));
+  // Not awaited: the release watch's imports reach back into this module, which must finish loading first.
+  maintenance({ running, stop, selfQueue: qf }).then((r) => console.log(JSON.stringify(r)), (e) => { console.error(`maintenance: ${e.message}`); process.exit(1); });
 }
