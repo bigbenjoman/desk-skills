@@ -649,10 +649,36 @@ n=$(wc -l < "$T/notified"); out=$(qtick 12)
 check "question handling: the next pass, the ask still handed on, pushes nothing again" '[ "$(wc -l < "$T/notified")" = "$n" ]'
 queue "{$(cpark Q3 3 "$(arm mixed)"),$(cpark Q4 4 "$(arm one-at-a-time)")}"
 cverdict Q3 Q4; out=$(qtick 23)
-check "question handling: in quiet hours nothing is pushed, and the log says the ask waits for the digest" \
-  '! grep -q "Q3\|Q4" "$T/notified" && grep -q "question-handling: not pushed in quiet hours (22:00 to 08:00), each waits for the check-in digest: Q3 (mixed), Q4 (one-at-a-time)" "$LOG"'
-rm -f "$T/state/handed.json"; out=$(qtick 12)
-check "question handling: a mixed ask with nothing else running is blocking, and pushed" 'grep -q "^desk: acme__widgets|Q3: Q3: which of two layouts?" "$T/notified"'
+check "question handling: in quiet hours nothing is pushed" '! grep -q "Q3\|Q4" "$T/notified"'
+out=$(qtick 12)
+check "question handling: once quiet hours end, the next tick pushes what was handed on in them; a mixed ask with nothing else running is blocking" \
+  'grep -q "^desk: acme__widgets|Q3: Q3: which of two layouts?" "$T/notified" && grep -q "Q4: Q4: which of two layouts?" "$T/notified"'
+# Q5's ask was listed by a check-in digest before the decider handed it on.
+queue "{$(cpark Q5 5 "$(arm one-at-a-time)"),\"R\":{\"key\":\"R\",\"state\":\"running\",\"lane\":\"A\"}}"
+node --input-type=module -e "import { recordAsks } from '$B/ask-ledger.mjs'; recordAsks('$DESK_QUEUE', [{ step: 'presented', key: 'Q5', since: '2026-10-28T15:00:00Z', via: 'digest', ref: 'page.md' }], { on: true });"
+cverdict Q5; out=$(qtick 12)
+check "question handling: an ask a check-in digest listed first is not pushed when it is handed on" '! grep -q "Q5" "$T/notified" && handed | grep -q "^Q5|"'
+# The push register cannot be written: the push still goes out once, and the tick says so.
+queue "{$(cpark Q6 6 "$(arm one-at-a-time)"),\"R\":{\"key\":\"R\",\"state\":\"running\",\"lane\":\"A\"}}"
+mv "$T/state/ask-pushes.json" "$T/ask-pushes.kept"; mkdir "$T/state/ask-pushes.json"
+cverdict Q6; out=$(qtick 12); out=$(qtick 12)
+check "question handling: a push the register cannot record is sent once, and the tick carries on, saying so" \
+  '[ "$(grep -c "Q6: Q6" "$T/notified")" = 1 ] && grep -q "question-handling: Q6 pushed, but not recorded" "$LOG" && [ "$(handed | grep -c "^Q6|")" = 1 ]'
+rmdir "$T/state/ask-pushes.json"; mv "$T/ask-pushes.kept" "$T/state/ask-pushes.json"
+# An idle batch: Q7 handed on in quiet hours, then ticks with no pass. One that finds the batch's lock
+# held sends nothing; the next sends it.
+queue "{$(cpark Q7 7 "$(arm one-at-a-time)")}"
+verdict '{"status":"idle","code":11,"message":"IDLE","waiting":[],"parked":[{"key":"Q7","question":"Q7: which of two layouts?"}],"notify":true,"push":[]}'
+out=$(qtick 23); passes=$(grep -c "pass: exit" "$LOG")
+sleep 60 & holder=$!
+printf '{"pid":%s,"since":"%s"}' "$holder" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$T/state/supervisor.lock"
+out=$(qtick 12)
+check "question handling: an idle tick that finds the batch's lock held sends no ask" '! grep -q "Q7" "$T/notified" && [ "$(grep -c "pass: exit" "$LOG")" = "$passes" ]'
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null; rm -f "$T/state/supervisor.lock"
+out=$(qtick 12)
+check "question handling: the next idle tick sends it, once" '[ "$(grep -c "Q7: Q7" "$T/notified")" = 1 ] && [ "$(grep -c "pass: exit" "$LOG")" = "$passes" ]'
+out=$(qtick 12)
+check "question handling: and the one after sends it no more" '[ "$(grep -c "Q7: Q7" "$T/notified")" = 1 ]'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

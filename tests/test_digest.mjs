@@ -353,14 +353,26 @@ t('DS-280 AC8 the page\'s count line says so', page11.includes('; 2 merging PR(s
   const slot = async (r, d) => checkin({ times: DEFAULT_TIMES, now: at('2026-10-30', '17:01'), dir: d, list: [r], bin: BIN, self: r.slug, promote: () => null, checkJira: () => null });
   const pushedR = repo('acme__pushed', { 'U-1': park('one-at-a-time') });
   const q = JSON.parse(readFileSync(pushedR.queue, 'utf8'));
-  QA.queuePushes(pushedR.state, [{ id: 'parked-U-1', ticket: 'U-1', kind: 'parked', text: 'which banner?', since }], q, { slug: pushedR.slug, now: at('2026-10-30', '10:00') });
-  QA.markPushed(pushedR.state, QA.duePushes(pushedR.state, q, at('2026-10-30', '10:00')).map((p) => p.key), { queue: pushedR.queue, now: at('2026-10-30', '10:00') });
+  const { handItems } = await import('../desk/bin/decider.mjs');
+  handItems(pushedR.state, [{ item: { id: 'parked-U-1', ticket: 'U-1', kind: 'parked', text: 'which banner?', since }, why: 'test' }], at('2026-10-30', '10:00'));
+  const sent = QA.duePushes(pushedR.state, q, { queue: pushedR.queue, slug: pushedR.slug, now: at('2026-10-30', '10:00') });
+  QA.markPushed(pushedR.state, sent, { queue: pushedR.queue, now: at('2026-10-30', '10:00') });
+  t('the ask was pushed as it was handed on', sent.length, 1);
   const pd = await slot(pushedR, join(root, 'digest-pushed'));
   t('an ask pushed already is still listed on the page', readFileSync(pd.page, 'utf8').includes('`U-1` (parked): which banner?'), true);
   t('but sets off no push of its own', `${pd.status} ${pd.questions} ${pd.push}`, 'sent 1 null');
   const offR = repo('acme__offarm', { 'U-1': park(null) });
   const od = await slot(offR, join(root, 'digest-offarm'));
   t('with the lever off, the same fresh park pushes as before', od.push?.key, 'digest:2026-10-30T17:00');
+  // A park the digest raises first carries its question-handling arm, as one a hand-over raises would.
+  const { queueDifference } = await import('../desk/bin/queue-ledger.mjs');
+  mkdirSync(join(root, 'cfg', 'repos', 'acme__armed'), { recursive: true });
+  writeFileSync(join(root, 'cfg', 'repos', 'acme__armed', 'config.md'), '## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n');
+  const armed = repo('acme__armed', { 'U-1': park('mixed') });
+  queueDifference(armed.queue, { seed: true });
+  await slot(armed, join(root, 'digest-armed'));
+  const raisedEv = readFileSync(join(dirname(armed.queue), 'ledger', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((e) => e.type === 'ask_raised');
+  t('an ask the digest raises first carries its arm and blocking flag', JSON.stringify([raisedEv?.data.arm, raisedEv?.data.blocking]), JSON.stringify(['mixed', true]));
 }
 
 rmSync(root, { recursive: true, force: true });

@@ -1,18 +1,24 @@
 // suite: question arms (how a handed-on ask reaches the person, by its ticket's question-handling arm)
 // layer: L1
-// covers: desk/bin/question-arms.mjs desk/bin/lever-pin.mjs
-// The module in process against fixture queues and a scratch batch state folder: which asks each arm
-// pushes, quiet hours, the push register the digest reads, and when a recommended call applies by
-// default at the check-in. With the lever off for a ticket, nothing changes.
-import { existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+// covers: desk/bin/question-arms.mjs desk/bin/lever-pin.mjs desk/bin/decider.mjs desk/bin/ask-ledger.mjs
+// The module in process against fixture queues, their ledgers and scratch batch state folders: which
+// handed-on asks each arm pushes, reconciled each tick, quiet hours, an ask a digest listed first, the
+// push register the digest reads, and when a recommended call applies by default at a check-in. With
+// the lever off for a ticket, nothing changes.
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { scratch } from './scratch.mjs';
 
 const T = scratch('desk-question-arms-');
 for (const k of Object.keys(process.env)) if (/^(DESK_|AUTOPILOT_)/.test(k)) delete process.env[k];
 mkdirSync(join(T, 'home'));
-Object.assign(process.env, { HOME: join(T, 'home'), DESK_CONFIG_ROOT: join(T, 'cfg') });
+const CONFIG = join(T, 'config.md');
+writeFileSync(CONFIG, '## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | `acme/widgets` |\n\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n');
+Object.assign(process.env, { HOME: join(T, 'home'), DESK_CONFIG: CONFIG, DESK_CONFIG_ROOT: join(T, 'cfg') });
 const QA = await import('../desk/bin/question-arms.mjs');
+const { handItems } = await import('../desk/bin/decider.mjs');
+const { recordAsks } = await import('../desk/bin/ask-ledger.mjs');
+const { queueDifference } = await import('../desk/bin/queue-ledger.mjs');
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -27,76 +33,103 @@ const item = (key) => ({ id: `parked-${key}`, ticket: key, kind: 'parked', text:
 const queue = (...tickets) => ({ version: 1, batch: 'b', tickets: Object.fromEntries(tickets.map((x) => [x.key, x])) });
 const running = (key, more = {}) => ({ key, state: 'running', lane: 'A', ...more });
 let n = 0;
-const stateDir = () => { const d = join(T, `state${++n}`); mkdirSync(d); return d; };
-const P = { kind: 'question', question: 'which layout?' };
+// A batch: its state folder and its queue file, the ledger beside it named, and `keys` handed on at `at`.
+const batch = (q, keys, at = new Date(2026, 10, 25, 13, 0)) => {
+  const state = join(T, `state${++n}`);
+  const file = join(T, `q${n}`, 'queue.json');
+  mkdirSync(state, { recursive: true });
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(q));
+  queueDifference(file, { seed: true });
+  handItems(state, keys.map((k) => ({ item: item(k), why: 'test' })), at);
+  return { state, file };
+};
+const due = (b, q, now = DAY) => QA.duePushes(b.state, q, { queue: b.file, slug: 'acme__widgets', now }).map((p) => p.key.split(':')[2]);
 
-// ---- the raised ask: its arm and blocking flag only where the lever is on --------------------------
+// ---- the raised ask: its arm and blocking flag only where the lever is on, whichever path raises it --
+const P = { kind: 'question', question: 'which layout?' };
 t('lever off: the raised step is as it was, with no arm or flag', QA.raised(item('A'), P, queue(parked('A'), running('R'))), { step: 'raised', kind: 'question', question: 'which layout?' });
 t('on, with another ticket running and none held behind it: not blocking', QA.raised(item('A'), P, queue(parked('A', 'mixed'), running('R'))), { step: 'raised', kind: 'question', question: 'which layout?', arm: 'mixed', blocking: false });
 t('a ticket held behind it: blocking', QA.raised(item('A'), P, queue(parked('A', 'batched'), running('R'), { key: 'H', state: 'queued', held_by: 'A' })).blocking, true);
 t('a finished ticket once held behind it does not count', QA.raised(item('A'), P, queue(parked('A', 'batched'), running('R'), { key: 'H', state: 'done', held_by: 'A' })).blocking, false);
 t('nothing else running: blocking', QA.raised(item('A'), P, queue(parked('A', 'one-at-a-time'), { key: 'Q', state: 'queued' })).blocking, true);
+const qr = queue(parked('A', 'batched'), running('R'));
+t('raised from the ticket itself (the digest, the pass) carries the same arm and flag', QA.raisedOf(qr.tickets.A, qr), { step: 'raised', key: 'A', since: SINCE, kind: 'question', question: 'A: which layout?', arm: 'batched', blocking: false });
+t('and none with the lever off', Object.keys(QA.raisedOf(parked('A'), queue(parked('A')))).sort(), ['key', 'kind', 'question', 'since', 'step']);
 
 // ---- which handed-on asks each arm pushes ---------------------------------------------------------
 {
-  const s = stateDir();
   const q = queue(parked('OFF'), parked('B', 'batched'), running('R'));
-  t('lever off and batched: nothing queued', QA.queuePushes(s, [item('OFF'), item('B')], q, { slug: 'acme__widgets', now: DAY }), []);
-  t('and no push register is written', existsSync(join(s, 'ask-pushes.json')), false);
-  t('and nothing is due', QA.duePushes(s, q, DAY), []);
+  const b = batch(q, ['OFF', 'B']);
+  t('lever off and batched: nothing due', due(b, q), []);
+  t('and no push register is written', existsSync(join(b.state, 'ask-pushes.json')), false);
 }
 {
-  const s = stateDir();
   const q = queue(parked('O', 'one-at-a-time'), parked('M', 'mixed'), parked('MB', 'mixed'), { key: 'H', state: 'queued', held_by: 'MB' },
-    parked('PB', 'one-at-a-time', 'PRODUCTION BROKEN: checkout fails'), running('R'));
-  const lines = QA.queuePushes(s, ['O', 'M', 'MB', 'PB'].map(item), q, { slug: 'acme__widgets', now: DAY });
-  t('one-at-a-time and a blocking mixed ask are queued; the report says so', lines, ['question-handling: pushed at the next notification: O (one-at-a-time), MB (mixed)']);
-  const due = QA.duePushes(s, q, DAY);
-  t('each is due with its question, keyed by its ask', due, [
-    { key: `ask:acme__widgets:O:${SINCE}`, text: 'O: O: which layout?' },
-    { key: `ask:acme__widgets:MB:${SINCE}`, text: 'MB: MB: which layout?' },
+    parked('PB', 'one-at-a-time', 'PRODUCTION BROKEN: checkout fails'), parked('NH', 'one-at-a-time'), running('R'));
+  const b = batch(q, ['O', 'M', 'MB', 'PB']);
+  const first = QA.duePushes(b.state, q, { queue: b.file, slug: 'acme__widgets', now: DAY });
+  t('one-at-a-time and a blocking mixed ask handed on are due, each with its question', first.map((p) => [p.key, p.text]), [
+    [`ask:acme__widgets:O:${SINCE}`, 'O: O: which layout?'],
+    [`ask:acme__widgets:MB:${SINCE}`, 'MB: MB: which layout?'],
   ]);
-  t('a production-broken park is the pass\'s to push, never queued here', due.some((p) => p.key.includes(':PB:')), false);
-  t('nothing is pushed yet', [...QA.pushedAsks(s)], []);
-  QA.markPushed(s, [due[0].key], { queue: join(s, 'queue.json'), now: DAY });
-  t('once sent, it is kept as pushed by its ask id', [...QA.pushedAsks(s)], [`O:${SINCE}`]);
-  t('and no longer due; one not yet sent still is', QA.duePushes(s, q, DAY).map((p) => p.key), [`ask:acme__widgets:MB:${SINCE}`]);
-  QA.queuePushes(s, [item('O')], q, { slug: 'acme__widgets', now: DAY });
-  t('handed on again, a pushed ask is not queued twice', QA.duePushes(s, q, DAY).map((p) => p.key), [`ask:acme__widgets:MB:${SINCE}`]);
-  const answered = queue(parked('O', 'one-at-a-time'), { ...parked('MB', 'mixed'), state: 'queued', park: null }, running('R'));
-  t('an ask answered before its push goes out is dropped', QA.duePushes(s, answered, DAY), []);
+  t('a production-broken park is the pass\'s to push, a park never handed on is not, nor a mixed one blocking nothing', ['PB', 'NH', 'M'].some((k) => due(b, q).includes(k)), false);
+  t('not yet sent, the same asks are due again the next tick', due(b, q), ['O', 'MB']);
+  t('a register write that fails is a report line, not a throw', (() => {
+    mkdirSync(join(b.state, 'ask-pushes.json'));
+    try { return QA.markPushed(b.state, [first[0]], { queue: b.file, now: DAY }).some((l) => l.startsWith('question-handling: O pushed, but not recorded')); } catch { return 'threw'; }
+  })(), true);
+  const b2 = batch(q, ['O', 'MB']);
+  QA.markPushed(b2.state, [first[0]], { queue: b2.file, now: DAY });
+  t('once sent, it is kept as pushed by its ask id', [...QA.pushedAsks(b2.state)], [`O:${SINCE}`]);
+  t('and no longer due; one not yet sent still is', due(b2, q), ['MB']);
+  mkdirSync(join(b2.state, 'briefings'), { recursive: true });
+  writeFileSync(join(b2.state, 'briefings', 'MB.md'), `## Answer from the user (${new Date(2026, 10, 25, 13, 30).toISOString()})\n\nthe wide one\n`);
+  t('an ask answered since it was handed on is not pushed', due(b2, q), []);
+  const settled = queue(parked('O', 'one-at-a-time'), { ...parked('MB', 'mixed'), state: 'queued', park: null }, running('R'));
+  t('nor one whose park is gone', due(batch(settled, ['MB']), settled), []);
 }
 
-// ---- quiet hours, 22:00 to 08:00: nothing pushed, the ask waits for the digest ----------------------
+// ---- an ask a check-in digest listed first is not pushed --------------------------------------------
 {
-  const s = stateDir();
-  const q = queue(parked('O', 'one-at-a-time'), running('R'));
-  t('handed on at night: not queued, and the report says it waits for the digest', QA.queuePushes(s, [item('O')], q, { slug: 'acme__widgets', now: NIGHT }),
-    ['question-handling: not pushed in quiet hours (22:00 to 08:00), each waits for the check-in digest: O (one-at-a-time)']);
-  t('nothing is due the next morning', QA.duePushes(s, q, new Date(2026, 10, 26, 9, 0)), []);
-  QA.queuePushes(s, [item('O')], q, { slug: 'acme__widgets', now: new Date(2026, 10, 25, 21, 59) });
-  t('queued just before quiet hours and not sent by then: dropped, left to the digest', QA.duePushes(s, q, new Date(2026, 10, 25, 22, 0)), []);
-  t('08:00 is outside quiet hours', QA.queuePushes(s, [item('O')], q, { slug: 'acme__widgets', now: new Date(2026, 10, 26, 8, 0) }).length && QA.duePushes(s, q, new Date(2026, 10, 26, 8, 0)).length, 1);
+  const q = queue(parked('O', 'one-at-a-time'), parked('P', 'one-at-a-time'), running('R'));
+  const b = batch(q, ['O', 'P']);
+  recordAsks(b.file, [{ step: 'presented', key: 'O', since: SINCE, via: 'digest', ref: 'page.md' }], { on: true, now: DAY });
+  t('the digest presented O: only P is pushed', due(b, q), ['P']);
 }
 
-// ---- a recommended call applies by default at the check-in, on the batched arm only ---------------
+// ---- quiet hours, 22:00 to 08:00: nothing pushed until they end, unless a digest lists it first -----
+{
+  const q = queue(parked('O', 'one-at-a-time'), running('R'));
+  const b = batch(q, ['O'], new Date(2026, 10, 25, 22, 30));
+  t('handed on at night: nothing due', due(b, q, NIGHT), []);
+  t('due once quiet hours end at 08:00', due(b, q, new Date(2026, 10, 26, 8, 0)), ['O']);
+  recordAsks(b.file, [{ step: 'presented', key: 'O', since: SINCE, via: 'digest', ref: 'page.md' }], { on: true, now: new Date(2026, 10, 26, 7, 59) });
+  t('unless the digest listed it first', due(b, q, new Date(2026, 10, 26, 8, 0)), []);
+}
+
+// ---- a recommended call applies by default at the check-in after a digest listed it, on batched only --
 {
   const TIMES = ['08:00', '17:00'];
-  // Parked at 09:00 local; the check-in after it is 17:00.
-  const since = new Date(2026, 10, 25, 9, 0).toISOString();
+  const since = new Date(2026, 10, 25, 7, 55).toISOString();
   const tk = (arm) => ({ ...parked('D', arm), park: { kind: 'question', question: 'Two columns or one?', since } });
   const call = (o = {}) => ({ question: 'Two columns or one?', options: ['two columns', 'one column'], chose: 'two columns', category: 'design', ...o });
-  const after = new Date(2026, 10, 25, 17, 5);
-  t('batched, a check-in since it parked: it applies', QA.defaultsAtCheckin(tk('batched'), call(), { times: TIMES, now: after }), true);
-  t('before that check-in: it does not yet', QA.defaultsAtCheckin(tk('batched'), call(), { times: TIMES, now: new Date(2026, 10, 25, 16, 59) }), false);
-  t('lever off: never', QA.defaultsAtCheckin(tk(null), call(), { times: TIMES, now: after }), false);
-  t('one-at-a-time and mixed: never', ['one-at-a-time', 'mixed'].map((a) => QA.defaultsAtCheckin(tk(a), call(), { times: TIMES, now: after })), [false, false]);
-  t('a product call never defaults', QA.defaultsAtCheckin(tk('batched'), call({ category: 'product' }), { times: TIMES, now: after }), false);
-  t('a call that spends money never defaults', QA.defaultsAtCheckin(tk('batched'), call({ question: 'Upgrade the plan, at $20 a month?', options: ['upgrade', 'stay'], chose: 'upgrade' }), { times: TIMES, now: after }), false);
-  t('a call about who owns something never defaults', QA.defaultsAtCheckin(tk('batched'), call({ question: 'Who owns the onboarding copy?', options: ['design', 'growth'], chose: 'design' }), { times: TIMES, now: after }), false);
-  t('no check-in times: never', QA.defaultsAtCheckin(tk('batched'), call(), { times: null, now: after }), false);
+  // Listed by the 08:00 digest; the next check-in is 17:00.
+  const listed = () => new Map([[`D:${since}`, new Date(2026, 10, 25, 8, 0).toISOString()]]);
+  const at = (h, m = 0) => new Date(2026, 10, 25, h, m);
+  const deflt = (arm, d = call(), now = at(17, 5), presented = listed) => QA.defaultsAtCheckin(tk(arm), d, { times: TIMES, presented, now });
+  t('batched, listed by a digest and the next check-in passed: it applies', deflt('batched'), true);
+  t('parked at 07:55, never listed by a digest: the 08:00 pass does not apply it', deflt('batched', call(), at(8, 0), () => new Map()), false);
+  t('listed at 08:00: not before the next check-in', deflt('batched', call(), at(16, 59)), false);
+  t('lever off: never', deflt(null), false);
+  t('one-at-a-time and mixed: never', ['one-at-a-time', 'mixed'].map((a) => deflt(a)), [false, false]);
+  t('a product call never defaults', deflt('batched', call({ category: 'product' })), false);
+  t('a call that spends money never defaults', deflt('batched', call({ question: 'Upgrade the plan, at $20 a month?', options: ['upgrade', 'stay'], chose: 'upgrade' })), false);
+  t('a call about who owns something never defaults', deflt('batched', call({ question: 'Who owns the onboarding copy?', options: ['design', 'growth'], chose: 'design' })), false);
+  t('no check-in times: never', QA.defaultsAtCheckin(tk('batched'), call(), { times: null, presented: listed, now: at(17, 5) }), false);
+  t('the worker is told the digest listed it first', /The check-in digest listed it and nobody answered it by the next check-in, so desk applied it by default/.test(QA.defaultAnswer(call())), true);
   const logged = QA.defaultCall(call(), 'D', '2026-11-25T17:05:00.000Z');
-  t('the logged call says how to reverse it', /applied the recommendation by default at 2026-11-25T17:05:00.000Z\. To reverse it, override it here with one column, then answer D with that choice\.$/.test(logged.question), true);
+  t('the logged call says how to reverse it', /listed it and nobody answered by the next check-in, so desk applied the recommendation by default at 2026-11-25T17:05:00.000Z\. To reverse it, override it here with one column, then answer D with that choice\.$/.test(logged.question), true);
   t('and keeps the call itself', [logged.chose, logged.category, logged.options], ['two columns', 'design', ['two columns', 'one column']]);
 }
 

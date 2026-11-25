@@ -41,7 +41,7 @@ import { changeLine, overrideEvent, isDecided, recordLeverDecision } from './lev
 import { leversDir } from './levers-view.mjs';
 import { pageState as leversPageState, refresh as refreshLevers } from './levers-refresh.mjs';
 import { recordAsks, ledgerOnIn, askId, ASK_LEDGER_ENV } from './ask-ledger.mjs';
-import { pushedAsks } from './question-arms.mjs';
+import { pushedAsks, raisedOf } from './question-arms.mjs';
 
 export const DEFAULT_TIMES = ['08:00', '17:00'];
 export { PRODUCTION_BROKEN };
@@ -504,11 +504,12 @@ function presentAsks({ list, groups, fresh, page, push, now }) {
   return list.flatMap((r, i) => {
     const parks = (groups[i]?.questions ?? []).filter((q) => q.kind === 'parked' && isFresh.has(q.key));
     if (!parks.length) return [];
-    const tickets = readJson(r.queue, null)?.tickets ?? {};
+    const q = readJson(r.queue, null);
+    const tickets = q?.tickets ?? {};
     const steps = parks.flatMap(({ ticket }) => {
       const p = tickets[ticket]?.park;
       if (!p?.since) return [];
-      return [{ step: 'raised', key: ticket, since: p.since, kind: p.kind, question: p.question },
+      return [raisedOf({ ...tickets[ticket], key: ticket }, q),
         { step: 'presented', key: ticket, since: p.since, via: 'digest', ref: page, notification: push?.key ?? null }];
     });
     return recordAsks(r.queue, steps, { on: ledgerOnIn(r.slug), by: 'digest', now });

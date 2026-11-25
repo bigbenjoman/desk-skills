@@ -3,25 +3,33 @@
 // pass.mjs carry none of it:
 //   batched        the ask waits for the check-in digest, as with the lever off; and a park that
 //                  recommends a call desk may not take for the worker applies it by default at the
-//                  first check-in after it parked (defaultsAtCheckin)
+//                  first check-in after the digest listed it (defaultsAtCheckin)
 //   one-at-a-time  each ask handed to the person (decider.mjs handItems) is pushed at once
 //   mixed          a blocking ask is pushed at once, the rest wait for the digest
 // A ticket whose pin names no value runs with the lever off, and nothing here changes what desk does
-// for it. An ask is blocking when another ticket of the batch is held behind its ticket, or when the
-// hand-over found nothing else in the batch running; the raised ask records the flag and the arm.
+// for it. An ask is blocking when another ticket of the batch is held behind its ticket, or when
+// nothing else in the batch is running. Whichever path raises an ask first (a hand-over, the digest,
+// the pass's take or urgent push), its raised step carries the arm and the flag (raisedOf).
 //
-// Nothing is pushed in quiet hours, 22:00 to 08:00 local time: an ask handed on then is not pushed
-// later, and waits for the digest as it would on batched. A park reading `PRODUCTION BROKEN:` is the
+// Nothing is pushed in quiet hours, 22:00 to 08:00 local time: an ask handed on then is pushed once
+// they end, unless a check-in digest has listed it first. A park reading `PRODUCTION BROKEN:` is the
 // pass's to push, at any hour and on every arm (digest.mjs urgentParks), so it is never pushed here.
 //
-// A push goes through <state>/ask-pushes.json: queued at the hand-over (queuePushes), sent by the
-// supervisor's next notification (duePushes) and kept as pushed once out (markPushed), when the ask is
-// recorded as presented by push. The digest still lists a pushed ask, but not as fresh (pushedAsks).
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+// The pushes are reconciled on each supervisor tick, under its batch lock (duePushes): every park
+// still handed on and unanswered (<state>/handed.json) that its arm pushes, and that no push and no
+// digest has presented, is due. Once the notification is out, markPushed keeps it in
+// <state>/ask-pushes.json and records the ask as presented by push. The digest still lists a pushed
+// ask, but not as fresh (pushedAsks).
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { leverValueFor } from './lever-pin.mjs';
 import { blockersOf, FINISHED } from './queue-states.mjs';
-import { askId, recordAsks } from './ask-ledger.mjs';
+import { askId, readAsks, recordAsks } from './ask-ledger.mjs';
+import { fold } from './ticket-ledger.mjs';
+import { ledgerTarget } from './queue-ledger.mjs';
+import { answered, readHanded } from './decider.mjs';
+import { isHeld } from './batch-state.mjs';
+import { writeJsonAtomic } from './dir-lock.mjs';
 import { nextCheckin, neverDefault } from './ask-defaults.mjs';
 import { askCategoryIn } from './decisions.mjs';
 import { PRODUCTION_BROKEN } from './promotion.mjs';
@@ -31,9 +39,9 @@ const LEVER = 'question-handling';
 const QUIET_FROM = 22;
 const QUIET_TO = 8;
 const quiet = (now) => now.getHours() >= QUIET_FROM || now.getHours() < QUIET_TO;
-const QUIET_HOURS = `${QUIET_FROM}:00 to ${String(QUIET_TO).padStart(2, '0')}:00`;
 // How long a pushed ask is remembered: long after any digest could list its park.
 const PUSHED_KEEP_MS = 30 * 24 * 3_600_000;
+const firstLine = (e) => String(e?.message ?? e).split('\n')[0];
 
 // The arm ticket `t` runs on, or null with the lever off for it; a pin that cannot be read is off.
 function armOf(t) {
@@ -46,77 +54,75 @@ function blocking(key, q) {
   const others = Object.entries(q?.tickets ?? {}).filter(([k]) => k !== key).map(([, t]) => t ?? {});
   return others.some((t) => !FINISHED.includes(t.state) && blockersOf(t).includes(key)) || !others.some((t) => t.state === 'running');
 }
+// The arm and blocking flag ticket `key`'s raised ask carries in queue `q`: none with the lever off.
+function armFields(key, q) {
+  const arm = armOf(q?.tickets?.[key]);
+  return arm ? { arm, blocking: blocking(key, q) } : {};
+}
 
-// The raised step of handed item `i` (one park, `p` its park record) in queue `q`, as ask-ledger.mjs
-// takes it: with its arm and blocking flag where the lever is on for the ticket.
-export function raised(i, p, q) {
-  const arm = armOf(q?.tickets?.[i.ticket]);
-  return { step: 'raised', kind: p.kind, question: p.question ?? i.text, ...(arm ? { arm, blocking: blocking(i.ticket, q) } : {}) };
+// The raised step of parked ticket `t` in queue `q`, as ask-ledger.mjs takes it, for any path that
+// raises its ask.
+export const raisedOf = (t, q) => ({ step: 'raised', key: t.key, since: t.park?.since, kind: t.park?.kind, question: t.park?.question, ...armFields(t.key, q) });
+// The same for handed item `i` (one park, `p` its park record), its key and since given by the caller.
+export const raised = (i, p, q) => ({ step: 'raised', kind: p.kind, question: p.question ?? i.text, ...armFields(i.ticket, q) });
+
+// The time each ask of queue file `queue`'s ledger was presented by a check-in digest: Map(ask id ->
+// at), empty where the ledger cannot be read.
+export function digestPresented(queue) {
+  try {
+    return new Map(readAsks(fold(ledgerTarget(queue).repoDir)).flatMap((a) => a.presented.filter((p) => p.via === 'digest').map((p) => [a.ask, p.at])));
+  } catch { return new Map(); }
 }
 
 const registerPath = (state) => join(state, 'ask-pushes.json');
-function readRegister(state) {
-  try {
-    const r = JSON.parse(readFileSync(registerPath(state), 'utf8'));
-    return { pending: r?.pending ?? {}, pushed: r?.pushed ?? {} };
-  } catch { return { pending: {}, pushed: {} }; }
-}
-function update(state, change, now) {
-  const r = readRegister(state);
-  const out = change(r);
-  for (const [ask, at] of Object.entries(r.pushed)) if (now - Date.parse(at) > PUSHED_KEEP_MS) delete r.pushed[ask];
-  const file = registerPath(state);
-  writeFileSync(`${file}.tmp`, `${JSON.stringify(r, null, 2)}\n`);
-  renameSync(`${file}.tmp`, file);
-  return out;
+// The asks pushed from batch state folder `state`: { <ask id>: at }.
+function readPushed(state) {
+  try { return JSON.parse(readFileSync(registerPath(state), 'utf8'))?.pushed ?? {}; } catch { return {}; }
 }
 
-// Queues a push for each of items `items` just handed to the person (decider.mjs handItems) that its
-// arm pushes, in batch state folder `state`, for queue `q` of repo `slug`. -> report lines.
-export function queuePushes(state, items, q, { slug, now = new Date() } = {}) {
-  const asks = items.filter((i) => i.kind === 'parked' && i.since).flatMap((i) => {
-    const t = q?.tickets?.[i.ticket];
+// The pushes due now from batch state folder `state` for queue `q` (its file `queue`, of repo `slug`):
+// each park handed on, unanswered since, that its arm pushes and nothing has presented by push or
+// digest. Run under the supervisor's batch lock, through to markPushed. -> [{ key, text, ticket, since }]
+export function duePushes(state, q, { queue, slug, now = new Date() } = {}) {
+  if (quiet(now)) return [];
+  const handed = Object.values(readHanded(state)).filter((e) => e.kind === 'parked');
+  const asks = handed.flatMap((e) => {
+    const t = q?.tickets?.[e.ticket];
+    const since = t?.park?.since;
+    if (t?.state !== 'parked' || isHeld(t) || !since || Date.parse(e.at) < Date.parse(since)) return [];
     const arm = armOf(t);
-    const question = String(t?.park?.question ?? i.text ?? '');
-    if (!(arm === 'one-at-a-time' || (arm === 'mixed' && blocking(i.ticket, q))) || PRODUCTION_BROKEN.test(question)) return [];
-    return [{ ask: askId(i.ticket, i.since), ticket: i.ticket, since: i.since, arm, question }];
+    if (!(arm === 'one-at-a-time' || (arm === 'mixed' && blocking(e.ticket, q)))) return [];
+    const question = String(t.park.question ?? e.text ?? '');
+    if (PRODUCTION_BROKEN.test(question)) return [];
+    return [{ entry: e, ask: askId(e.ticket, since), ticket: e.ticket, since, question }];
   });
   if (!asks.length) return [];
-  const names = asks.map((a) => `${a.ticket} (${a.arm})`).join(', ');
-  if (quiet(now)) return [`question-handling: not pushed in quiet hours (${QUIET_HOURS}), each waits for the check-in digest: ${names}`];
-  update(state, (r) => {
-    for (const a of asks) if (!r.pushed[a.ask]) r.pending[a.ask] = { ...a, key: `ask:${slug}:${a.ask}`, at: now.toISOString() };
-  }, now.getTime());
-  return [`question-handling: pushed at the next notification: ${names}`];
+  const pushed = readPushed(state);
+  const left = asks.filter((a) => !pushed[a.ask] && !answered(state, a.entry));
+  if (!left.length) return [];
+  const shown = digestPresented(queue);
+  return [...new Map(left.filter((a) => !shown.has(a.ask)).map((a) => [a.ask, a])).values()]
+    .map((a) => ({ key: `ask:${slug}:${a.ask}`, text: `${a.ticket}: ${a.question}`, ticket: a.ticket, since: a.since }));
 }
 
-// The pushes queued in `state` to send now, as the supervisor sends a pass's: [{ key, text }]. One whose
-// park queue `q` no longer holds (answered or settled since) is dropped, and in quiet hours all are,
-// each left to the digest.
-export function duePushes(state, q, now = new Date()) {
-  if (!existsSync(registerPath(state)) || !Object.keys(readRegister(state).pending).length) return [];
-  const live = (p) => { const t = q?.tickets?.[p.ticket]; return t?.state === 'parked' && t.park?.since === p.since; };
-  return update(state, (r) => {
-    for (const [ask, p] of Object.entries(r.pending)) if (quiet(now) || !live(p)) delete r.pending[ask];
-    return Object.values(r.pending).map((p) => ({ key: p.key, text: `${p.ticket}: ${p.question}` }));
-  }, now.getTime());
-}
-
-// Records the queued pushes `keys` as sent: kept as pushed, and each ask presented by push in the
-// ticket ledger of queue file `queue`. -> report lines.
-export function markPushed(state, keys, { queue, now = new Date() } = {}) {
-  const sent = new Set(keys);
-  if (!sent.size || !existsSync(registerPath(state))) return [];
-  const done = update(state, (r) => {
-    const out = Object.entries(r.pending).filter(([, p]) => sent.has(p.key));
-    for (const [ask] of out) { delete r.pending[ask]; r.pushed[ask] = now.toISOString(); }
-    return out.map(([, p]) => p);
-  }, now.getTime());
-  return recordAsks(queue, done.map((p) => ({ step: 'presented', key: p.ticket, since: p.since, via: 'push', ref: p.key, notification: p.key })), { by: 'supervisor', now });
+// Records pushes `sent` (duePushes's, once the notification is out) as pushed, and each ask presented
+// by push in the ticket ledger of queue file `queue`. Never throws. -> report lines.
+export function markPushed(state, sent, { queue, now = new Date() } = {}) {
+  if (!sent.length) return [];
+  const lines = [];
+  try {
+    const pushed = readPushed(state);
+    for (const p of sent) pushed[askId(p.ticket, p.since)] = now.toISOString();
+    for (const [ask, at] of Object.entries(pushed)) if (now.getTime() - Date.parse(at) > PUSHED_KEEP_MS) delete pushed[ask];
+    writeJsonAtomic(registerPath(state), { pushed });
+  } catch (e) {
+    lines.push(`question-handling: ${sent.map((p) => p.ticket).join(', ')} pushed, but not recorded in ${registerPath(state)} (${firstLine(e)}); the next tick may push again`);
+  }
+  return [...lines, ...recordAsks(queue, sent.map((p) => ({ step: 'presented', key: p.ticket, since: p.since, via: 'push', ref: p.key, notification: p.key })), { by: 'supervisor', now })];
 }
 
 // The asks pushed from batch state folder `state`, by ask id (<KEY>:<park.since>).
-export const pushedAsks = (state) => new Set(Object.keys(readRegister(state).pushed));
+export const pushedAsks = (state) => new Set(Object.keys(readPushed(state)));
 
 // Whether call `d` (a parsed decision) must never apply by default: a product call, one a check-in
 // default never takes (ask-defaults.mjs neverDefault: money, legal, production, customer copy), or a
@@ -127,20 +133,22 @@ const neverDefaults = (d) => {
 };
 
 // Whether ticket `t`'s park, recommending call `d` that desk may not take for the worker, applies it by
-// default at `now`: on the batched arm only, once a check-in time of `times` (digest.mjs checkinTimes)
-// has passed since it parked.
-export function defaultsAtCheckin(t, d, { times, now = new Date() } = {}) {
+// default at `now`: on the batched arm only, once a check-in digest has listed it and the next
+// check-in time of `times` (digest.mjs checkinTimes) after that has passed, so the person had a whole
+// check-in to answer it. `presented`, called only on that arm, gives digestPresented's map.
+export function defaultsAtCheckin(t, d, { times, presented, now = new Date() } = {}) {
   if (armOf(t) !== 'batched' || !t?.park?.since || !times?.length || neverDefaults(d)) return false;
-  const at = nextCheckin(times, new Date(t.park.since));
+  const listed = presented?.().get(askId(t.key, t.park.since));
+  const at = listed ? nextCheckin(times, new Date(listed)) : null;
   return !!at && at <= now;
 }
 
 // The answer the next worker reads for a call applied by default.
 export const defaultAnswer = (d) => `${d.chose}. This was the option the last worker recommended when it parked on this ${d.category} call. `
-  + 'Nobody answered it by the check-in after it parked, so desk applied it by default; the person can still reverse it. Build it and carry on rather than park on it again.';
+  + 'The check-in digest listed it and nobody answered it by the next check-in, so desk applied it by default; the person can still reverse it. Build it and carry on rather than park on it again.';
 
 // The decision logged for it, in decisions.mjs's shape, with how to reverse it from the digest.
 export const defaultCall = (d, key, at) => ({
   ...d,
-  question: `${d.question} Nobody answered by the check-in, so desk applied the recommendation by default at ${at}. To reverse it, override it here with ${d.options.filter((o) => o !== d.chose).join(' or ')}, then answer ${key} with that choice.`,
+  question: `${d.question} The check-in digest listed it and nobody answered by the next check-in, so desk applied the recommendation by default at ${at}. To reverse it, override it here with ${d.options.filter((o) => o !== d.chose).join(' or ')}, then answer ${key} with that choice.`,
 });

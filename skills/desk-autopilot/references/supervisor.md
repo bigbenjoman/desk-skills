@@ -70,9 +70,11 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
   and handed on goes in the next report in `<state>/supervisor.log` and in the batch notes;
 - where a ticket's pin sets the `question-handling` lever (`question-arms.mjs`), pushes a park it
   hands to the digest at once: every one on `one-at-a-time`, a blocking one on `mixed` (another
-  ticket is held behind it, or nothing else is running). Nothing settled by the decider is pushed,
-  nor anything between 22:00 and 08:00, when the park waits for the digest; an idle tick sends what a
-  reaped decider handed on. With the lever off, or on `batched`, nothing is pushed but as above;
+  ticket is held behind it, or nothing else is running). Each tick, under the batch's lock, pushes
+  every such park still handed on and unanswered that no push and no check-in digest has presented,
+  so one is sent once, idle ticks included. Nothing settled by the decider is pushed, and nothing
+  between 22:00 and 08:00: a park handed on then is pushed once they end, unless a digest lists it
+  first. With the lever off, or on `batched`, nothing is pushed but as above;
 - once a pass reports the batch idle, runs nothing more for it until the queue changes (a new batch,
   or a ticket admitted or requeued into this one), a park is answered, or, with anything parked,
   failed or held behind a blocker in no batch, `DESK_IDLE_RECHECK_MS` (30 minutes) passes, or
