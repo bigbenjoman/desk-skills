@@ -303,6 +303,19 @@ export function outagesAfter(outages, downSince, now = Date.now()) {
   }
   return out.slice(-OUTAGES_KEPT);
 }
+// The outside reviewer a red PR waits on through an outage still open (outagesAfter's, `to` null), or
+// null: only where every one of `red` (its red check names) is a §4 State check of kind external
+// (`stateChecks`, parsed) whose reviewer has one. Nothing failed there: no review came, and the driver
+// reruns no state check. -> { login, since (the outage's `from`) }
+export function waitingOnDown(red, stateChecks, outages) {
+  const open = new Map((outages ?? []).filter((o) => o?.to == null && o.login).map((o) => [o.login, o.from ?? null]));
+  if (!red?.length || !open.size) return null;
+  const ext = new Map((stateChecks ?? []).filter((c) => c.kind === 'external').map((c) => [c.name, c.login]));
+  const logins = red.map((n) => ext.get(n));
+  if (logins.some((l) => !l || !open.has(l))) return null;
+  return { login: logins[0], since: open.get(logins[0]) };
+}
+
 // `login`'s latest review across the repo, through `seed` read cold for no PR: an ISO time, null where
 // none is proven among the pages read, or undefined where GitHub could not be read.
 function repoLast(seed, login) {

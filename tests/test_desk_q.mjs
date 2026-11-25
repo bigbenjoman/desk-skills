@@ -2223,6 +2223,38 @@ t('DS-280 more than two red checks lead with the count and the first', Q.needTex
   '#902 · 3 checks failed: Lint +2 · rerun 1 of 2 next');
 t('DS-280 AC4 STARTS says how long a PR has been in Merging', cells280('M-4')[1], 'for 2h 5m');
 
+// ---- #1417: a PR red only on an outside reviewer's gate while that reviewer is down (gate-reviewer.mjs's
+// open outage) waits on the reviewer: no "failed", no rerun named, its rerun count left as it is.
+{
+  const gate1417 = { ...red, name: '🔐 Review gate' };
+  const down1417 = new Date(NOW - 3 * 3600000).toISOString();
+  const tickets = {
+    'G-1': { ...prOn(951, [...okChecks(2), gate1417], { reruns: {}, rerun_at: null, ...fresh }), group: at280(5) },
+    'G-2': { ...prOn(952, [...okChecks(2), gate1417], { reruns: {}, rerun_at: null, ...fresh }), group: at280(5) },
+    // Red on its own code as well: not only the gate, so it reads as before.
+    'G-3': { ...prOn(953, [...okChecks(2), gate1417, lint], { reruns: {}, rerun_at: null, ...fresh }), group: at280(5) },
+  };
+  put(I.T, I.env, 'ds1417', { port: 5651, conc: '3 / 5', beat: 1, perms: { ...grant, 'ci-rerun': 'yes' }, queue: { batch: 'ds1417', concurrency: 3, supervised: true, tickets } });
+  const slug = 'acme__ds1417';
+  const cfg1417 = join(I.env.DESK_CONFIG_ROOT, 'repos', slug, 'config.md');
+  writeFileSync(cfg1417, `${readFileSync(cfg1417, 'utf8')}\n## 4. Checks\n\n| Field | Value |\n|---|---|\n| State checks | \`🔐 Review gate: external agent-pullbot\` |\n`);
+  const gr1417 = join(I.env.HOME, '.desk-autopilot', slug, 'gate-reviewer.json');
+  const outage = (to) => writeFileSync(gr1417, JSON.stringify({ reviewers: {}, outages: [{ login: 'agent-pullbot', from: down1417, to }] }));
+  const need = (key) => { const r = Q.loadRepos(NOW).find((x) => x.name === 'ds1417'); return Q.needText(r, r.prs.find((p) => p.t.key === key)); };
+  outage(null);
+  // The clock today, else the day and the clock (just after midnight the outage began yesterday).
+  const { dayAndTime } = await import('../desk/bin/desk-q-eta.mjs');
+  const when1417 = new Date(down1417).toDateString() === new Date(NOW).toDateString() ? new Date(down1417).toTimeString().slice(0, 5) : dayAndTime(Date.parse(down1417));
+  t('#1417 AC1 red only on the down reviewer\'s gate: waiting on it, since when, not "failed"', need('G-1'), `#951 · waiting on agent-pullbot (down since ${when1417})`);
+  t('#1417 AC2 no rerun is named for it, and each PR waiting on it reads the same', `${/rerun|failed/.test(need('G-1'))} ${/^#952 · waiting on agent-pullbot \(down/.test(need('G-2'))}`, 'false true');
+  t('#1417 a PR red on its own code too reads as before', need('G-3'), '#953 · 🔐 Review gate, Lint failed · rerun 1 of 2 next');
+  // With passes stopped the row reads prNeed with no clock of its own, and says the same time.
+  { const r = Q.loadRepos(NOW).find((x) => x.name === 'ds1417');
+    t('#1417 passes stopped: the same "down since" time', Q.needText({ ...r, live: false }, r.prs.find((p) => p.t.key === 'G-1')).endsWith(`: waiting on agent-pullbot (down since ${when1417})`), true); }
+  outage(new Date(NOW - 60000).toISOString());
+  t('#1417 AC3 once the reviewer posts again (outage closed), the gate is handled as before, with its full rerun budget', need('G-1'), '#951 · 🔐 Review gate failed · rerun 1 of 2 next');
+}
+
 // ---- DS-420: a red PR the merge driver declined reads as the driver's reason, not its failed checks.
 const ci420 = { ...red, name: 'CI gate' };
 const red420 = (pr, more = {}, ps = {}) => ({ ...prOn(pr, [...okChecks(2), lint, backend, ci420], { reruns: {}, rerun_at: null, ...fresh, ...ps }), ...more });
