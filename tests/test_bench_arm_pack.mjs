@@ -1,6 +1,6 @@
 // suite: bench pack arm (the baseline against the same model with the start-4b pack at turn 0)
 // layer: L2
-import { mkdirSync, writeFileSync, readFileSync, existsSync, realpathSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, realpathSync, chmodSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { buildPack, readPack, parseArgs, PACK_ARM, PACK_HEADING, START_4B_FILES } from '../desk/bin/bench-arm-pack.mjs';
@@ -54,8 +54,10 @@ t('the pack changes the key', runKey(task, { ...plain, system: 'P1' }) !== befor
 t('a changed pack is a new key', runKey(task, { ...plain, system: 'P1' }) !== runKey(task, { ...plain, system: 'P2' }), true);
 
 // runClaude hands the pack to claude as a file kept in the run's folder, and nothing for an arm with none.
+// An executable stub, as the other bench suites write theirs: this suite starts a process (L2).
 const fake = join(dir, 'fake-claude.mjs');
-writeFileSync(fake, `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(join(dir, 'argv.json'))}, JSON.stringify(process.argv.slice(2)));\n`);
+writeFileSync(fake, `#!/usr/bin/env node\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(join(dir, 'argv.json'))}, JSON.stringify(process.argv.slice(2)));\n`);
+chmodSync(fake, 0o755);
 const runDir = join(dir, 'run');
 mkdirSync(runDir);
 const opts = { budget: '1', timeout: 30 };
