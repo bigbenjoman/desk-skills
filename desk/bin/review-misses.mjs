@@ -6,7 +6,9 @@
 // model call ('other' where none fits or the reply is unreadable) and the PR is one line of the repo's
 // <state>/review-misses.jsonl:
 //   { key, pr, recorded, misses: [{ head, kind, text, link }] }
-// (or { key, pr, unmerged: true, recorded }, or { key, pr, unread: true, recorded }, read again in an hour)
+// (or { key, pr, unmerged: true, recorded }, or { key, pr, unread: true, recorded }, read again in an hour;
+// a PR whose findings could not be classified is { ..., unread: true, unclassified: true }, and after
+// CLASSIFY_TRIES of those { key, pr, recorded, gave_up: true, tries }, never read again)
 // A kind missed on LEARN_MIN PRs or more becomes one checklist line of <state>/review-bar.learned.md,
 // citing those PRs, which desk-review reads after the bar and §4 What review here consistently asks for.
 // Its source is <state>/review-bar.learned.json, { since, lines: { <kind>: [pr] } }: a line, once there,
@@ -41,6 +43,8 @@ export const KINDS = Object.freeze({
 });
 // How many PRs a kind is missed on before it becomes a learned line.
 export const LEARN_MIN = 2;
+// How many failed classify calls a PR gets before a pass gives up on it.
+export const CLASSIFY_TRIES = 3;
 const CLASSIFY_TIMEOUT_MS = 120_000;
 const MARK = 'KINDS:';
 const logOf = (state) => join(state, 'review-misses.jsonl');
@@ -131,6 +135,17 @@ export function classify(findings, run = runModel) {
 export const readMisses = (state) => readLatest(logOf(state));
 const recordMisses = (state, entry) => appendLine(logOf(state), entry);
 
+// Failed classify calls per PR over the whole log: { <pr>: n }. A PR GitHub could not read is not one.
+export function classifyFails(state) {
+  let text = '';
+  try { text = readFileSync(logOf(state), 'utf8'); } catch { return {}; }
+  const n = {};
+  for (const line of text.split('\n')) {
+    try { const e = JSON.parse(line); if (e?.unclassified && e.pr != null) n[Number(e.pr)] = (n[Number(e.pr)] ?? 0) + 1; } catch { /* skipped */ }
+  }
+  return n;
+}
+
 // Each kind missed on LEARN_MIN PRs or more, with those PRs: { <kind>: [pr] }. 'other' names no check.
 export function recurring(entries, min = LEARN_MIN) {
   const prs = {};
@@ -182,13 +197,19 @@ export function relearn(state, { repo = '', now = new Date().toISOString() } = {
 export function missesStep(state, { tickets, gql, run = runModel, ctx = {}, repo = '', now = new Date().toISOString() }) {
   if (!ctx.external) return [];
   const record = (entry) => recordMisses(state, entry);
+  const fails = classifyFails(state);
   const lines = readDue({ tickets, gql, now, label: 'review misses', query: missesQuery, recorded: readMisses(state), record }, (key, pr, payload) => {
     const m = missesOf(payload, ctx);
     if (!m) { try { record({ key, pr, unmerged: true, recorded: now }); } catch { /* read again */ } return []; }
     const misses = classify(m.findings, run);
     if (!misses) {
-      try { record({ key, pr, unread: true, recorded: now }); } catch { /* tried again next pass */ }
-      return [`review misses: the ${m.findings.length} finding(s) desk missed on PR #${pr} (${key}) could not be classified; a pass tries again in an hour`];
+      const tries = (fails[pr] ?? 0) + 1;
+      if (tries >= CLASSIFY_TRIES) {
+        try { record({ key, pr, recorded: now, gave_up: true, tries }); } catch { /* tried again next pass */ }
+        return [`review misses: gave up on PR #${pr} (${key}): its ${m.findings.length} finding(s) could not be classified in ${tries} tries`];
+      }
+      try { record({ key, pr, unread: true, unclassified: true, recorded: now }); } catch { /* tried again next pass */ }
+      return [`review misses: the ${m.findings.length} finding(s) desk missed on PR #${pr} (${key}) could not be classified (try ${tries} of ${CLASSIFY_TRIES}); a pass tries again in an hour`];
     }
     try { record({ key, pr, recorded: now, misses: misses.map(({ head, kind, text, link }) => ({ head, kind, text, link })) }); } catch (e) {
       return [`review misses: PR #${pr} (${key}) could not be recorded (${String(e?.message ?? e).split('\n')[0]})`];
