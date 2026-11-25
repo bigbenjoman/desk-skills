@@ -1285,14 +1285,16 @@ check "DS-426 AC3 a park naming no Live reads entry is parked as today" \
   '[ "$(field L-3 state)" = "\"parked\"" ] && [ "$(field L-3 park.question)" = "\"which price should the plan show? Not reached: the PR\"" ] && [ "$(field L-3 park.clears_when.kind)" = "\"none\"" ]'
 check "DS-426 AC3 and so is one that asks a question beside the entry: nothing runs for it" \
   '[ "$(field L-4 state)" = "\"parked\"" ] && [ "$(field L-4 park.clears_when.kind)" = "\"none\"" ] && ! ls "$T/state-l/live-reads" | grep -q "^L-4-"'
-# L-5's read has finished, but a session claimed its park: the session's, so nothing is requeued.
+# L-5's read has finished, but a live session claimed its park: the session's, so nothing is requeued.
+# The session's transcript is fresh: a claim whose transcript is gone ends with it (tests/test_claims.sh).
+mkdir -p "$HOME/.claude/projects/-work-repo"; : > "$HOME/.claude/projects/-work-repo/s-live.jsonl"
 git init -q -b fix/L-5 "$T/wt/L-5"; git -C "$T/wt/L-5" commit -q --allow-empty -m L-5; HL5=$(git -C "$T/wt/L-5" rev-parse HEAD)
 printf '{"name":"gateway-models","command":"x","pid":0}\n' > "$T/state-l/live-reads/L-5-$HL5-gateway-models.json"
 echo 0 > "$T/state-l/live-reads/L-5-$HL5-gateway-models.code"; echo '{}' > "$T/state-l/live-reads/L-5-$HL5-gateway-models.out"
-q add L-5; q set L-5 state=parked lane=A branch=fix/L-5 "worktree=$T/wt/L-5" "park={\"question\":\"need live read gateway-models.\",\"clears_when\":{\"kind\":\"live-read\",\"reads\":[\"gateway-models\"],\"head\":\"$HL5\",\"base\":\"$LBASE\"},\"claim\":{\"session\":\"s-gone\",\"at\":\"2026-11-04T00:00:00Z\"}}"
+q add L-5; q set L-5 state=parked lane=A branch=fix/L-5 "worktree=$T/wt/L-5" "park={\"question\":\"need live read gateway-models.\",\"clears_when\":{\"kind\":\"live-read\",\"reads\":[\"gateway-models\"],\"head\":\"$HL5\",\"base\":\"$LBASE\"},\"claim\":{\"session\":\"s-live\",\"at\":\"2026-11-04T00:00:00Z\"}}"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-426 a finished read on a park a session claimed is left to the session: not requeued, the claim kept" \
-  '[ "$(field L-5 state)" = "\"parked\"" ] && [ "$(field L-5 park.claim.session)" = "\"s-gone\"" ] && ! echo "$out" | grep -q "L-5: live read"'
+  '[ "$(field L-5 state)" = "\"parked\"" ] && [ "$(field L-5 park.claim.session)" = "\"s-live\"" ] && ! echo "$out" | grep -q "L-5: live read"'
 # L-6 names gateway-models with text of its own beside it, a flag, a path and a command substitution;
 # L-7 names big-read, which prints one byte over 1 MiB.
 for k in 6 7; do git init -q -b "fix/L-$k" "$T/wt/L-$k"; git -C "$T/wt/L-$k" commit -q --allow-empty -m "L-$k"; done
