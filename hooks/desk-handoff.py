@@ -612,16 +612,18 @@ def parse_iso(s):
 
 def loop_due(slug, session):
     """(key, stamp) for the passes with no next pass still to come: the key names the passes, the
-    stamp their queues' modification times. ("", "") when none is."""
+    stamp their queues' modification times and their recorded next passes, so a next pass recorded
+    after a cached check (which sets the loop's interval) is checked afresh. ("", "") when none is."""
     now, keys, stamps = time.time(), [], []
     for p, n, queue in own_beats(slug, session):
         if n is not None and n > now:
             continue
         keys.append(f"{p:.0f}")
+        nxt = "-" if n is None else f"{n:.0f}"
         try:
-            stamps.append(f"{os.path.getmtime(queue):.3f}")
+            stamps.append(f"{os.path.getmtime(queue):.3f}/{nxt}")
         except OSError:
-            stamps.append("-")
+            stamps.append(f"-/{nxt}")
     return " ".join(sorted(keys)), " ".join(sorted(stamps))
 
 

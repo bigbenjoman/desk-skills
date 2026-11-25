@@ -135,4 +135,12 @@ t('AC3 could not: the item says why', /The loop lost its next tick, and the sess
 beat(-50, -35);
 t('AC3 no turn since it was due: the item says it could not, and why', /the session could not re-arm it: it has taken no turn since \d{4}-\d\d-\d\d \d\d:\d\d UTC, when it was due to: /.test(need()), true);
 
+// ---- AC2 with a short interval: a next pass recorded after a turn's check sets when it is lost
+beat(-8, null);
+hook('PostToolUse');
+t('AC2 a pass with no next pass recorded yet, under the default 15 minutes: nothing injected', out, '');
+beat(-8, -5); // next-pass recorded a 3-minute interval after that check, and it has gone by
+o = hook('PostToolUse');
+t('AC2 the cached check is dropped: lost at twice the 3-minute interval, not 15 minutes after the pass', /loop lost its next tick/.test(ctx(o)), true);
+
 process.exit(fails ? 1 : 0);
