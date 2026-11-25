@@ -113,6 +113,8 @@ function put(T, env, name, r) {
 
 const W = world();
 const lines = (s) => s.split('\n');
+// The lines under the red bands, which open home above what needs you.
+const unbanded = (s) => lines(s).filter((l) => !l.startsWith(' ✕ '));
 // The text of each amber note tagged `▲ <tag>` in the rendered lines, its tag stripped.
 const notesIn = (ls, tag) => ls.filter((l) => new RegExp(`^(note| {4}) {2}▲ ${tag} +`).test(l)).map((l) => l.replace(new RegExp(`^(note| {4}) {2}▲ ${tag} +`), ''));
 const rowOf = (out, name) => lines(out).find((l) => l.startsWith(`  ${name} `));
@@ -133,7 +135,7 @@ t('AC3 every set-up repo listed', ['voicepa', 'desk-skills', 'pr-ninja', 'pranic
 t('AC3 no-batch repos marked', /no batch/.test(rowOf(all.out, 'forewatt') ?? ''), true);
 // ---- AC4: header gives running workers, live batches' allowance against the machine cap, free memory
 // The line under what needs you.
-const head = lines(ov.out)[1];
+const head = unbanded(ov.out)[1];
 t('AC4 (DS-188 AC5, DS-215 AC12) header', /^● 2 workers running │ machine cap 10 · room for \d+ more │ \d+\.\d GiB free$/.test(head), true);
 // ---- AC5: overlapping worker port blocks named with the shared range
 t('AC5 port overlap note', lines(ov.out).some((l) => /^(note| {4}) {2}▲ ports +desk-skills \+ pranicuk share 3502–3503\./.test(l)), true);
@@ -181,7 +183,7 @@ t('AC11 show lists the merged blocker under its count, as a does on screen', lin
 t('show of a key not in the queue refuses', W.run('--plain', 'voicepa', 'show', 'VPL-77').code !== 0, true);
 // ---- AC12: no arguments, output not a terminal: the overview, exit 0
 const bare = W.run();
-t('AC12 piped with no arguments prints the overview', bare.code === 0 && /^◆ .*\n● \d+ workers? running │ /.test(bare.out) && rowOf(bare.out, 'voicepa') != null, true);
+t('AC12 piped with no arguments prints the overview', bare.code === 0 && /^◆ .*\n● \d+ workers? running │ /.test(unbanded(bare.out).join('\n')) && rowOf(bare.out, 'voicepa') != null, true);
 
 // ---- the repo screen has the week's time parked by cause (stuck-time.mjs), each cause with its tracking issue
 {
@@ -205,7 +207,7 @@ const S = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch:
 t('AC6 (DS-217 AC5) held behind a ticket parked for its own reason reads waiting, which needs you', /VPL-6\s+· waiting\s+behind VPL-5, which needs you\s/.test(S.run('--plain', 'voicepa').out), true);
 const blockedViews = { overview: S.run('--plain').out, queue: S.run('--plain', 'voicepa').out, ticket: S.run('--plain', 'voicepa', 'show', 'VPL-7').out };
 t('DS-279 AC6 a ticket held outside the batch needs you on every screen, and no screen says blocked or stuck',
-  JSON.stringify([...Object.values(blockedViews).map((s) => /stuck|blocked/i.test(s)), /^◆ 4 tickets need you .*│ voicepa 2 · pr-ninja 1 · pranicuk 1$/.test(lines(blockedViews.overview)[0]),
+  JSON.stringify([...Object.values(blockedViews).map((s) => /stuck|blocked/i.test(s)), /^◆ 4 tickets need you .*│ voicepa 2 · pr-ninja 1 · pranicuk 1$/.test(unbanded(blockedViews.overview)[0]),
     /VPL-7\s+◆ needs you\s+held by 2 Jira tickets outside: start anyway\?/.test(blockedViews.queue),
     lines(blockedViews.ticket)[0].startsWith('VPL-7  ◆ needs you'), lines(blockedViews.ticket).some((l) => /^ {2}◌ EXT-2 +In Progress$/.test(l))]),
   '[false,false,false,true,true,true,true]');
@@ -520,7 +522,7 @@ put(I.T, I.env, 'pr-ninja', { port: 3200, conc: '2 / 4', beat: 1, queue: { batch
   'PN-1': { state: 'running', stage: '4/9' }, 'PN-2': { state: 'running', stage: '2/9' }, 'PN-3': { state: 'triaged', open_questions: 0 } } } });
 const room = Q.overview(Q.loadRepos(), { avail: 36.6 });
 t('DS-116 AC11 (DS-188 AC5) the header gives running, the machine cap, the room left and free memory',
-  lines(room)[1], '● 4 workers running │ machine cap 10 · room for 6 more │ 36.6 GiB free');
+  unbanded(room)[1], '● 4 workers running │ machine cap 10 · room for 6 more │ 36.6 GiB free');
 t('DS-116 AC11 the room is the smaller of the machine cap and free memory', Q.headroom({ running: 4, cap: 10, avail: 18, gate: 8, perWorker: 3 }), 3);
 // The room uses the spawn gate the repos set, the highest of them, and 8 GiB only for a repo that sets none.
 const gateRoom = (over, avail) => {
@@ -1184,10 +1186,11 @@ const NY = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch
   'VPL-1': { state: 'parked', park: { question: 'which copy?' } }, 'VPL-2': { state: 'parked', park: { question: 'which price?' } },
   'VPL-3': { state: 'parked', held_by: 'VPL-1', park: { question: 'held by orchestrator: blocked by VPL-1' }, open_questions: 1, outside_blockers: [{ key: 'EXT-3', category: 'new' }] } } } } });
 t('DS-187 AC1 (DS-279 AC6) the overview opens with how many need you, each repo\'s count, most first, a ticket held outside the batch among them',
-  lines(NY.run('--plain').out)[0], '◆ 5 tickets need you │ voicepa 3 · pr-ninja 1 · pranicuk 1');
+  unbanded(NY.run('--plain').out)[0], '◆ 5 tickets need you │ voicepa 3 · pr-ninja 1 · pranicuk 1');
 const NYs = screen({ kind: 'overview', all: false }, 400);
 await sleep(20);
-t('DS-187 AC1 on the screen it is the first line under the tabs', `${NYs.frame()[1].startsWith('1 Queue')} ${NYs.frame()[3].startsWith('◆ ')} ${NYs.frame()[3] === lines(Q.overview(Q.loadRepos(), { avail: 30 }))[0]}`, 'true true true');
+const nyFirst = NYs.frame().slice(3).find((l) => !l.startsWith(' ✕ ')) ?? '';
+t('DS-187 AC1 on the screen it is the first line under the tabs and bands', `${NYs.frame()[1].startsWith('1 Queue')} ${nyFirst.startsWith('◆ ')} ${nyFirst === unbanded(Q.overview(Q.loadRepos(), { avail: 30 }))[0]}`, 'true true true');
 NYs.ui.finish(0);
 
 // mixed's queue order is not its group order: needs you, ready, blocked, running, ready, waiting.
@@ -1324,7 +1327,7 @@ G7.ui.finish(0);
 // AC8: with passes stopped, the merging row says when its checks were read, dimmed.
 const stoppedRow = landRow(landQueue(landRepo([ubuntu, macos], { beat: 300 })), 'LD-1');
 const hhmm = new Date(NOW - 60000).toTimeString().slice(0, 5);
-t('DS-194 AC8 passes stopped: as of the last read, what holds it', new RegExp(`▸ merging {4}#164 · as of ${hhmm}: tests \\(macos-latest\\) queued`).test(stoppedRow), true);
+t('DS-194 AC8 passes stopped: as of the last read, what holds it', new RegExp(`▸ merging +#164 · as of ${hhmm}: tests \\(macos-latest\\) queued`).test(stoppedRow), true);
 t('DS-194 AC8 and it is grey', coloured((await landingRaw([ubuntu, macos], 'LD-1', { beat: 300 })).l, true).some((c) => c.startsWith(`38;5;247:as of ${hhmm}: tests (macos-latest) queued`)), true);
 // AC9: once the pass records the PR merged, the ticket leaves Merging and counts as merged.
 const mergedQ = landQueue(landRepo([ubuntu], { ps: { ...prOpen([ubuntu]), state: 'MERGED' } }));
@@ -1588,7 +1591,7 @@ const ov215l = Q.overview(Q.loadRepos(NOW), { now: NOW, avail: 30 });
 const halt215l = Q.repoScreen(at215('halt'), { now: NOW });
 process.env.DESK_PLATFORM = 'darwin';
 t('DS-215 AC9 neither macOS nor Linux: every repo reads session, with no supervisor state, band or note',
-  `${/^ {2}sup +● session · 2m ago /.test(rowOf(ov215l, 'sup') ?? '')} ${/^ {2}off +● session · 3m ago /.test(rowOf(ov215l, 'off') ?? '')} ${/supervisor|Batches run by/.test(ov215l)} ${/✕/.test(ov215l)}`, 'true true false false');
+  `${/^ {2}sup +● session · 2m ago /.test(rowOf(ov215l, 'sup') ?? '')} ${/^ {2}off +● session · 3m ago /.test(rowOf(ov215l, 'off') ?? '')} ${/supervisor|Batches run by/.test(ov215l)} ${lines(ov215l).some((l) => l.includes('✕') && !l.includes('loop'))}`, 'true true false false');
 t('DS-215 AC9 and a repo screen offers no supervisor fix', /Supervisor's last log line|supervisor on/.test(halt215l), false);
 const plain215 = I.run('--plain').out;
 t('DS-215 AC10 --plain: the same words and glyphs, no colour, the band and notes as plain lines',
@@ -1685,6 +1688,39 @@ t('DS-215 AC6 a stopped session-run batch set to the supervisor with only ready 
   `${/^ {2}closed +■ stopped · 50m /.test(rowOf(ovClosed, 'closed') ?? '')} ${/▲ closed +passes stopped\. To resume: run \/desk-autopilot in closed; it hands the batch to the supervisor at Stage 4\.$/m.test(ovClosed)}`, 'true true');
 t('DS-215 AC7 with one ticket that needs you, the note still gives the count',
   lines(ovStall).some((l) => / {2}◆ needs you +\/desk-needs-you, in a Claude session, asks you about the 1 ticket\.$/.test(l)), true);
+
+// #1416: a repo set to session whose batch is marked handed over (a standing batch always is) reads as
+// its session's, with no supervisor band; once its passes stop with a ticket to move, the band names
+// that session's loop; and where no supervisor can run, nothing offers `supervisor on`.
+put(I.T, I.env, 's1416', { port: 5295, conc: '2 / 3', beat: 3, runBy: 'session', queue: { batch: 's1416', concurrency: 2, supervised: true, tickets: { 'SS-1': ready } } });
+put(I.T, I.env, 'x1416', { port: 5296, conc: '2 / 3', beat: 50, runBy: 'session', queue: { batch: 'x1416', concurrency: 2, supervised: true, tickets: { 'SX-1': ready } } });
+writeFileSync(join(I.env.HOME, '.desk-autopilot', 'acme__x1416', 'orchestrators', 'q.json'),
+  JSON.stringify({ queue: join(I.env.DESK_HOME, 'repos', 'acme__x1416', 'queue.json'), batch: 'x1416', pid: 1, at: minsAgo(50), session: 'sess-1416' }));
+const ov1416 = (names) => Q.overview(Q.loadRepos(NOW).filter((r) => names.includes(r.name)), { now: NOW, avail: 30 });
+const live1416 = ov1416(['s1416']);
+t('#1416 AC1 a repo set to session whose batch is marked handed over: ● session, and no supervisor band',
+  `${/^ {2}s1416 +● session · 3m ago /.test(rowOf(live1416, 's1416') ?? '')} ${/supervisor/.test(live1416)} ${/✕/.test(live1416)}`, 'true false false');
+const stop1416 = ov1416(['x1416']);
+t('#1416 AC2 its passes stopped with a ticket to move: the band says the session\'s loop stopped, names the session and not the supervisor',
+  `${lines(stop1416).includes(' ✕ x1416: the loop in session sess-1416 has stopped, so no passes run. Run /desk-autopilot in x1416')} ${/supervisor/.test(stop1416)}`, 'true false');
+process.env.DESK_PLATFORM = 'linux';
+writeFileSync(join(I.T, 'bin', 'systemctl'), '#!/bin/sh\necho "Failed to connect to bus: No medium found" >&2\nexit 1\n', { mode: 0o755 });
+const wsl1416 = `${ov1416(['off', 'halt'])}\n${Q.repoScreen(at215('off'), { now: NOW })}`;
+process.env.DESK_PLATFORM = 'darwin';
+rmSync(join(I.T, 'bin', 'systemctl'));
+t('#1416 AC3 Linux with no systemd user manager: no supervisor-off band or cell, and nothing offers supervisor on',
+  `${/supervisor on|supervisor off/.test(wsl1416)} ${/^ {2}off +● session · 3m ago /.test(rowOf(wsl1416, 'off') ?? '')}`, 'false true');
+// The supervisor runs every handed-over queue whatever the row says (an epic's plan hands one over,
+// `supervisor on` loads it), so in a repo set to session a handed-over batch is still the supervisor's
+// while its agent is loaded, or while the supervisor ran its last pass: then an unloaded agent is the
+// supervisor-off band, not a stopped loop.
+put(I.T, I.env, 'l1416', { port: 5297, conc: '2 / 3', beat: 3, runBy: 'session', queue: { batch: 'l1416', concurrency: 2, supervised: true, tickets: { 'SL-1': ready } } });
+put(I.T, I.env, 'p1416', { port: 5298, conc: '2 / 3', beat: 50, runBy: 'session', queue: { batch: 'p1416', concurrency: 2, supervised: true, pass: { by: 'supervisor', at: minsAgo(50) }, tickets: { 'SP-1': ready } } });
+I.loaded('sup', 'halt', 'l1416');
+const own1416 = ov1416(['l1416', 'p1416']);
+I.loaded('sup', 'halt');
+t('#1416 a repo set to session whose handed-over batch a loaded supervisor runs reads ● supervisor; one the supervisor last passed, its agent off, is the supervisor-off band',
+  `${/^ {2}l1416 +● supervisor · 3m ago /.test(rowOf(own1416, 'l1416') ?? '')} ${lines(own1416).some((l) => l.startsWith(' ✕ p1416: the supervisor is off'))} ${/✕ p1416: the (loop|session)/.test(own1416)}`, 'true true false');
 
 // ---- DS-218: the ticket screen leads with whether it moves without you; the tabs match the Queue.
 // The 2026-10-24 desk-skills queue: DS-168 behind three merged blockers, DS-150's draft PR and 27 open
