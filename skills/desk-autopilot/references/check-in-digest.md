@@ -120,7 +120,8 @@ moves; a cancelled one pushes nothing. Each move goes in `maintenance.log` as a 
   changed, once, with the date and an `ask-again` command; a put-off question is never pushed. A question
   still open at the next check-in is listed again, and the batch carries on meanwhile with every
   ticket it does not block. It is pushed only when something is new (a question the last page did
-  not list, or a call taken since); otherwise the page is written and nothing is pushed.
+  not list, or a call taken since); otherwise the page is written and nothing is pushed. A question
+  pushed already when it was handed on (below) is listed but is not new, so it pushes nothing.
 - **Merging PRs that stopped moving.** Per repo, under `Merging, no change for 2h or more`: each PR
   the last pass found in Merging whose head and check results have not changed for two hours, with
   how long and the check holding it. Listed, never pushed.
@@ -170,7 +171,20 @@ node ~/.claude/desk/bin/digest.mjs ask-again <slug> <TICKET>
   the time it carries is listed by the next digest. The digest rebuilds the Levers page, and the
   section ends on `open:` and its `file://` URL.
 - **Between check-ins** only a park whose question starts `PRODUCTION BROKEN: ` is pushed, at once
-  and on its own (the worker contract says when a worker may use it).
+  and on its own (the worker contract says when a worker may use it), unless the ticket's pin sets
+  the `question-handling` lever (`question-arms.mjs`, `desk-config.md` Phase 0 levers): on
+  `one-at-a-time` the supervisor pushes each park it hands to the digest, on `mixed` only a blocking
+  one, but never one this page listed first, and on neither between 22:00 and 08:00 (one handed on
+  then is pushed once they end, unless this page lists it first). A production-broken park is pushed
+  at any hour on every arm. Whichever way an ask is raised first, the ledger records its arm.
+- **Applied by default, on `batched`.** Where a ticket's pin sets `question-handling` to `batched`, a
+  park recommending a call desk may not take for its worker (`AUTOPILOT_PARK_RECOMMENDS`, a design
+  or wording call without §3 `autopilot-judgement` `yes`) takes its recommendation once this page has
+  listed it and the next check-in has passed with no answer: never before you have seen it. The pass
+  at that check-in answers and requeues it, and logs a call
+  with source `default` that this page lists with its override command, saying how to reverse it. A
+  product call, and one naming money, legal, production, customer copy or a fact only you hold, never
+  applies by itself. With the lever off, nothing does.
 - **Promotion, once a day.** Going to production is asked only in the day's last slot (`promotion.mjs`).
   Per repo with config §4 "Promotion ref" set, it lists one question covering every PR merged to
   §0 Default branch since that ref, with a staging-check page beside the digest

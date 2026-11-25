@@ -32,9 +32,10 @@
 //
 // A valued lever is in the set on any value but its baseline, and the pin's `values` names the value
 // each valued lever runs on: its arm on trial, its adopted value while kept or on its holdback's
-// adopted arm, the value it was set to by hand, else its baseline. One kept or set by hand with no
-// value recorded refuses the draw, with a needs-you item naming it, rather than run on the baseline;
-// one the row names is left out of the pin, with a warning, since the row names no value.
+// adopted arm, the value it was set to by hand, else its baseline; one off in the repo carries none.
+// One kept or set by hand with no value recorded refuses the draw, with a needs-you item naming it,
+// rather than run on the baseline; one the row names is left out of the pin, with a warning, since the
+// row names no value.
 //
 // The pin is the queue ticket's `levers: { set, arms, trial_ids, fp, block, at }`, with `values` where
 // it carries a valued lever (lever-pin.mjs); one
@@ -372,8 +373,10 @@ function draw({ slug, key, size, events, states, frozen, values, random, now, re
     if (isValued(l) && ['overridden', ...KEPT_STATES].includes(s.state) && !s.value) {
       throw new ValueMissing(name, `${name} is ${s.state} with no value of its own recorded (want one of ${l.values.join(', ')}); set one with levers decide`);
     }
-    // A valued lever runs on its baseline unless drawn, kept on or set to another value below.
-    if (isValued(l)) leverValues[name] = ['overridden', ...KEPT_STATES].includes(s.state) ? s.value : l.baseline;
+    // A valued lever runs on its baseline unless drawn, kept on or set to another value below. One off
+    // in this repo (never trialled or set) carries no value, so desk's own reads for the ticket
+    // (lever-pin.mjs leverValueFor) find it off, not on its baseline.
+    if (isValued(l) && s.state !== 'off') leverValues[name] = ['overridden', ...KEPT_STATES].includes(s.state) ? s.value : l.baseline;
     // Set by hand: pinned to its value, with no arm, whatever the freeze or the layer.
     if (s.state === 'overridden') {
       if (isValued(l) ? s.value !== l.baseline : s.value === 'on') set.push(name);

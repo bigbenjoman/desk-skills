@@ -6,7 +6,7 @@
 //   import { renderPage, pageAge } from './levers-page.mjs'
 import * as MS from './merge-stages.mjs';
 import { fmtHours } from './stuck-time.mjs';
-import { DECISION_RULE, GUARDRAILS, KEPT_STATES as KEPT, REGISTRY } from './lever-registry.mjs';
+import { DECISION_RULE, GUARDRAILS, KEPT_STATES as KEPT, REGISTRY, isValued } from './lever-registry.mjs';
 
 // An age in seconds as words, for the view model and the page alike: "3 hours ago". `short` gives
 // minutes as "min", as the page's header does. Runs in the browser too, so it uses nothing from outside
@@ -393,7 +393,7 @@ function leverRows(v) {
     let next;
     if (status === 'pinned') next = `Pinned by hand in ${l.cells.filter((c) => c.state === 'pinned').map((c) => c.repo).join(', ')}, so this is a before-and-after, not a test.`;
     else if (status === 'error') { const e = l.cells.find((c) => c.error)?.error; next = `Couldn’t read ${basename(e?.file)}${e?.line ? ` line ${e.line}` : ''}.`; }
-    else if (reg && !reg.trialled) next = reg.layer === 'quality-risk' ? 'Tested one at a time with blind reviews, once desk starts trialling it.' : 'Not trialled: on only where a repo’s levers row names it.';
+    else if (reg && !reg.trialled) next = reg.layer === 'quality-risk' ? 'Tested one at a time with blind reviews, once desk starts trialling it.' : isValued(reg) ? `Not trialled: on only where levers decide sets it to ${reg.values.join(', ')} in a repo.` : 'Not trialled: on only where a repo’s levers row names it.';
     else if (status === 'off' && l.cells.some((c) => c.state === 'ineligible')) next = `${cap(l.cells.filter((c) => c.state === 'ineligible').map((c) => c.note).join('. '))}.`;
     else next = anyAuto ? 'Testing starts with the next tickets desk admits.' : 'Testing starts when a repo is set to auto.';
     const decided = status === 'kept' && main ? keptAt(v, l.lever, main.repo) : null;

@@ -37,7 +37,8 @@
 //   node desk-env.mjs levers [<lever>]        what is on and where each lever's state comes from (pinned,
 //                                             auto or off), the freeze, unknown names; exit 1 on an invalid
 //                                             row; with <lever>, on or off, or a lever with more
-//                                             than two arms' value from the pin (DESK_LEVER_VALUES). A row unlike the last one the
+//                                             than two arms' value from the pin (DESK_LEVER_VALUES), off
+//                                             with none. A row unlike the last one the
 //                                             repo's lever log recorded is logged as a row_change. With
 //                                             `auto` in the row, a last `levers: …` line gives each managed
 //                                             lever's state in this repo (lever-changes.mjs summaryLine)
@@ -2527,13 +2528,14 @@ if (isMain) {
           if (!args[0]) process.exitCode = 1;
         }
         if (args[0]) {
-          // A lever with more than two arms prints the value this ticket's pin gave it, else its
-          // baseline: never on or off. The registry imports this module, so it is loaded without await.
+          // A lever with more than two arms prints the value this ticket's pin gave it, else off, as
+          // desk's own reads take it (lever-pin.mjs leverValueFor): the row names no value. The registry
+          // imports this module, so it is loaded without await.
           const value = leverValue(args[0]);
           if (value) { console.log(value); break; }
           import('./lever-registry.mjs').then(({ REGISTRY, isValued }) => {
             const reg = REGISTRY[args[0]];
-            console.log(isValued(reg) ? reg.baseline : leverOn(args[0], l) ? 'on' : 'off');
+            console.log(!isValued(reg) && leverOn(args[0], l) ? 'on' : 'off');
             if (!LEVERS.includes(args[0])) console.error(`desk-env: "${args[0]}" is not a lever desk knows (${known}); read as off`);
           }, (e) => { console.error(`desk-env levers: the lever registry: ${e.message}`); process.exitCode = 1; });
           break;
