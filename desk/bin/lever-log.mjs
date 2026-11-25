@@ -39,7 +39,7 @@ const text = (v) => typeof v === 'string' && v.trim() !== '';
 
 // Throws LeverLogError naming the first thing wrong with the event: kind, then reason code, then the
 // fields that kind needs.
-function check(event) {
+function check(event, registry = REGISTRY) {
   if (!event || typeof event !== 'object' || Array.isArray(event)) throw new LeverLogError('lever-log: an event is an object');
   const { kind, reason_code: code } = event;
   if (!KINDS.includes(kind)) throw new LeverLogError(`lever-log: kind "${kind}" is not one of ${KINDS.join(', ')}`);
@@ -52,21 +52,25 @@ function check(event) {
   const pairOf = kind === 'pair' || (kind === 'ramp' && event.pair != null && event.lever == null);
   if (pairOf) {
     const ls = event.levers;
-    if (!Array.isArray(ls) || ls.length !== 2 || ls[0] === ls[1] || ls.some((l) => !Object.hasOwn(REGISTRY, l))) throw new LeverLogError(`lever-log: a ${kind} event for a pair needs "levers", two different registry levers`);
+    if (!Array.isArray(ls) || ls.length !== 2 || ls[0] === ls[1] || ls.some((l) => !Object.hasOwn(registry, l))) throw new LeverLogError(`lever-log: a ${kind} event for a pair needs "levers", two different registry levers`);
     if (kind === 'pair') { need('from'); need('to'); }
   } else if (!NO_LEVER.includes(kind) || event.lever != null) {
     need('lever');
-    if (!Object.hasOwn(REGISTRY, event.lever)) throw new LeverLogError(`lever-log: lever "${event.lever}" is not declared in the lever registry`);
+    if (!Object.hasOwn(registry, event.lever)) throw new LeverLogError(`lever-log: lever "${event.lever}" is not declared in the lever registry`);
   }
   if (kind === 'transition') {
     need('from');
     need('to');
     if (event.actor !== BY_HAND) { need('eval_id'); need('evidence_file'); }
   }
-  // An override sets the lever by hand to `value`, on or off (lever-changes.mjs).
+  // An override sets the lever by hand to `value`, on or off (lever-changes.mjs), or for a lever with
+  // more than two arms one of its values.
   if (kind === 'override') {
     need('to');
-    if (event.to === 'overridden' && !['on', 'off'].includes(event.value)) throw new LeverLogError('lever-log: an override to overridden needs "value", on or off');
+    const values = registry[event.lever]?.values;
+    if (event.to === 'overridden' && !(values ?? ['on', 'off']).includes(event.value)) {
+      throw new LeverLogError(`lever-log: an override to overridden needs "value", ${values ? `one of ${event.lever}'s values (${values.join(', ')})` : 'on or off'}`);
+    }
   }
   // A trip is a revert with no evaluation behind it: the ticket and the record that tripped it stand in.
   if (kind === 'trip') {
@@ -80,17 +84,17 @@ const LOCK_WAIT_MS = 10_000;
 
 // Checks the event and appends it as one line, with `v`, `id`, `repo` (`*` for a machine-wide kind)
 // and (unless given) `at` filled in. Throws LeverLogError, writing nothing, on an event that fails the
-// check.
-export function append(slug, event) {
-  check(event);
-  return appendWith(slug, () => event);
+// check. `registry` is the lever registry the check reads (lever-registry.mjs REGISTRY).
+export function append(slug, event, { registry = REGISTRY } = {}) {
+  check(event, registry);
+  return appendWith(slug, () => event, { registry });
 }
 
 // As append, but `build()` runs under the log's lock and returns the event, or null to write nothing
 // (append then returns null). A caller that decides from what the log already holds reads it there,
 // so two callers deciding at once cannot both append. `build()` may return an array of events: each is
 // checked before any is written, and all are written in one append (-> the lines, in order).
-export function appendWith(slug, build) {
+export function appendWith(slug, build, { registry = REGISTRY } = {}) {
   const file = logFile(slug);
   mkdirSync(dirname(file), { recursive: true });
   const lock = `${file}.lock`;
@@ -98,7 +102,7 @@ export function appendWith(slug, build) {
     const built = build();
     if (built == null) return null;
     const events = Array.isArray(built) ? built : [built];
-    for (const event of events) check(event);
+    for (const event of events) check(event, registry);
     const lines = events.map(({ v, id, repo, at, ...rest }) => ({ v: VERSION, id: randomUUID(), at: at ?? new Date().toISOString(), repo: MACHINE_WIDE.includes(rest.kind) ? '*' : slug, ...rest }));
     appendFileSync(file, lines.map((l) => `${JSON.stringify(l)}\n`).join(''));
     return Array.isArray(built) ? lines : lines[0];
@@ -122,7 +126,7 @@ export function stampAfter(events, at = new Date()) {
 // the log's events and returns the event (or an array of them), null to write nothing, or { why } to refuse. A log with an
 // unreadable line is refused before `build` runs: admission reads it as no log at all, so an override
 // written there would never pin. -> { event: the event as written, or null; why: the refusal, or null }
-export function appendChecked(slug, build) {
+export function appendChecked(slug, build, { registry = REGISTRY } = {}) {
   let why = null;
   const event = appendWith(slug, () => {
     const log = read(slug);
@@ -133,7 +137,7 @@ export function appendChecked(slug, build) {
     const r = build(log.events);
     if (r?.why) { why = r.why; return null; }
     return r;
-  });
+  }, { registry });
   return { event, why };
 }
 

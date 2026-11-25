@@ -1,6 +1,6 @@
 // suite: check-in digest (slots, one digest per slot across repos, answers and overrides)
 // layer: L2
-import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, appendFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, appendFileSync, symlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -210,6 +210,11 @@ t('DS-180 a search reply with issues is read', viaFake('{"issues":[{"key":"A-1"}
 t('DS-180 a reply with no issue list is a failure', viaFake('{"errorMessages":["bad"]}').why, 'desk-jira search returned no issue list (bad)');
 t('DS-180 a reply with more pages behind it is a failure', viaFake('{"issues":[],"nextPageToken":"x"}').ok, false);
 t('DS-180 a refused search says why', viaFake('', 'desk-jira: HTTP 401').why, 'desk-jira: HTTP 401');
+{
+  writeFileSync(fakeOut, '{"issues":[{"key":"A-1"}],"nextPageToken":"x"}');
+  const env = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, FAKE_JIRA_OUT: fakeOut, FAKE_JIRA_ERR: '' };
+  t('#1394 a partial search takes the page and says more lies behind it', JSON.stringify(jiraSearch({ cwd: root, env, partial: true }, 'project = A', 1)), '{"ok":true,"issues":[{"key":"A-1"}],"more":true}');
+}
 
 // AC6: no desk config, or a Tracker that is not jira: every park listed, not-checked line; others checked.
 mkdirSync(join(root, 'cfg', 'repos', 'acme__nodone'), { recursive: true });
@@ -277,6 +282,73 @@ t('DS-280 AC8 the page\'s count line says so', page11.includes('; 2 merging PR(s
   const only = renderPage({ slot: '2026-11-25T08:00', since: null, groups: [{ slug: 'acme__w', questions: [], decisions: [], sessions: [{ ticket: 'W-1', session: 'sess-w' }] }] });
   t('issue-1384 a page with only claimed work lists it under its heading, and counts it',
     `${only.includes('Nothing to answer')} ${only.includes('### Being worked in a session')} ${only.includes('- `W-1`: being worked in session sess-w')} ${only.includes('; 1 being worked in a session.')}`, 'false true true true');
+}
+// The check-in presents each fresh park it lists as an ask, in that park's own repo's ticket ledger,
+// under that ledger's lock, where that repo's ledger lever is on.
+{
+  const { ledgerPaths, fold } = await import('../desk/bin/ticket-ledger.mjs');
+  const { readAsks } = await import('../desk/bin/ask-ledger.mjs');
+  const { lock, unlock } = await import('../desk/bin/dir-lock.mjs');
+  const { queueDifference } = await import('../desk/bin/queue-ledger.mjs');
+  const j = JSON.stringify;
+  mkdirSync(join(root, 'cfg', 'repos', 'acme__ask'), { recursive: true });
+  writeFileSync(join(root, 'cfg', 'repos', 'acme__ask', 'config.md'), '## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n');
+  const since = '2026-10-29T06:00:00.000Z';
+  const ON = repo('acme__ask', { 'K-1': { key: 'K-1', state: 'parked', park: { kind: 'question', question: 'which tier?', since } }, 'K-2': { key: 'K-2', state: 'triaged', open_questions: 1 } });
+  const OFF = repo('acme__quiet', { 'Q-1': { key: 'Q-1', state: 'parked', park: { question: 'which colour?', since } } });
+  // Each batch named in its ledger, as its first queue write with the lever on would.
+  for (const r of [ON, OFF]) queueDifference(r.queue, { seed: true });
+  const ledgerOf = (r) => ledgerPaths(dirname(r.queue)).events;
+  const events = (r) => (existsSync(ledgerOf(r)) ? readFileSync(ledgerOf(r), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []).filter((e) => e.type.startsWith('ask_'));
+  const opts = { times: DEFAULT_TIMES, dir, list: [OFF, ON], bin: BIN, self: 'acme__quiet', promote: () => null, checkJira: () => null };
+  const d1 = await checkin({ ...opts, now: at('2026-10-29', '08:01') });
+  t('a fresh park listed by the check-in is raised and presented in its own repo\'s ledger, the calling repo being another; a triage question is no ask',
+    j(events(ON).map((e) => `${e.type} ${e.key} ${e.data.ask}`)), j([`ask_raised K-1 K-1:${since}`, `ask_presented K-1 K-1:${since}`]));
+  const p = events(ON)[1]?.data;
+  t('presented by the digest: its page, and the push that names it', j([p?.via, p?.ref, p?.notification]), j(['digest', d1.page, d1.push?.key]));
+  t('a repo whose ledger lever is off gets no ask, and nothing failed', j([events(ON).length, events(OFF).length, d1.ledger]), '[2,0,[]]');
+  t('the ask reads back from the fold', j(readAsks(fold(dirname(ON.queue))).map((a) => [a.key, a.presented.map((x) => x.via)])), j([['K-1', ['digest']]]));
+  // The next slot lists K-1 again, no longer fresh: nothing new. A park new to it, with that repo's
+  // ledger locked, is not written, and the check-in says so rather than failing.
+  writeFileSync(ON.queue, JSON.stringify({ batch: 'b', tickets: { 'K-1': { key: 'K-1', state: 'parked', park: { kind: 'question', question: 'which tier?', since } }, 'K-3': { key: 'K-3', state: 'parked', park: { kind: 'question', question: 'which plan?', since } } } }));
+  const text = () => (existsSync(ledgerOf(ON)) ? readFileSync(ledgerOf(ON), 'utf8') : '');
+  const before = text();
+  lock(ledgerPaths(dirname(ON.queue)).lock);
+  let d2, threw = null;
+  try { d2 = await checkin({ ...opts, now: at('2026-10-29', '17:01') }); } catch (e) { threw = e.message; }
+  unlock(ledgerPaths(dirname(ON.queue)).lock);
+  t('with the other repo\'s ledger locked, the check-in is still sent, writes nothing past that lock, and says which asks were not recorded',
+    threw === null && d2?.status === 'sent' && before !== '' && text() === before && d2?.ledger?.length === 1 && d2.ledger[0].startsWith("ask ledger: K-3's ask_raised, K-3's ask_presented could not be added to the ticket ledger"), true);
+
+  // An answer through the digest goes to the repo holding the ticket, and is gated on that repo's ledger
+  // lever, whatever the calling repo's is. answer.mjs runs queue.mjs from DESK_HOME's bin: this checkout's.
+  const home = join(root, 'deskhome-ask');
+  mkdirSync(home, { recursive: true });
+  symlinkSync(BIN, join(home, 'bin'));
+  const caller = (lever) => { const f = join(root, `caller-${lever}.md`); writeFileSync(f, `## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | \`acme/caller\` |\n${lever ? '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n' : ''}`); return f; };
+  const target = (slug, lever) => {
+    mkdirSync(join(root, 'cfg', 'repos', slug), { recursive: true });
+    writeFileSync(join(root, 'cfg', 'repos', slug, 'config.md'), `## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | \`acme/${slug}\` |\n${lever ? '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n' : ''}`);
+    const r = repo(slug, { 'W-1': { key: 'W-1', state: 'parked', park: { kind: 'question', question: 'which width?', since } } });
+    queueDifference(r.queue, { seed: true });
+    return r;
+  };
+  const kept = { DESK_HOME: process.env.DESK_HOME, DESK_CONFIG: process.env.DESK_CONFIG };
+  process.env.DESK_HOME = home;
+  const answered = (r, lever) => {
+    process.env.DESK_CONFIG = caller(lever);
+    const a = answer({ slug: r.slug, ticket: 'W-1', text: 'the wide one', dir, list: [r], bin: BIN, now: new Date('2026-10-29T18:00:00.000Z') });
+    return `${a.ok} ${events(r).filter((e) => e.type === 'ask_answered').length}`;
+  };
+  const offThere = answered(target('acme__offthere', false), true);
+  const onThere = answered(target('acme__onthere', true), false);
+  const bare = repo('acme__noconfig', { 'W-1': { key: 'W-1', state: 'parked', park: { kind: 'question', question: 'which width?', since } } });
+  queueDifference(bare.queue, { seed: true });
+  const noConfig = answered(bare, true);
+  for (const [k, v] of Object.entries(kept)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  t('a caller with the ledger on answering a ticket in a repo with it off records no ask there', offThere, 'true 0');
+  t('a caller with the ledger off answering a ticket in a repo with it on records the ask there', onThere, 'true 1');
+  t('a caller with the ledger on answering a ticket in a repo with no config records no ask there', noConfig, 'true 0');
 }
 
 rmSync(root, { recursive: true, force: true });

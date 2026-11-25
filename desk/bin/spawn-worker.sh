@@ -70,6 +70,16 @@ else
   echo "FAIL: $TICKET's levers pin could not be read — refusing to spawn" >&2
   exit 1
 fi
+# The value each lever with more than two arms runs on, from the same pin, as `desk-env levers
+# <lever>` prints it. A ticket with no pin, or none valued, carries none.
+unset DESK_LEVER_VALUES
+if [ -n "${DESK_LEVERS+x}" ]; then
+  if ! VALUES="$(node "$BIN/lever-pin.mjs" values "$TICKET" </dev/null)"; then
+    echo "FAIL: $TICKET's levers pin values could not be read — refusing to spawn" >&2
+    exit 1
+  fi
+  if [ -n "$VALUES" ]; then export DESK_LEVER_VALUES="$VALUES"; fi
+fi
 
 # Never the user's own dev-server port: `next dev` fails EADDRINUSE rather than rebinding, so a clash
 # silently serves another worktree's code to screenshots and openapi:gen. The orchestrator assigns

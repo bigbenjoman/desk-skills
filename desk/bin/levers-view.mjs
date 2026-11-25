@@ -30,6 +30,7 @@ import { reworkSummary } from './rework.mjs';
 import { withDirLock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
 import { spendsNeedsYou } from './lever-log.mjs';
 import * as MS from './merge-stages.mjs';
+import * as RM from './review-misses.mjs';
 import * as ST from './stuck-time.mjs';
 import { listBatches } from './batches.mjs';
 
@@ -272,13 +273,14 @@ function trend(metric, rows, base, today, first) {
 
 // ---- the build ---------------------------------------------------------------------------------------------
 // What one evaluation row showed, with the honesty rules applied: its arms, mechanism effect, cost and
-// each guardrail's status.
+// each guardrail's status. A lever with more than two arms names its lead value and baseline as `arms`,
+// the arms its `on` and `off` counts are of.
 function evalEvidence(e, layerMin) {
   const minN = e.min_n ?? layerMin;
   const n = smallerArm(e.n);
   return {
     eval_id: e.eval_id ?? null, at: e.at ?? null, state: e.state ?? null,
-    n: { on: e.n?.on ?? null, off: e.n?.off ?? null, smaller: n, min: minN },
+    n: { on: e.n?.on ?? null, off: e.n?.off ?? null, smaller: n, min: minN, ...(e.value && e.baseline ? { arms: [e.value, e.baseline] } : {}) },
     effect: effectView(e.mechanism, n, minN), cost: costView(e.cost, n, minN, KEPT.includes(e.state)),
     guardrails: (e.guardrails ?? []).map((g) => ({ ...g, status: guardrailStatus(g, n, minN) })),
   };
@@ -522,10 +524,14 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
 }
 
 // Each repo's merged PR time by stage (merge-stages.mjs summary), for the repos with any recorded:
-// { repos: [{ name, prs, stages: { <stage>: { n, median, p75 } }, outage }] }.
+// { repos: [{ name, prs, stages: { <stage>: { n, median, p75 } }, outage, learned }] }, `learned` the outside
+// reviewer's re-reviews and undraft-to-approval time before and after the learned review bar, or null.
 function mergeStagesPanel(configured, root) {
   const names = shownNames(configured.map((r) => r.slug));
-  const repos = configured.map((r, i) => ({ name: names[i], ...MS.summary(MS.readStages(join(root, r.slug))) })).filter((r) => r.prs);
+  const repos = configured.map((r, i) => {
+    const st = MS.readStages(join(root, r.slug));
+    return { name: names[i], ...MS.summary(st), learned: RM.beforeAfter(st, RM.readLearned(join(root, r.slug)).since) };
+  }).filter((r) => r.prs);
   return { repos };
 }
 

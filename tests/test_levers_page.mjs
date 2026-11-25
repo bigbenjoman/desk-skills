@@ -303,6 +303,14 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
   t('AC11 each guardrail', dl.Guardrails, 'fix tries ratio: ok, 90% range 0.8 to 1.2, margin 1.25');
   t('AC11 the commit range', dl['Commit range'], 'abc1234..def5678');
   t('AC11 the evidence file', dl['Evidence file'], '/x/levers-evidence/evl_preflight.jsonl');
+  // A lever with more than two arms names its lead value and its baseline in place of on and off.
+  const valuedEvals = evals.map((e) => (e.lever === 'preflight' ? { ...e, value: 'batched', baseline: 'one-at-a-time' } : e));
+  const valuedView = V.buildView({
+    ...machine({ repos: autoRepos, now: NOW2, files: { [`${DS}/lever-evals.jsonl`]: jsonl(valuedEvals), [`${DS}/levers.jsonl`]: jsonl(log), [`${DS}/levers-evidence/evl_1.jsonl`]: jsonl(rows) } }),
+    now: NOW2, tz: 'UTC', generatedAt: NOW2,
+  });
+  const vchange = valuedView.panels.changes.all.find((c) => c.lever === 'preflight' && c.evidence);
+  t('a valued lever: the view names the arms its counts are of, its value and baseline', JSON.stringify([vchange?.evidence?.n?.arms, vchange?.evidence?.n?.on, vchange?.evidence?.n?.off]), '[["batched","one-at-a-time"],40,38]');
   t('AC11 a change citing no evaluation says so', section(hSix, 'ch-h').split('<details class="change">')[3].includes('<dt>Tickets per arm</dt><dd><span class="muted">not recorded</span>'), true);
 }
 
