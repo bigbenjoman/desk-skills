@@ -19,6 +19,9 @@ t('#1366 the session\'s own --never-default reason wins', D.neverDefault('Rename
 t('#1366 a recommendation that spends money never applies by itself', D.neverDefault('Upgrade the plan to the paid tier?', 'upgrade'), 'it is a money call, which desk never takes for you');
 t('#1366 nor one about production credentials', D.neverDefault('Rotate the production API key now?', 'rotate'), 'it is a production call, which desk never takes for you');
 t('#1366 an ordinary call may', D.neverDefault('Merge PR #12 now, or hold it for the release?', 'merge'), null);
+t('#1434 AC1 accepting a review gap never applies by itself: only the person\'s own comment accepts', D.neverDefault('PR #12\'s review left a requirement gap on AC3: accept it as built, or amend AC3?', 'accept'), 'only your own comment on the PR can accept a review gap, so desk never applies it for you');
+t('#1434 AC1 nor where the gap is quoted with its tag', D.neverDefault('PERSON\'S CALL · AC3: "x" — only a live run checks it. Recommended: accept AC3 as built', 'accept'), 'only your own comment on the PR can accept a review gap, so desk never applies it for you');
+t('#1434 the other option on the same gap may', D.neverDefault('PR #12\'s review left a requirement gap on AC3: accept it as built, or amend AC3?', 'amend'), null);
 
 const now = local(24, 10, 0);
 t('#1366 the deadline as the person reads it: today', D.deadlineText({ recommended: 'merge', apply_by: local(24, 17, 0).toISOString() }, now), 'applies merge at 17:00 unless you choose');

@@ -60,7 +60,8 @@ import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prep
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
 import { parseRecipe, readRecords as readPreviewRecords, evidenceHold, uploadHold, teardownCalls, teardown as previewTeardown, runCommand, DELETE_STEP_MS } from './preview-db.mjs';
-import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, staleChecks, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, stuckLessHeld, staleChecks, acceptedFix, awaitsAcceptance, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { gapParts } from './accept-gaps.mjs';
 import { fixClass, WAITING_CLASSES, keptHold } from './failure-class.mjs';
 import { makeBaseReads, memo } from './base-reads.mjs';
 import { leverOnFor } from './lever-pin.mjs';
@@ -1511,6 +1512,31 @@ const runClears = (onBase) => runSteps({
   report,
 });
 runClears(false);
+
+// ---- review gaps the person accepted on the PR ------------------------------------
+// A PR left for the person on gaps only their own comment accepts (accept-gaps.mjs) is read each pass;
+// once a comment or review from the §1 GitHub handle accepts one, the ticket goes back to a worker on
+// the PR, whoever runs the batch, to post the review's verdict again with it accepted (fix-tries.mjs
+// acceptedFix). A read that fails leaves it for the next pass.
+for (const t of Object.values(queue().tickets)) {
+  if (t.state === 'running' || t.state === 'queued' || !awaitsAcceptance(t)) continue;
+  const n = t.result.pr;
+  let v;
+  try { v = JSON.parse(readOrThrow(`gh pr view ${n}`, 'gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,isDraft,headRefOid,comments,reviews'])); } catch (e) {
+    report.waiting.push(`${t.key}: PR #${n} waits on the person accepting review gaps, and whether they have could not be read (${e.message}): the next pass reads it again`);
+    continue;
+  }
+  const c = acceptedFix(t, v, { logins: conflictHandle });
+  if (!c) continue;
+  const named = c.acceptance.gaps.map((g) => gapParts(g).ac ?? 'a gap').join(', ');
+  const said = `${c.acceptance.by} accepted ${named} on PR #${n}${c.acceptance.url ? ` (${c.acceptance.url})` : ''}`;
+  if (DRY) { report.recovered.push(`${t.key} (dry run): ${said}; would requeue it for a worker on the PR to record it`); continue; }
+  const fc = fixClass(c.fix, t);
+  q('set', t.key, `fix=${JSON.stringify({ ...c.fix, class: fc.class, class_rule: fc.class_rule, at: PASS_AT })}`);
+  const rq = qRun(['requeue', t.key]);
+  if (!rq.ok) { q('set', t.key, 'fix=null'); report.waiting.push(`${t.key}: ${said}, but the requeue was refused (${lastLine(rq.out)}): the next pass tries again`); continue; }
+  report.recovered.push(`${t.key}: ${said}: requeued for a worker on the PR to post the review's verdict again with it accepted`);
+}
 
 // ---- routine recoveries (recoveries.mjs) ------------------------------------------
 // A park the pass settles by script, before any decider or person is asked: a branch whose change a

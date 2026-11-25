@@ -24,6 +24,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { answerEntriesSince } from './handoff.mjs';
 import { CLEARS_WHEN_FORMS, describeCond, personClears, recorded, restating } from './clears-when.mjs';
+import { acceptCall } from './accept-gaps.mjs';
 import { needsSession, planPark, leftPark, personOnlyStep, LEFT_PREFIX, moveTargetsOf, targetsText, moveOffer, openUnknowns } from './batch-state.mjs';
 import { questionKey, readRegister, lookup } from './not-now.mjs';
 import { usageLimit } from './usage-limit.mjs';
@@ -153,6 +154,8 @@ export function presort(items, state = null) {
       hand.push({ item, why: `park ${item.round} asks what park ${item.round - 1} asked, with no answer since: a requeue would park again (last park: "${short(item.prev.question)}")` });
     } else if (item.kind === 'parked' && item.takenOnce && !(state && item.since && answered(state, { ticket: item.ticket, at: item.since }))) {
       hand.push({ item, why: 'its recommended option was taken once already (auto_answered) and it parked on the same call again: a call is taken once, so it is the person\'s' });
+    } else if (acceptCall(item.text)) {
+      hand.push({ item, why: 'it recommends accepting a review gap, which only a comment from the person\'s own GitHub handle does: no default, decider or worker applies it' });
     } else if (row && row[2] !== 'yes') {
       hand.push({ item, why: `needs config §3 ${row[1]}, which is "${row[2]}"` });
     } else if (item.kind === 'waiting' && item.state === 'done') {

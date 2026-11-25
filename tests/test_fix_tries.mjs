@@ -1,7 +1,7 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 // layer: L1
 import { readFileSync } from 'node:fs';
-import { deniedRoute, triesMade, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { deniedRoute, triesMade, fixCall, stuckLessHeld, outageChecks, outageLine, outageText, reviewGates, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, settleable, feedbackReply, externalTry, bodyFeedback, driverReviewTry, syncSaid, recommendedOf, acceptedFix, awaitsAcceptance, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
@@ -403,6 +403,38 @@ t('DS-585 AC5 and the stuck reason gives the person\'s gap up to needs-you', JSO
 const newHead = gapFix(personBody(1, REC_GAP), 1, [{ ...recOnly.fix, head: 'b'.repeat(40) }]);
 t('DS-585 AC5 at a new head the gap survived its try and goes to the person', newHead?.why, `review not clean after 1 fix try (1 review): 1 gap — still open after the fix try that quoted it: ${REC_GAP.slice(2)}`);
 t('DS-585 AC5 and its reason gives that gap up to needs-you, so a ready PR offers the answer', JSON.stringify(personGapsIn(newHead?.why)), JSON.stringify([REC_GAP.slice(2)]));
+// #1434: a gap whose recommendation is to accept it is settled only by the person's own comment.
+const ACC_GAP = `- PERSON'S CALL · AC3: "the pass requeues it" — only a live run can check it. Recommended: accept AC3 as built`;
+t('#1434 AC1 a recommended gap that accepts it starts no fix try', gapFix(personBody(1, ACC_GAP), 1), null);
+t('#1434 AC1 nor beside a takeable one: both go to the person', gapFix(personBody(2, REC_GAP, ACC_GAP), 2), null);
+t('#1434 AC1 the ready PR goes to the person with the gap named', JSON.stringify(personGapsIn(gapsCall(personBody(1, ACC_GAP), { gaps: '1' })?.why)), JSON.stringify([ACC_GAP.slice(2)]));
+t('#1434 AC1 adding an acceptance test is a recommendation a worker carries out', gapFix(personBody(1, `${PERSON_GAP}. Recommended: add an acceptance test for it`), 1)?.call, 'requeue');
+const accBody = (gaps) => personBody(gaps.length, ...gaps);
+const accPr = (comments, o = {}) => ({ state: 'OPEN', isDraft: false, headRefOid: HEAD, comments, reviews: [{ author: { login: 'me' }, submittedAt: '2026-11-20T10:00:00Z', body: accBody([ACC_GAP]) }], ...o });
+const said = (login, at, body) => ({ author: { login }, createdAt: at, body, url: `https://github.com/acme/w/pull/702#issuecomment-${at.slice(11, 13)}` });
+const ACCEPTS = 'I accept this requirement gap as it stands on this PR:\n- AC3: "the pass requeues it"';
+const accT = (o = {}) => tk({ result: { pr: 702 }, pr_status: { state: 'OPEN', isDraft: false }, stuck: { why: `review gaps only you can settle: ${ACC_GAP.slice(2)}` }, ...o });
+const accOpts = { logins: 'me,desk-bot' };
+const accepted = acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', ACCEPTS)]), accOpts);
+t('#1434 AC3 the person\'s comment after the review, naming AC3 and accepting it, sends a gaps fix at the head',
+  `${accepted?.fix.kind} ${accepted?.fix.ready} ${accepted?.fix.head === HEAD} ${accepted?.fix.accepted} ${JSON.stringify(accepted?.acceptance.gaps)}`, `gaps true true https://github.com/acme/w/pull/702#issuecomment-11 ${JSON.stringify([ACC_GAP.slice(2)])}`);
+t('#1434 AC3 its answer quotes the comment and links it, for the worker\'s accepted entry', accepted?.fix.answer, `${ACCEPTS}\n\n(Posted on the PR by me at 2026-11-20T11:00:00Z: https://github.com/acme/w/pull/702#issuecomment-11. Each gap it names is accepted.)`);
+const accBrief = fixBrief(tk({ key: 'T-1', fix: accepted.fix }));
+t('#1434 AC3 the worker is told to post the verdict again at the same head with the gap accepted', accBrief.includes('A gap the call accepts, with no code change') && accBrief.includes(ACCEPTS.split('\n')[0]), true);
+t('#1434 AC3 a review by the person accepts too', acceptedFix(accT(), accPr([], { reviews: [...accPr([]).reviews, { author: { login: 'me' }, submittedAt: '2026-11-20T12:00:00Z', body: 'Accepted: AC3 stands as built.', url: 'r1' }] }), accOpts)?.fix.accepted, 'r1');
+t('#1434 AC3 negative: the review account\'s comment is not the person\'s', acceptedFix(accT(), accPr([said('desk-bot', '2026-11-20T11:00:00Z', ACCEPTS)]), accOpts), null);
+t('#1434 AC3 negative: nor anyone else\'s', acceptedFix(accT(), accPr([said('stranger', '2026-11-20T11:00:00Z', ACCEPTS)]), accOpts), null);
+t('#1434 AC3 negative: a comment before the review is not read as accepting it', acceptedFix(accT(), accPr([said('me', '2026-11-20T09:00:00Z', ACCEPTS)]), accOpts), null);
+t('#1434 AC3 negative: one naming another criterion', acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', 'I accept AC4 as it is')]), accOpts), null);
+t('#1434 AC3 negative: one naming it without accepting', acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', 'AC3: let me think about it')]), accOpts), null);
+t('#1434 AC3 the criterion\'s quoted text names it as well as its label', acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', 'Accepting "the pass requeues it" as built.')]), accOpts)?.fix.kind, 'gaps');
+t('#1434 AC3 negative: an acceptance already sent to a worker is not sent again', acceptedFix(accT({ fix: { ...accepted.fix, finished: true } }), accPr([said('me', '2026-11-20T11:00:00Z', ACCEPTS)]), accOpts), null);
+t('#1434 AC3 negative: nor while another fix waits for its worker', acceptedFix(accT({ fix: { kind: 'review' } }), accPr([said('me', '2026-11-20T11:00:00Z', ACCEPTS)]), accOpts), null);
+t('#1434 AC3 negative: a review at another head lists nothing to accept', acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', ACCEPTS)], { headRefOid: 'b'.repeat(40) }), accOpts), null);
+t('#1434 AC3 negative: a closed PR', acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', ACCEPTS)], { state: 'CLOSED' }), accOpts), null);
+t('#1434 AC3 a draft\'s fix stays in draft', acceptedFix(accT(), accPr([said('me', '2026-11-20T11:00:00Z', ACCEPTS)], { isDraft: true }), accOpts)?.fix.ready, false);
+t('#1434 AC3 the pass reads a ready PR stuck on such a gap, and a draft whose review left gaps', `${awaitsAcceptance(accT())} ${awaitsAcceptance(tk({ result: { pr: 1 }, pr_status: { state: 'OPEN', isDraft: true }, undraft: { why: 'its review verdict at abc1234 is not clean (gaps=1)' } }))}`, 'true true');
+t('#1434 AC3 negative: not one stuck on a gap the person settles another way, nor a merged PR', `${awaitsAcceptance(accT({ stuck: { why: `review gaps only you can settle: ${PERSON_GAP.slice(2)}` } }))} ${awaitsAcceptance(accT({ pr_status: { state: 'MERGED' } }))}`, 'false false');
 t('DS-585 recommendedOf reads the last Recommended: and drops a trailing full stop', `${recommendedOf(`${REC_GAP}.`)}|${recommendedOf(PERSON_GAP)}`, `${REC}|null`);
 t('DS-585 recommendedOf keeps the option as written, dropping only emphasis around it', JSON.stringify(['Recommended: rename it to batch_name', 'Recommended: **keep `__init__`**.', '**Recommended:** _the batch name_'].map(recommendedOf)), JSON.stringify(['rename it to batch_name', 'keep `__init__`', 'the batch name']));
 t('DS-585 askCategoryIn finds each category and none in a plain engineering call', JSON.stringify(['costs £5 a month', 'GDPR', 'the prod database', 'the SMS text', 'the catalog entry', 'split it to DS-12'].map(askCategoryIn)), JSON.stringify(['money', 'legal', 'production', 'customer-copy', 'user-fact', null]));

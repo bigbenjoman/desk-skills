@@ -155,6 +155,7 @@ import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
 import { prsNaming } from './recoveries.mjs';
 import { parkWords, plainTerms, GRANT_WORDS } from './park-words.mjs';
 import { askAnswered, ledgerOnIn } from './ask-ledger.mjs';
+import { acceptNeed, acceptOnly, eachGap } from './accept-gaps.mjs';
 
 // The decisions a parked item offers to override, newest first.
 const DECISIONS_SHOWN = 3;
@@ -530,14 +531,18 @@ function stuckPlain(r, n, s, t) {
     const k = Number(shots[1]);
     return `${n} is a draft, and desk's capture try could not take ${k === 1 ? 'one of its screenshots' : `${k} of its screenshots`}, so nothing desk has can fill ${k === 1 ? 'its cell' : 'their cells'}. Edit the PR body so no cell is left; the next pass then takes it out of draft.`;
   }
-  const personGaps = personGapsIn(why).map(one).join('; ');
-  const yours = `requirement gaps only you can settle: ${personGaps}. Say how to settle them; a worker on the PR carries out your call.`;
-  if (personGaps && !/^review not clean/.test(why)) return `${n}'s code review left ${yours}`;
+  const tagged = eachGap(personGapsIn(why));
+  const accepts = tagged.filter(acceptOnly);
+  const personGaps = tagged.filter((g) => !acceptOnly(g)).map(one).join('; ');
+  const toAccept = accepts.length && t?.result?.pr ? `${accepts.length === 1 ? 'a requirement gap' : 'requirement gaps'} only you can accept: ${acceptNeed(t.result.pr, ghRepoOf(r), accepts.map(one))}` : '';
+  const settleYours = personGaps ? `requirement gaps only you can settle: ${personGaps}. Say how to settle them; a worker on the PR carries out your call.` : '';
+  const yours = [settleYours, toAccept && (settleYours ? `It also left ${toAccept}` : toAccept)].filter(Boolean).join(' ');
+  if (yours && !/^review not clean/.test(why)) return `${n}'s code review left ${yours}`;
   // Before the conflict test: a review reason names the conflict tries it was made after.
   if (/^review not clean/.test(why)) {
     const left = stuckFindings(why);
     const named = left.length ? `: ${left.map((f) => `${f.sev} ${one(f.text)}`).join('; ')}` : '';
-    return `${n}'s code review still has findings ${repairsMade(why) ?? REPAIRED}${named}. ${left.length ? 'Send it back to a worker for one more try, or fix' : 'Fix'} them on its branch and post a fresh review; ${thenMerge(r)}.${personGaps ? ` It also left ${yours}` : ''}`;
+    return `${n}'s code review still has findings ${repairsMade(why) ?? REPAIRED}${named}. ${left.length ? 'Send it back to a worker for one more try, or fix' : 'Fix'} them on its branch and post a fresh review; ${thenMerge(r)}.${yours ? ` It also left ${yours}` : ''}`;
   }
   const fb = /^review feedback still open[^:]*: (.+)$/.exec(why);
   if (fb) return `${n} still has review feedback open ${REPAIRED}: ${one(fb[1])}. Answer and resolve it, or fix it on its branch; ${thenMerge(r)}.`;
@@ -559,7 +564,7 @@ function stuckPlain(r, n, s, t) {
 
 // `gapLines`: the gaps its review lists (draftGapsOf), quoted after their count; null when they could
 // not be read, which the need says.
-function draftPlain(r, n, u, gapLines = null) {
+function draftPlain(r, n, u, gapLines = null, t = null) {
   const why = String(u?.why ?? '');
   const dirty = /not clean \(([^)]*)\)/.exec(why);
   if (dirty) {
@@ -568,6 +573,13 @@ function draftPlain(r, n, u, gapLines = null) {
     const gaps = Number(kv.find(([k]) => k === 'gaps')?.[1] ?? 0);
     const what = andList([...(found.length ? [`${andList(found)} finding${found.length === 1 && found[0].startsWith('1 ') ? '' : 's'}`] : []), ...(gaps ? [`${gaps} requirement gap${gaps === 1 ? '' : 's'}`] : [])]);
     const settle = `Say how to settle ${gaps === 1 && !found.length ? 'it' : 'them'}; a worker on the PR carries out your call.`;
+    // Gaps only the person's own comment accepts are given the ready comment, not a call to say.
+    const accepts = t?.result?.pr ? (gapLines ?? []).filter(acceptOnly) : [];
+    if (gaps && accepts.length) {
+      const rest = gapLines.filter((g) => !accepts.includes(g)).map((g) => one(g).replace(/[.;]$/, ''));
+      const toAccept = `${accepts.length === 1 ? 'The gap' : 'Gaps'} only you can accept: ${acceptNeed(t.result.pr, ghRepoOf(r), accepts.map(one))}`;
+      return `${n} is a draft, and its code review left ${what}${rest.length ? `: ${rest.join('; ')}. ${settle}` : '.'} ${toAccept}`;
+    }
     if (gaps && gapLines?.length) return `${n} is a draft, and its code review left ${what}: ${gapLines.map((g) => one(g).replace(/[.;]$/, '')).join('; ')}. ${settle}`;
     if (gaps) return `${n} is a draft, and its code review left ${what}. Desk could not read the review to quote ${gaps === 1 ? 'the gap' : 'the gaps'}, so read ${gaps === 1 ? 'it' : 'them'} on the PR. ${settle}`;
     // No fix try ran on these: one that did and ran out is stuck (stuckPlain), so the reason is the review's.
@@ -687,7 +699,7 @@ function prPlain(r, t, gapLines = null, reads = null) {
     case 'stuck': return `${stuckPlain(r, n, ask ? { ...w.stuck, checks: w.stuck.checks.filter((c) => !ask.names.has(c.name)) } : w.stuck, t)}${also}`;
     case 'spine': return `${n} is the feature spine, still a draft. Approve its acceptance specs; desk then takes it out of draft.`;
     case 'skipped': return `${n} is a draft, and CI does not run on drafts, so its checks were skipped. Undraft it so they run; ${thenMerge(r)}.`;
-    case 'draft': return draftPlain(r, n, w.undraft, gapLines);
+    case 'draft': return draftPlain(r, n, w.undraft, gapLines, t);
     case 'hold': return holdPlain(n, w, reads && holdStepDone(r, t, w, reads));
     case 'feedback': return `${n} is held for review: ${one(w.text)}. Resolve or answer it; desk then merges it.`;
     case 'approval': return `${n} waits on a person's approval: ${plainWords(w.text).replace(/: a person approves it before desk merges it$/, '')}. Review and approve it on GitHub; desk then merges it.`;
@@ -1816,11 +1828,18 @@ function itemOf(r, x, reads = null, finds = reads) {
   // takes their call on them, which a worker on the PR carries out.
   if (x.pr) {
     const stuck = stuckOf(t, r.ctx);
-    const need = prPlain(r, t, reads && draftHasGaps(t) ? draftGapsOf(r, t, reads) : null, reads), note = [captureNote(stuck), doneNote(t)].filter(Boolean).join(' ');
+    const gapLines = reads && draftHasGaps(t) ? draftGapsOf(r, t, reads) : null;
+    const need = prPlain(r, t, gapLines, reads), note = [captureNote(stuck), doneNote(t)].filter(Boolean).join(' ');
     // Closed unmerged: nothing merges it, so the ticket leaves the batch, or goes back for a new PR.
     if (t.pr_status?.state === 'CLOSED') return { kind: 'pr', need, note, actions: [['drop', 'its PR was closed without merging, so nothing will merge it; drop takes the ticket out of the batch and removes its clean worktree'], ['requeue'], ['not-now']] };
     const openPr = (...actions) => ({ kind: 'pr', need, note, actions: [...actions, SEND_BACK, ['not-now']] });
-    // Findings left beside the gaps are still a worker's to fix, so fix stays on offer.
+    // Findings left beside the gaps are still a worker's to fix, so fix stays on offer. Gaps that only
+    // the person's own comment accepts take no answer desk would post: the need gives the ready comment,
+    // and the pass reads it from the PR once it is there.
+    const tagged = draftHasGaps(t) ? gapLines ?? [] : eachGap(personGapsIn(stuck?.why));
+    if (reviewGaps(t, stuck) && tagged.length && tagged.every(acceptOnly)) {
+      return { kind: 'pr', need, note, actions: [['not-now', 'post the ready comment from your own GitHub account: not-now keeps it off this list, and the next pass reads your comment and sends the PR to a worker that records the acceptance'], ...(stuck && personReviewFix(t, { why: stuck.why }) ? [['fix', 'its findings are in the code: fix sends it to a worker on the PR for one more try, and leaves the gaps for your comment']] : []), SEND_BACK] };
+    }
     if (reviewGaps(t, stuck)) return openPr(['answer', 'say how to settle its review gaps; it is posted on the PR and a worker on the PR carries it out'], ...(stuck && personReviewFix(t, { why: stuck.why }) ? [['fix', 'its findings are in the code: fix sends it to a worker on the PR for one more try, and leaves the gaps for your answer']] : []), ['done']);
     // Held by nothing but a person's approval: once asked for, there is nothing to do but wait for it.
     const ask = approvalAsk(t, prWhy(r, t) ?? {});
