@@ -3993,7 +3993,7 @@ export const run = (argv, opts) => oneBuild(() => runView(argv, opts));
 function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () => refreshLevers(), say = (s) => console.log(s) } = {}) {
   if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships|days [<repo>] | desk-q costs [<repo>]\n'
     + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>\n'
-    + '       desk-q <repo> supervisor [on|off] | desk-q levers [--plain]\n'
+    + '       desk-q <repo> supervisor [on|off] | desk-q levers [--plain] | desk-q rollback <commit> | desk-q rollback --unpin\n'
     + '       desk-q --json home [--all] | repo <repo> | ticket <repo> <KEY> | usage | costs [<repo>]';
   checkFlags(argv);
   const word = scopeWord(argv);
@@ -5119,7 +5119,15 @@ const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
 })();
-if (isMain) {
+// `desk-q rollback <commit>`: the release watch's rollback, on demand (release-watch.mjs). It reads no
+// queue. Not awaited: release-watch's imports reach back into this module, which must finish loading first.
+if (isMain && process.argv[2] === 'rollback') {
+  Promise.all([import('./maintenance.mjs'), import('./release-watch.mjs')]).then(([m, w]) => {
+    const r = w.manualRollback(process.argv.slice(3), { dir: m.maintDir(), src: m.sourceCheckout() });
+    (r.code === 2 ? console.error : console.log)(r.text);
+    process.exit(r.code);
+  }).catch((e) => { console.error(`desk-q rollback: ${e.message}`); process.exit(1); });
+} else if (isMain) {
   const argv = process.argv.slice(2);
   try {
     // A terminal on both ends gets the screen; anything piped, --plain and a change typed in the
