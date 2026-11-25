@@ -24,7 +24,7 @@
 import { existsSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
 import { BATCHES_DIR, leverOn, levers } from './desk-env.mjs';
-import { append, fold, read, invalid, diffQueues, project, withoutProjectionOnly, parkOf, waitsOfField, ANSWERED, WAITS, PARK_KINDS, PROJECTION_ONLY, TRANSITIONS } from './ticket-ledger.mjs';
+import { append, fold, read, invalid, diffQueues, project, withoutProjectionOnly, parkOf, waitsOfField, ANSWERED, WAITS, PARK_KINDS, PROJECTION_ONLY, TRANSITIONS, ASK_EVENTS } from './ticket-ledger.mjs';
 import { fieldDiffs, flattenQueue } from './queue-fields.mjs';
 import { readQueueAt, same, versionOf, batchFields } from './queue-store.mjs';
 import { FINISHED, blockersOf } from './queue-states.mjs';
@@ -382,8 +382,10 @@ const underQueueLock = (file, waitMs, fn) => withDirLock(`${file}.lock`, fn,
 export const REBUILT_MARK = 'rebuilt_from_log';
 
 // The events of `batch` in the log past seq `since` that queue.json holds the outcome of: each one of a
-// ticket's, but for the auto-merge lines the pass folds from the merge log, which queue.json does not hold.
-const UNPROJECTED = ['automerge_armed', 'automerge_disarmed'];
+// ticket's, but for the auto-merge lines the pass folds from the merge log, and the history no queue field
+// holds (a merged PR's stages, a stuck interval, an ask's steps), each appended by its own writer, never
+// through queue.json.
+const UNPROJECTED = ['automerge_armed', 'automerge_disarmed', 'merge_stages', 'stuck', ...ASK_EVENTS];
 const owed = (repoDir, batch, since) => read(repoDir, { batch, since }).events.filter((e) => e.key != null && !UNPROJECTED.includes(e.type));
 
 // A rebuilt ticket's `holds`, which a writer lays only beside a held_by (queue-states.mjs holdsLaid).

@@ -198,6 +198,16 @@ levers(RECORD);
   t('an auto-merge line leaves queue.json as it is', [restoreQueue(f).restored, readFileSync(f, 'utf8') === fileBefore], [null, true]);
   writeQueueFile(f, { ...read(f), tickets: { ...read(f).tickets, B: tk('B', { lane: 'B' }) } }, { by: 'test' });
   t('and a write after it is made', read(f).tickets.B.lane, 'B');
+  // So do the history lines no queue field holds: an ask's step, a stuck interval, a merged PR's stages.
+  append(dirname(f), [
+    { type: 'ask_raised', batch: STANDING, key: 'B', data: { ask: 'B:2026-11-20T10:00:00Z', since: '2026-11-20T10:00:00Z', kind: 'question', blocking: true } },
+    { type: 'stuck', batch: STANDING, key: 'B', data: { cause: 'park', start: '2026-11-20T10:00:00Z', end: null } },
+    { type: 'merge_stages', batch: STANDING, key: 'A', data: { pr: 4, stages: {} } },
+  ], { by: 'pass' });
+  const histBefore = readFileSync(f, 'utf8');
+  t('an ask, stuck or merge-stages line leaves queue.json as it is', [restoreQueue(f).restored, readFileSync(f, 'utf8') === histBefore], [null, true]);
+  writeQueueFile(f, { ...read(f), tickets: { ...read(f).tickets, A: { ...read(f).tickets.A, lane: 'B' } } }, { by: 'test' });
+  t('and a write after them is made, not refused as behind the log', read(f).tickets.A.lane, 'B');
   const stale = read(f);
   write(f, { ...stale, tickets: { ...stale.tickets, Z: tk('Z') } });
   recordWrite(f, stale, { ...stale, tickets: { ...stale.tickets, B: { ...stale.tickets.B, lane: 'C' } } }, { by: 'test', mode: 'record' });
