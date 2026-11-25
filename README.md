@@ -269,6 +269,18 @@ removes them, and `move-batch.mjs` clears them from the slot it moves into.
 step by pointing `~/.claude/desk/current` at it; `~/.claude/desk/bin` and `templates` link through
 `current`, so a pass started before an install finishes on the release it started with. The newest
 three releases are kept, and `./install.sh --rollback` makes the one before the current one current.
+The release watch (`release-watch.mjs`) stands behind each release the auto-release installs. Once a
+release has 10 tickets finished on it, or 72 hours have passed since it went in (whichever comes
+first), it compares that release's tickets with the previous release's. It looks at fix tries per ticket, parked
+hours per ticket, post-merge reverts, and parks in an error class the previous release never parked in.
+The trips are the lever registry's: a post-merge revert trips at once. Fix tries and parked hours
+trip past their guardrail margin, and a new error class trips too, but each of those three only once
+both releases have 10 tickets. A trip pins the previous release (install.sh keeps the release before
+each one not yet judged, past the newest three) and opens one revert PR for every merge between the two releases. It also raises one
+needs-you item naming the merges, the metric and the evidence. The pin holds the auto-release and the
+maintenance window's update until main carries the revert, or until the PR is closed unmerged.
+`desk-q rollback <commit>` (7 or more hex digits) does the same on demand for the release installed
+at `<commit>`, and `desk-q rollback --unpin` lifts a pin.
 Each repo's queue and the other state under `~/.claude/desk` never move. It records the commit it installed in `~/.claude/desk/installed.json`, rewrites and
 reloads each loaded supervisor agent with the current node, and restarts each merge driver waiting
 between loops on the new code with the same tickets (one mid-loop is left, and named). Each tick
