@@ -12,7 +12,7 @@ import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { tryLockFile, filePid, writeJsonAtomic, withDirLock } from './dir-lock.mjs';
 import { holdThrough, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, parkFileFault, needsSession, planFirst, keyPattern, parkKind, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage } from './batch-state.mjs';
-import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
+import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsRun, runSpecs, batchSpecPaths, idScope, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
@@ -83,7 +83,7 @@ import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { runAudits, endedFromExit, auditsRunning, auditWanted } from './levers-audit.mjs';
 import { LANDED_FORMAT, landedOf, mergeMethodOf } from './merge-landed.mjs';
-import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget } from './queue-ledger.mjs';
+import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference, ledgerTarget, recordMode, restoreQueue, REBUILT_MARK } from './queue-ledger.mjs';
 import { fold as ledgerFold, append as ledgerAppend } from './ticket-ledger.mjs';
 import { recordAsks, measure as measureAsks, ASK_BY_ENV } from './ask-ledger.mjs';
 import { defaultsAtCheckin, defaultAnswer, defaultCall, digestPresented, raisedOf } from './question-arms.mjs';
@@ -98,7 +98,7 @@ import { decidePrStatus, followState, onThisPr, tookPostMerge, repoOfPr } from '
 import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict, ledgerLine, mergeGaps, mergeGapLine } from './pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict, ledgerLine, recordLine, rebuiltLine, mergeGaps, mergeGapLine } from './pass/report.mjs';
 import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
@@ -197,6 +197,22 @@ const PASS_AT = new Date().toISOString();
 // sooner than the interval would.
 const WOKEN = process.argv.includes('--woken');
 
+// Record mode (queue-ledger.mjs recordMode): a queue.json that is missing or behind the log is restored
+// from it before anything reads it, and the report says so (pass/report.mjs recordLine). One rebuilt
+// whole has none of the batch's own fields, its base among them, which this pass has already read
+// (E.applyBatchBase above), so every pass stops while it carries REBUILT_MARK, until a person has set
+// them again and cleared it.
+const RECORD = recordMode();
+let LEDGER_RESTORE = null;
+if (!DRY && RECORD.on) {
+  try { LEDGER_RESTORE = restoreQueue(QUEUE_FILE, { waitMs: LOCK_WAIT_MS }); }
+  catch (e) { LEDGER_RESTORE = { error: String(e?.message ?? e).split('\n')[0] }; }
+}
+{
+  let mark = null;
+  try { mark = JSON.parse(readFileSync(QUEUE_FILE, 'utf8'))[REBUILT_MARK] ?? null; } catch { /* missing or corrupt: refused below */ }
+  if (mark) refuse(rebuiltLine(mark, join(SHOWN_BIN, 'queue.mjs')));
+}
 if (!existsSync(QUEUE_FILE)) {
   refuse(`no queue at ${QUEUE_FILE} — run: node ${SHOWN_BIN}/queue.mjs init <batch-name>`);
 }
@@ -264,7 +280,7 @@ const sh = (cmd, args, { fresh, ...opts } = {}) => {
 // nothing to take (no §4 Vercel team, the lease kind off, or a lease store it cannot read, where
 // leases.mjs says to go on without it). A push that fails starts no build, so freeSlot gives back a
 // unit it placed, unless another taker renewed it since, and keeps one it only renewed.
-const LEASE_ENV = { machineValue: E.machineValue, testLockSlots: E.testLockSlots, psRows: E.psRows };
+const LEASE_ENV = { machineValue: E.machineValue, testLockSlots: E.testLockSlots, lightLockSlots: E.lightLockSlots, psRows: E.psRows };
 const leaseQuiet = (args) => leaseCli(args, { env: LEASE_ENV, out: () => {}, err: () => {} });
 function previewSlot(t, branch) {
   if (DRY || !E.previewSlotArgs('', 0)) return {};
@@ -303,8 +319,11 @@ function refusedLine(args, refused, why) {
 }
 // The report lines of one queue-writer.mjs flush: each change a refused write did not record, or each
 // field another writer had changed meanwhile, whose value stays; and done tickets left unarchived.
+// LEDGER_LEGACY counts the legacy_set events record mode appended for them, which record mode keeps.
+let LEDGER_LEGACY = 0;
 function writeLines(r) {
   if (!r.ok) return r.lost.map((args) => refusedLine(args, 'not recorded', r.why));
+  LEDGER_LEGACY += r.ledgerLegacy ?? 0;
   return [
     ...r.conflicts.map((c) => `${c.ticket ?? 'batch'}: queue write not made for ${c.field === 'order' ? 'the spawn order' : c.field === '*' ? 'the whole ticket' : c.field}: ${c.gone ? 'another writer took the ticket out of the queue' : 'another writer changed it after this pass read the queue, and its value stays'}`),
     ...(r.archiveError ? [`queue archive: done tickets were not archived this pass (${r.archiveError})`] : []),
@@ -491,6 +510,9 @@ const acceptanceSpecs = () => {
   try { row = E.configValues('acceptance-specs'); } catch { /* named where it is used */ }
   return acceptanceSpecsOf(row);
 };
+// The default branch a batch base is cut from: its specs are the ones the base changed against it
+// (spine-check.mjs batchSpecPaths), never another epic's sharing the acceptance directory.
+const specSource = () => { try { return E.configValue('default-branch') || null; } catch { return null; } };
 function parkSpine(t, pr) {
   const { specDir } = acceptanceSpecs();
   const c = pr == null
@@ -513,11 +535,11 @@ function checkOwned(t, pr) {
   if (pr == null) return;
   const { specDir, cmd } = acceptanceSpecs();
   // Under the test lock like any suite, in the child's worktree at the head it pushed.
-  const run = (id) => {
+  const run = (id, scope) => {
     if (!cmd) return { ok: false, out: 'config §4 Acceptance specs has no command taking {ids}' };
-    return runSpecs({ bin: BIN, root: t.worktree, item: cmd, id, timeout: SPEC_RUN_MS });
+    return runSpecs({ bin: BIN, root: t.worktree, item: cmd, id, timeout: SPEC_RUN_MS, scope });
   };
-  const c = checkChild({ worktree: t.worktree, base: DEFAULT_BRANCH, specDir, owners: Q.owners, key: t.key, run });
+  const c = checkChild({ worktree: t.worktree, base: DEFAULT_BRANCH, source: specSource(), specDir, owners: Q.owners, key: t.key, run });
   q('set', t.key, `spec_check=${JSON.stringify({ ok: c.ok, problems: c.problems, at: new Date().toISOString() })}`);
   if (c.ok) return;
   const why = `${CHILD_SPECS_PREFIX}: ${c.problems.join('; ')}. PR #${pr} stays draft: send it back with what to fix (answer.mjs ${t.key} "<note>", then queue.mjs requeue ${t.key})`;
@@ -530,7 +552,9 @@ function ownedBrief(t, wt) {
   if (!ownsSpecs(t)) return '';
   const { specDir, cmd } = acceptanceSpecs();
   const ids = ownedIds(Q.owners, t.key);
-  const owned = specDir ? ownedSpecs(specFilesAt(wt, 'HEAD', specDir), ids) : ids.map((id) => ({ id, specs: [] }));
+  // Only this batch's specs: another epic's in the same directory may be titled with the same id.
+  const mine = specDir ? batchSpecPaths({ worktree: wt, source: specSource(), base: DEFAULT_BRANCH, specDir }) : null;
+  const owned = specDir ? ownedSpecs(specFilesAt(wt, 'HEAD', specDir, mine), ids) : ids.map((id) => ({ id, specs: [] }));
   const lines = owned.flatMap(({ id, specs }) => (specs.length
     ? specs.map((s) => `- ${id}: "${s.title}" in ${s.path}`)
     : [`- ${id}: no spec titled with it on ${DEFAULT_BRANCH}. Park naming it rather than writing one`]));
@@ -543,7 +567,7 @@ function ownedBrief(t, wt) {
     '',
     `For each one: remove the marker that makes it ${EXPECTED_FAIL}, and make it pass. Run these spec files with §4 Unit tests, capped and locked as for any suite, rather than the whole acceptance directory: another child owns every other spec there, and each of those is still expected to fail.`,
     'Change no acceptance spec you do not own. If yours cannot pass without changing one, park naming it and its criterion.',
-    `When you finish, the pass runs only your specs${cmd ? ` (${ids.map((id) => `\`${specsCommand(cmd, id)}\``).join(', ')})` : ''} and parks the ticket, naming the spec, if one you own is still marked expected-fail or skipped, or fails, or if your branch changed a spec another child owns.`,
+    `When you finish, the pass runs only your specs${cmd ? ` (${owned.map(({ id, specs }) => `\`${specsRun(cmd, id, idScope(specDir, mine, specs)).label}\``).join(', ')})` : ''} and parks the ticket, naming the spec, if one you own is still marked expected-fail or skipped, or fails, or if your branch changed a spec another child owns.`,
     '',
   ].join('\n');
 }
@@ -2312,32 +2336,38 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
   try { light = E.configValue('suite-weight') === 'light'; } catch { /* unread: heavy, the default */ }
   return lockGate([
     queueOf('test', pools?.heavy.current ?? E.testLockSlots()),
-    light ? queueOf('light', pools?.light.current ?? 1) : null,
+    light ? queueOf('light', pools?.light.current ?? E.lightLockSlots()) : null,
   ]);
 })();
 // The stage a requeue resumes its last round at, or null where it starts again: no round to resume,
 // or an unfinished fix try, whose next worker gets the try's own task (fixTask), which runs suites.
 // resumeRound and the test lock gate both read it, so they agree on where a requeue starts.
 const resumedStage = (t) => (t.fix && !t.fix.finished ? null : roundStage(t.last_round?.stage));
-// Bound for the suites: a local session that starts at Stage 0 or one that runs suites: a killed worker
-// last at Stage 4 or 4b, a handoff to 4b, or a requeue resuming its last round there (resumeRound, which
-// resumes only in a kept worktree).
+// Bound for the suites: a local session that starts at Stage 0 ('fresh') or one that runs suites
+// ('suite'): an unfinished fix try, a killed worker last at Stage 4 or 4b, a handoff to 4b, or a requeue
+// resuming its last round there (resumeRound, which resumes only in a kept worktree). Null otherwise.
 const suiteBound = (r) => {
-  if (runsInCloud(r)) return false;
-  if (toResume(r)) return SUITE_STAGES.includes(roundStage(r.stage));
-  if (toHandoff(r)) return SUITE_STAGES.includes(String(r.handoff_stage));
+  if (runsInCloud(r)) return null;
+  if (toResume(r)) return SUITE_STAGES.includes(roundStage(r.stage)) ? 'suite' : null;
+  if (toHandoff(r)) return SUITE_STAGES.includes(String(r.handoff_stage)) ? 'suite' : null;
+  if (r.fix && !r.fix.finished) return 'suite';
   const round = existsSync(join(WORKTREES, r.key)) ? resumedStage(r) : null;
-  return !round || SUITE_STAGES.includes(round);
+  return !round ? 'fresh' : SUITE_STAGES.includes(round) ? 'suite' : null;
 };
-// The gate's room left this pass: each suite-bound ticket let through uses one, and once none is left
-// the rest are held. A ticket skipped later in the pass keeps its unit used, which errs on the side of
-// starting fewer.
-let lockRoom = LOCK_QUEUE?.room ?? Infinity;
-const lockQueueHolds = (r) => {
-  if (!suiteBound(r)) return false;
-  if (lockRoom <= 0) return true;
-  lockRoom -= 1;
+// Each lock queue's room left this pass: each suite-bound ticket let through uses one of every queue it
+// would join, and once one has none left the tickets bound for it are held. A fresh session joins only
+// the test lock's queue (its typechecks): its suites are a stage away, so a full light queue holds only
+// the tickets whose next step is a suite. A ticket skipped later in the pass keeps its units used, which
+// errs on the side of starting fewer.
+const lockRoom = Object.fromEntries(['test', 'light'].map((l) => [l, LOCK_QUEUE?.queues.find((q) => q.lock === l)?.room ?? Infinity]));
+const takeLockRoom = (locks) => {
+  if (locks.some((l) => lockRoom[l] <= 0)) return true;
+  for (const l of locks) lockRoom[l] -= 1;
   return false;
+};
+const lockQueueHolds = (r) => {
+  const bound = suiteBound(r);
+  return !!bound && takeLockRoom(bound === 'fresh' ? ['test'] : ['test', 'light']);
 };
 const lockQueueHeld = [];
 const runningKeys = new Set(running.map((r) => r.key));
@@ -3425,8 +3455,7 @@ async function spawnBaseFix({ wt, fix: asked }) {
       : { ticket: baseFixTicket, brief: baseFixBrief, task: baseFixTask };
   // A base try runs suites as a ticket's worker does, so it takes a unit of the test lock gate's room
   // first: with room for one, a pass starts the base try or a ticket, not both.
-  if (lockRoom <= 0) { out.push(`base ${tryWhat(fix)}: held, ${LOCK_QUEUE.line}`); return; }
-  lockRoom -= 1;
+  if (takeLockRoom(['test', 'light'])) { out.push(`base ${tryWhat(fix)}: held, ${LOCK_QUEUE.line}`); return; }
   if (DRY) { out.push(`base ${tryWhat(fix)} (dry run): would start try ${fix.try} of ${fix.of} on ${BASE} in ${wt}`); return; }
   // No login to start on: no try is spent, and the next pass looks again.
   const pick = repoLogin();
@@ -3729,7 +3758,8 @@ function fixTryStale(t) {
   // done tickets' reading below.
   const unrun = ran ? [] : unrunFields(t, f);
   q('set', t.key, `fix.finished=${PASS_AT}`, `fix.ended=${ended}`, ...unrun, `result.pr=${f.pr}`, 'state=done', 'handoff=null', ...(resumed ? ['resume=null'] : []), 'worktree_busy=null');
-  if (merged) q('merged', t.key, ...(v.mergedAt ? [v.mergedAt] : []));
+  // --pr replaces the ticket's merge record, so a merge already recorded with its PR (and who merged it) is kept.
+  if (merged) q('merged', t.key, ...(v.mergedAt ? [v.mergedAt] : []), ...(t.merge?.pr != null ? [] : ['--pr', String(f.pr)]));
   report.done.push(merged ? `${line}, recorded merged` : line);
   return true;
 }
@@ -4555,8 +4585,9 @@ runSteps({
     },
     'pr-status': (a) => q('set', a.key, `pr_status=${JSON.stringify(a.status)}`),
     'free-previews': (a) => releasePreviews(PREVIEW_TEAM, a.done.map((d) => ({ ...d, label: E.previewLabel(GH_REPO, { pr: d.pr }) })), { env: LEASE_ENV }),
-    merged: (a) => q('merged', a.key, ...(a.at ? [a.at] : []), ...(a.merge ? ['--pr', String(a.merge.pr), '--by', a.merge.by,
-      ...(a.merge.head_sha ? ['--head-sha', a.merge.head_sha] : []), ...(a.merge.base ? ['--base', a.merge.base] : [])] : [])),
+    // A PR merged by hand has no merger's record (a.merge), but its PR is still the ticket's own (a.pr).
+    merged: (a) => q('merged', a.key, ...(a.at ? [a.at] : []), '--pr', String(a.pr),
+      ...(a.merge ? ['--by', a.merge.by, ...(a.merge.head_sha ? ['--head-sha', a.merge.head_sha] : []), ...(a.merge.base ? ['--base', a.merge.base] : [])] : [])),
     'merge-log': () => ({ events: mergeLogNow() }),
     automerge: (a) => {
       try { ledgerAppend(LEDGER_AT.repoDir, a.events.map((e) => ({ ...e, batch: LEDGER_AT.batch, key: a.key })), { by: 'pass' }); }
@@ -5102,10 +5133,11 @@ function rerunBuilt(t, n, head, c, rec, ready = false) {
 
 // A draft's cancelled or timed-out runs, re-run by the merge driver's own rerun (rerun.sh), so the
 // driver and the pass keep one record, cap and cooldown per head.
+// A ready PR's (c.ready: a state check that failed on a GitHub read error) goes the same way.
 function rerunDraft(t, n, head, c) {
   const r = shOut('bash', [join(BIN, 'rerun.sh'), DRIVER_DIR, GH_REPO, String(n), head], { input: JSON.stringify({ gate: c.gate }), stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, RERUN_PERM: E.permission('ci-rerun') } });
   const said = r.out.split('\n').filter(Boolean).join('; ');
-  out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why}${said ? ` (${said})` : ''}`);
+  out.push(`${c.ready ? `fix tries: PR #${n} (${t.key}) is out of draft` : `undraft: PR #${n} (${t.key}) stays draft`}: ${c.why}${said ? ` (${said})` : ''}`);
 }
 
 // A draft's run that holds a check stuck pending past its limit: cancelled, so its check reads as
@@ -5181,6 +5213,7 @@ function fixReads(t, s, dirty, dirtyFiles) {
     repo: GH_REPO, base: DEFAULT_BRANCH, ...gateLists(), ...clearsRows, stateChecks: stateRow.checks,
     build: (failing, gate) => buildCall({ pending: gate?.pending ?? [], running: gate?.running, failing }, { builds: buildRow.checks, rerun: E.permission('ci-rerun'), built: (head) => buildRecord(BUILD_DIR, n, head), behind }, n, s.head, t),
     ...driverReruns(n, s.head),
+    rerunPerm: E.permission('ci-rerun'),
     waived: (names) => waivedAt(n, s.head, s.checks, names),
     conflictFiles: () => (dirty ? dirtyFiles : conflictFiles(t.branch)),
     baseAt: () => baseAtOf(s.head),
@@ -5331,8 +5364,8 @@ function refreshBranch(t, n, head, c) {
 // (failure-class.mjs fixClass) recorded before the worker spawns, and `held` (base red) waits with no
 // try. With the failure-class lever on (read per ticket, leverFor), one classed missing decision or
 // dependency wait is not requeued (the item says what it waits for), and `rerun` re-runs a draft's
-// checks classed runner or resource instead of spawning a fix worker, `wait` holding that rerun for
-// the run to finish.
+// checks classed runner or resource instead of spawning a fix worker, or a state check that failed on
+// a GitHub read error, in draft or out, `wait` holding that rerun for the run to finish.
 function applyFix(t, n, head, c) {
   const rec = keptHold(t.base_red, c, PASS_AT);
   if ('base_red' in c && JSON.stringify(t.base_red ?? null) !== JSON.stringify(rec)) {
@@ -5361,7 +5394,7 @@ function applyFix(t, n, head, c) {
   if (c.call === 'refresh') { refreshBranch(t, n, head, c); return; }
   if (c.call === 'wait') { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`); return; }
   if (c.call === 'rerun') {
-    if (DRY) out.push(`undraft (dry run): would re-run run(s) ${c.gate.failedRuns.join(', ')} on PR #${n} (${t.key}): ${c.why}`);
+    if (DRY) out.push(`${c.ready ? 'fix tries' : 'undraft'} (dry run): would re-run ${[...c.gate.failedRuns.map((r) => `run ${r}`), ...(c.gate.failedJobs ?? []).map((j) => `job ${j.jobId} of run ${j.runId}`)].join(', ')} on PR #${n} (${t.key}): ${c.why}`);
     else rerunDraft(t, n, head, c);
     return;
   }
@@ -6107,9 +6140,14 @@ if (!DRY && ledgerOn()) {
   catch (e) { check = { error: String(e?.message ?? e).split('\n')[0] }; }
   const l = ledgerLine({ check, missed, queueBin: join(SHOWN_BIN, 'queue.mjs') });
   if (l) lines.push(l);
-  ledgerRec = { ledger_diffs: check.error ? null : check.diffs.length, ledger_missed: missed, merges_unknown_merger: unknownMergers };
+  ledgerRec = { ledger_diffs: check.error ? null : check.diffs.length, ledger_missed: missed, merges_unknown_merger: unknownMergers,
+    ...(RECORD.on ? { ledger_legacy: LEDGER_LEGACY } : {}) };
   // What each ask's steps cost in tokens, each step once its figures can be read (ask-ledger.mjs measure).
   lines.push(...measureAsks(STATE, { queue: QUEUE_FILE, on: true, by: 'pass' }));
+}
+{
+  const l = DRY ? null : recordLine({ restore: LEDGER_RESTORE, ignored: RECORD.ignored });
+  if (l) lines.push(l);
 }
 
 // ---- pass metrics ------------------------------------------------------------

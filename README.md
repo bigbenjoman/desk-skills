@@ -269,6 +269,18 @@ removes them, and `move-batch.mjs` clears them from the slot it moves into.
 step by pointing `~/.claude/desk/current` at it; `~/.claude/desk/bin` and `templates` link through
 `current`, so a pass started before an install finishes on the release it started with. The newest
 three releases are kept, and `./install.sh --rollback` makes the one before the current one current.
+The release watch (`release-watch.mjs`) stands behind each release the auto-release installs. Once a
+release has 10 tickets finished on it, or 72 hours have passed since it went in (whichever comes
+first), it compares that release's tickets with the previous release's. It looks at fix tries per ticket, parked
+hours per ticket, post-merge reverts, and parks in an error class the previous release never parked in.
+The trips are the lever registry's: a post-merge revert trips at once. Fix tries and parked hours
+trip past their guardrail margin, and a new error class trips too, but each of those three only once
+both releases have 10 tickets. A trip pins the previous release (install.sh keeps the release before
+each one not yet judged, past the newest three) and opens one revert PR for every merge between the two releases. It also raises one
+needs-you item naming the merges, the metric and the evidence. The pin holds the auto-release and the
+maintenance window's update until main carries the revert, or until the PR is closed unmerged.
+`desk-q rollback <commit>` (7 or more hex digits) does the same on demand for the release installed
+at `<commit>`, and `desk-q rollback --unpin` lifts a pin.
 Each repo's queue and the other state under `~/.claude/desk` never move. It records the commit it installed in `~/.claude/desk/installed.json`, rewrites and
 reloads each loaded supervisor agent with the current node, and restarts each merge driver waiting
 between loops on the new code with the same tickets (one mid-loop is left, and named). Each tick
@@ -924,6 +936,15 @@ Each pass then compares queue.json with the queue rebuilt from the log: its repo
 field that differs and counts the pass's missed appends, and its line in `passes.jsonl` records both
 counts (`ledger_diffs`, `ledger_missed`). `queue.mjs rebuild [<batch | standing>]` writes the rebuilt
 queue to `queue.rebuilt.json` beside queue.json and prints each field that differs.
+
+With the `ledger-record` lever on as well (it does nothing without `ledger`, and a pass says so),
+the log is written first. A write the log refuses as an illegal transition, such as starting a done
+ticket running without a requeue, fails naming the ticket's state and the event, and changes
+neither file. queue.json records the log position it holds (`ledger_seq`), so a pass that finds
+queue.json missing, unreadable or behind the log rebuilds it from the log before reading it, and its
+report says so. Fields still written as `legacy_set` events are kept and counted (`ledger_legacy` in
+`passes.jsonl`). Turn it on only once the shadow difference has stayed at zero; turning it off goes
+straight back to writing queue.json first.
 
 The desk-skills test suite runs against throwaway homes and repos, never yours:
 

@@ -33,7 +33,9 @@
 //                                      not archived, while by.key still holds them (tookPostMerge)
 //   pr-status {key, status}            keep status on the ticket as pr_status
 //   set {key, fields}                  -> queue.mjs set's result
-//   merged {key, at, merge}            -> queue.mjs merged's record, or '' (at: GitHub's merge time, or null).
+//   merged {key, pr, at, merge}        -> queue.mjs merged's record, or '' (at: GitHub's merge time, or null).
+//                                      pr is the ticket's own PR (result.pr), recorded as the merge's PR
+//                                      (--pr) whoever merged it: a hand merge leaves no merger's record.
 //                                      With the ledger lever on, merge is {by, pr, head_sha, base}, who
 //                                      merged which PR at which head onto which base, recorded on the
 //                                      ticket as its merge (queue.mjs merged --by --pr --head-sha --base)
@@ -252,7 +254,7 @@ export function* decidePrStatus(s) {
       const own = s.ledger && ownRepoPr(s, t, n);
       const log = own ? ((yield { type: 'merge-log' }) ?? { events: s.mergeLog }).events : null;
       const merge = own ? mergerOf(s, n, st, log) : null;
-      const rec = yield { type: 'merged', key: t.key, at: st.merged_at ?? null, ...(merge ? { merge } : {}) };
+      const rec = yield { type: 'merged', key: t.key, pr: n, at: st.merged_at ?? null, ...(merge ? { merge } : {}) };
       if (rec) {
         merges.push(`${t.key} (PR #${n}): ${rec.split('\n').join('; ')}`);
         if (merge && !log) unknownMergers++;

@@ -13,16 +13,23 @@
 // queue.json is written first and the log second, and a failed append never fails the queue write: it
 // comes back as one missed append for the writer to report.
 //
+// With the ledger-record lever on as well (record mode), the log is written first, and a write it
+// refuses (a done ticket started without a requeue, or one made over a queue.json behind the log) or
+// an append that fails changes neither. queue.json then records, as `ledger_seq`, the log's seq it
+// holds its batch's events up to, so a pass finding later events of its batch's tickets, or no
+// queue.json at all, restores it from the log (restoreQueue).
+//
 // queueDifference rebuilds a batch's queue from the log and names each ticket field where queue.json
 // differs from it: the pass reports that after its writes, and `queue.mjs rebuild` writes the rebuild out.
+import { existsSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
-import { BATCHES_DIR, leverOn } from './desk-env.mjs';
-import { append, fold, invalid, diffQueues, project, withoutProjectionOnly, parkOf, waitsOfField, ANSWERED, WAITS, PARK_KINDS, TRANSITIONS } from './ticket-ledger.mjs';
+import { BATCHES_DIR, leverOn, levers } from './desk-env.mjs';
+import { append, fold, read, invalid, diffQueues, project, withoutProjectionOnly, parkOf, waitsOfField, ANSWERED, WAITS, PARK_KINDS, PROJECTION_ONLY, TRANSITIONS, HISTORY_EVENTS } from './ticket-ledger.mjs';
 import { fieldDiffs, flattenQueue } from './queue-fields.mjs';
-import { readQueueAt, same } from './queue-store.mjs';
+import { readQueueAt, same, versionOf, batchFields } from './queue-store.mjs';
 import { FINISHED, blockersOf } from './queue-states.mjs';
 import { parkKindOf } from './batch-state.mjs';
-import { lock, unlock } from './dir-lock.mjs';
+import { withDirLock, writeJsonAtomic } from './dir-lock.mjs';
 
 // What the log calls the standing batch, as `queue.mjs transfer <TICKET> standing` does.
 export const STANDING = 'standing';
@@ -34,6 +41,19 @@ export const STAMPS = ['updated_at'];
 export function ledgerOn() {
   try { return leverOn('ledger'); } catch { return false; }
 }
+
+// Record mode: { on, ignored }. The ledger-record lever has an effect only with the ledger lever on;
+// alone it is `ignored`. A config that cannot be read is neither.
+const RECORD_LEVER = 'ledger-record';
+export function recordMode() {
+  try {
+    const l = levers();
+    const rec = l.on.includes(RECORD_LEVER);
+    const ledger = l.on.includes('ledger');
+    return { on: rec && ledger, ignored: rec && !ledger };
+  } catch { return { on: false, ignored: false }; }
+}
+export const recordOn = () => recordMode().on;
 
 // The repo folder holding the log, and the batch, of queue `file`: <repo>/queue.json is the standing
 // batch, <repo>/batches/<name>/queue.json is batch <name>.
@@ -78,13 +98,19 @@ function stateEvent(from, now, at) {
 // the events stop at the first that is not, and `reached` says whether they end at the ticket's state;
 // when they do not, the state is recorded with the other fields: the pass also sets states no typed
 // event reaches, such as a running ticket back to triaged, and a ticket can join the queue done.
-function stateEvents(was, now, at) {
+// With `strict` (record mode), a done ticket started running without a requeue throws, naming the
+// ticket's state and the event, rather than being recorded as the field. ILLEGAL is that error's code.
+const ILLEGAL = 'ELEDGER_ILLEGAL';
+function stateEvents(was, now, at, { strict = false, key } = {}) {
   const start = was?.state ?? null;
   const steps = [];
   if (was === undefined && now.state !== 'queued') steps.push({ type: 'admitted', data: {} });
   else if (['parked', 'failed'].includes(start) && now.state === 'triaged') steps.push({ type: 'requeued', data: {} });
   const last = stateEvent(steps.length ? 'queued' : start, now, at);
   if (last) steps.push(last);
+  if (strict && start === 'done' && last?.type === 'spawned') {
+    throw Object.assign(new Error(`refused, nothing written: spawned for ${key} is illegal from its current state done (allowed from: ${TRANSITIONS.spawned.from.join('|')}): requeue it first`), { code: ILLEGAL });
+  }
   const events = [];
   let from = start;
   for (const s of steps) {
@@ -181,7 +207,8 @@ function holdEvents(was, now, fields, from, logged) {
 // `archived` holds each ticket this write moved to the archive, as it was archived. `elsewhere(key)`
 // says the log already has that ticket in another batch, so its leaving this one records nothing.
 // `logged(key)` is the blockers the log holds for that ticket, or null when the log was not read.
-export function queueEvents(before, after, { batch, archived = {}, elsewhere = () => false, logged = () => null, at = new Date().toISOString() } = {}) {
+// `strict` is record mode (stateEvents).
+export function queueEvents(before, after, { batch, archived = {}, elsewhere = () => false, logged = () => null, at = new Date().toISOString(), strict = false } = {}) {
   const bt = before?.tickets ?? {};
   const atk = after?.tickets ?? {};
   const live = Object.fromEntries(Object.keys(atk).map((k) => [k, atk[k]]));
@@ -210,7 +237,7 @@ export function queueEvents(before, after, { batch, archived = {}, elsewhere = (
         ev(key, 'moved', { from: text(now.moved_from.batch) ?? STANDING, to: batch });
         from = undefined;
       } else if (own(fields, 'state')) {
-        const { events: typed, reached, to } = stateEvents(was, now, at);
+        const { events: typed, reached, to } = stateEvents(was, now, at, { strict, key });
         if (typed.length && typed.every((e) => !invalid({ ...e, batch, key }))) {
           from = to;
           if (reached) delete fields.state;
@@ -267,12 +294,23 @@ export const seedEvents = (q, batch, skip = new Set(), at = new Date().toISOStri
 // Appends, in one append call, what the write of `after` over `before` to queue `file` changed, seeding
 // the batch `before` belongs to first when the log has never named it. `from` is that batch when it is
 // not the one `file` holds: a whole queue moved here from another batch (move-batch), each of whose
-// tickets gets a moved event naming both. -> { appended } or, when the append failed,
+// tickets gets a moved event naming both. -> { appended, legacy } or, when the append failed,
 // { appended: 0, missed: 1, why }. Never throws.
-export function recordWrite(file, before, after, { by, archived = {}, from = null } = {}) {
+// With `mode: 'record'` it is called before queue.json is written: a done ticket started running
+// without a requeue (stateEvents), or a write that appends events while the log holds events of this
+// batch's tickets past `before`'s ledger_seq (they were worked out from a queue.json the log has moved
+// past), comes back as { appended: 0, refused: true, why } with nothing appended. The result also
+// carries `seq`, the `ledger_seq` the write records: the log's seq after the append, or `before`'s own
+// for a write that appends nothing over a queue.json behind the log, which a restore still owes. Every
+// other transition is appended as in shadow mode, so a ticket whose log and queue.json disagree is
+// recorded, not refused. `stamp(seq)`, where given, is called with the log's seq just before the append.
+export function recordWrite(file, before, after, { by, archived = {}, from = null, mode = 'shadow', stamp } = {}) {
+  const strict = mode === 'record';
   try {
     const { repoDir, batch } = ledgerTarget(file);
     const state = fold(repoDir);
+    const since = Number.isInteger(before?.ledger_seq) ? before.ledger_seq : null;
+    const behind = strict && since != null && owed(repoDir, batch, since).length > 0;
     const elsewhere = (k) => own(state.tickets, k) && state.tickets[k].batch !== batch;
     const at = new Date().toISOString();
     const events = [];
@@ -283,12 +321,17 @@ export function recordWrite(file, before, after, { by, archived = {}, from = nul
       for (const key of Object.keys(after?.tickets ?? {})) if (own(before?.tickets, key)) events.push({ type: 'moved', batch, key, data: { from, to: batch }, at });
     }
     const logged = (k) => (own(state.tickets, k) ? state.tickets[k].holds ?? null : []);
-    events.push(...queueEvents(before, after, { batch, archived, elsewhere, logged, at }));
-    if (!events.length) return { appended: 0 };
-    append(repoDir, events, { by });
-    return { appended: events.length };
+    events.push(...queueEvents(before, after, { batch, archived, elsewhere, logged, at, strict }));
+    const legacy = events.filter((e) => e.type === 'legacy_set').length;
+    if (!events.length) return { appended: 0, legacy, ...(strict ? { seq: behind ? since : state.seq } : {}) };
+    if (behind) return { appended: 0, refused: true, why: `refused, nothing written: queue.json is behind the ticket ledger (a write the log took and queue.json never did); the next pass restores it from the log, then make this change again` };
+    stamp?.(state.seq);
+    const out = append(repoDir, events, { by });
+    return { appended: events.length, legacy, ...(strict ? { seq: out.at(-1).seq } : {}) };
   } catch (e) {
-    return { appended: 0, missed: 1, why: String(e?.message ?? e).split('\n')[0] };
+    const why = String(e?.message ?? e).split('\n')[0];
+    if (strict && e?.code === ILLEGAL) return { appended: 0, refused: true, why };
+    return { appended: 0, missed: 1, why };
   }
 }
 
@@ -315,9 +358,7 @@ const leaf = (v, path) => (v != null && STAMP_PATH.test(path) ? `<set:${typeof v
 // cannot be read, or the lock cannot be taken.
 export function queueDifference(file, { seed = false, by, waitMs = 10_000 } = {}) {
   const { repoDir, batch } = ledgerTarget(file);
-  const dir = `${file}.lock`;
-  lock(dir, { waitMs, timeout: (pid) => new Error(`the queue is locked by pid ${pid ?? '?'} past the ${waitMs / 1000}s wait`) });
-  try {
+  return underQueueLock(file, waitMs, () => {
     const current = readQueueAt(file);
     if (!current) throw new Error(`no queue to compare at ${file}`);
     let state = fold(repoDir);
@@ -330,7 +371,77 @@ export function queueDifference(file, { seed = false, by, waitMs = 10_000 } = {}
     const diffs = fieldDiffs(flattenQueue(comparable(rebuilt), { leaf }), flattenQueue(comparable(current), { leaf }))
       .map((d) => ({ path: d.path, rebuilt: d.a, queue: d.b }));
     return { rebuilt, seeded, diffs };
-  } finally { unlock(dir); }
+  });
+}
+
+// fn()'s result with queue `file`'s lock held, waiting up to `waitMs` for it.
+const underQueueLock = (file, waitMs, fn) => withDirLock(`${file}.lock`, fn,
+  { waitMs, timeout: (pid) => new Error(`the queue is locked by pid ${pid ?? '?'} past the ${waitMs / 1000}s wait`) });
+
+// The batch field a queue.json rebuilt whole from the log carries until a person clears it.
+export const REBUILT_MARK = 'rebuilt_from_log';
+
+// The events of `batch` in the log past seq `since` that queue.json holds the outcome of: each one of a
+// ticket's, but for the history no queue write makes (ticket-ledger.mjs HISTORY_EVENTS). It is read at
+// call time: ticket-ledger.mjs imports this module, so loaded from there first it is not yet
+// initialised when this module's top level runs.
+const owed = (repoDir, batch, since) => read(repoDir, { batch, since }).events.filter((e) => e.key != null && !HISTORY_EVENTS.includes(e.type));
+
+// A rebuilt ticket's `holds`, which a writer lays only beside a held_by (queue-states.mjs holdsLaid).
+function tidyHolds(q) {
+  for (const t of Object.values(q.tickets)) if (!own(t, 'held_by')) delete t.holds;
+  return q;
+}
+
+// Queue `current` with each ticket in `touched` as `rebuilt` (the log's projection) has it, keeping the
+// projection-only fields and the stamp current has for it; a touched ticket the log has left the batch
+// leaves it too, and one new to it joins after the rest. Every other ticket stays as current has it.
+function restoredFrom(current, rebuilt, touched) {
+  const ct = current.tickets ?? {};
+  const rt = rebuilt.tickets;
+  const kept = (t) => Object.fromEntries([...PROJECTION_ONLY, ...STAMPS].filter((f) => own(t, f)).map((f) => [f, t[f]]));
+  const tickets = {};
+  for (const k of Object.keys(ct)) {
+    if (!touched.has(k)) tickets[k] = ct[k];
+    else if (own(rt, k)) tickets[k] = { ...rt[k], ...kept(ct[k]) };
+  }
+  for (const k of touched) if (!own(ct, k) && own(rt, k)) tickets[k] = rt[k];
+  return { ...batchFields(current), tickets };
+}
+
+// Record mode's restore of queue `file` from the log, under the queue lock (waiting up to `waitMs`):
+// rebuilt whole when it is missing and the log has its batch, or, when it records a `ledger_seq` and
+// the log holds events of its batch's tickets past it (a write the log took and queue.json never did),
+// each of those tickets brought up to the log. A queue with no ledger_seq was written before record
+// mode and is left as it is. -> { restored: null | 'missing' | 'behind', tickets, seq }, `tickets`
+// naming each ticket the restore changed. Throws, changing nothing, when queue.json is there but does
+// not read, the log cannot be read or the lock cannot be taken.
+export function restoreQueue(file, { waitMs = 10_000 } = {}) {
+  const { repoDir, batch } = ledgerTarget(file);
+  return underQueueLock(file, waitMs, () => {
+    const current = readQueueAt(file);
+    if (!current && existsSync(file)) throw new Error(`${file} does not read as a queue, so it was left as it is`);
+    const since = Number.isInteger(current?.ledger_seq) ? current.ledger_seq : null;
+    const none = (seq) => ({ restored: null, tickets: [], seq });
+    if (current && since == null) return none(null);
+    const touched = current ? new Set(owed(repoDir, batch, since).map((e) => e.key)) : null;
+    if (current && !touched.size) return none(since);
+    const state = fold(repoDir);
+    if (!own(state.batches, batch)) return none(since);
+    // The projection names the log's batch id as `batch`; queue.json's `batch` is the batch's own name,
+    // which only queue.json held.
+    const { batch: _id, ...rebuilt } = tidyHolds(project(state, batch, current));
+    const out = current ? restoredFrom(current, rebuilt, touched) : rebuilt;
+    // A whole rebuild has none of the batch's own fields: REBUILT_MARK keeps every pass stopped until a
+    // person has set them again and cleared it (pass.mjs).
+    if (!current) out[REBUILT_MARK] = { at: new Date().toISOString(), seq: state.seq, tickets: Object.keys(out.tickets).length };
+    const was = current?.tickets ?? {};
+    const tickets = [...new Set([...Object.keys(was), ...Object.keys(out.tickets)])].filter((k) => !same(was[k], out.tickets[k]));
+    out.ledger_seq = state.seq;
+    out.version = versionOf(current) + 1;
+    writeJsonAtomic(file, out);
+    return { restored: current ? 'behind' : 'missing', tickets, seq: state.seq };
+  });
 }
 
 // The line a writer prints for a missed append, or null when there was none. It starts MISSED_PREFIX.

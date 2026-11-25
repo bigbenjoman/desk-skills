@@ -156,7 +156,7 @@ const WRAPPER = wrapperOf('test|tsc');
 const FLOCK = /^(?:\S*\/)?flock\s+(?:-\S+\s+)*\S*desk-test\.lock(?:\.\d+)?(?:\s|$)/;
 // The same for the light lock, which a worker's suite takes in a repo whose §4 Suite weight is light.
 const LIGHT_WRAPPER = wrapperOf('light');
-const LIGHT_FLOCK = /^(?:\S*\/)?flock\s+(?:-\S+\s+)*\S*desk-light\.lock(?:\s|$)/;
+const LIGHT_FLOCK = /^(?:\S*\/)?flock\s+(?:-\S+\s+)*\S*desk-light\.lock(?:\.\d+)?(?:\s|$)/;
 // A run.sh suite, or a with-lock.sh light command, waiting for a job token: the take exits once granted.
 const JOB_TAKE = /^(?:\S*\/)?node\s+(?:\S*\/)?job-token\.mjs\s+take(?:\s|$)/;
 
@@ -312,7 +312,7 @@ export function holdersText(runs) {
 // waits on. `lock` is the lock the reading is of, `test` or `light`, as its line names it.
 export function lockQueue({ waiting, slots, factor, held = [], counts, self, lock = 'test' }) {
   const at = slots * factor;
-  if (waiting == null) return { deep: false, holds: false, room: Infinity, unread: true, waiting: null, at, line: `${lock} lock queue: not read (ps could not be read), so workers start as they would without it` };
+  if (waiting == null) return { lock, deep: false, holds: false, room: Infinity, unread: true, waiting: null, at, line: `${lock} lock queue: not read (ps could not be read), so workers start as they would without it` };
   const deep = waiting >= at;
   let room = Math.max(0, at - waiting), share = null, own = null, byRepo = '';
   if (counts == null) {
@@ -328,7 +328,7 @@ export function lockQueue({ waiting, slots, factor, held = [], counts, self, loc
     if (deep) byRepo += `; this repo's share ceil(${at} / ${active}) = ${share}, ${own} its own`;
   }
   const by = held.length ? `; held by ${holdersText(held)}` : '';
-  return { deep, holds: room <= 0, room, share, own, unread: false, waiting, at, line: `${lock} lock queue: ${waiting} run(s) waiting on its ${slots} slot(s), ${deep ? 'at or over' : 'under'} the hold at ${slots} x ${factor} = ${at}${byRepo}${by}` };
+  return { lock, deep, holds: room <= 0, room, share, own, unread: false, waiting, at, line: `${lock} lock queue: ${waiting} run(s) waiting on its ${slots} slot(s), ${deep ? 'at or over' : 'under'} the hold at ${slots} x ${factor} = ${at}${byRepo}${by}` };
 }
 
 // The gate over the lock queues a repo's suite-bound workers would join (lockQueue readings; a null is

@@ -73,7 +73,7 @@ import { codexLogins } from './codex-usage.mjs';
 import { claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogin, defaultOf, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, migrateLogins,
   multiAccount, needsPinMigration, nextLoginFolder, readSubscriptions, repoSubscription, signInParts, toolDefault } from './logins.mjs';
 import { limitName, limitWord } from './usage-limit.mjs';
-import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
+import { startRefresh, readCache, chargesByName, forCosts, unreadSources, allUnread, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 import { itemKey, leaseTrialAsk, leaseTrialHome, needsCount } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
@@ -561,6 +561,7 @@ function draftNeed(q, t, needs, merging, now = Date.now(), ctx = NOBODY) {
   // A check stuck pending: its job re-run, or its run cancelled so the next pass re-runs it.
   if (u?.call === 'cancel') return merging(['draft', null], [' · stuck check\'s run cancelled to re-run it, out of draft once green', null]);
   if (u?.call === 'rerun' && /so that job is re-run$/.test(u.why ?? '')) return merging(['draft', null], [' · stuck job re-run, out of draft once green', null]);
+  if (u?.call === 'rerun' && /failed on a GitHub read error/.test(u.why ?? '')) return merging(['draft', null], [' · state check re-run once after a GitHub read error, out of draft once green', null]);
   if ((u?.call === 'rerun' || (u?.call === 'wait' && /^checks re-run/.test(u.why ?? ''))) && /ended by the runner/.test(u.why ?? '')) return merging(['draft', null], [' · checks the runner ended re-run once, out of draft once green', null]);
   if (u?.call === 'rerun' || (u?.call === 'wait' && /^checks re-run/.test(u.why ?? ''))) return merging(['draft', null], [' · cancelled checks re-run, out of draft once green', null]);
   if (u?.call === 'build' || (u?.call === 'wait' && /^its check build/.test(u.why ?? ''))) return merging(['draft', null], [' · check build running, out of draft once green', null]);
@@ -1655,7 +1656,27 @@ function epicsParts(repos, slug, { now = Date.now(), checkin = false, width = nu
 
 export const NO_COST_SOURCES = 'No cost sources set up. /desk-setup costs adds them.';
 export const NO_COST_READING = 'No cost reading yet. desk-q reads them in the background.';
+export const NO_COST_READABLE = 'No cost source can be read, so there are no charges to show.';
 const SUPPLIER_LABEL = { github: 'GitHub', vercel: 'Vercel', aws: 'AWS', neon: 'Neon' };
+// Why a source could not be read, then what would fix it where desk knows, as sentences.
+const sentence = (s) => (/[.!?]$/.test(s) ? capital(s) : `${capital(s)}.`);
+const whyFix = (u, lead = '') => `${lead ? `${lead}${u.why}` : capital(u.why)}${/[.!?]$/.test(u.why) ? '' : '.'}${u.fix ? ` ${sentence(u.fix)}` : ''}`;
+// With no figure, a ◌ note per source that could not be read, named by its account or team.
+const unreadNotes = (unread) => unread.map((u) => ({ tag: `◌ ${SUPPLIER_LABEL[u.supplier]} ${u.label}`, sgr: GREY, text: [[whyFix(u), null]] }));
+// Beside figures, one per name it bills, tagged as a figure not read today is, so the notes keep their
+// column; on one name's screen (`supplier`), tagged by supplier. A name whose row already says why
+// (`said(name, supplier)`, its can't-read tag) gets a note only where desk knows the fix.
+const unreadNameNotes = (unread, { supplier = false, said = () => false } = {}) => unread.flatMap((u) => (supplier ? [null] : u.names)
+  .filter((name) => u.fix || !said(name, u.supplier)).map((name) => ({
+    tag: `◌ ${name ?? SUPPLIER_LABEL[u.supplier]}`, sgr: GREY, text: [[whyFix(u, `Its ${name ? `${SUPPLIER_LABEL[u.supplier]} ` : ''}bill can't be read: `), null]] })));
+// The tag column noteLines pads to (plus one), so the longest tag keeps a gap before its text.
+const noteWidth = (notes) => Math.max(14, ...notes.map((n) => (n.tag ?? '').length + 1));
+// The head when no figure can be shown: every source tried and unreadable, else a reading still to
+// come; then a note per source that could not be read.
+function noFigureHead(unread, costs, cache, width) {
+  const notes = unreadNotes(unread);
+  return [allUnread({ cache, costs }) ? NO_COST_READABLE : NO_COST_READING, ...(notes.length ? ['', ...noteLines(notes, noteWidth(notes), width)] : [])];
+}
 const usd = (n) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 // "October, 1–26" while the month runs, "September" once it is read in full.
 function monthText(p) {
@@ -1737,7 +1758,8 @@ function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), c
   if (!costs.exists || !costs.entries.length) return { head: [NO_COST_SOURCES], rows: [], foot };
   const fc = forCosts(cache, costs);
   const c = chargesByName({ cache: fc, names: [...new Set(costs.entries.map((e) => e.name))] });
-  if (!c) return { head: [NO_COST_READING], rows: [], foot };
+  const unread = unreadSources({ cache: fc, costs });
+  if (!c) return { head: noFigureHead(unread, costs, fc, width), rows: [], foot };
   const charged = segLine([['charged ', GREY], ...chargedSegs(c)]);
   const lines = [...c.names, ...(c.shared == null ? [] : [{ name: 'shared', total: c.shared }])];
   const nw = Math.max(14, ...lines.map((x) => x.name.length + 1));
@@ -1760,9 +1782,10 @@ function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), c
     ...stale.map((r) => ({ tag: `◌ ${r.name}`, sgr: GREY, text: [[r.failedToday
       ? `Its ${SUPPLIER_LABEL[r.supplier]} bill couldn't be read today, so this shows the ${dayMonth(r.at)} figure. desk-q tries again every hour.`
       : `Its ${SUPPLIER_LABEL[r.supplier]} bill hasn't been read yet today, so this shows the ${dayMonth(r.at)} figure.`, null]] })),
+    ...unreadNameNotes(unread, { said: (name, s) => c.names.some((x) => x.name === name && x.cantRead?.supplier === s) }),
   ];
   return { head: [charged, '', bold(`  ${pad('REPO', nw)}${rpad('CHARGED', aw)}`)], rows,
-    foot: [segLine([[`  ${pad('total', nw)}`, GREY], [rpad(usd(c.total), aw), BOLD], ...includes]), ...(notes.length ? ['', ...noteLines(notes, nw, width)] : []), ...foot] };
+    foot: [segLine([[`  ${pad('total', nw)}`, GREY], [rpad(usd(c.total), aw), BOLD], ...includes]), ...(notes.length ? ['', ...noteLines(notes, Math.max(nw, noteWidth(notes)), width)] : []), ...foot] };
 }
 
 export const costsScreen = (repos, opts) => joined(costsParts(repos, opts));
@@ -1810,7 +1833,8 @@ function supplierParts(repos, name, { now = Date.now(), costs = readCosts(costsP
   if (!mine.length) return { head: [noCostSourcesFor(label)], rows: [], foot };
   const fc = forCosts(cache, costs);
   const c = chargesByName({ cache: fc, names: [name] });
-  if (!c) return { head: [NO_COST_READING], rows: [], foot };
+  const unread = unreadSources({ cache: fc, costs }).filter((u) => u.names.includes(name));
+  if (!c) return { head: noFigureHead(unread, { ...costs, entries: mine }, fc, width), rows: [], foot };
   const x = c.names.find((n) => n.name === name);
   const money = (n) => (n == null ? '–' : usd(n));
   const aw = Math.max(11, money(x.total).length + 3);
@@ -1826,7 +1850,7 @@ function supplierParts(repos, name, { now = Date.now(), costs = readCosts(costsP
   // The budget note on a name GitHub bills; it is the account's budget, not the name's.
   const notes = [...(mine.some((e) => e.supplier === 'github') ? budgetNotes(costs, fc, c.period) : []),
     ...(x.credits > 0 ? [warnNote('▲ credits', `AWS credits covered ${usd(x.credits)}. Without them, ${name} would have been charged ${
-      usd((Math.round((x.total ?? 0) * 100) + Math.round(x.credits * 100)) / 100)}.`)] : [])];
+      usd((Math.round((x.total ?? 0) * 100) + Math.round(x.credits * 100)) / 100)}.`)] : []), ...unreadNameNotes(unread, { supplier: true, said: (_, s) => x.cantRead?.supplier === s })];
   return { head: [charged, '', bold(`  ${pad('SUPPLIER', SUPPLIER_W)}${pad('FOR', FOR_W)}${rpad('CHARGED', aw)}`)], rows,
     foot: [segLine([[`  ${pad('total', SUPPLIER_W + FOR_W)}`, GREY], [rpad(money(x.total), aw), BOLD]]), ...(notes.length ? ['', ...noteLines(notes, 14, width)] : []), ...foot] };
 }
@@ -1962,7 +1986,8 @@ export function supplierPageParts(repos, name, supplier, { now = Date.now(), cos
   // The cache as costs.md has it now, as on the repo screen, so both count the same profiles.
   const cache = forCosts(raw, costs);
   const c = chargesByName({ cache, names: [name] });
-  if (!c) return { head: [NO_COST_READING], rows: [], foot: [], bill };
+  const unread = unreadSources({ cache, costs }).filter((u) => u.supplier === supplier && u.names.includes(name));
+  if (!c) return { head: noFigureHead(unread, { ...costs, entries: mine }, cache, width), rows: [], foot: [], bill };
   const x = c.names.find((n) => n.name === name);
   const total = x.by[supplier] ?? null;
   const where = supplier === 'vercel' ? [...new Set(mine.map((e) => e.team).filter(Boolean))].map((t) => `team ${t}`)
@@ -1973,8 +1998,9 @@ export function supplierPageParts(repos, name, supplier, { now = Date.now(), cos
   const awsLines = supplier === 'aws' && total != null ? awsLinesOf(cache, name, c.period) : [];
   const aws = awsLines.length ? awsParts(awsLines, mine) : null;
   const body = total == null ? [] : supplier === 'github' ? githubParts(cache, name, c.period, total) : supplier === 'vercel' ? vercelParts(cache, name) : aws?.lines ?? [];
-  const notes = supplier === 'github' ? budgetNotes(costs, cache, c.period)
-    : supplier === 'vercel' && body.length ? [{ tag: 'builds', sgr: GREY, text: [[VERCEL_BUILDS_NOTE, null]] }] : aws?.notes ?? [];
+  const notes = [...(supplier === 'github' ? budgetNotes(costs, cache, c.period)
+    : supplier === 'vercel' && body.length ? [{ tag: 'builds', sgr: GREY, text: [[VERCEL_BUILDS_NOTE, null]] }] : aws?.notes ?? []),
+  ...unreadNameNotes(unread, { supplier: true, said: (_, s) => x.cantRead?.supplier === s })];
   return { head: [charged, ...body], rows: [], foot: notes.length ? ['', ...noteLines(notes, 14, width)] : [], bill };
 }
 
@@ -3994,15 +4020,19 @@ function scopeWord(argv) {
 // One build: each git, launchctl and ps question it asks runs once (build-memo.mjs).
 export const run = (argv, opts) => oneBuild(() => runView(argv, opts));
 
-function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () => refreshLevers(), say = (s) => console.log(s) } = {}) {
+// The cost cache's check, as the open screen runs it: Costs, plain or --json, starts a reading when a
+// supplier is due, so a person who never opens the screen still gets one. Never waits, never fails.
+const costCheck = (costWith, now) => { try { costWith({ now }); } catch { /* the next run tries again */ } };
+
+function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () => refreshLevers(), say = (s) => console.log(s), costWith = startRefresh } = {}) {
   if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships|days [<repo>] | desk-q costs [<repo>]\n'
     + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>\n'
-    + '       desk-q <repo> supervisor [on|off] | desk-q levers [--plain]\n'
+    + '       desk-q <repo> supervisor [on|off] | desk-q levers [--plain] | desk-q rollback <commit> | desk-q rollback --unpin\n'
     + '       desk-q --json home [--all] | repo <repo> | ticket <repo> <KEY> | usage | costs [<repo>]';
   checkFlags(argv);
   const word = scopeWord(argv);
   const repos = loadOrRefuse(now, word);
-  if (argv.includes('--json')) return jsonCommand(repos, argv, now);
+  if (argv.includes('--json')) return jsonCommand(repos, argv, now, costWith);
   const v = target(repos, argv);
   if (v.kind === 'levers') return leversCommand(argv, { now, opener, rebuild, say });
   if (v.kind === 'supervisor') return apply(repos, v);
@@ -4010,7 +4040,10 @@ function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () =
   // Piped, the Timeline is drawn as plain text; --plain asks for the one-line-per-ticket list instead.
   if (v.kind === 'timeline') return argv.includes('--plain') ? shipsScreen(repos, v.slug, { now }) : timelineScreen(repos, v.slug, { now });
   if (v.kind === 'days') return daysScreen(repos, v.slug, { now });
-  if (v.kind === 'costs') return v.name !== undefined ? supplierScreen(repos, v.name, { now, label: v.label ?? v.name }) : costsScreen(repos, { now });
+  if (v.kind === 'costs') {
+    costCheck(costWith, now);
+    return v.name !== undefined ? supplierScreen(repos, v.name, { now, label: v.label ?? v.name }) : costsScreen(repos, { now });
+  }
   if (isWrite(v)) {
     const said = apply(repos, v);
     // The change read back in a build of its own, so nothing the first build remembered is shown.
@@ -4124,7 +4157,7 @@ export function costsJson(repos, v, { now = Date.now(), costs = readCosts(costsP
 }
 
 const JSON_USAGE = 'Which view? desk-q --json home [--all] | repo <repo> | ticket <repo> <KEY> | usage | costs [<repo>].';
-function jsonCommand(repos, argv, now) {
+function jsonCommand(repos, argv, now, costWith = startRefresh) {
   const [view, ...rest] = argv.filter((a) => !a.startsWith('--'));
   const k = view?.toLowerCase();
   if (!JSON_VIEWS.includes(k)) throw new Usage(JSON_USAGE);
@@ -4139,7 +4172,11 @@ function jsonCommand(repos, argv, now) {
     out = ticketJson(repos.find((x) => x.id === t.slug), t.key, { now });
   }
   else if (k === 'usage') out = usageViewJson(repos, { now });
-  else out = costsJson(repos, target(repos, ['costs', ...rest]), { now });
+  else {
+    const v = target(repos, ['costs', ...rest]);
+    costCheck(costWith, now);
+    out = costsJson(repos, v, { now });
+  }
   return JSON.stringify(out, null, 2);
 }
 
@@ -5113,8 +5150,10 @@ export function interactive({
     // One at a time: the probe's start lock refuses a second caller in the same moment.
     const due = probesDue(repos, { now });
     (async () => { for (const p of due) await probeWith({ now, ...p, done: () => { if (!done) draw(); } }).catch(() => {}); })();
-    try { costWith({ now }); } catch { /* the next check tries again */ }
+    costCheck(costWith, now);
   }, probeMs);
+  // Opened on Costs, the check runs at once rather than at the timer's first tick.
+  if (start?.kind === 'costs') costCheck(costWith, clock());
   draw();
   return { finish };
 }
@@ -5123,7 +5162,15 @@ const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
 })();
-if (isMain) {
+// `desk-q rollback <commit>`: the release watch's rollback, on demand (release-watch.mjs). It reads no
+// queue. Not awaited: release-watch's imports reach back into this module, which must finish loading first.
+if (isMain && process.argv[2] === 'rollback') {
+  Promise.all([import('./maintenance.mjs'), import('./release-watch.mjs')]).then(([m, w]) => {
+    const r = w.manualRollback(process.argv.slice(3), { dir: m.maintDir(), src: m.sourceCheckout() });
+    (r.code === 2 ? console.error : console.log)(r.text);
+    process.exit(r.code);
+  }).catch((e) => { console.error(`desk-q rollback: ${e.message}`); process.exit(1); });
+} else if (isMain) {
   const argv = process.argv.slice(2);
   try {
     // A terminal on both ends gets the screen; anything piped, --plain and a change typed in the

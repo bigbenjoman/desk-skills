@@ -175,8 +175,14 @@ q add M-1; q set M-1 state=done result.pr=400 "spawned_at=$SPAWNED"
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-175 AC1 a hand-merged PR gives the ticket GitHub's merge time" "[ \"\$(field M-1 merged_at)\" = '\"$MERGED\"' ]"
 check "DS-175 AC1 and the history gains exactly one line for it" '[ "$(lines)" = 2 ] && [ "$(keyed M-1)" = 1 ] && echo "$out" | grep -q "merge recorded: M-1 (PR #400)"'
+check "#1396 AC1 a hand-merged PR with no merge log is recorded as the merge's PR, at its merge time" \
+  "[ \"\$(field M-1 merge.pr)\" = 400 ] && [ \"\$(field M-1 merge.at)\" = '\"$MERGED\"' ] && ! echo \"\$out\" | grep -q 'PR missing'"
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-175 AC1 the next pass records nothing again and reads no PR" '[ "$(lines)" = 2 ] && [ ! -s "$T/gh-calls" ] && ! echo "$out" | grep -q "merge recorded"'
+# The gap line is printed once per merge, and M-1 is archived by now, so its output alone proves
+# nothing: the merge the next pass reads must still name its PR (the line reads merge.pr == null).
+check "#1396 AC2 and reports no merge recorded with the PR missing, its merge still naming the PR" \
+  '! echo "$out" | grep -q "recorded with the PR missing" && [ "$(field M-1 merge.pr)" = 400 ]'
 q set M-1 merged_at=null; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-175 AC1 a merged PR status kept from before is recorded from it, with no gh call and no second line" \
   "[ \"\$(field M-1 merged_at)\" = '\"$MERGED\"' ] && [ ! -s \"\$T/gh-calls\" ] && [ \"\$(keyed M-1)\" = 1 ]"
@@ -213,6 +219,7 @@ check "DS-180 AC10 closing out a ticket in no batch writes nothing and says noth
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-180 AC9 the next pass records it done with its PR, and clears the note" \
   '[ "$(field CO-1 state)" = "\"done\"" ] && [ "$(field CO-1 result.pr)" = 400 ] && [ "$(field CO-1 park)" = null ] && [ ! -f "$T/state-co/closed-out/CO-1.json" ] && echo "$out" | grep -q "CO-1: closed out from an interactive session (merged, PR #400)"'
+check "#1396 a merge closed out with --pr is recorded naming that PR" '[ "$(field CO-1 merge.pr)" = 400 ] && ! echo "$out" | grep -q "PR missing"'
 check "DS-180 AC9 a ticket nobody closed out stays parked" '[ "$(field CO-2 state)" = "\"parked\"" ]'
 out=$(node "$B/pass.mjs" 2>&1)
 check "a merge closed out with its PR stays done though the PR was opened from another branch" \

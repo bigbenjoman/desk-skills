@@ -115,6 +115,14 @@ specs command once for each id the child owns, and for no other, in its worktree
 - an owned spec failing when run (the spec, the command and the tail of its output);
 - a spec another child owns that the branch added, removed or changed, with that spec's owner.
 
+**Only the batch's own specs count.** Epics share the acceptance directory, and their criterion ids
+repeat (every epic has a `DoD5`). So a child's specs, its briefing and the base gate's are the files
+under the directory that the batch base changed against §0 Default branch, plus any the child's
+branch changed. An earlier epic's spec titled with the same id is never held against a child and is
+never run. Each run takes only its id's files, which replace the spec directory where the §4
+command names it, or `{files}` where the command has that. A command naming neither runs as
+configured. Where the base changed nothing under the directory, every spec there counts, as before.
+
 Send it back with what to fix: `answer.mjs <KEY> "<note>" --batch <EPIC>`, then `queue.mjs requeue <KEY> --batch <EPIC>`. A child
 that owns nothing runs as any batch ticket does.
 

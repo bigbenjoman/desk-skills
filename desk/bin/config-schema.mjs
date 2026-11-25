@@ -191,7 +191,7 @@ export function parseWorkerLocation(raw) {
 // the caller to name, and is never on.
 //   leverRow -> { on: [lever], unknown: [name], auto, invalid: message | null }
 //   parseLevers -> { on, unknown }
-export const LEVERS = Object.freeze(['codex', 'effort', 'failure-class', 'finder-model', 'ledger', 'memory', 'preflight', 'question-handling', 'review-reuse', 'wrappers']);
+export const LEVERS = Object.freeze(['codex', 'effort', 'failure-class', 'finder-model', 'ledger', 'ledger-record', 'memory', 'preflight', 'question-handling', 'review-reuse', 'wrappers']);
 // The finder-model lever's on arm: the Agent tool alias desk-review's Claude finder seats run on while
 // the lever is on (desk-env model finder). One of the aliases parseWorkerModels takes for `finder=`.
 export const FINDER_MODEL_LEVER = 'sonnet';
@@ -658,6 +658,7 @@ export const ROWS = Object.freeze([
   v('harm-vmmem', '3b', 'WSL VM share of its grant that holds spawns (%)', 'whole', '90', dflt('90')),
   v('file-budget', '3b', 'Per-file collision budget', 'file-budget', '3 over 1000 lines, else 1; serial: none', dflt('3 over 1000 lines, else 1; serial: none')),
   v('test-cap', '3b', 'Test worker cap under the test lock', 'whole', '4', { machine: 'test-cap' }),
+  v('light-lock-slots', '3b', 'Light lock slots', 'whole', '2', dflt('1', { machine: 'light-lock-slots' })),
   v('worker-budget', '3b', 'Autopilot per-worker budget (USD)', 'budget', '25', dflt('25')),
   v('batch-budget', '3b', 'Autopilot batch budget (USD)', 'budget', 'none', dflt('none')),
   v('worker-models', '3b', 'Worker models', 'worker-models', 'standard=sonnet high=opus', dflt('default')),
